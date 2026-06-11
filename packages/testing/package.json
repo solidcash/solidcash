@@ -1,0 +1,61 @@
+{
+  "name": "@solidcash/testing",
+  "version": "0.13.0",
+  "description": "SolidCash testing framework - Hardhat-style development environment for Bitcoin Cash contracts",
+  "keywords": [
+    "bitcoin cash",
+    "solidcash",
+    "testing",
+    "smart contracts",
+    "hardhat"
+  ],
+  "homepage": "https://solidcash.org",
+  "bugs": {
+    "url": "https://github.com/CashScript/cashscript/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/CashScript/cashscript.git"
+  },
+  "license": "MIT",
+  "author": "mainnet-pat",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "type": "module",
+  "sideEffects": false,
+  "bin": {
+    "solidcash": "dist/cli.js"
+  },
+  "directories": {
+    "lib": "src",
+    "test": "test"
+  },
+  "scripts": {
+    "build": "yarn clean && yarn compile",
+    "clean": "rm -rf ./dist",
+    "compile": "tsc -p tsconfig.build.json",
+    "lint": "eslint . --ext .ts --ignore-path ../../.eslintignore",
+    "prepare": "yarn build",
+    "prepublishOnly": "yarn test && yarn lint",
+    "test": "vitest run --passWithNoTests"
+  },
+  "dependencies": {
+    "@bitauth/libauth": "^3.1.0-next.8",
+    "@solidcash/utils": "^0.13.0",
+    "solidc": "^0.13.0",
+    "solidcash": "^0.13.0"
+  },
+  "devDependencies": {
+    "eslint": "^8.54.0",
+    "typescript": "^5.9.2",
+    "vitest": "^4.0.15"
+  },
+  "peerDependencies": {
+    "vitest": ">=2.0.0"
+  },
+  "peerDependenciesMeta": {
+    "vitest": {
+      "optional": true
+    }
+  }
+}

@@ -1,16 +1,107 @@
+export interface ResolvedImport {
+  source: string;  // The source code of the imported file
+  id: string;      // Canonical identifier (for dedup + nested import context)
+}
+
+export type ImportResolverFn = (importPath: string, currentFile: string) => ResolvedImport | undefined;
+
 export interface CompilerOptions {
   enforceFunctionParameterTypes?: boolean;
   enforceLocktimeGuard?: boolean;
+  commitmentLimit?: number;
+  importResolver?: ImportResolverFn;
+  rootFileId?: string;
 }
 
 export interface AbiInput {
   name: string;
   type: string;
+  indexed?: boolean;
+}
+
+export interface EmitAbi {
+  eventName: string;
+  eventSignature: string;
+  emitIndex: number;
+}
+
+export interface TokenContainerAccessAbi {
+  keyParam: string;
+  operations: readonly string[];
+  transferCount?: number;      // number of transfer() calls (>1 for fan-out)
+  transferNftCount?: number;   // number of transferNft() calls (>1 for fan-out)
+}
+
+export interface AbiOutput {
+  type: string;
+}
+
+/** Kinds of slots in the 1:1 block layout. */
+export type BlockSlotKind =
+  | 'master'
+  | 'dataNft'
+  | 'readOnlyDataNft'
+  | 'entry'
+  | 'satoshiContainer'
+  | 'tokenContainer'
+  | 'transfer'
+  | 'tcTransfer'
+  | 'event'
+  | 'returnEvent'
+  | 'deploy'
+  | 'lowLevelCall';
+
+/** A single slot in the function's block layout. */
+export interface BlockLayoutSlot {
+  kind: BlockSlotKind;
+  offset: number;           // compile-time offset from block start (= from master)
+  slotIndex?: number;       // for entry/tokenContainer/transfer/event/tcTransfer
+  nftIndex?: number;        // for dataNft/readOnlyDataNft
+  conditional?: boolean;    // true if slot may be inactive (in if/else branch)
+}
+
+/** 1:1 input/output block layout for a stateful function. */
+export interface FunctionBlockLayout {
+  blockSize: number;         // total number of slots in this contract's block
+  slots: BlockLayoutSlot[];
 }
 
 export interface AbiFunction {
   name: string;
+  selector?: string;  // 4-byte hex selector (e.g. "a9059cbb")
   inputs: readonly AbiInput[];
+  outputs?: readonly AbiOutput[];       // return types (omitted for void functions)
+  modifiers?: readonly string[];        // function modifiers (omitted if default external)
+  requiredNftIndices?: number[];  // sorted NFT indices this function accesses (absent = all)
+  entryAccesses?: readonly EntryAccessAbi[];
+  externalReads?: readonly ExternalReadAbi[];
+  externalCalls?: readonly ExternalCallAbi[];
+  externalOutStateReads?: readonly ExternalOutStateAbi[];
+  emits?: readonly EmitAbi[];
+  transferCount?: number;
+  deployTargets?: readonly { contractName: string; dataNftCount: number }[];
+  tokenContainerAccesses?: readonly TokenContainerAccessAbi[];
+  usesMsgSender?: boolean;
+  unsafeTier?: number;
+  splitCountParam?: string;
+  mergeCountParam?: string;
+  lowLevelCalls?: readonly { callMode: 'call' | 'staticcall' | 'delegatecall'; dataParamIndex?: number }[];
+  collectionIterations?: readonly CollectionIterationAbi[];
+  blockLayout?: FunctionBlockLayout;
+  isFallback?: boolean;
+  isReceive?: boolean;
+}
+
+export interface CollectionIterationAbi {
+  collection: string;
+  mode: 'entries' | 'keys' | 'values';
+  iterationIndex: number;
+}
+
+export interface FunctionDebugInformation {
+  requires: readonly RequireStatement[];
+  sourceMap: string;
+  logs: readonly LogEntry[];
 }
 
 export interface DebugInformation {
@@ -18,7 +109,7 @@ export interface DebugInformation {
   sourceMap: string; // see documentation for `generateSourceMap`
   logs: readonly LogEntry[]; // log entries generated from `console.log` statements
   requires: readonly RequireStatement[]; // messages for failing `require` statements
-  sourceTags?: string; // semantic tags for opcodes (e.g. loop update/condition ranges)
+  functionDebug?: Record<string, FunctionDebugInformation>; // per-function debug info keyed by selector hex
 }
 
 export interface LogEntry {
@@ -48,6 +139,131 @@ export interface RequireStatement {
   message?: string; // custom message for failing `require` statement
 }
 
+export interface StateVariableInfo {
+  name: string;
+  type: string;
+  nftIndex: number;
+  fieldIndex: number;
+  visibility?: string;  // 'external' | 'internal' | 'private' - omitted when 'public' (default)
+  immutable?: boolean;  // true when variable can only be assigned in constructor - omitted when false (default)
+  contractType?: string;  // contract/interface name when type is a contract reference (e.g. 'MarketplaceV1')
+  packed?: boolean;  // true when array is stored as packed blob in data NFT - omitted when false (default)
+}
+
+export interface CollectionInfo {
+  name: string;
+  signature: string;  // "balances:mapping(pubkey => int)" - unique collection key
+  kind: 'mapping' | 'array';
+  keyType: string;
+  valueType: string;
+  /** Present for nested mappings - all key types from outer to inner. */
+  keyTypes?: string[];
+  /** Optional name annotation for the mapping key (documentation only). */
+  keyName?: string;
+  /** Optional name annotation for the mapping value (documentation only). */
+  valueName?: string;
+  /** For nested mappings - all key names from outer to inner (documentation only). */
+  keyNames?: string[];
+  /** Present for arrays - the element type. */
+  elementType?: string;
+  /** Present for static arrays - the fixed size. */
+  bound?: number;
+  /** True when collection can only be assigned in constructor - omitted when false (default). */
+  immutable?: boolean;
+}
+
+export interface KeySourceAbi {
+  kind: 'param' | 'state' | 'expression';
+  paramName?: string;
+  stateVarName?: string;
+  expressionLabel?: string;
+}
+
+export interface EntryAccessAbi {
+  collection: string;
+  keyParams: string[];
+  keySources?: readonly KeySourceAbi[];  // optional for backward compat with old artifacts
+  operations: readonly string[];
+}
+
+export interface ExternalReadAbi {
+  interfaceName: string;
+  kind: 'data' | 'entry';
+  nftIndex?: number;
+  collectionName?: string;
+  collectionSignature?: string;
+  categoryParam?: string; // name of the constructor parameter providing the external category
+  lbcParam?: string; // name of the constructor parameter providing the expected locking bytecode
+}
+
+export interface ArgSource {
+  kind: 'forward' | 'constructorArg' | 'literal' | 'expression';
+  paramIndex?: number;     // for 'forward': index into the user-visible function args
+  paramName?: string;      // for 'constructorArg': name of the constructor parameter
+  value?: string;          // for 'literal': serialized value
+  type?: string;           // for 'literal': SolidCash type string
+}
+
+export interface ExternalCallAbi {
+  interfaceName: string;
+  functionName: string;
+  categoryParam?: string;
+  lbcParam?: string;
+  requiredDataNftIndices: number[];
+  hasReturnValues?: boolean;
+  returnTypes?: readonly string[];
+  returnEventSignature?: string;
+  computedOffset?: number;
+  callMode?: 'call' | 'staticcall' | 'delegatecall';
+  argSources?: readonly ArgSource[];
+}
+
+export interface ExternalOutStateAbi {
+  interfaceName: string;
+  categoryParam?: string;
+  lbcParam?: string;
+  requiredDataNftIndices: number[];
+}
+
+export interface ExternalInterfaceInfo {
+  name: string;
+  stateLayout: StateLayout;
+  abi?: readonly { name: string; inputs: readonly AbiInput[]; selector?: string; usesMsgSender?: boolean }[];
+}
+
+export interface StructDefinitionInfo {
+  name: string;
+  fields: readonly { name: string; type: string }[];
+}
+
+export interface EventDefinitionAbi {
+  name: string;
+  signature: string;
+  parameters: readonly AbiInput[];
+  anonymous?: boolean;
+}
+
+export interface ErrorDefinitionAbi {
+  name: string;
+  signature: string;
+  parameters: readonly AbiInput[];
+}
+
+export interface EnumDefinitionAbi {
+  name: string;
+  members: readonly { name: string; value: number | string }[];
+}
+
+export interface StateLayout {
+  variables: readonly StateVariableInfo[];
+  dataNftCount: number;
+  commitmentLimit: number;
+  constructorInputs?: readonly AbiInput[];
+  collections?: readonly CollectionInfo[];
+  mappings?: readonly CollectionInfo[];
+  structs?: readonly StructDefinitionInfo[];
+}
+
 export interface Artifact {
   contractName: string;
   constructorInputs: readonly AbiInput[];
@@ -55,108 +271,64 @@ export interface Artifact {
   bytecode: string;
   source: string;
   debug?: DebugInformation;
+  functionBodies?: Record<string, string>; // selector hex -> hex-encoded function body bytecode
+  fingerprint?: string; // SHA256 of the normalized bytecode pattern (BCH bytecode fingerprinting standard)
+  stateLayout?: StateLayout;
+  externalInterfaces?: readonly ExternalInterfaceInfo[];
+  events?: readonly EventDefinitionAbi[];
+  errors?: readonly ErrorDefinitionAbi[];
+  enums?: readonly EnumDefinitionAbi[];
   compiler: {
     name: string;
     version: string;
     options?: CompilerOptions;
   }
   updatedAt: string;
-  fingerprint?: string; // SHA256 of the normalized bytecode pattern (BCH bytecode fingerprinting standard)
 }
 
 export function formatArtifact(artifact: Artifact, format: 'json' | 'ts'): string {
   if (format === 'ts') {
-    // We remove any undefined values to make the artifact serializable
+    // We remove any undefined values to make the artifact serializable using stringifyAsTs
     const normalisedArtifact = JSON.parse(JSON.stringify(artifact));
-    return `export default ${stringify(normalisedArtifact, 'ts')} as const;\n`;
+    return `export default ${stringifyAsTs(normalisedArtifact)} as const;\n`;
   }
 
-  return stringify(artifact, 'json');
+  return JSON.stringify(artifact, null, 2);
 }
 
 const indent = (level: number): string => '  '.repeat(level);
 
-// Objects with this many or more properties are always expanded onto multiple lines, to keep
-// generated `.artifact.ts` files compliant with the `object-curly-newline` lint rule (minProperties: 4)
-const MAX_INLINE_OBJECT_PROPERTIES = 3;
+function stringifyAsTs(obj: any, indentationLevel: number = 1): string {
+  // For strings we use JSON.stringify to handle escaping, but we want to use single quotes instead of double quotes
+  // around string values inside objects, to match regular TS style
+  if (typeof obj === 'string') {
+    return `'${JSON.stringify(obj).replace(/'/g, "\\'").replace(/\\"/g, '"').slice(1, -1)}'`;
+  }
 
-// Recursively serialises an artifact to JSON or TS. Small records that are elements of an array
-// (e.g. `requires`, `constructorInputs`, `abi` inputs) are kept on a single line so list-like data
-// stays compact, while standalone objects assigned to a property (e.g. `compiler.options`) keep
-// their values expanded one per line.
-function stringify(
-  obj: any,
-  format: 'json' | 'ts',
-  indentationLevel: number = 1,
-  isArrayElement: boolean = false,
-): string {
-  if (typeof obj === 'string') return formatString(obj, format);
-
-  // Numbers, booleans and null are represented identically in JSON and TS
-  if (obj === null || typeof obj === 'number' || typeof obj === 'boolean') {
+  // Numbers and booleans are just converted to strings
+  if (typeof obj === 'number' || typeof obj === 'boolean') {
     return JSON.stringify(obj);
   }
 
-  if (Array.isArray(obj)) return formatArray(obj, format, indentationLevel, isArrayElement);
-
-  if (typeof obj === 'object') return formatObject(obj, format, indentationLevel, isArrayElement);
-
-  throw new Error(`Unsupported type: ${typeof obj}`);
-}
-
-function formatString(value: string, format: 'json' | 'ts'): string {
-  // JSON strings use standard double-quoted escaping
-  if (format === 'json') return JSON.stringify(value);
-
-  // TS strings use single quotes instead of double quotes around string values, to match regular TS style
-  return `'${JSON.stringify(value).replace(/'/g, "\\'").replace(/\\"/g, '"').slice(1, -1)}'`;
-}
-
-function formatArray(
-  array: readonly any[],
-  format: 'json' | 'ts',
-  indentationLevel: number,
-  isArrayElement: boolean,
-): string {
-  if (array.length === 0) return '[]';
-
-  const items = array.map((item) => stringify(item, format, indentationLevel + 1, true));
-
-  if (isArrayElement && canInline(array)) return `[${items.join(', ')}]`;
-
-  const lines = items.map((item) => `${indent(indentationLevel)}${item}`).join(',\n');
-  const trailingComma = format === 'ts' ? ',' : '';
-  return `[\n${lines}${trailingComma}\n${indent(indentationLevel - 1)}]`;
-}
-
-function formatObject(
-  obj: any,
-  format: 'json' | 'ts',
-  indentationLevel: number,
-  isArrayElement: boolean,
-): string {
-  const entries = Object.entries(obj).filter(([, value]) => value !== undefined);
-
-  if (entries.length === 0) return '{}';
-
-  const formatKey = (key: string): string => (format === 'json' ? JSON.stringify(key) : key);
-  const formatted = entries.map(
-    ([key, value]) => `${formatKey(key)}: ${stringify(value, format, indentationLevel + 1)}`,
-  );
-
-  if (isArrayElement && entries.length <= MAX_INLINE_OBJECT_PROPERTIES && canInline(obj)) {
-    return `{ ${formatted.join(', ')} }`;
+  // Arrays are recursively formatted with indentation
+  if (Array.isArray(obj)) {
+    if (obj.length === 0) return '[]';
+    const formattedItems = obj.map((item) => `${indent(indentationLevel)}${stringifyAsTs(item, indentationLevel + 1)}`);
+    return `[\n${formattedItems.join(',\n')},\n${indent(indentationLevel - 1)}]`;
   }
 
-  const lines = formatted.map((entry) => `${indent(indentationLevel)}${entry}`).join(',\n');
-  const trailingComma = format === 'ts' ? ',' : '';
-  return `{\n${lines}${trailingComma}\n${indent(indentationLevel - 1)}}`;
-}
+  // Objects are recursively formatted with indentation
+  if (typeof obj === 'object') {
+    const entries = Object.entries(obj);
 
-// A container can be inlined when none of its values are themselves a non-empty object or array
-function canInline(container: any): boolean {
-  const values = Array.isArray(container) ? container : Object.values(container);
-  return values.every((value) => (
-    value === undefined || value === null || typeof value !== 'object' || Object.keys(value).length === 0
-  ));
+    if (entries.length === 0) return '{}';
+
+    const formattedEntries = entries.map(([key, value]) => {
+      const safeKey = /^[a-zA-Z_$][a-zA-Z0-9_$]*$/.test(key) ? key : `'${key.replace(/'/g, "\\'")}'`;
+      return `${indent(indentationLevel)}${safeKey}: ${stringifyAsTs(value, indentationLevel + 1)}`;
+    });
+    return `{\n${formattedEntries.join(',\n')},\n${indent(indentationLevel - 1)}}`;
+  }
+
+  throw new Error(`Unsupported type: ${typeof obj}`);
 }

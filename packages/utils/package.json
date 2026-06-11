@@ -1,15 +1,15 @@
 {
-  "name": "@cashscript/utils",
+  "name": "@solidcash/utils",
   "version": "0.13.0",
-  "description": "CashScript utilities and types",
+  "description": "SolidCash utilities and types",
   "keywords": [
     "bitcoin cash",
-    "cashscript",
+    "solidcash",
     "sdk",
     "smart contracts",
     "cashtokens"
   ],
-  "homepage": "https://cashscript.org",
+  "homepage": "https://solidcash.org",
   "bugs": {
     "url": "https://github.com/CashScript/cashscript/issues"
   },

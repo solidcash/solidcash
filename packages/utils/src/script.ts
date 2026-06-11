@@ -10,7 +10,7 @@ import {
 } from '@bitauth/libauth';
 import OptimisationsEquivFile from './cashproof-optimisations.js';
 import { optimisationReplacements } from './optimisations.js';
-import { FullLocationData, PositionHint, SingleLocationData, SourceTagEntry } from './types.js';
+import { FullLocationData, PositionHint, SingleLocationData } from './types.js';
 import { LogEntry, RequireStatement } from './artifact.js';
 
 export const Op = OpcodesBch;
@@ -65,14 +65,19 @@ export function asmToBytecode(asm: string): Uint8Array {
   // Remove any duplicate whitespace
   asm = asm.replace(/\s+/g, ' ').trim();
 
-  if (asm === '') return new Uint8Array();
+  // Empty ASM string -> empty bytecode (not OP_0)
+  if (asm === '') return new Uint8Array(0);
 
   // Convert the ASM tokens to AuthenticationInstructions
   const instructions = asm.split(' ').map((token) => {
     // Even though the OpcodesBch type allows for { [key: number]: string }, we know that the keys are always the opcodes
     // so we can safely cast to the AuthenticationInstruction type
     if (token.startsWith('OP_')) {
-      return { opcode: Op[token as keyof typeof Op] } as AuthenticationInstruction;
+      const opcode = Op[token as keyof typeof Op];
+      if (opcode === undefined) {
+        throw new Error(`asmToBytecode: unknown opcode "${token}"`);
+      }
+      return { opcode } as AuthenticationInstruction;
     }
 
     const data = token.replace(/<|>/g, '').replace(/^0x/, '');
@@ -134,19 +139,9 @@ export function encodeNullDataScript(chunks: OpOrData[]): Uint8Array {
         return new Uint8Array([chunk]);
       }
 
-      const pushdataOpcode = getPushDataOpcode(chunk);
-      return new Uint8Array([...pushdataOpcode, ...chunk]);
+      return encodeDataPush(chunk);
     }),
   );
-}
-
-function getPushDataOpcode(data: Uint8Array): Uint8Array {
-  const { byteLength } = data;
-
-  if (byteLength === 0) return Uint8Array.from([0x4c, 0x00]);
-  if (byteLength < 76) return Uint8Array.from([byteLength]);
-  if (byteLength < 256) return Uint8Array.from([0x4c, byteLength]);
-  throw Error('Pushdata too large');
 }
 
 export function generateContractBytecodeScript(baseScript: Script, encodedConstructorArgs: Script): Script {
@@ -158,7 +153,6 @@ interface OptimiseBytecodeResult {
   locationData: FullLocationData;
   logs: LogEntry[];
   requires: RequireStatement[];
-  sourceTags: SourceTagEntry[];
 }
 
 export function optimiseBytecode(
@@ -166,7 +160,6 @@ export function optimiseBytecode(
   locationData: FullLocationData,
   logs: LogEntry[],
   requires: RequireStatement[],
-  sourceTags: SourceTagEntry[],
   constructorParamLength: number,
   runs: number = 1000,
 ): OptimiseBytecodeResult {
@@ -177,8 +170,7 @@ export function optimiseBytecode(
       locationData: newLocationData,
       logs: newLogs,
       requires: newRequires,
-      sourceTags: newSourceTags,
-    } = replaceOps(script, locationData, logs, requires, sourceTags, constructorParamLength, optimisationReplacements);
+    } = replaceOps(script, locationData, logs, requires, constructorParamLength, optimisationReplacements);
 
     // Break on fixed point
     if (scriptToAsm(oldScript) === scriptToAsm(newScript)) break;
@@ -187,10 +179,9 @@ export function optimiseBytecode(
     locationData = newLocationData;
     logs = newLogs;
     requires = newRequires;
-    sourceTags = newSourceTags;
   }
 
-  return { script, locationData, logs, requires, sourceTags };
+  return { script, locationData, logs, requires };
 }
 
 export function optimiseBytecodeOld(script: Script, runs: number = 1000): Script {
@@ -222,21 +213,28 @@ function replaceOpsOld(script: Script, optimisations: string[][]): Script {
   let asm = scriptToAsm(script);
 
   // Apply all optimisations in the cashproof file
+  // Normalize spaces after each rule to prevent double-space artifacts from
+  // empty replacements breaking subsequent pattern matches.
+  // Add word boundary assertion (?=\s|$) to each opcode in the pattern to prevent
+  // partial matching (e.g., OP_EQUAL matching inside OP_EQUALVERIFY).
   optimisations.forEach(([pattern, replacement]) => {
-    asm = asm.replace(new RegExp(pattern, 'g'), replacement);
+    const boundedPattern = pattern.replace(/(OP_\w+)/g, '$1(?=\\s|$)');
+    asm = asm.replace(new RegExp(boundedPattern, 'g'), replacement);
+    asm = asm.replace(/\s+/g, ' ').trim();
   });
 
   // Add optimisations that are not compatible with CashProof
+  // Use (?=\s|$) lookahead to prevent partial opcode matching
   // CashProof can't prove OP_IF without parameters
-  asm = asm.replace(/OP_NOT OP_IF/g, 'OP_NOTIF');
+  asm = asm.replace(/OP_NOT OP_IF(?=\s|$)/g, 'OP_NOTIF');
   // CashProof can't prove OP_CHECKMULTISIG without specifying N
-  asm = asm.replace(/OP_CHECKMULTISIG OP_VERIFY/g, 'OP_CHECKMULTISIGVERIFY');
+  asm = asm.replace(/OP_CHECKMULTISIG OP_VERIFY(?=\s|$)/g, 'OP_CHECKMULTISIGVERIFY');
   // CashProof can't prove bitwise operators
-  asm = asm.replace(/OP_SWAP OP_AND/g, 'OP_AND');
-  asm = asm.replace(/OP_SWAP OP_OR/g, 'OP_OR');
-  asm = asm.replace(/OP_SWAP OP_XOR/g, 'OP_XOR');
-  asm = asm.replace(/OP_DUP OP_AND/g, '');
-  asm = asm.replace(/OP_DUP OP_OR/g, '');
+  asm = asm.replace(/OP_SWAP OP_AND(?=\s|$)/g, 'OP_AND');
+  asm = asm.replace(/OP_SWAP OP_OR(?=\s|$)/g, 'OP_OR');
+  asm = asm.replace(/OP_SWAP OP_XOR(?=\s|$)/g, 'OP_XOR');
+  asm = asm.replace(/OP_DUP OP_AND(?=\s|$)/g, '');
+  asm = asm.replace(/OP_DUP OP_OR(?=\s|$)/g, '');
 
   // Remove any double spaces as a result of opcode removal
   asm = asm.replace(/\s+/g, ' ').trim();
@@ -249,7 +247,6 @@ interface ReplaceOpsResult {
   locationData: FullLocationData;
   logs: LogEntry[];
   requires: RequireStatement[];
-  sourceTags: SourceTagEntry[];
 }
 
 function replaceOps(
@@ -257,7 +254,6 @@ function replaceOps(
   locationData: FullLocationData,
   logs: LogEntry[],
   requires: RequireStatement[],
-  sourceTags: SourceTagEntry[],
   constructorParamLength: number,
   optimisations: string[][],
 ): ReplaceOpsResult {
@@ -265,7 +261,6 @@ function replaceOps(
   let newLocationData = [...locationData];
   let newLogs = [...logs];
   let newRequires = [...requires];
-  let newSourceTags = [...sourceTags];
 
   optimisations.forEach(([pattern, replacement]) => {
     let processedAsm = '';
@@ -345,7 +340,7 @@ function replaceOps(
             if (typeof data === 'string') return data;
 
             // If the log is completely before the pattern, we don't need to change anything
-            if (data.ip <= scriptIp) return data;
+            if (data.ip < scriptIp) return data;
 
             // If the log is completely after the pattern, we just need to offset the ip by the length diff
             if (data.ip >= scriptIp + patternLength) {
@@ -357,21 +352,18 @@ function replaceOps(
             const addedTransformations = [...pattern.split(/\s+/g)].slice(0, addedTransformationsCount).join(' ');
             const newTransformations = data.transformations ? `${addedTransformations} ${data.transformations}` : addedTransformations;
 
-            return {
+            // Only include transformations property if non-empty to avoid adding spurious empty strings
+            const result: typeof data = {
               ...data,
               ip: scriptIp,
-              transformations: newTransformations,
             };
+            if (newTransformations) {
+              result.transformations = newTransformations;
+            }
+            return result;
           }),
         };
       });
-
-      // Source tags use raw script indices (no constructor offset), so we adjust using scriptIndex directly
-      newSourceTags = newSourceTags.map((tag) => ({
-        ...tag,
-        startIndex: tag.startIndex >= scriptIndex ? Math.max(scriptIndex, tag.startIndex - lengthDiff) : tag.startIndex,
-        endIndex: tag.endIndex >= scriptIndex ? Math.max(scriptIndex, tag.endIndex - lengthDiff) : tag.endIndex,
-      }));
 
       // We add the replacement to the processed asm
       processedAsm = mergeAsm(processedAsm, replacement);
@@ -397,7 +389,6 @@ function replaceOps(
     locationData: newLocationData,
     logs: newLogs,
     requires: newRequires,
-    sourceTags: newSourceTags,
   };
 }
 

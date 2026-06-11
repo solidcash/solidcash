@@ -1,6 +1,6 @@
 export default `
 # This file can be run with CashProof to prove that the optimisations preserve exact functionality
-# This includes most of CashScript's bytecode optimisations, although some are incompatible with CashProof
+# This includes most of SolidCash's bytecode optimisations, although some are incompatible with CashProof
 
 # Hardcoded arithmetic
 # OP_NOT OP_IF                         <=> OP_NOTIF;
@@ -57,7 +57,11 @@ OP_CHECKDATASIG OP_VERIFY              <=> OP_CHECKDATASIGVERIFY;
 # OP_SWAP OP_OR                          <=> OP_OR;
 # OP_SWAP OP_XOR                         <=> OP_XOR;
 OP_SWAP OP_ADD                         <=> OP_ADD;
+# Explicit VERIFY variants must appear before their shorter counterparts
+# to prevent partial matching when word boundary assertions are used.
+OP_SWAP OP_EQUALVERIFY                 <=> OP_EQUALVERIFY;
 OP_SWAP OP_EQUAL                       <=> OP_EQUAL;
+OP_SWAP OP_NUMEQUALVERIFY              <=> OP_NUMEQUALVERIFY;
 OP_SWAP OP_NUMEQUAL                    <=> OP_NUMEQUAL;
 OP_SWAP OP_NUMNOTEQUAL                 <=> OP_NUMNOTEQUAL;
 OP_SWAP OP_GREATERTHANOREQUAL          <=> OP_LESSTHANOREQUAL;

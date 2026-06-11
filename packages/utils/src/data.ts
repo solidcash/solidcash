@@ -4,6 +4,7 @@ import {
   binToUtf8,
   vmNumberToBigInt,
   isVmNumberError,
+  stackItemIsTruthy,
   padMinimallyEncodedVmNumber,
 } from '@bitauth/libauth';
 
@@ -12,15 +13,7 @@ export function encodeBool(bool: boolean): Uint8Array {
 }
 
 export function decodeBool(encodedBool: Uint8Array): boolean {
-  // Any encoding of 0 is false, else true
-  for (let i = 0; i < encodedBool.byteLength; i += 1) {
-    if (encodedBool[i] !== 0) {
-      // Can be negative zero
-      if (i === encodedBool.byteLength - 1 && encodedBool[i] === 0x80) return false;
-      return true;
-    }
-  }
-  return false;
+  return stackItemIsTruthy(encodedBool);
 }
 
 export function encodeInt(int: bigint): Uint8Array {
@@ -33,7 +26,7 @@ export function encodeIntAsFixedBytes(int: bigint, byteLength: number): Uint8Arr
   return padMinimallyEncodedVmNumber(minimal, byteLength);
 }
 
-export function decodeInt(encodedInt: Uint8Array, maxLength: number = Infinity): bigint {
+export function decodeInt(encodedInt: Uint8Array, maxLength: number = 10000): bigint {
   const options = { maximumVmNumberByteLength: maxLength };
   const result = vmNumberToBigInt(encodedInt, options);
 
@@ -54,8 +47,4 @@ export function decodeString(encodedString: Uint8Array): string {
 
 export function placeholder(size: number): Uint8Array {
   return new Uint8Array(size).fill(0);
-}
-
-export function range(start: number, end: number): number[] {
-  return Array.from({ length: end - start + 1 }, (_, i) => start + i);
 }

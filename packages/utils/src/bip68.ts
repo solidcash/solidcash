@@ -41,6 +41,8 @@ export function encodeBip68({ blocks, seconds }: DecodedSequence): number {
   // If the input is correct, we encode it as a sequence in seconds (using the SEQUENCE_LOCKTIME_TYPE_FLAG)
   if (seconds !== undefined) {
     if (!Number.isFinite(seconds)) throw new TypeError('Expected Number seconds');
+    if (!Number.isInteger(seconds)) throw new TypeError('seconds must be an integer');
+    if (seconds < 0) throw new TypeError('Expected non-negative seconds');
     if (seconds > SECONDS_MAX) throw new TypeError('Expected Number seconds <= ' + SECONDS_MAX);
     if (seconds % SECONDS_MOD !== 0) throw new TypeError('Expected Number seconds as a multiple of ' + SECONDS_MOD);
 
@@ -50,6 +52,8 @@ export function encodeBip68({ blocks, seconds }: DecodedSequence): number {
   // If the input is correct, we return the blocks (no further encoding needed)
   if (blocks !== undefined) {
     if (!Number.isFinite(blocks)) throw new TypeError('Expected Number blocks');
+    if (!Number.isInteger(blocks)) throw new TypeError('blocks must be an integer');
+    if (blocks < 0) throw new TypeError('Expected non-negative blocks');
     if (blocks > SEQUENCE_LOCKTIME_MASK) throw new TypeError('Expected Number blocks <= ' + BLOCKS_MAX);
 
     return blocks;

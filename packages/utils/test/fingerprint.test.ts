@@ -72,24 +72,24 @@ describe('fingerprint utils', () => {
       // OP_2 <33 bytes> <33 bytes> <33 bytes> OP_3 OP_CHECKMULTISIG
       const pubkeyPush = concat(Op.OP_PUSHBYTES_33, zeroes(33));
       const bytecode = concat(Op.OP_2, pubkeyPush, pubkeyPush, pubkeyPush, Op.OP_3, Op.OP_CHECKMULTISIG);
-      // 5 consecutive pushes → OP_5; followed by OP_CHECKMULTISIG
+      // 5 consecutive pushes -> OP_5; followed by OP_CHECKMULTISIG
       expect(computeBytecodePattern(bytecode)).toEqual(concat(Op.OP_5, Op.OP_CHECKMULTISIG));
     });
 
     it('encodes push counts above 16 as a minimally encoded VM number push', () => {
-      // 17 consecutive OP_0 pushes → push of value 17 = OP_PUSHBYTES_1 0x11
+      // 17 consecutive OP_0 pushes -> push of value 17 = OP_PUSHBYTES_1 0x11
       const bytecode = zeroes(17);
       expect(computeBytecodePattern(bytecode)).toEqual(concat(Op.OP_PUSHBYTES_1, 0x11));
     });
 
     it('treats OP_1NEGATE and OP_0 as pushes when adjacent', () => {
-      // OP_0 OP_1NEGATE OP_DUP → OP_2 OP_DUP
+      // OP_0 OP_1NEGATE OP_DUP -> OP_2 OP_DUP
       const bytecode = concat(Op.OP_0, Op.OP_1NEGATE, Op.OP_DUP);
       expect(computeBytecodePattern(bytecode)).toEqual(concat(Op.OP_2, Op.OP_DUP));
     });
 
     it('does not collapse a non-push opcode that sits between pushes', () => {
-      // OP_1 OP_DUP OP_2 → OP_1 OP_DUP OP_1
+      // OP_1 OP_DUP OP_2 -> OP_1 OP_DUP OP_1
       const bytecode = concat(Op.OP_1, Op.OP_DUP, Op.OP_2);
       expect(computeBytecodePattern(bytecode)).toEqual(concat(Op.OP_1, Op.OP_DUP, Op.OP_1));
     });

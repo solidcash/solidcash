@@ -6,4 +6,5 @@ export * from './fingerprint.js';
 export * from './hash.js';
 export * from './script.js';
 export * from './source-map.js';
+export * from './state.js';
 export * from './types.js';

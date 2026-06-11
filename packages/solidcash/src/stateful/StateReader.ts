@@ -1,0 +1,368 @@
+import {
+  StateLayout, parsePushdataCommitment, EventDefinitionAbi, decodePushdataValue,
+  StateValue, StateRecord,
+} from '@solidcash/utils';
+import { hexToBin, binsAreEqual } from '@bitauth/libauth';
+import { Utxo } from '../interfaces.js';
+import NetworkProvider from '../network/NetworkProvider.js';
+
+export interface OnChainState {
+  state: Record<string, StateValue>;
+  masterUtxo: Utxo | undefined;
+  dataNftUtxos: Utxo[];
+  entryNftUtxos: Utxo[];
+}
+
+export class StateReader {
+  constructor(private layout: StateLayout) {}
+
+  /**
+   * Find the master UTXO (minting NFT) for the given category.
+   */
+  findMasterUtxo(utxos: Utxo[], categoryId: string): Utxo | undefined {
+    return utxos.find((utxo) => (
+      utxo.token
+      && utxo.token.category === categoryId
+      && utxo.token.nft
+      && utxo.token.nft.capability === 'minting'
+    ));
+  }
+
+  /**
+   * Find ALL master UTXOs (minting NFTs) for the given category.
+   * Returns them sorted by vout (ascending).
+   * A contract with threading enabled may have multiple minting NFTs.
+   */
+  findMasterUtxos(utxos: Utxo[], categoryId: string): Utxo[] {
+    return utxos
+      .filter((utxo) => (
+        utxo.token
+        && utxo.token.category === categoryId
+        && utxo.token.nft
+        && utxo.token.nft.capability === 'minting'
+      ))
+      .sort((a, b) => a.vout - b.vout);
+  }
+
+  /**
+   * Find data NFT UTXOs matching the given category ID.
+   * Validates each candidate's commitment by attempting to parse it as pushdata state
+   * at any nftIndex. This distinguishes data NFTs from entry NFTs (whose commitments
+   * have key+value format). Results are sorted by vout to match covenant output ordering.
+   */
+  findDataNfts(utxos: Utxo[], categoryId: string): Utxo[] {
+    const dataNftCount = this.layout.dataNftCount ?? 1;
+    return utxos
+      .filter((utxo) => {
+        if (!utxo.token
+          || utxo.token.category !== categoryId
+          || !utxo.token.nft
+          || utxo.token.nft.capability !== 'mutable'
+          || utxo.token.nft.commitment.length === 0) return false;
+        // Validate commitment parses as pushdata state at some nftIndex
+        const commitmentHex = utxo.token.nft.commitment;
+        for (let nftIdx = 0; nftIdx < dataNftCount; nftIdx++) {
+          try {
+            parsePushdataCommitment(commitmentHex, this.layout, nftIdx);
+            return true;
+          } catch {
+            // Try next nftIndex
+          }
+        }
+        return false;
+      })
+      .sort((a, b) => a.vout - b.vout);
+  }
+
+  /**
+   * Find entry NFT UTXOs matching the given category ID.
+   * Entry NFTs are mutable NFTs with commitments that are NOT data NFTs.
+   */
+  findEntryNfts(allUtxos: Utxo[], dataNftUtxos: Utxo[], categoryId: string): Utxo[] {
+    const dataNftIds = new Set(dataNftUtxos.map((u) => `${u.txid}:${u.vout}`));
+    return allUtxos
+      .filter((utxo) => (
+        utxo.token
+        && utxo.token.category === categoryId
+        && utxo.token.nft
+        && utxo.token.nft.capability === 'mutable'
+        && utxo.token.nft.commitment.length > 0
+        && !dataNftIds.has(`${utxo.txid}:${utxo.vout}`)
+      ))
+      .sort((a, b) => a.vout - b.vout);
+  }
+
+  /**
+   * Read state from data NFT UTXOs using pushdata format.
+   * Data NFTs must be ordered by nftIndex (0, 1, 2, ...).
+   */
+  readState(
+    dataNftUtxos: Utxo[],
+  ): Record<string, StateValue> {
+    const result: Record<string, StateValue> = {};
+
+    for (let nftIdx = 0; nftIdx < this.layout.dataNftCount; nftIdx++) {
+      const nftUtxo = dataNftUtxos[nftIdx];
+      if (!nftUtxo || !nftUtxo.token?.nft?.commitment) {
+        throw new Error(`Missing data NFT at index ${nftIdx} for state variables`);
+      }
+
+      const commitment = nftUtxo.token.nft.commitment;
+      const parsed = parsePushdataCommitment(commitment, this.layout, nftIdx);
+
+      for (const [key, value] of Object.entries(parsed)) {
+        result[key] = value;
+      }
+    }
+
+    return result;
+  }
+
+  /**
+   * Fetch UTXOs from the chain and read the contract state.
+   *
+   * @param provider - Network provider to query UTXOs from.
+   * @param categoryId - Token category ID shared by master and data NFTs.
+   * @param addresses - Addresses to search for UTXOs. Should include the
+   *   contract's token address (for the master UTXO) and any addresses
+   *   where data NFTs are held.
+   */
+  async readStateFromChain(
+    provider: NetworkProvider,
+    categoryId: string,
+    addresses: string[],
+    dataNftAddresses?: string[],
+  ): Promise<OnChainState> {
+    // Fetch all addresses in parallel for a consistent snapshot
+    const utxoResults = await Promise.all(
+      addresses.map((address) => provider.getUtxos(address)),
+    );
+    const allUtxos: Utxo[] = [];
+    const utxosByAddress = new Map<string, Utxo[]>();
+    for (let i = 0; i < addresses.length; i++) {
+      allUtxos.push(...utxoResults[i]);
+      utxosByAddress.set(addresses[i], utxoResults[i]);
+    }
+
+    const masterUtxo = this.findMasterUtxo(allUtxos, categoryId);
+
+    // When dataNftAddresses are provided, only look for data NFTs at those specific addresses.
+    // This prevents entry NFTs (which share the same category) from being misidentified.
+    // Filter from already-fetched UTXOs to avoid TOCTOU issues from re-fetching.
+    let dataNftPool: Utxo[];
+    if (dataNftAddresses && dataNftAddresses.length > 0) {
+      const dataNftAddressSet = new Set(dataNftAddresses);
+      dataNftPool = [];
+      for (const address of addresses) {
+        if (dataNftAddressSet.has(address)) {
+          dataNftPool.push(...(utxosByAddress.get(address) ?? []));
+        }
+      }
+    } else {
+      dataNftPool = allUtxos;
+    }
+
+    const dataNftUtxos = this.findDataNfts(dataNftPool, categoryId);
+
+    if (dataNftUtxos.length < this.layout.dataNftCount) {
+      throw new Error(
+        `Expected ${this.layout.dataNftCount} data NFT(s) for category ${categoryId}, `
+        + `found ${dataNftUtxos.length}. Check that all addresses holding data NFTs are included.`,
+      );
+    }
+
+    const state = this.readState(dataNftUtxos);
+    const entryNftUtxos = this.findEntryNfts(allUtxos, dataNftUtxos, categoryId);
+
+    return { state, masterUtxo, dataNftUtxos, entryNftUtxos };
+  }
+}
+
+export interface ParsedEvent {
+  txid: string;
+  vout: number;
+  values: Record<string, StateValue>;
+  eventName?: string;
+  eventSignature?: string;
+}
+
+export type EventFilter = Record<string, StateValue>;
+
+/**
+ * Parse event commitment data from a hex-encoded NFT commitment.
+ */
+export function parseEventCommitment(
+  commitmentHex: string,
+  eventDef: EventDefinitionAbi,
+  structs?: StateLayout['structs'],
+): Record<string, StateValue> {
+  const data = hexToBin(commitmentHex);
+  const result: Record<string, StateValue> = {};
+  let offset = 0;
+
+  for (const param of eventDef.parameters) {
+    const { value, bytesConsumed } = decodePushdataValue(data, offset, param.type, structs);
+    result[param.name] = value;
+    offset += bytesConsumed;
+  }
+
+  if (offset < data.length) {
+    throw new Error(
+      `parseEventCommitment: ${data.length - offset} trailing byte(s) after parsing all parameters`,
+    );
+  }
+
+  return result;
+}
+
+/**
+ * Read events from chain by querying UTXOs at the event covenant address.
+ */
+export async function readEventsFromChain(
+  provider: NetworkProvider,
+  eventAddress: string,
+  categoryId: string,
+  eventDef: EventDefinitionAbi,
+  structs?: StateLayout['structs'],
+): Promise<ParsedEvent[]> {
+  const utxos = await provider.getUtxos(eventAddress);
+
+  return utxos
+    .filter((utxo) => (
+      utxo.token
+      && utxo.token.category === categoryId
+      && utxo.token.nft
+      && utxo.token.nft.commitment.length > 0
+    ))
+    .map((utxo) => ({
+      txid: utxo.txid,
+      vout: utxo.vout,
+      values: parseEventCommitment(utxo.token!.nft!.commitment, eventDef, structs),
+    }));
+}
+
+/**
+ * Read events from chain and filter by indexed parameter values.
+ */
+export async function readEventsFiltered(
+  provider: NetworkProvider,
+  eventAddress: string,
+  categoryId: string,
+  eventDef: EventDefinitionAbi,
+  filters?: EventFilter,
+  structs?: StateLayout['structs'],
+): Promise<ParsedEvent[]> {
+  const allEvents = await readEventsFromChain(provider, eventAddress, categoryId, eventDef, structs);
+  if (!filters || Object.keys(filters).length === 0) return allEvents;
+
+  // Validate filter keys are indexed parameters
+  const indexedParams = new Set(
+    eventDef.parameters.filter((p) => p.indexed).map((p) => p.name),
+  );
+  for (const key of Object.keys(filters)) {
+    if (!indexedParams.has(key)) {
+      throw new Error(`Filter key '${key}' is not an indexed parameter of event '${eventDef.name}'`);
+    }
+  }
+
+  return allEvents.filter((event) => Object.entries(filters).every(
+    ([key, val]) => valuesEqual(event.values[key], val),
+  ));
+}
+
+/**
+ * Try to parse an event commitment, returning null if the commitment doesn't
+ * fully match the event definition (e.g. trailing bytes remain).
+ */
+export function tryParseEventCommitment(
+  commitmentHex: string,
+  eventDef: EventDefinitionAbi,
+  structs?: StateLayout['structs'],
+): Record<string, StateValue> | null {
+  try {
+    const data = hexToBin(commitmentHex);
+    const result: Record<string, StateValue> = {};
+    let offset = 0;
+
+    for (const param of eventDef.parameters) {
+      if (offset >= data.length) return null; // not enough data
+      const { value, bytesConsumed } = decodePushdataValue(data, offset, param.type, structs);
+      result[param.name] = value;
+      offset += bytesConsumed;
+    }
+
+    // Reject if there are unconsumed bytes (wrong event schema)
+    if (offset !== data.length) return null;
+
+    return result;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Read anonymous events from chain. Queries the shared anonymous event address
+ * and tries decoding each UTXO against all anonymous event definitions.
+ */
+export async function readAnonymousEventsFromChain(
+  provider: NetworkProvider,
+  anonymousAddress: string,
+  categoryId: string,
+  anonymousEventDefs: EventDefinitionAbi[],
+  structs?: StateLayout['structs'],
+): Promise<ParsedEvent[]> {
+  const utxos = await provider.getUtxos(anonymousAddress);
+  const results: ParsedEvent[] = [];
+
+  const filtered = utxos.filter((utxo) => (
+    utxo.token
+    && utxo.token.category === categoryId
+    && utxo.token.nft
+    && utxo.token.nft.commitment.length > 0
+  ));
+
+  for (const utxo of filtered) {
+    for (const eventDef of anonymousEventDefs) {
+      try {
+        const values = tryParseEventCommitment(utxo.token!.nft!.commitment, eventDef, structs);
+        if (values === null) continue; // didn't match this event schema
+        results.push({
+          txid: utxo.txid,
+          vout: utxo.vout,
+          values,
+          eventName: eventDef.name,
+          eventSignature: eventDef.signature,
+        });
+        break; // first successful decode wins
+      } catch {
+        // Try next event definition
+      }
+    }
+  }
+
+  return results;
+}
+
+/**
+ * Deep equality comparison for StateValue types (bigint, Uint8Array, string, boolean, struct objects).
+ */
+export function valuesEqual(a: StateValue, b: StateValue): boolean {
+  if (a === b) return true;
+  if (typeof a !== typeof b) return false;
+
+  if (a instanceof Uint8Array && b instanceof Uint8Array) {
+    return binsAreEqual(a, b);
+  }
+
+  if (typeof a === 'object' && typeof b === 'object'
+    && !(a instanceof Uint8Array) && !(b instanceof Uint8Array)) {
+    const aRec = a as StateRecord;
+    const bRec = b as StateRecord;
+    const aKeys = Object.keys(aRec);
+    const bKeys = Object.keys(bRec);
+    if (aKeys.length !== bKeys.length) return false;
+    return aKeys.every((key) => key in bRec && valuesEqual(aRec[key], bRec[key]));
+  }
+
+  return false;
+}

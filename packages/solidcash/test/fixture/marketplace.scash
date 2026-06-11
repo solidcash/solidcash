@@ -1,0 +1,717 @@
+// =============================================================================
+// Effective Acceleration Marketplace — SolidCash Port
+// Source: ../effectiveacceleration.ai/contract/contracts/MarketplaceV1.sol
+//         ../effectiveacceleration.ai/contract/contracts/MarketplaceDataV1.sol
+// =============================================================================
+//
+// ARCHITECTURE NOTES:
+// - Solidity uses two contracts (MarketplaceV1 + MarketplaceDataV1) with EVM
+//   global storage. SolidCash merges them into one stateful contract using
+//   NFT commitments for state.
+// - Solidity uses ERC20 tokens for payment. SolidCash uses native CashTokens
+//   (FTs). The paymentToken is a CashToken category (bytes32).
+// - Solidity uses Unicrow for escrow. SolidCash uses a built-in token
+//   container, where FTs are locked in the contract and released via transfer().
+// - Solidity uses msg.sender for identity. SolidCash uses pubkey + checkSig().
+// - Solidity uses block.timestamp. SolidCash uses tx.locktime (block height).
+//   24 hours ≈ 144 blocks.
+//
+// NOT YET PORTABLE — Summary:
+//
+// [NP1] Token container single-transfer-per-category-per-function limit.
+//       Solidity's Unicrow atomically splits payment to 4 parties (buyer,
+//       worker, arbitrator, marketplace). SolidCash can only do ONE transfer()
+//       per token category per function. Workaround: transfer worker's share;
+//       accumulate fees/refunds in container for separate withdrawal functions.
+//
+// [NP2] MECE tag validation (on-chain string mapping loop). Solidity validates
+//       tags against a string=>string mapping in a loop. Moved to off-chain/SDK.
+//
+// [NP3] User/Arbitrator enumeration arrays (userAddresses[], arbitratorAddresses[]).
+//       Solidity uses arrays for getUsers()/getArbitrators() pagination.
+//       SolidCash: use off-chain entry NFT indexing via StateReader.
+//
+// [NP4] updateJobPost with amount adjustment (complex collateral reconciliation
+//       with ERC20 transferFrom). Deferred — needs SDK-level FT delta management.
+//
+// [NP5] MarketplaceV2/V3 EACC reward token distribution. Deferred — add via
+//       external call to a separate reward contract.
+//
+// [NP6] Reviews as dynamic array per user (mapping(address => Review[])).
+//       Replaced by review events (emit). Off-chain indexing collects reviews.
+//
+// FULLY PORTABLE (adapted):
+// - ERC20 SafeTransfer → CashToken container transfer()
+// - Unicrow escrow pay/release/refund → token container (contract IS the escrow)
+// - Unicrow arbitrator split → native integer division
+// - OwnableUpgradeable → pubkey owner + checkSig
+// - PausableUpgradeable → bool paused state variable
+// - UUPS proxy → SolidCash upgrade modifier
+// - Nested mapping (whitelistWorkers) → mapping(int => mapping(bytes20 => bool))
+// - Dynamic arrays (jobs[], addresses[]) → state arrays with index assignment
+// - ECDSA.recover → checkDataSig(datasig, msg, pk)
+// - address(0) → bytes20 zero literal
+// - block.timestamp → tx.locktime (block height)
+// =============================================================================
+
+contract Marketplace(pubkey owner) {
+
+    // =========================================================================
+    // Enums
+    // =========================================================================
+
+    enum JobState {
+        Open = 0,
+        Taken = 1,
+        Closed = 2
+    }
+
+    enum JobEventType {
+        Created = 0,
+        Taken = 1,
+        Paid = 2,
+        Updated = 3,
+        Signed = 4,
+        Completed = 5,
+        Delivered = 6,
+        Closed = 7,
+        Reopened = 8,
+        Rated = 9,
+        Refunded = 10,
+        Disputed = 11,
+        Arbitrated = 12,
+        ArbitrationRefused = 13,
+        WhitelistedWorkerAdded = 14,
+        WhitelistedWorkerRemoved = 15,
+        CollateralWithdrawn = 16,
+        WorkerMessage = 17,
+        OwnerMessage = 18
+    }
+
+    // =========================================================================
+    // Structs
+    // =========================================================================
+
+    // Solidity: JobPost struct — string fields (title, tags, deliveryMethod)
+    // are stored off-chain via contentHash (IPFS CID).
+    struct JobData {
+        int state;              // JobState enum value
+        bool whitelistWorkers;
+        bytes20 creator;        // pubkeyhash of creator
+        bytes20 arbitrator;     // pubkeyhash of arbitrator (zero = none)
+        bytes20 worker;         // pubkeyhash of worker (zero = unassigned)
+        bytes32 contentHash;    // IPFS CID of full job details
+        bool multipleApplicants;
+        int amount;             // Payment amount in FT units
+        bytes32 paymentToken;   // CashToken category for payment
+        int timestamp;          // Block height of latest update
+        int maxTime;            // Max delivery time in blocks
+        int collateralOwed;     // Locked collateral (returned after ~144 blocks)
+        bytes32 resultHash;     // Delivery result hash
+        int rating;             // 1-5, 0 = not rated
+        bool disputed;
+    }
+
+    // Solidity: User struct
+    struct UserData {
+        pubkey publicKey;       // 33 bytes compressed pubkey
+        bytes20 pkh;            // pubkeyhash
+        int reputationUp;
+        int reputationDown;
+        // [NP3] name, bio, avatar stored off-chain (keyed by pkh)
+    }
+
+    // Solidity: JobArbitrator struct
+    struct ArbitratorData {
+        pubkey publicKey;
+        bytes20 pkh;
+        int fee;                // Basis points (0-10000)
+        int settledCount;
+        int refusedCount;
+        // [NP3] name, bio, avatar stored off-chain
+    }
+
+    // Solidity: UserRating struct
+    struct RatingData {
+        int averageRating;      // Current rating × 10000
+        int numberOfReviews;
+    }
+
+    // =========================================================================
+    // Events
+    // =========================================================================
+
+    event JobEvent(int jobId, int eventType, bytes20 addr, bytes32 dataHash);
+    event UserRegistered(bytes20 pkh, pubkey pk);
+    event ArbitratorRegistered(bytes20 pkh, pubkey pk, int fee);
+    event ConfigChanged(int configKey, int configValue);
+    // [NP6] Review data emitted as events instead of stored in arrays
+    event ReviewPosted(bytes20 worker, bytes20 reviewer, int jobId, int rating);
+
+    // =========================================================================
+    // State Variables
+    // =========================================================================
+
+    bool paused;
+    int nextJobId;
+    int marketplaceFee;         // Basis points
+    bytes20 treasuryPkh;
+    int version;
+
+    // =========================================================================
+    // State Arrays & Mappings
+    // =========================================================================
+
+    // Solidity: JobPost[] public jobs — direct equivalent
+    JobData[] jobs;
+
+    // Solidity: mapping(address => User) public users
+    mapping(bytes20 => UserData) users;
+
+    // Solidity: mapping(address => JobArbitrator) public arbitrators
+    mapping(bytes20 => ArbitratorData) arbitrators;
+
+    // Solidity: mapping(address => UserRating) public userRatings
+    mapping(bytes20 => RatingData) userRatings;
+
+    // Solidity: mapping(uint256 => mapping(address => bool)) public whitelistWorkers
+    mapping(int => mapping(bytes20 => bool)) jobWhitelist;
+
+    // =========================================================================
+    // Modifiers
+    // =========================================================================
+
+    modifier onlyOwner(sig s) {
+        require(checkSig(s, owner));
+        _;
+    }
+
+    modifier whenNotPaused() {
+        require(!this.paused, "Paused");
+        _;
+    }
+
+    // =========================================================================
+    // Admin Functions
+    // =========================================================================
+
+    function setPaused(sig s, bool newPaused) onlyOwner(s) {
+        this.paused = newPaused;
+    }
+
+    function setMarketplaceFee(sig s, int newFee) onlyOwner(s) {
+        require(newFee >= 0 && newFee <= 10000);
+        this.marketplaceFee = newFee;
+        emit ConfigChanged(0, newFee);
+    }
+
+    function setTreasuryPkh(sig s, bytes20 newTreasury) onlyOwner(s) {
+        this.treasuryPkh = newTreasury;
+    }
+
+    function setVersion(sig s, int newVersion) onlyOwner(s) {
+        this.version = newVersion;
+    }
+
+    // =========================================================================
+    // User Registration (Solidity: MarketplaceDataV1.registerUser)
+    // =========================================================================
+
+    function registerUser(pubkey pk, sig s, bytes20 pkh) whenNotPaused {
+        require(checkSig(s, pk));
+        require(hash160(pk) == pkh);
+        this.users[pkh] = UserData(pk, pkh, 0, 0);
+        emit UserRegistered(pkh, pk);
+    }
+
+    // =========================================================================
+    // Arbitrator Registration (Solidity: MarketplaceDataV1.registerArbitrator)
+    // =========================================================================
+
+    function registerArbitrator(
+        pubkey pk, sig s, bytes20 pkh, int fee
+    ) whenNotPaused {
+        require(checkSig(s, pk));
+        require(hash160(pk) == pkh);
+        require(fee >= 0 && fee <= 10000);
+        this.arbitrators[pkh] = ArbitratorData(pk, pkh, fee, 0, 0);
+        emit ArbitratorRegistered(pkh, pk, fee);
+    }
+
+    // =========================================================================
+    // Job Lifecycle
+    // =========================================================================
+
+    // Solidity: publishJobPost
+    // The creator sends FTs to the token container as part of the transaction.
+    // The SDK builds the tx with FT input from creator → FT output to container.
+    // [NP2] MECE tag validation is off-chain (SDK/frontend).
+    function publishJobPost(
+        pubkey creatorPk, sig creatorSig,
+        bytes32 contentHash,
+        bool multipleApplicants,
+        bytes32 paymentToken,
+        int amount,
+        int maxTime,
+        bytes20 arbitratorPkh
+    ) whenNotPaused {
+        bytes20 creatorPkh = hash160(creatorPk);
+        require(checkSig(creatorSig, creatorPk));
+        require(amount > 0);
+        require(maxTime > 0);
+
+        // Verify FTs deposited into token container
+        require(this.tokens[paymentToken].tokenAmount >= amount);
+
+        // Verify arbitrator registered (if specified)
+        bytes20 zeroAddr = 0x0000000000000000000000000000000000000000;
+        if (arbitratorPkh != zeroAddr) {
+            ArbitratorData arb = this.arbitrators[arbitratorPkh];
+            require(arb.pkh == arbitratorPkh, "arbitrator not registered");
+            require(arbitratorPkh != creatorPkh, "creator cannot be arbitrator");
+        }
+
+        // Verify user registered
+        UserData user = this.users[creatorPkh];
+        require(user.pkh == creatorPkh, "not registered");
+
+        int jobId = this.nextJobId;
+        this.nextJobId = jobId + 1;
+        int currentTime = tx.locktime;
+        bytes32 zeroHash = 0x0000000000000000000000000000000000000000000000000000000000000000;
+
+        this.jobs[jobId] = JobData(
+            int(JobState.Open),
+            false,
+            creatorPkh,
+            arbitratorPkh,
+            zeroAddr,
+            contentHash,
+            multipleApplicants,
+            amount,
+            paymentToken,
+            currentTime,
+            maxTime,
+            amount,             // collateralOwed = full amount initially
+            zeroHash,
+            0,
+            false
+        );
+
+        emit JobEvent(jobId, int(JobEventType.Created), creatorPkh, contentHash);
+    }
+
+    // Solidity: closeJob — onlyJobCreator
+    function closeJob(
+        pubkey creatorPk, sig creatorSig,
+        int jobId, bytes32 paymentToken
+    ) whenNotPaused {
+        bytes20 creatorPkh = hash160(creatorPk);
+        require(checkSig(creatorSig, creatorPk));
+
+        JobData job = this.jobs[jobId];
+        require(paymentToken == job.paymentToken);
+        require(job.state == int(JobState.Open), "not open");
+        require(job.creator == creatorPkh, "not creator");
+
+        // 144 blocks ≈ 24 hours
+        if (tx.locktime >= job.timestamp + 144) {
+            int returnAmount = job.amount + job.collateralOwed;
+            this.tokens[paymentToken].transfer(creatorPkh, returnAmount);
+            this.jobs[jobId].collateralOwed = 0;
+        } else {
+            this.jobs[jobId].collateralOwed = job.collateralOwed + job.amount;
+        }
+
+        this.jobs[jobId].state = int(JobState.Closed);
+
+        bytes32 emptyHash = 0x0000000000000000000000000000000000000000000000000000000000000000;
+        emit JobEvent(jobId, int(JobEventType.Closed), creatorPkh, emptyHash);
+    }
+
+    // Solidity: withdrawCollateral
+    function withdrawCollateral(
+        pubkey creatorPk, sig creatorSig,
+        int jobId, bytes32 paymentToken
+    ) whenNotPaused {
+        bytes20 creatorPkh = hash160(creatorPk);
+        require(checkSig(creatorSig, creatorPk));
+
+        JobData job = this.jobs[jobId];
+        require(paymentToken == job.paymentToken);
+        require(job.state == int(JobState.Closed), "not closed");
+        require(job.creator == creatorPkh, "not creator");
+        require(tx.locktime >= job.timestamp + 144, "24hrs not passed");
+        require(job.collateralOwed > 0, "no collateral");
+
+        this.tokens[paymentToken].transfer(creatorPkh, job.collateralOwed);
+        this.jobs[jobId].collateralOwed = 0;
+
+        bytes32 emptyHash = 0x0000000000000000000000000000000000000000000000000000000000000000;
+        emit JobEvent(jobId, int(JobEventType.CollateralWithdrawn), creatorPkh, emptyHash);
+    }
+
+    // Solidity: reopenJob — onlyJobCreator
+    function reopenJob(
+        pubkey creatorPk, sig creatorSig,
+        int jobId, bytes32 paymentToken
+    ) whenNotPaused {
+        bytes20 creatorPkh = hash160(creatorPk);
+        require(checkSig(creatorSig, creatorPk));
+
+        JobData job = this.jobs[jobId];
+        require(paymentToken == job.paymentToken);
+        require(job.state == int(JobState.Closed), "not closed");
+        require(job.creator == creatorPkh, "not creator");
+
+        if (job.collateralOwed < job.amount) {
+            require(this.tokens[paymentToken].tokenAmount >= job.amount);
+            this.jobs[jobId].collateralOwed = 0;
+        } else {
+            this.jobs[jobId].collateralOwed = job.collateralOwed - job.amount;
+        }
+
+        this.jobs[jobId].state = int(JobState.Open);
+        this.jobs[jobId].timestamp = tx.locktime;
+        bytes32 zeroHash = 0x0000000000000000000000000000000000000000000000000000000000000000;
+        this.jobs[jobId].resultHash = zeroHash;
+
+        emit JobEvent(jobId, int(JobEventType.Reopened), creatorPkh, zeroHash);
+    }
+
+    // Solidity: takeJob
+    // checkDataSig replaces ECDSA.recover for worker's job parameter signature.
+    function takeJob(
+        pubkey workerPk, sig workerSig, datasig jobSignature,
+        int jobId, bytes32 signedDigest
+    ) whenNotPaused {
+        bytes20 workerPkh = hash160(workerPk);
+        require(checkSig(workerSig, workerPk));
+        require(checkDataSig(jobSignature, signedDigest, workerPk));
+
+        JobData job = this.jobs[jobId];
+        require(job.state == int(JobState.Open), "not open");
+        require(workerPkh != job.creator, "creator cannot be worker");
+        require(workerPkh != job.arbitrator, "arbitrator cannot be worker");
+
+        if (job.whitelistWorkers) {
+            require(this.jobWhitelist[jobId][workerPkh] == true, "not whitelisted");
+        }
+
+        UserData user = this.users[workerPkh];
+        require(user.pkh == workerPkh, "not registered");
+
+        if (!job.multipleApplicants) {
+            this.jobs[jobId].state = int(JobState.Taken);
+            this.jobs[jobId].worker = workerPkh;
+            bytes32 emptyHash = 0x0000000000000000000000000000000000000000000000000000000000000000;
+            emit JobEvent(jobId, int(JobEventType.Taken), workerPkh, emptyHash);
+        } else {
+            emit JobEvent(jobId, int(JobEventType.Signed), workerPkh, signedDigest);
+        }
+    }
+
+    // Solidity: payStartJob — onlyJobCreator, for multipleApplicants mode
+    function payStartJob(
+        pubkey creatorPk, sig creatorSig,
+        int jobId, bytes20 workerPkh
+    ) whenNotPaused {
+        bytes20 creatorPkh = hash160(creatorPk);
+        require(checkSig(creatorSig, creatorPk));
+
+        JobData job = this.jobs[jobId];
+        require(job.state == int(JobState.Open), "not open");
+        require(job.creator == creatorPkh, "not creator");
+        require(workerPkh != creatorPkh, "creator cannot be worker");
+        require(workerPkh != job.arbitrator, "arbitrator cannot be worker");
+
+        UserData workerUser = this.users[workerPkh];
+        require(workerUser.pkh == workerPkh, "not registered");
+
+        this.jobs[jobId].state = int(JobState.Taken);
+        this.jobs[jobId].worker = workerPkh;
+
+        bytes32 emptyHash = 0x0000000000000000000000000000000000000000000000000000000000000000;
+        emit JobEvent(jobId, int(JobEventType.Paid), workerPkh, emptyHash);
+    }
+
+    // Solidity: deliverResult — onlyWorker
+    function deliverResult(
+        pubkey workerPk, sig workerSig,
+        int jobId, bytes32 resultHash
+    ) whenNotPaused {
+        bytes20 workerPkh = hash160(workerPk);
+        require(checkSig(workerSig, workerPk));
+
+        JobData job = this.jobs[jobId];
+        require(job.state == int(JobState.Taken), "not taken");
+        require(job.worker == workerPkh, "not worker");
+
+        this.jobs[jobId].resultHash = resultHash;
+
+        UserData userData = this.users[workerPkh];
+        this.users[workerPkh].reputationUp = userData.reputationUp + 1;
+
+        emit JobEvent(jobId, int(JobEventType.Delivered), workerPkh, resultHash);
+    }
+
+    // Solidity: approveResult — onlyJobCreator
+    // [NP1] Single transfer limit: worker gets (amount - fee). Fee stays in
+    //       container for separate treasury withdrawal.
+    function approveResult(
+        pubkey creatorPk, sig creatorSig,
+        int jobId, int reviewRating, bytes32 paymentToken,
+        bytes20 workerRecipient
+    ) whenNotPaused {
+        bytes20 creatorPkh = hash160(creatorPk);
+        require(checkSig(creatorSig, creatorPk));
+
+        JobData job = this.jobs[jobId];
+        require(paymentToken == job.paymentToken);
+        require(workerRecipient == job.worker);
+        require(job.state == int(JobState.Taken), "not taken");
+        require(job.creator == creatorPkh, "not creator");
+
+        int feeAmount = job.amount * this.marketplaceFee / 10000;
+        int workerAmount = job.amount - feeAmount;
+
+        this.tokens[paymentToken].transfer(workerRecipient, workerAmount);
+        this.jobs[jobId].state = int(JobState.Closed);
+
+        if (reviewRating > 0) {
+            require(reviewRating >= 1 && reviewRating <= 5);
+            this.jobs[jobId].rating = reviewRating;
+
+            RatingData ratingData = this.userRatings[job.worker];
+            int newAvg = (ratingData.averageRating * ratingData.numberOfReviews
+                          + reviewRating * 10000) / (ratingData.numberOfReviews + 1);
+            this.userRatings[job.worker] = RatingData(newAvg, ratingData.numberOfReviews + 1);
+            emit ReviewPosted(job.worker, creatorPkh, jobId, reviewRating);
+        }
+
+        bytes32 emptyHash = 0x0000000000000000000000000000000000000000000000000000000000000000;
+        emit JobEvent(jobId, int(JobEventType.Completed), job.worker, emptyHash);
+    }
+
+    // Solidity: refund — onlyWorker
+    function refund(
+        pubkey workerPk, sig workerSig,
+        int jobId
+    ) whenNotPaused {
+        bytes20 workerPkh = hash160(workerPk);
+        require(checkSig(workerSig, workerPk));
+
+        JobData job = this.jobs[jobId];
+        require(job.state == int(JobState.Taken), "not taken");
+        require(job.worker == workerPkh, "not worker");
+
+        bytes20 zeroAddr = 0x0000000000000000000000000000000000000000;
+        this.jobs[jobId].state = int(JobState.Open);
+        this.jobs[jobId].worker = zeroAddr;
+        this.jobs[jobId].disputed = false;
+
+        UserData userData = this.users[workerPkh];
+        this.users[workerPkh].reputationDown = userData.reputationDown + 1;
+
+        this.jobWhitelist[jobId][workerPkh] = false;
+
+        bytes32 emptyHash = 0x0000000000000000000000000000000000000000000000000000000000000000;
+        emit JobEvent(jobId, int(JobEventType.Refunded), workerPkh, emptyHash);
+    }
+
+    // Solidity: dispute — onlyCreatorOrWorker
+    function dispute(
+        pubkey callerPk, sig callerSig,
+        int jobId, bytes32 contentHash
+    ) whenNotPaused {
+        bytes20 callerPkh = hash160(callerPk);
+        require(checkSig(callerSig, callerPk));
+
+        JobData job = this.jobs[jobId];
+        require(job.state == int(JobState.Taken), "not taken");
+        require(callerPkh == job.creator || callerPkh == job.worker, "not creator or worker");
+        bytes20 zeroAddr = 0x0000000000000000000000000000000000000000;
+        require(job.arbitrator != zeroAddr, "no arbitrator");
+        require(!job.disputed, "already disputed");
+
+        this.jobs[jobId].disputed = true;
+        emit JobEvent(jobId, int(JobEventType.Disputed), callerPkh, contentHash);
+    }
+
+    // Solidity: arbitrate — onlyArbitrator
+    // [NP1] Single transfer limit: worker gets net share. Buyer refund becomes
+    //       collateralOwed (withdrawable). Arb + marketplace fees stay in
+    //       container for separate withdrawal.
+    function arbitrate(
+        pubkey arbPk, sig arbSig,
+        int jobId, int buyerShare, int workerShare, bytes32 reasonHash,
+        bytes32 paymentToken, bytes20 workerRecipient
+    ) whenNotPaused {
+        bytes20 arbPkh = hash160(arbPk);
+        require(checkSig(arbSig, arbPk));
+
+        JobData job = this.jobs[jobId];
+        require(paymentToken == job.paymentToken);
+        require(workerRecipient == job.worker);
+        require(job.state == int(JobState.Taken), "not taken");
+        require(job.arbitrator == arbPkh, "not arbitrator");
+        require(job.disputed, "not disputed");
+        require(buyerShare + workerShare == 10000, "shares must equal 100%");
+
+        int buyerAmount = job.amount * buyerShare / 10000;
+        int workerGross = job.amount * workerShare / 10000;
+
+        ArbitratorData arbData = this.arbitrators[arbPkh];
+        int arbFee = workerGross * arbData.fee / 10000;
+        int mktFee = workerGross * this.marketplaceFee / 10000;
+        int workerNet = workerGross - arbFee - mktFee;
+
+        if (workerNet > 0) {
+            this.tokens[paymentToken].transfer(workerRecipient, workerNet);
+        }
+
+        this.jobs[jobId].collateralOwed = job.collateralOwed + buyerAmount;
+        this.jobs[jobId].state = int(JobState.Closed);
+        this.jobs[jobId].disputed = false;
+
+        this.arbitrators[arbPkh].settledCount = arbData.settledCount + 1;
+
+        emit JobEvent(jobId, int(JobEventType.Arbitrated), arbPkh, reasonHash);
+    }
+
+    // Solidity: refuseArbitration — onlyArbitrator
+    function refuseArbitration(
+        pubkey arbPk, sig arbSig,
+        int jobId
+    ) whenNotPaused {
+        bytes20 arbPkh = hash160(arbPk);
+        require(checkSig(arbSig, arbPk));
+
+        JobData job = this.jobs[jobId];
+        require(job.state != int(JobState.Closed), "job closed");
+        require(job.arbitrator == arbPkh, "not arbitrator");
+
+        ArbitratorData arbData = this.arbitrators[arbPkh];
+        this.arbitrators[arbPkh].refusedCount = arbData.refusedCount + 1;
+
+        if (job.state == int(JobState.Taken)) {
+            bytes20 zeroAddr = 0x0000000000000000000000000000000000000000;
+            this.jobs[jobId].state = int(JobState.Open);
+            this.jobs[jobId].worker = zeroAddr;
+            this.jobs[jobId].disputed = false;
+        }
+
+        bytes20 zeroAddr2 = 0x0000000000000000000000000000000000000000;
+        this.jobs[jobId].arbitrator = zeroAddr2;
+
+        bytes32 emptyHash = 0x0000000000000000000000000000000000000000000000000000000000000000;
+        emit JobEvent(jobId, int(JobEventType.ArbitrationRefused), arbPkh, emptyHash);
+    }
+
+    // Solidity: review — separate post-close rating
+    function review(
+        pubkey creatorPk, sig creatorSig,
+        int jobId, int reviewRating
+    ) whenNotPaused {
+        bytes20 creatorPkh = hash160(creatorPk);
+        require(checkSig(creatorSig, creatorPk));
+
+        JobData job = this.jobs[jobId];
+        require(job.state == int(JobState.Closed), "not closed");
+        require(job.creator == creatorPkh, "not creator");
+        require(job.rating == 0, "already rated");
+        require(reviewRating >= 1 && reviewRating <= 5);
+
+        this.jobs[jobId].rating = reviewRating;
+
+        RatingData ratingData = this.userRatings[job.worker];
+        int newAvg = (ratingData.averageRating * ratingData.numberOfReviews
+                      + reviewRating * 10000) / (ratingData.numberOfReviews + 1);
+        this.userRatings[job.worker] = RatingData(newAvg, ratingData.numberOfReviews + 1);
+
+        emit ReviewPosted(job.worker, creatorPkh, jobId, reviewRating);
+        bytes32 emptyHash = 0x0000000000000000000000000000000000000000000000000000000000000000;
+        emit JobEvent(jobId, int(JobEventType.Rated), creatorPkh, emptyHash);
+    }
+
+    // =========================================================================
+    // Whitelist Management
+    // =========================================================================
+
+    function addWhitelistedWorker(
+        pubkey creatorPk, sig creatorSig,
+        int jobId, bytes20 workerPkh
+    ) whenNotPaused {
+        bytes20 creatorPkh = hash160(creatorPk);
+        require(checkSig(creatorSig, creatorPk));
+
+        JobData job = this.jobs[jobId];
+        require(job.state == int(JobState.Open), "not open");
+        require(job.creator == creatorPkh, "not creator");
+
+        this.jobWhitelist[jobId][workerPkh] = true;
+        this.jobs[jobId].whitelistWorkers = true;
+
+        bytes32 emptyHash = 0x0000000000000000000000000000000000000000000000000000000000000000;
+        emit JobEvent(jobId, int(JobEventType.WhitelistedWorkerAdded), workerPkh, emptyHash);
+    }
+
+    function removeWhitelistedWorker(
+        pubkey creatorPk, sig creatorSig,
+        int jobId, bytes20 workerPkh
+    ) whenNotPaused {
+        bytes20 creatorPkh = hash160(creatorPk);
+        require(checkSig(creatorSig, creatorPk));
+
+        JobData job = this.jobs[jobId];
+        require(job.state == int(JobState.Open), "not open");
+        require(job.creator == creatorPkh, "not creator");
+
+        this.jobWhitelist[jobId][workerPkh] = false;
+
+        bytes32 emptyHash = 0x0000000000000000000000000000000000000000000000000000000000000000;
+        emit JobEvent(jobId, int(JobEventType.WhitelistedWorkerRemoved), workerPkh, emptyHash);
+    }
+
+    // =========================================================================
+    // Thread Messaging
+    // =========================================================================
+
+    function postThreadMessage(
+        pubkey senderPk, sig senderSig,
+        int jobId, bytes32 contentHash
+    ) whenNotPaused {
+        bytes20 senderPkh = hash160(senderPk);
+        require(checkSig(senderSig, senderPk));
+
+        JobData job = this.jobs[jobId];
+        require(job.state != int(JobState.Closed), "job closed");
+
+        bool isOwner = (senderPkh == job.creator);
+
+        if (!isOwner) {
+            if (job.state == int(JobState.Taken)) {
+                require(senderPkh == job.worker, "not worker");
+            } else {
+                if (job.whitelistWorkers) {
+                    require(this.jobWhitelist[jobId][senderPkh] == true, "not whitelisted");
+                }
+            }
+        }
+
+        int eventType = isOwner ? int(JobEventType.OwnerMessage) : int(JobEventType.WorkerMessage);
+        emit JobEvent(jobId, eventType, senderPkh, contentHash);
+    }
+
+    // =========================================================================
+    // Upgrade & Emergency
+    // =========================================================================
+
+    function upgradeContract(sig s) upgrade onlyOwner(s) {
+        require(true);
+    }
+
+    function emergencyWithdraw(sig s) selfdestruct onlyOwner(s) {
+        require(true);
+    }
+}

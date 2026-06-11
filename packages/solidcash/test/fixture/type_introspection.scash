@@ -1,0 +1,37 @@
+interface IToken {
+    public int supply;
+    function mint(int amount);
+    function burn(int amount);
+}
+
+contract TypeIntrospection() {
+    enum Color { Red, Green, Blue }
+
+    function checkIntBounds(int x, pubkey pk, sig s) {
+        require(checkSig(s, pk));
+        require(x >= type(int8).min);
+        require(x <= type(int8).max);
+    }
+
+    function checkUintBounds(int x, pubkey pk, sig s) {
+        require(checkSig(s, pk));
+        require(x >= type(uint8).min);
+        require(x <= type(uint256).max);
+    }
+
+    function checkEnumBounds(int x, pubkey pk, sig s) {
+        require(checkSig(s, pk));
+        require(x >= type(Color).min);
+        require(x <= type(Color).max);
+    }
+
+    function checkInterfaceId(bytes4 id, pubkey pk, sig s) {
+        require(checkSig(s, pk));
+        require(id == type(IToken).interfaceId);
+    }
+
+    function checkContractName(string name, pubkey pk, sig s) {
+        require(checkSig(s, pk));
+        require(name == type(TypeIntrospection).name);
+    }
+}

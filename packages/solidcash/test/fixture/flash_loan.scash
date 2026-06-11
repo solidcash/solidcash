@@ -1,0 +1,41 @@
+pragma solidcash >=0.8.0;
+
+/**
+ * @title FlashLoan
+ * @notice Enables flash loans with a 0.09% fee, supporting both BCH and tokens.
+ *         The loan is repaid with the required fee in the same transaction.
+ * @param pkh The hash160 of the owner's public key, used for withdrawal authentication.
+ * @author kiok46 (https://github.com/kiok46/flash-loans)
+ */
+contract FlashLoan(bytes20 pkh) {
+    /**
+     * @notice Executes a flash loan, requiring repayment with a 0.09% fee.
+     * @param isToken Indicates whether the loan is for a token (true) or BCH (false).
+     */
+    function loan(bool isToken) {
+        require(tx.version == 2);
+
+        bytes inputBytecode = tx.inputs[this.activeInputIndex].lockingBytecode;
+        bytes outputBytecode = tx.outputs[this.activeInputIndex].lockingBytecode;
+        require(inputBytecode == outputBytecode);
+
+        bytes inputToken = tx.inputs[this.activeInputIndex].tokenCategory;
+        bytes outputToken = tx.outputs[this.activeInputIndex].tokenCategory;
+        require(inputToken == outputToken);
+
+        if(isToken) {
+            int loanFee = (tx.inputs[this.activeInputIndex].tokenAmount * 9) / 10000;
+            require(tx.outputs[this.activeInputIndex].tokenAmount == tx.inputs[this.activeInputIndex].tokenAmount + loanFee);
+            require(tx.outputs[this.activeInputIndex].value == tx.inputs[this.activeInputIndex].value);
+        } else {
+            require(inputToken == 0x);
+            int loanFee = (tx.inputs[this.activeInputIndex].value * 9) / 10000;
+            require(tx.outputs[this.activeInputIndex].value == tx.inputs[this.activeInputIndex].value + loanFee);
+        }
+    }
+
+    function withdraw(pubkey pk, sig s) {
+        require(hash160(pk) == pkh);
+        require(checkSig(s, pk));
+    }
+}

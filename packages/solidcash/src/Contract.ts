@@ -1,0 +1,261 @@
+import { binToHex, hexToBin } from '@bitauth/libauth';
+import {
+  AbiFunction,
+  Artifact,
+  asmToScript,
+  calculateBytesize,
+  countOpcodes,
+  generateContractBytecodeScript,
+  hash256,
+  Op,
+  scriptToBytecode,
+  StateLayout,
+} from '@solidcash/utils';
+import {
+  ConstructorArgument, encodeFunctionArgument, encodeConstructorArguments, FunctionArgument,
+} from './Argument.js';
+import {
+  Unlocker, ContractOptions, GenerateUnlockingBytecodeOptions, Utxo, AddressType, ContractUnlocker,
+} from './interfaces.js';
+import NetworkProvider from './network/NetworkProvider.js';
+import {
+  addressToLockScript, createUnlockingBytecode, createSighashPreimage, scriptToAddress,
+} from './utils.js';
+import SignatureTemplate from './SignatureTemplate.js';
+import { ParamsToTuple, AbiToFunctionMap } from './types/type-inference.js';
+import semver from 'semver';
+
+export class Contract<
+  TArtifact extends Artifact = Artifact,
+  TResolved extends {
+    constructorInputs: ConstructorArgument[];
+    unlock: Record<string, any>;
+  }
+  = {
+    constructorInputs: ParamsToTuple<TArtifact['constructorInputs']>;
+    unlock: AbiToFunctionMap<TArtifact['abi'], Unlocker>;
+  },
+> {
+  name: string;
+  address: string;
+  tokenAddress: string;
+  lockingBytecode: string;
+  bytecode: string;
+  bytesize: number;
+  opcount: number;
+  unlock: TResolved['unlock'];
+  provider: NetworkProvider;
+  addressType: AddressType;
+  isStateful: boolean;
+  salt?: Uint8Array;
+
+  encodedConstructorArgs: Uint8Array[];
+  private rawConstructorArgs: TResolved['constructorInputs'];
+
+  constructor(
+    public artifact: TArtifact,
+    public constructorArgs: TResolved['constructorInputs'],
+    private options: ContractOptions,
+  ) {
+    this.provider = this.options.provider;
+    this.addressType = this.options.addressType ?? 'p2sh32';
+    this.salt = this.options.salt;
+    if (this.salt && this.salt.length > 520) {
+      throw new Error('Salt must be 520 bytes or less');
+    }
+    this.rawConstructorArgs = constructorArgs;
+
+    const expectedProperties = ['abi', 'bytecode', 'constructorInputs', 'contractName', 'compiler'];
+    if (!expectedProperties.every((property) => property in artifact)) {
+      throw new Error('Invalid or incomplete artifact provided');
+    }
+
+    if (!semver.satisfies(artifact.compiler.version, '>=0.7.0', { includePrerelease: true })) {
+      throw new Error(`Artifact compiled with unsupported compiler version: ${artifact.compiler.version}, required >=0.7.0`);
+    }
+
+    if (artifact.constructorInputs.length !== constructorArgs.length) {
+      throw new Error(`Incorrect number of arguments passed to ${artifact.contractName} constructor. Expected ${artifact.constructorInputs.length} arguments (${artifact.constructorInputs.map((input) => input.type)}) but got ${constructorArgs.length}`);
+    }
+
+    // Encode arguments (this also performs type checking)
+    this.encodedConstructorArgs = encodeConstructorArguments(artifact, constructorArgs);
+
+    // Populate the 'unlock' object with the contract's functions
+    // (with a special case for single function, which has no "function selector")
+    this.unlock = {};
+    if (artifact.abi.length === 1) {
+      const f = artifact.abi[0];
+      // @ts-ignore TODO: see if we can use generics to make TypeScript happy
+      this.unlock[f.name] = this.createUnlocker(f);
+    } else {
+      // Group ABI entries by name to detect overloads
+      const nameGroups = new Map<string, { func: AbiFunction }[]>();
+      artifact.abi.forEach((f) => {
+        const group = nameGroups.get(f.name) ?? [];
+        group.push({ func: f });
+        nameGroups.set(f.name, group);
+      });
+
+      for (const [name, group] of nameGroups) {
+        // Register special fallback/receive unlockers
+        if (group.length === 1 && group[0].func.isReceive) {
+          // receive(): push NO args and NO selector - the redeemScript already pushes constructor args,
+          // so stack depth == M (constructor param count) triggers receive dispatch
+          const f = group[0].func;
+          // @ts-ignore TODO: see if we can use generics to make TypeScript happy
+          this.unlock.receive = () => {
+            const generateUnlockingBytecode = (): Uint8Array => (
+              createUnlockingBytecode(this.addressType, hexToBin(this.bytecode), [], undefined)
+            );
+            const generateLockingBytecode = (): Uint8Array => addressToLockScript(this.address);
+            return {
+              generateUnlockingBytecode, generateLockingBytecode, contract: this, params: [], abiFunction: f,
+            } as ContractUnlocker;
+          };
+          continue;
+        }
+        if (group.length === 1 && group[0].func.isFallback) {
+          // fallback(): normal unlocker with fallback's own selector
+          const f = group[0].func;
+          const selector = f.selector ? hexToBin(f.selector) : undefined;
+          // @ts-ignore TODO: see if we can use generics to make TypeScript happy
+          this.unlock.fallback = this.createUnlocker(f, selector);
+          continue;
+        }
+        if (group.length === 1) {
+          // Non-overloaded: register by plain name
+          const selector = group[0].func.selector ? hexToBin(group[0].func.selector) : undefined;
+          // @ts-ignore TODO: see if we can use generics to make TypeScript happy
+          this.unlock[name] = this.createUnlocker(group[0].func, selector);
+        } else {
+          // Overloaded: register each by explicit signature
+          for (const { func } of group) {
+            const sig = `${func.name}(${func.inputs.map((inp) => inp.type).join(',')})`;
+            const selector = func.selector ? hexToBin(func.selector) : undefined;
+            // @ts-ignore TODO: see if we can use generics to make TypeScript happy
+            this.unlock[sig] = this.createUnlocker(func, selector);
+          }
+
+          // Check if all overloads have different argument counts
+          const argCounts = group.map((g) => g.func.inputs.length);
+          const uniqueArgCounts = new Set(argCounts);
+          if (uniqueArgCounts.size === group.length) {
+            // All overloads have different arg counts - register a smart dispatcher on the plain name
+            const countMap = new Map(group.map((g) => [g.func.inputs.length, g]));
+            // @ts-ignore TODO: see if we can use generics to make TypeScript happy
+            this.unlock[name] = (...args: FunctionArgument[]) => {
+              const entry = countMap.get(args.length);
+              if (!entry) {
+                const available = group.map((g) => `${g.func.name}(${g.func.inputs.map((inp) => inp.type).join(',')})`);
+                throw new Error(
+                  `No overload of function '${name}' accepts ${args.length} arguments. `
+                  + `Available signatures: ${available.join(', ')}`,
+                );
+              }
+              const sel = entry.func.selector ? hexToBin(entry.func.selector) : undefined;
+              return this.createUnlocker(entry.func, sel)(...args);
+            };
+          } else {
+            // Same argument count overloads exist - plain name throws helpful error
+            // @ts-ignore TODO: see if we can use generics to make TypeScript happy
+            this.unlock[name] = (..._args: FunctionArgument[]) => {
+              const available = group.map((g) => `${g.func.name}(${g.func.inputs.map((inp) => inp.type).join(',')})`);
+              throw new Error(
+                `Ambiguous call to overloaded function '${name}'. `
+                + `Use explicit signature: ${available.join(', ')}`,
+              );
+            };
+          }
+        }
+      }
+    }
+
+    let contractBytecodeScript = generateContractBytecodeScript(
+      asmToScript(this.artifact.bytecode), this.encodedConstructorArgs,
+    );
+
+    if (this.salt && this.salt.length > 0) {
+      contractBytecodeScript = [this.salt, Op.OP_DROP, ...contractBytecodeScript];
+    }
+
+    this.name = artifact.contractName;
+    this.isStateful = !!artifact.stateLayout;
+    this.address = scriptToAddress(contractBytecodeScript, this.provider.network, this.addressType, false);
+    this.tokenAddress = scriptToAddress(contractBytecodeScript, this.provider.network, this.addressType, true);
+    this.bytecode = binToHex(scriptToBytecode(contractBytecodeScript));
+    this.lockingBytecode = this.addressType === 'p2s' ? this.bytecode : binToHex(addressToLockScript(this.address));
+    this.bytesize = calculateBytesize(contractBytecodeScript);
+    this.opcount = countOpcodes(contractBytecodeScript);
+  }
+
+  get stateLayout(): StateLayout | undefined {
+    return this.artifact.stateLayout;
+  }
+
+  async getBalance(): Promise<bigint> {
+    const utxos = await this.getUtxos();
+    return utxos.reduce((acc, utxo) => acc + utxo.satoshis, 0n);
+  }
+
+  async getUtxos(): Promise<Utxo[]> {
+    if (this.addressType === 'p2s') {
+      return this.provider.getUtxosForLockingBytecode(this.bytecode);
+    }
+
+    return this.provider.getUtxos(this.address);
+  }
+
+  withSalt(salt: Uint8Array): Contract<TArtifact, TResolved> {
+    return new Contract(this.artifact, this.rawConstructorArgs, { ...this.options, salt }) as any;
+  }
+
+  static generateSalt(length: number = 32): Uint8Array {
+    const salt = new Uint8Array(length);
+    crypto.getRandomValues(salt);
+    return salt;
+  }
+
+  private createUnlocker(abiFunction: AbiFunction, selector?: Uint8Array): ContractFunctionUnlocker {
+    return (...args: FunctionArgument[]) => {
+      if (abiFunction.inputs.length !== args.length) {
+        throw new Error(`Incorrect number of arguments passed to function ${abiFunction.name}. Expected ${abiFunction.inputs.length} arguments (${abiFunction.inputs.map((input) => input.type)}) but got ${args.length}`);
+      }
+
+      const bytecode = hexToBin(this.bytecode);
+
+      // For multi-function contracts with OP_INVOKE dispatch, OP_CHECKSIG inside an
+      // OP_INVOKE'd function uses the function body as coveredBytecode (not the full
+      // redeemScript). Use the function body bytecode for signature computation.
+      const selectorHex = selector ? binToHex(selector) : undefined;
+      const signingBytecode = (selectorHex && this.artifact.functionBodies?.[selectorHex])
+        ? hexToBin(this.artifact.functionBodies[selectorHex])
+        : bytecode;
+
+      const encodedArgs = args
+        .map((arg, i) => encodeFunctionArgument(arg, abiFunction.inputs[i].type));
+
+      const generateUnlockingBytecode = (
+        { transaction, sourceOutputs, inputIndex }: GenerateUnlockingBytecodeOptions,
+      ): Uint8Array => {
+        const completeArgs = encodedArgs.map((arg) => {
+          if (!(arg instanceof SignatureTemplate)) return arg;
+
+          // Generate transaction signature from SignatureTemplate
+          const preimage = createSighashPreimage(transaction, sourceOutputs, inputIndex, signingBytecode, arg.getHashType());
+          const sighash = hash256(preimage);
+          return arg.generateSignature(sighash);
+        });
+
+        const unlockingBytecode = createUnlockingBytecode(this.addressType, hexToBin(this.bytecode), completeArgs, selector);
+        return unlockingBytecode;
+      };
+
+      const generateLockingBytecode = (): Uint8Array => addressToLockScript(this.address);
+
+      return { generateUnlockingBytecode, generateLockingBytecode, contract: this, params: args, abiFunction };
+    };
+  }
+}
+
+type ContractFunctionUnlocker = (...args: FunctionArgument[]) => ContractUnlocker;

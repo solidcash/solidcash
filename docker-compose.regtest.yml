@@ -1,0 +1,100 @@
+services:
+  bchn:
+    image: mainnet/bitcoin-cash-node:v29.0.0
+    command: >
+      bitcoind
+      -regtest
+      -server=1
+      -txindex=1
+      -rpcuser=user
+      -rpcpassword=password
+      -rpcallowip=0.0.0.0/0
+      -rpcbind=0.0.0.0
+      -zmqpubhashblock=tcp://0.0.0.0:28332
+      -upgrade12activationtime=1762596456
+    ports:
+      - "18443:18443"
+      - "28332:28332"
+    volumes:
+      - bchn-data:/data/.bitcoin
+    healthcheck:
+      test: ["CMD", "bitcoin-cli", "-regtest", "-rpcuser=user", "-rpcpassword=password", "getblockchaininfo"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  fulcrum:
+    image: cculianu/fulcrum:latest
+    depends_on:
+      bchn:
+        condition: service_healthy
+    command: >
+      Fulcrum
+      -b bchn:18443
+      -u user
+      -p password
+      -t 0.0.0.0:50001
+      -w 0.0.0.0:50003
+      -T 0.5
+    ports:
+      - "50001:50001"
+      - "50003:50003"
+    volumes:
+      - fulcrum-data:/data
+
+  miner:
+    image: mainnet/bitcoin-cash-node:v29.0.0
+    depends_on:
+      bchn:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        CLI="bitcoin-cli -regtest -rpcconnect=bchn -rpcuser=user -rpcpassword=password"
+        ADDR=$$($$CLI getnewaddress)
+        HEIGHT=$$($$CLI getblockcount)
+        if [ "$$HEIGHT" -lt 200 ] 2>/dev/null; then
+          NEEDED=$$((200 - HEIGHT))
+          echo "Block height $$HEIGHT < 200, mining $$NEEDED blocks for coinbase maturity..."
+          $$CLI generatetoaddress $$NEEDED $$ADDR > /dev/null 2>&1
+          echo "Mined to height $$($$CLI getblockcount)"
+        fi
+        echo "Miner ready ($$ADDR) -- mines when mempool is non-empty, polls every 60s"
+        while true; do
+          COUNT=$$($$CLI getmempoolinfo | grep '"size"' | grep -o '[0-9]*')
+          if [ "$$COUNT" -gt 0 ] 2>/dev/null; then
+            $$CLI generatetoaddress 1 $$ADDR > /dev/null 2>&1
+            echo "Mined block ($$COUNT tx in mempool)"
+          fi
+          sleep 60
+        done
+
+  explorer:
+    build: /Code/bch-rpc-explorer
+    depends_on:
+      bchn:
+        condition: service_healthy
+      fulcrum:
+        condition: service_started
+    environment:
+      BTCEXP_COIN: BCH
+      BTCEXP_HOST: 0.0.0.0
+      BTCEXP_PORT: 3002
+      BTCEXP_BITCOIND_HOST: bchn
+      BTCEXP_BITCOIND_PORT: 18443
+      BTCEXP_BITCOIND_USER: user
+      BTCEXP_BITCOIND_PASS: password
+      BTCEXP_BITCOIND_RPC_TIMEOUT: 10000
+      BTCEXP_ADDRESS_API: electrumx
+      BTCEXP_ELECTRUMX_SERVERS: tcp://fulcrum:50001
+      BTCEXP_NO_RATES: "true"
+      BTCEXP_UI_SHOW_RPC: "true"
+      BTCEXP_RPC_ALLOWALL: "true"
+      BTCEXP_PRIVACY_MODE: "false"
+    ports:
+      - "3002:3002"
+
+volumes:
+  bchn-data:
+  fulcrum-data:

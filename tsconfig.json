@@ -4,9 +4,9 @@
   "compilerOptions": {
     "baseUrl": "./packages",
     "paths": {
-      "cashc": ["cashc/src"],
-      "cashscript": ["cashscript/src"],
-      "@cashscript/utils": ["utils/src"],
+      "solidc": ["solidc/src"],
+      "solidcash": ["solidcash/src"],
+      "@solidcash/utils": ["utils/src"],
     },
   },
 }

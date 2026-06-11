@@ -20,13 +20,13 @@
     "typescript": "^5.9.2"
   },
   "scripts": {
-    "test": "lerna run test --ignore cashscript-examples --ignore testing-suite",
-    "lint": "lerna run lint --ignore cashscript-examples --ignore testing-suite",
+    "test": "lerna run test --ignore solidcash-examples --ignore testing-suite",
+    "lint": "lerna run lint --ignore solidcash-examples --ignore testing-suite",
     "examples": "tsx examples/p2pkh.ts && tsx examples/transfer_with_timeout.ts && tsx examples/hodl_vault.ts",
     "postinstall": "lerna bootstrap && yarn build",
     "spellcheck": "cspell lint '**' --no-progress --must-find-files",
     "update-version": "tsx update-version.ts",
     "publish-all": "lerna publish from-package",
-    "build": "lerna run build --ignore cashscript-examples --ignore testing-suite"
+    "build": "lerna run build --ignore solidcash-examples --ignore testing-suite"
   }
 }

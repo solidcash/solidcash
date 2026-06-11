@@ -1,0 +1,31 @@
+contract StructDynamicArray() {
+    struct Pair {
+        int a;
+        int b;
+    }
+
+    function testPushAndRead() {
+        Pair[] arr = [Pair(1, 2), Pair(3, 4)];
+        arr.push(Pair(5, 6));
+        require(arr[0].a == 1);
+        require(arr[2].b == 6);
+        require(arr.length == 3);
+    }
+
+    function testAssign() {
+        Pair[] arr = [Pair(1, 2), Pair(3, 4)];
+        arr[0] = Pair(10, 20);
+        require(arr[0].a == 10);
+        require(arr[0].b == 20);
+        require(arr[1].a == 3);
+    }
+
+    function testPopAndDelete() {
+        Pair[] arr = [Pair(1, 2), Pair(3, 4), Pair(5, 6)];
+        arr.pop();
+        require(arr.length == 2);
+        arr.delete(0);
+        require(arr.length == 1);
+        require(arr[0].a == 3);
+    }
+}

@@ -1,0 +1,8 @@
+contract DynArrayEmpty() {
+    function test() {
+        int[] arr = [];
+        arr.push(1);
+        arr.push(2);
+        require(arr.length == 2);
+    }
+}

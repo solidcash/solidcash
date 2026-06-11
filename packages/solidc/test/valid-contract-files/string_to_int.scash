@@ -1,0 +1,6 @@
+contract StringToIntTest() {
+    function test(string s, int expected) {
+        int result = stringToInt(s);
+        require(result == expected);
+    }
+}

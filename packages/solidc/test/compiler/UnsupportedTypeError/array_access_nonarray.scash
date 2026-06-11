@@ -1,0 +1,6 @@
+contract ArrayAccessNonArray() {
+    function test(int x) {
+        int val = x[0];
+        require(val == 1);
+    }
+}

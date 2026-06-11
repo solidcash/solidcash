@@ -1,0 +1,7 @@
+contract Test() {
+    int counter;
+
+    function foo(bytes n) split(n) {
+        require(true);
+    }
+}

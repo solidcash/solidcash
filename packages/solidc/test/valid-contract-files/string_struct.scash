@@ -1,0 +1,14 @@
+contract StringStruct() {
+    struct Person {
+        string name;
+        int age;
+    }
+
+    Person owner;
+
+    function setOwner(string name, int age) {
+        this.owner = Person(name, age);
+        require(this.owner.name == name);
+        require(this.owner.age == age);
+    }
+}

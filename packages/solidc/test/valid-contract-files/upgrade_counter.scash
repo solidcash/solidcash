@@ -1,0 +1,15 @@
+contract UpgradeCounter() {
+    int counter;
+
+    function increment() {
+        this.counter = this.counter + 1;
+    }
+
+    function migrate(pubkey admin, sig s) upgrade {
+        require(checkSig(s, admin));
+    }
+
+    function authorize(pubkey pk, sig s) unsafe {
+        require(checkSig(s, pk));
+    }
+}

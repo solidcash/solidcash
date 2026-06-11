@@ -1,0 +1,7 @@
+import "./parent_inherits.scash";
+
+contract GrandChild() is Parent {
+    function childFunc(int z) {
+        require(z > 0);
+    }
+}

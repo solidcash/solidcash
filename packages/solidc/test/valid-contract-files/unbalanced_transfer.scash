@@ -1,0 +1,13 @@
+contract UnbalancedTransfer() {
+    int counter;
+
+    function payConditional(bool flag, bytes20 recipient1, bytes20 recipient2) payable {
+        if (flag) {
+            this.transfer(new LockingBytecodeP2PKH(recipient1), 1000);
+            this.transfer(new LockingBytecodeP2PKH(recipient2), 2000);
+        } else {
+            this.transfer(new LockingBytecodeP2PKH(recipient1), 3000);
+        }
+        this.counter = this.counter + 1;
+    }
+}

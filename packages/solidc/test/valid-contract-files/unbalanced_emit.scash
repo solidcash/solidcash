@@ -1,0 +1,10 @@
+contract EmitInBranch(pubkey owner) {
+    event Transfer(int amount);
+
+    function send(int amount, sig s) {
+        require(checkSig(s, owner));
+        if (amount > 100) {
+            emit Transfer(amount);
+        }
+    }
+}

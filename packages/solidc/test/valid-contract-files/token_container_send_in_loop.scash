@@ -1,0 +1,12 @@
+contract Test() {
+    int counter;
+
+    function test(bytes32 tokenCategory, bytes20 recipient, int amount) {
+        int i = 0;
+        do {
+            this.tokens[tokenCategory].transfer(recipient, amount);
+            i = i + 1;
+        } while (i < 3);
+        this.counter = this.counter + 1;
+    }
+}

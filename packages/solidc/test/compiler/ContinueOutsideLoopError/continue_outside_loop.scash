@@ -1,0 +1,6 @@
+contract BadContinue(int x) {
+    function test() {
+        continue;
+        require(x > 0);
+    }
+}

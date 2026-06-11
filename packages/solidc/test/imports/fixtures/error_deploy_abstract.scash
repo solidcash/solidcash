@@ -1,0 +1,9 @@
+import "./abstract_deploy_target.scash";
+
+// Error: deploying an abstract contract
+contract ErrorDeployAbstract() {
+    function test(pubkey pk, sig s) {
+        require(checkSig(s, pk));
+        bytes lbc = new AbstractDeployTarget();
+    }
+}

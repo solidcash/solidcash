@@ -1,0 +1,35 @@
+contract ModifierDoubleTest() {
+    mapping(bytes20 => bool) blacklist;
+
+    modifier notBlacklisted(bytes20 account) {
+        require(!this.blacklist[account]);
+        _;
+    }
+
+    modifier requirePositive(int val) {
+        require(val > 0);
+        _;
+    }
+
+    // Same modifier applied twice with different args
+    function transfer(bytes20 from, bytes20 to, int amount)
+        notBlacklisted(from) notBlacklisted(to) {
+        require(amount > 0);
+    }
+
+    // Same modifier three times
+    function multiTransfer(bytes20 a, bytes20 b, bytes20 c)
+        notBlacklisted(a) notBlacklisted(b) notBlacklisted(c) {
+        require(true);
+    }
+
+    // Two different modifiers with params
+    function guarded(bytes20 sender, int amount)
+        notBlacklisted(sender) requirePositive(amount) {
+        require(true);
+    }
+
+    function authorize(pubkey pk, sig s) unsafe {
+        require(checkSig(s, pk));
+    }
+}

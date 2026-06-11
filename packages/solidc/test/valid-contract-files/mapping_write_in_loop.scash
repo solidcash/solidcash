@@ -1,0 +1,11 @@
+contract MappingWriteLoop() {
+    mapping(bytes20 => int) balances;
+
+    function loopWrite(bytes20 key) {
+        int i = 0;
+        do {
+            this.balances[key] = this.balances[key] + 1;
+            i = i + 1;
+        } while (i < 3);
+    }
+}

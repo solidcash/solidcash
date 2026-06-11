@@ -1,0 +1,11 @@
+contract WhileLoop(int limit) {
+    function test() {
+        int i = 0;
+        int sum = 0;
+        while (i < limit) {
+            sum = sum + i;
+            i = i + 1;
+        }
+        require(sum >= 0);
+    }
+}

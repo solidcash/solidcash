@@ -1,0 +1,13 @@
+contract BoundedBytesCast() {
+    function castToBytes32(int val, pubkey pk, sig s) {
+        require(checkSig(s, pk));
+        bytes32 result = bytes32(val);
+        require(result != bytes32(0));
+    }
+
+    function castToBytes4(int val, pubkey pk, sig s) {
+        require(checkSig(s, pk));
+        bytes4 result = bytes4(val);
+        require(result != bytes4(0));
+    }
+}

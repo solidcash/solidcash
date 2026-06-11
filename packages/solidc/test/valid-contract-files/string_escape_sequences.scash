@@ -1,0 +1,14 @@
+contract EscapeTest() {
+    function testEscapes(string s) {
+        string tab = "\t";
+        string cr = "\r";
+        string nl = "\n";
+        string backslash = "\\";
+        string dquote = "\"";
+        string squote = '\'';
+        string hex = "\x48\x65\x6c\x6c\x6f";
+        string unicode = "\u0048\u0065\u006c\u006c\u006f";
+        require(hex == unicode);
+        require(tab + cr + nl + backslash + dquote + squote == s);
+    }
+}

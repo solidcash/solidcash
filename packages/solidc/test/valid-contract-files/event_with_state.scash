@@ -1,0 +1,12 @@
+contract EventWithState(pubkey owner) {
+    event CounterUpdated(int oldValue, int newValue);
+
+    int counter;
+
+    function update(sig s) {
+        require(checkSig(s, owner));
+        int oldCounter = this.counter;
+        this.counter = this.counter + 1;
+        emit CounterUpdated(oldCounter, this.counter);
+    }
+}

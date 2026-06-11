@@ -1,0 +1,10 @@
+contract BreakWhile() {
+    function test(int target) {
+        int i = 0;
+        while (i < 100) {
+            if (i == target) break;
+            i = i + 1;
+        }
+        require(i >= 0);
+    }
+}

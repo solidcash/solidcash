@@ -1,0 +1,7 @@
+import "./iextended_token.scash";
+
+contract BadExtToken() is IExtendedToken {
+    function burn(pubkey owner, sig s) {
+        require(checkSig(s, owner));
+    }
+}

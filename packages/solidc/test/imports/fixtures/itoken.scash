@@ -1,0 +1,9 @@
+interface IToken {
+    function transfer(pubkey to, sig s, int amount);
+}
+
+contract ITokenPlaceholder() {
+    function placeholder(int x) {
+        require(x == 1);
+    }
+}

@@ -1,0 +1,12 @@
+import "./deploy_stateful_target.scash";
+
+contract DeployStatefulFactory(pubkey factoryOwner) {
+    int deployCount;
+
+    function deployChild(sig s, bytes20 childOwner) deploy {
+        require(checkSig(s, factoryOwner));
+        bytes childLbc = new DeployStatefulTarget(childOwner);
+        require(childLbc.length == 35);
+        this.deployCount = this.deployCount + 1;
+    }
+}

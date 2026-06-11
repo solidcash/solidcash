@@ -1,0 +1,8 @@
+contract BadAsm() {
+    function test() {
+        assembly {
+            OP_NOTAREALOP
+        }
+        require(true);
+    }
+}

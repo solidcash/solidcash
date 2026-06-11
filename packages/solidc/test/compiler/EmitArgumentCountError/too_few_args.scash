@@ -1,0 +1,8 @@
+contract TooFewArgs(pubkey owner) {
+    event Transfer(pubkey from, pubkey to, int amount);
+
+    function send(pubkey to, sig s) {
+        require(checkSig(s, owner));
+        emit Transfer(owner, to);
+    }
+}

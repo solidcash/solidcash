@@ -1,0 +1,10 @@
+contract Helper() {
+    function double(int x) private pure returns (int) {
+        return x + x;
+    }
+
+    function compute(int val) {
+        int result = double(val);
+        require(result > 0);
+    }
+}

@@ -1,0 +1,8 @@
+import "./base_contract.scash";
+
+contract ChildContract(int maxAmount, int minAmount) is BaseContract {
+    function validate(pubkey owner, sig s, int amount) {
+        require(checkSig(s, owner));
+        require(amount >= minAmount);
+    }
+}

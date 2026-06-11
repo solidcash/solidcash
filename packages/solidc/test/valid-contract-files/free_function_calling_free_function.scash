@@ -1,0 +1,15 @@
+function double(int x) returns (int) {
+    return x + x;
+}
+
+function quadruple(int x) returns (int) {
+    int doubled = double(x);
+    return double(doubled);
+}
+
+contract Calculator() {
+    function compute(int x) {
+        int result = quadruple(x);
+        require(result > 0);
+    }
+}

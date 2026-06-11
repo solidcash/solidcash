@@ -1,0 +1,11 @@
+contract Test() {
+    int counter;
+
+    function foo() upgrade internal {
+        require(true);
+    }
+
+    function bar() {
+        require(true);
+    }
+}

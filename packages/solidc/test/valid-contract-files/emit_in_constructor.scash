@@ -1,0 +1,15 @@
+contract EmitInConstructor(pubkey owner) {
+    event Created(pubkey creator);
+
+    int counter;
+
+    constructor(int initial) {
+        this.counter = initial;
+        emit Created(owner);
+    }
+
+    function update(sig s) {
+        require(checkSig(s, owner));
+        this.counter = this.counter + 1;
+    }
+}

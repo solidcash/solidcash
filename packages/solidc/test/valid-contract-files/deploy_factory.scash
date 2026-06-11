@@ -1,0 +1,11 @@
+contract DeployFactory() {
+    int childCount;
+
+    function createChild() deploy {
+        this.childCount = this.childCount + 1;
+    }
+
+    function getCount() {
+        require(this.childCount > 0);
+    }
+}

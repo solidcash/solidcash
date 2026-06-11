@@ -1,0 +1,6 @@
+contract IntToStringTest() {
+    function test(int n, string expected) {
+        string result = intToString(n);
+        require(result == expected);
+    }
+}

@@ -1,0 +1,7 @@
+int constant MAX_VALUE = 1000;
+
+contract FileConstant() {
+    function spend(int value) {
+        require(value <= MAX_VALUE);
+    }
+}

@@ -1,0 +1,5 @@
+contract Test() {
+    function hello(fixed7x18 a) {
+        require(a > 0.0);
+    }
+}

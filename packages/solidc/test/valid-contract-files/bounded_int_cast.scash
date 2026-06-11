@@ -1,0 +1,25 @@
+contract BoundedIntCast() {
+    function testIntToUint(int x) {
+        uint8 a = uint8(x);
+        uint16 b = uint16(x);
+        uint32 c = uint32(x);
+        require(int(a) + int(b) + int(c) >= 0);
+    }
+
+    function testUintToInt(int x) {
+        uint8 a = uint8(x);
+        int16 b = int16(int(a));
+        require(int(b) >= 0);
+    }
+
+    function testBoolToUint(bool b) {
+        uint8 a = uint8(b);
+        require(int(a) >= 0);
+    }
+
+    function testUintToBool(int x) {
+        uint8 a = uint8(x);
+        bool b = bool(a);
+        require(b);
+    }
+}

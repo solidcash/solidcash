@@ -1,0 +1,10 @@
+function assertPositive(int x) {
+    require(x > 0);
+}
+
+contract Calculator() {
+    function compute(int x) {
+        assertPositive(x);
+        require(x < 100);
+    }
+}

@@ -1,0 +1,11 @@
+contract BadConstructor() {
+    int counter;
+
+    constructor(int initialCounter) {
+        this.counter = this.counter + initialCounter;
+    }
+
+    function update() {
+        this.counter = this.counter + 1;
+    }
+}

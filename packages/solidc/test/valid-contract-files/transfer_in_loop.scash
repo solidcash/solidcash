@@ -1,0 +1,12 @@
+contract TransferLoop() {
+    int counter;
+
+    function loopTransfer(bytes20 to, int amount) {
+        int i = 0;
+        do {
+            this.transfer(to, amount);
+            i = i + 1;
+        } while (i < 3);
+        this.counter = this.counter + 1;
+    }
+}

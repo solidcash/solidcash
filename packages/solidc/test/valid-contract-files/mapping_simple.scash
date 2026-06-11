@@ -1,0 +1,19 @@
+contract SimpleMapping() {
+    int counter;
+    mapping(bytes20 => int) balances;
+
+    function set(bytes20 key, int value) {
+        this.balances[key] = value;
+        this.counter = this.counter + 1;
+    }
+
+    function get(bytes20 key) {
+        int bal = this.balances[key];
+        require(bal > 0);
+    }
+
+    function remove(bytes20 key) {
+        this.balances.delete(key);
+        this.counter = this.counter - 1;
+    }
+}

@@ -1,0 +1,18 @@
+contract TokenContainerAllFields() {
+    int counter;
+
+    function inspect(bytes32 tokenCategory, bytes expectedCat, bytes expectedCommitment) {
+        int amount = this.tokens[tokenCategory].tokenAmount;
+        bytes cat = this.tokens[tokenCategory].tokenCategory;
+        bytes commitment = this.tokens[tokenCategory].nftCommitment;
+        int nfts = this.tokens[tokenCategory].nftCount;
+        require(amount >= 0);
+        require(cat == expectedCat);
+        require(commitment == expectedCommitment);
+        require(nfts >= 0);
+    }
+
+    function authorize(pubkey pk, sig s) unsafe {
+        require(checkSig(s, pk));
+    }
+}

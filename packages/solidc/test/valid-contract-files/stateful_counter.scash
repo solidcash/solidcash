@@ -1,0 +1,18 @@
+contract Counter() {
+    int counter;
+    bytes4 label;
+
+    constructor(int initialCounter, bytes4 initialLabel) {
+        this.counter = initialCounter;
+        this.label = initialLabel;
+    }
+
+    function update(bytes4 newLabel) {
+        this.counter = this.counter + 1;
+        this.label = newLabel;
+    }
+
+    function authorize(pubkey pk, sig s) unsafe {
+        require(checkSig(s, pk));
+    }
+}

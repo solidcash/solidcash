@@ -1,0 +1,29 @@
+contract MsgSenderTest() {
+    int counter;
+
+    function checkSender(address expected) {
+        require(msg.sender == expected);
+        this.counter = this.counter + 1;
+    }
+
+    function checkOrigin(address expected) {
+        require(tx.origin == expected);
+        this.counter = this.counter + 1;
+    }
+
+    function transferToSender(int amount) {
+        payable(msg.sender).transfer(amount);
+        this.counter = this.counter + 1;
+    }
+
+    function sendToSender(int amount) {
+        bool success = payable(msg.sender).send(amount);
+        require(success);
+        this.counter = this.counter + 1;
+    }
+
+    function transferToOrigin(int amount) {
+        payable(tx.origin).transfer(amount);
+        this.counter = this.counter + 1;
+    }
+}

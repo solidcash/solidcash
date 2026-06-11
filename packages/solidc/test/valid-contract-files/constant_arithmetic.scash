@@ -1,0 +1,12 @@
+int constant BASE = 100;
+int constant MULTIPLIER = 5;
+int constant LIMIT = BASE * MULTIPLIER;
+
+contract ConstantArithmetic() {
+    int constant OFFSET = 10;
+    int constant ADJUSTED_LIMIT = LIMIT + OFFSET;
+
+    function spend(int value) {
+        require(value <= ADJUSTED_LIMIT);
+    }
+}

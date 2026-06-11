@@ -1,0 +1,11 @@
+import "./itoken.scash";
+
+interface IExtendedToken is IToken {
+    function burn(pubkey owner, sig s);
+}
+
+contract IExtendedTokenPlaceholder() {
+    function placeholder(int x) {
+        require(x == 1);
+    }
+}

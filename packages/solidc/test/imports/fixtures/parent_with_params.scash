@@ -1,0 +1,5 @@
+contract ParentWithParams(int maxAmount) {
+    function check(int amount) {
+        require(amount <= maxAmount);
+    }
+}

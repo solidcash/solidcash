@@ -1,0 +1,28 @@
+contract PartialStructUpdate() {
+    struct User { bytes20 addr; string name; int balance; }
+    int counter;
+    mapping(bytes20 => User) users;
+
+    function addUser(bytes20 pkh, bytes20 addr, string name, int balance, pubkey pk, sig s) {
+        require(checkSig(s, pk));
+        this.users[pkh] = User(addr, name, balance);
+        this.counter = this.counter + 1;
+    }
+
+    function updateName(bytes20 pkh, string newName, pubkey pk, sig s) {
+        require(checkSig(s, pk));
+        this.users[pkh].name = newName;
+    }
+
+    function updateBalance(bytes20 pkh, int newBalance, pubkey pk, sig s) {
+        require(checkSig(s, pk));
+        this.users[pkh].balance = newBalance;
+    }
+
+    function updateAddr(bytes20 pkh, bytes20 newAddr, pubkey pk, sig s) {
+        require(checkSig(s, pk));
+        this.users[pkh].addr = newAddr;
+    }
+
+    function authorize(pubkey pk, sig s) unsafe { require(checkSig(s, pk)); }
+}

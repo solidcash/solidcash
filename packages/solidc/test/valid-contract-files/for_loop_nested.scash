@@ -1,0 +1,15 @@
+contract ForLoopNested() {
+    function nestedLoop() {
+        int total = 0;
+
+        for (int i = 0; i < tx.inputs.length; i = i + 1) {
+            if (tx.inputs[i].value > 1000) {
+                total = total + tx.inputs[i].value;
+            } else {
+                total = total + 1;
+            }
+        }
+
+        require(total > 0);
+    }
+}

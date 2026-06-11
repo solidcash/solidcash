@@ -1,0 +1,10 @@
+contract Token() {
+    function validate(sig s, pubkey pk) public {
+        require(checkSig(s, pk));
+    }
+
+    function mint(sig s, pubkey pk, int amount) {
+        validate(s, pk);
+        require(amount > 0);
+    }
+}

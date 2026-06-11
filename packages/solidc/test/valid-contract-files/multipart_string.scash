@@ -1,0 +1,6 @@
+contract MultipartTest() {
+    function test(string s) {
+        string combined = "Hello" " " "World";
+        require(combined == s);
+    }
+}

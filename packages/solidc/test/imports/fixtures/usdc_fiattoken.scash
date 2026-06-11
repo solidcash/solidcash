@@ -1,0 +1,351 @@
+pragma solidcash >=0.8.0;
+
+// =============================================================================
+// USDC FiatTokenV1 — Ported from Solidity (Circle stablecoin-evm)
+// Flattened from: AbstractFiatTokenV1, Ownable, Pausable, Blacklistable, FiatTokenV1
+//
+// FULLY PORTED. All Solidity patterns map directly to SolidCash.
+// =============================================================================
+
+// SafeMath — unnecessary on BCH BigInt VM but included for 1:1 parity
+library SafeMath {
+    function mul(int a, int b) returns (int) {
+        if (a == 0) { return 0; }
+        int c = a * b;
+        assert(c / a == b);
+        return c;
+    }
+
+    function div(int a, int b) returns (int) {
+        return a / b;
+    }
+
+    function sub(int a, int b) returns (int) {
+        assert(b <= a);
+        return a - b;
+    }
+
+    function add(int a, int b) returns (int) {
+        int c = a + b;
+        assert(c >= a);
+        return c;
+    }
+}
+
+contract FiatTokenV1() {
+
+    // ---- Events (from Ownable + Pausable + Blacklistable + FiatTokenV1) ----
+    event Transfer(bytes20 indexed from, bytes20 indexed to, int value);
+    event Approval(bytes20 indexed owner, bytes20 indexed spender, int value);
+    event OwnershipTransferred(bytes20 previousOwner, bytes20 newOwner);
+    event Pause();
+    event Unpause();
+    event PauserChanged(bytes20 indexed newAddress);
+    event Blacklisted(bytes20 indexed account);
+    event UnBlacklisted(bytes20 indexed account);
+    event BlacklisterChanged(bytes20 indexed newBlacklister);
+    event Mint(bytes20 indexed minter, bytes20 indexed to, int amount);
+    event Burn(bytes20 indexed burner, int amount);
+    event MinterConfigured(bytes20 indexed minter, int minterAllowedAmount);
+    event MinterRemoved(bytes20 indexed oldMinter);
+    event MasterMinterChanged(bytes20 indexed newMasterMinter);
+
+    using SafeMath for int;
+
+    // ---- State variables ----
+
+    // Ownable
+    public bytes20 _owner;
+
+    // Pausable
+    public bytes20 pauser;
+    public bool paused;
+
+    // Blacklistable
+    public bytes20 blacklister;
+    mapping(bytes20 account => bool listed) isBlacklistedMap;
+
+    // FiatTokenV1
+    public string name;
+    public string symbol;
+    public int decimals;
+    public string currency;
+    public bytes20 masterMinter;
+    public int totalSupply;
+    mapping(bytes20 holder => int balance) balances;
+    mapping(bytes20 owner => mapping(bytes20 spender => int allowance)) allowed;
+    mapping(bytes20 minter => bool isMinter) minters;
+    mapping(bytes20 minter => int allowance) minterAllowed;
+
+    // ---- Modifiers ----
+
+    modifier onlyOwner(pubkey modPk, sig modSig) {
+        require(hash160(modPk) == this._owner);
+        require(checkSig(modSig, modPk));
+        _;
+    }
+
+    modifier onlyPauser(pubkey modPk, sig modSig) {
+        require(hash160(modPk) == this.pauser);
+        require(checkSig(modSig, modPk));
+        _;
+    }
+
+    modifier onlyBlacklister(pubkey modPk, sig modSig) {
+        require(hash160(modPk) == this.blacklister);
+        require(checkSig(modSig, modPk));
+        _;
+    }
+
+    modifier onlyMasterMinter(pubkey modPk, sig modSig) {
+        require(hash160(modPk) == this.masterMinter);
+        require(checkSig(modSig, modPk));
+        _;
+    }
+
+    modifier whenNotPaused() {
+        require(!this.paused);
+        _;
+    }
+
+    modifier notBlacklisted(bytes20 modAccount) {
+        require(!this.isBlacklistedMap[modAccount]);
+        _;
+    }
+
+    // Solidity: modifier onlyMinters() { require(minters[msg.sender]); _; }
+    // BCH: caller's identity derived from pubkey param
+    modifier onlyMinters(bytes20 modMinter) {
+        require(this.minters[modMinter]);
+        _;
+    }
+
+    // ---- Constructor ----
+    // Solidity uses initialize() for proxy pattern. BCH deploys directly.
+    constructor(
+        string tokenName, string tokenSymbol, string tokenCurrency,
+        int tokenDecimals,
+        bytes20 newMasterMinter, bytes20 newPauser,
+        bytes20 newBlacklister, bytes20 newOwner
+    ) {
+        require(newMasterMinter != 0x0000000000000000000000000000000000000000);
+        require(newPauser != 0x0000000000000000000000000000000000000000);
+        require(newBlacklister != 0x0000000000000000000000000000000000000000);
+        require(newOwner != 0x0000000000000000000000000000000000000000);
+        this.name = tokenName;
+        this.symbol = tokenSymbol;
+        this.currency = tokenCurrency;
+        this.decimals = tokenDecimals;
+        this.masterMinter = newMasterMinter;
+        this.pauser = newPauser;
+        this.blacklister = newBlacklister;
+        this._owner = newOwner;
+        this.paused = false;
+        this.totalSupply = 0;
+    }
+
+    // ==== Ownable ====
+
+    function transferOwnership(
+        pubkey ownerPk, sig ownerSig,
+        bytes20 newOwner
+    ) onlyOwner(ownerPk, ownerSig) {
+        require(newOwner != 0x0000000000000000000000000000000000000000);
+        bytes20 previousOwner = this._owner;
+        this._owner = newOwner;
+        emit OwnershipTransferred(previousOwner, newOwner);
+    }
+
+    // ==== Pausable ====
+
+    function pause(pubkey pk, sig s) onlyPauser(pk, s) {
+        this.paused = true;
+        emit Pause();
+    }
+
+    function unpause(pubkey pk, sig s) onlyPauser(pk, s) {
+        this.paused = false;
+        emit Unpause();
+    }
+
+    function updatePauser(
+        pubkey ownerPk, sig ownerSig,
+        bytes20 newPauser
+    ) onlyOwner(ownerPk, ownerSig) {
+        require(newPauser != 0x0000000000000000000000000000000000000000);
+        this.pauser = newPauser;
+        emit PauserChanged(this.pauser);
+    }
+
+    // ==== Blacklistable ====
+
+    function blacklist(
+        pubkey blPk, sig blSig,
+        bytes20 account
+    ) onlyBlacklister(blPk, blSig) {
+        this.isBlacklistedMap[account] = true;
+        emit Blacklisted(account);
+    }
+
+    function unBlacklist(
+        pubkey blPk, sig blSig,
+        bytes20 account
+    ) onlyBlacklister(blPk, blSig) {
+        this.isBlacklistedMap[account] = false;
+        emit UnBlacklisted(account);
+    }
+
+    function updateBlacklister(
+        pubkey ownerPk, sig ownerSig,
+        bytes20 newBlacklister
+    ) onlyOwner(ownerPk, ownerSig) {
+        require(newBlacklister != 0x0000000000000000000000000000000000000000);
+        this.blacklister = newBlacklister;
+        emit BlacklisterChanged(this.blacklister);
+    }
+
+    // ==== ERC20: transfer ====
+
+    function transfer(
+        pubkey senderPk, sig senderSig,
+        bytes20 to, int value
+    ) whenNotPaused {
+        bytes20 sender = hash160(senderPk);
+        require(checkSig(senderSig, senderPk));
+        require(!this.isBlacklistedMap[sender]);
+        require(!this.isBlacklistedMap[to]);
+        require(sender != 0x0000000000000000000000000000000000000000);
+        require(to != 0x0000000000000000000000000000000000000000);
+        require(value <= this.balances[sender]);
+
+        this.balances[sender] = this.balances[sender].sub(value);
+        this.balances[to] = this.balances[to].add(value);
+        emit Transfer(sender, to, value);
+    }
+
+    // ==== ERC20: transferFrom ====
+
+    function transferFrom(
+        pubkey callerPk, sig callerSig,
+        bytes20 from, bytes20 to, int value
+    ) whenNotPaused {
+        bytes20 caller = hash160(callerPk);
+        require(checkSig(callerSig, callerPk));
+        require(!this.isBlacklistedMap[caller]);
+        require(!this.isBlacklistedMap[from]);
+        require(!this.isBlacklistedMap[to]);
+        require(value <= this.allowed[from][caller]);
+        require(from != 0x0000000000000000000000000000000000000000);
+        require(to != 0x0000000000000000000000000000000000000000);
+        require(value <= this.balances[from]);
+
+        this.balances[from] = this.balances[from].sub(value);
+        this.balances[to] = this.balances[to].add(value);
+        int currentAllowance = this.allowed[from][caller];
+        this.allowed[from][caller] = currentAllowance.sub(value);
+        emit Transfer(from, to, value);
+    }
+
+    // ==== ERC20: approve ====
+
+    function approve(
+        pubkey ownerPk, sig ownerSig,
+        bytes20 spender, int value
+    ) whenNotPaused {
+        bytes20 tokenOwner = hash160(ownerPk);
+        require(checkSig(ownerSig, ownerPk));
+        require(!this.isBlacklistedMap[tokenOwner]);
+        require(!this.isBlacklistedMap[spender]);
+        require(tokenOwner != 0x0000000000000000000000000000000000000000);
+        require(spender != 0x0000000000000000000000000000000000000000);
+
+        this.allowed[tokenOwner][spender] = value;
+        emit Approval(tokenOwner, spender, value);
+    }
+
+    // ==== View functions ====
+    // On BCH, state is also readable directly from UTXOs via SDK.
+
+    function totalSupply() view returns (int) {
+        return this.totalSupply;
+    }
+
+    function owner() view returns (bytes20) {
+        return this._owner;
+    }
+
+    // ==== Minter management ====
+
+    function configureMinter(
+        pubkey mmPk, sig mmSig,
+        bytes20 minter, int minterAllowedAmount
+    ) whenNotPaused onlyMasterMinter(mmPk, mmSig) {
+        this.minters[minter] = true;
+        this.minterAllowed[minter] = minterAllowedAmount;
+        emit MinterConfigured(minter, minterAllowedAmount);
+    }
+
+    function removeMinter(
+        pubkey mmPk, sig mmSig,
+        bytes20 minter
+    ) onlyMasterMinter(mmPk, mmSig) {
+        this.minters[minter] = false;
+        this.minterAllowed[minter] = 0;
+        emit MinterRemoved(minter);
+    }
+
+    // ==== Mint ====
+
+    function mint(
+        pubkey minterPk, sig minterSig,
+        bytes20 to, int amount
+    ) whenNotPaused onlyMinters(hash160(minterPk)) notBlacklisted(hash160(minterPk)) notBlacklisted(to) {
+        require(checkSig(minterSig, minterPk));
+        bytes20 minter = hash160(minterPk);
+        require(to != 0x0000000000000000000000000000000000000000);
+        require(amount > 0);
+
+        int mintingAllowedAmount = this.minterAllowed[minter];
+        require(amount <= mintingAllowedAmount);
+
+        this.totalSupply = this.totalSupply.add(amount);
+        this.balances[to] = this.balances[to].add(amount);
+        this.minterAllowed[minter] = mintingAllowedAmount.sub(amount);
+        emit Mint(minter, to, amount);
+        emit Transfer(0x0000000000000000000000000000000000000000, to, amount);
+    }
+
+    // ==== Burn ====
+
+    function burn(
+        pubkey minterPk, sig minterSig,
+        int amount
+    ) whenNotPaused onlyMinters(hash160(minterPk)) notBlacklisted(hash160(minterPk)) {
+        require(checkSig(minterSig, minterPk));
+        bytes20 minter = hash160(minterPk);
+        int balance = this.balances[minter];
+        require(amount > 0);
+        require(balance >= amount);
+
+        this.totalSupply = this.totalSupply.sub(amount);
+        this.balances[minter] = balance.sub(amount);
+        emit Burn(minter, amount);
+        emit Transfer(minter, 0x0000000000000000000000000000000000000000, amount);
+    }
+
+    // ==== Master Minter management ====
+
+    function updateMasterMinter(
+        pubkey ownerPk, sig ownerSig,
+        bytes20 newMasterMinter
+    ) onlyOwner(ownerPk, ownerSig) {
+        require(newMasterMinter != 0x0000000000000000000000000000000000000000);
+        this.masterMinter = newMasterMinter;
+        emit MasterMinterChanged(this.masterMinter);
+    }
+
+    // ==== BCH: authorize ====
+    function authorize(pubkey pk, sig s) unsafe {
+        require(checkSig(s, pk));
+    }
+}

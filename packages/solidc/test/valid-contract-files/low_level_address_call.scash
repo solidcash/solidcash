@@ -1,0 +1,36 @@
+pragma solidcash >=0.8.0;
+
+contract AddressCaller() {
+    // Statement form: addr.call(data)
+    function callStatement(address target, bytes payload) {
+        target.call(payload);
+        require(true);
+    }
+
+    // Statement form: addr.staticcall(data)
+    function staticcallStatement(address target, bytes payload) {
+        target.staticcall(payload);
+        require(true);
+    }
+
+    // Expression form via tuple assignment
+    function callExpression(address target, bytes payload) {
+        bool success, bytes returnData = target.call(payload);
+        require(success);
+        require(returnData.length > 0);
+    }
+
+    // Empty data: verify full unlocking bytecode
+    function callEmpty(address target) {
+        bool success, bytes returnData = target.call(0x);
+        require(success);
+        require(returnData.length > 0);
+    }
+
+    // Multiple calls in one function
+    function multiCall(address target1, address target2, bytes data1, bytes data2) {
+        target1.call(data1);
+        target2.staticcall(data2);
+        require(true);
+    }
+}

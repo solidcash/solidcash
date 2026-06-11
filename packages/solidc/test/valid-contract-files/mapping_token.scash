@@ -1,0 +1,20 @@
+contract Token() {
+    int totalSupply;
+    mapping(bytes20 => int) balances;
+
+    constructor(int supply) {
+        this.totalSupply = supply;
+    }
+
+    function transfer(bytes20 from, bytes20 to, int amount) {
+        int fromBal = this.balances[from];
+        require(fromBal >= amount);
+        this.balances[from] = fromBal - amount;
+        this.balances[to] = this.balances[to] + amount;
+    }
+
+    function mint(bytes20 recipient, int amount) {
+        this.balances[recipient] = this.balances[recipient] + amount;
+        this.totalSupply = this.totalSupply + amount;
+    }
+}

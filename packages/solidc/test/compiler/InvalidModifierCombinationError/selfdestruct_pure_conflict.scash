@@ -1,0 +1,7 @@
+contract Test() {
+    int counter;
+
+    function foo() selfdestruct pure {
+        require(true);
+    }
+}

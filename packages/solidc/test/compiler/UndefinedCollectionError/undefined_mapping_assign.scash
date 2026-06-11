@@ -1,0 +1,7 @@
+contract Test() {
+    int counter;
+
+    function test(bytes20 key) {
+        this.nonexistent[key] = 42;
+    }
+}

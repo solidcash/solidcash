@@ -1,0 +1,7 @@
+contract Test() {
+    function test() {
+        int[3] arr = [1, 2, 3];
+        int v = arr[-1];
+        require(v > 0);
+    }
+}

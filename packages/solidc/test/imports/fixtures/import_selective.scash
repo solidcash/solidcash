@@ -1,0 +1,7 @@
+import { MAX_AMOUNT } from "./constants_lib.scash";
+
+contract SelectiveSpender() {
+    function spend(int amount) {
+        require(amount <= MAX_AMOUNT);
+    }
+}

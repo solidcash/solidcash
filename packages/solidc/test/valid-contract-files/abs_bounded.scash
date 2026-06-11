@@ -1,0 +1,18 @@
+contract AbsBounded() {
+    int16 stored;
+
+    function setAbsolute(int16 x) {
+        // abs() should preserve bounded int type — no explicit cast needed
+        this.stored = abs(x);
+    }
+
+    function setMin(int16 a, int16 b) {
+        // min() should return the wider bounded int type
+        this.stored = min(a, b);
+    }
+
+    function setMax(int16 a, int16 b) {
+        // max() should return the wider bounded int type
+        this.stored = max(a, b);
+    }
+}

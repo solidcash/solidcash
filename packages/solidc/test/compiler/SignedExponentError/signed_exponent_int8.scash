@@ -1,0 +1,6 @@
+contract SignedExponentInt8() {
+    function test(int base) {
+        int8 exp = int8(3);
+        require(base ** exp > 0);
+    }
+}

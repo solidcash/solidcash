@@ -1,0 +1,16 @@
+interface ILedger {
+    event Deposit(bytes20 indexed account, int amount);
+    public int totalDeposits;
+    function deposit(int amount);
+}
+
+contract Ledger(pubkey owner) {
+    int totalDeposits;
+
+    function deposit(int amount, sig s) {
+        require(checkSig(s, owner));
+        require(amount > 0);
+        this.totalDeposits = this.totalDeposits + amount;
+        emit Deposit(hash160(owner), amount);
+    }
+}

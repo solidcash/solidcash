@@ -1,7 +1,0 @@
-contract ForLoopMissingCondition() {
-    function spend() {
-        for (int i = 0; ; i = i + 1) {
-            require(i < 3);
-        }
-    }
-}

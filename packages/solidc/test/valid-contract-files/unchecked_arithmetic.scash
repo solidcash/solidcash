@@ -1,0 +1,36 @@
+contract UncheckedArithmetic() {
+    function testUnsignedOverflow() {
+        // Unsigned overflow: 255 + 1 wraps to 0
+        unchecked {
+            uint8 y = uint8(255) + uint8(1);
+            require(y == 0);
+        }
+    }
+
+    function testSignedOverflow() {
+        // Signed overflow: 127 + 1 wraps to -128
+        unchecked {
+            int8 y = int8(127) + int8(1);
+            require(y == -128);
+        }
+    }
+
+    function testUnsignedUnderflow() {
+        // Unsigned underflow: 0 - 1 wraps to 255
+        unchecked {
+            uint8 y = uint8(0) - uint8(1);
+            require(y == 255);
+        }
+    }
+
+    function testMixed(uint8 a) {
+        // Normal checked code outside unchecked block
+        require(a <= 200);
+
+        // Unchecked arithmetic inside
+        unchecked {
+            uint8 b = a + uint8(100);
+            require(b >= 0);
+        }
+    }
+}

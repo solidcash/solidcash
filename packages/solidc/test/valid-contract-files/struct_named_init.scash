@@ -1,0 +1,38 @@
+struct Person {
+    string name;
+    int age;
+}
+
+contract Example() {
+    function test(string newName, int newAge) {
+        // Named field initialization (reordered fields)
+        Person p = Person({age: newAge, name: newName});
+        require(p.name == newName);
+        require(p.age == newAge);
+
+        // Named field initialization (in-order fields)
+        Person p2 = Person({name: newName, age: newAge});
+        require(p2.name == newName);
+    }
+
+    function testPartial(string newName) {
+        // Partial initialization: age defaults to 0
+        Person p = Person({name: newName});
+        require(p.name == newName);
+        require(p.age == 0);
+    }
+
+    function testPartialInt(int newAge) {
+        // Partial initialization: name defaults to ""
+        Person p = Person({age: newAge});
+        require(p.name == "");
+        require(p.age == newAge);
+    }
+
+    function testEmpty() {
+        // All fields default
+        Person p = Person({});
+        require(p.name == "");
+        require(p.age == 0);
+    }
+}

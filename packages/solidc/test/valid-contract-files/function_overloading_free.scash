@@ -1,0 +1,19 @@
+function add(int a, int b) returns (int) {
+    return a + b;
+}
+
+function add(int a, int b, int c) returns (int) {
+    return a + b + c;
+}
+
+contract Calculator(int base) {
+    function computeTwo(int x) {
+        int result = add(base, x);
+        require(result > 0);
+    }
+
+    function computeThree(int x, int y) {
+        int result = add(base, x, y);
+        require(result > 0);
+    }
+}

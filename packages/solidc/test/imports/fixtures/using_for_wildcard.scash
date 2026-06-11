@@ -1,0 +1,10 @@
+import "./math_lib.scash";
+
+contract UsingForWildcard() {
+    using SafeMath for *;
+
+    function doMath(int a, int b) {
+        int sum = a.add(b);
+        require(sum > 0);
+    }
+}

@@ -1,0 +1,11 @@
+contract UnsafeTier1(pubkey admin) {
+    int counter;
+
+    function increment() {
+        this.counter = this.counter + 1;
+    }
+
+    function admin1(sig s) unsafe(1) {
+        require(checkSig(s, admin));
+    }
+}

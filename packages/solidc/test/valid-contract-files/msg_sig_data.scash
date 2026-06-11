@@ -1,0 +1,17 @@
+pragma solidcash >=0.10.0;
+
+contract MsgSigDataTest() {
+    function checkSig(bytes4 expectedSig) {
+        require(msg.sig == expectedSig);
+    }
+
+    function checkData() {
+        require(msg.data.length > 0);
+    }
+
+    function useBoth(bytes4 expectedSig) {
+        require(msg.sig == expectedSig);
+        bytes data = msg.data;
+        require(data.length > 4);
+    }
+}

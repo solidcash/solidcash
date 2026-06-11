@@ -1,0 +1,28 @@
+contract FixedPointDemo(fixed128x18 basePrice) {
+    function testArithmetic(fixed128x18 amount) {
+        // Addition
+        fixed128x18 sum = amount + 1.5;
+        require(sum > 0.0);
+
+        // Subtraction
+        fixed128x18 diff = amount - 0.25;
+        require(diff > 0.0);
+
+        // Multiplication
+        fixed128x18 product = amount * 2.0;
+        require(product > amount);
+
+        // Division
+        fixed128x18 quotient = amount / 2.0;
+        require(quotient < amount);
+
+        // Comparison with constructor parameter
+        require(amount >= basePrice);
+    }
+
+    function testCast(int rawValue) {
+        // int → fixed cast
+        fixed128x18 scaled = fixed128x18(rawValue);
+        require(scaled >= 0.0);
+    }
+}

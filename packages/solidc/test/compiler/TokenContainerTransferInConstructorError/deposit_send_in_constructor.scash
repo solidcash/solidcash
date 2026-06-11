@@ -1,0 +1,12 @@
+contract Test() {
+    int counter;
+
+    constructor(bytes32 tokenCategory, bytes20 recipient, int amount) {
+        this.tokens[tokenCategory].transfer(recipient, amount);
+        this.counter = 0;
+    }
+
+    function authorize(pubkey pk, sig s) {
+        require(checkSig(s, pk));
+    }
+}

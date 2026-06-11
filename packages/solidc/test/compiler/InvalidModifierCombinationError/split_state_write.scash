@@ -1,0 +1,7 @@
+contract Test() {
+    int counter;
+
+    function foo(int n) split(n) {
+        this.counter = this.counter + 1;
+    }
+}

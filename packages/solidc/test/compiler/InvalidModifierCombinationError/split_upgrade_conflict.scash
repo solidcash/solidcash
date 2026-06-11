@@ -1,0 +1,7 @@
+contract Test() {
+    int counter;
+
+    function foo(int n) upgrade split(n) {
+        require(true);
+    }
+}

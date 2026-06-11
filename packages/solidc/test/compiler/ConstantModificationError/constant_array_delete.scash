@@ -1,0 +1,7 @@
+contract Test() {
+    function test() {
+        int[] constant arr = [1, 2];
+        arr.delete(0);
+        require(arr.length > 0);
+    }
+}

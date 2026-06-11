@@ -1,0 +1,9 @@
+import "./base_contract.scash";
+
+contract ChildOverride(int maxAmount) is BaseContract {
+    function check(pubkey owner, sig s, int amount) override {
+        require(checkSig(s, owner));
+        require(amount > 0);
+        require(amount <= maxAmount);
+    }
+}

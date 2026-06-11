@@ -1,0 +1,6 @@
+contract PackedBytesArray() {
+    function test(bytes a) {
+        bytes[] packed items = [a];
+        require(items[0] == a);
+    }
+}

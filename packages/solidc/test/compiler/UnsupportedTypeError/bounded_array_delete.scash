@@ -1,0 +1,7 @@
+contract BoundedArrayDelete() {
+    function test() {
+        int[3] arr = [1, 2, 3];
+        arr.delete(0);
+        require(arr[0] == 1);
+    }
+}

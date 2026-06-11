@@ -1,0 +1,12 @@
+contract TryCatchFinalRequire(pubkey owner) {
+    function spend(sig s) {
+        int x = 10;
+        try checkSig(s, owner) {
+            require(x == 10);
+        } catch Error(string reason) {
+            require(false);
+        } catch {
+            require(false);
+        }
+    }
+}

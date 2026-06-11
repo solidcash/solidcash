@@ -1,0 +1,32 @@
+// Test error declarations, assert, and revert
+
+error InsufficientBalance(int requested, int available);
+error Unauthorized();
+
+contract ErrorAssertRevert(pubkey owner) {
+    error ContractError(bytes32 id);
+
+    function checkBalance(sig s, int amount, int balance) {
+        require(checkSig(s, owner));
+        assert(amount > 0);
+        if (amount > balance) {
+            revert InsufficientBalance(amount, balance);
+        }
+        require(balance - amount >= 0);
+    }
+
+    function failAlways(sig s) {
+        require(checkSig(s, owner));
+        revert("Not implemented");
+    }
+
+    function failEmpty(sig s) {
+        require(checkSig(s, owner));
+        revert();
+    }
+
+    function simpleAssert(sig s, bool condition) {
+        require(checkSig(s, owner));
+        assert(condition);
+    }
+}

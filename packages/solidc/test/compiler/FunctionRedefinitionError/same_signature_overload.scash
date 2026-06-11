@@ -1,0 +1,13 @@
+contract Test() {
+    function add(int a, int b) internal pure returns (int) {
+        return a + b;
+    }
+
+    function add(int x, int y) internal pure returns (int) {
+        return x + y;
+    }
+
+    function compute(int x) {
+        require(x > 0);
+    }
+}

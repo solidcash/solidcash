@@ -1,0 +1,7 @@
+import "./error_circular_a.scash";
+
+contract CircularB() {
+    function spend(pubkey pk, sig s) {
+        require(checkSig(s, pk));
+    }
+}

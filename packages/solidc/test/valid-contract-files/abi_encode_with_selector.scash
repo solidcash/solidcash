@@ -1,0 +1,6 @@
+contract AbiEncodeWithSelector() {
+    function test(bytes4 sel, int x, pubkey pk) {
+        bytes data = abi.encodeWithSelector(sel, x, pk);
+        require(data.length > 4);
+    }
+}

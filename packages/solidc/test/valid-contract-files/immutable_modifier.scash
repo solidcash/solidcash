@@ -1,0 +1,11 @@
+contract ImmutableModifier() {
+    int immutable maxValue;
+
+    constructor() {
+        this.maxValue = 100;
+    }
+
+    function check(int amount) {
+        require(amount <= this.maxValue);
+    }
+}

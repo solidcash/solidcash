@@ -1,0 +1,12 @@
+contract ConditionalTransfer() {
+    int counter;
+
+    function send(bool flag, bytes20 recipientA, bytes20 recipientB, int amount) {
+        if (flag) {
+            this.transfer(recipientA, amount);
+        } else {
+            this.transfer(recipientB, amount);
+        }
+        this.counter = this.counter + 1;
+    }
+}

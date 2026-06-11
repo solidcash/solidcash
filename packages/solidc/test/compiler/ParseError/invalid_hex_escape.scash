@@ -1,0 +1,6 @@
+contract Test() {
+    function hello() {
+        string s = "\xGG";
+        require(s == "a");
+    }
+}

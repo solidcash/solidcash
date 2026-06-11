@@ -1,0 +1,14 @@
+contract ConditionalUpdate() {
+    int counter;
+    bytes4 label;
+
+    function update(bool flag, bytes4 newLabel) {
+        if (flag) {
+            this.counter = this.counter + 1;
+            this.label = newLabel;
+        } else {
+            this.counter = this.counter - 1;
+            this.label = 0x00000000;
+        }
+    }
+}

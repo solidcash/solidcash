@@ -1,0 +1,9 @@
+contract IndexedEvent() {
+    event Transfer(pubkey indexed sender, pubkey indexed receiver, int amount);
+    event Approval(pubkey indexed owner, pubkey indexed spender, int value);
+
+    function transfer(pubkey sender, pubkey receiver, int amount, sig s) {
+        require(checkSig(s, sender));
+        emit Transfer(sender, receiver, amount);
+    }
+}

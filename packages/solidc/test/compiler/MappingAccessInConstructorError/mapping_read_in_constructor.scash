@@ -1,0 +1,13 @@
+contract Test() {
+    mapping(bytes20 => int) balances;
+
+    constructor(bytes20 addr) {
+        int val = this.balances[addr];
+        require(val >= 0);
+    }
+
+    function test(bytes20 key) {
+        int val = this.balances[key];
+        require(val > 0);
+    }
+}

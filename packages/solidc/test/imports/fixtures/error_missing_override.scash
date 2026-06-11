@@ -1,0 +1,9 @@
+import "./base_contract.scash";
+
+contract BadChild(int maxAmount) is BaseContract {
+    // Redefines 'check' from parent without 'override' keyword
+    function check(pubkey owner, sig s, int amount) {
+        require(checkSig(s, owner));
+        require(amount > 0);
+    }
+}

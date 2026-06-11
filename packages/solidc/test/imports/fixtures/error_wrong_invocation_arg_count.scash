@@ -1,0 +1,9 @@
+import "./parent_with_params.scash";
+
+contract ErrorWrongArgCount(int limit) is ParentWithParams {
+    constructor(int limit) ParentWithParams(limit * 2, limit) {}
+
+    function validate(int amount) {
+        require(amount >= limit);
+    }
+}

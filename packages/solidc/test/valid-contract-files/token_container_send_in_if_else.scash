@@ -1,0 +1,12 @@
+contract ConditionalTokenContainerSend() {
+    int counter;
+
+    function sendConditional(bool flag, bytes32 tokenCategory, bytes20 recipientA, bytes20 recipientB, int amount) {
+        if (flag) {
+            this.tokens[tokenCategory].transfer(recipientA, amount);
+        } else {
+            this.tokens[tokenCategory].transfer(recipientB, amount);
+        }
+        this.counter = this.counter + 1;
+    }
+}

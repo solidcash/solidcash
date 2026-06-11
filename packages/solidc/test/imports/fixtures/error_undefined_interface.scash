@@ -1,0 +1,5 @@
+contract BadToken() is NonExistent {
+    function transfer(pubkey to, int amount) {
+        require(checkSig(sig(to), to));
+    }
+}

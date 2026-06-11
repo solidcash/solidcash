@@ -1,0 +1,10 @@
+import "./deploy_no_args.scash";
+
+// Deploys a zero-arg contract
+contract DeployNoArgsTarget() {
+    function run(pubkey pk, sig s) {
+        require(checkSig(s, pk));
+        bytes deployedLbc = new DeployNoArgs();
+        require(tx.outputs[0].lockingBytecode == deployedLbc);
+    }
+}

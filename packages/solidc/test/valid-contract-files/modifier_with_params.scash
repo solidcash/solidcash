@@ -1,0 +1,11 @@
+contract TimeLocked(bytes20 pkh) {
+    modifier afterTimeout(int timeout) {
+        require(tx.time >= timeout);
+        _;
+    }
+
+    function spend(pubkey pk, sig s) afterTimeout(1000) {
+        require(hash160(pk) == pkh);
+        require(checkSig(s, pk));
+    }
+}

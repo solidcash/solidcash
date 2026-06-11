@@ -1,0 +1,8 @@
+contract ComputedKeyMapping() {
+    mapping(bytes20 => int) balances;
+
+    function deposit(pubkey pk) {
+        bytes20 pkh = hash160(pk);
+        this.balances[pkh] = this.balances[pkh] + 1;
+    }
+}

@@ -1,0 +1,12 @@
+contract ArrayMappingValue() {
+    mapping(bytes20 => int[3]) scores;
+
+    function setScores(bytes20 user, int[3] values) {
+        this.scores[user] = values;
+        require(this.scores[user][0] == values[0]);
+    }
+
+    function setOneScore(bytes20 user, int index, int newValue) {
+        this.scores[user][index] = newValue;
+    }
+}

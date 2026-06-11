@@ -1,0 +1,7 @@
+import "./itoken.scash";
+
+contract BadToken() is IToken {
+    function otherFunc(pubkey pk, sig s) {
+        require(checkSig(s, pk));
+    }
+}

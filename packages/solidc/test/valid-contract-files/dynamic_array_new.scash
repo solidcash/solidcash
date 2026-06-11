@@ -1,0 +1,8 @@
+contract DynArrayNew() {
+    function test(int n) {
+        int[] arr = new int[](n);
+        arr[0] = 42;
+        require(arr.length == n);
+        require(arr[0] == 42);
+    }
+}

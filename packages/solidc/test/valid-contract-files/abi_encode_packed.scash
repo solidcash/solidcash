@@ -1,0 +1,6 @@
+contract AbiEncodePacked() {
+    function test(int x, bytes4 label, bool flag) {
+        bytes encoded = abi.encodePacked(x, label, flag);
+        require(encoded.length > 0);
+    }
+}

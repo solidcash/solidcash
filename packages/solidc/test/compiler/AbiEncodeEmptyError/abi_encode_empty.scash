@@ -1,0 +1,6 @@
+contract Test() {
+    function test() {
+        bytes encoded = abi.encode();
+        require(encoded.length > 0);
+    }
+}

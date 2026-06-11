@@ -1,0 +1,21 @@
+contract StructNestedMapping() {
+    struct Addr {
+        bytes20 hash;
+        int amount;
+    }
+
+    struct Payment {
+        Addr from;
+        Addr to;
+    }
+
+    mapping(int => Payment) payments;
+
+    function setPayment(int key, bytes20 fHash, int fAmt, bytes20 tHash, int tAmt) {
+        this.payments[key] = Payment(Addr(fHash, fAmt), Addr(tHash, tAmt));
+    }
+
+    function checkFromAmount(int key) {
+        require(this.payments[key].from.amount > 0);
+    }
+}

@@ -1,0 +1,10 @@
+interface IToken {
+    function transfer(pubkey to, int amount);
+}
+
+contract AbiEncodeCall() {
+    function test(pubkey to, int amount) {
+        bytes data = abi.encodeCall(IToken.transfer, (to, amount));
+        require(data.length > 4);
+    }
+}

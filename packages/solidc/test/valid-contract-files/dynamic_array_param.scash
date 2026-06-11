@@ -1,0 +1,6 @@
+contract DynArrayParam() {
+    function test(int[] arr) {
+        require(arr.length > 0);
+        require(arr[0] == 1);
+    }
+}

@@ -1,0 +1,15 @@
+contract StructMappingKeyReuse() {
+    struct User { bytes20 addr; int balance; }
+    int counter;
+    mapping(bytes20 => User) users;
+
+    function checkAndUpdate(bytes20 pkh, pubkey pk, sig s) {
+        require(checkSig(s, pk));
+        User u = this.users[pkh];
+        require(u.balance >= 0);
+        // Key reuse after struct mapping read — was failing before fix:
+        this.users[pkh] = User(pkh, u.balance + 1);
+    }
+
+    function authorize(pubkey pk, sig s) unsafe { require(checkSig(s, pk)); }
+}

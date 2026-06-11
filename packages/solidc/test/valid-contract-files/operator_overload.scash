@@ -1,0 +1,69 @@
+type Price is int;
+
+using {addPrice as +, subPrice as -, mulPrice as *, negPrice as -, eqPrice as ==, nePrice as !=, ltPrice as <} for Price;
+
+function addPrice(Price a, Price b) returns (Price) {
+    return Price(int(a) + int(b));
+}
+
+function subPrice(Price a, Price b) returns (Price) {
+    return Price(int(a) - int(b));
+}
+
+function mulPrice(Price a, Price b) returns (Price) {
+    return Price(int(a) * int(b));
+}
+
+function negPrice(Price a) returns (Price) {
+    return Price(-int(a));
+}
+
+function eqPrice(Price a, Price b) returns (bool) {
+    return int(a) == int(b);
+}
+
+function nePrice(Price a, Price b) returns (bool) {
+    return int(a) != int(b);
+}
+
+function ltPrice(Price a, Price b) returns (bool) {
+    return int(a) < int(b);
+}
+
+contract OperatorOverload() {
+    function testAdd(Price a, Price b) {
+        Price result = a + b;
+        require(int(result) == int(a) + int(b));
+    }
+
+    function testSub(Price a, Price b) {
+        Price result = a - b;
+        require(int(result) == int(a) - int(b));
+    }
+
+    function testChained(Price a, Price b, Price c) {
+        Price result = a + b + c;
+        require(int(result) == int(a) + int(b) + int(c));
+    }
+
+    function testComparison(Price a, Price b) {
+        require(a == b);
+    }
+
+    function testNegate(Price a) {
+        Price result = -a;
+        require(int(result) == -int(a));
+    }
+
+    function testInCondition(Price a, Price b) {
+        if (a < b) {
+            require(int(a) < int(b));
+        } else {
+            require(int(a) >= int(b));
+        }
+    }
+
+    function testMixed(Price a, int rawVal) {
+        require(int(a) == rawVal);
+    }
+}

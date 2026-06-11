@@ -1,0 +1,13 @@
+contract MultiNftConditional() {
+    bytes30 alpha;
+    bytes30 beta;
+    bytes30 gamma;
+
+    function conditionalWrite(bool flag, bytes30 val) {
+        if (flag) {
+            this.alpha = val;
+        } else {
+            this.gamma = val;
+        }
+    }
+}

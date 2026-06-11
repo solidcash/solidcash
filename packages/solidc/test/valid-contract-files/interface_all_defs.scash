@@ -1,0 +1,28 @@
+interface IMarket {
+    enum Status { Open, Closed, Paused }
+    struct Item { bytes20 seller; int price; }
+    type ItemId is int;
+    event Listed(int indexed itemId, bytes20 seller, int price);
+
+    public int itemCount;
+    function list(int price);
+}
+
+contract Market() {
+    int itemCount;
+    mapping(int => Item) items;
+
+    function list(int price, pubkey pk, sig s) {
+        require(checkSig(s, pk));
+        require(price > 0);
+        int status = int(Status.Open);
+        require(status == 0);
+        bytes20 seller = hash160(pk);
+        ItemId id = ItemId(this.itemCount);
+        this.items[int(id)] = Item(seller, price);
+        this.itemCount = this.itemCount + 1;
+        emit Listed(int(id), seller, price);
+    }
+
+    function authorize(pubkey pk, sig s) unsafe { require(checkSig(s, pk)); }
+}

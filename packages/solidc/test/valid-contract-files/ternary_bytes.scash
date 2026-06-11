@@ -1,0 +1,6 @@
+contract TernaryBytes(bool flag) {
+    function test() {
+        bytes result = flag ? 0x01 : 0x02;
+        require(result == 0x01);
+    }
+}

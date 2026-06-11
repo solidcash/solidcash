@@ -1,0 +1,11 @@
+contract ConditionalCounter() {
+    int counter;
+
+    function conditionalIncrement(bool flag) {
+        if (flag) {
+            this.counter = this.counter + 1;
+        } else {
+            this.counter = this.counter;
+        }
+    }
+}

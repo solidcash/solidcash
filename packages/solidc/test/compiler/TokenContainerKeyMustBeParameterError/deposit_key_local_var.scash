@@ -1,0 +1,9 @@
+contract Test() {
+    int counter;
+
+    function test(bytes32 tokenCategory) {
+        bytes32 localCat = tokenCategory;
+        int bal = this.tokens[localCat].tokenAmount;
+        require(bal >= 0);
+    }
+}

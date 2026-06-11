@@ -1,0 +1,9 @@
+import "./deploy_target.scash";
+
+// Error: using {value} in a non-stateful contract
+contract ErrorDeployValueNonStateful() {
+    function test(pubkey pk, sig s) {
+        require(checkSig(s, pk));
+        bytes lbc = new DeployTarget{value: 1000}(0x0000000000000000000000000000000000000000);
+    }
+}

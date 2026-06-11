@@ -1,0 +1,33 @@
+contract SwitchTest() {
+    function testBasicSwitch(int action) {
+        switch (action) {
+            case 1:
+                require(action == 1);
+            case 2:
+                require(action == 2);
+            default:
+                require(action != 1);
+        }
+    }
+
+    function testSwitchNoDefault(int action) {
+        switch (action) {
+            case 10:
+                require(action == 10);
+            case 20:
+                require(action == 20);
+        }
+        require(action >= 0);
+    }
+
+    function testSwitchExpression(int x, int y) {
+        switch (x + y) {
+            case 100:
+                require(x + y == 100);
+            case 200:
+                require(x + y == 200);
+            default:
+                require(x + y > 0);
+        }
+    }
+}

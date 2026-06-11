@@ -1,0 +1,25 @@
+contract NestedStructLastField() {
+    struct Inner {
+        int a;
+        int b;
+    }
+
+    struct Outer {
+        int x;
+        Inner inner;
+    }
+
+    Outer data;
+
+    function setData(int x, int a, int b) {
+        this.data = Outer(x, Inner(a, b));
+    }
+
+    function requireX() {
+        require(this.data.x > 0);
+    }
+
+    function requireInnerA() {
+        require(this.data.inner.a > 0);
+    }
+}

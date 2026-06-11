@@ -1,0 +1,19 @@
+function helper(int a) returns (int) {
+    return a * 2;
+}
+
+contract Calculator(int base) {
+    function helper(int a, int b) internal pure returns (int) {
+        return a + b;
+    }
+
+    function computeOne(int x) {
+        int result = helper(x);
+        require(result > base);
+    }
+
+    function computeTwo(int x, int y) {
+        int result = helper(x, y);
+        require(result > base);
+    }
+}

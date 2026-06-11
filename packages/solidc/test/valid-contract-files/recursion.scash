@@ -1,0 +1,25 @@
+function factorial(int n) returns (int) {
+    if (n <= 1) {
+        return 1;
+    }
+    return n * factorial(n - 1);
+}
+
+contract Recursion(pubkey owner) {
+    function countdown(int n) internal returns (int) {
+        if (n <= 0) {
+            return 0;
+        }
+        return 1 + countdown(n - 1);
+    }
+
+    function testFactorial(sig s, int n, int expected) {
+        require(checkSig(s, owner));
+        require(factorial(n) == expected);
+    }
+
+    function testCountdown(sig s, int n, int expected) {
+        require(checkSig(s, owner));
+        require(countdown(n) == expected);
+    }
+}

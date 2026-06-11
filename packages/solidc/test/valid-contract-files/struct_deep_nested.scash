@@ -1,0 +1,22 @@
+contract StructDeepNested() {
+    struct A {
+        int x;
+    }
+
+    struct B {
+        A inner;
+        int y;
+    }
+
+    struct C {
+        B mid;
+        int z;
+    }
+
+    function test() {
+        C val = C(B(A(42), 10), 20);
+        require(val.mid.inner.x == 42);
+        require(val.mid.y == 10);
+        require(val.z == 20);
+    }
+}

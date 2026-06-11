@@ -1,0 +1,8 @@
+contract HexStringTest() {
+    function test(bytes b) {
+        bytes deadbeef = hex"deadbeef";
+        bytes withUnderscores = hex"dead_beef";
+        require(deadbeef == withUnderscores);
+        require(deadbeef == b);
+    }
+}

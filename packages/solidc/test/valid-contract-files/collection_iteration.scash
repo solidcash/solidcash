@@ -1,0 +1,37 @@
+pragma solidcash >=0.8.0;
+
+contract CollectionIteration() {
+    int total;
+    mapping(bytes20 => int) balances;
+
+    // Iterate over key-value pairs using .entries
+    function sumEntries() {
+        int sum = 0;
+        for (int value of this.balances) {
+            sum = sum + value;
+        }
+        this.total = sum;
+    }
+
+    // Iterate over keys only
+    function countKeys() {
+        int count = 0;
+        for (bytes20 key in this.balances) {
+            count = count + 1;
+        }
+        this.total = count;
+    }
+
+    // Iterate over key-value pairs
+    function sumEntriesPairs() {
+        int sum = 0;
+        for (bytes20 key, int value of this.balances.entries) {
+            sum = sum + value;
+        }
+        this.total = sum;
+    }
+
+    function authorize(pubkey pk, sig s) unsafe {
+        require(checkSig(s, pk));
+    }
+}

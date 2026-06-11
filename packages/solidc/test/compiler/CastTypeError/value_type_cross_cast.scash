@@ -1,0 +1,11 @@
+contract ValueTypeCrossCast() {
+    type Price is int;
+    type Quantity is int;
+
+    function test(int x) {
+        Price p = Price(x);
+        // Cross-casting between different value types should fail
+        Quantity q = Quantity(p);
+        require(int(q) == x);
+    }
+}

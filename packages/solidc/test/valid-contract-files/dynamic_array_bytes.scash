@@ -1,0 +1,8 @@
+contract DynArrayBytes() {
+    function test(bytes4 a, bytes4 b) {
+        bytes4[] items = [a, b];
+        items.push(0x01020304);
+        bytes4 val = items[0];
+        require(val == a);
+    }
+}

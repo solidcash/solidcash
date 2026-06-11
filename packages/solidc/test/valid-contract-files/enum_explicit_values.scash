@@ -1,0 +1,13 @@
+contract EnumExplicitTest(int status) {
+    enum Status { Pending, Active = 10, Paused, Closed = 100 }
+
+    function checkActive(pubkey pk, sig s) {
+        require(status == Status.Active);
+        require(checkSig(s, pk));
+    }
+
+    function checkPaused(pubkey pk, sig s) {
+        require(status == Status.Paused);
+        require(checkSig(s, pk));
+    }
+}

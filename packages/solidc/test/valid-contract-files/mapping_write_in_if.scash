@@ -1,0 +1,13 @@
+contract ConditionalMapping() {
+    int counter;
+    mapping(bytes20 => int) balances;
+
+    function conditionalSet(bool flag, bytes20 key, int value) {
+        if (flag) {
+            this.balances[key] = value;
+        } else {
+            this.balances[key] = this.balances[key];
+        }
+        this.counter = this.counter + 1;
+    }
+}

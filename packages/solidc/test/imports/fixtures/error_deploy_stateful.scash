@@ -1,0 +1,9 @@
+import "./base_contract.scash";
+
+// Error: deploying a stateful contract
+contract ErrorDeployStateful() {
+    function test(pubkey pk, sig s) {
+        require(checkSig(s, pk));
+        bytes lbc = new BaseContract(100);
+    }
+}

@@ -1,0 +1,6 @@
+contract Ternary(bool flag) {
+    function test() {
+        int result = flag ? 1 : 0x01;
+        require(result == 1);
+    }
+}

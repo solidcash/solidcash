@@ -1,0 +1,12 @@
+contract DeployChild(bytes20 owner) {
+    int counter;
+
+    function increment() {
+        require(tx.outputs[0].lockingBytecode == new LockingBytecodeP2PKH(owner));
+        this.counter = this.counter + 1;
+    }
+
+    function getCounter() {
+        require(this.counter > 0);
+    }
+}

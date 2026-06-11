@@ -1,0 +1,14 @@
+contract BytesInStruct() {
+    struct Payload {
+        bytes data;
+        int tag;
+    }
+
+    Payload stored;
+
+    function setPayload(bytes data, int tag) {
+        this.stored = Payload(data, tag);
+        require(this.stored.data == data);
+        require(this.stored.tag == tag);
+    }
+}

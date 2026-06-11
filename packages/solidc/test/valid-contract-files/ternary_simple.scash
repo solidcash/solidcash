@@ -1,0 +1,6 @@
+contract Ternary(int x) {
+    function test() {
+        int result = x > 10 ? 1 : 0;
+        require(result == 1);
+    }
+}

@@ -1,0 +1,6 @@
+// Non-stateful contract with no constructor args, used as deployment target
+contract DeployNoArgs() {
+    function spend(pubkey pk, sig s) {
+        require(checkSig(s, pk));
+    }
+}

@@ -1,0 +1,9 @@
+contract DeployStatefulTarget(bytes20 owner) {
+    int counter;
+
+    function increment(pubkey pk, sig s) {
+        require(hash160(pk) == owner);
+        require(checkSig(s, pk));
+        this.counter = this.counter + 1;
+    }
+}

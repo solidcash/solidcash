@@ -1,0 +1,8 @@
+contract UndefinedEvent(pubkey owner) {
+    event Transfer(pubkey from, int amount);
+
+    function send(sig s) {
+        require(checkSig(s, owner));
+        emit Approval(owner, 100);
+    }
+}

@@ -1,0 +1,11 @@
+contract DelegateImpl() {
+    int totalSupply;
+
+    function mint(int amount) delegate {
+        this.totalSupply = this.totalSupply + amount;
+    }
+
+    function authorize(pubkey pk, sig s) unsafe {
+        require(checkSig(s, pk));
+    }
+}

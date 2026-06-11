@@ -1,0 +1,8 @@
+contract SigEvent(pubkey owner) {
+    event BadEvent(sig signature);
+
+    function send(sig s) {
+        require(checkSig(s, owner));
+        emit BadEvent(s);
+    }
+}

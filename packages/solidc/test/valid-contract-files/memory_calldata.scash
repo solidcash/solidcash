@@ -1,0 +1,11 @@
+contract MemoryCalldata() {
+    function test(bytes memory data, int calldata value) returns (int memory) {
+        require(data.length > 0);
+        require(value > 0);
+
+        int memory testVar = 0;
+        require(testVar == 0);
+
+        return 0;
+    }
+}

@@ -1,0 +1,7 @@
+import "./grandparent.scash";
+
+contract Parent() is GrandParent {
+    function parentFunc(int y) {
+        require(y > 0);
+    }
+}

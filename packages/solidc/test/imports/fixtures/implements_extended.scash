@@ -1,0 +1,11 @@
+import "./iextended_token.scash";
+
+contract ExtToken() is IExtendedToken {
+    function transfer(pubkey to, sig s, int amount) {
+        require(amount > 0);
+        require(checkSig(s, to));
+    }
+    function burn(pubkey owner, sig s) {
+        require(checkSig(s, owner));
+    }
+}

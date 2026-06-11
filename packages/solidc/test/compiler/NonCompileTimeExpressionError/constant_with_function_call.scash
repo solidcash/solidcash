@@ -1,0 +1,7 @@
+bytes constant HASH = hash160(0x00);
+
+contract Test() {
+    function spend() {
+        require(HASH == 0x00);
+    }
+}

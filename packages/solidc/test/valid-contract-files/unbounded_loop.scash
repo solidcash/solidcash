@@ -1,0 +1,24 @@
+contract UnboundedLoop(pubkey owner) {
+    function fibonacci(sig s, int n, int expected) {
+        require(checkSig(s, owner));
+        int a = 0;
+        int b = 1;
+        int i = 0;
+        do {
+            int temp = b;
+            b = a + b;
+            a = temp;
+            i = i + 1;
+        } while (i < n);
+        require(a == expected);
+    }
+
+    function sumTo(sig s, int n, int expected) {
+        require(checkSig(s, owner));
+        int total = 0;
+        for (int i = 1; i <= n; i = i + 1) {
+            total = total + i;
+        }
+        require(total == expected);
+    }
+}

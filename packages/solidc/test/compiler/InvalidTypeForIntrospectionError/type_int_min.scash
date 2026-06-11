@@ -1,0 +1,6 @@
+contract Test() {
+    function test(pubkey pk, sig s) {
+        require(checkSig(s, pk));
+        require(type(int).min == 0);
+    }
+}

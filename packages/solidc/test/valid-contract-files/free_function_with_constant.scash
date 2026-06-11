@@ -1,0 +1,12 @@
+int constant OFFSET = 10;
+
+function addOffset(int a) returns (int) {
+    return a + OFFSET;
+}
+
+contract Calculator() {
+    function compute(int x) {
+        int result = addOffset(x);
+        require(result > 0);
+    }
+}

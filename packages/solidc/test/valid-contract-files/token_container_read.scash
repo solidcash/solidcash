@@ -1,0 +1,12 @@
+contract TokenContainerRead() {
+    int counter;
+
+    function checkBalance(bytes32 tokenCategory) {
+        int bal = this.tokens[tokenCategory].tokenAmount;
+        require(bal > 0);
+    }
+
+    function authorize(pubkey pk, sig s) unsafe {
+        require(checkSig(s, pk));
+    }
+}

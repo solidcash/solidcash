@@ -1,0 +1,8 @@
+contract EventSimple(pubkey owner) {
+    event Transfer(pubkey from, pubkey to, int amount);
+
+    function transfer(pubkey to, int amount, sig s) {
+        require(checkSig(s, owner));
+        emit Transfer(owner, to, amount);
+    }
+}

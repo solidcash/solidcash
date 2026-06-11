@@ -1,0 +1,38 @@
+pragma solidcash >=0.8.0;
+
+library SafeMath {
+    function add(int a, int b) returns (int) {
+        int c = a + b;
+        assert(c >= a);
+        return c;
+    }
+
+    function sub(int a, int b) returns (int) {
+        assert(b <= a);
+        return a - b;
+    }
+}
+
+contract TokenWithLib() {
+    using SafeMath for int;
+
+    int totalSupply;
+    mapping(bytes20 => int) balances;
+
+    // Chained using-for: value.add(x).sub(y)
+    function transfer(bytes20 from, bytes20 to, int amount) {
+        int fee = 1;
+        int sendAmount = amount.sub(fee);
+
+        // this.stateVar.method() via using-for
+        this.totalSupply = this.totalSupply.add(fee);
+
+        // this.mapping[key].method() via using-for
+        this.balances[from] = this.balances[from].sub(amount);
+        this.balances[to] = this.balances[to].add(sendAmount);
+    }
+
+    function authorize(pubkey pk, sig s) unsafe {
+        require(checkSig(s, pk));
+    }
+}

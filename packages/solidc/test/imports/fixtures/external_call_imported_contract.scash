@@ -1,0 +1,11 @@
+import "./base_contract.scash";
+
+contract ExternalReader(bytes32 baseCategory) {
+    int lastBalance;
+
+    function readBalance(pubkey pk, sig s) {
+        require(checkSig(s, pk));
+        int val = BaseContract(baseCategory).balance;
+        this.lastBalance = val;
+    }
+}

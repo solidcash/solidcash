@@ -1,0 +1,29 @@
+// SafeMath — Ported verbatim from Solidity USDT (0xdAC17F958D2ee523a2206206994597C13D831ec7)
+// Unnecessary on BCH 2026 VM (unlimited BigInt), but included for 1:1 parity.
+
+library SafeMath {
+    function mul(int a, int b) returns (int) {
+        if (a == 0) {
+            return 0;
+        }
+        int c = a * b;
+        assert(c / a == b);
+        return c;
+    }
+
+    function div(int a, int b) returns (int) {
+        int c = a / b;
+        return c;
+    }
+
+    function sub(int a, int b) returns (int) {
+        assert(b <= a);
+        return a - b;
+    }
+
+    function add(int a, int b) returns (int) {
+        int c = a + b;
+        assert(c >= a);
+        return c;
+    }
+}

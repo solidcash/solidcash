@@ -1,0 +1,13 @@
+contract Utils() {
+    function clamp(int x, int lo, int hi) internal pure returns (int) {
+        if (x < lo) { return lo; }
+        if (x > hi) { return hi; }
+        return x;
+    }
+
+    function validate(int val) {
+        int result = clamp(val, 0, 100);
+        require(result >= 0);
+        require(result <= 100);
+    }
+}

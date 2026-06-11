@@ -1,0 +1,5 @@
+contract Test() {
+    function hello(fixed128x18 a, pubkey pk) {
+        require(checkSig(sig(a), pk));
+    }
+}

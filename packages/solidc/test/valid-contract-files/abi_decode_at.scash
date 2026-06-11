@@ -1,0 +1,6 @@
+contract AbiDecodeAt() {
+    function test(bytes data) {
+        bytes4 label = abi.decodeAt(data, (int, bytes4, bool), 1);
+        require(label == 0xDEADBEEF);
+    }
+}

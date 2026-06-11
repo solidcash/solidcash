@@ -1,0 +1,16 @@
+pragma solidcash ^0.13.0;
+
+contract DupFallback(bytes20 owner) {
+    function transfer(pubkey pk, sig s) {
+        require(hash160(pk) == owner);
+        require(checkSig(s, pk));
+    }
+
+    fallback() external {
+        require(tx.outputs[0].value >= 1000);
+    }
+
+    fallback() external {
+        require(tx.outputs[0].value >= 2000);
+    }
+}

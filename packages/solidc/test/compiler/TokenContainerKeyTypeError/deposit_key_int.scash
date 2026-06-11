@@ -1,0 +1,8 @@
+contract Test() {
+    int counter;
+
+    function test(int tokenCategory) {
+        int bal = this.tokens[tokenCategory].tokenAmount;
+        require(bal >= 0);
+    }
+}

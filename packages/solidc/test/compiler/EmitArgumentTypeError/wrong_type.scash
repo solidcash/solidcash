@@ -1,0 +1,8 @@
+contract WrongType(pubkey owner) {
+    event Transfer(pubkey from, int amount);
+
+    function send(int amount, sig s) {
+        require(checkSig(s, owner));
+        emit Transfer(amount, owner);
+    }
+}

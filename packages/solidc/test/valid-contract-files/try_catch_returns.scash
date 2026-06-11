@@ -1,0 +1,9 @@
+contract TryCatchReturns(pubkey owner) {
+    function spend(sig s) {
+        try checkSig(s, owner) returns (bool result) {
+            require(result);
+        } catch {
+            require(false);
+        }
+    }
+}

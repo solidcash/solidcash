@@ -1,0 +1,16 @@
+contract StructArrayTest() {
+    struct Point {
+        int x;
+        int y;
+    }
+
+    Point[3] points;
+
+    function setPoint(int index, int x, int y) {
+        this.points[index] = Point(x, y);
+    }
+
+    function requirePointX(int index) {
+        require(this.points[index].x > 0);
+    }
+}

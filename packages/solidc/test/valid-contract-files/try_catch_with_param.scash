@@ -1,0 +1,13 @@
+contract TryCatchParam(pubkey owner) {
+    function spend(sig s) {
+        try checkSig(s, owner) {
+            require(true);
+        } catch Error(string reason) {
+            require(true);
+        } catch (bytes data) {
+            require(true);
+        } catch {
+            require(true);
+        }
+    }
+}

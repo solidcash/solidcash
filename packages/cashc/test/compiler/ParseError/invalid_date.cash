@@ -1,8 +1,0 @@
-pragma cashscript >=0.8.0;
-
-contract Test() {
-    function test() {
-        int d = date("not a date");
-        require(d == 0);
-    }
-}

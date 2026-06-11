@@ -1,0 +1,12 @@
+contract TokenContainerSendNft() {
+    int counter;
+
+    function withdrawNft(bytes32 nftCategory, bytes20 recipient, bytes commitment, int capability) {
+        this.tokens[nftCategory].transferNft(recipient, commitment, capability);
+        this.counter = this.counter + 1;
+    }
+
+    function authorize(pubkey pk, sig s) unsafe {
+        require(checkSig(s, pk));
+    }
+}

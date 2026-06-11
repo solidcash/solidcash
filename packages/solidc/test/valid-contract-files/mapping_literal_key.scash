@@ -1,0 +1,8 @@
+contract LiteralKeyMapping() {
+    mapping(int => int) config;
+
+    function getConfig() {
+        int val = this.config[42];
+        require(val > 0);
+    }
+}

@@ -1,0 +1,9 @@
+import "./p2pkh_lib.scash";
+
+contract Forwarder(bytes20 targetPkh) {
+    function forward(pubkey pk, sig s) {
+        require(checkSig(s, pk));
+        bytes lockingBytecode = P2PKHLib(targetPkh).lockingBytecode;
+        require(tx.outputs[0].lockingBytecode == lockingBytecode);
+    }
+}

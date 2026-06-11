@@ -1,0 +1,14 @@
+contract StringMapping() {
+    mapping(string => int) nameToAge;
+    mapping(int => string) idToName;
+
+    function setNameAge(string name, int age) {
+        this.nameToAge[name] = age;
+        require(this.nameToAge[name] == age);
+    }
+
+    function setIdName(int id, string name) {
+        this.idToName[id] = name;
+        require(this.idToName[id] == name);
+    }
+}

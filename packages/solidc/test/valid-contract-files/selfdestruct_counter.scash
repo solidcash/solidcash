@@ -1,0 +1,15 @@
+contract SelfdestructCounter(pubkey admin) {
+    int counter;
+
+    function increment() {
+        this.counter = this.counter + 1;
+    }
+
+    function destroy(sig s) selfdestruct {
+        require(checkSig(s, admin));
+    }
+
+    function authorize(pubkey pk, sig s) unsafe {
+        require(checkSig(s, pk));
+    }
+}

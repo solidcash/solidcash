@@ -1,0 +1,8 @@
+pragma solidcash >=0.8.0;
+
+contract P2PKH(bytes20 pkh) {
+    function spend(pubkey pk, bytes65 s) {
+        require(hash160(pk) == pkh);
+        require(checkSig(sig(s), pk));
+    }
+}

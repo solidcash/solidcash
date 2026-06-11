@@ -1,0 +1,17 @@
+contract StateWriteBranchInLoop() {
+    int counter;
+    int other;
+
+    function update(bool flag) {
+        int i = 0;
+        do {
+            if (flag) {
+                this.counter = this.counter + 1;
+            } else {
+                this.counter = this.counter + 2;
+            }
+            i = i + 1;
+        } while (i < 3);
+        this.other = this.other + 1;
+    }
+}

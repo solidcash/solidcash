@@ -1,0 +1,8 @@
+contract DynArrayPacked() {
+    function test(bytes20 a, bytes20 b) {
+        bytes20[] packed addrs = [a, b];
+        addrs.push(0x0000000000000000000000000000000000000000);
+        bytes20 val = addrs[0];
+        require(val == a);
+    }
+}

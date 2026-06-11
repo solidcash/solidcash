@@ -1,0 +1,9 @@
+contract ValueTypeImplicitWrap() {
+    type Price is int;
+
+    function test(int x) {
+        // Implicit wrap should fail — must use explicit Price(x)
+        Price p = x;
+        require(int(p) == x);
+    }
+}

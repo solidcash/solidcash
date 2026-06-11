@@ -1,0 +1,10 @@
+function add(int a, int b) returns (int) {
+    return a + b;
+}
+
+contract Calculator(int base) {
+    function compute(int x) {
+        int result = add(base, x);
+        require(result > 0);
+    }
+}

@@ -1,0 +1,20 @@
+contract MultiFieldAssign() {
+    struct User { bytes20 addr; string name; int balance; }
+    int counter;
+    mapping(bytes20 => User) users;
+
+    function updateNameAndBalance(bytes20 pkh, string newName, int newBalance, pubkey pk, sig s) {
+        require(checkSig(s, pk));
+        this.users[pkh].name = newName;
+        this.users[pkh].balance = newBalance;
+    }
+
+    function updateAll(bytes20 pkh, bytes20 newAddr, string newName, int newBalance, pubkey pk, sig s) {
+        require(checkSig(s, pk));
+        this.users[pkh].addr = newAddr;
+        this.users[pkh].name = newName;
+        this.users[pkh].balance = newBalance;
+    }
+
+    function authorize(pubkey pk, sig s) unsafe { require(checkSig(s, pk)); }
+}

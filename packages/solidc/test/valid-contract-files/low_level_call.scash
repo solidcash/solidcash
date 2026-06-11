@@ -1,0 +1,20 @@
+pragma solidcash >=0.8.0;
+
+interface ICounter {
+    public int counter;
+    function increment();
+}
+
+contract DynamicCaller(bytes32 targetCategory) {
+    int state;
+
+    function dynamicCall() {
+        ICounter(targetCategory).increment.call();
+        this.state = this.state + 1;
+    }
+
+    function readOnlyCall() {
+        ICounter(targetCategory).increment.staticcall();
+        this.state = this.state + 1;
+    }
+}

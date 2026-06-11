@@ -1,0 +1,7 @@
+import "./itoken.scash";
+
+contract BadToken() is IToken {
+    function transfer(int amount) {
+        require(amount > 0);
+    }
+}

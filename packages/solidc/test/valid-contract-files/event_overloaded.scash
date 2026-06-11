@@ -1,0 +1,14 @@
+contract OverloadedEvents(pubkey owner) {
+    event Transfer(pubkey from, pubkey to, int amount);
+    event Transfer(pubkey from, int amount);
+
+    function transferFull(pubkey to, int amount, sig s) {
+        require(checkSig(s, owner));
+        emit Transfer(owner, to, amount);
+    }
+
+    function transferSimple(int amount, sig s) {
+        require(checkSig(s, owner));
+        emit Transfer(owner, amount);
+    }
+}

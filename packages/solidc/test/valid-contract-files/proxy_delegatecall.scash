@@ -1,0 +1,13 @@
+contract ProxyDelegatecall() {
+    int counter;
+
+    function authorize(pubkey pk, sig s) unsafe {
+        require(checkSig(s, pk));
+    }
+
+    fallback(bytes input) external {
+        address impl = address(0x76a91489abcdefabbaabbaabbaabbaabbaabbaabbaabba88ac);
+        impl.delegatecall(input);
+        require(input.length > 0);
+    }
+}

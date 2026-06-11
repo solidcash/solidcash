@@ -1,0 +1,7 @@
+// Simple non-stateful contract used as deployment target
+contract DeployTarget(bytes20 pkh) {
+    function spend(pubkey pk, sig s) {
+        require(hash160(pk) == pkh);
+        require(checkSig(s, pk));
+    }
+}

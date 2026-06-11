@@ -1,0 +1,10 @@
+import "./deploy_target.scash";
+
+// Non-stateful contract that computes a salted contract's locking bytecode
+contract DeployWithSalt() {
+    function run(pubkey pk, sig s, bytes20 targetPkh, bytes salt) {
+        require(checkSig(s, pk));
+        bytes deployedLbc = new DeployTarget{salt: salt}(targetPkh);
+        require(tx.outputs[0].lockingBytecode == deployedLbc);
+    }
+}

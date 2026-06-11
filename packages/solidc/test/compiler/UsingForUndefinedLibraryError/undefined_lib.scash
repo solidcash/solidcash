@@ -1,0 +1,7 @@
+contract UndefinedLib() {
+    using NonExistent for int;
+
+    function doMath(int a) {
+        require(a > 0);
+    }
+}

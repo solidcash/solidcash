@@ -1,0 +1,9 @@
+contract TryCatchBasic(pubkey owner) {
+    function spend(sig s) {
+        try checkSig(s, owner) {
+            require(true);
+        } catch {
+            require(true);
+        }
+    }
+}

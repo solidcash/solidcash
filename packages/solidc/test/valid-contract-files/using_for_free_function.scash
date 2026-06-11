@@ -1,0 +1,12 @@
+function doubleIt(int x) returns (int) {
+    return x + x;
+}
+
+contract UsingForFreeFunction() {
+    using {doubleIt} for int;
+
+    function doMath(int a) {
+        int result = a.doubleIt();
+        require(result == a + a);
+    }
+}

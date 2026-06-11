@@ -1,0 +1,10 @@
+contract Test() {
+    int counter;
+
+    function test(bytes32 tokenCategory, bytes20 recipient, int amount) {
+        if (amount > 100) {
+            this.tokens[tokenCategory].transfer(recipient, amount);
+        }
+        this.counter = this.counter + 1;
+    }
+}

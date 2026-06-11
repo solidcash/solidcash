@@ -1,0 +1,6 @@
+contract UnicodeTest() {
+    function test(string s) {
+        string hello = unicode"Hello \u0048\u0065\u006c\u006c\u006f";
+        require(hello == s);
+    }
+}

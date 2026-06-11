@@ -1,0 +1,7 @@
+contract Test() {
+    int counter;
+
+    function foo() unsafe(1) {
+        this.counter = this.counter + 1;
+    }
+}

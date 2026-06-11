@@ -1,0 +1,8 @@
+contract DynArrayConstantIndex() {
+    function test() {
+        int[3] arr = [1, 2, 3];
+        int v = arr[0];
+        int w = arr[2];
+        require(v + w == 4);
+    }
+}

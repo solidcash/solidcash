@@ -1,0 +1,11 @@
+contract ForLoopNoRequire() {
+    function doLoop() {
+        int total = 0;
+
+        require(total < 1);
+
+        for (int i = 0; i < 3; i = i + 1) {
+            total = total + 1;
+        }
+    }
+}

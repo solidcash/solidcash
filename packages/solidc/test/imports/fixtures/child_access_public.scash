@@ -1,0 +1,8 @@
+import "./parent_visibility.scash";
+
+contract ChildAccessPublic() is ParentVisibility {
+    function childRead(pubkey owner, sig s) {
+        require(checkSig(s, owner));
+        require(this.pubVar > 0);
+    }
+}

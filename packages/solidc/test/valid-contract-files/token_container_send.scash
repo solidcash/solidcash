@@ -1,0 +1,13 @@
+contract TokenContainerSend() {
+    int counter;
+
+    function sendTokens(bytes32 tokenCategory, bytes20 recipient, int amount) {
+        require(this.tokens[tokenCategory].tokenAmount >= amount);
+        this.tokens[tokenCategory].transfer(recipient, amount);
+        this.counter = this.counter + 1;
+    }
+
+    function authorize(pubkey pk, sig s) unsafe {
+        require(checkSig(s, pk));
+    }
+}

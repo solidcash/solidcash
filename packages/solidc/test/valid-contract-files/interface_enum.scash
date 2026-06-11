@@ -1,0 +1,19 @@
+interface IToken {
+    enum TokenKind { Fungible, NonFungible, SemiFungible }
+    public int supply;
+    function mint(int amount);
+}
+
+contract Token() {
+    int supply;
+
+    function mint(int amount, pubkey pk, sig s) {
+        require(checkSig(s, pk));
+        require(amount > 0);
+        int kind = int(TokenKind.Fungible);
+        require(kind == 0);
+        this.supply = this.supply + amount;
+    }
+
+    function authorize(pubkey pk, sig s) unsafe { require(checkSig(s, pk)); }
+}

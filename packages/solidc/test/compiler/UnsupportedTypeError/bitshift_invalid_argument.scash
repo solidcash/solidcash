@@ -1,0 +1,7 @@
+contract Test() {
+    function spend() {
+        bool x = true;
+        bool y = x << 4;
+        require(y);
+    }
+}

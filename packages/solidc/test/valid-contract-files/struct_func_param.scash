@@ -1,0 +1,14 @@
+contract StructFuncParam() {
+    struct Pair {
+        int a;
+        int b;
+    }
+
+    function checkSum(Pair p, int expected) {
+        require(p.a + p.b == expected);
+    }
+
+    function checkFirst(Pair p, int expected) {
+        require(p.a == expected);
+    }
+}

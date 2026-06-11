@@ -1,0 +1,10 @@
+// Library with constants and a contract
+int constant MAX_AMOUNT = 1000000;
+int constant MIN_AMOUNT = 546;
+
+contract ConstantsLib() {
+    function validate(int amount) {
+        require(amount >= MIN_AMOUNT);
+        require(amount <= MAX_AMOUNT);
+    }
+}

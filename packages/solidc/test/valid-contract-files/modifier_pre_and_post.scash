@@ -1,0 +1,12 @@
+contract PrePost(bytes20 pkh) {
+    modifier wrapped {
+        require(this.age >= 100);
+        _;
+        require(tx.time >= 1000);
+    }
+
+    function spend(pubkey pk, sig s) wrapped {
+        require(hash160(pk) == pkh);
+        require(checkSig(s, pk));
+    }
+}

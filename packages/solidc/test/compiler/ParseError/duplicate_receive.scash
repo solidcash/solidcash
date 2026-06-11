@@ -1,0 +1,16 @@
+pragma solidcash ^0.13.0;
+
+contract DupReceive(bytes20 owner) {
+    function transfer(pubkey pk, sig s) {
+        require(hash160(pk) == owner);
+        require(checkSig(s, pk));
+    }
+
+    receive() external payable {
+        require(tx.outputs[0].value >= 546);
+    }
+
+    receive() external payable {
+        require(tx.outputs[0].value >= 1000);
+    }
+}

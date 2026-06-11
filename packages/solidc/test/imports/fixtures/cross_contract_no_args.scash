@@ -1,0 +1,9 @@
+import "./transfer_with_timeout.scash";
+
+contract Forwarder() {
+    function forward(pubkey pk, sig s) {
+        require(checkSig(s, pk));
+        bytes lockingBytecode = TransferWithTimeout.lockingBytecode;
+        require(tx.outputs[0].lockingBytecode == lockingBytecode);
+    }
+}

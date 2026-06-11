@@ -1,0 +1,63 @@
+contract BoundedIntArray() {
+    function testPushAndRead(int x, int y, int z) {
+        uint8 a = uint8(x);
+        uint8 b = uint8(y);
+        uint8 c = uint8(z);
+        uint8[] arr = [a, b];
+        arr.push(c);
+        require(arr.length == 3);
+        require(int(arr[0]) == x);
+        require(int(arr[1]) == y);
+        require(int(arr[2]) == z);
+    }
+
+    function testAssign(int x, int y, int newVal) {
+        uint8 a = uint8(x);
+        uint8 b = uint8(y);
+        uint8[] arr = [a, b];
+        arr[0] = uint8(newVal);
+        require(int(arr[0]) == newVal);
+        require(int(arr[1]) == y);
+    }
+
+    function testPop(int x, int y, int z) {
+        uint8 a = uint8(x);
+        uint8 b = uint8(y);
+        uint8 c = uint8(z);
+        uint8[] arr = [a, b, c];
+        arr.pop();
+        require(arr.length == 2);
+        require(int(arr[0]) == x);
+        require(int(arr[1]) == y);
+    }
+
+    function testDelete(int x, int y, int z) {
+        uint8 a = uint8(x);
+        uint8 b = uint8(y);
+        uint8 c = uint8(z);
+        uint8[] arr = [a, b, c];
+        arr.delete(0);
+        require(arr.length == 2);
+        require(int(arr[0]) == z);
+        require(int(arr[1]) == y);
+    }
+
+    function testInt16Array(int x, int y) {
+        int16 a = int16(x);
+        int16 b = int16(y);
+        int16[] arr = [a, b];
+        arr.push(int16(0));
+        require(arr.length == 3);
+        require(int(arr[0]) == x);
+        require(int(arr[1]) == y);
+        require(int(arr[2]) == 0);
+    }
+
+    function testBoundsCheckInArray(int x, int y) {
+        uint8 a = uint8(x);
+        uint8 b = uint8(y);
+        uint8[] arr = [a, b];
+        uint8 sum = arr[0] + arr[1];
+        require(int(sum) == x + y);
+    }
+}

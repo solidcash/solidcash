@@ -1,0 +1,7 @@
+contract UndefinedFunc() {
+    using {nonExistentFunc} for int;
+
+    function doMath(int a) {
+        require(a > 0);
+    }
+}

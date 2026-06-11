@@ -1,0 +1,8 @@
+contract DynArrayBool() {
+    function test() {
+        bool[] flags = [true, false, true];
+        flags.push(false);
+        bool f = flags[1];
+        require(f == false);
+    }
+}

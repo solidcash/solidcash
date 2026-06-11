@@ -1,0 +1,23 @@
+contract ExponentiationTest(int x) {
+    int constant MAX_UINT = 2 ** 256 - 1;
+    int constant SCALE = 10 ** 18;
+    int constant SMALL = 3 ** 3;
+
+    function testConstant() {
+        require(MAX_UINT > 0);
+        require(SCALE == 1000000000000000000);
+        require(SMALL == 27);
+    }
+
+    function testRuntime(int base, int exp) {
+        int result = base ** exp;
+        require(result > x);
+    }
+
+    function testPrecedence() {
+        // ** has higher precedence than *
+        require(2 + 3 ** 2 == 11);
+        // ** is right-associative
+        require(2 ** 3 ** 2 == 512);
+    }
+}

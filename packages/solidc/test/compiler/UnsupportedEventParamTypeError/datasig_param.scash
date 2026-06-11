@@ -1,0 +1,8 @@
+contract DatasigEvent(pubkey owner) {
+    event BadEvent(datasig dsig);
+
+    function send(datasig ds, sig s) {
+        require(checkSig(s, owner));
+        emit BadEvent(ds);
+    }
+}

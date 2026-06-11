@@ -1,0 +1,1264 @@
+import { Artifact, CompilerOptions } from '@solidcash/utils';
+import fs from 'fs';
+import { URL } from 'url';
+import { version } from '../../src/index.js';
+
+interface Fixture {
+  fn: string,
+  artifact: Artifact,
+  compilerOptions?: CompilerOptions,
+}
+
+export const fixtures: Fixture[] = [
+  {
+    fn: 'p2pkh.scash',
+    artifact: {
+      contractName: 'P2PKH',
+      constructorInputs: [{ name: 'pkh', type: 'bytes20' }],
+      abi: [{ name: 'spend', selector: '9efe324b', inputs: [{ name: 'pk', type: 'pubkey' }, { name: 's', type: 'sig' }] }],
+      bytecode:
+        // require(hash160(pk) == pkh)
+        'OP_OVER OP_HASH160 OP_EQUALVERIFY '
+        // require(checkSig(s, pk))
+        + 'OP_CHECKSIG',
+      debug: {
+        bytecode: '78a988ac',
+        logs: [],
+        requires: [
+          { ip: 3, line: 3 },
+          { ip: 5, line: 4 },
+        ],
+        sourceMap: '3:24:3:26;:16::27:1;:8::36;4::4:33',
+      },
+      source: fs.readFileSync(new URL('../valid-contract-files/p2pkh.scash', import.meta.url), { encoding: 'utf-8' }),
+      compiler: {
+        name: 'solidc',
+        version,
+        options: {
+          commitmentLimit: 128,
+          enforceFunctionParameterTypes: true,
+          enforceLocktimeGuard: true,
+        },
+      },
+      updatedAt: '',
+    },
+  },
+  {
+    fn: 'reassignment.scash',
+    artifact: {
+      contractName: 'Reassignment',
+      constructorInputs: [{ name: 'x', type: 'int' }, { name: 'y', type: 'string' }],
+      abi: [{ name: 'hello', selector: '4a6ec480', inputs: [{ name: 'pk', type: 'pubkey' }, { name: 's', type: 'sig' }] }],
+      bytecode:
+        // int myVariable = 10 - 4
+        'OP_10 OP_4 OP_SUB '
+        // int myOtherVariable = 20 + myVariable % 2
+        + '14 OP_SWAP OP_2 OP_MOD OP_ADD '
+        // require(myOtherVariable > x)
+        + 'OP_LESSTHAN OP_VERIFY '
+        // string hw = "Hello World"
+        + '48656c6c6f20576f726c64 '
+        // hw = hw + y
+        + 'OP_DUP OP_ROT OP_CAT '
+        // require(ripemd160(pk) == ripemd160(hw))
+        + 'OP_2 OP_PICK OP_RIPEMD160 OP_SWAP OP_RIPEMD160 OP_EQUALVERIFY '
+        // require(checkSig(s, pk))
+        + 'OP_ROT OP_ROT OP_CHECKSIG '
+        + 'OP_NIP',
+      debug: {
+        bytecode: '5a549401147c5297939f690b48656c6c6f20576f726c64767b7e5279a67ca6887b7bac77',
+        logs: [],
+        requires: [
+          { ip: 11, line: 5 },
+          { ip: 21, line: 10 },
+          { ip: 25, line: 11 },
+        ],
+        sourceMap: '3:25:3:27;:30::31;:25:::1;4:30:4:32:0;:35::45;:48::49;:35:::1;:30;5:16:5:35;:8::37;7:20:7:33:0;8:13:8:15;:18::19;:13:::1;10:26:10:28:0;;:16::29:1;:43::45:0;:33::46:1;:8::48;11:25:11:26:0;:28::30;:8::33:1;2:4:12:5',
+      },
+      source: fs.readFileSync(new URL('../valid-contract-files/reassignment.scash', import.meta.url), { encoding: 'utf-8' }),
+      compiler: {
+        name: 'solidc',
+        version,
+        options: {
+          commitmentLimit: 128,
+          enforceFunctionParameterTypes: true,
+          enforceLocktimeGuard: true,
+        },
+      },
+      updatedAt: '',
+    },
+  },
+  {
+    fn: 'if_statement.scash',
+    artifact: {
+      contractName: 'IfStatement',
+      constructorInputs: [{ name: 'x', type: 'int' }, { name: 'y', type: 'int' }],
+      abi: [{ name: 'hello', selector: 'f5b89e4e', inputs: [{ name: 'a', type: 'int' }, { name: 'b', type: 'int' }] }],
+      bytecode:
+        // int d = a + b
+        'OP_2OVER OP_ADD '
+        // d = d - a
+        + 'OP_DUP OP_4 OP_PICK OP_SUB '
+        // if (d == x - 2) {
+        + 'OP_DUP OP_3 OP_ROLL OP_2 OP_SUB OP_NUMEQUAL OP_IF '
+        // int c = d + b
+        + 'OP_DUP OP_5 OP_PICK OP_ADD '
+        // d = a + c
+        + 'OP_4 OP_PICK OP_OVER OP_ADD OP_ROT OP_DROP OP_SWAP '
+        // require(c > d)
+        + 'OP_2DUP OP_LESSTHAN OP_VERIFY '
+        // } else {
+        + 'OP_DROP OP_ELSE '
+        // require(d == a) }
+        + 'OP_DUP OP_4 OP_PICK OP_NUMEQUALVERIFY OP_ENDIF '
+        // d = d + a
+        + 'OP_DUP OP_4 OP_ROLL OP_ADD '
+        // require(d == y)
+        + 'OP_3 OP_ROLL OP_NUMEQUAL '
+        + 'OP_NIP OP_NIP OP_NIP',
+      debug: {
+        bytecode: '70937654799476537a52949c6376557993547978937b757c6e9f6975677654799d6876547a93537a9c777777',
+        logs: [],
+        requires: [
+          { ip: 28, line: 8 },
+          { ip: 34, line: 10 },
+          { ip: 43, line: 13 },
+        ],
+        sourceMap: '3:16:3:21;::::1;4:12:4:13:0;:16::17;;:12:::1;5::5:13:0;:17::18;;:21::22;:17:::1;:12;:24:9:9:0;6:20:6:21;:24::25;;:20:::1;7:16:7:17:0;;:20::21;:16:::1;:12::22;;;8:20:8:25:0;::::1;:12::27;5:24:9:9;9:15:11::0;10:20:10:21;:25::26;;:12::28:1;9:15:11:9;12:12:12:13:0;:16::17;;:12:::1;13:21:13:22:0;;:8::24:1;2:4:14:5;;',
+      },
+      source: fs.readFileSync(new URL('../valid-contract-files/if_statement.scash', import.meta.url), { encoding: 'utf-8' }),
+      compiler: {
+        name: 'solidc',
+        version,
+        options: {
+          commitmentLimit: 128,
+          enforceFunctionParameterTypes: true,
+          enforceLocktimeGuard: true,
+        },
+      },
+      updatedAt: '',
+    },
+  },
+  {
+    fn: 'multifunction.scash',
+    artifact: {
+      contractName: 'MultiFunction',
+      constructorInputs: [{ name: 'sender', type: 'pubkey' }, { name: 'recipient', type: 'pubkey' }, { name: 'timeout', type: 'int' }],
+      abi: [
+        { name: 'transfer', selector: '3486e360', inputs: [{ name: 'recipientSig', type: 'sig' }] },
+        { name: 'timeout', selector: '2203057b', inputs: [{ name: 'senderSig', type: 'sig' }] },
+      ],
+      bytecode:
+        // function transfer (OP_DEFINE'd)
+        '537a7bac7777 3486e360 OP_DEFINE '
+        // function timeout (OP_DEFINE'd) + dispatcher
+        + '537a7cad7cb16d51 2203057b OP_DEFINE OP_DEPTH OP_1SUB OP_ROLL OP_INVOKE',
+      debug: {
+        bytecode: '06537a7bac7777043486e3608908537a7cad7cb16d51042203057b89748c7a8a',
+        logs: [],
+        requires: [],
+        sourceMap: '6:4:8:5;;;10::13;;;1:0:14:1;;;',
+        functionDebug: {
+          '3486e360': {
+            requires: [
+              { ip: 4, line: 7 },
+            ],
+            sourceMap: '7:25:7:37;;:39::48;:8::51:1;6:4:8:5;',
+            logs: [],
+          },
+          '2203057b': {
+            requires: [
+              { ip: 3, line: 11 },
+              { ip: 5, line: 12 },
+            ],
+            sourceMap: '11:25:11:34;;:36::42;:8::45:1;12:27:12:34:0;:8::36:1;10:4:13:5;',
+            logs: [],
+          },
+        },
+      },
+      functionBodies: { '3486e360': '537a7bac7777', '2203057b': '537a7cad7cb16d51' },
+      source: fs.readFileSync(new URL('../valid-contract-files/multifunction.scash', import.meta.url), { encoding: 'utf-8' }),
+      compiler: {
+        name: 'solidc',
+        version,
+        options: {
+          commitmentLimit: 128,
+          enforceFunctionParameterTypes: true,
+          enforceLocktimeGuard: true,
+        },
+      },
+      updatedAt: '',
+    },
+  },
+  {
+    fn: 'multifunction_if_statements.scash',
+    artifact: {
+      contractName: 'MultiFunctionIfStatements',
+      constructorInputs: [{ name: 'x', type: 'int' }, { name: 'y', type: 'int' }],
+      abi: [
+        { name: 'transfer', selector: '6bc12074', inputs: [{ name: 'a', type: 'int' }, { name: 'b', type: 'int' }] },
+        { name: 'timeout', selector: '7654e917', inputs: [{ name: 'b', type: 'int' }] },
+      ],
+      bytecode:
+        // function transfer (OP_DEFINE'd)
+        '7093765479947653799c537a929a6376557993547978937b757c6e9f6975675379776876547a93537a9c777777 6bc12074 OP_DEFINE '
+        // function timeout (OP_DEFINE'd) + dispatcher
+        + '527976529376537a9c63765479936e937b757c6e9f697568729c7777 7654e917 OP_DEFINE OP_DEPTH OP_1SUB OP_ROLL OP_INVOKE',
+      debug: {
+        bytecode: '2d7093765479947653799c537a929a6376557993547978937b757c6e9f6975675379776876547a93537a9c777777046bc12074891c527976529376537a9c63765479936e937b757c6e9f697568729c7777047654e91789748c7a8a',
+        logs: [],
+        requires: [],
+        sourceMap: '2:4:14:5;;;16::26;;;1:0:27:1;;;',
+        functionDebug: {
+          '6bc12074': {
+            requires: [
+              { ip: 28, line: 8 },
+              { ip: 42, line: 13 },
+            ],
+            sourceMap: '3:16:3:21;::::1;4:12:4:13:0;:16::17;;:12:::1;5::5:13:0;:17::18;;:12:::1;:27::28:0;;:22::29:1;:12;:31:9:9:0;6:20:6:21;:24::25;;:20:::1;7:16:7:17:0;;:20::21;:16:::1;:12::22;;;8:20:8:25:0;::::1;:12::27;5:31:9:9;9:15:11::0;10:16:10:17;;:12::18:1;9:15:11:9;12:12:12:13:0;:16::17;;:12:::1;13:21:13:22:0;;:8::24:1;2:4:14:5;;',
+            logs: [],
+          },
+          '7654e917': {
+            requires: [
+              { ip: 21, line: 22 },
+              { ip: 26, line: 25 },
+            ],
+            sourceMap: '17:16:17:17;;18:12:18:13;:16::17;:12:::1;19::19:13:0;:17::18;;:12:::1;:20:23:9:0;20::20:21;:24::25;;:20:::1;21:16:21:21:0;::::1;:12::22;;;22:20:22:25:0;::::1;:12::27;19:20:23:9;;24:12:25:22:0;25:8::24:1;16:4:26:5;',
+            logs: [],
+          },
+        },
+      },
+      functionBodies: { '6bc12074': '7093765479947653799c537a929a6376557993547978937b757c6e9f6975675379776876547a93537a9c777777', '7654e917': '527976529376537a9c63765479936e937b757c6e9f697568729c7777' },
+      source: fs.readFileSync(new URL('../valid-contract-files/multifunction_if_statements.scash', import.meta.url), { encoding: 'utf-8' }),
+      compiler: {
+        name: 'solidc',
+        version,
+        options: {
+          commitmentLimit: 128,
+          enforceFunctionParameterTypes: true,
+          enforceLocktimeGuard: true,
+        },
+      },
+      updatedAt: '',
+    },
+  },
+  {
+    fn: '2_of_3_multisig.scash',
+    artifact: {
+      contractName: 'MultiSig',
+      constructorInputs: [{ name: 'pk1', type: 'pubkey' }, { name: 'pk2', type: 'pubkey' }, { name: 'pk3', type: 'pubkey' }],
+      abi: [{ name: 'spend', selector: 'ee615eaf', inputs: [{ name: 's1', type: 'sig' }, { name: 's2', type: 'sig' }] }],
+      bytecode:
+        // require(checkMultiSig([s1, s2], [pk1, pk2, pk3]))
+        'OP_0 OP_2ROT OP_SWAP OP_2 OP_2ROT OP_SWAP OP_6 OP_ROLL OP_3 OP_CHECKMULTISIG',
+      debug: {
+        bytecode: '00717c52717c567a53ae',
+        logs: [],
+        requires: [{ ip: 13, line: 3 }],
+        sourceMap: '3:12:3:52;:27::33;;:26::34:1;:37::45:0;;:47::50;;:36::51:1;:4::54',
+      },
+      source: fs.readFileSync(new URL('../valid-contract-files/2_of_3_multisig.scash', import.meta.url), { encoding: 'utf-8' }),
+      compiler: {
+        name: 'solidc',
+        version,
+        options: {
+          commitmentLimit: 128,
+          enforceFunctionParameterTypes: true,
+          enforceLocktimeGuard: true,
+        },
+      },
+      updatedAt: '',
+    },
+  },
+  {
+    fn: 'split_size.scash',
+    artifact: {
+      contractName: 'SplitSize',
+      constructorInputs: [{ name: 'b', type: 'bytes' }],
+      abi: [{ name: 'spend', selector: 'f598582f', inputs: [] }],
+      bytecode:
+        // bytes x = b.split(b.length / 2)[1]
+        'OP_DUP OP_DUP OP_SIZE OP_NIP OP_2 OP_DIV OP_SPLIT OP_NIP '
+        // require(x != b)
+        + 'OP_2DUP OP_EQUAL OP_NOT OP_VERIFY '
+        // bytes x = b.split(b.length / 2)[1]
+        + 'OP_SWAP OP_4 OP_SPLIT OP_DROP OP_EQUAL OP_NOT',
+      debug: {
+        bytecode: '7676827752967f776e8791697c547f758791',
+        logs: [],
+        requires: [
+          { ip: 12, line: 4 },
+          { ip: 19, line: 5 },
+        ],
+        sourceMap: '3:18:3:27;;:26::34:1;;:37::38:0;:26:::1;:18::39;:::42;4:16:4:22:0;::::1;;:8::24;5:16:5:17:0;:24::25;:16::26:1;:::29;:::34;:8::36',
+      },
+      source: fs.readFileSync(new URL('../valid-contract-files/split_size.scash', import.meta.url), { encoding: 'utf-8' }),
+      compiler: {
+        name: 'solidc',
+        version,
+        options: {
+          commitmentLimit: 128,
+          enforceFunctionParameterTypes: true,
+          enforceLocktimeGuard: true,
+        },
+      },
+      updatedAt: '',
+    },
+  },
+  {
+    fn: 'cast_hash_checksig.scash',
+    artifact: {
+      contractName: 'CastHashChecksig',
+      constructorInputs: [],
+      abi: [{ name: 'hello', selector: '4a6ec480', inputs: [{ name: 'pk', type: 'pubkey' }, { name: 's', type: 'sig' }] }],
+      bytecode:
+        // require((ripemd160(bytes(pk)) == hash160(0x0) == !true));
+        'OP_DUP OP_RIPEMD160 OP_0 OP_HASH160 OP_EQUAL OP_1 OP_NOT OP_NUMEQUALVERIFY '
+        // require(checkSig(s, pk));
+        + 'OP_CHECKSIG',
+      debug: {
+        bytecode: '76a600a98751919dac',
+        logs: [],
+        requires: [
+          { ip: 7, line: 3 },
+          { ip: 9, line: 4 },
+        ],
+        sourceMap: '3:33:3:35;:17::37:1;:49::51:0;:41::52:1;:17;:57::61:0;:56:::1;:8::64;4::4:33',
+      },
+      source: fs.readFileSync(new URL('../valid-contract-files/cast_hash_checksig.scash', import.meta.url), { encoding: 'utf-8' }),
+      compiler: {
+        name: 'solidc',
+        version,
+        options: {
+          commitmentLimit: 128,
+          enforceFunctionParameterTypes: true,
+          enforceLocktimeGuard: true,
+        },
+      },
+      updatedAt: '',
+    },
+  },
+  {
+    fn: 'hodl_vault.scash',
+    artifact: {
+      contractName: 'HodlVault',
+      constructorInputs: [
+        { name: 'ownerPk', type: 'pubkey' },
+        { name: 'oraclePk', type: 'pubkey' },
+        { name: 'minBlock', type: 'int' },
+        { name: 'priceTarget', type: 'int' },
+      ],
+      abi: [
+        {
+          name: 'spend',
+          selector: '5872af0e',
+          inputs: [
+            { name: 'ownerSig', type: 'sig' },
+            { name: 'oracleSig', type: 'datasig' },
+            { name: 'oracleMessage', type: 'bytes8' },
+          ],
+        },
+      ],
+      bytecode:
+        // Implicit type enforcement for oracleMessage: require(oracleMessage.length == 8)
+        'OP_6 OP_PICK OP_SIZE OP_8 OP_EQUALVERIFY OP_DROP '
+        // bytes4 blockHeightBin, bytes4 priceBin = oracleMessage.split(4);
+        + 'OP_6 OP_PICK OP_4 OP_SPLIT '
+        // int blockHeight = int(blockHeightBin);
+        + 'OP_SWAP OP_BIN2NUM '
+        // int price = int(priceBin);
+        + 'OP_SWAP OP_BIN2NUM '
+        // require(blockHeight >= minBlock);
+        + 'OP_OVER OP_5 OP_ROLL OP_GREATERTHANOREQUAL OP_VERIFY '
+        // require(tx.time >= blockHeight);
+        + 'OP_SWAP OP_CHECKLOCKTIMEVERIFY OP_DROP '
+        // require(price >= priceTarget);
+        + 'OP_3 OP_ROLL OP_GREATERTHANOREQUAL OP_VERIFY '
+        // require(checkDataSig(oracleSig, oracleMessage, oraclePk));
+        + 'OP_3 OP_ROLL OP_4 OP_ROLL OP_3 OP_ROLL OP_CHECKDATASIGVERIFY '
+        // require(checkSig(ownerSig, ownerPk));
+        + 'OP_CHECKSIG',
+      debug: {
+        bytecode: '5679825888755679547f7c817c8178557aa2697cb175537aa269537a547a537abbac',
+        logs: [],
+        requires: [
+          { ip: 22, line: 23 },
+          { ip: 24, line: 24 },
+          { ip: 29, line: 27 },
+          { ip: 36, line: 30 },
+          { ip: 38, line: 35 },
+        ],
+        sourceMap: '15:8:15:28;;;;;;18:49:18:62;;:69::70;:49::71:1;19:30:19:44:0;:26::45:1;20:24:20:32:0;:20::33:1;23:16:23:27:0;:31::39;;:16:::1;:8::41;24:27:24:38:0;:8::40:1;;27:25:27:36:0;;:16:::1;:8::38;31:12:31:21:0;;32::32:25;;33::33:20;;30:8:34:11:1;35::35:45',
+      },
+      source: fs.readFileSync(new URL('../valid-contract-files/hodl_vault.scash', import.meta.url), { encoding: 'utf-8' }),
+      compiler: {
+        name: 'solidc',
+        version,
+        options: {
+          commitmentLimit: 128,
+          enforceFunctionParameterTypes: true,
+          enforceLocktimeGuard: true,
+        },
+      },
+      updatedAt: '',
+    },
+  },
+  {
+    fn: 'deep_replace.scash',
+    artifact: {
+      contractName: 'DeepReplace',
+      constructorInputs: [],
+      abi: [{ name: 'hello', selector: '993cadad', inputs: [] }],
+      bytecode:
+        // int a = 1; int b = 2; int c = 3; int d = 4; int e = 5; int f = 6;
+        'OP_1 OP_2 OP_3 OP_4 OP_5 OP_6 '
+        // if (a < 3) {
+        + 'OP_5 OP_PICK OP_3 OP_LESSTHAN OP_IF '
+        // a = 3 }
+        + 'OP_3 OP_6 OP_ROLL OP_DROP OP_SWAP OP_TOALTSTACK OP_SWAP OP_TOALTSTACK OP_SWAP '
+        + 'OP_TOALTSTACK OP_SWAP OP_TOALTSTACK OP_SWAP OP_FROMALTSTACK OP_FROMALTSTACK '
+        + 'OP_FROMALTSTACK OP_FROMALTSTACK OP_ENDIF '
+        // require(a > b + c + d + e + f);
+        + 'OP_2ROT OP_5 OP_ROLL OP_ADD OP_4 OP_ROLL OP_ADD '
+        + 'OP_3 OP_ROLL OP_ADD OP_ROT OP_ADD OP_GREATERTHAN',
+      debug: {
+        bytecode: '5152535455565579539f6353567a757c6b7c6b7c6b7c6b7c6c6c6c6c6871557a93547a93537a937b93a0',
+        logs: [],
+        requires: [{ ip: 42, line: 14 }],
+        sourceMap: '3:16:3:17;4::4;5::5;6::6;7::7;8::8;10:12:10:13;;:16::17;:12:::1;:19:12:9:0;11:16:11:17;:12::18:1;;;;;;;;;;;;;;;;10:19:12:9;14:16:14:21:0;:24::25;;:20:::1;:28::29:0;;:20:::1;:32::33:0;;:20:::1;:36::37:0;:20:::1;:8::39',
+      },
+      source: fs.readFileSync(new URL('../valid-contract-files/deep_replace.scash', import.meta.url), { encoding: 'utf-8' }),
+      compiler: {
+        name: 'solidc',
+        version,
+        options: {
+          commitmentLimit: 128,
+          enforceFunctionParameterTypes: true,
+          enforceLocktimeGuard: true,
+        },
+      },
+      updatedAt: '',
+    },
+  },
+  {
+    fn: 'bounded_bytes.scash',
+    artifact: {
+      contractName: 'BoundedBytes',
+      constructorInputs: [],
+      abi: [{ name: 'spend', selector: '651c154f', inputs: [{ name: 'b', type: 'bytes4' }, { name: 'i', type: 'int' }] }],
+      bytecode:
+        // Implicit type enforcement for b: require(b.length == 4)
+        'OP_DUP OP_SIZE OP_4 OP_EQUALVERIFY OP_DROP '
+        // require(b == toPaddedBytes(i, 4))
+        + 'OP_SWAP OP_4 OP_NUM2BIN OP_EQUAL',
+      debug: {
+        bytecode: '76825488757c548087',
+        logs: [],
+        requires: [{ ip: 9, line: 3 }],
+        sourceMap: '2:19:2:27;;;;;3:35:3:36;:38::39;:21::40:1;:8::42',
+      },
+      source: fs.readFileSync(new URL('../valid-contract-files/bounded_bytes.scash', import.meta.url), { encoding: 'utf-8' }),
+      compiler: {
+        name: 'solidc',
+        version,
+        options: {
+          commitmentLimit: 128,
+          enforceFunctionParameterTypes: true,
+          enforceLocktimeGuard: true,
+        },
+      },
+      updatedAt: '',
+    },
+  },
+  {
+    fn: 'covenant.scash',
+    artifact: {
+      contractName: 'Covenant',
+      constructorInputs: [
+        {
+          name: 'requiredVersion',
+          type: 'int',
+        },
+      ],
+      abi: [{ name: 'spend', selector: 'f598582f', inputs: [] }],
+      bytecode:
+        // require(tx.version == requiredVersion)
+        'OP_TXVERSION OP_NUMEQUALVERIFY '
+        // require(tx.bytecode == 0x00)
+        + 'OP_ACTIVEBYTECODE 00 OP_EQUAL',
+      debug: {
+        bytecode: 'c29dc1010087',
+        logs: [],
+        requires: [
+          { ip: 2, line: 3 },
+          { ip: 6, line: 4 },
+        ],
+        sourceMap: '3:16:3:26;:8::47:1;4:16:4:35:0;:39::43;:8::45:1',
+      },
+      source: fs.readFileSync(new URL('../valid-contract-files/covenant.scash', import.meta.url), { encoding: 'utf-8' }),
+      compiler: {
+        name: 'solidc',
+        version,
+        options: {
+          commitmentLimit: 128,
+          enforceFunctionParameterTypes: true,
+          enforceLocktimeGuard: true,
+        },
+      },
+      updatedAt: '',
+    },
+  },
+  {
+    fn: 'covenant_all_fields.scash',
+    artifact: {
+      contractName: 'Covenant',
+      constructorInputs: [],
+      abi: [{ name: 'spend', selector: 'f598582f', inputs: [] }],
+      bytecode:
+        // injected tx.locktime guard (tx.locktime used without a protocol-enforcing time check)
+        'OP_TXLOCKTIME OP_CHECKLOCKTIMEVERIFY OP_DROP '
+        // require(tx.version == 2)
+        + 'OP_TXVERSION OP_2 OP_NUMEQUALVERIFY '
+        // require(tx.locktime == 0)
+        + 'OP_TXLOCKTIME OP_0 OP_NUMEQUALVERIFY '
+        // require(tx.inputs.length == 1)
+        + 'OP_TXINPUTCOUNT OP_1 OP_NUMEQUALVERIFY '
+        // require(tx.outputs.length == 1)
+        + 'OP_TXOUTPUTCOUNT OP_1 OP_NUMEQUALVERIFY '
+        // require(this.activeInputIndex == 0)
+        + 'OP_INPUTINDEX OP_0 OP_NUMEQUALVERIFY '
+        // require(this.activeBytecode.length == 300)
+        + 'OP_ACTIVEBYTECODE OP_SIZE OP_NIP 2c01 OP_NUMEQUALVERIFY '
+        // require(tx.inputs[0].value == 10000)
+        + 'OP_0 OP_UTXOVALUE 1027 OP_NUMEQUALVERIFY '
+        // require(tx.inputs[0].lockingBytecode.length == 10000)
+        + 'OP_0 OP_UTXOBYTECODE OP_SIZE OP_NIP 1027 OP_NUMEQUALVERIFY '
+        // require(tx.inputs[0].outpointTransactionHash == 0x00...00)
+        + 'OP_0 OP_OUTPOINTTXHASH 0000000000000000000000000000000000000000000000000000000000000000 OP_EQUALVERIFY '
+        // require(tx.inputs[0].outpointIndex == 0)
+        + 'OP_0 OP_OUTPOINTINDEX OP_0 OP_NUMEQUALVERIFY '
+        // require(tx.inputs[0].unlockingBytecode.length == 100)
+        + 'OP_0 OP_INPUTBYTECODE OP_SIZE OP_NIP 64 OP_NUMEQUALVERIFY '
+        // require(tx.inputs[0].sequenceNumber == 0)
+        + 'OP_0 OP_INPUTSEQUENCENUMBER OP_0 OP_NUMEQUALVERIFY '
+        // require(tx.outputs[0].value == 10000)
+        + 'OP_0 OP_OUTPUTVALUE 1027 OP_NUMEQUALVERIFY '
+        // require(tx.outputs[0].lockingBytecode.length == 100)
+        + 'OP_0 OP_OUTPUTBYTECODE OP_SIZE OP_NIP 64 OP_NUMEQUALVERIFY '
+        // require(tx.inputs[0].tokenCategory == 0x000000000000000000000000000000000000000000000000000000000000000)
+        + 'OP_0 OP_UTXOTOKENCATEGORY 0000000000000000000000000000000000000000000000000000000000000000 OP_EQUALVERIFY '
+        // require(tx.inputs[0].nftCommitment == 0x00);
+        + 'OP_0 OP_UTXOTOKENCOMMITMENT 00 OP_EQUALVERIFY '
+        // require(tx.inputs[0].tokenAmount == 100);
+        + 'OP_0 OP_UTXOTOKENAMOUNT 64 OP_NUMEQUALVERIFY '
+        // require(tx.outputs[0].tokenCategory == 0x000000000000000000000000000000000000000000000000000000000000000)
+        + 'OP_0 OP_OUTPUTTOKENCATEGORY 0000000000000000000000000000000000000000000000000000000000000000 OP_EQUALVERIFY '
+        // require(tx.outputs[0].nftCommitment == 0x00);
+        + 'OP_0 OP_OUTPUTTOKENCOMMITMENT 00 OP_EQUALVERIFY '
+        // require(tx.outputs[0].tokenAmount == 100);
+        + 'OP_0 OP_OUTPUTTOKENAMOUNT 64 OP_NUMEQUAL',
+      debug: {
+        bytecode: 'c5b175c2529dc5009dc3519dc4519dc0009dc18277022c019d00c60210279d00c782770210279d00c82000000000000000000000000000000000000000000000000000000000000000008800c9009d00ca827701649d00cb009d00cc0210279d00cd827701649d00ce2000000000000000000000000000000000000000000000000000000000000000008800cf01008800d001649d00d12000000000000000000000000000000000000000000000000000000000000000008800d201008800d301649c',
+        logs: [],
+        requires: [
+          { ip: 1, line: 2, message: 'Using tx.locktime requires a non-final sequence number on the spending input' },
+          { ip: 5, line: 3 },
+          { ip: 8, line: 4 },
+          { ip: 11, line: 5 },
+          { ip: 14, line: 6 },
+          { ip: 17, line: 7 },
+          { ip: 22, line: 8 },
+          { ip: 26, line: 9 },
+          { ip: 32, line: 10 },
+          { ip: 36, line: 11 },
+          { ip: 40, line: 12 },
+          { ip: 46, line: 13 },
+          { ip: 50, line: 14 },
+          { ip: 54, line: 15 },
+          { ip: 60, line: 16 },
+          { ip: 64, line: 17 },
+          { ip: 68, line: 18 },
+          { ip: 72, line: 19 },
+          { ip: 76, line: 20 },
+          { ip: 80, line: 21 },
+          { ip: 85, line: 22 },
+        ],
+        sourceMap: '2:4:2:4;::::1;;3:16:3:26:0;:30::31;:8::33:1;4:16:4:27:0;:31::32;:8::34:1;5:16:5:32:0;:36::37;:8::39:1;6:16:6:33:0;:37::38;:8::40:1;7:16:7:37:0;:41::42;:8::44:1;8:16:8:35:0;:::42:1;;:46::49:0;:8::51:1;9:26:9:27:0;:16::34:1;:38::43:0;:8::45:1;10:26:10:27:0;:16::44:1;:::51;;:55::60:0;:8::62:1;11:26:11:27:0;:16::52:1;:56::121:0;:8::123:1;12:26:12:27:0;:16::42:1;:46::47:0;:8::49:1;13:26:13:27:0;:16::46:1;:::53;;:57::60:0;:8::62:1;14:26:14:27:0;:16::43:1;:47::48:0;:8::50:1;15:27:15:28:0;:16::35:1;:39::44:0;:8::46:1;16:27:16:28:0;:16::45:1;:::52;;:56::59:0;:8::61:1;17:26:17:27:0;:16::42:1;:46::111:0;:8::113:1;18:26:18:27:0;:16::42:1;:46::50:0;:8::52:1;19:26:19:27:0;:16::40:1;:44::47:0;:8::49:1;20:27:20:28:0;:16::43:1;:47::112:0;:8::114:1;21:27:21:28:0;:16::43:1;:47::51:0;:8::53:1;22:27:22:28:0;:16::41:1;:45::48:0;:8::50:1',
+      },
+      source: fs.readFileSync(new URL('../valid-contract-files/covenant_all_fields.scash', import.meta.url), { encoding: 'utf-8' }),
+      compiler: {
+        name: 'solidc',
+        version,
+        options: {
+          commitmentLimit: 128,
+          enforceFunctionParameterTypes: true,
+          enforceLocktimeGuard: true,
+        },
+      },
+      updatedAt: '',
+    },
+  },
+  {
+    fn: 'mecenas.scash',
+    artifact: {
+      contractName: 'Mecenas',
+      constructorInputs: [
+        { name: 'recipient', type: 'bytes20' },
+        { name: 'funder', type: 'bytes20' },
+        { name: 'pledge', type: 'int' },
+        { name: 'period', type: 'int' },
+      ],
+      abi: [
+        { name: 'recvFunds', selector: 'e8e62fca', inputs: [] },
+        { name: 'reclaim', selector: '2f7ef34c', inputs: [{ name: 'pk', type: 'pubkey' }, { name: 's', type: 'sig' }] },
+      ],
+      bytecode:
+        // function recvFunds (OP_DEFINE'd)
+        '537ab27500cd0376a9147b7e0288ac7e8802e803c0c676547994527994765579547993a16300cc707c949d6700cc55799d51cdc0c78851cc789d686d6d7551 e8e62fca OP_DEFINE '
+        // function reclaim (OP_DEFINE'd) + dispatcher
+        + '5479a97b88547a547aac777777 2f7ef34c OP_DEFINE OP_DEPTH OP_1SUB OP_ROLL OP_INVOKE',
+      debug: {
+        bytecode: '3f537ab27500cd0376a9147b7e0288ac7e8802e803c0c676547994527994765579547993a16300cc707c949d6700cc55799d51cdc0c78851cc789d686d6d755104e8e62fca890d5479a97b88547a547aac777777042f7ef34c89748c7a8a',
+        logs: [],
+        requires: [],
+        sourceMap: '2:4:21:5;;;23::26;;;1:0:27:1;;;',
+        functionDebug: {
+          'e8e62fca': {
+            requires: [
+              { ip: 2, line: 3 },
+              { ip: 11, line: 6 },
+              { ip: 35, line: 15 },
+              { ip: 41, line: 17 },
+              { ip: 46, line: 18 },
+              { ip: 50, line: 19 },
+            ],
+            sourceMap: '3:28:3:34;;:8::36:1;;6:27:6:28:0;:16::45:1;:49::84:0;:74::83;:49::84:1;;;:8::86;8:23:8:27:0;9:37:9:58;:27::65:1;10:26:10:38:0;:41::47;;:26:::1;:50::58:0;;:26:::1;14:12:14:23:0;:27::33;;:36::44;;:27:::1;:12;:46:16:9:0;15:31:15:32;:20::39:1;:43::66:0;;::::1;:12::68;16:15:20:9:0;17:31:17:32;:20::39:1;:43::49:0;;:12::51:1;18:31:18:32:0;:20::49:1;:63::84:0;:53::101:1;:12::103;19:31:19:32:0;:20::39:1;:43::54:0;:12::56:1;16:15:20:9;2:4:21:5;;;',
+            logs: [],
+          },
+          '2f7ef34c': {
+            requires: [
+              { ip: 4, line: 24 },
+              { ip: 10, line: 25 },
+            ],
+            sourceMap: '24:24:24:26;;:16::27:1;:31::37:0;:8::39:1;25:25:25:26:0;;:28::30;;:8::33:1;23:4:26:5;;',
+            logs: [],
+          },
+        },
+      },
+      functionBodies: { 'e8e62fca': '537ab27500cd0376a9147b7e0288ac7e8802e803c0c676547994527994765579547993a16300cc707c949d6700cc55799d51cdc0c78851cc789d686d6d7551', '2f7ef34c': '5479a97b88547a547aac777777' },
+      source: fs.readFileSync(new URL('../valid-contract-files/mecenas.scash', import.meta.url), { encoding: 'utf-8' }),
+      compiler: {
+        name: 'solidc',
+        version,
+        options: {
+          commitmentLimit: 128,
+          enforceFunctionParameterTypes: true,
+          enforceLocktimeGuard: true,
+        },
+      },
+      updatedAt: '',
+    },
+  },
+  {
+    fn: 'announcement.scash',
+    artifact: {
+      contractName: 'Announcement',
+      constructorInputs: [],
+      abi: [{ name: 'announce', selector: '327ae4c2', inputs: [] }],
+      bytecode:
+        // bytes announcement = new LockingBytecodeNullData(...)
+        '6a 6d02 OP_SIZE OP_SWAP OP_CAT OP_CAT '
+        + '4120636f6e7472616374206d6179206e6f7420696e6a75726520612068756d616e20626'
+        + '5696e67206f722c207468726f75676820696e616374696f6e2c20616c6c6f77206120687'
+        + '56d616e206265696e6720746f20636f6d6520746f206861726d2e '
+        + 'OP_SIZE OP_DUP 4b OP_GREATERTHAN OP_IF 4c OP_SWAP OP_CAT OP_ENDIF OP_SWAP OP_CAT OP_CAT '
+        // require(tx.outputs[0].value == 0)
+        + 'OP_0 OP_OUTPUTVALUE OP_0 OP_NUMEQUALVERIFY '
+        // require(tx.outputs[0].lockingBytecode == announcement)
+        + 'OP_0 OP_OUTPUTBYTECODE OP_EQUALVERIFY '
+        // int minerFee = 1000
+        + 'e803 '
+        // int changeAmount = tx.inputs[this.activeInputIndex].value - minerFee
+        + 'OP_INPUTINDEX OP_UTXOVALUE OP_OVER OP_SUB '
+        // if (changeAmount >= minerFee)
+        + 'OP_DUP OP_ROT OP_GREATERTHANOREQUAL OP_IF '
+        // require(
+        //  tx.outputs[1].lockingBytecode == tx.inputs[this.activeInputIndex].lockingBytecode
+        // )
+        + 'OP_1 OP_OUTPUTBYTECODE OP_INPUTINDEX OP_UTXOBYTECODE OP_EQUALVERIFY '
+        // require(tx.outputs[1].value == changeAmount) }
+        + 'OP_1 OP_OUTPUTVALUE OP_OVER OP_NUMEQUALVERIFY OP_ENDIF '
+        // Stack clean-up
+        + 'OP_DROP OP_1',
+      debug: {
+        bytecode: '016a026d02827c7e7e4c624120636f6e7472616374206d6179206e6f7420696e6a75726520612068756d616e206265696e67206f722c207468726f75676820696e616374696f6e2c20616c6c6f7720612068756d616e206265696e6720746f20636f6d6520746f206861726d2e8276014ba063014c7c7e687c7e7e00cc009d00cd8802e803c0c67894767ba26351cdc0c78851cc789d687551',
+        logs: [],
+        requires: [
+          { ip: 22, line: 16 },
+          { ip: 25, line: 17 },
+          { ip: 39, line: 24 },
+          { ip: 43, line: 25 },
+        ],
+        sourceMap: '10:29:13:10;11:12:11:18;::::1;;;;12:18:12:118:0;:12::119:1;;;;;;;;;;;;16:27:16:28:0;:16::35:1;:39::40:0;:8::42:1;17:27:17:28:0;:16::45:1;:8::63;21:23:21:27:0;22:37:22:58;:27::65:1;:68::76:0;:27:::1;23:12:23:24:0;:28::36;:12:::1;:38:26:9:0;24:31:24:32;:20::49:1;:63::84:0;:53::101:1;:12::103;25:31:25:32:0;:20::39:1;:43::55:0;:12::57:1;23:38:26:9;8:4:27:5;',
+      },
+      source: fs.readFileSync(new URL('../valid-contract-files/announcement.scash', import.meta.url), { encoding: 'utf-8' }),
+      compiler: {
+        name: 'solidc',
+        version,
+        options: {
+          commitmentLimit: 128,
+          enforceFunctionParameterTypes: true,
+          enforceLocktimeGuard: true,
+        },
+      },
+      updatedAt: '',
+    },
+  },
+  {
+    fn: 'p2palindrome.scash',
+    artifact: {
+      contractName: 'P2Palindrome',
+      constructorInputs: [],
+      abi: [
+        { name: 'spend', selector: 'a22501e8', inputs: [{ name: 'palindrome', type: 'string' }] },
+      ],
+      bytecode: 'OP_DUP OP_REVERSEBYTES OP_EQUAL',
+      debug: {
+        bytecode: '76bc87',
+        logs: [],
+        requires: [{ ip: 3, line: 3 }],
+        sourceMap: '3:16:3:26;:::36:1;:8::52',
+      },
+      source: fs.readFileSync(new URL('../valid-contract-files/p2palindrome.scash', import.meta.url), { encoding: 'utf-8' }),
+      compiler: {
+        name: 'solidc',
+        version,
+        options: {
+          commitmentLimit: 128,
+          enforceFunctionParameterTypes: true,
+          enforceLocktimeGuard: true,
+        },
+      },
+      updatedAt: '',
+    },
+  },
+  {
+    fn: 'num2bin_variable.scash',
+    artifact: {
+      contractName: 'Num2Bin',
+      constructorInputs: [],
+      abi: [
+        { name: 'spend', selector: '51513bdc', inputs: [{ name: 'size', type: 'int' }] },
+      ],
+      bytecode: 'OP_10 OP_SWAP OP_NUM2BIN OP_BIN2NUM OP_10 OP_NUMEQUAL',
+      debug: {
+        bytecode: '5a7c80815a9c',
+        logs: [],
+        requires: [{ ip: 6, line: 4 }],
+        sourceMap: '3:36:3:38;:40::44;:22::45:1;4:16:4:26;:30::32:0;:8::34:1',
+      },
+      source: fs.readFileSync(new URL('../valid-contract-files/num2bin_variable.scash', import.meta.url), { encoding: 'utf-8' }),
+      compiler: {
+        name: 'solidc',
+        version,
+        options: {
+          commitmentLimit: 128,
+          enforceFunctionParameterTypes: true,
+          enforceLocktimeGuard: true,
+        },
+      },
+      updatedAt: '',
+    },
+  },
+  {
+    fn: 'debug_messages.scash',
+    artifact: {
+      contractName: 'DebugMessages',
+      constructorInputs: [],
+      abi: [
+        { name: 'spend', selector: '51513bdc', inputs: [{ name: 'value', type: 'int' }] },
+      ],
+      bytecode: 'OP_DUP OP_1 OP_NUMEQUALVERIFY OP_1ADD OP_2 OP_NUMEQUAL',
+      debug: {
+        bytecode: '76519d8b529c',
+        logs: [
+          { data: [{ stackIndex: 0, type: 'int', ip: 3 }, 'test'], ip: 3, line: 4 },
+          { data: [{ stackIndex: 0, type: 'int', ip: 3 }, 'test2'], ip: 3, line: 5 },
+        ],
+        requires: [{ ip: 2, line: 3, message: 'Wrong value passed' }, { ip: 6, line: 6, message: 'Sum doesn\'t work' }],
+        sourceMap: '3:12:3:17;:21::22;:4::46:1;6:12:6:21;:25::26:0;:4::48:1',
+      },
+      source: fs.readFileSync(new URL('../valid-contract-files/debug_messages.scash', import.meta.url), { encoding: 'utf-8' }),
+      compiler: {
+        name: 'solidc',
+        version,
+        options: {
+          commitmentLimit: 128,
+          enforceFunctionParameterTypes: true,
+          enforceLocktimeGuard: true,
+        },
+      },
+      updatedAt: '',
+    },
+  },
+  {
+    fn: 'integer_formatting.scash',
+    artifact: {
+      contractName: 'IntegerFormatting',
+      constructorInputs: [],
+      abi: [
+        { name: 'test', selector: '58d7eb51', inputs: [] },
+      ],
+      bytecode: '0010a5d4e800 0010a5d4e800 0010a5d4e800 0010a5d4e800 0010a5d4e800 OP_4 OP_ROLL OP_OVER OP_NUMEQUALVERIFY OP_3 OP_ROLL OP_OVER OP_NUMEQUALVERIFY OP_ROT OP_OVER OP_NUMEQUALVERIFY OP_NUMEQUAL',
+      debug: {
+        bytecode: '060010a5d4e800060010a5d4e800060010a5d4e800060010a5d4e800060010a5d4e800547a789d537a789d7b789d9c',
+        logs: [],
+        requires: [{ ip: 8, line: 10 }, { ip: 12, line: 11 }, { ip: 15, line: 12 }, { ip: 17, line: 13 }],
+        sourceMap: '3:26:3:30;4::4;5::5:43;6:23:6:30;8:22:8:35;10:16:10:27;;:31::38;:8::40:1;11:16:11:27:0;;:31::38;:8::40:1;12:16:12:27:0;:31::38;:8::40:1;13::13:37',
+      },
+      source: fs.readFileSync(new URL('../valid-contract-files/integer_formatting.scash', import.meta.url), { encoding: 'utf-8' }),
+      compiler: {
+        name: 'solidc',
+        version,
+        options: {
+          commitmentLimit: 128,
+          enforceFunctionParameterTypes: true,
+          enforceLocktimeGuard: true,
+        },
+      },
+      updatedAt: '',
+    },
+  },
+  {
+    fn: 'multiline_statements.scash',
+    artifact: {
+      contractName: 'MultilineStatements',
+      constructorInputs: [{ name: 'x', type: 'int' }, { name: 'y', type: 'string' }],
+      abi: [{ name: 'spend', selector: 'fecf12ee', inputs: [{ name: 'a', type: 'int' }, { name: 'b', type: 'string' }] }],
+      bytecode: 'OP_ROT OP_SWAP OP_2 OP_SUB OP_NUMEQUAL OP_2 OP_PICK OP_2 OP_PICK OP_EQUAL OP_BOOLAND OP_IF OP_0 OP_VERIFY OP_ELSE OP_OVER 48656c6c6f20 OP_2 OP_PICK OP_CAT OP_EQUAL OP_IF OP_DUP 576f726c64 OP_EQUALVERIFY OP_ELSE OP_1 OP_0 OP_NOT OP_NOT OP_NOT OP_NUMEQUALVERIFY OP_ENDIF OP_ENDIF OP_2DROP OP_1',
+      debug: {
+        bytecode: '7b7c52949c52795279879a63006967780648656c6c6f2052797e87637605576f726c64886751009191919d68686d51',
+        logs: [],
+        requires: [
+          { ip: 15, line: 11 },
+          { ip: 26, line: 14 },
+          { ip: 33, line: 18 },
+        ],
+        sourceMap: '9:12:9:13;:17::18;:21::22;:17:::1;:12;10::10:13:0;;:17::18;;:12:::1;9;10:20:12:9:0;11::11:25;:12::27:1;12:15:19:9:0;:19:12:20;:24::32;13:10:13:11;;12:24:::1;:19;13:13:17:9:0;15:16:15:17;:21::28;14:12:16:14:1;17:15:19:9:0;18:20:18:24;:31::36;:30:::1;:29;:28;:12::38;17:15:19:9;12;5:4:20:5;',
+      },
+      source: fs.readFileSync(new URL('../valid-contract-files/multiline_statements.scash', import.meta.url), { encoding: 'utf-8' }),
+      compiler: {
+        name: 'solidc',
+        version,
+        options: {
+          commitmentLimit: 128,
+          enforceFunctionParameterTypes: true,
+          enforceLocktimeGuard: true,
+        },
+      },
+      updatedAt: '',
+    },
+  },
+  {
+    fn: 'log_intermediate_results.scash',
+    artifact: {
+      contractName: 'LogIntermediateResults',
+      constructorInputs: [{ name: 'owner', type: 'pubkey' }],
+      abi: [{ name: 'test_log_intermediate_result', selector: '3813a78a', inputs: [] }],
+      bytecode: 'OP_HASH256 OP_SIZE OP_NIP 20 OP_NUMEQUAL',
+      debug: {
+        bytecode: 'aa827701209c',
+        sourceMap: '3:29:5:47:1;6:16:6:33;;:37::39:0;:8::74:1',
+        logs: [
+          {
+            ip: 1,
+            line: 4,
+            data: [
+              {
+                stackIndex: 0,
+                type: 'bytes32',
+                ip: 1,
+                transformations: 'OP_SHA256',
+              },
+            ],
+          },
+        ],
+        requires: [
+          {
+            ip: 6,
+            line: 6,
+            message: 'doubleHash should be 32 bytes',
+          },
+        ],
+      },
+      source: fs.readFileSync(new URL('../valid-contract-files/log_intermediate_results.scash', import.meta.url), { encoding: 'utf-8' }),
+      compiler: {
+        name: 'solidc',
+        version,
+        options: {
+          commitmentLimit: 128,
+          enforceFunctionParameterTypes: true,
+          enforceLocktimeGuard: true,
+        },
+      },
+      updatedAt: '',
+    },
+  },
+  {
+    fn: 'double_split.scash',
+    artifact: {
+      contractName: 'DoubleSplit',
+      constructorInputs: [{ name: 'pkh', type: 'bytes20' }],
+      abi: [{ name: 'spend', selector: 'f598582f', inputs: [] }],
+      bytecode: 'OP_INPUTINDEX OP_UTXOBYTECODE 17 OP_SPLIT OP_DROP OP_3 OP_SPLIT OP_NIP OP_EQUAL',
+      debug: {
+        bytecode: 'c0c701177f75537f7787',
+        sourceMap: '3:36:3:57;:26::74:1;:81::83:0;:26::84:1;:::87;:94::95:0;:26::96:1;:::99;4:8:4:34',
+        logs: [],
+        requires: [
+          {
+            ip: 10,
+            line: 4,
+          },
+        ],
+      },
+      source: fs.readFileSync(new URL('../valid-contract-files/double_split.scash', import.meta.url), { encoding: 'utf-8' }),
+      compiler: {
+        name: 'solidc',
+        version,
+        options: {
+          commitmentLimit: 128,
+          enforceFunctionParameterTypes: true,
+          enforceLocktimeGuard: true,
+        },
+      },
+      updatedAt: '',
+    },
+  },
+  {
+    fn: 'slice.scash',
+    artifact: {
+      contractName: 'Slice',
+      constructorInputs: [{ name: 'pkh', type: 'bytes20' }],
+      abi: [{ name: 'spend', selector: 'f598582f', inputs: [] }],
+      bytecode: 'OP_INPUTINDEX OP_UTXOBYTECODE 17 OP_SPLIT OP_DROP OP_3 OP_SPLIT OP_NIP OP_EQUAL',
+      debug: {
+        bytecode: 'c0c701177f75537f7787',
+        sourceMap: '3:36:3:57;:26::74:1;:84::86:0;:26::87:1;;:81::82:0;:26::87:1;;4:8:4:34',
+        logs: [],
+        requires: [
+          {
+            ip: 10,
+            line: 4,
+            message: undefined,
+          },
+        ],
+      },
+      source: fs.readFileSync(new URL('../valid-contract-files/slice.scash', import.meta.url), { encoding: 'utf-8' }),
+      compiler: {
+        name: 'solidc',
+        version,
+        options: {
+          commitmentLimit: 128,
+          enforceFunctionParameterTypes: true,
+          enforceLocktimeGuard: true,
+        },
+      },
+      updatedAt: '',
+    },
+  },
+  {
+    fn: 'slice_optimised.scash',
+    artifact: {
+      contractName: 'Slice',
+      constructorInputs: [{ name: 'data', type: 'bytes32' }],
+      abi: [{ name: 'spend', selector: 'f598582f', inputs: [] }],
+      bytecode: '14 OP_SPLIT OP_DROP OP_0 14 OP_NUM2BIN OP_EQUAL',
+      debug: {
+        bytecode: '01147f750001148087',
+        sourceMap: '3:36:3:38;:22::39:1;;4:37:4:38:0;:40::42;:23::43:1;:8::45',
+        logs: [],
+        requires: [
+          {
+            ip: 8,
+            line: 4,
+            message: undefined,
+          },
+        ],
+      },
+      source: fs.readFileSync(new URL('../valid-contract-files/slice_optimised.scash', import.meta.url), { encoding: 'utf-8' }),
+      compiler: {
+        name: 'solidc',
+        version,
+        options: {
+          commitmentLimit: 128,
+          enforceFunctionParameterTypes: true,
+          enforceLocktimeGuard: true,
+        },
+      },
+      updatedAt: '',
+    },
+  },
+  {
+    fn: 'complex_loop.scash',
+    artifact: {
+      contractName: 'Loopy',
+      constructorInputs: [],
+      abi: [{ name: 'doLoop', selector: '16821cf9', inputs: [] }],
+      bytecode: 'OP_0 OP_0 OP_0 OP_0 OP_BEGIN OP_DUP OP_UTXOVALUE OP_4 OP_ROLL OP_DROP OP_SWAP OP_TOALTSTACK OP_SWAP OP_TOALTSTACK OP_SWAP OP_FROMALTSTACK OP_FROMALTSTACK OP_DUP OP_1ADD OP_NIP OP_TXOUTPUTCOUNT OP_2DUP OP_LESSTHAN OP_DUP OP_IF OP_2 OP_PICK OP_OUTPUTTOKENCATEGORY OP_0 OP_EQUAL OP_NOT OP_NIP OP_DUP OP_IF OP_4 OP_PICK OP_3 OP_PICK OP_OUTPUTVALUE OP_ADD OP_5 OP_ROLL OP_DROP OP_SWAP OP_TOALTSTACK OP_SWAP OP_TOALTSTACK OP_SWAP OP_TOALTSTACK OP_SWAP OP_FROMALTSTACK OP_FROMALTSTACK OP_FROMALTSTACK OP_ELSE OP_3 OP_PICK OP_1ADD OP_4 OP_ROLL OP_DROP OP_SWAP OP_TOALTSTACK OP_SWAP OP_TOALTSTACK OP_SWAP OP_FROMALTSTACK OP_FROMALTSTACK OP_ENDIF OP_ENDIF OP_2DROP OP_DUP OP_TXINPUTCOUNT OP_GREATERTHANOREQUAL OP_UNTIL OP_2SWAP OP_GREATERTHAN OP_VERIFY OP_SWAP OP_0 OP_GREATERTHAN OP_NIP',
+      debug: {
+        bytecode: '000000006576c6547a757c6b7c6b7c6c6c768b77c46e9f76635279d100879177766354795379cc93557a757c6b7c6b7c6b7c6c6c6c6753798b547a757c6b7c6b7c6c6c68686d76c3a26672a0697c00a077',
+        sourceMap: '3:23:3:24;4:24:4:25;5:25:5:26;6:16:6:17;8:8:26:39;9:33:9:34;:23::41:1;:12::42;;;;;;;;;;10:16:10:17:0;:::21:1;:12::22;12:20:12:37:0;13:21:13:26;::::1;15:16:15:17:0;:19:25:13;16:31:16:32;;:20::47:1;:51::53:0;:20:::1;;:16::54;18:20:18:21:0;:23:20:17;19:32:19:41;;:55::56;;:44::63:1;:32;:20::64;;;;;;;;;;;;;20:23:22:17:0;21:33:21:43;;:::47:1;:20::48;;;;;;;;;;20:23:22:17;15:19:25:13;8:11:26:9;26:17::18:0;:21::37;8:8::39:1;;28:16:28:36:0;::::1;:8::38;29:16:29:26:0;:29::30;:8::32:1;2:4:30:5',
+        logs: [
+          { ip: 68, line: 24, data: [{ stackIndex: 3, type: 'int', ip: 68 }] },
+        ],
+        requires: [
+          { ip: 76, line: 28 },
+          { ip: 80, line: 29 },
+        ],
+      },
+      source: fs.readFileSync(new URL('../valid-contract-files/complex_loop.scash', import.meta.url), { encoding: 'utf-8' }),
+      compiler: {
+        name: 'solidc',
+        version,
+        options: {
+          commitmentLimit: 128,
+          enforceFunctionParameterTypes: true,
+          enforceLocktimeGuard: true,
+        },
+      },
+      updatedAt: '',
+    },
+  },
+  {
+    fn: 'do_while_loop_no_introspection.scash',
+    artifact: {
+      contractName: 'Loopy',
+      constructorInputs: [],
+      abi: [{ name: 'doLoop', selector: '16821cf9', inputs: [] }],
+      bytecode: 'OP_0 OP_2 OP_BEGIN OP_OVER OP_1ADD OP_ROT OP_DROP OP_SWAP OP_2DUP OP_ADD OP_10 OP_LESSTHAN OP_VERIFY OP_OVER OP_10 OP_GREATERTHANOREQUAL OP_UNTIL OP_2DROP OP_1',
+      debug: {
+        bytecode: '005265788b7b757c6e935a9f69785aa2666d51',
+        sourceMap: '3:16:3:17;4::4;6:8:10:25;7:16:7:17;:::21:1;:12::22;;;9:20:9:25:0;::::1;:28::30:0;:20:::1;:12::32;10:17:10:18:0;:21::23;6:8::25:1;;2:4:11:5;',
+        logs: [
+          { ip: 8, line: 8, data: [{ stackIndex: 1, type: 'int', ip: 8 }] },
+        ],
+        requires: [
+          { ip: 12, line: 9 },
+        ],
+      },
+      source: fs.readFileSync(new URL('../valid-contract-files/do_while_loop_no_introspection.scash', import.meta.url), { encoding: 'utf-8' }),
+      compiler: {
+        name: 'solidc',
+        version,
+        options: {
+          commitmentLimit: 128,
+          enforceFunctionParameterTypes: true,
+          enforceLocktimeGuard: true,
+        },
+      },
+      updatedAt: '',
+    },
+  },
+  {
+    fn: 'bitshift.scash',
+    artifact: {
+      contractName: 'Bitshift',
+      constructorInputs: [],
+      abi: [{ name: 'spend', selector: 'f598582f', inputs: [] }],
+      bytecode: '1122334455667788 OP_4 OP_LSHIFTBIN OP_4 OP_RSHIFTBIN 0000000055667788 OP_EQUALVERIFY OP_8 OP_2 OP_RSHIFTNUM OP_1 OP_LSHIFTNUM OP_16 OP_NUMEQUAL',
+      debug: {
+        bytecode: '081122334455667788549854990800000000556677888858528e518d609c',
+        sourceMap: '3:19:3:37;4:24:4:25;:19:::1;:29::30:0;:19:::1;6:21:6:39:0;:8::41:1;8:16:8:17:0;9:21:9:22;:16:::1;:26::27:0;:16:::1;11:22:11:24:0;:8::26:1',
+        logs: [],
+        requires: [
+          { ip: 6, line: 6 },
+          { ip: 14, line: 11 },
+        ],
+      },
+      source: fs.readFileSync(new URL('../valid-contract-files/bitshift.scash', import.meta.url), { encoding: 'utf-8' }),
+      compiler: {
+        name: 'solidc',
+        version,
+        options: {
+          commitmentLimit: 128,
+          enforceFunctionParameterTypes: true,
+          enforceLocktimeGuard: true,
+        },
+      },
+      updatedAt: '',
+    },
+  },
+  {
+    fn: 'type_enforcement.scash',
+    artifact: {
+      contractName: 'TypeEnforcement',
+      constructorInputs: [],
+      abi: [{
+        name: 'spend', selector: 'b0ddffe5', inputs: [
+          { name: 'nonEnforcedInt', type: 'int' },
+          { name: 'enforcedBool', type: 'bool' },
+          { name: 'enforcedBytes', type: 'bytes4' },
+          { name: 'nonEnforcedBytes', type: 'bytes' },
+        ],
+      }],
+      bytecode:
+        // Implicit type enforcement for enforcedBool: enforcedBool = bool(enforcedBool)
+        'OP_SWAP OP_0NOTEQUAL '
+        // Implicit type enforcement for enforcedBytes: require(enforcedBytes.length == 4)
+        + 'OP_2 OP_PICK OP_SIZE OP_4 OP_EQUALVERIFY OP_DROP '
+        // if(enforcedBool == true) {
+        + 'OP_1 OP_NUMEQUAL OP_IF '
+        // require(nonEnforcedInt > 6)
+        + 'OP_DUP OP_6 OP_GREATERTHAN OP_VERIFY '
+        // } else {
+        + 'OP_ELSE '
+        // require(enforcedBytes == nonEnforcedBytes)
+        + 'OP_OVER OP_3 OP_PICK OP_EQUALVERIFY '
+        // Cleanup
+        + 'OP_ENDIF OP_2DROP OP_DROP OP_1',
+      debug: {
+        bytecode: '7c92527982548875519c637656a0696778537988686d7551',
+        sourceMap: '4:8:4:25;;5::5:28;;;;;;8:28:8:32;:12:::1;:34:10:9:0;9:20:9:34;:37::38;:20:::1;:12::40;10:15:12:9:0;11:20:11:33;:37::53;;:12::55:1;10:15:12:9;2:4:13:5;;',
+        logs: [],
+        requires: [
+          { ip: 14, line: 9 },
+          { ip: 19, line: 11 },
+        ],
+      },
+      source: fs.readFileSync(new URL('../valid-contract-files/type_enforcement.scash', import.meta.url), { encoding: 'utf-8' }),
+      compiler: {
+        name: 'solidc',
+        version,
+        options: {
+          commitmentLimit: 128,
+          enforceFunctionParameterTypes: true,
+          enforceLocktimeGuard: true,
+        },
+      },
+      updatedAt: '',
+    },
+  },
+  {
+    // Same as the fixture above, but with enforceFunctionParameterTypes disabled
+    fn: 'type_enforcement.scash',
+    compilerOptions: {
+      enforceFunctionParameterTypes: false,
+    },
+    artifact: {
+      contractName: 'TypeEnforcement',
+      constructorInputs: [],
+      abi: [{
+        name: 'spend', selector: 'b0ddffe5', inputs: [
+          { name: 'nonEnforcedInt', type: 'int' },
+          { name: 'enforcedBool', type: 'bool' },
+          { name: 'enforcedBytes', type: 'bytes4' },
+          { name: 'nonEnforcedBytes', type: 'bytes' },
+        ],
+      }],
+      bytecode:
+        // if(enforcedBool == true) {
+        'OP_SWAP OP_1 OP_NUMEQUAL OP_IF '
+        // require(nonEnforcedInt > 6)
+        + 'OP_DUP OP_6 OP_GREATERTHAN OP_VERIFY '
+        // } else {
+        + 'OP_ELSE '
+        // require(enforcedBytes == nonEnforcedBytes)
+        + 'OP_OVER OP_3 OP_PICK OP_EQUALVERIFY '
+        // Cleanup
+        + 'OP_ENDIF OP_2DROP OP_DROP OP_1',
+      debug: {
+        bytecode: '7c519c637656a0696778537988686d7551',
+        sourceMap: '8:12:8:24;:28::32;:12:::1;:34:10:9:0;9:20:9:34;:37::38;:20:::1;:12::40;10:15:12:9:0;11:20:11:33;:37::53;;:12::55:1;10:15:12:9;2:4:13:5;;',
+        logs: [],
+        requires: [
+          { ip: 7, line: 9 },
+          { ip: 12, line: 11 },
+        ],
+      },
+      source: fs.readFileSync(new URL('../valid-contract-files/type_enforcement.scash', import.meta.url), { encoding: 'utf-8' }),
+      compiler: {
+        name: 'solidc',
+        version,
+        options: {
+          commitmentLimit: 128,
+          enforceFunctionParameterTypes: false,
+          enforceLocktimeGuard: true,
+        },
+      },
+      updatedAt: '',
+    },
+  },
+  {
+    fn: 'msg_sig_data.scash',
+    artifact: {
+      contractName: 'MsgSigDataTest',
+      constructorInputs: [],
+      abi: [
+        { name: 'checkSig', selector: '79ede9d1', inputs: [{ name: 'expectedSig', type: 'bytes4' }] },
+        { name: 'checkData', selector: '8d71cec7', inputs: [] },
+        { name: 'useBoth', selector: '729bfbca', inputs: [{ name: 'expectedSig', type: 'bytes4' }] },
+      ],
+      bytecode:
+        // _redeemPushSize computation (P2SH detection + MINIMALDATA prefix size)
+        'OP_INPUTINDEX OP_UTXOBYTECODE OP_SIZE OP_NIP 24 OP_LESSTHAN OP_IF '
+        + 'OP_ACTIVEBYTECODE OP_SIZE OP_NIP OP_DUP 4c OP_LESSTHAN OP_IF OP_1ADD OP_ELSE '
+        + 'OP_DUP 0001 OP_LESSTHAN OP_IF OP_2 OP_ADD OP_ELSE OP_3 OP_ADD OP_ENDIF OP_ENDIF '
+        + 'OP_ELSE OP_0 OP_ENDIF '
+        // checkSig function body: msg.sig (compile-time selector 79ede9d1) == expectedSig
+        + '78825488750479ede9d17b8777 79ede9d1 OP_DEFINE '
+        // checkData function body: msg.data.length > 0
+        + '76c0ca7682777b947f75827700a077 8d71cec7 OP_DEFINE '
+        // useBoth function body: msg.sig check + msg.data length check
+        + '788254887504729bfbca7b8876c0ca7682777b947f75827754a077 729bfbca OP_DEFINE '
+        // dispatch
+        + 'OP_DEPTH OP_1SUB OP_ROLL OP_INVOKE',
+      debug: {
+        bytecode: 'c0c7827701249f63c1827776014c9f638b67760200019f63529367539368686700680d78825488750479ede9d17b87770479ede9d1890f76c0ca7682777b947f75827700a077048d71cec7891b788254887504729bfbca7b8876c0ca7682777b947f75827754a07704729bfbca89748c7a8a',
+        sourceMap: '3::17:1;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;4:4:6:5;;;8::10;;;12::16;;;3:0:17:1;;;',
+        logs: [],
+        requires: [],
+        functionDebug: {
+          '79ede9d1': {
+            requires: [
+              { ip: 8, line: 5, message: undefined },
+            ],
+            sourceMap: '4:22:4:40;;;;;5:16:5:23;:27::38;:8::40:1;4:4:6:5',
+            logs: [],
+          },
+          '8d71cec7': {
+            requires: [
+              { ip: 14, line: 9, message: undefined },
+            ],
+            sourceMap: '9:16:9:24;;;;;;;;;;:::31:1;;:34::35:0;:8::37:1;8:4:10:5',
+            logs: [],
+          },
+          '729bfbca': {
+            requires: [
+              { ip: 7, line: 13, message: undefined },
+              { ip: 22, line: 15, message: undefined },
+            ],
+            sourceMap: '12:21:12:39;;;;;13:16:13:23;:27::38;:8::40:1;14:21:14:29:0;;;;;;;;;;15:16:15:27:1;;:30::31:0;:8::33:1;12:4:16:5',
+            logs: [],
+          },
+        },
+      },
+      functionBodies: {
+        '79ede9d1': '78825488750479ede9d17b8777',
+        '8d71cec7': '76c0ca7682777b947f75827700a077',
+        '729bfbca': '788254887504729bfbca7b8876c0ca7682777b947f75827754a077',
+      },
+      source: fs.readFileSync(new URL('../valid-contract-files/msg_sig_data.scash', import.meta.url), { encoding: 'utf-8' }),
+      compiler: {
+        name: 'solidc',
+        version,
+        options: {
+          commitmentLimit: 128,
+          enforceFunctionParameterTypes: true,
+          enforceLocktimeGuard: true,
+        },
+      },
+      updatedAt: '',
+    },
+  },
+];

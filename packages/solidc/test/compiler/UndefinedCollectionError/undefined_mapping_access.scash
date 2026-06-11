@@ -1,0 +1,8 @@
+contract Test() {
+    int counter;
+
+    function test(bytes20 key) {
+        int val = this.nonexistent[key];
+        require(val > 0);
+    }
+}

@@ -1,0 +1,37 @@
+contract AddressTypes() {
+    int counter;
+
+    // Test address(lbc).balance and payable(address(lbc)).transfer(amount)
+    function transferToAddress(bytes lockingBytecode, int amount) {
+        address addr = address(lockingBytecode);
+        int bal = addr.balance;
+        require(bal >= amount);
+        payable(addr).transfer(amount);
+        this.counter = this.counter + 1;
+    }
+
+    // Test .send() returns bool (using inline payable cast to avoid round-trip issue)
+    function sendToAddress(bytes lockingBytecode, int amount) {
+        address addr = address(lockingBytecode);
+        bool success = payable(addr).send(amount);
+        require(success);
+        this.counter = this.counter + 1;
+    }
+
+    // Test address.connect(category).balance
+    function checkConnectedBalance(bytes lockingBytecode, bytes32 category, int minBalance) {
+        address addr = address(lockingBytecode);
+        int connectedBal = addr.connect(category).balance;
+        require(connectedBal >= minBalance);
+    }
+
+    // Test this.balance (own satoshi container balance from inputs)
+    function checkSelfBalance(int minBalance) {
+        require(this.balance >= minBalance);
+    }
+
+    // Test this.outState.balance (own satoshi container balance from outputs)
+    function checkOutStateBalance(int expectedBalance) {
+        require(this.outState.balance == expectedBalance);
+    }
+}

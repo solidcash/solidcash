@@ -1,0 +1,39 @@
+pragma solidcash >=0.8.0;
+
+contract TransparentProxy(bytes20 admin) {
+    bytes32 implCategory;
+
+    // Admin-only: change implementation
+    function setImpl(bytes32 newImplCategory, pubkey pk, sig s) {
+        require(hash160(pk) == admin);
+        require(checkSig(s, pk));
+        this.implCategory = newImplCategory;
+        require(tx.inputs[this.activeInputIndex].lockingBytecode ==
+                tx.outputs[this.activeInputIndex].lockingBytecode);
+    }
+
+    // Transparent forwarding via fallback — catches all unknown selectors
+    fallback(bytes input) external {
+        // Verify non-empty calldata (real function call, not empty push)
+        require(input.length > 0);
+
+        // Implementation master is right after proxy's UTXOs
+        // Convention: [proxy master, proxy data NFT, impl master, ...]
+        int implIndex = this.activeInputIndex + 2;
+        bytes catId, bytes capByte = tx.inputs[implIndex].tokenCategory.split(32);
+        require(catId == this.implCategory);
+        require(capByte != 0x);
+
+        // Verify the implementation received the same calldata as the proxy.
+        // The caller sends the impl's function selector to the proxy (which
+        // triggers fallback), and also calls the impl with the same selector.
+        // This ensures the impl's unlocking bytecode starts with the forwarded data.
+        bytes implForwarded, bytes implRedeemPush = tx.inputs[implIndex].unlockingBytecode.split(input.length);
+        require(implForwarded == input);
+        require(implRedeemPush.length > 0);
+
+        // Self-preservation covenant
+        require(tx.inputs[this.activeInputIndex].lockingBytecode ==
+                tx.outputs[this.activeInputIndex].lockingBytecode);
+    }
+}

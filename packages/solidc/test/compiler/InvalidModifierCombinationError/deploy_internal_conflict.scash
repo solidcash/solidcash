@@ -1,0 +1,7 @@
+contract Test() {
+    int counter;
+
+    function foo() deploy internal {
+        require(true);
+    }
+}

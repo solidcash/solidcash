@@ -1,0 +1,8 @@
+contract Test() {
+    int counter;
+
+    function test(bytes32 tokenCategory, bytes20 recipient, int amount) {
+        this.tokens[tokenCategory].withdraw(recipient, amount);
+        this.counter = this.counter + 1;
+    }
+}

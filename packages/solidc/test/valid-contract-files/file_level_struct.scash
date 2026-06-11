@@ -1,0 +1,14 @@
+struct User { bytes20 addr; string name; int balance; }
+
+contract Registry() {
+    int userCount;
+    mapping(bytes20 => User) users;
+
+    function registerUser(bytes20 pkh, bytes20 addr, string name, int balance, pubkey pk, sig s) {
+        require(checkSig(s, pk));
+        this.users[pkh] = User(addr, name, balance);
+        this.userCount = this.userCount + 1;
+    }
+
+    function authorize(pubkey pk, sig s) unsafe { require(checkSig(s, pk)); }
+}

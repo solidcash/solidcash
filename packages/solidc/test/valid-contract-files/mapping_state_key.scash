@@ -1,0 +1,11 @@
+contract StateKeyMapping() {
+    bytes20 admin;
+    mapping(bytes20 => int) balances;
+
+    function transferFromAdmin(bytes20 to, int amount) {
+        int adminBal = this.balances[this.admin];
+        require(adminBal >= amount);
+        this.balances[this.admin] = adminBal - amount;
+        this.balances[to] = this.balances[to] + amount;
+    }
+}

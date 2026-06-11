@@ -1,0 +1,12 @@
+contract MergeMaster(pubkey admin) {
+    int counter;
+
+    function increment() {
+        this.counter = this.counter + 1;
+    }
+
+    function consolidate(int n, sig s) merge(n) {
+        require(checkSig(s, admin));
+        require(n >= 1);
+    }
+}

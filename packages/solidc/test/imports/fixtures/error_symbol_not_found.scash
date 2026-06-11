@@ -1,0 +1,7 @@
+import { NonExistentSymbol } from "./constants_lib.scash";
+
+contract Broken() {
+    function spend(pubkey pk, sig s) {
+        require(checkSig(s, pk));
+    }
+}

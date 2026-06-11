@@ -1,0 +1,8 @@
+import "./math_lib.scash";
+
+contract UsesLibrary() {
+    function doMath(int a, int b) {
+        int sum = SafeMath.add(a, b);
+        require(sum > 0);
+    }
+}

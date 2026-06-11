@@ -1,0 +1,6 @@
+contract AsmEmpty() {
+    function test() {
+        assembly {}
+        require(true);
+    }
+}

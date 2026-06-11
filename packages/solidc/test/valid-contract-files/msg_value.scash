@@ -1,0 +1,9 @@
+contract MsgValueTest() {
+    function checkPositive() {
+        require(msg.value > 0);
+    }
+
+    function checkExact(int expected) {
+        require(msg.value == expected);
+    }
+}

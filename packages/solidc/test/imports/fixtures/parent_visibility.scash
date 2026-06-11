@@ -1,0 +1,20 @@
+contract ParentVisibility() {
+    public int pubVar;
+    internal int intVar;
+    private int privVar;
+
+    function readPublic(pubkey owner, sig s) {
+        require(checkSig(s, owner));
+        require(this.pubVar > 0);
+    }
+
+    function readInternal(pubkey owner, sig s) {
+        require(checkSig(s, owner));
+        require(this.intVar > 0);
+    }
+
+    function readPrivate(pubkey owner, sig s) {
+        require(checkSig(s, owner));
+        require(this.privVar > 0);
+    }
+}

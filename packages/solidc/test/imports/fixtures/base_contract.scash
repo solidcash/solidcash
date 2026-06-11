@@ -1,0 +1,8 @@
+contract BaseContract(int maxAmount) {
+    int balance;
+
+    function check(pubkey owner, sig s, int amount) {
+        require(checkSig(s, owner));
+        require(amount <= maxAmount);
+    }
+}

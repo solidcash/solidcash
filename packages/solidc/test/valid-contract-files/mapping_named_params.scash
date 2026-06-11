@@ -1,0 +1,11 @@
+contract MappingNamedParams() {
+    mapping(bytes20 user => int balance) balances;
+
+    function setBalance(bytes20 user, int amount) {
+        this.balances[user] = amount;
+    }
+
+    function getBalance(bytes20 user) {
+        require(this.balances[user] > 0);
+    }
+}

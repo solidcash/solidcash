@@ -1,0 +1,6 @@
+contract BadBreak(int x) {
+    function test() {
+        break;
+        require(x > 0);
+    }
+}

@@ -1,0 +1,14 @@
+import "./transfer_with_timeout.scash";
+
+contract ContractTypedStateVar() {
+    TransferWithTimeout public marketplace;
+
+    constructor() {
+        this.marketplace = TransferWithTimeout(0x0000000000000000000000000000000000000000000000000000);
+    }
+
+    function check(pubkey pk, sig s, bytes lbc) {
+        require(checkSig(s, pk));
+        this.marketplace = TransferWithTimeout(lbc);
+    }
+}

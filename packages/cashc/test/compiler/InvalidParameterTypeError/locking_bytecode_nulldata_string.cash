@@ -1,7 +1,0 @@
-pragma cashscript >=0.8.0;
-
-contract P2PKH() {
-    function spend() {
-        require(tx.outputs[0].lockingBytecode == new LockingBytecodeNullData(["Hello world"]));
-    }
-}

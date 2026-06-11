@@ -1,0 +1,20 @@
+// SolidCash analog of Solidity's onlyOwner modifier.
+// In Solidity, onlyOwner checks msg.sender == owner.
+// In SolidCash, ownership is proven via signature verification:
+// the caller must provide a valid signature matching the owner's pubkey.
+contract Owned(pubkey owner, int threshold) {
+    modifier onlyOwner(sig ownerSig) {
+        require(checkSig(ownerSig, owner));
+        _;
+    }
+
+    // Transfer: only the owner can spend, and only after a timelock
+    function transfer(sig s) onlyOwner(s) {
+        require(tx.time >= threshold);
+    }
+
+    // Reclaim: owner can reclaim at any time
+    function reclaim(sig s) onlyOwner(s) {
+        require(this.age >= 10);
+    }
+}

@@ -1,0 +1,14 @@
+contract Test() {
+    function add(int a, int b) internal pure returns (int) {
+        return a + b;
+    }
+
+    function add(int a, int b, int c) internal pure returns (int) {
+        return a + b + c;
+    }
+
+    function compute(pubkey pk) {
+        int result = add(pk);
+        require(result > 0);
+    }
+}

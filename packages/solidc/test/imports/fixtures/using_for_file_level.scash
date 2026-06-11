@@ -1,0 +1,11 @@
+import "./math_lib.scash";
+
+using SafeMath for int;
+
+contract UsingForFileLevel() {
+    function doMath(int a, int b) {
+        int sum = a.add(b);
+        int diff = a.sub(b);
+        require(sum > diff);
+    }
+}

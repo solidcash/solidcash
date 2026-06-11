@@ -1,0 +1,10 @@
+contract Math() {
+    function divmod(int a, int b) internal pure returns (int, int) {
+        return (a / b, a % b);
+    }
+
+    function compute(int x, int y) {
+        int q, int r = divmod(x, y);
+        require(q * y + r == x);
+    }
+}

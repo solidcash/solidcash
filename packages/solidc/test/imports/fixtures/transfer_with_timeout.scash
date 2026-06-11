@@ -1,0 +1,6 @@
+// A contract with no constructor params (for cross-contract ref without args)
+contract TransferWithTimeout() {
+    function transfer(pubkey sender, sig senderSig) {
+        require(checkSig(senderSig, sender));
+    }
+}

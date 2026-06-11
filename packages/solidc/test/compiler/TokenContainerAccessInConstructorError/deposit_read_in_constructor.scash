@@ -1,0 +1,12 @@
+contract Test() {
+    int counter;
+
+    constructor(bytes32 tokenCategory) {
+        int bal = this.tokens[tokenCategory].tokenAmount;
+        this.counter = bal;
+    }
+
+    function authorize(pubkey pk, sig s) {
+        require(checkSig(s, pk));
+    }
+}

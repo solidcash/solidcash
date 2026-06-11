@@ -1,0 +1,5 @@
+contract Test() {
+    function foo() {
+        return 1;
+    }
+}

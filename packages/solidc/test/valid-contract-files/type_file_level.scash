@@ -1,0 +1,14 @@
+type Price is int;
+
+contract PriceTracker() {
+    Price lastPrice;
+
+    function updatePrice(Price newPrice, pubkey pk, sig s) {
+        require(checkSig(s, pk));
+        int raw = int(newPrice);
+        require(raw > 0);
+        this.lastPrice = newPrice;
+    }
+
+    function authorize(pubkey pk, sig s) unsafe { require(checkSig(s, pk)); }
+}

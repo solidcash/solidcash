@@ -1,0 +1,11 @@
+contract Test() {
+    int counter;
+
+    function test(bytes20 recipient, int amount) {
+        if (amount > 100) {
+            this.transfer(recipient, amount);
+        }
+        this.counter = this.counter + 1;
+        require(true);
+    }
+}

@@ -1,0 +1,10 @@
+contract ConditionalTransfer() {
+    int counter;
+
+    function payIfNeeded(bool flag, bytes20 recipient) payable {
+        if (flag) {
+            this.transfer(new LockingBytecodeP2PKH(recipient), 1000);
+        }
+        this.counter = this.counter + 1;
+    }
+}

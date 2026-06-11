@@ -1,0 +1,9 @@
+contract AbiRoundtrip() {
+    function test(int x, bytes4 label, bool flag) {
+        bytes encoded = abi.encode(x, label, flag);
+        int dx, bytes4 dl, bool df = abi.decode(encoded, (int, bytes4, bool));
+        require(dx == x);
+        require(dl == label);
+        require(df == flag);
+    }
+}

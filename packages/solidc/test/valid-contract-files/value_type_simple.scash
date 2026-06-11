@@ -1,0 +1,18 @@
+contract ValueTypeTest() {
+    type Price is int;
+
+    function testWrapUnwrap(int rawPrice) {
+        // Wrap: int → Price
+        Price p = Price(rawPrice);
+        // Unwrap: Price → int
+        int extracted = int(p);
+        require(extracted == rawPrice);
+    }
+
+    function testEquality(int a, int b) {
+        Price p1 = Price(a);
+        Price p2 = Price(b);
+        // Value types support equality comparison
+        require(p1 == p2);
+    }
+}

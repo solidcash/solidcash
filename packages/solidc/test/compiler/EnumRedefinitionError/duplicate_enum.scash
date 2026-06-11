@@ -1,0 +1,9 @@
+contract Test(int x) {
+    enum Color { Red, Green, Blue }
+    enum Color { Cyan, Magenta }
+
+    function spend(pubkey pk, sig s) {
+        require(x == Color.Red);
+        require(checkSig(s, pk));
+    }
+}

@@ -1,0 +1,7 @@
+contract ContractConstant(int threshold) {
+    int constant FEE = 1000;
+
+    function spend(int value) {
+        require(value >= FEE + threshold);
+    }
+}

@@ -1,0 +1,19 @@
+contract Calculator(int base) {
+    function add(int a, int b) internal pure returns (int) {
+        return a + b;
+    }
+
+    function add(int a, int b, int c) internal pure returns (int) {
+        return a + b + c;
+    }
+
+    function computeTwo(int x) {
+        int result = add(base, x);
+        require(result > 0);
+    }
+
+    function computeThree(int x, int y) {
+        int result = add(base, x, y);
+        require(result > 0);
+    }
+}

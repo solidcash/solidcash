@@ -1,0 +1,14 @@
+import "./deploy_target.scash";
+
+// Stateful contract that deploys a child contract with a value transfer
+contract DeployWithValue(bytes20 myPkh) {
+    int deployCount;
+
+    function run(pubkey pk, sig s, bytes20 targetPkh, int amount) {
+        require(hash160(pk) == myPkh);
+        require(checkSig(s, pk));
+        bytes deployedLbc = new DeployTarget{value: amount}(targetPkh);
+        require(tx.outputs[0].lockingBytecode == deployedLbc);
+        this.deployCount = this.deployCount + 1;
+    }
+}

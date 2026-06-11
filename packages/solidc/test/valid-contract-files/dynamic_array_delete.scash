@@ -1,0 +1,7 @@
+contract DynArrayDelete() {
+    function test() {
+        int[] arr = [10, 20, 30];
+        arr.delete(0);
+        require(arr.length == 2);
+    }
+}

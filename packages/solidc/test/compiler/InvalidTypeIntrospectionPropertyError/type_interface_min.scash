@@ -1,0 +1,10 @@
+interface IFoo {
+    function bar(int x);
+}
+
+contract Test() {
+    function test(pubkey pk, sig s) {
+        require(checkSig(s, pk));
+        require(type(IFoo).min == 0);
+    }
+}

@@ -1,0 +1,16 @@
+contract TokenContainerOutState() {
+    int counter;
+
+    function checkOutputTokens(bytes32 tokenCategory) {
+        int outAmount = this.outState.tokens[tokenCategory].tokenAmount;
+        int outNfts = this.outState.tokens[tokenCategory].nftCount;
+        int inAmount = this.tokens[tokenCategory].tokenAmount;
+        int inNfts = this.tokens[tokenCategory].nftCount;
+        require(outAmount == inAmount);
+        require(outNfts == inNfts);
+    }
+
+    function authorize(pubkey pk, sig s) unsafe {
+        require(checkSig(s, pk));
+    }
+}

@@ -1,0 +1,9 @@
+contract LocalVarKeyMapping() {
+    mapping(int => int) balances;
+
+    function test(int addr) {
+        int derived = addr + 1;
+        int val = this.balances[derived];
+        require(val > 0);
+    }
+}

@@ -1,0 +1,9 @@
+contract ForLoopStateWrite() {
+    int counter;
+
+    function loopWrite() {
+        for (int i = 0; i < 3; i = i + 1) {
+            this.counter = this.counter + 1;
+        }
+    }
+}

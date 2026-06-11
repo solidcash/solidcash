@@ -1,0 +1,46 @@
+contract BoundedInt() {
+    function testUint8(int x, int y) {
+        uint8 a = uint8(x);
+        uint8 b = uint8(y);
+        uint8 result = uint8(int(a) + int(b));
+        require(result > 0);
+    }
+
+    function testInt16(int x) {
+        int16 val = int16(x);
+        int16 negated = -val;
+        require(int(negated) != 0);
+    }
+
+    function testWidening() {
+        uint8 small = uint8(10);
+        uint16 big = small;
+        require(int(big) == 10);
+    }
+
+    function testCast(int x) {
+        uint8 a = uint8(x);
+        int result = int(a);
+        require(result >= 0);
+    }
+
+    function testUint8Arithmetic(int x, int y) {
+        uint8 a = uint8(x);
+        uint8 b = uint8(y);
+        uint8 sum = a + b;
+        require(int(sum) >= int(a));
+    }
+
+    function testInt8Arithmetic(int x, int y) {
+        int8 a = int8(x);
+        int8 b = int8(y);
+        int8 sum = a + b;
+        require(int(sum) == int(a) + int(b));
+    }
+
+    function testUint8Negate(int x) {
+        int8 a = int8(x);
+        int8 b = -a;
+        require(int(b) == 0 - int(a));
+    }
+}

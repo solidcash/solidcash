@@ -1,0 +1,10 @@
+import "./math_lib.scash";
+
+contract UsingForFunctions() {
+    using {SafeMath.add} for int;
+
+    function doMath(int a, int b) {
+        int sum = a.add(b);
+        require(sum > 0);
+    }
+}

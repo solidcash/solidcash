@@ -1,0 +1,31 @@
+contract ERC20Token() {
+    int totalSupply;
+    mapping(bytes20 => int) balances;
+    mapping(bytes20 => mapping(bytes20 => int)) allowances;
+
+    function transfer(bytes20 from, bytes20 to, int amount) {
+        int fromBal = this.balances[from];
+        require(fromBal >= amount);
+        this.balances[from] = fromBal - amount;
+        this.balances[to] = this.balances[to] + amount;
+    }
+
+    function approve(bytes20 owner, bytes20 spender, int amount) {
+        this.allowances[owner][spender] = amount;
+    }
+
+    function transferFrom(bytes20 owner, bytes20 spender, bytes20 to, int amount) {
+        int allowed = this.allowances[owner][spender];
+        require(allowed >= amount);
+        this.allowances[owner][spender] = allowed - amount;
+        int fromBal = this.balances[owner];
+        require(fromBal >= amount);
+        this.balances[owner] = fromBal - amount;
+        this.balances[to] = this.balances[to] + amount;
+    }
+
+    function mint(bytes20 recipient, int amount) {
+        this.balances[recipient] = this.balances[recipient] + amount;
+        this.totalSupply = this.totalSupply + amount;
+    }
+}

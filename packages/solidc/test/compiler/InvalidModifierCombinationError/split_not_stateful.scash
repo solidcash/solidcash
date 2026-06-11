@@ -1,0 +1,5 @@
+contract Test() {
+    function foo(int n) split(n) {
+        require(true);
+    }
+}

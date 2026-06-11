@@ -1,0 +1,5 @@
+contract VirtualFunction(pubkey owner) {
+    function spend(sig s) virtual {
+        require(checkSig(s, owner));
+    }
+}

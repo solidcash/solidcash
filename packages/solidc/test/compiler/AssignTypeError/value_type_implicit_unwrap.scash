@@ -1,0 +1,10 @@
+contract ValueTypeImplicitUnwrap() {
+    type Price is int;
+
+    function test(int x) {
+        Price p = Price(x);
+        // Implicit unwrap should fail — must use explicit int(p)
+        int y = p;
+        require(y == x);
+    }
+}

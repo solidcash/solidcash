@@ -1,0 +1,7 @@
+import "./error_circular_inherit_b.scash";
+
+contract CircA() is CircB {
+    function a(int x) {
+        require(x > 0);
+    }
+}

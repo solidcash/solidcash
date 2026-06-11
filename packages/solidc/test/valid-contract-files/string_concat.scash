@@ -1,0 +1,13 @@
+contract StringConcatTest() {
+    function concatStrings(string a, string b, pubkey pk, sig s) {
+        require(checkSig(s, pk));
+        string result = string.concat(a, b);
+        require(result.length > 0);
+    }
+
+    function concatEmpty(pubkey pk, sig s) {
+        require(checkSig(s, pk));
+        string result = string.concat();
+        require(result.length == 0);
+    }
+}

@@ -1,0 +1,19 @@
+contract StructLocalVar() {
+    struct Point {
+        int x;
+        int y;
+    }
+
+    function test() {
+        Point p = Point(1, 2);
+        require(p.x == 1);
+        require(p.y == 2);
+    }
+
+    function testMultiple() {
+        Point a = Point(10, 20);
+        Point b = Point(30, 40);
+        require(a.x + b.x == 40);
+        require(a.y + b.y == 60);
+    }
+}

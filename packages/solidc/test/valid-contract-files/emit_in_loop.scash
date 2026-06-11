@@ -1,0 +1,12 @@
+contract EmitInLoop(pubkey owner) {
+    event Tick(int value);
+
+    function loop(int n, sig s) {
+        require(checkSig(s, owner));
+        int i = 0;
+        do {
+            emit Tick(i);
+            i = i + 1;
+        } while (i < n);
+    }
+}

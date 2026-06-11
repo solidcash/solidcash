@@ -1,0 +1,10 @@
+contract MultiEnumTest(int state, int role) {
+    enum State { Active, Paused, Stopped }
+    enum Role { Admin, User, Guest }
+
+    function adminOnly(pubkey pk, sig s) {
+        require(state == State.Active);
+        require(role == Role.Admin);
+        require(checkSig(s, pk));
+    }
+}

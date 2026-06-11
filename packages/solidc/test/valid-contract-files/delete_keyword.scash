@@ -1,0 +1,85 @@
+contract DeleteKeyword(pubkey owner) {
+    struct Point {
+        int x;
+        int y;
+    }
+
+    struct Inner {
+        int a;
+        int b;
+    }
+
+    struct Outer {
+        Inner inner;
+        int z;
+    }
+
+    int counter;
+    bool flag;
+    Point point;
+    Outer nested;
+    mapping(bytes20 => int) balances;
+
+    function resetCounter(sig s) {
+        require(checkSig(s, owner));
+        delete this.counter;
+    }
+
+    function resetFlag(sig s) {
+        require(checkSig(s, owner));
+        delete this.flag;
+    }
+
+    function deleteLocal(sig s) {
+        require(checkSig(s, owner));
+        int x = 42;
+        delete x;
+        require(x == 0);
+    }
+
+    function deleteLocalBytes(sig s) {
+        require(checkSig(s, owner));
+        bytes data = 0xdeadbeef;
+        delete data;
+        require(data == 0x);
+    }
+
+    function deleteLocalBool(sig s) {
+        require(checkSig(s, owner));
+        bool b = true;
+        delete b;
+        require(b == false);
+    }
+
+    function deleteLocalStruct(sig s) {
+        require(checkSig(s, owner));
+        Point p = Point(10, 20);
+        delete p;
+        require(p.x == 0);
+        require(p.y == 0);
+    }
+
+    function deleteLocalNestedStruct(sig s) {
+        require(checkSig(s, owner));
+        Outer o = Outer(Inner(1, 2), 3);
+        delete o;
+        require(o.inner.a == 0);
+        require(o.inner.b == 0);
+        require(o.z == 0);
+    }
+
+    function deleteStateStruct(sig s) {
+        require(checkSig(s, owner));
+        delete this.point;
+    }
+
+    function deleteStateNestedStruct(sig s) {
+        require(checkSig(s, owner));
+        delete this.nested;
+    }
+
+    function deleteMappingEntry(bytes20 key, sig s) {
+        require(checkSig(s, owner));
+        delete this.balances[key];
+    }
+}

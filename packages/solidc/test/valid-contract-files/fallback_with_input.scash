@@ -1,0 +1,12 @@
+pragma solidcash ^0.13.0;
+
+contract FallbackWithInput(bytes20 owner) {
+    function transfer(pubkey pk, sig s) {
+        require(hash160(pk) == owner);
+        require(checkSig(s, pk));
+    }
+
+    fallback(bytes input) external {
+        require(input.length > 0);
+    }
+}

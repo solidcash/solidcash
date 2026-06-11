@@ -1,0 +1,8 @@
+import "./constants_lib.scash";
+
+contract Spender() {
+    function spend(int amount) {
+        require(amount >= MIN_AMOUNT);
+        require(amount <= MAX_AMOUNT);
+    }
+}

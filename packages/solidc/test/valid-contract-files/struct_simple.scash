@@ -1,0 +1,25 @@
+contract StructTest() {
+    struct Score {
+        int value;
+        bytes20 player;
+    }
+
+    Score topScore;
+    mapping(bytes20 => Score) playerScores;
+
+    function setPlayerScore(bytes20 player, int value) {
+        this.playerScores[player] = Score(value, player);
+    }
+
+    function requirePlayerScore(bytes20 player) {
+        require(this.playerScores[player].value > 0);
+    }
+
+    function setTopScore(int value, bytes20 player) {
+        this.topScore = Score(value, player);
+    }
+
+    function requireTopScore() {
+        require(this.topScore.value > 0);
+    }
+}

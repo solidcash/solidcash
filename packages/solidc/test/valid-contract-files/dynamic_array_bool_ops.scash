@@ -1,0 +1,10 @@
+contract DynArrayBoolOps() {
+    function test() {
+        bool[] flags = [true, false, true, false];
+        flags.push(true);
+        flags.pop();
+        flags[1] = true;
+        flags.delete(2);
+        require(flags.length == 3);
+    }
+}

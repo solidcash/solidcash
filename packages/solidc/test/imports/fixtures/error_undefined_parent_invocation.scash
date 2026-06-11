@@ -1,0 +1,9 @@
+import "./parent_with_params.scash";
+
+contract ErrorUndefinedInvocation(int limit) is ParentWithParams {
+    constructor(int limit) NonExistent(limit) {}
+
+    function validate(int amount) {
+        require(amount >= limit);
+    }
+}

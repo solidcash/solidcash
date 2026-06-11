@@ -1,0 +1,7 @@
+contract StringArray() {
+    string[] items;
+
+    function getItem(int i, string expected) {
+        require(this.items[i] == expected);
+    }
+}

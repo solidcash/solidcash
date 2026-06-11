@@ -1,0 +1,14 @@
+contract Test(string y) {
+    function hello() {
+        // bytes → string explicit cast
+        require(string(0x4801) == y);
+
+        // string → bytes explicit cast
+        bytes b = bytes(y);
+        require(b == 0x4801);
+
+        // string → unbounded bytes implicit cast
+        bytes c = y;
+        require(c == 0x4801);
+    }
+}

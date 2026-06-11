@@ -1,0 +1,21 @@
+contract UnderscoreTest() {
+    bytes20 _owner;
+    int _balance;
+    mapping(bytes20 => int) _balances;
+
+    function _transfer(bytes20 _from, bytes20 _to, int _amount) {
+        require(this._balance >= _amount);
+        this._balances[_from] = this._balances[_from] - _amount;
+        this._balances[_to] = this._balances[_to] + _amount;
+        this._balance = this._balance - _amount;
+    }
+
+    function _setOwner(bytes20 _newOwner) {
+        require(this._owner != _newOwner);
+        this._owner = _newOwner;
+    }
+
+    function authorize(pubkey pk, sig s) unsafe {
+        require(checkSig(s, pk));
+    }
+}

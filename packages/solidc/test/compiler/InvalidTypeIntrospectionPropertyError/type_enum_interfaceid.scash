@@ -1,0 +1,8 @@
+contract Test() {
+    enum Color { Red, Green, Blue }
+
+    function test(pubkey pk, sig s) {
+        require(checkSig(s, pk));
+        require(type(Color).interfaceId == 0x00000000);
+    }
+}

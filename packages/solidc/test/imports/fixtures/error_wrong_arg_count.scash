@@ -1,0 +1,9 @@
+import "./p2pkh_lib.scash";
+
+contract Broken() {
+    function spend(pubkey pk, sig s) {
+        require(checkSig(s, pk));
+        bytes lockingBytecode = P2PKHLib(0x00, 0x01).lockingBytecode;
+        require(tx.outputs[0].lockingBytecode == lockingBytecode);
+    }
+}

@@ -1,0 +1,13 @@
+enum Direction { Up, Down, Left, Right }
+
+contract EnumFileLevelTest(int dir) {
+    function goUp(pubkey pk, sig s) {
+        require(dir == Direction.Up);
+        require(checkSig(s, pk));
+    }
+
+    function goRight(pubkey pk, sig s) {
+        require(dir == Direction.Right);
+        require(checkSig(s, pk));
+    }
+}

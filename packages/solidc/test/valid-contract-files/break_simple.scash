@@ -1,0 +1,10 @@
+contract BreakSimple() {
+    function test(int limit) {
+        int i = 0;
+        do {
+            if (i == limit) break;
+            i = i + 1;
+        } while (i < 10);
+        require(i >= 0);
+    }
+}

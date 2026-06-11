@@ -1,0 +1,20 @@
+contract EventAnonymousMixed(pubkey owner) {
+    event Transfer(pubkey indexed from, pubkey indexed to, int amount);
+    event Debug(int value) anonymous;
+    event AdminAction(pubkey indexed admin, int action) anonymous;
+
+    function transfer(pubkey to, int amount, sig s) {
+        require(checkSig(s, owner));
+        emit Transfer(owner, to, amount);
+    }
+
+    function debug(int value, sig s) {
+        require(checkSig(s, owner));
+        emit Debug(value);
+    }
+
+    function adminAction(int action, sig s) {
+        require(checkSig(s, owner));
+        emit AdminAction(owner, action);
+    }
+}

@@ -1,0 +1,27 @@
+contract EventTypes(pubkey owner) {
+    event SimpleEvent(int value);
+    event BytesEvent(bytes20 addr, bytes4 data);
+    event BoolEvent(bool flag, int value);
+    event MultiEmit(int a, int b);
+
+    function emitSimple(int value, sig s) {
+        require(checkSig(s, owner));
+        emit SimpleEvent(value);
+    }
+
+    function emitBytes(bytes20 addr, bytes4 data, sig s) {
+        require(checkSig(s, owner));
+        emit BytesEvent(addr, data);
+    }
+
+    function emitBool(bool flag, int value, sig s) {
+        require(checkSig(s, owner));
+        emit BoolEvent(flag, value);
+    }
+
+    function emitMultiple(int a, int b, sig s) {
+        require(checkSig(s, owner));
+        emit MultiEmit(a, b);
+        emit MultiEmit(b, a);
+    }
+}

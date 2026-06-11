@@ -1,0 +1,4 @@
+// Abstract contract that cannot be deployed
+abstract contract AbstractDeployTarget() {
+    function spend(pubkey pk, sig s);
+}

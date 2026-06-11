@@ -1,0 +1,11 @@
+contract Test() {
+    int counter;
+
+    function foo() upgrade view returns (int) {
+        return this.counter;
+    }
+
+    function bar() {
+        require(foo() > 0);
+    }
+}

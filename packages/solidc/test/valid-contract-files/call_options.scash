@@ -1,0 +1,34 @@
+pragma solidcash >=0.8.0;
+
+interface ICounter {
+    public int counter;
+    function increment();
+}
+
+contract CallOptionTest(bytes32 targetCategory) {
+    int state;
+
+    // External call with {value: X}
+    function callWithValue(int amount) {
+        ICounter(targetCategory).increment{value: amount}();
+        this.state = this.state + 1;
+    }
+
+    // Low-level call with {value: X}
+    function lowLevelCallWithValue(int amount) {
+        ICounter(targetCategory).increment.call{value: amount}();
+        this.state = this.state + 1;
+    }
+
+    // Gas-only option (no-op)
+    function callWithGas() {
+        ICounter(targetCategory).increment{gas: 800}();
+        this.state = this.state + 1;
+    }
+
+    // Both value and gas
+    function callWithBoth(int amount) {
+        ICounter(targetCategory).increment{value: amount, gas: 800}();
+        this.state = this.state + 1;
+    }
+}

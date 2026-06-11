@@ -1,0 +1,11 @@
+contract Test() {
+    int counter;
+
+    function foo() upgrade pure returns (int) {
+        return 1;
+    }
+
+    function bar() {
+        require(foo() > 0);
+    }
+}

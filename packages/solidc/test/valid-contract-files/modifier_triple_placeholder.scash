@@ -1,0 +1,15 @@
+contract Test(bytes20 pkh) {
+    modifier checkThrice(int timeout) {
+        require(tx.time >= timeout);
+        _;
+        require(this.age >= 100);
+        _;
+        require(tx.time >= timeout);
+        _;
+    }
+
+    function spend(pubkey pk, sig s) checkThrice(1000) {
+        require(hash160(pk) == pkh);
+        require(checkSig(s, pk));
+    }
+}

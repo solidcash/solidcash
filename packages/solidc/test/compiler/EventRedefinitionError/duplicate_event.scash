@@ -1,0 +1,8 @@
+contract DuplicateEvent(pubkey owner) {
+    event Transfer(pubkey from, int amount);
+    event Transfer(pubkey to, int value);
+
+    function send(sig s) {
+        require(checkSig(s, owner));
+    }
+}

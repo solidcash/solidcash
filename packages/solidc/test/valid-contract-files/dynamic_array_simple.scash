@@ -1,0 +1,9 @@
+contract DynArraySimple() {
+    function test() {
+        int[] arr = [1, 2, 3];
+        arr.push(4);
+        arr.pop();
+        int len = arr.length;
+        require(len == 3);
+    }
+}

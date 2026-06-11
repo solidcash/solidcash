@@ -1,6 +1,0 @@
-contract Test() {
-    function hello() {
-        string y = "Hello";
-        y = 0x000000fefe00;
-    }
-}

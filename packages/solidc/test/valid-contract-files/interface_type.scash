@@ -1,0 +1,18 @@
+interface IVault {
+    type Amount is int;
+    public int balance;
+    function deposit(int amount);
+}
+
+contract Vault() {
+    int balance;
+
+    function deposit(Amount amount, pubkey pk, sig s) {
+        require(checkSig(s, pk));
+        int raw = int(amount);
+        require(raw > 0);
+        this.balance = this.balance + raw;
+    }
+
+    function authorize(pubkey pk, sig s) unsafe { require(checkSig(s, pk)); }
+}

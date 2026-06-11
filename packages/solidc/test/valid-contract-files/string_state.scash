@@ -1,0 +1,8 @@
+contract StringState() {
+    string name;
+
+    function setName(string newName) {
+        this.name = newName;
+        require(this.name == newName);
+    }
+}

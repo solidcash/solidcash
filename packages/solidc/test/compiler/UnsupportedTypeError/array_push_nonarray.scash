@@ -1,0 +1,6 @@
+contract ArrayPushNonArray() {
+    function test(int x) {
+        x.push(1);
+        require(x == 1);
+    }
+}

@@ -1,0 +1,6 @@
+contract Test() {
+    function test(bytes data) {
+        int val = abi.decodeAt(data, (int, bool), 2);
+        require(val > 0);
+    }
+}

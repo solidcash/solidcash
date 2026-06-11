@@ -1,0 +1,6 @@
+contract Test() {
+    function hello(fixed128x18 a, fixed128x8 b) {
+        // Mixed decimals cannot be implicitly combined
+        require(a + b > 0.0);
+    }
+}

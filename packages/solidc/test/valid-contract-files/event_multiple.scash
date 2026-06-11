@@ -1,0 +1,14 @@
+contract EventMultiple(pubkey owner) {
+    event Transfer(pubkey from, pubkey to, int amount);
+    event Approval(pubkey spender, int amount);
+
+    function transfer(pubkey to, int amount, sig s) {
+        require(checkSig(s, owner));
+        emit Transfer(owner, to, amount);
+    }
+
+    function approve(pubkey spender, int amount, sig s) {
+        require(checkSig(s, owner));
+        emit Approval(spender, amount);
+    }
+}

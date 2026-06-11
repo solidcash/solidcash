@@ -1,0 +1,7 @@
+contract ArrayPushWrongType() {
+    function test() {
+        int[] arr = [1, 2, 3];
+        arr.push(0x00);
+        require(arr.length == 4);
+    }
+}

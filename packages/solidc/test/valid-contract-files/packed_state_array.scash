@@ -1,0 +1,35 @@
+contract PackedStateArray(pubkey owner) {
+    bytes20[] packed addresses;
+    int counter;
+
+    function addAddress(sig s, bytes20 addr) {
+        require(checkSig(s, owner));
+        this.addresses.push(addr);
+        this.counter = this.counter + 1;
+    }
+
+    function removeAddress(sig s, int idx) {
+        require(checkSig(s, owner));
+        this.addresses.delete(idx);
+        this.counter = this.counter - 1;
+    }
+
+    function setAddress(sig s, int idx, bytes20 addr) {
+        require(checkSig(s, owner));
+        this.addresses[idx] = addr;
+    }
+
+    function popAddress(sig s) {
+        require(checkSig(s, owner));
+        this.addresses.pop();
+        this.counter = this.counter - 1;
+    }
+
+    function readAddress(int idx, bytes20 expected) {
+        require(this.addresses[idx] == expected);
+    }
+
+    function authorize(sig s) unsafe {
+        require(checkSig(s, owner));
+    }
+}

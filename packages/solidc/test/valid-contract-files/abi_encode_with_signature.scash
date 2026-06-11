@@ -1,0 +1,6 @@
+contract AbiEncodeWithSignature() {
+    function test(int x, pubkey pk) {
+        bytes data = abi.encodeWithSignature("transfer(pubkey,int)", x, pk);
+        require(data.length > 4);
+    }
+}

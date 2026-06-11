@@ -1,0 +1,10 @@
+contract Test(bytes20 pkh) {
+    modifier checkOwner {
+        require(checkSig(s, pk));
+        _;
+    }
+
+    function spend(pubkey pk, sig s) checkOwner {
+        require(hash160(pk) == pkh);
+    }
+}

@@ -1,0 +1,16 @@
+contract Test(bytes20 pkh) {
+    modifier timelocked {
+        require(this.age >= 100);
+        _;
+    }
+
+    modifier timelocked {
+        require(this.age >= 200);
+        _;
+    }
+
+    function spend(pubkey pk, sig s) timelocked {
+        require(hash160(pk) == pkh);
+        require(checkSig(s, pk));
+    }
+}

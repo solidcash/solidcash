@@ -1,0 +1,8 @@
+import "./itoken.scash";
+
+contract Token() is IToken {
+    function transfer(pubkey to, sig s, int amount) {
+        require(amount > 0);
+        require(checkSig(s, to));
+    }
+}

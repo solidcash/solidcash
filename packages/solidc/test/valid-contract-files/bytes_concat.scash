@@ -1,0 +1,31 @@
+contract BytesConcatTest() {
+    function concatTwo(bytes a, bytes b, pubkey pk, sig s) {
+        require(checkSig(s, pk));
+        bytes result = bytes.concat(a, b);
+        require(result.length > 0);
+    }
+
+    function concatThree(bytes4 a, bytes4 b, bytes4 c, pubkey pk, sig s) {
+        require(checkSig(s, pk));
+        bytes result = bytes.concat(a, b, c);
+        require(result.length == 12);
+    }
+
+    function concatMixed(bytes4 a, string b, bytes c, pubkey pk, sig s) {
+        require(checkSig(s, pk));
+        bytes result = bytes.concat(a, b, c);
+        require(result.length > 0);
+    }
+
+    function concatEmpty(pubkey pk, sig s) {
+        require(checkSig(s, pk));
+        bytes result = bytes.concat();
+        require(result.length == 0);
+    }
+
+    function concatSingle(bytes a, pubkey pk, sig s) {
+        require(checkSig(s, pk));
+        bytes result = bytes.concat(a);
+        require(result == a);
+    }
+}

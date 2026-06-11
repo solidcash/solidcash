@@ -1,0 +1,12 @@
+contract ImmutableAssignOutsideConstructor() {
+    int immutable maxValue;
+
+    constructor() {
+        this.maxValue = 100;
+    }
+
+    function update(int newMax) {
+        this.maxValue = newMax;
+        require(newMax > 0);
+    }
+}

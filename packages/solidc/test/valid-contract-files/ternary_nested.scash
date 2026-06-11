@@ -1,0 +1,6 @@
+contract TernaryNested(int x) {
+    function test() {
+        int result = x > 100 ? 2 : x > 10 ? 1 : 0;
+        require(result >= 0);
+    }
+}

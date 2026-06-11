@@ -1,0 +1,15 @@
+contract WhileNested(int rows, int cols) {
+    function test() {
+        int i = 0;
+        int total = 0;
+        while (i < rows) {
+            int j = 0;
+            while (j < cols) {
+                total = total + 1;
+                j = j + 1;
+            }
+            i = i + 1;
+        }
+        require(total >= 0);
+    }
+}

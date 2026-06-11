@@ -1,0 +1,9 @@
+contract Test() {
+    function foo() pure view returns (int) {
+        return 1;
+    }
+
+    function bar() {
+        require(foo() > 0);
+    }
+}

@@ -1,0 +1,9 @@
+contract Test() {
+    function abs(int x) internal pure returns (int) {
+        if (x >= 0) { return x; }
+    }
+
+    function run(int val) {
+        require(abs(val) >= 0);
+    }
+}

@@ -1,0 +1,12 @@
+contract SigConstructor(pubkey owner) {
+    int counter;
+
+    constructor(sig s) {
+        require(checkSig(s, owner));
+        this.counter = 1;
+    }
+
+    function update() {
+        this.counter = this.counter + 1;
+    }
+}

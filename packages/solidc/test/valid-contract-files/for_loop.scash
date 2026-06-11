@@ -1,0 +1,11 @@
+contract ForLoopy() {
+    function doLoop() {
+        int total = 0;
+
+        for (int i = 0; i < tx.inputs.length; i = i + 1) {
+            total = total + 1;
+        }
+
+        require(total > 2);
+    }
+}

@@ -1,0 +1,7 @@
+// Simple library contract for import testing
+contract P2PKHLib(bytes20 pkh) {
+    function spend(pubkey pk, sig s) {
+        require(hash160(pk) == pkh);
+        require(checkSig(s, pk));
+    }
+}

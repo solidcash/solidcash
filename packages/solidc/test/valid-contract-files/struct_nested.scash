@@ -1,0 +1,25 @@
+contract NestedStructTest() {
+    struct Inner {
+        int x;
+        int y;
+    }
+
+    struct Outer {
+        Inner inner;
+        int z;
+    }
+
+    Outer data;
+
+    function setData(int x, int y, int z) {
+        this.data = Outer(Inner(x, y), z);
+    }
+
+    function requireZ() {
+        require(this.data.z > 0);
+    }
+
+    function requireInnerX() {
+        require(this.data.inner.x > 0);
+    }
+}

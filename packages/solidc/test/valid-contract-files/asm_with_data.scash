@@ -1,0 +1,9 @@
+contract AsmWithData() {
+    function test() {
+        assembly {
+            0x01
+            OP_DROP
+        }
+        require(true);
+    }
+}

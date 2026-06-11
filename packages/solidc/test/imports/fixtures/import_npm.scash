@@ -1,0 +1,8 @@
+import "@solidcash/testlib/constants.scash";
+
+contract NpmImporter() {
+    function check(pubkey pk, sig s) {
+        require(checkSig(s, pk));
+        require(PKG_VERSION == 1);
+    }
+}

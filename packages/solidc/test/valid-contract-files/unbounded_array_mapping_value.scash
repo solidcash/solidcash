@@ -1,0 +1,12 @@
+contract UnboundedArrayMappingValue() {
+    mapping(bytes20 => int[]) scores;
+
+    function setScores(bytes20 user, int[] values) {
+        this.scores[user] = values;
+        require(this.scores[user][0] == values[0]);
+    }
+
+    function setOneScore(bytes20 user, int index, int newValue) {
+        this.scores[user][index] = newValue;
+    }
+}

@@ -1,0 +1,6 @@
+contract PackedIntArray() {
+    function test(int a) {
+        int[] packed items = [a];
+        require(items[0] == a);
+    }
+}

@@ -1,0 +1,16 @@
+contract SimpleArray() {
+    int[5] scores;
+    bytes20[] addresses;
+
+    function setScore(int index, int value) {
+        this.scores[index] = value;
+    }
+
+    function getAndRequire(int index) {
+        require(this.scores[index] > 0);
+    }
+
+    function removeAddress(int index) {
+        this.addresses.delete(index);
+    }
+}

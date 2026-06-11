@@ -1,0 +1,7 @@
+contract BadBound() {
+    int[0] scores;
+
+    function foo(int i) {
+        require(this.scores[i] > 0);
+    }
+}

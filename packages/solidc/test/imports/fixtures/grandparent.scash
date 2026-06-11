@@ -1,0 +1,5 @@
+contract GrandParent() {
+    function gpFunc(int x) {
+        require(x > 0);
+    }
+}

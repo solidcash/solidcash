@@ -1,0 +1,6 @@
+contract AbiEncode() {
+    function test(int x, bytes4 label, bool flag) {
+        bytes encoded = abi.encode(x, label, flag);
+        require(encoded.length > 0);
+    }
+}

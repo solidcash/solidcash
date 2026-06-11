@@ -1,0 +1,310 @@
+pragma solidcash >=0.8.0;
+
+// SafeMath — Ported verbatim from Solidity USDT
+library SafeMath {
+    function mul(int a, int b) returns (int) {
+        if (a == 0) { return 0; }
+        int c = a * b;
+        assert(c / a == b);
+        return c;
+    }
+
+    function div(int a, int b) returns (int) {
+        int c = a / b;
+        return c;
+    }
+
+    function sub(int a, int b) returns (int) {
+        assert(b <= a);
+        return a - b;
+    }
+
+    function add(int a, int b) returns (int) {
+        int c = a + b;
+        assert(c >= a);
+        return c;
+    }
+}
+
+// =============================================================================
+// USDT TetherToken — Ported from Solidity
+// (Ethereum mainnet 0xdAC17F958D2ee523a2206206994597C13D831ec7)
+//
+// FULLY PORTED. The only Solidity pattern not reproduced is the deprecated
+// delegation (forwarding calls to upgradedAddress), which is unnecessary on BCH
+// because the `upgrade` modifier preserves the contract's category ID — users
+// never need to change the contract address after an upgrade.
+// =============================================================================
+
+contract TetherToken() {
+
+    // ---- Events ----
+    event Transfer(bytes20 indexed from, bytes20 indexed to, int value);
+    event Approval(bytes20 indexed tokenOwner, bytes20 indexed spender, int value);
+    event Pause();
+    event Unpause();
+    event Issue(int amount);
+    event Redeem(int amount);
+    event DestroyedBlackFunds(bytes20 indexed blackListedUser, int balance);
+    event AddedBlackList(bytes20 indexed user);
+    event RemovedBlackList(bytes20 indexed user);
+    event Params(int feeBasisPoints, int maxFee);
+
+    // ---- Constants ----
+    int constant MAX_UINT = 2 ** 256 - 1;
+
+    using SafeMath for int;
+
+    // ---- State variables ----
+    public bytes20 owner;
+    public int totalSupply;
+    mapping(bytes20 holder => int balance) public balances;
+    public int basisPointsRate;
+    public int maximumFee;
+    mapping(bytes20 tokenOwner => mapping(bytes20 spender => int allowance)) public allowed;
+    public bool paused;
+    mapping(bytes20 user => bool listed) public isBlackListed;
+    public string name;
+    public string symbol;
+    public int decimals;
+    public bool deprecated;
+
+    // ---- Modifiers ----
+
+    modifier onlyOwner(pubkey modPk, sig modSig) {
+        require(hash160(modPk) == this.owner);
+        require(checkSig(modSig, modPk));
+        _;
+    }
+
+    modifier whenNotPaused() {
+        require(!this.paused);
+        _;
+    }
+
+    modifier whenPaused() {
+        require(this.paused);
+        _;
+    }
+
+    modifier onlyPayloadSize(int modSize) {
+        require(!(msg.data.length < modSize + 4));
+        _;
+    }
+
+    // ---- Constructor ----
+    constructor(
+        int initialSupply, string tokenName, string tokenSymbol,
+        int tokenDecimals, bytes20 ownerPkh
+    ) {
+        this.totalSupply = initialSupply;
+        this.name = tokenName;
+        this.symbol = tokenSymbol;
+        this.decimals = tokenDecimals;
+        this.balances[ownerPkh] = initialSupply;
+        this.owner = ownerPkh;
+        this.paused = false;
+        this.deprecated = false;
+        this.basisPointsRate = 0;
+        this.maximumFee = 0;
+    }
+
+    // ==== Ownable ====
+
+    function transferOwnership(
+        pubkey ownerPk, sig ownerSig,
+        bytes20 newOwner
+    ) onlyOwner(ownerPk, ownerSig) {
+        if (newOwner != 0x0000000000000000000000000000000000000000) {
+            this.owner = newOwner;
+        }
+    }
+
+    // ==== Pausable ====
+
+    function pause(pubkey ownerPk, sig ownerSig) onlyOwner(ownerPk, ownerSig) whenNotPaused {
+        this.paused = true;
+        emit Pause();
+    }
+
+    function unpause(pubkey ownerPk, sig ownerSig) onlyOwner(ownerPk, ownerSig) whenPaused {
+        this.paused = false;
+        emit Unpause();
+    }
+
+    // ==== ERC20: transfer ====
+
+    function transfer(
+        pubkey senderPk, sig senderSig,
+        bytes20 to, int value
+    ) onlyPayloadSize(2 * 32) whenNotPaused {
+        bytes20 sender = hash160(senderPk);
+        require(checkSig(senderSig, senderPk));
+        require(!this.isBlackListed[sender]);
+        require(!this.deprecated);
+
+        int fee = value.mul(this.basisPointsRate).div(10000);
+        if (fee > this.maximumFee) {
+            fee = this.maximumFee;
+        }
+        int sendAmount = value.sub(fee);
+
+        this.balances[sender] = this.balances[sender].sub(value);
+        this.balances[to] = this.balances[to].add(sendAmount);
+        if (fee > 0) {
+            this.balances[this.owner] = this.balances[this.owner].add(fee);
+            emit Transfer(sender, this.owner, fee);
+        }
+        emit Transfer(sender, to, sendAmount);
+    }
+
+    // ==== ERC20: transferFrom ====
+
+    function transferFrom(
+        pubkey callerPk, sig callerSig,
+        bytes20 from, bytes20 to, int value
+    ) onlyPayloadSize(3 * 32) whenNotPaused {
+        require(checkSig(callerSig, callerPk));
+        bytes20 caller = hash160(callerPk);
+        require(!this.isBlackListed[from]);
+        require(!this.deprecated);
+
+        int currentAllowance = this.allowed[from][caller];
+
+        int fee = value.mul(this.basisPointsRate).div(10000);
+        if (fee > this.maximumFee) {
+            fee = this.maximumFee;
+        }
+
+        if (currentAllowance < MAX_UINT) {
+            this.allowed[from][caller] = currentAllowance.sub(value);
+        }
+        int sendAmount = value.sub(fee);
+        this.balances[from] = this.balances[from].sub(value);
+        this.balances[to] = this.balances[to].add(sendAmount);
+        if (fee > 0) {
+            this.balances[this.owner] = this.balances[this.owner].add(fee);
+            emit Transfer(from, this.owner, fee);
+        }
+        emit Transfer(from, to, sendAmount);
+    }
+
+    // ==== ERC20: approve ====
+
+    function approve(
+        pubkey ownerPk, sig ownerSig,
+        bytes20 spender, int value
+    ) onlyPayloadSize(2 * 32) {
+        bytes20 tokenOwner = hash160(ownerPk);
+        require(checkSig(ownerSig, ownerPk));
+        require(!this.deprecated);
+
+        require(!(value != 0 && this.allowed[tokenOwner][spender] != 0));
+
+        this.allowed[tokenOwner][spender] = value;
+        emit Approval(tokenOwner, spender, value);
+    }
+
+    // ==== View functions ====
+    // On BCH, state is readable directly from UTXOs via the SDK:
+    //   sc.state.totalSupply()             — totalSupply()
+    //   sc.balances(who)                   — balanceOf(address)
+    //   sc.allowed(owner)(spender)         — allowance(address, address)
+    //   sc.isBlackListed(addr)             — getBlackListStatus(address)
+    //   sc.state.owner()                   — getOwner()
+    // View functions that read mappings are accessible off-chain without
+    // on-chain function calls. Simple state views compile to BCH:
+
+    function totalSupply() view returns (int) {
+        return this.totalSupply;
+    }
+
+    function getOwner() view returns (bytes20) {
+        return this.owner;
+    }
+
+    // ==== BlackList ====
+
+    function addBlackList(
+        pubkey ownerPk, sig ownerSig,
+        bytes20 evilUser
+    ) onlyOwner(ownerPk, ownerSig) {
+        this.isBlackListed[evilUser] = true;
+        emit AddedBlackList(evilUser);
+    }
+
+    function removeBlackList(
+        pubkey ownerPk, sig ownerSig,
+        bytes20 clearedUser
+    ) onlyOwner(ownerPk, ownerSig) {
+        this.isBlackListed[clearedUser] = false;
+        emit RemovedBlackList(clearedUser);
+    }
+
+    function destroyBlackFunds(
+        pubkey ownerPk, sig ownerSig,
+        bytes20 blackListedUser
+    ) onlyOwner(ownerPk, ownerSig) {
+        require(this.isBlackListed[blackListedUser]);
+        int dirtyFunds = this.balances[blackListedUser];
+        this.balances[blackListedUser] = 0;
+        this.totalSupply = this.totalSupply - dirtyFunds;
+        emit DestroyedBlackFunds(blackListedUser, dirtyFunds);
+    }
+
+    // ==== Supply Management ====
+
+    function issue(
+        pubkey ownerPk, sig ownerSig,
+        int amount
+    ) onlyOwner(ownerPk, ownerSig) {
+        require(this.totalSupply + amount > this.totalSupply);
+        require(this.balances[this.owner] + amount > this.balances[this.owner]);
+        this.balances[this.owner] = this.balances[this.owner] + amount;
+        this.totalSupply = this.totalSupply + amount;
+        emit Issue(amount);
+    }
+
+    function redeem(
+        pubkey ownerPk, sig ownerSig,
+        int amount
+    ) onlyOwner(ownerPk, ownerSig) {
+        require(this.totalSupply >= amount);
+        require(this.balances[this.owner] >= amount);
+        this.totalSupply = this.totalSupply - amount;
+        this.balances[this.owner] = this.balances[this.owner] - amount;
+        emit Redeem(amount);
+    }
+
+    // ==== Fee Parameters ====
+
+    function setParams(
+        pubkey ownerPk, sig ownerSig,
+        int newBasisPoints, int newMaxFee
+    ) onlyOwner(ownerPk, ownerSig) {
+        require(newBasisPoints < 20);
+        require(newMaxFee < 50);
+
+        this.basisPointsRate = newBasisPoints;
+        this.maximumFee = newMaxFee.mul(10 ** this.decimals);
+        emit Params(this.basisPointsRate, this.maximumFee);
+    }
+
+    // ==== Deprecation ====
+    // Solidity's deprecated flag + upgradedAddress delegation lets users keep
+    // calling the old contract address after migration. On BCH, the category ID
+    // IS the contract identity, and the `upgrade` modifier preserves it — so
+    // users never need to change addresses. The delegation is unnecessary.
+    // The flag itself is fully supported:
+
+    function deprecate(
+        pubkey ownerPk, sig ownerSig
+    ) onlyOwner(ownerPk, ownerSig) {
+        this.deprecated = true;
+    }
+
+    // ==== BCH: authorize ====
+    function authorize(pubkey pk, sig s) unsafe {
+        require(checkSig(s, pk));
+    }
+}

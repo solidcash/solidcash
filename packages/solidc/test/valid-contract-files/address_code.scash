@@ -1,0 +1,29 @@
+pragma solidcash >=0.8.0;
+
+contract AddressCode() {
+    // Test codehash extraction from an address
+    function checkCodehash(address target, bytes expectedHash) {
+        bytes hash = target.codehash;
+        require(hash == expectedHash);
+    }
+
+    // Test code extraction from own address (fast path)
+    function getSelfCode(bytes expectedCode) {
+        address self = address(tx.inputs[this.activeInputIndex].lockingBytecode);
+        bytes code = self.code;
+        require(code == expectedCode);
+    }
+
+    // Test code extraction from another input (slow path)
+    function getOtherCode(address target, bytes expectedCode) {
+        bytes code = target.code;
+        require(code == expectedCode);
+    }
+
+    // Test codehash on output locking bytecode
+    function checkOutputCodehash(int outputIdx, bytes expectedHash) {
+        address outAddr = address(tx.outputs[outputIdx].lockingBytecode);
+        bytes hash = outAddr.codehash;
+        require(hash == expectedHash);
+    }
+}

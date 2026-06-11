@@ -1,0 +1,12 @@
+contract AsmSimple() {
+    function test() {
+        assembly {
+            OP_1
+            OP_1
+            OP_ADD
+            OP_2
+            OP_NUMEQUALVERIFY
+        }
+        require(true);
+    }
+}

@@ -1,13 +1,13 @@
 import { URL } from 'url';
-import { compileFile } from 'cashc';
-import { Contract, SignatureTemplate, TransactionBuilder, MockNetworkProvider, randomUtxo } from 'cashscript';
+import { compileFile } from 'solidc';
+import { Contract, SignatureTemplate, TransactionBuilder, MockNetworkProvider, randomUtxo } from 'solidcash';
 import { stringify } from '@bitauth/libauth';
 
 // Import Alice's keys from common.ts
 import { alicePkh, alicePriv, aliceAddress, alicePub } from './common.js';
 
 // Compile the P2PKH contract to an artifact object
-const artifact = compileFile(new URL('p2pkh.cash', import.meta.url));
+const artifact = compileFile(new URL('p2pkh.scash', import.meta.url));
 
 // Once you're ready to send transactions on a real network (like chipnet or mainnet), use the ElectrumNetworkProvider
 // const provider = new ElectrumNetworkProvider();

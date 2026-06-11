@@ -1,6 +1,6 @@
 import { stringify } from '@bitauth/libauth';
-import { Contract, SignatureTemplate, TransactionBuilder, Output, MockNetworkProvider, randomUtxo } from 'cashscript';
-import { compileFile } from 'cashc';
+import { Contract, SignatureTemplate, TransactionBuilder, Output, MockNetworkProvider, randomUtxo } from 'solidcash';
+import { compileFile } from 'solidc';
 import { URL } from 'url';
 
 // Import keys and price oracle from common.ts
@@ -12,7 +12,7 @@ import {
 } from './common.js';
 
 // Compile the HodlVault contract to an artifact object
-const artifact = compileFile(new URL('hodl_vault.cash', import.meta.url));
+const artifact = compileFile(new URL('hodl_vault.scash', import.meta.url));
 
 // Once you're ready to send transactions on a real network (like chipnet or mainnet), use the ElectrumNetworkProvider
 // const provider = new ElectrumNetworkProvider();

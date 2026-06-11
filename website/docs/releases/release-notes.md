@@ -2,46 +2,23 @@
 title: Release Notes
 ---
 
-## v0.13.0
+## v0.13.0-next.3
 
 This release contains several breaking changes, please refer to the [migration notes](/docs/releases/migration-notes) for more information.
 
-#### cashc compiler
-- :sparkles: Add support for `for`, `while` and `do-while` loops.
-- :sparkles: Add support for compound assignment operators (`+=`, `-=`) and increment/decrement operators (`++`, `--`).
+#### solidc compiler
+- :sparkles: Add support for `do {} while ()` loops.
 - :sparkles: Add support for bitwise and arithmetic shift operators (`<<`, `>>`) and bitwise inversion (`~`).
-- :sparkles: Add `fingerprint` field to artifact to allow for fingerprinting of the contract bytecode.
 - :sparkles: Add `unsafe_bool()` and `unsafe_int()` casting for semantic-only casts.
-- :sparkles: Add support for narrowing bytes types after `x.length == N` and checks in require or if statements.
-- :hammer_and_wrench: **BREAKING**: Automatically inject `require(tx.time >= tx.locktime)` when a function uses `tx.locktime` without a `tx.time` check in scope, ensuring the spending input is non-final so `nLockTime` is enforced. This can be disabled with the `enforceLocktimeGuard: false` compiler option (CLI: `--skip-enforce-locktime-guard`).
-- :hammer_and_wrench: **BREAKING**: Function parameter types are now strictly enforced (bounded bytes and boolean values). This can be disabled with the `enforceFunctionParameterTypes: false` compiler option (CLI: `--skip-enforce-function-parameter-types`).
-- :bug: Fix issue where casting bytes larger than `bytes8` to `int` was not allowed.
-- :bug: Fix issue where empty bytecode contracts were not properly compiled.
 - :bug: **BREAKING**: Fix issue where `bool()` casting did not change the value of the argument.
 - :boom: **BREAKING**: Rename `bytes4(int)` and `bytes(int, 4)` to `toPaddedBytes(int, 4)`.
 - :boom: **BREAKING**: Rename `bytes4(bytes)` to `unsafe_bytes4(bytes)`.
-- :racehorse: Add optimisations for negated number comparisons and boolean comparisons.
+- :racehorse: Add optimisations for negated number comparisons.
 
-#### CashScript SDK
+#### SolidCash SDK
 
-- :sparkles: Add support for loops in debug tooling.
-- :sparkles: Add support for `p2s` contract type.
-- :sparkles: Add `addBchChangeOutputIfNeeded()` method to `TransactionBuilder` class.
-- :sparkles: Add `addTokenChangeOutputIfNeeded()` method to `TransactionBuilder` class for adding a fungible token change output for a specific category.
-- :sparkles: Add `getTransactionSize` method to `TransactionBuilder` class.
-- :sparkles: Add `lockingBytecode` property to `Contract` class.
-- :sparkles: Add `getUtxosForLockingBytecode()` method to `ElectrumNetworkProvider` class and `MockNetworkProvider` interface.
-- :sparkles: In the `MockNetworkProvider`, `addUtxo()` now also allows UTXOs to be added by locking bytecode.
-- :sparkles: Add `gatherBchUtxos()` and `gatherFungibleTokenUtxos()` functions to the SDK for gathering UTXOs.
-- :sparkles: Add specific network error classes to standardise error handling in network providers.
-- :sparkles: Add TSDoc strings for all public classes and methods.
-- :bug: Fix issue where `FailedTransactionError` would not show underlying error if BitAuth URI generation failed.
-- :boom: **BREAKING**: Remove `BitcoinRpcNetworkProvider` and `FullStackNetworkProvider` from the SDK.
-- :hammer_and_wrench: **BREAKING**: Rename `addressType` option on `Contract` constructor to `contractType`.
-- :hammer_and_wrench: **BREAKING**: Remove undocumented `redeemScript` property from `Contract` class.
-- :hammer_and_wrench: **BREAKING**: Remove undocumented `buildLibauthTransaction()` method from `TransactionBuilder` class.
+- :sparkles: Add support for `do {} while ()` loops in debug tooling.
 - :hammer_and_wrench: Update default VM target to `BCH_2026_05`.
-- :hammer_and_wrench: Improve validation when adding outputs to a transaction.
 - :hammer_and_wrench: Improve package size by tidying up dependencies.
 
 #### Testing Suite
@@ -53,14 +30,14 @@ This release contains several breaking changes, please refer to the [migration n
 
 ## v0.12.1
 
-#### CashScript SDK
+#### SolidCash SDK
 - :sparkles: Add Vitest extensions for automated testing.
 
 ## v0.12.0
 
 This release contains several breaking changes, please refer to the [migration notes](/docs/releases/migration-notes) for more information.
 
-#### CashScript SDK
+#### SolidCash SDK
 - :sparkles: Add `getVmResourceUsage` method to `TransactionBuilder`.
 - :sparkles: Add `maximumFeeSatsPerByte` and `allowImplicitFungibleTokenBurn` options to `TransactionBuilder` constructor.
 - :sparkles: Add a configurable `vmTarget` option to `MockNetworkProvider`.
@@ -81,7 +58,7 @@ https://x.com/CashScriptBCH/status/1973692336782876974
 
 ## v0.11.5
 
-#### CashScript SDK
+#### SolidCash SDK
 - :sparkles: Include input index in console.log statements for debugging.
 - :sparkles: Improve type inference for function and constructor arguments in the `Contract` class.
 - :hammer_and_wrench: Replace redundant dependencies.
@@ -89,29 +66,29 @@ https://x.com/CashScriptBCH/status/1973692336782876974
 
 ## v0.11.4
 
-#### CashScript SDK
+#### SolidCash SDK
 - :sparkles: Add `updateUtxoSet` option to `MockNetworkProvider` to allow for updating the UTXO set after a transaction is sent.
 - :bug: Fix bug where sending P2PKH-only transactions would throw `No placeholder scenario ID or script ID found`.
 
 ## v0.11.3
 
-#### cashc compiler
+#### solidc compiler
 - :sparkles: Add `.slice(start, end)` operator for bytes and strings.
 - :sparkles: Add bounded bytes typing and bounds checking for `.split()` (includes checking for negative indices).
 - :racehorse: Add optimisation for `.slice(0, x)` and `.slice(x, y.length)` (also applies to `.split(0)[1]`).
 - :bug: Disallow incorrect bounded bytes typing when using `.split()`.
 
-#### CashScript SDK
+#### SolidCash SDK
 - :bug: Fix bug with where `ElectrumNetworkProvider` would disconnect in browser on visibility change of the page.
 
 ## v0.11.2
 
-#### CashScript SDK
+#### SolidCash SDK
 - :bug: Fix bug with new `generateWcTransactionObject()` throwing when using `placeholderP2PKHUnlocker()`.
 
 ## v0.11.1
 
-#### CashScript SDK
+#### SolidCash SDK
 - :sparkles: Add `generateWcTransactionObject()` method to `TransactionBuilder` to generate a `WcTransactionObject` that can be used to sign a transaction with a WalletConnect client.
 - :sparkles: Add `placeholderSignature()`, `placeholderPublicKey()` and `placeholderP2PKHUnlocker()` helper functions to the SDK for WalletConnect usage.
 
@@ -121,26 +98,26 @@ https://x.com/CashScriptBCH/status/1942513305420968238
 
 ## v0.11.0
 
-This update adds CashScript support for the new BCH 2025 network upgrade. To read more about the upgrade, see [this blog post](https://blog.bitjson.com/2025-chips/).
+This update adds SolidCash support for the new BCH 2025 network upgrade. To read more about the upgrade, see [this blog post](https://blog.bitjson.com/2025-chips/).
 
 This release also contains several breaking changes, please refer to the [migration notes](/docs/releases/migration-notes) for more information.
 
 Thanks [kiok](https://x.com/cypherpunk_bch) for the significant contributions!
 
-#### cashc compiler
+#### solidc compiler
 - :bug: Fix bug where source code in `--format ts` artifacts used incorrect quotation marks.
 - :hammer_and_wrench: Remove warning for opcount and update warning for byte size to match new limits.
 - :boom: **BREAKING**: `tx.age` was renamed to `this.age` to better reflect that it enforces a UTXO-level locktime check (*not* transaction-level).
 - :boom: **BREAKING**: The entire `debug` object on the artifact is reworked to enable debugging the optimised contract bytecode.
 
-#### CashScript SDK
+#### SolidCash SDK
 - :sparkles: Add debugging capabilities to the `TransactionBuilder`.
   - `transaction.debug()` & `transaction.bitauthUri()`
   - Output BitAuth IDE URI for debugging when transaction is rejected.
   - Libauth template generation and debugging for multi-contract transactions
-- :sparkles: Debugging now supports using the optimised contract bytecode (when compiled with `cashc@0.11.0` or later).
+- :sparkles: Debugging now supports using the optimised contract bytecode (when compiled with `solidc@0.11.0` or later).
 - :sparkles: Add `setBlockHeight()` method to `MockNetworkProvider`
-- :sparkles: Config-free usage of the CashScript SDK with Vite or Webpack
+- :sparkles: Config-free usage of the SolidCash SDK with Vite or Webpack
 - :hammer_and_wrench: Update debug tooling to use the new `BCH_2025_05` instruction set.
 - :hammer_and_wrench: Deprecate the simple transaction builder. You can still use the simple transaction builder with the current SDK, but this support will be removed in a future release
 - :boom: **BREAKING**: the Jest utilities for automated testing are now synchronous and no longer work with the deprecated simple transaction builder
@@ -148,7 +125,7 @@ Thanks [kiok](https://x.com/cypherpunk_bch) for the significant contributions!
   * `expect(transaction).toFailRequire()`
   * `expect(transaction).toFailRequireWith(message)`
 - :boom: **BREAKING**: Remove support for custom Clusters from `ElectrumNetworkProvider` and added a configuration object to the constructor.
-- :boom: **BREAKING**: Remove support for old contracts compiled with CashScript v0.6.x or earlier.
+- :boom: **BREAKING**: Remove support for old contracts compiled with SolidCash v0.6.x or earlier.
 - :bug: Fix bug where `JestExtensions` `expect().toLog()` would detect logs from different tests.
 - :bug: Fix bug where certain edge cases in require statements caused the `FailedRequireError` message to be slightly different from the original error message.
 
@@ -156,40 +133,40 @@ Thanks [kiok](https://x.com/cypherpunk_bch) for the significant contributions!
 
 https://x.com/CashScriptBCH/status/1935662184865890325
 
-#### @cashscript/utils
+#### @solidcash/utils
 - :boom: **BREAKING**: Remove `importArtifact` and `exportArtifact` helper functions. If you want to import or export artifacts, use `'fs'` to read and write files directly.
 
 ## v0.10.5
 
-#### cashc compiler
+#### solidc compiler
 - :bug: Fix bug in new TypeScript typings for artifact.
 
 ## v0.10.4
 
-#### cashc compiler
+#### solidc compiler
 - :bug: Fix bug in new `--format ts` option.
 
 ## v0.10.3
 
-#### cashc compiler
-- :sparkles: Add `--format ts` option to `cashc` CLI to generate TypeScript typings for the artifact.
+#### solidc compiler
+- :sparkles: Add `--format ts` option to `solidc` CLI to generate TypeScript typings for the artifact.
 
-#### CashScript SDK
-- :sparkles: Add automatic TypeScript typings for `Contract` class when artifact is generated using the `cashc` CLI with the `--format ts` option.
+#### SolidCash SDK
+- :sparkles: Add automatic TypeScript typings for `Contract` class when artifact is generated using the `solidc` CLI with the `--format ts` option.
 
 ## v0.10.2
 
-#### cashc compiler
+#### solidc compiler
 - :sparkles: Add support for using underscores in numeric literals to improve readability, e.g. `1_000_000`.
 - :sparkles: Add support for using scientific notation in numeric literals, e.g. `1e6` or `1E6`.
 
-#### CashScript SDK
+#### SolidCash SDK
 - :bug: Fix fee calculation when using `SignatureAlgorithm.ECDSA`.
 - :hammer_and_wrench: Clean up dependencies.
 
 ## v0.10.1
 
-#### CashScript SDK
+#### SolidCash SDK
 - :bug: Fix bug with `MockNetworkProvider` returning the wrong `Network` type (now returns `Network.MOCKNET` / `"mocknet"`).
 - :bug: Fix bug in debug tooling where incorrect placeholder keys were used when evaluating transactions with P2PKH inputs.
 
@@ -199,19 +176,19 @@ In this version we added proper debugging support for transactions and integrati
 
 Thanks [mainnet_pat](https://x.com/mainnet_pat) for the initiative and significant contributions!
 
-#### cashc compiler
+#### solidc compiler
 - :sparkles: Add `console.log()` statements for debugging.
 - :sparkles: Extend `require()` statements to allow custom error messages for debugging.
 - :hammer_and_wrench: Update artifact format to allow for new debugging features.
 - :hammer_and_wrench: Update dependencies to new major versions.
 
-#### CashScript SDK
+#### SolidCash SDK
 - :sparkles: Add support for transaction evaluation and debugging using libauth templates.
   - `transaction.debug()` & `transaction.bitauthUri()`
   - Output BitAuth IDE URI for debugging when transaction is rejected.
 - :sparkles: Add `MockNetworkProvider` to simulate network interaction for debugging and testing.
   - Add `randomUtxo()`, `randomToken()` and `randomNft()` functions to generate dummy UTXOs for testing.
-- :sparkles: Add CashScript Jest utilities for automated testing.
+- :sparkles: Add SolidCash Jest utilities for automated testing.
   * `await expect(transaction).toLog(message)`
   * `await expect(transaction).toFailRequire()`
   * `await expect(transaction).toFailRequireWith(message)`
@@ -233,29 +210,29 @@ https://x.com/CashScriptBCH/status/1833454128426615174
 
 ## v0.9.3
 
-#### cashc compiler
+#### solidc compiler
 - :hammer_and_wrench: Migrate from antlr4ts to ANTLR's official TypeScript target to remove circular dependency issues.
 
 ## v0.9.2
 
-#### CashScript SDK
+#### SolidCash SDK
 
 - :bug: Fix bug where UTXOs would be needlessly retrieved from the network during `build()` calls.
 - :bug: Fix off-by-one fee calculation error with transactions that have many outputs.
 - :bug: Fix bug where no error was thrown when invalid NFT commitment or token category were provided.
-- :hammer_and_wrench: Export all interfaces from CashScript's `interfaces.ts`.
+- :hammer_and_wrench: Export all interfaces from SolidCash's `interfaces.ts`.
 - :hammer_and_wrench: Merge duplicate code between Transaction.ts and TransactionBuilder.ts.
 
 ## v0.9.1
 
-#### CashScript SDK
+#### SolidCash SDK
 - :bug: Fix TransactionBuilder export bug.
 
 ## v0.9.0
 
-#### CashScript SDK
+#### SolidCash SDK
 - :sparkles: Add new `TransactionBuilder` class that allows combining UTXOs from multiple different smart contracts and P2PKH UTXOs in a single transaction.
-- :hammer_and_wrench: Deprecate all `meep` functionality. Meep has been unmaintained for years and does not support many new CashScript features. Meep functionality will be removed in a future release.
+- :hammer_and_wrench: Deprecate all `meep` functionality. Meep has been unmaintained for years and does not support many new SolidCash features. Meep functionality will be removed in a future release.
 
 ---
 
@@ -263,29 +240,29 @@ https://x.com/CashScriptBCH/status/1713928572677583023
 
 ## v0.8.2
 
-#### CashScript SDK
+#### SolidCash SDK
 - :bug: Fix bug with Vite build.
 - :sparkles: Expose `ElectrumNetworkProvider#performRequest` to allow raw Electrum requests if needed.
 
 ## v0.8.1
 
-#### CashScript SDK
+#### SolidCash SDK
 - :bug: Fix bug where a different property order of NFT inputs/outputs would cause errors.
 
 ## v0.8.0
 
-:warning: From v0.8.0 onwards, CashScript is a [Pure ESM package](https://gist.github.com/sindresorhus/a39789f98801d908bbc7ff3ecc99d99c). This means that you can no longer use `require()` to import `cashscript` or `cashc`.
+:warning: From v0.8.0 onwards, SolidCash is a [Pure ESM package](https://gist.github.com/sindresorhus/a39789f98801d908bbc7ff3ecc99d99c). This means that you can no longer use `require()` to import `solidcash` or `solidc`.
 
 This release also contains several breaking changes, please refer to the [migration notes](/docs/releases/migration-notes) for more information.
 
-#### cashc compiler
+#### solidc compiler
 - :sparkles: Add support for the new CashTokens introspection functionality (`tokenCategory`,`nftCommitment`and `tokenAmount`for both in- and outputs).
 - :sparkles: Add `LockingBytecodeP2SH32` to generate the new P2SH32 standard locking script.
 - :bug: Fix optimisation bug that caused `OP_0NOTEQUAL` to be applied to non-integer values.
 - :boom: **BREAKING**: Move to Pure ESM.
 - :boom: **BREAKING**: Rename `LockingBytecodeP2SH` to `LockingBytecodeP2SH20` - but it is recommended to change over to the new P2SH32 for security reasons.
 
-#### CashScript SDK
+#### SolidCash SDK
 - :sparkles: Add support for CashTokens.
   - `.to()` now takes a `token` parameter that can be used to send CashTokens.
   - UTXOs that are retrieved with `contract.getUtxos()` include a `token` field if they are token UTXOs.
@@ -311,35 +288,35 @@ https://x.com/CashScriptBCH/status/1662092546372255744
 
 ## v0.7.5
 
-#### CashScript SDK
+#### SolidCash SDK
 - :bug: Fix a bug with chipnet connection
 
 ## v0.7.4
 
-#### cashc compiler
+#### solidc compiler
 - :hammer_and_wrench: Internal refactoring
 
-#### CashScript SDK
+#### SolidCash SDK
 - :bug: Fix a bug with ESM exports
 
 ## v0.7.3
-#### CashScript SDK
+#### SolidCash SDK
 - :sparkles: Add `"chipnet"` network option to ElectrumNetworkProvider, used to connect to the May 2023 testnet.
 * :hammer_and_wrench: Renamed network options `"testnet"` & `"staging"` to `"testnet3"` and `"testnet4"` respectively. Old options will be removed in a future release.
 
 ## v0.7.2
-#### cashc compiler
+#### solidc compiler
 * :bug: Fix bug where contracts using `checkMultiSig()` were unspendable.
 
-#### CashScript SDK
+#### SolidCash SDK
 * :sparkles: Add `signatureAlgorithm` parameter to `SignatureTemplate` to allow ECDSA signatures.
 
 ## v0.7.1
-#### @cashscript/utils
+#### @solidcash/utils
 * :bug: Fix bug where 64bit integers could not be decoded.
 
 ## v0.7.0
-#### cashc compiler
+#### solidc compiler
 - :sparkles: Add destructuring assignments, e.g. `bytes2 left, bytes1 right = 0x123456.split(2)`
 - :sparkles: Add constant keyword, e.g. `int constant x = 10;`
 - :sparkles: Add multiplication, e.g. `int x = 5 * 5`
@@ -349,7 +326,7 @@ https://x.com/CashScriptBCH/status/1662092546372255744
 - :boom: **BREAKING**: Remove `sig` to `datasig` casting since this was only useful for *old* covenants
 - :bug: Fix ESM build
 
-#### CashScript SDK
+#### SolidCash SDK
 - :sparkles: Add `"staging"` network option to ElectrumNetworkProvider, used to connect to the May 2022 testnet
 - :hammer_and_wrench: Deprecate old introspection/covenant functionality. You can still use pre-0.7 contracts with the new SDK, but this support will be removed in a future release.
 - :boom: **BREAKING**: arguments of type `datasig` must be 64 bytes in length, effectively enforcing Schnorr
@@ -360,70 +337,70 @@ https://x.com/CashScriptBCH/status/1662092546372255744
 https://x.com/RoscoKalis/status/1529072055756414976
 
 ## v0.6.5
-#### cashc compiler
-* :bug: Fix `cashc` version
+#### solidc compiler
+* :bug: Fix `solidc` version
 
 ## v0.6.4
-#### cashc compiler
+#### solidc compiler
 * :sparkles: Add `byte` type alias for `bytes1`
 
 ## v0.6.3
 * :hammer_and_wrench: Use ES2015 for the "module" output for better compatibility
 
 ## v0.6.2
-#### CashScript SDK
+#### SolidCash SDK
 * :bug: Fix typing issue with BitcoinRpcNetworkProvider
 
 ## v0.6.1
-#### CashScript SDK
+#### SolidCash SDK
 * :bug: Fix bug with incorrect fee calculation when providing custom fee per byte
 
 ## v0.6.0
-#### cashc compiler
+#### solidc compiler
 * :sparkles: Add date literal (gets converted to int timestamp)
 * :hammer_and_wrench: Update ParseError messages
 * :bug: The final statement in a contract now MUST be a require statement (in all branches)
 * :bug: Empty contracts and functions are now considered invalid
 * :bug: Fix bug where certain covenants could become unspendable due to incorrect bytesize calculation
-  * :boom: **BREAKING**: Covenants using `tx.bytecode` now include a placeholder `OP_NOP` that gets replaced when constructor arguments are provided in the CashScript SDK. If you're not using the CashScript SDK, refer to the [`replaceBytecodeNop()` function](https://github.com/CashScript/cashscript/blob/v0.6.0/packages/utils/src/script.ts#L130) to see the steps required to do so manually.
+  * :boom: **BREAKING**: Covenants using `tx.bytecode` now include a placeholder `OP_NOP` that gets replaced when constructor arguments are provided in the SolidCash SDK. If you're not using the SolidCash SDK, refer to the [`replaceBytecodeNop()` function](https://github.com/CashScript/cashscript/blob/v0.6.0/packages/utils/src/script.ts#L130) to see the steps required to do so manually.
 * :boom: **BREAKING**: Remove `--args` parameter from the CLI, since this is too error prone with the recent changes in mind
 * :boom: **BREAKING**: Restructure exports
 
-#### CashScript SDK
+#### SolidCash SDK
 * :sparkles: Add BitcoinRpcNetworkProvider that connects to a BCH node RPC
-* :boom: **BREAKING**: Remove dependency on `cashc` and remove `CashCompiler` export
+* :boom: **BREAKING**: Remove dependency on `solidc` and remove `SolidCompiler` export
 
 ---
 https://x.com/RoscoKalis/status/1371896417443282956
 
 ## v0.5.7
-#### cashc compiler
+#### solidc compiler
 - :bug: Better error reporting for parsing/lexing errors
 
 ## v0.5.6
-#### cashc compiler
+#### solidc compiler
 - :bug: Make compiler fail early when encountering lexing/parsing errors, rather than performing error recovery
 - :bug: Allow empty hex literals (i.e. `0x`)
 
 ## v0.5.5
-#### CashScript SDK
+#### SolidCash SDK
 - :sparkles: Add `'regtest'` as a possible network for NetworkProviders.
 
 ## v0.5.4
 - :package: Add dual build system (CommonJS and ES Modules) to accommodate tree-shaking.
 
 ## v0.5.3
-#### CashScript SDK
+#### SolidCash SDK
 - :sparkles: Add `getRedeemScriptHex()` function to the `Contract` class.
 - :bug: Fix a bug where transaction locktime could not specifically be set to 0.
 - :bug: Fix a bug where signature buffers were not checked for size.
 
 ## v0.5.2
-#### cashc compiler
+#### solidc compiler
 - :bug: Fix a bug where an incorrect error message was displayed in Firefox when an incompatible pragma version was used.
 
 ## v0.5.1
-#### CashScript SDK
+#### SolidCash SDK
 - :sparkles: The `.send()` function now returns a `TransactionDetails` object. This extends the libauth `Transaction` with added `txid` and `hex` fields.
   - Because it extends the previous return type, this is backwards compatible.
   - Since this now returns the transaction hex as a field, using `.send(true)` to return the transaction hex is deprecated and will be removed in a future release.
@@ -433,17 +410,17 @@ https://x.com/RoscoKalis/status/1371896417443282956
 https://x.com/RoscoKalis/status/1301521593399685121
 
 ## v0.5.0
-#### CashScript SDK
-CashScript used to be very tightly coupled with BITBOX. This proved to be problematic after maintenance for BITBOX was stopped. The main objective of this update is to allow CashScript to be used with many different BCH libraries.
+#### SolidCash SDK
+SolidCash used to be very tightly coupled with BITBOX. This proved to be problematic after maintenance for BITBOX was stopped. The main objective of this update is to allow SolidCash to be used with many different BCH libraries.
 
 - :sparkles: Add `withoutChange()` function to disable change outputs for a transaction.
 - :sparkles: `SignatureTemplate` can now be used with BITBOX keypairs, `bitcore-lib-cash` private keys, WIF strings, and raw private key buffers, rather than *only* BITBOX.
 - :boom: Remove `Sig` alias for `SignatureTemplate` that was deprecated in v0.4.1.
 - :boom: **BREAKING**: Refactor contract instantiation flow
   - A contract is now instantiated by providing a compiled artifact, constructor arguments and an optional network provider.
-  - Anyone can implement the NetworkProvider interface to create a custom provider. The CashScript SDK offers three providers out of the box: one based on electrum-cash (default), one based on FullStack.cash' infrastructure, and one based on BITBOX. See the [NetworkProvider docs](/docs/sdk/network-provider) for details.
+  - Anyone can implement the NetworkProvider interface to create a custom provider. The SolidCash SDK offers three providers out of the box: one based on electrum-cash (default), one based on FullStack.cash' infrastructure, and one based on BITBOX. See the [NetworkProvider docs](/docs/sdk/network-provider) for details.
   - See the [migration notes](/docs/releases/migration-notes#v04-to-v05) for details on migrating from the old contract instantiation flow.
-- :boom: **BREAKING**: Remove the artifacts `'networks'` field and `.deployed()` functionality, This proved to be confusing and is better suited to be handled outside of the CashScript SDK.
+- :boom: **BREAKING**: Remove the artifacts `'networks'` field and `.deployed()` functionality, This proved to be confusing and is better suited to be handled outside of the SolidCash SDK.
 - :boom: **BREAKING**: `.send()` now returns a libauth Transaction instead of a BITBOX Transaction object. Alternatively a `raw` flag can be passed into the function to return a raw hex string.
 - :hammer_and_wrench: Removed BITBOX as a dependency in favour of libauth for utility functions.
 
@@ -451,25 +428,25 @@ CashScript used to be very tightly coupled with BITBOX. This proved to be proble
 https://x.com/RoscoKalis/status/1298645699559596033
 
 ## v0.4.4
-#### cashc compiler
+#### solidc compiler
 - :bug: Fix a bug where covenants would not always get verified correctly when the first `require(checkSig(...))` statement was inside a branch.
 
 ## v0.4.3
-#### cashc compiler
+#### solidc compiler
 - :racehorse: Add compiler optimisations.
 
 ## v0.4.2
 - Re-add README files to NPM that were accidentally removed in the v0.4.0 release.
 
 ## v0.4.1
-#### cashc compiler
+#### solidc compiler
 - :racehorse: Add optimisations to bitwise operators.
 - :shell: New CLI arguments.
   - Add `--opcount|-c` flag that displays the number of opcodes in the compiled bytecode.
   - Add `--size|-s` flag that displays the size in bytes of the compiled bytecode.
 - :symbols: Add trailing comma support.
 
-#### CashScript SDK
+#### SolidCash SDK
 - :name_badge: Rename `Sig` to `SignatureTemplate` to better convey its meaning.
   - `Sig` still exists for backward compatibility, but is deprecated and will be removed in a later release.
 
@@ -477,7 +454,7 @@ https://x.com/RoscoKalis/status/1298645699559596033
 https://x.com/RoscoKalis/status/1267440143624884227
 
 ## v0.4.0
-#### cashc compiler
+#### solidc compiler
 - :sparkles: Add `.reverse()` member function to `bytes` and `string` types.
 - :sparkles: Add bitwise operators `&`, `^`, `|`.
 - :sparkles: Allow casting `int` to variable size `bytes` based on `size` parameter.
@@ -489,8 +466,8 @@ https://x.com/RoscoKalis/status/1267440143624884227
 - :bug: Fix a bug where return type of `sha1` was incorrectly marked as `bytes32`.
 - :bug: `Data.decodeBool` only treated numerical zero as false, now any zero-representation is considered false (e.g. 0x0000, -0, ...).
 
-#### CashScript SDK
-- :sparkles: Add ability to provide hardcoded inputs to the transaction rather than use CashScript's coin selection.
+#### SolidCash SDK
+- :sparkles: Add ability to provide hardcoded inputs to the transaction rather than use SolidCash's coin selection.
 - :boom: **BREAKING**: Refactor the transaction flow to a fluent API
   - Remove the `TxOptions` argument and other arguments to the Transaction `send()` function.
   - Instead these parameters are passed in through fluent functions `from()`, `to()`, `withOpReturn()`, `withAge()`, `withTime()`, `withHardcodedFee()`, `withFeePerByte()` and `withMinChange()`.
@@ -504,37 +481,37 @@ This update contains several breaking changes. See the [migration notes](/docs/r
 https://x.com/RoscoKalis/status/1264921879346917376
 
 ## v0.3.3
-#### cashc compiler
+#### solidc compiler
 - :bug: Fix bug where variables could not reliably be used inside `OutputNullData` instantiation.
 
 ---
 https://x.com/RoscoKalis/status/1224389493769342979
 
 ## v0.3.2
-#### cashc compiler
+#### solidc compiler
 - :sparkles: Add `OutputNullData(bytes[] chunks)`, an output type to enforce `OP_RETURN` outputs.
 - :shell: CLI improvements
   - The `--output|-o` flag is now optional, if it is omitted or manually set to `-`, the artifact will be written to stdout rather than a file.
   - Add `--asm|-A` flag that outputs only Script in ASM format instead of a full JSON artifact.
   - Add `--hex|-h` flag that outputs only Script in hex format instead of a full JSON artifact.
   - Add `--args|-a` flag that allows you to specify constructor arguments that are added to the generated bytecode.
-    - :warning: The CLI **does not** perform type checking on these arguments, so it is recommended to use the CashScript SDK for type safety.
+    - :warning: The CLI **does not** perform type checking on these arguments, so it is recommended to use the SolidCash SDK for type safety.
 - :bug: Fix a compilation bug that allowed compilation of "unverified covenants" (#56).
 - :bug: Fix a compilation bug that allowed compilation of `OutputP2PKH(...)` without `new` keyword (#57).
 
-#### CashScript SDK
-- :globe_with_meridians: Browser support! You can now use CashScript inside web projects. Filesystem-based functionality such as compilation from file are not supported due to the nature of web, so CashScript files have to be read in a different way (e.g. Fetch API) and then passed into the CashScript SDK.
+#### SolidCash SDK
+- :globe_with_meridians: Browser support! You can now use SolidCash inside web projects. Filesystem-based functionality such as compilation from file are not supported due to the nature of web, so SolidCash files have to be read in a different way (e.g. Fetch API) and then passed into the SolidCash SDK.
 - :purse: Add `minChange` to transaction options. If this `minChange` is not reached, the change will be added to the transaction fee instead.
 
 ---
 https://x.com/RoscoKalis/status/1223280232343515136
 
 ## v0.3.1
-#### cashc compiler
+#### solidc compiler
 * :warning: Add warnings when a contract exceeds 201 opcodes or 520 bytes.
 * :bug: Fix a bug where an incorrect number of items were dropped from the stack after execution of a branch.
 
-#### CashScript SDK
+#### SolidCash SDK
 * :sparkles: Improve error handling.
   * Further specified `FailedTransactionError` into `FailedRequireError`, `FailedSigCheckError`, `FailedTimeCheckError` and a general fallback `FailedTransactionError`.
   * Add `Reason` enum with all possible reasons for a Script failure - can be used to catch specific errors.
@@ -545,10 +522,10 @@ https://x.com/RoscoKalis/status/1223280232343515136
 https://x.com/RoscoKalis/status/1217101473743544320
 
 ## v0.3.0
-#### cashc compiler
+#### solidc compiler
 * :sparkles: Covenants abstraction! All individual preimage fields can be accessed without manual decoding, passing, and verification.
   * Available fields: `tx.version`, `tx.hashPrevouts`, `tx.hashSequence`, `tx.outpoint`, `tx.bytecode`, `tx.value`, `tx.sequence`, `tx.hashOutputs`, `tx.locktime`, `tx.hashtype`.
-  * When any of these fields is used inside a function, this function is marked `covenant: true`, and requires a preimage as parameter (automatically passed by CashScript SDK).
+  * When any of these fields is used inside a function, this function is marked `covenant: true`, and requires a preimage as parameter (automatically passed by SolidCash SDK).
   * The correct fields are efficiently cut out of the preimage and made available.
   * The first occurrence of `require(checkSig(sig, pubkey));` is identified, and preimage verification is inserted using the same sig/pubkey. **Important**: if you have multiple `checkSig` statements, keep in mind that the first will be used for verification.
   * Automatically cuts off VarInt from `scriptCode`, so `tx.bytecode` contains the actual contract bytecode.
@@ -557,7 +534,7 @@ https://x.com/RoscoKalis/status/1217101473743544320
   * `new OutputP2SH(bytes8 amount, bytes20 scriptHash)`
 * :bug: Fix bug with invalid output when the final statement in a contract is an if-statement.
 
-#### CashScript SDK
+#### SolidCash SDK
 * :sparkles: Add `fee` option to TransactionOptions. This allows you to specify a hardcoded fee for your transaction.
 * :sparkles: Automatically pass in sighash preimage into covenant functions. **Important**: uses the hashtype of the first signature in the parameters for generation of this preimage.
 * :dizzy: Better fee estimation for transactions with many inputs.
@@ -566,17 +543,17 @@ https://x.com/RoscoKalis/status/1217101473743544320
 https://x.com/RoscoKalis/status/1204765863062188033
 
 ## v0.2.3
-#### cashc compiler
+#### solidc compiler
 * :bug: Fix a bug where unequal bytes types (e.g. `bytes3` & `bytes8`) could not be concatenated together, as they were considered different types.
 
 ---
 https://x.com/RoscoKalis/status/1202220857566908416
 
 ## v0.2.2
-#### CashScript SDK
+#### SolidCash SDK
 * :bug: Remove minimaldata encoding in `OP_RETURN` outputs that caused incompatibility with SLP.
 * :name_badge: Renamed `Contract.fromCashFile` to `Contract.compile`.
-  * The new function allows to pass in a path to a `.cash` file, or a string of the contract source code.
+  * The new function allows to pass in a path to a `.scash` file, or a string of the contract source code.
   * `Contract.fromCashFile` still exists for backward compatibility, but is deprecated and will be removed in a later release.
 * :name_badge: Renamed `Contract.fromArtifact` to `Contract.import`.
   * The new function allows to pass in a path to a `.json` artifact file, or a JSON object of the artifact.
@@ -588,11 +565,11 @@ https://x.com/RoscoKalis/status/1202220857566908416
 https://x.com/RoscoKalis/status/1192900277105389568
 
 ## v0.2.1
-#### cashc compiler
+#### solidc compiler
 * :sparkles: Support `bytes` types with bounded size, e.g. `bytes1`, `bytes13`, `bytes32`.
 * :bug: Fix bug in bytecode optimisation
 
-#### CashScript SDK
+#### SolidCash SDK
 * :sparkles: Support `bytes` types with bounded size, e.g. `bytes1`, `bytes13`, `bytes32`.
 * :bird: Automatically output meep command on failed transaction error.
 * :hammer:  Make the `hashtype` parameter in signature placeholders optional.
@@ -601,7 +578,7 @@ https://x.com/RoscoKalis/status/1192900277105389568
 https://x.com/RoscoKalis/status/1186554051720167424
 
 ## v0.2.0
-#### cashc compiler
+#### solidc compiler
 * :racehorse: Implement compiler optimisations
   * For the final use of a variable, it is retrieved with `OP_ROLL` rather than `OP_PICK`. This removes the need to clean the stack at the end of a contract.
   * Final `OP_VERIFY OP_TRUE` is removed as there is an implicit `OP_VERIFY` at the end of a Script.
@@ -609,20 +586,20 @@ https://x.com/RoscoKalis/status/1186554051720167424
   * Shallow `OP_PICK` and `OP_ROLL` are replaced by hardcoded opcodes (e.g. `OP_SWAP`, `OP_DUP`).
   * Several other bytecode optimisations.
 * :sparkles: Add `pragma` keyword to specify intended compiler version.
-  * Example: `pragma cashscript ^0.2.0;`
+  * Example: `pragma solidcash ^0.2.0;`
   * Contract fails to compile when compiler version does not satisfy constraints.
 * :rotating_light: Add CashProof for all individual bytecode optimisations and for example contracts from 0.1.2 to 0.2.0.
 * :bug: Add "default case" for function selection that fixes a vulnerability where people could spend funds by not calling any function.
 * :arrow_up: Update dependencies.
 
-#### CashScript SDK
-* :arrow_up: Update `cashc` and other dependencies.
+#### SolidCash SDK
+* :arrow_up: Update `solidc` and other dependencies.
 
 ---
 https://x.com/RoscoKalis/status/1178843657069154305
 
 ## v0.1.2
-#### CashScript SDK
+#### SolidCash SDK
 * :sparkles: Add support for `OP_RETURN` outputs.
 * :bug: Improved error handling.
 * :bug: Poll for transaction details to make sure it's available.
@@ -634,7 +611,7 @@ https://x.com/RoscoKalis/status/1178843657069154305
 https://x.com/RoscoKalis/status/1174910060691984385
 
 ## v0.1.1
-#### CashScript SDK
+#### SolidCash SDK
 * :bug: Bug fixes with incorrect parameter encoding for string/bool/int types.
 
 ## v0.1.0

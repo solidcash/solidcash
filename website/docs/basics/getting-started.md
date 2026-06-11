@@ -2,14 +2,14 @@
 title: Getting Started
 ---
 
-## Try CashScript Online
+## Try SolidCash Online
 
-To get started with writing CashScript smart contracts quickly, it is recommended to try out the [CashScript Playground](https://playground.cashscript.org/), a web application which lets you easily write and create contracts!
+To get started with writing SolidCash smart contracts quickly, it is recommended to try out the [SolidCash Playground](https://playground.solidcash.org/), a web application which lets you easily write and create contracts!
 
-The Playground has a code-editor and CashScript compiler easily accessible, without any prerequisites. Further, the playground allows to easily create contracts, wallets and build transactions.
+The Playground has a code-editor and SolidCash compiler easily accessible, without any prerequisites. Further, the playground allows to easily create contracts, wallets and build transactions.
 
 :::tip
-The [CashScript Playground](https://playground.cashscript.org/) is a great way to get started without doing any JavaScript/TypeScript coding, this way you can focus on learning just CashScript!
+The [SolidCash Playground](https://playground.solidcash.org/) is a great way to get started without doing any JavaScript/TypeScript coding, this way you can focus on learning just SolidCash!
 :::
 
 The Playground supports 'Mocknet', this is the recommended way to get started developing. This way you can create virtual UTXOs for testing without having to get Testnet coins and set up a Testnet wallet.
@@ -21,13 +21,13 @@ Here are the 5 simple steps for creating your first smart contract transaction w
 4. Next, go to the TransactionBuilder select the contract UTXO and the function to invoke on it
 5. Finally, specify the in- and outputs for the transaction and click 'Evaluate'!
 
-## Creating a CashScript Contract
+## Creating a SolidCash Contract
 
-To get started coding locally we will use a code editor and learn how to work with the `cashc` compiler to create CashScript contract artifacts.
+To get started coding locally we will use a code editor and learn how to work with the `solidc` compiler to create SolidCash contract artifacts.
 
 ### Prerequisites
 
-To write CashScript smart contracts locally you use a code editor. For the best developer experience, we recommend to use VS Code with the CashScript extension. This way it will automatically recognize `.cash` files and offer highlighting and autocompletion.
+To write SolidCash smart contracts locally you use a code editor. For the best developer experience, we recommend to use VS Code with the SolidCash extension. This way it will automatically recognize `.scash` files and offer highlighting and autocompletion.
 
 :::note prerequisites
 - Basic familiarity with the command line
@@ -36,23 +36,23 @@ To write CashScript smart contracts locally you use a code editor. For the best 
 :::
 
 :::tip
-To set up your CashScript developer environment, see the [Syntax Highlighting](/docs/language/syntax-highlighting) guide.
+To set up your SolidCash developer environment, see the [Syntax Highlighting](/docs/language/syntax-highlighting) guide.
 :::
 
-### Installing the CashScript compiler
-The command line CashScript compiler `cashc` can be installed from NPM.
+### Installing the SolidCash compiler
+The command line SolidCash compiler `solidc` can be installed from NPM.
 
 ```bash
-npm install -g cashc
+npm install -g solidc
 ```
 
 ### Writing your first contract
 
 We can start from a basic `TransferWithTimeout` smart contract, a simple contract for tips which allows the recipient to claim their gift at any time, but if they don't claim within some time, the sender can reclaim it.
 
-Open your code editor to start writing your first CashScript smart contract. Then create a new file `TransferWithTimeout.cash` and copy over the smart contracts code from below.
+Open your code editor to start writing your first SolidCash smart contract. Then create a new file `TransferWithTimeout.scash` and copy over the smart contracts code from below.
 ```solidity
-pragma cashscript ^0.13.0;
+pragma solidcash ^0.13.0;
 
 contract TransferWithTimeout(pubkey sender, pubkey recipient, int timeout) {
     // Allow the recipient to claim their received money
@@ -69,7 +69,7 @@ contract TransferWithTimeout(pubkey sender, pubkey recipient, int timeout) {
 ```
 
 Let's take some time to understand the contract structure.
-At the top, the smart contract declares the CashScript language version it's using with `pragma`.
+At the top, the smart contract declares the SolidCash language version it's using with `pragma`.
 Then a `TransferWithTimeout` is declare which takes in 3 contract arguments and has 2 contract functions: `transfer` and `timeout`.
 These contract functions both have `require` statements necessary to be met to be able to spend BCH from the contract.
 
@@ -79,48 +79,48 @@ There are some other examples available on the [Examples page](/docs/language/ex
 
 ### Compiling your contract
 
-The next step after writing your smart contract is using the command line compiler to create a contract artifact, so that it can be imported into the CashScript SDK.
+The next step after writing your smart contract is using the command line compiler to create a contract artifact, so that it can be imported into the SolidCash SDK.
 
 ```bash
-cashc ./TransferWithTimeout.cash --output ./TransferWithTimeout.json
+solidc ./TransferWithTimeout.scash --output ./TransferWithTimeout.json
 ```
 
-This will create an artifact file `TransferWithTimeout.json` from your CashScript file. If you look at the `bytecode` property on the artifact you will see the raw BCH script generated by the `cashc` compiler:
+This will create an artifact file `TransferWithTimeout.json` from your SolidCash file. If you look at the `bytecode` property on the artifact you will see the raw BCH script generated by the `solidc` compiler:
 
 ```
 OP_3 OP_PICK OP_0 OP_NUMEQUAL OP_IF OP_4 OP_ROLL OP_ROT OP_CHECKSIG OP_NIP OP_NIP OP_NIP OP_ELSE OP_3 OP_ROLL OP_1 OP_NUMEQUALVERIFY OP_3 OP_ROLL OP_SWAP OP_CHECKSIGVERIFY OP_SWAP OP_CHECKLOCKTIMEVERIFY OP_2DROP OP_1 OP_ENDIF
 ```
 
-## Creating a CashScript Transaction
+## Creating a SolidCash Transaction
 
 After creating a contract artifact, we can now use the TypeScript SDK to initialise the smart contract and to create a transaction spending from the smart contract UTXO. We'll continue with the `TransferWithTimeout` artifact generated earlier.
 
 :::info
-The CashScript SDK is written in TypeScript meaning that you can either use TypeScript or vanilla JavaScript to use the SDK.
+The SolidCash SDK is written in TypeScript meaning that you can either use TypeScript or vanilla JavaScript to use the SDK.
 It's recommended to use TypeScript for full type-safety of all you contract logic.
 :::
 
 ### Installing the TypeScript SDK
-The TypeScript SDK can be installed into your project with NPM. Note that CashScript is a [pure ESM package](https://gist.github.com/sindresorhus/a39789f98801d908bbc7ff3ecc99d99c).
+The TypeScript SDK can be installed into your project with NPM. Note that SolidCash is a [pure ESM package](https://gist.github.com/sindresorhus/a39789f98801d908bbc7ff3ecc99d99c).
 
 ```bash
-npm install cashscript
+npm install solidcash
 ```
 
 ### Initialising a Contract
 
 To initialise a contract with the SDK we will need 3 things: the contract artifact, the contract constructor arguments and a NetworkProvider.
 
-To do this, we import the `ElectrumNetworkProvider` and `Contract` classes from the CashScript SDK. We also need to import the contract artifact. Lastly, we need public keys from a generated key-pair to use as contract constructor arguments.
+To do this, we import the `ElectrumNetworkProvider` and `Contract` classes from the SolidCash SDK. We also need to import the contract artifact. Lastly, we need public keys from a generated key-pair to use as contract constructor arguments.
 
 :::tip
-For a code example of how to generate key-pairs with Libauth, see the [CashScript Examples' `common.ts`](https://github.com/CashScript/cashscript/blob/master/examples/common.ts) file where Alice and Bob's key-pairs are created.
+For a code example of how to generate key-pairs with Libauth, see the [SolidCash Examples' `common.ts`](https://github.com/CashScript/cashscript/blob/master/examples/common.ts) file where Alice and Bob's key-pairs are created.
 :::
 
 With the instantiated contract, we can now get the contract address and get the contract balance and UTXOs in the following way:
 
 ```javascript
-import { ElectrumNetworkProvider, Contract } from 'cashscript';
+import { ElectrumNetworkProvider, Contract } from 'solidcash';
 import artifact from './TransferWithTimeout.json' with { type: 'json' };
 import { alicePub, bobPub } from './keys.js';
 
@@ -148,7 +148,7 @@ Finally to create a transaction spending from the smart contract UTXO we use the
 To spend from an input you specify the `UTXO` together with an `Unlocker` to actually provide the 'unlock' script matching the input's locking bytecode. For the initialized smart contract the `Unlockers` are available as methods on the `Contract` instance. Below we will invoke the `transfer` function on the contract utxo through `contract.unlock.transfer(...)`.
 
 ```javascript
-import { MockNetworkProvider, Contract, SignatureTemplate, TransactionBuilder, randomUtxo } from 'cashscript';
+import { MockNetworkProvider, Contract, SignatureTemplate, TransactionBuilder, randomUtxo } from 'solidcash';
 import { alicePub, bobPriv, bobPub } from './keys.js';
 import artifact from './TransferWithTimeout.json' with { type: 'json' };
 

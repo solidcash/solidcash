@@ -1,14 +1,14 @@
-import { Contract, Output, randomUtxo, TransactionBuilder } from 'cashscript';
-import { compileFile } from 'cashc';
+import { Contract, Output, randomUtxo, TransactionBuilder } from 'solidcash';
+import { compileFile } from 'solidc';
 import { stringify } from '@bitauth/libauth';
 import { URL } from 'url';
-import { MockNetworkProvider } from 'cashscript/dist';
+import { MockNetworkProvider } from 'solidcash/dist';
 
 // Compile the Announcement contract to an artifact object
-const artifact = compileFile(new URL('announcement.cash', import.meta.url));
+const artifact = compileFile(new URL('announcement.scash', import.meta.url));
 
 // Initialise a network provider for network operations on MAINNET
-const contractType = 'p2sh20';
+const addressType = 'p2sh20';
 
 // Once you're ready to send transactions on a real network (like chipnet or mainnet), use the ElectrumNetworkProvider
 // const provider = new ElectrumNetworkProvider();
@@ -16,7 +16,7 @@ const provider = new MockNetworkProvider();
 
 // Instantiate a new contract using the compiled artifact and network provider
 // AND providing the constructor parameters (none)
-const contract = new Contract(artifact, [], { provider, contractType });
+const contract = new Contract(artifact, [], { provider, addressType });
 
 // Add a mock UTXO to the mock network provider
 provider.addUtxo(contract.address, randomUtxo());

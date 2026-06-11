@@ -19,6 +19,12 @@ const sidebars: SidebarsConfig = {
         'language/types',
         'language/functions',
         'language/globals',
+        'language/stateful-contracts',
+        'language/structs-enums-types',
+        'language/inheritance',
+        'language/modifiers',
+        'language/events-errors',
+        'language/advanced-features',
         'language/examples',
         'language/syntax-highlighting'
       ],
@@ -40,7 +46,9 @@ const sidebars: SidebarsConfig = {
         'sdk/typescript-sdk',
         'sdk/instantiation',
         'sdk/transaction-builder',
-        'sdk/transaction-utilities',
+        'sdk/stateful-contracts',
+        'sdk/threading',
+        'sdk/test-matchers',
         {
           type: 'category',
           label: 'Network Providers',
@@ -57,21 +65,13 @@ const sidebars: SidebarsConfig = {
     },
     {
       type: 'category',
-      label: 'Community SDKs',
-      items: [
-        'community-sdks/python-sdk',
-      ],
-    },
-    {
-      type: 'category',
       label: 'Guides',
       items: [
+        'guides/stateful-guide',
         'guides/covenants',
         'guides/lifecycle',
         'guides/cashtokens',
-        'guides/deployment',
         'guides/infrastructure',
-        'guides/concurrency',
         'guides/walletconnect',
         'guides/debugging',
         'guides/optimization',

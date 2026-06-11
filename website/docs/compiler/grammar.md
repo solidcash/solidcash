@@ -1,10 +1,10 @@
 ---
 title: Language Grammar
-description: ANTLR4 language grammar for CashScript
+description: ANTLR4 language grammar for SolidCash
 ---
 
 ```antlr4
-grammar CashScript;
+grammar SolidCash;
 
 sourceFile
     : pragmaDirective* contractDefinition EOF
@@ -15,7 +15,7 @@ pragmaDirective
     ;
 
 pragmaName
-    : 'cashscript'
+    : 'solidcash'
     ;
 
 pragmaValue
@@ -52,47 +52,34 @@ block
     ;
 
 statement
-    : controlStatement
-    | nonControlStatement ';'
-    ;
-
-nonControlStatement
     : variableDefinition
     | tupleAssignment
     | assignStatement
     | timeOpStatement
     | requireStatement
+    | ifStatement
+    | loopStatement
     | consoleStatement
     ;
 
-controlStatement
-    : ifStatement
-    | loopStatement
-    ;
-
 variableDefinition
-    : typeName modifier* Identifier '=' expression
+    : typeName modifier* Identifier '=' expression ';'
     ;
 
 tupleAssignment
-    : typeName Identifier ',' typeName Identifier '=' expression
+    : typeName Identifier ',' typeName Identifier '=' expression ';'
     ;
 
 assignStatement
-    : Identifier op=('=' | '+=' | '-=') expression
-    | Identifier op=('++' | '--')
+    : Identifier '=' expression ';'
     ;
 
 timeOpStatement
-    : 'require' '(' TxVar '>=' expression (',' requireMessage)? ')'
+    : 'require' '(' TxVar '>=' expression (',' requireMessage)? ')' ';'
     ;
 
 requireStatement
-    : 'require' '(' expression (',' requireMessage)? ')'
-    ;
-
-consoleStatement
-    : 'console.log' consoleParameterList
+    : 'require' '(' expression (',' requireMessage)? ')' ';'
     ;
 
 ifStatement
@@ -101,25 +88,14 @@ ifStatement
 
 loopStatement
     : doWhileStatement
-    | whileStatement
-    | forStatement
     ;
 
 doWhileStatement
     : 'do' block 'while' '(' expression ')' ';'
     ;
 
-whileStatement
-    : 'while' '(' expression ')' block
-    ;
-
-forStatement
-    : 'for' '(' forInit ';' expression ';' assignStatement ')' block
-    ;
-
-forInit
-    : variableDefinition
-    | assignStatement
+consoleStatement
+    : 'console.log' consoleParameterList ';'
     ;
 
 requireMessage
@@ -145,7 +121,7 @@ expressionList
 
 expression
     : '(' expression ')' # Parenthesised
-    | typeCast '(' castable=expression ','? ')' # Cast
+    | typeName '(' castable=expression (',' size=expression)? ','? ')' # Cast
     | functionCall # FunctionCallExpression
     | 'new' Identifier expressionList #Instantiation
     | expression '[' index=NumberLiteral ']' # TupleIndexOp
@@ -188,15 +164,7 @@ numberLiteral
     ;
 
 typeName
-    : PrimitiveType
-    | BoundedBytes
-    | UnboundedBytes
-    ;
-
-typeCast
-    : PrimitiveType
-    | UnboundedBytes
-    | UnsafeCast
+    : 'int' | 'bool' | 'string' | 'pubkey' | 'sig' | 'datasig' | Bytes
     ;
 
 VersionLiteral
@@ -224,21 +192,8 @@ ExponentPart
     : [eE] NumberPart
     ;
 
-PrimitiveType
-    : 'int'
-    | 'bool'
-    | 'string'
-    | 'pubkey'
-    | 'sig'
-    | 'datasig'
-    ;
-
-UnboundedBytes
-    : 'bytes'
-    ;
-
-BoundedBytes
-    : 'bytes' Bound | 'byte'
+Bytes
+    : 'bytes' Bound? | 'byte'
     ;
 
 Bound
@@ -261,13 +216,6 @@ HexLiteral
 TxVar
     : 'this.age'
     | 'tx.time'
-    ;
-
-UnsafeCast
-    : 'unsafe_int'
-    | 'unsafe_bool'
-    | 'unsafe_bytes' Bound?
-    | 'unsafe_byte'
     ;
 
 NullaryOp

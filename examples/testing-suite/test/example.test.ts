@@ -1,6 +1,6 @@
 import artifact from '../artifacts/example.artifact.js';
-import { Contract, MockNetworkProvider, TransactionBuilder, randomUtxo } from 'cashscript';
-import 'cashscript/vitest';
+import { Contract, MockNetworkProvider, TransactionBuilder, randomUtxo } from 'solidcash';
+import 'solidcash/vitest';
 
 describe('test example contract functions', () => {
   const provider = new MockNetworkProvider();

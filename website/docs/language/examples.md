@@ -2,7 +2,7 @@
 title: Examples
 ---
 
-An extensive collection of examples is available in the [GitHub repository][GitHub-CashScript-Examples]. Below we discuss a few of these examples in more details and go through their functionality. This example page focuses on the CashScript syntax, while the [SDK Examples page](/docs/sdk/examples) in the SDK section focuses on use of the SDK to build an application.
+An extensive collection of examples is available in the [GitHub repository][GitHub-CashScript-Examples]. Below we discuss a few of these examples in more details and go through their functionality. This example page focuses on the SolidCash syntax, while the [SDK Examples page](/docs/sdk/examples) in the SDK section focuses on use of the SDK to build an application.
 
 ## HodlVault
 For better or worse, HODLing and waiting for price increases is one of the main things people want to do with their cryptocurrency. But it can be difficult to hold on to your cryptocurrency when the price is going down. So to prevent weak hands from getting the best of you, it's better to store your stash in a smart contract that enforces HODLing for you.
@@ -12,7 +12,7 @@ This smart contract works by connecting with a price oracle. This price oracle i
 This involves some degree of trust in the price oracle, but since the oracle produces price data for everyone to use, their incentive to attack *your* smart contract is minimised. To improve this situation, you can also choose to connect with multiple oracle providers so you do not have to trust a single party.
 
 ```solidity
-pragma cashscript ^0.13.0;
+pragma solidcash ^0.13.0;
 
 // A minimum block is provided to ensure that oracle price entries from before
 // this block are disregarded. i.e. when the BCH price was $1000 in the past,
@@ -53,15 +53,11 @@ The contract works by checking that a UTXO is at least 30 days old, after which 
 Due to the nature of covenants, we have to be very specific about the outputs (amounts and destinations) of the transaction. This also means that we have to account for the special case where the remaining contract balance is lower than the `pledge` amount, meaning no remainder should be sent back. Finally, we have to account for a small fee that has to be taken from the contract's balance to pay the miners.
 
 ```solidity
-pragma cashscript ^0.13.0;
+pragma solidcash ^0.13.0;
 
 contract Mecenas(bytes20 recipient, bytes20 funder, int pledge, int period) {
     function receive() {
         require(this.age >= period);
-
-        // Require that there is only a single contract input to prevent
-        // multiple contract UTXOs being claimed in a single transaction
-        require(tx.inputs.length == 1);
 
         // Check that the first output sends to the recipient
         bytes25 recipientLockingBytecode = new LockingBytecodeP2PKH(recipient);
@@ -96,10 +92,10 @@ contract Mecenas(bytes20 recipient, bytes20 funder, int pledge, int period) {
 
 AMM DEX contract based on [the Cauldron DEX contract][Cauldron-Whitepaper], you can read more details about the contract design there.
 
-The CashScript contract code has the big advantage of abstracting away any stack management, having variable names, explicit types and a logical order of operations (compared to the 'reverse Polish notation' of raw script).
+The SolidCash contract code has the big advantage of abstracting away any stack management, having variable names, explicit types and a logical order of operations (compared to the 'reverse Polish notation' of raw script).
 
 ```solidity
-pragma cashscript ^0.13.0;
+pragma solidcash ^0.13.0;
 
 contract DexContract(bytes20 poolOwnerPkh) {
     function swap() {
@@ -139,7 +135,7 @@ contract DexContract(bytes20 poolOwnerPkh) {
 }
 ```
 
-Compared to the manually written and hand-optimized opcodes version of the contract, the CashScript compiled bytecode has just 5 extra opcodes overhead (7 extra bytes). Furthermore, even contracts with hand-optimized bytecode can still be used with the CashScript SDK, [find out more in the optimization guide](/docs/guides/optimization#advanced-hand-optimizing-bytecode).
+Compared to the manually written and hand-optimized opcodes version of the contract, the SolidCash compiled bytecode has just 5 extra opcodes overhead (7 extra bytes). Furthermore, even contracts with hand-optimized bytecode can still be used with the SolidCash SDK, [find out more in the optimization guide](/docs/guides/optimization#advanced-hand-optimizing-bytecode).
 
 More advanced examples on covenants, using NFTs to keep local state and issuing NFTs as receipts can be found in the [Covenants & Introspection Guide](/docs/guides/covenants).
 

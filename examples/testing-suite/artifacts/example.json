@@ -40,13 +40,8 @@
     ]
   },
   "compiler": {
-    "name": "cashc",
-    "version": "0.13.0",
-    "options": {
-      "enforceFunctionParameterTypes": true,
-      "enforceLocktimeGuard": true
-    }
+    "name": "solidc",
+    "version": "0.13.0-next.2"
   },
-  "updatedAt": "2026-05-16T11:32:10.968Z",
-  "fingerprint": "fa9e7ae1cf47ba86e0c490d22034b0f3006b74c4164855e54e1b709313dd3dbe"
+  "updatedAt": "2026-01-13T10:40:29.996Z"
 }

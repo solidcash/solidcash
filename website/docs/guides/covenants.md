@@ -8,7 +8,7 @@ Covenants are all the rage in Bitcoin Cash smart contracts. But what are they, a
 Bitcoin covenants were first proposed in a paper titled [Bitcoin Covenants][bitcoin-covenants], but several other proposals have been created over the years. In May of 2022 Bitcoin Cash implemented so-called *Native Introspection* which enables efficient and accessible covenants. This was extended with token introspection opcodes with the *CashTokens* upgrade in May of 2023.
 
 ## Accessible introspection data
-When using CashScript, you can access a lot of *introspection data* that can be used to inspect and constrain transaction details, such as inputs and outputs.
+When using SolidCash, you can access a lot of *introspection data* that can be used to inspect and constrain transaction details, such as inputs and outputs.
 
 - **`int this.activeInputIndex`** - Index of the input that is currently under evaluation during transaction validation.
 - **`bytes this.activeBytecode`** - Contract bytecode of the input that is currently under evaluation during transaction validation.
@@ -104,10 +104,6 @@ contract Mecenas(bytes20 recipient, bytes20 funder, int pledge, int period) {
     function receive() {
         require(this.age >= period);
 
-        // Require that there is only a single contract input to prevent
-        // multiple contract UTXOs being claimed in a single transaction
-        require(tx.inputs.length == 1);
-
         // Check that the first output sends to the recipient
         bytes25 recipientLockingBytecode = new LockingBytecodeP2PKH(recipient);
         require(tx.outputs[0].lockingBytecode == recipientLockingBytecode);
@@ -159,7 +155,8 @@ Besides these wasted days it can also be inconvenient to claim at set intervals,
 
 ```solidity
 // Mutable NFT Commitment contract state
-// bytes8 blockHeightPreviousPledge
+// bytes8 latestLockTime
+
 contract StreamingMecenas(
     bytes20 recipient,
     bytes20 funder,
@@ -172,7 +169,8 @@ contract StreamingMecenas(
 
         // Read the block height of the previous pledge, kept in the NFT commitment
         require(tx.inputs.length == 1);
-        int blockHeightPreviousPledge = int(tx.inputs[0].nftCommitment);
+        bytes localState = tx.inputs[0].nftCommitment;
+        int blockHeightPreviousPledge = int(localState);
 
         // Check that time has passed and that time locks are enabled
         require(tx.time >= blockHeightPreviousPledge);
@@ -186,10 +184,10 @@ contract StreamingMecenas(
         int currentValue = tx.inputs[0].value;
         int changeValue = currentValue - pledge - minerFee;
 
-        // If there is not enough left for *another* block after this one,
+        // If there is not enough left for *another* pledge after this one,
         // we send the remainder to the recipient. Otherwise we send the
         // remainder to the recipient and the change back to the contract
-        if (changeValue <= pledgePerBlock + minerFee) {
+        if (changeValue <= pledge + minerFee) {
             require(tx.outputs[0].value == currentValue - minerFee);
         } else {
             // Check that the outputs send the correct amounts
@@ -200,7 +198,8 @@ contract StreamingMecenas(
             require(tx.outputs[1].lockingBytecode == tx.inputs[0].lockingBytecode);
 
             // Update the block height of the previous pledge, kept in the NFT commitment
-            require(tx.outputs[1].nftCommitment == toPaddedBytes(tx.locktime, 8));
+            bytes blockHeightNewPledge = toPaddedBytes(tx.locktime, 8);
+            require(tx.outputs[1].nftCommitment == blockHeightNewPledge);
         }
     }
 

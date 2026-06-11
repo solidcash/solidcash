@@ -1,4 +1,4 @@
-import { hash160 } from '@cashscript/utils';
+import { hash160 } from '@solidcash/utils';
 import {
   deriveHdPrivateNodeFromSeed,
   deriveHdPath,

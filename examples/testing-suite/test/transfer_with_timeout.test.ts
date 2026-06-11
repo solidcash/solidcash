@@ -1,7 +1,7 @@
 import artifact from '../artifacts/transfer_with_timeout.artifact.js';
-import { Contract, MockNetworkProvider, SignatureTemplate, TransactionBuilder, randomUtxo } from 'cashscript';
+import { Contract, MockNetworkProvider, SignatureTemplate, TransactionBuilder, randomUtxo } from 'solidcash';
 import { alicePriv, alicePub, bobPub } from '../utils/keys.js';
-import 'cashscript/vitest';
+import 'solidcash/vitest';
 
 describe('test example contract functions', () => {
   const provider = new MockNetworkProvider();

@@ -3,13 +3,13 @@ import type { Config } from '@docusaurus/types';
 import type { Options as ClassicPresetOptions } from '@docusaurus/preset-classic';
 
 const config: Config = {
-  title: 'CashScript',
+  title: 'SolidCash',
   tagline: 'Smart contracts for Bitcoin Cash',
-  url: process.env.NEXT ? 'https://next.cashscript.org' : 'https://cashscript.org',
+  url: 'https://solidcash.org',
   baseUrl: '/',
   favicon: 'img/favicon.ico',
-  organizationName: 'CashScript',
-  projectName: 'cashscript',
+  organizationName: 'SolidCash',
+  projectName: 'solidcash',
   themeConfig: {
     prism: {
       theme: prismThemes.nightOwlLight,
@@ -17,18 +17,15 @@ const config: Config = {
       additionalLanguages: ['solidity', 'antlr4'],
     },
     image: 'img/logo.svg',
-    metadata: [
-      { name: 'algolia-site-verification', content: '434B800C3E7E420F' },
-    ],
     navbar: {
       logo: {
-        alt: 'CashScript',
+        alt: 'SolidCash',
         src: 'img/logo.svg',
       },
       items: [
         { to: '/docs/basics/about', label: 'Docs', position: 'right' },
         {
-          href: process.env.NEXT ? 'https://next.playground.cashscript.org' : 'https://playground.cashscript.org',
+          href: 'https://playground.solidcash.org',
           label: 'Playground',
           position: 'right',
         },
@@ -61,7 +58,7 @@ const config: Config = {
           items: [
             {
               label: 'Telegram',
-              href: 'https://t.me/CashScriptBCH',
+              href: 'https://t.me/SolidCashBCH',
             },
             {
               label: 'Showcase',
@@ -78,20 +75,7 @@ const config: Config = {
             },
             {
               label: 'Twitter',
-              href: 'https://twitter.com/CashScriptBCH',
-            },
-          ],
-        },
-        {
-          title: 'Sponsors',
-          items: [
-            {
-              html: `
-                <a href="https://generalprotocols.com" target="_blank">
-                  <img src="/img/general-protocols.png" alt="General Protocols"
-                       style="border-radius: 5px; max-height: 55px" />
-                </a>
-              `,
+              href: 'https://twitter.com/SolidCashBCH',
             },
           ],
         },
@@ -99,9 +83,9 @@ const config: Config = {
       copyright: `<b>Donations:</b> bitcoincash:qz6uftqp7dyc4ca9e94d7wsle06u0z2ccc223dkpl8`,
     },
     algolia: {
-      apiKey: '8b4fca20b2070c3e69e3110dde8ada71',
+      apiKey: 'd1e059f9bd6bf56667612a41a5115c6b',
       appId: 'XBVJRKV38F',
-      indexName: process.env.NEXT ? 'next_cashscript' : 'cashscript'
+      indexName: 'solidcash'
     },
   },
   presets: [
@@ -126,7 +110,6 @@ const config: Config = {
           { from: ['/docs', '/docs/about', '/docs/basics'], to: '/docs/basics/about' },
           { from: '/docs/language', to: '/docs/language/contracts' },
           { from: '/docs/sdk', to: '/docs/sdk/instantiation' },
-          { from: '/docs/sdk/transactions', to: '/docs/sdk/legacy-transaction-builder' },
           { from: '/docs/sdk/transactions-advanced', to: '/docs/sdk/transaction-builder' },
           { from: '/docs/guides', to: '/docs/guides/covenants' },
           { from: '/docs/guides/syntax-highlighting', to: '/docs/language/syntax-highlighting' },

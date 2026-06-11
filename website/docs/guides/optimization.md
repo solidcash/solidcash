@@ -3,9 +3,9 @@ title: Optimizing Contracts
 sidebar_label: Optimization
 ---
 
-CashScript contracts are transpiled from the high-level CashScript code to [BCH Script](https://reference.cash/protocol/blockchain/script) by the `cashc` compiler. BCH Script is the low-level language used for the Bitcoin Cash Virtual Machine (BCH VM) to evaluate contracts.
+SolidCash contracts are transpiled from the high-level SolidCash code to [BCH Script](https://reference.cash/protocol/blockchain/script) by the `solidc` compiler. BCH Script is the low-level language used for the Bitcoin Cash Virtual Machine (BCH VM) to evaluate contracts.
 
-Because transaction fees are based on the bytesize of a transaction, it may be useful to optimize the compiled size of your smart contract by tweaking your CashScript code.
+Because transaction fees are based on the bytesize of a transaction, it may be useful to optimize the compiled size of your smart contract by tweaking your SolidCash code.
 
 ## Example Workflow
 
@@ -13,7 +13,7 @@ When optimizing your contract, you will need to continuously compare the contrac
 With the compiler CLI, you can easily check the bytesize and opcode count directly from the generated contract artifact.
 
 ```bash
-cashc ./contract.cash --size --opcount
+solidc ./contract.scash --size --opcount
 ```
 
 The compiler calculates the size from the contract's bytecode without constructor arguments. For the `opcount` this is not a problem but the `bytesize` output will be an underestimate, as the contract hasn't been initialized with contract arguments.
@@ -25,13 +25,13 @@ To get the exact contract bytesize including constructor parameters, initialise 
 
 ## Optimization Tips
 
-The `cashc` compiler does some optimisations automatically. By writing your CashScript code in a specific way, the compiler is better able to optimise it.
+The `solidc` compiler does some optimisations automatically. By writing your SolidCash code in a specific way, the compiler is better able to optimise it.
 
 ### 1. Declare variables
 
 Declare variables instead of hardcoding the same values in multiple places:
 
-```solidity title="Example CashScript code"
+```solidity title="Example SolidCash code"
     // do this
     bytes tokenId = 0x8473d94f604de351cdee3030f6c354d36b257861ad8e95bbc0a06fbab2a2f9cf;
     require(tx.outputs[0].tokenCategory == tokenId);
@@ -44,7 +44,7 @@ Declare variables instead of hardcoding the same values in multiple places:
 
 Also declare variables when re-using certain common introspection items to avoid duplicate expressions:
 
-```solidity title="Example CashScript code"
+```solidity title="Example SolidCash code"
     // do this
     bytes tokenIdContract = tx.inputs[0].tokenCategory.split(32)[0];
     require(tx.inputs[1].tokenCategory == tokenIdContract);
@@ -63,7 +63,7 @@ Use/consume values as close to their declaration as possible, both for variables
 ### 3. Parse efficiently
 When using `.split()` to use both sides of a `bytes` element, declare both parts immediately to save on opcodes parsing the byte array.
 
-```solidity title="Example CashScript code"
+```solidity title="Example SolidCash code"
     // do this
     bytes firstPart, bytes secondPart = tx.inputs[0].nftCommitment.split(10);
 
@@ -75,7 +75,7 @@ When using `.split()` to use both sides of a `bytes` element, declare both parts
 
 Avoid if-statements when possible. Instead, try to "inline" them. This is because the compiler cannot know which branches will be taken, and therefore cannot optimise those branches as well. This [example](https://gitlab.com/GeneralProtocols/anyhedge/contracts/-/blob/development/contracts/v0.11/contract.cash#L128-130) from AnyHedge illustrates inlining flow control:
 
-```solidity title="AnyHedge CashScript code"
+```solidity title="AnyHedge SolidCash code"
     // do this
     bool onOrAfterMaturity = settlementTimestamp >= maturityTimestamp;
     bool priceOutOfBounds = !within(clampedPrice, lowLiquidationPrice + 1, highLiquidationPrice);
@@ -101,7 +101,7 @@ When a contract has many different functions or has a lot duplicate code shared 
 Modular contract design avoids the added size of having many functions, instead the contract logic is separated out in to different components which we will call 'function contracts'.
 By only adding the function contract you are actually using in the transaction, and not all the other unused functions, you can drastically shrink the size of your contracts used in a transaction.
 
-The concept of having NFT functions was first introduced by the [Jedex demo](https://github.com/bitjson/jedex#demonstrated-concepts) and was first implemented in a CashScript contract by the [FexCash DEX](https://github.com/fex-cash/fex/blob/main/whitepaper/fex_whitepaper.md). The concept is that by authenticating NFTs, you can make each function a separate contract with the same tokenId. This way, you can offload logic from the main contract. One function NFT contract is attached to the main contract during spending, while the other contract functions exist as unused UTXOs, separate from the transaction.
+The concept of having NFT functions was first introduced by the [Jedex demo](https://github.com/bitjson/jedex#demonstrated-concepts) and was first implemented in a SolidCash contract by the [FexCash DEX](https://github.com/fex-cash/fex/blob/main/whitepaper/fex_whitepaper.md). The concept is that by authenticating NFTs, you can make each function a separate contract with the same tokenId. This way, you can offload logic from the main contract. One function NFT contract is attached to the main contract during spending, while the other contract functions exist as unused UTXOs, separate from the transaction.
 
 :::tip
 By using function NFTs you can use a modular contract design where the contract functions are offloaded to different UTXOs, each identifiable by the main contract by using the same tokenId.
@@ -111,13 +111,13 @@ By using function NFTs you can use a modular contract design where the contract 
 
 If there is a lot of duplicate code across different functions in your contract, you could consider combining the functions into one, where the logic of the different functions are conditionally executed based on the function arguments, removing duplicate code.
 
-The difficulty with this approach is that CashScript functions expect a fixed number of arguments for each function. So when trying to combine two functions into one it might prove very difficult due to the different arguments they each expect. There is no notion of optional arguments or function overloading in CashScript currently.
+The difficulty with this approach is that SolidCash functions expect a fixed number of arguments for each function. So when trying to combine two functions into one it might prove very difficult due to the different arguments they each expect. There is no notion of optional arguments or function overloading in SolidCash currently.
 
 :::caution
-This optimization is considered advanced, as it steps away from the CashScript abstraction for contract structure and often requires workarounds.
+This optimization is considered advanced, as it steps away from the SolidCash abstraction for contract structure and often requires workarounds.
 :::
 
-```solidity title="Example CashScript code"
+```solidity title="Example SolidCash code"
 contract Example(){
   function Main(){
     // logic applying to all if/else branches
@@ -137,11 +137,11 @@ contract Example(){
 }
 ```
 
-In Cashscript, when defining multiple functions, a `selectorIndex` parameter is added under-the-hood to select which of the contract's functions you want to use, this wraps your functions in big `if-else` cases. However when combining multiple functions in one cases you will have to think about the function conditions and `if-else` branching yourself.
+In SolidCash, when defining multiple functions, a `selectorIndex` parameter is added under-the-hood to select which of the contract's functions you want to use, this wraps your functions in big `if-else` cases. However when combining multiple functions in one cases you will have to think about the function conditions and `if-else` branching yourself.
 
 ## Advanced: Hand-optimizing Bytecode
 
-You can still use the CashScript TypeScript SDK while using a hand-optimized or hand-written contract, although this is considered advanced functionality.
+You can still use the SolidCash TypeScript SDK while using a hand-optimized or hand-written contract, although this is considered advanced functionality.
 
 There's two ways to go about this, either you create a custom `Artifact` so you can still use the `Contract` class or you create a custom `Unlocker` to use in the transaction building directly.
 
@@ -153,14 +153,14 @@ It's worth considering whether hand-optimizing the contract is necessary at all.
 
 ### Optimizing with the BitauthIDE
 
-When optimizing the bytecode of your contract to ensure it is the smallest possible bytesize you'll likely want to use the [BitauthIDE][BitauthIDE] so you can see the stack changes for each executed OpCode. Low-level understanding can also give good intuition about the [optimization tips](#optimization-tips) for the CashScript code.
+When optimizing the bytecode of your contract to ensure it is the smallest possible bytesize you'll likely want to use the [BitauthIDE][BitauthIDE] so you can see the stack changes for each executed OpCode. Low-level understanding can also give good intuition about the [optimization tips](#optimization-tips) for the SolidCash code.
 
 ### Method 1) Custom Artifact
 
-To manually optimize a CashScript contract's bytecode, you need to overwrite the `bytecode` key of your contract artifact.
+To manually optimize a SolidCash contract's bytecode, you need to overwrite the `bytecode` key of your contract artifact.
 
-If you manually overwrite the `bytecode` in the artifact, the auto generated 2-way-mapping generated by the compiler becomes obsolete. You are no longer compiling high-level CashScript code into BCH script, instead you are writing BCH script by hand.
-This causes the link of the BCH opcodes to your original CashScript code will be entirely lost for debugging.
+If you manually overwrite the `bytecode` in the artifact, the auto generated 2-way-mapping generated by the compiler becomes obsolete. You are no longer compiling high-level SolidCash code into BCH script, instead you are writing BCH script by hand.
+This causes the link of the BCH opcodes to your original SolidCash code will be entirely lost for debugging.
 
 
 ```typescript
@@ -176,7 +176,7 @@ If you use hand-optimized `bytecode` in your Contract's artifact, the `debug` in
 :::
 
 :::tip
-You can create an `Artifact` for a fully hand-written contract so it becomes possible to use the contract with the nice features of the CashScript SDK! An example of this is [Cauldron_Swap_Test][Cauldron_Swap_Test] which uses `Artifact bytecode` not produced by `cashc` at all but still uses the CashScript SDK.
+You can create an `Artifact` for a fully hand-written contract so it becomes possible to use the contract with the nice features of the SolidCash SDK! An example of this is [Cauldron_Swap_Test][Cauldron_Swap_Test] which uses `Artifact bytecode` not produced by `solidc` at all but still uses the SolidCash SDK.
 :::
 
 ### Method 2) Custom Unlockers

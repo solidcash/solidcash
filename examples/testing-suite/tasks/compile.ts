@@ -1,19 +1,19 @@
-import { formatArtifact } from '@cashscript/utils';
-import { compileString } from 'cashc';
+import { formatArtifact } from '@solidcash/utils';
+import { compileString } from 'solidc';
 import fs from 'fs';
 import { URL } from 'url';
 
 export const compile = (): void => {
   const directory = new URL('../contracts', import.meta.url);
   const result = fs.readdirSync(directory)
-    .filter((fn) => fn.endsWith('.cash'));
+    .filter((fn) => fn.endsWith('.scash'));
 
   fs.mkdirSync(new URL('../artifacts', import.meta.url), { recursive: true });
 
   result.forEach((fn) => {
     const contractFile = new URL(fn, `${directory}/`);
-    const jsonOutputFile = new URL(`../artifacts/${fn.replace('.cash', '.json')}`, import.meta.url);
-    const tsOutputFile = new URL(`../artifacts/${fn.replace('.cash', '.artifact.ts')}`, import.meta.url);
+    const jsonOutputFile = new URL(`../artifacts/${fn.replace('.scash', '.json')}`, import.meta.url);
+    const tsOutputFile = new URL(`../artifacts/${fn.replace('.scash', '.artifact.ts')}`, import.meta.url);
 
     try {
       const contents = fs.readFileSync(contractFile, { encoding: 'utf-8' });

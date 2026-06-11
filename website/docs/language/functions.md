@@ -2,7 +2,7 @@
 title: Global Functions
 ---
 
-CashScript has several built-in functions for things like cryptographic and arithmetic applications, and it includes many common arithmetic and other operators that you would expect in a programming language.
+SolidCash has several built-in functions for things like cryptographic and arithmetic applications, and it includes many common arithmetic and other operators that you would expect in a programming language.
 
 ## Arithmetic functions
 ### abs()

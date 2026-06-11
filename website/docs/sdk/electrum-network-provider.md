@@ -2,7 +2,7 @@
 title: Electrum Network Provider
 ---
 
-The CashScript SDK needs to connect to the BCH network to perform certain operations, like retrieving the contract's balance, or sending transactions. The recommended network provider is the `ElectrumNetworkProvider`.
+The SolidCash SDK needs to connect to the BCH network to perform certain operations, like retrieving the contract's balance, or sending transactions. The recommended network provider is the `ElectrumNetworkProvider`.
 
 ## Creating an ElectrumNetworkProvider
 
@@ -44,13 +44,14 @@ interface CustomElectrumOptions extends OptionsBase {
 
 #### Example
 ```ts
-import { ElectrumNetworkProvider } from 'cashscript';
+import { ElectrumNetworkProvider } from 'solidcash';
 
 const hostname = 'chipnet.bch.ninja';
 const provider = new ElectrumNetworkProvider('chipnet', { hostname });
 ```
 
 ## ElectrumNetworkProvider Methods
+
 
 ### getUtxos()
 ```ts
@@ -79,16 +80,6 @@ interface TokenDetails {
 #### Example
 ```ts
 const userUtxos = await provider.getUtxos(userAddress)
-```
-### getUtxosForLockingBytecode()
-```ts
-async provider.getUtxosForLockingBytecode(lockingBytecode: Uint8Array | string): Promise<Utxo[]>;
-```
-Returns all UTXOs for a specific locking bytecode. Both confirmed and unconfirmed UTXOs are included.
-
-#### Example
-```ts
-const utxos = await provider.getUtxosForLockingBytecode(lockingBytecode)
 ```
 
 ### getBlockHeight()
@@ -175,9 +166,9 @@ If intending to use electrum-cash subscriptions, make sure to set `manualConnect
 
 ```ts
 import { ElectrumClient } from '@electrum-cash/network';
-import { ElectrumNetworkProvider } from 'cashscript';
+import { ElectrumNetworkProvider } from 'solidcash';
 
-const electrum = new ElectrumClient('CashScript Application', '1.4.1', 'chipnet.bch.ninja');
+const electrum = new ElectrumClient('SolidCash Application', '1.4.1', 'chipnet.bch.ninja');
 const provider = new ElectrumNetworkProvider(Network.CHIPNET, {
   electrum, manualConnectionManagement: true
 });
@@ -185,17 +176,3 @@ await electrum.connect();
 ```
 
 [electrum-cash]: https://www.npmjs.com/package/@electrum-cash/network
-
-## Error Handling
-
-The `ElectrumNetworkProvider` can throw the following errors when broadcasting a transaction:
-
-| Error | Description |
-|---|---|
-| `NetworkProviderMissingInputsError` | Transaction inputs are missing or already spent |
-| `NetworkProviderMempoolConflictError` | Transaction conflicts with an unconfirmed transaction in the mempool |
-| `NetworkProviderTransactionAlreadySubmittedError` | Transaction has already been submitted |
-| `NetworkProviderAbsoluteTimelockError` | Transaction is not yet final (nLockTime not satisfied) |
-| `NetworkProviderRelativeTimelockError` | BIP68 sequence lock not satisfied |
-| `NetworkProviderError` | Generic fallback network provider error |
-

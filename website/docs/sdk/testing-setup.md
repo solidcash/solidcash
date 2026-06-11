@@ -2,10 +2,10 @@
 title: Testing Setup
 ---
 
-For the ease of development, CashScript has a `MockNetwork` environment where you can create virtual UTXOs. This has the advantages of not needing any testnet balances, not having to set up smart contract UTXOs and not having network latency. Because of this the MockNetwork environment is the ideal setup to run repeated automated tests with a testing framework for increased smart contract security.
+For the ease of development, SolidCash has a `MockNetwork` environment where you can create virtual UTXOs. This has the advantages of not needing any testnet balances, not having to set up smart contract UTXOs and not having network latency. Because of this the MockNetwork environment is the ideal setup to run repeated automated tests with a testing framework for increased smart contract security.
 
 :::tip
-For a quick start with a CashScript testing setup, check out the [example testing-suite](https://github.com/CashScript/cashscript/tree/next/examples/testing-suite) that demonstrates a full development and testing environment for CashScript contracts, similar to Hardhat on Ethereum.
+For a quick start with a SolidCash testing setup, check out the [example testing-suite](https://github.com/CashScript/cashscript/tree/next/examples/testing-suite) that demonstrates a full development and testing environment for SolidCash contracts, similar to Hardhat on Ethereum.
 :::
 
 ## MockNetworkProvider
@@ -17,7 +17,7 @@ To create a new virtual UTXO use `provider.addUtxo(address, utxo)`. You can use 
 #### Example
 
 ```ts
-import { MockNetworkProvider, randomUtxo, randomToken, randomNFT } from 'cashscript';
+import { MockNetworkProvider, randomUtxo, randomToken, randomNFT } from 'solidcash';
 
 const provider = new MockNetworkProvider();
 const contractUtxo = provider.addUtxo(contract.address, { vout: 0, txid: "ab...", satoshis: 10000n });
@@ -34,19 +34,19 @@ By default, the `MockNetworkProvider` evaluates transactions locally but does no
 
 ## Automated testing
 
-To make writing automated tests for CashScript contracts easier, we provide Vitest and Jest extensions that enables easy testing of `console.log` values and `require` error messages. To use the extension, you can import it from `cashscript/vitest` or `cashscript/jest`.
+To make writing automated tests for SolidCash contracts easier, we provide Vitest and Jest extensions that enables easy testing of `console.log` values and `require` error messages. To use the extension, you can import it from `solidcash/vitest` or `solidcash/jest`.
 
 ```ts
-import 'cashscript/vitest';
+import 'solidcash/vitest';
 // or
-import 'cashscript/jest';
+import 'solidcash/jest';
 ```
 
 :::note
 If you're using a different testing framework, you can test for `console.log` values by spying on the console output, and test for `require` error messages by asserting that an error is thrown with a specific error message.
 :::
 
-With local transaction evaluation and debugging, it is possible to write efficient automated tests for CashScript contracts to test specific contract behaviour and check `console.log` values and `require` error messages.
+With local transaction evaluation and debugging, it is possible to write efficient automated tests for SolidCash contracts to test specific contract behaviour and check `console.log` values and `require` error messages.
 
 ### Logging values
 
@@ -114,8 +114,8 @@ contract Example() {
 
 ```ts title="Example test file"
 import artifact from '../artifacts/example.artifact.js';
-import { Contract, MockNetworkProvider, randomUtxo } from 'cashscript';
-import 'cashscript/vitest';
+import { Contract, MockNetworkProvider, randomUtxo } from 'solidcash';
+import 'solidcash/vitest';
 
 describe('Example contract', () => {
   const provider = new MockNetworkProvider();

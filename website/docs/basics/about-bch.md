@@ -46,11 +46,11 @@ The UTXO model where transactions only have access to the local transaction cont
 
 The locking and unlocking scripts of regular transactions and smart contracts on Bitcoin Cash are written using Bitcoin Cash' transaction scripting language, referred to as BCH Script (or Bitcoin Cash Script in full). BCH Script is a stack based assembly-like language, because it is a low-level language and requires stack management it is hard to write complex smart contract in Script directly.
 
-### CashScript
+### SolidCash
 
-CashScript is a high-level programming language for smart contracts on Bitcoin Cash that offers a strong abstraction for a smoother development experience. CashScript fully abstracts the management of items on the 'stack' from contract developers, allowing them to focus on their application logic instead of low-level details.
+SolidCash is a high-level programming language for smart contracts on Bitcoin Cash that offers a strong abstraction for a smoother development experience. SolidCash fully abstracts the management of items on the 'stack' from contract developers, allowing them to focus on their application logic instead of low-level details.
 
-The CashScript syntax is based on Ethereum's smart contract language Solidity, but its functionality is very different since smart contracts on Bitcoin Cash differ greatly from smart contracts on Ethereum.
+The SolidCash syntax is based on Ethereum's smart contract language Solidity, but its functionality is very different since smart contracts on Bitcoin Cash differ greatly from smart contracts on Ethereum.
 
 :::info
 Bitcoin Cash's "Local State" versus Ethereum's "Global State" requires a very different mental model and way to structure smart contract applications!

@@ -83,7 +83,7 @@ signatureTemplate.signMessageHash(message: Uint8Array): Uint8Array
 #### Example
 ```ts
 import { aliceTemplate } from './somewhere.js';
-import { sha256 } from '@cashscript/utils';
+import { sha256 } from '@solidcash/utils';
 import { hexToBin } from '@bitauth/libauth';
 
 const signature = aliceTemplate.signMessageHash(sha256(hexToBin('0000000000000000000000')));

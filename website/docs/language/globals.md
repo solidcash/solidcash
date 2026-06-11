@@ -21,7 +21,7 @@ require(tx.time >= <expression>);
 To access the value of the `nLocktime` field for assignment, use the `tx.locktime` introspection variable.
 :::
 
-Because of the way time locks work, **a corresponding time lock needs to be added to the transaction**. This can be done with the CashScript SDK by calling [`setLocktime()`][setLocktime()] on the `TransactionBuilder` instance.
+Because of the way time locks work, **a corresponding time lock needs to be added to the transaction**. This can be done with the SolidCash SDK by calling [`setLocktime()`][setLocktime()] on the `TransactionBuilder` instance.
 
 ### this.age
 `this.age` is used to create *relative* time lock on a UTXO. The value of `this.age` can either represent a number of blocks, or a number of *chunks*, which are 512 seconds. The corresponding *transaction level* time lock determines which of the two options is used.
@@ -36,10 +36,10 @@ require(this.age >= <expression>);
 To access the value of the `nSequence` field for variable assignment, use the [`sequenceNumber` introspection variable](#txinputsisequencenumber).
 :::
 
-Because of the way time locks work, **a corresponding time lock needs to be added to the transaction**. This can be done in the CashScript SDK through [`addInput()`][addInput()] by passing the `sequence` as optional argument. However, the value passed into this function will always be treated as a number of blocks, so **it is currently not supported to use `this.age` as a number of second chunks**.
+Because of the way time locks work, **a corresponding time lock needs to be added to the transaction**. This can be done in the SolidCash SDK through [`addInput()`][addInput()] by passing the `sequence` as optional argument. However, the value passed into this function will always be treated as a number of blocks, so **it is currently not supported to use `this.age` as a number of second chunks**.
 
 ## Introspection variables
-Introspection functionality is used to create *covenant* contracts. Covenants are a technique used to put constraints on spending the money inside a smart contract. The main use case of this is limiting the addresses where money can be sent and the amount sent. To explore the possible uses of covenants inside smart contracts, read the [CashScript Covenants Guide][covenants-guide].
+Introspection functionality is used to create *covenant* contracts. Covenants are a technique used to put constraints on spending the money inside a smart contract. The main use case of this is limiting the addresses where money can be sent and the amount sent. To explore the possible uses of covenants inside smart contracts, read the [SolidCash Covenants Guide][covenants-guide].
 
 ### this.activeInputIndex
 ```solidity
@@ -72,12 +72,6 @@ Represents the `nLocktime` field of the transaction. This is similar to the [`tx
 
 :::tip
  The use case for `tx.locktime` is to read the `nLocktime` value and add to the local state. Example usage for this is demonstrated in the [Sablier example](/docs/guides/covenants#keeping-local-state-in-nfts).
-:::
-
-Using `tx.locktime` in a contract requires a non-final sequence number on the spending input. A `require(tx.time >= ...)` check enforces a non-final sequence number. As a safety measure, the CashScript compiler automatically injects a check for this when no such check is present.
-
-:::info
-The automatically injected check uses a synthetic `require(tx.time >= tx.locktime, "Using tx.locktime requires a non-final sequence number on the spending input.")`. This automatically enforces a non-final sequence number when `tx.locktime` is used.
 :::
 
 ### tx.inputs
@@ -181,9 +175,9 @@ bytes tx.outputs[i].lockingBytecode
 
 Represents the locking bytecode (`scriptPubKey`) of a specific output.
 
-#### tx.output[i].tokenCategory
+#### tx.outputs[i].tokenCategory
 ```solidity
-bytes tx.output[i].tokenCategory
+bytes tx.outputs[i].tokenCategory
 ```
 
 Represents the `tokenCategory` of a specific output. Returns `0x` when that specific output contains no tokens. When the output contains an NFT with a capability, the 32-byte `tokenCategory` is concatenated together with `0x01` for a mutable NFT and `0x02` for a minting NFT.
@@ -192,16 +186,16 @@ Represents the `tokenCategory` of a specific output. Returns `0x` when that spec
 The `tokenCategory` introspection variable returns the tokenCategory in the original unreversed order, this is unlike wallets and explorers which use the reversed byte-order. So be careful about the byte-order of `tokenCategory` when working with BCH smart contracts.
 :::
 
-#### tx.output[i].nftCommitment
+#### tx.outputs[i].nftCommitment
 ```solidity
-bytes tx.output[i].nftCommitment
+bytes tx.outputs[i].nftCommitment
 ```
 
 Represents the NFT commitment data of a specific output.
 
-#### tx.output[i].tokenAmount
+#### tx.outputs[i].tokenAmount
 ```solidity
-int tx.output[i].tokenAmount
+int tx.outputs[i].tokenAmount
 ```
 
 Represents the amount of fungible tokens of a specific output. Maximum size for a `tokenAmount` is a 64-bit integer.

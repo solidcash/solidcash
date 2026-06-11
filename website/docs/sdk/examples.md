@@ -2,7 +2,7 @@
 title: Examples
 ---
 
-An extensive collection of examples is available in the [GitHub repository][github-examples]. Below we discuss the HodlVault example from the repository in full detail. The focus of this page is on the use of the SDK, while the [Examples page](/docs/language/examples) in the language section focuses on the CashScript syntax.
+An extensive collection of examples is available in the [GitHub repository][github-examples]. Below we discuss the HodlVault example from the repository in full detail. The focus of this page is on the use of the SDK, while the [Examples page](/docs/language/examples) in the language section focuses on the SolidCash syntax.
 
 ## HodlVault
 
@@ -14,16 +14,16 @@ We will break up the development of the smart contract application in 4 manageab
 
 ### Creating the keypairs
 
-To put the `HodlVault.cash` contract to use in a TypeScript application, we have to use the CashScript SDK in combination with a BCH library such as [Libauth][libauth] or [Mainnetjs][mainnetjs]. These libraries are used to generate public/private keys for the contract participants.
+To put the `HodlVault.scash` contract to use in a TypeScript application, we have to use the SolidCash SDK in combination with a BCH library such as [Libauth][libauth] or [Mainnetjs][mainnetjs]. These libraries are used to generate public/private keys for the contract participants.
 
 In this example we'll use [Libauth][libauth] to generate the keys `alicePriv`, `alicePub`, `oracle` & `oraclePub`. Then we can use these keys to create the smart contract.
 
 :::caution
-These 'private keys' are public just for testing, in other contexts you want to very carefully treat private keys as `environment variables`. You would also make sure to use a secure seed phrase and not 'CashScript Examples'...
+These 'private keys' are public just for testing, in other contexts you want to very carefully treat private keys as `environment variables`. You would also make sure to use a secure seed phrase and not 'SolidCash Examples'...
 :::
 
 ```ts title="common.ts"
-import { hash160 } from '@cashscript/utils';
+import { hash160 } from '@solidcash/utils';
 import {
   deriveHdPrivateNodeFromSeed,
   deriveHdPath,
@@ -34,7 +34,7 @@ import {
 import { PriceOracle } from './PriceOracle.js';
 
 // Generate entropy from BIP39 mnemonic phrase and initialise a root HD-wallet node
-const seed = deriveSeedFromBip39Mnemonic('CashScript Examples');
+const seed = deriveSeedFromBip39Mnemonic('SolidCash Examples');
 const rootNode = deriveHdPrivateNodeFromSeed(seed, true);
 const baseDerivationPath = "m/44'/145'/0'/0";
 
@@ -62,8 +62,8 @@ For development purposes, we'll use the `MockNetworkProvider` so you can simulat
 
 ```ts title="hodl_vault.ts"
 import { stringify } from '@bitauth/libauth';
-import { Contract, SignatureTemplate, MockNetworkProvider, randomUtxo } from 'cashscript';
-import { compileFile } from 'cashc';
+import { Contract, SignatureTemplate, MockNetworkProvider, randomUtxo } from 'solidcash';
+import { compileFile } from 'solidc';
 import { URL } from 'url';
 
 // Import keys and price oracle from common.ts
@@ -73,7 +73,7 @@ import {
 } from './common.ts';
 
 // Compile the HodlVault contract to an artifact object
-const artifact = compileFile(new URL('hodl_vault.cash', import.meta.url));
+const artifact = compileFile(new URL('hodl_vault.scash', import.meta.url));
 
 // Initialise a network provider for network operations on MockNet
 const provider = new MockNetworkProvider();
@@ -97,8 +97,8 @@ We need the create the functionality for generating and signing the oracle messa
 
 ```ts title="PriceOracle.ts"
 import { padMinimallyEncodedVmNumber, flattenBinArray } from '@bitauth/libauth';
-import { encodeInt, sha256 } from '@cashscript/utils';
-import { SignatureAlgorithm, SignatureTemplate } from 'cashscript';
+import { encodeInt, sha256 } from '@solidcash/utils';
+import { SignatureAlgorithm, SignatureTemplate } from 'solidcash';
 
 export class PriceOracle {
   constructor(public privateKey: Uint8Array) { }
@@ -125,8 +125,8 @@ Finally, we can put all of this together to create a working smart contract appl
 
 ```ts title="hodl_vault.ts"
 import { stringify } from '@bitauth/libauth';
-import { Contract, SignatureTemplate, MockNetworkProvider } from 'cashscript';
-import { compileFile } from 'cashc';
+import { Contract, SignatureTemplate, MockNetworkProvider } from 'solidcash';
+import { compileFile } from 'solidc';
 import { URL } from 'url';
 
 // Import keys and price oracle from common.ts
@@ -138,7 +138,7 @@ import {
 } from './common.ts';
 
 // Compile the HodlVault contract to an artifact object
-const artifact = compileFile(new URL('hodl_vault.cash', import.meta.url));
+const artifact = compileFile(new URL('hodl_vault.scash', import.meta.url));
 
 // Initialise a network provider for network operations on MockNet
 const provider = new MockNetworkProvider();

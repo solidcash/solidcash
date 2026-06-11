@@ -1,6 +1,6 @@
 import { stringify } from '@bitauth/libauth';
-import { compileFile } from 'cashc';
-import { Contract, MockNetworkProvider, Output, randomUtxo, SignatureTemplate, TransactionBuilder } from 'cashscript';
+import { compileFile } from 'solidc';
+import { Contract, MockNetworkProvider, Output, randomUtxo, SignatureTemplate, TransactionBuilder } from 'solidcash';
 import { URL } from 'url';
 
 // Import Bob and Alice's keys from common.ts
@@ -12,7 +12,7 @@ import {
 } from './common.js';
 
 // Compile the TransferWithTimeout contract
-const artifact = compileFile(new URL('transfer_with_timeout.cash', import.meta.url));
+const artifact = compileFile(new URL('transfer_with_timeout.scash', import.meta.url));
 
 // Once you're ready to send transactions on a real network (like chipnet or mainnet), use the ElectrumNetworkProvider
 // const provider = new ElectrumNetworkProvider();

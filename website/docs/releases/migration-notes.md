@@ -4,7 +4,7 @@ title: Migration Notes
 
 ## v0.12 to v0.13
 
-### cashc compiler
+### solidc compiler
 
 #### bounded bytes casting
 
@@ -52,62 +52,11 @@ require(bool(5) == true); // => true || compiles to 0x05 OP_0NOTEQUAL 0x01 OP_NU
 
 If you want to keep the old behaviour (without added opcodes), you can use the `unsafe_bool()` casting function instead.
 
-#### Function parameter type enforcement
-
-Function parameter types are now strictly enforced by default. Previously, no length checks were performed on bounded bytes types like `bytes20` and `bytes32` and no value checks were performed on boolean values. That meant that you could pass arguments to functions that were not of the correct type, which could lead to runtime vulnerabilities.
-
-We made this the new compiler default because it is more secure and more explicit. If you want to opt out of this behaviour, you can set the `enforceFunctionParameterTypes` option to `false` in the compiler options when compiling programmatically, or use the `--skip-enforce-function-parameter-types` flag when using the CLI.
-
-Now, the compiler adds extra opcodes to the script to enforce the correct types. If you pass a byte string of an incorrect length to a function that expects e.g. a `bytes20`, the transaction will fail. If you pass in a numeric non-boolean value to a function that expects a `bool`, it will be converted to a boolean value using the `OP_0NOTEQUAL` opcode. If you pass in a non-numeric value to a function that expects a `bool`, the transaction will fail.
-
-We added no extra checks for `int` values, because any numeric operations on a non-numeric value will automatically fail the entire transaction.
-
-#### Locktime guard enforcement
-
-The `enforceLocktimeGuard` option has been added to the compiler options. This option controls whether the compiler should inject a `require(tx.time >= tx.locktime)` check when `tx.locktime` is used without a `require(tx.time >= ...)` check in scope. By default, this is enabled. If you want to opt out of this behaviour, you can set the `enforceLocktimeGuard` option to `false` in the compiler options when compiling programmatically, or use the `--skip-enforce-locktime-guard` flag when using the CLI.
-
-### CashScript SDK
-
-The `addressType` option on the `Contract` constructor has been renamed to `contractType`.
-
-```ts
-// Before: addressType option
-const contract = new Contract(artifact, constructorArgs, { addressType: 'p2sh32' });
-
-// After: contractType option
-const contract = new Contract(artifact, constructorArgs, { contractType: 'p2sh32' });
-```
-
-### Network Provider
-
-If you are using a custom network provider, you will need to update the code for the custom provider to implement the new `getUtxosForLockingBytecode()` method to be compatible with the new `NetworkProvider` interface.
-
-```ts
-  /**
-   * Retrieve all UTXOs (confirmed and unconfirmed) for a given locking bytecode.
-   * @param lockingBytecode The locking bytecode for which we wish to retrieve UTXOs.
-   * @returns List of UTXOs spendable by the provided locking bytecode.
-   */
-  getUtxosForLockingBytecode(lockingBytecode: Uint8Array | string): Promise<Utxo[]>;
-```
-
-### FullStackNetworkProvider & BitcoinRpcNetworkProvider
-
-The `FullStackNetworkProvider` and `BitcoinRpcNetworkProvider` have been removed from the SDK. If you were using these providers, you will need to update your code to use a different network provider.
-
-```ts
-// Before: FullStackNetworkProvider
-const provider = new FullStackNetworkProvider('mainnet', bchjs);
-
-// After: ElectrumNetworkProvider
-const provider = new ElectrumNetworkProvider('mainnet');
-```
-
 ## v0.11 to v0.12
 
 There are several breaking changes to the SDK in this release.
 
-### CashScript SDK
+### SolidCash SDK
 
 #### Old Transaction Builder Removal
 
@@ -156,13 +105,13 @@ Earlier, the `MockNetworkProvider` also automatically added some test UTXOs to t
 
 There are several breaking changes to the compiler and SDK in this release. They are listed below in their own sections.
 
-### cashc compiler
+### solidc compiler
 
 `tx.age` was renamed to `this.age` to better reflect that it enforces a UTXO-level locktime check (*not* transaction-level). To migrate, replace all occurrences of `tx.age` with `this.age`.
 
 ### SDK: Transaction Builder
 
-The 'Simple Transaction builder' has been marked as deprecated and the 'Advanced Transaction Builder' is now simply referred to as the CashScript `Transaction Builder`, as there is only one supported for the future.
+The 'Simple Transaction builder' has been marked as deprecated and the 'Advanced Transaction Builder' is now simply referred to as the SolidCash `Transaction Builder`, as there is only one supported for the future.
 
 #### Example
 Since the new transaction builder is quite different from the old one, it may be useful to see an example refactored from the old way to the new way.
@@ -170,7 +119,7 @@ Since the new transaction builder is quite different from the old one, it may be
 With the deprecated 'simple transaction builder' the API looked like this:
 
 ```js
-import { ElectrumNetworkProvider, SignatureTemplate } from 'cashscript';
+import { ElectrumNetworkProvider, SignatureTemplate } from 'solidcash';
 
 const provider = new ElectrumNetworkProvider(Network.MAINNET);
 
@@ -198,7 +147,7 @@ With the new transaction builder the API looks like this:
 
 
 ```js
-import { TransactionBuilder, ElectrumNetworkProvider, SignatureTemplate } from 'cashscript';
+import { TransactionBuilder, ElectrumNetworkProvider, SignatureTemplate } from 'solidcash';
 
 const provider = new ElectrumNetworkProvider(Network.MAINNET);
 
@@ -237,9 +186,9 @@ Before:
 
 ```ts
 import { ElectrumCluster, ClusterOrder } from 'electrum-cash';
-import { ElectrumNetworkProvider } from 'cashscript';
+import { ElectrumNetworkProvider } from 'solidcash';
 
-const customCluster = new ElectrumCluster('CashScript Application', '1.4.1', 2, 3, ClusterOrder.PRIORITY);
+const customCluster = new ElectrumCluster('SolidCash Application', '1.4.1', 2, 3, ClusterOrder.PRIORITY);
 customCluster.addServer('bch.imaginary.cash', 50004, ElectrumTransport.WSS.Scheme, false);
 customCluster.addServer('blackie.c3-soft.com', 50004, ElectrumTransport.WSS.Scheme, false);
 customCluster.addServer('electroncash.dk', 50004, ElectrumTransport.WSS.Scheme, false);
@@ -251,9 +200,9 @@ After:
 
 ```ts
 import { ElectrumClient } from '@electrum-cash/network';
-import { ElectrumNetworkProvider } from 'cashscript';
+import { ElectrumNetworkProvider } from 'solidcash';
 
-const customClient = new ElectrumClient('CashScript Application', '1.4.1', 'bch.imaginary.cash');
+const customClient = new ElectrumClient('SolidCash Application', '1.4.1', 'bch.imaginary.cash');
 const provider = new ElectrumNetworkProvider('mainnet', { electrum: customClient });
 
 // or
@@ -263,7 +212,7 @@ const provider = new ElectrumNetworkProvider('mainnet', { hostname: 'bch.imagina
 
 ## v0.9 to v0.10
 
-### CashScript SDK
+### SolidCash SDK
 
 The `Reason` enum + `FailedTimeCheckError` and `FailedSigCheckError` errors have been removed. If you were using these to check your transaction errors, you should now use the new error classes `FailedRequireError`, `FailedTransactionEvaluationError` and `FailedTransactionError`.
 
@@ -273,13 +222,13 @@ The `Argument` type has been split into `FunctionArgument` and `ConstructorArgum
 
 ## v0.7 to v0.8
 
-### cashc compiler
-`cashc` is now a [Pure ESM package](https://gist.github.com/sindresorhus/a39789f98801d908bbc7ff3ecc99d99c). This means that you can no longer use `require` to import `cashscript`. For more information, see the [ESM documentation](https://nodejs.org/api/esm.html).
+### solidc compiler
+`solidc` is now a [Pure ESM package](https://gist.github.com/sindresorhus/a39789f98801d908bbc7ff3ecc99d99c). This means that you can no longer use `require` to import `solidcash`. For more information, see the [ESM documentation](https://nodejs.org/api/esm.html).
 
 `LockingBytecodeP2SH` should be replaced with `LockingBytecodeP2SH20` to keep the same behaviour, or updated to `LockingBytecodeP2SH32` to use the recommended new `P2SH32` Address type.
 
-### CashScript SDK
-`cashscript` is now a [Pure ESM package](https://gist.github.com/sindresorhus/a39789f98801d908bbc7ff3ecc99d99c). This means that you can no longer use `require` to import `cashscript`. For more information, see the [ESM documentation](https://nodejs.org/api/esm.html).
+### SolidCash SDK
+`solidcash` is now a [Pure ESM package](https://gist.github.com/sindresorhus/a39789f98801d908bbc7ff3ecc99d99c). This means that you can no longer use `require` to import `solidcash`. For more information, see the [ESM documentation](https://nodejs.org/api/esm.html).
 
 #### Contract instantiation
 When instantiating a `Contract` object, you now have to pass an options object as a third parameter instead of a network provider. This options object contains the network provider, as well as the address type. The address type defaults to `p2sh32` but can be changed to `p2sh20` if you want to keep the same address type as in earlier versions of the SDK.
@@ -297,7 +246,7 @@ All signature templates use `SIGHASH_ALL | SIGHASH_UTXOS` now, to keep using the
 ```ts
 const sig = new SignatureTemplate(wif, HashType.SIGHASH_ALL);
 ```
-Note that you *need* to use only `SIGHASH_ALL` if you're still using "old-style" covenants (from CashScript v0.6.0 and lower). It is recommended to upgrade to the new "native" covenants (from CashScript v0.7.0 and higher) instead.
+Note that you *need* to use only `SIGHASH_ALL` if you're still using "old-style" covenants (from SolidCash v0.6.0 and lower). It is recommended to upgrade to the new "native" covenants (from SolidCash v0.7.0 and higher) instead.
 
 #### bigint
 You can no longer use `number` inputs for constructor arguments, function arguments, or input/output amounts. Use `bigint` instead. `contract.getBalance()` and `contract.getUtxos()` now also return `bigint` for satoshi amounts instead of `number`.
@@ -308,7 +257,7 @@ You can no longer use `number` inputs for constructor arguments, function argume
 - `BitboxNetworkProvider` has been removed since Bitbox is long deprecated. Switch to modern solutions like `ElectrumNetworkProvider` instead.
 
 ## v0.6 to v0.7
-### cashc compiler
+### solidc compiler
 The older *preimage-based* introspection/covenants have been replaced with the newly supported *native* introspection/covenants. This has significant consequences for any existing covenant contracts, but in general this native introspection makes covenants more accessible, flexible and efficient. See below for a list of changes. In some cases there is no one to one mapping between the old introspection and the new introspection methods, so the logic of the smart contracts will need to be refactored as well.
 
 Most importantly, it is now possible to access specific data for all individual inputs and outputs, rather than e.g. working with hashes of the outputs (`tx.hashOutputs`). This offers more flexibility around the data you want to enforce. For more information about this new *native* introspection functionality, refer to the [Global covenant variables](/docs/language/globals#introspection-variables) section of the documentation, the [Covenants guide](/docs/guides/covenants/) and the [Native Introspection CHIP](https://gitlab.com/GeneralProtocols/research/chips/-/blob/master/CHIP-2021-02-Add-Native-Introspection-Opcodes.md).
@@ -333,8 +282,8 @@ Casting from `sig` to `datasig` has been removed since that was only useful for 
 #### Example
 Since the new covenant functionality is very different from the existing, it may be useful to see a complex covenant contract refactored from the old way to the new way.
 
-```solidity title="Mecenas.cash v0.6.0"
-pragma cashscript ^0.6.0;
+```solidity title="Mecenas.scash v0.6.0"
+pragma solidcash ^0.6.0;
 
 contract Mecenas(bytes20 recipient, bytes20 funder, int pledge, int period) {
     function receive(pubkey pk, sig s) {
@@ -371,7 +320,7 @@ contract Mecenas(bytes20 recipient, bytes20 funder, int pledge, int period) {
 }
 ```
 
-```solidity title="Mecenas.cash 0.7.0"
+```solidity title="Mecenas.scash 0.7.0"
 contract Mecenas(bytes20 recipient, bytes20 funder, int pledge, int period) {
     function receive() {
         require(tx.age >= period);
@@ -406,20 +355,20 @@ contract Mecenas(bytes20 recipient, bytes20 funder, int pledge, int period) {
 ```
 
 ## v0.5 to v0.6
-### cashc compiler
-The exports for library usage of `cashc` have been updated. All utility-type exports have been moved to the `@cashscript/utils` package, but they are still accessible from the `utils` export from `cashc`. Note that the recommended use of `cashc` is still the CLI, not the NPM package.
+### solidc compiler
+The exports for library usage of `solidc` have been updated. All utility-type exports have been moved to the `@solidcash/utils` package, but they are still accessible from the `utils` export from `solidc`. Note that the recommended use of `solidc` is still the CLI, not the NPM package.
 
 In v0.5 you could encode a string like this:
 ```js
-const { Data } = require('cashc');
+const { Data } = require('solidc');
 
 const encodedString = Data.encodeString('Hello World');
 ```
 
-While for v0.6 you'd need to use the `utils` export or `@cashscript/utils`:
+While for v0.6 you'd need to use the `utils` export or `@solidcash/utils`:
 ```js
-const { utils } = require('cashc');
-const { encodeString } = require('@cashscript/utils');
+const { utils } = require('solidc');
+const { encodeString } = require('@solidcash/utils');
 
 const encodedString = utils.encodeString('Hello World');
 const encodedString = encodeString('Hello World');
@@ -427,27 +376,27 @@ const encodedString = encodeString('Hello World');
 
 ---
 
-Compilation functions used to be exported as part of the `CashCompiler` object, but are now exported as standalone functions.
+Compilation functions used to be exported as part of the `SolidCompiler` object, but are now exported as standalone functions.
 
 In v0.5 compilation looked like this:
 ```js
-const { CashCompiler } = require('cashc');
+const { SolidCompiler } = require('solidc');
 
-const Mecenas = CashCompiler.compileFile(path.join(__dirname, 'mecenas.cash'));
+const Mecenas = SolidCompiler.compileFile(path.join(__dirname, 'mecenas.scash'));
 ```
 
 In v0.6, this needs to be changed to this:
 ```js
-const { compileFile } = require('cashc');
+const { compileFile } = require('solidc');
 
-const Mecenas = compileFile(path.join(__dirname, 'mecenas.cash'));
+const Mecenas = compileFile(path.join(__dirname, 'mecenas.scash'));
 ```
 
-### CashScript SDK
-The CashScript SDK no longer depends on `cashc` and no longer exports the `CashCompiler` object. This reflects the recommended usage where the CLI is used for compilation and the artifact JSON is saved. Then this artifact JSON can be imported into the CashScript SDK. If you prefer to compile your contracts from code, you need to add `cashc` as a dependency and use its compilation functionality.
+### SolidCash SDK
+The SolidCash SDK no longer depends on `solidc` and no longer exports the `SolidCompiler` object. This reflects the recommended usage where the CLI is used for compilation and the artifact JSON is saved. Then this artifact JSON can be imported into the SolidCash SDK. If you prefer to compile your contracts from code, you need to add `solidc` as a dependency and use its compilation functionality.
 
 ## v0.4 to v0.5
-### CashScript SDK
+### SolidCash SDK
 The contract instantiation flow has been refactored to enable compatibility with more BCH libraries and simplify the different classes involved.
 
 ---
@@ -456,17 +405,17 @@ In v0.4 a contract could be compiled or imported using `Contract.compile()` or `
 
 In v0.4, contract instantiation looked like this:
 ```js
-const { Contract } = require('cashscript');
+const { Contract } = require('solidcash');
 
-const Mecenas = Contract.compile(path.join(__dirname, 'mecenas.cash'), 'testnet');
+const Mecenas = Contract.compile(path.join(__dirname, 'mecenas.scash'), 'testnet');
 const contract = Mecenas.new(alicePkh, bobPkh, 10000);
 ```
 
 In v0.5, this needs to be changed to look like this:
 ```js
-const { CashCompiler, ElectrumNetworkProvider, Contract } = require('cashscript');
+const { SolidCompiler, ElectrumNetworkProvider, Contract } = require('solidcash');
 
-const Mecenas = CashCompiler.compileFile(path.join(__dirname, 'mecenas.cash'));
+const Mecenas = SolidCompiler.compileFile(path.join(__dirname, 'mecenas.scash'));
 const provider = new ElectrumNetworkProvider('testnet');
 const contract = new Contract(Mecenas, [alicePkh, bobPkh, 10000], provider);
 ```
@@ -480,12 +429,12 @@ const contract = new Contract(Mecenas, [alicePkh, bobPkh, 10000], provider);
 See the [release notes](/docs/releases/release-notes#v050) for an overview of other new changes.
 
 ## v0.3 to v0.4
-### cashc compiler
+### solidc compiler
 In v0.3, casting an `int` type to a `bytes` would perform an `NUM2BIN` operation, padding the value to 8 bytes. This made `bytes(10)` equivalent to `bytes8(10)`. From v0.4.0 onwards, casting to an *unbounded* `bytes` type is only a semantic cast, indicating that the `int` value should be treated as a `bytes` value.
 
 * If you need the old behaviour, you should change all occurrences of `bytes(x)` to `bytes8(x)`.
 
-### CashScript SDK
+### SolidCash SDK
 The entire `Transaction` flow has been refactored to a more fluent chained TransactionBuilder API.
 
 * All occurrences of `.send(to, amount)` should be replaced with `.to(to, amount).send()`.

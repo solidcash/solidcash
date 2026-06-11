@@ -1,13 +1,13 @@
 import { stringify } from '@bitauth/libauth';
-import { Contract, MockNetworkProvider, Output, randomUtxo, TransactionBuilder } from 'cashscript';
-import { compileFile } from 'cashc';
+import { Contract, MockNetworkProvider, Output, randomUtxo, TransactionBuilder } from 'solidcash';
+import { compileFile } from 'solidc';
 import { URL } from 'url';
 
 // Import Alice and Bob's pkh and Alice's address from common.ts
 import { aliceAddress, alicePkh, bobPkh } from './common.js';
 
 // Compile the Mecenas contract to an artifact object
-const artifact = compileFile(new URL('mecenas.cash', import.meta.url));
+const artifact = compileFile(new URL('mecenas.scash', import.meta.url));
 
 // Once you're ready to send transactions on a real network (like chipnet or mainnet), use the ElectrumNetworkProvider
 // const provider = new ElectrumNetworkProvider();
@@ -53,7 +53,7 @@ const contractChangeOutput: Output = {
 // Manually set fee to 1000 because this is hardcoded in the contract
 const transactionBuilder = new TransactionBuilder({ provider });
 
-transactionBuilder.addInput(contractInputUtxo, contract.unlock.receive());
+transactionBuilder.addInput(contractInputUtxo, contract.unlock.recvFunds());
 transactionBuilder.addOutput(receiverOutput);
 if (changeAmount > pledgeAmount + minerFee) transactionBuilder.addOutput(contractChangeOutput);
 

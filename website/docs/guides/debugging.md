@@ -10,13 +10,13 @@ There are 2 broad categories of smart contract bugs:
 
 ### 1. Bug in Transaction Building
 
-The first category of bugs is a bug in the transaction building meaning the 'invocation' of your smart contracts fails. This means the bug is in the usage of the CashScript Transaction builder and you need to carefully review the shape of your transaction and whether it matches the requirements imposed by the smart contract UTXOs.
+The first category of bugs is a bug in the transaction building meaning the 'invocation' of your smart contracts fails. This means the bug is in the usage of the SolidCash Transaction builder and you need to carefully review the shape of your transaction and whether it matches the requirements imposed by the smart contract UTXOs.
 
 ### 2. Bug in Contract Logic
 
-The second category of bugs is a bug in the smart contract logic which prohibits valid spending, this results in the shape of the Transaction builder not matching with the contracts simply because there is a coding error in the contract! Carefully review the logic in the failing line and if needed check the documentation so you are sure about the functionality of your CashScript contract code.
+The second category of bugs is a bug in the smart contract logic which prohibits valid spending, this results in the shape of the Transaction builder not matching with the contracts simply because there is a coding error in the contract! Carefully review the logic in the failing line and if needed check the documentation so you are sure about the functionality of your SolidCash contract code.
 
-Whatever category your bug falls into, the first step of debugging is understanding what line in your CashScript contract is making your transaction get rejected. Afterwards, investigation needs to start whether it's a transaction building bug or a bug in contract logic.
+Whatever category your bug falls into, the first step of debugging is understanding what line in your SolidCash contract is making your transaction get rejected. Afterwards, investigation needs to start whether it's a transaction building bug or a bug in contract logic.
 
 ## Debugging Tools
 
@@ -24,23 +24,23 @@ The [Transaction Builder](/docs/sdk/transaction-builder) has deep integration wi
 
 ### Error messages
 
-If a CashScript transaction is evaluated with `.debug()` or is sent to a network and rejected, then the transaction will be evaluated locally using libauth to provide the failure reason and debug information. Here is an example of what a CashScript error message looks like:
+If a SolidCash transaction is evaluated with `.debug()` or is sent to a network and rejected, then the transaction will be evaluated locally using libauth to provide the failure reason and debug information. Here is an example of what a SolidCash error message looks like:
 
 ```bash
-HodlVault.cash:23 Require statement failed at input 0 in contract HodlVault.cash at line 23.
+HodlVault.scash:23 Require statement failed at input 0 in contract HodlVault.scash at line 23.
 Failing statement: require(price >= priceTarget)
 Bitauth IDE: [link]
 ```
 
-Read the error message to see which line in the CashScript contract causes the transaction validation to fail. Investigate whether the contract function invocation is the issue (on the TypeScript SDK side) or whether the issue is in the CashScript contract itself (so you'd need to update your contract and recompile the artifact). If it is not clear **why** the CashScript contract is failing on that line, then you can use the following two strategies: console logging & Bitauth IDE stack trace.
+Read the error message to see which line in the SolidCash contract causes the transaction validation to fail. Investigate whether the contract function invocation is the issue (on the TypeScript SDK side) or whether the issue is in the SolidCash contract itself (so you'd need to update your contract and recompile the artifact). If it is not clear **why** the SolidCash contract is failing on that line, then you can use the following two strategies: console logging & Bitauth IDE stack trace.
 
 ### Console Logging
 
-To help with debugging you can add `console.log` statements to your CashScript contract file to log variables. This way you investigate whether the variables have the expected values when they get to the failing `require` statement in the CashScript file. After adding the `console.log` statements, recompile your contract so they are added to your contract's Artifact.
+To help with debugging you can add `console.log` statements to your SolidCash contract file to log variables. This way you investigate whether the variables have the expected values when they get to the failing `require` statement in the SolidCash file. After adding the `console.log` statements, recompile your contract so they are added to your contract's Artifact.
 
 ### Bitauth IDE
 
-Whenever a transaction fails, there will be a link in the console to open your smart contract transaction in the BitAuth IDE. This will allow you to inspect the transaction in detail, and see exactly why the transaction failed. In the BitAuth IDE you will see the raw BCH Script mapping to each line in your CashScript contract. Find the failing line and investigate the failing OpCode. You can break up the failing line, one opcode at a time, to see how the stack evolves and ends with your `require` failure.
+Whenever a transaction fails, there will be a link in the console to open your smart contract transaction in the BitAuth IDE. This will allow you to inspect the transaction in detail, and see exactly why the transaction failed. In the BitAuth IDE you will see the raw BCH Script mapping to each line in your SolidCash contract. Find the failing line and investigate the failing OpCode. You can break up the failing line, one opcode at a time, to see how the stack evolves and ends with your `require` failure.
 
 It's also possible to export the transaction for step-by-step debugging in the BitAuth IDE without failure. To do so, you can call the `getBitauthUri()` function on the transaction. This will return a URI that can be opened in the BitAuth IDE.
 
@@ -52,7 +52,7 @@ const uri = await transactionBuilder.getBitauthUri();
 It is unsafe to debug transactions on mainnet using the BitAuth IDE as private keys will be exposed to BitAuth IDE and transmitted over the network.
 :::
 
-The Bitauth IDE will show you the two-way mapping between the CashScript contract code generated opcodes. Here is [a Bitauth IDE link][BitauthIDE] for the basic `TransferWithTimeout` contract as an example:
+The Bitauth IDE will show you the two-way mapping between the SolidCash contract code generated opcodes. Here is [a Bitauth IDE link][BitauthIDE] for the basic `TransferWithTimeout` contract as an example:
 
 ```js
 // "TransferWithTimeout" contract constructor parameters
@@ -61,7 +61,7 @@ The Bitauth IDE will show you the two-way mapping between the CashScript contrac
 <sender> // pubkey = <0x0218d4166169298d42c1f763e243e4b5bc3df8e11690aa953b17a6e02902625f90>
 
 // bytecode
-                                       /* pragma cashscript ~0.11.0;                                                   */
+                                       /* pragma solidcash ~0.11.0;                                                   */
                                        /*                                                                              */
                                        /* contract TransferWithTimeout(pubkey sender, pubkey recipient, int timeout) { */
                                        /*     // Require recipient's signature to match                                */

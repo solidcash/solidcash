@@ -1,8 +1,8 @@
-# CashScript Testing Suite
+# SolidCash Testing Suite
 
-This is an example project to demonstrate how to write and compile CashScript contracts and test them using the CashScript SDK and Vitest.
+This is an example project to demonstrate how to write and compile SolidCash contracts and test them using the SolidCash SDK and Vitest.
 
-## Writing a CashScript contract
+## Writing a SolidCash contract
 
 We have included two simple example contracts in the `contracts/` directory that can be used as a starting point to write your own contracts. The contracts demonstrate logs, require statements and transaction signatures.
 
@@ -20,6 +20,6 @@ You can run the tests with `yarn test`.
 
 ## Next steps
 
-Once you're getting comfortable writing, compiling and testing CashScript contracts, you can copy the `testing-suite` directory into your own project to use as a starting point. From there you can start writing more complex contracts and integrate them into full applications.
+Once you're getting comfortable writing, compiling and testing SolidCash contracts, you can copy the `testing-suite` directory into your own project to use as a starting point. From there you can start writing more complex contracts and integrate them into full applications.
 
-We recommend checking out the [CashScript SDK documentation](https://cashscript.org/docs/sdk/) for more information on how to use the CashScript SDK, and the specific section on the [testing setup](https://cashscript.org/docs/sdk/testing-setup) for more information on how to test your contracts.
+We recommend checking out the [SolidCash SDK documentation](https://solidcash.org/docs/sdk/) for more information on how to use the SolidCash SDK, and the specific section on the [testing setup](https://solidcash.org/docs/sdk/testing-setup) for more information on how to test your contracts.

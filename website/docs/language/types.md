@@ -2,7 +2,7 @@
 title: Types & Operators
 ---
 
-CashScript is a statically typed language, which means that the type of each variable needs to be specified. Types can also be implicitly or explicitly cast to other types. For a quick reference of the various casting possibilities, see [Type Casting](#type-casting).
+SolidCash is a statically typed language, which means that the type of each variable needs to be specified. Types can also be implicitly or explicitly cast to other types. For a quick reference of the various casting possibilities, see [Type Casting](#type-casting).
 
 ## Boolean
 `bool`: The possible values are constants `true` and `false`.
@@ -25,14 +25,8 @@ The operators `||` and `&&` don't apply common short-circuiting rules. This mean
 Operators:
 
 - Comparisons: `<=`, `<`, `==`, `!=`, `>=`, `>` (all evaluate to `bool`)
-- Arithmetic operators: `+`, `-`, unary `-`, `*`, `/`, `%` (modulo).
+- Arithmetic operators: `+`, `-`, unary `-`, `*`, `/`, `%` (modulo), `**` (exponentiation).
 - Arithmetic shift operators: `<<`, `>>` (left and right shift)
-
-Note the lack of the `**` (exponentiation).
-
-#### Arithmetic Shift
-
-The shift operators `<<` and `>>` when applied to `int` are arithmetic shifts, which means that the value is multiplied or divided by `2^n` where `n` is the number of bits to shift. See [Bitshift and arithmetic shift](#bitshift-and-arithmetic-shift) for more details.
 
 #### Number Formatting
 
@@ -111,10 +105,6 @@ bytes noCapability = 0x;
 bytes2 data = 0x12345678.slice(1, 3); // 0x3456
 ```
 
-#### Bitshift
-
-The shift operators `<<` and `>>` when applied to `bytes` are bitwise shifts, which means that the value is shifted by `n` bits, and the bits that are shifted off the end are dropped. So that means that the byte size of the result is the same as the byte size of the input. See [Bitshift and arithmetic shift](#bitshift-and-arithmetic-shift) for more details.
-
 ## Bytes types with semantic meaning
 Some byte sequences hold specific meanings inside Bitcoin Cash contracts. These have been granted their own types, separate from the regular `bytes` type.
 
@@ -143,11 +133,13 @@ Operators:
 - `!=` (inequality)
 
 ## Array
-Arrays are not assignable and can only be used with the `checkMultisig` function using the following syntax:
+In non-stateful contracts, arrays can only be used with the `checkMultisig` function using the following syntax:
 
 ```solidity
 checkMultisig([sig1, sig2], [pk1, pk2, pk3]);
 ```
+
+In stateful contracts, dynamic arrays are supported as state variables with `push`, `pop`, `delete`, and index access. See [Stateful Contracts -- Dynamic Arrays](/docs/language/stateful-contracts#dynamic-arrays) for details.
 
 ## Tuple
 Tuples are the type that is returned when calling the `split` member function on a `string` or `bytes` type. Their first or second element can be accessed through an indexing syntax similar to other languages:
@@ -221,7 +213,7 @@ unsafe_bool(intValue); // (type = bool, content = 25 / 0x19)
 ```
 
 ## Operators
-An overview of all supported operators and their precedence is included below. Notable is a lack of exponentiation, since these operations are not supported by the underlying Bitcoin Script.
+An overview of all supported operators and their precedence is included below.
 
 | Precedence | Description                         | Operator                 |
 | ---------- | ----------------------------------- | ------------------------ |
@@ -234,42 +226,16 @@ An overview of all supported operators and their precedence is included below. N
 | 7          | Unary minus                         | `-`                      |
 | 7          | Logical NOT                         | `!`                      |
 | 7          | Bitwise inversion                   | `~`                      |
-| 8          | Multiplication, division and modulo | `*`, `/`, `%`            |
-| 9          | Addition and subtraction            | `+`, `-`                 |
-| 9          | String / bytes concatenation        | `+`                      |
-| 10         | Bitwise / Arithmetic shift          | `<<`, `>>`               |
-| 11         | Numeric comparison                  | `<`, `>`, `<=`, `>=`     |
-| 12         | Equality and inequality             | `==`, `!=`               |
-| 13         | Bitwise AND                         | `&`                      |
-| 14         | Bitwise XOR                         | `^`                      |
-| 15         | Bitwise OR                          | `\|`                     |
-| 16         | Logical AND                         | `&&`                     |
-| 17         | Logical OR                          | `\|\|`                   |
-| 18         | Assignment                          | `=`                      |
-
-### Bitshift and arithmetic shift
-
-The shifting operators `<<` and `>>` are available for both `int` and `bytes` types, but they are different operations based on the type.
-
-When applied to `int`, the operation is an arithmetic shift, which means that the value is multiplied or divided by `2^n` where `n` is the number of bits to shift.
-
-When applied to `bytes`, the operation is a bitwise shift, which means that the value is shifted by `n` bits, and the bits that are shifted off the left end are dropped. So that means that the byte size of the result is the same as the byte size of the input.
-:::caution
-Be mindful what the type of the input is when using the shift operators, so you know which of these operations is being performed. On the same underlying value (but different types), arithmetic and bitwise shift will produce different results.
-:::
-
-**Arithmetic shift (`int`)** — the value is multiplied (`<<`) or divided (`>>`) by `2^n`:
-
-| Expression | Result | Equivalent value          |
-| ---------- | ------ | ------------------------- |
-| `3 << 4`   | `48`   | `3 * 2^4`                 |
-| `100 >> 4` | `6`    | `100 / 2^4` (rounds down) |
-
-**Bitwise shift (`bytes`)** — the bits move within a fixed-width buffer and any bits shifted past either end fall off. Note that the result keeps the same byte length as the input:
-
-| Expression    | Input bits          | Result bits         | Result   |
-| ------------- | ------------------- | ------------------- | -------- |
-| `0x0102 << 1` | `00000001 00000010` | `00000010 00000100` | `0x0204` |
-| `0x0102 << 8` | `00000001 00000010` | `00000010 00000000` | `0x0200` |
-| `0x0102 >> 1` | `00000001 00000010` | `00000000 10000001` | `0x0081` |
-| `0x0102 >> 8` | `00000001 00000010` | `00000000 00000001` | `0x0001` |
+| 8          | Exponentiation (right-associative)  | `**`                     |
+| 9          | Multiplication, division and modulo | `*`, `/`, `%`            |
+| 10         | Addition and subtraction            | `+`, `-`                 |
+| 10         | String / bytes concatenation        | `+`                      |
+| 11         | Bitwise / Arithmetic shift          | `<<`, `>>`               |
+| 12         | Numeric comparison                  | `<`, `>`, `<=`, `>=`     |
+| 13         | Equality and inequality             | `==`, `!=`               |
+| 14         | Bitwise AND                         | `&`                      |
+| 15         | Bitwise XOR                         | `^`                      |
+| 16         | Bitwise OR                          | `\|`                     |
+| 17         | Logical AND                         | `&&`                     |
+| 18         | Logical OR                          | `\|\|`                   |
+| 19         | Assignment                          | `=`                      |

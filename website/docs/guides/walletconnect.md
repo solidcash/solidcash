@@ -2,7 +2,7 @@
 title: WalletConnect
 ---
 
-The BCH WalletConnect spec lays out a BCH-specific API for how Bitcoin Cash dapps can communicate to BCH Wallets. BCH WalletConnect uses the generic 'WalletConnect' transport layer but the contents being communicated is what's BCH-specific. The standard was designed with CashScript smart contract usage in mind.
+The BCH WalletConnect spec lays out a BCH-specific API for how Bitcoin Cash dapps can communicate to BCH Wallets. BCH WalletConnect uses the generic 'WalletConnect' transport layer but the contents being communicated is what's BCH-specific. The standard was designed with SolidCash smart contract usage in mind.
 
 The BCH WalletConnect standard is supported in multiple wallets and a wide range of dapps. You can find a full list of Bitcoin Cash dapps supporting WalletConnect on [Tokenaut.cash](https://tokenaut.cash/dapps?filter=walletconnect).
 
@@ -22,7 +22,7 @@ signTransaction: (wcTransactionObj: WcTransactionObject) => Promise<SignedTxObje
 
 ```ts
 interface WcTransactionObject {
-  // the spec also allows for a tx hex string but CashScript returns the libauth transaction object
+  // the spec also allows for a tx hex string but SolidCash returns the libauth transaction object
   transaction: TransactionCommon;
   sourceOutputs: WcSourceOutput[];
   broadcast?: boolean;
@@ -46,7 +46,7 @@ interface SignedTxObject {
 ```
 
 To use the BCH WalletConnect `signTransaction` API, we need to pass a  `wcTransactionObj`.
-CashScript `TransactionBuilder` has a `generateWcTransactionObject` method for creating this object.
+SolidCash `TransactionBuilder` has a `generateWcTransactionObject` method for creating this object.
 
 Below we show 2 examples, the first example using spending a user-input and in the second example spending from a user-contract with placeholders for `userPubKey` and `userSig`
 
@@ -55,13 +55,13 @@ Below we show 2 examples, the first example using spending a user-input and in t
 Below is example code from the `CreateContract` code of the 'Hodl Vault' dapp repository, [link to source code](https://github.com/mr-zwets/bch-hodl-dapp/blob/main/src/views/CreateContract.vue#L14).
 
 ```ts
-import { TransactionBuilder, placeholderP2PKHUnlocker } from "cashscript";
+import { TransactionBuilder, placeholderP2PKHUnlocker } from "solidcash";
 
 async function proposeWcTransaction(userAddress: string){
   // use a placeholderUnlocker which will be replaced by the user's wallet
   const placeholderUnlocker = placeholderP2PKHUnlocker(userAddress)
 
-  // use the CashScript SDK to construct a transaction
+  // use the SolidCash SDK to construct a transaction
   const transactionBuilder = new TransactionBuilder({provider: store.provider})
   transactionBuilder.addInputs(userInputUtxos, placeholderUnlocker)
   transactionBuilder.addOpReturnOutput(opReturnData)
@@ -87,7 +87,7 @@ async function proposeWcTransaction(userAddress: string){
 Below is example code from the `unlockHodlVault` code of the 'Hodl Vault' dapp repository, [link to source code](https://github.com/mr-zwets/bch-hodl-dapp/blob/main/src/views/UserContracts.vue#L66).
 
 ```ts
-import { TransactionBuilder, placeholderSignature, placeholderPublicKey } from "cashscript";
+import { TransactionBuilder, placeholderSignature, placeholderPublicKey } from "solidcash";
 
 async function unlockHodlVault(){
   // We use a placeholder signature and public key so this can be filled in by the user's wallet
@@ -123,7 +123,7 @@ See [the source code](https://github.com/mr-zwets/bch-hodl-dapp/blob/main/src/st
 ```ts
 import SignClient from '@walletconnect/sign-client';
 import { stringify } from "@bitauth/libauth";
-import { type WcTransactionObject } from "cashscript";
+import { type WcTransactionObject } from "solidcash";
 
 interface SignedTxObject {
   signedTransaction: string;

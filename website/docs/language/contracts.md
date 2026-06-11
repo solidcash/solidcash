@@ -2,10 +2,10 @@
 title: Contract Structure
 ---
 
-Contracts in CashScript are somewhat similar to classes in object-oriented languages. A notable difference is that there is no mutable state. So once a contract is instantiated with certain parameters, these values cannot change. Instead, functions can be called on the contract that act on the contract's values to spend money from the contract. The extension of CashScript source code files is `.cash`, and the structure of these source files is explained below.
+Contracts in SolidCash are somewhat similar to classes in object-oriented languages. Non-stateful contracts have immutable constructor parameters that cannot change once set. [Stateful contracts](/docs/language/stateful-contracts) additionally support mutable state variables that persist across transactions using CashToken NFT commitments. The extension of SolidCash source code files is `.scash`, and the structure of these source files is explained below.
 
 ## Pragma
-A contract file may start with a pragma directive to indicate the CashScript version the contract was written for. This ensures that a contract is not compiled with an unsupported compiler version. The pragma directive follows regular [semantic versioning (SemVer)](https://semver.npmjs.com/) rules.
+A contract file may start with a pragma directive to indicate the SolidCash version the contract was written for. This ensures that a contract is not compiled with an unsupported compiler version. The pragma directive follows regular [semantic versioning (SemVer)](https://semver.npmjs.com/) rules.
 
 :::caution
 Contract authors should be careful when allowing a range of versions to check that no breaking changes to the compiler were introduced in these versions which would result in different bytecode and smart contract address.
@@ -13,19 +13,31 @@ Contract authors should be careful when allowing a range of versions to check th
 
 #### Example
 ```solidity
-pragma cashscript ^0.13.0;
-pragma cashscript >= 0.7.0 < 0.9.3;
+pragma solidcash ^0.13.0;
+pragma solidcash >= 0.7.0 < 0.9.3;
 ```
 
 ## Constructor
-A CashScript constructor works slightly differently than what you might be used to in regular object-oriented languages. It is not possible to define any statements inside the constructor, as the constructor is only used to store values in the contract. Because of this limited nature, there is no separate `constructor` function, but instead the parameters are specified directly on the class definition.
+For non-stateful contracts, the constructor parameters are specified directly on the contract definition and serve as immutable values accessible from all functions.
 
 #### Example
 ```solidity
-pragma cashscript ^0.13.0;
+pragma solidcash ^0.13.0;
 
 contract HTLC(pubkey sender, pubkey recipient, int expiration, bytes32 hash) {
     ...
+}
+```
+
+Stateful contracts can additionally define an explicit `constructor()` body to initialize state variables at deployment time:
+
+```solidity
+contract Token(pubkey admin) {
+    int totalSupply;
+
+    constructor() {
+        this.totalSupply = 1_000_000;
+    }
 }
 ```
 
@@ -42,11 +54,11 @@ Upon initialization of the contract, constructor parameters are encoded and adde
 :::
 
 ## Functions
-The main construct in a CashScript contract is the function. A contract can contain one or multiple functions that can be executed to trigger transactions that spend money from the contract. At its core, the result of a function is just a yes or no answer to the question 'Can money be sent out of this contract?'. However, by using 'covenants it's possible to specify additional conditions — like restricting *where* money can be sent. To learn more about covenants, refer to the [CashScript Covenants Guide](/docs/guides/covenants).
+The main construct in a SolidCash contract is the function. A contract can contain one or multiple functions that can be executed to trigger transactions that spend money from the contract. At its core, the result of a function is just a yes or no answer to the question 'Can money be sent out of this contract?'. However, by using 'covenants it's possible to specify additional conditions - like restricting *where* money can be sent. To learn more about covenants, refer to the [SolidCash Covenants Guide](/docs/guides/covenants).
 
 #### Example
 ```solidity
-pragma cashscript ^0.13.0;
+pragma solidcash ^0.13.0;
 
 contract TransferWithTimeout(pubkey sender, pubkey recipient, int timeout) {
     function transfer(sig recipientSig) {
@@ -66,20 +78,20 @@ Function arguments are provided by the user in the unlocking script of the trans
 Because the arguments are provided by the user when spending from the contract, these are 'untrusted arguments'. This means that these arguments can be crafted in a specific way by anyone to see if they can exploit the contract logic.
 
 :::note
-Function parameters are passed in the reversed order of their declaration, but may be reordered by the compiler when enforcing function parameter types. This can be important when debugging, optimizing or when creating transactions manually.
+Function parameters are passed in the reversed order of their declaration. This can be important when debugging, optimizing or when creating transactions manually.
 :::
 
-In CashScript the types for the function arguments are **not** enforced automatically at the contract level. This can be especially relevant for types like `bool`, `bytesX` and other semantic bytes types. Instead this type information is only used by the SDK to check whether these arguments match the expected type during transaction building.
+In SolidCash the types for the function arguments are **not** enforced automatically at the contract level. This can be especially relevant for types like `bool`, `bytesX` and other semantic bytes types. Instead this type information is only used by the SDK to check whether these arguments match the expected type during transaction building.
 
-:::info
-The typings for function arguments are enforced by default for boolean values and bounded bytes types such as `bytes20` and `bytes32`.
+:::caution
+The typings for the function arguments are only semantic, this means the length of bounded bytes types like `bytes20` are **not** contract enforced automatically. Instead add an explicit length check `require(item.length == 20)`.
 :::
 
 ## Statements
-CashScript functions are made up of a collection of statements that determine whether money may be spent from the contract.
+SolidCash functions are made up of a collection of statements that determine whether money may be spent from the contract.
 
 ### require()
-The most important statement of CashScript contracts is the `require` statement. This statement takes a boolean expression and checks that it evaluates to `true`. If it evaluates to `false` instead, the transaction fails. This statement is used to ensure that the requirements are met to spend money from the contract.
+The most important statement of SolidCash contracts is the `require` statement. This statement takes a boolean expression and checks that it evaluates to `true`. If it evaluates to `false` instead, the transaction fails. This statement is used to ensure that the requirements are met to spend money from the contract.
 
 The `require` statement can also take an optional error message as a second argument. This can be used to provide more information about why the transaction failed when running the transaction in debug mode. You can read more about debugging in the [debugging guide](/docs/guides/debugging).
 
@@ -89,7 +101,7 @@ The error message in a `require` statement is only available in debug evaluation
 
 #### Example
 ```solidity
-pragma cashscript ^0.13.0;
+pragma solidcash ^0.13.0;
 
 contract P2PKH(bytes20 pkh) {
     function spend(pubkey pk, sig s) {
@@ -100,10 +112,10 @@ contract P2PKH(bytes20 pkh) {
 ```
 
 ### Variable declaration
-Variables can be declared by specifying their type and name. All variables need to be initialised at the time of their declaration, but can be reassigned later on — unless specifying the `constant` keyword. Since CashScript is strongly typed and has no type inference, it is not possible to use keywords such as `var` or `let` to declare variables.
+Variables can be declared by specifying their type and name. All variables need to be initialised at the time of their declaration, but can be reassigned later on - unless specifying the `constant` keyword. Since SolidCash is strongly typed and has no type inference, it is not possible to use keywords such as `var` or `let` to declare variables.
 
 :::note
-CashScript disallows variable shadowing and unused variables.
+SolidCash disallows variable shadowing and unused variables.
 :::
 
 #### Example
@@ -113,30 +125,25 @@ string constant myString = 'Bitcoin Cash';
 ```
 
 ### Variable assignment
-After their initial declaration, any variable can be reassigned later on. CashScript supports regular assignment with `=`, the compound assignment operators `+=` and `-=`, and the increment and decrement operators `++` and `--`. The compound and increment/decrement operators are only valid on `int` variables.
+After their initial declaration, any variable can be reassigned later on. However, SolidCash lacks any compound assignment operators such as `+=` or `-=`.
 
 #### Example
 ```solidity
 i = i + 1;
 hashedValue = sha256(hashedValue);
 myString = 'Cash';
-
-counter += 2;
-counter -= 1;
-counter++;
-counter--;
 ```
 
 ### If statements
 If and if-else statements follow usual semantics known from languages like C or JavaScript. If the condition within the `if` statement evaluates to `true`, the block of code within the `if` statement is executed. If the condition evaluates to `false`, the block of code within the optional `else` statement is executed.
 
 :::note
-There is no implicit type conversion from non-boolean to boolean types. So `if (1) { ... }` is not valid CashScript and should instead be written as `if (bool(1)) { ... }`
+There is no implicit type conversion from non-boolean to boolean types. So `if (1) { ... }` is not valid SolidCash and should instead be written as `if (bool(1)) { ... }`
 :::
 
 #### Example
 ```solidity
-pragma cashscript ^0.13.0;
+pragma solidcash ^0.13.0;
 
 contract OneOfTwo(bytes20 pkh1, bytes32 hash1, bytes20 pkh2, bytes32 hash2) {
     function spend(pubkey pk, sig s, bytes message) {
@@ -156,70 +163,18 @@ contract OneOfTwo(bytes20 pkh1, bytes32 hash1, bytes20 pkh2, bytes32 hash2) {
 
 ### Loops
 
-CashScript supports `for`, `while` and `do-while` loops. It currently does not support `break` and `continue` statements.
-
-#### for loop
-
-For loops are the main loop construct in CashScript and has a similar syntax to languages like JavaScript or C. The loop header consists of three parts: the initialization, the condition and the update. The initialization is executed only once before the loop starts. The condition is checked before each iteration of the loop. The update is executed after each iteration of the loop.
+SolidCash supports `for`, `while`, and `do-while` loops with `break` and `continue`. See [Advanced Features](/docs/language/advanced-features#for-loops) for the full loop syntax reference.
 
 #### Example
 ```solidity
-pragma cashscript ^0.13.0;
+pragma solidcash ^0.13.0;
 
 contract NoTokensAllowed() {
     function spend() {
-        // Loop over all inputs (variable length), and make sure that none of them contain tokens
-        for (int inputIndex = 0; inputIndex < tx.inputs.length; inputIndex++) {
-            require(tx.inputs[inputIndex].tokenCategory == 0x);
+        // Loop over all inputs and make sure none contain tokens
+        for (int i = 0; i < tx.inputs.length; i = i + 1) {
+            require(tx.inputs[i].tokenCategory == 0x);
         }
-    }
-}
-```
-
-#### while loop
-
-While loops execute their body as long as the condition holds, checking the condition before each iteration. They're useful when the number of iterations depends on values that change inside the body, so a for-style counter doesn't fit.
-
-#### Example
-```solidity
-pragma cashscript ^0.13.0;
-
-contract PartialFill(int minPayout) {
-    function spend() {
-        int totalPaid = 0;
-        int i = 0;
-
-        // Sum output values until the minimum payout is met. The number of outputs
-        // needed depends on the values themselves, so it's not known up-front.
-        while (totalPaid < minPayout) {
-            totalPaid = totalPaid + tx.outputs[i].value;
-            i = i + 1;
-        }
-
-        require(totalPaid >= minPayout);
-    }
-}
-```
-
-#### do-while loop
-
-Do-while loops execute their body first, then check the condition. The body is guaranteed to run at least once even if the condition is initially false. This is useful when a step needs to happen unconditionally before deciding whether to continue.
-
-#### Example
-```solidity
-pragma cashscript ^0.13.0;
-
-contract HashChainLock(bytes32 hashLock) {
-    function spend(bytes32 preimage) {
-        bytes32 current = preimage;
-
-        // Hash at least once before checking. Using a while loop would let anyone
-        // unlock the contract by passing hashLock itself as the preimage.
-        do {
-            current = hash256(current);
-        } while (current != hashLock);
-
-        require(current == hashLock);
     }
 }
 ```
@@ -233,7 +188,7 @@ Logging is only available in debug evaluation of a transaction, but has no impac
 
 #### Example
 ```solidity
-pragma cashscript ^0.13.0;
+pragma solidcash ^0.13.0;
 
 contract P2PKH(bytes20 pkh) {
     function spend(pubkey pk, sig s) {
@@ -251,7 +206,7 @@ contract P2PKH(bytes20 pkh) {
 
 ## Scope
 
-CashScript uses nested scopes for parameters, variables and global functions. There cannot be two identical names within the same scope or within a nested scope.
+SolidCash uses nested scopes for parameters, variables and global functions. There cannot be two identical names within the same scope or within a nested scope.
 
 There are the following scopes in the nesting order:
 

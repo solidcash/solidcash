@@ -15,6 +15,7 @@ import {
 import { binToHex, hexToBin, isHex, encodeTransaction } from '@bitauth/libauth';
 import { buildEventNftCovenantScript, computeEventNameHash } from '@solidcash/utils';
 import { TransactionBuilder, TransactionBuilderOptions } from '../TransactionBuilder.js';
+import { CovenantTransactionBuilder } from './CovenantTransactionBuilder.js';
 import { scriptToLockingBytecode, generateLibauthSourceOutputs } from '../utils.js';
 import type { LibauthOutput } from '../interfaces.js';
 import { Utxo, UnlockableUtxo, TransactionDetails } from '../interfaces.js';
@@ -740,15 +741,15 @@ export class StatefulTransactionBuilder {
   build(): TransactionBuilder {
     // Allow implicit NFT burn when entries are being deleted
     // Apply max fee override if set (user-specified via withMaxFee takes precedence)
-    // Always skip the inner TransactionBuilder's fee check - it can't understand
+    // CovenantTransactionBuilder skips the inner fee check - it can't understand
     // covenant-managed outputs. The STB performs its own fee check in send().
     const baseOpts = this._maximumFeeSatoshis !== undefined
-      ? { ...this.builderOptions, skipFeeCheck: true, maximumFeeSatoshis: this._maximumFeeSatoshis }
-      : { ...this.builderOptions, skipFeeCheck: true };
+      ? { ...this.builderOptions, maximumFeeSatoshis: this._maximumFeeSatoshis }
+      : { ...this.builderOptions };
     const opts = this.entryDeletes.size > 0
       ? { ...baseOpts, allowImplicitNftBurn: true }
       : baseOpts;
-    const builder = new TransactionBuilder(opts);
+    const builder = new CovenantTransactionBuilder(opts);
     builder.addInputs(this.allInputs);
 
     // Read current state from the provided data NFT commitments

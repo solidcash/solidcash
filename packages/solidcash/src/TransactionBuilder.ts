@@ -49,8 +49,6 @@ export interface TransactionBuilderOptions {
   maximumFeeSatsPerByte?: number;
   allowImplicitFungibleTokenBurn?: boolean;
   allowImplicitNftBurn?: boolean;
-  /** @internal Skip fee validation (used by auto-derivation probes). */
-  skipFeeCheck?: boolean;
 }
 
 const DEFAULT_SEQUENCE = 0xfffffffe;
@@ -208,9 +206,7 @@ export class TransactionBuilder {
     return this;
   }
 
-  private checkMaxFee(transaction: LibauthTransaction): void {
-    if (this.options.skipFeeCheck) return;
-
+  protected checkMaxFee(transaction: LibauthTransaction): void {
     const totalInputAmount = this.inputs.reduce((total, input) => total + input.satoshis, 0n);
     const totalOutputAmount = this.outputs.reduce((total, output) => total + output.amount, 0n);
     const fee = totalInputAmount - totalOutputAmount;
@@ -238,7 +234,7 @@ export class TransactionBuilder {
     }
   }
 
-  private checkFungibleTokenBurn(): void {
+  protected checkFungibleTokenBurn(): void {
     if (this.options.allowImplicitFungibleTokenBurn) return;
 
     const tokenInputAmounts: Record<string, bigint> = {};
@@ -263,7 +259,7 @@ export class TransactionBuilder {
     }
   }
 
-  private checkNftBurn(): void {
+  protected checkNftBurn(): void {
     if (this.options.allowImplicitNftBurn) return;
 
     // For mutable/minting NFTs, commitments can legitimately change (e.g. state updates),

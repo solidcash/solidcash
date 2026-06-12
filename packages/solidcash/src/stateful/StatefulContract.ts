@@ -1949,7 +1949,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
 
     const requiredIndices = constructorAbi?.requiredNftIndices
       ?? Array.from({ length: stateLayout.dataNftCount }, (_, i) => i);
-    const { TransactionBuilder } = await import('../TransactionBuilder.js');
+    const { CovenantTransactionBuilder } = await import('./CovenantTransactionBuilder.js');
     const vm = createVirtualMachineBch2026();
     const allEventDefs = artifact.events ?? [];
     const maxDeployIterations = 5;
@@ -1986,8 +1986,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       );
 
       // Build probe transaction
-      const probeBuilder = new TransactionBuilder({
-        provider: options.provider, skipFeeCheck: true,
+      const probeBuilder = new CovenantTransactionBuilder({
+        provider: options.provider,
       });
       probeBuilder.addInput(syntheticMaster, constructorUnlocker);
       iterDataNfts.forEach(
@@ -2474,8 +2474,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       // cleanly distinguishable from programming bugs or configuration errors.
       try {
         // Build the probe transaction with placeholder (current) commitments
-        const { TransactionBuilder } = await import('../TransactionBuilder.js');
-        const probeBuilder = new TransactionBuilder({ provider: this.inner.provider, skipFeeCheck: true });
+        const { CovenantTransactionBuilder } = await import('./CovenantTransactionBuilder.js');
+        const probeBuilder = new CovenantTransactionBuilder({ provider: this.inner.provider });
 
         // Input 0: master UTXO
         probeBuilder.addInput(masterUtxo, masterUnlocker);

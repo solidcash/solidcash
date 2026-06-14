@@ -3,8 +3,9 @@ import {
   hexToBin,
   Transaction,
   binToHex,
-  createVirtualMachineBch2026,
+  encodeTransaction,
 } from '@bitauth/libauth';
+import { createTxVerifier } from '@mem-cash/validation';
 import { buildInitialStateCommitments, type StateLayout } from '@solidcash/utils';
 import { Output, Network, Utxo } from '../src/interfaces.js';
 import { Contract, TransactionBuilder } from '../src/index.js';
@@ -13,6 +14,13 @@ import { getDataNftAddress } from '../src/stateful/covenant-helpers.js';
 import { network as defaultNetwork } from './fixture/vars.js';
 import { generateLibauthSourceOutputs, getNetworkPrefix, libauthOutputToSolidCashOutput } from '../src/utils.js';
 import { utxoComparator } from '../src/utils.js';
+
+// Unified mem-cash verifier for covenant build() output. skipFeePolicy skips the min-relay/absurd-fee
+// POLICY only (the fee funder is added at send()); scripts, CashToken consensus, value balance, and
+// the token-aware dust limit (fixed dust relay fee) all still run. createTxVerifier is sync in
+// mem-cash 0.0.6, so verifyTransaction stays synchronous.
+const txVerifier = createTxVerifier({ vmVersion: 'BCH_2026_05', standard: true, skipFeePolicy: true });
+const VERIFY_CHAIN_STATE = { height: 133700, medianTimePast: 1700000000 };
 
 export function getTxOutputs(tx: Transaction, network: Network = defaultNetwork): Output[] {
   return tx.outputs.map((o) => {
@@ -39,46 +47,18 @@ export function getTxOutputs(tx: Transaction, network: Network = defaultNetwork)
 }
 
 /**
- * Validate all scripts in a transaction using the BCH VM.
- * Works with both standard and custom unlockers (data NFTs, containers, etc.).
- * Throws if any input script fails validation.
+ * Verify a covenant build() transaction with the mem-cash verifier: scripts + CashToken consensus,
+ * value balance, and the token-aware dust limit. Fee policy (min-relay/absurd-fee) is skipped since
+ * this is the pre-fee build output (the fee funder is added at send()). Works with both standard and
+ * custom unlockers (data NFTs, containers, etc.). Throws if verification fails.
  */
 export function verifyTransaction(builder: TransactionBuilder): void {
-  const transaction = builder.buildLibauthTransaction();
+  const rawHex = binToHex(encodeTransaction(builder.buildLibauthTransaction()));
   const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
-  const vm = createVirtualMachineBch2026();
-  const result = vm.verify({ sourceOutputs, transaction });
-  if (typeof result === 'string') {
-    // Find the failing input and print debug info
-    for (let inputIndex = 0; inputIndex < transaction.inputs.length; inputIndex++) {
-      const singleResult = (vm as any).debug?.({ sourceOutputs, transaction, inputIndex });
-      if (singleResult && Array.isArray(singleResult)) {
-        const failStep = singleResult.findIndex((t: any) => t.error);
-        if (failStep >= 0) {
-          const start = Math.max(0, failStep - 10);
-          const lines: string[] = [`Input[${inputIndex}] fails at step ${failStep}/${singleResult.length}:`];
-          for (let i = start; i <= Math.min(failStep + 1, singleResult.length - 1); i++) {
-            const t = singleResult[i];
-            const stack = (t.stack || []).map((s: Uint8Array) => {
-              const hex = binToHex(s);
-              return hex === '' ? '(empty)' : hex.length > 16 ? hex.slice(0, 8) + '..' + `(${hex.length / 2}B)` : hex;
-            });
-            const ip = t.ip;
-            const instrs = t.instructions;
-            let opName = `ip=${ip}`;
-            if (instrs && ip > 0) {
-              const prev = instrs[ip - 1];
-              if (prev?.opcode !== undefined) {
-                opName = `op=${prev.opcode}`;
-              }
-            }
-            lines.push(`  [${i}] ${opName.padEnd(12)} stack=[${stack.join(', ')}]${t.error ? ` ERR: ${t.error}` : ''}`);
-          }
-          console.error(lines.join('\n'));
-        }
-      }
-    }
-    throw new Error(`Script verification failed: ${result}`);
+  const result = txVerifier.verify(rawHex, sourceOutputs, VERIFY_CHAIN_STATE);
+  if (!result.success) {
+    const detail = result.debugMessage ? `${result.error}: ${result.debugMessage}` : result.error;
+    throw new Error(`Transaction verification failed [code ${result.code}]: ${detail}`);
   }
 }
 

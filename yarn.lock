@@ -1601,44 +1601,44 @@
     npmlog "^4.1.2"
     write-file-atomic "^2.3.0"
 
-"@mem-cash/core@0.0.4":
-  version "0.0.4"
-  resolved "https://registry.npmjs.org/@mem-cash/core/-/core-0.0.4.tgz#9c3e1aebc6a3bada955b4b24f7e60da5a4bf41d5"
-  integrity sha512-R0B1z57eE1OJIfa5szvKrhYVp3v009o2HHxAcTQsVBpfZ3AB4Y0UQ3VFeuREYC1SHx4soXiP+G3pzBd19wMYew==
+"@mem-cash/core@0.0.6":
+  version "0.0.6"
+  resolved "https://registry.npmjs.org/@mem-cash/core/-/core-0.0.6.tgz#23b374ae82bf80b7c7f00c2a8491d7081a8ce6a9"
+  integrity sha512-dNYrJUgrSWg5xyHAI8L/enc6w+PELVNEhu/CjAHC95LtHMBInfvb4l/i2dfGw0tQoNzsezwhOmrej3nH5eKDzA==
   dependencies:
     "@bitauth/libauth" "^3.1.0-next.8"
-    "@mem-cash/storage" "0.0.4"
-    "@mem-cash/types" "0.0.4"
+    "@mem-cash/storage" "0.0.6"
+    "@mem-cash/types" "0.0.6"
 
-"@mem-cash/electrum@^0.0.4":
-  version "0.0.4"
-  resolved "https://registry.npmjs.org/@mem-cash/electrum/-/electrum-0.0.4.tgz#eda4db5d0f0125568f731fa37247f373c1775876"
-  integrity sha512-C7V2GoH63bWTgq2To+GsqtV0b2NMJTFpj/loqK7Z2H7+V/YlrgKDgG+XAeE3DY9s7dvLGm1S4fsnyly4Of0UxA==
+"@mem-cash/electrum@^0.0.6":
+  version "0.0.6"
+  resolved "https://registry.npmjs.org/@mem-cash/electrum/-/electrum-0.0.6.tgz#eef8879f11b5de39cd28efdf25fdc86e80c03a1b"
+  integrity sha512-FNgLSYGIbxsV28XqDyLTGSyCgQvxzlgNCPDNsclKftuaU0DKsPZzgDoFnNe0A7ak/t16Qh3pIURo79dhlzOCeA==
   dependencies:
     "@bitauth/libauth" "^3.1.0-next.8"
-    "@mem-cash/core" "0.0.4"
-    "@mem-cash/storage" "0.0.4"
-    "@mem-cash/types" "0.0.4"
+    "@mem-cash/core" "0.0.6"
+    "@mem-cash/storage" "0.0.6"
+    "@mem-cash/types" "0.0.6"
 
-"@mem-cash/storage@0.0.4":
-  version "0.0.4"
-  resolved "https://registry.npmjs.org/@mem-cash/storage/-/storage-0.0.4.tgz#bd7e27106155b76a5aafc0e671fe1171005bddf9"
-  integrity sha512-MUdpk5U21jPjZEBCh+T7DN1DcYv43Y0+k6aBJcd2AhIiBmZRh7gpYCKzABdzd7duT9BA+xkMma71h1275bH5rw==
+"@mem-cash/storage@0.0.6":
+  version "0.0.6"
+  resolved "https://registry.npmjs.org/@mem-cash/storage/-/storage-0.0.6.tgz#65c84988afb69aafbd0ab947277ebd14a28eb81b"
+  integrity sha512-Mh5EAJ6YltorHmVQ4a83gKWOSB3d7WlV9+4YiR3tsrcqwEP46RN5rt+Pb+qEw90XRAroofrmboA8MNNkFwRfrw==
   dependencies:
     "@bitauth/libauth" "^3.1.0-next.8"
-    "@mem-cash/types" "0.0.4"
+    "@mem-cash/types" "0.0.6"
 
-"@mem-cash/types@0.0.4":
-  version "0.0.4"
-  resolved "https://registry.npmjs.org/@mem-cash/types/-/types-0.0.4.tgz#d7829efc6cffb46d540c7d7376dc966b385aac81"
-  integrity sha512-xg2bDh6pdz+UNGhy9CkhmTSrvV8aYLoVYnmPetjgq/GIVtfF+PzI0ewmZ+xPUc0ST0htoJSErYAl7/isCx8w9Q==
+"@mem-cash/types@0.0.6":
+  version "0.0.6"
+  resolved "https://registry.npmjs.org/@mem-cash/types/-/types-0.0.6.tgz#9912d14134d001b220c236f8d7bea0ab0edfb59c"
+  integrity sha512-cSjcy02SYQoSJHTIv2Oc4W+bJU7sRv132Ycr112atOS3CyfGQRVTo2W5FWnnPeVqSsEkvl2sLGAMHvLdDJroUQ==
   dependencies:
     "@bitauth/libauth" "^3.1.0-next.8"
 
-"@mem-cash/validation@^0.0.4":
-  version "0.0.4"
-  resolved "https://registry.npmjs.org/@mem-cash/validation/-/validation-0.0.4.tgz#93c9f7319984d986e706cacc5e95c5570e52d668"
-  integrity sha512-IjqXFhVsJpTnojcZQsRaZI+kefeAzdq8h0pKOAN/uUzxJI426hnThYWQ/Kv3F0CFpOffxCRFMrtrvq0+IJ3EfA==
+"@mem-cash/validation@^0.0.6":
+  version "0.0.6"
+  resolved "https://registry.npmjs.org/@mem-cash/validation/-/validation-0.0.6.tgz#8beb81605f81be67a859c92e0c725560fb5eb3a3"
+  integrity sha512-otwmuX60E012DUQRRm47OmS8SV679YbHG/7AnCbxSNdpkwVOqEr4CdoQj43dT7RTl0pe1LyVNCRxfzm9DeRlxw==
   dependencies:
     "@bitauth/libauth" "^3.1.0-next.8"
 

@@ -1,7 +1,7 @@
 import { binToHex, hexToBin, isHex } from '@bitauth/libauth';
 import { sha256 } from '@solidcash/utils';
 import { createIndexer, type Indexer } from '@mem-cash/electrum';
-import { createTxVerifier, type TxVerifier } from '@mem-cash/validation';
+import { createTxVerifier } from '@mem-cash/validation';
 import { Utxo, Network, VmTarget, TokenDetails } from '../interfaces.js';
 import NetworkProvider from './NetworkProvider.js';
 import { addressToLockScript, randomUtxo } from '../utils.js';
@@ -19,25 +19,21 @@ export interface MockNetworkProviderOptions {
 }
 
 export default class MockNetworkProvider implements NetworkProvider {
-  public mc: Indexer;
+  public indexer: Indexer;
   public network: Network = Network.MOCKNET;
   public blockHeight: number = 133700;
   public options: MockNetworkProviderOptions;
   public vmTarget: VmTarget;
 
-  private _verifier?: TxVerifier;
-
   constructor(options?: Partial<MockNetworkProviderOptions>) {
     this.options = { updateUtxoSet: true, ...options };
     this.vmTarget = this.options.vmTarget ?? DEFAULT_VM_TARGET;
 
-    const proxy: TxVerifier = {
-      verify: (...args) => this._verifier!.verify(...args),
-      debug: (...args) => this._verifier!.debug(...args),
-    };
-
-    this.mc = createIndexer({ verifier: proxy });
-    this.mc.setChainTip(this.blockHeight, 1700000000);
+    const verifier = createTxVerifier({
+      vmVersion: this.vmTarget, standard: true, minRelayFeePerKb: 1000n, maxFee: 10_000_000n,
+    });
+    this.indexer = createIndexer({ verifier });
+    this.indexer.setChainTip(this.blockHeight, 1700000000);
   }
 
   async getUtxos(address: string): Promise<Utxo[]> {
@@ -48,7 +44,7 @@ export default class MockNetworkProvider implements NetworkProvider {
   async getUtxosForLockingBytecode(lockingBytecode: Uint8Array | string): Promise<Utxo[]> {
     const bin = typeof lockingBytecode === 'string' ? hexToBin(lockingBytecode) : lockingBytecode;
     const scriptHash = binToHex(sha256(bin));
-    return this.mc.getUtxos(scriptHash).map((entry) => ({
+    return this.indexer.getUtxos(scriptHash).map((entry) => ({
       txid: entry.outpoint.txid,
       vout: entry.outpoint.vout,
       satoshis: entry.satoshis,
@@ -62,7 +58,7 @@ export default class MockNetworkProvider implements NetworkProvider {
 
   setBlockHeight(newBlockHeight: number): void {
     this.blockHeight = newBlockHeight;
-    this.mc.setChainTip(newBlockHeight, 1700000000);
+    this.indexer.setChainTip(newBlockHeight, 1700000000);
   }
 
   async getBlockHeight(): Promise<number> {
@@ -70,22 +66,18 @@ export default class MockNetworkProvider implements NetworkProvider {
   }
 
   async getRawTransaction(txid: string): Promise<string> {
-    return this.mc.getRawTx(txid)!;
+    return this.indexer.getRawTx(txid)!;
   }
 
   async sendRawTransaction(txHex: string): Promise<string> {
     if (!this.options.updateUtxoSet) {
       const bin = hexToBin(txHex);
       const txid = binToHex(sha256(sha256(bin)).reverse());
-      this.mc.storage.storeRawTx(txid, txHex);
+      this.indexer.storage.storeRawTx(txid, txHex);
       return txid;
     }
 
-    this._verifier ??= await createTxVerifier({
-      vmVersion: this.vmTarget, standard: true, minRelayFeePerKb: 1000n, maxFee: 10_000_000n,
-    });
-
-    const result = this.mc.submitTransaction(txHex);
+    const result = this.indexer.submitTransaction(txHex);
     if (!result.success) {
       throw new Error(result.debugMessage ? `${result.error}: ${result.debugMessage}` : result.error);
     }
@@ -93,7 +85,7 @@ export default class MockNetworkProvider implements NetworkProvider {
     // Mine a block to confirm the transaction immediately. This moves outputs
     // from the mempool to the confirmed UTXO set and clears mempool spend
     // tracking, matching the old MockNetworkProvider's simple UTXO-array behavior.
-    this.mc.mine();
+    this.indexer.mine();
 
     return result.txid;
   }
@@ -105,7 +97,7 @@ export default class MockNetworkProvider implements NetworkProvider {
 
     const scriptHash = binToHex(sha256(lockingBytecodeBin));
 
-    this.mc.storage._test.utxo.add({
+    this.indexer.addUtxo({
       txid: utxo.txid,
       vout: utxo.vout,
       satoshis: utxo.satoshis,
@@ -156,8 +148,8 @@ export default class MockNetworkProvider implements NetworkProvider {
   }
 
   reset(): void {
-    this.mc.storage._test.reset();
-    this.mc.setChainTip(this.blockHeight, 1700000000);
+    this.indexer.reset();
+    this.indexer.setChainTip(this.blockHeight, 1700000000);
   }
 }
 

@@ -927,7 +927,7 @@ describe('Token Container', () => {
       expect(transferNftOutput.token!.nft!.commitment).toBe('');
     });
 
-    it('should use 1000n satoshis for transferNft outputs', () => {
+    it('should use 1200n satoshis for transferNft outputs', () => {
       const builder = makeBuilder();
 
       builder.addTokenContainerTransferNft(
@@ -938,7 +938,7 @@ describe('Token Container', () => {
       const outputs = txBuilder.outputs;
 
       const transferNftOutput = outputs[2];
-      expect(transferNftOutput.amount).toBe(1000n);
+      expect(transferNftOutput.amount).toBe(1200n);
     });
 
     it('should place transferNft outputs after transfer outputs', () => {

@@ -1169,7 +1169,7 @@ export class StatefulTransactionBuilder {
       if (entry.type === 'ft') {
         builder.addOutput({
           to: entry.data.lockingBytecode,
-          amount: 1000n,
+          amount: 1200n,
           token: {
             amount: entry.data.amount,
             category: entry.data.tokenContainerCategoryId,
@@ -1178,7 +1178,7 @@ export class StatefulTransactionBuilder {
       } else {
         builder.addOutput({
           to: entry.data.lockingBytecode,
-          amount: 1000n,
+          amount: 1200n,
           token: {
             amount: 0n,
             category: entry.data.tokenContainerCategoryId,

@@ -2994,7 +2994,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 const lbc = i < satoshiBytecodes.length ? satoshiBytecodes[i] : dummyLbc;
                 // Use extracted amount if available, otherwise keep placeholder
                 const amt = i < satoshiValues.length
-                  ? decodeScriptNumber(satoshiValues[i]) : 1000n;
+                  ? decodeScriptNumber(satoshiValues[i]) : 1200n;
                 stb.addTransfer(lbc, amt);
                 derivedTransfers.push({ lockingBytecode: lbc, amount: amt });
               }

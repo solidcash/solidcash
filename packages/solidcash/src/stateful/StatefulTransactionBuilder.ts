@@ -13,6 +13,7 @@ import {
   BlockSlotKind,
 } from '@solidcash/utils';
 import { binToHex, hexToBin, isHex, encodeTransaction } from '@bitauth/libauth';
+import { getDustThreshold } from '@mem-cash/validation';
 import { buildEventNftCovenantScript, computeEventNameHash } from '@solidcash/utils';
 import { TransactionBuilder, TransactionBuilderOptions } from '../TransactionBuilder.js';
 import { CovenantTransactionBuilder } from './CovenantTransactionBuilder.js';
@@ -1073,8 +1074,10 @@ export class StatefulTransactionBuilder {
       }
 
       const remainingAmount = this.satoshiContainerUtxo.satoshis - totalTransferAmount + this.containerDepositAmount;
-      // Minimum dust amount for a P2SH32 output: 444 + 32 (script) * 3 = 540 sats
-      const DUST_MINIMUM = 540n;
+      const satoshiContainerLockingBytecode = this.satoshiContainerLockingBytecode
+        ?? this.satoshiContainerUtxo.unlocker.generateLockingBytecode();
+      // Exact dust threshold for the satoshi-container output (token-aware; plain P2SH32 => 576).
+      const DUST_MINIMUM = getDustThreshold({ lockingBytecode: satoshiContainerLockingBytecode });
       if (remainingAmount > 0n && remainingAmount < DUST_MINIMUM) {
         throw new Error(
           `Satoshi container remaining balance (${remainingAmount}) is below dust threshold (${DUST_MINIMUM}). `
@@ -1082,11 +1085,8 @@ export class StatefulTransactionBuilder {
         );
       }
       if (remainingAmount >= DUST_MINIMUM) {
-        const lockingBytecode = this.satoshiContainerLockingBytecode
-          ?? this.satoshiContainerUtxo.unlocker.generateLockingBytecode();
-
         builder.addOutput({
-          to: lockingBytecode,
+          to: satoshiContainerLockingBytecode,
           amount: remainingAmount,
         });
       } else {
@@ -1666,7 +1666,15 @@ export class StatefulTransactionBuilder {
     // the minimum relay fee. Block-layout funders pass through to outputs
     // (input.satoshis -> output.amount), so any surplus they contribute is
     // incidental. A dedicated fee funder ensures the fee is always covered.
-    const DUST_MINIMUM = 600n; // P2SH32 dust threshold is 576; use 600 for margin
+    // P2SH32 OP_TRUE funder; its change output uses the same script, so the dust threshold is exact.
+    const DUMMY_LBC = new Uint8Array([
+      0xaa, 0x20,
+      0x95, 0x3c, 0xcf, 0xa5, 0x96, 0xa6, 0xc6, 0xd3, 0x9e, 0x59, 0x80, 0x19, 0x45, 0x39, 0x12, 0x4f,
+      0xdc, 0xff, 0x11, 0x6a, 0x57, 0x14, 0x55, 0xa2, 0x12, 0xba, 0xed, 0x81, 0x1f, 0x58, 0x5e, 0xe0,
+      0x87,
+    ]);
+    const DUMMY_UNLOCK = new Uint8Array([0x01, 0x51]);
+    const DUST_MINIMUM = getDustThreshold({ lockingBytecode: DUMMY_LBC });
 
     // Check whether existing inputs already cover the fee
     const existingInputSats = this.allInputs.reduce((sum, inp) => sum + inp.satoshis, 0n);
@@ -1685,13 +1693,6 @@ export class StatefulTransactionBuilder {
 
       // Register with mocknet provider
       if ((provider as any).addUtxo) {
-        const DUMMY_LBC = new Uint8Array([
-          0xaa, 0x20,
-          0x95, 0x3c, 0xcf, 0xa5, 0x96, 0xa6, 0xc6, 0xd3, 0x9e, 0x59, 0x80, 0x19, 0x45, 0x39, 0x12, 0x4f,
-          0xdc, 0xff, 0x11, 0x6a, 0x57, 0x14, 0x55, 0xa2, 0x12, 0xba, 0xed, 0x81, 0x1f, 0x58, 0x5e, 0xe0,
-          0x87,
-        ]);
-        const DUMMY_UNLOCK = new Uint8Array([0x01, 0x51]);
         await (provider as any).addUtxo(binToHex(DUMMY_LBC), dummyUtxo);
         const funder: UnlockableUtxo = {
           ...dummyUtxo,

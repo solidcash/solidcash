@@ -2,13 +2,8 @@ import { compileString } from 'solidc';
 import { hexToBin } from '@bitauth/libauth';
 import {
   Contract, StatefulContract,
-  getDataNftAddress,
 } from '../../src/index.js';
-import {
-  buildInitialStateCommitments,
-} from '@solidcash/utils';
-import { Utxo } from '../../src/interfaces.js';
-import { createTestProvider } from '../test-util.js';
+import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
 
 // =============================================================================
 // Contract Sources
@@ -80,36 +75,6 @@ contract StatefulTarget() {
     }
 }
 `;
-
-// =============================================================================
-// Helpers
-// =============================================================================
-
-function createMasterUtxo(categoryId: string): Utxo {
-  return {
-    txid: 'b1cd'.repeat(16),
-    vout: 0,
-    satoshis: 10000n,
-    token: {
-      category: categoryId,
-      amount: 0n,
-      nft: { capability: 'minting', commitment: '' },
-    },
-  };
-}
-
-function createDataNftUtxo(categoryId: string, commitment: string, vout: number = 1): Utxo {
-  return {
-    txid: 'b1cd'.repeat(16),
-    vout,
-    satoshis: 10000n,
-    token: {
-      category: categoryId,
-      amount: 0n,
-      nft: { capability: 'mutable', commitment },
-    },
-  };
-}
 
 // =============================================================================
 // Tests
@@ -210,49 +175,18 @@ describe('Low-Level Address Call (.call and .staticcall as address members)', ()
     it('should build transaction with .withCall(stateful contract)', async () => {
       const callerArt = compileString(STATEFUL_CALLER);
       const targetArt = compileString(STATEFUL_TARGET);
-      const callerCategoryId = 'aacd'.repeat(16);
-      const targetCategoryId = 'bbcd'.repeat(16);
 
       const provider = createTestProvider();
 
-      // Set up caller contract
+      // Real genesis for caller and target stateful contracts
       const callerContract = new Contract(callerArt, [], { provider });
-      const saltedCaller = callerContract.withSalt(hexToBin(callerCategoryId));
-      const callerCommitments = buildInitialStateCommitments(callerArt.stateLayout!, { counter: 0n });
-      await provider.addUtxo(saltedCaller.tokenAddress, createMasterUtxo(callerCategoryId));
-      await provider.addUtxo(
-        getDataNftAddress(saltedCaller, callerCategoryId),
-        createDataNftUtxo(callerCategoryId, callerCommitments[0]),
+      const { categoryId: callerCategoryId } = await setupStatefulUtxos(
+        provider, callerContract, callerArt.stateLayout!, { counter: 0n }, { saltContract: true },
       );
 
-      // Set up target contract (use different txid to avoid duplicate input)
       const targetContract = new Contract(targetArt, [], { provider });
-      const saltedTarget = targetContract.withSalt(hexToBin(targetCategoryId));
-      const targetCommitments = buildInitialStateCommitments(targetArt.stateLayout!, { score: 0n });
-      const targetMaster: Utxo = {
-        txid: 'c1cd'.repeat(16),
-        vout: 0,
-        satoshis: 10000n,
-        token: {
-          category: targetCategoryId,
-          amount: 0n,
-          nft: { capability: 'minting', commitment: '' },
-        },
-      };
-      const targetDataNft: Utxo = {
-        txid: 'c1cd'.repeat(16),
-        vout: 1,
-        satoshis: 10000n,
-        token: {
-          category: targetCategoryId,
-          amount: 0n,
-          nft: { capability: 'mutable', commitment: targetCommitments[0] },
-        },
-      };
-      await provider.addUtxo(saltedTarget.tokenAddress, targetMaster);
-      await provider.addUtxo(
-        getDataNftAddress(saltedTarget, targetCategoryId),
-        targetDataNft,
+      const { categoryId: targetCategoryId } = await setupStatefulUtxos(
+        provider, targetContract, targetArt.stateLayout!, { score: 0n }, { saltContract: true },
       );
 
       const callerSc = StatefulContract.withCategory(callerContract, callerCategoryId);
@@ -274,17 +208,12 @@ describe('Low-Level Address Call (.call and .staticcall as address members)', ()
 
     it('should build transaction with .withCall(raw utxo)', async () => {
       const callerArt = compileString(STATEFUL_CALLER);
-      const callerCategoryId = 'cccd'.repeat(16);
 
       const provider = createTestProvider();
 
       const callerContract = new Contract(callerArt, [], { provider });
-      const saltedCaller = callerContract.withSalt(hexToBin(callerCategoryId));
-      const callerCommitments = buildInitialStateCommitments(callerArt.stateLayout!, { counter: 0n });
-      await provider.addUtxo(saltedCaller.tokenAddress, createMasterUtxo(callerCategoryId));
-      await provider.addUtxo(
-        getDataNftAddress(saltedCaller, callerCategoryId),
-        createDataNftUtxo(callerCategoryId, callerCommitments[0]),
+      const { categoryId: callerCategoryId } = await setupStatefulUtxos(
+        provider, callerContract, callerArt.stateLayout!, { counter: 0n }, { saltContract: true },
       );
 
       const callerSc = StatefulContract.withCategory(callerContract, callerCategoryId);
@@ -317,17 +246,12 @@ describe('Low-Level Address Call (.call and .staticcall as address members)', ()
 
     it('should error when .withCall() is needed but not provided', async () => {
       const callerArt = compileString(STATEFUL_CALLER);
-      const callerCategoryId = 'eecd'.repeat(16);
 
       const provider = createTestProvider();
 
       const callerContract = new Contract(callerArt, [], { provider });
-      const saltedCaller = callerContract.withSalt(hexToBin(callerCategoryId));
-      const callerCommitments = buildInitialStateCommitments(callerArt.stateLayout!, { counter: 0n });
-      await provider.addUtxo(saltedCaller.tokenAddress, createMasterUtxo(callerCategoryId));
-      await provider.addUtxo(
-        getDataNftAddress(saltedCaller, callerCategoryId),
-        createDataNftUtxo(callerCategoryId, callerCommitments[0]),
+      const { categoryId: callerCategoryId } = await setupStatefulUtxos(
+        provider, callerContract, callerArt.stateLayout!, { counter: 0n }, { saltContract: true },
       );
 
       const callerSc = StatefulContract.withCategory(callerContract, callerCategoryId);

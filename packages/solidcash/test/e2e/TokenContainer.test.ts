@@ -14,7 +14,10 @@ import {
 } from '@solidcash/utils';
 import { hexToBin } from '@bitauth/libauth';
 import { Utxo } from '../../src/interfaces.js';
-import { createTestProvider, verifyTransaction, getTxOutputs } from '../test-util.js';
+import {
+  createTestProvider, verifyTransaction, getTxOutputs,
+  genesisStatefulMaster, genesisFtContainer, genesisNftContainer,
+} from '../test-util.js';
 import {
   alicePriv, aliceAddress, alicePub, alicePkh, bobTokenAddress,
 } from '../fixture/vars.js';
@@ -353,39 +356,36 @@ describe('Token Container', () => {
     const artifact = compileString(TOKEN_CONTAINER_READ_CONTRACT);
     const contract = new Contract(artifact, [], { provider });
 
-    const categoryId = 'aacd'.repeat(16);
-    const tokenContainerCategoryA = 'b1cd'.repeat(16);
-    const tokenContainerCategoryB = 'b2cd'.repeat(16);
-    const dataNftAddress = getDataNftAddress(contract, categoryId);
     const stateLayout = artifact.stateLayout!;
-    const initialCommitments = buildInitialStateCommitments(stateLayout, { counter: 0n });
-    const containerAddressA = getTokenContainerAddress(contract, categoryId, tokenContainerCategoryA);
+    const EMPTY_CATEGORY = 'e0cd'.repeat(16); // a category with no container, for empty-case reads
 
-    const masterUtxo: Utxo = {
-      txid: 'f1cd'.repeat(16),
-      vout: 0,
-      satoshis: 10000n,
-      token: {
-        category: categoryId,
-        amount: 0n,
-        nft: { capability: 'minting', commitment: '' },
-      },
-    };
-
-    const dataNftUtxo: Utxo = {
-      txid: 'f1cd'.repeat(16),
-      vout: 1,
-      satoshis: 10000n,
-      token: {
-        category: categoryId,
-        amount: 0n,
-        nft: { capability: 'mutable', commitment: initialCommitments[0] },
-      },
-    };
+    let categoryId: string;
+    let tokenContainerCategoryA: string;
+    let tokenContainerCategoryB: string;
+    let containerAddressA: string;
 
     beforeAll(async () => {
-      await provider.addUtxo(contract.tokenAddress, masterUtxo);
-      await provider.addUtxo(dataNftAddress, dataNftUtxo);
+      ({ categoryId } = await genesisStatefulMaster(provider, contract, stateLayout, { counter: 0n }));
+
+      // Container A: FT token funded with 300n + 700n.
+      const ftA = await genesisFtContainer(provider, contract, categoryId, [300n, 700n]);
+      tokenContainerCategoryA = ftA.category;
+      containerAddressA = ftA.address;
+
+      // A foreign-category FT at the same container address (for the filter test).
+      await provider.addTokenUtxosDynamic(() => [
+        { address: containerAddressA, satoshis: 1200n, token: { amount: 500n } },
+      ]);
+
+      // Container B: 2 immutable NFTs.
+      ({ category: tokenContainerCategoryB } = await genesisNftContainer(
+        provider, contract, categoryId, ['deadbeef', 'cafebabe'],
+      ));
+
+      // Satoshi container: 25000 sats.
+      await provider.addUtxo(getSatoshiContainerAddress(contract, categoryId), {
+        txid: 'f7cd'.repeat(16), vout: 0, satoshis: 25000n,
+      });
     });
 
     it('.address returns container address', () => {
@@ -396,25 +396,12 @@ describe('Token Container', () => {
 
     it('.utxos returns empty array when no container exists', async () => {
       const sc = StatefulContract.withCategory(contract, categoryId);
-      const utxos = await sc.tokens[tokenContainerCategoryA].utxos;
+      const utxos = await sc.tokens[EMPTY_CATEGORY].utxos;
       expect(utxos).toEqual([]);
     });
 
     it('.utxos returns all matching UTXOs', async () => {
       const sc = StatefulContract.withCategory(contract, categoryId);
-
-      const utxo1: Utxo = {
-        txid: 'f2cd'.repeat(16), vout: 0, satoshis: 1200n,
-        token: { category: tokenContainerCategoryA, amount: 300n },
-      };
-      const utxo2: Utxo = {
-        txid: 'f3cd'.repeat(16), vout: 0, satoshis: 1200n,
-        token: { category: tokenContainerCategoryA, amount: 700n },
-      };
-
-      await provider.addUtxo(containerAddressA, utxo1);
-      await provider.addUtxo(containerAddressA, utxo2);
-
       const utxos = await sc.tokens[tokenContainerCategoryA].utxos;
       expect(utxos).toHaveLength(2);
       expect(utxos[0].token?.category).toBe(tokenContainerCategoryA);
@@ -423,16 +410,8 @@ describe('Token Container', () => {
 
     it('.utxos filters by category', async () => {
       const sc = StatefulContract.withCategory(contract, categoryId);
-
-      // Add a UTXO with a different category at the same container address
-      const foreignUtxo: Utxo = {
-        txid: 'f4cd'.repeat(16), vout: 0, satoshis: 1200n,
-        token: { category: 'cccd'.repeat(16), amount: 500n },
-      };
-      await provider.addUtxo(containerAddressA, foreignUtxo);
-
+      // containerAddressA also holds a foreign-category FT (seeded in beforeAll)
       const utxos = await sc.tokens[tokenContainerCategoryA].utxos;
-      // Should still only have the 2 matching UTXOs from previous test
       expect(utxos.every((u) => u.token?.category === tokenContainerCategoryA)).toBe(true);
     });
 
@@ -473,26 +452,6 @@ describe('Token Container', () => {
 
     it('.commitments returns all NFT commitments', async () => {
       const sc = StatefulContract.withCategory(contract, categoryId);
-
-      const containerAddressB = getTokenContainerAddress(contract, categoryId, tokenContainerCategoryB);
-      const nftUtxo1: Utxo = {
-        txid: 'f5cd'.repeat(16), vout: 0, satoshis: 1200n,
-        token: {
-          category: tokenContainerCategoryB, amount: 0n,
-          nft: { capability: 'none', commitment: 'deadbeef' },
-        },
-      };
-      const nftUtxo2: Utxo = {
-        txid: 'f6cd'.repeat(16), vout: 0, satoshis: 1200n,
-        token: {
-          category: tokenContainerCategoryB, amount: 0n,
-          nft: { capability: 'none', commitment: 'cafebabe' },
-        },
-      };
-
-      await provider.addUtxo(containerAddressB, nftUtxo1);
-      await provider.addUtxo(containerAddressB, nftUtxo2);
-
       const commitments = await sc.tokens[tokenContainerCategoryB].commitments;
       expect(commitments).toHaveLength(2);
       expect(commitments).toContain('deadbeef');
@@ -529,13 +488,6 @@ describe('Token Container', () => {
 
     it('sc.getBalance() returns satoshi container balance', async () => {
       const sc = StatefulContract.withCategory(contract, categoryId);
-
-      const satoshiContainerAddr = getSatoshiContainerAddress(contract, categoryId);
-      const satUtxo: Utxo = {
-        txid: 'f7cd'.repeat(16), vout: 0, satoshis: 25000n,
-      };
-      await provider.addUtxo(satoshiContainerAddr, satUtxo);
-
       const balance = await sc.getBalance();
       expect(balance).toBe(25000n);
     });
@@ -543,27 +495,9 @@ describe('Token Container', () => {
     it('sc.getBalance() returns 0 when satoshi container is empty', async () => {
       const emptyProvider = createTestProvider();
       const emptyContract = new Contract(artifact, [], { provider: emptyProvider });
-      const emptyCategoryId = 'ddcd'.repeat(16);
-      const emptyLayout = artifact.stateLayout!;
-      const emptyCommitments = buildInitialStateCommitments(emptyLayout, { counter: 0n });
-
-      const emptyMaster: Utxo = {
-        txid: 'f8cd'.repeat(16), vout: 0, satoshis: 10000n,
-        token: {
-          category: emptyCategoryId, amount: 0n,
-          nft: { capability: 'minting', commitment: '' },
-        },
-      };
-      const emptyDataNft: Utxo = {
-        txid: 'f8cd'.repeat(16), vout: 1, satoshis: 10000n,
-        token: {
-          category: emptyCategoryId, amount: 0n,
-          nft: { capability: 'mutable', commitment: emptyCommitments[0] },
-        },
-      };
-      await emptyProvider.addUtxo(emptyContract.tokenAddress, emptyMaster);
-      await emptyProvider.addUtxo(getDataNftAddress(emptyContract, emptyCategoryId), emptyDataNft);
-
+      const { categoryId: emptyCategoryId } = await genesisStatefulMaster(
+        emptyProvider, emptyContract, stateLayout, { counter: 0n },
+      );
       const sc = StatefulContract.withCategory(emptyContract, emptyCategoryId);
       const balance = await sc.getBalance();
       expect(balance).toBe(0n);
@@ -1619,7 +1553,7 @@ describe('Token Container', () => {
     const provider = createTestProvider();
     const artifact = compileString(TOKEN_CONTAINER_SEND_CONTRACT);
     const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
-    const tokenContainerCatId = 'f1cd'.repeat(16);
+    let tokenContainerCatId: string;
 
     let deployedContract: Awaited<ReturnType<typeof StatefulContract.deploy>>['contract'];
     let categoryId: string;
@@ -1646,22 +1580,9 @@ describe('Token Container', () => {
     });
 
     it('should fund the token container with FTs', async () => {
-      // Get the token container address for this contract
-      const containerAddress = deployedContract.getTokenContainerAddress(tokenContainerCatId);
-
-      // Add FT UTXO at the container address
-      const ftUtxo: Utxo = {
-        txid: 'b0cd'.repeat(16),
-        vout: 0,
-        satoshis: 1200n,
-        token: {
-          category: tokenContainerCatId,
-          amount: 500n,
-        },
-      };
-      await provider.addUtxo(containerAddress, ftUtxo);
-
-      // Verify we can read the balance
+      ({ categoryId: tokenContainerCatId } = await provider.addTokenUtxosDynamic((cat) => [
+        { address: deployedContract.getTokenContainerAddress(cat), satoshis: 1200n, token: { amount: 500n } },
+      ]));
       const amount = await deployedContract.tokens[tokenContainerCatId].amount;
       expect(amount).toBe(500n);
     });
@@ -1706,7 +1627,7 @@ describe('Token Container', () => {
     const provider = createTestProvider();
     const artifact = compileString(TOKEN_CONTAINER_SEND_CONTRACT);
     const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
-    const tokenContainerCatId = 'e1cd'.repeat(16);
+    let tokenContainerCatId: string;
 
     let deployedContract: Awaited<ReturnType<typeof StatefulContract.deploy>>['contract'];
     let categoryId: string;
@@ -1732,19 +1653,9 @@ describe('Token Container', () => {
     });
 
     it('should fund the token container with FTs', async () => {
-      const containerAddress = deployedContract.getTokenContainerAddress(tokenContainerCatId);
-
-      const ftUtxo: Utxo = {
-        txid: 'e2cd'.repeat(16),
-        vout: 0,
-        satoshis: 1200n,
-        token: {
-          category: tokenContainerCatId,
-          amount: 500n,
-        },
-      };
-      await provider.addUtxo(containerAddress, ftUtxo);
-
+      ({ categoryId: tokenContainerCatId } = await provider.addTokenUtxosDynamic((cat) => [
+        { address: deployedContract.getTokenContainerAddress(cat), satoshis: 1200n, token: { amount: 500n } },
+      ]));
       const amount = await deployedContract.tokens[tokenContainerCatId].amount;
       expect(amount).toBe(500n);
     });
@@ -1793,7 +1704,7 @@ describe('Token Container', () => {
     const provider = createTestProvider();
     const artifact = compileString(TOKEN_CONTAINER_SEND_P2PKH_CONTRACT);
     const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
-    const tokenContainerCatId = 'adcd'.repeat(16);
+    let tokenContainerCatId: string;
 
     let deployedContract: Awaited<ReturnType<typeof StatefulContract.deploy>>['contract'];
     let categoryId: string;
@@ -1819,19 +1730,9 @@ describe('Token Container', () => {
     });
 
     it('should fund the token container with FTs', async () => {
-      const containerAddress = deployedContract.getTokenContainerAddress(tokenContainerCatId);
-
-      const ftUtxo: Utxo = {
-        txid: 'aecd'.repeat(16),
-        vout: 0,
-        satoshis: 1200n,
-        token: {
-          category: tokenContainerCatId,
-          amount: 500n,
-        },
-      };
-      await provider.addUtxo(containerAddress, ftUtxo);
-
+      ({ categoryId: tokenContainerCatId } = await provider.addTokenUtxosDynamic((cat) => [
+        { address: deployedContract.getTokenContainerAddress(cat), satoshis: 1200n, token: { amount: 500n } },
+      ]));
       const amount = await deployedContract.tokens[tokenContainerCatId].amount;
       expect(amount).toBe(500n);
     });
@@ -1903,7 +1804,7 @@ contract FtFanOut() {
     let deployedContract: Awaited<ReturnType<typeof StatefulContract.deploy>>['contract'];
     // eslint-disable-next-line @typescript-eslint/no-unused-vars
     let categoryId: string;
-    const tokenContainerCatId = 'cccd'.repeat(16);
+    let tokenContainerCatId: string;
 
     it('should compile with 2 tcTransfer slots', () => {
       const fn = ftFanoutArtifact.abi.find((f) => f.name === 'distribute');
@@ -1928,12 +1829,10 @@ contract FtFanOut() {
       deployedContract = result.contract;
       categoryId = result.categoryId;
 
-      // Fund the token container with FTs
-      const containerAddress = deployedContract.getTokenContainerAddress(tokenContainerCatId);
-      await provider.addUtxo(containerAddress, {
-        txid: 'e6cd'.repeat(16), vout: 0, satoshis: 1200n,
-        token: { category: tokenContainerCatId, amount: 10000n },
-      });
+      // Genesis + fund the token container with FTs (real category)
+      ({ categoryId: tokenContainerCatId } = await provider.addTokenUtxosDynamic((cat) => [
+        { address: deployedContract.getTokenContainerAddress(cat), satoshis: 1200n, token: { amount: 10000n } },
+      ]));
     });
 
     it('should fan-out FTs to 2 recipients via auto-derivation', async () => {

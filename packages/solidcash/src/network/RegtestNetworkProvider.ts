@@ -8,6 +8,7 @@ import {
   type SignRawTransactionWithWallet,
   type SendRawTransaction,
   type GetRawTransactionVerbosity0,
+  type GetTxOut,
   type ListUnspent,
   type ListUnspentItem,
   type ImportAddress,
@@ -57,9 +58,12 @@ export default class RegtestNetworkProvider implements NetworkProvider {
   async getUtxos(address: string): Promise<Utxo[]> {
     await this.ensureReady();
     await this.importAddressIfNeeded(address);
-    const result = await this.rpc.request<ListUnspent>(
-      'listunspent', 0, 9999999, [address], false, { includeTokens: true },
-    );
+    // Token-aware addresses request token UTXOs; plain addresses skip them (shared-node safety).
+    const decoded = isHex(address) ? undefined : cashAddressToLockingBytecode(address);
+    const includeTokens = typeof decoded === 'object' ? decoded.tokenSupport : true;
+    const result = includeTokens
+      ? await this.rpc.request<ListUnspent>('listunspent', 0, 9999999, [address], false, { includeTokens: true })
+      : await this.rpc.request<ListUnspent>('listunspent', 0, 9999999, [address], false);
     return result.map((u) => this.listUnspentItemToUtxo(u));
   }
 
@@ -125,15 +129,13 @@ export default class RegtestNetworkProvider implements NetworkProvider {
     if (!isHex(address)) await this.importAddressIfNeeded(address);
 
     const satoshis = utxo.satoshis < 546n ? 546n : utxo.satoshis;
-    const voutFilter = utxo.token ? (u: ListUnspentItem) => u.vout === 0 : () => true;
-    const walletUtxos = (await this.rpc.request<ListUnspent>('listunspent', 1, 9999999))
-      .filter((u) => u.spendable && voutFilter(u));
-    if (walletUtxos.length === 0) {
+    let fundingInput: ListUnspentItem;
+    try {
+      fundingInput = await this.pickLiveFundingInput(!!utxo.token);
+    } catch (e) {
       if (utxo.token) { await this.createVout0Utxo(); return this.addUtxo(address, utxo); }
-      throw new Error('No wallet UTXOs available. Mine more blocks.');
+      throw e;
     }
-
-    const fundingInput = walletUtxos[0];
     const lbc = this.toLockingBytecode(address);
     let txid: string;
 
@@ -249,6 +251,22 @@ export default class RegtestNetworkProvider implements NetworkProvider {
     }));
   }
 
+  // Query only large coins (mature coinbases): the shared wallet can list spent small coins as
+  // spendable, which fundrawtransaction then picks, breaking broadcast with "Missing inputs".
+  private async pickLiveFundingInput(vout0Only: boolean): Promise<ListUnspentItem> {
+    const candidates = (await this.rpc.request<ListUnspent>(
+      'listunspent', 1, 9999999, [], true, { minimumAmount: 1 },
+    ))
+      .filter((u) => u.spendable && (!vout0Only || u.vout === 0))
+      .sort((a, b) => (a.amount < b.amount ? 1 : -1));
+    for (const u of candidates) {
+      const out = await this.rpc.request<GetTxOut>('gettxout', u.txid, u.vout, true) as
+        GetTxOut['response'] | null;
+      if (out) return u;
+    }
+    throw new Error('No live wallet UTXOs available (>=1 BCH). Mine more blocks.');
+  }
+
   private async fundSignSend(unsignedHex: string): Promise<string> {
     // Count outputs to place change after them
     const decoded = decodeTransactionUnsafe(hexToBin(unsignedHex));
@@ -330,45 +348,14 @@ export default class RegtestNetworkProvider implements NetworkProvider {
     const lbc = hexToBin(RegtestNetworkProvider.DUMMY_FUNDER_LBC);
     const satoshis = 100000n;
 
-    const totalNeeded = Number(satoshis) * needed / 1e8 + 0.01;
-    let walletUtxos = (await this.rpc.request<ListUnspent>('listunspent', 1, 9999999))
-      .filter((u) => u.spendable && u.amount >= totalNeeded);
-    if (walletUtxos.length === 0) {
-      await this.rpc.request<GenerateToAddress>('generatetoaddress', 5, this.miningAddress);
-      walletUtxos = (await this.rpc.request<ListUnspent>('listunspent', 1, 9999999))
-        .filter((u) => u.spendable && u.amount >= totalNeeded);
-      if (walletUtxos.length === 0) return;
-    }
-
-    const inp = walletUtxos[0];
-    const inputSats = BigInt(inp.amount.toFixed(8).replace('.', ''));
-    const totalOut = satoshis * BigInt(needed);
-    const fee = BigInt(200 + needed * 40 + 40) * 2n;
-    const changeSats = inputSats - totalOut - fee;
-    if (changeSats < 546n) throw new Error('Insufficient funds for fee funder pool');
-
-    const changeAddr = await this.rpc.request<GetNewAddress>('getnewaddress', 'change');
-    const changeResult = cashAddressToLockingBytecode(changeAddr);
-    if (typeof changeResult === 'string') return;
-
-    const txHex = binToHex(encodeTransaction({
-      version: 2,
-      inputs: [{
-        outpointTransactionHash: hexToBin(inp.txid),
-        outpointIndex: inp.vout,
-        unlockingBytecode: new Uint8Array(),
-        sequenceNumber: 0xfffffffe,
-      }],
-      outputs: [
-        ...Array.from({ length: needed }, () => ({ lockingBytecode: lbc, valueSatoshis: satoshis })),
-        { lockingBytecode: changeResult.bytecode, valueSatoshis: changeSats },
-      ],
-      locktime: 0,
-    }));
-
-    const signed = await this.rpc.request<SignRawTransactionWithWallet>('signrawtransactionwithwallet', txHex);
-    if (!signed.complete) throw new Error('Failed to sign fee funder tx');
-    const txid = await this.rpc.request<SendRawTransaction>('sendrawtransaction', signed.hex);
+    // Seed with one validated-live coin so fundrawtransaction never reaches for stale
+    // small coins. Funders land at vouts 0..needed-1; fundSignSend appends change after them.
+    const fundingInput = await this.pickLiveFundingInput(false);
+    const unsignedHex = this.buildLibauthTx(
+      fundingInput,
+      Array.from({ length: needed }, () => ({ lockingBytecode: lbc, valueSatoshis: satoshis })),
+    );
+    const txid = await this.fundSignSend(unsignedHex);
     await this.mine(1);
     for (let i = 0; i < needed; i++) this.feeFunderPool.push({ txid, vout: i, satoshis });
   }

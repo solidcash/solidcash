@@ -10,10 +10,62 @@ import { buildInitialStateCommitments, type StateLayout } from '@solidcash/utils
 import { Output, Network, Utxo } from '../src/interfaces.js';
 import { Contract, TransactionBuilder } from '../src/index.js';
 import { MockNetworkProvider, RegtestNetworkProvider } from '../src/index.js';
-import { getDataNftAddress } from '../src/stateful/covenant-helpers.js';
+import { getDataNftAddress, getTokenContainerAddress } from '../src/stateful/covenant-helpers.js';
 import { network as defaultNetwork } from './fixture/vars.js';
 import { generateLibauthSourceOutputs, getNetworkPrefix, libauthOutputToSolidCashOutput } from '../src/utils.js';
 import { utxoComparator } from '../src/utils.js';
+
+type TestProvider = MockNetworkProvider | RegtestNetworkProvider;
+
+/**
+ * Genesis a stateful contract's master (minting) + data (mutable) NFTs under one real category.
+ * Works on mock and regtest: the category is the genesis txid, and addresses derive from it (no
+ * synthetic category assumptions).
+ */
+export async function genesisStatefulMaster(
+  provider: TestProvider,
+  contract: Contract,
+  stateLayout: StateLayout,
+  stateValues: Record<string, bigint>,
+): Promise<{ categoryId: string; masterUtxo: Utxo; dataNftUtxo: Utxo; dataNftAddress: string }> {
+  const commitments = buildInitialStateCommitments(stateLayout, stateValues);
+  const { categoryId, utxos } = await provider.addTokenUtxosDynamic((cat) => [
+    { address: contract.tokenAddress, satoshis: 10000n, token: { nft: { capability: 'minting', commitment: '' } } },
+    {
+      address: getDataNftAddress(contract, cat), satoshis: 10000n,
+      token: { nft: { capability: 'mutable', commitment: commitments[0] } },
+    },
+  ]);
+  return {
+    categoryId, masterUtxo: utxos[0], dataNftUtxo: utxos[1],
+    dataNftAddress: getDataNftAddress(contract, categoryId),
+  };
+}
+
+/** Genesis an FT token and fund the contract's container address for that category. */
+export async function genesisFtContainer(
+  provider: TestProvider, contract: Contract, masterCategoryId: string, amounts: bigint[],
+): Promise<{ category: string; address: string; utxos: Utxo[] }> {
+  const { categoryId, utxos } = await provider.addTokenUtxosDynamic((cat) => {
+    const address = getTokenContainerAddress(contract, masterCategoryId, cat);
+    return amounts.map((amount) => ({ address, satoshis: 1200n, token: { amount } }));
+  });
+  return { category: categoryId, address: getTokenContainerAddress(contract, masterCategoryId, categoryId), utxos };
+}
+
+/** Genesis NFTs and fund the contract's container address for that category. */
+export async function genesisNftContainer(
+  provider: TestProvider, contract: Contract, masterCategoryId: string,
+  commitments: string[], capability: 'none' | 'mutable' | 'minting' = 'none',
+): Promise<{ category: string; address: string; utxos: Utxo[] }> {
+  const { categoryId, utxos } = await provider.addTokenUtxosDynamic((cat) => {
+    const address = getTokenContainerAddress(contract, masterCategoryId, cat);
+    return commitments.map((commitment) => ({
+      address, satoshis: 1200n, token: { amount: 0n, nft: { capability, commitment } },
+    }));
+  });
+  return { category: categoryId, address: getTokenContainerAddress(contract, masterCategoryId, categoryId), utxos };
+}
 
 // Unified mem-cash verifier for covenant build() output. skipFeePolicy skips the min-relay/absurd-fee
 // POLICY only (the fee funder is added at send()); scripts, CashToken consensus, value balance, and

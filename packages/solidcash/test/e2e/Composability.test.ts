@@ -3,9 +3,12 @@ import { hexToBin } from '@bitauth/libauth';
 import {
   Contract, StatefulContract, SignatureTemplate, Signer,
 } from '../../src/index.js';
-import { buildInitialStateCommitments } from '@solidcash/utils';
 import { alicePub, alicePriv } from '../fixture/vars.js';
-import { createTestProvider, getTxOutputs } from '../test-util.js';
+import { getNetworkPrefix } from '../../src/utils.js';
+import { createTestProvider, getTxOutputs, setupStatefulUtxos } from '../test-util.js';
+
+// Unique key for Signer tests so the derived address has no prior UTXOs on the shared regtest node.
+const signerPriv = hexToBin('a1b2c3d4'.repeat(8));
 
 // Two independent contracts that A calls B
 const CALLER_SOURCE = `
@@ -49,41 +52,23 @@ contract Target() {
 describe('Contract Composability', () => {
   it('A calls B: both contracts update state in a single transaction', async () => {
     const provider = createTestProvider();
-    const catA = 'a1cd'.repeat(16);
-    const catB = 'b1cd'.repeat(16);
 
     const artA = compileString(CALLER_SOURCE);
     const artB = compileString(TARGET_SOURCE);
 
-    const contractA = new Contract(artA, [hexToBin(catB)], { provider });
+    // Genesis B first: A's constructor embeds B's real category, so B must exist before A is built.
     const contractB = new Contract(artB, [], { provider });
+    const { categoryId: catB } = await setupStatefulUtxos(
+      provider, contractB, artB.stateLayout!, { counter: 0n }, { saltContract: true },
+    );
 
-    // Set up UTXOs via StatefulContract (handles category prefix automatically)
+    const contractA = new Contract(artA, [hexToBin(catB)], { provider });
+    const { categoryId: catA } = await setupStatefulUtxos(
+      provider, contractA, artA.stateLayout!, { callerState: 0n }, { saltContract: true },
+    );
+
     const scA = StatefulContract.withCategory(contractA, catA);
     const scB = StatefulContract.withCategory(contractB, catB);
-
-    const commitsA = buildInitialStateCommitments(artA.stateLayout!, { callerState: 0n });
-    const commitsB = buildInitialStateCommitments(artB.stateLayout!, { counter: 0n });
-
-    // Register A's UTXOs
-    await provider.addUtxo(scA.tokenAddress, {
-      txid: 'aacd'.repeat(16), vout: 0, satoshis: 10000n,
-      token: { category: catA, amount: 0n, nft: { capability: 'minting', commitment: '' } },
-    });
-    await provider.addUtxo(scA.getDataNftAddress(), {
-      txid: 'aacd'.repeat(16), vout: 1, satoshis: 10000n,
-      token: { category: catA, amount: 0n, nft: { capability: 'mutable', commitment: commitsA[0] } },
-    });
-
-    // Register B's UTXOs
-    await provider.addUtxo(scB.tokenAddress, {
-      txid: 'bbcd'.repeat(16), vout: 0, satoshis: 10000n,
-      token: { category: catB, amount: 0n, nft: { capability: 'minting', commitment: '' } },
-    });
-    await provider.addUtxo(scB.getDataNftAddress(), {
-      txid: 'bbcd'.repeat(16), vout: 1, satoshis: 10000n,
-      token: { category: catB, amount: 0n, nft: { capability: 'mutable', commitment: commitsB[0] } },
-    });
 
     // A calls B's increment() - both states update in one tx
     const tx = await scA.callTarget(alicePub, new SignatureTemplate(alicePriv))
@@ -147,22 +132,24 @@ describe('Contract Composability', () => {
       const provider = createTestProvider();
       const signer = new Signer(alicePriv, provider);
 
-      expect(signer.getAddress()).toContain('bchtest:');
+      expect(signer.getAddress()).toContain(`${getNetworkPrefix(provider.network)}:`);
       expect(signer.getLockingBytecode()).toBeInstanceOf(Uint8Array);
       expect(signer.getLockingBytecode().length).toBeGreaterThan(0);
     });
 
     it('Signer.getUtxos() returns UTXOs from provider', async () => {
       const provider = createTestProvider();
-      const signer = new Signer(alicePriv, provider);
+      const signer = new Signer(signerPriv, provider);
       const addr = signer.getAddress();
 
       await provider.addUtxo(addr, { txid: 'cccd'.repeat(16), vout: 0, satoshis: 50000n });
       await provider.addUtxo(addr, { txid: 'ddcd'.repeat(16), vout: 0, satoshis: 30000n });
 
-      const utxos = await signer.getUtxos();
-      expect(utxos).toHaveLength(2);
-      expect(utxos[0].satoshis).toBe(50000n);
+      // The shared regtest node persists UTXOs across runs at this fixed address, so assert the
+      // two added UTXOs are present rather than an exact total count.
+      const amounts = (await signer.getUtxos()).map((u) => u.satoshis);
+      expect(amounts).toContain(50000n);
+      expect(amounts).toContain(30000n);
     });
 
     it('connect(signer) binds signer to StatefulContract', () => {

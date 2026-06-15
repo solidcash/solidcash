@@ -3,7 +3,7 @@ import { hash160 } from '@solidcash/utils';
 import type NetworkProvider from './network/NetworkProvider.js';
 import type { Utxo, UnlockableUtxo } from './interfaces.js';
 import { Network } from './interfaces.js';
-import { publicKeyToP2PKHLockingBytecode } from './utils.js';
+import { publicKeyToP2PKHLockingBytecode, getNetworkPrefix } from './utils.js';
 import SignatureTemplate from './SignatureTemplate.js';
 
 /**
@@ -55,7 +55,7 @@ export default class Signer {
     const cached = this._addresses.get(net);
     if (cached) return cached;
 
-    const prefix = net === Network.MAINNET ? 'bitcoincash' : 'bchtest';
+    const prefix = getNetworkPrefix(net);
     const result = encodeCashAddress(
       { prefix, type: 'p2pkh', payload: this.pkh, throwErrors: true },
     );

@@ -14,7 +14,8 @@ import { randomUtxo } from '../../src/utils.js';
 describe('TransferWithTimeout', () => {
   const provider = createTestProvider();
 
-  const twtInstancePast = new Contract(twtArtifact, [alicePub, bobPub, 100000n], { provider });
+  // timeout below the regtest node height so setLocktime(blockHeight) satisfies tx.time >= timeout
+  const twtInstancePast = new Contract(twtArtifact, [alicePub, bobPub, 100n], { provider });
   const twtInstanceFuture = new Contract(twtArtifact, [alicePub, bobPub, 2000000n], { provider });
 
   beforeAll(async () => {

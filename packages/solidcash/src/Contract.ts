@@ -203,7 +203,8 @@ export class Contract<
       return this.provider.getUtxosForLockingBytecode(this.bytecode);
     }
 
-    return this.provider.getUtxos(this.address);
+    // Token-aware address so a contract sees all its UTXOs (plain + CashToken) at its script.
+    return this.provider.getUtxos(this.tokenAddress);
   }
 
   withSalt(salt: Uint8Array): Contract<TArtifact, TResolved> {

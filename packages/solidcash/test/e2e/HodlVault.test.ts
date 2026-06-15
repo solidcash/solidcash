@@ -22,7 +22,7 @@ import { placeholder } from '@solidcash/utils';
 describe('HodlVault', () => {
   const provider = createTestProvider();
 
-  const hodlVault = new Contract(artifact, [alicePub, oraclePub, 99000n, 30000n], { provider });
+  const hodlVault = new Contract(artifact, [alicePub, oraclePub, 100n, 30000n], { provider });
 
   beforeAll(async () => {
     console.log(hodlVault.address);
@@ -32,8 +32,8 @@ describe('HodlVault', () => {
   describe('send', () => {
     it('should fail when oracle sig is incorrect', async () => {
       // given
-      const message = oracle.createMessage(100000n, 30000n);
-      const wrongMessage = oracle.createMessage(100000n, 30001n);
+      const message = oracle.createMessage(150n, 30000n);
+      const wrongMessage = oracle.createMessage(150n, 30001n);
       const wrongSig = oracle.signMessage(wrongMessage);
       const to = hodlVault.address;
       const amount = 10000n;
@@ -44,7 +44,7 @@ describe('HodlVault', () => {
         .addInputs(utxos, hodlVault.unlock.spend(new SignatureTemplate(alicePriv), wrongSig, message))
         .addOutput({ to: to, amount: amount })
         .addOutput({ to: to, amount: changeAmount })
-        .setLocktime(100_000)
+        .setLocktime(150)
         .send();
 
       // then
@@ -55,7 +55,7 @@ describe('HodlVault', () => {
 
     it('should fail when price is too low', async () => {
       // given
-      const message = oracle.createMessage(100000n, 29900n);
+      const message = oracle.createMessage(150n, 29900n);
       const oracleSig = oracle.signMessage(message);
       const to = hodlVault.address;
       const amount = 10000n;
@@ -66,7 +66,7 @@ describe('HodlVault', () => {
         .addInputs(utxos, hodlVault.unlock.spend(new SignatureTemplate(alicePriv), oracleSig, message))
         .addOutput({ to: to, amount: amount })
         .addOutput({ to: to, amount: changeAmount })
-        .setLocktime(100_000)
+        .setLocktime(150)
         .send();
 
       // then
@@ -77,7 +77,7 @@ describe('HodlVault', () => {
 
     it('should succeed when price is high enough', async () => {
       // given
-      const message = oracle.createMessage(100000n, 30000n);
+      const message = oracle.createMessage(150n, 30000n);
       const oracleSig = oracle.signMessage(message);
       const to = hodlVault.address;
       const amount = 10000n;
@@ -88,7 +88,7 @@ describe('HodlVault', () => {
         .addInputs(utxos, hodlVault.unlock.spend(new SignatureTemplate(alicePriv), oracleSig, message))
         .addOutput({ to: to, amount: amount })
         .addOutput({ to: to, amount: changeAmount })
-        .setLocktime(100_000)
+        .setLocktime(150)
         .send();
 
       // then
@@ -98,7 +98,7 @@ describe('HodlVault', () => {
 
     it('should succeed when price is high enough, ECDSA sig and datasig', async () => {
       // given
-      const message = oracle.createMessage(100000n, 30000n);
+      const message = oracle.createMessage(150n, 30000n);
       const oracleSig = oracle.signMessage(message, SignatureAlgorithm.ECDSA);
       const to = hodlVault.address;
       const amount = 10000n;
@@ -111,7 +111,7 @@ describe('HodlVault', () => {
         .addInputs(utxos, hodlVault.unlock.spend(signatureTemplate, oracleSig, message))
         .addOutput({ to: to, amount: amount })
         .addOutput({ to: to, amount: changeAmount })
-        .setLocktime(100_000)
+        .setLocktime(150)
         .send();
 
       // then
@@ -130,6 +130,8 @@ describe('HodlVault', () => {
         txid: '11'.repeat(32), // palindrome required: precomputed ECDSA signature depends on exact txid
         vout: 0,
       });
+      // mock-only test (uses MockNetworkProvider directly); precomputed sig depends on the exact
+      // contract bytecode + locktime, so keep the original high values here.
       const message = oracle.createMessage(100000n, 30000n);
       const oracleSig = oracle.signMessage(message, SignatureAlgorithm.ECDSA);
       const to = contract.address;
@@ -146,13 +148,14 @@ describe('HodlVault', () => {
         .send();
 
       // then
-      const txOutputs = getTxOutputs(tx);
+      // decode outputs with the mock provider's network (this test always uses MockNetworkProvider)
+      const txOutputs = getTxOutputs(tx, cleanProvider.network);
       expect(txOutputs).toEqual(expect.arrayContaining([{ to, amount }]));
     });
 
     it('should fail to accept wrong signature lengths', async () => {
       // given
-      const message = oracle.createMessage(100000n, 30000n);
+      const message = oracle.createMessage(150n, 30000n);
       const oracleSig = oracle.signMessage(message, SignatureAlgorithm.ECDSA);
       const to = hodlVault.address;
       const amount = 10000n;
@@ -168,7 +171,7 @@ describe('HodlVault', () => {
         .addInputs(utxos, hodlVault.unlock.spend(placeholder(71), oracleSig, message))
         .addOutput({ to: to, amount: amount })
         .addOutput({ to: to, amount: changeAmount })
-        .setLocktime(100_000)
+        .setLocktime(150)
         .send()).rejects.toThrow('HodlVault.scash:31 Error in transaction at input 0 in contract HodlVault.scash at line 31');
 
       // sig: unlocker should not throw when given an empty byte array, but transaction should fail on require statement
@@ -177,7 +180,7 @@ describe('HodlVault', () => {
         .addInputs(utxos, hodlVault.unlock.spend(placeholder(0), oracleSig, message))
         .addOutput({ to: to, amount: amount })
         .addOutput({ to: to, amount: changeAmount })
-        .setLocktime(100_000)
+        .setLocktime(150)
         .send()).rejects.toThrow('HodlVault.scash:31 Require statement failed at input 0 in contract HodlVault.scash at line 31');
 
       // datasig: unlocker should throw when given an improper length
@@ -190,7 +193,7 @@ describe('HodlVault', () => {
         .addInputs(utxos, hodlVault.unlock.spend(signatureTemplate, placeholder(64), message))
         .addOutput({ to: to, amount: amount })
         .addOutput({ to: to, amount: changeAmount })
-        .setLocktime(100_000)
+        .setLocktime(150)
         .send()).rejects.toThrow('HodlVault.scash:30 Require statement failed at input 0 in contract HodlVault.scash at line 30');
 
       // datasig: unlocker should not throw when given an empty byte array, but transaction should fail on require statement
@@ -199,7 +202,7 @@ describe('HodlVault', () => {
         .addInputs(utxos, hodlVault.unlock.spend(signatureTemplate, placeholder(0), message))
         .addOutput({ to: to, amount: amount })
         .addOutput({ to: to, amount: changeAmount })
-        .setLocktime(100_000)
+        .setLocktime(150)
         .send()).rejects.toThrow('HodlVault.scash:30 Require statement failed at input 0 in contract HodlVault.scash at line 30');
     });
   });

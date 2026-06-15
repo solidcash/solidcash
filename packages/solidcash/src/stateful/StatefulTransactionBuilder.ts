@@ -1713,7 +1713,11 @@ export class StatefulTransactionBuilder {
     // so extra outputs don't affect covenant introspection.
     const finalBuilder = this.build();
 
-    if (this.funderChangeAddress && this.funderUtxos.length > 0) {
+    if (this.funderUtxos.length > 0) {
+      // Funders supplied at construction (auto-derivation) may lack an explicit change address;
+      // default change to the funder's own script so over-sized funders don't bloat the fee.
+      const changeTo = this.funderChangeAddress
+        ?? this.funderUtxos[0].unlocker.generateLockingBytecode();
       const funderTotal = this.funderUtxos.reduce((sum, f) => sum + f.satoshis, 0n);
       const covenantInputTotal = this.allInputs
         .filter((inp) => !this.funderUtxos.some((f) => f.txid === inp.txid && f.vout === inp.vout))
@@ -1723,7 +1727,7 @@ export class StatefulTransactionBuilder {
       const changeAmount = available - neededFee;
 
       if (changeAmount >= DUST_MINIMUM) {
-        finalBuilder.addOutput({ to: this.funderChangeAddress, amount: changeAmount });
+        finalBuilder.addOutput({ to: changeTo, amount: changeAmount });
       }
     }
 

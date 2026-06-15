@@ -17,7 +17,7 @@ import {
   alicePub,
   alicePriv,
 } from '../fixture/vars.js';
-import { createTestProvider, getTxOutputs } from '../test-util.js';
+import { createTestProvider, getTxOutputs, setupStatefulUtxos } from '../test-util.js';
 import { Utxo } from '../../src/interfaces.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 
@@ -71,11 +71,35 @@ describe('External State Variable', () => {
   const contract = new Contract(artifact, [], { provider });
   const stateLayout = artifact.stateLayout!;
 
-  const categoryId = 'a1cd'.repeat(16);
-  const dataNftAddress = getDataNftAddress(contract, categoryId);
+  // ExternalState has a dual data NFT layout (counter on NFT 0, externalValue on NFT 1).
+  // Both data NFTs live at the same getDataNftAddress under one category.
+  let categoryId: string;
+  let dataNftAddress: string;
+  let masterUtxo: Utxo;
+  let dataNftUtxo0: Utxo;
+  let dataNftUtxo1: Utxo;
 
   const initialCommitments = buildInitialStateCommitments(stateLayout, {
     counter: 0n, externalValue: 0n,
+  });
+
+  beforeAll(async () => {
+    const genesis = await (provider as any).addTokenUtxosDynamic((catId: string) => {
+      const dnAddr = getDataNftAddress(contract, catId);
+      return [
+        { address: contract.tokenAddress, satoshis: 10000n,
+          token: { amount: 0n, nft: { capability: 'minting', commitment: '' } } },
+        { address: dnAddr, satoshis: 10000n,
+          token: { amount: 0n, nft: { capability: 'mutable', commitment: initialCommitments[0] } } },
+        { address: dnAddr, satoshis: 10000n,
+          token: { amount: 0n, nft: { capability: 'mutable', commitment: initialCommitments[1] } } },
+      ];
+    });
+    categoryId = genesis.categoryId;
+    masterUtxo = genesis.utxos[0];
+    dataNftUtxo0 = genesis.utxos[1];
+    dataNftUtxo1 = genesis.utxos[2];
+    dataNftAddress = getDataNftAddress(contract, categoryId);
   });
 
   describe('artifact', () => {
@@ -108,45 +132,6 @@ describe('External State Variable', () => {
   });
 
   describe('state write with dual-path covenant', () => {
-    const masterUtxo: Utxo = {
-      txid: 'b1cd'.repeat(16),
-      vout: 0,
-      satoshis: 10000n,
-      token: {
-        category: categoryId,
-        amount: 0n,
-        nft: { capability: 'minting', commitment: '' },
-      },
-    };
-
-    const dataNftUtxo0: Utxo = {
-      txid: 'b1cd'.repeat(16),
-      vout: 1,
-      satoshis: 10000n,
-      token: {
-        category: categoryId,
-        amount: 0n,
-        nft: { capability: 'mutable', commitment: initialCommitments[0] },
-      },
-    };
-
-    const dataNftUtxo1: Utxo = {
-      txid: 'b1cd'.repeat(16),
-      vout: 2,
-      satoshis: 10000n,
-      token: {
-        category: categoryId,
-        amount: 0n,
-        nft: { capability: 'mutable', commitment: initialCommitments[1] },
-      },
-    };
-
-    beforeAll(async () => {
-      await provider.addUtxo(contract.tokenAddress, masterUtxo);
-      await provider.addUtxo(dataNftAddress, dataNftUtxo0);
-      await provider.addUtxo(dataNftAddress, dataNftUtxo1);
-    });
-
     it('should update counter only (flag=1 write path, NFT 0 only)', async () => {
       const tx = await new StatefulTransactionBuilder({
         provider,
@@ -196,23 +181,29 @@ describe('External State Variable', () => {
     });
 
     it('should update both NFTs when setBoth is called', async () => {
-      const contractUtxos = await contract.getUtxos();
-      const currentMaster = contractUtxos.find(
-        (u) => u.token?.category === categoryId && u.token?.nft?.capability === 'minting',
-      )!;
-      const covenantUtxos = await provider.getUtxos(dataNftAddress);
-      const sortedNfts = covenantUtxos
-        .filter((u) => u.token?.nft?.capability === 'mutable')
-        .sort((a, b) => a.vout - b.vout);
+      // Fresh genesis (counter starts at 1) so the two data NFTs sit at deterministic vouts.
+      const c = new Contract(artifact, [], { provider });
+      const freshCommitments = buildInitialStateCommitments(stateLayout, { counter: 1n, externalValue: 0n });
+      const genesis = await (provider as any).addTokenUtxosDynamic((catId: string) => {
+        const dnAddr = getDataNftAddress(c, catId);
+        return [
+          { address: c.tokenAddress, satoshis: 10000n,
+            token: { amount: 0n, nft: { capability: 'minting', commitment: '' } } },
+          { address: dnAddr, satoshis: 10000n,
+            token: { amount: 0n, nft: { capability: 'mutable', commitment: freshCommitments[0] } } },
+          { address: dnAddr, satoshis: 10000n,
+            token: { amount: 0n, nft: { capability: 'mutable', commitment: freshCommitments[1] } } },
+        ];
+      });
 
       const tx = await new StatefulTransactionBuilder({
         provider,
         stateLayout,
-        categoryId,
-        masterUtxo: { ...currentMaster, unlocker: contract.unlock.setBoth(99n) },
+        categoryId: genesis.categoryId,
+        masterUtxo: { ...genesis.utxos[0], unlocker: c.unlock.setBoth(99n) },
         dataNftUtxos: [
-          { ...sortedNfts[0], unlocker: createDataNftUnlocker(contract, 0, categoryId) },
-          { ...sortedNfts[1], unlocker: createDataNftUnlocker(contract, 0, categoryId) },
+          { ...genesis.utxos[1], unlocker: createDataNftUnlocker(c, 0, genesis.categoryId) },
+          { ...genesis.utxos[2], unlocker: createDataNftUnlocker(c, 0, genesis.categoryId) },
         ],
       })
         .setState('counter', 2n)
@@ -235,48 +226,13 @@ describe('External State Variable', () => {
     const scArtifact = compileString(EXTERNAL_CONTRACT);
     const scContract = new Contract(scArtifact, [], { provider: scProvider });
     const scStateLayout = scArtifact.stateLayout!;
-    const scCategoryId = 'c1cd'.repeat(16);
-    const scSaltedContract = scContract.withSalt(hexToBin(scCategoryId));
-    const scDataNftAddress = getDataNftAddress(scSaltedContract, scCategoryId);
-
-    const scInitialCommitments = buildInitialStateCommitments(scStateLayout, {
-      counter: 0n, externalValue: 0n,
-    });
-
-    const scMasterUtxo: Utxo = {
-      txid: 'c2cd'.repeat(16),
-      vout: 0,
-      satoshis: 10000n,
-      token: {
-        category: scCategoryId, amount: 0n,
-        nft: { capability: 'minting', commitment: '' },
-      },
-    };
-
-    const scDataNftUtxo0: Utxo = {
-      txid: 'c2cd'.repeat(16),
-      vout: 1,
-      satoshis: 10000n,
-      token: {
-        category: scCategoryId, amount: 0n,
-        nft: { capability: 'mutable', commitment: scInitialCommitments[0] },
-      },
-    };
-
-    const scDataNftUtxo1: Utxo = {
-      txid: 'c2cd'.repeat(16),
-      vout: 2,
-      satoshis: 10000n,
-      token: {
-        category: scCategoryId, amount: 0n,
-        nft: { capability: 'mutable', commitment: scInitialCommitments[1] },
-      },
-    };
+    let scCategoryId: string;
 
     beforeAll(async () => {
-      await scProvider.addUtxo(scSaltedContract.tokenAddress, scMasterUtxo);
-      await scProvider.addUtxo(scDataNftAddress, scDataNftUtxo0);
-      await scProvider.addUtxo(scDataNftAddress, scDataNftUtxo1);
+      // withCategory salts internally; genesis master + 2 data NFTs at the salted addresses.
+      ({ categoryId: scCategoryId } = await setupStatefulUtxos(
+        scProvider, scContract, scStateLayout, { counter: 0n, externalValue: 0n }, { saltContract: true },
+      ));
     });
 
     it('should read initial state with external variable', async () => {
@@ -310,7 +266,13 @@ describe('External State Variable', () => {
     });
 
     it('should update both variables via setBoth', async () => {
-      const sc = StatefulContract.withCategory(scContract, scCategoryId);
+      // Own fresh genesis: after the prior setExternal, NFT 1 and the untouched NFT 0 can share a
+      // vout across txs, and two single-int data NFTs are indistinguishable to the reader.
+      const c = new Contract(scArtifact, [], { provider: scProvider });
+      const { categoryId: freshCategoryId } = await setupStatefulUtxos(
+        scProvider, c, scStateLayout, { counter: 0n, externalValue: 0n }, { saltContract: true },
+      );
+      const sc = StatefulContract.withCategory(c, freshCategoryId);
 
       const tx = await sc.setBoth(99n)
         .send();
@@ -390,36 +352,20 @@ contract Owner() {
   const ownerArtifact = compileString(OWNER_CONTRACT);
   const ownerContract = new Contract(ownerArtifact, [], { provider });
   const ownerStateLayout = ownerArtifact.stateLayout!;
-  const ownerCategoryId = 'd1cd'.repeat(16);
-  const ownerDataNftAddress = getDataNftAddress(ownerContract, ownerCategoryId);
+  let ownerCategoryId: string;
+  let ownerDataNftUtxo: Utxo;
 
   const ownerInitialCommitments = buildInitialStateCommitments(ownerStateLayout, { balance: 42n });
 
-  const ownerMasterUtxo: Utxo = {
-    txid: 'd2cd'.repeat(16),
-    vout: 0,
-    satoshis: 10000n,
-    token: {
-      category: ownerCategoryId,
-      amount: 0n,
-      nft: { capability: 'minting', commitment: '' },
-    },
-  };
-
-  const ownerDataNftUtxo: Utxo = {
-    txid: 'd2cd'.repeat(16),
-    vout: 1,
-    satoshis: 10000n,
-    token: {
-      category: ownerCategoryId,
-      amount: 0n,
-      nft: { capability: 'mutable', commitment: ownerInitialCommitments[0] },
-    },
-  };
-
   beforeAll(async () => {
-    await provider.addUtxo(ownerContract.tokenAddress, ownerMasterUtxo);
-    await provider.addUtxo(ownerDataNftAddress, ownerDataNftUtxo);
+    const genesis = await (provider as any).addTokenUtxosDynamic((catId: string) => [
+      { address: ownerContract.tokenAddress, satoshis: 10000n,
+        token: { amount: 0n, nft: { capability: 'minting', commitment: '' } } },
+      { address: getDataNftAddress(ownerContract, catId), satoshis: 10000n,
+        token: { amount: 0n, nft: { capability: 'mutable', commitment: ownerInitialCommitments[0] } } },
+    ]);
+    ownerCategoryId = genesis.categoryId;
+    ownerDataNftUtxo = genesis.utxos[1];
   });
 
   describe('createReadOnlyDataNftUnlocker', () => {
@@ -462,32 +408,18 @@ contract Owner() {
       const readerArtifact = compileString(READER_CONTRACT);
       const readerContract = new Contract(readerArtifact, [], { provider });
       const readerStateLayout = readerArtifact.stateLayout!;
-      const readerCategoryId = 'd3cd'.repeat(16);
 
       const readerInitialCommitments = buildInitialStateCommitments(readerStateLayout, { total: 0n });
 
-      const readerMasterUtxo: Utxo = {
-        txid: 'd4cd'.repeat(16),
-        vout: 0,
-        satoshis: 10000n,
-        token: {
-          category: readerCategoryId, amount: 0n,
-          nft: { capability: 'minting', commitment: '' },
-        },
-      };
-
-      const readerDataNftUtxo: Utxo = {
-        txid: 'd4cd'.repeat(16),
-        vout: 1,
-        satoshis: 10000n,
-        token: {
-          category: readerCategoryId, amount: 0n,
-          nft: { capability: 'mutable', commitment: readerInitialCommitments[0] },
-        },
-      };
-
-      await provider.addUtxo(readerContract.tokenAddress, readerMasterUtxo);
-      await provider.addUtxo(getDataNftAddress(readerContract, readerCategoryId), readerDataNftUtxo);
+      const readerGenesis = await (provider as any).addTokenUtxosDynamic((catId: string) => [
+        { address: readerContract.tokenAddress, satoshis: 10000n,
+          token: { amount: 0n, nft: { capability: 'minting', commitment: '' } } },
+        { address: getDataNftAddress(readerContract, catId), satoshis: 10000n,
+          token: { amount: 0n, nft: { capability: 'mutable', commitment: readerInitialCommitments[0] } } },
+      ]);
+      const readerCategoryId = readerGenesis.categoryId;
+      const readerMasterUtxo: Utxo = readerGenesis.utxos[0];
+      const readerDataNftUtxo: Utxo = readerGenesis.utxos[1];
 
       const tx = await new StatefulTransactionBuilder({
         provider,
@@ -562,53 +494,43 @@ contract ExternalSource() {
   const writerArtifact = compileString(WRITER_CONTRACT);
   const writerContract = new Contract(writerArtifact, [], { provider });
   const writerStateLayout = writerArtifact.stateLayout!;
-  const writerCategoryId = 'e1cd'.repeat(16);
-  const writerSaltedContract = writerContract.withSalt(hexToBin(writerCategoryId));
-  const writerDataNftAddress = getDataNftAddress(writerSaltedContract, writerCategoryId);
+  let writerCategoryId: string;
+  let writerSaltedContract: Contract;
+  let writerMasterUtxo: Utxo;
+  let writerDataNftUtxo: Utxo;
 
   const sourceArtifact = compileString(EXTERNAL_SOURCE);
   const sourceContract = new Contract(sourceArtifact, [], { provider });
   const sourceStateLayout = sourceArtifact.stateLayout!;
-  const sourceCategoryId = 'e2cd'.repeat(16);
-  const sourceDataNftAddress = getDataNftAddress(sourceContract, sourceCategoryId);
+  let sourceCategoryId: string;
+  let sourceDataNftUtxo: Utxo;
 
   const writerInitialCommitments = buildInitialStateCommitments(writerStateLayout, { counter: 0n });
   const sourceInitialCommitments = buildInitialStateCommitments(sourceStateLayout, { externalData: 123n });
 
-  const writerMasterUtxo: Utxo = {
-    txid: 'e3cd'.repeat(16),
-    vout: 0,
-    satoshis: 10000n,
-    token: {
-      category: writerCategoryId, amount: 0n,
-      nft: { capability: 'minting', commitment: '' },
-    },
-  };
-
-  const writerDataNftUtxo: Utxo = {
-    txid: 'e3cd'.repeat(16),
-    vout: 1,
-    satoshis: 10000n,
-    token: {
-      category: writerCategoryId, amount: 0n,
-      nft: { capability: 'mutable', commitment: writerInitialCommitments[0] },
-    },
-  };
-
-  const sourceDataNftUtxo: Utxo = {
-    txid: 'e4cd'.repeat(16),
-    vout: 1,
-    satoshis: 10000n,
-    token: {
-      category: sourceCategoryId, amount: 0n,
-      nft: { capability: 'mutable', commitment: sourceInitialCommitments[0] },
-    },
-  };
-
   beforeAll(async () => {
-    await provider.addUtxo(writerSaltedContract.tokenAddress, writerMasterUtxo);
-    await provider.addUtxo(writerDataNftAddress, writerDataNftUtxo);
-    await provider.addUtxo(sourceDataNftAddress, sourceDataNftUtxo);
+    // Writer: salted contract, real master + data NFT genesis.
+    const writerGenesis = await (provider as any).addTokenUtxosDynamic((catId: string) => {
+      const salted = writerContract.withSalt(hexToBin(catId));
+      return [
+        { address: salted.tokenAddress, satoshis: 10000n,
+          token: { amount: 0n, nft: { capability: 'minting', commitment: '' } } },
+        { address: getDataNftAddress(salted, catId), satoshis: 10000n,
+          token: { amount: 0n, nft: { capability: 'mutable', commitment: writerInitialCommitments[0] } } },
+      ];
+    });
+    writerCategoryId = writerGenesis.categoryId;
+    writerSaltedContract = writerContract.withSalt(hexToBin(writerCategoryId));
+    writerMasterUtxo = writerGenesis.utxos[0];
+    writerDataNftUtxo = writerGenesis.utxos[1];
+
+    // Source: read-only data NFT only (no master needed for read path).
+    const sourceGenesis = await (provider as any).addTokenUtxosDynamic((catId: string) => [
+      { address: getDataNftAddress(sourceContract, catId), satoshis: 10000n,
+        token: { amount: 0n, nft: { capability: 'mutable', commitment: sourceInitialCommitments[0] } } },
+    ]);
+    sourceCategoryId = sourceGenesis.categoryId;
+    sourceDataNftUtxo = sourceGenesis.utxos[0];
   });
 
   it('should include read-only data NFTs in inputs and preserve them in outputs', async () => {

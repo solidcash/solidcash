@@ -1800,35 +1800,19 @@ describe('Inheritance, Libraries, and Interfaces - SDK e2e', () => {
     ): Promise<{ categoryId: string; masterUtxo: Utxo; dataNftUtxo: Utxo; dataNftAddress: string }> {
       const initialCommitments = buildInitialStateCommitments(stateLayout, initialState);
 
-      if ('addTokenUtxosDynamic' in provider) {
-        const genesis = await (provider as any).addTokenUtxosDynamic((catId: string) => {
-          const dnAddr = getDataNftAddress(contract, catId);
-          return [
-            { address: contract.tokenAddress, satoshis: 10000n, token: { amount: 0n, nft: { capability: 'minting' as const, commitment: '' } } },
-            { address: dnAddr, satoshis: 10000n, token: { amount: 0n, nft: { capability: 'mutable' as const, commitment: initialCommitments[0] } } },
-          ];
-        });
-        return {
-          categoryId: genesis.categoryId,
-          masterUtxo: genesis.utxos[0],
-          dataNftUtxo: genesis.utxos[1],
-          dataNftAddress: getDataNftAddress(contract, genesis.categoryId),
-        };
-      }
-
-      const categoryId = 'cccd'.repeat(16);
-      const dataNftAddress = getDataNftAddress(contract, categoryId);
-      const masterUtxo: Utxo = {
-        txid: 'ddcd'.repeat(16), vout: 0, satoshis: 10000n,
-        token: { category: categoryId, amount: 0n, nft: { capability: 'minting' as const, commitment: '' } },
+      // Real genesis (category == genesis txid); works on mock and regtest.
+      const genesis = await (provider as any).addTokenUtxosDynamic((catId: string) => [
+        { address: contract.tokenAddress, satoshis: 10000n,
+          token: { amount: 0n, nft: { capability: 'minting' as const, commitment: '' } } },
+        { address: getDataNftAddress(contract, catId), satoshis: 10000n,
+          token: { amount: 0n, nft: { capability: 'mutable' as const, commitment: initialCommitments[0] } } },
+      ]);
+      return {
+        categoryId: genesis.categoryId,
+        masterUtxo: genesis.utxos[0],
+        dataNftUtxo: genesis.utxos[1],
+        dataNftAddress: getDataNftAddress(contract, genesis.categoryId),
       };
-      const dataNftUtxo: Utxo = {
-        txid: 'ddcd'.repeat(16), vout: 1, satoshis: 10000n,
-        token: { category: categoryId, amount: 0n, nft: { capability: 'mutable' as const, commitment: initialCommitments[0] } },
-      };
-      await provider.addUtxo(contract.tokenAddress, masterUtxo);
-      await provider.addUtxo(dataNftAddress, dataNftUtxo);
-      return { categoryId, masterUtxo, dataNftUtxo, dataNftAddress };
     }
 
     async function sendStatefulTx(

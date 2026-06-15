@@ -21,6 +21,7 @@
   },
   "scripts": {
     "test": "lerna run test --ignore solidcash-examples --ignore testing-suite",
+    "test:regtest": "yarn workspace solidcash test:regtest",
     "lint": "lerna run lint --ignore solidcash-examples --ignore testing-suite",
     "examples": "tsx examples/p2pkh.ts && tsx examples/transfer_with_timeout.ts && tsx examples/hodl_vault.ts",
     "postinstall": "lerna bootstrap && yarn build",

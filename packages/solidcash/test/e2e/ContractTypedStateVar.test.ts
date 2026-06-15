@@ -1,13 +1,13 @@
 import { compileString } from 'solidc';
 import { hexToBin } from '@bitauth/libauth';
-import { ResolvedImport, buildInitialStateCommitments } from '@solidcash/utils';
+import { ResolvedImport } from '@solidcash/utils';
 import {
   Contract, StatefulTransactionBuilder,
   StateReader, SignatureTemplate,
   getDataNftAddress, createDataNftUnlocker,
 } from '../../src/index.js';
 import { Utxo } from '../../src/interfaces.js';
-import { createTestProvider } from '../test-util.js';
+import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
 import {
   alicePriv, alicePub,
 } from '../fixture/vars.js';
@@ -291,40 +291,25 @@ describe('Contract-Typed State Variables', () => {
     const provider = createTestProvider();
     const contract = new Contract(artifact, [], { provider });
     const stateLayout = artifact.stateLayout!;
-    const categoryId = 'aacd'.repeat(16);
-    const dataNftAddress = getDataNftAddress(contract, categoryId);
 
     // Zero address (25 zero bytes for locking bytecode)
     const zeroAddr = new Uint8Array(25);
-    const initialCommitments = buildInitialStateCommitments(stateLayout, {
-      marketplace: zeroAddr,
-    });
 
-    const masterUtxo: Utxo = {
-      txid: 'bbcd'.repeat(16),
-      vout: 0,
-      satoshis: 10000n,
-      token: {
-        category: categoryId,
-        amount: 0n,
-        nft: { capability: 'minting', commitment: '' },
-      },
-    };
-
-    const dataNftUtxo: Utxo = {
-      txid: 'bbcd'.repeat(16),
-      vout: 1,
-      satoshis: 10000n,
-      token: {
-        category: categoryId,
-        amount: 0n,
-        nft: { capability: 'mutable', commitment: initialCommitments[0] },
-      },
-    };
+    let categoryId: string;
+    let saltedContract: Contract;
+    let dataNftAddress: string;
+    let masterUtxo: Utxo;
+    let dataNftUtxo: Utxo;
 
     beforeAll(async () => {
-      await provider.addUtxo(contract.tokenAddress, masterUtxo);
-      await provider.addUtxo(dataNftAddress, dataNftUtxo);
+      const setup = await setupStatefulUtxos(
+        provider, contract, stateLayout, { marketplace: zeroAddr }, { saltContract: true },
+      );
+      categoryId = setup.categoryId;
+      saltedContract = contract.withSalt(hexToBin(categoryId));
+      dataNftAddress = getDataNftAddress(saltedContract, categoryId);
+      masterUtxo = setup.masterUtxo;
+      dataNftUtxo = setup.dataNftUtxos[0];
     });
 
     it('should be marked as stateful', () => {
@@ -347,9 +332,9 @@ describe('Contract-Typed State Variables', () => {
         categoryId,
         masterUtxo: {
           ...masterUtxo,
-          unlocker: contract.unlock.setMarketplace(alicePub, new SignatureTemplate(alicePriv), newLbc),
+          unlocker: saltedContract.unlock.setMarketplace(alicePub, new SignatureTemplate(alicePriv), newLbc),
         },
-        dataNftUtxos: [{ ...dataNftUtxo, unlocker: createDataNftUnlocker(contract, 0, categoryId) }],
+        dataNftUtxos: [{ ...dataNftUtxo, unlocker: createDataNftUnlocker(saltedContract, 0, categoryId) }],
       })
         .setState('marketplace', newLbc)
         .send();
@@ -375,41 +360,26 @@ describe('Contract-Typed State Variables', () => {
     const provider = createTestProvider();
     const contract = new Contract(artifact, [], { provider });
     const stateLayout = artifact.stateLayout!;
-    const categoryId = 'cccd'.repeat(16);
-    const dataNftAddress = getDataNftAddress(contract, categoryId);
 
     const zeroAddr = new Uint8Array(25);
-    const initialCommitments = buildInitialStateCommitments(stateLayout, {
-      marketplace: zeroAddr,
-      escrow: zeroAddr,
-      counter: 0n,
-    });
 
-    const masterUtxo: Utxo = {
-      txid: 'ddcd'.repeat(16),
-      vout: 0,
-      satoshis: 10000n,
-      token: {
-        category: categoryId,
-        amount: 0n,
-        nft: { capability: 'minting', commitment: '' },
-      },
-    };
-
-    const dataNftUtxo: Utxo = {
-      txid: 'ddcd'.repeat(16),
-      vout: 1,
-      satoshis: 10000n,
-      token: {
-        category: categoryId,
-        amount: 0n,
-        nft: { capability: 'mutable', commitment: initialCommitments[0] },
-      },
-    };
+    let categoryId: string;
+    let saltedContract: Contract;
+    let dataNftAddress: string;
+    let masterUtxo: Utxo;
+    let dataNftUtxo: Utxo;
 
     beforeAll(async () => {
-      await provider.addUtxo(contract.tokenAddress, masterUtxo);
-      await provider.addUtxo(dataNftAddress, dataNftUtxo);
+      const setup = await setupStatefulUtxos(
+        provider, contract, stateLayout,
+        { marketplace: zeroAddr, escrow: zeroAddr, counter: 0n },
+        { saltContract: true },
+      );
+      categoryId = setup.categoryId;
+      saltedContract = contract.withSalt(hexToBin(categoryId));
+      dataNftAddress = getDataNftAddress(saltedContract, categoryId);
+      masterUtxo = setup.masterUtxo;
+      dataNftUtxo = setup.dataNftUtxos[0];
     });
 
     it('should read initial state with all zero values', () => {
@@ -429,9 +399,9 @@ describe('Contract-Typed State Variables', () => {
         categoryId,
         masterUtxo: {
           ...masterUtxo,
-          unlocker: contract.unlock.setMarketplace(alicePub, new SignatureTemplate(alicePriv), newMarketplaceLbc),
+          unlocker: saltedContract.unlock.setMarketplace(alicePub, new SignatureTemplate(alicePriv), newMarketplaceLbc),
         },
-        dataNftUtxos: [{ ...dataNftUtxo, unlocker: createDataNftUnlocker(contract, 0, categoryId) }],
+        dataNftUtxos: [{ ...dataNftUtxo, unlocker: createDataNftUnlocker(saltedContract, 0, categoryId) }],
       })
         .setState('marketplace', newMarketplaceLbc)
         .setState('escrow', zeroAddr)
@@ -454,7 +424,7 @@ describe('Contract-Typed State Variables', () => {
 
     it('should update escrow and increment counter', async () => {
       // Fetch current UTXOs from the provider (previous test consumed the originals)
-      const contractUtxos = await contract.getUtxos();
+      const contractUtxos = await saltedContract.getUtxos();
       const covenantUtxos = await provider.getUtxos(dataNftAddress);
 
       const currentMaster = contractUtxos.find(
@@ -483,11 +453,11 @@ describe('Contract-Typed State Variables', () => {
         categoryId,
         masterUtxo: {
           ...currentMaster,
-          unlocker: contract.unlock.setEscrow(alicePub, new SignatureTemplate(alicePriv), newEscrowLbc),
+          unlocker: saltedContract.unlock.setEscrow(alicePub, new SignatureTemplate(alicePriv), newEscrowLbc),
         },
         dataNftUtxos: [{
           ...currentDataNft,
-          unlocker: createDataNftUnlocker(contract, 0, categoryId),
+          unlocker: createDataNftUnlocker(saltedContract, 0, categoryId),
         }],
       })
         .setState('marketplace', prevMarketplaceLbc)
@@ -516,39 +486,24 @@ describe('Contract-Typed State Variables', () => {
     const provider = createTestProvider();
     const contract = new Contract(artifact, [], { provider });
     const stateLayout = artifact.stateLayout!;
-    const categoryId = 'ffcd'.repeat(16);
-    const dataNftAddress = getDataNftAddress(contract, categoryId);
 
     const zeroAddr = new Uint8Array(25);
-    const initialCommitments = buildInitialStateCommitments(stateLayout, {
-      token: zeroAddr,
-    });
 
-    const masterUtxo: Utxo = {
-      txid: '11cd'.repeat(16),
-      vout: 0,
-      satoshis: 10000n,
-      token: {
-        category: categoryId,
-        amount: 0n,
-        nft: { capability: 'minting', commitment: '' },
-      },
-    };
-
-    const dataNftUtxo: Utxo = {
-      txid: '11cd'.repeat(16),
-      vout: 1,
-      satoshis: 10000n,
-      token: {
-        category: categoryId,
-        amount: 0n,
-        nft: { capability: 'mutable', commitment: initialCommitments[0] },
-      },
-    };
+    let categoryId: string;
+    let saltedContract: Contract;
+    let dataNftAddress: string;
+    let masterUtxo: Utxo;
+    let dataNftUtxo: Utxo;
 
     beforeAll(async () => {
-      await provider.addUtxo(contract.tokenAddress, masterUtxo);
-      await provider.addUtxo(dataNftAddress, dataNftUtxo);
+      const setup = await setupStatefulUtxos(
+        provider, contract, stateLayout, { token: zeroAddr }, { saltContract: true },
+      );
+      categoryId = setup.categoryId;
+      saltedContract = contract.withSalt(hexToBin(categoryId));
+      dataNftAddress = getDataNftAddress(saltedContract, categoryId);
+      masterUtxo = setup.masterUtxo;
+      dataNftUtxo = setup.dataNftUtxos[0];
     });
 
     it('should have contractType set to interface name', () => {
@@ -570,9 +525,9 @@ describe('Contract-Typed State Variables', () => {
         categoryId,
         masterUtxo: {
           ...masterUtxo,
-          unlocker: contract.unlock.setToken(alicePub, new SignatureTemplate(alicePriv), newTokenLbc),
+          unlocker: saltedContract.unlock.setToken(alicePub, new SignatureTemplate(alicePriv), newTokenLbc),
         },
-        dataNftUtxos: [{ ...dataNftUtxo, unlocker: createDataNftUnlocker(contract, 0, categoryId) }],
+        dataNftUtxos: [{ ...dataNftUtxo, unlocker: createDataNftUnlocker(saltedContract, 0, categoryId) }],
       })
         .setState('token', newTokenLbc)
         .send();

@@ -6,6 +6,7 @@ import {
   SignatureTemplate,
   randomUtxo,
   createDataNftUnlocker,
+  getDataNftAddress,
 } from '../../src/index.js';
 import {
   buildInitialStateCommitments,
@@ -34,6 +35,40 @@ function returnEventOutput(
       category: categoryId,
       nft: { capability: 'none', commitment },
     },
+  };
+}
+
+// Genesis A + B under ONE shared real category: a two-category cycle is un-bootstrappable
+// (each address would commit to the peer's not-yet-created genesis txid).
+async function genesisMutualPair(
+  provider: ReturnType<typeof createTestProvider>,
+  artA: ReturnType<typeof compileString>, artB: ReturnType<typeof compileString>,
+  stateA: Record<string, bigint>, stateB: Record<string, bigint>,
+): Promise<{
+    categoryId: string; contractA: Contract; contractB: Contract;
+    masterA: Utxo; dataNftA: Utxo; masterB: Utxo; dataNftB: Utxo;
+  }> {
+  const commitsA = buildInitialStateCommitments(artA.stateLayout!, stateA);
+  const commitsB = buildInitialStateCommitments(artB.stateLayout!, stateB);
+  const { categoryId, utxos } = await (provider as any).addTokenUtxosDynamic((cat: string) => {
+    const a = new Contract(artA, [hexToBin(cat)], { provider });
+    const b = new Contract(artB, [hexToBin(cat)], { provider });
+    return [
+      { address: a.tokenAddress, satoshis: 10000n,
+        token: { amount: 0n, nft: { capability: 'minting', commitment: '' } } },
+      { address: getDataNftAddress(a, cat), satoshis: 10000n,
+        token: { amount: 0n, nft: { capability: 'mutable', commitment: commitsA[0] } } },
+      { address: b.tokenAddress, satoshis: 10000n,
+        token: { amount: 0n, nft: { capability: 'minting', commitment: '' } } },
+      { address: getDataNftAddress(b, cat), satoshis: 10000n,
+        token: { amount: 0n, nft: { capability: 'mutable', commitment: commitsB[0] } } },
+    ];
+  });
+  return {
+    categoryId,
+    contractA: new Contract(artA, [hexToBin(categoryId)], { provider }),
+    contractB: new Contract(artB, [hexToBin(categoryId)], { provider }),
+    masterA: utxos[0], dataNftA: utxos[1], masterB: utxos[2], dataNftB: utxos[3],
   };
 }
 
@@ -255,34 +290,15 @@ describe('Circular Call Patterns (A->B->A)', () => {
       const artA = compileString(CALLER_A);
       const artB = compileString(READER_B);
 
-      const catA = 'a1cd'.repeat(16);
-      const catB = 'b1cd'.repeat(16);
-
-      const contractA = new Contract(artA, [hexToBin(catB)], { provider });
-      const contractB = new Contract(artB, [hexToBin(catA)], { provider });
-
       const layoutA = artA.stateLayout!;
       const layoutB = artB.stateLayout!;
 
-      const commitsA = buildInitialStateCommitments(layoutA, { stateA: 10n });
-      const commitsB = buildInitialStateCommitments(layoutB, { stateB: 20n });
-
-      const masterA: Utxo = {
-        txid: 'a2cd'.repeat(16), vout: 0, satoshis: 10000n,
-        token: { category: catA, amount: 0n, nft: { capability: 'minting', commitment: '' } },
-      };
-      const dataNftA: Utxo = {
-        txid: 'a2cd'.repeat(16), vout: 1, satoshis: 10000n,
-        token: { category: catA, amount: 0n, nft: { capability: 'mutable', commitment: commitsA[0] } },
-      };
-      const masterB: Utxo = {
-        txid: 'b2cd'.repeat(16), vout: 0, satoshis: 10000n,
-        token: { category: catB, amount: 0n, nft: { capability: 'minting', commitment: '' } },
-      };
-      const dataNftB: Utxo = {
-        txid: 'b2cd'.repeat(16), vout: 1, satoshis: 10000n,
-        token: { category: catB, amount: 0n, nft: { capability: 'mutable', commitment: commitsB[0] } },
-      };
+      // Real genesis: A + B share one category (see genesisMutualPair).
+      const {
+        categoryId: cat, contractA, contractB, masterA, dataNftA, masterB, dataNftB,
+      } = await genesisMutualPair(provider, artA, artB, { stateA: 10n }, { stateB: 20n });
+      const catA = cat;
+      const catB = cat;
 
       // A is the "main" contract. B is the external call target.
       // B's _externalOutStateInputBase = 0 (pointing to A)
@@ -434,34 +450,15 @@ describe('Circular Call Patterns (A->B->A)', () => {
       const artA = compileString(MUTUAL_A);
       const artB = compileString(MUTUAL_B);
 
-      const catA = 'a1cd'.repeat(16);
-      const catB = 'b1cd'.repeat(16);
-
-      const contractA = new Contract(artA, [hexToBin(catB)], { provider });
-      const contractB = new Contract(artB, [hexToBin(catA)], { provider });
-
       const layoutA = artA.stateLayout!;
       const layoutB = artB.stateLayout!;
 
-      const commitsA = buildInitialStateCommitments(layoutA, { stateA: 10n });
-      const commitsB = buildInitialStateCommitments(layoutB, { stateB: 20n });
-
-      const masterA: Utxo = {
-        txid: 'a2cd'.repeat(16), vout: 0, satoshis: 10000n,
-        token: { category: catA, amount: 0n, nft: { capability: 'minting', commitment: '' } },
-      };
-      const dataNftA: Utxo = {
-        txid: 'a2cd'.repeat(16), vout: 1, satoshis: 10000n,
-        token: { category: catA, amount: 0n, nft: { capability: 'mutable', commitment: commitsA[0] } },
-      };
-      const masterB: Utxo = {
-        txid: 'b2cd'.repeat(16), vout: 0, satoshis: 10000n,
-        token: { category: catB, amount: 0n, nft: { capability: 'minting', commitment: '' } },
-      };
-      const dataNftB: Utxo = {
-        txid: 'b2cd'.repeat(16), vout: 1, satoshis: 10000n,
-        token: { category: catB, amount: 0n, nft: { capability: 'mutable', commitment: commitsB[0] } },
-      };
+      // Real genesis: A + B share one category (see genesisMutualPair).
+      const {
+        categoryId: cat, contractA, contractB, masterA, dataNftA, masterB, dataNftB,
+      } = await genesisMutualPair(provider, artA, artB, { stateA: 10n }, { stateB: 20n });
+      const catA = cat;
+      const catB = cat;
 
       // No _externalCallSelector needed: both IA and IB have only 1 callable function each
 
@@ -555,34 +552,16 @@ describe('Circular Call Patterns (A->B->A)', () => {
       const provider = createTestProvider();
       const art = compileString(SELF_REF);
 
-      const catX = 'a1cd'.repeat(16);
-      const catY = 'b1cd'.repeat(16);
-
-      // Instance 1: otherCategory = catY
-      const instance1 = new Contract(art, [hexToBin(catY)], { provider });
-      // Instance 2: otherCategory = catX
-      const instance2 = new Contract(art, [hexToBin(catX)], { provider });
-
       const layout = art.stateLayout!;
-      const commits1 = buildInitialStateCommitments(layout, { counter: 0n });
-      const commits2 = buildInitialStateCommitments(layout, { counter: 0n });
 
-      const master1: Utxo = {
-        txid: 'a2cd'.repeat(16), vout: 0, satoshis: 10000n,
-        token: { category: catX, amount: 0n, nft: { capability: 'minting', commitment: '' } },
-      };
-      const dataNft1: Utxo = {
-        txid: 'a2cd'.repeat(16), vout: 1, satoshis: 10000n,
-        token: { category: catX, amount: 0n, nft: { capability: 'mutable', commitment: commits1[0] } },
-      };
-      const master2: Utxo = {
-        txid: 'b2cd'.repeat(16), vout: 0, satoshis: 10000n,
-        token: { category: catY, amount: 0n, nft: { capability: 'minting', commitment: '' } },
-      };
-      const dataNft2: Utxo = {
-        txid: 'b2cd'.repeat(16), vout: 1, satoshis: 10000n,
-        token: { category: catY, amount: 0n, nft: { capability: 'mutable', commitment: commits2[0] } },
-      };
+      // Real genesis: both SelfRef instances share one category (see genesisMutualPair).
+      const {
+        categoryId: cat,
+        contractA: instance1, contractB: instance2,
+        masterA: master1, dataNftA: dataNft1, masterB: master2, dataNftB: dataNft2,
+      } = await genesisMutualPair(provider, art, art, { counter: 0n }, { counter: 0n });
+      const catX = cat;
+      const catY = cat;
 
       // No _externalCallSelector needed: ISelf has only 1 callable function (step)
 

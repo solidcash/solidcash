@@ -1,14 +1,12 @@
 import { compileString } from 'solidc';
-import { hexToBin } from '@bitauth/libauth';
 import {
   Contract, StatefulContract,
   TransactionBuilder, FailedRequireError,
-  getDataNftAddress,
 } from '../../src/index.js';
 import {
-  buildInitialStateCommitments, parsePushdataCommitment,
+  parsePushdataCommitment,
 } from '@solidcash/utils';
-import { createTestProvider, getTxOutputs, gatherUtxos } from '../test-util.js';
+import { createTestProvider, getTxOutputs, gatherUtxos, setupStatefulUtxos } from '../test-util.js';
 import { randomUtxo } from '../../src/utils.js';
 
 // A stateful contract that increments counter in a for loop
@@ -66,36 +64,10 @@ describe('ForLoop', () => {
     const artifact = compileString(FOR_LOOP_COUNTER_CONTRACT);
     const contract = new Contract(artifact, [], { provider });
     const stateLayout = artifact.stateLayout!;
-    const categoryId = 'e3cd'.repeat(16);
-    const saltedContract = contract.withSalt(hexToBin(categoryId));
-    const dataNftAddress = getDataNftAddress(saltedContract, categoryId);
-    const initialCommitments = buildInitialStateCommitments(stateLayout, { counter: 0n });
-
-    const masterUtxo = {
-      txid: 'f3cd'.repeat(16),
-      vout: 0,
-      satoshis: 10000n,
-      token: {
-        category: categoryId,
-        amount: 0n,
-        nft: { capability: 'minting' as const, commitment: '' },
-      },
-    };
-
-    const dataNftUtxo = {
-      txid: 'f3cd'.repeat(16),
-      vout: 1,
-      satoshis: 10000n,
-      token: {
-        category: categoryId,
-        amount: 0n,
-        nft: { capability: 'mutable' as const, commitment: initialCommitments[0] },
-      },
-    };
+    let categoryId: string;
 
     beforeAll(async () => {
-      await provider.addUtxo(saltedContract.tokenAddress, masterUtxo);
-      await provider.addUtxo(dataNftAddress, dataNftUtxo);
+      ({ categoryId } = await setupStatefulUtxos(provider, contract, stateLayout, { counter: 0n }, { saltContract: true }));
     });
 
     it('should compile with stateLayout', () => {
@@ -134,36 +106,10 @@ describe('ForLoop', () => {
     const artifact = compileString(FOR_BRANCH_IN_LOOP_CONTRACT);
     const contract = new Contract(artifact, [], { provider });
     const stateLayout = artifact.stateLayout!;
-    const categoryId = 'e4cd'.repeat(16);
-    const saltedContract = contract.withSalt(hexToBin(categoryId));
-    const dataNftAddress = getDataNftAddress(saltedContract, categoryId);
-    const initialCommitments = buildInitialStateCommitments(stateLayout, { counter: 0n });
-
-    const masterUtxo = {
-      txid: 'f4cd'.repeat(16),
-      vout: 0,
-      satoshis: 10000n,
-      token: {
-        category: categoryId,
-        amount: 0n,
-        nft: { capability: 'minting' as const, commitment: '' },
-      },
-    };
-
-    const dataNftUtxo = {
-      txid: 'f4cd'.repeat(16),
-      vout: 1,
-      satoshis: 10000n,
-      token: {
-        category: categoryId,
-        amount: 0n,
-        nft: { capability: 'mutable' as const, commitment: initialCommitments[0] },
-      },
-    };
+    let categoryId: string;
 
     beforeAll(async () => {
-      await provider.addUtxo(saltedContract.tokenAddress, masterUtxo);
-      await provider.addUtxo(dataNftAddress, dataNftUtxo);
+      ({ categoryId } = await setupStatefulUtxos(provider, contract, stateLayout, { counter: 0n }, { saltContract: true }));
     });
 
     it('should add 2 per iteration when addTwo=true (3 iterations = +6)', async () => {

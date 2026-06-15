@@ -3,7 +3,7 @@ import { hexToBin } from '@bitauth/libauth';
 import {
   Contract, StatefulContract, StatefulTransactionBuilder,
   StatefulFunctionCall, TransactionBuilder,
-  getDataNftAddress, createDataNftUnlocker,
+  createDataNftUnlocker,
 } from '../../src/index.js';
 import {
   buildInitialStateCommitments,
@@ -15,7 +15,7 @@ import {
 import { Utxo } from '../../src/interfaces.js';
 import { SignatureTemplate } from '../../src/index.js';
 import { ExternalCallUtxoGroup } from '../../src/stateful/StatefulTransactionBuilder.js';
-import { createTestProvider } from '../test-util.js';
+import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
 
 // ===== Contract Sources =====
 
@@ -184,75 +184,25 @@ describe('Cross-Contract External Function Calls', () => {
     const provider = createTestProvider();
     const readerArtifact = compileString(READER_CONTRACT);
     const counterArtifact = compileString(COUNTER_CONTRACT);
-
-    const counterCategoryId = 'a1cd'.repeat(16);
-    const readerCategoryId = 'b1cd'.repeat(16);
-
-    const counterContract = new Contract(counterArtifact, [], { provider });
-    const readerContract = new Contract(
-      readerArtifact, [hexToBin(counterCategoryId)], { provider },
-    );
-
     const counterStateLayout = counterArtifact.stateLayout!;
     const readerStateLayout = readerArtifact.stateLayout!;
 
-    const counterInitialCommitments = buildInitialStateCommitments(
-      counterStateLayout, { counter: 5n },
-    );
-    const readerInitialCommitments = buildInitialStateCommitments(
-      readerStateLayout, { lastSeen: 0n },
-    );
-
-    const counterMasterUtxo: Utxo = {
-      txid: 'a2cd'.repeat(16),
-      vout: 0,
-      satoshis: 10000n,
-      token: {
-        category: counterCategoryId, amount: 0n,
-        nft: { capability: 'minting', commitment: '' },
-      },
-    };
-
-    const counterDataNftUtxo: Utxo = {
-      txid: 'a2cd'.repeat(16),
-      vout: 1,
-      satoshis: 10000n,
-      token: {
-        category: counterCategoryId, amount: 0n,
-        nft: { capability: 'mutable', commitment: counterInitialCommitments[0] },
-      },
-    };
-
-    const readerMasterUtxo: Utxo = {
-      txid: 'b2cd'.repeat(16),
-      vout: 0,
-      satoshis: 10000n,
-      token: {
-        category: readerCategoryId, amount: 0n,
-        nft: { capability: 'minting', commitment: '' },
-      },
-    };
-
-    const readerDataNftUtxo: Utxo = {
-      txid: 'b2cd'.repeat(16),
-      vout: 1,
-      satoshis: 10000n,
-      token: {
-        category: readerCategoryId, amount: 0n,
-        nft: { capability: 'mutable', commitment: readerInitialCommitments[0] },
-      },
-    };
+    let counterCategoryId: string;
+    let readerCategoryId: string;
+    let counterContract: Contract;
+    let readerContract: Contract;
 
     beforeAll(async () => {
-      const saltedCounter = counterContract.withSalt(hexToBin(counterCategoryId));
-      const counterDataNftAddress = getDataNftAddress(saltedCounter, counterCategoryId);
-      await provider.addUtxo(saltedCounter.tokenAddress, counterMasterUtxo);
-      await provider.addUtxo(counterDataNftAddress, counterDataNftUtxo);
+      // Genesis counter (B) first so the reader (A) can embed its real category.
+      counterContract = new Contract(counterArtifact, [], { provider });
+      ({ categoryId: counterCategoryId } = await setupStatefulUtxos(
+        provider, counterContract, counterStateLayout, { counter: 5n }, { saltContract: true },
+      ));
 
-      const saltedReader = readerContract.withSalt(hexToBin(readerCategoryId));
-      const readerDataNftAddress = getDataNftAddress(saltedReader, readerCategoryId);
-      await provider.addUtxo(saltedReader.tokenAddress, readerMasterUtxo);
-      await provider.addUtxo(readerDataNftAddress, readerDataNftUtxo);
+      readerContract = new Contract(readerArtifact, [hexToBin(counterCategoryId)], { provider });
+      ({ categoryId: readerCategoryId } = await setupStatefulUtxos(
+        provider, readerContract, readerStateLayout, { lastSeen: 0n }, { saltContract: true },
+      ));
     });
 
     it('should return a StatefulFunctionCall from the call namespace', () => {

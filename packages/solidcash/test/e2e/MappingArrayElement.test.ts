@@ -13,7 +13,6 @@ import {
 } from '@solidcash/utils';
 import { alicePkh } from '../fixture/vars.js';
 import { createTestProvider, getTxOutputs } from '../test-util.js';
-import { Utxo } from '../../src/interfaces.js';
 
 // Regression test for emitMappingArrayElementAssign codegen.
 // Exercises `this.scores[user][index] = newValue` where the mapping value is
@@ -37,55 +36,32 @@ contract ArrayMappingValue() {
 describe('Mapping array-element assignment', () => {
   const artifact = compileString(CONTRACT_SOURCE);
   const stateLayout = artifact.stateLayout!;
-  const categoryId = 'aacd'.repeat(16);
+  // Assigned per-bootstrap to the real genesis category; readScoresFromTx filters by it.
+  let categoryId: string;
 
+  // Genesis master + data NFT + the scores entry NFT in ONE real category so the entry
+  // NFT shares the contract's category (Electrum is address+category indexed).
   async function bootstrapWithEntry(initialScores: bigint[]): Promise<{
     provider: MockNetworkProvider;
     sc: ConnectedStatefulContract;
   }> {
     const provider = createTestProvider();
     const contract = new Contract(artifact, [], { provider });
-    const saltedContract = contract.withSalt(hexToBin(categoryId));
-
     const initialCommitments = buildInitialStateCommitments(stateLayout, { counter: 0n });
+    const entryCommitment = buildEntryCommitment(alicePkh, 'bytes20', initialScores, 'int[3]');
 
-    const masterUtxo: Utxo = {
-      txid: 'a1cd'.repeat(16),
-      vout: 0,
-      satoshis: 100000n,
-      token: {
-        category: categoryId,
-        amount: 0n,
-        nft: { capability: 'minting', commitment: '' },
-      },
-    };
-    const dataNftUtxo: Utxo = {
-      txid: 'a1cd'.repeat(16),
-      vout: 1,
-      satoshis: 10000n,
-      token: {
-        category: categoryId,
-        amount: 0n,
-        nft: { capability: 'mutable', commitment: initialCommitments[0] },
-      },
-    };
-    await provider.addUtxo(saltedContract.tokenAddress, masterUtxo);
-    await provider.addUtxo(getDataNftAddress(saltedContract, categoryId), dataNftUtxo);
-
-    const entryCommitment = buildEntryCommitment(
-      alicePkh, 'bytes20', initialScores, 'int[3]',
-    );
-    const entryNftUtxo: Utxo = {
-      txid: 'b1cd'.repeat(16),
-      vout: 0,
-      satoshis: 1200n,
-      token: {
-        category: categoryId,
-        amount: 0n,
-        nft: { capability: 'mutable', commitment: entryCommitment },
-      },
-    };
-    await provider.addUtxo(getEntryNftAddress(contract, categoryId, 'scores'), entryNftUtxo);
+    const { categoryId: cat } = await provider.addTokenUtxosDynamic((c) => {
+      const salted = contract.withSalt(hexToBin(c));
+      return [
+        { address: salted.tokenAddress, satoshis: 100000n,
+          token: { amount: 0n, nft: { capability: 'minting' as const, commitment: '' } } },
+        { address: getDataNftAddress(salted, c), satoshis: 10000n,
+          token: { amount: 0n, nft: { capability: 'mutable' as const, commitment: initialCommitments[0] } } },
+        { address: getEntryNftAddress(salted, c, 'scores'), satoshis: 1200n,
+          token: { amount: 0n, nft: { capability: 'mutable' as const, commitment: entryCommitment } } },
+      ];
+    });
+    categoryId = cat;
 
     const sc = StatefulContract.withCategory(contract, categoryId);
     return { provider, sc };

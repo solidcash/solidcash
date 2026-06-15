@@ -1,7 +1,7 @@
 import { compileString } from 'solidc';
 import { hexToBin } from '@bitauth/libauth';
 import {
-  Contract, MockNetworkProvider,
+  Contract, MockNetworkProvider, RegtestNetworkProvider,
   StatefulContract, SignatureTemplate,
   getDataNftAddress, getEntryNftAddress,
   type ConnectedStatefulContract,
@@ -10,13 +10,47 @@ import {
   buildInitialStateCommitments,
   buildEntryCommitment,
   parseEntryCommitment,
+  type StateLayout,
 } from '@solidcash/utils';
 import {
   alicePriv, alicePub, alicePkh,
   bobPkh,
 } from '../fixture/vars.js';
 import { createTestProvider, getTxOutputs } from '../test-util.js';
-import { Utxo } from '../../src/interfaces.js';
+
+type TestProvider = MockNetworkProvider | RegtestNetworkProvider;
+
+// One entry NFT to genesis under the contract's real category.
+interface EntrySpec {
+  collection: string;
+  commitment: string;
+}
+
+// Genesis master + data NFT(s) + any entry NFTs under ONE real category (entry NFTs must share
+// the contract's category). Callers build the deterministic entry commitments first. Returns
+// the real categoryId.
+async function setupWithEntries(
+  provider: TestProvider, contract: Contract, stateLayout: StateLayout,
+  initialState: Record<string, any>, entries: EntrySpec[],
+): Promise<{ categoryId: string }> {
+  const commitments = buildInitialStateCommitments(stateLayout, initialState);
+  const { categoryId } = await provider.addTokenUtxosDynamic((cat) => {
+    const salted = contract.withSalt(hexToBin(cat));
+    return [
+      { address: salted.tokenAddress, satoshis: 10000n,
+        token: { amount: 0n, nft: { capability: 'minting' as const, commitment: '' } } },
+      ...commitments.map((commitment) => ({
+        address: getDataNftAddress(salted, cat), satoshis: 10000n,
+        token: { amount: 0n, nft: { capability: 'mutable' as const, commitment } },
+      })),
+      ...entries.map((e) => ({
+        address: getEntryNftAddress(salted, cat, e.collection), satoshis: 10000n,
+        token: { amount: 0n, nft: { capability: 'mutable' as const, commitment: e.commitment } },
+      })),
+    ];
+  });
+  return { categoryId };
+}
 
 const PARTIAL_STRUCT_UPDATE_SOURCE = `
 pragma solidcash >=0.8.0;
@@ -102,55 +136,26 @@ describe('Partial Struct Update', () => {
   });
 
   describe('e2e with StatefulContract', () => {
-    let provider: MockNetworkProvider;
-    let contract: Contract;
-    let sc: ConnectedStatefulContract;
-    const categoryId = 'aacd'.repeat(16);
     const sig = new SignatureTemplate(alicePriv);
 
     // User struct field values
     const userAddr = alicePkh; // bytes20
     const userNameStr = 'Alice'; // JS string for function args
-    const userNameBytes = new TextEncoder().encode('Alice'); // Uint8Array for setEntry struct values
+    const userNameBytes = new TextEncoder().encode('Alice'); // Uint8Array for entry struct values
     const userBalance = 1000n;
 
-    beforeEach(async () => {
-      provider = createTestProvider();
-      contract = new Contract(artifact, [], { provider });
-
-      const saltedContract = contract.withSalt(hexToBin(categoryId));
-      const initialCommitments = buildInitialStateCommitments(stateLayout, { counter: 0n });
-
-      const masterUtxo: Utxo = {
-        txid: 'a1cd'.repeat(16),
-        vout: 0,
-        satoshis: 100000n,
-        token: {
-          category: categoryId,
-          amount: 0n,
-          nft: { capability: 'minting', commitment: '' },
-        },
-      };
-
-      const dataNftAddress = getDataNftAddress(saltedContract, categoryId);
-      const dataNftUtxo: Utxo = {
-        txid: 'a1cd'.repeat(16),
-        vout: 1,
-        satoshis: 10000n,
-        token: {
-          category: categoryId,
-          amount: 0n,
-          nft: { capability: 'mutable', commitment: initialCommitments[0] },
-        },
-      };
-
-      await provider.addUtxo(saltedContract.tokenAddress, masterUtxo);
-      await provider.addUtxo(dataNftAddress, dataNftUtxo);
-
-      sc = StatefulContract.withCategory(contract, categoryId);
-    });
+    // Build the existing entry NFT commitment for alicePkh (shared by the update tests).
+    const existingEntryCommitment = (): string => buildEntryCommitment(
+      alicePkh, 'bytes20', { addr: userAddr, name: userNameBytes, balance: userBalance }, 'User', structs,
+    );
 
     it('should add a user entry via addUser', async () => {
+      // No pre-seeded entry: addUser creates the entry NFT from scratch.
+      const provider = createTestProvider();
+      const contract = new Contract(artifact, [], { provider });
+      const { categoryId } = await setupWithEntries(provider, contract, stateLayout, { counter: 0n }, []);
+      const sc: ConnectedStatefulContract = StatefulContract.withCategory(contract, categoryId);
+
       const tx = await sc.addUser(alicePkh, userAddr, userNameStr, userBalance, alicePub, sig)
         .send();
 
@@ -184,25 +189,14 @@ describe('Partial Struct Update', () => {
     });
 
     it('should update only the name field via updateName', async () => {
-      // First, bootstrap an existing entry NFT for alicePkh
-      const existingUserValue = { addr: userAddr, name: userNameBytes, balance: userBalance };
-      const entryCommitment = buildEntryCommitment(
-        alicePkh, 'bytes20', existingUserValue, 'User', structs,
+      // Genesis master + data NFT + the existing entry NFT for alicePkh under one real category.
+      const provider = createTestProvider();
+      const contract = new Contract(artifact, [], { provider });
+      const { categoryId } = await setupWithEntries(
+        provider, contract, stateLayout, { counter: 1n },
+        [{ collection: 'users', commitment: existingEntryCommitment() }],
       );
-
-      // Add the entry NFT at the correct address
-      const entryNftAddress = getEntryNftAddress(contract, categoryId, 'users');
-      const entryNftUtxo: Utxo = {
-        txid: 'b1cd'.repeat(16),
-        vout: 0,
-        satoshis: 1200n,
-        token: {
-          category: categoryId,
-          amount: 0n,
-          nft: { capability: 'mutable', commitment: entryCommitment },
-        },
-      };
-      await provider.addUtxo(entryNftAddress, entryNftUtxo);
+      const sc: ConnectedStatefulContract = StatefulContract.withCategory(contract, categoryId);
 
       const newNameStr = 'Bob'; // JS string for function arg
       const tx = await sc.updateName(alicePkh, newNameStr, alicePub, sig)
@@ -231,23 +225,13 @@ describe('Partial Struct Update', () => {
     });
 
     it('should update only the balance field via updateBalance', async () => {
-      const existingUserValue = { addr: userAddr, name: userNameBytes, balance: userBalance };
-      const entryCommitment = buildEntryCommitment(
-        alicePkh, 'bytes20', existingUserValue, 'User', structs,
+      const provider = createTestProvider();
+      const contract = new Contract(artifact, [], { provider });
+      const { categoryId } = await setupWithEntries(
+        provider, contract, stateLayout, { counter: 1n },
+        [{ collection: 'users', commitment: existingEntryCommitment() }],
       );
-
-      const entryNftAddress = getEntryNftAddress(contract, categoryId, 'users');
-      const entryNftUtxo: Utxo = {
-        txid: 'c1cd'.repeat(16),
-        vout: 0,
-        satoshis: 1200n,
-        token: {
-          category: categoryId,
-          amount: 0n,
-          nft: { capability: 'mutable', commitment: entryCommitment },
-        },
-      };
-      await provider.addUtxo(entryNftAddress, entryNftUtxo);
+      const sc: ConnectedStatefulContract = StatefulContract.withCategory(contract, categoryId);
 
       const newBalance = 5000n;
       const tx = await sc.updateBalance(alicePkh, newBalance, alicePub, sig)
@@ -275,23 +259,13 @@ describe('Partial Struct Update', () => {
     });
 
     it('should update only the addr field via updateAddr', async () => {
-      const existingUserValue = { addr: userAddr, name: userNameBytes, balance: userBalance };
-      const entryCommitment = buildEntryCommitment(
-        alicePkh, 'bytes20', existingUserValue, 'User', structs,
+      const provider = createTestProvider();
+      const contract = new Contract(artifact, [], { provider });
+      const { categoryId } = await setupWithEntries(
+        provider, contract, stateLayout, { counter: 1n },
+        [{ collection: 'users', commitment: existingEntryCommitment() }],
       );
-
-      const entryNftAddress = getEntryNftAddress(contract, categoryId, 'users');
-      const entryNftUtxo: Utxo = {
-        txid: 'd1cd'.repeat(16),
-        vout: 0,
-        satoshis: 1200n,
-        token: {
-          category: categoryId,
-          amount: 0n,
-          nft: { capability: 'mutable', commitment: entryCommitment },
-        },
-      };
-      await provider.addUtxo(entryNftAddress, entryNftUtxo);
+      const sc: ConnectedStatefulContract = StatefulContract.withCategory(contract, categoryId);
 
       const newAddr = bobPkh; // different bytes20
       const tx = await sc.updateAddr(alicePkh, newAddr, alicePub, sig)
@@ -319,23 +293,13 @@ describe('Partial Struct Update', () => {
     });
 
     it('should update both name and balance via updateNameAndBalance', async () => {
-      const existingUserValue = { addr: userAddr, name: userNameBytes, balance: userBalance };
-      const entryCommitment = buildEntryCommitment(
-        alicePkh, 'bytes20', existingUserValue, 'User', structs,
+      const provider = createTestProvider();
+      const contract = new Contract(artifact, [], { provider });
+      const { categoryId } = await setupWithEntries(
+        provider, contract, stateLayout, { counter: 1n },
+        [{ collection: 'users', commitment: existingEntryCommitment() }],
       );
-
-      const entryNftAddress = getEntryNftAddress(contract, categoryId, 'users');
-      const entryNftUtxo: Utxo = {
-        txid: 'e1cd'.repeat(16),
-        vout: 0,
-        satoshis: 1200n,
-        token: {
-          category: categoryId,
-          amount: 0n,
-          nft: { capability: 'mutable', commitment: entryCommitment },
-        },
-      };
-      await provider.addUtxo(entryNftAddress, entryNftUtxo);
+      const sc: ConnectedStatefulContract = StatefulContract.withCategory(contract, categoryId);
 
       const newNameStr = 'Charlie';
       const newBalance = 9999n;
@@ -365,23 +329,13 @@ describe('Partial Struct Update', () => {
     });
 
     it('should update all three fields via updateAll', async () => {
-      const existingUserValue = { addr: userAddr, name: userNameBytes, balance: userBalance };
-      const entryCommitment = buildEntryCommitment(
-        alicePkh, 'bytes20', existingUserValue, 'User', structs,
+      const provider = createTestProvider();
+      const contract = new Contract(artifact, [], { provider });
+      const { categoryId } = await setupWithEntries(
+        provider, contract, stateLayout, { counter: 1n },
+        [{ collection: 'users', commitment: existingEntryCommitment() }],
       );
-
-      const entryNftAddress = getEntryNftAddress(contract, categoryId, 'users');
-      const entryNftUtxo: Utxo = {
-        txid: 'f1cd'.repeat(16),
-        vout: 0,
-        satoshis: 1200n,
-        token: {
-          category: categoryId,
-          amount: 0n,
-          nft: { capability: 'mutable', commitment: entryCommitment },
-        },
-      };
-      await provider.addUtxo(entryNftAddress, entryNftUtxo);
+      const sc: ConnectedStatefulContract = StatefulContract.withCategory(contract, categoryId);
 
       const newAddr = bobPkh;
       const newNameStr = 'Diane';

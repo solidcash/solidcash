@@ -504,7 +504,8 @@ describe('StatefulContract.deployFrom()', () => {
         vout: 1, // invalid - must be 0
         satoshis: 100000n,
       };
-      await provider.addUtxo(p2pkh.address, childFunding);
+      // No addUtxo: deployFrom validates fundingUtxo.vout before any node use, and on regtest
+      // addUtxo would back-fill vout to 0, masking the rejection this test asserts.
 
       await expect(StatefulContract.deployFrom({
         provider,

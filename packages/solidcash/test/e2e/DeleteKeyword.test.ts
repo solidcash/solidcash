@@ -3,11 +3,10 @@ import { hexToBin } from '@bitauth/libauth';
 import {
   Contract, MockNetworkProvider, TransactionBuilder, SignatureTemplate,
   StatefulContract, FailedRequireError,
-  getDataNftAddress,
 } from '../../src/index.js';
-import { buildInitialStateCommitments, parsePushdataCommitment } from '@solidcash/utils';
+import { parsePushdataCommitment } from '@solidcash/utils';
 import { randomUtxo } from '../../src/utils.js';
-import { createTestProvider, gatherUtxos, getTxOutputs } from '../test-util.js';
+import { createTestProvider, gatherUtxos, getTxOutputs, setupStatefulUtxos } from '../test-util.js';
 import { alicePriv, alicePub, alicePkh } from '../fixture/vars.js';
 import { Utxo } from '../../src/interfaces.js';
 
@@ -262,34 +261,12 @@ describe('Delete Keyword', () => {
     const artifact = compileString(DELETE_STATE_CONTRACT);
     const contract = new Contract(artifact, [], { provider });
     const stateLayout = artifact.stateLayout!;
-    const categoryId = 'cccd'.repeat(16);
-    // StatefulContract.withCategory() auto-salts with categoryId, so use the salted contract's addresses
-    const saltedContract = contract.withSalt(hexToBin(categoryId));
-    const dataNftAddress = getDataNftAddress(saltedContract, categoryId);
-
-    const initialCommitments = buildInitialStateCommitments(stateLayout, {
-      counter: 5n, flag: true,
-    });
-
-    const masterUtxo: Utxo = {
-      txid: 'ddcd'.repeat(16), vout: 0, satoshis: 10000n,
-      token: {
-        category: categoryId, amount: 0n,
-        nft: { capability: 'minting', commitment: '' },
-      },
-    };
-
-    const dataNftUtxo: Utxo = {
-      txid: 'ddcd'.repeat(16), vout: 1, satoshis: 10000n,
-      token: {
-        category: categoryId, amount: 0n,
-        nft: { capability: 'mutable', commitment: initialCommitments[0] },
-      },
-    };
+    let categoryId: string;
 
     beforeAll(async () => {
-      await provider.addUtxo(saltedContract.tokenAddress, masterUtxo);
-      await provider.addUtxo(dataNftAddress, dataNftUtxo);
+      ({ categoryId } = await setupStatefulUtxos(
+        provider, contract, stateLayout, { counter: 5n, flag: true }, { saltContract: true },
+      ));
     });
 
     it('should read initial state', async () => {
@@ -377,31 +354,9 @@ describe('Delete Keyword', () => {
       const artifact = compileString(STRUCT_STATE_CONTRACT);
       const contract = new Contract(artifact, [], { provider });
       const stateLayout = artifact.stateLayout!;
-      const categoryId = 'abcd'.repeat(16);
-      const saltedContract = contract.withSalt(hexToBin(categoryId));
-      const dataNftAddress = getDataNftAddress(saltedContract, categoryId);
-
-      const initialCommitments = buildInitialStateCommitments(stateLayout, {
-        point: { x: 10n, y: 20n },
-      });
-
-      const masterUtxo: Utxo = {
-        txid: 'aacd'.repeat(16), vout: 0, satoshis: 10000n,
-        token: {
-          category: categoryId, amount: 0n,
-          nft: { capability: 'minting', commitment: '' },
-        },
-      };
-      const dataNftUtxo: Utxo = {
-        txid: 'aacd'.repeat(16), vout: 1, satoshis: 10000n,
-        token: {
-          category: categoryId, amount: 0n,
-          nft: { capability: 'mutable', commitment: initialCommitments[0] },
-        },
-      };
-
-      await provider.addUtxo(saltedContract.tokenAddress, masterUtxo);
-      await provider.addUtxo(dataNftAddress, dataNftUtxo);
+      const { categoryId } = await setupStatefulUtxos(
+        provider, contract, stateLayout, { point: { x: 10n, y: 20n } }, { saltContract: true },
+      );
 
       const sc = StatefulContract.withCategory(contract, categoryId);
       const state = await sc.getState();
@@ -446,31 +401,9 @@ describe('Delete Keyword', () => {
       const artifact = compileString(source);
       const contract = new Contract(artifact, [], { provider });
       const stateLayout = artifact.stateLayout!;
-      const categoryId = 'bacd'.repeat(16);
-      const saltedContract = contract.withSalt(hexToBin(categoryId));
-      const dataNftAddress = getDataNftAddress(saltedContract, categoryId);
-
-      const initialCommitments = buildInitialStateCommitments(stateLayout, {
-        data: { inner: { a: 5n, b: 10n }, z: 15n },
-      });
-
-      const masterUtxo: Utxo = {
-        txid: 'bbcd'.repeat(16), vout: 0, satoshis: 10000n,
-        token: {
-          category: categoryId, amount: 0n,
-          nft: { capability: 'minting', commitment: '' },
-        },
-      };
-      const dataNftUtxo: Utxo = {
-        txid: 'bbcd'.repeat(16), vout: 1, satoshis: 10000n,
-        token: {
-          category: categoryId, amount: 0n,
-          nft: { capability: 'mutable', commitment: initialCommitments[0] },
-        },
-      };
-
-      await provider.addUtxo(saltedContract.tokenAddress, masterUtxo);
-      await provider.addUtxo(dataNftAddress, dataNftUtxo);
+      const { categoryId } = await setupStatefulUtxos(
+        provider, contract, stateLayout, { data: { inner: { a: 5n, b: 10n }, z: 15n } }, { saltContract: true },
+      );
 
       const sc = StatefulContract.withCategory(contract, categoryId);
       const state = await sc.getState();

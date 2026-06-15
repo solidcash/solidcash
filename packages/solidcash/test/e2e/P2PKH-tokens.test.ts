@@ -1,3 +1,4 @@
+import { hexToBin } from '@bitauth/libauth';
 import { randomUtxo, randomToken, randomNFT } from '../../src/utils.js';
 import {
   Contract, SignatureTemplate,
@@ -20,7 +21,9 @@ describe('P2PKH-tokens', () => {
   beforeAll(async () => {
     provider = createTestProvider();
 
-    p2pkhInstance = new Contract(artifact, [alicePkh], { provider });
+    // file-unique salt: isolates this contract's address from other files' alicePkh P2PKH so the
+    // shared regtest node doesn't accumulate foreign UTXOs here (which would bloat tx size/fees)
+    p2pkhInstance = new Contract(artifact, [alicePkh], { provider, salt: hexToBin('a7'.repeat(16)) });
     console.log(p2pkhInstance.tokenAddress);
     await provider.addUtxo(p2pkhInstance.address, randomUtxo());
     await provider.addUtxo(p2pkhInstance.address, randomUtxo());
@@ -66,7 +69,9 @@ describe('P2PKH-tokens', () => {
       const to = p2pkhInstance.tokenAddress;
       const amount = 1000n;
       const { token } = tokenUtxo;
-      const fee = 1000n;
+      // Scale fee with input count: the shared regtest address accumulates UTXOs across runs, so a
+      // fixed fee falls below the min relay fee once the tx grows past ~1000 bytes.
+      const fee = 250n * BigInt(nonTokenUtxos.length + 3);
       const changeAmount = fullBchBalance - fee - amount;
 
       const tx = await new TransactionBuilder({ provider })
@@ -281,7 +286,8 @@ describe('P2PKH-tokens', () => {
       const to = p2pkhInstance.tokenAddress;
       const amount = 1000n;
       const token = { ...tokenUtxo.token!, amount: tokenUtxo.token!.amount - 1n };
-      const fee = 1000n;
+      // scale fee with input count: a reused address may hold many UTXOs on the shared regtest node
+      const fee = 250n * BigInt(nonTokenUtxos.length + 2);
       const fullBchBalance = nonTokenUtxos.reduce((total, utxo) => total + utxo.satoshis, 0n) + tokenUtxo.satoshis;
       const changeAmount = fullBchBalance - fee - amount;
 

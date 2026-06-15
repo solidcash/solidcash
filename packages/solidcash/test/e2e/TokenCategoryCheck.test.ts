@@ -1,4 +1,4 @@
-import { randomUtxo, randomToken, isFungibleTokenUtxo, isNonTokenUtxo, utxoComparator } from '../../src/utils.js';
+import { randomUtxo, isFungibleTokenUtxo, isNonTokenUtxo, utxoComparator } from '../../src/utils.js';
 import {
   Contract, FailedRequireError,
   TransactionBuilder,
@@ -13,7 +13,10 @@ describe('TokenCategoryCheck', () => {
 
   beforeAll(async () => {
     console.log(checkTokenCategoryContract.tokenAddress);
-    await provider.addUtxo(checkTokenCategoryContract.address, randomUtxo({ satoshis: 1000n, token: randomToken() }));
+    // Real FT genesis at the contract's token address (synthetic categories do not exist on regtest)
+    await (provider as any).addTokenUtxosDynamic(() => [
+      { address: checkTokenCategoryContract.tokenAddress, satoshis: 1000n, token: { amount: 1000n } },
+    ]);
     await provider.addUtxo(checkTokenCategoryContract.address, randomUtxo());
     await provider.addUtxo(checkTokenCategoryContract.address, randomUtxo());
     await provider.addUtxo(checkTokenCategoryContract.address, randomUtxo());

@@ -143,26 +143,18 @@ describe('FlashLoan', () => {
   // ============================================================
   describe('Token flash loan (loan)', () => {
     it('should execute a token flash loan with correct fee', async () => {
-      const tokenCategory = 'aacd'.repeat(16);
       const tokenAmount = 100_000n;
       const loanFee = calcFee(tokenAmount); // 90 tokens
       const poolSats = 10_000n;
 
-      // Pool UTXO: contract holds tokens
-      const poolUtxo: Utxo = {
-        ...randomUtxo({ satoshis: poolSats }),
-        token: { category: tokenCategory, amount: tokenAmount },
-      };
-
-      // Borrower has tokens to pay the fee
-      const borrowerTokenUtxo: Utxo = {
-        ...randomUtxo({ satoshis: 1_000n }),
-        token: { category: tokenCategory, amount: 1_000n },
-      };
+      // Real genesis: one category funds both the pool and the borrower's fee tokens.
+      const { categoryId: tokenCategory, utxos } = await (provider as any).addTokenUtxosDynamic(() => [
+        { address: flashLoanContract.tokenAddress, satoshis: poolSats, token: { amount: tokenAmount } },
+        { address: bobP2pkh.tokenAddress, satoshis: 1_000n, token: { amount: 1_000n } },
+      ]);
+      const poolUtxo: Utxo = utxos[0];
+      const borrowerTokenUtxo: Utxo = utxos[1];
       const borrowerBchUtxo = randomUtxo({ satoshis: 100_000n });
-
-      await provider.addUtxo(flashLoanContract.tokenAddress, poolUtxo);
-      await provider.addUtxo(bobP2pkh.address, borrowerTokenUtxo);
       await provider.addUtxo(bobP2pkh.address, borrowerBchUtxo);
 
       // Token flash loan transaction:
@@ -202,24 +194,18 @@ describe('FlashLoan', () => {
     });
 
     it('should fail token flash loan when token fee is insufficient', async () => {
-      const tokenCategory = 'bbcd'.repeat(16);
       const tokenAmount = 100_000n;
       const loanFee = calcFee(tokenAmount);
       const insufficientFee = loanFee - 1n;
       const poolSats = 10_000n;
 
-      const poolUtxo: Utxo = {
-        ...randomUtxo({ satoshis: poolSats }),
-        token: { category: tokenCategory, amount: tokenAmount },
-      };
-      const borrowerTokenUtxo: Utxo = {
-        ...randomUtxo({ satoshis: 1_000n }),
-        token: { category: tokenCategory, amount: 1_000n },
-      };
+      const { categoryId: tokenCategory, utxos } = await (provider as any).addTokenUtxosDynamic(() => [
+        { address: flashLoanContract.tokenAddress, satoshis: poolSats, token: { amount: tokenAmount } },
+        { address: bobP2pkh.tokenAddress, satoshis: 1_000n, token: { amount: 1_000n } },
+      ]);
+      const poolUtxo: Utxo = utxos[0];
+      const borrowerTokenUtxo: Utxo = utxos[1];
       const borrowerBchUtxo = randomUtxo({ satoshis: 100_000n });
-
-      await provider.addUtxo(flashLoanContract.tokenAddress, poolUtxo);
-      await provider.addUtxo(bobP2pkh.address, borrowerTokenUtxo);
       await provider.addUtxo(bobP2pkh.address, borrowerBchUtxo);
 
       const txPromise = new TransactionBuilder({ provider })
@@ -243,23 +229,17 @@ describe('FlashLoan', () => {
     });
 
     it('should fail token flash loan when BCH value changes', async () => {
-      const tokenCategory = 'cccd'.repeat(16);
       const tokenAmount = 100_000n;
       const loanFee = calcFee(tokenAmount);
       const poolSats = 10_000n;
 
-      const poolUtxo: Utxo = {
-        ...randomUtxo({ satoshis: poolSats }),
-        token: { category: tokenCategory, amount: tokenAmount },
-      };
-      const borrowerTokenUtxo: Utxo = {
-        ...randomUtxo({ satoshis: 1_000n }),
-        token: { category: tokenCategory, amount: 1_000n },
-      };
+      const { categoryId: tokenCategory, utxos } = await (provider as any).addTokenUtxosDynamic(() => [
+        { address: flashLoanContract.tokenAddress, satoshis: poolSats, token: { amount: tokenAmount } },
+        { address: bobP2pkh.tokenAddress, satoshis: 1_000n, token: { amount: 1_000n } },
+      ]);
+      const poolUtxo: Utxo = utxos[0];
+      const borrowerTokenUtxo: Utxo = utxos[1];
       const borrowerBchUtxo = randomUtxo({ satoshis: 100_000n });
-
-      await provider.addUtxo(flashLoanContract.tokenAddress, poolUtxo);
-      await provider.addUtxo(bobP2pkh.address, borrowerTokenUtxo);
       await provider.addUtxo(bobP2pkh.address, borrowerBchUtxo);
 
       // Try to steal 1 sat of BCH from the pool

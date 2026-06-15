@@ -2,14 +2,14 @@ import { compileString } from 'solidc';
 import { hexToBin } from '@bitauth/libauth';
 import {
   Contract, StatefulContract, SignatureTemplate,
-  getDataNftAddress, getEventNftAddress, getAnonymousEventNftAddress,
+  getEventNftAddress, getAnonymousEventNftAddress,
   readEventsFromChain, readEventsFiltered,
   readAnonymousEventsFromChain,
 } from '../../src/index.js';
 import {
-  buildInitialStateCommitments, parsePushdataCommitment,
+  parsePushdataCommitment,
 } from '@solidcash/utils';
-import { createTestProvider, getTxOutputs } from '../test-util.js';
+import { createTestProvider, getTxOutputs, setupStatefulUtxos } from '../test-util.js';
 import { alicePub, alicePriv } from '../fixture/vars.js';
 
 // Stateful contract with a named event (for comparison baseline)
@@ -111,24 +111,14 @@ describe('EventAnonymousE2E', () => {
     const artifact = compileString(NAMED_EVENT_CONTRACT);
     const contract = new Contract(artifact, [], { provider });
     const stateLayout = artifact.stateLayout!;
-    const categoryId = 'a1cd'.repeat(16);
-    const saltedContract = contract.withSalt(hexToBin(categoryId));
-    const dataNftAddress = getDataNftAddress(saltedContract, categoryId);
-    const initialCommitments = buildInitialStateCommitments(stateLayout, { counter: 0n });
-
-    const masterUtxo = {
-      txid: 'b1cd'.repeat(16), vout: 0, satoshis: 10000n,
-      token: { category: categoryId, amount: 0n, nft: { capability: 'minting' as const, commitment: '' } },
-    };
-    const dataNftUtxo = {
-      txid: 'b1cd'.repeat(16), vout: 1, satoshis: 10000n,
-      token: { category: categoryId, amount: 0n, nft: { capability: 'mutable' as const, commitment: initialCommitments[0] } },
-    };
+    let categoryId: string;
+    let saltedContract: Contract;
 
     beforeAll(async () => {
-      await provider.addUtxo(saltedContract.tokenAddress, masterUtxo);
-      await provider.addUtxo(dataNftAddress, dataNftUtxo);
+      ({ categoryId } = await setupStatefulUtxos(provider, contract, stateLayout, { counter: 0n }, { saltContract: true }));
+      saltedContract = contract.withSalt(hexToBin(categoryId));
     });
+
 
     it('should emit a named event and create event NFT output', async () => {
       const sc = StatefulContract.withCategory(contract, categoryId);
@@ -167,24 +157,14 @@ describe('EventAnonymousE2E', () => {
     const artifact = compileString(ANONYMOUS_EVENT_CONTRACT);
     const contract = new Contract(artifact, [], { provider });
     const stateLayout = artifact.stateLayout!;
-    const categoryId = 'a2cd'.repeat(16);
-    const saltedContract = contract.withSalt(hexToBin(categoryId));
-    const dataNftAddress = getDataNftAddress(saltedContract, categoryId);
-    const initialCommitments = buildInitialStateCommitments(stateLayout, { counter: 0n });
-
-    const masterUtxo = {
-      txid: 'b2cd'.repeat(16), vout: 0, satoshis: 10000n,
-      token: { category: categoryId, amount: 0n, nft: { capability: 'minting' as const, commitment: '' } },
-    };
-    const dataNftUtxo = {
-      txid: 'b2cd'.repeat(16), vout: 1, satoshis: 10000n,
-      token: { category: categoryId, amount: 0n, nft: { capability: 'mutable' as const, commitment: initialCommitments[0] } },
-    };
+    let categoryId: string;
+    let saltedContract: Contract;
 
     beforeAll(async () => {
-      await provider.addUtxo(saltedContract.tokenAddress, masterUtxo);
-      await provider.addUtxo(dataNftAddress, dataNftUtxo);
+      ({ categoryId } = await setupStatefulUtxos(provider, contract, stateLayout, { counter: 0n }, { saltContract: true }));
+      saltedContract = contract.withSalt(hexToBin(categoryId));
     });
+
 
     it('should emit an anonymous event and update state', async () => {
       const sc = StatefulContract.withCategory(contract, categoryId);
@@ -255,24 +235,14 @@ describe('EventAnonymousE2E', () => {
     const artifact = compileString(MIXED_EVENT_CONTRACT);
     const contract = new Contract(artifact, [], { provider });
     const stateLayout = artifact.stateLayout!;
-    const categoryId = 'a3cd'.repeat(16);
-    const saltedContract = contract.withSalt(hexToBin(categoryId));
-    const dataNftAddress = getDataNftAddress(saltedContract, categoryId);
-    const initialCommitments = buildInitialStateCommitments(stateLayout, { counter: 0n });
-
-    const masterUtxo = {
-      txid: 'b3cd'.repeat(16), vout: 0, satoshis: 10000n,
-      token: { category: categoryId, amount: 0n, nft: { capability: 'minting' as const, commitment: '' } },
-    };
-    const dataNftUtxo = {
-      txid: 'b3cd'.repeat(16), vout: 1, satoshis: 10000n,
-      token: { category: categoryId, amount: 0n, nft: { capability: 'mutable' as const, commitment: initialCommitments[0] } },
-    };
+    let categoryId: string;
+    let saltedContract: Contract;
 
     beforeAll(async () => {
-      await provider.addUtxo(saltedContract.tokenAddress, masterUtxo);
-      await provider.addUtxo(dataNftAddress, dataNftUtxo);
+      ({ categoryId } = await setupStatefulUtxos(provider, contract, stateLayout, { counter: 0n }, { saltContract: true }));
+      saltedContract = contract.withSalt(hexToBin(categoryId));
     });
+
 
     it('should emit a named event via increment()', async () => {
       const sc = StatefulContract.withCategory(contract, categoryId);
@@ -337,24 +307,14 @@ describe('EventAnonymousE2E', () => {
     const artifact = compileString(MULTI_ANON_CONTRACT);
     const contract = new Contract(artifact, [], { provider });
     const stateLayout = artifact.stateLayout!;
-    const categoryId = 'a4cd'.repeat(16);
-    const saltedContract = contract.withSalt(hexToBin(categoryId));
-    const dataNftAddress = getDataNftAddress(saltedContract, categoryId);
-    const initialCommitments = buildInitialStateCommitments(stateLayout, { counter: 0n });
-
-    const masterUtxo = {
-      txid: 'b4cd'.repeat(16), vout: 0, satoshis: 10000n,
-      token: { category: categoryId, amount: 0n, nft: { capability: 'minting' as const, commitment: '' } },
-    };
-    const dataNftUtxo = {
-      txid: 'b4cd'.repeat(16), vout: 1, satoshis: 10000n,
-      token: { category: categoryId, amount: 0n, nft: { capability: 'mutable' as const, commitment: initialCommitments[0] } },
-    };
+    let categoryId: string;
+    let saltedContract: Contract;
 
     beforeAll(async () => {
-      await provider.addUtxo(saltedContract.tokenAddress, masterUtxo);
-      await provider.addUtxo(dataNftAddress, dataNftUtxo);
+      ({ categoryId } = await setupStatefulUtxos(provider, contract, stateLayout, { counter: 0n }, { saltContract: true }));
+      saltedContract = contract.withSalt(hexToBin(categoryId));
     });
+
 
     it('should emit LogA anonymously', async () => {
       const sc = StatefulContract.withCategory(contract, categoryId);
@@ -416,24 +376,14 @@ describe('EventAnonymousE2E', () => {
     const artifact = compileString(INDEXED_EVENT_CONTRACT);
     const contract = new Contract(artifact, [], { provider });
     const stateLayout = artifact.stateLayout!;
-    const categoryId = 'a5cd'.repeat(16);
-    const saltedContract = contract.withSalt(hexToBin(categoryId));
-    const dataNftAddress = getDataNftAddress(saltedContract, categoryId);
-    const initialCommitments = buildInitialStateCommitments(stateLayout, { counter: 0n });
-
-    const masterUtxo = {
-      txid: 'b5cd'.repeat(16), vout: 0, satoshis: 10000n,
-      token: { category: categoryId, amount: 0n, nft: { capability: 'minting' as const, commitment: '' } },
-    };
-    const dataNftUtxo = {
-      txid: 'b5cd'.repeat(16), vout: 1, satoshis: 10000n,
-      token: { category: categoryId, amount: 0n, nft: { capability: 'mutable' as const, commitment: initialCommitments[0] } },
-    };
+    let categoryId: string;
+    let saltedContract: Contract;
 
     beforeAll(async () => {
-      await provider.addUtxo(saltedContract.tokenAddress, masterUtxo);
-      await provider.addUtxo(dataNftAddress, dataNftUtxo);
+      ({ categoryId } = await setupStatefulUtxos(provider, contract, stateLayout, { counter: 0n }, { saltContract: true }));
+      saltedContract = contract.withSalt(hexToBin(categoryId));
     });
+
 
     it('should emit Transfer events with different parameters', async () => {
       const sc = StatefulContract.withCategory(contract, categoryId);
@@ -571,24 +521,12 @@ describe('EventAnonymousE2E', () => {
     const artifact = compileString(NAMED_EVENT_CONTRACT);
     const contract = new Contract(artifact, [], { provider });
     const stateLayout = artifact.stateLayout!;
-    const categoryId = 'e1cd'.repeat(16);
-    const saltedContract = contract.withSalt(hexToBin(categoryId));
-    const dataNftAddress = getDataNftAddress(saltedContract, categoryId);
-    const initialCommitments = buildInitialStateCommitments(stateLayout, { counter: 0n });
-
-    const masterUtxo = {
-      txid: 'f1cd'.repeat(16), vout: 0, satoshis: 10000n,
-      token: { category: categoryId, amount: 0n, nft: { capability: 'minting' as const, commitment: '' } },
-    };
-    const dataNftUtxo = {
-      txid: 'f1cd'.repeat(16), vout: 1, satoshis: 10000n,
-      token: { category: categoryId, amount: 0n, nft: { capability: 'mutable' as const, commitment: initialCommitments[0] } },
-    };
+    let categoryId: string;
 
     beforeAll(async () => {
-      await provider.addUtxo(saltedContract.tokenAddress, masterUtxo);
-      await provider.addUtxo(dataNftAddress, dataNftUtxo);
+      ({ categoryId } = await setupStatefulUtxos(provider, contract, stateLayout, { counter: 0n }, { saltContract: true }));
     });
+
 
     it('should pass when event is emitted (no args check)', async () => {
       const sc = StatefulContract.withCategory(contract, categoryId);
@@ -682,43 +620,28 @@ contract TargetWithEvent() {
 `;
 
     const provider = createTestProvider();
-    const catA = 'cacd'.repeat(16);
-    const catB = 'cbcd'.repeat(16);
-
     const artA = compileString(CALLER_WITH_EVENT);
     const artB = compileString(TARGET_WITH_EVENT);
 
-    const contractA = new Contract(artA, [hexToBin(catB)], { provider });
-    const contractB = new Contract(artB, [], { provider });
-
-    const scA = StatefulContract.withCategory(contractA, catA);
-    const scB = StatefulContract.withCategory(contractB, catB);
-
-    const commitsA = buildInitialStateCommitments(artA.stateLayout!, { callerState: 0n });
-    const commitsB = buildInitialStateCommitments(artB.stateLayout!, { counter: 0n });
+    let scA: ReturnType<typeof StatefulContract.withCategory>;
+    let scB: ReturnType<typeof StatefulContract.withCategory>;
 
     // Build the transaction once (auto-derivation consumes UTXOs)
     let builtTx: any;
 
     beforeAll(async () => {
-      // A's UTXOs
-      await provider.addUtxo(scA.tokenAddress, {
-        txid: 'cacd'.repeat(16), vout: 0, satoshis: 10000n,
-        token: { category: catA, amount: 0n, nft: { capability: 'minting' as const, commitment: '' } },
-      });
-      await provider.addUtxo(scA.getDataNftAddress(), {
-        txid: 'cacd'.repeat(16), vout: 1, satoshis: 10000n,
-        token: { category: catA, amount: 0n, nft: { capability: 'mutable' as const, commitment: commitsA[0] } },
-      });
-      // B's UTXOs
-      await provider.addUtxo(scB.tokenAddress, {
-        txid: 'cbcd'.repeat(16), vout: 0, satoshis: 10000n,
-        token: { category: catB, amount: 0n, nft: { capability: 'minting' as const, commitment: '' } },
-      });
-      await provider.addUtxo(scB.getDataNftAddress(), {
-        txid: 'cbcd'.repeat(16), vout: 1, satoshis: 10000n,
-        token: { category: catB, amount: 0n, nft: { capability: 'mutable' as const, commitment: commitsB[0] } },
-      });
+      // Genesis B first; A embeds B's real category.
+      const contractB = new Contract(artB, [], { provider });
+      const { categoryId: catB } = await setupStatefulUtxos(
+        provider, contractB, artB.stateLayout!, { counter: 0n }, { saltContract: true },
+      );
+      const contractA = new Contract(artA, [hexToBin(catB)], { provider });
+      const { categoryId: catA } = await setupStatefulUtxos(
+        provider, contractA, artA.stateLayout!, { callerState: 0n }, { saltContract: true },
+      );
+
+      scB = StatefulContract.withCategory(contractB, catB);
+      scA = StatefulContract.withCategory(contractA, catA);
 
       // Build once; reuse for all assertions
       const call = scA.callTarget(alicePub, new SignatureTemplate(alicePriv))
@@ -785,24 +708,11 @@ contract TargetWithEvent() {
 
     const provider = createTestProvider();
     const contract = new Contract(artifact, [], { provider });
-    const categoryId = 'f5cd'.repeat(16);
-    const saltedContract = contract.withSalt(hexToBin(categoryId));
-    const dataNftAddress = getDataNftAddress(saltedContract, categoryId);
     const stateLayout = artifact.stateLayout!;
-    const initialCommitments = buildInitialStateCommitments(stateLayout, { counter: 0n });
-
-    const masterUtxo = {
-      txid: 'f6cd'.repeat(16), vout: 0, satoshis: 10000n,
-      token: { category: categoryId, amount: 0n, nft: { capability: 'minting' as const, commitment: '' } },
-    };
-    const dataNftUtxo = {
-      txid: 'f6cd'.repeat(16), vout: 1, satoshis: 10000n,
-      token: { category: categoryId, amount: 0n, nft: { capability: 'mutable' as const, commitment: initialCommitments[0] } },
-    };
+    let categoryId: string;
 
     beforeAll(async () => {
-      await provider.addUtxo(saltedContract.tokenAddress, masterUtxo);
-      await provider.addUtxo(dataNftAddress, dataNftUtxo);
+      ({ categoryId } = await setupStatefulUtxos(provider, contract, stateLayout, { counter: 0n }, { saltContract: true }));
     });
 
     it('should autocomplete event name (only "CounterUpdated" is valid)', async () => {

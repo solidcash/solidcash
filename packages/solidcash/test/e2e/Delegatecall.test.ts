@@ -10,7 +10,7 @@ import { Artifact, buildInitialStateCommitments, parsePushdataCommitment } from 
 import {
   alicePub, alicePriv,
 } from '../fixture/vars.js';
-import { createTestProvider, getTxOutputs } from '../test-util.js';
+import { createTestProvider, getTxOutputs, setupStatefulUtxos } from '../test-util.js';
 import { ContractUnlocker, Utxo } from '../../src/interfaces.js';
 import { ExternalCallUtxoGroup } from '../../src/stateful/StatefulTransactionBuilder.js';
 import { createUnlockingBytecode, addressToLockScript } from '../../src/utils.js';
@@ -153,29 +153,26 @@ contract Bad() {
 
 interface Deployed {
   contract: Contract;
+  categoryId: string;
   utxos: { master: Utxo; dataNfts: Utxo[] };
 }
 
 /** Deploy a stateful contract: create Contract, build UTXOs, register with provider. */
 async function deploy(
   provider: MockNetworkProvider, artifact: Artifact, args: any[],
-  catId: string, state: Record<string, any>, satoshis = 10000n,
-): Deployed {
+  state: Record<string, any>, satoshis = 10000n,
+): Promise<Deployed> {
   const contract = new Contract(artifact, args, { provider });
   const commitments = buildInitialStateCommitments(artifact.stateLayout!, state);
-  const master: Utxo = {
-    txid: catId, vout: 0, satoshis,
-    token: { category: catId, amount: 0n, nft: { capability: 'minting', commitment: '' } },
-  };
-  const dataNfts = commitments.map((commitment, i) => ({
-    txid: catId, vout: i + 1, satoshis,
-    token: { category: catId, amount: 0n, nft: { capability: 'mutable' as const, commitment } },
-  }));
-  await provider.addUtxo(contract.tokenAddress, master);
-  for (const nft of dataNfts) {
-    await provider.addUtxo(getDataNftAddress(contract, catId), nft);
-  }
-  return { contract, utxos: { master, dataNfts } };
+  // Real genesis at the unsalted contract addresses (matches the direct unlockers below).
+  const { categoryId, utxos } = await (provider as any).addTokenUtxosDynamic((cat: string) => [
+    { address: contract.tokenAddress, satoshis, token: { amount: 0n, nft: { capability: 'minting', commitment: '' } } },
+    ...commitments.map((commitment) => ({
+      address: getDataNftAddress(contract, cat), satoshis,
+      token: { amount: 0n, nft: { capability: 'mutable' as const, commitment } },
+    })),
+  ]);
+  return { contract, categoryId, utxos: { master: utxos[0], dataNfts: utxos.slice(1) } };
 }
 
 /** Create an ExternalCallUtxoGroup for inclusion in a StatefulTransactionBuilder. */
@@ -328,11 +325,10 @@ describe('Delegatecall', () => {
 
     it('should build proxy + impl delegatecall transaction', async () => {
       const provider = createTestProvider();
-      const proxyCatId = 'a1cd'.repeat(16);
-      const implCatId = 'b1cd'.repeat(16);
-
-      const proxy = await deploy(provider, proxyArtifact, [], proxyCatId, { counter: 0n });
-      const impl = await deploy(provider, implArtifact, [], implCatId, { counter: 0n });
+      const proxy = await deploy(provider, proxyArtifact, [], { counter: 0n });
+      const impl = await deploy(provider, implArtifact, [], { counter: 0n });
+      const proxyCatId = proxy.categoryId;
+      const implCatId = impl.categoryId;
 
       // Get the impl's increment selector to send to the proxy's fallback
       const implSelector = hexToBin(implArtifact.abi.find((f) => f.name === 'increment')!.selector!);
@@ -364,11 +360,10 @@ describe('Delegatecall', () => {
 
     it('should modify proxy state via delegate function', async () => {
       const provider = createTestProvider();
-      const proxyCatId = 'c1cd'.repeat(16);
-      const implCatId = 'd1cd'.repeat(16);
-
-      const proxy = await deploy(provider, proxyArtifact, [], proxyCatId, { counter: 5n });
-      const impl = await deploy(provider, implArtifact, [], implCatId, { counter: 0n });
+      const proxy = await deploy(provider, proxyArtifact, [], { counter: 5n });
+      const impl = await deploy(provider, implArtifact, [], { counter: 0n });
+      const proxyCatId = proxy.categoryId;
+      const implCatId = impl.categoryId;
 
       const implSelector = hexToBin(implArtifact.abi.find((f) => f.name === 'increment')!.selector!);
 
@@ -410,11 +405,10 @@ describe('Delegatecall', () => {
 
     it('should preserve implementation NFTs in delegate transaction outputs', async () => {
       const provider = createTestProvider();
-      const proxyCatId = 'e1cd'.repeat(16);
-      const implCatId = 'f1cd'.repeat(16);
-
-      const proxy = await deploy(provider, proxyArtifact, [], proxyCatId, { counter: 0n });
-      const impl = await deploy(provider, implArtifact, [], implCatId, { counter: 0n });
+      const proxy = await deploy(provider, proxyArtifact, [], { counter: 0n });
+      const impl = await deploy(provider, implArtifact, [], { counter: 0n });
+      const proxyCatId = proxy.categoryId;
+      const implCatId = impl.categoryId;
 
       const implSelector = hexToBin(implArtifact.abi.find((f) => f.name === 'increment')!.selector!);
 
@@ -466,11 +460,10 @@ describe('Delegatecall', () => {
 
     it('should build multi-state increment via delegate', async () => {
       const provider = createTestProvider();
-      const proxyCatId = 'a2cd'.repeat(16);
-      const implCatId = 'b2cd'.repeat(16);
-
-      const proxy = await deploy(provider, proxyArtifact, [], proxyCatId, { counter: 0n, totalOps: 0n });
-      const impl = await deploy(provider, implArtifact, [], implCatId, { counter: 0n, totalOps: 0n });
+      const proxy = await deploy(provider, proxyArtifact, [], { counter: 0n, totalOps: 0n });
+      const impl = await deploy(provider, implArtifact, [], { counter: 0n, totalOps: 0n });
+      const proxyCatId = proxy.categoryId;
+      const implCatId = impl.categoryId;
 
       const implSelector = hexToBin(implArtifact.abi.find((f) => f.name === 'increment')!.selector!);
 
@@ -512,11 +505,10 @@ describe('Delegatecall', () => {
 
     it('should build multi-state decrement via delegate', async () => {
       const provider = createTestProvider();
-      const proxyCatId = 'c2cd'.repeat(16);
-      const implCatId = 'd2cd'.repeat(16);
-
-      const proxy = await deploy(provider, proxyArtifact, [], proxyCatId, { counter: 10n, totalOps: 5n });
-      const impl = await deploy(provider, implArtifact, [], implCatId, { counter: 0n, totalOps: 0n });
+      const proxy = await deploy(provider, proxyArtifact, [], { counter: 10n, totalOps: 5n });
+      const impl = await deploy(provider, implArtifact, [], { counter: 0n, totalOps: 0n });
+      const proxyCatId = proxy.categoryId;
+      const implCatId = impl.categoryId;
 
       const implSelector = hexToBin(implArtifact.abi.find((f) => f.name === 'decrement')!.selector!);
 
@@ -565,8 +557,8 @@ describe('Delegatecall', () => {
 
     it('should build authorize (unsafe) transaction on proxy', async () => {
       const provider = createTestProvider();
-      const proxyCatId = 'a3cd'.repeat(16);
-      const proxy = await deploy(provider, proxyArtifact, [], proxyCatId, { counter: 0n });
+      const proxy = await deploy(provider, proxyArtifact, [], { counter: 0n });
+      const proxyCatId = proxy.categoryId;
 
       const tx = await new StatefulTransactionBuilder({
         provider,
@@ -586,8 +578,8 @@ describe('Delegatecall', () => {
 
     it('proxy authorize should preserve state (counter unchanged)', async () => {
       const provider = createTestProvider();
-      const proxyCatId = 'b3cd'.repeat(16);
-      const proxy = await deploy(provider, proxyArtifact, [], proxyCatId, { counter: 42n });
+      const proxy = await deploy(provider, proxyArtifact, [], { counter: 42n });
+      const proxyCatId = proxy.categoryId;
 
       const tx = await new StatefulTransactionBuilder({
         provider,
@@ -628,8 +620,8 @@ describe('Delegatecall', () => {
 
     it('should build authorize (unsafe) transaction on impl', async () => {
       const provider = createTestProvider();
-      const implCatId = 'a4cd'.repeat(16);
-      const impl = await deploy(provider, implArtifact, [], implCatId, { counter: 0n });
+      const impl = await deploy(provider, implArtifact, [], { counter: 0n });
+      const implCatId = impl.categoryId;
 
       const tx = await new StatefulTransactionBuilder({
         provider,
@@ -657,42 +649,15 @@ describe('Delegatecall', () => {
 
     it('should auto-derive single state variable via delegatecall', async () => {
       const provider = createTestProvider();
-      const proxyCatId = 'a5cd'.repeat(16);
-      const implCatId = 'b5cd'.repeat(16);
-
-      // Set up proxy contract
+      // Set up proxy + impl via real genesis
       const proxyContract = new Contract(proxyArtifact, [], { provider });
-      const saltedProxy = proxyContract.withSalt(hexToBin(proxyCatId));
-      const proxyDataNftAddr = getDataNftAddress(saltedProxy, proxyCatId);
-      const proxyCommitments = buildInitialStateCommitments(proxyArtifact.stateLayout!, { counter: 0n });
-
-      const proxyMaster: Utxo = {
-        txid: 'f5cd'.repeat(16), vout: 0, satoshis: 10000n,
-        token: { category: proxyCatId, amount: 0n, nft: { capability: 'minting', commitment: '' } },
-      };
-      const proxyDataNft: Utxo = {
-        txid: 'f5cd'.repeat(16), vout: 1, satoshis: 10000n,
-        token: { category: proxyCatId, amount: 0n, nft: { capability: 'mutable', commitment: proxyCommitments[0] } },
-      };
-      await provider.addUtxo(saltedProxy.tokenAddress, proxyMaster);
-      await provider.addUtxo(proxyDataNftAddr, proxyDataNft);
-
-      // Set up impl contract (different txid to avoid duplicate inputs)
+      const { categoryId: proxyCatId } = await setupStatefulUtxos(
+        provider, proxyContract, proxyArtifact.stateLayout!, { counter: 0n }, { saltContract: true },
+      );
       const implContract = new Contract(implArtifact, [], { provider });
-      const saltedImpl = implContract.withSalt(hexToBin(implCatId));
-      const implDataNftAddr = getDataNftAddress(saltedImpl, implCatId);
-      const implCommitments = buildInitialStateCommitments(implArtifact.stateLayout!, { counter: 0n });
-
-      const implMaster: Utxo = {
-        txid: 'e5cd'.repeat(16), vout: 0, satoshis: 10000n,
-        token: { category: implCatId, amount: 0n, nft: { capability: 'minting', commitment: '' } },
-      };
-      const implDataNft: Utxo = {
-        txid: 'e5cd'.repeat(16), vout: 1, satoshis: 10000n,
-        token: { category: implCatId, amount: 0n, nft: { capability: 'mutable', commitment: implCommitments[0] } },
-      };
-      await provider.addUtxo(saltedImpl.tokenAddress, implMaster);
-      await provider.addUtxo(implDataNftAddr, implDataNft);
+      const { categoryId: implCatId } = await setupStatefulUtxos(
+        provider, implContract, implArtifact.stateLayout!, { counter: 0n }, { saltContract: true },
+      );
 
       // Connect both as StatefulContract
       const proxySc = StatefulContract.withCategory(proxyContract, proxyCatId);
@@ -720,34 +685,14 @@ describe('Delegatecall', () => {
 
     it('should auto-derive with non-zero initial state', async () => {
       const provider = createTestProvider();
-      const proxyCatId = 'c5cd'.repeat(16);
-      const implCatId = 'd5cd'.repeat(16);
-
       const proxyContract = new Contract(proxyArtifact, [], { provider });
-      const saltedProxy = proxyContract.withSalt(hexToBin(proxyCatId));
-      const proxyCommitments = buildInitialStateCommitments(proxyArtifact.stateLayout!, { counter: 42n });
-
-      await provider.addUtxo(saltedProxy.tokenAddress, {
-        txid: 'f6cd'.repeat(16), vout: 0, satoshis: 10000n,
-        token: { category: proxyCatId, amount: 0n, nft: { capability: 'minting', commitment: '' } },
-      });
-      await provider.addUtxo(getDataNftAddress(saltedProxy, proxyCatId), {
-        txid: 'f6cd'.repeat(16), vout: 1, satoshis: 10000n,
-        token: { category: proxyCatId, amount: 0n, nft: { capability: 'mutable', commitment: proxyCommitments[0] } },
-      });
-
+      const { categoryId: proxyCatId } = await setupStatefulUtxos(
+        provider, proxyContract, proxyArtifact.stateLayout!, { counter: 42n }, { saltContract: true },
+      );
       const implContract = new Contract(implArtifact, [], { provider });
-      const saltedImpl = implContract.withSalt(hexToBin(implCatId));
-      const implCommitments = buildInitialStateCommitments(implArtifact.stateLayout!, { counter: 0n });
-
-      await provider.addUtxo(saltedImpl.tokenAddress, {
-        txid: 'e6cd'.repeat(16), vout: 0, satoshis: 10000n,
-        token: { category: implCatId, amount: 0n, nft: { capability: 'minting', commitment: '' } },
-      });
-      await provider.addUtxo(getDataNftAddress(saltedImpl, implCatId), {
-        txid: 'e6cd'.repeat(16), vout: 1, satoshis: 10000n,
-        token: { category: implCatId, amount: 0n, nft: { capability: 'mutable', commitment: implCommitments[0] } },
-      });
+      const { categoryId: implCatId } = await setupStatefulUtxos(
+        provider, implContract, implArtifact.stateLayout!, { counter: 0n }, { saltContract: true },
+      );
 
       const proxySc = StatefulContract.withCategory(proxyContract, proxyCatId);
       const implSc = StatefulContract.withCategory(implContract, implCatId);
@@ -775,38 +720,14 @@ describe('Delegatecall', () => {
       const multiProxyArtifact = compileString(DELEGATECALL_PROXY_MULTI);
 
       const provider = createTestProvider();
-      const proxyCatId = 'a6cd'.repeat(16);
-      const implCatId = 'b6cd'.repeat(16);
-
       const proxyContract = new Contract(multiProxyArtifact, [], { provider });
-      const saltedProxy = proxyContract.withSalt(hexToBin(proxyCatId));
-      const proxyCommitments = buildInitialStateCommitments(
-        multiProxyArtifact.stateLayout!, { counter: 5n, totalOps: 10n },
+      const { categoryId: proxyCatId } = await setupStatefulUtxos(
+        provider, proxyContract, multiProxyArtifact.stateLayout!, { counter: 5n, totalOps: 10n }, { saltContract: true },
       );
-
-      await provider.addUtxo(saltedProxy.tokenAddress, {
-        txid: 'f7cd'.repeat(16), vout: 0, satoshis: 10000n,
-        token: { category: proxyCatId, amount: 0n, nft: { capability: 'minting', commitment: '' } },
-      });
-      await provider.addUtxo(getDataNftAddress(saltedProxy, proxyCatId), {
-        txid: 'f7cd'.repeat(16), vout: 1, satoshis: 10000n,
-        token: { category: proxyCatId, amount: 0n, nft: { capability: 'mutable', commitment: proxyCommitments[0] } },
-      });
-
       const implContract = new Contract(multiImplArtifact, [], { provider });
-      const saltedImpl = implContract.withSalt(hexToBin(implCatId));
-      const implCommitments = buildInitialStateCommitments(
-        multiImplArtifact.stateLayout!, { counter: 0n, totalOps: 0n },
+      const { categoryId: implCatId } = await setupStatefulUtxos(
+        provider, implContract, multiImplArtifact.stateLayout!, { counter: 0n, totalOps: 0n }, { saltContract: true },
       );
-
-      await provider.addUtxo(saltedImpl.tokenAddress, {
-        txid: 'e7cd'.repeat(16), vout: 0, satoshis: 10000n,
-        token: { category: implCatId, amount: 0n, nft: { capability: 'minting', commitment: '' } },
-      });
-      await provider.addUtxo(getDataNftAddress(saltedImpl, implCatId), {
-        txid: 'e7cd'.repeat(16), vout: 1, satoshis: 10000n,
-        token: { category: implCatId, amount: 0n, nft: { capability: 'mutable', commitment: implCommitments[0] } },
-      });
 
       const proxySc = StatefulContract.withCategory(proxyContract, proxyCatId);
       const implSc = StatefulContract.withCategory(implContract, implCatId);
@@ -832,34 +753,14 @@ describe('Delegatecall', () => {
 
     it('should preserve impl NFTs unchanged in delegatecall outputs', async () => {
       const provider = createTestProvider();
-      const proxyCatId = 'a7cd'.repeat(16);
-      const implCatId = 'b7cd'.repeat(16);
-
       const proxyContract = new Contract(proxyArtifact, [], { provider });
-      const saltedProxy = proxyContract.withSalt(hexToBin(proxyCatId));
-      const proxyCommitments = buildInitialStateCommitments(proxyArtifact.stateLayout!, { counter: 0n });
-
-      await provider.addUtxo(saltedProxy.tokenAddress, {
-        txid: 'f8cd'.repeat(16), vout: 0, satoshis: 10000n,
-        token: { category: proxyCatId, amount: 0n, nft: { capability: 'minting', commitment: '' } },
-      });
-      await provider.addUtxo(getDataNftAddress(saltedProxy, proxyCatId), {
-        txid: 'f8cd'.repeat(16), vout: 1, satoshis: 10000n,
-        token: { category: proxyCatId, amount: 0n, nft: { capability: 'mutable', commitment: proxyCommitments[0] } },
-      });
-
+      const { categoryId: proxyCatId } = await setupStatefulUtxos(
+        provider, proxyContract, proxyArtifact.stateLayout!, { counter: 0n }, { saltContract: true },
+      );
       const implContract = new Contract(implArtifact, [], { provider });
-      const saltedImpl = implContract.withSalt(hexToBin(implCatId));
-      const implCommitments = buildInitialStateCommitments(implArtifact.stateLayout!, { counter: 99n });
-
-      await provider.addUtxo(saltedImpl.tokenAddress, {
-        txid: 'e8cd'.repeat(16), vout: 0, satoshis: 10000n,
-        token: { category: implCatId, amount: 0n, nft: { capability: 'minting', commitment: '' } },
-      });
-      await provider.addUtxo(getDataNftAddress(saltedImpl, implCatId), {
-        txid: 'e8cd'.repeat(16), vout: 1, satoshis: 10000n,
-        token: { category: implCatId, amount: 0n, nft: { capability: 'mutable', commitment: implCommitments[0] } },
-      });
+      const { categoryId: implCatId } = await setupStatefulUtxos(
+        provider, implContract, implArtifact.stateLayout!, { counter: 99n }, { saltContract: true },
+      );
 
       const proxySc = StatefulContract.withCategory(proxyContract, proxyCatId);
       const implSc = StatefulContract.withCategory(implContract, implCatId);

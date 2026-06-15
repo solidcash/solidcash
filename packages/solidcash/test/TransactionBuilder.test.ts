@@ -251,25 +251,25 @@ describe('Transaction Builder', () => {
     });
 
     it('should succeed when NFT is preserved in output', async () => {
-      const nftToken = randomNFT();
-      const nftUtxo = randomUtxo({ token: nftToken });
+      const nftUtxo = randomUtxo({ token: randomNFT() });
       await provider.addUtxo(p2pkhInstance.tokenAddress, nftUtxo);
 
       expect(() => {
         new TransactionBuilder({ provider })
           .addInput(nftUtxo, p2pkhInstance.unlock.spend(carolPub, new SignatureTemplate(carolPriv)))
-          .addOutput({ to: bobTokenAddress, amount: nftUtxo.satoshis - 1000n, token: nftToken })
+          // use the real (post-addUtxo) token so the preserved category matches on regtest
+          .addOutput({ to: bobTokenAddress, amount: nftUtxo.satoshis - 1000n, token: nftUtxo.token })
           .build();
       }).not.toThrow();
     });
 
     it('should succeed when mutable NFT commitment changes in output', async () => {
-      const nftToken = randomNFT({ nft: { capability: 'mutable', commitment: 'aabb' } });
-      const nftUtxo = randomUtxo({ token: nftToken });
+      const nftUtxo = randomUtxo({ token: randomNFT({ nft: { capability: 'mutable', commitment: 'aabb' } }) });
       await provider.addUtxo(p2pkhInstance.tokenAddress, nftUtxo);
 
+      // use the real (post-addUtxo) category so only the commitment changes on regtest
       const updatedToken = {
-        ...nftToken,
+        ...nftUtxo.token,
         nft: { capability: 'mutable' as const, commitment: 'ccdd' },
       };
 
@@ -418,7 +418,8 @@ describe('Transaction Builder', () => {
     const aliceUtxos = (await provider.getUtxos(aliceAddress)).filter(isNonTokenUtxo);
     const sigTemplate = new SignatureTemplate(alicePriv);
 
-    expect(aliceUtxos.length).toBe(2);
+    // shared regtest node may have extra UTXOs at the reused fixture address; need at least 2
+    expect(aliceUtxos.length).toBeGreaterThanOrEqual(2);
 
     const change = aliceUtxos[0].satoshis + aliceUtxos[1].satoshis - 1000n;
 

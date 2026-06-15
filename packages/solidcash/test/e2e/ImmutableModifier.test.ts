@@ -4,11 +4,10 @@ import {
   StateReader,
   getDataNftAddress, createDataNftUnlocker,
 } from '../../src/index.js';
-import { hexToBin } from '@bitauth/libauth';
 import {
   buildInitialStateCommitments, parsePushdataCommitment,
 } from '@solidcash/utils';
-import { createTestProvider, getTxOutputs } from '../test-util.js';
+import { createTestProvider, getTxOutputs, setupStatefulUtxos } from '../test-util.js';
 import { Utxo } from '../../src/interfaces.js';
 
 // A stateful contract with an immutable state variable:
@@ -140,37 +139,25 @@ describe('ImmutableModifier', () => {
     const contract = new Contract(artifact, [], { provider });
     const stateLayout = artifact.stateLayout!;
 
-    const categoryId = 'aacd'.repeat(16);
-    const dataNftAddress = getDataNftAddress(contract, categoryId);
-
     // Build initial state: maxValue=100
     const initialCommitments = buildInitialStateCommitments(stateLayout, { maxValue: 100n });
 
-    const masterUtxo: Utxo = {
-      txid: 'bbcd'.repeat(16),
-      vout: 0,
-      satoshis: 10000n,
-      token: {
-        category: categoryId,
-        amount: 0n,
-        nft: { capability: 'minting', commitment: '' },
-      },
-    };
-
-    const dataNftUtxo: Utxo = {
-      txid: 'bbcd'.repeat(16),
-      vout: 1,
-      satoshis: 10000n,
-      token: {
-        category: categoryId,
-        amount: 0n,
-        nft: { capability: 'mutable', commitment: initialCommitments[0] },
-      },
-    };
+    // Populated by real genesis in beforeAll (category == genesis txid, can't be hardcoded).
+    let categoryId: string;
+    let dataNftAddress: string;
+    let masterUtxo: Utxo;
+    let dataNftUtxo: Utxo;
 
     beforeAll(async () => {
-      await provider.addUtxo(contract.tokenAddress, masterUtxo);
-      await provider.addUtxo(dataNftAddress, dataNftUtxo);
+      const { categoryId: cat, utxos } = await (provider as any).addTokenUtxosDynamic((c: string) => [
+        { address: contract.tokenAddress, satoshis: 10000n,
+          token: { amount: 0n, nft: { capability: 'minting', commitment: '' } } },
+        { address: getDataNftAddress(contract, c), satoshis: 10000n,
+          token: { amount: 0n, nft: { capability: 'mutable', commitment: initialCommitments[0] } } },
+      ]);
+      categoryId = cat;
+      dataNftAddress = getDataNftAddress(contract, cat);
+      [masterUtxo, dataNftUtxo] = utxos;
     });
 
     it('should read initial state with immutable variable', () => {
@@ -229,22 +216,10 @@ describe('ImmutableModifier', () => {
       // Use separate provider so UTXOs are fresh (manual STB test above consumed the shared ones)
       const autoProvider = createTestProvider();
       const autoContract = new Contract(artifact, [], { provider: autoProvider });
-      const autoCategoryId = 'bbcd'.repeat(16);
-      // StatefulContract.withCategory() auto-salts with categoryId, so UTXOs must be at salted addresses
-      const autoSaltedContract = autoContract.withSalt(hexToBin(autoCategoryId));
-      const autoDataNftAddress = getDataNftAddress(autoSaltedContract, autoCategoryId);
-
-      const autoMaster: Utxo = {
-        txid: 'cccd'.repeat(16), vout: 0, satoshis: 10000n,
-        token: { category: autoCategoryId, amount: 0n, nft: { capability: 'minting', commitment: '' } },
-      };
-      const autoDataNft: Utxo = {
-        txid: 'cccd'.repeat(16), vout: 1, satoshis: 10000n,
-        token: { category: autoCategoryId, amount: 0n, nft: { capability: 'mutable', commitment: initialCommitments[0] } },
-      };
-
-      await autoProvider.addUtxo(autoSaltedContract.tokenAddress, autoMaster);
-      await autoProvider.addUtxo(autoDataNftAddress, autoDataNft);
+      // Real genesis at the salted addresses StatefulContract.withCategory expects.
+      const { categoryId: autoCategoryId } = await setupStatefulUtxos(
+        autoProvider, autoContract, stateLayout, { maxValue: 100n }, { saltContract: true },
+      );
 
       // Auto-derivation for read-only/immutable functions: the convenience API
       // auto-derives output state by preserving current on-chain commitments.

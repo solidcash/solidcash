@@ -1,14 +1,15 @@
 import { compileString } from 'solidc';
-import { Contract, SignatureTemplate, TransactionBuilder, StatefulContract, getDataNftAddress } from '../../src/index.js';
-import { buildInitialStateCommitments, parsePushdataCommitment } from '@solidcash/utils';
-import { hexToBin } from '@bitauth/libauth';
+import { Contract, SignatureTemplate, TransactionBuilder, StatefulContract } from '../../src/index.js';
+import { parsePushdataCommitment } from '@solidcash/utils';
 import {
   alicePkh,
   alicePriv,
   alicePub,
   aliceAddress,
 } from '../fixture/vars.js';
-import { createTestProvider, getLargestUtxo, getTxOutputs, verifyTransaction } from '../test-util.js';
+import {
+  createTestProvider, getLargestUtxo, getTxOutputs, verifyTransaction, setupStatefulUtxos,
+} from '../test-util.js';
 import { FailedRequireError } from '../../src/Errors.js';
 import { randomUtxo } from '../../src/utils.js';
 import fallbackReceiveArtifact from '../fixture/fallback_receive.artifact.js';
@@ -181,21 +182,12 @@ describe('Stateful fallback/receive ABI metadata (M-NEW-3)', () => {
 
     it('SDK should fetch all data NFTs when calling fallback on stateful contract', async () => {
       const provider = createTestProvider();
-      const catId = 'aacd'.repeat(16);
       const baseContract = new Contract(artifact, [], { provider });
-      const salted = baseContract.withSalt(hexToBin(catId));
-      const dataNftAddr = getDataNftAddress(salted, catId);
 
-      const commitments = buildInitialStateCommitments(artifact.stateLayout!, { counter: 5n });
-
-      await provider.addUtxo(salted.tokenAddress, {
-        txid: 'abcd'.repeat(16), vout: 0, satoshis: 10000n,
-        token: { category: catId, amount: 0n, nft: { capability: 'minting', commitment: '' } },
-      });
-      await provider.addUtxo(dataNftAddr, {
-        txid: 'abcd'.repeat(16), vout: 1, satoshis: 10000n,
-        token: { category: catId, amount: 0n, nft: { capability: 'mutable', commitment: commitments[0] } },
-      });
+      // Real genesis at the salted addresses withCategory expects.
+      const { categoryId: catId } = await setupStatefulUtxos(
+        provider, baseContract, artifact.stateLayout!, { counter: 5n }, { saltContract: true },
+      );
 
       const sc = StatefulContract.withCategory(baseContract, catId);
 
@@ -233,21 +225,12 @@ describe('Stateful fallback/receive ABI metadata (M-NEW-3)', () => {
 
     it('SDK should auto-derive state for regular function on contract with receive', async () => {
       const provider = createTestProvider();
-      const catId = 'bbcd'.repeat(16);
       const baseContract = new Contract(artifact, [], { provider });
-      const salted = baseContract.withSalt(hexToBin(catId));
-      const dataNftAddr = getDataNftAddress(salted, catId);
 
-      const commitments = buildInitialStateCommitments(artifact.stateLayout!, { counter: 10n });
-
-      await provider.addUtxo(salted.tokenAddress, {
-        txid: 'bccd'.repeat(16), vout: 0, satoshis: 10000n,
-        token: { category: catId, amount: 0n, nft: { capability: 'minting', commitment: '' } },
-      });
-      await provider.addUtxo(dataNftAddr, {
-        txid: 'bccd'.repeat(16), vout: 1, satoshis: 10000n,
-        token: { category: catId, amount: 0n, nft: { capability: 'mutable', commitment: commitments[0] } },
-      });
+      // Real genesis at the salted addresses withCategory expects.
+      const { categoryId: catId } = await setupStatefulUtxos(
+        provider, baseContract, artifact.stateLayout!, { counter: 10n }, { saltContract: true },
+      );
 
       const sc = StatefulContract.withCategory(baseContract, catId);
       const tx = await sc.call.increment().send();

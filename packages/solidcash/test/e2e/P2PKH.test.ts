@@ -15,7 +15,7 @@ import {
 } from '../fixture/vars.js';
 import { createTestProvider, gatherUtxos, getTxOutputs } from '../test-util.js';
 import {
-  createOpReturnOutput, randomUtxo,
+  createOpReturnOutput, randomUtxo, isNonTokenUtxo,
 } from '../../src/utils.js';
 import artifact from '../fixture/p2pkh.artifact.js';
 
@@ -39,7 +39,7 @@ describe('P2PKH-no-tokens', () => {
       // given
       const to = p2pkhContract.address;
       const amount = 10000n;
-      const { utxos, changeAmount } = gatherUtxos(await p2pkhContract.getUtxos(), { amount });
+      const { utxos, changeAmount } = gatherUtxos((await p2pkhContract.getUtxos()).filter(isNonTokenUtxo), { amount });
 
       // when
       const txPromise = new TransactionBuilder({ provider })
@@ -58,7 +58,7 @@ describe('P2PKH-no-tokens', () => {
       // given
       const to = p2pkhContract.address;
       const amount = 10000n;
-      const { utxos, changeAmount } = gatherUtxos(await p2pkhContract.getUtxos(), { amount });
+      const { utxos, changeAmount } = gatherUtxos((await p2pkhContract.getUtxos()).filter(isNonTokenUtxo), { amount });
 
       // when
       const txPromise = new TransactionBuilder({ provider })
@@ -77,7 +77,7 @@ describe('P2PKH-no-tokens', () => {
       // given
       const to = p2pkhContract.address;
       const amount = 10000n;
-      const { utxos, changeAmount } = gatherUtxos(await p2pkhContract.getUtxos(), { amount });
+      const { utxos, changeAmount } = gatherUtxos((await p2pkhContract.getUtxos()).filter(isNonTokenUtxo), { amount });
 
       // when
       const tx = await new TransactionBuilder({ provider })
@@ -98,7 +98,9 @@ describe('P2PKH-no-tokens', () => {
       // given
       const to = p2pkhContract.address;
       const amount = 1000n;
-      const { utxos, total, changeAmount } = gatherUtxos(await p2pkhContract.getUtxos(), { amount });
+      const { utxos, total, changeAmount } = gatherUtxos(
+        (await p2pkhContract.getUtxos()).filter(isNonTokenUtxo), { amount },
+      );
       const failureAmount = total + 1n;
 
       // when
@@ -116,7 +118,7 @@ describe('P2PKH-no-tokens', () => {
       // given
       const to = p2pkhContract.address;
       const amount = 1000n;
-      const { utxos, changeAmount } = gatherUtxos(await p2pkhContract.getUtxos(), { amount });
+      const { utxos, changeAmount } = gatherUtxos((await p2pkhContract.getUtxos()).filter(isNonTokenUtxo), { amount });
 
       // when
       const tx = await new TransactionBuilder({ provider })
@@ -141,7 +143,9 @@ describe('P2PKH-no-tokens', () => {
         { to: p2pkhContract.address, amount: 10_000n },
         { to: p2pkhContract.address, amount: 20_000n },
       ];
-      const { utxos, changeAmount } = gatherUtxos(await p2pkhContract.getUtxos(), { amount: 30_000n, fee: 2000n });
+      const { utxos, changeAmount } = gatherUtxos(
+        (await p2pkhContract.getUtxos()).filter(isNonTokenUtxo), { amount: 30_000n, fee: 2000n },
+      );
 
       // when
       const tx = await new TransactionBuilder({ provider })
@@ -162,7 +166,9 @@ describe('P2PKH-no-tokens', () => {
         { to: p2pkhContract.address, amount: 10_000n },
         { to: p2pkhContract.address, amount: 20_000n },
       ];
-      const { utxos, changeAmount } = gatherUtxos(await p2pkhContract.getUtxos(), { amount: 30_000n, fee: 2000n });
+      const { utxos, changeAmount } = gatherUtxos(
+        (await p2pkhContract.getUtxos()).filter(isNonTokenUtxo), { amount: 30_000n, fee: 2000n },
+      );
 
       // when
       const tx = await new TransactionBuilder({ provider })
@@ -181,7 +187,7 @@ describe('P2PKH-no-tokens', () => {
       const opReturnData = ['0x6d02', 'Hello, World!', '0x01'];
       const to = p2pkhContract.address;
       const amount = 10000n;
-      const { utxos, changeAmount } = gatherUtxos(await p2pkhContract.getUtxos(), { amount });
+      const { utxos, changeAmount } = gatherUtxos((await p2pkhContract.getUtxos()).filter(isNonTokenUtxo), { amount });
 
       // when
       const tx = await new TransactionBuilder({ provider })
@@ -203,8 +209,8 @@ describe('P2PKH-no-tokens', () => {
       const amount = 10000n;
       const bobSignatureTemplate = new SignatureTemplate(bobPriv);
 
-      const contractUtxos = await p2pkhContract.getUtxos();
-      const bobUtxos = await provider.getUtxos(bobAddress);
+      const contractUtxos = (await p2pkhContract.getUtxos()).filter(isNonTokenUtxo);
+      const bobUtxos = (await provider.getUtxos(bobAddress)).filter(isNonTokenUtxo);
 
       // when
       const tx = await new TransactionBuilder({ provider })

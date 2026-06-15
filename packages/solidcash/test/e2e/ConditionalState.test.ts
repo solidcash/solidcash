@@ -1,13 +1,11 @@
 import { compileString } from 'solidc';
-import { hexToBin } from '@bitauth/libauth';
 import {
   Contract, StatefulContract,
-  getDataNftAddress,
 } from '../../src/index.js';
 import {
-  buildInitialStateCommitments, parsePushdataCommitment,
+  parsePushdataCommitment,
 } from '@solidcash/utils';
-import { createTestProvider, getTxOutputs } from '../test-util.js';
+import { createTestProvider, getTxOutputs, setupStatefulUtxos } from '../test-util.js';
 
 // A stateful contract that writes state in both branches of an if/else:
 //   if (flag): counter + 1, label = newLabel
@@ -56,37 +54,13 @@ describe('Conditional State Writes', () => {
     const artifact = compileString(CONDITIONAL_UPDATE_CONTRACT);
     const contract = new Contract(artifact, [], { provider });
     const stateLayout = artifact.stateLayout!;
-    const categoryId = 'c1cd'.repeat(16);
-    const saltedContract = contract.withSalt(hexToBin(categoryId));
-    const dataNftAddress = getDataNftAddress(saltedContract, categoryId);
     const zeroLabel = new Uint8Array(4);
-    const initialCommitments = buildInitialStateCommitments(stateLayout, { counter: 0n, label: zeroLabel });
-
-    const masterUtxo = {
-      txid: 'a1cd'.repeat(16),
-      vout: 0,
-      satoshis: 10000n,
-      token: {
-        category: categoryId,
-        amount: 0n,
-        nft: { capability: 'minting' as const, commitment: '' },
-      },
-    };
-
-    const dataNftUtxo = {
-      txid: 'a1cd'.repeat(16),
-      vout: 1,
-      satoshis: 10000n,
-      token: {
-        category: categoryId,
-        amount: 0n,
-        nft: { capability: 'mutable' as const, commitment: initialCommitments[0] },
-      },
-    };
+    let categoryId: string;
 
     beforeAll(async () => {
-      await provider.addUtxo(saltedContract.tokenAddress, masterUtxo);
-      await provider.addUtxo(dataNftAddress, dataNftUtxo);
+      ({ categoryId } = await setupStatefulUtxos(
+        provider, contract, stateLayout, { counter: 0n, label: zeroLabel }, { saltContract: true },
+      ));
     });
 
     it('should compile with stateLayout', () => {
@@ -129,36 +103,10 @@ describe('Conditional State Writes', () => {
     const artifact = compileString(CONDITIONAL_INCREMENT_CONTRACT);
     const contract = new Contract(artifact, [], { provider });
     const stateLayout = artifact.stateLayout!;
-    const categoryId = 'c2cd'.repeat(16);
-    const saltedContract = contract.withSalt(hexToBin(categoryId));
-    const dataNftAddress = getDataNftAddress(saltedContract, categoryId);
-    const initialCommitments = buildInitialStateCommitments(stateLayout, { counter: 5n });
-
-    const masterUtxo = {
-      txid: 'b2cd'.repeat(16),
-      vout: 0,
-      satoshis: 10000n,
-      token: {
-        category: categoryId,
-        amount: 0n,
-        nft: { capability: 'minting' as const, commitment: '' },
-      },
-    };
-
-    const dataNftUtxo = {
-      txid: 'b2cd'.repeat(16),
-      vout: 1,
-      satoshis: 10000n,
-      token: {
-        category: categoryId,
-        amount: 0n,
-        nft: { capability: 'mutable' as const, commitment: initialCommitments[0] },
-      },
-    };
+    let categoryId: string;
 
     beforeAll(async () => {
-      await provider.addUtxo(saltedContract.tokenAddress, masterUtxo);
-      await provider.addUtxo(dataNftAddress, dataNftUtxo);
+      ({ categoryId } = await setupStatefulUtxos(provider, contract, stateLayout, { counter: 5n }, { saltContract: true }));
     });
 
     it('should have single state variable', () => {

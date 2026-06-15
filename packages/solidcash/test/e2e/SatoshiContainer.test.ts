@@ -269,8 +269,7 @@ describe('Satoshi Container', () => {
 
       // No satoshi container output (drained)
       const containerOutput = txOutputs.find(
-        (o) => !o.token && o.amount > 0n && o.to !== bobAddress
-          && o.to !== txOutputs[0].to, // exclude master
+        (o) => o.to === deployedContract.satoshiContainer.address,
       );
       expect(containerOutput).toBeUndefined();
     });

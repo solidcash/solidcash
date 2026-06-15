@@ -13,7 +13,7 @@ import {
 } from '../fixture/vars.js';
 import { Utxo } from '../../src/interfaces.js';
 import { ExternalCallUtxoGroup } from '../../src/stateful/StatefulTransactionBuilder.js';
-import { createTestProvider } from '../test-util.js';
+import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
 
 // =============================================================================
 // Contract Sources
@@ -954,41 +954,23 @@ contract TickCaller(bytes32 bCategory) {
     const artB = compileString(NO_ARG_B);
     const artCaller = compileString(NO_ARG_CALLER);
 
-    const catB = 'e1cd'.repeat(16);
-    const catCaller = 'e2cd'.repeat(16);
-
-    // Salt must match categoryId so tokenAddress matches what StatefulContract.connect uses
-    const contractB = new Contract(artB, [], { provider: regProvider, salt: hexToBin(catB) });
-    const contractCaller = new Contract(artCaller, [hexToBin(catB)], { provider: regProvider, salt: hexToBin(catCaller) });
-
     const layoutB = artB.stateLayout!;
     const layoutCaller = artCaller.stateLayout!;
 
-    const commitsB = buildInitialStateCommitments(layoutB, { count: 0n });
-    const commitsCaller = buildInitialStateCommitments(layoutCaller, { total: 0n });
-
-    const masterB: Utxo = {
-      txid: 'e3cd'.repeat(16), vout: 0, satoshis: 10000n,
-      token: { category: catB, amount: 0n, nft: { capability: 'minting', commitment: '' } },
-    };
-    const dataNftB: Utxo = {
-      txid: 'e3cd'.repeat(16), vout: 1, satoshis: 10000n,
-      token: { category: catB, amount: 0n, nft: { capability: 'mutable', commitment: commitsB[0] } },
-    };
-    const masterCaller: Utxo = {
-      txid: 'e4cd'.repeat(16), vout: 0, satoshis: 10000n,
-      token: { category: catCaller, amount: 0n, nft: { capability: 'minting', commitment: '' } },
-    };
-    const dataNftCaller: Utxo = {
-      txid: 'e4cd'.repeat(16), vout: 1, satoshis: 10000n,
-      token: { category: catCaller, amount: 0n, nft: { capability: 'mutable', commitment: commitsCaller[0] } },
-    };
+    let catB: string; let catCaller: string;
+    let contractB: Contract; let contractCaller: Contract;
 
     beforeAll(async () => {
-      await regProvider.addUtxo(contractB.tokenAddress, masterB);
-      await regProvider.addUtxo(getDataNftAddress(contractB, catB), dataNftB);
-      await regProvider.addUtxo(contractCaller.tokenAddress, masterCaller);
-      await regProvider.addUtxo(getDataNftAddress(contractCaller, catCaller), dataNftCaller);
+      // Genesis B first; the caller embeds B's real category.
+      const cB = new Contract(artB, [], { provider: regProvider });
+      ({ categoryId: catB } = await setupStatefulUtxos(regProvider, cB, layoutB, { count: 0n }, { saltContract: true }));
+      contractB = cB.withSalt(hexToBin(catB));
+
+      const cCaller = new Contract(artCaller, [hexToBin(catB)], { provider: regProvider });
+      ({ categoryId: catCaller } = await setupStatefulUtxos(
+        regProvider, cCaller, layoutCaller, { total: 0n }, { saltContract: true },
+      ));
+      contractCaller = cCaller.withSalt(hexToBin(catCaller));
     });
 
     it('should bind external contracts at connect time', () => {
@@ -1073,37 +1055,18 @@ contract TickCaller(bytes32 bCategory) {
       const abProvider = createTestProvider();
       const abArtB = compileString(CONTRACT_B);
       const abArtA = compileString(CONTRACT_A_CALLS_B);
-      const abCatB = 'e7cd'.repeat(16);
-      const abCatA = 'e8cd'.repeat(16);
-      const abContractB = new Contract(abArtB, [], { provider: abProvider, salt: hexToBin(abCatB) });
-      const abContractA = new Contract(abArtA, [hexToBin(abCatB)], { provider: abProvider, salt: hexToBin(abCatA) });
-
       const abLayoutB = abArtB.stateLayout!;
       const abLayoutA = abArtA.stateLayout!;
-      const abCommitsB = buildInitialStateCommitments(abLayoutB, { calledCount: 0n });
-      const abCommitsA = buildInitialStateCommitments(abLayoutA, { stateA: 0n });
 
-      const abMasterB: Utxo = {
-        txid: 'e9cd'.repeat(16), vout: 0, satoshis: 10000n,
-        token: { category: abCatB, amount: 0n, nft: { capability: 'minting', commitment: '' } },
-      };
-      const abDataB: Utxo = {
-        txid: 'e9cd'.repeat(16), vout: 1, satoshis: 10000n,
-        token: { category: abCatB, amount: 0n, nft: { capability: 'mutable', commitment: abCommitsB[0] } },
-      };
-      const abMasterA: Utxo = {
-        txid: 'eacd'.repeat(16), vout: 0, satoshis: 10000n,
-        token: { category: abCatA, amount: 0n, nft: { capability: 'minting', commitment: '' } },
-      };
-      const abDataA: Utxo = {
-        txid: 'eacd'.repeat(16), vout: 1, satoshis: 10000n,
-        token: { category: abCatA, amount: 0n, nft: { capability: 'mutable', commitment: abCommitsA[0] } },
-      };
-
-      await abProvider.addUtxo(abContractB.tokenAddress, abMasterB);
-      await abProvider.addUtxo(getDataNftAddress(abContractB, abCatB), abDataB);
-      await abProvider.addUtxo(abContractA.tokenAddress, abMasterA);
-      await abProvider.addUtxo(getDataNftAddress(abContractA, abCatA), abDataA);
+      // Genesis B first; A embeds B's real category.
+      const abContractB = new Contract(abArtB, [], { provider: abProvider });
+      const { categoryId: abCatB } = await setupStatefulUtxos(
+        abProvider, abContractB, abLayoutB, { calledCount: 0n }, { saltContract: true },
+      );
+      const abContractA = new Contract(abArtA, [hexToBin(abCatB)], { provider: abProvider });
+      const { categoryId: abCatA } = await setupStatefulUtxos(
+        abProvider, abContractA, abLayoutA, { stateA: 0n }, { saltContract: true },
+      );
 
       const abScB = StatefulContract.withCategory(abContractB, abCatB);
       const abScA = StatefulContract.withCategory(abContractA, abCatA, {

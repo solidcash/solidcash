@@ -15,7 +15,7 @@ import {
   alicePub,
   alicePriv,
 } from '../fixture/vars.js';
-import { createTestProvider, getTxOutputs, createFeeFunder } from '../test-util.js';
+import { createTestProvider, getTxOutputs, createFeeFunder, setupStatefulUtxos } from '../test-util.js';
 import { Utxo, TokenDetails } from '../../src/interfaces.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 
@@ -91,38 +91,21 @@ describe('Stateful Contract', () => {
   beforeAll(async () => {
     initialCommitments = buildInitialStateCommitments(stateLayout, { counter: 0n, label: zeroLabel });
 
-    if ('addTokenUtxosDynamic' in provider) {
-      // Regtest: use dynamic callback to derive addresses from the categoryId
-      const genesis = await (provider as any).addTokenUtxosDynamic((catId: string) => {
-        const dnAddr = getDataNftAddress(contract, catId);
-        return [
-          { address: contract.tokenAddress, satoshis: 10000n,
-            token: { amount: 0n, nft: { capability: 'minting', commitment: '' } } },
-          { address: dnAddr, satoshis: 10000n,
-            token: { amount: 0n, nft: { capability: 'mutable', commitment: initialCommitments[0] } } },
-        ];
-      });
-      categoryId = genesis.categoryId;
-      masterUtxo = genesis.utxos[0];
-      dataNftUtxo = genesis.utxos[1];
-      dataNftAddress = getDataNftAddress(contract, categoryId);
-    } else {
-      // Mocknet: use hardcoded synthetic UTXOs
-      categoryId = 'aacd'.repeat(16);
-      dataNftAddress = getDataNftAddress(contract, categoryId);
-
-      masterUtxo = {
-        txid: 'bbcd'.repeat(16), vout: 0, satoshis: 10000n,
-        token: { category: categoryId, amount: 0n, nft: { capability: 'minting', commitment: '' } },
-      };
-      dataNftUtxo = {
-        txid: 'bbcd'.repeat(16), vout: 1, satoshis: 10000n,
-        token: { category: categoryId, amount: 0n, nft: { capability: 'mutable', commitment: initialCommitments[0] } },
-      };
-
-      await provider.addUtxo(contract.tokenAddress, masterUtxo);
-      await provider.addUtxo(dataNftAddress, dataNftUtxo);
-    }
+    // Real genesis at the unsalted contract addresses (manual TransactionBuilder tests
+    // below use contract.tokenAddress directly). Works on mock and regtest.
+    const genesis = await (provider as any).addTokenUtxosDynamic((catId: string) => {
+      const dnAddr = getDataNftAddress(contract, catId);
+      return [
+        { address: contract.tokenAddress, satoshis: 10000n,
+          token: { amount: 0n, nft: { capability: 'minting', commitment: '' } } },
+        { address: dnAddr, satoshis: 10000n,
+          token: { amount: 0n, nft: { capability: 'mutable', commitment: initialCommitments[0] } } },
+      ];
+    });
+    categoryId = genesis.categoryId;
+    masterUtxo = genesis.utxos[0];
+    dataNftUtxo = genesis.utxos[1];
+    dataNftAddress = getDataNftAddress(contract, categoryId);
   });
 
   describe('ethers.js-like convenience API', () => {
@@ -132,32 +115,10 @@ describe('Stateful Contract', () => {
     let convCategoryId: string;
 
     beforeAll(async () => {
-      const convInitialCommitments = buildInitialStateCommitments(stateLayout, { counter: 0n, label: zeroLabel });
-
-      if ('addTokenUtxosDynamic' in convProvider) {
-        const genesis = await (convProvider as any).addTokenUtxosDynamic((catId: string) => {
-          const salted = convContract.withSalt(hexToBin(catId));
-          return [
-            { address: salted.tokenAddress, satoshis: 10000n,
-              token: { amount: 0n, nft: { capability: 'minting', commitment: '' } } },
-            { address: getDataNftAddress(salted, catId), satoshis: 10000n,
-              token: { amount: 0n, nft: { capability: 'mutable', commitment: convInitialCommitments[0] } } },
-          ];
-        });
-        convCategoryId = genesis.categoryId;
-      } else {
-        convCategoryId = 'ffcd'.repeat(16);
-        const convSaltedContract = convContract.withSalt(hexToBin(convCategoryId));
-        const convDataNftAddress = getDataNftAddress(convSaltedContract, convCategoryId);
-        await convProvider.addUtxo(convSaltedContract.tokenAddress, {
-          txid: 'ffcd'.repeat(16), vout: 0, satoshis: 10000n,
-          token: { category: convCategoryId, amount: 0n, nft: { capability: 'minting', commitment: '' } },
-        });
-        await convProvider.addUtxo(convDataNftAddress, {
-          txid: 'ffcd'.repeat(16), vout: 1, satoshis: 10000n,
-          token: { category: convCategoryId, amount: 0n, nft: { capability: 'mutable', commitment: convInitialCommitments[0] } },
-        });
-      }
+      // withCategory salts internally; genesis at the salted addresses. Works on mock and regtest.
+      ({ categoryId: convCategoryId } = await setupStatefulUtxos(
+        convProvider, convContract, stateLayout, { counter: 0n, label: zeroLabel }, { saltContract: true },
+      ));
     });
 
     it('should auto-send on await (thenable)', async () => {
@@ -485,13 +446,15 @@ describe('Stateful Contract', () => {
       const deployContract = new Contract(artifact, [], { provider: deployProvider });
       const deployP2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider: deployProvider });
 
-      const fundingUtxo: Utxo = {
+      let fundingUtxo: Utxo = {
         txid: 'cccd'.repeat(16),
         vout: 0,
         satoshis: 100000n,
       };
 
-      await deployProvider.addUtxo(deployP2pkh.address, fundingUtxo);
+      // Regtest back-fills a real funding UTXO; reassign so the genesis category
+      // (== the funding input txid) is the real one. On mock the txid is preserved.
+      fundingUtxo = await deployProvider.addUtxo(deployP2pkh.address, fundingUtxo);
 
       const genesisCategoryId = fundingUtxo.txid;
       const genesisCommitments = buildInitialStateCommitments(stateLayout, { counter: 0n, label: zeroLabel });
@@ -587,31 +550,10 @@ describe('StatefulContract API', () => {
   let scSaltedContract: Contract;
 
   beforeAll(async () => {
-    const scInitialCommitments = buildInitialStateCommitments(scStateLayout, { counter: 0n, label: scZeroLabel });
-
-    if ('addTokenUtxosDynamic' in scProvider) {
-      const genesis = await (scProvider as any).addTokenUtxosDynamic((catId: string) => {
-        const salted = scContract.withSalt(hexToBin(catId));
-        return [
-          { address: salted.tokenAddress, satoshis: 10000n,
-            token: { amount: 0n, nft: { capability: 'minting', commitment: '' } } },
-          { address: getDataNftAddress(salted, catId), satoshis: 10000n,
-            token: { amount: 0n, nft: { capability: 'mutable', commitment: scInitialCommitments[0] } } },
-        ];
-      });
-      scCategoryId = genesis.categoryId;
-    } else {
-      scCategoryId = 'ddcd'.repeat(16);
-      const salted = scContract.withSalt(hexToBin(scCategoryId));
-      await scProvider.addUtxo(salted.tokenAddress, {
-        txid: 'eecd'.repeat(16), vout: 0, satoshis: 10000n,
-        token: { category: scCategoryId, amount: 0n, nft: { capability: 'minting', commitment: '' } },
-      });
-      await scProvider.addUtxo(getDataNftAddress(salted, scCategoryId), {
-        txid: 'eecd'.repeat(16), vout: 1, satoshis: 10000n,
-        token: { category: scCategoryId, amount: 0n, nft: { capability: 'mutable', commitment: scInitialCommitments[0] } },
-      });
-    }
+    // withCategory salts internally; genesis at the salted addresses. Works on mock and regtest.
+    ({ categoryId: scCategoryId } = await setupStatefulUtxos(
+      scProvider, scContract, scStateLayout, { counter: 0n, label: scZeroLabel }, { saltContract: true },
+    ));
     scSaltedContract = scContract.withSalt(hexToBin(scCategoryId));
   });
 
@@ -829,47 +771,10 @@ describe('StatefulContract API', () => {
     let sigCategoryId: string;
 
     beforeAll(async () => {
-      const sigInitialCommitments = buildInitialStateCommitments(sigStateLayout, { counter: 0n });
-
-      if ('addTokenUtxosDynamic' in sigProvider) {
-        const genesis = await (sigProvider as any).addTokenUtxosDynamic((catId: string) => {
-          const salted = sigContract.withSalt(hexToBin(catId));
-          return [
-            { address: salted.tokenAddress, satoshis: 10000n,
-              token: { amount: 0n, nft: { capability: 'minting', commitment: '' } } },
-            { address: getDataNftAddress(salted, catId), satoshis: 10000n,
-              token: { amount: 0n, nft: { capability: 'mutable', commitment: sigInitialCommitments[0] } } },
-          ];
-        });
-        sigCategoryId = genesis.categoryId;
-      } else {
-        sigCategoryId = 'cccd'.repeat(16);
-        const sigSaltedContract = sigContract.withSalt(hexToBin(sigCategoryId));
-        const sigDataNftAddress = getDataNftAddress(sigSaltedContract, sigCategoryId);
-
-        const sigMasterUtxo: Utxo = {
-          txid: 'cccd'.repeat(16),
-          vout: 0,
-          satoshis: 10000n,
-          token: {
-            category: sigCategoryId, amount: 0n,
-            nft: { capability: 'minting', commitment: '' },
-          },
-        };
-
-        const sigDataNftUtxo: Utxo = {
-          txid: 'cccd'.repeat(16),
-          vout: 1,
-          satoshis: 10000n,
-          token: {
-            category: sigCategoryId, amount: 0n,
-            nft: { capability: 'mutable', commitment: sigInitialCommitments[0] },
-          },
-        };
-
-        await sigProvider.addUtxo(sigSaltedContract.tokenAddress, sigMasterUtxo);
-        await sigProvider.addUtxo(sigDataNftAddress, sigDataNftUtxo);
-      }
+      // withCategory salts internally; genesis at the salted addresses. Works on mock and regtest.
+      ({ categoryId: sigCategoryId } = await setupStatefulUtxos(
+        sigProvider, sigContract, sigStateLayout, { counter: 0n }, { saltContract: true },
+      ));
     });
 
     it('should auto-derive state for sig function that writes state (counter 0->1)', async () => {
@@ -1167,64 +1072,24 @@ describe('Multi-NFT Stateful Contract', () => {
   beforeAll(async () => {
     initialCommitments = buildInitialStateCommitments(stateLayout, { alpha: zeroAlpha, beta: zeroBeta });
 
-    if ('addTokenUtxosDynamic' in provider) {
-      const genesis = await (provider as any).addTokenUtxosDynamic((catId: string) => {
-        const dnAddr = getDataNftAddress(contract, catId);
-        return [
-          { address: contract.tokenAddress, satoshis: 10000n,
-            token: { amount: 0n, nft: { capability: 'minting', commitment: '' } } },
-          { address: dnAddr, satoshis: 10000n,
-            token: { amount: 0n, nft: { capability: 'mutable', commitment: initialCommitments[0] } } },
-          { address: dnAddr, satoshis: 10000n,
-            token: { amount: 0n, nft: { capability: 'mutable', commitment: initialCommitments[1] } } },
-        ];
-      });
-      categoryId = genesis.categoryId;
-      masterUtxo = genesis.utxos[0];
-      dataNftUtxo0 = genesis.utxos[1];
-      dataNftUtxo1 = genesis.utxos[2];
-      dataNftAddress = getDataNftAddress(contract, categoryId);
-    } else {
-      categoryId = 'abcd'.repeat(16);
-      dataNftAddress = getDataNftAddress(contract, categoryId);
-
-      masterUtxo = {
-        txid: 'cccd'.repeat(16),
-        vout: 0,
-        satoshis: 10000n,
-        token: {
-          category: categoryId,
-          amount: 0n,
-          nft: { capability: 'minting', commitment: '' },
-        },
-      };
-
-      dataNftUtxo0 = {
-        txid: 'cccd'.repeat(16),
-        vout: 1,
-        satoshis: 10000n,
-        token: {
-          category: categoryId,
-          amount: 0n,
-          nft: { capability: 'mutable', commitment: initialCommitments[0] },
-        },
-      };
-
-      dataNftUtxo1 = {
-        txid: 'cccd'.repeat(16),
-        vout: 2,
-        satoshis: 10000n,
-        token: {
-          category: categoryId,
-          amount: 0n,
-          nft: { capability: 'mutable', commitment: initialCommitments[1] },
-        },
-      };
-
-      await provider.addUtxo(contract.tokenAddress, masterUtxo);
-      await provider.addUtxo(dataNftAddress, dataNftUtxo0);
-      await provider.addUtxo(dataNftAddress, dataNftUtxo1);
-    }
+    // Real genesis at the unsalted contract addresses (manual TransactionBuilder tests
+    // below use contract.tokenAddress directly). Works on mock and regtest.
+    const genesis = await (provider as any).addTokenUtxosDynamic((catId: string) => {
+      const dnAddr = getDataNftAddress(contract, catId);
+      return [
+        { address: contract.tokenAddress, satoshis: 10000n,
+          token: { amount: 0n, nft: { capability: 'minting', commitment: '' } } },
+        { address: dnAddr, satoshis: 10000n,
+          token: { amount: 0n, nft: { capability: 'mutable', commitment: initialCommitments[0] } } },
+        { address: dnAddr, satoshis: 10000n,
+          token: { amount: 0n, nft: { capability: 'mutable', commitment: initialCommitments[1] } } },
+      ];
+    });
+    categoryId = genesis.categoryId;
+    masterUtxo = genesis.utxos[0];
+    dataNftUtxo0 = genesis.utxos[1];
+    dataNftUtxo1 = genesis.utxos[2];
+    dataNftAddress = getDataNftAddress(contract, categoryId);
   });
 
   describe('artifact', () => {
@@ -1358,62 +1223,10 @@ describe('Multi-NFT Stateful Contract', () => {
     let scCategoryId: string;
 
     beforeAll(async () => {
-      const scInitialCommitments = buildInitialStateCommitments(scStateLayout, {
-        alpha: scZeroAlpha, beta: scZeroBeta,
-      });
-
-      if ('addTokenUtxosDynamic' in scProvider) {
-        const genesis = await (scProvider as any).addTokenUtxosDynamic((catId: string) => {
-          const salted = scContract.withSalt(hexToBin(catId));
-          return [
-            { address: salted.tokenAddress, satoshis: 10000n,
-              token: { amount: 0n, nft: { capability: 'minting', commitment: '' } } },
-            { address: getDataNftAddress(salted, catId), satoshis: 10000n,
-              token: { amount: 0n, nft: { capability: 'mutable', commitment: scInitialCommitments[0] } } },
-            { address: getDataNftAddress(salted, catId), satoshis: 10000n,
-              token: { amount: 0n, nft: { capability: 'mutable', commitment: scInitialCommitments[1] } } },
-          ];
-        });
-        scCategoryId = genesis.categoryId;
-      } else {
-        scCategoryId = 'decd'.repeat(16);
-        const scSaltedContract = scContract.withSalt(hexToBin(scCategoryId));
-        const scDataNftAddress = getDataNftAddress(scSaltedContract, scCategoryId);
-
-        const scMasterUtxo: Utxo = {
-          txid: 'ffcd'.repeat(16),
-          vout: 0,
-          satoshis: 10000n,
-          token: {
-            category: scCategoryId, amount: 0n,
-            nft: { capability: 'minting', commitment: '' },
-          },
-        };
-
-        const scDataNftUtxo0: Utxo = {
-          txid: 'ffcd'.repeat(16),
-          vout: 1,
-          satoshis: 10000n,
-          token: {
-            category: scCategoryId, amount: 0n,
-            nft: { capability: 'mutable', commitment: scInitialCommitments[0] },
-          },
-        };
-
-        const scDataNftUtxo1: Utxo = {
-          txid: 'ffcd'.repeat(16),
-          vout: 2,
-          satoshis: 10000n,
-          token: {
-            category: scCategoryId, amount: 0n,
-            nft: { capability: 'mutable', commitment: scInitialCommitments[1] },
-          },
-        };
-
-        await scProvider.addUtxo(scSaltedContract.tokenAddress, scMasterUtxo);
-        await scProvider.addUtxo(scDataNftAddress, scDataNftUtxo0);
-        await scProvider.addUtxo(scDataNftAddress, scDataNftUtxo1);
-      }
+      // withCategory salts internally; genesis at the salted addresses. Works on mock and regtest.
+      ({ categoryId: scCategoryId } = await setupStatefulUtxos(
+        scProvider, scContract, scStateLayout, { alpha: scZeroAlpha, beta: scZeroBeta }, { saltContract: true },
+      ));
     });
 
     it('should connect and read initial state', async () => {
@@ -1498,12 +1311,13 @@ describe('Multi-NFT Stateful Contract', () => {
       const deployArtifact = compileString(TWO_CHUNKS_CONTRACT);
       const deployP2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider: deployProvider });
 
-      const fundingUtxo: Utxo = {
+      let fundingUtxo: Utxo = {
         txid: 'facd'.repeat(16),
         vout: 0,
         satoshis: 100000n,
       };
-      await deployProvider.addUtxo(deployP2pkh.address, fundingUtxo);
+      // Regtest back-fills a real funding UTXO; deploy's category == the funding txid.
+      fundingUtxo = await deployProvider.addUtxo(deployP2pkh.address, fundingUtxo);
 
       const alpha = new Uint8Array(100).fill(0x01);
       const beta = new Uint8Array(100).fill(0x02);
@@ -1623,75 +1437,10 @@ describe('3-NFT Per-Function Optimization', () => {
     let categoryId: string;
 
     beforeAll(async () => {
-      const initialCommitments = buildInitialStateCommitments(stateLayout, {
-        alpha: zeroAlpha, beta: zeroBeta, gamma: zeroGamma,
-      });
-
-      if ('addTokenUtxosDynamic' in provider) {
-        const genesis = await (provider as any).addTokenUtxosDynamic((catId: string) => {
-          const salted = contract.withSalt(hexToBin(catId));
-          return [
-            { address: salted.tokenAddress, satoshis: 10000n,
-              token: { amount: 0n, nft: { capability: 'minting', commitment: '' } } },
-            { address: getDataNftAddress(salted, catId), satoshis: 10000n,
-              token: { amount: 0n, nft: { capability: 'mutable', commitment: initialCommitments[0] } } },
-            { address: getDataNftAddress(salted, catId), satoshis: 10000n,
-              token: { amount: 0n, nft: { capability: 'mutable', commitment: initialCommitments[1] } } },
-            { address: getDataNftAddress(salted, catId), satoshis: 10000n,
-              token: { amount: 0n, nft: { capability: 'mutable', commitment: initialCommitments[2] } } },
-          ];
-        });
-        categoryId = genesis.categoryId;
-      } else {
-        categoryId = 'abcd'.repeat(16);
-        const saltedContract = contract.withSalt(hexToBin(categoryId));
-        const dataNftAddress = getDataNftAddress(saltedContract, categoryId);
-
-        const masterUtxo: Utxo = {
-          txid: 'eecd'.repeat(16),
-          vout: 0,
-          satoshis: 10000n,
-          token: {
-            category: categoryId, amount: 0n,
-            nft: { capability: 'minting', commitment: '' },
-          },
-        };
-
-        const dataNftUtxo0: Utxo = {
-          txid: 'eecd'.repeat(16),
-          vout: 1,
-          satoshis: 10000n,
-          token: {
-            category: categoryId, amount: 0n,
-            nft: { capability: 'mutable', commitment: initialCommitments[0] },
-          },
-        };
-
-        const dataNftUtxo1: Utxo = {
-          txid: 'eecd'.repeat(16),
-          vout: 2,
-          satoshis: 10000n,
-          token: {
-            category: categoryId, amount: 0n,
-            nft: { capability: 'mutable', commitment: initialCommitments[1] },
-          },
-        };
-
-        const dataNftUtxo2: Utxo = {
-          txid: 'eecd'.repeat(16),
-          vout: 3,
-          satoshis: 10000n,
-          token: {
-            category: categoryId, amount: 0n,
-            nft: { capability: 'mutable', commitment: initialCommitments[2] },
-          },
-        };
-
-        await provider.addUtxo(saltedContract.tokenAddress, masterUtxo);
-        await provider.addUtxo(dataNftAddress, dataNftUtxo0);
-        await provider.addUtxo(dataNftAddress, dataNftUtxo1);
-        await provider.addUtxo(dataNftAddress, dataNftUtxo2);
-      }
+      // withCategory salts internally; genesis at the salted addresses. Works on mock and regtest.
+      ({ categoryId } = await setupStatefulUtxos(
+        provider, contract, stateLayout, { alpha: zeroAlpha, beta: zeroBeta, gamma: zeroGamma }, { saltContract: true },
+      ));
     });
 
     it('setGamma() should only have 2 inputs/outputs (master + nft2)', async () => {
@@ -1801,12 +1550,13 @@ describe('3-NFT Per-Function Optimization', () => {
       const deployArtifact = compileString(THREE_CHUNKS_CONTRACT);
       const deployP2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider: deployProvider });
 
-      const fundingUtxo: Utxo = {
+      let fundingUtxo: Utxo = {
         txid: 'facd'.repeat(16),
         vout: 0,
         satoshis: 200000n,
       };
-      await deployProvider.addUtxo(deployP2pkh.address, fundingUtxo);
+      // Regtest back-fills a real funding UTXO; deploy's category == the funding txid.
+      fundingUtxo = await deployProvider.addUtxo(deployP2pkh.address, fundingUtxo);
 
       const alpha = new Uint8Array(100).fill(0x01);
       const beta = new Uint8Array(100).fill(0x02);

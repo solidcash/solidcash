@@ -8,7 +8,7 @@ import {
 import {
   buildInitialStateCommitments,
 } from '@solidcash/utils';
-import { Utxo } from '../../src/interfaces.js';
+import { getDataNftAddress } from '../../src/index.js';
 import { createTestProvider } from '../test-util.js';
 import { aliceAddress } from '../fixture/vars.js';
 
@@ -103,42 +103,39 @@ describe('Low-Level Call Primitives (.call and .staticcall)', () => {
       const artCaller = compileString(DYNAMIC_CALLER);
       const artCounter = compileString(COUNTER);
 
-      const catCaller = 'cacd'.repeat(16);
-      const catCounter = 'cbcd'.repeat(16);
-
-      const contractCaller = new Contract(artCaller, [hexToBin(catCounter)], { provider });
-      const contractCounter = new Contract(artCounter, [], { provider });
-
       const layoutCaller = artCaller.stateLayout!;
       const layoutCounter = artCounter.stateLayout!;
 
-      const commitsCaller = buildInitialStateCommitments(layoutCaller, { state: 0n });
       const commitsCounter = buildInitialStateCommitments(layoutCounter, { counter: 5n });
 
-      // Caller's UTXOs
-      const masterCaller: Utxo = {
-        txid: 'cacd'.repeat(16), vout: 0, satoshis: 10000n,
-        token: { category: catCaller, amount: 0n, nft: { capability: 'minting', commitment: '' } },
-      };
-      const dataNftCaller: Utxo = {
-        txid: 'cacd'.repeat(16), vout: 1, satoshis: 10000n,
-        token: { category: catCaller, amount: 0n, nft: { capability: 'mutable', commitment: commitsCaller[0] } },
-      };
+      // Genesis Counter first: the caller embeds Counter's real category as a ctor arg.
+      const contractCounter = new Contract(artCounter, [], { provider });
+      const counterGenesis = await (provider as any).addTokenUtxosDynamic((cat: string) => [
+        { address: contractCounter.tokenAddress, satoshis: 10000n,
+          token: { amount: 0n, nft: { capability: 'minting', commitment: '' } } },
+        ...commitsCounter.map((c) => ({
+          address: getDataNftAddress(contractCounter, cat), satoshis: 10000n,
+          token: { amount: 0n, nft: { capability: 'mutable', commitment: c } },
+        })),
+      ]);
+      const catCounter = counterGenesis.categoryId;
+      const masterCounter = counterGenesis.utxos[0];
+      const dataNftCounter = counterGenesis.utxos[1];
 
-      // Counter's UTXOs
-      const masterCounter: Utxo = {
-        txid: 'cbcd'.repeat(16), vout: 0, satoshis: 10000n,
-        token: { category: catCounter, amount: 0n, nft: { capability: 'minting', commitment: '' } },
-      };
-      const dataNftCounter: Utxo = {
-        txid: 'cbcd'.repeat(16), vout: 1, satoshis: 10000n,
-        token: { category: catCounter, amount: 0n, nft: { capability: 'mutable', commitment: commitsCounter[0] } },
-      };
-
-      await provider.addUtxo(masterCaller.txid, masterCaller);
-      await provider.addUtxo(dataNftCaller.txid, dataNftCaller);
-      await provider.addUtxo(masterCounter.txid, masterCounter);
-      await provider.addUtxo(dataNftCounter.txid, dataNftCounter);
+      // Build the caller with Counter's real category, then genesis it.
+      const contractCaller = new Contract(artCaller, [hexToBin(catCounter)], { provider });
+      const commitsCaller = buildInitialStateCommitments(layoutCaller, { state: 0n });
+      const callerGenesis = await (provider as any).addTokenUtxosDynamic((cat: string) => [
+        { address: contractCaller.tokenAddress, satoshis: 10000n,
+          token: { amount: 0n, nft: { capability: 'minting', commitment: '' } } },
+        ...commitsCaller.map((c) => ({
+          address: getDataNftAddress(contractCaller, cat), satoshis: 10000n,
+          token: { amount: 0n, nft: { capability: 'mutable', commitment: c } },
+        })),
+      ]);
+      const catCaller = callerGenesis.categoryId;
+      const masterCaller = callerGenesis.utxos[0];
+      const dataNftCaller = callerGenesis.utxos[1];
 
       // Transaction layout:
       //   Input[0]: Caller master
@@ -188,42 +185,39 @@ describe('Low-Level Call Primitives (.call and .staticcall)', () => {
       const artCaller = compileString(DYNAMIC_CALLER);
       const artCounter = compileString(COUNTER);
 
-      const catCaller = 'dacd'.repeat(16);
-      const catCounter = 'dbcd'.repeat(16);
-
-      const contractCaller = new Contract(artCaller, [hexToBin(catCounter)], { provider });
-      const contractCounter = new Contract(artCounter, [], { provider });
-
       const layoutCaller = artCaller.stateLayout!;
       const layoutCounter = artCounter.stateLayout!;
 
-      const commitsCaller = buildInitialStateCommitments(layoutCaller, { state: 0n });
       const commitsCounter = buildInitialStateCommitments(layoutCounter, { counter: 10n });
 
-      // Caller's UTXOs
-      const masterCaller: Utxo = {
-        txid: 'dacd'.repeat(16), vout: 0, satoshis: 10000n,
-        token: { category: catCaller, amount: 0n, nft: { capability: 'minting', commitment: '' } },
-      };
-      const dataNftCaller: Utxo = {
-        txid: 'dacd'.repeat(16), vout: 1, satoshis: 10000n,
-        token: { category: catCaller, amount: 0n, nft: { capability: 'mutable', commitment: commitsCaller[0] } },
-      };
+      // Genesis Counter first: the caller embeds Counter's real category as a ctor arg.
+      const contractCounter = new Contract(artCounter, [], { provider });
+      const counterGenesis = await (provider as any).addTokenUtxosDynamic((cat: string) => [
+        { address: contractCounter.tokenAddress, satoshis: 10000n,
+          token: { amount: 0n, nft: { capability: 'minting', commitment: '' } } },
+        ...commitsCounter.map((c) => ({
+          address: getDataNftAddress(contractCounter, cat), satoshis: 10000n,
+          token: { amount: 0n, nft: { capability: 'mutable', commitment: c } },
+        })),
+      ]);
+      const catCounter = counterGenesis.categoryId;
+      const masterCounter = counterGenesis.utxos[0];
+      const dataNftCounter = counterGenesis.utxos[1];
 
-      // Counter's UTXOs
-      const masterCounter: Utxo = {
-        txid: 'dbcd'.repeat(16), vout: 0, satoshis: 10000n,
-        token: { category: catCounter, amount: 0n, nft: { capability: 'minting', commitment: '' } },
-      };
-      const dataNftCounter: Utxo = {
-        txid: 'dbcd'.repeat(16), vout: 1, satoshis: 10000n,
-        token: { category: catCounter, amount: 0n, nft: { capability: 'mutable', commitment: commitsCounter[0] } },
-      };
-
-      await provider.addUtxo(masterCaller.txid, masterCaller);
-      await provider.addUtxo(dataNftCaller.txid, dataNftCaller);
-      await provider.addUtxo(masterCounter.txid, masterCounter);
-      await provider.addUtxo(dataNftCounter.txid, dataNftCounter);
+      // Build the caller with Counter's real category, then genesis it.
+      const contractCaller = new Contract(artCaller, [hexToBin(catCounter)], { provider });
+      const commitsCaller = buildInitialStateCommitments(layoutCaller, { state: 0n });
+      const callerGenesis = await (provider as any).addTokenUtxosDynamic((cat: string) => [
+        { address: contractCaller.tokenAddress, satoshis: 10000n,
+          token: { amount: 0n, nft: { capability: 'minting', commitment: '' } } },
+        ...commitsCaller.map((c) => ({
+          address: getDataNftAddress(contractCaller, cat), satoshis: 10000n,
+          token: { amount: 0n, nft: { capability: 'mutable', commitment: c } },
+        })),
+      ]);
+      const catCaller = callerGenesis.categoryId;
+      const masterCaller = callerGenesis.utxos[0];
+      const dataNftCaller = callerGenesis.utxos[1];
 
       const unlockCaller = contractCaller.unlock.readOnlyCall(2n);
       const unlockCounter = contractCounter.unlock.increment();

@@ -232,31 +232,39 @@ contract VaultV2() {
 // Helpers
 // ============================================================
 
+// tx.inputs[].tokenCategory is internal (reversed) byte order; genesis returns display-order.
+// implCategory is compared against it in-script, so it must hold the reversed bytes.
+function implCat(categoryId: string): Uint8Array {
+  return hexToBin(categoryId).slice().reverse();
+}
+
 interface Deployed {
   contract: Contract;
+  categoryId: string;
   utxos: { master: Utxo; dataNfts: Utxo[] };
 }
 
-/** Deploy a stateful contract: create Contract, build UTXOs, register with provider. */
+/** Deploy a stateful contract via real genesis at the unsalted contract addresses. */
 async function deploy(
   provider: MockNetworkProvider, artifact: Artifact, args: any[],
-  catId: string, state: Record<string, any>, satoshis = 10000n,
-): Deployed {
-  const contract = new Contract(artifact, args, { provider });
+  state: Record<string, any>, satoshis = 10000n,
+): Promise<Deployed> {
+  // Salt with the genesis category so each deploy gets a unique address: on the shared regtest
+  // node, unsalted same-arg contracts collide and re-reads by address would pick a foreign master.
+  const baseContract = new Contract(artifact, args, { provider });
   const commitments = buildInitialStateCommitments(artifact.stateLayout!, state);
-  const master: Utxo = {
-    txid: catId, vout: 0, satoshis,
-    token: { category: catId, amount: 0n, nft: { capability: 'minting', commitment: '' } },
-  };
-  const dataNfts = commitments.map((commitment, i) => ({
-    txid: catId, vout: i + 1, satoshis,
-    token: { category: catId, amount: 0n, nft: { capability: 'mutable' as const, commitment } },
-  }));
-  await provider.addUtxo(contract.tokenAddress, master);
-  for (const nft of dataNfts) {
-    await provider.addUtxo(getDataNftAddress(contract, catId), nft);
-  }
-  return { contract, utxos: { master, dataNfts } };
+  const { categoryId, utxos } = await (provider as any).addTokenUtxosDynamic((cat: string) => {
+    const salted = baseContract.withSalt(hexToBin(cat));
+    return [
+      { address: salted.tokenAddress, satoshis, token: { amount: 0n, nft: { capability: 'minting', commitment: '' } } },
+      ...commitments.map((commitment) => ({
+        address: getDataNftAddress(salted, cat), satoshis,
+        token: { amount: 0n, nft: { capability: 'mutable' as const, commitment } },
+      })),
+    ];
+  });
+  const contract = baseContract.withSalt(hexToBin(categoryId));
+  return { contract, categoryId, utxos: { master: utxos[0], dataNfts: utxos.slice(1) } };
 }
 
 /** Create an ExternalCallUtxoGroup for inclusion in a StatefulTransactionBuilder. */
@@ -356,11 +364,11 @@ describe('Proxy Pattern', () => {
 
     it('should forward a call to V1 implementation (increment counter)', async () => {
       const provider = createTestProvider();
-      const proxyCatId = 'aa'.repeat(32);
-      const v1CatId = 'b1'.repeat(32);
-
-      const proxy = await deploy(provider, proxyArtifact, [alicePkh], proxyCatId, { implCategory: hexToBin(v1CatId) });
-      const v1 = await deploy(provider, v1Artifact, [], v1CatId, { counter: 0n });
+      // Genesis impl first to learn its real category, then deploy proxy pointing at it.
+      const v1 = await deploy(provider, v1Artifact, [], { counter: 0n });
+      const v1CatId = v1.categoryId;
+      const proxy = await deploy(provider, proxyArtifact, [alicePkh], { implCategory: implCat(v1CatId) });
+      const proxyCatId = proxy.categoryId;
 
       const tx = await proxyStb(
         provider,
@@ -375,14 +383,14 @@ describe('Proxy Pattern', () => {
 
     it('should fail when pointing to wrong implementation category', async () => {
       const provider = createTestProvider();
-      const proxyCatId = 'aa'.repeat(32);
+      // Proxy points at v1CatId but the fake impl has a different real category.
       const v1CatId = 'b1'.repeat(32);
-      const fakeCatId = 'ff'.repeat(32);
+      const proxy = await deploy(provider, proxyArtifact, [alicePkh], { implCategory: hexToBin(v1CatId) });
+      const proxyCatId = proxy.categoryId;
+      const fake = await deploy(provider, v1Artifact, [], { counter: 0n });
+      const fakeCatId = fake.categoryId;
 
-      const proxy = await deploy(provider, proxyArtifact, [alicePkh], proxyCatId, { implCategory: hexToBin(v1CatId) });
-      const fake = await deploy(provider, v1Artifact, [], fakeCatId, { counter: 0n });
-
-      // Builds fine but would fail on-chain: catId (ff..ff) != implCategory (b1..b1)
+      // Builds fine but would fail on-chain: fake catId != implCategory (b1..b1)
       const hex = proxyStb(
         provider,
         proxyArtifact, proxy, proxyCatId, 'forward', [2n],
@@ -397,11 +405,12 @@ describe('Proxy Pattern', () => {
 
     it('should upgrade proxy to V2 and then forward to new implementation', async () => {
       const provider = createTestProvider();
-      const proxyCatId = 'aa'.repeat(32);
       const v1CatId = 'b1'.repeat(32);
-      const v2CatId = 'c1'.repeat(32);
-
-      const proxy = await deploy(provider, proxyArtifact, [alicePkh], proxyCatId, { implCategory: hexToBin(v1CatId) });
+      // Genesis V2 first so the proxy can be upgraded to its real category, then forward to it.
+      const v2 = await deploy(provider, v2Artifact, [], { counter: 0n, operationCount: 0n });
+      const v2CatId = v2.categoryId;
+      const proxy = await deploy(provider, proxyArtifact, [alicePkh], { implCategory: hexToBin(v1CatId) });
+      const proxyCatId = proxy.categoryId;
 
       // --- Step 1: Admin upgrades proxy to V2 ---
       const upgradeTx = await new StatefulTransactionBuilder({
@@ -410,13 +419,13 @@ describe('Proxy Pattern', () => {
         categoryId: proxyCatId,
         masterUtxo: {
           ...proxy.utxos.master,
-          unlocker: proxy.contract.unlock.setImpl(hexToBin(v2CatId), alicePub, new SignatureTemplate(alicePriv)),
+          unlocker: proxy.contract.unlock.setImpl(implCat(v2CatId), alicePub, new SignatureTemplate(alicePriv)),
         },
         dataNftUtxos: proxy.utxos.dataNfts.map((nft) => ({
           ...nft, unlocker: createDataNftUnlocker(proxy.contract, 0, proxyCatId),
         })),
       })
-        .setState('implCategory', hexToBin(v2CatId))
+        .setState('implCategory', implCat(v2CatId))
         .send();
 
       expect(upgradeTx.txid).toBeDefined();
@@ -427,13 +436,12 @@ describe('Proxy Pattern', () => {
       const proxyCovenantUtxos = await provider.getUtxos(getDataNftAddress(proxy.contract, proxyCatId));
       const updatedProxy: Deployed = {
         contract: proxy.contract,
+        categoryId: proxyCatId,
         utxos: {
           master: proxyUtxos.find((u) => u.token?.nft?.capability === 'minting')!,
           dataNfts: proxyCovenantUtxos.filter((u) => u.token?.nft?.capability === 'mutable'),
         },
       };
-
-      const v2 = await deploy(provider, v2Artifact, [], v2CatId, { counter: 0n, operationCount: 0n });
 
       const forwardTx = await proxyStb(
         provider,
@@ -449,11 +457,11 @@ describe('Proxy Pattern', () => {
 
     it('should reject setImpl from non-admin (transaction builds but script fails)', async () => {
       const provider = createTestProvider();
-      const proxyCatId = 'aa'.repeat(32);
       const v1CatId = 'b1'.repeat(32);
       const v2CatId = 'c1'.repeat(32);
 
-      const proxy = await deploy(provider, proxyArtifact, [alicePkh], proxyCatId, { implCategory: hexToBin(v1CatId) });
+      const proxy = await deploy(provider, proxyArtifact, [alicePkh], { implCategory: hexToBin(v1CatId) });
+      const proxyCatId = proxy.categoryId;
 
       // Bob (non-admin) tries to upgrade - builds fine but would fail on-chain
       const hex = new StatefulTransactionBuilder({
@@ -491,13 +499,12 @@ describe('Proxy Pattern', () => {
 
     it('should deposit through proxy (proxy.deposit + impl.deposit)', async () => {
       const provider = createTestProvider();
-      const proxyCatId = 'e1'.repeat(32);
-      const v1CatId = 'f1'.repeat(32);
-
+      const v1 = await deploy(provider, v1Artifact, [], { balance: 0n });
+      const v1CatId = v1.categoryId;
       const proxy = await deploy(
-        provider, proxyArtifact, [alicePkh], proxyCatId, { implCategory: hexToBin(v1CatId) }, 50_000n,
+        provider, proxyArtifact, [alicePkh], { implCategory: implCat(v1CatId) }, 50_000n,
       );
-      const v1 = await deploy(provider, v1Artifact, [], v1CatId, { balance: 0n });
+      const proxyCatId = proxy.categoryId;
 
       const depositAmount = 5000n;
       const tx = await proxyStb(
@@ -513,13 +520,12 @@ describe('Proxy Pattern', () => {
 
     it('should withdraw through proxy with valid signature', async () => {
       const provider = createTestProvider();
-      const proxyCatId = 'e1'.repeat(32);
-      const v1CatId = 'f1'.repeat(32);
-
+      const v1 = await deploy(provider, v1Artifact, [], { balance: 5000n });
+      const v1CatId = v1.categoryId;
       const proxy = await deploy(
-        provider, proxyArtifact, [alicePkh], proxyCatId, { implCategory: hexToBin(v1CatId) }, 50_000n,
+        provider, proxyArtifact, [alicePkh], { implCategory: implCat(v1CatId) }, 50_000n,
       );
-      const v1 = await deploy(provider, v1Artifact, [], v1CatId, { balance: 5000n });
+      const proxyCatId = proxy.categoryId;
 
       const withdrawAmount = 2000n;
       const tx = await proxyStb(
@@ -536,13 +542,14 @@ describe('Proxy Pattern', () => {
 
     it('should upgrade to V2 and withdraw with txCount tracking', async () => {
       const provider = createTestProvider();
-      const proxyCatId = 'e1'.repeat(32);
       const v1CatId = 'f1'.repeat(32);
-      const v2CatId = 'f2'.repeat(32);
-
+      // Genesis V2 first so the proxy can be upgraded to its real category, then withdraw via it.
+      const v2 = await deploy(provider, v2Artifact, [], { balance: 5000n, txCount: 0n });
+      const v2CatId = v2.categoryId;
       const proxy = await deploy(
-        provider, proxyArtifact, [alicePkh], proxyCatId, { implCategory: hexToBin(v1CatId) }, 50_000n,
+        provider, proxyArtifact, [alicePkh], { implCategory: hexToBin(v1CatId) }, 50_000n,
       );
+      const proxyCatId = proxy.categoryId;
 
       // --- Step 1: Admin upgrades to V2 ---
       const upgradeTx = await new StatefulTransactionBuilder({
@@ -551,13 +558,13 @@ describe('Proxy Pattern', () => {
         categoryId: proxyCatId,
         masterUtxo: {
           ...proxy.utxos.master,
-          unlocker: proxy.contract.unlock.setImpl(hexToBin(v2CatId), alicePub, new SignatureTemplate(alicePriv)),
+          unlocker: proxy.contract.unlock.setImpl(implCat(v2CatId), alicePub, new SignatureTemplate(alicePriv)),
         },
         dataNftUtxos: proxy.utxos.dataNfts.map((nft) => ({
           ...nft, unlocker: createDataNftUnlocker(proxy.contract, 0, proxyCatId),
         })),
       })
-        .setState('implCategory', hexToBin(v2CatId))
+        .setState('implCategory', implCat(v2CatId))
         .send();
 
       expect(upgradeTx.txid).toBeDefined();
@@ -567,13 +574,13 @@ describe('Proxy Pattern', () => {
       const proxyCovenantUtxos = await provider.getUtxos(getDataNftAddress(proxy.contract, proxyCatId));
       const updatedProxy: Deployed = {
         contract: proxy.contract,
+        categoryId: proxyCatId,
         utxos: {
           master: proxyUtxos.find((u) => u.token?.nft?.capability === 'minting')!,
           dataNfts: proxyCovenantUtxos.filter((u) => u.token?.nft?.capability === 'mutable'),
         },
       };
 
-      const v2 = await deploy(provider, v2Artifact, [], v2CatId, { balance: 5000n, txCount: 0n });
       const withdrawAmount = 1000n;
 
       const withdrawTx = await proxyStb(
@@ -614,11 +621,10 @@ describe('Proxy Pattern', () => {
 
     it('should forward a call to V1 via fallback (increment counter)', async () => {
       const provider = createTestProvider();
-      const proxyCatId = 'dd'.repeat(32);
-      const v1CatId = 'e1'.repeat(32);
-
-      const proxy = await deploy(provider, proxyArtifact, [alicePkh], proxyCatId, { implCategory: hexToBin(v1CatId) });
-      const v1 = await deploy(provider, v1Artifact, [], v1CatId, { counter: 0n });
+      const v1 = await deploy(provider, v1Artifact, [], { counter: 0n });
+      const v1CatId = v1.categoryId;
+      const proxy = await deploy(provider, proxyArtifact, [alicePkh], { implCategory: implCat(v1CatId) });
+      const proxyCatId = proxy.categoryId;
 
       // Push the impl's increment selector to the proxy - the dispatcher sees an
       // unknown selector and routes to fallback. msg.data then matches the impl's calldata.
@@ -645,11 +651,12 @@ describe('Proxy Pattern', () => {
 
     it('should upgrade to V2 and forward increment via fallback', async () => {
       const provider = createTestProvider();
-      const proxyCatId = 'dd'.repeat(32);
       const v1CatId = 'e1'.repeat(32);
-      const v2CatId = 'e2'.repeat(32);
-
-      const proxy = await deploy(provider, proxyArtifact, [alicePkh], proxyCatId, { implCategory: hexToBin(v1CatId) });
+      // Genesis V2 first so the proxy can be upgraded to its real category, then forward to it.
+      const v2 = await deploy(provider, v2Artifact, [], { counter: 0n, operationCount: 0n });
+      const v2CatId = v2.categoryId;
+      const proxy = await deploy(provider, proxyArtifact, [alicePkh], { implCategory: hexToBin(v1CatId) });
+      const proxyCatId = proxy.categoryId;
 
       // --- Step 1: Admin upgrades proxy to V2 ---
       const upgradeTx = await new StatefulTransactionBuilder({
@@ -658,13 +665,13 @@ describe('Proxy Pattern', () => {
         categoryId: proxyCatId,
         masterUtxo: {
           ...proxy.utxos.master,
-          unlocker: proxy.contract.unlock.setImpl(hexToBin(v2CatId), alicePub, new SignatureTemplate(alicePriv)),
+          unlocker: proxy.contract.unlock.setImpl(implCat(v2CatId), alicePub, new SignatureTemplate(alicePriv)),
         },
         dataNftUtxos: proxy.utxos.dataNfts.map((nft) => ({
           ...nft, unlocker: createDataNftUnlocker(proxy.contract, 0, proxyCatId),
         })),
       })
-        .setState('implCategory', hexToBin(v2CatId))
+        .setState('implCategory', implCat(v2CatId))
         .send();
 
       expect(upgradeTx.txid).toBeDefined();
@@ -674,13 +681,12 @@ describe('Proxy Pattern', () => {
       const proxyCovenantUtxos = await provider.getUtxos(getDataNftAddress(proxy.contract, proxyCatId));
       const updatedProxy: Deployed = {
         contract: proxy.contract,
+        categoryId: proxyCatId,
         utxos: {
           master: proxyUtxos.find((u) => u.token?.nft?.capability === 'minting')!,
           dataNfts: proxyCovenantUtxos.filter((u) => u.token?.nft?.capability === 'mutable'),
         },
       };
-
-      const v2 = await deploy(provider, v2Artifact, [], v2CatId, { counter: 0n, operationCount: 0n });
 
       // Push V2's increment selector to the proxy - triggers fallback with matching calldata
       const implSelector = hexToBin(v2Artifact.abi.find((f) => f.name === 'increment')!.selector!);
@@ -706,11 +712,11 @@ describe('Proxy Pattern', () => {
 
     it('should reject setImpl from non-admin (transaction builds but script fails)', async () => {
       const provider = createTestProvider();
-      const proxyCatId = 'dd'.repeat(32);
       const v1CatId = 'e1'.repeat(32);
       const v2CatId = 'e2'.repeat(32);
 
-      const proxy = await deploy(provider, proxyArtifact, [alicePkh], proxyCatId, { implCategory: hexToBin(v1CatId) });
+      const proxy = await deploy(provider, proxyArtifact, [alicePkh], { implCategory: hexToBin(v1CatId) });
+      const proxyCatId = proxy.categoryId;
 
       // Bob (non-admin) tries to upgrade - builds fine but would fail on-chain
       const hex = new StatefulTransactionBuilder({

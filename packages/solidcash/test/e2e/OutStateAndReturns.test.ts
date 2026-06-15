@@ -3,7 +3,7 @@ import { hexToBin } from '@bitauth/libauth';
 import {
   Contract, StatefulContract, StatefulTransactionBuilder,
   StatefulFunctionCall, TransactionBuilder,
-  getDataNftAddress, createDataNftUnlocker,
+  createDataNftUnlocker,
 } from '../../src/index.js';
 import {
   buildInitialStateCommitments,
@@ -15,7 +15,7 @@ import {
 import { Utxo } from '../../src/interfaces.js';
 import { SignatureTemplate } from '../../src/index.js';
 import { ExternalCallUtxoGroup } from '../../src/stateful/StatefulTransactionBuilder.js';
-import { createTestProvider } from '../test-util.js';
+import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
 
 // ===== Contract Sources =====
 
@@ -439,73 +439,24 @@ contract Reader(bytes32 counterCategory) {
     const provider = createTestProvider();
     const outStateReaderArtifact = compileString(OUTSTATE_READER_CONTRACT);
     const counterArtifact = compileString(COUNTER_CONTRACT);
-
-    const counterCategoryId = 'e1cd'.repeat(16);
-    const readerCategoryId = 'e2cd'.repeat(16);
-
-    const counterContract = new Contract(counterArtifact, [], { provider });
-    const readerContract = new Contract(
-      outStateReaderArtifact, [hexToBin(counterCategoryId)], { provider },
-    );
-
     const counterStateLayout = counterArtifact.stateLayout!;
     const readerStateLayout = outStateReaderArtifact.stateLayout!;
 
-    const counterInitialCommitments = buildInitialStateCommitments(
-      counterStateLayout, { counter: 5n },
-    );
-    const readerInitialCommitments = buildInitialStateCommitments(
-      readerStateLayout, { lastSeen: 0n },
-    );
-
-    const counterMasterUtxo: Utxo = {
-      txid: 'e3cd'.repeat(16),
-      vout: 0,
-      satoshis: 10000n,
-      token: {
-        category: counterCategoryId, amount: 0n,
-        nft: { capability: 'minting', commitment: '' },
-      },
-    };
-
-    const counterDataNftUtxo: Utxo = {
-      txid: 'e3cd'.repeat(16),
-      vout: 1,
-      satoshis: 10000n,
-      token: {
-        category: counterCategoryId, amount: 0n,
-        nft: { capability: 'mutable', commitment: counterInitialCommitments[0] },
-      },
-    };
-
-    const readerMasterUtxo: Utxo = {
-      txid: 'e4cd'.repeat(16),
-      vout: 0,
-      satoshis: 10000n,
-      token: {
-        category: readerCategoryId, amount: 0n,
-        nft: { capability: 'minting', commitment: '' },
-      },
-    };
-
-    const readerDataNftUtxo: Utxo = {
-      txid: 'e4cd'.repeat(16),
-      vout: 1,
-      satoshis: 10000n,
-      token: {
-        category: readerCategoryId, amount: 0n,
-        nft: { capability: 'mutable', commitment: readerInitialCommitments[0] },
-      },
-    };
+    let counterCategoryId: string;
+    let readerCategoryId: string;
+    let readerContract: Contract;
 
     beforeAll(async () => {
-      const counterDataNftAddress = getDataNftAddress(counterContract, counterCategoryId);
-      await provider.addUtxo(counterContract.tokenAddress, counterMasterUtxo);
-      await provider.addUtxo(counterDataNftAddress, counterDataNftUtxo);
+      // Genesis counter (B) first so the reader (A) can embed its real category.
+      const counterContract = new Contract(counterArtifact, [], { provider });
+      ({ categoryId: counterCategoryId } = await setupStatefulUtxos(
+        provider, counterContract, counterStateLayout, { counter: 5n }, { saltContract: true },
+      ));
 
-      const readerDataNftAddress = getDataNftAddress(readerContract, readerCategoryId);
-      await provider.addUtxo(readerContract.tokenAddress, readerMasterUtxo);
-      await provider.addUtxo(readerDataNftAddress, readerDataNftUtxo);
+      readerContract = new Contract(outStateReaderArtifact, [hexToBin(counterCategoryId)], { provider });
+      ({ categoryId: readerCategoryId } = await setupStatefulUtxos(
+        provider, readerContract, readerStateLayout, { lastSeen: 0n }, { saltContract: true },
+      ));
     });
 
     it('should return a StatefulFunctionCall from the call namespace', () => {
@@ -659,40 +610,15 @@ contract Reader(bytes32 counterCategory) {
   describe('function returns B-side StatefulTransactionBuilder', () => {
     const provider = createTestProvider();
     const returningCounterArtifact = compileString(RETURNING_COUNTER_CONTRACT);
-
-    const counterCategoryId = 'c1cd'.repeat(16);
-
-    const counterContract = new Contract(returningCounterArtifact, [], { provider });
     const counterStateLayout = returningCounterArtifact.stateLayout!;
+    const counterContract = new Contract(returningCounterArtifact, [], { provider });
 
-    const counterInitialCommitments = buildInitialStateCommitments(
-      counterStateLayout, { counter: 5n },
-    );
-
-    const counterMasterUtxo: Utxo = {
-      txid: 'c2cd'.repeat(16),
-      vout: 0,
-      satoshis: 10000n,
-      token: {
-        category: counterCategoryId, amount: 0n,
-        nft: { capability: 'minting', commitment: '' },
-      },
-    };
-
-    const counterDataNftUtxo: Utxo = {
-      txid: 'c2cd'.repeat(16),
-      vout: 1,
-      satoshis: 10000n,
-      token: {
-        category: counterCategoryId, amount: 0n,
-        nft: { capability: 'mutable', commitment: counterInitialCommitments[0] },
-      },
-    };
+    let counterCategoryId: string;
 
     beforeAll(async () => {
-      const counterDataNftAddress = getDataNftAddress(counterContract, counterCategoryId);
-      await provider.addUtxo(counterContract.tokenAddress, counterMasterUtxo);
-      await provider.addUtxo(counterDataNftAddress, counterDataNftUtxo);
+      ({ categoryId: counterCategoryId } = await setupStatefulUtxos(
+        provider, counterContract, counterStateLayout, { counter: 5n }, { saltContract: true },
+      ));
     });
 
     it('should return a StatefulFunctionCall for a returning function', () => {
@@ -726,75 +652,25 @@ contract Reader(bytes32 counterCategory) {
     const provider = createTestProvider();
     const returnReaderArtifact = compileString(RETURN_READER_CONTRACT);
     const returningCounterArtifact = compileString(RETURNING_COUNTER_CONTRACT);
-
-    const counterCategoryId = 'd1cd'.repeat(16);
-    const readerCategoryId = 'd2cd'.repeat(16);
-
-    const counterContract = new Contract(returningCounterArtifact, [], { provider });
-    const readerContract = new Contract(
-      returnReaderArtifact, [hexToBin(counterCategoryId)], { provider },
-    );
-
     const counterStateLayout = returningCounterArtifact.stateLayout!;
     const readerStateLayout = returnReaderArtifact.stateLayout!;
 
-    const counterInitialCommitments = buildInitialStateCommitments(
-      counterStateLayout, { counter: 5n },
-    );
-    const readerInitialCommitments = buildInitialStateCommitments(
-      readerStateLayout, { lastResult: 0n },
-    );
-
-    const counterMasterUtxo: Utxo = {
-      txid: 'd3cd'.repeat(16),
-      vout: 0,
-      satoshis: 10000n,
-      token: {
-        category: counterCategoryId, amount: 0n,
-        nft: { capability: 'minting', commitment: '' },
-      },
-    };
-
-    const counterDataNftUtxo: Utxo = {
-      txid: 'd3cd'.repeat(16),
-      vout: 1,
-      satoshis: 10000n,
-      token: {
-        category: counterCategoryId, amount: 0n,
-        nft: { capability: 'mutable', commitment: counterInitialCommitments[0] },
-      },
-    };
-
-    const readerMasterUtxo: Utxo = {
-      txid: 'd4cd'.repeat(16),
-      vout: 0,
-      satoshis: 10000n,
-      token: {
-        category: readerCategoryId, amount: 0n,
-        nft: { capability: 'minting', commitment: '' },
-      },
-    };
-
-    const readerDataNftUtxo: Utxo = {
-      txid: 'd4cd'.repeat(16),
-      vout: 1,
-      satoshis: 10000n,
-      token: {
-        category: readerCategoryId, amount: 0n,
-        nft: { capability: 'mutable', commitment: readerInitialCommitments[0] },
-      },
-    };
+    let counterCategoryId: string;
+    let readerCategoryId: string;
+    let counterContract: Contract;
+    let readerContract: Contract;
 
     beforeAll(async () => {
-      const saltedCounter = counterContract.withSalt(hexToBin(counterCategoryId));
-      const counterDataNftAddress = getDataNftAddress(saltedCounter, counterCategoryId);
-      await provider.addUtxo(saltedCounter.tokenAddress, counterMasterUtxo);
-      await provider.addUtxo(counterDataNftAddress, counterDataNftUtxo);
+      // Genesis counter (B) first so the reader (A) can embed its real category.
+      counterContract = new Contract(returningCounterArtifact, [], { provider });
+      ({ categoryId: counterCategoryId } = await setupStatefulUtxos(
+        provider, counterContract, counterStateLayout, { counter: 5n }, { saltContract: true },
+      ));
 
-      const saltedReader = readerContract.withSalt(hexToBin(readerCategoryId));
-      const readerDataNftAddress = getDataNftAddress(saltedReader, readerCategoryId);
-      await provider.addUtxo(saltedReader.tokenAddress, readerMasterUtxo);
-      await provider.addUtxo(readerDataNftAddress, readerDataNftUtxo);
+      readerContract = new Contract(returnReaderArtifact, [hexToBin(counterCategoryId)], { provider });
+      ({ categoryId: readerCategoryId } = await setupStatefulUtxos(
+        provider, readerContract, readerStateLayout, { lastResult: 0n }, { saltContract: true },
+      ));
     });
 
     it('should return a StatefulFunctionCall from the A-side reader', () => {

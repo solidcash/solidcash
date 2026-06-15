@@ -2,15 +2,13 @@ import { compileString } from 'solidc';
 import { hexToBin } from '@bitauth/libauth';
 import {
   Contract, MockNetworkProvider,
-  StatefulContract, getDataNftAddress, SignatureTemplate,
+  StatefulContract, SignatureTemplate,
 } from '../../src/index.js';
 import type { ConnectedStatefulContract } from '../../src/stateful/StatefulContract.js';
-import { buildInitialStateCommitments } from '@solidcash/utils';
-import { Utxo } from '../../src/interfaces.js';
 import {
   alicePub, alicePriv,
 } from '../fixture/vars.js';
-import { createTestProvider } from '../test-util.js';
+import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
 
 // =============================================================================
 // Contract Sources
@@ -194,41 +192,16 @@ async function setupContracts(
   const artA = compileString(sourceA);
   const artB = compileString(sourceB);
 
-  const catA = 'a1cd'.repeat(16);
-  const catB = 'b1cd'.repeat(16);
+  // Genesis B first: A's constructor embeds B's real category, so B must exist before A is built.
+  const contractB = new Contract(artB, constructorArgsB(), { provider });
+  const { categoryId: catB } = await setupStatefulUtxos(
+    provider, contractB, artB.stateLayout!, initialStateB, { saltContract: true },
+  );
 
-  const contractB = new Contract(artB, constructorArgsB(), { provider, salt: hexToBin(catB) });
-  const contractA = new Contract(artA, constructorArgsA(catB), { provider, salt: hexToBin(catA) });
-
-  const commitsA = buildInitialStateCommitments(artA.stateLayout!, initialStateA);
-  const commitsB = buildInitialStateCommitments(artB.stateLayout!, initialStateB);
-
-  const masterA: Utxo = {
-    txid: 'aacd'.repeat(16), vout: 0, satoshis: 10000n,
-    token: { category: catA, amount: 0n, nft: { capability: 'minting', commitment: '' } },
-  };
-  const masterB: Utxo = {
-    txid: 'bbcd'.repeat(16), vout: 0, satoshis: 10000n,
-    token: { category: catB, amount: 0n, nft: { capability: 'minting', commitment: '' } },
-  };
-
-  await provider.addUtxo(contractA.tokenAddress, masterA);
-  await provider.addUtxo(contractB.tokenAddress, masterB);
-
-  for (let i = 0; i < commitsA.length; i++) {
-    const dataNft: Utxo = {
-      txid: 'aacd'.repeat(16), vout: i + 1, satoshis: 10000n,
-      token: { category: catA, amount: 0n, nft: { capability: 'mutable', commitment: commitsA[i] } },
-    };
-    await provider.addUtxo(getDataNftAddress(contractA, catA), dataNft);
-  }
-  for (let i = 0; i < commitsB.length; i++) {
-    const dataNft: Utxo = {
-      txid: 'bbcd'.repeat(16), vout: i + 1, satoshis: 10000n,
-      token: { category: catB, amount: 0n, nft: { capability: 'mutable', commitment: commitsB[i] } },
-    };
-    await provider.addUtxo(getDataNftAddress(contractB, catB), dataNft);
-  }
+  const contractA = new Contract(artA, constructorArgsA(catB), { provider });
+  const { categoryId: catA } = await setupStatefulUtxos(
+    provider, contractA, artA.stateLayout!, initialStateA, { saltContract: true },
+  );
 
   const scB = StatefulContract.withCategory(contractB, catB);
 
@@ -521,55 +494,19 @@ contract ContractA(bytes32 bCategory) {
       const artB = compileString(B_SOURCE);
       const artC = compileString(C_SOURCE);
 
-      const catA = 'a1cd'.repeat(16);
-      const catB = 'b1cd'.repeat(16);
-      const catC = 'c1cd'.repeat(16);
-
-      const contractC = new Contract(artC, [], { provider, salt: hexToBin(catC) });
-      const contractB = new Contract(artB, [hexToBin(catC)], { provider, salt: hexToBin(catB) });
-      const contractA = new Contract(artA, [hexToBin(catB)], { provider, salt: hexToBin(catA) });
-
-      const commitsA = buildInitialStateCommitments(artA.stateLayout!, { stateA: 0n });
-      const commitsB = buildInitialStateCommitments(artB.stateLayout!, { calledCount: 0n });
-      const commitsC = buildInitialStateCommitments(artC.stateLayout!, { result: 0n });
-
-      // Master UTXOs
-      const masterA: Utxo = {
-        txid: 'aacd'.repeat(16), vout: 0, satoshis: 10000n,
-        token: { category: catA, amount: 0n, nft: { capability: 'minting', commitment: '' } },
-      };
-      const masterB: Utxo = {
-        txid: 'bbcd'.repeat(16), vout: 0, satoshis: 10000n,
-        token: { category: catB, amount: 0n, nft: { capability: 'minting', commitment: '' } },
-      };
-      const masterC: Utxo = {
-        txid: 'cccd'.repeat(16), vout: 0, satoshis: 10000n,
-        token: { category: catC, amount: 0n, nft: { capability: 'minting', commitment: '' } },
-      };
-
-      await provider.addUtxo(contractA.tokenAddress, masterA);
-      await provider.addUtxo(contractB.tokenAddress, masterB);
-      await provider.addUtxo(contractC.tokenAddress, masterC);
-
-      // Data NFTs
-      for (let i = 0; i < commitsA.length; i++) {
-        await provider.addUtxo(getDataNftAddress(contractA, catA), {
-          txid: 'aacd'.repeat(16), vout: i + 1, satoshis: 10000n,
-          token: { category: catA, amount: 0n, nft: { capability: 'mutable', commitment: commitsA[i] } },
-        });
-      }
-      for (let i = 0; i < commitsB.length; i++) {
-        await provider.addUtxo(getDataNftAddress(contractB, catB), {
-          txid: 'bbcd'.repeat(16), vout: i + 1, satoshis: 10000n,
-          token: { category: catB, amount: 0n, nft: { capability: 'mutable', commitment: commitsB[i] } },
-        });
-      }
-      for (let i = 0; i < commitsC.length; i++) {
-        await provider.addUtxo(getDataNftAddress(contractC, catC), {
-          txid: 'cccd'.repeat(16), vout: i + 1, satoshis: 10000n,
-          token: { category: catC, amount: 0n, nft: { capability: 'mutable', commitment: commitsC[i] } },
-        });
-      }
+      // Genesis in dependency order: C (leaf) -> B (embeds C) -> A (embeds B).
+      const contractC = new Contract(artC, [], { provider });
+      const { categoryId: catC } = await setupStatefulUtxos(
+        provider, contractC, artC.stateLayout!, { result: 0n }, { saltContract: true },
+      );
+      const contractB = new Contract(artB, [hexToBin(catC)], { provider });
+      const { categoryId: catB } = await setupStatefulUtxos(
+        provider, contractB, artB.stateLayout!, { calledCount: 0n }, { saltContract: true },
+      );
+      const contractA = new Contract(artA, [hexToBin(catB)], { provider });
+      const { categoryId: catA } = await setupStatefulUtxos(
+        provider, contractA, artA.stateLayout!, { stateA: 0n }, { saltContract: true },
+      );
 
       // Connect C (no external deps)
       const scC = StatefulContract.withCategory(contractC, catC);
@@ -595,21 +532,10 @@ contract ContractA(bytes32 bCategory) {
 
       // Create a separate A contract on the SAME provider (no connect-time IB binding)
       const artA = compileString(A_SOURCE);
-      const catA = 'a2cd'.repeat(16);
-      const catB = 'b1cd'.repeat(16);
-      const contractA = new Contract(artA, [hexToBin(catB)], { provider, salt: hexToBin(catA) });
-
-      const commitsA = buildInitialStateCommitments(artA.stateLayout!, { stateA: 0n });
-      await provider.addUtxo(contractA.tokenAddress, {
-        txid: 'a2cd'.repeat(16), vout: 0, satoshis: 10000n,
-        token: { category: catA, amount: 0n, nft: { capability: 'minting', commitment: '' } },
-      });
-      for (let i = 0; i < commitsA.length; i++) {
-        await provider.addUtxo(getDataNftAddress(contractA, catA), {
-          txid: 'a2cd'.repeat(16), vout: i + 1, satoshis: 10000n,
-          token: { category: catA, amount: 0n, nft: { capability: 'mutable', commitment: commitsA[i] } },
-        });
-      }
+      const contractA = new Contract(artA, [hexToBin(scB.categoryId)], { provider });
+      const { categoryId: catA } = await setupStatefulUtxos(
+        provider, contractA, artA.stateLayout!, { stateA: 0n }, { saltContract: true },
+      );
 
       const scA = StatefulContract.withCategory(contractA, catA);
 
@@ -626,21 +552,10 @@ contract ContractA(bytes32 bCategory) {
 
       // Create a separate A contract on the SAME provider (no connect-time IB binding)
       const artA = compileString(A_SOURCE);
-      const catA = 'a3cd'.repeat(16);
-      const catB = 'b1cd'.repeat(16);
-      const contractA = new Contract(artA, [hexToBin(catB)], { provider, salt: hexToBin(catA) });
-
-      const commitsA = buildInitialStateCommitments(artA.stateLayout!, { stateA: 0n });
-      await provider.addUtxo(contractA.tokenAddress, {
-        txid: 'a3cd'.repeat(16), vout: 0, satoshis: 10000n,
-        token: { category: catA, amount: 0n, nft: { capability: 'minting', commitment: '' } },
-      });
-      for (let i = 0; i < commitsA.length; i++) {
-        await provider.addUtxo(getDataNftAddress(contractA, catA), {
-          txid: 'a3cd'.repeat(16), vout: i + 1, satoshis: 10000n,
-          token: { category: catA, amount: 0n, nft: { capability: 'mutable', commitment: commitsA[i] } },
-        });
-      }
+      const contractA = new Contract(artA, [hexToBin(scB.categoryId)], { provider });
+      const { categoryId: catA } = await setupStatefulUtxos(
+        provider, contractA, artA.stateLayout!, { stateA: 0n }, { saltContract: true },
+      );
 
       const scA = StatefulContract.withCategory(contractA, catA);
 
@@ -712,35 +627,17 @@ contract ContractB(bytes32 aCat) is IB {
       const artA = compileString(A_SOURCE);
       const artB = compileString(B_SOURCE);
 
-      const catA = 'a1cd'.repeat(16);
-      const catB = 'b1cd'.repeat(16);
-
-      const contractA = new Contract(artA, [hexToBin(catB)], { provider, salt: hexToBin(catA) });
-      const contractB = new Contract(artB, [hexToBin(catA)], { provider, salt: hexToBin(catB) });
-
-      const commitsA = buildInitialStateCommitments(artA.stateLayout!, { counter: 0n });
-      const commitsB = buildInitialStateCommitments(artB.stateLayout!, { counter: 0n });
-
-      await provider.addUtxo(contractA.tokenAddress, {
-        txid: 'aacd'.repeat(16), vout: 0, satoshis: 10000n,
-        token: { category: catA, amount: 0n, nft: { capability: 'minting', commitment: '' } },
-      });
-      await provider.addUtxo(contractB.tokenAddress, {
-        txid: 'bbcd'.repeat(16), vout: 0, satoshis: 10000n,
-        token: { category: catB, amount: 0n, nft: { capability: 'minting', commitment: '' } },
-      });
-      for (let i = 0; i < commitsA.length; i++) {
-        await provider.addUtxo(getDataNftAddress(contractA, catA), {
-          txid: 'aacd'.repeat(16), vout: i + 1, satoshis: 10000n,
-          token: { category: catA, amount: 0n, nft: { capability: 'mutable', commitment: commitsA[i] } },
-        });
-      }
-      for (let i = 0; i < commitsB.length; i++) {
-        await provider.addUtxo(getDataNftAddress(contractB, catB), {
-          txid: 'bbcd'.repeat(16), vout: i + 1, satoshis: 10000n,
-          token: { category: catB, amount: 0n, nft: { capability: 'mutable', commitment: commitsB[i] } },
-        });
-      }
+      // Mutual A<->B: genesis B with a placeholder A-category (real cycle wired via externals
+      // below), then genesis A with B's real category.
+      const placeholderCatA = 'a1cd'.repeat(16);
+      const contractB = new Contract(artB, [hexToBin(placeholderCatA)], { provider });
+      const { categoryId: catB } = await setupStatefulUtxos(
+        provider, contractB, artB.stateLayout!, { counter: 0n }, { saltContract: true },
+      );
+      const contractA = new Contract(artA, [hexToBin(catB)], { provider });
+      const { categoryId: catA } = await setupStatefulUtxos(
+        provider, contractA, artA.stateLayout!, { counter: 0n }, { saltContract: true },
+      );
 
       // Create circular binding: A->B->A
       const scA = StatefulContract.withCategory(contractA, catA);
@@ -762,39 +659,16 @@ contract ContractB(bytes32 aCat) is IB {
       const artA = compileString(DEPOSITOR_A);
       const artB = compileString(POOL_B);
 
-      const catA = 'a1cd'.repeat(16);
-      const catB = 'b1cd'.repeat(16);
-
-      // Build A with the traditional constructor args
-      const contractA = new Contract(artA, [hexToBin(catB)], { provider, salt: hexToBin(catA) });
-
-      const commitsA = buildInitialStateCommitments(artA.stateLayout!, { totalDeposited: 0n });
-      const commitsB = buildInitialStateCommitments(artB.stateLayout!, { balance: 0n });
-
-      await provider.addUtxo(contractA.tokenAddress, {
-        txid: 'aacd'.repeat(16), vout: 0, satoshis: 10000n,
-        token: { category: catA, amount: 0n, nft: { capability: 'minting', commitment: '' } },
-      });
-      for (let i = 0; i < commitsA.length; i++) {
-        await provider.addUtxo(getDataNftAddress(contractA, catA), {
-          txid: 'aacd'.repeat(16), vout: i + 1, satoshis: 10000n,
-          token: { category: catA, amount: 0n, nft: { capability: 'mutable', commitment: commitsA[i] } },
-        });
-      }
-
-      // Build B's contract manually for UTXOs (externalContracts auto-creates internally,
-      // but we still need UTXOs in the provider)
-      const contractB = new Contract(artB, [], { provider, salt: hexToBin(catB) });
-      await provider.addUtxo(contractB.tokenAddress, {
-        txid: 'bbcd'.repeat(16), vout: 0, satoshis: 10000n,
-        token: { category: catB, amount: 0n, nft: { capability: 'minting', commitment: '' } },
-      });
-      for (let i = 0; i < commitsB.length; i++) {
-        await provider.addUtxo(getDataNftAddress(contractB, catB), {
-          txid: 'bbcd'.repeat(16), vout: i + 1, satoshis: 10000n,
-          token: { category: catB, amount: 0n, nft: { capability: 'mutable', commitment: commitsB[i] } },
-        });
-      }
+      // Genesis B first; A embeds B's real category. externalContracts auto-creates B internally
+      // from (artB, catB), which must resolve to the same addresses genesis funded.
+      const contractB = new Contract(artB, [], { provider });
+      const { categoryId: catB } = await setupStatefulUtxos(
+        provider, contractB, artB.stateLayout!, { balance: 0n }, { saltContract: true },
+      );
+      const contractA = new Contract(artA, [hexToBin(catB)], { provider });
+      const { categoryId: catA } = await setupStatefulUtxos(
+        provider, contractA, artA.stateLayout!, { totalDeposited: 0n }, { saltContract: true },
+      );
 
       // Use externalContracts instead of manually creating scB + wiring externals
       const scA = StatefulContract.withCategory(contractA, catA, {
@@ -873,55 +747,19 @@ contract ContractA(bytes32 bCategory) {
       const artB = compileString(B_SOURCE);
       const artC = compileString(C_SOURCE);
 
-      const catA = 'a1cd'.repeat(16);
-      const catB = 'b1cd'.repeat(16);
-      const catC = 'c1cd'.repeat(16);
-
-      // Create Contract A (user still provides their own constructor args)
-      const contractA = new Contract(artA, [hexToBin(catB)], { provider, salt: hexToBin(catA) });
-
-      // Add UTXOs for all three contracts
-      const commitsA = buildInitialStateCommitments(artA.stateLayout!, { stateA: 0n });
-      const commitsB = buildInitialStateCommitments(artB.stateLayout!, { calledCount: 0n });
-      const commitsC = buildInitialStateCommitments(artC.stateLayout!, { result: 0n });
-
-      // We need to add UTXOs for B and C at the addresses the internally-created
-      // Contract objects will use. Since locking bytecode depends on constructor args + salt,
-      // we create temporary contracts to derive the correct addresses.
-      const contractB = new Contract(artB, [hexToBin(catC)], { provider, salt: hexToBin(catB) });
-      const contractC = new Contract(artC, [], { provider, salt: hexToBin(catC) });
-
-      await provider.addUtxo(contractA.tokenAddress, {
-        txid: 'aacd'.repeat(16), vout: 0, satoshis: 10000n,
-        token: { category: catA, amount: 0n, nft: { capability: 'minting', commitment: '' } },
-      });
-      await provider.addUtxo(contractB.tokenAddress, {
-        txid: 'bbcd'.repeat(16), vout: 0, satoshis: 10000n,
-        token: { category: catB, amount: 0n, nft: { capability: 'minting', commitment: '' } },
-      });
-      await provider.addUtxo(contractC.tokenAddress, {
-        txid: 'cccd'.repeat(16), vout: 0, satoshis: 10000n,
-        token: { category: catC, amount: 0n, nft: { capability: 'minting', commitment: '' } },
-      });
-
-      for (let i = 0; i < commitsA.length; i++) {
-        await provider.addUtxo(getDataNftAddress(contractA, catA), {
-          txid: 'aacd'.repeat(16), vout: i + 1, satoshis: 10000n,
-          token: { category: catA, amount: 0n, nft: { capability: 'mutable', commitment: commitsA[i] } },
-        });
-      }
-      for (let i = 0; i < commitsB.length; i++) {
-        await provider.addUtxo(getDataNftAddress(contractB, catB), {
-          txid: 'bbcd'.repeat(16), vout: i + 1, satoshis: 10000n,
-          token: { category: catB, amount: 0n, nft: { capability: 'mutable', commitment: commitsB[i] } },
-        });
-      }
-      for (let i = 0; i < commitsC.length; i++) {
-        await provider.addUtxo(getDataNftAddress(contractC, catC), {
-          txid: 'cccd'.repeat(16), vout: i + 1, satoshis: 10000n,
-          token: { category: catC, amount: 0n, nft: { capability: 'mutable', commitment: commitsC[i] } },
-        });
-      }
+      // Genesis in dependency order: C (leaf) -> B (embeds C) -> A (embeds B).
+      const contractC = new Contract(artC, [], { provider });
+      const { categoryId: catC } = await setupStatefulUtxos(
+        provider, contractC, artC.stateLayout!, { result: 0n }, { saltContract: true },
+      );
+      const contractB = new Contract(artB, [hexToBin(catC)], { provider });
+      const { categoryId: catB } = await setupStatefulUtxos(
+        provider, contractB, artB.stateLayout!, { calledCount: 0n }, { saltContract: true },
+      );
+      const contractA = new Contract(artA, [hexToBin(catB)], { provider });
+      const { categoryId: catA } = await setupStatefulUtxos(
+        provider, contractA, artA.stateLayout!, { stateA: 0n }, { saltContract: true },
+      );
 
       // ONE LINE: flat map of all external artifacts + category IDs
       const scA = StatefulContract.withCategory(contractA, catA, {
@@ -986,36 +824,15 @@ contract Depositor(bytes32 poolCategory) {
       const ecAbi = artA.abi.find((f) => f.name === 'addToPool')!;
       expect(ecAbi.externalCalls![0].interfaceName).toBe('Pool');
 
-      const catA = 'a1cd'.repeat(16);
-      const catB = 'b1cd'.repeat(16);
-
-      const contractA = new Contract(artA, [hexToBin(catB)], { provider, salt: hexToBin(catA) });
-      const contractB = new Contract(artB, [], { provider, salt: hexToBin(catB) });
-
-      const commitsA = buildInitialStateCommitments(artA.stateLayout!, { totalDeposited: 0n });
-      const commitsB = buildInitialStateCommitments(artB.stateLayout!, { balance: 0n });
-
-      await provider.addUtxo(contractA.tokenAddress, {
-        txid: 'aacd'.repeat(16), vout: 0, satoshis: 10000n,
-        token: { category: catA, amount: 0n, nft: { capability: 'minting', commitment: '' } },
-      });
-      await provider.addUtxo(contractB.tokenAddress, {
-        txid: 'bbcd'.repeat(16), vout: 0, satoshis: 10000n,
-        token: { category: catB, amount: 0n, nft: { capability: 'minting', commitment: '' } },
-      });
-
-      for (let i = 0; i < commitsA.length; i++) {
-        await provider.addUtxo(getDataNftAddress(contractA, catA), {
-          txid: 'aacd'.repeat(16), vout: i + 1, satoshis: 10000n,
-          token: { category: catA, amount: 0n, nft: { capability: 'mutable', commitment: commitsA[i] } },
-        });
-      }
-      for (let i = 0; i < commitsB.length; i++) {
-        await provider.addUtxo(getDataNftAddress(contractB, catB), {
-          txid: 'bbcd'.repeat(16), vout: i + 1, satoshis: 10000n,
-          token: { category: catB, amount: 0n, nft: { capability: 'mutable', commitment: commitsB[i] } },
-        });
-      }
+      // Genesis B first; A embeds B's real category.
+      const contractB = new Contract(artB, [], { provider });
+      const { categoryId: catB } = await setupStatefulUtxos(
+        provider, contractB, artB.stateLayout!, { balance: 0n }, { saltContract: true },
+      );
+      const contractA = new Contract(artA, [hexToBin(catB)], { provider });
+      const { categoryId: catA } = await setupStatefulUtxos(
+        provider, contractA, artA.stateLayout!, { totalDeposited: 0n }, { saltContract: true },
+      );
 
       // Key: use 'Pool' (the contract name) as the key - matches interfaceName in ABI
       const scA = StatefulContract.withCategory(contractA, catA, {
@@ -1033,36 +850,15 @@ contract Depositor(bytes32 poolCategory) {
       const artA = compileString(DEPOSITOR_A_CONTRACT_REF, { importResolver });
       const artB = compileString(POOL_B_STANDALONE);
 
-      const catA = 'a1cd'.repeat(16);
-      const catB = 'b1cd'.repeat(16);
-
-      const contractA = new Contract(artA, [hexToBin(catB)], { provider, salt: hexToBin(catA) });
-      const contractB = new Contract(artB, [], { provider, salt: hexToBin(catB) });
-
-      const commitsA = buildInitialStateCommitments(artA.stateLayout!, { totalDeposited: 0n });
-      const commitsB = buildInitialStateCommitments(artB.stateLayout!, { balance: 0n });
-
-      await provider.addUtxo(contractA.tokenAddress, {
-        txid: 'aacd'.repeat(16), vout: 0, satoshis: 10000n,
-        token: { category: catA, amount: 0n, nft: { capability: 'minting', commitment: '' } },
-      });
-      await provider.addUtxo(contractB.tokenAddress, {
-        txid: 'bbcd'.repeat(16), vout: 0, satoshis: 10000n,
-        token: { category: catB, amount: 0n, nft: { capability: 'minting', commitment: '' } },
-      });
-
-      for (let i = 0; i < commitsA.length; i++) {
-        await provider.addUtxo(getDataNftAddress(contractA, catA), {
-          txid: 'aacd'.repeat(16), vout: i + 1, satoshis: 10000n,
-          token: { category: catA, amount: 0n, nft: { capability: 'mutable', commitment: commitsA[i] } },
-        });
-      }
-      for (let i = 0; i < commitsB.length; i++) {
-        await provider.addUtxo(getDataNftAddress(contractB, catB), {
-          txid: 'bbcd'.repeat(16), vout: i + 1, satoshis: 10000n,
-          token: { category: catB, amount: 0n, nft: { capability: 'mutable', commitment: commitsB[i] } },
-        });
-      }
+      // Genesis B first; A embeds B's real category.
+      const contractB = new Contract(artB, [], { provider });
+      const { categoryId: catB } = await setupStatefulUtxos(
+        provider, contractB, artB.stateLayout!, { balance: 0n }, { saltContract: true },
+      );
+      const contractA = new Contract(artA, [hexToBin(catB)], { provider });
+      const { categoryId: catA } = await setupStatefulUtxos(
+        provider, contractA, artA.stateLayout!, { totalDeposited: 0n }, { saltContract: true },
+      );
 
       // Use connect-time externals with contract name 'Pool'
       const scB = StatefulContract.withCategory(contractB, catB);

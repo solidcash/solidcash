@@ -1,18 +1,14 @@
 import { compileString } from 'solidc';
-import { hexToBin } from '@bitauth/libauth';
 import {
   Contract, StatefulContract,
-  getDataNftAddress,
 } from '../../src/index.js';
 import {
-  buildInitialStateCommitments,
   parseEntryCommitment,
 } from '@solidcash/utils';
 import {
   alicePkh,
 } from '../fixture/vars.js';
-import { createTestProvider, getTxOutputs } from '../test-util.js';
-import { Utxo } from '../../src/interfaces.js';
+import { createTestProvider, getTxOutputs, setupStatefulUtxos } from '../test-util.js';
 
 // ===== Contract Sources =====
 
@@ -117,36 +113,9 @@ describe('Dynamic Mapping Keys', () => {
       const provider = createTestProvider();
       const contract = new Contract(artifact, [], { provider });
       const stateLayout = artifact.stateLayout!;
-      const categoryId = 'c1cd'.repeat(16);
-      const saltedContract = contract.withSalt(hexToBin(categoryId));
-
-      const initialCommitments = buildInitialStateCommitments(stateLayout, { counter: 0n });
-
-      const masterUtxo: Utxo = {
-        txid: 'd1cd'.repeat(16),
-        vout: 0,
-        satoshis: 10000n,
-        token: {
-          category: categoryId,
-          amount: 0n,
-          nft: { capability: 'minting', commitment: '' },
-        },
-      };
-
-      const dataNftAddress = getDataNftAddress(saltedContract, categoryId);
-      const dataNftUtxo: Utxo = {
-        txid: 'd1cd'.repeat(16),
-        vout: 1,
-        satoshis: 10000n,
-        token: {
-          category: categoryId,
-          amount: 0n,
-          nft: { capability: 'mutable', commitment: initialCommitments[0] },
-        },
-      };
-
-      await provider.addUtxo(saltedContract.tokenAddress, masterUtxo);
-      await provider.addUtxo(dataNftAddress, dataNftUtxo);
+      const { categoryId } = await setupStatefulUtxos(
+        provider, contract, stateLayout, { counter: 0n }, { saltContract: true },
+      );
 
       const sc = StatefulContract.withCategory(contract, categoryId);
       const key = alicePkh;
@@ -219,37 +188,10 @@ describe('Dynamic Mapping Keys', () => {
     it('should auto-resolve state key from on-chain state', async () => {
       const scProvider = createTestProvider();
       const scContract = new Contract(artifact, [], { provider: scProvider });
-      const categoryId = 'c2cd'.repeat(16);
-      const saltedContract = scContract.withSalt(hexToBin(categoryId));
-
       // Setup: admin = alicePkh
-      const initialCommitments = buildInitialStateCommitments(stateLayout, { admin: alicePkh });
-
-      const masterUtxo: Utxo = {
-        txid: 'd2cd'.repeat(16),
-        vout: 0,
-        satoshis: 10000n,
-        token: {
-          category: categoryId,
-          amount: 0n,
-          nft: { capability: 'minting', commitment: '' },
-        },
-      };
-
-      const dataNftAddress = getDataNftAddress(saltedContract, categoryId);
-      const dataNftUtxo: Utxo = {
-        txid: 'd2cd'.repeat(16),
-        vout: 1,
-        satoshis: 10000n,
-        token: {
-          category: categoryId,
-          amount: 0n,
-          nft: { capability: 'mutable', commitment: initialCommitments[0] },
-        },
-      };
-
-      await scProvider.addUtxo(saltedContract.tokenAddress, masterUtxo);
-      await scProvider.addUtxo(dataNftAddress, dataNftUtxo);
+      const { categoryId } = await setupStatefulUtxos(
+        scProvider, scContract, stateLayout, { admin: alicePkh }, { saltContract: true },
+      );
 
       const sc = StatefulContract.withCategory(scContract, categoryId);
 
@@ -289,36 +231,9 @@ describe('Dynamic Mapping Keys', () => {
     it('should auto-resolve expression key without withEntryKey() for new entries', async () => {
       const scProvider = createTestProvider();
       const scContract = new Contract(artifact, [], { provider: scProvider });
-      const categoryId = 'c3cd'.repeat(16);
-      const saltedContract = scContract.withSalt(hexToBin(categoryId));
-
-      const initialCommitments = buildInitialStateCommitments(stateLayout, { counter: 0n });
-
-      const masterUtxo: Utxo = {
-        txid: 'd3cd'.repeat(16),
-        vout: 0,
-        satoshis: 10000n,
-        token: {
-          category: categoryId,
-          amount: 0n,
-          nft: { capability: 'minting', commitment: '' },
-        },
-      };
-
-      const dataNftAddress = getDataNftAddress(saltedContract, categoryId);
-      const dataNftUtxo: Utxo = {
-        txid: 'd3cd'.repeat(16),
-        vout: 1,
-        satoshis: 10000n,
-        token: {
-          category: categoryId,
-          amount: 0n,
-          nft: { capability: 'mutable', commitment: initialCommitments[0] },
-        },
-      };
-
-      await scProvider.addUtxo(saltedContract.tokenAddress, masterUtxo);
-      await scProvider.addUtxo(dataNftAddress, dataNftUtxo);
+      const { categoryId } = await setupStatefulUtxos(
+        scProvider, scContract, stateLayout, { counter: 0n }, { saltContract: true },
+      );
 
       const sc = StatefulContract.withCategory(scContract, categoryId);
 
@@ -336,36 +251,9 @@ describe('Dynamic Mapping Keys', () => {
     it('should succeed with withEntryKey()', async () => {
       const scProvider = createTestProvider();
       const scContract = new Contract(artifact, [], { provider: scProvider });
-      const categoryId = 'c4cd'.repeat(16);
-      const saltedContract = scContract.withSalt(hexToBin(categoryId));
-
-      const initialCommitments = buildInitialStateCommitments(stateLayout, { counter: 0n });
-
-      const masterUtxo: Utxo = {
-        txid: 'd4cd'.repeat(16),
-        vout: 0,
-        satoshis: 10000n,
-        token: {
-          category: categoryId,
-          amount: 0n,
-          nft: { capability: 'minting', commitment: '' },
-        },
-      };
-
-      const dataNftAddress = getDataNftAddress(saltedContract, categoryId);
-      const dataNftUtxo: Utxo = {
-        txid: 'd4cd'.repeat(16),
-        vout: 1,
-        satoshis: 10000n,
-        token: {
-          category: categoryId,
-          amount: 0n,
-          nft: { capability: 'mutable', commitment: initialCommitments[0] },
-        },
-      };
-
-      await scProvider.addUtxo(saltedContract.tokenAddress, masterUtxo);
-      await scProvider.addUtxo(dataNftAddress, dataNftUtxo);
+      const { categoryId } = await setupStatefulUtxos(
+        scProvider, scContract, stateLayout, { counter: 0n }, { saltContract: true },
+      );
 
       const sc = StatefulContract.withCategory(scContract, categoryId);
 
@@ -391,37 +279,10 @@ describe('Dynamic Mapping Keys', () => {
       const provider = createTestProvider();
       const artifact = compileString(EXPRESSION_KEY_CONTRACT);
       const contract = new Contract(artifact, [], { provider });
-      const categoryId = 'c5cd'.repeat(16);
       const stateLayout = artifact.stateLayout!;
-
-      const saltedContract = contract.withSalt(hexToBin(categoryId));
-      const initialCommitments = buildInitialStateCommitments(stateLayout, { counter: 0n });
-
-      const masterUtxo: Utxo = {
-        txid: 'd5cd'.repeat(16),
-        vout: 0,
-        satoshis: 10000n,
-        token: {
-          category: categoryId,
-          amount: 0n,
-          nft: { capability: 'minting', commitment: '' },
-        },
-      };
-
-      const dataNftAddress = getDataNftAddress(saltedContract, categoryId);
-      const dataNftUtxo: Utxo = {
-        txid: 'd5cd'.repeat(16),
-        vout: 1,
-        satoshis: 10000n,
-        token: {
-          category: categoryId,
-          amount: 0n,
-          nft: { capability: 'mutable', commitment: initialCommitments[0] },
-        },
-      };
-
-      await provider.addUtxo(saltedContract.tokenAddress, masterUtxo);
-      await provider.addUtxo(dataNftAddress, dataNftUtxo);
+      const { categoryId } = await setupStatefulUtxos(
+        provider, contract, stateLayout, { counter: 0n }, { saltContract: true },
+      );
 
       const sc = StatefulContract.withCategory(contract, categoryId);
       // withEntryKey provides the expression key; state and entry are auto-derived

@@ -16,7 +16,7 @@ import {
   carolPriv,
   carolPub,
 } from '../fixture/vars.js';
-import { addressToLockScript, randomUtxo } from '../../src/utils.js';
+import { addressToLockScript, randomUtxo, isNonTokenUtxo } from '../../src/utils.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 import twtArtifact from '../fixture/transfer_with_timeout.artifact.js';
 import { createTestProvider, getTxOutputs } from '../test-util.js';
@@ -49,8 +49,8 @@ describe('Multi Contract', () => {
       // given
       const to = p2pkhInstance1.address;
       const amount = 10000n;
-      const p2pkhInstance1Utxos = await p2pkhInstance1.getUtxos();
-      const p2pkhInstance2Utxos = await p2pkhInstance2.getUtxos();
+      const p2pkhInstance1Utxos = (await p2pkhInstance1.getUtxos()).filter(isNonTokenUtxo);
+      const p2pkhInstance2Utxos = (await p2pkhInstance2.getUtxos()).filter(isNonTokenUtxo);
       const bobAddressUtxos = await provider.getUtxos(bobAddress);
 
       // when
@@ -71,8 +71,8 @@ describe('Multi Contract', () => {
       // given
       const to = p2pkhInstance1.address;
       const amount = 10000n;
-      const p2pkhInstance1Utxos = await p2pkhInstance1.getUtxos();
-      const p2pkhInstance2Utxos = await p2pkhInstance2.getUtxos();
+      const p2pkhInstance1Utxos = (await p2pkhInstance1.getUtxos()).filter(isNonTokenUtxo);
+      const p2pkhInstance2Utxos = (await p2pkhInstance2.getUtxos()).filter(isNonTokenUtxo);
       const bobAddressUtxos = await provider.getUtxos(bobAddress);
 
       // when
@@ -101,8 +101,8 @@ describe('Multi Contract', () => {
       const to = p2pkhInstance1.address;
       const amount = 10000n;
       const outputs = [{ to, amount }];
-      const p2pkhInstance1Utxos = await p2pkhInstance1.getUtxos();
-      const p2pkhInstance2Utxos = await p2pkhInstance2.getUtxos();
+      const p2pkhInstance1Utxos = (await p2pkhInstance1.getUtxos()).filter(isNonTokenUtxo);
+      const p2pkhInstance2Utxos = (await p2pkhInstance2.getUtxos()).filter(isNonTokenUtxo);
       const bobAddressUtxos = await provider.getUtxos(bobAddress);
 
       // when
@@ -121,7 +121,7 @@ describe('Multi Contract', () => {
 
   describe('Different contracts', () => {
     const p2pkhContract = new Contract(p2pkhArtifact, [bobPkh], { provider });
-    const twtContract = new Contract(twtArtifact, [bobPub, carolPub, 100000n], { provider });
+    const twtContract = new Contract(twtArtifact, [bobPub, carolPub, 100n], { provider });
 
     beforeAll(async () => {
       console.log(p2pkhContract.tokenAddress);
@@ -135,8 +135,8 @@ describe('Multi Contract', () => {
       // given
       const to = p2pkhContract.address;
       const amount = 10000n;
-      const p2pkhContractUtxos = await p2pkhContract.getUtxos();
-      const twtContractUtxos = await twtContract.getUtxos();
+      const p2pkhContractUtxos = (await p2pkhContract.getUtxos()).filter(isNonTokenUtxo);
+      const twtContractUtxos = (await twtContract.getUtxos()).filter(isNonTokenUtxo);
       const bobAddressUtxos = await provider.getUtxos(bobAddress);
 
       // when
@@ -157,8 +157,8 @@ describe('Multi Contract', () => {
       // given
       const to = p2pkhContract.address;
       const amount = 10000n;
-      const p2pkhContractUtxos = await p2pkhContract.getUtxos();
-      const twtContractUtxos = await twtContract.getUtxos();
+      const p2pkhContractUtxos = (await p2pkhContract.getUtxos()).filter(isNonTokenUtxo);
+      const twtContractUtxos = (await twtContract.getUtxos()).filter(isNonTokenUtxo);
       const bobAddressUtxos = await provider.getUtxos(bobAddress);
 
       // when
@@ -183,12 +183,12 @@ describe('Multi Contract', () => {
       const to = p2pkhContract.address;
       const amount = 10000n;
       const outputs = [{ to, amount }];
-      const p2pkhContractUtxos = await p2pkhContract.getUtxos();
-      const twtContractUtxos = await twtContract.getUtxos();
+      const p2pkhContractUtxos = (await p2pkhContract.getUtxos()).filter(isNonTokenUtxo);
+      const twtContractUtxos = (await twtContract.getUtxos()).filter(isNonTokenUtxo);
       const bobAddressUtxos = await provider.getUtxos(bobAddress);
 
-      // Set block height past the locktime so the timelocked tx is valid
-      provider.setBlockHeight(1000001);
+      // Use the current block height as locktime: final (<= tip) and past the timeout (>= 100)
+      const currentHeight = await provider.getBlockHeight();
 
       // when
       const tx = await new TransactionBuilder({ provider })
@@ -196,7 +196,7 @@ describe('Multi Contract', () => {
         .addInput(twtContractUtxos[0], twtContract.unlock.timeout(bobSignatureTemplate))
         .addInput(bobAddressUtxos[0], bobSignatureTemplate.unlockP2PKH())
         .addOutput({ to, amount })
-        .setLocktime(1000000)
+        .setLocktime(currentHeight)
         .send();
 
       // then

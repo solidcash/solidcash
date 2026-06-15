@@ -1,4 +1,5 @@
 import { compileString } from 'solidc';
+import { hexToBin } from '@bitauth/libauth';
 import {
   Contract, SignatureTemplate, StatefulContract,
   getDataNftAddress,
@@ -189,57 +190,32 @@ describe('StatefulContract.destroy()', () => {
 
   describe('batch destruction with maxInputsPerTx', () => {
     const provider = createTestProvider();
-    const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
 
     it('should batch destruction into multiple transactions when input count exceeds limit', async () => {
-      // Deploy a simple counter contract
-      const fundingUtxo: Utxo = {
-        txid: 'ddcd'.repeat(16),
-        vout: 0,
-        satoshis: 100000n,
-      };
-      await provider.addUtxo(p2pkh.address, fundingUtxo);
+      // Real genesis: 1 master + 5 mutable data NFTs sharing one real category.
+      // Many data NFTs (vs a single field) give destroy() enough inputs to batch.
+      const { buildPushdataCommitment } = await import('@solidcash/utils');
+      const stateLayout = selfdestructArtifact.stateLayout!;
+      const contract = new Contract(selfdestructArtifact, [alicePub], { provider });
 
-      const result = await StatefulContract.deploy(selfdestructArtifact, [alicePub], {
-        provider,
-        fundingUtxo,
-        funder: p2pkh.unlock.spend(alicePub, new SignatureTemplate(alicePriv)),
-        initialState: { counter: 0n },
-        changeAddress: p2pkh.address,
+      const { categoryId } = await (provider as any).addTokenUtxosDynamic((cat: string) => {
+        const salted = contract.withSalt(hexToBin(cat));
+        const dataNftAddr = getDataNftAddress(salted, cat);
+        // counter=0 for the real data NFT, then 4 more with distinct valid values
+        const counters = [0n, 10n, 11n, 12n, 13n];
+        return [
+          { address: salted.tokenAddress, satoshis: 10000n,
+            token: { amount: 0n, nft: { capability: 'minting', commitment: '' } } },
+          ...counters.map((counter) => ({
+            address: dataNftAddr, satoshis: 1200n,
+            token: { amount: 0n, nft: { capability: 'mutable', commitment: buildPushdataCommitment(stateLayout, { counter }, 0) } },
+          })),
+        ];
       });
 
-      const deployedContract = result.contract;
-      const categoryId = result.categoryId;
+      const deployedContract = StatefulContract.withCategory(contract, categoryId);
 
-      // The deployed contract has 1 master + 1 data NFT = 2 inputs.
-      // To test batching, we need more inputs. We can manually add extra
-      // "phantom" data NFTs at the data NFT address. These will be discovered
-      // by destroy() and included as additional data NFT inputs.
-      // (In practice, extra data NFTs appear when state layout has many fields.)
-      const dataNftAddress = getDataNftAddress(deployedContract.inner, categoryId);
-
-      // Add phantom data NFTs with vout > 1 to sort after the real one.
-      // Give them valid pushdata commitments (matching the stateLayout for nftIdx 0).
-      // For `int counter`, a valid commitment is just an encoded int value.
-      const { buildPushdataCommitment } = await import('@solidcash/utils');
-      for (let i = 0; i < 4; i++) {
-        const commitment = buildPushdataCommitment(
-          selfdestructArtifact.stateLayout!, { counter: BigInt(i + 10) }, 0,
-        );
-        const phantomUtxo: Utxo = {
-          txid: `d${i + 1}`.padEnd(64, `${i + 1}`),
-          vout: i + 2, // vout > 1 to sort after real data NFT
-          satoshis: 1200n,
-          token: {
-            category: categoryId,
-            amount: 0n,
-            nft: { capability: 'mutable', commitment },
-          },
-        };
-        await provider.addUtxo(dataNftAddress, phantomUtxo);
-      }
-
-      // Total inputs: master(1) + real dataNft(1) + phantom dataNfts(4) = 6
+      // Total inputs: master(1) + dataNfts(5) = 6
       // With maxInputsPerTx=3, need multiple batches
       const destroyResult = await StatefulContract.destroy({
         provider,

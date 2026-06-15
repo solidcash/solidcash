@@ -12,6 +12,7 @@ import {
   alicePub,
   alicePriv,
 } from '../fixture/vars.js';
+import { hexToBin } from '@bitauth/libauth';
 import { createTestProvider, getTxOutputs } from '../test-util.js';
 import { Utxo } from '../../src/interfaces.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
@@ -162,38 +163,47 @@ describe('Threading', () => {
   });
 
   describe('ThreadManager', () => {
-    // Helper to set up a connected stateful contract with mock UTXOs
+    // Helper to set up a connected stateful contract via real token genesis.
+    // Genesis-es `masterCount` minting NFTs + dataNftCount mutable data NFTs under
+    // one real category, salting addresses the way withCategory expects.
     async function setupContract(
-      categoryId: string,
       masterCount: number,
       opts?: { masterSatoshis?: bigint },
-    ): { sc: ReturnType<typeof StatefulContract.connect>; provider: MockNetworkProvider } {
+    ): Promise<{
+        sc: ReturnType<typeof StatefulContract.withCategory>;
+        provider: MockNetworkProvider; categoryId: string;
+      }> {
       const provider = createTestProvider();
       const contract = new Contract(artifact, [], { provider });
-      const sc = StatefulContract.withCategory(contract, categoryId);
       const commits = buildInitialStateCommitments(stateLayout, { x: 0n, y: 0n });
-      const dataNftAddr = getDataNftAddress(contract, categoryId);
-      const masterSatoshis = opts?.masterSatoshis ?? 1200n;
+      const masterSatoshis = opts?.masterSatoshis ?? 10000n;
 
-      for (let i = 0; i < masterCount; i++) {
-        await provider.addUtxo(sc.tokenAddress, {
-          txid: categoryId, vout: i, satoshis: masterSatoshis,
-          token: { category: categoryId, amount: 0n, nft: { capability: 'minting', commitment: '' } },
-        });
-      }
-      for (let i = 0; i < stateLayout.dataNftCount; i++) {
-        await provider.addUtxo(dataNftAddr, {
-          txid: categoryId, vout: masterCount + i, satoshis: 1200n,
-          token: { category: categoryId, amount: 0n, nft: { capability: 'mutable', commitment: commits[i] } },
-        });
-      }
+      const { categoryId } = await (provider as any).addTokenUtxosDynamic((cat: string) => {
+        const salted = contract.withSalt(hexToBin(cat));
+        const dataNftAddr = getDataNftAddress(salted, cat);
+        const outs = [];
+        for (let i = 0; i < masterCount; i++) {
+          outs.push({
+            address: salted.tokenAddress, satoshis: masterSatoshis,
+            token: { amount: 0n, nft: { capability: 'minting' as const, commitment: '' } },
+          });
+        }
+        for (let i = 0; i < commits.length; i++) {
+          outs.push({
+            address: dataNftAddr, satoshis: 10000n,
+            token: { amount: 0n, nft: { capability: 'mutable' as const, commitment: commits[i] } },
+          });
+        }
+        return outs;
+      });
 
-      return { sc, provider };
+      const sc = StatefulContract.withCategory(contract, categoryId);
+      return { sc, provider, categoryId };
     }
 
     describe('discover', () => {
       it('should discover threads with round-robin partitions', async () => {
-        const { sc } = await setupContract('decd'.repeat(16), 2);
+        const { sc } = await setupContract(2);
         const tm = new ThreadManager(sc);
         const threads = await tm.discover();
 
@@ -205,7 +215,7 @@ describe('Threading', () => {
       });
 
       it('should discover single thread when 1 minting NFT', async () => {
-        const { sc } = await setupContract('d1cd'.repeat(16), 1);
+        const { sc } = await setupContract(1);
         const tm = new ThreadManager(sc);
         const threads = await tm.discover();
 
@@ -216,8 +226,7 @@ describe('Threading', () => {
 
     describe('partition validation via ThreadHandle.call', () => {
       it('should throw when function requires NFT outside thread partition', async () => {
-        const { sc } = await setupContract('dfcd'.repeat(16), 1);
-        const cid = 'dfcd'.repeat(16);
+        const { sc, categoryId: cid } = await setupContract(1);
 
         const handle = new ThreadHandle(
           0,
@@ -234,8 +243,7 @@ describe('Threading', () => {
       });
 
       it('should succeed when function requires NFT within thread partition', async () => {
-        const { sc } = await setupContract('d2cd'.repeat(16), 1);
-        const cid = 'd2cd'.repeat(16);
+        const { sc, categoryId: cid } = await setupContract(1);
 
         const handle = new ThreadHandle(
           0,
@@ -250,8 +258,7 @@ describe('Threading', () => {
       });
 
       it('should throw for unknown function name', async () => {
-        const { sc } = await setupContract('d3cd'.repeat(16), 1);
-        const cid = 'd3cd'.repeat(16);
+        const { sc, categoryId: cid } = await setupContract(1);
 
         const handle = new ThreadHandle(
           0,
@@ -267,7 +274,7 @@ describe('Threading', () => {
 
     describe('round-robin partitioning', () => {
       it('should distribute indices evenly with 2 threads and 2 NFTs', async () => {
-        const { sc } = await setupContract('e2cd'.repeat(16), 2);
+        const { sc } = await setupContract(2);
         const tm = new ThreadManager(sc);
         const threads = await tm.discover();
 
@@ -278,7 +285,7 @@ describe('Threading', () => {
 
     describe('split validation', () => {
       it('should throw on split with threadCount < 2', async () => {
-        const { sc } = await setupContract('e3cd'.repeat(16), 1);
+        const { sc } = await setupContract(1);
         const tm = new ThreadManager(sc);
 
         await expect(tm.split({
@@ -289,7 +296,7 @@ describe('Threading', () => {
       });
 
       it('should throw on split when multiple minting NFTs already exist', async () => {
-        const { sc } = await setupContract('e4cd'.repeat(16), 2);
+        const { sc } = await setupContract(2);
         const tm = new ThreadManager(sc);
 
         await expect(tm.split({
@@ -300,7 +307,7 @@ describe('Threading', () => {
       });
 
       it('should throw on overlapping partitions', async () => {
-        const { sc } = await setupContract('e5cd'.repeat(16), 1, { masterSatoshis: 10000n });
+        const { sc } = await setupContract(1, { masterSatoshis: 10000n });
         const tm = new ThreadManager(sc);
 
         await expect(tm.split({
@@ -314,8 +321,7 @@ describe('Threading', () => {
 
     describe('merge validation', () => {
       it('should throw when merging fewer than 2 threads', async () => {
-        const { sc } = await setupContract('e6cd'.repeat(16), 1);
-        const cid = 'e6cd'.repeat(16);
+        const { sc, categoryId: cid } = await setupContract(1);
         const tm = new ThreadManager(sc);
 
         const handle = new ThreadHandle(
@@ -335,8 +341,7 @@ describe('Threading', () => {
 
     describe('StatefulTransactionBuilder.addOutput guard', () => {
       it('should throw when adding minting NFT output of same category', async () => {
-        const cid = 'e7cd'.repeat(16);
-        const { sc } = await setupContract(cid, 1);
+        const { sc, categoryId: cid } = await setupContract(1);
 
         const builder = await sc.functions.incrementX();
 
@@ -352,9 +357,8 @@ describe('Threading', () => {
       });
 
       it('should allow adding minting NFT of a different category', async () => {
-        const cid = 'e8cd'.repeat(16);
         const otherCid = 'f8cd'.repeat(16);
-        const { sc } = await setupContract(cid, 1);
+        const { sc } = await setupContract(1);
 
         const builder = await sc.functions.incrementX();
 
@@ -373,7 +377,7 @@ describe('Threading', () => {
 
     describe('getThreads', () => {
       it('should return current thread set after discover', async () => {
-        const { sc } = await setupContract('e9cd'.repeat(16), 2);
+        const { sc } = await setupContract(2);
         const tm = new ThreadManager(sc);
 
         expect(tm.getThreads()).toEqual([]);

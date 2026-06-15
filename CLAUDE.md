@@ -28,6 +28,9 @@ yarn test -t 'Transaction Builder'
 # Run SDK tests against real chipnet (default is local mocknet)
 TESTS_USE_CHIPNET=true yarn test
 
+# Run SDK tests against a local regtest node (requires the docker stack, see "Regtest test stack")
+yarn test:regtest
+
 # Lint all packages
 yarn lint
 
@@ -37,6 +40,31 @@ yarn test --coverage
 # Regenerate ANTLR parser after grammar changes (run from packages/solidc)
 yarn antlr
 ```
+
+### Regtest test stack
+
+`TESTS_USE_REGTEST=true` points the SDK e2e tests at a local BCHN regtest node + Fulcrum indexer,
+started via `docker-compose.regtest.yml`:
+
+```bash
+# Start the stack (skip the `explorer` service: it builds a local image and tests do not need it)
+docker compose -f docker-compose.regtest.yml up -d bchn fulcrum miner
+
+# Ready when BCHN is at height 200 (the `miner` pre-mines for coinbase maturity) and Fulcrum logs
+# "Block height 200, up-to-date" (port 50003). Then run the regtest suite. test:regtest sets
+# --no-file-parallelism: the tests share one node, so parallel files cause mempool conflicts.
+yarn test:regtest
+
+# Tear down (add -v to also wipe chain state)
+docker compose -f docker-compose.regtest.yml down
+```
+
+- `RegtestNetworkProvider` defaults match the compose: RPC `localhost:18443` (user/password), Electrum
+  `localhost:50003`. Override via `REGTEST_RPC_URL`, `REGTEST_RPC_USER`, `REGTEST_RPC_PASSWORD`,
+  `REGTEST_ELECTRUM_HOST`, `REGTEST_ELECTRUM_PORT`.
+- If Fulcrum loops on "Possible reorg, will rewind ..." or exits on startup, the `bchn-data` /
+  `fulcrum-data` volumes are stale and out of sync. Reset with
+  `docker compose -f docker-compose.regtest.yml down -v` and restart.
 
 ## Architecture
 

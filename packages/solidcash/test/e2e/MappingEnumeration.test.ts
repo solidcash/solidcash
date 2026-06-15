@@ -8,12 +8,47 @@ import {
   buildInitialStateCommitments,
   buildEntryCommitment,
   buildEntryCommitmentMultiKey,
+  type StateLayout,
 } from '@solidcash/utils';
 import {
   alicePkh, bobPkh,
 } from '../fixture/vars.js';
-import { Utxo } from '../../src/interfaces.js';
 import { createTestProvider } from '../test-util.js';
+import { MockNetworkProvider, RegtestNetworkProvider } from '../../src/index.js';
+
+type TestProvider = MockNetworkProvider | RegtestNetworkProvider;
+
+// One entry NFT to genesis under the contract's real category.
+interface EntrySpec {
+  collection: string;
+  commitment: string;
+  capability?: 'none' | 'mutable' | 'minting';
+}
+
+// Genesis master + data NFT + all entry NFTs under ONE real category (entry NFTs must share the
+// contract's category). Returns the real categoryId and the salted contract.
+async function setupWithEntries(
+  provider: TestProvider, contract: Contract, stateLayout: StateLayout,
+  initialState: Record<string, any>, entries: EntrySpec[],
+): Promise<{ categoryId: string; saltedContract: Contract }> {
+  const commitments = buildInitialStateCommitments(stateLayout, initialState);
+  const { categoryId } = await provider.addTokenUtxosDynamic((cat) => {
+    const salted = contract.withSalt(hexToBin(cat));
+    return [
+      { address: salted.tokenAddress, satoshis: 10000n,
+        token: { amount: 0n, nft: { capability: 'minting' as const, commitment: '' } } },
+      ...commitments.map((commitment) => ({
+        address: getDataNftAddress(salted, cat), satoshis: 10000n,
+        token: { amount: 0n, nft: { capability: 'mutable' as const, commitment } },
+      })),
+      ...entries.map((e) => ({
+        address: getEntryNftAddress(salted, cat, e.collection), satoshis: 10000n,
+        token: { amount: 0n, nft: { capability: e.capability ?? 'mutable', commitment: e.commitment } },
+      })),
+    ];
+  });
+  return { categoryId, saltedContract: contract.withSalt(hexToBin(categoryId)) };
+}
 
 // ===== Contract Sources =====
 
@@ -53,47 +88,6 @@ contract NestedMapping() {
 }
 `;
 
-// ===== Helpers =====
-
-function createMasterUtxo(categoryId: string): Utxo {
-  return {
-    txid: 'd1cd'.repeat(16),
-    vout: 0,
-    satoshis: 10000n,
-    token: {
-      category: categoryId,
-      amount: 0n,
-      nft: { capability: 'minting', commitment: '' },
-    },
-  };
-}
-
-function createDataNftUtxo(categoryId: string, commitment: string, vout: number = 1): Utxo {
-  return {
-    txid: 'd1cd'.repeat(16),
-    vout,
-    satoshis: 10000n,
-    token: {
-      category: categoryId,
-      amount: 0n,
-      nft: { capability: 'mutable', commitment },
-    },
-  };
-}
-
-function createEntryNftUtxo(categoryId: string, commitment: string, vout: number): Utxo {
-  return {
-    txid: 'e1cd'.repeat(16),
-    vout,
-    satoshis: 10000n,
-    token: {
-      category: categoryId,
-      amount: 0n,
-      nft: { capability: 'mutable', commitment },
-    },
-  };
-}
-
 // ===== Tests =====
 
 describe('Mapping Enumeration (getEntries)', () => {
@@ -103,17 +97,8 @@ describe('Mapping Enumeration (getEntries)', () => {
 
     it('should return empty array when no entries exist', async () => {
       const provider = createTestProvider();
-      const categoryId = 'c1cd'.repeat(16);
       const contract = new Contract(artifact, [], { provider });
-      const saltedContract = contract.withSalt(hexToBin(categoryId));
-
-      const initialCommitments = buildInitialStateCommitments(stateLayout, { counter: 0n });
-
-      await provider.addUtxo(saltedContract.tokenAddress, createMasterUtxo(categoryId));
-      await provider.addUtxo(
-        getDataNftAddress(saltedContract, categoryId),
-        createDataNftUtxo(categoryId, initialCommitments[0]),
-      );
+      const { categoryId } = await setupWithEntries(provider, contract, stateLayout, { counter: 0n }, []);
 
       const sc = StatefulContract.withCategory(contract, categoryId);
       const entries = await sc.getEntries('balances');
@@ -123,22 +108,13 @@ describe('Mapping Enumeration (getEntries)', () => {
 
     it('should enumerate a single entry', async () => {
       const provider = createTestProvider();
-      const categoryId = 'c2cd'.repeat(16);
       const contract = new Contract(artifact, [], { provider });
-      const saltedContract = contract.withSalt(hexToBin(categoryId));
-
-      const initialCommitments = buildInitialStateCommitments(stateLayout, { counter: 1n });
-
-      await provider.addUtxo(saltedContract.tokenAddress, createMasterUtxo(categoryId));
-      await provider.addUtxo(
-        getDataNftAddress(saltedContract, categoryId),
-        createDataNftUtxo(categoryId, initialCommitments[0]),
-      );
-
       // Add an entry NFT for alice with balance 100
       const entryCommitment = buildEntryCommitment(alicePkh, 'bytes20', 100n, 'int');
-      const entryAddress = getEntryNftAddress(saltedContract, categoryId, 'balances');
-      await provider.addUtxo(entryAddress, createEntryNftUtxo(categoryId, entryCommitment, 2));
+      const { categoryId } = await setupWithEntries(
+        provider, contract, stateLayout, { counter: 1n },
+        [{ collection: 'balances', commitment: entryCommitment }],
+      );
 
       const sc = StatefulContract.withCategory(contract, categoryId);
       const entries = await sc.getEntries('balances');
@@ -150,24 +126,17 @@ describe('Mapping Enumeration (getEntries)', () => {
 
     it('should enumerate multiple entries', async () => {
       const provider = createTestProvider();
-      const categoryId = 'c3cd'.repeat(16);
       const contract = new Contract(artifact, [], { provider });
-      const saltedContract = contract.withSalt(hexToBin(categoryId));
-
-      const initialCommitments = buildInitialStateCommitments(stateLayout, { counter: 2n });
-
-      await provider.addUtxo(saltedContract.tokenAddress, createMasterUtxo(categoryId));
-      await provider.addUtxo(
-        getDataNftAddress(saltedContract, categoryId),
-        createDataNftUtxo(categoryId, initialCommitments[0]),
-      );
-
       // Add two entry NFTs
-      const entryAddress = getEntryNftAddress(saltedContract, categoryId, 'balances');
       const entry1 = buildEntryCommitment(alicePkh, 'bytes20', 100n, 'int');
       const entry2 = buildEntryCommitment(bobPkh, 'bytes20', 200n, 'int');
-      await provider.addUtxo(entryAddress, createEntryNftUtxo(categoryId, entry1, 2));
-      await provider.addUtxo(entryAddress, createEntryNftUtxo(categoryId, entry2, 3));
+      const { categoryId } = await setupWithEntries(
+        provider, contract, stateLayout, { counter: 2n },
+        [
+          { collection: 'balances', commitment: entry1 },
+          { collection: 'balances', commitment: entry2 },
+        ],
+      );
 
       const sc = StatefulContract.withCategory(contract, categoryId);
       const entries = await sc.getEntries('balances');
@@ -184,38 +153,23 @@ describe('Mapping Enumeration (getEntries)', () => {
 
     it('should skip UTXOs that are not entry NFTs', async () => {
       const provider = createTestProvider();
-      const categoryId = 'c4cd'.repeat(16);
       const contract = new Contract(artifact, [], { provider });
-      const saltedContract = contract.withSalt(hexToBin(categoryId));
-
-      const initialCommitments = buildInitialStateCommitments(stateLayout, { counter: 1n });
-
-      await provider.addUtxo(saltedContract.tokenAddress, createMasterUtxo(categoryId));
-      await provider.addUtxo(
-        getDataNftAddress(saltedContract, categoryId),
-        createDataNftUtxo(categoryId, initialCommitments[0]),
+      // One valid entry NFT + a non-mutable NFT (skipped), both under the real category.
+      const entry = buildEntryCommitment(alicePkh, 'bytes20', 50n, 'int');
+      const { categoryId, saltedContract } = await setupWithEntries(
+        provider, contract, stateLayout, { counter: 1n },
+        [
+          { collection: 'balances', commitment: entry },
+          { collection: 'balances', commitment: 'deadbeef', capability: 'none' },
+        ],
       );
 
-      // Add one valid entry NFT
+      // Add a UTXO with a different real category at the entry address (should be skipped)
       const entryAddress = getEntryNftAddress(saltedContract, categoryId, 'balances');
-      const entry = buildEntryCommitment(alicePkh, 'bytes20', 50n, 'int');
-      await provider.addUtxo(entryAddress, createEntryNftUtxo(categoryId, entry, 2));
-
-      // Add a non-mutable NFT (should be skipped)
-      await provider.addUtxo(entryAddress, {
-        txid: 'f1cd'.repeat(16),
-        vout: 3,
-        satoshis: 10000n,
-        token: {
-          category: categoryId,
-          amount: 0n,
-          nft: { capability: 'none', commitment: 'deadbeef' },
-        },
-      });
-
-      // Add a UTXO with wrong category (should be skipped)
-      const wrongCategory = 'ffcd'.repeat(16);
-      await provider.addUtxo(entryAddress, createEntryNftUtxo(wrongCategory, entry, 4));
+      await provider.addTokenUtxosDynamic(() => [
+        { address: entryAddress, satoshis: 10000n,
+          token: { amount: 0n, nft: { capability: 'mutable' as const, commitment: entry } } },
+      ]);
 
       const sc = StatefulContract.withCategory(contract, categoryId);
       const entries = await sc.getEntries('balances');
@@ -227,22 +181,14 @@ describe('Mapping Enumeration (getEntries)', () => {
 
     it('should accept full collection signature', async () => {
       const provider = createTestProvider();
-      const categoryId = 'c5cd'.repeat(16);
       const contract = new Contract(artifact, [], { provider });
-      const saltedContract = contract.withSalt(hexToBin(categoryId));
-
-      const initialCommitments = buildInitialStateCommitments(stateLayout, { counter: 1n });
-
-      await provider.addUtxo(saltedContract.tokenAddress, createMasterUtxo(categoryId));
-      await provider.addUtxo(
-        getDataNftAddress(saltedContract, categoryId),
-        createDataNftUtxo(categoryId, initialCommitments[0]),
-      );
 
       const collection = stateLayout.collections!.find((c) => c.name === 'balances')!;
-      const entryAddress = getEntryNftAddress(saltedContract, categoryId, collection.signature);
       const entry = buildEntryCommitment(alicePkh, 'bytes20', 42n, 'int');
-      await provider.addUtxo(entryAddress, createEntryNftUtxo(categoryId, entry, 2));
+      const { categoryId } = await setupWithEntries(
+        provider, contract, stateLayout, { counter: 1n },
+        [{ collection: collection.signature, commitment: entry }],
+      );
 
       const sc = StatefulContract.withCategory(contract, categoryId);
       // Use full signature instead of name
@@ -254,16 +200,8 @@ describe('Mapping Enumeration (getEntries)', () => {
 
     it('should throw for unknown collection name', async () => {
       const provider = createTestProvider();
-      const categoryId = 'c6cd'.repeat(16);
       const contract = new Contract(artifact, [], { provider });
-      const saltedContract = contract.withSalt(hexToBin(categoryId));
-
-      const initialCommitments = buildInitialStateCommitments(stateLayout, { counter: 0n });
-      await provider.addUtxo(saltedContract.tokenAddress, createMasterUtxo(categoryId));
-      await provider.addUtxo(
-        getDataNftAddress(saltedContract, categoryId),
-        createDataNftUtxo(categoryId, initialCommitments[0]),
-      );
+      const { categoryId } = await setupWithEntries(provider, contract, stateLayout, { counter: 0n }, []);
 
       const sc = StatefulContract.withCategory(contract, categoryId);
       await expect(sc.getEntries('nonexistent')).rejects.toThrow('Unknown collection');
@@ -276,17 +214,7 @@ describe('Mapping Enumeration (getEntries)', () => {
 
     it('should enumerate multi-key entries', async () => {
       const provider = createTestProvider();
-      const categoryId = 'cacd'.repeat(16);
       const contract = new Contract(artifact, [], { provider });
-      const saltedContract = contract.withSalt(hexToBin(categoryId));
-
-      const initialCommitments = buildInitialStateCommitments(stateLayout, { counter: 1n });
-
-      await provider.addUtxo(saltedContract.tokenAddress, createMasterUtxo(categoryId));
-      await provider.addUtxo(
-        getDataNftAddress(saltedContract, categoryId),
-        createDataNftUtxo(categoryId, initialCommitments[0]),
-      );
 
       // Create multi-key entry: allowances[alice][bob] = 500
       const collection = stateLayout.collections!.find((c) => c.name === 'allowances')!;
@@ -294,9 +222,10 @@ describe('Mapping Enumeration (getEntries)', () => {
       const entryCommitment = buildEntryCommitmentMultiKey(
         [alicePkh, bobPkh], keyTypes, 500n, 'int',
       );
-
-      const entryAddress = getEntryNftAddress(saltedContract, categoryId, 'allowances');
-      await provider.addUtxo(entryAddress, createEntryNftUtxo(categoryId, entryCommitment, 2));
+      const { categoryId } = await setupWithEntries(
+        provider, contract, stateLayout, { counter: 1n },
+        [{ collection: 'allowances', commitment: entryCommitment }],
+      );
 
       const sc = StatefulContract.withCategory(contract, categoryId);
       const entries = await sc.getEntries('allowances');

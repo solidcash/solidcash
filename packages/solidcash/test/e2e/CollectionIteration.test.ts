@@ -11,7 +11,6 @@ import {
 import {
   alicePkh, bobPkh,
 } from '../fixture/vars.js';
-import { Utxo } from '../../src/interfaces.js';
 import { createTestProvider } from '../test-util.js';
 
 // ===== Contract Sources =====
@@ -52,47 +51,6 @@ contract CollectionIteration() {
     }
 }
 `;
-
-// ===== Helpers =====
-
-function createMasterUtxo(categoryId: string): Utxo {
-  return {
-    txid: 'b1cd'.repeat(16),
-    vout: 0,
-    satoshis: 10000n,
-    token: {
-      category: categoryId,
-      amount: 0n,
-      nft: { capability: 'minting', commitment: '' },
-    },
-  };
-}
-
-function createDataNftUtxo(categoryId: string, commitment: string, vout: number = 1): Utxo {
-  return {
-    txid: 'b1cd'.repeat(16),
-    vout,
-    satoshis: 10000n,
-    token: {
-      category: categoryId,
-      amount: 0n,
-      nft: { capability: 'mutable', commitment },
-    },
-  };
-}
-
-function createEntryNftUtxo(categoryId: string, commitment: string, vout: number): Utxo {
-  return {
-    txid: 'b2cd'.repeat(16),
-    vout,
-    satoshis: 10000n,
-    token: {
-      category: categoryId,
-      amount: 0n,
-      nft: { capability: 'mutable', commitment },
-    },
-  };
-}
 
 // ===== Tests =====
 
@@ -169,17 +127,19 @@ describe('Collection Iteration', () => {
 
     it('should build transaction with zero entries (sumValues)', async () => {
       const provider = createTestProvider();
-      const categoryId = 'b3cd'.repeat(16);
       const contract = new Contract(artifact, [], { provider });
-      const saltedContract = contract.withSalt(hexToBin(categoryId));
 
-      const initialCommitments = buildInitialStateCommitments(stateLayout, { total: 0n });
-
-      await provider.addUtxo(saltedContract.tokenAddress, createMasterUtxo(categoryId));
-      await provider.addUtxo(
-        getDataNftAddress(saltedContract, categoryId),
-        createDataNftUtxo(categoryId, initialCommitments[0]),
-      );
+      // Genesis master + data NFT (no entries) under one real category.
+      const { categoryId } = await (provider as any).addTokenUtxosDynamic((cat: string) => {
+        const salted = contract.withSalt(hexToBin(cat));
+        const commitments = buildInitialStateCommitments(stateLayout, { total: 0n });
+        return [
+          { address: salted.tokenAddress, satoshis: 10000n,
+            token: { nft: { capability: 'minting', commitment: '' } } },
+          { address: getDataNftAddress(salted, cat), satoshis: 10000n,
+            token: { nft: { capability: 'mutable', commitment: commitments[0] } } },
+        ];
+      });
 
       const sc = StatefulContract.withCategory(contract, categoryId);
 
@@ -191,24 +151,24 @@ describe('Collection Iteration', () => {
 
     it('should include entry NFTs as iteration inputs for sumValues', async () => {
       const provider = createTestProvider();
-      const categoryId = 'b4cd'.repeat(16);
       const contract = new Contract(artifact, [], { provider });
-      const saltedContract = contract.withSalt(hexToBin(categoryId));
 
-      const initialCommitments = buildInitialStateCommitments(stateLayout, { total: 0n });
-
-      await provider.addUtxo(saltedContract.tokenAddress, createMasterUtxo(categoryId));
-      await provider.addUtxo(
-        getDataNftAddress(saltedContract, categoryId),
-        createDataNftUtxo(categoryId, initialCommitments[0]),
-      );
-
-      // Add 2 entry NFTs
-      const entryAddress = getEntryNftAddress(saltedContract, categoryId, 'balances');
-      const entry1 = buildEntryCommitment(alicePkh, 'bytes20', 100n, 'int');
-      const entry2 = buildEntryCommitment(bobPkh, 'bytes20', 200n, 'int');
-      await provider.addUtxo(entryAddress, createEntryNftUtxo(categoryId, entry1, 2));
-      await provider.addUtxo(entryAddress, createEntryNftUtxo(categoryId, entry2, 3));
+      // Genesis master + data NFT + 2 entry NFTs under one real category.
+      const { categoryId } = await (provider as any).addTokenUtxosDynamic((cat: string) => {
+        const salted = contract.withSalt(hexToBin(cat));
+        const commitments = buildInitialStateCommitments(stateLayout, { total: 0n });
+        const entryAddress = getEntryNftAddress(salted, cat, 'balances');
+        return [
+          { address: salted.tokenAddress, satoshis: 10000n,
+            token: { nft: { capability: 'minting', commitment: '' } } },
+          { address: getDataNftAddress(salted, cat), satoshis: 10000n,
+            token: { nft: { capability: 'mutable', commitment: commitments[0] } } },
+          { address: entryAddress, satoshis: 10000n,
+            token: { nft: { capability: 'mutable', commitment: buildEntryCommitment(alicePkh, 'bytes20', 100n, 'int') } } },
+          { address: entryAddress, satoshis: 10000n,
+            token: { nft: { capability: 'mutable', commitment: buildEntryCommitment(bobPkh, 'bytes20', 200n, 'int') } } },
+        ];
+      });
 
       const sc = StatefulContract.withCategory(contract, categoryId);
       // sum = 100 + 200 = 300; auto-derived via iterative VM probe
@@ -222,24 +182,24 @@ describe('Collection Iteration', () => {
 
     it('should include entry NFTs as iteration inputs for countKeys', async () => {
       const provider = createTestProvider();
-      const categoryId = 'b5cd'.repeat(16);
       const contract = new Contract(artifact, [], { provider });
-      const saltedContract = contract.withSalt(hexToBin(categoryId));
 
-      const initialCommitments = buildInitialStateCommitments(stateLayout, { total: 0n });
-
-      await provider.addUtxo(saltedContract.tokenAddress, createMasterUtxo(categoryId));
-      await provider.addUtxo(
-        getDataNftAddress(saltedContract, categoryId),
-        createDataNftUtxo(categoryId, initialCommitments[0]),
-      );
-
-      // Add 2 entry NFTs
-      const entryAddress = getEntryNftAddress(saltedContract, categoryId, 'balances');
-      const entry1 = buildEntryCommitment(alicePkh, 'bytes20', 100n, 'int');
-      const entry2 = buildEntryCommitment(bobPkh, 'bytes20', 200n, 'int');
-      await provider.addUtxo(entryAddress, createEntryNftUtxo(categoryId, entry1, 2));
-      await provider.addUtxo(entryAddress, createEntryNftUtxo(categoryId, entry2, 3));
+      // Genesis master + data NFT + 2 entry NFTs under one real category.
+      const { categoryId } = await (provider as any).addTokenUtxosDynamic((cat: string) => {
+        const salted = contract.withSalt(hexToBin(cat));
+        const commitments = buildInitialStateCommitments(stateLayout, { total: 0n });
+        const entryAddress = getEntryNftAddress(salted, cat, 'balances');
+        return [
+          { address: salted.tokenAddress, satoshis: 10000n,
+            token: { nft: { capability: 'minting', commitment: '' } } },
+          { address: getDataNftAddress(salted, cat), satoshis: 10000n,
+            token: { nft: { capability: 'mutable', commitment: commitments[0] } } },
+          { address: entryAddress, satoshis: 10000n,
+            token: { nft: { capability: 'mutable', commitment: buildEntryCommitment(alicePkh, 'bytes20', 100n, 'int') } } },
+          { address: entryAddress, satoshis: 10000n,
+            token: { nft: { capability: 'mutable', commitment: buildEntryCommitment(bobPkh, 'bytes20', 200n, 'int') } } },
+        ];
+      });
 
       const sc = StatefulContract.withCategory(contract, categoryId);
       // count = 2 keys; auto-derived via iterative VM probe
@@ -252,24 +212,24 @@ describe('Collection Iteration', () => {
 
     it('should include entry NFTs as iteration inputs for sumEntries', async () => {
       const provider = createTestProvider();
-      const categoryId = 'b6cd'.repeat(16);
       const contract = new Contract(artifact, [], { provider });
-      const saltedContract = contract.withSalt(hexToBin(categoryId));
 
-      const initialCommitments = buildInitialStateCommitments(stateLayout, { total: 0n });
-
-      await provider.addUtxo(saltedContract.tokenAddress, createMasterUtxo(categoryId));
-      await provider.addUtxo(
-        getDataNftAddress(saltedContract, categoryId),
-        createDataNftUtxo(categoryId, initialCommitments[0]),
-      );
-
-      // Add 2 entry NFTs
-      const entryAddress = getEntryNftAddress(saltedContract, categoryId, 'balances');
-      const entry1 = buildEntryCommitment(alicePkh, 'bytes20', 100n, 'int');
-      const entry2 = buildEntryCommitment(bobPkh, 'bytes20', 200n, 'int');
-      await provider.addUtxo(entryAddress, createEntryNftUtxo(categoryId, entry1, 2));
-      await provider.addUtxo(entryAddress, createEntryNftUtxo(categoryId, entry2, 3));
+      // Genesis master + data NFT + 2 entry NFTs under one real category.
+      const { categoryId } = await (provider as any).addTokenUtxosDynamic((cat: string) => {
+        const salted = contract.withSalt(hexToBin(cat));
+        const commitments = buildInitialStateCommitments(stateLayout, { total: 0n });
+        const entryAddress = getEntryNftAddress(salted, cat, 'balances');
+        return [
+          { address: salted.tokenAddress, satoshis: 10000n,
+            token: { nft: { capability: 'minting', commitment: '' } } },
+          { address: getDataNftAddress(salted, cat), satoshis: 10000n,
+            token: { nft: { capability: 'mutable', commitment: commitments[0] } } },
+          { address: entryAddress, satoshis: 10000n,
+            token: { nft: { capability: 'mutable', commitment: buildEntryCommitment(alicePkh, 'bytes20', 100n, 'int') } } },
+          { address: entryAddress, satoshis: 10000n,
+            token: { nft: { capability: 'mutable', commitment: buildEntryCommitment(bobPkh, 'bytes20', 200n, 'int') } } },
+        ];
+      });
 
       const sc = StatefulContract.withCategory(contract, categoryId);
       // sum = 100 + 200 = 300; auto-derived via iterative VM probe
@@ -282,39 +242,34 @@ describe('Collection Iteration', () => {
 
     it('should filter out non-mutable NFTs from iteration entries', async () => {
       const provider = createTestProvider();
-      const categoryId = 'b7cd'.repeat(16);
       const contract = new Contract(artifact, [], { provider });
-      const saltedContract = contract.withSalt(hexToBin(categoryId));
 
-      const initialCommitments = buildInitialStateCommitments(stateLayout, { total: 0n });
-
-      await provider.addUtxo(saltedContract.tokenAddress, createMasterUtxo(categoryId));
-      await provider.addUtxo(
-        getDataNftAddress(saltedContract, categoryId),
-        createDataNftUtxo(categoryId, initialCommitments[0]),
-      );
-
-      const entryAddress = getEntryNftAddress(saltedContract, categoryId, 'balances');
-
-      // Add one valid entry
-      const entry = buildEntryCommitment(alicePkh, 'bytes20', 50n, 'int');
-      await provider.addUtxo(entryAddress, createEntryNftUtxo(categoryId, entry, 2));
-
-      // Add invalid: non-mutable NFT (should be filtered)
-      await provider.addUtxo(entryAddress, {
-        txid: 'f1cd'.repeat(16),
-        vout: 3,
-        satoshis: 10000n,
-        token: {
-          category: categoryId,
-          amount: 0n,
-          nft: { capability: 'none', commitment: 'deadbeef' },
-        },
+      // Genesis master + data NFT + 1 valid entry + 1 invalid non-mutable NFT under one real category.
+      const { categoryId } = await (provider as any).addTokenUtxosDynamic((cat: string) => {
+        const salted = contract.withSalt(hexToBin(cat));
+        const commitments = buildInitialStateCommitments(stateLayout, { total: 0n });
+        const entryAddress = getEntryNftAddress(salted, cat, 'balances');
+        return [
+          { address: salted.tokenAddress, satoshis: 10000n,
+            token: { nft: { capability: 'minting', commitment: '' } } },
+          { address: getDataNftAddress(salted, cat), satoshis: 10000n,
+            token: { nft: { capability: 'mutable', commitment: commitments[0] } } },
+          { address: entryAddress, satoshis: 10000n,
+            token: { nft: { capability: 'mutable', commitment: buildEntryCommitment(alicePkh, 'bytes20', 50n, 'int') } } },
+          // Invalid: non-mutable NFT (should be filtered)
+          { address: entryAddress, satoshis: 10000n,
+            token: { nft: { capability: 'none', commitment: 'deadbeef' } } },
+        ];
       });
 
-      // Add invalid: wrong category (should be filtered)
-      const wrongCategory = 'ffcd'.repeat(16);
-      await provider.addUtxo(entryAddress, createEntryNftUtxo(wrongCategory, entry, 4));
+      const saltedContract = contract.withSalt(hexToBin(categoryId));
+      const entryAddress = getEntryNftAddress(saltedContract, categoryId, 'balances');
+
+      // Invalid: wrong category (separate genesis -> different category, should be filtered)
+      await (provider as any).addTokenUtxosDynamic(() => [
+        { address: entryAddress, satoshis: 10000n,
+          token: { nft: { capability: 'mutable', commitment: buildEntryCommitment(alicePkh, 'bytes20', 50n, 'int') } } },
+      ]);
 
       const sc = StatefulContract.withCategory(contract, categoryId);
       // Only 1 valid entry with value 50; auto-derived via iterative VM probe

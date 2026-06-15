@@ -1,10 +1,10 @@
 import fs, { PathLike } from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { Artifact, CompilerOptions } from '@solidcash/utils';
-import { compileString } from './compiler.js';
+import { Artifact } from '@solidcash/utils';
+import { compileString, CompileOptions } from './compiler.js';
 
-export function compileFile(codeFile: PathLike, compilerOptions: CompilerOptions = {}): Artifact {
+export function compileFile(codeFile: PathLike, compilerOptions: CompileOptions = {}): Artifact {
   const code = fs.readFileSync(codeFile, { encoding: 'utf-8' });
 
   // Convert URL objects to file paths, then resolve to absolute

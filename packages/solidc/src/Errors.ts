@@ -47,7 +47,7 @@ import {
   RevertNode,
 } from './ast/AST.js';
 import { Symbol, SymbolType } from './ast/SymbolTable.js';
-import { Location, Point } from './ast/Location.js';
+import { Location } from './ast/Location.js';
 import { BinaryOperator } from './ast/Operator.js';
 
 export class SolidCashError extends Error {
@@ -70,12 +70,10 @@ export class SolidCashError extends Error {
 export class ParseError extends Error {
   constructor(
     message: string,
-    location?: Point | Location,
+    public location?: Location,
   ) {
-    const start = location instanceof Point ? location : location?.start;
-
-    if (start) {
-      message += ` at ${start}`;
+    if (location) {
+      message += ` at ${location.start}`;
     }
 
     super(message);

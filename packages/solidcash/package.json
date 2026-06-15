@@ -1,6 +1,6 @@
 {
   "name": "solidcash",
-  "version": "0.13.0",
+  "version": "0.13.1",
   "description": "SolidCash SDK - easily write and interact with Bitcoin Cash contracts",
   "keywords": [
     "bitcoin cash",

@@ -4,7 +4,7 @@ import { Artifact, CompilerOptions, computeBytecodeFingerprintWithConstructorArg
 import { generateArtifact } from './artifact/Artifact.js';
 import { Ast, ContractNode, ContractReferenceNode, InstantiationNode, SourceFileNode } from './ast/AST.js';
 import AstBuilder from './ast/AstBuilder.js';
-import ThrowingErrorListener from './ast/ThrowingErrorListener.js';
+import { ThrowingErrorListener, SolidCashErrorListener, ForwardingErrorListener } from './ast/error-listeners.js';
 import GenerateTargetTraversal from './generation/GenerateTargetTraversal.js';
 import SolidCashLexer from './grammar/SolidCashLexer.js';
 import SolidCashParser from './grammar/SolidCashParser.js';
@@ -25,11 +25,16 @@ export const DEFAULT_COMPILER_OPTIONS: CompilerOptions = {
   commitmentLimit: 128,
 };
 
-export function compileString(code: string, compilerOptions: CompilerOptions = {}): Artifact {
-  const mergedCompilerOptions = { ...DEFAULT_COMPILER_OPTIONS, ...compilerOptions };
+export interface CompileOptions extends CompilerOptions {
+  errorListener?: SolidCashErrorListener;
+}
+
+export function compileString(code: string, compilerOptions: CompileOptions = {}): Artifact {
+  const { errorListener, ...artifactCompilerOptions } = compilerOptions;
+  const mergedCompilerOptions = { ...DEFAULT_COMPILER_OPTIONS, ...artifactCompilerOptions };
 
   // Lexing + parsing
-  let ast = parseCode(code);
+  let ast = parseCode(code, errorListener);
 
   // Resolve imports
   if (ast.imports.length > 0) {
@@ -279,19 +284,25 @@ function topologicalSort(
   return sorted;
 }
 
-export function parseCode(code: string): Ast {
+export function parseCode(
+  code: string,
+  errorListener: SolidCashErrorListener = ThrowingErrorListener.INSTANCE,
+): Ast {
+  const syntaxErrorListener = new ForwardingErrorListener(errorListener);
+
   // Lexing (throwing on errors)
   const inputStream = new CharStream(code);
   const lexer = new SolidCashLexer(inputStream);
   lexer.removeErrorListeners();
-  lexer.addErrorListener(ThrowingErrorListener.INSTANCE);
+  lexer.addErrorListener(syntaxErrorListener);
   const tokenStream = new CommonTokenStream(lexer);
 
   // Parsing (throwing on errors)
   const parser = new SolidCashParser(tokenStream);
   parser.removeErrorListeners();
-  parser.addErrorListener(ThrowingErrorListener.INSTANCE);
+  parser.addErrorListener(syntaxErrorListener);
   const parseTree = parser.sourceFile();
+  syntaxErrorListener.throwFirstError();
 
   // AST building
   const ast = new AstBuilder(parseTree).build() as Ast;

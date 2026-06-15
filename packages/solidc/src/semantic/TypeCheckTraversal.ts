@@ -831,9 +831,9 @@ export default class TypeCheckTraversal extends AstTraversal {
     }
 
     if (!implicitlyCastable(node.tuple.type, assignmentType)) {
-      throw new AssignTypeError(
-        new VariableDefinitionNode(assignmentType, [], node.elements[0].name, node.tuple),
-      );
+      const syntheticAssignment = new VariableDefinitionNode(assignmentType, [], node.elements[0].name, node.tuple);
+      syntheticAssignment.location = node.location;
+      throw new AssignTypeError(syntheticAssignment);
     }
     return node;
   }

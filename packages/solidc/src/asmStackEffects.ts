@@ -1,19 +1,10 @@
 import { Op } from '@solidcash/utils';
 
 /**
- * Net stack effect of an opcode: how many items it pops and pushes.
- *
- * Used to keep the compiler's named stack tracker synchronized across an inline
- * `assembly {}` block. Opcodes with a data-dependent stack effect (e.g. OP_ROLL,
- * OP_IFDUP, OP_CHECKMULTISIG) or that alter control flow (OP_IF family) are
- * deliberately absent: they cannot be statically tracked and are rejected.
- *
- * Reordering opcodes (OP_SWAP, OP_ROT, ...) are modelled as popping all the items
- * they touch and pushing the same count of fresh (anonymous) slots. This keeps the
- * stack DEPTH exact while dropping the names of the touched slots - safe because a
- * later reference to an anonymized variable fails loud rather than reading a wrong
- * index. Opcodes that only add to the top without disturbing items below
- * (OP_DUP, OP_OVER, OP_PICK, introspection, ...) leave those names intact.
+ * Net stack effect of an opcode, used to keep the assembly-block stack tracker in sync.
+ * Opcodes with data-dependent (OP_ROLL, OP_IFDUP, OP_CHECKMULTISIG) or control-flow
+ * (OP_IF family) effects are absent and rejected. Reordering opcodes pop their touched
+ * slots and push the same count of anonymous slots (depth exact, names dropped).
  */
 export interface StackEffect {
   pops: number;
@@ -156,10 +147,7 @@ const EFFECTS: Record<number, StackEffect> = {
   [Op.OP_OUTPUTTOKENAMOUNT]: { pops: 1, pushes: 1 },
 };
 
-/**
- * Return the static stack effect of an opcode, or `undefined` when the opcode has
- * a data-dependent / control-flow stack effect that cannot be statically tracked.
- */
+/** Static stack effect of an opcode, or undefined if it cannot be statically tracked. */
 export function getStackEffect(opcode: number): StackEffect | undefined {
   return EFFECTS[opcode];
 }

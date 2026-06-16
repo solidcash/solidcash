@@ -1,8 +1,6 @@
 contract AsmStackTracking() {
     function test(int a, int b) {
-        // Net +1 assembly block: leaves one extra item on the stack. The compiler
-        // must track this so the references to a and b below resolve to the correct
-        // (shifted) stack positions.
+        // Net +1 block: a and b below must resolve to their shifted positions.
         assembly {
             OP_TXVERSION
             OP_DROP

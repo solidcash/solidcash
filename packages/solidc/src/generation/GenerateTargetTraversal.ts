@@ -155,7 +155,7 @@ import {
   getFixedWidth,
 } from './utils.js';
 import { isNumericType } from '../utils.js';
-import { getStackEffect } from './asmStackEffects.js';
+import { getStackEffect } from '../asmStackEffects.js';
 import { InvalidModifierCombinationError } from '../Errors.js';
 
 // Locking bytecode template fragments - correspond to libauth's
@@ -2551,11 +2551,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const script = asmToScript(node.assemblyBody);
     const locationData = { location: node.location, positionHint: PositionHint.START };
 
-    // Emit each element and mirror its stack effect onto the compiler's tracker so
-    // that variable references after the block resolve to correct stack indices.
-    // Data pushes add one slot; opcode effects come from the static effect table
-    // (untrackable opcodes are rejected earlier by TypeCheckTraversal). Popped slots
-    // are removed by name; pushed results are anonymous '(asm)' placeholders.
+    // Mirror each element's stack effect onto the tracker so later variable refs resolve
+    // correctly. Data push = 1 slot; opcode effects from the table (untrackable ones are
+    // rejected in TypeCheckTraversal). Results are anonymous '(asm)' slots.
     for (const element of script) {
       this.emit(element, locationData);
       if (typeof element !== 'number') {

@@ -1,0 +1,11 @@
+contract BadAsm() {
+    function test() {
+        assembly {
+            OP_1
+            OP_IF
+            OP_2
+            OP_ENDIF
+        }
+        require(true);
+    }
+}

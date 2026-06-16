@@ -155,6 +155,7 @@ import {
   getFixedWidth,
 } from './utils.js';
 import { isNumericType } from '../utils.js';
+import { getStackEffect } from './asmStackEffects.js';
 import { InvalidModifierCombinationError } from '../Errors.js';
 
 // Locking bytecode template fragments - correspond to libauth's
@@ -2549,13 +2550,25 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     const script = asmToScript(node.assemblyBody);
     const locationData = { location: node.location, positionHint: PositionHint.START };
+
+    // Emit each element and mirror its stack effect onto the compiler's tracker so
+    // that variable references after the block resolve to correct stack indices.
+    // Data pushes add one slot; opcode effects come from the static effect table
+    // (untrackable opcodes are rejected earlier by TypeCheckTraversal). Popped slots
+    // are removed by name; pushed results are anonymous '(asm)' placeholders.
     for (const element of script) {
       this.emit(element, locationData);
+      if (typeof element !== 'number') {
+        this.pushToStack('(asm)');
+        continue;
+      }
+      const effect = getStackEffect(element);
+      if (effect === undefined) {
+        throw new Error(`Untrackable opcode in assembly block: ${element}`);
+      }
+      this.popFromStack(effect.pops);
+      for (let i = 0; i < effect.pushes; i += 1) this.pushToStack('(asm)');
     }
-
-    // Warn that assembly blocks may desynchronize the compiler's stack tracker
-    const line = node.location ? ` at line ${node.location.start.line}` : '';
-    console.log(`Warning: assembly block${line} may modify the stack in ways the compiler cannot track. Subsequent variable references may use incorrect stack indices.`);
 
     return node;
   }

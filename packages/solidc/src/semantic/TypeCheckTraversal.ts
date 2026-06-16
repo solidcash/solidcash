@@ -150,6 +150,7 @@ import { BinaryOperator, NullaryOperator, UnaryOperator } from '../ast/Operator.
 import { Symbol } from '../ast/SymbolTable.js';
 import { GlobalFunction, Modifier } from '../ast/Globals.js';
 import { isNumericType, resultingTypeForBinaryOp } from '../utils.js';
+import { getStackEffect } from '../generation/asmStackEffects.js';
 
 export default class TypeCheckTraversal extends AstTraversal {
   private currentFunction: FunctionDefinitionNode;
@@ -990,13 +991,21 @@ export default class TypeCheckTraversal extends AstTraversal {
     const tokens = node.assemblyBody.split(/\s+/).filter((t) => t.length > 0);
     for (const token of tokens) {
       if (token.startsWith('OP_')) {
-        if (Op[token as keyof typeof Op] === undefined) {
+        const opcode = Op[token as keyof typeof Op];
+        if (opcode === undefined) {
           throw new InvalidAssemblyError(node, `unknown opcode '${token}'`);
         }
         if (dangerousOpcodes.has(token)) {
           throw new InvalidAssemblyError(
             node,
             `opcode '${token}' is not allowed in assembly blocks as it can corrupt script execution`,
+          );
+        }
+        if (getStackEffect(opcode as number) === undefined) {
+          throw new InvalidAssemblyError(
+            node,
+            `opcode '${token}' has a data-dependent or control-flow stack effect that the compiler `
+            + 'cannot track; it is not allowed in assembly blocks',
           );
         }
       } else if (/^(0[xX])?[0-9a-fA-F]*$/.test(token)) {

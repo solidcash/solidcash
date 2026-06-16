@@ -762,6 +762,13 @@ describe('Valid Contracts - SDK e2e', () => {
       const tx = await sendTx(provider, contract, contract.unlock.test());
       expect(tx.txid).toBeDefined();
     });
+
+    it('asm_stack_tracking: net +1 block keeps later variable indices correct', async () => {
+      const { provider, contract } = setupContract(loadCash('asm_stack_tracking.scash'));
+      await addUtxos(provider, contract.address);
+      const tx = await sendTx(provider, contract, contract.unlock.test(11n, 22n));
+      expect(tx.txid).toBeDefined();
+    });
   });
 
   // =======================================================================

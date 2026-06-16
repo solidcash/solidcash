@@ -1,0 +1,9 @@
+contract BadAsm() {
+    function test() {
+        assembly {
+            OP_1
+            OP_ROLL
+        }
+        require(true);
+    }
+}

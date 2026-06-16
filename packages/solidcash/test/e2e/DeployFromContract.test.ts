@@ -1,9 +1,9 @@
 import { compileString } from 'solidc';
-import { hexToBin } from '@bitauth/libauth';
+import { hexToBin, binToHex } from '@bitauth/libauth';
 import {
   Contract, SignatureTemplate, StatefulContract,
 } from '../../src/index.js';
-import { parsePushdataCommitment } from '@solidcash/utils';
+import { parsePushdataCommitment, parseEntryCommitment } from '@solidcash/utils';
 import {
   alicePub,
   alicePriv,
@@ -250,7 +250,7 @@ describe('StatefulContract.deployFrom()', () => {
     // TODO: deployFrom does not yet support deploy functions that access mappings (entries).
     // The create3 function writes to this.children[salt], which requires entry NFT
     // inputs/outputs that deployFrom does not construct.
-    it.skip('should deploy a child via create3 with salt', async () => {
+    it('should deploy a child via create3 with salt', async () => {
       const salt = '00'.repeat(31) + '01'; // salt = 1 (as bytes32 hex)
       const childFundingUtxo: Utxo = {
         txid: 'd2cd'.repeat(16),
@@ -293,6 +293,29 @@ describe('StatefulContract.deployFrom()', () => {
       // Factory master preserved
       expect(txOutputs[0].token?.nft?.capability).toBe('minting');
       expect(txOutputs[0].token?.category).toBe(factory.categoryId);
+
+      // Factory data NFT (output 1) childCount incremented to 1
+      const factoryState = parsePushdataCommitment(
+        txOutputs[1].token!.nft!.commitment, create3FactoryArtifact.stateLayout!, 0,
+      );
+      expect(factoryState.childCount).toBe(1n);
+
+      // Factory entry NFT (output 2) for children[salt], keyed by the factory category,
+      // with the child categoryId as its value
+      const entryNftAddress = factory.getEntryNftAddress('children');
+      const entryOutput = txOutputs[2];
+      expect(entryOutput.token?.category).toBe(factory.categoryId);
+      expect(entryOutput.token?.nft?.capability).toBe('mutable');
+      const entry = parseEntryCommitment(entryOutput.token!.nft!.commitment, 'bytes32', 'bytes32');
+      expect(binToHex(entry.key as Uint8Array)).toBe(salt);
+      // The contract stores outpointTransactionHash (internal byte order), which is the
+      // reverse of the display-order childCategoryId (= funding txid).
+      const childCategoryInternal = binToHex(hexToBin(result.childCategoryId).reverse());
+      expect(binToHex(entry.value as Uint8Array)).toBe(childCategoryInternal);
+
+      // The deployed child is queryable as a fresh stateful contract
+      const enumerated = await factory.getEntries('children');
+      expect(enumerated.length).toBe(1);
 
       // Child minting NFT created
       const childOutputIndex = txOutputs.findIndex(

@@ -6,13 +6,13 @@ The SolidCash SDK needs to connect to the BCH network to perform certain operati
 
 ## Creating an ElectrumNetworkProvider
 
-The ElectrumNetworkProvider uses [@electrum-cash/network][electrum-cash] library to connect to the configured electrum server. The connection uses a single, trusted electrum server so it does no have any fallback logic and does not validate SPV proofs for chain inclusion.
+The ElectrumNetworkProvider uses [@electrum-cash/network][electrum-cash] library to connect to the configured electrum server. The connection uses a single, trusted electrum server so it does not have any fallback logic and does not validate SPV proofs for chain inclusion.
 
 By default the `ElectrumNetworkProvider` creates a short-lived connection only when requests are pending. To configure this see the section on '[Manual Connection Management](#manual-connection-management)'.
 
 ### Constructor
 
-Both `network` and `options` parameters are optional, and they default to `mainnet` with the `bch.imaginary.cash` electrum server.
+Both `network` and `options` parameters are optional, and they default to `mainnet` with the `bch.imaginary.scash` electrum server.
 
 ```ts
 new ElectrumNetworkProvider(network?: Network, options?: Options)
@@ -162,14 +162,14 @@ When initializing an `ElectrumNetworkProvider` you have the option in the constr
 
 If intending to use electrum-cash subscriptions, make sure to set `manualConnectionManagement` to true, so the `ElectrumNetworkProvider` does not disconnect after each request.
 
-#### example
+#### Example
 
 ```ts
 import { ElectrumClient } from '@electrum-cash/network';
 import { ElectrumNetworkProvider } from 'solidcash';
 
 const electrum = new ElectrumClient('SolidCash Application', '1.4.1', 'chipnet.bch.ninja');
-const provider = new ElectrumNetworkProvider(Network.CHIPNET, {
+const provider = new ElectrumNetworkProvider('chipnet', {
   electrum, manualConnectionManagement: true
 });
 await electrum.connect();

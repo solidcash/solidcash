@@ -19,17 +19,32 @@ interface MockNetworkProviderOptions {
   updateUtxoSet?: boolean;
   vmTarget?: VmTarget;
 }
+
+interface MockNetworkProvider extends NetworkProvider {
+  options: MockNetworkProviderOptions;
+  vmTarget: VmTarget;
+
+  constructor(options?: Partial<MockNetworkProviderOptions>) {}
+
+  // Hardcode the block height
+  setBlockHeight(newBlockHeight: number): void;
+
+  // Add a UTXO to the UTXO set of the mock network
+  addUtxo(addressOrLockingBytecode: string, utxo: Utxo): Utxo;
+
+  // Reset the UTXO set and transaction list of the mock network
+  reset(): void;
+}
 ```
 
 The `updateUtxoSet` option is used to determine whether the UTXO set should be updated after a transaction is sent. If `updateUtxoSet` is `true` (default), the UTXO set will be updated to reflect the new state of the mock network. If `updateUtxoSet` is `false`, the UTXO set will not be updated.
 
-The `vmTarget` option defaults to the current VM of `BCH_2025_05`, but this can be changed to test your contract against different BCH virtual machine targets.
+The `vmTarget` option defaults to the current VM of `BCH_2026_05`, but this can be changed to test your contract against different BCH virtual machine targets.
 
 #### Example
 ```ts
 const provider = new MockNetworkProvider();
-const newUtxo = randomUtxo({satoshis: 10_000n})
-provider.addUtxo(contractAddress, newUtxo);
+const newUtxo = provider.addUtxo(contractAddress, randomUtxo({ satoshis: 10_000n }));
 ```
 
 The network type of the `MockNetworkProvider` is `'mocknet'`.
@@ -44,7 +59,7 @@ There are two alternative network providers implemented. Currently neither suppo
 new FullStackNetworkProvider(network: Network, bchjs: BCHJS)
 ```
 
-The `FullStackNetworkProvider` uses [FullStack.cash][fullstack]' infrastructure to connect to the BCH network. FullStack.cash' offers dedicated infrastructure and support plans for larger projects. Both `network` and `bchjs` parameters are mandatory, where `bchjs` is an instance of FullStack.cash' [BCHJS][bchjs].
+The `FullStackNetworkProvider` uses [FullStack.scash][fullstack]' infrastructure to connect to the BCH network. FullStack.scash' offers dedicated infrastructure and support plans for larger projects. Both `network` and `bchjs` parameters are mandatory, where `bchjs` is an instance of FullStack.scash' [BCHJS][bchjs].
 
 :::caution
 The `FullStackNetworkProvider` does not currently support CashTokens. If you want to use CashTokens, please use the `ElectrumNetworkProvider` instead.
@@ -56,7 +71,7 @@ The `FullStackNetworkProvider` does not currently support CashTokens. If you wan
 import BCHJS from '@psf/bch-js';
 import { FullStackNetworkProvider } from 'solidcash';
 
-const restURL = 'https://api.fullstack.cash/v3/';
+const restURL = 'https://api.fullstack.scash/v3/';
 const apiToken = 'eyJhbGciO...'; // Your JWT token here.
 const bchjs = new BCHJS({ restURL, apiToken });
 
@@ -82,5 +97,5 @@ import { BitcoinRpcNetworkProvider } from 'solidcash';
 const provider = new BitcoinRpcNetworkProvider('mainnet', 'http://localhost:8332');
 ```
 
-[fullstack]: https://fullstack.cash/
-[bchjs]: https://bchjs.fullstack.cash/
+[fullstack]: https://fullstack.scash/
+[bchjs]: https://bchjs.fullstack.scash/

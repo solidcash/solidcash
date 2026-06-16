@@ -2,7 +2,16 @@
 title: Release Notes
 ---
 
-## v0.13.0-next.3
+## v0.13.1
+
+#### solidc compiler
+- :sparkles: Allow custom `SolidCashErrorListener` to be passed to the compiler.
+- :bug: Fix missing location data in tuple assignment errors.
+
+#### SolidCash SDK
+- :sparkles: In the `MockNetworkProvider`, `addUtxo()` now returns the added UTXO.
+
+## v0.13.0
 
 This release contains several breaking changes, please refer to the [migration notes](/docs/releases/migration-notes) for more information.
 
@@ -27,6 +36,16 @@ This release contains several breaking changes, please refer to the [migration n
 - :hammer_and_wrench: Compile all contracts in the `contracts/` directory and save the artifacts in the `artifacts/` directory.
 - :hammer_and_wrench: Compile TS artifacts as well as JSON artifacts.
 - :hammer_and_wrench: Add key management utilities for testing.
+
+---
+
+https://x.com/SolidCashBCH/status/2059199869261095106
+
+## v0.12.2
+
+#### solidc compiler
+- :sparkles: Backport from v0.13.1: allow custom `SolidCashErrorListener` to be passed to the compiler.
+- :bug: Backport from v0.13.1: fix missing location data in tuple assignment errors.
 
 ## v0.12.1
 
@@ -54,7 +73,7 @@ This release contains several breaking changes, please refer to the [migration n
 
 ---
 
-https://x.com/CashScriptBCH/status/1973692336782876974
+https://x.com/SolidCashBCH/status/1973692336782876974
 
 ## v0.11.5
 
@@ -79,7 +98,7 @@ https://x.com/CashScriptBCH/status/1973692336782876974
 - :bug: Disallow incorrect bounded bytes typing when using `.split()`.
 
 #### SolidCash SDK
-- :bug: Fix bug with where `ElectrumNetworkProvider` would disconnect in browser on visibility change of the page.
+- :bug: Fix bug where `ElectrumNetworkProvider` would disconnect in browser on visibility change of the page.
 
 ## v0.11.2
 
@@ -94,7 +113,7 @@ https://x.com/CashScriptBCH/status/1973692336782876974
 
 ---
 
-https://x.com/CashScriptBCH/status/1942513305420968238
+https://x.com/SolidCashBCH/status/1942513305420968238
 
 ## v0.11.0
 
@@ -131,7 +150,7 @@ Thanks [kiok](https://x.com/cypherpunk_bch) for the significant contributions!
 
 ---
 
-https://x.com/CashScriptBCH/status/1935662184865890325
+https://x.com/SolidCashBCH/status/1935662184865890325
 
 #### @solidcash/utils
 - :boom: **BREAKING**: Remove `importArtifact` and `exportArtifact` helper functions. If you want to import or export artifacts, use `'fs'` to read and write files directly.
@@ -206,7 +225,7 @@ Thanks [mainnet_pat](https://x.com/mainnet_pat) for the initiative and significa
 
 ---
 
-https://x.com/CashScriptBCH/status/1833454128426615174
+https://x.com/SolidCashBCH/status/1833454128426615174
 
 ## v0.9.3
 
@@ -236,7 +255,7 @@ https://x.com/CashScriptBCH/status/1833454128426615174
 
 ---
 
-https://x.com/CashScriptBCH/status/1713928572677583023
+https://x.com/SolidCashBCH/status/1713928572677583023
 
 ## v0.8.2
 
@@ -256,7 +275,7 @@ https://x.com/CashScriptBCH/status/1713928572677583023
 This release also contains several breaking changes, please refer to the [migration notes](/docs/releases/migration-notes) for more information.
 
 #### solidc compiler
-- :sparkles: Add support for the new CashTokens introspection functionality (`tokenCategory`,`nftCommitment`and `tokenAmount`for both in- and outputs).
+- :sparkles: Add support for the new CashTokens introspection functionality (`tokenCategory`, `nftCommitment` and `tokenAmount` for both in- and outputs).
 - :sparkles: Add `LockingBytecodeP2SH32` to generate the new P2SH32 standard locking script.
 - :bug: Fix optimisation bug that caused `OP_0NOTEQUAL` to be applied to non-integer values.
 - :boom: **BREAKING**: Move to Pure ESM.
@@ -284,7 +303,7 @@ This release also contains several breaking changes, please refer to the [migrat
 
 ---
 
-https://x.com/CashScriptBCH/status/1662092546372255744
+https://x.com/SolidCashBCH/status/1662092546372255744
 
 ## v0.7.5
 
@@ -418,7 +437,7 @@ SolidCash used to be very tightly coupled with BITBOX. This proved to be problem
 - :boom: Remove `Sig` alias for `SignatureTemplate` that was deprecated in v0.4.1.
 - :boom: **BREAKING**: Refactor contract instantiation flow
   - A contract is now instantiated by providing a compiled artifact, constructor arguments and an optional network provider.
-  - Anyone can implement the NetworkProvider interface to create a custom provider. The SolidCash SDK offers three providers out of the box: one based on electrum-cash (default), one based on FullStack.cash' infrastructure, and one based on BITBOX. See the [NetworkProvider docs](/docs/sdk/network-provider) for details.
+  - Anyone can implement the NetworkProvider interface to create a custom provider. The SolidCash SDK offers three providers out of the box: one based on electrum-cash (default), one based on FullStack.scash' infrastructure, and one based on BITBOX. See the [NetworkProvider docs](/docs/sdk/network-provider) for details.
   - See the [migration notes](/docs/releases/migration-notes#v04-to-v05) for details on migrating from the old contract instantiation flow.
 - :boom: **BREAKING**: Remove the artifacts `'networks'` field and `.deployed()` functionality, This proved to be confusing and is better suited to be handled outside of the SolidCash SDK.
 - :boom: **BREAKING**: `.send()` now returns a libauth Transaction instead of a BITBOX Transaction object. Alternatively a `raw` flag can be passed into the function to return a raw hex string.
@@ -472,7 +491,7 @@ https://x.com/RoscoKalis/status/1267440143624884227
   - Remove the `TxOptions` argument and other arguments to the Transaction `send()` function.
   - Instead these parameters are passed in through fluent functions `from()`, `to()`, `withOpReturn()`, `withAge()`, `withTime()`, `withHardcodedFee()`, `withFeePerByte()` and `withMinChange()`.
   - After specifying at least one output with either `to()` or `withOpReturn()`the transaction is ready. From here the transaction can be sent to the network with the `send()` function, the transaction hex can be returned with the `build()` function, or the meep debugging command can be returned with the `meep()` function.
-- :boom: Remove `Contract.fromCashFile()` and `Contract.fromArtifact()` which were deprecated in favour or `Contract.compile()` and `Contract.import()` in v0.2.2.
+- :boom: Remove `Contract.fromCashFile()` and `Contract.fromArtifact()` which were deprecated in favour of `Contract.compile()` and `Contract.import()` in v0.2.2.
 
 #### Migration
 This update contains several breaking changes. See the [migration notes](/docs/releases/migration-notes#v03-to-v04) for a full migration guide.

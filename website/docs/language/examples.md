@@ -2,7 +2,7 @@
 title: Examples
 ---
 
-An extensive collection of examples is available in the [GitHub repository][GitHub-CashScript-Examples]. Below we discuss a few of these examples in more details and go through their functionality. This example page focuses on the SolidCash syntax, while the [SDK Examples page](/docs/sdk/examples) in the SDK section focuses on use of the SDK to build an application.
+An extensive collection of examples is available in the [GitHub repository][GitHub-SolidCash-Examples]. Below we discuss a few of these examples in more details and go through their functionality. This example page focuses on the SolidCash syntax, while the [SDK Examples page](/docs/sdk/examples) in the SDK section focuses on use of the SDK to build an application.
 
 ## HodlVault
 For better or worse, HODLing and waiting for price increases is one of the main things people want to do with their cryptocurrency. But it can be difficult to hold on to your cryptocurrency when the price is going down. So to prevent weak hands from getting the best of you, it's better to store your stash in a smart contract that enforces HODLing for you.
@@ -110,7 +110,7 @@ contract DexContract(bytes20 poolOwnerPkh) {
         // transaction format changes in the future.
         require(tx.version == 2);
 
-        // Verify that this contract lives on on the output with the same input as this contract.
+        // Verify that this contract lives on the output with the same input as this contract.
         bytes inputBytecode = tx.inputs[this.activeInputIndex].lockingBytecode;
         bytes outputBytecode = tx.outputs[this.activeInputIndex].lockingBytecode;
         require(inputBytecode == outputBytecode);
@@ -129,7 +129,7 @@ contract DexContract(bytes20 poolOwnerPkh) {
         require(effectiveOutputK >= targetK);
     }
     function withdrawal(pubkey poolOwnerPk, sig poolOwnerSig) {
-        require(hash160(poolOwnerPk) == poolOwner);
+        require(hash160(poolOwnerPk) == poolOwnerPkh);
         require(checkSig(poolOwnerSig, poolOwnerPk));
     }
 }
@@ -139,5 +139,5 @@ Compared to the manually written and hand-optimized opcodes version of the contr
 
 More advanced examples on covenants, using NFTs to keep local state and issuing NFTs as receipts can be found in the [Covenants & Introspection Guide](/docs/guides/covenants).
 
-[GitHub-CashScript-Examples]: https://github.com/CashScript/cashscript/tree/master/examples
+[GitHub-SolidCash-Examples]: https://github.com/CashScript/cashscript/tree/master/examples
 [Cauldron-Whitepaper]: https://www.cauldron.quest/_files/ugd/ae85be_b1dc04d2b6b94ab5a200e3d8cd197aa3.pdf

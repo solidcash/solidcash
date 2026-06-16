@@ -5,37 +5,26 @@ title: Syntax Highlighting
 When developing smart contracts for SolidCash it is useful to have the proper syntax highlighting in your code editor / IDE. If you use Visual Studio Code, there is a dedicated SolidCash extension. For other editors it is recommended to install a Solidity highlighting plugin and associate it with `.scash` files in your editor, since the syntaxes of the two languages are very similar.
 
 ## Visual Studio Code (Recommended)
-For Visual Studio Code (and derived editors like Cursor) we have an official [SolidCash extension](https://marketplace.visualstudio.com/items?itemName=CashScript.cashscript-vscode). This extension works with `.scash` files and supports syntax highlighting, autocompletion, snippets and linting. Because of the first-class SolidCash support, Visual Studio Code with this SolidCash extension is the recommended way to develop SolidCash contracts.
+For Visual Studio Code (and derived editors like Cursor) we have an official [SolidCash extension](https://marketplace.visualstudio.com/items?itemName=SolidCash.solidcash-vscode). This extension works with `.scash` files and supports syntax highlighting, autocompletion, snippets and linting. Because of the first-class SolidCash support, Visual Studio Code with this SolidCash extension is the recommended way to develop SolidCash contracts.
 
 To have the extension automatically suggested for any developer looking at your SolidCash contract in VScode, add the following configuration in a `.vscode/extensions.json` file:
 
 ```json title="&#126;/.vscode/extensions.json"
 {
   "recommendations": [
-    "cashscript.cashscript-vscode",
+    "solidcash.solidcash-vscode",
   ]
 }
 ```
 
 ## Cursor
 
-Cursor and other VS Code forks can use the VS Code extension mentioned above. This extension should be findable in the extensions menu within the editor. If it is not, you can manually install it from the [Open VSX Registry](https://open-vsx.org/extension/CashScript/cashscript-vscode).
+Cursor and other VS Code forks can use the VS Code extension mentioned above. This extension should be findable in the extensions menu within the editor. If it is not, you can manually install it from the [Open VSX Registry](https://open-vsx.org/extension/SolidCash/solidcash-vscode).
 
 ## Sublime Text
-The most popular Solidity plugin for Sublime Text 2/3 is [Ethereum](https://packagecontrol.io/packages/Ethereum). Install this plugin with [Package Control](https://packagecontrol.io/), open a `.scash` file and set Solidity as the syntax language in the Sublime menu bar:
+The most popular Solidity plugin for Sublime Text is [Ethereum](https://packagecontrol.io/packages/Ethereum). Install this plugin with [Package Control](https://packagecontrol.io/), open a `.scash` file and set Solidity as the syntax language in the Sublime menu bar:
 
 > View -> Syntax -> Open all with current extension as ... -> Solidity
-
-This associates `.scash` files with Solidity, and enables syntax highlighting for your SolidCash files.
-
-## Atom
-The most popular Solidity plugin for Atom is [language-solidity](https://atom.io/packages/language-solidity). Install this plugin and add the following snippet to your Config file:
-
-```yaml title="&#126;/.atom/config.cson"
-core:
-  customFileTypes:
-    "source.solidity": ["scash"]
-```
 
 This associates `.scash` files with Solidity, and enables syntax highlighting for your SolidCash files.
 

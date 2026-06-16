@@ -189,7 +189,7 @@ import { ElectrumCluster, ClusterOrder } from 'electrum-cash';
 import { ElectrumNetworkProvider } from 'solidcash';
 
 const customCluster = new ElectrumCluster('SolidCash Application', '1.4.1', 2, 3, ClusterOrder.PRIORITY);
-customCluster.addServer('bch.imaginary.cash', 50004, ElectrumTransport.WSS.Scheme, false);
+customCluster.addServer('bch.imaginary.scash', 50004, ElectrumTransport.WSS.Scheme, false);
 customCluster.addServer('blackie.c3-soft.com', 50004, ElectrumTransport.WSS.Scheme, false);
 customCluster.addServer('electroncash.dk', 50004, ElectrumTransport.WSS.Scheme, false);
 
@@ -202,12 +202,12 @@ After:
 import { ElectrumClient } from '@electrum-cash/network';
 import { ElectrumNetworkProvider } from 'solidcash';
 
-const customClient = new ElectrumClient('SolidCash Application', '1.4.1', 'bch.imaginary.cash');
+const customClient = new ElectrumClient('SolidCash Application', '1.4.1', 'bch.imaginary.scash');
 const provider = new ElectrumNetworkProvider('mainnet', { electrum: customClient });
 
 // or
 
-const provider = new ElectrumNetworkProvider('mainnet', { hostname: 'bch.imaginary.cash' });
+const provider = new ElectrumNetworkProvider('mainnet', { hostname: 'bch.imaginary.scash' });
 ```
 
 ## v0.9 to v0.10
@@ -242,7 +242,7 @@ const contract = new Contract(artifact, constructorArgs, options);
 ```
 
 #### SIGHASH_UTXO
-All signature templates use `SIGHASH_ALL | SIGHASH_UTXOS` now, to keep using the only the previous `SIGHASH_ALL` overwrite it in the following way:
+All signature templates use `SIGHASH_ALL | SIGHASH_UTXOS` now, to keep using only the previous `SIGHASH_ALL`, overwrite it in the following way:
 ```ts
 const sig = new SignatureTemplate(wif, HashType.SIGHASH_ALL);
 ```
@@ -295,7 +295,7 @@ contract Mecenas(bytes20 recipient, bytes20 funder, int pledge, int period) {
 
         if (intValue <= pledge + minerFee) {
             // The contract has less value than the pledge, or equal.
-            // The recipient must claim all of of it.
+            // The recipient must claim all of it.
 
             bytes8 amount1 = bytes8(intValue - minerFee);
             bytes34 out1 = new OutputP2PKH(amount1, recipient);

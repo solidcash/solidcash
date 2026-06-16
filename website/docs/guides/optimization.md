@@ -3,7 +3,7 @@ title: Optimizing Contracts
 sidebar_label: Optimization
 ---
 
-SolidCash contracts are transpiled from the high-level SolidCash code to [BCH Script](https://reference.cash/protocol/blockchain/script) by the `solidc` compiler. BCH Script is the low-level language used for the Bitcoin Cash Virtual Machine (BCH VM) to evaluate contracts.
+SolidCash contracts are transpiled from the high-level SolidCash code to [BCH Script](https://reference.scash/protocol/blockchain/script) by the `solidc` compiler. BCH Script is the low-level language used for the Bitcoin Cash Virtual Machine (BCH VM) to evaluate contracts.
 
 Because transaction fees are based on the bytesize of a transaction, it may be useful to optimize the compiled size of your smart contract by tweaking your SolidCash code.
 
@@ -58,7 +58,7 @@ Also declare variables when re-using certain common introspection items to avoid
 ### 2. Consume stack items
 
 It's best to "consume" values (i.e. their final use in the contract) as soon as possible. This frees up space on the stack.
-Use/consume values as close to their declaration as possible, both for variables and for parameters. This avoids having to do deep stack operations. This [example](https://gitlab.com/GeneralProtocols/anyhedge/contracts/-/blob/development/contracts/v0.11/contract.cash#L61-72) from AnyHedge illustrates consuming values immediately.
+Use/consume values as close to their declaration as possible, both for variables and for parameters. This avoids having to do deep stack operations. This [example](https://gitlab.com/GeneralProtocols/anyhedge/contracts/-/blob/development/contracts/v0.11/contract.scash#L61-72) from AnyHedge illustrates consuming values immediately.
 
 ### 3. Parse efficiently
 When using `.split()` to use both sides of a `bytes` element, declare both parts immediately to save on opcodes parsing the byte array.
@@ -73,7 +73,7 @@ When using `.split()` to use both sides of a `bytes` element, declare both parts
 ```
 ### 4. Avoid if-else
 
-Avoid if-statements when possible. Instead, try to "inline" them. This is because the compiler cannot know which branches will be taken, and therefore cannot optimise those branches as well. This [example](https://gitlab.com/GeneralProtocols/anyhedge/contracts/-/blob/development/contracts/v0.11/contract.cash#L128-130) from AnyHedge illustrates inlining flow control:
+Avoid if-statements when possible. Instead, try to "inline" them. This is because the compiler cannot know which branches will be taken, and therefore cannot optimise those branches as well. This [example](https://gitlab.com/GeneralProtocols/anyhedge/contracts/-/blob/development/contracts/v0.11/contract.scash#L128-130) from AnyHedge illustrates inlining flow control:
 
 ```solidity title="AnyHedge SolidCash code"
     // do this
@@ -176,7 +176,7 @@ If you use hand-optimized `bytecode` in your Contract's artifact, the `debug` in
 :::
 
 :::tip
-You can create an `Artifact` for a fully hand-written contract so it becomes possible to use the contract with the nice features of the SolidCash SDK! An example of this is [Cauldron_Swap_Test][Cauldron_Swap_Test] which uses `Artifact bytecode` not produced by `solidc` at all but still uses the SolidCash SDK.
+You can create an `Artifact` for a fully hand-written contract so it becomes possible to use the contract with the nice features of the SolidCash SDK! An example of this is the [unofficial Cauldron Swap SDK][Cauldron-Swap-SDK], which uses `Artifact bytecode` not produced by `solidc` at all but still uses the SolidCash SDK.
 :::
 
 ### Method 2) Custom Unlockers
@@ -204,5 +204,5 @@ interface GenerateUnlockingBytecodeOptions {
 
 
 [BitauthIDE]: https://ide.bitauth.com
-[Cauldron_Swap_Test]: https://github.com/mr-zwets/Cauldron_Swap_Test
+[Cauldron-Swap-SDK]: https://github.com/mr-zwets/Cauldron-Swap-SDK
 [addInput()]: /docs/sdk/transaction-builder#addinput

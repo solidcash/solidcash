@@ -6,7 +6,7 @@ sidebar_label: Script & Transaction Limits
 Bitcoin Cash imposes various constraints on scripts and transactions to ensure efficient contract execution and network stability. We'll categorize these limits into 2 types: 'Contract-related limits' and 'General transaction limits'.
 
 :::note
-Some of the limits below are hard BCH consensus rules, others are standardness relay rules which are still present significant practical barriers. These relay rules however are only enforced on network propagation. You can read more about the [BCH standardness rules here][standardness-docs].
+Some of the limits below are hard BCH consensus rules, others are standardness relay rules which still present significant practical barriers. These relay rules however are only enforced on network propagation. You can read more about the [BCH standardness rules here][standardness-docs].
 :::
 
 ## Contract-related limits
@@ -76,7 +76,7 @@ For ease of development, it is standard practice to use `1,000` satoshis as dust
 
 :::note
 The standard practice of 1,000 satoshis as dust amount for outputs is for the `P2PKH`, `P2SH20` and `P2SH32` output types.
-For custom locking bytecode outputs a higher dust limits may be required, you can [find more info here][info-dust-limit].
+For custom locking bytecode outputs a higher dust limit may be required, you can [find more info here][info-dust-limit].
 :::
 
 ### Minimum Relay Fee
@@ -100,6 +100,6 @@ The Bitcoin Cash protocol does not strictly enforce minimum fees for transaction
 For further details on transaction validation and standardness rules, see the [documentation on BCH transaction validation][standardness-docs].
 
 [op-cost-table]: https://github.com/bitjson/bch-vm-limits/blob/master/operation-costs.md
-[standardness-docs]: https://documentation.cash/protocol/blockchain/transaction-validation/network-level-validation-rules#standard-transactions.html
-[standard-outputs-docs]: https://documentation.cash/protocol/blockchain/transaction/locking-script.html
+[standardness-docs]: https://documentation.scash/protocol/blockchain/transaction-validation/network-level-validation-rules#standard-transactions.html
+[standard-outputs-docs]: https://documentation.scash/protocol/blockchain/transaction/locking-script.html
 [info-dust-limit]: https://bitcoincashresearch.org/t/friday-night-challenge-worst-case-dust/1181/2

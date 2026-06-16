@@ -2,44 +2,44 @@
 title: Python SDK
 ---
 
-[`cashscript-py`][pypi] is a community-maintained Python SDK for CashScript development. It is a port of the official [TypeScript SDK][typescript-sdk] and aims to give Python developers (for example those building server-side tools, bots, or Electron Cash plugins) a familiar API for constructing and interacting with CashScript contracts on BCH without re-implementing low-level details.
+[`solidcash-py`][pypi] is a community-maintained Python SDK for SolidCash development. It is a port of the official [TypeScript SDK][typescript-sdk] and aims to give Python developers (for example those building server-side tools, bots, or Electron Cash plugins) a familiar API for constructing and interacting with SolidCash contracts on BCH without re-implementing low-level details.
 
 :::info
-The Python SDK is maintained independently from the official CashScript project. For the full API reference, guides and runnable examples, see the links under [Documentation](#documentation) below.
+The Python SDK is maintained independently from the official SolidCash project. For the full API reference, guides and runnable examples, see the links under [Documentation](#documentation) below.
 :::
 
 ## When to use the Python SDK
 
-Use the Python SDK when you want to build and send CashScript transactions from a Python codebase. It mirrors the structure of the TypeScript SDK, so the same four core classes are available. See the [TypeScript SDK documentation][typescript-sdk] for more details.
+Use the Python SDK when you want to build and send SolidCash transactions from a Python codebase. It mirrors the structure of the TypeScript SDK, so the same four core classes are available. See the [TypeScript SDK documentation][typescript-sdk] for more details.
 
 - the `Contract` class
 - the `TransactionBuilder` class
 - the `NetworkProvider` class (e.g. `ElectrumNetworkProvider`)
 - the `SignatureTemplate` class
 
-Contracts are still compiled with `cashc` and loaded from the resulting artifact JSON. The Python SDK only handles instantiation, transaction building and network interaction.
+Contracts are still compiled with `solidc` and loaded from the resulting artifact JSON. The Python SDK only handles instantiation, transaction building and network interaction.
 
 ## Installation
 
 Install from PyPI:
 
 ```bash
-pip install cashscript-py
+pip install solidcash-py
 ```
 
 Or, with [`uv`][uv]:
 
 ```bash
-uv add cashscript-py
+uv add solidcash-py
 ```
 
 ## SDK usage
 
-The usage of the 4 classes in your code is as follows: before using the SDK you create one or multiple contract artifacts compiled by `cashc`. Then to start using the SDK, you instantiate a `NetworkProvider`, which you then provide to instantiate a `Contract` from an `Artifact`. Once you have a `Contract` instance, you can use it in the `TransactionBuilder`. During transaction building you might need to generate a signature, in which case you would instantiate a `SignatureTemplate`.
+The usage of the 4 classes in your code is as follows: before using the SDK you create one or multiple contract artifacts compiled by `solidc`. Then to start using the SDK, you instantiate a `NetworkProvider`, which you then provide to instantiate a `Contract` from an `Artifact`. Once you have a `Contract` instance, you can use it in the `TransactionBuilder`. During transaction building you might need to generate a signature, in which case you would instantiate a `SignatureTemplate`.
 
 For more complete examples of the SDK flow, refer to the [runnable examples][examples] in the Python SDK repository.
 
-#### example
+#### Example
 
 ```python
 from cashscript_py import Contract, ElectrumNetworkProvider, Output, SignatureTemplate, TransactionBuilder
@@ -78,15 +78,15 @@ See the [Python SDK Transaction Builder guide][transaction-builder-guide] in the
 
 The Python SDK has its own documentation site and examples.
 
-- **Documentation:** [cashscript-py.readthedocs.io][readthedocs]
-- **PyPI package:** [cashscript-py][pypi]
-- **Source code:** [gitlab.com/cashscript-py/cashscript-py][source]
+- **Documentation:** [solidcash-py.readthedocs.io][readthedocs]
+- **PyPI package:** [solidcash-py][pypi]
+- **Source code:** [gitlab.com/solidcash-py/solidcash-py][source]
 
-[pypi]: https://pypi.org/project/cashscript-py/
+[pypi]: https://pypi.org/project/solidcash-py/
 [typescript-sdk]: ../sdk/typescript-sdk.md
 [uv]: https://docs.astral.sh/uv/
-[examples]: https://gitlab.com/cashscript-py/cashscript-py/-/tree/master/examples
-[readthedocs]: https://cashscript-py.readthedocs.io/
+[examples]: https://gitlab.com/solidcash-py/solidcash-py/-/tree/master/examples
+[readthedocs]: https://solidcash-py.readthedocs.io/
 [bitauth-ide]: https://ide.bitauth.com/
-[transaction-builder-guide]: https://cashscript-py.readthedocs.io/en/latest/guide/transaction-builder.html
-[source]: https://gitlab.com/cashscript-py/cashscript-py
+[transaction-builder-guide]: https://solidcash-py.readthedocs.io/en/latest/guide/transaction-builder.html
+[source]: https://gitlab.com/solidcash-py/solidcash-py

@@ -3,7 +3,7 @@ title: Old Transaction Builder
 ---
 
 :::caution
-This is the documentation for the old and now deprecated 'Simple Transaction Builder' which operated on a single contract.
+This is the documentation for the old 'Simple Transaction Builder' which operated on a single contract. This API was **removed in v0.12** and is no longer available in the SDK.
 It is strongly recommended to migrate over to the new default transaction builder [using the migration notes](/docs/releases/migration-notes).
 :::
 
@@ -39,7 +39,7 @@ interface TokenDetails {
 ```
 
 :::note
-The CashScript SDK supports automatic UTXO selection for BCH and fungible CashTokens. However, if you want to send Non-Fungible CashTokens, you will need to do manual UTXO selection using `from()`.
+The SolidCash SDK supports automatic UTXO selection for BCH and fungible CashTokens. However, if you want to send Non-Fungible CashTokens, you will need to do manual UTXO selection using `from()`.
 :::
 
 #### Example
@@ -64,7 +64,7 @@ The `withOpReturn()` function allows you to add `OP_RETURN` outputs to the trans
 transaction.from(inputs: Utxo[]): this
 ```
 
-The `from()` function allows you to provide a hardcoded list of contract UTXOs to be used in the transaction. This overrides the regular UTXO selection performed by the CashScript SDK, so **no further selection will be performed** on the provided UTXOs. This function can be called any number of times, and the provided UTXOs will be added to the list of earlier added UTXOs.
+The `from()` function allows you to provide a hardcoded list of contract UTXOs to be used in the transaction. This overrides the regular UTXO selection performed by the SolidCash SDK, so **no further selection will be performed** on the provided UTXOs. This function can be called any number of times, and the provided UTXOs will be added to the list of earlier added UTXOs.
 
 :::tip
 The built-in UTXO selection is generally sufficient. But there are specific use cases for which it makes sense to use a custom selection algorithm.
@@ -86,7 +86,7 @@ The `fromP2PKH()` function allows you to provide a list of P2PKH UTXOs to be use
 #### Example
 ```ts
 import { bobAddress, bobPrivateKey } from './somewhere';
-import { ElectrumNetworkProvider, SignatureTemplate } from 'cashscript';
+import { ElectrumNetworkProvider, SignatureTemplate } from 'solidcash';
 
 const provider = new ElectrumNetworkProvider();
 const bobUtxos = await provider.getUtxos(bobAddress);
@@ -112,7 +112,7 @@ The `withFeePerByte()` function allows you to specify the fee per per bytes for 
 transaction.withHardcodedFee(hardcodedFee: bigint): this
 ```
 
-The `withHardcodedFee()` function allows you to specify a hardcoded fee to the transaction. By default the transaction fee is automatically calculated by the CashScript SDK, but there are certain use cases where the smart contract relies on a hardcoded fee.
+The `withHardcodedFee()` function allows you to specify a hardcoded fee to the transaction. By default the transaction fee is automatically calculated by the SolidCash SDK, but there are certain use cases where the smart contract relies on a hardcoded fee.
 
 :::tip
 If you're not building a covenant contract, you probably do not need a hardcoded transaction fee.
@@ -176,7 +176,7 @@ Be sure to check that the remaining amount (sum of inputs - sum of outputs) is n
 transaction.withAge(age: number): this
 ```
 
-The `withAge()` function allows you to specify the minimum age of the transaction inputs. This is necessary if you want to use the `tx.age` CashScript functionality. The `age` parameter passed into this function will be the value of `tx.age` inside the smart contract. For more information, refer to [BIP68][bip68].
+The `withAge()` function allows you to specify the minimum age of the transaction inputs. This is necessary if you want to use the `tx.age` SolidCash functionality. The `age` parameter passed into this function will be the value of `tx.age` inside the smart contract. For more information, refer to [BIP68][bip68].
 
 #### Example
 ```ts
@@ -262,7 +262,7 @@ It is unsafe to debug transactions on mainnet using the BitAuth IDE as private k
 
 ## Transaction errors
 
-When sending a transaction, the CashScript SDK will throw an error if the transaction fails. If you are using an artifact compiled with `cashc@0.10.0` or later, the error will be of the type `FailedRequireError` or `FailedTransactionEvaluationError`. In case of a `FailedRequireError`, the error will refer to the corresponding `require` statement in the contract code so you know where your contract failed. If you want more information about the underlying error, you can check the `libauthErrorMessage` property of the error.
+When sending a transaction, the SolidCash SDK will throw an error if the transaction fails. If you are using an artifact compiled with `solidc@0.10.0` or later, the error will be of the type `FailedRequireError` or `FailedTransactionEvaluationError`. In case of a `FailedRequireError`, the error will refer to the corresponding `require` statement in the contract code so you know where your contract failed. If you want more information about the underlying error, you can check the `libauthErrorMessage` property of the error.
 
 ```ts
 interface FailedRequireError {
@@ -275,7 +275,7 @@ interface FailedRequireError {
 }
 ```
 
-If you are using an artifact compiled with an older version of `cashc`, the error will always be of the type `FailedTransactionError`. In this case, you can use the `reason` property of the error to determine the reason for the failure.
+If you are using an artifact compiled with an older version of `solidc`, the error will always be of the type `FailedTransactionError`. In this case, you can use the `reason` property of the error to determine the reason for the failure.
 
 [fetch-api]: https://developer.mozilla.org/en-US/docs/Web/API/Fetch_API
 [bip68]: https://github.com/bitcoin/bips/blob/master/bip-0068.mediawiki

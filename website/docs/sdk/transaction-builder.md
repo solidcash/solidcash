@@ -161,7 +161,7 @@ Adds an OP_RETURN output to the transaction with the provided data chunks in str
 
 #### Example
 ```ts
-// Post "Hello World!" to memo.cash
+// Post "Hello World!" to memo.scash
 transactionBuilder.addOpReturnOutput(['0x6d02', 'Hello World!']);
 ```
 
@@ -175,8 +175,21 @@ Sets the locktime for the transaction to set a transaction-level absolute timelo
 
 #### Example
 ```ts
-// Set locktime one day from now (nLocktime is a Unix timestamp in seconds)
-transactionBuilder.setLocktime(Math.floor(Date.now() / 1000) + 24 * 60 * 60);
+// Set locktime one day from now
+transactionBuilder.setLocktime((Date.now() / 1000) + 24 * 60 * 60);
+```
+
+### getTransactionSize()
+```ts
+transactionBuilder.getTransactionSize(): bigint
+```
+
+Returns the size of the transaction in bytes.
+
+#### Example
+```ts
+const transactionSize = transactionBuilder.getTransactionSize();
+console.log(`Transaction size: ${transactionSize} bytes`);
 ```
 
 ## Completing the Transaction
@@ -239,7 +252,7 @@ const txHex = new TransactionBuilder({ provider, maximumFeeSatoshis })
 
 ### debug()
 ```ts
-transactionBuilder.debug(): DebugResult
+transactionBuilder.debug(): DebugResults
 ```
 
 If you want to debug a transaction locally instead of sending it to the network, you can call the `debug()` function on the transaction. This will return intermediate values and the final result of the transaction. It will also show any logged values and `require` error messages.
@@ -255,6 +268,40 @@ You can read more about debugging transactions on the [debugging page](/docs/gui
 :::caution
 It is unsafe to debug transactions on mainnet using the BitAuth IDE as private keys will be exposed to BitAuth IDE and transmitted over the network.
 :::
+
+### getVmResourceUsage()
+```ts
+transactionBuilder.getVmResourceUsage(verbose: boolean = false): Array<VmResourceUsage>
+```
+
+The `getVmResourceUsage()` function allows you to get the VM resource usage for the transaction. This can be useful for debugging and optimization. The VM resource usage is calculated for each input individually so the result is an array of `VmResourceUsage` results corresponding to each of the transaction inputs.
+
+```ts
+interface VmResourceUsage {
+  arithmeticCost: number;
+  definedFunctions: number;
+  hashDigestIterations: number;
+  maximumOperationCost: number;
+  maximumHashDigestIterations: number;
+  maximumSignatureCheckCount: number;
+  densityControlLength: number;
+  operationCost: number;
+  signatureCheckCount: number;
+}
+```
+
+The verbose mode also logs the VM resource usage for each input as a table to the console.
+
+```
+VM Resource usage by inputs:
+┌─────────┬─────────────────────────────────────────────────┬─────┬──────────────────────────┬───────────┬──────────┐
+│ (index) │ Contract - Function                             │ Ops │ Op Cost Budget Usage     │ SigChecks │ Hashes   │
+├─────────┼─────────────────────────────────────────────────┼─────┼──────────────────────────┼───────────┼──────────┤
+│ 0       │ 'SingleFunction - test_require_single_function' │ 7   │ '1,155 / 36,000 (3%)'    │ '0 / 1'   │ '2 / 22' │
+│ 1       │ 'ZeroHandling - test_zero_handling'             │ 13  │ '1,760 / 40,800 (4%)'    │ '0 / 1'   │ '2 / 25' │
+│ 2       │ 'P2PKH Input'                                   │ 7   │ '28,217 / 112,800 (25%)' │ '1 / 3'   │ '7 / 70' │
+└─────────┴─────────────────────────────────────────────────┴─────┴──────────────────────────┴───────────┴──────────┘
+```
 
 ### generateWcTransactionObject()
 ```ts
@@ -273,7 +320,7 @@ interface WcTransactionOptions {
 }
 
 interface WcTransactionObject {
-  transaction: TransactionCommon | string;
+  transaction: TransactionCommon;
   sourceOutputs: WcSourceOutput[];
   broadcast?: boolean;
   userPrompt?: string;
@@ -325,7 +372,21 @@ const signResult = await signWcTransaction(wcTransactionObj);
 
 ## Transaction errors
 
-Transactions can fail for a number of reasons. Refer to the [Transaction Errors][transactions-simple-errors] section of the simplified transaction builder documentation for more information. Note that the transaction builder does not yet support the `FailedRequireError` mentioned in the simplified transaction builder documentation so any error will be of type `FailedTransactionError` and include any of the mentioned error reasons in its message.
+When sending a transaction, the SolidCash SDK will throw an error if the transaction fails. If you are using an artifact compiled with `solidc@0.10.0` or later, the error will be of the type `FailedRequireError` or `FailedTransactionEvaluationError`. In case of a `FailedRequireError`, the error will refer to the corresponding `require` statement in the contract code so you know where your contract failed. If you want more information about the underlying error, you can check the `libauthErrorMessage` property of the error.
+
+```ts
+interface FailedRequireError {
+  message: string;
+  artifact: Artifact;
+  failingInstructionPointer: number;
+  requireStatement: { ip: number, line: number, message?: string };
+  inputIndex: number;
+  bitauthUri: string;
+  libauthErrorMessage?: string;
+}
+```
+
+If you are using an artifact compiled with an older version of `solidc`, the error will always be of the type `FailedTransactionError`. In this case, you can use the `reason` property of the error to determine the reason for the failure.
 
 [bitcoin-wiki-timelocks]: https://en.bitcoin.it/wiki/Timelock
 

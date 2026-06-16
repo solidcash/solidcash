@@ -12,7 +12,7 @@ For a quick start with a SolidCash testing setup, check out the [example testing
 
 The `MockNetworkProvider` is a special network provider that allows you to evaluate transactions locally without interacting with the Bitcoin Cash network. This is useful when writing automated tests for your contracts, or when debugging your contract locally.
 
-To create a new virtual UTXO use `provider.addUtxo(address, utxo)`. You can use the helper functions `randomUtxo()`, `randomToken()` and `randomNFT()` to generate random partial Utxo info which you can be overwritten with custom values.
+To create a new virtual UTXO use `provider.addUtxo(address, utxo)`. You can use the helper functions `randomUtxo()`, `randomToken()` and `randomNFT()` to generate random partial Utxo info which can be overwritten with custom values.
 
 #### Example
 
@@ -29,12 +29,12 @@ const aliceUtxo = provider.addUtxo(aliceAddress, randomUtxo({
 ```
 
 :::note
-By default, the `MockNetworkProvider` evaluates transactions locally but does not process the transaction updates. This means no UTXOs are consumed and no new UTXOs are created when mocking a transaction `send` using the provider. This can be configured by setting the `updateUtxoSet` option to `true`.
+By default, the `MockNetworkProvider` evaluates transactions locally and updates the in-memory UTXO set after a transaction is sent. This means spent UTXOs are consumed and new UTXOs are created when mocking a transaction `send` using the provider. This can be disabled by setting the `updateUtxoSet` option to `false`.
 :::
 
 ## Automated testing
 
-To make writing automated tests for SolidCash contracts easier, we provide Vitest and Jest extensions that enables easy testing of `console.log` values and `require` error messages. To use the extension, you can import it from `solidcash/vitest` or `solidcash/jest`.
+To make writing automated tests for SolidCash contracts easier, we provide Vitest and Jest extensions that enable easy testing of `console.log` values and `require` error messages. To use the extension, you can import it from `solidcash/vitest` or `solidcash/jest`.
 
 ```ts
 import 'solidcash/vitest';
@@ -94,7 +94,7 @@ describe('Example contract', () => {
 
   it('should pass require statement when correct parameter is passed', async () => {
     const transaction = new TransactionBuilder({ provider })
-      .addInput(contractUtxo, contract.unlock.exampleFunction(999n))
+      .addInput(contractUtxo, contract.unlock.exampleFunction(1000n))
       .addOutput({ to: contract.address, amount: 10000n })
     expect(transaction).not.toFailRequire();
   });

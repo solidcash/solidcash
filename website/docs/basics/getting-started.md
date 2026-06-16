@@ -70,7 +70,7 @@ contract TransferWithTimeout(pubkey sender, pubkey recipient, int timeout) {
 
 Let's take some time to understand the contract structure.
 At the top, the smart contract declares the SolidCash language version it's using with `pragma`.
-Then a `TransferWithTimeout` is declare which takes in 3 contract arguments and has 2 contract functions: `transfer` and `timeout`.
+Then a `TransferWithTimeout` is declared which takes in 3 contract arguments and has 2 contract functions: `transfer` and `timeout`.
 These contract functions both have `require` statements necessary to be met to be able to spend BCH from the contract.
 
 :::tip
@@ -97,7 +97,7 @@ After creating a contract artifact, we can now use the TypeScript SDK to initial
 
 :::info
 The SolidCash SDK is written in TypeScript meaning that you can either use TypeScript or vanilla JavaScript to use the SDK.
-It's recommended to use TypeScript for full type-safety of all you contract logic.
+It's recommended to use TypeScript for full type-safety of all your contract logic.
 :::
 
 ### Installing the TypeScript SDK
@@ -160,8 +160,7 @@ const contractArguments = [alicePub, bobPub, 100000n];
 const contract = new Contract(artifact, contractArguments, {provider});
 
 // Create a mocknet UTXO for testing
-const contractMockUtxo = randomUtxo()
-provider.addUtxo(contract.address, contractMockUtxo);
+const contractMockUtxo = provider.addUtxo(contract.address, randomUtxo());
 
 // Create the signatureTemplate for bob to sign the contract input
 const bobSignatureTemplate = new SignatureTemplate(bobPriv)
@@ -180,4 +179,4 @@ console.log(transferDetails);
 
 Congrats 🎉! You've successfully created a transaction spending from a Bitcoin Cash smart contract!
 
-To use the `timeout` function you need to use Alice as signer for the spending condition. Secondly you also need get to use `.setLocktime()` with a valid argument during the transaction building to pass the `tx.time` check of the `timeout` function.
+To use the `timeout` function you need to use Alice as signer for the spending condition. Secondly you also need to use `.setLocktime()` with a valid argument during the transaction building to pass the `tx.time` check of the `timeout` function.

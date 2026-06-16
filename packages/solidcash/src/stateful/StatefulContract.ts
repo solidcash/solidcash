@@ -1308,10 +1308,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       finalArgs = [...finalArgs, new Uint8Array(32)]; // zero bytes = direct call
     }
 
-    // Resolve entry NFT accesses (mapping writes) in the deploy function. Each access
-    // becomes an entry NFT output keyed by the factory's category. Existing entries are
-    // also added as inputs at their block-layout slot; new entries need no input (the
-    // funding UTXO at the entry slot offset has no token, so the covenant reads default).
+    // Resolve entry NFT accesses (mapping writes): each becomes an entry NFT output keyed
+    // by the factory category. Existing entries are also added as inputs; new entries need
+    // none (the funding UTXO at the entry slot has no token, so the covenant reads default).
     const factoryLayout = factory.inner.stateLayout!;
     const entryAccesses = deployAbi.entryAccesses ?? [];
     const entryInfos: Array<{
@@ -1332,7 +1331,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       if (keyParamIdx < 0) {
         throw new Error(`Mapping key parameter '${keyParam}' not found in '${deployFunctionName}' inputs.`);
       }
-      const keyValue = deployFunctionArgs[keyParamIdx] as bigint | boolean | Uint8Array;
+      // Normalize hex-string bytes keys to Uint8Array (parsed keys are always Uint8Array).
+      const rawKey = deployFunctionArgs[keyParamIdx];
+      const keyValue: bigint | boolean | Uint8Array = typeof rawKey === 'string'
+        ? hexToBin(rawKey.replace(/^0x/i, ''))
+        : (rawKey as bigint | boolean | Uint8Array);
 
       // Find an existing entry NFT whose key matches (write-to-existing path).
       let existingUtxo: Utxo | undefined;
@@ -1411,10 +1414,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       });
     }
 
-    // Derive the factory's new state commitments via VM inference.
-    // Probe inputs: master, data NFTs, existing entry NFTs, funding UTXO (for deploy genesis).
-    // Probe outputs: master, data NFTs, entry NFTs, then child outputs. Entry commitments
-    // (key||value) are extracted from the trace alongside the data NFT state commitments.
+    // Derive factory state + entry commitments via VM probe. Inputs: master, data NFTs,
+    // existing entries, funding. Outputs: master, data NFTs, entries, child outputs.
     const { state: derivedState, entryCommitments } = await (factory as StatefulContract)._deriveCommitments(
       deployFunctionName, finalArgs, requiredNftIndices,
       [...entryPlaceholderOutputs, ...childExtraOutputs],
@@ -1503,8 +1504,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       });
     }
 
-    // Entry NFT outputs (mapping writes), at their block-layout slots after the data NFTs.
-    // Commitments (key||value) come from the VM trace derivation above.
+    // Entry NFT outputs, after the data NFTs; commitments derived from the VM trace above.
     for (let i = 0; i < entryInfos.length; i++) {
       const info = entryInfos[i];
       const entryAddress = getEntryNftAddress(factory.inner, factory.categoryId, info.collection);
@@ -1544,8 +1544,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       });
     }
 
-    // Change output. New entry NFT outputs are funded from the funding UTXO; existing
-    // entry NFTs are satoshi-neutral (their input satoshis fund their output).
+    // Change output. New entries cost dust from the funding UTXO; existing entries are
+    // satoshi-neutral (input funds output).
     const newEntryCount = BigInt(entryInfos.filter((e) => !e.existingUtxo).length);
     const totalChildCost = masterAmount + (dataNftAmount * BigInt(childLayout!.dataNftCount));
     const totalEntryCost = dataNftAmount * newEntryCount;
@@ -2568,9 +2568,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         const { CovenantTransactionBuilder } = await import('./CovenantTransactionBuilder.js');
         const vm = createVirtualMachineBch2026();
 
-        // Run a probe with the given data NFT output commitments and return the VM trace.
-        // dataNftOutputCommitments overrides the placeholder commitments for the data NFT
-        // outputs; when omitted the current on-chain commitments are used.
+        // Probe with optional data NFT output commitment overrides (default: current).
         const runProbe = (dataNftOutputCommitments?: string[]): AuthenticationProgramStateCommon[] => {
           const probeBuilder = new CovenantTransactionBuilder({ provider: this.inner.provider });
 
@@ -2613,7 +2611,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             });
           }
 
-          // Add extra outputs (e.g. entry NFTs and child contract outputs)
+          // Add extra outputs (entry NFTs and child contract outputs)
           if (extraOutputs) {
             for (const output of extraOutputs) {
               probeBuilder.addOutput(output);
@@ -2625,17 +2623,14 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           return vm.debug({ inputIndex: 0, sourceOutputs, transaction }) as AuthenticationProgramStateCommon[];
         };
 
-        // Pass 1: derive data NFT state commitments. The placeholder commitments don't
-        // match the expected post-state, so the data NFT verify fails - but the trace
-        // captures the expected (derived) values before the failing OP_EQUALVERIFY.
+        // Pass 1: derive data NFT state. Placeholder outputs fail the data NFT verify, but
+        // the trace captures the expected values before the failing OP_EQUALVERIFY.
         const fullTrace = runProbe();
         const stateOutputRange = { min: 1, max: 1 + requiredNftIndices.length };
         const commitmentHexes = extractCommitmentsFromTrace(fullTrace, requiredNftIndices.length, stateOutputRange);
 
-        // Entry NFT outputs (mapping writes) sit immediately after the data NFT outputs.
-        // They are verified AFTER the data NFTs, so a failing data NFT verify in pass 1
-        // halts the trace before reaching them. Re-run with the derived data NFT
-        // commitments so the data NFT verify passes and the entry verify is reached.
+        // Pass 2: entry verifies run after the data NFT verify, so re-run with derived data
+        // NFT commitments to get past it and reach the entry verifies.
         let entryCommitments: string[] = [];
         if (entryOutputCount > 0) {
           const entryBase = 1 + requiredNftIndices.length;

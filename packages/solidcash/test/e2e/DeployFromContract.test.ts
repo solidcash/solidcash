@@ -60,6 +60,21 @@ contract Create3Factory() {
 }
 `;
 
+// Factory whose deploy function overwrites a mapping entry (no `== 0` guard), to exercise
+// deployFrom's existing-entry write path.
+const OVERWRITE_FACTORY = `
+contract OverwriteFactory() {
+    int childCount;
+    mapping(bytes32 => bytes32) children;
+
+    function recreate(bytes32 salt, int fundingInputIndex) deploy {
+        bytes32 childCategoryId = tx.inputs[fundingInputIndex].outpointTransactionHash;
+        this.children[salt] = childCategoryId;
+        this.childCount = this.childCount + 1;
+    }
+}
+`;
+
 // Factory WITHOUT deploy modifier (for negative tests)
 const NO_DEPLOY_FACTORY = `
 contract NoDeployFactory() {
@@ -82,6 +97,7 @@ describe('StatefulContract.deployFrom()', () => {
   const factoryArtifact = compileString(FACTORY);
   const childArtifact = compileString(CHILD);
   const create3FactoryArtifact = compileString(CREATE3_FACTORY);
+  const overwriteFactoryArtifact = compileString(OVERWRITE_FACTORY);
   const noDeployArtifact = compileString(NO_DEPLOY_FACTORY);
 
   describe('deploy modifier in artifact ABI', () => {
@@ -247,11 +263,8 @@ describe('StatefulContract.deployFrom()', () => {
       expect(factory.categoryId).toBe(fundingUtxo.txid);
     });
 
-    // TODO: deployFrom does not yet support deploy functions that access mappings (entries).
-    // The create3 function writes to this.children[salt], which requires entry NFT
-    // inputs/outputs that deployFrom does not construct.
     it('should deploy a child via create3 with salt', async () => {
-      const salt = '00'.repeat(31) + '01'; // salt = 1 (as bytes32 hex)
+      const salt = '00'.repeat(31) + '01'; // salt = 1
       const childFundingUtxo: Utxo = {
         txid: 'd2cd'.repeat(16),
         vout: 0,
@@ -259,12 +272,7 @@ describe('StatefulContract.deployFrom()', () => {
       };
       await provider.addUtxo(p2pkh.address, childFundingUtxo);
 
-      // The fundingInputIndex depends on how many inputs the factory uses.
-      // Factory has: master (input 0), data NFTs for childCount (input 1),
-      // entry NFTs for mapping (input 2..N), then funding UTXO.
-      // For the create3 factory with 1 data NFT + 0 initial entries,
-      // fundingInputIndex = 1 (master) + requiredDataNftCount
-      // But we need to figure out the exact value based on the ABI.
+      // New entry: funding doubles as the entry-slot filler, so fundingInputIndex = master + data NFTs
       const create3Abi = create3FactoryArtifact.abi.find((f) => f.name === 'create3')!;
       const requiredNftCount = create3Abi.requiredNftIndices?.length
         ?? create3FactoryArtifact.stateLayout!.dataNftCount;
@@ -300,20 +308,16 @@ describe('StatefulContract.deployFrom()', () => {
       );
       expect(factoryState.childCount).toBe(1n);
 
-      // Factory entry NFT (output 2) for children[salt], keyed by the factory category,
-      // with the child categoryId as its value
-      const entryNftAddress = factory.getEntryNftAddress('children');
+      // Factory entry NFT (output 2): children[salt] = child category, factory-keyed
       const entryOutput = txOutputs[2];
       expect(entryOutput.token?.category).toBe(factory.categoryId);
       expect(entryOutput.token?.nft?.capability).toBe('mutable');
       const entry = parseEntryCommitment(entryOutput.token!.nft!.commitment, 'bytes32', 'bytes32');
       expect(binToHex(entry.key as Uint8Array)).toBe(salt);
-      // The contract stores outpointTransactionHash (internal byte order), which is the
-      // reverse of the display-order childCategoryId (= funding txid).
+      // Stored value is outpointTransactionHash (internal byte order = reversed txid)
       const childCategoryInternal = binToHex(hexToBin(result.childCategoryId).reverse());
       expect(binToHex(entry.value as Uint8Array)).toBe(childCategoryInternal);
 
-      // The deployed child is queryable as a fresh stateful contract
       const enumerated = await factory.getEntries('children');
       expect(enumerated.length).toBe(1);
 
@@ -322,6 +326,94 @@ describe('StatefulContract.deployFrom()', () => {
         (o) => o.token?.category === result.childCategoryId && o.token?.nft?.capability === 'minting',
       );
       expect(childOutputIndex).toBeGreaterThan(0);
+
+      factory = result.factory;
+    });
+  });
+
+  describe('deployFrom overwriting an existing mapping entry', () => {
+    let factory: Awaited<ReturnType<typeof StatefulContract.deploy>>['contract'];
+    const salt = '00'.repeat(31) + '07'; // bytes32 hex
+
+    it('should deploy the overwrite factory', async () => {
+      const fundingUtxo: Utxo = { txid: 'e1cd'.repeat(16), vout: 0, satoshis: 100000n };
+      await provider.addUtxo(p2pkh.address, fundingUtxo);
+
+      const result = await StatefulContract.deploy(overwriteFactoryArtifact, [], {
+        provider,
+        fundingUtxo,
+        funder: p2pkh.unlock.spend(alicePub, new SignatureTemplate(alicePriv)),
+        initialState: { childCount: 0n },
+        changeAddress: p2pkh.address,
+      });
+
+      factory = result.contract;
+      expect(factory.categoryId).toBe(fundingUtxo.txid);
+    });
+
+    it('should create the entry on first deploy (new entry, fundingInputIndex=2)', async () => {
+      const childFundingUtxo: Utxo = { txid: 'e2cd'.repeat(16), vout: 0, satoshis: 100000n };
+      await provider.addUtxo(p2pkh.address, childFundingUtxo);
+
+      // New entry: funding fills the entry slot, so fundingInputIndex = master + data NFTs = 2
+      const result = await StatefulContract.deployFrom({
+        provider,
+        factory,
+        deployFunctionName: 'recreate',
+        deployFunctionArgs: [salt, 2n],
+        childArtifact,
+        childConstructorArgs: [alicePkh],
+        childInitialState: { counter: 0n },
+        fundingUtxo: childFundingUtxo,
+        funder: p2pkh.unlock.spend(alicePub, new SignatureTemplate(alicePriv)),
+        changeAddress: p2pkh.address,
+      });
+
+      const txOutputs = getTxOutputs(result.tx);
+      const entry = parseEntryCommitment(txOutputs[2].token!.nft!.commitment, 'bytes32', 'bytes32');
+      expect(binToHex(entry.key as Uint8Array)).toBe(salt);
+      expect(binToHex(entry.value as Uint8Array)).toBe(binToHex(hexToBin(result.childCategoryId).reverse()));
+
+      const entries = await factory.getEntries('children');
+      expect(entries.length).toBe(1);
+
+      factory = result.factory;
+    });
+
+    it('should overwrite the existing entry on second deploy (existing entry input, fundingInputIndex=3)', async () => {
+      const childFundingUtxo: Utxo = { txid: 'e3cd'.repeat(16), vout: 0, satoshis: 100000n };
+      await provider.addUtxo(p2pkh.address, childFundingUtxo);
+
+      // Entry now exists: it takes the entry slot, funding shifts to the deploy slot (index 3)
+      const result = await StatefulContract.deployFrom({
+        provider,
+        factory,
+        deployFunctionName: 'recreate',
+        deployFunctionArgs: [salt, 3n],
+        childArtifact,
+        childConstructorArgs: [alicePkh],
+        childInitialState: { counter: 0n },
+        fundingUtxo: childFundingUtxo,
+        funder: p2pkh.unlock.spend(alicePub, new SignatureTemplate(alicePriv)),
+        changeAddress: p2pkh.address,
+      });
+
+      const txOutputs = getTxOutputs(result.tx);
+
+      // childCount incremented to 2 (state preserved across the overwrite)
+      const factoryState = parsePushdataCommitment(
+        txOutputs[1].token!.nft!.commitment, overwriteFactoryArtifact.stateLayout!, 0,
+      );
+      expect(factoryState.childCount).toBe(2n);
+
+      // Entry overwritten in place with the new child's category, same key
+      const entry = parseEntryCommitment(txOutputs[2].token!.nft!.commitment, 'bytes32', 'bytes32');
+      expect(binToHex(entry.key as Uint8Array)).toBe(salt);
+      expect(binToHex(entry.value as Uint8Array)).toBe(binToHex(hexToBin(result.childCategoryId).reverse()));
+
+      // Exactly one entry remains - overwritten, not duplicated
+      const entries = await factory.getEntries('children');
+      expect(entries.length).toBe(1);
 
       factory = result.factory;
     });

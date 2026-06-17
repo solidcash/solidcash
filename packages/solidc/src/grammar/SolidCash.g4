@@ -312,7 +312,7 @@ tupleAssignment
     ;
 
 assignStatement
-    : Identifier op=('=' | '+=' | '-=') expression ';'
+    : Identifier op=('=' | '+=' | '-=' | '*=' | '/=' | '%=' | '&=' | '|=' | '^=' | '<<=' | '>>=') expression ';'
     | Identifier op=('++' | '--') ';'
     ;
 
@@ -392,7 +392,7 @@ forCondition
     ;
 
 forUpdate
-    : Identifier op=('=' | '+=' | '-=') expression
+    : Identifier op=('=' | '+=' | '-=' | '*=' | '/=' | '%=' | '&=' | '|=' | '^=' | '<<=' | '>>=') expression
     | Identifier op=('++' | '--')
     ;
 

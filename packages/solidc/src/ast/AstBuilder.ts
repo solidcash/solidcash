@@ -897,7 +897,14 @@ export default class AstBuilder
     } else {
       const left = new IdentifierNode(identifierText);
       left.location = identifierLocation;
-      const binaryOperator = (op === '+=' || op === '++') ? BinaryOperator.PLUS : BinaryOperator.MINUS;
+      const COMPOUND_OPS: Record<string, BinaryOperator> = {
+        '+=': BinaryOperator.PLUS, '++': BinaryOperator.PLUS,
+        '-=': BinaryOperator.MINUS, '--': BinaryOperator.MINUS,
+        '*=': BinaryOperator.MUL, '/=': BinaryOperator.DIV, '%=': BinaryOperator.MOD,
+        '&=': BinaryOperator.BIT_AND, '|=': BinaryOperator.BIT_OR, '^=': BinaryOperator.BIT_XOR,
+        '<<=': BinaryOperator.SHIFT_LEFT, '>>=': BinaryOperator.SHIFT_RIGHT,
+      };
+      const binaryOperator = COMPOUND_OPS[op];
       const right = (op === '++' || op === '--')
         ? new IntLiteralNode(1n)
         : this.visit(expressionCtx!) as ExpressionNode;

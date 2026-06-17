@@ -65,6 +65,8 @@ see `packages/solidcash/test/e2e/DispatchSelectorSecurity.test.ts`.
 | `0x1004` | minting NFT uniqueness | `[] -> []` (non-delegate; delegate inlines) |
 | `0x1005` | master value preservation | `[] -> []` (non-delegate; delegate inlines) |
 | `0x1006` | category base == master's category base | `[cat] -> []` (non-delegate; delegate inlines) |
+| `0x1007` | satoshi container P2SH32 lbc from category | `[cat] -> [lbc]` |
+| `0x1008` | token container P2SH32 lbc from masterCat+tcCat | `[masterCat, tcCat] -> [lbc]` |
 
 Frame/int-encode interaction: each int-encode site frames once, so when int-encode is its own
 subroutine those frames move into it; only the remaining (bytes-branch) frames count toward the
@@ -89,22 +91,28 @@ Propagation and inheritance are handled by the registry loops - do not add per-s
 multi-function contracts because propagation+inheritance were wired for int-decode only; the
 registry exists to make that class of bug impossible.)
 
-## Negative result: the covenant-LBC family (do not re-attempt as-is)
+## The covenant-LBC family (0x1007, 0x1008)
 
-Extracting `emitDataNftLbc` / `emitSatoshiContainerLbc` / `emitTokenContainerLbc` as subroutines
-was tried and reverted. Instrumenting a full suite run showed **no contract triggers any of them**:
-every contract constructs each covenant P2SH32 address **<2x** (k>=2 never met), even Highlight,
-which uses satoshi and token containers across four functions. Covenant-address construction is
-typically <=1 per contract, so these inline correctly and a subroutine would be untested with no
-measured benefit.
+The satoshi/token container LBC transforms ARE extractable. An earlier attempt was reverted after a
+suite run showed "no contract triggers any LBC >=2x" - but that measurement predates the registry
+refactor, which fixed sub-traversal count propagation. Before the fix the probe saw ~0 LBC uses for
+multi-function contracts (counts never propagated from function-body sub-traversals), so the rule
+concluded inline. Post-registry the counts are correct: 15 contracts use an LBC template >=2x, and
+extracting the two transforms shrank **9 contracts by 1385 bytes total** (AddressTypes -305 / -25%,
+TokenContainerOutState -223, MsgSenderTest -147).
 
-The "repeated ~48-byte covenant template" visible in a naive repeated-block scan of Highlight is a
-**data constant** embedded across heterogeneous covenant logic (address build + covenant
-verification), not a single `[category] -> [lbc]` transform. Data constants cannot be subroutined.
+These transforms are pure stack operations (no introspection), so unlike the master family they need
+no delegate gate. `emitSatoshiContainerLbc` is `[cat] -> [lbc]` (tracks stack); `emitTokenContainerLbc`
+is `[masterCat, tcCat] -> [lbc]` (leaves tracking to the caller). OP_INVOKE shares the runtime stack,
+so the body's hardcoded OP_ROLL indices reach the same items as inline.
 
-Takeaway: covenant-LBC construction rarely repeats >=2x within a contract; not a fruitful target.
+Caveat - transform vs verification: the ~48-byte covenant middle constant also appears inline where a
+covenant *output's* bytecode is verified. Only the `[category] -> [lbc]` transform path is subroutined;
+a contract whose template copies are mostly verification-context (e.g. Highlight, TokenContainerRead)
+has a transform count <2 and correctly stays inline. `emitDataNftLbc` has a single call site (k<2),
+so it is not extracted.
 
-## Cross-contract analysis (how 0x1006 was found)
+## Cross-contract analysis (how 0x1006-0x1008 were found)
 
 Earlier rounds only profiled Highlight. To find patterns repeated across the *whole* ecosystem,
 temporarily hook `compileString` (just before its `return`) to append `{n: contractName,
@@ -122,6 +130,9 @@ SPLIT DROP EQUALVERIFY`, byte-identical 11-byte tail) as the single broadest rep
 across 141 contracts. Extracted as `0x1006`; under k>=2 it shrank **45 contracts by 878 bytes
 total** (ERC20Token -89, Highlight -68, PartialStructUpdate -47). The window scan over-estimates
 (many contracts use the idiom exactly once -> inline), so the real win is the k>=2 subset.
+
+The same dump (ranking by net savings, accounting for define overhead) surfaced the covenant-LBC
+transforms as the next-largest target, leading to `0x1007`/`0x1008` above.
 
 The next-ranked repeat is single-data-NFT preservation (value/amount/commitment/bytecode at offset
 +1); it is offset-parameterized, so a generic subroutine would need the offset fixed - deferred.

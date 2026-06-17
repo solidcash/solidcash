@@ -257,7 +257,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private static readonly MINT_UNIQUENESS_SUBROUTINE_ID = 0x1004n;
   private static readonly MASTER_VALUE_PRES_SUBROUTINE_ID = 0x1005n;
   private static readonly CAT_BASE_EQ_MASTER_SUBROUTINE_ID = 0x1006n;
-  private static readonly ALL_SUBROUTINE_IDS = [0x1000n, 0x1001n, 0x1002n, 0x1003n, 0x1004n, 0x1005n, 0x1006n];
+  private static readonly SATOSHI_LBC_SUBROUTINE_ID = 0x1007n;
+  private static readonly TOKEN_LBC_SUBROUTINE_ID = 0x1008n;
+  private static readonly ALL_SUBROUTINE_IDS =
+    [0x1000n, 0x1001n, 0x1002n, 0x1003n, 0x1004n, 0x1005n, 0x1006n, 0x1007n, 0x1008n];
 
   // State-related tracking
   private stateVariables: StateVariableNode[] = [];
@@ -590,6 +593,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const CATEQ = GenerateTargetTraversalWithLocation.CAT_BASE_EQ_MASTER_SUBROUTINE_ID;
     if (count(CATEQ) >= 2) {
       spans.push({ id: CATEQ, span: this.defineCapturedSubroutine(CATEQ, (t) => t.emitVerifyCatBaseEqMaster(loc), loc) });
+    }
+    const SATLBC = GenerateTargetTraversalWithLocation.SATOSHI_LBC_SUBROUTINE_ID;
+    if (count(SATLBC) >= 2) {
+      spans.push({ id: SATLBC, span: this.defineCapturedSubroutine(SATLBC, (t) => t.emitSatoshiContainerLbc(loc), loc) });
+    }
+    const TOKLBC = GenerateTargetTraversalWithLocation.TOKEN_LBC_SUBROUTINE_ID;
+    if (count(TOKLBC) >= 2) {
+      spans.push({ id: TOKLBC, span: this.defineCapturedSubroutine(TOKLBC, (t) => t.emitTokenContainerLbc(loc), loc) });
     }
 
     this.subroutineUseCount = new Map();
@@ -11397,6 +11408,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * Stack after:  [..., p2sh32_locking_bytecode]
    */
   private emitSatoshiContainerLbc(locationData: SingleLocationData): void {
+    // Shared as a subroutine when used >=2x; replicate the inline net effect (category -> lbc).
+    if (this.invokeSubroutineIfDefined(GenerateTargetTraversalWithLocation.SATOSHI_LBC_SUBROUTINE_ID, locationData)) {
+      this.popFromStack();
+      this.pushToStack('(value)');
+      return;
+    }
     const prefix = hexToBin('63ce01207f5288');   // 7 bytes
     const middle = hexToBin('8867767676cdc0c788ccc0c6a269d1c0ce88d3c0d0a269c0c7c38c6576c09c6476c75279879169688c76009f66757568'); // 48 bytes
     const suffix = hexToBin('7551');             // 2 bytes
@@ -11460,6 +11477,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * Does NOT track stack - caller must manage push/pop.
    */
   private emitTokenContainerLbc(locationData: SingleLocationData): void {
+    // Shared as a subroutine when used >=2x; like the inline body, leaves stack tracking to caller.
+    if (this.invokeSubroutineIfDefined(GenerateTargetTraversalWithLocation.TOKEN_LBC_SUBROUTINE_ID, locationData)) {
+      return;
+    }
     // Token container covenant script (must match buildTokenContainerCovenantScript in state.ts):
     // OP_IF UTXOTOKENCATEGORY <32> SPLIT OP_2 EQUALVERIFY <masterCat> EQUALVERIFY
     //   OP_ELSE DUP DUP DUP OUTPUTBYTECODE INPUTINDEX UTXOBYTECODE EQUALVERIFY

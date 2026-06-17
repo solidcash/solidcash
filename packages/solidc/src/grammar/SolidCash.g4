@@ -519,6 +519,7 @@ expression
     | 'string.concat' expressionList # StringConcat
     | 'abi.decode' '(' expression ',' typeList ')' # AbiDecode
     | 'abi.decodeAt' '(' expression ',' typeList ',' NumberLiteral ')' # AbiDecodeAt
+    | element=expression '[' start=expression ':' end=expression ']' # IndexRangeSlice
     | expression '[' index=NumberLiteral ']' # TupleIndexOp
     | expression '[' expression ']' # ArrayAccess
     | scope='tx.outputs' '[' expression ']' op=('.value' | '.lockingBytecode' | '.tokenCategory' | '.nftCommitment' | '.tokenAmount') # UnaryIntrospectionOp

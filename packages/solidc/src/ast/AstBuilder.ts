@@ -148,6 +148,7 @@ import type {
   StatementContext,
   RequireMessageContext,
   SliceContext,
+  IndexRangeSliceContext,
   DoWhileStatementContext,
   LoopStatementContext,
   StateVariableDeclarationContext,
@@ -1252,6 +1253,16 @@ export default class AstBuilder
   }
 
   visitSlice(ctx: SliceContext): SliceNode {
+    const element = this.visit(ctx._element);
+    const start = this.visit(ctx._start);
+    const end = this.visit(ctx._end);
+    const slice = new SliceNode(element, start, end);
+    slice.location = Location.fromCtx(ctx);
+    return slice;
+  }
+
+  // `x[a:b]` index-range syntax desugars to the same SliceNode as `x.slice(a, b)`.
+  visitIndexRangeSlice(ctx: IndexRangeSliceContext): SliceNode {
     const element = this.visit(ctx._element);
     const start = this.visit(ctx._start);
     const end = this.visit(ctx._end);

@@ -9,7 +9,22 @@ Stateful contracts inline the same building blocks (pushdata encode/decode, cove
 constructions) many times, bloating bytecode. This work extracts the high-value repeated
 blocks into shared BCH-2026 `OP_DEFINE`/`OP_INVOKE` subroutines, under a usage-count rule.
 
-Result on the Highlight benchmark: **4210 -> 2619 bytes (-38%)**.
+## Highlight benchmark (full arc)
+
+This work continues the `future` branch's first subroutine optimization. Measured by compiling the
+identical `HIGHLIGHT_CONTRACT` source at each point:
+
+| Point | Commit | Bytes | Delta |
+|-------|--------|-------|-------|
+| Unoptimized baseline | `33525937` (parent of first opt in `future`) | 6665 | - |
+| First opt in `future` (int-decode `0x1000`) | `1c7b7490` / `future` HEAD | 4210 | -2455 (-36.8%) |
+| Current | `solidcash_v0.13.1` (this work) | 2619 | -1591 (-37.8%) |
+
+Cumulative from unoptimized: **6665 -> 2619, -4046 bytes (-60.7%)**.
+
+Note: the int-decode subroutine (`0x1000`) was wired with sub->parent propagation from the start,
+so it was live for multi-function Highlight and delivered that first -36.8%. The "silently dead for
+multi-function" bug fixed on this branch affected only frame/int-encode (`0x1001`/`0x1002`).
 
 ## The rule
 

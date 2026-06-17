@@ -255,7 +255,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private static readonly INT_ENCODE_SUBROUTINE_ID = 0x1002n;
   private static readonly MASTER_SELF_PRES_SUBROUTINE_ID = 0x1003n;
   private static readonly MINT_UNIQUENESS_SUBROUTINE_ID = 0x1004n;
-  private static readonly ALL_SUBROUTINE_IDS = [0x1000n, 0x1001n, 0x1002n, 0x1003n, 0x1004n];
+  private static readonly MASTER_VALUE_PRES_SUBROUTINE_ID = 0x1005n;
+  private static readonly ALL_SUBROUTINE_IDS = [0x1000n, 0x1001n, 0x1002n, 0x1003n, 0x1004n, 0x1005n];
 
   // State-related tracking
   private stateVariables: StateVariableNode[] = [];
@@ -580,6 +581,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         id: MUNIQ,
         span: this.defineCapturedSubroutine(MUNIQ, (t) => t.emitMintingNftUniqueness(captureFn), loc),
       });
+    }
+    const MVAL = GenerateTargetTraversalWithLocation.MASTER_VALUE_PRES_SUBROUTINE_ID;
+    if (count(MVAL) >= 2) {
+      spans.push({ id: MVAL, span: this.defineCapturedSubroutine(MVAL, (t) => t.emitMasterValuePreservation(loc), loc) });
     }
 
     this.subroutineUseCount = new Map();
@@ -9364,6 +9369,40 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
+   * Emit master UTXO satoshi (==) and fungible-token-amount (>=) preservation. Generic and
+   * stack-neutral; shared as a subroutine for non-delegate functions (delegate inlines).
+   */
+  private emitMasterValuePreservation(locationData: SingleLocationData): void {
+    if (!this.currentFunctionIsDelegate && this.invokeSubroutineIfDefined(
+      GenerateTargetTraversalWithLocation.MASTER_VALUE_PRES_SUBROUTINE_ID, locationData)) {
+      return;
+    }
+
+    // Master UTXO exact satoshi preservation: inputValue == outputValue
+    this.emitMasterInputIndex(locationData);
+    this.emit(Op.OP_UTXOVALUE, locationData);
+    this.pushToStack('(value)');
+    this.emitMasterInputIndex(locationData);
+    this.emit(Op.OP_OUTPUTVALUE, locationData);
+    this.pushToStack('(value)');
+    this.emit(Op.OP_EQUALVERIFY, locationData);
+    this.popFromStack(2);
+
+    // Master UTXO fungible token amount preservation: outputAmount >= inputAmount
+    this.emitMasterInputIndex(locationData);
+    this.emit(Op.OP_UTXOTOKENAMOUNT, locationData);
+    this.pushToStack('(value)');
+    this.emitMasterInputIndex(locationData);
+    this.emit(Op.OP_OUTPUTTOKENAMOUNT, locationData);
+    this.pushToStack('(value)');
+    this.emit(Op.OP_LESSTHANOREQUAL, locationData);
+    this.popFromStack(2);
+    this.pushToStack('(value)');
+    this.emit(Op.OP_VERIFY, locationData);
+    this.popFromStack();
+  }
+
+  /**
    * Emit the master input index for state access paths.
    * In delegate functions, reads _proxyMasterIndex from the altstack via FROMALTSTACK/DUP/TOALTSTACK
    * (saved at function entry) to reference the proxy's master UTXO.
@@ -10237,28 +10276,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private emitValuePreservation(node: FunctionDefinitionNode, hasTokenContainerAccess?: boolean): void {
     const locationData = { location: node.body.location, positionHint: PositionHint.END };
 
-    // Master UTXO exact satoshi preservation: inputValue == outputValue
-    this.emitMasterInputIndex(locationData);
-    this.emit(Op.OP_UTXOVALUE, locationData);
-    this.pushToStack('(value)');
-    this.emitMasterInputIndex(locationData);
-    this.emit(Op.OP_OUTPUTVALUE, locationData);
-    this.pushToStack('(value)');
-    this.emit(Op.OP_EQUALVERIFY, locationData);
-    this.popFromStack(2);
-
-    // Master UTXO fungible token amount preservation: outputAmount >= inputAmount
-    this.emitMasterInputIndex(locationData);
-    this.emit(Op.OP_UTXOTOKENAMOUNT, locationData);
-    this.pushToStack('(value)');
-    this.emitMasterInputIndex(locationData);
-    this.emit(Op.OP_OUTPUTTOKENAMOUNT, locationData);
-    this.pushToStack('(value)');
-    this.emit(Op.OP_LESSTHANOREQUAL, locationData);
-    this.popFromStack(2);
-    this.pushToStack('(value)');
-    this.emit(Op.OP_VERIFY, locationData);
-    this.popFromStack();
+    this.emitMasterValuePreservation(locationData);
 
     // Data NFT satoshi and fungible token preservation (for all accessed NFTs)
     for (const [, compactOffset] of this.compactOffsetMap) {

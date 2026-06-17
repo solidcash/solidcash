@@ -243,17 +243,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private currentFunction: FunctionDefinitionNode;
   private constructorParameterCount: number;
   private contractUsesMsgData: boolean = false;
-  // Registry of compiler-internal subroutines, keyed by 2-byte id. A subroutine is OP_DEFINE'd
-  // once and OP_INVOKE'd when used >=2 times, else inlined. `defined` is inherited into
-  // sub-traversals (so bodies invoke it); `useCount` is propagated back up (so the probe sees
-  // every site). Both code paths are independently correct, so a misestimate is only suboptimal.
+  // Compiler-internal subroutine registry, keyed by 2-byte id. `defined` is inherited into
+  // sub-traversals; `useCount` is propagated back up.
   private subroutineDefined = new Map<bigint, boolean>();
   private subroutineUseCount = new Map<bigint, number>();
 
-  // Compiler-internal subroutine IDs are 2-byte script numbers starting at 0x1000.
-  // This range is disjoint by length from both user function IDs (small ints from 0)
-  // and 4-byte entry-point selectors, so the dispatcher's 4-byte selector check keeps
-  // these subroutines unreachable from the unlocking script.
+  // 2-byte subroutine IDs from 0x1000: disjoint by length from user function IDs (small ints)
+  // and 4-byte selectors, so the dispatcher's 4-byte selector check keeps them unreachable.
   private static readonly INT_DECODE_SUBROUTINE_ID = 0x1000n;
   private static readonly PUSHDATA_FRAME_SUBROUTINE_ID = 0x1001n;
   private static readonly INT_ENCODE_SUBROUTINE_ID = 0x1002n;
@@ -542,10 +538,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.pushToStack('__internal__redeemPushSize');
     }
 
-    // Inline (<=1 use) vs shared OP_DEFINE subroutine (>=2 uses) for each registered subroutine,
-    // chosen by a usage-count probe. A used subroutine must be defined before any body invoking
-    // it. Both paths are correct, so a misestimate is only suboptimal; the splices below drop a
-    // DEFINE that an over-estimate left unused.
+    // Inline (<=1 use) vs shared OP_DEFINE subroutine (>=2 uses) per registered subroutine,
+    // chosen by a usage-count probe. Defines must precede the bodies that invoke them.
     const DECODE = GenerateTargetTraversalWithLocation.INT_DECODE_SUBROUTINE_ID;
     const FRAME = GenerateTargetTraversalWithLocation.PUSHDATA_FRAME_SUBROUTINE_ID;
     const INTENC = GenerateTargetTraversalWithLocation.INT_ENCODE_SUBROUTINE_ID;
@@ -554,8 +548,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const count = (id: bigint): number => probe?.get(id) ?? 0;
 
     const defineIntEncode = count(INTENC) >= 2;
-    // Each int-encode site frames once; when int-encode is its own subroutine those frames move
-    // into it, so only the remaining (bytes-branch) frames count toward the shared frame routine.
+    // When int-encode is its own subroutine it absorbs its per-site frame, leaving only
+    // bytes-branch frames for the shared frame routine.
     const frameUses = defineIntEncode ? count(FRAME) - count(INTENC) : count(FRAME);
 
     // Emit OP_DEFINEs before bodies, recording spans for the dead-DEFINE splice.
@@ -683,18 +677,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
-   * Count subroutine-eligible sites by dry-running body generation on a throwaway clone in
-   * inline mode (empty subroutineDefined), leaving real instance/AST state untouched. Returns
-   * null when no site is reachable; on context-reproduction failure returns a define-all map so
-   * the caller defines (correct, just not inlined).
+   * Count subroutine-eligible sites by dry-running body generation on a throwaway clone, leaving
+   * real instance/AST state untouched. Returns null when no site is reachable, or a define-all
+   * map on failure (conservative).
    */
   private subroutineUseProbe(node: ContractNode): Map<bigint, number> | null {
     // Subroutine sites only arise from packed state/entry reads, state/entry writes, or events.
     if (this.stateVariables.length === 0 && this.collectionCount === 0 && this.eventDefinitions.length === 0) {
       return null;
     }
-    // Body generation mutates one AST field accumulatively (function deployTargets); snapshot
-    // and restore it so the probe leaves the shared AST untouched for the real pass.
+    // Body gen mutates deployTargets accumulatively; snapshot/restore so the probe leaves it clean.
     const allFns = [node.constructorDef, node.fallbackDef, node.receiveDef, ...node.functions]
       .filter((f): f is FunctionDefinitionNode => f !== undefined);
     const savedDeployTargets = allFns.map((f) => f.deployTargets);
@@ -807,10 +799,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
-   * Verify the entry selector is 4 bytes before OP_INVOKE. Internal function IDs
-   * (small ints) and compiler subroutine IDs (2-byte, from 0x1000) are shorter, so
-   * this prevents them being invoked directly from the unlocking script. Leaves the
-   * selector on the stack for OP_INVOKE.
+   * Verify the entry selector is 4 bytes before OP_INVOKE, so shorter internal/subroutine IDs
+   * can't be invoked from the unlocking script. Leaves the selector on the stack.
    */
   private emitEntrySelectorSizeCheck(loc: SingleLocationData): void {
     this.emit(Op.OP_SIZE, loc);
@@ -866,24 +856,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
-   * Emit a shared OP_DEFINE subroutine for the generic int pushdata decode routine.
-   *
-   * Stack before: [encoded_blob]
-   * Stack after:  [decoded_int_value, remainder]
-   *
-   * The routine handles OP_0, OP_1NEGATE, OP_1-OP_16, PUSHDATA1, PUSHDATA2,
-   * and standard pushdata (length 1-75). Decoded values are BIN2NUM-converted.
-   *
-   * This saves ~39% bytecode by replacing 33+ inline 85-byte instances with
-   * 3-byte OP_INVOKE calls.
+   * Emit the shared OP_DEFINE subroutine for the generic pushdata decode. Stack: [blob] ->
+   * [raw_bytes, remainder]. Type-agnostic (raw bytes for all types); int callers add BIN2NUM.
+   * Handles OP_0, OP_1NEGATE, OP_1-OP_16, PUSHDATA1/2, and standard pushdata (1-75).
    */
   private emitIntDecodeSubroutine(node: ContractNode): void {
     const loc: SingleLocationData = { location: node.location, positionHint: PositionHint.START };
 
-    // Build the type-agnostic pushdata decode routine.
-    // Stack before: [encoded_blob]
-    // Stack after:  [decoded_raw_bytes, remainder]
-    // Returns raw bytes for ALL types. Callers add BIN2NUM for int types.
     const body: (Op | Uint8Array)[] = [];
     const push = (op: Op | Uint8Array): void => { body.push(op); };
 

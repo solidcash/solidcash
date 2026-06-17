@@ -253,7 +253,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private static readonly INT_DECODE_SUBROUTINE_ID = 0x1000n;
   private static readonly PUSHDATA_FRAME_SUBROUTINE_ID = 0x1001n;
   private static readonly INT_ENCODE_SUBROUTINE_ID = 0x1002n;
-  private static readonly ALL_SUBROUTINE_IDS = [0x1000n, 0x1001n, 0x1002n];
+  private static readonly MASTER_SELF_PRES_SUBROUTINE_ID = 0x1003n;
+  private static readonly MINT_UNIQUENESS_SUBROUTINE_ID = 0x1004n;
+  private static readonly ALL_SUBROUTINE_IDS = [0x1000n, 0x1001n, 0x1002n, 0x1003n, 0x1004n];
 
   // State-related tracking
   private stateVariables: StateVariableNode[] = [];
@@ -564,6 +566,19 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       spans.push({
         id: INTENC,
         span: this.defineCapturedSubroutine(INTENC, (t) => t.emitGenericPushdataEncode(PrimitiveType.INT, loc), loc),
+      });
+    }
+    // Master self-preservation and minting uniqueness (non-delegate); capture needs a function node.
+    const MSP = GenerateTargetTraversalWithLocation.MASTER_SELF_PRES_SUBROUTINE_ID;
+    const MUNIQ = GenerateTargetTraversalWithLocation.MINT_UNIQUENESS_SUBROUTINE_ID;
+    const captureFn = node.functions.find((f) => f.body !== undefined);
+    if (captureFn && count(MSP) >= 2) {
+      spans.push({ id: MSP, span: this.defineCapturedSubroutine(MSP, (t) => t.emitMasterSelfPreservation(captureFn), loc) });
+    }
+    if (captureFn && count(MUNIQ) >= 2) {
+      spans.push({
+        id: MUNIQ,
+        span: this.defineCapturedSubroutine(MUNIQ, (t) => t.emitMintingNftUniqueness(captureFn), loc),
       });
     }
 
@@ -9304,6 +9319,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private emitMasterSelfPreservation(node: FunctionDefinitionNode): void {
     const locationData = { location: node.body.location, positionHint: PositionHint.END };
 
+    // Shared as a subroutine for non-delegate functions; delegate (altstack proxy index) inlines.
+    if (!this.currentFunctionIsDelegate && this.invokeSubroutineIfDefined(
+      GenerateTargetTraversalWithLocation.MASTER_SELF_PRES_SUBROUTINE_ID, locationData)) {
+      return;
+    }
+
     // Verify locking bytecode (use UTXOBYTECODE, not ACTIVEBYTECODE, for P2SH compatibility)
     this.emitMasterInputIndex(locationData);
     this.emit(Op.OP_UTXOBYTECODE, locationData);
@@ -9589,6 +9610,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    */
   private emitMintingNftUniqueness(node: FunctionDefinitionNode): void {
     const locationData = { location: node.body.location, positionHint: PositionHint.END };
+
+    // Shared as a subroutine for non-delegate functions; delegate (altstack proxy index) inlines.
+    if (!this.currentFunctionIsDelegate && this.invokeSubroutineIfDefined(
+      GenerateTargetTraversalWithLocation.MINT_UNIQUENESS_SUBROUTINE_ID, locationData)) {
+      return;
+    }
 
     // Get this contract's category+capability (33 bytes: 32-byte category + 0x02 minting)
     this.emitMasterInputIndex(locationData);

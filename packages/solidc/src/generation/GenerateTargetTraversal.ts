@@ -244,14 +244,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private constructorParameterCount: number;
   private contractUsesMsgData: boolean = false;
   private intDecodeSubroutineDefined: boolean = false;
-  // Count of generic pushdata-decode sites; drives the inline (<=1) vs OP_DEFINE (>=2) choice.
+  private pushdataFrameSubroutineDefined: boolean = false;
+  // Counts of subroutine-eligible sites; drive the inline (<=1) vs OP_DEFINE (>=2) choice.
   private intDecodeUseCount: number = 0;
+  private pushdataFrameUseCount: number = 0;
 
   // Compiler-internal subroutine IDs are 2-byte script numbers starting at 0x1000.
   // This range is disjoint by length from both user function IDs (small ints from 0)
   // and 4-byte entry-point selectors, so the dispatcher's 4-byte selector check keeps
   // these subroutines unreachable from the unlocking script.
   private static readonly INT_DECODE_SUBROUTINE_ID = 0x1000n;
+  private static readonly PUSHDATA_FRAME_SUBROUTINE_ID = 0x1001n;
 
   // State-related tracking
   private stateVariables: StateVariableNode[] = [];
@@ -536,41 +539,24 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.pushToStack('__internal__redeemPushSize');
     }
 
-    // Choose inline (<=1 use) vs a shared OP_DEFINE subroutine (>=2 uses) for the generic int
-    // pushdata decode, via a usage-count pre-pass. The subroutine, when used, must be defined
-    // before any body that invokes it. Both code paths are independently correct, so a
-    // misestimated count is only suboptimal; the splice below removes the DEFINE if a
-    // conservative over-estimate turns out unused.
-    // Generic decodes only occur when reading packed state/entry values, so skip the
-    // count probe entirely for contracts with no state variables or collections.
-    const mayDecode = this.stateVariables.length > 0 || this.collectionCount > 0;
-    const defineIntDecode = mayDecode && this.countIntDecodeUses(node) >= 2;
-    let subStart = -1;
-    let subEnd = -1;
-    if (defineIntDecode) {
-      subStart = this.output.length;
-      this.emitIntDecodeSubroutine(node);
-      subEnd = this.output.length;
-    }
+    // Inline (<=1 use) vs shared OP_DEFINE subroutine (>=2 uses) for int-decode and the
+    // pushdata frame, chosen by a usage-count probe. A used subroutine must be defined before
+    // any body invoking it. Both paths are correct, so a misestimate is only suboptimal; the
+    // splices below drop a DEFINE that an over-estimate left unused.
+    const probe = this.subroutineUseProbe(node);
+    const defineIntDecode = (probe?.decode ?? 0) >= 2;
+    const defineFrame = (probe?.frame ?? 0) >= 2;
+
+    const decodeSpan = defineIntDecode ? this.emitWithSpan(() => this.emitIntDecodeSubroutine(node)) : null;
+    const frameSpan = defineFrame ? this.emitWithSpan(() => this.emitPushdataFrameSubroutine(node)) : null;
 
     this.intDecodeUseCount = 0;
+    this.pushdataFrameUseCount = 0;
     this.emitFunctionDefinesAndDispatch(node);
 
-    if (defineIntDecode && this.intDecodeUseCount === 0) {
-      const removed = subEnd - subStart;
-      this.output.splice(subStart, removed);
-      this.locationData.splice(subStart, removed);
-      const threshold = subStart + this.constructorParameterCount - 1;
-      for (const r of this.requires) {
-        if (r.ip > threshold) r.ip -= removed;
-      }
-      for (const l of this.consoleLogs) {
-        if (l.ip > threshold) l.ip -= removed;
-        for (const item of l.data) {
-          if (typeof item === 'object' && item.ip > threshold) item.ip -= removed;
-        }
-      }
-    }
+    // Splice dead DEFINEs (over-estimate). Later-emitted first, so earlier spans stay valid.
+    if (frameSpan && this.pushdataFrameUseCount === 0) this.spliceRange(frameSpan);
+    if (decodeSpan && this.intDecodeUseCount === 0) this.spliceRange(decodeSpan);
 
     return node;
   }
@@ -610,13 +596,42 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
   }
 
+  /** Emit via `emit` and return the [start, end) range it appended to the output. */
+  private emitWithSpan(emit: () => void): { start: number; end: number } {
+    const start = this.output.length;
+    emit();
+    return { start, end: this.output.length };
+  }
+
+  /** Remove a previously emitted range and shift recorded require/log IPs past it. */
+  private spliceRange(span: { start: number; end: number }): void {
+    const removed = span.end - span.start;
+    if (removed <= 0) return;
+    this.output.splice(span.start, removed);
+    this.locationData.splice(span.start, removed);
+    const threshold = span.start + this.constructorParameterCount - 1;
+    for (const r of this.requires) {
+      if (r.ip > threshold) r.ip -= removed;
+    }
+    for (const l of this.consoleLogs) {
+      if (l.ip > threshold) l.ip -= removed;
+      for (const item of l.data) {
+        if (typeof item === 'object' && item.ip > threshold) item.ip -= removed;
+      }
+    }
+  }
+
   /**
-   * Count generic pushdata-decode sites by dry-running body generation on a throwaway clone
-   * (real instance state untouched). The count is independent of whether the subroutine is
-   * defined, so the probe runs in inline mode. On any failure to reproduce context, returns a
-   * conservative 2 so the caller defines the subroutine (always correct, just not inlined).
+   * Count subroutine-eligible sites (generic decode, pushdata frame) by dry-running body
+   * generation on a throwaway clone in inline mode, leaving real instance/AST state untouched.
+   * Returns null when neither site is reachable; on context-reproduction failure returns 2s so
+   * the caller defines (correct, just not inlined).
    */
-  private countIntDecodeUses(node: ContractNode): number {
+  private subroutineUseProbe(node: ContractNode): { decode: number; frame: number } | null {
+    // Both sites only arise from packed state/entry reads, state/entry writes, or events.
+    if (this.stateVariables.length === 0 && this.collectionCount === 0 && this.eventDefinitions.length === 0) {
+      return null;
+    }
     // Body generation mutates one AST field accumulatively (function deployTargets); snapshot
     // and restore it so the probe leaves the shared AST untouched for the real pass.
     const allFns = [node.constructorDef, node.fallbackDef, node.receiveDef, ...node.functions]
@@ -635,10 +650,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       probe.constructorParameterCount = this.constructorParameterCount;
       probe.compiledBytecodes = this.compiledBytecodes;
       probe.intDecodeSubroutineDefined = false;
+      probe.pushdataFrameSubroutineDefined = false;
       probe.emitFunctionDefinesAndDispatch(node);
-      return probe.intDecodeUseCount;
+      return { decode: probe.intDecodeUseCount, frame: probe.pushdataFrameUseCount };
     } catch {
-      return 2;
+      return { decode: 2, frame: 2 };
     } finally {
       allFns.forEach((f, i) => { f.deployTargets = savedDeployTargets[i]; });
     }
@@ -6100,7 +6116,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * Assumes value is on top of stack (non-empty).
    */
   private emitStandardPushdataFrame(locationData: SingleLocationData): void {
-    // Stack: [value]
+    // Stack: [value] -> [framed_blob]. Use the shared subroutine when defined (>=2 uses).
+    this.pushdataFrameUseCount += 1;
+    if (this.pushdataFrameSubroutineDefined) {
+      this.emit(encodeInt(GenerateTargetTraversalWithLocation.PUSHDATA_FRAME_SUBROUTINE_ID), locationData);
+      this.emit(Op.OP_INVOKE, locationData);
+      return;
+    }
+
     // Get size
     this.emit(Op.OP_SIZE, locationData);
     // DUP size for comparison
@@ -6146,6 +6169,22 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_CAT, locationData);
     this.emit(Op.OP_ENDIF, locationData);
     this.emit(Op.OP_ENDIF, locationData);
+  }
+
+  /**
+   * Emit the shared OP_DEFINE subroutine for the standard pushdata frame. Body captured from
+   * the inline emitter on a throwaway traversal (byte-identical). Stack: [value] -> [framed].
+   */
+  private emitPushdataFrameSubroutine(node: ContractNode): void {
+    const loc: SingleLocationData = { location: node.location, positionHint: PositionHint.START };
+    const sub = new GenerateTargetTraversalWithLocation(this.compilerOptions);
+    sub.pushdataFrameSubroutineDefined = false; // emit inline body, not a self-invoke
+    sub.emitStandardPushdataFrame(loc);
+    const bodyBytecode = scriptToBytecode(asmToScript(scriptToAsm(sub.output)));
+    this.emit(bodyBytecode, loc);
+    this.emit(encodeInt(GenerateTargetTraversalWithLocation.PUSHDATA_FRAME_SUBROUTINE_ID), loc);
+    this.emit(Op.OP_DEFINE, loc);
+    this.pushdataFrameSubroutineDefined = true;
   }
 
   // === Pushdata decode helpers ===

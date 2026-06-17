@@ -33,34 +33,34 @@ contract TransferWithTimeout(bytes20 senderPkh, bytes20 recipientPkh, int timeou
     require(tx.time >= timeout);
   }
 }`,
-    asmBytecode: '547a5479ad537aa97b877777 c4e6689f OP_DEFINE 7604deadbeef88527953799d54795579885379547988547a5479ad537aa9887cb16d51 0ad09621 OP_DEFINE OP_DEPTH OP_1SUB OP_ROLL OP_INVOKE',
-    sourceMap: '3:2:6:3;;;8::16;;;2:0:17:1;;;',
+    asmBytecode: '547a5479ad537aa97b877777 c4e6689f OP_DEFINE 7604deadbeef88527953799d54795579885379547988547a5479ad537aa9887cb16d51 0ad09621 OP_DEFINE OP_DEPTH OP_1SUB OP_ROLL OP_SIZE OP_4 OP_NUMEQUALVERIFY OP_INVOKE',
+    sourceMap: '3:2:6:3;;;8::16;;;2:0:17:1;;;;;;',
     expectedLineToOpcodeMap: {
       3: [hexToBin('547a5479ad537aa97b877777'), hexToBin('c4e6689f'), Op.OP_DEFINE],
-      8: [hexToBin('7604deadbeef88527953799d54795579885379547988547a5479ad537aa9887cb16d51'), hexToBin('0ad09621'), Op.OP_DEFINE, Op.OP_DEPTH, Op.OP_1SUB, Op.OP_ROLL, Op.OP_INVOKE],
+      8: [hexToBin('7604deadbeef88527953799d54795579885379547988547a5479ad537aa9887cb16d51'), hexToBin('0ad09621'), Op.OP_DEFINE, Op.OP_DEPTH, Op.OP_1SUB, Op.OP_ROLL, Op.OP_SIZE, Op.OP_4, Op.OP_NUMEQUALVERIFY, Op.OP_INVOKE],
     },
     expectedLineToAsmMap: {
       3: '<0x547a5479ad537aa97b877777> <0xc4e6689f> OP_DEFINE',
-      8: '<0x7604deadbeef88527953799d54795579885379547988547a5479ad537aa9887cb16d51> <0x0ad09621> OP_DEFINE OP_DEPTH OP_1SUB OP_ROLL OP_INVOKE',
+      8: '<0x7604deadbeef88527953799d54795579885379547988547a5479ad537aa9887cb16d51> <0x0ad09621> OP_DEFINE OP_DEPTH OP_1SUB OP_ROLL OP_SIZE OP_4 OP_NUMEQUALVERIFY OP_INVOKE',
     },
     expectedBitAuthScript: `
-                                                                                                                                     /*                                                                                      */
-                                                                                                                                     /* contract TransferWithTimeout(bytes20 senderPkh, bytes20 recipientPkh, int timeout) { */
-<0x547a5479ad537aa97b877777> <0xc4e6689f> OP_DEFINE                                                                                  /*   function transfer(pubkey signingPk, sig s) {                                       */
-                                                                                                                                     /*     require(checkSig(s, signingPk));                                                 */
-                                                                                                                                     /*     require(hash160(signingPk) == recipientPkh);                                     */
-                                                                                                                                     /*   }                                                                                  */
-                                                                                                                                     /*                                                                                      */
-<0x7604deadbeef88527953799d54795579885379547988547a5479ad537aa9887cb16d51> <0x0ad09621> OP_DEFINE OP_DEPTH OP_1SUB OP_ROLL OP_INVOKE /*   function timeout(pubkey signingPk, sig s) {                                        */
-                                                                                                                                     /*     require(senderPkh == 0xdeadbeef);                                                */
-                                                                                                                                     /*     require(timeout == timeout);                                                     */
-                                                                                                                                     /*     require(s == s);                                                                 */
-                                                                                                                                     /*     require(signingPk == signingPk);                                                 */
-                                                                                                                                     /*     require(checkSig(s, signingPk));                                                 */
-                                                                                                                                     /*     require(hash160(signingPk) == senderPkh);                                        */
-                                                                                                                                     /*     require(tx.time >= timeout);                                                     */
-                                                                                                                                     /*   }                                                                                  */
-                                                                                                                                     /* }                                                                                    */
+                                                                                                                                                                    /*                                                                                      */
+                                                                                                                                                                    /* contract TransferWithTimeout(bytes20 senderPkh, bytes20 recipientPkh, int timeout) { */
+<0x547a5479ad537aa97b877777> <0xc4e6689f> OP_DEFINE                                                                                                                 /*   function transfer(pubkey signingPk, sig s) {                                       */
+                                                                                                                                                                    /*     require(checkSig(s, signingPk));                                                 */
+                                                                                                                                                                    /*     require(hash160(signingPk) == recipientPkh);                                     */
+                                                                                                                                                                    /*   }                                                                                  */
+                                                                                                                                                                    /*                                                                                      */
+<0x7604deadbeef88527953799d54795579885379547988547a5479ad537aa9887cb16d51> <0x0ad09621> OP_DEFINE OP_DEPTH OP_1SUB OP_ROLL OP_SIZE OP_4 OP_NUMEQUALVERIFY OP_INVOKE /*   function timeout(pubkey signingPk, sig s) {                                        */
+                                                                                                                                                                    /*     require(senderPkh == 0xdeadbeef);                                                */
+                                                                                                                                                                    /*     require(timeout == timeout);                                                     */
+                                                                                                                                                                    /*     require(s == s);                                                                 */
+                                                                                                                                                                    /*     require(signingPk == signingPk);                                                 */
+                                                                                                                                                                    /*     require(checkSig(s, signingPk));                                                 */
+                                                                                                                                                                    /*     require(hash160(signingPk) == senderPkh);                                        */
+                                                                                                                                                                    /*     require(tx.time >= timeout);                                                     */
+                                                                                                                                                                    /*   }                                                                                  */
+                                                                                                                                                                    /* }                                                                                    */
 `.replace(/^\n+/, '').replace(/\n+$/, ''),
   },
   {
@@ -100,15 +100,15 @@ contract Mecenas(bytes20 recipient, bytes20 funder, int pledge/*, int period */)
         require(checkSig(s, pk));
     }
 }`.replace(/^\n+/, '').replace(/\n+$/, ''),
-    asmBytecode: '00cd0376a9147b7e0288ac7e8802e803c0c676547994527994765579547993a16300cc707c949d6700cc55799d51cdc0c78851cc789d686d6d7551 e8e62fca OP_DEFINE 5379a97b8872ac7777 2f7ef34c OP_DEFINE OP_DEPTH OP_1SUB OP_ROLL OP_INVOKE',
-    sourceMap: '9:4:28:5;;;30::33;;;8:0:34:1;;;',
+    asmBytecode: '00cd0376a9147b7e0288ac7e8802e803c0c676547994527994765579547993a16300cc707c949d6700cc55799d51cdc0c78851cc789d686d6d7551 e8e62fca OP_DEFINE 5379a97b8872ac7777 2f7ef34c OP_DEFINE OP_DEPTH OP_1SUB OP_ROLL OP_SIZE OP_4 OP_NUMEQUALVERIFY OP_INVOKE',
+    sourceMap: '9:4:28:5;;;30::33;;;8:0:34:1;;;;;;',
     expectedLineToOpcodeMap: {
       9: [hexToBin('00cd0376a9147b7e0288ac7e8802e803c0c676547994527994765579547993a16300cc707c949d6700cc55799d51cdc0c78851cc789d686d6d7551'), hexToBin('e8e62fca'), Op.OP_DEFINE],
-      30: [hexToBin('5379a97b8872ac7777'), hexToBin('2f7ef34c'), Op.OP_DEFINE, Op.OP_DEPTH, Op.OP_1SUB, Op.OP_ROLL, Op.OP_INVOKE],
+      30: [hexToBin('5379a97b8872ac7777'), hexToBin('2f7ef34c'), Op.OP_DEFINE, Op.OP_DEPTH, Op.OP_1SUB, Op.OP_ROLL, Op.OP_SIZE, Op.OP_4, Op.OP_NUMEQUALVERIFY, Op.OP_INVOKE],
     },
     expectedLineToAsmMap: {
       9: '<0x00cd0376a9147b7e0288ac7e8802e803c0c676547994527994765579547993a16300cc707c949d6700cc55799d51cdc0c78851cc789d686d6d7551> <0xe8e62fca> OP_DEFINE',
-      30: '<0x5379a97b8872ac7777> <0x2f7ef34c> OP_DEFINE OP_DEPTH OP_1SUB OP_ROLL OP_INVOKE',
+      30: '<0x5379a97b8872ac7777> <0x2f7ef34c> OP_DEFINE OP_DEPTH OP_1SUB OP_ROLL OP_SIZE OP_4 OP_NUMEQUALVERIFY OP_INVOKE',
     },
     expectedBitAuthScript: `
                                                                                                                                                   /* pragma solidcash >=0.8.0;                                                                                          */
@@ -140,7 +140,7 @@ contract Mecenas(bytes20 recipient, bytes20 funder, int pledge/*, int period */)
                                                                                                                                                   /*         }                                                                                                          */
                                                                                                                                                   /*     }                                                                                                              */
                                                                                                                                                   /*                                                                                                                    */
-<0x5379a97b8872ac7777> <0x2f7ef34c> OP_DEFINE OP_DEPTH OP_1SUB OP_ROLL OP_INVOKE                                                                  /*     function reclaim(pubkey pk, sig s) {                                                                           */
+<0x5379a97b8872ac7777> <0x2f7ef34c> OP_DEFINE OP_DEPTH OP_1SUB OP_ROLL OP_SIZE OP_4 OP_NUMEQUALVERIFY OP_INVOKE                                   /*     function reclaim(pubkey pk, sig s) {                                                                           */
                                                                                                                                                   /*         require(hash160(pk) == funder);                                                                            */
                                                                                                                                                   /*         require(checkSig(s, pk));                                                                                  */
                                                                                                                                                   /*     }                                                                                                              */

@@ -152,12 +152,12 @@ export const fixtures: Fixture[] = [
         // function transfer (OP_DEFINE'd)
         '537a7bac7777 3486e360 OP_DEFINE '
         // function timeout (OP_DEFINE'd) + dispatcher
-        + '537a7cad7cb16d51 2203057b OP_DEFINE OP_DEPTH OP_1SUB OP_ROLL OP_INVOKE',
+        + '537a7cad7cb16d51 2203057b OP_DEFINE OP_DEPTH OP_1SUB OP_ROLL OP_SIZE OP_4 OP_NUMEQUALVERIFY OP_INVOKE',
       debug: {
-        bytecode: '06537a7bac7777043486e3608908537a7cad7cb16d51042203057b89748c7a8a',
+        bytecode: '06537a7bac7777043486e3608908537a7cad7cb16d51042203057b89748c7a82549d8a',
         logs: [],
         requires: [],
-        sourceMap: '6:4:8:5;;;10::13;;;1:0:14:1;;;',
+        sourceMap: '6:4:8:5;;;10::13;;;1:0:14:1;;;;;;',
         functionDebug: {
           '3486e360': {
             requires: [
@@ -203,12 +203,12 @@ export const fixtures: Fixture[] = [
         // function transfer (OP_DEFINE'd)
         '7093765479947653799c537a929a6376557993547978937b757c6e9f6975675379776876547a93537a9c777777 6bc12074 OP_DEFINE '
         // function timeout (OP_DEFINE'd) + dispatcher
-        + '527976529376537a9c63765479936e937b757c6e9f697568729c7777 7654e917 OP_DEFINE OP_DEPTH OP_1SUB OP_ROLL OP_INVOKE',
+        + '527976529376537a9c63765479936e937b757c6e9f697568729c7777 7654e917 OP_DEFINE OP_DEPTH OP_1SUB OP_ROLL OP_SIZE OP_4 OP_NUMEQUALVERIFY OP_INVOKE',
       debug: {
-        bytecode: '2d7093765479947653799c537a929a6376557993547978937b757c6e9f6975675379776876547a93537a9c777777046bc12074891c527976529376537a9c63765479936e937b757c6e9f697568729c7777047654e91789748c7a8a',
+        bytecode: '2d7093765479947653799c537a929a6376557993547978937b757c6e9f6975675379776876547a93537a9c777777046bc12074891c527976529376537a9c63765479936e937b757c6e9f697568729c7777047654e91789748c7a82549d8a',
         logs: [],
         requires: [],
-        sourceMap: '2:4:14:5;;;16::26;;;1:0:27:1;;;',
+        sourceMap: '2:4:14:5;;;16::26;;;1:0:27:1;;;;;;',
         functionDebug: {
           '6bc12074': {
             requires: [
@@ -616,12 +616,12 @@ export const fixtures: Fixture[] = [
         // function recvFunds (OP_DEFINE'd)
         '537ab27500cd0376a9147b7e0288ac7e8802e803c0c676547994527994765579547993a16300cc707c949d6700cc55799d51cdc0c78851cc789d686d6d7551 e8e62fca OP_DEFINE '
         // function reclaim (OP_DEFINE'd) + dispatcher
-        + '5479a97b88547a547aac777777 2f7ef34c OP_DEFINE OP_DEPTH OP_1SUB OP_ROLL OP_INVOKE',
+        + '5479a97b88547a547aac777777 2f7ef34c OP_DEFINE OP_DEPTH OP_1SUB OP_ROLL OP_SIZE OP_4 OP_NUMEQUALVERIFY OP_INVOKE',
       debug: {
-        bytecode: '3f537ab27500cd0376a9147b7e0288ac7e8802e803c0c676547994527994765579547993a16300cc707c949d6700cc55799d51cdc0c78851cc789d686d6d755104e8e62fca890d5479a97b88547a547aac777777042f7ef34c89748c7a8a',
+        bytecode: '3f537ab27500cd0376a9147b7e0288ac7e8802e803c0c676547994527994765579547993a16300cc707c949d6700cc55799d51cdc0c78851cc789d686d6d755104e8e62fca890d5479a97b88547a547aac777777042f7ef34c89748c7a82549d8a',
         logs: [],
         requires: [],
-        sourceMap: '2:4:21:5;;;23::26;;;1:0:27:1;;;',
+        sourceMap: '2:4:21:5;;;23::26;;;1:0:27:1;;;;;;',
         functionDebug: {
           'e8e62fca': {
             requires: [
@@ -1212,10 +1212,10 @@ export const fixtures: Fixture[] = [
         // useBoth function body: msg.sig check + msg.data length check
         + '788254887504729bfbca7b8876c0ca7682777b947f75827754a077 729bfbca OP_DEFINE '
         // dispatch
-        + 'OP_DEPTH OP_1SUB OP_ROLL OP_INVOKE',
+        + 'OP_DEPTH OP_1SUB OP_ROLL OP_SIZE OP_4 OP_NUMEQUALVERIFY OP_INVOKE',
       debug: {
-        bytecode: 'c0c7827701249f63c1827776014c9f638b67760200019f63529367539368686700680d78825488750479ede9d17b87770479ede9d1890f76c0ca7682777b947f75827700a077048d71cec7891b788254887504729bfbca7b8876c0ca7682777b947f75827754a07704729bfbca89748c7a8a',
-        sourceMap: '3::17:1;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;4:4:6:5;;;8::10;;;12::16;;;3:0:17:1;;;',
+        bytecode: 'c0c7827701249f63c1827776014c9f638b67760200019f63529367539368686700680d78825488750479ede9d17b87770479ede9d1890f76c0ca7682777b947f75827700a077048d71cec7891b788254887504729bfbca7b8876c0ca7682777b947f75827754a07704729bfbca89748c7a82549d8a',
+        sourceMap: '3::17:1;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;4:4:6:5;;;8::10;;;12::16;;;3:0:17:1;;;;;;',
         logs: [],
         requires: [],
         functionDebug: {

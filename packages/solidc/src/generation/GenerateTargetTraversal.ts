@@ -244,11 +244,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private constructorParameterCount: number;
   private contractUsesMsgData: boolean = false;
   private intDecodeSubroutineDefined: boolean = false;
-  private intDecodeSubroutineUsed: boolean = false;
+  // Count of generic pushdata-decode sites; drives the inline (<=1) vs OP_DEFINE (>=2) choice.
+  private intDecodeUseCount: number = 0;
 
-  // Reserved subroutine ID for the shared generic int pushdata decode routine.
-  // Uses a high value to avoid collisions with user function IDs (0, 1, 2, ...).
-  private static readonly INT_DECODE_SUBROUTINE_ID = 0x7FFFFF00n;
+  // Compiler-internal subroutine IDs are 2-byte script numbers starting at 0x1000.
+  // This range is disjoint by length from both user function IDs (small ints from 0)
+  // and 4-byte entry-point selectors, so the dispatcher's 4-byte selector check keeps
+  // these subroutines unreachable from the unlocking script.
+  private static readonly INT_DECODE_SUBROUTINE_ID = 0x1000n;
 
   // State-related tracking
   private stateVariables: StateVariableNode[] = [];
@@ -533,13 +536,47 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.pushToStack('__internal__redeemPushSize');
     }
 
-    // Emit shared subroutine for generic int pushdata decode (saves ~39% bytecode).
-    // Must be defined before any function that uses it. Record the emit range so
-    // we can splice it out below if the contract never invokes it.
-    const subStart = this.output.length;
-    this.emitIntDecodeSubroutine(node);
-    const subEnd = this.output.length;
+    // Choose inline (<=1 use) vs a shared OP_DEFINE subroutine (>=2 uses) for the generic int
+    // pushdata decode, via a usage-count pre-pass. The subroutine, when used, must be defined
+    // before any body that invokes it. Both code paths are independently correct, so a
+    // misestimated count is only suboptimal; the splice below removes the DEFINE if a
+    // conservative over-estimate turns out unused.
+    // Generic decodes only occur when reading packed state/entry values, so skip the
+    // count probe entirely for contracts with no state variables or collections.
+    const mayDecode = this.stateVariables.length > 0 || this.collectionCount > 0;
+    const defineIntDecode = mayDecode && this.countIntDecodeUses(node) >= 2;
+    let subStart = -1;
+    let subEnd = -1;
+    if (defineIntDecode) {
+      subStart = this.output.length;
+      this.emitIntDecodeSubroutine(node);
+      subEnd = this.output.length;
+    }
 
+    this.intDecodeUseCount = 0;
+    this.emitFunctionDefinesAndDispatch(node);
+
+    if (defineIntDecode && this.intDecodeUseCount === 0) {
+      const removed = subEnd - subStart;
+      this.output.splice(subStart, removed);
+      this.locationData.splice(subStart, removed);
+      const threshold = subStart + this.constructorParameterCount - 1;
+      for (const r of this.requires) {
+        if (r.ip > threshold) r.ip -= removed;
+      }
+      for (const l of this.consoleLogs) {
+        if (l.ip > threshold) l.ip -= removed;
+        for (const item of l.data) {
+          if (typeof item === 'object' && item.ip > threshold) item.ip -= removed;
+        }
+      }
+    }
+
+    return node;
+  }
+
+  /** Emit OP_DEFINEs for all functions plus the dispatcher (or inline a single function). */
+  private emitFunctionDefinesAndDispatch(node: ContractNode): void {
     // Emit OP_DEFINE for internal/public functions that have a functionId
     const definedFunctions = node.functions.filter((f) => f.functionId !== undefined);
     for (const f of definedFunctions) {
@@ -548,8 +585,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     // Build dispatcher: only include entry-point functions (external/public) + constructor
     const entryFunctions = node.functions.filter((f) => f.isEntryPoint);
-
-    // Append constructor as the last function in the dispatcher
     const allFunctions = node.constructorDef
       ? [...entryFunctions, node.constructorDef]
       : entryFunctions;
@@ -557,49 +592,56 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const hasFallback = !!node.fallbackDef;
     const hasReceive = !!node.receiveDef;
 
-    // Include fallback/receive in the set of OP_DEFINE'd functions
     const dispatchFunctions = [...allFunctions];
     if (hasFallback) dispatchFunctions.push(node.fallbackDef!);
     if (hasReceive) dispatchFunctions.push(node.receiveDef!);
 
     if (dispatchFunctions.length === 1 && !hasFallback && !hasReceive) {
       const visited = this.visitList(dispatchFunctions) as FunctionDefinitionNode[];
-      // Split back
       if (node.constructorDef) {
         node.constructorDef = visited[visited.length - 1];
       }
     } else {
-      // OP_DEFINE each entry-point function with its 4-byte hash selector
+      // OP_DEFINE each entry-point function with its 4-byte hash selector, then dispatch
       dispatchFunctions.forEach((f) => {
         this.emitEntryPointFunctionDefine(f, node.parameters);
       });
-
-      // Generate dispatch logic
       this.emitDispatch(node, allFunctions, hasFallback, hasReceive);
     }
+  }
 
-    // If no compiled function actually invokes the int-decode subroutine,
-    // remove its DEFINE from the output so simple non-stateful contracts
-    // (e.g. P2PKH) do not pay ~78 bytes of unused setup. Requires/logs
-    // recorded while the subroutine was still present must have their IPs
-    // shifted so they continue to reference the correct post-splice opcodes.
-    if (!this.intDecodeSubroutineUsed) {
-      const count = subEnd - subStart;
-      this.output.splice(subStart, count);
-      this.locationData.splice(subStart, count);
-      const threshold = subStart + this.constructorParameterCount - 1;
-      for (const r of this.requires) {
-        if (r.ip > threshold) r.ip -= count;
-      }
-      for (const l of this.consoleLogs) {
-        if (l.ip > threshold) l.ip -= count;
-        for (const item of l.data) {
-          if (typeof item === 'object' && item.ip > threshold) item.ip -= count;
-        }
-      }
+  /**
+   * Count generic pushdata-decode sites by dry-running body generation on a throwaway clone
+   * (real instance state untouched). The count is independent of whether the subroutine is
+   * defined, so the probe runs in inline mode. On any failure to reproduce context, returns a
+   * conservative 2 so the caller defines the subroutine (always correct, just not inlined).
+   */
+  private countIntDecodeUses(node: ContractNode): number {
+    // Body generation mutates one AST field accumulatively (function deployTargets); snapshot
+    // and restore it so the probe leaves the shared AST untouched for the real pass.
+    const allFns = [node.constructorDef, node.fallbackDef, node.receiveDef, ...node.functions]
+      .filter((f): f is FunctionDefinitionNode => f !== undefined);
+    const savedDeployTargets = allFns.map((f) => f.deployTargets);
+    try {
+      const probe = new GenerateTargetTraversalWithLocation(this.compilerOptions);
+      probe.stack = [...this.stack];
+      probe.stateVariables = this.stateVariables;
+      probe.collectionCount = this.collectionCount;
+      probe.dataNftCount = this.dataNftCount;
+      probe.eventDefinitions = this.eventDefinitions;
+      probe.userFunctionDefs = this.userFunctionDefs;
+      probe.constantExpressions = new Map(this.constantExpressions);
+      probe.contractUsesMsgData = this.contractUsesMsgData;
+      probe.constructorParameterCount = this.constructorParameterCount;
+      probe.compiledBytecodes = this.compiledBytecodes;
+      probe.intDecodeSubroutineDefined = false;
+      probe.emitFunctionDefinesAndDispatch(node);
+      return probe.intDecodeUseCount;
+    } catch {
+      return 2;
+    } finally {
+      allFns.forEach((f, i) => { f.deployTargets = savedDeployTargets[i]; });
     }
-
-    return node;
   }
 
   /**
@@ -627,6 +669,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_DEPTH, loc);
       this.emit(Op.OP_1SUB, loc);
       this.emit(Op.OP_ROLL, loc);
+      this.emitEntrySelectorSizeCheck(loc);
       this.emit(Op.OP_INVOKE, loc);
       return;
     }
@@ -678,13 +721,26 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_INVOKE, loc);   // invoke fallback
       this.emit(Op.OP_ENDIF, loc);
     } else {
-      // No fallback: simple OP_INVOKE (unknown selectors hard-fail, which is correct)
+      // No fallback: validate 4-byte selector, then OP_INVOKE (unknown selectors hard-fail)
+      this.emitEntrySelectorSizeCheck(loc);
       this.emit(Op.OP_INVOKE, loc);
     }
 
     if (hasReceive) {
       this.emit(Op.OP_ENDIF, loc);
     }
+  }
+
+  /**
+   * Verify the entry selector is 4 bytes before OP_INVOKE. Internal function IDs
+   * (small ints) and compiler subroutine IDs (2-byte, from 0x1000) are shorter, so
+   * this prevents them being invoked directly from the unlocking script. Leaves the
+   * selector on the stack for OP_INVOKE.
+   */
+  private emitEntrySelectorSizeCheck(loc: SingleLocationData): void {
+    this.emit(Op.OP_SIZE, loc);
+    this.emit(encodeInt(4n), loc);
+    this.emit(Op.OP_NUMEQUALVERIFY, loc);
   }
 
   /**
@@ -720,8 +776,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     subTraversal.currentFunction = func;
     subTraversal.visit(func);
 
-    // Propagate subroutine usage so the parent knows to keep its DEFINE.
-    this.intDecodeSubroutineUsed = this.intDecodeSubroutineUsed || subTraversal.intDecodeSubroutineUsed;
+    // Propagate decode-use count so the parent's inline-vs-subroutine decision sees all uses.
+    this.intDecodeUseCount += subTraversal.intDecodeUseCount;
 
     // Serialize the function body to bytecode data
     const bodyBytecode = scriptToBytecode(asmToScript(scriptToAsm(subTraversal.output)));
@@ -893,8 +949,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     subTraversal.currentFunction = func;
     subTraversal.visit(func);
 
-    // Propagate subroutine usage so the parent knows to keep its DEFINE.
-    this.intDecodeSubroutineUsed = this.intDecodeSubroutineUsed || subTraversal.intDecodeSubroutineUsed;
+    // Propagate decode-use count so the parent's inline-vs-subroutine decision sees all uses.
+    this.intDecodeUseCount += subTraversal.intDecodeUseCount;
 
     // Normalize the output
     const normalizedOutput = asmToScript(scriptToAsm(subTraversal.output));
@@ -6275,12 +6331,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * Stack after: [decoded_value] [remainder]
    */
   private emitGenericPushdataDecode(type: Type, locationData: SingleLocationData): void {
+    this.intDecodeUseCount += 1;
     const isIntLike = type === PrimitiveType.INT || type instanceof IntType || type instanceof FixedType;
 
     // Use shared OP_DEFINE subroutine when available.
     // The subroutine returns [raw_bytes, remainder]. For int types, add BIN2NUM.
     if (this.intDecodeSubroutineDefined) {
-      this.intDecodeSubroutineUsed = true;
       this.emit(encodeInt(GenerateTargetTraversalWithLocation.INT_DECODE_SUBROUTINE_ID), locationData);
       this.emit(Op.OP_INVOKE, locationData);
       // Subroutine returns [raw_bytes, remainder]. Convert raw to int if needed.

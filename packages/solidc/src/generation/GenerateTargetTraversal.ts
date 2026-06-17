@@ -799,6 +799,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     subTraversal.isDefineSubTraversal = true;
     subTraversal.constantExpressions = new Map(this.constantExpressions);
     subTraversal.intDecodeSubroutineDefined = this.intDecodeSubroutineDefined;
+    subTraversal.pushdataFrameSubroutineDefined = this.pushdataFrameSubroutineDefined;
+    subTraversal.intEncodeSubroutineDefined = this.intEncodeSubroutineDefined;
 
     // Start with EMPTY stack -- visitFunctionDefinition will push params
     // via visitParameter (pushToStack with pushToBottom=true)
@@ -807,8 +809,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     subTraversal.currentFunction = func;
     subTraversal.visit(func);
 
-    // Propagate decode-use count so the parent's inline-vs-subroutine decision sees all uses.
+    // Propagate subroutine-use counts so the parent's inline-vs-subroutine decision sees all uses.
     this.intDecodeUseCount += subTraversal.intDecodeUseCount;
+    this.pushdataFrameUseCount += subTraversal.pushdataFrameUseCount;
+    this.intEncodeUseCount += subTraversal.intEncodeUseCount;
 
     // Serialize the function body to bytecode data
     const bodyBytecode = scriptToBytecode(asmToScript(scriptToAsm(subTraversal.output)));
@@ -962,6 +966,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     subTraversal.constantExpressions = new Map(this.constantExpressions);
     subTraversal.compiledBytecodes = this.compiledBytecodes;
     subTraversal.intDecodeSubroutineDefined = this.intDecodeSubroutineDefined;
+    subTraversal.pushdataFrameSubroutineDefined = this.pushdataFrameSubroutineDefined;
+    subTraversal.intEncodeSubroutineDefined = this.intEncodeSubroutineDefined;
     subTraversal.contractUsesMsgData = this.contractUsesMsgData;
 
     // Pre-populate tracked stack with _redeemPushSize (if needed) and constructor param names.
@@ -980,8 +986,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     subTraversal.currentFunction = func;
     subTraversal.visit(func);
 
-    // Propagate decode-use count so the parent's inline-vs-subroutine decision sees all uses.
+    // Propagate subroutine-use counts so the parent's inline-vs-subroutine decision sees all uses.
     this.intDecodeUseCount += subTraversal.intDecodeUseCount;
+    this.pushdataFrameUseCount += subTraversal.pushdataFrameUseCount;
+    this.intEncodeUseCount += subTraversal.intEncodeUseCount;
 
     // Normalize the output
     const normalizedOutput = asmToScript(scriptToAsm(subTraversal.output));

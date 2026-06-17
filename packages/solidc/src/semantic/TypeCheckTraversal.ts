@@ -1014,6 +1014,9 @@ export default class TypeCheckTraversal extends AstTraversal {
         throw new InvalidAssemblyError(node, `invalid token '${token}'`);
       }
     }
+
+    const loc = node.location ? ` at line ${node.location.start.line}` : '';
+    console.log(`Warning: inline assembly used${loc}. Raw opcodes bypass type checking; you are responsible for the correctness of the emitted script.`);
     return node;
   }
 

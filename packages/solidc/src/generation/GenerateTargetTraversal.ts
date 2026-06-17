@@ -245,9 +245,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private contractUsesMsgData: boolean = false;
   private intDecodeSubroutineDefined: boolean = false;
   private pushdataFrameSubroutineDefined: boolean = false;
+  private intEncodeSubroutineDefined: boolean = false;
   // Counts of subroutine-eligible sites; drive the inline (<=1) vs OP_DEFINE (>=2) choice.
   private intDecodeUseCount: number = 0;
   private pushdataFrameUseCount: number = 0;
+  private intEncodeUseCount: number = 0;
 
   // Compiler-internal subroutine IDs are 2-byte script numbers starting at 0x1000.
   // This range is disjoint by length from both user function IDs (small ints from 0)
@@ -255,6 +257,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   // these subroutines unreachable from the unlocking script.
   private static readonly INT_DECODE_SUBROUTINE_ID = 0x1000n;
   private static readonly PUSHDATA_FRAME_SUBROUTINE_ID = 0x1001n;
+  private static readonly INT_ENCODE_SUBROUTINE_ID = 0x1002n;
 
   // State-related tracking
   private stateVariables: StateVariableNode[] = [];
@@ -545,16 +548,23 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // splices below drop a DEFINE that an over-estimate left unused.
     const probe = this.subroutineUseProbe(node);
     const defineIntDecode = (probe?.decode ?? 0) >= 2;
-    const defineFrame = (probe?.frame ?? 0) >= 2;
+    const defineIntEncode = (probe?.intEncode ?? 0) >= 2;
+    // Each int-encode site frames once; when int-encode is its own subroutine those frames move
+    // into it, so only the remaining (bytes-branch) frames count toward the shared frame routine.
+    const frameUses = probe ? (defineIntEncode ? probe.frame - probe.intEncode : probe.frame) : 0;
+    const defineFrame = frameUses >= 2;
 
     const decodeSpan = defineIntDecode ? this.emitWithSpan(() => this.emitIntDecodeSubroutine(node)) : null;
     const frameSpan = defineFrame ? this.emitWithSpan(() => this.emitPushdataFrameSubroutine(node)) : null;
+    const intEncodeSpan = defineIntEncode ? this.emitWithSpan(() => this.emitIntEncodeSubroutine(node)) : null;
 
     this.intDecodeUseCount = 0;
     this.pushdataFrameUseCount = 0;
+    this.intEncodeUseCount = 0;
     this.emitFunctionDefinesAndDispatch(node);
 
     // Splice dead DEFINEs (over-estimate). Later-emitted first, so earlier spans stay valid.
+    if (intEncodeSpan && this.intEncodeUseCount === 0) this.spliceRange(intEncodeSpan);
     if (frameSpan && this.pushdataFrameUseCount === 0) this.spliceRange(frameSpan);
     if (decodeSpan && this.intDecodeUseCount === 0) this.spliceRange(decodeSpan);
 
@@ -627,7 +637,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * Returns null when neither site is reachable; on context-reproduction failure returns 2s so
    * the caller defines (correct, just not inlined).
    */
-  private subroutineUseProbe(node: ContractNode): { decode: number; frame: number } | null {
+  private subroutineUseProbe(node: ContractNode): { decode: number; frame: number; intEncode: number } | null {
     // Both sites only arise from packed state/entry reads, state/entry writes, or events.
     if (this.stateVariables.length === 0 && this.collectionCount === 0 && this.eventDefinitions.length === 0) {
       return null;
@@ -651,10 +661,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       probe.compiledBytecodes = this.compiledBytecodes;
       probe.intDecodeSubroutineDefined = false;
       probe.pushdataFrameSubroutineDefined = false;
+      probe.intEncodeSubroutineDefined = false;
       probe.emitFunctionDefinesAndDispatch(node);
-      return { decode: probe.intDecodeUseCount, frame: probe.pushdataFrameUseCount };
+      return {
+        decode: probe.intDecodeUseCount,
+        frame: probe.pushdataFrameUseCount,
+        intEncode: probe.intEncodeUseCount,
+      };
     } catch {
-      return { decode: 2, frame: 2 };
+      return { decode: 2, frame: 2, intEncode: 2 };
     } finally {
       allFns.forEach((f, i) => { f.deployTargets = savedDeployTargets[i]; });
     }
@@ -6017,6 +6032,19 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // First, handle the special cases for int-like types
     const isIntLike = type === PrimitiveType.INT || type instanceof IntType
       || type instanceof FixedType || (type instanceof BytesType && type.bound === 1);
+
+    // The int-like branch is shared via a subroutine when used >=2 times.
+    if (isIntLike) {
+      this.intEncodeUseCount += 1;
+      if (this.intEncodeSubroutineDefined) {
+        this.emit(encodeInt(GenerateTargetTraversalWithLocation.INT_ENCODE_SUBROUTINE_ID), locationData);
+        this.emit(Op.OP_INVOKE, locationData);
+        this.popFromStack();
+        this.pushToStack('(value)');
+        return;
+      }
+    }
+
     if (isIntLike) {
       // For int/bytes1: check for OP_0, OP_1-OP_16, OP_1NEGATE, then standard pushdata
       // DUP the value to test it
@@ -6109,6 +6137,22 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     this.popFromStack();
     this.pushToStack('(value)');
+  }
+
+  /**
+   * Emit the shared OP_DEFINE subroutine for the int-like pushdata encode branch. Body captured
+   * from the inline emitter (frame inlined, so it is self-contained). Stack: [value] -> [encoded].
+   */
+  private emitIntEncodeSubroutine(node: ContractNode): void {
+    const loc: SingleLocationData = { location: node.location, positionHint: PositionHint.START };
+    const sub = new GenerateTargetTraversalWithLocation(this.compilerOptions);
+    sub.pushdataFrameSubroutineDefined = false; // inline the frame inside this subroutine
+    sub.emitGenericPushdataEncode(PrimitiveType.INT, loc);
+    const bodyBytecode = scriptToBytecode(asmToScript(scriptToAsm(sub.output)));
+    this.emit(bodyBytecode, loc);
+    this.emit(encodeInt(GenerateTargetTraversalWithLocation.INT_ENCODE_SUBROUTINE_ID), loc);
+    this.emit(Op.OP_DEFINE, loc);
+    this.intEncodeSubroutineDefined = true;
   }
 
   /**

@@ -105,7 +105,7 @@ import {
 } from '../ast/AST.js';
 import AstTraversal from '../ast/AstTraversal.js';
 import { SymbolTable, Symbol, SymbolType } from '../ast/SymbolTable.js';
-import { NullaryOperator, UnaryOperator } from '../ast/Operator.js';
+import { BinaryOperator, NullaryOperator, UnaryOperator } from '../ast/Operator.js';
 import {
   FunctionRedefinitionError,
   VariableRedefinitionError,
@@ -219,6 +219,13 @@ export default class SymbolTableTraversal extends AstTraversal {
   private currentContract: ContractNode;
   private expectedSymbolType: SymbolType = SymbolType.VARIABLE;
   private insideConsoleStatement: boolean = false;
+
+  // Depth of conditionally-evaluated expression branches (ternary arms, short-circuit && / ||
+  // right operand). References inside them must not become the OP_ROLL "last use": the branch may
+  // be skipped at runtime, so the variable must stay on the stack (PICK) and be cleaned by cleanStack.
+  private conditionalBranchDepth: number = 0;
+
+  private conditionalRefNames: Set<string> = new Set();
   private insideConstructor: boolean = false;
   private stateVariableMap: Map<string, StateVariableNode> = new Map();
   private collectionMap: Map<string, CollectionNode> = new Map();
@@ -844,6 +851,8 @@ export default class SymbolTableTraversal extends AstTraversal {
 
   visitFunctionDefinition(node: FunctionDefinitionNode): Node {
     this.currentFunction = node;
+    this.conditionalBranchDepth = 0;
+    this.conditionalRefNames = new Set();
 
     node.symbolTable = new SymbolTable(this.symbolTables[0]);
     this.symbolTables.unshift(node.symbolTable);
@@ -4341,7 +4350,13 @@ export default class SymbolTableTraversal extends AstTraversal {
     // Keep track of final use of variables for code generation (excluding console statements)
     // Constants are inlined, so they don't need stack tracking
     if (!this.insideConsoleStatement && definition.symbolType !== SymbolType.CONSTANT) {
-      this.currentFunction.opRolls.set(node.name, node);
+      if (this.conditionalBranchDepth > 0) {
+        // Used inside a conditionally-skipped branch: never roll-eligible (stays on the stack).
+        this.conditionalRefNames.add(node.name);
+        this.currentFunction.opRolls.delete(node.name);
+      } else if (!this.conditionalRefNames.has(node.name)) {
+        this.currentFunction.opRolls.set(node.name, node);
+      }
     }
 
     return node;
@@ -4723,7 +4738,11 @@ export default class SymbolTableTraversal extends AstTraversal {
 
   override visitBinaryOp(node: BinaryOpNode): Node {
     node.left = this.visit(node.left) as ExpressionNode;
+    // Short-circuit && / || only conditionally evaluate the right operand.
+    const shortCircuit = node.operator === BinaryOperator.AND || node.operator === BinaryOperator.OR;
+    if (shortCircuit) this.conditionalBranchDepth += 1;
     node.right = this.visit(node.right) as ExpressionNode;
+    if (shortCircuit) this.conditionalBranchDepth -= 1;
 
     if (this.operatorOverloads.size === 0) return node;
 
@@ -4735,6 +4754,16 @@ export default class SymbolTableTraversal extends AstTraversal {
         return this.createOperatorFunctionCall(funcName, [node.left, node.right], node);
       }
     }
+    return node;
+  }
+
+  override visitTernaryOp(node: TernaryOpNode): Node {
+    // Only the condition is always evaluated; the two arms are conditionally skipped.
+    node.condition = this.visit(node.condition) as ExpressionNode;
+    this.conditionalBranchDepth += 1;
+    node.ifTrue = this.visit(node.ifTrue) as ExpressionNode;
+    node.ifFalse = this.visit(node.ifFalse) as ExpressionNode;
+    this.conditionalBranchDepth -= 1;
     return node;
   }
 

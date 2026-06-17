@@ -2177,7 +2177,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // No-op: catch blocks produce no bytecode (Bitcoin Script cannot recover from opcode failures)
     if (_node.block.statements && _node.block.statements.length > 0) {
       const line = _node.location ? ` at line ${_node.location.start.line}` : '';
-      console.log(`Warning: catch clause${line} will be ignored at runtime. Bitcoin Script has no exception recovery - if the try expression fails, the entire transaction is invalid.`);
+      console.log(`Warning: catch clause${line} is dead code and will be ignored at runtime. Unlike Solidity, `
+        + 'Bitcoin Script has no exception recovery: if the try expression fails, the whole transaction '
+        + 'is invalid and the catch block never runs.');
     }
     return _node;
   }
@@ -3551,7 +3553,36 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     return node;
   }
 
+  /** Emit short-circuit && / || : `a && b` as `a ? b : false`, `a || b` as `a ? true : b`. */
+  private emitShortCircuitBoolean(node: BinaryOpNode): Node {
+    const startLoc = { location: node.location, positionHint: PositionHint.START };
+    const endLoc = { location: node.location, positionHint: PositionHint.END };
+    node.left = this.visit(node.left);
+    this.popFromStack(); // condition consumed by OP_IF
+    this.emit(Op.OP_IF, startLoc);
+    const snapshot = [...this.stack];
+    if (node.operator === BinaryOperator.AND) {
+      node.right = this.visit(node.right);
+      this.emit(Op.OP_ELSE, endLoc);
+      this.stack = [...snapshot];
+      this.emit(encodeInt(0n), endLoc);
+      this.pushToStack('(value)');
+    } else {
+      this.emit(encodeInt(1n), startLoc);
+      this.pushToStack('(value)');
+      this.emit(Op.OP_ELSE, endLoc);
+      this.stack = [...snapshot];
+      node.right = this.visit(node.right);
+    }
+    this.emit(Op.OP_ENDIF, endLoc);
+    return node;
+  }
+
   visitBinaryOp(node: BinaryOpNode): Node {
+    // Short-circuit && / || (Solidity semantics): the right operand is only evaluated when needed.
+    if (node.operator === BinaryOperator.AND || node.operator === BinaryOperator.OR) {
+      return this.emitShortCircuitBoolean(node);
+    }
     node.left = this.visit(node.left);
     const bothOperandsAreNumeric = isNumericType(node.left.type) && isNumericType(node.right.type);
     const locationData = { location: node.location, positionHint: PositionHint.END };

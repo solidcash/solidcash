@@ -201,21 +201,21 @@ export const fixtures: Fixture[] = [
       ],
       bytecode:
         // function transfer (OP_DEFINE'd)
-        '7093765479947653799c537a929a6376557993547978937b757c6e9f6975675379776876547a93537a9c777777 6bc12074 OP_DEFINE '
+        '7093765479947653799c635279926700686376567993557978937b757c6e9f6975675479776876557a93547a9d6d6d51 6bc12074 OP_DEFINE '
         // function timeout (OP_DEFINE'd) + dispatcher
         + '527976529376537a9c63765479936e937b757c6e9f697568729c7777 7654e917 OP_DEFINE OP_DEPTH OP_1SUB OP_ROLL OP_SIZE OP_4 OP_NUMEQUALVERIFY OP_INVOKE',
       debug: {
-        bytecode: '2d7093765479947653799c537a929a6376557993547978937b757c6e9f6975675379776876547a93537a9c777777046bc12074891c527976529376537a9c63765479936e937b757c6e9f697568729c7777047654e91789748c7a82549d8a',
+        bytecode: '307093765479947653799c635279926700686376567993557978937b757c6e9f6975675479776876557a93547a9d6d6d51046bc12074891c527976529376537a9c63765479936e937b757c6e9f697568729c7777047654e91789748c7a82549d8a',
         logs: [],
         requires: [],
         sourceMap: '2:4:14:5;;;16::26;;;1:0:27:1;;;;;;',
         functionDebug: {
           '6bc12074': {
             requires: [
-              { ip: 28, line: 8 },
-              { ip: 42, line: 13 },
+              { ip: 31, line: 8 },
+              { ip: 44, line: 13 },
             ],
-            sourceMap: '3:16:3:21;::::1;4:12:4:13:0;:16::17;;:12:::1;5::5:13:0;:17::18;;:12:::1;:27::28:0;;:22::29:1;:12;:31:9:9:0;6:20:6:21;:24::25;;:20:::1;7:16:7:17:0;;:20::21;:16:::1;:12::22;;;8:20:8:25:0;::::1;:12::27;5:31:9:9;9:15:11::0;10:16:10:17;;:12::18:1;9:15:11:9;12:12:12:13:0;:16::17;;:12:::1;13:21:13:22:0;;:8::24:1;2:4:14:5;;',
+            sourceMap: '3:16:3:21;::::1;4:12:4:13:0;:16::17;;:12:::1;5::5:13:0;:17::18;;:12:::1;:::29:0;:27::28;;:22::29:1;:12;;;:31:9:9:0;6:20:6:21;:24::25;;:20:::1;7:16:7:17:0;;:20::21;:16:::1;:12::22;;;8:20:8:25:0;::::1;:12::27;5:31:9:9;9:15:11::0;10:16:10:17;;:12::18:1;9:15:11:9;12:12:12:13:0;:16::17;;:12:::1;13:21:13:22:0;;:8::24:1;2:4:14:5;;',
             logs: [],
           },
           '7654e917': {
@@ -228,7 +228,7 @@ export const fixtures: Fixture[] = [
           },
         },
       },
-      functionBodies: { '6bc12074': '7093765479947653799c537a929a6376557993547978937b757c6e9f6975675379776876547a93537a9c777777', '7654e917': '527976529376537a9c63765479936e937b757c6e9f697568729c7777' },
+      functionBodies: { '6bc12074': '7093765479947653799c635279926700686376567993557978937b757c6e9f6975675479776876557a93547a9d6d6d51', '7654e917': '527976529376537a9c63765479936e937b757c6e9f697568729c7777' },
       source: fs.readFileSync(new URL('../valid-contract-files/multifunction_if_statements.scash', import.meta.url), { encoding: 'utf-8' }),
       compiler: {
         name: 'solidc',
@@ -835,16 +835,16 @@ export const fixtures: Fixture[] = [
       contractName: 'MultilineStatements',
       constructorInputs: [{ name: 'x', type: 'int' }, { name: 'y', type: 'string' }],
       abi: [{ name: 'spend', selector: 'fecf12ee', inputs: [{ name: 'a', type: 'int' }, { name: 'b', type: 'string' }] }],
-      bytecode: 'OP_ROT OP_SWAP OP_2 OP_SUB OP_NUMEQUAL OP_2 OP_PICK OP_2 OP_PICK OP_EQUAL OP_BOOLAND OP_IF OP_0 OP_VERIFY OP_ELSE OP_OVER 48656c6c6f20 OP_2 OP_PICK OP_CAT OP_EQUAL OP_IF OP_DUP 576f726c64 OP_EQUALVERIFY OP_ELSE OP_1 OP_0 OP_NOT OP_NOT OP_NOT OP_NUMEQUALVERIFY OP_ENDIF OP_ENDIF OP_2DROP OP_1',
+      bytecode: 'OP_ROT OP_SWAP OP_2 OP_SUB OP_NUMEQUAL OP_IF OP_2DUP OP_EQUAL OP_ELSE OP_0 OP_ENDIF OP_IF OP_0 OP_VERIFY OP_ELSE OP_OVER 48656c6c6f20 OP_2 OP_PICK OP_CAT OP_EQUAL OP_IF OP_DUP 576f726c64 OP_EQUALVERIFY OP_ELSE OP_1 OP_0 OP_NOT OP_NOT OP_NOT OP_NUMEQUALVERIFY OP_ENDIF OP_ENDIF OP_2DROP OP_1',
       debug: {
-        bytecode: '7b7c52949c52795279879a63006967780648656c6c6f2052797e87637605576f726c64886751009191919d68686d51',
+        bytecode: '7b7c52949c636e8767006863006967780648656c6c6f2052797e87637605576f726c64886751009191919d68686d51',
         logs: [],
         requires: [
           { ip: 15, line: 11 },
           { ip: 26, line: 14 },
           { ip: 33, line: 18 },
         ],
-        sourceMap: '9:12:9:13;:17::18;:21::22;:17:::1;:12;10::10:13:0;;:17::18;;:12:::1;9;10:20:12:9:0;11::11:25;:12::27:1;12:15:19:9:0;:19:12:20;:24::32;13:10:13:11;;12:24:::1;:19;13:13:17:9:0;15:16:15:17;:21::28;14:12:16:14:1;17:15:19:9:0;18:20:18:24;:31::36;:30:::1;:29;:28;:12::38;17:15:19:9;12;5:4:20:5;',
+        sourceMap: '9:12:9:13;:17::18;:21::22;:17:::1;:12;::10:18:0;10;::::1;9;;;10:20:12:9:0;11::11:25;:12::27:1;12:15:19:9:0;:19:12:20;:24::32;13:10:13:11;;12:24:::1;:19;13:13:17:9:0;15:16:15:17;:21::28;14:12:16:14:1;17:15:19:9:0;18:20:18:24;:31::36;:30:::1;:29;:28;:12::38;17:15:19:9;12;5:4:20:5;',
       },
       source: fs.readFileSync(new URL('../valid-contract-files/multiline_statements.scash', import.meta.url), { encoding: 'utf-8' }),
       compiler: {

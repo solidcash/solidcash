@@ -9,7 +9,7 @@ Stateful contracts inline the same building blocks (pushdata encode/decode, cove
 constructions) many times, bloating bytecode. This work extracts the high-value repeated
 blocks into shared BCH-2026 `OP_DEFINE`/`OP_INVOKE` subroutines, under a usage-count rule.
 
-Result on the Highlight benchmark: **4210 -> 2852 bytes (-32%)**.
+Result on the Highlight benchmark: **4210 -> 2619 bytes (-38%)**.
 
 ## The rule
 
@@ -61,10 +61,20 @@ see `packages/solidcash/test/e2e/DispatchSelectorSecurity.test.ts`.
 | `0x1000` | generic int pushdata decode | `[blob] -> [raw, remainder]` (manual body; int callers add BIN2NUM) |
 | `0x1001` | standard pushdata frame | `[value] -> [framed]` |
 | `0x1002` | int-like pushdata encode (wrapper + inline frame) | `[value] -> [encoded]` |
+| `0x1003` | master self-preservation (bytecode + category) | `[] -> []` (non-delegate; delegate inlines) |
+| `0x1004` | minting NFT uniqueness | `[] -> []` (non-delegate; delegate inlines) |
+| `0x1005` | master value preservation | `[] -> []` (non-delegate; delegate inlines) |
+| `0x1006` | category base == master's category base | `[cat] -> []` (non-delegate; delegate inlines) |
 
 Frame/int-encode interaction: each int-encode site frames once, so when int-encode is its own
 subroutine those frames move into it; only the remaining (bytes-branch) frames count toward the
 standalone frame subroutine (`frameUses = defineIntEncode ? frame - intEncode : frame`).
+
+The master-family (`0x1003`-`0x1006`) bake `OP_INPUTINDEX` (the master at offset 0), so they are
+gated on `!currentFunctionIsDelegate` at the chokepoint; delegate functions resolve the master via
+the altstack proxy index and inline instead. `0x1006` emits raw (no stack-tracker calls): the four
+call sites (data NFT, entry input/output, event output) each push a category then invoke, and
+manage their own tracker bookkeeping.
 
 ## Adding a new subroutine
 
@@ -92,6 +102,26 @@ The "repeated ~48-byte covenant template" visible in a naive repeated-block scan
 **data constant** embedded across heterogeneous covenant logic (address build + covenant
 verification), not a single `[category] -> [lbc]` transform. Data constants cannot be subroutined.
 
-Takeaway: the remaining Highlight bytes are heterogeneous covenant logic (self-preservation,
-minting-uniqueness, embedded templates) that is not amenable to generic subroutine extraction.
-Further size wins there would need a different technique.
+Takeaway: covenant-LBC construction rarely repeats >=2x within a contract; not a fruitful target.
+
+## Cross-contract analysis (how 0x1006 was found)
+
+Earlier rounds only profiled Highlight. To find patterns repeated across the *whole* ecosystem,
+temporarily hook `compileString` (just before its `return`) to append `{n: contractName,
+b: debug.bytecode}` to a file for any artifact with a `stateLayout`, gated on an env var:
+
+    if (process.env.SUBANALYZE && art.stateLayout) appendFileSync(process.env.SUBANALYZE, ...)
+
+Run the full e2e suite with that env var set, dedup the dump by name+bytecode (the suite compiles
+~290 unique stateful contracts), decode each body's function bodies, and rank opcode windows by
+ecosystem savings: `sum over contracts of max(0, count_in_contract - 1) * window_bytes`. Revert the
+hook afterward (`git checkout`).
+
+This surfaced the category-base comparison (`[cat] 32 SPLIT DROP <master> UTXOTOKENCATEGORY 32
+SPLIT DROP EQUALVERIFY`, byte-identical 11-byte tail) as the single broadest repeat: ~570 sites
+across 141 contracts. Extracted as `0x1006`; under k>=2 it shrank **45 contracts by 878 bytes
+total** (ERC20Token -89, Highlight -68, PartialStructUpdate -47). The window scan over-estimates
+(many contracts use the idiom exactly once -> inline), so the real win is the k>=2 subset.
+
+The next-ranked repeat is single-data-NFT preservation (value/amount/commitment/bytecode at offset
++1); it is offset-parameterized, so a generic subroutine would need the offset fixed - deferred.

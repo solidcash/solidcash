@@ -256,7 +256,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private static readonly MASTER_SELF_PRES_SUBROUTINE_ID = 0x1003n;
   private static readonly MINT_UNIQUENESS_SUBROUTINE_ID = 0x1004n;
   private static readonly MASTER_VALUE_PRES_SUBROUTINE_ID = 0x1005n;
-  private static readonly ALL_SUBROUTINE_IDS = [0x1000n, 0x1001n, 0x1002n, 0x1003n, 0x1004n, 0x1005n];
+  private static readonly CAT_BASE_EQ_MASTER_SUBROUTINE_ID = 0x1006n;
+  private static readonly ALL_SUBROUTINE_IDS = [0x1000n, 0x1001n, 0x1002n, 0x1003n, 0x1004n, 0x1005n, 0x1006n];
 
   // State-related tracking
   private stateVariables: StateVariableNode[] = [];
@@ -585,6 +586,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const MVAL = GenerateTargetTraversalWithLocation.MASTER_VALUE_PRES_SUBROUTINE_ID;
     if (count(MVAL) >= 2) {
       spans.push({ id: MVAL, span: this.defineCapturedSubroutine(MVAL, (t) => t.emitMasterValuePreservation(loc), loc) });
+    }
+    const CATEQ = GenerateTargetTraversalWithLocation.CAT_BASE_EQ_MASTER_SUBROUTINE_ID;
+    if (count(CATEQ) >= 2) {
+      spans.push({ id: CATEQ, span: this.defineCapturedSubroutine(CATEQ, (t) => t.emitVerifyCatBaseEqMaster(loc), loc) });
     }
 
     this.subroutineUseCount = new Map();
@@ -7877,6 +7882,25 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(encodeInt(0n), locationData);
   }
 
+  /** Verify the category on the stack shares the master's 32-byte category base. [cat] -> []. */
+  private emitVerifyCatBaseEqMaster(locationData: SingleLocationData): void {
+    // Shared as a subroutine for non-delegate functions; delegate (altstack proxy index) inlines.
+    // Raw emit: callers manage the stack tracker.
+    if (!this.currentFunctionIsDelegate && this.invokeSubroutineIfDefined(
+      GenerateTargetTraversalWithLocation.CAT_BASE_EQ_MASTER_SUBROUTINE_ID, locationData)) {
+      return;
+    }
+    this.emit(encodeInt(32n), locationData);
+    this.emit(Op.OP_SPLIT, locationData);
+    this.emit(Op.OP_DROP, locationData);
+    this.emitMasterInputIndex(locationData);
+    this.emit(Op.OP_UTXOTOKENCATEGORY, locationData);
+    this.emit(encodeInt(32n), locationData);
+    this.emit(Op.OP_SPLIT, locationData);
+    this.emit(Op.OP_DROP, locationData);
+    this.emit(Op.OP_EQUALVERIFY, locationData);
+  }
+
   /** Emit token category verification for each accessed data NFT */
   private emitTokenCategoryVerification(node: FunctionDefinitionNode): void {
     const locationData = { location: node.location, positionHint: PositionHint.START };
@@ -7884,24 +7908,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const sortedNftIndices = [...this.compactOffsetMap.keys()].sort((a, b) => a - b);
     for (const nftIdx of sortedNftIndices) {
       const compactOffset = this.compactOffsetMap.get(nftIdx)!;
-      // data NFT category (strip capability suffix to get 32-byte category ID)
-      // OP_UTXOTOKENCATEGORY returns: category (32 bytes) + optional capability byte (suffix)
+      // data NFT category base matches master's
       this.emitMasterInputIndex(locationData);
       this.emit(encodeInt(BigInt(compactOffset)), locationData);
       this.emit(Op.OP_ADD, locationData);
       this.emit(Op.OP_UTXOTOKENCATEGORY, locationData);
-      this.emit(encodeInt(32n), locationData);
-      this.emit(Op.OP_SPLIT, locationData);
-      this.emit(Op.OP_DROP, locationData);
-
-      // master's category (strip capability suffix)
-      this.emitMasterInputIndex(locationData);
-      this.emit(Op.OP_UTXOTOKENCATEGORY, locationData);
-      this.emit(encodeInt(32n), locationData);
-      this.emit(Op.OP_SPLIT, locationData);
-      this.emit(Op.OP_DROP, locationData);
-
-      this.emit(Op.OP_EQUALVERIFY, locationData);
+      this.emitVerifyCatBaseEqMaster(locationData);
     }
   }
 
@@ -8062,20 +8074,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // Compute entry input index (0 extra untracked values at IF entry)
       this.emitEntryInputIndex(i, locationData, 0);
 
-      // Entry input category base (strip capability suffix)
+      // Entry input category base matches master's
       this.emit(Op.OP_UTXOTOKENCATEGORY, locationData);
-      this.emit(encodeInt(32n), locationData);
-      this.emit(Op.OP_SPLIT, locationData);
-      this.emit(Op.OP_DROP, locationData);
-
-      // Master category base
-      this.emitMasterInputIndex(locationData);
-      this.emit(Op.OP_UTXOTOKENCATEGORY, locationData);
-      this.emit(encodeInt(32n), locationData);
-      this.emit(Op.OP_SPLIT, locationData);
-      this.emit(Op.OP_DROP, locationData);
-
-      this.emit(Op.OP_EQUALVERIFY, locationData);
+      this.emitVerifyCatBaseEqMaster(locationData);
 
       // Verify input capability is mutable (0x01) - prevents capability downgrade attacks
       this.emitEntryInputIndex(i, locationData, 0);
@@ -8131,24 +8132,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     for (const [slotIdx] of this.pendingEntryWrites) {
       if (this.pendingEntryDeletes.has(slotIdx)) continue;
 
-      // Output category base
+      // Output category base matches master's
       this.emitEntryOutputIndex(slotIdx, locationData, 0);
       this.emit(Op.OP_OUTPUTTOKENCATEGORY, locationData);
-      this.emit(encodeInt(32n), locationData);
-      this.emit(Op.OP_SPLIT, locationData);
-      this.emit(Op.OP_DROP, locationData);
-      this.pushToStack('(value)');
-
-      // Master category base
-      this.emitMasterInputIndex(locationData);
-      this.emit(Op.OP_UTXOTOKENCATEGORY, locationData);
-      this.emit(encodeInt(32n), locationData);
-      this.emit(Op.OP_SPLIT, locationData);
-      this.emit(Op.OP_DROP, locationData);
-      this.pushToStack('(value)');
-
-      this.emit(Op.OP_EQUALVERIFY, locationData);
-      this.popFromStack(2);
+      this.emitVerifyCatBaseEqMaster(locationData);
 
       // Verify output capability is mutable (0x01) - prevents capability downgrade attacks
       this.emitEntryOutputIndex(slotIdx, locationData, 0);
@@ -8732,24 +8719,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_EQUALVERIFY, locationData);
       this.popFromStack(2);
 
-      // 3. Verify output token category matches master's category (stripped to 32 bytes)
+      // 3. Verify output token category base matches master's
       this.emitBlockSlotIndex('event', emitIndex, locationData);
       this.emit(Op.OP_OUTPUTTOKENCATEGORY, locationData);
-      this.emit(encodeInt(32n), locationData);
-      this.emit(Op.OP_SPLIT, locationData);
-      this.emit(Op.OP_DROP, locationData);
-      this.pushToStack('(value)');
-
-      // Master category base
-      this.emitMasterInputIndex(locationData);
-      this.emit(Op.OP_UTXOTOKENCATEGORY, locationData);
-      this.emit(encodeInt(32n), locationData);
-      this.emit(Op.OP_SPLIT, locationData);
-      this.emit(Op.OP_DROP, locationData);
-      this.pushToStack('(value)');
-
-      this.emit(Op.OP_EQUALVERIFY, locationData);
-      this.popFromStack(2);
+      this.emitVerifyCatBaseEqMaster(locationData);
 
       // 4. Verify NFT capability is 'none' (no capability byte), not 'mutable' or 'minting'
       this.emitBlockSlotIndex('event', emitIndex, locationData);

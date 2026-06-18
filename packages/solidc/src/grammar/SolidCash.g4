@@ -618,6 +618,7 @@ typeName
     | 'ufixed'
     | BoundedSignedFixed
     | BoundedUnsignedFixed
+    | 'function' '(' (typeName (',' typeName)*)? ')' ('returns' '(' typeName (',' typeName)* ')')?
     | Identifier
     ;
 

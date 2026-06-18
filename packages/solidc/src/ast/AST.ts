@@ -1057,6 +1057,9 @@ export class StateArrayDeleteNode extends StatementNode implements Named {
 
 export class IdentifierNode extends ExpressionNode implements Named {
   definition?: Symbol;
+  // Set when this identifier names a function used as a value (a function pointer); codegen pushes
+  // the target's integer functionId.
+  functionReference?: FunctionDefinitionNode;
 
   constructor(
     public name: string,

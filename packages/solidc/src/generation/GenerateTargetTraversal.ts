@@ -33,6 +33,7 @@ import {
   ConnectedAddressType,
   ValueType,
   EnumType,
+  FunctionType,
   BlockLayoutSlot,
   BlockSlotKind,
 } from '@solidcash/utils';
@@ -3110,6 +3111,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       return this.visitUserFunctionCall(node, targetFunc);
     }
 
+    // Indirect call through a function-typed value (function pointer).
+    if (node.identifier.type instanceof FunctionType) {
+      return this.visitIndirectFunctionCall(node);
+    }
+
     // Struct constructor: emit pushdata encode for each field + OP_CAT
     if (node.type instanceof StructType) {
       const structType = node.type;
@@ -3389,6 +3395,29 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     return node;
   }
 
+  // Indirect call: like visitUserFunctionCall, but the functionId comes from a function-typed value
+  // (variable/parameter) evaluated onto the stack instead of a literal.
+  visitIndirectFunctionCall(node: FunctionCallNode): Node {
+    const locationData = { location: node.location, positionHint: PositionHint.END };
+    const funcType = node.identifier.type as FunctionType;
+
+    // Evaluate arguments in REVERSE order so first param ends up on top.
+    for (let i = node.parameters.length - 1; i >= 0; i--) {
+      node.parameters[i] = this.visit(node.parameters[i]);
+    }
+
+    // Push the functionId value on top, then OP_INVOKE consumes it plus the args.
+    node.identifier = this.visit(node.identifier) as IdentifierNode;
+    this.emit(Op.OP_INVOKE, locationData);
+
+    this.popFromStack(node.parameters.length + 1);
+    for (let i = 0; i < funcType.returnTypes.length; i++) {
+      this.pushToStack('(value)');
+    }
+
+    return node;
+  }
+
   visitReturn(node: ReturnNode): Node {
     const locationData = { location: node.location, positionHint: PositionHint.END };
 
@@ -3443,13 +3472,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Visit the inner function call
     node.call = this.visit(node.call) as FunctionCallNode;
 
-    // Discard return values (if any)
+    // Discard return values (if any). Direct calls know their target; indirect calls (function
+    // pointers) get the count from the callee's function type.
     const targetFunc = node.call.resolvedFunction;
-    if (targetFunc && targetFunc.returnTypes.length > 0) {
-      for (let i = 0; i < targetFunc.returnTypes.length; i++) {
-        this.emit(Op.OP_DROP, locationData);
-        this.popFromStack();
-      }
+    const returnCount = targetFunc
+      ? targetFunc.returnTypes.length
+      : node.call.identifier.type instanceof FunctionType
+        ? node.call.identifier.type.returnTypes.length
+        : 0;
+    for (let i = 0; i < returnCount; i++) {
+      this.emit(Op.OP_DROP, locationData);
+      this.popFromStack();
     }
 
     return node;
@@ -5387,6 +5420,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   visitIdentifier(node: IdentifierNode): Node {
+    // Function pointer value: push the target's integer functionId (an indirect call OP_INVOKEs it).
+    if (node.functionReference) {
+      this.emit(encodeInt(BigInt(node.functionReference.functionId!)),
+        { location: node.location, positionHint: PositionHint.START });
+      this.pushToStack('(value)');
+      return node;
+    }
+
     // Inline constant expressions instead of stack lookup
     const constExpr = this.constantExpressions.get(node.name);
     if (constExpr) {

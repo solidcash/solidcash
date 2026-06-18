@@ -16,6 +16,7 @@ import {
   TokenContainerType,
   AddressType,
   ConnectedAddressType,
+  FunctionType,
   Op,
 } from '@solidcash/utils';
 import {
@@ -1109,6 +1110,15 @@ export default class TypeCheckTraversal extends AstTraversal {
     node.identifier = this.visit(node.identifier) as IdentifierNode;
     node.parameters = this.visitList(node.parameters);
 
+    // Indirect call through a function-typed value: check args against the signature, result is its returns.
+    if (node.identifier.type instanceof FunctionType && !this.functionDefinitions.has(node.identifier.name)) {
+      const ft = node.identifier.type;
+      expectParameters(node, node.parameters.map((p) => p.type!), ft.parameterTypes);
+      node.type = ft.returnTypes.length === 1 ? ft.returnTypes[0]
+        : ft.returnTypes.length > 1 ? new TupleType(ft.returnTypes) : PrimitiveType.VOID;
+      return node;
+    }
+
     // Handle overload resolution for user-defined functions
     const overloads = this.functionDefinitions.get(node.identifier.name);
     if (overloads && overloads.length > 1 && !node.resolvedFunction) {
@@ -1867,6 +1877,14 @@ export default class TypeCheckTraversal extends AstTraversal {
   }
 
   visitIdentifier(node: IdentifierNode): Node {
+    // Function pointer value: type is the target's signature, not its return type.
+    if (node.functionReference) {
+      node.type = new FunctionType(
+        node.functionReference.parameters.map((p) => p.type),
+        node.functionReference.returnTypes,
+      );
+      return node;
+    }
     if (!node.definition) return node;
     node.type = node.definition.type;
     return node;

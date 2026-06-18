@@ -112,6 +112,7 @@ import {
   FunctionRedefinitionError,
   VariableRedefinitionError,
   TupleMixedSlotsError,
+  FunctionTypeNotEncodableError,
   UndefinedReferenceError,
   UnusedVariableError,
   InvalidSymbolTypeError,
@@ -172,7 +173,7 @@ import {
   CompilerOptions, PrimitiveType, BytesType, Type, StructType, EnumType, AddressType, ConnectedAddressType, ValueType,
   computeEventSignature, computeErrorSignature, computeCollectionSignature,
   computeFunctionSignature, computeFunctionSelector, TupleType, ArrayType,
-  IntType, FixedType, MappingType,
+  IntType, FixedType, MappingType, FunctionType,
   FunctionBlockLayout, BlockLayoutSlot,
 } from '@solidcash/utils';
 import { binToHex } from '@bitauth/libauth';
@@ -579,6 +580,18 @@ export default class SymbolTableTraversal extends AstTraversal {
     // Pre-register all user-defined functions (before visiting bodies)
     for (const func of node.functions) {
       this.validateModifiers(func, node);
+
+      // Function pointers are internal-only: an entry point can't receive one (no ABI encoding).
+      if (func.isEntryPoint) {
+        for (const p of func.parameters) {
+          if (p.type instanceof FunctionType) {
+            throw new FunctionTypeNotEncodableError(p, 'parameters of an external/public function');
+          }
+        }
+        if (func.returnTypes.some((t) => t instanceof FunctionType)) {
+          throw new FunctionTypeNotEncodableError(func, 'return values of an external/public function');
+        }
+      }
 
       const paramTypes = func.parameters.map((p) => p.type);
       const sig = computeFunctionSignature(func.name, paramTypes.map((t) => t.toString()));
@@ -3437,7 +3450,11 @@ export default class SymbolTableTraversal extends AstTraversal {
       // Multiple overloads: defer resolution to TypeCheckTraversal
     }
 
-    this.expectedSymbolType = SymbolType.FUNCTION;
+    // Indirect call through a function-typed variable: resolve the callee as a variable, not a function.
+    const calleeSym = this.symbolTables[0].get(node.identifier.name);
+    const isIndirect = !this.functionDefinitions.has(node.identifier.name) && calleeSym?.type instanceof FunctionType;
+
+    this.expectedSymbolType = isIndirect ? SymbolType.VARIABLE : SymbolType.FUNCTION;
     node.identifier = this.visit(node.identifier) as IdentifierNode;
     this.expectedSymbolType = SymbolType.VARIABLE;
     node.parameters = this.visitList(node.parameters);
@@ -3462,6 +3479,13 @@ export default class SymbolTableTraversal extends AstTraversal {
           return transferNode;
         }
       }
+    }
+
+    // Indirect call statement through a function-typed variable: defer to the function-call visitor.
+    const calleeSym = this.symbolTables[0].get(callName);
+    if (!this.functionDefinitions.has(callName) && calleeSym?.type instanceof FunctionType) {
+      node.call = this.visit(node.call) as FunctionCallNode;
+      return node;
     }
 
     // Function call statements are only valid for user-defined functions
@@ -4422,6 +4446,19 @@ export default class SymbolTableTraversal extends AstTraversal {
     const definition = this.symbolTables[0].get(node.name);
     if (!definition) {
       throw new UndefinedReferenceError(node);
+    }
+
+    // Function name used as a value (function pointer): resolve to its definition. Must be a single
+    // (non-overloaded) function; codegen pushes its integer functionId. Inlined, so no opRolls slot.
+    if (definition.symbolType === SymbolType.FUNCTION && this.expectedSymbolType === SymbolType.VARIABLE) {
+      const overloads = this.functionDefinitions.get(node.name) ?? [];
+      if (overloads.length !== 1) {
+        throw new InvalidSymbolTypeError(node, this.expectedSymbolType);
+      }
+      node.definition = definition;
+      node.functionReference = overloads[0];
+      definition.references.push(node);
+      return node;
     }
 
     // Allow constants where variables are expected

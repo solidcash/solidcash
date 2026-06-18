@@ -1,7 +1,7 @@
 export type Type =
   | PrimitiveType | ArrayType | TupleType | BytesType | IntType | FixedType
   | MappingType | StructType | TokenContainerType | EnumType
-  | AddressType | ConnectedAddressType | ValueType;
+  | AddressType | ConnectedAddressType | ValueType | FunctionType;
 
 export class TokenContainerType {
   toString(): string { return 'tokenContainer'; }
@@ -178,6 +178,22 @@ export class TupleType {
 
   toString(): string {
     return `(${this.elements.map((e) => e.toString()).join(', ')})`;
+  }
+}
+
+// Internal function type (function pointer). At the VM level a value of this type is the target's
+// integer functionId; an indirect call is `<functionId> OP_INVOKE`. Internal-only (no external/ABI).
+export class FunctionType {
+  constructor(
+    public parameterTypes: Type[],
+    public returnTypes: Type[],
+  ) {}
+
+  toString(): string {
+    const params = this.parameterTypes.map((t) => t.toString()).join(',');
+    const base = `function(${params})`;
+    if (this.returnTypes.length === 0) return base;
+    return `${base}returns(${this.returnTypes.map((t) => t.toString()).join(',')})`;
   }
 }
 
@@ -391,6 +407,13 @@ export function implicitlyCastable(actual?: Type, expected?: Type): boolean {
     return false;
   }
 
+  // Function types: only an exact structural match casts (and never to/from anything else, so a raw
+  // int can't become a function pointer). Compared via toString, which encodes params + returns.
+  if (actual instanceof FunctionType || expected instanceof FunctionType) {
+    return actual instanceof FunctionType && expected instanceof FunctionType
+      && actual.toString() === expected.toString();
+  }
+
   // Token containers can't be implicitly cast
   if (actual instanceof TokenContainerType || expected instanceof TokenContainerType) return false;
 
@@ -548,6 +571,9 @@ export function parseType(str: string): Type {
 
   if (str.startsWith('byte')) return BytesType.fromString(str);
 
+  // Internal function type: function(<types>)[returns(<types>)] (whitespace already stripped).
+  if (str.startsWith('function(')) return parseFunctionType(str);
+
   // Array types: int[5], int[], bytes20[], int[3][5], etc.
   // Use lastIndexOf to find the outermost dimension (rightmost brackets)
   if (str.endsWith(']') && str.includes('[')) {
@@ -605,6 +631,47 @@ export function parseTypeStrict(str: string): Type {
     throw new Error(`Unrecognized type string "${str}"`);
   }
   return result;
+}
+
+// Parse `function(<types>)` or `function(<types>)returns(<types>)` (no whitespace) into a FunctionType.
+function parseFunctionType(str: string): FunctionType {
+  const afterKeyword = str.slice('function'.length); // "(params)..." or "(params)returns(rets)"
+  const [paramsInner, rest] = splitParenGroup(afterKeyword);
+  let returnTypes: Type[] = [];
+  if (rest.startsWith('returns(')) {
+    const [retsInner] = splitParenGroup(rest.slice('returns'.length));
+    returnTypes = splitTopLevelCommas(retsInner).map(parseType);
+  }
+  return new FunctionType(splitTopLevelCommas(paramsInner).map(parseType), returnTypes);
+}
+
+// Given a string starting with '(', return [inside, remainder-after-matching-paren].
+function splitParenGroup(s: string): [string, string] {
+  let depth = 0;
+  for (let i = 0; i < s.length; i++) {
+    if (s[i] === '(') depth++;
+    else if (s[i] === ')') {
+      depth--;
+      if (depth === 0) return [s.slice(1, i), s.slice(i + 1)];
+    }
+  }
+  return [s.slice(1), ''];
+}
+
+// Split on commas at parenthesis/bracket depth 0; empty input yields no elements.
+function splitTopLevelCommas(s: string): string[] {
+  if (s === '') return [];
+  const parts: string[] = [];
+  let depth = 0;
+  let start = 0;
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (c === '(' || c === '[') depth++;
+    else if (c === ')' || c === ']') depth--;
+    else if (c === ',' && depth === 0) { parts.push(s.slice(start, i)); start = i + 1; }
+  }
+  parts.push(s.slice(start));
+  return parts;
 }
 
 /** Find the index of `=>` at parenthesis depth 0 within a string. */

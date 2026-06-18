@@ -283,8 +283,13 @@ export function explicitlyCastable(from?: Type, to?: Type): boolean {
   // Structs can't be cast
   if (from instanceof StructType || to instanceof StructType) return false;
 
-  // Enums can't be cast
-  if (from instanceof EnumType || to instanceof EnumType) return false;
+  // Enums are int-backed: allow explicit enum <-> int conversions (int -> enum is range-checked at
+  // codegen). Enum <-> enum is still disallowed.
+  if (from instanceof EnumType || to instanceof EnumType) {
+    if (from instanceof EnumType && to instanceof EnumType) return false;
+    const isInt = (t: Type): boolean => t === PrimitiveType.INT || t instanceof IntType;
+    return from instanceof EnumType ? isInt(to) : isInt(from);
+  }
 
   // Tuples can't be cast
   if (from instanceof TupleType || to instanceof TupleType) return false;

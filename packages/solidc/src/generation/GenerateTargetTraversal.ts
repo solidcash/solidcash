@@ -2987,7 +2987,27 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (node.type instanceof FixedType && !node.isUnsafe) {
       this.emitFixedBoundsCheck(node.type, { location: node.location, positionHint: PositionHint.END });
     }
+    // Emit range check for int -> enum casts (Solidity checks the value is a valid enum member)
+    if (node.type instanceof EnumType && !node.isUnsafe) {
+      this.emitEnumBoundsCheck(node.type, { location: node.location, positionHint: PositionHint.END });
+    }
     return node;
+  }
+
+  // Verify a value cast to an enum lies within the enum's member-value range.
+  private emitEnumBoundsCheck(type: EnumType, locationData: SingleLocationData): void {
+    if (this.uncheckedDepth > 0) return;
+    const values = type.members.map((m) => m.value);
+    const min = values.reduce((a, b) => (b < a ? b : a), values[0]);
+    const max = values.reduce((a, b) => (b > a ? b : a), values[0]);
+    this.emit(Op.OP_DUP, locationData);
+    this.emit(encodeInt(min), locationData);
+    this.emit(Op.OP_GREATERTHANOREQUAL, locationData);
+    this.emit(Op.OP_VERIFY, locationData);
+    this.emit(Op.OP_DUP, locationData);
+    this.emit(encodeInt(max), locationData);
+    this.emit(Op.OP_LESSTHANOREQUAL, locationData);
+    this.emit(Op.OP_VERIFY, locationData);
   }
 
   visitFunctionCall(node: FunctionCallNode): Node {

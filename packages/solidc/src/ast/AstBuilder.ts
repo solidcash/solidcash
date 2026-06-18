@@ -1192,11 +1192,11 @@ export default class AstBuilder
     return cast;
   }
 
-  visitFunctionCallExpression(ctx: FunctionCallExpressionContext): FunctionCallNode {
-    return this.visit(ctx.functionCall()) as FunctionCallNode;
+  visitFunctionCallExpression(ctx: FunctionCallExpressionContext): ExpressionNode {
+    return this.visit(ctx.functionCall()) as ExpressionNode;
   }
 
-  visitFunctionCall(ctx: FunctionCallContext): FunctionCallNode {
+  visitFunctionCall(ctx: FunctionCallContext): ExpressionNode {
     const identifiers = ctx.Identifier_list();
 
     // Named-arg struct initialization: Person({name: "Alice", age: 30}) or Person({})
@@ -1220,6 +1220,15 @@ export default class AstBuilder
     const identifier = new IdentifierNode(name);
     identifier.location = Location.fromToken(identifiers[0].symbol);
     const parameters = ctx.expressionList().expression_list().map((e) => this.visit(e));
+
+    // `Color(i)` where Color is an enum is an int -> enum cast, not a function call.
+    const enumType = identifiers.length === 1 ? this.enumMap.get(name) : undefined;
+    if (enumType && parameters.length === 1) {
+      const cast = new CastNode(enumType, parameters[0] as ExpressionNode, false);
+      cast.location = Location.fromCtx(ctx);
+      return cast;
+    }
+
     const functionCall = new FunctionCallNode(identifier, parameters);
     functionCall.location = Location.fromCtx(ctx);
     return functionCall;

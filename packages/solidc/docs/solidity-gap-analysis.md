@@ -19,11 +19,12 @@ skipped slots, named return values, integer bitwise `& | ^ ~`, bytesN ordering `
 tuple assignment to existing lvalues + swap `(x,y)=(y,x)`. **Category A is now complete.** Category B
 underway: **internal function types / function pointers** (incl. dispatch tables), **`super.f()`/
 `Base.f()` parent calls**, and **`type(C).creationCode`/`runtimeCode`** are done. The only remaining
-Category B item is meaningful `virtual` + explicit `override(A,B)` (override-safety fidelity). **Real
-C3 linearization is now implemented** - `super`/`Base` use true C3 MRO (cooperative super in
-diamonds), with `C3LinearizationError` for inconsistent hierarchies. **Category C doc reconciliations
-are done** (C3 claim, `interfaceId` width, `encodeWithSignature` selector). See per-row Status markers
-below.
+**Category B is now complete** - internal function types + dispatch tables, `super`/`Base.f()`,
+`type(C).creationCode`, real C3 linearization (cooperative super; `C3LinearizationError` for
+inconsistent hierarchies), and meaningful `virtual` + explicit `override(A, B)`. **Category C doc
+reconciliations are done** (C3 claim, `interfaceId` width, `encodeWithSignature` selector).
+Categories A, B, and C are all complete; what remains is only the Category D "intentionally
+unsupported on UTXO" items (documented below). See per-row Status markers.
 
 ## Where SolidCash already matches or exceeds Solidity
 
@@ -68,7 +69,7 @@ The remaining gaps are bounded. They are listed below.
 | **Internal function types / function pointers** DONE `74a3eb8f` `dcf6d498` `79804a8a` | High / novel | A function value is the target's integer `functionId`; an indirect call is `<functionId> OP_INVOKE`, reusing the existing per-function `OP_DEFINE`/`OP_INVOKE` dispatch. `function(T) returns (R)` type; function name in value position; callbacks/strategy dispatch/higher-order helpers; expression + statement call forms; **dispatch tables** (arrays + state mappings of function pointers, encoded as the int functionId; two-step call from a table element since the callee grammar wants an identifier). SDK encodes/decodes function-pointer values as int. Targets are internal/private/public (external stay N/A); entry-point function-type params/returns rejected (no ABI); function-pointer state in `upgrade`/`delegate` contracts rejected (positional ids would remap). Event fields of function type not yet supported. |
 | `super.f()` and qualified `Base.f()` parent calls DONE `e5273533` | Med | Overridden parent bodies are preserved under a mangled internal name during flattening; `super.f()` resolves to the next ancestor in the linearization that implements f (multi-level chains work), `Base.f()` targets a named ancestor. Preserved bodies are internal-only and pruned unless reached by a super/Base call; abstract parents are not preserved. |
 | Real C3 linearization DONE `39f3b1ed` | Med | `super`/`Base` resolution now uses true C3 MRO (Python/Solidity order): identical to depth-first for linear/tree hierarchies, but in diamonds `super` traverses the sibling branch before the shared ancestor (cooperative super). Inconsistent hierarchies raise `C3LinearizationError`. The flatten that builds the function set is unchanged - C3 governs resolution order, which is what `super` observes. |
-| Make `virtual` meaningful + explicit `override(A,B)` | Med | `virtual` is currently a no-op (everything implicitly overridable); `override` base-list form missing (`SolidCash.g4:200`). Safety + fidelity for diamonds. The last open Category B item. |
+| Make `virtual` meaningful + explicit `override(A,B)` DONE `42664f8a` | Med | `virtual` is now enforced: overriding a non-virtual function raises `NonVirtualOverrideError` (abstract functions are implicitly virtual). The `override(A, B)` base-list form parses and is validated (each base must be an ancestor that declares the function, else `OverrideBaseListError`); bare `override` unchanged. Breaking change - migrated the test contracts to mark overridden bases `virtual`. |
 | `type(C).creationCode` / `runtimeCode` DONE `667a91c8` | Med | Returns the child contract's compiled redeem script as bytes (BCH has no separate creation vs runtime code, so runtimeCode aliases creationCode). Reuses referenced-contract compilation; emitted as a bytes constant. Enables on-chain factory patterns (build a child's address/output from its bytecode + constructor args). |
 
 ## Category C - ALIGN: semantic divergences and doc fixes

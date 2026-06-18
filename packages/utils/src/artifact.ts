@@ -90,6 +90,7 @@ export interface AbiFunction {
   blockLayout?: FunctionBlockLayout;
   isFallback?: boolean;
   isReceive?: boolean;
+  externalLibraries?: readonly string[];  // names of external script libraries this function uses (e.g. 'keccak256')
 }
 
 export interface CollectionIterationAbi {
@@ -264,6 +265,17 @@ export interface StateLayout {
   structs?: readonly StructDefinitionInfo[];
 }
 
+/**
+ * An external script library the contract loads at runtime from a co-spent side-car UTXO
+ * (introspection + OP_DEFINE + OP_INVOKE). The SDK deploys the side-car once with the contract and
+ * co-spends it for any call that uses the library. See keccak-poc/INTEGRATION.md.
+ */
+export interface ExternalLibraryAbi {
+  name: string;       // library name, e.g. 'keccak256'
+  blobHash: string;   // hash256 of the library script blob; matches the integrity check in the bytecode
+  branded: boolean;   // true: side-car address salted with the contract category (per-contract); false: shared
+}
+
 export interface Artifact {
   contractName: string;
   constructorInputs: readonly AbiInput[];
@@ -278,6 +290,7 @@ export interface Artifact {
   events?: readonly EventDefinitionAbi[];
   errors?: readonly ErrorDefinitionAbi[];
   enums?: readonly EnumDefinitionAbi[];
+  externalLibraries?: readonly ExternalLibraryAbi[];  // external script libraries this contract depends on
   compiler: {
     name: string;
     version: string;

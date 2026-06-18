@@ -1,6 +1,7 @@
 import {
   AbiFunction, Artifact, CompilerOptions, DebugInformation, Script, scriptToAsm, StateLayout, ArrayType,
   computeCollectionSignature, computeFunctionSelectorHex, ExternalInterfaceInfo, MappingType, Type, ValueType,
+  ExternalLibraryAbi, KECCAK256_LIBRARY_BLOB_HASH,
 } from '@solidcash/utils';
 import { binToHex } from '@bitauth/libauth';
 import { version } from '../index.js';
@@ -96,6 +97,7 @@ function buildFunctionAbiMetadata(func: FunctionDefinitionNode): Partial<AbiFunc
       })),
     }),
     ...(func.usesMsgSender && { usesMsgSender: true }),
+    ...(func.usesKeccak256 && { externalLibraries: ['keccak256'] }),
     ...(func.unsafeTier !== undefined && { unsafeTier: func.unsafeTier }),
     ...(func.lowLevelCalls && func.lowLevelCalls.length > 0 && {
       lowLevelCalls: func.lowLevelCalls.map((lc) => ({ callMode: lc.callMode })),
@@ -349,6 +351,12 @@ export function generateArtifact(
     }).filter((x): x is ExternalInterfaceInfo => x !== undefined)
     : undefined;
 
+  // External script libraries (side-car) the contract depends on. Branded (category-salted side-car)
+  // for stateful contracts; shared otherwise. See keccak-poc/INTEGRATION.md.
+  const externalLibraries: ExternalLibraryAbi[] | undefined = contract.functions.some((f) => f.usesKeccak256)
+    ? [{ name: 'keccak256', blobHash: KECCAK256_LIBRARY_BLOB_HASH, branded: stateLayout !== undefined }]
+    : undefined;
+
   return {
     contractName: contract.name,
     constructorInputs,
@@ -363,6 +371,7 @@ export function generateArtifact(
     ...(events && { events }),
     ...(errors && { errors }),
     ...(enums && { enums }),
+    ...(externalLibraries && { externalLibraries }),
     compiler: {
       name: 'solidc',
       version,

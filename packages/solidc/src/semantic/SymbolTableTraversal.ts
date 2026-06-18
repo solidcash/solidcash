@@ -1,4 +1,4 @@
-import { GLOBAL_SYMBOL_TABLE, Modifier } from '../ast/Globals.js';
+import { GLOBAL_SYMBOL_TABLE, GlobalFunction, Modifier } from '../ast/Globals.js';
 import {
   ContractNode,
   ParameterNode,
@@ -915,6 +915,11 @@ export default class SymbolTableTraversal extends AstTraversal {
         if (sym) sym.references.push({ name: '__internal__msgSenderCategory' } as IdentifierNode);
         this.pushToStack(categoryParam);
       }
+    }
+
+    // keccak256 pre-scan: flag functions that use it so codegen loads the side-car library (no param injection)
+    if (this.collectKeccak256Usage(node.body)) {
+      node.usesKeccak256 = true;
     }
 
     // Entry slot pre-scan: collect unique (collection, keyParam) pairs and assign slot indices
@@ -1994,6 +1999,26 @@ export default class SymbolTableTraversal extends AstTraversal {
       } else if (Array.isArray(value)) {
         for (const item of value) {
           if (item instanceof Node && this.collectMsgSenderUsage(item, visited)) return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  private collectKeccak256Usage(node: Node, visited: Set<Node> = new Set()): boolean {
+    if (visited.has(node)) return false;
+    visited.add(node);
+
+    if (node instanceof FunctionCallNode && node.identifier.name === GlobalFunction.KECCAK256) {
+      return true;
+    }
+
+    for (const value of Object.values(node)) {
+      if (value instanceof Node) {
+        if (this.collectKeccak256Usage(value, visited)) return true;
+      } else if (Array.isArray(value)) {
+        for (const item of value) {
+          if (item instanceof Node && this.collectKeccak256Usage(item, visited)) return true;
         }
       }
     }

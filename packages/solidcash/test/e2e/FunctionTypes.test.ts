@@ -47,6 +47,14 @@ contract FnPtr() {
         op(v);
         require(double(v) == expected);
     }
+
+    // Dispatch table: an array of function pointers indexed at runtime (callee grammar requires a
+    // two-step: read the element into a local, then call it).
+    function dispatch(int i, int v, int expected) {
+        function(int) returns (int)[] handlers = [double, triple];
+        function(int) returns (int) h = handlers[i];
+        require(h(v) == expected);
+    }
 }
 `;
 
@@ -82,6 +90,14 @@ describe('internal function types', () => {
 
   it('discards the result of a statement-form indirect call without corrupting the stack', async () => {
     await expect(spend('viaStatement', [21n, 42n])).resolves.toBeDefined();
+  });
+
+  it('dispatches through an array of function pointers (index 0)', async () => {
+    await expect(spend('dispatch', [0n, 21n, 42n])).resolves.toBeDefined();
+  });
+
+  it('dispatches through an array of function pointers (index 1)', async () => {
+    await expect(spend('dispatch', [1n, 21n, 63n])).resolves.toBeDefined();
   });
 
   it('rejects when the pointer yields the wrong result', async () => {

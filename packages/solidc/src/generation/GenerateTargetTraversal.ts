@@ -6341,6 +6341,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * After execution: pops 1 value, pushes 1 encoded bytes value.
    */
   private emitPushdataEncode(type: Type, locationData: SingleLocationData): void {
+    // A function pointer is its integer functionId on the wire: encode/decode it as an int.
+    if (type instanceof FunctionType) type = PrimitiveType.INT;
     // StructType: the value is already an encoded blob from construction - no-op
     if (type instanceof StructType) {
       return;
@@ -6562,6 +6564,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * Stack after: [decoded_value] [remainder]
    */
   private emitPushdataDecode(type: Type, locationData: SingleLocationData): void {
+    // A function pointer is its integer functionId on the wire: encode/decode it as an int.
+    if (type instanceof FunctionType) type = PrimitiveType.INT;
     // StructType: extract struct bytes from blob, leaving remainder
     // Stack: [blob] -> [struct_bytes, remainder]
     if (type instanceof StructType) {

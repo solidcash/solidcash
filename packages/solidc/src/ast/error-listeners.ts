@@ -87,36 +87,11 @@ function normaliseSyntaxErrorMessage(
   const noViableAlternativeInput = getNoViableAlternativeInput(message);
   const extraneousInput = isExtraneousInput(message, tokenText);
 
-  if (isBoundedBytesExpressionError(message, tokenText, noViableAlternativeInput)) {
-    return boundedBytesCastMessage(tokenText);
-  }
-
   if (noViableAlternativeInput !== undefined || extraneousInput) {
     return `Unexpected token '${tokenText}'`;
   }
 
   return message;
-}
-
-function isBoundedBytesExpressionError(
-  message: string,
-  tokenText: string,
-  noViableAlternativeInput: string | undefined,
-): boolean {
-  if (!isBoundedBytesToken(tokenText)) return false;
-
-  return noViableAlternativeInput?.includes(`(${tokenText}`) || isExtraneousInput(message, tokenText);
-}
-
-function isBoundedBytesToken(tokenText: string): boolean {
-  return tokenText === 'byte' || /^bytes[1-9][0-9]*$/.test(tokenText);
-}
-
-function boundedBytesCastMessage(typeName: string): string {
-  const bound = typeName === 'byte' ? 1 : Number(typeName.slice('bytes'.length));
-  const unsafeCast = typeName === 'byte' ? 'unsafe_byte' : `unsafe_${typeName}`;
-
-  return `Invalid bounded bytes cast '${typeName}(...)'. Use 'toPaddedBytes(value, ${bound})' to convert an int or '${unsafeCast}(value)' for semantic bytes casts`;
 }
 
 function getNoViableAlternativeInput(message: string): string | undefined {

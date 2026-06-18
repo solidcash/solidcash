@@ -185,7 +185,7 @@ describe('Diamond Inheritance - SDK e2e', () => {
       const files: Record<string, string> = {
         '/lib/a.scash': `
           contract A() {
-            function shared(int x) {
+            function shared(int x) virtual {
               require(x > 0);
             }
           }
@@ -318,7 +318,7 @@ describe('Diamond Inheritance - SDK e2e', () => {
       const files: Record<string, string> = {
         '/lib/a.scash': `
           contract A() {
-            function shared(int x) {
+            function shared(int x) virtual {
               require(x > 0);
             }
           }

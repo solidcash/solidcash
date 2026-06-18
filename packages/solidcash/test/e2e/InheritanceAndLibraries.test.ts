@@ -98,7 +98,7 @@ describe('Inheritance, Libraries, and Interfaces - SDK e2e', () => {
       const files: Record<string, string> = {
         '/lib/parent.scash': `
           contract Parent() {
-            function check(int x) {
+            function check(int x) virtual {
               require(x > 0);
             }
           }
@@ -126,7 +126,7 @@ describe('Inheritance, Libraries, and Interfaces - SDK e2e', () => {
       const files: Record<string, string> = {
         '/lib/parent.scash': `
           contract Parent() {
-            function check(int x) {
+            function check(int x) virtual {
               require(x > 0);
             }
           }
@@ -153,7 +153,7 @@ describe('Inheritance, Libraries, and Interfaces - SDK e2e', () => {
       const files: Record<string, string> = {
         '/lib/parent.scash': `
           contract Parent() {
-            function check(int x) {
+            function check(int x) virtual {
               require(x > 0);
             }
           }
@@ -180,7 +180,7 @@ describe('Inheritance, Libraries, and Interfaces - SDK e2e', () => {
       const files: Record<string, string> = {
         '/lib/parent.scash': `
           contract Parent() {
-            function check(int x) {
+            function check(int x) virtual {
               require(x > 0);
             }
           }
@@ -207,7 +207,7 @@ describe('Inheritance, Libraries, and Interfaces - SDK e2e', () => {
       const files: Record<string, string> = {
         '/lib/parent.scash': `
           contract Parent() {
-            function check(int x) {
+            function check(int x) virtual {
               require(x > 100);
             }
           }
@@ -236,7 +236,7 @@ describe('Inheritance, Libraries, and Interfaces - SDK e2e', () => {
       const files: Record<string, string> = {
         '/lib/parent.scash': `
           contract Parent() {
-            function check(int x) {
+            function check(int x) virtual {
               require(x > 100);
             }
           }
@@ -1513,7 +1513,7 @@ describe('Inheritance, Libraries, and Interfaces - SDK e2e', () => {
       const files: Record<string, string> = {
         '/lib/grandparent.scash': `
           contract GrandParent() {
-            function check(int x) {
+            function check(int x) virtual {
               require(x > 100);
             }
           }

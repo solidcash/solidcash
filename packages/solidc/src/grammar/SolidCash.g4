@@ -135,7 +135,7 @@ fallbackDefinition
     ;
 
 fallbackModifier
-    : 'payable' | 'virtual' | 'override'
+    : 'payable' | 'virtual' | overrideSpecifier
     ;
 
 receiveDefinition
@@ -197,7 +197,11 @@ customModifierInvocation
     ;
 
 functionModifier
-    : 'pure' | 'view' | 'internal' | 'external' | 'public' | 'private' | 'payable' | 'override' | 'virtual' | unsafeModifier | 'upgrade' | 'deploy' | 'selfdestruct' | 'delegate'
+    : 'pure' | 'view' | 'internal' | 'external' | 'public' | 'private' | 'payable' | overrideSpecifier | 'virtual' | unsafeModifier | 'upgrade' | 'deploy' | 'selfdestruct' | 'delegate'
+    ;
+
+overrideSpecifier
+    : 'override' ('(' Identifier (',' Identifier)* ')')?
     ;
 
 unsafeModifier

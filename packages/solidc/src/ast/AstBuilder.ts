@@ -611,7 +611,9 @@ export default class AstBuilder
     const modifiers: FunctionModifier[] = [FunctionModifier.EXTERNAL];
     const fallbackModCtxs = ctx.fallbackModifier_list();
     if (fallbackModCtxs && fallbackModCtxs.length > 0) {
-      modifiers.push(...fallbackModCtxs.map((m) => m.getText() as FunctionModifier));
+      modifiers.push(...fallbackModCtxs.map(
+        (m) => (m.overrideSpecifier() ? FunctionModifier.OVERRIDE : m.getText() as FunctionModifier),
+      ));
     }
     node.modifiers = modifiers;
 
@@ -776,6 +778,12 @@ export default class AstBuilder
         functionDefinition.modifiers.push(FunctionModifier.UNSAFE);
         const tierToken = unsafeCtx.NumberLiteral();
         functionDefinition.unsafeTier = tierToken ? parseInt(tierToken.getText(), 10) : 0;
+        continue;
+      }
+      const overrideCtx = m.overrideSpecifier();
+      if (overrideCtx) {
+        functionDefinition.modifiers.push(FunctionModifier.OVERRIDE);
+        functionDefinition.overrideBases = overrideCtx.Identifier_list().map((id) => id.getText());
         continue;
       }
       functionDefinition.modifiers.push(m.getText() as FunctionModifier);

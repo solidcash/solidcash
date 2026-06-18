@@ -52,6 +52,7 @@ import { PlaceholderStatementContext } from "./SolidCashParser.js";
 import { FunctionDefinitionContext } from "./SolidCashParser.js";
 import { CustomModifierInvocationContext } from "./SolidCashParser.js";
 import { FunctionModifierContext } from "./SolidCashParser.js";
+import { OverrideSpecifierContext } from "./SolidCashParser.js";
 import { UnsafeModifierContext } from "./SolidCashParser.js";
 import { ReturnTypeContext } from "./SolidCashParser.js";
 import { ReturnParamContext } from "./SolidCashParser.js";
@@ -466,6 +467,12 @@ export default class SolidCashVisitor<Result> extends ParseTreeVisitor<Result> {
 	 * @return the visitor result
 	 */
 	visitFunctionModifier?: (ctx: FunctionModifierContext) => Result;
+	/**
+	 * Visit a parse tree produced by `SolidCashParser.overrideSpecifier`.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	visitOverrideSpecifier?: (ctx: OverrideSpecifierContext) => Result;
 	/**
 	 * Visit a parse tree produced by `SolidCashParser.unsafeModifier`.
 	 * @param ctx the parse tree

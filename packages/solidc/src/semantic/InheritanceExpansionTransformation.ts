@@ -64,6 +64,8 @@ import {
 import {
   CircularContractInheritanceError,
   C3LinearizationError,
+  NonVirtualOverrideError,
+  OverrideBaseListError,
   DiamondInheritanceError,
   InheritanceNameCollisionError,
   MissingOverrideError,
@@ -317,6 +319,10 @@ function mergeFunctions(
       // overridden parent body under a mangled internal name so super.f()/Base.f() can still call it.
       if (!existingFunc.inheritedFrom
           && existingFunc.modifiers.includes(FunctionModifier.OVERRIDE)) {
+        // Meaningful virtual: a parent function must be virtual (or abstract) to be overridable.
+        if (!parentFunc.isAbstract && !parentFunc.modifiers.includes(FunctionModifier.VIRTUAL)) {
+          throw new NonVirtualOverrideError(existingFunc, parentFunc.name, parentFunc.inheritedFrom ?? parent.name);
+        }
         preserveOverriddenFunction(child, parentFunc, parent, subs);
         continue;
       }
@@ -390,6 +396,15 @@ function resolveSuperAndBaseCalls(contract: ContractNode, linearization: string[
   const ancestors = new Set(linearization);
   const indexOf = new Map(linearization.map((name, i) => [name, i]));
   const references = new Map<string, Set<string>>(); // function name -> preserved impls it calls
+
+  // Validate explicit `override(A, B)` base lists: each named base must be an ancestor that declares it.
+  for (const fn of contract.functions) {
+    for (const base of fn.overrideBases) {
+      if (!ancestors.has(base) || !superImplFor(contract, base, fn.name)) {
+        throw new OverrideBaseListError(fn, fn.name, base);
+      }
+    }
+  }
 
   for (const fn of contract.functions) {
     const definingContract = fn.definingContract ?? fn.inheritedFrom ?? contract.name;

@@ -31,17 +31,17 @@ function resolverFor(files: Record<string, string>) {
 const FILES = {
   '/lib/a.scash': `
     contract A {
-      function f(int x) internal returns (int) { return x + 1; }
+      function f(int x) internal virtual returns (int) { return x + 1; }
     }`,
   '/lib/b.scash': `
     import "./a.scash";
     contract B is A {
-      function f(int x) internal override returns (int) { return super.f(x) + 10; }
+      function f(int x) internal virtual override returns (int) { return super.f(x) + 10; }
     }`,
   '/lib/c.scash': `
     import "./a.scash";
     contract C is A {
-      function f(int x) internal override returns (int) { return super.f(x) + 100; }
+      function f(int x) internal virtual override returns (int) { return super.f(x) + 100; }
     }`,
 };
 

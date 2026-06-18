@@ -202,6 +202,8 @@ export class FunctionDefinitionNode extends Node implements Named {
   // The contract that defined this function body, set during inheritance flattening. Used to resolve
   // `super.f()` relative to the right point in the linearization.
   definingContract?: string;
+  // Base contracts named in an explicit `override(A, B)` specifier (empty for a bare `override`).
+  overrideBases: string[] = [];
   usesMsgSender?: boolean;
   unsafeTier?: number;          // 0, 1, or 2 (only set when UNSAFE modifier present)
   splitCountParam?: string;     // parameter name for split count

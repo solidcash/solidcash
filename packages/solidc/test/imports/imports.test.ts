@@ -1004,7 +1004,7 @@ describe('Imports', () => {
       const files: Record<string, string> = {
         '/lib/a.scash': `
           contract A() {
-            function shared(int x) {
+            function shared(int x) virtual {
               require(x > 0);
             }
           }
@@ -1031,7 +1031,7 @@ describe('Imports', () => {
         import "./lib/b.scash";
         import "./lib/c.scash";
         contract D() is B, C {
-          function shared(int x) override {
+          function shared(int x) virtual override {
             require(x > 1);
           }
         }
@@ -1151,7 +1151,7 @@ describe('Imports', () => {
       const files: Record<string, string> = {
         '/lib/a.scash': `
           contract A() {
-            function shared(int x) {
+            function shared(int x) virtual {
               require(x > 0);
             }
           }
@@ -1159,7 +1159,7 @@ describe('Imports', () => {
         '/lib/b.scash': `
           import "./a.scash";
           contract B() is A {
-            function shared(int x) override {
+            function shared(int x) virtual override {
               require(x > 1);
             }
           }
@@ -3078,7 +3078,7 @@ describe('Imports', () => {
       const files: Record<string, string> = {
         '/lib/a.scash': `
           contract A() {
-            function shared(int x) {
+            function shared(int x) virtual {
               require(x > 0);
             }
           }
@@ -3086,7 +3086,7 @@ describe('Imports', () => {
         '/lib/b.scash': `
           import "./a.scash";
           contract B() is A {
-            function shared(int x) override {
+            function shared(int x) virtual override {
               require(x > 1);
             }
           }
@@ -3094,7 +3094,7 @@ describe('Imports', () => {
         '/lib/c.scash': `
           import "./a.scash";
           contract C() is A {
-            function shared(int x) override {
+            function shared(int x) virtual override {
               require(x > 2);
             }
           }
@@ -3123,7 +3123,7 @@ describe('Imports', () => {
       const files: Record<string, string> = {
         '/lib/a.scash': `
           contract A() {
-            function shared(int x) {
+            function shared(int x) virtual {
               require(x > 0);
             }
           }
@@ -3131,7 +3131,7 @@ describe('Imports', () => {
         '/lib/b.scash': `
           import "./a.scash";
           contract B() is A {
-            function shared(int x) override {
+            function shared(int x) virtual override {
               require(x > 1);
             }
           }
@@ -3139,7 +3139,7 @@ describe('Imports', () => {
         '/lib/c.scash': `
           import "./a.scash";
           contract C() is A {
-            function shared(int x) override {
+            function shared(int x) virtual override {
               require(x > 2);
             }
           }
@@ -3150,7 +3150,7 @@ describe('Imports', () => {
         import "./lib/b.scash";
         import "./lib/c.scash";
         contract D() is B, C {
-          function shared(int x) override {
+          function shared(int x) virtual override {
             require(x > 3);
           }
         }
@@ -3261,7 +3261,7 @@ describe('Imports', () => {
       const files: Record<string, string> = {
         '/lib/a.scash': `
           contract A() {
-            function shared(int x) {
+            function shared(int x) virtual {
               require(x > 0);
             }
           }
@@ -3269,7 +3269,7 @@ describe('Imports', () => {
         '/lib/b.scash': `
           import "./a.scash";
           contract B() is A {
-            function shared(int x) override {
+            function shared(int x) virtual override {
               require(x > 1);
             }
           }
@@ -3290,7 +3290,7 @@ describe('Imports', () => {
         import "./lib/b.scash";
         import "./lib/c.scash";
         contract D() is B, C {
-          function shared(int x) override {
+          function shared(int x) virtual override {
             require(x > 2);
           }
           function dFunc(int w) {

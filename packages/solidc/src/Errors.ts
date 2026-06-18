@@ -837,6 +837,18 @@ export class C3LinearizationError extends SolidCashError {
   }
 }
 
+export class NonVirtualOverrideError extends SolidCashError {
+  constructor(node: Node, functionName: string, parentName: string) {
+    super(node, `Cannot override '${functionName}': '${parentName}' did not mark it 'virtual'`);
+  }
+}
+
+export class OverrideBaseListError extends SolidCashError {
+  constructor(node: Node, functionName: string, baseName: string) {
+    super(node, `override(${baseName}) on '${functionName}': '${baseName}' is not a base contract that declares it`);
+  }
+}
+
 export class InheritanceNameCollisionError extends SolidCashError {
   constructor(public node: ContractNode, kind: string, name: string, parentName: string) {
     super(node, `${kind} '${name}' is already defined in parent contract '${parentName}'`);

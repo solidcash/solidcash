@@ -63,6 +63,7 @@ import {
 } from '../ast/AST.js';
 import {
   CircularContractInheritanceError,
+  C3LinearizationError,
   DiamondInheritanceError,
   InheritanceNameCollisionError,
   MissingOverrideError,
@@ -123,21 +124,46 @@ export default function expandInheritance(ast: SourceFileNode): SourceFileNode {
   return ast;
 }
 
-// Depth-first, left-to-right ancestor order (most-derived first), deduped - matching the flatten.
+// C3 linearization (the same MRO Python/Solidity use): most-derived first, each class before its
+// parents, left-to-right parent priority, and monotonic across the hierarchy. For linear/tree
+// hierarchies this equals the depth-first order; it only differs for diamonds, where `super` must
+// visit a sibling branch before the shared ancestor. Throws if the hierarchy is not C3-consistent.
 function computeLinearization(contract: ContractNode, contractMap: Map<string, ContractNode>): string[] {
-  const order: string[] = [];
-  const seen = new Set<string>();
-  const visit = (name: string, implementsList: string[]): void => {
-    if (seen.has(name)) return;
-    seen.add(name);
-    order.push(name);
-    for (const parent of implementsList) {
-      const pc = contractMap.get(parent);
-      if (pc) visit(parent, pc.implements);
-    }
+  const parentsOf = (name: string): string[] => {
+    const implementsList = name === contract.name ? contract.implements : (contractMap.get(name)?.implements ?? []);
+    return implementsList.filter((n) => contractMap.has(n));
   };
-  visit(contract.name, contract.implements);
-  return order;
+
+  const linearize = (name: string): string[] => {
+    const parents = parentsOf(name);
+    if (parents.length === 0) return [name];
+    const sequences = [...parents.map((p) => linearize(p)), [...parents]];
+    return [name, ...c3Merge(sequences, contract)];
+  };
+
+  return linearize(contract.name);
+}
+
+// Merge step of C3: repeatedly take the head of some sequence that appears in no sequence's tail.
+function c3Merge(sequences: string[][], contract: ContractNode): string[] {
+  const result: string[] = [];
+  let lists = sequences.map((s) => [...s]).filter((s) => s.length > 0);
+  while (lists.length > 0) {
+    let head: string | undefined;
+    for (const list of lists) {
+      const candidate = list[0];
+      if (!lists.some((other) => other.slice(1).includes(candidate))) {
+        head = candidate;
+        break;
+      }
+    }
+    if (head === undefined) {
+      throw new C3LinearizationError(contract);
+    }
+    result.push(head);
+    lists = lists.map((list) => (list[0] === head ? list.slice(1) : list)).filter((s) => s.length > 0);
+  }
+  return result;
 }
 
 /**

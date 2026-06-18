@@ -831,6 +831,12 @@ export class CircularContractInheritanceError extends SolidCashError {
   }
 }
 
+export class C3LinearizationError extends SolidCashError {
+  constructor(public node: ContractNode) {
+    super(node, `Inconsistent inheritance hierarchy for contract '${node.name}': cannot compute a C3 linearization`);
+  }
+}
+
 export class InheritanceNameCollisionError extends SolidCashError {
   constructor(public node: ContractNode, kind: string, name: string, parentName: string) {
     super(node, `${kind} '${name}' is already defined in parent contract '${parentName}'`);

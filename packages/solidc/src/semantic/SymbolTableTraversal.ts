@@ -4701,9 +4701,11 @@ export default class SymbolTableTraversal extends AstTraversal {
       return node;
     }
 
-    // Try resolving as an interface
+    // An imported contract is also registered as a synthesized interface, so disambiguate by property:
+    // interfaceId -> the interface; name/creationCode/runtimeCode -> the contract.
     const iface = this.interfaceMap.get(typeText);
-    if (iface) {
+    const contract = this.contractMap.get(typeText);
+    if (iface && (node.property === 'interfaceId' || !contract)) {
       node.interfaceNode = iface;
       if (node.property !== 'interfaceId') {
         throw new InvalidTypeIntrospectionPropertyError(node, typeText, node.property, ['interfaceId']);
@@ -4724,11 +4726,14 @@ export default class SymbolTableTraversal extends AstTraversal {
     }
 
     // Try resolving as a contract
-    const contract = this.contractMap.get(typeText);
     if (contract) {
       node.contractName = contract.name;
-      if (node.property !== 'name') {
-        throw new InvalidTypeIntrospectionPropertyError(node, typeText, node.property, ['name']);
+      // creationCode/runtimeCode return the child's compiled redeem script (BCH has no separate
+      // creation vs runtime code); collected for compilation and emitted as bytes by codegen.
+      if (node.property !== 'name' && node.property !== 'creationCode' && node.property !== 'runtimeCode') {
+        throw new InvalidTypeIntrospectionPropertyError(
+          node, typeText, node.property, ['name', 'creationCode', 'runtimeCode'],
+        );
       }
       return node;
     }

@@ -727,6 +727,8 @@ export default class TypeCheckTraversal extends AstTraversal {
       node.type = new BytesType(4);
     } else if (node.property === 'name') {
       node.type = PrimitiveType.STRING;
+    } else if (node.property === 'creationCode' || node.property === 'runtimeCode') {
+      node.type = new BytesType();
     }
     return node;
   }

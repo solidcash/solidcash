@@ -5937,6 +5937,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(node.precomputedBytes!, locationData);
     } else if (node.property === 'name') {
       this.emit(encodeString(node.contractName!), locationData);
+    } else if (node.property === 'creationCode' || node.property === 'runtimeCode') {
+      // The child's compiled redeem script (BCH has no separate creation vs runtime code).
+      const bytecode = this.compiledBytecodes.get(node.contractName!);
+      if (!bytecode) {
+        throw new Error(`Compiled bytecode for contract '${node.contractName}' not available`);
+      }
+      this.emit(bytecode, locationData);
     }
 
     this.pushToStack('(value)');

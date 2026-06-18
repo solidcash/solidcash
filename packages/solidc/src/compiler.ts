@@ -2,7 +2,9 @@ import { CharStream, CommonTokenStream } from 'antlr4';
 import { binToHex } from '@bitauth/libauth';
 import { Artifact, CompilerOptions, computeBytecodeFingerprintWithConstructorArgs, generateSourceMap, optimiseBytecode, optimiseBytecodeOld, scriptToAsm, scriptToBytecode, sourceMapToLocationData } from '@solidcash/utils';
 import { generateArtifact } from './artifact/Artifact.js';
-import { Ast, ContractNode, ContractReferenceNode, InstantiationNode, SourceFileNode } from './ast/AST.js';
+import {
+  Ast, ContractNode, ContractReferenceNode, InstantiationNode, SourceFileNode, TypeIntrospectionNode,
+} from './ast/AST.js';
 import AstBuilder from './ast/AstBuilder.js';
 import { ThrowingErrorListener, SolidCashErrorListener, ForwardingErrorListener } from './ast/error-listeners.js';
 import GenerateTargetTraversal from './generation/GenerateTargetTraversal.js';
@@ -228,6 +230,13 @@ function collectRefsRecursive(node: any, refs: Set<string>, visited: WeakSet<obj
     }
     if (node.callOptions?.value) collectRefsRecursive(node.callOptions.value, refs, visited);
     if (node.callOptions?.salt) collectRefsRecursive(node.callOptions.salt, refs, visited);
+    return;
+  }
+
+  // type(Child).creationCode / runtimeCode embeds the child's compiled bytecode.
+  if (node instanceof TypeIntrospectionNode && node.contractName
+    && (node.property === 'creationCode' || node.property === 'runtimeCode')) {
+    refs.add(node.contractName);
     return;
   }
 

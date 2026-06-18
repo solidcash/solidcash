@@ -16,8 +16,10 @@ Implemented so far (branch `solidcash_v0.13.1`), each with a VM-level e2e test: 
 `x[a:b]` slice, `bytesN[k]` index, `require(cond, Error())`, enum<->int casts + enum-typed params
 with full SDK encode/decode, `addmod`/`mulmod`, named call args `f({a:1})`, tuple destructuring with
 skipped slots, named return values, integer bitwise `& | ^ ~`, bytesN ordering `< <= > >=`, and
-tuple assignment to existing lvalues + swap `(x,y)=(y,x)`. **Category A is now complete.** Next is
-Category B (internal function types et al.). See per-row Status markers below.
+tuple assignment to existing lvalues + swap `(x,y)=(y,x)`. **Category A is now complete.** Category B
+underway: **internal function types / function pointers** are done (`function(T) returns (R)`,
+indirect calls via `OP_INVOKE`). Remaining Category B: `super`/`Base.f()`, real C3,
+`type(C).creationCode`. See per-row Status markers below.
 
 ## Where SolidCash already matches or exceeds Solidity
 
@@ -59,7 +61,7 @@ The remaining gaps are bounded. They are listed below.
 
 | Gap | Value | Notes |
 |-----|-------|-------|
-| **Internal function types / function pointers** `function(...) returns(...)` | High / novel | Newly feasible on BCH-2026: the compiler already mints per-function `functionId`s and calls via `OP_INVOKE`. A function value is that id on the stack; an indirect call is `OP_INVOKE <id>`. Unlocks callbacks, strategy dispatch, higher-order helpers, table-driven dispatch. **Internal only** - external function types (address+selector) stay N/A. |
+| **Internal function types / function pointers** DONE `74a3eb8f` | High / novel | A function value is the target's integer `functionId`; an indirect call is `<functionId> OP_INVOKE`, reusing the existing per-function `OP_DEFINE`/`OP_INVOKE` dispatch. `function(T) returns (R)` type; function name in value position; callbacks/strategy dispatch/higher-order helpers; expression + statement call forms. Targets are internal/private/public (external stay N/A); entry-point function-type params/returns rejected (no ABI encoding); struct/array/mapping/state/event fields of function type are a future increment. |
 | `super.f()` and qualified `Base.f()` parent calls | Med | Inheritance is flattened at compile time; today only constructor-arg forwarding exists. Needed for mixin/template (OZ-style) porting. |
 | Real C3 linearization | Med | Current impl is depth-first left-to-right flatten with diamond-collision rejection, **not** C3 MRO (`InheritanceExpansionTransformation.ts:160-275`). Either implement C3 or correct the docs (see ALIGN). |
 | Make `virtual` meaningful + explicit `override(A,B)` | Med | `virtual` is currently a no-op (everything implicitly overridable); `override` base-list form missing (`SolidCash.g4:200`). Safety + fidelity for diamonds. |

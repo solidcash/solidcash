@@ -47,6 +47,7 @@ export class Contract<
   provider: NetworkProvider;
   addressType: AddressType;
   isStateful: boolean;
+  usesExternalLibraries: boolean;
   salt?: Uint8Array;
 
   encodedConstructorArgs: Uint8Array[];
@@ -175,6 +176,13 @@ export class Contract<
       asmToScript(this.artifact.bytecode), this.encodedConstructorArgs,
     );
 
+    // Contracts using an external library (e.g. keccak256) are spent with a budget pad pushed on top
+    // of the unlocking; the redeem drops it before any logic runs (see budgetPad / co-spend wiring).
+    this.usesExternalLibraries = !!artifact.externalLibraries?.length;
+    if (this.usesExternalLibraries) {
+      contractBytecodeScript = [Op.OP_DROP, ...contractBytecodeScript];
+    }
+
     if (this.salt && this.salt.length > 0) {
       contractBytecodeScript = [this.salt, Op.OP_DROP, ...contractBytecodeScript];
     }
@@ -248,7 +256,13 @@ export class Contract<
           return arg.generateSignature(sighash);
         });
 
-        const unlockingBytecode = createUnlockingBytecode(this.addressType, hexToBin(this.bytecode), completeArgs, selector);
+        // External-library contracts get a budget pad pushed on top (dropped by the redeem's OP_DROP),
+        // sizing the per-input op budget to the keccak computation.
+        const finalArgs = this.usesExternalLibraries
+          ? [this.budgetPad(abiFunction, args), ...completeArgs]
+          : completeArgs;
+
+        const unlockingBytecode = createUnlockingBytecode(this.addressType, hexToBin(this.bytecode), finalArgs, selector);
         return unlockingBytecode;
       };
 
@@ -256,6 +270,20 @@ export class Contract<
 
       return { generateUnlockingBytecode, generateLockingBytecode, contract: this, params: args, abiFunction };
     };
+  }
+
+  // Size the budget pad for a call. keccak256 functions need the per-input op budget raised
+  // (~800 op/unlocking byte; ~2.25M op per 136-byte block); ~2900 unlocking bytes cover one block.
+  // Non-keccak functions of a keccak-using contract still need a 1-byte pad to satisfy the redeem OP_DROP.
+  private budgetPad(abiFunction: AbiFunction, args: FunctionArgument[]): Uint8Array {
+    if (!abiFunction.externalLibraries?.includes('keccak256')) return new Uint8Array(1);
+    const inputBytes = args.reduce((max: number, arg, i) => {
+      const type = abiFunction.inputs[i]?.type ?? '';
+      return (arg instanceof Uint8Array && (type === 'bytes' || type.startsWith('bytes')))
+        ? Math.max(max, arg.length) : max;
+    }, 0);
+    const blocks = Math.min(3, Math.max(1, Math.floor(inputBytes / 136) + 1));
+    return new Uint8Array(blocks * 2900);
   }
 }
 

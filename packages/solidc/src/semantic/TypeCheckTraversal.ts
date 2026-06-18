@@ -1425,6 +1425,12 @@ export default class TypeCheckTraversal extends AstTraversal {
       case BinaryOperator.LE:
       case BinaryOperator.GT:
       case BinaryOperator.GE:
+        // bytesN ordering: equal-width fixed bytes compare as unsigned big-endian (Solidity semantics).
+        if (node.left.type instanceof BytesType && node.right.type instanceof BytesType
+            && node.left.type.bound !== undefined && node.left.type.bound === node.right.type.bound) {
+          node.type = PrimitiveType.BOOL;
+          return node;
+        }
         expectNumeric(node, resType);
         node.type = PrimitiveType.BOOL;
         return node;

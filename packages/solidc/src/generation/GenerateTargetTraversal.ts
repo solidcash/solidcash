@@ -3705,6 +3705,28 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     return node;
   }
 
+  // Big-endian fixed-bytes blob on stack -> unsigned number. Reverse to little-endian, sign-pad with
+  // 0x00 so the high bit is not read as a sign, BIN2NUM. Stack: one value -> one value.
+  private emitBytesToBigEndianNum(loc: SingleLocationData): void {
+    this.emit(Op.OP_REVERSEBYTES, loc);
+    this.emit(new Uint8Array([0x00]), loc);
+    this.emit(Op.OP_CAT, loc);
+    this.emit(Op.OP_BIN2NUM, loc);
+  }
+
+  // bytesN ordering < <= > >= : compare both operands as unsigned big-endian numbers.
+  private emitBytesCompare(node: BinaryOpNode): Node {
+    const loc = { location: node.location, positionHint: PositionHint.END };
+    node.left = this.visit(node.left);
+    this.emitBytesToBigEndianNum(loc);
+    node.right = this.visit(node.right);
+    this.emitBytesToBigEndianNum(loc);
+    this.emit(compileBinaryOp(node.operator, true), loc);
+    this.popFromStack(2);
+    this.pushToStack('(value)');
+    return node;
+  }
+
   visitBinaryOp(node: BinaryOpNode): Node {
     // Short-circuit && / || (Solidity semantics): the right operand is only evaluated when needed.
     if (node.operator === BinaryOperator.AND || node.operator === BinaryOperator.OR) {
@@ -3714,6 +3736,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if ((node.operator === BinaryOperator.BIT_AND || node.operator === BinaryOperator.BIT_OR
       || node.operator === BinaryOperator.BIT_XOR) && node.type instanceof IntType) {
       return this.emitIntBitwise(node);
+    }
+    // bytesN ordering: compare equal-width fixed bytes as unsigned big-endian numbers.
+    if ((node.operator === BinaryOperator.LT || node.operator === BinaryOperator.LE
+      || node.operator === BinaryOperator.GT || node.operator === BinaryOperator.GE)
+      && node.left.type instanceof BytesType) {
+      return this.emitBytesCompare(node);
     }
     node.left = this.visit(node.left);
     const bothOperandsAreNumeric = isNumericType(node.left.type) && isNumericType(node.right.type);

@@ -28,8 +28,11 @@ compiler**. The script is generated directly in JS and its output matches Ethere
 - `keccak.mjs`   - JS keccak-f oracle (validated against the `keccak` lib).
 - `vm.mjs`       - libauth BCH-2026 VM harness.
 - `gen25.mjs`    - **optimized** generator (25 separate lane items); used by the shipped artifact.
+- `genvar.mjs`   - **variable-length** generator (arbitrary input, multi-block; 25-lane state + a
+  runtime absorb loop with full Ethereum padding).
 - `gen.mjs`      - original/reference generator (200-byte blob state).
 - `test-perm25.mjs` / `test-msg25.mjs` - validate + measure the optimized permutation / full hash.
+- `test-var.mjs` - validate variable-length keccak256 vs EVM across lengths (pad edges + multi-block).
 - `test-round.mjs` / `test-perm.mjs` / `test-empty.mjs` / `test-msg.mjs` - blob-version validation.
 - `build-artifact.mjs` - emits `Keccak256.artifact.json` (a hand-authored SolidCash artifact).
 - `spend.mjs`    - standalone contract spend verifying script output == EVM keccak256.
@@ -71,9 +74,24 @@ add real complexity; the practical floor on a stack VM is ~1.2M.
 **Bytecode size** is a non-issue (1.8 KB << 10 KB limit). A loop (OP_BEGIN/OP_UNTIL + an RC table)
 would shave the 24 invoke/iota sequences but not the op cost, so it isn't worth the RC-indexing cost.
 
+## Variable-length (genvar.mjs)
+
+`genKeccak256var` hashes an **arbitrary-length** message: it pads in script (Ethereum `0x01..0x80`,
+to a multiple of the 136-byte rate) and absorbs block-by-block in an `OP_BEGIN/OP_UNTIL` loop over the
+25-lane state. Verified vs EVM for lengths 0..300 incl. every pad edge (135 = single `0x81` pad byte;
+136 and 272 = full-block boundaries that need an extra block). Cost is linear at **~2.25M op / block**
+(1 block 2.26M, 2 -> 4.5M, 3 -> 6.76M); script ~2.3 KB.
+
+The blob permutation (~5.8M/block) cannot do multi-block - 2 blocks exceed the budget - which is why
+the variable-length path uses the 25-lane permutation.
+
+**Practical cap: ~3 blocks (~408 bytes) per input.** The 10 KB unlocking-bytecode limit bounds the
+per-input op budget (`~800 * unlockingLength`, max ~8M), so 4 blocks (~9M) will not fit. A cheaper
+permutation (toward the ~1.2M floor) would roughly double the reachable input size.
+
 ## Limits / caveats
 
-- **Single block only** (fixed 32-byte preimage; message <= 135 bytes). Variable-length + multi-block
-  adds absorb-loop logic; each extra 136-byte block is another ~2.2M op cost (linear).
+- Variable-length is capped at ~3 blocks per input (above). The shipped artifact is the fixed 32-byte
+  single-block form; `genvar.mjs` is the general path.
 - Reclassifies keccak256 in the Solidity gap analysis from Category D ("N/A - no Keccak opcode") to
   implementable. (ecrecover stays impractical - separate problem.)

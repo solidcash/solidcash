@@ -15,9 +15,9 @@ Implemented so far (branch `solidcash_v0.13.1`), each with a VM-level e2e test: 
 `&&`/`||` (+ conditional-var-leak fix) and the try/catch warning (ALIGN); compound assignment,
 `x[a:b]` slice, `bytesN[k]` index, `require(cond, Error())`, enum<->int casts + enum-typed params
 with full SDK encode/decode, `addmod`/`mulmod`, named call args `f({a:1})`, tuple destructuring with
-skipped slots, named return values, integer bitwise `& | ^ ~`, bytesN ordering `< <= > >=`
-(Category A). The only remaining Category A item is tuple existing-lvalue/swap (needs RHS tuple
-expressions). Then Category B (function types et al.). See per-row Status markers below.
+skipped slots, named return values, integer bitwise `& | ^ ~`, bytesN ordering `< <= > >=`, and
+tuple assignment to existing lvalues + swap `(x,y)=(y,x)`. **Category A is now complete.** Next is
+Category B (internal function types et al.). See per-row Status markers below.
 
 ## Where SolidCash already matches or exceeds Solidity
 
@@ -48,7 +48,7 @@ The remaining gaps are bounded. They are listed below.
 | DONE `86fedba1` `86046e99` | Enum <-> int conversion + enum-typed params/vars | `Color(i)` range-checked, `int(c)`; fixed the pre-existing enum-param crash; SDK encode/decode (`33caf817` `406fdca9`). |
 | DONE `a1aba265` | `addmod` / `mulmod` | `(x+y)%k` / `(x*y)%k` (no wrap on BCH BigInt). |
 | DONE `b6ee313c` | Tuple destructuring with skipped slots `(, x) = f()` | Empty-slot grammar; codegen drops skipped values via the altstack (declared -> altstack, skipped -> drop, restore + name). |
-| TODO | Tuple assignment to existing lvalues + swap `(x,y)=(y,x)` | LHS is declaration-only; swap also needs RHS tuple expressions `(y,x)`. |
+| DONE `c09937f1` | Tuple assignment to existing lvalues + swap `(x,y)=(y,x)` | Bare-identifier slots + per-slot RHS tuple expressions. Swap of top-two vars -> single OP_SWAP; general case evaluates RHS first (clobber-safe) then emitReplace. Mixing declarations + existing rejected. Fixed an opRolls last-use bug for existing targets. |
 | DONE (already worked) | Multi-return destructuring from **user** functions `(a,b)=myFn()` | Verified: `(int a, int b) = userFn()` and `= b.split(4)` both compile/run. Declarations only. |
 | DONE `fd8f2dcf` | Named args for arbitrary calls `f({b:2,a:1})` | Reorder to declared params in SymbolTable; single-target only (overloaded+named errors). |
 | DONE `e0334f3c` | Named return values `returns (int sum)` | Desugared (NamedReturnTransformation) to default-init locals + `return <names>;`; bare `return;` returns them. Requires an explicit `return;`. |

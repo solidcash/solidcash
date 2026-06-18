@@ -70,6 +70,13 @@ import {
   UndefinedParentInvocationError,
   DuplicateParentInvocationError,
 } from '../Errors.js';
+import AstTraversal from '../ast/AstTraversal.js';
+
+// Internal name a parent's overridden function is preserved under, so `super.f()` / `Base.f()` can
+// still reach it after the hierarchy is flattened.
+function superImplName(definingContract: string, fnName: string): string {
+  return `__base_${definingContract}_${fnName}`;
+}
 
 function cloneNode<T extends Node>(node: T): T {
   const clone = Object.create(Object.getPrototypeOf(node));
@@ -105,10 +112,32 @@ export default function expandInheritance(ast: SourceFileNode): SourceFileNode {
   // If the contract doesn't implement anything, nothing to do
   if (ast.contract.implements.length === 0) return ast;
 
+  // Capture the linearization before expansion clears `implements` (used for super resolution).
+  const linearization = computeLinearization(ast.contract, contractMap);
+
   const expanded = new Set<string>();
   expandContract(ast.contract, contractMap, expanded, new Set());
 
+  resolveSuperAndBaseCalls(ast.contract, linearization);
+
   return ast;
+}
+
+// Depth-first, left-to-right ancestor order (most-derived first), deduped - matching the flatten.
+function computeLinearization(contract: ContractNode, contractMap: Map<string, ContractNode>): string[] {
+  const order: string[] = [];
+  const seen = new Set<string>();
+  const visit = (name: string, implementsList: string[]): void => {
+    if (seen.has(name)) return;
+    seen.add(name);
+    order.push(name);
+    for (const parent of implementsList) {
+      const pc = contractMap.get(parent);
+      if (pc) visit(parent, pc.implements);
+    }
+  };
+  visit(contract.name, contract.implements);
+  return order;
 }
 
 /**
@@ -258,9 +287,11 @@ function mergeFunctions(
         continue;
       }
 
-      // Child's OWN explicit override resolves conflicts (not inherited overrides)
+      // Child's OWN explicit override resolves conflicts (not inherited overrides). Preserve the
+      // overridden parent body under a mangled internal name so super.f()/Base.f() can still call it.
       if (!existingFunc.inheritedFrom
           && existingFunc.modifiers.includes(FunctionModifier.OVERRIDE)) {
+        preserveOverriddenFunction(child, parentFunc, parent, subs);
         continue;
       }
 
@@ -285,6 +316,109 @@ function mergeFunctions(
       child.functions.push(cloned);
       childFuncMap.set(cloned.name, cloned);
     }
+  }
+}
+
+// Preserve a parent function that the child overrides, under a mangled internal name, so super.f()
+// and Base.f() can still call it. Forced to internal visibility (never an entry point).
+function preserveOverriddenFunction(
+  child: ContractNode,
+  parentFunc: FunctionDefinitionNode,
+  parent: ContractNode,
+  subs?: Map<string, ExpressionNode>,
+): void {
+  if (parentFunc.isAbstract) return; // no body to call via super/Base
+  const definingContract = parentFunc.inheritedFrom ?? parent.name;
+  const mangled = superImplName(definingContract, parentFunc.name);
+  if (child.functions.some((f) => f.name === mangled)) return; // already preserved (diamond)
+
+  const cloned = cloneNode(parentFunc);
+  cloned.name = mangled;
+  cloned.definingContract = definingContract;
+  cloned.inheritedFrom = definingContract;
+  cloned.modifiers = cloned.modifiers.filter((m) => m !== FunctionModifier.PUBLIC
+    && m !== FunctionModifier.EXTERNAL && m !== FunctionModifier.OVERRIDE && m !== FunctionModifier.VIRTUAL);
+  if (!cloned.modifiers.includes(FunctionModifier.INTERNAL)) {
+    cloned.modifiers.push(FunctionModifier.INTERNAL);
+  }
+  if (subs) substituteInFunction(cloned, subs);
+  child.functions.push(cloned);
+}
+
+// The flattened-contract function name that implements `fnName` as defined in `definingContract`:
+// the preserved mangled copy if present, else the plain function when it is that contract's own.
+function superImplFor(contract: ContractNode, definingContract: string, fnName: string): string | undefined {
+  const mangled = superImplName(definingContract, fnName);
+  if (contract.functions.some((f) => f.name === mangled)) return mangled;
+  const plain = contract.functions.find((f) => f.name === fnName);
+  if (plain && (plain.definingContract ?? plain.inheritedFrom ?? contract.name) === definingContract) {
+    return fnName;
+  }
+  return undefined;
+}
+
+// Rewrite `super.f(...)` and `Base.f(...)` calls to the preserved parent implementations, then prune
+// any preserved bodies that no call actually reaches (they may reference parent-only state and would
+// not compile as dead code).
+function resolveSuperAndBaseCalls(contract: ContractNode, linearization: string[]): void {
+  const ancestors = new Set(linearization);
+  const indexOf = new Map(linearization.map((name, i) => [name, i]));
+  const references = new Map<string, Set<string>>(); // function name -> preserved impls it calls
+
+  for (const fn of contract.functions) {
+    const definingContract = fn.definingContract ?? fn.inheritedFrom ?? contract.name;
+    const used = new Set<string>();
+    const resolve = (callName: string): string | undefined => {
+      const dot = callName.indexOf('.');
+      if (dot < 0) return undefined;
+      const namespace = callName.slice(0, dot);
+      const target = callName.slice(dot + 1);
+
+      let impl: string | undefined;
+      if (namespace === 'super') {
+        const start = indexOf.get(definingContract);
+        if (start === undefined) return undefined;
+        for (let i = start + 1; i < linearization.length && !impl; i += 1) {
+          impl = superImplFor(contract, linearization[i], target);
+        }
+      } else if (ancestors.has(namespace)) {
+        impl = superImplFor(contract, namespace, target);
+      } else {
+        return undefined; // library / interface / other namespaced call - leave alone
+      }
+
+      if (impl && impl.startsWith('__base_')) used.add(impl);
+      return impl;
+    };
+    new SuperCallRewriter(resolve).visit(fn.body);
+    references.set(fn.name, used);
+  }
+
+  // Keep only preserved functions reachable from the non-preserved (real) functions.
+  const reachable = new Set<string>();
+  const queue = contract.functions.filter((f) => !f.name.startsWith('__base_')).map((f) => f.name);
+  while (queue.length > 0) {
+    const name = queue.shift()!;
+    for (const impl of references.get(name) ?? []) {
+      if (!reachable.has(impl)) {
+        reachable.add(impl);
+        queue.push(impl);
+      }
+    }
+  }
+  contract.functions = contract.functions.filter((f) => !f.name.startsWith('__base_') || reachable.has(f.name));
+}
+
+// Renames matching FunctionCallNode identifiers (super.f / Base.f -> preserved impl) in place.
+class SuperCallRewriter extends AstTraversal {
+  constructor(private readonly resolve: (callName: string) => string | undefined) {
+    super();
+  }
+
+  visitFunctionCall(node: FunctionCallNode): Node {
+    const target = this.resolve(node.identifier.name);
+    if (target) node.identifier.name = target;
+    return super.visitFunctionCall(node);
   }
 }
 

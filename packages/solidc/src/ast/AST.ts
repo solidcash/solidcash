@@ -199,6 +199,9 @@ export class FunctionDefinitionNode extends Node implements Named {
   isReceive: boolean = false;
   isAbstract: boolean = false;
   inheritedFrom?: string;
+  // The contract that defined this function body, set during inheritance flattening. Used to resolve
+  // `super.f()` relative to the right point in the linearization.
+  definingContract?: string;
   usesMsgSender?: boolean;
   unsafeTier?: number;          // 0, 1, or 2 (only set when UNSAFE modifier present)
   splitCountParam?: string;     // parameter name for split count

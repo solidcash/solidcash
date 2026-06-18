@@ -580,6 +580,9 @@ export class RevertArgumentTypeError extends TypeError {
   }
 }
 
+// Named call argument error (unknown/duplicate/missing/overloaded). Message is built by the caller.
+export class NamedArgumentError extends SolidCashError {}
+
 export class TransferArgumentTypeError extends TypeError {
   constructor(node: Node, argName: string, actual?: Type, expected?: Type) {
     super(node, actual, expected, `this.transfer() argument '${argName}' has type '${actual}' but expected '${expected}'`);

@@ -130,6 +130,7 @@ import {
   TokenContainerAccessInConstructorError,
   InvalidModifierCombinationError,
   InternalCallToExternalError,
+  NamedArgumentError,
   NonCompileTimeExpressionError,
   TypeDefinitionRedefinitionError,
   EnumRedefinitionError,
@@ -3219,6 +3220,27 @@ export default class SymbolTableTraversal extends AstTraversal {
     return node;
   }
 
+  // Reorder named call arguments f({b:2,a:1}) into the function's declared parameter order.
+  private reorderNamedCallArgs(func: FunctionDefinitionNode, node: FunctionCallNode): ExpressionNode[] {
+    const fieldNames = node.fieldNames!;
+    const paramNames = func.parameters.map((p) => p.name);
+    const seen = new Set<string>();
+    for (const name of fieldNames) {
+      if (seen.has(name)) throw new NamedArgumentError(node, `Duplicate named argument '${name}'`);
+      seen.add(name);
+      if (!paramNames.includes(name)) {
+        throw new NamedArgumentError(node, `Unknown named argument '${name}' for function '${func.name}'`);
+      }
+    }
+    if (fieldNames.length !== paramNames.length) {
+      throw new NamedArgumentError(
+        node,
+        `Function '${func.name}' expects ${paramNames.length} arguments but got ${fieldNames.length}`,
+      );
+    }
+    return func.parameters.map((p) => node.parameters[fieldNames.indexOf(p.name)] as ExpressionNode);
+  }
+
   visitFunctionCall(node: FunctionCallNode): Node {
     // Check if this is an address method call: dest.send(amount), dest.connect(category),
     // dest.call(data), dest.staticcall(data)
@@ -3359,6 +3381,15 @@ export default class SymbolTableTraversal extends AstTraversal {
     // Check if this is a user-defined function call
     const overloads = this.functionDefinitions.get(node.identifier.name);
     if (overloads && overloads.length > 0) {
+      if (node.fieldNames) {
+        // Named call arguments f({a:1,b:2}): reorder to the function's parameter order. Overload
+        // resolution depends on positional types, so named args require a single (non-overloaded) target.
+        if (overloads.length > 1) {
+          throw new NamedArgumentError(node, `Named arguments are not supported for overloaded function '${node.identifier.name}'`);
+        }
+        node.parameters = this.reorderNamedCallArgs(overloads[0], node);
+        node.fieldNames = undefined;
+      }
       if (overloads.length === 1) {
         node.resolvedFunction = overloads[0];
         if (overloads[0].visibility === 'external' && !overloads[0].isFreeFunction) {

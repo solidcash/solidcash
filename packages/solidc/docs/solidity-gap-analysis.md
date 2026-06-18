@@ -49,7 +49,7 @@ The remaining gaps are bounded. They are listed below.
 | TODO | Tuple destructuring with skipped slots `(, x) = f()` | Codegen `OP_DROP` for skipped slots. |
 | TODO | Tuple assignment to existing lvalues + swap `(x,y)=(y,x)` | LHS is declaration-only today; enables the swap idiom. |
 | TODO | Multi-return destructuring from **user** functions `(a,b)=myFn()` | `TupleType` wired for built-ins; extend to user fns. |
-| TODO | Named args for arbitrary calls `f({b:2,a:1})` | Reorder to declared params; struct-init machinery is ~90% of it. Needs overload-aware handling + new errors. |
+| DONE `<pending>` | Named args for arbitrary calls `f({b:2,a:1})` | Reorder to declared params in SymbolTable; single-target only (overloaded+named errors). |
 | TODO | Named return values `returns (int sum)` | Implicit return vars in scope (assignable, returned on bare `return;`). |
 | TODO | bytesN ordering `< <= > >=` and single-byte index `b[k]` | Index lowers to `slice(k,k+1)`; ordering = lexicographic compare. |
 | TODO | Integer bitwise `& \| ^ ~` | Needs a defined sign-magnitude/byte semantics decision before building (only genuinely new capability; riskiest). |

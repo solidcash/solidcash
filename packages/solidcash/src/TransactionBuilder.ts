@@ -117,6 +117,19 @@ export class TransactionBuilder {
   }
 
   /**
+   * One-time deploy of the shared keccak256 side-car library: adds an output creating the side-car UTXO
+   * if it does not exist yet. Call when deploying/funding a keccak256 contract (idempotent ecosystem-wide).
+   * Returns the side-car amount added (0n if it already exists).
+   */
+  async addSidecarDeployIfNeeded(amount: bigint = 2000n): Promise<bigint> {
+    const sidecarLock = keccakSidecarLockingBytecode(KECCAK256_SHARED_SALT);
+    const existing = await this.provider.getUtxosForLockingBytecode(sidecarLock);
+    if (existing.length > 0) return 0n;
+    this.addOutput({ to: sidecarLock, amount });
+    return amount;
+  }
+
+  /**
    * Co-spend the keccak256 side-car library required by any keccak-using contract input. The side-car
    * is appended as the LAST input and recreated as the LAST output (it self-preserves against the last
    * output). The ~2.4 KB blob lives once on-chain; this loads it for the spend and keeps it reusable.

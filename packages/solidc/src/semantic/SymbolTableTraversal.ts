@@ -620,6 +620,25 @@ export default class SymbolTableTraversal extends AstTraversal {
       this.functionDefinitions.set(func.name, existing);
     }
 
+    // Function pointers in persistent state are only safe while the contract bytecode is immutable
+    // (functionIds are positional). A contract that can rewrite its own code (upgrade) or delegates
+    // execution to swappable logic would remap those ids, so reject the combination.
+    const mutatesCode = node.functions.some((f) =>
+      f.modifiers.includes(FunctionModifier.UPGRADE) || f.modifiers.includes(FunctionModifier.DELEGATE));
+    if (mutatesCode) {
+      const stateTypes = [
+        ...node.stateVariables.map((sv) => sv.type),
+        ...node.collections.map((c) => c.type),
+      ];
+      for (const t of stateTypes) {
+        if (typeReferencesFunctionPointer(t)) {
+          throw new FunctionTypeNotEncodableError(
+            node, 'persistent state of an upgrade/delegate contract (functionIds would remap)',
+          );
+        }
+      }
+    }
+
     // Validate abstract functions: concrete contracts must not have abstract functions
     if (!node.isAbstract) {
       for (const func of node.functions) {
@@ -5399,5 +5418,15 @@ function isCompileTimeExpression(
     const compoundName = `${expr.expression.name}.${expr.name}`;
     return constantMap.has(compoundName);
   }
+  return false;
+}
+
+// True if `type` is, or transitively contains, a function-pointer type (mapping value, array element,
+// or struct field).
+function typeReferencesFunctionPointer(type: Type): boolean {
+  if (type instanceof FunctionType) return true;
+  if (type instanceof MappingType) return typeReferencesFunctionPointer(type.valueType);
+  if (type instanceof ArrayType) return typeReferencesFunctionPointer(type.elementType);
+  if (type instanceof StructType) return type.fields.some((f) => typeReferencesFunctionPointer(f.type));
   return false;
 }

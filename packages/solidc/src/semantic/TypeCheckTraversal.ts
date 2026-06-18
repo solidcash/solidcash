@@ -2089,6 +2089,8 @@ function isValidStateType(type: Type): boolean {
   if (type === PrimitiveType.PUBKEY) return true;
   if (type === PrimitiveType.SIG) return true;
   if (type === PrimitiveType.DATASIG) return true;
+  // Function pointers store as their integer functionId (immutable per covenant bytecode).
+  if (type instanceof FunctionType) return true;
   if (type instanceof IntType) return true;
   if (type instanceof FixedType) return true;
   if (type instanceof BytesType) return true;

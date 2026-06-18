@@ -7,6 +7,7 @@ import {
   encodeInt,
   encodeString,
   FixedType,
+  FunctionType,
   IntType,
   parseType,
   PrimitiveType,
@@ -56,6 +57,14 @@ export function encodeFunctionArgument(argument: FunctionArgument, typeStr: stri
           + `(min: ${type.minValue}, max: ${type.maxValue})`,
         );
       }
+    }
+    return encodeInt(argument);
+  }
+
+  if (type instanceof FunctionType) {
+    // Function pointer: its value is the target's integer functionId.
+    if (typeof argument !== 'bigint') {
+      throw new TypeError(typeof argument, type);
     }
     return encodeInt(argument);
   }

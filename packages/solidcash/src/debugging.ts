@@ -355,6 +355,8 @@ const decodeStackItem = (
   if (element.type === PrimitiveType.STRING) return decodeString(stackItem);
   // Enums are int-backed: decode to their underlying integer value.
   if (enumNames.has(element.type)) return decodeInt(stackItem);
+  // Function pointers are int-backed (their functionId): decode to the integer.
+  if (element.type.startsWith('function(')) return decodeInt(stackItem);
 
   return `0x${binToHex(stackItem)}`;
 };

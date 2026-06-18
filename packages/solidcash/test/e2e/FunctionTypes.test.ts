@@ -111,6 +111,6 @@ describe('internal function types', () => {
         function run(function(int) returns (int) f, int v) { require(f(v) == 10); }
       }
     `;
-    expect(() => compileString(bad)).toThrow(/internal-only/i);
+    expect(() => compileString(bad)).toThrow(/Function types cannot be used/i);
   });
 });

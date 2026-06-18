@@ -291,7 +291,7 @@ export class TupleMixedSlotsError extends SolidCashError {
 
 export class FunctionTypeNotEncodableError extends SolidCashError {
   constructor(node: Node, context: string) {
-    super(node, `Function types are internal-only and cannot be used as ${context}`);
+    super(node, `Function types cannot be used as ${context}`);
   }
 }
 

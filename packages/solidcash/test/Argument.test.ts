@@ -18,3 +18,17 @@ describe('encodeFunctionArgument: enum types', () => {
     expect(() => encodeFunctionArgument(true as unknown as bigint, 'NotAType')).toThrow(/Unrecognized type/);
   });
 });
+
+// SDK encoding of function-pointer arguments. A function value is the target's integer functionId,
+// so it encodes as int even though the ABI type string is `function(...)returns(...)`.
+describe('encodeFunctionArgument: function pointer types', () => {
+  it('encodes a function pointer (functionId) as int', () => {
+    expect(encodeFunctionArgument(0n, 'function(int)returns(int)')).toEqual(encodeInt(0n));
+    expect(encodeFunctionArgument(3n, 'function(bytes)returns(bool)')).toEqual(encodeInt(3n));
+    expect(encodeFunctionArgument(2n, 'function()')).toEqual(encodeInt(2n));
+  });
+
+  it('rejects a non-bigint function pointer value', () => {
+    expect(() => encodeFunctionArgument('double' as unknown as bigint, 'function(int)returns(int)')).toThrow();
+  });
+});

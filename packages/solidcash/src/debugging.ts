@@ -138,10 +138,11 @@ const debugSingleScenario = (
         if (logEntries.length === 0) return [];
 
         const reversedPriorDebugSteps = logMatchingSteps.slice(0, index + 1).reverse();
+        const enumNames = new Set((artifact.enums ?? []).map((e) => e.name));
 
         return logEntries.map((logEntry) => {
           const decodedLogData = logEntry.data
-            .map((dataEntry) => decodeLogDataEntry(dataEntry, reversedPriorDebugSteps, vm));
+            .map((dataEntry) => decodeLogDataEntry(dataEntry, reversedPriorDebugSteps, vm, enumNames));
           return { logEntry, decodedLogData };
         });
       });
@@ -293,6 +294,7 @@ const decodeLogDataEntry = (
   dataEntry: LogData,
   reversedPriorDebugSteps: AuthenticationProgramStateCommon[],
   vm: VM,
+  enumNames: Set<string> = new Set(),
 ): string | bigint | boolean => {
   if (typeof dataEntry === 'string') return dataEntry;
 
@@ -303,7 +305,7 @@ const decodeLogDataEntry = (
   }
 
   const transformedDebugStep = applyStackItemTransformations(dataEntry, dataEntryDebugStep, vm);
-  return decodeStackItem(dataEntry, transformedDebugStep.stack);
+  return decodeStackItem(dataEntry, transformedDebugStep.stack, enumNames);
 };
 
 const applyStackItemTransformations = (
@@ -336,7 +338,11 @@ const applyStackItemTransformations = (
   return transformationsEndState;
 };
 
-const decodeStackItem = (element: StackItem, stack: Uint8Array[]): string | bigint | boolean => {
+const decodeStackItem = (
+  element: StackItem,
+  stack: Uint8Array[],
+  enumNames: Set<string> = new Set(),
+): string | bigint | boolean => {
   // Reversed since stack is in reverse order
   const stackItem = [...stack].reverse()[element.stackIndex];
 
@@ -347,6 +353,8 @@ const decodeStackItem = (element: StackItem, stack: Uint8Array[]): string | bigi
   if (element.type === PrimitiveType.BOOL) return decodeBool(stackItem);
   if (element.type === PrimitiveType.INT) return decodeInt(stackItem);
   if (element.type === PrimitiveType.STRING) return decodeString(stackItem);
+  // Enums are int-backed: decode to their underlying integer value.
+  if (enumNames.has(element.type)) return decodeInt(stackItem);
 
   return `0x${binToHex(stackItem)}`;
 };

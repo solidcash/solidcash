@@ -19,6 +19,8 @@ export enum GlobalFunction {
   MIN = 'min',
   MAX = 'max',
   WITHIN = 'within',
+  ADDMOD = 'addmod',
+  MULMOD = 'mulmod',
   RIPEMD160 = 'ripemd160',
   SHA1 = 'sha1',
   SHA256 = 'sha256',
@@ -80,6 +82,14 @@ GLOBAL_SYMBOL_TABLE.set(
 );
 GLOBAL_SYMBOL_TABLE.set(Symbol.function(
   GlobalFunction.WITHIN, PrimitiveType.BOOL,
+  [PrimitiveType.INT, PrimitiveType.INT, PrimitiveType.INT],
+));
+GLOBAL_SYMBOL_TABLE.set(Symbol.function(
+  GlobalFunction.ADDMOD, PrimitiveType.INT,
+  [PrimitiveType.INT, PrimitiveType.INT, PrimitiveType.INT],
+));
+GLOBAL_SYMBOL_TABLE.set(Symbol.function(
+  GlobalFunction.MULMOD, PrimitiveType.INT,
   [PrimitiveType.INT, PrimitiveType.INT, PrimitiveType.INT],
 ));
 GLOBAL_SYMBOL_TABLE.set(

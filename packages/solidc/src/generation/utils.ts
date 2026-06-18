@@ -165,9 +165,11 @@ export function compileGlobalFunction(fn: GlobalFunction): Script {
     [GlobalFunction.HASH256]: [Op.OP_HASH256],
     [GlobalFunction.WITHIN]: [Op.OP_WITHIN],
     [GlobalFunction.TO_PADDED_BYTES]: [Op.OP_NUM2BIN],
-    // intToString/stringToInt are handled directly in visitFunctionCall, not here
+    // intToString/stringToInt/addmod/mulmod are handled directly in visitFunctionCall, not here
     [GlobalFunction.INT_TO_STRING]: [],
     [GlobalFunction.STRING_TO_INT]: [],
+    [GlobalFunction.ADDMOD]: [],
+    [GlobalFunction.MULMOD]: [],
   };
 
   return mapping[fn];

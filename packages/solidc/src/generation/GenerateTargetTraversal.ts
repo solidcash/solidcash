@@ -3010,6 +3010,22 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_VERIFY, locationData);
   }
 
+  // addmod(x,y,k) = (x+y)%k, mulmod(x,y,k) = (x*y)%k. Args are interleaved with the ops so the
+  // sum/product is on the stack before the modulus (avoids reordering three pushed values).
+  private visitAddMulMod(node: FunctionCallNode): Node {
+    const loc = { location: node.location, positionHint: PositionHint.END };
+    node.parameters[0] = this.visit(node.parameters[0]);
+    node.parameters[1] = this.visit(node.parameters[1]);
+    this.emit(node.identifier.name === GlobalFunction.ADDMOD ? Op.OP_ADD : Op.OP_MUL, loc);
+    this.popFromStack(2);
+    this.pushToStack('(value)');
+    node.parameters[2] = this.visit(node.parameters[2]);
+    this.emit(Op.OP_MOD, loc);
+    this.popFromStack(2);
+    this.pushToStack('(value)');
+    return node;
+  }
+
   visitFunctionCall(node: FunctionCallNode): Node {
     if (node.identifier.name === GlobalFunction.CHECKMULTISIG) {
       return this.visitMultiSig(node);
@@ -3021,6 +3037,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     if (node.identifier.name === GlobalFunction.STRING_TO_INT) {
       return this.visitStringToInt(node);
+    }
+
+    if (node.identifier.name === GlobalFunction.ADDMOD || node.identifier.name === GlobalFunction.MULMOD) {
+      return this.visitAddMulMod(node);
     }
 
     // User-defined function call via OP_INVOKE

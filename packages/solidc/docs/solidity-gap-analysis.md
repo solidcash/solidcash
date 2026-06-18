@@ -11,12 +11,13 @@ language. Categories below:
 
 ## Progress (2026-06)
 
-Implemented so far (branch `solidcash_v0.13.1`): short-circuit `&&`/`||` (+ conditional-var-leak fix)
-and the try/catch warning (ALIGN); compound assignment, `x[a:b]` slice, `require(cond, Error())`,
-enum<->int casts + enum-typed params with full SDK encode/decode, `addmod`/`mulmod` (Category A).
-Each shipped with a VM-level e2e test. Remaining Category A: tuple-destructuring expressiveness,
-named call args, named returns, bytesN ordering/index, integer bitwise. Then Category B (function
-types et al.). See per-row Status markers below.
+Implemented so far (branch `solidcash_v0.13.1`), each with a VM-level e2e test: short-circuit
+`&&`/`||` (+ conditional-var-leak fix) and the try/catch warning (ALIGN); compound assignment,
+`x[a:b]` slice, `bytesN[k]` index, `require(cond, Error())`, enum<->int casts + enum-typed params
+with full SDK encode/decode, `addmod`/`mulmod`, named call args `f({a:1})`, tuple destructuring with
+skipped slots, named return values (Category A). Remaining Category A: tuple existing-lvalue/swap
+(needs RHS tuple expressions), bytesN ordering + integer bitwise (both need a byte-order/sign
+semantics decision). Then Category B (function types et al.). See per-row Status markers below.
 
 ## Where SolidCash already matches or exceeds Solidity
 

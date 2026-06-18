@@ -116,10 +116,10 @@ contract GrandChild() is Child {
 
 ## Diamond Inheritance
 
-Inheritance is flattened at compile time by merging parents depth-first, left-to-right. When two
-parents define the same function (a diamond), the child **must** provide an explicit `override` to
-resolve the ambiguity; without it the compiler errors. Functions inherited from a single common
-ancestor are deduplicated rather than treated as a conflict.
+Inheritance is flattened at compile time by merging parents. When two parents define the same
+function (a diamond), the child **must** provide an explicit `override` to resolve the ambiguity;
+without it the compiler errors. Functions inherited from a single common ancestor are deduplicated
+rather than treated as a conflict.
 
 ```solidity
 contract A() {
@@ -137,11 +137,11 @@ contract D() is B, C {
 ```
 
 :::note
-This is a left-to-right flatten with diamond-collision rejection, **not** full C3 linearization. For
-linear and most multiple-inheritance hierarchies the resolution order is the same; the practical
-difference only appears in complex diamonds, where SolidCash requires an explicit `override` instead
-of silently picking a C3 order. Use `super.f()` to call the next parent implementation and
-`Base.f()` to call a specific ancestor's.
+`super.f()` and `Base.f()` resolve along the **C3 linearization** (the same method resolution order
+Python and Solidity use). For the diamond above the order is `[D, B, C, A]`, so `super.foo()` inside
+`B` reaches `C` (the sibling branch) before the shared ancestor `A` - cooperative super. An
+inheritance graph with no valid C3 ordering is a compile error. Use `super.f()` to call the next
+implementation in this order, or `Base.f()` to call a specific ancestor's directly.
 :::
 
 ## Abstract Contracts

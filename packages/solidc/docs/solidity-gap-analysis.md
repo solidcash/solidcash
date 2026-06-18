@@ -19,10 +19,11 @@ skipped slots, named return values, integer bitwise `& | ^ ~`, bytesN ordering `
 tuple assignment to existing lvalues + swap `(x,y)=(y,x)`. **Category A is now complete.** Category B
 underway: **internal function types / function pointers** (incl. dispatch tables), **`super.f()`/
 `Base.f()` parent calls**, and **`type(C).creationCode`/`runtimeCode`** are done. The only remaining
-Category B item is real C3 linearization + meaningful `virtual`/`override(A,B)` (currently a
-depth-first flatten; the docs now describe it accurately rather than claiming C3). **Category C doc
-reconciliations are done** (C3 claim, `interfaceId` width, `encodeWithSignature` selector). See
-per-row Status markers below.
+Category B item is meaningful `virtual` + explicit `override(A,B)` (override-safety fidelity). **Real
+C3 linearization is now implemented** - `super`/`Base` use true C3 MRO (cooperative super in
+diamonds), with `C3LinearizationError` for inconsistent hierarchies. **Category C doc reconciliations
+are done** (C3 claim, `interfaceId` width, `encodeWithSignature` selector). See per-row Status markers
+below.
 
 ## Where SolidCash already matches or exceeds Solidity
 
@@ -66,8 +67,8 @@ The remaining gaps are bounded. They are listed below.
 |-----|-------|-------|
 | **Internal function types / function pointers** DONE `74a3eb8f` `dcf6d498` `79804a8a` | High / novel | A function value is the target's integer `functionId`; an indirect call is `<functionId> OP_INVOKE`, reusing the existing per-function `OP_DEFINE`/`OP_INVOKE` dispatch. `function(T) returns (R)` type; function name in value position; callbacks/strategy dispatch/higher-order helpers; expression + statement call forms; **dispatch tables** (arrays + state mappings of function pointers, encoded as the int functionId; two-step call from a table element since the callee grammar wants an identifier). SDK encodes/decodes function-pointer values as int. Targets are internal/private/public (external stay N/A); entry-point function-type params/returns rejected (no ABI); function-pointer state in `upgrade`/`delegate` contracts rejected (positional ids would remap). Event fields of function type not yet supported. |
 | `super.f()` and qualified `Base.f()` parent calls DONE `e5273533` | Med | Overridden parent bodies are preserved under a mangled internal name during flattening; `super.f()` resolves to the next ancestor in the linearization that implements f (multi-level chains work), `Base.f()` targets a named ancestor. Preserved bodies are internal-only and pruned unless reached by a super/Base call; abstract parents are not preserved. |
-| Real C3 linearization | Med | Current impl is depth-first left-to-right flatten with diamond-collision rejection, **not** C3 MRO (`InheritanceExpansionTransformation.ts:160-275`). Either implement C3 or correct the docs (see ALIGN). |
-| Make `virtual` meaningful + explicit `override(A,B)` | Med | `virtual` is currently a no-op (everything implicitly overridable); `override` base-list form missing (`SolidCash.g4:200`). Safety + fidelity for diamonds. |
+| Real C3 linearization DONE `39f3b1ed` | Med | `super`/`Base` resolution now uses true C3 MRO (Python/Solidity order): identical to depth-first for linear/tree hierarchies, but in diamonds `super` traverses the sibling branch before the shared ancestor (cooperative super). Inconsistent hierarchies raise `C3LinearizationError`. The flatten that builds the function set is unchanged - C3 governs resolution order, which is what `super` observes. |
+| Make `virtual` meaningful + explicit `override(A,B)` | Med | `virtual` is currently a no-op (everything implicitly overridable); `override` base-list form missing (`SolidCash.g4:200`). Safety + fidelity for diamonds. The last open Category B item. |
 | `type(C).creationCode` / `runtimeCode` DONE `667a91c8` | Med | Returns the child contract's compiled redeem script as bytes (BCH has no separate creation vs runtime code, so runtimeCode aliases creationCode). Reuses referenced-contract compilation; emitted as a bytes constant. Enables on-chain factory patterns (build a child's address/output from its bytecode + constructor args). |
 
 ## Category C - ALIGN: semantic divergences and doc fixes
@@ -76,7 +77,7 @@ The remaining gaps are bounded. They are listed below.
 |------|-------|--------|
 | **Short-circuit `&&` / `||`** DONE `7c99690a` | SolidCash did NOT short-circuit. | Fixed: emits `OP_IF` branching (RHS skipped when decided). Also fixed the underlying conditional-var-leak in the `opRolls` last-use analysis (which affected ternary too). |
 | **`try`/`catch` dead catch** DONE `7c99690a` | Catch blocks emit nothing (BCH can't resume after a failed opcode). | Kept as dead code (4+ contracts rely on the try-block) but sharpened the compile-time warning to call out the Solidity divergence. |
-| C3 linearization claim DONE | `inheritance.md:119` said "C3 linearization"; impl does not compute C3. | Doc corrected: describes the depth-first left-to-right flatten with diamond-collision rejection, and notes it is not full C3. |
+| C3 linearization claim DONE | `inheritance.md:119` said "C3 linearization"; impl did not compute C3. | Resolved by *implementing* C3 (`39f3b1ed`): `super`/`Base` now use true C3 MRO; docs updated to match. |
 | `type(I).interfaceId` width DONE | Code returns `bytes4`; docs said `bytes32`. | Docs corrected to `bytes4` (sha256-based, EIP-165 style) in inheritance.md + structs-enums-types.md. |
 | `abi.encodeWithSignature` selector DONE | Solidity derives the 4-byte selector via `keccak256(sig)`; SolidCash uses `sha256`, so selectors DIFFER and are not cross-VM compatible. | Documented in advanced-features.md (sha256, not keccak; not cross-VM compatible). |
 | `delete` as prefix expression; postfix `x++`/`x--` in expression position | SolidCash has statement forms only. | Minor; optional alignment. |

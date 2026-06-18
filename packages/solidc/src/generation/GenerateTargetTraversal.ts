@@ -3502,6 +3502,19 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     const locationData = { location: node.location, positionHint: PositionHint.END };
 
+    // bytes[k] with a literal index: [b] <k> OP_SPLIT OP_NIP 1 OP_SPLIT OP_DROP -> [byte].
+    if (node.tuple.type instanceof BytesType) {
+      this.emit(encodeInt(BigInt(node.index)), locationData);
+      this.emit(Op.OP_SPLIT, locationData);
+      this.emit(Op.OP_NIP, locationData);
+      this.emit(encodeInt(1n), locationData);
+      this.emit(Op.OP_SPLIT, locationData);
+      this.emit(Op.OP_DROP, locationData);
+      this.popFromStack();
+      this.pushToStack('(value)');
+      return node;
+    }
+
     // Handle constant-index array access (arr[5] where 5 is a NumberLiteral)
     if (node.tuple.type instanceof ArrayType) {
       const arrType = node.tuple.type;
@@ -4095,6 +4108,22 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   visitArrayAccess(node: ArrayAccessNode): Node {
     const locationData = { location: node.location, positionHint: PositionHint.END };
+
+    // bytes[k]: extract the k-th byte. [b, k] OP_SPLIT OP_NIP 1 OP_SPLIT OP_DROP -> [byte].
+    // An out-of-range index makes OP_SPLIT fail (natural bounds enforcement).
+    if (node.array.type instanceof BytesType) {
+      node.array = this.visit(node.array);
+      node.index = this.visit(node.index);
+      this.emit(Op.OP_SPLIT, locationData);
+      this.emit(Op.OP_NIP, locationData);
+      this.emit(encodeInt(1n), locationData);
+      this.emit(Op.OP_SPLIT, locationData);
+      this.emit(Op.OP_DROP, locationData);
+      this.popFromStack(2);
+      this.pushToStack('(value)');
+      return node;
+    }
+
     const arrType = node.array.type as ArrayType;
     const elemType = arrType.elementType;
     const fixedWidth = isFixedWidthType(elemType);

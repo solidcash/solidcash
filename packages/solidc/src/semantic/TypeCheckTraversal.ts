@@ -1299,6 +1299,12 @@ export default class TypeCheckTraversal extends AstTraversal {
   visitTupleIndexOp(node: TupleIndexOpNode): Node {
     node.tuple = this.visit(node.tuple);
 
+    // bytes[k] with a literal index parses as a tuple-index op: a single byte (Solidity bytes1).
+    if (node.tuple.type instanceof BytesType) {
+      node.type = new BytesType(1);
+      return node;
+    }
+
     // Handle constant-index array access (arr[5] where 5 is a NumberLiteral)
     if (node.tuple.type instanceof ArrayType) {
       // Bounds check for bounded arrays with constant index
@@ -1669,6 +1675,13 @@ export default class TypeCheckTraversal extends AstTraversal {
   visitArrayAccess(node: ArrayAccessNode): Node {
     node.array = this.visit(node.array);
     node.index = this.visit(node.index);
+
+    // bytes[k] / bytesN[k]: index a single byte (Solidity returns bytes1).
+    if (node.array.type instanceof BytesType) {
+      expectInt(node as any, node.index.type);
+      node.type = new BytesType(1);
+      return node;
+    }
 
     if (!(node.array.type instanceof ArrayType)) {
       throw new UnsupportedTypeError(node as any, node.array.type, new ArrayType(PrimitiveType.INT));

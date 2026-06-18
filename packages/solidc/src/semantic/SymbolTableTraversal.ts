@@ -620,9 +620,8 @@ export default class SymbolTableTraversal extends AstTraversal {
       this.functionDefinitions.set(func.name, existing);
     }
 
-    // Function pointers in persistent state are only safe while the contract bytecode is immutable
-    // (functionIds are positional). A contract that can rewrite its own code (upgrade) or delegates
-    // execution to swappable logic would remap those ids, so reject the combination.
+    // Function pointers in state are positional functionIds, safe only while the bytecode is immutable.
+    // An upgrade (rewrites own code) or delegate (swappable logic) contract would remap them - reject.
     const mutatesCode = node.functions.some((f) =>
       f.modifiers.includes(FunctionModifier.UPGRADE) || f.modifiers.includes(FunctionModifier.DELEGATE));
     if (mutatesCode) {

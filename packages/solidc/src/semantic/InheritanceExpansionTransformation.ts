@@ -126,10 +126,9 @@ export default function expandInheritance(ast: SourceFileNode): SourceFileNode {
   return ast;
 }
 
-// C3 linearization (the same MRO Python/Solidity use): most-derived first, each class before its
-// parents, left-to-right parent priority, and monotonic across the hierarchy. For linear/tree
-// hierarchies this equals the depth-first order; it only differs for diamonds, where `super` must
-// visit a sibling branch before the shared ancestor. Throws if the hierarchy is not C3-consistent.
+// C3 linearization (the MRO Python/Solidity use): most-derived first, each class before its parents,
+// left-to-right priority, monotonic. Equals depth-first for linear/tree hierarchies, differs only in
+// diamonds. Throws if no consistent linearization exists.
 function computeLinearization(contract: ContractNode, contractMap: Map<string, ContractNode>): string[] {
   const parentsOf = (name: string): string[] => {
     const implementsList = name === contract.name ? contract.implements : (contractMap.get(name)?.implements ?? []);
@@ -389,9 +388,8 @@ function superImplFor(contract: ContractNode, definingContract: string, fnName: 
   return undefined;
 }
 
-// Rewrite `super.f(...)` and `Base.f(...)` calls to the preserved parent implementations, then prune
-// any preserved bodies that no call actually reaches (they may reference parent-only state and would
-// not compile as dead code).
+// Rewrite `super.f(...)`/`Base.f(...)` to the preserved parent implementations, then prune preserved
+// bodies no call reaches (dead bodies may reference parent-only state and fail to compile).
 function resolveSuperAndBaseCalls(contract: ContractNode, linearization: string[]): void {
   const ancestors = new Set(linearization);
   const indexOf = new Map(linearization.map((name, i) => [name, i]));

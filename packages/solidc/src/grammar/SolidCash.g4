@@ -205,7 +205,11 @@ unsafeModifier
     ;
 
 returnType
-    : 'returns' '(' typeName modifier* (',' typeName modifier*)* ','? ')'
+    : 'returns' '(' returnParam (',' returnParam)* ','? ')'
+    ;
+
+returnParam
+    : typeName modifier* Identifier?
     ;
 
 parameterList
@@ -267,7 +271,8 @@ tokenContainerMethodStatement
     ;
 
 returnStatement
-    : 'return' expression (',' expression)* ';'
+    : 'return' ';'
+    | 'return' expression (',' expression)* ';'
     | 'return' '(' expression (',' expression)* ','? ')' ';'
     ;
 

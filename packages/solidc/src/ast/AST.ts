@@ -191,6 +191,7 @@ export class FunctionDefinitionNode extends Node implements Named {
   modifiers: FunctionModifier[] = [];
   customModifiers: CustomModifierInvocation[] = [];
   returnTypes: Type[] = [];
+  returnNames: string[] = []; // named returns (empty unless all return values are named)
   functionId?: number;
   functionSelector?: Uint8Array;  // 4-byte hash selector for entry-point functions
   isFreeFunction: boolean = false;

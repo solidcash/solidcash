@@ -13,6 +13,7 @@ import TypeCheckTraversal from './semantic/TypeCheckTraversal.js';
 import EnsureFinalRequireTraversal from './semantic/EnsureFinalRequireTraversal.js';
 import InjectLocktimeGuardTraversal from './semantic/InjectLocktimeGuardTraversal.js';
 import EarlyReturnTransformation from './semantic/EarlyReturnTransformation.js';
+import NamedReturnTransformation from './semantic/NamedReturnTransformation.js';
 import expandModifiers from './semantic/ModifierExpansionTransformation.js';
 import expandBreakContinue from './semantic/BreakContinueTransformation.js';
 import expandInheritance from './semantic/InheritanceExpansionTransformation.js';
@@ -66,6 +67,9 @@ export function compileString(code: string, compilerOptions: CompileOptions = {}
 
   // Break/continue expansion (before semantic analysis)
   ast = expandBreakContinue(ast);
+
+  // Named-return desugar (before semantic analysis): named returns become default-init locals.
+  ast = ast.accept(new NamedReturnTransformation()) as Ast;
 
   // Semantic analysis
   ast = ast.accept(new SymbolTableTraversal(mergedCompilerOptions)) as Ast;
@@ -165,6 +169,7 @@ function compileReferencedContracts(
     // Without this, imported contracts get OP_PICK + OP_NIP instead of OP_ROLL,
     // producing different (larger) bytecode than standalone compilation.
     let singleAst: Ast = new SourceFileNode(contract);
+    singleAst = singleAst.accept(new NamedReturnTransformation()) as Ast;
     singleAst = singleAst.accept(new SymbolTableTraversal(compilerOptions)) as Ast;
     singleAst = singleAst.accept(new TypeCheckTraversal()) as Ast;
     singleAst = singleAst.accept(new EnsureFinalRequireTraversal()) as Ast;

@@ -54,6 +54,7 @@ import { CustomModifierInvocationContext } from "./SolidCashParser.js";
 import { FunctionModifierContext } from "./SolidCashParser.js";
 import { UnsafeModifierContext } from "./SolidCashParser.js";
 import { ReturnTypeContext } from "./SolidCashParser.js";
+import { ReturnParamContext } from "./SolidCashParser.js";
 import { ParameterListContext } from "./SolidCashParser.js";
 import { ParameterContext } from "./SolidCashParser.js";
 import { BlockContext } from "./SolidCashParser.js";
@@ -477,6 +478,12 @@ export default class SolidCashVisitor<Result> extends ParseTreeVisitor<Result> {
 	 * @return the visitor result
 	 */
 	visitReturnType?: (ctx: ReturnTypeContext) => Result;
+	/**
+	 * Visit a parse tree produced by `SolidCashParser.returnParam`.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	visitReturnParam?: (ctx: ReturnParamContext) => Result;
 	/**
 	 * Visit a parse tree produced by `SolidCashParser.parameterList`.
 	 * @param ctx the parse tree

@@ -107,6 +107,7 @@ import {
 import AstTraversal from '../ast/AstTraversal.js';
 import { SymbolTable, Symbol, SymbolType } from '../ast/SymbolTable.js';
 import { BinaryOperator, NullaryOperator, UnaryOperator } from '../ast/Operator.js';
+import { createDefaultValueExpression } from '../ast/defaults.js';
 import {
   FunctionRedefinitionError,
   VariableRedefinitionError,
@@ -5180,33 +5181,7 @@ export default class SymbolTableTraversal extends AstTraversal {
   }
 
   private createDefaultExpression(type: Type, contextNode: Node): ExpressionNode {
-    if (type === PrimitiveType.BOOL) {
-      const node = new BoolLiteralNode(false);
-      node.location = contextNode.location;
-      return node;
-    }
-    if (type === PrimitiveType.STRING) {
-      const node = new StringLiteralNode('', '"');
-      node.location = contextNode.location;
-      return node;
-    }
-    if (type instanceof BytesType && type.bound !== undefined) {
-      const node = new HexLiteralNode(new Uint8Array(type.bound));
-      node.location = contextNode.location;
-      return node;
-    }
-    if (type instanceof StructType) {
-      const identifier = new IdentifierNode(type.name);
-      identifier.location = contextNode.location;
-      const params = type.fields.map((f) => this.createDefaultExpression(f.type, contextNode));
-      const node = new FunctionCallNode(identifier, params);
-      node.location = contextNode.location;
-      return node;
-    }
-    // int, bytes (unbounded), and all other numeric types default to 0
-    const node = new IntLiteralNode(0n);
-    node.location = contextNode.location;
-    return node;
+    return createDefaultValueExpression(type, contextNode.location);
   }
 
   /**

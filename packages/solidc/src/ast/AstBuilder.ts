@@ -679,10 +679,7 @@ export default class AstBuilder
     // Parse return types
     const returnTypeCtx = ctx.returnType();
     if (returnTypeCtx) {
-      functionDefinition.returnTypes = returnTypeCtx.typeName_list().map(
-        (t) => this.resolveType(t.getText()),
-      );
-      this.warnReturnTypeModifiers(returnTypeCtx);
+      this.applyReturnType(functionDefinition, returnTypeCtx);
     }
 
     return functionDefinition;
@@ -725,10 +722,7 @@ export default class AstBuilder
     // Parse return types
     const returnTypeCtx = ctx.returnType();
     if (returnTypeCtx) {
-      functionDefinition.returnTypes = returnTypeCtx.typeName_list().map(
-        (t) => this.resolveType(t.getText()),
-      );
-      this.warnReturnTypeModifiers(returnTypeCtx);
+      this.applyReturnType(functionDefinition, returnTypeCtx);
     }
 
     return functionDefinition;
@@ -748,10 +742,7 @@ export default class AstBuilder
     // Parse return types
     const returnTypeCtx = ctx.returnType();
     if (returnTypeCtx) {
-      functionDefinition.returnTypes = returnTypeCtx.typeName_list().map(
-        (t) => this.resolveType(t.getText()),
-      );
-      this.warnReturnTypeModifiers(returnTypeCtx);
+      this.applyReturnType(functionDefinition, returnTypeCtx);
     }
 
     return functionDefinition;
@@ -1944,10 +1935,7 @@ export default class AstBuilder
     let returnTypes: Type[] = [];
     const returnTypeCtx = ctx.returnType();
     if (returnTypeCtx) {
-      returnTypes = returnTypeCtx.typeName_list().map(
-        (t) => this.resolveType(t.getText()),
-      );
-      this.warnReturnTypeModifiers(returnTypeCtx);
+      returnTypes = returnTypeCtx.returnParam_list().map((p) => this.resolveType(p.typeName().getText()));
     }
 
     const node = new InterfaceFunctionNode(name, parameters, returnTypes);
@@ -2057,13 +2045,26 @@ export default class AstBuilder
     return parseType(typeText);
   }
 
-  private warnReturnTypeModifiers(ctx: ReturnTypeContext): void {
-    for (const mod of ctx.modifier_list()) {
-      const text = mod.getText();
-      if (text === Modifier.MEMORY || text === Modifier.CALLDATA) {
-        const loc = Location.fromCtx(mod);
-        const line = loc ? ` at line ${loc.start.line}` : '';
-        console.log(`Warning: '${text}' data location modifier is a no-op in SolidCash${line}. All data lives on-stack in the BCH VM.`);
+  // Populate returnTypes and (optionally) returnNames from a `returns (...)` clause.
+  private applyReturnType(fn: FunctionDefinitionNode, ctx: ReturnTypeContext): void {
+    const params = ctx.returnParam_list();
+    fn.returnTypes = params.map((p) => this.resolveType(p.typeName().getText()));
+    const named = params.filter((p) => p.Identifier() !== null);
+    if (named.length > 0 && named.length !== params.length) {
+      throw new ParseError('All return values must be named, or none of them', Location.fromCtx(ctx));
+    }
+    if (named.length === params.length) {
+      fn.returnNames = params.map((p) => p.Identifier()!.getText());
+    }
+    // Warn about no-op data-location modifiers
+    for (const p of params) {
+      for (const mod of p.modifier_list()) {
+        const text = mod.getText();
+        if (text === Modifier.MEMORY || text === Modifier.CALLDATA) {
+          const loc = Location.fromCtx(mod);
+          const line = loc ? ` at line ${loc.start.line}` : '';
+          console.log(`Warning: '${text}' data location modifier is a no-op in SolidCash${line}. All data lives on-stack in the BCH VM.`);
+        }
       }
     }
   }

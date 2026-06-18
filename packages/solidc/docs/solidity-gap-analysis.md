@@ -50,7 +50,7 @@ The remaining gaps are bounded. They are listed below.
 | TODO | Tuple assignment to existing lvalues + swap `(x,y)=(y,x)` | LHS is declaration-only; swap also needs RHS tuple expressions `(y,x)`. |
 | DONE (already worked) | Multi-return destructuring from **user** functions `(a,b)=myFn()` | Verified: `(int a, int b) = userFn()` and `= b.split(4)` both compile/run. Declarations only. |
 | DONE `fd8f2dcf` | Named args for arbitrary calls `f({b:2,a:1})` | Reorder to declared params in SymbolTable; single-target only (overloaded+named errors). |
-| TODO | Named return values `returns (int sum)` | Implicit return vars in scope (assignable, returned on bare `return;`). |
+| DONE `<pending>` | Named return values `returns (int sum)` | Desugared (NamedReturnTransformation) to default-init locals + `return <names>;`; bare `return;` returns them. Requires an explicit `return;`. |
 | PARTIAL | bytesN single-byte index `b[k]` DONE; ordering `< <= > >=` TODO | Index extracts the byte via SPLIT (literal + variable). Ordering deferred - needs a byte-order/sign semantics decision (like integer bitwise). |
 | TODO | Integer bitwise `& \| ^ ~` | Needs a defined sign-magnitude/byte semantics decision before building (only genuinely new capability; riskiest). |
 

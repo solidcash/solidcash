@@ -8,7 +8,7 @@ import {
   encodeString,
   FixedType,
   IntType,
-  parseTypeStrict,
+  parseType,
   PrimitiveType,
 } from '@solidcash/utils';
 import { TypeError } from './Errors.js';
@@ -23,7 +23,12 @@ export type EncodedFunctionArgument = Uint8Array | SignatureTemplate;
 export type EncodeFunction = (arg: FunctionArgument, typeStr: string) => EncodedFunctionArgument;
 
 export function encodeFunctionArgument(argument: FunctionArgument, typeStr: string): EncodedFunctionArgument {
-  let type = parseTypeStrict(typeStr);
+  let type = parseType(typeStr);
+  if (type === undefined) {
+    // Unrecognized type name (e.g. an enum): enum values are int-backed, encode as int.
+    if (typeof argument === 'bigint') return encodeInt(argument);
+    throw new Error(`Unrecognized type string "${typeStr}"`);
+  }
 
   if (type === PrimitiveType.BOOL) {
     if (typeof argument !== 'boolean') {

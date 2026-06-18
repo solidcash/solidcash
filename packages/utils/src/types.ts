@@ -415,8 +415,12 @@ export function implicitlyCastable(actual?: Type, expected?: Type): boolean {
   // Mappings can't be implicitly cast
   if (actual instanceof MappingType || expected instanceof MappingType) return false;
 
-  // Enums can't be implicitly cast
-  if (actual instanceof EnumType || expected instanceof EnumType) return false;
+  // Enums are int-backed: implicitly compatible with int types and the same enum (not other enums).
+  if (actual instanceof EnumType || expected instanceof EnumType) {
+    const intLike = (t: Type): boolean => t === PrimitiveType.INT || t instanceof IntType;
+    if (actual instanceof EnumType && expected instanceof EnumType) return actual.name === expected.name;
+    return actual instanceof EnumType ? intLike(expected) : intLike(actual);
+  }
 
   // Structs can only be implicitly cast to the same struct type
   if (actual instanceof StructType || expected instanceof StructType) {

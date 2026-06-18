@@ -1,6 +1,6 @@
 import { ParseTree, ParseTreeVisitor } from 'antlr4';
 import { hexToBin } from '@bitauth/libauth';
-import { parseType, MappingType, ArrayType, StructType, IntType, FixedType, Type, AddressType, ValueType, BytesType, PrimitiveType } from '@solidcash/utils';
+import { parseType, MappingType, ArrayType, StructType, IntType, FixedType, Type, AddressType, ValueType, BytesType, PrimitiveType, EnumType } from '@solidcash/utils';
 import semver from 'semver';
 import {
   Node,
@@ -252,6 +252,7 @@ export default class AstBuilder
   extends ParseTreeVisitor<Node>
   implements SolidCashVisitor<Node> {
   private structMap: Map<string, StructType> = new Map();
+  private enumMap: Map<string, EnumType> = new Map();
   private typeDefMap: Map<string, ValueType> = new Map();
   private pendingParentInvocations: ParentInvocation[] = [];
   private packedStateArrayNames: Set<string> = new Set();
@@ -1777,6 +1778,8 @@ export default class AstBuilder
     }
     const node = new EnumDefinitionNode(name, members);
     node.location = Location.fromCtx(ctx);
+    // Register so the enum name resolves as a type (params, locals, returns, struct fields).
+    this.enumMap.set(name, new EnumType(name, members));
     return node;
   }
 
@@ -2017,6 +2020,8 @@ export default class AstBuilder
     if (typeText === 'address') return new AddressType(false);
     const structType = this.structMap.get(typeText);
     if (structType) return structType;
+    const enumType = this.enumMap.get(typeText);
+    if (enumType) return enumType;
     const valueType = this.typeDefMap.get(typeText);
     if (valueType) return valueType;
     this.validateBoundedIntType(typeText);

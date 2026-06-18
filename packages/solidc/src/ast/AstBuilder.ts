@@ -923,7 +923,8 @@ export default class AstBuilder
 
   visitTimeOpStatement(ctx: TimeOpStatementContext): TimeOpNode {
     const expression = this.visit(ctx.expression());
-    const message = ctx.requireMessage() ? this.createStringLiteral(ctx.requireMessage()).value : undefined;
+    const rm = ctx.requireMessage();
+    const message = rm && rm.StringLiteral() ? this.createStringLiteral(rm).value : undefined;
     const timeOp = new TimeOpNode(ctx.TxVar().getText() as TimeOp, expression, message);
     timeOp.location = Location.fromCtx(ctx);
 
@@ -932,8 +933,18 @@ export default class AstBuilder
 
   visitRequireStatement(ctx: RequireStatementContext): RequireNode {
     const expression = this.visit(ctx.expression());
-    const message = ctx.requireMessage() ? this.createStringLiteral(ctx.requireMessage()).value : undefined;
-    const require = new RequireNode(expression, message);
+    const rm = ctx.requireMessage();
+    let message: string | undefined;
+    let errorName: string | undefined;
+    let args: ExpressionNode[] = [];
+    if (rm && rm.StringLiteral()) {
+      message = this.createStringLiteral(rm).value;
+    } else if (rm && rm.Identifier()) {
+      // require(cond, CustomError(args)) - reverts with the custom error if cond is false
+      errorName = rm.Identifier().getText();
+      args = rm.expressionList().expression_list().map((e) => this.visit(e) as ExpressionNode);
+    }
+    const require = new RequireNode(expression, message, errorName, args);
     require.location = Location.fromCtx(ctx);
     return require;
   }

@@ -563,19 +563,19 @@ export class ErrorRedefinitionError extends RedefinitionError {
 }
 
 export class UndefinedErrorError extends SolidCashError {
-  constructor(node: RevertNode) {
+  constructor(node: RevertNode | RequireNode) {
     super(node, `Undefined error '${node.errorName}'`);
   }
 }
 
 export class RevertArgumentCountError extends SolidCashError {
-  constructor(node: RevertNode, expected: number, actual: number) {
+  constructor(node: RevertNode | RequireNode, expected: number, actual: number) {
     super(node, `Error '${node.errorName}' expects ${expected} arguments but got ${actual}`);
   }
 }
 
 export class RevertArgumentTypeError extends TypeError {
-  constructor(node: RevertNode, paramName: string, actual?: Type, expected?: Type) {
+  constructor(node: RevertNode | RequireNode, paramName: string, actual?: Type, expected?: Type) {
     super(node, actual, expected, `Type '${actual}' cannot be used for error parameter '${paramName}' of type '${expected}'`);
   }
 }

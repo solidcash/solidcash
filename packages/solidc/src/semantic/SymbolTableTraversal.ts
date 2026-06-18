@@ -80,6 +80,7 @@ import {
   StateVariableVisibility,
   ErrorDefinitionNode,
   RevertNode,
+  RequireNode,
   AssertNode,
   AddressTransferStatementNode,
   AddressSendExpressionNode,
@@ -4294,6 +4295,22 @@ export default class SymbolTableTraversal extends AstTraversal {
       throw new ErrorRedefinitionError(err);
     }
     this.errorMap.set(sig, err);
+  }
+
+  visitRequire(node: RequireNode): Node {
+    node.expression = this.visit(node.expression);
+    if (node.errorName) {
+      // require(cond, CustomError(args)): resolve the error like a revert.
+      const candidates = [...this.errorMap.values()].filter((e) => e.name === node.errorName);
+      if (candidates.length === 0) {
+        throw new UndefinedErrorError(node);
+      }
+      if (candidates.length === 1) {
+        node.errorDefinition = candidates[0];
+      }
+      node.args = this.visitList(node.args);
+    }
+    return node;
   }
 
   visitRevert(node: RevertNode): Node {

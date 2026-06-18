@@ -891,6 +891,22 @@ export default class TypeCheckTraversal extends AstTraversal {
     node.expression = this.visit(node.expression);
     const parameters = node.expression.type ? [node.expression.type] : [];
     expectParameters(node, parameters, [PrimitiveType.BOOL]);
+
+    // require(cond, CustomError(args)): type-check the error arguments like a revert.
+    node.args = this.visitList(node.args);
+    if (node.errorDefinition) {
+      const errorDef = node.errorDefinition;
+      if (node.args.length !== errorDef.parameters.length) {
+        throw new RevertArgumentCountError(node, errorDef.parameters.length, node.args.length);
+      }
+      for (let i = 0; i < node.args.length; i++) {
+        const argType = node.args[i].type;
+        const paramType = errorDef.parameters[i].type;
+        if (argType && !implicitlyCastable(argType, paramType)) {
+          throw new RevertArgumentTypeError(node, errorDef.parameters[i].name, argType, paramType);
+        }
+      }
+    }
     return node;
   }
 

@@ -400,9 +400,13 @@ export class TimeOpNode extends StatementNode {
 }
 
 export class RequireNode extends StatementNode {
+  errorDefinition?: ErrorDefinitionNode;
+
   constructor(
     public expression: ExpressionNode,
     public message?: string,
+    public errorName?: string,
+    public args: ExpressionNode[] = [],
   ) {
     super();
   }

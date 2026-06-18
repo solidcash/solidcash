@@ -70,6 +70,7 @@ import { MappingDeleteStatementContext } from "./SolidCashParser.js";
 import { StateAssignStatementContext } from "./SolidCashParser.js";
 import { VariableDefinitionContext } from "./SolidCashParser.js";
 import { TupleAssignmentContext } from "./SolidCashParser.js";
+import { TupleSlotContext } from "./SolidCashParser.js";
 import { AssignStatementContext } from "./SolidCashParser.js";
 import { ArrayPushStatementContext } from "./SolidCashParser.js";
 import { ArrayPopStatementContext } from "./SolidCashParser.js";
@@ -572,6 +573,12 @@ export default class SolidCashVisitor<Result> extends ParseTreeVisitor<Result> {
 	 * @return the visitor result
 	 */
 	visitTupleAssignment?: (ctx: TupleAssignmentContext) => Result;
+	/**
+	 * Visit a parse tree produced by `SolidCashParser.tupleSlot`.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	visitTupleSlot?: (ctx: TupleSlotContext) => Result;
 	/**
 	 * Visit a parse tree produced by `SolidCashParser.assignStatement`.
 	 * @param ctx the parse tree

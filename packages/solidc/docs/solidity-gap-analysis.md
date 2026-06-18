@@ -46,9 +46,9 @@ The remaining gaps are bounded. They are listed below.
 | DONE `86ec5f9b` | `require(cond, CustomError(args))` | Reuses the revert custom-error machinery; error is tooling metadata on BCH. |
 | DONE `86fedba1` `86046e99` | Enum <-> int conversion + enum-typed params/vars | `Color(i)` range-checked, `int(c)`; fixed the pre-existing enum-param crash; SDK encode/decode (`33caf817` `406fdca9`). |
 | DONE `a1aba265` | `addmod` / `mulmod` | `(x+y)%k` / `(x*y)%k` (no wrap on BCH BigInt). |
-| TODO | Tuple destructuring with skipped slots `(, x) = f()` | Codegen `OP_DROP` for skipped slots. |
-| TODO | Tuple assignment to existing lvalues + swap `(x,y)=(y,x)` | LHS is declaration-only today; enables the swap idiom. |
-| TODO | Multi-return destructuring from **user** functions `(a,b)=myFn()` | `TupleType` wired for built-ins; extend to user fns. |
+| DONE `<pending>` | Tuple destructuring with skipped slots `(, x) = f()` | Empty-slot grammar; codegen drops skipped values via the altstack (declared -> altstack, skipped -> drop, restore + name). |
+| TODO | Tuple assignment to existing lvalues + swap `(x,y)=(y,x)` | LHS is declaration-only; swap also needs RHS tuple expressions `(y,x)`. |
+| DONE (already worked) | Multi-return destructuring from **user** functions `(a,b)=myFn()` | Verified: `(int a, int b) = userFn()` and `= b.split(4)` both compile/run. Declarations only. |
 | DONE `fd8f2dcf` | Named args for arbitrary calls `f({b:2,a:1})` | Reorder to declared params in SymbolTable; single-target only (overloaded+named errors). |
 | TODO | Named return values `returns (int sum)` | Implicit return vars in scope (assignable, returned on bare `return;`). |
 | PARTIAL | bytesN single-byte index `b[k]` DONE; ordering `< <= > >=` TODO | Index extracts the byte via SPLIT (literal + variable). Ordering deferred - needs a byte-order/sign semantics decision (like integer bitwise). |

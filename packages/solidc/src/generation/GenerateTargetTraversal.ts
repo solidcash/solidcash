@@ -1619,8 +1619,28 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   visitTupleAssignment(node: TupleAssignmentNode): Node {
     node.tuple = this.visit(node.tuple);
     this.popFromStack(node.elements.length);
+
+    if (!node.elements.some((e) => e.skip)) {
+      // Fast path: every slot is a declaration - just name the N tuple values in place.
+      for (const elem of node.elements) this.pushToStack(elem.name!);
+      return node;
+    }
+
+    // Skipped slots: process top-down - declared values to the altstack, skipped values dropped.
+    // FROMALTSTACK then restores the declared values in original (left-to-right) order to name.
+    const loc = { location: node.location, positionHint: PositionHint.END };
+    let declaredCount = 0;
+    for (let i = node.elements.length - 1; i >= 0; i -= 1) {
+      if (node.elements[i].skip) {
+        this.emit(Op.OP_DROP, loc);
+      } else {
+        this.emit(Op.OP_TOALTSTACK, loc);
+        declaredCount += 1;
+      }
+    }
+    for (let i = 0; i < declaredCount; i += 1) this.emit(Op.OP_FROMALTSTACK, loc);
     for (const elem of node.elements) {
-      this.pushToStack(elem.name);
+      if (!elem.skip) this.pushToStack(elem.name!);
     }
     return node;
   }

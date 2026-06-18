@@ -354,15 +354,16 @@ export class VariableDefinitionNode extends StatementNode implements Named, Type
 
 export class TupleAssignmentNode extends StatementNode {
   constructor(
-    public elements: { name: string, type: Type }[],
+    // A `skip` element is an empty slot `(, x) = ...` whose value is dropped.
+    public elements: { name?: string, type?: Type, skip?: boolean }[],
     public tuple: ExpressionNode,
     public parenthesised: boolean = false,
   ) {
     super();
   }
 
-  get left(): { name: string, type: Type } { return this.elements[0]; }
-  get right(): { name: string, type: Type } { return this.elements[1]; }
+  get left(): { name?: string, type?: Type, skip?: boolean } { return this.elements[0]; }
+  get right(): { name?: string, type?: Type, skip?: boolean } { return this.elements[1]; }
 
   accept<T>(visitor: AstVisitor<T>): T {
     return visitor.visitTupleAssignment(this);

@@ -3207,10 +3207,11 @@ export default class SymbolTableTraversal extends AstTraversal {
 
   visitTupleAssignment(node: TupleAssignmentNode): Node {
     node.elements.forEach((variable) => {
-      const definition = new VariableDefinitionNode(variable.type, [], variable.name, node.tuple);
+      if (variable.skip) return; // empty slot: value is dropped, no variable declared
+      const definition = new VariableDefinitionNode(variable.type!, [], variable.name!, node.tuple);
       definition.location = node.location;
 
-      if (this.symbolTables[0].get(variable.name)) {
+      if (this.symbolTables[0].get(variable.name!)) {
         throw new VariableRedefinitionError(definition);
       }
       this.symbolTables[0].set(Symbol.variable(definition));

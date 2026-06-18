@@ -858,13 +858,21 @@ export default class AstBuilder
 
   visitTupleAssignment(ctx: TupleAssignmentContext): TupleAssignmentNode {
     const expression = this.visit(ctx.expression());
-    const names = ctx.Identifier_list();
-    const types = ctx.typeName_list();
-    const elements = names.map((name, i) => ({
-      name: name.getText(),
-      type: this.resolveType(types[i].getText()),
-    }));
-    // Detect parenthesised form: (type a, type b) = expr;
+    const slots = ctx.tupleSlot_list();
+    let elements: { name?: string, type?: Type, skip?: boolean }[];
+    if (slots.length > 0) {
+      // Parenthesised form: each slot is a declaration `type name` or an empty (skipped) slot.
+      elements = slots.map((slot) => {
+        const tn = slot.typeName();
+        if (tn) return { name: slot.Identifier()!.getText(), type: this.resolveType(tn.getText()) };
+        return { skip: true };
+      });
+    } else {
+      // Unparenthesised declaration form: type a, type b = expr;
+      const names = ctx.Identifier_list();
+      const types = ctx.typeName_list();
+      elements = names.map((name, i) => ({ name: name.getText(), type: this.resolveType(types[i].getText()) }));
+    }
     const parenthesised = ctx.getText().startsWith('(');
     const tupleAssignment = new TupleAssignmentNode(elements, expression, parenthesised);
     tupleAssignment.location = Location.fromCtx(ctx);

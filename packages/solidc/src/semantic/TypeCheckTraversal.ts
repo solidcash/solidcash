@@ -821,18 +821,25 @@ export default class TypeCheckTraversal extends AstTraversal {
   visitTupleAssignment(node: TupleAssignmentNode): Node {
     node.tuple = this.visit(node.tuple);
 
-    const assignmentType = new TupleType(node.elements.map((e) => e.type));
+    const rhsType = node.tuple.type;
+    // Skipped slots accept whatever the RHS provides at that position (the value is dropped).
+    const elementTypes: Type[] = node.elements.map((e, i) => {
+      if (e.skip) return rhsType instanceof TupleType ? rhsType.elements[i] : PrimitiveType.ANY;
+      return e.type!;
+    });
+    const assignmentType = new TupleType(elementTypes);
 
     // For 2-element tuples, the expression must be a split operation or abi.decode
     // For N-element tuples (N > 2), the expression must produce a matching TupleType
     if (node.elements.length === 2) {
-      if (!(node.tuple.type instanceof TupleType)) {
+      if (!(rhsType instanceof TupleType)) {
         throw new TupleAssignmentError(node.tuple);
       }
     }
 
-    if (!implicitlyCastable(node.tuple.type, assignmentType)) {
-      const syntheticAssignment = new VariableDefinitionNode(assignmentType, [], node.elements[0].name, node.tuple);
+    if (!implicitlyCastable(rhsType, assignmentType)) {
+      const firstNamed = node.elements.find((e) => !e.skip);
+      const syntheticAssignment = new VariableDefinitionNode(assignmentType, [], firstNamed?.name ?? '_', node.tuple);
       syntheticAssignment.location = node.location;
       throw new AssignTypeError(syntheticAssignment);
     }

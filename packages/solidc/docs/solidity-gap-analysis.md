@@ -75,9 +75,9 @@ The remaining gaps are bounded. They are listed below.
 |------|-------|--------|
 | **Short-circuit `&&` / `||`** DONE `7c99690a` | SolidCash did NOT short-circuit. | Fixed: emits `OP_IF` branching (RHS skipped when decided). Also fixed the underlying conditional-var-leak in the `opRolls` last-use analysis (which affected ternary too). |
 | **`try`/`catch` dead catch** DONE `7c99690a` | Catch blocks emit nothing (BCH can't resume after a failed opcode). | Kept as dead code (4+ contracts rely on the try-block) but sharpened the compile-time warning to call out the Solidity divergence. |
-| C3 linearization claim | `inheritance.md:119` says "C3 linearization"; impl does not compute C3. | Implement C3 (Category B) or correct the doc. |
-| `type(I).interfaceId` width | Code returns `bytes4` (`TypeCheckTraversal.ts:726`); docs say `bytes32`. | Reconcile doc vs impl; define BCH interfaceId semantics. |
-| `abi.encodeWithSignature` selector | Solidity derives the 4-byte selector via `keccak256(sig)`; SolidCash has no keccak, so selectors DIFFER and are not cross-VM compatible. | Document explicitly so users don't assume ABI selector compatibility. |
+| C3 linearization claim DONE | `inheritance.md:119` said "C3 linearization"; impl does not compute C3. | Doc corrected: describes the depth-first left-to-right flatten with diamond-collision rejection, and notes it is not full C3. |
+| `type(I).interfaceId` width DONE | Code returns `bytes4`; docs said `bytes32`. | Docs corrected to `bytes4` (sha256-based, EIP-165 style) in inheritance.md + structs-enums-types.md. |
+| `abi.encodeWithSignature` selector DONE | Solidity derives the 4-byte selector via `keccak256(sig)`; SolidCash uses `sha256`, so selectors DIFFER and are not cross-VM compatible. | Documented in advanced-features.md (sha256, not keccak; not cross-VM compatible). |
 | `delete` as prefix expression; postfix `x++`/`x--` in expression position | SolidCash has statement forms only. | Minor; optional alignment. |
 
 ## Category D - N/A on UTXO (document as intentionally unsupported, with BCH substitute)

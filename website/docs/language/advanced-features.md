@@ -102,6 +102,12 @@ bytes call = abi.encodeWithSignature("transfer(address,uint)", to, amount);
 bytes call = abi.encodeCall(IToken.transfer, (recipient, amount));
 ```
 
+:::note
+`abi.encodeWithSignature` and `abi.encodeCall` derive the 4-byte selector from the function signature
+using **sha256**, not Ethereum's `keccak256`. Selectors therefore differ from an EVM contract's, so
+encoded calldata is **not** cross-VM compatible - use these for SolidCash-to-SolidCash calls.
+:::
+
 ## External Contract Interaction
 
 ### External State Reads

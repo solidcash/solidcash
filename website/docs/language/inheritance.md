@@ -116,7 +116,10 @@ contract GrandChild() is Child {
 
 ## Diamond Inheritance
 
-When multiple parents share a common ancestor, SolidCash resolves conflicts using C3 linearization:
+Inheritance is flattened at compile time by merging parents depth-first, left-to-right. When two
+parents define the same function (a diamond), the child **must** provide an explicit `override` to
+resolve the ambiguity; without it the compiler errors. Functions inherited from a single common
+ancestor are deduplicated rather than treated as a conflict.
 
 ```solidity
 contract A() {
@@ -134,7 +137,11 @@ contract D() is B, C {
 ```
 
 :::note
-If two parents define the same function, the child **must** provide an explicit `override` to resolve the ambiguity. The compiler will error otherwise.
+This is a left-to-right flatten with diamond-collision rejection, **not** full C3 linearization. For
+linear and most multiple-inheritance hierarchies the resolution order is the same; the practical
+difference only appears in complex diamonds, where SolidCash requires an explicit `override` instead
+of silently picking a C3 order. Use `super.f()` to call the next parent implementation and
+`Base.f()` to call a specific ancestor's.
 :::
 
 ## Abstract Contracts
@@ -191,8 +198,9 @@ interface IERC20 {
 ### Interface ID (EIP-165 Style)
 
 ```solidity
-bytes32 id = type(IERC20).interfaceId;
-// XOR of all function selectors - same as Solidity's EIP-165
+bytes4 id = type(IERC20).interfaceId;
+// XOR of all 4-byte function selectors - EIP-165 style (bytes4, like Solidity).
+// Note: SolidCash selectors are sha256-based, not keccak256, so the value differs from an EVM contract.
 ```
 
 ### External State Reads

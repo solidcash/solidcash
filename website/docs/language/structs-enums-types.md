@@ -250,5 +250,7 @@ unchecked {
 | `type(fixed128x18).min` | `fixed128x18` | Min fixed-point value |
 | `type(Status).min` | `int` | First enum value |
 | `type(Status).max` | `int` | Last enum value |
-| `type(IToken).interfaceId` | `bytes32` | EIP-165-style interface ID |
+| `type(IToken).interfaceId` | `bytes4` | EIP-165-style interface ID (sha256-based, differs from EVM) |
 | `type(MyContract).name` | `string` | Contract name as string |
+| `type(MyContract).creationCode` | `bytes` | Child contract's compiled redeem script |
+| `type(MyContract).runtimeCode` | `bytes` | Alias of `creationCode` (BCH has no creation/runtime split) |

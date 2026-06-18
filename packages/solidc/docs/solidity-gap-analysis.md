@@ -9,6 +9,15 @@ language. Categories below:
 - **N/A** - EVM-execution-model specific (accounts, gas, storage slots, message calls); document as
   intentionally unsupported, with the BCH substitute.
 
+## Progress (2026-06)
+
+Implemented so far (branch `solidcash_v0.13.1`): short-circuit `&&`/`||` (+ conditional-var-leak fix)
+and the try/catch warning (ALIGN); compound assignment, `x[a:b]` slice, `require(cond, Error())`,
+enum<->int casts + enum-typed params with full SDK encode/decode, `addmod`/`mulmod` (Category A).
+Each shipped with a VM-level e2e test. Remaining Category A: tuple-destructuring expressiveness,
+named call args, named returns, bytesN ordering/index, integer bitwise. Then Category B (function
+types et al.). See per-row Status markers below.
+
 ## Where SolidCash already matches or exceeds Solidity
 
 Syntax/OOP parity is high. SolidCash already has: structs (file-level, nested, partial field
@@ -30,20 +39,20 @@ The remaining gaps are bounded. They are listed below.
 
 ## Category A - IMPLEMENT: quick ergonomic/syntactic parity (low risk)
 
-| Gap | Solidity | SolidCash today | Effort | Notes |
-|-----|----------|-----------------|--------|-------|
-| Compound assignment `*= /= %= &= \|= ^= <<= >>=` | full set | only `= += -= ++ --` (`SolidCash.g4:315,395`) | XS | Desugar `x op= e` -> `x = x op e`. Highest visibility-per-effort. |
-| Tuple destructuring with skipped slots `(, x) = f()` | `variableDeclarationTuple` allows gaps | every slot must be `type name` (`SolidCash.g4:310`) | S | Codegen `OP_DROP` for skipped slots. |
-| Tuple assignment to existing lvalues + swap `(x,y)=(y,x)` | yes | LHS is declaration-only | S | Enables the swap idiom; stack reorder. |
-| Multi-return destructuring from **user** functions `(a,b)=myFn()` | yes | `TupleType` wired for built-ins (`split`, `abi.decode`); confirm/extend to user fns | S | Core Solidity idiom. |
-| Named args for arbitrary calls `f({b:2,a:1})` | `callArgumentList` | only struct-init + callOptions (`SolidCash.g4:483`) | S | Reorder to declared params at compile time; struct-init machinery is ~90% of it. |
-| Named return values `returns (int sum)` | yes | `returnType` is types only (`SolidCash.g4:207`) | S | Sugar: name + assign + bare `return;`. |
-| `x[a:b]` index-range sugar | calldata/array slice | `.slice(a,b)` method only (`SolidCash.g4:528`) | XS | Lower `[a:b]` to existing `SliceNode` for bytes/string. |
-| `require(cond, CustomError(args))` | since 0.8.26 | `requireMessage` is StringLiteral only (`SolidCash.g4:457`) | S | `revert Custom()` already parses; reuse for require. |
-| Enum <-> int explicit conversion (range-checked) | `uint(E)` / `E(i)` | member access yields int but casts rejected (`types.ts:287`) | S | Add checked conversions. |
-| `addmod` / `mulmod` | yes | missing | XS | Pure sugar `(x+y)%k` / `(x*y)%k` (no wrap on BCH BigInt). |
-| bytesN ordering `< <= > >=` and single-byte index `b[k]` | yes | only `==`/`!=`; use `.slice` | S | Index lowers to `slice(k,k+1)`; ordering = lexicographic compare. |
-| Integer bitwise `& \| ^ ~` | two's-complement on ints | bytes-only in SolidCash (`types.md:82`) | M | Needs a defined sign-magnitude/byte semantics decision before building. |
+| Status | Gap | Notes |
+|--------|-----|-------|
+| DONE `71ac1c45` | Compound assignment `*= /= %= &= \|= ^= <<= >>=` | Desugar `x op= e` -> `x = x op e`; inherits the binary op's type rules. |
+| DONE `ecb01192` | `x[a:b]` index-range sugar | Lowers to the existing `SliceNode` (byte-identical to `.slice`). |
+| DONE `86ec5f9b` | `require(cond, CustomError(args))` | Reuses the revert custom-error machinery; error is tooling metadata on BCH. |
+| DONE `86fedba1` `86046e99` | Enum <-> int conversion + enum-typed params/vars | `Color(i)` range-checked, `int(c)`; fixed the pre-existing enum-param crash; SDK encode/decode (`33caf817` `406fdca9`). |
+| DONE `a1aba265` | `addmod` / `mulmod` | `(x+y)%k` / `(x*y)%k` (no wrap on BCH BigInt). |
+| TODO | Tuple destructuring with skipped slots `(, x) = f()` | Codegen `OP_DROP` for skipped slots. |
+| TODO | Tuple assignment to existing lvalues + swap `(x,y)=(y,x)` | LHS is declaration-only today; enables the swap idiom. |
+| TODO | Multi-return destructuring from **user** functions `(a,b)=myFn()` | `TupleType` wired for built-ins; extend to user fns. |
+| TODO | Named args for arbitrary calls `f({b:2,a:1})` | Reorder to declared params; struct-init machinery is ~90% of it. Needs overload-aware handling + new errors. |
+| TODO | Named return values `returns (int sum)` | Implicit return vars in scope (assignable, returned on bare `return;`). |
+| TODO | bytesN ordering `< <= > >=` and single-byte index `b[k]` | Index lowers to `slice(k,k+1)`; ordering = lexicographic compare. |
+| TODO | Integer bitwise `& \| ^ ~` | Needs a defined sign-magnitude/byte semantics decision before building (only genuinely new capability; riskiest). |
 
 ## Category B - IMPLEMENT: substantial features
 
@@ -59,8 +68,8 @@ The remaining gaps are bounded. They are listed below.
 
 | Item | Issue | Action |
 |------|-------|--------|
-| **Short-circuit `&&` / `||`** | SolidCash does NOT short-circuit (`types.md`, confirmed; codegen uses `OP_BOOLAND`/`OP_BOOLOR`). Solidity guarantees short-circuit; ported code like `a != 0 && b/a > 1` breaks. | Correctness priority. Emit `OP_IF` branching so the RHS is skipped when the result is decided. Guard against RHS side-effects/failures. |
-| **`try`/`catch` dead catch** | Grammar advertises try/catch but `visitCatchClause` emits nothing (`GenerateTargetTraversal.ts:2176`) - BCH Script cannot resume after a failed opcode. Catch is silently dead (only a console warning). | Decide: compile-error on non-empty catch (honest), or keep but document loudly. Do not advertise a capability the VM can't deliver. |
+| **Short-circuit `&&` / `||`** DONE `7c99690a` | SolidCash did NOT short-circuit. | Fixed: emits `OP_IF` branching (RHS skipped when decided). Also fixed the underlying conditional-var-leak in the `opRolls` last-use analysis (which affected ternary too). |
+| **`try`/`catch` dead catch** DONE `7c99690a` | Catch blocks emit nothing (BCH can't resume after a failed opcode). | Kept as dead code (4+ contracts rely on the try-block) but sharpened the compile-time warning to call out the Solidity divergence. |
 | C3 linearization claim | `inheritance.md:119` says "C3 linearization"; impl does not compute C3. | Implement C3 (Category B) or correct the doc. |
 | `type(I).interfaceId` width | Code returns `bytes4` (`TypeCheckTraversal.ts:726`); docs say `bytes32`. | Reconcile doc vs impl; define BCH interfaceId semantics. |
 | `abi.encodeWithSignature` selector | Solidity derives the 4-byte selector via `keccak256(sig)`; SolidCash has no keccak, so selectors DIFFER and are not cross-VM compatible. | Document explicitly so users don't assume ABI selector compatibility. |

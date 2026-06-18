@@ -3652,10 +3652,68 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     return node;
   }
 
+  // Int on stack -> its bits/8-byte two's-complement bytes. Add 2^bits when negative, NUM2BIN to
+  // bits/8+1 bytes, keep the low bits/8 (drops the sign-pad byte). Stack: one value -> one value.
+  private emitToTwosComplementBytes(type: IntType, loc: SingleLocationData): void {
+    const byteLen = BigInt(type.bits / 8);
+    if (type.signed) {
+      this.emit(Op.OP_DUP, loc);
+      this.emit(encodeInt(0n), loc);
+      this.emit(Op.OP_LESSTHAN, loc);
+      this.emit(encodeInt(1n << BigInt(type.bits)), loc);
+      this.emit(Op.OP_MUL, loc);
+      this.emit(Op.OP_ADD, loc);
+    }
+    this.emit(encodeInt(byteLen + 1n), loc);
+    this.emit(Op.OP_NUM2BIN, loc);
+    this.emit(encodeInt(byteLen), loc);
+    this.emit(Op.OP_SPLIT, loc);
+    this.emit(Op.OP_DROP, loc);
+  }
+
+  // Inverse of emitToTwosComplementBytes: bits/8-byte two's-complement bytes on stack -> int.
+  private emitFromTwosComplementBytes(type: IntType, loc: SingleLocationData): void {
+    this.emit(new Uint8Array([0x00]), loc); // sign-pad so BIN2NUM reads an unsigned value in [0, 2^bits)
+    this.emit(Op.OP_CAT, loc);
+    this.emit(Op.OP_BIN2NUM, loc);
+    if (type.signed) {
+      // Reinterpret the high bit as a sign: if u >= 2^(bits-1), u -= 2^bits.
+      this.emit(Op.OP_DUP, loc);
+      this.emit(encodeInt(1n << BigInt(type.bits - 1)), loc);
+      this.emit(Op.OP_GREATERTHANOREQUAL, loc);
+      this.emit(Op.OP_IF, loc);
+      this.emit(encodeInt(1n << BigInt(type.bits)), loc);
+      this.emit(Op.OP_SUB, loc);
+      this.emit(Op.OP_ENDIF, loc);
+    }
+  }
+
+  // Integer bitwise & | ^ : two's-complement bytes -> byte-wise op -> back to int.
+  private emitIntBitwise(node: BinaryOpNode): Node {
+    const type = node.type as IntType;
+    const loc = { location: node.location, positionHint: PositionHint.END };
+    node.left = this.visit(node.left);
+    this.emitToTwosComplementBytes(type, loc);
+    node.right = this.visit(node.right);
+    this.emitToTwosComplementBytes(type, loc);
+    const byteOp = node.operator === BinaryOperator.BIT_AND ? Op.OP_AND
+      : node.operator === BinaryOperator.BIT_OR ? Op.OP_OR : Op.OP_XOR;
+    this.emit(byteOp, loc);
+    this.popFromStack(2);
+    this.pushToStack('(value)');
+    this.emitFromTwosComplementBytes(type, loc);
+    return node;
+  }
+
   visitBinaryOp(node: BinaryOpNode): Node {
     // Short-circuit && / || (Solidity semantics): the right operand is only evaluated when needed.
     if (node.operator === BinaryOperator.AND || node.operator === BinaryOperator.OR) {
       return this.emitShortCircuitBoolean(node);
+    }
+    // Integer bitwise (fixed-width two's-complement) when the result is a bounded int.
+    if ((node.operator === BinaryOperator.BIT_AND || node.operator === BinaryOperator.BIT_OR
+      || node.operator === BinaryOperator.BIT_XOR) && node.type instanceof IntType) {
+      return this.emitIntBitwise(node);
     }
     node.left = this.visit(node.left);
     const bothOperandsAreNumeric = isNumericType(node.left.type) && isNumericType(node.right.type);
@@ -3789,6 +3847,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_DROP, locationData); // [..., length]
       this.popFromStack(); // remove blob tracking
       this.pushToStack('(value)');
+      return node;
+    }
+
+    // Integer bitwise NOT: ~a = mask - a (mask = -1 signed, 2^bits-1 unsigned). OP_INVERT is disabled.
+    if (node.operator === UnaryOperator.INVERT && node.type instanceof IntType) {
+      const mask = node.type.signed ? -1n : (1n << BigInt(node.type.bits)) - 1n;
+      this.emit(encodeInt(mask), locationData);
+      this.emit(Op.OP_SWAP, locationData);
+      this.emit(Op.OP_SUB, locationData);
       return node;
     }
 

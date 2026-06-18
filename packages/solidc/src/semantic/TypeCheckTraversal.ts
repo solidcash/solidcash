@@ -1439,10 +1439,29 @@ export default class TypeCheckTraversal extends AstTraversal {
         return node;
       case BinaryOperator.BIT_AND:
       case BinaryOperator.BIT_OR:
-      case BinaryOperator.BIT_XOR:
+      case BinaryOperator.BIT_XOR: {
+        // Integer bitwise (fixed-width two's-complement) when at least one operand is a bounded int.
+        const lt = node.left.type;
+        const rt = node.right.type;
+        const lInt = lt === PrimitiveType.INT || lt instanceof IntType;
+        const rInt = rt === PrimitiveType.INT || rt instanceof IntType;
+        if (lInt && rInt) {
+          const bounded = lt instanceof IntType ? lt : (rt instanceof IntType ? rt : undefined);
+          if (!bounded) {
+            // Unbounded `int` has no fixed width; require intN/uintN for bitwise.
+            throw new UnsupportedTypeError(node as any, lt, new IntType(false, 256));
+          }
+          if (lt instanceof IntType && rt instanceof IntType
+              && (lt.bits !== bounded.bits || rt.bits !== bounded.bits || lt.signed !== rt.signed)) {
+            throw new TypeError(node, rt, lt);
+          }
+          node.type = bounded;
+          return node;
+        }
         expectSameSizeBytes(node, node.left.type, node.right.type);
         node.type = node.left.type;
         return node;
+      }
       case BinaryOperator.SHIFT_LEFT:
       case BinaryOperator.SHIFT_RIGHT:
         expectAnyOfTypes(node, node.left.type, [new BytesType(), PrimitiveType.INT]);
@@ -1479,6 +1498,11 @@ export default class TypeCheckTraversal extends AstTraversal {
         }
         return node;
       case UnaryOperator.INVERT:
+        // Integer bitwise-not on a bounded int (~a = mask - a); else bytes.
+        if (node.expression.type instanceof IntType) {
+          node.type = node.expression.type;
+          return node;
+        }
         expectBytes(node, node.expression.type);
         node.type = node.expression.type;
         return node;

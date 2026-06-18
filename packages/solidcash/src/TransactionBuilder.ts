@@ -24,7 +24,9 @@ import {
   isCovenantUnlocker,
 } from './interfaces.js';
 import { NetworkProvider } from './network/index.js';
-import { hash256 } from '@solidcash/utils';
+import {
+  hash256, scriptToBytecode, buildKeccakSidecarRedeem, keccakSidecarLockingBytecode, KECCAK256_SHARED_SALT,
+} from '@solidcash/utils';
 import {
   solidCashOutputToLibauthOutput,
   createOpReturnOutput,
@@ -111,6 +113,43 @@ export class TransactionBuilder {
     }
 
     this.inputs = this.inputs.concat(utxos.map(((utxo) => ({ ...utxo, unlocker, options }))));
+    return this;
+  }
+
+  /**
+   * Co-spend the keccak256 side-car library required by any keccak-using contract input. The side-car
+   * is appended as the LAST input and recreated as the LAST output (it self-preserves against the last
+   * output). The ~2.4 KB blob lives once on-chain; this loads it for the spend and keeps it reusable.
+   * Auto-invoked by send(); call it explicitly before build()/debug() for keccak contracts. Shared
+   * side-car only - branded (stateful) side-cars must be co-spent manually for now.
+   */
+  async addRequiredSidecars(): Promise<this> {
+    const usesKeccak = (input: UnlockableUtxo): boolean =>
+      isContractUnlocker(input.unlocker) && !!input.unlocker.abiFunction.externalLibraries?.includes('keccak256');
+    if (!this.inputs.some((i) => isUnlockableUtxo(i) && usesKeccak(i))) return this;
+
+    const isBranded = this.inputs.some((i) => isUnlockableUtxo(i) && isContractUnlocker(i.unlocker)
+      && i.unlocker.contract.artifact.externalLibraries?.find((l) => l.name === 'keccak256')?.branded);
+    if (isBranded) {
+      throw new Error('Branded keccak256 side-car co-spend is not yet auto-wired; add the side-car input and a matching last output manually.');
+    }
+
+    const sidecarRedeem = buildKeccakSidecarRedeem(KECCAK256_SHARED_SALT);
+    const sidecarLock = keccakSidecarLockingBytecode(KECCAK256_SHARED_SALT);
+    const utxos = await this.provider.getUtxosForLockingBytecode(sidecarLock);
+    if (utxos.length === 0) {
+      throw new Error('keccak256 side-car library UTXO not found; deploy it before spending a keccak256 contract.');
+    }
+    const sidecarOutpoints = new Set(utxos.map((u) => `${u.txid}:${u.vout}`));
+    if (this.inputs.some((i) => sidecarOutpoints.has(`${i.txid}:${i.vout}`))) return this; // already co-spent
+
+    const sidecar = utxos[0];
+    const unlocker: Unlocker = {
+      generateUnlockingBytecode: () => scriptToBytecode([sidecarRedeem]), // PUSHDATA(redeem)
+      generateLockingBytecode: () => sidecarLock,
+    };
+    this.addInput(sidecar, unlocker);                              // last input (the loader reads it)
+    this.addOutput({ to: sidecarLock, amount: sidecar.satoshis }); // last output (self-preservation)
     return this;
   }
 
@@ -417,6 +456,9 @@ export class TransactionBuilder {
   async send(): Promise<TransactionDetails>;
   async send(raw: true): Promise<string>;
   async send(raw?: true): Promise<TransactionDetails | string> {
+    // Co-spend any required external-library side-cars (e.g. keccak256) before building.
+    await this.addRequiredSidecars();
+
     // Build the transaction, then debug (for script-level errors), then check fees.
     // This order ensures FailedRequireError takes precedence over fee validation errors.
     const transaction = this.buildLibauthTransaction();

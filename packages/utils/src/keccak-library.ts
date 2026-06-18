@@ -18,10 +18,10 @@ export const KECCAK256_LIBRARY_BLOB_LENGTH = 2326;
 export const KECCAK256_LIBRARY_ID = 0x1009n;                 // next after the 0x1000-0x1008 subroutine registry
 
 // Side-car redeem layout the loader strips past (must match the SDK builder):
-//   <salt:32> OP_DROP | self-pres(5) | PUSHDATA2-prefix(3) | blob | OP_DROP OP_1
+//   <salt:32> OP_DROP | self-pres(6) | PUSHDATA2-prefix(3) | blob | OP_DROP OP_1
 // branded: salt = contract token category; shared: salt = 32 zero bytes.
 export const KECCAK256_SIDECAR_SALT_PREFIX_LENGTH = 34;      // OP_PUSHBYTES_32 + 32 + OP_DROP
-export const KECCAK256_SIDECAR_SELFPRES_LENGTH = 5;          // INPUTINDEX UTXOBYTECODE INPUTINDEX OUTPUTBYTECODE EQUALVERIFY
+export const KECCAK256_SIDECAR_SELFPRES_LENGTH = 6;          // INPUTINDEX UTXOBYTECODE TXOUTPUTCOUNT 1SUB OUTPUTBYTECODE EQUALVERIFY
 export const KECCAK256_SIDECAR_BLOB_PUSH_PREFIX_LENGTH = 3;  // OP_PUSHDATA2 + 2-byte length
 export const KECCAK256_SIDECAR_OUTER_PUSH_PREFIX_LENGTH = 3; // unlocking = PUSHDATA2(redeem)
 
@@ -32,9 +32,11 @@ export const KECCAK256_SIDECAR_OUTER_PUSH_PREFIX_LENGTH = 3; // unlocking = PUSH
  */
 export function buildKeccakSidecarRedeem(salt: Uint8Array): Uint8Array {
   if (salt.length !== 32) throw new Error('keccak side-car salt must be 32 bytes');
+  // self-pres: own locking bytecode == the LAST output's locking bytecode (recreate the library UTXO).
+  // Decoupled from the input index so the SDK can append the side-car as the last input + last output.
   const script: Script = [
     salt, Op.OP_DROP,
-    Op.OP_INPUTINDEX, Op.OP_UTXOBYTECODE, Op.OP_INPUTINDEX, Op.OP_OUTPUTBYTECODE, Op.OP_EQUALVERIFY,
+    Op.OP_INPUTINDEX, Op.OP_UTXOBYTECODE, Op.OP_TXOUTPUTCOUNT, Op.OP_1SUB, Op.OP_OUTPUTBYTECODE, Op.OP_EQUALVERIFY,
     hexToBin(KECCAK256_LIBRARY_BLOB), Op.OP_DROP, Op.OP_1,
   ];
   return scriptToBytecode(script);

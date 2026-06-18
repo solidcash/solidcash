@@ -15,10 +15,9 @@ Implemented so far (branch `solidcash_v0.13.1`), each with a VM-level e2e test: 
 `&&`/`||` (+ conditional-var-leak fix) and the try/catch warning (ALIGN); compound assignment,
 `x[a:b]` slice, `bytesN[k]` index, `require(cond, Error())`, enum<->int casts + enum-typed params
 with full SDK encode/decode, `addmod`/`mulmod`, named call args `f({a:1})`, tuple destructuring with
-skipped slots, named return values, integer bitwise `& | ^ ~` (Category A). Remaining Category A:
-tuple existing-lvalue/swap (needs RHS tuple expressions) and bytesN ordering `< <= > >=` (now
-unblocked - reuses the integer-bitwise two's-complement byte machinery). Then Category B (function
-types et al.). See per-row Status markers below.
+skipped slots, named return values, integer bitwise `& | ^ ~`, bytesN ordering `< <= > >=`
+(Category A). The only remaining Category A item is tuple existing-lvalue/swap (needs RHS tuple
+expressions). Then Category B (function types et al.). See per-row Status markers below.
 
 ## Where SolidCash already matches or exceeds Solidity
 
@@ -53,7 +52,7 @@ The remaining gaps are bounded. They are listed below.
 | DONE (already worked) | Multi-return destructuring from **user** functions `(a,b)=myFn()` | Verified: `(int a, int b) = userFn()` and `= b.split(4)` both compile/run. Declarations only. |
 | DONE `fd8f2dcf` | Named args for arbitrary calls `f({b:2,a:1})` | Reorder to declared params in SymbolTable; single-target only (overloaded+named errors). |
 | DONE `e0334f3c` | Named return values `returns (int sum)` | Desugared (NamedReturnTransformation) to default-init locals + `return <names>;`; bare `return;` returns them. Requires an explicit `return;`. |
-| PARTIAL | bytesN single-byte index `b[k]` DONE; ordering `< <= > >=` TODO | Index extracts the byte via SPLIT (literal + variable). Ordering now unblocked - the integer-bitwise two's-complement conversion gives the byte/sign machinery it needs. |
+| DONE `40862303` `a2be41fd` | bytesN single-byte index `b[k]` + ordering `< <= > >=` | Index extracts the byte via SPLIT (literal + variable). Ordering compares equal-width bytesN as unsigned big-endian (REVERSEBYTES + 0x00 sign-pad + BIN2NUM + numeric compare); unequal-width/unbounded rejected. |
 | DONE `cc79005a` | Integer bitwise `& \| ^ ~` | Bounded intN/uintN via sign-magnitude <-> two's-complement (NUM2BIN/SPLIT -> byte-wise AND/OR/XOR -> BIN2NUM); `~a = mask - a` (OP_INVERT disabled). Unbounded int + mismatched width/sign rejected. VM e2e for signed/unsigned incl. negatives. |
 
 ## Category B - IMPLEMENT: substantial features

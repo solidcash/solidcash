@@ -686,7 +686,11 @@ function substituteInStatement(
   }
 
   if (stmt instanceof TupleAssignmentNode) {
-    stmt.tuple = substituteInExpression(stmt.tuple, subs);
+    if (stmt.tupleExpressions) {
+      stmt.tupleExpressions = stmt.tupleExpressions.map((e) => substituteInExpression(e, subs));
+    } else {
+      stmt.tuple = substituteInExpression(stmt.tuple, subs);
+    }
     return stmt;
   }
 

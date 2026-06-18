@@ -1616,19 +1616,59 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     return node;
   }
 
-  visitTupleAssignment(node: TupleAssignmentNode): Node {
-    node.tuple = this.visit(node.tuple);
-    this.popFromStack(node.elements.length);
+  // True for `(a, b) = (b, a)` where a and b are the top two stack entries: one OP_SWAP does it.
+  private isTopTwoSwap(node: TupleAssignmentNode): boolean {
+    if (!node.tupleExpressions || node.elements.length !== 2) return false;
+    const [e0, e1] = node.elements;
+    if (!e0.existing || !e1.existing) return false;
+    const [r0, r1] = node.tupleExpressions;
+    if (!(r0 instanceof IdentifierNode) || !(r1 instanceof IdentifierNode)) return false;
+    if (r0.name !== e1.name || r1.name !== e0.name) return false;
+    const d0 = this.getStackIndex(e0.name!);
+    const d1 = this.getStackIndex(e1.name!);
+    return (d0 === 0 && d1 === 1) || (d0 === 1 && d1 === 0);
+  }
 
+  visitTupleAssignment(node: TupleAssignmentNode): Node {
+    const loc = { location: node.location, positionHint: PositionHint.END };
+
+    // Swap fast-path: exchange the top two stack vars in place, no RHS copy.
+    if (this.isTopTwoSwap(node)) {
+      this.emit(Op.OP_SWAP, loc);
+      return node;
+    }
+
+    // Evaluate the RHS, leaving one value per slot on the stack (rightmost slot's value on top).
+    if (node.tupleExpressions) {
+      node.tupleExpressions = node.tupleExpressions.map((e) => this.visit(e) as ExpressionNode);
+    } else {
+      node.tuple = this.visit(node.tuple);
+    }
+
+    // Existing-lvalue slots: assign each value top-down into its variable's slot; drop skipped values.
+    // RHS is fully evaluated first, so swaps and self-references are clobber-safe.
+    if (node.elements.some((e) => e.existing)) {
+      for (let i = node.elements.length - 1; i >= 0; i -= 1) {
+        const elem = node.elements[i];
+        if (elem.skip) {
+          this.emit(Op.OP_DROP, loc);
+        } else {
+          this.emitReplace(this.getStackIndex(elem.name!), node);
+        }
+        this.popFromStack();
+      }
+      return node;
+    }
+
+    // Declaration slots: name the N values in place.
+    this.popFromStack(node.elements.length);
     if (!node.elements.some((e) => e.skip)) {
-      // Fast path: every slot is a declaration - just name the N tuple values in place.
       for (const elem of node.elements) this.pushToStack(elem.name!);
       return node;
     }
 
-    // Skipped slots: process top-down - declared values to the altstack, skipped values dropped.
-    // FROMALTSTACK then restores the declared values in original (left-to-right) order to name.
-    const loc = { location: node.location, positionHint: PositionHint.END };
+    // Skipped slots among declarations: process top-down - declared values to the altstack, skipped
+    // values dropped. FROMALTSTACK then restores the declared values in original order to name.
     let declaredCount = 0;
     for (let i = node.elements.length - 1; i >= 0; i -= 1) {
       if (node.elements[i].skip) {

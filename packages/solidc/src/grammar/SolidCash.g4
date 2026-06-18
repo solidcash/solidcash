@@ -313,11 +313,13 @@ variableDefinition
 
 tupleAssignment
     : typeName Identifier (',' typeName Identifier)+ '=' expression ';'
+    | '(' tupleSlot (',' tupleSlot)+ ')' '=' '(' expression (',' expression)+ ')' ';'
     | '(' tupleSlot (',' tupleSlot)+ ')' '=' expression ';'
     ;
 
 tupleSlot
     : typeName Identifier
+    | Identifier
     |
     ;
 

@@ -848,14 +848,15 @@ export default class AstBuilder
   }
 
   visitTupleAssignment(ctx: TupleAssignmentContext): TupleAssignmentNode {
-    const expression = this.visit(ctx.expression());
     const slots = ctx.tupleSlot_list();
-    let elements: { name?: string, type?: Type, skip?: boolean }[];
+    let elements: { name?: string, type?: Type, skip?: boolean, existing?: boolean }[];
     if (slots.length > 0) {
-      // Parenthesised form: each slot is a declaration `type name` or an empty (skipped) slot.
+      // Parenthesised form: a declaration `type name`, a bare `name` (existing lvalue), or an empty slot.
       elements = slots.map((slot) => {
         const tn = slot.typeName();
         if (tn) return { name: slot.Identifier()!.getText(), type: this.resolveType(tn.getText()) };
+        const id = slot.Identifier();
+        if (id) return { name: id.getText(), existing: true };
         return { skip: true };
       });
     } else {
@@ -865,7 +866,12 @@ export default class AstBuilder
       elements = names.map((name, i) => ({ name: name.getText(), type: this.resolveType(types[i].getText()) }));
     }
     const parenthesised = ctx.getText().startsWith('(');
-    const tupleAssignment = new TupleAssignmentNode(elements, expression, parenthesised);
+    // `(a, b) = (e1, e2)` parses N RHS expressions; the other forms parse one tuple-valued expression.
+    const exprs = ctx.expression_list();
+    const tupleAssignment = exprs.length > 1
+      ? new TupleAssignmentNode(elements, undefined as unknown as ExpressionNode, parenthesised,
+        exprs.map((e) => this.visit(e) as ExpressionNode))
+      : new TupleAssignmentNode(elements, this.visit(exprs[0]) as ExpressionNode, parenthesised);
     tupleAssignment.location = Location.fromCtx(ctx);
     return tupleAssignment;
   }

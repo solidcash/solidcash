@@ -214,7 +214,11 @@ export default class AstTraversal extends AstVisitor<Node> {
   }
 
   visitTupleAssignment(node: TupleAssignmentNode): Node {
-    node.tuple = this.visit(node.tuple);
+    if (node.tupleExpressions) {
+      node.tupleExpressions = node.tupleExpressions.map((e) => this.visit(e) as ExpressionNode);
+    } else {
+      node.tuple = this.visit(node.tuple);
+    }
     return node;
   }
 

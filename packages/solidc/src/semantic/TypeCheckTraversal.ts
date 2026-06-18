@@ -819,6 +819,21 @@ export default class TypeCheckTraversal extends AstTraversal {
   }
 
   visitTupleAssignment(node: TupleAssignmentNode): Node {
+    if (node.tupleExpressions) {
+      // `(x, y) = (a, b)`: each RHS expression maps to one slot; the combined type is their tuple.
+      node.tupleExpressions = node.tupleExpressions.map((e) => this.visit(e));
+      const rhsTuple = new TupleType(node.tupleExpressions.map((e) => e.type!));
+      const elementTypes = node.elements.map((e, i) => (e.skip ? rhsTuple.elements[i] : e.type!));
+      const assignmentType = new TupleType(elementTypes);
+      if (!implicitlyCastable(rhsTuple, assignmentType)) {
+        const firstNamed = node.elements.find((e) => !e.skip);
+        const synthetic = new VariableDefinitionNode(assignmentType, [], firstNamed?.name ?? '_', node.tupleExpressions[0]);
+        synthetic.location = node.location;
+        throw new AssignTypeError(synthetic);
+      }
+      return node;
+    }
+
     node.tuple = this.visit(node.tuple);
 
     const rhsType = node.tuple.type;

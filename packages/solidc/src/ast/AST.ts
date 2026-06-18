@@ -356,15 +356,18 @@ export class VariableDefinitionNode extends StatementNode implements Named, Type
 export class TupleAssignmentNode extends StatementNode {
   constructor(
     // A `skip` element is an empty slot `(, x) = ...` whose value is dropped.
-    public elements: { name?: string, type?: Type, skip?: boolean }[],
+    // An `existing` element is a bare identifier `(x, y) = ...` assigned to an already-declared var.
+    public elements: { name?: string, type?: Type, skip?: boolean, existing?: boolean }[],
     public tuple: ExpressionNode,
     public parenthesised: boolean = false,
+    // Per-slot RHS expressions for `(x, y) = (a, b)` (swap/assign); when set, `tuple` is unused.
+    public tupleExpressions?: ExpressionNode[],
   ) {
     super();
   }
 
-  get left(): { name?: string, type?: Type, skip?: boolean } { return this.elements[0]; }
-  get right(): { name?: string, type?: Type, skip?: boolean } { return this.elements[1]; }
+  get left(): { name?: string, type?: Type, skip?: boolean, existing?: boolean } { return this.elements[0]; }
+  get right(): { name?: string, type?: Type, skip?: boolean, existing?: boolean } { return this.elements[1]; }
 
   accept<T>(visitor: AstVisitor<T>): T {
     return visitor.visitTupleAssignment(this);

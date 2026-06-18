@@ -111,6 +111,7 @@ import { createDefaultValueExpression } from '../ast/defaults.js';
 import {
   FunctionRedefinitionError,
   VariableRedefinitionError,
+  TupleMixedSlotsError,
   UndefinedReferenceError,
   UnusedVariableError,
   InvalidSymbolTypeError,
@@ -1525,7 +1526,11 @@ export default class SymbolTableTraversal extends AstTraversal {
       count += this.countLowLevelCalls(node.expression);
     }
     if (node instanceof TupleAssignmentNode) {
-      count += this.countLowLevelCalls(node.tuple);
+      if (node.tupleExpressions) {
+        for (const e of node.tupleExpressions) count += this.countLowLevelCalls(e);
+      } else {
+        count += this.countLowLevelCalls(node.tuple);
+      }
     }
     if (node instanceof BranchNode) {
       count += this.countLowLevelCalls(node.ifBlock);
@@ -1575,7 +1580,11 @@ export default class SymbolTableTraversal extends AstTraversal {
       this.assignLowLevelCallIndices(node.expression, state);
     }
     if (node instanceof TupleAssignmentNode) {
-      this.assignLowLevelCallIndices(node.tuple, state);
+      if (node.tupleExpressions) {
+        for (const e of node.tupleExpressions) this.assignLowLevelCallIndices(e, state);
+      } else {
+        this.assignLowLevelCallIndices(node.tuple, state);
+      }
     }
     if (node instanceof BranchNode) {
       this.assignLowLevelCallIndices(node.ifBlock, state);
@@ -3207,9 +3216,26 @@ export default class SymbolTableTraversal extends AstTraversal {
   }
 
   visitTupleAssignment(node: TupleAssignmentNode): Node {
-    node.elements.forEach((variable) => {
+    // Disallow mixing new declarations with existing-lvalue slots in one tuple assignment.
+    const hasDeclaration = node.elements.some((e) => !e.skip && !e.existing);
+    const hasExisting = node.elements.some((e) => e.existing);
+    if (hasDeclaration && hasExisting) {
+      throw new TupleMixedSlotsError(node);
+    }
+
+    node.elements.forEach((variable, i) => {
       if (variable.skip) return; // empty slot: value is dropped, no variable declared
-      const definition = new VariableDefinitionNode(variable.type!, [], variable.name!, node.tuple);
+      if (variable.existing) {
+        // Existing lvalue: must already be declared; resolve to validate (codegen rolls into its slot).
+        const sym = this.symbolTables[0].get(variable.name!);
+        if (!sym) {
+          throw new UndefinedReferenceError({ name: variable.name!, location: node.location } as IdentifierNode);
+        }
+        variable.type = sym.type; // record the declared type for the type-check assignability pass
+        return;
+      }
+      const initializer = node.tupleExpressions ? node.tupleExpressions[i] : node.tuple;
+      const definition = new VariableDefinitionNode(variable.type!, [], variable.name!, initializer);
       definition.location = node.location;
 
       if (this.symbolTables[0].get(variable.name!)) {
@@ -3218,7 +3244,17 @@ export default class SymbolTableTraversal extends AstTraversal {
       this.symbolTables[0].set(Symbol.variable(definition));
     });
 
-    node.tuple = this.visit(node.tuple);
+    if (node.tupleExpressions) {
+      node.tupleExpressions = node.tupleExpressions.map((e) => this.visit(e) as ExpressionNode);
+    } else {
+      node.tuple = this.visit(node.tuple);
+    }
+
+    // Existing-lvalue targets are written here, so their slots must survive: drop them from opRolls so
+    // their RHS/prior reads PICK instead of ROLL (mirrors how visitAssign protects an assigned var).
+    node.elements.forEach((variable) => {
+      if (variable.existing) this.currentFunction.opRolls.delete(variable.name!);
+    });
     return node;
   }
 

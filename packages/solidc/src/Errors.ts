@@ -281,6 +281,14 @@ export class TupleAssignmentError extends SolidCashError {
   }
 }
 
+export class TupleMixedSlotsError extends SolidCashError {
+  constructor(
+    node: Node,
+  ) {
+    super(node, 'Cannot mix new declarations and existing variables in a single tuple assignment');
+  }
+}
+
 export class ConstantModificationError extends SolidCashError {
   constructor(
     node: VariableDefinitionNode | ConstantDefinitionNode,

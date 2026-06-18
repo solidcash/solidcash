@@ -17,8 +17,8 @@ Implemented so far (branch `solidcash_v0.13.1`), each with a VM-level e2e test: 
 with full SDK encode/decode, `addmod`/`mulmod`, named call args `f({a:1})`, tuple destructuring with
 skipped slots, named return values, integer bitwise `& | ^ ~`, bytesN ordering `< <= > >=`, and
 tuple assignment to existing lvalues + swap `(x,y)=(y,x)`. **Category A is now complete.** Category B
-underway: **internal function types / function pointers** are done (`function(T) returns (R)`,
-indirect calls via `OP_INVOKE`). Remaining Category B: `super`/`Base.f()`, real C3,
+underway: **internal function types / function pointers** (incl. dispatch tables) and
+**`super.f()`/`Base.f()` parent calls** are done. Remaining Category B: real C3 linearization and
 `type(C).creationCode`. See per-row Status markers below.
 
 ## Where SolidCash already matches or exceeds Solidity
@@ -62,7 +62,7 @@ The remaining gaps are bounded. They are listed below.
 | Gap | Value | Notes |
 |-----|-------|-------|
 | **Internal function types / function pointers** DONE `74a3eb8f` `dcf6d498` `79804a8a` | High / novel | A function value is the target's integer `functionId`; an indirect call is `<functionId> OP_INVOKE`, reusing the existing per-function `OP_DEFINE`/`OP_INVOKE` dispatch. `function(T) returns (R)` type; function name in value position; callbacks/strategy dispatch/higher-order helpers; expression + statement call forms; **dispatch tables** (arrays + state mappings of function pointers, encoded as the int functionId; two-step call from a table element since the callee grammar wants an identifier). SDK encodes/decodes function-pointer values as int. Targets are internal/private/public (external stay N/A); entry-point function-type params/returns rejected (no ABI); function-pointer state in `upgrade`/`delegate` contracts rejected (positional ids would remap). Event fields of function type not yet supported. |
-| `super.f()` and qualified `Base.f()` parent calls | Med | Inheritance is flattened at compile time; today only constructor-arg forwarding exists. Needed for mixin/template (OZ-style) porting. |
+| `super.f()` and qualified `Base.f()` parent calls DONE `e5273533` | Med | Overridden parent bodies are preserved under a mangled internal name during flattening; `super.f()` resolves to the next ancestor in the linearization that implements f (multi-level chains work), `Base.f()` targets a named ancestor. Preserved bodies are internal-only and pruned unless reached by a super/Base call; abstract parents are not preserved. |
 | Real C3 linearization | Med | Current impl is depth-first left-to-right flatten with diamond-collision rejection, **not** C3 MRO (`InheritanceExpansionTransformation.ts:160-275`). Either implement C3 or correct the docs (see ALIGN). |
 | Make `virtual` meaningful + explicit `override(A,B)` | Med | `virtual` is currently a no-op (everything implicitly overridable); `override` base-list form missing (`SolidCash.g4:200`). Safety + fidelity for diamonds. |
 | `type(C).creationCode` / `runtimeCode` | Med | BCH analog = child redeem/locking bytecode. `deployFrom`/create3 plumbing exists in the SDK; a compile-time accessor enables on-chain factory patterns. |

@@ -393,6 +393,8 @@ export function explicitlyCastable(from?: Type, to?: Type): boolean {
     return false;
   }
 
+  // class-based types (function/enum/array/struct/...) are not in the primitive cast table
+  if (typeof from !== 'string' || typeof to !== 'string') return false;
   return ExplicitlyCastableTo[from].includes(to);
 }
 

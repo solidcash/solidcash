@@ -85,9 +85,18 @@ to a multiple of the 136-byte rate) and absorbs block-by-block in an `OP_BEGIN/O
 The blob permutation (~5.8M/block) cannot do multi-block - 2 blocks exceed the budget - which is why
 the variable-length path uses the 25-lane permutation.
 
-**Practical cap: ~3 blocks (~408 bytes) per input.** The 10 KB unlocking-bytecode limit bounds the
-per-input op budget (`~800 * unlockingLength`, max ~8M), so 4 blocks (~9M) will not fit. A cheaper
-permutation (toward the ~1.2M floor) would roughly double the reachable input size.
+**Practical cap: ~3 blocks (~408 bytes) per input - bounded by *compute*, not message size.** The
+per-input op budget is `~32,800 + 800 * unlockingLength`, and the unlocking length is capped at 10,000
+bytes (consensus `maximumBytecodeLength`, confirmed in libauth - multi-push doesn't help, 11,999 B is
+rejected). So the budget maxes at ~8M op -> ~3 keccak blocks. The budget is strictly per-input and
+cannot be pooled across inputs in one tx.
+
+**Note: optimizing for compute budget increases the max message size.** Because the cap is
+op-budget / op-per-block, reducing the permutation cost directly raises the reachable input size:
+in-place chi/theta (~2.25M -> ~1.6M/block) reaches ~5 blocks (~680 B); the ~1.2M floor reaches ~6-7
+blocks (~900 B). For unbounded input, a chained-tx streaming sponge (commit the 200-byte state between
+transactions, absorb ~3 blocks per tx, squeeze at the end) removes the size limit at `ceil(blocks/3)`
+transactions.
 
 ## Limits / caveats
 

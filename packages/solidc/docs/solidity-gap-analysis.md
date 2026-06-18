@@ -20,8 +20,9 @@ tuple assignment to existing lvalues + swap `(x,y)=(y,x)`. **Category A is now c
 underway: **internal function types / function pointers** (incl. dispatch tables), **`super.f()`/
 `Base.f()` parent calls**, and **`type(C).creationCode`/`runtimeCode`** are done. The only remaining
 Category B item is real C3 linearization + meaningful `virtual`/`override(A,B)` (currently a
-depth-first flatten; see Category C - either implement C3 or correct the docs). See per-row Status
-markers below.
+depth-first flatten; the docs now describe it accurately rather than claiming C3). **Category C doc
+reconciliations are done** (C3 claim, `interfaceId` width, `encodeWithSignature` selector). See
+per-row Status markers below.
 
 ## Where SolidCash already matches or exceeds Solidity
 

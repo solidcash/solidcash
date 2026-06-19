@@ -128,7 +128,7 @@ constantDefinition
     ;
 
 constructorDefinition
-    : 'constructor' parameterList ('public' | 'internal')? parentInvocation* '{' statement* '}'
+    : 'constructor' parameterList ('public' | 'internal' | 'external')? parentInvocation* '{' statement* '}'
     ;
 
 fallbackDefinition

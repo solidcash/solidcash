@@ -37,7 +37,7 @@ export function compileString(code: string, compilerOptions: CompileOptions = {}
   const mergedCompilerOptions = { ...DEFAULT_COMPILER_OPTIONS, ...artifactCompilerOptions };
 
   // Lexing + parsing
-  let ast = parseCode(code, errorListener);
+  let ast = parseCode(code, errorListener, mergedCompilerOptions.solidityImportCompat);
 
   // Resolve imports
   if (ast.imports.length > 0) {
@@ -47,7 +47,9 @@ export function compileString(code: string, compilerOptions: CompileOptions = {}
         + 'Use compileFile() for Node.js, or provide a custom importResolver in options.',
       );
     }
-    const resolver = new ImportResolver(mergedCompilerOptions.importResolver);
+    const resolver = new ImportResolver(
+      mergedCompilerOptions.importResolver, mergedCompilerOptions.solidityImportCompat,
+    );
     ast = resolver.resolve(ast, mergedCompilerOptions.rootFileId ?? 'main');
   }
 
@@ -301,6 +303,7 @@ function topologicalSort(
 export function parseCode(
   code: string,
   errorListener: SolidCashErrorListener = ThrowingErrorListener.INSTANCE,
+  solidityImportCompat = false,
 ): Ast {
   const syntaxErrorListener = new ForwardingErrorListener(errorListener);
 
@@ -319,7 +322,7 @@ export function parseCode(
   syntaxErrorListener.throwFirstError();
 
   // AST building
-  const ast = new AstBuilder(parseTree).build() as Ast;
+  const ast = new AstBuilder(parseTree, solidityImportCompat).build() as Ast;
 
   return ast;
 }

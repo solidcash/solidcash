@@ -11,14 +11,22 @@ export function compileFile(codeFile: PathLike, compilerOptions: CompileOptions 
   const fileStr = codeFile instanceof URL ? fileURLToPath(codeFile) : codeFile.toString();
   const filePath = path.resolve(fileStr);
 
+  // With solidityImportCompat, `.sol` files resolve as solidcash sources (so OZ/Solidity imports load).
+  const compat = compilerOptions.solidityImportCompat ?? false;
+  // Ordered file candidates for a base path: keep an explicit extension, else try .scash (then .sol).
+  const candidatesFor = (base: string): string[] => {
+    if (base.endsWith('.scash')) return [base];
+    if (base.endsWith('.sol')) return compat ? [base] : [`${base}.scash`];
+    return compat ? [`${base}.scash`, `${base}.sol`] : [`${base}.scash`];
+  };
+  const firstExisting = (base: string): string | undefined => candidatesFor(base).find((c) => fs.existsSync(c));
+
   const nodeResolver = (importPath: string, currentFile: string): { source: string; id: string } | undefined => {
     const isRelative = importPath.startsWith('./') || importPath.startsWith('../');
 
     if (isRelative) {
-      const dir = path.dirname(currentFile);
-      let resolved = path.resolve(dir, importPath);
-      if (!resolved.endsWith('.scash')) resolved += '.scash';
-      if (!fs.existsSync(resolved)) return undefined;
+      const resolved = firstExisting(path.resolve(path.dirname(currentFile), importPath));
+      if (!resolved) return undefined;
       return { source: fs.readFileSync(resolved, { encoding: 'utf-8' }), id: resolved };
     }
 
@@ -26,9 +34,8 @@ export function compileFile(codeFile: PathLike, compilerOptions: CompileOptions 
     // Walk up directories from the current file looking for node_modules/
     let searchDir = path.dirname(currentFile);
     while (true) {
-      const candidate = path.join(searchDir, 'node_modules', importPath);
-      const resolved = candidate.endsWith('.scash') ? candidate : candidate + '.scash';
-      if (fs.existsSync(resolved)) {
+      const resolved = firstExisting(path.join(searchDir, 'node_modules', importPath));
+      if (resolved) {
         return { source: fs.readFileSync(resolved, { encoding: 'utf-8' }), id: resolved };
       }
       const parent = path.dirname(searchDir);

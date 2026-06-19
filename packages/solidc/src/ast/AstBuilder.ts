@@ -258,7 +258,7 @@ export default class AstBuilder
   private pendingParentInvocations: ParentInvocation[] = [];
   private packedStateArrayNames: Set<string> = new Set();
 
-  constructor(private tree: ParseTree) {
+  constructor(private tree: ParseTree, private solidityImportCompat = false) {
     super();
   }
 
@@ -433,8 +433,18 @@ export default class AstBuilder
   }
 
   processPragma(ctx: PragmaDirectiveContext): void {
+    // solidityImportCompat: accept `pragma solidity <any>` and skip the version check (Solidity sources
+    // pin old versions like =0.5.17 that the live compiler can't satisfy).
+    if (this.solidityImportCompat) return;
+
     const pragmaName = getPragmaName(ctx.pragmaName().getText());
-    if (pragmaName !== PragmaName.SOLIDCASH) throw new Error(); // Shouldn't happen
+    if (pragmaName !== PragmaName.SOLIDCASH) {
+      throw new ParseError(
+        `Unsupported pragma '${ctx.pragmaName().getText()}'. Only 'solidcash' is supported; `
+        + 'enable solidityImportCompat to accept \'solidity\'.',
+        Location.fromCtx(ctx),
+      );
+    }
 
     // Strip any -beta tags
     const actualVersion = version.replace(/-.*/g, '');

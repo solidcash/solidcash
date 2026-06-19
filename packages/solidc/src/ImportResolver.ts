@@ -7,7 +7,7 @@ export class ImportResolver {
   private resolvedFiles = new Map<string, SourceFileNode>();
   private resolving = new Set<string>();
 
-  constructor(private resolver: ImportResolverFn) {}
+  constructor(private resolver: ImportResolverFn, private solidityImportCompat = false) {}
 
   resolve(ast: SourceFileNode, currentFileId: string): SourceFileNode {
     for (const importNode of ast.imports) {
@@ -53,7 +53,7 @@ export class ImportResolver {
 
       if (!this.resolvedFiles.has(resolvedId)) {
         this.resolving.add(resolvedId);
-        const importedAst = parseCode(resolved.source);
+        const importedAst = parseCode(resolved.source, undefined, this.solidityImportCompat);
         // Recursively resolve imports in the imported file
         this.resolve(importedAst, resolvedId);
         this.resolvedFiles.set(resolvedId, importedAst);

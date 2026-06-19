@@ -17,6 +17,9 @@ export interface CompilerOptions {
   // Disable the auto-inline heuristic (small, single-call libraries inline by default). Explicit
   // inlineLibraries entries still apply.
   disableAutoInline?: boolean;
+  // Solidity-source compatibility: resolve `.sol` imports as solidcash sources, accept `pragma solidity`,
+  // and skip the pragma version check. For porting Solidity codebases.
+  solidityImportCompat?: boolean;
   // User-supplied external libraries (script precompiles). Each registers `name(...)` as a callable with
   // the given ABI signature, backed by the hex `code` blob. Merged with the built-in libraries.
   userLibraries?: { name: string; code: string; abi: { inputs: AbiInput[]; outputs: AbiOutput[] } }[];

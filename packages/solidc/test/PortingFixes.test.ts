@@ -53,6 +53,29 @@ describe('A3: identifiers matching [eE][0-9]+ are not mis-lexed as exponents', (
   });
 });
 
+describe('solidityImportCompat', () => {
+  const SRC = 'pragma solidity =0.5.17;\ncontract C() { int n; function f() { this.n = 1; } }';
+
+  it('accepts `pragma solidity` and skips the version check under the option', () => {
+    expect(compileString(SRC, { solidityImportCompat: true }).contractName).toBe('C');
+  });
+
+  it('rejects `pragma solidity` without the option (clean error)', () => {
+    expect(() => compileString(SRC)).toThrow(/solidityImportCompat/);
+  });
+
+  it('parses an imported source whose own `pragma solidity` would otherwise fail', () => {
+    const resolver = (p: string): { source: string; id: string } | undefined => (p.includes('Dep')
+      ? { source: 'pragma solidity ^0.5.0;\nlibrary L { function two() returns (int) { return 2; } }', id: 'Dep' }
+      : undefined);
+    const a = compileString(
+      'pragma solidity ^0.5.0;\nimport "./Dep.sol";\ncontract C() { int n; function f() { this.n = 1; } }',
+      { solidityImportCompat: true, importResolver: resolver },
+    );
+    expect(a.contractName).toBe('C');
+  });
+});
+
 describe('Solidity-compat features (from the minimal Sablier port)', () => {
   it('accepts `uint` as the unbounded int', () => {
     const a = compileString('contract C() { int n; function f(uint x) { this.n = x; } }');

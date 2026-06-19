@@ -898,21 +898,20 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_DEFINE, locationData);
   }
 
-  /**
-   * Load an external library blob from its side-car (the last tx input), verify it by hash, and
-   * OP_DEFINE it under the library's function id. Net-zero on the data stack. The blob-hash check binds
-   * the content, so a wrong/substituted side-car fails the spend. Strip offsets are derived from the
-   * blob (sidecarStripOffsets) and match the SDK's side-car redeem layout. Reads the side-car's
-   * unlocking (revealed P2SH redeem). See packages/solidc/docs/external-libraries.md.
-   */
-  // Inline a library: push its blob straight from the contract bytecode and OP_DEFINE it. No side-car,
-  // no integrity hash (the blob is part of the contract). Net-0 on the data stack.
+  // Inline a library: push its blob from the contract bytecode and OP_DEFINE it (no side-car, no
+  // integrity hash). Net-0 on the data stack.
   private emitInlineLibraryDefine(lib: ExternalLibrary, loc: SingleLocationData): void {
     this.emit(lib.blob, loc);
     this.emit(encodeInt(lib.functionId), loc);
     this.emit(Op.OP_DEFINE, loc);
   }
 
+  /**
+   * Load an external library blob from its side-car (the last tx input's revealed P2SH redeem), verify it
+   * by hash, and OP_DEFINE it under the library's function id. Net-zero on the data stack. Strip offsets
+   * come from the blob (sidecarStripOffsets) and match the SDK's side-car redeem layout. See
+   * packages/solidc/docs/external-libraries.md.
+   */
   private emitExternalLibraryLoader(lib: ExternalLibrary, loc: SingleLocationData): void {
     const { outerPush, saltPrefix, selfPres, blobPush, blobLength } = sidecarStripOffsets(lib.blob);
     this.emit(Op.OP_TXINPUTCOUNT, loc);

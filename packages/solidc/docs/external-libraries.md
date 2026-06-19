@@ -1,8 +1,8 @@
 # External Libraries (script precompiles)
 
 A user-extensible registry of named BCH-script libraries that are callable from contracts like builtins.
-`keccak256` is the first built-in instance; the same mechanism supports future built-ins (`keccak512`)
-and user-supplied libraries.
+`keccak256` is the first built-in instance; the same mechanism supports future built-ins (another hashing
+scheme) and user-supplied libraries.
 
 ## Concept
 
@@ -13,7 +13,7 @@ at runtime from a co-spent side-car UTXO.
 
 ## Decisions (locked)
 
-- **Registry is user-extensible (1c):** built-in precompiles (`keccak256`, future `keccak512`) PLUS
+- **Registry is user-extensible (1c):** built-in precompiles (`keccak256`, another hashing scheme) PLUS
   user-supplied libraries, provided two ways: (a) a precompiled blob + declared ABI, and (b) a `.scash`
   library source the compiler compiles into a blob. Both resolve to the same registry entry.
 - **Generic-first (2b):** build the registry + descriptor generically (keyed by name), with keccak256
@@ -30,7 +30,7 @@ at runtime from a co-spent side-car UTXO.
 
 ```ts
 interface ExternalLibraryAbi {
-  name: string;          // builtin resolves its library by this name (keccak256, keccak512, user 'lib')
+  name: string;          // builtin resolves its library by this name (keccak256, another scheme, user 'lib')
   inline: boolean;       // embedded in the contract redeem vs loaded from a side-car
   branded: boolean;      // side-car address salted with the contract category vs shared
   blobHash: string;      // hash256(blob); the integrity check baked into the bytecode
@@ -51,7 +51,7 @@ interface ExternalLibrary {            // a registry entry
   abi: { inputs: AbiInput[]; outputs: AbiOutput[] };
   // side-car layout (offsets the loader strips), derived from how the side-car redeem wraps the blob
 }
-const BUILTIN_LIBRARIES = { keccak256: {...}, /* keccak512: {...} */ };
+const BUILTIN_LIBRARIES = { keccak256: {...}, /* another hashing scheme: {...} */ };
 // user libraries merged in via the compiler option (blob+abi) or compiled from .scash
 ```
 

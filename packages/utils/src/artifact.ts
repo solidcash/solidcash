@@ -280,14 +280,14 @@ export interface StateLayout {
  * co-spends it for any call that uses the library. See keccak-poc/INTEGRATION.md.
  */
 export interface ExternalLibraryAbi {
-  name: string;       // the builtin resolves its library by this name (e.g. 'keccak256', future 'keccak512')
+  name: string;       // the builtin resolves its library by this name (e.g. 'keccak256')
   blobHash: string;   // hash256 of the library script blob; matches the integrity check in the bytecode
   branded: boolean;   // true: side-car address salted with the contract category (per-contract); false: shared
   inline?: boolean;   // true: blob embedded in the contract redeem (no side-car); false: loaded from a side-car
   codeBegin?: number; // byte offset where the blob begins in the side-car input bytecode
   codeEnd?: number;   // ... and ends (the range the loader strips to)
   abi?: { inputs: readonly AbiInput[]; outputs: readonly AbiOutput[] };  // call signature, e.g. (bytes) -> bytes32
-  code?: string;      // hex blob; present for user-supplied libraries (the SDK needs it to build the side-car)
+  code?: string;      // hex blob; present for user-supplied libraries
 }
 
 export interface Artifact {

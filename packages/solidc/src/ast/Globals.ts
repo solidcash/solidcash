@@ -133,7 +133,7 @@ GLOBAL_SYMBOL_TABLE.set(Symbol.function(
   [PrimitiveType.STRING],
 ));
 
-// External-library precompiles (keccak256, future keccak512, ...) are registered from the registry by
+// External-library precompiles (keccak256, another hashing scheme, ...) are registered from the registry by
 // name with their declared ABI signature, so `lib()` is a valid, type-checked call. User-supplied
 // libraries are registered per-compilation in SymbolTableTraversal from the same shape.
 for (const lib of Object.values(BUILTIN_LIBRARIES)) {

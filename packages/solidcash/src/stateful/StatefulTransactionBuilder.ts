@@ -1656,7 +1656,6 @@ export class StatefulTransactionBuilder {
     };
   }
 
-  // Extra unlocking bytes an external-library side-car co-spend will add (for fee estimation); 0 if none.
   async send(): Promise<TransactionDetails> {
     const provider = this.builderOptions.provider;
     if (!provider) {

@@ -4780,10 +4780,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       }
     }
 
-    // Co-spend the external-library side-car if this function (A) uses a library, OR if it calls an
-    // external contract (B) whose function uses one. One side-car serves every loader in the tx - the
-    // loader reads OP_INPUTBYTECODE of the last input and verifies the blob by hash, so it is
-    // branding-agnostic. Set before derivation so the probes include it; the side-car must be deployed.
+    // Co-spend the external-library side-car if this function uses a library, or calls an external
+    // contract whose function does. One side-car serves every loader in the tx (the loader reads the last
+    // input and verifies the blob by hash). Set before derivation so the probes include it.
     // First non-inline library used (inline libraries are baked into the contract; no side-car).
     const firstSidecarLib = (art: any, names: readonly string[]): ExternalLibraryAbi | undefined => {
       for (const name of names) {

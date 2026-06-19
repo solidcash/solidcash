@@ -1,5 +1,5 @@
 // Generic registry of external script libraries ("precompiles") callable from contracts by name.
-// Built-in libraries (keccak256, future keccak512) plus user-supplied ones share this shape. A library
+// Built-in libraries (keccak256, another hashing scheme) plus user-supplied ones share this shape. A library
 // is a self-contained, OP_DEFINE-able script blob (a function inputs -> outputs) with an ABI signature.
 // It is either inlined into the contract redeem or loaded at runtime from a co-spent side-car UTXO.
 // See packages/solidc/docs/external-libraries.md.
@@ -27,7 +27,7 @@ export interface ExternalLibrary {
 }
 
 // Built-in precompiles. User libraries (blob+ABI, or compiled from .scash) are merged into this set at
-// compile time. Future built-ins (keccak512, ...) are added as more named entries.
+// compile time. Future built-ins (another hashing scheme, ...) are added as more named entries.
 export const BUILTIN_LIBRARIES: Record<string, ExternalLibrary> = {
   keccak256: {
     name: 'keccak256',
@@ -61,7 +61,7 @@ export function resolveLibraries(userLibraries?: readonly UserLibraryInput[]): R
 }
 
 // Resolve a library's script blob from its artifact descriptor: user libraries carry the blob inline
-// (descriptor.code); built-ins are looked up by name in the registry. Used by the SDK to build the side-car.
+// (descriptor.code); built-ins are looked up by name in the registry.
 export function resolveLibraryBlob(lib: ExternalLibraryAbi): Uint8Array {
   if (lib.code) return hexToBin(lib.code);
   const builtin = BUILTIN_LIBRARIES[lib.name];

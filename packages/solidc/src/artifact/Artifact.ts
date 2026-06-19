@@ -369,7 +369,7 @@ export function generateArtifact(
         codeBegin: range.codeBegin,
         codeEnd: range.codeEnd,
         abi: lib.abi,
-        // built-ins are known to the SDK; user libraries embed their blob so the SDK can build the side-car.
+        // built-ins resolve by name in the SDK; user libraries embed their blob
         ...(BUILTIN_LIBRARIES[name] ? {} : { code: binToHex(lib.blob) }),
       };
     })

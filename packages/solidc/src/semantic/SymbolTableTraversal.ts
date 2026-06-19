@@ -932,8 +932,8 @@ export default class SymbolTableTraversal extends AstTraversal {
       }
     }
 
-    // External-library pre-scan: record which libraries (keccak256, ...) the function calls (and how many
-    // times) so codegen loads each one's blob (side-car or inline). No parameter injection needed.
+    // External-library pre-scan: record which libraries the function calls and how many times, so codegen
+    // loads each one's blob (side-car or inline) and the inline decision has call counts.
     const libraryCallCounts = this.countLibraryCalls(node.body);
     if (libraryCallCounts.size > 0) {
       node.usedLibraries = [...libraryCallCounts.keys()];
@@ -2023,10 +2023,9 @@ export default class SymbolTableTraversal extends AstTraversal {
     return false;
   }
 
-  // Decide, contract-wide, which external libraries are inlined into the contract bytecode (no side-car).
-  // A library inlines iff explicitly requested (inlineLibraries[name] === true), or auto: exactly one call
-  // site across the contract and a blob within INLINE_MAX_BLOB_LENGTH. inlineLibraries[name] === false
-  // forces a side-car. Annotates each using function's inlinedLibraries for codegen + the artifact.
+  // Decide contract-wide which external libraries are inlined into the contract bytecode (vs a side-car):
+  // inlineLibraries[name] forces it on/off; otherwise auto-inline a single-call library with a blob within
+  // INLINE_MAX_BLOB_LENGTH. Annotates each using function's inlinedLibraries for codegen + the artifact.
   private decideLibraryInlining(contract: ContractNode): void {
     const fns = [contract.constructorDef, contract.fallbackDef, contract.receiveDef, ...contract.functions]
       .filter((f): f is FunctionDefinitionNode => !!f);

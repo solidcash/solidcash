@@ -19,7 +19,9 @@ import { TransactionBuilder, TransactionBuilderOptions } from '../TransactionBui
 import { CovenantTransactionBuilder } from './CovenantTransactionBuilder.js';
 import { scriptToLockingBytecode, generateLibauthSourceOutputs } from '../utils.js';
 import type { LibauthOutput } from '../interfaces.js';
-import { Utxo, UnlockableUtxo, TransactionDetails } from '../interfaces.js';
+import {
+  Utxo, UnlockableUtxo, TransactionDetails, isUnlockableUtxo, isContractUnlocker,
+} from '../interfaces.js';
 
 export interface EntryNftInfo {
   slotIndex: number;
@@ -1628,10 +1630,23 @@ export class StatefulTransactionBuilder {
     };
   }
 
+  // Extra unlocking bytes a keccak256 side-car co-spend will add (for fee estimation); 0 if none needed.
   async send(): Promise<TransactionDetails> {
     const provider = this.builderOptions.provider;
     if (!provider) {
       throw new Error('No network provider available');
+    }
+
+    // keccak256 in a stateful contract is not yet supported: the side-car library must be present
+    // during auto-derivation's VM probes (which run the covenant, incl. the keccak loader), not just
+    // appended to the final tx. Threading it through derivation is a separate effort. The stateless
+    // path (shared side-car) is fully supported via TransactionBuilder.addRequiredSidecars().
+    if (this.allInputs.some((i) => isUnlockableUtxo(i) && isContractUnlocker(i.unlocker)
+      && i.unlocker.abiFunction.externalLibraries?.includes('keccak256'))) {
+      throw new Error(
+        'keccak256 is not yet supported in stateful contracts (the side-car library must be threaded '
+        + 'through auto-derivation). It is fully supported in stateless contracts.',
+      );
     }
 
     // -- Phase 1: build the covenant transaction (logic only, no fee) --

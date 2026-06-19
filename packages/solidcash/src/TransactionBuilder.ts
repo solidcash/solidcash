@@ -117,12 +117,13 @@ export class TransactionBuilder {
   }
 
   /**
-   * One-time deploy of the shared keccak256 side-car library: adds an output creating the side-car UTXO
-   * if it does not exist yet. Call when deploying/funding a keccak256 contract (idempotent ecosystem-wide).
+   * One-time deploy of the keccak256 side-car library: adds an output creating the side-car UTXO if it
+   * does not exist yet. Call when deploying/funding a keccak256 contract (idempotent). Pass `salt` =
+   * the contract's token category for a branded (per-contract) side-car; omit for the shared one.
    * Returns the side-car amount added (0n if it already exists).
    */
-  async addSidecarDeployIfNeeded(amount: bigint = 2000n): Promise<bigint> {
-    const sidecarLock = keccakSidecarLockingBytecode(KECCAK256_SHARED_SALT);
+  async addSidecarDeployIfNeeded(amount: bigint = 2000n, salt: Uint8Array = KECCAK256_SHARED_SALT): Promise<bigint> {
+    const sidecarLock = keccakSidecarLockingBytecode(salt);
     const existing = await this.provider.getUtxosForLockingBytecode(sidecarLock);
     if (existing.length > 0) return 0n;
     this.addOutput({ to: sidecarLock, amount });
@@ -137,18 +138,27 @@ export class TransactionBuilder {
    * side-car only - branded (stateful) side-cars must be co-spent manually for now.
    */
   async addRequiredSidecars(): Promise<this> {
-    const usesKeccak = (input: UnlockableUtxo): boolean =>
-      isContractUnlocker(input.unlocker) && !!input.unlocker.abiFunction.externalLibraries?.includes('keccak256');
-    if (!this.inputs.some((i) => isUnlockableUtxo(i) && usesKeccak(i))) return this;
+    const keccakInputs = this.inputs.filter((i): i is UnlockableUtxo => isUnlockableUtxo(i)
+      && isContractUnlocker(i.unlocker) && !!i.unlocker.abiFunction.externalLibraries?.includes('keccak256'));
+    if (keccakInputs.length === 0) return this;
 
-    const isBranded = this.inputs.some((i) => isUnlockableUtxo(i) && isContractUnlocker(i.unlocker)
-      && i.unlocker.contract.artifact.externalLibraries?.find((l) => l.name === 'keccak256')?.branded);
-    if (isBranded) {
-      throw new Error('Branded keccak256 side-car co-spend is not yet auto-wired; add the side-car input and a matching last output manually.');
-    }
+    // Resolve the side-car salt: branded -> the contract's token category (carried on the spent state
+    // UTXO), giving a per-contract side-car address; shared -> zero. One keccak side-car per transaction.
+    const saltOf = (input: UnlockableUtxo): Uint8Array => {
+      if (!isContractUnlocker(input.unlocker)) return KECCAK256_SHARED_SALT;
+      const branded = input.unlocker.contract.artifact.externalLibraries?.find((l) => l.name === 'keccak256')?.branded;
+      if (!branded) return KECCAK256_SHARED_SALT;
+      if (!input.token?.category) {
+        throw new Error('Branded keccak256 side-car requires the spent contract input to carry its token category.');
+      }
+      return hexToBin(input.token.category);
+    };
+    const salts = new Set(keccakInputs.map((i) => binToHex(saltOf(i))));
+    if (salts.size > 1) throw new Error('Multiple distinct keccak256 side-cars in one transaction are not supported.');
+    const salt = saltOf(keccakInputs[0]);
 
-    const sidecarRedeem = buildKeccakSidecarRedeem(KECCAK256_SHARED_SALT);
-    const sidecarLock = keccakSidecarLockingBytecode(KECCAK256_SHARED_SALT);
+    const sidecarRedeem = buildKeccakSidecarRedeem(salt);
+    const sidecarLock = keccakSidecarLockingBytecode(salt);
     const utxos = await this.provider.getUtxosForLockingBytecode(sidecarLock);
     if (utxos.length === 0) {
       throw new Error('keccak256 side-car library UTXO not found; deploy it before spending a keccak256 contract.');

@@ -2,9 +2,9 @@ import { describe, it, expect } from 'vitest';
 import { compileString } from 'solidc';
 import { binToHex, hexToBin } from '@bitauth/libauth';
 import { keccakSidecarLockingBytecode, KECCAK256_SHARED_SALT } from '@solidcash/utils';
-import { Contract, TransactionBuilder } from '../src/index.js';
+import { Contract, StatefulContract, TransactionBuilder } from '../src/index.js';
 import { randomUtxo } from '../src/utils.js';
-import { createTestProvider, createFeeFunder } from './test-util.js';
+import { createTestProvider, createFeeFunder, setupStatefulUtxos } from './test-util.js';
 
 // keccak256() is backed by a pure-script side-car library co-spent at runtime (see keccak-poc/).
 const SOURCE = `
@@ -61,5 +61,38 @@ describe('keccak256 builtin (side-car library)', () => {
 
   it('rejects a wrong expected hash', async () => {
     await expect(spendKeccak(VECTORS.ones.preimage, VECTORS.zeros.hash)).rejects.toThrow();
+  });
+});
+
+// A stateful contract gets a BRANDED side-car: its address is salted with the contract's token
+// category, so each contract co-spends its own keccak UTXO (no cross-contract contention).
+const STATEFUL_SOURCE = `
+contract StatefulKeccak() {
+    int counter;
+    function bump(bytes preimage, bytes32 expected) {
+        require(keccak256(preimage) == expected);
+        this.counter = this.counter + 1;
+    }
+}`;
+
+describe('keccak256 builtin (stateful contracts)', () => {
+  it('marks the side-car branded for a stateful contract', () => {
+    const artifact = compileString(STATEFUL_SOURCE);
+    expect(artifact.externalLibraries?.[0]).toMatchObject({ name: 'keccak256', branded: true });
+  });
+
+  // Stateful auto-derivation runs covenant VM probes before the side-car exists, so keccak256 in a
+  // stateful contract is not yet supported; the SDK surfaces a clear error rather than a cryptic failure.
+  it('throws a clear error for keccak256 in a stateful spend (not yet supported)', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(STATEFUL_SOURCE);
+    const contract = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, contract, artifact.stateLayout!, { counter: 0n }, { saltContract: true },
+    );
+    const sc = StatefulContract.withCategory(contract, categoryId);
+    await expect(
+      sc.bump(hexToBin(VECTORS.zeros.preimage), hexToBin(VECTORS.zeros.hash)).send(),
+    ).rejects.toThrow(/not yet supported in stateful/);
   });
 });

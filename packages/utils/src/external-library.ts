@@ -39,6 +39,29 @@ export function pushPrefixLength(len: number): number {
   return 5;
 }
 
+// Fixed parts of the side-car redeem wrapper (same for every library).
+export const SIDECAR_SALT_PREFIX_LENGTH = 34; // OP_PUSHBYTES_32 + 32 salt bytes + OP_DROP
+export const SIDECAR_SELFPRES_LENGTH = 6;     // INPUTINDEX UTXOBYTECODE TXOUTPUTCOUNT 1SUB OUTPUTBYTECODE EQUALVERIFY
+
+/**
+ * The successive lengths a contract's loader strips off the side-car INPUT bytecode (= PUSHDATA(redeem))
+ * to reach the blob: drop outerPush, saltPrefix, selfPres, blobPush; then take blobLength (drop the
+ * OP_DROP OP_1 suffix). Derived from the blob length; salt-independent.
+ */
+export function sidecarStripOffsets(blob: Uint8Array): {
+  outerPush: number; saltPrefix: number; selfPres: number; blobPush: number; blobLength: number;
+} {
+  const blobPush = pushPrefixLength(blob.length);
+  const redeemLength = SIDECAR_SALT_PREFIX_LENGTH + SIDECAR_SELFPRES_LENGTH + blobPush + blob.length + 2;
+  return {
+    outerPush: pushPrefixLength(redeemLength),
+    saltPrefix: SIDECAR_SALT_PREFIX_LENGTH,
+    selfPres: SIDECAR_SELFPRES_LENGTH,
+    blobPush,
+    blobLength: blob.length,
+  };
+}
+
 /**
  * Build a side-car redeem wrapping a library blob:
  *   <salt:32> OP_DROP | self-pres | PUSHDATA(blob) | OP_DROP OP_1

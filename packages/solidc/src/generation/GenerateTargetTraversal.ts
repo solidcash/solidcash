@@ -36,13 +36,9 @@ import {
   FunctionType,
   BlockLayoutSlot,
   BlockSlotKind,
-  KECCAK256_LIBRARY_BLOB_HASH,
-  KECCAK256_LIBRARY_BLOB_LENGTH,
-  KECCAK256_LIBRARY_ID,
-  KECCAK256_SIDECAR_OUTER_PUSH_PREFIX_LENGTH,
-  KECCAK256_SIDECAR_SALT_PREFIX_LENGTH,
-  KECCAK256_SIDECAR_SELFPRES_LENGTH,
-  KECCAK256_SIDECAR_BLOB_PUSH_PREFIX_LENGTH,
+  BUILTIN_LIBRARIES,
+  ExternalLibrary,
+  sidecarStripOffsets,
 } from '@solidcash/utils';
 import {
   ContractNode,
@@ -900,30 +896,32 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
-   * Load the keccak256 library blob from the side-car (the last tx input), verify it by hash, and
-   * OP_DEFINE it under KECCAK256_LIBRARY_ID. Net-zero on the data stack. The blob-hash check binds the
-   * content, so a wrong/substituted side-car fails the spend. Strip offsets match the SDK's side-car
-   * redeem layout (see keccak-poc/INTEGRATION.md). Reads the side-car's unlocking (revealed P2SH redeem).
+   * Load an external library blob from its side-car (the last tx input), verify it by hash, and
+   * OP_DEFINE it under the library's function id. Net-zero on the data stack. The blob-hash check binds
+   * the content, so a wrong/substituted side-car fails the spend. Strip offsets are derived from the
+   * blob (sidecarStripOffsets) and match the SDK's side-car redeem layout. Reads the side-car's
+   * unlocking (revealed P2SH redeem). See packages/solidc/docs/external-libraries.md.
    */
-  private emitKeccakLibraryLoader(loc: SingleLocationData): void {
+  private emitExternalLibraryLoader(lib: ExternalLibrary, loc: SingleLocationData): void {
+    const { outerPush, saltPrefix, selfPres, blobPush, blobLength } = sidecarStripOffsets(lib.blob);
     this.emit(Op.OP_TXINPUTCOUNT, loc);
     this.emit(Op.OP_1SUB, loc);
-    this.emit(Op.OP_INPUTBYTECODE, loc);          // last input unlocking = PUSHDATA2(redeem)
+    this.emit(Op.OP_INPUTBYTECODE, loc);          // last input unlocking = PUSHDATA(redeem)
     const strip = (n: number, dropTop: boolean): void => {
       this.emit(encodeInt(BigInt(n)), loc);
       this.emit(Op.OP_SPLIT, loc);
       this.emit(dropTop ? Op.OP_DROP : Op.OP_NIP, loc);
     };
-    strip(KECCAK256_SIDECAR_OUTER_PUSH_PREFIX_LENGTH, false);  // drop outer PUSHDATA2 prefix -> redeem
-    strip(KECCAK256_SIDECAR_SALT_PREFIX_LENGTH, false);        // drop <salt:32> OP_DROP
-    strip(KECCAK256_SIDECAR_SELFPRES_LENGTH, false);           // drop self-preservation
-    strip(KECCAK256_SIDECAR_BLOB_PUSH_PREFIX_LENGTH, false);   // drop blob PUSHDATA2 prefix
-    strip(KECCAK256_LIBRARY_BLOB_LENGTH, true);                // split blob | suffix; drop suffix -> blob
+    strip(outerPush, false);    // drop outer push prefix -> redeem
+    strip(saltPrefix, false);   // drop <salt:32> OP_DROP
+    strip(selfPres, false);     // drop self-preservation
+    strip(blobPush, false);     // drop blob push prefix
+    strip(blobLength, true);    // split blob | suffix; drop suffix -> blob
     this.emit(Op.OP_DUP, loc);
     this.emit(Op.OP_HASH256, loc);
-    this.emit(hexToBin(KECCAK256_LIBRARY_BLOB_HASH), loc);
-    this.emit(Op.OP_EQUALVERIFY, loc);            // integrity: blob is the genuine keccak256 library
-    this.emit(encodeInt(KECCAK256_LIBRARY_ID), loc);
+    this.emit(lib.blobHash, loc);                 // integrity: blob is the genuine library
+    this.emit(Op.OP_EQUALVERIFY, loc);
+    this.emit(encodeInt(lib.functionId), loc);
     this.emit(Op.OP_DEFINE, loc);
   }
 
@@ -1330,7 +1328,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     // Load the keccak256 library from the side-car (last input) and OP_DEFINE it once, before the body.
     if (node.usesKeccak256) {
-      this.emitKeccakLibraryLoader({ location: node.location, positionHint: PositionHint.START });
+      this.emitExternalLibraryLoader(BUILTIN_LIBRARIES.keccak256, { location: node.location, positionHint: PositionHint.START });
     }
 
     node.body = this.visit(node.body) as BlockNode;
@@ -3128,12 +3126,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     return node;
   }
 
-  // keccak256(x): the library is OP_DEFINEd at the function-body prologue (emitKeccakLibraryLoader);
-  // each call just pushes the message and OP_INVOKEs it.
-  private visitKeccak256(node: FunctionCallNode): Node {
+  // External library call (e.g. keccak256(x)): the library is OP_DEFINEd at the function-body prologue
+  // (emitExternalLibraryLoader); each call pushes the argument and OP_INVOKEs it by the library's id.
+  private visitExternalLibraryCall(node: FunctionCallNode, lib: ExternalLibrary): Node {
     const loc = { location: node.location, positionHint: PositionHint.END };
     node.parameters[0] = this.visit(node.parameters[0]);
-    this.emit(encodeInt(KECCAK256_LIBRARY_ID), loc);
+    this.emit(encodeInt(lib.functionId), loc);
     this.emit(Op.OP_INVOKE, loc);
     this.popFromStack(1);
     this.pushToStack('(value)');
@@ -3157,8 +3155,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       return this.visitAddMulMod(node);
     }
 
-    if (node.identifier.name === GlobalFunction.KECCAK256) {
-      return this.visitKeccak256(node);
+    const externalLib = BUILTIN_LIBRARIES[node.identifier.name];
+    if (externalLib) {
+      return this.visitExternalLibraryCall(node, externalLib);
     }
 
     // User-defined function call via OP_INVOKE

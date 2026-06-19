@@ -11,6 +11,9 @@ export interface CompilerOptions {
   commitmentLimit?: number;
   importResolver?: ImportResolverFn;
   rootFileId?: string;
+  // Per-library inline override (keyed by library name, e.g. 'keccak256'): true = always inline the blob
+  // into the contract, false = always use a side-car. Omitted = auto (inline when used once).
+  inlineLibraries?: Record<string, boolean>;
 }
 
 export interface AbiInput {
@@ -271,9 +274,13 @@ export interface StateLayout {
  * co-spends it for any call that uses the library. See keccak-poc/INTEGRATION.md.
  */
 export interface ExternalLibraryAbi {
-  name: string;       // library name, e.g. 'keccak256'
+  name: string;       // the builtin resolves its library by this name (e.g. 'keccak256', future 'keccak512')
   blobHash: string;   // hash256 of the library script blob; matches the integrity check in the bytecode
   branded: boolean;   // true: side-car address salted with the contract category (per-contract); false: shared
+  inline?: boolean;   // true: blob embedded in the contract redeem (no side-car); false: loaded from a side-car
+  codeBegin?: number; // byte offset where the blob begins in the side-car input bytecode
+  codeEnd?: number;   // ... and ends (the range the loader strips to)
+  abi?: { inputs: readonly AbiInput[]; outputs: readonly AbiOutput[] };  // call signature, e.g. (bytes) -> bytes32
 }
 
 export interface Artifact {

@@ -174,7 +174,7 @@ import {
   computeEventSignature, computeErrorSignature, computeCollectionSignature,
   computeFunctionSignature, computeFunctionSelector, TupleType, ArrayType,
   IntType, FixedType, MappingType, FunctionType,
-  FunctionBlockLayout, BlockLayoutSlot,
+  FunctionBlockLayout, BlockLayoutSlot, BUILTIN_LIBRARIES,
 } from '@solidcash/utils';
 import { binToHex } from '@bitauth/libauth';
 
@@ -917,9 +917,11 @@ export default class SymbolTableTraversal extends AstTraversal {
       }
     }
 
-    // keccak256 pre-scan: flag functions that use it so codegen loads the side-car library (no param injection)
-    if (this.collectKeccak256Usage(node.body)) {
-      node.usesKeccak256 = true;
+    // External-library pre-scan: record which libraries (keccak256, ...) the function calls so codegen
+    // loads each one's blob (side-car or inline). No parameter injection needed.
+    const usedLibraries = this.collectUsedLibraries(node.body);
+    if (usedLibraries.size > 0) {
+      node.usedLibraries = [...usedLibraries];
     }
 
     // Entry slot pre-scan: collect unique (collection, keyParam) pairs and assign slot indices
@@ -2005,24 +2007,24 @@ export default class SymbolTableTraversal extends AstTraversal {
     return false;
   }
 
-  private collectKeccak256Usage(node: Node, visited: Set<Node> = new Set()): boolean {
-    if (visited.has(node)) return false;
+  private collectUsedLibraries(node: Node, found: Set<string> = new Set(), visited: Set<Node> = new Set()): Set<string> {
+    if (visited.has(node)) return found;
     visited.add(node);
 
-    if (node instanceof FunctionCallNode && node.identifier.name === GlobalFunction.KECCAK256) {
-      return true;
+    if (node instanceof FunctionCallNode && node.identifier.name in BUILTIN_LIBRARIES) {
+      found.add(node.identifier.name);
     }
 
     for (const value of Object.values(node)) {
       if (value instanceof Node) {
-        if (this.collectKeccak256Usage(value, visited)) return true;
+        this.collectUsedLibraries(value, found, visited);
       } else if (Array.isArray(value)) {
         for (const item of value) {
-          if (item instanceof Node && this.collectKeccak256Usage(item, visited)) return true;
+          if (item instanceof Node) this.collectUsedLibraries(item, found, visited);
         }
       }
     }
-    return false;
+    return found;
   }
 
   private collectCollectionIterations(node: Node, iterations: CollectionIterationInfo[]): void {

@@ -44,9 +44,12 @@ async function spendKeccak(preimageHex: string, expectedHex: string): Promise<st
 describe('keccak256 builtin (side-car library)', () => {
   it('records the side-car dependency in the artifact', () => {
     const artifact = compileString(SOURCE);
-    expect(artifact.externalLibraries).toEqual([
-      { name: 'keccak256', blobHash: expect.any(String), branded: false },
-    ]);
+    expect(artifact.externalLibraries).toHaveLength(1);
+    expect(artifact.externalLibraries![0]).toMatchObject({
+      name: 'keccak256', branded: false, inline: false, blobHash: expect.any(String),
+      codeBegin: expect.any(Number), codeEnd: expect.any(Number),
+      abi: { inputs: [{ name: 'message', type: 'bytes' }], outputs: [{ type: 'bytes32' }] },
+    });
     expect(artifact.abi.find((f) => f.name === 'verify')?.externalLibraries).toEqual(['keccak256']);
   });
 

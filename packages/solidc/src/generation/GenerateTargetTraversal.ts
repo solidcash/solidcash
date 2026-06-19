@@ -1326,9 +1326,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_TOALTSTACK, loc);
     }
 
-    // Load the keccak256 library from the side-car (last input) and OP_DEFINE it once, before the body.
-    if (node.usesKeccak256) {
-      this.emitExternalLibraryLoader(BUILTIN_LIBRARIES.keccak256, { location: node.location, positionHint: PositionHint.START });
+    // Load each external library this function uses (from the side-car) and OP_DEFINE it once, before
+    // the body.
+    for (const libName of node.usedLibraries ?? []) {
+      this.emitExternalLibraryLoader(BUILTIN_LIBRARIES[libName], { location: node.location, positionHint: PositionHint.START });
     }
 
     node.body = this.visit(node.body) as BlockNode;

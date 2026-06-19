@@ -205,7 +205,7 @@ export class FunctionDefinitionNode extends Node implements Named {
   // Base contracts named in an explicit `override(A, B)` specifier (empty for a bare `override`).
   overrideBases: string[] = [];
   usesMsgSender?: boolean;
-  usesKeccak256?: boolean;      // function calls keccak256() -> needs the keccak side-car library loaded
+  usedLibraries?: string[];     // external libraries this function calls (e.g. ['keccak256']) -> load each
   unsafeTier?: number;          // 0, 1, or 2 (only set when UNSAFE modifier present)
   splitCountParam?: string;     // parameter name for split count
   mergeCountParam?: string;     // parameter name for merge count

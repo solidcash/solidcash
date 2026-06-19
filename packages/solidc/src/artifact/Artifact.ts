@@ -1,7 +1,7 @@
 import {
   AbiFunction, Artifact, CompilerOptions, DebugInformation, Script, scriptToAsm, StateLayout, ArrayType,
   computeCollectionSignature, computeFunctionSelectorHex, ExternalInterfaceInfo, MappingType, Type, ValueType,
-  ExternalLibraryAbi, KECCAK256_LIBRARY_BLOB_HASH,
+  ExternalLibraryAbi, BUILTIN_LIBRARIES, sidecarCodeRange,
 } from '@solidcash/utils';
 import { binToHex } from '@bitauth/libauth';
 import { version } from '../index.js';
@@ -97,7 +97,7 @@ function buildFunctionAbiMetadata(func: FunctionDefinitionNode): Partial<AbiFunc
       })),
     }),
     ...(func.usesMsgSender && { usesMsgSender: true }),
-    ...(func.usesKeccak256 && { externalLibraries: ['keccak256'] }),
+    ...(func.usedLibraries && func.usedLibraries.length > 0 && { externalLibraries: func.usedLibraries }),
     ...(func.unsafeTier !== undefined && { unsafeTier: func.unsafeTier }),
     ...(func.lowLevelCalls && func.lowLevelCalls.length > 0 && {
       lowLevelCalls: func.lowLevelCalls.map((lc) => ({ callMode: lc.callMode })),
@@ -351,10 +351,23 @@ export function generateArtifact(
     }).filter((x): x is ExternalInterfaceInfo => x !== undefined)
     : undefined;
 
-  // External script libraries (side-car) the contract depends on. Branded (category-salted side-car)
-  // for stateful contracts; shared otherwise. See keccak-poc/INTEGRATION.md.
-  const externalLibraries: ExternalLibraryAbi[] | undefined = contract.functions.some((f) => f.usesKeccak256)
-    ? [{ name: 'keccak256', blobHash: KECCAK256_LIBRARY_BLOB_HASH, branded: stateLayout !== undefined }]
+  // External script libraries the contract depends on, with a self-describing descriptor. Branded
+  // (category-salted side-car) for stateful contracts; shared otherwise. See docs/external-libraries.md.
+  const usedLibraryNames = [...new Set(contract.functions.flatMap((f) => f.usedLibraries ?? []))];
+  const externalLibraries: ExternalLibraryAbi[] | undefined = usedLibraryNames.length > 0
+    ? usedLibraryNames.map((name) => {
+      const lib = BUILTIN_LIBRARIES[name];
+      const range = sidecarCodeRange(lib.blob);
+      return {
+        name,
+        blobHash: binToHex(lib.blobHash),
+        branded: stateLayout !== undefined,
+        inline: false, // phase 5 sets this from the inline decision
+        codeBegin: range.codeBegin,
+        codeEnd: range.codeEnd,
+        abi: lib.abi,
+      };
+    })
     : undefined;
 
   return {

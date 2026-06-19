@@ -2196,6 +2196,11 @@ export default class SymbolTableTraversal extends AstTraversal {
     if ('expression' in node && (node as any).expression instanceof Node) {
       this.collectEntryAccesses((node as any).expression, map);
     }
+    if ('expressions' in node && Array.isArray((node as any).expressions)) {
+      for (const e of (node as any).expressions) {
+        if (e instanceof Node) this.collectEntryAccesses(e, map);
+      }
+    }
     if ('left' in node && (node as any).left instanceof Node) {
       this.collectEntryAccesses((node as any).left, map);
     }
@@ -2300,6 +2305,11 @@ export default class SymbolTableTraversal extends AstTraversal {
     }
     if ('expression' in node && (node as any).expression instanceof Node) {
       this.assignEntrySlotIndices((node as any).expression, map);
+    }
+    if ('expressions' in node && Array.isArray((node as any).expressions)) {
+      for (const e of (node as any).expressions) {
+        if (e instanceof Node) this.assignEntrySlotIndices(e, map);
+      }
     }
     if ('left' in node && (node as any).left instanceof Node) {
       this.assignEntrySlotIndices((node as any).left, map);

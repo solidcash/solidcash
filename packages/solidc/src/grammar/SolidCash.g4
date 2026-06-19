@@ -662,11 +662,11 @@ NumberLiteral
     : '-'? NumberPart ExponentPart?
     ;
 
-NumberPart
+fragment NumberPart
     : [0-9]+ ('_' [0-9]+)*
     ;
 
-ExponentPart
+fragment ExponentPart
     : [eE] NumberPart
     ;
 

@@ -2122,6 +2122,8 @@ function isValidEventParamType(type: Type): boolean {
   if (type === PrimitiveType.STRING || type === PrimitiveType.PUBKEY) return true;
   // All bytes types (bounded and unbounded) are valid
   if (type instanceof BytesType) return true;
+  // address is bytes-backed (locking bytecode), serialized like bytes
+  if (type instanceof AddressType) return true;
   // Structs are valid (serialized via pushdata encoding)
   if (type instanceof StructType) return true;
   // sig and datasig are NOT valid event parameter types

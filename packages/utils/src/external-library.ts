@@ -6,10 +6,13 @@
 import { hexToBin } from '@bitauth/libauth';
 import { Op, Script, scriptToBytecode } from './script.js';
 import { hash256 } from './hash.js';
-import { AbiInput, AbiOutput } from './artifact.js';
+import { AbiInput, AbiOutput, ExternalLibraryAbi } from './artifact.js';
 import {
   KECCAK256_LIBRARY_BLOB, KECCAK256_LIBRARY_BLOB_HASH, KECCAK256_LIBRARY_ID,
 } from './keccak-library.js';
+
+// Salt for a SHARED (unbranded) side-car: 32 zero bytes. Branded side-cars salt with the contract category.
+export const SHARED_LIBRARY_SALT = new Uint8Array(32);
 
 export interface ExternalLibrary {
   name: string;             // builtin resolves its library by this name (e.g. 'keccak256')
@@ -51,6 +54,15 @@ export function resolveLibraries(userLibraries?: readonly UserLibraryInput[]): R
     nextId += 1n;
   }
   return resolved;
+}
+
+// Resolve a library's script blob from its artifact descriptor: user libraries carry the blob inline
+// (descriptor.code); built-ins are looked up by name in the registry. Used by the SDK to build the side-car.
+export function resolveLibraryBlob(lib: ExternalLibraryAbi): Uint8Array {
+  if (lib.code) return hexToBin(lib.code);
+  const builtin = BUILTIN_LIBRARIES[lib.name];
+  if (!builtin) throw new Error(`External library '${lib.name}' has no blob: not a built-in and no inline code`);
+  return builtin.blob;
 }
 
 // Minimal data-push prefix length for a push of `len` bytes (direct / PUSHDATA1 / PUSHDATA2 / PUSHDATA4).

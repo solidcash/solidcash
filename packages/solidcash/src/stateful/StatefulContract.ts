@@ -22,8 +22,10 @@ import {
   ExternalReadAbi,
   EntryAccessAbi,
   EmitAbi,
-  keccakSidecarLockingBytecode,
-  KECCAK256_SHARED_SALT,
+  sidecarLockingBytecode,
+  resolveLibraryBlob,
+  SHARED_LIBRARY_SALT,
+  ExternalLibraryAbi,
 } from '@solidcash/utils';
 import {
   createVirtualMachineBch2026,
@@ -4778,36 +4780,43 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       }
     }
 
-    // Co-spend the keccak256 side-car if this function (A) uses keccak256, OR if it calls an external
-    // contract (B) whose function uses keccak256. One side-car serves every keccak loader in the tx -
-    // the loader reads OP_INPUTBYTECODE of the last input and verifies the blob by hash, so it is
+    // Co-spend the external-library side-car if this function (A) uses a library, OR if it calls an
+    // external contract (B) whose function uses one. One side-car serves every loader in the tx - the
+    // loader reads OP_INPUTBYTECODE of the last input and verifies the blob by hash, so it is
     // branding-agnostic. Set before derivation so the probes include it; the side-car must be deployed.
-    const keccakBranded = (art: any): boolean | undefined => art?.externalLibraries
-      ?.find((l: any) => l.name === 'keccak256')?.branded;
-    let keccakSalt: Uint8Array | undefined;
-    if (abiFunction?.externalLibraries?.includes('keccak256')) {
-      keccakSalt = keccakBranded(this.inner.artifact) ? hexToBin(this.categoryId) : KECCAK256_SHARED_SALT;
+    const libDescriptor = (art: any, name: string): ExternalLibraryAbi | undefined => art?.externalLibraries
+      ?.find((l: any) => l.name === name);
+    let sidecarLib: ExternalLibraryAbi | undefined;
+    let sidecarSalt: Uint8Array | undefined;
+    const usedHere = abiFunction?.externalLibraries ?? [];
+    if (usedHere.length > 0) {
+      sidecarLib = libDescriptor(this.inner.artifact, usedHere[0]);
+      sidecarSalt = sidecarLib?.branded ? hexToBin(this.categoryId) : SHARED_LIBRARY_SALT;
     } else {
       // External calls and external out-state reads both run the callee's function (co-spent), so a
-      // keccak-using callee needs the side-car too. Check both group lists.
+      // library-using callee needs the side-car too. Check both group lists.
       for (const group of [...externalCallUtxoGroups, ...externalOutStateUtxoGroups]) {
         const bArt = group.externalContract?.inner?.artifact ?? group.externalContract?.artifact;
         const bFn = bArt?.abi?.find((f: any) => f.name === group.functionName);
-        if (bFn?.externalLibraries?.includes('keccak256')) {
-          keccakSalt = keccakBranded(bArt) ? hexToBin(group.categoryId) : KECCAK256_SHARED_SALT;
-          break; // one side-car suffices for all keccak loaders in the tx
+        const used = bFn?.externalLibraries ?? [];
+        if (used.length > 0) {
+          sidecarLib = libDescriptor(bArt, used[0]);
+          sidecarSalt = sidecarLib?.branded ? hexToBin(group.categoryId) : SHARED_LIBRARY_SALT;
+          break; // one side-car suffices for all loaders in the tx
         }
       }
     }
-    if (keccakSalt) {
-      const sidecarUtxos = await this.inner.provider.getUtxosForLockingBytecode(keccakSidecarLockingBytecode(keccakSalt));
+    if (sidecarLib && sidecarSalt) {
+      const blob = resolveLibraryBlob(sidecarLib);
+      const lock = sidecarLockingBytecode(blob, sidecarSalt);
+      const sidecarUtxos = await this.inner.provider.getUtxosForLockingBytecode(lock);
       if (sidecarUtxos.length === 0) {
         throw new Error(
-          'keccak256 side-car library UTXO not found; deploy it before spending '
+          `${sidecarLib.name} side-car library UTXO not found; deploy it before spending `
           + '(TransactionBuilder.addSidecarDeployIfNeeded with the contract category salt).',
         );
       }
-      builder.setKeccakSidecar(sidecarUtxos[0], keccakSalt);
+      builder.setSidecar(sidecarUtxos[0], blob, sidecarSalt);
     }
 
     // Check if there is nothing to derive for this function (e.g., split/merge/unsafe tiers)

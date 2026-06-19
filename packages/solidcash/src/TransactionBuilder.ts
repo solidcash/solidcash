@@ -25,7 +25,8 @@ import {
 } from './interfaces.js';
 import { NetworkProvider } from './network/index.js';
 import {
-  hash256, scriptToBytecode, buildKeccakSidecarRedeem, keccakSidecarLockingBytecode, KECCAK256_SHARED_SALT,
+  hash256, scriptToBytecode, buildSidecarRedeem, sidecarLockingBytecode, resolveLibraryBlob,
+  SHARED_LIBRARY_SALT, ExternalLibraryAbi,
 } from '@solidcash/utils';
 import {
   solidCashOutputToLibauthOutput,
@@ -117,13 +118,15 @@ export class TransactionBuilder {
   }
 
   /**
-   * One-time deploy of the keccak256 side-car library: adds an output creating the side-car UTXO if it
-   * does not exist yet. Call when deploying/funding a keccak256 contract (idempotent). Pass `salt` =
+   * One-time deploy of an external-library side-car: adds an output creating the side-car UTXO if it
+   * does not exist yet. Call when deploying/funding a library-using contract (idempotent). Pass `salt` =
    * the contract's token category for a branded (per-contract) side-car; omit for the shared one.
    * Returns the side-car amount added (0n if it already exists).
    */
-  async addSidecarDeployIfNeeded(amount: bigint = 2000n, salt: Uint8Array = KECCAK256_SHARED_SALT): Promise<bigint> {
-    const sidecarLock = keccakSidecarLockingBytecode(salt);
+  async addSidecarDeployIfNeeded(
+    blob: Uint8Array, amount: bigint = 2000n, salt: Uint8Array = SHARED_LIBRARY_SALT,
+  ): Promise<bigint> {
+    const sidecarLock = sidecarLockingBytecode(blob, salt);
     const existing = await this.provider.getUtxosForLockingBytecode(sidecarLock);
     if (existing.length > 0) return 0n;
     this.addOutput({ to: sidecarLock, amount });
@@ -131,37 +134,46 @@ export class TransactionBuilder {
   }
 
   /**
-   * Co-spend the keccak256 side-car library required by any keccak-using contract input. The side-car
+   * Co-spend the external-library side-car required by any library-using contract input. The side-car
    * is appended as the LAST input and recreated as the LAST output (it self-preserves against the last
-   * output). The ~2.4 KB blob lives once on-chain; this loads it for the spend and keeps it reusable.
-   * Auto-invoked by send(); call it explicitly before build()/debug() for keccak contracts. Shared
-   * side-car only - branded (stateful) side-cars must be co-spent manually for now.
+   * output). The blob lives once on-chain; this loads it for the spend and keeps it reusable. Auto-invoked
+   * by send(); call it explicitly before build()/debug() for library contracts. The loader reads the last
+   * input and verifies the blob by hash, so one side-car serves one library per transaction.
    */
   async addRequiredSidecars(): Promise<this> {
-    const keccakInputs = this.inputs.filter((i): i is UnlockableUtxo => isUnlockableUtxo(i)
-      && isContractUnlocker(i.unlocker) && !!i.unlocker.abiFunction.externalLibraries?.includes('keccak256'));
-    if (keccakInputs.length === 0) return this;
-
-    // Resolve the side-car salt: branded -> the contract's token category (carried on the spent state
-    // UTXO), giving a per-contract side-car address; shared -> zero. One keccak side-car per transaction.
-    const saltOf = (input: UnlockableUtxo): Uint8Array => {
-      if (!isContractUnlocker(input.unlocker)) return KECCAK256_SHARED_SALT;
-      const branded = input.unlocker.contract.artifact.externalLibraries?.find((l) => l.name === 'keccak256')?.branded;
-      if (!branded) return KECCAK256_SHARED_SALT;
-      if (!input.token?.category) {
-        throw new Error('Branded keccak256 side-car requires the spent contract input to carry its token category.');
+    // Collect (library descriptor, salt) for every external library a contract input's spent function uses.
+    const required: { lib: ExternalLibraryAbi; salt: Uint8Array }[] = [];
+    for (const input of this.inputs) {
+      if (!isUnlockableUtxo(input) || !isContractUnlocker(input.unlocker)) continue;
+      const used = input.unlocker.abiFunction.externalLibraries ?? [];
+      const descriptors = input.unlocker.contract.artifact.externalLibraries ?? [];
+      for (const name of used) {
+        const lib = descriptors.find((l) => l.name === name);
+        if (!lib) continue;
+        if (lib.branded && !input.token?.category) {
+          throw new Error(`Branded ${name} side-car requires the spent contract input to carry its token category.`);
+        }
+        required.push({ lib, salt: lib.branded ? hexToBin(input.token!.category!) : SHARED_LIBRARY_SALT });
       }
-      return hexToBin(input.token.category);
-    };
-    const salts = new Set(keccakInputs.map((i) => binToHex(saltOf(i))));
-    if (salts.size > 1) throw new Error('Multiple distinct keccak256 side-cars in one transaction are not supported.');
-    const salt = saltOf(keccakInputs[0]);
+    }
+    if (required.length === 0) return this;
 
-    const sidecarRedeem = buildKeccakSidecarRedeem(salt);
-    const sidecarLock = keccakSidecarLockingBytecode(salt);
+    // A single last-input side-car holds one blob; distinct (blob, salt) side-cars cannot share it.
+    const distinct = new Map<string, { blob: Uint8Array; salt: Uint8Array }>();
+    for (const { lib, salt } of required) {
+      const blob = resolveLibraryBlob(lib);
+      distinct.set(`${binToHex(hash256(blob))}:${binToHex(salt)}`, { blob, salt });
+    }
+    if (distinct.size > 1) {
+      throw new Error('Multiple distinct external-library side-cars in one transaction are not supported.');
+    }
+    const { blob, salt } = [...distinct.values()][0];
+
+    const sidecarRedeem = buildSidecarRedeem(blob, salt);
+    const sidecarLock = sidecarLockingBytecode(blob, salt);
     const utxos = await this.provider.getUtxosForLockingBytecode(sidecarLock);
     if (utxos.length === 0) {
-      throw new Error('keccak256 side-car library UTXO not found; deploy it before spending a keccak256 contract.');
+      throw new Error('External-library side-car UTXO not found; deploy it before spending a library contract.');
     }
     const sidecarOutpoints = new Set(utxos.map((u) => `${u.txid}:${u.vout}`));
     if (this.inputs.some((i) => sidecarOutpoints.has(`${i.txid}:${i.vout}`))) return this; // already co-spent

@@ -28,7 +28,7 @@ async function spendKeccak(preimageHex: string, expectedHex: string): Promise<st
   const contract = new Contract(compileString(SOURCE), [], { provider });
 
   // Deploy the side-car library once, then fund the contract.
-  const sidecarUtxo = await provider.addUtxo(sidecarLockHex, randomUtxo({ satoshis: 5000n }));
+  await provider.addUtxo(sidecarLockHex, randomUtxo({ satoshis: 5000n }));
   const contractUtxo = await provider.addUtxo(contract.address, randomUtxo({ satoshis: 100000n }));
   const feeFunder = await createFeeFunder(provider, 20000n);
 
@@ -170,7 +170,8 @@ describe('keccak256 builtin (keccak in a called external function)', () => {
       provider, calleeContract, calleeArtifact.stateLayout!, { counter: 5n }, { saltContract: true },
     );
     // Deploy the callee's branded side-car.
-    await provider.addUtxo(binToHex(keccakSidecarLockingBytecode(hexToBin(calleeCategory))), randomUtxo({ satoshis: 5000n }));
+    const calleeSidecarLock = binToHex(keccakSidecarLockingBytecode(hexToBin(calleeCategory)));
+    await provider.addUtxo(calleeSidecarLock, randomUtxo({ satoshis: 5000n }));
 
     const callerContract = new Contract(callerArtifact, [hexToBin(calleeCategory)], { provider });
     const { categoryId: callerCategory } = await setupStatefulUtxos(

@@ -15,15 +15,15 @@ import {
 import { binToHex, hexToBin, isHex, encodeTransaction } from '@bitauth/libauth';
 import { getDustThreshold } from '@mem-cash/validation';
 import {
-  buildEventNftCovenantScript, computeEventNameHash, buildKeccakSidecarRedeem,
-  keccakSidecarLockingBytecode, KECCAK256_SHARED_SALT, scriptToBytecode,
+  buildEventNftCovenantScript, computeEventNameHash, buildSidecarRedeem,
+  sidecarLockingBytecode, scriptToBytecode,
 } from '@solidcash/utils';
 import { TransactionBuilder, TransactionBuilderOptions } from '../TransactionBuilder.js';
 import { CovenantTransactionBuilder } from './CovenantTransactionBuilder.js';
 import { scriptToLockingBytecode, generateLibauthSourceOutputs } from '../utils.js';
 import type { LibauthOutput } from '../interfaces.js';
 import {
-  Utxo, UnlockableUtxo, TransactionDetails, isUnlockableUtxo, isContractUnlocker,
+  Utxo, UnlockableUtxo, TransactionDetails,
 } from '../interfaces.js';
 
 export interface EntryNftInfo {
@@ -132,9 +132,9 @@ export class StatefulTransactionBuilder {
   private _minRelayFeePerKb: bigint;
   private _maximumFeeSatoshis?: bigint;
   private allInputs: UnlockableUtxo[];
-  // keccak256 side-car library UTXO, co-spent as the LAST input so the covenant's keccak loader can read
+  // External-library side-car UTXO, co-spent as the LAST input so the covenant's library loader can read
   // it (via OP_INPUTBYTECODE) during both auto-derivation probes and the final tx. Set by _applyOverrides.
-  private keccakSidecarUtxo?: UnlockableUtxo;
+  private sidecarUtxo?: UnlockableUtxo;
   private stateLayout: StateLayout;
   private masterUtxo: UnlockableUtxo;
   private dataNftUtxos: UnlockableUtxo[];
@@ -748,14 +748,14 @@ export class StatefulTransactionBuilder {
    * This method is idempotent - each call creates a fresh TransactionBuilder.
    */
   /**
-   * Configure the keccak256 side-car library UTXO to co-spend (appended as the last input by build()).
-   * salt = the contract's token category (branded) or KECCAK256_SHARED_SALT (shared). Must be called
-   * before auto-derivation so the derivation probes include the side-car.
+   * Configure the external-library side-car UTXO to co-spend (appended as the last input by build()).
+   * blob = the library script; salt = the contract's token category (branded) or zero (shared). Must be
+   * called before auto-derivation so the derivation probes include the side-car.
    */
-  setKeccakSidecar(utxo: Utxo, salt: Uint8Array): void {
-    const redeem = buildKeccakSidecarRedeem(salt);
-    const lock = keccakSidecarLockingBytecode(salt);
-    this.keccakSidecarUtxo = {
+  setSidecar(utxo: Utxo, blob: Uint8Array, salt: Uint8Array): void {
+    const redeem = buildSidecarRedeem(blob, salt);
+    const lock = sidecarLockingBytecode(blob, salt);
+    this.sidecarUtxo = {
       ...utxo,
       unlocker: {
         generateUnlockingBytecode: () => scriptToBytecode([redeem]),
@@ -777,9 +777,9 @@ export class StatefulTransactionBuilder {
       : baseOpts;
     const builder = new CovenantTransactionBuilder(opts);
     builder.addInputs(this.allInputs);
-    // Co-spend the keccak256 side-car as the LAST input (the covenant's keccak loader reads it via
+    // Co-spend the external-library side-car as the LAST input (the covenant's library loader reads it via
     // OP_INPUTBYTECODE of the last input). Present in derivation probes and the final tx alike.
-    if (this.keccakSidecarUtxo) builder.addInputs([this.keccakSidecarUtxo]);
+    if (this.sidecarUtxo) builder.addInputs([this.sidecarUtxo]);
 
     // Read current state from the provided data NFT commitments
     const currentState: Record<
@@ -1656,7 +1656,7 @@ export class StatefulTransactionBuilder {
     };
   }
 
-  // Extra unlocking bytes a keccak256 side-car co-spend will add (for fee estimation); 0 if none needed.
+  // Extra unlocking bytes an external-library side-car co-spend will add (for fee estimation); 0 if none.
   async send(): Promise<TransactionDetails> {
     const provider = this.builderOptions.provider;
     if (!provider) {
@@ -1691,7 +1691,7 @@ export class StatefulTransactionBuilder {
 
     // covenantSize already includes the side-car input (build() appends it); account for the recreation
     // output added below (value 8 + scriptLen 1 + P2SH32 35), with a small margin.
-    const sidecarOutputOverhead = this.keccakSidecarUtxo ? 50n : 0n;
+    const sidecarOutputOverhead = this.sidecarUtxo ? 50n : 0n;
     const totalEstimatedSize = covenantSize + BigInt(feeInputOverhead) + BigInt(changeOutputOverhead)
       + sidecarOutputOverhead;
     const neededFee = this.computeMinFee(totalEstimatedSize);
@@ -1765,12 +1765,12 @@ export class StatefulTransactionBuilder {
       }
     }
 
-    // Recreate the keccak side-car as the LAST output (its self-preservation verifies the last output).
+    // Recreate the side-car as the LAST output (its self-preservation verifies the last output).
     // Value-preserving (recreation amount == side-car input amount), so it is fee-neutral.
-    if (this.keccakSidecarUtxo) {
+    if (this.sidecarUtxo) {
       finalBuilder.addOutput({
-        to: this.keccakSidecarUtxo.unlocker.generateLockingBytecode(),
-        amount: this.keccakSidecarUtxo.satoshis,
+        to: this.sidecarUtxo.unlocker.generateLockingBytecode(),
+        amount: this.sidecarUtxo.satoshis,
       });
     }
 
@@ -1780,7 +1780,7 @@ export class StatefulTransactionBuilder {
     const { decodeTransactionUnsafe, hash256 } = await import('@bitauth/libauth');
     const rawTxBin = hexToBin(rawTx);
     const totalInputSats = this.allInputs.reduce((sum, inp) => sum + inp.satoshis, 0n)
-      + (this.keccakSidecarUtxo?.satoshis ?? 0n); // side-car input is added by build(), not in allInputs
+      + (this.sidecarUtxo?.satoshis ?? 0n); // side-car input is added by build(), not in allInputs
     const decodedTx = decodeTransactionUnsafe(rawTxBin);
     const totalOutputSats = (decodedTx as { outputs: Array<{ valueSatoshis: bigint }> }).outputs
       .reduce((sum, out) => sum + out.valueSatoshis, 0n);

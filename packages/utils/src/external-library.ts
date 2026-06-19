@@ -31,6 +31,28 @@ export const BUILTIN_LIBRARIES: Record<string, ExternalLibrary> = {
   },
 };
 
+// A user-supplied library: a name, the script blob (hex), and its call signature. Provided to the
+// compiler via the `userLibraries` option; resolved into the registry alongside the built-ins.
+export interface UserLibraryInput {
+  name: string;
+  code: string; // hex-encoded library blob (a function inputs -> outputs)
+  abi: { inputs: AbiInput[]; outputs: AbiOutput[] };
+}
+
+// The full library set for a compilation: built-in precompiles + user libraries. User libraries get
+// function ids after the built-ins'. Throws on a name collision (incl. shadowing a built-in).
+export function resolveLibraries(userLibraries?: readonly UserLibraryInput[]): Record<string, ExternalLibrary> {
+  const resolved: Record<string, ExternalLibrary> = { ...BUILTIN_LIBRARIES };
+  let nextId = Object.values(BUILTIN_LIBRARIES).reduce((max, l) => (l.functionId > max ? l.functionId : max), 0x1008n) + 1n;
+  for (const ul of userLibraries ?? []) {
+    if (resolved[ul.name]) throw new Error(`External library '${ul.name}' is already defined`);
+    const blob = hexToBin(ul.code);
+    resolved[ul.name] = { name: ul.name, blob, blobHash: hash256(blob), functionId: nextId, abi: ul.abi };
+    nextId += 1n;
+  }
+  return resolved;
+}
+
 // Minimal data-push prefix length for a push of `len` bytes (direct / PUSHDATA1 / PUSHDATA2 / PUSHDATA4).
 export function pushPrefixLength(len: number): number {
   if (len <= 75) return 1;

@@ -21,7 +21,7 @@ export const KECCAK256_LIBRARY_ID = 0x1009n;                 // next after the 0
 //   <salt:32> OP_DROP | self-pres(6) | PUSHDATA2-prefix(3) | blob | OP_DROP OP_1
 // branded: salt = contract token category; shared: salt = 32 zero bytes.
 export const KECCAK256_SIDECAR_SALT_PREFIX_LENGTH = 34;      // OP_PUSHBYTES_32 + 32 + OP_DROP
-export const KECCAK256_SIDECAR_SELFPRES_LENGTH = 6;          // INPUTINDEX UTXOBYTECODE TXOUTPUTCOUNT 1SUB OUTPUTBYTECODE EQUALVERIFY
+export const KECCAK256_SIDECAR_SELFPRES_LENGTH = 6;          // self-pres recreates against last output
 export const KECCAK256_SIDECAR_BLOB_PUSH_PREFIX_LENGTH = 3;  // OP_PUSHDATA2 + 2-byte length
 export const KECCAK256_SIDECAR_OUTER_PUSH_PREFIX_LENGTH = 3; // unlocking = PUSHDATA2(redeem)
 

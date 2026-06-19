@@ -1,7 +1,7 @@
 import {
   AbiFunction, Artifact, CompilerOptions, DebugInformation, Script, scriptToAsm, StateLayout, ArrayType,
   computeCollectionSignature, computeFunctionSelectorHex, ExternalInterfaceInfo, MappingType, Type, ValueType,
-  ExternalLibraryAbi, BUILTIN_LIBRARIES, sidecarCodeRange,
+  ExternalLibraryAbi, BUILTIN_LIBRARIES, resolveLibraries, sidecarCodeRange,
 } from '@solidcash/utils';
 import { binToHex } from '@bitauth/libauth';
 import { version } from '../index.js';
@@ -353,10 +353,11 @@ export function generateArtifact(
 
   // External script libraries the contract depends on, with a self-describing descriptor. Branded
   // (category-salted side-car) for stateful contracts; shared otherwise. See docs/external-libraries.md.
+  const resolvedLibraries = resolveLibraries(compilerOptions.userLibraries);
   const usedLibraryNames = [...new Set(contract.functions.flatMap((f) => f.usedLibraries ?? []))];
   const externalLibraries: ExternalLibraryAbi[] | undefined = usedLibraryNames.length > 0
     ? usedLibraryNames.map((name) => {
-      const lib = BUILTIN_LIBRARIES[name];
+      const lib = resolvedLibraries[name];
       const range = sidecarCodeRange(lib.blob);
       return {
         name,
@@ -366,6 +367,8 @@ export function generateArtifact(
         codeBegin: range.codeBegin,
         codeEnd: range.codeEnd,
         abi: lib.abi,
+        // built-ins are known to the SDK; user libraries embed their blob so the SDK can build the side-car.
+        ...(BUILTIN_LIBRARIES[name] ? {} : { code: binToHex(lib.blob) }),
       };
     })
     : undefined;

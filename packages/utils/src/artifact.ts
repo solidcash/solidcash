@@ -14,6 +14,9 @@ export interface CompilerOptions {
   // Per-library inline override (keyed by library name, e.g. 'keccak256'): true = always inline the blob
   // into the contract, false = always use a side-car. Omitted = auto (inline when used once).
   inlineLibraries?: Record<string, boolean>;
+  // User-supplied external libraries (script precompiles). Each registers `name(...)` as a callable with
+  // the given ABI signature, backed by the hex `code` blob. Merged with the built-in libraries.
+  userLibraries?: { name: string; code: string; abi: { inputs: AbiInput[]; outputs: AbiOutput[] } }[];
 }
 
 export interface AbiInput {
@@ -281,6 +284,7 @@ export interface ExternalLibraryAbi {
   codeBegin?: number; // byte offset where the blob begins in the side-car input bytecode
   codeEnd?: number;   // ... and ends (the range the loader strips to)
   abi?: { inputs: readonly AbiInput[]; outputs: readonly AbiOutput[] };  // call signature, e.g. (bytes) -> bytes32
+  code?: string;      // hex blob; present for user-supplied libraries (the SDK needs it to build the side-car)
 }
 
 export interface Artifact {

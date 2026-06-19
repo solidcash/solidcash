@@ -36,7 +36,7 @@ import {
   FunctionType,
   BlockLayoutSlot,
   BlockSlotKind,
-  BUILTIN_LIBRARIES,
+  resolveLibraries,
   ExternalLibrary,
   sidecarStripOffsets,
 } from '@solidcash/utils';
@@ -352,8 +352,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   entryPointDebugInfo: Map<string, FunctionDebugInformation> = new Map();  // selector hex -> debug info
   entryPointBytecodes: Map<string, Uint8Array> = new Map(); // selector hex -> raw function body bytecode
 
+  private resolvedLibraries: Record<string, ExternalLibrary>;
+
   constructor(private compilerOptions: CompilerOptions) {
     super();
+    this.resolvedLibraries = resolveLibraries(compilerOptions.userLibraries);
   }
 
   private emit(op: OpOrData | OpOrData[], locationData: SingleLocationData): void {
@@ -1329,7 +1332,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Load each external library this function uses (from the side-car) and OP_DEFINE it once, before
     // the body.
     for (const libName of node.usedLibraries ?? []) {
-      this.emitExternalLibraryLoader(BUILTIN_LIBRARIES[libName], { location: node.location, positionHint: PositionHint.START });
+      const loc = { location: node.location, positionHint: PositionHint.START };
+      this.emitExternalLibraryLoader(this.resolvedLibraries[libName], loc);
     }
 
     node.body = this.visit(node.body) as BlockNode;
@@ -3156,7 +3160,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       return this.visitAddMulMod(node);
     }
 
-    const externalLib = BUILTIN_LIBRARIES[node.identifier.name];
+    const externalLib = this.resolvedLibraries[node.identifier.name];
     if (externalLib) {
       return this.visitExternalLibraryCall(node, externalLib);
     }

@@ -1,4 +1,4 @@
-import { GLOBAL_SYMBOL_TABLE, GlobalFunction, Modifier } from '../ast/Globals.js';
+import { GLOBAL_SYMBOL_TABLE, Modifier } from '../ast/Globals.js';
 import {
   ContractNode,
   ParameterNode,
@@ -174,7 +174,7 @@ import {
   computeEventSignature, computeErrorSignature, computeCollectionSignature,
   computeFunctionSignature, computeFunctionSelector, TupleType, ArrayType,
   IntType, FixedType, MappingType, FunctionType,
-  FunctionBlockLayout, BlockLayoutSlot, BUILTIN_LIBRARIES,
+  FunctionBlockLayout, BlockLayoutSlot, resolveLibraries, ExternalLibrary, parseTypeStrict,
 } from '@solidcash/utils';
 import { binToHex } from '@bitauth/libauth';
 
@@ -253,9 +253,21 @@ export default class SymbolTableTraversal extends AstTraversal {
   // operatorKey examples: '+', '-', '==', 'unary_-', 'unary_~'
   private operatorOverloads: Map<string, Map<string, string>> = new Map();
 
+  private resolvedLibraries: Record<string, ExternalLibrary>;
+
   constructor(compilerOptions: CompilerOptions = {}) {
     super();
     this.compilerOptions = compilerOptions;
+    // Built-in + user-supplied external libraries for this compilation. User libraries are registered
+    // as callable functions in the per-compilation root table (NOT the static global, which would leak).
+    this.resolvedLibraries = resolveLibraries(compilerOptions.userLibraries);
+    for (const ul of compilerOptions.userLibraries ?? []) {
+      this.symbolTables[0].set(Symbol.function(
+        ul.name,
+        parseTypeStrict(ul.abi.outputs[0].type),
+        ul.abi.inputs.map((input) => parseTypeStrict(input.type)),
+      ));
+    }
   }
 
   visitSourceFile(node: SourceFileNode): Node {
@@ -2011,7 +2023,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     if (visited.has(node)) return found;
     visited.add(node);
 
-    if (node instanceof FunctionCallNode && node.identifier.name in BUILTIN_LIBRARIES) {
+    if (node instanceof FunctionCallNode && node.identifier.name in this.resolvedLibraries) {
       found.add(node.identifier.name);
     }
 

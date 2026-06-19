@@ -88,6 +88,7 @@ export class ImportResolver {
         target.structDefinitions.push(...source.structDefinitions);
         target.typeDefinitions.push(...source.typeDefinitions);
         target.eventDefinitions.push(...source.eventDefinitions);
+        target.errorDefinitions.push(...source.errorDefinitions);
         target.interfaceDefinitions.push(...source.interfaceDefinitions);
         target.freeFunctions.push(...source.freeFunctions);
         target.usingForDirectives.push(...source.usingForDirectives);
@@ -99,7 +100,8 @@ export class ImportResolver {
           const { name } = binding;
           // Check if importing a library namespace (e.g. import { SafeMath } from "math_lib.scash")
           if (source.isLibrary && source.libraryName === name) {
-            // Import all namespaced functions, constants, enums, structs, types, events, using-for from this library
+            // Import all namespaced functions, constants, enums, structs, types, events, using-for from this
+            // library (or interface-only file, whose placeholder name is its first interface).
             target.freeFunctions.push(...source.freeFunctions);
             target.constantDefinitions.push(
               ...source.constantDefinitions.filter((c) => c.name.startsWith(`${name}.`)),
@@ -108,6 +110,8 @@ export class ImportResolver {
             target.structDefinitions.push(...source.structDefinitions);
             target.typeDefinitions.push(...source.typeDefinitions);
             target.eventDefinitions.push(...source.eventDefinitions);
+            target.errorDefinitions.push(...source.errorDefinitions);
+            target.interfaceDefinitions.push(...source.interfaceDefinitions);
             target.usingForDirectives.push(...source.usingForDirectives);
           } else if (!source.isLibrary && source.contract.name === name) {
             target.importedContracts.push(source.contract);
@@ -119,6 +123,7 @@ export class ImportResolver {
             const structDef = source.structDefinitions.find((s) => s.name === name);
             const typeDef = source.typeDefinitions.find((t) => t.name === name);
             const eventDef = source.eventDefinitions.find((e) => e.name === name);
+            const errorDef = source.errorDefinitions.find((e) => e.name === name);
             const freeFunc = source.freeFunctions.find((f) => f.name === name);
             const importedContract = source.importedContracts.find((c) => c.name === name);
 
@@ -134,6 +139,8 @@ export class ImportResolver {
               target.typeDefinitions.push(typeDef);
             } else if (eventDef) {
               target.eventDefinitions.push(eventDef);
+            } else if (errorDef) {
+              target.errorDefinitions.push(errorDef);
             } else if (iface) {
               target.interfaceDefinitions.push(iface);
               // Also import interface-level definitions to file level
@@ -167,6 +174,7 @@ export class ImportResolver {
         target.structDefinitions.push(...source.structDefinitions);
         target.typeDefinitions.push(...source.typeDefinitions);
         target.eventDefinitions.push(...source.eventDefinitions);
+        target.errorDefinitions.push(...source.errorDefinitions);
         target.interfaceDefinitions.push(...source.interfaceDefinitions);
         target.freeFunctions.push(...source.freeFunctions);
         // Propagate global using-for directives through namespace imports

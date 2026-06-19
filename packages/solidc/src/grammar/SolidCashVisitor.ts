@@ -148,6 +148,7 @@ import { StateAccessContext } from "./SolidCashParser.js";
 import { NewArrayContext } from "./SolidCashParser.js";
 import { SliceContext } from "./SolidCashParser.js";
 import { TupleIndexOpContext } from "./SolidCashParser.js";
+import { MethodCallNamedContext } from "./SolidCashParser.js";
 import { FieldAccessContext } from "./SolidCashParser.js";
 import { AbiEncodePackedContext } from "./SolidCashParser.js";
 import { AbiEncodeCallContext } from "./SolidCashParser.js";
@@ -1076,6 +1077,13 @@ export default class SolidCashVisitor<Result> extends ParseTreeVisitor<Result> {
 	 * @return the visitor result
 	 */
 	visitTupleIndexOp?: (ctx: TupleIndexOpContext) => Result;
+	/**
+	 * Visit a parse tree produced by the `MethodCallNamed`
+	 * labeled alternative in `SolidCashParser.expression`.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	visitMethodCallNamed?: (ctx: MethodCallNamedContext) => Result;
 	/**
 	 * Visit a parse tree produced by the `FieldAccess`
 	 * labeled alternative in `SolidCashParser.expression`.

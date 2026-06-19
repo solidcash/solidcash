@@ -1,9 +1,0 @@
-function add(int a, int b) internal returns (int) {
-    return a + b;
-}
-
-contract Test() {
-    function compute(int x) {
-        require(x > 0);
-    }
-}

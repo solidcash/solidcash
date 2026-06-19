@@ -1,8 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { compileString } from '../src/index.js';
 
-// Compiler fixes surfaced by porting Solidity (Sablier) to SolidCash. See
-// examples/legacy-contracts/scash/INTERVENTIONS.md.
+// Compiler features surfaced by porting Solidity (Sablier) to SolidCash.
+// See packages/solidc/docs/solidity-import-compat.md.
 
 describe('A4: address is a valid event parameter type', () => {
   it('compiles an event with an address param and an emit', () => {
@@ -214,5 +214,126 @@ describe('B7: a returning function that reads a mapping must not crash', () => {
         function go() { this.n = this.n + 1; }
       }`);
     expect(artifact.abi.find((f) => f.name === 'getA')).toBeDefined();
+  });
+});
+
+// Features surfaced by the modern Sablier Flow port. See examples/flow/scash/INTERVENTIONS.md.
+
+describe('Qualified + named-arg event emit', () => {
+  it('accepts a qualified emit `emit C.E(...)` (qualifier stripped)', () => {
+    const a = compileString(`
+      contract C() {
+        int n;
+        event Moved(address who, int amt);
+        function go(address dst, int amt) { emit C.Moved(dst, amt); this.n = this.n + 1; }
+      }`);
+    expect(a.events?.find((e) => e.name === 'Moved')?.signature).toBe('Moved(address,int)');
+  });
+
+  it('reorders named-arg emit `emit E({b, a})` into the event param order', () => {
+    const a = compileString(`
+      contract C() {
+        int n;
+        event Moved(address who, int amt);
+        function go(address dst, int amt) { emit Moved({amt: amt, who: dst}); this.n = this.n + 1; }
+      }`);
+    expect(a.contractName).toBe('C');
+  });
+
+  it('rejects a named-arg emit whose names do not match the event', () => {
+    expect(() => compileString(`
+      contract C() {
+        int n;
+        event Moved(address who, int amt);
+        function go(address dst, int amt) { emit Moved({amt: amt, nope: dst}); this.n = this.n + 1; }
+      }`)).toThrow(/named argument|No event/);
+  });
+});
+
+describe('Named-arg external interface call', () => {
+  it('reorders named args into the interface function param order', () => {
+    const a = compileString(`
+      interface IBank { function balanceOf(address who, int day) external view returns (int); }
+      contract C() {
+        int n;
+        function f(bytes32 cat, address who) { int b = IBank(cat).balanceOf({day: 5, who: who}); this.n = b; }
+      }`);
+    expect(a.contractName).toBe('C');
+  });
+});
+
+describe('error declarations inside libraries', () => {
+  it('accepts an `error` declared in a library body', () => {
+    const a = compileString(`
+      library Errors { error InsufficientBalance(int available, int required); function id(int x) returns (int) { return x; } }
+      contract C() { int n; function go() { this.n = 1; } }`);
+    expect(a.contractName).toBe('C');
+  });
+});
+
+describe('Visibility on free / library functions', () => {
+  it('accepts visibility/mutability on a free function (ignored)', () => {
+    const a = compileString(`
+      function helper(int x) internal pure returns (int) { return x * 2; }
+      contract C() { int n; function go() { this.n = helper(3); } }`);
+    expect(a.contractName).toBe('C');
+  });
+
+  it('accepts visibility/mutability on a library function (ignored)', () => {
+    const a = compileString(`
+      library Math { function dbl(int x) internal pure returns (int) { return x * 2; } }
+      contract C() { int n; function go() { this.n = 1; } }`);
+    expect(a.contractName).toBe('C');
+  });
+});
+
+describe('Interface-only / type-only files', () => {
+  it('parses an interface-only file (no trailing contract) and reports it as not directly compilable', () => {
+    expect(() => compileString('interface I { function f(int x) external returns (int); }'))
+      .toThrow(/do not produce artifacts|Cannot compile/);
+  });
+
+  it('parses a type-only file (UDVT + free function, no trailing contract)', () => {
+    expect(() => compileString('type UD is int;\nfunction unwrap(UD x) returns (int) { return UD.unwrap(x); }'))
+      .toThrow(/do not produce artifacts|Cannot compile/);
+  });
+
+  it('imports an interface-only file under solidityImportCompat', () => {
+    const resolver = (p: string): { source: string; id: string } | undefined => (p.includes('IBank')
+      ? { source: 'interface IBank { function bal(address who) external view returns (int); }', id: 'IBank' }
+      : undefined);
+    const a = compileString(
+      'import { IBank } from "./IBank.sol";\ncontract C() { int n; function f(bytes32 c, address w) { this.n = IBank(c).bal(w); } }',
+      { solidityImportCompat: true, importResolver: resolver },
+    );
+    expect(a.contractName).toBe('C');
+  });
+});
+
+describe('Qualified + named-arg custom-error revert', () => {
+  it('accepts a qualified revert `revert Lib.Err(args)` (qualifier stripped)', () => {
+    const a = compileString(`
+      library Errors { error Bad(int x); }
+      contract C() { int n; function f(int x) { if (x < 0) { revert Errors.Bad(x); } this.n = x; } }`);
+    expect(a.contractName).toBe('C');
+  });
+
+  it('reorders a named-arg revert into the error param order', () => {
+    const a = compileString(`
+      contract C() {
+        int n;
+        error Range(int lo, int hi);
+        function f(int x) { if (x < 0) { revert Range({hi: 10, lo: 0}); } this.n = x; }
+      }`);
+    expect(a.contractName).toBe('C');
+  });
+});
+
+describe('Named-arg call statement', () => {
+  it('accepts a bare named-arg free-function call statement, reordered', () => {
+    const a = compileString(`
+      function check(int lo, int hi) returns (int) { require(hi >= lo); return hi; }
+      contract C() { int n; function f() { check({hi: 5, lo: 1}); this.n = 1; } }`);
+    expect(a.contractName).toBe('C');
   });
 });

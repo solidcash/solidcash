@@ -3388,6 +3388,25 @@ export default class SymbolTableTraversal extends AstTraversal {
     return func.parameters.map((p) => node.parameters[fieldNames.indexOf(p.name)] as ExpressionNode);
   }
 
+  // Reorder named method args obj.f({b:2,a:1}) into the callee's declared parameter order.
+  private reorderNamedArgsByParams(
+    fieldNames: string[], params: { name: string }[], args: ExpressionNode[], node: Node, calleeLabel: string,
+  ): ExpressionNode[] {
+    const paramNames = params.map((p) => p.name);
+    const seen = new Set<string>();
+    for (const name of fieldNames) {
+      if (seen.has(name)) throw new NamedArgumentError(node, `Duplicate named argument '${name}'`);
+      seen.add(name);
+      if (!paramNames.includes(name)) {
+        throw new NamedArgumentError(node, `Unknown named argument '${name}' for ${calleeLabel}`);
+      }
+    }
+    if (fieldNames.length !== paramNames.length) {
+      throw new NamedArgumentError(node, `${calleeLabel} expects ${paramNames.length} arguments but got ${fieldNames.length}`);
+    }
+    return params.map((p) => args[fieldNames.indexOf(p.name)]);
+  }
+
   visitFunctionCall(node: FunctionCallNode): Node {
     // Check if this is an address method call: dest.send(amount), dest.connect(category),
     // dest.call(data), dest.staticcall(data)
@@ -3842,7 +3861,19 @@ export default class SymbolTableTraversal extends AstTraversal {
     if (candidates.length === 0) {
       throw new UndefinedEventError(node);
     }
-    if (candidates.length === 1) {
+    if (node.fieldNames) {
+      // Named-arg emit `emit E({b: y, a: x})`: pick the event whose params match the names and reorder.
+      const match = candidates.find((ev) => ev.parameters.length === node.fieldNames!.length
+        && ev.parameters.every((p) => node.fieldNames!.includes(p.name)));
+      if (!match) {
+        throw new NamedArgumentError(
+          node, `No event '${node.eventName}' matches named arguments {${node.fieldNames.join(', ')}}`,
+        );
+      }
+      node.args = match.parameters.map((p) => node.args[node.fieldNames!.indexOf(p.name)]);
+      node.eventDefinition = match;
+      node.fieldNames = undefined;
+    } else if (candidates.length === 1) {
       node.eventDefinition = candidates[0];
     } else {
       // Multiple overloads: defer resolution to TypeCheckTraversal
@@ -4509,7 +4540,19 @@ export default class SymbolTableTraversal extends AstTraversal {
       if (candidates.length === 0) {
         throw new UndefinedErrorError(node);
       }
-      if (candidates.length === 1) {
+      if (node.fieldNames) {
+        // Named-arg revert `revert E({b: y, a: x})`: pick the error whose params match the names and reorder.
+        const match = candidates.find((e) => e.parameters.length === node.fieldNames!.length
+          && e.parameters.every((p) => node.fieldNames!.includes(p.name)));
+        if (!match) {
+          throw new NamedArgumentError(
+            node, `No error '${node.errorName}' matches named arguments {${node.fieldNames.join(', ')}}`,
+          );
+        }
+        node.args = match.parameters.map((p) => node.args[node.fieldNames!.indexOf(p.name)]);
+        node.errorDefinition = match;
+        node.fieldNames = undefined;
+      } else if (candidates.length === 1) {
         node.errorDefinition = candidates[0];
       }
       // Multiple overloads: defer to TypeCheckTraversal
@@ -5150,6 +5193,13 @@ export default class SymbolTableTraversal extends AstTraversal {
           throw new UndefinedInterfaceFunctionError(node, iface.name, functionName);
         }
 
+        if (node.fieldNames) {
+          node.parameters = this.reorderNamedArgsByParams(
+            node.fieldNames, ifaceFunc.parameters, node.parameters, node, `'${iface.name}.${ifaceFunc.name}'`,
+          );
+          node.fieldNames = undefined;
+        }
+
         // Visit call parameters
         const parameters = this.visitList(node.parameters) as ExpressionNode[];
 
@@ -5239,6 +5289,13 @@ export default class SymbolTableTraversal extends AstTraversal {
         const ifaceFunc = allFunctions.find((f) => f.name === node.methodName);
         if (!ifaceFunc) {
           throw new UndefinedInterfaceFunctionError(node, iface.name, node.methodName);
+        }
+
+        if (node.fieldNames) {
+          node.parameters = this.reorderNamedArgsByParams(
+            node.fieldNames, ifaceFunc.parameters, node.parameters, node, `'${iface.name}.${ifaceFunc.name}'`,
+          );
+          node.fieldNames = undefined;
         }
 
         // Visit method parameters

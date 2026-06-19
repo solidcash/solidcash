@@ -1636,6 +1636,7 @@ export interface ExternalOutStateSlot {
 export class MethodCallNode extends ExpressionNode {
   callOptions?: CallOptions;
   valueTransferIndex: number = -1; // temporary carrier for pre-scan before transformation
+  fieldNames?: string[]; // set for named-arg calls obj.f({a: x}); reordered against the callee's params
 
   constructor(
     public object: ExpressionNode,
@@ -1685,6 +1686,7 @@ export class ErrorDefinitionNode extends Node implements Named {
 
 export class RevertNode extends StatementNode {
   errorDefinition?: ErrorDefinitionNode;
+  fieldNames?: string[]; // set for named-arg reverts revert E({a: x}); reordered against the error's params
 
   constructor(
     public errorName?: string,
@@ -1739,6 +1741,7 @@ export class EmitStatementNode extends StatementNode {
   eventDefinition?: EventDefinitionNode;
   eventCandidates?: EventDefinitionNode[];
   emitIndex: number = 0;
+  fieldNames?: string[]; // set for named-arg emits emit E({a: x}); reordered against the event's params
 
   constructor(
     public eventName: string,

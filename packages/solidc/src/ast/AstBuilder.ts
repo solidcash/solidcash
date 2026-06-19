@@ -219,6 +219,7 @@ import type {
   RevertStatementContext,
   AssertStatementContext,
   MethodCallContext,
+  MethodCallNamedContext,
   AddressMethodStatementContext,
   CallOptionsContext,
   OutStateMappingFieldAccessContext,
@@ -347,6 +348,11 @@ export default class AstBuilder
         allLibEventDefs.push(this.visitEventDefinition(evCtx));
       }
 
+      // Library error definitions (accumulated to file level)
+      for (const erCtx of libCtx.errorDefinition_list()) {
+        errorDefinitions.push(this.visitErrorDefinition(erCtx));
+      }
+
       // Library constants get namespaced names (e.g. SafeMath.MAX_VALUE)
       const libConstants = libCtx.constantDefinition_list().map(
         (c) => {
@@ -368,12 +374,15 @@ export default class AstBuilder
       freeFunctions.push(...libFunctions);
     }
 
-    // If no contract definition (library-only file), return a library node
+    // If no contract definition (library-only, or interface/type-only file), return a definitions-only node.
+    // Interface/type-only files have no library either; they exist only to be imported.
     if (!ctx.contractDefinition()) {
       const lastLib = allLibDefs[allLibDefs.length - 1];
-      const libName = lastLib.Identifier().getText();
+      const libName = lastLib
+        ? lastLib.Identifier().getText()
+        : (interfaceDefinitions[0]?.name ?? 'definitions');
       const placeholder = new ContractNode(libName, [], [], [], [], [], [], undefined, []);
-      placeholder.location = Location.fromCtx(lastLib);
+      placeholder.location = lastLib ? Location.fromCtx(lastLib) : Location.fromCtx(ctx);
       const node = new SourceFileNode(
         placeholder, constantDefinitions, enumDefinitions, structDefinitions, typeDefinitions,
         errorDefinitions, allLibEventDefs, interfaceDefinitions, freeFunctions, imports, usingForDirectives,
@@ -2071,6 +2080,19 @@ export default class AstBuilder
     return node;
   }
 
+  // Named-arg method call: obj.f({a: x, b: y}). Args are reordered against the callee's params in semantic analysis.
+  visitMethodCallNamed(ctx: MethodCallNamedContext): ExpressionNode {
+    const object = this.visit(ctx.expression());
+    const methodName = ctx.Identifier().getText();
+    const namedArgs = ctx.namedArg_list();
+    const parameters = namedArgs.map((na) => this.visit(na.expression()) as ExpressionNode);
+    const node = new MethodCallNode(object, methodName, parameters);
+    node.fieldNames = namedArgs.map((na) => na.Identifier().getText());
+    node.callOptions = this.parseCallOptions(ctx.callOptions());
+    node.location = Location.fromCtx(ctx);
+    return node;
+  }
+
   // Flatten BlockNode statements into the parent list (used for for-loop desugaring)
   private flattenStatements(statements: StatementNode[]): StatementNode[] {
     return statements.flatMap((s) => (s instanceof BlockNode && s.statements) ? s.statements : [s]);
@@ -2267,11 +2289,21 @@ export default class AstBuilder
 
   visitRevertStatement(ctx: RevertStatementContext): RevertNode {
     let node: RevertNode;
-    if (ctx.Identifier()) {
-      // revert CustomError(args);
-      const errorName = ctx.Identifier().getText();
-      const args = ctx.expressionList().expression_list().map((e) => this.visit(e) as ExpressionNode);
-      node = new RevertNode(errorName, args);
+    const identifiers = ctx.Identifier_list();
+    if (identifiers.length > 0) {
+      // revert CustomError(args) or qualified revert Lib.CustomError(args): the error resolves by its bare
+      // name, so take the last identifier.
+      const errorName = identifiers[identifiers.length - 1].getText();
+      if (!ctx.expressionList()) {
+        // Named-arg form: revert E({a: x, b: y})
+        const namedArgs = ctx.namedArg_list();
+        const args = namedArgs.map((na) => this.visit(na.expression()) as ExpressionNode);
+        node = new RevertNode(errorName, args);
+        node.fieldNames = namedArgs.map((na) => na.Identifier().getText());
+      } else {
+        const args = ctx.expressionList().expression_list().map((e) => this.visit(e) as ExpressionNode);
+        node = new RevertNode(errorName, args);
+      }
     } else if (ctx.StringLiteral()) {
       // revert("message");
       const rawString = ctx.StringLiteral().getText();
@@ -2302,9 +2334,20 @@ export default class AstBuilder
   }
 
   visitEmitStatement(ctx: EmitStatementContext): EmitStatementNode {
-    const eventName = ctx.Identifier().getText();
-    const args = ctx.expressionList().expression_list().map((e) => this.visit(e) as ExpressionNode);
-    const node = new EmitStatementNode(eventName, args);
+    // Qualified emit `emit I.E(...)`: the event resolves by its bare name, so take the last identifier.
+    const identifiers = ctx.Identifier_list();
+    const eventName = identifiers[identifiers.length - 1].getText();
+    let node: EmitStatementNode;
+    if (!ctx.expressionList()) {
+      // Named-arg form: emit E({a: x, b: y})
+      const namedArgs = ctx.namedArg_list();
+      const args = namedArgs.map((na) => this.visit(na.expression()) as ExpressionNode);
+      node = new EmitStatementNode(eventName, args);
+      node.fieldNames = namedArgs.map((na) => na.Identifier().getText());
+    } else {
+      const args = ctx.expressionList().expression_list().map((e) => this.visit(e) as ExpressionNode);
+      node = new EmitStatementNode(eventName, args);
+    }
     node.location = Location.fromCtx(ctx);
     return node;
   }
@@ -2380,6 +2423,23 @@ export default class AstBuilder
   ): FunctionCallStatementNode | MethodCallStatementNode | LowLevelCallStatementNode {
     const identifiers = ctx.Identifier_list();
     const expressionLists = ctx.expressionList_list();
+
+    // Named-arg call statement: foo({a: x}) or Lib.foo({a: x}). Args reorder against the callee in semantics.
+    if (expressionLists.length === 0) {
+      const name = identifiers.length > 1
+        ? `${identifiers[0].getText()}.${identifiers[1].getText()}`
+        : identifiers[0].getText();
+      const identifier = new IdentifierNode(name);
+      identifier.location = Location.fromToken(identifiers[0].symbol);
+      const namedArgs = ctx.namedArg_list();
+      const params = namedArgs.map((na) => this.visit(na.expression()) as ExpressionNode);
+      const functionCall = new FunctionCallNode(identifier, params);
+      functionCall.fieldNames = namedArgs.map((na) => na.Identifier().getText());
+      functionCall.location = Location.fromCtx(ctx);
+      const stmt = new FunctionCallStatementNode(functionCall);
+      stmt.location = Location.fromCtx(ctx);
+      return stmt;
+    }
 
     // Alternative 3: Identifier expressionList '.' Identifier '.' Identifier callOptions? expressionList ';'
     // Pattern: IFoo(cat).bar.call{value:X}(args)  ->  MethodCallNode(FieldAccessNode(FunctionCallNode), "call", args)

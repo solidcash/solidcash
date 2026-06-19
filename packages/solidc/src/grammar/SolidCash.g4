@@ -1,7 +1,7 @@
 grammar SolidCash;
 
 sourceFile
-    : pragmaDirective* importDirective* (constantDefinition | enumDefinition | structDefinition | typeDefinition | usingForDirective | errorDefinition | interfaceDefinition | freeFunctionDefinition | libraryDefinition)* (contractDefinition | libraryDefinition) EOF
+    : pragmaDirective* importDirective* (constantDefinition | enumDefinition | structDefinition | typeDefinition | usingForDirective | errorDefinition | interfaceDefinition | freeFunctionDefinition | libraryDefinition)* (contractDefinition | libraryDefinition)? EOF
     ;
 
 importDirective
@@ -15,7 +15,7 @@ importBinding
     ;
 
 freeFunctionDefinition
-    : 'function' Identifier parameterList returnType? '{' statement* '}'
+    : 'function' Identifier parameterList functionModifier* returnType? '{' statement* '}'
     ;
 
 usingForDirective
@@ -76,7 +76,7 @@ interfaceFunction
     ;
 
 libraryDefinition
-    : 'library' Identifier '{' enumDefinition* structDefinition* typeDefinition* eventDefinition* constantDefinition* usingForDirective* freeFunctionDefinition* '}'
+    : 'library' Identifier '{' enumDefinition* structDefinition* typeDefinition* eventDefinition* errorDefinition* constantDefinition* usingForDirective* freeFunctionDefinition* '}'
     ;
 
 contractDefinition
@@ -282,7 +282,8 @@ returnStatement
     ;
 
 functionCallStatement
-    : Identifier expressionList ';'
+    : Identifier ('.' Identifier)? '(' '{' (namedArg (',' namedArg)* ','?)? '}' ')' ';'
+    | Identifier expressionList ';'
     | Identifier '.' Identifier expressionList ';'
     | Identifier expressionList '.' Identifier '.' Identifier callOptions? expressionList ';'
     ;
@@ -292,7 +293,8 @@ addressMethodStatement
     ;
 
 emitStatement
-    : 'emit' Identifier expressionList ';'
+    : 'emit' Identifier ('.' Identifier)? '(' '{' (namedArg (',' namedArg)* ','?)? '}' ')' ';'
+    | 'emit' Identifier ('.' Identifier)? expressionList ';'
     ;
 
 mappingAssignStatement
@@ -477,7 +479,8 @@ requireMessage
     ;
 
 revertStatement
-    : 'revert' Identifier expressionList ';'
+    : 'revert' Identifier ('.' Identifier)? '(' '{' (namedArg (',' namedArg)* ','?)? '}' ')' ';'
+    | 'revert' Identifier ('.' Identifier)? expressionList ';'
     | 'revert' '(' StringLiteral ')' ';'
     | 'revert' '(' ')' ';'
     ;
@@ -545,6 +548,7 @@ expression
     | expression op=('.reverse()' | '.length') # UnaryOp
     | left=expression op='.split' '(' right=expression ')' # BinaryOp
     | element=expression '.slice' '(' start=expression ',' end=expression ')' # Slice
+    | expression '.' Identifier callOptions? '(' '{' (namedArg (',' namedArg)* ','?)? '}' ')' # MethodCallNamed
     | expression '.' Identifier callOptions? expressionList # MethodCall
     | expression memberName # FieldAccess
     | op=('!' | '-' | '~') expression # UnaryOp

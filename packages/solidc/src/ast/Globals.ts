@@ -1,4 +1,4 @@
-import { PrimitiveType, ArrayType, BytesType } from '@solidcash/utils';
+import { PrimitiveType, ArrayType, BytesType, BUILTIN_LIBRARIES, parseTypeStrict } from '@solidcash/utils';
 import { SymbolTable, Symbol } from './SymbolTable.js';
 
 export const NumberUnit: { [index: string]: number } = {
@@ -103,9 +103,6 @@ GLOBAL_SYMBOL_TABLE.set(
   Symbol.function(GlobalFunction.SHA256, new BytesType(32), [PrimitiveType.ANY]),
 );
 GLOBAL_SYMBOL_TABLE.set(
-  Symbol.function(GlobalFunction.KECCAK256, new BytesType(32), [PrimitiveType.ANY]),
-);
-GLOBAL_SYMBOL_TABLE.set(
   Symbol.function(GlobalFunction.HASH160, new BytesType(20), [PrimitiveType.ANY]),
 );
 GLOBAL_SYMBOL_TABLE.set(
@@ -135,3 +132,14 @@ GLOBAL_SYMBOL_TABLE.set(Symbol.function(
   GlobalFunction.STRING_TO_INT, PrimitiveType.INT,
   [PrimitiveType.STRING],
 ));
+
+// External-library precompiles (keccak256, future keccak512, ...) are registered from the registry by
+// name with their declared ABI signature, so `lib()` is a valid, type-checked call. User-supplied
+// libraries are registered per-compilation in SymbolTableTraversal from the same shape.
+for (const lib of Object.values(BUILTIN_LIBRARIES)) {
+  GLOBAL_SYMBOL_TABLE.set(Symbol.function(
+    lib.name,
+    parseTypeStrict(lib.abi.outputs[0].type),
+    lib.abi.inputs.map((input) => parseTypeStrict(input.type)),
+  ));
+}

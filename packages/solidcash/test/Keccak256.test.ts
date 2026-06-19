@@ -97,4 +97,25 @@ describe('keccak256 builtin (stateful contracts)', () => {
     const tx = await sc.bump(hexToBin(VECTORS.zeros.preimage), hexToBin(VECTORS.zeros.hash)).send();
     expect(tx.txid).toMatch(/^[0-9a-f]{64}$/);
   });
+
+  // A stateful contract can opt into the SHARED (unbranded) side-car instead of a per-category one
+  // (accepting cross-contract contention). The loader is branding-agnostic, so this works the same way.
+  it('spends a stateful contract using the shared (unbranded) side-car', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(STATEFUL_SOURCE);
+    // Opt this stateful contract into the shared side-car (override the auto-branding).
+    artifact.externalLibraries = artifact.externalLibraries!.map(
+      (l) => (l.name === 'keccak256' ? { ...l, branded: false } : l),
+    );
+    const contract = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, contract, artifact.stateLayout!, { counter: 0n }, { saltContract: true },
+    );
+    // Deploy the SHARED side-car (zero salt).
+    await provider.addUtxo(binToHex(keccakSidecarLockingBytecode(KECCAK256_SHARED_SALT)), randomUtxo({ satoshis: 5000n }));
+
+    const sc = StatefulContract.withCategory(contract, categoryId);
+    const tx = await sc.bump(hexToBin(VECTORS.zeros.preimage), hexToBin(VECTORS.zeros.hash)).send();
+    expect(tx.txid).toMatch(/^[0-9a-f]{64}$/);
+  });
 });

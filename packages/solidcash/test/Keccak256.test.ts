@@ -2,9 +2,10 @@ import { describe, it, expect } from 'vitest';
 import { compileString } from 'solidc';
 import { binToHex, hexToBin } from '@bitauth/libauth';
 import { keccakSidecarLockingBytecode, KECCAK256_SHARED_SALT } from '@solidcash/utils';
-import { Contract, StatefulContract, TransactionBuilder } from '../src/index.js';
+import { Contract, StatefulContract, TransactionBuilder, SignatureTemplate } from '../src/index.js';
 import { randomUtxo } from '../src/utils.js';
 import { createTestProvider, createFeeFunder, setupStatefulUtxos } from './test-util.js';
+import { alicePub, alicePriv } from './fixture/vars.js';
 
 // keccak256() is backed by a pure-script side-car library co-spent at runtime (see keccak-poc/).
 const SOURCE = `
@@ -116,6 +117,68 @@ describe('keccak256 builtin (stateful contracts)', () => {
 
     const sc = StatefulContract.withCategory(contract, categoryId);
     const tx = await sc.bump(hexToBin(VECTORS.zeros.preimage), hexToBin(VECTORS.zeros.hash)).send();
+    expect(tx.txid).toMatch(/^[0-9a-f]{64}$/);
+  });
+});
+
+// Edge case: the spent contract (A) does NOT call keccak256 directly, but it calls an external
+// contract (B) whose function does. The side-car is still co-spent (detected via the called function),
+// and one side-car serves B's loader (it reads the last input, branding-agnostic).
+const CALLEE_KECCAK = `
+pragma solidcash >=0.8.0;
+interface ICalleeK {
+    public int counter;
+    function bump(bytes preimage, bytes32 expected);
+}
+contract CalleeK() is ICalleeK {
+    int counter;
+    function bump(bytes preimage, bytes32 expected) {
+        require(keccak256(preimage) == expected);
+        this.counter = this.counter + 1;
+    }
+}`;
+
+const CALLER_NO_KECCAK = `
+pragma solidcash >=0.8.0;
+interface ICalleeK {
+    public int counter;
+    function bump(bytes preimage, bytes32 expected);
+}
+contract CallerK(bytes32 calleeCategory) {
+    int lastSeen;
+    function readAfterBump(pubkey pk, sig s) {
+        require(checkSig(s, pk));
+        int newVal = ICalleeK(calleeCategory).outState.counter;
+        this.lastSeen = newVal;
+    }
+}`;
+
+describe('keccak256 builtin (keccak in a called external function)', () => {
+  it('co-spends the side-car when the spent function calls an external keccak function', async () => {
+    const provider = createTestProvider();
+    const calleeArtifact = compileString(CALLEE_KECCAK);
+    const callerArtifact = compileString(CALLER_NO_KECCAK);
+    // The caller itself does NOT use keccak256; only the callee does.
+    expect(callerArtifact.externalLibraries).toBeUndefined();
+    expect(calleeArtifact.externalLibraries?.[0]).toMatchObject({ name: 'keccak256', branded: true });
+
+    const calleeContract = new Contract(calleeArtifact, [], { provider });
+    const { categoryId: calleeCategory } = await setupStatefulUtxos(
+      provider, calleeContract, calleeArtifact.stateLayout!, { counter: 5n }, { saltContract: true },
+    );
+    // Deploy the callee's branded side-car.
+    await provider.addUtxo(binToHex(keccakSidecarLockingBytecode(hexToBin(calleeCategory))), randomUtxo({ satoshis: 5000n }));
+
+    const callerContract = new Contract(callerArtifact, [hexToBin(calleeCategory)], { provider });
+    const { categoryId: callerCategory } = await setupStatefulUtxos(
+      provider, callerContract, callerArtifact.stateLayout!, { lastSeen: 0n }, { saltContract: true },
+    );
+
+    const callerSc = StatefulContract.withCategory(callerContract, callerCategory);
+    const calleeSc = StatefulContract.withCategory(calleeContract, calleeCategory);
+    const tx = await callerSc.readAfterBump(alicePub, new SignatureTemplate(alicePriv))
+      .withExternalCall(calleeSc, 'bump', [hexToBin(VECTORS.zeros.preimage), hexToBin(VECTORS.zeros.hash)])
+      .send();
     expect(tx.txid).toMatch(/^[0-9a-f]{64}$/);
   });
 });

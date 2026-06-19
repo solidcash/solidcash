@@ -4778,20 +4778,36 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       }
     }
 
-    // If this function uses keccak256, co-spend the side-car library so the auto-derivation probes AND
-    // the final tx include it (the covenant's keccak loader reads it via OP_INPUTBYTECODE of the last
-    // input). Branded by the contract token category; the side-car must already be deployed.
+    // Co-spend the keccak256 side-car if this function (A) uses keccak256, OR if it calls an external
+    // contract (B) whose function uses keccak256. One side-car serves every keccak loader in the tx -
+    // the loader reads OP_INPUTBYTECODE of the last input and verifies the blob by hash, so it is
+    // branding-agnostic. Set before derivation so the probes include it; the side-car must be deployed.
+    const keccakBranded = (art: any): boolean | undefined => art?.externalLibraries
+      ?.find((l: any) => l.name === 'keccak256')?.branded;
+    let keccakSalt: Uint8Array | undefined;
     if (abiFunction?.externalLibraries?.includes('keccak256')) {
-      const branded = this.inner.artifact.externalLibraries?.find((l) => l.name === 'keccak256')?.branded;
-      const salt = branded ? hexToBin(this.categoryId) : KECCAK256_SHARED_SALT;
-      const sidecarUtxos = await this.inner.provider.getUtxosForLockingBytecode(keccakSidecarLockingBytecode(salt));
+      keccakSalt = keccakBranded(this.inner.artifact) ? hexToBin(this.categoryId) : KECCAK256_SHARED_SALT;
+    } else {
+      // External calls and external out-state reads both run the callee's function (co-spent), so a
+      // keccak-using callee needs the side-car too. Check both group lists.
+      for (const group of [...externalCallUtxoGroups, ...externalOutStateUtxoGroups]) {
+        const bArt = group.externalContract?.inner?.artifact ?? group.externalContract?.artifact;
+        const bFn = bArt?.abi?.find((f: any) => f.name === group.functionName);
+        if (bFn?.externalLibraries?.includes('keccak256')) {
+          keccakSalt = keccakBranded(bArt) ? hexToBin(group.categoryId) : KECCAK256_SHARED_SALT;
+          break; // one side-car suffices for all keccak loaders in the tx
+        }
+      }
+    }
+    if (keccakSalt) {
+      const sidecarUtxos = await this.inner.provider.getUtxosForLockingBytecode(keccakSidecarLockingBytecode(keccakSalt));
       if (sidecarUtxos.length === 0) {
         throw new Error(
           'keccak256 side-car library UTXO not found; deploy it before spending '
           + '(TransactionBuilder.addSidecarDeployIfNeeded with the contract category salt).',
         );
       }
-      builder.setKeccakSidecar(sidecarUtxos[0], salt);
+      builder.setKeccakSidecar(sidecarUtxos[0], keccakSalt);
     }
 
     // Check if there is nothing to derive for this function (e.g., split/merge/unsafe tiers)

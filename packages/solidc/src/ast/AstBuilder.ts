@@ -153,6 +153,7 @@ import type {
   LoopStatementContext,
   StateVariableDeclarationContext,
   StateAccessContext,
+  ThisExprContext,
   StateAssignStatementContext,
   MappingAccessContext,
   MappingAssignStatementContext,
@@ -1644,6 +1645,16 @@ export default class AstBuilder
     return node;
   }
 
+  // Solidity `this` (e.g. address(this)): the contract's address is the locking script of the UTXO being
+  // spent, i.e. tx.inputs[this.activeInputIndex].lockingBytecode (OP_INPUTINDEX OP_UTXOBYTECODE).
+  visitThisExpr(ctx: ThisExprContext): UnaryOpNode {
+    const index = new NullaryOpNode(NullaryOperator.INPUT_INDEX);
+    index.location = Location.fromCtx(ctx);
+    const node = new UnaryOpNode(UnaryOperator.INPUT_LOCKING_BYTECODE, index);
+    node.location = Location.fromCtx(ctx);
+    return node;
+  }
+
   visitStateAssignStatement(ctx: StateAssignStatementContext): StateAssignNode {
     const name = ctx.Identifier().getText();
     const expression = this.visit(ctx.expression());
@@ -2059,6 +2070,13 @@ export default class AstBuilder
     // Handle 'addresspayable' from grammar (two tokens concatenated without space)
     if (typeText === 'addresspayable') return new AddressType(true);
     if (typeText === 'address') return new AddressType(false);
+    // Library-qualified type (Solidity `Library.Type`): library types are registered bare, so resolve the
+    // part after the dot.
+    if (typeText.includes('.')) {
+      const bare = typeText.slice(typeText.lastIndexOf('.') + 1);
+      const qualified = this.structMap.get(bare) ?? this.enumMap.get(bare) ?? this.typeDefMap.get(bare);
+      if (qualified) return qualified;
+    }
     const structType = this.structMap.get(typeText);
     if (structType) return structType;
     const enumType = this.enumMap.get(typeText);

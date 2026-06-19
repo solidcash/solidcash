@@ -571,6 +571,10 @@ export function parseType(str: string): Type {
   if (str === 'address payable' || str === 'addresspayable') return new AddressType(true);
   if (str === 'address') return new AddressType();
 
+  // `uint` (Solidity alias for uint256) maps to the unbounded native int (BCH ints are arbitrary-precision
+  // signed bigints, so the unsigned distinction is nominal). `int` resolves via the PrimitiveType fallback.
+  if (str === 'uint') return PrimitiveType.INT;
+
   if (str.startsWith('byte')) return BytesType.fromString(str);
 
   // Internal function type: function(<types>)[returns(<types>)] (whitespace already stripped).

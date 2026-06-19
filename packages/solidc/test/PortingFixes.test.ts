@@ -53,6 +53,36 @@ describe('A3: identifiers matching [eE][0-9]+ are not mis-lexed as exponents', (
   });
 });
 
+describe('Solidity-compat features (from the minimal Sablier port)', () => {
+  it('accepts `uint` as the unbounded int', () => {
+    const a = compileString('contract C() { int n; function f(uint x) { this.n = x; } }');
+    expect(a.contractName).toBe('C');
+  });
+
+  it('accepts constructor visibility (public/internal), ignoring it', () => {
+    for (const vis of ['public', 'internal']) {
+      const a = compileString(`contract C() { int n; constructor() ${vis} { this.n = 1; } function f() { this.n = this.n + 1; } }`);
+      expect(a.contractName).toBe('C');
+    }
+  });
+
+  it('resolves a library-qualified type (Library.Type) in a type position', () => {
+    const a = compileString(`
+      library Types { struct Stream { int a; } }
+      contract C() {
+        mapping(int => Types.Stream) m;
+        function f(int k) { Types.Stream s = this.m[k]; require(s.a >= 0); }
+      }`);
+    expect(a.contractName).toBe('C');
+  });
+
+  it('compiles address(this) to OP_INPUTINDEX OP_UTXOBYTECODE (the spent UTXO locking script)', () => {
+    const a = compileString('contract C() { int n; function f(address r) { require(r != address(this)); this.n = 1; } }');
+    expect(a.bytecode).toContain('OP_INPUTINDEX');
+    expect(a.bytecode).toContain('OP_UTXOBYTECODE');
+  });
+});
+
 describe('A1: declaration order is not enforced', () => {
   it('allows a file-level free function before the struct it uses', () => {
     const artifact = compileString(`

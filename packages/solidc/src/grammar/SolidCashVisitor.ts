@@ -132,6 +132,7 @@ import { AbiEncodeWithSignatureContext } from "./SolidCashParser.js";
 import { MappingAccessContext } from "./SolidCashParser.js";
 import { InstantiationContext } from "./SolidCashParser.js";
 import { AbiEncodeWithSelectorContext } from "./SolidCashParser.js";
+import { ThisExprContext } from "./SolidCashParser.js";
 import { NullaryOpContext } from "./SolidCashParser.js";
 import { AbiDecodeContext } from "./SolidCashParser.js";
 import { BinaryOpContext } from "./SolidCashParser.js";
@@ -963,6 +964,13 @@ export default class SolidCashVisitor<Result> extends ParseTreeVisitor<Result> {
 	 * @return the visitor result
 	 */
 	visitAbiEncodeWithSelector?: (ctx: AbiEncodeWithSelectorContext) => Result;
+	/**
+	 * Visit a parse tree produced by the `ThisExpr`
+	 * labeled alternative in `SolidCashParser.expression`.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	visitThisExpr?: (ctx: ThisExprContext) => Result;
 	/**
 	 * Visit a parse tree produced by the `NullaryOp`
 	 * labeled alternative in `SolidCashParser.expression`.

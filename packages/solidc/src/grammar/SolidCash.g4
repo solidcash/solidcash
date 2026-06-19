@@ -39,6 +39,7 @@ pragmaDirective
 
 pragmaName
     : 'solidcash'
+    | 'solidity'
     ;
 
 pragmaValue
@@ -127,7 +128,7 @@ constantDefinition
     ;
 
 constructorDefinition
-    : 'constructor' parameterList parentInvocation* '{' statement* '}'
+    : 'constructor' parameterList ('public' | 'internal')? parentInvocation* '{' statement* '}'
     ;
 
 fallbackDefinition
@@ -563,6 +564,7 @@ expression
     | 'this' '.' Identifier '.' Identifier '[' expression ']' memberName # OutStateMappingFieldAccess
     | 'this' '.' Identifier ('[' expression ']')+ # MappingAccess
     | 'this' '.' Identifier # StateAccess
+    | 'this' # ThisExpr
     | NullaryOp # NullaryOp
     | Identifier # Identifier
     | literal # LiteralExpression
@@ -623,6 +625,7 @@ typeName
     | BoundedSignedFixed
     | BoundedUnsignedFixed
     | 'function' '(' (typeName (',' typeName)*)? ')' ('returns' '(' typeName (',' typeName)* ')')?
+    | Identifier '.' Identifier
     | Identifier
     ;
 

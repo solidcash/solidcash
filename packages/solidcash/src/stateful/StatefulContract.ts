@@ -22,6 +22,8 @@ import {
   ExternalReadAbi,
   EntryAccessAbi,
   EmitAbi,
+  keccakSidecarLockingBytecode,
+  KECCAK256_SHARED_SALT,
 } from '@solidcash/utils';
 import {
   createVirtualMachineBch2026,
@@ -4774,6 +4776,22 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           break;
         }
       }
+    }
+
+    // If this function uses keccak256, co-spend the side-car library so the auto-derivation probes AND
+    // the final tx include it (the covenant's keccak loader reads it via OP_INPUTBYTECODE of the last
+    // input). Branded by the contract token category; the side-car must already be deployed.
+    if (abiFunction?.externalLibraries?.includes('keccak256')) {
+      const branded = this.inner.artifact.externalLibraries?.find((l) => l.name === 'keccak256')?.branded;
+      const salt = branded ? hexToBin(this.categoryId) : KECCAK256_SHARED_SALT;
+      const sidecarUtxos = await this.inner.provider.getUtxosForLockingBytecode(keccakSidecarLockingBytecode(salt));
+      if (sidecarUtxos.length === 0) {
+        throw new Error(
+          'keccak256 side-car library UTXO not found; deploy it before spending '
+          + '(TransactionBuilder.addSidecarDeployIfNeeded with the contract category salt).',
+        );
+      }
+      builder.setKeccakSidecar(sidecarUtxos[0], salt);
     }
 
     // Check if there is nothing to derive for this function (e.g., split/merge/unsafe tiers)

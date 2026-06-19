@@ -81,18 +81,20 @@ describe('keccak256 builtin (stateful contracts)', () => {
     expect(artifact.externalLibraries?.[0]).toMatchObject({ name: 'keccak256', branded: true });
   });
 
-  // Stateful auto-derivation runs covenant VM probes before the side-car exists, so keccak256 in a
-  // stateful contract is not yet supported; the SDK surfaces a clear error rather than a cryptic failure.
-  it('throws a clear error for keccak256 in a stateful spend (not yet supported)', async () => {
+  // The branded side-car is co-spent and threaded through auto-derivation (present in the probes and the
+  // final tx). The side-car address is salted with the contract's token category.
+  it('spends a stateful contract that uses keccak256 (auto-co-spends the branded side-car)', async () => {
     const provider = createTestProvider();
     const artifact = compileString(STATEFUL_SOURCE);
     const contract = new Contract(artifact, [], { provider });
     const { categoryId } = await setupStatefulUtxos(
       provider, contract, artifact.stateLayout!, { counter: 0n }, { saltContract: true },
     );
+    // Deploy the branded side-car at the per-category address.
+    await provider.addUtxo(binToHex(keccakSidecarLockingBytecode(hexToBin(categoryId))), randomUtxo({ satoshis: 5000n }));
+
     const sc = StatefulContract.withCategory(contract, categoryId);
-    await expect(
-      sc.bump(hexToBin(VECTORS.zeros.preimage), hexToBin(VECTORS.zeros.hash)).send(),
-    ).rejects.toThrow(/not yet supported in stateful/);
+    const tx = await sc.bump(hexToBin(VECTORS.zeros.preimage), hexToBin(VECTORS.zeros.hash)).send();
+    expect(tx.txid).toMatch(/^[0-9a-f]{64}$/);
   });
 });

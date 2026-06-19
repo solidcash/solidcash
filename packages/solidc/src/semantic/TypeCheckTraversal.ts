@@ -793,8 +793,11 @@ export default class TypeCheckTraversal extends AstTraversal {
     if (node.type instanceof FixedType && node.expression instanceof DecimalLiteralNode) {
       node.expression.type = node.type;
     }
-    node.expression = this.visit(node.expression);
-    expectAssignable(node, node.expression.type, node.type);
+    // Uninitialized declaration (`int x;`): no initializer to type-check; codegen emits the zero value.
+    if (node.expression) {
+      node.expression = this.visit(node.expression);
+      expectAssignable(node, node.expression.type, node.type);
+    }
 
     // Validate 'packed' modifier: only valid for arrays with fixed-width element types.
     // For fixed-width types, packed encoding is already automatic - the modifier is documentation only.

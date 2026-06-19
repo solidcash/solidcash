@@ -53,6 +53,72 @@ describe('A3: identifiers matching [eE][0-9]+ are not mis-lexed as exponents', (
   });
 });
 
+describe('A1: declaration order is not enforced', () => {
+  it('allows a file-level free function before the struct it uses', () => {
+    const artifact = compileString(`
+      function area(Rect r) returns (int) { return r.w * r.h; }
+      struct Rect { int w; int h; }
+      contract C() { function go() { require(area(Rect(2, 3)) == 6); } }`);
+    expect(artifact.contractName).toBe('C');
+  });
+
+  it('allows contract-body members (state var, event) after a function', () => {
+    const artifact = compileString(`
+      contract C() {
+        function bump(pubkey pk, sig s) { require(checkSig(s, pk)); emit E(this.n); this.n = this.n + 1; }
+        int n;
+        event E(int v);
+      }`);
+    expect(artifact.contractName).toBe('C');
+  });
+
+  it('allows a function to reference a constant defined later', () => {
+    const artifact = compileString(`
+      contract C() {
+        int n;
+        function f() { this.n = LIMIT; }
+        int constant LIMIT = 42;
+      }`);
+    expect(artifact.contractName).toBe('C');
+  });
+
+  it('still rejects more than one constructor', () => {
+    expect(() => compileString(`
+      contract C() { int n; constructor() { this.n = 1; } constructor(int x) { this.n = x; } }`))
+      .toThrow(/at most one constructor/);
+  });
+});
+
+describe('A2: uninitialized declarations zero-init (via the same path as delete)', () => {
+  it.each([
+    ['int', 'int x; this.n = x;'],
+    ['bounded int', 'int128 x; this.n = x;'],
+    ['bytes32', 'bytes32 x; this.h = x;'],
+    ['bytes', 'bytes x; this.bb = x;'],
+    ['string', 'string x; this.ss = x;'],
+    ['bool', 'bool x; this.flag = x;'],
+  ])('zero-inits %s', (_label, body) => {
+    const artifact = compileString(`
+      contract C() {
+        int n; bytes32 h; bytes bb; string ss; bool flag;
+        function f() { ${body} }
+      }`);
+    expect(artifact.contractName).toBe('C');
+  });
+
+  it('zero-inits a struct local (delete parity)', () => {
+    const artifact = compileString(`
+      struct S { int a; int b; }
+      contract C() { int n; function f() { S z; this.n = z.a; } }`);
+    expect(artifact.contractName).toBe('C');
+  });
+
+  it('still type-checks an explicit initializer', () => {
+    expect(() => compileString(`
+      contract C() { bytes32 h; function f() { bytes32 x = 5; this.h = x; } }`)).toThrow();
+  });
+});
+
 describe('B7: a returning function that reads a mapping must not crash', () => {
   it('compiles a function that returns a mapping read', () => {
     const artifact = compileString(`

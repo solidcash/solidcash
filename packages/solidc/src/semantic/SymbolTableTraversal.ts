@@ -1367,7 +1367,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     }
     // Scan expressions for AddressSendExpressionNode and InstantiationNode with value
     if (node instanceof VariableDefinitionNode) {
-      this.collectTransferStatements(node.expression, transferInfos);
+      if (node.expression) this.collectTransferStatements(node.expression, transferInfos);
     }
     // Contract deployment with {value}: new Contract{value: x}(args)
     if (node instanceof InstantiationNode && node.callOptions?.value
@@ -1577,7 +1577,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     }
     // Handle expression-level LowLevelCallNode in variable definitions, tuple assignments, etc.
     if (node instanceof VariableDefinitionNode) {
-      count += this.countLowLevelCalls(node.expression);
+      if (node.expression) count += this.countLowLevelCalls(node.expression);
     }
     if (node instanceof TupleAssignmentNode) {
       if (node.tupleExpressions) {
@@ -1631,7 +1631,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       this.assignLowLevelCallIndices((node as any).block, state);
     }
     if (node instanceof VariableDefinitionNode) {
-      this.assignLowLevelCallIndices(node.expression, state);
+      if (node.expression) this.assignLowLevelCallIndices(node.expression, state);
     }
     if (node instanceof TupleAssignmentNode) {
       if (node.tupleExpressions) {
@@ -3216,7 +3216,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       }
     }
 
-    node.expression = this.visit(node.expression);
+    if (node.expression) node.expression = this.visit(node.expression);
 
     this.symbolTables[0].set(Symbol.variable(node));
 

@@ -447,6 +447,15 @@ export default class AstBuilder
     });
   }
 
+  // The contract body permits declarations in any order, so singletons (constructor, fallback, receive)
+  // parse as lists; enforce at-most-one here.
+  private atMostOne<T>(list: T[], label: string, ctx: ContractDefinitionContext): T | undefined {
+    if (list.length > 1) {
+      throw new ParseError(`A contract may have at most one ${label}`, Location.fromCtx(ctx));
+    }
+    return list[0];
+  }
+
   visitContractDefinition(ctx: ContractDefinitionContext): ContractNode {
     const identifiers = ctx.Identifier_list();
     const name = identifiers[0].getText();
@@ -519,8 +528,9 @@ export default class AstBuilder
       (m) => this.visitModifierDefinition(m),
     );
 
-    // Extract optional constructor
-    const constructorCtx = ctx.constructorDefinition();
+    // Extract optional constructor (the body allows any declaration order, so these are lists; ANTLR no
+    // longer enforces at-most-one, hence the explicit check).
+    const constructorCtx = this.atMostOne(ctx.constructorDefinition_list(), 'constructor', ctx);
     let constructorDef: FunctionDefinitionNode | undefined;
     if (constructorCtx) {
       constructorDef = this.visitConstructorDefinition(constructorCtx);
@@ -538,13 +548,13 @@ export default class AstBuilder
       .sort((a, b) => (a.location?.start.line ?? 0) - (b.location?.start.line ?? 0));
 
     // Extract optional fallback/receive
-    const fallbackCtx = ctx.fallbackDefinition();
+    const fallbackCtx = this.atMostOne(ctx.fallbackDefinition_list(), 'fallback function', ctx);
     let fallbackDef: FunctionDefinitionNode | undefined;
     if (fallbackCtx) {
       fallbackDef = this.visitFallbackDefinition(fallbackCtx);
     }
 
-    const receiveCtx = ctx.receiveDefinition();
+    const receiveCtx = this.atMostOne(ctx.receiveDefinition_list(), 'receive function', ctx);
     let receiveDef: FunctionDefinitionNode | undefined;
     if (receiveCtx) {
       receiveDef = this.visitReceiveDefinition(receiveCtx);
@@ -849,7 +859,8 @@ export default class AstBuilder
     }
     const modifiers = ctx.modifier_list().map((modifier) => modifier.getText());
     const name = ctx.Identifier().getText();
-    const expression = this.visit(ctx.expression());
+    // An omitted initializer (`int x;`) leaves expression undefined; codegen emits the type's zero value.
+    const expression = ctx.expression() ? this.visit(ctx.expression()) : undefined;
     const variableDefinition = new VariableDefinitionNode(type, modifiers, name, expression);
     variableDefinition.location = Location.fromCtx(ctx);
     return variableDefinition;

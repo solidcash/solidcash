@@ -766,7 +766,7 @@ function substituteInStatement(
   subs: Map<string, ExpressionNode>,
 ): StatementNode {
   if (stmt instanceof VariableDefinitionNode) {
-    stmt.expression = substituteInExpression(stmt.expression, subs);
+    if (stmt.expression) stmt.expression = substituteInExpression(stmt.expression, subs);
     return stmt;
   }
 

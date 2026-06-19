@@ -1,7 +1,7 @@
 grammar SolidCash;
 
 sourceFile
-    : pragmaDirective* importDirective* constantDefinition* enumDefinition* structDefinition* typeDefinition* usingForDirective* errorDefinition* interfaceDefinition* freeFunctionDefinition* libraryDefinition* (contractDefinition | libraryDefinition) EOF
+    : pragmaDirective* importDirective* (constantDefinition | enumDefinition | structDefinition | typeDefinition | usingForDirective | errorDefinition | interfaceDefinition | freeFunctionDefinition | libraryDefinition)* (contractDefinition | libraryDefinition) EOF
     ;
 
 importDirective
@@ -79,7 +79,7 @@ libraryDefinition
     ;
 
 contractDefinition
-    : 'abstract'? 'contract' Identifier parameterList? ('is' Identifier (',' Identifier)*)? '{' enumDefinition* structDefinition* typeDefinition* eventDefinition* errorDefinition* constantDefinition* usingForDirective* stateVariableDeclaration* modifierDefinition* constructorDefinition? (functionDefinition | abstractFunctionDefinition)* fallbackDefinition? receiveDefinition? '}'
+    : 'abstract'? 'contract' Identifier parameterList? ('is' Identifier (',' Identifier)*)? '{' (enumDefinition | structDefinition | typeDefinition | eventDefinition | errorDefinition | constantDefinition | usingForDirective | stateVariableDeclaration | modifierDefinition | constructorDefinition | functionDefinition | abstractFunctionDefinition | fallbackDefinition | receiveDefinition)* '}'
     ;
 
 abstractFunctionDefinition
@@ -311,7 +311,7 @@ stateAssignStatement
     ;
 
 variableDefinition
-    : typeName modifier* Identifier '=' expression ';'
+    : typeName modifier* Identifier ('=' expression)? ';'
     | arrayType modifier* Identifier '=' expression ';'
     ;
 

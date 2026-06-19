@@ -1663,8 +1663,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   visitVariableDefinition(node: VariableDefinitionNode): Node {
-    node.expression = this.visit(node.expression);
-    this.popFromStack();
+    if (node.expression) {
+      node.expression = this.visit(node.expression);
+      this.popFromStack();
+    } else {
+      // Uninitialized declaration: emit the type's zero value (same machinery as `delete`).
+      this.emitDefaultValue({ location: node.location, positionHint: PositionHint.END }, node.type);
+    }
     this.pushToStack(node.name);
     return node;
   }

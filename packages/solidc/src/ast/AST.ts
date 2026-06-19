@@ -351,7 +351,8 @@ export class VariableDefinitionNode extends StatementNode implements Named, Type
     public type: Type,
     public modifier: string[],
     public name: string,
-    public expression: ExpressionNode,
+    // Undefined for an uninitialized declaration (`int x;`); codegen emits the type's zero value.
+    public expression?: ExpressionNode,
   ) {
     super();
   }

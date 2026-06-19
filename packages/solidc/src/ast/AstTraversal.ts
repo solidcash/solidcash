@@ -209,7 +209,7 @@ export default class AstTraversal extends AstVisitor<Node> {
   }
 
   visitVariableDefinition(node: VariableDefinitionNode): Node {
-    node.expression = this.visit(node.expression);
+    if (node.expression) node.expression = this.visit(node.expression);
     return node;
   }
 

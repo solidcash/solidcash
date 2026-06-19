@@ -517,9 +517,13 @@ export default class OutputSourceCodeTraversal extends AstTraversal {
 
   visitVariableDefinition(node: VariableDefinitionNode): Node {
     const modifiers = node.modifier.length > 0 ? ` ${node.modifier.join(' ')}` : '';
-    this.addOutput(`${node.type}${modifiers} ${node.name} = `, true);
-    this.visit(node.expression);
-    this.addOutput(';\n');
+    if (node.expression) {
+      this.addOutput(`${node.type}${modifiers} ${node.name} = `, true);
+      this.visit(node.expression);
+      this.addOutput(';\n');
+    } else {
+      this.addOutput(`${node.type}${modifiers} ${node.name};\n`, true);
+    }
 
     return node;
   }

@@ -269,7 +269,9 @@ export class AssignTypeError extends TypeError {
     node: AssignNode | VariableDefinitionNode,
   ) {
     const expected = node instanceof AssignNode ? node.identifier.type : node.type;
-    super(node, node.expression.type, expected, `Type '${node.expression.type}' can not be assigned to variable of type '${expected}'`);
+    // Only raised for an actual initializer mismatch, so expression is present.
+    const actual = node.expression!.type;
+    super(node, actual, expected, `Type '${actual}' can not be assigned to variable of type '${expected}'`);
   }
 }
 

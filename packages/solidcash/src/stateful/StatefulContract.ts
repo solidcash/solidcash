@@ -3278,6 +3278,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       msgSenderCategory?: Uint8Array;
       drainSatoshiContainer?: boolean;
       drainTokenContainers?: string[];
+      emitReturn?: boolean;
     },
   ): Promise<StatefulTransactionBuilder> {
     const stateLayout = this.inner.stateLayout!;
@@ -3319,9 +3320,16 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
 
     // Append _msgSenderCategory if function uses msg.sender
     let finalArgs = args;
-    // B8 return-value emit: -1 means "do not emit" (default). Stage 2 sets this to the return-event
-    // output index when .emitReturn() is used.
-    const returnEmitOutputIndex = -1;
+    // B8 return-value emit: -1 means "do not emit" (default). With .emitReturn(), point the covenant's
+    // __internal__returnOutputIdx at the function's returnEvent output slot (a fixed block-layout offset).
+    let returnEmitOutputIndex = -1;
+    if (overrides?.emitReturn && (abiFunction?.outputs?.length ?? 0) > 0) {
+      const slot = abiFunction?.blockLayout?.slots.find((s) => s.kind === 'returnEvent');
+      if (!slot) {
+        throw new Error(`Function '${functionName}' has no returnEvent output slot; cannot emit its return value.`);
+      }
+      returnEmitOutputIndex = slot.offset;
+    }
     if (abiFunction?.usesMsgSender) {
       const msgSenderCategory = overrides?.msgSenderCategory ?? new Uint8Array(32);
       finalArgs = [...finalArgs, msgSenderCategory];
@@ -4838,6 +4846,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       builder.setSidecar(sidecarUtxos[0], blob, sidecarSalt);
     }
 
+    // B8 emit: reserve a placeholder return-event output so the covenant's OP_OUTPUTTOKENCOMMITMENT at
+    // the return slot has an output to read during derivation; the real commitment is derived below.
+    if (returnEmitOutputIndex >= 0) {
+      builder.setReturnEventOutput(this.categoryId, new Uint8Array([0]));
+    }
+
     // Check if there is nothing to derive for this function (e.g., split/merge/unsafe tiers)
     const hasNothingToDerive = requiredNftIndices.length === 0
       && (abiFunction?.entryAccesses?.length ?? 0) === 0
@@ -4891,7 +4905,36 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       );
     }
 
+    // B8 emit: derive the encoded return value (the covenant compares it to the return-event output
+    // commitment) and set it, replacing the placeholder.
+    if (returnEmitOutputIndex >= 0) {
+      const blob = this._deriveReturnBlob(builder, returnEmitOutputIndex);
+      if (!blob) {
+        throw new Error(
+          `Could not derive the return value of '${functionName}' for .emitReturn(). `
+          + 'Functions that write state and return a value are not yet supported with emit.',
+        );
+      }
+      builder.setReturnEventOutput(this.categoryId, blob);
+    }
+
     return builder;
+  }
+
+  // B8 emit: run one VM probe and extract the encoded return blob from the return-event verification
+  // (OP_OUTPUTTOKENCOMMITMENT == __returnBlob), the same trace-extraction used for external-call returns.
+  private _deriveReturnBlob(
+    builder: StatefulTransactionBuilder, returnOutputIndex: number,
+  ): Uint8Array | undefined {
+    const probe = builder.build();
+    const transaction = probe.buildLibauthTransaction();
+    const sourceOutputs = generateLibauthSourceOutputs(probe.inputs);
+    const vm = createVirtualMachineBch2026();
+    const trace = vm.debug({ inputIndex: 0, sourceOutputs, transaction }) as AuthenticationProgramStateCommon[];
+    const commitments = extractCommitmentsFromTrace(trace, 1, {
+      min: returnOutputIndex, max: returnOutputIndex + 1,
+    });
+    return commitments && commitments.length > 0 ? hexToBin(commitments[0]) : undefined;
   }
 
   /**
@@ -5548,6 +5591,7 @@ export class StatefulFunctionCall {
   private externalCallInfos: ExternalCallInfo[] = [];
   private callInfos: CallInfo[] = [];
   private registryExternalStateOverrides: Map<string, Record<string, StateValueType>> = new Map();
+  private emitReturnFlag = false;
 
   private splitFundingConfig?: {
     utxos: Utxo[];
@@ -5624,6 +5668,15 @@ export class StatefulFunctionCall {
 
   withMaxFee(maximumFeeSatoshis: bigint): this {
     this.maxFeeOverride = maximumFeeSatoshis;
+    return this;
+  }
+
+  /**
+   * Emit this function's return value(s) in a return-event output (B8), so an off-chain reader can
+   * decode them. Without this, a returning function is spendable but its return value is not emitted.
+   */
+  emitReturn(): this {
+    this.emitReturnFlag = true;
     return this;
   }
 
@@ -5990,7 +6043,7 @@ export class StatefulFunctionCall {
     let derived: Record<string, any> | undefined;
 
     const needsRebuild = (this.externalCallInfos.length > 0 || this.callInfos.length > 0
-      || this.entryKeyOverrides.size > 0 || this.externalEntryKeyOverrides.size > 0)
+      || this.entryKeyOverrides.size > 0 || this.externalEntryKeyOverrides.size > 0 || this.emitReturnFlag)
       && this.parentContract && this.functionName && this.functionArgs;
 
     if (needsRebuild) {
@@ -6000,6 +6053,7 @@ export class StatefulFunctionCall {
           calls: this.callInfos.length > 0 ? this.callInfos : undefined,
           entryKeyOverrides: this.entryKeyOverrides.size > 0 ? this.entryKeyOverrides : undefined,
           externalEntryKeyOverrides: this.externalEntryKeyOverrides.size > 0 ? this.externalEntryKeyOverrides : undefined,
+          emitReturn: this.emitReturnFlag || undefined,
         },
       );
       derived = (builder as any).__derivedState;

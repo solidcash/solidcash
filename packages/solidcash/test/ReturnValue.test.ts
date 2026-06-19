@@ -25,4 +25,19 @@ describe('B8: returning entry functions are spendable standalone', () => {
     const tx = await sc.readCounter().send();
     expect(tx.txid).toMatch(/^[0-9a-f]{64}$/);
   });
+
+  it('emits the return value in a return-event output with .emitReturn()', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(SOURCE);
+    const contract = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, contract, artifact.stateLayout!, { counter: 9n }, { saltContract: true },
+    );
+
+    const sc = StatefulContract.withCategory(contract, categoryId);
+    // The covenant verifies the return-event output commitment == the encoded return value, so a
+    // successful send proves the value (9) was derived and emitted correctly.
+    const tx = await sc.readCounter().emitReturn().send();
+    expect(tx.txid).toMatch(/^[0-9a-f]{64}$/);
+  });
 });

@@ -76,6 +76,26 @@ describe('solidityImportCompat', () => {
   });
 });
 
+describe('Solidity-compat features (OpenZeppelin imports)', () => {
+  it('accepts visibility modifiers on interface functions (ignored)', () => {
+    const a = compileString(`
+      interface I { function bal(int x) external view returns (int); function poke() external; }
+      contract C() is I {
+        int n;
+        function bal(int x) returns (int) { return x; }
+        function poke() { this.n = this.n + 1; }
+      }`);
+    expect(a.contractName).toBe('C');
+  });
+
+  it('accepts `using ... for ...` inside a library body', () => {
+    const a = compileString(`
+      library Math { using Math for int; function dbl(int x) returns (int) { return x * 2; } }
+      contract C() { int n; function go() { this.n = 1; } }`);
+    expect(a.contractName).toBe('C');
+  });
+});
+
 describe('Solidity-compat features (from the minimal Sablier port)', () => {
   it('accepts `uint` as the unbounded int', () => {
     const a = compileString('contract C() { int n; function f(uint x) { this.n = x; } }');

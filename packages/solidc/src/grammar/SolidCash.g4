@@ -72,11 +72,11 @@ interfaceStateVariableVisibility
     ;
 
 interfaceFunction
-    : 'function' Identifier parameterList returnType? ';'
+    : 'function' Identifier parameterList functionModifier* returnType? ';'
     ;
 
 libraryDefinition
-    : 'library' Identifier '{' enumDefinition* structDefinition* typeDefinition* eventDefinition* constantDefinition* freeFunctionDefinition* '}'
+    : 'library' Identifier '{' enumDefinition* structDefinition* typeDefinition* eventDefinition* constantDefinition* usingForDirective* freeFunctionDefinition* '}'
     ;
 
 contractDefinition

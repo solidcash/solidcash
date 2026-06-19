@@ -3319,6 +3319,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
 
     // Append _msgSenderCategory if function uses msg.sender
     let finalArgs = args;
+    // B8 return-value emit: -1 means "do not emit" (default). Stage 2 sets this to the return-event
+    // output index when .emitReturn() is used.
+    const returnEmitOutputIndex = -1;
     if (abiFunction?.usesMsgSender) {
       const msgSenderCategory = overrides?.msgSenderCategory ?? new Uint8Array(32);
       finalArgs = [...finalArgs, msgSenderCategory];
@@ -4609,6 +4612,19 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
 
 
 
+
+    // B8: a returning entry function takes a hidden __internal__returnOutputIdx. Default it to -1 (the
+    // covenant computes the return value but does not emit it on-chain); opt-in emit sets a real index.
+    if (abiFunction) {
+      const returnIdxPos = abiFunction.inputs.findIndex((inp) => inp.name === '__internal__returnOutputIdx');
+      if (returnIdxPos >= 0 && finalArgs.length < abiFunction.inputs.length) {
+        finalArgs = [
+          ...finalArgs.slice(0, returnIdxPos),
+          BigInt(returnEmitOutputIndex),
+          ...finalArgs.slice(returnIdxPos),
+        ];
+      }
+    }
 
     // Validate that the total argument count (user + synthetic) matches the ABI.
     // A mismatch here indicates the SDK's synthetic parameter injection is out of sync

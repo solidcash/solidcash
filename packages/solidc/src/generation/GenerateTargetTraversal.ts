@@ -905,6 +905,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * blob (sidecarStripOffsets) and match the SDK's side-car redeem layout. Reads the side-car's
    * unlocking (revealed P2SH redeem). See packages/solidc/docs/external-libraries.md.
    */
+  // Inline a library: push its blob straight from the contract bytecode and OP_DEFINE it. No side-car,
+  // no integrity hash (the blob is part of the contract). Net-0 on the data stack.
+  private emitInlineLibraryDefine(lib: ExternalLibrary, loc: SingleLocationData): void {
+    this.emit(lib.blob, loc);
+    this.emit(encodeInt(lib.functionId), loc);
+    this.emit(Op.OP_DEFINE, loc);
+  }
+
   private emitExternalLibraryLoader(lib: ExternalLibrary, loc: SingleLocationData): void {
     const { outerPush, saltPrefix, selfPres, blobPush, blobLength } = sidecarStripOffsets(lib.blob);
     this.emit(Op.OP_TXINPUTCOUNT, loc);
@@ -1329,11 +1337,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_TOALTSTACK, loc);
     }
 
-    // Load each external library this function uses (from the side-car) and OP_DEFINE it once, before
-    // the body.
+    // Load each external library this function uses and OP_DEFINE it once, before the body. Inlined
+    // libraries push their blob from the contract bytecode; the rest load it from the co-spent side-car.
     for (const libName of node.usedLibraries ?? []) {
       const loc = { location: node.location, positionHint: PositionHint.START };
-      this.emitExternalLibraryLoader(this.resolvedLibraries[libName], loc);
+      const lib = this.resolvedLibraries[libName];
+      if (node.inlinedLibraries?.includes(libName)) this.emitInlineLibraryDefine(lib, loc);
+      else this.emitExternalLibraryLoader(lib, loc);
     }
 
     node.body = this.visit(node.body) as BlockNode;

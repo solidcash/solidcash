@@ -4784,24 +4784,28 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // external contract (B) whose function uses one. One side-car serves every loader in the tx - the
     // loader reads OP_INPUTBYTECODE of the last input and verifies the blob by hash, so it is
     // branding-agnostic. Set before derivation so the probes include it; the side-car must be deployed.
-    const libDescriptor = (art: any, name: string): ExternalLibraryAbi | undefined => art?.externalLibraries
-      ?.find((l: any) => l.name === name);
+    // First non-inline library used (inline libraries are baked into the contract; no side-car).
+    const firstSidecarLib = (art: any, names: readonly string[]): ExternalLibraryAbi | undefined => {
+      for (const name of names) {
+        const d: ExternalLibraryAbi | undefined = art?.externalLibraries?.find((l: any) => l.name === name);
+        if (d && !d.inline) return d;
+      }
+      return undefined;
+    };
     let sidecarLib: ExternalLibraryAbi | undefined;
     let sidecarSalt: Uint8Array | undefined;
-    const usedHere = abiFunction?.externalLibraries ?? [];
-    if (usedHere.length > 0) {
-      sidecarLib = libDescriptor(this.inner.artifact, usedHere[0]);
-      sidecarSalt = sidecarLib?.branded ? hexToBin(this.categoryId) : SHARED_LIBRARY_SALT;
+    sidecarLib = firstSidecarLib(this.inner.artifact, abiFunction?.externalLibraries ?? []);
+    if (sidecarLib) {
+      sidecarSalt = sidecarLib.branded ? hexToBin(this.categoryId) : SHARED_LIBRARY_SALT;
     } else {
       // External calls and external out-state reads both run the callee's function (co-spent), so a
       // library-using callee needs the side-car too. Check both group lists.
       for (const group of [...externalCallUtxoGroups, ...externalOutStateUtxoGroups]) {
         const bArt = group.externalContract?.inner?.artifact ?? group.externalContract?.artifact;
         const bFn = bArt?.abi?.find((f: any) => f.name === group.functionName);
-        const used = bFn?.externalLibraries ?? [];
-        if (used.length > 0) {
-          sidecarLib = libDescriptor(bArt, used[0]);
-          sidecarSalt = sidecarLib?.branded ? hexToBin(group.categoryId) : SHARED_LIBRARY_SALT;
+        sidecarLib = firstSidecarLib(bArt, bFn?.externalLibraries ?? []);
+        if (sidecarLib) {
+          sidecarSalt = sidecarLib.branded ? hexToBin(group.categoryId) : SHARED_LIBRARY_SALT;
           break; // one side-car suffices for all loaders in the tx
         }
       }

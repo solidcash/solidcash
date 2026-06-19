@@ -14,6 +14,9 @@ export interface CompilerOptions {
   // Per-library inline override (keyed by library name, e.g. 'keccak256'): true = always inline the blob
   // into the contract, false = always use a side-car. Omitted = auto (inline when used once).
   inlineLibraries?: Record<string, boolean>;
+  // Disable the auto-inline heuristic (small, single-call libraries inline by default). Explicit
+  // inlineLibraries entries still apply.
+  disableAutoInline?: boolean;
   // User-supplied external libraries (script precompiles). Each registers `name(...)` as a callable with
   // the given ABI signature, backed by the hex `code` blob. Merged with the built-in libraries.
   userLibraries?: { name: string; code: string; abi: { inputs: AbiInput[]; outputs: AbiOutput[] } }[];

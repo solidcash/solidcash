@@ -206,6 +206,8 @@ export class FunctionDefinitionNode extends Node implements Named {
   overrideBases: string[] = [];
   usesMsgSender?: boolean;
   usedLibraries?: string[];     // external libraries this function calls (e.g. ['keccak256']) -> load each
+  inlinedLibraries?: string[];  // subset of usedLibraries inlined into the contract bytecode (no side-car)
+  libraryCallCounts?: Map<string, number>; // per-library call-site count (drives the inline decision)
   unsafeTier?: number;          // 0, 1, or 2 (only set when UNSAFE modifier present)
   splitCountParam?: string;     // parameter name for split count
   mergeCountParam?: string;     // parameter name for merge count

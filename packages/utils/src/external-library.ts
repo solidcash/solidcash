@@ -14,6 +14,10 @@ import {
 // Salt for a SHARED (unbranded) side-car: 32 zero bytes. Branded side-cars salt with the contract category.
 export const SHARED_LIBRARY_SALT = new Uint8Array(32);
 
+// Auto-inline cutoff: a single-call library with a blob no larger than this is inlined into the contract
+// bytecode (no side-car). Larger blobs (e.g. keccak256, 2326 B) use a side-car so they live once on-chain.
+export const INLINE_MAX_BLOB_LENGTH = 256;
+
 export interface ExternalLibrary {
   name: string;             // builtin resolves its library by this name (e.g. 'keccak256')
   blob: Uint8Array;         // the library script (a function inputs -> outputs)

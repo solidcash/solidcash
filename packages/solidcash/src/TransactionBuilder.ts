@@ -149,7 +149,7 @@ export class TransactionBuilder {
       const descriptors = input.unlocker.contract.artifact.externalLibraries ?? [];
       for (const name of used) {
         const lib = descriptors.find((l) => l.name === name);
-        if (!lib) continue;
+        if (!lib || lib.inline) continue; // inline libraries are baked into the contract; no side-car
         if (lib.branded && !input.token?.category) {
           throw new Error(`Branded ${name} side-car requires the spent contract input to carry its token category.`);
         }

@@ -16,6 +16,17 @@ contract UserLib() {
     }
 }`;
 
+// Two call sites of inc() across the contract -> not auto-inlined (auto requires exactly one).
+const TWO_CALL_SOURCE = `
+contract UserLib() {
+    function check(int n, int expected) {
+        require(inc(n) == expected);
+    }
+    function twice(int n, int expected) {
+        require(inc(n) == expected);
+    }
+}`;
+
 describe('user external libraries', () => {
   it('rejects a call to an unregistered library function', () => {
     expect(() => compileString(SOURCE)).toThrow();
@@ -32,7 +43,7 @@ describe('user external libraries', () => {
     expect(artifact.externalLibraries).toHaveLength(1);
     // 1-byte blob: outerPush(1)+saltPrefix(34)+selfPres(6)+blobPush(1) = 42 .. 43
     expect(artifact.externalLibraries![0]).toMatchObject({
-      name: 'inc', branded: false, inline: false, code: '8b',
+      name: 'inc', branded: false, code: '8b',
       codeBegin: 42, codeEnd: 43, blobHash: expect.any(String),
       abi: { inputs: [{ name: 'x', type: 'int' }], outputs: [{ type: 'int' }] },
     });
@@ -53,5 +64,39 @@ contract K() {
   it('rejects a user library that shadows a built-in name', () => {
     const collide = { ...INC_LIBRARY, name: 'keccak256' };
     expect(() => compileString(SOURCE, { userLibraries: [collide] })).toThrow(/already defined/);
+  });
+});
+
+describe('external library inlining', () => {
+  it('auto-inlines a small single-call library', () => {
+    const artifact = compileString(SOURCE, { userLibraries: [INC_LIBRARY] });
+    expect(artifact.externalLibraries![0].inline).toBe(true);
+  });
+
+  it('does not auto-inline a multi-call library', () => {
+    const artifact = compileString(TWO_CALL_SOURCE, { userLibraries: [INC_LIBRARY] });
+    expect(artifact.externalLibraries![0].inline).toBe(false);
+  });
+
+  it('honors inlineLibraries: false to force a side-car', () => {
+    const artifact = compileString(SOURCE, { userLibraries: [INC_LIBRARY], inlineLibraries: { inc: false } });
+    expect(artifact.externalLibraries![0].inline).toBe(false);
+  });
+
+  it('honors disableAutoInline', () => {
+    const artifact = compileString(SOURCE, { userLibraries: [INC_LIBRARY], disableAutoInline: true });
+    expect(artifact.externalLibraries![0].inline).toBe(false);
+  });
+
+  it('does not auto-inline a large library (keccak256) but inlineLibraries: true forces it', () => {
+    const keccakSource = `
+contract K() {
+    function v(bytes m, bytes32 e) {
+        require(keccak256(m) == e);
+    }
+}`;
+    expect(compileString(keccakSource).externalLibraries![0].inline).toBe(false);
+    const forced = compileString(keccakSource, { inlineLibraries: { keccak256: true } });
+    expect(forced.externalLibraries![0].inline).toBe(true);
   });
 });

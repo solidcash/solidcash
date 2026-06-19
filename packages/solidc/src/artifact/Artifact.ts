@@ -354,7 +354,9 @@ export function generateArtifact(
   // External script libraries the contract depends on, with a self-describing descriptor. Branded
   // (category-salted side-car) for stateful contracts; shared otherwise. See docs/external-libraries.md.
   const resolvedLibraries = resolveLibraries(compilerOptions.userLibraries);
-  const usedLibraryNames = [...new Set(contract.functions.flatMap((f) => f.usedLibraries ?? []))];
+  const allFns = [contract.constructorDef, contract.fallbackDef, contract.receiveDef, ...contract.functions];
+  const usedLibraryNames = [...new Set(allFns.flatMap((f) => f?.usedLibraries ?? []))];
+  const inlinedNames = new Set(allFns.flatMap((f) => f?.inlinedLibraries ?? []));
   const externalLibraries: ExternalLibraryAbi[] | undefined = usedLibraryNames.length > 0
     ? usedLibraryNames.map((name) => {
       const lib = resolvedLibraries[name];
@@ -363,7 +365,7 @@ export function generateArtifact(
         name,
         blobHash: binToHex(lib.blobHash),
         branded: stateLayout !== undefined,
-        inline: false, // phase 5 sets this from the inline decision
+        inline: inlinedNames.has(name), // inlined into the contract bytecode -> SDK skips the side-car
         codeBegin: range.codeBegin,
         codeEnd: range.codeEnd,
         abi: lib.abi,

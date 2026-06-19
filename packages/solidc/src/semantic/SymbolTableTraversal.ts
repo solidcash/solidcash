@@ -175,6 +175,7 @@ import {
   computeFunctionSignature, computeFunctionSelector, TupleType, ArrayType,
   IntType, FixedType, MappingType, FunctionType,
   FunctionBlockLayout, BlockLayoutSlot, resolveLibraries, ExternalLibrary, parseTypeStrict,
+  INLINE_MAX_BLOB_LENGTH,
 } from '@solidcash/utils';
 import { binToHex } from '@bitauth/libauth';
 
@@ -827,6 +828,8 @@ export default class SymbolTableTraversal extends AstTraversal {
       node.receiveDef = this.visit(node.receiveDef) as FunctionDefinitionNode;
     }
 
+    this.decideLibraryInlining(node);
+
     const unusedSymbols = node.symbolTable.unusedSymbols();
     if (unusedSymbols.length !== 0) {
       throw new UnusedVariableError(unusedSymbols[0]);
@@ -929,11 +932,12 @@ export default class SymbolTableTraversal extends AstTraversal {
       }
     }
 
-    // External-library pre-scan: record which libraries (keccak256, ...) the function calls so codegen
-    // loads each one's blob (side-car or inline). No parameter injection needed.
-    const usedLibraries = this.collectUsedLibraries(node.body);
-    if (usedLibraries.size > 0) {
-      node.usedLibraries = [...usedLibraries];
+    // External-library pre-scan: record which libraries (keccak256, ...) the function calls (and how many
+    // times) so codegen loads each one's blob (side-car or inline). No parameter injection needed.
+    const libraryCallCounts = this.countLibraryCalls(node.body);
+    if (libraryCallCounts.size > 0) {
+      node.usedLibraries = [...libraryCallCounts.keys()];
+      node.libraryCallCounts = libraryCallCounts;
     }
 
     // Entry slot pre-scan: collect unique (collection, keyParam) pairs and assign slot indices
@@ -2019,24 +2023,50 @@ export default class SymbolTableTraversal extends AstTraversal {
     return false;
   }
 
-  private collectUsedLibraries(node: Node, found: Set<string> = new Set(), visited: Set<Node> = new Set()): Set<string> {
-    if (visited.has(node)) return found;
+  // Decide, contract-wide, which external libraries are inlined into the contract bytecode (no side-car).
+  // A library inlines iff explicitly requested (inlineLibraries[name] === true), or auto: exactly one call
+  // site across the contract and a blob within INLINE_MAX_BLOB_LENGTH. inlineLibraries[name] === false
+  // forces a side-car. Annotates each using function's inlinedLibraries for codegen + the artifact.
+  private decideLibraryInlining(contract: ContractNode): void {
+    const fns = [contract.constructorDef, contract.fallbackDef, contract.receiveDef, ...contract.functions]
+      .filter((f): f is FunctionDefinitionNode => !!f);
+    const totals = new Map<string, number>();
+    for (const fn of fns) {
+      for (const [name, n] of fn.libraryCallCounts ?? []) totals.set(name, (totals.get(name) ?? 0) + n);
+    }
+    for (const [name, total] of totals) {
+      const override = this.compilerOptions.inlineLibraries?.[name];
+      const inline = override !== undefined
+        ? override
+        : !this.compilerOptions.disableAutoInline
+          && total === 1 && this.resolvedLibraries[name].blob.length <= INLINE_MAX_BLOB_LENGTH;
+      if (!inline) continue;
+      for (const fn of fns) {
+        if (fn.usedLibraries?.includes(name)) (fn.inlinedLibraries ??= []).push(name);
+      }
+    }
+  }
+
+  private countLibraryCalls(
+    node: Node, counts: Map<string, number> = new Map(), visited: Set<Node> = new Set(),
+  ): Map<string, number> {
+    if (visited.has(node)) return counts;
     visited.add(node);
 
     if (node instanceof FunctionCallNode && node.identifier.name in this.resolvedLibraries) {
-      found.add(node.identifier.name);
+      counts.set(node.identifier.name, (counts.get(node.identifier.name) ?? 0) + 1);
     }
 
     for (const value of Object.values(node)) {
       if (value instanceof Node) {
-        this.collectUsedLibraries(value, found, visited);
+        this.countLibraryCalls(value, counts, visited);
       } else if (Array.isArray(value)) {
         for (const item of value) {
-          if (item instanceof Node) this.collectUsedLibraries(item, found, visited);
+          if (item instanceof Node) this.countLibraryCalls(item, counts, visited);
         }
       }
     }
-    return found;
+    return counts;
   }
 
   private collectCollectionIterations(node: Node, iterations: CollectionIterationInfo[]): void {

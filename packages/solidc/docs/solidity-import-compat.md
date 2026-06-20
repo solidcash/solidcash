@@ -48,20 +48,19 @@ access. To narrow the gap (verified against solc `DeclarationContainer::resolveN
 recursing outward only on a miss):
 
 - **Bare reads** resolve to state when no local shadows the name: `x`, `m[k]`, `m[k1][k2]`, `m[k].field`.
-- **Bare writes**: `x = v`, `x op= v`, `m[k] = v`, `m[k] op= v` (scalar and single-key mapping/array element,
-  including compound).
-- **Compound assignment on state** (new for the `this.` forms too): `this.x op= v`, `this.m[k] op= v`,
+- **Bare writes**: `x = v`, `x op= v`, `m[k] = v`, `m[k] op= v`, `m[k].field = v`, `m[k].field op= v`,
+  `m[a][b] = v` (scalar, element, member, and nested, including compound).
+- **Compound assignment on state** (also for the `this.` forms): `this.x op= v`, `this.m[k] op= v`,
   `this.m[k].field op= v`, for `op` in `+ - * / % << >>` (and `& | ^` on byte types). Each desugars to
   `target = target <op> rhs` and is byte-for-byte identical to the hand-written form.
+
+A single `assignmentStatement` grammar rule covers all `this.`-prefixed and bare-indexed lvalues; the
+AstBuilder maps the lvalue shape to the existing assignment node and semantic analysis routes state vs local.
+Bare scalar `x op= v` (and `x++`/`x--`) stay in `assignStatement`.
 
 Resolution is the scope chain: a local/parameter is found first; only an unshadowed name falls through to a
 state variable (SolidCash additionally rejects declaring a local that collides with a state name, so the two
 never ambiguously coexist).
-
-Known limitation: a **bare mapping/array element member write** (`m[k].field = v` / `m[k].field op= v`) still
-requires the `this.` prefix (`this.m[k].field op= v`). The bare form is ambiguous with member method-call
-statements (`m[k].field.method()`) in the current grammar; the `this.` form covers it. Bare member *reads*
-work.
 
 ## Sablier Flow exercise: where "compile as-is" stops
 
@@ -69,12 +68,13 @@ work.
 `@sablier/evm-utils@1.0.3`). After the features above, the interfaces and pure libraries parse; the remaining
 blockers are EVM substance with no BCH mapping, not language gaps:
 
-- prb-math `Common.sol` inline `assembly ("memory-safe")` (the fixed-point core: `msb`/`mulDiv`/`exp2`).
+- inline `assembly ("memory-safe")` - in OZ `SafeERC20.sol` (`_callOptionalReturn` low-level `call`) and
+  prb-math `Common.sol` (the fixed-point core: `msb`/`mulDiv`/`exp2`).
 - ERC-721 internals (`_requireOwned`/`_update`) and external EVM contract calls (the comptroller).
 
-The first parse blocker at `_streams[id].snapshotDebtScaled += x` is now the one bare-state limitation above
-(member-element compound write); it compiles with a `this.` prefix. Bare scalar/single-key state access and
-all `this.`-prefixed compound writes are supported.
+The whole `SablierFlow.sol` contract body now parses (its `_streams[id].snapshotDebtScaled += x` and similar
+bare member/compound state writes are supported); the first remaining blocker is `SafeERC20.sol`'s inline
+assembly, reached during import resolution. That is an EVM wall, not a language gap.
 
 Sablier Flow is an ERC-721 + comptroller + prb-math contract, so a full port does not converge. The working
 record of the exercise (verbatim source, probe script, per-file results) lives under `examples/flow/scash/`.

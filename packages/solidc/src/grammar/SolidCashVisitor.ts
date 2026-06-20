@@ -66,17 +66,14 @@ import { ReturnStatementContext } from "./SolidCashParser.js";
 import { FunctionCallStatementContext } from "./SolidCashParser.js";
 import { AddressMethodStatementContext } from "./SolidCashParser.js";
 import { EmitStatementContext } from "./SolidCashParser.js";
-import { MappingAssignStatementContext } from "./SolidCashParser.js";
-import { MappingFieldAssignStatementContext } from "./SolidCashParser.js";
+import { AssignmentStatementContext } from "./SolidCashParser.js";
 import { MappingDeleteStatementContext } from "./SolidCashParser.js";
-import { StateAssignStatementContext } from "./SolidCashParser.js";
 import { VariableDefinitionContext } from "./SolidCashParser.js";
 import { TupleAssignmentContext } from "./SolidCashParser.js";
 import { TupleSlotContext } from "./SolidCashParser.js";
 import { AssignStatementContext } from "./SolidCashParser.js";
 import { ArrayPushStatementContext } from "./SolidCashParser.js";
 import { ArrayPopStatementContext } from "./SolidCashParser.js";
-import { ArrayAssignStatementContext } from "./SolidCashParser.js";
 import { ArrayDeleteStatementContext } from "./SolidCashParser.js";
 import { StateArrayPushStatementContext } from "./SolidCashParser.js";
 import { StateArrayPopStatementContext } from "./SolidCashParser.js";
@@ -554,29 +551,17 @@ export default class SolidCashVisitor<Result> extends ParseTreeVisitor<Result> {
 	 */
 	visitEmitStatement?: (ctx: EmitStatementContext) => Result;
 	/**
-	 * Visit a parse tree produced by `SolidCashParser.mappingAssignStatement`.
+	 * Visit a parse tree produced by `SolidCashParser.assignmentStatement`.
 	 * @param ctx the parse tree
 	 * @return the visitor result
 	 */
-	visitMappingAssignStatement?: (ctx: MappingAssignStatementContext) => Result;
-	/**
-	 * Visit a parse tree produced by `SolidCashParser.mappingFieldAssignStatement`.
-	 * @param ctx the parse tree
-	 * @return the visitor result
-	 */
-	visitMappingFieldAssignStatement?: (ctx: MappingFieldAssignStatementContext) => Result;
+	visitAssignmentStatement?: (ctx: AssignmentStatementContext) => Result;
 	/**
 	 * Visit a parse tree produced by `SolidCashParser.mappingDeleteStatement`.
 	 * @param ctx the parse tree
 	 * @return the visitor result
 	 */
 	visitMappingDeleteStatement?: (ctx: MappingDeleteStatementContext) => Result;
-	/**
-	 * Visit a parse tree produced by `SolidCashParser.stateAssignStatement`.
-	 * @param ctx the parse tree
-	 * @return the visitor result
-	 */
-	visitStateAssignStatement?: (ctx: StateAssignStatementContext) => Result;
 	/**
 	 * Visit a parse tree produced by `SolidCashParser.variableDefinition`.
 	 * @param ctx the parse tree
@@ -613,12 +598,6 @@ export default class SolidCashVisitor<Result> extends ParseTreeVisitor<Result> {
 	 * @return the visitor result
 	 */
 	visitArrayPopStatement?: (ctx: ArrayPopStatementContext) => Result;
-	/**
-	 * Visit a parse tree produced by `SolidCashParser.arrayAssignStatement`.
-	 * @param ctx the parse tree
-	 * @return the visitor result
-	 */
-	visitArrayAssignStatement?: (ctx: ArrayAssignStatementContext) => Result;
 	/**
 	 * Visit a parse tree produced by `SolidCashParser.arrayDeleteStatement`.
 	 * @param ctx the parse tree

@@ -234,16 +234,13 @@ block
 statement
     : variableDefinition
     | tupleAssignment
-    | arrayAssignStatement
     | arrayPushStatement
     | arrayPopStatement
     | arrayDeleteStatement
     | stateArrayPushStatement
     | stateArrayPopStatement
     | assignStatement
-    | stateAssignStatement
-    | mappingFieldAssignStatement
-    | mappingAssignStatement
+    | assignmentStatement
     | mappingDeleteStatement
     | timeOpStatement
     | requireStatement
@@ -297,20 +294,16 @@ emitStatement
     | 'emit' Identifier ('.' Identifier)? expressionList ';'
     ;
 
-mappingAssignStatement
-    : 'this' '.' Identifier ('[' expression ']')+ op=('=' | '+=' | '-=' | '*=' | '/=' | '%=' | '&=' | '|=' | '^=' | '<<=' | '>>=') expression ';'
-    ;
-
-mappingFieldAssignStatement
-    : 'this' '.' Identifier ('[' expression ']')+ '.' Identifier op=('=' | '+=' | '-=' | '*=' | '/=' | '%=' | '&=' | '|=' | '^=' | '<<=' | '>>=') expression ';'
+// Unified lvalue assignment: scalar/element/member, `this.`-prefixed or bare, with optional compound op. The
+// lvalue shape is resolved to the right target (state var, collection, local) in AstBuilder/semantic. Bare
+// scalar `x op= v` stays in assignStatement (which also handles `++`/`--`).
+assignmentStatement
+    : 'this' '.' Identifier (('[' expression ']')+ ('.' Identifier)?)? op=('=' | '+=' | '-=' | '*=' | '/=' | '%=' | '&=' | '|=' | '^=' | '<<=' | '>>=') expression ';'
+    | Identifier ('[' expression ']')+ ('.' Identifier)? op=('=' | '+=' | '-=' | '*=' | '/=' | '%=' | '&=' | '|=' | '^=' | '<<=' | '>>=') expression ';'
     ;
 
 mappingDeleteStatement
     : 'this' '.' Identifier ('[' expression ']')* '.delete' '(' expression ')' ';'
-    ;
-
-stateAssignStatement
-    : 'this' '.' Identifier op=('=' | '+=' | '-=' | '*=' | '/=' | '%=' | '&=' | '|=' | '^=' | '<<=' | '>>=') expression ';'
     ;
 
 variableDefinition
@@ -343,9 +336,6 @@ arrayPopStatement
     : Identifier '.pop' '(' ')' ';'
     ;
 
-arrayAssignStatement
-    : Identifier '[' expression ']' op=('=' | '+=' | '-=' | '*=' | '/=' | '%=' | '&=' | '|=' | '^=' | '<<=' | '>>=') expression ';'
-    ;
 
 arrayDeleteStatement
     : Identifier '.delete' '(' expression ')' ';'

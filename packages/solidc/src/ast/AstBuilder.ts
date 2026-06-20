@@ -154,10 +154,8 @@ import type {
   StateVariableDeclarationContext,
   StateAccessContext,
   ThisExprContext,
-  StateAssignStatementContext,
+  AssignmentStatementContext,
   MappingAccessContext,
-  MappingAssignStatementContext,
-  MappingFieldAssignStatementContext,
   MappingDeleteStatementContext,
   DeleteLocalContext,
   DeleteStateContext,
@@ -200,7 +198,6 @@ import type {
   ArrayAccessContext,
   ArrayPushStatementContext,
   ArrayPopStatementContext,
-  ArrayAssignStatementContext,
   ArrayDeleteStatementContext,
   StateArrayPushStatementContext,
   StateArrayPopStatementContext,
@@ -1688,13 +1685,67 @@ export default class AstBuilder
     return node;
   }
 
-  visitStateAssignStatement(ctx: StateAssignStatementContext): StateAssignNode {
-    const name = ctx.Identifier().getText();
-    const read = new StateAccessNode(name);
-    read.location = Location.fromToken(ctx.Identifier().symbol);
-    const expression = this.compoundRhs(read, ctx._op.text, ctx.expression(), Location.fromCtx(ctx));
-    const node = new StateAssignNode(name, expression);
-    node.location = Location.fromCtx(ctx);
+  // Unified lvalue assignment: `this.x`, `this.m[k]`, `this.m[k].f`, `m[k]`, `m[k].f`, `m[k1][k2]` (with any
+  // compound op). The lvalue shape selects the assignment node; semantic analysis routes state vs local. A
+  // numKeys-0 lvalue is always `this.<scalar>` (the bare-scalar form lives in assignStatement).
+  visitAssignmentStatement(ctx: AssignmentStatementContext): StatementNode {
+    const isThis = ctx.getText().startsWith('this.');
+    const ids = ctx.Identifier_list();
+    const name = ids[0].getText();
+    const nameLoc = Location.fromToken(ids[0].symbol);
+    const hasMember = ids.length > 1;
+    const fieldName = hasMember ? ids[1].getText() : undefined;
+    const op = ctx._op.text;
+    const exprCtxs = ctx.expression_list();
+    const keyCtxs = exprCtxs.slice(0, -1);
+    const valueCtx = exprCtxs[exprCtxs.length - 1];
+    const keys = keyCtxs.map((e) => this.visit(e) as ExpressionNode);
+    const loc = Location.fromCtx(ctx);
+    // A bare single-key element resolves to state-or-local in semantic analysis (ArrayAccess/ArrayAssign); a
+    // `this.`-prefixed element is unambiguously a state collection (MappingAccess/MappingAssign).
+    const bareElement = keys.length === 1 && !hasMember && !isThis;
+
+    // Read-expression node matching the lvalue (for a compound op), built with fresh key instances so it does
+    // not alias the keys used by the assignment node.
+    const buildRead = (): ExpressionNode => {
+      if (keys.length === 0) {
+        const r = new StateAccessNode(name);
+        r.location = nameLoc;
+        return r;
+      }
+      const readKeys = keyCtxs.map((e) => this.visit(e) as ExpressionNode);
+      if (bareElement) {
+        const baseId = new IdentifierNode(name);
+        baseId.location = nameLoc;
+        const r = new ArrayAccessNode(baseId, readKeys[0]);
+        r.location = nameLoc;
+        return r;
+      }
+      const m = new MappingAccessNode(name, readKeys);
+      m.location = nameLoc;
+      if (!hasMember) return m;
+      const f = new FieldAccessNode(m, fieldName!);
+      f.location = loc;
+      return f;
+    };
+
+    const value = op === '='
+      ? this.visit(valueCtx) as ExpressionNode
+      : this.compoundRhs(buildRead(), op, valueCtx, loc);
+
+    let node: StatementNode;
+    if (keys.length === 0) {
+      node = new StateAssignNode(name, value);
+    } else if (hasMember) {
+      node = new MappingFieldAssignNode(name, keys, fieldName!, value);
+    } else if (bareElement) {
+      node = new ArrayAssignNode(name, keys[0], value);
+    } else if (keys.length === 1 && this.packedStateArrayNames.has(name)) {
+      node = new StateArrayAssignNode(name, keys[0], value);
+    } else {
+      node = new MappingAssignNode(name, keys, value);
+    }
+    node.location = loc;
     return node;
   }
 
@@ -1739,61 +1790,6 @@ export default class AstBuilder
     return node;
   }
 
-  visitMappingAssignStatement(ctx: MappingAssignStatementContext): MappingAssignNode | StateArrayAssignNode {
-    const name = ctx.Identifier().getText();
-    const op = ctx._op.text;
-    const exprCtxs = ctx.expression_list();
-    // All expressions except the last are keys; the last is the value
-    const keyCtxs = exprCtxs.slice(0, -1);
-    const valueCtx = exprCtxs[exprCtxs.length - 1];
-    const keys = keyCtxs.map((e) => this.visit(e));
-    // For a compound op, read the current value via a fresh MappingAccessNode (separate key node instances
-    // to avoid aliasing the keys used by the assign node).
-    let expression: ExpressionNode;
-    if (op === '=') {
-      expression = this.visit(valueCtx) as ExpressionNode;
-    } else {
-      const read = new MappingAccessNode(name, keyCtxs.map((e) => this.visit(e)));
-      read.location = Location.fromToken(ctx.Identifier().symbol);
-      expression = this.compoundRhs(read, op, valueCtx, Location.fromCtx(ctx));
-    }
-
-    // Route packed state array assigns to StateArrayAssignNode
-    if (this.packedStateArrayNames.has(name) && keys.length === 1) {
-      const node = new StateArrayAssignNode(name, keys[0], expression);
-      node.location = Location.fromCtx(ctx);
-      return node;
-    }
-
-    const node = new MappingAssignNode(name, keys, expression);
-    node.location = Location.fromCtx(ctx);
-    return node;
-  }
-
-  visitMappingFieldAssignStatement(ctx: MappingFieldAssignStatementContext): MappingFieldAssignNode {
-    const collectionName = ctx.Identifier(0).getText();
-    const fieldName = ctx.Identifier(1).getText();
-    const op = ctx._op.text;
-    const exprCtxs = ctx.expression_list();
-    // All expressions except the last are keys; the last is the value
-    const keyCtxs = exprCtxs.slice(0, -1);
-    const valueCtx = exprCtxs[exprCtxs.length - 1];
-    const keys = keyCtxs.map((e) => this.visit(e));
-    // For a compound op, read the current field via fresh nodes (separate key instances to avoid aliasing).
-    let expression: ExpressionNode;
-    if (op === '=') {
-      expression = this.visit(valueCtx) as ExpressionNode;
-    } else {
-      const mapRead = new MappingAccessNode(collectionName, keyCtxs.map((e) => this.visit(e)));
-      mapRead.location = Location.fromToken(ctx.Identifier(0).symbol);
-      const fieldRead = new FieldAccessNode(mapRead, fieldName);
-      fieldRead.location = Location.fromCtx(ctx);
-      expression = this.compoundRhs(fieldRead, op, valueCtx, Location.fromCtx(ctx));
-    }
-    const node = new MappingFieldAssignNode(collectionName, keys, fieldName, expression);
-    node.location = Location.fromCtx(ctx);
-    return node;
-  }
 
   visitMappingDeleteStatement(ctx: MappingDeleteStatementContext): MappingDeleteNode | StateArrayDeleteNode {
     const name = ctx.Identifier().getText();
@@ -2619,31 +2615,6 @@ export default class AstBuilder
   visitStateArrayPopStatement(ctx: StateArrayPopStatementContext): StateArrayPopNode {
     const name = ctx.Identifier().getText();
     const node = new StateArrayPopNode(name);
-    node.location = Location.fromCtx(ctx);
-    return node;
-  }
-
-  // Bare indexed assignment `a[k] op= v`. Routed to state vs local in semantic analysis (visitArrayAssign).
-  // For a compound op the current element is read via an ArrayAccessNode, which visitArrayAccess rewrites to
-  // a MappingAccessNode for state collections.
-  visitArrayAssignStatement(ctx: ArrayAssignStatementContext): ArrayAssignNode {
-    const name = ctx.Identifier().getText();
-    const nameLoc = Location.fromToken(ctx.Identifier().symbol);
-    const op = ctx._op.text;
-    const keyCtx = ctx.expression(0);
-    const valueCtx = ctx.expression(1);
-    const key = this.visit(keyCtx) as ExpressionNode;
-    let value: ExpressionNode;
-    if (op === '=') {
-      value = this.visit(valueCtx) as ExpressionNode;
-    } else {
-      const baseId = new IdentifierNode(name);
-      baseId.location = nameLoc;
-      const read = new ArrayAccessNode(baseId, this.visit(keyCtx) as ExpressionNode);
-      read.location = nameLoc;
-      value = this.compoundRhs(read, op, valueCtx, Location.fromCtx(ctx));
-    }
-    const node = new ArrayAssignNode(name, key, value);
     node.location = Location.fromCtx(ctx);
     return node;
   }

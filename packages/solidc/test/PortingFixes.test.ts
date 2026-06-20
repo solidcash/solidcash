@@ -544,3 +544,16 @@ describe('FinalRequire relaxation', () => {
     expect(a.contractName).toBe('C');
   });
 });
+
+describe('BCH crypto types + number units usable as identifiers (lexer split)', () => {
+  it.each([
+    ['var named sig', 'contract C(){ int n; function f() { int sig = 5; this.n = sig; } }'],
+    ['var named bits', 'contract C(){ int n; function f() { int bits = 3; this.n = bits; } }'],
+    ['param named pubkey', 'contract C(){ int n; function f(int pubkey) { this.n = pubkey; } }'],
+    ['var named datasig', 'contract C(){ int n; function f() { int datasig = 7; this.n = datasig; } }'],
+  ])('%s', (_l, src) => { expect(compileString(src).contractName).toBe('C'); });
+
+  it('still parses the crypto types + number units (no regression)', () => {
+    expect(compileString('contract C(){ int n; function f(sig s, pubkey pk, datasig d, bytes32 m) { require(checkSig(s, pk)); require(checkDataSig(d, m, pk)); this.n = 5 bits; } }').contractName).toBe('C');
+  });
+});

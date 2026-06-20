@@ -39,6 +39,7 @@ userDefinableOperator
 anyIdentifier
     : Identifier
     | 'deploy' | 'delegate' | 'upgrade' | 'selfdestruct' | 'unsafe' | 'packed' | 'entries' | 'error' | 'global' | 'revert'
+    | CryptoType | BchUnit
     ;
 
 pragmaDirective
@@ -609,7 +610,7 @@ literal
     ;
 
 numberLiteral
-    : NumberLiteral NumberUnit?
+    : NumberLiteral (NumberUnit | BchUnit)?
     ;
 
 decimalLiteral
@@ -620,6 +621,7 @@ typeName
     : 'address' 'payable'
     | 'address'
     | PrimitiveType
+    | CryptoType
     | BoundedBytes
     | UnboundedBytes
     | BoundedSignedInt
@@ -635,6 +637,7 @@ typeName
 
 typeCast
     : PrimitiveType
+    | CryptoType
     | UnboundedBytes
     | BoundedBytes
     | UnsafeCast
@@ -657,8 +660,13 @@ BooleanLiteral
     ;
 
 NumberUnit
+    : 'seconds' | 'minutes' | 'hours' | 'days' | 'weeks'
+    ;
+
+// BCH value units are split out (not NumberUnit) so they can double as soft identifiers (`bits`/`sats`/...
+// are valid Solidity identifiers); the parser accepts them as number-literal units and as names.
+BchUnit
     : 'satoshis' | 'sats' | 'finney' | 'bits' | 'bitcoin'
-    | 'seconds' | 'minutes' | 'hours' | 'days' | 'weeks'
     ;
 
 DecimalLiteral
@@ -681,7 +689,12 @@ PrimitiveType
     : 'int'
     | 'bool'
     | 'string'
-    | 'pubkey'
+    ;
+
+// BCH crypto types are split into their own token (not PrimitiveType) so they can double as soft identifiers
+// (`pubkey`/`sig`/`datasig` are valid Solidity identifiers); the parser accepts them in type + name positions.
+CryptoType
+    : 'pubkey'
     | 'sig'
     | 'datasig'
     ;

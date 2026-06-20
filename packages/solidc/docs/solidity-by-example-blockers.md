@@ -41,10 +41,11 @@ many files carry several blockers, so the error *distribution* moved much more t
   as an unconditionally-spendable path, matching Solidity). It stays a **hard error by default** so SolidCash
   contracts can't silently expose an always-spendable UTXO. - DONE
 
-### Remaining - needs a decision (not yet done)
-
-- Bitcoin-type / number-unit identifier collisions (`sig`/`pubkey`/`datasig`, `bits`/`sats`/...): these are
-  single lexer token-types, so softening them needs lexer restructuring (split each word into its own token).
+- BCH crypto-type / number-unit identifier collisions: split `pubkey`/`sig`/`datasig` out of `PrimitiveType`
+  into a `CryptoType` token and the BCH value units `satoshis`/`sats`/`finney`/`bits`/`bitcoin` out of
+  `NumberUnit` into a `BchUnit` token, then accept both in name + expression positions (via `anyIdentifier`)
+  as well as their original type/unit positions. All such collisions cleared; no regression to the types/units
+  themselves. - DONE
 
 ### Remaining - fundamental (EVM, won't map to BCH)
 

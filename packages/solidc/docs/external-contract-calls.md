@@ -1,309 +1,270 @@
-# External contract calls & dynamic dispatch (Solidity-parity model)
+# External contract calls & dynamic dispatch (EVM-parity address model)
 
-Status: **design spec** (not yet implemented). Captures the model for `IContract(address).method(arg)` on the
-BCH UTXO/CashTokens substrate, with the explicit goal of staying as close to Solidity/EVM dynamic dispatch as
-the chain allows. Normative rules use MUST/SHOULD.
+Status: **design spec** (not yet implemented). Model for `IContract(address).method(arg)` on the BCH
+UTXO/CashTokens substrate, with the explicit goal of **EVM address parity**: an `address` *is* the contract's
+on-chain address, passed/compared/called directly, with no derivation or transformation. Normative rules use
+MUST/SHOULD.
 
 ## 1. Goal
 
-Make `IContract(addr).method(arg)` - Solidity's dynamic dispatch - the recurring, idiomatic way to call
-another contract in SolidCash, with EVM-equivalent *safety* and as much EVM-equivalent *ergonomics* as the
-UTXO model permits. A single value (`addr`) identifies a callee; you pass it around, compare it, and call
-through it.
+`IContract(addr).method(arg)` is *the* way to call another contract. `addr` is a first-class value identical
+in role to an EVM address: you store it, compare it, and dispatch through it. **No `derive()`, implicit or
+explicit** - the value you hold is the address, full stop. Calls must have EVM-equivalent *safety* and as much
+EVM-equivalent *ergonomics* as the chain allows.
 
-## 2. Background: what an "address" is on each chain
+## 2. What "address" is, on each chain
 
 | | EVM | BCH (SolidCash) |
 |---|---|---|
-| code identity | bound to the account by the protocol | P2SH32 **locking bytecode** = hash of code+args |
-| state identity | bound to the account by the protocol | NFT **category** = genesis txid (mint-once) |
-| the handle | one `address` binds **both** | code and state are **independent** primitives |
+| address = | hash of code (CREATE2: `hash(deployer, salt, codehash)`) | **P2SH32 script hash** = hash of the redeem script (code + baked args) |
+| address ⟹ code | yes (protocol-bound) | **yes** (P2SH: only that script hashes to that address) |
+| address ⟹ state | yes (protocol-bound storage) | **not for free** - see §3 |
 
-The decisive asymmetry:
+So the EVM-parity address on BCH is the **P2SH32 script hash**. It is 32 bytes rather than 20, and parity is
+in *semantics* (address = hash-of-code, compared directly), not width. (Stateful contracts are p2sh32 only -
+see [[Only p2sh32 for Stateful Contracts]] - so contract addresses are 32 bytes by construction.)
 
-- A **locking script only governs how a UTXO is *spent*** - it never attests to what that UTXO *contains*.
-  Anyone can pay a UTXO to any address with any token category and any commitment, permissionlessly, running
-  no code. So **code-on-a-UTXO does not imply "this code produced this state."**
-- A **category is mint-once** at genesis and (under self-preservation) its commitment only evolves through the
-  contract's own covenant. So **category implies genuine state.**
-
-Therefore the faithful BCH equivalent of an EVM address - the thing that binds code+state integrity - is the
-**category**, *not* the locking bytecode. This is the foundational claim of this spec.
-
-> **Claim 1.** EVM `address` ≈ BCH **category**. EVM `address` ≠ BCH locking bytecode.
-
-## 3. Core principle: derive the address from the category
-
-A Solidity contract-identity address is a pure function of the category:
+`IContract(addr).method()` verifies the co-spent callee with a **direct address comparison**:
 
 ```
-addr = derive(categoryId)
+require( OP_UTXOBYTECODE(inputN) == addr )      // (or its 32-byte hash); no derivation
 ```
 
-`derive` MUST be deterministic and collision-resistant. Two encodings:
+The one gap vs EVM is `address ⟹ state`. §3 closes it.
 
-- **Identity** - `addr = categoryId` (32 bytes). Verification `categoryId == addr`. Collision resistance:
-  exact (none possible). Simplest covenant. **Recommended baseline.**
-- **hash160** - `addr = hash160(categoryId)` (20 bytes), BCH's native address derivation. Verification
-  `hash160(categoryId) == addr`. Collision resistance 2^160 (infeasible). Use only where a port genuinely
-  needs Solidity's 20-byte address width (bit-packing, `uint160` casts); accept the 160-bit bound.
+## 3. The load-bearing requirement: self-pinning closes `address ⟹ state`
 
-Because `derive` is public and pure, **no registry and no central party** is involved: anyone can derive any
-instance's address from its (public) category and verify it locally. This is the decentralized answer.
+A P2SH locking script governs **how a UTXO is spent**, never what it *contains*. Anyone can pay a UTXO to any
+address with any token category and any commitment, permissionlessly, running no code. So on BCH:
 
-Normative:
-- The compiler MUST verify the co-spent callee against the category, never the locking bytecode alone:
-  `require(derive(OP_UTXOTOKENCATEGORY(inputN)) == addr)`.
-- `derive` MUST operate on the canonical 32-byte category id in **internal** byte order (the order
-  `OP_UTXOTOKENCATEGORY` yields), with the capability byte stripped, consistently on both the stored address
-  and the introspected value. (Mismatch here silently breaks honest matches and invites loosening the check -
-  see [[regtest_category_byteorder_bug]].)
+- `address ⟹ code` holds (P2SH guarantees the script).
+- `address ⟹ state` does **not** hold for free - the UTXO's category/commitment are attacker-chosen at
+  creation.
 
-## 4. Threat model & forgery analysis
+EVM gets `address ⟹ state` from the protocol binding storage to the account. BCH must get it from the
+**contract's own covenant**:
 
-The transaction builder / SDK is **untrusted**: it chooses every input and every output. The covenant is the
-only arbiter. A design is safe only against what *passes the covenant*.
+> **Self-pinning (`code ⟹ category`):** the contract bakes its state-NFT **category** as a constructor arg and
+> its covenant enforces `OP_UTXOTOKENCATEGORY(self) == bakedCategory` on every spend, inductively from genesis.
 
-### 4.1 The code-only forgery (why fixing locking bytecode is fatal)
+With self-pinning, a UTXO carrying this code can *only validly hold* the one legitimate category - and that
+category is mint-once, so its commitment is genuine state by induction. Therefore:
 
-Suppose Contract1 verifies a callee by **locking bytecode only** (no category):
+> **Claim.** For a self-pinning contract, `address ⟹ (code, genuine state)` - the EVM-address property,
+> reconstructed on BCH.
 
-1. Attacker genesis's their own category `CX` (dust cost) with a lying commitment.
-2. Attacker pays a UTXO **to the callee's P2SH32 address** bearing `CX` + the lie (permissionless; runs no code).
-3. SDK co-spends Contract1 + that UTXO. A **category-agnostic** callee covenant accepts the spend (it
-   introspects "my category = `CX`, my state = lie", enforces a valid-looking transition - it cannot see that
-   `CX` is illegitimate).
-4. Contract1 checks locking bytecode ✓, reads the commitment = lie, acts on it. **Total state injection**
-   (oracle manipulation, fund drain).
+### 3.1 Why this makes the caller's check trivial (and why it's exactly EVM)
 
-Severity: **critical**, mountable by the SDK alone.
+The callee's UTXO is **co-spent** (it is an input), so **its covenant runs** as part of tx validation. A
+fabricated UTXO sitting at the address with a fake category is **unspendable** (self-pin rejects any category ≠
+the baked one), so it can never be a valid input. Hence *any co-spent UTXO at `addr` necessarily passed
+self-pin → carries genuine state*. The caller therefore needs only:
 
-### 4.2 Why the category defeats it
+```
+require( OP_UTXOBYTECODE(inputN) == addr )
+```
 
-`derive(category) == addr` checks the **category**, which the attacker cannot forge (mint-once; no preimage at
-2^160/exact). So the fabricated `CX` fails the check. Forgery via §4.1 is dead.
+and the callee's own covenant - which ran *because it was spent* - did the integrity work. This is precisely
+the EVM model: the callee's code executes on the call and enforces its own invariants. No category check, no
+derivation at the caller.
 
-### 4.3 Residual trust = Solidity parity, not a regression
+### 3.2 Stateless callees
 
-After §4.2 the only remaining trust is **"was `storedAddr` set to a legitimate category's derivation?"** -
-i.e. who is allowed to write Contract1's `token`/`callee` field. This is *identical* to Solidity (controlling a
-stored `address` redirects calls). The derivation neither adds nor removes this; it is decentralized data set
-by whoever the dapp trusts. No registry needed.
+A stateless / pure-covenant contract has no NFT to forge. `address ⟹ code` is sufficient; the address handle
+is trivially safe with the same `OP_UTXOBYTECODE == addr` check.
 
-### 4.4 The two-direction rule (when each verification mode is sound)
+## 4. Forgery analysis (keep this central)
 
-Two implications must not be conflated:
+Threat model: the SDK/tx-builder is **untrusted** - it picks every input and output. The covenant is the only
+arbiter.
 
-- **`category ⟹ code` (self-preservation):** a genuine `C` token can only sit under the contract's code,
-  because the covenant preserves its own NFT under its own script on every spend. ⇒ verifying **by category**
-  also gives you the code. Holds for any self-preserving stateful contract.
-- **`code ⟹ category` (self-pinning):** a UTXO with the contract's code can *only validly hold* its one
-  category (the covenant rejects spends with any other). ⇒ verifying **by address/locking-bytecode** also
-  gives you the category. Holds **only** when the code hard-pins its category (= unique code → unique
-  address = Scenario B in §6).
+### 4.1 The attack the model must defeat
 
-| target | code ⟹ category? | address-only safe? |
-|---|---|---|
-| category-agnostic shared code (Scenario A) | NO | **NO - forgeable (§4.1)** |
-| self-pinning / salted (Scenario B) | YES | YES |
-| stateless (no NFT) | n/a | YES (nothing to forge) |
+If a stateful callee is **category-agnostic** (does *not* self-pin - it reads its own category and preserves
+whatever it finds), then:
 
-> **Claim 2.** Address-only verification is sound *iff* the target is stateless or provably self-pins its
-> category. For shared-code instances, category verification is mandatory.
+1. Attacker genesis's their own category `CX` (dust) with a lying commitment.
+2. Attacker pays a UTXO **to the callee's address** bearing `CX` + the lie (permissionless; runs no code).
+3. SDK co-spends caller + that UTXO. The category-agnostic covenant **accepts the spend** (it preserves `CX`
+   under the code; it cannot tell `CX` is illegitimate).
+4. Caller checks `OP_UTXOBYTECODE == addr` ✓, reads the lie commitment, acts on it. **Total state injection**
+   (oracle manipulation, fund drain). SDK-mountable, **critical**.
 
-## 5. The trilemma and its resolution
+### 4.2 Why self-pinning kills it
 
-Every external call wants three properties; static pinning gives at most two:
+A self-pinning callee enforces `category == bakedCategory`. The fabricated `CX`-UTXO at the address is
+**unspendable**, so it cannot be a co-spent input - the attack never gets off the ground. The attacker cannot
+instead use the *real* category (mint-once; held only by the genuine lineage). So address-handle integrity is
+restored **by the callee binding its own state**, not by the caller checking a second identifier.
 
-- **Integrity** - the state is real (anti-hacker, §4).
-- **Authenticity** - the logic is what you expect (anti-owner-rug).
-- **Adaptability** - upgrade / swap instance / intermix (anti-overconstraint).
+> **Rule.** Address-handle dispatch is sound **iff** the callee is stateless, or a **self-pinning** stateful
+> contract. A category-agnostic stateful contract behind an address handle is exactly §4.1 and MUST be
+> rejected by the compiler.
 
-Fix locking bytecode → lose integrity. Fix category → lose authenticity (owner mutates code under the fixed
-category). Fix both → lose adaptability.
+### 4.3 Residual trust = EVM parity, not a regression
 
-**The trap is treating code-trust as a static, caller-side pin.** Resolution - assign each property to its
-rightful owner:
+The only remaining trust is "was `addr` set to a legitimate contract's address?" - i.e. who may write the
+caller's `callee`/`token` field. Identical to Solidity (controlling a stored `address` redirects calls).
+Decentralized data; no registry.
 
-1. **Integrity belongs to the category - always.** Anchor every external read on `derive(category)==addr`.
-   Non-negotiable.
-2. **Authenticity belongs to the *callee*, as a genesis-committed, covenant-enforced governance fact** that
-   the caller *reads from the unforgeable state* - not a caller pin. (This is the unlock; see §5.1.)
-3. **Adaptability is preserved by treating `addr` as a runtime value, never a hardcoded constant.** Different
-   instances = different handles; intermix and dynamic dispatch are free.
+## 5. The trilemma, resolved under the address model
 
-The key enabler: on BCH the callee's **state commitment is itself category-anchored and unforgeable**, so the
-callee can publish its own code-governance into its state and the caller can trust it - something EVM can't do
-cleanly cross-contract.
+Three properties tension on every call: **integrity** (state is real), **authenticity** (logic is what you
+expect), **adaptability** (upgrade/intermix). The escape is not to pin identifiers on the caller, but:
 
-### 5.1 Resolution by upgrade stance
+- **Integrity + authenticity come from the address itself, *because the callee self-pins*.** `addr ⟹ (code,
+  state)`. For an **immutable** contract this is the whole story - the single address handle delivers integrity
+  and authenticity at once, with no caller-side pin and no derivation. **This is the default and it is
+  trilemma-free.**
+- **Adaptability** is preserved because `addr` is a runtime value (store it, swap it, pass it) and because
+  multiple callees are just multiple addresses you co-spend and check independently.
 
-**Immutable callee (default, trilemma-free).** A non-upgradeable contract self-preserves under *fixed* code ⇒
-`category ⟹ exact code, forever`. The single derived address therefore delivers all three properties at once:
-integrity (mint-once), authenticity (code can't change), adaptability (runtime handle, intermixable). **No
-trilemma** - the "fix both" you feared is achieved without any caller pin, because the callee's own
-immutability binds code to category. This SHOULD be the default an interface expresses.
+### 5.1 Upgradeability = the EVM proxy pattern (stable address, mutable impl)
 
-**Upgradeable callee (trilemma is real and partly inherent).** Upgradeability *is* trusting an upgrader, so
-"owner go nuts" can be **bounded, not eliminated**. The callee carries a **genesis-committed, covenant-enforced
-upgrade policy** in its commitment - e.g. an immutable allowlist of permitted code-hashes, or
-`{governorCategory, timelock}`. The covenant enforces that every upgrade stays within the policy *and*
-preserves the policy. The caller verifies "current code-hash ∈ committed allowlist" (or "governed by G with
-delay D"). The owner can upgrade - but only to what they pre-committed, in the open. This is **strictly
-stronger than an EVM proxy**, where the admin typically upgrades to anything.
+A self-pinning contract's address is `hash(code)`, so changing code changes the address - which would break a
+stable handle. EVM solves this with **proxies**; so do we, identically:
 
-### 5.2 "Owner go nuts" is two threats - separate them
+- An upgradeable contract is a **stable, self-pinning proxy** (fixed proxy code → fixed address) that
+  delegates to a **mutable implementation**.
+- The **proxy address is the EVM-parity handle**; the implementation changes behind it.
+- The proxy covenant enforces the **upgrade policy** (immutable allowlist of implementation code-hashes, or
+  `{governorCategory, timelock}`), carried in the proxy's (self-pinned, unforgeable) commitment. The owner can
+  upgrade only within the policy they committed at genesis - **stricter than a typical EVM proxy** whose admin
+  upgrades to anything.
 
-- **Code mutation (upgrade rug):** defended by §5.1's committed/enforced policy.
-- **Operator feeds bad data through legit code** (an oracle owner posts a fake price via the real setter):
-  category real, code real, *input* a lie. **No reference mechanism defends this** - it is data-source trust,
-  identical to trusting Chainlink signers in Solidity. Mitigation is economic/redundancy, out of scope for the
-  reference model. Stated so it isn't conflated with the upgrade threat.
+SolidCash already has a delegate/proxy mechanism (altstack `_proxyMasterIndex`) to build on.
 
-## 6. Deploy topologies (not either/or)
+### 5.2 "Owner go nuts" - two threats, only one is in scope
 
-The *same category-agnostic code* supports two topologies; choosing one is a deploy decision, not a language
-mandate. Keep contract code **category-agnostic** (it reads its own category by introspection, never hardcodes
-one) so it serves both.
+- **Code mutation (upgrade rug):** bounded by §5.1's covenant-enforced policy.
+- **Operator posts bad data through legit code** (a real oracle owner sets a fake price via its real setter):
+  address real, code real, *input* a lie. **No reference mechanism defends this** - it is data-source trust,
+  same as trusting Chainlink signers in Solidity. Economic/redundancy mitigation; out of scope here.
 
-| | A: shared code, category-keyed, intermix | B: salted, unique address per instance |
-|---|---|---|
-| instance key | category (address shared across instances) | address (encodes salt/category; self-pins) |
-| call-site ref | `IFoo(addr)` where addr = derive(category) | `IFoo(addr)` (address is unique) |
-| disambiguation when N co-spent | by category (address is ambiguous) | by address |
-| upgradeable | natural (code changes, category persists) | breaks (address pins code) |
-| deploy cost | cheap; one script, N genesises | per-instance salt; bytecode variety |
-| address-only safe? | **no** (§4.4) | yes (self-pins) |
-| best for | marketplaces, pools, per-user vaults, upgradeable | singletons / small fixed set; registries/anchors |
+## 6. The cost (honest trade-offs vs the category-keyed alternative)
 
-A also gives **atomic co-spend of many instances with no reentrancy** - a composition primitive the EVM lacks;
-do not sacrifice it chasing B. Trust chains that *must* be address-safe (e.g. a well-known anchor) should be
-B-style self-pinning singletons.
+Choosing EVM address parity means choosing **self-pinning, unique-address instances** (each instance bakes its
+category → distinct redeem script → distinct address). Consequences:
+
+- **Two-phase deploy.** The category is a genesis-time value (genesis txid), so it is baked *after* genesis:
+  (1) genesis the category, (2) compute `addr = hash(template + category)`, (3) lock the NFT under that
+  address. The address is therefore known **post-genesis** (CREATE-like), not pre-computable like CREATE2.
+  Counterfactual/pre-computed addresses need extra machinery - deferred.
+- **No shared-bytecode "intermix" topology.** The category-agnostic, one-script-many-instances model
+  (reference by category) is *not* the address-parity model and address-handle dispatch is **forbidden** on it
+  (§4.2). It remains expressible for users who explicitly want it, but it is non-EVM-parity. Intermix under the
+  address model = co-spending several unique-address instances, each checked by its address (works; loses only
+  the shared-script byte savings - same as EVM CREATE2 instances).
+- **Addresses are 32 bytes** (p2sh32 hash), not 20. Semantics match; width does not.
+
+These are the deliberate prices of dropping `derive()` for true address parity.
 
 ## 7. Specification
 
-### 7.1 The `address` type has two roles (the duality)
+### 7.1 `address`
 
-Solidity fuses them; BCH cannot (code and category are independent - you cannot derive locking bytecode from a
-category). SolidCash MUST distinguish by use-site:
+`address` (contract identity) is the callee's **p2sh32 locking-script hash** (32 bytes), used directly:
+stored, compared (`==`, `!= address(0)`), passed, and dispatched through. No derivation. `address(0)` is the
+all-zero hash (no real script hashes to it) - a clean null sentinel.
 
-- **identity address** = `derive(category)` - for `IFoo(addr)`, equality/comparison, and `address(this)`
-  *as identity*. This spec is about this role.
-- **location address** = locking bytecode - for value sends and recipients (`addr.transfer(v)`).
+Note the existing **location/identity duality** dissolves favorably here: the contract address *is* the
+locking-script hash, so the contract-identity address and the recipient/location address coincide (as in EVM).
+`address(this)` = the spent input's own script hash (`hash(OP_INPUTINDEX OP_UTXOBYTECODE)` or the introspected
+hash), usable both to be called and to be paid.
 
-A contract-typed value that must be both called and paid carries both facets internally. (The current
-`address(this)` lowering to `OP_INPUTINDEX OP_UTXOBYTECODE` is the *location* address; the identity address is
-`derive(OP_UTXOTOKENCATEGORY(OP_INPUTINDEX))`.)
+### 7.2 `IContract(addr).method(arg)` lowering
 
-### 7.2 `derive`
+`method(arg)` is realized by **co-spending** the callee (its UTXO is an input, its covenant runs) and reading
+its result via introspection / the existing `_Return_` event flow. The caller covenant MUST:
 
-As §3: identity (recommended) or hash160 (20-byte compat). One choice per compilation/interface, applied
-consistently to stored addresses, `address(this)`-as-identity, and the introspection check.
+1. **Identity+integrity (one check):** `require(OP_UTXOBYTECODE(inputN) == addr)`. For a self-pinning callee
+   this *is* the integrity guarantee (§3.1): the callee's covenant, having been spent, already enforced its
+   category and transition.
+2. **Interaction:** read the callee's state (view) / constrain its output (state-changing) / consume its
+   return blob - exactly the current external-call/`_Return_` machinery, keyed on the verified address.
 
-### 7.3 Interface declares the upgrade stance
+No category appears at the call site. The caller stays address-agnostic at compile time (`addr` is a
+runtime parameter/field).
 
-The interface (not the call site) declares the callee's stance, which selects the caller's check:
+### 7.3 Self-pinning (callee obligation)
+
+Any **stateful** contract that may be referenced by address MUST self-pin:
+
+- take its state-NFT category as a constructor arg (baked into the redeem script → part of the address);
+- covenant MUST enforce `OP_UTXOTOKENCATEGORY(self) == bakedCategory` on every spend, and preserve the NFT
+  under its own code (self-preservation), so the invariant is inductive from genesis.
+
+The compiler MUST verify this property and surface it in the artifact, so a caller's `IContract(addr)` can rely
+on `addr ⟹ state`. A stateful contract lacking it MUST NOT be addressable (it would be §4.1-forgeable).
+
+### 7.4 Interface upgrade stance
+
+The interface declares the callee's stance:
 
 ```
 immutable interface IOracle { function price() external view returns (uint256); }
 
-upgradeable interface IVault {
-    // policy carried in the callee's commitment; one of:
-    //   codeHashes [0x.., 0x..]          // immutable allowlist of permitted code hashes
-    //   governor <category> timelock 144 // governance category + min delay
+proxy interface IVault {                 // upgradeable behind a stable proxy address
+    // policy carried in the proxy's self-pinned commitment, one of:
+    //   impl codeHashes [0x.., 0x..]    // immutable allowlist of implementation hashes
+    //   governor <category> timelock 144
     function deposit(uint256 amount) external;
 }
 ```
 
-- `immutable` ⇒ caller emits the category check only (category ⟹ fixed code).
-- `upgradeable { policy }` ⇒ caller emits the category check **and** the policy check.
+- `immutable` ⇒ caller emits only the address check (§7.2.1); `addr ⟹ (fixed code, state)`.
+- `proxy { policy }` ⇒ the address is the stable proxy address; the caller additionally `require`s the proxy's
+  committed implementation policy meets the interface's bar.
 
-### 7.4 Commitment governance layout (callee side)
+### 7.5 Deploy
 
-An upgradeable callee MUST carry, in its NFT commitment, a governance field its covenant enforces from genesis
-and preserves across every spend/upgrade. Minimum shapes:
+Two-phase (§6): genesis category → `addr = hash(template + category)` → lock NFT under `addr`. The toolchain
+returns `addr` after deploy. Optional CREATE2-style pre-computation is future work.
 
-- **allowlist:** a Merkle root (or short list) of permitted code-hashes; upgrade transitions MUST target a
-  member; the root is immutable.
-- **governor+timelock:** a governor category + a min-delay; upgrades MUST be authorized by co-spending the
-  governor and respecting the delay; the `{governor, timelock}` pair is immutable (or itself governor-bounded).
-
-An immutable callee needs no field; its covenant simply forbids code change (self-preservation under fixed
-code).
-
-### 7.5 `IContract(addr).method(arg)` lowering (caller side)
-
-`method(arg)` is realized by **co-spending the callee** (its UTXO is an input, so its covenant runs) and
-reading its result via introspection / the existing `_Return_` event mechanism. The caller covenant MUST, in
-order:
-
-1. **Integrity:** `require(derive(OP_UTXOTOKENCATEGORY(inputN)) == addr)`.
-2. **Authenticity (only if interface is `upgradeable`):** read the callee's committed governance from
-   `OP_UTXOTOKENCOMMITMENT(inputN)` and `require` it meets the interface's bar (immutable / hash ∈ allowlist /
-   governed). For `immutable` interfaces this step is omitted - category already ⟹ code.
-3. **Interaction:** read the callee's state (view) or constrain its output (state-changing) or consume its
-   return blob, exactly as the existing external-call/`_Return_` flow does today - but keyed on the verified
-   category, not a pinned locking bytecode.
-
-The caller's code MUST stay category-agnostic: `addr` is a runtime parameter/field, never a compile-time
-category constant (preserves adaptability and intermix).
-
-### 7.6 `address(this)`
-
-- as **identity**: `derive(OP_UTXOTOKENCATEGORY(OP_INPUTINDEX))` (runtime-computed from the contract's own
-  category).
-- as **location** (recipient/self-output): `OP_INPUTINDEX OP_UTXOBYTECODE` (current behavior).
-
-The compiler selects by use-site (compared/passed/called → identity; transfer recipient → location).
-
-## 8. EVM-parity mapping - what ports and what differs
+## 8. EVM-parity mapping
 
 Ports cleanly:
-- `IContract(addr).viewFn()` / `IContract(addr).stateFn(arg)` → co-spend + category-verified read/constrain.
-- passing, storing, comparing `address` handles; `address(0)` as a null sentinel (no real category derives to
-  it).
-- `address(this)` (identity).
+- `IContract(addr).viewFn()` / `.stateFn(arg)` → co-spend + `OP_UTXOBYTECODE==addr` + read/constrain.
+- storing/comparing/passing `address`; `address(0)` null sentinel; `address(this)`.
+- upgradeable deps via a stable proxy address (the EVM proxy idiom, one-to-one).
 
-Differs (inherent, not a gap to "fix"):
-- **Synchronous return mid-execution** → BCH **co-spend introspection** (the callee is an input; you read its
-  output, you don't receive a CALL return). Re-entrancy does not exist.
-- **Value send to a contract** needs the **location** address (locking bytecode), not derivable from the
-  category - separate pass (§7.1).
-- **`token.transferFrom(...)`** maps to a **CashTokens covenant move**, not an external code call - ERC-20 is
-  not a contract on BCH.
-- **EVM globals** `.balance`, `msg.value`, `code.length` have no direct analogue.
+Differs (inherent):
+- **synchronous return mid-call** → **co-spend introspection** (callee is an input; you read its output, no
+  CALL return; no reentrancy).
+- **`token.transferFrom(...)`** → a **CashTokens covenant move**, not a code call (ERC-20 isn't a contract).
+- EVM globals `.balance`, `msg.value`, `code.length`: no direct analogue.
+- addresses are 32 bytes; CREATE2 counterfactual pre-computation is deferred.
 
 ## 9. Compiler enforcement (normative)
 
-1. MUST forbid address/locking-bytecode-only external **state** reads/calls against a stateful target (the
-   §4.1 exploit). Hard error.
-2. MUST allow address-only **only** for stateless targets, or targets the compiler can prove self-pin their
-   category (Scenario B).
-3. MUST treat a locking-bytecode pin as **defense-in-depth on top of** a category check, never a substitute.
-4. For `upgradeable` interfaces, MUST emit the §7.5(2) policy check; MUST refuse to *pin code* against an
-   upgradeable interface (latent post-upgrade breakage).
-5. MUST keep `derive` byte-order/capability handling canonical and identical on both sides (§3).
-6. SHOULD default interfaces to `immutable` (trilemma-free) and require explicit opt-in for `upgradeable`.
+1. `IContract(addr)` MUST verify `OP_UTXOBYTECODE(input) == addr` and MUST NOT use `derive`/category at the
+   call site.
+2. A **stateful** callee referenced by address MUST be **self-pinning** (§7.3); the compiler MUST prove this
+   and reject category-agnostic stateful contracts behind an address handle (the §4.1 forgery).
+3. Stateless callees may be addressed with the same check (nothing to forge).
+4. `proxy` interfaces MUST emit the implementation-policy check; the proxy code (hence proxy address) MUST be
+   fixed/immutable so the handle is stable.
+5. `address(this)` is the contract's own script hash, serving both identity and recipient roles.
 
 ## 10. Phased plan
 
-1. **Identity address from category** - `derive`, the `address(this)`-as-identity lowering, and the category
-   integrity check in `IFoo(addr)`. (This is the forgery-critical core and the bulk of contract-ref code.)
-2. **Interface upgrade-stance** - `immutable` vs `upgradeable { policy }`, the commitment governance layout,
-   and the caller policy check.
-3. **Location/identity duality** - value-send-to-contract via the location address; recipient addresses.
-4. **Deploy ergonomics** - learning an instance's address post-genesis; optional B-style salting for
-   singletons/anchors.
+1. **Address handle** - `address` = p2sh32 hash; `IContract(addr).method()` lowering to `OP_UTXOBYTECODE==addr`;
+   `address(this)` as script hash.
+2. **Self-pinning** - constructor-baked category + covenant invariant + the compiler proof/artifact flag; gate
+   address-dispatch on it.
+3. **Proxy upgradeability** - `proxy` interface + implementation-policy commitment + caller policy check, on
+   the existing delegate mechanism.
+4. **Deploy ergonomics** - two-phase deploy tooling; later, CREATE2-style pre-computed addresses.
 
 ## 11. Open questions
 
-- `derive`: commit to identity (32B) as the canonical address, with hash160 (20B) as an explicit opt-in? Or
-  pick one globally?
-- Governance layout: fixed struct vs a small DSL in the `upgradeable { ... }` block; Merkle allowlist vs
-  inline list size limits.
-- How an interface asserting `immutable` is *checked* against the callee (the callee must be provably
-  non-upgradeable - via its own compiled covenant property, surfaced in the artifact).
-- Cross-contract chains (A→B→C) under category handles + per-hop policy checks (interplay with the existing
-  transitive external-call resolution).
-- Whether `address(this)` should default to identity under `solidityImportCompat` (closer to Solidity) while
-  staying location elsewhere.
+- Self-pinning proof: how the compiler statically certifies `category == bakedArg` is enforced on *all* spend
+  paths, and how that flag is represented in the artifact for callers to trust.
+- Address value: full locking bytecode vs the 32-byte hash as the canonical `address` representation (hash is
+  leaner; bytecode avoids a hash op).
+- Counterfactual/CREATE2-style pre-computed addresses despite the genesis-txid category dependency (e.g. a
+  create3-style indirection that fixes the address independent of the category).
+- Proxy policy layout (allowlist root vs inline list; governor+timelock encoding) and how `address(this)`
+  behaves inside a proxy vs its implementation.
+- Whether to keep the category-agnostic, category-referenced topology at all as an explicit non-parity escape
+  hatch, or drop it to keep one model.

@@ -18,6 +18,12 @@ their individual counts suggest.
 Implemented this run (committed; full solidc suite green at each step). The scorecard is a lagging metric -
 many files carry several blockers, so the error *distribution* moved much more than +14:
 
+- **D** reserved-word collisions: soft-keyword `anyIdentifier` rule (mirrors Solidity's `identifier: Identifier
+  | From | Error | Revert | ...`), used in name + expression-read positions. Softened the implicit-token
+  keywords `deploy delegate upgrade selfdestruct unsafe packed entries error global revert` - all
+  keyword-collision parse errors eliminated. Still reserved (lexer token-types, would need lexer surgery to
+  split): the Bitcoin types `pubkey`/`sig`/`datasig` and number units `bits`/`sats`/`finney`/`satoshis`/
+  `bitcoin`; and member-access on a soft name (`s.error`) is not yet softened. - DONE (partial)
 - **A** state-variable inline initializers (lowered into the constructor) - DONE
 - **B** multiple top-level contracts per file (last = primary, earlier = available) - DONE
 - **C** `payable` on constructors (accepted, ignored) - DONE
@@ -30,13 +36,10 @@ many files carry several blockers, so the error *distribution* moved much more t
 
 ### Remaining - needs a decision (not yet done)
 
-- **D. Reserved-word collisions** (~11 files): SolidCash keywords used as ordinary Solidity identifiers -
-  `error` (param name), `deploy` (function name), `transaction` (var name), plus `selfdestruct` (Solidity
-  builtin call), `sig`/`bits` (type/unit). Fixing needs a soft-keyword `identifier` rule used in name
-  positions; it carries grammar-ambiguity risk and a scope choice (which keywords to soften). **Deferred for
-  a deliberate decision.**
 - **FinalRequireStatementError** (5): SolidCash requires each function to end in `require()` (covenant
   verification). Solidity functions need not. Relaxing this is a covenant-model decision. **Deferred.**
+- Bitcoin-type / number-unit identifier collisions (`sig`/`pubkey`/`datasig`, `bits`/`sats`/...): these are
+  single lexer token-types, so softening them needs lexer restructuring (split each word into its own token).
 
 ### Remaining - fundamental (EVM, won't map to BCH)
 

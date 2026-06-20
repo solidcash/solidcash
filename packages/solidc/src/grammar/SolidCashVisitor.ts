@@ -13,6 +13,7 @@ import { UsingLibraryForContext } from "./SolidCashParser.js";
 import { UsingFunctionsForContext } from "./SolidCashParser.js";
 import { UsingFunctionBindingContext } from "./SolidCashParser.js";
 import { UserDefinableOperatorContext } from "./SolidCashParser.js";
+import { AnyIdentifierContext } from "./SolidCashParser.js";
 import { PragmaDirectiveContext } from "./SolidCashParser.js";
 import { PragmaNameContext } from "./SolidCashParser.js";
 import { PragmaValueContext } from "./SolidCashParser.js";
@@ -233,6 +234,12 @@ export default class SolidCashVisitor<Result> extends ParseTreeVisitor<Result> {
 	 * @return the visitor result
 	 */
 	visitUserDefinableOperator?: (ctx: UserDefinableOperatorContext) => Result;
+	/**
+	 * Visit a parse tree produced by `SolidCashParser.anyIdentifier`.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	visitAnyIdentifier?: (ctx: AnyIdentifierContext) => Result;
 	/**
 	 * Visit a parse tree produced by `SolidCashParser.pragmaDirective`.
 	 * @param ctx the parse tree

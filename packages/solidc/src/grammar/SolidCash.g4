@@ -15,7 +15,7 @@ importBinding
     ;
 
 freeFunctionDefinition
-    : 'function' Identifier parameterList functionModifier* returnType? '{' statement* '}'
+    : 'function' anyIdentifier parameterList functionModifier* returnType? '{' statement* '}'
     ;
 
 usingForDirective
@@ -31,6 +31,14 @@ userDefinableOperator
     : '+' | '-' | '*' | '/' | '%' | '**'
     | '==' | '!=' | '<' | '<=' | '>' | '>='
     | '&' | '|' | '^' | '~'
+    ;
+
+// A user-chosen name. Soft keywords: SolidCash-specific keywords that Solidity keeps usable as identifiers
+// (matching Solidity's `anyIdentifier: Identifier | From | Error | Revert | Global | ...`). Used in name
+// positions (parameters, locals, function/struct-field names) so valid Solidity identifiers don't collide.
+anyIdentifier
+    : Identifier
+    | 'deploy' | 'delegate' | 'upgrade' | 'selfdestruct' | 'unsafe' | 'packed' | 'entries' | 'error' | 'global' | 'revert'
     ;
 
 pragmaDirective
@@ -84,7 +92,7 @@ contractDefinition
     ;
 
 abstractFunctionDefinition
-    : 'function' Identifier parameterList functionModifier* customModifierInvocation* returnType? ';'
+    : 'function' anyIdentifier parameterList functionModifier* customModifierInvocation* returnType? ';'
     ;
 
 eventDefinition
@@ -108,7 +116,7 @@ structDefinition
     ;
 
 structField
-    : typeName Identifier ';'
+    : typeName anyIdentifier ';'
     ;
 
 enumDefinition
@@ -190,7 +198,7 @@ placeholderStatement
     ;
 
 functionDefinition
-    : 'function' Identifier parameterList functionModifier* customModifierInvocation* returnType? '{' statement* '}'
+    : 'function' anyIdentifier parameterList functionModifier* customModifierInvocation* returnType? '{' statement* '}'
     ;
 
 customModifierInvocation
@@ -214,8 +222,8 @@ returnType
     ;
 
 returnParam
-    : typeName modifier* Identifier?
-    | arrayType modifier* Identifier?
+    : typeName modifier* anyIdentifier?
+    | arrayType modifier* anyIdentifier?
     ;
 
 parameterList
@@ -223,8 +231,8 @@ parameterList
     ;
 
 parameter
-    : typeName modifier* Identifier?
-    | arrayType modifier* Identifier?
+    : typeName modifier* anyIdentifier?
+    | arrayType modifier* anyIdentifier?
     ;
 
 block
@@ -308,8 +316,8 @@ mappingDeleteStatement
     ;
 
 variableDefinition
-    : typeName modifier* Identifier ('=' expression)? ';'
-    | arrayType modifier* Identifier ('=' expression)? ';'
+    : typeName modifier* anyIdentifier ('=' expression)? ';'
+    | arrayType modifier* anyIdentifier ('=' expression)? ';'
     ;
 
 tupleAssignment
@@ -562,7 +570,7 @@ expression
     | 'this' '.' Identifier # StateAccess
     | 'this' # ThisExpr
     | NullaryOp # NullaryOp
-    | Identifier # Identifier
+    | anyIdentifier # Identifier
     | literal # LiteralExpression
     ;
 

@@ -507,3 +507,20 @@ describe('Array return types, unnamed params, array locals, bare delete', () => 
     expect(a.contractName).toBe('C');
   });
 });
+
+describe('Soft keywords (reserved in SolidCash, valid identifiers in Solidity)', () => {
+  it.each([
+    ['param named error, read in body', 'contract C() { int n; function f(int error) { this.n = error; } }'],
+    ['function named deploy', 'contract C() { int n; function deploy() { this.n = 1; } }'],
+    ['local named revert', 'contract C() { int n; function f() { int revert = 5; this.n = revert; } }'],
+    ['local named delegate', 'contract C() { int n; function f() { int delegate = 3; this.n = delegate; } }'],
+    ['local named global', 'contract C() { int n; function f() { int global = 7; this.n = global; } }'],
+    ['struct field named error', 'struct S { int error; } contract C() { int n; function f(int v) { this.n = v; } }'],
+  ])('%s', (_l, src) => {
+    expect(compileString(src).contractName).toBe('C');
+  });
+
+  it('still parses the deploy/selfdestruct function modifiers in modifier position', () => {
+    expect(compileString('contract C() { int n; function f() deploy { this.n = 1; } }').contractName).toBe('C');
+  });
+});

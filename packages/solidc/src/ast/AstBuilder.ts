@@ -712,7 +712,7 @@ export default class AstBuilder
   }
 
   visitFunctionDefinition(ctx: FunctionDefinitionContext): FunctionDefinitionNode {
-    const name = ctx.Identifier().getText();
+    const name = ctx.anyIdentifier().getText();
     const parameters = ctx.parameterList().parameter_list().map((p) => this.visit(p) as ParameterNode);
     const statements = this.flattenStatements(ctx.statement_list().map((s) => this.visit(s) as StatementNode));
     const block = new BlockNode(statements);
@@ -753,7 +753,7 @@ export default class AstBuilder
   }
 
   visitAbstractFunctionDefinition(ctx: AbstractFunctionDefinitionContext): FunctionDefinitionNode {
-    const name = ctx.Identifier().getText();
+    const name = ctx.anyIdentifier().getText();
     const parameters = ctx.parameterList().parameter_list().map((p) => this.visit(p) as ParameterNode);
 
     // Abstract functions have no body - create an empty block
@@ -796,7 +796,7 @@ export default class AstBuilder
   }
 
   visitFreeFunctionDefinition(ctx: FreeFunctionDefinitionContext): FunctionDefinitionNode {
-    const name = ctx.Identifier().getText();
+    const name = ctx.anyIdentifier().getText();
     const parameters = ctx.parameterList().parameter_list().map((p) => this.visit(p) as ParameterNode);
     const statements = this.flattenStatements(ctx.statement_list().map((s) => this.visit(s) as StatementNode));
     const block = new BlockNode(statements);
@@ -899,7 +899,7 @@ export default class AstBuilder
     // Unnamed parameters (common in interface signatures, e.g. `transfer(address, uint256)`) get a synthetic
     // location-unique name; they cannot be referenced in a body.
     const loc = Location.fromCtx(ctx);
-    const name = ctx.Identifier()?.getText() ?? `__unnamed_${loc?.start.line ?? 0}_${loc?.start.column ?? 0}`;
+    const name = ctx.anyIdentifier()?.getText() ?? `__unnamed_${loc?.start.line ?? 0}_${loc?.start.column ?? 0}`;
     const parameter = new ParameterNode(type, name, modifiers);
     parameter.location = loc;
     return parameter;
@@ -918,7 +918,7 @@ export default class AstBuilder
       type = this.resolveType(ctx.typeName().getText());
     }
     const modifiers = ctx.modifier_list().map((modifier) => modifier.getText());
-    const name = ctx.Identifier().getText();
+    const name = ctx.anyIdentifier().getText();
     // An omitted initializer (`int x;`) leaves expression undefined; codegen emits the type's zero value.
     const expression = ctx.expression() ? this.visit(ctx.expression()) : undefined;
     const variableDefinition = new VariableDefinitionNode(type, modifiers, name, expression);
@@ -1430,7 +1430,7 @@ export default class AstBuilder
   }
 
   visitIdentifier(ctx: IdentifierContext): IdentifierNode {
-    const identifier = new IdentifierNode(ctx.Identifier().getText());
+    const identifier = new IdentifierNode(ctx.anyIdentifier().getText());
     identifier.location = Location.fromCtx(ctx);
     return identifier;
   }
@@ -1917,7 +1917,7 @@ export default class AstBuilder
   visitStructDefinition(ctx: StructDefinitionContext): StructDefinitionNode {
     const structName = ctx.Identifier().getText();
     const fields = ctx.structField_list().map((fieldCtx) => ({
-      name: fieldCtx.Identifier().getText(),
+      name: fieldCtx.anyIdentifier().getText(),
       type: this.resolveType(fieldCtx.typeName().getText()),
     }));
     const node = new StructDefinitionNode(structName, fields);
@@ -2217,12 +2217,12 @@ export default class AstBuilder
   private applyReturnType(fn: FunctionDefinitionNode, ctx: ReturnTypeContext): void {
     const params = ctx.returnParam_list();
     fn.returnTypes = params.map((p) => this.returnParamType(p));
-    const named = params.filter((p) => p.Identifier() !== null);
+    const named = params.filter((p) => p.anyIdentifier() !== null);
     if (named.length > 0 && named.length !== params.length) {
       throw new ParseError('All return values must be named, or none of them', Location.fromCtx(ctx));
     }
     if (named.length === params.length) {
-      fn.returnNames = params.map((p) => p.Identifier()!.getText());
+      fn.returnNames = params.map((p) => p.anyIdentifier()!.getText());
     }
     // Warn about no-op data-location modifiers
     for (const p of params) {

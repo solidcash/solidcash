@@ -250,6 +250,15 @@ import { ParseError, StateVariableNameCollisionError, VersionError } from '../Er
 
 const RESERVED_STATE_NAMES = ['age', 'activeInputIndex', 'activeBytecode', 'tokens'];
 
+// Compound-assignment operators desugared to `target <binop> rhs`.
+const COMPOUND_OPS: Record<string, BinaryOperator> = {
+  '+=': BinaryOperator.PLUS, '++': BinaryOperator.PLUS,
+  '-=': BinaryOperator.MINUS, '--': BinaryOperator.MINUS,
+  '*=': BinaryOperator.MUL, '/=': BinaryOperator.DIV, '%=': BinaryOperator.MOD,
+  '&=': BinaryOperator.BIT_AND, '|=': BinaryOperator.BIT_OR, '^=': BinaryOperator.BIT_XOR,
+  '<<=': BinaryOperator.SHIFT_LEFT, '>>=': BinaryOperator.SHIFT_RIGHT,
+};
+
 export default class AstBuilder
   extends ParseTreeVisitor<Node>
   implements SolidCashVisitor<Node> {
@@ -943,13 +952,6 @@ export default class AstBuilder
     } else {
       const left = new IdentifierNode(identifierText);
       left.location = identifierLocation;
-      const COMPOUND_OPS: Record<string, BinaryOperator> = {
-        '+=': BinaryOperator.PLUS, '++': BinaryOperator.PLUS,
-        '-=': BinaryOperator.MINUS, '--': BinaryOperator.MINUS,
-        '*=': BinaryOperator.MUL, '/=': BinaryOperator.DIV, '%=': BinaryOperator.MOD,
-        '&=': BinaryOperator.BIT_AND, '|=': BinaryOperator.BIT_OR, '^=': BinaryOperator.BIT_XOR,
-        '<<=': BinaryOperator.SHIFT_LEFT, '>>=': BinaryOperator.SHIFT_RIGHT,
-      };
       const binaryOperator = COMPOUND_OPS[op];
       const right = (op === '++' || op === '--')
         ? new IntLiteralNode(1n)
@@ -963,6 +965,18 @@ export default class AstBuilder
     const assign = new AssignNode(identifier, rhs);
     assign.location = location;
     return assign;
+  }
+
+  // RHS of a (possibly compound) state assignment: `=` uses the expression directly; `+=` etc. desugar to
+  // `<read> <binop> <expression>`, where `read` is the read-expression node for the assignment target.
+  private compoundRhs(
+    read: ExpressionNode, op: string, expressionCtx: ExpressionContext, location: Location,
+  ): ExpressionNode {
+    const rhs = this.visit(expressionCtx) as ExpressionNode;
+    if (op === '=') return rhs;
+    const binaryOp = new BinaryOpNode(read, COMPOUND_OPS[op], rhs);
+    binaryOp.location = location;
+    return binaryOp;
   }
 
   visitTimeOpStatement(ctx: TimeOpStatementContext): TimeOpNode {
@@ -1676,7 +1690,9 @@ export default class AstBuilder
 
   visitStateAssignStatement(ctx: StateAssignStatementContext): StateAssignNode {
     const name = ctx.Identifier().getText();
-    const expression = this.visit(ctx.expression());
+    const read = new StateAccessNode(name);
+    read.location = Location.fromToken(ctx.Identifier().symbol);
+    const expression = this.compoundRhs(read, ctx._op.text, ctx.expression(), Location.fromCtx(ctx));
     const node = new StateAssignNode(name, expression);
     node.location = Location.fromCtx(ctx);
     return node;
@@ -1725,10 +1741,22 @@ export default class AstBuilder
 
   visitMappingAssignStatement(ctx: MappingAssignStatementContext): MappingAssignNode | StateArrayAssignNode {
     const name = ctx.Identifier().getText();
-    const expressions = ctx.expression_list().map((e) => this.visit(e));
+    const op = ctx._op.text;
+    const exprCtxs = ctx.expression_list();
     // All expressions except the last are keys; the last is the value
-    const keys = expressions.slice(0, -1);
-    const expression = expressions[expressions.length - 1];
+    const keyCtxs = exprCtxs.slice(0, -1);
+    const valueCtx = exprCtxs[exprCtxs.length - 1];
+    const keys = keyCtxs.map((e) => this.visit(e));
+    // For a compound op, read the current value via a fresh MappingAccessNode (separate key node instances
+    // to avoid aliasing the keys used by the assign node).
+    let expression: ExpressionNode;
+    if (op === '=') {
+      expression = this.visit(valueCtx) as ExpressionNode;
+    } else {
+      const read = new MappingAccessNode(name, keyCtxs.map((e) => this.visit(e)));
+      read.location = Location.fromToken(ctx.Identifier().symbol);
+      expression = this.compoundRhs(read, op, valueCtx, Location.fromCtx(ctx));
+    }
 
     // Route packed state array assigns to StateArrayAssignNode
     if (this.packedStateArrayNames.has(name) && keys.length === 1) {
@@ -1745,10 +1773,23 @@ export default class AstBuilder
   visitMappingFieldAssignStatement(ctx: MappingFieldAssignStatementContext): MappingFieldAssignNode {
     const collectionName = ctx.Identifier(0).getText();
     const fieldName = ctx.Identifier(1).getText();
-    const expressions = ctx.expression_list().map((e) => this.visit(e));
+    const op = ctx._op.text;
+    const exprCtxs = ctx.expression_list();
     // All expressions except the last are keys; the last is the value
-    const keys = expressions.slice(0, -1);
-    const expression = expressions[expressions.length - 1];
+    const keyCtxs = exprCtxs.slice(0, -1);
+    const valueCtx = exprCtxs[exprCtxs.length - 1];
+    const keys = keyCtxs.map((e) => this.visit(e));
+    // For a compound op, read the current field via fresh nodes (separate key instances to avoid aliasing).
+    let expression: ExpressionNode;
+    if (op === '=') {
+      expression = this.visit(valueCtx) as ExpressionNode;
+    } else {
+      const mapRead = new MappingAccessNode(collectionName, keyCtxs.map((e) => this.visit(e)));
+      mapRead.location = Location.fromToken(ctx.Identifier(0).symbol);
+      const fieldRead = new FieldAccessNode(mapRead, fieldName);
+      fieldRead.location = Location.fromCtx(ctx);
+      expression = this.compoundRhs(fieldRead, op, valueCtx, Location.fromCtx(ctx));
+    }
     const node = new MappingFieldAssignNode(collectionName, keys, fieldName, expression);
     node.location = Location.fromCtx(ctx);
     return node;
@@ -2582,11 +2623,27 @@ export default class AstBuilder
     return node;
   }
 
+  // Bare indexed assignment `a[k] op= v`. Routed to state vs local in semantic analysis (visitArrayAssign).
+  // For a compound op the current element is read via an ArrayAccessNode, which visitArrayAccess rewrites to
+  // a MappingAccessNode for state collections.
   visitArrayAssignStatement(ctx: ArrayAssignStatementContext): ArrayAssignNode {
     const name = ctx.Identifier().getText();
-    const index = this.visit(ctx.expression(0));
-    const value = this.visit(ctx.expression(1));
-    const node = new ArrayAssignNode(name, index, value);
+    const nameLoc = Location.fromToken(ctx.Identifier().symbol);
+    const op = ctx._op.text;
+    const keyCtx = ctx.expression(0);
+    const valueCtx = ctx.expression(1);
+    const key = this.visit(keyCtx) as ExpressionNode;
+    let value: ExpressionNode;
+    if (op === '=') {
+      value = this.visit(valueCtx) as ExpressionNode;
+    } else {
+      const baseId = new IdentifierNode(name);
+      baseId.location = nameLoc;
+      const read = new ArrayAccessNode(baseId, this.visit(keyCtx) as ExpressionNode);
+      read.location = nameLoc;
+      value = this.compoundRhs(read, op, valueCtx, Location.fromCtx(ctx));
+    }
+    const node = new ArrayAssignNode(name, key, value);
     node.location = Location.fromCtx(ctx);
     return node;
   }

@@ -3238,6 +3238,13 @@ export default class SymbolTableTraversal extends AstTraversal {
   visitAssign(node: AssignNode): Node {
     const sym = this.symbolTables[0].get(node.identifier.name);
 
+    // Bare write to a state variable `x = ...` (no shadowing local): route to a state assignment.
+    if (sym?.symbolType === SymbolType.STATE_VARIABLE) {
+      const stateNode = new StateAssignNode(node.identifier.name, node.expression);
+      stateNode.location = node.location;
+      return this.visit(stateNode);
+    }
+
     if (sym) {
       this.checkConstantModification(sym);
     }
@@ -3246,7 +3253,36 @@ export default class SymbolTableTraversal extends AstTraversal {
     return node;
   }
 
+  // True when `name` is a state mapping/collection or a packed state array (the bare-indexable state targets).
+  private isStateCollectionName(name: string): boolean {
+    if (this.collectionMap.has(name)) return true;
+    const sv = this.stateVariableMap.get(name);
+    return !!(sv?.isPacked && sv.type instanceof ArrayType);
+  }
+
+  // Flatten a bare index chain `a[k1][k2]...` into its base expression and keys (base-first order).
+  private flattenArrayAccess(node: ArrayAccessNode): { base: ExpressionNode; keys: ExpressionNode[] } {
+    const keys: ExpressionNode[] = [];
+    let cur: ExpressionNode = node;
+    while (cur instanceof ArrayAccessNode) {
+      keys.unshift(cur.index);
+      cur = cur.array;
+    }
+    return { base: cur, keys };
+  }
+
   visitArrayAccess(node: ArrayAccessNode): Node {
+    // Bare state read `m[k]` / `m[k1][k2]` (no shadowing local): resolve as `this.m[...]`. Build one
+    // MappingAccessNode with all keys and let visitMappingAccess do the multi-key/packed-array resolution.
+    const flat = this.flattenArrayAccess(node);
+    if (flat.base instanceof IdentifierNode
+      && this.isStateCollectionName(flat.base.name)
+      && !this.isShadowedByLocal(flat.base.name)) {
+      const mapNode = new MappingAccessNode(flat.base.name, flat.keys);
+      mapNode.location = node.location;
+      return this.visit(mapNode);
+    }
+
     node.array = this.visit(node.array);
     node.index = this.visit(node.index);
 
@@ -3294,6 +3330,17 @@ export default class SymbolTableTraversal extends AstTraversal {
   }
 
   visitArrayAssign(node: ArrayAssignNode): Node {
+    // Bare write to a state mapping/array element `m[k] = ...` (no shadowing local): route to the matching
+    // `this.m[k] = ...` path (packed state arrays use StateArrayAssignNode, mappings MappingAssignNode).
+    if (this.isStateCollectionName(node.name) && !this.isShadowedByLocal(node.name)) {
+      const sv = this.stateVariableMap.get(node.name);
+      const stateNode = sv?.isPacked
+        ? new StateArrayAssignNode(node.name, node.index, node.value)
+        : new MappingAssignNode(node.name, [node.index], node.value);
+      stateNode.location = node.location;
+      return this.visit(stateNode);
+    }
+
     const sym = this.symbolTables[0].get(node.name);
     if (!sym) {
       throw new UndefinedReferenceError({ name: node.name, location: node.location } as IdentifierNode);
@@ -4581,10 +4628,23 @@ export default class SymbolTableTraversal extends AstTraversal {
     this.symbolTables[0].set(Symbol.enumType(ed.name, enumType));
   }
 
+  // A name is shadowed by a local/parameter when the nearest scope entry is a plain variable.
+  private isShadowedByLocal(name: string): boolean {
+    return this.symbolTables[0].get(name)?.symbolType === SymbolType.VARIABLE;
+  }
+
   visitIdentifier(node: IdentifierNode): Node {
     const definition = this.symbolTables[0].get(node.name);
     if (!definition) {
       throw new UndefinedReferenceError(node);
+    }
+
+    // Bare reference to a state variable with no shadowing local: resolve as `this.<name>` (Solidity reads
+    // state vars by name; an inner-scope local shadows them via the scope chain checked above).
+    if (definition.symbolType === SymbolType.STATE_VARIABLE) {
+      const stateNode = new StateAccessNode(node.name);
+      stateNode.location = node.location;
+      return this.visit(stateNode);
     }
 
     // Function name used as a value (function pointer): resolve to its definition. Must be a single

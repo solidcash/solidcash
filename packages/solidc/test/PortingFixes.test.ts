@@ -337,3 +337,65 @@ describe('Named-arg call statement', () => {
     expect(a.contractName).toBe('C');
   });
 });
+
+describe('Compound assignment on state (desugars to read <op> rhs)', () => {
+  it.each([
+    ['scalar',
+      'contract C() { int x; function f(int v) { this.x += v; } }',
+      'contract C() { int x; function f(int v) { this.x = this.x + v; } }'],
+    ['mapping',
+      'contract C() { mapping(int=>int) m; function f(int k, int v) { this.m[k] += v; } }',
+      'contract C() { mapping(int=>int) m; function f(int k, int v) { this.m[k] = this.m[k] + v; } }'],
+    ['mapping field',
+      'struct S{int a;} contract C() { mapping(int=>S) m; function f(int k, int v) { this.m[k].a += v; } }',
+      'struct S{int a;} contract C() { mapping(int=>S) m; function f(int k, int v) { this.m[k].a = this.m[k].a + v; } }'],
+  ])('%s compound matches the explicit form byte-for-byte', (_l, compound, explicit) => {
+    expect(compileString(compound).bytecode).toBe(compileString(explicit).bytecode);
+  });
+
+  it('supports arithmetic/shift compound operators on an int state var', () => {
+    for (const op of ['+=', '-=', '*=', '/=', '%=', '<<=', '>>=']) {
+      expect(compileString(`contract C() { int x; function f(int v) { this.x ${op} v; } }`).contractName).toBe('C');
+    }
+  });
+
+  it('supports bitwise compound operators on a bytes state var', () => {
+    for (const op of ['&=', '|=', '^=']) {
+      expect(compileString(`contract C() { bytes32 b; function f(bytes32 v) { this.b ${op} v; } }`).contractName).toBe('C');
+    }
+  });
+});
+
+describe('Bare state access (implicit this., Solidity-compatible)', () => {
+  it.each([
+    ['scalar read',
+      'contract C() { int x; int n; function f() { this.n = x + 1; } }',
+      'contract C() { int x; int n; function f() { this.n = this.x + 1; } }'],
+    ['scalar write',
+      'contract C() { int x; function f(int v) { x = v; } }',
+      'contract C() { int x; function f(int v) { this.x = v; } }'],
+    ['scalar compound write',
+      'contract C() { int x; function f(int v) { x += v; } }',
+      'contract C() { int x; function f(int v) { this.x = this.x + v; } }'],
+    ['mapping read',
+      'contract C() { mapping(int=>int) m; int n; function f(int k) { this.n = m[k]; } }',
+      'contract C() { mapping(int=>int) m; int n; function f(int k) { this.n = this.m[k]; } }'],
+    ['mapping write',
+      'contract C() { mapping(int=>int) m; function f(int k, int v) { m[k] = v; } }',
+      'contract C() { mapping(int=>int) m; function f(int k, int v) { this.m[k] = v; } }'],
+    ['mapping single-key compound write',
+      'contract C() { mapping(int=>int) m; function f(int k, int v) { m[k] += v; } }',
+      'contract C() { mapping(int=>int) m; function f(int k, int v) { this.m[k] = this.m[k] + v; } }'],
+    ['mapping field read',
+      'struct S{int a;} contract C() { mapping(int=>S) m; int n; function f(int k) { this.n = m[k].a; } }',
+      'struct S{int a;} contract C() { mapping(int=>S) m; int n; function f(int k) { this.n = this.m[k].a; } }'],
+  ])('%s matches the this.-prefixed form byte-for-byte', (_l, bare, explicit) => {
+    expect(compileString(bare).bytecode).toBe(compileString(explicit).bytecode);
+  });
+
+  it('bare names resolve to a param vs state distinctly (scope chain)', () => {
+    const readParam = compileString('contract C() { int s; int out; function f(int p) { require(p >= 0); this.out = p; } }');
+    const readState = compileString('contract C() { int s; int out; function f(int p) { require(p >= 0); this.out = s; } }');
+    expect(readParam.bytecode).not.toBe(readState.bytecode);
+  });
+});

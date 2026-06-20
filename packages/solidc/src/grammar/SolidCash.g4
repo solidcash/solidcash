@@ -298,11 +298,11 @@ emitStatement
     ;
 
 mappingAssignStatement
-    : 'this' '.' Identifier ('[' expression ']')+ '=' expression ';'
+    : 'this' '.' Identifier ('[' expression ']')+ op=('=' | '+=' | '-=' | '*=' | '/=' | '%=' | '&=' | '|=' | '^=' | '<<=' | '>>=') expression ';'
     ;
 
 mappingFieldAssignStatement
-    : 'this' '.' Identifier ('[' expression ']')+ '.' Identifier '=' expression ';'
+    : 'this' '.' Identifier ('[' expression ']')+ '.' Identifier op=('=' | '+=' | '-=' | '*=' | '/=' | '%=' | '&=' | '|=' | '^=' | '<<=' | '>>=') expression ';'
     ;
 
 mappingDeleteStatement
@@ -310,7 +310,7 @@ mappingDeleteStatement
     ;
 
 stateAssignStatement
-    : 'this' '.' Identifier '=' expression ';'
+    : 'this' '.' Identifier op=('=' | '+=' | '-=' | '*=' | '/=' | '%=' | '&=' | '|=' | '^=' | '<<=' | '>>=') expression ';'
     ;
 
 variableDefinition
@@ -344,7 +344,7 @@ arrayPopStatement
     ;
 
 arrayAssignStatement
-    : Identifier '[' expression ']' '=' expression ';'
+    : Identifier '[' expression ']' op=('=' | '+=' | '-=' | '*=' | '/=' | '%=' | '&=' | '|=' | '^=' | '<<=' | '>>=') expression ';'
     ;
 
 arrayDeleteStatement

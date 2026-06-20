@@ -215,6 +215,7 @@ returnType
 
 returnParam
     : typeName modifier* Identifier?
+    | arrayType modifier* Identifier?
     ;
 
 parameterList
@@ -222,8 +223,8 @@ parameterList
     ;
 
 parameter
-    : typeName modifier* Identifier
-    | arrayType modifier* Identifier
+    : typeName modifier* Identifier?
+    | arrayType modifier* Identifier?
     ;
 
 block
@@ -308,7 +309,7 @@ mappingDeleteStatement
 
 variableDefinition
     : typeName modifier* Identifier ('=' expression)? ';'
-    | arrayType modifier* Identifier '=' expression ';'
+    | arrayType modifier* Identifier ('=' expression)? ';'
     ;
 
 tupleAssignment
@@ -353,6 +354,7 @@ deleteStatement
     : 'delete' Identifier ';'                                      # DeleteLocal
     | 'delete' 'this' '.' Identifier ';'                           # DeleteState
     | 'delete' 'this' '.' Identifier ('[' expression ']')+ ';'     # DeleteMappingEntry
+    | 'delete' Identifier ('[' expression ']')+ ';'                # DeleteIndexed
     ;
 
 timeOpStatement

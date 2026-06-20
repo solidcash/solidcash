@@ -160,6 +160,7 @@ import type {
   DeleteLocalContext,
   DeleteStateContext,
   DeleteMappingEntryContext,
+  DeleteIndexedContext,
   AbiEncodeContext,
   AbiEncodePackedContext,
   AbiEncodeWithSelectorContext,
@@ -221,6 +222,7 @@ import type {
   CallOptionsContext,
   OutStateMappingFieldAccessContext,
   ReturnTypeContext,
+  ReturnParamContext,
   FallbackDefinitionContext,
   ReceiveDefinitionContext,
   AbstractFunctionDefinitionContext,
@@ -894,9 +896,12 @@ export default class AstBuilder
       type = this.resolveType(ctx.typeName().getText()) ?? new AddressType(false);
     }
     const modifiers = ctx.modifier_list().map((m) => m.getText());
-    const name = ctx.Identifier().getText();
+    // Unnamed parameters (common in interface signatures, e.g. `transfer(address, uint256)`) get a synthetic
+    // location-unique name; they cannot be referenced in a body.
+    const loc = Location.fromCtx(ctx);
+    const name = ctx.Identifier()?.getText() ?? `__unnamed_${loc?.start.line ?? 0}_${loc?.start.column ?? 0}`;
     const parameter = new ParameterNode(type, name, modifiers);
-    parameter.location = Location.fromCtx(ctx);
+    parameter.location = loc;
     return parameter;
   }
 
@@ -1861,6 +1866,20 @@ export default class AstBuilder
     return node;
   }
 
+  // Bare indexed delete `delete m[k];` / `delete arr[i];` (no `this.`); resolved to state in semantics.
+  visitDeleteIndexed(ctx: DeleteIndexedContext): MappingDeleteNode | StateArrayDeleteNode {
+    const name = ctx.Identifier().getText();
+    const keys = ctx.expression_list().map((e) => this.visit(e));
+    if (this.packedStateArrayNames.has(name) && keys.length === 1) {
+      const node = new StateArrayDeleteNode(name, keys[0]);
+      node.location = Location.fromCtx(ctx);
+      return node;
+    }
+    const node = new MappingDeleteNode(name, keys);
+    node.location = Location.fromCtx(ctx);
+    return node;
+  }
+
   private buildMappingType(ctx: MappingTypeContext): MappingType {
     const keyType = parseType(ctx.typeName(0).getText());
     const identifiers = ctx.Identifier_list();
@@ -2058,8 +2077,7 @@ export default class AstBuilder
     let returnTypes: Type[] = [];
     const returnTypeCtx = ctx.returnType();
     if (returnTypeCtx) {
-      returnTypes = returnTypeCtx.returnParam_list()
-        .map((p) => this.resolveType(p.typeName().getText()) ?? new AddressType(false));
+      returnTypes = returnTypeCtx.returnParam_list().map((p) => this.returnParamType(p));
     }
 
     const node = new InterfaceFunctionNode(name, parameters, returnTypes);
@@ -2189,10 +2207,16 @@ export default class AstBuilder
     return parseType(typeText);
   }
 
+  // Resolve a return parameter's type (a plain type, or an array type like `uint256[] memory`).
+  private returnParamType(p: ReturnParamContext): Type {
+    if (p.arrayType()) return this.buildArrayType(p.arrayType()!);
+    return this.resolveType(p.typeName()!.getText()) ?? new AddressType(false);
+  }
+
   // Populate returnTypes and (optionally) returnNames from a `returns (...)` clause.
   private applyReturnType(fn: FunctionDefinitionNode, ctx: ReturnTypeContext): void {
     const params = ctx.returnParam_list();
-    fn.returnTypes = params.map((p) => this.resolveType(p.typeName().getText()) ?? new AddressType(false));
+    fn.returnTypes = params.map((p) => this.returnParamType(p));
     const named = params.filter((p) => p.Identifier() !== null);
     if (named.length > 0 && named.length !== params.length) {
       throw new ParseError('All return values must be named, or none of them', Location.fromCtx(ctx));

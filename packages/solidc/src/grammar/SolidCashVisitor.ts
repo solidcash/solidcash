@@ -80,6 +80,7 @@ import { StateArrayPopStatementContext } from "./SolidCashParser.js";
 import { DeleteLocalContext } from "./SolidCashParser.js";
 import { DeleteStateContext } from "./SolidCashParser.js";
 import { DeleteMappingEntryContext } from "./SolidCashParser.js";
+import { DeleteIndexedContext } from "./SolidCashParser.js";
 import { TimeOpStatementContext } from "./SolidCashParser.js";
 import { RequireStatementContext } from "./SolidCashParser.js";
 import { IfStatementContext } from "./SolidCashParser.js";
@@ -637,6 +638,13 @@ export default class SolidCashVisitor<Result> extends ParseTreeVisitor<Result> {
 	 * @return the visitor result
 	 */
 	visitDeleteMappingEntry?: (ctx: DeleteMappingEntryContext) => Result;
+	/**
+	 * Visit a parse tree produced by the `DeleteIndexed`
+	 * labeled alternative in `SolidCashParser.deleteStatement`.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	visitDeleteIndexed?: (ctx: DeleteIndexedContext) => Result;
 	/**
 	 * Visit a parse tree produced by `SolidCashParser.timeOpStatement`.
 	 * @param ctx the parse tree

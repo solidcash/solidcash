@@ -485,3 +485,25 @@ describe('address casts + enum state + unresolved-type params', () => {
     expect(a.contractName).toBe('C');
   });
 });
+
+describe('Array return types, unnamed params, array locals, bare delete', () => {
+  it('accepts an array return type', () => {
+    const a = compileString('contract C() { int[3] arr; function f() returns (int[] memory) { int[] r; return r; } }');
+    expect(a.contractName).toBe('C');
+  });
+
+  it('accepts unnamed parameters (interface signatures)', () => {
+    const a = compileString('interface I { function transfer(address, uint256) external returns (bool); } contract C() { int n; function g() { this.n = 1; } }');
+    expect(a.contractName).toBe('C');
+  });
+
+  it('accepts an uninitialized array local (zero-init)', () => {
+    const a = compileString('contract C() { int n; function f() { int[] r; this.n = r.length; } }');
+    expect(a.contractName).toBe('C');
+  });
+
+  it('accepts bare `delete m[k]` (routed to state)', () => {
+    const a = compileString('contract C() { mapping(int => int) m; function f(int k) { delete m[k]; } }');
+    expect(a.contractName).toBe('C');
+  });
+});

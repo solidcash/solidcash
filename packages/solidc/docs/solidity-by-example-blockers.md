@@ -34,10 +34,15 @@ many files carry several blockers, so the error *distribution* moved much more t
 - **I** enum-typed state variables - DONE
 - **Crash fix** contract/interface-typed params/returns (undefined type -> address fallback) - DONE
 
+- **FinalRequire relaxation** - two parts. (1) Always-on, safe: an *unconditional* require/assert/revert/
+  timeop anywhere in a function gates the whole path (codegen appends `OP_1` after trailing statements), so
+  `require(authorized); _mint(...)` no longer needs the require to be last. (2) Under `solidityImportCompat`: a
+  void path that verifies *nothing* and changes no state downgrades from a hard error to a warning (compiles
+  as an unconditionally-spendable path, matching Solidity). It stays a **hard error by default** so SolidCash
+  contracts can't silently expose an always-spendable UTXO. - DONE
+
 ### Remaining - needs a decision (not yet done)
 
-- **FinalRequireStatementError** (5): SolidCash requires each function to end in `require()` (covenant
-  verification). Solidity functions need not. Relaxing this is a covenant-model decision. **Deferred.**
 - Bitcoin-type / number-unit identifier collisions (`sig`/`pubkey`/`datasig`, `bits`/`sats`/...): these are
   single lexer token-types, so softening them needs lexer restructuring (split each word into its own token).
 

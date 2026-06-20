@@ -524,3 +524,23 @@ describe('Soft keywords (reserved in SolidCash, valid identifiers in Solidity)',
     expect(compileString('contract C() { int n; function f() deploy { this.n = 1; } }').contractName).toBe('C');
   });
 });
+
+describe('FinalRequire relaxation', () => {
+  it('allows a non-final require to gate the path (require not last)', () => {
+    const a = compileString('contract C() { mapping(int=>int) m; function f(int k) { require(k > 0); delete m[k]; } }');
+    expect(a.contractName).toBe('C');
+  });
+
+  it('still errors (by default) on a void path with no verification', () => {
+    expect(() => compileString('contract C() { function f(int i) pure { if (i <= 100) { revert("x"); } } }'))
+      .toThrow(/require\(\) statement|FinalRequire/i);
+  });
+
+  it('downgrades the no-verification error to a warning under solidityImportCompat', () => {
+    const a = compileString(
+      'contract C() { function f(int i) pure { if (i <= 100) { revert("x"); } } }',
+      { solidityImportCompat: true },
+    );
+    expect(a.contractName).toBe('C');
+  });
+});

@@ -78,7 +78,7 @@ export function compileString(code: string, compilerOptions: CompileOptions = {}
   // Semantic analysis
   ast = ast.accept(new SymbolTableTraversal(mergedCompilerOptions)) as Ast;
   ast = ast.accept(new TypeCheckTraversal()) as Ast;
-  ast = ast.accept(new EnsureFinalRequireTraversal()) as Ast;
+  ast = ast.accept(new EnsureFinalRequireTraversal(mergedCompilerOptions.solidityImportCompat)) as Ast;
 
   // Inject synthetic tx.locktime guard where tx.locktime is used without a protocol-enforcing time check
   if (mergedCompilerOptions.enforceLocktimeGuard) {
@@ -176,7 +176,7 @@ function compileReferencedContracts(
     singleAst = singleAst.accept(new NamedReturnTransformation()) as Ast;
     singleAst = singleAst.accept(new SymbolTableTraversal(compilerOptions)) as Ast;
     singleAst = singleAst.accept(new TypeCheckTraversal()) as Ast;
-    singleAst = singleAst.accept(new EnsureFinalRequireTraversal()) as Ast;
+    singleAst = singleAst.accept(new EnsureFinalRequireTraversal(compilerOptions.solidityImportCompat)) as Ast;
     if (compilerOptions.enforceLocktimeGuard) {
       singleAst = singleAst.accept(new InjectLocktimeGuardTraversal()) as Ast;
     }

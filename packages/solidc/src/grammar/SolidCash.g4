@@ -328,7 +328,7 @@ tupleAssignment
     ;
 
 tupleSlot
-    : typeName Identifier
+    : typeName modifier* Identifier
     | Identifier
     |
     ;
@@ -661,6 +661,7 @@ BooleanLiteral
 
 NumberUnit
     : 'seconds' | 'minutes' | 'hours' | 'days' | 'weeks'
+    | 'wei' | 'gwei' | 'ether'
     ;
 
 // BCH value units are split out (not NumberUnit) so they can double as soft identifiers (`bits`/`sats`/...

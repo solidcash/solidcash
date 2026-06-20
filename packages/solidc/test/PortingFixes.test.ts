@@ -557,3 +557,23 @@ describe('BCH crypto types + number units usable as identifiers (lexer split)', 
     expect(compileString('contract C(){ int n; function f(sig s, pubkey pk, datasig d, bytes32 m) { require(checkSig(s, pk)); require(checkDataSig(d, m, pk)); this.n = 5 bits; } }').contractName).toBe('C');
   });
 });
+
+describe('Low-level call options + tuple-slot modifiers + value units', () => {
+  it('supports the {value:} call option on a low-level call', () => {
+    const a = compileString('contract C() { int n; function f(address to, bytes data, int v) { (bool ok, bytes res) = to.call{value: v}(data); require(ok); this.n = res.length; } }');
+    expect(a.contractName).toBe('C');
+  });
+
+  it('supports a data-location modifier in a tuple slot', () => {
+    const a = compileString('contract C() { int n; function f(address to, bytes data) { (bool ok, bytes memory res) = to.call(data); require(ok); this.n = res.length; } }');
+    expect(a.contractName).toBe('C');
+  });
+
+  it.each([
+    ['ether', 'this.n = 1 ether;'],
+    ['gwei', 'this.n = 2 gwei;'],
+    ['wei', 'this.n = 100 wei;'],
+  ])('accepts the %s value unit', (_l, body) => {
+    expect(compileString(`contract C() { int n; function f() { ${body} } }`).contractName).toBe('C');
+  });
+});

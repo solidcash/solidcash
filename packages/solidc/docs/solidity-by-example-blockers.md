@@ -47,12 +47,21 @@ many files carry several blockers, so the error *distribution* moved much more t
   as well as their original type/unit positions. All such collisions cleared; no regression to the types/units
   themselves. - DONE
 
+### Now supported (were mis-classified as EVM-only)
+
+- low-level **`addr.call{value:}(data)` / `staticcall` / `delegatecall`** - SolidCash already models low-level
+  calls (returns `(bool, bytes)`); the `{value:}` call-option path was just resolving the target type from
+  `node.object.type` (unset during SymbolTableTraversal) instead of the symbol table - fixed.
+- **`(bool, bytes memory) = ...` tuple destructuring** with a data-location modifier in a slot.
+- **`ether`/`gwei`/`wei` value units** (nominal on BCH, accepted for porting).
+
 ### Remaining - fundamental (EVM, won't map to BCH)
 
 - inline **Yul assembly** (`:=`, `switch`, `if`, `for`, `mstore`/`tstore`) - `Unexpected token ':'` etc.
 - **external calls via state-var of interface type** (`token.transferFrom(...)`, `pool.token0()`) - the bulk
-  of the 27 `UndefinedReferenceError`s; calling a separately-deployed contract has no BCH co-spend analogue.
-- low-level `.call{value:}` tuple destructuring (`memory`), `.balance`, `msg.value`, `1 ether` value units.
+  of the `UndefinedReferenceError`s; invoking a separately-deployed contract and receiving a return mid-tx has
+  no BCH analogue (the closest is the co-spend `IFoo(category).method()` constraint, a different shape).
+- EVM globals `.balance`, `msg.value`, `address(this).code.length`.
 
 ## Tier 1 - high impact, clean BCH mapping (fix first)
 

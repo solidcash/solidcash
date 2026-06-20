@@ -5394,12 +5394,17 @@ export default class SymbolTableTraversal extends AstTraversal {
       }
     }
 
-    // Low-level call on address variable: addr.call(data), addr.staticcall(data), or addr.delegatecall(data)
+    // Low-level call on address variable: addr.call{value:}(data), addr.staticcall(data), etc. (The no-option
+    // form parses as a namespaced functionCall and is handled in visitFunctionCall; the call-option form
+    // reaches here as a MethodCall.) node.object.type isn't assigned yet in this pass, so resolve the type
+    // from the symbol table for a bare identifier target.
     if (node.methodName === 'call' || node.methodName === 'staticcall' || node.methodName === 'delegatecall') {
       node.object = this.visit(node.object);
+      const objType = node.object.type
+        ?? (node.object instanceof IdentifierNode ? this.symbolTables[0].get(node.object.name)?.type : undefined);
       if (
-        node.object.type instanceof AddressType
-        || node.object.type instanceof ConnectedAddressType
+        objType instanceof AddressType
+        || objType instanceof ConnectedAddressType
       ) {
         const data = node.parameters.length === 1
           ? this.visit(node.parameters[0]) as ExpressionNode : node.parameters[0];

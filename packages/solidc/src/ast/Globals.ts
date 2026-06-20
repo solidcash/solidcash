@@ -12,6 +12,10 @@ export const NumberUnit: { [index: string]: number } = {
   HOURS: 3600,
   DAYS: 86400,
   WEEKS: 604800,
+  // Solidity value units (accepted for porting; nominal on BCH, which has no ETH denomination).
+  WEI: 1,
+  GWEI: 1e9,
+  ETHER: 1e18,
 };
 
 export enum GlobalFunction {

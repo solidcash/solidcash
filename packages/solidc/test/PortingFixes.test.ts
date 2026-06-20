@@ -408,3 +408,58 @@ describe('Bare state access (implicit this., Solidity-compatible)', () => {
     expect(readParam.bytecode).not.toBe(readState.bytecode);
   });
 });
+
+// Blockers cleared from the solidity-by-example corpus run. See docs/solidity-by-example-blockers.md.
+
+describe('State-variable inline initializers (lowered into the constructor)', () => {
+  it.each([
+    ['scalar', 'contract C() { uint public count = 123; function f() { this.count = this.count + 1; } }'],
+    ['bool', 'contract C() { bool flag = true; function f() { this.flag = false; } }'],
+    ['bytes32', 'contract C() { bytes32 h = 0x0000000000000000000000000000000000000000000000000000000000000001; function f() { this.h = 0x0000000000000000000000000000000000000000000000000000000000000002; } }'],
+  ])('accepts %s initializer', (_l, src) => {
+    expect(compileString(src).contractName).toBe('C');
+  });
+
+  it('runs the initializer before the user constructor body', () => {
+    const a = compileString('contract C() { uint x = 5; constructor(uint v) { this.x = this.x + v; } function f() { this.x = this.x + 1; } }');
+    expect(a.contractName).toBe('C');
+  });
+});
+
+describe('Multiple top-level definitions per file', () => {
+  it('compiles the last contract as primary, earlier ones available', () => {
+    const a = compileString('contract A() { function f() returns (int) { return 1; } } contract C() { int n; function g() { this.n = 1; } }');
+    expect(a.contractName).toBe('C');
+  });
+
+  it('the primary may inherit an earlier contract in the same file', () => {
+    const a = compileString('contract Base() { int n; function base() { this.n = 1; } } contract C() is Base { function g() { this.n = 2; } }');
+    expect(a.contractName).toBe('C');
+  });
+
+  it('interface + contract in one file', () => {
+    const a = compileString('interface I { function f() external; } contract C() is I { int n; function f() { this.n = 1; } }');
+    expect(a.contractName).toBe('C');
+  });
+});
+
+describe('Constructor payable + interface body ordering', () => {
+  it('accepts payable on a constructor (ignored)', () => {
+    expect(compileString('contract C() { int n; constructor() payable { this.n = 1; } function f() { this.n = this.n + 1; } }').contractName).toBe('C');
+  });
+
+  it('accepts events/errors interleaved with functions in an interface body', () => {
+    const a = compileString('interface I { function f() external; event E(int v); error Bad(int x); } contract C() is I { int n; function f() { this.n = 1; } }');
+    expect(a.contractName).toBe('C');
+  });
+});
+
+describe('uint256 <-> int compatibility', () => {
+  it.each([
+    ['state assign', 'contract C() { uint256 x; function f() { this.x = 5; } }'],
+    ['return int as uint256', 'contract C() { int n; function f() returns (uint256) { this.n = 1; return 7; } }'],
+    ['local int -> uint256', 'contract C() { int n; function f() { uint256 y = 3; this.n = y; } }'],
+  ])('%s', (_l, src) => {
+    expect(compileString(src).contractName).toBe('C');
+  });
+});

@@ -257,6 +257,7 @@ export class ParameterNode extends Node implements Named, Typed {
 export class StateVariableNode extends Node implements Named, Typed {
   immutable: boolean = false;
   isPacked: boolean = false;
+  initializer?: ExpressionNode; // inline `= expr` init, lowered into the constructor by the AstBuilder
   contractTypeName?: string;
   nftIndex: number = 0;
   fieldIndex: number = 0;

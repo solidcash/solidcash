@@ -1,7 +1,7 @@
 grammar SolidCash;
 
 sourceFile
-    : pragmaDirective* importDirective* (constantDefinition | enumDefinition | structDefinition | typeDefinition | usingForDirective | errorDefinition | interfaceDefinition | freeFunctionDefinition | libraryDefinition)* (contractDefinition | libraryDefinition)? EOF
+    : pragmaDirective* importDirective* (constantDefinition | enumDefinition | structDefinition | typeDefinition | usingForDirective | errorDefinition | interfaceDefinition | freeFunctionDefinition | libraryDefinition | contractDefinition)* EOF
     ;
 
 importDirective
@@ -55,7 +55,7 @@ versionOperator
     ;
 
 interfaceDefinition
-    : 'interface' Identifier ('is' Identifier (',' Identifier)*)? '{' enumDefinition* structDefinition* typeDefinition* eventDefinition* interfaceStateVariable* interfaceCollection* interfaceFunction* '}'
+    : 'interface' Identifier ('is' Identifier (',' Identifier)*)? '{' (enumDefinition | structDefinition | typeDefinition | eventDefinition | errorDefinition | interfaceStateVariable | interfaceCollection | interfaceFunction)* '}'
     ;
 
 interfaceCollection
@@ -128,7 +128,7 @@ constantDefinition
     ;
 
 constructorDefinition
-    : 'constructor' parameterList ('public' | 'internal' | 'external')? parentInvocation* '{' statement* '}'
+    : 'constructor' parameterList ('public' | 'internal' | 'external' | 'payable')* parentInvocation* '{' statement* '}'
     ;
 
 fallbackDefinition
@@ -148,10 +148,10 @@ parentInvocation
     ;
 
 stateVariableDeclaration
-    : stateVariableVisibility? typeName modifier* Identifier ';'
-    | typeName stateVariableVisibility modifier* Identifier ';'
+    : stateVariableVisibility? typeName modifier* Identifier ('=' expression)? ';'
+    | typeName stateVariableVisibility modifier* Identifier ('=' expression)? ';'
     | stateVariableVisibility? mappingType collectionModifier* Identifier ';'
-    | stateVariableVisibility? arrayType collectionModifier* Identifier ';'
+    | stateVariableVisibility? arrayType collectionModifier* Identifier ('=' expression)? ';'
     ;
 
 collectionModifier

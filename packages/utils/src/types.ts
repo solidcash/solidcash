@@ -510,6 +510,10 @@ export function implicitlyCastable(actual?: Type, expected?: Type): boolean {
   // IntType -> PrimitiveType.INT: widening to unbounded (always OK)
   if (actual instanceof IntType && expected === PrimitiveType.INT) return true;
 
+  // PrimitiveType.INT -> IntType: the BCH VM has one unbounded integer, so bounded widths (uint256, int128,
+  // ...) are nominal; int values and literals assign freely to them (matches Solidity ports using uintN).
+  if (actual === PrimitiveType.INT && expected instanceof IntType) return true;
+
   // IntType -> IntType: widening same-signedness or unsigned->wider-signed
   if (actual instanceof IntType && expected instanceof IntType) {
     if (actual.signed === expected.signed) return expected.bits >= actual.bits;

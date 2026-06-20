@@ -380,9 +380,11 @@ export default class AstBuilder
       freeFunctions.push(...libFunctions);
     }
 
+    const contractCtxs = ctx.contractDefinition_list();
+
     // If no contract definition (library-only, or interface/type-only file), return a definitions-only node.
     // Interface/type-only files have no library either; they exist only to be imported.
-    if (!ctx.contractDefinition()) {
+    if (contractCtxs.length === 0) {
       const lastLib = allLibDefs[allLibDefs.length - 1];
       const libName = lastLib
         ? lastLib.Identifier().getText()
@@ -399,11 +401,15 @@ export default class AstBuilder
       return node;
     }
 
-    const contract = this.visit(ctx.contractDefinition()) as ContractNode;
+    // Multiple top-level contracts per file (common in Solidity): compile the last as the primary; the
+    // earlier ones become available contracts (for inheritance / cross-references), like imports.
+    const contracts = contractCtxs.map((c) => this.visit(c) as ContractNode);
+    const contract = contracts[contracts.length - 1];
     const sourceFileNode = new SourceFileNode(
       contract, constantDefinitions, enumDefinitions, structDefinitions, typeDefinitions,
       errorDefinitions, [], interfaceDefinitions, freeFunctions, imports, usingForDirectives,
     );
+    sourceFileNode.importedContracts.push(...contracts.slice(0, -1));
     sourceFileNode.location = Location.fromCtx(ctx);
     return sourceFileNode;
   }
@@ -584,6 +590,27 @@ export default class AstBuilder
     let receiveDef: FunctionDefinitionNode | undefined;
     if (receiveCtx) {
       receiveDef = this.visitReceiveDefinition(receiveCtx);
+    }
+
+    // Lower inline state-variable initializers `T x = expr;` into constructor assignments `this.x = expr;`,
+    // run at deploy before the user's constructor body. Create a `__construct` if none exists.
+    const initStatements: StatementNode[] = stateVariables
+      .filter((sv) => sv.initializer)
+      .map((sv) => {
+        const assign = new StateAssignNode(sv.name, sv.initializer!);
+        assign.location = sv.location;
+        sv.initializer = undefined;
+        return assign;
+      });
+    if (initStatements.length > 0) {
+      if (constructorDef) {
+        constructorDef.body.statements = [...initStatements, ...(constructorDef.body.statements ?? [])];
+      } else {
+        const block = new BlockNode(initStatements);
+        block.location = Location.fromCtx(ctx);
+        constructorDef = new FunctionDefinitionNode('__construct', [], block);
+        constructorDef.location = Location.fromCtx(ctx);
+      }
     }
 
     const contract = new ContractNode(
@@ -1664,6 +1691,8 @@ export default class AstBuilder
     if (contractTypeName) node.contractTypeName = contractTypeName;
     node.visibility = visibility;
     node.immutable = isImmutable;
+    const initCtx = ctx.expression?.();
+    if (initCtx) node.initializer = this.visit(initCtx) as ExpressionNode;
     node.location = Location.fromCtx(ctx);
     return node;
   }

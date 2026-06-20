@@ -13,6 +13,38 @@ Re-run: `node examples/solidity-by-example/bench.mjs` (scorecard) then `categori
 a handful of recurring gaps; many files hit several at once, so fixing the top tiers unblocks far more than
 their individual counts suggest.
 
+## Run results (2026-06-20): 4 -> 18 / 152
+
+Implemented this run (committed; full solidc suite green at each step). The scorecard is a lagging metric -
+many files carry several blockers, so the error *distribution* moved much more than +14:
+
+- **A** state-variable inline initializers (lowered into the constructor) - DONE
+- **B** multiple top-level contracts per file (last = primary, earlier = available) - DONE
+- **C** `payable` on constructors (accepted, ignored) - DONE
+- **E** events/errors interleaved in interface/contract bodies - DONE
+- **F** array return types, unnamed parameters, uninitialized array locals, bare indexed `delete` - DONE
+- **G** `uint256`/`uintN` <-> `int` compatibility (one unbounded VM integer) - DONE
+- **H** `address(int)` cast + bytes/hex address literals - DONE
+- **I** enum-typed state variables - DONE
+- **Crash fix** contract/interface-typed params/returns (undefined type -> address fallback) - DONE
+
+### Remaining - needs a decision (not yet done)
+
+- **D. Reserved-word collisions** (~11 files): SolidCash keywords used as ordinary Solidity identifiers -
+  `error` (param name), `deploy` (function name), `transaction` (var name), plus `selfdestruct` (Solidity
+  builtin call), `sig`/`bits` (type/unit). Fixing needs a soft-keyword `identifier` rule used in name
+  positions; it carries grammar-ambiguity risk and a scope choice (which keywords to soften). **Deferred for
+  a deliberate decision.**
+- **FinalRequireStatementError** (5): SolidCash requires each function to end in `require()` (covenant
+  verification). Solidity functions need not. Relaxing this is a covenant-model decision. **Deferred.**
+
+### Remaining - fundamental (EVM, won't map to BCH)
+
+- inline **Yul assembly** (`:=`, `switch`, `if`, `for`, `mstore`/`tstore`) - `Unexpected token ':'` etc.
+- **external calls via state-var of interface type** (`token.transferFrom(...)`, `pool.token0()`) - the bulk
+  of the 27 `UndefinedReferenceError`s; calling a separately-deployed contract has no BCH co-spend analogue.
+- low-level `.call{value:}` tuple destructuring (`memory`), `.balance`, `msg.value`, `1 ether` value units.
+
 ## Tier 1 - high impact, clean BCH mapping (fix first)
 
 ### A. State-variable inline initializers (35 files)

@@ -2100,6 +2100,7 @@ function isValidStateType(type: Type): boolean {
   if (type instanceof FixedType) return true;
   if (type instanceof BytesType) return true;
   if (type instanceof AddressType) return true;
+  if (type instanceof EnumType) return true; // int-backed: stored as the underlying integer
   if (type instanceof ValueType) return isValidStateType(type.underlyingType);
   if (type instanceof StructType) return type.fields.every((f) => isValidStateType(f.type));
   if (type instanceof ArrayType) return isValidStateType(type.elementType);

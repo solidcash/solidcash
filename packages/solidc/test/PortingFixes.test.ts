@@ -463,3 +463,25 @@ describe('uint256 <-> int compatibility', () => {
     expect(compileString(src).contractName).toBe('C');
   });
 });
+
+describe('address casts + enum state + unresolved-type params', () => {
+  it('allows the explicit address(int) cast (e.g. address(0))', () => {
+    const a = compileString('contract C() { address a; function f() { this.a = address(0); } }');
+    expect(a.contractName).toBe('C');
+  });
+
+  it('allows a bytes address literal to initialize an address', () => {
+    const a = compileString('contract C() { address a = 0x0000000000000000000000000000000000000001; function f() { this.a = address(0); } }');
+    expect(a.contractName).toBe('C');
+  });
+
+  it('allows an enum-typed state variable', () => {
+    const a = compileString('contract C() { enum S { A, B } S status; function f() { this.status = S.B; } }');
+    expect(a.contractName).toBe('C');
+  });
+
+  it('does not crash on a contract/interface-typed parameter (resolves to address)', () => {
+    const a = compileString('interface ICallee { function setX(int x) external; } contract C() { int n; function f(ICallee c) { require(c != address(0)); this.n = 1; } }');
+    expect(a.contractName).toBe('C');
+  });
+});

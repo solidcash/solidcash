@@ -275,6 +275,9 @@ export function explicitlyCastable(from?: Type, to?: Type): boolean {
     if (from instanceof BytesType && !to.payable) return true;
     // address -> address (any payable combo, including contract type constructors)
     if (from instanceof AddressType) return true;
+    // int -> address: `address(0)` / `address(uint160(x))`. Address is locking bytecode at the VM level;
+    // the integer is converted to its byte representation.
+    if (from === PrimitiveType.INT || from instanceof IntType) return true;
     return false;
   }
   if (to instanceof ConnectedAddressType) {
@@ -438,6 +441,8 @@ export function implicitlyCastable(actual?: Type, expected?: Type): boolean {
     // connected address -> unbounded bytes: OK (category bytes at VM level)
     return !expected.bound;
   }
+  // bytes -> address: address literals (`0x...`) and lbc bytes assign to a non-payable address.
+  if (actual instanceof BytesType && expected instanceof AddressType) return !expected.payable;
   // Can't implicitly cast to/from address types in other cases
   if (actual instanceof AddressType || expected instanceof AddressType) return false;
   if (actual instanceof ConnectedAddressType || expected instanceof ConnectedAddressType) return false;

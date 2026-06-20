@@ -889,7 +889,9 @@ export default class AstBuilder
     if (ctx.arrayType()) {
       type = this.buildArrayType(ctx.arrayType()!);
     } else {
-      type = this.resolveType(ctx.typeName().getText());
+      // Unknown type (e.g. a contract/interface name used as a parameter type) falls back to address, like
+      // state variables do; the reference is validated later in semantic analysis.
+      type = this.resolveType(ctx.typeName().getText()) ?? new AddressType(false);
     }
     const modifiers = ctx.modifier_list().map((m) => m.getText());
     const name = ctx.Identifier().getText();
@@ -2056,7 +2058,8 @@ export default class AstBuilder
     let returnTypes: Type[] = [];
     const returnTypeCtx = ctx.returnType();
     if (returnTypeCtx) {
-      returnTypes = returnTypeCtx.returnParam_list().map((p) => this.resolveType(p.typeName().getText()));
+      returnTypes = returnTypeCtx.returnParam_list()
+        .map((p) => this.resolveType(p.typeName().getText()) ?? new AddressType(false));
     }
 
     const node = new InterfaceFunctionNode(name, parameters, returnTypes);
@@ -2189,7 +2192,7 @@ export default class AstBuilder
   // Populate returnTypes and (optionally) returnNames from a `returns (...)` clause.
   private applyReturnType(fn: FunctionDefinitionNode, ctx: ReturnTypeContext): void {
     const params = ctx.returnParam_list();
-    fn.returnTypes = params.map((p) => this.resolveType(p.typeName().getText()));
+    fn.returnTypes = params.map((p) => this.resolveType(p.typeName().getText()) ?? new AddressType(false));
     const named = params.filter((p) => p.Identifier() !== null);
     if (named.length > 0 && named.length !== params.length) {
       throw new ParseError('All return values must be named, or none of them', Location.fromCtx(ctx));

@@ -231,9 +231,12 @@ whose state - data NFT / entry NFTs / commitments - a caller can read.)
 A self-pinning stateful contract:
 - takes its state-NFT category as a (compiler-injected) constructor arg, baked into the redeem script → part
   of the address;
-- covenant enforces `OP_UTXOTOKENCATEGORY(self) == bakedCategory` on **every** spend path (incl.
-  `selfdestruct`/`unsafe`, which today skip covenant codegen), and preserves the NFT under its own code, so the
-  invariant is inductive from genesis;
+- enforces `categoryPortionOf(OP_UTXOTOKENCATEGORY(self)) == bakedCategory` **once in the contract prologue**
+  (emitted before the function dispatcher / at the top of a single inlined function), so it runs on **every
+  spend** - including `selfdestruct`/`unsafe` functions, which skip only their function-*body* covenant code
+  (run after the prologue via `OP_INVOKE`) and so cannot bypass the prologue pin. (One ~5-byte check, not per
+  function.) The check splits off the capability byte and compares the 32-byte category portion. Combined with
+  self-preservation, the invariant is inductive from genesis;
 - the same pin is added to the permissionless **read/merge paths** of the sub-covenants (data NFT, entry NFT,
   token container, satoshi container - the audit found these only *preserve* the category today; event NFT has
   no read path).

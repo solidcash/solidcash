@@ -12,31 +12,37 @@ in role to an EVM address: you store it, compare it, and dispatch through it. **
 explicit** - the value you hold is the address, full stop. Calls must have EVM-equivalent *safety* and as much
 EVM-equivalent *ergonomics* as the chain allows.
 
-## 2. What "address" is, on each chain
+## 2. Terminology: four distinct "address-like" things
+
+"Address" is overloaded on BCH. The spec uses these names **exactly** and never interchangeably:
+
+| term | value | derived from | role | EVM analogue |
+|---|---|---|---|---|
+| **cashaddr** | `bitcoincash:p…` string (bech32; token-aware variant for token UTXOs) | the locking bytecode | human / wallet / SDK display & I/O | the checksummed `0x…` *display* of an address |
+| **locking bytecode** (scriptPubKey) | 35 bytes: `OP_HASH256 ‖ 0x20 ‖ <scriptHash> ‖ OP_EQUAL` (`0xaa20 ‖ hash ‖ 0x87`) | the script hash | on-chain output; returned by `OP_UTXOBYTECODE`; *where outputs go* (location) | — (EVM has no scriptPubKey) |
+| **script hash** = the language's **`address`** | 32 bytes: `hash256(redeemScript)` = `hash(constructorArgs ‖ code)` | code **and** baked args (incl. the category when self-pinning) | VM-level **identity**: `IContract(addr)`, `==`, stored/passed; `address(0)` = 32 zero bytes | **`address`** (the callable, per-instance identity) |
+| **code hash** | 32 bytes: `hash(compiledBytecode)`, **args excluded** | code only (same across all instances of a contract) | "which contract / which code" - interface & proxy-impl identity | **`codehash`** / `hash(type(C).runtimeCode)` |
+
+Relationships: `cashaddr ⟺ locking bytecode` (lossless display); `locking = 0xaa20 ‖ scriptHash ‖ 0x87`;
+`scriptHash = hash(args ‖ code)` (**per-instance** - baked args, incl. category, make each instance unique);
+`codeHash = hash(code)` (**per-template** - identical across instances).
+
+EVM mapping: EVM **`address`** ≈ BCH **script hash** (callable identity), **`codehash`** ≈ BCH **code hash**
+(template), and **cashaddr** ≈ EVM's checksummed-hex *display* (a presentation layer, **not** a semantic one).
+`derive()` is gone - the script hash *is* the address.
+
+### 2.1 `address ⟹ code`, but not `⟹ state`
 
 | | EVM | BCH (SolidCash) |
 |---|---|---|
-| address = | hash of code (CREATE2: `hash(deployer, salt, codehash)`) | **P2SH32 script hash** = hash of the redeem script (code + baked args) |
-| address ⟹ code | yes (protocol-bound) | **yes** (P2SH: only that script hashes to that address) |
-| address ⟹ state | yes (protocol-bound storage) | **not for free** - see §3 |
+| `address ⟹ code` | yes (protocol-bound) | **yes** - P2SH: only that redeem script hashes to that script hash |
+| `address ⟹ state` | yes (protocol-bound storage) | **not for free** - see §3 |
 
-So the EVM-parity address on BCH is the **P2SH32 script hash** - the 32-byte `hash256(redeemScript)`. Parity
-is in *semantics* (address = hash-of-code), not width (32 vs EVM's 20). Stateful contracts are p2sh32 only
-(see [[Only p2sh32 for Stateful Contracts]]).
-
-**Two encodings, don't conflate them** (this is the §7.1 identity/location duality):
-- **the 32-byte script hash** = `hash256(redeemScript)` - the canonical **`address`** value (compact identity,
-  stored/compared/passed; `address(0)` = 32 zero bytes).
-- **the 35-byte P2SH32 locking bytecode** = `OP_HASH256 ‖ 0x20 ‖ <32-byte hash> ‖ OP_EQUAL` (constants:
-  prefix `0xaa20`, suffix `0x87`) - the **scriptPubKey** that appears on a UTXO and is returned by
-  `OP_UTXOBYTECODE`. This is the *location* encoding (where outputs go).
-
-They are cheaply inter-convertible: locking = `0xaa20 ‖ hash ‖ 0x87`; hash = locking with the 2-byte prefix
-and 1-byte suffix stripped.
-
-`IContract(addr).method()` verifies the co-spent callee against the 32-byte `addr`. `OP_UTXOBYTECODE` returns
-the 35-byte locking bytecode, so the check either strips the framing from it or reconstructs the locking from
-`addr` (~4-5 ops):
+The language's `address` is the **32-byte script hash**; the **35-byte locking bytecode** is its *location*
+encoding (the §7.1 identity/location duality), cheaply inter-convertible (strip/prepend the 3 framing bytes
+`aa20…87`). `IContract(addr).method()` verifies the co-spent callee against the 32-byte `addr`;
+`OP_UTXOBYTECODE` returns the 35-byte locking, so the check strips its framing or reconstructs the locking
+from `addr` (~4-5 ops):
 
 ```
 require( OP_UTXOBYTECODE(inputN) == (0xaa20 ‖ addr ‖ 0x87) )   // reconstruct-and-compare, addr = 32-byte hash
@@ -232,7 +238,8 @@ immutable interface IOracle { function price() external view returns (uint256); 
 
 proxy interface IVault {                 // upgradeable behind a stable proxy address
     // policy carried in the proxy's self-pinned commitment, one of:
-    //   impl codeHashes [0x.., 0x..]    // immutable allowlist of implementation hashes
+    //   impl codeHashes [0x.., 0x..]    // allowlist of implementation CODE hashes (§2, args-excluded -
+    //                                   // authorizes the code, independent of per-instance args), immutable
     //   governor <category> timelock 144
     function deposit(uint256 amount) external;
 }

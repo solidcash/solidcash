@@ -252,11 +252,13 @@ A self-pinning stateful contract:
 - the same capability-baked pin is added (Stage 2) to the permissionless **read path** of the sub-covenants
   **that carry the contract's own category C**: the **data NFT** (`C‖0x01`) and **entry NFT** (`C‖0x01`), which
   today only *preserve* their category on the read path. It is **NOT** applied to the **token container** (its
-  UTXO carries the *held* token X, so `category==C` would reject every spend) or the **satoshi container** (it
-  carries satoshis / only incidental tokens, so `OP_UTXOTOKENCATEGORY` is empty/foreign). Those two are
-  secured instead by their master-path check (`master category == C`, and the master is self-pinned) plus
+  UTXO carries the *held* token X, so `category==C` would reject every spend) or the **satoshi container**
+  (its category is **indeterminate** - it may hold C itself, e.g. C-fungible-tokens, *or* be satoshis-only
+  (empty category), *or* hold incidental foreign tokens - so no fixed pin value works). Those two are secured
+  instead by their master-path check (`master category == C`, and the master is self-pinned) plus
   token/satoshi **conservation** (a fabricated container must hold real assets), so they need no category pin -
-  and adding one would brick them. The **event NFT** carries C but is write-only (no read path), so it needs
+  and adding one would brick them. (The data/entry NFTs, by contrast, are *guaranteed* to carry C - they are
+  the contract's own state NFTs minted under C - so a fixed `C‖0x01` pin is safe there.) The **event NFT** carries C but is write-only (no read path), so it needs
   none either.
 
 The compiler emits and proves this, and surfaces an `addressable` flag in the artifact so a caller's

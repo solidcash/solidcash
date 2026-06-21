@@ -4,29 +4,42 @@ Status: **in progress.** Stage 1 (master self-pin) is landed and live. Stage 3 (
 of the category-referenced model with `IContract(addr)`, removing `connect`) is being implemented. Stage 4
 (proxy upgradeability) remains design.
 
-> **DECISION (2026-06): reads verify each co-spent sub-NFT by its own per-identity address + self-pin.**
-> Master-anchored reads were rejected: there is **no read-only master spend** (co-spending B's master requires B
-> to *execute a function*, `StatefulContract.ts` ~3811), so a generic read can't anchor to a co-spent master.
-> Instead a read co-spends only B's sub-NFT(s) read-only (the existing read-only path) and verifies each by its
-> **distinct on-chain address** plus a **Stage 2 self-pin** (so a fabricated foreign-category UTXO at that address
-> is unspendable). This is fail-closed and permutation-proof. `IFoo(addr)` is the uniform handle (category form
-> excluded entirely).
+> **DECISION (2026-06): the register/memory model for sound cross-contract reads.**
 >
-> **State is two NFT classes, and only fixed-size vars use `nftIndex`:**
-> - **Fixed-size vars** - tightly bin-packed (multiple per NFT), static layout frozen at compile time. The data
->   NFT covenant is parameterized by `nftIndex` so each fixed-state NFT has a **distinct address**
->   `dataNftAddr(C, nftIndex)`; a read checks `OP_UTXOBYTECODE == dataNftAddr(C, nftIndex)`. This makes
->   multi-(fixed)-data-NFT external reads sound (distinct addresses defeat tx-builder permutation).
-> - **Dynamic-size vars** (variable `string`/array that grows/shrinks) - a **separate NFT class**, one per var,
->   addressed by **var identity** like entry NFTs are by `collectionHash` (`dynVarAddr(C, varKey)`), with
->   in-commitment chunk-index disambiguation for multi-chunk values. Living outside the `nftIndex` space, a
->   dynamic var's growth/shrink never shifts a fixed var's `nftIndex`. **This class is a future feature** (today
->   an unbounded var gets a position-dependent dedicated NFT bounded by `commitmentLimit`, throws on overflow);
->   when added it slots in beside entry/data NFTs with zero impact on fixed-var addressing.
+> *Mental model (CPU analogy).* A data NFT is a **register** (a fixed-width ~`commitmentLimit` slot); a contract's
+> fixed-size state is a **register file**; `nftIndex` is the **register number**. Like every ISA, fixed-size data
+> lives in **registers** and variable-size data lives in **memory**:
+> - **Fixed-size vars -> registers (data NFTs).** Tightly bin-packed, **static count** frozen at compile time
+>   (`ceil(total_fixed_width / commitmentLimit)`). A value wider than one register spans a **register pair** (fixed
+>   count, ABI layout) - never a runtime-variable count.
+> - **Variable-size vars (`string`, dynamic array) -> memory.** A separate, *addressed, growable* structure -
+>   which is exactly what **entry NFTs already are** (per-collection address + in-commitment key, mint/destroy to
+>   grow/shrink). A variable value is a memory object, **not** a register that grows. So the earlier
+>   "dynamic-spanning data NFT" worry was a register/memory category error: the register file is static; only
+>   memory grows, and memory already handles growth soundly. Variable-state-in-memory is **future work**, out of
+>   scope for the read fix.
 >
-> Stage 3 implements the **fixed-var class** (per-`nftIndex` data NFT covenant + Stage 2 self-pin). The earlier
-> master-free §3.3/§7.3/§9.6 text below predates this and is superseded by this block; the dynamic-var class is
-> deferred research.
+> *The soundness gap.* A register's number must be its **identity** (a CPU addresses `r5` by number, never "the
+> 3rd register here"). Today a data NFT's `nftIndex` is only **positional** - nothing on the UTXO declares it.
+> Fine for the contract's **own** spends (it builds its own tx, trusted ordering); **unsound** for cross-contract
+> reads, where an untrusted tx-builder can permute B's (identically-addressed `f(C)`) data NFTs and the reader
+> can't detect it. (Single-data-NFT and entry reads are unaffected.)
+>
+> *The fix: stamp the register number as a verifiable UTXO attribute.* Chosen mechanism - a **commitment-preamble
+> tag**: each data NFT self-declares its `nftIndex` as the first field of its commitment; a read does
+> `tag == N -> OP_EQUALVERIFY` (fail-closed on permutation). Preferred over the alternative (a per-`nftIndex`
+> *address*, `dataNftAddr(C, nftIndex)`) because the tag keeps the address `f(C)` - **no SDK per-UTXO
+> address-tracking change** - and self-describes (the natural shape for the future memory/chunk case). The
+> per-`nftIndex`-address variant (register number in the *addressing*, classic-register style) stays the recorded
+> alternative; it needs the SDK to model data NFTs as an indexed register file.
+>
+> *Trustworthiness* of the tag rests on **Stage 2 self-pin**: the data NFT covenant enforces its live category
+> `== C` on the read path, so only a genuine category-C UTXO is spendable at the address; category C is mint-once
+> (only B's lineage), and B's write codegen always stamps the correct `nftIndex`, so every category-C data NFT
+> carries a correct tag. The covenant need not enforce the tag itself.
+>
+> Stage 3 read fix = **Stage 2 self-pin + commitment-preamble nftIndex tag + reader tag-verify**. The earlier
+> master-free / per-nftIndex-address §3.3/§7.3/§9.6 text below predates this and is superseded by this block.
 
 Model for `IContract(address).method(arg)` on the BCH UTXO/CashTokens substrate, with the explicit goal of **EVM
 address parity**: an `address` *is* the contract's on-chain address, passed/compared/called directly, with no

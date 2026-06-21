@@ -1,5 +1,4 @@
 import { compileString } from 'solidc';
-import { hexToBin } from '@bitauth/libauth';
 import {
   Contract, StatefulTransactionBuilder,
   TransactionBuilder,
@@ -41,16 +40,16 @@ interface ICounter {
     function increment();
 }
 
-contract DynamicCaller(bytes32 targetCategory) {
+contract DynamicCaller(bytes targetAddr) {
     int state;
 
     function dynamicCall() {
-        ICounter(targetCategory).increment.call();
+        ICounter(targetAddr).increment.call();
         this.state = this.state + 1;
     }
 
     function readOnlyCall() {
-        ICounter(targetCategory).increment.staticcall();
+        ICounter(targetAddr).increment.staticcall();
         this.state = this.state + 1;
     }
 }
@@ -122,8 +121,8 @@ describe('Low-Level Call Primitives (.call and .staticcall)', () => {
       const masterCounter = counterGenesis.utxos[0];
       const dataNftCounter = counterGenesis.utxos[1];
 
-      // Build the caller with Counter's real category, then genesis it.
-      const contractCaller = new Contract(artCaller, [hexToBin(catCounter)], { provider });
+      // Build the caller with Counter's master address (address model), then genesis it.
+      const contractCaller = new Contract(artCaller, [contractCounter.lockingBytecode], { provider });
       const commitsCaller = buildInitialStateCommitments(layoutCaller, { state: 0n });
       const callerGenesis = await (provider as any).addTokenUtxosDynamic((cat: string) => [
         { address: contractCaller.tokenAddress, satoshis: 10000n,
@@ -204,8 +203,8 @@ describe('Low-Level Call Primitives (.call and .staticcall)', () => {
       const masterCounter = counterGenesis.utxos[0];
       const dataNftCounter = counterGenesis.utxos[1];
 
-      // Build the caller with Counter's real category, then genesis it.
-      const contractCaller = new Contract(artCaller, [hexToBin(catCounter)], { provider });
+      // Build the caller with Counter's master address (address model), then genesis it.
+      const contractCaller = new Contract(artCaller, [contractCounter.lockingBytecode], { provider });
       const commitsCaller = buildInitialStateCommitments(layoutCaller, { state: 0n });
       const callerGenesis = await (provider as any).addTokenUtxosDynamic((cat: string) => [
         { address: contractCaller.tokenAddress, satoshis: 10000n,

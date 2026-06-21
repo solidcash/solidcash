@@ -4,6 +4,7 @@ import {
   Contract, StatefulTransactionBuilder,
   TransactionBuilder,
   createDataNftUnlocker,
+  getDataNftLockingBytecode,
 } from '../../src/index.js';
 import {
   buildInitialStateCommitments,
@@ -63,12 +64,12 @@ interface IThreadedA {
     function handleCallback(int val) returns (int);
 }
 
-contract ThreadedA(bytes32 bCategory) is IThreadedA {
+contract ThreadedA(bytes bAddr) is IThreadedA {
     external int x;
     external int y;
 
     function callB(int val) {
-        int result = IB(bCategory).processAndCallback(val);
+        int result = IB(bAddr).processAndCallback(val);
         this.x = this.x + result;
     }
 
@@ -85,7 +86,7 @@ contract ThreadedA(bytes32 bCategory) is IThreadedA {
 // B's processAndCallback function:
 //   1. Receives a value
 //   2. Updates its own state
-//   3. Calls back to IThreadedA(aCategory).handleCallback(val)
+//   3. Calls back to IThreadedA(aAddr).handleCallback(val)
 //   4. Returns the result
 //
 // From B's perspective, the "callback" is just another external call
@@ -108,11 +109,11 @@ interface IB {
     function processAndCallback(int val) returns (int);
 }
 
-contract ThreadedB(bytes32 aCategory) is IB {
+contract ThreadedB(bytes aAddr) is IB {
     int bState;
 
     function processAndCallback(int val) returns (int) {
-        int callbackResult = IThreadedA(aCategory).handleCallback(val);
+        int callbackResult = IThreadedA(aAddr).handleCallback(val);
         this.bState = this.bState + val + callbackResult;
         return val;
     }
@@ -155,7 +156,7 @@ describe('Threaded Circular Calls (A->B->A via Threading)', () => {
       expect(fn!.externalCalls![0]).toEqual(expect.objectContaining({
         interfaceName: 'IB',
         functionName: 'processAndCallback',
-        categoryParam: 'bCategory',
+        addressParam: 'bAddr',
       }));
     });
 
@@ -178,7 +179,7 @@ describe('Threaded Circular Calls (A->B->A via Threading)', () => {
       expect(fn!.externalCalls![0]).toEqual(expect.objectContaining({
         interfaceName: 'IThreadedA',
         functionName: 'handleCallback',
-        categoryParam: 'aCategory',
+        addressParam: 'aAddr',
       }));
     });
 
@@ -258,8 +259,15 @@ describe('Threaded Circular Calls (A->B->A via Threading)', () => {
       const catA = 'a1cd'.repeat(16);
       const catB = 'b1cd'.repeat(16);
 
-      const contractA = new Contract(artA, [hexToBin(catB)], { provider });
-      const contractB = new Contract(artB, [hexToBin(catA)], { provider });
+      // Address model: A bakes B's master address. The A<->B address cycle is un-bootstrappable
+      // (each address commits to the peer's, a hash fixed point), so B bakes a placeholder A-address.
+      // This test only .build()s (no verifyTransaction - see selector note below), so covenant
+      // identity is not evaluated and the placeholder is inert for assembly.
+      const placeholderAddrA = getDataNftLockingBytecode(catA);
+      const contractB = new Contract(artB, [placeholderAddrA], { provider });
+      const contractA = new Contract(
+        artA, [contractB.withCategory(hexToBin(catB)).lockingBytecode], { provider },
+      );
 
       const layoutA = artA.stateLayout!;
       const layoutB = artB.stateLayout!;

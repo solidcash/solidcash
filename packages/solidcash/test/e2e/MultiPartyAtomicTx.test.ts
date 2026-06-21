@@ -1,5 +1,4 @@
 import { compileString } from 'solidc';
-import { hexToBin } from '@bitauth/libauth';
 import {
   Contract, StatefulTransactionBuilder,
   TransactionBuilder,
@@ -68,12 +67,12 @@ interface IPoolB {
     function swap(int amount) returns (int);
 }
 
-contract MultiCaller(bytes32 poolACategory, bytes32 poolBCategory) {
+contract MultiCaller(bytes poolAAddr, bytes poolBAddr) {
     int profit;
 
     function doMultiCall(int fee, int amount) {
-        int feeResult = IPoolA(poolACategory).doAction(fee);
-        int swapResult = IPoolB(poolBCategory).swap(amount);
+        int feeResult = IPoolA(poolAAddr).doAction(fee);
+        int swapResult = IPoolB(poolBAddr).swap(amount);
         this.profit = this.profit + swapResult - feeResult;
     }
 }
@@ -88,12 +87,12 @@ interface IPool {
     function doAction(int amount) returns (int);
 }
 
-contract DualPoolCaller(bytes32 poolXCategory, bytes32 poolYCategory) {
+contract DualPoolCaller(bytes poolXAddr, bytes poolYAddr) {
     int total;
 
     function callBoth(int amountX, int amountY) {
-        int x = IPool(poolXCategory).doAction(amountX);
-        int y = IPool(poolYCategory).doAction(amountY);
+        int x = IPool(poolXAddr).doAction(amountX);
+        int y = IPool(poolYAddr).doAction(amountY);
         this.total = this.total + x + y;
     }
 }
@@ -108,12 +107,12 @@ interface IPoolA {
     function doAction(int fee) returns (int);
 }
 
-contract CallerWithOutState(bytes32 poolCategory) {
+contract CallerWithOutState(bytes poolAddr) {
     int lastFees;
 
     function callAndRead(int fee) {
-        int result = IPoolA(poolCategory).doAction(fee);
-        int newFees = IPoolA(poolCategory).outState.totalFees;
+        int result = IPoolA(poolAddr).doAction(fee);
+        int newFees = IPoolA(poolAddr).outState.totalFees;
         require(newFees > 0);
         this.lastFees = newFees + result;
     }
@@ -137,7 +136,7 @@ describe('Multi-Party Atomic Transactions', () => {
       expect(fn!.externalCalls![0]).toEqual(expect.objectContaining({
         interfaceName: 'IPoolA',
         functionName: 'doAction',
-        categoryParam: 'poolACategory',
+        addressParam: 'poolAAddr',
       }));
       expect(fn!.externalCalls![0].computedOffset).toBeUndefined();
 
@@ -145,7 +144,7 @@ describe('Multi-Party Atomic Transactions', () => {
       expect(fn!.externalCalls![1]).toEqual(expect.objectContaining({
         interfaceName: 'IPoolB',
         functionName: 'swap',
-        categoryParam: 'poolBCategory',
+        addressParam: 'poolBAddr',
         computedOffset: 2,
       }));
     });
@@ -171,11 +170,11 @@ interface IPoolA {
     function doAction(int fee) returns (int);
 }
 
-contract SingleCaller(bytes32 poolCategory) {
+contract SingleCaller(bytes poolAddr) {
     int result;
 
     function callOnce(int fee) {
-        int r = IPoolA(poolCategory).doAction(fee);
+        int r = IPoolA(poolAddr).doAction(fee);
         this.result = r;
     }
 }
@@ -197,11 +196,11 @@ contract SingleCaller(bytes32 poolCategory) {
       expect(fn!.externalCalls).toBeDefined();
       expect(fn!.externalCalls!.length).toBe(2);
 
-      // Both calls are IPool.doAction but with different categoryParams
+      // Both calls are IPool.doAction but with different addressParams
       expect(fn!.externalCalls![0].interfaceName).toBe('IPool');
-      expect(fn!.externalCalls![0].categoryParam).toBe('poolXCategory');
+      expect(fn!.externalCalls![0].addressParam).toBe('poolXAddr');
       expect(fn!.externalCalls![1].interfaceName).toBe('IPool');
-      expect(fn!.externalCalls![1].categoryParam).toBe('poolYCategory');
+      expect(fn!.externalCalls![1].addressParam).toBe('poolYAddr');
     });
 
     it('should share outState with call UTXO when targeting same contract', () => {
@@ -259,7 +258,7 @@ contract SingleCaller(bytes32 poolCategory) {
     const poolBContract = new Contract(poolBArtifact, [], { provider });
     const multiCallerContract = new Contract(
       multiCallerArtifact,
-      [hexToBin(poolACategoryId), hexToBin(poolBCategoryId)],
+      [poolAContract.lockingBytecode, poolBContract.lockingBytecode],
       { provider },
     );
 

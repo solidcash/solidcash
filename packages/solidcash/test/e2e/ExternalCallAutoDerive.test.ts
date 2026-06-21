@@ -3,6 +3,7 @@ import { hexToBin } from '@bitauth/libauth';
 import {
   Contract, MockNetworkProvider,
   StatefulContract, SignatureTemplate,
+  getDataNftLockingBytecode,
 } from '../../src/index.js';
 import type { ConnectedStatefulContract } from '../../src/stateful/StatefulContract.js';
 import {
@@ -42,11 +43,11 @@ pragma solidcash >=0.8.0;
 
 ${POOL_INTERFACE}
 
-contract Depositor(bytes32 poolCategory) {
+contract Depositor(bytes poolAddr) {
     int totalDeposited;
 
     function addToPool(int val) {
-        IPool(poolCategory).deposit(val);
+        IPool(poolAddr).deposit(val);
         this.totalDeposited = this.totalDeposited + val;
     }
 }
@@ -80,11 +81,11 @@ pragma solidcash >=0.8.0;
 
 ${PROCESSOR_INTERFACE}
 
-contract ProcessCaller(bytes32 processorCategory) {
+contract ProcessCaller(bytes processorAddr) {
     int lastResult;
 
     function callProcess(int x) {
-        int result = IProcessor(processorCategory).process(x);
+        int result = IProcessor(processorAddr).process(x);
         this.lastResult = result;
     }
 }
@@ -118,11 +119,11 @@ pragma solidcash >=0.8.0;
 
 ${GUARDED_INTERFACE}
 
-contract Trigger(bytes32 guardedCategory) {
+contract Trigger(bytes guardedAddr) {
     int triggerCount;
 
     function triggerGuarded() {
-        IGuarded(guardedCategory).guarded();
+        IGuarded(guardedAddr).guarded();
         this.triggerCount = this.triggerCount + 1;
     }
 }
@@ -158,11 +159,11 @@ pragma solidcash >=0.8.0;
 
 ${CALC_INTERFACE}
 
-contract MathCaller(bytes32 calcCategory) {
+contract MathCaller(bytes calcAddr) {
     int lastSum;
 
     function compute(int x, int y) {
-        int result = ICalc(calcCategory).add(x, y);
+        int result = ICalc(calcAddr).add(x, y);
         this.lastSum = result;
     }
 }
@@ -174,7 +175,7 @@ contract MathCaller(bytes32 calcCategory) {
 
 async function setupContracts(
   sourceA: string, sourceB: string,
-  constructorArgsA: (catB: string) => any[],
+  constructorArgsA: (calleeAddr: Uint8Array) => any[],
   constructorArgsB: () => any[],
   initialStateA: Record<string, bigint>,
   initialStateB: Record<string, bigint>,
@@ -192,13 +193,15 @@ async function setupContracts(
   const artA = compileString(sourceA);
   const artB = compileString(sourceB);
 
-  // Genesis B first: A's constructor embeds B's real category, so B must exist before A is built.
+  // Genesis B first: A's constructor embeds B's real address, so B must exist before A is built.
   const contractB = new Contract(artB, constructorArgsB(), { provider });
   const { categoryId: catB } = await setupStatefulUtxos(
     provider, contractB, artB.stateLayout!, initialStateB, { saltContract: true },
   );
 
-  const contractA = new Contract(artA, constructorArgsA(catB), { provider });
+  // Address model: A calls B, so the handle is B's self-pinned master locking bytecode.
+  const calleeAddr = contractB.withCategory(hexToBin(catB)).lockingBytecode;
+  const contractA = new Contract(artA, constructorArgsA(calleeAddr), { provider });
   const { categoryId: catA } = await setupStatefulUtxos(
     provider, contractA, artA.stateLayout!, initialStateA, { saltContract: true },
   );
@@ -230,7 +233,7 @@ describe('External Call Auto-Derivation via Convenience API', () => {
     it('should auto-derive with withExternalCall (explicit args)', async () => {
       const { scA, scB } = await setupContracts(
         DEPOSITOR_A, POOL_B,
-        (catB) => [hexToBin(catB)], () => [],
+        (addr) => [addr], () => [],
         { totalDeposited: 0n }, { balance: 0n },
       );
 
@@ -244,7 +247,7 @@ describe('External Call Auto-Derivation via Convenience API', () => {
     it('should auto-derive with simplified withExternalCall (args from ABI)', async () => {
       const { scA, scB } = await setupContracts(
         DEPOSITOR_A, POOL_B,
-        (catB) => [hexToBin(catB)], () => [],
+        (addr) => [addr], () => [],
         { totalDeposited: 0n }, { balance: 0n },
       );
 
@@ -259,7 +262,7 @@ describe('External Call Auto-Derivation via Convenience API', () => {
     it('should auto-derive with connect-time binding', async () => {
       const { scA } = await setupContracts(
         DEPOSITOR_A, POOL_B,
-        (catB) => [hexToBin(catB)], () => [],
+        (addr) => [addr], () => [],
         { totalDeposited: 0n }, { balance: 0n },
         { connectTimeBinding: true, interfaceName: 'IPool' },
       );
@@ -279,7 +282,7 @@ describe('External Call Auto-Derivation via Convenience API', () => {
     it('should auto-derive with withExternalCall (explicit)', async () => {
       const { scA, scB } = await setupContracts(
         CALLER_A_WITH_RETURN, PROCESSOR_B,
-        (catB) => [hexToBin(catB)], () => [],
+        (addr) => [addr], () => [],
         { lastResult: 0n }, { processed: 0n },
       );
 
@@ -293,7 +296,7 @@ describe('External Call Auto-Derivation via Convenience API', () => {
     it('should auto-derive with simplified withExternalCall', async () => {
       const { scA, scB } = await setupContracts(
         CALLER_A_WITH_RETURN, PROCESSOR_B,
-        (catB) => [hexToBin(catB)], () => [],
+        (addr) => [addr], () => [],
         { lastResult: 0n }, { processed: 0n },
       );
 
@@ -307,7 +310,7 @@ describe('External Call Auto-Derivation via Convenience API', () => {
     it('should auto-derive with connect-time binding', async () => {
       const { scA } = await setupContracts(
         CALLER_A_WITH_RETURN, PROCESSOR_B,
-        (catB) => [hexToBin(catB)], () => [],
+        (addr) => [addr], () => [],
         { lastResult: 0n }, { processed: 0n },
         { connectTimeBinding: true, interfaceName: 'IProcessor' },
       );
@@ -325,7 +328,7 @@ describe('External Call Auto-Derivation via Convenience API', () => {
     it('should auto-derive with withExternalCall providing sig args', async () => {
       const { scA, scB } = await setupContracts(
         TRIGGER_A, GUARDED_B,
-        (catB) => [hexToBin(catB)], () => [],
+        (addr) => [addr], () => [],
         { triggerCount: 0n }, { counter: 0n },
       );
 
@@ -340,7 +343,7 @@ describe('External Call Auto-Derivation via Convenience API', () => {
     it('connect-time binding should fail without args (B needs sig)', async () => {
       const { scA } = await setupContracts(
         TRIGGER_A, GUARDED_B,
-        (catB) => [hexToBin(catB)], () => [],
+        (addr) => [addr], () => [],
         { triggerCount: 0n }, { counter: 0n },
         { connectTimeBinding: true, interfaceName: 'IGuarded' },
       );
@@ -353,7 +356,7 @@ describe('External Call Auto-Derivation via Convenience API', () => {
     it('connect-time binding + withExternalCall override should work', async () => {
       const { scA, scB } = await setupContracts(
         TRIGGER_A, GUARDED_B,
-        (catB) => [hexToBin(catB)], () => [],
+        (addr) => [addr], () => [],
         { triggerCount: 0n }, { counter: 0n },
         { connectTimeBinding: true, interfaceName: 'IGuarded' },
       );
@@ -374,7 +377,7 @@ describe('External Call Auto-Derivation via Convenience API', () => {
     it('should auto-derive with withExternalCall (explicit)', async () => {
       const { scA, scB } = await setupContracts(
         MATH_A, CALC_B,
-        (catB) => [hexToBin(catB)], () => [],
+        (addr) => [addr], () => [],
         { lastSum: 0n }, { total: 0n },
       );
 
@@ -388,7 +391,7 @@ describe('External Call Auto-Derivation via Convenience API', () => {
     it('should auto-derive with simplified withExternalCall', async () => {
       const { scA, scB } = await setupContracts(
         MATH_A, CALC_B,
-        (catB) => [hexToBin(catB)], () => [],
+        (addr) => [addr], () => [],
         { lastSum: 0n }, { total: 0n },
       );
 
@@ -402,7 +405,7 @@ describe('External Call Auto-Derivation via Convenience API', () => {
     it('should auto-derive with connect-time binding', async () => {
       const { scA } = await setupContracts(
         MATH_A, CALC_B,
-        (catB) => [hexToBin(catB)], () => [],
+        (addr) => [addr], () => [],
         { lastSum: 0n }, { total: 0n },
         { connectTimeBinding: true, interfaceName: 'ICalc' },
       );
@@ -455,12 +458,12 @@ pragma solidcash >=0.8.0;
 ${C_INTERFACE}
 ${B_INTERFACE}
 
-contract ContractB(bytes32 cCategory) is IB {
+contract ContractB(bytes cAddr) is IB {
     int calledCount;
 
     function chainToC(int val) returns (int) {
         require(val > 0);
-        int cResult = IC(cCategory).compute(val);
+        int cResult = IC(cAddr).compute(val);
         this.calledCount = this.calledCount + cResult;
         return this.calledCount;
     }
@@ -473,11 +476,11 @@ pragma solidcash >=0.8.0;
 
 ${B_INTERFACE}
 
-contract ContractA(bytes32 bCategory) {
+contract ContractA(bytes bAddr) {
     int stateA;
 
     function startChain(int val) {
-        int bResult = IB(bCategory).chainToC(val);
+        int bResult = IB(bAddr).chainToC(val);
         this.stateA = this.stateA + bResult;
     }
 }
@@ -495,15 +498,20 @@ contract ContractA(bytes32 bCategory) {
       const artC = compileString(C_SOURCE);
 
       // Genesis in dependency order: C (leaf) -> B (embeds C) -> A (embeds B).
+      // Address model: each caller bakes the callee's self-pinned master locking bytecode.
       const contractC = new Contract(artC, [], { provider });
       const { categoryId: catC } = await setupStatefulUtxos(
         provider, contractC, artC.stateLayout!, { result: 0n }, { saltContract: true },
       );
-      const contractB = new Contract(artB, [hexToBin(catC)], { provider });
+      const contractB = new Contract(
+        artB, [contractC.withCategory(hexToBin(catC)).lockingBytecode], { provider },
+      );
       const { categoryId: catB } = await setupStatefulUtxos(
         provider, contractB, artB.stateLayout!, { calledCount: 0n }, { saltContract: true },
       );
-      const contractA = new Contract(artA, [hexToBin(catB)], { provider });
+      const contractA = new Contract(
+        artA, [contractB.withCategory(hexToBin(catB)).lockingBytecode], { provider },
+      );
       const { categoryId: catA } = await setupStatefulUtxos(
         provider, contractA, artA.stateLayout!, { stateA: 0n }, { saltContract: true },
       );
@@ -532,7 +540,7 @@ contract ContractA(bytes32 bCategory) {
 
       // Create a separate A contract on the SAME provider (no connect-time IB binding)
       const artA = compileString(A_SOURCE);
-      const contractA = new Contract(artA, [hexToBin(scB.categoryId)], { provider });
+      const contractA = new Contract(artA, [scB.inner.lockingBytecode], { provider });
       const { categoryId: catA } = await setupStatefulUtxos(
         provider, contractA, artA.stateLayout!, { stateA: 0n }, { saltContract: true },
       );
@@ -552,7 +560,7 @@ contract ContractA(bytes32 bCategory) {
 
       // Create a separate A contract on the SAME provider (no connect-time IB binding)
       const artA = compileString(A_SOURCE);
-      const contractA = new Contract(artA, [hexToBin(scB.categoryId)], { provider });
+      const contractA = new Contract(artA, [scB.inner.lockingBytecode], { provider });
       const { categoryId: catA } = await setupStatefulUtxos(
         provider, contractA, artA.stateLayout!, { stateA: 0n }, { saltContract: true },
       );
@@ -592,11 +600,11 @@ pragma solidcash >=0.8.0;
 ${B_INTERFACE}
 ${A_INTERFACE}
 
-contract ContractA(bytes32 bCat) is IA {
+contract ContractA(bytes bAddr) is IA {
     int counter;
 
     function trigger() {
-        IB(bCat).bump();
+        IB(bAddr).bump();
         this.counter = this.counter + 1;
     }
 
@@ -612,11 +620,11 @@ pragma solidcash >=0.8.0;
 ${A_INTERFACE}
 ${B_INTERFACE}
 
-contract ContractB(bytes32 aCat) is IB {
+contract ContractB(bytes aAddr) is IB {
     int counter;
 
     function bump() {
-        IA(aCat).increment();
+        IA(aAddr).increment();
         this.counter = this.counter + 1;
     }
 }
@@ -627,14 +635,16 @@ contract ContractB(bytes32 aCat) is IB {
       const artA = compileString(A_SOURCE);
       const artB = compileString(B_SOURCE);
 
-      // Mutual A<->B: genesis B with a placeholder A-category (real cycle wired via externals
-      // below), then genesis A with B's real category.
-      const placeholderCatA = 'a1cd'.repeat(16);
-      const contractB = new Contract(artB, [hexToBin(placeholderCatA)], { provider });
+      // Mutual A<->B: genesis B with a placeholder A-address (real cycle wired via externals
+      // below), then genesis A with B's real master address.
+      const placeholderAddrA = getDataNftLockingBytecode('a1cd'.repeat(16));
+      const contractB = new Contract(artB, [placeholderAddrA], { provider });
       const { categoryId: catB } = await setupStatefulUtxos(
         provider, contractB, artB.stateLayout!, { counter: 0n }, { saltContract: true },
       );
-      const contractA = new Contract(artA, [hexToBin(catB)], { provider });
+      const contractA = new Contract(
+        artA, [contractB.withCategory(hexToBin(catB)).lockingBytecode], { provider },
+      );
       const { categoryId: catA } = await setupStatefulUtxos(
         provider, contractA, artA.stateLayout!, { counter: 0n }, { saltContract: true },
       );
@@ -659,13 +669,15 @@ contract ContractB(bytes32 aCat) is IB {
       const artA = compileString(DEPOSITOR_A);
       const artB = compileString(POOL_B);
 
-      // Genesis B first; A embeds B's real category. externalContracts auto-creates B internally
-      // from (artB, catB), which must resolve to the same addresses genesis funded.
+      // Genesis B first; A embeds B's real master address. externalContracts auto-creates B
+      // internally from (artB, catB), which must resolve to the same addresses genesis funded.
       const contractB = new Contract(artB, [], { provider });
       const { categoryId: catB } = await setupStatefulUtxos(
         provider, contractB, artB.stateLayout!, { balance: 0n }, { saltContract: true },
       );
-      const contractA = new Contract(artA, [hexToBin(catB)], { provider });
+      const contractA = new Contract(
+        artA, [contractB.withCategory(hexToBin(catB)).lockingBytecode], { provider },
+      );
       const { categoryId: catA } = await setupStatefulUtxos(
         provider, contractA, artA.stateLayout!, { totalDeposited: 0n }, { saltContract: true },
       );
@@ -716,12 +728,12 @@ pragma solidcash >=0.8.0;
 ${C_INTERFACE}
 ${B_INTERFACE}
 
-contract ContractB(bytes32 cCategory) is IB {
+contract ContractB(bytes cAddr) is IB {
     int calledCount;
 
     function chainToC(int val) returns (int) {
         require(val > 0);
-        int cResult = IC(cCategory).compute(val);
+        int cResult = IC(cAddr).compute(val);
         this.calledCount = this.calledCount + cResult;
         return this.calledCount;
     }
@@ -732,11 +744,11 @@ pragma solidcash >=0.8.0;
 
 ${B_INTERFACE}
 
-contract ContractA(bytes32 bCategory) {
+contract ContractA(bytes bAddr) {
     int stateA;
 
     function startChain(int val) {
-        int bResult = IB(bCategory).chainToC(val);
+        int bResult = IB(bAddr).chainToC(val);
         this.stateA = this.stateA + bResult;
     }
 }
@@ -748,15 +760,20 @@ contract ContractA(bytes32 bCategory) {
       const artC = compileString(C_SOURCE);
 
       // Genesis in dependency order: C (leaf) -> B (embeds C) -> A (embeds B).
+      // Address model: each caller bakes the callee's self-pinned master locking bytecode.
       const contractC = new Contract(artC, [], { provider });
       const { categoryId: catC } = await setupStatefulUtxos(
         provider, contractC, artC.stateLayout!, { result: 0n }, { saltContract: true },
       );
-      const contractB = new Contract(artB, [hexToBin(catC)], { provider });
+      const contractB = new Contract(
+        artB, [contractC.withCategory(hexToBin(catC)).lockingBytecode], { provider },
+      );
       const { categoryId: catB } = await setupStatefulUtxos(
         provider, contractB, artB.stateLayout!, { calledCount: 0n }, { saltContract: true },
       );
-      const contractA = new Contract(artA, [hexToBin(catB)], { provider });
+      const contractA = new Contract(
+        artA, [contractB.withCategory(hexToBin(catB)).lockingBytecode], { provider },
+      );
       const { categoryId: catA } = await setupStatefulUtxos(
         provider, contractA, artA.stateLayout!, { stateA: 0n }, { saltContract: true },
       );
@@ -800,11 +817,11 @@ pragma solidcash >=0.8.0;
 
 import { Pool } from 'pool.scash';
 
-contract Depositor(bytes32 poolCategory) {
+contract Depositor(bytes poolAddr) {
     int totalDeposited;
 
     function addToPool(int val) {
-        Pool(poolCategory).deposit(val);
+        Pool(poolAddr).deposit(val);
         this.totalDeposited = this.totalDeposited + val;
     }
 }
@@ -824,12 +841,14 @@ contract Depositor(bytes32 poolCategory) {
       const ecAbi = artA.abi.find((f) => f.name === 'addToPool')!;
       expect(ecAbi.externalCalls![0].interfaceName).toBe('Pool');
 
-      // Genesis B first; A embeds B's real category.
+      // Genesis B first; A embeds B's real master address.
       const contractB = new Contract(artB, [], { provider });
       const { categoryId: catB } = await setupStatefulUtxos(
         provider, contractB, artB.stateLayout!, { balance: 0n }, { saltContract: true },
       );
-      const contractA = new Contract(artA, [hexToBin(catB)], { provider });
+      const contractA = new Contract(
+        artA, [contractB.withCategory(hexToBin(catB)).lockingBytecode], { provider },
+      );
       const { categoryId: catA } = await setupStatefulUtxos(
         provider, contractA, artA.stateLayout!, { totalDeposited: 0n }, { saltContract: true },
       );
@@ -850,12 +869,14 @@ contract Depositor(bytes32 poolCategory) {
       const artA = compileString(DEPOSITOR_A_CONTRACT_REF, { importResolver });
       const artB = compileString(POOL_B_STANDALONE);
 
-      // Genesis B first; A embeds B's real category.
+      // Genesis B first; A embeds B's real master address.
       const contractB = new Contract(artB, [], { provider });
       const { categoryId: catB } = await setupStatefulUtxos(
         provider, contractB, artB.stateLayout!, { balance: 0n }, { saltContract: true },
       );
-      const contractA = new Contract(artA, [hexToBin(catB)], { provider });
+      const contractA = new Contract(
+        artA, [contractB.withCategory(hexToBin(catB)).lockingBytecode], { provider },
+      );
       const { categoryId: catA } = await setupStatefulUtxos(
         provider, contractA, artA.stateLayout!, { totalDeposited: 0n }, { saltContract: true },
       );

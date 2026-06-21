@@ -95,11 +95,11 @@ interface IA {
     function callB(int val);
 }
 
-contract CallerA(bytes32 bCategory) is IA {
+contract CallerA(bytes bAddr) is IA {
     int stateA;
 
     function callB(int val) {
-        int result = IB(bCategory).actionB(val);
+        int result = IB(bAddr).actionB(val);
         this.stateA = this.stateA + result;
     }
 }
@@ -118,11 +118,11 @@ interface IB {
     function actionB(int val) returns (int);
 }
 
-contract ReaderB(bytes32 aCategory) is IB {
+contract ReaderB(bytes aAddr) is IB {
     int stateB;
 
     function actionB(int val) returns (int) {
-        int aState = IA(aCategory).outState.stateA;
+        int aState = IA(aAddr).outState.stateA;
         this.stateB = this.stateB + val + aState;
         return val;
     }
@@ -149,11 +149,11 @@ interface IA {
     function callB(int val) returns (int);
 }
 
-contract MutualA(bytes32 bCategory) is IA {
+contract MutualA(bytes bAddr) is IA {
     int stateA;
 
     function callB(int val) returns (int) {
-        int result = IB(bCategory).actionB(val);
+        int result = IB(bAddr).actionB(val);
         this.stateA = this.stateA + result;
         return result;
     }
@@ -173,11 +173,11 @@ interface IB {
     function actionB(int val) returns (int);
 }
 
-contract MutualB(bytes32 aCategory) is IB {
+contract MutualB(bytes aAddr) is IB {
     int stateB;
 
     function actionB(int val) returns (int) {
-        int aResult = IA(aCategory).callB(val);
+        int aResult = IA(aAddr).callB(val);
         this.stateB = this.stateB + val + aResult;
         return val;
     }
@@ -198,11 +198,11 @@ interface ISelf {
     function step(int val) returns (int);
 }
 
-contract SelfRef(bytes32 otherCategory) is ISelf {
+contract SelfRef(bytes otherAddr) is ISelf {
     int counter;
 
     function step(int val) returns (int) {
-        int otherVal = ISelf(otherCategory).step(val);
+        int otherVal = ISelf(otherAddr).step(val);
         this.counter = this.counter + otherVal;
         return val;
     }
@@ -285,7 +285,13 @@ describe('Circular Call Patterns (A->B->A)', () => {
       expect(inputsB).toContain('__internal__returnOutputIdx');
     });
 
-    it('builds a transaction with A at input[0..1] and B at input[2..3]', async () => {
+    // ADDRESS-MODEL LIMITATION: mutual A<->B cycle is un-bootstrappable. A bakes B's address and B
+    // bakes A's address, so addrA = hash(codeA|addrB|C) and addrB = hash(codeB|addrA|C) - a hash
+    // fixed point with no constructible solution (empirically: baking the peer's real lbc changes
+    // self lbc, never converges). The covenant checks OP_UTXOBYTECODE(peer)==bakedPeerAddr in BOTH
+    // directions, so no genesis can satisfy both. Pattern 1 verifies on-chain (B reads A.outState,
+    // A calls B) so it cannot be wired. Was bootstrappable under the old shared-category model.
+    it.skip('builds a transaction with A at input[0..1] and B at input[2..3]', async () => {
       const provider = createTestProvider();
       const artA = compileString(CALLER_A);
       const artB = compileString(READER_B);
@@ -387,7 +393,7 @@ describe('Circular Call Patterns (A->B->A)', () => {
       expect(fnA!.externalCalls![0]).toEqual(expect.objectContaining({
         interfaceName: 'IB',
         functionName: 'actionB',
-        categoryParam: 'bCategory',
+        addressParam: 'bAddr',
       }));
 
       // B has external call to IA.callB
@@ -396,7 +402,7 @@ describe('Circular Call Patterns (A->B->A)', () => {
       expect(fnB!.externalCalls![0]).toEqual(expect.objectContaining({
         interfaceName: 'IA',
         functionName: 'callB',
-        categoryParam: 'aCategory',
+        addressParam: 'aAddr',
       }));
     });
 
@@ -421,7 +427,12 @@ describe('Circular Call Patterns (A->B->A)', () => {
       expect(inputsB).toContain('__internal__externalReturnOutputIdx'); // B reads A's return
     });
 
-    it('A and B cross-reference in a single atomic transaction', async () => {
+    // ADDRESS-MODEL LIMITATION: mutual A<->B cycle is un-bootstrappable (see Pattern 1 skip note).
+    // MutualA bakes MutualB's address and vice versa: addrA=hash(codeA|addrB|C),
+    // addrB=hash(codeB|addrA|C) has no constructible fixed point, so no genesis satisfies both
+    // covenants' OP_UTXOBYTECODE(peer)==bakedPeerAddr. This test builds + verifyTransaction()s a
+    // real bidirectional cycle, which the address model cannot bootstrap.
+    it.skip('A and B cross-reference in a single atomic transaction', async () => {
       // This is the key insight: in a single transaction, both scripts
       // verify each other at their respective input indices.
       //
@@ -539,11 +550,16 @@ describe('Circular Call Patterns (A->B->A)', () => {
       expect(fn!.externalCalls![0]).toEqual(expect.objectContaining({
         interfaceName: 'ISelf',
         functionName: 'step',
-        categoryParam: 'otherCategory',
+        addressParam: 'otherAddr',
       }));
     });
 
-    it('two instances of SelfRef can verify each other in one TX', async () => {
+    // ADDRESS-MODEL LIMITATION: mutual cycle is un-bootstrappable (see Pattern 1 skip note). Two
+    // SelfRef instances each bake the other's address (same code, shared category): addr1 and addr2
+    // satisfy addr1=hash(code|addr2|C), addr2=hash(code|addr1|C) - a hash fixed point with no
+    // constructible solution. verifyTransaction() needs both covenant identity checks to pass, which
+    // no genesis can arrange. Was bootstrappable under the old shared-category model.
+    it.skip('two instances of SelfRef can verify each other in one TX', async () => {
       // This is the "ping-pong" pattern:
       //   Instance1 (catX) calls ISelf(catY).step()
       //   Instance2 (catY) calls ISelf(catX).step()
@@ -686,19 +702,19 @@ describe('Circular Call Patterns (A->B->A)', () => {
       //   contract.call(contract.address) -> same instance, same storage
       //
       // In SolidCash:
-      //   ISelf(otherCategory).step() -> different instance, different UTXO
+      //   ISelf(otherAddr).step() -> different instance, different UTXO
       //
       // True self-reentrancy (same instance calling itself) is impossible.
 
       const art = compileString(SELF_REF);
       const fn = art.abi.find((f) => f.name === 'step');
 
-      // The external call uses 'otherCategory' - a constructor parameter
-      // This MUST be a different category from the contract's own
-      expect(fn!.externalCalls![0].categoryParam).toBe('otherCategory');
+      // The external call uses 'otherAddr' - a constructor parameter
+      // This MUST be a different instance address from the contract's own
+      expect(fn!.externalCalls![0].addressParam).toBe('otherAddr');
 
-      // If someone set otherCategory == ownCategory, the covenant check
-      // would try to find a SECOND master UTXO with the same category
+      // If someone set otherAddr == ownAddr, the covenant check
+      // would try to find a SECOND master UTXO with the same address
       // at the external call input position. But the contract's own master is
       // already consumed at input[0]. There is no second master UTXO.
       // The transaction would fail to validate.

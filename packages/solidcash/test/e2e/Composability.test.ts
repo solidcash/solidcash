@@ -18,12 +18,12 @@ interface ITarget {
     function increment();
 }
 
-contract Caller(bytes32 targetCategory) {
+contract Caller(bytes targetAddr) {
     int callerState;
 
     function callTarget(pubkey pk, sig s) {
         require(checkSig(s, pk));
-        ITarget(targetCategory).increment();
+        ITarget(targetAddr).increment();
         this.callerState = this.callerState + 1;
     }
 
@@ -62,7 +62,8 @@ describe('Contract Composability', () => {
       provider, contractB, artB.stateLayout!, { counter: 0n }, { saltContract: true },
     );
 
-    const contractA = new Contract(artA, [hexToBin(catB)], { provider });
+    const targetAddr = contractB.withCategory(hexToBin(catB)).lockingBytecode;
+    const contractA = new Contract(artA, [targetAddr], { provider });
     const { categoryId: catA } = await setupStatefulUtxos(
       provider, contractA, artA.stateLayout!, { callerState: 0n }, { saltContract: true },
     );

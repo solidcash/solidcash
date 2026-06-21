@@ -3,7 +3,7 @@ import { hexToBin } from '@bitauth/libauth';
 import {
   Contract, StatefulContract, StatefulTransactionBuilder,
   StatefulFunctionCall, TransactionBuilder,
-  createDataNftUnlocker,
+  createDataNftUnlocker, getDataNftLockingBytecode,
 } from '../../src/index.js';
 import {
   buildInitialStateCommitments,
@@ -38,7 +38,7 @@ contract Counter() is ICounter {
 }
 `;
 
-// Reader using 2-arg form (category, lbc) for external state reads
+// Reader using address form for external state reads
 const LBC_READER_CONTRACT = `
 pragma solidcash >=0.8.0;
 
@@ -47,18 +47,18 @@ interface ICounter {
     function increment(pubkey owner, sig s);
 }
 
-contract LbcReader(bytes32 counterCategory, bytes counterLbc) {
+contract LbcReader(bytes counterAddr) {
     int lastSeen;
 
     function sync(pubkey pk, sig s) {
         require(checkSig(s, pk));
-        int val = ICounter(counterCategory, counterLbc).counter;
+        int val = ICounter(counterAddr).counter;
         this.lastSeen = val;
     }
 }
 `;
 
-// Reader using 2-arg form for outState reads
+// Reader using address form for outState reads
 const LBC_OUTSTATE_READER_CONTRACT = `
 pragma solidcash >=0.8.0;
 
@@ -67,18 +67,18 @@ interface ICounter {
     function increment(pubkey owner, sig s);
 }
 
-contract LbcOutStateReader(bytes32 counterCategory, bytes counterLbc) {
+contract LbcOutStateReader(bytes counterAddr) {
     int lastSeen;
 
     function readOutputState(pubkey pk, sig s) {
         require(checkSig(s, pk));
-        int newVal = ICounter(counterCategory, counterLbc).outState.counter;
+        int newVal = ICounter(counterAddr).outState.counter;
         this.lastSeen = newVal;
     }
 }
 `;
 
-// Caller using 2-arg form for external function calls with return values
+// Caller using address form for external function calls with return values
 const LBC_CALLER_CONTRACT = `
 pragma solidcash >=0.8.0;
 
@@ -87,12 +87,12 @@ interface IReturningCounter {
     function getAndIncrement(pubkey owner, sig s) returns (int);
 }
 
-contract LbcCaller(bytes32 counterCategory, bytes counterLbc) {
+contract LbcCaller(bytes counterAddr) {
     int lastResult;
 
     function callAndRead(pubkey pk, sig s) {
         require(checkSig(s, pk));
-        int result = IReturningCounter(counterCategory, counterLbc).getAndIncrement();
+        int result = IReturningCounter(counterAddr).getAndIncrement();
         this.lastResult = result;
     }
 }
@@ -121,11 +121,11 @@ contract ReturningCounter() is IReturningCounter {
 
 // ===== Tests =====
 
-describe('Lbc Verification (2-arg instantiation)', () => {
+describe('Lbc Verification (address instantiation)', () => {
   // ---------- Artifact Metadata Tests ----------
 
   describe('artifact metadata', () => {
-    it('should include lbcParam in externalReads for 2-arg state read', () => {
+    it('should include addressParam in externalReads for address state read', () => {
       const artifact = compileString(LBC_READER_CONTRACT);
       const fn = artifact.abi.find((f) => f.name === 'sync');
 
@@ -134,12 +134,11 @@ describe('Lbc Verification (2-arg instantiation)', () => {
       expect(fn!.externalReads!.length).toBe(1);
       expect(fn!.externalReads![0]).toEqual(expect.objectContaining({
         interfaceName: 'ICounter',
-        categoryParam: 'counterCategory',
-        lbcParam: 'counterLbc',
+        addressParam: 'counterAddr',
       }));
     });
 
-    it('should include lbcParam in externalOutStateReads for 2-arg outState read', () => {
+    it('should include addressParam in externalOutStateReads for address outState read', () => {
       const artifact = compileString(LBC_OUTSTATE_READER_CONTRACT);
       const fn = artifact.abi.find((f) => f.name === 'readOutputState');
 
@@ -148,12 +147,11 @@ describe('Lbc Verification (2-arg instantiation)', () => {
       expect(fn!.externalOutStateReads!.length).toBe(1);
       expect(fn!.externalOutStateReads![0]).toEqual(expect.objectContaining({
         interfaceName: 'ICounter',
-        categoryParam: 'counterCategory',
-        lbcParam: 'counterLbc',
+        addressParam: 'counterAddr',
       }));
     });
 
-    it('should include lbcParam in externalCalls for 2-arg function call', () => {
+    it('should include addressParam in externalCalls for address function call', () => {
       const artifact = compileString(LBC_CALLER_CONTRACT);
       const fn = artifact.abi.find((f) => f.name === 'callAndRead');
 
@@ -162,12 +160,11 @@ describe('Lbc Verification (2-arg instantiation)', () => {
       expect(fn!.externalCalls!.length).toBe(1);
       expect(fn!.externalCalls![0]).toEqual(expect.objectContaining({
         interfaceName: 'IReturningCounter',
-        categoryParam: 'counterCategory',
-        lbcParam: 'counterLbc',
+        addressParam: 'counterAddr',
       }));
     });
 
-    it('should NOT include lbcParam for 1-arg form (backwards compat)', () => {
+    it('should set addressParam to the constructor parameter name', () => {
       const source = `
 pragma solidcash >=0.8.0;
 
@@ -176,23 +173,22 @@ interface ICounter {
     function increment(pubkey owner, sig s);
 }
 
-contract Reader(bytes32 counterCategory) {
+contract Reader(bytes counterAddr) {
     int lastSeen;
 
     function sync(pubkey pk, sig s) {
         require(checkSig(s, pk));
-        int val = ICounter(counterCategory).counter;
+        int val = ICounter(counterAddr).counter;
         this.lastSeen = val;
     }
 }
 `;
       const artifact = compileString(source);
       const fn = artifact.abi.find((f) => f.name === 'sync');
-      expect(fn!.externalReads![0].categoryParam).toBe('counterCategory');
-      expect(fn!.externalReads![0].lbcParam).toBeUndefined();
+      expect(fn!.externalReads![0].addressParam).toBe('counterAddr');
     });
 
-    it('should have readOnlyDataNft slot in blockLayout with lbc-parameterized contract', () => {
+    it('should have readOnlyDataNft slot in blockLayout with address-parameterized contract', () => {
       const artifact = compileString(LBC_READER_CONTRACT);
       const fn = artifact.abi.find((f) => f.name === 'sync');
 
@@ -202,9 +198,9 @@ contract Reader(bytes32 counterCategory) {
     });
   });
 
-  // ---------- StatefulFunctionCall API with lbc-parameterized state reads ----------
+  // ---------- StatefulFunctionCall API with address state reads ----------
 
-  describe('StatefulFunctionCall API with lbc state reads', () => {
+  describe('StatefulFunctionCall API with address state reads', () => {
     const provider = createTestProvider();
     const readerArtifact = compileString(LBC_READER_CONTRACT);
     const counterArtifact = compileString(COUNTER_CONTRACT);
@@ -215,30 +211,29 @@ contract Reader(bytes32 counterCategory) {
     let readerContract: Contract;
 
     beforeAll(async () => {
-      // Genesis counter (B) first; reader (A) embeds B's real category + salted lbc.
+      // Genesis counter (B) first; reader (A) embeds B's data-NFT address (state read).
       const { categoryId: counterCategoryId } = await setupStatefulUtxos(
         provider, counterContract, counterArtifact.stateLayout!, { counter: 5n }, { saltContract: true },
       );
-      const saltedCounter = counterContract.withCategory(hexToBin(counterCategoryId));
 
       readerContract = new Contract(
-        readerArtifact, [hexToBin(counterCategoryId), saltedCounter.lockingBytecode], { provider },
+        readerArtifact, [getDataNftLockingBytecode(counterCategoryId)], { provider },
       );
       ({ categoryId: readerCategoryId } = await setupStatefulUtxos(
         provider, readerContract, readerArtifact.stateLayout!, { lastSeen: 0n }, { saltContract: true },
       ));
     });
 
-    it('should return a StatefulFunctionCall for lbc-parameterized contract', () => {
+    it('should return a StatefulFunctionCall for address-parameterized contract', () => {
       const sc = StatefulContract.withCategory(readerContract, readerCategoryId);
       const call = sc.sync(alicePub, new SignatureTemplate(alicePriv));
       expect(call).toBeInstanceOf(StatefulFunctionCall);
     });
   });
 
-  // ---------- StatefulFunctionCall API with lbc outState reads ----------
+  // ---------- StatefulFunctionCall API with address outState reads ----------
 
-  describe('StatefulFunctionCall API with lbc outState reads', () => {
+  describe('StatefulFunctionCall API with address outState reads', () => {
     const provider = createTestProvider();
     const readerArtifact = compileString(LBC_OUTSTATE_READER_CONTRACT);
     const counterArtifact = compileString(COUNTER_CONTRACT);
@@ -250,22 +245,22 @@ contract Reader(bytes32 counterCategory) {
     let readerContract: Contract;
 
     beforeAll(async () => {
-      // Genesis counter (B) first; the on-chain contract is salted, so the reader's
-      // covenant must embed the salted counter's real category + salted lbc.
+      // Genesis counter (B) first; outState reads pin the callee master, so the reader's
+      // covenant embeds the salted counter's master locking bytecode.
       ({ categoryId: counterCategoryId } = await setupStatefulUtxos(
         provider, counterContract, counterArtifact.stateLayout!, { counter: 5n }, { saltContract: true },
       ));
       const saltedCounter = counterContract.withCategory(hexToBin(counterCategoryId));
 
       readerContract = new Contract(
-        readerArtifact, [hexToBin(counterCategoryId), saltedCounter.lockingBytecode], { provider },
+        readerArtifact, [saltedCounter.lockingBytecode], { provider },
       );
       ({ categoryId: readerCategoryId } = await setupStatefulUtxos(
         provider, readerContract, readerArtifact.stateLayout!, { lastSeen: 0n }, { saltContract: true },
       ));
     });
 
-    it('should return a StatefulFunctionCall for lbc outState reader', () => {
+    it('should return a StatefulFunctionCall for address outState reader', () => {
       const sc = StatefulContract.withCategory(readerContract, readerCategoryId);
       const call = sc.readOutputState(alicePub, new SignatureTemplate(alicePriv));
       expect(call).toBeInstanceOf(StatefulFunctionCall);
@@ -283,9 +278,9 @@ contract Reader(bytes32 counterCategory) {
     });
   });
 
-  // ---------- StatefulTransactionBuilder with lbc-parameterized external calls ----------
+  // ---------- StatefulTransactionBuilder with address-parameterized external calls ----------
 
-  describe('StatefulTransactionBuilder with lbc external call UTXOs', () => {
+  describe('StatefulTransactionBuilder with address external call UTXOs', () => {
     const provider = createTestProvider();
     const readerArtifact = compileString(LBC_OUTSTATE_READER_CONTRACT);
     const counterArtifact = compileString(COUNTER_CONTRACT);
@@ -297,7 +292,7 @@ contract Reader(bytes32 counterCategory) {
     const counterLbc = counterContract.lockingBytecode;
 
     const readerContract = new Contract(
-      readerArtifact, [hexToBin(counterCategoryId), counterLbc], { provider },
+      readerArtifact, [counterLbc], { provider },
     );
 
     const counterStateLayout = counterArtifact.stateLayout!;
@@ -350,7 +345,7 @@ contract Reader(bytes32 counterCategory) {
       },
     };
 
-    it('should build a StatefulTransactionBuilder with lbc-parameterized external call', () => {
+    it('should build a StatefulTransactionBuilder with address-parameterized external call', () => {
       const readerMasterUnlocker = readerContract.unlock.readOutputState(
         alicePub, new SignatureTemplate(alicePriv), 2n,
       );
@@ -388,7 +383,7 @@ contract Reader(bytes32 counterCategory) {
       expect(builder).toBeInstanceOf(TransactionBuilder);
     });
 
-    it('should compute correct transfer output base with lbc external call', () => {
+    it('should compute correct transfer output base with address external call', () => {
       const readerMasterUnlocker = readerContract.unlock.readOutputState(
         alicePub, new SignatureTemplate(alicePriv), 2n,
       );
@@ -424,9 +419,9 @@ contract Reader(bytes32 counterCategory) {
     });
   });
 
-  // ---------- StatefulFunctionCall API with lbc external function calls ----------
+  // ---------- StatefulFunctionCall API with address external function calls ----------
 
-  describe('StatefulFunctionCall API with lbc external calls', () => {
+  describe('StatefulFunctionCall API with address external calls', () => {
     const provider = createTestProvider();
     const callerArtifact = compileString(LBC_CALLER_CONTRACT);
     const counterArtifact = compileString(RETURNING_COUNTER_CONTRACT);
@@ -438,27 +433,28 @@ contract Reader(bytes32 counterCategory) {
     let callerContract: Contract;
 
     beforeAll(async () => {
-      // Genesis counter (B) first; caller (A) embeds B's real category + salted lbc.
+      // Genesis counter (B) first; function calls pin the callee master, so the caller (A)
+      // embeds the salted counter's master locking bytecode.
       ({ categoryId: counterCategoryId } = await setupStatefulUtxos(
         provider, counterContract, counterArtifact.stateLayout!, { counter: 5n }, { saltContract: true },
       ));
       const saltedCounter = counterContract.withCategory(hexToBin(counterCategoryId));
 
       callerContract = new Contract(
-        callerArtifact, [hexToBin(counterCategoryId), saltedCounter.lockingBytecode], { provider },
+        callerArtifact, [saltedCounter.lockingBytecode], { provider },
       );
       ({ categoryId: callerCategoryId } = await setupStatefulUtxos(
         provider, callerContract, callerArtifact.stateLayout!, { lastResult: 0n }, { saltContract: true },
       ));
     });
 
-    it('should return a StatefulFunctionCall for lbc-parameterized caller', () => {
+    it('should return a StatefulFunctionCall for address-parameterized caller', () => {
       const sc = StatefulContract.withCategory(callerContract, callerCategoryId);
       const call = sc.callAndRead(alicePub, new SignatureTemplate(alicePriv));
       expect(call).toBeInstanceOf(StatefulFunctionCall);
     });
 
-    it('should support chaining withExternalCall for lbc caller', () => {
+    it('should support chaining withExternalCall for address caller', () => {
       const callerSc = StatefulContract.withCategory(callerContract, callerCategoryId);
       const counterSc = StatefulContract.withCategory(counterContract, counterCategoryId);
 

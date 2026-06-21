@@ -47,12 +47,12 @@ interface ICounter {
     function increment(pubkey owner, sig s);
 }
 
-contract OutStateReader(bytes32 counterCategory) {
+contract OutStateReader(bytes counterAddr) {
     int lastSeen;
 
     function readOutputState(pubkey pk, sig s) {
         require(checkSig(s, pk));
-        int newVal = ICounter(counterCategory).outState.counter;
+        int newVal = ICounter(counterAddr).outState.counter;
         this.lastSeen = newVal;
     }
 }
@@ -88,12 +88,12 @@ interface IReturningCounter {
     function getAndIncrement(pubkey owner, sig s) returns (int);
 }
 
-contract ReturnReader(bytes32 counterCategory) {
+contract ReturnReader(bytes counterAddr) {
     int lastResult;
 
     function callAndRead(pubkey pk, sig s) {
         require(checkSig(s, pk));
-        int result = IReturningCounter(counterCategory).getAndIncrement();
+        int result = IReturningCounter(counterAddr).getAndIncrement();
         this.lastResult = result;
     }
 }
@@ -129,18 +129,18 @@ interface IReturningCounter {
     function getAndIncrement(pubkey owner, sig s) returns (int);
 }
 
-contract CombinedReader(bytes32 counterCategory) {
+contract CombinedReader(bytes counterAddr) {
     int lastSeen;
 
     function callWithReturn(pubkey pk, sig s) {
         require(checkSig(s, pk));
-        int result = IReturningCounter(counterCategory).getAndIncrement();
+        int result = IReturningCounter(counterAddr).getAndIncrement();
         this.lastSeen = result;
     }
 
     function readOutState(pubkey pk, sig s) {
         require(checkSig(s, pk));
-        int newVal = IReturningCounter(counterCategory).outState.counter;
+        int newVal = IReturningCounter(counterAddr).outState.counter;
         this.lastSeen = newVal;
     }
 }
@@ -156,13 +156,13 @@ interface IMultiField {
     function setAll(pubkey owner, sig s);
 }
 
-contract MultiFieldReader(bytes32 extCategory) {
+contract MultiFieldReader(bytes extAddr) {
     int sum;
 
     function readAlphaAndGamma(pubkey pk, sig s) {
         require(checkSig(s, pk));
-        int a = IMultiField(extCategory).outState.alpha;
-        int g = IMultiField(extCategory).outState.gamma;
+        int a = IMultiField(extAddr).outState.alpha;
+        int g = IMultiField(extAddr).outState.gamma;
         this.sum = a + g;
     }
 }
@@ -183,7 +183,7 @@ describe('outState Accessor and Function Returns', () => {
       expect(fn!.externalOutStateReads!.length).toBe(1);
       expect(fn!.externalOutStateReads![0]).toEqual(expect.objectContaining({
         interfaceName: 'ICounter',
-        categoryParam: 'counterCategory',
+        addressParam: 'counterAddr',
         requiredDataNftIndices: expect.arrayContaining([0]),
       }));
     });
@@ -453,7 +453,8 @@ contract Reader(bytes32 counterCategory) {
         provider, counterContract, counterStateLayout, { counter: 5n }, { saltContract: true },
       ));
 
-      readerContract = new Contract(outStateReaderArtifact, [hexToBin(counterCategoryId)], { provider });
+      const counterAddr = counterContract.withCategory(hexToBin(counterCategoryId)).lockingBytecode;
+      readerContract = new Contract(outStateReaderArtifact, [counterAddr], { provider });
       ({ categoryId: readerCategoryId } = await setupStatefulUtxos(
         provider, readerContract, readerStateLayout, { lastSeen: 0n }, { saltContract: true },
       ));
@@ -478,7 +479,7 @@ contract Reader(bytes32 counterCategory) {
 
     const counterContract = new Contract(counterArtifact, [], { provider });
     const readerContract = new Contract(
-      outStateReaderArtifact, [hexToBin(counterCategoryId)], { provider },
+      outStateReaderArtifact, [counterContract.lockingBytecode], { provider },
     );
 
     const counterStateLayout = counterArtifact.stateLayout!;
@@ -667,7 +668,8 @@ contract Reader(bytes32 counterCategory) {
         provider, counterContract, counterStateLayout, { counter: 5n }, { saltContract: true },
       ));
 
-      readerContract = new Contract(returnReaderArtifact, [hexToBin(counterCategoryId)], { provider });
+      const counterAddr = counterContract.withCategory(hexToBin(counterCategoryId)).lockingBytecode;
+      readerContract = new Contract(returnReaderArtifact, [counterAddr], { provider });
       ({ categoryId: readerCategoryId } = await setupStatefulUtxos(
         provider, readerContract, readerStateLayout, { lastResult: 0n }, { saltContract: true },
       ));

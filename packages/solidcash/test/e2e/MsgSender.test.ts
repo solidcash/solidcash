@@ -91,11 +91,11 @@ interface IB {
     function doWork(int val) returns (int);
 }
 
-contract ContractA(bytes32 bCategory) {
+contract ContractA(bytes bAddr) {
     int stateA;
 
     function callB(int val) {
-        int result = IB(bCategory).doWork(val);
+        int result = IB(bAddr).doWork(val);
         this.stateA = this.stateA + result;
     }
 }
@@ -155,12 +155,12 @@ interface IB_Chain {
     function chainToC(int val) returns (int);
 }
 
-contract ContractBChain(bytes32 cCategory) is IB_Chain {
+contract ContractBChain(bytes cAddr) is IB_Chain {
     int calledCount;
 
     function chainToC(int val) returns (int) {
         require(val > 0);
-        int cResult = IC_Sender(cCategory).compute(val);
+        int cResult = IC_Sender(cAddr).compute(val);
         this.calledCount = this.calledCount + cResult;
         return this.calledCount;
     }
@@ -174,11 +174,11 @@ interface IB_Chain {
     function chainToC(int val) returns (int);
 }
 
-contract ContractAChain(bytes32 bCategory) {
+contract ContractAChain(bytes bAddr) {
     int stateA;
 
     function startChain(int val) {
-        int bResult = IB_Chain(bCategory).chainToC(val);
+        int bResult = IB_Chain(bAddr).chainToC(val);
         this.stateA = this.stateA + bResult;
     }
 }
@@ -196,12 +196,12 @@ interface IC_Sender {
     function compute(int val) returns (int);
 }
 
-contract ContractAFanout(bytes32 bCategory, bytes32 cCategory) {
+contract ContractAFanout(bytes bAddr, bytes cAddr) {
     int stateA;
 
     function callBothBC(int valB, int valC) {
-        int bResult = IB_Sender(bCategory).doWorkFromSender(valB);
-        int cResult = IC_Sender(cCategory).compute(valC);
+        int bResult = IB_Sender(bAddr).doWorkFromSender(valB);
+        int cResult = IC_Sender(cAddr).compute(valC);
         this.stateA = this.stateA + bResult + cResult;
     }
 }
@@ -388,7 +388,7 @@ describe('msg.sender and tx.origin', () => {
     const catB = 'b1cd'.repeat(16);
 
     const contractB = new Contract(artB, [], { provider });
-    const contractA = new Contract(artA, [hexToBin(catB)], { provider });
+    const contractA = new Contract(artA, [contractB.lockingBytecode], { provider });
 
     const layoutA = artA.stateLayout!;
     const layoutB = artB.stateLayout!;
@@ -482,11 +482,11 @@ describe('msg.sender and tx.origin', () => {
 
     const artB = compileString(CONTRACT_B_CALLS_C);
     const catB = 'b3cd'.repeat(16);
-    const contractB = new Contract(artB, [hexToBin(catC)], { provider });
+    const contractB = new Contract(artB, [contractC.lockingBytecode], { provider });
 
     const artA = compileString(CONTRACT_A_CALLS_B_CHAIN);
     const catA = 'a3cd'.repeat(16);
-    const contractA = new Contract(artA, [hexToBin(catB)], { provider });
+    const contractA = new Contract(artA, [contractB.lockingBytecode], { provider });
 
     const layoutA = artA.stateLayout!;
     const layoutB = artB.stateLayout!;
@@ -635,7 +635,9 @@ describe('msg.sender and tx.origin', () => {
 
     const artA = compileString(CONTRACT_A_FANOUT);
     const catA = 'a5cd'.repeat(16);
-    const contractA = new Contract(artA, [hexToBin(catB), hexToBin(catC)], { provider });
+    const contractA = new Contract(
+      artA, [contractB.lockingBytecode, contractC.lockingBytecode], { provider },
+    );
 
     const layoutA = artA.stateLayout!;
     const layoutB = artB.stateLayout!;
@@ -940,11 +942,11 @@ interface ITickable {
     function tick() returns (int);
 }
 
-contract TickCaller(bytes32 bCategory) {
+contract TickCaller(bytes bAddr) {
     int total;
 
     function callTick() {
-        int result = ITickable(bCategory).tick();
+        int result = ITickable(bAddr).tick();
         this.total = this.total + result;
     }
 }
@@ -966,7 +968,7 @@ contract TickCaller(bytes32 bCategory) {
       ({ categoryId: catB } = await setupStatefulUtxos(regProvider, cB, layoutB, { count: 0n }, { saltContract: true }));
       contractB = cB.withCategory(hexToBin(catB));
 
-      const cCaller = new Contract(artCaller, [hexToBin(catB)], { provider: regProvider });
+      const cCaller = new Contract(artCaller, [contractB.lockingBytecode], { provider: regProvider });
       ({ categoryId: catCaller } = await setupStatefulUtxos(
         regProvider, cCaller, layoutCaller, { total: 0n }, { saltContract: true },
       ));
@@ -1034,7 +1036,8 @@ contract TickCaller(bytes32 bCategory) {
       const abCatB = 'e5cd'.repeat(16);
       const abCatA = 'e6cd'.repeat(16);
       const abContractB = new Contract(abArtB, [], { provider: abProvider });
-      const abContractA = new Contract(abArtA, [hexToBin(abCatB)], { provider: abProvider });
+      const abBAddr = abContractB.withCategory(hexToBin(abCatB)).lockingBytecode;
+      const abContractA = new Contract(abArtA, [abBAddr], { provider: abProvider });
 
       const abScB = StatefulContract.withCategory(abContractB, abCatB);
       const abScA = StatefulContract.withCategory(abContractA, abCatA, {
@@ -1063,7 +1066,8 @@ contract TickCaller(bytes32 bCategory) {
       const { categoryId: abCatB } = await setupStatefulUtxos(
         abProvider, abContractB, abLayoutB, { calledCount: 0n }, { saltContract: true },
       );
-      const abContractA = new Contract(abArtA, [hexToBin(abCatB)], { provider: abProvider });
+      const abBAddr = abContractB.withCategory(hexToBin(abCatB)).lockingBytecode;
+      const abContractA = new Contract(abArtA, [abBAddr], { provider: abProvider });
       const { categoryId: abCatA } = await setupStatefulUtxos(
         abProvider, abContractA, abLayoutA, { stateA: 0n }, { saltContract: true },
       );

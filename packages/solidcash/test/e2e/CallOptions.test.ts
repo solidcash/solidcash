@@ -12,26 +12,26 @@ interface ICounter {
     function increment();
 }
 
-contract CallOptionTest(bytes32 targetCategory) {
+contract CallOptionTest(bytes targetAddr) {
     int state;
 
     function callWithValue(int amount) {
-        ICounter(targetCategory).increment{value: amount}();
+        ICounter(targetAddr).increment{value: amount}();
         this.state = this.state + 1;
     }
 
     function lowLevelCallWithValue(int amount) {
-        ICounter(targetCategory).increment.call{value: amount}();
+        ICounter(targetAddr).increment.call{value: amount}();
         this.state = this.state + 1;
     }
 
     function callWithGas() {
-        ICounter(targetCategory).increment{gas: 800}();
+        ICounter(targetAddr).increment{gas: 800}();
         this.state = this.state + 1;
     }
 
     function callWithBoth(int amount) {
-        ICounter(targetCategory).increment{value: amount, gas: 800}();
+        ICounter(targetAddr).increment{value: amount, gas: 800}();
         this.state = this.state + 1;
     }
 }
@@ -45,11 +45,11 @@ interface ICounter {
     function increment();
 }
 
-contract GasOnly(bytes32 targetCategory) {
+contract GasOnly(bytes targetAddr) {
     int state;
 
     function doCall() {
-        ICounter(targetCategory).increment{gas: 500}();
+        ICounter(targetAddr).increment{gas: 500}();
         this.state = this.state + 1;
     }
 }

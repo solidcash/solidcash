@@ -580,14 +580,14 @@ interface ITarget {
     function increment();
 }
 
-contract CallerWithEvent(bytes32 targetCategory) {
+contract CallerWithEvent(bytes targetAddr) {
     event CallerAction(int callerState);
 
     int callerState;
 
     function callTarget(pubkey pk, sig s) {
         require(checkSig(s, pk));
-        ITarget(targetCategory).increment();
+        ITarget(targetAddr).increment();
         this.callerState = this.callerState + 1;
         emit CallerAction(this.callerState);
     }
@@ -635,7 +635,8 @@ contract TargetWithEvent() {
       const { categoryId: catB } = await setupStatefulUtxos(
         provider, contractB, artB.stateLayout!, { counter: 0n }, { saltContract: true },
       );
-      const contractA = new Contract(artA, [hexToBin(catB)], { provider });
+      const targetAddr = contractB.withCategory(hexToBin(catB)).lockingBytecode;
+      const contractA = new Contract(artA, [targetAddr], { provider });
       const { categoryId: catA } = await setupStatefulUtxos(
         provider, contractA, artA.stateLayout!, { callerState: 0n }, { saltContract: true },
       );

@@ -5379,7 +5379,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       if (spec.constructorArgs) {
         constructorArgs = spec.constructorArgs;
       } else {
-        constructorArgs = StatefulContract._inferConstructorArgs(spec.artifact, specs);
+        constructorArgs = StatefulContract._inferConstructorArgs(spec.artifact, specs, provider);
       }
 
       const contract = new Contract(spec.artifact, constructorArgs as any, {
@@ -5417,6 +5417,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
   private static _inferConstructorArgs(
     artifact: Artifact,
     allSpecs: Record<string, ExternalContractSpec>,
+    provider: any,
     visited?: Set<string>,
   ): ConstructorArgument[] {
     visited = visited ?? new Set();
@@ -5468,9 +5469,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       }
       // Build the external contract (self-pinned: category baked) to derive its addresses.
       const extArgs = spec.constructorArgs
-        ?? StatefulContract._inferConstructorArgs(spec.artifact, allSpecs, new Set(visited));
+        ?? StatefulContract._inferConstructorArgs(spec.artifact, allSpecs, provider, new Set(visited));
       const extContract = new Contract(spec.artifact, extArgs as any, {
-        provider: undefined as any, // not needed for locking bytecode derivation
+        provider,
         category: hexToBin(spec.categoryId),
       });
       if (ref.kind === 'master') {

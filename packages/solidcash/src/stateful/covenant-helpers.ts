@@ -91,6 +91,22 @@ export function getEntryNftAddress(
   return scriptToAddress(covenantScript, contract.provider.network, contract.addressType, true);
 }
 
+// Locking-bytecode (bytes) forms of the sub-NFT addresses, used as address-model handles
+// baked into a reader's constructor args (the read covenant checks OP_UTXOBYTECODE == this value).
+export function getDataNftLockingBytecode(categoryId: string): Uint8Array {
+  validateCategoryId(categoryId);
+  return scriptToLockingBytecode(buildDataNftCovenantScript(hexToBin(categoryId)), 'p2sh32');
+}
+
+export function getEntryNftLockingBytecode(
+  contract: Contract<any, any>, categoryId: string, collectionNameOrSignature: string,
+): Uint8Array {
+  validateCategoryId(categoryId);
+  const collectionSignature = resolveCollectionSignature(contract.artifact, collectionNameOrSignature);
+  const collectionHash = computeCollectionHash(collectionSignature);
+  return scriptToLockingBytecode(buildEntryNftCovenantScript(hexToBin(categoryId), collectionHash), 'p2sh32');
+}
+
 export function getEventNftAddress(
   contract: Contract<any, any>, categoryId: string, eventNameOrSignature: string,
 ): string {

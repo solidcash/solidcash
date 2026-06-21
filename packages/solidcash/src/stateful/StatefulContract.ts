@@ -48,6 +48,7 @@ import {
 } from './StateReader.js';
 import {
   getDataNftAddress, getEntryNftAddress, getEventNftAddress, getAnonymousEventNftAddress,
+  getDataNftLockingBytecode, getEntryNftLockingBytecode,
   getTokenContainerAddress, getSatoshiContainerAddress, getContractState,
   createDataNftUnlocker, createDestroyDataNftUnlocker,
   createReadOnlyDataNftUnlocker, createEntryNftUnlocker, createReadOnlyEntryNftUnlocker,
@@ -3751,9 +3752,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           );
         }
 
-        // Resolve external category ID from constructor args using categoryParam
+        // Resolve external category ID from the registered external (address model)
         const externalCategoryId = this._resolveExternalCategoryIdByParam(
-          ec.categoryParam, ec.interfaceName, artifact,
+          ec.addressParam, ec.interfaceName, artifact,
         );
 
         // Get B's on-chain state
@@ -4043,9 +4044,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             );
           }
 
-          // Resolve C's category ID from B's constructor args
+          // Resolve C's category ID from B's registered external (address model)
           const cCategoryId = (bContract as StatefulContract)._resolveExternalCategoryIdByParam(
-            bEc.categoryParam, bEc.interfaceName, bContract.inner.artifact,
+            bEc.addressParam, bEc.interfaceName, bContract.inner.artifact,
           );
 
           // Get C's on-chain state
@@ -4314,7 +4315,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
 
       for (const osRead of externalOutStateReads) {
         const isShared = externalCalls?.some(
-          (ec) => ec.interfaceName === osRead.interfaceName && ec.categoryParam === osRead.categoryParam,
+          (ec) => ec.interfaceName === osRead.interfaceName && ec.addressParam === osRead.addressParam,
         ) ?? false;
 
         if (!isShared) {
@@ -4334,7 +4335,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
 
         // Resolve external category ID
         const externalCategoryId = this._resolveExternalCategoryIdByParam(
-          osRead.categoryParam, osRead.interfaceName, artifact,
+          osRead.addressParam, osRead.interfaceName, artifact,
         );
 
         // Get B's on-chain state
@@ -4969,53 +4970,35 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
   }
 
   /**
-   * Resolve the external category ID from constructor args using the categoryParam metadata.
+   * Resolve the external category ID for an external read (address model).
+   * A's constructor args bake the callee *address*, not its category, so the category is
+   * recovered from the registered external contract (keyed by interface name).
    */
-  private _resolveExternalCategoryId(er: ExternalReadAbi, artifact: Artifact): string {
-    if (!er.categoryParam) {
-      throw new Error(
-        `External read for interface '${er.interfaceName}' is missing categoryParam metadata. `
-        + 'Cannot auto-discover the external category ID.',
-      );
-    }
-
-    // Look up the constructor arg by param name
-    const paramIndex = artifact.constructorInputs.findIndex((inp) => inp.name === er.categoryParam);
-    if (paramIndex < 0) {
-      throw new Error(
-        `Constructor parameter '${er.categoryParam}' not found for external read `
-        + `of interface '${er.interfaceName}'.`,
-      );
-    }
-
-    // Get the encoded constructor arg (raw bytes for bytes32)
-    const encodedArg = this.inner.encodedConstructorArgs[paramIndex];
-    return binToHex(encodedArg);
+  private _resolveExternalCategoryId(er: ExternalReadAbi, _artifact: Artifact): string {
+    return this._resolveRegisteredExternalCategoryId(er.interfaceName);
   }
 
   /**
-   * Resolve the external category ID from a category parameter name.
+   * Resolve the external category ID by interface name from the external registry (address model).
+   * The addressParam is unused for resolution - it carries the callee address on-chain, while the
+   * category needed for off-chain UTXO discovery comes from the registered external contract.
    */
   private _resolveExternalCategoryIdByParam(
-    categoryParam: string | undefined, interfaceName: string, artifact: Artifact,
+    _addressParam: string | undefined, interfaceName: string, _artifact: Artifact,
   ): string {
-    if (!categoryParam) {
+    return this._resolveRegisteredExternalCategoryId(interfaceName);
+  }
+
+  /** Look up a registered external contract's category ID by interface name. */
+  private _resolveRegisteredExternalCategoryId(interfaceName: string): string {
+    const ext = this._externalRegistry.get(interfaceName);
+    if (!ext) {
       throw new Error(
-        `External call for interface '${interfaceName}' is missing categoryParam metadata. `
-        + 'Cannot auto-discover the external category ID.',
+        `External contract for interface '${interfaceName}' is not registered. `
+        + 'Provide it via connect-time externals (connect/from { externals }) or withExternalCall().',
       );
     }
-
-    const paramIndex = artifact.constructorInputs.findIndex((inp) => inp.name === categoryParam);
-    if (paramIndex < 0) {
-      throw new Error(
-        `Constructor parameter '${categoryParam}' not found for external call `
-        + `of interface '${interfaceName}'.`,
-      );
-    }
-
-    const encodedArg = this.inner.encodedConstructorArgs[paramIndex];
-    return binToHex(encodedArg);
+    return ext.categoryId;
   }
 
   /**
@@ -5448,20 +5431,27 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
 
     if (artifact.constructorInputs.length === 0) return [];
 
-    // Collect constructor param name -> { interfaceName, kind } from all ABI functions
-    const paramRefs = new Map<string, { interfaceName: string; kind: 'category' | 'lbc' }>();
+    // Collect constructor param name -> { interfaceName, kind } from all ABI functions.
+    // In the address model each external param carries a locking bytecode: the callee's master
+    // address for calls/outState, or the data/entry sub-NFT address for reads.
+    const paramRefs = new Map<string, {
+      interfaceName: string; kind: 'master' | 'dataNft' | 'entryNft'; collection?: string;
+    }>();
     for (const func of artifact.abi) {
       for (const ec of func.externalCalls ?? []) {
-        if (ec.categoryParam) paramRefs.set(ec.categoryParam, { interfaceName: ec.interfaceName, kind: 'category' });
-        if (ec.lbcParam) paramRefs.set(ec.lbcParam, { interfaceName: ec.interfaceName, kind: 'lbc' });
+        if (ec.addressParam) paramRefs.set(ec.addressParam, { interfaceName: ec.interfaceName, kind: 'master' });
       }
       for (const er of func.externalReads ?? []) {
-        if (er.categoryParam) paramRefs.set(er.categoryParam, { interfaceName: er.interfaceName, kind: 'category' });
-        if (er.lbcParam) paramRefs.set(er.lbcParam, { interfaceName: er.interfaceName, kind: 'lbc' });
+        if (er.addressParam) {
+          paramRefs.set(er.addressParam, {
+            interfaceName: er.interfaceName,
+            kind: er.kind === 'entry' ? 'entryNft' : 'dataNft',
+            collection: er.collectionName ?? er.collectionSignature,
+          });
+        }
       }
       for (const os of func.externalOutStateReads ?? []) {
-        if (os.categoryParam) paramRefs.set(os.categoryParam, { interfaceName: os.interfaceName, kind: 'category' });
-        if (os.lbcParam) paramRefs.set(os.lbcParam, { interfaceName: os.interfaceName, kind: 'lbc' });
+        if (os.addressParam) paramRefs.set(os.addressParam, { interfaceName: os.interfaceName, kind: 'master' });
       }
     }
 
@@ -5480,17 +5470,20 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           + `Required by '${artifact.contractName}' constructor param '${input.name}'.`,
         );
       }
-      if (ref.kind === 'category') {
-        return hexToBin(spec.categoryId);
-      }
-      // For lbcParam, build a temporary Contract to get its locking bytecode
-      const lbcArgs = spec.constructorArgs
+      // Build the external contract (self-pinned: category baked) to derive its addresses.
+      const extArgs = spec.constructorArgs
         ?? StatefulContract._inferConstructorArgs(spec.artifact, allSpecs, new Set(visited));
-      const tempContract = new Contract(spec.artifact, lbcArgs as any, {
-        provider: undefined as any, // not needed for lockingBytecode
+      const extContract = new Contract(spec.artifact, extArgs as any, {
+        provider: undefined as any, // not needed for locking bytecode derivation
         category: hexToBin(spec.categoryId),
       });
-      return tempContract.lockingBytecode;
+      if (ref.kind === 'master') {
+        return extContract.lockingBytecode;
+      }
+      if (ref.kind === 'entryNft') {
+        return getEntryNftLockingBytecode(extContract, spec.categoryId, ref.collection!);
+      }
+      return getDataNftLockingBytecode(spec.categoryId);
     });
   }
 

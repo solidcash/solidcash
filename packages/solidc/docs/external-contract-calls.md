@@ -240,12 +240,15 @@ whose state - data NFT / entry NFTs / commitments - a caller can read.)
 A self-pinning stateful contract:
 - takes its state-NFT category as a (compiler-injected) constructor arg, baked into the redeem script → part
   of the address;
-- enforces `categoryPortionOf(OP_UTXOTOKENCATEGORY(self)) == bakedCategory` **once in the contract prologue**
-  (emitted before the function dispatcher / at the top of a single inlined function), so it runs on **every
-  spend** - including `selfdestruct`/`unsafe` functions, which skip only their function-*body* covenant code
-  (run after the prologue via `OP_INVOKE`) and so cannot bypass the prologue pin. (One ~5-byte check, not per
-  function.) The check splits off the capability byte and compares the 32-byte category portion. Combined with
-  self-preservation, the invariant is inductive from genesis;
+- enforces `OP_INPUTINDEX OP_UTXOTOKENCATEGORY == bakedCategoryWithCapability` **once in the contract
+  prologue** (before the dispatcher / at the top of a single inlined function), so it runs on **every spend** -
+  including `selfdestruct`/`unsafe` functions, which skip only their function-*body* covenant code (run after
+  the prologue via `OP_INVOKE`) and so cannot bypass the prologue pin. A stateful contract's spent UTXO is
+  always its master = the **minting NFT** (capability `0x02`), and capabilities never change, so the baked
+  value is `category(internal) || 0x02` (33 bytes) and the compare is **direct** - no capability-byte split.
+  This also pins the capability. (One ~4-byte check, not per function; empirically verified across the e2e
+  suite incl. delegate/upgrade/selfdestruct.) Combined with self-preservation, the invariant is inductive from
+  genesis;
 - the same pin is added to the permissionless **read/merge paths** of the sub-covenants (data NFT, entry NFT,
   token container, satoshi container - the audit found these only *preserve* the category today; event NFT has
   no read path).
@@ -316,12 +319,13 @@ by default** for every stateful contract (no flag) - it is the default-addressab
 
 0. **Done** - `this.categoryId` introspection (the self-category primitive).
 1. **Self-pinning (callee) - DONE.** Implemented by reworking the existing dead salt (no new ctor arg): the
-   SDK bakes the category as a verify **prologue** `<cat> OP_INPUTINDEX OP_UTXOTOKENCATEGORY <32> OP_SPLIT
-   OP_DROP OP_EQUALVERIFY` (runs before ctor args + dispatch -> one contract-level check covering
-   selfdestruct/unsafe). On by default for every stateful contract (the categoryId, already threaded as the
+   SDK bakes the category as a verify **prologue** `<category||0x02> OP_INPUTINDEX OP_UTXOTOKENCATEGORY
+   OP_EQUALVERIFY` (the master is always the minting NFT, so the 0x02 capability is baked and compared
+   directly - no split). Runs before ctor args + dispatch -> one contract-level check covering
+   selfdestruct/unsafe. On by default for every stateful contract (the categoryId, already threaded as the
    salt, is now the `category` self-pin segment; `salt` freed for the separate user CREATE2 segment). Address
-   commits to the category. deployFrom children remain un-self-pinned (compiler-side follow-up). Full SDK +
-   compiler suites green.
+   commits to the category + capability. deployFrom children remain un-self-pinned (compiler-side follow-up).
+   Full SDK + compiler suites green.
 2. **Harden sub-covenants.** Add the pin to the **read/merge paths** of data NFT, entry NFT, token container,
    satoshi container (compiler inline + `state.ts` in lockstep; event NFT already safe).
 3. **Address dispatch (caller).** `address` = locking-bytecode value; `IContract(addr).method()` ->

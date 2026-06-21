@@ -1,11 +1,21 @@
 # External contract calls & dynamic dispatch (EVM-parity address model)
 
-Status: **in progress.** Stage 1 (master self-pin) is landed and live. Stage 2 (data+entry NFT self-pin - the
-master-free-read enabler) and Stage 3 (address dispatch: hard replace of the category-referenced model with
-`IContract(addr)`, removing `connect`) are being implemented together. Stage 4 (proxy upgradeability) remains
-design. Model for `IContract(address).method(arg)` on the BCH UTXO/CashTokens substrate, with the explicit goal
-of **EVM address parity**: an `address` *is* the contract's on-chain address, passed/compared/called directly,
-with no derivation or transformation. Normative rules use MUST/SHOULD.
+Status: **in progress.** Stage 1 (master self-pin) is landed and live. Stage 3 (address dispatch: hard replace
+of the category-referenced model with `IContract(addr)`, removing `connect`) is being implemented. Stage 4
+(proxy upgradeability) remains design.
+
+> **DECISION (2026-06): reads are master-anchored, not master-free.** Cross-contract state reads **co-spend the
+> callee's master** and anchor the read sub-NFT(s) to it (`subNft.categoryBase == master.categoryBase`, with the
+> master verified by `OP_UTXOBYTECODE(master) == addr`). This keeps one uniform `IFoo(addr)` handle for reads and
+> calls, supports multi-NFT reads for free, and needs **no Stage 2 self-pin and no synthetic constructor args**.
+> The **master-free** read design (sub-NFT self-pin / Stage 2 + per-slot synthetic committed ctor args, §3.3/§7.3
+> below) is **postponed research** - kept here for when the master-contention cost of master-anchored reads
+> warrants it. Sections §3.3, §7.3, §9.6, §10 below describe the postponed master-free model; the live model is
+> master-anchored.
+
+Model for `IContract(address).method(arg)` on the BCH UTXO/CashTokens substrate, with the explicit goal of **EVM
+address parity**: an `address` *is* the contract's on-chain address, passed/compared/called directly, with no
+derivation or transformation. Normative rules use MUST/SHOULD.
 
 ## 1. Goal
 

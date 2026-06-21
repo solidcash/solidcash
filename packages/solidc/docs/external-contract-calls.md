@@ -4,14 +4,29 @@ Status: **in progress.** Stage 1 (master self-pin) is landed and live. Stage 3 (
 of the category-referenced model with `IContract(addr)`, removing `connect`) is being implemented. Stage 4
 (proxy upgradeability) remains design.
 
-> **DECISION (2026-06): reads are master-anchored, not master-free.** Cross-contract state reads **co-spend the
-> callee's master** and anchor the read sub-NFT(s) to it (`subNft.categoryBase == master.categoryBase`, with the
-> master verified by `OP_UTXOBYTECODE(master) == addr`). This keeps one uniform `IFoo(addr)` handle for reads and
-> calls, supports multi-NFT reads for free, and needs **no Stage 2 self-pin and no synthetic constructor args**.
-> The **master-free** read design (sub-NFT self-pin / Stage 2 + per-slot synthetic committed ctor args, §3.3/§7.3
-> below) is **postponed research** - kept here for when the master-contention cost of master-anchored reads
-> warrants it. Sections §3.3, §7.3, §9.6, §10 below describe the postponed master-free model; the live model is
-> master-anchored.
+> **DECISION (2026-06): reads verify each co-spent sub-NFT by its own per-identity address + self-pin.**
+> Master-anchored reads were rejected: there is **no read-only master spend** (co-spending B's master requires B
+> to *execute a function*, `StatefulContract.ts` ~3811), so a generic read can't anchor to a co-spent master.
+> Instead a read co-spends only B's sub-NFT(s) read-only (the existing read-only path) and verifies each by its
+> **distinct on-chain address** plus a **Stage 2 self-pin** (so a fabricated foreign-category UTXO at that address
+> is unspendable). This is fail-closed and permutation-proof. `IFoo(addr)` is the uniform handle (category form
+> excluded entirely).
+>
+> **State is two NFT classes, and only fixed-size vars use `nftIndex`:**
+> - **Fixed-size vars** - tightly bin-packed (multiple per NFT), static layout frozen at compile time. The data
+>   NFT covenant is parameterized by `nftIndex` so each fixed-state NFT has a **distinct address**
+>   `dataNftAddr(C, nftIndex)`; a read checks `OP_UTXOBYTECODE == dataNftAddr(C, nftIndex)`. This makes
+>   multi-(fixed)-data-NFT external reads sound (distinct addresses defeat tx-builder permutation).
+> - **Dynamic-size vars** (variable `string`/array that grows/shrinks) - a **separate NFT class**, one per var,
+>   addressed by **var identity** like entry NFTs are by `collectionHash` (`dynVarAddr(C, varKey)`), with
+>   in-commitment chunk-index disambiguation for multi-chunk values. Living outside the `nftIndex` space, a
+>   dynamic var's growth/shrink never shifts a fixed var's `nftIndex`. **This class is a future feature** (today
+>   an unbounded var gets a position-dependent dedicated NFT bounded by `commitmentLimit`, throws on overflow);
+>   when added it slots in beside entry/data NFTs with zero impact on fixed-var addressing.
+>
+> Stage 3 implements the **fixed-var class** (per-`nftIndex` data NFT covenant + Stage 2 self-pin). The earlier
+> master-free §3.3/§7.3/§9.6 text below predates this and is superseded by this block; the dynamic-var class is
+> deferred research.
 
 Model for `IContract(address).method(arg)` on the BCH UTXO/CashTokens substrate, with the explicit goal of **EVM
 address parity**: an `address` *is* the contract's on-chain address, passed/compared/called directly, with no

@@ -107,6 +107,17 @@ export function buildDataNftCovenantScript(categoryId: Uint8Array): Script {
     Op.OP_ELSE,
     // === Read-only path (flag=0): no master needed ===
     Op.OP_DROP, // discard unused placeholder
+    // Self-pin (Stage 2): this input's live category must be C with mutable capability, so a
+    // fabricated foreign-category UTXO at this address is unspendable - making address-based
+    // external reads sound without co-spending the master.
+    Op.OP_INPUTINDEX,
+    Op.OP_UTXOTOKENCATEGORY,
+    encodeInt(32n),
+    Op.OP_SPLIT,
+    Op.OP_1,
+    Op.OP_EQUALVERIFY, // mutable capability (0x01)
+    catInternal,
+    Op.OP_EQUALVERIFY, // correct category
     // Commitment preservation: input commitment == output commitment
     Op.OP_INPUTINDEX,
     Op.OP_UTXOTOKENCOMMITMENT,
@@ -1051,6 +1062,17 @@ export function buildEntryNftCovenantScript(categoryId: Uint8Array, collectionHa
     Op.OP_ELSE,
     // === Read-only path (flag=0): no master needed ===
     Op.OP_DROP, // discard unused placeholder
+    // Self-pin (Stage 2): this input's live category must be C with mutable capability, so a
+    // fabricated foreign-category UTXO at this entry address is unspendable - making address-based
+    // external entry reads sound without co-spending the master.
+    Op.OP_INPUTINDEX,
+    Op.OP_UTXOTOKENCATEGORY,
+    encodeInt(32n),
+    Op.OP_SPLIT,
+    Op.OP_1,
+    Op.OP_EQUALVERIFY, // mutable capability (0x01)
+    catInternal,
+    Op.OP_EQUALVERIFY, // correct category
     // Self-preservation (bytecode) - prevents readers from redirecting entries
     Op.OP_INPUTINDEX,
     Op.OP_UTXOBYTECODE,

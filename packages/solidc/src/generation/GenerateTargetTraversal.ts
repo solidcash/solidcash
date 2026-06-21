@@ -12,6 +12,7 @@ import {
   scriptToAsm,
   scriptToBytecode,
   buildDataNftCovenantScript,
+  buildEntryNftCovenantScript,
   generateSourceMap,
   FullLocationData,
   LogEntry,
@@ -8534,76 +8535,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_DROP, locationData);
       this.pushToStack('(value)'); // categoryId on stack
 
-      // Build entry covenant script bytes matching buildEntryNftCovenantScript in state.ts:
-      // prefix = OP_IF(0x63) UTXOTOKENCATEGORY(0xce) <32>(0x0120) SPLIT(0x7f) OP_2(0x52) EQUALVERIFY(0x88)
-      const prefix = new Uint8Array([0x63, 0xce, 0x01, 0x20, 0x7f, 0x52, 0x88]);
-      const categoryPushPrefix = new Uint8Array([0x20]);
-
-      // suffix includes write path remainder + ELSE read-only path + ENDIF + collection hash
-      const suffix = new Uint8Array([
-        0x7d, 0x88, // TUCK, EQUALVERIFY
-        0xc0, 0xce, 0x01, 0x20, 0x7f, 0x75, // INPUTINDEX, UTXOTOKENCATEGORY, <32>, SPLIT, DROP
-        0x88, // EQUALVERIFY
-        // OP_ELSE: read-only path
-        0x67, // OP_ELSE
-        0x75, // DROP (discard unused placeholder)
-        // Self-preservation (bytecode): INPUTINDEX UTXOBYTECODE INPUTINDEX OUTPUTBYTECODE EQUALVERIFY
-        0xc0, 0xc7, 0xc0, 0xcd, 0x88,
-        // Category preservation: INPUTINDEX UTXOTOKENCATEGORY INPUTINDEX OUTPUTTOKENCATEGORY EQUALVERIFY
-        0xc0, 0xce, 0xc0, 0xd1, 0x88,
-        // Commitment preservation: INPUTINDEX UTXOTOKENCOMMITMENT INPUTINDEX OUTPUTTOKENCOMMITMENT EQUALVERIFY
-        0xc0, 0xcf, 0xc0, 0xd2, 0x88,
-        // FT amount preservation: INPUTINDEX OUTPUTTOKENAMOUNT INPUTINDEX UTXOTOKENAMOUNT GREATERTHANOREQUAL VERIFY
-        0xc0, 0xd3, 0xc0, 0xd0, 0xa2, 0x69,
-        // Satoshi preservation: INPUTINDEX UTXOVALUE INPUTINDEX OUTPUTVALUE EQUALVERIFY
-        0xc0, 0xc6, 0xc0, 0xcc, 0x88,
-        // OP_ENDIF
-        0x68,
-        // Embed collection hash
-        0x14, // push 20 bytes
-        ...collectionHash,
-        0x75, // DROP
-        0x51, // OP_1
-      ]);
-
-      // Build full script: prefix + categoryPushPrefix + category + suffix
-      this.emit(prefix, locationData);
-      this.pushToStack('(value)');
-      this.emit(categoryPushPrefix, locationData);
-      this.pushToStack('(value)');
-
-      // Get the categoryId that's below on stack (at index 2 now)
-      this.emit(encodeInt(2n), locationData);
-      this.emit(Op.OP_ROLL, locationData);
-      this.removeFromStack(2);
-      this.pushToStack('(value)');
-
-      this.emit(Op.OP_CAT, locationData); // pushPrefix + category
-      this.popFromStack(2);
-      this.pushToStack('(value)');
-      this.emit(Op.OP_CAT, locationData); // prefix + (pushPrefix + category)
-      this.popFromStack(2);
-      this.pushToStack('(value)');
-
-      this.emit(suffix, locationData);
-      this.pushToStack('(value)');
-      this.emit(Op.OP_CAT, locationData); // full script
-      this.popFromStack(2);
-      this.pushToStack('(value)');
-
-      // Hash to P2SH32: OP_HASH256 then wrap as 0xaa20 <hash> 0x87
-      this.emit(Op.OP_HASH256, locationData);
-      this.emit(P2SH32_LBC_PREFIX, locationData);
-      this.pushToStack('(value)');
-      this.emit(Op.OP_SWAP, locationData);
-      this.emit(Op.OP_CAT, locationData);
-      this.popFromStack(2);
-      this.pushToStack('(value)');
-      this.emit(P2SH32_LBC_SUFFIX, locationData);
-      this.pushToStack('(value)');
-      this.emit(Op.OP_CAT, locationData);
-      this.popFromStack(2);
-      this.pushToStack('(value)'); // expected locking bytecode
+      // Reconstruct the entry NFT P2SH32 locking bytecode from the category on the stack,
+      // auto-derived from buildEntryNftCovenantScript (collectionHash baked in) so this mirror
+      // can never drift from state.ts regardless of how the entry covenant evolves.
+      this.emitP2sh32FromCovenant((cat) => buildEntryNftCovenantScript(cat, collectionHash), locationData);
+      // Stack: [..., entry_lbc] (expected locking bytecode)
 
       // Get actual output locking bytecode
       this.emitEntryOutputIndex(slotIdx, locationData, 0);

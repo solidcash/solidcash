@@ -45,12 +45,12 @@ interface ICounter {
     function increment(pubkey owner, sig s);
 }
 
-contract Reader(bytes32 counterCategory) {
+contract Reader(bytes counterAddr) {
     int lastSeen;
 
     function readAfterIncrement(pubkey pk, sig s) {
         require(checkSig(s, pk));
-        int newVal = ICounter(counterCategory).outState.counter;
+        int newVal = ICounter(counterAddr).outState.counter;
         this.lastSeen = newVal;
     }
 }
@@ -91,18 +91,18 @@ interface IMultiCounter {
     function decrement(pubkey owner, sig s);
 }
 
-contract MultiReader(bytes32 counterCategory) {
+contract MultiReader(bytes counterAddr) {
     int lastSeen;
 
     function readAfterIncrement(pubkey pk, sig s) {
         require(checkSig(s, pk));
-        int newVal = IMultiCounter(counterCategory).outState.counter;
+        int newVal = IMultiCounter(counterAddr).outState.counter;
         this.lastSeen = newVal;
     }
 
     function readAfterDecrement(pubkey pk, sig s) {
         require(checkSig(s, pk));
-        int newVal = IMultiCounter(counterCategory).outState.counter;
+        int newVal = IMultiCounter(counterAddr).outState.counter;
         this.lastSeen = newVal;
     }
 }
@@ -123,7 +123,7 @@ describe('Cross-Contract External Function Calls', () => {
       expect(fn!.externalOutStateReads!.length).toBe(1);
       expect(fn!.externalOutStateReads![0]).toEqual(expect.objectContaining({
         interfaceName: 'ICounter',
-        categoryParam: 'counterCategory',
+        addressParam: 'counterAddr',
         requiredDataNftIndices: expect.arrayContaining([0]),
       }));
     });
@@ -199,7 +199,8 @@ describe('Cross-Contract External Function Calls', () => {
         provider, counterContract, counterStateLayout, { counter: 5n }, { saltContract: true },
       ));
 
-      readerContract = new Contract(readerArtifact, [hexToBin(counterCategoryId)], { provider });
+      const counterAddr = counterContract.withCategory(hexToBin(counterCategoryId)).lockingBytecode;
+      readerContract = new Contract(readerArtifact, [counterAddr], { provider });
       ({ categoryId: readerCategoryId } = await setupStatefulUtxos(
         provider, readerContract, readerStateLayout, { lastSeen: 0n }, { saltContract: true },
       ));
@@ -254,7 +255,7 @@ describe('Cross-Contract External Function Calls', () => {
 
     const counterContract = new Contract(counterArtifact, [], { provider });
     const readerContract = new Contract(
-      readerArtifact, [hexToBin(counterCategoryId)], { provider },
+      readerArtifact, [counterContract.lockingBytecode], { provider },
     );
 
     const counterStateLayout = counterArtifact.stateLayout!;

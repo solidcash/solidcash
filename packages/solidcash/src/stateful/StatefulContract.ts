@@ -3752,10 +3752,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           );
         }
 
-        // Resolve external category ID from the registered external (address model)
-        const externalCategoryId = this._resolveExternalCategoryIdByParam(
-          ec.addressParam, ec.interfaceName, artifact,
-        );
+        // Resolve external category ID from the resolved external contract (address model:
+        // the callee address is baked in A's args; its category comes from the external instance,
+        // provided via connect-time externals or withExternalCall()).
+        const externalCategoryId = callInfo.externalContract.categoryId;
 
         // Get B's on-chain state
         const bState = await callInfo.externalContract.getFullState();
@@ -4044,10 +4044,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             );
           }
 
-          // Resolve C's category ID from B's registered external (address model)
-          const cCategoryId = (bContract as StatefulContract)._resolveExternalCategoryIdByParam(
-            bEc.addressParam, bEc.interfaceName, bContract.inner.artifact,
-          );
+          // Resolve C's category ID from the resolved transitive external contract (address model)
+          const cCategoryId = cContract.categoryId;
 
           // Get C's on-chain state
           const cState = await cContract.getFullState();
@@ -4333,10 +4331,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           continue;
         }
 
-        // Resolve external category ID
-        const externalCategoryId = this._resolveExternalCategoryIdByParam(
-          osRead.addressParam, osRead.interfaceName, artifact,
-        );
+        // Resolve external category ID from the resolved external contract (address model)
+        const externalCategoryId = callInfo.externalContract.categoryId;
 
         // Get B's on-chain state
         const bState = await callInfo.externalContract.getFullState();

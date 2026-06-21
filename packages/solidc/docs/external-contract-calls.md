@@ -146,10 +146,14 @@ SolidCash already has a delegate/proxy mechanism (altstack `_proxyMasterIndex`) 
 Choosing EVM address parity means choosing **self-pinning, unique-address instances** (each instance bakes its
 category → distinct redeem script → distinct address). Consequences:
 
-- **Two-phase deploy.** The category is a genesis-time value (genesis txid), so it is baked *after* genesis:
-  (1) genesis the category, (2) compute `addr = hash(template + category)`, (3) lock the NFT under that
-  address. The address is therefore known **post-genesis** (CREATE-like), not pre-computable like CREATE2.
-  Counterfactual/pre-computed addresses need extra machinery - deferred.
+- **Single-phase deploy; address is pre-computable (CREATE2-like).** A token category ID is **the txid of the
+  parent transaction whose output 0 is consumed** by a "token genesis input" - *not* the genesis
+  transaction's own txid (CHIP-2022-02-CashTokens). So the category is a **known value before deploy**: pick a
+  UTXO with outpoint index 0, its parent txid *is* the category `C`. There is **no circularity** - bake `C`
+  into the redeem script, compute `addr = hash(template + C)`, and in a single genesis transaction spend that
+  vout-0 UTXO and pay the state NFT (category `C`) to `addr`. The address is fully determined in advance.
+  (SolidCash's current deploy already derives the category from a genesis input; the only addition is baking
+  that already-known category into the constructor args.)
 - **No shared-bytecode "intermix" topology.** The category-agnostic, one-script-many-instances model
   (reference by category) is *not* the address-parity model and address-handle dispatch is **forbidden** on it
   (§4.2). It remains expressible for users who explicitly want it, but it is non-EVM-parity. Intermix under the
@@ -218,8 +222,9 @@ proxy interface IVault {                 // upgradeable behind a stable proxy ad
 
 ### 7.5 Deploy
 
-Two-phase (§6): genesis category → `addr = hash(template + category)` → lock NFT under `addr`. The toolchain
-returns `addr` after deploy. Optional CREATE2-style pre-computation is future work.
+Single-phase (§6): pick a UTXO with outpoint index 0; its parent txid is the category `C`; bake `C` into the
+constructor args → `addr = hash(template + C)` is known in advance; in one genesis transaction spend that
+vout-0 UTXO and pay the state NFT (category `C`) to `addr`. The address is pre-computable (CREATE2-like).
 
 ## 8. EVM-parity mapping
 
@@ -233,7 +238,7 @@ Differs (inherent):
   CALL return; no reentrancy).
 - **`token.transferFrom(...)`** → a **CashTokens covenant move**, not a code call (ERC-20 isn't a contract).
 - EVM globals `.balance`, `msg.value`, `code.length`: no direct analogue.
-- addresses are 32 bytes; CREATE2 counterfactual pre-computation is deferred.
+- addresses are 32 bytes (semantics parity, not width).
 
 ## 9. Compiler enforcement (normative)
 
@@ -254,7 +259,8 @@ Differs (inherent):
    address-dispatch on it.
 3. **Proxy upgradeability** - `proxy` interface + implementation-policy commitment + caller policy check, on
    the existing delegate mechanism.
-4. **Deploy ergonomics** - two-phase deploy tooling; later, CREATE2-style pre-computed addresses.
+4. **Deploy** - SDK bakes the (already-known, vout-0-parent-txid) category into the constructor args; single
+   genesis tx; the address is pre-computable.
 
 ## 11. Open questions
 
@@ -262,8 +268,9 @@ Differs (inherent):
   paths, and how that flag is represented in the artifact for callers to trust.
 - Address value: full locking bytecode vs the 32-byte hash as the canonical `address` representation (hash is
   leaner; bytecode avoids a hash op).
-- Counterfactual/CREATE2-style pre-computed addresses despite the genesis-txid category dependency (e.g. a
-  create3-style indirection that fixes the address independent of the category).
+- Whether self-pinning (addressability) is **opt-in** (a contract marker; coexists with category-agnostic A)
+  or the **default** for EVM parity. Opt-in keeps A's shared-bytecode intermix available; default maximizes
+  Solidity-likeness. (Self-pinning makes each instance's address category-dependent, hence unique.)
 - Proxy policy layout (allowlist root vs inline list; governor+timelock encoding) and how `address(this)`
   behaves inside a proxy vs its implementation.
 - Whether to keep the category-agnostic, category-referenced topology at all as an explicit non-parity escape

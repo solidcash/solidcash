@@ -36,6 +36,8 @@ export {
 export { ThreadManager, ThreadHandle, type SplitOptions, type MergeOptions } from './ThreadManager.js';
 export {
   getDataNftAddress,
+  getDataNftLockingBytecode,
+  getEntryNftLockingBytecode,
   getEntryNftAddress,
   getEventNftAddress,
   getAnonymousEventNftAddress,

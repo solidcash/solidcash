@@ -147,11 +147,11 @@ interface ICalleeK {
     public int counter;
     function bump(bytes preimage, bytes32 expected);
 }
-contract CallerK(bytes32 calleeCategory) {
+contract CallerK(bytes calleeAddr) {
     int lastSeen;
     function readAfterBump(pubkey pk, sig s) {
         require(checkSig(s, pk));
-        int newVal = ICalleeK(calleeCategory).outState.counter;
+        int newVal = ICalleeK(calleeAddr).outState.counter;
         this.lastSeen = newVal;
     }
 }`;
@@ -173,7 +173,8 @@ describe('keccak256 builtin (keccak in a called external function)', () => {
     const calleeSidecarLock = binToHex(keccakSidecarLockingBytecode(hexToBin(calleeCategory)));
     await provider.addUtxo(calleeSidecarLock, randomUtxo({ satoshis: 5000n }));
 
-    const callerContract = new Contract(callerArtifact, [hexToBin(calleeCategory)], { provider });
+    const calleeAddr = calleeContract.withCategory(hexToBin(calleeCategory)).lockingBytecode;
+    const callerContract = new Contract(callerArtifact, [calleeAddr], { provider });
     const { categoryId: callerCategory } = await setupStatefulUtxos(
       provider, callerContract, callerArtifact.stateLayout!, { lastSeen: 0n }, { saltContract: true },
     );

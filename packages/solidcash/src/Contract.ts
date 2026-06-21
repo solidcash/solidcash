@@ -5,7 +5,6 @@ import {
   asmToScript,
   calculateBytesize,
   countOpcodes,
-  encodeInt,
   generateContractBytecodeScript,
   hash256,
   Op,
@@ -191,13 +190,18 @@ export class Contract<
     // Category self-pin (stateful contracts): bake the category and verify the spent UTXO's category equals
     // it, so the address commits to the category (address => genuine state). This reworks the former dead
     // `<salt> OP_DROP` into a live check. It is the script prologue (runs before constructor args + dispatch),
-    // so it is one contract-level check covering every function, including selfdestruct/unsafe. The capability
-    // byte (mutable/minting NFTs) is split off; OP_UTXOTOKENCATEGORY is internal byte order, so reverse.
+    // so it is one contract-level check covering every function, including selfdestruct/unsafe.
+    //
+    // A stateful contract's spent UTXO is always its master = the MINTING NFT (capability 0x02), and
+    // capabilities never change, so OP_UTXOTOKENCATEGORY returns `category(32) || 0x02`. We bake that exact
+    // 33-byte value (internal byte order + the 0x02 minting capability) and compare directly - no need to
+    // split off the capability byte. This also pins the capability, rejecting a same-category UTXO with the
+    // wrong capability. See docs/external-contract-calls.md.
     if (this.isStateful && this.category && this.category.length > 0) {
-      const catInternal = this.category.slice().reverse();
+      const catWithCapability = Uint8Array.from([...this.category.slice().reverse(), 0x02]);
       contractBytecodeScript = [
-        catInternal, Op.OP_INPUTINDEX, Op.OP_UTXOTOKENCATEGORY, encodeInt(32n), Op.OP_SPLIT, Op.OP_DROP,
-        Op.OP_EQUALVERIFY, ...contractBytecodeScript,
+        catWithCapability, Op.OP_INPUTINDEX, Op.OP_UTXOTOKENCATEGORY, Op.OP_EQUALVERIFY,
+        ...contractBytecodeScript,
       ];
     }
 

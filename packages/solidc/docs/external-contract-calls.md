@@ -249,9 +249,15 @@ A self-pinning stateful contract:
   This also pins the capability. (One ~4-byte check, not per function; empirically verified across the e2e
   suite incl. delegate/upgrade/selfdestruct.) Combined with self-preservation, the invariant is inductive from
   genesis;
-- the same pin is added to the permissionless **read/merge paths** of the sub-covenants (data NFT, entry NFT,
-  token container, satoshi container - the audit found these only *preserve* the category today; event NFT has
-  no read path).
+- the same capability-baked pin is added (Stage 2) to the permissionless **read path** of the sub-covenants
+  **that carry the contract's own category C**: the **data NFT** (`C‖0x01`) and **entry NFT** (`C‖0x01`), which
+  today only *preserve* their category on the read path. It is **NOT** applied to the **token container** (its
+  UTXO carries the *held* token X, so `category==C` would reject every spend) or the **satoshi container** (it
+  carries satoshis / only incidental tokens, so `OP_UTXOTOKENCATEGORY` is empty/foreign). Those two are
+  secured instead by their master-path check (`master category == C`, and the master is self-pinned) plus
+  token/satoshi **conservation** (a fabricated container must hold real assets), so they need no category pin -
+  and adding one would brick them. The **event NFT** carries C but is write-only (no read path), so it needs
+  none either.
 
 The compiler emits and proves this, and surfaces an `addressable` flag in the artifact so a caller's
 `IContract(addr)` can rely on `addr ⟹ state`. (A future `agnostic` opt-out for the shared-script topology is
@@ -326,8 +332,11 @@ by default** for every stateful contract (no flag) - it is the default-addressab
    salt, is now the `category` self-pin segment; `salt` freed for the separate user CREATE2 segment). Address
    commits to the category + capability. deployFrom children remain un-self-pinned (compiler-side follow-up).
    Full SDK + compiler suites green.
-2. **Harden sub-covenants.** Add the pin to the **read/merge paths** of data NFT, entry NFT, token container,
-   satoshi container (compiler inline + `state.ts` in lockstep; event NFT already safe).
+2. **Harden sub-covenants.** Add the capability-baked pin to the **read path** of the own-category NFTs only -
+   **data NFT** (`C‖0x01`) and **entry NFT** (`C‖0x01`) - via `state.ts` + the compiler mirror in lockstep
+   (prefer auto-deriving the compiler segments from `state.ts`). NOT the token/satoshi containers (carry foreign
+   assets, not C - master-gated + conservation-safe) nor the event NFT (no read path). Add negative tests
+   (fabricated-category NFT must be rejected).
 3. **Address dispatch (caller).** `address` = locking-bytecode value; `IContract(addr).method()` ->
    `OP_UTXOBYTECODE == addr` + co-spend + read/`_Return_`; `address(this)` = `OP_INPUTINDEX OP_UTXOBYTECODE`;
    deprecate/replace `connect(categoryId)`. Gated on 1+2.

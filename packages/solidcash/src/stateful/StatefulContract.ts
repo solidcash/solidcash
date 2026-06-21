@@ -4974,17 +4974,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     return this._resolveRegisteredExternalCategoryId(er.interfaceName);
   }
 
-  /**
-   * Resolve the external category ID by interface name from the external registry (address model).
-   * The addressParam is unused for resolution - it carries the callee address on-chain, while the
-   * category needed for off-chain UTXO discovery comes from the registered external contract.
-   */
-  private _resolveExternalCategoryIdByParam(
-    _addressParam: string | undefined, interfaceName: string, _artifact: Artifact,
-  ): string {
-    return this._resolveRegisteredExternalCategoryId(interfaceName);
-  }
-
   /** Look up a registered external contract's category ID by interface name. */
   private _resolveRegisteredExternalCategoryId(interfaceName: string): string {
     const ext = this._externalRegistry.get(interfaceName);

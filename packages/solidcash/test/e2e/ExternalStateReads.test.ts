@@ -139,10 +139,11 @@ describe('Cross-Contract External State Reads', () => {
     let counterCategoryId: string;
     let readerCategoryId: string;
     let readerContract: Contract;
+    let counterContract: Contract;
 
     beforeAll(async () => {
       // Genesis counter (B) first so the reader (A) can embed its real category.
-      const counterContract = new Contract(counterArtifact, [], { provider });
+      counterContract = new Contract(counterArtifact, [], { provider });
       ({ categoryId: counterCategoryId } = await setupStatefulUtxos(
         provider, counterContract, counterStateLayout, { counter: 5n }, { saltContract: true },
       ));
@@ -162,11 +163,14 @@ describe('Cross-Contract External State Reads', () => {
       expect(binToHex(encodedArg)).toBe(binToHex(getDataNftLockingBytecode(counterCategoryId)));
     });
 
-    // Pending: address-read auto-derivation needs the external registered for off-chain UTXO
-    // discovery (registry-based category resolution). Runtime-verified via the manual-builder
-    // block below; the fluent auto-derivation path is migrated in the e2e re-green follow-up.
-    it.skip('should build a transaction that includes external read UTXOs', async () => {
-      const sc = StatefulContract.withCategory(readerContract, readerCategoryId);
+    it('should build a transaction that includes external read UTXOs', async () => {
+      // Address-read auto-derivation: the external is registered so the SDK can discover the
+      // callee's data NFT off-chain (the address handle is baked; its category comes from the
+      // registered external instance).
+      const counterSc = StatefulContract.withCategory(counterContract, counterCategoryId);
+      const sc = StatefulContract.withCategory(readerContract, readerCategoryId, {
+        externals: { ICounter: counterSc },
+      });
       const call = sc.sync(alicePub, new SignatureTemplate(alicePriv));
       expect(call).toBeInstanceOf(StatefulFunctionCall);
       const tx = await call.send();

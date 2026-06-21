@@ -176,7 +176,13 @@ export interface TransactionDetails extends Transaction {
 export interface ContractOptions {
   provider: NetworkProvider,
   addressType?: AddressType,
+  // User CREATE2-style salt: a dead push baked into the script for deterministic / counterfactual address
+  // control (EVM `new C{salt}` / create2). Distinct from the category self-pin below.
   salt?: Uint8Array,
+  // Category self-pin (stateful contracts): the contract's own state-NFT category (display byte order). When
+  // set, the script prologue verifies the spent UTXO's category equals this baked value, so the address
+  // commits to the category (address => genuine state). See docs/external-contract-calls.md.
+  category?: Uint8Array,
 }
 
 export type AddressType = 'p2sh20' | 'p2sh32' | 'p2s';

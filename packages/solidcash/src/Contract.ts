@@ -5,6 +5,7 @@ import {
   asmToScript,
   calculateBytesize,
   countOpcodes,
+  encodeInt,
   generateContractBytecodeScript,
   hash256,
   Op,
@@ -49,6 +50,7 @@ export class Contract<
   isStateful: boolean;
   usesExternalLibraries: boolean;
   salt?: Uint8Array;
+  category?: Uint8Array;
 
   encodedConstructorArgs: Uint8Array[];
   private rawConstructorArgs: TResolved['constructorInputs'];
@@ -64,6 +66,7 @@ export class Contract<
     if (this.salt && this.salt.length > 520) {
       throw new Error('Salt must be 520 bytes or less');
     }
+    this.category = this.options.category;
     this.rawConstructorArgs = constructorArgs;
 
     const expectedProperties = ['abi', 'bytecode', 'constructorInputs', 'contractName', 'compiler'];
@@ -183,12 +186,28 @@ export class Contract<
       contractBytecodeScript = [Op.OP_DROP, ...contractBytecodeScript];
     }
 
+    this.isStateful = !!artifact.stateLayout;
+
+    // Category self-pin (stateful contracts): bake the category and verify the spent UTXO's category equals
+    // it, so the address commits to the category (address => genuine state). This reworks the former dead
+    // `<salt> OP_DROP` into a live check. It is the script prologue (runs before constructor args + dispatch),
+    // so it is one contract-level check covering every function, including selfdestruct/unsafe. The capability
+    // byte (mutable/minting NFTs) is split off; OP_UTXOTOKENCATEGORY is internal byte order, so reverse.
+    if (this.isStateful && this.category && this.category.length > 0) {
+      const catInternal = this.category.slice().reverse();
+      contractBytecodeScript = [
+        catInternal, Op.OP_INPUTINDEX, Op.OP_UTXOTOKENCATEGORY, encodeInt(32n), Op.OP_SPLIT, Op.OP_DROP,
+        Op.OP_EQUALVERIFY, ...contractBytecodeScript,
+      ];
+    }
+
+    // User CREATE2 salt (optional, any contract): a dead push baked into the script for deterministic /
+    // counterfactual address control. Separate, outermost segment (distinct from the category self-pin).
     if (this.salt && this.salt.length > 0) {
       contractBytecodeScript = [this.salt, Op.OP_DROP, ...contractBytecodeScript];
     }
 
     this.name = artifact.contractName;
-    this.isStateful = !!artifact.stateLayout;
     this.address = scriptToAddress(contractBytecodeScript, this.provider.network, this.addressType, false);
     this.tokenAddress = scriptToAddress(contractBytecodeScript, this.provider.network, this.addressType, true);
     this.bytecode = binToHex(scriptToBytecode(contractBytecodeScript));

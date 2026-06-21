@@ -309,16 +309,23 @@ Differs (inherent):
 5. `address` is the 35-byte locking bytecode; `address(this)` = `OP_INPUTINDEX OP_UTXOBYTECODE`, serving both
    identity and recipient roles with no conversion.
 
-## 10. Phased plan
+## 10. Phased plan (implementation order: 1 -> 2 -> 3 -> 4)
 
-1. **Address handle** - `address` = 35-byte locking bytecode; `IContract(addr).method()` lowering to
-   `OP_UTXOBYTECODE == addr`; `address(this)` = `OP_INPUTINDEX OP_UTXOBYTECODE`.
-2. **Self-pinning** - constructor-baked category + covenant invariant + the compiler proof/artifact flag; gate
-   address-dispatch on it.
-3. **Proxy upgradeability** - `proxy` interface + implementation-policy commitment + caller policy check, on
-   the existing delegate mechanism.
-4. **Deploy** - SDK bakes the (already-known, vout-0-parent-txid) category into the constructor args; single
-   genesis tx; the address is pre-computable.
+Address-dispatch must be gated on self-pinning for safety, so self-pinning lands first. Self-pinning is **on
+by default** for every stateful contract (no flag) - it is the default-addressable decision, landed directly.
+
+0. **Done** - `this.categoryId` introspection (the self-category primitive).
+1. **Self-pinning (callee).** Inject a `__category` constructor arg into every stateful contract (baked ->
+   part of the address); emit the **prologue pin** once (covers selfdestruct/unsafe); **SDK deploy** bakes the
+   known (vout-0-parent-txid) category into the args. Single genesis tx; address pre-computable.
+2. **Harden sub-covenants.** Add the pin to the **read/merge paths** of data NFT, entry NFT, token container,
+   satoshi container (compiler inline + `state.ts` in lockstep; event NFT already safe).
+3. **Address dispatch (caller).** `address` = locking-bytecode value; `IContract(addr).method()` ->
+   `OP_UTXOBYTECODE == addr` + co-spend + read/`_Return_`; `address(this)` = `OP_INPUTINDEX OP_UTXOBYTECODE`;
+   deprecate/replace `connect(categoryId)`. Gated on 1+2.
+4. **Proxy upgradeability.** `immutable`/`proxy` interface stances + impl-policy commitment + caller policy
+   check, on the existing delegate mechanism.
+5. *(Deferred, YAGNI)* `agnostic` opt-out for the shared-script topology.
 
 ## 11. Open questions
 

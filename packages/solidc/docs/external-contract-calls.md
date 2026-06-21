@@ -191,11 +191,20 @@ These are the deliberate prices of dropping `derive()` for true address parity.
 
 ### 7.1 `address`
 
-`address` (contract identity) is the callee's **35-byte P2SH32 locking bytecode** (`0xaa20 ‖ hash ‖ 0x87`,
-where `hash = hash256(redeemScript)`), used directly: stored, compared (`==`, `!= address(0)`), passed,
-dispatched through, **and** used as the recipient scriptPubKey. No derivation, no conversion - it is exactly
-what `OP_UTXOBYTECODE`/`OP_OUTPUTBYTECODE` return. `address(0)` = the empty/all-zero locking bytecode (no real
-contract matches) - a clean null sentinel.
+`address` is **its own type** (the existing `AddressType`), **not** an alias to `bytesN` or to `bytes`. It is
+VM-represented as a **variable-length locking bytecode** (≈ unbounded `bytes`), with *explicit* casts to/from
+`bytes` - this preserves type safety, the address operations (`.send`/`.connect`/`.call`/`IContract(addr)`),
+and Solidity parity (Solidity's `address` ≠ `bytes20`). It is **not** fixed-width: locking bytecode is 35
+bytes for p2sh32, 23 for p2sh20, 25 for p2pkh, so `address` (which also denotes EOA/wallet recipients) cannot
+be `bytes35`. An address is used directly: stored, compared (`==`, `!= address(0)`), passed, dispatched
+through, **and** used as the recipient scriptPubKey - it is exactly what `OP_UTXOBYTECODE`/`OP_OUTPUTBYTECODE`
+return. `address(0)` = the empty/all-zero locking bytecode (no real contract matches) - a clean null sentinel.
+
+A **contract handle** (an interface type `IFoo`) is a *distinct* type carrying "this is contract C" for
+dispatch; its *value* is specifically the **35-byte p2sh32 locking bytecode** of a stateful contract. The
+type system tracks it as the contract type - no `bytes35` is introduced. So the addressable feature does not
+add a width-typed address; it only changes *what value* an `address`/`IFoo` handle carries (category-baked
+locking bytecode) and the call semantics.
 
 **Identity and location coincide.** Because the address *is* the locking bytecode, the call/compare identity
 and the recipient/location encoding are the **same value** - no duality, no conversion (unlike the rejected

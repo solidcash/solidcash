@@ -30,7 +30,6 @@ import {
   optimiseBytecode,
   optimiseBytecodeOld,
   AddressType,
-  ConnectedAddressType,
   ValueType,
   EnumType,
   FunctionType,
@@ -132,7 +131,6 @@ import {
   FunctionModifier,
   AddressTransferStatementNode,
   AddressSendExpressionNode,
-  AddressConnectNode,
   LowLevelCallNode,
   LowLevelCallStatementNode,
   CollectionIterationNode,
@@ -5666,14 +5664,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   visitAddressTransferStatement(node: AddressTransferStatementNode): Node {
-    const locationData = { location: node.location, positionHint: PositionHint.START };
-
-    // Resolve the locking bytecode to send to
-    // For AddressType: the stack value IS the locking bytecode
-    // For ConnectedAddressType: derive satoshi container lbc from category
-    const addrType = node.addressExpression.type;
-    const needsContainerDerivation = addrType instanceof ConnectedAddressType;
-
+    // The address value IS the locking bytecode to send to.
     if (this.preAllocatedTransfers.has(node.transferIndex)) {
       // Pre-allocated path: use emitReplace to update the dummy slots
       const lbName = `__internal__transfer_lb_${node.transferIndex}`;
@@ -5681,9 +5672,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
       // Visit address expression
       node.addressExpression = this.visit(node.addressExpression);
-      if (needsContainerDerivation) {
-        this.emitSatoshiContainerLbc(locationData);
-      }
       this.emitReplace(this.getStackIndex(lbName), node);
       this.popFromStack();
 
@@ -5694,9 +5682,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     } else {
       // Normal path (outside branches)
       node.addressExpression = this.visit(node.addressExpression);
-      if (needsContainerDerivation) {
-        this.emitSatoshiContainerLbc(locationData);
-      }
       this.popFromStack();
       const lbStackName = `__internal__transfer_lb_${node.transferIndex}`;
       this.pushToStack(lbStackName);
@@ -5719,18 +5704,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   visitAddressSendExpression(node: AddressSendExpressionNode): Node {
     const locationData = { location: node.location, positionHint: PositionHint.START };
 
-    // Same as AddressTransferStatement but push OP_1 (true) as the expression result
-    const addrType = node.addressExpression.type;
-    const needsContainerDerivation = addrType instanceof ConnectedAddressType;
-
+    // Same as AddressTransferStatement but push OP_1 (true) as the expression result.
+    // The address value IS the locking bytecode to send to.
     if (this.preAllocatedTransfers.has(node.transferIndex)) {
       const lbName = `__internal__transfer_lb_${node.transferIndex}`;
       const amtName = `__internal__transfer_amt_${node.transferIndex}`;
 
       node.addressExpression = this.visit(node.addressExpression);
-      if (needsContainerDerivation) {
-        this.emitSatoshiContainerLbc(locationData);
-      }
       this.emitReplace(this.getStackIndex(lbName), node);
       this.popFromStack();
 
@@ -5739,9 +5719,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.popFromStack();
     } else {
       node.addressExpression = this.visit(node.addressExpression);
-      if (needsContainerDerivation) {
-        this.emitSatoshiContainerLbc(locationData);
-      }
       this.popFromStack();
       const lbStackName = `__internal__transfer_lb_${node.transferIndex}`;
       this.pushToStack(lbStackName);
@@ -5765,43 +5742,23 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     return node;
   }
 
-  visitAddressConnect(node: AddressConnectNode): Node {
-    const locationData = { location: node.location, positionHint: PositionHint.START };
-
-    // Visit address expression -> pushes lbc onto stack
-    node.addressExpression = this.visit(node.addressExpression);
-    // Drop the lbc - we only need the category
-    this.emit(Op.OP_DROP, locationData);
-    this.popFromStack();
-
-    // Visit category expression -> pushes category onto stack
-    node.categoryExpression = this.visit(node.categoryExpression);
-    // Category is now on stack - result type is ConnectedAddressType
-    // Stack tracking already handled by visit
-
-    return node;
-  }
-
   /**
    * Emit a value transfer for {value: X} call options.
-   * Derives the satoshi container P2SH32 locking bytecode from the category
+   * Sends the satoshis to the callee's address (the address param IS the locking bytecode)
    * and queues a transfer output with the specified amount.
    */
   private emitValueTransfer(
     valueTransferIndex: number,
     valueExpr: ExpressionNode,
-    categoryParamName: string,
+    addressParamName: string,
     locationData: SingleLocationData,
     node: Node,
   ): ExpressionNode {
-    // Push category to stack via OP_PICK
-    const catIdx = this.getStackIndex(categoryParamName);
-    this.emit(encodeInt(BigInt(catIdx)), locationData);
+    // Push the callee address (locking bytecode) to stack via OP_PICK
+    const addrIdx = this.getStackIndex(addressParamName);
+    this.emit(encodeInt(BigInt(addrIdx)), locationData);
     this.emit(Op.OP_PICK, locationData);
-    this.pushToStack('(__valTransferCat)');
-
-    // Derive satoshi container P2SH32 locking bytecode from category
-    this.emitSatoshiContainerLbc(locationData);
+    this.pushToStack('(__valTransferAddr)');
 
     if (this.preAllocatedTransfers.has(valueTransferIndex)) {
       // Pre-allocated branch path: replace dummy slots
@@ -5902,6 +5859,19 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       return this.emitTokenContainerFieldAccess(node);
     }
 
+    // Handle this.outState.balance - own satoshi container, summed over OUTPUTS.
+    // (this.outState pushes the contract's own category; derive its satoshi container lbc.)
+    if (node.name === 'balance'
+        && node.expression instanceof StateAccessNode && node.expression.name === 'outState') {
+      node.expression = this.visit(node.expression);
+      // Stack: [category]
+      this.emitSatoshiContainerLbc(locationData);
+      // Stack: [container_lbc]
+      this.emitBalanceLoop(true, locationData);
+      // Stack: [sum]
+      return node;
+    }
+
     // Handle .balance on AddressType - loop over inputs summing matching values
     if (node.name === 'balance' && node.expression.type instanceof AddressType) {
       node.expression = this.visit(node.expression);
@@ -5911,22 +5881,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       return node;
     }
 
-    // Handle .balance on ConnectedAddressType - derive satoshi container lbc, then loop
-    if (node.name === 'balance' && node.expression.type instanceof ConnectedAddressType) {
-      // Check if this is this.outState.balance - if so, loop over outputs instead of inputs
-      const useOutputs = node.expression instanceof StateAccessNode && node.expression.name === 'outState';
-      node.expression = this.visit(node.expression);
-      // Stack: [category]
-      this.emitSatoshiContainerLbc(locationData);
-      // Stack: [container_lbc]
-      this.emitBalanceLoop(useOutputs, locationData);
-      // Stack: [sum]
-      return node;
-    }
-
     // Handle .codehash on AddressType - extract hash from P2SH locking bytecode
-    if (node.name === 'codehash'
-        && (node.expression.type instanceof AddressType || node.expression.type instanceof ConnectedAddressType)) {
+    if (node.name === 'codehash' && node.expression.type instanceof AddressType) {
       node.expression = this.visit(node.expression);
       // Stack: [lbc]
       this.emitCodehash(locationData);
@@ -5935,8 +5891,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
 
     // Handle .code on AddressType - extract redeem script
-    if (node.name === 'code'
-        && (node.expression.type instanceof AddressType || node.expression.type instanceof ConnectedAddressType)) {
+    if (node.name === 'code' && node.expression.type instanceof AddressType) {
       node.expression = this.visit(node.expression);
       // Stack: [lbc]
       this.emitCode(locationData);
@@ -6993,8 +6948,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       return node;
     }
 
-    // this.outState - get own category, typed as ConnectedAddressType
-    // (used as this.outState.balance -> FieldAccess handles .balance on ConnectedAddressType)
+    // this.outState - get own category (used as this.outState.balance, handled specially
+    // in visitFieldAccess: derives the own satoshi container lbc and sums over outputs)
     if (node.name === 'outState' && !node.stateVariable) {
       // Get own category (32 bytes, strip capability flag)
       this.emitMasterInputIndex(locationData);
@@ -7184,12 +7139,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     const locationData = { location: node.location, positionHint: PositionHint.START };
 
-    // Handle {value: X} call option - emit a transfer to the target's satoshi container
+    // Handle {value: X} call option - emit a transfer to the callee's address
     if (node.callOptions?.value && node.valueTransferIndex >= 0 && node.callInfo) {
       const slot = this.externalCallSlots[node.callInfo.externalCallSlotIndex];
-      if (slot?.categoryParam) {
+      if (slot?.addressParam) {
         node.callOptions.value = this.emitValueTransfer(
-          node.valueTransferIndex, node.callOptions.value, slot.categoryParam, locationData, node,
+          node.valueTransferIndex, node.callOptions.value, slot.addressParam, locationData, node,
         );
       }
     }
@@ -7349,10 +7304,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     // Handle {value: X} call option
     if (node.callOptions?.value && node.valueTransferIndex >= 0) {
-      const catParam = this.getCategoryParamFromTarget(node.targetExpression);
-      if (catParam) {
+      const addrParam = this.getAddressParamFromTarget(node.targetExpression);
+      if (addrParam) {
         node.callOptions.value = this.emitValueTransfer(
-          node.valueTransferIndex, node.callOptions.value, catParam, locationData, node,
+          node.valueTransferIndex, node.callOptions.value, addrParam, locationData, node,
         );
       }
     }
@@ -7378,10 +7333,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     // Handle {value: X} call option
     if (node.callOptions?.value && node.valueTransferIndex >= 0) {
-      const catParam = this.getCategoryParamFromTarget(node.targetExpression);
-      if (catParam) {
+      const addrParam = this.getAddressParamFromTarget(node.targetExpression);
+      if (addrParam) {
         node.callOptions.value = this.emitValueTransfer(
-          node.valueTransferIndex, node.callOptions.value, catParam, locationData, node,
+          node.valueTransferIndex, node.callOptions.value, addrParam, locationData, node,
         );
       }
     }
@@ -7396,17 +7351,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     return node;
   }
 
-  /** Extract the category parameter name from a low-level call's target expression. */
-  private getCategoryParamFromTarget(targetExpression: ExpressionNode): string | undefined {
-    // Interface-based: IFoo(cat).call() -> targetExpression is FunctionCallNode
+  /** Extract the address parameter name from a low-level call's target expression. */
+  private getAddressParamFromTarget(targetExpression: ExpressionNode): string | undefined {
+    // Interface-based: IFoo(addr).call() -> targetExpression is FunctionCallNode, param[0] is the address
     if (targetExpression instanceof FunctionCallNode && targetExpression.parameters.length >= 1) {
-      const catExpr = targetExpression.parameters[0];
-      if (catExpr instanceof IdentifierNode) {
-        return catExpr.name;
+      const addrExpr = targetExpression.parameters[0];
+      if (addrExpr instanceof IdentifierNode) {
+        return addrExpr.name;
       }
     }
-    // Address-based with ConnectedAddressType: addr.call() -> addr holds category
-    if (targetExpression instanceof IdentifierNode && targetExpression.type instanceof ConnectedAddressType) {
+    // Address-based: addr.call() -> addr is the address handle
+    if (targetExpression instanceof IdentifierNode && targetExpression.type instanceof AddressType) {
       return targetExpression.name;
     }
     return undefined;
@@ -9188,53 +9143,21 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emitBlockSlotIndex('readOnlyDataNft', slot.slotIndex, locationData);
       // DUP the input index so we can use it multiple times
       this.emit(Op.OP_DUP, locationData);
-
-      // 1. Verify token category: OP_UTXOTOKENCATEGORY, strip capability, compare
       // Stack: [inputIdx, inputIdx]
-      this.emit(Op.OP_UTXOTOKENCATEGORY, locationData);
-      // Strip capability suffix (last byte if > 32 bytes)
-      this.emit(Op.OP_DUP, locationData);
-      this.emit(Op.OP_SIZE, locationData);
-      this.emit(Op.OP_NIP, locationData);
-      this.emit(encodeInt(32n), locationData);
-      this.emit(Op.OP_GREATERTHAN, locationData);
-      this.emit(Op.OP_IF, locationData);
-      this.emit(encodeInt(32n), locationData);
-      this.emit(Op.OP_SPLIT, locationData);
-      this.emit(Op.OP_DROP, locationData);
-      this.emit(Op.OP_ENDIF, locationData);
-      // Compare stripped category to the expected category parameter.
-      // OP_UTXOTOKENCATEGORY returns internal byte order; reverse to display
-      // order to match the display-order parameter.
-      this.emit(Op.OP_REVERSEBYTES, locationData);
-      // Stack: [inputIdx, stripped_category_display] (2 untracked)
-      if (slot.categoryParam) {
-        // +2 for 2 untracked values on real stack: stripped_category and inputIdx
-        const catParamIdx = this.getStackIndex(slot.categoryParam);
-        this.emit(encodeInt(BigInt(catParamIdx + 2)), locationData);
-        this.emit(Op.OP_PICK, locationData);
-        this.emit(Op.OP_EQUALVERIFY, locationData);
-        // Stack after: [inputIdx] -- stripped_category consumed by EQUALVERIFY
-      } else {
-        // Fallback: compare against master's own category base
-        this.emitMasterInputIndex(locationData);
-        this.emit(Op.OP_UTXOTOKENCATEGORY, locationData);
-        this.emit(encodeInt(32n), locationData);
-        this.emit(Op.OP_SPLIT, locationData);
-        this.emit(Op.OP_DROP, locationData);
-        this.emit(Op.OP_EQUALVERIFY, locationData);
-      }
-      // Stack: [inputIdx]
 
-      // Optional lbc verification: verify input's locking bytecode matches expected lbc parameter
-      if (slot.lbcParam) {
-        this.emit(Op.OP_DUP, locationData);              // [inputIdx, inputIdx]
-        this.emit(Op.OP_UTXOBYTECODE, locationData);     // [inputIdx, input_bytecode]
-        const lbcParamIdx = this.getStackIndex(slot.lbcParam);
-        this.emit(encodeInt(BigInt(lbcParamIdx + 2)), locationData);
-        this.emit(Op.OP_PICK, locationData);              // [inputIdx, input_bytecode, expected_lbc]
-        this.emit(Op.OP_EQUALVERIFY, locationData);       // [inputIdx]
+      // 1. IDENTITY (master-free): the co-spent read-only sub-NFT's locking bytecode == the expected
+      // sub-NFT address. The data/entry NFT self-pins its category (Stage 2), so any spendable UTXO at
+      // that address necessarily carries the genuine category C and thus genuine committed state - no
+      // master co-spend needed to anchor it.
+      this.emit(Op.OP_UTXOBYTECODE, locationData);     // [inputIdx, input_bytecode]
+      if (!slot.addressParam) {
+        throw new Error('external read target address must be a constructor/function parameter');
       }
+      // +2 for the 2 untracked values on the real stack: input_bytecode and inputIdx
+      const addrParamIdx = this.getStackIndex(slot.addressParam);
+      this.emit(encodeInt(BigInt(addrParamIdx + 2)), locationData);
+      this.emit(Op.OP_PICK, locationData);              // [inputIdx, input_bytecode, expected_addr]
+      this.emit(Op.OP_EQUALVERIFY, locationData);       // [inputIdx]
 
       // Verify bytecode self-preservation: input bytecode == output bytecode
       // Stack: [inputIdx] (1 untracked)
@@ -9281,42 +9204,21 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_DUP, locationData);
       // Stack: [B_master_inputIdx, B_master_inputIdx] (2 untracked)
 
-      // 1. Verify token category (ALL modes)
-      this.emit(Op.OP_UTXOTOKENCATEGORY, locationData);
-      // Strip capability byte if present (category is first 32 bytes)
-      this.emit(Op.OP_DUP, locationData);
-      this.emit(Op.OP_SIZE, locationData);
-      this.emit(Op.OP_NIP, locationData);
-      this.emit(encodeInt(32n), locationData);
-      this.emit(Op.OP_GREATERTHAN, locationData);
-      this.emit(Op.OP_IF, locationData);
-      this.emit(encodeInt(32n), locationData);
-      this.emit(Op.OP_SPLIT, locationData);
-      this.emit(Op.OP_DROP, locationData);
-      this.emit(Op.OP_ENDIF, locationData);
-      // OP_UTXOTOKENCATEGORY returns internal byte order; reverse to display
-      // order to match the display-order parameter.
-      this.emit(Op.OP_REVERSEBYTES, locationData);
-      // Stack: [B_master_inputIdx, stripped_category_display] (2 untracked)
-
-      if (slot.categoryParam) {
-        // Compare to constructor/function parameter
-        const catParamIdx = this.getStackIndex(slot.categoryParam);
-        this.emit(encodeInt(BigInt(catParamIdx + 2)), locationData);
-        this.emit(Op.OP_PICK, locationData);
-        this.emit(Op.OP_EQUALVERIFY, locationData);
-      } else {
-        // Fallback: compare to master's own category
-        this.emitMasterInputIndex(locationData);
-        this.emit(Op.OP_UTXOTOKENCATEGORY, locationData);
-        this.emit(encodeInt(32n), locationData);
-        this.emit(Op.OP_SPLIT, locationData);
-        this.emit(Op.OP_DROP, locationData);
-        this.emit(Op.OP_EQUALVERIFY, locationData);
+      // 1. IDENTITY (ALL modes): B's master locking bytecode == the expected address.
+      // B's master self-pins its category+capability (Stage 1), so a matching address means the
+      // co-spent UTXO is the genuine master holding genuine state - no caller-side category check.
+      this.emit(Op.OP_UTXOBYTECODE, locationData);  // [B_master_inputIdx, B_master_bytecode]
+      if (!slot.addressParam) {
+        throw new Error('external call target address must be a constructor/function parameter');
       }
+      // +2 for the 2 untracked values on the real stack: B_master_bytecode and B_master_inputIdx
+      const addrParamIdx = this.getStackIndex(slot.addressParam);
+      this.emit(encodeInt(BigInt(addrParamIdx + 2)), locationData);
+      this.emit(Op.OP_PICK, locationData);          // [idx, B_master_bytecode, expected_addr]
+      this.emit(Op.OP_EQUALVERIFY, locationData);   // [idx]
       // Stack: [B_master_inputIdx] (1 untracked)
 
-      // .call / .delegatecall mode: category check + minting capability verification
+      // .call / .delegatecall mode: minting capability verification
       // Verifying minting capability prevents substitution of event/return NFTs (which have
       // the same base category but 'none' capability) as fake call targets.
       if (callMode === ExternalCallMode.CALL || callMode === ExternalCallMode.DELEGATECALL) {
@@ -9330,16 +9232,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emit(Op.OP_EQUALVERIFY, locationData);        // [idx]  minting verified
         this.emit(Op.OP_DROP, locationData);
         continue;
-      }
-
-      // Optional lbc verification: verify B's locking bytecode matches expected lbc parameter
-      if (slot.lbcParam) {
-        this.emit(Op.OP_DUP, locationData);              // [idx, idx]
-        this.emit(Op.OP_UTXOBYTECODE, locationData);     // [idx, input_bytecode]
-        const lbcParamIdx = this.getStackIndex(slot.lbcParam);
-        this.emit(encodeInt(BigInt(lbcParamIdx + 2)), locationData);
-        this.emit(Op.OP_PICK, locationData);              // [idx, input_bytecode, expected_lbc]
-        this.emit(Op.OP_EQUALVERIFY, locationData);       // [idx]
       }
 
       // 2. Verify B's master locking bytecode is preserved: input == output (REGULAR + STATICCALL)
@@ -9627,46 +9519,18 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_DUP, locationData);
       // Stack: [B_master_inputIdx, B_master_inputIdx] (2 untracked)
 
-      // 1. Verify token category
-      this.emit(Op.OP_UTXOTOKENCATEGORY, locationData);
-      this.emit(Op.OP_DUP, locationData);
-      this.emit(Op.OP_SIZE, locationData);
-      this.emit(Op.OP_NIP, locationData);
-      this.emit(encodeInt(32n), locationData);
-      this.emit(Op.OP_GREATERTHAN, locationData);
-      this.emit(Op.OP_IF, locationData);
-      this.emit(encodeInt(32n), locationData);
-      this.emit(Op.OP_SPLIT, locationData);
-      this.emit(Op.OP_DROP, locationData);
-      this.emit(Op.OP_ENDIF, locationData);
-      // OP_UTXOTOKENCATEGORY returns internal byte order; reverse to display.
-      this.emit(Op.OP_REVERSEBYTES, locationData);
-
-      if (slot.categoryParam) {
-        const catParamIdx = this.getStackIndex(slot.categoryParam);
-        this.emit(encodeInt(BigInt(catParamIdx + 2)), locationData);
-        this.emit(Op.OP_PICK, locationData);
-        this.emit(Op.OP_EQUALVERIFY, locationData);
-      } else {
-        this.emitMasterInputIndex(locationData);
-        this.emit(Op.OP_UTXOTOKENCATEGORY, locationData);
-        this.emit(encodeInt(32n), locationData);
-        this.emit(Op.OP_SPLIT, locationData);
-        this.emit(Op.OP_DROP, locationData);
-        this.emit(Op.OP_REVERSEBYTES, locationData);
-        this.emit(Op.OP_EQUALVERIFY, locationData);
+      // 1. IDENTITY: B's master locking bytecode == the expected address (B's master self-pins
+      // its category+capability, so a matching address means the genuine master / genuine state).
+      this.emit(Op.OP_UTXOBYTECODE, locationData);  // [B_master_inputIdx, B_master_bytecode]
+      if (!slot.addressParam) {
+        throw new Error('external outState target address must be a constructor/function parameter');
       }
+      // +2 for the 2 untracked values on the real stack: B_master_bytecode and B_master_inputIdx
+      const osAddrParamIdx = this.getStackIndex(slot.addressParam);
+      this.emit(encodeInt(BigInt(osAddrParamIdx + 2)), locationData);
+      this.emit(Op.OP_PICK, locationData);
+      this.emit(Op.OP_EQUALVERIFY, locationData);
       // Stack: [B_master_inputIdx] (1 untracked)
-
-      // Optional lbc verification: verify B's locking bytecode matches expected lbc parameter
-      if (slot.lbcParam) {
-        this.emit(Op.OP_DUP, locationData);              // [idx, idx]
-        this.emit(Op.OP_UTXOBYTECODE, locationData);     // [idx, input_bytecode]
-        const lbcParamIdx = this.getStackIndex(slot.lbcParam);
-        this.emit(encodeInt(BigInt(lbcParamIdx + 2)), locationData);
-        this.emit(Op.OP_PICK, locationData);              // [idx, input_bytecode, expected_lbc]
-        this.emit(Op.OP_EQUALVERIFY, locationData);       // [idx]
-      }
 
       // 2. Verify B's master locking bytecode is preserved: input == output
       this.emit(Op.OP_DUP, locationData);

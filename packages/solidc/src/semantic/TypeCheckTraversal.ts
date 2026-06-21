@@ -15,7 +15,6 @@ import {
   ValueType,
   TokenContainerType,
   AddressType,
-  ConnectedAddressType,
   FunctionType,
   Op,
 } from '@solidcash/utils';
@@ -90,7 +89,6 @@ import {
   AssertNode,
   AddressTransferStatementNode,
   AddressSendExpressionNode,
-  AddressConnectNode,
   LowLevelCallNode,
   LowLevelCallStatementNode,
   ExternalFunctionCallNode,
@@ -364,8 +362,7 @@ export default class TypeCheckTraversal extends AstTraversal {
     node.amount = this.visit(node.amount);
 
     const addrType = node.addressExpression.type;
-    if (!(addrType instanceof AddressType && addrType.payable)
-        && !(addrType instanceof ConnectedAddressType && addrType.payable)) {
+    if (!(addrType instanceof AddressType && addrType.payable)) {
       throw new TransferArgumentTypeError(
         node, 'address', addrType!, new AddressType(true),
       );
@@ -381,8 +378,7 @@ export default class TypeCheckTraversal extends AstTraversal {
     node.amount = this.visit(node.amount);
 
     const addrType = node.addressExpression.type;
-    if (!(addrType instanceof AddressType && addrType.payable)
-        && !(addrType instanceof ConnectedAddressType && addrType.payable)) {
+    if (!(addrType instanceof AddressType && addrType.payable)) {
       throw new TransferArgumentTypeError(
         node, 'address', addrType!, new AddressType(true),
       );
@@ -391,28 +387,6 @@ export default class TypeCheckTraversal extends AstTraversal {
       throw new TransferArgumentTypeError(node, 'amount', node.amount.type, PrimitiveType.INT);
     }
     node.type = PrimitiveType.BOOL;
-    return node;
-  }
-
-  visitAddressConnect(node: AddressConnectNode): Node {
-    node.addressExpression = this.visit(node.addressExpression);
-    node.categoryExpression = this.visit(node.categoryExpression);
-
-    const addrType = node.addressExpression.type;
-    if (!(addrType instanceof AddressType)) {
-      throw new TypeError(
-        node, addrType, new AddressType(),
-        `'.connect()' requires an address type, found '${addrType}'`,
-      );
-    }
-    if (node.categoryExpression.type && !implicitlyCastable(node.categoryExpression.type, new BytesType())) {
-      throw new TypeError(
-        node, node.categoryExpression.type, new BytesType(),
-        `'.connect()' category argument must be bytes, found '${node.categoryExpression.type}'`,
-      );
-    }
-    // Preserve payable flag from the source address
-    node.type = new ConnectedAddressType(addrType.payable);
     return node;
   }
 
@@ -453,8 +427,7 @@ export default class TypeCheckTraversal extends AstTraversal {
   }
 
   visitExternalFunctionCall(node: ExternalFunctionCallNode): Node {
-    node.categoryExpression = this.visit(node.categoryExpression);
-    if (node.lbcExpression) node.lbcExpression = this.visit(node.lbcExpression);
+    node.addressExpression = this.visit(node.addressExpression);
     node.parameters = this.visitList(node.parameters);
     if (node.callOptions?.value) {
       node.callOptions.value = this.visit(node.callOptions.value);
@@ -669,21 +642,21 @@ export default class TypeCheckTraversal extends AstTraversal {
     const exprType = node.expression.type;
 
     // Handle .balance on address/connected address types
-    if ((exprType instanceof AddressType || exprType instanceof ConnectedAddressType)
+    if ((exprType instanceof AddressType)
         && node.name === 'balance') {
       node.type = PrimitiveType.INT;
       return node;
     }
 
     // Handle .codehash on address types -> bytes (20 or 32 depending on P2SH type, checked at runtime)
-    if ((exprType instanceof AddressType || exprType instanceof ConnectedAddressType)
+    if ((exprType instanceof AddressType)
         && node.name === 'codehash') {
       node.type = new BytesType();
       return node;
     }
 
     // Handle .code on address types -> bytes (the redeem script)
-    if ((exprType instanceof AddressType || exprType instanceof ConnectedAddressType)
+    if ((exprType instanceof AddressType)
         && node.name === 'code') {
       node.type = new BytesType();
       return node;
@@ -755,9 +728,9 @@ export default class TypeCheckTraversal extends AstTraversal {
       return node;
     }
     // this.outState - special built-in (used as this.outState.balance)
-    // Typed as ConnectedAddressType so .balance is valid on it via visitFieldAccess
+    // Typed as AddressType so .balance is valid on it via visitFieldAccess
     if (node.name === 'outState' && !node.stateVariable) {
-      node.type = new ConnectedAddressType(false);
+      node.type = new AddressType(false);
       return node;
     }
     if (node.stateVariable) {
@@ -1070,10 +1043,7 @@ export default class TypeCheckTraversal extends AstTraversal {
     // For payable() cast, determine the correct target type based on source type
     if (node.type instanceof AddressType && node.type.payable) {
       const sourceType = node.expression.type;
-      if (sourceType instanceof ConnectedAddressType) {
-        // payable(connectedAddr) -> ConnectedAddressType(payable=true)
-        node.type = new ConnectedAddressType(true);
-      } else if (sourceType instanceof AddressType) {
+      if (sourceType instanceof AddressType) {
         // payable(addr) -> AddressType(payable=true)
         node.type = new AddressType(true);
       }

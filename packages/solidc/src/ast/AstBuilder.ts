@@ -101,7 +101,6 @@ import {
   MethodCallStatementNode,
   AddressTransferStatementNode,
   AddressSendExpressionNode,
-  AddressConnectNode,
   LowLevelCallStatementNode,
   CallOptions,
   CollectionIterationNode,
@@ -2145,19 +2144,6 @@ export default class AstBuilder
         );
       }
       const node = new AddressSendExpressionNode(object, parameters[0]);
-      node.location = Location.fromCtx(ctx);
-      return node;
-    }
-
-    // .connect(category) on an address produces AddressConnectNode
-    if (methodName === 'connect' && parameters.length === 1) {
-      if (callOpts) {
-        throw new ParseError(
-          'Call options are not applicable to .connect()',
-          Location.fromCtx(ctx),
-        );
-      }
-      const node = new AddressConnectNode(object, parameters[0]);
       node.location = Location.fromCtx(ctx);
       return node;
     }

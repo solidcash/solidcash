@@ -205,8 +205,7 @@ export interface ExternalReadAbi {
   nftIndex?: number;
   collectionName?: string;
   collectionSignature?: string;
-  categoryParam?: string; // name of the constructor parameter providing the external category
-  lbcParam?: string; // name of the constructor parameter providing the expected locking bytecode
+  addressParam?: string; // name of the constructor parameter providing the callee address (locking bytecode)
 }
 
 export interface ArgSource {
@@ -220,8 +219,7 @@ export interface ArgSource {
 export interface ExternalCallAbi {
   interfaceName: string;
   functionName: string;
-  categoryParam?: string;
-  lbcParam?: string;
+  addressParam?: string;
   requiredDataNftIndices: number[];
   hasReturnValues?: boolean;
   returnTypes?: readonly string[];
@@ -233,8 +231,7 @@ export interface ExternalCallAbi {
 
 export interface ExternalOutStateAbi {
   interfaceName: string;
-  categoryParam?: string;
-  lbcParam?: string;
+  addressParam?: string;
   requiredDataNftIndices: number[];
 }
 

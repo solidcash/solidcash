@@ -92,7 +92,6 @@ import {
   AssertNode,
   AddressTransferStatementNode,
   AddressSendExpressionNode,
-  AddressConnectNode,
   MethodCallStatementNode,
   LowLevelCallNode,
   LowLevelCallStatementNode,
@@ -200,7 +199,6 @@ export default abstract class AstVisitor<T> {
   abstract visitMethodCall(node: MethodCallNode): T;
   abstract visitAddressTransferStatement(node: AddressTransferStatementNode): T;
   abstract visitAddressSendExpression(node: AddressSendExpressionNode): T;
-  abstract visitAddressConnect(node: AddressConnectNode): T;
   abstract visitLowLevelCall(node: LowLevelCallNode): T;
   abstract visitLowLevelCallStatement(node: LowLevelCallStatementNode): T;
   abstract visitCollectionIteration(node: CollectionIterationNode): T;

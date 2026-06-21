@@ -59,16 +59,14 @@ function buildFunctionAbiMetadata(func: FunctionDefinitionNode): Partial<AbiFunc
         ...(er.nftIndex !== undefined && { nftIndex: er.nftIndex }),
         ...(er.collectionName && { collectionName: er.collectionName }),
         ...(er.collectionSignature && { collectionSignature: er.collectionSignature }),
-        ...(er.categoryParam && { categoryParam: er.categoryParam }),
-        ...(er.lbcParam && { lbcParam: er.lbcParam }),
+        ...(er.addressParam && { addressParam: er.addressParam }),
       })),
     }),
     ...(func.externalCalls && func.externalCalls.length > 0 && {
       externalCalls: func.externalCalls.map((ec) => ({
         interfaceName: ec.interfaceName,
         functionName: ec.functionName,
-        ...(ec.categoryParam && { categoryParam: ec.categoryParam }),
-        ...(ec.lbcParam && { lbcParam: ec.lbcParam }),
+        ...(ec.addressParam && { addressParam: ec.addressParam }),
         requiredDataNftIndices: ec.requiredDataNftIndices,
         ...(ec.hasReturnValues && { hasReturnValues: true }),
         ...(ec.returnTypes && ec.returnTypes.length > 0 && {
@@ -83,8 +81,7 @@ function buildFunctionAbiMetadata(func: FunctionDefinitionNode): Partial<AbiFunc
     ...(func.externalOutStateReads && func.externalOutStateReads.length > 0 && {
       externalOutStateReads: func.externalOutStateReads.map((os) => ({
         interfaceName: os.interfaceName,
-        ...(os.categoryParam && { categoryParam: os.categoryParam }),
-        ...(os.lbcParam && { lbcParam: os.lbcParam }),
+        ...(os.addressParam && { addressParam: os.addressParam }),
         requiredDataNftIndices: os.requiredDataNftIndices,
       })),
     }),

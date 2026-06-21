@@ -57,7 +57,6 @@ import {
   BytesConcatNode,
   StringConcatNode,
   AddressSendExpressionNode,
-  AddressConnectNode,
   LowLevelCallNode,
   TypeIntrospectionNode,
 } from '../ast/AST.js';
@@ -713,12 +712,6 @@ function substituteInExpression(
   if (expr instanceof AddressSendExpressionNode) {
     expr.addressExpression = substituteInExpression(expr.addressExpression, subs);
     expr.amount = substituteInExpression(expr.amount, subs);
-    return expr;
-  }
-
-  if (expr instanceof AddressConnectNode) {
-    expr.addressExpression = substituteInExpression(expr.addressExpression, subs);
-    expr.categoryExpression = substituteInExpression(expr.categoryExpression, subs);
     return expr;
   }
 

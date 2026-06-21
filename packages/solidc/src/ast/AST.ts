@@ -1470,9 +1470,8 @@ export class ExternalStateAccessNode extends ExpressionNode {
 
   constructor(
     public interfaceName: string,
-    public categoryExpression: ExpressionNode,
+    public addressExpression: ExpressionNode,
     public name: string,
-    public lbcExpression?: ExpressionNode,
   ) {
     super();
   }
@@ -1496,10 +1495,9 @@ export class ExternalMappingAccessNode extends ExpressionNode {
 
   constructor(
     public interfaceName: string,
-    public categoryExpression: ExpressionNode,
+    public addressExpression: ExpressionNode,
     public name: string,
     public keys: ExpressionNode[],
-    public lbcExpression?: ExpressionNode,
   ) {
     super();
   }
@@ -1515,8 +1513,7 @@ export interface ExternalReadSlot {
   nftIndex?: number;
   collectionName?: string;
   collectionSignature?: string;
-  categoryParam?: string; // name of the constructor/function parameter providing the category
-  lbcParam?: string; // name of the constructor/function parameter providing the locking bytecode
+  addressParam?: string; // name of the constructor/function parameter providing the callee address (locking bytecode)
   slotIndex: number;
 }
 
@@ -1552,10 +1549,9 @@ export class ExternalFunctionCallNode extends ExpressionNode {
 
   constructor(
     public interfaceName: string,
-    public categoryExpression: ExpressionNode,
+    public addressExpression: ExpressionNode,
     public functionName: string,
     public parameters: ExpressionNode[],
-    public lbcExpression?: ExpressionNode,
   ) {
     super();
   }
@@ -1576,8 +1572,7 @@ export interface ExternalCallArgSource {
 export interface ExternalCallSlot {
   interfaceName: string;
   functionName: string;
-  categoryParam?: string;
-  lbcParam?: string;
+  addressParam?: string;
   slotIndex: number;
   requiredDataNftIndices: number[];
   hasReturnValues?: boolean;
@@ -1603,8 +1598,7 @@ export interface ExternalOutputStateAccessInfo {
 export class ExternalOutputStateNode extends ExpressionNode {
   constructor(
     public interfaceName: string,
-    public categoryExpression: ExpressionNode,
-    public lbcExpression?: ExpressionNode,
+    public addressExpression: ExpressionNode,
   ) { super(); }
 
   accept<T>(visitor: AstVisitor<T>): T {
@@ -1627,8 +1621,7 @@ export class ExternalOutputStateAccessNode extends ExpressionNode {
 
 export interface ExternalOutStateSlot {
   interfaceName: string;
-  categoryParam?: string;
-  lbcParam?: string;
+  addressParam?: string;
   slotIndex: number;
   requiredDataNftIndices: number[];
   sharedWithCallSlotIndex?: number;
@@ -1798,19 +1791,6 @@ export class AddressSendExpressionNode extends ExpressionNode {
 
   accept<T>(visitor: AstVisitor<T>): T {
     return visitor.visitAddressSendExpression(this);
-  }
-}
-
-export class AddressConnectNode extends ExpressionNode {
-  constructor(
-    public addressExpression: ExpressionNode,  // address type
-    public categoryExpression: ExpressionNode,  // bytes32 category
-  ) {
-    super();
-  }
-
-  accept<T>(visitor: AstVisitor<T>): T {
-    return visitor.visitAddressConnect(this);
   }
 }
 

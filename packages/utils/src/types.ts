@@ -1,7 +1,7 @@
 export type Type =
   | PrimitiveType | ArrayType | TupleType | BytesType | IntType | FixedType
   | MappingType | StructType | TokenContainerType | EnumType
-  | AddressType | ConnectedAddressType | ValueType | FunctionType;
+  | AddressType | ValueType | FunctionType;
 
 export class TokenContainerType {
   toString(): string { return 'tokenContainer'; }
@@ -10,11 +10,6 @@ export class TokenContainerType {
 export class AddressType {
   constructor(public payable: boolean = false) {}
   toString(): string { return this.payable ? 'address payable' : 'address'; }
-}
-
-export class ConnectedAddressType {
-  constructor(public payable: boolean = false) {}
-  toString(): string { return this.payable ? 'connected address payable' : 'connected address'; }
 }
 
 export class ArrayType {
@@ -250,7 +245,6 @@ function typesEqual(a: Type, b?: Type): boolean {
     return a.name === b.name && typesEqual(a.underlyingType, b.underlyingType);
   }
   if (a instanceof AddressType && b instanceof AddressType) return a.payable === b.payable;
-  if (a instanceof ConnectedAddressType && b instanceof ConnectedAddressType) return a.payable === b.payable;
   if (a instanceof TokenContainerType && b instanceof TokenContainerType) return true;
   return a.toString() === b.toString();
 }
@@ -280,18 +274,8 @@ export function explicitlyCastable(from?: Type, to?: Type): boolean {
     if (from === PrimitiveType.INT || from instanceof IntType) return true;
     return false;
   }
-  if (to instanceof ConnectedAddressType) {
-    // connected address -> connected address payable (via payable() cast)
-    if (from instanceof ConnectedAddressType && to.payable) return true;
-    return false;
-  }
   if (from instanceof AddressType) {
     // address -> bytes (address is lbc bytes at VM level)
-    if (to instanceof BytesType) return true;
-    return false;
-  }
-  if (from instanceof ConnectedAddressType) {
-    // connected address -> bytes (category bytes at VM level)
     if (to instanceof BytesType) return true;
     return false;
   }
@@ -429,23 +413,14 @@ export function implicitlyCastable(actual?: Type, expected?: Type): boolean {
     if (expected.payable && !actual.payable) return false;
     return true;
   }
-  if (actual instanceof ConnectedAddressType && expected instanceof ConnectedAddressType) {
-    if (expected.payable && !actual.payable) return false;
-    return true;
-  }
   if (actual instanceof AddressType && expected instanceof BytesType) {
     // address -> unbounded bytes: OK (address is lbc bytes at VM level)
-    return !expected.bound;
-  }
-  if (actual instanceof ConnectedAddressType && expected instanceof BytesType) {
-    // connected address -> unbounded bytes: OK (category bytes at VM level)
     return !expected.bound;
   }
   // bytes -> address: address literals (`0x...`) and lbc bytes assign to a non-payable address.
   if (actual instanceof BytesType && expected instanceof AddressType) return !expected.payable;
   // Can't implicitly cast to/from address types in other cases
   if (actual instanceof AddressType || expected instanceof AddressType) return false;
-  if (actual instanceof ConnectedAddressType || expected instanceof ConnectedAddressType) return false;
 
   // Mappings can't be implicitly cast
   if (actual instanceof MappingType || expected instanceof MappingType) return false;

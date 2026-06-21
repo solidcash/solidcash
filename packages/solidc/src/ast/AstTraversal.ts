@@ -96,7 +96,6 @@ import {
   AssertNode,
   AddressTransferStatementNode,
   AddressSendExpressionNode,
-  AddressConnectNode,
   LowLevelCallNode,
   LowLevelCallStatementNode,
   CollectionIterationNode,
@@ -590,21 +589,18 @@ export default class AstTraversal extends AstVisitor<Node> {
   }
 
   visitExternalStateAccess(node: ExternalStateAccessNode): Node {
-    node.categoryExpression = this.visit(node.categoryExpression);
-    if (node.lbcExpression) node.lbcExpression = this.visit(node.lbcExpression);
+    node.addressExpression = this.visit(node.addressExpression);
     return node;
   }
 
   visitExternalMappingAccess(node: ExternalMappingAccessNode): Node {
-    node.categoryExpression = this.visit(node.categoryExpression);
-    if (node.lbcExpression) node.lbcExpression = this.visit(node.lbcExpression);
+    node.addressExpression = this.visit(node.addressExpression);
     node.keys = this.visitList(node.keys);
     return node;
   }
 
   visitExternalFunctionCall(node: ExternalFunctionCallNode): Node {
-    node.categoryExpression = this.visit(node.categoryExpression);
-    if (node.lbcExpression) node.lbcExpression = this.visit(node.lbcExpression);
+    node.addressExpression = this.visit(node.addressExpression);
     node.parameters = this.visitList(node.parameters);
     if (node.callOptions?.value) node.callOptions.value = this.visit(node.callOptions.value) as ExpressionNode;
     if (node.callOptions?.gas) node.callOptions.gas = this.visit(node.callOptions.gas) as ExpressionNode;
@@ -612,8 +608,7 @@ export default class AstTraversal extends AstVisitor<Node> {
   }
 
   visitExternalOutputState(node: ExternalOutputStateNode): Node {
-    node.categoryExpression = this.visit(node.categoryExpression);
-    if (node.lbcExpression) node.lbcExpression = this.visit(node.lbcExpression);
+    node.addressExpression = this.visit(node.addressExpression);
     return node;
   }
 
@@ -639,12 +634,6 @@ export default class AstTraversal extends AstVisitor<Node> {
   visitAddressSendExpression(node: AddressSendExpressionNode): Node {
     node.addressExpression = this.visit(node.addressExpression);
     node.amount = this.visit(node.amount);
-    return node;
-  }
-
-  visitAddressConnect(node: AddressConnectNode): Node {
-    node.addressExpression = this.visit(node.addressExpression);
-    node.categoryExpression = this.visit(node.categoryExpression);
     return node;
   }
 

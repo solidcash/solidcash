@@ -84,7 +84,6 @@ import {
   AssertNode,
   AddressTransferStatementNode,
   AddressSendExpressionNode,
-  AddressConnectNode,
   HexLiteralNode,
   IntLiteralNode,
   BoolLiteralNode,
@@ -170,7 +169,7 @@ import {
   AbiEncodeCallArgCountError,
 } from '../Errors.js';
 import {
-  CompilerOptions, PrimitiveType, BytesType, Type, StructType, EnumType, AddressType, ConnectedAddressType, ValueType,
+  CompilerOptions, PrimitiveType, BytesType, Type, StructType, EnumType, AddressType, ValueType,
   computeEventSignature, computeErrorSignature, computeCollectionSignature,
   computeFunctionSignature, computeFunctionSelector, TupleType, ArrayType,
   IntType, FixedType, MappingType, FunctionType,
@@ -1073,13 +1072,13 @@ export default class SymbolTableTraversal extends AstTraversal {
         }
 
         // Detect overlap with external call slots: if an outState read targets the
-        // same interface+categoryParam as an external call, share the call's UTXO group
+        // same interface+addressParam as an external call, share the call's UTXO group
         let allShared = true;
         if (node.externalCalls && node.externalCalls.length > 0) {
           for (const osSlot of externalOutStateMap.values()) {
             const matchingCallSlot = node.externalCalls.find(
               (cs) => cs.interfaceName === osSlot.interfaceName
-                && cs.categoryParam === osSlot.categoryParam,
+                && cs.addressParam === osSlot.addressParam,
             );
             if (matchingCallSlot) {
               osSlot.sharedWithCallSlotIndex = matchingCallSlot.slotIndex;
@@ -2565,16 +2564,13 @@ export default class SymbolTableTraversal extends AstTraversal {
     if (node instanceof ExternalStateAccessNode && node.readInfo) {
       const key = `${node.readInfo.interfaceName}:data:${node.readInfo.nftIndex}`;
       if (!map.has(key)) {
-        const categoryParam = node.categoryExpression instanceof IdentifierNode
-          ? node.categoryExpression.name : undefined;
-        const lbcParam = node.lbcExpression instanceof IdentifierNode
-          ? node.lbcExpression.name : undefined;
+        const addressParam = node.addressExpression instanceof IdentifierNode
+          ? node.addressExpression.name : undefined;
         map.set(key, {
           interfaceName: node.readInfo.interfaceName,
           kind: 'data',
           nftIndex: node.readInfo.nftIndex,
-          categoryParam,
-          lbcParam,
+          addressParam,
           slotIndex: -1,
         });
       }
@@ -2584,17 +2580,14 @@ export default class SymbolTableTraversal extends AstTraversal {
     if (node instanceof ExternalMappingAccessNode && node.readInfo) {
       const key = `${node.readInfo.interfaceName}:entry:${node.readInfo.collectionSignature}`;
       if (!map.has(key)) {
-        const categoryParam = node.categoryExpression instanceof IdentifierNode
-          ? node.categoryExpression.name : undefined;
-        const lbcParam = node.lbcExpression instanceof IdentifierNode
-          ? node.lbcExpression.name : undefined;
+        const addressParam = node.addressExpression instanceof IdentifierNode
+          ? node.addressExpression.name : undefined;
         map.set(key, {
           interfaceName: node.readInfo.interfaceName,
           kind: 'entry',
           collectionName: node.readInfo.collectionName,
           collectionSignature: node.readInfo.collectionSignature,
-          categoryParam,
-          lbcParam,
+          addressParam,
           slotIndex: -1,
         });
       }
@@ -2610,11 +2603,8 @@ export default class SymbolTableTraversal extends AstTraversal {
     if ('expression' in node && (node as any).expression instanceof Node) {
       this.collectExternalReads((node as any).expression, map);
     }
-    if ('categoryExpression' in node && (node as any).categoryExpression instanceof Node) {
-      this.collectExternalReads((node as any).categoryExpression, map);
-    }
-    if ('lbcExpression' in node && (node as any).lbcExpression instanceof Node) {
-      this.collectExternalReads((node as any).lbcExpression, map);
+    if ('addressExpression' in node && (node as any).addressExpression instanceof Node) {
+      this.collectExternalReads((node as any).addressExpression, map);
     }
     if ('left' in node && (node as any).left instanceof Node) {
       this.collectExternalReads((node as any).left, map);
@@ -2694,11 +2684,8 @@ export default class SymbolTableTraversal extends AstTraversal {
     if ('expression' in node && (node as any).expression instanceof Node) {
       this.assignExternalReadSlotIndices((node as any).expression, map);
     }
-    if ('categoryExpression' in node && (node as any).categoryExpression instanceof Node) {
-      this.assignExternalReadSlotIndices((node as any).categoryExpression, map);
-    }
-    if ('lbcExpression' in node && (node as any).lbcExpression instanceof Node) {
-      this.assignExternalReadSlotIndices((node as any).lbcExpression, map);
+    if ('addressExpression' in node && (node as any).addressExpression instanceof Node) {
+      this.assignExternalReadSlotIndices((node as any).addressExpression, map);
     }
     if ('left' in node && (node as any).left instanceof Node) {
       this.assignExternalReadSlotIndices((node as any).left, map);
@@ -2757,10 +2744,8 @@ export default class SymbolTableTraversal extends AstTraversal {
   private collectExternalCalls(node: Node, slots: ExternalCallSlot[]): void {
     if (node instanceof ExternalFunctionCallNode && node.callInfo) {
       // Each call site gets its own slot (no de-duplication)
-      const categoryParam = node.categoryExpression instanceof IdentifierNode
-        ? node.categoryExpression.name : undefined;
-      const lbcParam = node.lbcExpression instanceof IdentifierNode
-        ? node.lbcExpression.name : undefined;
+      const addressParam = node.addressExpression instanceof IdentifierNode
+        ? node.addressExpression.name : undefined;
       // Determine if selector verification is needed: only when the callee interface
       // has >1 callable function AND mode is REGULAR (call/staticcall skip selectors)
       const callMode = node.callInfo.callMode;
@@ -2832,8 +2817,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       slots.push({
         interfaceName: node.callInfo.interfaceName,
         functionName: node.callInfo.functionName,
-        categoryParam,
-        lbcParam,
+        addressParam,
         slotIndex: -1,
         requiredDataNftIndices: dataNftIndices,
         computedOffset: 0,
@@ -2858,11 +2842,8 @@ export default class SymbolTableTraversal extends AstTraversal {
     if ('expression' in node && (node as any).expression instanceof Node) {
       this.collectExternalCalls((node as any).expression, slots);
     }
-    if ('categoryExpression' in node && (node as any).categoryExpression instanceof Node) {
-      this.collectExternalCalls((node as any).categoryExpression, slots);
-    }
-    if ('lbcExpression' in node && (node as any).lbcExpression instanceof Node) {
-      this.collectExternalCalls((node as any).lbcExpression, slots);
+    if ('addressExpression' in node && (node as any).addressExpression instanceof Node) {
+      this.collectExternalCalls((node as any).addressExpression, slots);
     }
     if ('left' in node && (node as any).left instanceof Node) {
       this.collectExternalCalls((node as any).left, slots);
@@ -2939,11 +2920,8 @@ export default class SymbolTableTraversal extends AstTraversal {
     if ('callNode' in node && (node as any).callNode instanceof Node) {
       this.assignExternalCallSlotIndices((node as any).callNode, slots, counter);
     }
-    if ('categoryExpression' in node && (node as any).categoryExpression instanceof Node) {
-      this.assignExternalCallSlotIndices((node as any).categoryExpression, slots, counter);
-    }
-    if ('lbcExpression' in node && (node as any).lbcExpression instanceof Node) {
-      this.assignExternalCallSlotIndices((node as any).lbcExpression, slots, counter);
+    if ('addressExpression' in node && (node as any).addressExpression instanceof Node) {
+      this.assignExternalCallSlotIndices((node as any).addressExpression, slots, counter);
     }
     if ('left' in node && (node as any).left instanceof Node) {
       this.assignExternalCallSlotIndices((node as any).left, slots, counter);
@@ -3004,14 +2982,11 @@ export default class SymbolTableTraversal extends AstTraversal {
           existing.requiredDataNftIndices.sort((a, b) => a - b);
         }
       } else {
-        const categoryParam = node.outStateNode.categoryExpression instanceof IdentifierNode
-          ? node.outStateNode.categoryExpression.name : undefined;
-        const lbcParam = node.outStateNode.lbcExpression instanceof IdentifierNode
-          ? node.outStateNode.lbcExpression.name : undefined;
+        const addressParam = node.outStateNode.addressExpression instanceof IdentifierNode
+          ? node.outStateNode.addressExpression.name : undefined;
         map.set(key, {
           interfaceName: node.accessInfo.interfaceName,
-          categoryParam,
-          lbcParam,
+          addressParam,
           slotIndex: -1,
           requiredDataNftIndices: [node.accessInfo.nftIndex],
         });
@@ -3031,11 +3006,8 @@ export default class SymbolTableTraversal extends AstTraversal {
     if ('outStateNode' in node && (node as any).outStateNode instanceof Node) {
       this.collectExternalOutStateReads((node as any).outStateNode, map);
     }
-    if ('categoryExpression' in node && (node as any).categoryExpression instanceof Node) {
-      this.collectExternalOutStateReads((node as any).categoryExpression, map);
-    }
-    if ('lbcExpression' in node && (node as any).lbcExpression instanceof Node) {
-      this.collectExternalOutStateReads((node as any).lbcExpression, map);
+    if ('addressExpression' in node && (node as any).addressExpression instanceof Node) {
+      this.collectExternalOutStateReads((node as any).addressExpression, map);
     }
     if ('left' in node && (node as any).left instanceof Node) {
       this.collectExternalOutStateReads((node as any).left, map);
@@ -3083,11 +3055,8 @@ export default class SymbolTableTraversal extends AstTraversal {
     if ('outStateNode' in node && (node as any).outStateNode instanceof Node) {
       this.assignExternalOutStateSlotIndices((node as any).outStateNode, map);
     }
-    if ('categoryExpression' in node && (node as any).categoryExpression instanceof Node) {
-      this.assignExternalOutStateSlotIndices((node as any).categoryExpression, map);
-    }
-    if ('lbcExpression' in node && (node as any).lbcExpression instanceof Node) {
-      this.assignExternalOutStateSlotIndices((node as any).lbcExpression, map);
+    if ('addressExpression' in node && (node as any).addressExpression instanceof Node) {
+      this.assignExternalOutStateSlotIndices((node as any).addressExpression, map);
     }
     if ('left' in node && (node as any).left instanceof Node) {
       this.assignExternalOutStateSlotIndices((node as any).left, map);
@@ -3471,15 +3440,6 @@ export default class SymbolTableTraversal extends AstTraversal {
           sendNode.location = node.location;
           return sendNode;
         }
-        if (methodName === 'connect' && node.parameters.length === 1) {
-          const addrIdentifier = new IdentifierNode(varName);
-          addrIdentifier.location = node.identifier.location;
-          const visitedAddr = this.visit(addrIdentifier);
-          const category = this.visit(node.parameters[0]);
-          const connectNode = new AddressConnectNode(visitedAddr, category);
-          connectNode.location = node.location;
-          return connectNode;
-        }
         if ((methodName === 'call' || methodName === 'staticcall' || methodName === 'delegatecall') && node.parameters.length === 1) {
           const addrIdentifier = new IdentifierNode(varName);
           addrIdentifier.location = node.identifier.location;
@@ -3573,19 +3533,17 @@ export default class SymbolTableTraversal extends AstTraversal {
       }
     }
 
-    // Check if this is a contract/interface type constructor: MarketplaceV1(lbc) or MarketplaceV1(category, lbc)
+    // Check if this is a contract/interface type constructor used as an address value: MarketplaceV1(addr)
     if (!structType) {
       const isContractType = this.contractMap.has(node.identifier.name)
         || this.interfaceMap.has(node.identifier.name);
       if (isContractType) {
-        if (node.parameters.length < 1 || node.parameters.length > 2) {
+        if (node.parameters.length !== 1) {
           throw new ContractTypeConstructorArgCountError(node, node.identifier.name);
         }
         node.parameters = this.visitList(node.parameters);
-        // 1-arg: Name(lbc) -> address (backwards compat standalone path)
-        // 2-arg: Name(category, lbc) -> address from lbc
-        const lbcExpr = node.parameters.length === 2 ? node.parameters[1] : node.parameters[0];
-        const castNode = new CastNode(new AddressType(false), lbcExpr, false);
+        // Name(addr) -> address handle (the address IS the locking bytecode)
+        const castNode = new CastNode(new AddressType(false), node.parameters[0], false);
         castNode.location = node.location;
         return castNode;
       }
@@ -4731,22 +4689,20 @@ export default class SymbolTableTraversal extends AstTraversal {
       }
     }
 
-    // Detect outState accessor: ICounter(category).outState or ICounter(category, lbc).outState
+    // Detect outState accessor: ICounter(addr).outState
     if (node.expression instanceof FunctionCallNode && node.name === 'outState') {
       const iface = this.interfaceMap.get(node.expression.identifier.name);
       if (iface) {
         const paramCount = node.expression.parameters.length;
-        if (paramCount < 1 || paramCount > 2) {
+        if (paramCount !== 1) {
           throw new ExternalReadArgCountError(node, iface.name, paramCount);
         }
         const firstArg = node.expression.parameters[0];
         if (isEmptyBytesLiteral(firstArg)) {
           throw new ExternalAccessOnUnconnectedError(node, iface.name, 'outState');
         }
-        const categoryExpr = this.visit(firstArg) as ExpressionNode;
-        const lbcExpr = paramCount === 2
-          ? this.visit(node.expression.parameters[1]) as ExpressionNode : undefined;
-        const outStateNode = new ExternalOutputStateNode(iface.name, categoryExpr, lbcExpr);
+        const addressExpr = this.visit(firstArg) as ExpressionNode;
+        const outStateNode = new ExternalOutputStateNode(iface.name, addressExpr);
         outStateNode.location = node.location;
         return outStateNode;
       }
@@ -4793,26 +4749,24 @@ export default class SymbolTableTraversal extends AstTraversal {
       return accessNode;
     }
 
-    // Detect external state reads: ICounter(category).stateVar or ICounter(category, lbc).stateVar
+    // Detect external state reads: ICounter(addr).stateVar
     if (node.expression instanceof FunctionCallNode) {
       const iface = this.interfaceMap.get(node.expression.identifier.name);
       if (iface) {
         const paramCount = node.expression.parameters.length;
-        if (paramCount < 1 || paramCount > 2) {
+        if (paramCount !== 1) {
           throw new ExternalReadArgCountError(node, iface.name, paramCount);
         }
 
         const firstArg = node.expression.parameters[0];
 
-        // Unconnected mode: Name(0x, lbc) - only address-like properties allowed
+        // Unconnected mode: Name(0x) - only address-like properties allowed
         if (isEmptyBytesLiteral(firstArg)) {
           throw new ExternalAccessOnUnconnectedError(node, iface.name, node.name);
         }
 
-        // Visit the category expression for symbol resolution
-        const categoryExpr = this.visit(firstArg) as ExpressionNode;
-        const lbcExpr = paramCount === 2
-          ? this.visit(node.expression.parameters[1]) as ExpressionNode : undefined;
+        // Visit the address expression for symbol resolution
+        const addressExpr = this.visit(firstArg) as ExpressionNode;
 
         // Check if it's a state variable read
         const allVars = this.getAllInterfaceStateVariables(iface);
@@ -4825,7 +4779,7 @@ export default class SymbolTableTraversal extends AstTraversal {
             .sort((a, b) => a.fieldIndex - b.fieldIndex)
             .map((l) => ({ type: l.type, fieldIndex: l.fieldIndex }));
 
-          const extNode = new ExternalStateAccessNode(iface.name, categoryExpr, node.name, lbcExpr);
+          const extNode = new ExternalStateAccessNode(iface.name, addressExpr, node.name);
           extNode.type = ifaceVar.type;
           extNode.readInfo = {
             interfaceName: iface.name,
@@ -4845,7 +4799,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         const ifaceColl = allCollections.find((c) => c.name === node.name);
         if (ifaceColl) {
           const collSig = computeCollectionSignature(ifaceColl.name, ifaceColl.type.toString());
-          const extNode = new ExternalMappingAccessNode(iface.name, categoryExpr, node.name, [], lbcExpr);
+          const extNode = new ExternalMappingAccessNode(iface.name, addressExpr, node.name, []);
           extNode.readInfo = {
             interfaceName: iface.name,
             collectionName: node.name,
@@ -5232,7 +5186,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       const iface = this.interfaceMap.get(funcCallNode.identifier.name);
       if (iface) {
         const paramCount = funcCallNode.parameters.length;
-        if (paramCount < 1 || paramCount > 2) {
+        if (paramCount !== 1) {
           throw new ExternalReadArgCountError(node, iface.name, paramCount);
         }
 
@@ -5242,9 +5196,7 @@ export default class SymbolTableTraversal extends AstTraversal {
           throw new ExternalAccessOnUnconnectedError(node, iface.name, functionName);
         }
 
-        const categoryExpr = this.visit(firstArg) as ExpressionNode;
-        const lbcExpr = paramCount === 2
-          ? this.visit(funcCallNode.parameters[1]) as ExpressionNode : undefined;
+        const addressExpr = this.visit(firstArg) as ExpressionNode;
 
         // Validate: interface has function with the field access name
         const allFunctions = this.getAllInterfaceFunctions(iface);
@@ -5271,7 +5223,7 @@ export default class SymbolTableTraversal extends AstTraversal {
 
         // Create ExternalFunctionCallNode with callMode
         const callNode = new ExternalFunctionCallNode(
-          iface.name, categoryExpr, functionName, parameters, lbcExpr,
+          iface.name, addressExpr, functionName, parameters,
         );
         callNode.callMode = callMode;
         callNode.callOptions = node.callOptions;
@@ -5328,21 +5280,19 @@ export default class SymbolTableTraversal extends AstTraversal {
       const iface = this.interfaceMap.get(node.object.identifier.name);
       if (iface) {
         const paramCount = node.object.parameters.length;
-        if (paramCount < 1 || paramCount > 2) {
+        if (paramCount !== 1) {
           throw new ExternalReadArgCountError(node, iface.name, paramCount);
         }
 
         const firstArg = node.object.parameters[0];
 
-        // Unconnected mode: Name(0x, lbc) - cannot call methods
+        // Unconnected mode: Name(0x) - cannot call methods
         if (isEmptyBytesLiteral(firstArg)) {
           throw new ExternalAccessOnUnconnectedError(node, iface.name, node.methodName);
         }
 
-        // Visit the category expression for symbol resolution
-        const categoryExpr = this.visit(firstArg) as ExpressionNode;
-        const lbcExpr = paramCount === 2
-          ? this.visit(node.object.parameters[1]) as ExpressionNode : undefined;
+        // Visit the address expression for symbol resolution
+        const addressExpr = this.visit(firstArg) as ExpressionNode;
 
         // Validate: interface has function with this name
         const allFunctions = this.getAllInterfaceFunctions(iface);
@@ -5363,7 +5313,7 @@ export default class SymbolTableTraversal extends AstTraversal {
 
         // Create ExternalFunctionCallNode
         const callNode = new ExternalFunctionCallNode(
-          iface.name, categoryExpr, node.methodName, parameters, lbcExpr,
+          iface.name, addressExpr, node.methodName, parameters,
         );
         callNode.callOptions = node.callOptions;
         callNode.valueTransferIndex = node.valueTransferIndex;
@@ -5402,10 +5352,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       node.object = this.visit(node.object);
       const objType = node.object.type
         ?? (node.object instanceof IdentifierNode ? this.symbolTables[0].get(node.object.name)?.type : undefined);
-      if (
-        objType instanceof AddressType
-        || objType instanceof ConnectedAddressType
-      ) {
+      if (objType instanceof AddressType) {
         const data = node.parameters.length === 1
           ? this.visit(node.parameters[0]) as ExpressionNode : node.parameters[0];
         const callNode = new LowLevelCallNode(node.object, data, node.methodName);

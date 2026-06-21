@@ -87,7 +87,6 @@ import {
   AssertNode,
   AddressTransferStatementNode,
   AddressSendExpressionNode,
-  AddressConnectNode,
   TypeDefinitionNode,
   InterfaceNode,
   LowLevelCallNode,
@@ -102,7 +101,7 @@ import {
   SwitchCaseNode,
   UsingForDirectiveNode,
 } from '../ast/AST.js';
-import { AddressType, ConnectedAddressType, MappingType, Type } from '@solidcash/utils';
+import { AddressType, MappingType, Type } from '@solidcash/utils';
 import AstTraversal from '../ast/AstTraversal.js';
 
 export default class OutputSourceCodeTraversal extends AstTraversal {
@@ -393,13 +392,6 @@ export default class OutputSourceCodeTraversal extends AstTraversal {
     return node;
   }
 
-  visitAddressConnect(node: AddressConnectNode): Node {
-    node.addressExpression = this.visit(node.addressExpression);
-    this.addOutput('.connect(');
-    node.categoryExpression = this.visit(node.categoryExpression);
-    this.addOutput(')');
-    return node;
-  }
 
   visitTokenContainerMethodStatement(node: TokenContainerMethodStatementNode): Node {
     this.addOutput('this.tokens[', true);
@@ -818,10 +810,8 @@ export default class OutputSourceCodeTraversal extends AstTraversal {
   }
 
   visitCast(node: CastNode): Node {
-    // payable() is the cast keyword for AddressType(payable=true) and ConnectedAddressType(payable=true)
+    // payable() is the cast keyword for AddressType(payable=true)
     if (node.type instanceof AddressType && node.type.payable) {
-      this.addOutput('payable(');
-    } else if (node.type instanceof ConnectedAddressType && node.type.payable) {
       this.addOutput('payable(');
     } else if (node.type instanceof AddressType && !node.type.payable) {
       this.addOutput('address(');

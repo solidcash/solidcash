@@ -1,7 +1,6 @@
 import {
   AddressType,
   BytesType,
-  ConnectedAddressType,
   EnumType,
   FixedType,
   IntType,
@@ -133,9 +132,9 @@ export function compileCast(from: Type, to: Type, isUnsafe: boolean): Script {
   // StructType -> StructType: no-op (same blob at VM level)
   if (from instanceof StructType && to instanceof StructType) return [];
 
-  // address/connected address casts are no-ops (stack value unchanged)
-  if (to instanceof AddressType || to instanceof ConnectedAddressType) return [];
-  if (from instanceof AddressType || from instanceof ConnectedAddressType) return [];
+  // address casts are no-ops (stack value unchanged)
+  if (to instanceof AddressType) return [];
+  if (from instanceof AddressType) return [];
 
   // pubkey/sig/datasig <-> bytes: no-op (all are bytes at VM level)
   if (from === PrimitiveType.PUBKEY || from === PrimitiveType.SIG || from === PrimitiveType.DATASIG) return [];

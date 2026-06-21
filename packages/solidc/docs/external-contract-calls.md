@@ -221,16 +221,29 @@ its result via introspection / the existing `_Return_` event flow. The caller co
 No category appears at the call site. The caller stays address-agnostic at compile time (`addr` is a
 runtime parameter/field).
 
-### 7.3 Self-pinning (callee obligation)
+### 7.3 Self-pinning (callee obligation) - DEFAULT for stateful contracts
 
-Any **stateful** contract that may be referenced by address MUST self-pin:
+**Decision:** **every stateful contract self-pins by default** (no opt-in). Self-pinning is irrelevant to
+**stateless** contracts - they have no readable state to forge, so they are addressable for free via the bare
+`OP_UTXOBYTECODE == addr` check (§3.2) and are left untouched. (Self-pinning matters exactly for contracts
+whose state - data NFT / entry NFTs / commitments - a caller can read.)
 
-- take its state-NFT category as a constructor arg (baked into the redeem script → part of the address);
-- covenant MUST enforce `OP_UTXOTOKENCATEGORY(self) == bakedCategory` on every spend, and preserve the NFT
-  under its own code (self-preservation), so the invariant is inductive from genesis.
+A self-pinning stateful contract:
+- takes its state-NFT category as a (compiler-injected) constructor arg, baked into the redeem script → part
+  of the address;
+- covenant enforces `OP_UTXOTOKENCATEGORY(self) == bakedCategory` on **every** spend path (incl.
+  `selfdestruct`/`unsafe`, which today skip covenant codegen), and preserves the NFT under its own code, so the
+  invariant is inductive from genesis;
+- the same pin is added to the permissionless **read/merge paths** of the sub-covenants (data NFT, entry NFT,
+  token container, satoshi container - the audit found these only *preserve* the category today; event NFT has
+  no read path).
 
-The compiler MUST verify this property and surface it in the artifact, so a caller's `IContract(addr)` can rely
-on `addr ⟹ state`. A stateful contract lacking it MUST NOT be addressable (it would be §4.1-forgeable).
+The compiler emits and proves this, and surfaces an `addressable` flag in the artifact so a caller's
+`IContract(addr)` can rely on `addr ⟹ state`. (A future `agnostic` opt-out for the shared-script topology is
+deferred - YAGNI.)
+
+This is a **breaking change**: stateful contract addresses change (the category is now baked), and deploy must
+supply the category. Stateless contracts are unaffected.
 
 ### 7.4 Interface upgrade stance
 
@@ -304,10 +317,7 @@ Differs (inherent):
   ops in the generator), so identity == location == introspected value with **zero conversion** and a 1-op
   call check. The 32-byte-hash alternative was rejected: it would convert at every use (in-script ops matter
   more than the +3 stored bytes) and would resurrect an identity/location duality.
-- Whether self-pinning (addressability) is **opt-in** (a contract marker; coexists with category-agnostic A)
-  or the **default** for EVM parity. Opt-in keeps A's shared-bytecode intermix available; default maximizes
-  Solidity-likeness. (Self-pinning makes each instance's address category-dependent, hence unique.)
 - Proxy policy layout (allowlist root vs inline list; governor+timelock encoding) and how `address(this)`
   behaves inside a proxy vs its implementation.
-- Whether to keep the category-agnostic, category-referenced topology at all as an explicit non-parity escape
-  hatch, or drop it to keep one model.
+- The category-agnostic opt-*out* (`agnostic`): deferred (YAGNI) - add only if a concrete shared-script need
+  arises. Until then there is one model: stateful = self-pinning.

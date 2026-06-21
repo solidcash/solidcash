@@ -1,6 +1,7 @@
 export enum NullaryOperator {
   INPUT_INDEX = 'this.activeInputIndex',
   BYTECODE = 'this.activeBytecode',
+  CATEGORY_ID = 'this.categoryId',
   INPUT_COUNT = 'tx.inputs.length',
   OUTPUT_COUNT = 'tx.outputs.length',
   VERSION = 'tx.version',

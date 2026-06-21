@@ -247,7 +247,7 @@ import { getPragmaName, PragmaName, getVersionOpFromCtx } from './Pragma.js';
 import { version } from '../index.js';
 import { ParseError, StateVariableNameCollisionError, VersionError } from '../Errors.js';
 
-const RESERVED_STATE_NAMES = ['age', 'activeInputIndex', 'activeBytecode', 'tokens'];
+const RESERVED_STATE_NAMES = ['age', 'activeInputIndex', 'activeBytecode', 'categoryId', 'tokens'];
 
 // Compound-assignment operators desugared to `target <binop> rhs`.
 const COMPOUND_OPS: Record<string, BinaryOperator> = {

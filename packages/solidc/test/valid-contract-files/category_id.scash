@@ -1,0 +1,13 @@
+contract CategoryId() {
+    bytes category;
+
+    // Read the contract's own state-NFT category via introspection.
+    function store() {
+        this.category = this.categoryId;
+    }
+
+    // Self-pin pattern: enforce the live category equals the baked (constructor-arg) category.
+    function pin(bytes32 expected) {
+        require(this.categoryId == expected);
+    }
+}

@@ -756,6 +756,7 @@ BoundedUnsignedFixed
 NullaryOp
     : 'this.activeInputIndex'
     | 'this.activeBytecode'
+    | 'this.categoryId'
     | 'tx.inputs.length'
     | 'tx.outputs.length'
     | 'tx.version'

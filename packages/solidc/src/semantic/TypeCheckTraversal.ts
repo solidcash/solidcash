@@ -1596,6 +1596,9 @@ export default class TypeCheckTraversal extends AstTraversal {
       case NullaryOperator.BYTECODE:
         node.type = new BytesType();
         return node;
+      case NullaryOperator.CATEGORY_ID:
+        node.type = new BytesType();
+        return node;
       case NullaryOperator.MSG_SIG:
         node.type = new BytesType(4);
         return node;

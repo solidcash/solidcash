@@ -272,6 +272,8 @@ export function compileNullaryOp(op: NullaryOperator): Op[] {
   const mapping: Record<string, Op[]> = {
     [NullaryOperator.INPUT_INDEX]: [Op.OP_INPUTINDEX],
     [NullaryOperator.BYTECODE]: [Op.OP_ACTIVEBYTECODE],
+    // The active input's own state-NFT category (capability byte appended for mutable/minting NFTs).
+    [NullaryOperator.CATEGORY_ID]: [Op.OP_INPUTINDEX, Op.OP_UTXOTOKENCATEGORY],
     [NullaryOperator.INPUT_COUNT]: [Op.OP_TXINPUTCOUNT],
     [NullaryOperator.OUTPUT_COUNT]: [Op.OP_TXOUTPUTCOUNT],
     [NullaryOperator.VERSION]: [Op.OP_TXVERSION],

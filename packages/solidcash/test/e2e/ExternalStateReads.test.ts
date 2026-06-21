@@ -1,4 +1,4 @@
-import { compileString } from 'solidc';
+import { compileString, MultiNftExternalReadError } from 'solidc';
 import { hexToBin, binToHex } from '@bitauth/libauth';
 import {
   Contract, TransactionBuilder,
@@ -67,14 +67,35 @@ interface IExtState {
     function doSomething(pubkey owner, sig s);
 }
 
-contract ExtReader(bytes32 extCategory) {
+contract ExtReader(bytes extAddr) {
     int sum;
 
-    function readBoth(pubkey pk, sig s) {
+    // externalValue lives on data-NFT index 0 (the 'external' qualifier gives it its own NFT).
+    function readZero(pubkey pk, sig s) {
         require(checkSig(s, pk));
-        int a = IExtState(extCategory).normalValue;
-        int b = IExtState(extCategory).externalValue;
-        this.sum = a + b;
+        int b = IExtState(extAddr).externalValue;
+        this.sum = b;
+    }
+}
+`;
+
+// normalValue lives on data-NFT index 1; reading it cross-contract is rejected (unverifiable NFT order).
+const EXT_READER_MULTI_NFT = `
+pragma solidcash >=0.8.0;
+
+interface IExtState {
+    external int externalValue;
+    public int normalValue;
+    function doSomething(pubkey owner, sig s);
+}
+
+contract ExtReaderMulti(bytes extAddr) {
+    int sum;
+
+    function readHigh(pubkey pk, sig s) {
+        require(checkSig(s, pk));
+        int a = IExtState(extAddr).normalValue;
+        this.sum = a;
     }
 }
 `;
@@ -111,19 +132,21 @@ describe('Cross-Contract External State Reads', () => {
       );
     });
 
-    it('should have externalReads across different NFT indices', () => {
+    it('should record an nftIndex-0 external read', () => {
       const artifact = compileString(EXT_READER_CONTRACT);
-      const readFn = artifact.abi.find((f) => f.name === 'readBoth');
+      const readFn = artifact.abi.find((f) => f.name === 'readZero');
 
       expect(readFn).toBeDefined();
       expect(readFn!.externalReads).toBeDefined();
-      expect(readFn!.externalReads!.length).toBe(2);
+      expect(readFn!.externalReads!.length).toBe(1);
+      expect(readFn!.externalReads![0].kind).toBe('data');
+      expect(readFn!.externalReads![0].nftIndex).toBe(0);
+    });
 
-      // normalValue is on NFT 0, externalValue is on NFT 1
-      const dataReads = readFn!.externalReads!.filter((er) => er.kind === 'data');
-      expect(dataReads.length).toBe(2);
-      const nftIndices = dataReads.map((er) => er.nftIndex).sort();
-      expect(nftIndices).toEqual([0, 1]);
+    it('should reject reads of multi-data-NFT external state (nftIndex >= 1)', () => {
+      // The callee data NFTs share one address, so a higher-index NFT's position is unverifiable
+      // on-chain. Rejected until the commitment nftIndex tag lands.
+      expect(() => compileString(EXT_READER_MULTI_NFT)).toThrow(MultiNftExternalReadError);
     });
   });
 

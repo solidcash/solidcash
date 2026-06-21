@@ -961,6 +961,18 @@ export class MethodCallNotSupportedError extends SolidCashError {
   }
 }
 
+export class MultiNftExternalReadError extends SolidCashError {
+  constructor(node: Node, interfaceName: string, varName: string, nftIndex: number) {
+    super(
+      node,
+      `External read '${interfaceName}(...).${varName}' targets data-NFT index ${nftIndex}. Cross-contract reads `
+      + 'of multi-data-NFT state (nftIndex >= 1) are not yet sound: the callee data NFTs share one address, so '
+      + 'their order cannot be verified on-chain and an untrusted tx builder could substitute the wrong NFT. '
+      + 'Only nftIndex-0 vars may be read externally until the commitment nftIndex tag lands.',
+    );
+  }
+}
+
 export class UsingForUndefinedLibraryError extends SolidCashError {
   constructor(node: Node, libraryName: string) {
     super(node, `Library '${libraryName}' referenced in 'using for' directive is not defined or imported`);

@@ -26,6 +26,7 @@ import {
   PrivateStateVariableAccessError,
   UndefinedExternalStateVariableError,
   ExternalReadArgCountError,
+  MultiNftExternalReadError,
   ExternalAccessOnUnconnectedError,
   AbstractContractNotCompilableError,
   AbstractFunctionInConcreteContractError,
@@ -1977,30 +1978,48 @@ describe('Imports', () => {
       expect(syncFn!.externalReads!.length).toBe(1);
     });
 
-    it('should compile reads from different NFT indices', () => {
+    it('should compile a read of an nftIndex-0 external var', () => {
       const code = `
         interface IBigState {
           external int externalVar;
           public int normalVar;
           function doSomething(pubkey owner, sig s);
         }
-        contract Reader(bytes32 bigStateCategory) {
+        contract Reader(bytes bigStateAddr) {
           int result;
           function read(pubkey pk, sig s) {
             require(checkSig(s, pk));
-            int a = IBigState(bigStateCategory).externalVar;
-            int b = IBigState(bigStateCategory).normalVar;
-            this.result = a + b;
+            int a = IBigState(bigStateAddr).externalVar;
+            this.result = a;
           }
         }
       `;
       const artifact = compileString(code);
       expect(artifact).toBeDefined();
       const readFn = artifact.abi.find((f) => f.name === 'read');
-      expect(readFn).toBeDefined();
-      // External var and normal var are on different NFTs -> 2 external read slots
       expect(readFn!.externalReads).toBeDefined();
-      expect(readFn!.externalReads!.length).toBe(2);
+      expect(readFn!.externalReads!.length).toBe(1);
+    });
+
+    it('should reject reads of multi-data-NFT external state (nftIndex >= 1)', () => {
+      // normalVar lives on data-NFT index 1; the callee data NFTs share one address, so a higher-index
+      // NFT's position is unverifiable on-chain. Rejected until the commitment nftIndex tag lands.
+      const code = `
+        interface IBigState {
+          external int externalVar;
+          public int normalVar;
+          function doSomething(pubkey owner, sig s);
+        }
+        contract Reader(bytes bigStateAddr) {
+          int result;
+          function read(pubkey pk, sig s) {
+            require(checkSig(s, pk));
+            int b = IBigState(bigStateAddr).normalVar;
+            this.result = b;
+          }
+        }
+      `;
+      expect(() => compileString(code)).toThrow(MultiNftExternalReadError);
     });
 
     it('should throw UndefinedExternalStateVariableError for unknown variable', () => {

@@ -157,6 +157,7 @@ import {
   UnknownContractTypeError,
   ContractTypeConstructorArgCountError,
   ExternalAccessOnUnconnectedError,
+  MultiNftExternalReadError,
   AbstractFunctionInConcreteContractError,
   UnimplementedAbstractFunctionError,
   AbstractContractNotCompilableError,
@@ -4774,6 +4775,11 @@ export default class SymbolTableTraversal extends AstTraversal {
         if (ifaceVar) {
           const layout = this.computeInterfaceStateLayout(iface);
           const varLayout = layout.find((l) => l.name === node.name)!;
+          // Soundness guard: callee data NFTs share one address, so a higher-index NFT's position is
+          // unverifiable on-chain. Reject multi-data-NFT external reads until the commitment tag lands.
+          if (varLayout.nftIndex >= 1) {
+            throw new MultiNftExternalReadError(node, iface.name, node.name, varLayout.nftIndex);
+          }
           const fieldsInNft = layout
             .filter((l) => l.nftIndex === varLayout.nftIndex)
             .sort((a, b) => a.fieldIndex - b.fieldIndex)

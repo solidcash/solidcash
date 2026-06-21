@@ -315,9 +315,13 @@ Address-dispatch must be gated on self-pinning for safety, so self-pinning lands
 by default** for every stateful contract (no flag) - it is the default-addressable decision, landed directly.
 
 0. **Done** - `this.categoryId` introspection (the self-category primitive).
-1. **Self-pinning (callee).** Inject a `__category` constructor arg into every stateful contract (baked ->
-   part of the address); emit the **prologue pin** once (covers selfdestruct/unsafe); **SDK deploy** bakes the
-   known (vout-0-parent-txid) category into the args. Single genesis tx; address pre-computable.
+1. **Self-pinning (callee) - DONE.** Implemented by reworking the existing dead salt (no new ctor arg): the
+   SDK bakes the category as a verify **prologue** `<cat> OP_INPUTINDEX OP_UTXOTOKENCATEGORY <32> OP_SPLIT
+   OP_DROP OP_EQUALVERIFY` (runs before ctor args + dispatch -> one contract-level check covering
+   selfdestruct/unsafe). On by default for every stateful contract (the categoryId, already threaded as the
+   salt, is now the `category` self-pin segment; `salt` freed for the separate user CREATE2 segment). Address
+   commits to the category. deployFrom children remain un-self-pinned (compiler-side follow-up). Full SDK +
+   compiler suites green.
 2. **Harden sub-covenants.** Add the pin to the **read/merge paths** of data NFT, entry NFT, token container,
    satoshi container (compiler inline + `state.ts` in lockstep; event NFT already safe).
 3. **Address dispatch (caller).** `address` = locking-bytecode value; `IContract(addr).method()` ->

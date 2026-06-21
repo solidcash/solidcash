@@ -11,6 +11,7 @@ import {
   Script,
   scriptToAsm,
   scriptToBytecode,
+  buildDataNftCovenantScript,
   generateSourceMap,
   FullLocationData,
   LogEntry,
@@ -169,6 +170,28 @@ const P2SH20_LBC_PREFIX = hexToBin('a914');  // OP_HASH160 OP_PUSHBYTES_20
 const P2SH20_LBC_SUFFIX = hexToBin('87');    // OP_EQUAL
 const P2SH32_LBC_PREFIX = hexToBin('aa20');  // OP_HASH256 OP_PUSHBYTES_32
 const P2SH32_LBC_SUFFIX = hexToBin('87');    // OP_EQUAL
+
+/** Split a byte array on each occurrence of `delim`, returning the pieces between/around delimiters. */
+function splitOnDelimiter(bytes: Uint8Array, delim: Uint8Array): Uint8Array[] {
+  const out: Uint8Array[] = [];
+  let start = 0;
+  let i = 0;
+  while (i + delim.length <= bytes.length) {
+    let match = true;
+    for (let j = 0; j < delim.length; j++) {
+      if (bytes[i + j] !== delim[j]) { match = false; break; }
+    }
+    if (match) {
+      out.push(bytes.slice(start, i));
+      i += delim.length;
+      start = i;
+    } else {
+      i++;
+    }
+  }
+  out.push(bytes.slice(start));
+  return out;
+}
 
 class MsgDataUsageCollector extends AstTraversal {
   found = false;
@@ -8708,67 +8731,51 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * segment0 + 0x20 + cat + segment1 + 0x20 + cat + segment2 + 0x20 + cat + segment3 + 0x20 + cat + segment4
    */
   private emitDataNftLbc(locationData: SingleLocationData): void {
-    const segment0 = hexToBin('76529c6375ce01207f5288');                // 11 bytes
-    const segment1 = hexToBin('88c0ce01207f5188');                     // 8 bytes
-    const segment2 = hexToBin('88c0c49f63c0d1826301207f75');           // 13 bytes - output absence check
-    const segment3 = hexToBin('87916967756868516763ce01207f5288');      // 16 bytes
-    const segment4 = hexToBin('7d88c0ce01207f75886775c0cfc0d28868c0c7c0cd88c0cec0d188c0d3c0d0a269c0c6c0cc8768'); // 39 bytes
-    const pushdata32 = hexToBin('20');
-    const p2sh32Prefix = P2SH32_LBC_PREFIX;
-    const p2sh32Suffix = P2SH32_LBC_SUFFIX;
+    // Reconstruct the data NFT P2SH32 locking bytecode from the category on the stack.
+    // The constant segments are auto-derived from buildDataNftCovenantScript so this mirror
+    // can never drift from state.ts (the covenant is the single source of truth).
+    this.emitP2sh32FromCovenant(buildDataNftCovenantScript, locationData);
+  }
 
-    // Stack: [category]
-    // Create 4 copies of encoded category (0x20 || cat)
-    this.emit(pushdata32, locationData);
+  /**
+   * Reconstruct a category-parameterized sub-NFT P2SH32 locking bytecode in-script from the
+   * category (32B, internal order) on top of the stack. The covenant's constant bytes are
+   * auto-derived from its builder by splitting on a unique 32-byte category placeholder, so the
+   * in-script reconstruction matches the off-chain covenant byte-for-byte regardless of how the
+   * covenant evolves (the "5 pairs must match" lockstep becomes mechanical).
+   * Stack before: [category]; after: [p2sh32_lbc].
+   */
+  private emitP2sh32FromCovenant(
+    buildCovenant: (categoryId: Uint8Array) => Script, locationData: SingleLocationData,
+  ): void {
+    const placeholder = Uint8Array.from({ length: 32 }, (_v, i) => i); // 00 01 .. 1f (display order)
+    const covenant = scriptToBytecode(buildCovenant(placeholder));
+    // The covenant stores the category in internal (reversed) order, pushed as 0x20 || cat.
+    const delim = Uint8Array.from([0x20, ...placeholder.slice().reverse()]);
+    const segments = splitOnDelimiter(covenant, delim);
+
+    // enc = 0x20 || category (runtime), then body = seg0 ++ enc ++ seg1 ++ enc ++ ... ++ segN
+    this.emit(hexToBin('20'), locationData);
     this.emit(Op.OP_SWAP, locationData);
-    this.emit(Op.OP_CAT, locationData);     // [0x20||cat]
-    this.emit(Op.OP_DUP, locationData);     // [enc, enc]
-    this.emit(Op.OP_DUP, locationData);     // [enc, enc, enc]
-    this.emit(Op.OP_DUP, locationData);     // [enc, enc, enc, enc]
-
-    // Build: seg0||enc0||seg1||enc1||seg2||enc2||seg3||enc3||seg4
-    // Stack top is enc3: [enc0, enc1, enc2, enc3]
-
-    // segment3 || enc3
-    this.emit(segment3, locationData);
-    this.emit(Op.OP_SWAP, locationData);
-    this.emit(Op.OP_CAT, locationData);     // [enc0, enc1, enc2, seg3||enc3]
-
-    // Append segment4
-    this.emit(segment4, locationData);
-    this.emit(Op.OP_CAT, locationData);     // [enc0, enc1, enc2, seg3||enc3||seg4]
-
-    // Prepend segment2 || enc2
-    this.emit(Op.OP_SWAP, locationData);    // [enc0, enc1, seg3||enc3||seg4, enc2]
-    this.emit(segment2, locationData);
-    this.emit(Op.OP_SWAP, locationData);    // [enc0, enc1, seg3||enc3||seg4, seg2, enc2]
-    this.emit(Op.OP_CAT, locationData);     // [enc0, enc1, seg3||enc3||seg4, seg2||enc2]
-    this.emit(Op.OP_SWAP, locationData);    // [enc0, enc1, seg2||enc2, seg3||enc3||seg4]
-    this.emit(Op.OP_CAT, locationData);     // [enc0, enc1, seg2||enc2||seg3||enc3||seg4]
-
-    // Prepend segment1 || enc1
-    this.emit(Op.OP_SWAP, locationData);    // [enc0, tail, enc1]
-    this.emit(segment1, locationData);
-    this.emit(Op.OP_SWAP, locationData);    // [enc0, tail, seg1, enc1]
-    this.emit(Op.OP_CAT, locationData);     // [enc0, tail, seg1||enc1]
-    this.emit(Op.OP_SWAP, locationData);    // [enc0, seg1||enc1, tail]
-    this.emit(Op.OP_CAT, locationData);     // [enc0, seg1||enc1||tail]
-
-    // Prepend segment0 || enc0
-    this.emit(Op.OP_SWAP, locationData);    // [body, enc0]
-    this.emit(segment0, locationData);
-    this.emit(Op.OP_SWAP, locationData);    // [body, seg0, enc0]
-    this.emit(Op.OP_CAT, locationData);     // [body, seg0||enc0]
-    this.emit(Op.OP_SWAP, locationData);    // [seg0||enc0, body]
-    this.emit(Op.OP_CAT, locationData);     // [full_covenant_script]
+    this.emit(Op.OP_CAT, locationData);          // [enc]
+    this.emit(segments[0], locationData);        // [enc, body]
+    for (let i = 1; i < segments.length; i++) {
+      this.emit(Op.OP_OVER, locationData);       // [enc, body, enc]
+      this.emit(Op.OP_CAT, locationData);        // [enc, body||enc]
+      if (segments[i].length > 0) {
+        this.emit(segments[i], locationData);    // [enc, body||enc, seg_i]
+        this.emit(Op.OP_CAT, locationData);      // [enc, body||enc||seg_i]
+      }
+    }
+    this.emit(Op.OP_NIP, locationData);          // [body] (drop enc)
 
     // Hash and wrap as P2SH32
     this.emit(Op.OP_HASH256, locationData);
-    this.emit(p2sh32Prefix, locationData);
+    this.emit(P2SH32_LBC_PREFIX, locationData);
     this.emit(Op.OP_SWAP, locationData);
     this.emit(Op.OP_CAT, locationData);
-    this.emit(p2sh32Suffix, locationData);
-    this.emit(Op.OP_CAT, locationData);     // [p2sh32_lbc]
+    this.emit(P2SH32_LBC_SUFFIX, locationData);
+    this.emit(Op.OP_CAT, locationData);          // [p2sh32_lbc]
 
     // Stack tracking: category consumed, p2sh32_lbc produced
     this.popFromStack();

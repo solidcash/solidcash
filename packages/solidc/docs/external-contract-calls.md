@@ -1,10 +1,11 @@
 # External contract calls & dynamic dispatch (EVM-parity address model)
 
-Status: **partially implemented.** Stage 1 (self-pinning) is landed and live; Stage 2 (sub-covenant pins) was
-analyzed and **intentionally skipped as redundant** (§7.3, §10); Stages 3-4 (address dispatch, proxy
-upgradeability) remain design. Model for `IContract(address).method(arg)` on the BCH UTXO/CashTokens substrate,
-with the explicit goal of **EVM address parity**: an `address` *is* the contract's on-chain address,
-passed/compared/called directly, with no derivation or transformation. Normative rules use MUST/SHOULD.
+Status: **in progress.** Stage 1 (master self-pin) is landed and live. Stage 2 (data+entry NFT self-pin - the
+master-free-read enabler) and Stage 3 (address dispatch: hard replace of the category-referenced model with
+`IContract(addr)`, removing `connect`) are being implemented together. Stage 4 (proxy upgradeability) remains
+design. Model for `IContract(address).method(arg)` on the BCH UTXO/CashTokens substrate, with the explicit goal
+of **EVM address parity**: an `address` *is* the contract's on-chain address, passed/compared/called directly,
+with no derivation or transformation. Normative rules use MUST/SHOULD.
 
 ## 1. Goal
 
@@ -96,6 +97,20 @@ derivation at the caller.
 
 A stateless / pure-covenant contract has no NFT to forge. `address ⟹ code` is sufficient; the address handle
 is trivially safe with the same `OP_UTXOBYTECODE == addr` check.
+
+### 3.3 Reads are master-free; the sub-NFT self-pins
+
+A **state-changing call** co-spends B's master (it mutates B - unavoidable), so call integrity rides on the
+master's self-pin (Stage 1). A **read** must not: requiring every reader to co-spend B's master would make that
+single UTXO a **global lock**, serializing all of B's own activity *and* all concurrent readers - at most one
+read-or-op per block for a popular B. So reads co-spend only the **sub-NFT** being read (the data/entry NFT),
+contending solely for that UTXO.
+
+Without a co-spent master there is no anchor to verify the sub-NFT against, so the sub-NFT must carry its **own**
+integrity: the data NFT and entry NFT **self-pin their category** (Stage 2, §7.3), exactly as the master does.
+A read is then a single `OP_UTXOBYTECODE(readOnlyDataNft) == <sub-NFT address>` against the deploy-time-fixed
+sub-NFT address; the self-pin guarantees the co-spent UTXO's committed state is genuine. Residual trust = "who
+set the address" - identical to the call case and to EVM (§4.3).
 
 ## 4. Forgery analysis (keep this central)
 
@@ -250,24 +265,25 @@ A self-pinning stateful contract:
   This also pins the capability. (One ~4-byte check, not per function; empirically verified across the e2e
   suite incl. delegate/upgrade/selfdestruct.) Combined with self-preservation, the invariant is inductive from
   genesis;
-- the sub-covenants (data NFT, entry NFT, token/satoshi containers, event NFT) get **no** additional
-  category pin. The original Stage 2 plan was to add a capability-baked read-path pin to the own-category NFTs
-  (data `C‖0x01`, entry `C‖0x01`); **that stage was analyzed and intentionally skipped as redundant.** A
-  sub-NFT is never reached by a bare address - it is always **co-spent through the master**, and the reader
-  already anchors every accessed sub-NFT's category to that master: `emitTokenCategoryVerification` (data NFT
-  inputs) and `emitEntryCategoryVerification` (entry inputs, plus a mutable-`0x01` capability check) both call
-  `emitVerifyCatBaseEqMaster` -> `require(subNft.categoryBase == master.categoryBase)`. With the master now
-  self-pinned (above), `master.category == C` is guaranteed, so a fabricated sub-NFT (correct bytecode, foreign
-  category) is **rejected at the reader** - the sub-covenant pin would only re-check an already-enforced fact.
-  This is the asymmetry with the master: the master is referenced **by address** with no category to compare,
-  so its self-pin is what bridges `address ⟹ category`; sub-NFTs inherit that bridge through the verified
-  master. Skipping Stage 2 also avoids touching the byte-for-byte covenant mirrors (`build*CovenantScript` in
-  `state.ts` + the hand-coded compiler `emit*Lbc` reconstructions - the highest-risk "5 pairs must match"
-  surface) for zero security gain. The pin would earn its keep only if a **future** read path ever trusted a
-  sub-NFT by address/bytecode *without* anchoring its category to a verified master; add it then. (Separately,
-  the **token container** carries the *held* token X, so `category==C` would brick it; the **satoshi
-  container** category is **indeterminate**; the **event NFT** is write-only with no read path - none of these
-  can or should take a fixed `C` pin regardless.)
+- the **data NFT** and **entry NFT** self-pin their category on the read path (Stage 2). This is the enabler
+  for **master-free cross-contract reads** (§3.3): a reader reads B's sub-NFT *without co-spending B's master*,
+  so there is no master to anchor the sub-NFT's category to - the sub-NFT must carry its own integrity. The
+  self-pin (`OP_UTXOTOKENCATEGORY(self) == bakedCategory‖capability`, capability `0x01` for these mutable NFTs)
+  makes a fabricated UTXO at the sub-NFT's address - correct bytecode, foreign token category - **unspendable**,
+  so any co-spent UTXO at that address necessarily carries the genuine category `C` and thus genuine committed
+  state. The reader therefore needs only `OP_UTXOBYTECODE(readOnlyDataNft) == <data-NFT address>` (the sub-NFT
+  address, which bakes `C`), and the sub-covenant - having run because it was spent - guarantees the rest. This
+  is the sub-NFT analogue of the master self-pin: it bridges `address ⟹ (code, genuine state)` for the sub-NFT
+  in isolation. The pin is **NOT** applied to the **token container** (its UTXO carries the *held* token X, so
+  `category==C` would reject every spend), the **satoshi container** (indeterminate category), or the **event
+  NFT** (write-only, no read path). Cost: the byte-for-byte covenant mirrors (`build*CovenantScript` in
+  `state.ts` + the compiler `emit*Lbc` reconstructions) must stay in lockstep.
+
+  > **History.** An earlier revision skipped Stage 2 as "redundant," on the reasoning that the reader anchors
+  > every sub-NFT's category to a co-spent, self-pinned master. That holds *only* when reads co-spend B's
+  > master. We instead make reads **master-free** (co-spending B's master to read would make B's master a global
+  > lock, serializing all of B's activity against every reader - §3.3). Master-free reads require the sub-NFT to
+  > self-pin, so Stage 2 is reinstated as the enabler, not redundant.
 
 The compiler emits and proves this, and surfaces an `addressable` flag in the artifact so a caller's
 `IContract(addr)` can rely on `addr ⟹ state`. (A future `agnostic` opt-out for the shared-script topology is
@@ -327,11 +343,11 @@ Differs (inherent):
    fixed/immutable so the handle is stable.
 5. `address` is the 35-byte locking bytecode; `address(this)` = `OP_INPUTINDEX OP_UTXOBYTECODE`, serving both
    identity and recipient roles with no conversion.
-6. A cross-contract **sub-NFT read** (caller reads the callee's data/entry NFT) MUST anchor that sub-NFT's
-   category to the **callee's** self-pinned master - the master verified by `OP_UTXOBYTECODE == addr` - via the
-   existing `categoryBase == master.categoryBase` check resolved in the callee's frame. (Self-reads already do
-   this against the contract's own master; this rule extends the same anchoring to the cross-contract frame.
-   It is the reason the per-sub-covenant read-path pin is unnecessary - see §7.3.)
+6. A cross-contract **sub-NFT read** (caller reads the callee's data/entry NFT) is **master-free**: it co-spends
+   only the sub-NFT and verifies `OP_UTXOBYTECODE(readOnlyDataNft) == <sub-NFT address>`. Soundness comes from
+   the sub-NFT's **self-pin** (Stage 2, §7.3), which makes any co-spent UTXO at that address carry the genuine
+   category `C` (a fabricated foreign-category UTXO there is unspendable). The caller MUST NOT need to co-spend
+   the callee's master to read - co-spending it would make the master a global lock on the callee.
 
 ## 10. Phased plan (implementation order: 1 -> 2 -> 3 -> 4)
 
@@ -347,23 +363,17 @@ by default** for every stateful contract (no flag) - it is the default-addressab
    salt, is now the `category` self-pin segment; `salt` freed for the separate user CREATE2 segment). Address
    commits to the category + capability. deployFrom children remain un-self-pinned (compiler-side follow-up).
    Full SDK + compiler suites green.
-2. **Harden sub-covenants - SKIPPED (intentionally; redundant).** The plan was a capability-baked read-path
-   pin on the own-category NFTs (data `C‖0x01`, entry `C‖0x01`). Analysis showed it adds nothing: every accessed
-   sub-NFT is co-spent through the master and the reader already verifies `subNft.categoryBase ==
-   master.categoryBase` (`emitTokenCategoryVerification` / `emitEntryCategoryVerification` ->
-   `emitVerifyCatBaseEqMaster`), and Stage 1 makes `master.category == C`, so a fabricated foreign-category
-   sub-NFT is already rejected at the reader. Skipping it avoids touching the byte-for-byte covenant mirrors
-   (`state.ts` + `emit*Lbc`, the "5 pairs" surface) for zero gain. Revisit only if a future read path trusts a
-   sub-NFT by address without anchoring to a verified master (§7.3). The security that Stage 3 actually relies
-   on is that cross-contract sub-NFT reads anchor to the callee's verified, self-pinned master.
-3. **Address dispatch (caller).** `address` = locking-bytecode value; `IContract(addr).method()` ->
-   `OP_UTXOBYTECODE == addr` + co-spend + read/`_Return_`; `address(this)` = `OP_INPUTINDEX OP_UTXOBYTECODE`;
-   deprecate/replace `connect(categoryId)`. Gated on 1 (Stage 2 not required). **Critical correctness
-   obligation:** cross-contract sub-NFT reads MUST anchor each accessed sub-NFT's category to the *callee's*
-   self-pinned master (the one matched by `OP_UTXOBYTECODE == addr`), i.e. `emitMasterInputIndex` /
-   `emitVerifyCatBaseEqMaster` must resolve to the callee's master in that frame - not the caller's. This is
-   where sub-NFT integrity lives under address dispatch (it replaces what the skipped Stage 2 pin would have
-   done, and does it correctly for the cross-contract case).
+2. **Sub-NFT self-pin (data + entry NFT) - the master-free-read enabler.** Add the capability-baked self-pin
+   to the read path of the data NFT (`C‖0x01`) and entry NFT (`C‖0x01`) covenants in `state.ts`, with the
+   compiler `emit*Lbc` mirrors in lockstep (the "5 pairs" surface). This lets a reader trust a co-spent sub-NFT
+   by its address alone, with no master anchor (§7.3). NOT the token/satoshi containers (foreign/indeterminate
+   category) nor the event NFT (no read path). Negative test: a fabricated-category sub-NFT must be unspendable.
+3. **Address dispatch (caller).** `address` = locking-bytecode value. **Calls** `IContract(addr).method()` ->
+   co-spend B's master + `OP_UTXOBYTECODE(B_master) == addr` (B's master self-pin from Stage 1 gives genuine
+   state) + `_Return_`. **Reads** `IContract(addr).stateVar` -> co-spend B's sub-NFT only (master-free) +
+   `OP_UTXOBYTECODE(readOnlyDataNft) == <sub-NFT address>` (Stage 2 self-pin gives genuine state). `address(this)`
+   = `OP_INPUTINDEX OP_UTXOBYTECODE`; remove `connect(categoryId)` and `address.connect(category)` entirely.
+   Gated on 1 + 2.
 4. **Proxy upgradeability.** `immutable`/`proxy` interface stances + impl-policy commitment + caller policy
    check, on the existing delegate mechanism.
 5. *(Deferred, YAGNI)* `agnostic` opt-out for the shared-script topology.

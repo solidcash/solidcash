@@ -306,7 +306,7 @@ describe('msg.sender and tx.origin', () => {
     };
 
     beforeAll(async () => {
-      await provider.addUtxo(contract.tokenAddress, masterUtxo);
+      await provider.addUtxo(contract.withCategory(hexToBin(masterUtxo.token!.category!)).tokenAddress, masterUtxo);
       await provider.addUtxo(dataNftAddress, dataNftUtxo);
     });
 
@@ -353,7 +353,7 @@ describe('msg.sender and tx.origin', () => {
     };
 
     beforeAll(async () => {
-      await provider.addUtxo(contract.tokenAddress, masterUtxo);
+      await provider.addUtxo(contract.withCategory(hexToBin(masterUtxo.token!.category!)).tokenAddress, masterUtxo);
       await provider.addUtxo(dataNftAddress, dataNftUtxo);
     });
 
@@ -808,7 +808,7 @@ describe('msg.sender and tx.origin', () => {
     };
 
     beforeAll(async () => {
-      await provider.addUtxo(contract.tokenAddress, masterUtxo);
+      await provider.addUtxo(contract.withCategory(hexToBin(masterUtxo.token!.category!)).tokenAddress, masterUtxo);
       await provider.addUtxo(dataNftAddress, dataNftUtxo);
     });
 
@@ -964,13 +964,13 @@ contract TickCaller(bytes32 bCategory) {
       // Genesis B first; the caller embeds B's real category.
       const cB = new Contract(artB, [], { provider: regProvider });
       ({ categoryId: catB } = await setupStatefulUtxos(regProvider, cB, layoutB, { count: 0n }, { saltContract: true }));
-      contractB = cB.withSalt(hexToBin(catB));
+      contractB = cB.withCategory(hexToBin(catB));
 
       const cCaller = new Contract(artCaller, [hexToBin(catB)], { provider: regProvider });
       ({ categoryId: catCaller } = await setupStatefulUtxos(
         regProvider, cCaller, layoutCaller, { total: 0n }, { saltContract: true },
       ));
-      contractCaller = cCaller.withSalt(hexToBin(catCaller));
+      contractCaller = cCaller.withCategory(hexToBin(catCaller));
     });
 
     it('should bind external contracts at connect time', () => {

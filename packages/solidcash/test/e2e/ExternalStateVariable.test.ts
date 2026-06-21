@@ -511,7 +511,7 @@ contract ExternalSource() {
   beforeAll(async () => {
     // Writer: salted contract, real master + data NFT genesis.
     const writerGenesis = await (provider as any).addTokenUtxosDynamic((catId: string) => {
-      const salted = writerContract.withSalt(hexToBin(catId));
+      const salted = writerContract.withCategory(hexToBin(catId));
       return [
         { address: salted.tokenAddress, satoshis: 10000n,
           token: { amount: 0n, nft: { capability: 'minting', commitment: '' } } },
@@ -520,7 +520,7 @@ contract ExternalSource() {
       ];
     });
     writerCategoryId = writerGenesis.categoryId;
-    writerSaltedContract = writerContract.withSalt(hexToBin(writerCategoryId));
+    writerSaltedContract = writerContract.withCategory(hexToBin(writerCategoryId));
     writerMasterUtxo = writerGenesis.utxos[0];
     writerDataNftUtxo = writerGenesis.utxos[1];
 

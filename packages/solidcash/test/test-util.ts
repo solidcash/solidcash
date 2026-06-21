@@ -245,15 +245,16 @@ export async function setupStatefulUtxos(
   // Use addTokenUtxosDynamic for proper genesis on both providers.
   // The callback receives the categoryId and returns addresses derived from it.
   const result = await (provider as any).addTokenUtxosDynamic((categoryId: string) => {
-    const saltedContract = contract.salt ? contract : contract.withSalt(hexToBin(categoryId));
-    const masterContract = opts?.saltContract ? saltedContract : contract;
-    const masterAddress = masterContract.tokenAddress;
+    // Stateful contracts self-pin to their category (see docs/external-contract-calls.md), so the master
+    // must be seeded at the category-pinned address (matching StatefulContract.withCategory).
+    const pinnedContract = contract.category ? contract : contract.withCategory(hexToBin(categoryId));
+    const masterAddress = pinnedContract.tokenAddress;
 
     return [
       { address: masterAddress, satoshis: masterSatoshis,
         token: { amount: 0n, nft: { capability: 'minting' as const, commitment: '' } } },
       ...commitments.map((_commitment, i) => ({
-        address: getDataNftAddress(saltedContract, categoryId),
+        address: getDataNftAddress(pinnedContract, categoryId),
         satoshis: dataNftSatoshis,
         token: { amount: 0n, nft: { capability: 'mutable' as const, commitment: commitments[i] } },
       })),
@@ -261,10 +262,10 @@ export async function setupStatefulUtxos(
   });
 
   const categoryId = result.categoryId;
-  const saltedContract = contract.salt ? contract : contract.withSalt(hexToBin(categoryId));
+  const pinnedContract = contract.category ? contract : contract.withCategory(hexToBin(categoryId));
   const dataNftAddresses: string[] = [];
   for (let i = 0; i < dataNftCount; i++) {
-    dataNftAddresses.push(getDataNftAddress(saltedContract, categoryId));
+    dataNftAddresses.push(getDataNftAddress(pinnedContract, categoryId));
   }
 
   return {

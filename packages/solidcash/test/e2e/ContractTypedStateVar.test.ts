@@ -306,7 +306,7 @@ describe('Contract-Typed State Variables', () => {
         provider, contract, stateLayout, { marketplace: zeroAddr }, { saltContract: true },
       );
       categoryId = setup.categoryId;
-      saltedContract = contract.withSalt(hexToBin(categoryId));
+      saltedContract = contract.withCategory(hexToBin(categoryId));
       dataNftAddress = getDataNftAddress(saltedContract, categoryId);
       masterUtxo = setup.masterUtxo;
       dataNftUtxo = setup.dataNftUtxos[0];
@@ -376,7 +376,7 @@ describe('Contract-Typed State Variables', () => {
         { saltContract: true },
       );
       categoryId = setup.categoryId;
-      saltedContract = contract.withSalt(hexToBin(categoryId));
+      saltedContract = contract.withCategory(hexToBin(categoryId));
       dataNftAddress = getDataNftAddress(saltedContract, categoryId);
       masterUtxo = setup.masterUtxo;
       dataNftUtxo = setup.dataNftUtxos[0];
@@ -500,7 +500,7 @@ describe('Contract-Typed State Variables', () => {
         provider, contract, stateLayout, { token: zeroAddr }, { saltContract: true },
       );
       categoryId = setup.categoryId;
-      saltedContract = contract.withSalt(hexToBin(categoryId));
+      saltedContract = contract.withCategory(hexToBin(categoryId));
       dataNftAddress = getDataNftAddress(saltedContract, categoryId);
       masterUtxo = setup.masterUtxo;
       dataNftUtxo = setup.dataNftUtxos[0];

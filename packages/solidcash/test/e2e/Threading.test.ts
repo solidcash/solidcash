@@ -179,7 +179,7 @@ describe('Threading', () => {
       const masterSatoshis = opts?.masterSatoshis ?? 10000n;
 
       const { categoryId } = await (provider as any).addTokenUtxosDynamic((cat: string) => {
-        const salted = contract.withSalt(hexToBin(cat));
+        const salted = contract.withCategory(hexToBin(cat));
         const dataNftAddr = getDataNftAddress(salted, cat);
         const outs = [];
         for (let i = 0; i < masterCount; i++) {

@@ -219,7 +219,7 @@ contract Reader(bytes32 counterCategory) {
       const { categoryId: counterCategoryId } = await setupStatefulUtxos(
         provider, counterContract, counterArtifact.stateLayout!, { counter: 5n }, { saltContract: true },
       );
-      const saltedCounter = counterContract.withSalt(hexToBin(counterCategoryId));
+      const saltedCounter = counterContract.withCategory(hexToBin(counterCategoryId));
 
       readerContract = new Contract(
         readerArtifact, [hexToBin(counterCategoryId), saltedCounter.lockingBytecode], { provider },
@@ -255,7 +255,7 @@ contract Reader(bytes32 counterCategory) {
       ({ categoryId: counterCategoryId } = await setupStatefulUtxos(
         provider, counterContract, counterArtifact.stateLayout!, { counter: 5n }, { saltContract: true },
       ));
-      const saltedCounter = counterContract.withSalt(hexToBin(counterCategoryId));
+      const saltedCounter = counterContract.withCategory(hexToBin(counterCategoryId));
 
       readerContract = new Contract(
         readerArtifact, [hexToBin(counterCategoryId), saltedCounter.lockingBytecode], { provider },
@@ -442,7 +442,7 @@ contract Reader(bytes32 counterCategory) {
       ({ categoryId: counterCategoryId } = await setupStatefulUtxos(
         provider, counterContract, counterArtifact.stateLayout!, { counter: 5n }, { saltContract: true },
       ));
-      const saltedCounter = counterContract.withSalt(hexToBin(counterCategoryId));
+      const saltedCounter = counterContract.withCategory(hexToBin(counterCategoryId));
 
       callerContract = new Contract(
         callerArtifact, [hexToBin(counterCategoryId), saltedCounter.lockingBytecode], { provider },

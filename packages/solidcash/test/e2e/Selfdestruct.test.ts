@@ -199,7 +199,7 @@ describe('StatefulContract.destroy()', () => {
       const contract = new Contract(selfdestructArtifact, [alicePub], { provider });
 
       const { categoryId } = await (provider as any).addTokenUtxosDynamic((cat: string) => {
-        const salted = contract.withSalt(hexToBin(cat));
+        const salted = contract.withCategory(hexToBin(cat));
         const dataNftAddr = getDataNftAddress(salted, cat);
         // counter=0 for the real data NFT, then 4 more with distinct valid values
         const counters = [0n, 10n, 11n, 12n, 13n];

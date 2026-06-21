@@ -131,7 +131,7 @@ describe('Collection Iteration', () => {
 
       // Genesis master + data NFT (no entries) under one real category.
       const { categoryId } = await (provider as any).addTokenUtxosDynamic((cat: string) => {
-        const salted = contract.withSalt(hexToBin(cat));
+        const salted = contract.withCategory(hexToBin(cat));
         const commitments = buildInitialStateCommitments(stateLayout, { total: 0n });
         return [
           { address: salted.tokenAddress, satoshis: 10000n,
@@ -155,7 +155,7 @@ describe('Collection Iteration', () => {
 
       // Genesis master + data NFT + 2 entry NFTs under one real category.
       const { categoryId } = await (provider as any).addTokenUtxosDynamic((cat: string) => {
-        const salted = contract.withSalt(hexToBin(cat));
+        const salted = contract.withCategory(hexToBin(cat));
         const commitments = buildInitialStateCommitments(stateLayout, { total: 0n });
         const entryAddress = getEntryNftAddress(salted, cat, 'balances');
         return [
@@ -186,7 +186,7 @@ describe('Collection Iteration', () => {
 
       // Genesis master + data NFT + 2 entry NFTs under one real category.
       const { categoryId } = await (provider as any).addTokenUtxosDynamic((cat: string) => {
-        const salted = contract.withSalt(hexToBin(cat));
+        const salted = contract.withCategory(hexToBin(cat));
         const commitments = buildInitialStateCommitments(stateLayout, { total: 0n });
         const entryAddress = getEntryNftAddress(salted, cat, 'balances');
         return [
@@ -216,7 +216,7 @@ describe('Collection Iteration', () => {
 
       // Genesis master + data NFT + 2 entry NFTs under one real category.
       const { categoryId } = await (provider as any).addTokenUtxosDynamic((cat: string) => {
-        const salted = contract.withSalt(hexToBin(cat));
+        const salted = contract.withCategory(hexToBin(cat));
         const commitments = buildInitialStateCommitments(stateLayout, { total: 0n });
         const entryAddress = getEntryNftAddress(salted, cat, 'balances');
         return [
@@ -246,7 +246,7 @@ describe('Collection Iteration', () => {
 
       // Genesis master + data NFT + 1 valid entry + 1 invalid non-mutable NFT under one real category.
       const { categoryId } = await (provider as any).addTokenUtxosDynamic((cat: string) => {
-        const salted = contract.withSalt(hexToBin(cat));
+        const salted = contract.withCategory(hexToBin(cat));
         const commitments = buildInitialStateCommitments(stateLayout, { total: 0n });
         const entryAddress = getEntryNftAddress(salted, cat, 'balances');
         return [
@@ -262,7 +262,7 @@ describe('Collection Iteration', () => {
         ];
       });
 
-      const saltedContract = contract.withSalt(hexToBin(categoryId));
+      const saltedContract = contract.withCategory(hexToBin(categoryId));
       const entryAddress = getEntryNftAddress(saltedContract, categoryId, 'balances');
 
       // Invalid: wrong category (separate genesis -> different category, should be filtered)

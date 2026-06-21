@@ -630,9 +630,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     contract: Contract<T>, categoryId: string,
     options?: StatefulConnectOptions,
   ): ConnectedStatefulContract<T> {
-    const finalContract = contract.salt
-      ? contract
-      : contract.withSalt(hexToBin(categoryId));
+    // Self-pin: bake the category as the verify prologue (address => genuine state). The user `salt` (if any)
+    // stays a separate CREATE2 segment.
+    const finalContract = contract.withCategory(hexToBin(categoryId));
     const sc = new StatefulContract(finalContract, categoryId) as ConnectedStatefulContract<T>;
     if (options?.externals) {
       for (const [name, ext] of Object.entries(options.externals)) {
@@ -658,9 +658,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     categoryId: string,
   ): ConnectedStatefulContract<T> {
     const { externals, externalContracts, ...contractOptions } = options;
-    const finalOptions = contractOptions.salt !== undefined
-      ? contractOptions
-      : { ...contractOptions, salt: hexToBin(categoryId) };
+    // Self-pin: category baked as the verify prologue; user `salt` (if any) stays a separate CREATE2 segment.
+    const finalOptions = { ...contractOptions, category: hexToBin(categoryId) };
     const contract = new Contract(artifact, constructorArgs as any, finalOptions);
     const sc = new StatefulContract(contract, categoryId) as ConnectedStatefulContract<T>;
     if (externals) {
@@ -764,7 +763,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const contract = new Contract(artifact, constructorArgs as any, {
       provider: options.provider,
       addressType: options.addressType,
-      salt: hexToBin(categoryId),
+      category: hexToBin(categoryId),
     });
 
     const stateLayout = artifact.stateLayout;
@@ -1027,11 +1026,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
 
     const masterUtxo = onChainState.masterUtxo;
 
-    // Create the new contract instance with the same categoryId as salt
+    // Create the new contract instance self-pinned to the same categoryId
     const newContract = new Contract(newArtifact, newConstructorArgs as any, {
       provider,
       addressType,
-      salt: hexToBin(categoryId),
+      category: hexToBin(categoryId),
     });
 
     // Determine which data NFTs the upgrade function needs
@@ -1566,8 +1565,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
 
     const tx = await builder.send();
 
-    // Connect the child contract with its categoryId
-    const childStateful = StatefulContract.withCategory(childContract, childCategoryId);
+    // Connect the child with its categoryId. deployFrom children are deployed on-chain by the compiler's
+    // `new C(...)` codegen, which produces UNSALTED/UN-self-pinned addresses (the output goes to
+    // childContractUnsalted), so the returned child keeps childContract's salt-only form (not the category
+    // self-pin) - wrap it directly rather than via withCategory (which would add the pin). Self-pinning
+    // deployFrom children is a compiler-side follow-up. See docs/external-contract-calls.md.
+    const childStateful = new StatefulContract(childContract, childCategoryId) as ConnectedStatefulContract<T>;
 
     return { factory, child: childStateful, tx, childCategoryId };
   }
@@ -5402,7 +5405,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
 
       const contract = new Contract(spec.artifact, constructorArgs as any, {
         provider,
-        salt: hexToBin(spec.categoryId),
+        category: hexToBin(spec.categoryId),
       });
       const sc = StatefulContract.withCategory(contract, spec.categoryId);
       builtContracts.set(interfaceName, sc);
@@ -5485,7 +5488,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         ?? StatefulContract._inferConstructorArgs(spec.artifact, allSpecs, new Set(visited));
       const tempContract = new Contract(spec.artifact, lbcArgs as any, {
         provider: undefined as any, // not needed for lockingBytecode
-        salt: hexToBin(spec.categoryId),
+        category: hexToBin(spec.categoryId),
       });
       return tempContract.lockingBytecode;
     });

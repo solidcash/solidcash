@@ -33,7 +33,7 @@ async function setupWithEntries(
 ): Promise<{ categoryId: string; saltedContract: Contract }> {
   const commitments = buildInitialStateCommitments(stateLayout, initialState);
   const { categoryId } = await provider.addTokenUtxosDynamic((cat) => {
-    const salted = contract.withSalt(hexToBin(cat));
+    const salted = contract.withCategory(hexToBin(cat));
     return [
       { address: salted.tokenAddress, satoshis: 10000n,
         token: { amount: 0n, nft: { capability: 'minting' as const, commitment: '' } } },
@@ -47,7 +47,7 @@ async function setupWithEntries(
       })),
     ];
   });
-  return { categoryId, saltedContract: contract.withSalt(hexToBin(categoryId)) };
+  return { categoryId, saltedContract: contract.withCategory(hexToBin(categoryId)) };
 }
 
 // ===== Contract Sources =====

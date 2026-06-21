@@ -211,7 +211,7 @@ describe('Cross-Contract External State Reads', () => {
         provider, readerContract, readerStateLayout, { total: 0n }, { saltContract: true },
       );
       readerCategoryId = readerSetup.categoryId;
-      readerSaltedContract = readerContract.withSalt(hexToBin(readerCategoryId));
+      readerSaltedContract = readerContract.withCategory(hexToBin(readerCategoryId));
       readerMasterUtxo = readerSetup.masterUtxo;
       [readerDataNftUtxo] = readerSetup.dataNftUtxos;
     });
@@ -289,7 +289,7 @@ describe('Cross-Contract External State Reads', () => {
       readerArtifact, [hexToBin(counterCategoryId)], { provider },
     );
     const readerCategoryId = 'd3cd'.repeat(16);
-    const readerSaltedContract = readerContract.withSalt(hexToBin(readerCategoryId));
+    const readerSaltedContract = readerContract.withCategory(hexToBin(readerCategoryId));
     const readerDataNftAddress = getDataNftAddress(readerSaltedContract, readerCategoryId);
     const readerStateLayout = readerArtifact.stateLayout!;
 

@@ -238,6 +238,11 @@ export class Contract<
     return new Contract(this.artifact, this.rawConstructorArgs, { ...this.options, salt }) as any;
   }
 
+  // Bake the contract's state-NFT category (display byte order) as the self-pin prologue (stateful contracts).
+  withCategory(category: Uint8Array): Contract<TArtifact, TResolved> {
+    return new Contract(this.artifact, this.rawConstructorArgs, { ...this.options, category }) as any;
+  }
+
   static generateSalt(length: number = 32): Uint8Array {
     const salt = new Uint8Array(length);
     crypto.getRandomValues(salt);

@@ -254,7 +254,7 @@ async function deploy(
   const baseContract = new Contract(artifact, args, { provider });
   const commitments = buildInitialStateCommitments(artifact.stateLayout!, state);
   const { categoryId, utxos } = await (provider as any).addTokenUtxosDynamic((cat: string) => {
-    const salted = baseContract.withSalt(hexToBin(cat));
+    const salted = baseContract.withCategory(hexToBin(cat));
     return [
       { address: salted.tokenAddress, satoshis, token: { amount: 0n, nft: { capability: 'minting', commitment: '' } } },
       ...commitments.map((commitment) => ({
@@ -263,7 +263,7 @@ async function deploy(
       })),
     ];
   });
-  const contract = baseContract.withSalt(hexToBin(categoryId));
+  const contract = baseContract.withCategory(hexToBin(categoryId));
   return { contract, categoryId, utxos: { master: utxos[0], dataNfts: utxos.slice(1) } };
 }
 

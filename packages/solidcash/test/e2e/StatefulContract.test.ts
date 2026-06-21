@@ -554,13 +554,13 @@ describe('StatefulContract API', () => {
     ({ categoryId: scCategoryId } = await setupStatefulUtxos(
       scProvider, scContract, scStateLayout, { counter: 0n, label: scZeroLabel }, { saltContract: true },
     ));
-    scSaltedContract = scContract.withSalt(hexToBin(scCategoryId));
+    scSaltedContract = scContract.withCategory(hexToBin(scCategoryId));
   });
 
   describe('construction', () => {
     it('should create via connect()', () => {
       const sc = StatefulContract.withCategory(scContract, scCategoryId);
-      expect(sc.inner.salt).toEqual(hexToBin(scCategoryId));
+      expect(sc.inner.category).toEqual(hexToBin(scCategoryId));
       expect(sc.categoryId).toBe(scCategoryId);
       expect(sc.address).toBe(scSaltedContract.address);
       expect(sc.tokenAddress).toBe(scSaltedContract.tokenAddress);
@@ -811,34 +811,36 @@ describe('StatefulContract API', () => {
     });
   });
 
-  describe('auto-salting', () => {
-    it('connect() should auto-salt with categoryId', () => {
+  describe('auto category self-pin', () => {
+    it('connect() should self-pin with categoryId', () => {
       const unsaltedContract = new Contract(scArtifact, [], { provider: scProvider });
       const sc = StatefulContract.withCategory(unsaltedContract, scCategoryId);
 
-      // The salted address should differ from the unsalted contract address
+      // The self-pinned address should differ from the un-pinned contract address
       expect(sc.address).not.toBe(unsaltedContract.address);
-      // The inner contract should have the salt set
-      expect(sc.inner.salt).toBeDefined();
+      // The inner contract should have the category baked (the self-pin segment)
+      expect(sc.inner.category).toBeDefined();
     });
 
-    it('connect() should preserve existing salt on contract', () => {
+    it('connect() should preserve a user salt alongside the category pin', () => {
       const customSalt = new Uint8Array([0x01, 0x02, 0x03, 0x04]);
       const saltedContract = new Contract(scArtifact, [], { provider: scProvider, salt: customSalt });
       const sc = StatefulContract.withCategory(saltedContract, scCategoryId);
 
-      // Should use the existing salt, not override with categoryId
+      // Two separate segments: the user salt is preserved AND the category pin is added.
       expect(sc.inner.salt).toEqual(customSalt);
-      expect(sc.address).toBe(saltedContract.address);
+      expect(sc.inner.category).toEqual(hexToBin(scCategoryId));
+      // The address includes both segments, so it differs from the salt-only contract.
+      expect(sc.address).not.toBe(saltedContract.address);
     });
 
-    it('from() should auto-salt with categoryId', () => {
+    it('from() should self-pin with categoryId', () => {
       const unsaltedContract = new Contract(scArtifact, [], { provider: scProvider });
       const sc = StatefulContract.from(scArtifact, [], { provider: scProvider }, scCategoryId);
 
-      // The auto-salted address should differ from the unsalted contract
+      // The self-pinned address should differ from the un-pinned contract
       expect(sc.address).not.toBe(unsaltedContract.address);
-      expect(sc.inner.salt).toBeDefined();
+      expect(sc.inner.category).toBeDefined();
     });
 
     it('from() should use explicit salt when provided', () => {

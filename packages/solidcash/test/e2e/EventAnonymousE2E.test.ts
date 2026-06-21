@@ -116,7 +116,7 @@ describe('EventAnonymousE2E', () => {
 
     beforeAll(async () => {
       ({ categoryId } = await setupStatefulUtxos(provider, contract, stateLayout, { counter: 0n }, { saltContract: true }));
-      saltedContract = contract.withSalt(hexToBin(categoryId));
+      saltedContract = contract.withCategory(hexToBin(categoryId));
     });
 
 
@@ -162,7 +162,7 @@ describe('EventAnonymousE2E', () => {
 
     beforeAll(async () => {
       ({ categoryId } = await setupStatefulUtxos(provider, contract, stateLayout, { counter: 0n }, { saltContract: true }));
-      saltedContract = contract.withSalt(hexToBin(categoryId));
+      saltedContract = contract.withCategory(hexToBin(categoryId));
     });
 
 
@@ -240,7 +240,7 @@ describe('EventAnonymousE2E', () => {
 
     beforeAll(async () => {
       ({ categoryId } = await setupStatefulUtxos(provider, contract, stateLayout, { counter: 0n }, { saltContract: true }));
-      saltedContract = contract.withSalt(hexToBin(categoryId));
+      saltedContract = contract.withCategory(hexToBin(categoryId));
     });
 
 
@@ -312,7 +312,7 @@ describe('EventAnonymousE2E', () => {
 
     beforeAll(async () => {
       ({ categoryId } = await setupStatefulUtxos(provider, contract, stateLayout, { counter: 0n }, { saltContract: true }));
-      saltedContract = contract.withSalt(hexToBin(categoryId));
+      saltedContract = contract.withCategory(hexToBin(categoryId));
     });
 
 
@@ -381,7 +381,7 @@ describe('EventAnonymousE2E', () => {
 
     beforeAll(async () => {
       ({ categoryId } = await setupStatefulUtxos(provider, contract, stateLayout, { counter: 0n }, { saltContract: true }));
-      saltedContract = contract.withSalt(hexToBin(categoryId));
+      saltedContract = contract.withCategory(hexToBin(categoryId));
     });
 
 

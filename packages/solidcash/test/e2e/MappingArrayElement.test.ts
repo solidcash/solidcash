@@ -51,7 +51,7 @@ describe('Mapping array-element assignment', () => {
     const entryCommitment = buildEntryCommitment(alicePkh, 'bytes20', initialScores, 'int[3]');
 
     const { categoryId: cat } = await provider.addTokenUtxosDynamic((c) => {
-      const salted = contract.withSalt(hexToBin(c));
+      const salted = contract.withCategory(hexToBin(c));
       return [
         { address: salted.tokenAddress, satoshis: 100000n,
           token: { amount: 0n, nft: { capability: 'minting' as const, commitment: '' } } },

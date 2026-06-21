@@ -1881,11 +1881,11 @@ describe('Imports', () => {
           public int counter;
           function increment(pubkey owner, sig s);
         }
-        contract Reader(bytes32 counterCategory) {
+        contract Reader(bytes counterAddr) {
           int total;
           function sync(pubkey pk, sig s) {
             require(checkSig(s, pk));
-            int val = ICounter(counterCategory).counter;
+            int val = ICounter(counterAddr).counter;
             this.total = val;
           }
         }
@@ -1898,7 +1898,7 @@ describe('Imports', () => {
       expect(syncFn!.externalReads![0].interfaceName).toBe('ICounter');
       expect(syncFn!.externalReads![0].kind).toBe('data');
       expect(syncFn!.externalReads![0].nftIndex).toBe(0);
-      expect(syncFn!.externalReads![0].categoryParam).toBe('counterCategory');
+      expect(syncFn!.externalReads![0].addressParam).toBe('counterAddr');
     });
 
     it('should include externalInterfaces in the artifact', () => {
@@ -2286,18 +2286,18 @@ describe('Imports', () => {
     });
   });
 
-  describe('Unified instantiation with lbc', () => {
-    it('should compile external state read with 2-arg form (category, lbc)', () => {
+  describe('Address-based instantiation', () => {
+    it('should compile external state read with an address arg', () => {
       const code = `
         interface ICounter {
           public int counter;
           function increment(pubkey owner, sig s);
         }
-        contract Reader(bytes32 counterCategory, bytes counterLbc) {
+        contract Reader(bytes counterAddr) {
           int lastSeen;
           function sync(pubkey pk, sig s) {
             require(checkSig(s, pk));
-            int val = ICounter(counterCategory, counterLbc).counter;
+            int val = ICounter(counterAddr).counter;
             this.lastSeen = val;
           }
         }
@@ -2308,21 +2308,20 @@ describe('Imports', () => {
       expect(syncFn).toBeDefined();
       expect(syncFn!.externalReads).toBeDefined();
       expect(syncFn!.externalReads!.length).toBe(1);
-      expect(syncFn!.externalReads![0].categoryParam).toBe('counterCategory');
-      expect(syncFn!.externalReads![0].lbcParam).toBe('counterLbc');
+      expect(syncFn!.externalReads![0].addressParam).toBe('counterAddr');
     });
 
-    it('should compile external function call with 2-arg form (category, lbc)', () => {
+    it('should compile external function call with an address arg', () => {
       const code = `
         interface ICounter {
           public int counter;
           function increment() returns (int);
         }
-        contract Caller(bytes32 counterCategory, bytes counterLbc) {
+        contract Caller(bytes counterAddr) {
           int lastSeen;
           function callIncrement(pubkey pk, sig s) {
             require(checkSig(s, pk));
-            int result = ICounter(counterCategory, counterLbc).increment();
+            int result = ICounter(counterAddr).increment();
             this.lastSeen = result;
           }
         }
@@ -2333,22 +2332,21 @@ describe('Imports', () => {
       expect(fn).toBeDefined();
       expect(fn!.externalCalls).toBeDefined();
       expect(fn!.externalCalls!.length).toBe(1);
-      expect(fn!.externalCalls![0].categoryParam).toBe('counterCategory');
-      expect(fn!.externalCalls![0].lbcParam).toBe('counterLbc');
+      expect(fn!.externalCalls![0].addressParam).toBe('counterAddr');
     });
 
-    it('should compile external outState read with 2-arg form (category, lbc)', () => {
+    it('should compile external outState read with an address arg', () => {
       const code = `
         interface ICounter {
           public int counter;
           function increment() returns (int);
         }
-        contract Observer(bytes32 counterCategory, bytes counterLbc) {
+        contract Observer(bytes counterAddr) {
           int lastSeen;
           function observe(pubkey pk, sig s) {
             require(checkSig(s, pk));
-            int result = ICounter(counterCategory, counterLbc).increment();
-            int val = ICounter(counterCategory, counterLbc).outState.counter;
+            int result = ICounter(counterAddr).increment();
+            int val = ICounter(counterAddr).outState.counter;
             this.lastSeen = val + result;
           }
         }
@@ -2359,29 +2357,7 @@ describe('Imports', () => {
       expect(fn).toBeDefined();
       expect(fn!.externalOutStateReads).toBeDefined();
       expect(fn!.externalOutStateReads!.length).toBe(1);
-      expect(fn!.externalOutStateReads![0].lbcParam).toBe('counterLbc');
-    });
-
-    it('should still compile 1-arg form (backwards compat)', () => {
-      const code = `
-        interface ICounter {
-          public int counter;
-          function increment(pubkey owner, sig s);
-        }
-        contract Reader(bytes32 counterCategory) {
-          int total;
-          function sync(pubkey pk, sig s) {
-            require(checkSig(s, pk));
-            int val = ICounter(counterCategory).counter;
-            this.total = val;
-          }
-        }
-      `;
-      const artifact = compileString(code);
-      expect(artifact).toBeDefined();
-      const syncFn = artifact.abi.find((f) => f.name === 'sync');
-      expect(syncFn!.externalReads![0].categoryParam).toBe('counterCategory');
-      expect(syncFn!.externalReads![0].lbcParam).toBeUndefined();
+      expect(fn!.externalOutStateReads![0].addressParam).toBe('counterAddr');
     });
 
     it('should throw ExternalAccessOnUnconnectedError for 0x state access', () => {
@@ -2390,11 +2366,11 @@ describe('Imports', () => {
           public int counter;
           function increment(pubkey owner, sig s);
         }
-        contract Reader(bytes counterLbc) {
+        contract Reader() {
           int total;
           function sync(pubkey pk, sig s) {
             require(checkSig(s, pk));
-            int val = ICounter(0x, counterLbc).counter;
+            int val = ICounter(0x).counter;
             this.total = val;
           }
         }
@@ -2408,11 +2384,11 @@ describe('Imports', () => {
           public int counter;
           function increment() returns (int);
         }
-        contract Caller(bytes counterLbc) {
+        contract Caller() {
           int total;
           function callIt(pubkey pk, sig s) {
             require(checkSig(s, pk));
-            int result = ICounter(0x, counterLbc).increment();
+            int result = ICounter(0x).increment();
             this.total = result;
           }
         }
@@ -2426,11 +2402,11 @@ describe('Imports', () => {
           public int counter;
           function increment(pubkey owner, sig s);
         }
-        contract Observer(bytes counterLbc) {
+        contract Observer() {
           int total;
           function observe(pubkey pk, sig s) {
             require(checkSig(s, pk));
-            int val = ICounter(0x, counterLbc).outState.counter;
+            int val = ICounter(0x).outState.counter;
             this.total = val;
           }
         }

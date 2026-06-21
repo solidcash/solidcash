@@ -18,13 +18,6 @@ contract AddressTypes() {
         this.counter = this.counter + 1;
     }
 
-    // Test address.connect(category).balance
-    function checkConnectedBalance(bytes lockingBytecode, bytes32 category, int minBalance) {
-        address addr = address(lockingBytecode);
-        int connectedBal = addr.connect(category).balance;
-        require(connectedBal >= minBalance);
-    }
-
     // Test this.balance (own satoshi container balance from inputs)
     function checkSelfBalance(int minBalance) {
         require(this.balance >= minBalance);

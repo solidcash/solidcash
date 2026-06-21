@@ -1,8 +1,15 @@
 # External contract calls & dynamic dispatch (EVM-parity address model)
 
-Status: **in progress.** Stage 1 (master self-pin) is landed and live. Stage 3 (address dispatch: hard replace
-of the category-referenced model with `IContract(addr)`, removing `connect`) is being implemented. Stage 4
-(proxy upgradeability) remains design.
+Status: **Stage 3 landed & green.** Stage 1 (master self-pin) + Stage 2 (data/entry NFT read-path self-pin) +
+Stage 3 (address dispatch: hard replace of the category model with `IContract(addr)`, `connect` removed) are
+implemented and tested: compiler 1218 green, SDK 1712 green. `IContract(addr).method()/.stateVar/.outState` is
+runtime-verified (reads, calls, outState, returns, msg.sender, multi-party, low-level, events) on mocknet.
+Remaining scoped pieces: (a) **multi-data-NFT external reads** need the commitment-preamble nftIndex tag
+(single-data-NFT reads + entries are sound today; multi-data-NFT EXT_READER reads are compile-only) - the
+register/memory design below; (b) `address(this)` primitive; (c) **circular A<->B address references are a
+deliberate casualty** - a mutual cycle `addrA=hash(codeA|addrB)`, `addrB=hash(codeB|addrA)` is a hash fixed
+point with no constructible genesis (3 CircularCalls tests skipped); the old shared-category model could
+bootstrap them, address parity cannot. Stage 4 (proxy upgradeability) remains design.
 
 > **DECISION (2026-06): the register/memory model for sound cross-contract reads.**
 >

@@ -7135,6 +7135,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // 2. Read commitment at that index
     this.emit(Op.OP_UTXOTOKENCOMMITMENT, locationData);
 
+    // 2b. Verify the nftIndex tag (multi-data-NFT callee) - a substituted sibling NFT carries a
+    // different tag and fails here, so the reader proves which register it co-spent.
+    if (info.calleeMultiNft) this.emitNftIndexTagVerify(info.nftIndex, locationData);
+
     // 3. Skip preceding fields
     const fieldsInNft = info.fieldsInNft;
     for (let i = 0; i < info.fieldIndex; i++) {
@@ -7284,6 +7288,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     // 2. Read OUTPUT commitment (post-execution state)
     this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, locationData);
+
+    // 2b. Verify the nftIndex tag (multi-data-NFT callee) - rejects a substituted sibling NFT.
+    if (info.calleeMultiNft) this.emitNftIndexTagVerify(info.nftIndex, locationData);
 
     // 3. Skip preceding fields
     const fieldsInNft = info.fieldsInNft;

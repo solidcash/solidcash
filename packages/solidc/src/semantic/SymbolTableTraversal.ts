@@ -157,7 +157,6 @@ import {
   UnknownContractTypeError,
   ContractTypeConstructorArgCountError,
   ExternalAccessOnUnconnectedError,
-  MultiNftExternalReadError,
   AbstractFunctionInConcreteContractError,
   UnimplementedAbstractFunctionError,
   AbstractContractNotCompilableError,
@@ -4730,6 +4729,7 @@ export default class SymbolTableTraversal extends AstTraversal {
 
       const layout = this.computeInterfaceStateLayout(iface);
       const varLayout = layout.find((l) => l.name === node.name)!;
+      const calleeMultiNft = layout.some((l) => l.nftIndex >= 1);
       const fieldsInNft = layout
         .filter((l) => l.nftIndex === varLayout.nftIndex)
         .sort((a, b) => a.fieldIndex - b.fieldIndex)
@@ -4745,6 +4745,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         fieldIndex: varLayout.fieldIndex,
         fieldsInNft,
         externalOutStateSlotIndex: -1, // assigned later by pre-scan
+        calleeMultiNft,
       };
       accessNode.location = node.location;
       return accessNode;
@@ -4775,11 +4776,9 @@ export default class SymbolTableTraversal extends AstTraversal {
         if (ifaceVar) {
           const layout = this.computeInterfaceStateLayout(iface);
           const varLayout = layout.find((l) => l.name === node.name)!;
-          // Soundness guard: callee data NFTs share one address, so a higher-index NFT's position is
-          // unverifiable on-chain. Reject multi-data-NFT external reads until the commitment tag lands.
-          if (varLayout.nftIndex >= 1) {
-            throw new MultiNftExternalReadError(node, iface.name, node.name, varLayout.nftIndex);
-          }
+          // A callee that spans >1 data NFT tags each commitment with its nftIndex; the read verifies it
+          // (a substituted sibling NFT carries a different tag and fails), making multi-NFT reads sound.
+          const calleeMultiNft = layout.some((l) => l.nftIndex >= 1);
           const fieldsInNft = layout
             .filter((l) => l.nftIndex === varLayout.nftIndex)
             .sort((a, b) => a.fieldIndex - b.fieldIndex)
@@ -4795,6 +4794,7 @@ export default class SymbolTableTraversal extends AstTraversal {
             fieldIndex: varLayout.fieldIndex,
             fieldsInNft,
             externalReadSlotIndex: -1, // assigned later by pre-scan
+            calleeMultiNft,
           };
           extNode.location = node.location;
           return extNode;

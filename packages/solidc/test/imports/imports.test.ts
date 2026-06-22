@@ -26,7 +26,6 @@ import {
   PrivateStateVariableAccessError,
   UndefinedExternalStateVariableError,
   ExternalReadArgCountError,
-  MultiNftExternalReadError,
   ExternalAccessOnUnconnectedError,
   AbstractContractNotCompilableError,
   AbstractFunctionInConcreteContractError,
@@ -2001,9 +2000,9 @@ describe('Imports', () => {
       expect(readFn!.externalReads!.length).toBe(1);
     });
 
-    it('should reject reads of multi-data-NFT external state (nftIndex >= 1)', () => {
-      // normalVar lives on data-NFT index 1; the callee data NFTs share one address, so a higher-index
-      // NFT's position is unverifiable on-chain. Rejected until the commitment nftIndex tag lands.
+    it('should compile reads of multi-data-NFT external state (nftIndex >= 1)', () => {
+      // normalVar lives on data-NFT index 1. Sound via the commitment nftIndex tag: the reader verifies
+      // the co-spent NFT's tag == 1, so a substituted sibling NFT (different tag) is rejected on-chain.
       const code = `
         interface IBigState {
           external int externalVar;
@@ -2019,7 +2018,10 @@ describe('Imports', () => {
           }
         }
       `;
-      expect(() => compileString(code)).toThrow(MultiNftExternalReadError);
+      const artifact = compileString(code);
+      const readFn = artifact.abi.find((f) => f.name === 'read');
+      expect(readFn!.externalReads!.length).toBe(1);
+      expect(readFn!.externalReads![0].nftIndex).toBe(1);
     });
 
     it('should throw UndefinedExternalStateVariableError for unknown variable', () => {

@@ -1463,6 +1463,7 @@ export interface ExternalStateReadInfo {
   fieldIndex: number;
   fieldsInNft: { type: Type; fieldIndex: number }[];
   externalReadSlotIndex: number;
+  calleeMultiNft: boolean; // callee spans >1 data NFT -> its commitments carry an nftIndex tag to verify
 }
 
 export class ExternalStateAccessNode extends ExpressionNode {
@@ -1593,6 +1594,7 @@ export interface ExternalOutputStateAccessInfo {
   fieldIndex: number;
   fieldsInNft: { type: Type; fieldIndex: number }[];
   externalOutStateSlotIndex: number;
+  calleeMultiNft: boolean; // callee spans >1 data NFT -> its commitments carry an nftIndex tag to verify
 }
 
 export class ExternalOutputStateNode extends ExpressionNode {

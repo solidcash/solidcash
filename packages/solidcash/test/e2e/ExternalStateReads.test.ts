@@ -1,4 +1,4 @@
-import { compileString, MultiNftExternalReadError } from 'solidc';
+import { compileString } from 'solidc';
 import { hexToBin, binToHex } from '@bitauth/libauth';
 import {
   Contract, TransactionBuilder,
@@ -143,10 +143,12 @@ describe('Cross-Contract External State Reads', () => {
       expect(readFn!.externalReads![0].nftIndex).toBe(0);
     });
 
-    it('should reject reads of multi-data-NFT external state (nftIndex >= 1)', () => {
-      // The callee data NFTs share one address, so a higher-index NFT's position is unverifiable
-      // on-chain. Rejected until the commitment nftIndex tag lands.
-      expect(() => compileString(EXT_READER_MULTI_NFT)).toThrow(MultiNftExternalReadError);
+    it('should compile reads of multi-data-NFT external state (nftIndex >= 1)', () => {
+      // Sound via the commitment nftIndex tag: the read verifies the co-spent NFT's tag == 1.
+      const artifact = compileString(EXT_READER_MULTI_NFT);
+      const readFn = artifact.abi.find((f) => f.name === 'readHigh');
+      expect(readFn!.externalReads!.length).toBe(1);
+      expect(readFn!.externalReads![0].nftIndex).toBe(1);
     });
   });
 

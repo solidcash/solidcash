@@ -670,3 +670,40 @@ describe('dynamic storage chunk codec', () => {
     expect(joined).toEqual(value);
   });
 });
+
+describe('dynamic-storage data-NFT commitment (A$len header)', () => {
+  // A layout with a non-dynamic int and a dynamic string, both packed in data NFT 0.
+  const layout: StateLayout = {
+    dataNftCount: 1,
+    commitmentLimit: 128,
+    variables: [
+      { name: 'a', type: 'uint256', nftIndex: 0, fieldIndex: 0 },
+      { name: 'b', type: 'string', nftIndex: 0, fieldIndex: 1, dynamic: true },
+    ],
+  };
+
+  it('encodes a dynamic field as its uint32 byte-length, not the inline value', () => {
+    // "the quick brown fox" is 19 bytes; the commitment must hold len=19, not the string bytes.
+    const hex = buildPushdataCommitment(layout, { a: 7n, b: 'the quick brown fox' }, 0);
+    // a (7 -> OP_7 0x57) then b$len (19 -> 0x01 0x13).
+    expect(hex).toBe('570113');
+  });
+
+  it('empty string encodes len 0 (OP_0)', () => {
+    expect(buildPushdataCommitment(layout, { a: 0n, b: '' }, 0)).toBe('0000');
+  });
+
+  it('decodes a dynamic field into <name>$len (value assembled from chunks elsewhere)', () => {
+    const hex = buildPushdataCommitment(layout, { a: 7n, b: 'x'.repeat(200) }, 0);
+    const parsed = parsePushdataCommitment(hex, layout, 0);
+    expect(parsed.a).toBe(7n);
+    expect(parsed['b$len']).toBe(200n);
+    expect(parsed.b).toBeUndefined(); // value is not reconstructable from the commitment alone
+  });
+
+  it('byte length is utf8 for multibyte strings', () => {
+    // a single emoji is 4 utf8 bytes
+    const hex = buildPushdataCommitment(layout, { a: 0n, b: '\u{1F680}' }, 0);
+    expect(parsePushdataCommitment(hex, layout, 0)['b$len']).toBe(4n);
+  });
+});

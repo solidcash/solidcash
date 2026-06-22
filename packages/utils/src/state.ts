@@ -829,6 +829,12 @@ export function buildPushdataCommitment(
     parts.push(encodeNftIndexTag(nftIndex));
   }
   for (const field of fieldsForNft) {
+    if (field.dynamic) {
+      // Dynamic var: the data-NFT field is a uint32 length header (A$len); the value lives in chunks.
+      const value = values[field.name] ?? getDefaultStateValue(field.type, layout.structs);
+      parts.push(encodePushdataValue(BigInt(dynamicValueByteLength(value)), DYNAMIC_LEN_TYPE));
+      continue;
+    }
     const value = values[field.name] ?? getDefaultStateValue(field.type, layout.structs);
     parts.push(encodePushdataValue(value, field.type, layout.structs));
   }
@@ -878,6 +884,14 @@ export function parsePushdataCommitment(
   }
 
   for (const field of fieldsForNft) {
+    if (field.dynamic) {
+      // Dynamic var: decode the uint32 length header into <name>$len; the value is assembled from
+      // chunks by the StateReader. parsePushdataCommitment alone cannot reconstruct it.
+      const { value, bytesConsumed } = decodePushdataValue(bytes, offset, DYNAMIC_LEN_TYPE);
+      result[dynamicLenKey(field.name)] = value;
+      offset += bytesConsumed;
+      continue;
+    }
     const { value, bytesConsumed } = decodePushdataValue(bytes, offset, field.type, layout.structs);
     result[field.name] = value;
     offset += bytesConsumed;
@@ -976,6 +990,26 @@ export function parseEntryCommitment(
 
 /** Max chunk data bytes. 120 + 5 (index) + 2 (framing) <= 128-byte commitment budget. */
 export const DYNAMIC_CHUNK_SIZE = 120;
+
+/** Type of a dynamic var's hidden length-header register field (A$len). See dynamic-storage.md. */
+export const DYNAMIC_LEN_TYPE = 'uint32';
+
+/** Internal state-record key under which a dynamic var's decoded length is held before chunk assembly. */
+export function dynamicLenKey(varName: string): string {
+  return `${varName}$len`;
+}
+
+/** Chunk-collection signature for a dynamic var: "<name>:<type>" (e.g. "text:string"). */
+export function dynamicChunkSignature(varName: string, varTypeString: string): string {
+  return computeCollectionSignature(varName, varTypeString);
+}
+
+/** UTF-8/raw byte length of a dynamic-storage value (string -> utf8 bytes, bytes -> raw). */
+export function dynamicValueByteLength(value: StateValue): number {
+  if (typeof value === 'string') return utf8ToBin(value).length;
+  if (value instanceof Uint8Array) return value.length;
+  return 0;
+}
 
 /** ceil(byteLength / DYNAMIC_CHUNK_SIZE) - the number of chunk UTXOs a value of this length needs. */
 export function chunkCountForLength(byteLength: number): number {

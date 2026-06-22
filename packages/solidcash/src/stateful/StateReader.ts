@@ -1,8 +1,9 @@
 import {
   StateLayout, parsePushdataCommitment, EventDefinitionAbi, decodePushdataValue,
   StateValue, StateRecord, isMultiDataNftLayout,
+  parseChunkCommitment, joinChunks, dynamicLenKey,
 } from '@solidcash/utils';
-import { hexToBin, binsAreEqual } from '@bitauth/libauth';
+import { hexToBin, binsAreEqual, binToUtf8 } from '@bitauth/libauth';
 import { Utxo } from '../interfaces.js';
 import NetworkProvider from '../network/NetworkProvider.js';
 
@@ -98,6 +99,60 @@ export class StateReader {
   }
 
   /**
+   * Find a dynamic var's chunk UTXOs in a pool (fetched from the var's chunk address), parse each
+   * chunk commitment, and return them ordered by the verified in-commitment chunkIndex (robust against
+   * UTXO permutation). Chunks are entry NFTs: mutable, this category, commitment = chunkIndex ++ data.
+   */
+  findChunkNfts(pool: Utxo[], categoryId: string): Array<{ chunkIndex: number; chunkData: Uint8Array }> {
+    const chunks: Array<{ chunkIndex: number; chunkData: Uint8Array }> = [];
+    for (const utxo of pool) {
+      if (!utxo.token
+        || utxo.token.category !== categoryId
+        || !utxo.token.nft
+        || utxo.token.nft.capability !== 'mutable'
+        || utxo.token.nft.commitment.length === 0) continue;
+      try {
+        chunks.push(parseChunkCommitment(utxo.token.nft.commitment));
+      } catch {
+        // Not a chunk commitment for this var - skip.
+      }
+    }
+    chunks.sort((a, b) => a.chunkIndex - b.chunkIndex);
+    return chunks;
+  }
+
+  /**
+   * Assemble dynamic-storage vars: replace each `<name>$len` length header (decoded from the data NFT)
+   * with the full value joined from the var's chunk UTXOs and truncated to that length. Mutates state.
+   */
+  private assembleDynamicVars(
+    state: Record<string, StateValue>,
+    categoryId: string,
+    chunkPoolByVar: Record<string, Utxo[]>,
+  ): void {
+    for (const v of this.layout.variables) {
+      if (!v.dynamic) continue;
+      const lenKey = dynamicLenKey(v.name);
+      const len = Number(state[lenKey] as bigint ?? 0n);
+      delete state[lenKey];
+
+      let value: Uint8Array;
+      if (len === 0) {
+        value = new Uint8Array(0);
+      } else {
+        const ordered = this.findChunkNfts(chunkPoolByVar[v.name] ?? [], categoryId);
+        if (ordered.length === 0) {
+          throw new Error(
+            `Dynamic var '${v.name}' has length ${len} but no chunk UTXOs were found at its chunk address`,
+          );
+        }
+        value = joinChunks(ordered.map((c) => c.chunkData), len);
+      }
+      state[v.name] = v.type === 'string' ? binToUtf8(value) : value;
+    }
+  }
+
+  /**
    * Read state from data NFT UTXOs using pushdata format.
    * Data NFTs must be ordered by nftIndex (0, 1, 2, ...).
    */
@@ -137,6 +192,7 @@ export class StateReader {
     categoryId: string,
     addresses: string[],
     dataNftAddresses?: string[],
+    dynamicChunkAddresses?: Record<string, string>,
   ): Promise<OnChainState> {
     // Fetch all addresses in parallel for a consistent snapshot
     const utxoResults = await Promise.all(
@@ -177,6 +233,17 @@ export class StateReader {
     }
 
     const state = this.readState(dataNftUtxos);
+
+    // Assemble dynamic-storage vars (string / unbounded bytes) from their chunk UTXOs, grouped by the
+    // address each chunk collection was fetched from.
+    if (dynamicChunkAddresses && Object.keys(dynamicChunkAddresses).length > 0) {
+      const chunkPoolByVar: Record<string, Utxo[]> = {};
+      for (const [varName, addr] of Object.entries(dynamicChunkAddresses)) {
+        chunkPoolByVar[varName] = utxosByAddress.get(addr) ?? [];
+      }
+      this.assembleDynamicVars(state, categoryId, chunkPoolByVar);
+    }
+
     const entryNftUtxos = this.findEntryNfts(allUtxos, dataNftUtxos, categoryId);
 
     return { state, masterUtxo, dataNftUtxos, entryNftUtxos };

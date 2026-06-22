@@ -12,6 +12,7 @@ import {
   buildAnonymousEventNftCovenantScript,
   computeCollectionHash,
   computeEventNameHash,
+  dynamicChunkSignature,
   Script,
   scriptToBytecode,
 } from '@solidcash/utils';
@@ -107,6 +108,17 @@ export function getEntryNftLockingBytecode(
   return scriptToLockingBytecode(buildEntryNftCovenantScript(hexToBin(categoryId), collectionHash), 'p2sh32');
 }
 
+// Chunk-collection address for a dynamic-storage var (string / unbounded bytes). Chunks are entry NFTs
+// keyed by the var's chunk signature "<name>:<type>". See dynamic-storage.md.
+export function getDynamicChunkAddress(
+  contract: Contract<any, any>, categoryId: string, varName: string, varType: string,
+): string {
+  validateCategoryId(categoryId);
+  const collectionHash = computeCollectionHash(dynamicChunkSignature(varName, varType));
+  const covenantScript = buildEntryNftCovenantScript(hexToBin(categoryId), collectionHash);
+  return scriptToAddress(covenantScript, contract.provider.network, contract.addressType, true);
+}
+
 export function getEventNftAddress(
   contract: Contract<any, any>, categoryId: string, eventNameOrSignature: string,
 ): string {
@@ -158,6 +170,14 @@ export async function getContractState(
     throw new Error(`Contract ${contract.name} is not a stateful contract`);
   }
 
+  // Dynamic-storage vars (string / unbounded bytes) keep their data in chunk UTXOs at a per-var address.
+  const dynamicVars = (contract.artifact.stateLayout.variables ?? [])
+    .filter((v: { dynamic?: boolean }) => v.dynamic);
+  const dynamicChunkAddresses: Record<string, string> = {};
+  for (const v of dynamicVars) {
+    dynamicChunkAddresses[v.name] = getDynamicChunkAddress(contract, categoryId, v.name, v.type);
+  }
+
   let allAddresses: string[];
   let dataNftOnlyAddresses: string[] | undefined;
   if (dataNftAddresses !== undefined) {
@@ -172,9 +192,15 @@ export async function getContractState(
     // Pass data NFT addresses separately so StateReader can distinguish data NFTs from entry NFTs
     dataNftOnlyAddresses = [contract.tokenAddress, dataNftAddr];
   }
+  // Always fetch dynamic-var chunk addresses so the reader can assemble their values.
+  for (const addr of Object.values(dynamicChunkAddresses)) {
+    if (!allAddresses.includes(addr)) allAddresses.push(addr);
+  }
 
   const reader = new StateReader(contract.artifact.stateLayout);
-  return reader.readStateFromChain(contract.provider, categoryId, allAddresses, dataNftOnlyAddresses);
+  return reader.readStateFromChain(
+    contract.provider, categoryId, allAddresses, dataNftOnlyAddresses, dynamicChunkAddresses,
+  );
 }
 
 // ---------------------------------------------------------------------------

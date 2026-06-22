@@ -1,6 +1,6 @@
 import {
   StateLayout, parsePushdataCommitment, EventDefinitionAbi, decodePushdataValue,
-  StateValue, StateRecord,
+  StateValue, StateRecord, isMultiDataNftLayout,
 } from '@solidcash/utils';
 import { hexToBin, binsAreEqual } from '@bitauth/libauth';
 import { Utxo } from '../interfaces.js';
@@ -52,26 +52,31 @@ export class StateReader {
    */
   findDataNfts(utxos: Utxo[], categoryId: string): Utxo[] {
     const dataNftCount = this.layout.dataNftCount ?? 1;
-    return utxos
-      .filter((utxo) => {
-        if (!utxo.token
-          || utxo.token.category !== categoryId
-          || !utxo.token.nft
-          || utxo.token.nft.capability !== 'mutable'
-          || utxo.token.nft.commitment.length === 0) return false;
-        // Validate commitment parses as pushdata state at some nftIndex
-        const commitmentHex = utxo.token.nft.commitment;
-        for (let nftIdx = 0; nftIdx < dataNftCount; nftIdx++) {
-          try {
-            parsePushdataCommitment(commitmentHex, this.layout, nftIdx);
-            return true;
-          } catch {
-            // Try next nftIndex
-          }
+    const multi = isMultiDataNftLayout(this.layout);
+    // Validate each candidate's commitment and record the nftIndex it parses at. For a multi-data-NFT
+    // layout the commitment carries a verified nftIndex tag, so exactly one index parses cleanly.
+    const tagged: Array<{ utxo: Utxo; nftIndex: number }> = [];
+    for (const utxo of utxos) {
+      if (!utxo.token
+        || utxo.token.category !== categoryId
+        || !utxo.token.nft
+        || utxo.token.nft.capability !== 'mutable'
+        || utxo.token.nft.commitment.length === 0) continue;
+      const commitmentHex = utxo.token.nft.commitment;
+      for (let nftIdx = 0; nftIdx < dataNftCount; nftIdx++) {
+        try {
+          parsePushdataCommitment(commitmentHex, this.layout, nftIdx);
+          tagged.push({ utxo, nftIndex: nftIdx });
+          break;
+        } catch {
+          // Try next nftIndex
         }
-        return false;
-      })
-      .sort((a, b) => a.vout - b.vout);
+      }
+    }
+    // Multi-data-NFT: order by the verified nftIndex tag (robust against vout/input permutation, so
+    // dataNftUtxos[i] is genuinely register i). Single-data-NFT: vout order (no tag to disambiguate).
+    tagged.sort((a, b) => (multi ? a.nftIndex - b.nftIndex : a.utxo.vout - b.utxo.vout));
+    return tagged.map((t) => t.utxo);
   }
 
   /**

@@ -100,6 +100,39 @@ contract ExtReaderMulti(bytes extAddr) {
 }
 `;
 
+// Multi-data-NFT callee + reader for the runtime soundness test. reg1 is `external` so it lives on
+// its own data NFT (nftIndex 1); the interface and the contract declare state identically so their
+// layouts agree. Reading IBig(addr).reg1 co-spends register 1 and verifies its nftIndex tag on-chain.
+const BIG_IFACE = `
+interface IBig {
+    public int reg0;
+    external int reg1;
+    function bump(pubkey owner, sig s);
+}`;
+
+const BIG_CALLEE = `
+pragma solidcash >=0.8.0;
+${BIG_IFACE}
+contract BigState() is IBig {
+    int reg0;
+    external int reg1;
+    function bump(pubkey owner, sig s) {
+        require(checkSig(s, owner));
+        this.reg0 = this.reg0 + 1;
+    }
+}`;
+
+const BIG_READER = `
+pragma solidcash >=0.8.0;
+${BIG_IFACE}
+contract BigReader(bytes bigAddr) {
+    int seen;
+    function read(pubkey pk, sig s) {
+        require(checkSig(s, pk));
+        this.seen = IBig(bigAddr).reg1;
+    }
+}`;
+
 // ---------- Artifact Metadata Tests ----------
 
 describe('Cross-Contract External State Reads', () => {
@@ -418,6 +451,51 @@ describe('Cross-Contract External State Reads', () => {
       // Verify artifact has the right constructor input metadata
       expect(artifact.constructorInputs[0].name).toBe('counterAddr');
       expect(artifact.constructorInputs[0].type).toBe('bytes');
+    });
+  });
+
+  // ---------- Multi-data-NFT external read (runtime soundness) ----------
+
+  describe('multi-data-NFT external read (runtime)', () => {
+    const provider = createTestProvider();
+    const calleeArtifact = compileString(BIG_CALLEE);
+    const readerArtifact = compileString(BIG_READER);
+
+    it('compiles a callee that spans two data NFTs with reg1 on index 1', () => {
+      expect(calleeArtifact.stateLayout!.dataNftCount).toBe(2);
+      const reg1 = calleeArtifact.stateLayout!.variables.find((v) => v.name === 'reg1')!;
+      expect(reg1.nftIndex).toBe(1);
+      // Reader resolves the same nftIndex via the interface layout.
+      const readFn = readerArtifact.abi.find((f) => f.name === 'read')!;
+      expect(readFn.externalReads![0].nftIndex).toBe(1);
+    });
+
+    it('reads register 1 of a multi-data-NFT callee (tag-verified, distinct from register 0)', async () => {
+      // Genesis the callee first so the reader can embed its data-NFT address. reg0 != reg1 so that a
+      // wrong-NFT co-spend would carry the wrong nftIndex tag and fail on-chain - a txid proves the SDK
+      // co-spent register 1 and the contract verified its tag.
+      const calleeContract = new Contract(calleeArtifact, [], { provider });
+      const { categoryId: calleeCategory } = await setupStatefulUtxos(
+        provider, calleeContract, calleeArtifact.stateLayout!, { reg0: 7n, reg1: 99n }, { saltContract: true },
+      );
+
+      const bigAddr = getDataNftLockingBytecode(calleeCategory);
+      const readerContract = new Contract(readerArtifact, [bigAddr], { provider });
+      const { categoryId: readerCategory } = await setupStatefulUtxos(
+        provider, readerContract, readerArtifact.stateLayout!, { seen: 0n }, { saltContract: true },
+      );
+
+      const calleeSc = StatefulContract.withCategory(calleeContract, calleeCategory);
+      const readerSc = StatefulContract.withCategory(readerContract, readerCategory, {
+        externals: { IBig: calleeSc },
+      });
+
+      const tx = await readerSc.read(alicePub, new SignatureTemplate(alicePriv)).send();
+      expect(tx.txid).toMatch(/^[0-9a-f]{64}$/);
+
+      // The reader stored register 1's value (99), not register 0's (7).
+      const state = await readerSc.getState();
+      expect(state.seen).toBe(99n);
     });
   });
 });

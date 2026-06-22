@@ -29,6 +29,7 @@ import {
   StructType,
   computeEventNameHash,
   computeCollectionHash,
+  computeCollectionSignature,
   FunctionDebugInformation,
   optimiseBytecode,
   optimiseBytecodeOld,
@@ -301,6 +302,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private entrySlots: EntryAccessInfo[] = [];
   private pendingEntryWrites: Map<number, { keyStackName: string; valueStackName: string }> = new Map();
   private pendingEntryDeletes: Set<number> = new Set();
+
+  // Dynamic-storage writes (string / unbounded bytes): the value is kept on the stack until the
+  // epilogue, where the chunk write loop (split + verify trailing chunk outputs) is emitted.
+  private pendingDynamicWrites: Map<string, { valueStackName: string; sv: StateVariableNode }> = new Map();
 
   // External read tracking
   private externalReadSlots: ExternalReadSlot[] = [];
@@ -1163,6 +1168,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.pendingStateWrites = new Map();
     this.pendingEntryWrites = new Map();
     this.pendingEntryDeletes = new Set();
+    this.pendingDynamicWrites = new Map();
     this.pendingTransfers = [];
     this.transferInfos = node.transferInfos ?? [];
     this.pendingEmits = [];
@@ -1469,6 +1475,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
       if (!this.functionHasDelegatecall && (hasEntryWrites || hasEntryDeletes)) {
         this.emitEntryCovenantVerification(node);
+      }
+      // Dynamic-storage writes: verify trailing chunk outputs (and consume old chunk inputs).
+      if (!this.functionHasDelegatecall && this.pendingDynamicWrites.size > 0) {
+        this.emitDynamicWriteVerification(node);
       }
       // Read-only entry preservation: verify entries not written/deleted are preserved
       // Selfdestruct functions skip - all entries are destroyed
@@ -7074,6 +7084,35 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const key = `${sv.nftIndex}:${sv.fieldIndex}`;
     const locationData = { location: node.location, positionHint: PositionHint.END };
 
+    // Dynamic-storage write (string / unbounded bytes): the data-NFT field holds uint32 A$len; the value
+    // is split into chunk UTXOs verified in the epilogue. Keep the raw value on the stack until then.
+    if (sv.isDynamic) {
+      if (this.preAllocatedStateWrites.has(key) || this.pendingDynamicWrites.has(sv.name)) {
+        throw new Error(
+          `Dynamic-storage write to '${sv.name}' is only supported as a top-level statement, once per `
+          + 'function (phase 1). See docs/dynamic-storage.md.',
+        );
+      }
+      // 1. Evaluate expression -> raw value bytes on top
+      node.expression = this.visit(node.expression);
+      const valueStackName = `__internal__dynwrite_value_${sv.name}`;
+      this.popFromStack();
+      this.pushToStack(valueStackName); // keep value for the epilogue chunk loop
+
+      // 2. Register field = uint32 byte length (A$len), kept on the stack as the pending state write.
+      this.emit(Op.OP_SIZE, locationData); // [value, size] - OP_SIZE leaves value, pushes size
+      this.pushToStack('(dynlen)');
+      this.emitPushdataEncode(new IntType(false, 32), locationData); // [value, len_encoded]
+      this.popFromStack();
+      const stateWriteStackName = `__internal__state_write_${sv.name}`;
+      this.pushToStack(stateWriteStackName);
+      this.pendingStateWrites.set(key, stateWriteStackName);
+      this.preAllocatedStateWrites.add(key);
+
+      this.pendingDynamicWrites.set(sv.name, { valueStackName, sv });
+      return node;
+    }
+
     // 1. Evaluate expression
     node.expression = this.visit(node.expression);
 
@@ -8615,6 +8654,104 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_ROLL, locationData);
       this.emit(Op.OP_DROP, locationData);
       this.removeFromStack(valIdx);
+    }
+  }
+
+  /**
+   * Emit covenant verification for dynamic-storage writes (string / unbounded bytes).
+   *
+   * The value was kept on the stack by visitStateAssign and the register field already holds uint32
+   * A$len. Here we verify the trailing chunk OUTPUTS reconstruct exactly that value:
+   *   - nNew = ceil(len / CHUNK); pin OP_TXOUTPUTCOUNT == OP_INPUTINDEX + blockSize + nNew (no orphans)
+   *   - for i in 0..nNew-1 at output (OP_INPUTINDEX + blockSize + i): verify locking bytecode == chunk
+   *     address, category base == master + mutable, decode chunkIndex == i, OP_CAT chunkData onto an
+   *     accumulator; after the loop the accumulator must equal the original value.
+   * Chunk INPUT consumption (destroying old chunks on shrink/replace) is a follow-up; for grow-from-empty
+   * there are no old chunks. See docs/dynamic-storage.md.
+   */
+  private emitDynamicWriteVerification(node: FunctionDefinitionNode): void {
+    const loc = { location: node.body.location, positionHint: PositionHint.END };
+    const blockSize = this.currentFunction.blockLayout?.blockSize ?? 1;
+
+    for (const [name, { valueStackName, sv }] of this.pendingDynamicWrites) {
+      const chunkHash = computeCollectionHash(computeCollectionSignature(name, sv.type.toString()));
+      // Phase 1: single-chunk (value <= CHUNK bytes). Multi-chunk loop + old-chunk consumption follow.
+      // Stack on entry: [..., value(valueStackName)].
+
+      // --- chunk address locking bytecode (tracked '(dyn_chunkaddr)') ---
+      this.emitMasterInputIndex(loc);
+      this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
+      this.emit(encodeInt(32n), loc);
+      this.emit(Op.OP_SPLIT, loc);
+      this.emit(Op.OP_DROP, loc); // [..., categoryId(32B)]
+      this.pushToStack('(dyn_chunkaddr)');
+      this.emitP2sh32FromCovenant((cat) => buildEntryNftCovenantScript(cat, chunkHash), loc);
+      this.stack[0] = '(dyn_chunkaddr)'; // helper renamed top (index 0) to '(value)'
+
+      // --- expected commitment = pushdata(int 0) ++ pushdata(value)  (tracked '(dyn_expected)') ---
+      this.emit(encodeInt(0n), loc);
+      this.pushToStack('(dyn_zero)');
+      this.emitPushdataEncode(new IntType(false, 32), loc); // chunk-0 key byte 0x00
+      this.stack[0] = '(dyn_expected)';
+      this.emit(encodeInt(BigInt(this.getStackIndex(valueStackName))), loc);
+      this.emit(Op.OP_PICK, loc);
+      this.pushToStack('(dyn_tmpval)');
+      this.emitPushdataEncode(new BytesType(), loc); // pushdata(value)
+      this.emit(Op.OP_CAT, loc);
+      this.popFromStack(); // [..., value, chunkaddr, expected]
+
+      // --- nNew = (len(value) != 0) ? 1 : 0 (single-chunk) ---  [..., expected, nNew]
+      this.emit(encodeInt(BigInt(this.getStackIndex(valueStackName))), loc);
+      this.emit(Op.OP_PICK, loc);
+      this.emit(Op.OP_SIZE, loc);
+      this.emit(Op.OP_NIP, loc);
+      this.emit(Op.OP_0NOTEQUAL, loc);
+
+      // --- pin OP_TXOUTPUTCOUNT == OP_INPUTINDEX + blockSize + nNew ---
+      this.emitMasterInputIndex(loc); // [..., nNew, base]
+      this.emit(encodeInt(BigInt(blockSize)), loc);
+      this.emit(Op.OP_ADD, loc);
+      this.emit(Op.OP_OVER, loc); // copy nNew
+      this.emit(Op.OP_ADD, loc);
+      this.emit(Op.OP_TXOUTPUTCOUNT, loc);
+      this.emit(Op.OP_NUMEQUALVERIFY, loc); // [..., nNew]
+
+      // --- if nNew == 1, verify the single chunk output at OP_INPUTINDEX + blockSize ---
+      this.emit(Op.OP_IF, loc); // consumes nNew -> [..., value, chunkaddr, expected]
+      this.emitMasterInputIndex(loc);
+      this.emit(encodeInt(BigInt(blockSize)), loc);
+      this.emit(Op.OP_ADD, loc); // [..., outIdx]  (1 untracked)
+      // locking bytecode == chunk address
+      this.emit(Op.OP_DUP, loc);
+      this.emit(Op.OP_OUTPUTBYTECODE, loc);
+      this.emit(encodeInt(BigInt(this.getStackIndex('(dyn_chunkaddr)') + 2)), loc); // +2: outIdx, bytecode
+      this.emit(Op.OP_PICK, loc);
+      this.emit(Op.OP_EQUALVERIFY, loc); // [..., outIdx]
+      // category base == master + mutable
+      this.emit(Op.OP_DUP, loc);
+      this.emit(Op.OP_OUTPUTTOKENCATEGORY, loc); // [..., outIdx, cat]
+      this.emit(Op.OP_DUP, loc);
+      this.emit(encodeInt(32n), loc);
+      this.emit(Op.OP_SPLIT, loc);
+      this.emit(Op.OP_NIP, loc); // [..., outIdx, cat, capability]
+      this.emit(new Uint8Array([0x01]), loc);
+      this.emit(Op.OP_EQUALVERIFY, loc);
+      this.emitVerifyCatBaseEqMaster(loc); // consumes cat -> [..., outIdx]
+      // commitment == expected
+      this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, loc); // consumes outIdx -> [..., commitment]
+      this.emit(encodeInt(BigInt(this.getStackIndex('(dyn_expected)') + 1)), loc); // +1: commitment
+      this.emit(Op.OP_PICK, loc);
+      this.emit(Op.OP_EQUALVERIFY, loc);
+      this.emit(Op.OP_ENDIF, loc); // [..., value, chunkaddr, expected]
+
+      // cleanup tracked temporaries + the value
+      for (const tmp of ['(dyn_expected)', '(dyn_chunkaddr)', valueStackName]) {
+        const idx = this.getStackIndex(tmp);
+        this.emit(encodeInt(BigInt(idx)), loc);
+        this.emit(Op.OP_ROLL, loc);
+        this.emit(Op.OP_DROP, loc);
+        this.removeFromStack(idx);
+      }
     }
   }
 

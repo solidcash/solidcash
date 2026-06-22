@@ -23,16 +23,21 @@ Solidity stores a dynamic `string`/`bytes` at slot `p` as a length header plus d
 
 A dynamic-storage variable = a **length header** (in a register) + **data chunks** (chunk UTXOs).
 
-### Length header (Ethereum's slot `p`)
-A hidden fixed-size field in the contract's data NFT (a register field). It holds the byte length and
-a short/long marker (mirroring Ethereum's `*2` / `*2+1`). The register is the length **authority**.
+### Register layout (Ethereum's slot `p`)
+A dynamic var `A` gets two hidden fixed-size register fields in the contract's data NFT:
+- `A$len` (int): **0 => short/inline**, **> 0 => long/chunked, value = the byte length**. Since a long
+  value is always > 32 bytes, `len == 0` unambiguously marks short (the 0-sentinel doubles as the
+  short/long flag, mirroring Ethereum's low-bit flag). It is the length **authority** for the long case.
+- `A$inline` (bytes): the value itself when short; empty when long.
 
 ### Short / inline (Ethereum's short-string optimization)
-If the value fits in the register's remaining commitment budget, it is stored **inline in the data
-NFT** - no chunk UTXOs. This is today's single-data-NFT behavior. The marker says "short".
+**Inline threshold = 32 bytes** (matching Ethereum's `< 32` rule). A value of length `<= 32` is stored
+**inline in the data NFT** (`A$len = 0`, `A$inline = value`) - no chunk UTXOs. This is today's
+single-data-NFT behavior.
 
 ### Long / chunked (Ethereum's `keccak256(p) + i`)
-A long value spills into **chunk UTXOs**. A chunk is structurally an **entry NFT**:
+A value of length `> 32` spills into **chunk UTXOs** (`A$len = length`, `A$inline = empty`). A chunk is
+structurally an **entry NFT**:
 - `key = chunkIndex` (int), `value = chunkData` (raw bytes, ~120 B - the 128-byte commitment minus the
   index + framing overhead).
 - All chunks of one variable share one address `P2SH32(chunkCovenant(category, chunkHash))`, where
@@ -41,41 +46,40 @@ A long value spills into **chunk UTXOs**. A chunk is structurally an **entry NFT
 - The chunk's `chunkIndex` is verified in its commitment (the entry-key verification), so chunk `i`
   cannot be substituted by chunk `j` - identical to the entry-key / nftIndex-tag soundness pattern.
 
-So a dynamic `string A` desugars to: a hidden `int A.len` register field + a chunk collection
-`A.chunks : (int chunkIndex => bytes chunkData)`.
+So a dynamic `string A` desugars to: hidden `int A$len` + `bytes A$inline` register fields + a chunk
+collection `A$chunks : (int chunkIndex => bytes chunkData)`.
 
 ### Read (on-chain)
-- Read `A.len` from the register; check the short/long marker.
-- Short: the inline bytes are the value.
-- Long: **loop** `i = 0 .. ceil(len / CHUNK) - 1` (`OP_BEGIN`/`OP_UNTIL`, modeled on
+- Read `A$len`. **If 0 (short):** value = `A$inline`.
+- **Else (long):** **loop** `i = 0 .. ceil(A$len / CHUNK) - 1` (`OP_BEGIN`/`OP_UNTIL`, modeled on
   `visitCollectionIteration`), co-spend chunk `i` read-only, `OP_CAT` its `chunkData`, then truncate to
-  `len`. Unbounded (VM-limit-bounded, like EVM gas), no compile-time cap.
+  `A$len`. Unbounded (VM-limit-bounded, like EVM gas), no compile-time cap.
 - Chunk `i`'s input index = `OP_INPUTINDEX + blockSize + priorIterCounts + i` (the
   `emitCollectionIterInputIndex` formula).
 
 ### Write (on-chain), grow and shrink
-- Compute the new value's chunk count `n = ceil(newLen / CHUNK)`.
-- **Loop-split** the value into `CHUNK`-byte pieces; for each chunk slot, verify/emit the output chunk
-  commitment `[i ++ data]` (the entry-write verification).
-- **Grow:** mint new chunk UTXOs for indices beyond the old count (entry mint).
-- **Shrink:** destroy the now-extraneous chunk UTXOs (entry destroy).
-- Update `A.len` (and short/long marker) in the register (the data-NFT write path).
-- Short<->long transitions move data between the inline register and chunks.
+- **If newLen <= 32 (short):** set `A$len = 0`, `A$inline = value`, destroy all existing chunks.
+- **Else (long):** set `A$len = newLen`, `A$inline = empty`; **loop-split** the value into `CHUNK`-byte
+  pieces; for each chunk slot verify/emit the output chunk commitment `[i ++ data]` (entry-write
+  verification); **grow** = mint chunk UTXOs for new indices, **shrink** = destroy now-extraneous ones.
+- Short<->long transitions fall out of the two branches (e.g. growing past 32 moves the inline value
+  into chunks; shrinking to <= 32 moves it back inline and frees the chunks).
 
 ### Off-chain (SDK)
-The SDK chunks a value on write (split into `CHUNK`-byte commitments, allocate/free chunk UTXOs to
-match the new count) and concatenates on read (fetch chunks ordered by the verified `chunkIndex`,
-join, truncate to `len`). Unbounded. `findChunkNfts` discovers a variable's chunks by category +
-chunk address, ordered by the in-commitment `chunkIndex` (robust against UTXO permutation, like
-`findDataNfts` tag-ordering).
+The SDK applies the same 32-byte rule: short values set `A$inline` and free chunks; long values clear
+`A$inline`, split into `CHUNK`-byte commitments, and allocate/free chunk UTXOs to match the new count.
+On read it returns `A$inline` when `A$len == 0`, else fetches chunks ordered by the verified
+`chunkIndex`, joins, and truncates to `A$len`. Unbounded. `findChunkNfts` discovers a variable's chunks
+by category + chunk address, ordered by the in-commitment `chunkIndex` (robust against UTXO
+permutation, like `findDataNfts` tag-ordering).
 
 ## Soundness
 - **Chunk integrity:** the entry covenant's Stage-2 self-pin (live category == C, mutable) means only
   genuine chunk UTXOs are spendable at the address.
 - **Chunk ordering:** `chunkIndex` is verified in each chunk's commitment (entry-key pattern) - a
   reader proves it read chunk `i`, so chunks cannot be permuted.
-- **Length authority:** `A.len` is covenant-enforced in the register; the read concatenates exactly
-  `ceil(len / CHUNK)` chunks and truncates to `len`; the write allocates/frees to match.
+- **Length authority:** `A$len` is covenant-enforced in the register; the read concatenates exactly
+  `ceil(A$len / CHUNK)` chunks and truncates to `A$len`; the write allocates/frees to match.
 
 ## Reuse map (almost entirely existing machinery)
 | Need | Reuses |

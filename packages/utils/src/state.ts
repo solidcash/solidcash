@@ -796,6 +796,23 @@ function decodeGenericPushdata(
 }
 
 /**
+ * A layout spans multiple data NFTs when its fixed-size state occupies more than one NFT. Such layouts
+ * prepend a verifiable nftIndex tag to every data-NFT commitment so a higher-index NFT cannot be
+ * substituted for a lower one (they share one covenant address). Single-NFT layouts carry no tag.
+ */
+export function isMultiDataNftLayout(layout: StateLayout): boolean {
+  return layout.dataNftCount > 1;
+}
+
+/**
+ * The nftIndex tag prepended to a multi-data-NFT commitment: the index encoded as a pushdata int
+ * (1 byte for indices 0-16). Identical to how the compiler stamps and verifies it on-chain.
+ */
+export function encodeNftIndexTag(nftIndex: number): Uint8Array {
+  return encodePushdataValue(BigInt(nftIndex), 'int');
+}
+
+/**
  * Build a pushdata commitment hex string for a single NFT.
  */
 export function buildPushdataCommitment(
@@ -808,6 +825,9 @@ export function buildPushdataCommitment(
     .sort((a, b) => a.fieldIndex - b.fieldIndex);
 
   const parts: Uint8Array[] = [];
+  if (isMultiDataNftLayout(layout)) {
+    parts.push(encodeNftIndexTag(nftIndex));
+  }
   for (const field of fieldsForNft) {
     const value = values[field.name] ?? getDefaultStateValue(field.type, layout.structs);
     parts.push(encodePushdataValue(value, field.type, layout.structs));
@@ -847,6 +867,15 @@ export function parsePushdataCommitment(
 
   const result: Record<string, StateValue> = {};
   let offset = 0;
+
+  // Multi-data-NFT commitments carry a leading nftIndex tag - verify and skip it before the fields.
+  if (isMultiDataNftLayout(layout)) {
+    const { value: tag, bytesConsumed } = decodePushdataValue(bytes, offset, 'int');
+    if (Number(tag) !== nftIndex) {
+      throw new Error(`parsePushdataCommitment: nftIndex tag mismatch for NFT index ${nftIndex}: got ${tag}`);
+    }
+    offset += bytesConsumed;
+  }
 
   for (const field of fieldsForNft) {
     const { value, bytesConsumed } = decodePushdataValue(bytes, offset, field.type, layout.structs);

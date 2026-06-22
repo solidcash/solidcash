@@ -967,6 +967,54 @@ export function parseEntryCommitment(
   return { key, value };
 }
 
+// ---------- Dynamic storage chunks (chunked string/bytes) ----------
+//
+// A dynamic-storage variable's data is split into fixed-size chunks, each held in a chunk UTXO that is
+// structurally an entry NFT: commitment = encodePushdata(chunkIndex) ++ encodePushdata(chunkData).
+// chunkData is bounded so the commitment fits the 128-byte budget: index (<=5 bytes for any practical
+// index) + bytes framing (<=2 bytes via OP_PUSHDATA1) + data <= 128.
+
+/** Max chunk data bytes. 120 + 5 (index) + 2 (framing) <= 128-byte commitment budget. */
+export const DYNAMIC_CHUNK_SIZE = 120;
+
+/** ceil(byteLength / DYNAMIC_CHUNK_SIZE) - the number of chunk UTXOs a value of this length needs. */
+export function chunkCountForLength(byteLength: number): number {
+  return Math.ceil(byteLength / DYNAMIC_CHUNK_SIZE);
+}
+
+/** Split a value into DYNAMIC_CHUNK_SIZE-byte pieces (the last piece may be shorter). */
+export function splitValueIntoChunks(value: Uint8Array): Uint8Array[] {
+  const chunks: Uint8Array[] = [];
+  for (let off = 0; off < value.length; off += DYNAMIC_CHUNK_SIZE) {
+    chunks.push(value.slice(off, off + DYNAMIC_CHUNK_SIZE));
+  }
+  return chunks;
+}
+
+/** Build a chunk UTXO commitment (an entry with key=chunkIndex, value=chunkData). */
+export function buildChunkCommitment(
+  chunkIndex: number, chunkData: Uint8Array, commitmentLimit?: number,
+): string {
+  return buildEntryCommitment(BigInt(chunkIndex), 'int', chunkData, 'bytes', undefined, commitmentLimit);
+}
+
+/** Parse a chunk UTXO commitment into its index and data. */
+export function parseChunkCommitment(hex: string): { chunkIndex: number; chunkData: Uint8Array } {
+  const { key, value } = parseEntryCommitment(hex, 'int', 'bytes');
+  return { chunkIndex: Number(key as bigint), chunkData: value as Uint8Array };
+}
+
+/** Concatenate chunk data (ordered by chunkIndex) and truncate to the authoritative length. */
+export function joinChunks(orderedChunkData: Uint8Array[], totalLength: number): Uint8Array {
+  const joined = new Uint8Array(orderedChunkData.reduce((acc, c) => acc + c.length, 0));
+  let off = 0;
+  for (const c of orderedChunkData) {
+    joined.set(c, off);
+    off += c.length;
+  }
+  return joined.slice(0, totalLength);
+}
+
 /**
  * Build an entry NFT commitment hex string from multiple keys and a value.
  * The commitment is: encodePushdata(key1) ++ encodePushdata(key2) ++ ... ++ encodePushdata(value)

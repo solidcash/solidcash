@@ -9,6 +9,12 @@ import {
   buildDataNftCovenantScript,
   buildEntryNftCovenantScript,
   buildSatoshiContainerCovenantScript,
+  DYNAMIC_CHUNK_SIZE,
+  chunkCountForLength,
+  splitValueIntoChunks,
+  buildChunkCommitment,
+  parseChunkCommitment,
+  joinChunks,
   StateLayout,
   StateRecord,
   Op,
@@ -610,5 +616,57 @@ describe('nested struct state commitment roundtrip', () => {
     const parsed1 = parsePushdataCommitment(commitment1, mixedLayout, 1);
     expect(parsed0.count).toBe(42n);
     expect(parsed1.data).toEqual({ inner: { x: 1n, y: 2n }, z: 3n });
+  });
+});
+
+describe('dynamic storage chunk codec', () => {
+  const bytesOf = (n: number): Uint8Array => Uint8Array.from({ length: n }, (_v, i) => (i * 7 + 3) & 0xff);
+
+  it('computes chunk count as ceil(length / DYNAMIC_CHUNK_SIZE)', () => {
+    expect(chunkCountForLength(0)).toBe(0);
+    expect(chunkCountForLength(1)).toBe(1);
+    expect(chunkCountForLength(DYNAMIC_CHUNK_SIZE)).toBe(1);
+    expect(chunkCountForLength(DYNAMIC_CHUNK_SIZE + 1)).toBe(2);
+    expect(chunkCountForLength(DYNAMIC_CHUNK_SIZE * 3)).toBe(3);
+  });
+
+  it('splits a value into DYNAMIC_CHUNK_SIZE pieces (last possibly shorter)', () => {
+    const value = bytesOf(DYNAMIC_CHUNK_SIZE * 2 + 10);
+    const chunks = splitValueIntoChunks(value);
+    expect(chunks.length).toBe(3);
+    expect(chunks[0].length).toBe(DYNAMIC_CHUNK_SIZE);
+    expect(chunks[1].length).toBe(DYNAMIC_CHUNK_SIZE);
+    expect(chunks[2].length).toBe(10);
+  });
+
+  it('round-trips a value through split -> commitments -> parse -> join', () => {
+    const value = bytesOf(DYNAMIC_CHUNK_SIZE * 3 + 47); // spans 4 chunks
+    const chunks = splitValueIntoChunks(value);
+    // Build a commitment per chunk; each must fit the 128-byte budget.
+    const commitments = chunks.map((data, i) => buildChunkCommitment(i, data, 128));
+    // Parse back (simulate arbitrary UTXO order, then reorder by chunkIndex).
+    const parsed = commitments
+      .map((hex) => parseChunkCommitment(hex))
+      .sort((a, b) => a.chunkIndex - b.chunkIndex);
+    expect(parsed.map((p) => p.chunkIndex)).toEqual([0, 1, 2, 3]);
+    const joined = joinChunks(parsed.map((p) => p.chunkData), value.length);
+    expect(joined).toEqual(value);
+  });
+
+  it('keeps a full chunk commitment within the 128-byte budget even at large indices', () => {
+    const data = bytesOf(DYNAMIC_CHUNK_SIZE);
+    for (const idx of [0, 16, 127, 1000, 70000, 16_000_000]) {
+      const hex = buildChunkCommitment(idx, data, 128); // throws if > 128
+      expect(hex.length / 2).toBeLessThanOrEqual(128);
+      expect(parseChunkCommitment(hex)).toEqual({ chunkIndex: idx, chunkData: data });
+    }
+  });
+
+  it('handles an exact multiple of the chunk size with no short trailing chunk', () => {
+    const value = bytesOf(DYNAMIC_CHUNK_SIZE * 2);
+    const chunks = splitValueIntoChunks(value);
+    expect(chunks.length).toBe(2);
+    const joined = joinChunks(chunks, value.length);
+    expect(joined).toEqual(value);
   });
 });

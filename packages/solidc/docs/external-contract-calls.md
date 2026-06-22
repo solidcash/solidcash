@@ -1,16 +1,20 @@
 # External contract calls & dynamic dispatch (EVM-parity address model)
 
-Status: **Stage 3 landed & green.** Stage 1 (master self-pin) + Stage 2 (data/entry NFT read-path self-pin) +
-Stage 3 (address dispatch: hard replace of the category model with `IContract(addr)`, `connect` removed) are
-implemented and tested: compiler 1219 green, SDK 1713 green. `IContract(addr).method()/.stateVar/.outState` is
-runtime-verified (reads, calls, outState, returns, msg.sender, multi-party, low-level, events) on mocknet.
-Remaining scoped pieces: (a) **multi-data-NFT external reads** need the commitment-preamble nftIndex tag
-(single-data-NFT reads + entries are sound today; cross-contract reads of an nftIndex >= 1 var are **rejected at
-compile time** with `MultiNftExternalReadError` until the tag lands - no silently-unsound code is emitted) - the
-register/memory design below; (b) `address(this)` primitive; (c) **circular A<->B address references are a
-deliberate casualty** - a mutual cycle `addrA=hash(codeA|addrB)`, `addrB=hash(codeB|addrA)` is a hash fixed
-point with no constructible genesis (3 CircularCalls tests skipped); the old shared-category model could
-bootstrap them, address parity cannot. Stage 4 (proxy upgradeability) remains design.
+Status: **Stage 3 landed & green, incl. the multi-data-NFT nftIndex tag.** Stage 1 (master self-pin) + Stage 2
+(data/entry NFT read-path self-pin) + Stage 3 (address dispatch: hard replace of the category model with
+`IContract(addr)`, `connect` removed) are implemented and tested: compiler 1219 green, SDK 1715 green.
+`IContract(addr).method()/.stateVar/.outState` is runtime-verified (reads, calls, outState, returns, msg.sender,
+multi-party, low-level, events) on mocknet. **Multi-data-NFT external reads are now SOUND and shipped** via the
+commitment-preamble nftIndex tag (below): each data NFT of a multi-NFT contract self-declares its `nftIndex` as
+the first commitment field; own reads skip it, own writes stamp it, external reads `OP_EQUALVERIFY` it == the
+expected index, and the SDK orders data NFTs by the verified tag. A multi-NFT external read e2e reads register 1
+of a two-register callee and returns register 1's value (not register 0's), proving the tag is co-spent,
+verified, and the correct register decoded. Single-data-NFT contracts carry no tag (byte-for-byte unchanged).
+Remaining scoped pieces: (a) `address(this)` primitive; (b) variable-size state in "memory" (entry-NFT-style
+growable storage - the register/memory design below); (c) **circular A<->B address references are a deliberate
+casualty** - a mutual cycle `addrA=hash(codeA|addrB)`, `addrB=hash(codeB|addrA)` is a hash fixed point with no
+constructible genesis (3 CircularCalls tests skipped); the old shared-category model could bootstrap them,
+address parity cannot. Stage 4 (proxy upgradeability) remains design.
 
 > **DECISION (2026-06): the register/memory model for sound cross-contract reads.**
 >
@@ -48,6 +52,17 @@ bootstrap them, address parity cannot. Stage 4 (proxy upgradeability) remains de
 >
 > Stage 3 read fix = **Stage 2 self-pin + commitment-preamble nftIndex tag + reader tag-verify**. The earlier
 > master-free / per-nftIndex-address §3.3/§7.3/§9.6 text below predates this and is superseded by this block.
+>
+> **SHIPPED (2026-06-22).** The commitment-preamble tag is implemented and green (compiler 1219 / SDK 1715).
+> Codec: `encodeNftIndexTag` / `isMultiDataNftLayout` in `utils/state.ts`; `buildPushdataCommitment` prepends the
+> tag (the index as a pushdata int, 1 byte for 0-16) and `parsePushdataCommitment` verifies+skips it, gated on
+> `dataNftCount > 1`. Compiler (`GenerateTargetTraversal`): own reads `emitNftIndexTagSkip`, write reconstruct
+> stamps the constant tag, external read + outState `emitNftIndexTagVerify` (`OP_EQUALVERIFY` vs the expected
+> index), all gated on `isMultiDataNft()` / `calleeMultiNft` (resolved from the callee interface layout). SDK
+> (`StateReader.findDataNfts`): a multi-NFT contract's data NFTs are ordered by the nftIndex their commitment
+> verifiably parses at, so `dataNftUtxos[i]` is register i and external reads co-spend the right register.
+> Single-data-NFT contracts emit no tag and are byte-for-byte unchanged. `MultiNftExternalReadError` (the interim
+> compile-time guard) is removed.
 
 Model for `IContract(address).method(arg)` on the BCH UTXO/CashTokens substrate, with the explicit goal of **EVM
 address parity**: an `address` *is* the contract's on-chain address, passed/compared/called directly, with no

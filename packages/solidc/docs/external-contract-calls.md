@@ -2,9 +2,10 @@
 
 Status: **Stage 3 landed & green, incl. the multi-data-NFT nftIndex tag.** Stage 1 (master self-pin) + Stage 2
 (data/entry NFT read-path self-pin) + Stage 3 (address dispatch: hard replace of the category model with
-`IContract(addr)`, `connect` removed) are implemented and tested: compiler 1219 green, SDK 1715 green.
-`IContract(addr).method()/.stateVar/.outState` is runtime-verified (reads, calls, outState, returns, msg.sender,
-multi-party, low-level, events) on mocknet. **Multi-data-NFT external reads are now SOUND and shipped** via the
+`IContract(addr)`, `connect` removed) are implemented and tested: compiler 1219 green, SDK 1715 green on **both
+mocknet and a real BCHN regtest node** (identical: 1715 passed / 0 failed, real consensus + Fulcrum discovery +
+fees). `IContract(addr).method()/.stateVar/.outState` is runtime-verified (reads, calls, outState, returns,
+msg.sender, multi-party, low-level, events). **Multi-data-NFT external reads are now SOUND and shipped** via the
 commitment-preamble nftIndex tag (below): each data NFT of a multi-NFT contract self-declares its `nftIndex` as
 the first commitment field; own reads skip it, own writes stamp it, external reads `OP_EQUALVERIFY` it == the
 expected index, and the SDK orders data NFTs by the verified tag. A multi-NFT external read e2e reads register 1

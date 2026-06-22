@@ -681,6 +681,17 @@ export function isPrimitive(type: Type): type is PrimitiveType {
   return Boolean(PrimitiveType[type.toString().toUpperCase() as keyof typeof PrimitiveType]);
 }
 
+/**
+ * A dynamic-storage type: variable-length state stored in chunk UTXOs (string / unbounded bytes).
+ * Such a state var desugars to a hidden `uint32 <name>$len` register field + a chunk collection.
+ * See packages/solidc/docs/dynamic-storage.md.
+ */
+export function isDynamicStorageType(type: Type): boolean {
+  if (type === PrimitiveType.STRING) return true;
+  if (type instanceof BytesType && type.bound === undefined) return true;
+  return false;
+}
+
 export interface LocationI {
   start: {
     line: number,

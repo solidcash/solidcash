@@ -174,7 +174,7 @@ import {
   computeFunctionSignature, computeFunctionSelector, TupleType, ArrayType,
   IntType, FixedType, MappingType, FunctionType,
   FunctionBlockLayout, BlockLayoutSlot, resolveLibraries, ExternalLibrary, parseTypeStrict,
-  INLINE_MAX_BLOB_LENGTH,
+  INLINE_MAX_BLOB_LENGTH, isDynamicStorageType,
 } from '@solidcash/utils';
 import { binToHex } from '@bitauth/libauth';
 
@@ -504,7 +504,14 @@ export default class SymbolTableTraversal extends AstTraversal {
         }
       }
 
-      const maxSize = getMaxPushdataEncodedSizeForType(sv.type);
+      // Dynamic-storage vars (string / unbounded bytes) store only a uint32 length header (A$len) in
+      // the data NFT; the value itself lives in chunk UTXOs. So they reserve the uint32 footprint, not
+      // the generic string/bytes estimate. See docs/dynamic-storage.md.
+      let maxSize = getMaxPushdataEncodedSizeForType(sv.type);
+      if (isDynamicStorageType(sv.type)) {
+        sv.isDynamic = true;
+        maxSize = getMaxPushdataEncodedSizeForType(new IntType(false, 32)); // A$len: uint32 -> 6 bytes
+      }
 
       if (sv.visibility === StateVariableVisibility.EXTERNAL) {
         // External variables always get their own dedicated NFT
@@ -4458,7 +4465,12 @@ export default class SymbolTableTraversal extends AstTraversal {
     let currentNftUsed = 0;
 
     for (const sv of allVars) {
-      const maxSize = getMaxPushdataEncodedSizeForType(sv.type);
+      // Mirror the main bin-packing: dynamic-storage vars reserve only the uint32 length-header
+      // footprint (A$len), so external-read nftIndex computation stays consistent with the real layout.
+      let maxSize = getMaxPushdataEncodedSizeForType(sv.type);
+      if (isDynamicStorageType(sv.type)) {
+        maxSize = getMaxPushdataEncodedSizeForType(new IntType(false, 32));
+      }
 
       if (sv.visibility === StateVariableVisibility.EXTERNAL) {
         if (currentNftUsed > 0) {

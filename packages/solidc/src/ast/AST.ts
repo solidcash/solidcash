@@ -257,6 +257,9 @@ export class ParameterNode extends Node implements Named, Typed {
 export class StateVariableNode extends Node implements Named, Typed {
   immutable: boolean = false;
   isPacked: boolean = false;
+  // Dynamic-storage var (string / unbounded bytes): the data-NFT field holds a uint32 length header
+  // (<name>$len) and the value lives in chunk UTXOs. See docs/dynamic-storage.md.
+  isDynamic: boolean = false;
   initializer?: ExpressionNode; // inline `= expr` init, lowered into the constructor by the AstBuilder
   contractTypeName?: string;
   nftIndex: number = 0;

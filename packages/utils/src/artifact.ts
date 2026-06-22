@@ -161,6 +161,9 @@ export interface StateVariableInfo {
   immutable?: boolean;  // true when variable can only be assigned in constructor - omitted when false (default)
   contractType?: string;  // contract/interface name when type is a contract reference (e.g. 'MarketplaceV1')
   packed?: boolean;  // true when array is stored as packed blob in data NFT - omitted when false (default)
+  // true for dynamic-storage vars (string / unbounded bytes): the data-NFT field holds a uint32 length
+  // header (<name>$len) and the value lives in chunk UTXOs. Omitted when false. See dynamic-storage.md.
+  dynamic?: boolean;
 }
 
 export interface CollectionInfo {

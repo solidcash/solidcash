@@ -223,6 +223,7 @@ export function generateArtifact(
         ...(sv.visibility !== StateVariableVisibility.PUBLIC && { visibility: sv.visibility }),
         ...(sv.immutable && { immutable: true }),
         ...(sv.isPacked && { packed: true }),
+        ...(sv.isDynamic && { dynamic: true }),
         ...(sv.contractTypeName && { contractType: sv.contractTypeName }),
       })),
       dataNftCount: contract.stateVariables.length > 0

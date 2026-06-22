@@ -8705,16 +8705,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_PICK, loc);
       this.emit(Op.OP_SIZE, loc);
       this.emit(Op.OP_NIP, loc);
-      this.emit(Op.OP_0NOTEQUAL, loc);
-
-      // --- pin OP_TXOUTPUTCOUNT == OP_INPUTINDEX + blockSize + nNew ---
-      this.emitMasterInputIndex(loc); // [..., nNew, base]
-      this.emit(encodeInt(BigInt(blockSize)), loc);
-      this.emit(Op.OP_ADD, loc);
-      this.emit(Op.OP_OVER, loc); // copy nNew
-      this.emit(Op.OP_ADD, loc);
-      this.emit(Op.OP_TXOUTPUTCOUNT, loc);
-      this.emit(Op.OP_NUMEQUALVERIFY, loc); // [..., nNew]
+      this.emit(Op.OP_0NOTEQUAL, loc); // [..., expected, nNew]
+      // NOTE phase 1: no OP_TXOUTPUTCOUNT orphan-bound yet (allows a trailing change output). A spender
+      // could add an extra/duplicate chunk output beyond the verified region; harden with a boundary or
+      // output-scan check before permissionless dynamic writes. See docs/dynamic-storage.md.
 
       // --- if nNew == 1, verify the single chunk output at OP_INPUTINDEX + blockSize ---
       this.emit(Op.OP_IF, loc); // consumes nNew -> [..., value, chunkaddr, expected]
@@ -8737,10 +8731,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(new Uint8Array([0x01]), loc);
       this.emit(Op.OP_EQUALVERIFY, loc);
       this.emitVerifyCatBaseEqMaster(loc); // consumes cat -> [..., outIdx]
-      // commitment == expected
-      this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, loc); // consumes outIdx -> [..., commitment]
-      this.emit(encodeInt(BigInt(this.getStackIndex('(dyn_expected)') + 1)), loc); // +1: commitment
-      this.emit(Op.OP_PICK, loc);
+      // commitment == expected. Emit the TIGHT pattern <expected> <idx> OP_OUTPUTTOKENCOMMITMENT
+      // OP_EQUALVERIFY so the SDK's trace extractor (extractCommitmentsFromTrace) can read the
+      // expected commitment.
+      this.emit(encodeInt(BigInt(this.getStackIndex('(dyn_expected)') + 1)), loc); // +1: outIdx on top
+      this.emit(Op.OP_PICK, loc); // [..., outIdx, expected]
+      this.emit(Op.OP_SWAP, loc); // [..., expected, outIdx]
+      this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, loc); // [..., expected, commitment]
       this.emit(Op.OP_EQUALVERIFY, loc);
       this.emit(Op.OP_ENDIF, loc); // [..., value, chunkaddr, expected]
 

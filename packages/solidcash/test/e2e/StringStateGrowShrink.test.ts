@@ -59,24 +59,19 @@ describe('string state variable: extension and contraction (single data NFT)', (
     expect((await sc.getState()).text).toBe('');
   });
 
-  it('rejects a string that overflows the single data NFT commitment (no UTXO is allocated)', async () => {
+  it('stores a string up to one chunk (<= 120 bytes) in a single chunk UTXO', async () => {
     const contract = new Contract(artifact, [], { provider });
     const { categoryId } = await setupStatefulUtxos(
       provider, contract, artifact.stateLayout!, { text: '' }, { saltContract: true },
     );
     const sc = StatefulContract.withCategory(contract, categoryId);
-
-    // commitmentLimit is 128 bytes; a 200-byte string exceeds one commitment. Today this throws at
-    // build time rather than allocating a second data NFT - that is the pending "memory" feature.
-    const tooBig = 'x'.repeat(200);
-    await expect(
-      sc.setText(tooBig, alicePub, new SignatureTemplate(alicePriv)).send(),
-    ).rejects.toThrow(/exceed/i);
+    const maxOneChunk = 'a'.repeat(120);
+    await sc.setText(maxOneChunk, alicePub, new SignatureTemplate(alicePriv)).send();
+    expect((await sc.getState()).text).toBe(maxOneChunk);
   });
 
-  // PENDING the variable-size "memory" model (entry-NFT-style growable storage for dynamic state).
-  // When implemented, a `string` state var should span multiple data NFTs: deploying empty needs one
-  // NFT, growing to 200 bytes allocates an extra NFT, and shrinking to 10 bytes frees the extraneous
-  // NFT. Tracked in docs/external-contract-calls.md (register/memory DECISION block).
-  it.todo('spans, allocates, and frees data NFTs as a string state var grows past one commitment and shrinks back');
+  // Multi-chunk spanning (value > 120 bytes -> 2+ chunk UTXOs): the dynamic value is split across
+  // several chunk UTXOs that allocate as it grows and free as it shrinks. The on-chain write loop for
+  // >1 chunk is the remaining piece (single-chunk path is implemented). See docs/dynamic-storage.md.
+  it.todo('spans, allocates, and frees chunk UTXOs as a string state var grows past one chunk and shrinks back');
 });

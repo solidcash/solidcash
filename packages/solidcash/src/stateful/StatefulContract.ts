@@ -11,6 +11,8 @@ import {
   buildEventNftCovenantScript,
   buildAnonymousEventNftCovenantScript,
   computeCollectionHash,
+  dynamicChunkSignature,
+  DYNAMIC_CHUNK_SIZE,
   computeEventNameHash,
   parsePushdataCommitment,
   buildPushdataCommitment,
@@ -48,10 +50,12 @@ import {
 } from './StateReader.js';
 import {
   getDataNftAddress, getEntryNftAddress, getEventNftAddress, getAnonymousEventNftAddress,
+  getDynamicChunkAddress,
   getDataNftLockingBytecode, getEntryNftLockingBytecode,
   getTokenContainerAddress, getSatoshiContainerAddress, getContractState,
   createDataNftUnlocker, createDestroyDataNftUnlocker,
   createReadOnlyDataNftUnlocker, createEntryNftUnlocker, createReadOnlyEntryNftUnlocker,
+  createDynamicChunkUnlocker,
   createEventNftUnlocker, createAnonymousEventNftUnlocker,
   createTokenContainerUnlocker, createSatoshiContainerUnlocker,
   resolveCollectionSignature,
@@ -3051,6 +3055,33 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             }
           }
 
+          // Dynamic-storage chunk commitments. The data-NFT field holds uint32 A$len; from it we know
+          // nNew = ceil(len/CHUNK). Ensure the builder creates nNew chunk outputs (placeholders until
+          // their commitments are extracted), then extract the real commitments the covenant built.
+          const chunkVars = stb.getDynamicChunkVars();
+          if (chunkVars.length > 0 && derivedAState) {
+            let chunkOffset = stb.getChunkOutputBase();
+            for (const dv of chunkVars) {
+              const len = Number((derivedAState[`${dv.name}$len`] as bigint) ?? 0n);
+              const nNew = Math.ceil(len / DYNAMIC_CHUNK_SIZE);
+              const existing = stb.getChunkRawCommitments(dv.name);
+              if (existing.length !== nNew) {
+                stb.setChunkRawCommitments(dv.name, Array.from({ length: nNew }, (_, i) => existing[i] ?? '00'));
+              }
+              if (nNew > 0) {
+                const range = { min: chunkOffset, max: chunkOffset + nNew };
+                const chunkCommits = extractCommitmentsFromTrace(fullTrace2, nNew, range) ?? [];
+                if (chunkCommits.length > 0) {
+                  const cur = stb.getChunkRawCommitments(dv.name);
+                  stb.setChunkRawCommitments(dv.name,
+                    Array.from({ length: nNew }, (_, i) => chunkCommits[i] ?? cur[i] ?? '00'));
+                  commitmentProgress += chunkCommits.length;
+                }
+              }
+              chunkOffset += nNew;
+            }
+          }
+
           // Event commitments: output indices [eventBase, eventBase + eventCount)
           if (eventCount > 0) {
             const eventOutputBase = stb.getEventOutputBase();
@@ -4685,6 +4716,29 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       }
     }
 
+    // Dynamic-storage vars (string / unbounded bytes): chunk NFTs at a per-var entry covenant address.
+    const dynamicVarInfos = (stateLayout.variables ?? []).filter((v) => v.dynamic);
+    const dynamicChunkVars = dynamicVarInfos.map((v) => ({
+      name: v.name,
+      type: v.type,
+      lockingBytecode: scriptToLockingBytecode(
+        buildEntryNftCovenantScript(hexToBin(this.categoryId), computeCollectionHash(dynamicChunkSignature(v.name, v.type))),
+        this.inner.addressType,
+      ),
+    }));
+    // Old chunk UTXOs to consume (destroy) on this write - fetched from each dynamic var's chunk address.
+    const dynamicChunkInputs: UnlockableUtxo[] = [];
+    for (const v of dynamicVarInfos) {
+      const chunkAddr = getDynamicChunkAddress(this.inner, this.categoryId, v.name, v.type);
+      const utxos = await this.inner.provider.getUtxos(chunkAddr);
+      for (const utxo of utxos) {
+        if (utxo.token?.category !== this.categoryId || utxo.token?.nft?.capability !== 'mutable') continue;
+        if (!utxo.token?.nft?.commitment) continue;
+        const unlocker = createDynamicChunkUnlocker(this.inner, 0, this.categoryId, v.name, v.type);
+        dynamicChunkInputs.push({ ...utxo, unlocker });
+      }
+    }
+
     const builder = new StatefulTransactionBuilder({
       provider: this.inner.provider,
       maximumFeeSatoshis: 50000n,
@@ -4697,6 +4751,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       entryNfts,
       entryAccesses,
       entryNftLockingBytecodes,
+      ...(dynamicChunkVars.length > 0 && { dynamicChunkVars }),
+      ...(dynamicChunkInputs.length > 0 && { dynamicChunkInputs }),
       tokenContainers,
       tokenContainerLockingBytecodes,
       ...(satoshiContainerUtxo && { satoshiContainerUtxo, satoshiContainerLockingBytecode }),

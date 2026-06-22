@@ -20,7 +20,7 @@ import {
 } from '@solidcash/utils';
 import { TransactionBuilder, TransactionBuilderOptions } from '../TransactionBuilder.js';
 import { CovenantTransactionBuilder } from './CovenantTransactionBuilder.js';
-import { scriptToLockingBytecode, generateLibauthSourceOutputs } from '../utils.js';
+import { scriptToLockingBytecode, generateLibauthSourceOutputs, calculateDust } from '../utils.js';
 import type { LibauthOutput } from '../interfaces.js';
 import {
   Utxo, UnlockableUtxo, TransactionDetails,
@@ -102,6 +102,10 @@ export interface StatefulTransactionOptions extends TransactionBuilderOptions {
   entryNfts?: EntryNftInfo[];
   entryAccesses?: readonly EntryAccessAbi[];
   entryNftLockingBytecodes?: Map<string, Uint8Array>; // collection name -> locking bytecode
+  // Dynamic-storage vars (string / unbounded bytes): chunk NFTs created as trailing outputs.
+  dynamicChunkVars?: Array<{ name: string; type: string; lockingBytecode: Uint8Array }>;
+  // Old chunk UTXOs co-spent (destroyed) on a dynamic-storage write; not recreated as outputs.
+  dynamicChunkInputs?: UnlockableUtxo[];
   eventDefinitions?: readonly EventDefinitionAbi[];
   eventNftLockingBytecodes?: Map<string, Uint8Array>; // eventSignature -> locking bytecode
   tokenContainers?: TokenContainerInfo[];
@@ -183,6 +187,10 @@ export class StatefulTransactionBuilder {
 
   private pendingReturnEventOutputs: Array<{ categoryId: string; commitment: Uint8Array }> = [];
   private entryRawCommitments: Map<number, string> = new Map(); // slotIndex -> hex commitment (from auto-derivation)
+  private dynamicChunkVars: Array<{ name: string; type: string; lockingBytecode: Uint8Array }> = [];
+  private dynamicChunkInputs: UnlockableUtxo[] = [];
+  // varName -> ordered chunk commitments (hex) from auto-derivation; length determines chunk output count.
+  private chunkRawCommitments: Map<string, string[]> = new Map();
   private eventRawCommitments: Map<number, string> = new Map(); // emitIndex -> hex commitment (from auto-derivation)
   private pendingEventPlaceholders: Array<{ eventSignature: string; emitIndex: number }> = [];
 
@@ -201,6 +209,8 @@ export class StatefulTransactionBuilder {
     this.lowLevelCallRawInputs = options.lowLevelCallRawInputs ?? [];
     this.entryNfts = options.entryNfts ?? [];
     this.entryNftLockingBytecodes = options.entryNftLockingBytecodes ?? new Map();
+    this.dynamicChunkVars = options.dynamicChunkVars ?? [];
+    this.dynamicChunkInputs = options.dynamicChunkInputs ?? [];
     this.eventDefinitions = options.eventDefinitions ?? [];
     this.eventNftLockingBytecodes = options.eventNftLockingBytecodes ?? new Map();
     this.tokenContainers = options.tokenContainers ?? [];
@@ -344,6 +354,8 @@ export class StatefulTransactionBuilder {
         // Remaining low-level call inputs not already positioned in block layout slots
         ...lowLevelCallInputs.slice(llcIdx), ...this.lowLevelCallRawInputs,
         ...this.iterationEntryInputs,
+        // Old chunk UTXOs being consumed (destroyed) on a dynamic-storage write
+        ...this.dynamicChunkInputs,
         // Leftover funders not consumed by block layout slots (fee-only inputs)
         ...funderPool,
       ];
@@ -355,6 +367,7 @@ export class StatefulTransactionBuilder {
       ...externalOutStateInputs, ...externalCallInputs,
       ...lowLevelCallInputs, ...this.lowLevelCallRawInputs,
       ...entryInputs, ...this.iterationEntryInputs,
+      ...this.dynamicChunkInputs,
       ...tokenContainerInputs, ...satoshiContainerInputs,
       ...this.funderUtxos,
     ];
@@ -422,6 +435,14 @@ export class StatefulTransactionBuilder {
   ): this {
     const variable = this.stateLayout.variables.find((v) => v.name === name);
     if (!variable) {
+      // Allow a dynamic var's hidden length key "<name>$len" (the data-NFT register field).
+      if (name.endsWith('$len')) {
+        const base = name.slice(0, -4);
+        if (this.stateLayout.variables.some((v) => v.name === base && v.dynamic)) {
+          this.stateUpdates.set(name, value);
+          return this;
+        }
+      }
       throw new Error(`Unknown state variable: ${name}`);
     }
     this.stateUpdates.set(name, value);
@@ -635,6 +656,38 @@ export class StatefulTransactionBuilder {
   }
 
   /**
+   * Set the ordered chunk commitments for a dynamic-storage var (from auto-derivation). The number of
+   * commitments determines how many trailing chunk NFT outputs are created.
+   */
+  setChunkRawCommitments(varName: string, commitments: string[]): this {
+    this.chunkRawCommitments.set(varName, commitments);
+    return this;
+  }
+
+  getDynamicChunkVars(): Array<{ name: string; type: string; lockingBytecode: Uint8Array }> {
+    return this.dynamicChunkVars;
+  }
+
+  getChunkRawCommitments(varName: string): string[] {
+    return this.chunkRawCommitments.get(varName) ?? [];
+  }
+
+  /**
+   * Output index where chunk NFTs begin: the block-layout blockSize (chunks are trailing outputs at
+   * OP_INPUTINDEX + blockSize + i, matching the dynamic-write covenant). Falls back to the computed
+   * trailing position when no block layout is present.
+   */
+  getChunkOutputBase(): number {
+    return this.blockLayout?.blockSize ?? this.getEventOutputBase() + this.getEventOutputCount();
+  }
+
+  private _dynamicChunkOutputCount(): number {
+    let n = 0;
+    for (const dv of this.dynamicChunkVars) n += (this.chunkRawCommitments.get(dv.name) ?? []).length;
+    return n;
+  }
+
+  /**
    * Set a raw event NFT commitment by emit index (from auto-derivation).
    */
   setEventRawCommitment(emitIndex: number, commitment: string): this {
@@ -772,7 +825,9 @@ export class StatefulTransactionBuilder {
     const baseOpts = this._maximumFeeSatoshis !== undefined
       ? { ...this.builderOptions, maximumFeeSatoshis: this._maximumFeeSatoshis }
       : { ...this.builderOptions };
-    const opts = this.entryDeletes.size > 0
+    // Dynamic-storage writes consume old chunk NFTs (mint/burn to match the new value), and entry
+    // deletes burn entries - both are intended implicit burns.
+    const opts = (this.entryDeletes.size > 0 || this.dynamicChunkInputs.length > 0 || this.dynamicChunkVars.length > 0)
       ? { ...baseOpts, allowImplicitNftBurn: true }
       : baseOpts;
     const builder = new CovenantTransactionBuilder(opts);
@@ -1364,6 +1419,26 @@ export class StatefulTransactionBuilder {
       });
     }
 
+    // Dynamic-storage chunk outputs (trailing, after the fixed block). One mutable NFT per chunk of
+    // each dynamic var; commitments come from auto-derivation (the covenant builds them on-chain).
+    for (const dv of this.dynamicChunkVars) {
+      const commitments = this.chunkRawCommitments.get(dv.name) ?? [];
+      for (const commitment of commitments) {
+        const chunkOutput = {
+          to: dv.lockingBytecode,
+          amount: 1200n,
+          token: {
+            amount: 0n,
+            category: this.categoryId,
+            nft: { capability: 'mutable' as const, commitment },
+          },
+        };
+        // Larger chunk commitments need more than the 1200-sat floor to clear the dust threshold.
+        chunkOutput.amount = BigInt(Math.max(1200, calculateDust(chunkOutput)));
+        builder.addOutput(chunkOutput);
+      }
+    }
+
     // Iteration entry outputs (after fixed block, matching input ordering)
     for (const iterUtxo of this.iterationEntryInputs) {
       builder.addOutput({
@@ -1621,6 +1696,7 @@ export class StatefulTransactionBuilder {
     return this.getEventOutputBase() + eventOutputCount
       + this.pendingReturnEventOutputs.length
       + lowLevelCallOutputCount
+      + this._dynamicChunkOutputCount()
       + iterationEntryOutputCount
       + this.pendingOutputs.length
       + changeOutputCount;

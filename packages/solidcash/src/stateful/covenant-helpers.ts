@@ -268,6 +268,25 @@ export function createEntryNftUnlocker(
   );
 }
 
+// Unlocker for spending (destroying) a dynamic-storage chunk NFT. Chunks reuse the entry NFT covenant;
+// flag=1 authorizes the spend by co-spending the master at masterInputIndex. Old chunks are consumed
+// (not recreated) on a dynamic-storage write; new chunks are minted fresh.
+export function createDynamicChunkUnlocker(
+  contract: Contract<any, any>, masterInputIndex: number, categoryId: string, varName: string, varType: string,
+): ContractUnlocker {
+  validateMasterInputIndex(masterInputIndex);
+  validateCategoryId(categoryId);
+  const collectionHash = computeCollectionHash(dynamicChunkSignature(varName, varType));
+  const covenantScript = buildEntryNftCovenantScript(hexToBin(categoryId), collectionHash);
+  return createCovenantContractUnlocker(
+    contract,
+    `ChunkNft_${categoryId.slice(0, 8)}`,
+    covenantScript,
+    [{ name: 'flag', type: 'int' }, { name: 'masterInputIndex', type: 'int' }],
+    [1n, BigInt(masterInputIndex)],
+  );
+}
+
 export function createReadOnlyEntryNftUnlocker(
   contract: Contract<any, any>, categoryId: string, collectionNameOrSignature: string,
 ): ContractUnlocker {

@@ -831,8 +831,13 @@ export function buildPushdataCommitment(
   for (const field of fieldsForNft) {
     if (field.dynamic) {
       // Dynamic var: the data-NFT field is a uint32 length header (A$len); the value lives in chunks.
-      const value = values[field.name] ?? getDefaultStateValue(field.type, layout.structs);
-      parts.push(encodePushdataValue(BigInt(dynamicValueByteLength(value)), DYNAMIC_LEN_TYPE));
+      // Prefer an explicit <name>$len (set during auto-derivation, when only the length is known);
+      // otherwise compute the length from the value.
+      const lenKey = dynamicLenKey(field.name);
+      const len = values[lenKey] !== undefined
+        ? Number(values[lenKey] as bigint)
+        : dynamicValueByteLength(values[field.name] ?? getDefaultStateValue(field.type, layout.structs));
+      parts.push(encodePushdataValue(BigInt(len), DYNAMIC_LEN_TYPE));
       continue;
     }
     const value = values[field.name] ?? getDefaultStateValue(field.type, layout.structs);

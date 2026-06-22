@@ -1,9 +1,20 @@
 # Dynamic storage (chunked string / bytes / dynamic arrays)
 
-Status: **in progress.** The "heap" half of the register/heap state model. Fixed-size state lives in
-**registers** (data NFTs, static count - see external-contract-calls.md). Variable-size state
-(`string`, `bytes`, dynamic arrays) lives in **dynamic storage**: it grows and shrinks at runtime by
-allocating and freeing chunk UTXOs.
+Status: **single-chunk shipped & green; multi-chunk in progress.** The "heap" half of the register/heap
+state model. Fixed-size state lives in **registers** (data NFTs, static count - see
+external-contract-calls.md). Variable-size state (`string`, `bytes`, dynamic arrays) lives in **dynamic
+storage**: it grows and shrinks at runtime by allocating and freeing chunk UTXOs.
+
+> **Implementation status (2026-06-22):** A dynamic `string`/`bytes` state var of length <= one chunk
+> (120 B) works **end-to-end** (layout desugar + SDK read + on-chain write covenant + SDK builder/
+> derivation), mock-proven: deploy empty -> grow -> shrink -> empty. Remaining: (1) the **multi-chunk
+> write loop** (> 120 B; the SDK derivation/builder already handle N chunks - only the codegen
+> `OP_BEGIN`/`OP_UNTIL` loop over `i` remains, building `pushdata(i)++pushdata(slice_i)` per chunk via
+> the tight `<expected> <idx> OP_OUTPUTTOKENCOMMITMENT OP_EQUALVERIFY` pattern); (2) the **orphan-bound**
+> (the strict `OP_TXOUTPUTCOUNT` pin was dropped because it forbade a trailing change output - replace
+> with an output-scan bound before permissionless dynamic writes); (3) the **on-chain read loop** (for
+> `this.dynVar` in contract logic - not needed for write-only functions). See memory
+> dynamic_storage_chunks for the precise state.
 
 > NOTE on naming: this is **storage** (persistent state), Solidity's `storage` data location - NOT the
 > `memory` keyword, which in SolidCash is a no-op Solidity-compat modifier on params/returns (all

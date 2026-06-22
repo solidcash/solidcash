@@ -209,3 +209,73 @@ These are the concrete code-level facts that shape the implementation, gathered 
   `ceil(oldLen/CHUNK)` old chunk inputs present (mirrors the read loop's input enumeration).
   - Constraint this imposes: a function that does a dynamic write puts chunk outputs LAST, so it cannot
     also append arbitrary trailing outputs after them. Phase 1 = single dynamic write per function.
+
+## Codegen implementation plan (2026-06-22, block-layout facts gathered)
+
+State of play: layout desugar + SDK read path are committed and validated. The remaining work is the
+on-chain codegen (read loop, write loop) + the SDK write path. These facts make it executable.
+
+### Block-layout facts (from `SymbolTableTraversal.computeBlockLayout` ~5452 + GTT finalize ~1222)
+- A function's `FunctionBlockLayout = { blockSize, slots[] }` (utils/artifact.ts 66-79). `slots` are the
+  fixed compile-time inputs/outputs (master, dataNft per required nftIndex, reads, entries, containers,
+  transfers, events...). **1:1 layout: output index == input index == slot.offset.**
+- `compactOffsetMap` (GTT ~1190): nftIndex -> 1-based position among co-spent data NFTs; a register read
+  is `OP_INPUTINDEX + compactOffset` then `OP_UTXOTOKENCOMMITMENT` (see `emitReadCurrentStateValueEncoded`
+  2262 - skips nftIndex tag + preceding fields via `emitPushdataSkip`, then decodes).
+- **Variable trailing INPUTS** (collection iteration): live AFTER `blockSize`; entry i index =
+  `OP_INPUTINDEX + blockSize + sum(prior __internal__collectionIterCount_j) + i`
+  (`emitCollectionIterInputIndex` 2822). The count is an injected synthetic param
+  `__internal__collectionIterCount_N` (SymbolTableTraversal 969-989), passed by the SDK.
+- **Variable trailing OUTPUTS: do not exist.** Output slots are always compile-time-fixed. The write
+  loop must introduce them. `OP_TXOUTPUTCOUNT` is only used today for minting-count checks
+  (split/merge/delegate ~10172/10360/9941), never to bound a covenant output region.
+
+### Read loop (`this.dynVar` in contract logic) - models collection iteration
+NOTE: not needed by the motivating `setText` test (it only writes). Needed when a function *reads* a
+dynamic var. Plan:
+1. Detect a dynamic-var read; treat its chunks as a variable trailing input run (one run per dynamic
+   read), reusing the collection-iteration trailing-input machinery (shared counter space; if a function
+   has both, order them and accumulate counts).
+2. Count = `ceil(A$len / CHUNK)` computed on-chain from the decoded `A$len` (NOT an SDK-passed param, but
+   the SDK must still POSITION the chunk inputs at the trailing offsets and pass nothing - or, simpler
+   for v1, reuse an injected `__internal__dynReadChunkCount_N` param to avoid mixing derived counts with
+   the iteration counter arithmetic).
+3. Loop i=0..count-1: input index = `OP_INPUTINDEX + blockSize + (prior trailing counts) + i`;
+   `OP_UTXOTOKENCOMMITMENT`; decode chunk key, `OP_EQUALVERIFY i`; `OP_CAT` chunkData onto an accumulator.
+   After loop: truncate accumulator to `A$len` (`OP_SPLIT`+`OP_DROP`). Empty when `A$len==0` (skip loop).
+
+### Write loop (`this.dynVar = expr`) - the novel core
+1. **Detect** dynamic writes in the function (scan body for `StateAssignNode` whose target is a dynamic
+   var); record on the function node (new field, e.g. `dynamicWrites: string[]`), like entryAccesses.
+2. **Block layout**: a dynamic-write function (a) co-spends its OLD chunks as variable trailing INPUTS
+   (count = `ceil(oldLen/CHUNK)`, oldLen read from the old data NFT), and (b) emits NEW chunks as
+   variable trailing OUTPUTS (count = `ceil(newLen/CHUNK)`). Both runs sit after `blockSize`. For phase 1
+   (single dynamic write, chunk outputs last) the new mechanism is: chunk outputs occupy
+   `[firstChunkOut .. firstChunkOut + nNew)` where `firstChunkOut = blockSize` (output side), and the
+   loop pins `OP_TXOUTPUTCOUNT == blockSize + nNew`.
+3. **Codegen** (at the write site / function epilogue):
+   - Compute `newLen = OP_SIZE(value)`; `nNew = (newLen + CHUNK-1) / CHUNK` (int div via OP_DIV).
+   - Write `A$len = newLen` into the new data NFT commitment field (the register write path already
+     reconstructs the data NFT commitment; the dynamic field contributes `encodeInt(newLen)` as uint32).
+   - **Output loop** i=0..nNew-1 (OP_BEGIN/OP_UNTIL): slice `value[i*CHUNK : min((i+1)*CHUNK, newLen)]`;
+     build expected commitment `encodeInt(i) ++ pushdata(slice)`; verify
+     `OP_OUTPUTTOKENCOMMITMENT(blockSize+i) == expected`, `OP_OUTPUTBYTECODE(blockSize+i) == chunkAddr`
+     (reconstruct via `emitP2sh32FromCovenant(cat => buildEntryNftCovenantScript(cat, chunkHash))`,
+     chunkHash = computeCollectionHash("<name>:<type>")), and category base == master + mutable.
+   - **Pin** `OP_TXOUTPUTCOUNT == blockSize + nNew` (no extra/orphan chunk outputs).
+   - **Old chunks**: read `oldLen` from old data NFT, co-spend `ceil(oldLen/CHUNK)` old chunk inputs as a
+     trailing input run (forces their consumption; Stage-2 self-pin makes only genuine chunks spendable).
+     Grow = some new outputs have no corresponding old input (mint); shrink = some old inputs have no new
+     output (destroy). No explicit per-index pairing needed: outputs are fully verified, inputs are fully
+     consumed, counts are pinned.
+4. **SDK write** (StatefulTransactionBuilder): position old chunk UTXOs as trailing inputs; create new
+   chunk outputs (commitment via `buildChunkCommitment`) as trailing outputs; auto-derivation feeds the
+   value so codegen probes pass; fee-account the net chunk dust delta.
+
+### Open sub-decisions for the codegen session
+- Whether the chunk count is on-chain-derived (`ceil(A$len/CHUNK)`) or SDK-injected. On-chain-derived is
+  cleaner (no SDK/loop counter coupling) but needs the trailing-input/output index arithmetic to use a
+  derived count rather than a picked param. Recommend: derive on-chain; the SDK only positions UTXOs.
+- Block-layout representation of the variable chunk run (new slot kind `chunk` with a runtime count, vs a
+  separate post-block region). Recommend a dedicated post-block region anchored at `blockSize` since only
+  one dynamic write is allowed in phase 1.

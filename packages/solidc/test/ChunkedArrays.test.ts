@@ -52,4 +52,18 @@ describe('chunk-packed arrays: layout/desugar (chunkedArrays flag)', () => {
       { chunkedArrays: true },
     )).not.toThrow();
   });
+
+  // Codegen step #13 (.length): count = A$len / elementWidth - read cheaply from the header (persisted) or
+  // OP_SIZE(blob)/width (read-after-write), without reassembling the whole array.
+  it('compiles .length on a chunk-packed array (persisted and read-after-write)', () => {
+    expect(() => compileString(
+      'pragma solidcash >=0.8.0; contract C(){ uint256[] a; function f(){ require(this.a.length == 3); } }',
+      { chunkedArrays: true },
+    )).not.toThrow();
+    expect(() => compileString(
+      'pragma solidcash >=0.8.0; contract C(){ bytes20[] a;'
+      + ' function f(bytes20 x, pubkey pk, sig s){ require(checkSig(s, pk)); this.a = [x]; require(this.a.length == 1); } }',
+      { chunkedArrays: true },
+    )).not.toThrow();
+  });
 });

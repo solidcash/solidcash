@@ -4046,8 +4046,35 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   visitUnaryOp(node: UnaryOpNode): Node {
-    node.expression = this.visit(node.expression);
     const locationData = { location: node.location, positionHint: PositionHint.END };
+
+    // Chunk-packed array `.length`: count = A$len / elementWidth - cheap (no chunk reads). Special-cased
+    // BEFORE visiting the expression so we don't reassemble the whole array just to read its length.
+    if (node.operator === UnaryOperator.SIZE && node.expression instanceof StateAccessNode
+      && node.expression.stateVariable?.isDynamic && node.expression.stateVariable.type instanceof ArrayType) {
+      const sv = node.expression.stateVariable;
+      const width = getFixedWidth((sv.type as ArrayType).elementType);
+      const pending = this.pendingDynamicWrites.get(sv.name);
+      if (pending) {
+        // read-after-write: the new tight blob is on the stack; count = OP_SIZE(blob) / width
+        this.emit(encodeInt(BigInt(this.getStackIndex(pending.valueStackName))), locationData);
+        this.emit(Op.OP_PICK, locationData);
+        this.emit(Op.OP_SIZE, locationData);
+        this.emit(Op.OP_NIP, locationData);
+        this.emit(encodeInt(BigInt(width)), locationData);
+        this.emit(Op.OP_DIV, locationData);
+        this.pushToStack('(value)');
+      } else {
+        // persisted: count = A$len header / width
+        this.emitReadDynamicLen(sv, '(arrlen)', locationData);
+        this.emit(encodeInt(BigInt(width)), locationData);
+        this.emit(Op.OP_DIV, locationData);
+        this.stack[this.getStackIndex('(arrlen)')] = '(value)';
+      }
+      return node;
+    }
+
+    node.expression = this.visit(node.expression);
 
     // For .length on arrays: decode the length prefix instead of using SIZE
     if (node.operator === UnaryOperator.SIZE && node.expression.type instanceof ArrayType) {

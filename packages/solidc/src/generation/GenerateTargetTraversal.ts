@@ -7068,6 +7068,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emit(encodeInt(BigInt(this.getStackIndex(pendingDynamic.valueStackName))), locationData);
         this.emit(Op.OP_PICK, locationData);
         this.pushToStack('(value)');
+        // Chunk-packed array: the on-stack value is the tight element blob; rebuild the array form.
+        if (sv.type instanceof ArrayType) {
+          this.emitPrependArrayCount(getFixedWidth((sv.type as ArrayType).elementType), locationData);
+        }
         return node;
       }
       // Persisted read: loop over the var's co-spent chunk inputs, concat, truncate to A$len.
@@ -7093,6 +7097,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         reads.push(sv.name);
       }
       this.emitDynamicReadLoop(sv, locationData);
+      // Chunk-packed array: the read loop reassembles the tight element blob; rebuild the array form.
+      if (sv.type instanceof ArrayType) {
+        this.emitPrependArrayCount(getFixedWidth((sv.type as ArrayType).elementType), locationData);
+      }
       return node;
     }
 
@@ -9000,6 +9008,27 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_ROLL, loc);
     this.emit(Op.OP_DROP, loc);
     this.removeFromStack(idx);
+  }
+
+  /**
+   * Rebuild a chunk-packed array's on-stack form `pushdata(count) ++ tight_blob` from the tight element blob
+   * on top of the stack (count = OP_SIZE(blob) / elementWidth). Leaves '(value)'. Inverse of the count-prefix
+   * strip in the array write path. See docs/arrays.md.
+   */
+  private emitPrependArrayCount(width: number, loc: SingleLocationData): void {
+    this.emit(Op.OP_DUP, loc); // [blob, blobcopy]
+    this.pushToStack('(arrcnt)');
+    this.emit(Op.OP_SIZE, loc); // [blob, blobcopy, size]
+    this.emit(Op.OP_NIP, loc); // [blob, size]  '(arrcnt)' = size
+    this.emit(encodeInt(BigInt(width)), loc);
+    this.emit(Op.OP_DIV, loc); // [blob, count]  '(arrcnt)' = count
+    this.emitPushdataEncode(PrimitiveType.INT, loc); // [blob, pushdata(count)]
+    this.stack[0] = '(arrcnt)';
+    this.emit(Op.OP_SWAP, loc); // [pushdata(count), blob]
+    [this.stack[0], this.stack[1]] = [this.stack[1], this.stack[0]];
+    this.emit(Op.OP_CAT, loc); // [pushdata(count) ++ blob]
+    this.popFromStack();
+    this.stack[0] = '(value)';
   }
 
   /**

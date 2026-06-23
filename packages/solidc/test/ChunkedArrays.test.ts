@@ -66,4 +66,19 @@ describe('chunk-packed arrays: layout/desugar (chunkedArrays flag)', () => {
       { chunkedArrays: true },
     )).not.toThrow();
   });
+
+  // Codegen step #13 (whole-array read): reassemble the tight blob (read loop / on-stack value) and prepend
+  // the count -> the on-stack array form, usable wherever an array value is. Round-trip proven by e2e at #15.
+  it('compiles a whole-array read (persisted and read-after-write)', () => {
+    expect(() => compileString(
+      'pragma solidcash >=0.8.0; contract C(){ bytes20[] a; bytes20[] packed b;'
+      + ' function f(){ this.b = this.a; } }',
+      { chunkedArrays: true },
+    )).not.toThrow();
+    expect(() => compileString(
+      'pragma solidcash >=0.8.0; contract C(){ bytes20[] a; bytes20[] packed b;'
+      + ' function f(bytes20 x, pubkey pk, sig s){ require(checkSig(s, pk)); this.a = [x]; this.b = this.a; } }',
+      { chunkedArrays: true },
+    )).not.toThrow();
+  });
 });

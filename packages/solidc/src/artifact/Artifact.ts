@@ -106,6 +106,7 @@ function buildFunctionAbiMetadata(func: FunctionDefinitionNode): Partial<AbiFunc
         iterationIndex: ci.iterationIndex,
       })),
     }),
+    ...(func.dynamicReads && func.dynamicReads.length > 0 && { dynamicReads: [...func.dynamicReads] }),
     ...(func.blockLayout && { blockLayout: func.blockLayout }),
   };
 }

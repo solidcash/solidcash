@@ -110,8 +110,9 @@ describe('string state variable: extension and contraction (single data NFT)', (
 });
 
 // Reading a dynamic var ON-CHAIN in the SAME function that writes it works (the raw new value is still
-// on the stack, no chunk read loop needed). Reading a PERSISTED dynamic var is a compile-time error
-// until the read loop lands. The full off-chain read is always available via getState().
+// on the stack, no chunk read loop needed). Reading a PERSISTED dynamic var co-spends the var's chunks
+// as read-only inputs and loops to reassemble the value (see the read-loop describe below). The full
+// off-chain read is always available via getState().
 const RW_SOURCE = `
 pragma solidcash >=0.8.0;
 
@@ -144,5 +145,50 @@ describe('string state variable: on-chain read-after-write', () => {
     const big = 'Q'.repeat(250); // 3 chunks
     await sc.setAndCheck(big, alicePub, sig()).send();
     expect((await sc.getState()).text).toBe(big);
+  });
+});
+
+// Reading a PERSISTED dynamic var on-chain (in a function that does NOT write it): the SDK co-spends the
+// var's chunk UTXOs as read-only inputs, and the covenant loops to reassemble + verify the value.
+const READ_SOURCE = `
+pragma solidcash >=0.8.0;
+
+contract ReadString() {
+    string text;
+
+    function setText(string t, pubkey pk, sig s) {
+        require(checkSig(s, pk));
+        this.text = t;
+    }
+
+    function checkText(string expected) {
+        require(this.text == expected);
+    }
+}
+`;
+
+describe('string state variable: persisted on-chain read loop', () => {
+  const provider = createTestProvider();
+  const artifact = compileString(READ_SOURCE);
+
+  it('reassembles and verifies a persisted dynamic var on-chain (single + multi chunk)', async () => {
+    const contract = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, contract, artifact.stateLayout!, { text: '' }, { saltContract: true },
+    );
+    const sc = StatefulContract.withCategory(contract, categoryId);
+    const sig = (): SignatureTemplate => new SignatureTemplate(alicePriv);
+
+    // single chunk: read passes for the right value, fails the require for a wrong one.
+    await sc.setText('hello', alicePub, sig()).send();
+    await sc.checkText('hello').send();
+    let threw = false;
+    try { await sc.checkText('wrong').send(); } catch { threw = true; }
+    expect(threw).toBe(true);
+
+    // multi chunk (250 bytes -> 3 chunks): the read loop reassembles across chunks.
+    const big = 'A'.repeat(120) + 'B'.repeat(120) + 'C'.repeat(10);
+    await sc.setText(big, alicePub, sig()).send();
+    await sc.checkText(big).send();
   });
 });

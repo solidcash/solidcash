@@ -188,6 +188,9 @@ export class FunctionDefinitionNode extends Node implements Named {
   deployTargets?: { contractName: string; dataNftCount: number }[];
   lowLevelCalls?: { callMode: 'call' | 'staticcall' | 'delegatecall'; dataParamIndex?: number }[];
   collectionIterations?: CollectionIterationInfo[];
+  // Persisted dynamic-storage vars (string / unbounded bytes) read on-chain (not written this function);
+  // the SDK co-spends their chunk UTXOs as read-only trailing inputs. Recorded during codegen.
+  dynamicReads?: string[];
   modifiers: FunctionModifier[] = [];
   customModifiers: CustomModifierInvocation[] = [];
   returnTypes: Type[] = [];

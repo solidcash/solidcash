@@ -1,7 +1,7 @@
 # Dynamic storage (chunked string / bytes / dynamic arrays)
 
-Status: **multi-chunk write + on-chain read-after-write shipped & green; persisted on-chain read guarded.**
-The "heap" half of the register/heap state model. Fixed-size state lives in **registers** (data NFTs, static count - see
+Status: **multi-chunk write + full on-chain read (read-after-write AND persisted chunk read loop) shipped
+& green.** The "heap" half of the register/heap state model. Fixed-size state lives in **registers** (data NFTs, static count - see
 external-contract-calls.md). Variable-size state (`string`, `bytes`, dynamic arrays) lives in **dynamic
 storage**: it grows and shrinks at runtime by allocating and freeing chunk UTXOs.
 
@@ -254,9 +254,15 @@ on-chain codegen (read loop, write loop) + the SDK write path. These facts make 
   (split/merge/delegate ~10172/10360/9941), never to bound a covenant output region.
 
 ### Read loop (`this.dynVar` in contract logic) - models collection iteration
-Status (2026-06-23): **read-after-write done; persisted read GUARDED (clean compile error); the persisted
-read loop below is the remaining work - a write-loop-sized effort (intricate tracker-managed codegen +
-full SDK chunk-input plumbing + a derivation interaction).** Concrete executable design:
+Status (2026-06-23): **SHIPPED & GREEN.** Read-after-write returns the raw on-stack value; a persisted
+read runs the chunk read loop below. Chunk preservation is ENFORCED on-chain (the chunk entry covenant's
+flag=0 read-only path requires output==input), so a read cannot destroy the value. As-built notes:
+`emitDynamicReadLoop` (GTT) wired from `visitStateAccess` records `node.dynamicReads`; the artifact
+surfaces `AbiFunction.dynamicReads`; the SDK (`StatefulContract._createBuilder`) fetches each read var's
+chunks, orders them by chunkIndex, and co-spends them as read-only `iterationEntryInputs`
+(`createReadOnlyDynamicChunkUnlocker`, flag=0) which the builder recreates as preserving outputs - and the
+write-path `dynamicVarInfos` now excludes read-only vars (else the chunk is double-added). The design below
+matches the implementation:
 
 **Codegen** (`emitDynamicReadLoop(sv)`, call from `visitStateAccess` persisted branch, replacing the
 guard `throw`; leaves the value bytes on the stack as `(value)`):

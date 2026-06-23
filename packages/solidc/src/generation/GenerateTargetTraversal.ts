@@ -7043,14 +7043,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.pushToStack('(value)');
         return node;
       }
-      // Reading a persisted dynamic var needs a chunk read loop (the planned next step); decoding the
-      // length field as the value would be silently wrong, so reject it until then. The value is still
-      // readable off-chain via the SDK getState().
-      throw new Error(
-        `On-chain read of persisted dynamic-storage '${sv.name}' (${sv.type.toString()}) is not yet `
-        + 'supported - its value lives in chunk UTXOs and needs a read loop. Read it off-chain via '
-        + 'getState(), or read it in the same function that writes it. See docs/dynamic-storage.md.',
-      );
+      // Persisted read: loop over the var's co-spent chunk inputs, concat, truncate to A$len.
+      // Record it so the artifact/SDK knows to co-spend the chunks as read-only trailing inputs.
+      const reads = (this.currentFunction.dynamicReads ??= []);
+      if (!reads.includes(sv.name)) reads.push(sv.name);
+      this.emitDynamicReadLoop(sv, locationData);
+      return node;
     }
 
     // If this state variable has been written (pre-allocated in a loop or branch),
@@ -8843,6 +8841,153 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.removeFromStack(idx);
       }
     }
+  }
+
+  /**
+   * Read a persisted dynamic-storage var (string / unbounded bytes) on-chain. Reads the uint32 A$len
+   * header, then loops over the var's co-spent chunk INPUTS (trailing, at OP_INPUTINDEX + blockSize + i),
+   * verifying each is a genuine chunk (address + chunkIndex == i) and OP_CATing its data onto an
+   * accumulator; truncates to A$len. Leaves the value bytes on the stack as '(value)'. Loop mirrors
+   * visitCollectionIteration so the body is runtime-stack-neutral. The SDK positions + preserves the
+   * chunk inputs; on-chain preservation enforcement is deferred (permissionless-hardening, like the
+   * write orphan-bound). Phase 1: one dynamic read per function, no coexisting collection iteration.
+   */
+  private emitDynamicReadLoop(sv: StateVariableNode, loc: SingleLocationData): void {
+    const CHUNK = 120;
+    const lenType = new IntType(false, 32);
+    const chunkHash = computeCollectionHash(computeCollectionSignature(sv.name, sv.type.toString()));
+    const blockSize = this.currentFunction.blockLayout?.blockSize ?? 1;
+    const fieldsInNft = this.stateVariables
+      .filter((v) => v.nftIndex === sv.nftIndex)
+      .sort((a, b) => a.fieldIndex - b.fieldIndex);
+
+    // --- A$len (uint32 field) -> '(dyn_rlen)' ---
+    this.emitMasterInputIndex(loc);
+    this.emit(encodeInt(BigInt(this.compactOffsetMap.get(sv.nftIndex)!)), loc);
+    this.emit(Op.OP_ADD, loc);
+    this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc);
+    if (this.isMultiDataNft()) this.emitNftIndexTagSkip(loc);
+    for (let i = 0; i < sv.fieldIndex; i++) this.emitPushdataSkip(fieldsInNft[i].type, loc);
+    if (sv.fieldIndex === fieldsInNft[fieldsInNft.length - 1].fieldIndex) {
+      this.emitPushdataDecodeLastField(lenType, loc);
+    } else {
+      this.emitPushdataDecode(lenType, loc);
+      this.emit(Op.OP_DROP, loc);
+    }
+    this.pushToStack('(dyn_rlen)');
+
+    // --- chunk address '(dyn_rchunkaddr)' ---
+    this.emitMasterInputIndex(loc);
+    this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
+    this.emit(encodeInt(32n), loc);
+    this.emit(Op.OP_SPLIT, loc);
+    this.emit(Op.OP_DROP, loc);
+    this.pushToStack('(dyn_rchunkaddr)');
+    this.emitP2sh32FromCovenant((cat) => buildEntryNftCovenantScript(cat, chunkHash), loc);
+    this.stack[0] = '(dyn_rchunkaddr)';
+
+    // --- count = ceil(len/CHUNK) '(dyn_rcount)', accumulator '(dyn_racc)', counter '(dyn_ri)' ---
+    this.emit(encodeInt(BigInt(this.getStackIndex('(dyn_rlen)'))), loc);
+    this.emit(Op.OP_PICK, loc);
+    this.pushToStack('(dyn_rcount)');
+    this.emit(encodeInt(BigInt(CHUNK - 1)), loc);
+    this.emit(Op.OP_ADD, loc);
+    this.emit(encodeInt(BigInt(CHUNK)), loc);
+    this.emit(Op.OP_DIV, loc);
+    this.emit(encodeInt(0n), loc); // empty accumulator
+    this.pushToStack('(dyn_racc)');
+    this.emit(encodeInt(0n), loc);
+    this.pushToStack('(dyn_ri)');
+
+    // LOOP: OP_BEGIN / cond(i<count) / OP_IF / read+verify+accumulate chunk i / incr / ... / OP_UNTIL
+    this.scopeDepth += 1;
+    this.emit(Op.OP_BEGIN, loc);
+    this.emit(encodeInt(BigInt(this.getStackIndex('(dyn_ri)'))), loc);
+    this.emit(Op.OP_PICK, loc);
+    this.emit(encodeInt(BigInt(this.getStackIndex('(dyn_rcount)') + 1)), loc);
+    this.emit(Op.OP_PICK, loc);
+    this.emit(Op.OP_LESSTHAN, loc);
+    this.emit(Op.OP_IF, loc);
+
+    const stackBeforeBody = [...this.stack];
+    const stackDepth = this.stack.length;
+
+    // inputIdx = masterInputIndex + blockSize + i
+    this.emitMasterInputIndex(loc);
+    this.emit(encodeInt(BigInt(blockSize)), loc);
+    this.emit(Op.OP_ADD, loc);
+    this.emit(encodeInt(BigInt(this.getStackIndex('(dyn_ri)') + 1)), loc); // +1: inputIdx-partial untracked
+    this.emit(Op.OP_PICK, loc);
+    this.emit(Op.OP_ADD, loc);
+    // (a) input bytecode == chunk address
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_UTXOBYTECODE, loc);
+    this.emit(encodeInt(BigInt(this.getStackIndex('(dyn_rchunkaddr)') + 2)), loc); // +2: inputIdx, bytecode
+    this.emit(Op.OP_PICK, loc);
+    this.emit(Op.OP_EQUALVERIFY, loc);
+    // (b) category base == master + mutable
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
+    this.emit(Op.OP_DUP, loc);
+    this.emit(encodeInt(32n), loc);
+    this.emit(Op.OP_SPLIT, loc);
+    this.emit(Op.OP_NIP, loc);
+    this.emit(new Uint8Array([0x01]), loc);
+    this.emit(Op.OP_EQUALVERIFY, loc);
+    this.emitVerifyCatBaseEqMaster(loc); // consumes cat -> [..., inputIdx]
+    // (c) commitment -> chunkIndex (== i) ++ chunkData
+    this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc); // [..., commitment]
+    this.emitPushdataDecode(lenType, loc); // [..., chunkIndex, remainder]
+    this.emit(Op.OP_SWAP, loc); // [..., remainder, chunkIndex]
+    this.emit(encodeInt(BigInt(this.getStackIndex('(dyn_ri)') + 2)), loc); // +2: remainder, chunkIndex
+    this.emit(Op.OP_PICK, loc);
+    this.emit(Op.OP_EQUALVERIFY, loc); // [..., remainder]
+    this.emitPushdataDecodeLastField(new BytesType(), loc); // [..., chunkData]
+    // accumulator ++= chunkData (in place; emitReplace consumes the untracked result, tracker unchanged)
+    this.emit(encodeInt(BigInt(this.getStackIndex('(dyn_racc)') + 1)), loc); // +1: chunkData on top
+    this.emit(Op.OP_PICK, loc);
+    this.emit(Op.OP_SWAP, loc);
+    this.emit(Op.OP_CAT, loc);
+    this.emitReplace(this.getStackIndex('(dyn_racc)') + 1, this.currentFunction);
+
+    this.removeScopedVariables(stackDepth, this.currentFunction);
+
+    // increment i (in place)
+    this.emit(encodeInt(BigInt(this.getStackIndex('(dyn_ri)'))), loc);
+    this.emit(Op.OP_PICK, loc);
+    this.emit(Op.OP_1ADD, loc);
+    this.emitReplace(this.getStackIndex('(dyn_ri)') + 1, this.currentFunction);
+    this.popFromStack();
+
+    this.emit(encodeBool(false), loc);
+    this.pushToStack('(dyn_rloop_continue)');
+    this.emit(Op.OP_ELSE, loc);
+    this.stack = [...stackBeforeBody];
+    this.emit(encodeBool(true), loc);
+    this.pushToStack('(dyn_rloop_exit)');
+    this.emit(Op.OP_ENDIF, loc);
+    this.emit(Op.OP_UNTIL, loc);
+    this.popFromStack();
+    this.scopeDepth -= 1;
+
+    // truncate accumulator to A$len (also asserts size >= A$len), in place
+    this.emit(encodeInt(BigInt(this.getStackIndex('(dyn_racc)'))), loc);
+    this.emit(Op.OP_PICK, loc);
+    this.emit(encodeInt(BigInt(this.getStackIndex('(dyn_rlen)') + 1)), loc); // +1: acc copy on top
+    this.emit(Op.OP_PICK, loc);
+    this.emit(Op.OP_SPLIT, loc);
+    this.emit(Op.OP_DROP, loc);
+    this.emitReplace(this.getStackIndex('(dyn_racc)') + 1, this.currentFunction);
+
+    // clean up temps, leaving '(dyn_racc)' (the value) on top; rename it
+    for (const tmp of ['(dyn_ri)', '(dyn_rcount)', '(dyn_rchunkaddr)', '(dyn_rlen)']) {
+      const idx = this.getStackIndex(tmp);
+      this.emit(encodeInt(BigInt(idx)), loc);
+      this.emit(Op.OP_ROLL, loc);
+      this.emit(Op.OP_DROP, loc);
+      this.removeFromStack(idx);
+    }
+    this.stack[this.getStackIndex('(dyn_racc)')] = '(value)';
   }
 
   /**

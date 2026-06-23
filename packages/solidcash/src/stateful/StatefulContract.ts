@@ -12,6 +12,7 @@ import {
   buildAnonymousEventNftCovenantScript,
   computeCollectionHash,
   dynamicChunkSignature,
+  parseChunkCommitment,
   DYNAMIC_CHUNK_SIZE,
   computeEventNameHash,
   parsePushdataCommitment,
@@ -55,7 +56,7 @@ import {
   getTokenContainerAddress, getSatoshiContainerAddress, getContractState,
   createDataNftUnlocker, createDestroyDataNftUnlocker,
   createReadOnlyDataNftUnlocker, createEntryNftUnlocker, createReadOnlyEntryNftUnlocker,
-  createDynamicChunkUnlocker,
+  createDynamicChunkUnlocker, createReadOnlyDynamicChunkUnlocker,
   createEventNftUnlocker, createAnonymousEventNftUnlocker,
   createTokenContainerUnlocker, createSatoshiContainerUnlocker,
   resolveCollectionSignature,
@@ -3618,6 +3619,28 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       }
     }
 
+    // Persisted dynamic-storage reads: co-spend the var's chunks as read-only trailing inputs (ordered by
+    // chunkIndex so input blockSize+i is chunk i), preserved as outputs. Reuses iterationEntryInputs.
+    const dynamicReads = abiFunction?.dynamicReads;
+    if (dynamicReads && dynamicReads.length > 0) {
+      for (const varName of dynamicReads) {
+        const dynVar = (stateLayout.variables ?? []).find((v) => v.name === varName && v.dynamic);
+        if (!dynVar) continue;
+        const chunkAddr = getDynamicChunkAddress(this.inner, this.categoryId, dynVar.name, dynVar.type);
+        const utxos = await this.inner.provider.getUtxos(chunkAddr);
+        const chunks = utxos
+          .filter((u) => u.token?.category === this.categoryId
+            && u.token?.nft?.capability === 'mutable'
+            && u.token?.nft?.commitment && u.token.nft.commitment.length > 0)
+          .map((u) => ({ utxo: u, chunkIndex: parseChunkCommitment(u.token!.nft!.commitment).chunkIndex }))
+          .sort((a, b) => a.chunkIndex - b.chunkIndex);
+        for (const { utxo } of chunks) {
+          const unlocker = createReadOnlyDynamicChunkUnlocker(this.inner, 0, this.categoryId, dynVar.name, dynVar.type);
+          iterationEntryInputs.push({ ...utxo, unlocker });
+        }
+      }
+    }
+
     // Handle external state reads (cross-contract reads via interfaces)
     const externalReads = abiFunction?.externalReads;
     let externalReadUtxos: UnlockableUtxo[] = [];
@@ -4750,8 +4773,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       }
     }
 
-    // Dynamic-storage vars (string / unbounded bytes): chunk NFTs at a per-var entry covenant address.
-    const dynamicVarInfos = (stateLayout.variables ?? []).filter((v) => v.dynamic);
+    // Dynamic-storage vars (string / unbounded bytes) WRITTEN by this function: chunk NFTs at a per-var
+    // entry covenant address. Vars only READ (in dynamicReads) are co-spent read-only above, not here.
+    const dynamicVarInfos = (stateLayout.variables ?? [])
+      .filter((v) => v.dynamic && !(dynamicReads ?? []).includes(v.name));
     const dynamicChunkVars = dynamicVarInfos.map((v) => ({
       name: v.name,
       type: v.type,

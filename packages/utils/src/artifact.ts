@@ -99,6 +99,8 @@ export interface AbiFunction {
   mergeCountParam?: string;
   lowLevelCalls?: readonly { callMode: 'call' | 'staticcall' | 'delegatecall'; dataParamIndex?: number }[];
   collectionIterations?: readonly CollectionIterationAbi[];
+  // Persisted dynamic-storage vars read on-chain; the SDK co-spends their chunks as read-only inputs.
+  dynamicReads?: readonly string[];
   blockLayout?: FunctionBlockLayout;
   isFallback?: boolean;
   isReceive?: boolean;

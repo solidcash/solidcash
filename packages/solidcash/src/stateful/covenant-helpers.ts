@@ -287,6 +287,24 @@ export function createDynamicChunkUnlocker(
   );
 }
 
+// Read-only unlocker for a dynamic-storage chunk NFT: flag=0 (preserve, output==input) so an on-chain
+// read can co-spend the var's chunks without destroying them. The entry covenant enforces preservation.
+export function createReadOnlyDynamicChunkUnlocker(
+  contract: Contract<any, any>, masterInputIndex: number, categoryId: string, varName: string, varType: string,
+): ContractUnlocker {
+  validateMasterInputIndex(masterInputIndex);
+  validateCategoryId(categoryId);
+  const collectionHash = computeCollectionHash(dynamicChunkSignature(varName, varType));
+  const covenantScript = buildEntryNftCovenantScript(hexToBin(categoryId), collectionHash);
+  return createCovenantContractUnlocker(
+    contract,
+    `ChunkNft_${categoryId.slice(0, 8)}`,
+    covenantScript,
+    [{ name: 'flag', type: 'int' }, { name: 'masterInputIndex', type: 'int' }],
+    [0n, BigInt(masterInputIndex)],
+  );
+}
+
 export function createReadOnlyEntryNftUnlocker(
   contract: Contract<any, any>, categoryId: string, collectionNameOrSignature: string,
 ): ContractUnlocker {

@@ -191,10 +191,19 @@ Rejected alternatives (recorded for posterity):
   (`len=0`, empty data) so reads can force-co-spend it; otherwise a spender withholds chunk 0 and a
   non-empty value reads as empty. Costs >= 1 chunk for every string incl. empty. Not chosen.
 
+## Phase-1 coexistence limits (GUARDED - clean compile errors, not silent-wrong)
+The read loop reads chunks at the fixed trailing offset `blockSize + i` and the write loop emits chunk
+outputs there, so a function may do **at most one** of {one dynamic write, one persisted dynamic read of a
+single var} and may **not** combine it with a collection iteration. The compiler rejects: a second
+distinct persisted read, a persisted read + collection iteration, a dynamic write + persisted read, and a
+dynamic write + collection iteration. Still allowed: a single read, a single write, read-after-write
+(same var), and reading the same var more than once. Lifting these needs the collection-iteration shared
+trailing-counter arithmetic (accumulate prior trailing-input/output counts) - a phase-2 item.
+
 ## Phasing
 1. `string` / `bytes` (the motivating case): read (loop-concat), write (loop-split + mint/destroy +
-   `A$len`), empty <-> non-empty. On-chain + off-chain. Makes
-   `StringStateGrowShrink.test.ts`'s `it.todo` pass.
+   `A$len`), empty <-> non-empty. On-chain + off-chain. **SHIPPED & GREEN** (write, read-after-write,
+   persisted read loop; phase-1 coexistence guarded).
 2. Dynamic arrays `T[]` (same machinery, element-typed chunks; element access = chunk + offset).
 3. Nested dynamic types.
 

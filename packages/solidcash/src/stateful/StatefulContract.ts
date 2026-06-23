@@ -3622,8 +3622,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // Persisted dynamic-storage reads: co-spend the var's chunks as read-only trailing inputs (ordered by
     // chunkIndex so input blockSize+i is chunk i), preserved as outputs. Reuses iterationEntryInputs.
     const dynamicReads = abiFunction?.dynamicReads;
+    const dynamicWriteNames = abiFunction?.dynamicWrites ?? [];
     if (dynamicReads && dynamicReads.length > 0) {
       for (const varName of dynamicReads) {
+        // Element ops read AND write the same var (read-modify-write). Its chunks are co-spent below by the
+        // write path (consumed + recreated), placed at the read offset in chunkIndex order - so the read loop
+        // still reads chunk i at blockSize+i. Skip here to avoid co-spending the same UTXO twice.
+        if (dynamicWriteNames.includes(varName)) continue;
         const dynVar = (stateLayout.variables ?? []).find((v) => v.name === varName && v.dynamic);
         if (!dynVar) continue;
         const chunkAddr = getDynamicChunkAddress(this.inner, this.categoryId, dynVar.name, dynVar.type);
@@ -4789,14 +4794,20 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         this.inner.addressType,
       ),
     }));
-    // Old chunk UTXOs to consume (destroy) on this write - fetched from each dynamic var's chunk address.
+    // Old chunk UTXOs to consume (destroy) on this write - fetched from each dynamic var's chunk address,
+    // ordered by chunkIndex. The order matters for element ops (read-modify-write): the on-chain read loop
+    // reassembles from these same inputs and requires input blockSize+i to be chunk i.
     const dynamicChunkInputs: UnlockableUtxo[] = [];
     for (const v of dynamicVarInfos) {
       const chunkAddr = getDynamicChunkAddress(this.inner, this.categoryId, v.name, v.type);
       const utxos = await this.inner.provider.getUtxos(chunkAddr);
-      for (const utxo of utxos) {
-        if (utxo.token?.category !== this.categoryId || utxo.token?.nft?.capability !== 'mutable') continue;
-        if (!utxo.token?.nft?.commitment) continue;
+      const chunks = utxos
+        .filter((utxo) => utxo.token?.category === this.categoryId
+          && utxo.token?.nft?.capability === 'mutable'
+          && utxo.token?.nft?.commitment && utxo.token.nft.commitment.length > 0)
+        .map((utxo) => ({ utxo, chunkIndex: parseChunkCommitment(utxo.token!.nft!.commitment).chunkIndex }))
+        .sort((a, b) => a.chunkIndex - b.chunkIndex);
+      for (const { utxo } of chunks) {
         const unlocker = createDynamicChunkUnlocker(this.inner, 0, this.categoryId, v.name, v.type);
         dynamicChunkInputs.push({ ...utxo, unlocker });
       }

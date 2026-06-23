@@ -129,3 +129,61 @@ describe('chunk-packed array: whole-array round-trip', () => {
     expect((st.b as Uint8Array[]).map((e) => e[0])).toEqual([1, 2, 3]);
   });
 });
+
+// Element ops (#14): each reads the array (reassemble chunks), modifies on-stack, and writes it back. The
+// read and write of the SAME var co-spend its chunks once - read loop reassembles from the consumed inputs.
+const ELEMS = `pragma solidcash >=0.8.0;
+contract C() {
+  uint256[] nums;
+  function setNums(uint256 a, uint256 b, pubkey pk, sig s) { require(checkSig(s, pk)); this.nums = [a, b]; }
+  function setElem(int i, uint256 v, pubkey pk, sig s) { require(checkSig(s, pk)); this.nums[i] = v; }
+  function push(uint256 v, pubkey pk, sig s) { require(checkSig(s, pk)); this.nums.push(v); }
+  function pop(pubkey pk, sig s) { require(checkSig(s, pk)); this.nums.pop(); }
+  function del(int i, pubkey pk, sig s) { require(checkSig(s, pk)); this.nums.delete(i); }
+}`;
+
+describe('chunk-packed array: element ops (read-modify-write)', () => {
+  const provider = createTestProvider();
+  const sig = (): SignatureTemplate => new SignatureTemplate(alicePriv);
+
+  const fresh = async (): Promise<StatefulContract> => {
+    const artifact = compileString(ELEMS, { chunkedArrays: true });
+    const contract = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, contract, artifact.stateLayout!, { nums: [] }, { saltContract: true },
+    );
+    return StatefulContract.withCategory(contract, categoryId);
+  };
+
+  it('writes element i in place (including one straddling a chunk boundary)', async () => {
+    const sc = await fresh();
+    // grow to 4 elements (132 B = 2 chunks) so element 3 straddles the boundary
+    await sc.setNums(10n, 20n, alicePub, sig()).send();
+    await sc.push(30n, alicePub, sig()).send();
+    await sc.push(40n, alicePub, sig()).send();
+    await sc.setElem(1n, 99n, alicePub, sig()).send();
+    expect((await sc.getState()).nums).toEqual([10n, 99n, 30n, 40n]);
+    await sc.setElem(3n, 88n, alicePub, sig()).send(); // straddles bytes [99,132)
+    expect((await sc.getState()).nums).toEqual([10n, 99n, 30n, 88n]);
+  });
+
+  it('pushes and pops across chunk-count transitions', async () => {
+    const sc = await fresh();
+    await sc.setNums(10n, 20n, alicePub, sig()).send(); // 66 B, 1 chunk
+    await sc.push(30n, alicePub, sig()).send();         // 99 B, 1 chunk
+    await sc.push(40n, alicePub, sig()).send();         // 132 B, 2 chunks (1 -> 2)
+    expect((await sc.getState()).nums).toEqual([10n, 20n, 30n, 40n]);
+    await sc.pop(alicePub, sig()).send();               // 99 B, 1 chunk (2 -> 1)
+    await sc.pop(alicePub, sig()).send();               // 66 B, 1 chunk
+    expect((await sc.getState()).nums).toEqual([10n, 20n]);
+  });
+
+  it('deletes an element (swap-with-last, same semantics as a packed array)', async () => {
+    const sc = await fresh();
+    await sc.setNums(10n, 20n, alicePub, sig()).send();
+    await sc.push(30n, alicePub, sig()).send();
+    await sc.push(40n, alicePub, sig()).send();
+    await sc.del(1n, alicePub, sig()).send(); // [10,20,30,40] -> [10,40,30]
+    expect((await sc.getState()).nums).toEqual([10n, 40n, 30n]);
+  });
+});

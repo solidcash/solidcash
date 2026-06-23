@@ -5064,6 +5064,19 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   ): void {
     const key = `${sv.nftIndex}:${sv.fieldIndex}`;
 
+    // Chunk-packed dynamic array: the blob on top is `pushdata(count)++elems`. Store only the tight elements
+    // in chunks (count = A$len / elementWidth) - the epilogue's chunk write loop handles the rest.
+    if (sv.isDynamic) {
+      if (this.pendingDynamicWrites.has(sv.name)) {
+        throw new Error(
+          `Dynamic-storage write to '${sv.name}' is only supported once per function (phase 1). `
+          + 'See docs/dynamic-storage.md.',
+        );
+      }
+      this.emitRegisterDynamicWrite(sv, key, locationData, true);
+      return;
+    }
+
     // Encode to pushdata format - for ArrayType this is a no-op
     this.emitPushdataEncode(sv.type, locationData);
 
@@ -5077,6 +5090,42 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.pushToStack(stackName);
       this.pendingStateWrites.set(key, stackName);
     }
+  }
+
+  /**
+   * Register a dynamic-storage write whose value blob is on top of the tracked stack. Stores the tight bytes
+   * as the pending chunk value (the epilogue splits it into chunk outputs) and the uint32 A$len as the
+   * data-NFT field. `stripCount` drops the leading `pushdata(count)` of a chunk-packed array's on-stack form,
+   * since the count is recoverable as A$len / elementWidth. Records the write so the SDK consumes the old
+   * chunks and creates the new ones.
+   */
+  private emitRegisterDynamicWrite(
+    sv: StateVariableNode,
+    key: string,
+    loc: SingleLocationData,
+    stripCount: boolean,
+  ): void {
+    if (stripCount) {
+      this.emitPushdataDecode(PrimitiveType.INT, loc); // [count, elements]
+      this.emit(Op.OP_NIP, loc); // [elements]
+    }
+    const valueStackName = `__internal__dynwrite_value_${sv.name}`;
+    this.popFromStack();
+    this.pushToStack(valueStackName); // keep value for the epilogue chunk loop
+
+    // Register field = uint32 byte length (A$len), kept on the stack as the pending state write.
+    this.emit(Op.OP_SIZE, loc); // [value, size] - OP_SIZE leaves value, pushes size
+    this.pushToStack('(dynlen)');
+    this.emitPushdataEncode(new IntType(false, 32), loc); // [value, len_encoded]
+    this.popFromStack();
+    const stateWriteStackName = `__internal__state_write_${sv.name}`;
+    this.pushToStack(stateWriteStackName);
+    this.pendingStateWrites.set(key, stateWriteStackName);
+    this.preAllocatedStateWrites.add(key);
+
+    this.pendingDynamicWrites.set(sv.name, { valueStackName, sv });
+    const writes = (this.currentFunction.dynamicWrites ??= []);
+    if (!writes.includes(sv.name)) writes.push(sv.name);
   }
 
   visitStateArrayPush(node: StateArrayPushNode): Node {
@@ -7141,34 +7190,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           + 'function (phase 1). See docs/dynamic-storage.md.',
         );
       }
-      // 1. Evaluate expression -> raw value bytes on top
+      // 1. Evaluate expression -> raw value bytes on top, then register the chunk write. A chunk-packed
+      // array's on-stack form is `pushdata(count)++elems`; strip the count (recoverable as A$len/width).
       node.expression = this.visit(node.expression);
-      // A chunk-packed fixed-width array's on-stack form is `pushdata(count) ++ tight_elements`. Store only
-      // the tight element blob in the chunks - the count is recoverable as A$len / elementWidth, which keeps
-      // element i at byte i*width. So strip the leading count prefix. See docs/arrays.md.
-      if (sv.type instanceof ArrayType) {
-        this.emitPushdataDecode(PrimitiveType.INT, locationData); // [count, elements]
-        this.emit(Op.OP_NIP, locationData); // [elements]
-      }
-      const valueStackName = `__internal__dynwrite_value_${sv.name}`;
-      this.popFromStack();
-      this.pushToStack(valueStackName); // keep value for the epilogue chunk loop
-
-      // 2. Register field = uint32 byte length (A$len), kept on the stack as the pending state write.
-      this.emit(Op.OP_SIZE, locationData); // [value, size] - OP_SIZE leaves value, pushes size
-      this.pushToStack('(dynlen)');
-      this.emitPushdataEncode(new IntType(false, 32), locationData); // [value, len_encoded]
-      this.popFromStack();
-      const stateWriteStackName = `__internal__state_write_${sv.name}`;
-      this.pushToStack(stateWriteStackName);
-      this.pendingStateWrites.set(key, stateWriteStackName);
-      this.preAllocatedStateWrites.add(key);
-
-      this.pendingDynamicWrites.set(sv.name, { valueStackName, sv });
-      // Record the write so the SDK consumes this var's old chunks and creates the new ones. Vars not
-      // listed here (read-only or untouched) keep their chunks intact.
-      const writes = (this.currentFunction.dynamicWrites ??= []);
-      if (!writes.includes(sv.name)) writes.push(sv.name);
+      this.emitRegisterDynamicWrite(sv, key, locationData, sv.type instanceof ArrayType);
       return node;
     }
 
@@ -8735,11 +8760,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const blockSize = this.currentFunction.blockLayout?.blockSize ?? 1;
 
     // Phase 1: a dynamic write emits chunk outputs at blockSize+i, so it cannot share the trailing
-    // input/output space with a persisted dynamic read or a collection iteration.
-    if ((node.dynamicReads?.length ?? 0) > 0) {
+    // input/output space with a persisted read of a DIFFERENT var or a collection iteration. Reading the
+    // SAME var that is written is fine and expected (element ops: read-modify-write) - the read loop reads
+    // the var's old chunks (co-spent as the consumed inputs) and the write recreates them as new outputs.
+    const writtenNames = node.dynamicWrites ?? [];
+    const foreignReads = (node.dynamicReads ?? []).filter((r) => !writtenNames.includes(r));
+    if (foreignReads.length > 0) {
       throw new Error(
-        'A dynamic-storage write and a persisted dynamic-storage read in the same function are not yet '
-        + 'supported (phase 1). Use separate functions. See docs/dynamic-storage.md.',
+        `A dynamic-storage write and a persisted read of a different var ('${foreignReads[0]}') in the same `
+        + 'function are not yet supported (phase 1). Use separate functions. See docs/dynamic-storage.md.',
       );
     }
     if ((node.collectionIterations?.length ?? 0) > 0) {

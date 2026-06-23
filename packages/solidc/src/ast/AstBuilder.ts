@@ -551,9 +551,13 @@ export default class AstBuilder
       }
     }
 
-    // Track packed state array names for routing this.arr[i] and this.arr.delete(i)
+    // Track dense-indexable state array names for routing this.arr[i], this.arr.push/pop, this.arr.delete(i):
+    // both packed (inline blob) and chunk-packed (dynamic) arrays share the same `pushdata(count)++elems`
+    // element codegen.
     this.packedStateArrayNames = new Set(
-      stateVariables.filter((sv) => sv.isPacked).map((sv) => sv.name),
+      stateVariables
+        .filter((sv) => sv.isPacked || (sv.isDynamic && sv.type instanceof ArrayType))
+        .map((sv) => sv.name),
     );
 
     // Collect modifier definitions

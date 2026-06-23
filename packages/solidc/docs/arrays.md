@@ -161,10 +161,15 @@ the per-element withholding attack. `string[]`/`bytes[]` land here. Deferred.
        in the ABI) so the SDK consumes/recreates only those chunks - a `.length`-only or untouched var keeps
        its chunks. Cross-field reads use the **physical** field type (a dynamic var's data-NFT field is a
        `uint32 A$len` header, not its declared type), so skipping `a` to read `b` no longer mis-parses;
-   (d) codegen: element ops. Index READ (`this.a[i]`) DONE - reuses the packed-array element codegen by making
-       the read-blob primitive dynamic-aware (reassemble chunks -> `pushdata(count)++elems`, then extract via
-       byte offset; elements straddling a 120 B chunk boundary fall out naturally). Index WRITE / `push` /
-       `pop` / `delete` remain (need read+write of the same var in one tx);
+   (d) DONE - codegen: element ops (index r/w, `push`, `pop`, `this.a.delete(i)`). Reuses the packed-array
+       element codegen verbatim by making BOTH blob primitives (read + write) dynamic-aware: read reassembles
+       chunks -> `pushdata(count)++elems` (elements straddling a 120 B chunk boundary fall out of the byte
+       offset naturally), write strips the count and registers a chunk write. Element WRITES read AND write
+       the same var in one tx (read-modify-write): the phase-1 read/write guard now allows reads that are a
+       subset of writes, and the SDK co-spends the var's chunks ONCE (the read loop reassembles from the same
+       inputs the write consumes; chunk inputs sorted by chunkIndex so input blockSize+i is chunk i). Push/pop
+       across chunk-count transitions (1<->2 chunks) verified. NOT partial-chunk: a write still rewrites all
+       chunks (correct, O(n); true partial access is a later optimization);
    (e) SDK: whole-array store/read DONE; element positioning + dust fee accounting remain;
    (f) flip the default, migrate the non-packed-array tests, e2e.
 2. **Phase 3** - variable-width (`string[]`, `bytes[]`) via element-keyed/nested.

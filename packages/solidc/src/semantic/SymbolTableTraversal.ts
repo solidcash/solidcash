@@ -3230,11 +3230,12 @@ export default class SymbolTableTraversal extends AstTraversal {
     return node;
   }
 
-  // True when `name` is a state mapping/collection or a packed state array (the bare-indexable state targets).
+  // True when `name` is a state mapping/collection or a dense-indexable state array (packed or chunk-packed):
+  // the bare-indexable state targets.
   private isStateCollectionName(name: string): boolean {
     if (this.collectionMap.has(name)) return true;
     const sv = this.stateVariableMap.get(name);
-    return !!(sv?.isPacked && sv.type instanceof ArrayType);
+    return !!(sv && (sv.isPacked || sv.isDynamic) && sv.type instanceof ArrayType);
   }
 
   // Flatten a bare index chain `a[k1][k2]...` into its base expression and keys (base-first order).
@@ -3311,7 +3312,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     // `this.m[k] = ...` path (packed state arrays use StateArrayAssignNode, mappings MappingAssignNode).
     if (this.isStateCollectionName(node.name) && !this.isShadowedByLocal(node.name)) {
       const sv = this.stateVariableMap.get(node.name);
-      const stateNode = sv?.isPacked
+      const stateNode = (sv?.isPacked || sv?.isDynamic) && sv?.type instanceof ArrayType
         ? new StateArrayAssignNode(node.name, node.index, node.value)
         : new MappingAssignNode(node.name, [node.index], node.value);
       stateNode.location = node.location;
@@ -4255,7 +4256,7 @@ export default class SymbolTableTraversal extends AstTraversal {
 
   visitStateArrayPush(node: StateArrayPushNode): Node {
     const sv = this.stateVariableMap.get(node.name);
-    if (!sv || !sv.isPacked || !(sv.type instanceof ArrayType)) {
+    if (!sv || !(sv.isPacked || sv.isDynamic) || !(sv.type instanceof ArrayType)) {
       throw new UndefinedStateVariableError(node);
     }
     if (sv.immutable && !this.insideConstructor) {
@@ -4268,7 +4269,7 @@ export default class SymbolTableTraversal extends AstTraversal {
 
   visitStateArrayPop(node: StateArrayPopNode): Node {
     const sv = this.stateVariableMap.get(node.name);
-    if (!sv || !sv.isPacked || !(sv.type instanceof ArrayType)) {
+    if (!sv || !(sv.isPacked || sv.isDynamic) || !(sv.type instanceof ArrayType)) {
       throw new UndefinedStateVariableError(node);
     }
     if (sv.immutable && !this.insideConstructor) {
@@ -4280,7 +4281,7 @@ export default class SymbolTableTraversal extends AstTraversal {
 
   visitStateArrayAssign(node: StateArrayAssignNode): Node {
     const sv = this.stateVariableMap.get(node.name);
-    if (!sv || !sv.isPacked || !(sv.type instanceof ArrayType)) {
+    if (!sv || !(sv.isPacked || sv.isDynamic) || !(sv.type instanceof ArrayType)) {
       throw new UndefinedStateVariableError(node);
     }
     if (sv.immutable && !this.insideConstructor) {
@@ -4294,7 +4295,7 @@ export default class SymbolTableTraversal extends AstTraversal {
 
   visitStateArrayDelete(node: StateArrayDeleteNode): Node {
     const sv = this.stateVariableMap.get(node.name);
-    if (!sv || !sv.isPacked || !(sv.type instanceof ArrayType)) {
+    if (!sv || !(sv.isPacked || sv.isDynamic) || !(sv.type instanceof ArrayType)) {
       throw new UndefinedStateVariableError(node);
     }
     if (sv.immutable && !this.insideConstructor) {

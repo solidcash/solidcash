@@ -254,18 +254,48 @@ on-chain codegen (read loop, write loop) + the SDK write path. These facts make 
   (split/merge/delegate ~10172/10360/9941), never to bound a covenant output region.
 
 ### Read loop (`this.dynVar` in contract logic) - models collection iteration
-NOTE: not needed by the motivating `setText` test (it only writes). Needed when a function *reads* a
-dynamic var. Plan:
-1. Detect a dynamic-var read; treat its chunks as a variable trailing input run (one run per dynamic
-   read), reusing the collection-iteration trailing-input machinery (shared counter space; if a function
-   has both, order them and accumulate counts).
-2. Count = `ceil(A$len / CHUNK)` computed on-chain from the decoded `A$len` (NOT an SDK-passed param, but
-   the SDK must still POSITION the chunk inputs at the trailing offsets and pass nothing - or, simpler
-   for v1, reuse an injected `__internal__dynReadChunkCount_N` param to avoid mixing derived counts with
-   the iteration counter arithmetic).
-3. Loop i=0..count-1: input index = `OP_INPUTINDEX + blockSize + (prior trailing counts) + i`;
-   `OP_UTXOTOKENCOMMITMENT`; decode chunk key, `OP_EQUALVERIFY i`; `OP_CAT` chunkData onto an accumulator.
-   After loop: truncate accumulator to `A$len` (`OP_SPLIT`+`OP_DROP`). Empty when `A$len==0` (skip loop).
+Status (2026-06-23): **read-after-write done; persisted read GUARDED (clean compile error); the persisted
+read loop below is the remaining work - a write-loop-sized effort (intricate tracker-managed codegen +
+full SDK chunk-input plumbing + a derivation interaction).** Concrete executable design:
+
+**Codegen** (`emitDynamicReadLoop(sv)`, call from `visitStateAccess` persisted branch, replacing the
+guard `throw`; leaves the value bytes on the stack as `(value)`):
+1. **Read `A$len`** (the uint32 field): `emitMasterInputIndex` + `compactOffsetMap.get(nftIndex)` +
+   `OP_UTXOTOKENCOMMITMENT`, skip nftIndex tag (multi-NFT) + preceding fields, decode THIS field as
+   `new IntType(false, 32)` (NOT `sv.type`). Track `(dyn_rlen)`.
+2. **Chunk address** `(dyn_rchunkaddr)`: same as the write loop
+   (`emitP2sh32FromCovenant(cat => buildEntryNftCovenantScript(cat, chunkHash))`,
+   `chunkHash = computeCollectionHash(computeCollectionSignature(sv.name, sv.type.toString()))`).
+3. **`count = ceil(A$len/CHUNK)`** `(dyn_rcount)` = `(len + 119) OP_DIV 120` (0 when empty). **Accumulator**
+   `(dyn_racc)` = `OP_0` (empty). **Counter** `(dyn_ri)` = 0. Derive count ON-CHAIN (no injected param);
+   the SDK still positions the chunk inputs at `[blockSize, blockSize+count)`.
+4. **Loop** (mirror `visitCollectionIteration`: `OP_BEGIN`/cond `i<count`/`OP_IF`/snapshot
+   `stackBeforeBody`/body/`removeScopedVariables`/in-place increment via `emitReplace`/`OP_0`/`OP_ELSE`
+   reset `this.stack`/`OP_1`/`OP_ENDIF`/`OP_UNTIL`). Body for chunk i (untracked working values, like the
+   write verify; `emitPushdataDecode` is tracker-neutral):
+   - `inputIdx = OP_INPUTINDEX + blockSize + i`.
+   - **Genuineness (read soundness):** `OP_UTXOBYTECODE(inputIdx) == chunkAddr`; category base == master +
+     mutable (`OP_UTXOTOKENCATEGORY`, 32 `OP_SPLIT` `OP_NIP`, `0x01` cap, `emitVerifyCatBaseEqMaster`).
+   - `commitment = OP_UTXOTOKENCOMMITMENT(inputIdx)`; `emitPushdataDecode(IntType(false,32))` -> chunkIndex
+     + remainder; `OP_EQUALVERIFY` chunkIndex == i; `emitPushdataDecodeLastField(BytesType)` -> chunkData.
+   - **Accumulate:** `acc = acc ++ chunkData` in place (pick `(dyn_racc)`, CAT chunkData, `emitReplace`).
+     (Chunks store exactly `value[i*120:...]` so the concat == the value; truncation is defensive.)
+5. After loop: truncate `(dyn_racc)` to `A$len` (`OP_SPLIT`+`OP_DROP`; also asserts len >= A$len). Push as
+   `(value)`. Empty when `A$len==0` (count 0 -> loop skipped -> acc empty).
+- **Preservation:** a read-only chunk co-spend MUST be recreated (output==input) or the value is destroyed.
+  The SDK recreates the chunks (like `iterationEntryInputs`). On-chain preservation ENFORCEMENT (per-chunk
+  `OUTPUTTOKENCOMMITMENT/BYTECODE/CATEGORY/VALUE == input`) is deferred to the same permissionless-hardening
+  bucket as the write orphan-bound (not exploitable in the signed model). If enforced inline, the SDK
+  extractor's controlStack + `findRedeemScriptStart` fixes (already landed) apply to the loop's OTC checks.
+
+**Semantic** (`SymbolTableTraversal`): pre-scan the body for persisted dynamic reads (a `StateAccessNode`
+with `sv.isDynamic` NOT written in the same function), record `node.dynamicReads: string[]` (like
+`collectionIterations`); surface in the artifact ABI. Phase 1: one dynamic read per function, no coexisting
+collection iteration (shared trailing-input offset). **SDK** (`StatefulContract._createBuilder` /
+`StatefulTransactionBuilder`): for each `dynamicReads` var, fetch its chunks (`findChunkNfts` via
+`getDynamicChunkAddress`), order by chunkIndex, co-spend as trailing read-only inputs at
+`[blockSize, blockSize+count)`, and recreate them as preserving outputs at the same indices; the
+auto-derivation already provides the chunk UTXOs so the loop's `OP_UTXOTOKENCOMMITMENT` reads them.
 
 ### Write loop (`this.dynVar = expr`) - the novel core
 1. **Detect** dynamic writes in the function (scan body for `StateAssignNode` whose target is a dynamic

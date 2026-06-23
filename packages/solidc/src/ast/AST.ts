@@ -358,6 +358,10 @@ export class CollectionNode extends Node implements Named {
 }
 
 export class VariableDefinitionNode extends StatementNode implements Named, Typed {
+  // A synthesized binding that may legitimately go unused (e.g. a desugared `for..of` loop variable);
+  // suppresses the unused-variable check, matching collection iteration.
+  allowUnused?: boolean;
+
   constructor(
     public type: Type,
     public modifier: string[],

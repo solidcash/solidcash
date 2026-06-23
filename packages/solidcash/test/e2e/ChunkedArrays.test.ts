@@ -187,3 +187,34 @@ describe('chunk-packed array: element ops (read-modify-write)', () => {
     expect((await sc.getState()).nums).toEqual([10n, 40n, 30n]);
   });
 });
+
+// for..of (#17): desugars to an index loop over a once-cached local, so it works on chunk-packed (and
+// packed) arrays, which aren't collections. The loop var may go unused (e.g. counting), like a collection.
+const ITER = `pragma solidcash >=0.8.0;
+contract C() {
+  uint256[] nums;
+  function setNums(uint256 a, uint256 b, uint256 c, uint256 d, pubkey pk, sig s) {
+    require(checkSig(s, pk)); this.nums = [a, b, c, d];
+  }
+  function checkSum(int expected) { int t = 0; for (uint256 x of this.nums) { t = t + int(x); } require(t == expected); }
+  function checkCount(int expected) { int c = 0; for (uint256 x of this.nums) { c = c + 1; } require(c == expected); }
+}`;
+
+describe('chunk-packed array: for..of iteration', () => {
+  const provider = createTestProvider();
+  const sig = (): SignatureTemplate => new SignatureTemplate(alicePriv);
+
+  it('iterates elements on-chain (sum + count across a chunk boundary)', async () => {
+    const artifact = compileString(ITER, { chunkedArrays: true });
+    const contract = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, contract, artifact.stateLayout!, { nums: [] }, { saltContract: true },
+    );
+    const sc = StatefulContract.withCategory(contract, categoryId);
+
+    await sc.setNums(10n, 20n, 30n, 40n, alicePub, sig()).send(); // 132 B = 2 chunks, sum 100
+    await sc.checkSum(100n).send();                 // sums elements (incl. boundary-straddling element 3)
+    await sc.checkCount(4n).send();                 // loop var unused -> still allowed
+    await expect(sc.checkSum(99n).send()).rejects.toThrow();
+  });
+});

@@ -74,8 +74,9 @@ stored inline.
 - **Storage:** a length-prefixed blob **inline in a data NFT commitment**, same encoding as a local array.
   An unbounded `packed T[]` is forced to **its own** data NFT (size unknown); a bounded `T[N] packed`
   bin-packs but must be last in its NFT (`SymbolTableTraversal.ts:543-569`).
-- **Operations:** the full dense API - index read/write, `push`, `pop`, `.length`, `delete` (splice). **No
-  `for ... of`** (it is not a collection; iterate by index + `.length`).
+- **Operations:** the full dense API - index read/write, `push`, `pop`, `.length`, `delete` (splice), and
+  `for (T v of this.a)` (desugared in `AstBuilder` to an index loop over a once-cached local, since it is a
+  state variable, not a collection - shared with the chunk-packed form).
 - **Size:** **bounded by the commitment limit** (128 B default, `commitmentLimit`, `compiler.ts:28`). The
   count plus every element must fit in that ~120 B; encoding throws past it (`utils/state.ts:857`).
 - **Use when:** a small, dense array you push/pop and read `.length` on (addresses, a short list).
@@ -170,8 +171,12 @@ the per-element withholding attack. `string[]`/`bytes[]` land here. Deferred.
        inputs the write consumes; chunk inputs sorted by chunkIndex so input blockSize+i is chunk i). Push/pop
        across chunk-count transitions (1<->2 chunks) verified. NOT partial-chunk: a write still rewrites all
        chunks (correct, O(n); true partial access is a later optimization);
-   (e) SDK: whole-array store/read DONE; element positioning + dust fee accounting remain;
-   (f) flip the default, migrate the non-packed-array tests, e2e.
+   (e) SDK: whole-array store/read + element positioning DONE; dust fee accounting as needed;
+   (g) DONE - `for (T v of this.a)`: desugared in `AstBuilder` to `{ T[] tmp = this.a; int i = 0; while (i <
+       tmp.length) { T v = tmp[i]; <body>; i++; } }` - one reassembly into a local, then ordinary local-array
+       indexing (also enables `for..of` on packed arrays). The loop var may go unused (allowUnused flag ->
+       self-reference), matching collection iteration;
+   (f) flip the default (chunkedArrays -> true), migrate the non-packed-array tests, e2e.
 2. **Phase 3** - variable-width (`string[]`, `bytes[]`) via element-keyed/nested.
 
 ## Choosing a state array

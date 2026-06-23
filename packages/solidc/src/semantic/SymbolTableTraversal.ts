@@ -3196,6 +3196,12 @@ export default class SymbolTableTraversal extends AstTraversal {
     if (node.expression) node.expression = this.visit(node.expression);
 
     this.symbolTables[0].set(Symbol.variable(node));
+    // A synthesized binding allowed to be unused (e.g. a desugared for..of loop var): self-reference it so
+    // the unused-variable check passes, matching collection iteration's loop variable.
+    if (node.allowUnused) {
+      const sym = this.symbolTables[0].get(node.name);
+      if (sym) sym.references.push({ name: node.name } as IdentifierNode);
+    }
 
     return node;
   }

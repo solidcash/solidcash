@@ -265,6 +265,7 @@ export default class AstBuilder
   private typeDefMap: Map<string, ValueType> = new Map();
   private pendingParentInvocations: ParentInvocation[] = [];
   private packedStateArrayNames: Set<string> = new Set();
+  private forOfArrayCounter = 0; // uniquifies the temp locals of a desugared `for..of` over a state array
 
   constructor(private tree: ParseTree, private solidityImportCompat = false, private chunkedArrays = false) {
     super();
@@ -1064,7 +1065,7 @@ export default class AstBuilder
       return this.visit(ctx.forInStatement()) as CollectionIterationNode;
     }
     if (ctx.forOfStatement()) {
-      return this.visit(ctx.forOfStatement()) as CollectionIterationNode;
+      return this.visit(ctx.forOfStatement()) as StatementNode;
     }
     return this.visit(ctx.forStatement()) as BlockNode;
   }
@@ -1097,17 +1098,64 @@ export default class AstBuilder
     return node;
   }
 
-  visitForOfStatement(ctx: ForOfStatementContext): CollectionIterationNode {
+  visitForOfStatement(ctx: ForOfStatementContext): CollectionIterationNode | BlockNode {
     const valueType = this.resolveType(ctx.typeName().getText());
     const valueName = ctx.Identifier(0).getText();
     const collectionName = ctx.Identifier(1).getText();
     const body = this.visit(ctx.block()) as BlockNode;
+
+    // Dense state arrays (packed inline or chunk-packed) are state variables, not collections. Desugar
+    // `for (T x of this.a)` into an index loop over a once-cached local so the body reuses ordinary local
+    // array indexing: { T[] tmp = this.a; int i = 0; while (i < tmp.length) { T x = tmp[i]; <body>; i++; } }
+    if (this.packedStateArrayNames.has(collectionName)) {
+      return this.desugarForOfArray(valueType, valueName, collectionName, body, Location.fromCtx(ctx));
+    }
+
     const node = new CollectionIterationNode(
       CollectionIterationMode.VALUES, collectionName,
       undefined, undefined, valueType, valueName, body,
     );
     node.location = Location.fromCtx(ctx);
     return node;
+  }
+
+  private desugarForOfArray(
+    valueType: Type,
+    valueName: string,
+    arrayName: string,
+    body: BlockNode,
+    loc: Location,
+  ): BlockNode {
+    const uid = this.forOfArrayCounter++;
+    const tmpName = `__forOf_arr_${uid}`;
+    const idxName = `__forOf_i_${uid}`;
+    const ident = (name: string): IdentifierNode => { const n = new IdentifierNode(name); n.location = loc; return n; };
+    const stamp = <T extends { location?: Location }>(n: T): T => { n.location = loc; return n; };
+
+    // T[] tmp = this.a;  (one reassembly for chunk-packed; inline read for packed)
+    const cacheDef = stamp(new VariableDefinitionNode(
+      new ArrayType(valueType), [], tmpName, stamp(new StateAccessNode(arrayName)),
+    ));
+    // int i = 0;
+    const idxDef = stamp(new VariableDefinitionNode(PrimitiveType.INT, [], idxName, stamp(new IntLiteralNode(0n))));
+    // T x = tmp[i];  (loop var may go unused, like a collection-iteration loop variable)
+    const elemDef = stamp(new VariableDefinitionNode(
+      valueType, [], valueName, stamp(new ArrayAccessNode(ident(tmpName), ident(idxName))),
+    ));
+    elemDef.allowUnused = true;
+    // i = i + 1;
+    const update = stamp(new AssignNode(
+      ident(idxName), stamp(new BinaryOpNode(ident(idxName), BinaryOperator.PLUS, stamp(new IntLiteralNode(1n)))),
+    ));
+    // while (i < tmp.length) { x = tmp[i]; <body>; i++; }
+    const loopBody = stamp(new BlockNode([elemDef, ...(body.statements ?? []), update]));
+    const cond = stamp(new BinaryOpNode(
+      ident(idxName), BinaryOperator.LT, stamp(new UnaryOpNode(UnaryOperator.SIZE, ident(tmpName))),
+    ));
+    const whileNode = stamp(new WhileNode(cond, loopBody));
+    whileNode.forLoopUpdateCount = 1; // the trailing i++ still runs on `continue`
+
+    return stamp(new BlockNode([cacheDef, idxDef, whileNode]));
   }
 
   visitForStatement(ctx: ForStatementContext): BlockNode {

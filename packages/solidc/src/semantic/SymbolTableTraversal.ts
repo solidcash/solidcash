@@ -504,12 +504,13 @@ export default class SymbolTableTraversal extends AstTraversal {
         }
       }
 
-      // Dynamic-storage vars (string / unbounded bytes) store only a uint32 length header (A$len) in
-      // the data NFT; the value itself lives in chunk UTXOs. So they reserve the uint32 footprint, not
-      // the generic string/bytes estimate. See docs/dynamic-storage.md.
+      // Dynamic-storage vars (string / unbounded bytes, and chunk-packed fixed-width arrays) store only a
+      // uint32 length header (A$len) in the data NFT; the value itself lives in chunk UTXOs. So they reserve
+      // the uint32 footprint, not the generic estimate. string/bytes are detected by type here; a chunk-packed
+      // array arrives with sv.isDynamic already set by the AstBuilder. See docs/dynamic-storage.md, arrays.md.
       let maxSize = getMaxPushdataEncodedSizeForType(sv.type);
-      if (isDynamicStorageType(sv.type)) {
-        sv.isDynamic = true;
+      if (isDynamicStorageType(sv.type)) sv.isDynamic = true;
+      if (sv.isDynamic) {
         maxSize = getMaxPushdataEncodedSizeForType(new IntType(false, 32)); // A$len: uint32 -> 6 bytes
       }
 

@@ -1,6 +1,6 @@
 import { ParseTree, ParseTreeVisitor } from 'antlr4';
 import { hexToBin } from '@bitauth/libauth';
-import { parseType, MappingType, ArrayType, StructType, IntType, FixedType, Type, AddressType, ValueType, BytesType, PrimitiveType, EnumType } from '@solidcash/utils';
+import { parseType, MappingType, ArrayType, StructType, IntType, FixedType, Type, AddressType, ValueType, BytesType, PrimitiveType, EnumType, isFixedWidthType } from '@solidcash/utils';
 import semver from 'semver';
 import {
   Node,
@@ -266,7 +266,7 @@ export default class AstBuilder
   private pendingParentInvocations: ParentInvocation[] = [];
   private packedStateArrayNames: Set<string> = new Set();
 
-  constructor(private tree: ParseTree, private solidityImportCompat = false) {
+  constructor(private tree: ParseTree, private solidityImportCompat = false, private chunkedArrays = false) {
     super();
   }
 
@@ -1672,6 +1672,18 @@ export default class AstBuilder
         // Packed array: store as a single blob in a data NFT (state variable)
         const node = new StateVariableNode(arrayT, name);
         node.isPacked = true;
+        node.visibility = visibility;
+        node.immutable = isImmutable;
+        node.location = Location.fromCtx(ctx);
+        return node;
+      }
+
+      // Chunk-packed array (phase-2 scaffold, behind chunkedArrays): an unbounded fixed-width `T[]` becomes
+      // a dense chunk-backed dynamic state variable (uint32 length header + chunk UTXOs), reusing the
+      // string/bytes machinery. Variable-width / bounded arrays keep the collection model. See docs/arrays.md.
+      if (this.chunkedArrays && arrayT.bound === undefined && isFixedWidthType(arrayT.elementType)) {
+        const node = new StateVariableNode(arrayT, name);
+        node.isDynamic = true;
         node.visibility = visibility;
         node.immutable = isImmutable;
         node.location = Location.fromCtx(ctx);

@@ -23,6 +23,10 @@ export interface CompilerOptions {
   // User-supplied external libraries (script precompiles). Each registers `name(...)` as a callable with
   // the given ABI signature, backed by the hex `code` blob. Merged with the built-in libraries.
   userLibraries?: { name: string; code: string; abi: { inputs: AbiInput[]; outputs: AbiOutput[] } }[];
+  // Phase-2 scaffold (default false): route an unbounded fixed-width `T[]` state var to the dense
+  // chunk-packed backend (uint32 length header + chunk UTXOs) instead of the sparse entry-NFT collection.
+  // Will become the default for fixed-width `T[]` once the codegen/SDK land. See docs/arrays.md.
+  chunkedArrays?: boolean;
 }
 
 export interface AbiInput {

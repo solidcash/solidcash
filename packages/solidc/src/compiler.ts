@@ -26,6 +26,7 @@ export const DEFAULT_COMPILER_OPTIONS: CompilerOptions = {
   enforceFunctionParameterTypes: true,
   enforceLocktimeGuard: true,
   commitmentLimit: 128,
+  chunkedArrays: false,
 };
 
 export interface CompileOptions extends CompilerOptions {
@@ -37,7 +38,8 @@ export function compileString(code: string, compilerOptions: CompileOptions = {}
   const mergedCompilerOptions = { ...DEFAULT_COMPILER_OPTIONS, ...artifactCompilerOptions };
 
   // Lexing + parsing
-  let ast = parseCode(code, errorListener, mergedCompilerOptions.solidityImportCompat);
+  let ast = parseCode(code, errorListener, mergedCompilerOptions.solidityImportCompat,
+    mergedCompilerOptions.chunkedArrays);
 
   // Resolve imports
   if (ast.imports.length > 0) {
@@ -304,6 +306,7 @@ export function parseCode(
   code: string,
   errorListener: SolidCashErrorListener = ThrowingErrorListener.INSTANCE,
   solidityImportCompat = false,
+  chunkedArrays = false,
 ): Ast {
   const syntaxErrorListener = new ForwardingErrorListener(errorListener);
 
@@ -322,7 +325,7 @@ export function parseCode(
   syntaxErrorListener.throwFirstError();
 
   // AST building
-  const ast = new AstBuilder(parseTree, solidityImportCompat).build() as Ast;
+  const ast = new AstBuilder(parseTree, solidityImportCompat, chunkedArrays).build() as Ast;
 
   return ast;
 }

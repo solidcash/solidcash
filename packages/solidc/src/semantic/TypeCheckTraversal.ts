@@ -711,6 +711,10 @@ export default class TypeCheckTraversal extends AstTraversal {
     if (node.isPacked && node.type instanceof ArrayType) {
       return node;
     }
+    // Chunk-packed fixed-width arrays (phase-2 scaffold): a dense dynamic array stored across chunk UTXOs.
+    if (node.isDynamic && node.type instanceof ArrayType) {
+      return node;
+    }
     if (!(node.type instanceof StructType) && !isValidStateType(node.type)) {
       throw new UnsupportedStateTypeError(node);
     }

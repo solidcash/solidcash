@@ -1,7 +1,7 @@
 # Dynamic storage (chunked string / bytes / dynamic arrays)
 
-Status: **multi-chunk write shipped & green.** The "heap" half of the register/heap
-state model. Fixed-size state lives in **registers** (data NFTs, static count - see
+Status: **multi-chunk write + on-chain read-after-write shipped & green; persisted on-chain read guarded.**
+The "heap" half of the register/heap state model. Fixed-size state lives in **registers** (data NFTs, static count - see
 external-contract-calls.md). Variable-size state (`string`, `bytes`, dynamic arrays) lives in **dynamic
 storage**: it grows and shrinks at runtime by allocating and freeing chunk UTXOs.
 

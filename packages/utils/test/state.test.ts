@@ -15,6 +15,9 @@ import {
   buildChunkCommitment,
   parseChunkCommitment,
   joinChunks,
+  packFixedWidthArray,
+  unpackFixedWidthArray,
+  packFixedWidthElement,
   StateLayout,
   StateRecord,
   Op,
@@ -705,5 +708,37 @@ describe('dynamic-storage data-NFT commitment (A$len header)', () => {
     // a single emoji is 4 utf8 bytes
     const hex = buildPushdataCommitment(layout, { a: 0n, b: '\u{1F680}' }, 0);
     expect(parsePushdataCommitment(hex, layout, 0)['b$len']).toBe(4n);
+  });
+});
+
+describe('flat-stream fixed-width array codec', () => {
+  // The tight blob backing a chunk-packed fixed-width T[] (see docs/arrays.md). Round-trip + the
+  // computable element offset (element i at byte i*width) that gives O(1) random access.
+  it.each([
+    ['uint8', [0n, 5n, 255n], 2],
+    ['uint256', [0n, 1n, 1234567890123456789n], 33],
+    ['int128', [-5n, 0n, 42n], 17],
+    ['bool', [true, false, true], 1],
+  ] as Array<[string, Array<bigint | boolean>, number]>)(
+    'round-trips %s with width %i and computable offsets', (type, elements, width) => {
+      const blob = packFixedWidthArray(elements, type);
+      expect(blob.length).toBe(elements.length * width);
+      expect(unpackFixedWidthArray(blob, type)).toEqual(elements);
+      // element i occupies [i*width, (i+1)*width)
+      for (let i = 0; i < elements.length; i++) {
+        expect(blob.slice(i * width, (i + 1) * width)).toEqual(packFixedWidthElement(elements[i], type));
+      }
+    },
+  );
+
+  it('round-trips bytesN elements as raw bytes', () => {
+    const els = [new Uint8Array(20).fill(0xab), new Uint8Array(20).fill(0x01)];
+    const blob = packFixedWidthArray(els, 'bytes20');
+    expect(blob.length).toBe(40);
+    expect(unpackFixedWidthArray(blob, 'bytes20')).toEqual(els);
+  });
+
+  it('rejects a blob whose length is not a multiple of the element width', () => {
+    expect(() => unpackFixedWidthArray(new Uint8Array(5), 'uint256')).toThrow();
   });
 });

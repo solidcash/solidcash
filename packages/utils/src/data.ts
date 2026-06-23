@@ -37,6 +37,21 @@ export function decodeInt(encodedInt: Uint8Array, maxLength: number = 10000): bi
   return result;
 }
 
+/**
+ * Decode a fixed-width (OP_NUM2BIN) sign-magnitude int - the OP_BIN2NUM inverse of encodeIntAsFixedBytes.
+ * Unlike decodeInt, it accepts the non-minimal zero-padding that NUM2BIN/fixed-width packing produces.
+ */
+export function decodeIntFixedWidth(encodedInt: Uint8Array, maxLength: number = 10000): bigint {
+  const result = vmNumberToBigInt(encodedInt, {
+    maximumVmNumberByteLength: maxLength,
+    requireMinimalEncoding: false,
+  });
+  if (isVmNumberError(result)) {
+    throw new Error(result);
+  }
+  return result;
+}
+
 export function encodeString(str: string): Uint8Array {
   return utf8ToBin(str);
 }

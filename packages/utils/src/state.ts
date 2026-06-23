@@ -1,6 +1,9 @@
 import { AbiFunction, Artifact, StateLayout, StateVariableInfo, StructDefinitionInfo } from './artifact.js';
 import { bytecodeToAsm, Op, Script, scriptToBytecode } from './script.js';
-import { encodeInt } from './data.js';
+import { encodeInt, encodeIntAsFixedBytes, decodeIntFixedWidth } from './data.js';
+import {
+  BytesType, FixedType, IntType, parseTypeStrict, PrimitiveType, fixedWidthBytes,
+} from './types.js';
 import {
   bigIntToVmNumber, binToHex, binToUtf8, hexToBin, utf8ToBin, vmNumberToBigInt, isVmNumberError,
 } from '@bitauth/libauth';
@@ -1052,6 +1055,61 @@ export function joinChunks(orderedChunkData: Uint8Array[], totalLength: number):
     off += c.length;
   }
   return joined.slice(0, totalLength);
+}
+
+// ===== Flat-stream chunk-packed array codec (fixed-width elements) =====
+// The tight-packed blob `elem_0 ++ elem_1 ++ ...` (each element exactly fixedWidthBytes bytes) that backs a
+// chunk-packed fixed-width T[]. Matches the compiler's emitEncodeElementPacked so SDK-built chunks and the
+// covenant agree. Element i lives at byte [i*width, (i+1)*width). See docs/arrays.md. Structs are deferred.
+
+/** Pack one fixed-width element to exactly fixedWidthBytes(type) bytes (OP_NUM2BIN for int/fixed). */
+export function packFixedWidthElement(value: PrimitiveStateValue, elementType: string): Uint8Array {
+  const t = parseTypeStrict(elementType);
+  if (t === PrimitiveType.BOOL) return new Uint8Array([value ? 1 : 0]);
+  if (t instanceof IntType || t instanceof FixedType) {
+    return encodeIntAsFixedBytes(value as bigint, t.byteWidth);
+  }
+  if ((t instanceof BytesType && t.bound !== undefined) || t === PrimitiveType.PUBKEY) {
+    const width = fixedWidthBytes(t);
+    const bytes = value as Uint8Array;
+    if (bytes.length !== width) {
+      throw new Error(`packFixedWidthElement: '${elementType}' must be ${width} bytes, got ${bytes.length}`);
+    }
+    return bytes;
+  }
+  throw new Error(`packFixedWidthElement: '${elementType}' is not a supported fixed-width element type`);
+}
+
+/** Decode one fixed-width element from its packed bytes (OP_BIN2NUM for int/fixed). */
+export function unpackFixedWidthElement(bytes: Uint8Array, elementType: string): PrimitiveStateValue {
+  const t = parseTypeStrict(elementType);
+  if (t === PrimitiveType.BOOL) return bytes.length > 0 && bytes[0] !== 0;
+  if (t instanceof IntType || t instanceof FixedType) return decodeIntFixedWidth(bytes);
+  if ((t instanceof BytesType && t.bound !== undefined) || t === PrimitiveType.PUBKEY) return bytes;
+  throw new Error(`unpackFixedWidthElement: '${elementType}' is not a supported fixed-width element type`);
+}
+
+/** Pack a fixed-width array into its tight blob. */
+export function packFixedWidthArray(elements: PrimitiveStateValue[], elementType: string): Uint8Array {
+  const width = fixedWidthBytes(parseTypeStrict(elementType));
+  const blob = new Uint8Array(elements.length * width);
+  for (let i = 0; i < elements.length; i++) {
+    blob.set(packFixedWidthElement(elements[i], elementType), i * width);
+  }
+  return blob;
+}
+
+/** Unpack a tight blob into elements; blob length must be a whole multiple of the element width. */
+export function unpackFixedWidthArray(blob: Uint8Array, elementType: string): PrimitiveStateValue[] {
+  const width = fixedWidthBytes(parseTypeStrict(elementType));
+  if (blob.length % width !== 0) {
+    throw new Error(`unpackFixedWidthArray: blob length ${blob.length} is not a multiple of element width ${width}`);
+  }
+  const out: PrimitiveStateValue[] = [];
+  for (let off = 0; off < blob.length; off += width) {
+    out.push(unpackFixedWidthElement(blob.slice(off, off + width), elementType));
+  }
+  return out;
 }
 
 /**

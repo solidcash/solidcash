@@ -623,6 +623,34 @@ export function parseTypeStrict(str: string): Type {
   return result;
 }
 
+/**
+ * A type is fixed-width when its packed (tight) encoding is a constant number of bytes - the basis for the
+ * flat-stream chunk-packed array (element `i` lives at byte offset `i * fixedWidthBytes`). Mirrors the
+ * compiler's getFixedWidth/emitEncodeElementPacked. Plain `int`, unbounded `bytes`, `string` and structs
+ * with any dynamic field are NOT fixed-width (their encoding is value-dependent). Accepts a Type or a
+ * type string.
+ */
+export function isFixedWidthType(type: Type | string): boolean {
+  const t = typeof type === 'string' ? parseType(type) : type;
+  if (t === undefined) return false;
+  if (t === PrimitiveType.BOOL || t === PrimitiveType.PUBKEY) return true;
+  if (t instanceof BytesType) return t.bound !== undefined;
+  if (t instanceof IntType || t instanceof FixedType) return true;
+  if (t instanceof StructType) return t.fields.every((f) => isFixedWidthType(f.type));
+  return false;
+}
+
+/** Packed (tight) byte width of a fixed-width type. Throws if the type is not fixed-width. */
+export function fixedWidthBytes(type: Type | string): number {
+  const t = typeof type === 'string' ? parseTypeStrict(type) : type;
+  if (t === PrimitiveType.BOOL) return 1;
+  if (t === PrimitiveType.PUBKEY) return 33;
+  if (t instanceof BytesType && t.bound !== undefined) return t.bound;
+  if (t instanceof IntType || t instanceof FixedType) return t.byteWidth;
+  if (t instanceof StructType) return t.fields.reduce((sum, f) => sum + fixedWidthBytes(f.type), 0);
+  throw new Error(`Type is not fixed-width: ${t}`);
+}
+
 // Parse `function(<types>)` or `function(<types>)returns(<types>)` (no whitespace) into a FunctionType.
 function parseFunctionType(str: string): FunctionType {
   const afterKeyword = str.slice('function'.length); // "(params)..." or "(params)returns(rets)"

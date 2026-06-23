@@ -99,9 +99,68 @@ chunk machinery (the same one shipped for `string`/`bytes`), packing many elemen
 - **Write / grow / shrink:** the dynamic-storage write loop generalized to element-typed chunks - split the
   elements into chunks, verify each chunk output, and apply the same **orphan-bound + old-chunk consumption**
   scans (`emitVerifyChunkUtxoCount`) that already make `string`/`bytes` writes leave the exact chunk set.
-- **Status:** designed only. The `string`/`bytes` chunk path (phase 1) is shipped and green; arrays are
-  phase 2 in dynamic-storage.md. It would most naturally become the new backend for the **default** state
-  `T[]` (or a third explicit modifier) - to be decided when built.
+- **Status:** **DECIDED as the new default backend for state `T[]`** (see the spec below); implementation in
+  progress. The `string`/`bytes` chunk path it reuses (phase 1) is shipped and green.
+
+## Decision (2026-06-23) and implementation spec
+
+**Decision:** the default state `T[]` becomes a dense, length-tracked, **unbounded chunk-packed array**.
+The layout is chosen by element type. `packed T[]` stays (inline, bounded, cheapest); the sparse use-case
+moves to `mapping(uint=>T)`. Rationale: today's non-packed `T[]` is a sparse int-map (no `push`/`.length`) -
+surprising for a Solidity-targeting language; and for the common small-element case the flat-stream layout
+is also 3-6x denser than one-entry-NFT-per-element.
+
+### Layout by element type
+- **Fixed-width** elements (`uintN`/`intN`, `bytesN`, `bool`, `address`, `fixedNxM`, fixed-width struct) -
+  including > 120 B like `bytes200` - use **flat-stream** (phase 2).
+- **Variable-width** elements (`string`, `bytes`, dynamic struct) use **element-keyed / nested** (phase 3).
+
+### Flat-stream (fixed-width) - phase 2
+Storage is the shipped `string`/`bytes` dynamic-storage machinery reused verbatim: a `uint32` byte-length
+header `A$len` in the data NFT + a chunk run. The chunk blob is the **tight-packed** element stream
+`elem_0 ++ elem_1 ++ ...`, each element exactly `width = getFixedWidth(T)` bytes (sign-magnitude `OP_NUM2BIN`
+packing, `width` from `IntType.byteWidth = ceil((bits+1)/8)`, same as `emitEncodeElementPacked`). Therefore:
+- `n = A$len / width` is the count; `.length` reads the header and divides (no separate count field).
+- element `i` occupies blob bytes `[i*width, (i+1)*width)` - **computable** -> O(1) random access.
+
+| Op | Mechanism |
+| --- | --- |
+| `this.a.length` | read `A$len`, `/ width` |
+| `this.a[i]` (read) | co-spend the chunks covering `[i*width,(i+1)*width)`, concat, splice `width` bytes, decode |
+| `this.a[i] = v` | rewrite only the chunk(s) covering element `i`'s byte range; other chunks preserved |
+| `this.a.push(v)` | `A$len += width`; append `v`'s `width` bytes (extend last chunk or mint one) |
+| `this.a.pop()` | `A$len -= width`; truncate/drop the last chunk |
+| `delete this.a[i]` | zero element `i`'s `width` bytes (Solidity `delete` = zero, not splice) |
+| whole read `this.a` | dynamic read loop -> blob -> decode all |
+| whole write `this.a = [..]` | encode -> tight blob -> dynamic write loop |
+| `for (T v of this.a)` | iterate `i = 0..n-1`, read element `i` |
+
+Covenant reuses the shipped dynamic write loop + orphan-bound + old-chunk consumption (`emitVerifyChunkUtxoCount`).
+The novel codegen is **partial-chunk access**: element ops target the chunk(s) for one element's byte range
+instead of the whole run (a new read/write narrower than the whole-value string read/write).
+
+### Element-keyed / nested (variable-width) - phase 3
+Each element `i` is its own dynamic value (own length authority + own chunk sub-run), keyed
+`(elementIndex, chunkIndex)` via `buildEntryCommitmentMultiKey`. Per-element length authority lives in
+always-co-spent state (a length-index in the data NFT, or each element as a nested dynamic value) to defeat
+the per-element withholding attack. `string[]`/`bytes[]` land here. Deferred.
+
+### Migration
+- `T[]` semantics change: **sparse int-map -> dense array** (gains `push`/`pop`/`.length`; loses arbitrary
+  gaps). Sparse use -> `mapping(uint=>T)`. Existing non-packed-array tests update to the dense model.
+- `packed T[]` unchanged. Breaking state-layout change (length header + chunked storage) - fine pre-1.0.
+- **Interim** (until phase 3): variable-width `T[]` (`string[]`, `bytes[]`) stays on today's collection
+  model; only fixed-width `T[]` flips to flat-stream in phase 2.
+
+### Phasing / build order
+1. **Phase 2 (in progress)** - flat-stream fixed-width arrays:
+   (a) utils: `isFixedWidthType`/`fixedWidthBytes` + tight-pack codec (`pack`/`unpack` array <-> blob);
+   (b) layout/desugar: fixed-width `T[]` -> dynamic-storage (`A$len` header + chunk collection);
+   (c) codegen: whole-array read/write + `.length`;
+   (d) codegen: element ops (index r/w, `push`, `pop`, `delete`) via partial-chunk access;
+   (e) SDK: store/read + element positioning + dust fee accounting;
+   (f) flip the default, migrate the non-packed-array tests, e2e.
+2. **Phase 3** - variable-width (`string[]`, `bytes[]`) via element-keyed/nested.
 
 ## Choosing a state array
 

@@ -2,12 +2,39 @@ import {
   ArrayType,
   BytesType,
   explicitlyCastable,
+  fixedWidthBytes,
+  isFixedWidthType,
   parseType,
   PrimitiveType,
   TupleType,
 } from '../src/index.js';
 
 describe('type utilities', () => {
+  // Foundation for the flat-stream chunk-packed array: which element types pack to a constant width,
+  // and what that width is (element i lives at byte offset i * fixedWidthBytes). See docs/arrays.md.
+  describe('isFixedWidthType / fixedWidthBytes', () => {
+    it('classifies fixed-width types and their packed byte widths', () => {
+      // bool / pubkey / bounded bytes
+      expect(isFixedWidthType('bool')).toBe(true);
+      expect(fixedWidthBytes('bool')).toBe(1);
+      expect(isFixedWidthType('pubkey')).toBe(true);
+      expect(fixedWidthBytes('pubkey')).toBe(33);
+      expect(fixedWidthBytes('bytes20')).toBe(20);
+      expect(fixedWidthBytes('bytes200')).toBe(200);
+      // bounded ints: sign-magnitude width = ceil((bits+1)/8)
+      expect(fixedWidthBytes('uint8')).toBe(2);
+      expect(fixedWidthBytes('uint256')).toBe(33);
+      expect(fixedWidthBytes('int128')).toBe(17);
+    });
+
+    it('rejects variable-width types', () => {
+      expect(isFixedWidthType('int')).toBe(false); // plain int is value-dependent
+      expect(isFixedWidthType('bytes')).toBe(false); // unbounded
+      expect(isFixedWidthType('string')).toBe(false);
+      expect(() => fixedWidthBytes('string')).toThrow();
+    });
+  });
+
   describe('explicitlyCastable()', () => {
     it('cannot cast undefined values', () => {
       expect(explicitlyCastable(PrimitiveType.INT, undefined)).toEqual(false);

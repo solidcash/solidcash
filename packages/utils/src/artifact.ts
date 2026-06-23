@@ -105,6 +105,8 @@ export interface AbiFunction {
   collectionIterations?: readonly CollectionIterationAbi[];
   // Persisted dynamic-storage vars read on-chain; the SDK co-spends their chunks as read-only inputs.
   dynamicReads?: readonly string[];
+  // Dynamic-storage vars written on-chain; the SDK consumes their old chunks and creates the new ones.
+  dynamicWrites?: readonly string[];
   blockLayout?: FunctionBlockLayout;
   isFallback?: boolean;
   isReceive?: boolean;

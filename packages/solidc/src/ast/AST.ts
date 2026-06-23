@@ -191,6 +191,10 @@ export class FunctionDefinitionNode extends Node implements Named {
   // Persisted dynamic-storage vars (string / unbounded bytes) read on-chain (not written this function);
   // the SDK co-spends their chunk UTXOs as read-only trailing inputs. Recorded during codegen.
   dynamicReads?: string[];
+  // Dynamic-storage vars WRITTEN on-chain this function; the SDK consumes their old chunks and creates the
+  // new ones. A function that only reads `.length` (or doesn't touch the var) must NOT appear here, else its
+  // chunks would be wrongly destroyed. Recorded during codegen.
+  dynamicWrites?: string[];
   modifiers: FunctionModifier[] = [];
   customModifiers: CustomModifierInvocation[] = [];
   returnTypes: Type[] = [];

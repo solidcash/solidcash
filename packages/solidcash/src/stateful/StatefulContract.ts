@@ -4774,9 +4774,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     }
 
     // Dynamic-storage vars (string / unbounded bytes) WRITTEN by this function: chunk NFTs at a per-var
-    // entry covenant address. Vars only READ (in dynamicReads) are co-spent read-only above, not here.
+    // entry covenant address. Only vars the function actually writes (dynamicWrites) get their old chunks
+    // consumed and new ones created. Vars merely read (dynamicReads, co-spent read-only above) or untouched
+    // - e.g. a function that reads only `.length`, or writes a different dynamic var - must be left alone,
+    // else their chunks would be wrongly destroyed.
+    const dynamicWrites = abiFunction?.dynamicWrites ?? [];
     const dynamicVarInfos = (stateLayout.variables ?? [])
-      .filter((v) => v.dynamic && !(dynamicReads ?? []).includes(v.name));
+      .filter((v) => v.dynamic && dynamicWrites.includes(v.name));
     const dynamicChunkVars = dynamicVarInfos.map((v) => ({
       name: v.name,
       type: v.type,

@@ -154,11 +154,15 @@ the per-element withholding attack. `string[]`/`bytes[]` land here. Deferred.
 
 ### Phasing / build order
 1. **Phase 2 (in progress)** - flat-stream fixed-width arrays:
-   (a) utils: `isFixedWidthType`/`fixedWidthBytes` + tight-pack codec (`pack`/`unpack` array <-> blob);
-   (b) layout/desugar: fixed-width `T[]` -> dynamic-storage (`A$len` header + chunk collection);
-   (c) codegen: whole-array read/write + `.length`;
+   (a) DONE - utils: `isFixedWidthType`/`fixedWidthBytes` + tight-pack codec (`pack`/`unpack` array <-> blob);
+   (b) DONE - layout/desugar: fixed-width `T[]` -> dynamic-storage (`A$len` header + chunk collection);
+   (c) DONE - codegen: whole-array read/write + `.length`. Includes shrink-to-empty (`this.a = []`) and
+       multiple dynamic vars per contract: a function records which dynamic vars it WRITES (`dynamicWrites`
+       in the ABI) so the SDK consumes/recreates only those chunks - a `.length`-only or untouched var keeps
+       its chunks. Cross-field reads use the **physical** field type (a dynamic var's data-NFT field is a
+       `uint32 A$len` header, not its declared type), so skipping `a` to read `b` no longer mis-parses;
    (d) codegen: element ops (index r/w, `push`, `pop`, `delete`) via partial-chunk access;
-   (e) SDK: store/read + element positioning + dust fee accounting;
+   (e) SDK: whole-array store/read DONE; element positioning + dust fee accounting remain;
    (f) flip the default, migrate the non-packed-array tests, e2e.
 2. **Phase 3** - variable-width (`string[]`, `bytes[]`) via element-keyed/nested.
 

@@ -2291,7 +2291,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     // Skip preceding fields
     for (let i = 0; i < sv.fieldIndex; i++) {
-      this.emitPushdataSkip(fieldsInNft[i].type, locationData);
+      this.emitPushdataSkip(this.physicalFieldType(fieldsInNft[i]), locationData);
     }
 
     // Decode this field
@@ -5026,7 +5026,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
       // Skip preceding fields
       for (let i = 0; i < sv.fieldIndex; i++) {
-        this.emitPushdataSkip(fieldsInNft[i].type, locationData);
+        this.emitPushdataSkip(this.physicalFieldType(fieldsInNft[i]), locationData);
       }
 
       // Decode this field - for ArrayType as last field, this is a no-op
@@ -7135,7 +7135,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     // 2. Skip preceding fields
     for (let i = 0; i < sv.fieldIndex; i++) {
-      this.emitPushdataSkip(fieldsInNft[i].type, locationData);
+      this.emitPushdataSkip(this.physicalFieldType(fieldsInNft[i]), locationData);
     }
 
     // 3. Decode this field
@@ -7190,6 +7190,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.preAllocatedStateWrites.add(key);
 
       this.pendingDynamicWrites.set(sv.name, { valueStackName, sv });
+      // Record the write so the SDK consumes this var's old chunks and creates the new ones. Vars not
+      // listed here (read-only or untouched) keep their chunks intact.
+      const writes = (this.currentFunction.dynamicWrites ??= []);
+      if (!writes.includes(sv.name)) writes.push(sv.name);
       return node;
     }
 
@@ -8501,15 +8505,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
             // Skip preceding fields
             for (let i = 0; i < sv.fieldIndex; i++) {
-              this.emitPushdataSkip(sortedFields[i].type, locationData);
+              this.emitPushdataSkip(this.physicalFieldType(sortedFields[i]), locationData);
             }
 
-            // Decode this field
+            // Decode this field. A dynamic var's physical field is its uint32 A$len header (preserved
+            // verbatim here when unwritten), not a value of its declared string/bytes/array type.
+            const fieldType = this.physicalFieldType(sv);
             const isLast = sv.fieldIndex === sortedFields[sortedFields.length - 1].fieldIndex;
             if (isLast) {
-              this.emitPushdataDecodeLastField(sv.type, locationData);
+              this.emitPushdataDecodeLastField(fieldType, locationData);
             } else {
-              this.emitPushdataDecode(sv.type, locationData);
+              this.emitPushdataDecode(fieldType, locationData);
               this.emit(Op.OP_DROP, locationData); // drop remainder (top of stack)
             }
 
@@ -8517,7 +8523,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
             // so that emitPushdataEncode's internal popFromStack pops the right entry
             this.pushToStack('(value)');
             // Re-encode to pushdata format (pops decoded value, pushes encoded value)
-            this.emitPushdataEncode(sv.type, locationData);
+            this.emitPushdataEncode(fieldType, locationData);
           }
 
           // CAT with previous fields
@@ -8920,6 +8926,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
   }
 
+  /**
+   * The physical data-NFT field type for skip/decode/encode. A dynamic var (string / unbounded bytes /
+   * chunk-packed array) stores only a uint32 A$len header in the commitment, NOT a value of its declared
+   * type. Reading or skipping a preceding/unwritten dynamic field with its declared type mis-parses the
+   * header (e.g. skipping a `uint256[]` would decode a phantom count*width array). Always use this.
+   */
+  private physicalFieldType(field: { type: Type; isDynamic?: boolean }): Type {
+    return field.isDynamic ? new IntType(false, 32) : field.type;
+  }
+
   /** Read a dynamic var's uint32 A$len header from its data NFT INPUT commitment; push as `trackName`. */
   private emitReadDynamicLen(sv: StateVariableNode, trackName: string, loc: SingleLocationData): void {
     const fieldsInNft = this.stateVariables
@@ -8930,7 +8946,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_ADD, loc);
     this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc);
     if (this.isMultiDataNft()) this.emitNftIndexTagSkip(loc);
-    for (let i = 0; i < sv.fieldIndex; i++) this.emitPushdataSkip(fieldsInNft[i].type, loc);
+    for (let i = 0; i < sv.fieldIndex; i++) this.emitPushdataSkip(this.physicalFieldType(fieldsInNft[i]), loc);
     if (sv.fieldIndex === fieldsInNft[fieldsInNft.length - 1].fieldIndex) {
       this.emitPushdataDecodeLastField(new IntType(false, 32), loc);
     } else {
@@ -9055,7 +9071,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_ADD, loc);
     this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc);
     if (this.isMultiDataNft()) this.emitNftIndexTagSkip(loc);
-    for (let i = 0; i < sv.fieldIndex; i++) this.emitPushdataSkip(fieldsInNft[i].type, loc);
+    for (let i = 0; i < sv.fieldIndex; i++) this.emitPushdataSkip(this.physicalFieldType(fieldsInNft[i]), loc);
     if (sv.fieldIndex === fieldsInNft[fieldsInNft.length - 1].fieldIndex) {
       this.emitPushdataDecodeLastField(lenType, loc);
     } else {

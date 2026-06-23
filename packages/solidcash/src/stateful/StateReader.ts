@@ -2,6 +2,7 @@ import {
   StateLayout, parsePushdataCommitment, EventDefinitionAbi, decodePushdataValue,
   StateValue, StateRecord, isMultiDataNftLayout,
   parseChunkCommitment, joinChunks, dynamicLenKey,
+  parseArrayTypeString, isFixedWidthType, unpackFixedWidthArray,
 } from '@solidcash/utils';
 import { hexToBin, binsAreEqual, binToUtf8 } from '@bitauth/libauth';
 import { Utxo } from '../interfaces.js';
@@ -148,7 +149,13 @@ export class StateReader {
         }
         value = joinChunks(ordered.map((c) => c.chunkData), len);
       }
-      state[v.name] = v.type === 'string' ? binToUtf8(value) : value;
+      // Chunk-packed fixed-width array: decode the tight blob into elements. string -> utf8, bytes -> raw.
+      const arrInfo = parseArrayTypeString(v.type);
+      if (arrInfo && isFixedWidthType(arrInfo.elementType)) {
+        state[v.name] = unpackFixedWidthArray(value, arrInfo.elementType) as StateValue;
+      } else {
+        state[v.name] = v.type === 'string' ? binToUtf8(value) : value;
+      }
     }
   }
 

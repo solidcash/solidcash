@@ -748,6 +748,15 @@ export default class TypeCheckTraversal extends AstTraversal {
     if (node.stateVariable?.type instanceof FixedType && node.expression instanceof DecimalLiteralNode) {
       node.expression.type = node.stateVariable.type;
     }
+    // Chunk-packed array write: encode an array literal RHS as a blob (pushdata(count) ++ tight_elements)
+    // so the codegen can strip the count prefix and store only the tight blob in chunks. See docs/arrays.md.
+    if (node.stateVariable?.isDynamic && node.stateVariable.type instanceof ArrayType
+      && node.expression instanceof ArrayNode) {
+      node.expression.blobEncoded = true;
+      if (node.expression.elements.length === 0) {
+        node.expression.type = node.stateVariable.type;
+      }
+    }
     node.expression = this.visit(node.expression);
     if (node.stateVariable && node.expression.type) {
       if (!implicitlyCastable(node.expression.type, node.stateVariable.type)) {

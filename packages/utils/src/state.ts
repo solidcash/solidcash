@@ -2,7 +2,7 @@ import { AbiFunction, Artifact, StateLayout, StateVariableInfo, StructDefinition
 import { bytecodeToAsm, Op, Script, scriptToBytecode } from './script.js';
 import { encodeInt, encodeIntAsFixedBytes, decodeIntFixedWidth } from './data.js';
 import {
-  BytesType, FixedType, IntType, parseTypeStrict, PrimitiveType, fixedWidthBytes,
+  BytesType, FixedType, IntType, parseTypeStrict, PrimitiveType, fixedWidthBytes, isFixedWidthType,
 } from './types.js';
 import {
   bigIntToVmNumber, binToHex, binToUtf8, hexToBin, utf8ToBin, vmNumberToBigInt, isVmNumberError,
@@ -201,7 +201,7 @@ function parseBoundedIntRange(type: string): { min: bigint; max: bigint } | unde
 }
 
 /** Parse an array type string like "int[3]" (bounded) or "int[]" (unbounded) into element type and optional bound. */
-function parseArrayTypeString(type: string): { elementType: string; bound: number | undefined } | undefined {
+export function parseArrayTypeString(type: string): { elementType: string; bound: number | undefined } | undefined {
   // Bounded: "int[3]", "bytes20[5]"
   const bounded = type.match(/^(.+)\[(\d+)\]$/);
   if (bounded) return { elementType: bounded[1], bound: parseInt(bounded[2], 10) };
@@ -839,7 +839,7 @@ export function buildPushdataCommitment(
       const lenKey = dynamicLenKey(field.name);
       const len = values[lenKey] !== undefined
         ? Number(values[lenKey] as bigint)
-        : dynamicValueByteLength(values[field.name] ?? getDefaultStateValue(field.type, layout.structs));
+        : dynamicValueByteLength(values[field.name] ?? getDefaultStateValue(field.type, layout.structs), field.type);
       parts.push(encodePushdataValue(BigInt(len), DYNAMIC_LEN_TYPE));
       continue;
     }
@@ -1013,7 +1013,14 @@ export function dynamicChunkSignature(varName: string, varTypeString: string): s
 }
 
 /** UTF-8/raw byte length of a dynamic-storage value (string -> utf8 bytes, bytes -> raw). */
-export function dynamicValueByteLength(value: StateValue): number {
+export function dynamicValueByteLength(value: StateValue, type?: string): number {
+  // Chunk-packed fixed-width array: A$len = tight element blob byte length = count * elementWidth.
+  if (type !== undefined && Array.isArray(value)) {
+    const arrInfo = parseArrayTypeString(type);
+    if (arrInfo && isFixedWidthType(arrInfo.elementType)) {
+      return packFixedWidthArray(value as PrimitiveStateValue[], arrInfo.elementType).length;
+    }
+  }
   if (typeof value === 'string') return utf8ToBin(value).length;
   if (value instanceof Uint8Array) return value.length;
   return 0;

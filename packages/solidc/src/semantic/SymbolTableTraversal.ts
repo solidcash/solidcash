@@ -3730,9 +3730,11 @@ export default class SymbolTableTraversal extends AstTraversal {
       throw new MappingAccessInConstructorError(node);
     }
 
-    // Check if this is a packed state array access (this.scores[index])
+    // Check if this is a packed or chunk-packed state array access (this.scores[index]). Both store a
+    // `pushdata(count)++elems` blob (inline for packed, reassembled from chunks for dynamic), so element
+    // access shares one codegen path; the read-blob primitive branches on isDynamic internally.
     const packedSv = this.stateVariableMap.get(node.name);
-    if (packedSv && packedSv.isPacked && packedSv.type instanceof ArrayType) {
+    if (packedSv && (packedSv.isPacked || packedSv.isDynamic) && packedSv.type instanceof ArrayType) {
       node.isPackedStateArrayAccess = true;
       node.packedStateVariable = packedSv;
       node.type = (packedSv.type as ArrayType).elementType;

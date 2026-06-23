@@ -15,6 +15,7 @@ contract C() {
   }
   function clearNums(pubkey pk, sig s) { require(checkSig(s, pk)); this.nums = []; }
   function checkLen(int n) { require(this.nums.length == n); }
+  function checkElem(int i, uint256 expected) { require(this.nums[i] == expected); }
 }`;
 const BLOBS = `pragma solidcash >=0.8.0;
 contract C() {
@@ -82,6 +83,23 @@ describe('chunk-packed array: whole-array round-trip', () => {
     expect((await sc.getState()).nums).toEqual([1n, 2n, 3n, 4n]);
     await sc.clearNums(alicePub, sig()).send(); // 2 chunks -> empty
     expect((await sc.getState()).nums).toEqual([]);
+  });
+
+  it('reads array elements on-chain via this.a[i], including one spanning a chunk boundary', async () => {
+    const artifact = compileString(NUMS, { chunkedArrays: true });
+    const contract = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, contract, artifact.stateLayout!, { nums: [] }, { saltContract: true },
+    );
+    const sc = StatefulContract.withCategory(contract, categoryId);
+
+    await sc.setNums(10n, 20n, 30n, 40n, alicePub, sig()).send(); // 4 x 33 B = 132 B = 2 chunks
+    // element 3 occupies bytes [99,132) - it straddles the 120-byte chunk boundary; reassembly handles it.
+    for (const [i, exp] of [[0n, 10n], [1n, 20n], [2n, 30n], [3n, 40n]] as const) {
+      await sc.checkElem(i, exp).send();
+    }
+    await expect(sc.checkElem(1n, 99n).send()).rejects.toThrow(); // wrong value
+    await expect(sc.checkElem(4n, 0n).send()).rejects.toThrow();  // out of bounds
   });
 
   it('keeps two dynamic arrays independent: writing one preserves the other (header + chunks)', async () => {

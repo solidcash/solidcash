@@ -5001,6 +5001,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   ): void {
     const key = `${sv.nftIndex}:${sv.fieldIndex}`;
 
+    // Chunk-packed dynamic array: reassemble the tight element blob (read-after-write value or persisted
+    // read loop) and prepend the count -> the same `pushdata(count)++elems` form a packed array has, so the
+    // element ops below (index/push/pop) reuse the packed codegen verbatim.
+    if (sv.isDynamic) {
+      this.emitReadDynamicScalar(sv, locationData);
+      this.emitPrependArrayCount(getFixedWidth((sv.type as ArrayType).elementType), locationData);
+      this.stack[0] = stackLabel;
+      return;
+    }
+
     if (this.pendingStateWrites.has(key)) {
       // Read from pre-allocated / previously written stack slot
       const stackName = this.pendingStateWrites.get(key)!;
@@ -7061,43 +7071,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Dynamic-storage read (string / unbounded bytes): the data-NFT field holds only the uint32 length
     // header (A$len); the persisted value lives in chunk UTXOs.
     if (sv.isDynamic) {
-      // Read-after-write in the same function: the raw new value is still on the stack (valueStackName),
-      // so return it directly - cheap and exact, no chunk read needed (e.g. `this.s = v; require(this.s == v)`).
-      const pendingDynamic = this.pendingDynamicWrites.get(sv.name);
-      if (pendingDynamic) {
-        this.emit(encodeInt(BigInt(this.getStackIndex(pendingDynamic.valueStackName))), locationData);
-        this.emit(Op.OP_PICK, locationData);
-        this.pushToStack('(value)');
-        // Chunk-packed array: the on-stack value is the tight element blob; rebuild the array form.
-        if (sv.type instanceof ArrayType) {
-          this.emitPrependArrayCount(getFixedWidth((sv.type as ArrayType).elementType), locationData);
-        }
-        return node;
-      }
-      // Persisted read: loop over the var's co-spent chunk inputs, concat, truncate to A$len.
-      // Record it so the artifact/SDK knows to co-spend the chunks as read-only trailing inputs.
-      // Phase 1: the read loop reads chunks at the fixed offset blockSize+i, so it cannot share the
-      // trailing-input space with a collection iteration, nor with a second distinct dynamic read
-      // (their chunks would sit at a different offset). Reading the same var again is fine.
-      const reads = (this.currentFunction.dynamicReads ??= []);
-      if (!reads.includes(sv.name)) {
-        if ((this.currentFunction.collectionIterations?.length ?? 0) > 0) {
-          throw new Error(
-            `Reading persisted dynamic-storage '${sv.name}' alongside a collection iteration is not yet `
-            + 'supported (phase 1). Read it in a separate function. See docs/dynamic-storage.md.',
-          );
-        }
-        if (reads.length > 0) {
-          throw new Error(
-            `Reading more than one persisted dynamic-storage var in one function ('${reads[0]}' and `
-            + `'${sv.name}') is not yet supported (phase 1). Read them in separate functions. `
-            + 'See docs/dynamic-storage.md.',
-          );
-        }
-        reads.push(sv.name);
-      }
-      this.emitDynamicReadLoop(sv, locationData);
-      // Chunk-packed array: the read loop reassembles the tight element blob; rebuild the array form.
+      this.emitReadDynamicScalar(sv, locationData);
+      // Chunk-packed array: the read leaves the tight element blob; rebuild the `pushdata(count)++elems` form.
       if (sv.type instanceof ArrayType) {
         this.emitPrependArrayCount(getFixedWidth((sv.type as ArrayType).elementType), locationData);
       }
@@ -8934,6 +8909,42 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    */
   private physicalFieldType(field: { type: Type; isDynamic?: boolean }): Type {
     return field.isDynamic ? new IntType(false, 32) : field.type;
+  }
+
+  /**
+   * Push a dynamic var's current VALUE (the tight bytes, no array count prefix) as '(value)'. Read-after-write
+   * returns the new value still on the stack (cheap, exact - e.g. `this.s = v; require(this.s == v)`);
+   * otherwise it co-spends the persisted chunks and reassembles them via the read loop, recording the read so
+   * the SDK adds the chunk inputs. Phase 1: the read loop reads chunks at the fixed offset blockSize+i, so it
+   * cannot share the trailing-input space with a collection iteration or a second distinct dynamic read
+   * (reading the same var again is fine).
+   */
+  private emitReadDynamicScalar(sv: StateVariableNode, loc: SingleLocationData): void {
+    const pending = this.pendingDynamicWrites.get(sv.name);
+    if (pending) {
+      this.emit(encodeInt(BigInt(this.getStackIndex(pending.valueStackName))), loc);
+      this.emit(Op.OP_PICK, loc);
+      this.pushToStack('(value)');
+      return;
+    }
+    const reads = (this.currentFunction.dynamicReads ??= []);
+    if (!reads.includes(sv.name)) {
+      if ((this.currentFunction.collectionIterations?.length ?? 0) > 0) {
+        throw new Error(
+          `Reading persisted dynamic-storage '${sv.name}' alongside a collection iteration is not yet `
+          + 'supported (phase 1). Read it in a separate function. See docs/dynamic-storage.md.',
+        );
+      }
+      if (reads.length > 0) {
+        throw new Error(
+          `Reading more than one persisted dynamic-storage var in one function ('${reads[0]}' and `
+          + `'${sv.name}') is not yet supported (phase 1). Read them in separate functions. `
+          + 'See docs/dynamic-storage.md.',
+        );
+      }
+      reads.push(sv.name);
+    }
+    this.emitDynamicReadLoop(sv, loc);
   }
 
   /** Read a dynamic var's uint32 A$len header from its data NFT INPUT commitment; push as `trackName`. */

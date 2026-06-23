@@ -76,12 +76,18 @@ So a dynamic `string A` desugars to: hidden `uint32 A$len` register field + a ch
 `A$chunks : (int chunkIndex => bytes chunkData)`.
 
 ### Read (on-chain)
-- Read `A$len`. **If 0:** value = empty bytes (no chunks co-spent).
-- **Else:** **loop** `i = 0 .. ceil(A$len / CHUNK) - 1` (`OP_BEGIN`/`OP_UNTIL`, modeled on
-  `visitCollectionIteration`), co-spend chunk `i` read-only, verify its `chunkIndex == i`, `OP_CAT` its
-  `chunkData`, then truncate to `A$len`. Unbounded (VM-limit-bounded, like EVM gas), no compile-time cap.
-- Chunk `i`'s input index = `OP_INPUTINDEX + blockSize + priorIterCounts + i` (the
-  `emitCollectionIterInputIndex` formula).
+- **Read-after-write (implemented):** reading a dynamic var in the *same function that writes it* returns
+  the raw new value still on the stack (`valueStackName`) - cheap and exact, no chunk read needed. E.g.
+  `this.s = v; require(this.s == v)` works for any length.
+- **Persisted read (planned - currently a compile-time error):** reading a dynamic var that was *not*
+  written in this function needs the chunk read loop below; until it lands, the compiler rejects it (the
+  data NFT holds only `A$len`, so decoding it as the value would be silently wrong). The full value is
+  always readable off-chain via the SDK `getState()`.
+- **Read loop (planned):** read `A$len`. **If 0:** value = empty bytes (no chunks co-spent). **Else:**
+  **loop** `i = 0 .. ceil(A$len / CHUNK) - 1` (`OP_BEGIN`/`OP_UNTIL`, modeled on `visitCollectionIteration`),
+  co-spend chunk `i` read-only, verify its `chunkIndex == i`, `OP_CAT` its `chunkData`, then truncate to
+  `A$len`. Unbounded (VM-limit-bounded, like EVM gas), no compile-time cap. Chunk `i`'s input index =
+  `OP_INPUTINDEX + blockSize + priorIterCounts + i` (the `emitCollectionIterInputIndex` formula).
 
 ### Write (on-chain), grow and shrink
 - Set `A$len = newLen` in the register.

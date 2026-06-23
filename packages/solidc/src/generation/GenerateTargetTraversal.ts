@@ -7031,6 +7031,28 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const sv = node.stateVariable!;
     const key = `${sv.nftIndex}:${sv.fieldIndex}`;
 
+    // Dynamic-storage read (string / unbounded bytes): the data-NFT field holds only the uint32 length
+    // header (A$len); the persisted value lives in chunk UTXOs.
+    if (sv.isDynamic) {
+      // Read-after-write in the same function: the raw new value is still on the stack (valueStackName),
+      // so return it directly - cheap and exact, no chunk read needed (e.g. `this.s = v; require(this.s == v)`).
+      const pendingDynamic = this.pendingDynamicWrites.get(sv.name);
+      if (pendingDynamic) {
+        this.emit(encodeInt(BigInt(this.getStackIndex(pendingDynamic.valueStackName))), locationData);
+        this.emit(Op.OP_PICK, locationData);
+        this.pushToStack('(value)');
+        return node;
+      }
+      // Reading a persisted dynamic var needs a chunk read loop (the planned next step); decoding the
+      // length field as the value would be silently wrong, so reject it until then. The value is still
+      // readable off-chain via the SDK getState().
+      throw new Error(
+        `On-chain read of persisted dynamic-storage '${sv.name}' (${sv.type.toString()}) is not yet `
+        + 'supported - its value lives in chunk UTXOs and needs a read loop. Read it off-chain via '
+        + 'getState(), or read it in the same function that writes it. See docs/dynamic-storage.md.',
+      );
+    }
+
     // If this state variable has been written (pre-allocated in a loop or branch),
     // read from the stack-tracked value instead of re-reading from the input commitment.
     // This is critical for loops: each iteration must see the previous iteration's

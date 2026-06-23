@@ -108,3 +108,41 @@ describe('string state variable: extension and contraction (single data NFT)', (
       expect((await sc.getState()).text).toBe('');
     });
 });
+
+// Reading a dynamic var ON-CHAIN in the SAME function that writes it works (the raw new value is still
+// on the stack, no chunk read loop needed). Reading a PERSISTED dynamic var is a compile-time error
+// until the read loop lands. The full off-chain read is always available via getState().
+const RW_SOURCE = `
+pragma solidcash >=0.8.0;
+
+contract StringRW() {
+    string text;
+
+    function setAndCheck(string t, pubkey pk, sig s) {
+        require(checkSig(s, pk));
+        this.text = t;
+        require(this.text == t);
+    }
+}
+`;
+
+describe('string state variable: on-chain read-after-write', () => {
+  const provider = createTestProvider();
+  const artifact = compileString(RW_SOURCE);
+
+  it('passes on-chain require(this.text == t) for single- and multi-chunk values', async () => {
+    const contract = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, contract, artifact.stateLayout!, { text: '' }, { saltContract: true },
+    );
+    const sc = StatefulContract.withCategory(contract, categoryId);
+    const sig = (): SignatureTemplate => new SignatureTemplate(alicePriv);
+
+    await sc.setAndCheck('hi', alicePub, sig()).send(); // single chunk
+    expect((await sc.getState()).text).toBe('hi');
+
+    const big = 'Q'.repeat(250); // 3 chunks
+    await sc.setAndCheck(big, alicePub, sig()).send();
+    expect((await sc.getState()).text).toBe(big);
+  });
+});

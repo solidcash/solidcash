@@ -7133,6 +7133,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
       // 1. Evaluate expression -> raw value bytes on top
       node.expression = this.visit(node.expression);
+      // A chunk-packed fixed-width array's on-stack form is `pushdata(count) ++ tight_elements`. Store only
+      // the tight element blob in the chunks - the count is recoverable as A$len / elementWidth, which keeps
+      // element i at byte i*width. So strip the leading count prefix. See docs/arrays.md.
+      if (sv.type instanceof ArrayType) {
+        this.emitPushdataDecode(PrimitiveType.INT, locationData); // [count, elements]
+        this.emit(Op.OP_NIP, locationData); // [elements]
+      }
       const valueStackName = `__internal__dynwrite_value_${sv.name}`;
       this.popFromStack();
       this.pushToStack(valueStackName); // keep value for the epilogue chunk loop

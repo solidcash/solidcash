@@ -36,4 +36,20 @@ describe('chunk-packed arrays: layout/desugar (chunkedArrays flag)', () => {
     expect(isCollection(a, 'a')).toBe(true);
     expect(stateVar(a, 'a')).toBeUndefined();
   });
+
+  // Codegen step #13 (write): `this.a = [..]` stores only the tight element blob in chunks (the count
+  // prefix is stripped; count = A$len/width). Compiles + stack-balances through the shipped dynamic write
+  // loop. Round-trip is covered by e2e once the SDK store/read (#15) lands.
+  it('compiles a whole-array write through the dynamic chunk write loop', () => {
+    expect(() => compileString(
+      'pragma solidcash >=0.8.0; contract C(){ bytes20[] a;'
+      + ' function f(bytes20 x, bytes20 y, pubkey pk, sig s){ require(checkSig(s, pk)); this.a = [x, y]; } }',
+      { chunkedArrays: true },
+    )).not.toThrow();
+    expect(() => compileString(
+      'pragma solidcash >=0.8.0; contract C(){ bool[] a;'
+      + ' function f(pubkey pk, sig s){ require(checkSig(s, pk)); this.a = [true, false, true]; } }',
+      { chunkedArrays: true },
+    )).not.toThrow();
+  });
 });

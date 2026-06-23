@@ -169,7 +169,10 @@ specialization of the entry-NFT mechanism, not a parallel one.
 random-access-by-index like a mapping (read just chunk `i`, no whole-value concat). Same chunk
 machinery: string = "read the whole run", array = "read element `i`". One UTXO primitive (entry NFT),
 three disciplines: mapping (sparse, no length), array (dense, length, random access), string/bytes
-(dense, length, whole-value).
+(dense, length, whole-value). **NOTE:** the existing on-chain array forms (non-packed `T[]` = sparse
+entry-NFT collection; `packed T[]` = bounded inline blob) and how this chunk-packed array would relate to
+them are catalogued in **arrays.md** - the chunk-packed form is the only dense+length-tracked+unbounded
+array, the gap the others leave.
 
 ### Layout: `A$len` packs as a normal register field (no inline, no dedicated NFT)
 `A$len` (uint32) is the analog of Ethereum's header **slot `p`**, and the chunk run is the analog of

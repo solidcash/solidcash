@@ -214,3 +214,34 @@ describe('string state variable: persisted on-chain read loop', () => {
     await sc.checkText('').send();
   });
 });
+
+// The write covenant pins exactly ceil(A$len/120) chunk-address outputs (orphan-bound) and forces all
+// ceil(oldLen/120) old chunks to be co-spent (old-chunk consumption), so no stray/duplicate chunk can
+// survive to corrupt a future read. The grow/shrink suite above exercises the accept path across counts;
+// this proves the reject path.
+describe('string state variable: orphan-bound (write leaves exactly the right chunk set)', () => {
+  const provider = createTestProvider();
+  const artifact = compileString(SOURCE);
+  const sig = (): SignatureTemplate => new SignatureTemplate(alicePriv);
+
+  it('rejects a write that creates an extra (duplicate) chunk output', async () => {
+    const contract = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, contract, artifact.stateLayout!, { text: '' }, { saltContract: true },
+    );
+    const sc = StatefulContract.withCategory(contract, categoryId);
+
+    await sc.setText('hello', alicePub, sig()).send(); // valid baseline
+
+    // Derive a valid single-chunk write, then append a duplicate chunk commitment so the builder emits
+    // nNew+1 chunk outputs. The covenant's orphan-bound (count == nNew) must reject it.
+    const call = sc.setText('world', alicePub, sig());
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const stb: any = await (call as any)._applyOverrides();
+    const cur = stb.getChunkRawCommitments('text');
+    stb.setChunkRawCommitments('text', [...cur, cur[0]]);
+    let rejected = false;
+    try { await stb.send(); } catch { rejected = true; }
+    expect(rejected).toBe(true);
+  });
+});

@@ -8700,12 +8700,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    *
    * The value was kept on the stack by visitStateAssign and the register field already holds uint32
    * A$len. Here we verify the trailing chunk OUTPUTS reconstruct exactly that value:
-   *   - nNew = ceil(len / CHUNK); pin OP_TXOUTPUTCOUNT == OP_INPUTINDEX + blockSize + nNew (no orphans)
-   *   - for i in 0..nNew-1 at output (OP_INPUTINDEX + blockSize + i): verify locking bytecode == chunk
-   *     address, category base == master + mutable, decode chunkIndex == i, OP_CAT chunkData onto an
-   *     accumulator; after the loop the accumulator must equal the original value.
-   * Chunk INPUT consumption (destroying old chunks on shrink/replace) is a follow-up; for grow-from-empty
-   * there are no old chunks. See docs/dynamic-storage.md.
+   *   - nNew = ceil(len / CHUNK); for i in 0..nNew-1 at output (OP_INPUTINDEX + blockSize + i): verify
+   *     locking bytecode == chunk address, category base == master + mutable, commitment == [i ++ data_i].
+   *   - orphan-bound: exactly nNew outputs carry the chunk address (no extra/duplicate chunk outputs).
+   *   - old-chunk consumption: ceil(oldLen / CHUNK) inputs carry the chunk address (every old chunk is
+   *     co-spent), so a shrink/replace leaves no stale chunk. Together these pin the exact chunk set.
+   * See docs/dynamic-storage.md.
    */
   private emitDynamicWriteVerification(node: FunctionDefinitionNode): void {
     const loc = { location: node.body.location, positionHint: PositionHint.END };
@@ -8761,10 +8761,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // --- loop counter i = 0 ('(dyn_i)') ---
       this.emit(encodeInt(0n), loc);
       this.pushToStack('(dyn_i)');
-
-      // NOTE phase 1: no OP_TXOUTPUTCOUNT orphan-bound yet (allows a trailing change output). A spender
-      // could add an extra/duplicate chunk output beyond the verified region; harden with a boundary or
-      // output-scan check before permissionless dynamic writes. See docs/dynamic-storage.md.
 
       // LOOP: OP_BEGIN / cond(i<nNew) / OP_IF / verify chunk i / incr / OP_0 / OP_ELSE / OP_1 / OP_ENDIF / OP_UNTIL
       this.scopeDepth += 1;
@@ -8865,6 +8861,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.popFromStack(); // pop loop result
       this.scopeDepth -= 1;
 
+      // Orphan-bound: exactly nNew outputs carry the chunk address (no extra/duplicate chunk outputs that
+      // would corrupt a future read). Old-chunk consumption: all old chunks (ceil(oldLen/CHUNK)) are
+      // co-spent as inputs, so a shrink/replace leaves no stale chunk behind.
+      this.emitVerifyChunkUtxoCount('(dyn_nnew)', true, loc);
+      this.emitDynamicOldChunkConsumption(sv, loc);
+
       // --- post-loop cleanup: remove i, nNew, chunkaddr, and the value (top-down keeps indices valid) ---
       for (const tmp of ['(dyn_i)', '(dyn_nnew)', '(dyn_chunkaddr)', valueStackName]) {
         const idx = this.getStackIndex(tmp);
@@ -8874,6 +8876,96 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.removeFromStack(idx);
       }
     }
+  }
+
+  /** Read a dynamic var's uint32 A$len header from its data NFT INPUT commitment; push as `trackName`. */
+  private emitReadDynamicLen(sv: StateVariableNode, trackName: string, loc: SingleLocationData): void {
+    const fieldsInNft = this.stateVariables
+      .filter((v) => v.nftIndex === sv.nftIndex)
+      .sort((a, b) => a.fieldIndex - b.fieldIndex);
+    this.emitMasterInputIndex(loc);
+    this.emit(encodeInt(BigInt(this.compactOffsetMap.get(sv.nftIndex)!)), loc);
+    this.emit(Op.OP_ADD, loc);
+    this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc);
+    if (this.isMultiDataNft()) this.emitNftIndexTagSkip(loc);
+    for (let i = 0; i < sv.fieldIndex; i++) this.emitPushdataSkip(fieldsInNft[i].type, loc);
+    if (sv.fieldIndex === fieldsInNft[fieldsInNft.length - 1].fieldIndex) {
+      this.emitPushdataDecodeLastField(new IntType(false, 32), loc);
+    } else {
+      this.emitPushdataDecode(new IntType(false, 32), loc);
+      this.emit(Op.OP_DROP, loc);
+    }
+    this.pushToStack(trackName);
+  }
+
+  /**
+   * Verify the number of tx inputs/outputs whose locking bytecode == '(dyn_chunkaddr)' equals the int at
+   * `expectedCountName`. Output side = orphan-bound (no extra/duplicate chunk outputs); input side =
+   * old-chunk consumption. Scans all inputs/outputs (mirrors emitMintingNftUniqueness).
+   */
+  private emitVerifyChunkUtxoCount(expectedCountName: string, isOutput: boolean, loc: SingleLocationData): void {
+    const countOp = isOutput ? Op.OP_TXOUTPUTCOUNT : Op.OP_TXINPUTCOUNT;
+    const bytecodeOp = isOutput ? Op.OP_OUTPUTBYTECODE : Op.OP_UTXOBYTECODE;
+
+    this.emit(encodeInt(0n), loc);
+    this.pushToStack('(chunk_scan_count)');
+    this.emit(countOp, loc);
+    this.emit(Op.OP_1SUB, loc);
+    this.pushToStack('(chunk_scan_i)');
+
+    this.scopeDepth += 1;
+    this.emit(Op.OP_BEGIN, loc);
+    this.emit(Op.OP_DUP, loc);
+    this.emit(encodeInt(0n), loc);
+    this.emit(Op.OP_LESSTHAN, loc);
+    this.emit(Op.OP_IF, loc);
+    this.emit(Op.OP_DROP, loc);
+    this.emit(encodeBool(true), loc);
+    this.emit(Op.OP_ELSE, loc);
+    this.emit(Op.OP_DUP, loc); // copy index
+    this.emit(bytecodeOp, loc); // utxo/output[i] locking bytecode
+    this.emit(encodeInt(BigInt(this.getStackIndex('(dyn_chunkaddr)') + 1)), loc); // +1: lbc untracked
+    this.emit(Op.OP_PICK, loc);
+    this.emit(Op.OP_EQUAL, loc);
+    this.emit(Op.OP_IF, loc);
+    this.emit(Op.OP_SWAP, loc); // bring count up, increment, swap back
+    this.emit(Op.OP_1ADD, loc);
+    this.emit(Op.OP_SWAP, loc);
+    this.emit(Op.OP_ENDIF, loc);
+    this.emit(Op.OP_1SUB, loc); // index--
+    this.emit(encodeBool(false), loc);
+    this.emit(Op.OP_ENDIF, loc);
+    this.emit(Op.OP_UNTIL, loc);
+    this.popFromStack(); // (chunk_scan_i) consumed by the exit-branch DROP
+    this.scopeDepth -= 1;
+
+    this.emit(encodeInt(BigInt(this.getStackIndex('(chunk_scan_count)'))), loc);
+    this.emit(Op.OP_PICK, loc);
+    this.emit(encodeInt(BigInt(this.getStackIndex(expectedCountName) + 1)), loc); // +1: count copy
+    this.emit(Op.OP_PICK, loc);
+    this.emit(Op.OP_EQUALVERIFY, loc);
+
+    const idx = this.getStackIndex('(chunk_scan_count)');
+    this.emit(encodeInt(BigInt(idx)), loc);
+    this.emit(Op.OP_ROLL, loc);
+    this.emit(Op.OP_DROP, loc);
+    this.removeFromStack(idx);
+  }
+
+  /** Force every old chunk to be co-spent: ceil(oldLen/CHUNK) inputs carry the chunk address. */
+  private emitDynamicOldChunkConsumption(sv: StateVariableNode, loc: SingleLocationData): void {
+    const CHUNK = 120;
+    this.emitReadDynamicLen(sv, '(dyn_oldnnew)', loc); // oldLen
+    this.emit(encodeInt(BigInt(CHUNK - 1)), loc);
+    this.emit(Op.OP_ADD, loc);
+    this.emit(encodeInt(BigInt(CHUNK)), loc);
+    this.emit(Op.OP_DIV, loc); // (dyn_oldnnew) = ceil(oldLen/CHUNK)
+    this.emitVerifyChunkUtxoCount('(dyn_oldnnew)', false, loc);
+    const idx = this.getStackIndex('(dyn_oldnnew)');
+    this.emit(encodeInt(BigInt(idx)), loc);
+    this.emit(Op.OP_ROLL, loc);
+    this.emit(Op.OP_DROP, loc);
+    this.removeFromStack(idx);
   }
 
   /**

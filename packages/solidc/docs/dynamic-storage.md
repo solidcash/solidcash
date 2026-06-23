@@ -16,11 +16,11 @@ storage**: it grows and shrinks at runtime by allocating and freeing chunk UTXOs
 > `controlStack` (skip steps with a `false`); (b) the `findLastIndex(ip === 0)` redeem-script-start
 > heuristic landed inside an `OP_INVOKE` subroutine (each chunk invokes int-encode + cat-base), dropping
 > earlier chunks - now `findRedeemScriptStart` anchors on the redeem script's own (longest) instruction
-> array. Remaining: (1) the **orphan-bound** (the strict `OP_TXOUTPUTCOUNT` pin was dropped because it
-> forbade a trailing change output - replace with an output-scan bound before permissionless dynamic
-> writes); (2) on-chain **old-chunk-input consumption** (the SDK co-spends/burns old chunks, but the
-> covenant does not yet force it); (3) the **on-chain read loop** (for `this.dynVar` in contract logic -
-> not needed for write-only functions). See memory dynamic_storage_chunks for the precise state.
+> array. **Orphan-bound + old-chunk consumption + the persisted read loop are now also shipped** (see
+> below): a write pins exactly `ceil(A$len/CHUNK)` chunk-address outputs and forces all `ceil(oldLen/CHUNK)`
+> old chunks to be co-spent (output-scan + input-scan, `emitVerifyChunkUtxoCount`), and `this.dynVar`
+> reads reassemble the value from co-spent chunks. Phase-1 coexistence limits are guarded (clean compile
+> errors). See memory dynamic_storage_chunks for the precise state.
 
 > NOTE on naming: this is **storage** (persistent state), Solidity's `storage` data location - NOT the
 > `memory` keyword, which in SolidCash is a no-op Solidity-compat modifier on params/returns (all

@@ -274,6 +274,30 @@ export type CallInfo = {
 };
 
 /**
+ * Find the index in the trace where the redeem (locking/covenant) script evaluation begins.
+ *
+ * A naive `findLastIndex(ip === 0)` is wrong: `OP_INVOKE` subroutines (int decode/encode,
+ * category-base checks, etc.) start a fresh evaluation that also resets `ip` to 0. When a covenant
+ * runs subroutines BETWEEN inline verifications (e.g. a dynamic-storage write loop invokes the
+ * int-encode + cat-base subroutines for every chunk), the last `ip === 0` lands inside a subroutine,
+ * and slicing there silently drops every verification that ran before it. We anchor instead on the
+ * redeem script's own instruction array, identified as the longest array seen at any `ip === 0` step
+ * (the full covenant has far more instructions than the unlocking script's pushes or any subroutine).
+ */
+function findRedeemScriptStart(fullTrace: AuthenticationProgramStateCommon[]): number {
+  let redeemInstructions: AuthenticationProgramStateCommon['instructions'] | undefined;
+  let maxLen = -1;
+  for (const state of fullTrace) {
+    if (state.ip === 0 && state.instructions.length > maxLen) {
+      maxLen = state.instructions.length;
+      redeemInstructions = state.instructions;
+    }
+  }
+  if (!redeemInstructions) return findLastIndex(fullTrace, (state) => state.ip === 0);
+  return findLastIndex(fullTrace, (state) => state.ip === 0 && state.instructions === redeemInstructions);
+}
+
+/**
  * Extract expected commitment hex strings from a VM debug trace.
  *
  * The contract verifies state via: <expected> OP_OUTPUTTOKENCOMMITMENT OP_EQUALVERIFY
@@ -284,8 +308,8 @@ function extractCommitmentsFromTrace(
   expectedCount: number,
   outputIndexRange?: { min: number; max: number },
 ): string[] | undefined {
-  // Slice to last P2SH phase (locking script execution)
-  const p2shStart = findLastIndex(fullTrace, (state) => state.ip === 0);
+  // Slice to the redeem (locking) script phase, subroutine-aware (see findRedeemScriptStart).
+  const p2shStart = findRedeemScriptStart(fullTrace);
   const lockingScriptTrace = p2shStart >= 0 ? fullTrace.slice(p2shStart) : fullTrace;
 
   // Use a Map keyed by output index to keep the LAST match for each output.
@@ -299,6 +323,14 @@ function extractCommitmentsFromTrace(
     const step = lockingScriptTrace[i];
     const instruction = step.instructions[step.ip];
     if (!instruction) continue;
+    // Skip instructions inside a not-taken conditional branch. libauth's debug trace records every
+    // instruction, even those skipped because an enclosing OP_IF/OP_NOTIF is false (controlStack
+    // contains a `false`). A dynamic-storage write loop verifies each chunk output with an inline
+    // <expected> <idx> OP_OUTPUTTOKENCOMMITMENT OP_EQUALVERIFY inside the loop body; on the loop's
+    // exit iteration that body is skipped, leaving a phantom OP_OUTPUTTOKENCOMMITMENT step whose
+    // frozen stack (the loop temporaries) would otherwise be misread as a commitment. Only real,
+    // executed verifications have a controlStack with no `false`.
+    if (step.controlStack.some((c) => c === false)) continue;
 
     if (instruction.opcode === Op.OP_OUTPUTTOKENCOMMITMENT) {
       sawOutputTokenCommitment = true;
@@ -443,7 +475,7 @@ function extractVerifiedValuesFromTrace(
   targetOpcode: number,
   outputIndexRange?: { min: number; max: number },
 ): Uint8Array[] {
-  const p2shStart = findLastIndex(fullTrace, (state) => state.ip === 0);
+  const p2shStart = findRedeemScriptStart(fullTrace);
   const lockingScriptTrace = p2shStart >= 0 ? fullTrace.slice(p2shStart) : fullTrace;
 
   // Use a Map keyed by output index for "last write wins" semantics.
@@ -458,6 +490,8 @@ function extractVerifiedValuesFromTrace(
     const step = lockingScriptTrace[i];
     const instruction = step.instructions[step.ip];
     if (!instruction) continue;
+    // Skip instructions inside a not-taken conditional branch (see extractCommitmentsFromTrace).
+    if (step.controlStack.some((c) => c === false)) continue;
 
     if (instruction.opcode === targetOpcode) {
       sawTarget = true;

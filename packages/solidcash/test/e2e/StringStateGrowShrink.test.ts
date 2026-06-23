@@ -71,7 +71,40 @@ describe('string state variable: extension and contraction (single data NFT)', (
   });
 
   // Multi-chunk spanning (value > 120 bytes -> 2+ chunk UTXOs): the dynamic value is split across
-  // several chunk UTXOs that allocate as it grows and free as it shrinks. The on-chain write loop for
-  // >1 chunk is the remaining piece (single-chunk path is implemented). See docs/dynamic-storage.md.
-  it.todo('spans, allocates, and frees chunk UTXOs as a string state var grows past one chunk and shrinks back');
+  // several chunk UTXOs that allocate as it grows and free as it shrinks. The on-chain write loop
+  // (OP_BEGIN/OP_UNTIL over i=0..ceil(len/120)-1, one chunk output verified per iteration) drives this.
+  it('spans, allocates, and frees chunk UTXOs as a string state var grows past one chunk and shrinks back',
+    async () => {
+      const contract = new Contract(artifact, [], { provider });
+      const { categoryId } = await setupStatefulUtxos(
+        provider, contract, artifact.stateLayout!, { text: '' }, { saltContract: true },
+      );
+      const sc = StatefulContract.withCategory(contract, categoryId);
+      const sig = (): SignatureTemplate => new SignatureTemplate(alicePriv);
+
+      // Distinct per-chunk content catches any chunk mis-ordering or off-by-one slice bug.
+      const three = 'A'.repeat(120) + 'B'.repeat(120) + 'C'.repeat(10); // 250 bytes -> 3 chunks
+      const two = 'X'.repeat(120) + 'Y'.repeat(10); // 130 bytes -> 2 chunks
+      const one = 'hello'; // 5 bytes -> 1 chunk
+
+      // Grow from empty (0 -> 3 chunks): mints 3 chunk UTXOs.
+      await sc.setText(three, alicePub, sig()).send();
+      expect((await sc.getState()).text).toBe(three);
+
+      // Shrink (3 -> 2 chunks): consumes 3 old chunks, mints 2.
+      await sc.setText(two, alicePub, sig()).send();
+      expect((await sc.getState()).text).toBe(two);
+
+      // Shrink (2 -> 1 chunk).
+      await sc.setText(one, alicePub, sig()).send();
+      expect((await sc.getState()).text).toBe(one);
+
+      // Grow again (1 -> 3 chunks) to prove allocate-after-shrink works.
+      await sc.setText(three, alicePub, sig()).send();
+      expect((await sc.getState()).text).toBe(three);
+
+      // Shrink all the way back to empty (3 -> 0 chunks): frees every chunk.
+      await sc.setText('', alicePub, sig()).send();
+      expect((await sc.getState()).text).toBe('');
+    });
 });

@@ -1,20 +1,26 @@
 # Dynamic storage (chunked string / bytes / dynamic arrays)
 
-Status: **single-chunk shipped & green; multi-chunk in progress.** The "heap" half of the register/heap
+Status: **multi-chunk write shipped & green.** The "heap" half of the register/heap
 state model. Fixed-size state lives in **registers** (data NFTs, static count - see
 external-contract-calls.md). Variable-size state (`string`, `bytes`, dynamic arrays) lives in **dynamic
 storage**: it grows and shrinks at runtime by allocating and freeing chunk UTXOs.
 
-> **Implementation status (2026-06-22):** A dynamic `string`/`bytes` state var of length <= one chunk
-> (120 B) works **end-to-end** (layout desugar + SDK read + on-chain write covenant + SDK builder/
-> derivation), mock-proven: deploy empty -> grow -> shrink -> empty. Remaining: (1) the **multi-chunk
-> write loop** (> 120 B; the SDK derivation/builder already handle N chunks - only the codegen
-> `OP_BEGIN`/`OP_UNTIL` loop over `i` remains, building `pushdata(i)++pushdata(slice_i)` per chunk via
-> the tight `<expected> <idx> OP_OUTPUTTOKENCOMMITMENT OP_EQUALVERIFY` pattern); (2) the **orphan-bound**
-> (the strict `OP_TXOUTPUTCOUNT` pin was dropped because it forbade a trailing change output - replace
-> with an output-scan bound before permissionless dynamic writes); (3) the **on-chain read loop** (for
-> `this.dynVar` in contract logic - not needed for write-only functions). See memory
-> dynamic_storage_chunks for the precise state.
+> **Implementation status (2026-06-23):** A dynamic `string`/`bytes` state var of **any length** works
+> **end-to-end** (layout desugar + SDK read + on-chain write covenant + SDK builder/derivation),
+> mock-proven over a full grow/shrink sequence: empty -> 3 chunks -> 2 chunks -> 1 chunk -> 3 chunks ->
+> empty. The codegen `OP_BEGIN`/`OP_UNTIL` write loop over `i` builds `pushdata(i)++pushdata(slice_i)`
+> per chunk via the tight `<expected> <idx> OP_OUTPUTTOKENCOMMITMENT OP_EQUALVERIFY` pattern, modeled on
+> `visitCollectionIteration` so the loop body is runtime-stack-neutral by construction. Two SDK
+> derivation bugs the inline-OTC-in-a-loop exposed (both fixed): (a) the trace extractor read phantom
+> `OP_OUTPUTTOKENCOMMITMENT` steps inside the loop's not-taken exit branch - now filtered by libauth's
+> `controlStack` (skip steps with a `false`); (b) the `findLastIndex(ip === 0)` redeem-script-start
+> heuristic landed inside an `OP_INVOKE` subroutine (each chunk invokes int-encode + cat-base), dropping
+> earlier chunks - now `findRedeemScriptStart` anchors on the redeem script's own (longest) instruction
+> array. Remaining: (1) the **orphan-bound** (the strict `OP_TXOUTPUTCOUNT` pin was dropped because it
+> forbade a trailing change output - replace with an output-scan bound before permissionless dynamic
+> writes); (2) on-chain **old-chunk-input consumption** (the SDK co-spends/burns old chunks, but the
+> covenant does not yet force it); (3) the **on-chain read loop** (for `this.dynVar` in contract logic -
+> not needed for write-only functions). See memory dynamic_storage_chunks for the precise state.
 
 > NOTE on naming: this is **storage** (persistent state), Solidity's `storage` data location - NOT the
 > `memory` keyword, which in SolidCash is a no-op Solidity-compat modifier on params/returns (all

@@ -8675,10 +8675,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     for (const [name, { valueStackName, sv }] of this.pendingDynamicWrites) {
       const chunkHash = computeCollectionHash(computeCollectionSignature(name, sv.type.toString()));
-      // Phase 1: single-chunk (value <= CHUNK bytes). Multi-chunk loop + old-chunk consumption follow.
-      // Stack on entry: [..., value(valueStackName)].
+      // Multi-chunk write loop. The raw value lives on the stack (valueStackName); split it into
+      // CHUNK-byte pieces and verify each as a trailing chunk output (output index blockSize+i) via the
+      // tight `<expected> <idx> OP_OUTPUTTOKENCOMMITMENT OP_EQUALVERIFY` pattern (the SDK extractor reads
+      // each expected progressively across derivation iterations). The loop is modeled on
+      // visitCollectionIteration so its body is runtime-stack-neutral by construction: every body-local
+      // is removed before the iteration boundary, the counter is incremented in place, and the OP_ELSE
+      // exit branch resets the tracker to the pre-body snapshot.
+      const CHUNK = 120;
 
-      // --- chunk address locking bytecode (tracked '(dyn_chunkaddr)') ---
+      // --- loop-invariant temp: chunk address locking bytecode ('(dyn_chunkaddr)') ---
       this.emitMasterInputIndex(loc);
       this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
       this.emit(encodeInt(32n), loc);
@@ -8688,40 +8694,82 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emitP2sh32FromCovenant((cat) => buildEntryNftCovenantScript(cat, chunkHash), loc);
       this.stack[0] = '(dyn_chunkaddr)'; // helper renamed top (index 0) to '(value)'
 
-      // --- expected commitment = pushdata(int 0) ++ pushdata(value)  (tracked '(dyn_expected)') ---
-      this.emit(encodeInt(0n), loc);
-      this.pushToStack('(dyn_zero)');
-      this.emitPushdataEncode(new IntType(false, 32), loc); // chunk-0 key byte 0x00
-      this.stack[0] = '(dyn_expected)';
+      // --- loop-invariant temp: nNew = ceil(size(value) / CHUNK) ('(dyn_nnew)') ---
       this.emit(encodeInt(BigInt(this.getStackIndex(valueStackName))), loc);
-      this.emit(Op.OP_PICK, loc);
-      this.pushToStack('(dyn_tmpval)');
-      this.emitPushdataEncode(new BytesType(), loc); // pushdata(value)
-      this.emit(Op.OP_CAT, loc);
-      this.popFromStack(); // [..., value, chunkaddr, expected]
+      this.emit(Op.OP_PICK, loc); // copy value
+      this.pushToStack('(dyn_nnew)');
+      this.emit(Op.OP_SIZE, loc); // [..., value_copy, size] (OP_SIZE leaves the value)
+      this.emit(Op.OP_NIP, loc); // [..., size]
+      this.emit(encodeInt(BigInt(CHUNK - 1)), loc);
+      this.emit(Op.OP_ADD, loc);
+      this.emit(encodeInt(BigInt(CHUNK)), loc);
+      this.emit(Op.OP_DIV, loc); // nNew = (size + CHUNK-1) / CHUNK; 0 when empty
 
-      // --- nNew = (len(value) != 0) ? 1 : 0 (single-chunk) ---  [..., expected, nNew]
-      this.emit(encodeInt(BigInt(this.getStackIndex(valueStackName))), loc);
-      this.emit(Op.OP_PICK, loc);
-      this.emit(Op.OP_SIZE, loc);
-      this.emit(Op.OP_NIP, loc);
-      this.emit(Op.OP_0NOTEQUAL, loc); // [..., expected, nNew]
+      // --- loop counter i = 0 ('(dyn_i)') ---
+      this.emit(encodeInt(0n), loc);
+      this.pushToStack('(dyn_i)');
+
       // NOTE phase 1: no OP_TXOUTPUTCOUNT orphan-bound yet (allows a trailing change output). A spender
       // could add an extra/duplicate chunk output beyond the verified region; harden with a boundary or
       // output-scan check before permissionless dynamic writes. See docs/dynamic-storage.md.
 
-      // --- if nNew == 1, verify the single chunk output at OP_INPUTINDEX + blockSize ---
-      this.emit(Op.OP_IF, loc); // consumes nNew -> [..., value, chunkaddr, expected]
+      // LOOP: OP_BEGIN / cond(i<nNew) / OP_IF / verify chunk i / incr / OP_0 / OP_ELSE / OP_1 / OP_ENDIF / OP_UNTIL
+      this.scopeDepth += 1;
+      this.emit(Op.OP_BEGIN, loc);
+
+      // condition: i < nNew (untracked manual PICKs, like visitCollectionIteration; OP_IF consumes it)
+      this.emit(encodeInt(BigInt(this.getStackIndex('(dyn_i)'))), loc);
+      this.emit(Op.OP_PICK, loc);
+      this.emit(encodeInt(BigInt(this.getStackIndex('(dyn_nnew)') + 1)), loc); // +1 for the picked i
+      this.emit(Op.OP_PICK, loc);
+      this.emit(Op.OP_LESSTHAN, loc);
+      this.emit(Op.OP_IF, loc);
+
+      const stackBeforeBody = [...this.stack];
+      const stackDepth = this.stack.length;
+
+      // --- build expected = pushdata(i) ++ pushdata(slice_i)  (tracked '(dyn_expected)') ---
+      this.emit(encodeInt(BigInt(this.getStackIndex('(dyn_i)'))), loc);
+      this.emit(Op.OP_PICK, loc); // copy i
+      this.pushToStack('(dyn_expected)');
+      this.emitPushdataEncode(new IntType(false, 32), loc); // pushdata(i)
+      this.stack[0] = '(dyn_expected)';
+
+      // slice_i = value[i*CHUNK : i*CHUNK + min(CHUNK, size - i*CHUNK)]  (tracked '(dyn_slice)')
+      this.emit(encodeInt(BigInt(this.getStackIndex(valueStackName))), loc);
+      this.emit(Op.OP_PICK, loc); // copy value
+      this.pushToStack('(dyn_slice)');
+      this.emit(encodeInt(BigInt(this.getStackIndex('(dyn_i)'))), loc); // (dyn_slice) already tracked, no offset
+      this.emit(Op.OP_PICK, loc); // copy i
+      this.emit(encodeInt(BigInt(CHUNK)), loc);
+      this.emit(Op.OP_MUL, loc); // start = i*CHUNK
+      this.emit(Op.OP_SPLIT, loc); // [..., left, right=value[start:]]
+      this.emit(Op.OP_NIP, loc); // drop left -> [..., right]
+      this.emit(Op.OP_SIZE, loc); // [..., right, size(right)]
+      this.emit(encodeInt(BigInt(CHUNK)), loc);
+      this.emit(Op.OP_MIN, loc); // chunkLen = min(CHUNK, size(right))
+      this.emit(Op.OP_SPLIT, loc); // [..., slice, tail]
+      this.emit(Op.OP_DROP, loc); // [..., slice]
+      this.emitPushdataEncode(new BytesType(), loc); // pushdata(slice)
+      this.stack[0] = '(dyn_slice)';
+      this.emit(Op.OP_CAT, loc); // pushdata(i) ++ pushdata(slice)
+      this.popFromStack(); // [..., (dyn_expected) = full expected]
+
+      // --- verify chunk output i (untracked working values; expected is already built & tracked) ---
+      // outIdx = masterInputIndex + blockSize + i
       this.emitMasterInputIndex(loc);
       this.emit(encodeInt(BigInt(blockSize)), loc);
-      this.emit(Op.OP_ADD, loc); // [..., outIdx]  (1 untracked)
-      // locking bytecode == chunk address
+      this.emit(Op.OP_ADD, loc);
+      this.emit(encodeInt(BigInt(this.getStackIndex('(dyn_i)') + 1)), loc); // +1: outIdx-partial untracked
+      this.emit(Op.OP_PICK, loc);
+      this.emit(Op.OP_ADD, loc); // [..., outIdx]
+      // (a) locking bytecode == chunk address
       this.emit(Op.OP_DUP, loc);
       this.emit(Op.OP_OUTPUTBYTECODE, loc);
       this.emit(encodeInt(BigInt(this.getStackIndex('(dyn_chunkaddr)') + 2)), loc); // +2: outIdx, bytecode
       this.emit(Op.OP_PICK, loc);
       this.emit(Op.OP_EQUALVERIFY, loc); // [..., outIdx]
-      // category base == master + mutable
+      // (b) category base == master + mutable
       this.emit(Op.OP_DUP, loc);
       this.emit(Op.OP_OUTPUTTOKENCATEGORY, loc); // [..., outIdx, cat]
       this.emit(Op.OP_DUP, loc);
@@ -8731,18 +8779,41 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(new Uint8Array([0x01]), loc);
       this.emit(Op.OP_EQUALVERIFY, loc);
       this.emitVerifyCatBaseEqMaster(loc); // consumes cat -> [..., outIdx]
-      // commitment == expected. Emit the TIGHT pattern <expected> <idx> OP_OUTPUTTOKENCOMMITMENT
-      // OP_EQUALVERIFY so the SDK's trace extractor (extractCommitmentsFromTrace) can read the
-      // expected commitment.
+      // (c) commitment == expected. TIGHT pattern <expected> <idx> OP_OUTPUTTOKENCOMMITMENT OP_EQUALVERIFY
+      // so the SDK trace extractor (extractCommitmentsFromTrace) reads each chunk's expected commitment.
       this.emit(encodeInt(BigInt(this.getStackIndex('(dyn_expected)') + 1)), loc); // +1: outIdx on top
       this.emit(Op.OP_PICK, loc); // [..., outIdx, expected]
       this.emit(Op.OP_SWAP, loc); // [..., expected, outIdx]
       this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, loc); // [..., expected, commitment]
-      this.emit(Op.OP_EQUALVERIFY, loc);
-      this.emit(Op.OP_ENDIF, loc); // [..., value, chunkaddr, expected]
+      this.emit(Op.OP_EQUALVERIFY, loc); // [..., (dyn_expected)]
 
-      // cleanup tracked temporaries + the value
-      for (const tmp of ['(dyn_expected)', '(dyn_chunkaddr)', valueStackName]) {
+      // --- clean up body-local temporaries ((dyn_expected)) back to the snapshot depth ---
+      this.removeScopedVariables(stackDepth, node);
+
+      // --- increment counter i (in place) ---
+      this.emit(encodeInt(BigInt(this.getStackIndex('(dyn_i)'))), loc);
+      this.emit(Op.OP_PICK, loc);
+      this.emit(Op.OP_1ADD, loc);
+      this.emitReplace(this.getStackIndex('(dyn_i)') + 1, node);
+      this.popFromStack(); // pop the picked+incremented value after replace
+
+      // continue loop (push false)
+      this.emit(encodeBool(false), loc);
+      this.pushToStack('(dyn_loop_continue)');
+
+      this.emit(Op.OP_ELSE, loc);
+      // exit loop: reset tracker to pre-body snapshot, push true
+      this.stack = [...stackBeforeBody];
+      this.emit(encodeBool(true), loc);
+      this.pushToStack('(dyn_loop_exit)');
+
+      this.emit(Op.OP_ENDIF, loc);
+      this.emit(Op.OP_UNTIL, loc);
+      this.popFromStack(); // pop loop result
+      this.scopeDepth -= 1;
+
+      // --- post-loop cleanup: remove i, nNew, chunkaddr, and the value (top-down keeps indices valid) ---
+      for (const tmp of ['(dyn_i)', '(dyn_nnew)', '(dyn_chunkaddr)', valueStackName]) {
         const idx = this.getStackIndex(tmp);
         this.emit(encodeInt(BigInt(idx)), loc);
         this.emit(Op.OP_ROLL, loc);

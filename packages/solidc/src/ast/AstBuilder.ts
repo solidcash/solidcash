@@ -267,7 +267,7 @@ export default class AstBuilder
   private packedStateArrayNames: Set<string> = new Set();
   private forOfArrayCounter = 0; // uniquifies the temp locals of a desugared `for..of` over a state array
 
-  constructor(private tree: ParseTree, private solidityImportCompat = false, private chunkedArrays = false) {
+  constructor(private tree: ParseTree, private solidityImportCompat = false, private chunkedArrays = true) {
     super();
   }
 

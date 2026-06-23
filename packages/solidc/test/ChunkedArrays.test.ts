@@ -31,8 +31,14 @@ describe('chunk-packed arrays: layout/desugar (chunkedArrays flag)', () => {
     }
   });
 
-  it('is a no-op when the flag is off (default): fixed-width T[] stays a collection', () => {
+  it('routes unbounded fixed-width T[] to chunk-packed by DEFAULT (flag now defaults on)', () => {
     const a = compileString(src('uint256[] a;'));
+    expect(isCollection(a, 'a')).toBe(false);
+    expect(stateVar(a, 'a')?.dynamic).toBe(true);
+  });
+
+  it('can be turned off explicitly: chunkedArrays:false keeps fixed-width T[] a collection', () => {
+    const a = compileString(src('uint256[] a;'), { chunkedArrays: false });
     expect(isCollection(a, 'a')).toBe(true);
     expect(stateVar(a, 'a')).toBeUndefined();
   });

@@ -26,7 +26,7 @@ export const DEFAULT_COMPILER_OPTIONS: CompilerOptions = {
   enforceFunctionParameterTypes: true,
   enforceLocktimeGuard: true,
   commitmentLimit: 128,
-  chunkedArrays: false,
+  chunkedArrays: true,
 };
 
 export interface CompileOptions extends CompilerOptions {
@@ -306,7 +306,7 @@ export function parseCode(
   code: string,
   errorListener: SolidCashErrorListener = ThrowingErrorListener.INSTANCE,
   solidityImportCompat = false,
-  chunkedArrays = false,
+  chunkedArrays = true,
 ): Ast {
   const syntaxErrorListener = new ForwardingErrorListener(errorListener);
 

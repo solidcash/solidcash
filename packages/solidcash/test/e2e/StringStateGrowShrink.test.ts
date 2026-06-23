@@ -164,12 +164,19 @@ contract ReadString() {
     function checkText(string expected) {
         require(this.text == expected);
     }
+
+    // reads the same persisted var twice in one function (two read loops, one co-spent chunk set)
+    function checkTwice(string a) {
+        require(this.text == a);
+        require(this.text == a);
+    }
 }
 `;
 
 describe('string state variable: persisted on-chain read loop', () => {
   const provider = createTestProvider();
   const artifact = compileString(READ_SOURCE);
+  const sig = (): SignatureTemplate => new SignatureTemplate(alicePriv);
 
   it('reassembles and verifies a persisted dynamic var on-chain (single + multi chunk)', async () => {
     const contract = new Contract(artifact, [], { provider });
@@ -177,7 +184,6 @@ describe('string state variable: persisted on-chain read loop', () => {
       provider, contract, artifact.stateLayout!, { text: '' }, { saltContract: true },
     );
     const sc = StatefulContract.withCategory(contract, categoryId);
-    const sig = (): SignatureTemplate => new SignatureTemplate(alicePriv);
 
     // single chunk: read passes for the right value, fails the require for a wrong one.
     await sc.setText('hello', alicePub, sig()).send();
@@ -190,5 +196,21 @@ describe('string state variable: persisted on-chain read loop', () => {
     const big = 'A'.repeat(120) + 'B'.repeat(120) + 'C'.repeat(10);
     await sc.setText(big, alicePub, sig()).send();
     await sc.checkText(big).send();
+
+    // read the same var twice in one function.
+    await sc.checkTwice(big).send();
+  });
+
+  it('reads an empty persisted value (from start and after shrink-to-empty)', async () => {
+    const contract = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, contract, artifact.stateLayout!, { text: '' }, { saltContract: true },
+    );
+    const sc = StatefulContract.withCategory(contract, categoryId);
+
+    await sc.checkText('').send(); // empty from the start: A$len 0, no chunks, read loop skipped
+    await sc.setText('x', alicePub, sig()).send();
+    await sc.setText('', alicePub, sig()).send(); // shrink back to empty
+    await sc.checkText('').send();
   });
 });

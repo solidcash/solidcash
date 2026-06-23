@@ -7045,8 +7045,26 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
       // Persisted read: loop over the var's co-spent chunk inputs, concat, truncate to A$len.
       // Record it so the artifact/SDK knows to co-spend the chunks as read-only trailing inputs.
+      // Phase 1: the read loop reads chunks at the fixed offset blockSize+i, so it cannot share the
+      // trailing-input space with a collection iteration, nor with a second distinct dynamic read
+      // (their chunks would sit at a different offset). Reading the same var again is fine.
       const reads = (this.currentFunction.dynamicReads ??= []);
-      if (!reads.includes(sv.name)) reads.push(sv.name);
+      if (!reads.includes(sv.name)) {
+        if ((this.currentFunction.collectionIterations?.length ?? 0) > 0) {
+          throw new Error(
+            `Reading persisted dynamic-storage '${sv.name}' alongside a collection iteration is not yet `
+            + 'supported (phase 1). Read it in a separate function. See docs/dynamic-storage.md.',
+          );
+        }
+        if (reads.length > 0) {
+          throw new Error(
+            `Reading more than one persisted dynamic-storage var in one function ('${reads[0]}' and `
+            + `'${sv.name}') is not yet supported (phase 1). Read them in separate functions. `
+            + 'See docs/dynamic-storage.md.',
+          );
+        }
+        reads.push(sv.name);
+      }
       this.emitDynamicReadLoop(sv, locationData);
       return node;
     }
@@ -8692,6 +8710,21 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private emitDynamicWriteVerification(node: FunctionDefinitionNode): void {
     const loc = { location: node.body.location, positionHint: PositionHint.END };
     const blockSize = this.currentFunction.blockLayout?.blockSize ?? 1;
+
+    // Phase 1: a dynamic write emits chunk outputs at blockSize+i, so it cannot share the trailing
+    // input/output space with a persisted dynamic read or a collection iteration.
+    if ((node.dynamicReads?.length ?? 0) > 0) {
+      throw new Error(
+        'A dynamic-storage write and a persisted dynamic-storage read in the same function are not yet '
+        + 'supported (phase 1). Use separate functions. See docs/dynamic-storage.md.',
+      );
+    }
+    if ((node.collectionIterations?.length ?? 0) > 0) {
+      throw new Error(
+        'A dynamic-storage write and a collection iteration in the same function are not yet supported '
+        + '(phase 1). Use separate functions. See docs/dynamic-storage.md.',
+      );
+    }
 
     for (const [name, { valueStackName, sv }] of this.pendingDynamicWrites) {
       const chunkHash = computeCollectionHash(computeCollectionSignature(name, sv.type.toString()));

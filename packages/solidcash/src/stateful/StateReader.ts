@@ -149,10 +149,15 @@ export class StateReader {
         }
         value = joinChunks(ordered.map((c) => c.chunkData), len);
       }
-      // Chunk-packed fixed-width array: decode the tight blob into elements. string -> utf8, bytes -> raw.
+      // Chunk-packed array: decode the blob into elements. Fixed-width -> tight blob (count = len/width);
+      // variable-width (string[]/bytes[]/int[]) -> standard `pushdata(count) ++ pushdata(elem_0) ++ ...`
+      // framing. Non-array string -> utf8, bytes -> raw.
       const arrInfo = parseArrayTypeString(v.type);
       if (arrInfo && isFixedWidthType(arrInfo.elementType)) {
         state[v.name] = unpackFixedWidthArray(value, arrInfo.elementType) as StateValue;
+      } else if (arrInfo) {
+        state[v.name] = (value.length === 0
+          ? [] : decodePushdataValue(value, 0, v.type, this.layout.structs).value) as StateValue;
       } else {
         state[v.name] = v.type === 'string' ? binToUtf8(value) : value;
       }

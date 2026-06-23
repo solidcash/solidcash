@@ -13,8 +13,9 @@ const stateVar = (a: ReturnType<typeof compileString>, name: string): { type: st
   (a.stateLayout?.variables ?? []).find((v) => v.name === name);
 
 describe('chunk-packed arrays: layout/desugar (chunkedArrays flag)', () => {
-  it('routes unbounded fixed-width T[] to a chunk-backed dynamic state var when the flag is on', () => {
-    for (const t of ['uint256[]', 'bytes20[]', 'bool[]', 'bytes200[]']) {
+  it('routes unbounded chunk-packable T[] to a chunk-backed dynamic state var', () => {
+    // fixed-width (flat-stream) AND simple variable-width leaf types (single-blob framed): int/string/bytes
+    for (const t of ['uint256[]', 'bytes20[]', 'bool[]', 'bytes200[]', 'int[]', 'string[]', 'bytes[]']) {
       const a = compileString(src(`${t} a;`), { chunkedArrays: true });
       expect(isCollection(a, 'a')).toBe(false);
       const v = stateVar(a, 'a');
@@ -23,12 +24,17 @@ describe('chunk-packed arrays: layout/desugar (chunkedArrays flag)', () => {
     }
   });
 
-  it('keeps variable-width / bounded arrays on the collection model even with the flag on', () => {
-    // plain int is variable-width; string[] is variable-width; uint256[5] is bounded
-    for (const t of ['int[]', 'string[]', 'uint256[5]']) {
+  it('keeps bounded and struct/nested-array elements on the collection model', () => {
+    // uint256[5] is bounded; a struct element and a nested array are not yet chunk-packable
+    const structSrc = (decl: string): string =>
+      `pragma solidcash >=0.8.0; struct P { int x; string note; } contract C(){ ${decl} int counter; constructor(){}`
+      + ' function f(){ require(this.counter >= 0); } }';
+    for (const t of ['uint256[5]', 'int[5]']) {
       const a = compileString(src(`${t} a;`), { chunkedArrays: true });
       expect(isCollection(a, 'a')).toBe(true);
     }
+    const sa = compileString(structSrc('P[] people;'), { chunkedArrays: true });
+    expect(isCollection(sa, 'people')).toBe(true);
   });
 
   it('routes unbounded fixed-width T[] to chunk-packed by DEFAULT (flag now defaults on)', () => {

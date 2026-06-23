@@ -218,3 +218,67 @@ describe('chunk-packed array: for..of iteration', () => {
     await expect(sc.checkSum(99n).send()).rejects.toThrow();
   });
 });
+
+// Phase 3 (#18): variable-width element types (string[]/int[]/bytes[]) chunk-pack as a single dynamic blob
+// `pushdata(count) ++ pushdata(elem_0) ++ ...` (count kept in the blob, element access via scan). Reuses the
+// dynamic-storage machinery + the packed-array variable-width codegen.
+const STRS = `pragma solidcash >=0.8.0;
+contract C() {
+  string[] words;
+  function setWords(string a, string b, string c, pubkey pk, sig s) { require(checkSig(s, pk)); this.words = [a, b, c]; }
+  function pushWord(string w, pubkey pk, sig s) { require(checkSig(s, pk)); this.words.push(w); }
+  function popWord(pubkey pk, sig s) { require(checkSig(s, pk)); this.words.pop(); }
+  function checkElem(int i, string expected) { require(this.words[i] == expected); }
+  function totalLen(int n) { int t = 0; for (string w of this.words) { t = t + w.length; } require(t == n); }
+}`;
+
+describe('chunk-packed array: variable-width elements (string[] / int[] / bytes[])', () => {
+  const provider = createTestProvider();
+  const sig = (): SignatureTemplate => new SignatureTemplate(alicePriv);
+
+  it('round-trips a string[]: write, read, index, push/pop, for..of - across chunk boundaries', async () => {
+    const artifact = compileString(STRS, { chunkedArrays: true });
+    const contract = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, contract, artifact.stateLayout!, { words: [] }, { saltContract: true },
+    );
+    const sc = StatefulContract.withCategory(contract, categoryId);
+
+    // two 100-byte strings: 200 B of element data + framing spills past one 120 B chunk
+    const big = 'x'.repeat(100); const big2 = 'y'.repeat(100);
+    await sc.setWords(big, 'mid', big2, alicePub, sig()).send();
+    expect(await sc.getState().then((s) => s.words)).toEqual([big, 'mid', big2]);
+    await sc.checkElem(0n, big).send();             // element 0 straddles chunks
+    await sc.totalLen(203n).send();                 // for..of sums element .lengths (100+3+100)
+    await expect(sc.checkElem(1n, 'nope').send()).rejects.toThrow();
+
+    await sc.pushWord('extra', alicePub, sig()).send();
+    expect(await sc.getState().then((s) => (s.words as string[]).length)).toBe(4);
+    await sc.popWord(alicePub, sig()).send();
+    expect(await sc.getState().then((s) => s.words)).toEqual([big, 'mid', big2]);
+  });
+
+  it('round-trips int[] and bytes[] in one contract (cross-var preservation)', async () => {
+    const src = `pragma solidcash >=0.8.0;
+contract C() {
+  int[] nums;
+  bytes[] blobs;
+  function setNums(int a, int b, int c, pubkey pk, sig s) { require(checkSig(s, pk)); this.nums = [a, b, c]; }
+  function setBlobs(bytes a, bytes b, pubkey pk, sig s) { require(checkSig(s, pk)); this.blobs = [a, b]; }
+  function checkNum(int i, int e) { require(this.nums[i] == e); }
+}`;
+    const artifact = compileString(src, { chunkedArrays: true });
+    const contract = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, contract, artifact.stateLayout!, { nums: [], blobs: [] }, { saltContract: true },
+    );
+    const sc = StatefulContract.withCategory(contract, categoryId);
+
+    await sc.setNums(100n, 200n, 300n, alicePub, sig()).send();
+    await sc.setBlobs(new Uint8Array([1, 2, 3]), new Uint8Array([4, 5]), alicePub, sig()).send(); // preserves nums
+    const st = await sc.getState();
+    expect(st.nums).toEqual([100n, 200n, 300n]);
+    expect((st.blobs as Uint8Array[]).map((b) => [...b])).toEqual([[1, 2, 3], [4, 5]]);
+    await sc.checkNum(2n, 300n).send();
+  });
+});

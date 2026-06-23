@@ -1,6 +1,6 @@
 import { ParseTree, ParseTreeVisitor } from 'antlr4';
 import { hexToBin } from '@bitauth/libauth';
-import { parseType, MappingType, ArrayType, StructType, IntType, FixedType, Type, AddressType, ValueType, BytesType, PrimitiveType, EnumType, isFixedWidthType } from '@solidcash/utils';
+import { parseType, MappingType, ArrayType, StructType, IntType, FixedType, Type, AddressType, ValueType, BytesType, PrimitiveType, EnumType, isFixedWidthType, isChunkPackableElementType } from '@solidcash/utils';
 import semver from 'semver';
 import {
   Node,
@@ -1730,10 +1730,12 @@ export default class AstBuilder
         return node;
       }
 
-      // Chunk-packed array (phase-2 scaffold, behind chunkedArrays): an unbounded fixed-width `T[]` becomes
-      // a dense chunk-backed dynamic state variable (uint32 length header + chunk UTXOs), reusing the
-      // string/bytes machinery. Variable-width / bounded arrays keep the collection model. See docs/arrays.md.
-      if (this.chunkedArrays && arrayT.bound === undefined && isFixedWidthType(arrayT.elementType)) {
+      // Chunk-packed array (behind chunkedArrays, default on): an unbounded `T[]` with a chunk-packable
+      // element type becomes a dense chunk-backed dynamic state variable (uint32 length header + chunk UTXOs),
+      // reusing the string/bytes machinery. Fixed-width -> flat-stream; simple variable-width (int/string/
+      // bytes) -> single-blob framed. Struct / nested-array elements and bounded arrays keep the collection
+      // model. See docs/arrays.md.
+      if (this.chunkedArrays && arrayT.bound === undefined && isChunkPackableElementType(arrayT.elementType)) {
         const node = new StateVariableNode(arrayT, name);
         node.isDynamic = true;
         node.visibility = visibility;

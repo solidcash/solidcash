@@ -640,6 +640,22 @@ export function isFixedWidthType(type: Type | string): boolean {
   return false;
 }
 
+/**
+ * An array element type eligible for the chunk-packed backend. Fixed-width types use the flat-stream layout
+ * (count = A$len/width); simple variable-width LEAF types (plain `int`, `string`, unbounded `bytes`) use the
+ * single-blob framed layout (the whole array is one dynamic value `pushdata(count) ++ pushdata(elem_0) ++ ...`,
+ * element access via scan). Struct and nested-array elements are NOT yet chunk-packable (they stay on the
+ * collection backend). Accepts a Type or a type string.
+ */
+export function isChunkPackableElementType(type: Type | string): boolean {
+  const t = typeof type === 'string' ? parseType(type) : type;
+  if (t === undefined) return false;
+  if (isFixedWidthType(t)) return true;
+  if (t === PrimitiveType.INT || t === PrimitiveType.STRING) return true;
+  if (t instanceof BytesType) return true; // unbounded bytes (bounded bytesN already fixed-width above)
+  return false;
+}
+
 /** Packed (tight) byte width of a fixed-width type. Throws if the type is not fixed-width. */
 export function fixedWidthBytes(type: Type | string): number {
   const t = typeof type === 'string' ? parseTypeStrict(type) : type;

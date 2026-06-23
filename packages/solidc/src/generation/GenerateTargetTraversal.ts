@@ -4048,10 +4048,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   visitUnaryOp(node: UnaryOpNode): Node {
     const locationData = { location: node.location, positionHint: PositionHint.END };
 
-    // Chunk-packed array `.length`: count = A$len / elementWidth - cheap (no chunk reads). Special-cased
-    // BEFORE visiting the expression so we don't reassemble the whole array just to read its length.
+    // Chunk-packed FIXED-WIDTH array `.length`: count = A$len / elementWidth - cheap (no chunk reads).
+    // Special-cased BEFORE visiting the expression so we don't reassemble the whole array just to read its
+    // length. A variable-width array has no fixed width, so it falls through to the normal array `.length`
+    // path below (reassemble the blob, decode the count prefix).
     if (node.operator === UnaryOperator.SIZE && node.expression instanceof StateAccessNode
-      && node.expression.stateVariable?.isDynamic && node.expression.stateVariable.type instanceof ArrayType) {
+      && node.expression.stateVariable?.isDynamic && node.expression.stateVariable.type instanceof ArrayType
+      && isFixedWidthType((node.expression.stateVariable.type as ArrayType).elementType)) {
       const sv = node.expression.stateVariable;
       const width = getFixedWidth((sv.type as ArrayType).elementType);
       const pending = this.pendingDynamicWrites.get(sv.name);
@@ -5001,12 +5004,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   ): void {
     const key = `${sv.nftIndex}:${sv.fieldIndex}`;
 
-    // Chunk-packed dynamic array: reassemble the tight element blob (read-after-write value or persisted
-    // read loop) and prepend the count -> the same `pushdata(count)++elems` form a packed array has, so the
-    // element ops below (index/push/pop) reuse the packed codegen verbatim.
+    // Chunk-packed dynamic array: reassemble the element blob -> the same `pushdata(count)++elems` form a
+    // packed array has, so the element ops below (index/push/pop) reuse the packed codegen verbatim. For a
+    // fixed-width element type the stored blob is tight (count stripped), so prepend count = A$len/width; for
+    // a variable-width element type the stored blob already carries its `pushdata(count)` prefix.
     if (sv.isDynamic) {
       this.emitReadDynamicScalar(sv, locationData);
-      this.emitPrependArrayCount(getFixedWidth((sv.type as ArrayType).elementType), locationData);
+      const elemType = (sv.type as ArrayType).elementType;
+      if (isFixedWidthType(elemType)) this.emitPrependArrayCount(getFixedWidth(elemType), locationData);
       this.stack[0] = stackLabel;
       return;
     }
@@ -5064,8 +5069,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   ): void {
     const key = `${sv.nftIndex}:${sv.fieldIndex}`;
 
-    // Chunk-packed dynamic array: the blob on top is `pushdata(count)++elems`. Store only the tight elements
-    // in chunks (count = A$len / elementWidth) - the epilogue's chunk write loop handles the rest.
+    // Chunk-packed dynamic array: the blob on top is `pushdata(count)++elems`. For a fixed-width element type
+    // store only the tight elements (count recoverable as A$len/width); for a variable-width element type
+    // keep the count prefix (it cannot be recovered). The epilogue's chunk write loop handles the rest.
     if (sv.isDynamic) {
       if (this.pendingDynamicWrites.has(sv.name)) {
         throw new Error(
@@ -5073,7 +5079,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           + 'See docs/dynamic-storage.md.',
         );
       }
-      this.emitRegisterDynamicWrite(sv, key, locationData, true);
+      this.emitRegisterDynamicWrite(sv, key, locationData, isFixedWidthType((sv.type as ArrayType).elementType));
       return;
     }
 
@@ -7121,8 +7127,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // header (A$len); the persisted value lives in chunk UTXOs.
     if (sv.isDynamic) {
       this.emitReadDynamicScalar(sv, locationData);
-      // Chunk-packed array: the read leaves the tight element blob; rebuild the `pushdata(count)++elems` form.
-      if (sv.type instanceof ArrayType) {
+      // Chunk-packed FIXED-WIDTH array: the stored blob is tight (no count); rebuild `pushdata(count)++elems`
+      // from count = A$len/width. A variable-width array's stored blob already carries its count prefix.
+      if (sv.type instanceof ArrayType && isFixedWidthType((sv.type as ArrayType).elementType)) {
         this.emitPrependArrayCount(getFixedWidth((sv.type as ArrayType).elementType), locationData);
       }
       return node;
@@ -7191,9 +7198,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         );
       }
       // 1. Evaluate expression -> raw value bytes on top, then register the chunk write. A chunk-packed
-      // array's on-stack form is `pushdata(count)++elems`; strip the count (recoverable as A$len/width).
+      // array's on-stack form is `pushdata(count)++elems`; strip the count only for a fixed-width element
+      // type (recoverable as A$len/width) - variable-width keeps it. Strings/bytes (non-array) never strip.
       node.expression = this.visit(node.expression);
-      this.emitRegisterDynamicWrite(sv, key, locationData, sv.type instanceof ArrayType);
+      const stripCount = sv.type instanceof ArrayType && isFixedWidthType((sv.type as ArrayType).elementType);
+      this.emitRegisterDynamicWrite(sv, key, locationData, stripCount);
       return node;
     }
 

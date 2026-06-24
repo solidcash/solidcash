@@ -144,6 +144,18 @@ export class EmptyContractError extends SolidCashError {
   }
 }
 
+export class TransferInStatelessContractError extends SolidCashError {
+  constructor(
+    public node: FunctionDefinitionNode,
+  ) {
+    super(
+      node,
+      'satoshi transfers (this.transfer()/address.transfer()/address.send()) require a stateful contract '
+      + '(one with state variables): a stateless contract has no covenant block to enforce the transfer outputs',
+    );
+  }
+}
+
 export class EmptyFunctionError extends SolidCashError {
   constructor(
     public node: FunctionDefinitionNode,

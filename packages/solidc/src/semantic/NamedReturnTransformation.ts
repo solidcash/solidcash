@@ -59,6 +59,19 @@ export default class NamedReturnTransformation extends AstTraversal {
     });
     node.body.statements = [...defaults, ...(node.body.statements ?? [])];
 
+    // Solidity returns the named values implicitly at the end of the function. If the body does not already
+    // end in a return, append `return <names>;` so functions that just assign the named returns are valid.
+    const stmts = node.body.statements;
+    if (!(stmts[stmts.length - 1] instanceof ReturnNode)) {
+      const implicitReturn = new ReturnNode(node.returnNames.map((name) => {
+        const id = new IdentifierNode(name);
+        id.location = node.location;
+        return id;
+      }));
+      implicitReturn.location = node.location;
+      stmts.push(implicitReturn);
+    }
+
     const previous = this.currentReturnNames;
     this.currentReturnNames = node.returnNames;
     node.body = this.visit(node.body) as BlockNode;

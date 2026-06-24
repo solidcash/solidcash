@@ -113,7 +113,6 @@ import {
   TupleMixedSlotsError,
   FunctionTypeNotEncodableError,
   UndefinedReferenceError,
-  UnusedVariableError,
   InvalidSymbolTypeError,
   ConstantModificationError,
   UndefinedStateVariableError,
@@ -148,6 +147,7 @@ import {
   ExternalReadArgCountError,
   UndefinedInterfaceFunctionError,
   MethodCallNotSupportedError,
+  TransferInStatelessContractError,
   UsingForUndefinedLibraryError,
   UsingForUndefinedFunctionError,
   OperatorOverloadNonUDVTError,
@@ -497,9 +497,17 @@ export default class SymbolTableTraversal extends AstTraversal {
         throw new VariableRedefinitionError(new ParameterNode(sv.type, sv.name));
       }
 
-      // Validate contract-typed state variables
+      // Validate contract-typed state variables. A name unknown at parse time may resolve to an enum or
+      // struct now that imports are merged (e.g. an imported `enum Status` / `struct Todo`); re-type the
+      // state var to the real value type rather than leaving it as a contract address handle.
       if (sv.contractTypeName) {
-        if (!this.contractMap.has(sv.contractTypeName) && !this.interfaceMap.has(sv.contractTypeName)) {
+        if (this.enumMap.has(sv.contractTypeName)) {
+          sv.type = this.enumMap.get(sv.contractTypeName)!;
+          sv.contractTypeName = undefined;
+        } else if (this.structMap.has(sv.contractTypeName)) {
+          sv.type = this.structMap.get(sv.contractTypeName)!;
+          sv.contractTypeName = undefined;
+        } else if (!this.contractMap.has(sv.contractTypeName) && !this.interfaceMap.has(sv.contractTypeName)) {
           throw new UnknownContractTypeError(sv, sv.contractTypeName);
         }
       }
@@ -838,8 +846,10 @@ export default class SymbolTableTraversal extends AstTraversal {
     this.decideLibraryInlining(node);
 
     const unusedSymbols = node.symbolTable.unusedSymbols();
-    if (unusedSymbols.length !== 0) {
-      throw new UnusedVariableError(unusedSymbols[0]);
+    for (const unused of unusedSymbols) {
+      // Solidity only warns on unused vars/params and never fails the compile; match that.
+      const uloc = unused.definition?.location ? ` at line ${unused.definition.location.start.line}` : '';
+      console.log(`Warning: unused variable '${unused.name}'${uloc}.`);
     }
 
     this.symbolTables.shift();
@@ -1183,6 +1193,11 @@ export default class SymbolTableTraversal extends AstTraversal {
       this.collectTransferStatements(node.body, transferInfos);
 
       if (transferInfos.length > 0) {
+        // Satoshi transfers are enforced via the stateful covenant block layout; a stateless contract
+        // (no state vars/collections/events) has no such block, so reject them with a clear error.
+        if (!this.isStatefulContract) {
+          throw new TransferInStatelessContractError(node);
+        }
         node.transferInfos = transferInfos;
 
       }
@@ -1314,8 +1329,10 @@ export default class SymbolTableTraversal extends AstTraversal {
     }
 
     const unusedSymbols = node.symbolTable.unusedSymbols();
-    if (unusedSymbols.length !== 0) {
-      throw new UnusedVariableError(unusedSymbols[0]);
+    for (const unused of unusedSymbols) {
+      // Solidity only warns on unused vars/params and never fails the compile; match that.
+      const uloc = unused.definition?.location ? ` at line ${unused.definition.location.start.line}` : '';
+      console.log(`Warning: unused variable '${unused.name}'${uloc}.`);
     }
 
     this.symbolTables.shift();
@@ -3173,8 +3190,10 @@ export default class SymbolTableTraversal extends AstTraversal {
     node.statements = this.visitOptionalList(node.statements) as StatementNode[];
 
     const unusedSymbols = node.symbolTable.unusedSymbols();
-    if (unusedSymbols.length !== 0) {
-      throw new UnusedVariableError(unusedSymbols[0]);
+    for (const unused of unusedSymbols) {
+      // Solidity only warns on unused vars/params and never fails the compile; match that.
+      const uloc = unused.definition?.location ? ` at line ${unused.definition.location.start.line}` : '';
+      console.log(`Warning: unused variable '${unused.name}'${uloc}.`);
     }
 
     this.symbolTables.shift();
@@ -3465,6 +3484,51 @@ export default class SymbolTableTraversal extends AstTraversal {
           return callNode;
         }
 
+        // Interface-typed variable: `token.transferFrom(a, b, c)` where `token` is an `IERC20`-typed
+        // state var / param / local. Route to the same external-call path as `IERC20(addr).method(..)`,
+        // with the address expression being the variable's value (its stored locking bytecode).
+        {
+          const varIdentifier = new IdentifierNode(varName);
+          varIdentifier.location = node.identifier.location;
+          const visitedVar = this.visit(varIdentifier) as ExpressionNode;
+          // Resolve the declared type from a param/local symbol or a state variable (a bare state var
+          // resolves to a state-access node whose .type is only set later, so consult the state-var map).
+          const varType = visitedVar.type
+            ?? (visitedVar instanceof IdentifierNode ? visitedVar.definition?.type : undefined)
+            ?? this.stateVariableMap.get(varName)?.type;
+          if (varType instanceof AddressType && varType.interfaceName && this.interfaceMap.has(varType.interfaceName)) {
+            const iface = this.interfaceMap.get(varType.interfaceName)!;
+            const ifaceFunc = this.getAllInterfaceFunctions(iface).find((f) => f.name === methodName);
+            if (ifaceFunc) {
+              if (node.fieldNames) {
+                node.parameters = this.reorderNamedArgsByParams(
+                  node.fieldNames, ifaceFunc.parameters, node.parameters, node, `'${iface.name}.${ifaceFunc.name}'`,
+                );
+                node.fieldNames = undefined;
+              }
+              const parameters = this.visitList(node.parameters) as ExpressionNode[];
+              // `foo.bar(args)` parses as a namespaced function call, which carries no `{value:}` call
+              // options (those arrive via the MethodCall path), so none are threaded here.
+              const callNode = new ExternalFunctionCallNode(iface.name, visitedVar, methodName, parameters);
+              callNode.callInfo = {
+                interfaceName: iface.name,
+                functionName: methodName,
+                externalCallSlotIndex: -1,
+              };
+              if (ifaceFunc.returnTypes.length > 0) {
+                callNode.type = ifaceFunc.returnTypes.length === 1
+                  ? ifaceFunc.returnTypes[0]
+                  : new TupleType(ifaceFunc.returnTypes);
+                callNode.callInfo.hasReturnValues = true;
+                callNode.callInfo.returnTypes = ifaceFunc.returnTypes;
+                callNode.callInfo.returnEventSignature = `_Return_${ifaceFunc.name}(${ifaceFunc.returnTypes.map((t) => t.toString()).join(',')})`;
+              }
+              callNode.location = node.location;
+              return callNode;
+            }
+          }
+        }
+
         // Try using-for resolution: a.doubleIt() -> doubleIt(a) or SafeMath.add(a, ...)
         if (this.usingForBindings.size > 0) {
           // Visit the variable to get its type
@@ -3557,8 +3621,10 @@ export default class SymbolTableTraversal extends AstTraversal {
           throw new ContractTypeConstructorArgCountError(node, node.identifier.name);
         }
         node.parameters = this.visitList(node.parameters);
-        // Name(addr) -> address handle (the address IS the locking bytecode)
-        const castNode = new CastNode(new AddressType(false), node.parameters[0], false);
+        // Name(addr) -> address handle (the address IS the locking bytecode). Tag the handle with the
+        // interface name so `IFoo(addr).bar(..)` and `IFoo x = IFoo(addr); x.bar(..)` route to externals.
+        const ifaceTag = this.interfaceMap.has(node.identifier.name) ? node.identifier.name : undefined;
+        const castNode = new CastNode(new AddressType(false, ifaceTag), node.parameters[0], false);
         castNode.location = node.location;
         return castNode;
       }
@@ -3621,6 +3687,28 @@ export default class SymbolTableTraversal extends AstTraversal {
     if (!this.functionDefinitions.has(callName) && calleeSym?.type instanceof FunctionType) {
       node.call = this.visit(node.call) as FunctionCallNode;
       return node;
+    }
+
+    // Statement-form external call on an interface-typed variable: `token.transfer(to, amt);`. Resolve the
+    // interface via the function-call visitor, then wrap the external call as a statement (its result, if
+    // any, is discarded). The expression forms (`x = token.method(..)`, `require(token.method(..))`) already
+    // route through visitFunctionCall directly.
+    if (callName.includes('.') && !this.functionDefinitions.has(callName)) {
+      const [varName] = callName.split('.');
+      const varType = this.symbolTables[0]?.get(varName)?.type ?? this.stateVariableMap.get(varName)?.type;
+      if (varType instanceof AddressType && varType.interfaceName && this.interfaceMap.has(varType.interfaceName)) {
+        const resolved = this.visit(node.call);
+        if (resolved instanceof ExternalFunctionCallNode) {
+          const wrapper = new MethodCallStatementNode(
+            new MethodCallNode(new IdentifierNode(varName), callName.split('.')[1], []),
+          );
+          wrapper.expression = resolved;
+          wrapper.location = node.location;
+          return wrapper;
+        }
+        node.call = resolved as FunctionCallNode;
+        return node;
+      }
     }
 
     // Function call statements are only valid for user-defined functions
@@ -4061,8 +4149,10 @@ export default class SymbolTableTraversal extends AstTraversal {
     node.tryBlock.statements = this.visitOptionalList(node.tryBlock.statements) as StatementNode[];
 
     const unusedSymbols = node.tryBlock.symbolTable.unusedSymbols();
-    if (unusedSymbols.length !== 0) {
-      throw new UnusedVariableError(unusedSymbols[0]);
+    for (const unused of unusedSymbols) {
+      // Solidity only warns on unused vars/params and never fails the compile; match that.
+      const uloc = unused.definition?.location ? ` at line ${unused.definition.location.start.line}` : '';
+      console.log(`Warning: unused variable '${unused.name}'${uloc}.`);
     }
 
     this.symbolTables.shift();
@@ -5378,8 +5468,13 @@ export default class SymbolTableTraversal extends AstTraversal {
     // from the symbol table for a bare identifier target.
     if (node.methodName === 'call' || node.methodName === 'staticcall' || node.methodName === 'delegatecall') {
       node.object = this.visit(node.object);
+      // node.object.type isn't assigned yet in this pass: resolve a bare identifier from the symbol table,
+      // and treat msg.sender / tx.origin (NullaryOps typed `address` in TypeCheckTraversal) as addresses.
+      const isAddressNullary = node.object instanceof NullaryOpNode
+        && (node.object.operator === NullaryOperator.MSG_SENDER || node.object.operator === NullaryOperator.TX_ORIGIN);
       const objType = node.object.type
-        ?? (node.object instanceof IdentifierNode ? this.symbolTables[0].get(node.object.name)?.type : undefined);
+        ?? (node.object instanceof IdentifierNode ? this.symbolTables[0].get(node.object.name)?.type : undefined)
+        ?? (isAddressNullary ? new AddressType() : undefined);
       if (objType instanceof AddressType) {
         const data = node.parameters.length === 1
           ? this.visit(node.parameters[0]) as ExpressionNode : node.parameters[0];

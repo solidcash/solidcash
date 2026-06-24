@@ -8,7 +8,10 @@ export class TokenContainerType {
 }
 
 export class AddressType {
-  constructor(public payable: boolean = false) {}
+  // interfaceName, when set, records that this address handle was typed as a specific contract/interface
+  // (e.g. `IERC20 token` or `IERC20(addr)`), so `token.method(..)` can route to an external call. It is
+  // metadata only and is intentionally ignored by typesEqual/castability (an address is an address).
+  constructor(public payable: boolean = false, public interfaceName?: string) {}
   toString(): string { return this.payable ? 'address payable' : 'address'; }
 }
 
@@ -319,10 +322,10 @@ export function explicitlyCastable(from?: Type, to?: Type): boolean {
     if (!to.bound) return true;
 
     if (from instanceof BytesType) {
-      // Can freely cast from unbounded bytes
-      if (!from.bound) return true;
-      // Can only cast bounded bytes to bounded bytes if bounds are equal
-      return from.bound === to.bound;
+      // bytesN -> bytesM is always castable (Solidity semantics): equal/unbounded is a no-op,
+      // shrinking truncates the leftmost bytes, widening right-pads with zeros. e.g.
+      // bytes4(keccak256(x)) for a function selector.
+      return true;
     }
 
     // string -> bytes: allowed (string is UTF-8 bytes)

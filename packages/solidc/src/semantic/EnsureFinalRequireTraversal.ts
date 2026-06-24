@@ -35,7 +35,7 @@ import {
   StateArrayDeleteNode,
 } from '../ast/AST.js';
 import AstTraversal from '../ast/AstTraversal.js';
-import { EmptyContractError, EmptyFunctionError, FinalRequireStatementError, MissingReturnError, ReturnInExternalFunctionError } from '../Errors.js';
+import { EmptyFunctionError, FinalRequireStatementError, MissingReturnError, ReturnInExternalFunctionError } from '../Errors.js';
 
 export default class EnsureFinalRequireTraversal extends AstTraversal {
   private isStatefulContract: boolean = false;
@@ -71,7 +71,12 @@ export default class EnsureFinalRequireTraversal extends AstTraversal {
     }
 
     if (node.functions.length === 0 && !node.fallbackDef && !node.receiveDef && !node.isAbstract) {
-      throw new EmptyContractError(node);
+      // State-publishing contract: no spending path. Allowed, but warn that it is unspendable.
+      console.log(
+        `Warning: contract '${node.name}' has no functions; it compiles to an unspendable locking script. `
+        + 'Funds sent to it cannot be recovered and the output just bloats the UTXO set. '
+        + 'This is only useful for publishing immutable state on-chain.',
+      );
     }
 
     return node;

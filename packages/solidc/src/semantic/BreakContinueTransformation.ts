@@ -290,8 +290,8 @@ function nestBreakContinue(
       break; // skip remaining statements (loop re-evaluates condition)
     }
 
-    // Branch with break/continue in if-block
-    if (stmt instanceof BranchNode && remaining.length > 0) {
+    // Branch with break/continue (handles last-statement branches too, remaining may be empty)
+    if (stmt instanceof BranchNode) {
       const ifHasBreak = blockContainsBreakContinue(stmt.ifBlock, 'break');
       const ifHasContinue = blockContainsBreakContinue(stmt.ifBlock, 'continue');
 

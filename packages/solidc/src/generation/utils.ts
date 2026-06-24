@@ -121,8 +121,14 @@ export function compileCast(from: Type, to: Type, isUnsafe: boolean): Script {
   // bool -> BytesType: no-op (bool 0/1 is already valid bytes)
   if (from === PrimitiveType.BOOL && to instanceof BytesType) return [];
 
-  // BytesType -> BytesType: no-op (same representation)
-  if (from instanceof BytesType && to instanceof BytesType) return [];
+  // BytesType -> BytesType: equal bounds or an unbounded side is a no-op (same representation).
+  // Shrinking keeps the leftmost M bytes (Solidity left-aligned truncation); widening right-pads
+  // with (M-N) zero bytes. e.g. bytes4(keccak256(x)) -> first 4 bytes of the hash.
+  if (from instanceof BytesType && to instanceof BytesType) {
+    if (from.bound === undefined || to.bound === undefined || from.bound === to.bound) return [];
+    if (to.bound < from.bound) return [encodeInt(BigInt(to.bound)), Op.OP_SPLIT, Op.OP_DROP];
+    return [new Uint8Array(to.bound - from.bound), Op.OP_CAT];
+  }
 
   // IntType/FixedType -> unbounded bytes: no-op (VM number is already bytes)
   if ((from instanceof IntType || from instanceof FixedType) && to instanceof BytesType && to.bound === undefined) {

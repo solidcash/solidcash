@@ -700,14 +700,14 @@ describe('dynamic-storage data-NFT commitment (A$len header)', () => {
     const hex = buildPushdataCommitment(layout, { a: 7n, b: 'x'.repeat(200) }, 0);
     const parsed = parsePushdataCommitment(hex, layout, 0);
     expect(parsed.a).toBe(7n);
-    expect(parsed['b$len']).toBe(200n);
+    expect(parsed.b$len).toBe(200n);
     expect(parsed.b).toBeUndefined(); // value is not reconstructable from the commitment alone
   });
 
   it('byte length is utf8 for multibyte strings', () => {
     // a single emoji is 4 utf8 bytes
     const hex = buildPushdataCommitment(layout, { a: 0n, b: '\u{1F680}' }, 0);
-    expect(parsePushdataCommitment(hex, layout, 0)['b$len']).toBe(4n);
+    expect(parsePushdataCommitment(hex, layout, 0).b$len).toBe(4n);
   });
 });
 

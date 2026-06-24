@@ -1,6 +1,6 @@
 import { ParseTree, ParseTreeVisitor } from 'antlr4';
 import { hexToBin } from '@bitauth/libauth';
-import { parseType, MappingType, ArrayType, StructType, IntType, FixedType, Type, AddressType, ValueType, BytesType, PrimitiveType, EnumType, isFixedWidthType, isChunkPackableElementType } from '@solidcash/utils';
+import { parseType, MappingType, ArrayType, StructType, IntType, FixedType, Type, AddressType, ValueType, BytesType, PrimitiveType, EnumType, isChunkPackableElementType } from '@solidcash/utils';
 import semver from 'semver';
 import {
   Node,
@@ -112,6 +112,7 @@ import {
   UsingForDirectiveNode,
   UsingForBinding,
 } from './AST.js';
+import { cloneNode } from './clone.js';
 import { UnaryOperator, BinaryOperator, NullaryOperator } from './Operator.js';
 import type {
   ContractDefinitionContext,
@@ -265,6 +266,16 @@ export default class AstBuilder
   private typeDefMap: Map<string, ValueType> = new Map();
   private pendingParentInvocations: ParentInvocation[] = [];
   private packedStateArrayNames: Set<string> = new Set();
+  // Storage-pointer locals: `T storage x = container[k];` makes `x` a compile-time alias for the access
+  // path `container[k]`. Reads/writes through `x` are rewritten to that path (reusing existing codegen).
+  // Per-function (cleared at each function/constructor/modifier entry); flat scope is sufficient here.
+  private storageAliases: Map<string, { container: string; keys: ExpressionNode[]; access: ExpressionNode }> =
+    new Map();
+
+  // Local struct-typed variables, used to desugar member assignment `s.field = v` (which has no direct
+  // codegen) into a struct rebuild `s = S(.., v, ..)`. Per-function, like storageAliases.
+  private localStructTypes: Map<string, StructType> = new Map();
+
   private forOfArrayCounter = 0; // uniquifies the temp locals of a desugared `for..of` over a state array
 
   constructor(private tree: ParseTree, private solidityImportCompat = false, private chunkedArrays = true) {
@@ -639,6 +650,8 @@ export default class AstBuilder
   }
 
   visitConstructorDefinition(ctx: ConstructorDefinitionContext): FunctionDefinitionNode {
+    this.storageAliases = new Map();
+    this.localStructTypes = new Map();
     const statements = this.flattenStatements(ctx.statement_list().map((s) => this.visit(s) as StatementNode));
     const block = new BlockNode(statements);
     block.location = Location.fromCtx(ctx);
@@ -716,6 +729,8 @@ export default class AstBuilder
   }
 
   visitFunctionDefinition(ctx: FunctionDefinitionContext): FunctionDefinitionNode {
+    this.storageAliases = new Map();
+    this.localStructTypes = new Map();
     const name = ctx.anyIdentifier().getText();
     const parameters = ctx.parameterList().parameter_list().map((p) => this.visit(p) as ParameterNode);
     const statements = this.flattenStatements(ctx.statement_list().map((s) => this.visit(s) as StatementNode));
@@ -820,6 +835,8 @@ export default class AstBuilder
   }
 
   visitModifierDefinition(ctx: ModifierDefinitionContext): ModifierDefinitionNode {
+    this.storageAliases = new Map();
+    this.localStructTypes = new Map();
     const name = ctx.Identifier().getText();
     const parameters = ctx.parameterList()
       ? ctx.parameterList()!.parameter_list().map((p) => this.visit(p) as ParameterNode)
@@ -896,8 +913,10 @@ export default class AstBuilder
       type = this.buildArrayType(ctx.arrayType()!);
     } else {
       // Unknown type (e.g. a contract/interface name used as a parameter type) falls back to address, like
-      // state variables do; the reference is validated later in semantic analysis.
-      type = this.resolveType(ctx.typeName().getText()) ?? new AddressType(false);
+      // state variables do; the reference is validated later in semantic analysis. The name is kept on the
+      // address handle so an interface-typed param (`IERC20 token`) can route `token.method(..)` externally.
+      const tn = ctx.typeName().getText();
+      type = this.resolveType(tn) ?? new AddressType(false, tn);
     }
     const modifiers = ctx.modifier_list().map((m) => m.getText());
     // Unnamed parameters (common in interface signatures, e.g. `transfer(address, uint256)`) get a synthetic
@@ -914,20 +933,59 @@ export default class AstBuilder
     return this.visit(ctx.getChild(0));
   }
 
-  visitVariableDefinition(ctx: VariableDefinitionContext): VariableDefinitionNode {
+  visitVariableDefinition(ctx: VariableDefinitionContext): StatementNode {
     let type: Type;
     if (ctx.arrayType()) {
       type = this.buildArrayType(ctx.arrayType()!);
     } else {
-      type = this.resolveType(ctx.typeName().getText());
+      // Keep an unknown (contract/interface) type name on the address handle so a local interface-typed
+      // var (`IERC20 token = IERC20(addr)`) can route `token.method(..)` to an external call.
+      const tn = ctx.typeName().getText();
+      type = this.resolveType(tn) ?? new AddressType(false, tn);
     }
     const modifiers = ctx.modifier_list().map((modifier) => modifier.getText());
     const name = ctx.anyIdentifier().getText();
     // An omitted initializer (`int x;`) leaves expression undefined; codegen emits the type's zero value.
     const expression = ctx.expression() ? this.visit(ctx.expression()) : undefined;
+
+    // Storage pointer: `T storage x = container[k];` aliases `x` to the access path. Record the alias and
+    // drop the declaration (no runtime value); reads/writes of `x` are rewritten to `container[k]`.
+    if (modifiers.includes(Modifier.STORAGE) && expression) {
+      const path = this.extractStorageAccessPath(expression as ExpressionNode);
+      if (path) {
+        this.storageAliases.set(name, { ...path, access: expression as ExpressionNode });
+        const dropped = new BlockNode([]);
+        dropped.location = Location.fromCtx(ctx);
+        return dropped;
+      }
+    }
+
+    // Track local struct-typed vars so `s.field = v` can desugar to a struct rebuild (visitAssignmentStatement).
+    if (type instanceof StructType) this.localStructTypes.set(name, type);
+
     const variableDefinition = new VariableDefinitionNode(type, modifiers, name, expression);
     variableDefinition.location = Location.fromCtx(ctx);
     return variableDefinition;
+  }
+
+  // Extract { container, keys } from a storage-location expression: `this.m[k]` (MappingAccess) or a bare
+  // `m[k]` / `m[a][b]` (nested ArrayAccess on an identifier base). Returns undefined for anything else.
+  private extractStorageAccessPath(
+    expr: ExpressionNode,
+  ): { container: string; keys: ExpressionNode[] } | undefined {
+    if (expr instanceof MappingAccessNode) {
+      return { container: expr.name, keys: [...expr.keys] };
+    }
+    if (expr instanceof ArrayAccessNode) {
+      const keys: ExpressionNode[] = [];
+      let cur: ExpressionNode = expr;
+      while (cur instanceof ArrayAccessNode) {
+        keys.unshift(cur.index);
+        cur = cur.array;
+      }
+      if (cur instanceof IdentifierNode) return { container: cur.name, keys };
+    }
+    return undefined;
   }
 
   visitTupleAssignment(ctx: TupleAssignmentContext): TupleAssignmentNode {
@@ -1167,32 +1225,44 @@ export default class AstBuilder
     const initType = this.resolveType(initCtx.typeName().getText());
     const initModifiers = initCtx.modifier_list().map((m) => m.getText());
     const initName = initCtx.Identifier().getText();
-    const initExpr = this.visit(initCtx.expression());
+    // Initializer is optional (`for (uint i; ...)`); default an omitted one to 0.
+    let initExpr: ExpressionNode;
+    if (initCtx.expression()) {
+      initExpr = this.visit(initCtx.expression()) as ExpressionNode;
+    } else {
+      initExpr = new IntLiteralNode(0n);
+      initExpr.location = Location.fromCtx(initCtx);
+    }
     const initNode = new VariableDefinitionNode(initType, initModifiers, initName, initExpr);
     initNode.location = Location.fromCtx(initCtx);
 
-    // Build update: AssignNode (supports =, +=, -=, ++, --)
-    const updateNode = this.buildCompoundAssign(
-      updateCtx.Identifier().getText(),
-      Location.fromToken(updateCtx.Identifier().symbol),
-      updateCtx._op.text,
-      updateCtx.expression(),
-      Location.fromCtx(updateCtx),
-    );
+    // Update clause is optional (`for (...; ...; )`); when present it becomes the trailing
+    // body statement marked by forLoopUpdateCount so `continue` still runs it.
+    const updateNode = updateCtx
+      ? this.buildCompoundAssign(
+        updateCtx.Identifier().getText(),
+        Location.fromToken(updateCtx.Identifier().symbol),
+        updateCtx._op.text,
+        updateCtx.expression(),
+        Location.fromCtx(updateCtx),
+      )
+      : undefined;
 
     // Build condition
     const condition = this.visit(condCtx.expression());
 
-    // Build body block, appending update as last statement
+    // Build body block, appending update as last statement when present
     const bodyBlock = this.visit(ctx.block()) as BlockNode;
-    const bodyStatements = [...(bodyBlock.statements ?? []), updateNode];
+    const bodyStatements = updateNode
+      ? [...(bodyBlock.statements ?? []), updateNode]
+      : [...(bodyBlock.statements ?? [])];
     const loopBlock = new BlockNode(bodyStatements);
     loopBlock.location = bodyBlock.location;
 
     // while (cond) { body; update } - pre-checks the condition so zero iterations are correct.
     // forLoopUpdateCount marks the trailing update so `continue` still runs it.
     const whileNode = new WhileNode(condition, loopBlock);
-    whileNode.forLoopUpdateCount = 1;
+    whileNode.forLoopUpdateCount = updateNode ? 1 : 0;
     whileNode.location = Location.fromCtx(ctx);
 
     // Wrap: { init; while (cond) { body; update; } }
@@ -1756,8 +1826,9 @@ export default class AstBuilder
     let type = this.resolveType(typeText);
     let contractTypeName: string | undefined;
     if (!type) {
-      // Unknown type - treat as contract/interface reference (validated in SymbolTableTraversal)
-      type = new AddressType(false);
+      // Unknown type - treat as contract/interface reference (validated in SymbolTableTraversal). Tag the
+      // address handle with the name so `IERC20 token; token.transferFrom(..)` routes to an external call.
+      type = new AddressType(false, typeText);
       contractTypeName = typeText;
     }
     const node = new StateVariableNode(type, name);
@@ -1793,7 +1864,7 @@ export default class AstBuilder
   visitAssignmentStatement(ctx: AssignmentStatementContext): StatementNode {
     const isThis = ctx.getText().startsWith('this.');
     const ids = ctx.Identifier_list();
-    const name = ids[0].getText();
+    const rawName = ids[0].getText();
     const nameLoc = Location.fromToken(ids[0].symbol);
     const hasMember = ids.length > 1;
     const fieldName = hasMember ? ids[1].getText() : undefined;
@@ -1801,11 +1872,51 @@ export default class AstBuilder
     const exprCtxs = ctx.expression_list();
     const keyCtxs = exprCtxs.slice(0, -1);
     const valueCtx = exprCtxs[exprCtxs.length - 1];
-    const keys = keyCtxs.map((e) => this.visit(e) as ExpressionNode);
     const loc = Location.fromCtx(ctx);
+
+    // Local struct member assignment `s.field op= v` (no index, local struct, not `this.`/alias). There is no
+    // direct codegen for writing a local struct field, so desugar to a struct rebuild: `s = S(.., new, ..)`,
+    // where the assigned field gets the new value and the others are read back from `s`.
+    const localStruct = (!isThis && hasMember && keyCtxs.length === 0 && !this.storageAliases.has(rawName))
+      ? this.localStructTypes.get(rawName) : undefined;
+    if (localStruct) {
+      const fieldRead = (field: string): ExpressionNode => {
+        const base = new IdentifierNode(rawName);
+        base.location = nameLoc;
+        const fa = new FieldAccessNode(base, field);
+        fa.location = loc;
+        return fa;
+      };
+      const newValue = op === '='
+        ? this.visit(valueCtx) as ExpressionNode
+        : this.compoundRhs(fieldRead(fieldName!), op, valueCtx, loc);
+      const ctorId = new IdentifierNode(localStruct.name);
+      ctorId.location = nameLoc;
+      const ctor = new FunctionCallNode(
+        ctorId,
+        localStruct.fields.map((f) => (f.name === fieldName ? newValue : fieldRead(f.name))),
+      );
+      ctor.location = loc;
+      const target = new IdentifierNode(rawName);
+      target.location = nameLoc;
+      const assign = new AssignNode(target, ctor);
+      assign.location = loc;
+      return assign;
+    }
+
+    // Storage-pointer write: `alias.field op= v` (or `alias[k]... op= v`) -> rewrite to the aliased container
+    // access `container[aliasKeys, ...indexKeys]`. The alias is always an unambiguous state location.
+    const alias = !isThis ? this.storageAliases.get(rawName) : undefined;
+    const name = alias ? alias.container : rawName;
+    // Build the key list fresh each call (read + assign nodes must not share key node instances).
+    const buildKeys = (): ExpressionNode[] => {
+      const idxKeys = keyCtxs.map((e) => this.visit(e) as ExpressionNode);
+      return alias ? [...alias.keys.map((k) => cloneNode(k)), ...idxKeys] : idxKeys;
+    };
+    const keys = buildKeys();
     // A bare single-key element resolves to state-or-local in semantic analysis (ArrayAccess/ArrayAssign); a
-    // `this.`-prefixed element is unambiguously a state collection (MappingAccess/MappingAssign).
-    const bareElement = keys.length === 1 && !hasMember && !isThis;
+    // `this.`-prefixed or alias element is unambiguously a state collection (MappingAccess/MappingAssign).
+    const bareElement = !alias && keys.length === 1 && !hasMember && !isThis;
 
     // Read-expression node matching the lvalue (for a compound op), built with fresh key instances so it does
     // not alias the keys used by the assignment node.
@@ -1815,7 +1926,7 @@ export default class AstBuilder
         r.location = nameLoc;
         return r;
       }
-      const readKeys = keyCtxs.map((e) => this.visit(e) as ExpressionNode);
+      const readKeys = buildKeys();
       if (bareElement) {
         const baseId = new IdentifierNode(name);
         baseId.location = nameLoc;
@@ -2151,13 +2262,26 @@ export default class AstBuilder
     return node;
   }
 
-  visitFieldAccess(ctx: FieldAccessContext): FieldAccessNode {
-    const expression = this.visit(ctx.expression());
+  visitFieldAccess(ctx: FieldAccessContext): ExpressionNode {
+    let expression = this.visit(ctx.expression());
     const memberCtx = ctx.memberName();
     // memberName can be '.' Identifier or a dotted token like '.value'
     const fieldName = memberCtx.Identifier()
       ? memberCtx.Identifier().getText()
       : memberCtx.getText().slice(1); // strip leading '.'
+
+    // Solidity `block.timestamp` -> BCH `tx.locktime` (the spend's nLocktime time bound) under import-compat.
+    if (this.solidityImportCompat && expression instanceof IdentifierNode
+      && expression.name === 'block' && fieldName === 'timestamp') {
+      const locktime = new NullaryOpNode(NullaryOperator.LOCKTIME);
+      locktime.location = Location.fromCtx(ctx);
+      return locktime;
+    }
+
+    // Storage-pointer read: `alias.field` -> `container[keys].field` (clone the access path per use site).
+    if (expression instanceof IdentifierNode && this.storageAliases.has(expression.name)) {
+      expression = cloneNode(this.storageAliases.get(expression.name)!.access);
+    }
     const node = new FieldAccessNode(expression, fieldName);
     node.location = Location.fromCtx(ctx);
     return node;
@@ -2660,21 +2784,10 @@ export default class AstBuilder
       return node;
     }
 
-    if (methodName === 'transfer') {
-      if (callOpts?.value) {
-        throw new ParseError(
-          "'{value}' call option is not applicable to '.transfer()' - the amount is already specified as the argument",
-          Location.fromCtx(ctx),
-        );
-      }
-
-      if (args.length !== 1) {
-        throw new ParseError(
-          "'.transfer()' expects exactly one argument (the amount)",
-          Location.fromCtx(ctx),
-        );
-      }
-
+    // Satoshi send `addr.transfer(amount)`: exactly one argument and no `{value:}`. An interface method also
+    // named `transfer` (e.g. ERC20 `transfer(to, amount)`) has a different arity / shape and falls through to
+    // the external method-call path below.
+    if (methodName === 'transfer' && args.length === 1 && !callOpts) {
       const node = new AddressTransferStatementNode(addressExpression, args[0]);
       node.location = Location.fromCtx(ctx);
       return node;

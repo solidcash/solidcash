@@ -594,3 +594,232 @@ describe('this.categoryId introspection (contract self-category)', () => {
     expect(() => compileString('contract C() { int categoryId; function f() { this.categoryId = 1; } }')).toThrow();
   });
 });
+
+// solidity-by-example porting bench. See packages/solidc/docs/solidity-by-example-bench.md.
+describe('SBE-1: break/continue when the branch is the last loop statement', () => {
+  it('compiles a for-loop whose final statement is if(){break} (loop/Loop.sol pattern)', () => {
+    const a = compileString(`
+      contract C() {
+        function f() {
+          int sum = 0;
+          for (int i = 0; i < 10; i = i + 1) {
+            if (i == 3) { continue; }
+            if (i == 5) { break; }
+            sum = sum + i;
+          }
+          require(sum >= 0);
+        }
+      }`);
+    expect(a.contractName).toBe('C');
+  });
+
+  it('compiles a bare if(){break} as the only loop statement', () => {
+    const a = compileString(`
+      contract C() {
+        function f(int n) {
+          for (int i = 0; i < n; i = i + 1) {
+            if (i == 5) { break; }
+          }
+          require(true);
+        }
+      }`);
+    expect(a.contractName).toBe('C');
+  });
+});
+
+describe('SBE-2: bytesN -> bytesM cast (truncate / widen)', () => {
+  it('compiles bytes4(keccak256(...)) function-selector truncation', () => {
+    const a = compileString(`
+      contract C() {
+        function f(string s) {
+          bytes4 sel = bytes4(keccak256(bytes(s)));
+          require(sel.length == 4);
+        }
+      }`);
+    expect(a.contractName).toBe('C');
+  });
+
+  it('shrinking a bounded bytes truncates the leftmost bytes (OP_SPLIT OP_DROP)', () => {
+    const a = compileString('contract C() { function f() { bytes2 a = 0x1234; bytes1 b = bytes1(a); require(b.length == 1); } }');
+    expect(a.bytecode).toContain('OP_SPLIT OP_DROP');
+  });
+
+  it('widening a bounded bytes right-pads with zero bytes (OP_CAT)', () => {
+    const a = compileString('contract C() { function f() { bytes1 a = 0x12; bytes4 b = bytes4(a); require(b.length == 4); } }');
+    expect(a.bytecode).toContain('OP_CAT');
+  });
+});
+
+describe('SBE-3: unused vars/params warn but never fail (Solidity-style)', () => {
+  it('compiles imported Solidity with unused vars/params', () => {
+    const a = compileString(`pragma solidity ^0.8.26;
+      contract C {
+        function f(uint256 used, uint256 unusedParam) public pure returns (uint256) {
+          uint256 unusedLocal = 7;
+          return used;
+        }
+      }`, { solidityImportCompat: true });
+    expect(a.contractName).toBe('C');
+  });
+  it('also accepts an unused param in a native SolidCash contract (no flag, warn-only)', () => {
+    const a = compileString('contract C() { function f(sig s, pubkey pk, int unused) { require(checkSig(s, pk)); } }');
+    expect(a.contractName).toBe('C');
+  });
+});
+
+describe('SBE-4: function-less contracts compile (state-publishing, unspendable)', () => {
+  it('a truly-empty contract compiles to an unspendable OP_RETURN script', () => {
+    const a = compileString('contract Foo() {}');
+    expect(a.bytecode).toBe('OP_0 OP_VERIFY');
+  });
+
+  it('a modifier-only contract compiles to OP_RETURN', () => {
+    const a = compileString('contract Guard() { modifier noReentrant() { _; } }');
+    expect(a.bytecode).toBe('OP_0 OP_VERIFY');
+  });
+
+  it('a storage-only Solidity contract compiles under solidityImportCompat', () => {
+    const a = compileString(`pragma solidity ^0.8.26;
+      contract HelloWorld { string public greet = "Hello World!"; }`, { solidityImportCompat: true });
+    expect(a.contractName).toBe('HelloWorld');
+  });
+});
+
+describe('SBE-5: for-loop flexibility + prefix increment statements', () => {
+  it('for-loop with omitted initializer defaults the counter to 0', () => {
+    const a = compileString('contract C() { function f() { int s = 0; for (int i; i < 3; i++) { s = s + i; } require(s >= 0); } }');
+    expect(a.contractName).toBe('C');
+  });
+
+  it('for-loop with an empty update clause compiles', () => {
+    const a = compileString('contract C() { function f() { int s = 0; for (int i = 0; i < 3;) { s = s + i; unchecked { i = i + 1; } } require(s >= 0); } }');
+    expect(a.contractName).toBe('C');
+  });
+
+  it('accepts prefix ++ and -- as statements (same effect as postfix)', () => {
+    const a = compileString('contract C() { function f() { int i = 0; ++i; --i; require(i == 0); } }');
+    expect(a.contractName).toBe('C');
+  });
+});
+
+describe('SBE-6: external calls on interface-typed variables (EVM parity)', () => {
+  const IFACE = 'interface IERC20 { function transferFrom(address f, address t, int a) external returns (bool); }';
+  it('routes a method call on an interface-typed state var to an external call', () => {
+    const a = compileString(`${IFACE}
+      contract C(IERC20 token) {
+        function f(address from, address to, sig s, pubkey pk) {
+          bool ok = token.transferFrom(from, to, 5);
+          require(checkSig(s, pk));
+        }
+      }`);
+    expect(a.contractName).toBe('C');
+  });
+  it('routes a method call on an interface-typed local (IFoo x = IFoo(addr))', () => {
+    const a = compileString(`interface IFoo { function bar(int x) external returns (int); }
+      contract C() {
+        function f(address a, sig s, pubkey pk) { IFoo foo = IFoo(a); int r = foo.bar(5); require(checkSig(s, pk)); }
+      }`);
+    expect(a.contractName).toBe('C');
+  });
+  it('routes a method call on an interface-typed parameter', () => {
+    const a = compileString(`interface IFoo { function bar(int x) external returns (int); }
+      contract C() { function f(IFoo foo, sig s, pubkey pk) { int r = foo.bar(5); require(checkSig(s, pk)); } }`);
+    expect(a.contractName).toBe('C');
+  });
+});
+
+describe('SBE-7: ether-send via low-level call{value:}', () => {
+  it('addr.call{value:}(data) on an address variable', () => {
+    const a = compileString('contract C() { function f(address dst, sig s, pubkey pk) { (bool ok, bytes d) = dst.call{value: 100}(0x); require(checkSig(s, pk)); } }');
+    expect(a.contractName).toBe('C');
+  });
+  it('msg.sender.call{value:}(data)', () => {
+    const a = compileString('contract C() { function f(sig s, pubkey pk) { (bool ok, bytes d) = msg.sender.call{value: 100}(0x); require(checkSig(s, pk)); } }');
+    expect(a.contractName).toBe('C');
+  });
+});
+
+describe('SBE-8: satoshi transfer requires a stateful contract (clean error, no crash)', () => {
+  it('rejects address.transfer() in a stateless contract with a clear error', () => {
+    expect(() => compileString('contract C() { function f(address payable dst, sig s, pubkey pk) { dst.transfer(100); require(checkSig(s, pk)); } }'))
+      .toThrow(/require a stateful contract/);
+  });
+  it('rejects address.send() in a stateless contract', () => {
+    expect(() => compileString('contract C() { function f(address payable dst, sig s, pubkey pk) { bool ok = dst.send(100); require(checkSig(s, pk)); } }'))
+      .toThrow(/require a stateful contract/);
+  });
+  it('still allows address.transfer() in a stateful contract', () => {
+    const a = compileString('contract C() { int n; function f(address payable dst, sig s, pubkey pk) { dst.transfer(100); this.n = 1; require(checkSig(s, pk)); } }');
+    expect(a.contractName).toBe('C');
+  });
+});
+
+describe('SBE-9: imported enum/struct types + hex-literal-as-int + implicit named return', () => {
+  it('resolves an enum-typed state var imported from another file', () => {
+    const resolver = (p: string): { source: string; id: string } | undefined => (p.includes('Decl')
+      ? { source: 'enum Status { Pending, Shipped }', id: 'Decl' } : undefined);
+    const a = compileString('pragma solidity ^0.8.26;\nimport "./Decl.sol";\ncontract Enum { Status public status; }',
+      { solidityImportCompat: true, importResolver: resolver });
+    expect(a.contractName).toBe('Enum');
+  });
+
+  it('treats a hex number literal as a big-endian int when compared with an int (compat)', () => {
+    const a = compileString('pragma solidity ^0.8.26;\ncontract C { function f(uint256 x) external pure returns (bool) { return x >= 0x100000000000000000000000000000000; } }',
+      { solidityImportCompat: true });
+    expect(a.contractName).toBe('C');
+  });
+
+  it('keeps int-vs-hex-literal a type error in native SolidCash (no flag)', () => {
+    expect(() => compileString('contract C() { function f() { require(tx.version == 0x02); } }')).toThrow();
+  });
+
+  it('returns named returns implicitly when there is no explicit return', () => {
+    const a = compileString('contract C() { function f(int x, sig s, pubkey pk) returns (int r) { r = x + 1; require(checkSig(s, pk)); } }');
+    expect(a.contractName).toBe('C');
+  });
+});
+
+describe('SBE-10: storage-pointer locals + block.timestamp + stmt-form interface calls', () => {
+  it('aliases a mapping-struct storage pointer for read and write', () => {
+    const a = compileString(`contract C() {
+      struct S { int a; bool b; }
+      mapping(int => S) m;
+      function f(int k, int v) { S storage s = m[k]; require(s.a >= 0); s.a += v; s.b = true; }
+    }`);
+    expect(a.contractName).toBe('C');
+  });
+
+  it('aliases a struct-array storage pointer', () => {
+    const a = compileString(`contract C() {
+      struct T { int x; bool done; }
+      T[] arr;
+      function f(int i) { T storage t = arr[i]; require(!t.done); t.x = 5; }
+    }`);
+    expect(a.contractName).toBe('C');
+  });
+
+  it('maps block.timestamp to tx.locktime under solidityImportCompat', () => {
+    const a = compileString(`pragma solidity ^0.8.26;
+      contract C { uint256 t; function f(uint256 startAt) external { require(startAt >= block.timestamp); t = startAt; } }`,
+    { solidityImportCompat: true });
+    expect(a.bytecode).toContain('OP_TXLOCKTIME');
+  });
+
+  it('routes a statement-form interface call on a constructor-param var (2-arg .transfer is not satoshi send)', () => {
+    const a = compileString(`interface IERC20 { function transfer(address t, uint256 a) external returns (bool); }
+      contract C(IERC20 token) { uint256 n; function f(address to, uint256 amt) external { token.transfer(to, amt); n = 1; } }`,
+    { solidityImportCompat: true });
+    expect(a.contractName).toBe('C');
+  });
+});
+
+describe('SBE-11: local struct member assignment (desugars to a struct rebuild)', () => {
+  it('assigns a field of a local struct', () => {
+    const a = compileString('contract C() { struct S { int a; bool b; } int n; function f(int v) { S memory s; s.a = v; this.n = s.a; } }');
+    expect(a.contractName).toBe('C');
+  });
+  it('supports compound assignment on a local struct field', () => {
+    const a = compileString('contract C() { struct S { int a; bool b; } int n; function f(int v) { S memory s = S(1, false); s.a += v; this.n = s.a; } }');
+    expect(a.contractName).toBe('C');
+  });
+});

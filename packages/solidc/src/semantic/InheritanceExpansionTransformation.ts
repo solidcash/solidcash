@@ -73,6 +73,7 @@ import {
   DuplicateParentInvocationError,
 } from '../Errors.js';
 import AstTraversal from '../ast/AstTraversal.js';
+import { cloneNode } from '../ast/clone.js';
 
 // Internal name a parent's overridden function is preserved under, so `super.f()` / `Base.f()` can
 // still reach it after the hierarchy is flattened.
@@ -80,21 +81,6 @@ function superImplName(definingContract: string, fnName: string): string {
   return `__base_${definingContract}_${fnName}`;
 }
 
-function cloneNode<T extends Node>(node: T): T {
-  const clone = Object.create(Object.getPrototypeOf(node));
-  for (const [key, value] of Object.entries(node)) {
-    if (value instanceof Node) {
-      clone[key] = cloneNode(value);
-    } else if (Array.isArray(value)) {
-      clone[key] = value.map((item) => (item instanceof Node ? cloneNode(item) : item));
-    } else if (value instanceof Map) {
-      clone[key] = new Map(value);
-    } else {
-      clone[key] = value;
-    }
-  }
-  return clone;
-}
 
 /**
  * Expand contract inheritance by merging parent contract definitions into child contracts.

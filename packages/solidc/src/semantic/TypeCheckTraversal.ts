@@ -38,6 +38,7 @@ import {
   NullaryOpNode,
   SliceNode,
   IntLiteralNode,
+  HexLiteralNode,
   DecimalLiteralNode,
   DoWhileNode,
   WhileNode,
@@ -154,6 +155,10 @@ import { getStackEffect } from '../asmStackEffects.js';
 export default class TypeCheckTraversal extends AstTraversal {
   private currentFunction: FunctionDefinitionNode;
   private functionDefinitions: Map<string, FunctionDefinitionNode[]> = new Map();
+
+  constructor(private solidityImportCompat: boolean = false) {
+    super();
+  }
 
   visitSourceFile(node: SourceFileNode): Node {
     node.constantDefinitions.forEach((cd) => this.visitConstantDefinition(cd));
@@ -1368,6 +1373,17 @@ export default class TypeCheckTraversal extends AstTraversal {
     return node;
   }
 
+  // Reinterpret a Solidity hex number literal as its big-endian integer value (the bytes are stored in
+  // source order). Returns an IntLiteralNode so codegen emits a proper Script number, not a byte string.
+  private hexLiteralToInt(lit: HexLiteralNode): IntLiteralNode {
+    let value = 0n;
+    for (const b of lit.value) value = (value << 8n) + BigInt(b);
+    const intNode = new IntLiteralNode(value);
+    intNode.location = lit.location;
+    intNode.type = PrimitiveType.INT;
+    return intNode;
+  }
+
   visitBinaryOp(node: BinaryOpNode): Node {
     // Visit non-decimal side first so its type is available for propagation
     const leftIsDecimal = node.left instanceof DecimalLiteralNode;
@@ -1395,6 +1411,19 @@ export default class TypeCheckTraversal extends AstTraversal {
       }
       node.left = this.visit(node.left);
       node.right = this.visit(node.right);
+    }
+
+    // Solidity hex number literals (`0x100...`) are big-endian integers, not byte strings. When one side of
+    // a binary op is an integer and the other is a hex literal, reinterpret the literal as its big-endian
+    // integer value (e.g. `x >= 0x100000000000000000000000000000000` for `x >= 2**128`). Only triggers on a
+    // hex-vs-int pairing, which would otherwise be a type error, so it never changes working code.
+    const isIntType = (t?: Type): boolean => t === PrimitiveType.INT || t instanceof IntType;
+    if (this.solidityImportCompat) {
+      if (node.left instanceof HexLiteralNode && isIntType(node.right.type)) {
+        node.left = this.hexLiteralToInt(node.left);
+      } else if (node.right instanceof HexLiteralNode && isIntType(node.left.type)) {
+        node.right = this.hexLiteralToInt(node.right);
+      }
     }
 
     const resType = resultingTypeForBinaryOp(node.operator, node.left.type!, node.right.type!);

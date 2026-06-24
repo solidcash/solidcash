@@ -310,6 +310,7 @@ emitStatement
 assignmentStatement
     : 'this' '.' Identifier (('[' expression ']')+ ('.' Identifier)?)? op=('=' | '+=' | '-=' | '*=' | '/=' | '%=' | '&=' | '|=' | '^=' | '<<=' | '>>=') expression ';'
     | Identifier ('[' expression ']')+ ('.' Identifier)? op=('=' | '+=' | '-=' | '*=' | '/=' | '%=' | '&=' | '|=' | '^=' | '<<=' | '>>=') expression ';'
+    | Identifier '.' Identifier op=('=' | '+=' | '-=' | '*=' | '/=' | '%=' | '&=' | '|=' | '^=' | '<<=' | '>>=') expression ';'
     ;
 
 mappingDeleteStatement
@@ -336,6 +337,7 @@ tupleSlot
 assignStatement
     : Identifier op=('=' | '+=' | '-=' | '*=' | '/=' | '%=' | '&=' | '|=' | '^=' | '<<=' | '>>=') expression ';'
     | Identifier op=('++' | '--') ';'
+    | op=('++' | '--') Identifier ';'
     ;
 
 arrayPushStatement
@@ -400,11 +402,11 @@ forOfStatement
     ;
 
 forStatement
-    : 'for' '(' forInit forCondition forUpdate ')' block
+    : 'for' '(' forInit forCondition forUpdate? ')' block
     ;
 
 forInit
-    : typeName modifier* Identifier '=' expression ';'
+    : typeName modifier* Identifier ('=' expression)? ';'
     ;
 
 forCondition
@@ -595,6 +597,7 @@ modifier
     | 'packed'
     | 'memory'
     | 'calldata'
+    | 'storage'
     | 'immutable'
     ;
 

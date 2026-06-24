@@ -56,6 +56,7 @@ export enum Modifier {
   PACKED = 'packed',
   MEMORY = 'memory',
   CALLDATA = 'calldata',
+  STORAGE = 'storage',
   IMMUTABLE = 'immutable',
 }
 

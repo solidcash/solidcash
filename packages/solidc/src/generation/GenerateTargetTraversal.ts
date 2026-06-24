@@ -670,6 +670,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (hasFallback) dispatchFunctions.push(node.fallbackDef!);
     if (hasReceive) dispatchFunctions.push(node.receiveDef!);
 
+    if (dispatchFunctions.length === 0) {
+      // State-publishing / empty contract: no entry point exists, so there is no spending path.
+      // Emit OP_0 OP_VERIFY (an always-fail) so the locking script is unspendable (warned in
+      // semantic analysis). Preferred over OP_RETURN, which carries data-output semantics.
+      const loc: SingleLocationData = { location: node.location, positionHint: PositionHint.START };
+      this.emit(Op.OP_0, loc);
+      this.emit(Op.OP_VERIFY, loc);
+      return;
+    }
+
     if (dispatchFunctions.length === 1 && !hasFallback && !hasReceive) {
       const visited = this.visitList(dispatchFunctions) as FunctionDefinitionNode[];
       if (node.constructorDef) {

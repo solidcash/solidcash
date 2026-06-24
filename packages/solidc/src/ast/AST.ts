@@ -1528,6 +1528,7 @@ export interface ExternalReadSlot {
   collectionName?: string;
   collectionSignature?: string;
   addressParam?: string; // name of the constructor/function parameter providing the callee address (locking bytecode)
+  addressStateVar?: string; // name of the interface-typed state var holding the callee address (read from state)
   slotIndex: number;
 }
 
@@ -1587,6 +1588,7 @@ export interface ExternalCallSlot {
   interfaceName: string;
   functionName: string;
   addressParam?: string;
+  addressStateVar?: string; // interface-typed state var holding the callee address (read from state)
   slotIndex: number;
   requiredDataNftIndices: number[];
   hasReturnValues?: boolean;
@@ -1637,6 +1639,7 @@ export class ExternalOutputStateAccessNode extends ExpressionNode {
 export interface ExternalOutStateSlot {
   interfaceName: string;
   addressParam?: string;
+  addressStateVar?: string; // interface-typed state var holding the callee address (read from state)
   slotIndex: number;
   requiredDataNftIndices: number[];
   sharedWithCallSlotIndex?: number;

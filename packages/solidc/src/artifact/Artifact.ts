@@ -67,6 +67,7 @@ function buildFunctionAbiMetadata(func: FunctionDefinitionNode): Partial<AbiFunc
         interfaceName: ec.interfaceName,
         functionName: ec.functionName,
         ...(ec.addressParam && { addressParam: ec.addressParam }),
+        ...(ec.addressStateVar && { addressStateVar: ec.addressStateVar }),
         requiredDataNftIndices: ec.requiredDataNftIndices,
         ...(ec.hasReturnValues && { hasReturnValues: true }),
         ...(ec.returnTypes && ec.returnTypes.length > 0 && {

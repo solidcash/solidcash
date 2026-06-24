@@ -231,6 +231,7 @@ export interface ExternalCallAbi {
   interfaceName: string;
   functionName: string;
   addressParam?: string;
+  addressStateVar?: string; // interface-typed state var holding the callee address (read from state, not caller-provided)
   requiredDataNftIndices: number[];
   hasReturnValues?: boolean;
   returnTypes?: readonly string[];

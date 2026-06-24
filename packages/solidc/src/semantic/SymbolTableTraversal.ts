@@ -2771,6 +2771,10 @@ export default class SymbolTableTraversal extends AstTraversal {
       // Each call site gets its own slot (no de-duplication)
       const addressParam = node.addressExpression instanceof IdentifierNode
         ? node.addressExpression.name : undefined;
+      // A `__extaddr_<var>` address local is the synthesized read of an interface-typed state var (see
+      // SynthesizeExternalAddressLocals); record the underlying state var so the SDK resolves it from state.
+      const addressStateVar = addressParam?.startsWith('__extaddr_')
+        ? addressParam.slice('__extaddr_'.length) : undefined;
       // Determine if selector verification is needed: only when the callee interface
       // has >1 callable function AND mode is REGULAR (call/staticcall skip selectors)
       const callMode = node.callInfo.callMode;
@@ -2843,6 +2847,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         interfaceName: node.callInfo.interfaceName,
         functionName: node.callInfo.functionName,
         addressParam,
+        addressStateVar,
         slotIndex: -1,
         requiredDataNftIndices: dataNftIndices,
         computedOffset: 0,

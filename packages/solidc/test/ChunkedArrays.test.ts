@@ -24,8 +24,9 @@ describe('chunk-packed arrays: layout/desugar (chunkedArrays flag)', () => {
     }
   });
 
-  it('keeps bounded and struct/nested-array elements on the collection model', () => {
-    // uint256[5] is bounded; a struct element and a nested array are not yet chunk-packable
+  it('keeps bounded arrays on the collection model; struct elements are chunk-packed', () => {
+    // uint256[5] is bounded -> collection. A struct element IS chunk-packable: fixed-width structs use the
+    // flat-stream layout, variable-width structs (a string/bytes/bigint field) use the framed layout.
     const structSrc = (decl: string): string =>
       `pragma solidcash >=0.8.0; struct P { int x; string note; } contract C(){ ${decl} int counter; constructor(){}`
       + ' function f(){ require(this.counter >= 0); } }';
@@ -33,8 +34,10 @@ describe('chunk-packed arrays: layout/desugar (chunkedArrays flag)', () => {
       const a = compileString(src(`${t} a;`), { chunkedArrays: true });
       expect(isCollection(a, 'a')).toBe(true);
     }
+    // variable-width struct array is now chunk-packed (dynamic), not a collection
     const sa = compileString(structSrc('P[] people;'), { chunkedArrays: true });
-    expect(isCollection(sa, 'people')).toBe(true);
+    expect(isCollection(sa, 'people')).toBe(false);
+    expect(stateVar(sa, 'people')?.dynamic).toBe(true);
   });
 
   it('routes unbounded fixed-width T[] to chunk-packed by DEFAULT (flag now defaults on)', () => {

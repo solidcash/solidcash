@@ -266,6 +266,9 @@ export default class AstBuilder
   private typeDefMap: Map<string, ValueType> = new Map();
   private pendingParentInvocations: ParentInvocation[] = [];
   private packedStateArrayNames: Set<string> = new Set();
+  // Chunk-packed/packed state struct arrays -> element StructType, for desugaring element-field writes
+  // (`arr[i].field = v`) to a whole-element rebuild (`arr[i] = T(arr[i].f0, .., v, ..)`).
+  private packedStructArrayElems: Map<string, StructType> = new Map();
   // Storage-pointer locals: `T storage x = container[k];` makes `x` a compile-time alias for the access
   // path `container[k]`. Reads/writes through `x` are rewritten to that path (reusing existing codegen).
   // Per-function (cleared at each function/constructor/modifier entry); flat scope is sufficient here.
@@ -570,6 +573,12 @@ export default class AstBuilder
       stateVariables
         .filter((sv) => sv.isPacked || (sv.isDynamic && sv.type instanceof ArrayType))
         .map((sv) => sv.name),
+    );
+    this.packedStructArrayElems = new Map(
+      stateVariables
+        .filter((sv) => (sv.isPacked || sv.isDynamic) && sv.type instanceof ArrayType
+          && (sv.type as ArrayType).elementType instanceof StructType)
+        .map((sv) => [sv.name, (sv.type as ArrayType).elementType as StructType]),
     );
 
     // Collect modifier definitions
@@ -1914,6 +1923,36 @@ export default class AstBuilder
       return alias ? [...alias.keys.map((k) => cloneNode(k)), ...idxKeys] : idxKeys;
     };
     const keys = buildKeys();
+
+    // Element-field write on a chunk-packed/packed struct state array: `arr[i].field op= v` (directly or via a
+    // storage-pointer alias). Chunk-packed arrays have no in-place element-field write, so rebuild the whole
+    // element: `arr[i] = T(arr[i].f0, .., new, ..)`, reusing the element read + whole-element assign.
+    const structArrayElem = hasMember && keys.length === 1 ? this.packedStructArrayElems.get(name) : undefined;
+    if (structArrayElem && structArrayElem.fields.some((f) => f.name === fieldName)) {
+      const fieldRead = (field: string): ExpressionNode => {
+        const baseId = new IdentifierNode(name);
+        baseId.location = nameLoc;
+        const acc = new ArrayAccessNode(baseId, buildKeys()[0]);
+        acc.location = nameLoc;
+        const fa = new FieldAccessNode(acc, field);
+        fa.location = loc;
+        return fa;
+      };
+      const newValue = op === '='
+        ? this.visit(valueCtx) as ExpressionNode
+        : this.compoundRhs(fieldRead(fieldName!), op, valueCtx, loc);
+      const ctorId = new IdentifierNode(structArrayElem.name);
+      ctorId.location = nameLoc;
+      const ctor = new FunctionCallNode(
+        ctorId,
+        structArrayElem.fields.map((f) => (f.name === fieldName ? newValue : fieldRead(f.name))),
+      );
+      ctor.location = loc;
+      const assign = new StateArrayAssignNode(name, buildKeys()[0], ctor);
+      assign.location = loc;
+      return assign;
+    }
+
     // A bare single-key element resolves to state-or-local in semantic analysis (ArrayAccess/ArrayAssign); a
     // `this.`-prefixed or alias element is unambiguously a state collection (MappingAccess/MappingAssign).
     const bareElement = !alias && keys.length === 1 && !hasMember && !isThis;

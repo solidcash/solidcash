@@ -282,3 +282,55 @@ contract C() {
     await sc.checkNum(2n, 300n).send();
   });
 });
+
+// #15: variable-width struct elements (a struct with a string/bytes/bigint field) chunk-pack via the framed
+// layout, navigated by walking each element's inner field frames. Element-field writes (`arr[i].field = v`)
+// desugar to a whole-element rebuild (`arr[i] = T(arr[i].f0, .., v, ..)`).
+const STRUCTARR = `pragma solidcash >=0.8.0;
+contract C() {
+  struct Item { string name; int qty; }
+  Item[] items;
+  function setItems(string n0, int q0, string n1, int q1, pubkey pk, sig s) {
+    require(checkSig(s, pk)); this.items = [Item(n0, q0), Item(n1, q1)];
+  }
+  function pushItem(string n, int q, pubkey pk, sig s) { require(checkSig(s, pk)); this.items.push(Item(n, q)); }
+  function popItem(pubkey pk, sig s) { require(checkSig(s, pk)); this.items.pop(); }
+  function setQty(int i, int q, pubkey pk, sig s) { require(checkSig(s, pk)); this.items[i].qty = q; }
+  function checkName(int i, string e) { require(this.items[i].name == e); }
+  function checkQty(int i, int e) { require(this.items[i].qty == e); }
+}`;
+
+describe('chunk-packed array: variable-width struct elements', () => {
+  const provider = createTestProvider();
+  const sig = (): SignatureTemplate => new SignatureTemplate(alicePriv);
+
+  it('round-trips a struct[] with a string field: write, read, push, element-field-write, pop', async () => {
+    const artifact = compileString(STRUCTARR, { chunkedArrays: true });
+    const contract = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, contract, artifact.stateLayout!, { items: [] }, { saltContract: true },
+    );
+    const sc = StatefulContract.withCategory(contract, categoryId);
+
+    // a 100-byte name pushes the element data past one chunk
+    const big = 'x'.repeat(100);
+    await sc.setItems(big, 3n, 'banana', 5n, alicePub, sig()).send();
+    expect(await sc.getState().then((s) => s.items)).toEqual([{ name: big, qty: 3n }, { name: 'banana', qty: 5n }]);
+    await sc.checkName(0n, big).send();          // element 0 straddles chunks
+    await sc.checkQty(1n, 5n).send();
+    await expect(sc.checkQty(1n, 4n).send()).rejects.toThrow();
+
+    await sc.pushItem('cherry', 7n, alicePub, sig()).send();
+    expect(await sc.getState().then((s) => (s.items as unknown[]).length)).toBe(3);
+    await sc.checkName(2n, 'cherry').send();
+
+    // element-field write -> whole-element rebuild
+    await sc.setQty(0n, 99n, alicePub, sig()).send();
+    expect(await sc.getState().then((s) => s.items)).toEqual(
+      [{ name: big, qty: 99n }, { name: 'banana', qty: 5n }, { name: 'cherry', qty: 7n }],
+    );
+
+    await sc.popItem(alicePub, sig()).send();
+    expect(await sc.getState().then((s) => (s.items as unknown[]).length)).toBe(2);
+  });
+});

@@ -2628,6 +2628,12 @@ export default class SymbolTableTraversal extends AstTraversal {
     if ('expression' in node && (node as any).expression instanceof Node) {
       this.collectExternalReads((node as any).expression, map);
     }
+    if ('tuple' in node && (node as any).tuple instanceof Node) {
+      this.collectExternalReads((node as any).tuple, map);
+    }
+    if ('tupleExpressions' in node && Array.isArray((node as any).tupleExpressions)) {
+      for (const e of (node as any).tupleExpressions) { if (e instanceof Node) this.collectExternalReads(e, map); }
+    }
     if ('addressExpression' in node && (node as any).addressExpression instanceof Node) {
       this.collectExternalReads((node as any).addressExpression, map);
     }
@@ -2709,6 +2715,12 @@ export default class SymbolTableTraversal extends AstTraversal {
     if ('expression' in node && (node as any).expression instanceof Node) {
       this.assignExternalReadSlotIndices((node as any).expression, map);
     }
+    if ('tuple' in node && (node as any).tuple instanceof Node) {
+      this.assignExternalReadSlotIndices((node as any).tuple, map);
+    }
+    if ('tupleExpressions' in node && Array.isArray((node as any).tupleExpressions)) {
+      for (const e of (node as any).tupleExpressions) { if (e instanceof Node) this.assignExternalReadSlotIndices(e, map); }
+    }
     if ('addressExpression' in node && (node as any).addressExpression instanceof Node) {
       this.assignExternalReadSlotIndices((node as any).addressExpression, map);
     }
@@ -2780,21 +2792,25 @@ export default class SymbolTableTraversal extends AstTraversal {
       const callMode = node.callInfo.callMode;
       let needsSelectorVerification = false;
       if (!callMode || callMode === ExternalCallMode.REGULAR) {
-        const iface = this.interfaceMap.get(node.callInfo.interfaceName);
-        if (iface) {
-          const allFunctions = this.getAllInterfaceFunctions(iface);
-          needsSelectorVerification = allFunctions.length > 1;
-        }
+        const calleeFns = this.getCalleeFunctions(node.callInfo.interfaceName);
+        if (calleeFns) needsSelectorVerification = calleeFns.length > 1;
       }
 
-      // Compute the target interface's data NFT count so that computedOffset
-      // and staticcall commitment preservation use correct indices.
+      // Callee data NFT count (for computedOffset + commitment preservation). Interface: from its computed
+      // layout; contract callee: from its state vars' nftIndex. A wrong count fails loudly at the dispatch's
+      // address EQUALVERIFY (it reads the wrong input), so this is fail-safe, not silently unsound.
       const callIface = this.interfaceMap.get(node.callInfo.interfaceName);
       let dataNftIndices: number[] = [];
       if (callIface) {
         const layout = this.computeInterfaceStateLayout(callIface);
         if (layout.length > 0) {
           const dataNftCount = Math.max(...layout.map((v) => v.nftIndex)) + 1;
+          dataNftIndices = Array.from({ length: dataNftCount }, (_, i) => i);
+        }
+      } else {
+        const calleeContract = this.contractMap.get(node.callInfo.interfaceName);
+        if (calleeContract && calleeContract.stateVariables.length > 0) {
+          const dataNftCount = Math.max(...calleeContract.stateVariables.map((sv) => sv.nftIndex ?? 0)) + 1;
           dataNftIndices = Array.from({ length: dataNftCount }, (_, i) => i);
         }
       }
@@ -2872,6 +2888,12 @@ export default class SymbolTableTraversal extends AstTraversal {
     if ('expression' in node && (node as any).expression instanceof Node) {
       this.collectExternalCalls((node as any).expression, slots);
     }
+    if ('tuple' in node && (node as any).tuple instanceof Node) {
+      this.collectExternalCalls((node as any).tuple, slots);
+    }
+    if ('tupleExpressions' in node && Array.isArray((node as any).tupleExpressions)) {
+      for (const e of (node as any).tupleExpressions) { if (e instanceof Node) this.collectExternalCalls(e, slots); }
+    }
     if ('addressExpression' in node && (node as any).addressExpression instanceof Node) {
       this.collectExternalCalls((node as any).addressExpression, slots);
     }
@@ -2946,6 +2968,14 @@ export default class SymbolTableTraversal extends AstTraversal {
     }
     if ('expression' in node && (node as any).expression instanceof Node) {
       this.assignExternalCallSlotIndices((node as any).expression, slots, counter);
+    }
+    if ('tuple' in node && (node as any).tuple instanceof Node) {
+      this.assignExternalCallSlotIndices((node as any).tuple, slots, counter);
+    }
+    if ('tupleExpressions' in node && Array.isArray((node as any).tupleExpressions)) {
+      for (const e of (node as any).tupleExpressions) {
+        if (e instanceof Node) this.assignExternalCallSlotIndices(e, slots, counter);
+      }
     }
     if ('callNode' in node && (node as any).callNode instanceof Node) {
       this.assignExternalCallSlotIndices((node as any).callNode, slots, counter);
@@ -3033,6 +3063,12 @@ export default class SymbolTableTraversal extends AstTraversal {
     if ('expression' in node && (node as any).expression instanceof Node) {
       this.collectExternalOutStateReads((node as any).expression, map);
     }
+    if ('tuple' in node && (node as any).tuple instanceof Node) {
+      this.collectExternalOutStateReads((node as any).tuple, map);
+    }
+    if ('tupleExpressions' in node && Array.isArray((node as any).tupleExpressions)) {
+      for (const e of (node as any).tupleExpressions) { if (e instanceof Node) this.collectExternalOutStateReads(e, map); }
+    }
     if ('outStateNode' in node && (node as any).outStateNode instanceof Node) {
       this.collectExternalOutStateReads((node as any).outStateNode, map);
     }
@@ -3081,6 +3117,14 @@ export default class SymbolTableTraversal extends AstTraversal {
     }
     if ('expression' in node && (node as any).expression instanceof Node) {
       this.assignExternalOutStateSlotIndices((node as any).expression, map);
+    }
+    if ('tuple' in node && (node as any).tuple instanceof Node) {
+      this.assignExternalOutStateSlotIndices((node as any).tuple, map);
+    }
+    if ('tupleExpressions' in node && Array.isArray((node as any).tupleExpressions)) {
+      for (const e of (node as any).tupleExpressions) {
+        if (e instanceof Node) this.assignExternalOutStateSlotIndices(e, map);
+      }
     }
     if ('outStateNode' in node && (node as any).outStateNode instanceof Node) {
       this.assignExternalOutStateSlotIndices((node as any).outStateNode, map);
@@ -3501,22 +3545,23 @@ export default class SymbolTableTraversal extends AstTraversal {
           const varType = visitedVar.type
             ?? (visitedVar instanceof IdentifierNode ? visitedVar.definition?.type : undefined)
             ?? this.stateVariableMap.get(varName)?.type;
-          if (varType instanceof AddressType && varType.interfaceName && this.interfaceMap.has(varType.interfaceName)) {
-            const iface = this.interfaceMap.get(varType.interfaceName)!;
-            const ifaceFunc = this.getAllInterfaceFunctions(iface).find((f) => f.name === methodName);
+          const calleeName = varType instanceof AddressType ? varType.interfaceName : undefined;
+          const calleeFns = calleeName ? this.getCalleeFunctions(calleeName) : undefined;
+          if (calleeName && calleeFns) {
+            const ifaceFunc = calleeFns.find((f) => f.name === methodName);
             if (ifaceFunc) {
               if (node.fieldNames) {
                 node.parameters = this.reorderNamedArgsByParams(
-                  node.fieldNames, ifaceFunc.parameters, node.parameters, node, `'${iface.name}.${ifaceFunc.name}'`,
+                  node.fieldNames, ifaceFunc.parameters, node.parameters, node, `'${calleeName}.${ifaceFunc.name}'`,
                 );
                 node.fieldNames = undefined;
               }
               const parameters = this.visitList(node.parameters) as ExpressionNode[];
               // `foo.bar(args)` parses as a namespaced function call, which carries no `{value:}` call
               // options (those arrive via the MethodCall path), so none are threaded here.
-              const callNode = new ExternalFunctionCallNode(iface.name, visitedVar, methodName, parameters);
+              const callNode = new ExternalFunctionCallNode(calleeName, visitedVar, methodName, parameters);
               callNode.callInfo = {
-                interfaceName: iface.name,
+                interfaceName: calleeName,
                 functionName: methodName,
                 externalCallSlotIndex: -1,
               };
@@ -4502,6 +4547,17 @@ export default class SymbolTableTraversal extends AstTraversal {
     return [...funcMap.values()];
   }
 
+  // Callable functions for an external-call target name: an interface's functions, or - treating a contract
+  // as its own interface - a contract's functions. The callee's own covenant arbiters which are callable, so
+  // exposing all is safe. Returns undefined if the name is neither an interface nor a contract.
+  private getCalleeFunctions(name: string): (InterfaceFunctionNode | FunctionDefinitionNode)[] | undefined {
+    const iface = this.interfaceMap.get(name);
+    if (iface) return this.getAllInterfaceFunctions(iface);
+    const contract = this.contractMap.get(name);
+    if (contract) return contract.functions;
+    return undefined;
+  }
+
   /**
    * Recursively collect all state variables from an interface, including inherited ones.
    * Deduplicates by variable name (child overrides parent).
@@ -5476,13 +5532,14 @@ export default class SymbolTableTraversal extends AstTraversal {
     // form parses as a namespaced functionCall (handled in visitFunctionCall); the call-option form reaches
     // here as a MethodCall.
     if (node.methodName === 'call' || node.methodName === 'staticcall' || node.methodName === 'delegatecall') {
+      const objName = node.object instanceof IdentifierNode ? node.object.name : undefined;
       node.object = this.visit(node.object);
-      // node.object.type isn't assigned yet in this pass: resolve a bare identifier from the symbol table,
-      // and treat msg.sender / tx.origin (NullaryOps typed `address` in TypeCheckTraversal) as addresses.
+      // node.object.type isn't assigned yet in this pass: resolve a bare identifier from the local symbol
+      // table or the state-var map, and treat msg.sender / tx.origin (NullaryOps typed `address`) as addresses.
       const isAddressNullary = node.object instanceof NullaryOpNode
         && (node.object.operator === NullaryOperator.MSG_SENDER || node.object.operator === NullaryOperator.TX_ORIGIN);
       const objType = node.object.type
-        ?? (node.object instanceof IdentifierNode ? this.symbolTables[0].get(node.object.name)?.type : undefined)
+        ?? (objName ? this.symbolTables[0].get(objName)?.type ?? this.stateVariableMap.get(objName)?.type : undefined)
         ?? (isAddressNullary ? new AddressType() : undefined);
       if (objType instanceof AddressType) {
         const data = node.parameters.length === 1
@@ -5494,6 +5551,52 @@ export default class SymbolTableTraversal extends AstTraversal {
           callNode.callOptions.value = this.visit(callNode.callOptions.value) as ExpressionNode;
         }
         if (callNode.callOptions?.gas) callNode.callOptions.gas = this.visit(callNode.callOptions.gas) as ExpressionNode;
+        callNode.location = node.location;
+        return callNode;
+      }
+    }
+
+    // `var.method{value:}(..)`: `var` is an interface/contract-typed identifier (a function/constructor param,
+    // or a synthesized __extaddr_ local for a state-var target). The no-option form is a namespaced
+    // FunctionCall (handled in visitFunctionCall); the call-option form arrives here. Route to external call.
+    if (node.object instanceof IdentifierNode) {
+      const varName = node.object.name;
+      const varIdentifier = new IdentifierNode(varName);
+      varIdentifier.location = node.object.location;
+      const visitedVar = this.visit(varIdentifier) as ExpressionNode;
+      const varType = visitedVar.type
+        ?? (visitedVar instanceof IdentifierNode ? visitedVar.definition?.type : undefined)
+        ?? this.stateVariableMap.get(varName)?.type;
+      const calleeName = varType instanceof AddressType ? varType.interfaceName : undefined;
+      const calleeFns = calleeName ? this.getCalleeFunctions(calleeName) : undefined;
+      const ifaceFunc = calleeFns?.find((f) => f.name === node.methodName);
+      if (calleeName && ifaceFunc) {
+        if (node.fieldNames) {
+          node.parameters = this.reorderNamedArgsByParams(
+            node.fieldNames, ifaceFunc.parameters, node.parameters, node, `'${calleeName}.${ifaceFunc.name}'`,
+          );
+          node.fieldNames = undefined;
+        }
+        const parameters = this.visitList(node.parameters) as ExpressionNode[];
+        const callNode = new ExternalFunctionCallNode(calleeName, visitedVar, node.methodName, parameters);
+        callNode.callOptions = node.callOptions;
+        callNode.valueTransferIndex = node.valueTransferIndex;
+        if (callNode.callOptions?.value) {
+          callNode.callOptions.value = this.visit(callNode.callOptions.value) as ExpressionNode;
+        }
+        if (callNode.callOptions?.gas) callNode.callOptions.gas = this.visit(callNode.callOptions.gas) as ExpressionNode;
+        callNode.callInfo = {
+          interfaceName: calleeName,
+          functionName: node.methodName,
+          externalCallSlotIndex: -1,
+        };
+        if (ifaceFunc.returnTypes.length > 0) {
+          callNode.type = ifaceFunc.returnTypes.length === 1
+            ? ifaceFunc.returnTypes[0] : new TupleType(ifaceFunc.returnTypes);
+          callNode.callInfo.hasReturnValues = true;
+          callNode.callInfo.returnTypes = ifaceFunc.returnTypes;
+          callNode.callInfo.returnEventSignature = `_Return_${ifaceFunc.name}(${ifaceFunc.returnTypes.map((t) => t.toString()).join(',')})`;
+        }
         callNode.location = node.location;
         return callNode;
       }

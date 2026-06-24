@@ -7,6 +7,7 @@ import {
   VariableDefinitionNode,
   IdentifierNode,
   FunctionCallNode,
+  MethodCallNode,
   BlockNode,
 } from '../ast/AST.js';
 import { AddressType } from '@solidcash/utils';
@@ -83,6 +84,25 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
       }
     }
     node.parameters = this.visitList(node.parameters) as ExpressionNode[];
+    return node;
+  }
+
+  // `token.method{value:}(..)` form: rewrite the object identifier to the synthesized __extaddr_ local.
+  visitMethodCall(node: MethodCallNode): Node {
+    if (
+      node.object instanceof IdentifierNode && this.stateVarIface.has(node.object.name)
+      && !ADDRESS_METHODS.has(node.methodName)
+    ) {
+      this.usedInFn.add(node.object.name);
+      const loc = node.object.location;
+      node.object = new IdentifierNode(PREFIX + node.object.name);
+      node.object.location = loc;
+    } else {
+      node.object = this.visit(node.object) as ExpressionNode;
+    }
+    node.parameters = this.visitList(node.parameters) as ExpressionNode[];
+    if (node.callOptions?.value) node.callOptions.value = this.visit(node.callOptions.value) as ExpressionNode;
+    if (node.callOptions?.gas) node.callOptions.gas = this.visit(node.callOptions.gas) as ExpressionNode;
     return node;
   }
 }

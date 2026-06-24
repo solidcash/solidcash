@@ -120,6 +120,27 @@ contract Stats() is IStats {
 }
 `;
 
+// A-side reader that destructures a multi-return external call into a tuple
+const MULTI_RETURN_READER_CONTRACT = `
+pragma solidcash >=0.8.0;
+
+interface IStats {
+    public bigint a;
+    public bigint b;
+    function getStats(pubkey owner, sig s) returns (bigint, bigint);
+}
+
+contract MultiReturnReader(bytes statsAddr) {
+    bigint sum;
+
+    function callStats(pubkey pk, sig s) {
+        require(checkSig(s, pk));
+        (bigint x, bigint y) = IStats(statsAddr).getStats();
+        this.sum = x + y;
+    }
+}
+`;
+
 // Reader that uses both outState and external function call with returns
 const COMBINED_READER_CONTRACT = `
 pragma solidcash >=0.8.0;
@@ -700,6 +721,48 @@ contract Reader(bytes32 counterCategory) {
         .send();
 
       expect(tx.txid).toBeDefined();
+    });
+  });
+
+  // ---------- Multi-return external call destructured into a tuple (A-side) ----------
+
+  describe('multi-return external call tuple destructure (A-side)', () => {
+    const provider = createTestProvider();
+    const readerArtifact = compileString(MULTI_RETURN_READER_CONTRACT);
+    const statsArtifact = compileString(MULTI_RETURN_CONTRACT);
+    const statsStateLayout = statsArtifact.stateLayout!;
+    const readerStateLayout = readerArtifact.stateLayout!;
+
+    let statsCategoryId: string;
+    let readerCategoryId: string;
+    let statsContract: Contract;
+    let readerContract: Contract;
+
+    beforeAll(async () => {
+      // Genesis Stats (B) first so the reader (A) can embed its real address.
+      statsContract = new Contract(statsArtifact, [], { provider });
+      ({ categoryId: statsCategoryId } = await setupStatefulUtxos(
+        provider, statsContract, statsStateLayout, { a: 3n, b: 4n }, { saltContract: true },
+      ));
+
+      const statsAddr = statsContract.withCategory(hexToBin(statsCategoryId)).lockingBytecode;
+      readerContract = new Contract(readerArtifact, [statsAddr], { provider });
+      ({ categoryId: readerCategoryId } = await setupStatefulUtxos(
+        provider, readerContract, readerStateLayout, { sum: 0n }, { saltContract: true },
+      ));
+    });
+
+    it('reads both values from a destructured multi-return external call', async () => {
+      const readerSc = StatefulContract.withCategory(readerContract, readerCategoryId);
+      const statsSc = StatefulContract.withCategory(statsContract, statsCategoryId);
+
+      const tx = await readerSc.callStats(alicePub, new SignatureTemplate(alicePriv))
+        .withExternalCall(statsSc, 'getStats', [alicePub, new SignatureTemplate(alicePriv)])
+        .send();
+
+      expect(tx.txid).toBeDefined();
+      // getStats returns (a+b, a*b) = (7, 12); sum = 19
+      expect((await readerSc.getState()).sum).toBe(19n);
     });
   });
 

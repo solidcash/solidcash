@@ -21,9 +21,10 @@ These combine into the forms below. The defining axis on-chain is *dense + lengt
 `push`/`length` array) vs *sparse* (an `int`-keyed mapping wearing array syntax).
 
 **Default backend selection** for a bare `T[]` state var (no `packed` keyword): an **unbounded chunk-packable**
-element type -> **chunk-packed** (fixed-width `uintN`/`bytesN`/`bool`/`pubkey`/`address`/`fixedNxM` via
-flat-stream, OR simple variable-width leaf `int`/`string`/`bytes` via single-blob framing); a **struct** or
-**nested-array** element, or a **bounded** `T[N]`, -> **collection**. `packed` always selects the inline blob.
+element type -> **chunk-packed** (fixed-width `uintN`/`bytesN`/`bool`/`pubkey`/`address`/`fixedNxM` and
+fixed-width **structs** via flat-stream, OR variable-width leaf `int`/`string`/`bytes` and variable-width
+**structs** via single-blob framing); a **nested-array** element, or a **bounded** `T[N]`, -> **collection**.
+`packed` always selects the inline blob.
 The selecting predicate is `arrayT.bound === undefined && isChunkPackableElementType(elementType)`
 (`AstBuilder.ts`), behind the `chunkedArrays` compiler option which now **defaults on**.
 
@@ -32,15 +33,15 @@ The selecting predicate is `arrayT.bound === undefined && isChunkPackableElement
 | Form | Declaration | Lives in | Representation | index r/w | `delete` | `push`/`pop` | `.length` | `for ... of` | Size limit | Persisted |
 | --- | --- | --- | --- | :-: | :-: | :-: | :-: | :-: | --- | :-: |
 | **Local** | `int[] a = ...` (in a function) | VM stack | length-prefixed blob on the stack | ✅ | ✅ | ✅ | ✅ | n/a | ~10 KB stack-element limit | ❌ (transient) |
-| **State, non-packed** | bounded / struct / nested-array `T[]` (e.g. `uint256[5] a;`, `Person[] a;`) | entry NFTs | one entry NFT per **set** index (`mapping(int=>T)`) | ✅ | ✅ | ❌ | ❌ | ✅ | unbounded indices | ✅ |
+| **State, non-packed** | bounded / nested-array `T[]` (e.g. `uint256[5] a;`, `int[][] a;`) | entry NFTs | one entry NFT per **set** index (`mapping(int=>T)`) | ✅ | ✅ | ❌ | ❌ | ✅ | unbounded indices | ✅ |
 | **State, packed** | `int[] packed a;` / `int[N] packed a;` | one data NFT | inline length-prefixed blob | ✅ | ✅ | ✅ | ✅ | ✅ | **bounded** (~120 B commitment) | ✅ |
-| **State, chunk-packed** *(default for unbounded `T[]` with a chunk-packable element)* | `uint256[] a;`, `string[] a;`, `int[] a;`, `bytes[] a;` | data NFT header + chunk UTXOs | `uint32 len` header + elements packed across 120 B chunks | ✅ | ✅ | ✅ | ✅ | ✅ | unbounded | ✅ |
+| **State, chunk-packed** *(default for unbounded `T[]` with a chunk-packable element)* | `uint256[] a;`, `string[] a;`, `int[] a;`, `bytes[] a;`, `Person[] a;` | data NFT header + chunk UTXOs | `uint32 len` header + elements packed across 120 B chunks | ✅ | ✅ | ✅ | ✅ | ✅ | unbounded | ✅ |
 
 Key takeaway: **chunk-packed is the first state form that is simultaneously dense (`push`/`length`),
 unbounded, and persisted** - it is now the default for any unbounded `T[]` with a chunk-packable element
 (fixed-width, or simple variable-width `int`/`string`/`bytes`). `packed` stays dense but capped at one
 commitment; the non-packed collection stays unbounded-but-sparse (no `push`/`length`), used for the element
-types chunk-packing does not yet cover (struct, nested array) and for bounded `T[N]`.
+types chunk-packing does not yet cover (nested array) and for bounded `T[N]`.
 
 ## 1. Local / memory arrays (on the stack)
 
@@ -60,9 +61,9 @@ Solidity-`memory` analog (transient, not persisted).
 ## 2. State, non-packed `T[]` - sparse entry-NFT collection
 
 The backend for a state-level `T[]` (no `packed` modifier) whose element type is **not yet chunk-packable**
-(a **struct** or **nested array**) or whose length is **bounded** (`T[N]`). It is **not** a dense array - it
+(a **nested array**) or whose length is **bounded** (`T[N]`). It is **not** a dense array - it
 is a `mapping(int => T)` with array syntax. (An unbounded `T[]` with a chunk-packable element - fixed-width,
-or simple variable-width `int`/`string`/`bytes` - instead defaults to the chunk-packed form in section 4.)
+variable-width `int`/`string`/`bytes`, or a struct - instead defaults to the chunk-packed form in section 4.)
 
 - **AST:** a `CollectionNode` (not a `StateVariableNode`); `AstBuilder.ts` ("Non-packed array: store as
   entry NFTs (collection)"). `keyType = int`, `valueType = elementType`, artifact `kind: "array"`.
@@ -141,8 +142,10 @@ is also 3-6x denser than one-entry-NFT-per-element.
 - **Simple variable-width** leaf elements (`int`, `string`, unbounded `bytes`) use **single-blob framed** (the
   whole array is one dynamic value `pushdata(count) ++ pushdata(elem_0) ++ ...`; the count is kept in the blob;
   element access scans). SHIPPED.
-- **Struct / nested-array** elements stay on the **collection** backend for now (chunk-packing them - fixed-
-  width-struct flat-stream, or per-element element-keyed/nested - is future work).
+- **Struct** elements chunk-pack too: fixed-width structs via flat-stream, variable-width structs (a `string`/
+  `bytes`/`bigint` field) via the framed layout (navigated by walking each element's inner field frames).
+  Element-field writes desugar to a whole-element rebuild. SHIPPED. **Nested-array** elements stay on the
+  collection backend for now (future work).
 
 ### Flat-stream (fixed-width) - phase 2
 Storage is the shipped `string`/`bytes` dynamic-storage machinery reused verbatim: a `uint32` byte-length
@@ -233,7 +236,7 @@ in future work (they stay on the collection backend today).
 | --- | --- |
 | Dense `push`/`pop`/`.length`/index/`for..of`, **unbounded** (fixed-width OR `int`/`string`/`bytes` elements) | **bare `T[]`** (chunk-packed default, e.g. `uint256[]`, `string[]`) |
 | Dense `push`/`pop`/`.length`, small total (~120 B), cheapest (one commitment) | `packed T[]` |
-| Sparse / random keyed-by-int, OR struct / nested-array elements, OR bounded `T[N]` | non-packed `T[]` (collection) |
+| Sparse / random keyed-by-int, OR nested-array elements, OR bounded `T[N]` | non-packed `T[]` (collection) |
 | Transient scratch in a function | local `int[]` |
 
 ## Maintenance notes
@@ -245,7 +248,7 @@ in future work (they stay on the collection backend today).
 - The operation matrix above was verified empirically by compiling each op against each form. Re-verify if
   the array op routing changes.
 - Chunk-packed is the default for any unbounded `T[]` with a chunk-packable element (`chunkedArrays` defaults
-  on). Remaining array work, all optional optimizations / extensions: (1) **struct / nested-array** element
-  chunk-packing; (2) **element-keyed/nested** layout for variable-width (lifts the per-element on-stack cap);
-  (3) **partial-chunk rewrite** (element ops currently rewrite all of a var's chunks). Update this doc when any
-  lands.
+  on); structs (fixed- and variable-width) chunk-pack as of #15. Remaining array work, all optional
+  optimizations / extensions: (1) **nested-array** element chunk-packing; (2) **element-keyed/nested** layout
+  for variable-width (lifts the per-element on-stack cap); (3) **partial-chunk rewrite** (element ops currently
+  rewrite all of a var's chunks). Update this doc when any lands.

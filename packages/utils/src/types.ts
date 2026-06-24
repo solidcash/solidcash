@@ -8,9 +8,8 @@ export class TokenContainerType {
 }
 
 export class AddressType {
-  // interfaceName, when set, records that this address handle was typed as a specific contract/interface
-  // (e.g. `IERC20 token` or `IERC20(addr)`), so `token.method(..)` can route to an external call. It is
-  // metadata only and is intentionally ignored by typesEqual/castability (an address is an address).
+  // interfaceName: contract/interface this address was typed as (e.g. `IERC20 token`), so `token.method(..)`
+  // can route to an external call. Metadata only - typesEqual/castability ignore it (an address is an address).
   constructor(public payable: boolean = false, public interfaceName?: string) {}
   toString(): string { return this.payable ? 'address payable' : 'address'; }
 }
@@ -196,9 +195,9 @@ export class FunctionType {
 }
 
 export enum PrimitiveType {
-  // INT is the integer-literal / generic-integer type (`5`); it implicitly converts to any bounded IntType
-  // (int8..int256, uint..) and to BIGINT. BIGINT is the explicit arbitrary-precision type (keyword `bigint`).
-  // The `int`/`uint` keywords are IntType(.,256). INT is normalized to BIGINT in the type-helper functions.
+  // INT: integer-literal / generic-integer type (`5`); implicitly converts to any bounded IntType and to
+  // BIGINT, and is normalized to BIGINT in the type-helper functions. BIGINT: explicit arbitrary-precision
+  // type (keyword `bigint`). The `int`/`uint` keywords are IntType(.,256), not INT.
   INT = 'int',
   BIGINT = 'bigint',
   BOOL = 'bool',
@@ -579,8 +578,7 @@ export function parseType(str: string): Type {
   if (str === 'uint') return new IntType(false, 256);
 
   // Array types: int[5], int[], bytes20[], int[3][5], etc. Checked before the `byte`/`function` branches so
-  // `bytes20[]` parses as an array of bytes20 (not as a malformed bytes type).
-  // Use lastIndexOf to find the outermost dimension (rightmost brackets).
+  // `bytes20[]` parses as an array of bytes20. lastIndexOf finds the outermost (rightmost) dimension.
   if (str.endsWith(']') && str.includes('[')) {
     const bracketIdx = str.lastIndexOf('[');
     const elementTypeStr = str.substring(0, bracketIdx);
@@ -645,10 +643,9 @@ export function parseTypeStrict(str: string): Type {
 
 /**
  * A type is fixed-width when its packed (tight) encoding is a constant number of bytes - the basis for the
- * flat-stream chunk-packed array (element `i` lives at byte offset `i * fixedWidthBytes`). Mirrors the
- * compiler's getFixedWidth/emitEncodeElementPacked. Plain `int`, unbounded `bytes`, `string` and structs
- * with any dynamic field are NOT fixed-width (their encoding is value-dependent). Accepts a Type or a
- * type string.
+ * flat-stream chunk-packed array (element `i` at byte offset `i * fixedWidthBytes`). Mirrors the compiler's
+ * getFixedWidth/emitEncodeElementPacked. NOT fixed-width (value-dependent encoding): plain `int`, unbounded
+ * `bytes`, `string`, and structs with any dynamic field. Accepts a Type or a type string.
  */
 export function isFixedWidthType(type: Type | string): boolean {
   const t = typeof type === 'string' ? parseType(type) : type;
@@ -661,13 +658,11 @@ export function isFixedWidthType(type: Type | string): boolean {
 }
 
 /**
- * An array element type eligible for the chunk-packed backend. Fixed-width types use the flat-stream layout
- * (count = A$len/width); simple variable-width LEAF types (plain `int`, `string`, unbounded `bytes`) use the
- * single-blob framed layout (the whole array is one dynamic value `pushdata(count) ++ pushdata(elem_0) ++ ...`,
- * element access via scan). Fixed-width structs use the flat-stream layout; variable-width structs (a `string`/
- * `bytes`/`bigint` field) use the framed layout, navigated by walking each element's inner field frames.
- * Nested-array elements are NOT yet chunk-packable (they stay on the collection backend). Accepts a Type or a
- * type string.
+ * An array element type eligible for the chunk-packed backend. Fixed-width types (incl. fixed-width structs)
+ * use the flat-stream layout (count = A$len/width). Variable-width leaves (plain `int`, `string`, unbounded
+ * `bytes`) and variable-width structs use the framed layout: one dynamic value
+ * `pushdata(count) ++ pushdata(elem_0) ++ ...`, accessed by scan. Nested-array elements are NOT yet
+ * chunk-packable (they stay on the collection backend). Accepts a Type or a type string.
  */
 export function isChunkPackableElementType(type: Type | string): boolean {
   const t = typeof type === 'string' ? parseType(type) : type;

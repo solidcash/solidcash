@@ -512,10 +512,10 @@ export default class SymbolTableTraversal extends AstTraversal {
         }
       }
 
-      // Dynamic-storage vars (string / unbounded bytes, and chunk-packed fixed-width arrays) store only a
-      // uint32 length header (A$len) in the data NFT; the value itself lives in chunk UTXOs. So they reserve
-      // the uint32 footprint, not the generic estimate. string/bytes are detected by type here; a chunk-packed
-      // array arrives with sv.isDynamic already set by the AstBuilder. See docs/dynamic-storage.md, arrays.md.
+      // Dynamic-storage vars (string / unbounded bytes, chunk-packed fixed-width arrays) store only a uint32
+      // length header (A$len) in the data NFT; the value lives in chunk UTXOs, so reserve the uint32 footprint.
+      // string/bytes detected by type; a chunk-packed array arrives with sv.isDynamic set by the AstBuilder.
+      // See docs/dynamic-storage.md, arrays.md.
       let maxSize = getMaxPushdataEncodedSizeForType(sv.type);
       if (isDynamicStorageType(sv.type)) sv.isDynamic = true;
       if (sv.isDynamic) {
@@ -3689,10 +3689,9 @@ export default class SymbolTableTraversal extends AstTraversal {
       return node;
     }
 
-    // Statement-form external call on an interface-typed variable: `token.transfer(to, amt);`. Resolve the
-    // interface via the function-call visitor, then wrap the external call as a statement (its result, if
-    // any, is discarded). The expression forms (`x = token.method(..)`, `require(token.method(..))`) already
-    // route through visitFunctionCall directly.
+    // Statement-form external call on an interface-typed variable: `token.transfer(to, amt);`. Resolve via
+    // the function-call visitor, then wrap the external call as a statement (result discarded). Expression
+    // forms (`x = token.method(..)`, `require(token.method(..))`) already route through visitFunctionCall.
     if (callName.includes('.') && !this.functionDefinitions.has(callName)) {
       const [varName] = callName.split('.');
       const varType = this.symbolTables[0]?.get(varName)?.type ?? this.stateVariableMap.get(varName)?.type;
@@ -5468,10 +5467,9 @@ export default class SymbolTableTraversal extends AstTraversal {
       }
     }
 
-    // Low-level call on address variable: addr.call{value:}(data), addr.staticcall(data), etc. (The no-option
-    // form parses as a namespaced functionCall and is handled in visitFunctionCall; the call-option form
-    // reaches here as a MethodCall.) node.object.type isn't assigned yet in this pass, so resolve the type
-    // from the symbol table for a bare identifier target.
+    // Low-level call on address variable: addr.call{value:}(data), addr.staticcall(data), etc. The no-option
+    // form parses as a namespaced functionCall (handled in visitFunctionCall); the call-option form reaches
+    // here as a MethodCall.
     if (node.methodName === 'call' || node.methodName === 'staticcall' || node.methodName === 'delegatecall') {
       node.object = this.visit(node.object);
       // node.object.type isn't assigned yet in this pass: resolve a bare identifier from the symbol table,

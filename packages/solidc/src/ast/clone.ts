@@ -1,9 +1,8 @@
 import { Node } from './AST.js';
 
 /**
- * Deep-clone an AST node. Child Nodes and arrays of Nodes are cloned recursively; Maps are shallow-copied;
- * primitives and other values are copied by reference. Used where the same subtree must appear in more than
- * one position (e.g. inheritance expansion, storage-pointer alias substitution).
+ * Deep-clone an AST node: child Nodes (and Node arrays) recursively; Maps shallow-copied; other values by
+ * reference. Used where the same subtree must appear in more than one position (e.g. storage-pointer aliasing).
  */
 export function cloneNode<T extends Node>(node: T): T {
   const clone = Object.create(Object.getPrototypeOf(node));

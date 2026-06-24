@@ -277,13 +277,10 @@ export type CallInfo = {
 /**
  * Find the index in the trace where the redeem (locking/covenant) script evaluation begins.
  *
- * A naive `findLastIndex(ip === 0)` is wrong: `OP_INVOKE` subroutines (int decode/encode,
- * category-base checks, etc.) start a fresh evaluation that also resets `ip` to 0. When a covenant
- * runs subroutines BETWEEN inline verifications (e.g. a dynamic-storage write loop invokes the
- * int-encode + cat-base subroutines for every chunk), the last `ip === 0` lands inside a subroutine,
- * and slicing there silently drops every verification that ran before it. We anchor instead on the
- * redeem script's own instruction array, identified as the longest array seen at any `ip === 0` step
- * (the full covenant has far more instructions than the unlocking script's pushes or any subroutine).
+ * A naive `findLastIndex(ip === 0)` is wrong: `OP_INVOKE` subroutines also reset `ip` to 0, so when a
+ * covenant runs subroutines between inline verifications the last `ip === 0` lands inside a subroutine
+ * and slicing there drops earlier verifications. Anchor instead on the redeem script's own instruction
+ * array, identified as the longest array seen at any `ip === 0` step.
  */
 function findRedeemScriptStart(fullTrace: AuthenticationProgramStateCommon[]): number {
   let redeemInstructions: AuthenticationProgramStateCommon['instructions'] | undefined;
@@ -324,13 +321,10 @@ function extractCommitmentsFromTrace(
     const step = lockingScriptTrace[i];
     const instruction = step.instructions[step.ip];
     if (!instruction) continue;
-    // Skip instructions inside a not-taken conditional branch. libauth's debug trace records every
-    // instruction, even those skipped because an enclosing OP_IF/OP_NOTIF is false (controlStack
-    // contains a `false`). A dynamic-storage write loop verifies each chunk output with an inline
-    // <expected> <idx> OP_OUTPUTTOKENCOMMITMENT OP_EQUALVERIFY inside the loop body; on the loop's
-    // exit iteration that body is skipped, leaving a phantom OP_OUTPUTTOKENCOMMITMENT step whose
-    // frozen stack (the loop temporaries) would otherwise be misread as a commitment. Only real,
-    // executed verifications have a controlStack with no `false`.
+    // Skip instructions inside a not-taken conditional branch: libauth's trace records skipped
+    // instructions too (enclosing OP_IF/OP_NOTIF false => controlStack contains a `false`). A
+    // dynamic-write loop's exit iteration skips its inline OP_OUTPUTTOKENCOMMITMENT verify, leaving a
+    // phantom step whose frozen stack would otherwise be misread as a commitment.
     if (step.controlStack.some((c) => c === false)) continue;
 
     if (instruction.opcode === Op.OP_OUTPUTTOKENCOMMITMENT) {
@@ -670,7 +664,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     contract: Contract<T>, categoryId: string,
     options?: StatefulConnectOptions,
   ): ConnectedStatefulContract<T> {
-    // Self-pin: bake the category as the verify prologue (address => genuine state). The user `salt` (if any)
+    // Self-pin: category baked as the verify prologue (address => genuine state); user `salt` (if any)
     // stays a separate CREATE2 segment.
     const finalContract = contract.withCategory(hexToBin(categoryId));
     const sc = new StatefulContract(finalContract, categoryId) as ConnectedStatefulContract<T>;
@@ -1605,11 +1599,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
 
     const tx = await builder.send();
 
-    // Connect the child with its categoryId. deployFrom children are deployed on-chain by the compiler's
-    // `new C(...)` codegen, which produces UNSALTED/UN-self-pinned addresses (the output goes to
-    // childContractUnsalted), so the returned child keeps childContract's salt-only form (not the category
-    // self-pin) - wrap it directly rather than via withCategory (which would add the pin). Self-pinning
-    // deployFrom children is a compiler-side follow-up. See docs/external-contract-calls.md.
+    // Connect the child with its categoryId. The compiler's `new C(...)` codegen deploys it to an
+    // UNSALTED/un-self-pinned address, so keep childContract's salt-only form: wrap directly rather than
+    // via withCategory (which would add the pin). Self-pinning is a compiler-side follow-up.
+    // See docs/external-contract-calls.md.
     const childStateful = new StatefulContract(childContract, childCategoryId) as ConnectedStatefulContract<T>;
 
     return { factory, child: childStateful, tx, childCategoryId };
@@ -3625,9 +3618,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const dynamicWriteNames = abiFunction?.dynamicWrites ?? [];
     if (dynamicReads && dynamicReads.length > 0) {
       for (const varName of dynamicReads) {
-        // Element ops read AND write the same var (read-modify-write). Its chunks are co-spent below by the
-        // write path (consumed + recreated), placed at the read offset in chunkIndex order - so the read loop
-        // still reads chunk i at blockSize+i. Skip here to avoid co-spending the same UTXO twice.
+        // Read-modify-write var: its chunks are co-spent below by the write path (in chunkIndex order, so
+        // the read loop still reads chunk i at blockSize+i). Skip here to avoid co-spending the same UTXO twice.
         if (dynamicWriteNames.includes(varName)) continue;
         const dynVar = (stateLayout.variables ?? []).find((v) => v.name === varName && v.dynamic);
         if (!dynVar) continue;
@@ -3844,9 +3836,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           );
         }
 
-        // Resolve external category ID from the resolved external contract (address model:
-        // the callee address is baked in A's args; its category comes from the external instance,
-        // provided via connect-time externals or withExternalCall()).
+        // Resolve external category ID from the resolved external contract (address model: A's args
+        // bake the callee address, so its category comes from the registered external instance).
         const externalCategoryId = callInfo.externalContract.categoryId;
 
         // Get B's on-chain state
@@ -4777,10 +4768,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     }
 
     // Dynamic-storage vars (string / unbounded bytes) WRITTEN by this function: chunk NFTs at a per-var
-    // entry covenant address. Only vars the function actually writes (dynamicWrites) get their old chunks
-    // consumed and new ones created. Vars merely read (dynamicReads, co-spent read-only above) or untouched
-    // - e.g. a function that reads only `.length`, or writes a different dynamic var - must be left alone,
-    // else their chunks would be wrongly destroyed.
+    // entry covenant address. Only written vars (dynamicWrites) get old chunks consumed + new ones created;
+    // read-only or untouched vars must be left alone, else their chunks would be wrongly destroyed.
     const dynamicWrites = abiFunction?.dynamicWrites ?? [];
     const dynamicVarInfos = (stateLayout.variables ?? [])
       .filter((v) => v.dynamic && dynamicWrites.includes(v.name));

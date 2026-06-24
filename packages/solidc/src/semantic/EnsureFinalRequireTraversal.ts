@@ -143,10 +143,9 @@ export default class EnsureFinalRequireTraversal extends AstTraversal {
   }
 }
 
-// A spending path that performs no verification (no require/assert/revert/timeop on the path) and changes no
-// state would compile as an unconditionally-spendable script (codegen ends it with OP_1). Under
-// solidityImportCompat that matches Solidity (the function just runs) and is downgraded to a warning;
-// otherwise it stays a hard error so SolidCash contracts can't silently expose an always-spendable path.
+// A path with no verification (no require/assert/revert/timeop) and no state change compiles as
+// unconditionally-spendable (codegen ends it with OP_1). Under solidityImportCompat this is a warning
+// (matches Solidity); otherwise a hard error, so SolidCash can't silently expose an always-spendable path.
 function warnOrThrowUnverified(node: Node, compat: boolean): void {
   if (!compat) throw new FinalRequireStatementError(node);
   const line = node.location?.start?.line;
@@ -161,8 +160,8 @@ function ensureFinalStatementIsRequire(statements: StatementNode[] = [], compat 
   if (!finalStatement) return;
 
   // An unconditional require/assert/revert/timeop anywhere in this scope gates the whole path (codegen
-  // appends OP_1 after any trailing statements), so the path is verified even when it doesn't END in a
-  // require - e.g. Solidity's `require(authorized); _mint(...)`. This generalizes the if-without-else case.
+  // appends OP_1 after trailing statements), so the path is verified even when it doesn't END in a require
+  // - e.g. Solidity's `require(authorized); _mint(...)`. Generalizes the if-without-else case.
   if (hasPriorUnconditionalRequire(statementsWithoutLogs)) return;
 
   // If the final statement is a branch node, both branches need to end with a require().

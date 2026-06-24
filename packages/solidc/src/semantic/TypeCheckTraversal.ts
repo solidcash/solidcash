@@ -790,10 +790,9 @@ export default class TypeCheckTraversal extends AstTraversal {
       expectAssignable(node, node.expression.type, node.type);
     }
 
-    // Coerce an array literal to the declared array type so codegen packs elements at the declared
-    // element width (e.g. int256 fixed-width) rather than the literals' inferred PrimitiveType.INT
-    // (variable-width). Without this, `int[] a = [1,2,3]` builds variable-width but a[i] reads
-    // fixed-width. Empty arrays are handled above (before visiting).
+    // Coerce an array literal to the declared array type so codegen packs at the declared element width
+    // (e.g. int256), not the literals' inferred variable-width INT. Else `int[] a = [1,2,3]` is built
+    // variable-width but a[i] reads fixed-width. Empty arrays handled above (before visiting).
     if (node.type instanceof ArrayType && node.expression instanceof ArrayNode && node.expression.elements.length > 0) {
       node.expression.type = node.type;
     }
@@ -1221,8 +1220,8 @@ export default class TypeCheckTraversal extends AstTraversal {
     if (type instanceof StructType) {
       node.type = type;
       // Array-typed struct fields: mark an array-literal arg blobEncoded and coerce it to the field's array
-      // type, so codegen builds a single framed array blob at the declared element width (mirrors the typed
-      // array assignment path). Positional args line up with fields in declaration order.
+      // type so codegen builds a framed blob at the declared element width (mirrors the typed array assign
+      // path). Positional args line up with fields in declaration order.
       type.fields.forEach((field, i) => {
         const arg = node.parameters[i];
         if (field.type instanceof ArrayType && arg instanceof ArrayNode) {
@@ -1431,10 +1430,9 @@ export default class TypeCheckTraversal extends AstTraversal {
       node.right = this.visit(node.right);
     }
 
-    // Solidity hex number literals (`0x100...`) are big-endian integers, not byte strings. When one side of
-    // a binary op is an integer and the other is a hex literal, reinterpret the literal as its big-endian
-    // integer value (e.g. `x >= 0x100000000000000000000000000000000` for `x >= 2**128`). Only triggers on a
-    // hex-vs-int pairing, which would otherwise be a type error, so it never changes working code.
+    // Solidity hex number literals (`0x100...`) are big-endian integers, not byte strings. On a hex-vs-int
+    // pairing (e.g. `x >= 0x100000000000000000000000000000000`), reinterpret the literal as its integer
+    // value. Only fires on that pairing, which would otherwise be a type error, so it never changes working code.
     const isIntType = (t?: Type): boolean => t === PrimitiveType.BIGINT || t instanceof IntType;
     if (this.solidityImportCompat) {
       if (node.left instanceof HexLiteralNode && isIntType(node.right.type)) {

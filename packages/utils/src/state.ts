@@ -110,9 +110,8 @@ export function buildDataNftCovenantScript(categoryId: Uint8Array): Script {
     Op.OP_ELSE,
     // === Read-only path (flag=0): no master needed ===
     Op.OP_DROP, // discard unused placeholder
-    // Self-pin (Stage 2): this input's live category must be C with mutable capability, so a
-    // fabricated foreign-category UTXO at this address is unspendable - making address-based
-    // external reads sound without co-spending the master.
+    // Self-pin (Stage 2): require this input's live category == C with mutable capability, so a fabricated
+    // foreign-category UTXO at this address is unspendable - address-based external reads sound w/o the master.
     Op.OP_INPUTINDEX,
     Op.OP_UTXOTOKENCATEGORY,
     encodeInt(32n),
@@ -834,8 +833,7 @@ export function buildPushdataCommitment(
   for (const field of fieldsForNft) {
     if (field.dynamic) {
       // Dynamic var: the data-NFT field is a uint32 length header (A$len); the value lives in chunks.
-      // Prefer an explicit <name>$len (set during auto-derivation, when only the length is known);
-      // otherwise compute the length from the value.
+      // Use an explicit <name>$len (set during auto-derivation) if present, else compute it from the value.
       const lenKey = dynamicLenKey(field.name);
       const len = values[lenKey] !== undefined
         ? Number(values[lenKey] as bigint)
@@ -991,10 +989,9 @@ export function parseEntryCommitment(
 
 // ---------- Dynamic storage chunks (chunked string/bytes) ----------
 //
-// A dynamic-storage variable's data is split into fixed-size chunks, each held in a chunk UTXO that is
-// structurally an entry NFT: commitment = encodePushdata(chunkIndex) ++ encodePushdata(chunkData).
-// chunkData is bounded so the commitment fits the 128-byte budget: index (<=5 bytes for any practical
-// index) + bytes framing (<=2 bytes via OP_PUSHDATA1) + data <= 128.
+// A dynamic var's data is split into fixed-size chunks, each in a chunk UTXO that is structurally an entry
+// NFT: commitment = encodePushdata(chunkIndex) ++ encodePushdata(chunkData). chunkData is bounded to fit the
+// 128-byte budget: index (<=5 bytes) + bytes framing (<=2 via OP_PUSHDATA1) + data <= 128.
 
 /** Max chunk data bytes. 120 + 5 (index) + 2 (framing) <= 128-byte commitment budget. */
 export const DYNAMIC_CHUNK_SIZE = 120;
@@ -1065,9 +1062,9 @@ export function joinChunks(orderedChunkData: Uint8Array[], totalLength: number):
 }
 
 // ===== Flat-stream chunk-packed array codec (fixed-width elements) =====
-// The tight-packed blob `elem_0 ++ elem_1 ++ ...` (each element exactly fixedWidthBytes bytes) that backs a
-// chunk-packed fixed-width T[]. Matches the compiler's emitEncodeElementPacked so SDK-built chunks and the
-// covenant agree. Element i lives at byte [i*width, (i+1)*width). See docs/arrays.md. Structs are deferred.
+// Tight-packed blob `elem_0 ++ elem_1 ++ ...` (element i at byte [i*width, (i+1)*width)) backing a
+// chunk-packed fixed-width T[]. Matches the compiler's emitEncodeElementPacked. See docs/arrays.md.
+// Structs are deferred.
 
 /** Pack one fixed-width element to exactly fixedWidthBytes(type) bytes (OP_NUM2BIN for int/fixed). */
 export function packFixedWidthElement(value: PrimitiveStateValue, elementType: string): Uint8Array {
@@ -1243,9 +1240,8 @@ export function buildEntryNftCovenantScript(categoryId: Uint8Array, collectionHa
     Op.OP_ELSE,
     // === Read-only path (flag=0): no master needed ===
     Op.OP_DROP, // discard unused placeholder
-    // Self-pin (Stage 2): this input's live category must be C with mutable capability, so a
-    // fabricated foreign-category UTXO at this entry address is unspendable - making address-based
-    // external entry reads sound without co-spending the master.
+    // Self-pin (Stage 2): require this input's live category == C with mutable capability, so a fabricated
+    // foreign-category UTXO at this entry address is unspendable - address-based entry reads sound w/o master.
     Op.OP_INPUTINDEX,
     Op.OP_UTXOTOKENCATEGORY,
     encodeInt(32n),

@@ -271,14 +271,13 @@ export default class AstBuilder
   private packedStructArrayElems: Map<string, StructType> = new Map();
   // State struct variables -> StructType, for desugaring field-chain writes (`this.d.x = v`) to a rebuild.
   private stateStructVars: Map<string, StructType> = new Map();
-  // Storage-pointer locals: `T storage x = container[k];` makes `x` a compile-time alias for the access
-  // path `container[k]`. Reads/writes through `x` are rewritten to that path (reusing existing codegen).
-  // Per-function (cleared at each function/constructor/modifier entry); flat scope is sufficient here.
+  // Storage-pointer locals: `T storage x = container[k];` makes `x` a compile-time alias for access path
+  // `container[k]`; reads/writes of `x` are rewritten to that path. Per-function (cleared at each entry).
   private storageAliases: Map<string, { container: string; keys: ExpressionNode[]; access: ExpressionNode }> =
     new Map();
 
-  // Local struct-typed variables, used to desugar member assignment `s.field = v` (which has no direct
-  // codegen) into a struct rebuild `s = S(.., v, ..)`. Per-function, like storageAliases.
+  // Local struct-typed vars, to desugar member assignment `s.field = v` (no direct codegen) into a struct
+  // rebuild `s = S(.., v, ..)`. Per-function, like storageAliases.
   private localStructTypes: Map<string, StructType> = new Map();
 
   private forOfArrayCounter = 0; // uniquifies the temp locals of a desugared `for..of` over a state array
@@ -400,8 +399,8 @@ export default class AstBuilder
 
     const contractCtxs = ctx.contractDefinition_list();
 
-    // If no contract definition (library-only, or interface/type-only file), return a definitions-only node.
-    // Interface/type-only files have no library either; they exist only to be imported.
+    // No contract definition (library-only, or interface/type-only file): return a definitions-only node,
+    // existing only to be imported.
     if (contractCtxs.length === 0) {
       const lastLib = allLibDefs[allLibDefs.length - 1];
       const libName = lastLib
@@ -593,8 +592,7 @@ export default class AstBuilder
       (m) => this.visitModifierDefinition(m),
     );
 
-    // Extract optional constructor (the body allows any declaration order, so these are lists; ANTLR no
-    // longer enforces at-most-one, hence the explicit check).
+    // Extract optional constructor (parsed as a list since the body allows any declaration order).
     const constructorCtx = this.atMostOne(ctx.constructorDefinition_list(), 'constructor', ctx);
     let constructorDef: FunctionDefinitionNode | undefined;
     if (constructorCtx) {
@@ -928,9 +926,8 @@ export default class AstBuilder
     if (ctx.arrayType()) {
       type = this.buildArrayType(ctx.arrayType()!);
     } else {
-      // Unknown type (e.g. a contract/interface name used as a parameter type) falls back to address, like
-      // state variables do; the reference is validated later in semantic analysis. The name is kept on the
-      // address handle so an interface-typed param (`IERC20 token`) can route `token.method(..)` externally.
+      // Unknown (contract/interface) type name falls back to address (validated later in semantic analysis);
+      // the name is kept on the handle so an interface-typed param (`IERC20 token`) routes `token.method(..)`.
       const tn = ctx.typeName().getText();
       type = this.resolveType(tn) ?? new AddressType(false, tn);
     }
@@ -1252,8 +1249,7 @@ export default class AstBuilder
     const initNode = new VariableDefinitionNode(initType, initModifiers, initName, initExpr);
     initNode.location = Location.fromCtx(initCtx);
 
-    // Update clause is optional (`for (...; ...; )`); when present it becomes the trailing
-    // body statement marked by forLoopUpdateCount so `continue` still runs it.
+    // Update clause is optional (`for (...; ...; )`); when present it becomes the trailing body statement.
     const updateNode = updateCtx
       ? this.buildCompoundAssign(
         updateCtx.Identifier().getText(),
@@ -1816,11 +1812,10 @@ export default class AstBuilder
         return node;
       }
 
-      // Chunk-packed array (behind chunkedArrays, default on): an unbounded `T[]` with a chunk-packable
-      // element type becomes a dense chunk-backed dynamic state variable (uint32 length header + chunk UTXOs),
-      // reusing the string/bytes machinery. Fixed-width -> flat-stream; simple variable-width (int/string/
-      // bytes) -> single-blob framed. Struct / nested-array elements and bounded arrays keep the collection
-      // model. See docs/arrays.md.
+      // Chunk-packed array (behind chunkedArrays, default on): an unbounded `T[]` with a chunk-packable element
+      // type becomes a dense chunk-backed dynamic state variable (uint32 length header + chunk UTXOs), reusing
+      // the string/bytes machinery. Struct/nested-array elements and bounded arrays keep the collection model.
+      // See docs/arrays.md.
       if (this.chunkedArrays && arrayT.bound === undefined && isChunkPackableElementType(arrayT.elementType)) {
         const node = new StateVariableNode(arrayT, name);
         node.isDynamic = true;
@@ -2454,8 +2449,7 @@ export default class AstBuilder
     // Handle 'addresspayable' from grammar (two tokens concatenated without space)
     if (typeText === 'addresspayable') return new AddressType(true);
     if (typeText === 'address') return new AddressType(false);
-    // Library-qualified type (Solidity `Library.Type`): library types are registered bare, so resolve the
-    // part after the dot.
+    // Library-qualified type (Solidity `Library.Type`): library types are registered bare, so resolve post-dot.
     if (typeText.includes('.')) {
       const bare = typeText.slice(typeText.lastIndexOf('.') + 1);
       const qualified = this.structMap.get(bare) ?? this.enumMap.get(bare) ?? this.typeDefMap.get(bare);
@@ -2872,9 +2866,8 @@ export default class AstBuilder
       return node;
     }
 
-    // Satoshi send `addr.transfer(amount)`: exactly one argument and no `{value:}`. An interface method also
-    // named `transfer` (e.g. ERC20 `transfer(to, amount)`) has a different arity / shape and falls through to
-    // the external method-call path below.
+    // Satoshi send `addr.transfer(amount)`: exactly one argument and no `{value:}`. A same-named interface
+    // method (e.g. ERC20 `transfer(to, amount)`) differs in arity/shape and falls through below.
     if (methodName === 'transfer' && args.length === 1 && !callOpts) {
       const node = new AddressTransferStatementNode(addressExpression, args[0]);
       node.location = Location.fromCtx(ctx);

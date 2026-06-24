@@ -188,12 +188,11 @@ export class FunctionDefinitionNode extends Node implements Named {
   deployTargets?: { contractName: string; dataNftCount: number }[];
   lowLevelCalls?: { callMode: 'call' | 'staticcall' | 'delegatecall'; dataParamIndex?: number }[];
   collectionIterations?: CollectionIterationInfo[];
-  // Persisted dynamic-storage vars (string / unbounded bytes) read on-chain (not written this function);
-  // the SDK co-spends their chunk UTXOs as read-only trailing inputs. Recorded during codegen.
+  // Dynamic-storage vars (string / unbounded bytes) read on-chain (not written here); recorded during codegen.
+  // SDK co-spends their chunk UTXOs as read-only trailing inputs.
   dynamicReads?: string[];
-  // Dynamic-storage vars WRITTEN on-chain this function; the SDK consumes their old chunks and creates the
-  // new ones. A function that only reads `.length` (or doesn't touch the var) must NOT appear here, else its
-  // chunks would be wrongly destroyed. Recorded during codegen.
+  // Dynamic-storage vars written on-chain here; recorded during codegen. SDK consumes old chunks, creates new.
+  // A function that only reads `.length` (or doesn't touch the var) must NOT appear, else its chunks are destroyed.
   dynamicWrites?: string[];
   modifiers: FunctionModifier[] = [];
   customModifiers: CustomModifierInvocation[] = [];
@@ -358,8 +357,8 @@ export class CollectionNode extends Node implements Named {
 }
 
 export class VariableDefinitionNode extends StatementNode implements Named, Typed {
-  // A synthesized binding that may legitimately go unused (e.g. a desugared `for..of` loop variable);
-  // suppresses the unused-variable check, matching collection iteration.
+  // Synthesized binding that may legitimately go unused (e.g. a desugared `for..of` loop var);
+  // suppresses the unused-variable check.
   allowUnused?: boolean;
 
   constructor(

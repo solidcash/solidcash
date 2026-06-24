@@ -671,9 +671,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (hasReceive) dispatchFunctions.push(node.receiveDef!);
 
     if (dispatchFunctions.length === 0) {
-      // State-publishing / empty contract: no entry point exists, so there is no spending path.
-      // Emit OP_0 OP_VERIFY (an always-fail) so the locking script is unspendable (warned in
-      // semantic analysis). Preferred over OP_RETURN, which carries data-output semantics.
+      // State-publishing / empty contract: no entry point, so emit OP_0 OP_VERIFY (always-fail) to make
+      // the script unspendable (warned in semantic analysis). Not OP_RETURN: it has data-output semantics.
       const loc: SingleLocationData = { location: node.location, positionHint: PositionHint.START };
       this.emit(Op.OP_0, loc);
       this.emit(Op.OP_VERIFY, loc);
@@ -5109,11 +5108,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
-   * Register a dynamic-storage write whose value blob is on top of the tracked stack. Stores the tight bytes
-   * as the pending chunk value (the epilogue splits it into chunk outputs) and the uint32 A$len as the
-   * data-NFT field. `stripCount` drops the leading `pushdata(count)` of a chunk-packed array's on-stack form,
-   * since the count is recoverable as A$len / elementWidth. Records the write so the SDK consumes the old
-   * chunks and creates the new ones.
+   * Register a dynamic-storage write whose value blob is on top of the tracked stack: stores the tight bytes
+   * as the pending chunk value (epilogue splits it into chunk outputs) and the uint32 A$len as the data-NFT
+   * field. `stripCount` drops a chunk-packed array's leading `pushdata(count)` (recoverable as
+   * A$len / elementWidth). Records the write so the SDK consumes old chunks and creates new ones.
    */
   private emitRegisterDynamicWrite(
     sv: StateVariableNode,
@@ -7277,8 +7275,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // 2. Read commitment at that index
     this.emit(Op.OP_UTXOTOKENCOMMITMENT, locationData);
 
-    // 2b. Verify the nftIndex tag (multi-data-NFT callee) - a substituted sibling NFT carries a
-    // different tag and fails here, so the reader proves which register it co-spent.
+    // 2b. Verify the nftIndex tag (multi-data-NFT callee): proves which register was co-spent, so a
+    // substituted sibling NFT (different tag) is rejected.
     if (info.calleeMultiNft) this.emitNftIndexTagVerify(info.nftIndex, locationData);
 
     // 3. Skip preceding fields
@@ -8527,8 +8525,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
               this.emitPushdataSkip(this.physicalFieldType(sortedFields[i]), locationData);
             }
 
-            // Decode this field. A dynamic var's physical field is its uint32 A$len header (preserved
-            // verbatim here when unwritten), not a value of its declared string/bytes/array type.
+            // Decode this field. An unwritten dynamic var preserves its uint32 A$len header verbatim
+            // (see physicalFieldType), not a value of its declared type.
             const fieldType = this.physicalFieldType(sv);
             const isLast = sv.fieldIndex === sortedFields[sortedFields.length - 1].fieldIndex;
             if (isLast) {
@@ -8763,14 +8761,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
-   * Emit covenant verification for dynamic-storage writes (string / unbounded bytes).
-   *
-   * The value was kept on the stack by visitStateAssign and the register field already holds uint32
-   * A$len. Here we verify the trailing chunk OUTPUTS reconstruct exactly that value:
+   * Emit covenant verification for dynamic-storage writes (string / unbounded bytes). The value is on the
+   * stack (from visitStateAssign) and the register field already holds uint32 A$len. Verify the trailing
+   * chunk OUTPUTS reconstruct exactly that value:
    *   - nNew = ceil(len / CHUNK); for i in 0..nNew-1 at output (OP_INPUTINDEX + blockSize + i): verify
    *     locking bytecode == chunk address, category base == master + mutable, commitment == [i ++ data_i].
    *   - orphan-bound: exactly nNew outputs carry the chunk address (no extra/duplicate chunk outputs).
-   *   - old-chunk consumption: ceil(oldLen / CHUNK) inputs carry the chunk address (every old chunk is
+   *   - old-chunk consumption: ceil(oldLen / CHUNK) inputs carry the chunk address (every old chunk
    *     co-spent), so a shrink/replace leaves no stale chunk. Together these pin the exact chunk set.
    * See docs/dynamic-storage.md.
    */
@@ -8780,8 +8777,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     // Phase 1: a dynamic write emits chunk outputs at blockSize+i, so it cannot share the trailing
     // input/output space with a persisted read of a DIFFERENT var or a collection iteration. Reading the
-    // SAME var that is written is fine and expected (element ops: read-modify-write) - the read loop reads
-    // the var's old chunks (co-spent as the consumed inputs) and the write recreates them as new outputs.
+    // SAME written var is fine (element ops, read-modify-write): the read co-spends its old chunks as
+    // inputs and the write recreates them as outputs.
     const writtenNames = node.dynamicWrites ?? [];
     const foreignReads = (node.dynamicReads ?? []).filter((r) => !writtenNames.includes(r));
     if (foreignReads.length > 0) {
@@ -8802,10 +8799,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // Multi-chunk write loop. The raw value lives on the stack (valueStackName); split it into
       // CHUNK-byte pieces and verify each as a trailing chunk output (output index blockSize+i) via the
       // tight `<expected> <idx> OP_OUTPUTTOKENCOMMITMENT OP_EQUALVERIFY` pattern (the SDK extractor reads
-      // each expected progressively across derivation iterations). The loop is modeled on
-      // visitCollectionIteration so its body is runtime-stack-neutral by construction: every body-local
-      // is removed before the iteration boundary, the counter is incremented in place, and the OP_ELSE
-      // exit branch resets the tracker to the pre-body snapshot.
+      // each expected progressively across derivation iterations). Modeled on visitCollectionIteration, so
+      // the body is runtime-stack-neutral by construction.
       const CHUNK = 120;
 
       // --- loop-invariant temp: chunk address locking bytecode ('(dyn_chunkaddr)') ---
@@ -8952,20 +8947,19 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   /**
    * The physical data-NFT field type for skip/decode/encode. A dynamic var (string / unbounded bytes /
    * chunk-packed array) stores only a uint32 A$len header in the commitment, NOT a value of its declared
-   * type. Reading or skipping a preceding/unwritten dynamic field with its declared type mis-parses the
-   * header (e.g. skipping a `uint256[]` would decode a phantom count*width array). Always use this.
+   * type. Using the declared type to skip/decode a dynamic field mis-parses the header (e.g. a `uint256[]`
+   * would decode a phantom count*width array). Always use this.
    */
   private physicalFieldType(field: { type: Type; isDynamic?: boolean }): Type {
     return field.isDynamic ? new IntType(false, 32) : field.type;
   }
 
   /**
-   * Push a dynamic var's current VALUE (the tight bytes, no array count prefix) as '(value)'. Read-after-write
-   * returns the new value still on the stack (cheap, exact - e.g. `this.s = v; require(this.s == v)`);
-   * otherwise it co-spends the persisted chunks and reassembles them via the read loop, recording the read so
-   * the SDK adds the chunk inputs. Phase 1: the read loop reads chunks at the fixed offset blockSize+i, so it
-   * cannot share the trailing-input space with a collection iteration or a second distinct dynamic read
-   * (reading the same var again is fine).
+   * Push a dynamic var's current VALUE (tight bytes, no array count prefix) as '(value)'. Read-after-write
+   * returns the new value still on the stack (e.g. `this.s = v; require(this.s == v)`); otherwise co-spends
+   * the persisted chunks and reassembles via the read loop, recording the read so the SDK adds the chunk
+   * inputs. Phase 1: the read loop uses the fixed offset blockSize+i, so it cannot coexist with a collection
+   * iteration or a second distinct dynamic read (reading the same var again is fine).
    */
   private emitReadDynamicScalar(sv: StateVariableNode, loc: SingleLocationData): void {
     const pending = this.pendingDynamicWrites.get(sv.name);
@@ -9107,13 +9101,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
-   * Read a persisted dynamic-storage var (string / unbounded bytes) on-chain. Reads the uint32 A$len
-   * header, then loops over the var's co-spent chunk INPUTS (trailing, at OP_INPUTINDEX + blockSize + i),
-   * verifying each is a genuine chunk (address + chunkIndex == i) and OP_CATing its data onto an
-   * accumulator; truncates to A$len. Leaves the value bytes on the stack as '(value)'. Loop mirrors
-   * visitCollectionIteration so the body is runtime-stack-neutral. The SDK positions + preserves the
-   * chunk inputs; on-chain preservation enforcement is deferred (permissionless-hardening, like the
-   * write orphan-bound). Phase 1: one dynamic read per function, no coexisting collection iteration.
+   * Read a persisted dynamic-storage var (string / unbounded bytes) on-chain. Reads the uint32 A$len header,
+   * then loops over the var's co-spent chunk INPUTS (trailing, at OP_INPUTINDEX + blockSize + i), verifying
+   * each is a genuine chunk (address + chunkIndex == i) and OP_CATing its data onto an accumulator;
+   * truncates to A$len. Leaves '(value)'. Loop mirrors visitCollectionIteration (runtime-stack-neutral).
+   * The SDK positions + preserves the chunk inputs; on-chain preservation enforcement is deferred
+   * (permissionless-hardening, like the write orphan-bound). Phase 1: one dynamic read per function, no
+   * coexisting collection iteration.
    */
   private emitDynamicReadLoop(sv: StateVariableNode, loc: SingleLocationData): void {
     const CHUNK = 120;
@@ -9354,18 +9348,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * segment0 + 0x20 + cat + segment1 + 0x20 + cat + segment2 + 0x20 + cat + segment3 + 0x20 + cat + segment4
    */
   private emitDataNftLbc(locationData: SingleLocationData): void {
-    // Reconstruct the data NFT P2SH32 locking bytecode from the category on the stack.
-    // The constant segments are auto-derived from buildDataNftCovenantScript so this mirror
-    // can never drift from state.ts (the covenant is the single source of truth).
+    // Auto-derived from buildDataNftCovenantScript so this mirror can never drift from state.ts.
     this.emitP2sh32FromCovenant(buildDataNftCovenantScript, locationData);
   }
 
   /**
-   * Reconstruct a category-parameterized sub-NFT P2SH32 locking bytecode in-script from the
-   * category (32B, internal order) on top of the stack. The covenant's constant bytes are
-   * auto-derived from its builder by splitting on a unique 32-byte category placeholder, so the
-   * in-script reconstruction matches the off-chain covenant byte-for-byte regardless of how the
-   * covenant evolves (the "5 pairs must match" lockstep becomes mechanical).
+   * Reconstruct a category-parameterized sub-NFT P2SH32 locking bytecode in-script from the category
+   * (32B, internal order) on top of the stack. The covenant's constant bytes are auto-derived from its
+   * builder by splitting on a unique 32-byte category placeholder, so the reconstruction matches the
+   * off-chain covenant byte-for-byte (the "5 pairs must match" lockstep becomes mechanical).
    * Stack before: [category]; after: [p2sh32_lbc].
    */
   private emitP2sh32FromCovenant(
@@ -9777,8 +9768,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
       // 1. IDENTITY (master-free): the co-spent read-only sub-NFT's locking bytecode == the expected
       // sub-NFT address. The data/entry NFT self-pins its category (Stage 2), so any spendable UTXO at
-      // that address necessarily carries the genuine category C and thus genuine committed state - no
-      // master co-spend needed to anchor it.
+      // that address carries the genuine category and thus genuine committed state - no master co-spend.
       this.emit(Op.OP_UTXOBYTECODE, locationData);     // [inputIdx, input_bytecode]
       if (!slot.addressParam) {
         throw new Error('external read target address must be a constructor/function parameter');

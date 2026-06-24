@@ -287,6 +287,19 @@ state-variable, interface- and contract-typed targets) in `regular`/`call`/`stat
 and `outState` returns; low-level `call`/`staticcall`/`delegatecall`; value transfer; `delegatecall` proxy
 pattern. See `external-contract-calls.md` for the per-feature test inventory.
 
-Designed, not built: generic allowlist-free dynamic dispatch, the `before`/`after` guard regions, the four
-compiler guarantees, the taint meta-guard, and opaque-`bytes`/witness-shape returns (section 10). The
+Shipped (rawCall MVP, VM-verified - e2e `RawCall.test.ts`): generic allowlist-free dynamic dispatch via
+`bytes result = addr.rawCall(selector, args)` - an identity-bound (`OP_UTXOBYTECODE == addr`) co-spend whose
+return is read as a single opaque `bytes` blob from the integrity-bound return event. The callee, function and
+args are supplied at build time via `.withExternalCall(callee, fn, args)`. The positive path and the
+target-substitution rejection are both verified. MVP limitations:
+- **Selector pinning deferred.** A co-spent single-function callee's unlocking carries an internal functionId,
+  not the 4-byte abi selector, so on-chain "which function" verification needs dispatch-level work. The
+  `selector` argument is accepted but not yet enforced on-chain; the integrity that IS enforced is the target
+  identity plus the return-event category binding (both reused, audited mechanisms).
+- **Raw-blob-to-`bytes`-state-var.** Storing the opaque return directly into a variable-length `bytes` state
+  var hits an auto-derivation convergence edge (the field length depends on the dynamically-read blob). Use a
+  fixed-size derivation of it (hash/length) or forward it.
+
+Designed, not built: the `before`/`after` guard regions, the four compiler guarantees, the taint meta-guard,
+witness-shape (typed) returns, on-chain selector pinning, and the bounded multicall loop (section 10). The
 adversarial test matrix is the acceptance gate for that work.

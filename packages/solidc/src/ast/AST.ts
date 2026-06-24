@@ -1561,6 +1561,9 @@ export class ExternalFunctionCallNode extends ExpressionNode {
   callMode?: ExternalCallMode;
   callOptions?: CallOptions;
   valueTransferIndex: number = -1;
+  // Generic dynamic dispatch (addr.rawCall(selector, args)): callee type/function unknown at compile time,
+  // the return is read as a single opaque bytes blob, identity-bound to the witnessed address.
+  rawCall?: boolean;
 
   constructor(
     public interfaceName: string,
@@ -1599,6 +1602,7 @@ export interface ExternalCallSlot {
   needsSelectorVerification?: boolean; // true when callee interface has >1 callable function
   callMode?: ExternalCallMode;
   argSources?: ExternalCallArgSource[];
+  rawCall?: boolean; // generic dynamic dispatch: opaque bytes return, identity-bound to the witnessed address
 }
 
 export interface ExternalOutputStateAccessInfo {

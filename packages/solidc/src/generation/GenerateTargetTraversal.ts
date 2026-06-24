@@ -7368,18 +7368,23 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, locationData);
       // Stack: [return_blob] (1 untracked)
 
-      // Decode return values from blob
-      for (let i = 0; i < returnTypes.length; i++) {
-        const isLast = i === returnTypes.length - 1;
-        if (isLast) {
-          this.emitPushdataDecodeLastField(returnTypes[i], locationData);
-        } else {
-          this.emitPushdataDecode(returnTypes[i], locationData);
-          // After decode, stack has: [decoded_value, remaining_blob]
-          // Swap so remaining_blob is on top for next iteration
-          this.emit(Op.OP_SWAP, locationData);
-        }
+      if (node.rawCall) {
+        // Opaque: the whole return-event commitment IS the bytes result (no typed decode).
         this.pushToStack('(value)');
+      } else {
+        // Decode return values from blob
+        for (let i = 0; i < returnTypes.length; i++) {
+          const isLast = i === returnTypes.length - 1;
+          if (isLast) {
+            this.emitPushdataDecodeLastField(returnTypes[i], locationData);
+          } else {
+            this.emitPushdataDecode(returnTypes[i], locationData);
+            // After decode, stack has: [decoded_value, remaining_blob]
+            // Swap so remaining_blob is on top for next iteration
+            this.emit(Op.OP_SWAP, locationData);
+          }
+          this.pushToStack('(value)');
+        }
       }
     }
 

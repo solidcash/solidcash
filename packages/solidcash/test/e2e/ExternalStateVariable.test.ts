@@ -28,18 +28,18 @@ const EXTERNAL_CONTRACT = `
 pragma solidcash >=0.8.0;
 
 contract ExternalState() {
-    int counter;
-    external int externalValue;
+    bigint counter;
+    external bigint externalValue;
 
     function increment() {
         this.counter = this.counter + 1;
     }
 
-    function setExternal(int val) {
+    function setExternal(bigint val) {
         this.externalValue = val;
     }
 
-    function setBoth(int val) {
+    function setBoth(bigint val) {
         this.counter = this.counter + 1;
         this.externalValue = val;
     }
@@ -51,9 +51,9 @@ const READER_CONTRACT = `
 pragma solidcash >=0.8.0;
 
 contract Reader() {
-    int total;
+    bigint total;
 
-    function addValue(int amount) {
+    function addValue(bigint amount) {
         this.total = this.total + amount;
     }
 
@@ -109,13 +109,13 @@ describe('External State Variable', () => {
 
       // counter: regular (public) variable on NFT 0
       expect(stateLayout.variables[0].name).toBe('counter');
-      expect(stateLayout.variables[0].type).toBe('int');
+      expect(stateLayout.variables[0].type).toBe('bigint');
       expect(stateLayout.variables[0].nftIndex).toBe(0);
       expect(stateLayout.variables[0].fieldIndex).toBe(0);
 
       // externalValue: external variable gets its own NFT (NFT 1)
       expect(stateLayout.variables[1].name).toBe('externalValue');
-      expect(stateLayout.variables[1].type).toBe('int');
+      expect(stateLayout.variables[1].type).toBe('bigint');
       expect(stateLayout.variables[1].nftIndex).toBe(1);
       expect(stateLayout.variables[1].fieldIndex).toBe(0);
       expect(stateLayout.variables[1].visibility).toBe('external');
@@ -267,7 +267,7 @@ describe('External State Variable', () => {
 
     it('should update both variables via setBoth', async () => {
       // Own fresh genesis: after the prior setExternal, NFT 1 and the untouched NFT 0 can share a
-      // vout across txs, and two single-int data NFTs are indistinguishable to the reader.
+      // vout across txs, and two single-bigint data NFTs are indistinguishable to the reader.
       const c = new Contract(scArtifact, [], { provider: scProvider });
       const { categoryId: freshCategoryId } = await setupStatefulUtxos(
         scProvider, c, scStateLayout, { counter: 0n, externalValue: 0n }, { saltContract: true },
@@ -341,9 +341,9 @@ describe('Read-Only Data NFT Unlocker', () => {
 pragma solidcash >=0.8.0;
 
 contract Owner() {
-    int balance;
+    bigint balance;
 
-    function setBalance(int newBalance) {
+    function setBalance(bigint newBalance) {
         this.balance = newBalance;
     }
 }
@@ -471,7 +471,7 @@ describe('StatefulTransactionBuilder with readOnlyDataNftUtxos', () => {
 pragma solidcash >=0.8.0;
 
 contract Writer() {
-    int counter;
+    bigint counter;
 
     function increment() {
         this.counter = this.counter + 1;
@@ -483,9 +483,9 @@ contract Writer() {
 pragma solidcash >=0.8.0;
 
 contract ExternalSource() {
-    external int externalData;
+    external bigint externalData;
 
-    function setData(int val) {
+    function setData(bigint val) {
         this.externalData = val;
     }
 }
@@ -607,9 +607,9 @@ describe('Read-Only Entry NFT Unlocker', () => {
 pragma solidcash >=0.8.0;
 
 contract MappingStore() {
-    mapping(bytes20 => int) balances;
+    mapping(bytes20 => bigint) balances;
 
-    function setBalance(bytes20 key, int amount) {
+    function setBalance(bytes20 key, bigint amount) {
         this.balances[key] = amount;
     }
 }
@@ -689,8 +689,8 @@ describe('Dual-Path Covenant Bytecode', () => {
     const SIMPLE = `
 pragma solidcash >=0.8.0;
 contract Simple() {
-    int x;
-    function set(int v) { this.x = v; }
+    bigint x;
+    function set(bigint v) { this.x = v; }
 }
 `;
     const artifact = compileString(SIMPLE);

@@ -1,5 +1,5 @@
 import { hexToBin } from '@bitauth/libauth';
-import { BytesType, PrimitiveType } from '@solidcash/utils';
+import { BytesType, IntType, PrimitiveType } from '@solidcash/utils';
 import {
   SourceFileNode,
   ContractNode,
@@ -78,7 +78,7 @@ export const fixtures: Fixture[] = [
     ast: new SourceFileNode(
       new ContractNode(
         'Reassignment',
-        [new ParameterNode(PrimitiveType.INT, 'x'), new ParameterNode(PrimitiveType.STRING, 'y')],
+        [new ParameterNode(new IntType(true, 256), 'x'), new ParameterNode(PrimitiveType.STRING, 'y')],
         [],
         [],
         [],
@@ -90,7 +90,7 @@ export const fixtures: Fixture[] = [
           [new ParameterNode(PrimitiveType.PUBKEY, 'pk'), new ParameterNode(PrimitiveType.SIG, 's')],
           new BlockNode([
             new VariableDefinitionNode(
-              PrimitiveType.INT,
+              new IntType(true, 256),
               [],
               'myVariable',
               new BinaryOpNode(
@@ -100,7 +100,7 @@ export const fixtures: Fixture[] = [
               ),
             ),
             new VariableDefinitionNode(
-              PrimitiveType.INT,
+              new IntType(true, 256),
               [],
               'myOtherVariable',
               new BinaryOpNode(
@@ -157,7 +157,7 @@ export const fixtures: Fixture[] = [
     ast: new SourceFileNode(
       new ContractNode(
         'MultiFunctionIfStatements',
-        [new ParameterNode(PrimitiveType.INT, 'x'), new ParameterNode(PrimitiveType.INT, 'y')],
+        [new ParameterNode(new IntType(true, 256), 'x'), new ParameterNode(new IntType(true, 256), 'y')],
         [],
         [],
         [],
@@ -167,10 +167,10 @@ export const fixtures: Fixture[] = [
         [
           new FunctionDefinitionNode(
             'transfer',
-            [new ParameterNode(PrimitiveType.INT, 'a'), new ParameterNode(PrimitiveType.INT, 'b')],
+            [new ParameterNode(new IntType(true, 256), 'a'), new ParameterNode(new IntType(true, 256), 'b')],
             new BlockNode([
               new VariableDefinitionNode(
-                PrimitiveType.INT,
+                new IntType(true, 256),
                 [],
                 'd',
                 new BinaryOpNode(
@@ -199,7 +199,7 @@ export const fixtures: Fixture[] = [
                 ),
                 new BlockNode([
                   new VariableDefinitionNode(
-                    PrimitiveType.INT,
+                    new IntType(true, 256),
                     [],
                     'c',
                     new BinaryOpNode(
@@ -250,10 +250,10 @@ export const fixtures: Fixture[] = [
           ),
           new FunctionDefinitionNode(
             'timeout',
-            [new ParameterNode(PrimitiveType.INT, 'b')],
+            [new ParameterNode(new IntType(true, 256), 'b')],
             new BlockNode([
               new VariableDefinitionNode(
-                PrimitiveType.INT,
+                new IntType(true, 256),
                 [],
                 'd',
                 new IdentifierNode('b'),
@@ -274,7 +274,7 @@ export const fixtures: Fixture[] = [
                 ),
                 new BlockNode([
                   new VariableDefinitionNode(
-                    PrimitiveType.INT,
+                    new IntType(true, 256),
                     [],
                     'c',
                     new BinaryOpNode(
@@ -369,8 +369,8 @@ export const fixtures: Fixture[] = [
         [
           new ParameterNode(PrimitiveType.PUBKEY, 'ownerPk'),
           new ParameterNode(PrimitiveType.PUBKEY, 'oraclePk'),
-          new ParameterNode(PrimitiveType.INT, 'minBlock'),
-          new ParameterNode(PrimitiveType.INT, 'priceTarget'),
+          new ParameterNode(new IntType(true, 256), 'minBlock'),
+          new ParameterNode(new IntType(true, 256), 'priceTarget'),
         ],
         [],
         [],
@@ -398,21 +398,21 @@ export const fixtures: Fixture[] = [
               ),
             ),
             new VariableDefinitionNode(
-              PrimitiveType.INT,
+              new IntType(true, 256),
               [],
               'blockHeight',
               new CastNode(
-                PrimitiveType.INT,
+                new IntType(true, 256),
                 new IdentifierNode('blockHeightBin'),
                 false,
               ),
             ),
             new VariableDefinitionNode(
-              PrimitiveType.INT,
+              new IntType(true, 256),
               [],
               'price',
               new CastNode(
-                PrimitiveType.INT,
+                new IntType(true, 256),
                 new IdentifierNode('priceBin'),
                 false,
               ),
@@ -682,8 +682,8 @@ export const fixtures: Fixture[] = [
         [
           new ParameterNode(new BytesType(20), 'recipient'),
           new ParameterNode(new BytesType(20), 'funder'),
-          new ParameterNode(PrimitiveType.INT, 'pledge'),
-          new ParameterNode(PrimitiveType.INT, 'period'),
+          new ParameterNode(new IntType(true, 256), 'pledge'),
+          new ParameterNode(new IntType(true, 256), 'period'),
         ],
         [],
         [],
@@ -714,13 +714,13 @@ export const fixtures: Fixture[] = [
                 ),
               ),
               new VariableDefinitionNode(
-                PrimitiveType.INT,
+                new IntType(true, 256),
                 [],
                 'minerFee',
                 new IntLiteralNode(1000n),
               ),
               new VariableDefinitionNode(
-                PrimitiveType.INT,
+                new IntType(true, 256),
                 [],
                 'currentValue',
                 new UnaryOpNode(
@@ -729,7 +729,7 @@ export const fixtures: Fixture[] = [
                 ),
               ),
               new VariableDefinitionNode(
-                PrimitiveType.INT,
+                new IntType(true, 256),
                 [],
                 'changeValue',
                 new BinaryOpNode(
@@ -891,13 +891,13 @@ export const fixtures: Fixture[] = [
               ),
             ),
             new VariableDefinitionNode(
-              PrimitiveType.INT,
+              new IntType(true, 256),
               [],
               'minerFee',
               new IntLiteralNode(1000n),
             ),
             new VariableDefinitionNode(
-              PrimitiveType.INT,
+              new IntType(true, 256),
               [],
               'changeAmount',
               new BinaryOpNode(
@@ -961,7 +961,7 @@ export const fixtures: Fixture[] = [
         [
           new FunctionDefinitionNode(
             'spend',
-            [new ParameterNode(PrimitiveType.INT, 'value')],
+            [new ParameterNode(new IntType(true, 256), 'value')],
             new BlockNode([
               new RequireNode(
                 new BinaryOpNode(
@@ -1014,7 +1014,7 @@ export const fixtures: Fixture[] = [
           [],
           new BlockNode([
             new VariableDefinitionNode(
-              PrimitiveType.INT,
+              new IntType(true, 256),
               [],
               'i',
               new IntLiteralNode(0n),

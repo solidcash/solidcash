@@ -56,10 +56,10 @@ const SIMPLE_MAPPING_CONTRACT = `
 pragma solidcash >=0.8.0;
 
 contract SimpleMapping() {
-    int counter;
-    mapping(bytes20 => int) balances;
+    bigint counter;
+    mapping(bytes20 => bigint) balances;
 
-    function setBalance(bytes20 key, int amount) {
+    function setBalance(bytes20 key, bigint amount) {
         this.balances[key] = amount;
         this.counter = this.counter + 1;
     }
@@ -74,10 +74,10 @@ const NESTED_MAPPING_CONTRACT = `
 pragma solidcash >=0.8.0;
 
 contract NestedMapping() {
-    int counter;
-    mapping(bytes20 => mapping(bytes20 => int)) allowances;
+    bigint counter;
+    mapping(bytes20 => mapping(bytes20 => bigint)) allowances;
 
-    function setAllowance(bytes20 owner, bytes20 spender, int amount) {
+    function setAllowance(bytes20 owner, bytes20 spender, bigint amount) {
         this.allowances[owner][spender] = amount;
         this.counter = this.counter + 1;
     }
@@ -91,7 +91,7 @@ contract NestedMapping() {
 // ===== Tests =====
 
 describe('Mapping Enumeration (getEntries)', () => {
-  describe('simple mapping(bytes20 => int)', () => {
+  describe('simple mapping(bytes20 => bigint)', () => {
     const artifact = compileString(SIMPLE_MAPPING_CONTRACT);
     const stateLayout = artifact.stateLayout!;
 
@@ -110,7 +110,7 @@ describe('Mapping Enumeration (getEntries)', () => {
       const provider = createTestProvider();
       const contract = new Contract(artifact, [], { provider });
       // Add an entry NFT for alice with balance 100
-      const entryCommitment = buildEntryCommitment(alicePkh, 'bytes20', 100n, 'int');
+      const entryCommitment = buildEntryCommitment(alicePkh, 'bytes20', 100n, 'bigint');
       const { categoryId } = await setupWithEntries(
         provider, contract, stateLayout, { counter: 1n },
         [{ collection: 'balances', commitment: entryCommitment }],
@@ -128,8 +128,8 @@ describe('Mapping Enumeration (getEntries)', () => {
       const provider = createTestProvider();
       const contract = new Contract(artifact, [], { provider });
       // Add two entry NFTs
-      const entry1 = buildEntryCommitment(alicePkh, 'bytes20', 100n, 'int');
-      const entry2 = buildEntryCommitment(bobPkh, 'bytes20', 200n, 'int');
+      const entry1 = buildEntryCommitment(alicePkh, 'bytes20', 100n, 'bigint');
+      const entry2 = buildEntryCommitment(bobPkh, 'bytes20', 200n, 'bigint');
       const { categoryId } = await setupWithEntries(
         provider, contract, stateLayout, { counter: 2n },
         [
@@ -155,7 +155,7 @@ describe('Mapping Enumeration (getEntries)', () => {
       const provider = createTestProvider();
       const contract = new Contract(artifact, [], { provider });
       // One valid entry NFT + a non-mutable NFT (skipped), both under the real category.
-      const entry = buildEntryCommitment(alicePkh, 'bytes20', 50n, 'int');
+      const entry = buildEntryCommitment(alicePkh, 'bytes20', 50n, 'bigint');
       const { categoryId, saltedContract } = await setupWithEntries(
         provider, contract, stateLayout, { counter: 1n },
         [
@@ -184,7 +184,7 @@ describe('Mapping Enumeration (getEntries)', () => {
       const contract = new Contract(artifact, [], { provider });
 
       const collection = stateLayout.collections!.find((c) => c.name === 'balances')!;
-      const entry = buildEntryCommitment(alicePkh, 'bytes20', 42n, 'int');
+      const entry = buildEntryCommitment(alicePkh, 'bytes20', 42n, 'bigint');
       const { categoryId } = await setupWithEntries(
         provider, contract, stateLayout, { counter: 1n },
         [{ collection: collection.signature, commitment: entry }],
@@ -208,7 +208,7 @@ describe('Mapping Enumeration (getEntries)', () => {
     });
   });
 
-  describe('nested mapping(bytes20 => mapping(bytes20 => int))', () => {
+  describe('nested mapping(bytes20 => mapping(bytes20 => bigint))', () => {
     const artifact = compileString(NESTED_MAPPING_CONTRACT);
     const stateLayout = artifact.stateLayout!;
 
@@ -220,7 +220,7 @@ describe('Mapping Enumeration (getEntries)', () => {
       const collection = stateLayout.collections!.find((c) => c.name === 'allowances')!;
       const keyTypes = collection.keyTypes ?? [collection.keyType];
       const entryCommitment = buildEntryCommitmentMultiKey(
-        [alicePkh, bobPkh], keyTypes, 500n, 'int',
+        [alicePkh, bobPkh], keyTypes, 500n, 'bigint',
       );
       const { categoryId } = await setupWithEntries(
         provider, contract, stateLayout, { counter: 1n },

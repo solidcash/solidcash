@@ -31,7 +31,7 @@ contract CatchAllProxy(bytes20 admin) {
     bytes32 implCategory;
 
     // Forward any operation - the implementation contract validates actual logic
-    function forward(int implInputIndex) {
+    function forward(bigint implInputIndex) {
         // Verify implementation NFT is present at the given input index
         bytes catId, bytes capByte = tx.inputs[implInputIndex].tokenCategory.split(32);
         require(catId == this.implCategory);
@@ -57,7 +57,7 @@ const COUNTER_V1 = `
 pragma solidcash >=0.8.0;
 
 contract CounterV1() {
-    int counter;
+    bigint counter;
 
     function increment() {
         this.counter = this.counter + 1;
@@ -74,8 +74,8 @@ const COUNTER_V2 = `
 pragma solidcash >=0.8.0;
 
 contract CounterV2() {
-    int counter;
-    int operationCount;
+    bigint counter;
+    bigint operationCount;
 
     function increment() {
         this.counter = this.counter + 1;
@@ -118,7 +118,7 @@ contract TransparentProxy(bytes20 admin) {
 
         // Implementation master is right after proxy's UTXOs
         // Convention: [proxy master, proxy data NFT, impl master, ...]
-        int implIndex = this.activeInputIndex + 2;
+        bigint implIndex = this.activeInputIndex + 2;
         bytes catId, bytes capByte = tx.inputs[implIndex].tokenCategory.split(32);
         require(catId == this.implCategory);
         require(capByte != 0x);
@@ -151,7 +151,7 @@ pragma solidcash >=0.8.0;
 contract VaultProxy(bytes20 admin) {
     bytes32 implCategory;
 
-    function deposit(int implInputIndex) {
+    function deposit(bigint implInputIndex) {
         bytes catId, bytes capByte = tx.inputs[implInputIndex].tokenCategory.split(32);
         require(catId == this.implCategory);
         require(capByte != 0x);
@@ -162,7 +162,7 @@ contract VaultProxy(bytes20 admin) {
                 tx.inputs[this.activeInputIndex].value);
     }
 
-    function withdraw(int amount, pubkey pk, sig s, int implInputIndex) {
+    function withdraw(bigint amount, pubkey pk, sig s, bigint implInputIndex) {
         bytes catId, bytes capByte = tx.inputs[implInputIndex].tokenCategory.split(32);
         require(catId == this.implCategory);
         require(capByte != 0x);
@@ -190,14 +190,14 @@ const VAULT_V1 = `
 pragma solidcash >=0.8.0;
 
 contract VaultV1() {
-    int balance;
+    bigint balance;
 
-    function deposit(int amount) {
+    function deposit(bigint amount) {
         require(amount > 0);
         this.balance = this.balance + amount;
     }
 
-    function withdraw(int amount) {
+    function withdraw(bigint amount) {
         require(amount > 0);
         require(this.balance >= amount);
         this.balance = this.balance - amount;
@@ -210,16 +210,16 @@ const VAULT_V2 = `
 pragma solidcash >=0.8.0;
 
 contract VaultV2() {
-    int balance;
-    int txCount;
+    bigint balance;
+    bigint txCount;
 
-    function deposit(int amount) {
+    function deposit(bigint amount) {
         require(amount > 0);
         this.balance = this.balance + amount;
         this.txCount = this.txCount + 1;
     }
 
-    function withdraw(int amount) {
+    function withdraw(bigint amount) {
         require(amount > 0);
         require(this.balance >= amount);
         this.balance = this.balance - amount;
@@ -344,12 +344,12 @@ describe('Proxy Pattern', () => {
         expect.arrayContaining([expect.objectContaining({ name: 'implCategory', type: 'bytes32' })]),
       );
       expect(v1Artifact.stateLayout!.variables).toEqual(
-        expect.arrayContaining([expect.objectContaining({ name: 'counter', type: 'int' })]),
+        expect.arrayContaining([expect.objectContaining({ name: 'counter', type: 'bigint' })]),
       );
       expect(v2Artifact.stateLayout!.variables).toEqual(
         expect.arrayContaining([
-          expect.objectContaining({ name: 'counter', type: 'int' }),
-          expect.objectContaining({ name: 'operationCount', type: 'int' }),
+          expect.objectContaining({ name: 'counter', type: 'bigint' }),
+          expect.objectContaining({ name: 'operationCount', type: 'bigint' }),
         ]),
       );
     });

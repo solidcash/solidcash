@@ -174,10 +174,10 @@ const VM_NUMBER_MAX_BYTE_LENGTH = 150;
 
 /** Check if a type string represents an int-like type (int, int8, uint256, fixed128x18, etc.) */
 function isIntLikeType(type: string): boolean {
-  return type === 'int' || /^u?int\d+$/.test(type) || /^u?fixed\d+x\d+$/.test(type);
+  return type === 'bigint' || /^u?int\d+$/.test(type) || /^u?fixed\d+x\d+$/.test(type);
 }
 
-/** Parse a bounded int/fixed type string and return its min/max range, or undefined for unbounded 'int'. */
+/** Parse a bounded int/fixed type string and return its min/max range, or undefined for unbounded 'bigint'. */
 function parseBoundedIntRange(type: string): { min: bigint; max: bigint } | undefined {
   // Match int8, uint16, int128, uint256, etc.
   const intMatch = type.match(/^(u?)(int)(\d+)$/);
@@ -269,7 +269,7 @@ export function getMaxPushdataEncodedSize(
   }
   const arrInfo = parseArrayTypeString(type);
   if (arrInfo) {
-    const lengthSize = getMaxPushdataEncodedSize('int', structs);
+    const lengthSize = getMaxPushdataEncodedSize('bigint', structs);
     if (arrInfo.bound === undefined) return lengthSize; // Unbounded: just length prefix (minimum)
     const elemSize = getMaxPushdataEncodedSize(arrInfo.elementType, structs);
     return lengthSize + arrInfo.bound * elemSize;
@@ -278,7 +278,7 @@ export function getMaxPushdataEncodedSize(
   // Since May 2025, BCH VM supports arbitrarily large integers (up to 10,000-byte stack elements).
   // Using 258 (1 OP_PUSHDATA1 prefix + 1 length byte + 256 data bytes) handles numbers up to 2^2048
   // while staying within practical NFT commitment size limits.
-  if (type === 'int') return 258;
+  if (type === 'bigint') return 258;
   if (type === 'pubkey') return 34; // 1 byte length prefix (0x21) + 33 bytes
   if (type === 'sig') return 74; // 1 byte length prefix + up to 73 bytes
   if (type === 'datasig') return 66; // 1 byte length prefix + up to 65 bytes
@@ -357,7 +357,7 @@ export function encodePushdataValue(
     const arr = value as StateValue[];
     const parts: Uint8Array[] = [];
     // Length prefix (encoded as int)
-    parts.push(encodePushdataValue(BigInt(arr.length), 'int'));
+    parts.push(encodePushdataValue(BigInt(arr.length), 'bigint'));
     // Elements
     for (const elem of arr) {
       parts.push(encodePushdataValue(elem, arrInfo.elementType, structs));
@@ -413,8 +413,8 @@ export function encodePushdataValue(
         `encodePushdataValue: expected bigint for type '${type}', got ${typeof primitiveValue}`,
       );
     }
-    // M-10: Range validation for bounded int/fixed types (not unbounded 'int')
-    if (type !== 'int') {
+    // M-10: Range validation for bounded int/fixed types (not unbounded 'bigint')
+    if (type !== 'bigint') {
       const bounds = parseBoundedIntRange(type);
       if (bounds && (primitiveValue < bounds.min || primitiveValue > bounds.max)) {
         throw new Error(
@@ -570,7 +570,7 @@ export function decodePushdataValue(
   if (arrInfo) {
     let totalConsumed = 0;
     // Decode length prefix (encoded as int)
-    const { value: lenVal, bytesConsumed: lenBytes } = decodePushdataValue(data, offset, 'int');
+    const { value: lenVal, bytesConsumed: lenBytes } = decodePushdataValue(data, offset, 'bigint');
     totalConsumed += lenBytes;
     const len = Number(lenVal as bigint);
     if (len < 0 || len > 10000) {
@@ -812,7 +812,7 @@ export function isMultiDataNftLayout(layout: StateLayout): boolean {
  * (1 byte for indices 0-16). Identical to how the compiler stamps and verifies it on-chain.
  */
 export function encodeNftIndexTag(nftIndex: number): Uint8Array {
-  return encodePushdataValue(BigInt(nftIndex), 'int');
+  return encodePushdataValue(BigInt(nftIndex), 'bigint');
 }
 
 /**
@@ -884,7 +884,7 @@ export function parsePushdataCommitment(
 
   // Multi-data-NFT commitments carry a leading nftIndex tag - verify and skip it before the fields.
   if (isMultiDataNftLayout(layout)) {
-    const { value: tag, bytesConsumed } = decodePushdataValue(bytes, offset, 'int');
+    const { value: tag, bytesConsumed } = decodePushdataValue(bytes, offset, 'bigint');
     if (Number(tag) !== nftIndex) {
       throw new Error(`parsePushdataCommitment: nftIndex tag mismatch for NFT index ${nftIndex}: got ${tag}`);
     }
@@ -1044,12 +1044,12 @@ export function splitValueIntoChunks(value: Uint8Array): Uint8Array[] {
 export function buildChunkCommitment(
   chunkIndex: number, chunkData: Uint8Array, commitmentLimit?: number,
 ): string {
-  return buildEntryCommitment(BigInt(chunkIndex), 'int', chunkData, 'bytes', undefined, commitmentLimit);
+  return buildEntryCommitment(BigInt(chunkIndex), 'bigint', chunkData, 'bytes', undefined, commitmentLimit);
 }
 
 /** Parse a chunk UTXO commitment into its index and data. */
 export function parseChunkCommitment(hex: string): { chunkIndex: number; chunkData: Uint8Array } {
-  const { key, value } = parseEntryCommitment(hex, 'int', 'bytes');
+  const { key, value } = parseEntryCommitment(hex, 'bigint', 'bytes');
   return { chunkIndex: Number(key as bigint), chunkData: value as Uint8Array };
 }
 

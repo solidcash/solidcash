@@ -240,7 +240,7 @@ export class UnsupportedTypeError extends TypeError {
     expected?: Type,
   ) {
     if (node instanceof BinaryOpNode && node.operator.startsWith('.')) {
-      if (expected === PrimitiveType.INT) {
+      if (expected === PrimitiveType.BIGINT) {
         super(node, actual, expected, `Tried to call member 'split' with unsupported parameter type '${actual}'`);
       } else {
         super(node, actual, expected, `Tried to call member 'split' on unsupported type '${actual}'`);

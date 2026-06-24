@@ -24,12 +24,12 @@ const COUNTER_CONTRACT = `
 pragma solidcash >=0.8.0;
 
 interface ICounter {
-    public int counter;
+    public bigint counter;
     function increment(pubkey owner, sig s);
 }
 
 contract Counter() is ICounter {
-    int counter;
+    bigint counter;
 
     function increment(pubkey owner, sig s) {
         require(checkSig(s, owner));
@@ -43,16 +43,16 @@ const OUTSTATE_READER_CONTRACT = `
 pragma solidcash >=0.8.0;
 
 interface ICounter {
-    public int counter;
+    public bigint counter;
     function increment(pubkey owner, sig s);
 }
 
 contract OutStateReader(bytes counterAddr) {
-    int lastSeen;
+    bigint lastSeen;
 
     function readOutputState(pubkey pk, sig s) {
         require(checkSig(s, pk));
-        int newVal = ICounter(counterAddr).outState.counter;
+        bigint newVal = ICounter(counterAddr).outState.counter;
         this.lastSeen = newVal;
     }
 }
@@ -63,16 +63,16 @@ const RETURNING_COUNTER_CONTRACT = `
 pragma solidcash >=0.8.0;
 
 interface IReturningCounter {
-    public int counter;
-    function getAndIncrement(pubkey owner, sig s) returns (int);
+    public bigint counter;
+    function getAndIncrement(pubkey owner, sig s) returns (bigint);
 }
 
 contract ReturningCounter() is IReturningCounter {
-    int counter;
+    bigint counter;
 
-    function getAndIncrement(pubkey owner, sig s) returns (int) {
+    function getAndIncrement(pubkey owner, sig s) returns (bigint) {
         require(checkSig(s, owner));
-        int oldVal = this.counter;
+        bigint oldVal = this.counter;
         this.counter = this.counter + 1;
         return oldVal;
     }
@@ -84,16 +84,16 @@ const RETURN_READER_CONTRACT = `
 pragma solidcash >=0.8.0;
 
 interface IReturningCounter {
-    public int counter;
-    function getAndIncrement(pubkey owner, sig s) returns (int);
+    public bigint counter;
+    function getAndIncrement(pubkey owner, sig s) returns (bigint);
 }
 
 contract ReturnReader(bytes counterAddr) {
-    int lastResult;
+    bigint lastResult;
 
     function callAndRead(pubkey pk, sig s) {
         require(checkSig(s, pk));
-        int result = IReturningCounter(counterAddr).getAndIncrement();
+        bigint result = IReturningCounter(counterAddr).getAndIncrement();
         this.lastResult = result;
     }
 }
@@ -104,16 +104,16 @@ const MULTI_RETURN_CONTRACT = `
 pragma solidcash >=0.8.0;
 
 interface IStats {
-    public int a;
-    public int b;
-    function getStats(pubkey owner, sig s) returns (int, int);
+    public bigint a;
+    public bigint b;
+    function getStats(pubkey owner, sig s) returns (bigint, bigint);
 }
 
 contract Stats() is IStats {
-    int a;
-    int b;
+    bigint a;
+    bigint b;
 
-    function getStats(pubkey owner, sig s) returns (int, int) {
+    function getStats(pubkey owner, sig s) returns (bigint, bigint) {
         require(checkSig(s, owner));
         return (this.a + this.b, this.a * this.b);
     }
@@ -125,22 +125,22 @@ const COMBINED_READER_CONTRACT = `
 pragma solidcash >=0.8.0;
 
 interface IReturningCounter {
-    public int counter;
-    function getAndIncrement(pubkey owner, sig s) returns (int);
+    public bigint counter;
+    function getAndIncrement(pubkey owner, sig s) returns (bigint);
 }
 
 contract CombinedReader(bytes counterAddr) {
-    int lastSeen;
+    bigint lastSeen;
 
     function callWithReturn(pubkey pk, sig s) {
         require(checkSig(s, pk));
-        int result = IReturningCounter(counterAddr).getAndIncrement();
+        bigint result = IReturningCounter(counterAddr).getAndIncrement();
         this.lastSeen = result;
     }
 
     function readOutState(pubkey pk, sig s) {
         require(checkSig(s, pk));
-        int newVal = IReturningCounter(counterAddr).outState.counter;
+        bigint newVal = IReturningCounter(counterAddr).outState.counter;
         this.lastSeen = newVal;
     }
 }
@@ -150,19 +150,19 @@ const MULTI_FIELD_OUTSTATE_READER = `
 pragma solidcash >=0.8.0;
 
 interface IMultiField {
-    public int alpha;
-    public int beta;
-    public int gamma;
+    public bigint alpha;
+    public bigint beta;
+    public bigint gamma;
     function setAll(pubkey owner, sig s);
 }
 
 contract MultiFieldReader(bytes extAddr) {
-    int sum;
+    bigint sum;
 
     function readAlphaAndGamma(pubkey pk, sig s) {
         require(checkSig(s, pk));
-        int a = IMultiField(extAddr).outState.alpha;
-        int g = IMultiField(extAddr).outState.gamma;
+        bigint a = IMultiField(extAddr).outState.alpha;
+        bigint g = IMultiField(extAddr).outState.gamma;
         this.sum = a + g;
     }
 }
@@ -204,7 +204,7 @@ describe('outState Accessor and Function Returns', () => {
       expect(artifact.externalInterfaces![0].name).toBe('ICounter');
       expect(artifact.externalInterfaces![0].stateLayout.variables).toEqual(
         expect.arrayContaining([
-          expect.objectContaining({ name: 'counter', type: 'int', nftIndex: 0 }),
+          expect.objectContaining({ name: 'counter', type: 'bigint', nftIndex: 0 }),
         ]),
       );
     });
@@ -249,7 +249,7 @@ describe('outState Accessor and Function Returns', () => {
 
       expect(fn!.outputs).toBeDefined();
       expect(fn!.outputs!.length).toBe(1);
-      expect(fn!.outputs![0].type).toBe('int');
+      expect(fn!.outputs![0].type).toBe('bigint');
     });
 
     it('should inject _returnOutputIdx synthetic parameter for B-side entry points', () => {
@@ -267,8 +267,8 @@ describe('outState Accessor and Function Returns', () => {
       expect(fn).toBeDefined();
       expect(fn!.outputs).toBeDefined();
       expect(fn!.outputs!.length).toBe(2);
-      expect(fn!.outputs![0].type).toBe('int');
-      expect(fn!.outputs![1].type).toBe('int');
+      expect(fn!.outputs![0].type).toBe('bigint');
+      expect(fn!.outputs![1].type).toBe('bigint');
     });
   });
 
@@ -289,7 +289,7 @@ describe('outState Accessor and Function Returns', () => {
       expect(ec.hasReturnValues).toBe(true);
       expect(ec.returnTypes).toBeDefined();
       expect(ec.returnTypes!.length).toBe(1);
-      expect(ec.returnTypes![0]).toBe('int');
+      expect(ec.returnTypes![0]).toBe('bigint');
       expect(ec.returnEventSignature).toBeDefined();
       expect(typeof ec.returnEventSignature).toBe('string');
     });
@@ -373,16 +373,16 @@ describe('outState Accessor and Function Returns', () => {
 pragma solidcash >=0.8.0;
 
 interface ICounter {
-    public int counter;
+    public bigint counter;
     function increment(pubkey owner, sig s);
 }
 
 contract Reader(bytes32 counterCategory) {
-    int lastSeen;
+    bigint lastSeen;
 
     function readBad(pubkey pk, sig s) {
         require(checkSig(s, pk));
-        int newVal = ICounter(counterCategory).outState.nonexistent;
+        bigint newVal = ICounter(counterCategory).outState.nonexistent;
         this.lastSeen = newVal;
     }
 }
@@ -396,11 +396,11 @@ contract Reader(bytes32 counterCategory) {
 pragma solidcash >=0.8.0;
 
 contract Reader(bytes32 counterCategory) {
-    int lastSeen;
+    bigint lastSeen;
 
     function readBad(pubkey pk, sig s) {
         require(checkSig(s, pk));
-        int newVal = counterCategory.outState.something;
+        bigint newVal = counterCategory.outState.something;
         this.lastSeen = newVal;
     }
 }
@@ -414,16 +414,16 @@ contract Reader(bytes32 counterCategory) {
 pragma solidcash >=0.8.0;
 
 interface ICounter {
-    public int counter;
+    public bigint counter;
     function increment(pubkey owner, sig s);
 }
 
 contract Reader(bytes32 counterCategory) {
-    int lastSeen;
+    bigint lastSeen;
 
     function readBad(pubkey pk, sig s) {
         require(checkSig(s, pk));
-        int result = ICounter(counterCategory).increment();
+        bigint result = ICounter(counterCategory).increment();
         this.lastSeen = result;
     }
 }
@@ -637,7 +637,7 @@ contract Reader(bytes32 counterCategory) {
       // Should have return type info
       expect(fn!.outputs).toBeDefined();
       expect(fn!.outputs!.length).toBe(1);
-      expect(fn!.outputs![0].type).toBe('int');
+      expect(fn!.outputs![0].type).toBe('bigint');
 
       // Should have _returnOutputIdx synthetic parameter
       const inputNames = fn!.inputs.map((i) => i.name);
@@ -713,7 +713,7 @@ contract Reader(bytes32 counterCategory) {
       expect(fn).toBeDefined();
       expect(fn!.outputs).toBeDefined();
       expect(fn!.outputs!.length).toBe(2);
-      expect(fn!.outputs!.map((o) => o.type)).toEqual(['int', 'int']);
+      expect(fn!.outputs!.map((o) => o.type)).toEqual(['bigint', 'bigint']);
     });
 
     it('should inject _returnOutputIdx for multi-return entry points', () => {
@@ -729,8 +729,8 @@ contract Reader(bytes32 counterCategory) {
       expect(artifact.stateLayout).toBeDefined();
       expect(artifact.stateLayout!.variables).toEqual(
         expect.arrayContaining([
-          expect.objectContaining({ name: 'a', type: 'int' }),
-          expect.objectContaining({ name: 'b', type: 'int' }),
+          expect.objectContaining({ name: 'a', type: 'bigint' }),
+          expect.objectContaining({ name: 'b', type: 'bigint' }),
         ]),
       );
     });

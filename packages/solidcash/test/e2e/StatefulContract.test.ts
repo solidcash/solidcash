@@ -20,7 +20,7 @@ import { Utxo, TokenDetails } from '../../src/interfaces.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 
 // A stateful contract with two state variables of different types:
-//   int counter   - incremented each call
+//   bigint counter   - incremented each call
 //   bytes4 label  - set to caller-supplied value each call
 // Two functions:
 //   update:    reads/writes both state variables (auto-covenant enforced)
@@ -29,7 +29,7 @@ const COUNTER_CONTRACT = `
 pragma solidcash >=0.8.0;
 
 contract Counter() {
-    int counter;
+    bigint counter;
     bytes4 label;
 
     function update(bytes4 newLabel) {
@@ -44,14 +44,14 @@ contract Counter() {
 `;
 
 // A stateful contract with sig-authenticated state writes:
-//   int counter   - incremented only by authorized signers
+//   bigint counter   - incremented only by authorized signers
 // Function increment: requires signature check, then writes state (tests sig-arg auto-derivation)
 // Function readCounter: read-only, no state writes (tests immutable/read-only auto-derivation)
 const AUTH_COUNTER_CONTRACT = `
 pragma solidcash >=0.8.0;
 
 contract AuthCounter(pubkey owner) {
-    int counter;
+    bigint counter;
 
     function increment(sig s) {
         require(checkSig(s, owner));
@@ -170,9 +170,9 @@ describe('Stateful Contract', () => {
       expect(artifact.stateLayout).toBeDefined();
       expect(stateLayout.variables).toHaveLength(2);
 
-      // counter: int at field 0
+      // counter: bigint at field 0
       expect(stateLayout.variables[0].name).toBe('counter');
-      expect(stateLayout.variables[0].type).toBe('int');
+      expect(stateLayout.variables[0].type).toBe('bigint');
       expect(stateLayout.variables[0].nftIndex).toBe(0);
       expect(stateLayout.variables[0].fieldIndex).toBe(0);
 

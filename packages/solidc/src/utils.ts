@@ -18,5 +18,6 @@ export function resultingTypeForBinaryOp(
 }
 
 export function isNumericType(type?: Type): boolean {
-  return type === PrimitiveType.INT || type === PrimitiveType.BOOL || type instanceof IntType || type instanceof FixedType;
+  return type === PrimitiveType.BIGINT || type === PrimitiveType.INT || type === PrimitiveType.BOOL
+    || type instanceof IntType || type instanceof FixedType;
 }

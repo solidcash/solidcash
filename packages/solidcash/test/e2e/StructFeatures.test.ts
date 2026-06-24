@@ -776,8 +776,8 @@ describe('Stateful nested struct contracts', () => {
       const outerDef = layout.structs!.find((s) => s.name === 'Outer');
       expect(innerDef).toBeDefined();
       expect(outerDef).toBeDefined();
-      expect(innerDef!.fields).toEqual([{ name: 'x', type: 'int' }, { name: 'y', type: 'int' }]);
-      expect(outerDef!.fields).toEqual([{ name: 'inner', type: 'Inner' }, { name: 'z', type: 'int' }]);
+      expect(innerDef!.fields).toEqual([{ name: 'x', type: 'int256' }, { name: 'y', type: 'int256' }]);
+      expect(outerDef!.fields).toEqual([{ name: 'inner', type: 'Inner' }, { name: 'z', type: 'int256' }]);
     });
   });
 

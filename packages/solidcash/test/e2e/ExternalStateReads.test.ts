@@ -23,12 +23,12 @@ const COUNTER_CONTRACT = `
 pragma solidcash >=0.8.0;
 
 interface ICounter {
-    public int counter;
+    public bigint counter;
     function increment(pubkey owner, sig s);
 }
 
 contract Counter() is ICounter {
-    int counter;
+    bigint counter;
 
     function increment(pubkey owner, sig s) {
         require(checkSig(s, owner));
@@ -42,16 +42,16 @@ const READER_CONTRACT = `
 pragma solidcash >=0.8.0;
 
 interface ICounter {
-    public int counter;
+    public bigint counter;
     function increment(pubkey owner, sig s);
 }
 
 contract Reader(bytes counterAddr) {
-    int total;
+    bigint total;
 
     function sync(pubkey pk, sig s) {
         require(checkSig(s, pk));
-        int val = ICounter(counterAddr).counter;
+        bigint val = ICounter(counterAddr).counter;
         this.total = val;
     }
 }
@@ -62,18 +62,18 @@ const EXT_READER_CONTRACT = `
 pragma solidcash >=0.8.0;
 
 interface IExtState {
-    external int externalValue;
-    public int normalValue;
+    external bigint externalValue;
+    public bigint normalValue;
     function doSomething(pubkey owner, sig s);
 }
 
 contract ExtReader(bytes extAddr) {
-    int sum;
+    bigint sum;
 
     // externalValue lives on data-NFT index 0 (the 'external' qualifier gives it its own NFT).
     function readZero(pubkey pk, sig s) {
         require(checkSig(s, pk));
-        int b = IExtState(extAddr).externalValue;
+        bigint b = IExtState(extAddr).externalValue;
         this.sum = b;
     }
 }
@@ -84,17 +84,17 @@ const EXT_READER_MULTI_NFT = `
 pragma solidcash >=0.8.0;
 
 interface IExtState {
-    external int externalValue;
-    public int normalValue;
+    external bigint externalValue;
+    public bigint normalValue;
     function doSomething(pubkey owner, sig s);
 }
 
 contract ExtReaderMulti(bytes extAddr) {
-    int sum;
+    bigint sum;
 
     function readHigh(pubkey pk, sig s) {
         require(checkSig(s, pk));
-        int a = IExtState(extAddr).normalValue;
+        bigint a = IExtState(extAddr).normalValue;
         this.sum = a;
     }
 }
@@ -105,8 +105,8 @@ contract ExtReaderMulti(bytes extAddr) {
 // layouts agree. Reading IBig(addr).reg1 co-spends register 1 and verifies its nftIndex tag on-chain.
 const BIG_IFACE = `
 interface IBig {
-    public int reg0;
-    external int reg1;
+    public bigint reg0;
+    external bigint reg1;
     function bump(pubkey owner, sig s);
 }`;
 
@@ -114,8 +114,8 @@ const BIG_CALLEE = `
 pragma solidcash >=0.8.0;
 ${BIG_IFACE}
 contract BigState() is IBig {
-    int reg0;
-    external int reg1;
+    bigint reg0;
+    external bigint reg1;
     function bump(pubkey owner, sig s) {
         require(checkSig(s, owner));
         this.reg0 = this.reg0 + 1;
@@ -126,7 +126,7 @@ const BIG_READER = `
 pragma solidcash >=0.8.0;
 ${BIG_IFACE}
 contract BigReader(bytes bigAddr) {
-    int seen;
+    bigint seen;
     function read(pubkey pk, sig s) {
         require(checkSig(s, pk));
         this.seen = IBig(bigAddr).reg1;
@@ -160,7 +160,7 @@ describe('Cross-Contract External State Reads', () => {
       expect(artifact.externalInterfaces![0].name).toBe('ICounter');
       expect(artifact.externalInterfaces![0].stateLayout.variables).toEqual(
         expect.arrayContaining([
-          expect.objectContaining({ name: 'counter', type: 'int', nftIndex: 0 }),
+          expect.objectContaining({ name: 'counter', type: 'bigint', nftIndex: 0 }),
         ]),
       );
     });

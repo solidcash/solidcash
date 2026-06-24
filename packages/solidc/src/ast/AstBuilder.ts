@@ -1195,7 +1195,7 @@ export default class AstBuilder
       new ArrayType(valueType), [], tmpName, stamp(new StateAccessNode(arrayName)),
     ));
     // int i = 0;
-    const idxDef = stamp(new VariableDefinitionNode(PrimitiveType.INT, [], idxName, stamp(new IntLiteralNode(0n))));
+    const idxDef = stamp(new VariableDefinitionNode(PrimitiveType.BIGINT, [], idxName, stamp(new IntLiteralNode(0n))));
     // T x = tmp[i];  (loop var may go unused, like a collection-iteration loop variable)
     const elemDef = stamp(new VariableDefinitionNode(
       valueType, [], valueName, stamp(new ArrayAccessNode(ident(tmpName), ident(idxName))),

@@ -19,19 +19,19 @@ const COLLECTION_ITERATION_CONTRACT = `
 pragma solidcash >=0.8.0;
 
 contract CollectionIteration() {
-    int total;
-    mapping(bytes20 => int) balances;
+    bigint total;
+    mapping(bytes20 => bigint) balances;
 
     function sumValues() {
-        int sum = 0;
-        for (int value of this.balances) {
+        bigint sum = 0;
+        for (bigint value of this.balances) {
             sum = sum + value;
         }
         this.total = sum;
     }
 
     function countKeys() {
-        int count = 0;
+        bigint count = 0;
         for (bytes20 key in this.balances) {
             count = count + 1;
         }
@@ -39,8 +39,8 @@ contract CollectionIteration() {
     }
 
     function sumEntries() {
-        int sum = 0;
-        for (bytes20 key, int value of this.balances.entries) {
+        bigint sum = 0;
+        for (bytes20 key, bigint value of this.balances.entries) {
             sum = sum + value;
         }
         this.total = sum;
@@ -65,7 +65,7 @@ describe('Collection Iteration', () => {
       const balances = artifact.stateLayout!.collections!.find((c) => c.name === 'balances');
       expect(balances).toBeDefined();
       expect(balances!.keyType).toBe('bytes20');
-      expect(balances!.valueType).toBe('int');
+      expect(balances!.valueType).toBe('bigint');
     });
 
     it('should include collectionIterations in ABI for sumValues', () => {
@@ -110,7 +110,7 @@ describe('Collection Iteration', () => {
         expect(fn).toBeDefined();
         const countParam = fn!.inputs.find((i) => i.name === '__internal__collectionIterCount_0');
         expect(countParam).toBeDefined();
-        expect(countParam!.type).toBe('int');
+        expect(countParam!.type).toBe('bigint');
       }
     });
 
@@ -164,9 +164,9 @@ describe('Collection Iteration', () => {
           { address: getDataNftAddress(salted, cat), satoshis: 10000n,
             token: { nft: { capability: 'mutable', commitment: commitments[0] } } },
           { address: entryAddress, satoshis: 10000n,
-            token: { nft: { capability: 'mutable', commitment: buildEntryCommitment(alicePkh, 'bytes20', 100n, 'int') } } },
+            token: { nft: { capability: 'mutable', commitment: buildEntryCommitment(alicePkh, 'bytes20', 100n, 'bigint') } } },
           { address: entryAddress, satoshis: 10000n,
-            token: { nft: { capability: 'mutable', commitment: buildEntryCommitment(bobPkh, 'bytes20', 200n, 'int') } } },
+            token: { nft: { capability: 'mutable', commitment: buildEntryCommitment(bobPkh, 'bytes20', 200n, 'bigint') } } },
         ];
       });
 
@@ -195,9 +195,9 @@ describe('Collection Iteration', () => {
           { address: getDataNftAddress(salted, cat), satoshis: 10000n,
             token: { nft: { capability: 'mutable', commitment: commitments[0] } } },
           { address: entryAddress, satoshis: 10000n,
-            token: { nft: { capability: 'mutable', commitment: buildEntryCommitment(alicePkh, 'bytes20', 100n, 'int') } } },
+            token: { nft: { capability: 'mutable', commitment: buildEntryCommitment(alicePkh, 'bytes20', 100n, 'bigint') } } },
           { address: entryAddress, satoshis: 10000n,
-            token: { nft: { capability: 'mutable', commitment: buildEntryCommitment(bobPkh, 'bytes20', 200n, 'int') } } },
+            token: { nft: { capability: 'mutable', commitment: buildEntryCommitment(bobPkh, 'bytes20', 200n, 'bigint') } } },
         ];
       });
 
@@ -225,9 +225,9 @@ describe('Collection Iteration', () => {
           { address: getDataNftAddress(salted, cat), satoshis: 10000n,
             token: { nft: { capability: 'mutable', commitment: commitments[0] } } },
           { address: entryAddress, satoshis: 10000n,
-            token: { nft: { capability: 'mutable', commitment: buildEntryCommitment(alicePkh, 'bytes20', 100n, 'int') } } },
+            token: { nft: { capability: 'mutable', commitment: buildEntryCommitment(alicePkh, 'bytes20', 100n, 'bigint') } } },
           { address: entryAddress, satoshis: 10000n,
-            token: { nft: { capability: 'mutable', commitment: buildEntryCommitment(bobPkh, 'bytes20', 200n, 'int') } } },
+            token: { nft: { capability: 'mutable', commitment: buildEntryCommitment(bobPkh, 'bytes20', 200n, 'bigint') } } },
         ];
       });
 
@@ -255,7 +255,7 @@ describe('Collection Iteration', () => {
           { address: getDataNftAddress(salted, cat), satoshis: 10000n,
             token: { nft: { capability: 'mutable', commitment: commitments[0] } } },
           { address: entryAddress, satoshis: 10000n,
-            token: { nft: { capability: 'mutable', commitment: buildEntryCommitment(alicePkh, 'bytes20', 50n, 'int') } } },
+            token: { nft: { capability: 'mutable', commitment: buildEntryCommitment(alicePkh, 'bytes20', 50n, 'bigint') } } },
           // Invalid: non-mutable NFT (should be filtered)
           { address: entryAddress, satoshis: 10000n,
             token: { nft: { capability: 'none', commitment: 'deadbeef' } } },
@@ -268,7 +268,7 @@ describe('Collection Iteration', () => {
       // Invalid: wrong category (separate genesis -> different category, should be filtered)
       await (provider as any).addTokenUtxosDynamic(() => [
         { address: entryAddress, satoshis: 10000n,
-          token: { nft: { capability: 'mutable', commitment: buildEntryCommitment(alicePkh, 'bytes20', 50n, 'int') } } },
+          token: { nft: { capability: 'mutable', commitment: buildEntryCommitment(alicePkh, 'bytes20', 50n, 'bigint') } } },
       ]);
 
       const sc = StatefulContract.withCategory(contract, categoryId);

@@ -27,7 +27,7 @@ const DELEGATE_IMPL = `
 pragma solidcash >=0.8.0;
 
 contract DelegateImpl() {
-    int counter;
+    bigint counter;
 
     function increment() delegate {
         this.counter = this.counter + 1;
@@ -47,7 +47,7 @@ const DELEGATECALL_PROXY = `
 pragma solidcash >=0.8.0;
 
 contract DelegatecallProxy() {
-    int counter;
+    bigint counter;
 
     function authorize(pubkey pk, sig s) unsafe {
         require(checkSig(s, pk));
@@ -66,8 +66,8 @@ const DELEGATE_IMPL_MULTI = `
 pragma solidcash >=0.8.0;
 
 contract DelegateImplMulti() {
-    int counter;
-    int totalOps;
+    bigint counter;
+    bigint totalOps;
 
     function increment() delegate {
         this.counter = this.counter + 1;
@@ -91,8 +91,8 @@ const DELEGATECALL_PROXY_MULTI = `
 pragma solidcash >=0.8.0;
 
 contract DelegatecallProxyMulti() {
-    int counter;
-    int totalOps;
+    bigint counter;
+    bigint totalOps;
 
     function authorize(pubkey pk, sig s) unsafe {
         require(checkSig(s, pk));
@@ -111,7 +111,7 @@ contract DelegatecallProxyMulti() {
 const DELEGATE_PLUS_UNSAFE = `
 pragma solidcash >=0.8.0;
 contract Bad() {
-    int x;
+    bigint x;
     function foo() delegate unsafe {
         this.x = 1;
     }
@@ -121,7 +121,7 @@ contract Bad() {
 const DELEGATE_PLUS_UPGRADE = `
 pragma solidcash >=0.8.0;
 contract Bad() {
-    int x;
+    bigint x;
     function foo() delegate upgrade {
         this.x = 1;
     }
@@ -140,7 +140,7 @@ contract Bad() {
 const DELEGATE_PLUS_SELFDESTRUCT = `
 pragma solidcash >=0.8.0;
 contract Bad() {
-    int x;
+    bigint x;
     function foo() delegate selfdestruct {
         this.x = 1;
     }
@@ -229,7 +229,7 @@ describe('Delegatecall', () => {
       expect(incrementAbi).toBeDefined();
       expect(incrementAbi.inputs).toEqual(
         expect.arrayContaining([
-          expect.objectContaining({ name: '__internal__proxyMasterIndex', type: 'int' }),
+          expect.objectContaining({ name: '__internal__proxyMasterIndex', type: 'bigint' }),
         ]),
       );
     });
@@ -267,10 +267,10 @@ describe('Delegatecall', () => {
 
     it('both contracts should have matching state layouts', () => {
       expect(implArtifact.stateLayout!.variables).toEqual(
-        expect.arrayContaining([expect.objectContaining({ name: 'counter', type: 'int' })]),
+        expect.arrayContaining([expect.objectContaining({ name: 'counter', type: 'bigint' })]),
       );
       expect(proxyArtifact.stateLayout!.variables).toEqual(
-        expect.arrayContaining([expect.objectContaining({ name: 'counter', type: 'int' })]),
+        expect.arrayContaining([expect.objectContaining({ name: 'counter', type: 'bigint' })]),
       );
     });
 

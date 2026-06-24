@@ -25,6 +25,9 @@ export function compileTimeOp(op: TimeOp): Script {
 }
 
 export function compileCast(from: Type, to: Type, isUnsafe: boolean): Script {
+  // INT (integer literal/generic) shares the unbounded VM representation of BIGINT.
+  if (from === PrimitiveType.INT) from = PrimitiveType.BIGINT;
+  if (to === PrimitiveType.INT) to = PrimitiveType.BIGINT;
   // unsafe() casts intentionally skip ALL conversion opcodes (not just bounds checks).
   // This is by design: the developer asserts the raw stack value is already correct.
   // Examples: unsafe_int(bytes) skips OP_BIN2NUM, unsafe_bool(int) skips OP_0NOTEQUAL.
@@ -40,27 +43,27 @@ export function compileCast(from: Type, to: Type, isUnsafe: boolean): Script {
   // bytes -> string: no-op
   if (from instanceof BytesType && to === PrimitiveType.STRING) return [];
 
-  if (from === PrimitiveType.INT && to instanceof BytesType && to.bound !== undefined) {
+  if (from === PrimitiveType.BIGINT && to instanceof BytesType && to.bound !== undefined) {
     return [encodeInt(BigInt(to.bound)), Op.OP_NUM2BIN];
   }
   // int -> unbounded bytes: no-op (VM number is already bytes)
-  if (from === PrimitiveType.INT && to instanceof BytesType && to.bound === undefined) return [];
+  if (from === PrimitiveType.BIGINT && to instanceof BytesType && to.bound === undefined) return [];
 
-  if (from === PrimitiveType.INT && to === PrimitiveType.BOOL) {
+  if (from === PrimitiveType.BIGINT && to === PrimitiveType.BOOL) {
     return [Op.OP_0NOTEQUAL];
   }
 
   // bool -> int: no-op (bool 0/1 is already a valid int)
-  if (from === PrimitiveType.BOOL && to === PrimitiveType.INT) return [];
+  if (from === PrimitiveType.BOOL && to === PrimitiveType.BIGINT) return [];
 
-  if (from instanceof BytesType && to === PrimitiveType.INT) {
+  if (from instanceof BytesType && to === PrimitiveType.BIGINT) {
     return [Op.OP_BIN2NUM];
   }
 
   // int -> IntType: no opcode needed, bounds check emitted by caller
-  if (from === PrimitiveType.INT && to instanceof IntType) return [];
+  if (from === PrimitiveType.BIGINT && to instanceof IntType) return [];
   // IntType -> int: no-op (already a valid VM number)
-  if (from instanceof IntType && to === PrimitiveType.INT) return [];
+  if (from instanceof IntType && to === PrimitiveType.BIGINT) return [];
   // IntType -> IntType: no-op, bounds check emitted by caller
   if (from instanceof IntType && to instanceof IntType) return [];
   // IntType -> BytesType: same as int -> bytes
@@ -76,7 +79,7 @@ export function compileCast(from: Type, to: Type, isUnsafe: boolean): Script {
 
   // FixedType cast rules - at VM level, fixed-point values are scaled integers
   // int -> FixedType: multiply by scaleFactor
-  if (from === PrimitiveType.INT && to instanceof FixedType) {
+  if (from === PrimitiveType.BIGINT && to instanceof FixedType) {
     return [encodeInt(to.scaleFactor), Op.OP_MUL];
   }
   // IntType -> FixedType: multiply by scaleFactor
@@ -84,7 +87,7 @@ export function compileCast(from: Type, to: Type, isUnsafe: boolean): Script {
     return [encodeInt(to.scaleFactor), Op.OP_MUL];
   }
   // FixedType -> int: divide by scaleFactor (truncates)
-  if (from instanceof FixedType && to === PrimitiveType.INT) {
+  if (from instanceof FixedType && to === PrimitiveType.BIGINT) {
     return [encodeInt(from.scaleFactor), Op.OP_DIV];
   }
   // FixedType -> IntType: divide by scaleFactor, bounds check emitted by caller

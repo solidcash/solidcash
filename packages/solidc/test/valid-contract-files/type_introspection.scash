@@ -7,19 +7,19 @@ interface IToken {
 contract TypeIntrospection() {
     enum Color { Red, Green, Blue }
 
-    function checkIntBounds(int x, pubkey pk, sig s) {
+    function checkIntBounds(bigint x, pubkey pk, sig s) {
         require(checkSig(s, pk));
         require(x >= type(int8).min);
         require(x <= type(int8).max);
     }
 
-    function checkUintBounds(int x, pubkey pk, sig s) {
+    function checkUintBounds(bigint x, pubkey pk, sig s) {
         require(checkSig(s, pk));
         require(x >= type(uint8).min);
         require(x <= type(uint256).max);
     }
 
-    function checkEnumBounds(int x, pubkey pk, sig s) {
+    function checkEnumBounds(bigint x, pubkey pk, sig s) {
         require(checkSig(s, pk));
         require(x >= type(Color).min);
         require(x <= type(Color).max);

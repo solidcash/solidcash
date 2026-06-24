@@ -41,51 +41,51 @@ async function sendTx(
 // --- Shared contract source ---------------------------------------------
 
 const OPERATOR_OVERLOAD_CODE = `
-  type Price is int;
+  type Price is bigint;
 
   using {addPrice as +, subPrice as -, mulPrice as *, negPrice as -, eqPrice as ==, nePrice as !=, ltPrice as <} for Price;
 
   function addPrice(Price a, Price b) returns (Price) {
-      return Price(int(a) + int(b));
+      return Price(bigint(a) + bigint(b));
   }
   function subPrice(Price a, Price b) returns (Price) {
-      return Price(int(a) - int(b));
+      return Price(bigint(a) - bigint(b));
   }
   function mulPrice(Price a, Price b) returns (Price) {
-      return Price(int(a) * int(b));
+      return Price(bigint(a) * bigint(b));
   }
   function negPrice(Price a) returns (Price) {
-      return Price(-int(a));
+      return Price(-bigint(a));
   }
   function eqPrice(Price a, Price b) returns (bool) {
-      return int(a) == int(b);
+      return bigint(a) == bigint(b);
   }
   function nePrice(Price a, Price b) returns (bool) {
-      return int(a) != int(b);
+      return bigint(a) != bigint(b);
   }
   function ltPrice(Price a, Price b) returns (bool) {
-      return int(a) < int(b);
+      return bigint(a) < bigint(b);
   }
 
   contract Test() {
     function testAdd(Price a, Price b) {
       Price result = a + b;
-      require(int(result) == int(a) + int(b));
+      require(bigint(result) == bigint(a) + bigint(b));
     }
 
     function testSub(Price a, Price b) {
       Price result = a - b;
-      require(int(result) == int(a) - int(b));
+      require(bigint(result) == bigint(a) - bigint(b));
     }
 
     function testMul(Price a, Price b) {
       Price result = a * b;
-      require(int(result) == int(a) * int(b));
+      require(bigint(result) == bigint(a) * bigint(b));
     }
 
     function testChained(Price a, Price b, Price c) {
       Price result = a + b + c;
-      require(int(result) == int(a) + int(b) + int(c));
+      require(bigint(result) == bigint(a) + bigint(b) + bigint(c));
     }
 
     function testEquality(Price a, Price b) {
@@ -98,19 +98,19 @@ const OPERATOR_OVERLOAD_CODE = `
 
     function testNegate(Price a) {
       Price result = -a;
-      require(int(result) == -int(a));
+      require(bigint(result) == -bigint(a));
     }
 
     function testLessThan(Price a, Price b) {
       if (a < b) {
-        require(int(a) < int(b));
+        require(bigint(a) < bigint(b));
       } else {
-        require(int(a) >= int(b));
+        require(bigint(a) >= bigint(b));
       }
     }
 
-    function testMixed(Price a, int rawVal) {
-      require(int(a) == rawVal);
+    function testMixed(Price a, bigint rawVal) {
+      require(bigint(a) == rawVal);
     }
 
     function testComplexExpr(Price a, Price b, Price c) {
@@ -221,18 +221,18 @@ describe('Operator Overloading - SDK e2e', () => {
   describe('global keyword', () => {
     it('global using-for compiles successfully', async () => {
       const code = `
-        type Amount is int;
+        type Amount is bigint;
 
         using {addAmount as +} for Amount global;
 
         function addAmount(Amount a, Amount b) returns (Amount) {
-            return Amount(int(a) + int(b));
+            return Amount(bigint(a) + bigint(b));
         }
 
         contract Test() {
           function check(Amount a, Amount b) {
             Amount result = a + b;
-            require(int(result) == int(a) + int(b));
+            require(bigint(result) == bigint(a) + bigint(b));
           }
         }
       `;
@@ -245,18 +245,18 @@ describe('Operator Overloading - SDK e2e', () => {
 
     it('global using-for works end-to-end', async () => {
       const code = `
-        type Amount is int;
+        type Amount is bigint;
 
         using {addAmount as +} for Amount global;
 
         function addAmount(Amount a, Amount b) returns (Amount) {
-            return Amount(int(a) + int(b));
+            return Amount(bigint(a) + bigint(b));
         }
 
         contract Test() {
           function check(Amount a, Amount b) {
             Amount result = a + b;
-            require(int(result) == int(a) + int(b));
+            require(bigint(result) == bigint(a) + bigint(b));
           }
         }
       `;
@@ -271,23 +271,23 @@ describe('Operator Overloading - SDK e2e', () => {
   describe('method binding with operator', () => {
     it('method binding (no operator) works alongside operator overloads', async () => {
       const code = `
-        type Val is int;
+        type Val is bigint;
 
         using {addVal as +, doubleVal} for Val;
 
         function addVal(Val a, Val b) returns (Val) {
-            return Val(int(a) + int(b));
+            return Val(bigint(a) + bigint(b));
         }
 
         function doubleVal(Val a) returns (Val) {
-            return Val(int(a) * 2);
+            return Val(bigint(a) * 2);
         }
 
         contract Test() {
           function check(Val a) {
             Val doubled = a.doubleVal();
             Val sum = a + doubled;
-            require(int(sum) == int(a) * 3);
+            require(bigint(sum) == bigint(a) * 3);
           }
         }
       `;

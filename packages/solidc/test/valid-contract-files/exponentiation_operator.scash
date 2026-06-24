@@ -1,5 +1,5 @@
 contract ExponentiationTest(int x) {
-    int constant MAX_UINT = 2 ** 256 - 1;
+    bigint constant MAX_UINT = 2 ** 256 - 1;
     int constant SCALE = 10 ** 18;
     int constant SMALL = 3 ** 3;
 
@@ -9,7 +9,7 @@ contract ExponentiationTest(int x) {
         require(SMALL == 27);
     }
 
-    function testRuntime(int base, int exp) {
+    function testRuntime(int base, bigint exp) {
         int result = base ** exp;
         require(result > x);
     }

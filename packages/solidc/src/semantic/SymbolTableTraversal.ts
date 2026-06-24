@@ -180,7 +180,7 @@ import { binToHex } from '@bitauth/libauth';
 
 function getMaxPushdataEncodedSizeForType(type: Type): number {
   if (type === PrimitiveType.BOOL) return 1;
-  if (type === PrimitiveType.INT) return 9;
+  if (type === PrimitiveType.BIGINT) return 9;
   if (type === PrimitiveType.PUBKEY) return 34;
   if (type === PrimitiveType.SIG) return 74;
   if (type === PrimitiveType.DATASIG) return 66;
@@ -211,7 +211,7 @@ function getMaxPushdataEncodedSizeForType(type: Type): number {
     return type.fields.reduce((sum, f) => sum + getMaxPushdataEncodedSizeForType(f.type), 0);
   }
   if (type instanceof ArrayType && type.bound !== undefined) {
-    return getMaxPushdataEncodedSizeForType(PrimitiveType.INT)
+    return getMaxPushdataEncodedSizeForType(PrimitiveType.BIGINT)
       + type.bound * getMaxPushdataEncodedSizeForType(type.elementType);
   }
   return 9;
@@ -988,7 +988,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         for (let i = 0; i < collectionIterations.length; i++) {
           collectionIterations[i].iterationIndex = i;
 
-          const countParam = new ParameterNode(PrimitiveType.INT, `__internal__collectionIterCount_${i}`);
+          const countParam = new ParameterNode(PrimitiveType.BIGINT, `__internal__collectionIterCount_${i}`);
           countParam.location = node.location;
           node.parameters.push(countParam);
           this.symbolTables[0].set(Symbol.variable(countParam));
@@ -1044,7 +1044,7 @@ export default class SymbolTableTraversal extends AstTraversal {
 
         // _externalCallInputBase: kept as runtime param because in mutual calling (A<->B),
         // B's external call target may be at a position BEFORE B's master.
-        const inputBaseParam = new ParameterNode(PrimitiveType.INT, '__internal__externalCallInputBase');
+        const inputBaseParam = new ParameterNode(PrimitiveType.BIGINT, '__internal__externalCallInputBase');
         inputBaseParam.location = node.location;
         node.parameters.push(inputBaseParam);
         this.symbolTables[0].set(Symbol.variable(inputBaseParam));
@@ -1115,7 +1115,7 @@ export default class SymbolTableTraversal extends AstTraversal {
 
         // Only inject _externalOutStateInputBase if not ALL outState reads are shared with calls
         if (!allShared) {
-          const inputBaseParam = new ParameterNode(PrimitiveType.INT, '__internal__externalOutStateInputBase');
+          const inputBaseParam = new ParameterNode(PrimitiveType.BIGINT, '__internal__externalOutStateInputBase');
           inputBaseParam.location = node.location;
           node.parameters.push(inputBaseParam);
           this.symbolTables[0].set(Symbol.variable(inputBaseParam));
@@ -1130,7 +1130,7 @@ export default class SymbolTableTraversal extends AstTraversal {
 
     // B-side: inject _returnOutputIdx for functions with return types that are entry points
     if (node.returnTypes.length > 0 && node.isEntryPoint) {
-      const returnOutputIdxParam = new ParameterNode(PrimitiveType.INT, '__internal__returnOutputIdx');
+      const returnOutputIdxParam = new ParameterNode(PrimitiveType.BIGINT, '__internal__returnOutputIdx');
       returnOutputIdxParam.location = node.location;
       node.parameters.push(returnOutputIdxParam);
       this.symbolTables[0].set(Symbol.variable(returnOutputIdxParam));
@@ -1149,7 +1149,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         const paramName = returningSlots.length === 1
           ? '__internal__externalReturnOutputIdx'
           : `__internal__externalReturnOutputIdx${slot.returnSlotIndex}`;
-        const returnOutputIdxParam = new ParameterNode(PrimitiveType.INT, paramName);
+        const returnOutputIdxParam = new ParameterNode(PrimitiveType.BIGINT, paramName);
         returnOutputIdxParam.location = node.location;
         node.parameters.push(returnOutputIdxParam);
         this.symbolTables[0].set(Symbol.variable(returnOutputIdxParam));
@@ -1244,7 +1244,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         } else for (let i = 0; i < lowLevelCallCount; i++) {
           if (node.lowLevelCalls![i].callMode === 'delegatecall') continue;
           const paramName = lowLevelCallCount === 1 ? '__internal__callInputIndex' : `__internal__callInputIndex${i}`;
-          const param = new ParameterNode(PrimitiveType.INT, paramName);
+          const param = new ParameterNode(PrimitiveType.BIGINT, paramName);
           param.location = node.location;
           node.parameters.push(param);
           this.symbolTables[0].set(Symbol.variable(param));
@@ -1267,7 +1267,7 @@ export default class SymbolTableTraversal extends AstTraversal {
 
     // Inject _proxyMasterIndex for delegate functions
     if (node.modifiers.includes(FunctionModifier.DELEGATE)) {
-      const param = new ParameterNode(PrimitiveType.INT, '__internal__proxyMasterIndex');
+      const param = new ParameterNode(PrimitiveType.BIGINT, '__internal__proxyMasterIndex');
       param.location = node.location;
       node.parameters.push(param);
       this.symbolTables[0].set(Symbol.variable(param));
@@ -1982,8 +1982,8 @@ export default class SymbolTableTraversal extends AstTraversal {
       if (!param) {
         throw new InvalidModifierCombinationError(node, `split parameter '${node.splitCountParam}' is not a function parameter`);
       }
-      if (param.type !== PrimitiveType.INT) {
-        throw new InvalidModifierCombinationError(node, `split parameter '${node.splitCountParam}' must be of type 'int'`);
+      if (param.type !== PrimitiveType.BIGINT && !(param.type instanceof IntType)) {
+        throw new InvalidModifierCombinationError(node, `split parameter '${node.splitCountParam}' must be an integer type`);
       }
     }
 
@@ -1993,8 +1993,8 @@ export default class SymbolTableTraversal extends AstTraversal {
       if (!param) {
         throw new InvalidModifierCombinationError(node, `merge parameter '${node.mergeCountParam}' is not a function parameter`);
       }
-      if (param.type !== PrimitiveType.INT) {
-        throw new InvalidModifierCombinationError(node, `merge parameter '${node.mergeCountParam}' must be of type 'int'`);
+      if (param.type !== PrimitiveType.BIGINT && !(param.type instanceof IntType)) {
+        throw new InvalidModifierCombinationError(node, `merge parameter '${node.mergeCountParam}' must be an integer type`);
       }
     }
   }
@@ -2817,7 +2817,7 @@ export default class SymbolTableTraversal extends AstTraversal {
           }
         }
         if (param instanceof IntLiteralNode) {
-          argSources.push({ kind: 'literal', value: param.value.toString(), type: 'int' });
+          argSources.push({ kind: 'literal', value: param.value.toString(), type: 'bigint' });
           continue;
         }
         if (param instanceof BoolLiteralNode) {
@@ -5031,7 +5031,13 @@ export default class SymbolTableTraversal extends AstTraversal {
   }
 
   override visitUsingForDirective(node: UsingForDirectiveNode): Node {
-    const typeKey = node.isWildcard ? '*' : (node.targetTypeName ?? '*');
+    // Key bindings by the resolved type string so they match the lookup (which uses the value's resolved
+    // type.toString()). e.g. `using ... for int` keys under 'int256' now that `int` resolves to int256.
+    // Struct/enum/contract names aren't parseable here, so fall back to the raw name (which matches too).
+    let typeKey = node.isWildcard ? '*' : (node.targetTypeName ?? '*');
+    if (!node.isWildcard && node.targetTypeName) {
+      try { typeKey = parseTypeStrict(node.targetTypeName).toString(); } catch { /* keep raw name */ }
+    }
 
     if (node.libraryName) {
       // Form 1: using LibName for Type - find all functions starting with "LibName."

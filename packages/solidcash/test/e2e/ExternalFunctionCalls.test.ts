@@ -23,12 +23,12 @@ const COUNTER_CONTRACT = `
 pragma solidcash >=0.8.0;
 
 interface ICounter {
-    public int counter;
+    public bigint counter;
     function increment(pubkey owner, sig s);
 }
 
 contract Counter() is ICounter {
-    int counter;
+    bigint counter;
 
     function increment(pubkey owner, sig s) {
         require(checkSig(s, owner));
@@ -41,16 +41,16 @@ const READER_CONTRACT = `
 pragma solidcash >=0.8.0;
 
 interface ICounter {
-    public int counter;
+    public bigint counter;
     function increment(pubkey owner, sig s);
 }
 
 contract Reader(bytes counterAddr) {
-    int lastSeen;
+    bigint lastSeen;
 
     function readAfterIncrement(pubkey pk, sig s) {
         require(checkSig(s, pk));
-        int newVal = ICounter(counterAddr).outState.counter;
+        bigint newVal = ICounter(counterAddr).outState.counter;
         this.lastSeen = newVal;
     }
 }
@@ -61,13 +61,13 @@ const MULTI_FN_COUNTER_CONTRACT = `
 pragma solidcash >=0.8.0;
 
 interface IMultiCounter {
-    public int counter;
+    public bigint counter;
     function increment(pubkey owner, sig s);
     function decrement(pubkey owner, sig s);
 }
 
 contract MultiCounter() is IMultiCounter {
-    int counter;
+    bigint counter;
 
     function increment(pubkey owner, sig s) {
         require(checkSig(s, owner));
@@ -86,23 +86,23 @@ const MULTI_READER_CONTRACT = `
 pragma solidcash >=0.8.0;
 
 interface IMultiCounter {
-    public int counter;
+    public bigint counter;
     function increment(pubkey owner, sig s);
     function decrement(pubkey owner, sig s);
 }
 
 contract MultiReader(bytes counterAddr) {
-    int lastSeen;
+    bigint lastSeen;
 
     function readAfterIncrement(pubkey pk, sig s) {
         require(checkSig(s, pk));
-        int newVal = IMultiCounter(counterAddr).outState.counter;
+        bigint newVal = IMultiCounter(counterAddr).outState.counter;
         this.lastSeen = newVal;
     }
 
     function readAfterDecrement(pubkey pk, sig s) {
         require(checkSig(s, pk));
-        int newVal = IMultiCounter(counterAddr).outState.counter;
+        bigint newVal = IMultiCounter(counterAddr).outState.counter;
         this.lastSeen = newVal;
     }
 }
@@ -144,7 +144,7 @@ describe('Cross-Contract External Function Calls', () => {
       expect(artifact.externalInterfaces![0].name).toBe('ICounter');
       expect(artifact.externalInterfaces![0].stateLayout.variables).toEqual(
         expect.arrayContaining([
-          expect.objectContaining({ name: 'counter', type: 'int', nftIndex: 0 }),
+          expect.objectContaining({ name: 'counter', type: 'bigint', nftIndex: 0 }),
         ]),
       );
     });
@@ -169,7 +169,7 @@ describe('Cross-Contract External Function Calls', () => {
       expect(artifact.stateLayout).toBeDefined();
       expect(artifact.stateLayout!.variables).toEqual(
         expect.arrayContaining([
-          expect.objectContaining({ name: 'counter', type: 'int', nftIndex: 0 }),
+          expect.objectContaining({ name: 'counter', type: 'bigint', nftIndex: 0 }),
         ]),
       );
 
@@ -428,16 +428,16 @@ describe('Cross-Contract External Function Calls', () => {
 pragma solidcash >=0.8.0;
 
 interface ICounter {
-    public int counter;
+    public bigint counter;
     function increment(pubkey owner, sig s);
 }
 
 contract Reader(bytes32 counterCategory) {
-    int lastSeen;
+    bigint lastSeen;
 
     function readBad(pubkey pk, sig s) {
         require(checkSig(s, pk));
-        int newVal = ICounter(counterCategory).outState.nonexistent;
+        bigint newVal = ICounter(counterCategory).outState.nonexistent;
         this.lastSeen = newVal;
     }
 }

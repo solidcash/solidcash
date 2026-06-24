@@ -3800,7 +3800,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     let sharedFunderPool: UnlockableUtxo[] | undefined;
 
     if (externalCalls && externalCalls.length > 0 && resolvedExternalCalls) {
-      const artifact = this.inner.artifact;
 
       // Count total funders needed across all B blocks
       if (this._signer) {
@@ -4398,7 +4397,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const externalOutStateReads = abiFunction?.externalOutStateReads;
 
     if (externalOutStateReads && externalOutStateReads.length > 0) {
-      const artifact = this.inner.artifact;
 
       // Determine which outState reads are shared with existing external calls
       const nonSharedReads: { read: typeof externalOutStateReads[0]; overrideIdx: number }[] = [];
@@ -5162,7 +5160,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         }
         case 'literal': {
           if (source.value === undefined || !source.type) return undefined;
-          if (source.type === 'int') {
+          if (source.type === 'bigint') {
             resolved.push(BigInt(source.value));
           } else if (source.type === 'bool') {
             resolved.push(source.value === 'true');

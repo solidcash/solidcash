@@ -217,7 +217,7 @@ export function createDataNftUnlocker(
     contract,
     `DataNft_${categoryId.slice(0, 8)}`,
     covenantScript,
-    [{ name: 'flag', type: 'int' }, { name: 'masterInputIndex', type: 'int' }],
+    [{ name: 'flag', type: 'bigint' }, { name: 'masterInputIndex', type: 'bigint' }],
     [1n, BigInt(masterInputIndex)],
   );
 }
@@ -232,7 +232,7 @@ export function createDestroyDataNftUnlocker(
     contract,
     `DataNft_${categoryId.slice(0, 8)}`,
     covenantScript,
-    [{ name: 'flag', type: 'int' }, { name: 'masterInputIndex', type: 'int' }],
+    [{ name: 'flag', type: 'bigint' }, { name: 'masterInputIndex', type: 'bigint' }],
     [2n, BigInt(masterInputIndex)],
   );
 }
@@ -246,7 +246,7 @@ export function createReadOnlyDataNftUnlocker(
     contract,
     `DataNft_${categoryId.slice(0, 8)}`,
     covenantScript,
-    [{ name: 'flag', type: 'int' }, { name: 'index', type: 'int' }],
+    [{ name: 'flag', type: 'bigint' }, { name: 'index', type: 'bigint' }],
     [0n, 0n],
   );
 }
@@ -263,7 +263,7 @@ export function createEntryNftUnlocker(
     contract,
     `EntryNft_${categoryId.slice(0, 8)}`,
     covenantScript,
-    [{ name: 'flag', type: 'int' }, { name: 'masterInputIndex', type: 'int' }],
+    [{ name: 'flag', type: 'bigint' }, { name: 'masterInputIndex', type: 'bigint' }],
     [1n, BigInt(masterInputIndex)],
   );
 }
@@ -282,7 +282,7 @@ export function createDynamicChunkUnlocker(
     contract,
     `ChunkNft_${categoryId.slice(0, 8)}`,
     covenantScript,
-    [{ name: 'flag', type: 'int' }, { name: 'masterInputIndex', type: 'int' }],
+    [{ name: 'flag', type: 'bigint' }, { name: 'masterInputIndex', type: 'bigint' }],
     [1n, BigInt(masterInputIndex)],
   );
 }
@@ -300,7 +300,7 @@ export function createReadOnlyDynamicChunkUnlocker(
     contract,
     `ChunkNft_${categoryId.slice(0, 8)}`,
     covenantScript,
-    [{ name: 'flag', type: 'int' }, { name: 'masterInputIndex', type: 'int' }],
+    [{ name: 'flag', type: 'bigint' }, { name: 'masterInputIndex', type: 'bigint' }],
     [0n, BigInt(masterInputIndex)],
   );
 }
@@ -316,7 +316,7 @@ export function createReadOnlyEntryNftUnlocker(
     contract,
     `EntryNft_${categoryId.slice(0, 8)}`,
     covenantScript,
-    [{ name: 'flag', type: 'int' }, { name: 'index', type: 'int' }],
+    [{ name: 'flag', type: 'bigint' }, { name: 'index', type: 'bigint' }],
     [0n, 0n],
   );
 }
@@ -365,7 +365,7 @@ export function createTokenContainerUnlocker(
     contract,
     `TokenContainer_${categoryId.slice(0, 8)}_${tokenContainerCategoryId.slice(0, 8)}`,
     covenantScript,
-    [{ name: 'flag', type: 'int' }, { name: 'masterInputIndex', type: 'int' }],
+    [{ name: 'flag', type: 'bigint' }, { name: 'masterInputIndex', type: 'bigint' }],
     [1n, BigInt(masterInputIndex)],
     'p2sh32',
   );
@@ -382,7 +382,7 @@ export function createSatoshiContainerUnlocker(
     contract,
     `SatoshiContainer_${categoryId.slice(0, 8)}`,
     covenantScript,
-    [{ name: 'flag', type: 'int' }, { name: 'masterInputIndex', type: 'int' }],
+    [{ name: 'flag', type: 'bigint' }, { name: 'masterInputIndex', type: 'bigint' }],
     [1n, BigInt(masterInputIndex)],
     'p2sh32',
   );

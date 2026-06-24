@@ -23,10 +23,10 @@ const CONTRACT_SOURCE = `
 pragma solidcash >=0.8.0;
 
 contract ArrayMappingValue() {
-    int counter;
-    mapping(bytes20 => int[3]) scores;
+    bigint counter;
+    mapping(bytes20 => bigint[3]) scores;
 
-    function setOneScore(bytes20 user, int index, int newValue) {
+    function setOneScore(bytes20 user, bigint index, bigint newValue) {
         this.scores[user][index] = newValue;
         this.counter = this.counter + 1;
     }
@@ -48,7 +48,7 @@ describe('Mapping array-element assignment', () => {
     const provider = createTestProvider();
     const contract = new Contract(artifact, [], { provider });
     const initialCommitments = buildInitialStateCommitments(stateLayout, { counter: 0n });
-    const entryCommitment = buildEntryCommitment(alicePkh, 'bytes20', initialScores, 'int[3]');
+    const entryCommitment = buildEntryCommitment(alicePkh, 'bytes20', initialScores, 'bigint[3]');
 
     const { categoryId: cat } = await provider.addTokenUtxosDynamic((c) => {
       const salted = contract.withCategory(hexToBin(c));
@@ -79,7 +79,7 @@ describe('Mapping array-element assignment', () => {
     );
     expect(entryOutput).toBeDefined();
     const parsed = parseEntryCommitment(
-      entryOutput!.token!.nft!.commitment, 'bytes20', 'int[3]',
+      entryOutput!.token!.nft!.commitment, 'bytes20', 'bigint[3]',
     );
     expect(parsed.key).toEqual(alicePkh);
     return parsed.value as bigint[];

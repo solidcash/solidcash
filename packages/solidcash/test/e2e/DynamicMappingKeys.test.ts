@@ -17,16 +17,16 @@ const PARAM_KEY_CONTRACT = `
 pragma solidcash >=0.8.0;
 
 contract ParamKeyMapping() {
-    int counter;
-    mapping(bytes20 => int) balances;
+    bigint counter;
+    mapping(bytes20 => bigint) balances;
 
-    function setBalance(bytes20 key, int amount) {
+    function setBalance(bytes20 key, bigint amount) {
         this.balances[key] = amount;
         this.counter = this.counter + 1;
     }
 
     function getBalance(bytes20 key) {
-        int bal = this.balances[key];
+        bigint bal = this.balances[key];
         require(bal > 0);
     }
 
@@ -42,14 +42,14 @@ pragma solidcash >=0.8.0;
 
 contract StateKeyMapping() {
     bytes20 admin;
-    mapping(bytes20 => int) balances;
+    mapping(bytes20 => bigint) balances;
 
-    function deposit(bytes20 user, int amount) {
+    function deposit(bytes20 user, bigint amount) {
         this.balances[user] = this.balances[user] + amount;
     }
 
-    function transferFromAdmin(bytes20 to, int amount) {
-        int adminBal = this.balances[this.admin];
+    function transferFromAdmin(bytes20 to, bigint amount) {
+        bigint adminBal = this.balances[this.admin];
         require(adminBal >= amount);
         this.balances[this.admin] = adminBal - amount;
         this.balances[to] = this.balances[to] + amount;
@@ -66,11 +66,11 @@ const EXPRESSION_KEY_CONTRACT = `
 pragma solidcash >=0.8.0;
 
 contract ExpressionKeyMapping() {
-    int counter;
-    mapping(int => int) data;
+    bigint counter;
+    mapping(bigint => bigint) data;
 
-    function setDerived(int base, int value) {
-        int derived = base + 1;
+    function setDerived(bigint base, bigint value) {
+        bigint derived = base + 1;
         this.data[derived] = value;
         this.counter = this.counter + 1;
     }
@@ -135,7 +135,7 @@ describe('Dynamic Mapping Keys', () => {
       );
       if (entryOutput) {
         const parsed = parseEntryCommitment(
-          entryOutput.token!.nft!.commitment, 'bytes20', 'int',
+          entryOutput.token!.nft!.commitment, 'bytes20', 'bigint',
         );
         expect(parsed.value).toBe(amount);
       }
@@ -303,14 +303,14 @@ describe('Dynamic Mapping Keys', () => {
 
         contract MixedKeys() {
             bytes20 owner;
-            mapping(bytes20 => int) balances;
+            mapping(bytes20 => bigint) balances;
 
-            function deposit(bytes20 user, int amount) {
+            function deposit(bytes20 user, bigint amount) {
                 this.balances[user] = this.balances[user] + amount;
             }
 
-            function withdrawToOwner(bytes20 from, int amount) {
-                int bal = this.balances[from];
+            function withdrawToOwner(bytes20 from, bigint amount) {
+                bigint bal = this.balances[from];
                 require(bal >= amount);
                 this.balances[from] = bal - amount;
                 this.balances[this.owner] = this.balances[this.owner] + amount;
@@ -333,10 +333,10 @@ describe('Dynamic Mapping Keys', () => {
         pragma solidcash >=0.8.0;
 
         contract LiteralKey() {
-            mapping(int => int) config;
+            mapping(bigint => bigint) config;
 
             function getConfig() {
-                int val = this.config[42];
+                bigint val = this.config[42];
                 require(val > 0);
             }
         }
@@ -360,7 +360,7 @@ describe('Dynamic Mapping Keys', () => {
         pragma solidcash >=0.8.0;
 
         contract ComputedKey() {
-            mapping(bytes20 => int) balances;
+            mapping(bytes20 => bigint) balances;
 
             function deposit(pubkey pk) {
                 bytes20 pkh = hash160(pk);

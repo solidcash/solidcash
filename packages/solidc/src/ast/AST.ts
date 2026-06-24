@@ -316,7 +316,7 @@ export class CollectionNode extends Node implements Named {
   }
 
   get keyType(): Type {
-    if (this.type instanceof ArrayType) return PrimitiveType.INT;
+    if (this.type instanceof ArrayType) return PrimitiveType.BIGINT;
     return this.type.keyType;
   }
 
@@ -327,7 +327,7 @@ export class CollectionNode extends Node implements Named {
 
   /** Recursively collect all key types from nested MappingType. */
   get allKeyTypes(): Type[] {
-    if (this.type instanceof ArrayType) return [PrimitiveType.INT];
+    if (this.type instanceof ArrayType) return [PrimitiveType.BIGINT];
     const keys: Type[] = [];
     let current: Type = this.type;
     while (current instanceof MappingType) {
@@ -1122,7 +1122,7 @@ export class IntLiteralNode extends LiteralNode<bigint> {
     public value: bigint,
   ) {
     super();
-    this.type = PrimitiveType.INT;
+    this.type = PrimitiveType.INT; // integer literal/generic; converts to any IntType or to bigint
   }
 
   accept<T>(visitor: AstVisitor<T>): T {
@@ -1414,7 +1414,7 @@ export class InterfaceCollectionNode extends Node implements Named, Typed {
   }
 
   get keyType(): Type {
-    if (this.type instanceof ArrayType) return PrimitiveType.INT;
+    if (this.type instanceof ArrayType) return PrimitiveType.BIGINT;
     return this.type.keyType;
   }
 
@@ -1424,7 +1424,7 @@ export class InterfaceCollectionNode extends Node implements Named, Typed {
   }
 
   get allKeyTypes(): Type[] {
-    if (this.type instanceof ArrayType) return [PrimitiveType.INT];
+    if (this.type instanceof ArrayType) return [PrimitiveType.BIGINT];
     const keys: Type[] = [];
     let current: Type = this.type;
     while (current instanceof MappingType) {

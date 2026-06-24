@@ -15,7 +15,7 @@ const stateVar = (a: ReturnType<typeof compileString>, name: string): { type: st
 describe('chunk-packed arrays: layout/desugar (chunkedArrays flag)', () => {
   it('routes unbounded chunk-packable T[] to a chunk-backed dynamic state var', () => {
     // fixed-width (flat-stream) AND simple variable-width leaf types (single-blob framed): int/string/bytes
-    for (const t of ['uint256[]', 'bytes20[]', 'bool[]', 'bytes200[]', 'int[]', 'string[]', 'bytes[]']) {
+    for (const t of ['uint256[]', 'bytes20[]', 'bool[]', 'bytes200[]', 'bigint[]', 'string[]', 'bytes[]']) {
       const a = compileString(src(`${t} a;`), { chunkedArrays: true });
       expect(isCollection(a, 'a')).toBe(false);
       const v = stateVar(a, 'a');

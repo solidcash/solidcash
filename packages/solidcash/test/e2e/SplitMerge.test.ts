@@ -17,18 +17,18 @@ const SPLIT_MERGE_CONTRACT = `
 pragma solidcash >=0.8.0;
 
 contract SplitMerge(pubkey admin) {
-    int counter;
+    bigint counter;
 
     function increment() {
         this.counter = this.counter + 1;
     }
 
-    function fork(int n, sig s) split(n) {
+    function fork(bigint n, sig s) split(n) {
         require(n >= 1);
         require(checkSig(s, admin));
     }
 
-    function consolidate(int n, sig s) merge(n) {
+    function consolidate(bigint n, sig s) merge(n) {
         require(n >= 1);
         require(checkSig(s, admin));
     }
@@ -73,11 +73,11 @@ describe('SplitMerge', () => {
       expect(consolidateAbi!.requiredNftIndices).toEqual([]);
     });
 
-    it('should have correct input types for fork(int n, sig s)', () => {
+    it('should have correct input types for fork(bigint n, sig s)', () => {
       const forkAbi = artifact.abi.find((f) => f.name === 'fork');
       expect(forkAbi!.inputs.length).toBe(2);
       expect(forkAbi!.inputs[0].name).toBe('n');
-      expect(forkAbi!.inputs[0].type).toBe('int');
+      expect(forkAbi!.inputs[0].type).toBe('bigint');
       expect(forkAbi!.inputs[1].name).toBe('s');
       expect(forkAbi!.inputs[1].type).toBe('sig');
     });

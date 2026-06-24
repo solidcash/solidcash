@@ -17,7 +17,7 @@ describe('A4: address is a valid event parameter type', () => {
       }`);
     expect(artifact.contractName).toBe('C');
     const ev = artifact.events?.find((e) => e.name === 'Moved');
-    expect(ev?.signature).toBe('Moved(address,int)');
+    expect(ev?.signature).toBe('Moved(address,int256)');
     expect(ev?.parameters?.[0]?.type).toBe('address');
   });
 });
@@ -97,8 +97,8 @@ describe('Solidity-compat features (OpenZeppelin imports)', () => {
 });
 
 describe('Solidity-compat features (from the minimal Sablier port)', () => {
-  it('accepts `uint` as the unbounded int', () => {
-    const a = compileString('contract C() { int n; function f(uint x) { this.n = x; } }');
+  it('accepts `uint` as an alias for uint256', () => {
+    const a = compileString('contract C() { bigint n; function f(uint x) { this.n = x; } }');
     expect(a.contractName).toBe('C');
   });
 
@@ -227,7 +227,7 @@ describe('Qualified + named-arg event emit', () => {
         event Moved(address who, int amt);
         function go(address dst, int amt) { emit C.Moved(dst, amt); this.n = this.n + 1; }
       }`);
-    expect(a.events?.find((e) => e.name === 'Moved')?.signature).toBe('Moved(address,int)');
+    expect(a.events?.find((e) => e.name === 'Moved')?.signature).toBe('Moved(address,int256)');
   });
 
   it('reorders named-arg emit `emit E({b, a})` into the event param order', () => {
@@ -458,7 +458,7 @@ describe('uint256 <-> int compatibility', () => {
   it.each([
     ['state assign', 'contract C() { uint256 x; function f() { this.x = 5; } }'],
     ['return int as uint256', 'contract C() { int n; function f() returns (uint256) { this.n = 1; return 7; } }'],
-    ['local int -> uint256', 'contract C() { int n; function f() { uint256 y = 3; this.n = y; } }'],
+    ['local uint256 -> bigint', 'contract C() { bigint n; function f() { uint256 y = 3; this.n = y; } }'],
   ])('%s', (_l, src) => {
     expect(compileString(src).contractName).toBe('C');
   });
@@ -791,7 +791,7 @@ describe('SBE-10: storage-pointer locals + block.timestamp + stmt-form interface
 
   it('aliases a struct-array storage pointer', () => {
     const a = compileString(`contract C() {
-      struct T { int x; bool done; }
+      struct T { bigint x; bool done; }
       T[] arr;
       function f(int i) { T storage t = arr[i]; require(!t.done); t.x = 5; }
     }`);

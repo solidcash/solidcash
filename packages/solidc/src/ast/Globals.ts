@@ -78,25 +78,25 @@ GLOBAL_SYMBOL_TABLE.set(
 
 // Global functions
 GLOBAL_SYMBOL_TABLE.set(
-  Symbol.function(GlobalFunction.ABS, PrimitiveType.INT, [PrimitiveType.INT]),
+  Symbol.function(GlobalFunction.ABS, PrimitiveType.BIGINT, [PrimitiveType.BIGINT]),
 );
 GLOBAL_SYMBOL_TABLE.set(
-  Symbol.function(GlobalFunction.MIN, PrimitiveType.INT, [PrimitiveType.INT, PrimitiveType.INT]),
+  Symbol.function(GlobalFunction.MIN, PrimitiveType.BIGINT, [PrimitiveType.BIGINT, PrimitiveType.BIGINT]),
 );
 GLOBAL_SYMBOL_TABLE.set(
-  Symbol.function(GlobalFunction.MAX, PrimitiveType.INT, [PrimitiveType.INT, PrimitiveType.INT]),
+  Symbol.function(GlobalFunction.MAX, PrimitiveType.BIGINT, [PrimitiveType.BIGINT, PrimitiveType.BIGINT]),
 );
 GLOBAL_SYMBOL_TABLE.set(Symbol.function(
   GlobalFunction.WITHIN, PrimitiveType.BOOL,
-  [PrimitiveType.INT, PrimitiveType.INT, PrimitiveType.INT],
+  [PrimitiveType.BIGINT, PrimitiveType.BIGINT, PrimitiveType.BIGINT],
 ));
 GLOBAL_SYMBOL_TABLE.set(Symbol.function(
-  GlobalFunction.ADDMOD, PrimitiveType.INT,
-  [PrimitiveType.INT, PrimitiveType.INT, PrimitiveType.INT],
+  GlobalFunction.ADDMOD, PrimitiveType.BIGINT,
+  [PrimitiveType.BIGINT, PrimitiveType.BIGINT, PrimitiveType.BIGINT],
 ));
 GLOBAL_SYMBOL_TABLE.set(Symbol.function(
-  GlobalFunction.MULMOD, PrimitiveType.INT,
-  [PrimitiveType.INT, PrimitiveType.INT, PrimitiveType.INT],
+  GlobalFunction.MULMOD, PrimitiveType.BIGINT,
+  [PrimitiveType.BIGINT, PrimitiveType.BIGINT, PrimitiveType.BIGINT],
 ));
 GLOBAL_SYMBOL_TABLE.set(
   Symbol.function(GlobalFunction.RIPEMD160, new BytesType(20), [PrimitiveType.ANY]),
@@ -127,14 +127,14 @@ GLOBAL_SYMBOL_TABLE.set(Symbol.function(
 ));
 GLOBAL_SYMBOL_TABLE.set(Symbol.function(
   GlobalFunction.TO_PADDED_BYTES, new BytesType(),
-  [PrimitiveType.INT, PrimitiveType.INT],
+  [PrimitiveType.BIGINT, PrimitiveType.BIGINT],
 ));
 GLOBAL_SYMBOL_TABLE.set(Symbol.function(
   GlobalFunction.INT_TO_STRING, PrimitiveType.STRING,
-  [PrimitiveType.INT],
+  [PrimitiveType.BIGINT],
 ));
 GLOBAL_SYMBOL_TABLE.set(Symbol.function(
-  GlobalFunction.STRING_TO_INT, PrimitiveType.INT,
+  GlobalFunction.STRING_TO_INT, PrimitiveType.BIGINT,
   [PrimitiveType.STRING],
 ));
 

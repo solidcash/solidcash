@@ -826,7 +826,7 @@ describe('Inheritance, Libraries, and Interfaces - SDK e2e', () => {
       expect(coll.name).toBe('balances');
       expect(coll.kind).toBe('mapping');
       expect(coll.keyType).toBe('bytes20');
-      expect(coll.valueType).toBe('int');
+      expect(coll.valueType).toBe('int256');
       expect(coll.keyName).toBe('user');
       expect(coll.valueName).toBe('balance');
 

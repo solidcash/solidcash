@@ -38,7 +38,7 @@ export function encodeFunctionArgument(argument: FunctionArgument, typeStr: stri
     return encodeBool(argument);
   }
 
-  if (type === PrimitiveType.INT || type instanceof IntType || type instanceof FixedType) {
+  if (type === PrimitiveType.BIGINT || type instanceof IntType || type instanceof FixedType) {
     if (typeof argument !== 'bigint') {
       throw new TypeError(typeof argument, type);
     }

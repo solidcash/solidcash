@@ -11,20 +11,20 @@ import { createTestProvider, getTxOutputs, setupStatefulUtxos } from '../test-ut
 import { Utxo } from '../../src/interfaces.js';
 
 // A stateful contract with an immutable state variable:
-//   int immutable maxValue   - can only be assigned in constructor
+//   bigint immutable maxValue   - can only be assigned in constructor
 // Constructor sets maxValue to 100.
 // Function check() reads maxValue and enforces the constraint.
 const IMMUTABLE_CONTRACT = `
 pragma solidcash >=0.8.0;
 
 contract ImmutableTest() {
-    int immutable maxValue;
+    bigint immutable maxValue;
 
     constructor() {
         this.maxValue = 100;
     }
 
-    function check(int amount) {
+    function check(bigint amount) {
         require(amount <= this.maxValue);
     }
 }
@@ -35,13 +35,13 @@ const MUTABLE_CONTRACT = `
 pragma solidcash >=0.8.0;
 
 contract MutableTest() {
-    int maxValue;
+    bigint maxValue;
 
     constructor() {
         this.maxValue = 100;
     }
 
-    function check(int amount) {
+    function check(bigint amount) {
         require(amount <= this.maxValue);
     }
 }
@@ -60,7 +60,7 @@ describe('ImmutableModifier', () => {
 
       expect(stateLayout.variables).toHaveLength(1);
       expect(stateLayout.variables[0].name).toBe('maxValue');
-      expect(stateLayout.variables[0].type).toBe('int');
+      expect(stateLayout.variables[0].type).toBe('bigint');
       expect(stateLayout.variables[0].nftIndex).toBe(0);
       expect(stateLayout.variables[0].fieldIndex).toBe(0);
       expect(stateLayout.variables[0].immutable).toBe(true);
@@ -91,7 +91,7 @@ describe('ImmutableModifier', () => {
     it('immutable on parameters should not affect bytecode', () => {
       const withMod = compileString(`
         contract Test(pubkey owner) {
-            function spend(sig s, int immutable amount) {
+            function spend(sig s, bigint immutable amount) {
                 require(checkSig(s, owner));
                 require(amount > 0);
             }
@@ -100,7 +100,7 @@ describe('ImmutableModifier', () => {
 
       const withoutMod = compileString(`
         contract Test(pubkey owner) {
-            function spend(sig s, int amount) {
+            function spend(sig s, bigint amount) {
                 require(checkSig(s, owner));
                 require(amount > 0);
             }
@@ -113,8 +113,8 @@ describe('ImmutableModifier', () => {
     it('immutable on local variables should not affect bytecode', () => {
       const withMod = compileString(`
         contract Test() {
-            function run(int x) {
-                int immutable y = x + 1;
+            function run(bigint x) {
+                bigint immutable y = x + 1;
                 require(y > 0);
             }
         }
@@ -122,8 +122,8 @@ describe('ImmutableModifier', () => {
 
       const withoutMod = compileString(`
         contract Test() {
-            function run(int x) {
-                int y = x + 1;
+            function run(bigint x) {
+                bigint y = x + 1;
                 require(y > 0);
             }
         }
@@ -257,13 +257,13 @@ describe('ImmutableModifier', () => {
     it('should reject assignment to immutable state variable outside constructor', () => {
       const code = `
         contract Bad() {
-            int immutable maxValue;
+            bigint immutable maxValue;
 
             constructor() {
                 this.maxValue = 100;
             }
 
-            function update(int newMax) {
+            function update(bigint newMax) {
                 this.maxValue = newMax;
                 require(newMax > 0);
             }
@@ -276,13 +276,13 @@ describe('ImmutableModifier', () => {
     it('should allow assignment to immutable state variable inside constructor', () => {
       const code = `
         contract Good() {
-            int immutable maxValue;
+            bigint immutable maxValue;
 
             constructor() {
                 this.maxValue = 100;
             }
 
-            function check(int amount) {
+            function check(bigint amount) {
                 require(amount <= this.maxValue);
             }
         }
@@ -294,15 +294,15 @@ describe('ImmutableModifier', () => {
     it('should allow multiple immutable state variables', () => {
       const code = `
         contract MultiImmutable() {
-            int immutable x;
-            int immutable y;
+            bigint immutable x;
+            bigint immutable y;
 
             constructor() {
                 this.x = 10;
                 this.y = 20;
             }
 
-            function check(int val) {
+            function check(bigint val) {
                 require(val >= this.x);
                 require(val <= this.y);
             }

@@ -560,7 +560,7 @@ function getMaxEncodedSize(typeStr: string, structDefs?: StructDefinitionNode[])
     }
   }
   if (typeStr === 'bool') return 1;
-  if (typeStr === 'int') return 9;
+  if (typeStr === 'bigint') return 9;
   if (typeStr === 'pubkey') return 34;
   if (typeStr === 'sig') return 74;
   if (typeStr === 'datasig') return 66;

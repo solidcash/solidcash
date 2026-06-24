@@ -605,7 +605,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (defineIntEncode) {
       spans.push({
         id: INTENC,
-        span: this.defineCapturedSubroutine(INTENC, (t) => t.emitGenericPushdataEncode(PrimitiveType.INT, loc), loc),
+        span: this.defineCapturedSubroutine(INTENC, (t) => t.emitGenericPushdataEncode(PrimitiveType.BIGINT, loc), loc),
       });
     }
     // Master self-preservation and minting uniqueness (non-delegate); capture needs a function node.
@@ -3735,7 +3735,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       const fixedWidth = isFixedWidthType(elemType);
 
       // Decode length prefix: [blob] -> [length, elements_blob]
-      this.emitPushdataDecode(PrimitiveType.INT, locationData);
+      this.emitPushdataDecode(PrimitiveType.BIGINT, locationData);
       // Bitcoin stack: [..., length, elements_blob]
       this.emit(Op.OP_SWAP, locationData); // [..., elements_blob, length]
       this.popFromStack(); // remove blob tracking
@@ -4093,7 +4093,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (node.operator === UnaryOperator.SIZE && node.expression.type instanceof ArrayType) {
       // Stack: [..., blob]
       // Decode length prefix: [blob] -> [length, remainder]
-      this.emitPushdataDecode(PrimitiveType.INT, locationData);
+      this.emitPushdataDecode(PrimitiveType.BIGINT, locationData);
       // Stack: [..., length, remainder]
       this.emit(Op.OP_DROP, locationData); // [..., length]
       this.popFromStack(); // remove blob tracking
@@ -4192,7 +4192,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // Encode length prefix using abi.encode (minimal pushdata)
       this.emit(encodeInt(BigInt(node.elements.length)), locationData);
       this.pushToStack('(length)');
-      this.emitPushdataEncode(PrimitiveType.INT, locationData);
+      this.emitPushdataEncode(PrimitiveType.BIGINT, locationData);
 
       if (node.elements.length === 0) {
         // Empty array: just the length prefix (0x00 = 1 byte)
@@ -4239,7 +4239,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // stack: [..., n, n_dup]
 
     // Encode the duplicate as pushdata length prefix
-    this.emitPushdataEncode(PrimitiveType.INT, locationData);
+    this.emitPushdataEncode(PrimitiveType.BIGINT, locationData);
     // stack: [..., n, len_prefix]
 
     // Swap so n is on top for byte count computation
@@ -4470,7 +4470,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     node.array = this.visit(node.array);
 
     // Decode length prefix: [blob] -> [length, elements_blob]
-    this.emitPushdataDecode(PrimitiveType.INT, locationData);
+    this.emitPushdataDecode(PrimitiveType.BIGINT, locationData);
     // Bitcoin stack: [..., length, elements_blob]
     this.emit(Op.OP_SWAP, locationData); // [..., elements_blob, length]
     this.popFromStack(); // remove blob tracking
@@ -4538,7 +4538,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.pushToStack('(arr)');
 
     // Decode length prefix: [blob] -> [length, elements_blob]
-    this.emitPushdataDecode(PrimitiveType.INT, locationData);
+    this.emitPushdataDecode(PrimitiveType.BIGINT, locationData);
     // Bitcoin stack: [..., length, elements_blob]
     this.emit(Op.OP_SWAP, locationData); // [..., elements_blob, length]
     this.popFromStack(); // remove arr tracking
@@ -4547,7 +4547,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     // Increment length and re-encode prefix
     this.emit(Op.OP_1ADD, locationData); // [..., elements_blob, length+1]
-    this.emitPushdataEncode(PrimitiveType.INT, locationData); // [..., elements_blob, new_len_encoded]
+    this.emitPushdataEncode(PrimitiveType.BIGINT, locationData); // [..., elements_blob, new_len_encoded]
 
     // Prepend new length to elements: swap + CAT
     this.emit(Op.OP_SWAP, locationData); // [..., new_len_encoded, elements_blob]
@@ -4588,7 +4588,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.pushToStack('(arr)');
 
     // Decode length prefix: [blob] -> [length, elements_blob]
-    this.emitPushdataDecode(PrimitiveType.INT, locationData);
+    this.emitPushdataDecode(PrimitiveType.BIGINT, locationData);
     this.emit(Op.OP_SWAP, locationData); // [..., elements_blob, length]
     this.popFromStack();
     this.pushToStack('(elements)');
@@ -4605,7 +4605,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (fixedWidth) {
       const width = getFixedWidth(elemType);
       // Re-encode new length
-      this.emitPushdataEncode(PrimitiveType.INT, locationData);
+      this.emitPushdataEncode(PrimitiveType.BIGINT, locationData);
       this.emit(Op.OP_SWAP, locationData); // [..., new_len_enc, elements_blob]
       // Trim last element
       this.emit(Op.OP_SIZE, locationData); // [..., new_len_enc, elements, size]
@@ -4635,7 +4635,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_SPLIT, locationData); // [..., new_length, trimmed, rest]
       this.emit(Op.OP_DROP, locationData); // [..., new_length, trimmed]
       this.emit(Op.OP_SWAP, locationData); // [..., trimmed, new_length]
-      this.emitPushdataEncode(PrimitiveType.INT, locationData);
+      this.emitPushdataEncode(PrimitiveType.BIGINT, locationData);
       this.emit(Op.OP_SWAP, locationData); // [..., new_len_enc, trimmed]
       this.emit(Op.OP_CAT, locationData); // [..., new_blob]
       this.popFromStack(2);
@@ -4662,7 +4662,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.pushToStack('(arr)');
 
     // Decode length prefix: [blob] -> [length, elements_blob]
-    this.emitPushdataDecode(PrimitiveType.INT, locationData);
+    this.emitPushdataDecode(PrimitiveType.BIGINT, locationData);
     this.emit(Op.OP_SWAP, locationData); // [..., elements_blob, length]
     this.popFromStack();
     this.pushToStack('(elements)');
@@ -4766,12 +4766,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_PICK, locationData);
     this.pushToStack('(old_arr)');
     // Decode length from old arr
-    this.emitPushdataDecode(PrimitiveType.INT, locationData);
+    this.emitPushdataDecode(PrimitiveType.BIGINT, locationData);
     this.emit(Op.OP_DROP, locationData); // drop remainder, keep length
     this.popFromStack();
     this.pushToStack('(length)');
     // Re-encode length and prepend
-    this.emitPushdataEncode(PrimitiveType.INT, locationData);
+    this.emitPushdataEncode(PrimitiveType.BIGINT, locationData);
     this.emit(Op.OP_SWAP, locationData); // [..., len_enc, elements]
     this.emit(Op.OP_CAT, locationData); // [..., new_blob]
     this.popFromStack(2);
@@ -4800,7 +4800,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.pushToStack('(arr)');
 
     // Decode length: [blob] -> [length, elements_blob]
-    this.emitPushdataDecode(PrimitiveType.INT, locationData);
+    this.emitPushdataDecode(PrimitiveType.BIGINT, locationData);
     this.emit(Op.OP_SWAP, locationData); // [..., elements_blob, length]
     this.popFromStack();
     this.pushToStack('(elements)');
@@ -4877,7 +4877,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(encodeInt(BigInt(stackIdx)), locationData);
       this.emit(Op.OP_PICK, locationData);
       this.pushToStack('(old_arr)');
-      this.emitPushdataDecode(PrimitiveType.INT, locationData);
+      this.emitPushdataDecode(PrimitiveType.BIGINT, locationData);
       this.emit(Op.OP_DROP, locationData); // drop elements remainder, keep length
       this.popFromStack();
       this.pushToStack('(length)');
@@ -4935,7 +4935,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(encodeInt(BigInt(stackIdx2)), locationData);
       this.emit(Op.OP_PICK, locationData);
       this.pushToStack('(old_arr2)');
-      this.emitPushdataDecode(PrimitiveType.INT, locationData);
+      this.emitPushdataDecode(PrimitiveType.BIGINT, locationData);
       this.emit(Op.OP_DROP, locationData); // drop remainder, keep decoded length
       this.popFromStack();
       this.pushToStack('(length2)');
@@ -4971,19 +4971,19 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(encodeInt(BigInt(stackIdx3)), locationData);
       this.emit(Op.OP_PICK, locationData);
       this.pushToStack('(old_arr3)');
-      this.emitPushdataDecode(PrimitiveType.INT, locationData);
+      this.emitPushdataDecode(PrimitiveType.BIGINT, locationData);
       this.emit(Op.OP_DROP, locationData); // drop remainder, keep decoded length
       this.popFromStack();
       this.pushToStack('(length3)');
       this.emit(Op.OP_1SUB, locationData);
-      this.emitPushdataEncode(PrimitiveType.INT, locationData);
+      this.emitPushdataEncode(PrimitiveType.BIGINT, locationData);
       this.emit(Op.OP_SWAP, locationData);
       this.emit(Op.OP_CAT, locationData);
       this.popFromStack(2);
       this.pushToStack('(value)');
     } else {
       // Variable-width: new_length is already on stack
-      this.emitPushdataEncode(PrimitiveType.INT, locationData);
+      this.emitPushdataEncode(PrimitiveType.BIGINT, locationData);
       this.emit(Op.OP_SWAP, locationData);
       this.emit(Op.OP_CAT, locationData);
       this.popFromStack(2);
@@ -5122,7 +5122,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     stripCount: boolean,
   ): void {
     if (stripCount) {
-      this.emitPushdataDecode(PrimitiveType.INT, loc); // [count, elements]
+      this.emitPushdataDecode(PrimitiveType.BIGINT, loc); // [count, elements]
       this.emit(Op.OP_NIP, loc); // [elements]
     }
     const valueStackName = `__internal__dynwrite_value_${sv.name}`;
@@ -5155,7 +5155,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emitReadStateArrayBlob(sv, locationData, '(arr)');
 
     // 2. Decode length prefix: [blob] -> [length, elements_blob]
-    this.emitPushdataDecode(PrimitiveType.INT, locationData);
+    this.emitPushdataDecode(PrimitiveType.BIGINT, locationData);
     this.emit(Op.OP_SWAP, locationData); // [..., elements_blob, length]
     this.popFromStack(); // remove arr tracking
     this.pushToStack('(elements)');
@@ -5163,7 +5163,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     // 3. Increment length and re-encode prefix
     this.emit(Op.OP_1ADD, locationData);
-    this.emitPushdataEncode(PrimitiveType.INT, locationData);
+    this.emitPushdataEncode(PrimitiveType.BIGINT, locationData);
 
     // 4. Prepend new length to elements: swap + CAT
     this.emit(Op.OP_SWAP, locationData); // [..., new_len_encoded, elements_blob]
@@ -5201,7 +5201,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emitReadStateArrayBlob(sv, locationData, '(arr)');
 
     // 2. Decode length prefix: [blob] -> [length, elements_blob]
-    this.emitPushdataDecode(PrimitiveType.INT, locationData);
+    this.emitPushdataDecode(PrimitiveType.BIGINT, locationData);
     this.emit(Op.OP_SWAP, locationData); // [..., elements_blob, length]
     this.popFromStack();
     this.pushToStack('(elements)');
@@ -5218,7 +5218,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (fixedWidth) {
       const width = getFixedWidth(elemType);
       // Re-encode new length
-      this.emitPushdataEncode(PrimitiveType.INT, locationData);
+      this.emitPushdataEncode(PrimitiveType.BIGINT, locationData);
       this.emit(Op.OP_SWAP, locationData); // [..., new_len_enc, elements_blob]
       // Trim last element
       this.emit(Op.OP_SIZE, locationData);
@@ -5246,7 +5246,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_SPLIT, locationData);
       this.emit(Op.OP_DROP, locationData); // [..., new_length, trimmed]
       this.emit(Op.OP_SWAP, locationData); // [..., trimmed, new_length]
-      this.emitPushdataEncode(PrimitiveType.INT, locationData);
+      this.emitPushdataEncode(PrimitiveType.BIGINT, locationData);
       this.emit(Op.OP_SWAP, locationData); // [..., new_len_enc, trimmed]
       this.emit(Op.OP_CAT, locationData); // [..., new_blob]
       this.popFromStack(2);
@@ -5270,7 +5270,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emitReadStateArrayBlob(sv, locationData, '(arr)');
 
     // 2. Decode length prefix: [blob] -> [length, elements_blob]
-    this.emitPushdataDecode(PrimitiveType.INT, locationData);
+    this.emitPushdataDecode(PrimitiveType.BIGINT, locationData);
     this.emit(Op.OP_SWAP, locationData); // [..., elements_blob, length]
     this.popFromStack();
     this.pushToStack('(elements)');
@@ -5360,11 +5360,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Re-encode with original length prefix. We need to get the original length.
     // Re-read the state blob to extract its length prefix, then prepend.
     this.emitReadStateArrayBlob(sv, { location: node.location, positionHint: PositionHint.END }, '(old_arr)');
-    this.emitPushdataDecode(PrimitiveType.INT, locationData);
+    this.emitPushdataDecode(PrimitiveType.BIGINT, locationData);
     this.emit(Op.OP_DROP, locationData); // drop remainder, keep length
     this.popFromStack();
     this.pushToStack('(length)');
-    this.emitPushdataEncode(PrimitiveType.INT, locationData);
+    this.emitPushdataEncode(PrimitiveType.BIGINT, locationData);
     this.emit(Op.OP_SWAP, locationData); // [..., len_enc, elements]
     this.emit(Op.OP_CAT, locationData); // [..., new_blob]
     this.popFromStack(2);
@@ -5389,7 +5389,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emitReadStateArrayBlob(sv, locationData, '(arr)');
 
     // 2. Decode length: [blob] -> [length, elements_blob]
-    this.emitPushdataDecode(PrimitiveType.INT, locationData);
+    this.emitPushdataDecode(PrimitiveType.BIGINT, locationData);
     this.emit(Op.OP_SWAP, locationData); // [..., elements_blob, length]
     this.popFromStack();
     this.pushToStack('(elements)');
@@ -5459,7 +5459,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
       // Find and extract the last element - read length from state blob
       this.emitReadStateArrayBlob(sv, locationData, '(old_arr)');
-      this.emitPushdataDecode(PrimitiveType.INT, locationData);
+      this.emitPushdataDecode(PrimitiveType.BIGINT, locationData);
       this.emit(Op.OP_DROP, locationData); // drop elements remainder, keep length
       this.popFromStack();
       this.pushToStack('(length)');
@@ -5505,7 +5505,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
       // Trim last element (scan to last_index = old_length - 1)
       this.emitReadStateArrayBlob(sv, locationData, '(old_arr2)');
-      this.emitPushdataDecode(PrimitiveType.INT, locationData);
+      this.emitPushdataDecode(PrimitiveType.BIGINT, locationData);
       this.emit(Op.OP_DROP, locationData); // drop remainder, keep decoded length
       this.popFromStack();
       this.pushToStack('(length2)');
@@ -5537,19 +5537,19 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (fixedWidth) {
       // For fixed-width, get new_length = old_length - 1
       this.emitReadStateArrayBlob(sv, locationData, '(old_arr3)');
-      this.emitPushdataDecode(PrimitiveType.INT, locationData);
+      this.emitPushdataDecode(PrimitiveType.BIGINT, locationData);
       this.emit(Op.OP_DROP, locationData); // drop remainder, keep decoded length
       this.popFromStack();
       this.pushToStack('(length3)');
       this.emit(Op.OP_1SUB, locationData);
-      this.emitPushdataEncode(PrimitiveType.INT, locationData);
+      this.emitPushdataEncode(PrimitiveType.BIGINT, locationData);
       this.emit(Op.OP_SWAP, locationData);
       this.emit(Op.OP_CAT, locationData);
       this.popFromStack(2);
       this.pushToStack('(value)');
     } else {
       // Variable-width: new_length is already on stack
-      this.emitPushdataEncode(PrimitiveType.INT, locationData);
+      this.emitPushdataEncode(PrimitiveType.BIGINT, locationData);
       this.emit(Op.OP_SWAP, locationData);
       this.emit(Op.OP_CAT, locationData);
       this.popFromStack(2);
@@ -5577,7 +5577,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emitReadStateArrayBlob(sv, locationData, '(arr)');
 
     // 2. Decode length prefix: [blob] -> [length, elements_blob]
-    this.emitPushdataDecode(PrimitiveType.INT, locationData);
+    this.emitPushdataDecode(PrimitiveType.BIGINT, locationData);
     this.emit(Op.OP_SWAP, locationData); // [..., elements_blob, length]
     this.popFromStack(); // remove arr tracking
     this.pushToStack('(elements)');
@@ -6521,7 +6521,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    */
   private emitPushdataEncode(type: Type, locationData: SingleLocationData): void {
     // A function pointer is its integer functionId on the wire: encode/decode it as an int.
-    if (type instanceof FunctionType) type = PrimitiveType.INT;
+    if (type instanceof FunctionType) type = PrimitiveType.BIGINT;
     // StructType: the value is already an encoded blob from construction - no-op
     if (type instanceof StructType) {
       return;
@@ -6571,7 +6571,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // We need to encode the value using minimal pushdata format
 
     // First, handle the special cases for int-like types
-    const isIntLike = type === PrimitiveType.INT || type instanceof IntType
+    const isIntLike = type === PrimitiveType.BIGINT || type instanceof IntType
       || type instanceof FixedType || (type instanceof BytesType && type.bound === 1);
 
     // The int-like branch is shared via a subroutine when used >=2 times.
@@ -6744,7 +6744,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    */
   private emitPushdataDecode(type: Type, locationData: SingleLocationData): void {
     // A function pointer is its integer functionId on the wire: encode/decode it as an int.
-    if (type instanceof FunctionType) type = PrimitiveType.INT;
+    if (type instanceof FunctionType) type = PrimitiveType.BIGINT;
     // StructType: extract struct bytes from blob, leaving remainder
     // Stack: [blob] -> [struct_bytes, remainder]
     if (type instanceof StructType) {
@@ -6869,7 +6869,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
       // Decode the inner array's length prefix (pushdata-encoded int)
       // Stack: [blob] -> [decoded_length, rest_after_prefix]
-      this.emitGenericPushdataDecode(PrimitiveType.INT, locationData);
+      this.emitGenericPushdataDecode(PrimitiveType.BIGINT, locationData);
       // Stack: [decoded_length, rest_after_prefix]
       this.emit(Op.OP_SWAP, locationData);
       // Stack: [rest_after_prefix, decoded_length]
@@ -6925,7 +6925,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   /** Consume a leading nftIndex tag without checking it. Stack: [commitment] -> [fields_blob]. */
   private emitNftIndexTagSkip(locationData: SingleLocationData): void {
-    this.emitPushdataSkip(PrimitiveType.INT, locationData);
+    this.emitPushdataSkip(PrimitiveType.BIGINT, locationData);
   }
 
   /**
@@ -6934,7 +6934,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * Stack: [commitment] -> [fields_blob].
    */
   private emitNftIndexTagVerify(nftIndex: number, locationData: SingleLocationData): void {
-    this.emitGenericPushdataDecode(PrimitiveType.INT, locationData); // [tagValue, remainder]
+    this.emitGenericPushdataDecode(PrimitiveType.BIGINT, locationData); // [tagValue, remainder]
     this.emit(Op.OP_SWAP, locationData);                             // [remainder, tagValue]
     this.emit(encodeInt(BigInt(nftIndex)), locationData);            // [remainder, tagValue, n]
     this.emit(Op.OP_EQUALVERIFY, locationData);                      // [remainder]
@@ -6947,7 +6947,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    */
   private emitGenericPushdataDecode(type: Type, locationData: SingleLocationData): void {
     this.bumpSubroutineUse(GenerateTargetTraversalWithLocation.INT_DECODE_SUBROUTINE_ID);
-    const isIntLike = type === PrimitiveType.INT || type instanceof IntType || type instanceof FixedType;
+    const isIntLike = type === PrimitiveType.BIGINT || type instanceof IntType || type instanceof FixedType;
 
     // Use shared OP_DEFINE subroutine when available.
     // The subroutine returns [raw_bytes, remainder]. For int types, add BIN2NUM.
@@ -7681,7 +7681,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       const fixedWidth = isFixedWidthType(elemType);
 
       // Decode length prefix: [blob] -> [length, elements_blob]
-      this.emitPushdataDecode(PrimitiveType.INT, locationData);
+      this.emitPushdataDecode(PrimitiveType.BIGINT, locationData);
       this.emit(Op.OP_SWAP, locationData);
       this.popFromStack();
       this.pushToStack('(elements)');
@@ -7886,7 +7886,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.pushToStack('(arr_blob)');
 
     // Decode length prefix: [blob] -> [length, elements_blob]
-    this.emitPushdataDecode(PrimitiveType.INT, locationData);
+    this.emitPushdataDecode(PrimitiveType.BIGINT, locationData);
     this.emit(Op.OP_SWAP, locationData);
     this.popFromStack(); // remove arr_blob tracking
     this.pushToStack('(elements)');
@@ -8008,7 +8008,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Re-encode with saved length prefix
     // Stack: [..., arr_length, modified_elements]
     this.emit(Op.OP_SWAP, locationData); // [..., modified_elements, arr_length]
-    this.emitPushdataEncode(PrimitiveType.INT, locationData);
+    this.emitPushdataEncode(PrimitiveType.BIGINT, locationData);
     this.emit(Op.OP_SWAP, locationData); // [..., len_enc, elements]
     this.emit(Op.OP_CAT, locationData); // [..., new_array_blob]
     this.popFromStack(2);
@@ -8414,7 +8414,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (type.bound !== undefined) {
         // Bounded: length prefix + bound default elements
         this.emit(encodeInt(BigInt(type.bound)), locationData);
-        this.emitPushdataEncode(PrimitiveType.INT, locationData);
+        this.emitPushdataEncode(PrimitiveType.BIGINT, locationData);
         for (let i = 0; i < type.bound; i++) {
           this.emitDefaultValue(locationData, type.elementType);
           this.emitPushdataEncode(type.elementType, locationData);
@@ -8423,7 +8423,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       } else {
         // Unbounded: empty array = just encoded int 0 (length prefix only)
         this.emit(encodeInt(0n), locationData);
-        this.emitPushdataEncode(PrimitiveType.INT, locationData);
+        this.emitPushdataEncode(PrimitiveType.BIGINT, locationData);
       }
       this.stack = savedStack;
       return;
@@ -9097,7 +9097,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_NIP, loc); // [blob, size]  '(arrcnt)' = size
     this.emit(encodeInt(BigInt(width)), loc);
     this.emit(Op.OP_DIV, loc); // [blob, count]  '(arrcnt)' = count
-    this.emitPushdataEncode(PrimitiveType.INT, loc); // [blob, pushdata(count)]
+    this.emitPushdataEncode(PrimitiveType.BIGINT, loc); // [blob, pushdata(count)]
     this.stack[0] = '(arrcnt)';
     this.emit(Op.OP_SWAP, loc); // [pushdata(count), blob]
     [this.stack[0], this.stack[1]] = [this.stack[1], this.stack[0]];

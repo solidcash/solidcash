@@ -55,7 +55,7 @@ describe('Error, Assert, and Revert - SDK e2e', () => {
   describe('Artifact metadata', () => {
     it('error declarations appear in artifact errors array', () => {
       const code = `
-        error InsufficientBalance(int requested, int available);
+        error InsufficientBalance(bigint requested, bigint available);
         error Unauthorized();
         contract Test(pubkey owner) {
           error ContractError(bytes32 id);
@@ -72,10 +72,10 @@ describe('Error, Assert, and Revert - SDK e2e', () => {
 
       expect(artifact.errors![0]).toEqual({
         name: 'InsufficientBalance',
-        signature: 'InsufficientBalance(int,int)',
+        signature: 'InsufficientBalance(bigint,bigint)',
         parameters: [
-          { name: 'requested', type: 'int' },
-          { name: 'available', type: 'int' },
+          { name: 'requested', type: 'bigint' },
+          { name: 'available', type: 'bigint' },
         ],
       });
 
@@ -156,7 +156,7 @@ describe('Error, Assert, and Revert - SDK e2e', () => {
     it('assert with expression: assert(x > 0) succeeds for positive', async () => {
       const code = `
         contract Test(pubkey owner) {
-          function check(sig s, int x) {
+          function check(sig s, bigint x) {
             require(checkSig(s, owner));
             assert(x > 0);
           }
@@ -176,7 +176,7 @@ describe('Error, Assert, and Revert - SDK e2e', () => {
     it('assert with expression: assert(x > 0) fails for zero', async () => {
       const code = `
         contract Test(pubkey owner) {
-          function check(sig s, int x) {
+          function check(sig s, bigint x) {
             require(checkSig(s, owner));
             assert(x > 0);
           }
@@ -241,9 +241,9 @@ describe('Error, Assert, and Revert - SDK e2e', () => {
 
     it('revert CustomError(args) always fails', async () => {
       const code = `
-        error InsufficientBalance(int requested, int available);
+        error InsufficientBalance(bigint requested, bigint available);
         contract Test(pubkey owner) {
-          function withdraw(sig s, int amount, int balance) {
+          function withdraw(sig s, bigint amount, bigint balance) {
             require(checkSig(s, owner));
             if (amount > balance) {
               revert InsufficientBalance(amount, balance);
@@ -266,9 +266,9 @@ describe('Error, Assert, and Revert - SDK e2e', () => {
 
     it('revert CustomError: succeeds when revert is not reached', async () => {
       const code = `
-        error InsufficientBalance(int requested, int available);
+        error InsufficientBalance(bigint requested, bigint available);
         contract Test(pubkey owner) {
-          function withdraw(sig s, int amount, int balance) {
+          function withdraw(sig s, bigint amount, bigint balance) {
             require(checkSig(s, owner));
             if (amount > balance) {
               revert InsufficientBalance(amount, balance);
@@ -328,12 +328,12 @@ describe('Error, Assert, and Revert - SDK e2e', () => {
 
   describe('Combined error/assert/revert', () => {
     const combinedCode = `
-      error InsufficientBalance(int requested, int available);
+      error InsufficientBalance(bigint requested, bigint available);
       error Unauthorized();
       contract Combined(pubkey owner) {
         error ContractError(bytes32 id);
 
-        function checkBalance(sig s, int amount, int balance) {
+        function checkBalance(sig s, bigint amount, bigint balance) {
           require(checkSig(s, owner));
           assert(amount > 0);
           if (amount > balance) {

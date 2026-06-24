@@ -233,7 +233,7 @@ describe('Contract-Typed State Variables', () => {
       expect(vars[1].type).toBe('address');
       expect(vars[1].contractType).toBe('Escrow');
       expect(vars[2].name).toBe('counter');
-      expect(vars[2].type).toBe('int');
+      expect(vars[2].type).toBe('int256');
       expect(vars[2].contractType).toBeUndefined();
     });
 

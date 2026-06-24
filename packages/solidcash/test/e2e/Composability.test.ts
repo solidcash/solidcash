@@ -19,7 +19,7 @@ interface ITarget {
 }
 
 contract Caller(bytes targetAddr) {
-    int callerState;
+    bigint callerState;
 
     function callTarget(pubkey pk, sig s) {
         require(checkSig(s, pk));
@@ -37,7 +37,7 @@ const TARGET_SOURCE = `
 pragma solidcash >=0.8.0;
 
 contract Target() {
-    int counter;
+    bigint counter;
 
     function increment() {
         this.counter = this.counter + 1;
@@ -173,8 +173,8 @@ describe('Contract Composability', () => {
       const source = `
         pragma solidcash >=0.8.0;
         contract ConditionalSlots() {
-            event Evt(int amount);
-            int state;
+            event Evt(bigint amount);
+            bigint state;
             function test(bool cond) {
                 if (cond) {
                     emit Evt(1);
@@ -204,12 +204,12 @@ describe('Contract Composability', () => {
       const source = `
         pragma solidcash >=0.8.0;
         interface IOther {
-            function action() returns (int);
+            function action() returns (bigint);
         }
         contract WithReturn(bytes32 otherCat) {
-            int state;
+            bigint state;
             function call() {
-                int result = IOther(otherCat).action();
+                bigint result = IOther(otherCat).action();
                 this.state = result;
             }
             function authorize(pubkey pk, sig s) unsafe {
@@ -245,7 +245,7 @@ describe('Contract Composability', () => {
       const source = `
         pragma solidcash >=0.8.0;
         contract WithTransfer() {
-            int state;
+            bigint state;
             function doTransfer(bytes20 recipient) payable {
                 this.state = this.state + 1;
                 this.transfer(new LockingBytecodeP2PKH(recipient), 1000);
@@ -273,7 +273,7 @@ describe('Contract Composability', () => {
         pragma solidcash >=0.8.0;
         contract T() {
           bytes20 _owner;
-          int _balance;
+          bigint _balance;
           function _setOwner(bytes20 _newOwner) {
             this._owner = _newOwner;
             this._balance = this._balance + 1;
@@ -290,8 +290,8 @@ describe('Contract Composability', () => {
       const art = compileString(`
         pragma solidcash >=0.8.0;
         contract T() {
-          int constant MAX = 2 ** 256 - 1;
-          int constant SCALE = 10 ** 18;
+          bigint constant MAX = 2 ** 256 - 1;
+          bigint constant SCALE = 10 ** 18;
           function test() { require(MAX > 0); require(SCALE == 1000000000000000000); }
         }
       `);
@@ -301,8 +301,8 @@ describe('Contract Composability', () => {
     it('** exponentiation operator: runtime', () => {
       const art = compileString(`
         pragma solidcash >=0.8.0;
-        contract T(int x) {
-          function test(int base, int exp) { require(base ** exp > x); }
+        contract T(bigint x) {
+          function test(bigint base, bigint exp) { require(base ** exp > x); }
         }
       `);
       expect(art).toBeDefined();
@@ -326,12 +326,12 @@ describe('Contract Composability', () => {
       const art = compileString(`
         pragma solidcash >=0.8.0;
         library Lib {
-          function add(int a, int b) returns (int) { return a + b; }
-          function sub(int a, int b) returns (int) { assert(b <= a); return a - b; }
+          function add(bigint a, bigint b) returns (bigint) { return a + b; }
+          function sub(bigint a, bigint b) returns (bigint) { assert(b <= a); return a - b; }
         }
-        contract T(int x) {
-          using Lib for int;
-          function test(int a, int b) { require(a.add(b).sub(1) > x); }
+        contract T(bigint x) {
+          using Lib for bigint;
+          function test(bigint a, bigint b) { require(a.add(b).sub(1) > x); }
         }
       `);
       expect(art).toBeDefined();
@@ -341,11 +341,11 @@ describe('Contract Composability', () => {
     it('this.stateVar.method() via using-for', () => {
       const art = compileString(`
         pragma solidcash >=0.8.0;
-        library M { function add(int a, int b) returns (int) { return a + b; } }
+        library M { function add(bigint a, bigint b) returns (bigint) { return a + b; } }
         contract T() {
-          using M for int;
-          public int x;
-          function f(int a) { this.x = this.x.add(a); }
+          using M for bigint;
+          public bigint x;
+          function f(bigint a) { this.x = this.x.add(a); }
           function authorize(pubkey pk, sig s) unsafe { require(checkSig(s, pk)); }
         }
       `);
@@ -356,13 +356,13 @@ describe('Contract Composability', () => {
       const art = compileString(`
         pragma solidcash >=0.8.0;
         library M {
-          function add(int a, int b) returns (int) { return a + b; }
-          function sub(int a, int b) returns (int) { return a - b; }
+          function add(bigint a, bigint b) returns (bigint) { return a + b; }
+          function sub(bigint a, bigint b) returns (bigint) { return a - b; }
         }
         contract T() {
-          using M for int;
-          mapping(bytes20 => int) balances;
-          function transfer(bytes20 from, bytes20 to, int amount) {
+          using M for bigint;
+          mapping(bytes20 => bigint) balances;
+          function transfer(bytes20 from, bytes20 to, bigint amount) {
             this.balances[from] = this.balances[from].sub(amount);
             this.balances[to] = this.balances[to].add(amount);
           }
@@ -377,8 +377,8 @@ describe('Contract Composability', () => {
         pragma solidcash >=0.8.0;
         interface IB { function action(); }
         contract T(bytes32 _bCat) {
-          int _state;
-          function callB(int _val) {
+          bigint _state;
+          function callB(bigint _val) {
             IB(_bCat).action();
             this._state = this._state + _val;
           }
@@ -413,9 +413,9 @@ describe('Contract Composability', () => {
       const art = compileString(`
         pragma solidcash >=0.8.0;
         contract T() {
-          mapping(bytes20 => int) public balances;
-          int[3] public arr;
-          mapping(bytes20 => mapping(bytes20 => int)) public allowances;
+          mapping(bytes20 => bigint) public balances;
+          bigint[3] public arr;
+          mapping(bytes20 => mapping(bytes20 => bigint)) public allowances;
           function authorize(pubkey pk, sig s) unsafe { require(checkSig(s, pk)); }
         }
       `);

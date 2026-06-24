@@ -351,7 +351,9 @@ const decodeStackItem = (
   }
 
   if (element.type === PrimitiveType.BOOL) return decodeBool(stackItem);
-  if (element.type === PrimitiveType.INT) return decodeInt(stackItem);
+  if (element.type === PrimitiveType.BIGINT || element.type === PrimitiveType.INT) return decodeInt(stackItem);
+  // Bounded integer types (int8..int256, uint8..uint256) are int-backed.
+  if (/^u?int\d+$/.test(element.type)) return decodeInt(stackItem);
   if (element.type === PrimitiveType.STRING) return decodeString(stackItem);
   // Enums are int-backed: decode to their underlying integer value.
   if (enumNames.has(element.type)) return decodeInt(stackItem);

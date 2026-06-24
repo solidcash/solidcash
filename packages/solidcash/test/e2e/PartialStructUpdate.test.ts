@@ -56,11 +56,11 @@ const PARTIAL_STRUCT_UPDATE_SOURCE = `
 pragma solidcash >=0.8.0;
 
 contract PartialStructUpdate() {
-    struct User { bytes20 addr; string name; int balance; }
-    int counter;
+    struct User { bytes20 addr; string name; bigint balance; }
+    bigint counter;
     mapping(bytes20 => User) users;
 
-    function addUser(bytes20 pkh, bytes20 addr, string name, int balance, pubkey pk, sig s) {
+    function addUser(bytes20 pkh, bytes20 addr, string name, bigint balance, pubkey pk, sig s) {
         require(checkSig(s, pk));
         this.users[pkh] = User(addr, name, balance);
         this.counter = this.counter + 1;
@@ -71,7 +71,7 @@ contract PartialStructUpdate() {
         this.users[pkh].name = newName;
     }
 
-    function updateBalance(bytes20 pkh, int newBalance, pubkey pk, sig s) {
+    function updateBalance(bytes20 pkh, bigint newBalance, pubkey pk, sig s) {
         require(checkSig(s, pk));
         this.users[pkh].balance = newBalance;
     }
@@ -81,13 +81,13 @@ contract PartialStructUpdate() {
         this.users[pkh].addr = newAddr;
     }
 
-    function updateNameAndBalance(bytes20 pkh, string newName, int newBalance, pubkey pk, sig s) {
+    function updateNameAndBalance(bytes20 pkh, string newName, bigint newBalance, pubkey pk, sig s) {
         require(checkSig(s, pk));
         this.users[pkh].name = newName;
         this.users[pkh].balance = newBalance;
     }
 
-    function updateAll(bytes20 pkh, bytes20 newAddr, string newName, int newBalance, pubkey pk, sig s) {
+    function updateAll(bytes20 pkh, bytes20 newAddr, string newName, bigint newBalance, pubkey pk, sig s) {
         require(checkSig(s, pk));
         this.users[pkh].addr = newAddr;
         this.users[pkh].name = newName;
@@ -131,7 +131,7 @@ describe('Partial Struct Update', () => {
     expect(structs[0].fields).toEqual([
       { name: 'addr', type: 'bytes20' },
       { name: 'name', type: 'string' },
-      { name: 'balance', type: 'int' },
+      { name: 'balance', type: 'bigint' },
     ]);
   });
 

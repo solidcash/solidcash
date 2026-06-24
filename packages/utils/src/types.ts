@@ -196,7 +196,11 @@ export class FunctionType {
 }
 
 export enum PrimitiveType {
+  // INT is the integer-literal / generic-integer type (`5`); it implicitly converts to any bounded IntType
+  // (int8..int256, uint..) and to BIGINT. BIGINT is the explicit arbitrary-precision type (keyword `bigint`).
+  // The `int`/`uint` keywords are IntType(.,256). INT is normalized to BIGINT in the type-helper functions.
   INT = 'int',
+  BIGINT = 'bigint',
   BOOL = 'bool',
   STRING = 'string',
   // ADDRESS = 'address',
@@ -208,8 +212,9 @@ export enum PrimitiveType {
 }
 
 const ExplicitlyCastableTo: { [key in PrimitiveType]: PrimitiveType[] } = {
-  [PrimitiveType.INT]: [PrimitiveType.INT, PrimitiveType.BOOL],
-  [PrimitiveType.BOOL]: [PrimitiveType.BOOL, PrimitiveType.INT],
+  [PrimitiveType.INT]: [PrimitiveType.INT, PrimitiveType.BIGINT, PrimitiveType.BOOL],
+  [PrimitiveType.BIGINT]: [PrimitiveType.BIGINT, PrimitiveType.INT, PrimitiveType.BOOL],
+  [PrimitiveType.BOOL]: [PrimitiveType.BOOL, PrimitiveType.BIGINT],
   [PrimitiveType.STRING]: [PrimitiveType.STRING],
   [PrimitiveType.PUBKEY]: [PrimitiveType.PUBKEY],
   [PrimitiveType.SIG]: [PrimitiveType.SIG],
@@ -220,6 +225,9 @@ const ExplicitlyCastableTo: { [key in PrimitiveType]: PrimitiveType[] } = {
 
 function typesEqual(a: Type, b?: Type): boolean {
   if (!b) return false;
+  // INT (integer literal/generic) is interchangeable with BIGINT (unbounded) at the type level.
+  if (a === PrimitiveType.INT) a = PrimitiveType.BIGINT;
+  if (b === PrimitiveType.INT) b = PrimitiveType.BIGINT;
   if (a === b) return true; // PrimitiveType enum comparison
   if (a instanceof BytesType && b instanceof BytesType) return a.bound === b.bound;
   if (a instanceof IntType && b instanceof IntType) return a.signed === b.signed && a.bits === b.bits;
@@ -254,6 +262,9 @@ function typesEqual(a: Type, b?: Type): boolean {
 
 export function explicitlyCastable(from?: Type, to?: Type): boolean {
   if (!from || !to) return false;
+  // INT (integer literal/generic) behaves as BIGINT (unbounded) for casting.
+  if (from === PrimitiveType.INT) from = PrimitiveType.BIGINT;
+  if (to === PrimitiveType.INT) to = PrimitiveType.BIGINT;
 
   // ValueType: only allow wrap (underlying -> value type) and unwrap (value type -> underlying)
   if (from instanceof ValueType || to instanceof ValueType) {
@@ -274,7 +285,7 @@ export function explicitlyCastable(from?: Type, to?: Type): boolean {
     if (from instanceof AddressType) return true;
     // int -> address: `address(0)` / `address(uint160(x))`. Address is locking bytecode at the VM level;
     // the integer is converted to its byte representation.
-    if (from === PrimitiveType.INT || from instanceof IntType) return true;
+    if (from === PrimitiveType.BIGINT || from instanceof IntType) return true;
     return false;
   }
   if (from instanceof AddressType) {
@@ -293,7 +304,7 @@ export function explicitlyCastable(from?: Type, to?: Type): boolean {
   // codegen). Enum <-> enum is still disallowed.
   if (from instanceof EnumType || to instanceof EnumType) {
     if (from instanceof EnumType && to instanceof EnumType) return false;
-    const isInt = (t: Type): boolean => t === PrimitiveType.INT || t instanceof IntType;
+    const isInt = (t: Type): boolean => t === PrimitiveType.BIGINT || t instanceof IntType;
     return from instanceof EnumType ? isInt(to) : isInt(from);
   }
 
@@ -312,7 +323,7 @@ export function explicitlyCastable(from?: Type, to?: Type): boolean {
     // Can't cast bool to bytes
     if (from === PrimitiveType.BOOL) return false;
     // Can cast int to any size bytes
-    if (from === PrimitiveType.INT) return true;
+    if (from === PrimitiveType.BIGINT) return true;
     // Can cast bounded int to any size bytes (same as int -> bytes)
     if (from instanceof IntType) return true;
     // Can cast fixed to any size bytes (same as int -> bytes, since stored as scaled int)
@@ -337,7 +348,7 @@ export function explicitlyCastable(from?: Type, to?: Type): boolean {
 
   if (from instanceof BytesType) {
     // Can cast unbounded bytes or <=4 bytes to int
-    if (to === PrimitiveType.INT) return !from.bound || from.bound <= 8;
+    if (to === PrimitiveType.BIGINT) return !from.bound || from.bound <= 8;
     // bytes -> IntType (like bytes -> int, with BIN2NUM)
     if (to instanceof IntType) return true;
     // bytes -> FixedType (like bytes -> int, with BIN2NUM)
@@ -355,7 +366,7 @@ export function explicitlyCastable(from?: Type, to?: Type): boolean {
 
   // IntType explicit cast rules
   if (from instanceof IntType) {
-    if (to === PrimitiveType.INT) return true;
+    if (to === PrimitiveType.BIGINT) return true;
     if (to instanceof IntType) return true;
     if (to === PrimitiveType.BOOL) return true;
     if (to instanceof FixedType) return true; // IntType -> FixedType (scale by scaleFactor)
@@ -363,7 +374,7 @@ export function explicitlyCastable(from?: Type, to?: Type): boolean {
     return false;
   }
   if (to instanceof IntType) {
-    if (from === PrimitiveType.INT) return true;
+    if (from === PrimitiveType.BIGINT) return true;
     if (from === PrimitiveType.BOOL) return true;
     if (from instanceof FixedType) return true; // FixedType -> IntType (divide by scaleFactor)
     return false;
@@ -373,12 +384,12 @@ export function explicitlyCastable(from?: Type, to?: Type): boolean {
   // Note: FixedType -> BytesType is handled above in the `to instanceof BytesType` block
   if (from instanceof FixedType) {
     if (to instanceof FixedType) return true;   // any FixedType -> any FixedType
-    if (to === PrimitiveType.INT) return true;   // FixedType -> int (divide by scaleFactor)
+    if (to === PrimitiveType.BIGINT) return true;   // FixedType -> int (divide by scaleFactor)
     if (to === PrimitiveType.BOOL) return true;  // FixedType -> bool (non-zero check)
     return false;
   }
   if (to instanceof FixedType) {
-    if (from === PrimitiveType.INT) return true;  // int -> FixedType (scale by scaleFactor)
+    if (from === PrimitiveType.BIGINT) return true;  // int -> FixedType (scale by scaleFactor)
     if (from === PrimitiveType.BOOL) return true;
     return false;
   }
@@ -390,6 +401,9 @@ export function explicitlyCastable(from?: Type, to?: Type): boolean {
 
 export function implicitlyCastable(actual?: Type, expected?: Type): boolean {
   if (!actual || !expected) return false;
+  // INT (integer literal/generic) behaves as BIGINT (unbounded): casts to any IntType and to bigint.
+  if (actual === PrimitiveType.INT) actual = PrimitiveType.BIGINT;
+  if (expected === PrimitiveType.INT) expected = PrimitiveType.BIGINT;
 
   // ValueType: only the same value type is implicitly castable to itself
   if (actual instanceof ValueType || expected instanceof ValueType) {
@@ -430,7 +444,7 @@ export function implicitlyCastable(actual?: Type, expected?: Type): boolean {
 
   // Enums are int-backed: implicitly compatible with int types and the same enum (not other enums).
   if (actual instanceof EnumType || expected instanceof EnumType) {
-    const intLike = (t: Type): boolean => t === PrimitiveType.INT || t instanceof IntType;
+    const intLike = (t: Type): boolean => t === PrimitiveType.BIGINT || t instanceof IntType;
     if (actual instanceof EnumType && expected instanceof EnumType) return actual.name === expected.name;
     return actual instanceof EnumType ? intLike(expected) : intLike(actual);
   }
@@ -470,7 +484,7 @@ export function implicitlyCastable(actual?: Type, expected?: Type): boolean {
   if (expected instanceof BytesType) {
     // Can't implicitly cast bool, int, bounded int, fixed to bytes
     if (actual === PrimitiveType.BOOL) return false;
-    if (actual === PrimitiveType.INT) return false;
+    if (actual === PrimitiveType.BIGINT) return false;
     if (actual instanceof IntType) return false;
     if (actual instanceof FixedType) return false;
     // string -> unbounded bytes: allow implicit cast
@@ -490,12 +504,12 @@ export function implicitlyCastable(actual?: Type, expected?: Type): boolean {
     return false;
   }
 
-  // IntType -> PrimitiveType.INT: widening to unbounded (always OK)
-  if (actual instanceof IntType && expected === PrimitiveType.INT) return true;
+  // IntType -> PrimitiveType.BIGINT: widening to unbounded (always OK)
+  if (actual instanceof IntType && expected === PrimitiveType.BIGINT) return true;
 
-  // PrimitiveType.INT -> IntType: the BCH VM has one unbounded integer, so bounded widths (uint256, int128,
+  // PrimitiveType.BIGINT -> IntType: the BCH VM has one unbounded integer, so bounded widths (uint256, int128,
   // ...) are nominal; int values and literals assign freely to them (matches Solidity ports using uintN).
-  if (actual === PrimitiveType.INT && expected instanceof IntType) return true;
+  if (actual === PrimitiveType.BIGINT && expected instanceof IntType) return true;
 
   // IntType -> IntType: widening same-signedness or unsigned->wider-signed
   if (actual instanceof IntType && expected instanceof IntType) {
@@ -505,8 +519,8 @@ export function implicitlyCastable(actual?: Type, expected?: Type): boolean {
     return false;
   }
 
-  // FixedType -> PrimitiveType.INT: widening to unbounded (always OK)
-  if (actual instanceof FixedType && expected === PrimitiveType.INT) return false;
+  // FixedType -> PrimitiveType.BIGINT: widening to unbounded (always OK)
+  if (actual instanceof FixedType && expected === PrimitiveType.BIGINT) return false;
 
   // FixedType -> FixedType: same decimals, wider bits, same signedness direction
   if (actual instanceof FixedType && expected instanceof FixedType) {
@@ -558,10 +572,11 @@ export function parseType(str: string): Type {
   if (str === 'address payable' || str === 'addresspayable') return new AddressType(true);
   if (str === 'address') return new AddressType();
 
-  // `bigint` is the arbitrary-precision native int (BCH VM integer). `uint` currently aliases it; `int`
-  // resolves via the PrimitiveType fallback. (Stage 2 will retarget `int`/`uint` to int256/uint256.)
-  if (str === 'bigint') return PrimitiveType.INT;
-  if (str === 'uint') return PrimitiveType.INT;
+  // `bigint` is the arbitrary-precision native int (BCH VM integer). `int`/`uint` are Solidity-parity
+  // aliases for int256/uint256 (bounded, fixed-width, overflow-checked).
+  if (str === 'bigint') return PrimitiveType.BIGINT;
+  if (str === 'int') return new IntType(true, 256);
+  if (str === 'uint') return new IntType(false, 256);
 
   if (str.startsWith('byte')) return BytesType.fromString(str);
 
@@ -655,7 +670,7 @@ export function isChunkPackableElementType(type: Type | string): boolean {
   const t = typeof type === 'string' ? parseType(type) : type;
   if (t === undefined) return false;
   if (isFixedWidthType(t)) return true;
-  if (t === PrimitiveType.INT || t === PrimitiveType.STRING) return true;
+  if (t === PrimitiveType.BIGINT || t === PrimitiveType.STRING) return true;
   if (t instanceof BytesType) return true; // unbounded bytes (bounded bytesN already fixed-width above)
   return false;
 }

@@ -17,9 +17,9 @@ const NAMED_EVENT_CONTRACT = `
 pragma solidcash >=0.8.0;
 
 contract NamedEvent() {
-    event CounterUpdated(int oldValue, int newValue);
+    event CounterUpdated(bigint oldValue, bigint newValue);
 
-    int counter;
+    bigint counter;
 
     function increment() {
         emit CounterUpdated(this.counter, this.counter + 1);
@@ -33,9 +33,9 @@ const ANONYMOUS_EVENT_CONTRACT = `
 pragma solidcash >=0.8.0;
 
 contract AnonEvent() {
-    event CounterUpdated(int oldValue, int newValue) anonymous;
+    event CounterUpdated(bigint oldValue, bigint newValue) anonymous;
 
-    int counter;
+    bigint counter;
 
     function increment() {
         emit CounterUpdated(this.counter, this.counter + 1);
@@ -49,10 +49,10 @@ const MIXED_EVENT_CONTRACT = `
 pragma solidcash >=0.8.0;
 
 contract MixedEvent() {
-    event StateChanged(int oldValue, int newValue);
-    event DebugLog(int value) anonymous;
+    event StateChanged(bigint oldValue, bigint newValue);
+    event DebugLog(bigint value) anonymous;
 
-    int counter;
+    bigint counter;
 
     function increment() {
         emit StateChanged(this.counter, this.counter + 1);
@@ -71,17 +71,17 @@ const MULTI_ANON_CONTRACT = `
 pragma solidcash >=0.8.0;
 
 contract MultiAnon() {
-    event LogA(int value) anonymous;
-    event LogB(int x, int y) anonymous;
+    event LogA(bigint value) anonymous;
+    event LogB(bigint x, bigint y) anonymous;
 
-    int counter;
+    bigint counter;
 
     function emitA() {
         this.counter = this.counter + 1;
         emit LogA(this.counter);
     }
 
-    function emitB(int y) {
+    function emitB(bigint y) {
         this.counter = this.counter + 1;
         emit LogB(this.counter, y);
     }
@@ -93,11 +93,11 @@ const INDEXED_EVENT_CONTRACT = `
 pragma solidcash >=0.8.0;
 
 contract IndexedEvent() {
-    event Transfer(int indexed from, int indexed to, int amount);
+    event Transfer(bigint indexed from, bigint indexed to, bigint amount);
 
-    int counter;
+    bigint counter;
 
-    function transfer(int from, int to, int amount) {
+    function transfer(bigint from, bigint to, bigint amount) {
         this.counter = this.counter + 1;
         emit Transfer(from, to, amount);
     }
@@ -498,7 +498,7 @@ describe('EventAnonymousE2E', () => {
       compileString(NAMED_EVENT_CONTRACT);
 
       // Build a mock commitment with pushdata-encoded values
-      // For int values, pushdata encoding uses VM number format
+      // For bigint values, pushdata encoding uses VM number format
       // We'll rely on the actual commitment from a sent transaction
     });
 
@@ -581,9 +581,9 @@ interface ITarget {
 }
 
 contract CallerWithEvent(bytes targetAddr) {
-    event CallerAction(int callerState);
+    event CallerAction(bigint callerState);
 
-    int callerState;
+    bigint callerState;
 
     function callTarget(pubkey pk, sig s) {
         require(checkSig(s, pk));
@@ -603,12 +603,12 @@ contract CallerWithEvent(bytes targetAddr) {
 pragma solidcash >=0.8.0;
 
 contract TargetWithEvent() {
-    event TargetIncremented(int oldValue, int newValue);
+    event TargetIncremented(bigint oldValue, bigint newValue);
 
-    int counter;
+    bigint counter;
 
     function increment() {
-        int oldVal = this.counter;
+        bigint oldVal = this.counter;
         this.counter = oldVal + 1;
         emit TargetIncremented(oldVal, this.counter);
     }
@@ -698,10 +698,10 @@ contract TargetWithEvent() {
       events: [
         {
           name: 'CounterUpdated',
-          signature: 'CounterUpdated(int,int)',
+          signature: 'CounterUpdated(bigint,bigint)',
           parameters: [
-            { name: 'oldValue', type: 'int' },
-            { name: 'newValue', type: 'int' },
+            { name: 'oldValue', type: 'bigint' },
+            { name: 'newValue', type: 'bigint' },
           ],
         },
       ],
@@ -737,7 +737,7 @@ contract TargetWithEvent() {
     it('should accept predicate functions with inferred parameter types', async () => {
       const sc = StatefulContract.withCategory(contract, categoryId);
       const call = sc.increment();
-      // The predicate parameter type is inferred as bigint (from 'int' -> bigint mapping)
+      // The predicate parameter type is inferred as bigint (from 'bigint' -> bigint mapping)
       await expect(call).toEmit(sc, 'CounterUpdated', {
         oldValue: (v) => v === 0n,
         newValue: (v) => v > 0n,

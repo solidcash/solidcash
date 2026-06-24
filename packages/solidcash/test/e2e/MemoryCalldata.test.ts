@@ -7,11 +7,11 @@ import { createTestProvider, gatherUtxos } from '../test-util.js';
 
 const MEMORY_CALLDATA_CONTRACT = `
 contract MemoryCalldata() {
-    function test(bytes memory data, int calldata value) {
+    function test(bytes memory data, bigint calldata value) {
         require(data.length > 0);
         require(value > 0);
 
-        int memory localVar = 0;
+        bigint memory localVar = 0;
         require(localVar == 0);
     }
 }
@@ -92,18 +92,18 @@ describe('MemoryCalldata', () => {
       expect(artifact.abi[0].name).toBe('test');
       expect(artifact.abi[0].inputs).toEqual([
         { name: 'data', type: 'bytes' },
-        { name: 'value', type: 'int' },
+        { name: 'value', type: 'bigint' },
       ]);
     });
 
     it('memory and calldata modifiers should not affect the compiled bytecode', () => {
       const withoutModifiers = compileString(`
         contract MemoryCalldata() {
-            function test(bytes data, int value) {
+            function test(bytes data, bigint value) {
                 require(data.length > 0);
                 require(value > 0);
 
-                int localVar = 0;
+                bigint localVar = 0;
                 require(localVar == 0);
             }
         }
@@ -115,10 +115,10 @@ describe('MemoryCalldata', () => {
     it('memory modifier in return type should not affect bytecode', () => {
       const withReturnModifier = compileString(`
         contract Test() {
-            function add(int a, int b) internal pure returns (int memory) {
+            function add(bigint a, bigint b) internal pure returns (bigint memory) {
                 return a + b;
             }
-            function run(int a, int b) {
+            function run(bigint a, bigint b) {
                 require(add(a, b) > 0);
             }
         }
@@ -126,10 +126,10 @@ describe('MemoryCalldata', () => {
 
       const withoutReturnModifier = compileString(`
         contract Test() {
-            function add(int a, int b) internal pure returns (int) {
+            function add(bigint a, bigint b) internal pure returns (bigint) {
                 return a + b;
             }
-            function run(int a, int b) {
+            function run(bigint a, bigint b) {
                 require(add(a, b) > 0);
             }
         }
@@ -141,10 +141,10 @@ describe('MemoryCalldata', () => {
     it('calldata modifier in return type should not affect bytecode', () => {
       const withReturnModifier = compileString(`
         contract Test() {
-            function getVal(int x) internal pure returns (int calldata) {
+            function getVal(bigint x) internal pure returns (bigint calldata) {
                 return x + 1;
             }
-            function run(int x) {
+            function run(bigint x) {
                 require(getVal(x) > 0);
             }
         }
@@ -152,10 +152,10 @@ describe('MemoryCalldata', () => {
 
       const withoutReturnModifier = compileString(`
         contract Test() {
-            function getVal(int x) internal pure returns (int) {
+            function getVal(bigint x) internal pure returns (bigint) {
                 return x + 1;
             }
-            function run(int x) {
+            function run(bigint x) {
                 require(getVal(x) > 0);
             }
         }

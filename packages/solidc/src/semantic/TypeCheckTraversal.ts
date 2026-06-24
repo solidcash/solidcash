@@ -326,8 +326,8 @@ export default class TypeCheckTraversal extends AstTraversal {
         throw new TokenContainerMethodArgumentError(node, 'to', toType, new BytesType());
       }
       const amountType = node.args[1]?.type;
-      if (amountType && !implicitlyCastable(amountType, PrimitiveType.INT)) {
-        throw new TokenContainerMethodArgumentError(node, 'amount', amountType, PrimitiveType.INT);
+      if (amountType && !implicitlyCastable(amountType, PrimitiveType.BIGINT)) {
+        throw new TokenContainerMethodArgumentError(node, 'amount', amountType, PrimitiveType.BIGINT);
       }
     } else if (node.methodName === 'transferNft') {
       // transferNft(to, commitment, capability): to -> bytes, commitment -> bytes, capability -> int
@@ -340,8 +340,8 @@ export default class TypeCheckTraversal extends AstTraversal {
         throw new TokenContainerMethodArgumentError(node, 'commitment', commitmentType, new BytesType());
       }
       const capabilityType = node.args[2]?.type;
-      if (capabilityType && !implicitlyCastable(capabilityType, PrimitiveType.INT)) {
-        throw new TokenContainerMethodArgumentError(node, 'capability', capabilityType, PrimitiveType.INT);
+      if (capabilityType && !implicitlyCastable(capabilityType, PrimitiveType.BIGINT)) {
+        throw new TokenContainerMethodArgumentError(node, 'capability', capabilityType, PrimitiveType.BIGINT);
       }
     }
 
@@ -355,8 +355,8 @@ export default class TypeCheckTraversal extends AstTraversal {
     if (node.lockingBytecode.type && !implicitlyCastable(node.lockingBytecode.type, new BytesType())) {
       throw new TransferArgumentTypeError(node, 'lockingBytecode', node.lockingBytecode.type, new BytesType());
     }
-    if (node.amount.type && !implicitlyCastable(node.amount.type, PrimitiveType.INT)) {
-      throw new TransferArgumentTypeError(node, 'amount', node.amount.type, PrimitiveType.INT);
+    if (node.amount.type && !implicitlyCastable(node.amount.type, PrimitiveType.BIGINT)) {
+      throw new TransferArgumentTypeError(node, 'amount', node.amount.type, PrimitiveType.BIGINT);
     }
 
     return node;
@@ -372,8 +372,8 @@ export default class TypeCheckTraversal extends AstTraversal {
         node, 'address', addrType!, new AddressType(true),
       );
     }
-    if (node.amount.type && !implicitlyCastable(node.amount.type, PrimitiveType.INT)) {
-      throw new TransferArgumentTypeError(node, 'amount', node.amount.type, PrimitiveType.INT);
+    if (node.amount.type && !implicitlyCastable(node.amount.type, PrimitiveType.BIGINT)) {
+      throw new TransferArgumentTypeError(node, 'amount', node.amount.type, PrimitiveType.BIGINT);
     }
     return node;
   }
@@ -388,8 +388,8 @@ export default class TypeCheckTraversal extends AstTraversal {
         node, 'address', addrType!, new AddressType(true),
       );
     }
-    if (node.amount.type && !implicitlyCastable(node.amount.type, PrimitiveType.INT)) {
-      throw new TransferArgumentTypeError(node, 'amount', node.amount.type, PrimitiveType.INT);
+    if (node.amount.type && !implicitlyCastable(node.amount.type, PrimitiveType.BIGINT)) {
+      throw new TransferArgumentTypeError(node, 'amount', node.amount.type, PrimitiveType.BIGINT);
     }
     node.type = PrimitiveType.BOOL;
     return node;
@@ -403,8 +403,8 @@ export default class TypeCheckTraversal extends AstTraversal {
     }
     if (node.callOptions?.value) {
       node.callOptions.value = this.visit(node.callOptions.value);
-      if (node.callOptions.value.type && !implicitlyCastable(node.callOptions.value.type, PrimitiveType.INT)) {
-        throw new TypeError(node, node.callOptions.value.type, PrimitiveType.INT);
+      if (node.callOptions.value.type && !implicitlyCastable(node.callOptions.value.type, PrimitiveType.BIGINT)) {
+        throw new TypeError(node, node.callOptions.value.type, PrimitiveType.BIGINT);
       }
     }
     if (node.callOptions?.gas) {
@@ -421,8 +421,8 @@ export default class TypeCheckTraversal extends AstTraversal {
     }
     if (node.callOptions?.value) {
       node.callOptions.value = this.visit(node.callOptions.value);
-      if (node.callOptions.value.type && !implicitlyCastable(node.callOptions.value.type, PrimitiveType.INT)) {
-        throw new TypeError(node, node.callOptions.value.type, PrimitiveType.INT);
+      if (node.callOptions.value.type && !implicitlyCastable(node.callOptions.value.type, PrimitiveType.BIGINT)) {
+        throw new TypeError(node, node.callOptions.value.type, PrimitiveType.BIGINT);
       }
     }
     if (node.callOptions?.gas) {
@@ -436,8 +436,8 @@ export default class TypeCheckTraversal extends AstTraversal {
     node.parameters = this.visitList(node.parameters);
     if (node.callOptions?.value) {
       node.callOptions.value = this.visit(node.callOptions.value);
-      if (node.callOptions.value.type && !implicitlyCastable(node.callOptions.value.type, PrimitiveType.INT)) {
-        throw new TypeError(node, node.callOptions.value.type, PrimitiveType.INT);
+      if (node.callOptions.value.type && !implicitlyCastable(node.callOptions.value.type, PrimitiveType.BIGINT)) {
+        throw new TypeError(node, node.callOptions.value.type, PrimitiveType.BIGINT);
       }
     }
     if (node.callOptions?.gas) {
@@ -520,8 +520,8 @@ export default class TypeCheckTraversal extends AstTraversal {
       if (node.arrayIndex) {
         // Array element access: validate index is int, result type is element type
         node.arrayIndex = this.visit(node.arrayIndex);
-        if (node.arrayIndex.type && !implicitlyCastable(node.arrayIndex.type, PrimitiveType.INT)) {
-          throw new TypeError(node, node.arrayIndex.type, PrimitiveType.INT);
+        if (node.arrayIndex.type && !implicitlyCastable(node.arrayIndex.type, PrimitiveType.BIGINT)) {
+          throw new TypeError(node, node.arrayIndex.type, PrimitiveType.BIGINT);
         }
         const arrType = node.collection.innermostValueType as ArrayType;
         node.type = arrType.elementType;
@@ -547,8 +547,8 @@ export default class TypeCheckTraversal extends AstTraversal {
       }
       if (node.arrayIndex) {
         // Array element assign: validate index is int, expression matches element type
-        if (node.arrayIndex.type && !implicitlyCastable(node.arrayIndex.type, PrimitiveType.INT)) {
-          throw new TypeError(node, node.arrayIndex.type, PrimitiveType.INT);
+        if (node.arrayIndex.type && !implicitlyCastable(node.arrayIndex.type, PrimitiveType.BIGINT)) {
+          throw new TypeError(node, node.arrayIndex.type, PrimitiveType.BIGINT);
         }
         const arrType = node.collection.innermostValueType as ArrayType;
         if (node.expression.type && !implicitlyCastable(node.expression.type, arrType.elementType)) {
@@ -619,8 +619,8 @@ export default class TypeCheckTraversal extends AstTraversal {
       // outState token container accesses only support aggregate fields
       if (node.expression.isOutStateTokenContainerAccess) {
         const validOutStateFields: Record<string, Type> = {
-          tokenAmount: PrimitiveType.INT,
-          nftCount: PrimitiveType.INT,
+          tokenAmount: PrimitiveType.BIGINT,
+          nftCount: PrimitiveType.BIGINT,
         };
         const fieldType = validOutStateFields[node.name];
         if (!fieldType) {
@@ -631,10 +631,10 @@ export default class TypeCheckTraversal extends AstTraversal {
       }
 
       const validFields: Record<string, Type> = {
-        tokenAmount: PrimitiveType.INT,
+        tokenAmount: PrimitiveType.BIGINT,
         tokenCategory: new BytesType(),
         nftCommitment: new BytesType(),
-        nftCount: PrimitiveType.INT,
+        nftCount: PrimitiveType.BIGINT,
       };
       const fieldType = validFields[node.name];
       if (!fieldType) {
@@ -649,7 +649,7 @@ export default class TypeCheckTraversal extends AstTraversal {
     // Handle .balance on address/connected address types
     if ((exprType instanceof AddressType)
         && node.name === 'balance') {
-      node.type = PrimitiveType.INT;
+      node.type = PrimitiveType.BIGINT;
       return node;
     }
 
@@ -673,7 +673,7 @@ export default class TypeCheckTraversal extends AstTraversal {
       if (!member) {
         throw new UndefinedEnumMemberError(node, exprType);
       }
-      node.type = PrimitiveType.INT;
+      node.type = PrimitiveType.BIGINT;
       node.enumType = exprType;
       return node;
     }
@@ -699,7 +699,7 @@ export default class TypeCheckTraversal extends AstTraversal {
       } else if (node.resolvedType instanceof FixedType) {
         node.type = node.resolvedType;
       } else if (node.resolvedType instanceof EnumType) {
-        node.type = PrimitiveType.INT;
+        node.type = PrimitiveType.BIGINT;
       }
     } else if (node.property === 'interfaceId') {
       node.type = new BytesType(4);
@@ -733,7 +733,7 @@ export default class TypeCheckTraversal extends AstTraversal {
   visitStateAccess(node: StateAccessNode): Node {
     // this.balance - special built-in (when no state variable named 'balance'), returns int
     if (node.name === 'balance' && !node.stateVariable) {
-      node.type = PrimitiveType.INT;
+      node.type = PrimitiveType.BIGINT;
       return node;
     }
     // this.outState - special built-in (used as this.outState.balance)
@@ -788,6 +788,14 @@ export default class TypeCheckTraversal extends AstTraversal {
     if (node.expression) {
       node.expression = this.visit(node.expression);
       expectAssignable(node, node.expression.type, node.type);
+    }
+
+    // Coerce an array literal to the declared array type so codegen packs elements at the declared
+    // element width (e.g. int256 fixed-width) rather than the literals' inferred PrimitiveType.INT
+    // (variable-width). Without this, `int[] a = [1,2,3]` builds variable-width but a[i] reads
+    // fixed-width. Empty arrays are handled above (before visiting).
+    if (node.type instanceof ArrayType && node.expression instanceof ArrayNode && node.expression.elements.length > 0) {
+      node.expression.type = node.type;
     }
 
     // Validate 'packed' modifier: only valid for arrays with fixed-width element types.
@@ -1417,7 +1425,7 @@ export default class TypeCheckTraversal extends AstTraversal {
     // a binary op is an integer and the other is a hex literal, reinterpret the literal as its big-endian
     // integer value (e.g. `x >= 0x100000000000000000000000000000000` for `x >= 2**128`). Only triggers on a
     // hex-vs-int pairing, which would otherwise be a type error, so it never changes working code.
-    const isIntType = (t?: Type): boolean => t === PrimitiveType.INT || t instanceof IntType;
+    const isIntType = (t?: Type): boolean => t === PrimitiveType.BIGINT || t instanceof IntType;
     if (this.solidityImportCompat) {
       if (node.left instanceof HexLiteralNode && isIntType(node.right.type)) {
         node.left = this.hexLiteralToInt(node.left);
@@ -1491,8 +1499,8 @@ export default class TypeCheckTraversal extends AstTraversal {
         // Integer bitwise (fixed-width two's-complement) when at least one operand is a bounded int.
         const lt = node.left.type;
         const rt = node.right.type;
-        const lInt = lt === PrimitiveType.INT || lt instanceof IntType;
-        const rInt = rt === PrimitiveType.INT || rt instanceof IntType;
+        const lInt = lt === PrimitiveType.BIGINT || lt instanceof IntType;
+        const rInt = rt === PrimitiveType.BIGINT || rt instanceof IntType;
         if (lInt && rInt) {
           const bounded = lt instanceof IntType ? lt : (rt instanceof IntType ? rt : undefined);
           if (!bounded) {
@@ -1512,7 +1520,7 @@ export default class TypeCheckTraversal extends AstTraversal {
       }
       case BinaryOperator.SHIFT_LEFT:
       case BinaryOperator.SHIFT_RIGHT:
-        expectAnyOfTypes(node, node.left.type, [new BytesType(), PrimitiveType.INT]);
+        expectAnyOfTypes(node, node.left.type, [new BytesType(), PrimitiveType.BIGINT]);
         expectInt(node, node.right.type);
         if (node.right instanceof IntLiteralNode && Number(node.right.value) < 0) {
           throw new BitshiftBitcountNegativeError(node, Number(node.right.value));
@@ -1542,7 +1550,7 @@ export default class TypeCheckTraversal extends AstTraversal {
           node.type = node.expression.type;
         } else {
           expectInt(node, node.expression.type);
-          node.type = node.expression.type instanceof IntType ? node.expression.type : PrimitiveType.INT;
+          node.type = node.expression.type instanceof IntType ? node.expression.type : PrimitiveType.BIGINT;
         }
         return node;
       case UnaryOperator.INVERT:
@@ -1556,11 +1564,11 @@ export default class TypeCheckTraversal extends AstTraversal {
         return node;
       case UnaryOperator.SIZE:
         if (node.expression.type instanceof ArrayType) {
-          node.type = PrimitiveType.INT;
+          node.type = PrimitiveType.BIGINT;
           return node;
         }
         expectAnyOfTypes(node, node.expression.type, [new BytesType(), PrimitiveType.STRING]);
-        node.type = PrimitiveType.INT;
+        node.type = PrimitiveType.BIGINT;
         return node;
       case UnaryOperator.REVERSE:
         expectAnyOfTypes(node, node.expression.type, [new BytesType(), PrimitiveType.STRING]);
@@ -1574,7 +1582,7 @@ export default class TypeCheckTraversal extends AstTraversal {
       case UnaryOperator.INPUT_TOKEN_AMOUNT:
       case UnaryOperator.OUTPUT_TOKEN_AMOUNT:
         expectInt(node, node.expression.type);
-        node.type = PrimitiveType.INT;
+        node.type = PrimitiveType.BIGINT;
         return node;
       case UnaryOperator.INPUT_LOCKING_BYTECODE:
       case UnaryOperator.INPUT_UNLOCKING_BYTECODE:
@@ -1603,7 +1611,7 @@ export default class TypeCheckTraversal extends AstTraversal {
       case NullaryOperator.VERSION:
       case NullaryOperator.LOCKTIME:
       case NullaryOperator.MSG_VALUE:
-        node.type = PrimitiveType.INT;
+        node.type = PrimitiveType.BIGINT;
         return node;
       case NullaryOperator.BYTECODE:
         node.type = new BytesType();
@@ -1766,7 +1774,7 @@ export default class TypeCheckTraversal extends AstTraversal {
     }
 
     if (!(node.array.type instanceof ArrayType)) {
-      throw new UnsupportedTypeError(node as any, node.array.type, new ArrayType(PrimitiveType.INT));
+      throw new UnsupportedTypeError(node as any, node.array.type, new ArrayType(PrimitiveType.BIGINT));
     }
 
     expectInt(node as any, node.index.type);
@@ -1958,22 +1966,22 @@ function expectBool(node: ExpectedNode, actual?: Type): void {
 }
 
 function expectInt(node: ExpectedNode, actual?: Type): void {
-  expectAnyOfTypes(node, actual, [PrimitiveType.INT]);
+  expectAnyOfTypes(node, actual, [PrimitiveType.BIGINT]);
 }
 
 function expectNumeric(node: ExpectedNode, actual?: Type): void {
   if (!isNumericType(actual)) {
-    throw new UnsupportedTypeError(node, actual, PrimitiveType.INT);
+    throw new UnsupportedTypeError(node, actual, PrimitiveType.BIGINT);
   }
 }
 
 function expectNumericOrConcat(node: ExpectedNode, actual?: Type): void {
   // Bool is excluded from numeric addition - use int() cast first
   if (actual !== PrimitiveType.BOOL && isNumericType(actual)) return;
-  if (implicitlyCastable(actual, PrimitiveType.INT)) return;
+  if (implicitlyCastable(actual, PrimitiveType.BIGINT)) return;
   if (implicitlyCastable(actual, PrimitiveType.STRING)) return;
   if (implicitlyCastable(actual, new BytesType())) return;
-  throw new UnsupportedTypeError(node, actual, PrimitiveType.INT);
+  throw new UnsupportedTypeError(node, actual, PrimitiveType.BIGINT);
 }
 
 function expectBytes(node: ExpectedNode, actual?: Type): void {
@@ -2104,7 +2112,7 @@ const inferPaddedBytesType = (node: FunctionCallNode): Type => {
 };
 
 function isValidStateType(type: Type): boolean {
-  if (type === PrimitiveType.INT || type === PrimitiveType.BOOL) return true;
+  if (type === PrimitiveType.BIGINT || type === PrimitiveType.BOOL) return true;
   if (type === PrimitiveType.STRING) return true;
   if (type === PrimitiveType.PUBKEY) return true;
   if (type === PrimitiveType.SIG) return true;
@@ -2123,7 +2131,7 @@ function isValidStateType(type: Type): boolean {
 }
 
 function isValidMappingKeyType(type: Type): boolean {
-  if (type === PrimitiveType.INT || type === PrimitiveType.BOOL) return true;
+  if (type === PrimitiveType.BIGINT || type === PrimitiveType.BOOL) return true;
   if (type === PrimitiveType.STRING) return true;
   if (type === PrimitiveType.PUBKEY) return true;
   if (type instanceof IntType) return true;
@@ -2135,7 +2143,7 @@ function isValidMappingKeyType(type: Type): boolean {
 
 function isValidEventParamType(type: Type): boolean {
   // int, bool, string, pubkey are valid
-  if (type === PrimitiveType.INT || type === PrimitiveType.BOOL) return true;
+  if (type === PrimitiveType.BIGINT || type === PrimitiveType.BOOL) return true;
   // Bounded int types are valid
   if (type instanceof IntType) return true;
   if (type === PrimitiveType.STRING || type === PrimitiveType.PUBKEY) return true;

@@ -540,7 +540,7 @@ describe('Valid Contracts - SDK e2e', () => {
     it('abi_decode: decode pre-encoded data', async () => {
       // Build encoded data: int(1) + bytes4(0xdeadbeef) + bool(true)
       const parts = [
-        encodePushdataValue(1n, 'int'),
+        encodePushdataValue(1n, 'int256'),
         encodePushdataValue(hexToBin('deadbeef'), 'bytes4'),
         encodePushdataValue(true, 'bool'),
       ];
@@ -557,7 +557,7 @@ describe('Valid Contracts - SDK e2e', () => {
 
     it('abi_decode_at: decode specific field at index', async () => {
       const parts = [
-        encodePushdataValue(1n, 'int'),
+        encodePushdataValue(1n, 'int256'),
         encodePushdataValue(hexToBin('deadbeef'), 'bytes4'),
         encodePushdataValue(true, 'bool'),
       ];

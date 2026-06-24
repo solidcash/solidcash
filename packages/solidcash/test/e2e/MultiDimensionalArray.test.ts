@@ -62,14 +62,14 @@ async function addUtxos(provider: MockNetworkProvider, address: string, count: n
 const LITERAL_ACCESS_SOURCE = `
 pragma solidcash ^0.13.0;
 contract LiteralAccess() {
-    function testAccess(int row, int col) {
-        int[3][] matrix = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
-        int val = matrix[row][col];
+    function testAccess(bigint row, bigint col) {
+        bigint[3][] matrix = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
+        bigint val = matrix[row][col];
         require(val >= 0);
     }
 
     function testConstants() {
-        int[3][] matrix = [[10, 20, 30], [40, 50, 60]];
+        bigint[3][] matrix = [[10, 20, 30], [40, 50, 60]];
         require(matrix[0][0] == 10);
         require(matrix[0][2] == 30);
         require(matrix[1][0] == 40);
@@ -83,7 +83,7 @@ const PUSH_POP_SOURCE = `
 pragma solidcash ^0.13.0;
 contract PushPop() {
     function testPushPop() {
-        int[3][] rows = [[10, 20, 30]];
+        bigint[3][] rows = [[10, 20, 30]];
         rows.push([40, 50, 60]);
         require(rows.length == 2);
         require(rows[1][0] == 40);
@@ -94,7 +94,7 @@ contract PushPop() {
     }
 
     function testMultiplePush() {
-        int[2][] arr = [];
+        bigint[2][] arr = [];
         arr.push([1, 2]);
         arr.push([3, 4]);
         arr.push([5, 6]);
@@ -110,19 +110,19 @@ const INNER_EXTRACT_SOURCE = `
 pragma solidcash ^0.13.0;
 contract InnerExtract() {
     function testExtractRow() {
-        int[3][] matrix = [[1, 2, 3], [4, 5, 6]];
-        int[] row0 = matrix[0];
+        bigint[3][] matrix = [[1, 2, 3], [4, 5, 6]];
+        bigint[] row0 = matrix[0];
         require(row0.length == 3);
         require(row0[0] == 1);
         require(row0[1] == 2);
         require(row0[2] == 3);
-        int[] row1 = matrix[1];
+        bigint[] row1 = matrix[1];
         require(row1[0] == 4);
         require(row1[2] == 6);
     }
 
     function testOuterLength() {
-        int[3][] matrix = [[1, 2, 3], [4, 5, 6], [7, 8, 9]];
+        bigint[3][] matrix = [[1, 2, 3], [4, 5, 6], [7, 8, 9]];
         require(matrix.length == 3);
     }
 }
@@ -131,8 +131,8 @@ contract InnerExtract() {
 const DIAGONAL_SOURCE = `
 pragma solidcash ^0.13.0;
 contract Diagonal() {
-    function testDiagonal(int n) {
-        int[3][] matrix = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
+    function testDiagonal(bigint n) {
+        bigint[3][] matrix = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
         require(matrix[n][n] == 1);
     }
 }
@@ -142,7 +142,7 @@ const DELETE_SOURCE = `
 pragma solidcash ^0.13.0;
 contract Delete2D() {
     function testDelete() {
-        int[2][] pairs = [[1, 2], [3, 4], [5, 6]];
+        bigint[2][] pairs = [[1, 2], [3, 4], [5, 6]];
         require(pairs.length == 3);
         pairs.delete(1);
         require(pairs.length == 2);
@@ -157,7 +157,7 @@ const ASSIGN_SOURCE = `
 pragma solidcash ^0.13.0;
 contract Assign2D() {
     function testOuterAssign() {
-        int[2][] pairs = [[1, 2], [3, 4]];
+        bigint[2][] pairs = [[1, 2], [3, 4]];
         pairs[0] = [10, 20];
         require(pairs[0][0] == 10);
         require(pairs[0][1] == 20);
@@ -165,7 +165,7 @@ contract Assign2D() {
     }
 
     function testPushThenAssign() {
-        int[2][] arr = [[0, 0]];
+        bigint[2][] arr = [[0, 0]];
         arr.push([0, 0]);
         arr[0] = [10, 20];
         arr[1] = [30, 40];
@@ -219,7 +219,7 @@ const FIXED_2D_SOURCE = `
 pragma solidcash ^0.13.0;
 contract Fixed2D() {
     function testAccess() {
-        int[3][2] grid = [[1, 2, 3], [4, 5, 6]];
+        bigint[3][2] grid = [[1, 2, 3], [4, 5, 6]];
         require(grid[0][0] == 1);
         require(grid[0][2] == 3);
         require(grid[1][0] == 4);
@@ -228,7 +228,7 @@ contract Fixed2D() {
     }
 
     function testAssign() {
-        int[3][2] grid = [[1, 2, 3], [4, 5, 6]];
+        bigint[3][2] grid = [[1, 2, 3], [4, 5, 6]];
         grid[1] = [7, 8, 9];
         require(grid[1][0] == 7);
         require(grid[1][2] == 9);
@@ -241,8 +241,8 @@ const FIXED_INNER_SOURCE = `
 pragma solidcash ^0.13.0;
 contract FixedInner() {
     function testInnerLength() {
-        int[3][2] grid = [[10, 20, 30], [40, 50, 60]];
-        int[] row = grid[0];
+        bigint[3][2] grid = [[10, 20, 30], [40, 50, 60]];
+        bigint[] row = grid[0];
         require(row.length == 3);
     }
 }
@@ -252,7 +252,7 @@ const FAILURE_VALUE_SOURCE = `
 pragma solidcash ^0.13.0;
 contract FailureValue() {
     function testWrongValue() {
-        int[2][] pairs = [[10, 20], [30, 40]];
+        bigint[2][] pairs = [[10, 20], [30, 40]];
         require(pairs[0][0] == 999);
     }
 }
@@ -262,7 +262,7 @@ const FAILURE_LENGTH_SOURCE = `
 pragma solidcash ^0.13.0;
 contract FailureLength() {
     function testWrongLength() {
-        int[2][] pairs = [[1, 2]];
+        bigint[2][] pairs = [[1, 2]];
         require(pairs.length == 5);
     }
 }
@@ -272,7 +272,7 @@ const FAILURE_PUSH_SOURCE = `
 pragma solidcash ^0.13.0;
 contract FailurePush() {
     function testWrongAfterPush() {
-        int[2][] pairs = [[1, 2]];
+        bigint[2][] pairs = [[1, 2]];
         pairs.push([3, 4]);
         require(pairs[1][0] == 99);
     }
@@ -433,7 +433,7 @@ describe('Multi-Dimensional Arrays', () => {
   });
 
   // -- fixed-size 2D arrays (both dimensions bounded) ------------------
-  describe('fixed-size 2D arrays - int[3][2]', () => {
+  describe('fixed-size 2D arrays - bigint[3][2]', () => {
     const { provider, contract } = setupContract(FIXED_2D_SOURCE);
     beforeAll(() => addUtxos(provider, contract.address, 4));
 

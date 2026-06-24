@@ -37,19 +37,19 @@ describe('type utilities', () => {
 
   describe('explicitlyCastable()', () => {
     it('cannot cast undefined values', () => {
-      expect(explicitlyCastable(PrimitiveType.INT, undefined)).toEqual(false);
+      expect(explicitlyCastable(PrimitiveType.BIGINT, undefined)).toEqual(false);
       expect(explicitlyCastable(undefined, PrimitiveType.STRING)).toEqual(false);
     });
 
     it('cannot cast tuples', () => {
-      expect(explicitlyCastable(PrimitiveType.INT, new TupleType([PrimitiveType.INT, PrimitiveType.INT])))
+      expect(explicitlyCastable(PrimitiveType.BIGINT, new TupleType([PrimitiveType.BIGINT, PrimitiveType.BIGINT])))
         .toEqual(false);
-      expect(explicitlyCastable(new TupleType([PrimitiveType.INT, PrimitiveType.INT]), PrimitiveType.STRING))
+      expect(explicitlyCastable(new TupleType([PrimitiveType.BIGINT, PrimitiveType.BIGINT]), PrimitiveType.STRING))
         .toEqual(false);
     });
 
     it('cannot cast between array an non-array', () => {
-      expect(explicitlyCastable(PrimitiveType.INT, new ArrayType(PrimitiveType.INT)))
+      expect(explicitlyCastable(PrimitiveType.BIGINT, new ArrayType(PrimitiveType.BIGINT)))
         .toEqual(false);
     });
 
@@ -61,7 +61,7 @@ describe('type utilities', () => {
 
     it('can cast arrays if their elements can be cast', () => {
       expect(
-        explicitlyCastable(new ArrayType(PrimitiveType.BOOL), new ArrayType(PrimitiveType.INT)),
+        explicitlyCastable(new ArrayType(PrimitiveType.BOOL), new ArrayType(PrimitiveType.BIGINT)),
       ).toEqual(true);
     });
 
@@ -82,7 +82,7 @@ describe('type utilities', () => {
 
   describe('parseType()', () => {
     it('should parse primitive type strings', () => {
-      expect(parseType('int')).toEqual(PrimitiveType.INT);
+      expect(parseType('int')).toEqual(PrimitiveType.BIGINT);
       expect(parseType('bool')).toEqual(PrimitiveType.BOOL);
       expect(parseType('string')).toEqual(PrimitiveType.STRING);
       expect(parseType('pubkey')).toEqual(PrimitiveType.PUBKEY);

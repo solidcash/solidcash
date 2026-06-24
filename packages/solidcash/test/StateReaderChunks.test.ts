@@ -93,7 +93,7 @@ describe('StateReader chunk discovery + assembly', () => {
     );
     expect(result.state.a).toBe(7n);
     expect(result.state.b).toBe(text);
-    expect(result.state['b$len']).toBeUndefined();
+    expect(result.state.b$len).toBeUndefined();
   });
 
   it('returns empty string for A$len 0 with no chunks', async () => {

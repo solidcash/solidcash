@@ -10,7 +10,7 @@ import { randomUtxo } from '../../src/utils.js';
 import { createTestProvider, gatherUtxos } from '../test-util.js';
 import { alicePkh } from '../fixture/vars.js';
 import { hexToBin } from '@bitauth/libauth';
-import { encodePushdataValue } from '@solidcash/utils';
+import { encodePushdataValue, packFixedWidthArray } from '@solidcash/utils';
 
 // --- Helpers -------------------------------------------------------------
 
@@ -968,20 +968,14 @@ describe('Dynamic Arrays', () => {
       await provider.addUtxo(contract.address, randomUtxo({ satoshis: 100000n }));
     });
 
-    // Build a pushdata-encoded int[] blob: length prefix + pushdata-encoded elements
+    // Build an int256[] param blob: minimal-pushdata length prefix + packed fixed-width (33-byte) elements,
+    // matching the fixed-width array codegen (`int` is now int256).
     function buildIntArrayBlob(elements: bigint[]): Uint8Array {
-      const parts: Uint8Array[] = [];
-      parts.push(encodePushdataValue(BigInt(elements.length), 'int'));
-      for (const el of elements) {
-        parts.push(encodePushdataValue(el, 'int'));
-      }
-      const totalLen = parts.reduce((a, p) => a + p.length, 0);
-      const result = new Uint8Array(totalLen);
-      let offset = 0;
-      for (const part of parts) {
-        result.set(part, offset);
-        offset += part.length;
-      }
+      const lenPrefix = encodePushdataValue(BigInt(elements.length), 'bigint');
+      const packed = packFixedWidthArray(elements, 'int256');
+      const result = new Uint8Array(lenPrefix.length + packed.length);
+      result.set(lenPrefix, 0);
+      result.set(packed, lenPrefix.length);
       return result;
     }
 
@@ -1786,12 +1780,12 @@ describe('Dynamic Arrays', () => {
         expect(bytecode).not.toContain('OP_UNTIL');
       });
 
-      it('int[] access uses scan loop (NOT packed), confirming difference', () => {
-        // Regular unbounded int[] uses linear scan (O(n))
+      it('bigint[] access uses scan loop (NOT packed), confirming difference', () => {
+        // Variable-width unbounded bigint[] uses linear scan (O(n)); int[] is now int256[] (fixed-width, packed)
         const source = `
           contract IntAccess() {
-              function test(int idx) {
-                  int[] arr = [10, 20, 30];
+              function test(bigint idx) {
+                  bigint[] arr = [10, 20, 30];
                   require(arr[idx] == 20);
               }
           }
@@ -1799,10 +1793,10 @@ describe('Dynamic Arrays', () => {
         const artifact = compileString(source);
         const bytecode = artifact.bytecode;
 
-        // Unbounded int[] DOES use scan loop
+        // Unbounded bigint[] DOES use scan loop
         expect(bytecode).toContain('OP_BEGIN');
         expect(bytecode).toContain('OP_UNTIL');
-        // Unbounded int[] does NOT use OP_MUL for offset computation
+        // Unbounded bigint[] does NOT use OP_MUL for offset computation
         expect(bytecode).not.toContain('OP_MUL');
       });
 

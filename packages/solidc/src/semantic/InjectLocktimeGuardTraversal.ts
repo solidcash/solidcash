@@ -69,7 +69,7 @@ function createLocktimeGuard(funcNode: FunctionDefinitionNode): TimeOpNode {
   const guardLocation = new Location(funcNode.body.location.start, funcNode.body.location.start);
 
   const expression = new NullaryOpNode(NullaryOperator.LOCKTIME);
-  expression.type = PrimitiveType.INT;
+  expression.type = PrimitiveType.BIGINT;
   expression.location = guardLocation;
 
   const message = 'Using tx.locktime requires a non-final sequence number on the spending input';

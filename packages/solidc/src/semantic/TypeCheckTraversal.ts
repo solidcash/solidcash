@@ -1718,7 +1718,8 @@ export default class TypeCheckTraversal extends AstTraversal {
 
   visitAbiDecode(node: AbiDecodeNode): Node {
     node.data = this.visit(node.data);
-    node.type = new TupleType(node.schema);
+    // A single-type decode yields that type directly (Solidity `abi.decode(d, (T))` returns T); 2+ -> tuple.
+    node.type = node.schema.length === 1 ? node.schema[0] : new TupleType(node.schema);
     return node;
   }
 

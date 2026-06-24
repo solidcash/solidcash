@@ -117,7 +117,7 @@ structDefinition
     ;
 
 structField
-    : typeName anyIdentifier ';'
+    : (typeName | arrayType) anyIdentifier ';'
     ;
 
 enumDefinition
@@ -308,9 +308,9 @@ emitStatement
 // lvalue shape is resolved to the right target (state var, collection, local) in AstBuilder/semantic. Bare
 // scalar `x op= v` stays in assignStatement (which also handles `++`/`--`).
 assignmentStatement
-    : 'this' '.' Identifier (('[' expression ']')+ ('.' Identifier)?)? op=('=' | '+=' | '-=' | '*=' | '/=' | '%=' | '&=' | '|=' | '^=' | '<<=' | '>>=') expression ';'
-    | Identifier ('[' expression ']')+ ('.' Identifier)? op=('=' | '+=' | '-=' | '*=' | '/=' | '%=' | '&=' | '|=' | '^=' | '<<=' | '>>=') expression ';'
-    | Identifier '.' Identifier op=('=' | '+=' | '-=' | '*=' | '/=' | '%=' | '&=' | '|=' | '^=' | '<<=' | '>>=') expression ';'
+    : 'this' '.' Identifier (('[' expression ']')+)? ('.' Identifier)* op=('=' | '+=' | '-=' | '*=' | '/=' | '%=' | '&=' | '|=' | '^=' | '<<=' | '>>=') expression ';'
+    | Identifier ('[' expression ']')+ ('.' Identifier)* op=('=' | '+=' | '-=' | '*=' | '/=' | '%=' | '&=' | '|=' | '^=' | '<<=' | '>>=') expression ';'
+    | Identifier ('.' Identifier)+ op=('=' | '+=' | '-=' | '*=' | '/=' | '%=' | '&=' | '|=' | '^=' | '<<=' | '>>=') expression ';'
     ;
 
 mappingDeleteStatement

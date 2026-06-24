@@ -578,13 +578,9 @@ export function parseType(str: string): Type {
   if (str === 'int') return new IntType(true, 256);
   if (str === 'uint') return new IntType(false, 256);
 
-  if (str.startsWith('byte')) return BytesType.fromString(str);
-
-  // Internal function type: function(<types>)[returns(<types>)] (whitespace already stripped).
-  if (str.startsWith('function(')) return parseFunctionType(str);
-
-  // Array types: int[5], int[], bytes20[], int[3][5], etc.
-  // Use lastIndexOf to find the outermost dimension (rightmost brackets)
+  // Array types: int[5], int[], bytes20[], int[3][5], etc. Checked before the `byte`/`function` branches so
+  // `bytes20[]` parses as an array of bytes20 (not as a malformed bytes type).
+  // Use lastIndexOf to find the outermost dimension (rightmost brackets).
   if (str.endsWith(']') && str.includes('[')) {
     const bracketIdx = str.lastIndexOf('[');
     const elementTypeStr = str.substring(0, bracketIdx);
@@ -593,6 +589,11 @@ export function parseType(str: string): Type {
     const bound = boundStr ? parseInt(boundStr, 10) : undefined;
     return new ArrayType(elementType, bound);
   }
+
+  if (str.startsWith('byte')) return BytesType.fromString(str);
+
+  // Internal function type: function(<types>)[returns(<types>)] (whitespace already stripped).
+  if (str.startsWith('function(')) return parseFunctionType(str);
 
   // mapping(KeyType => ValueType) - supports nested mappings
   if (str.startsWith('mapping(') && str.endsWith(')')) {

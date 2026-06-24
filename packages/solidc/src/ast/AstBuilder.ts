@@ -269,6 +269,8 @@ export default class AstBuilder
   // Chunk-packed/packed state struct arrays -> element StructType, for desugaring element-field writes
   // (`arr[i].field = v`) to a whole-element rebuild (`arr[i] = T(arr[i].f0, .., v, ..)`).
   private packedStructArrayElems: Map<string, StructType> = new Map();
+  // State struct variables -> StructType, for desugaring field-chain writes (`this.d.x = v`) to a rebuild.
+  private stateStructVars: Map<string, StructType> = new Map();
   // Storage-pointer locals: `T storage x = container[k];` makes `x` a compile-time alias for the access
   // path `container[k]`. Reads/writes through `x` are rewritten to that path (reusing existing codegen).
   // Per-function (cleared at each function/constructor/modifier entry); flat scope is sufficient here.
@@ -579,6 +581,11 @@ export default class AstBuilder
         .filter((sv) => (sv.isPacked || sv.isDynamic) && sv.type instanceof ArrayType
           && (sv.type as ArrayType).elementType instanceof StructType)
         .map((sv) => [sv.name, (sv.type as ArrayType).elementType as StructType]),
+    );
+    this.stateStructVars = new Map(
+      stateVariables
+        .filter((sv) => sv.type instanceof StructType)
+        .map((sv) => [sv.name, sv.type as StructType]),
     );
 
     // Collect modifier definitions
@@ -1867,6 +1874,29 @@ export default class AstBuilder
     return node;
   }
 
+  // The struct type holding each field of a chain ([T0, T1, .., T(n-1)]), or undefined if `chain` is not a
+  // valid struct field path from `t0` (each non-final field must itself be a struct). Used to gate the
+  // field-chain rebuild desugar.
+  private chainStructTypes(t0: StructType, chain: string[]): StructType[] | undefined {
+    const types: StructType[] = [];
+    let cur: StructType | undefined = t0;
+    for (let i = 0; i < chain.length; i++) {
+      if (!cur || !cur.fields.some((x) => x.name === chain[i])) return undefined;
+      types.push(cur);
+      if (i < chain.length - 1) cur = this.resolveFieldStruct(cur, chain[i]);
+    }
+    return types;
+  }
+
+  // The StructType of field `field` in struct `t`, resolving a placeholder (unresolved-name) field type via the
+  // struct registry.
+  private resolveFieldStruct(t: StructType, field: string): StructType | undefined {
+    const ft = t.fields.find((x) => x.name === field)?.type;
+    if (ft instanceof StructType) return ft;
+    if (ft instanceof AddressType && ft.interfaceName) return this.structMap.get(ft.interfaceName);
+    return undefined;
+  }
+
   // Unified lvalue assignment: `this.x`, `this.m[k]`, `this.m[k].f`, `m[k]`, `m[k].f`, `m[k1][k2]` (with any
   // compound op). The lvalue shape selects the assignment node; semantic analysis routes state vs local. A
   // numKeys-0 lvalue is always `this.<scalar>` (the bare-scalar form lives in assignStatement).
@@ -1883,32 +1913,50 @@ export default class AstBuilder
     const valueCtx = exprCtxs[exprCtxs.length - 1];
     const loc = Location.fromCtx(ctx);
 
-    // Local struct member assignment `s.field op= v` (no index, local struct, not `this.`/alias). There is no
-    // direct codegen for writing a local struct field, so desugar to a struct rebuild: `s = S(.., new, ..)`,
-    // where the assigned field gets the new value and the others are read back from `s`.
-    const localStruct = (!isThis && hasMember && keyCtxs.length === 0 && !this.storageAliases.has(rawName))
-      ? this.localStructTypes.get(rawName) : undefined;
-    if (localStruct) {
-      const fieldRead = (field: string): ExpressionNode => {
-        const base = new IdentifierNode(rawName);
-        base.location = nameLoc;
-        const fa = new FieldAccessNode(base, field);
+    // Struct field-chain write `<base>.f1.f2...fn op= v` where base is a local or state struct variable (no
+    // index, no alias). Struct fields have no in-place write codegen, so rebuild the base value from the
+    // innermost field outward and assign it back: `base = T(base.g0, .., (g==f1 ? <rebuilt f1> : base.g), ..)`.
+    // Recurses for nested chains (`b.a.x = v`, `this.d.a.x = v`).
+    const memberChain = ids.slice(1).map((id) => id.getText());
+    const baseStructT = (memberChain.length >= 1 && keyCtxs.length === 0 && !this.storageAliases.has(rawName))
+      ? (isThis ? this.stateStructVars.get(rawName) : this.localStructTypes.get(rawName))
+      : undefined;
+    if (baseStructT && this.chainStructTypes(baseStructT, memberChain)) {
+      const baseRead = (): ExpressionNode => {
+        const r: ExpressionNode = isThis ? new StateAccessNode(rawName) : new IdentifierNode(rawName);
+        r.location = nameLoc;
+        return r;
+      };
+      const fieldAccess = (expr: ExpressionNode, field: string): ExpressionNode => {
+        const fa = new FieldAccessNode(expr, field);
         fa.location = loc;
         return fa;
       };
-      const newValue = op === '='
+      // Rebuild `structExpr` (struct type t) with `structExpr.chain` replaced by finalValue.
+      const rebuild = (structExpr: ExpressionNode, t: StructType, chain: string[], finalValue: ExpressionNode):
+      ExpressionNode => {
+        const [head, ...rest] = chain;
+        const newField = rest.length === 0
+          ? finalValue
+          : rebuild(fieldAccess(cloneNode(structExpr), head), this.resolveFieldStruct(t, head)!, rest, finalValue);
+        const ctorId = new IdentifierNode(t.name);
+        ctorId.location = nameLoc;
+        const ctor = new FunctionCallNode(
+          ctorId,
+          t.fields.map((f) => (f.name === head ? newField : fieldAccess(cloneNode(structExpr), f.name))),
+        );
+        ctor.location = loc;
+        return ctor;
+      };
+      let chainRead = baseRead();
+      for (const m of memberChain) chainRead = fieldAccess(chainRead, m);
+      const finalValue = op === '='
         ? this.visit(valueCtx) as ExpressionNode
-        : this.compoundRhs(fieldRead(fieldName!), op, valueCtx, loc);
-      const ctorId = new IdentifierNode(localStruct.name);
-      ctorId.location = nameLoc;
-      const ctor = new FunctionCallNode(
-        ctorId,
-        localStruct.fields.map((f) => (f.name === fieldName ? newValue : fieldRead(f.name))),
-      );
-      ctor.location = loc;
-      const target = new IdentifierNode(rawName);
-      target.location = nameLoc;
-      const assign = new AssignNode(target, ctor);
+        : this.compoundRhs(chainRead, op, valueCtx, loc);
+      const rebuilt = rebuild(baseRead(), baseStructT, memberChain, finalValue);
+      const assign: StatementNode = isThis
+        ? new StateAssignNode(rawName, rebuilt)
+        : new AssignNode(baseRead(), rebuilt);
       assign.location = loc;
       return assign;
     }
@@ -2134,7 +2182,8 @@ export default class AstBuilder
     const structName = ctx.Identifier().getText();
     const fields = ctx.structField_list().map((fieldCtx) => ({
       name: fieldCtx.anyIdentifier().getText(),
-      type: this.resolveType(fieldCtx.typeName().getText()),
+      // A field may be a plain typeName or an arrayType (`int[]`, `bytes20[3]`).
+      type: this.resolveType((fieldCtx.typeName() ?? fieldCtx.arrayType())!.getText()),
     }));
     const node = new StructDefinitionNode(structName, fields);
     node.location = Location.fromCtx(ctx);

@@ -1220,6 +1220,16 @@ export default class TypeCheckTraversal extends AstTraversal {
     // Struct constructor: type is the StructType itself
     if (type instanceof StructType) {
       node.type = type;
+      // Array-typed struct fields: mark an array-literal arg blobEncoded and coerce it to the field's array
+      // type, so codegen builds a single framed array blob at the declared element width (mirrors the typed
+      // array assignment path). Positional args line up with fields in declaration order.
+      type.fields.forEach((field, i) => {
+        const arg = node.parameters[i];
+        if (field.type instanceof ArrayType && arg instanceof ArrayNode) {
+          arg.blobEncoded = true;
+          arg.type = field.type;
+        }
+      });
     }
 
     return node;

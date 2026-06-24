@@ -4,7 +4,7 @@ import { dirname, resolve } from 'path';
 import { compileString } from 'solidc';
 import {
   Contract, MockNetworkProvider, TransactionBuilder, FailedRequireError,
-  StateRecord,
+  StateRecord, StatefulContract, SignatureTemplate,
 } from '../../src/index.js';
 import {
   buildPushdataCommitment,
@@ -13,7 +13,8 @@ import {
   StateLayout,
 } from '@solidcash/utils';
 import { randomUtxo } from '../../src/utils.js';
-import { createTestProvider, gatherUtxos } from '../test-util.js';
+import { createTestProvider, gatherUtxos, setupStatefulUtxos } from '../test-util.js';
+import { alicePub, alicePriv } from '../fixture/vars.js';
 
 // --- Helpers ----------------------------------------------------------------
 
@@ -816,5 +817,89 @@ describe('Stateful nested struct contracts', () => {
       expect(inner.y).toBe(8n);
       expect(data.z).toBe(9n);
     });
+  });
+});
+
+// Closed struct field-write gaps: array-typed struct fields, direct state struct-var field writes, and nested
+// struct field writes. Field writes desugar to a struct rebuild.
+describe('Struct field-write gaps', () => {
+  const sig = (): SignatureTemplate => new SignatureTemplate(alicePriv);
+
+  it('Gap1: array-typed struct field - construct, index read, length', async () => {
+    const source = `contract C() {
+      struct Bag { int[] xs; int tag; }
+      function test() {
+        Bag b = Bag([10, 20, 30], 7);
+        require(b.xs[0] == 10);
+        require(b.xs[2] == 30);
+        require(b.xs.length == 3);
+        require(b.tag == 7);
+      }
+    }`;
+    const { provider, contract } = setupContract(source);
+    await provider.addUtxo(contract.address, randomUtxo({ satoshis: 100000n }));
+    await provider.addUtxo(contract.address, randomUtxo({ satoshis: 100000n }));
+    const tx = await sendTx(provider, contract, contract.unlock.test());
+    expect(tx.txid).toBeDefined();
+  });
+
+  it('Gap3: nested local struct field write (b.a.x = v)', async () => {
+    const source = `contract C() {
+      struct A { int x; }
+      struct B { A a; int y; }
+      function test() {
+        B b = B(A(1), 2);
+        b.a.x = 9;
+        require(b.a.x == 9);
+        require(b.y == 2);
+      }
+    }`;
+    const { provider, contract } = setupContract(source);
+    await provider.addUtxo(contract.address, randomUtxo({ satoshis: 100000n }));
+    await provider.addUtxo(contract.address, randomUtxo({ satoshis: 100000n }));
+    const tx = await sendTx(provider, contract, contract.unlock.test());
+    expect(tx.txid).toBeDefined();
+  });
+
+  it('Gap2: direct state struct-var field write preserves other fields (this.d.x = v)', async () => {
+    const source = `pragma solidcash >=0.8.0;
+    contract C() {
+      struct P { int x; int y; }
+      P d;
+      function setX(int v, pubkey pk, sig s) { require(checkSig(s, pk)); this.d.x = v; }
+      function setY(int v, pubkey pk, sig s) { require(checkSig(s, pk)); this.d.y = v; }
+    }`;
+    const provider = createTestProvider();
+    const artifact = compileString(source);
+    const contract = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, contract, artifact.stateLayout!, { d: { x: 0n, y: 0n } }, { saltContract: true },
+    );
+    const sc = StatefulContract.withCategory(contract, categoryId);
+
+    await sc.setX(5n, alicePub, sig()).send();
+    expect((await sc.getState()).d).toEqual({ x: 5n, y: 0n });
+    await sc.setY(9n, alicePub, sig()).send();           // x preserved by the rebuild
+    expect((await sc.getState()).d).toEqual({ x: 5n, y: 9n });
+  });
+
+  it('Gap2 nested: state struct-var nested field write (this.d.a.x = v)', async () => {
+    const source = `pragma solidcash >=0.8.0;
+    contract C() {
+      struct A { int x; int y; }
+      struct B { A a; int z; }
+      B d;
+      function setAX(int v, pubkey pk, sig s) { require(checkSig(s, pk)); this.d.a.x = v; }
+    }`;
+    const provider = createTestProvider();
+    const artifact = compileString(source);
+    const contract = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, contract, artifact.stateLayout!, { d: { a: { x: 0n, y: 1n }, z: 2n } }, { saltContract: true },
+    );
+    const sc = StatefulContract.withCategory(contract, categoryId);
+
+    await sc.setAX(7n, alicePub, sig()).send();
+    expect((await sc.getState()).d).toEqual({ a: { x: 7n, y: 1n }, z: 2n });   // y and z preserved
   });
 });

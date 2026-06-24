@@ -17,10 +17,10 @@ p.x = 9;                                     // local field write (top-level fie
 ```
 
 - Define structs at **contract, file, library, or interface** level.
-- Fields may be any value type or a nested struct. **Array-typed fields are not yet supported.**
+- Fields may be any value type, an array type (`int[]`, `bytes20[3]`), or a nested struct.
 - A struct value is stored as its fields encoded back to back.
-- Partial field writes work for **local** structs and **mapping values**; a direct **state struct variable**
-  must be reassigned whole (see [Limitations](#limitations)).
+- Field writes work everywhere - local structs, state struct variables, mapping values, and array elements -
+  including nested chains (`b.a.x = v`). They desugar to a struct rebuild.
 
 ## Defining structs
 
@@ -45,11 +45,13 @@ contract Registry() {
 
 ### Allowed field types
 
-| Allowed                                                                 | Not allowed (yet)        |
-| ----------------------------------------------------------------------- | ------------------------ |
-| `int`/`uint`/`intN`/`uintN`, `bigint`, `bool`                           | array-typed fields       |
-| `bytesN`, `bytes`, `string`                                             | (`int[] xs;`, `int[3] xs;`) |
-| `pubkey`, `sig`, `datasig`, `address`, an `enum`, and a **nested struct** |                          |
+A field may be any of:
+
+- `int`/`uint`/`intN`/`uintN`, `bigint`, `bool`
+- `bytesN`, `bytes`, `string`
+- `pubkey`, `sig`, `datasig`, `address`, an `enum`
+- a **nested struct**
+- an **array type** (`int[] xs;`, `bytes20[3] ps;`)
 
 Nested structs may be arbitrarily deep. A struct that (directly or transitively) contains itself is rejected
 with a circular-definition error.
@@ -89,19 +91,18 @@ require(val.mid.inner.x == 42);              // local, deeply nested
 
 ### Field writes
 
-A **top-level** field write is supported for locals and for mapping values; it is compiled as a
-read-modify-write that rebuilds the struct:
+A field write is compiled as a read-modify-write that rebuilds the struct, and works on every kind of struct
+location - local, state variable, mapping value, and array element - including arbitrarily nested chains:
 
 ```solidity
 Point p = Point(1, 2);
 p.x = 9;                          // local: desugars to p = Point(9, p.y)
 
-this.users[pkh].name = newName;   // mapping value: rebuilds the entry
-this.users[pkh].balance = bal;    // consecutive field writes are fine
+this.data.x = 9;                  // state struct variable
+this.users[pkh].name = newName;   // mapping value
+arr[i].a = 9;                     // array element
+b.a.x = 9;                        // nested chain (rebuilds inner then outer)
 ```
-
-What is **not** supported (see [Limitations](#limitations)): nested field writes (`b.a.x = v`) and direct
-state struct-variable field writes (`this.data.x = v`). For those, reassign the whole struct.
 
 ### As state variables, mapping values, parameters, returns
 
@@ -194,21 +195,18 @@ Struct values cross the SDK boundary as plain JS records keyed by field name:
 - **integer fields** are `bigint`; **bool fields** are `boolean`.
 - Omitted/`undefined` fields fall back to the type's default value.
 
-## Limitations
+## Capabilities
 
 Verified against the current compiler:
 
-- **Array-typed struct fields are not supported** - `struct S { int[] xs; }` and `struct S { int[3] xs; }`
-  both fail to parse.
-- **Direct state struct-variable field writes are not supported** - `this.data.x = v` is rejected. Reassign
-  the whole struct instead: `this.data = Point(v, this.data.y)`. (Mapping-value field writes
-  `this.m[k].field = v` *are* supported.)
-- **Nested field writes are not supported** - `b.a.x = v` (local) and the equivalent on mapping values are
-  rejected; only a top-level field write desugars to a rebuild. Rebuild the inner struct explicitly.
-
-Reads are unrestricted: arbitrary nesting works for locals, state variables, and mapping values. Both
-fixed-width and variable-width `struct[]` arrays support push/pop/index/whole-element-assign/delete and
-element-field writes (`arr[i].field = v`, via a whole-element rebuild).
+- **Reads** are unrestricted: arbitrary nesting works for locals, state variables, mapping values, and array
+  elements (`this.payments[k].from.amount`, `val.mid.inner.x`).
+- **Field writes** work on every struct location - local, state variable, mapping value, array element -
+  including nested chains (`b.a.x = v`, `this.d.a.x = v`). Each desugars to a struct rebuild.
+- **Array-typed fields** (`int[]`, `bytes20[3]`, ...) are supported: construct (`Bag([1,2,3], 7)`), read,
+  index (`b.xs[i]`), and `.length`.
+- **`struct[]` arrays** (both fixed-width and variable-width elements) support
+  push/pop/index/whole-element-assign/delete and element-field writes (`arr[i].field = v`).
 
 ## See also
 

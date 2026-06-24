@@ -558,8 +558,9 @@ export function parseType(str: string): Type {
   if (str === 'address payable' || str === 'addresspayable') return new AddressType(true);
   if (str === 'address') return new AddressType();
 
-  // `uint` (Solidity alias for uint256) maps to the unbounded native int (BCH ints are arbitrary-precision
-  // signed bigints, so the unsigned distinction is nominal). `int` resolves via the PrimitiveType fallback.
+  // `bigint` is the arbitrary-precision native int (BCH VM integer). `uint` currently aliases it; `int`
+  // resolves via the PrimitiveType fallback. (Stage 2 will retarget `int`/`uint` to int256/uint256.)
+  if (str === 'bigint') return PrimitiveType.INT;
   if (str === 'uint') return PrimitiveType.INT;
 
   if (str.startsWith('byte')) return BytesType.fromString(str);

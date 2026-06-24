@@ -691,6 +691,7 @@ fragment ExponentPart
 
 PrimitiveType
     : 'int'
+    | 'bigint'
     | 'bool'
     | 'string'
     ;

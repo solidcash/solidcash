@@ -19,7 +19,7 @@ import {
 } from '../ast/AST.js';
 import { IntType, AddressType, Type, PrimitiveType } from '@solidcash/utils';
 import { NullaryOperator, BinaryOperator } from '../ast/Operator.js';
-import { TimeOp } from '../ast/Globals.js';
+import { TimeOp, GlobalFunction } from '../ast/Globals.js';
 import AstTraversal from '../ast/AstTraversal.js';
 
 /**
@@ -64,9 +64,17 @@ function setterParam(varName: string): string {
 export default class SynthesizeBlockOracle extends AstTraversal {
   private used = new Set<string>();
   private loc: unknown;
+  // Set when the contract references blockhash(n): surfaced to the artifact so the keeper knows to
+  // maintain the project-global (n->hash) oracle (docs/block-oracle.md).
+  usesBlockhash = false;
 
   constructor(private readonly solidityImportCompat = false) {
     super();
+  }
+
+  visitFunctionCall(node: FunctionCallNode): Node {
+    if (node.identifier.name === GlobalFunction.BLOCKHASH) this.usesBlockhash = true;
+    return super.visitFunctionCall(node);
   }
 
   visitSourceFile(node: SourceFileNode): Node {

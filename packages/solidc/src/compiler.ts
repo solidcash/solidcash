@@ -89,7 +89,8 @@ export function compileString(code: string, compilerOptions: CompileOptions = {}
   // local-interface-var dispatch).
   ast = ast.accept(new SynthesizeExternalAddressLocals()) as Ast;
   // Oracle-backed block.* reads -> injected uint32 state-var registers + desugared state reads.
-  ast = ast.accept(new SynthesizeBlockOracle(mergedCompilerOptions.solidityImportCompat)) as Ast;
+  const blockOracle = new SynthesizeBlockOracle(mergedCompilerOptions.solidityImportCompat);
+  ast = ast.accept(blockOracle) as Ast;
 
   // Semantic analysis
   ast = ast.accept(new SymbolTableTraversal(mergedCompilerOptions)) as Ast;
@@ -152,7 +153,10 @@ export function compileString(code: string, compilerOptions: CompileOptions = {}
 
   const fingerprint = computeBytecodeFingerprintWithConstructorArgs(optimisationResult.script, constructorParamLength);
 
-  return generateArtifact(ast, optimisationResult.script, code, debug, mergedCompilerOptions, functionBodies, fingerprint);
+  const artifact = generateArtifact(ast, optimisationResult.script, code, debug, mergedCompilerOptions, functionBodies, fingerprint);
+  // Marker for the off-chain keeper: this contract reads blockhash(n) -> maintain the (n->hash) oracle.
+  if (blockOracle.usesBlockhash) artifact.usesBlockhash = true;
+  return artifact;
 }
 
 /**

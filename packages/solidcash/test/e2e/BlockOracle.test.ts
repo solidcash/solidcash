@@ -356,6 +356,18 @@ describe('blobhash / blockhash', () => {
     expect(() => compileString(`contract B(){ function f(){ require(blockhash(1) == ${B32_ZERO}); } }`))
       .toThrow(/requires the blockhashOracleCategory/);
   });
+
+  it('compiler marks usesBlockhash so the keeper maintains the (n->hash) oracle', () => {
+    const withBh = compileString(
+      'contract B(){ function f(int bn, bytes32 h){ require(blockhash(bn) == h); } }',
+      { blockhashOracleCategory: BH_CAT },
+    );
+    const noBh = compileString(`contract B(){ function f(){ require(blobhash(0) == ${B32_ZERO}); } }`);
+    expect(withBh.usesBlockhash).toBe(true);
+    expect(BlockOracleUpdater.usesBlockhash(withBh)).toBe(true);
+    expect(noBh.usesBlockhash).toBeUndefined();
+    expect(BlockOracleUpdater.usesBlockhash(noBh)).toBe(false);
+  });
 });
 
 // blockhash(n) MVP read: the (n->hash) oracle UTXO is co-spent as the LAST input (category C_oracle +

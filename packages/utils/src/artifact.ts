@@ -324,6 +324,7 @@ export interface Artifact {
   errors?: readonly ErrorDefinitionAbi[];
   enums?: readonly EnumDefinitionAbi[];
   externalLibraries?: readonly ExternalLibraryAbi[];  // external script libraries this contract depends on
+  usesBlockhash?: boolean;  // contract reads blockhash(n); keeper maintains the (n->hash) oracle
   compiler: {
     name: string;
     version: string;

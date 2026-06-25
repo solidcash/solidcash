@@ -15,9 +15,9 @@ import SignatureTemplate from '../SignatureTemplate.js';
  *  - block-info register (block.number/timestamp/...): present iff the artifact has `__updateBlockOracle`.
  *    Reads the block from a BCHN JSON-RPC and pushes a signed + freshness-bound `__updateBlockOracle` when
  *    the chain is ahead of the on-chain register.
- *  - n->hash oracle (blockhash(n)): present iff the artifact uses blockhash(). Mints the per-block
- *    (n->hash) UTXO under the project-global oracle category and sweeps the one that fell out of the
- *    256-block window. (Pending the on-chain covenant + blockhash() compiler support - see the doc.)
+ *  - n->hash oracle (blockhash(n)): present iff the artifact stamps usesBlockhash. Mints the per-block
+ *    (n->hash) UTXO under the project-global oracle category. (Sweeping the one that aged out of the
+ *    256-block window is a keeper follow-up; the covenant's permissionless tx.time>=n+256 wipe is in place.)
  *
  * The keeper/operator private key signs both (the contract's baked `__blockOracleOwner` for block-info,
  * and the n->hash mint).
@@ -139,11 +139,11 @@ export class BlockOracleUpdater {
   }
 
   /**
-   * The contract reads blockhash(n), so it needs the project-global (n->hash) oracle. The compiler sets
-   * this marker on the artifact once blockhash() lands (see docs/block-oracle.md); false until then.
+   * The contract reads blockhash(n), so it needs the project-global (n->hash) oracle. The compiler stamps
+   * this marker on the artifact when blockhash() is referenced (see docs/block-oracle.md).
    */
   static usesBlockhash(artifact: Artifact): boolean {
-    return (artifact as { usesBlockhash?: boolean }).usesBlockhash === true;
+    return artifact.usesBlockhash === true;
   }
 
   /** Current block-info oracle height from the on-chain __block_number register (0 if absent). */

@@ -1,7 +1,10 @@
-import { hexToBin, binToHex } from '@bitauth/libauth';
+import { hexToBin, binToHex, secp256k1 } from '@bitauth/libauth';
 import { ElectrumClient } from '@electrum-cash/network';
 import { BchnRpcClient } from '@mr-zwets/bchn-api-wrapper';
-import { Artifact, blockhashOracleLockingBytecode, buildBlockhashCommitment } from '@solidcash/utils';
+import {
+  Artifact, blockhashOracleLockingBytecode, buildBlockhashCommitment, buildBlockhashOracleCovenantScript,
+  scriptToBytecode, encodeInt, hash160,
+} from '@solidcash/utils';
 import { Contract } from '../Contract.js';
 import { TransactionBuilder } from '../TransactionBuilder.js';
 import { Utxo, Unlocker } from '../interfaces.js';
@@ -195,13 +198,52 @@ export class BlockOracleUpdater {
   }
 
   /**
-   * Maintain the project-global (n->hash) oracle: mint the new tip's (n, hash) pair. (Sweeping the pair
-   * that aged out of the 256-block window is a keeper follow-up; the covenant's permissionless wipe path
-   * `tx.time >= n+256` is already in place.)
+   * Sweep (burn) the (n->hash) oracle UTXO that aged out of the 256-block window, reclaiming its dust to
+   * the keeper's P2PKH. Best-effort: returns null if nothing sits at addr(n). Spends the covenant wipe
+   * path (flag 1) under tx.time >= n+256 - mineable once the chain reaches n+256. The covenant also lets
+   * anyone wipe, so this is a keeper convenience (reclaim dust), not a liveness dependency.
+   */
+  async sweepBlockhashPair(n: bigint): Promise<string | null> {
+    const catHex = this.cfg.blockhashOracleCategory;
+    if (!catHex) throw new Error('blockhashOracleCategory is required to sweep (n->hash) pairs');
+    const cat = hexToBin(catHex);
+    const addrN = blockhashOracleLockingBytecode(cat, n);
+    const utxos = await this.cfg.contract.provider.getUtxosForLockingBytecode(addrN);
+    if (utxos.length === 0) return null;
+
+    const redeem = scriptToBytecode(buildBlockhashOracleCovenantScript(cat, n));
+    const wipeUnlock = scriptToBytecode([encodeInt(1n), redeem]); // flag 1 = wipe branch
+    const unlocker = { generateLockingBytecode: (): Uint8Array => addrN, generateUnlockingBytecode: (): Uint8Array => wipeUnlock };
+
+    const builder = new TransactionBuilder({ provider: this.cfg.contract.provider, allowImplicitNftBurn: true });
+    let reclaimed = 0n;
+    for (const utxo of utxos) {
+      builder.addInput(utxo, unlocker);
+      reclaimed += utxo.satoshis;
+    }
+    const fee = 1000n;
+    const tx = await builder
+      .addOutput({ to: this.keeperP2pkh(), amount: reclaimed - fee })
+      .setLocktime(Number(n + BigInt(BLOCKHASH_WINDOW)))
+      .send();
+    return tx.txid;
+  }
+
+  // The keeper's own P2PKH locking bytecode (reclaim destination for swept dust).
+  private keeperP2pkh(): Uint8Array {
+    const pub = secp256k1.derivePublicKeyCompressed(this.cfg.keeperKey);
+    if (typeof pub === 'string') throw new Error(`invalid keeper key: ${pub}`);
+    return Uint8Array.from([0x76, 0xa9, 0x14, ...hash160(pub), 0x88, 0xac]);
+  }
+
+  /**
+   * Maintain the project-global (n->hash) oracle on a new tip: mint the tip's (n, hash) pair and sweep the
+   * pair that just aged out of the 256-block window (best-effort dust reclaim).
    */
   private async maintainBlockhashWindow(tip: number): Promise<void> {
     const hashHex: string = await this.cfg.rpc.request('getblockhash', tip);
     await this.mintBlockhashPair(BigInt(tip), hexToBin(hashHex));
+    if (tip > BLOCKHASH_WINDOW) await this.sweepBlockhashPair(BigInt(tip - BLOCKHASH_WINDOW));
   }
 
   /**

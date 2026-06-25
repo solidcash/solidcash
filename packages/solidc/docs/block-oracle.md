@@ -12,11 +12,12 @@ Status: **IMPLEMENTED (compiler + SDK e2e, green).**
 - `blobhash(i)` -> `bytes32(0)` (no BCH blobs). `blockhash(n)`: **read codegen + hardened `(n->hash)`
   covenant + keeper minting implemented** (self-pin + self-preserving recreate + CLTV `tx.time >= n+256`
   wipe; `buildBlockhashOracleCovenantScript` / `blockhashOracleLockingBytecode` / `buildBlockhashCommitment`
-  in utils/state.ts; `BlockOracleUpdater.mintBlockhashPair`). **Full publish->read e2e green:** the keeper
-  mints `addr(n)` from the `C_oracle` master and a consumer reads it via `blockhash(n)`; plus wipe
-  succeeds at `n+256` / rejected before. Remaining: SDK auto-discovery (consumer auto-co-spend, no manual
-  input), a dedicated co-spend slot (vs the last-input convention), keeper sweep wiring, the `usesBlockhash`
-  artifact marker, and `bytes32(0)`-when-absent (s11).
+  in utils/state.ts; `BlockOracleUpdater.mintBlockhashPair` / `sweepBlockhashPair`). **Full lifecycle e2e
+  green:** the keeper mints `addr(n)` from the `C_oracle` master, a consumer reads it via `blockhash(n)`,
+  and the keeper sweeps `addr(n-256)` when it ages out (covenant wipe at `n+256`; rejected before). The
+  compiler stamps `artifact.usesBlockhash` when `blockhash()` is referenced, so the keeper auto-maintains
+  the oracle. Remaining: SDK auto-discovery (consumer auto-co-spend, no manual input), a dedicated co-spend
+  slot (vs the last-input convention), and `bytes32(0)`-when-absent (s11).
 
 Implementation notes: each referenced field is desugared (`SynthesizeBlockOracle` pre-semantic transform)
 to a read of an injected register of the contract's own state - `uint32` for the numeric fields, `address`
@@ -248,13 +249,15 @@ Still open:
 
 ## 11. blockhash(n) and blobhash(i)
 
-Status: **blobhash IMPLEMENTED; blockhash read codegen IMPLEMENTED (MVP).** `blobhash(i) == bytes32(0)`.
-`blockhash(n)` reads the co-spent `(n->hash)` UTXO (last-input MVP convention) and verifies
-`OP_UTXOTOKENCATEGORY == blockhashOracleCategory` (compiler option) + `commitment.n == n` +
-`require(tx.time >= n)`, returning the 32-byte hash. **Remaining for production:** the hardened
-`(n->hash)` covenant (below), a dedicated co-spend slot (vs the last-input convention), SDK `addr(n)`
-discovery + auto-recreate, keeper minting/sweeping (`maintainBlockhashWindow`), and `bytes32(0)` when the
-SDK finds no live UTXO. The design below is the target.
+Status: **blobhash IMPLEMENTED; blockhash IMPLEMENTED (hardened covenant + keeper mint/sweep).**
+`blobhash(i) == bytes32(0)`. `blockhash(n)` reads the co-spent `(n->hash)` UTXO (last-input MVP
+convention) and verifies `OP_UTXOTOKENCATEGORY == blockhashOracleCategory` (compiler option) +
+`commitment.n == n` + `require(tx.time >= n)`, returning the 32-byte hash. The hardened `(n->hash)`
+covenant (self-pin + self-preserving recreate + CLTV `n+256` wipe), the keeper mint + sweep
+(`BlockOracleUpdater.mintBlockhashPair` / `sweepBlockhashPair` / `maintainBlockhashWindow`), and the
+`artifact.usesBlockhash` marker are all in place and e2e-green. **Remaining:** SDK auto-discovery (the
+consumer auto-resolves + co-spends `addr(n)`, no manual input), a dedicated co-spend slot (vs the
+last-input convention), and `bytes32(0)` when the SDK finds no live UTXO.
 
 
 These are **functions** (runtime argument), not the 0-param `block.*` properties, so they lower as
@@ -296,8 +299,10 @@ or unpublished), yield `bytes32(0)` (EVM parity), no revert.
 complementary - the unique address costs nothing in-script.
 
 **Keeper (the updater).** On each new tip `n`: mint `addr(n)` carrying `(n, hash)` under `C_oracle`, and
-sweep `addr(n - 256)`. This is `BlockOracleUpdater.maintainBlockhashWindow` - gated on
-`usesBlockhash(artifact)`, signed by the keeper key, **pending the on-chain covenant**.
+sweep `addr(n - 256)`. This is `BlockOracleUpdater.maintainBlockhashWindow` (mint via `mintBlockhashPair`,
+best-effort wipe via `sweepBlockhashPair`), gated on `usesBlockhash(artifact)` and signed by the keeper key.
+Sweeping is a dust-reclaim convenience: the covenant's `tx.time >= n+256` path lets anyone wipe, so the
+window stays bounded even if the keeper stalls.
 
 **Grinding caveat (unchanged):** the tx-builder picks `n`, so `uint(blockhash(n)) % k` randomness is
 grindable - worse than EVM. Legitimate commit-reveal must **pin `n`** (committed in a prior tx). A compiler
@@ -329,7 +334,8 @@ warning when `blockhash(...)` feeds modulo/arithmetic is advisable.
 - Register `blockhash`/`blobhash` as `GlobalFunction`s, signature `(uint) -> bytes32`. `blobhash` -> push
   `bytes32(0)`. `blockhash` -> external read of `C_oracle` (category + `commitment.n` check) + the
   `tx.time >= n` floor; `0` outside the window.
-- Set an artifact `usesBlockhash` marker when the function is referenced (drives `usesBlockhash(artifact)`
-  in the updater and the `block.hash`-current register field).
+- Artifact `usesBlockhash` marker (DONE): `SynthesizeBlockOracle` detects `blockhash()` and the compiler
+  stamps `artifact.usesBlockhash`, driving `BlockOracleUpdater.usesBlockhash(artifact)` so the keeper
+  auto-maintains the oracle.
 - SDK: resolve `n` (call-site arg / VM trace), look up `addr(n)` on Fulcrum, co-spend the `(n->hash)` UTXO
   read-only (+ recreate); the VM is the arbiter, so a wrong injection fails the category/`n` check.

@@ -505,3 +505,36 @@ describe('blockhash keeper minting', () => {
     expect(tx.txid).toMatch(/^[0-9a-f]{64}$/);
   });
 });
+
+function sweepUpdater(provider: ReturnType<typeof createTestProvider>): BlockOracleUpdater {
+  const consumer = new Contract(
+    compileString('contract B(){ function f(int bn, bytes32 h){ require(blockhash(bn) == h); } }', { blockhashOracleCategory: BH_CAT }),
+    [], { provider },
+  );
+  return new BlockOracleUpdater({
+    contract: consumer, categoryId: '00'.repeat(32), keeperKey: alicePriv, rpc: fakeRpc(), blockhashOracleCategory: BH_CAT,
+  });
+}
+
+describe('blockhash keeper sweep', () => {
+  it('wipes the (n->hash) pair that aged out of the window and reclaims the dust', async () => {
+    const provider = createTestProvider();
+    const n = 100000n; // swept at n+256 = 100256 <= mock tip 133700
+    const cat = hexToBin(BH_CAT);
+    const addrN = blockhashOracleLockingBytecode(cat, n);
+    const token = {
+      category: BH_CAT, amount: 0n,
+      nft: { capability: 'none' as const, commitment: binToHex(buildBlockhashCommitment(n, hexToBin('ab'.repeat(32)))) },
+    };
+    await provider.addUtxo(binToHex(addrN), { txid: '55'.repeat(32), vout: 0, satoshis: 2000n, token });
+    expect(await provider.getUtxosForLockingBytecode(addrN)).toHaveLength(1);
+
+    const txid = await sweepUpdater(provider).sweepBlockhashPair(n);
+    expect(txid).toMatch(/^[0-9a-f]{64}$/);
+    expect(await provider.getUtxosForLockingBytecode(addrN)).toHaveLength(0);
+  });
+
+  it('returns null when there is nothing to sweep at addr(n)', async () => {
+    expect(await sweepUpdater(createTestProvider()).sweepBlockhashPair(99999n)).toBeNull();
+  });
+});

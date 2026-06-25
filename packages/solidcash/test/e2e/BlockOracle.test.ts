@@ -1,10 +1,10 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import { compileString } from 'solidc';
-import { hexToBin } from '@bitauth/libauth';
+import { hexToBin, binToHex } from '@bitauth/libauth';
 import { Contract, StatefulContract, TransactionBuilder, SignatureTemplate } from '../../src/index.js';
 import { randomUtxo } from '../../src/utils.js';
 import { createTestProvider, createFeeFunder, setupStatefulUtxos } from '../test-util.js';
-import { alicePub, alicePriv, bobPriv } from '../fixture/vars.js';
+import { alicePub, alicePriv, bobPriv, aliceTokenAddress } from '../fixture/vars.js';
 import { BlockOracleUpdater, fetchBlockOracleFields, RpcLike } from '../../src/oracle/blockOracleUpdater.js';
 
 // block.chainid is a baked single-byte network constant (chainId & 0xff), typed bytes1, compared
@@ -348,8 +348,69 @@ describe('blobhash / blockhash', () => {
     await expect(spendBlob(`0x01${'00'.repeat(31)}`)).rejects.toThrow();
   });
 
-  it('blockhash(n) is recognized (type-checked) but its codegen is pending', () => {
+  it('blockhash(n) requires the blockhashOracleCategory compiler option', () => {
     expect(() => compileString(`contract B(){ function f(){ require(blockhash(1) == ${B32_ZERO}); } }`))
-      .toThrow(/blockhash\(\) is not yet implemented/);
+      .toThrow(/requires the blockhashOracleCategory/);
+  });
+});
+
+// blockhash(n) MVP read: the (n->hash) oracle UTXO is co-spent as the LAST input (category C_oracle +
+// commitment n(4 LE)||hash); the contract verifies category + commitment.n == n + require(tx.time >= n)
+// and returns hash. Held here at a trivial anyone-can-spend p2sh32 (redeem OP_1) and recreated for token
+// consistency. n <= 133700 (mock tip) so the freshness locktime is final. (Hardened covenant + SDK
+// auto-discovery + keeper minting are the next increment - docs/block-oracle.md s11.)
+const BH_CAT = 'cc'.repeat(32);
+const TRIVIAL_LBC = hexToBin('aa20953ccfa596a6c6d39e5980194539124fdcff116a571455a212baed811f585ee087');
+const TRIVIAL_UNLOCK = hexToBin('0151');
+
+function n4LE(n: number): Uint8Array {
+  const b = new Uint8Array(4);
+  let v = n;
+  for (let i = 0; i < 4; i++) { b[i] = v & 0xff; v >>>= 8; }
+  return b;
+}
+
+async function spendBlockhash(argN: number, storedN: number, storedHash: Uint8Array, expectHash: Uint8Array): Promise<string> {
+  const provider = createTestProvider();
+  const artifact = compileString(
+    'contract B(){ function f(int bn, bytes32 h){ require(blockhash(bn) == h); } }',
+    { blockhashOracleCategory: BH_CAT },
+  );
+  const contract = new Contract(artifact, [], { provider });
+  const contractUtxo = await provider.addUtxo(contract.address, randomUtxo({ satoshis: 100000n }));
+  const feeFunder = await createFeeFunder(provider, 20000n);
+
+  const token = {
+    category: BH_CAT, amount: 0n,
+    nft: { capability: 'none' as const, commitment: binToHex(new Uint8Array([...n4LE(storedN), ...storedHash])) },
+  };
+  const nhashUtxo = { txid: '11'.repeat(32), vout: 0, satoshis: 1000n, token };
+  await provider.addUtxo(binToHex(TRIVIAL_LBC), nhashUtxo);
+  const nhashUnlocker = { generateLockingBytecode: () => TRIVIAL_LBC, generateUnlockingBytecode: () => TRIVIAL_UNLOCK };
+
+  const tx = await new TransactionBuilder({ provider })
+    .addInput(contractUtxo, contract.unlock.f(BigInt(argN), expectHash))
+    .addInput(feeFunder.utxo, feeFunder.unlocker)
+    .addInput(nhashUtxo, nhashUnlocker) // LAST input = (n->hash) oracle NFT
+    .addOutput({ to: contract.address, amount: 119000n })
+    .addOutput({ to: aliceTokenAddress, amount: 1000n, token })
+    .setLocktime(argN)
+    .send();
+  return tx.txid;
+}
+
+describe('blockhash(n) e2e (MVP: last-input n->hash oracle)', () => {
+  const HASH = hexToBin('aa'.repeat(32));
+
+  it('returns the attested hash for a matching (n, hash) oracle UTXO', async () => {
+    expect(await spendBlockhash(100000, 100000, HASH, HASH)).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it('rejects a wrong expected hash', async () => {
+    await expect(spendBlockhash(100000, 100000, HASH, hexToBin('bb'.repeat(32)))).rejects.toThrow();
+  });
+
+  it('rejects an oracle UTXO whose commitment.n != the requested n', async () => {
+    await expect(spendBlockhash(100000, 99999, HASH, HASH)).rejects.toThrow();
   });
 });

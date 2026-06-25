@@ -9,6 +9,11 @@ Status: **IMPLEMENTED (compiler + SDK e2e, green).**
 - Off-chain keeper: `packages/solidcash/src/oracle/blockOracleUpdater.ts` (Fulcrum
   `blockchain.headers.subscribe` + a single BCHN `getblock` verbosity-2 call: coinbase inline, fees =
   `sum(coinbase outputs) - subsidy(height)`; signed `__updateBlockOracle` when the chain is ahead).
+- `blobhash(i)` -> `bytes32(0)` (no BCH blobs). `blockhash(n)` **read codegen (MVP)**: co-spends the
+  `(n->hash)` oracle UTXO (category-pinned to the baked `blockhashOracleCategory`, `commitment.n == n`,
+  `tx.time >= n`) and returns the hash; e2e green. Remaining: hardened `(n->hash)` covenant, a proper
+  co-spend slot (currently the last-input convention), SDK `addr(n)` discovery, keeper minting, and
+  `bytes32(0)`-when-absent (s11).
 
 Implementation notes: each referenced field is desugared (`SynthesizeBlockOracle` pre-semantic transform)
 to a read of an injected register of the contract's own state - `uint32` for the numeric fields, `address`
@@ -238,7 +243,16 @@ Still open:
 - **`block.totalFees` width:** `uint32` (4 B, 42.9 BCH ceiling - minimal viable) vs `uint64` (8 B,
   bulletproof). Default `uint32`.
 
-## 11. blockhash(n) and blobhash(i) - DESIGN (pending implementation)
+## 11. blockhash(n) and blobhash(i)
+
+Status: **blobhash IMPLEMENTED; blockhash read codegen IMPLEMENTED (MVP).** `blobhash(i) == bytes32(0)`.
+`blockhash(n)` reads the co-spent `(n->hash)` UTXO (last-input MVP convention) and verifies
+`OP_UTXOTOKENCATEGORY == blockhashOracleCategory` (compiler option) + `commitment.n == n` +
+`require(tx.time >= n)`, returning the 32-byte hash. **Remaining for production:** the hardened
+`(n->hash)` covenant (below), a dedicated co-spend slot (vs the last-input convention), SDK `addr(n)`
+discovery + auto-recreate, keeper minting/sweeping (`maintainBlockhashWindow`), and `bytes32(0)` when the
+SDK finds no live UTXO. The design below is the target.
+
 
 These are **functions** (runtime argument), not the 0-param `block.*` properties, so they lower as
 `GlobalFunction`s (the keccak256 path is the template), not nullary register reads.

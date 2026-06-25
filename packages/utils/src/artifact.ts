@@ -30,6 +30,9 @@ export interface CompilerOptions {
   // block.chainid network constant, baked as a single byte (chainId & 0xff). Convention:
   // mainnet 0, chipnet 1, testnet4 2, regtest -1 (0xff). User-land; see docs/block-oracle.md.
   chainId?: number;
+  // blockhash() n->hash oracle token category (32-byte display hex). Required for blockhash() consumers;
+  // baked into the read as the trust anchor (OP_UTXOTOKENCATEGORY == this). See docs/block-oracle.md s11.
+  blockhashOracleCategory?: string;
 }
 
 export interface AbiInput {

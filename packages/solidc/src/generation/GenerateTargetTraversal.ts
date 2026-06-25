@@ -3258,8 +3258,29 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
 
     if (node.identifier.name === GlobalFunction.BLOCKHASH) {
-      // Recognized + type-checked; the read codegen (the n->hash oracle co-spend) is the next increment.
-      throw new Error('blockhash() is not yet implemented; see packages/solidc/docs/block-oracle.md section 11');
+      const catHex = this.compilerOptions.blockhashOracleCategory;
+      if (!catHex) {
+        throw new Error('blockhash() requires the blockhashOracleCategory compiler option (the n->hash oracle '
+          + 'token category); see packages/solidc/docs/block-oracle.md section 11');
+      }
+      // Read the co-spent (n->hash) oracle UTXO (the last input, MVP convention) and return its hash:
+      //   require(tx.time >= n); category(last) == C_oracle; commitment = n(4 LE) || hash(32), n == arg.
+      // Soundness: C_oracle is mint-once (keeper), so a co-spent UTXO with it carries a genuine (n,hash);
+      // the n-check disambiguates the block; the tx-builder can only present the real pair.
+      const catInternal = hexToBin(catHex).slice().reverse();
+      const loc = { location: node.location, positionHint: PositionHint.START };
+      node.parameters[0] = this.visit(node.parameters[0]); // [n]
+      this.emit([
+        Op.OP_DUP, Op.OP_CHECKLOCKTIMEVERIFY, Op.OP_DROP, // require(tx.time >= n)
+        Op.OP_TXINPUTCOUNT, Op.OP_1SUB, // last input index
+        Op.OP_DUP, Op.OP_UTXOTOKENCATEGORY, catInternal, Op.OP_EQUALVERIFY, // category == C_oracle
+        Op.OP_UTXOTOKENCOMMITMENT, encodeInt(4n), Op.OP_SPLIT, // [n, n4, hash32]
+        Op.OP_SWAP, Op.OP_BIN2NUM, // [n, hash32, commitment.n]
+        Op.OP_ROT, Op.OP_EQUALVERIFY, // commitment.n == n -> [hash32]
+      ], loc);
+      this.popFromStack();
+      this.pushToStack('(value)');
+      return node;
     }
 
     const externalLib = this.resolvedLibraries[node.identifier.name];

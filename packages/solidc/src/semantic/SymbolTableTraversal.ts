@@ -4858,6 +4858,17 @@ export default class SymbolTableTraversal extends AstTraversal {
   }
 
   visitFieldAccess(node: FieldAccessNode): Node {
+    // `this.<fn>.selector` -> the function's 4-byte selector (bytes4). `this.<fn>` parses as a state access;
+    // intercept before it resolves (it is a function, not a state var) and fold to the precomputed selector.
+    if (node.expression instanceof StateAccessNode && node.name === 'selector') {
+      const fn = this.functionDefinitions.get(node.expression.name)?.[0];
+      if (fn?.functionSelector) {
+        const lit = new HexLiteralNode(fn.functionSelector);
+        lit.location = node.location;
+        return lit;
+      }
+    }
+
     // Detect namespaced constant access (e.g. SafeMath.MAX_SAFE from a library)
     if (node.expression instanceof IdentifierNode) {
       const compoundName = `${node.expression.name}.${node.name}`;

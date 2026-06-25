@@ -921,3 +921,14 @@ describe('SBE-16: assignment-as-expression `(x op= rhs)` yields the new value', 
     expect(a.contractName).toBe('C');
   });
 });
+
+describe('SBE-17: this.<fn>.selector resolves to the function selector (bytes4)', () => {
+  it('uses this.fn.selector in abi.encodeWithSelector (own function)', () => {
+    const a = compileString(
+      'contract C() { function test(uint256 i) external pure returns (uint256) { return i; }'
+      + ' function getData(uint256 i) external pure returns (bytes) { return abi.encodeWithSelector(this.test.selector, i); } }',
+      { solidityImportCompat: true },
+    );
+    expect(a.contractName).toBe('C');
+  });
+});

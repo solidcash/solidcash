@@ -6,6 +6,7 @@ import {
   VariableDefinitionNode,
   FunctionDefinitionNode,
   AssignNode,
+  AssignmentExpressionNode,
   IdentifierNode,
   BranchNode,
   CastNode,
@@ -224,6 +225,11 @@ export default class AstTraversal extends AstVisitor<Node> {
   visitAssign(node: AssignNode): Node {
     node.identifier = this.visit(node.identifier) as IdentifierNode;
     node.expression = this.visit(node.expression);
+    return node;
+  }
+
+  visitAssignmentExpression(node: AssignmentExpressionNode): Node {
+    node.assign = this.visit(node.assign) as AssignNode;
     return node;
   }
 

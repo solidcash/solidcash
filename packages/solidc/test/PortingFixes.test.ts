@@ -896,3 +896,28 @@ describe('SBE-15: empty-body returning function + named-arg call to a returning 
     expect(a.contractName).toBe('X');
   });
 });
+
+describe('SBE-16: assignment-as-expression `(x op= rhs)` yields the new value', () => {
+  it('compiles a compound assignment in a while condition (most-significant-bit loop)', () => {
+    const a = compileString(
+      'contract C() { int n; function f(uint256 x, sig s, pubkey pk) { require(checkSig(s, pk));'
+      + ' uint256 i = 0; while ((x >>= 1) > 0) { i = i + 1; } this.n = int(i); } }',
+      { solidityImportCompat: true },
+    );
+    expect(a.contractName).toBe('C');
+  });
+  it('compiles a simple assignment used as an expression `(y = expr)`', () => {
+    const a = compileString(
+      'contract C() { int n; function f(uint256 x, sig s, pubkey pk) { require(checkSig(s, pk));'
+      + ' uint256 y = 0; if ((y = x + 1) > 5) { this.n = int(y); } else { this.n = 0; } } }',
+      { solidityImportCompat: true },
+    );
+    expect(a.contractName).toBe('C');
+  });
+  it('does not regress a normal parenthesized expression', () => {
+    const a = compileString(
+      'contract C() { int n; function f(int x, sig s, pubkey pk) { require(checkSig(s, pk)); this.n = (x + 1) * 2; } }',
+    );
+    expect(a.contractName).toBe('C');
+  });
+});

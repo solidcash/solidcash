@@ -49,6 +49,7 @@ import {
   VariableDefinitionNode,
   FunctionDefinitionNode,
   AssignNode,
+  AssignmentExpressionNode,
   IdentifierNode,
   BranchNode,
   CastNode,
@@ -1821,6 +1822,18 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.popFromStack();
       this.pushToStack(node.identifier.name);
     }
+    return node;
+  }
+
+  // `(x op= rhs)` as an expression: perform the assignment (updates x's slot in place), then COPY x back onto
+  // the stack as the expression value. Always a copy (OP_PICK) - the var is read, not consumed (it may be used
+  // again, e.g. on the next iteration of `while ((x >>= 1) > 0)`).
+  visitAssignmentExpression(node: AssignmentExpressionNode): Node {
+    this.visit(node.assign);
+    const locationData = { location: node.location, positionHint: PositionHint.END };
+    this.emit(encodeInt(BigInt(this.getStackIndex(node.assign.identifier.name))), locationData);
+    this.emit(Op.OP_PICK, locationData);
+    this.pushToStack('(value)');
     return node;
   }
 

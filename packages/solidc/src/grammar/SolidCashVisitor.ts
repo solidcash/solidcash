@@ -127,6 +127,7 @@ import { MethodCallContext } from "./SolidCashParser.js";
 import { FunctionCallExpressionContext } from "./SolidCashParser.js";
 import { ArrayAccessContext } from "./SolidCashParser.js";
 import { IdentifierContext } from "./SolidCashParser.js";
+import { AssignmentExpressionContext } from "./SolidCashParser.js";
 import { AbiEncodeWithSignatureContext } from "./SolidCashParser.js";
 import { MappingAccessContext } from "./SolidCashParser.js";
 import { InstantiationContext } from "./SolidCashParser.js";
@@ -931,6 +932,13 @@ export default class SolidCashVisitor<Result> extends ParseTreeVisitor<Result> {
 	 * @return the visitor result
 	 */
 	visitIdentifier?: (ctx: IdentifierContext) => Result;
+	/**
+	 * Visit a parse tree produced by the `AssignmentExpression`
+	 * labeled alternative in `SolidCashParser.expression`.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	visitAssignmentExpression?: (ctx: AssignmentExpressionContext) => Result;
 	/**
 	 * Visit a parse tree produced by the `AbiEncodeWithSignature`
 	 * labeled alternative in `SolidCashParser.expression`.

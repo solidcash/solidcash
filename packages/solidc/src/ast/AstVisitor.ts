@@ -6,6 +6,7 @@ import {
   VariableDefinitionNode,
   FunctionDefinitionNode,
   AssignNode,
+  AssignmentExpressionNode,
   IdentifierNode,
   BranchNode,
   CastNode,
@@ -122,6 +123,7 @@ export default abstract class AstVisitor<T> {
   abstract visitVariableDefinition(node: VariableDefinitionNode): T;
   abstract visitTupleAssignment(node: TupleAssignmentNode): T;
   abstract visitAssign(node: AssignNode): T;
+  abstract visitAssignmentExpression(node: AssignmentExpressionNode): T;
   abstract visitTimeOp(node: TimeOpNode): T;
   abstract visitRequire(node: RequireNode): T;
   abstract visitBranch(node: BranchNode): T;

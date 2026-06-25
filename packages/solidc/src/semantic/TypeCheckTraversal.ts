@@ -20,6 +20,7 @@ import {
 } from '@solidcash/utils';
 import {
   AssignNode,
+  AssignmentExpressionNode,
   BranchNode,
   CastNode,
   FunctionCallNode,
@@ -873,6 +874,13 @@ export default class TypeCheckTraversal extends AstTraversal {
     }
     node.expression = this.visit(node.expression);
     expectAssignable(node, node.expression.type, node.identifier.type);
+    return node;
+  }
+
+  // `(x op= rhs)` as an expression yields x's (new) value, so its type is x's type.
+  visitAssignmentExpression(node: AssignmentExpressionNode): Node {
+    node.assign = this.visit(node.assign) as AssignNode;
+    node.type = node.assign.identifier.type;
     return node;
   }
 

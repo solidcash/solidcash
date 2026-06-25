@@ -10,6 +10,7 @@ import {
   VariableDefinitionNode,
   FunctionDefinitionNode,
   AssignNode,
+  AssignmentExpressionNode,
   IdentifierNode,
   BranchNode,
   CastNode,
@@ -122,6 +123,7 @@ import type {
   TupleAssignmentContext,
   ParameterContext,
   AssignStatementContext,
+  AssignmentExpressionContext,
   ExpressionContext,
   IfStatementContext,
   FunctionCallContext,
@@ -1038,6 +1040,20 @@ export default class AstBuilder
       ctx.expression(),
       Location.fromCtx(ctx),
     );
+  }
+
+  // `(x op= rhs)` as an expression: build the desugared assignment, wrap it so codegen yields x's new value.
+  visitAssignmentExpression(ctx: AssignmentExpressionContext): AssignmentExpressionNode {
+    const assign = this.buildCompoundAssign(
+      ctx.Identifier().getText(),
+      Location.fromToken(ctx.Identifier().symbol),
+      ctx._op.text,
+      ctx.expression(),
+      Location.fromCtx(ctx),
+    );
+    const node = new AssignmentExpressionNode(assign);
+    node.location = Location.fromCtx(ctx);
+    return node;
   }
 
   // Builds an AssignNode from a `=`, `+=`, `-=`, `++` or `--` form, rewriting compound

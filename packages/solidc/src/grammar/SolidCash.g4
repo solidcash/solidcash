@@ -528,7 +528,8 @@ typeList
     ;
 
 expression
-    : '(' expression ')' # Parenthesised
+    : '(' Identifier op=('=' | '+=' | '-=' | '*=' | '/=' | '%=' | '&=' | '|=' | '^=' | '<<=' | '>>=') expression ')' # AssignmentExpression
+    | '(' expression ')' # Parenthesised
     | typeCast '(' castable=expression ','? ')' # Cast
     | functionCall # FunctionCallExpression
     | 'new' Identifier callOptions? expressionList #Instantiation

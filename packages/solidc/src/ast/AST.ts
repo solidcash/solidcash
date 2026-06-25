@@ -656,6 +656,20 @@ export abstract class ExpressionNode extends Node {
   type?: Type;
 }
 
+// `(x op= rhs)` used as an expression: performs the assignment to local `x` and yields its new value
+// (Solidity's assignment-as-expression, e.g. `while ((n >>= 1) > 0)`). Wraps the desugared AssignNode.
+export class AssignmentExpressionNode extends ExpressionNode {
+  constructor(
+    public assign: AssignNode,
+  ) {
+    super();
+  }
+
+  accept<T>(visitor: AstVisitor<T>): T {
+    return visitor.visitAssignmentExpression(this);
+  }
+}
+
 export class ContractReferenceNode extends ExpressionNode {
   compiledBytecode?: Uint8Array;
 

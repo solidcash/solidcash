@@ -27,6 +27,9 @@ export interface CompilerOptions {
   // chunk-packed backend (uint32 length header + chunk UTXOs) instead of the sparse entry-NFT collection.
   // Will become the default for fixed-width `T[]` once the codegen/SDK land. See docs/arrays.md.
   chunkedArrays?: boolean;
+  // block.chainid network constant, baked as a single byte (chainId & 0xff). Convention:
+  // mainnet 0, chipnet 1, testnet4 2, regtest -1 (0xff). User-land; see docs/block-oracle.md.
+  chainId?: number;
 }
 
 export interface AbiInput {
@@ -238,7 +241,7 @@ export interface ExternalCallAbi {
   returnEventSignature?: string;
   computedOffset?: number;
   callMode?: 'call' | 'staticcall' | 'delegatecall';
-  rawCall?: boolean; // generic dynamic dispatch (addr.rawCall): opaque bytes return, callee unknown at compile time
+  opaqueReturn?: boolean; // `(bool,bytes)=addr.call(payload)`: opaque integrity-bound return, callee unknown at compile time
   argSources?: readonly ArgSource[];
 }
 

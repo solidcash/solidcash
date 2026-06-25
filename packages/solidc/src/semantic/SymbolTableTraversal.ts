@@ -2868,7 +2868,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         requiredDataNftIndices: dataNftIndices,
         computedOffset: 0,
         needsSelectorVerification,
-        ...(node.rawCall && { rawCall: true }),
+        ...(node.opaqueReturn && { opaqueReturn: true }),
         ...(callMode && callMode !== ExternalCallMode.REGULAR && { callMode }),
         ...(node.callInfo.hasReturnValues && {
           hasReturnValues: true,
@@ -3524,31 +3524,22 @@ export default class SymbolTableTraversal extends AstTraversal {
           sendNode.location = node.location;
           return sendNode;
         }
-        if ((methodName === 'call' || methodName === 'staticcall' || methodName === 'delegatecall') && node.parameters.length === 1) {
-          const addrIdentifier = new IdentifierNode(varName);
-          addrIdentifier.location = node.identifier.location;
-          const visitedAddr = this.visit(addrIdentifier) as ExpressionNode;
-          const data = this.visit(node.parameters[0]) as ExpressionNode;
-          const callNode = new LowLevelCallNode(visitedAddr, data, methodName);
-          callNode.location = node.location;
-          return callNode;
-        }
-
-        // Generic dynamic dispatch: addr.rawCall(selector, args) -> opaque bytes, selector verified on-chain
-        // against the co-spent callee. Callee type/function are unknown at compile time.
-        if (methodName === 'rawCall' && node.parameters.length === 2) {
-          const addrIdentifier = new IdentifierNode(varName);
-          addrIdentifier.location = node.identifier.location;
-          const addressExpr = this.visit(addrIdentifier) as ExpressionNode;
+        // EVM-parity expression-form low-level call: `(bool, bytes) = addr.call(payload)` co-spends the callee
+        // and returns its REAL integrity-bound return (identity + return-event), where `payload` is built with
+        // abi.encodeWithSignature/Selector. The statement form `addr.call(payload);` stays fire-and-forget
+        // (LowLevelCallStatementNode, built in AstBuilder); the co-spend is supplied via .withExternalCall().
+        if (methodName === 'call' && node.parameters.length === 1) {
+          const addrId = new IdentifierNode(varName);
+          addrId.location = node.identifier.location;
+          const addressExpr = this.visit(addrId) as ExpressionNode;
           const varType = addressExpr.type
             ?? (addressExpr instanceof IdentifierNode ? addressExpr.definition?.type : undefined)
             ?? this.stateVariableMap.get(varName)?.type;
           if (varType instanceof AddressType) {
-            this.visit(node.parameters[0]); // selector: visited for symbol resolution (resolved by the SDK)
-            const argsExpr = this.visit(node.parameters[1]) as ExpressionNode;
-            const callNode = new ExternalFunctionCallNode('__raw__', addressExpr, '__raw__', [argsExpr]);
-            callNode.rawCall = true;
-            callNode.type = new BytesType();
+            const payloadExpr = this.visit(node.parameters[0]) as ExpressionNode;
+            const callNode = new ExternalFunctionCallNode('__raw__', addressExpr, '__raw__', [payloadExpr]);
+            callNode.opaqueReturn = true;
+            callNode.type = new TupleType([PrimitiveType.BOOL, new BytesType()]);
             callNode.callInfo = {
               interfaceName: '__raw__',
               functionName: '__raw__',
@@ -3561,6 +3552,17 @@ export default class SymbolTableTraversal extends AstTraversal {
             callNode.location = node.location;
             return callNode;
           }
+        }
+
+        // Low-level staticcall/delegatecall (and `call` on a non-address target) on a variable.
+        if ((methodName === 'call' || methodName === 'staticcall' || methodName === 'delegatecall') && node.parameters.length === 1) {
+          const addrIdentifier = new IdentifierNode(varName);
+          addrIdentifier.location = node.identifier.location;
+          const visitedAddr = this.visit(addrIdentifier) as ExpressionNode;
+          const data = this.visit(node.parameters[0]) as ExpressionNode;
+          const callNode = new LowLevelCallNode(visitedAddr, data, methodName);
+          callNode.location = node.location;
+          return callNode;
         }
 
         // Interface-typed variable: `token.transferFrom(a, b, c)` where `token` is an `IERC20`-typed
@@ -5553,36 +5555,6 @@ export default class SymbolTableTraversal extends AstTraversal {
           callNode.callInfo.returnEventSignature = `_Return_${ifaceFunc.name}(${ifaceFunc.returnTypes.map((t) => t.toString()).join(',')})`;
         }
 
-        callNode.location = node.location;
-        return callNode;
-      }
-    }
-
-    // Generic dynamic dispatch: addr.rawCall(selector, args) - opaque bytes return, selector verified
-    // on-chain against the co-spent callee. Callee type/function are unknown at compile time.
-    if (node.methodName === 'rawCall') {
-      if (node.parameters.length !== 2) {
-        throw new Error("'rawCall' expects exactly 2 arguments: (bytes selector, bytes args)");
-      }
-      const objName = node.object instanceof IdentifierNode ? node.object.name : undefined;
-      const addressExpr = this.visit(node.object) as ExpressionNode;
-      const objType = addressExpr.type
-        ?? (objName ? this.symbolTables[0].get(objName)?.type ?? this.stateVariableMap.get(objName)?.type : undefined);
-      if (objType instanceof AddressType) {
-        this.visit(node.parameters[0]); // selector: visited for symbol resolution (resolved by the SDK)
-        const argsExpr = this.visit(node.parameters[1]) as ExpressionNode;
-        const callNode = new ExternalFunctionCallNode('__raw__', addressExpr, '__raw__', [argsExpr]);
-        callNode.rawCall = true;
-        callNode.type = new BytesType();
-        callNode.callInfo = {
-          interfaceName: '__raw__',
-          functionName: '__raw__',
-          externalCallSlotIndex: -1,
-          hasReturnValues: true,
-          returnTypes: [new BytesType()],
-          returnEventSignature: '_Return___raw__(bytes)',
-          callMode: ExternalCallMode.REGULAR,
-        };
         callNode.location = node.location;
         return callNode;
       }

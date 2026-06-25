@@ -278,7 +278,7 @@ after-guard; unauthenticated result reaching a load-bearing position.
 | Send value | `call{value:}` | `{value:}` -> satoshi-transfer output |
 | Reentrancy | real hazard; needs guards | structurally absent (flat atomic tx) |
 | MultiCall (reads) | batch `eth_call` workaround | off-chain UTXO batch fetch (no contract) |
-| Arbitrary `call(bytes)` | reflective, runtime | generic dispatch (section 10): integrity-bound, policy via guards |
+| `(bool,bytes)=addr.call(payload)` | reflective, runtime | integrity-bound co-spend; opaque return read from the return event (section 12) |
 
 ## 12. Status
 
@@ -287,20 +287,24 @@ state-variable, interface- and contract-typed targets) in `regular`/`call`/`stat
 and `outState` returns; low-level `call`/`staticcall`/`delegatecall`; value transfer; `delegatecall` proxy
 pattern. See `external-contract-calls.md` for the per-feature test inventory.
 
-Shipped (rawCall MVP, VM-verified - e2e `RawCall.test.ts`): generic allowlist-free dynamic dispatch via
-`bytes result = addr.rawCall(selector, args)` - an identity-bound (`OP_UTXOBYTECODE == addr`) co-spend whose
-return is read as a single opaque `bytes` blob from the integrity-bound return event. The callee, function and
-args are supplied at build time via `.withExternalCall(callee, fn, args)`. Verified e2e: the positive path,
+Shipped (generic dynamic dispatch, EVM-parity surface, VM-verified - e2e `CallReturn.test.ts`):
+`(bool success, bytes data) = addr.call(payload)` where `payload` is built with
+`abi.encodeWithSignature`/`abi.encodeWithSelector`. This **expression form** is an identity-bound
+(`OP_UTXOBYTECODE == addr`) co-spend whose `data` is read as a single opaque `bytes` blob from the
+integrity-bound return event (`success` is always true - integrity failures fail the spend). The statement
+form `addr.call(payload);` stays fire-and-forget (the existing low-level call). The callee, function and args
+are supplied at build time via `.withExternalCall(callee, fn, args)`. Verified e2e: real-return read,
 genericity (the same caller dispatches to two unrelated callee types), the opaque result used in a covenant
-decision (`require(result.length > 0)`), and target-substitution rejection. MVP limitations:
+decision (`require`), target-substitution rejection, and the inline `abi.encodeWithSignature` surface
+compiling. MVP limitations:
 - **Selector pinning deferred.** A co-spent single-function callee's unlocking carries an internal functionId,
   not the 4-byte abi selector, so on-chain "which function" verification needs dispatch-level work. The
-  `selector` argument is accepted but not yet enforced on-chain; the integrity that IS enforced is the target
-  identity plus the return-event category binding (both reused, audited mechanisms).
-- **Raw-blob-to-`bytes`-state-var.** Storing the opaque return directly into a variable-length `bytes` state
-  var hits an auto-derivation convergence edge (the field length depends on the dynamically-read blob). Use a
-  fixed-size derivation of it (hash/length) or forward it.
+  `payload` is not yet verified on-chain against the callee's calldata; the integrity that IS enforced is the
+  target identity plus the return-event category binding (both reused, audited mechanisms).
+- **Real-return-to-`bytes`-state-var.** Storing the opaque return directly into a variable-length `bytes`
+  state var hits an auto-derivation convergence edge (the field length depends on the dynamically-read blob).
+  Use a fixed-size derivation of it (hash/length) or forward it.
 
 Designed, not built: the `before`/`after` guard regions, the four compiler guarantees, the taint meta-guard,
-witness-shape (typed) returns, on-chain selector pinning, and the bounded multicall loop (section 10). The
-adversarial test matrix is the acceptance gate for that work.
+witness-shape (typed) returns, on-chain payload/selector pinning, `staticcall`-with-return, and the bounded
+multicall loop (section 10). The adversarial test matrix is the acceptance gate for that work.

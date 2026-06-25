@@ -4143,6 +4143,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       case NullaryOperator.TX_ORIGIN:
         this.emitTxOrigin(locationData);
         break;
+      case NullaryOperator.CHAIN_ID:
+        // Baked network constant as a single byte; regtest -1 -> 0xff.
+        this.emit(Uint8Array.from([(this.compilerOptions.chainId ?? 0) & 0xff]), locationData);
+        break;
       default:
         this.emit(compileNullaryOp(node.operator), locationData);
         break;
@@ -7368,9 +7372,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, locationData);
       // Stack: [return_blob] (1 untracked)
 
-      if (node.rawCall) {
-        // Opaque: the whole return-event commitment IS the bytes result (no typed decode).
-        this.pushToStack('(value)');
+      if (node.opaqueReturn) {
+        // EVM-parity `(bool success, bytes data) = addr.call(payload)`: the whole return-event commitment is
+        // `data` (opaque, no typed decode); `success` is always true (integrity failures fail the spend).
+        this.emit(Op.OP_1, locationData);    // [data, true]
+        this.emit(Op.OP_SWAP, locationData); // [true, data]
+        this.pushToStack('(success)');
+        this.pushToStack('(returnData)');
       } else {
         // Decode return values from blob
         for (let i = 0; i < returnTypes.length; i++) {

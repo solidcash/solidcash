@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { compileString } from 'solidc';
 import { hexToBin } from '@bitauth/libauth';
 import {
-  Contract, StatefulContract, SignatureTemplate, FunctionArgument,
+  Contract, StatefulContract, SignatureTemplate,
 } from '../../src/index.js';
 import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
 import { alicePub, alicePriv } from '../fixture/vars.js';
@@ -28,20 +28,22 @@ contract Adder() {
   }
 }`;
 
-// Caller: generic dynamic dispatch. addr is caller-supplied; the return is read as opaque bytes, used in a
-// covenant decision (the require), then a fixed-size derivation of it is committed to state.
+// EVM-parity low-level call: `(bool, bytes) = addr.call(payload)` returns the callee's real integrity-bound
+// return. `payload` is built with abi.encodeWithSignature/Selector off-chain. The opaque return is used in a
+// covenant decision (the require) and a fixed-size derivation of it is committed to state.
 const CALLER = `pragma solidcash >=0.8.0;
 contract Caller() {
   bytes32 digest;
-  function go(address t, bytes sel, bytes args, pubkey pk, sig s) {
+  function go(address t, bytes payload, pubkey pk, sig s) {
     require(checkSig(s, pk));
-    bytes result = t.rawCall(sel, args);
+    (bool ok, bytes result) = t.call(payload);
+    require(ok);
     require(result.length > 0);
     this.digest = sha256(result);
   }
 }`;
 
-describe('rawCall generic dynamic dispatch', () => {
+describe('low-level call with integrity-bound return ((bool,bytes) = addr.call(payload))', () => {
   const provider = createTestProvider();
   const sig = (): SignatureTemplate => new SignatureTemplate(alicePriv);
 
@@ -71,48 +73,63 @@ describe('rawCall generic dynamic dispatch', () => {
     };
   }
 
-  // Run the caller's rawCall against a co-spent callee and return the caller's resulting digest.
-  async function rawCall(
-    caller: StatefulContract, target: Uint8Array, callee: StatefulContract, fn: string, args: FunctionArgument[],
-  ): Promise<Uint8Array> {
-    const sel = new Uint8Array(4); // selector is not enforced on-chain in the MVP
-    const tx = await caller.go(target, sel, new Uint8Array(), alicePub, sig())
-      .withExternalCall(callee, fn, args)
-      .send();
-    expect(tx.txid).toBeDefined();
-    return (await caller.getState()).digest as Uint8Array;
+  // payload stands in for abi.encodeWithSignature(`${fn}(...)`, ...args); not enforced on-chain in this MVP.
+  function payloadFor(art: typeof echoArt, fn: string): Uint8Array {
+    return hexToBin(art.abi.find((f) => f.name === fn)!.selector!);
   }
 
-  it('reads an integrity-bound opaque return from a generic callee', async () => {
+  it('reads the callee\'s real return via addr.call(payload)', async () => {
     const echo = await genCallee(echoArt, { stored: 0n });
     const caller = await genCaller();
 
-    const digest = await rawCall(caller.sc, echo.addr, echo.sc, 'setAndReturn', [42n, alicePub, sig()]);
+    const tx = await caller.sc.go(echo.addr, payloadFor(echoArt, 'setAndReturn'), alicePub, sig())
+      .withExternalCall(echo.sc, 'setAndReturn', [42n, alicePub, sig()])
+      .send();
 
+    expect(tx.txid).toBeDefined();
     expect((await echo.sc.getState()).stored).toBe(42n);
-    expect(digest.some((b) => b !== 0)).toBe(true);
+    expect(((await caller.sc.getState()).digest as Uint8Array).some((b) => b !== 0)).toBe(true);
   });
 
   it('dispatches the same caller generically to an unrelated callee type', async () => {
     const adder = await genCallee(adderArt, { last: 0n });
     const caller = await genCaller();
 
-    const digest = await rawCall(caller.sc, adder.addr, adder.sc, 'add', [3n, 4n, alicePub, sig()]);
+    const tx = await caller.sc.go(adder.addr, payloadFor(adderArt, 'add'), alicePub, sig())
+      .withExternalCall(adder.sc, 'add', [3n, 4n, alicePub, sig()])
+      .send();
 
-    // The same Caller.go reached a different contract+function with its own args.
+    expect(tx.txid).toBeDefined();
     expect((await adder.sc.getState()).last).toBe(7n);
-    expect(digest.some((b) => b !== 0)).toBe(true);
+    expect(((await caller.sc.getState()).digest as Uint8Array).some((b) => b !== 0)).toBe(true);
   });
 
   it('rejects a wrong target address (co-spent callee is not the claimed addr)', async () => {
     const echo = await genCallee(echoArt, { stored: 0n });
     const caller = await genCaller();
 
-    // Claim the caller's own address as the target while actually co-spending echo: identity check fails.
     await expect(
-      caller.sc.go(caller.addr, new Uint8Array(4), new Uint8Array(), alicePub, sig())
+      caller.sc.go(caller.addr, payloadFor(echoArt, 'setAndReturn'), alicePub, sig())
         .withExternalCall(echo.sc, 'setAndReturn', [42n, alicePub, sig()])
         .send(),
     ).rejects.toThrow();
+  });
+});
+
+describe('abi.encodeWithSignature payload (parity surface)', () => {
+  it('compiles addr.call(abi.encodeWithSignature(...)) into an integrity-bound external call', () => {
+    const src = `pragma solidcash >=0.8.0;
+contract C() {
+  bytes32 d;
+  function f(address t, bigint v, pubkey pk, sig s) {
+    require(checkSig(s, pk));
+    (bool ok, bytes r) = t.call(abi.encodeWithSignature("setAndReturn(uint256)", v));
+    require(ok);
+    this.d = sha256(r);
+  }
+}`;
+    const art = compileString(src);
+    const fn = art.abi.find((f) => f.name === 'f');
+    expect(fn!.externalCalls?.some((e) => e.opaqueReturn)).toBe(true);
   });
 });

@@ -104,14 +104,15 @@ describe('Low-Level Address Call (.call and .staticcall as address members)', ()
       expect(staticcallFn!.lowLevelCalls![0].callMode).toBe('staticcall');
     });
 
-    it('ABI contains lowLevelCalls metadata for expression-form call', () => {
+    it('expression-form call is an integrity-bound external call (returns the callee value)', () => {
       const art = compileString(ADDRESS_CALLER);
 
+      // `(bool, bytes) = target.call(payload)` returns the callee's REAL integrity-bound return, so the
+      // expression form compiles to an external call (opaqueReturn), not a fire-and-forget low-level call.
       const callExprFn = art.abi.find((f) => f.name === 'callExpression');
       expect(callExprFn).toBeDefined();
-      expect(callExprFn!.lowLevelCalls).toBeDefined();
-      expect(callExprFn!.lowLevelCalls!.length).toBe(1);
-      expect(callExprFn!.lowLevelCalls![0].callMode).toBe('call');
+      expect(callExprFn!.externalCalls?.some((e) => e.opaqueReturn)).toBe(true);
+      expect(callExprFn!.lowLevelCalls).toBeUndefined();
     });
 
     it('ABI contains lowLevelCalls for multi-call function', () => {

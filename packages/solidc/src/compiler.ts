@@ -79,7 +79,7 @@ export function compileString(code: string, compilerOptions: CompileOptions = {}
   ast = expandBreakContinue(ast);
 
   // Named-return desugar (before semantic analysis): named returns become default-init locals.
-  ast = ast.accept(new NamedReturnTransformation()) as Ast;
+  ast = ast.accept(new NamedReturnTransformation(mergedCompilerOptions.solidityImportCompat)) as Ast;
 
   // Inline void helpers that make external calls into their internal call sites (the external co-spend can't
   // cross an OP_INVOKE boundary); reduces to the entry-point-body external-call case.
@@ -189,7 +189,7 @@ function compileReferencedContracts(
     // Without this, imported contracts get OP_PICK + OP_NIP instead of OP_ROLL,
     // producing different (larger) bytecode than standalone compilation.
     let singleAst: Ast = new SourceFileNode(contract);
-    singleAst = singleAst.accept(new NamedReturnTransformation()) as Ast;
+    singleAst = singleAst.accept(new NamedReturnTransformation(compilerOptions.solidityImportCompat)) as Ast;
     singleAst = singleAst.accept(new InlineExternalCallHelpers()) as Ast;
     singleAst = singleAst.accept(new SynthesizeExternalAddressLocals()) as Ast;
     singleAst = singleAst.accept(new SynthesizeBlockOracle(compilerOptions.solidityImportCompat)) as Ast;

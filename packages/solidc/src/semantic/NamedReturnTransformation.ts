@@ -30,6 +30,10 @@ import AstTraversal from '../ast/AstTraversal.js';
 export default class NamedReturnTransformation extends AstTraversal {
   private currentReturnNames: string[] = [];
 
+  constructor(private solidityImportCompat: boolean = false) {
+    super();
+  }
+
   visitSourceFile(node: SourceFileNode): Node {
     for (let i = 0; i < node.freeFunctions.length; i++) {
       node.freeFunctions[i] = this.visit(node.freeFunctions[i]) as FunctionDefinitionNode;
@@ -45,6 +49,16 @@ export default class NamedReturnTransformation extends AstTraversal {
   }
 
   visitFunctionDefinition(node: FunctionDefinitionNode): Node {
+    // Empty-body function with (unnamed) return types: Solidity returns the type defaults. Synthesize
+    // `return <defaults>;` so it compiles. Porting mode only - native keeps EmptyFunctionError as a guard.
+    if (this.solidityImportCompat && node.body && (node.body.statements?.length ?? 0) === 0
+      && node.returnTypes.length > 0 && node.returnNames.length === 0) {
+      const ret = new ReturnNode(node.returnTypes.map((t) => createDefaultValueExpression(t, node.location)));
+      ret.location = node.location;
+      node.body.statements = [ret];
+      return node;
+    }
+
     if (node.returnNames.length === 0 || !node.body) {
       return node;
     }

@@ -873,3 +873,26 @@ describe('SBE-14: bare state-array push/pop (Solidity idiom) routes to state, li
       .toBe(compileString(src('this.arr.pop()'), { solidityImportCompat: true }).bytecode);
   });
 });
+
+describe('SBE-15: empty-body returning function + named-arg call to a returning function', () => {
+  it('an empty-body function with return types compiles (Solidity returns defaults) under compat', () => {
+    const a = compileString(
+      'contract X() { function f(uint256 x) public pure returns (uint256) {} function g() external pure returns (uint256) { return f(1); } }',
+      { solidityImportCompat: true },
+    );
+    expect(a.contractName).toBe('X');
+  });
+  it('still rejects an empty-body returning function in native mode (footgun guard)', () => {
+    expect(() => compileString(
+      'contract X() { int n; function ok() { this.n = 1; } function f(uint256 x) returns (uint256) {} }',
+    )).toThrow(/contains no statements/);
+  });
+  it('forwards the synthetic returnOutputIdx for a named-arg call to a public returning function', () => {
+    const a = compileString(
+      'contract X() { function f(uint256 x, uint256 y) public pure returns (uint256) { return x + y; }'
+      + ' function g() external pure returns (uint256) { return f({y: 2, x: 1}); } }',
+      { solidityImportCompat: true },
+    );
+    expect(a.contractName).toBe('X');
+  });
+});

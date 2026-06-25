@@ -3477,7 +3477,11 @@ export default class SymbolTableTraversal extends AstTraversal {
   // Reorder named call arguments f({b:2,a:1}) into the function's declared parameter order.
   private reorderNamedCallArgs(func: FunctionDefinitionNode, node: FunctionCallNode): ExpressionNode[] {
     const fieldNames = node.fieldNames!;
-    const paramNames = func.parameters.map((p) => p.name);
+    // Synthetic __internal__ params (e.g. returnOutputIdx on a public returning fn) are appended during
+    // semantic analysis and never named at the call site; reorder only the user params - TypeCheck's
+    // forwardInternalReturnOutputIdx appends the synthetic values to the now-positional call.
+    const userParams = func.parameters.filter((p) => !p.name.startsWith('__internal__'));
+    const paramNames = userParams.map((p) => p.name);
     const seen = new Set<string>();
     for (const name of fieldNames) {
       if (seen.has(name)) throw new NamedArgumentError(node, `Duplicate named argument '${name}'`);
@@ -3492,7 +3496,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         `Function '${func.name}' expects ${paramNames.length} arguments but got ${fieldNames.length}`,
       );
     }
-    return func.parameters.map((p) => node.parameters[fieldNames.indexOf(p.name)] as ExpressionNode);
+    return userParams.map((p) => node.parameters[fieldNames.indexOf(p.name)] as ExpressionNode);
   }
 
   // Reorder named method args obj.f({b:2,a:1}) into the callee's declared parameter order.

@@ -1,15 +1,24 @@
 import { hexToBin } from '@bitauth/libauth';
 import { ElectrumClient } from '@electrum-cash/network';
 import { BchnRpcClient } from '@mr-zwets/bchn-api-wrapper';
+import { Artifact } from '@solidcash/utils';
 import { Contract } from '../Contract.js';
 import { StatefulContract } from '../stateful/StatefulContract.js';
 import SignatureTemplate from '../SignatureTemplate.js';
 
 /**
- * Off-chain keeper that keeps a per-contract block.* oracle register fresh (docs/block-oracle.md). It
- * subscribes to Fulcrum block-header notifications and, on each new tip, reads the block from a BCHN
- * JSON-RPC, compares its height with the oracle's current height, and pushes a signed + freshness-bound
- * `__updateBlockOracle` if the chain is ahead. The owner key is the contract's baked `__blockOracleOwner`.
+ * Off-chain keeper for a contract's block.* oracles (docs/block-oracle.md). It subscribes to Fulcrum
+ * block-header notifications and, on each new tip, maintains only the oracle(s) the contract actually uses:
+ *
+ *  - block-info register (block.number/timestamp/...): present iff the artifact has `__updateBlockOracle`.
+ *    Reads the block from a BCHN JSON-RPC and pushes a signed + freshness-bound `__updateBlockOracle` when
+ *    the chain is ahead of the on-chain register.
+ *  - n->hash oracle (blockhash(n)): present iff the artifact uses blockhash(). Mints the per-block
+ *    (n->hash) UTXO under the project-global oracle category and sweeps the one that fell out of the
+ *    256-block window. (Pending the on-chain covenant + blockhash() compiler support - see the doc.)
+ *
+ * The keeper/operator private key signs both (the contract's baked `__blockOracleOwner` for block-info,
+ * and the n->hash mint).
  */
 
 // Any JSON-RPC client exposing `request(method, ...params)` (BchnRpcClient satisfies this).
@@ -25,6 +34,9 @@ export interface BlockOracleFields {
   totalFees: bigint; // sum of tx fees, satoshis
   coinbase: Uint8Array; // coinbase output 0 locking bytecode
 }
+
+// EVM-parity blockhash window.
+export const BLOCKHASH_WINDOW = 256;
 
 // User-land defaults: mainnet -> public BCHN, regtest -> the docker stack (see docker-compose.regtest.yml).
 export const DEFAULT_RPC_URL: Record<string, string> = {
@@ -105,38 +117,84 @@ function buildUpdate(
 export interface BlockOracleUpdaterConfig {
   contract: Contract;
   categoryId: string;
-  ownerKey: Uint8Array; // private key of the baked __blockOracleOwner
+  // Operator/keeper private key. Signs the block-info `__updateBlockOracle` (vs the baked
+  // `__blockOracleOwner`) and the n->hash oracle mints.
+  keeperKey: Uint8Array;
   rpc: RpcLike;
   electrumHost?: string; // Fulcrum host for blockchain.headers.subscribe
+  // Project-global blockhash (n->hash) oracle token category. Required only for blockhash() consumers.
+  blockhashOracleCategory?: string;
 }
 
 export class BlockOracleUpdater {
   constructor(private readonly cfg: BlockOracleUpdaterConfig) {}
 
-  /** Current oracle height from the on-chain __block_number register (0 if absent). */
+  /** The contract writes a current-block register set (block.number/timestamp/...). */
+  static usesBlockInfo(artifact: Artifact): boolean {
+    return artifact.abi.some((fn) => fn.name === '__updateBlockOracle');
+  }
+
+  /**
+   * The contract reads blockhash(n), so it needs the project-global (n->hash) oracle. The compiler sets
+   * this marker on the artifact once blockhash() lands (see docs/block-oracle.md); false until then.
+   */
+  static usesBlockhash(artifact: Artifact): boolean {
+    return (artifact as { usesBlockhash?: boolean }).usesBlockhash === true;
+  }
+
+  /** Current block-info oracle height from the on-chain __block_number register (0 if absent). */
   async oracleHeight(): Promise<bigint> {
     const sc = StatefulContract.withCategory(this.cfg.contract, this.cfg.categoryId);
     const state = await sc.getState();
     return BigInt((state.__block_number as bigint | undefined) ?? 0n);
   }
 
-  /** Push a signed + freshness-bound update for the given block fields. Returns the txid. */
+  /** Push a signed + freshness-bound block-info update for the given block fields. Returns the txid. */
   async pushUpdate(fields: BlockOracleFields): Promise<string> {
     const { args, state } = buildUpdate(this.cfg.contract, fields);
     const sc = StatefulContract.withCategory(this.cfg.contract, this.cfg.categoryId);
-    const call = (sc as any).__updateBlockOracle(new SignatureTemplate(this.cfg.ownerKey), ...args)
+    const call = (sc as any).__updateBlockOracle(new SignatureTemplate(this.cfg.keeperKey), ...args)
       .setState(state)
       .setLocktime(Number(fields.number)); // freshness: require(tx.time >= number)
     const tx = await call.send();
     return tx.txid;
   }
 
-  /** Fetch the tip; if ahead of the oracle, push an update. Returns the update txid or null if up to date. */
+  /**
+   * Maintain the project-global (n->hash) oracle for blockhash(): mint the new tip's (n, hash) pair under
+   * the oracle category and sweep the pair that aged out of the 256-block window.
+   *
+   * PENDING the on-chain n->hash covenant (self-pin + self-preserving recreate + tx.time>=n+256 wipe) and
+   * blockhash() compiler support. The detection + scheduling are wired here; the mint/sweep are not, since
+   * there is no covenant to mint against yet. See docs/block-oracle.md.
+   */
+  private async maintainBlockhashWindow(tip: number): Promise<void> {
+    if (!this.cfg.blockhashOracleCategory) {
+      throw new Error('blockhashOracleCategory is required to maintain the n->hash oracle for a blockhash() consumer');
+    }
+    // TODO(blockhash): const hash = await this.cfg.rpc.request('getblockhash', tip);
+    //   mint addr(tip) carrying (tip, hash) under blockhashOracleCategory; sweep addr(tip - BLOCKHASH_WINDOW).
+    void tip;
+    console.warn('[block-oracle-updater] n->hash oracle pending blockhash() support; skipping window maintenance');
+  }
+
+  /**
+   * Fetch the tip and maintain whichever oracle(s) this contract uses. Returns the block-info update txid
+   * (or null if the block-info oracle is absent or already current).
+   */
   async syncOnce(): Promise<string | null> {
     const tip = Number(await this.cfg.rpc.request('getblockcount'));
-    if (BigInt(tip) <= (await this.oracleHeight())) return null;
-    const hash: string = await this.cfg.rpc.request('getblockhash', tip);
-    return this.pushUpdate(await fetchBlockOracleFields(this.cfg.rpc, hash));
+    const { artifact } = this.cfg.contract;
+
+    let blockInfoTxid: string | null = null;
+    if (BlockOracleUpdater.usesBlockInfo(artifact) && BigInt(tip) > (await this.oracleHeight())) {
+      const hash: string = await this.cfg.rpc.request('getblockhash', tip);
+      blockInfoTxid = await this.pushUpdate(await fetchBlockOracleFields(this.cfg.rpc, hash));
+    }
+    if (BlockOracleUpdater.usesBlockhash(artifact)) {
+      await this.maintainBlockhashWindow(tip);
+    }
+    return blockInfoTxid;
   }
 
   /**

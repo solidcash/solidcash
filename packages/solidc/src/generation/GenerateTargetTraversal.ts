@@ -3246,6 +3246,22 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       return this.visitAddMulMod(node);
     }
 
+    if (node.identifier.name === GlobalFunction.BLOBHASH) {
+      // No blobs on BCH: ignore the index, return bytes32(0) (EVM returns 0 for i >= numBlobs).
+      const loc = { location: node.location, positionHint: PositionHint.START };
+      node.parameters[0] = this.visit(node.parameters[0]);
+      this.popFromStack();
+      this.emit(Op.OP_DROP, loc);
+      this.emit(new Uint8Array(32), loc);
+      this.pushToStack('(value)');
+      return node;
+    }
+
+    if (node.identifier.name === GlobalFunction.BLOCKHASH) {
+      // Recognized + type-checked; the read codegen (the n->hash oracle co-spend) is the next increment.
+      throw new Error('blockhash() is not yet implemented; see packages/solidc/docs/block-oracle.md section 11');
+    }
+
     const externalLib = this.resolvedLibraries[node.identifier.name];
     if (externalLib) {
       return this.visitExternalLibraryCall(node, externalLib);

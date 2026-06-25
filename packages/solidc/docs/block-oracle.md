@@ -216,9 +216,8 @@ is ~47 bytes, and even with a 64-byte audit sig the total is ~111 B, under 128.
     copying its (category-trusted) data in.
   Both ride the section-5 anti-over-reporting check. Keeping v1's owner-key path as one policy among these
   is the only forward-compat requirement.
-- **block.hash / prevrandao:** deferred. No native source and **grindable** (the tx-builder picks the
-  attestation; miners grind the coinbase). MUST be documented as not-secure-randomness; a compiler warning
-  on `block.hash` feeding modulo/arithmetic is advisable. Real randomness needs a VRF / commit-reveal.
+- **block.hash / blockhash(n) / blobhash(i):** specced in section 11 (per-pair n->hash oracle), pending
+  implementation. `prevrandao` has no BCH analogue (no randomness beacon); not planned.
 - **Signer decentralization:** if the trust-minimized path adopts datasig, the single key is the seam to
   a committee / m-of-n later (bake a key-commitment/Merkle root, not a literal key, to keep it
   non-breaking).
@@ -238,3 +237,82 @@ Still open:
   (recommended, section 5) vs strictly everything through the co-spent register.
 - **`block.totalFees` width:** `uint32` (4 B, 42.9 BCH ceiling - minimal viable) vs `uint64` (8 B,
   bulletproof). Default `uint32`.
+
+## 11. blockhash(n) and blobhash(i) - DESIGN (pending implementation)
+
+These are **functions** (runtime argument), not the 0-param `block.*` properties, so they lower as
+`GlobalFunction`s (the keccak256 path is the template), not nullary register reads.
+
+### 11.1 blobhash(uint) -> bytes32: return zero
+
+EIP-4844 blobs (KZG-committed sidecar data on a blob-carrying tx) have **no BCH analogue**. EVM returns
+`0` for `i >= numBlobs`; on BCH `numBlobs == 0`, so `blobhash(i) == bytes32(0)` for all `i` - a porting
+shim so Solidity that references it compiles and runs. Codegen: drop the arg, push 32 zero bytes.
+(Optional compile warning that blobs do not exist on BCH.) An `OP_RETURN`-data reinterpretation is
+rejected - it silently changes Solidity semantics.
+
+### 11.2 blockhash(uint n) -> bytes32: the per-pair (n -> hash) oracle
+
+`block.hash` of the *current* block is just a `bytes32` register field (co-spend, owner-updated, like the
+other block.* fields), so `blockhash(block.number)` resolves locally. The hard part is historical `n`,
+which the single current-block register cannot hold. Design (category-trust, no datasig):
+
+**The `(n -> hash)` UTXO.** One per block, under a project-global oracle token category `C_oracle`:
+- **Unique address `addr(n)`** (a deterministic function of `n`) - so the SDK/Fulcrum looks it up by exact
+  scripthash, returning *one* UTXO, no grind-and-filter over a shared address. The contract does **not**
+  recompute `addr(n)`, so the address carries no in-script inline-bytecode-match burden; only the keeper
+  (mint) and SDK (discovery) derive it.
+- **Commitment `(n, hash)`** - this is the contract's on-chain pin: the consumer checks `commitment.n == n`.
+- **Covenant: three paths** - (1) keeper genesis under `C_oracle`; (2) **read = self-preserving recreate**
+  (read-only, self-pins `category == C_oracle`); (3) **wipe** = anyone may consume once
+  `tx.time >= n + 256` (height floor). Bounded 256-deep window (EVM parity), dust recycled on wipe,
+  cleanup permissionless so the set stays bounded even if the keeper stalls.
+
+**The consumer (`blockhash(n)`) is stateless** - an external read of `C_oracle`: co-spend the `(n->hash)`
+UTXO read-only, check `OP_UTXOTOKENCATEGORY(in) == C_oracle` (mint-once = keeper, the trust anchor) +
+`commitment.n == n`, return `hash`. No per-contract register, no merkle proof. Emit
+`require(tx.time >= n)` (no-future bound). If the SDK finds no live UTXO at `addr(n)` (outside the window
+or unpublished), yield `bytes32(0)` (EVM parity), no revert.
+
+**Why category + commitment, not the address:** unique `addr(n)` is the off-chain *indexer* key;
+`commitment.n` is the on-chain *contract* pin; `C_oracle` (self-pin, mint-once) is the *trust*. They are
+complementary - the unique address costs nothing in-script.
+
+**Keeper (the updater).** On each new tip `n`: mint `addr(n)` carrying `(n, hash)` under `C_oracle`, and
+sweep `addr(n - 256)`. This is `BlockOracleUpdater.maintainBlockhashWindow` - gated on
+`usesBlockhash(artifact)`, signed by the keeper key, **pending the on-chain covenant**.
+
+**Grinding caveat (unchanged):** the tx-builder picks `n`, so `uint(blockhash(n)) % k` randomness is
+grindable - worse than EVM. Legitimate commit-reveal must **pin `n`** (committed in a prior tx). A compiler
+warning when `blockhash(...)` feeds modulo/arithmetic is advisable.
+
+### 11.3 Open decision: public primitive vs keeper-gated
+
+- **Public primitive (recommended):** reads are **permissionless self-serve**; integrity comes from
+  self-pin + self-preserve; reads are contention-free because they partition by `n`. No keeper on the read
+  path. This is the right model if `blockhash` is a language primitive any contract may call.
+- **Keeper-gated (project-private):** require `C_oracle`'s **master (minting NFT)** co-spent in every read.
+  This excludes alien consumers, but (a) re-creates the single-master **global lock** the per-pair design
+  exists to avoid - so it needs **master fan-out** (the deferred split mechanism) to keep throughput - and
+  (b) for the gate to actually exclude aliens the master spend must be keeper-signed, putting the keeper on
+  the read path. Integrity does **not** need this (self-pin already gives it); the gate only buys access
+  control. Pick this only for a deliberately private oracle, and pull master fan-out into v1.
+
+### 11.4 Alternatives (recorded)
+
+- **Merkle root** (per-contract register holds a 32-byte root of a `(height->hash)` tree; caller supplies a
+  proof): contention-free even for a hot recent `n`, but every blockhash-using contract carries a register
+  + in-script proof verification. Use if you expect heavy concurrent reads of the *same* recent `n`.
+- **Datasig** (keeper signs `(n, hash)`, caller supplies `(hash, sig)`, contract `OP_CHECKDATASIG`): any
+  `n`, no storage, no shared UTXO - but key-trust, and it allows permissionless bootstrap (no keeper
+  liveness on the read path). The escape if you ever want consumer-bootstrapped pairs.
+
+### 11.5 Compiler / SDK integration
+
+- Register `blockhash`/`blobhash` as `GlobalFunction`s, signature `(uint) -> bytes32`. `blobhash` -> push
+  `bytes32(0)`. `blockhash` -> external read of `C_oracle` (category + `commitment.n` check) + the
+  `tx.time >= n` floor; `0` outside the window.
+- Set an artifact `usesBlockhash` marker when the function is referenced (drives `usesBlockhash(artifact)`
+  in the updater and the `block.hash`-current register field).
+- SDK: resolve `n` (call-site arg / VM trace), look up `addr(n)` on Fulcrum, co-spend the `(n->hash)` UTXO
+  read-only (+ recreate); the VM is the arbiter, so a wrong injection fails the category/`n` check.

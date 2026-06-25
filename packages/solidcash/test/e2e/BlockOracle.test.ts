@@ -297,7 +297,7 @@ describe('block.* off-chain keeper (updater)', () => {
       __block_totalFees: 0n, __block_coinbase: hexToBin('00'), __blockOracleOwner: alicePub,
     }, { saltContract: true });
 
-    const updater = new BlockOracleUpdater({ contract, categoryId, ownerKey: alicePriv, rpc: fakeRpc(100000) });
+    const updater = new BlockOracleUpdater({ contract, categoryId, keeperKey: alicePriv, rpc: fakeRpc(100000) });
     expect(await updater.oracleHeight()).toBe(0n);
 
     const txid = await updater.syncOnce();
@@ -316,7 +316,40 @@ describe('block.* off-chain keeper (updater)', () => {
       __block_totalFees: 0n, __block_coinbase: hexToBin('00'), __blockOracleOwner: alicePub,
     }, { saltContract: true });
 
-    const impostor = new BlockOracleUpdater({ contract, categoryId, ownerKey: bobPriv, rpc: fakeRpc(100000) });
+    const impostor = new BlockOracleUpdater({ contract, categoryId, keeperKey: bobPriv, rpc: fakeRpc(100000) });
     await expect(impostor.syncOnce()).rejects.toThrow();
+  });
+});
+
+// blobhash(i) has no BCH analogue (no EIP-4844 blobs) -> always bytes32(0); blockhash(n) is recognized
+// but its n->hash oracle read codegen is pending (docs/block-oracle.md s11).
+const B32_ZERO = `0x${'00'.repeat(32)}`;
+
+async function spendBlob(expectHex: string): Promise<string> {
+  const provider = createTestProvider();
+  const artifact = compileString(`contract Blob(){ function f(){ require(blobhash(5) == ${expectHex}); } }`);
+  const contract = new Contract(artifact, [], { provider });
+  const utxo = await provider.addUtxo(contract.address, randomUtxo({ satoshis: 100000n }));
+  const feeFunder = await createFeeFunder(provider, 20000n);
+  const tx = await new TransactionBuilder({ provider })
+    .addInput(utxo, contract.unlock.f())
+    .addInput(feeFunder.utxo, feeFunder.unlocker)
+    .addOutput({ to: contract.address, amount: 110000n })
+    .send();
+  return tx.txid;
+}
+
+describe('blobhash / blockhash', () => {
+  it('blobhash(i) returns bytes32(0) (no blobs on BCH)', async () => {
+    expect(await spendBlob(B32_ZERO)).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it('blobhash rejects a non-zero expectation', async () => {
+    await expect(spendBlob(`0x01${'00'.repeat(31)}`)).rejects.toThrow();
+  });
+
+  it('blockhash(n) is recognized (type-checked) but its codegen is pending', () => {
+    expect(() => compileString(`contract B(){ function f(){ require(blockhash(1) == ${B32_ZERO}); } }`))
+      .toThrow(/blockhash\(\) is not yet implemented/);
   });
 });

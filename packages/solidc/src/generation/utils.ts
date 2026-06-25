@@ -179,6 +179,9 @@ export function compileGlobalFunction(fn: GlobalFunction): Script {
     [GlobalFunction.ADDMOD]: [],
     [GlobalFunction.MULMOD]: [],
     [GlobalFunction.KECCAK256]: [],
+    // blockhash/blobhash are handled directly in visitFunctionCall (n->hash oracle read / bytes32(0))
+    [GlobalFunction.BLOCKHASH]: [],
+    [GlobalFunction.BLOBHASH]: [],
   };
 
   return mapping[fn];

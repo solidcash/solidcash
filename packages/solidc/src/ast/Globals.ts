@@ -37,6 +37,8 @@ export enum GlobalFunction {
   TO_PADDED_BYTES = 'toPaddedBytes',
   INT_TO_STRING = 'intToString',
   STRING_TO_INT = 'stringToInt',
+  BLOCKHASH = 'blockhash',
+  BLOBHASH = 'blobhash',
 }
 
 export enum TimeOp {
@@ -136,6 +138,14 @@ GLOBAL_SYMBOL_TABLE.set(Symbol.function(
 GLOBAL_SYMBOL_TABLE.set(Symbol.function(
   GlobalFunction.STRING_TO_INT, PrimitiveType.BIGINT,
   [PrimitiveType.STRING],
+));
+// EVM-parity block-hash builtins (see docs/block-oracle.md s11). blobhash always returns 0 (no BCH
+// blobs); blockhash(n) reads the project (n->hash) oracle.
+GLOBAL_SYMBOL_TABLE.set(Symbol.function(
+  GlobalFunction.BLOCKHASH, new BytesType(32), [PrimitiveType.INT],
+));
+GLOBAL_SYMBOL_TABLE.set(Symbol.function(
+  GlobalFunction.BLOBHASH, new BytesType(32), [PrimitiveType.INT],
 ));
 
 // External-library precompiles (keccak256, another hashing scheme, ...) are registered from the registry by

@@ -443,3 +443,53 @@ describe('blockhash(n) e2e (real (n->hash) covenant)', () => {
     await expect(wipeBlockhash(100000, 100255)).rejects.toThrow();
   });
 });
+
+// Keeper minting: spend a C_oracle minting master to mint the (n,hash) oracle UTXO at addr(n). Master held
+// at a trivial anyone-can-spend p2sh32 (OP_1) for the test; production gates it on the keeper key.
+const MASTER_LBC = hexToBin('aa20953ccfa596a6c6d39e5980194539124fdcff116a571455a212baed811f585ee087');
+const MASTER_UNLOCK = hexToBin('0151');
+
+describe('blockhash keeper minting', () => {
+  it('mints a valid (n,hash) oracle UTXO from the C_oracle master, read back via blockhash', async () => {
+    const provider = createTestProvider();
+    const masterUtxo = {
+      txid: '33'.repeat(32), vout: 0, satoshis: 10000n,
+      token: { category: BH_CAT, amount: 0n, nft: { capability: 'minting' as const, commitment: '' } },
+    };
+    await provider.addUtxo(binToHex(MASTER_LBC), masterUtxo);
+    const consumer = new Contract(
+      compileString('contract B(){ function f(int bn, bytes32 h){ require(blockhash(bn) == h); } }', { blockhashOracleCategory: BH_CAT }),
+      [], { provider },
+    );
+    const updater = new BlockOracleUpdater({
+      contract: consumer, categoryId: '00'.repeat(32), keeperKey: alicePriv, rpc: fakeRpc(),
+      blockhashOracleCategory: BH_CAT,
+      blockhashOracleMaster: {
+        utxo: masterUtxo,
+        unlocker: { generateLockingBytecode: () => MASTER_LBC, generateUnlockingBytecode: () => MASTER_UNLOCK },
+      },
+    });
+
+    const H = hexToBin('cd'.repeat(32));
+    const mintTxid = await updater.mintBlockhashPair(100000n, H);
+    expect(mintTxid).toMatch(/^[0-9a-f]{64}$/);
+
+    // The minted (n->hash) NFT is output 1 of the mint tx; a consumer co-spends it and reads blockhash(100000).
+    const cat = hexToBin(BH_CAT);
+    const addrN = blockhashOracleLockingBytecode(cat, 100000n);
+    const redeem = scriptToBytecode(buildBlockhashOracleCovenantScript(cat, 100000n));
+    const token = { category: BH_CAT, amount: 0n, nft: { capability: 'none' as const, commitment: binToHex(buildBlockhashCommitment(100000n, H)) } };
+    const mintedUtxo = { txid: mintTxid, vout: 1, satoshis: 1000n, token };
+    const contractUtxo = await provider.addUtxo(consumer.address, randomUtxo({ satoshis: 100000n }));
+    const readUnlock = scriptToBytecode([new Uint8Array(0), redeem]);
+
+    const tx = await new TransactionBuilder({ provider })
+      .addInput(contractUtxo, consumer.unlock.f(100000n, H))
+      .addInput(mintedUtxo, { generateLockingBytecode: () => addrN, generateUnlockingBytecode: () => readUnlock })
+      .addOutput({ to: consumer.address, amount: 99000n })
+      .addOutput({ to: addrN, amount: 1000n, token })
+      .setLocktime(100000)
+      .send();
+    expect(tx.txid).toMatch(/^[0-9a-f]{64}$/);
+  });
+});

@@ -1,8 +1,10 @@
-import { hexToBin } from '@bitauth/libauth';
+import { hexToBin, binToHex } from '@bitauth/libauth';
 import { ElectrumClient } from '@electrum-cash/network';
 import { BchnRpcClient } from '@mr-zwets/bchn-api-wrapper';
-import { Artifact } from '@solidcash/utils';
+import { Artifact, blockhashOracleLockingBytecode, buildBlockhashCommitment } from '@solidcash/utils';
 import { Contract } from '../Contract.js';
+import { TransactionBuilder } from '../TransactionBuilder.js';
+import { Utxo, Unlocker } from '../interfaces.js';
 import { StatefulContract } from '../stateful/StatefulContract.js';
 import SignatureTemplate from '../SignatureTemplate.js';
 
@@ -124,6 +126,8 @@ export interface BlockOracleUpdaterConfig {
   electrumHost?: string; // Fulcrum host for blockchain.headers.subscribe
   // Project-global blockhash (n->hash) oracle token category. Required only for blockhash() consumers.
   blockhashOracleCategory?: string;
+  // The keeper's C_oracle minting NFT (master), used to mint the per-block (n->hash) oracle UTXOs.
+  blockhashOracleMaster?: { utxo: Utxo; unlocker: Unlocker };
 }
 
 export class BlockOracleUpdater {
@@ -161,21 +165,43 @@ export class BlockOracleUpdater {
   }
 
   /**
-   * Maintain the project-global (n->hash) oracle for blockhash(): mint the new tip's (n, hash) pair under
-   * the oracle category and sweep the pair that aged out of the 256-block window.
-   *
-   * PENDING the on-chain n->hash covenant (self-pin + self-preserving recreate + tx.time>=n+256 wipe) and
-   * blockhash() compiler support. The detection + scheduling are wired here; the mint/sweep are not, since
-   * there is no covenant to mint against yet. See docs/block-oracle.md.
+   * Mint the (n -> hash) oracle UTXO at addr(n) under the oracle category, spending + recreating the
+   * keeper's C_oracle minting master. Returns the mint txid.
+   */
+  async mintBlockhashPair(n: bigint, hash: Uint8Array): Promise<string> {
+    const catHex = this.cfg.blockhashOracleCategory;
+    const master = this.cfg.blockhashOracleMaster;
+    if (!catHex || !master) {
+      throw new Error('blockhashOracleCategory + blockhashOracleMaster are required to mint (n->hash) pairs');
+    }
+    const addrN = blockhashOracleLockingBytecode(hexToBin(catHex), n);
+    const commitment = binToHex(buildBlockhashCommitment(n, hash));
+    const mintSats = 1000n;
+    const fee = 1000n;
+    const tx = await new TransactionBuilder({ provider: this.cfg.contract.provider })
+      .addInput(master.utxo, master.unlocker)
+      .addOutput({
+        to: master.unlocker.generateLockingBytecode(),
+        amount: master.utxo.satoshis - mintSats - fee,
+        token: master.utxo.token,
+      }) // recreate the minting master
+      .addOutput({
+        to: addrN,
+        amount: mintSats,
+        token: { category: catHex, amount: 0n, nft: { capability: 'none', commitment } },
+      }) // mint the (n,hash) oracle NFT
+      .send();
+    return tx.txid;
+  }
+
+  /**
+   * Maintain the project-global (n->hash) oracle: mint the new tip's (n, hash) pair. (Sweeping the pair
+   * that aged out of the 256-block window is a keeper follow-up; the covenant's permissionless wipe path
+   * `tx.time >= n+256` is already in place.)
    */
   private async maintainBlockhashWindow(tip: number): Promise<void> {
-    if (!this.cfg.blockhashOracleCategory) {
-      throw new Error('blockhashOracleCategory is required to maintain the n->hash oracle for a blockhash() consumer');
-    }
-    // TODO(blockhash): const hash = await this.cfg.rpc.request('getblockhash', tip);
-    //   mint addr(tip) carrying (tip, hash) under blockhashOracleCategory; sweep addr(tip - BLOCKHASH_WINDOW).
-    void tip;
-    console.warn('[block-oracle-updater] n->hash oracle pending blockhash() support; skipping window maintenance');
+    const hashHex: string = await this.cfg.rpc.request('getblockhash', tip);
+    await this.mintBlockhashPair(BigInt(tip), hexToBin(hashHex));
   }
 
   /**

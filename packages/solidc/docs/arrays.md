@@ -21,9 +21,11 @@ These combine into the forms below. The defining axis on-chain is *dense + lengt
 `push`/`length` array) vs *sparse* (an `int`-keyed mapping wearing array syntax).
 
 **Default backend selection** for a bare `T[]` state var (no `packed` keyword): an **unbounded chunk-packable**
-element type -> **chunk-packed** (fixed-width `uintN`/`bytesN`/`bool`/`pubkey`/`address`/`fixedNxM` and
-fixed-width **structs** via flat-stream, OR variable-width leaf `int`/`string`/`bytes` and variable-width
-**structs** via single-blob framing); a **nested-array** element, or a **bounded** `T[N]`, -> **collection**.
+element type -> **chunk-packed** (fixed-width `uintN`/`bytesN`/`bool`/`pubkey`/`fixedNxM` and
+fixed-width **structs** via flat-stream, OR variable-width leaf `int`/`string`/`bytes`/`address` and
+variable-width **structs** via single-blob framing); a **nested-array** element, or a **bounded** `T[N]`,
+-> **collection**. (`address` is variable-width on BCH - a locking bytecode of 23/25/35 B - so it framed-packs
+like `bytes`, not flat like the fixed-width types.)
 `packed` always selects the inline blob.
 The selecting predicate is `arrayT.bound === undefined && isChunkPackableElementType(elementType)`
 (`AstBuilder.ts`), behind the `chunkedArrays` compiler option which now **defaults on**.
@@ -52,7 +54,7 @@ Solidity-`memory` analog (transient, not persisted).
   `pushdata(count) ++ elem_0 ++ elem_1 ++ ...`. **Fixed-width** element types (bounded ints `uint8`..`int256`,
   `fixed`, `bool`, `pubkey`, `bytesN`) are packed tightly to their byte width (`emitEncodeElementPacked`,
   `isFixedWidthType` in `generation/utils.ts:242`); **variable-width** types (plain `int`, unbounded `bytes`,
-  `string`, structs) use per-element pushdata framing. The same encoding is reused for the packed state blob.
+  `string`, `address`, structs) use per-element pushdata framing. The same encoding is reused for the packed state blob.
 - **Full API:** `new T[](n)`, literals, index read/write, `push`, `pop`, `.length`, fixed `T[N]`.
 - **Size:** bounded only by the ~10 KB stack-element limit; effectively unbounded for realistic sizes.
 - **Codegen:** array AST nodes in `GenerateTargetTraversal.ts` (`ArrayNode`, `NewArrayNode`, the

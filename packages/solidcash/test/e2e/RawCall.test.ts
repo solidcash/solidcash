@@ -1,11 +1,13 @@
 import { describe, it, expect } from 'vitest';
 import { compileString } from 'solidc';
 import { hexToBin } from '@bitauth/libauth';
-import { Contract, StatefulContract, SignatureTemplate } from '../../src/index.js';
+import {
+  Contract, StatefulContract, SignatureTemplate, FunctionArgument,
+} from '../../src/index.js';
 import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
 import { alicePub, alicePriv } from '../fixture/vars.js';
 
-// Callee: a generic stateful contract with a returning function. The caller knows nothing about its type.
+// Two unrelated callee types. The caller knows nothing about either at compile time.
 const ECHO = `pragma solidcash >=0.8.0;
 contract Echo() {
   bigint stored;
@@ -16,15 +18,25 @@ contract Echo() {
   }
 }`;
 
-// Caller: generic dynamic dispatch. addr/selector are caller-supplied; the return is read as opaque bytes.
-// The digest of the opaque return is stored, which exercises the full integrity-bound blob (every byte
-// affects the hash) while keeping a fixed-size, cleanly-derivable state field.
+const ADDER = `pragma solidcash >=0.8.0;
+contract Adder() {
+  bigint last;
+  function add(bigint a, bigint b, pubkey pk, sig s) returns (bigint) {
+    require(checkSig(s, pk));
+    this.last = a + b;
+    return a + b;
+  }
+}`;
+
+// Caller: generic dynamic dispatch. addr is caller-supplied; the return is read as opaque bytes, used in a
+// covenant decision (the require), then a fixed-size derivation of it is committed to state.
 const CALLER = `pragma solidcash >=0.8.0;
 contract Caller() {
   bytes32 digest;
   function go(address t, bytes sel, bytes args, pubkey pk, sig s) {
     require(checkSig(s, pk));
     bytes result = t.rawCall(sel, args);
+    require(result.length > 0);
     this.digest = sha256(result);
   }
 }`;
@@ -34,54 +46,72 @@ describe('rawCall generic dynamic dispatch', () => {
   const sig = (): SignatureTemplate => new SignatureTemplate(alicePriv);
 
   const echoArt = compileString(ECHO);
+  const adderArt = compileString(ADDER);
   const callerArt = compileString(CALLER);
-  const sel = hexToBin(echoArt.abi.find((f) => f.name === 'setAndReturn')!.selector!);
 
-  // Genesis a fresh echo + caller pair; returns the bound stateful contracts and echo's address.
-  async function setup(): Promise<{
-    callerSc: StatefulContract; echoSc: StatefulContract; echoAddr: Uint8Array; callerAddr: Uint8Array;
-  }> {
-    const echo = new Contract(echoArt, [], { provider });
-    const { categoryId: echoCat } = await setupStatefulUtxos(
-      provider, echo, echoArt.stateLayout!, { stored: 0n }, { saltContract: true },
-    );
-    const echoAddr = hexToBin(echo.withCategory(hexToBin(echoCat)).lockingBytecode);
-
-    const caller = new Contract(callerArt, [], { provider });
-    const { categoryId: callerCat } = await setupStatefulUtxos(
-      provider, caller, callerArt.stateLayout!, { digest: new Uint8Array(32) }, { saltContract: true },
-    );
-    const callerAddr = hexToBin(caller.withCategory(hexToBin(callerCat)).lockingBytecode);
-
+  async function genCallee(
+    art: typeof echoArt, init: Record<string, unknown>,
+  ): Promise<{ sc: StatefulContract; addr: Uint8Array }> {
+    const c = new Contract(art, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(provider, c, art.stateLayout!, init, { saltContract: true });
     return {
-      callerSc: StatefulContract.withCategory(caller, callerCat),
-      echoSc: StatefulContract.withCategory(echo, echoCat),
-      echoAddr,
-      callerAddr,
+      sc: StatefulContract.withCategory(c, categoryId),
+      addr: hexToBin(c.withCategory(hexToBin(categoryId)).lockingBytecode),
     };
   }
 
-  it('reads an integrity-bound opaque return from a generic callee', async () => {
-    const { callerSc, echoSc, echoAddr } = await setup();
+  async function genCaller(): Promise<{ sc: StatefulContract; addr: Uint8Array }> {
+    const c = new Contract(callerArt, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, c, callerArt.stateLayout!, { digest: new Uint8Array(32) }, { saltContract: true },
+    );
+    return {
+      sc: StatefulContract.withCategory(c, categoryId),
+      addr: hexToBin(c.withCategory(hexToBin(categoryId)).lockingBytecode),
+    };
+  }
 
-    const tx = await callerSc.go(echoAddr, sel, new Uint8Array(), alicePub, sig())
-      .withExternalCall(echoSc, 'setAndReturn', [42n, alicePub, sig()])
+  // Run the caller's rawCall against a co-spent callee and return the caller's resulting digest.
+  async function rawCall(
+    caller: StatefulContract, target: Uint8Array, callee: StatefulContract, fn: string, args: FunctionArgument[],
+  ): Promise<Uint8Array> {
+    const sel = new Uint8Array(4); // selector is not enforced on-chain in the MVP
+    const tx = await caller.go(target, sel, new Uint8Array(), alicePub, sig())
+      .withExternalCall(callee, fn, args)
       .send();
-
     expect(tx.txid).toBeDefined();
-    expect((await echoSc.getState()).stored).toBe(42n);
-    // digest = sha256(opaque return blob); non-zero proves the blob was read and hashed.
-    const digest = (await callerSc.getState()).digest as Uint8Array;
+    return (await caller.getState()).digest as Uint8Array;
+  }
+
+  it('reads an integrity-bound opaque return from a generic callee', async () => {
+    const echo = await genCallee(echoArt, { stored: 0n });
+    const caller = await genCaller();
+
+    const digest = await rawCall(caller.sc, echo.addr, echo.sc, 'setAndReturn', [42n, alicePub, sig()]);
+
+    expect((await echo.sc.getState()).stored).toBe(42n);
+    expect(digest.some((b) => b !== 0)).toBe(true);
+  });
+
+  it('dispatches the same caller generically to an unrelated callee type', async () => {
+    const adder = await genCallee(adderArt, { last: 0n });
+    const caller = await genCaller();
+
+    const digest = await rawCall(caller.sc, adder.addr, adder.sc, 'add', [3n, 4n, alicePub, sig()]);
+
+    // The same Caller.go reached a different contract+function with its own args.
+    expect((await adder.sc.getState()).last).toBe(7n);
     expect(digest.some((b) => b !== 0)).toBe(true);
   });
 
   it('rejects a wrong target address (co-spent callee is not the claimed addr)', async () => {
-    const { callerSc, echoSc, callerAddr } = await setup();
+    const echo = await genCallee(echoArt, { stored: 0n });
+    const caller = await genCaller();
 
     // Claim the caller's own address as the target while actually co-spending echo: identity check fails.
     await expect(
-      callerSc.go(callerAddr, sel, new Uint8Array(), alicePub, sig())
-        .withExternalCall(echoSc, 'setAndReturn', [42n, alicePub, sig()])
+      caller.sc.go(caller.addr, new Uint8Array(4), new Uint8Array(), alicePub, sig())
+        .withExternalCall(echo.sc, 'setAndReturn', [42n, alicePub, sig()])
         .send(),
     ).rejects.toThrow();
   });

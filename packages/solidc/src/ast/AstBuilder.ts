@@ -1951,7 +1951,7 @@ export default class AstBuilder
       const rebuilt = rebuild(baseRead(), baseStructT, memberChain, finalValue);
       const assign: StatementNode = isThis
         ? new StateAssignNode(rawName, rebuilt)
-        : new AssignNode(baseRead(), rebuilt);
+        : new AssignNode(baseRead() as IdentifierNode, rebuilt); // !isThis: baseRead() is an IdentifierNode
       assign.location = loc;
       return assign;
     }

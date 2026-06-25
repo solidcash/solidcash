@@ -290,8 +290,9 @@ pattern. See `external-contract-calls.md` for the per-feature test inventory.
 Shipped (rawCall MVP, VM-verified - e2e `RawCall.test.ts`): generic allowlist-free dynamic dispatch via
 `bytes result = addr.rawCall(selector, args)` - an identity-bound (`OP_UTXOBYTECODE == addr`) co-spend whose
 return is read as a single opaque `bytes` blob from the integrity-bound return event. The callee, function and
-args are supplied at build time via `.withExternalCall(callee, fn, args)`. The positive path and the
-target-substitution rejection are both verified. MVP limitations:
+args are supplied at build time via `.withExternalCall(callee, fn, args)`. Verified e2e: the positive path,
+genericity (the same caller dispatches to two unrelated callee types), the opaque result used in a covenant
+decision (`require(result.length > 0)`), and target-substitution rejection. MVP limitations:
 - **Selector pinning deferred.** A co-spent single-function callee's unlocking carries an internal functionId,
   not the 4-byte abi selector, so on-chain "which function" verification needs dispatch-level work. The
   `selector` argument is accepted but not yet enforced on-chain; the integrity that IS enforced is the target

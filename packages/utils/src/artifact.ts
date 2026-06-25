@@ -238,6 +238,7 @@ export interface ExternalCallAbi {
   returnEventSignature?: string;
   computedOffset?: number;
   callMode?: 'call' | 'staticcall' | 'delegatecall';
+  rawCall?: boolean; // generic dynamic dispatch (addr.rawCall): opaque bytes return, callee unknown at compile time
   argSources?: readonly ArgSource[];
 }
 

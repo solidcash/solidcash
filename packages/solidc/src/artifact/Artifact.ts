@@ -76,6 +76,7 @@ function buildFunctionAbiMetadata(func: FunctionDefinitionNode): Partial<AbiFunc
         ...(ec.returnEventSignature && { returnEventSignature: ec.returnEventSignature }),
         ...(ec.computedOffset !== undefined && ec.computedOffset > 0 && { computedOffset: ec.computedOffset }),
         ...(ec.callMode && ec.callMode !== ExternalCallMode.REGULAR && { callMode: ec.callMode }),
+        ...(ec.rawCall && { rawCall: true }),
         ...(ec.argSources && ec.argSources.length > 0 && { argSources: ec.argSources }),
       })),
     }),

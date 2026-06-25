@@ -349,6 +349,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   // User-defined function tracking (for OP_INVOKE)
   private userFunctionDefs: Map<string, FunctionDefinitionNode> = new Map();
   private isDefineSubTraversal: boolean = false;
+  // True when the current function has a `return` nested inside a loop (the raw-return stack cleanup can't
+  // handle that, so its internal-call subroutine keeps the event-blob return path - see visitReturn).
+  private functionHasReturnInLoop: boolean = false;
 
   // Branch pre-allocation tracking
   private preAllocatedStateWrites: Set<string> = new Set(); // "nftIndex:fieldIndex"
@@ -1172,8 +1175,28 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_INVOKE, locationData);
   }
 
+  // True if `node` contains a `return` nested inside a loop. Generic tree walk (skips cross-references that
+  // point outside the function body) so any container - branch, block, switch, try - is covered.
+  private hasReturnInLoop(node: Node, inLoop: boolean): boolean {
+    if (node instanceof ReturnNode) return inLoop;
+    const nowInLoop = inLoop || node instanceof WhileNode || node instanceof DoWhileNode;
+    for (const key of Object.keys(node)) {
+      if (key === 'resolvedFunction' || key === 'definition' || key === 'collection') continue;
+      const v = (node as unknown as Record<string, unknown>)[key];
+      if (v instanceof Node) {
+        if (this.hasReturnInLoop(v, nowInLoop)) return true;
+      } else if (Array.isArray(v)) {
+        for (const item of v) {
+          if (item instanceof Node && this.hasReturnInLoop(item, nowInLoop)) return true;
+        }
+      }
+    }
+    return false;
+  }
+
   visitFunctionDefinition(node: FunctionDefinitionNode): Node {
     this.currentFunction = node;
+    this.functionHasReturnInLoop = node.body ? this.hasReturnInLoop(node.body, false) : false;
     this.pendingStateWrites = new Map();
     this.pendingEntryWrites = new Map();
     this.pendingEntryDeletes = new Set();
@@ -1389,7 +1412,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // via visitReturn. They don't need covenant verification.
     // Entry-point functions with return types DO need covenant verification
     // (they're entry points that also emit return event UTXOs).
-    if (node.returnTypes.length > 0 && !node.isEntryPoint) {
+    // The internal-call subroutine of a public function (isDefineSubTraversal) is compiled with
+    // internal semantics too: it returns the value on the stack, with no return-event covenant. (Functions
+    // with a return-inside-a-loop keep the entry-point/event path - see visitReturn.)
+    if (node.returnTypes.length > 0
+      && (!node.isEntryPoint || (this.isDefineSubTraversal && !this.functionHasReturnInLoop))) {
       return node;
     }
 
@@ -3546,7 +3573,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // For entry-point functions with return types (B-side):
     // Pushdata-encode each value and CAT into a single blob, similar to emit.
     // The blob is stashed on the tracked stack for covenant verification.
-    if (this.currentFunction.isEntryPoint && this.currentFunction.returnTypes.length > 0) {
+    // The internal-call subroutine (isDefineSubTraversal) instead leaves the raw value(s) on the stack like a
+    // plain internal function, so an internal caller gets the return value (no return event is produced).
+    // Exception: a `return` inside a loop isn't supported by the raw-return stack cleanup, so keep the
+    // event-blob path for such functions (the internal-call subroutine is then unused/spliced).
+    if (this.currentFunction.isEntryPoint && this.currentFunction.returnTypes.length > 0
+      && (!this.isDefineSubTraversal || this.functionHasReturnInLoop)) {
       const returnTypes = this.currentFunction.returnTypes;
       for (let i = 0; i < returnTypes.length; i++) {
         this.emitPushdataEncode(returnTypes[i], locationData);

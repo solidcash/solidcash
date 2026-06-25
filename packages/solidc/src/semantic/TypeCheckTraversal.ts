@@ -1160,14 +1160,16 @@ export default class TypeCheckTraversal extends AstTraversal {
       node.type = resolvedReturnType;
 
       // Validate parameter types against the resolved overload
+      this.forwardInternalReturnOutputIdx(node, node.resolvedFunction);
       const resolvedParamTypes = node.resolvedFunction.parameters.map((p) => p.type);
-      expectParameters(node, argTypes, resolvedParamTypes);
+      expectParameters(node, node.parameters.map((p) => p.type!), resolvedParamTypes);
 
       return node;
     }
 
     // Single overload resolved from SymbolTableTraversal - validate params
     if (node.resolvedFunction) {
+      this.forwardInternalReturnOutputIdx(node, node.resolvedFunction);
       const argTypes = node.parameters.map((p) => p.type!);
       const resolvedParamTypes = node.resolvedFunction.parameters.map((p) => p.type);
       expectParameters(node, argTypes, resolvedParamTypes);
@@ -1399,6 +1401,21 @@ export default class TypeCheckTraversal extends AstTraversal {
     intNode.location = lit.location;
     intNode.type = PrimitiveType.INT;
     return intNode;
+  }
+
+  // An internal call to a `public` function that RETURNS a value targets the function's internal-call
+  // subroutine, which still carries the injected `__internal__returnOutputIdx` param. The Solidity-source call
+  // site can't know about it, so auto-supply -1 (the internal subroutine produces no return event - the value
+  // stays on the stack). Only fires when the user passed exactly the user-visible args and returnOutputIdx is
+  // the sole synthetic param; transitive cases (msg.sender / external-call params) are left to fail.
+  private forwardInternalReturnOutputIdx(node: FunctionCallNode, fn: FunctionDefinitionNode): void {
+    const synthetic = fn.parameters.filter((p) => p.name.startsWith('__internal__'));
+    if (node.parameters.length !== fn.parameters.length - synthetic.length) return;
+    if (synthetic.length !== 1 || synthetic[0].name !== '__internal__returnOutputIdx') return;
+    const minusOne = new IntLiteralNode(-1n);
+    minusOne.location = node.location;
+    minusOne.type = PrimitiveType.INT;
+    node.parameters.push(minusOne);
   }
 
   visitBinaryOp(node: BinaryOpNode): Node {

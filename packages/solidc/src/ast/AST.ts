@@ -360,6 +360,9 @@ export class VariableDefinitionNode extends StatementNode implements Named, Type
   // Synthesized binding that may legitimately go unused (e.g. a desugared `for..of` loop var);
   // suppresses the unused-variable check.
   allowUnused?: boolean;
+  // The init of a C-style `for` loop. Block-scoped in Solidity but the for desugars to a flattened
+  // `{ init; while }`, so a sequential loop reusing the same name may re-declare (overwrite) it.
+  isLoopVariable?: boolean;
 
   constructor(
     public type: Type,

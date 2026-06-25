@@ -3251,8 +3251,15 @@ export default class SymbolTableTraversal extends AstTraversal {
   }
 
   visitVariableDefinition(node: VariableDefinitionNode): Node {
-    if (this.symbolTables[0].get(node.name)) {
-      throw new VariableRedefinitionError(node);
+    const existing = this.symbolTables[0].get(node.name);
+    if (existing) {
+      // Sequential `for (uint i ...)` loops reuse `i`: the for desugars to a flattened `{ init; while }`, so
+      // the second init re-declares a name still in scope. Allow it only when both the old and new bindings
+      // are loop variables (the prior loop is dead and its body already resolved in-order); set() overwrites.
+      const existingDef = existing.definition as VariableDefinitionNode | undefined;
+      if (!(node.isLoopVariable && existingDef?.isLoopVariable)) {
+        throw new VariableRedefinitionError(node);
+      }
     }
 
     for (const mod of node.modifier) {

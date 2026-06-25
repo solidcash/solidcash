@@ -1248,6 +1248,10 @@ export default class AstBuilder
     }
     const initNode = new VariableDefinitionNode(initType, initModifiers, initName, initExpr);
     initNode.location = Location.fromCtx(initCtx);
+    // The loop variable is block-scoped in Solidity; the for desugars to a flattened `{ init; while }`, so
+    // mark it so a sequential loop reusing the same name can re-declare it (it overwrites the dead prior one;
+    // identifier resolution is in-order, so each loop body already resolved against its own declaration).
+    initNode.isLoopVariable = true;
 
     // Update clause is optional (`for (...; ...; )`); when present it becomes the trailing body statement.
     const updateNode = updateCtx

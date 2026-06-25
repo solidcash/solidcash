@@ -2896,17 +2896,23 @@ export default class AstBuilder
     return node;
   }
 
-  visitArrayPushStatement(ctx: ArrayPushStatementContext): ArrayPushNode {
+  visitArrayPushStatement(ctx: ArrayPushStatementContext): ArrayPushNode | StateArrayPushNode {
     const name = ctx.Identifier().getText();
     const value = this.visit(ctx.expression());
-    const node = new ArrayPushNode(name, value);
+    // Bare `arr.push(x)` on a state array (Solidity's idiom - storage arrays only) routes to the state push,
+    // matching the bare state element-access routing. `this.arr.push(x)` already hits visitStateArrayPushStatement.
+    const node = this.packedStateArrayNames.has(name)
+      ? new StateArrayPushNode(name, value)
+      : new ArrayPushNode(name, value);
     node.location = Location.fromCtx(ctx);
     return node;
   }
 
-  visitArrayPopStatement(ctx: ArrayPopStatementContext): ArrayPopNode {
+  visitArrayPopStatement(ctx: ArrayPopStatementContext): ArrayPopNode | StateArrayPopNode {
     const name = ctx.Identifier().getText();
-    const node = new ArrayPopNode(name);
+    const node = this.packedStateArrayNames.has(name)
+      ? new StateArrayPopNode(name)
+      : new ArrayPopNode(name);
     node.location = Location.fromCtx(ctx);
     return node;
   }

@@ -860,3 +860,16 @@ describe('SBE-13: void external-call helpers are inlined at internal call sites 
     expect(go?.externalCalls?.every((c) => c.functionName === 'transferFrom')).toBe(true);
   });
 });
+
+describe('SBE-14: bare state-array push/pop (Solidity idiom) routes to state, like this.arr.push', () => {
+  const src = (op: string): string =>
+    `contract C() { uint256[] arr; function f(uint256 x, sig s, pubkey pk) { require(checkSig(s, pk)); ${op}; } }`;
+  it('bare arr.push(x) compiles identically to this.arr.push(x)', () => {
+    expect(compileString(src('arr.push(x)'), { solidityImportCompat: true }).bytecode)
+      .toBe(compileString(src('this.arr.push(x)'), { solidityImportCompat: true }).bytecode);
+  });
+  it('bare arr.pop() compiles identically to this.arr.pop()', () => {
+    expect(compileString(src('arr.pop()'), { solidityImportCompat: true }).bytecode)
+      .toBe(compileString(src('this.arr.pop()'), { solidityImportCompat: true }).bytecode);
+  });
+});

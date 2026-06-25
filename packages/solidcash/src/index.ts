@@ -3,6 +3,8 @@ export { default as Signer } from './Signer.js';
 export { Contract } from './Contract.js';
 export { TransactionBuilder } from './TransactionBuilder.js';
 export * from './stateful/index.js';
+export * from './oracle/blockOracleUpdater.js';
+export * from './oracle/blockhashCoSpend.js';
 export {
   type ConstructorArgument,
   type FunctionArgument,

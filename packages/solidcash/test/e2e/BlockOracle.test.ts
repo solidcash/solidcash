@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import { compileString } from 'solidc';
 import { hexToBin, binToHex } from '@bitauth/libauth';
-import { Contract, StatefulContract, TransactionBuilder, SignatureTemplate } from '../../src/index.js';
+import { Contract, StatefulContract, TransactionBuilder, SignatureTemplate, resolveBlockhashCoSpend } from '../../src/index.js';
 import { randomUtxo } from '../../src/utils.js';
 import { createTestProvider, createFeeFunder, setupStatefulUtxos } from '../test-util.js';
 import { alicePub, alicePriv, bobPriv, aliceAddress } from '../fixture/vars.js';
@@ -386,25 +386,24 @@ async function spendBlockhash(argN: number, storedN: number, storedHash: Uint8Ar
   const contract = new Contract(artifact, [], { provider });
   const contractUtxo = await provider.addUtxo(contract.address, randomUtxo({ satoshis: 100000n }));
 
-  // The (n->hash) oracle NFT at its real covenant address addr(storedN): immutable, category-pinned,
-  // co-spent read-only (flag 0) and self-preservingly recreated at the matching output index.
+  // Seed the (n->hash) oracle NFT at its real covenant address addr(storedN), then resolve the co-spend
+  // pieces via the SDK helper (immutable, category-pinned, read-only flag 0, self-preserving recreate).
   const cat = hexToBin(BH_CAT);
   const addrN = blockhashOracleLockingBytecode(cat, BigInt(storedN));
-  const redeem = scriptToBytecode(buildBlockhashOracleCovenantScript(cat, BigInt(storedN)));
   const token = {
     category: BH_CAT, amount: 0n,
     nft: { capability: 'none' as const, commitment: binToHex(buildBlockhashCommitment(BigInt(storedN), storedHash)) },
   };
-  const nhashUtxo = { txid: '11'.repeat(32), vout: 0, satoshis: 1000n, token };
-  await provider.addUtxo(binToHex(addrN), nhashUtxo);
-  const readUnlock = scriptToBytecode([new Uint8Array(0), redeem]); // flag 0 (read) + redeem
-  const nhashUnlocker = { generateLockingBytecode: () => addrN, generateUnlockingBytecode: () => readUnlock };
+  await provider.addUtxo(binToHex(addrN), { txid: '11'.repeat(32), vout: 0, satoshis: 1000n, token });
+
+  const cospend = await resolveBlockhashCoSpend(provider, BH_CAT, BigInt(storedN));
+  if (!cospend) throw new Error('no (n->hash) oracle UTXO at addr(n)');
 
   const tx = await new TransactionBuilder({ provider })
     .addInput(contractUtxo, contract.unlock.f(BigInt(argN), expectHash)) // input 0
-    .addInput(nhashUtxo, nhashUnlocker) // input 1 (last) = (n->hash) oracle NFT
+    .addInput(cospend.utxo, cospend.unlocker) // input 1 (last) = (n->hash) oracle NFT
     .addOutput({ to: contract.address, amount: 99000n }) // output 0
-    .addOutput({ to: addrN, amount: 1000n, token }) // output 1: self-preserving recreate (matching index)
+    .addOutput(cospend.recreateOutput) // output 1: self-preserving recreate (matching index)
     .setLocktime(argN)
     .send();
   return tx.txid;
@@ -453,6 +452,28 @@ describe('blockhash(n) e2e (real (n->hash) covenant)', () => {
 
   it('rejects a wipe before n+256 (CLTV blocks early cleanup)', async () => {
     await expect(wipeBlockhash(100000, 100255)).rejects.toThrow();
+  });
+
+  it('resolveBlockhashCoSpend returns null when no UTXO sits at addr(n)', async () => {
+    expect(await resolveBlockhashCoSpend(createTestProvider(), BH_CAT, 100000n)).toBeNull();
+  });
+
+  it('resolveBlockhashCoSpend yields the live UTXO + a matching self-preserving recreate', async () => {
+    const provider = createTestProvider();
+    const cat = hexToBin(BH_CAT);
+    const addrN = blockhashOracleLockingBytecode(cat, 100000n);
+    const token = {
+      category: BH_CAT, amount: 0n,
+      nft: { capability: 'none' as const, commitment: binToHex(buildBlockhashCommitment(100000n, HASH)) },
+    };
+    await provider.addUtxo(binToHex(addrN), { txid: '66'.repeat(32), vout: 0, satoshis: 1000n, token });
+
+    const cospend = await resolveBlockhashCoSpend(provider, BH_CAT, 100000n);
+    expect(cospend).not.toBeNull();
+    expect(cospend!.locktime).toBe(100000); // tx.time floor = n
+    expect(cospend!.recreateOutput.to).toEqual(addrN); // recreate at addr(n)
+    expect(cospend!.recreateOutput.token).toEqual(token); // identity preserved
+    expect(binToHex(cospend!.unlocker.generateLockingBytecode())).toBe(binToHex(addrN));
   });
 });
 

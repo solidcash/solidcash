@@ -16,8 +16,10 @@ Status: **IMPLEMENTED (compiler + SDK e2e, green).**
   green:** the keeper mints `addr(n)` from the `C_oracle` master, a consumer reads it via `blockhash(n)`,
   and the keeper sweeps `addr(n-256)` when it ages out (covenant wipe at `n+256`; rejected before). The
   compiler stamps `artifact.usesBlockhash` when `blockhash()` is referenced, so the keeper auto-maintains
-  the oracle. Remaining: SDK auto-discovery (consumer auto-co-spend, no manual input), a dedicated co-spend
-  slot (vs the last-input convention), and `bytes32(0)`-when-absent (s11).
+  the oracle. The SDK `resolveBlockhashCoSpend` helper packages the consumer co-spend (lookup + read
+  unlocker + self-preserving recreate). Remaining: auto-injection (extract `n` + add the co-spend to the
+  build with no manual call), a dedicated co-spend slot (vs the last-input convention), and
+  `bytes32(0)`-when-absent (s11).
 
 Implementation notes: each referenced field is desugared (`SynthesizeBlockOracle` pre-semantic transform)
 to a read of an injected register of the contract's own state - `uint32` for the numeric fields, `address`
@@ -337,5 +339,9 @@ warning when `blockhash(...)` feeds modulo/arithmetic is advisable.
 - Artifact `usesBlockhash` marker (DONE): `SynthesizeBlockOracle` detects `blockhash()` and the compiler
   stamps `artifact.usesBlockhash`, driving `BlockOracleUpdater.usesBlockhash(artifact)` so the keeper
   auto-maintains the oracle.
-- SDK: resolve `n` (call-site arg / VM trace), look up `addr(n)` on Fulcrum, co-spend the `(n->hash)` UTXO
-  read-only (+ recreate); the VM is the arbiter, so a wrong injection fails the category/`n` check.
+- SDK co-spend resolver (DONE): `resolveBlockhashCoSpend(provider, category, n)` looks up `addr(n)` and
+  returns the `(utxo, read-flag unlocker, self-preserving recreate, locktime)` the consumer wires (or null
+  outside the window). The VM is the arbiter, so a wrong injection fails the category/`n` check.
+- SDK auto-injection (REMAINING): extract `n` from the call site / VM trace and add the resolved co-spend +
+  recreate to the build automatically (vs the manual `resolveBlockhashCoSpend` wiring), plus a dedicated
+  co-spend slot and `bytes32(0)` when the resolver returns null.

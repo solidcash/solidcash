@@ -9,11 +9,12 @@ Status: **IMPLEMENTED (compiler + SDK e2e, green).**
 - Off-chain keeper: `packages/solidcash/src/oracle/blockOracleUpdater.ts` (Fulcrum
   `blockchain.headers.subscribe` + a single BCHN `getblock` verbosity-2 call: coinbase inline, fees =
   `sum(coinbase outputs) - subsidy(height)`; signed `__updateBlockOracle` when the chain is ahead).
-- `blobhash(i)` -> `bytes32(0)` (no BCH blobs). `blockhash(n)` **read codegen (MVP)**: co-spends the
-  `(n->hash)` oracle UTXO (category-pinned to the baked `blockhashOracleCategory`, `commitment.n == n`,
-  `tx.time >= n`) and returns the hash; e2e green. Remaining: hardened `(n->hash)` covenant, a proper
-  co-spend slot (currently the last-input convention), SDK `addr(n)` discovery, keeper minting, and
-  `bytes32(0)`-when-absent (s11).
+- `blobhash(i)` -> `bytes32(0)` (no BCH blobs). `blockhash(n)`: **read codegen + the hardened `(n->hash)`
+  covenant implemented** (self-pin category + self-preserving recreate + CLTV `tx.time >= n+256` wipe;
+  `buildBlockhashOracleCovenantScript` / `blockhashOracleLockingBytecode` / `buildBlockhashCommitment` in
+  utils/state.ts). e2e green: read returns the attested hash (rejects wrong hash / wrong `n`), wipe
+  succeeds at `n+256` and is rejected before. Remaining: a dedicated co-spend slot (vs the last-input
+  convention), SDK `addr(n)` discovery + auto-recreate, keeper minting, and `bytes32(0)`-when-absent (s11).
 
 Implementation notes: each referenced field is desugared (`SynthesizeBlockOracle` pre-semantic transform)
 to a read of an injected register of the contract's own state - `uint32` for the numeric fields, `address`

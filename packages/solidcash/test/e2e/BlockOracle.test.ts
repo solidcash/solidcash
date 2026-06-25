@@ -4,7 +4,11 @@ import { hexToBin, binToHex } from '@bitauth/libauth';
 import { Contract, StatefulContract, TransactionBuilder, SignatureTemplate } from '../../src/index.js';
 import { randomUtxo } from '../../src/utils.js';
 import { createTestProvider, createFeeFunder, setupStatefulUtxos } from '../test-util.js';
-import { alicePub, alicePriv, bobPriv, aliceTokenAddress } from '../fixture/vars.js';
+import { alicePub, alicePriv, bobPriv, aliceAddress } from '../fixture/vars.js';
+import {
+  buildBlockhashOracleCovenantScript, blockhashOracleLockingBytecode, buildBlockhashCommitment, scriptToBytecode,
+  encodeInt,
+} from '@solidcash/utils';
 import { BlockOracleUpdater, fetchBlockOracleFields, RpcLike } from '../../src/oracle/blockOracleUpdater.js';
 
 // block.chainid is a baked single-byte network constant (chainId & 0xff), typed bytes1, compared
@@ -360,15 +364,6 @@ describe('blobhash / blockhash', () => {
 // consistency. n <= 133700 (mock tip) so the freshness locktime is final. (Hardened covenant + SDK
 // auto-discovery + keeper minting are the next increment - docs/block-oracle.md s11.)
 const BH_CAT = 'cc'.repeat(32);
-const TRIVIAL_LBC = hexToBin('aa20953ccfa596a6c6d39e5980194539124fdcff116a571455a212baed811f585ee087');
-const TRIVIAL_UNLOCK = hexToBin('0151');
-
-function n4LE(n: number): Uint8Array {
-  const b = new Uint8Array(4);
-  let v = n;
-  for (let i = 0; i < 4; i++) { b[i] = v & 0xff; v >>>= 8; }
-  return b;
-}
 
 async function spendBlockhash(argN: number, storedN: number, storedHash: Uint8Array, expectHash: Uint8Array): Promise<string> {
   const provider = createTestProvider();
@@ -378,28 +373,54 @@ async function spendBlockhash(argN: number, storedN: number, storedHash: Uint8Ar
   );
   const contract = new Contract(artifact, [], { provider });
   const contractUtxo = await provider.addUtxo(contract.address, randomUtxo({ satoshis: 100000n }));
-  const feeFunder = await createFeeFunder(provider, 20000n);
 
+  // The (n->hash) oracle NFT at its real covenant address addr(storedN): immutable, category-pinned,
+  // co-spent read-only (flag 0) and self-preservingly recreated at the matching output index.
+  const cat = hexToBin(BH_CAT);
+  const addrN = blockhashOracleLockingBytecode(cat, BigInt(storedN));
+  const redeem = scriptToBytecode(buildBlockhashOracleCovenantScript(cat, BigInt(storedN)));
   const token = {
     category: BH_CAT, amount: 0n,
-    nft: { capability: 'none' as const, commitment: binToHex(new Uint8Array([...n4LE(storedN), ...storedHash])) },
+    nft: { capability: 'none' as const, commitment: binToHex(buildBlockhashCommitment(BigInt(storedN), storedHash)) },
   };
   const nhashUtxo = { txid: '11'.repeat(32), vout: 0, satoshis: 1000n, token };
-  await provider.addUtxo(binToHex(TRIVIAL_LBC), nhashUtxo);
-  const nhashUnlocker = { generateLockingBytecode: () => TRIVIAL_LBC, generateUnlockingBytecode: () => TRIVIAL_UNLOCK };
+  await provider.addUtxo(binToHex(addrN), nhashUtxo);
+  const readUnlock = scriptToBytecode([new Uint8Array(0), redeem]); // flag 0 (read) + redeem
+  const nhashUnlocker = { generateLockingBytecode: () => addrN, generateUnlockingBytecode: () => readUnlock };
 
   const tx = await new TransactionBuilder({ provider })
-    .addInput(contractUtxo, contract.unlock.f(BigInt(argN), expectHash))
-    .addInput(feeFunder.utxo, feeFunder.unlocker)
-    .addInput(nhashUtxo, nhashUnlocker) // LAST input = (n->hash) oracle NFT
-    .addOutput({ to: contract.address, amount: 119000n })
-    .addOutput({ to: aliceTokenAddress, amount: 1000n, token })
+    .addInput(contractUtxo, contract.unlock.f(BigInt(argN), expectHash)) // input 0
+    .addInput(nhashUtxo, nhashUnlocker) // input 1 (last) = (n->hash) oracle NFT
+    .addOutput({ to: contract.address, amount: 99000n }) // output 0
+    .addOutput({ to: addrN, amount: 1000n, token }) // output 1: self-preserving recreate (matching index)
     .setLocktime(argN)
     .send();
   return tx.txid;
 }
 
-describe('blockhash(n) e2e (MVP: last-input n->hash oracle)', () => {
+// Wipe path: after n+256 anyone may consume (burn) the (n->hash) UTXO; before n+256 the CLTV blocks it.
+async function wipeBlockhash(storedN: number, locktime: number): Promise<string> {
+  const provider = createTestProvider();
+  const cat = hexToBin(BH_CAT);
+  const addrN = blockhashOracleLockingBytecode(cat, BigInt(storedN));
+  const redeem = scriptToBytecode(buildBlockhashOracleCovenantScript(cat, BigInt(storedN)));
+  const token = {
+    category: BH_CAT, amount: 0n,
+    nft: { capability: 'none' as const, commitment: binToHex(buildBlockhashCommitment(BigInt(storedN), new Uint8Array(32))) },
+  };
+  const nhashUtxo = { txid: '22'.repeat(32), vout: 0, satoshis: 5000n, token };
+  await provider.addUtxo(binToHex(addrN), nhashUtxo);
+  const wipeUnlock = scriptToBytecode([encodeInt(1n), redeem]); // flag 1 (wipe) + redeem
+  const unlocker = { generateLockingBytecode: () => addrN, generateUnlockingBytecode: () => wipeUnlock };
+  const tx = await new TransactionBuilder({ provider, allowImplicitNftBurn: true })
+    .addInput(nhashUtxo, unlocker)
+    .addOutput({ to: aliceAddress, amount: 4000n })
+    .setLocktime(locktime)
+    .send();
+  return tx.txid;
+}
+
+describe('blockhash(n) e2e (real (n->hash) covenant)', () => {
   const HASH = hexToBin('aa'.repeat(32));
 
   it('returns the attested hash for a matching (n, hash) oracle UTXO', async () => {
@@ -412,5 +433,13 @@ describe('blockhash(n) e2e (MVP: last-input n->hash oracle)', () => {
 
   it('rejects an oracle UTXO whose commitment.n != the requested n', async () => {
     await expect(spendBlockhash(100000, 99999, HASH, HASH)).rejects.toThrow();
+  });
+
+  it('anyone may wipe the (n->hash) UTXO at or after n+256', async () => {
+    expect(await wipeBlockhash(100000, 100256)).toMatch(/^[0-9a-f]{64}$/); // 100000+256 <= mock tip 133700
+  });
+
+  it('rejects a wipe before n+256 (CLTV blocks early cleanup)', async () => {
+    await expect(wipeBlockhash(100000, 100255)).rejects.toThrow();
   });
 });

@@ -1,0 +1,322 @@
+import { describe, it, expect, beforeAll } from 'vitest';
+import { compileString } from 'solidc';
+import { hexToBin } from '@bitauth/libauth';
+import { Contract, StatefulContract, TransactionBuilder, SignatureTemplate } from '../../src/index.js';
+import { randomUtxo } from '../../src/utils.js';
+import { createTestProvider, createFeeFunder, setupStatefulUtxos } from '../test-util.js';
+import { alicePub, alicePriv, bobPriv } from '../fixture/vars.js';
+import { BlockOracleUpdater, fetchBlockOracleFields, RpcLike } from '../../src/oracle/blockOracleUpdater.js';
+
+// block.chainid is a baked single-byte network constant (chainId & 0xff), typed bytes1, compared
+// bytewise. The contract requires the baked byte equals an unlock arg, so the spend only succeeds when
+// the byte compiled for `chainId` matches what the caller expects under the VM.
+const SOURCE = `
+contract ChainIdCheck() {
+    function check(bytes1 expected) {
+        require(block.chainid == expected);
+    }
+}`;
+
+// User-land convention: mainnet 0, chipnet 1, testnet4 2, regtest -1 (0xff).
+const NETWORKS = [
+  { name: 'mainnet', chainId: 0, hex: '00' },
+  { name: 'chipnet', chainId: 1, hex: '01' },
+  { name: 'testnet4', chainId: 2, hex: '02' },
+  { name: 'regtest', chainId: -1, hex: 'ff' },
+];
+
+async function spendCheck(chainId: number, expectedHex: string): Promise<string> {
+  const provider = createTestProvider();
+  const artifact = compileString(SOURCE, { chainId });
+  const contract = new Contract(artifact, [], { provider });
+
+  const contractUtxo = await provider.addUtxo(contract.address, randomUtxo({ satoshis: 100000n }));
+  const feeFunder = await createFeeFunder(provider, 20000n);
+
+  const tx = await new TransactionBuilder({ provider })
+    .addInput(contractUtxo, contract.unlock.check(hexToBin(expectedHex)))
+    .addInput(feeFunder.utxo, feeFunder.unlocker)
+    .addOutput({ to: contract.address, amount: 110000n })
+    .send();
+  return tx.txid;
+}
+
+// Spend a no-arg contract whose body hardcodes a network-byte check.
+async function spendLiteral(chainId: number | undefined, literalHex: string): Promise<string> {
+  const provider = createTestProvider();
+  const src = `contract C() { function f() { require(block.chainid == 0x${literalHex}); } }`;
+  const artifact = compileString(src, chainId === undefined ? {} : { chainId });
+  const contract = new Contract(artifact, [], { provider });
+
+  const contractUtxo = await provider.addUtxo(contract.address, randomUtxo({ satoshis: 100000n }));
+  const feeFunder = await createFeeFunder(provider, 20000n);
+
+  const tx = await new TransactionBuilder({ provider })
+    .addInput(contractUtxo, contract.unlock.f())
+    .addInput(feeFunder.utxo, feeFunder.unlocker)
+    .addOutput({ to: contract.address, amount: 110000n })
+    .send();
+  return tx.txid;
+}
+
+describe('block.chainid e2e', () => {
+  for (const net of NETWORKS) {
+    it(`bakes ${net.name} (chainId ${net.chainId}) as 0x${net.hex} and enforces it on the VM`, async () => {
+      const txid = await spendCheck(net.chainId, net.hex);
+      expect(txid).toMatch(/^[0-9a-f]{64}$/);
+    });
+
+    it(`rejects a mismatched network byte for ${net.name}`, async () => {
+      const wrongHex = net.hex === '00' ? '01' : '00';
+      await expect(spendCheck(net.chainId, wrongHex)).rejects.toThrow();
+    });
+  }
+
+  it('defaults to mainnet (0x00) when chainId is omitted', async () => {
+    const txid = await spendLiteral(undefined, '00');
+    expect(txid).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it('a chipnet-compiled contract fails a hardcoded mainnet check (0x01 != 0x00)', async () => {
+    await expect(spendLiteral(1, '00')).rejects.toThrow();
+  });
+});
+
+describe('block.chainid compilation', () => {
+  it('bakes a different byte per chainId', () => {
+    const mainnet = compileString(SOURCE, { chainId: 0 }).bytecode;
+    const chipnet = compileString(SOURCE, { chainId: 1 }).bytecode;
+    const regtest = compileString(SOURCE, { chainId: -1 }).bytecode;
+    expect(mainnet).not.toEqual(chipnet);
+    expect(chipnet).not.toEqual(regtest);
+    // regtest -1 -> the literal byte 0xff
+    expect(regtest).toContain('ff');
+  });
+
+  it('defaults to mainnet when chainId is omitted (same bytecode as chainId 0)', () => {
+    expect(compileString(SOURCE).bytecode).toEqual(compileString(SOURCE, { chainId: 0 }).bytecode);
+  });
+});
+
+// Oracle-backed block.* reads: each referenced field is an injected register of the contract's own
+// state (uint32, or address for the variable-length coinbase). This block tests the READ path with the
+// registers seeded as initial state (decoupled from the owner-update path tested below). Values are real
+// mainnet block 956830. basefee is derived: Floor(1000 * totalFees / size) = Floor(1000*31792/9075) = 3503.
+const ORACLE_READER = `
+contract BlockReader() {
+    function check(int eNumber, int eTimestamp, int eDiff, int eSize, int eFees, int eBasefee, bytes eCoinbase) {
+        require(block.number == eNumber);
+        require(block.timestamp == eTimestamp);
+        require(block.difficulty == eDiff);
+        require(block.size == eSize);
+        require(block.totalFees == eFees);
+        require(block.basefee == eBasefee);
+        require(block.coinbase == eCoinbase);
+    }
+}`;
+
+const BLOCK = {
+  number: 956830n,
+  timestamp: 1782384635n,
+  difficulty: 0x18026c88n,
+  size: 9075n,
+  totalFees: 31792n,
+  basefee: 3503n, // Floor(1000 * 31792 / 9075)
+  coinbase: hexToBin('76a914f1c075a01882ae0972f95d3a4177c86c852b7d9188ac'), // p2pkh, 25 bytes
+};
+
+describe('block.* oracle reads e2e', () => {
+  const provider = createTestProvider();
+  const artifact = compileString(ORACLE_READER);
+  const contract = new Contract(artifact, [], { provider });
+  const stateLayout = artifact.stateLayout!;
+  let categoryId: string;
+
+  beforeAll(async () => {
+    ({ categoryId } = await setupStatefulUtxos(provider, contract, stateLayout, {
+      __block_number: BLOCK.number,
+      __block_timestamp: BLOCK.timestamp,
+      __block_difficulty: BLOCK.difficulty,
+      __block_size: BLOCK.size,
+      __block_totalFees: BLOCK.totalFees,
+      __block_coinbase: BLOCK.coinbase,
+      __blockOracleOwner: alicePub,
+    }, { saltContract: true }));
+  });
+
+  it('injects one register per field (uint32, address for coinbase) + an immutable owner key', () => {
+    expect(stateLayout.variables.map((v) => `${v.name}:${v.type}`)).toEqual([
+      '__block_number:uint32', '__block_timestamp:uint32', '__block_difficulty:uint32',
+      '__block_size:uint32', '__block_totalFees:uint32', '__block_coinbase:address',
+      '__blockOracleOwner:pubkey',
+    ]);
+  });
+
+  it('reads every block.* field (incl. coinbase) and derives basefee, matching the seeded state', async () => {
+    const sc = StatefulContract.withCategory(contract, categoryId);
+    const tx = await sc.check(
+      BLOCK.number, BLOCK.timestamp, BLOCK.difficulty, BLOCK.size, BLOCK.totalFees, BLOCK.basefee, BLOCK.coinbase,
+    ).send();
+    expect(tx.txid).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it('rejects a wrong block.number', async () => {
+    const sc = StatefulContract.withCategory(contract, categoryId);
+    await expect(sc.check(
+      999999n, BLOCK.timestamp, BLOCK.difficulty, BLOCK.size, BLOCK.totalFees, BLOCK.basefee, BLOCK.coinbase,
+    ).send()).rejects.toThrow();
+  });
+
+  it('rejects a wrong derived basefee', async () => {
+    const sc = StatefulContract.withCategory(contract, categoryId);
+    await expect(sc.check(
+      BLOCK.number, BLOCK.timestamp, BLOCK.difficulty, BLOCK.size, BLOCK.totalFees, 3504n, BLOCK.coinbase,
+    ).send()).rejects.toThrow();
+  });
+
+  it('rejects a wrong block.coinbase', async () => {
+    const sc = StatefulContract.withCategory(contract, categoryId);
+    await expect(sc.check(
+      BLOCK.number, BLOCK.timestamp, BLOCK.difficulty, BLOCK.size, BLOCK.totalFees, BLOCK.basefee,
+      hexToBin('76a914000000000000000000000000000000000000000088ac'),
+    ).send()).rejects.toThrow();
+  });
+});
+
+// Owner-update path: block.* usage injects an immutable owner key (__blockOracleOwner) + an owner-gated
+// __updateBlockOracle(sig, ...fields) that requires the owner signature and the freshness/anti-over-
+// reporting bound require(tx.time >= number), then writes the registers. The deployer/owner runs an
+// off-chain updater (see solidcash/src/oracle/block-oracle-updater) that calls this each block.
+const OWNED_ORACLE = `
+contract BlockOracleOwned() {
+    function readBack(int eNumber, int eTimestamp) {
+        require(block.number == eNumber);
+        require(block.timestamp == eTimestamp);
+    }
+}`;
+
+describe('block.* owner-update path e2e', () => {
+  const provider = createTestProvider();
+  const artifact = compileString(OWNED_ORACLE);
+  const contract = new Contract(artifact, [], { provider });
+  const stateLayout = artifact.stateLayout!;
+  let categoryId: string;
+
+  beforeAll(async () => {
+    ({ categoryId } = await setupStatefulUtxos(provider, contract, stateLayout, {
+      __block_number: 0n, __block_timestamp: 0n, __blockOracleOwner: alicePub,
+    }, { saltContract: true }));
+  });
+
+  it('injects an immutable owner key + an owner-gated __updateBlockOracle function', () => {
+    expect(stateLayout.variables.map((v) => v.name)).toContain('__blockOracleOwner');
+    expect(stateLayout.variables.find((v) => v.name === '__blockOracleOwner')?.immutable).toBe(true);
+    expect(artifact.abi.map((f) => f.name)).toContain('__updateBlockOracle');
+  });
+
+  // Mock chain tip is height 133700, so the freshness bound tx.time >= number requires number <= 133700
+  // (a real-node update at the tip would use the live height). The freshness IS the anti-over-reporting:
+  // a tx claiming a height the chain has not reached is non-final and unminable.
+  it('owner updates the registers (signed + fresh), and the new values read back', async () => {
+    const sc = StatefulContract.withCategory(contract, categoryId);
+    await sc.__updateBlockOracle(new SignatureTemplate(alicePriv), 100000n, 1700000000n)
+      .setState({ __block_number: 100000n, __block_timestamp: 1700000000n })
+      .setLocktime(100000) // tx.time >= number (height mode), <= chain tip -> final
+      .send();
+
+    const reader = StatefulContract.withCategory(contract, categoryId);
+    const tx = await reader.readBack(100000n, 1700000000n).send();
+    expect(tx.txid).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it('rejects an update not signed by the owner', async () => {
+    const sc = StatefulContract.withCategory(contract, categoryId);
+    await expect(sc.__updateBlockOracle(new SignatureTemplate(bobPriv), 100000n, 1700000000n)
+      .setState({ __block_number: 100000n, __block_timestamp: 1700000000n })
+      .setLocktime(100000)
+      .send()).rejects.toThrow();
+  });
+
+  it('rejects an over-reported height (nLocktime < number violates the freshness bound)', async () => {
+    const sc = StatefulContract.withCategory(contract, categoryId);
+    await expect(sc.__updateBlockOracle(new SignatureTemplate(alicePriv), 100001n, 1700000000n)
+      .setState({ __block_number: 100001n, __block_timestamp: 1700000000n })
+      .setLocktime(100000) // < number -> require(tx.time >= number) fails (and 100000 <= tip, so final)
+      .send()).rejects.toThrow();
+  });
+});
+
+// Off-chain keeper: a fake BCHN JSON-RPC (one getblock verbosity-2 call inlines the coinbase tx). Height
+// is 100000 so the freshness tx.time >= number is final under the mock tip; subsidy(100000) = 50 BCH, so a
+// coinbase output of 50.00031792 BCH yields totalFees = 31792 sats. Drives the keeper through a real
+// signed update of the on-chain registers.
+const CB_HEX = '76a914f1c075a01882ae0972f95d3a4177c86c852b7d9188ac';
+const FAKE_BLOCK = {
+  height: 100000, time: 1782384635, bits: '18026c88', size: 9075,
+  tx: [{ vout: [{ value: 50.00031792, scriptPubKey: { hex: CB_HEX } }] }],
+};
+function fakeRpc(tip = 100000): RpcLike {
+  return {
+    request: async (method: string, ...params: any[]) => {
+      switch (method) {
+        case 'getblockcount': return tip;
+        case 'getblockhash': return `hash_${params[0]}`;
+        case 'getblock': return FAKE_BLOCK;
+        default: throw new Error(`unexpected rpc ${method}`);
+      }
+    },
+  };
+}
+
+const ORACLE_FULL = `
+contract BlockOracleFull() {
+    function touch(bytes expectCb) {
+        require(block.number >= 0);
+        require(block.timestamp >= 0);
+        require(block.difficulty >= 0);
+        require(block.size >= 0);
+        require(block.totalFees >= 0);
+        require(block.coinbase == expectCb);
+    }
+}`;
+
+describe('block.* off-chain keeper (updater)', () => {
+  it('fetchBlockOracleFields extracts all six fields from BCHN rpc', async () => {
+    expect(await fetchBlockOracleFields(fakeRpc(), 'h')).toEqual({
+      number: 100000n, timestamp: 1782384635n, difficulty: 0x18026c88n,
+      size: 9075n, totalFees: 31792n, coinbase: hexToBin(CB_HEX),
+    });
+  });
+
+  it('pushes a signed update when the chain is ahead, then is a no-op when caught up', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(ORACLE_FULL);
+    const contract = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(provider, contract, artifact.stateLayout!, {
+      __block_number: 0n, __block_timestamp: 0n, __block_difficulty: 0n, __block_size: 0n,
+      __block_totalFees: 0n, __block_coinbase: hexToBin('00'), __blockOracleOwner: alicePub,
+    }, { saltContract: true });
+
+    const updater = new BlockOracleUpdater({ contract, categoryId, ownerKey: alicePriv, rpc: fakeRpc(100000) });
+    expect(await updater.oracleHeight()).toBe(0n);
+
+    const txid = await updater.syncOnce();
+    expect(txid).toMatch(/^[0-9a-f]{64}$/);
+    expect(await updater.oracleHeight()).toBe(100000n);
+
+    expect(await updater.syncOnce()).toBeNull(); // chain not ahead -> no update
+  });
+
+  it('rejects a keeper that is not the baked owner', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(ORACLE_FULL);
+    const contract = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(provider, contract, artifact.stateLayout!, {
+      __block_number: 0n, __block_timestamp: 0n, __block_difficulty: 0n, __block_size: 0n,
+      __block_totalFees: 0n, __block_coinbase: hexToBin('00'), __blockOracleOwner: alicePub,
+    }, { saltContract: true });
+
+    const impostor = new BlockOracleUpdater({ contract, categoryId, ownerKey: bobPriv, rpc: fakeRpc(100000) });
+    await expect(impostor.syncOnce()).rejects.toThrow();
+  });
+});

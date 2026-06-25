@@ -17,6 +17,7 @@ import InjectLocktimeGuardTraversal from './semantic/InjectLocktimeGuardTraversa
 import EarlyReturnTransformation from './semantic/EarlyReturnTransformation.js';
 import NamedReturnTransformation from './semantic/NamedReturnTransformation.js';
 import SynthesizeExternalAddressLocals from './semantic/SynthesizeExternalAddressLocals.js';
+import SynthesizeBlockOracle from './semantic/SynthesizeBlockOracle.js';
 import expandModifiers from './semantic/ModifierExpansionTransformation.js';
 import expandBreakContinue from './semantic/BreakContinueTransformation.js';
 import expandInheritance from './semantic/InheritanceExpansionTransformation.js';
@@ -28,6 +29,7 @@ export const DEFAULT_COMPILER_OPTIONS: CompilerOptions = {
   enforceLocktimeGuard: true,
   commitmentLimit: 128,
   chunkedArrays: true,
+  chainId: 0,
 };
 
 export interface CompileOptions extends CompilerOptions {
@@ -81,6 +83,8 @@ export function compileString(code: string, compilerOptions: CompileOptions = {}
   // Interface-typed state vars used as external-call targets -> synthesized address locals (reuses the
   // local-interface-var dispatch).
   ast = ast.accept(new SynthesizeExternalAddressLocals()) as Ast;
+  // Oracle-backed block.* reads -> injected uint32 state-var registers + desugared state reads.
+  ast = ast.accept(new SynthesizeBlockOracle(mergedCompilerOptions.solidityImportCompat)) as Ast;
 
   // Semantic analysis
   ast = ast.accept(new SymbolTableTraversal(mergedCompilerOptions)) as Ast;
@@ -182,6 +186,7 @@ function compileReferencedContracts(
     let singleAst: Ast = new SourceFileNode(contract);
     singleAst = singleAst.accept(new NamedReturnTransformation()) as Ast;
     singleAst = singleAst.accept(new SynthesizeExternalAddressLocals()) as Ast;
+    singleAst = singleAst.accept(new SynthesizeBlockOracle(compilerOptions.solidityImportCompat)) as Ast;
     singleAst = singleAst.accept(new SymbolTableTraversal(compilerOptions)) as Ast;
     singleAst = singleAst.accept(new TypeCheckTraversal(compilerOptions.solidityImportCompat)) as Ast;
     singleAst = singleAst.accept(new EnsureFinalRequireTraversal(compilerOptions.solidityImportCompat)) as Ast;

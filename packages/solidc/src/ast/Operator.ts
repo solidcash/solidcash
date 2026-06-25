@@ -11,6 +11,14 @@ export enum NullaryOperator {
   MSG_SIG = 'msg.sig',
   MSG_DATA = 'msg.data',
   TX_ORIGIN = 'tx.origin',
+  CHAIN_ID = 'block.chainid',
+  BLOCK_NUMBER = 'block.number',
+  BLOCK_TIMESTAMP = 'block.timestamp',
+  BLOCK_DIFFICULTY = 'block.difficulty',
+  BLOCK_SIZE = 'block.size',
+  BLOCK_TOTAL_FEES = 'block.totalFees',
+  BLOCK_BASEFEE = 'block.basefee',
+  BLOCK_COINBASE = 'block.coinbase',
 }
 
 export enum UnaryOperator {

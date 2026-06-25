@@ -1630,6 +1630,9 @@ export default class TypeCheckTraversal extends AstTraversal {
       case NullaryOperator.MSG_SIG:
         node.type = new BytesType(4);
         return node;
+      case NullaryOperator.CHAIN_ID:
+        node.type = new BytesType(1);
+        return node;
       case NullaryOperator.MSG_DATA:
         node.type = new BytesType();
         return node;

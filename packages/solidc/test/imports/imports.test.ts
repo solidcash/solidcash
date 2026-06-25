@@ -168,6 +168,34 @@ describe('Imports', () => {
       expect(artifact.contractName).toBe('Spender');
     });
 
+    it('should dedup a symbol imported via both a wildcard and a named import', () => {
+      const files: Record<string, string> = {
+        '/lib/shapes.scash': `
+          int constant MAX = 100;
+          struct Point { int x; int y; }
+          contract Shapes() { function ping() { require(true); } }
+        `,
+      };
+
+      // `MAX` and `Point` each arrive via both imports of the same file; they must dedup, not redefine.
+      const code = `
+        import "./lib/shapes.scash";
+        import { MAX, Point } from "./lib/shapes.scash";
+        contract C() {
+          int v;
+          function go(int a) {
+            require(a < MAX);
+            this.v = a;
+          }
+        }
+      `;
+
+      expect(() => compileString(code, {
+        importResolver: createMapResolver(files),
+        rootFileId: '/main.scash',
+      })).not.toThrow();
+    });
+
     it('should compile with in-memory selective import', () => {
       const files: Record<string, string> = {
         '/lib/constants.scash': `

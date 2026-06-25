@@ -5744,6 +5744,15 @@ export class StatefulFunctionCall {
     return this;
   }
 
+  // nLocktime for the final tx (e.g. block.* oracle freshness `require(tx.time >= number)`); inputs are
+  // non-final by default so the bound is enforced.
+  private locktimeOverride?: number;
+
+  setLocktime(locktime: number): this {
+    this.locktimeOverride = locktime;
+    return this;
+  }
+
   deleteEntry(slotIndex: number): this {
     this.entryDeleteSlots.push(slotIndex);
     return this;
@@ -6015,6 +6024,7 @@ export class StatefulFunctionCall {
     const maxRetries = 3;
     for (let attempt = 0; attempt < maxRetries; attempt++) {
       const stb = await this._applyOverrides();
+      if (this.locktimeOverride !== undefined) stb.setLocktime(this.locktimeOverride);
       try {
         return await stb.send();
       } catch (err: any) {

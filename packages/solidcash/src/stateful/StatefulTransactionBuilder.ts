@@ -817,6 +817,14 @@ export class StatefulTransactionBuilder {
     };
   }
 
+  /** Optional nLocktime for the final tx, e.g. the block.* freshness `require(tx.time >= number)`. */
+  locktimeOverride?: number;
+
+  setLocktime(locktime: number): this {
+    this.locktimeOverride = locktime;
+    return this;
+  }
+
   build(): TransactionBuilder {
     // Allow implicit NFT burn when entries are being deleted
     // Apply max fee override if set (user-specified via withMaxFee takes precedence)
@@ -831,6 +839,7 @@ export class StatefulTransactionBuilder {
       ? { ...baseOpts, allowImplicitNftBurn: true }
       : baseOpts;
     const builder = new CovenantTransactionBuilder(opts);
+    if (this.locktimeOverride !== undefined) builder.locktime = this.locktimeOverride;
     builder.addInputs(this.allInputs);
     // Co-spend the external-library side-car as the LAST input (the covenant's library loader reads it via
     // OP_INPUTBYTECODE of the last input). Present in derivation probes and the final tx alike.

@@ -65,6 +65,21 @@ export class ImportResolver {
       this.mergeImports(ast, importedAst, importNode);
     }
 
+    // Dedup definitions imported via multiple statements from the same file (e.g. a wildcard
+    // `import "./Foo.sol"` plus a named `import {Point} from "./Foo.sol"`): both reference the SAME cached
+    // node, so deduping by identity removes the redundant copy. Distinct same-named definitions from different
+    // files keep separate nodes and still collide downstream (a genuine redefinition).
+    ast.importedContracts = [...new Set(ast.importedContracts)];
+    ast.constantDefinitions = [...new Set(ast.constantDefinitions)];
+    ast.enumDefinitions = [...new Set(ast.enumDefinitions)];
+    ast.structDefinitions = [...new Set(ast.structDefinitions)];
+    ast.typeDefinitions = [...new Set(ast.typeDefinitions)];
+    ast.eventDefinitions = [...new Set(ast.eventDefinitions)];
+    ast.errorDefinitions = [...new Set(ast.errorDefinitions)];
+    ast.interfaceDefinitions = [...new Set(ast.interfaceDefinitions)];
+    ast.freeFunctions = [...new Set(ast.freeFunctions)];
+    ast.usingForDirectives = [...new Set(ast.usingForDirectives)];
+
     return ast;
   }
 

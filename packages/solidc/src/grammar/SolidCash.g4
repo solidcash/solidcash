@@ -770,6 +770,14 @@ NullaryOp
     | 'msg.sig'
     | 'msg.data'
     | 'tx.origin'
+    | 'block.chainid'
+    | 'block.number'
+    | 'block.timestamp'
+    | 'block.difficulty'
+    | 'block.size'
+    | 'block.totalFees'
+    | 'block.basefee'
+    | 'block.coinbase'
     ;
 
 UnicodeLiteral

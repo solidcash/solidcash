@@ -3,6 +3,7 @@ import { compileString } from 'solidc';
 import { Contract, StatefulContract, SignatureTemplate } from '../../src/index.js';
 import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
 import { alicePub, alicePriv } from '../fixture/vars.js';
+import { hexToBin } from '@bitauth/libauth';
 
 // Chunk-packed fixed-width arrays (docs/arrays.md), behind the chunkedArrays flag. Whole-array
 // store/read round-trip through the dynamic-storage chunk machinery + the tight-pack codec, plus
@@ -256,6 +257,36 @@ describe('chunk-packed array: variable-width elements (string[] / int[] / bytes[
     expect(await sc.getState().then((s) => (s.words as string[]).length)).toBe(4);
     await sc.popWord(alicePub, sig()).send();
     expect(await sc.getState().then((s) => s.words)).toEqual([big, 'mid', big2]);
+  });
+
+  // address is variable-width on BCH (locking bytecode: 23/25/35 B) -> framed layout like bytes[].
+  it('round-trips an address[]: assign, on-chain index read, push, length', async () => {
+    const src = `pragma solidcash >=0.8.0;
+contract C() {
+  address[] addrs;
+  function setAddrs(address a, address b, pubkey pk, sig s) { require(checkSig(s, pk)); this.addrs = [a, b]; }
+  function add(address a, pubkey pk, sig s) { require(checkSig(s, pk)); this.addrs.push(a); }
+  function checkElem(int i, address expected) { require(this.addrs[i] == expected); }
+  function count(int n) { require(this.addrs.length == n); }
+}`;
+    const artifact = compileString(src, { chunkedArrays: true });
+    const contract = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, contract, artifact.stateLayout!, { addrs: [] }, { saltContract: true },
+    );
+    const sc = StatefulContract.withCategory(contract, categoryId);
+
+    const a1 = hexToBin(`aa20${'11'.repeat(32)}87`); // p2sh32 locking bytecode (35 B)
+    const a2 = hexToBin(`aa20${'22'.repeat(32)}87`);
+    const a3 = hexToBin(`aa20${'33'.repeat(32)}87`);
+    await sc.setAddrs(a1, a2, alicePub, sig()).send();
+    await sc.count(2n).send();
+    await sc.checkElem(0n, a1).send();              // framed decode of element 0
+    await sc.checkElem(1n, a2).send();
+    await expect(sc.checkElem(0n, a2).send()).rejects.toThrow(); // wrong expected at idx 0
+    await sc.add(a3, alicePub, sig()).send();       // push to non-empty
+    await sc.count(3n).send();
+    await sc.checkElem(2n, a3).send();
   });
 
   it('round-trips int[] and bytes[] in one contract (cross-var preservation)', async () => {

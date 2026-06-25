@@ -670,6 +670,7 @@ export function isChunkPackableElementType(type: Type | string): boolean {
   if (isFixedWidthType(t)) return true;
   if (t === PrimitiveType.BIGINT || t === PrimitiveType.STRING) return true;
   if (t instanceof BytesType) return true; // unbounded bytes (bounded bytesN already fixed-width above)
+  if (t instanceof AddressType) return true; // variable-width locking bytecode -> framed layout (like bytes)
   if (t instanceof StructType) return true; // variable-width struct -> framed layout (fixed-width handled above)
   return false;
 }

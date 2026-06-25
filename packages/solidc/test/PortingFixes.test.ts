@@ -836,3 +836,27 @@ describe('SBE-12: single-type abi.decode unwraps to the element type (not a 1-tu
     expect(a.contractName).toBe('C');
   });
 });
+
+describe('SBE-13: void external-call helpers are inlined at internal call sites (SafeERC20 pattern)', () => {
+  const IFACE = 'interface IERC20 { function transferFrom(address f, address t, int a) external returns (bool); }';
+  it('inlines a helper called twice; each inline collects its own external call', () => {
+    const a = compileString(`${IFACE}
+      contract C(IERC20 token1, IERC20 token2) {
+        int n;
+        function _safe(IERC20 t, address f, address r, int v) {
+          bool sent = t.transferFrom(f, r, v); require(sent);
+        }
+        function go(address f, address r, sig s, pubkey pk) {
+          require(checkSig(s, pk));
+          _safe(token1, f, r, 5);
+          _safe(token2, r, f, 7);
+          this.n = 1;
+        }
+      }`);
+    // Two internal calls -> two inlined transferFrom external calls in `go` (the helper's `sent` local is
+    // alpha-renamed per inline, so the two copies do not collide).
+    const go = a.abi.find((f) => f.name === 'go');
+    expect(go?.externalCalls?.length).toBe(2);
+    expect(go?.externalCalls?.every((c) => c.functionName === 'transferFrom')).toBe(true);
+  });
+});

@@ -17,6 +17,7 @@ import InjectLocktimeGuardTraversal from './semantic/InjectLocktimeGuardTraversa
 import EarlyReturnTransformation from './semantic/EarlyReturnTransformation.js';
 import NamedReturnTransformation from './semantic/NamedReturnTransformation.js';
 import SynthesizeExternalAddressLocals from './semantic/SynthesizeExternalAddressLocals.js';
+import InlineExternalCallHelpers from './semantic/InlineExternalCallHelpers.js';
 import SynthesizeBlockOracle from './semantic/SynthesizeBlockOracle.js';
 import expandModifiers from './semantic/ModifierExpansionTransformation.js';
 import expandBreakContinue from './semantic/BreakContinueTransformation.js';
@@ -79,6 +80,10 @@ export function compileString(code: string, compilerOptions: CompileOptions = {}
 
   // Named-return desugar (before semantic analysis): named returns become default-init locals.
   ast = ast.accept(new NamedReturnTransformation()) as Ast;
+
+  // Inline void helpers that make external calls into their internal call sites (the external co-spend can't
+  // cross an OP_INVOKE boundary); reduces to the entry-point-body external-call case.
+  ast = ast.accept(new InlineExternalCallHelpers()) as Ast;
 
   // Interface-typed state vars used as external-call targets -> synthesized address locals (reuses the
   // local-interface-var dispatch).
@@ -185,6 +190,7 @@ function compileReferencedContracts(
     // producing different (larger) bytecode than standalone compilation.
     let singleAst: Ast = new SourceFileNode(contract);
     singleAst = singleAst.accept(new NamedReturnTransformation()) as Ast;
+    singleAst = singleAst.accept(new InlineExternalCallHelpers()) as Ast;
     singleAst = singleAst.accept(new SynthesizeExternalAddressLocals()) as Ast;
     singleAst = singleAst.accept(new SynthesizeBlockOracle(compilerOptions.solidityImportCompat)) as Ast;
     singleAst = singleAst.accept(new SymbolTableTraversal(compilerOptions)) as Ast;

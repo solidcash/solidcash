@@ -19,9 +19,11 @@ Status: **IMPLEMENTED (compiler + SDK e2e, green).**
   the oracle. **Auto-injection is wired:** the compiler tags `abi.blockhashReads` (the param feeding `n`)
   and `TransactionBuilder.send()` reads the call arg, resolves `addr(n)`, and co-spends the `(n->hash)`
   UTXO + self-preserving recreate automatically - `blockhash(n)` needs no manual wiring (the
-  `resolveBlockhashCoSpend` helper remains for computed/multiple `n`). Remaining: a dedicated co-spend slot
-  (lifts the one-co-spend / no-side-car-combo MVP limits of the last-input convention) and
-  `bytes32(0)`-when-absent (s11).
+  `resolveBlockhashCoSpend` helper remains for computed/multiple `n`). Absent reads **error by design**
+  (not EVM's `bytes32(0)`): on BCH the tx-builder controls inputs, so returning `0` when the oracle is not
+  co-spent would let a malicious builder force `blockhash(n) == 0` for an in-window block; erroring keeps a
+  contract from ever seeing a forged `0` (s11.2). Remaining: a dedicated co-spend slot (lifts the
+  one-co-spend / no-side-car-combo MVP limits of the last-input convention).
 
 Implementation notes: each referenced field is desugared (`SynthesizeBlockOracle` pre-semantic transform)
 to a read of an injected register of the contract's own state - `uint32` for the numeric fields, `address`
@@ -259,9 +261,10 @@ convention) and verifies `OP_UTXOTOKENCATEGORY == blockhashOracleCategory` (comp
 `commitment.n == n` + `require(tx.time >= n)`, returning the 32-byte hash. The hardened `(n->hash)`
 covenant (self-pin + self-preserving recreate + CLTV `n+256` wipe), the keeper mint + sweep
 (`BlockOracleUpdater.mintBlockhashPair` / `sweepBlockhashPair` / `maintainBlockhashWindow`), and the
-`artifact.usesBlockhash` marker are all in place and e2e-green. **Remaining:** SDK auto-discovery (the
-consumer auto-resolves + co-spends `addr(n)`, no manual input), a dedicated co-spend slot (vs the
-last-input convention), and `bytes32(0)` when the SDK finds no live UTXO.
+`artifact.usesBlockhash` marker, and SDK auto-injection (`abi.blockhashReads` +
+`TransactionBuilder.addRequiredBlockhashCoSpends` co-spend `addr(n)` from the call args) are all in place
+and e2e-green. Absent reads error by design (s11.3), not EVM's `bytes32(0)`. **Remaining:** a dedicated
+co-spend slot (vs the last-input convention) to lift the one-co-spend / no-side-car-combo MVP limits.
 
 
 These are **functions** (runtime argument), not the 0-param `block.*` properties, so they lower as
@@ -295,8 +298,15 @@ which the single current-block register cannot hold. Design (category-trust, no 
 **The consumer (`blockhash(n)`) is stateless** - an external read of `C_oracle`: co-spend the `(n->hash)`
 UTXO read-only, check `OP_UTXOTOKENCATEGORY(in) == C_oracle` (mint-once = keeper, the trust anchor) +
 `commitment.n == n`, return `hash`. No per-contract register, no merkle proof. Emit
-`require(tx.time >= n)` (no-future bound). If the SDK finds no live UTXO at `addr(n)` (outside the window
-or unpublished), yield `bytes32(0)` (EVM parity), no revert.
+`require(tx.time >= n)` (no-future bound).
+
+**Absent reads error, not `bytes32(0)`.** If the SDK finds no live UTXO at `addr(n)` (outside the window
+or unpublished), it errors rather than yielding EVM's `bytes32(0)`. On BCH the tx-builder controls the
+inputs, so a "return `0` when the oracle is not co-spent" rule would let a malicious builder force
+`blockhash(n) == 0` for an **in-window** block by simply omitting the co-spend - a forgeable read EVM does
+not have (there the node supplies the hash). Erroring keeps a contract from ever seeing a forged `0`. A
+contract that wants the EVM "too old -> 0" branch checks the window itself (`block.number - n` against the
+256 bound) instead of trusting a `0`.
 
 **Why category + commitment, not the address:** unique `addr(n)` is the off-chain *indexer* key;
 `commitment.n` is the on-chain *contract* pin; `C_oracle` (self-pin, mint-once) is the *trust*. They are
@@ -350,6 +360,9 @@ warning when `blockhash(...)` feeds modulo/arithmetic is advisable.
   input + recreate at the matching index, bumping `tx.time` to `n`. `blockhashOracleCategory` is persisted
   in `artifact.compiler.options` for the lookup. The VM is the arbiter, so a wrong injection fails the
   category/`n` check.
-- REMAINING: a dedicated co-spend slot (the MVP uses the last-input convention, so one co-spend per tx and
-  no external-library side-car in the same tx - both are guarded with a clear error); and `bytes32(0)` when
-  the resolver returns null (EVM-parity absent read - needs a codegen branch on co-spend presence).
+- Absent read = error (DECIDED, s11.2): the resolver/builder errors when no UTXO exists at `addr(n)` rather
+  than returning EVM's `bytes32(0)`, since on BCH a builder could otherwise force a `0` read by omitting the
+  co-spend. No EVM-parity `0` branch.
+- REMAINING: a dedicated co-spend slot. The MVP uses the last-input convention, so one co-spend per tx and
+  no external-library side-car in the same tx - both are guarded with a clear error. A reserved slot (e.g. a
+  commitment-tagged input the read codegen locates by tag, like the multi-data-NFT preamble) lifts both.

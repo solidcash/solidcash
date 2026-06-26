@@ -8,6 +8,8 @@ import {
   SourceFileNode,
   VariableDefinitionNode,
   IdentifierNode,
+  RequireNode,
+  BoolLiteralNode,
 } from '../ast/AST.js';
 import { createDefaultValueExpression } from '../ast/defaults.js';
 import AstTraversal from '../ast/AstTraversal.js';
@@ -45,6 +47,10 @@ export default class NamedReturnTransformation extends AstTraversal {
   visitContract(node: ContractNode): Node {
     node.parameters = this.visitList(node.parameters) as ParameterNode[];
     node.functions = this.visitList(node.functions) as FunctionDefinitionNode[];
+    // receive()/fallback() are stored separately (__receive/__fallback); visit them so an empty body is
+    // synthesized like any other void function.
+    if (node.fallbackDef) node.fallbackDef = this.visit(node.fallbackDef) as FunctionDefinitionNode;
+    if (node.receiveDef) node.receiveDef = this.visit(node.receiveDef) as FunctionDefinitionNode;
     return node;
   }
 
@@ -56,6 +62,20 @@ export default class NamedReturnTransformation extends AstTraversal {
       const ret = new ReturnNode(node.returnTypes.map((t) => createDefaultValueExpression(t, node.location)));
       ret.location = node.location;
       node.body.statements = [ret];
+      return node;
+    }
+
+    // Empty-body VOID function (e.g. `receive() external payable {}`, an empty payable `deposit()`): Solidity
+    // accepts the call and does nothing. Synthesize `require(true);` so it compiles - a state-preserving no-op
+    // spend path. Porting mode only - native keeps EmptyFunctionError as a guard. Constructors may stay empty
+    // (parent-only) and abstract functions have no body, so both are excluded.
+    if (this.solidityImportCompat && node.body && (node.body.statements?.length ?? 0) === 0
+      && node.returnTypes.length === 0 && node.name !== '__construct') {
+      const cond = new BoolLiteralNode(true);
+      cond.location = node.location;
+      const req = new RequireNode(cond);
+      req.location = node.location;
+      node.body.statements = [req];
       return node;
     }
 

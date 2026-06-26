@@ -1088,3 +1088,22 @@ describe('++ / -- on state-variable and element lvalues (common Solidity idiom)'
       .toBe('C');
   });
 });
+
+describe('empty void functions synthesize a no-op body (Solidity porting: receive/fallback/payable)', () => {
+  it('compiles empty receive(), payable, and plain void functions under solidityImportCompat', () => {
+    for (const body of [
+      'function inc() public { n++; } receive() external payable {}',
+      'function deposit() public payable {} function inc() public { n++; }',
+      'function f() public {} function inc() public { n++; }',
+      'function inc() public { n++; } fallback() external payable {}',
+    ]) {
+      const src = `pragma solidity ^0.8.0; contract C { int n; ${body} }`;
+      expect(compileString(src, { solidityImportCompat: true }).contractName).toBe('C');
+    }
+  });
+
+  it('still rejects an empty function in native mode (the guard is preserved)', () => {
+    expect(() => compileString('contract C() { int n; function f() {} }'))
+      .toThrow(/contains no statements/);
+  });
+});

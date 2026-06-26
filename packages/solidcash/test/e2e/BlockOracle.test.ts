@@ -357,6 +357,17 @@ describe('blobhash / blockhash', () => {
     expect(blob.stateLayout!.variables.map((v) => v.name)).toEqual(['__block_totalFees', '__block_size', '__blockOracleOwner']);
   });
 
+  // block.gaslimit + gasleft() are fixed shims (1000000): BCH has no gas metering. A constant (not 0/revert)
+  // keeps ported gas-budget checks running; the compiler warns. 1000000 = 0x40420f.
+  it('block.gaslimit and gasleft() lower to the fixed shim 1000000 (no oracle state)', () => {
+    const gl = compileString('contract A(){ function f(int e){ require(block.gaslimit == e); } }');
+    const gf = compileString('contract B(){ function f(int e){ require(gasleft() == e); } }');
+    expect(gl.bytecode).toContain('40420f'); // 1000000 little-endian
+    expect(gf.bytecode).toContain('40420f');
+    expect(gl.stateLayout).toBeUndefined(); // pure constant - not oracle-backed, no state
+    expect(gf.stateLayout).toBeUndefined();
+  });
+
   it('blobhash rejects a non-zero expectation', async () => {
     await expect(spendBlob(`0x01${'00'.repeat(31)}`)).rejects.toThrow();
   });

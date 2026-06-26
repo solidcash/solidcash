@@ -3,7 +3,8 @@
 Status: **IMPLEMENTED (compiler + SDK e2e, green).**
 - `block.chainid` - baked single-byte network constant.
 - Oracle reads `block.{number,timestamp,difficulty,size,totalFees,basefee,coinbase}`; `block.blobbasefee`
-  aliases `block.basefee` (no EIP-4844 blobs on BCH; compiler warns).
+  aliases `block.basefee` (no EIP-4844 blobs on BCH; compiler warns). `block.gaslimit` + `gasleft()` are
+  fixed shims (`1000000`, no gas metering on BCH; compiler warns).
 - Owner-update path: an immutable baked owner key (`__blockOracleOwner`) + an injected
   `__updateBlockOracle(sig, ...fields)` gated by the owner signature and the freshness/anti-over-reporting
   bound `require(tx.time >= number)`.
@@ -185,6 +186,12 @@ Notes:
   there is no real blob base fee; it aliases the base fee rather than returning `0` (which would silently
   zero out multiplications or divide-by-zero in ported code). The compiler emits a one-time warning that it
   is not a true blob base fee. Do not rely on its value as blob-specific.
+- `block.gaslimit` (`uint`) and `gasleft()` (`uint256`) are **fixed shims**: BCH has no gas metering, so both
+  lower to the constant `1000000` (no oracle state - a pure literal, like `block.chainid`). A constant rather
+  than `0` or a revert so that ported gas-budget checks (`require(gasleft() >= X)`, `block.gaslimit`
+  comparisons) keep running. The compiler emits a one-time warning for each that it is a meaningless shim. Do
+  not rely on the value. (`gasleft()` is desugared pre-semantically, so it never reaches the function
+  registry; `block.gaslimit` is a `NullaryOp` token.)
 - `block.chainid` is **implemented**: a compile-time constant baked as a single byte from the
   `chainId` compiler option (default 0), typed `bytes1` and compared bytewise (e.g.
   `require(block.chainid == 0xff)`). It needs none of the oracle infra. User-land convention:

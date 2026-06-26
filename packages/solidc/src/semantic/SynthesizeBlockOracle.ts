@@ -68,13 +68,29 @@ export default class SynthesizeBlockOracle extends AstTraversal {
   // maintain the project-global (n->hash) oracle (docs/block-oracle.md).
   usesBlockhash = false;
   private fnUsesBlockhash = false;
-  private warnedBlobbasefee = false;
+  private warnedShims = new Set<string>();
 
   constructor(private readonly solidityImportCompat = false) {
     super();
   }
 
+  // One-time compiler warning for an EVM primitive that has no BCH analogue and is lowered as a shim.
+  private warnShim(key: string, message: string): void {
+    if (this.warnedShims.has(key)) return;
+    this.warnedShims.add(key);
+    console.warn(message);
+  }
+
   visitFunctionCall(node: FunctionCallNode): Node {
+    // gasleft() -> fixed 1000000: BCH has no gas metering. A literal (not a revert) so ported code that
+    // gates on a gas budget keeps running; warn it is a shim.
+    if (node.identifier.name === 'gasleft' && node.parameters.length === 0) {
+      this.warnShim('gasleft', 'Warning: gasleft() has no BCH analogue (no gas metering); SolidCash lowers '
+        + 'it as a fixed shim (1000000). Do not rely on its value.');
+      const lit = new IntLiteralNode(1_000_000n);
+      lit.location = node.location;
+      return lit;
+    }
     if (node.identifier.name === GlobalFunction.BLOCKHASH) {
       this.usesBlockhash = true;
       this.fnUsesBlockhash = true;
@@ -129,15 +145,23 @@ export default class SynthesizeBlockOracle extends AstTraversal {
       this.used.add(varName);
       return this.stateAccess(varName, node);
     }
+    // block.gaslimit -> fixed 1000000: BCH has no gas metering. A constant (not 0, not a revert) so ported
+    // code that compares against a gas limit keeps working; warn it is a shim.
+    if (node.operator === NullaryOperator.BLOCK_GASLIMIT) {
+      this.warnShim('block.gaslimit', 'Warning: block.gaslimit has no BCH analogue (no gas metering); '
+        + 'SolidCash lowers it as a fixed shim (1000000). Do not rely on its value.');
+      const lit = new IntLiteralNode(1_000_000n);
+      lit.location = node.location;
+      return lit;
+    }
     if (node.operator === NullaryOperator.BLOCK_BASEFEE || node.operator === NullaryOperator.BLOCK_BLOBBASEFEE) {
       // block.basefee = Floor(1000 * totalFees / size) sat/KB (VM divide truncates toward zero).
       // block.blobbasefee is an ALIAS for it: BCH has no EIP-4844 blobs, but returning 0 would silently
       // zero out (or divide-by-zero) downstream computations, so it aliases the real base fee. Warn once.
-      if (node.operator === NullaryOperator.BLOCK_BLOBBASEFEE && !this.warnedBlobbasefee) {
-        this.warnedBlobbasefee = true;
-        console.warn('Warning: block.blobbasefee has no BCH analogue (no EIP-4844 blobs); it aliases '
-          + 'block.basefee (a real, non-zero base fee) so it does not zero out computations. Do not rely on '
-          + 'it as a true blob base fee.');
+      if (node.operator === NullaryOperator.BLOCK_BLOBBASEFEE) {
+        this.warnShim('block.blobbasefee', 'Warning: block.blobbasefee has no BCH analogue (no EIP-4844 '
+          + 'blobs); it aliases block.basefee (a real, non-zero base fee) so it does not zero out '
+          + 'computations. Do not rely on it as a true blob base fee.');
       }
       this.used.add('__block_totalFees');
       this.used.add('__block_size');

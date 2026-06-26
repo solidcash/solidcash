@@ -85,7 +85,7 @@ The remaining gaps are bounded. They are listed below.
 
 ## Category D - N/A on UTXO (document as intentionally unsupported, with BCH substitute)
 
-- **Gas family**: `gasleft()`, `tx.gasprice`, `block.gaslimit` - no gas metering on BCH. (`block.basefee` IS implemented: oracle-backed, reinterpreted as the block's realized fee rate `Floor(1000*totalFees/size)` sat/KB - see docs/block-oracle.md.)
+- **Gas family**: no gas metering on BCH. `tx.gasprice` remains N/A. `gasleft()` and `block.gaslimit` are implemented as **fixed shims** (constant `1000000`, compiler-warned) so ported gas-budget checks keep running; `block.basefee` is implemented oracle-backed, reinterpreted as the block's realized fee rate `Floor(1000*totalFees/size)` sat/KB. See docs/block-oracle.md.
 - **Block/randomness introspection** (IMPLEMENTED via the per-contract block oracle, see docs/block-oracle.md): `blockhash(n)`, `block.coinbase`, `block.difficulty`, `block.number`, `block.timestamp`, etc. are oracle-backed reads. `block.prevrandao` remains N/A. Non-oracle substitute for time/height: `require(tx.time >= ...)` (CLTV) / `require(this.age >= ...)` (CSV).
 - **EIP-4844 blobs**: `blobhash(i)` -> `bytes32(0)` and `block.blobbasefee` -> aliases `block.basefee` (compiler-warned porting shims; no real BCH blobs). See docs/block-oracle.md s11.
 - **`keccak256`** - no Keccak opcode. Substitute: `sha256` / `hash256` / `hash160` / `ripemd160`.

@@ -323,6 +323,9 @@ assignmentStatement
     : 'this' '.' Identifier (('[' expression ']')+)? ('.' Identifier)* op=('=' | '+=' | '-=' | '*=' | '/=' | '%=' | '&=' | '|=' | '^=' | '<<=' | '>>=') expression ';'
     | Identifier ('[' expression ']')+ ('.' Identifier)* op=('=' | '+=' | '-=' | '*=' | '/=' | '%=' | '&=' | '|=' | '^=' | '<<=' | '>>=') expression ';'
     | Identifier ('.' Identifier)+ op=('=' | '+=' | '-=' | '*=' | '/=' | '%=' | '&=' | '|=' | '^=' | '<<=' | '>>=') expression ';'
+    | 'this' '.' Identifier (('[' expression ']')+)? ('.' Identifier)* op=('++' | '--') ';'
+    | Identifier ('[' expression ']')+ ('.' Identifier)* op=('++' | '--') ';'
+    | Identifier ('.' Identifier)+ op=('++' | '--') ';'
     ;
 
 mappingDeleteStatement

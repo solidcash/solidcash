@@ -1062,3 +1062,29 @@ describe('uint160(address) / bytes20(address) Solidity-compat narrowing casts', 
     warn.mockRestore();
   });
 });
+
+describe('++ / -- on state-variable and element lvalues (common Solidity idiom)', () => {
+  it('compiles postfix ++/-- on state vars, mapping elements, and array elements', () => {
+    for (const body of [
+      'int n; function f() { this.n++; }',
+      'int n; function f() { this.n--; }',
+      'mapping(int => int) m; function f(int k) { this.m[k]++; }',
+      'mapping(int => int) m; function f(int k) { this.m[k]--; }',
+      'int[] a; function f(int i) { this.a[i]++; }',
+    ]) {
+      expect(compileString(`contract C() { ${body} }`).contractName).toBe('C');
+    }
+  });
+
+  it('state ++/-- desugars byte-identically to += 1 / -= 1', () => {
+    expect(compileString('contract C() { int n; function f() { this.n++; } }').debug.bytecode)
+      .toBe(compileString('contract C() { int n; function f() { this.n += 1; } }').debug.bytecode);
+    expect(compileString('contract C() { int n; function f() { this.n--; } }').debug.bytecode)
+      .toBe(compileString('contract C() { int n; function f() { this.n -= 1; } }').debug.bytecode);
+  });
+
+  it('still parses a bare local ++ (unchanged)', () => {
+    expect(compileString('contract C() { int n; function f() { int i = 0; i++; this.n = i; } }').contractName)
+      .toBe('C');
+  });
+});

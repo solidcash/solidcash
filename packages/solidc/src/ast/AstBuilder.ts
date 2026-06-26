@@ -1110,10 +1110,17 @@ export default class AstBuilder
   // RHS of a (possibly compound) state assignment: `=` uses the expression directly; `+=` etc. desugar to
   // `<read> <binop> <expression>`, where `read` is the read-expression node for the assignment target.
   private compoundRhs(
-    read: ExpressionNode, op: string, expressionCtx: ExpressionContext, location: Location,
+    read: ExpressionNode, op: string, expressionCtx: ExpressionContext | undefined, location: Location,
   ): ExpressionNode {
-    const rhs = this.visit(expressionCtx) as ExpressionNode;
-    if (op === '=') return rhs;
+    // `++` / `--` have no RHS expression: desugar to `read +/- 1` (COMPOUND_OPS maps ++ -> PLUS, -- -> MINUS).
+    let rhs: ExpressionNode;
+    if (op === '++' || op === '--') {
+      rhs = new IntLiteralNode(1n);
+      rhs.location = location;
+    } else {
+      rhs = this.visit(expressionCtx!) as ExpressionNode;
+      if (op === '=') return rhs;
+    }
     const binaryOp = new BinaryOpNode(read, COMPOUND_OPS[op], rhs);
     binaryOp.location = location;
     return binaryOp;
@@ -1941,9 +1948,11 @@ export default class AstBuilder
     const hasMember = ids.length > 1;
     const fieldName = hasMember ? ids[1].getText() : undefined;
     const op = ctx._op.text;
+    // `lvalue++` / `lvalue--`: no RHS expression, so every parsed expression is an index key (not a value).
+    const isIncDec = op === '++' || op === '--';
     const exprCtxs = ctx.expression_list();
-    const keyCtxs = exprCtxs.slice(0, -1);
-    const valueCtx = exprCtxs[exprCtxs.length - 1];
+    const keyCtxs = isIncDec ? exprCtxs : exprCtxs.slice(0, -1);
+    const valueCtx = isIncDec ? undefined : exprCtxs[exprCtxs.length - 1];
     const loc = Location.fromCtx(ctx);
 
     // Struct field-chain write `<base>.f1.f2...fn op= v` where base is a local or state struct variable (no
@@ -1984,7 +1993,7 @@ export default class AstBuilder
       let chainRead = baseRead();
       for (const m of memberChain) chainRead = fieldAccess(chainRead, m);
       const finalValue = op === '='
-        ? this.visit(valueCtx) as ExpressionNode
+        ? this.visit(valueCtx!) as ExpressionNode
         : this.compoundRhs(chainRead, op, valueCtx, loc);
       const rebuilt = rebuild(baseRead(), baseStructT, memberChain, finalValue);
       const assign: StatementNode = isThis
@@ -2020,7 +2029,7 @@ export default class AstBuilder
         return fa;
       };
       const newValue = op === '='
-        ? this.visit(valueCtx) as ExpressionNode
+        ? this.visit(valueCtx!) as ExpressionNode
         : this.compoundRhs(fieldRead(fieldName!), op, valueCtx, loc);
       const ctorId = new IdentifierNode(structArrayElem.name);
       ctorId.location = nameLoc;
@@ -2063,7 +2072,7 @@ export default class AstBuilder
     };
 
     const value = op === '='
-      ? this.visit(valueCtx) as ExpressionNode
+      ? this.visit(valueCtx!) as ExpressionNode
       : this.compoundRhs(buildRead(), op, valueCtx, loc);
 
     let node: StatementNode;

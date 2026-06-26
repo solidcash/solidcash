@@ -29,9 +29,10 @@ Status: **IMPLEMENTED (compiler + SDK e2e, green).**
   VM re-verifies category + `commitment.n`, so a wrong index just fails. **Multiple `n` (done):** each
   reader resolves its own co-spend by `commitment.n`, and `addRequiredBlockhashCoSpends` auto-injects every
   distinct `n`; coexists with a keccak side-car (the reader uses its index param, the keccak loader the last
-  input). Remaining: a **stateful** reader - the index is only knowable at `send()` (co-spend placement) but
-  the stateful path pre-fills args; and placing the co-spend in a stateful tx is non-trivial because that
-  layout is not input/output-balanced (the recreate must still land at the co-spend's input index).
+  input). **Stateful readers (done):** a stateful function reads `blockhash(n)` via a `blockhashOracle`
+  block-layout slot - the co-spend rides the slot, the index param is filled deterministically (master input
+  index + slot offset), the auto-derivation probes co-spend it too, and the SDK auto-sets the locktime so
+  the CLTV passes in both the probe and the final tx.
 
 Implementation notes: each referenced field is desugared (`SynthesizeBlockOracle` pre-semantic transform)
 to a read of an injected register of the contract's own state - `uint32` for the numeric fields, `address`
@@ -273,10 +274,10 @@ covenant (self-pin + self-preserving recreate + CLTV `n+256` wipe), the keeper m
 `artifact.usesBlockhash` marker, SDK auto-injection (`abi.blockhashReads` +
 `TransactionBuilder.addRequiredBlockhashCoSpends` co-spend `addr(n)` from the call args), and the
 composition-safe index param (SDK fills it by locating the `C_oracle` co-spend, matched on `commitment.n`),
-multiple distinct `n` per tx, and keccak side-car coexistence are all in place and e2e-green. Absent reads
-error by design (s11.2), not EVM's `bytes32(0)`. **Remaining:** a **stateful** blockhash reader - the index
-is only knowable at `send()` while the stateful path pre-fills args, and placing the co-spend in the
-(input/output-unbalanced) stateful tx layout with the recreate at the co-spend's input index is non-trivial.
+multiple distinct `n` per tx, keccak side-car coexistence, and stateful readers (via a `blockhashOracle`
+block-layout slot - the co-spend rides the slot, the index is master+offset, the derivation probes co-spend
+it, and the SDK auto-sets the CLTV locktime) are all in place and e2e-green. Absent reads error by design
+(s11.2), not EVM's `bytes32(0)`. **`blockhash(n)` is feature-complete** for stateless and stateful readers.
 
 
 These are **functions** (runtime argument), not the 0-param `block.*` properties, so they lower as
@@ -386,7 +387,10 @@ warning when `blockhash(...)` feeds modulo/arithmetic is advisable.
 - Multiple `n` + side-car coexistence (DONE): the fill matches its co-spend on `commitment.n` (the reader's
   `n` from `blockhashReads`), `addRequiredBlockhashCoSpends` auto-injects every distinct `n`, and the keccak
   side-car guard is dropped (the reader uses its index param; the keccak loader uses the last input).
-- REMAINING: a stateful blockhash reader. The arg-fill parts are tractable (a placeholder insert in the
-  StatefulContract arg assembly + `createUnlocker` overriding it via the same late `sourceOutputs` resolve),
-  but the real work is placing the co-spend in a stateful tx: that layout is not input/output-balanced, yet
-  the recreate must land at the co-spend's input index (covenant `output[INPUTINDEX] == input`).
+- Stateful readers (DONE): a `blockhashOracle` block-layout slot (computeBlockLayout, after readOnlyDataNft)
+  holds the co-spend, so the stateful tx assembly places input + self-preserving recreate at the same index
+  and the index param is filled deterministically (master input index + slot offset). The auto-derivation
+  probes co-spend it (`_deriveFullTransactionState` via the stb that carries the slot; `_deriveCommitments`
+  via an explicit probe input + recreate), and the SDK auto-sets the tx locktime to `max(n)` so the
+  `require(tx.time >= n)` CLTV passes in both the probe and the final tx (the probe otherwise ran at locktime
+  0 and derived wrong state). `blockhash(n)` is feature-complete.

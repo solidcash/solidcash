@@ -1,4 +1,6 @@
-import { PrimitiveType, ArrayType, BytesType, BUILTIN_LIBRARIES, parseTypeStrict } from '@solidcash/utils';
+import {
+  PrimitiveType, ArrayType, BytesType, AddressType, BUILTIN_LIBRARIES, parseTypeStrict,
+} from '@solidcash/utils';
 import { SymbolTable, Symbol } from './SymbolTable.js';
 
 export const NumberUnit: { [index: string]: number } = {
@@ -34,6 +36,7 @@ export enum GlobalFunction {
   CHECKSIG = 'checkSig',
   CHECKMULTISIG = 'checkMultiSig',
   CHECKDATASIG = 'checkDataSig',
+  ECRECOVER = 'ecrecover',
   TO_PADDED_BYTES = 'toPaddedBytes',
   INT_TO_STRING = 'intToString',
   STRING_TO_INT = 'stringToInt',
@@ -126,6 +129,13 @@ GLOBAL_SYMBOL_TABLE.set(Symbol.function(
 GLOBAL_SYMBOL_TABLE.set(Symbol.function(
   GlobalFunction.CHECKDATASIG, PrimitiveType.BOOL,
   [PrimitiveType.DATASIG, new BytesType(), PrimitiveType.PUBKEY],
+));
+// ecrecover(hash, sig, pubKey): verify-with-pubkey form. Returns the signer's P2PKH locking bytecode (as an
+// address) on success, or the zero address 0x on an empty signature. The 4-arg Solidity form is handled
+// separately (warn + always 0x). See docs/ecrecover.md.
+GLOBAL_SYMBOL_TABLE.set(Symbol.function(
+  GlobalFunction.ECRECOVER, new AddressType(),
+  [new BytesType(32), PrimitiveType.DATASIG, PrimitiveType.PUBKEY],
 ));
 GLOBAL_SYMBOL_TABLE.set(Symbol.function(
   GlobalFunction.TO_PADDED_BYTES, new BytesType(),

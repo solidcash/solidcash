@@ -3310,6 +3310,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       return node;
     }
 
+    if (node.identifier.name === GlobalFunction.ECRECOVER) {
+      return this.visitEcrecover(node);
+    }
+
     const externalLib = this.resolvedLibraries[node.identifier.name];
     if (externalLib) {
       return this.visitExternalLibraryCall(node, externalLib);
@@ -3358,6 +3362,39 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.popFromStack(node.parameters.length);
     this.pushToStack('(value)');
 
+    return node;
+  }
+
+  // ecrecover(hash, sig, pubKey): verify `sig` over `hash` against `pubKey`, then return the signer's P2PKH
+  // locking bytecode (0x76a914 || hash160(pubKey) || 0x88ac) on success or the zero address 0x on an empty
+  // signature. NULLFAIL means a non-empty invalid signature aborts the script. The 4-arg Solidity form
+  // (hash, v, r, s) is inert: it drops its args and yields 0x (BCH cannot recover; see docs/ecrecover.md).
+  visitEcrecover(node: FunctionCallNode): Node {
+    const loc = { location: node.location, positionHint: PositionHint.END };
+    node.parameters = this.visitList(node.parameters);
+
+    if (node.parameters.length === 4) {
+      this.emit([Op.OP_2DROP, Op.OP_2DROP, encodeInt(0n)], loc); // drop (hash, v, r, s), push zero address
+      this.popFromStack(4);
+      this.pushToStack('(value)');
+      return node;
+    }
+
+    // 3-arg form. Stack after visitList: [hash, sig, pubKey].
+    this.emit([
+      Op.OP_DUP, Op.OP_HASH160, // [hash, sig, pubKey, hash160(pubKey)]
+      hexToBin('76a914'), Op.OP_SWAP, Op.OP_CAT, // [.., 0x76a914 || pkh]
+      hexToBin('88ac'), Op.OP_CAT, // [.., p2pkh]  (25-byte locking bytecode)
+      Op.OP_TOALTSTACK, // stash p2pkh; [hash, sig, pubKey]
+      Op.OP_ROT, Op.OP_SWAP, // reorder to OP_CHECKDATASIG operand order [sig, hash, pubKey]
+      Op.OP_CHECKDATASIG, // [bool]
+      Op.OP_FROMALTSTACK, Op.OP_SWAP, // [p2pkh, bool]
+      Op.OP_IF, // valid signature: keep p2pkh
+      Op.OP_ELSE, Op.OP_DROP, encodeInt(0n), // empty signature: zero address 0x
+      Op.OP_ENDIF,
+    ], loc);
+    this.popFromStack(node.parameters.length);
+    this.pushToStack('(value)');
     return node;
   }
 

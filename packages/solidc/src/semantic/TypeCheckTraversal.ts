@@ -1118,6 +1118,18 @@ export default class TypeCheckTraversal extends AstTraversal {
     node.identifier = this.visit(node.identifier) as IdentifierNode;
     node.parameters = this.visitList(node.parameters);
 
+    // Solidity's ecrecover(hash, v, r, s) (4 args): accepted for porting but NOT emulated - BCH cannot recover a
+    // public key. It always evaluates to the zero address (0x), so signature checks fail closed. Warn and point
+    // to the 3-arg form. The 3-arg ecrecover(hash, sig, pubKey) falls through to normal resolution.
+    if (node.identifier.name === GlobalFunction.ECRECOVER && node.parameters.length === 4) {
+      const loc = node.location ? ` at line ${node.location.start.line}` : '';
+      console.log(`Warning: ecrecover(hash, v, r, s)${loc} performs ECDSA public-key recovery, which Bitcoin `
+        + 'Cash cannot do; it always returns the zero address (0x), so any check against it fails. Use '
+        + 'ecrecover(hash, sig, pubKey) - verify a supplied public key. See docs/ecrecover.md.');
+      node.type = new AddressType();
+      return node;
+    }
+
     // Indirect call through a function-typed value: check args against the signature, result is its returns.
     if (node.identifier.type instanceof FunctionType && !this.functionDefinitions.has(node.identifier.name)) {
       const ft = node.identifier.type;

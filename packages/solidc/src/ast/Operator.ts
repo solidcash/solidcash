@@ -20,6 +20,7 @@ export enum NullaryOperator {
   BLOCK_BASEFEE = 'block.basefee',
   BLOCK_BLOBBASEFEE = 'block.blobbasefee',
   BLOCK_GASLIMIT = 'block.gaslimit',
+  BLOCK_PREVRANDAO = 'block.prevrandao',
   BLOCK_COINBASE = 'block.coinbase',
 }
 

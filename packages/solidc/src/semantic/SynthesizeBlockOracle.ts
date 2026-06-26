@@ -145,6 +145,16 @@ export default class SynthesizeBlockOracle extends AstTraversal {
       this.used.add(varName);
       return this.stateAccess(varName, node);
     }
+    // block.prevrandao: BCH has no randomness source. Lowered (in codegen) to a transaction-local value -
+    // abs(int(sha256(input[0] prevout txid))) - so it needs no oracle. Warn: the tx-builder picks input[0],
+    // so it is grindable + constant within a fixed tx. Pass through to TypeCheck/codegen unchanged.
+    if (node.operator === NullaryOperator.BLOCK_PREVRANDAO) {
+      this.warnShim('block.prevrandao', 'Warning: block.prevrandao has no secure randomness on BCH (no VM '
+        + 'randomness, no consensus beacon). SolidCash lowers it to abs(int(sha256(input[0] prevout txid))) - '
+        + 'transaction-local and fully chosen by the tx-builder (grindable). Do not use for security-sensitive '
+        + 'randomness; use commit-reveal or a checkDataSig oracle.');
+      return node;
+    }
     // block.gaslimit -> fixed 1000000: BCH has no gas metering. A constant (not 0, not a revert) so ported
     // code that compares against a gas limit keeps working; warn it is a shim.
     if (node.operator === NullaryOperator.BLOCK_GASLIMIT) {

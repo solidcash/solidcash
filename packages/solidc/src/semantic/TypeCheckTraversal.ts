@@ -1658,6 +1658,9 @@ export default class TypeCheckTraversal extends AstTraversal {
       case NullaryOperator.CHAIN_ID:
         node.type = new BytesType(1);
         return node;
+      case NullaryOperator.BLOCK_PREVRANDAO:
+        node.type = new IntType(false, 256); // uint256 (a non-negative hash-derived value); see block-oracle.md
+        return node;
       case NullaryOperator.MSG_DATA:
         node.type = new BytesType();
         return node;

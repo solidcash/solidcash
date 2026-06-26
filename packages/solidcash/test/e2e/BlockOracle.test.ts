@@ -368,6 +368,14 @@ describe('blobhash / blockhash', () => {
     expect(gf.stateLayout).toBeUndefined();
   });
 
+  // block.prevrandao: no randomness on BCH. A transaction-local shim - abs(int(sha256(input[0] prevout
+  // txid))), grindable by the tx-builder - with NO oracle co-spend or state. Compiler warns.
+  it('block.prevrandao lowers to abs(int(sha256(input[0] prevout txid))), no oracle', () => {
+    const p = compileString('contract A(){ function f(int e){ require(block.prevrandao % 6 == e); } }');
+    expect(p.bytecode).toContain('OP_0 OP_OUTPOINTTXHASH OP_SHA256 OP_BIN2NUM OP_ABS');
+    expect(p.stateLayout).toBeUndefined(); // transaction-local - no oracle register
+  });
+
   it('blobhash rejects a non-zero expectation', async () => {
     await expect(spendBlob(`0x01${'00'.repeat(31)}`)).rejects.toThrow();
   });

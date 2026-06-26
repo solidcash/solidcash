@@ -4,7 +4,8 @@ Status: **IMPLEMENTED (compiler + SDK e2e, green).**
 - `block.chainid` - baked single-byte network constant.
 - Oracle reads `block.{number,timestamp,difficulty,size,totalFees,basefee,coinbase}`; `block.blobbasefee`
   aliases `block.basefee` (no EIP-4844 blobs on BCH; compiler warns). `block.gaslimit` + `gasleft()` are
-  fixed shims (`1000000`, no gas metering on BCH; compiler warns).
+  fixed shims (`1000000`, no gas metering on BCH; compiler warns). `block.prevrandao` is a transaction-local
+  shim (`abs(int(sha256(input[0] prevout txid)))`, no oracle; grindable; compiler warns).
 - Owner-update path: an immutable baked owner key (`__blockOracleOwner`) + an injected
   `__updateBlockOracle(sig, ...fields)` gated by the owner signature and the freshness/anti-over-reporting
   bound `require(tx.time >= number)`.
@@ -192,6 +193,17 @@ Notes:
   comparisons) keep running. The compiler emits a one-time warning for each that it is a meaningless shim. Do
   not rely on the value. (`gasleft()` is desugared pre-semantically, so it never reaches the function
   registry; `block.gaslimit` is a `NullaryOp` token.)
+- `block.prevrandao` (`uint256`) is a **transaction-local randomness shim** - it needs **no oracle, no
+  co-spend, no state**, unlike the other introspected fields. BCH has no VM randomness opcode and no
+  consensus beacon, so it lowers in-line to `abs(int(sha256(input[0] prevout txid)))`:
+  `OP_0 OP_OUTPOINTTXHASH OP_SHA256 OP_BIN2NUM OP_ABS`. Choices: `input[0]` (one value for the whole tx,
+  identical across every contract spent in it); `sha256` (the prevout txid is already a hash, but mixing
+  decouples it from the displayed txid); `OP_ABS` (a 32-byte `BIN2NUM` is sign-interpreted, so ABS yields a
+  non-negative `uint` and `prevrandao % N` behaves). **It is not secure randomness** and the compiler warns
+  once: the tx-builder picks which UTXO sits at `input[0]`, so it fully controls (grinds) the value, and if a
+  covenant pins `input[0]` to its own UTXO the value is constant per contract instance. For real randomness
+  use commit-reveal or a `checkDataSig` oracle. (A multi-input hash mix is possible for more entropy but is
+  equally grindable, since the builder picks every input.)
 - `block.chainid` is **implemented**: a compile-time constant baked as a single byte from the
   `chainId` compiler option (default 0), typed `bytes1` and compared bytewise (e.g.
   `require(block.chainid == 0xff)`). It needs none of the oracle infra. User-land convention:

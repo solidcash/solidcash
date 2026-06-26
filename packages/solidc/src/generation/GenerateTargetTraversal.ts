@@ -4243,6 +4243,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         // Baked network constant as a single byte; regtest -1 -> 0xff.
         this.emit(Uint8Array.from([(this.compilerOptions.chainId ?? 0) & 0xff]), locationData);
         break;
+      case NullaryOperator.BLOCK_PREVRANDAO:
+        // Transaction-local randomness shim: abs(int(sha256(input[0] prevout txid))). No secure source on
+        // BCH; grindable by the tx-builder (SynthesizeBlockOracle warns; see docs/block-oracle.md). ABS
+        // makes the 32-byte hash a non-negative uint so `prevrandao % N` behaves.
+        this.emit([Op.OP_0, Op.OP_OUTPOINTTXHASH, Op.OP_SHA256, Op.OP_BIN2NUM, Op.OP_ABS], locationData);
+        break;
       default:
         this.emit(compileNullaryOp(node.operator), locationData);
         break;

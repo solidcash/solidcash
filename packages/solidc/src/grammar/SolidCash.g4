@@ -792,6 +792,7 @@ NullaryOp
     | 'block.basefee'
     | 'block.blobbasefee'
     | 'block.gaslimit'
+    | 'block.prevrandao'
     | 'block.coinbase'
     ;
 

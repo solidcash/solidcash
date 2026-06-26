@@ -46,8 +46,10 @@ describe('selfdestruct(addr) destination (runtime)', () => {
     });
     expect(result.txs.length).toBe(1);
 
-    // Output 0 is a non-token P2PKH output to bob carrying the whole freed balance (>= the 50000 container).
+    // The value pin forces exactly one output: the whole freed balance (>= the 50000 container) at bob, with
+    // nothing siphoned to a second output.
     const outputs = getTxOutputs(result.txs[0]);
+    expect(outputs.length).toBe(1);
     expect(outputs[0].to).toBe(bobAddress);
     expect(outputs[0].token).toBeUndefined();
     expect(outputs[0].amount).toBeGreaterThanOrEqual(50000n);

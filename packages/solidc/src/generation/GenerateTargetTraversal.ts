@@ -5868,15 +5868,24 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   // `selfdestruct(addr)`: the implied selfdestruct modifier collapses all state UTXOs (no recreation); here we
-  // pin tx.outputs[0] - the single freed-balance output the SDK's selfdestructTo() builds - to addr's locking
-  // bytecode. So the contract's end-of-life value can only land at addr, whoever triggers it.
+  // pin the freed balance to addr. Two checks: (1) tx.outputs[0].lockingBytecode == addr (the destination), and
+  // (2) tx has exactly one output, so the collapsed value can only land at addr (or be left as miner fee) - it
+  // cannot be siphoned to a second recipient. So the contract's end-of-life value reaches addr, whoever spends.
   visitSelfdestructStatement(node: SelfdestructStatementNode): Node {
     const locationData = { location: node.location, positionHint: PositionHint.END };
+    // (1) Address pin: tx.outputs[0].lockingBytecode == addr
     node.recipient = this.visit(node.recipient);          // [recipient_lb]
     this.emit(encodeInt(0n), locationData);               // [recipient_lb, 0]
     this.pushToStack('(value)');
     this.emit(Op.OP_OUTPUTBYTECODE, locationData);        // [recipient_lb, output0_lb]
     this.emit(Op.OP_EQUALVERIFY, locationData);           // []
+    this.popFromStack(2);
+    // (2) Value pin: exactly one output, so all freed value goes to addr (nothing left to siphon elsewhere).
+    this.emit(Op.OP_TXOUTPUTCOUNT, locationData);         // [outputCount]
+    this.pushToStack('(value)');
+    this.emit(encodeInt(1n), locationData);               // [outputCount, 1]
+    this.pushToStack('(value)');
+    this.emit(Op.OP_NUMEQUALVERIFY, locationData);        // []
     this.popFromStack(2);
     return node;
   }

@@ -985,14 +985,17 @@ describe('SBE-20: selfdestruct(addr) implies the selfdestruct modifier and pins 
     expect(kill?.modifiers).toContain('selfdestruct');
   });
 
-  it('emits the output-0 destination covenant (OP_OUTPUTBYTECODE), unlike the modifier-only form', () => {
+  it('pins output 0 to addr (OP_OUTPUTBYTECODE) and pins the value (single-output check)', () => {
     const stmt = bytecodeToAsm(hexToBin(compileString(AUTH).debug.bytecode));
     const modOnly = bytecodeToAsm(hexToBin(compileString(
       'contract C(pubkey admin) { int counter;'
       + ' function kill(sig s) selfdestruct { require(checkSig(s, admin)); } }',
     ).debug.bytecode));
+    // Address pin: outputs[0].lockingBytecode == addr (statement-specific; absent from the modifier-only form).
     expect(stmt).toContain('OP_OUTPUTBYTECODE');
     expect(modOnly).not.toContain('OP_OUTPUTBYTECODE');
+    // Value pin: exactly one output, so the freed value can only land at addr (or miner fee), never siphoned.
+    expect(stmt).toContain('OP_TXOUTPUTCOUNT OP_1 OP_NUMEQUALVERIFY');
   });
 
   it('rejects an unauthenticated selfdestruct (the final require guard is mandatory)', () => {

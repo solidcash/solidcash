@@ -26,9 +26,12 @@ Status: **IMPLEMENTED (compiler + SDK e2e, green).**
   assumes the last input (wrong under cross-contract composition - the last input belongs to whoever the
   builder appended last). The compiler injects a hidden `__internal__blockhashInputIndex` param and reads
   `input[that]`; the SDK fills it by locating the `C_oracle` co-spend, so the UTXO may sit at any index. The
-  VM re-verifies category + `commitment.n`, so a wrong index just fails. Remaining: the stateful
-  orchestrator (StatefulContract) filling the index for a stateful reader, and multiple distinct `n` per tx
-  (one co-spend today).
+  VM re-verifies category + `commitment.n`, so a wrong index just fails. **Multiple `n` (done):** each
+  reader resolves its own co-spend by `commitment.n`, and `addRequiredBlockhashCoSpends` auto-injects every
+  distinct `n`; coexists with a keccak side-car (the reader uses its index param, the keccak loader the last
+  input). Remaining: a **stateful** reader - the index is only knowable at `send()` (co-spend placement) but
+  the stateful path pre-fills args; and placing the co-spend in a stateful tx is non-trivial because that
+  layout is not input/output-balanced (the recreate must still land at the co-spend's input index).
 
 Implementation notes: each referenced field is desugared (`SynthesizeBlockOracle` pre-semantic transform)
 to a read of an injected register of the contract's own state - `uint32` for the numeric fields, `address`
@@ -269,9 +272,11 @@ covenant (self-pin + self-preserving recreate + CLTV `n+256` wipe), the keeper m
 (`BlockOracleUpdater.mintBlockhashPair` / `sweepBlockhashPair` / `maintainBlockhashWindow`), the
 `artifact.usesBlockhash` marker, SDK auto-injection (`abi.blockhashReads` +
 `TransactionBuilder.addRequiredBlockhashCoSpends` co-spend `addr(n)` from the call args), and the
-composition-safe index param (SDK fills it by locating the `C_oracle` co-spend) are all in place
-and e2e-green. Absent reads error by design (s11.2), not EVM's `bytes32(0)`. **Remaining:** the stateful
-orchestrator filling the index for a stateful reader, and multiple distinct `n` per tx (one co-spend today).
+composition-safe index param (SDK fills it by locating the `C_oracle` co-spend, matched on `commitment.n`),
+multiple distinct `n` per tx, and keccak side-car coexistence are all in place and e2e-green. Absent reads
+error by design (s11.2), not EVM's `bytes32(0)`. **Remaining:** a **stateful** blockhash reader - the index
+is only knowable at `send()` while the stateful path pre-fills args, and placing the co-spend in the
+(input/output-unbalanced) stateful tx layout with the recreate at the co-spend's input index is non-trivial.
 
 
 These are **functions** (runtime argument), not the 0-param `block.*` properties, so they lower as
@@ -378,6 +383,10 @@ warning when `blockhash(...)` feeds modulo/arithmetic is advisable.
   and accepts either the visible-arg list (stateless, SDK fills internals) or the full list (stateful
   orchestrator). The covenant (`output[INPUTINDEX] == input`) is unchanged; the VM re-verifies, so a wrong
   index just fails.
-- REMAINING: the stateful orchestrator (`StatefulContract`) filling `__internal__blockhashInputIndex` for a
-  stateful blockhash reader; multiple distinct `n` per tx (one co-spend today - the fill locates the first
-  `C_oracle` input); and combining with an external-library side-car (still guarded with a clear error).
+- Multiple `n` + side-car coexistence (DONE): the fill matches its co-spend on `commitment.n` (the reader's
+  `n` from `blockhashReads`), `addRequiredBlockhashCoSpends` auto-injects every distinct `n`, and the keccak
+  side-car guard is dropped (the reader uses its index param; the keccak loader uses the last input).
+- REMAINING: a stateful blockhash reader. The arg-fill parts are tractable (a placeholder insert in the
+  StatefulContract arg assembly + `createUnlocker` overriding it via the same late `sourceOutputs` resolve),
+  but the real work is placing the co-spend in a stateful tx: that layout is not input/output-balanced, yet
+  the recreate must land at the co-spend's input index (covenant `output[INPUTINDEX] == input`).

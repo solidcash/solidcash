@@ -16,9 +16,11 @@ Status: **IMPLEMENTED (compiler + SDK e2e, green).**
   green:** the keeper mints `addr(n)` from the `C_oracle` master, a consumer reads it via `blockhash(n)`,
   and the keeper sweeps `addr(n-256)` when it ages out (covenant wipe at `n+256`; rejected before). The
   compiler stamps `artifact.usesBlockhash` when `blockhash()` is referenced, so the keeper auto-maintains
-  the oracle. The SDK `resolveBlockhashCoSpend` helper packages the consumer co-spend (lookup + read
-  unlocker + self-preserving recreate). Remaining: auto-injection (extract `n` + add the co-spend to the
-  build with no manual call), a dedicated co-spend slot (vs the last-input convention), and
+  the oracle. **Auto-injection is wired:** the compiler tags `abi.blockhashReads` (the param feeding `n`)
+  and `TransactionBuilder.send()` reads the call arg, resolves `addr(n)`, and co-spends the `(n->hash)`
+  UTXO + self-preserving recreate automatically - `blockhash(n)` needs no manual wiring (the
+  `resolveBlockhashCoSpend` helper remains for computed/multiple `n`). Remaining: a dedicated co-spend slot
+  (lifts the one-co-spend / no-side-car-combo MVP limits of the last-input convention) and
   `bytes32(0)`-when-absent (s11).
 
 Implementation notes: each referenced field is desugared (`SynthesizeBlockOracle` pre-semantic transform)
@@ -342,6 +344,12 @@ warning when `blockhash(...)` feeds modulo/arithmetic is advisable.
 - SDK co-spend resolver (DONE): `resolveBlockhashCoSpend(provider, category, n)` looks up `addr(n)` and
   returns the `(utxo, read-flag unlocker, self-preserving recreate, locktime)` the consumer wires (or null
   outside the window). The VM is the arbiter, so a wrong injection fails the category/`n` check.
-- SDK auto-injection (REMAINING): extract `n` from the call site / VM trace and add the resolved co-spend +
-  recreate to the build automatically (vs the manual `resolveBlockhashCoSpend` wiring), plus a dedicated
-  co-spend slot and `bytes32(0)` when the resolver returns null.
+- SDK auto-injection (DONE): the compiler tags `abi.blockhashReads` (the param feeding `n`, recorded in
+  codegen for a direct-identifier arg); `TransactionBuilder.addRequiredBlockhashCoSpends()` (auto-invoked by
+  `send()` before sidecars) reads that arg, calls `resolveBlockhashCoSpend`, and appends the `(n->hash)`
+  input + recreate at the matching index, bumping `tx.time` to `n`. `blockhashOracleCategory` is persisted
+  in `artifact.compiler.options` for the lookup. The VM is the arbiter, so a wrong injection fails the
+  category/`n` check.
+- REMAINING: a dedicated co-spend slot (the MVP uses the last-input convention, so one co-spend per tx and
+  no external-library side-car in the same tx - both are guarded with a clear error); and `bytes32(0)` when
+  the resolver returns null (EVM-parity absent read - needs a codegen branch on co-spend presence).

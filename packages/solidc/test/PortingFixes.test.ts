@@ -996,6 +996,9 @@ describe('SBE-20: selfdestruct(addr) implies the selfdestruct modifier and pins 
     expect(modOnly).not.toContain('OP_OUTPUTBYTECODE');
     // Value pin: exactly one output, so the freed value can only land at addr (or miner fee), never siphoned.
     expect(stmt).toContain('OP_TXOUTPUTCOUNT OP_1 OP_NUMEQUALVERIFY');
+    // Value floor: sum all input values (loop) then require (inputSum - outputs[0].value) < 2000 (the fee).
+    expect(stmt).toContain('OP_TXINPUTCOUNT OP_1SUB OP_BEGIN');
+    expect(stmt).toContain('OP_OUTPUTVALUE OP_SUB');
   });
 
   it('rejects an unauthenticated selfdestruct (the final require guard is mandatory)', () => {

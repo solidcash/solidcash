@@ -39,10 +39,11 @@ await StatefulContract.selfdestructTo({
 - `selfdestruct(addr)` **implies** the `selfdestruct` function modifier; you do not write both.
 - It collapses **all** state UTXOs (master, data NFTs, entries, events, containers). The master is **not**
   recreated. This is the contract's end of life.
-- The native balance is freed to **output 0**, and the covenant pins it two ways: `outputs[0].lockingBytecode
-  == addr` (the destination) **and** the transaction has exactly one output (so the freed value can only land
-  at `addr`, never siphoned to a second recipient). The destination is pinned by the covenant itself, not by a
-  separate event/result NFT.
+- The native balance is freed to **output 0**, and the covenant pins it three ways: `outputs[0].lockingBytecode
+  == addr` (the destination), the transaction has exactly one output (so the value cannot be siphoned to a
+  second recipient), and the fee (`sum(inputs) - outputs[0].value`) is `< 2000` (so the value cannot be burned
+  to miner fee). Together: at least `sum(inputs) - 2000` provably reaches `addr`. The destination is pinned by
+  the covenant itself, not by a separate event/result NFT.
 - Tokens are **not** swept. This mirrors EVM: tokens are the program's responsibility; untouched tokens get
   stuck (the status quo). Sweep them in contract logic before destruction if you need them.
 - v1 keeps an **authorization guard**: a selfdestruct function must end in a `require()`. The author supplies
@@ -137,18 +138,23 @@ visitSelfdestructStatement(node) {
   this.emit(Op.OP_TXOUTPUTCOUNT);                 // [outputCount]
   this.emit(encodeInt(1n));                       // [outputCount, 1]
   this.emit(Op.OP_NUMEQUALVERIFY);                // []
+  // (3) Value floor: emitSelfdestructFeeFloor - sum all input values via an OP_BEGIN/OP_UNTIL loop, then
+  //     require (inputSum - outputs[0].value) < 2000, bounding the fee.
 }
 ```
 
 Emitted Script (ASM):
 
 ```
-<recipient_lb> OP_0 OP_OUTPUTBYTECODE OP_EQUALVERIFY OP_TXOUTPUTCOUNT OP_1 OP_NUMEQUALVERIFY
+<recipient_lb> OP_0 OP_OUTPUTBYTECODE OP_EQUALVERIFY            // address pin
+OP_TXOUTPUTCOUNT OP_1 OP_NUMEQUALVERIFY                         // single-output pin
+OP_0 OP_TXINPUTCOUNT OP_1SUB OP_BEGIN ... OP_UNTIL             // inputSum = sum of every input value
+OP_0 OP_OUTPUTVALUE OP_SUB <2000> OP_LESSTHAN OP_VERIFY         // (inputSum - outputs[0].value) < 2000
 ```
 
-Two differences from the modifier-only form: the statement form pins the destination (`OP_OUTPUTBYTECODE`,
-which the modifier-only form lacks) and pins the value via the single-output check
-(`OP_TXOUTPUTCOUNT OP_1 OP_NUMEQUALVERIFY`).
+Three differences from the modifier-only form: the statement form pins the destination (`OP_OUTPUTBYTECODE`,
+which the modifier-only form lacks), pins the output count (`OP_TXOUTPUTCOUNT OP_1 OP_NUMEQUALVERIFY`), and
+pins the fee (the input-sum loop plus `OP_OUTPUTVALUE OP_SUB ... OP_LESSTHAN`).
 
 ### 5. Authorization guard (semantic)
 
@@ -171,16 +177,17 @@ When the selfdestruct function is spent (on the master input), the contract Scri
 1. Runs the collapse logic from the `SELFDESTRUCT` modifier (co-spend and destroy all state UTXOs).
 2. Runs the author's `require(...)` authorization.
 3. Runs the destination covenant: `tx.outputs[0].lockingBytecode == addr`.
-4. Runs the value covenant: `tx` has exactly one output (`OP_TXOUTPUTCOUNT == 1`).
+4. Runs the output-count covenant: `tx` has exactly one output (`OP_TXOUTPUTCOUNT == 1`).
+5. Runs the fee covenant: `sum(input values) - outputs[0].value < 2000`.
 
-Together, steps 3 and 4 pin the freed balance to `addr`: with a single output whose locking bytecode must be
-`addr`, the collapsed input value can only land at `addr` or be left as miner fee. It cannot be redirected to a
-second recipient. The destination is enforced by the covenant itself, not by a separate event/result NFT.
+Together, these pin the freed balance to `addr`. Step 3 fixes the destination; step 4 (single output) means the
+value cannot be siphoned to a second recipient; step 5 (bounded fee) means the value cannot be burned to miner
+fee. So at least `sum(inputs) - 2000` provably reaches `addr`, regardless of who builds the transaction. The
+destination is enforced by the covenant itself, not by a separate event/result NFT.
 
-What this does **not** enforce: a value *floor*. The covenant fixes where the value can go, not a minimum
-amount. An authorized triggerer could set `outputs[0].value` low and overpay the miner fee, burning value. Under
-the mandatory `require()` gate this is a non-issue (you do not grief your own contract). A value floor
-(`outputs[0].value >= freed - feeBound`) would matter only for a future permissionless variant; see "Roadmap".
+The `2000`-sat fee cap is a fixed constant. A destroy transaction that genuinely needs a larger fee (very many
+inputs) cannot satisfy the covenant - another reason `selfdestruct(addr)` is single-transaction-scale only
+(see Limitations).
 
 ## SDK driver
 
@@ -208,14 +215,17 @@ inherent: the author chose `to` as the destination, and the SDK must point outpu
 - **The author owns the auth condition.** A selfdestruct that should be admin-only must check a signature
   (`require(checkSig(s, admin))`). The guard forces *a* require to exist, not that it is meaningful auth
   (`require(true)` passes), so the author is trusted to put real auth there.
-- **Destination and value are pinned on chain.** The covenant enforces `outputs[0].lockingBytecode == addr`
-  **and** that the tx has exactly one output. So the freed balance can only land at `addr` (or be left as miner
-  fee); it cannot be redirected to another recipient, even by a hand-crafted transaction. This is enforced by
-  the VM, not trusted to the SDK.
-- **No value floor (fee-burn).** Because only the destination and output count are pinned, an authorized
-  triggerer could set `outputs[0].value` low and overpay the fee, burning value rather than delivering it. The
-  `require()` gate makes this a non-issue (you do not grief your own contract); a floor is only needed for a
-  permissionless variant (see "Roadmap").
+- **Destination and value are pinned on chain.** The covenant enforces `outputs[0].lockingBytecode == addr`,
+  a single output, and a fee below 2000 sats. So at least `sum(inputs) - 2000` provably reaches `addr`: the value
+  cannot be redirected to another recipient (single output), nor burned to fee (fee cap), even by a hand-crafted
+  transaction. This is enforced by the VM, not trusted to the SDK.
+- **Permissionless is safe for value, but the destination must not be caller-controlled.** Because the value
+  pins guarantee the balance reaches `outputs[0] == addr`, you can drop a real auth check (anyone may trigger
+  the destruction) **only if `addr` is not attacker-chosen**. If the destination is a function parameter
+  (`selfdestruct(to)` with `to` from calldata), an unauthenticated caller simply passes their own address and
+  takes the balance - the value pins faithfully send it to the address they chose. A permissionless selfdestruct
+  must take its destination from contract state or a constant (`selfdestruct(this.beneficiary)`), not from a
+  caller argument. The compiler does not yet enforce this; it is the author's responsibility.
 - **Tokens are not protected.** Any FT/NFT not swept by contract logic before destruction is burned or stranded,
   matching EVM. Sweep deliberately.
 
@@ -246,13 +256,12 @@ It also requires a **stateful** contract (fixture `selfdestruct_not_stateful.sca
 
 ## Roadmap
 
-The destination and value are already pinned (address + single output). Remaining items:
+The destination and value are fully pinned (address + single output + fee floor), so a permissionless
+selfdestruct is value-safe (see "Authorization and security"). Remaining items:
 
-- **Value floor for a permissionless variant.** To safely drop the `require()` gate and let anyone trigger
-  destruction, add a value floor (`outputs[0].value >= freed - feeBound`, where `freed` sums the co-spent
-  contract input values). Without it, an unauthorized triggerer could burn the balance to miner fee. With it,
-  the function could be opened to any caller. The single-output pin already prevents redirection-theft; the
-  floor adds anti-griefing.
+- **Compiler-enforce permissionless safety.** Reject (or require auth on) a no-auth selfdestruct whose
+  destination is a caller-controlled argument, so the author cannot accidentally ship an exploitable one.
+- **Configurable fee cap.** The 2000-sat cap is a fixed constant; let the author raise it for large destroys.
 - **Batched destruction.** Support contracts above the single-transaction UTXO limit by applying the pins only
   on the final transaction of a batched destroy.
 - **Constrain the argument type** to a locking bytecode at compile time, instead of failing at runtime.
@@ -261,12 +270,16 @@ The destination and value are already pinned (address + single output). Remainin
 
 - Compiler: `packages/solidc/test/PortingFixes.test.ts`, group `SBE-20`:
   - the modifier is implied in the ABI,
-  - the statement form pins the destination (`OP_OUTPUTBYTECODE`, absent from the modifier-only form) and the
-    value (`OP_TXOUTPUTCOUNT OP_1 OP_NUMEQUALVERIFY`),
+  - the statement form pins the destination (`OP_OUTPUTBYTECODE`, absent from the modifier-only form), the
+    output count (`OP_TXOUTPUTCOUNT OP_1 OP_NUMEQUALVERIFY`), and the fee (input-sum loop + `OP_OUTPUTVALUE
+    OP_SUB`),
   - an unauthenticated selfdestruct is rejected (`FinalRequireStatementError`).
-- SDK e2e: `packages/solidcash/test/e2e/SelfdestructDestination.test.ts`: deploys with a balance, calls
-  `selfdestructTo`, and asserts the tx has exactly one output carrying the freed balance to the destination, the
-  contract is collapsed (no minting NFT recreated), and `totalReclaimed` equals output 0's amount.
+- SDK e2e: `packages/solidcash/test/e2e/SelfdestructDestination.test.ts`:
+  - positive: `selfdestructTo` produces exactly one output carrying the freed balance to the destination, the
+    contract is collapsed (no minting NFT recreated), and `totalReclaimed` equals output 0's amount,
+  - negative (permissionless, no-sig contract, hand-built transaction with a positive control): a second output
+    siphoning the value is rejected (output-count pin), and underpaying output 0 to leave a 5000-sat fee is
+    rejected (fee floor).
 - The modifier-only path is covered by `packages/solidcash/test/e2e/Selfdestruct.test.ts`.
 
 ## File map
@@ -278,7 +291,8 @@ The destination and value are already pinned (address + single output). Remainin
 | Parse to AST                    | `packages/solidc/src/ast/AstBuilder.ts` (`visitSelfdestructStatement`)    |
 | Modifier implication            | `packages/solidc/src/ast/AstBuilder.ts` (`visitFunctionDefinition`)       |
 | Traversal default               | `packages/solidc/src/ast/AstTraversal.ts` (`visitSelfdestructStatement`)  |
-| Destination covenant codegen    | `packages/solidc/src/generation/GenerateTargetTraversal.ts` (`visitSelfdestructStatement`) |
+| Destination + value-pin codegen | `packages/solidc/src/generation/GenerateTargetTraversal.ts` (`visitSelfdestructStatement`) |
+| Fee-floor codegen               | `packages/solidc/src/generation/GenerateTargetTraversal.ts` (`emitSelfdestructFeeFloor`) |
 | Collapse behavior               | `packages/solidc/src/generation/GenerateTargetTraversal.ts` (`visitFunctionDefinition`, `isSelfdestruct`) |
 | Auth guard                      | `packages/solidc/src/semantic/EnsureFinalRequireTraversal.ts`            |
 | SDK driver                      | `packages/solidcash/src/stateful/StatefulContract.ts` (`selfdestructTo`, `destroy`) |

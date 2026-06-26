@@ -5880,14 +5880,60 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_OUTPUTBYTECODE, locationData);        // [recipient_lb, output0_lb]
     this.emit(Op.OP_EQUALVERIFY, locationData);           // []
     this.popFromStack(2);
-    // (2) Value pin: exactly one output, so all freed value goes to addr (nothing left to siphon elsewhere).
+    // (2) Value pin: exactly one output, so the freed value cannot be siphoned to a second recipient.
     this.emit(Op.OP_TXOUTPUTCOUNT, locationData);         // [outputCount]
     this.pushToStack('(value)');
     this.emit(encodeInt(1n), locationData);               // [outputCount, 1]
     this.pushToStack('(value)');
     this.emit(Op.OP_NUMEQUALVERIFY, locationData);        // []
     this.popFromStack(2);
+    // (3) Value floor: the tx fee (sum of input sats - the single output's sats) must be < 2000, so the
+    // freed balance cannot be burned to miner fee. With (1)+(2)+(3), at least (inputs - 2000) reaches addr.
+    this.emitSelfdestructFeeFloor(locationData);
     return node;
+  }
+
+  // Sum every input's satoshi value, then require (inputSum - outputs[0].value) < SELFDESTRUCT_MAX_FEE. The
+  // single-output pin (visitSelfdestructStatement step 2) makes outputs[0].value the whole output sum, so this
+  // bounds the actual transaction fee. Loop idiom mirrors emitDelegateSelfPreservation: accumulator + counter on
+  // the stack, counter dropped on exit; the loop body is depth-balanced so it is not tracked per-op.
+  private emitSelfdestructFeeFloor(locationData: SingleLocationData): void {
+    this.emit(encodeInt(0n), locationData);               // inputSum = 0
+    this.pushToStack('(sd_insum)');
+    this.emit(Op.OP_TXINPUTCOUNT, locationData);
+    this.emit(Op.OP_1SUB, locationData);                  // i = inputCount - 1
+    this.pushToStack('(sd_i)');
+
+    this.emit(Op.OP_BEGIN, locationData);
+    this.emit(Op.OP_DUP, locationData);                   // [sum, i, i]
+    this.emit(encodeInt(0n), locationData);
+    this.emit(Op.OP_LESSTHAN, locationData);              // [sum, i, i<0]
+    this.emit(Op.OP_IF, locationData);
+    this.emit(Op.OP_DROP, locationData);                  // exit: drop i -> [sum]
+    this.emit(encodeBool(true), locationData);
+    this.emit(Op.OP_ELSE, locationData);
+    this.emit(Op.OP_DUP, locationData);                   // [sum, i, i]
+    this.emit(Op.OP_UTXOVALUE, locationData);             // [sum, i, value_i]
+    this.emit(Op.OP_ROT, locationData);                   // [i, value_i, sum]
+    this.emit(Op.OP_ADD, locationData);                   // [i, sum+value_i]
+    this.emit(Op.OP_SWAP, locationData);                  // [sum', i]
+    this.emit(Op.OP_1SUB, locationData);                  // [sum', i-1]
+    this.emit(encodeBool(false), locationData);
+    this.emit(Op.OP_ENDIF, locationData);
+    this.emit(Op.OP_UNTIL, locationData);
+    this.popFromStack();                                  // (sd_i) dropped on exit -> [sum]
+
+    this.emit(encodeInt(0n), locationData);               // output index 0
+    this.emit(Op.OP_OUTPUTVALUE, locationData);           // [sum, outputs[0].value]
+    this.pushToStack('(value)');
+    this.emit(Op.OP_SUB, locationData);                   // [fee]
+    this.popFromStack();
+    this.emit(encodeInt(2000n), locationData);            // SELFDESTRUCT_MAX_FEE
+    this.pushToStack('(value)');
+    this.emit(Op.OP_LESSTHAN, locationData);              // [fee < 2000]
+    this.popFromStack();
+    this.emit(Op.OP_VERIFY, locationData);
+    this.popFromStack();                                  // (sd_insum)
   }
 
   visitTransferStatement(node: TransferStatementNode): Node {

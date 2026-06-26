@@ -1870,6 +1870,19 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     return { txs, totalReclaimed };
   }
 
+  /**
+   * Trigger a `selfdestruct(addr)` function: collapse all of the contract's state UTXOs (no master
+   * recreation - end of life) and free the native balance to `recipient` at output 0.
+   *
+   * The compiler's selfdestruct covenant pins `tx.outputs[0].lockingBytecode == addr` (the destination
+   * the contract author wired into `selfdestruct(addr)`). This routes the freed value there at output 0;
+   * `recipient` must resolve to that same address. Tokens are not swept (EVM parity - the program owns
+   * them). Mechanically identical to destroy(); this name mirrors the language feature.
+   */
+  static selfdestructTo(options: DestroyOptions): Promise<DestroyResult> {
+    return StatefulContract.destroy(options);
+  }
+
   private static async _buildDestroyTransactionHex(
     contract: ConnectedStatefulContract,
     categoryId: string,

@@ -1,4 +1,6 @@
 import { describe, it, expect } from 'vitest';
+import { hexToBin } from '@bitauth/libauth';
+import { bytecodeToAsm } from '@solidcash/utils';
 import { compileString } from '../src/index.js';
 
 // Compiler features surfaced by porting Solidity (Sablier) to SolidCash.
@@ -970,5 +972,32 @@ describe('SBE-19: Interface.method.selector / Contract.method.selector resolve t
       + ' contract C { function f(uint256 x) external pure returns (bytes) {'
       + ' return abi.encodeWithSelector(Other.ping.selector, x); } }',
       { solidityImportCompat: true }).contractName).toBe('C');
+  });
+});
+
+describe('SBE-20: selfdestruct(addr) implies the selfdestruct modifier and pins output 0 to addr', () => {
+  const AUTH = 'contract C(pubkey admin) { int counter;'
+    + ' function kill(sig s, address to) { require(checkSig(s, admin)); selfdestruct(to); } }';
+
+  it('implies the selfdestruct modifier in the ABI', () => {
+    const artifact = compileString(AUTH);
+    const kill = artifact.abi.find((f) => f.name === 'kill');
+    expect(kill?.modifiers).toContain('selfdestruct');
+  });
+
+  it('emits the output-0 destination covenant (OP_OUTPUTBYTECODE), unlike the modifier-only form', () => {
+    const stmt = bytecodeToAsm(hexToBin(compileString(AUTH).debug.bytecode));
+    const modOnly = bytecodeToAsm(hexToBin(compileString(
+      'contract C(pubkey admin) { int counter;'
+      + ' function kill(sig s) selfdestruct { require(checkSig(s, admin)); } }',
+    ).debug.bytecode));
+    expect(stmt).toContain('OP_OUTPUTBYTECODE');
+    expect(modOnly).not.toContain('OP_OUTPUTBYTECODE');
+  });
+
+  it('rejects an unauthenticated selfdestruct (the final require guard is mandatory)', () => {
+    expect(() => compileString(
+      'contract C(pubkey admin) { int counter; function kill(address to) { selfdestruct(to); } }',
+    )).toThrow();
   });
 });

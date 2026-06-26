@@ -1809,6 +1809,20 @@ export class TransferStatementNode extends StatementNode {
   }
 }
 
+// `selfdestruct(recipient)`: destroys the contract and forwards its value to an output with the recipient's
+// locking bytecode, in the same transaction. Implies the selfdestruct modifier on the enclosing function.
+export class SelfdestructStatementNode extends StatementNode {
+  constructor(
+    public recipient: ExpressionNode,
+  ) {
+    super();
+  }
+
+  accept<T>(visitor: AstVisitor<T>): T {
+    return visitor.visitSelfdestructStatement(this);
+  }
+}
+
 export class AddressTransferStatementNode extends StatementNode {
   transferIndex: number = 0;
 

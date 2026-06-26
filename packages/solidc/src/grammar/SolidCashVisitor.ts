@@ -67,6 +67,7 @@ import { TokenContainerMethodStatementContext } from "./SolidCashParser.js";
 import { ReturnStatementContext } from "./SolidCashParser.js";
 import { FunctionCallStatementContext } from "./SolidCashParser.js";
 import { AddressMethodStatementContext } from "./SolidCashParser.js";
+import { SelfdestructStatementContext } from "./SolidCashParser.js";
 import { EmitStatementContext } from "./SolidCashParser.js";
 import { AssignmentStatementContext } from "./SolidCashParser.js";
 import { MappingDeleteStatementContext } from "./SolidCashParser.js";
@@ -560,6 +561,12 @@ export default class SolidCashVisitor<Result> extends ParseTreeVisitor<Result> {
 	 * @return the visitor result
 	 */
 	visitAddressMethodStatement?: (ctx: AddressMethodStatementContext) => Result;
+	/**
+	 * Visit a parse tree produced by `SolidCashParser.selfdestructStatement`.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	visitSelfdestructStatement?: (ctx: SelfdestructStatementContext) => Result;
 	/**
 	 * Visit a parse tree produced by `SolidCashParser.emitStatement`.
 	 * @param ctx the parse tree

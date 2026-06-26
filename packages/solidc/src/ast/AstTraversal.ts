@@ -72,6 +72,7 @@ import {
   ErrorDefinitionNode,
   EmitStatementNode,
   TransferStatementNode,
+  SelfdestructStatementNode,
   TokenContainerMethodStatementNode,
   ReturnNode,
   FunctionCallStatementNode,
@@ -523,6 +524,11 @@ export default class AstTraversal extends AstVisitor<Node> {
   visitTransferStatement(node: TransferStatementNode): Node {
     node.lockingBytecode = this.visit(node.lockingBytecode);
     node.amount = this.visit(node.amount);
+    return node;
+  }
+
+  visitSelfdestructStatement(node: SelfdestructStatementNode): Node {
+    node.recipient = this.visit(node.recipient);
     return node;
   }
 

@@ -73,6 +73,7 @@ import {
   EventDefinitionNode,
   EmitStatementNode,
   TransferStatementNode,
+  SelfdestructStatementNode,
   TokenContainerMethodStatementNode,
   FunctionModifier,
   ReturnNode,
@@ -221,6 +222,7 @@ import type {
   MethodCallContext,
   MethodCallNamedContext,
   AddressMethodStatementContext,
+  SelfdestructStatementContext,
   CallOptionsContext,
   OutStateMappingFieldAccessContext,
   ReturnTypeContext,
@@ -790,6 +792,14 @@ export default class AstBuilder
     const returnTypeCtx = ctx.returnType();
     if (returnTypeCtx) {
       this.applyReturnType(functionDefinition, returnTypeCtx);
+    }
+
+    // `selfdestruct(addr)` in the body implies the selfdestruct modifier (collapse all state UTXOs, no
+    // recreation). The destination is enforced in codegen (visitSelfdestructStatement pins tx.outputs[0] to
+    // addr); the SDK's selfdestructTo() routes the freed balance to addr at output 0.
+    if (functionDefinition.body.statements!.some((s) => s instanceof SelfdestructStatementNode)
+      && !functionDefinition.modifiers.includes(FunctionModifier.SELFDESTRUCT)) {
+      functionDefinition.modifiers.push(FunctionModifier.SELFDESTRUCT);
     }
 
     return functionDefinition;
@@ -2663,6 +2673,13 @@ export default class AstBuilder
       type: this.resolveType(paramCtx.typeName().getText()),
     }));
     const node = new ErrorDefinitionNode(errorName, parameters);
+    node.location = Location.fromCtx(ctx);
+    return node;
+  }
+
+  visitSelfdestructStatement(ctx: SelfdestructStatementContext): SelfdestructStatementNode {
+    const recipient = this.visit(ctx.expression()) as ExpressionNode;
+    const node = new SelfdestructStatementNode(recipient);
     node.location = Location.fromCtx(ctx);
     return node;
   }

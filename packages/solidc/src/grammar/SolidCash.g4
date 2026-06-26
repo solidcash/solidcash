@@ -268,6 +268,7 @@ statement
     | returnStatement
     | functionCallStatement
     | addressMethodStatement
+    | selfdestructStatement
     | assemblyStatement
     | tryCatchStatement
     | revertStatement
@@ -302,6 +303,12 @@ functionCallStatement
 
 addressMethodStatement
     : expression '.' Identifier callOptions? expressionList ';'
+    ;
+
+// EVM-style `selfdestruct(addr)`: destroys the contract and forwards its value to addr (function-based form of
+// the selfdestruct modifier). Implies the modifier on the enclosing function.
+selfdestructStatement
+    : 'selfdestruct' '(' expression ')' ';'
     ;
 
 emitStatement
@@ -784,6 +791,7 @@ NullaryOp
     | 'block.totalFees'
     | 'block.basefee'
     | 'block.blobbasefee'
+    | 'block.gaslimit'
     | 'block.coinbase'
     ;
 

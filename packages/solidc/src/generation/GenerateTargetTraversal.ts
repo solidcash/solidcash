@@ -3282,6 +3282,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // the n-check disambiguates the block; the tx-builder can only present the real pair.
       const catInternal = hexToBin(catHex).slice().reverse();
       const loc = { location: node.location, positionHint: PositionHint.START };
+      // SDK auto-injection: if n is a direct identifier (a function param) the SDK reads that arg to
+      // resolve addr(n) and co-spend the (n->hash) UTXO. Computed n (not an identifier) is not recorded;
+      // the consumer wires it via resolveBlockhashCoSpend. The SDK only acts on names that are params.
+      const nArg = node.parameters[0];
+      if (nArg instanceof IdentifierNode) {
+        const reads = (this.currentFunction.blockhashReads ??= []);
+        if (!reads.includes(nArg.name)) reads.push(nArg.name);
+      }
       node.parameters[0] = this.visit(node.parameters[0]); // [n]
       this.emit([
         Op.OP_DUP, Op.OP_CHECKLOCKTIMEVERIFY, Op.OP_DROP, // require(tx.time >= n)

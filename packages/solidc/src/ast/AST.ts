@@ -194,6 +194,9 @@ export class FunctionDefinitionNode extends Node implements Named {
   // Dynamic-storage vars written on-chain here; recorded during codegen. SDK consumes old chunks, creates new.
   // A function that only reads `.length` (or doesn't touch the var) must NOT appear, else its chunks are destroyed.
   dynamicWrites?: string[];
+  // Function parameters whose value feeds blockhash(n); recorded during codegen. SDK reads the arg to resolve
+  // addr(n) and co-spend the (n->hash) oracle UTXO as a trailing input (mirrors dynamicReads auto-injection).
+  blockhashReads?: string[];
   modifiers: FunctionModifier[] = [];
   customModifiers: CustomModifierInvocation[] = [];
   returnTypes: Type[] = [];

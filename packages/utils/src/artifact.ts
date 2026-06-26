@@ -113,6 +113,9 @@ export interface AbiFunction {
   dynamicReads?: readonly string[];
   // Dynamic-storage vars written on-chain; the SDK consumes their old chunks and creates the new ones.
   dynamicWrites?: readonly string[];
+  // Function params whose value feeds blockhash(n); the SDK reads the arg to resolve addr(n) and co-spend
+  // the (n->hash) oracle UTXO as a trailing input.
+  blockhashReads?: readonly string[];
   blockLayout?: FunctionBlockLayout;
   isFallback?: boolean;
   isReceive?: boolean;

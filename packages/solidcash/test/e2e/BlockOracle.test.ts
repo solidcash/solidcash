@@ -368,6 +368,21 @@ describe('blobhash / blockhash', () => {
     expect(noBh.usesBlockhash).toBeUndefined();
     expect(BlockOracleUpdater.usesBlockhash(noBh)).toBe(false);
   });
+
+  it('records blockhashReads metadata (the param feeding n) for SDK auto-injection', () => {
+    const direct = compileString(
+      'contract B(){ function f(int bn, bytes32 h){ require(blockhash(bn) == h); } }',
+      { blockhashOracleCategory: BH_CAT },
+    );
+    expect(direct.abi.find((fn) => fn.name === 'f')?.blockhashReads).toEqual(['bn']);
+
+    // Computed n (not a direct identifier) is NOT recorded -> consumer wires resolveBlockhashCoSpend manually.
+    const computed = compileString(
+      'contract B(){ function f(int bn, bytes32 h){ require(blockhash(bn + 1) == h); } }',
+      { blockhashOracleCategory: BH_CAT },
+    );
+    expect(computed.abi.find((fn) => fn.name === 'f')?.blockhashReads).toBeUndefined();
+  });
 });
 
 // blockhash(n) MVP read: the (n->hash) oracle UTXO is co-spent as the LAST input (category C_oracle +

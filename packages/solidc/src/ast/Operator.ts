@@ -18,6 +18,7 @@ export enum NullaryOperator {
   BLOCK_SIZE = 'block.size',
   BLOCK_TOTAL_FEES = 'block.totalFees',
   BLOCK_BASEFEE = 'block.basefee',
+  BLOCK_BLOBBASEFEE = 'block.blobbasefee',
   BLOCK_COINBASE = 'block.coinbase',
 }
 

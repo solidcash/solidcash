@@ -68,6 +68,7 @@ export default class SynthesizeBlockOracle extends AstTraversal {
   // maintain the project-global (n->hash) oracle (docs/block-oracle.md).
   usesBlockhash = false;
   private fnUsesBlockhash = false;
+  private warnedBlobbasefee = false;
 
   constructor(private readonly solidityImportCompat = false) {
     super();
@@ -128,8 +129,16 @@ export default class SynthesizeBlockOracle extends AstTraversal {
       this.used.add(varName);
       return this.stateAccess(varName, node);
     }
-    if (node.operator === NullaryOperator.BLOCK_BASEFEE) {
-      // Floor(1000 * totalFees / size) - VM integer divide truncates toward zero.
+    if (node.operator === NullaryOperator.BLOCK_BASEFEE || node.operator === NullaryOperator.BLOCK_BLOBBASEFEE) {
+      // block.basefee = Floor(1000 * totalFees / size) sat/KB (VM divide truncates toward zero).
+      // block.blobbasefee is an ALIAS for it: BCH has no EIP-4844 blobs, but returning 0 would silently
+      // zero out (or divide-by-zero) downstream computations, so it aliases the real base fee. Warn once.
+      if (node.operator === NullaryOperator.BLOCK_BLOBBASEFEE && !this.warnedBlobbasefee) {
+        this.warnedBlobbasefee = true;
+        console.warn('Warning: block.blobbasefee has no BCH analogue (no EIP-4844 blobs); it aliases '
+          + 'block.basefee (a real, non-zero base fee) so it does not zero out computations. Do not rely on '
+          + 'it as a true blob base fee.');
+      }
       this.used.add('__block_totalFees');
       this.used.add('__block_size');
       const lit = new IntLiteralNode(1000n);

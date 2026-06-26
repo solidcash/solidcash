@@ -85,9 +85,9 @@ The remaining gaps are bounded. They are listed below.
 
 ## Category D - N/A on UTXO (document as intentionally unsupported, with BCH substitute)
 
-- **Gas family**: `gasleft()`, `tx.gasprice`, `block.gaslimit`, `block.basefee`, `block.blobbasefee` - no gas metering on BCH.
-- **Block/randomness introspection**: `blockhash`, `block.coinbase`, `block.difficulty`, `block.prevrandao`, readable `block.number`/`block.timestamp` - not exposed by Script. Substitute: absolute time/height locks via `require(tx.time >= ...)` (CLTV) and `require(this.age >= ...)` (CSV).
-- **EIP-4844 blobs**: `blobhash`, `block.blobbasefee` - Ethereum-only.
+- **Gas family**: `gasleft()`, `tx.gasprice`, `block.gaslimit` - no gas metering on BCH. (`block.basefee` IS implemented: oracle-backed, reinterpreted as the block's realized fee rate `Floor(1000*totalFees/size)` sat/KB - see docs/block-oracle.md.)
+- **Block/randomness introspection** (IMPLEMENTED via the per-contract block oracle, see docs/block-oracle.md): `blockhash(n)`, `block.coinbase`, `block.difficulty`, `block.number`, `block.timestamp`, etc. are oracle-backed reads. `block.prevrandao` remains N/A. Non-oracle substitute for time/height: `require(tx.time >= ...)` (CLTV) / `require(this.age >= ...)` (CSV).
+- **EIP-4844 blobs**: `blobhash(i)` -> `bytes32(0)` and `block.blobbasefee` -> aliases `block.basefee` (compiler-warned porting shims; no real BCH blobs). See docs/block-oracle.md s11.
 - **`keccak256`** - no Keccak opcode. Substitute: `sha256` / `hash256` / `hash160` / `ripemd160`.
 - **`ecrecover`** - no pubkey recovery. Substitute: `checkSig` / `checkDataSig` / `checkMultiSig` with an explicit `pubkey`.
 - **`erc7201`, transient storage, storage/memory/calldata data locations, storage-slot layout** - UTXO has no storage slots; state lives in data-NFT commitments.

@@ -348,6 +348,15 @@ describe('blobhash / blockhash', () => {
     expect(await spendBlob(B32_ZERO)).toMatch(/^[0-9a-f]{64}$/);
   });
 
+  // block.blobbasefee has no BCH analogue (no EIP-4844 blobs); it aliases block.basefee (a real, non-zero
+  // base fee) rather than 0, which would zero out / divide-by-zero downstream computations.
+  it('block.blobbasefee aliases block.basefee (identical bytecode + registers)', () => {
+    const base = compileString('contract A(){ function f(int e){ require(block.basefee == e); } }');
+    const blob = compileString('contract B(){ function f(int e){ require(block.blobbasefee == e); } }');
+    expect(blob.bytecode).toEqual(base.bytecode);
+    expect(blob.stateLayout!.variables.map((v) => v.name)).toEqual(['__block_totalFees', '__block_size', '__blockOracleOwner']);
+  });
+
   it('blobhash rejects a non-zero expectation', async () => {
     await expect(spendBlob(`0x01${'00'.repeat(31)}`)).rejects.toThrow();
   });

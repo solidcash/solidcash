@@ -783,6 +783,7 @@ NullaryOp
     | 'block.size'
     | 'block.totalFees'
     | 'block.basefee'
+    | 'block.blobbasefee'
     | 'block.coinbase'
     ;
 

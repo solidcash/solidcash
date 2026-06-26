@@ -2,7 +2,8 @@
 
 Status: **IMPLEMENTED (compiler + SDK e2e, green).**
 - `block.chainid` - baked single-byte network constant.
-- Oracle reads `block.{number,timestamp,difficulty,size,totalFees,basefee,coinbase}`.
+- Oracle reads `block.{number,timestamp,difficulty,size,totalFees,basefee,coinbase}`; `block.blobbasefee`
+  aliases `block.basefee` (no EIP-4844 blobs on BCH; compiler warns).
 - Owner-update path: an immutable baked owner key (`__blockOracleOwner`) + an injected
   `__updateBlockOracle(sig, ...fields)` gated by the owner signature and the freshness/anti-over-reporting
   bound `require(tx.time >= number)`.
@@ -174,11 +175,16 @@ these `uint256` because EVM is 256-bit and wei is 1e-18; on BCH the values are s
 | `block.size` | 2 | oracle | `uint32` | 4 B | 9075 | block size in bytes; uint32 covers ~4 GB blocks (BCH-native, not a Solidity global) |
 | `block.totalFees` | 2 | oracle | `uint32` | 4 B | 31792 | sum of tx fees in sats; uint32 ceiling 42.9 BCH >> any real block (uint64 if more headroom wanted) |
 | `block.basefee` | 2 | **derived** | `uint32` | none | 3503 | `Floor(1000 * block.totalFees / block.size)` = sat/KB; computed at read, VM intermediate is unbounded so no overflow |
+| `block.blobbasefee` | 2 | **alias** | `uint32` | none | 3503 | EVM EIP-4844 blob base fee; no BCH analogue. Aliases `block.basefee` (NOT 0, which would zero out / divide-by-zero downstream); the compiler warns it is not a true blob fee |
 
 Notes:
 - `block.basefee` is **not stored**; it is computed from the encoded `block.size` + `block.totalFees`, so
   it always matches the formula and is auditable on-chain. There is **no consensus base fee** on BCH -
   this is the realized fee rate of the block, sat/KB, for Solidity portability.
+- `block.blobbasefee` is an **alias** of `block.basefee` (identical bytecode). BCH has no EIP-4844 blobs, so
+  there is no real blob base fee; it aliases the base fee rather than returning `0` (which would silently
+  zero out multiplications or divide-by-zero in ported code). The compiler emits a one-time warning that it
+  is not a true blob base fee. Do not rely on its value as blob-specific.
 - `block.chainid` is **implemented**: a compile-time constant baked as a single byte from the
   `chainId` compiler option (default 0), typed `bytes1` and compared bytewise (e.g.
   `require(block.chainid == 0xff)`). It needs none of the oracle infra. User-land convention:

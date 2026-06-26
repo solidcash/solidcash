@@ -63,6 +63,7 @@ export type BlockSlotKind =
   | 'master'
   | 'dataNft'
   | 'readOnlyDataNft'
+  | 'blockhashOracle'
   | 'entry'
   | 'satoshiContainer'
   | 'tokenContainer'

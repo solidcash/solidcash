@@ -5773,6 +5773,12 @@ export default class SymbolTableTraversal extends AstTraversal {
       }
     }
 
+    // blockhash(n): the (n->hash) oracle co-spend - a read-only, self-preserving 1:1 input/output slot. The
+    // SDK fills __internal__blockhashInputIndex with this slot's absolute index (master input index + offset).
+    if (node.usesBlockhash) {
+      slots.push({ kind: 'blockhashOracle', offset: offset++ });
+    }
+
     // Reserve offset space for outState groups (between reads and entries)
     if (node.externalOutStateReads) {
       for (const slot of node.externalOutStateReads) {

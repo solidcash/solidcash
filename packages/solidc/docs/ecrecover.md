@@ -162,6 +162,31 @@ require(ethAddr == expectedEthAddr);
 A dedicated `ecrecoverEth` builtin could wrap this. It is noted here for completeness but is not part of this
 specification.
 
+## Narrowing an address: uint160(address) and bytes20(address)
+
+A SolidCash `address` is a variable-length locking bytecode, not a fixed 20-byte value like an EVM `uint160`.
+For Solidity ports that write `uint160(addr)` or `bytes20(addr)`, those casts are supported as **narrowing**
+conversions: they extract the **embedded 20-byte hash** - the P2PKH pubkey-hash at offset 3 of
+`0x76a914 <20-byte hash> 0x88ac` - and then yield bytes or an int.
+
+```solidity
+address signer = ecrecover(hash, sig, pubKey);   // a P2PKH locking bytecode
+bytes20 pkh = bytes20(signer);                    // the signer's 20-byte pubkey-hash
+uint160 id = uint160(signer);                     // that hash as a non-negative integer
+```
+
+- **`bytes20(address)`** -> the 20-byte hash (`<3> OP_SPLIT OP_NIP <20> OP_SPLIT OP_DROP`).
+- **`uint160(address)`** (any unsigned `IntType`) -> the same 20 bytes, then a `0x00` sign byte and `OP_BIN2NUM`,
+  so the result is the **non-negative** little-endian value of the hash (without the sign byte, a hash whose top
+  bit is set would be a negative number and fail the unsigned bounds check). A signed `intN` target skips the
+  sign byte.
+- **`bytes(address)`** (unbounded) is unchanged - it keeps the full locking bytecode, not the narrowed hash.
+
+Both narrowing casts emit a compile-time **warning**: the conversion is lossy and assumes the P2PKH form
+(offset 3), so for a non-P2PKH address the extracted bytes are not a meaningful 20-byte identity. Compare
+addresses as addresses (locking bytecodes) where you can; reach for these casts only for Solidity source
+compatibility.
+
 ## Security considerations
 
 - **Provide-and-verify, not recover.** The result is only as meaningful as the supplied `pubKey`: the function

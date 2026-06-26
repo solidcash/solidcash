@@ -141,6 +141,22 @@ export function compileCast(from: Type, to: Type, isUnsafe: boolean): Script {
   // StructType -> StructType: no-op (same blob at VM level)
   if (from instanceof StructType && to instanceof StructType) return [];
 
+  // Solidity-compat narrowing casts: `bytes20(address)` / `uint160(address)`. A SolidCash address is a
+  // variable-length locking bytecode, not a 20-byte value, so we narrow to the embedded 20-byte hash (the
+  // P2PKH pubkey-hash at offset 3: 0x76a914 <20-byte hash> 0x88ac) first. This is lossy and warned in
+  // TypeCheckTraversal. Only bytes20 and int targets narrow; `bytes(address)` keeps the full locking bytecode.
+  const narrowAddressTo20 = [encodeInt(3n), Op.OP_SPLIT, Op.OP_NIP, encodeInt(20n), Op.OP_SPLIT, Op.OP_DROP];
+  if (from instanceof AddressType && to instanceof BytesType && to.bound === 20) {
+    return narrowAddressTo20;
+  }
+  if (from instanceof AddressType && to instanceof IntType) {
+    // OP_BIN2NUM reads a sign-magnitude little-endian number; for unsigned targets append a 0x00 sign byte so
+    // the hash is a non-negative value (otherwise ~half of hashes fail the uint's >= 0 bounds check).
+    return to.signed
+      ? [...narrowAddressTo20, Op.OP_BIN2NUM]
+      : [...narrowAddressTo20, new Uint8Array([0]), Op.OP_CAT, Op.OP_BIN2NUM];
+  }
+
   // address casts are no-ops (stack value unchanged)
   if (to instanceof AddressType) return [];
   if (from instanceof AddressType) return [];

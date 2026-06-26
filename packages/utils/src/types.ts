@@ -290,6 +290,9 @@ export function explicitlyCastable(from?: Type, to?: Type): boolean {
   if (from instanceof AddressType) {
     // address -> bytes (address is lbc bytes at VM level)
     if (to instanceof BytesType) return true;
+    // address -> int: Solidity-compat `uint160(address)`. Narrows the (variable-length) address to 20 bytes
+    // first; see compileCast. Address is not a fixed-width number on BCH, so this is lossy (warned).
+    if (to instanceof IntType) return true;
     return false;
   }
 

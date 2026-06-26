@@ -666,3 +666,36 @@ describe('blockhash keeper sweep', () => {
     expect(await sweepUpdater(createTestProvider()).sweepBlockhashPair(99999n)).toBeNull();
   });
 });
+
+// Stateful blockhash reader: the (n->hash) co-spend rides a block-layout slot (not a trailing append), and
+// the index param is filled deterministically (master input index + slot offset).
+const BH_STATEFUL_SRC = `
+pragma solidcash >=0.8.0;
+contract BH() {
+    bigint counter;
+    function bump(int bn, bytes32 h) {
+        this.counter = this.counter + 1;
+        require(blockhash(bn) == h);
+    }
+}
+`;
+
+describe('blockhash(n) stateful reader', () => {
+  it('reads blockhash from a stateful function via the block-layout slot', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(BH_STATEFUL_SRC, { blockhashOracleCategory: BH_CAT });
+    const contract = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, contract, artifact.stateLayout!, { counter: 5n }, { saltContract: true },
+    );
+
+    const n = 100000n; const H = hexToBin('aa'.repeat(32));
+    const addrN = blockhashOracleLockingBytecode(hexToBin(BH_CAT), n);
+    const token = { category: BH_CAT, amount: 0n, nft: { capability: 'none' as const, commitment: binToHex(buildBlockhashCommitment(n, H)) } };
+    await provider.addUtxo(binToHex(addrN), { txid: 'e1'.repeat(32), vout: 0, satoshis: 1000n, token });
+
+    const sc = StatefulContract.withCategory(contract, categoryId);
+    const tx = await (sc as any).bump(n, H).send();
+    expect(tx.txid).toMatch(/^[0-9a-f]{64}$/);
+  });
+});

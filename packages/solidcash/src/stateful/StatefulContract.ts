@@ -39,6 +39,7 @@ import {
   encodeLockingBytecodeP2pkh,
 } from '@bitauth/libauth';
 import { Contract } from '../Contract.js';
+import { resolveBlockhashCoSpend } from '../oracle/blockhashCoSpend.js';
 import Signer from '../Signer.js';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
 import { AddressType, ContractOptions, LibauthOutput, Output, TransactionDetails, UnlockableUtxo, Unlocker, Utxo } from '../interfaces.js';
@@ -2602,6 +2603,27 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         () => createDataNftUnlocker(this.inner, 0, this.categoryId),
       );
 
+      // blockhash(n): resolve each reader's (n->hash) co-spend so the probe's VM run can read input[param]
+      // (the masterUnlocker late-resolves the index from the probe's own sourceOutputs). Placed right after
+      // the data NFTs, matching the blockhashOracle block-layout slot.
+      const bhProbeCoSpends: Array<{ utxo: Utxo; unlocker: Unlocker; recreate: Output; locktime: number }> = [];
+      if (abiFunction.blockhashReads && abiFunction.blockhashReads.length > 0) {
+        const bhCategory = this.inner.artifact.compiler.options?.blockhashOracleCategory;
+        if (bhCategory) {
+          const bhVisible = abiFunction.inputs.filter((i) => !i.name.startsWith('__internal__'));
+          const bhSeen = new Set<string>();
+          for (const paramName of abiFunction.blockhashReads) {
+            const pIdx = bhVisible.findIndex((i) => i.name === paramName);
+            if (pIdx < 0) continue;
+            const bn = args[pIdx];
+            if (typeof bn !== 'bigint' || bhSeen.has(String(bn))) continue;
+            bhSeen.add(String(bn));
+            const cs = await resolveBlockhashCoSpend(this.inner.provider, bhCategory, bn);
+            if (cs) bhProbeCoSpends.push({ utxo: cs.utxo, unlocker: cs.unlocker, recreate: cs.recreateOutput, locktime: cs.locktime });
+          }
+        }
+      }
+
       // Wrap the VM probe + extraction in AutoDerivationError so failures are
       // cleanly distinguishable from programming bugs or configuration errors.
       try {
@@ -2611,6 +2633,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         // Probe with optional data NFT output commitment overrides (default: current).
         const runProbe = (dataNftOutputCommitments?: string[]): AuthenticationProgramStateCommon[] => {
           const probeBuilder = new CovenantTransactionBuilder({ provider: this.inner.provider });
+          if (bhProbeCoSpends.length > 0) {
+            probeBuilder.locktime = Math.max(...bhProbeCoSpends.map((c) => c.locktime)); // require(tx.time >= n)
+          }
 
           // Input 0: master UTXO
           probeBuilder.addInput(masterUtxo, masterUnlocker);
@@ -2619,6 +2644,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           filteredDataNftUtxos.forEach((nftUtxo, i) => {
             probeBuilder.addInput(nftUtxo, dataNftUnlockers[i]);
           });
+
+          // blockhash (n->hash) co-spends at the blockhashOracle slot (right after the data NFTs)
+          for (const cs of bhProbeCoSpends) probeBuilder.addInput(cs.utxo, cs.unlocker);
 
           // Extra inputs (e.g. funding UTXO for deploy genesis)
           if (extraInputs) {
@@ -2650,6 +2678,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               },
             });
           }
+
+          // blockhash recreate outputs (self-preserving, at the matching slot index)
+          for (const cs of bhProbeCoSpends) probeBuilder.addOutput(cs.recreate);
 
           // Add extra outputs (entry NFTs and child contract outputs)
           if (extraOutputs) {
@@ -3397,6 +3428,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       const msgSenderCategory = overrides?.msgSenderCategory ?? new Uint8Array(32);
       finalArgs = [...finalArgs, msgSenderCategory];
     }
+    // __internal__blockhashInputIndex: the (n->hash) co-spend's absolute input index = master(0) + the slot
+    // offset (the SymbolTable injects this param right after msgSender, so it is pushed here in order).
+    const bhSlot = abiFunction?.blockLayout?.slots.find((s) => s.kind === 'blockhashOracle');
+    if (bhSlot) {
+      finalArgs = [...finalArgs, BigInt(bhSlot.offset)];
+    }
 
     // Handle entry NFT accesses
     const entryAccesses = abiFunction?.entryAccesses;
@@ -3743,6 +3780,28 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       }
 
 
+    }
+
+    // blockhash(n): resolve each reader's (n->hash) oracle co-spend (matched by n from the call args). The
+    // builder places it at the blockhashOracle block-layout slot; the index param is filled below.
+    const blockhashCoSpendUtxos: UnlockableUtxo[] = [];
+    let maxBhLocktime = 0; // require(tx.time >= n) - the SDK sets the locktime so the derivation probe passes
+    if (abiFunction?.blockhashReads && abiFunction.blockhashReads.length > 0) {
+      const bhCategory = this.inner.artifact.compiler.options?.blockhashOracleCategory;
+      if (!bhCategory) throw new Error('blockhash(n): contract compiled without blockhashOracleCategory');
+      const bhVisible = abiFunction.inputs.filter((i) => !i.name.startsWith('__internal__'));
+      const bhSeen = new Set<string>();
+      for (const paramName of abiFunction.blockhashReads) {
+        const pIdx = bhVisible.findIndex((i) => i.name === paramName);
+        if (pIdx < 0) continue;
+        const bn = args[pIdx];
+        if (typeof bn !== 'bigint' || bhSeen.has(String(bn))) continue;
+        bhSeen.add(String(bn));
+        const cospend = await resolveBlockhashCoSpend(this.inner.provider, bhCategory, bn);
+        if (!cospend) throw new Error(`blockhash(${bn}): no (n->hash) oracle UTXO at addr(${bn})`);
+        blockhashCoSpendUtxos.push({ ...cospend.utxo, unlocker: cospend.unlocker });
+        if (cospend.locktime > maxBhLocktime) maxBhLocktime = cospend.locktime;
+      }
     }
 
     // Pre-declare outState variables (populated later, but needed for base computations in external calls)
@@ -4818,6 +4877,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       tokenContainerLockingBytecodes,
       ...(satoshiContainerUtxo && { satoshiContainerUtxo, satoshiContainerLockingBytecode }),
       ...(externalReadUtxos.length > 0 && { readOnlyDataNftUtxos: externalReadUtxos }),
+      ...(blockhashCoSpendUtxos.length > 0 && { blockhashCoSpendUtxos }),
       ...(externalOutStateUtxoGroups.length > 0 && { externalOutStateUtxoGroups }),
       ...(externalCallUtxoGroups.length > 0 && { externalCallUtxoGroups }),
       ...(lowLevelCallUtxoGroups.length > 0 && { lowLevelCallUtxoGroups }),
@@ -4827,6 +4887,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       ...(iterationEntryInputs.length > 0 && { iterationEntryInputs }),
       ...(abiFunction?.blockLayout && { blockLayout: abiFunction.blockLayout }),
     });
+
+    // blockhash(n) requires tx.time >= n; set it so the derivation probe (and the final tx) satisfy the CLTV.
+    if (maxBhLocktime > 0) builder.setLocktime(maxBhLocktime);
 
     // Auto-fund block-layout slots that need funder inputs (output-only slots
     // like transfers/events, non-existing entries/TCs). These are WITHIN the

@@ -4869,6 +4869,21 @@ export default class SymbolTableTraversal extends AstTraversal {
       }
     }
 
+    // `Interface.method.selector` -> the interface method's 4-byte selector (bytes4), computed from its
+    // signature. Mirrors `this.<fn>.selector` for own functions.
+    if (node.name === 'selector' && node.expression instanceof FieldAccessNode
+      && node.expression.expression instanceof IdentifierNode) {
+      const fa = node.expression;
+      const iface = this.interfaceMap.get((fa.expression as IdentifierNode).name);
+      const method = iface?.functions.find((f) => f.name === fa.name);
+      if (method) {
+        const sig = computeFunctionSignature(method.name, method.parameters.map((p) => p.type.toString()));
+        const lit = new HexLiteralNode(computeFunctionSelector(sig));
+        lit.location = node.location;
+        return lit;
+      }
+    }
+
     // Detect namespaced constant access (e.g. SafeMath.MAX_SAFE from a library)
     if (node.expression instanceof IdentifierNode) {
       const compoundName = `${node.expression.name}.${node.name}`;

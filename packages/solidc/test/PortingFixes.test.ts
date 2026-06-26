@@ -955,3 +955,20 @@ describe('SBE-18: parent-constructor args (inheritance-list + constructor-level)
       { solidityImportCompat: true })).toThrow(/expects 1/);
   });
 });
+
+describe('SBE-19: Interface.method.selector / Contract.method.selector resolve to the 4-byte selector', () => {
+  it('uses Interface.method.selector in abi.encodeWithSelector', () => {
+    expect(compileString(
+      'interface IFoo { function bar(address a, uint256 b) external; }'
+      + ' contract C { function f(address to, uint256 amt) external pure returns (bytes) {'
+      + ' return abi.encodeWithSelector(IFoo.bar.selector, to, amt); } }',
+      { solidityImportCompat: true }).contractName).toBe('C');
+  });
+  it('resolves a sibling contract method selector (Contract.method.selector)', () => {
+    expect(compileString(
+      'contract Other { function ping(uint256 x) external {} }'
+      + ' contract C { function f(uint256 x) external pure returns (bytes) {'
+      + ' return abi.encodeWithSelector(Other.ping.selector, x); } }',
+      { solidityImportCompat: true }).contractName).toBe('C');
+  });
+});

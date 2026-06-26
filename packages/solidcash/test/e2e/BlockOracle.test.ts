@@ -326,7 +326,7 @@ describe('block.* off-chain keeper (updater)', () => {
 });
 
 // blobhash(i) has no BCH analogue (no EIP-4844 blobs) -> always bytes32(0); blockhash(n) is recognized
-// but its n->hash oracle read codegen is pending (docs/block-oracle.md s11).
+// but its n->hash oracle read codegen is pending (docs/block-and-transaction-properties.md s11).
 const B32_ZERO = `0x${'00'.repeat(32)}`;
 
 async function spendBlob(expectHex: string): Promise<string> {
@@ -417,7 +417,7 @@ describe('blobhash / blockhash', () => {
 // commitment n(4 LE)||hash); the contract verifies category + commitment.n == n + require(tx.time >= n)
 // and returns hash. Held here at a trivial anyone-can-spend p2sh32 (redeem OP_1) and recreated for token
 // consistency. n <= 133700 (mock tip) so the freshness locktime is final. (Hardened covenant + SDK
-// auto-discovery + keeper minting are the next increment - docs/block-oracle.md s11.)
+// auto-discovery + keeper minting are the next increment - docs/block-and-transaction-properties.md s11.)
 const BH_CAT = 'cc'.repeat(32);
 
 async function spendBlockhash(argN: number, storedN: number, storedHash: Uint8Array, expectHash: Uint8Array): Promise<string> {
@@ -730,7 +730,7 @@ describe('blockhash(n) stateful reader', () => {
 
 // tx.gasprice: the CURRENT transaction's realized fee rate (sat/KB) = 1000*(sum in - sum out)/tx_size,
 // reconstructed entirely from introspection (no oracle): value loops for the fee, bytecode-size loops +
-// fixed per-element overheads for the size. See block-oracle.md.
+// fixed per-element overheads for the size. See block-and-transaction-properties.md.
 describe('tx.gasprice (current-tx fee rate, sat/KB)', () => {
   it('lowers to the fee/size formula via introspection loops, no oracle', () => {
     const g = compileString('contract A(){ function f(int e){ require(tx.gasprice == e); } }');

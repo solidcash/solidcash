@@ -23,7 +23,7 @@ import { TimeOp, GlobalFunction } from '../ast/Globals.js';
 import AstTraversal from '../ast/AstTraversal.js';
 
 /**
- * Oracle-backed `block.*` reads + the per-contract owner-update path (docs/block-oracle.md).
+ * Oracle-backed `block.*` reads + the per-contract owner-update path (docs/block-and-transaction-properties.md).
  *
  * Each referenced field is desugared to a read of an injected register of the contract's own state
  * (`uint32`, or `address` for the variable-length coinbase); a stateless contract that uses block.*
@@ -65,7 +65,7 @@ export default class SynthesizeBlockOracle extends AstTraversal {
   private used = new Set<string>();
   private loc: unknown;
   // Set when the contract references blockhash(n): surfaced to the artifact so the keeper knows to
-  // maintain the project-global (n->hash) oracle (docs/block-oracle.md).
+  // maintain the project-global (n->hash) oracle (docs/block-and-transaction-properties.md).
   usesBlockhash = false;
   private fnUsesBlockhash = false;
   private warnedShims = new Set<string>();

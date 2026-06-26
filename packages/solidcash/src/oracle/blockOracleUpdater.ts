@@ -12,7 +12,7 @@ import { StatefulContract } from '../stateful/StatefulContract.js';
 import SignatureTemplate from '../SignatureTemplate.js';
 
 /**
- * Off-chain keeper for a contract's block.* oracles (docs/block-oracle.md). It subscribes to Fulcrum
+ * Off-chain keeper for a contract's block.* oracles (docs/block-and-transaction-properties.md). It subscribes to Fulcrum
  * block-header notifications and, on each new tip, maintains only the oracle(s) the contract actually uses:
  *
  *  - block-info register (block.number/timestamp/...): present iff the artifact has `__updateBlockOracle`.
@@ -143,7 +143,7 @@ export class BlockOracleUpdater {
 
   /**
    * The contract reads blockhash(n), so it needs the project-global (n->hash) oracle. The compiler stamps
-   * this marker on the artifact when blockhash() is referenced (see docs/block-oracle.md).
+   * this marker on the artifact when blockhash() is referenced (see docs/block-and-transaction-properties.md).
    */
   static usesBlockhash(artifact: Artifact): boolean {
     return artifact.usesBlockhash === true;

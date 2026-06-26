@@ -6,7 +6,7 @@ import { NetworkProvider } from '../network/index.js';
 import { Utxo, Unlocker, Output } from '../interfaces.js';
 
 /**
- * Consumer-side resolver for blockhash(n) (docs/block-oracle.md s11). The read codegen co-spends the
+ * Consumer-side resolver for blockhash(n) (docs/block-and-transaction-properties.md s11). The read codegen co-spends the
  * project-global (n->hash) oracle UTXO as the LAST input and self-preservingly recreates it at the MATCHING
  * output index, under tx.time >= n. This packages the three pieces a consumer wires for that, so call sites
  * stop hand-rolling the covenant redeem + read flag.

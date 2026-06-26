@@ -1438,7 +1438,7 @@ export function buildAnonymousEventNftCovenantBytecode(categoryIdHex: string): s
 
 /**
  * Build the blockhash (n -> hash) oracle covenant for block `n` under the oracle token category
- * (docs/block-oracle.md s11). The immutable ('none' capability) NFT carries commitment = n(4 LE)||hash(32).
+ * (docs/block-and-transaction-properties.md s11). The immutable ('none' capability) NFT carries commitment = n(4 LE)||hash(32).
  *
  * The covenant:
  *  - self-pins its token category == categoryId (capability 'none'), so a foreign-category UTXO paid to

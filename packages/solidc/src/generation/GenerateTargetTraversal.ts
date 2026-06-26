@@ -3275,7 +3275,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       const catHex = this.compilerOptions.blockhashOracleCategory;
       if (!catHex) {
         throw new Error('blockhash() requires the blockhashOracleCategory compiler option (the n->hash oracle '
-          + 'token category); see packages/solidc/docs/block-oracle.md section 11');
+          + 'token category); see packages/solidc/docs/block-and-transaction-properties.md section 11');
       }
       // Read the co-spent (n->hash) oracle UTXO (the last input, MVP convention) and return its hash:
       //   require(tx.time >= n); category(last) == C_oracle; commitment = n(4 LE) || hash(32), n == arg.
@@ -4329,7 +4329,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         break;
       case NullaryOperator.BLOCK_PREVRANDAO:
         // Transaction-local randomness shim: abs(int(sha256(input[0] prevout txid))). No secure source on
-        // BCH; grindable by the tx-builder (SynthesizeBlockOracle warns; see docs/block-oracle.md). ABS
+        // BCH; grindable by the tx-builder (SynthesizeBlockOracle warns; see docs/block-and-transaction-properties.md). ABS
         // makes the 32-byte hash a non-negative uint so `prevrandao % N` behaves.
         this.emit([Op.OP_0, Op.OP_OUTPOINTTXHASH, Op.OP_SHA256, Op.OP_BIN2NUM, Op.OP_ABS], locationData);
         break;

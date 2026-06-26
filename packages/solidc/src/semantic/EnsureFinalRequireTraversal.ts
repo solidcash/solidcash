@@ -33,6 +33,9 @@ import {
   StateArrayPopNode,
   StateArrayAssignNode,
   StateArrayDeleteNode,
+  SelfdestructStatementNode,
+  IdentifierNode,
+  FunctionCallNode,
 } from '../ast/AST.js';
 import AstTraversal from '../ast/AstTraversal.js';
 import { EmptyFunctionError, FinalRequireStatementError, MissingReturnError, ReturnInExternalFunctionError } from '../Errors.js';
@@ -95,6 +98,10 @@ export default class EnsureFinalRequireTraversal extends AstTraversal {
       throw new EmptyFunctionError(node);
     }
 
+    // The selfdestruct value pins protect HOW MUCH reaches the destination, not WHO it is. Warn if the
+    // destination is caller-controlled and the function isn't authenticated (see helper).
+    warnUnauthenticatedSelfdestruct(node);
+
     const visibility = node.visibility;
     const hasReturnTypes = node.returnTypes.length > 0;
 
@@ -151,6 +158,61 @@ function warnOrThrowUnverified(node: Node, compat: boolean): void {
   const line = node.location?.start?.line;
   console.log(`Warning: a spending path${line ? ` near line ${line}` : ''} performs no require()/verification `
     + 'and changes no state; it compiles as an unconditionally-spendable path. Add a require() to constrain it.');
+}
+
+const SIGNATURE_CHECK_NAMES = new Set(['checkSig', 'checkDataSig', 'checkMultiSig']);
+
+// Finds whether a subtree references any of the given names (used to detect a caller-controlled selfdestruct
+// destination: an identifier matching a function parameter). Other expression nodes recurse via the base.
+class NameReferenceFinder extends AstTraversal {
+  found = false;
+
+  constructor(private names: Set<string>) { super(); }
+
+  visitIdentifier(node: IdentifierNode): Node {
+    if (this.names.has(node.name)) this.found = true;
+    return node;
+  }
+}
+
+// Finds whether a subtree contains a signature-check call - on BCH the only primitive that authenticates a
+// specific party (covenant/introspection conditions authenticate transaction shape, not who triggers it).
+class SignatureCheckFinder extends AstTraversal {
+  found = false;
+
+  visitFunctionCall(node: FunctionCallNode): Node {
+    if (node.identifier && SIGNATURE_CHECK_NAMES.has(node.identifier.name)) this.found = true;
+    return super.visitFunctionCall(node);
+  }
+}
+
+// selfdestruct(addr) value-pins the freed balance to outputs[0] == addr, but addr is whatever the covenant
+// reads. If addr is caller-controlled (a function parameter) AND the function has no signature check, ANY
+// caller can pass their own address and take the balance. The two safe forms - authenticate the function, or
+// take the destination from contract state / a constant - are not flagged. Warning only (porting compat); the
+// author may have a non-signature authorization. See docs/selfdestruct.md (Security considerations).
+function warnUnauthenticatedSelfdestruct(node: FunctionDefinitionNode): void {
+  const selfdestructs = (node.body.statements ?? [])
+    .filter((s): s is SelfdestructStatementNode => s instanceof SelfdestructStatementNode);
+  if (selfdestructs.length === 0) return;
+
+  const sigFinder = new SignatureCheckFinder();
+  sigFinder.visit(node.body);
+  if (sigFinder.found) return; // authenticated by a signature check
+
+  const paramNames = new Set(node.parameters.map((p) => p.name));
+  for (const sd of selfdestructs) {
+    const destFinder = new NameReferenceFinder(paramNames);
+    destFinder.visit(sd.recipient);
+    if (!destFinder.found) continue; // destination is from state / a constant - safe
+
+    const line = sd.location?.start?.line;
+    console.log(`Warning: selfdestruct in '${node.name}'${line ? ` at line ${line}` : ''} sends the freed `
+      + 'balance to a caller-supplied address with no signature check; any caller could redirect it to '
+      + 'themselves. Authenticate it (e.g. require(checkSig(s, owner))) or take the destination from contract '
+      + 'state / a constant (selfdestruct(this.beneficiary)). See packages/solidc/docs/selfdestruct.md.');
+    return; // one warning per function is enough
+  }
 }
 
 function ensureFinalStatementIsRequire(statements: StatementNode[] = [], compat = false): void {

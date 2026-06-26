@@ -1107,3 +1107,33 @@ describe('empty void functions synthesize a no-op body (Solidity porting: receiv
       .toThrow(/contains no statements/);
   });
 });
+
+describe('selfdestruct caller-controlled destination warning (no-auth footgun, not an error)', () => {
+  const warns = (src: string): boolean => {
+    const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    compileString(src); // must COMPILE - it is a warning, not an error
+    const w = spy.mock.calls.some((c) => String(c[0]).includes('sends the freed balance to a caller-supplied'));
+    spy.mockRestore();
+    return w;
+  };
+
+  it('warns on a no-auth selfdestruct to a caller-supplied address (and still compiles)', () => {
+    expect(warns('contract C(pubkey admin) { int n;'
+      + ' function kill(address to) { require(true); selfdestruct(to); } }')).toBe(true);
+  });
+
+  it('warns when the caller-supplied address is wrapped (new LockingBytecodeP2PKH(to))', () => {
+    expect(warns('contract C(pubkey admin) { int n;'
+      + ' function kill(bytes20 to) { require(true); selfdestruct(new LockingBytecodeP2PKH(to)); } }')).toBe(true);
+  });
+
+  it('does not warn when authenticated with a signature check', () => {
+    expect(warns('contract C(pubkey admin) { int n;'
+      + ' function kill(sig s, address to) { require(checkSig(s, admin)); selfdestruct(to); } }')).toBe(false);
+  });
+
+  it('does not warn when the destination comes from contract state', () => {
+    expect(warns('contract C(pubkey admin) { address beneficiary; int n;'
+      + ' function kill() { require(true); selfdestruct(this.beneficiary); } }')).toBe(false);
+  });
+});

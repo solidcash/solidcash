@@ -168,7 +168,7 @@ function kill(address to) { selfdestruct(to); }   // compile error: final statem
 The compiler guarantees a `require()` exists so the covenant cannot be trivially bypassed; the **author**
 supplies the real authorization condition inside it (for example `require(checkSig(s, admin))`). The guard does
 not by itself prove the require is a meaningful auth check (`require(true)` would pass the guard), which is why
-v1 is documented as author-trusted. See "Authorization and security" below.
+v1 is documented as author-trusted. See "Security considerations" below.
 
 ## The on-chain covenant
 
@@ -208,26 +208,81 @@ locking bytecode. In the TL;DR example the function takes `address to`; the call
 both the `to` arg (which the covenant reads) and as `recipient` (which becomes output 0). This coupling is
 inherent: the author chose `to` as the destination, and the SDK must point output 0 at it.
 
-## Authorization and security
+## Security considerations
 
-- **Requires a trailing `require()`.** Without it, the function is rejected. The covenant code (collapse plus
-  destination and value pins) cannot run unguarded.
-- **The author owns the auth condition.** A selfdestruct that should be admin-only must check a signature
-  (`require(checkSig(s, admin))`). The guard forces *a* require to exist, not that it is meaningful auth
-  (`require(true)` passes), so the author is trusted to put real auth there.
-- **Destination and value are pinned on chain.** The covenant enforces `outputs[0].lockingBytecode == addr`,
-  a single output, and a fee below 2000 sats. So at least `sum(inputs) - 2000` provably reaches `addr`: the value
-  cannot be redirected to another recipient (single output), nor burned to fee (fee cap), even by a hand-crafted
-  transaction. This is enforced by the VM, not trusted to the SDK.
-- **Permissionless is safe for value, but the destination must not be caller-controlled.** Because the value
-  pins guarantee the balance reaches `outputs[0] == addr`, you can drop a real auth check (anyone may trigger
-  the destruction) **only if `addr` is not attacker-chosen**. If the destination is a function parameter
-  (`selfdestruct(to)` with `to` from calldata), an unauthenticated caller simply passes their own address and
-  takes the balance - the value pins faithfully send it to the address they chose. A permissionless selfdestruct
-  must take its destination from contract state or a constant (`selfdestruct(this.beneficiary)`), not from a
-  caller argument. The compiler does not yet enforce this; it is the author's responsibility.
-- **Tokens are not protected.** Any FT/NFT not swept by contract logic before destruction is burned or stranded,
-  matching EVM. Sweep deliberately.
+`selfdestruct(addr)` is a terminal, value-moving operation with no recovery. Read this before shipping one.
+
+### What the covenant guarantees
+
+When a `selfdestruct(addr)` function is spent, the VM enforces - independently of the SDK - that the transaction:
+
+- has exactly one output,
+- whose locking bytecode equals `addr`,
+- with a fee (`sum(inputs) - outputs[0].value`) below 2000 sats.
+
+So **at least `sum(inputs) - 2000` satoshis reach `addr`**, whoever builds the transaction. The freed balance
+cannot be redirected to another recipient or burned to fee beyond the 2000-sat cap. This is the security
+foundation everything below builds on.
+
+### The destination must not be caller-controlled in a permissionless contract
+
+This is the easiest mistake to make. The pins guarantee the balance reaches `addr` - but `addr` is whatever the
+covenant reads at spend time. If the destination is a function argument and the function has no real
+authorization, anyone can point it at themselves:
+
+```solidity
+// UNSAFE if permissionless: an unauthenticated caller passes their own address and takes the balance.
+function kill(address to) { require(true); selfdestruct(to); }
+```
+
+The value pins faithfully deliver the balance to the address the caller chose - they protect *how much* reaches
+the destination, not *who* the destination is. A selfdestruct that anyone may trigger must therefore take its
+destination from contract state or a constant, where the caller cannot influence it:
+
+```solidity
+// Safe to leave open: the destination is fixed in state, not chosen by the caller.
+address beneficiary;
+function kill() { require(true); selfdestruct(this.beneficiary); }
+```
+
+If the destination is caller-supplied, gate the function with real authorization (e.g.
+`require(checkSig(s, admin))`). The compiler does **not** yet enforce this distinction - it is the author's
+responsibility (compiler enforcement is on the roadmap).
+
+### The require() guard is structural, not semantic
+
+The compiler only checks that a selfdestruct function ends in *a* `require()`, so the covenant cannot run
+unguarded. It does not check that the condition is meaningful: `require(true)` passes. The author chooses the
+authorization. For a permissionless contract `require(true)` is intentional, and safety then rests entirely on a
+non-caller-controlled destination plus the value pins.
+
+### A state-sourced destination is only as safe as its writer
+
+`selfdestruct(this.beneficiary)` sends the balance wherever `beneficiary` points at spend time. Whoever can
+write that state variable controls the destruction target. Authorize the state-write path with the same care as
+the destruction itself - a permissive setter undoes a fixed-destination design.
+
+### Tokens are not protected
+
+The value pins cover native satoshis only. Any fungible tokens or NFTs the contract holds and does not sweep
+before destruction are burned or stranded, matching EVM. Sweep them deliberately in contract logic first; the
+selfdestruct will not move them for you.
+
+### Destruction is irreversible and single-transaction-scale
+
+The master minting NFT is consumed and never recreated - the category's minting capability is gone permanently.
+The pins also require a single output and a sub-2000 fee, which a *batched* destroy (used when the state exceeds
+~200 UTXOs, see Limitations) cannot satisfy: its intermediate transactions recreate the master and add outputs.
+A contract that can grow past single-transaction scale may become **undestroyable** via `selfdestruct(addr)`.
+Keep such contracts' UTXO count bounded, or use the modifier-only `selfdestruct` form (which has no pins and
+supports batching, at the cost of an on-chain-enforced destination).
+
+### Residual fee loss is accepted by design
+
+The fee cap is a fixed 2000 sats. A triggerer can still cause up to 2000 sats to go to miner fee instead of
+`addr` (by overpaying within the cap). This is negligible for any meaningful balance and not profitable for the
+triggerer - the fee goes to the miner, not to them. It is the deliberate trade for bounding the fee with a
+constant instead of modeling exact transaction size on chain. Raising the cap is a roadmap item.
 
 ## Modifier conflicts
 
@@ -257,7 +312,7 @@ It also requires a **stateful** contract (fixture `selfdestruct_not_stateful.sca
 ## Roadmap
 
 The destination and value are fully pinned (address + single output + fee floor), so a permissionless
-selfdestruct is value-safe (see "Authorization and security"). Remaining items:
+selfdestruct is value-safe (see "Security considerations"). Remaining items:
 
 - **Compiler-enforce permissionless safety.** Reject (or require auth on) a no-auth selfdestruct whose
   destination is a caller-controlled argument, so the author cannot accidentally ship an exploitable one.

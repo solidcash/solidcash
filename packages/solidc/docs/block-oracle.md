@@ -22,8 +22,13 @@ Status: **IMPLEMENTED (compiler + SDK e2e, green).**
   `resolveBlockhashCoSpend` helper remains for computed/multiple `n`). Absent reads **error by design**
   (not EVM's `bytes32(0)`): on BCH the tx-builder controls inputs, so returning `0` when the oracle is not
   co-spent would let a malicious builder force `blockhash(n) == 0` for an in-window block; erroring keeps a
-  contract from ever seeing a forged `0` (s11.2). Remaining: a dedicated co-spend slot (lifts the
-  one-co-spend / no-side-car-combo MVP limits of the last-input convention).
+  contract from ever seeing a forged `0` (s11.2). **Composition-safe slot (done):** the reader no longer
+  assumes the last input (wrong under cross-contract composition - the last input belongs to whoever the
+  builder appended last). The compiler injects a hidden `__internal__blockhashInputIndex` param and reads
+  `input[that]`; the SDK fills it by locating the `C_oracle` co-spend, so the UTXO may sit at any index. The
+  VM re-verifies category + `commitment.n`, so a wrong index just fails. Remaining: the stateful
+  orchestrator (StatefulContract) filling the index for a stateful reader, and multiple distinct `n` per tx
+  (one co-spend today).
 
 Implementation notes: each referenced field is desugared (`SynthesizeBlockOracle` pre-semantic transform)
 to a read of an injected register of the contract's own state - `uint32` for the numeric fields, `address`
@@ -256,15 +261,17 @@ Still open:
 ## 11. blockhash(n) and blobhash(i)
 
 Status: **blobhash IMPLEMENTED; blockhash IMPLEMENTED (hardened covenant + keeper mint/sweep).**
-`blobhash(i) == bytes32(0)`. `blockhash(n)` reads the co-spent `(n->hash)` UTXO (last-input MVP
-convention) and verifies `OP_UTXOTOKENCATEGORY == blockhashOracleCategory` (compiler option) +
-`commitment.n == n` + `require(tx.time >= n)`, returning the 32-byte hash. The hardened `(n->hash)`
+`blobhash(i) == bytes32(0)`. `blockhash(n)` co-spends the `(n->hash)` UTXO located via a synthesized
+`__internal__blockhashInputIndex` param (composition-safe; NOT the last input) and verifies
+`OP_UTXOTOKENCATEGORY == blockhashOracleCategory` (compiler option) + `commitment.n == n` +
+`require(tx.time >= n)`, returning the 32-byte hash. The hardened `(n->hash)`
 covenant (self-pin + self-preserving recreate + CLTV `n+256` wipe), the keeper mint + sweep
-(`BlockOracleUpdater.mintBlockhashPair` / `sweepBlockhashPair` / `maintainBlockhashWindow`), and the
-`artifact.usesBlockhash` marker, and SDK auto-injection (`abi.blockhashReads` +
-`TransactionBuilder.addRequiredBlockhashCoSpends` co-spend `addr(n)` from the call args) are all in place
-and e2e-green. Absent reads error by design (s11.3), not EVM's `bytes32(0)`. **Remaining:** a dedicated
-co-spend slot (vs the last-input convention) to lift the one-co-spend / no-side-car-combo MVP limits.
+(`BlockOracleUpdater.mintBlockhashPair` / `sweepBlockhashPair` / `maintainBlockhashWindow`), the
+`artifact.usesBlockhash` marker, SDK auto-injection (`abi.blockhashReads` +
+`TransactionBuilder.addRequiredBlockhashCoSpends` co-spend `addr(n)` from the call args), and the
+composition-safe index param (SDK fills it by locating the `C_oracle` co-spend) are all in place
+and e2e-green. Absent reads error by design (s11.2), not EVM's `bytes32(0)`. **Remaining:** the stateful
+orchestrator filling the index for a stateful reader, and multiple distinct `n` per tx (one co-spend today).
 
 
 These are **functions** (runtime argument), not the 0-param `block.*` properties, so they lower as
@@ -363,6 +370,14 @@ warning when `blockhash(...)` feeds modulo/arithmetic is advisable.
 - Absent read = error (DECIDED, s11.2): the resolver/builder errors when no UTXO exists at `addr(n)` rather
   than returning EVM's `bytes32(0)`, since on BCH a builder could otherwise force a `0` read by omitting the
   co-spend. No EVM-parity `0` branch.
-- REMAINING: a dedicated co-spend slot. The MVP uses the last-input convention, so one co-spend per tx and
-  no external-library side-car in the same tx - both are guarded with a clear error. A reserved slot (e.g. a
-  commitment-tagged input the read codegen locates by tag, like the multi-data-NFT preamble) lifts both.
+- Composition-safe co-spend slot (DONE): the reader no longer uses `OP_TXINPUTCOUNT OP_1SUB` (the last input
+  belongs to whoever the builder appended last, breaking cross-contract composition). `SynthesizeBlockOracle`
+  flags blockhash functions; SymbolTable injects a hidden `__internal__blockhashInputIndex` BIGINT param
+  (after validating user params - it uses the reserved prefix, like `_externalCallInputBase`); codegen reads
+  `input[that]`. `Contract.createUnlocker` fills it by locating the `C_oracle` co-spend in `sourceOutputs`,
+  and accepts either the visible-arg list (stateless, SDK fills internals) or the full list (stateful
+  orchestrator). The covenant (`output[INPUTINDEX] == input`) is unchanged; the VM re-verifies, so a wrong
+  index just fails.
+- REMAINING: the stateful orchestrator (`StatefulContract`) filling `__internal__blockhashInputIndex` for a
+  stateful blockhash reader; multiple distinct `n` per tx (one co-spend today - the fill locates the first
+  `C_oracle` input); and combining with an external-library side-car (still guarded with a clear error).

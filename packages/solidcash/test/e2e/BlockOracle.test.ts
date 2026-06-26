@@ -727,3 +727,33 @@ describe('blockhash(n) stateful reader', () => {
     expect(tx.txid).toMatch(/^[0-9a-f]{64}$/);
   });
 });
+
+// tx.gasprice: the CURRENT transaction's realized fee rate (sat/KB) = 1000*(sum in - sum out)/tx_size,
+// reconstructed entirely from introspection (no oracle): value loops for the fee, bytecode-size loops +
+// fixed per-element overheads for the size. See block-oracle.md.
+describe('tx.gasprice (current-tx fee rate, sat/KB)', () => {
+  it('lowers to the fee/size formula via introspection loops, no oracle', () => {
+    const g = compileString('contract A(){ function f(int e){ require(tx.gasprice == e); } }');
+    expect(g.bytecode).toContain('OP_UTXOVALUE');                       // sum input sats
+    expect(g.bytecode).toContain('OP_OUTPUTVALUE');                     // sum output sats
+    expect(g.bytecode).toContain('OP_INPUTBYTECODE OP_SIZE OP_NIP');    // sum unlocking-script lengths
+    expect(g.bytecode).toContain('OP_OUTPUTBYTECODE OP_SIZE OP_NIP');   // sum locking-script lengths
+    expect(g.bytecode).toContain('e803 OP_MUL');                        // * 1000
+    expect(g.bytecode).toContain('OP_DIV');                             // / size
+    expect(g.stateLayout).toBeUndefined();                             // current tx only - no oracle register
+  });
+
+  it('computes a positive fee rate on a real spend (loops + introspection execute on the VM)', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString('contract A(){ function f(){ require(tx.gasprice >= 1); } }');
+    const contract = new Contract(artifact, [], { provider });
+    const contractUtxo = await provider.addUtxo(contract.address, randomUtxo({ satoshis: 100000n }));
+    const feeFunder = await createFeeFunder(provider, 20000n);
+    const tx = await new TransactionBuilder({ provider })
+      .addInput(contractUtxo, contract.unlock.f())
+      .addInput(feeFunder.utxo, feeFunder.unlocker)
+      .addOutput({ to: contract.address, amount: 110000n }) // in 120000 - out 110000 = 10000 sat fee
+      .send();
+    expect(tx.txid).toMatch(/^[0-9a-f]{64}$/);
+  });
+});

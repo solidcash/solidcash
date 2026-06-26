@@ -783,6 +783,7 @@ NullaryOp
     | 'msg.sig'
     | 'msg.data'
     | 'tx.origin'
+    | 'tx.gasprice'
     | 'block.chainid'
     | 'block.number'
     | 'block.timestamp'

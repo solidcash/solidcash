@@ -6,6 +6,8 @@ Status: **IMPLEMENTED (compiler + SDK e2e, green).**
   aliases `block.basefee` (no EIP-4844 blobs on BCH; compiler warns). `block.gaslimit` + `gasleft()` are
   fixed shims (`1000000`, no gas metering on BCH; compiler warns). `block.prevrandao` is a transaction-local
   shim (`abs(int(sha256(input[0] prevout txid)))`, no oracle; grindable; compiler warns).
+- `tx.gasprice` - the current transaction's realized fee rate, `1000*(sum in - sum out)/tx_size` sat/KB,
+  reconstructed from introspection (no oracle; tx_size estimated since there is no `OP_TXSIZE`). See s12.
 - Owner-update path: an immutable baked owner key (`__blockOracleOwner`) + an injected
   `__updateBlockOracle(sig, ...fields)` gated by the owner signature and the freshness/anti-over-reporting
   bound `require(tx.time >= number)`.
@@ -419,3 +421,59 @@ warning when `blockhash(...)` feeds modulo/arithmetic is advisable.
   via an explicit probe input + recreate), and the SDK auto-sets the tx locktime to `max(n)` so the
   `require(tx.time >= n)` CLTV passes in both the probe and the final tx (the probe otherwise ran at locktime
   0 and derived wrong state). `blockhash(n)` is feature-complete.
+
+## 12. tx.gasprice - the current transaction's fee rate
+
+Status: **IMPLEMENTED**, no oracle. `tx.gasprice` (`uint`, same nominal type as `block.basefee`) is the
+*current* transaction's realized fee rate in **satoshis per kilobyte**:
+
+```
+tx.gasprice = 1000 * (sum of input satoshis - sum of output satoshis) / tx_size
+            = 1000 * fee / tx_size
+```
+
+It is the EVM `tx.gasprice` reinterpreted for BCH: the sender's chosen price, here expressed as a sat/KB fee
+rate (mirroring how `block.basefee` reinterprets the base fee). Unlike the oracle-backed `block.*` fields,
+**everything is the current transaction**, so it needs no oracle, no co-spend, and no state - it is lowered
+inline from native introspection.
+
+### 12.1 The fee (easy)
+
+`fee = Σ inputs OP_UTXOVALUE(i) - Σ outputs OP_OUTPUTVALUE(j)` - the satoshi value that enters minus what
+leaves (tokens are separate, so this is the real sat fee). Each sum is an `OP_BEGIN`/`OP_UNTIL` loop over
+`OP_TXINPUTCOUNT` / `OP_TXOUTPUTCOUNT` accumulating the per-element value.
+
+### 12.2 The size (the only real work)
+
+There is **no `OP_TXSIZE` opcode**, so the serialized byte size is reconstructed from introspection:
+
+```
+tx_size = header                                  (10 = 4 version + 4 locktime + 2 one-byte count varints)
+        + Σ inputs  [ 41 + len(unlocking_i) ]     (41 = 32 outpoint txid + 4 vout + 4 sequence + 1 length varint)
+        + Σ outputs [ 9  + len(locking_j)   ]      (9  = 8 value + 1 length varint)
+```
+
+`len(unlocking_i) = OP_SIZE(OP_INPUTBYTECODE(i))`, `len(locking_j) = OP_SIZE(OP_OUTPUTBYTECODE(j))`, summed
+in two more loops; the fixed `41*nIn`, `9*nOut`, `10` overheads are added with `OP_TXINPUTCOUNT` /
+`OP_TXOUTPUTCOUNT` outside the loops.
+
+**Estimate, not exact:** the script-length prefix is a Bitcoin **varint** - 1 byte for scripts <= 252 B, 3
+for larger. We assume 1 byte. Contract unlocking scripts (sig + redeem) routinely exceed 252 B, so each such
+script is undercounted by 2 bytes; for a fee *rate* that is negligible (<1% on a typical tx), which is why
+this is `tx_size` as an estimate. The count varints (`nIn`/`nOut`) are always 1 byte for real transactions.
+
+### 12.3 Codegen
+
+`OP_TXINPUTCOUNT` value loop -> `OP_TXOUTPUTCOUNT` value loop -> `OP_SUB` (fee); `OP_TXINPUTCOUNT` size loop
++ `41*nIn` -> `OP_TXOUTPUTCOUNT` size loop + `9*nOut` -> `+10` (size); then `1000 * fee / size`
+(`OP_SWAP 1000 OP_MUL OP_SWAP OP_DIV`). Emitted by `GenerateTargetTraversal.emitTxGasprice` /
+`emitIntrospectionSum`. No circularity: the transaction is final when the VM runs, so every input's
+unlocking script (including the current input's) is fixed and introspectable.
+
+### 12.4 Caveats
+
+- **Units:** sat/KB, **not** wei/gas. Ported code that reasons about EVM gas units must be adapted.
+- **Builder-set:** the fee and size are chosen by the transaction builder - which is *faithful* to EVM
+  (`tx.gasprice` is the sender's price), so it is a real value, not a fake shim. A contract gating on it
+  (`require(tx.gasprice <= X)`) constrains the spender's own fee; that is the intended use.
+- **Integer divide** truncates toward zero (`Floor`), like `block.basefee`.

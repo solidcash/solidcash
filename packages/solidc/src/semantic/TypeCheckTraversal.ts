@@ -1087,6 +1087,15 @@ export default class TypeCheckTraversal extends AstTraversal {
       throw new CastTypeError(node);
     }
 
+    // Solidity-compat `bytes20(address)` / `uint160(address)`: narrows the variable-length address to its
+    // embedded 20-byte hash (see compileCast). Lossy, so warn once at the cast site.
+    if (node.expression.type instanceof AddressType
+      && ((node.type instanceof BytesType && node.type.bound === 20) || node.type instanceof IntType)) {
+      const loc = node.location ? ` at line ${node.location.start.line}` : '';
+      console.log(`Warning: ${node.type}(address)${loc} narrows a variable-length BCH address (a locking `
+        + 'bytecode) to its embedded 20-byte hash; this is lossy and differs from a fixed-width EVM address.');
+    }
+
     // Warn if integer literal exceeds target type's range
     if (node.expression instanceof IntLiteralNode) {
       const litValue = node.expression.value;
@@ -1672,6 +1681,9 @@ export default class TypeCheckTraversal extends AstTraversal {
         return node;
       case NullaryOperator.BLOCK_PREVRANDAO:
         node.type = new IntType(false, 256); // uint256 (a non-negative hash-derived value); see block-oracle.md
+        return node;
+      case NullaryOperator.TX_GASPRICE:
+        node.type = new IntType(false, 32); // uint (sat/KB fee rate), same nominal type as block.basefee
         return node;
       case NullaryOperator.MSG_DATA:
         node.type = new BytesType();

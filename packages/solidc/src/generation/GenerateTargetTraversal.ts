@@ -4257,6 +4257,53 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     return node;
   }
 
+  /**
+   * Sum an introspection value over every input or output, leaving ONE accumulated number on the stack.
+   * countOp = OP_TXINPUTCOUNT | OP_TXOUTPUTCOUNT; perElem consumes the index already on the stack and leaves
+   * one numeric value (e.g. [OP_UTXOVALUE], or [OP_INPUTBYTECODE, OP_SIZE, OP_NIP] for the script length).
+   * Net +1 on the stack; the caller tracks the single result. Loops over indices n-1..0.
+   */
+  private emitIntrospectionSum(countOp: Op, perElem: (Op | Uint8Array)[], loc: SingleLocationData): void {
+    this.emit([
+      countOp,                                  // [n]
+      encodeInt(0n), Op.OP_SWAP,                // [acc=0, counter=n]
+      Op.OP_BEGIN,
+      Op.OP_1SUB,                               // [acc, idx]
+      Op.OP_DUP,                                // [acc, idx, idx]
+      ...perElem,                               // [acc, idx, value]
+      Op.OP_ROT, Op.OP_ADD,                     // [idx, acc+value]
+      Op.OP_SWAP,                               // [acc', counter'=idx]
+      Op.OP_DUP, encodeInt(0n), Op.OP_NUMEQUAL, // [acc', counter', counter'==0]
+      Op.OP_UNTIL,
+      Op.OP_DROP,                               // [acc']
+    ], loc);
+  }
+
+  /**
+   * tx.gasprice: the transaction's realized fee rate in sat/KB - 1000 * (sum input sats - sum output sats) /
+   * tx_size. tx_size is reconstructed from introspection (there is no OP_TXSIZE): header (10 = version 4 +
+   * locktime 4 + two 1-byte count varints) + per input (41 = 32 outpoint txid + 4 vout + 4 sequence + 1
+   * script-length varint) + unlocking length + per output (9 = 8 value + 1 script-length varint) + locking
+   * length. The 1-byte script-length varint is an estimate; a >252-byte script undercounts by 2 bytes,
+   * negligible for a fee rate. Entirely the current tx - no oracle, no co-spend, no state.
+   */
+  private emitTxGasprice(loc: SingleLocationData): void {
+    // fee = sum(input sats) - sum(output sats)
+    this.emitIntrospectionSum(Op.OP_TXINPUTCOUNT, [Op.OP_UTXOVALUE], loc);     // [val_in]
+    this.emitIntrospectionSum(Op.OP_TXOUTPUTCOUNT, [Op.OP_OUTPUTVALUE], loc);  // [val_in, val_out]
+    this.emit(Op.OP_SUB, loc);                                                 // [fee]
+    // in_size = sum(unlocking script len) + 41 * nIn
+    this.emitIntrospectionSum(Op.OP_TXINPUTCOUNT, [Op.OP_INPUTBYTECODE, Op.OP_SIZE, Op.OP_NIP], loc); // [fee, bc_in]
+    this.emit([Op.OP_TXINPUTCOUNT, encodeInt(41n), Op.OP_MUL, Op.OP_ADD], loc);     // [fee, in_size]
+    // out_size = sum(locking script len) + 9 * nOut
+    this.emitIntrospectionSum(Op.OP_TXOUTPUTCOUNT, [Op.OP_OUTPUTBYTECODE, Op.OP_SIZE, Op.OP_NIP], loc); // [fee, in_size, bc_out]
+    this.emit([Op.OP_TXOUTPUTCOUNT, encodeInt(9n), Op.OP_MUL, Op.OP_ADD], loc);     // [fee, in_size, out_size]
+    // size = in_size + out_size + 10 (header)
+    this.emit([Op.OP_ADD, encodeInt(10n), Op.OP_ADD], loc);                         // [fee, size]
+    // gasprice = 1000 * fee / size
+    this.emit([Op.OP_SWAP, encodeInt(1000n), Op.OP_MUL, Op.OP_SWAP, Op.OP_DIV], loc); // [gasprice]
+  }
+
   visitNullaryOp(node: NullaryOpNode): Node {
     const locationData = { location: node.location, positionHint: PositionHint.START };
 
@@ -4285,6 +4332,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         // BCH; grindable by the tx-builder (SynthesizeBlockOracle warns; see docs/block-oracle.md). ABS
         // makes the 32-byte hash a non-negative uint so `prevrandao % N` behaves.
         this.emit([Op.OP_0, Op.OP_OUTPOINTTXHASH, Op.OP_SHA256, Op.OP_BIN2NUM, Op.OP_ABS], locationData);
+        break;
+      case NullaryOperator.TX_GASPRICE:
+        this.emitTxGasprice(locationData);
         break;
       default:
         this.emit(compileNullaryOp(node.operator), locationData);

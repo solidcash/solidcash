@@ -11,6 +11,7 @@ export enum NullaryOperator {
   MSG_SIG = 'msg.sig',
   MSG_DATA = 'msg.data',
   TX_ORIGIN = 'tx.origin',
+  TX_GASPRICE = 'tx.gasprice',
   CHAIN_ID = 'block.chainid',
   BLOCK_NUMBER = 'block.number',
   BLOCK_TIMESTAMP = 'block.timestamp',

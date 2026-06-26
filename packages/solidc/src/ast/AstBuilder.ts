@@ -508,9 +508,17 @@ export default class AstBuilder
   }
 
   visitContractDefinition(ctx: ContractDefinitionContext): ContractNode {
-    const identifiers = ctx.Identifier_list();
-    const name = identifiers[0].getText();
-    const implementsList = identifiers.slice(1).map((id) => id.getText());
+    const name = ctx.Identifier().getText();
+    const specs = ctx.inheritanceSpecifier_list();
+    const implementsList = specs.map((s) => s.Identifier().getText());
+    // Inheritance-list constructor args (`is X("a")`) -> parent invocations, same as a constructor-level X("a").
+    const inheritanceInvocations: ParentInvocation[] = specs
+      .filter((s) => s.expressionList() !== null)
+      .map((s) => ({
+        parentName: s.Identifier().getText(),
+        args: s.expressionList()!.expression_list().map((e) => this.visit(e) as ExpressionNode),
+        location: Location.fromCtx(s),
+      }));
     const parameters = ctx.parameterList()
       ? ctx.parameterList()!.parameter_list().map((p) => this.visit(p) as ParameterNode)
       : [];
@@ -659,7 +667,7 @@ export default class AstBuilder
     contract.receiveDef = receiveDef;
     contract.isAbstract = ctx.children?.some((c) => c.getText() === 'abstract') === true;
     contract.implements = implementsList;
-    contract.parentInvocations = this.pendingParentInvocations;
+    contract.parentInvocations = [...inheritanceInvocations, ...this.pendingParentInvocations];
     this.pendingParentInvocations = [];
     contract.location = Location.fromCtx(ctx);
     return contract;

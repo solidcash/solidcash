@@ -26,6 +26,7 @@ import { InterfaceStateVariableVisibilityContext } from "./SolidCashParser.js";
 import { InterfaceFunctionContext } from "./SolidCashParser.js";
 import { LibraryDefinitionContext } from "./SolidCashParser.js";
 import { ContractDefinitionContext } from "./SolidCashParser.js";
+import { InheritanceSpecifierContext } from "./SolidCashParser.js";
 import { AbstractFunctionDefinitionContext } from "./SolidCashParser.js";
 import { EventDefinitionContext } from "./SolidCashParser.js";
 import { EventParameterContext } from "./SolidCashParser.js";
@@ -313,6 +314,12 @@ export default class SolidCashVisitor<Result> extends ParseTreeVisitor<Result> {
 	 * @return the visitor result
 	 */
 	visitContractDefinition?: (ctx: ContractDefinitionContext) => Result;
+	/**
+	 * Visit a parse tree produced by `SolidCashParser.inheritanceSpecifier`.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	visitInheritanceSpecifier?: (ctx: InheritanceSpecifierContext) => Result;
 	/**
 	 * Visit a parse tree produced by `SolidCashParser.abstractFunctionDefinition`.
 	 * @param ctx the parse tree

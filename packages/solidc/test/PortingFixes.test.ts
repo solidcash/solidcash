@@ -932,3 +932,26 @@ describe('SBE-17: this.<fn>.selector resolves to the function selector (bytes4)'
     expect(a.contractName).toBe('C');
   });
 });
+
+describe('SBE-18: parent-constructor args (inheritance-list + constructor-level) inline the parent ctor body', () => {
+  const BASES = 'contract X { string nm; constructor(string _n) { nm = _n; } }'
+    + ' contract Y { string tt; constructor(string _t) { tt = _t; } }';
+  it('inheritance-list args: contract B is X("a"), Y("b")', () => {
+    expect(compileString(`${BASES} contract B is X("a"), Y("b") {}`, { solidityImportCompat: true }).contractName)
+      .toBe('B');
+  });
+  it('constructor-level args: constructor() X("a") Y("b")', () => {
+    expect(compileString(`${BASES} contract E is X, Y { constructor() X("a") Y("b") {} }`,
+      { solidityImportCompat: true }).contractName).toBe('E');
+  });
+  it('inlines + substitutes the parent ctor body (a wrong-typed arg is a type error)', () => {
+    expect(() => compileString(
+      'contract Base { int b; constructor(int _x) { b = _x; } } contract C is Base { constructor() Base("oops") {} }',
+      { solidityImportCompat: true })).toThrow();
+  });
+  it('checks the parent ctor arg count against the parent constructor params', () => {
+    expect(() => compileString(
+      'contract Base { int b; constructor(int _x) { b = _x; } } contract C is Base { constructor() Base(1, 2) {} }',
+      { solidityImportCompat: true })).toThrow(/expects 1/);
+  });
+});

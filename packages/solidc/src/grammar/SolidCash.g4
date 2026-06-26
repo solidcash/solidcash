@@ -89,7 +89,12 @@ libraryDefinition
     ;
 
 contractDefinition
-    : 'abstract'? 'contract' Identifier parameterList? ('is' Identifier (',' Identifier)*)? '{' (enumDefinition | structDefinition | typeDefinition | eventDefinition | errorDefinition | constantDefinition | usingForDirective | stateVariableDeclaration | modifierDefinition | constructorDefinition | functionDefinition | abstractFunctionDefinition | fallbackDefinition | receiveDefinition)* '}'
+    : 'abstract'? 'contract' Identifier parameterList? ('is' inheritanceSpecifier (',' inheritanceSpecifier)*)? '{' (enumDefinition | structDefinition | typeDefinition | eventDefinition | errorDefinition | constantDefinition | usingForDirective | stateVariableDeclaration | modifierDefinition | constructorDefinition | functionDefinition | abstractFunctionDefinition | fallbackDefinition | receiveDefinition)* '}'
+    ;
+
+// A base contract in the inheritance list, optionally with constructor args: `is X("a"), Y`.
+inheritanceSpecifier
+    : Identifier expressionList?
     ;
 
 abstractFunctionDefinition

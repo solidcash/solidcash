@@ -3,6 +3,7 @@ import {
   SourceFileNode,
   ContractNode,
   FunctionDefinitionNode,
+  ParameterNode,
   FunctionModifier,
   ExpressionNode,
   IdentifierNode,
@@ -210,6 +211,8 @@ function expandContract(
     mergeParent(contract, parent);
   }
 
+  inlineParentConstructors(contract, parentNames, contractMap);
+
   expanding.delete(contract.name);
   expanded.add(contract.name);
 
@@ -218,20 +221,56 @@ function expandContract(
 }
 
 /**
+ * Inline parent constructor bodies into the child constructor. Solidity runs base constructors first, in the
+ * order the parents are listed (`is X, Y` -> X then Y), each with the args from its matching invocation
+ * (constructor-level `X(args)` or inheritance-list `is X(args)`). Parents are already expanded, so a parent's
+ * own parents' ctors are already inlined into it. Only invoked parents are inlined - that path previously failed
+ * the arg-count check, so this is purely additive (existing inheritance without parent-ctor-args is untouched).
+ */
+function inlineParentConstructors(
+  contract: ContractNode,
+  parentNames: string[],
+  contractMap: Map<string, ContractNode>,
+): void {
+  const parentStmts: StatementNode[] = [];
+  for (const parentName of parentNames) {
+    const invocation = contract.parentInvocations.find((pi) => pi.parentName === parentName);
+    if (!invocation) continue;
+    const parent = contractMap.get(parentName)!;
+    if (!parent.constructorDef?.body?.statements?.length) continue;
+    const ctorParams = effectiveConstructorParams(parent);
+    const clonedCtor = cloneNode(parent.constructorDef);
+    substituteInFunction(clonedCtor, new Map(ctorParams.map((p, i) => [p.name, invocation.args[i]])));
+    parentStmts.push(...(clonedCtor.body.statements ?? []));
+  }
+  if (parentStmts.length === 0) return;
+
+  if (!contract.constructorDef) {
+    const body = new BlockNode([]);
+    body.location = contract.location;
+    contract.constructorDef = new FunctionDefinitionNode('__construct', [], body);
+    contract.constructorDef.location = contract.location;
+  }
+  contract.constructorDef.body.statements = [...parentStmts, ...(contract.constructorDef.body.statements ?? [])];
+}
+
+/**
  * Merge a parent contract's definitions into a child contract.
  */
 function mergeParent(child: ContractNode, parent: ContractNode): void {
   const invocation = child.parentInvocations.find((pi) => pi.parentName === parent.name);
 
-  // Build substitution map if explicit invocation exists
+  // Build substitution map if explicit invocation exists. A Solidity-style parent declares its constructor
+  // params in `constructor(...)` (parent.constructorDef.parameters), not the contract-level params.
+  const ctorParams = effectiveConstructorParams(parent);
   let subs: Map<string, ExpressionNode> | undefined;
   if (invocation) {
-    if (invocation.args.length !== parent.parameters.length) {
+    if (invocation.args.length !== ctorParams.length) {
       throw new ParentInvocationArgCountError(
-        child, parent.name, parent.parameters.length, invocation.args.length,
+        child, parent.name, ctorParams.length, invocation.args.length,
       );
     }
-    subs = new Map(parent.parameters.map((p, i) => [p.name, invocation.args[i]]));
+    subs = new Map(ctorParams.map((p, i) => [p.name, invocation.args[i]]));
   }
 
   // 1. Merge functions (with optional substitution)
@@ -450,6 +489,14 @@ class SuperCallRewriter extends AstTraversal {
  * Merge constructor params: prepend parent params to child params.
  * Skip params that already exist in the child (by name).
  */
+/**
+ * The params a constructor invocation must match: contract-level params (native `contract X(p)`) if any, else
+ * the `constructor(p)` params (Solidity style declares them there, not on the contract).
+ */
+function effectiveConstructorParams(c: ContractNode): ParameterNode[] {
+  return c.parameters.length > 0 ? c.parameters : (c.constructorDef?.parameters ?? []);
+}
+
 function mergeConstructorParams(child: ContractNode, parent: ContractNode): void {
   if (parent.parameters.length === 0) return;
 

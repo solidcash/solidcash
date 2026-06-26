@@ -1486,6 +1486,14 @@ export function buildBlockhashCommitment(n: bigint, hash: Uint8Array): Uint8Arra
   return Uint8Array.from([...n4, ...hash]);
 }
 
+// Decode the block number from a (n->hash) oracle commitment: the first 4 bytes, little-endian (the inverse
+// of buildBlockhashCommitment). Used to match a co-spent oracle UTXO to a blockhash(n) reader.
+export function blockhashCommitmentNumber(commitment: Uint8Array): bigint {
+  let n = 0n;
+  for (let i = 0; i < 4 && i < commitment.length; i++) n |= BigInt(commitment[i]) << BigInt(8 * i);
+  return n;
+}
+
 /**
  * Build the token container covenant script for holding foreign tokens on behalf
  * of a stateful master contract.

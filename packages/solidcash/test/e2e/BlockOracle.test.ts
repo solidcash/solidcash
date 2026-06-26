@@ -555,6 +555,33 @@ describe('blockhash(n) auto-injection (SDK)', () => {
       .send();
     expect(tx.txid).toMatch(/^[0-9a-f]{64}$/);
   });
+
+  // Multiple readers with different n in one tx: the builder auto-injects both co-spends and each reader's
+  // unlocker resolves its own by commitment.n (not position).
+  it('auto-injects and matches multiple readers, each to its own n', async () => {
+    const provider = createTestProvider();
+    const contract = new Contract(compileString(SRC, { blockhashOracleCategory: BH_CAT }), [], { provider });
+    const utxoA = await provider.addUtxo(contract.address, randomUtxo({ satoshis: 100000n }));
+    const utxoB = await provider.addUtxo(contract.address, randomUtxo({ satoshis: 100000n }));
+
+    const n1 = 100000n; const n2 = 100001n; // both <= mock tip 133700
+    const h1 = hexToBin('a1'.repeat(32)); const h2 = hexToBin('b2'.repeat(32));
+    const seed = async (n: bigint, h: Uint8Array, txid: string): Promise<void> => {
+      const addrN = blockhashOracleLockingBytecode(hexToBin(BH_CAT), n);
+      const token = { category: BH_CAT, amount: 0n, nft: { capability: 'none' as const, commitment: binToHex(buildBlockhashCommitment(n, h)) } };
+      await provider.addUtxo(binToHex(addrN), { txid, vout: 0, satoshis: 1000n, token });
+    };
+    await seed(n1, h1, 'a1'.repeat(32));
+    await seed(n2, h2, 'b2'.repeat(32));
+
+    const tx = await new TransactionBuilder({ provider })
+      .addInput(utxoA, contract.unlock.f(n1, h1)) // reader for n1
+      .addInput(utxoB, contract.unlock.f(n2, h2)) // reader for n2
+      .addOutput({ to: contract.address, amount: 99000n })
+      .addOutput({ to: contract.address, amount: 99000n })
+      .send(); // auto-injects co-spend(n1) at input/output 2 + co-spend(n2) at input/output 3
+    expect(tx.txid).toMatch(/^[0-9a-f]{64}$/);
+  });
 });
 
 // Keeper minting: spend a C_oracle minting master to mint the (n,hash) oracle UTXO at addr(n). Master held

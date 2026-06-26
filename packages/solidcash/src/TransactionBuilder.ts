@@ -190,14 +190,14 @@ export class TransactionBuilder {
   }
 
   /**
-   * Auto-co-spend the (n->hash) oracle UTXO for any contract input whose spent function reads blockhash(n)
-   * with a direct param argument (abi.blockhashReads). The UTXO is appended as the LAST input (the read
-   * codegen reads the last input) and self-preservingly recreated at the matching output index; tx.time is
-   * bumped to n (the read's require(tx.time >= n)). Auto-invoked by send() before sidecars.
+   * Auto-co-spend the (n->hash) oracle UTXO for every contract input whose spent function reads blockhash(n)
+   * with a direct param argument (abi.blockhashReads). Each distinct n is appended as an input and
+   * self-preservingly recreated at the matching output index; tx.time is bumped to max(n). Auto-invoked by
+   * send() before sidecars. The reader locates its co-spend by the synthesized index param (matched on
+   * commitment.n), NOT by position, so this composes freely - multiple readers, and an external-library
+   * side-car (which the keccak loader reads as the last input) in the same tx.
    *
-   * MVP scope: one co-spend per tx (the last-input convention holds one), not combinable with an external-
-   * library side-car in the same tx (both claim the last input). Computed n, multiple n, or the side-car
-   * combo are wired via resolveBlockhashCoSpend manually; the dedicated co-spend slot lifts these limits.
+   * Computed n (not a direct identifier) is wired via resolveBlockhashCoSpend manually.
    */
   async addRequiredBlockhashCoSpends(): Promise<this> {
     // Distinct n required by contract inputs reading blockhash(<param>).
@@ -216,33 +216,25 @@ export class TransactionBuilder {
         distinct.set(`${category}:${arg}`, { n: arg, category });
       }
     }
-    if (distinct.size === 0) return this;
-    if (distinct.size > 1) {
-      throw new Error('Multiple distinct blockhash(n) co-spends in one transaction are not yet supported '
-        + '(the last-input convention holds one); wire resolveBlockhashCoSpend manually.');
-    }
-    if (this.inputs.some((i) => isUnlockableUtxo(i) && isContractUnlocker(i.unlocker)
-      && (i.unlocker.abiFunction.externalLibraries?.length ?? 0) > 0)) {
-      throw new Error('blockhash(n) combined with an external-library side-car in one tx is not yet supported '
-        + '(both claim the last input); the dedicated co-spend slot lifts this.');
-    }
 
-    const { n, category } = [...distinct.values()][0];
-    const cospend = await resolveBlockhashCoSpend(this.provider, category, n);
-    if (!cospend) {
-      throw new Error(`No (n->hash) oracle UTXO at addr(${n}); it is outside the 256-block window or unpublished.`);
-    }
-    const outpoint = `${cospend.utxo.txid}:${cospend.utxo.vout}`;
-    if (this.inputs.some((i) => `${i.txid}:${i.vout}` === outpoint)) return this; // already co-spent (manual)
+    for (const { n, category } of distinct.values()) {
+      const cospend = await resolveBlockhashCoSpend(this.provider, category, n);
+      if (!cospend) {
+        throw new Error(`No (n->hash) oracle UTXO at addr(${n}); it is outside the 256-block window or unpublished.`);
+      }
+      const outpoint = `${cospend.utxo.txid}:${cospend.utxo.vout}`;
+      if (this.inputs.some((i) => `${i.txid}:${i.vout}` === outpoint)) continue; // already co-spent (manual)
 
-    // The recreate must land at output index == the co-spend input index (covenant output[INPUTINDEX]).
-    if (this.inputs.length !== this.outputs.length) {
-      throw new Error('blockhash(n) auto co-spend needs inputs.length == outputs.length so the oracle recreate '
-        + 'aligns with its input index; balance the tx or wire resolveBlockhashCoSpend manually.');
+      // The recreate must land at output index == the co-spend input index (covenant output[INPUTINDEX]).
+      // Appending input+output in lockstep keeps them aligned as long as the tx starts balanced.
+      if (this.inputs.length !== this.outputs.length) {
+        throw new Error('blockhash(n) auto co-spend needs inputs.length == outputs.length so the oracle recreate '
+          + 'aligns with its input index; balance the tx or wire resolveBlockhashCoSpend manually.');
+      }
+      this.addInput(cospend.utxo, cospend.unlocker);  // (n->hash) oracle NFT (located by its index param)
+      this.addOutput(cospend.recreateOutput);         // self-preserving recreate at the matching index
+      if (this.locktime < cospend.locktime) this.locktime = cospend.locktime; // require(tx.time >= n)
     }
-    this.addInput(cospend.utxo, cospend.unlocker);  // last input = (n->hash) oracle NFT
-    this.addOutput(cospend.recreateOutput);         // self-preserving recreate at the matching index
-    if (this.locktime < cospend.locktime) this.locktime = cospend.locktime; // require(tx.time >= n)
     return this;
   }
 

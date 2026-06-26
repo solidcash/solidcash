@@ -400,6 +400,8 @@ export function generateArtifact(
         enforceFunctionParameterTypes: compilerOptions.enforceFunctionParameterTypes,
         enforceLocktimeGuard: compilerOptions.enforceLocktimeGuard,
         commitmentLimit: compilerOptions.commitmentLimit,
+        // The (n->hash) oracle category, needed by the SDK to auto-resolve blockhash(n) co-spends.
+        ...(compilerOptions.blockhashOracleCategory && { blockhashOracleCategory: compilerOptions.blockhashOracleCategory }),
       },
     },
     updatedAt: new Date().toISOString(),

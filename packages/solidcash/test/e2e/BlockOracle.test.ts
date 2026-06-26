@@ -492,6 +492,50 @@ describe('blockhash(n) e2e (real (n->hash) covenant)', () => {
   });
 });
 
+// Auto-injection: the builder reads abi.blockhashReads + the call args, resolves addr(n), and co-spends the
+// (n->hash) UTXO as the last input + self-preserving recreate - no manual resolveBlockhashCoSpend wiring.
+describe('blockhash(n) auto-injection (SDK)', () => {
+  const N = 100000n;
+  const H = hexToBin('aa'.repeat(32));
+  const SRC = 'contract B(){ function f(int bn, bytes32 h){ require(blockhash(bn) == h); } }';
+
+  async function setup() {
+    const provider = createTestProvider();
+    const contract = new Contract(compileString(SRC, { blockhashOracleCategory: BH_CAT }), [], { provider });
+    const contractUtxo = await provider.addUtxo(contract.address, randomUtxo({ satoshis: 100000n }));
+    const addrN = blockhashOracleLockingBytecode(hexToBin(BH_CAT), N);
+    const token = { category: BH_CAT, amount: 0n, nft: { capability: 'none' as const, commitment: binToHex(buildBlockhashCommitment(N, H)) } };
+    await provider.addUtxo(binToHex(addrN), { txid: '77'.repeat(32), vout: 0, satoshis: 1000n, token });
+    return { provider, contract, contractUtxo };
+  }
+
+  it('persists blockhashOracleCategory in the artifact for the SDK', () => {
+    const artifact = compileString(SRC, { blockhashOracleCategory: BH_CAT });
+    expect(artifact.compiler.options?.blockhashOracleCategory).toBe(BH_CAT);
+  });
+
+  it('auto-co-spends the (n->hash) UTXO from the call args (no manual wiring)', async () => {
+    const { provider, contract, contractUtxo } = await setup();
+    const tx = await new TransactionBuilder({ provider })
+      .addInput(contractUtxo, contract.unlock.f(N, H))
+      .addOutput({ to: contract.address, amount: 99000n })
+      .send();
+    expect(tx.txid).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it('errors clearly when no (n->hash) UTXO exists at addr(n)', async () => {
+    const provider = createTestProvider();
+    const contract = new Contract(compileString(SRC, { blockhashOracleCategory: BH_CAT }), [], { provider });
+    const contractUtxo = await provider.addUtxo(contract.address, randomUtxo({ satoshis: 100000n }));
+    await expect(
+      new TransactionBuilder({ provider })
+        .addInput(contractUtxo, contract.unlock.f(N, H))
+        .addOutput({ to: contract.address, amount: 99000n })
+        .send(),
+    ).rejects.toThrow(/No \(n->hash\) oracle UTXO/);
+  });
+});
+
 // Keeper minting: spend a C_oracle minting master to mint the (n,hash) oracle UTXO at addr(n). Master held
 // at a trivial anyone-can-spend p2sh32 (OP_1) for the test; production gates it on the keeper key.
 const MASTER_LBC = hexToBin('aa20953ccfa596a6c6d39e5980194539124fdcff116a571455a212baed811f585ee087');

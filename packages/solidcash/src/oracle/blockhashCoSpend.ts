@@ -2,7 +2,7 @@ import { hexToBin } from '@bitauth/libauth';
 import {
   blockhashOracleLockingBytecode, buildBlockhashOracleCovenantScript, scriptToBytecode,
 } from '@solidcash/utils';
-import { NetworkProvider } from '../network/NetworkProvider.js';
+import { NetworkProvider } from '../network/index.js';
 import { Utxo, Unlocker, Output } from '../interfaces.js';
 
 /**

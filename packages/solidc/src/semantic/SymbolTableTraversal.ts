@@ -949,6 +949,19 @@ export default class SymbolTableTraversal extends AstTraversal {
       }
     }
 
+    // blockhash(n): inject the hidden co-spend input-index param (flagged by SynthesizeBlockOracle). The read
+    // codegen reads input[this] rather than the last input, so it survives cross-contract composition; the
+    // SDK fills it by locating the C_oracle co-spend.
+    if (node.usesBlockhash) {
+      const idxParam = new ParameterNode(PrimitiveType.BIGINT, '__internal__blockhashInputIndex');
+      idxParam.location = node.location;
+      node.parameters.push(idxParam);
+      this.symbolTables[0].set(Symbol.variable(idxParam));
+      const sym = this.symbolTables[0].get('__internal__blockhashInputIndex');
+      if (sym) sym.references.push({ name: '__internal__blockhashInputIndex' } as IdentifierNode);
+      this.pushToStack(idxParam);
+    }
+
     // External-library pre-scan: record which libraries the function calls and how many times, so codegen
     // loads each one's blob (side-car or inline) and the inline decision has call counts.
     const libraryCallCounts = this.countLibraryCalls(node.body);

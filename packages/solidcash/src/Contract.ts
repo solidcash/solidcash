@@ -15,7 +15,7 @@ import {
   ConstructorArgument, encodeFunctionArgument, encodeConstructorArguments, FunctionArgument,
 } from './Argument.js';
 import {
-  Unlocker, ContractOptions, GenerateUnlockingBytecodeOptions, Utxo, AddressType, ContractUnlocker,
+  Unlocker, ContractOptions, GenerateUnlockingBytecodeOptions, Utxo, AddressType, ContractUnlocker, LibauthOutput,
 } from './interfaces.js';
 import NetworkProvider from './network/NetworkProvider.js';
 import {
@@ -255,9 +255,15 @@ export class Contract<
 
   private createUnlocker(abiFunction: AbiFunction, selector?: Uint8Array): ContractFunctionUnlocker {
     return (...args: FunctionArgument[]) => {
-      if (abiFunction.inputs.length !== args.length) {
-        throw new Error(`Incorrect number of arguments passed to function ${abiFunction.name}. Expected ${abiFunction.inputs.length} arguments (${abiFunction.inputs.map((input) => input.type)}) but got ${args.length}`);
+      // __internal__ params (e.g. the blockhash co-spend index) are SDK-filled. Stateless callers pass only
+      // the visible args and the unlocker fills the internals; the stateful orchestrator passes the full
+      // list already filled. Accept either shape.
+      const visibleInputs = abiFunction.inputs.filter((input) => !input.name.startsWith('__internal__'));
+      if (args.length !== visibleInputs.length && args.length !== abiFunction.inputs.length) {
+        throw new Error(`Incorrect number of arguments passed to function ${abiFunction.name}. Expected ${visibleInputs.length} arguments (${visibleInputs.map((input) => input.type)}) but got ${args.length}`);
       }
+      const internalsProvided = args.length === abiFunction.inputs.length && abiFunction.inputs.length !== visibleInputs.length;
+      const argInputs = internalsProvided ? abiFunction.inputs : visibleInputs;
 
       const bytecode = hexToBin(this.bytecode);
 
@@ -270,7 +276,7 @@ export class Contract<
         : bytecode;
 
       const encodedArgs = args
-        .map((arg, i) => encodeFunctionArgument(arg, abiFunction.inputs[i].type));
+        .map((arg, i) => encodeFunctionArgument(arg, argInputs[i].type));
 
       const generateUnlockingBytecode = (
         { transaction, sourceOutputs, inputIndex }: GenerateUnlockingBytecodeOptions,
@@ -284,11 +290,16 @@ export class Contract<
           return arg.generateSignature(sighash);
         });
 
+        // Fill the synthesized blockhash co-spend index (locate the C_oracle UTXO among the spent inputs);
+        // composition-safe - the reader does not assume the last input. Appended after the visible args.
+        // Skipped when the caller already provided the full arg list (stateful orchestrator).
+        const synthArgs = internalsProvided ? [] : this.resolveBlockhashIndexArgs(abiFunction, sourceOutputs);
+
         // External-library contracts get a budget pad pushed on top (dropped by the redeem's OP_DROP),
         // sizing the per-input op budget to the keccak computation.
         const finalArgs = this.usesExternalLibraries
-          ? [this.budgetPad(abiFunction, args), ...completeArgs]
-          : completeArgs;
+          ? [this.budgetPad(abiFunction, args), ...completeArgs, ...synthArgs]
+          : [...completeArgs, ...synthArgs];
 
         const unlockingBytecode = createUnlockingBytecode(this.addressType, hexToBin(this.bytecode), finalArgs, selector);
         return unlockingBytecode;
@@ -298,6 +309,23 @@ export class Contract<
 
       return { generateUnlockingBytecode, generateLockingBytecode, contract: this, params: args, abiFunction };
     };
+  }
+
+  // Resolve the synthesized blockhash co-spend index: locate the co-spent (n->hash) oracle UTXO (token
+  // category == blockhashOracleCategory) among the spent inputs and return its index as the
+  // __internal__blockhashInputIndex arg. Empty when the function reads no blockhash. The VM re-verifies
+  // category + commitment.n, so a wrong index just fails the script (sound regardless of placement).
+  private resolveBlockhashIndexArgs(abiFunction: AbiFunction, sourceOutputs: LibauthOutput[]): Uint8Array[] {
+    const bhIdx = abiFunction.inputs.find((inp) => inp.name === '__internal__blockhashInputIndex');
+    if (!bhIdx) return [];
+    const category = this.artifact.compiler.options?.blockhashOracleCategory;
+    if (!category) throw new Error('blockhash(n): contract compiled without blockhashOracleCategory');
+    const index = sourceOutputs.findIndex((so) => so.token && binToHex(so.token.category) === category);
+    if (index < 0) {
+      throw new Error(`blockhash(n): no (n->hash) oracle UTXO co-spent (token category ${category}); add it `
+        + 'via the TransactionBuilder auto-injection or resolveBlockhashCoSpend.');
+    }
+    return [encodeFunctionArgument(BigInt(index), bhIdx.type) as Uint8Array];
   }
 
   // Size the budget pad for a call. keccak256 functions need the per-input op budget raised

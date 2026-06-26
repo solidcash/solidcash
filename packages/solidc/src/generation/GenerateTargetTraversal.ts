@@ -3291,9 +3291,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         if (!reads.includes(nArg.name)) reads.push(nArg.name);
       }
       node.parameters[0] = this.visit(node.parameters[0]); // [n]
+      // The co-spend input index comes from the synthesized __internal__blockhashInputIndex param (the SDK
+      // locates the C_oracle co-spend and fills it), NOT OP_TXINPUTCOUNT OP_1SUB - the last input belongs to
+      // whoever the builder appended last, which breaks under cross-contract composition. Depth is computed
+      // with [n] on top; the DUP/CLTV/DROP below is net-zero so the stack is still [n] at the OP_PICK.
+      const idxDepth = this.getStackIndex('__internal__blockhashInputIndex');
       this.emit([
-        Op.OP_DUP, Op.OP_CHECKLOCKTIMEVERIFY, Op.OP_DROP, // require(tx.time >= n)
-        Op.OP_TXINPUTCOUNT, Op.OP_1SUB, // last input index
+        Op.OP_DUP, Op.OP_CHECKLOCKTIMEVERIFY, Op.OP_DROP, // require(tx.time >= n), [n]
+        encodeInt(BigInt(idxDepth)), Op.OP_PICK, // co-spend input index (composition-safe), [n, idx]
         Op.OP_DUP, Op.OP_UTXOTOKENCATEGORY, catInternal, Op.OP_EQUALVERIFY, // category == C_oracle
         Op.OP_UTXOTOKENCOMMITMENT, encodeInt(4n), Op.OP_SPLIT, // [n, n4, hash32]
         Op.OP_SWAP, Op.OP_BIN2NUM, // [n, hash32, commitment.n]

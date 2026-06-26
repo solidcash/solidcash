@@ -67,14 +67,29 @@ export default class SynthesizeBlockOracle extends AstTraversal {
   // Set when the contract references blockhash(n): surfaced to the artifact so the keeper knows to
   // maintain the project-global (n->hash) oracle (docs/block-oracle.md).
   usesBlockhash = false;
+  private fnUsesBlockhash = false;
 
   constructor(private readonly solidityImportCompat = false) {
     super();
   }
 
   visitFunctionCall(node: FunctionCallNode): Node {
-    if (node.identifier.name === GlobalFunction.BLOCKHASH) this.usesBlockhash = true;
+    if (node.identifier.name === GlobalFunction.BLOCKHASH) {
+      this.usesBlockhash = true;
+      this.fnUsesBlockhash = true;
+    }
     return super.visitFunctionCall(node);
+  }
+
+  // Flag a function reading blockhash(n); SymbolTable injects the hidden co-spend input-index param after
+  // it has validated the user params (the param uses the reserved __internal__ prefix).
+  visitFunctionDefinition(node: FunctionDefinitionNode): Node {
+    const prev = this.fnUsesBlockhash;
+    this.fnUsesBlockhash = false;
+    const result = super.visitFunctionDefinition(node) as FunctionDefinitionNode;
+    if (this.fnUsesBlockhash) result.usesBlockhash = true;
+    this.fnUsesBlockhash = prev;
+    return result;
   }
 
   visitSourceFile(node: SourceFileNode): Node {

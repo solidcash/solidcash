@@ -534,6 +534,27 @@ describe('blockhash(n) auto-injection (SDK)', () => {
         .send(),
     ).rejects.toThrow(/No \(n->hash\) oracle UTXO/);
   });
+
+  // Composition: the co-spend is NOT the last input (an unrelated input trails it). The reader locates it by
+  // its synthesized index param, not OP_TXINPUTCOUNT OP_1SUB - which would read the trailing input and fail.
+  it('reads the co-spend by index when it is not the last input (composition-safe)', async () => {
+    const { provider, contract, contractUtxo } = await setup();
+    const cospend = await resolveBlockhashCoSpend(provider, BH_CAT, N);
+    if (!cospend) throw new Error('co-spend seeded by setup()');
+    const trailing = { txid: '99'.repeat(32), vout: 0, satoshis: 5000n };
+    await provider.addUtxo(binToHex(MASTER_LBC), trailing); // anyone-can-spend OP_1 p2sh, no token
+
+    const tx = await new TransactionBuilder({ provider })
+      .addInput(contractUtxo, contract.unlock.f(N, H)) // input 0: the reader
+      .addInput(cospend.utxo, cospend.unlocker) // input 1: (n->hash) co-spend (NOT last)
+      .addInput(trailing, { generateLockingBytecode: () => MASTER_LBC, generateUnlockingBytecode: () => MASTER_UNLOCK })
+      .addOutput({ to: contract.address, amount: 99000n }) // output 0
+      .addOutput(cospend.recreateOutput) // output 1: recreate (covenant output[1] == input[1])
+      .addOutput({ to: aliceAddress, amount: 4000n }) // output 2
+      .setLocktime(Number(N))
+      .send();
+    expect(tx.txid).toMatch(/^[0-9a-f]{64}$/);
+  });
 });
 
 // Keeper minting: spend a C_oracle minting master to mint the (n,hash) oracle UTXO at addr(n). Master held

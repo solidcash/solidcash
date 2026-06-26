@@ -197,6 +197,9 @@ export class FunctionDefinitionNode extends Node implements Named {
   // Function parameters whose value feeds blockhash(n); recorded during codegen. SDK reads the arg to resolve
   // addr(n) and co-spend the (n->hash) oracle UTXO as a trailing input (mirrors dynamicReads auto-injection).
   blockhashReads?: string[];
+  // Set by SynthesizeBlockOracle when the function reads blockhash(n); SymbolTable then injects the hidden
+  // __internal__blockhashInputIndex param (the co-spend's input index) so the read survives composition.
+  usesBlockhash?: boolean;
   modifiers: FunctionModifier[] = [];
   customModifiers: CustomModifierInvocation[] = [];
   returnTypes: Type[] = [];

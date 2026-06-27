@@ -2,7 +2,7 @@ import {
   StateLayout, parsePushdataCommitment, EventDefinitionAbi, decodePushdataValue,
   StateValue, StateRecord, isMultiDataNftLayout,
   parseChunkCommitment, joinChunks, dynamicLenKey,
-  parseArrayTypeString, isFixedWidthType, unpackFixedWidthArray,
+  parseArrayTypeString, isFixedWidthType, unpackFixedWidthArray, decodePackedEventArray,
 } from '@solidcash/utils';
 import { hexToBin, binsAreEqual, binToUtf8 } from '@bitauth/libauth';
 import { Utxo } from '../interfaces.js';
@@ -285,7 +285,9 @@ export function parseEventCommitment(
   let offset = 0;
 
   for (const param of eventDef.parameters) {
-    const { value, bytesConsumed } = decodePushdataValue(data, offset, param.type, structs);
+    const { value, bytesConsumed } = parseArrayTypeString(param.type)
+      ? decodePackedEventArray(data, offset, param.type, structs)
+      : decodePushdataValue(data, offset, param.type, structs);
     result[param.name] = value;
     offset += bytesConsumed;
   }
@@ -370,7 +372,9 @@ export function tryParseEventCommitment(
 
     for (const param of eventDef.parameters) {
       if (offset >= data.length) return null; // not enough data
-      const { value, bytesConsumed } = decodePushdataValue(data, offset, param.type, structs);
+      const { value, bytesConsumed } = parseArrayTypeString(param.type)
+        ? decodePackedEventArray(data, offset, param.type, structs)
+        : decodePushdataValue(data, offset, param.type, structs);
       result[param.name] = value;
       offset += bytesConsumed;
     }

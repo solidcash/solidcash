@@ -2217,6 +2217,9 @@ function isValidEventParamType(type: Type): boolean {
   if (type instanceof AddressType) return true;
   // Structs are valid (serialized via pushdata encoding)
   if (type instanceof StructType) return true;
+  // Arrays are valid when their element type is. The emit writes the on-stack array blob verbatim (count push +
+  // fixed-width or framed elements); the SDK reads it back via decodePackedEventArray.
+  if (type instanceof ArrayType) return isValidEventParamType(type.elementType);
   // sig and datasig are NOT valid event parameter types
   return false;
 }

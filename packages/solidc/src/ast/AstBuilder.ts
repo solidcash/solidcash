@@ -2794,9 +2794,12 @@ export default class AstBuilder
     const eventName = ctx.Identifier().getText();
     const parameters = ctx.eventParameter_list().map((paramCtx) => {
       const indexed = paramCtx.getChildCount() === 3;
+      const tn = paramCtx.typeName();
+      // An event parameter may be a plain type or an array type (`int[]`, `bytes20[3]`).
+      const type = tn ? this.resolveType(tn.getText()) : this.buildArrayType(paramCtx.arrayType()!);
       return {
         name: paramCtx.Identifier().getText(),
-        type: this.resolveType(paramCtx.typeName().getText()),
+        type,
         ...(indexed && { indexed: true }),
       };
     });

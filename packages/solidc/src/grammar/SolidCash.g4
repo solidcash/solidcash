@@ -106,7 +106,7 @@ eventDefinition
     ;
 
 eventParameter
-    : typeName 'indexed'? Identifier
+    : (typeName | arrayType) 'indexed'? Identifier
     ;
 
 errorDefinition

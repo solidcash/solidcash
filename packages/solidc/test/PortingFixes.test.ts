@@ -1321,3 +1321,30 @@ describe('tuple ternary cond ? (a, b) : (c, d) (Solidity parity)', () => {
       + ' { (int x, int y) = b ? (1, 2, 3) : (4, 5); return x; } }')).toThrow(/different arities/i);
   });
 });
+
+describe('array event parameters (Solidity parity)', () => {
+  const c = (src: string): string => compileString(src).contractName;
+
+  it('compiles a dynamic array event parameter and its emit', () => {
+    expect(c('contract C() { event E(int[] xs); function f() { int[] a = [1,2,3]; emit E(a); require(true); } }')).toBe('C');
+  });
+
+  it('compiles a fixed array event parameter', () => {
+    expect(c('contract C() { event E(int[3] xs); function f() { int[3] a = [1,2,3]; emit E(a); require(true); } }')).toBe('C');
+  });
+
+  it('compiles a bytes20[] event parameter', () => {
+    expect(c('contract C() { event E(bytes20[] who);'
+      + ' function f() { bytes20[] a = [0x0000000000000000000000000000000000000000]; emit E(a); require(true); } }')).toBe('C');
+  });
+
+  it('compiles an indexed array and a mixed scalar/array event', () => {
+    expect(c('contract C() { event E(int[] indexed xs); function f() { int[] a = [1]; emit E(a); require(true); } }')).toBe('C');
+    expect(c('contract C() { event E(int n, int[] xs); function f() { int[] a = [1,2]; emit E(5, a); require(true); } }')).toBe('C');
+  });
+
+  it('exposes the array param in the event ABI', () => {
+    const art = compileString('contract C() { event E(int[] xs); function f() { require(true); } }');
+    expect(art.events![0].parameters[0].type).toMatch(/\[\]/);
+  });
+});

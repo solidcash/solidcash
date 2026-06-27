@@ -1117,6 +1117,56 @@ export function unpackFixedWidthArray(blob: Uint8Array, elementType: string): Pr
 }
 
 /**
+ * Decode an array as it appears in an EVENT NFT commitment: `<count> ++ <elements>`, where count is the minimal
+ * script-number push the compiler emits (OP_0, OP_1..OP_16, or OP_PUSHBYTES_n + value) and elements are raw
+ * fixed-width (int, bytesN, bool, ...) or framed pushdata for variable-width element types. This is the on-stack
+ * blob the emit covenant writes verbatim (emitPushdataEncode is a no-op on ArrayType), distinct from the framed
+ * encoding decodePushdataValue produces - so events use this decoder, not the generic array branch.
+ */
+export function decodePackedEventArray(
+  data: Uint8Array, offset: number, type: string, structs?: readonly StructDefinitionInfo[],
+): { value: StateValue[]; bytesConsumed: number } {
+  const arrInfo = parseArrayTypeString(type);
+  if (!arrInfo) throw new Error(`decodePackedEventArray: '${type}' is not an array type`);
+  const b0 = data[offset];
+  let count: number;
+  let countBytes: number;
+  if (b0 === 0x00) {
+    count = 0; countBytes = 1; // OP_0
+  } else if (b0 >= 0x51 && b0 <= 0x60) {
+    count = b0 - 0x50; countBytes = 1; // OP_1..OP_16
+  } else if (b0 >= 0x01 && b0 <= 0x4b) {
+    const num = vmNumberToBigInt(
+      data.slice(offset + 1, offset + 1 + b0), { maximumVmNumberByteLength: VM_NUMBER_MAX_BYTE_LENGTH },
+    );
+    if (isVmNumberError(num)) throw new Error(`decodePackedEventArray: invalid array count: ${num}`);
+    count = Number(num); countBytes = 1 + b0;
+  } else {
+    throw new Error(`decodePackedEventArray: unexpected array count push 0x${b0.toString(16)} at offset ${offset}`);
+  }
+  if (count < 0 || count > 10000) {
+    throw new Error(`decodePackedEventArray: array length ${count} exceeds safe decoding limit (max 10000)`);
+  }
+  const elemType = parseTypeStrict(arrInfo.elementType);
+  if (isFixedWidthType(elemType)) {
+    const width = fixedWidthBytes(elemType);
+    const blob = data.slice(offset + countBytes, offset + countBytes + count * width);
+    return {
+      value: unpackFixedWidthArray(blob, arrInfo.elementType) as StateValue[],
+      bytesConsumed: countBytes + count * width,
+    };
+  }
+  let totalConsumed = countBytes;
+  const arr: StateValue[] = [];
+  for (let i = 0; i < count; i++) {
+    const { value: elem, bytesConsumed } = decodePushdataValue(data, offset + totalConsumed, arrInfo.elementType, structs);
+    arr.push(elem);
+    totalConsumed += bytesConsumed;
+  }
+  return { value: arr, bytesConsumed: totalConsumed };
+}
+
+/**
  * Build an entry NFT commitment hex string from multiple keys and a value.
  * The commitment is: encodePushdata(key1) ++ encodePushdata(key2) ++ ... ++ encodePushdata(value)
  */

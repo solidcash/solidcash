@@ -24,8 +24,8 @@ SolidCash compiles to a UTXO model where data has exactly **two** possible homes
 
 Because non-state data has exactly one home (the stack), **SolidCash never requires a data-location keyword**.
 The Solidity friction of annotating `memory` / `calldata` / `storage` on every `bytes`, `string`, array, or
-struct parameter simply does not exist. The location keywords are accepted for porting and are either no-ops
-or repurposed (see below).
+struct parameter simply does not exist. When you do write one, it still carries meaning: `calldata` is
+enforced read-only, `storage` is a write-through alias, and `memory` names the mutable on-stack default.
 
 ## The default: no modifier
 
@@ -68,13 +68,13 @@ See [arrays.md](./arrays.md) and [structs.md](./structs.md) for the layout detai
 
 | EVM | SolidCash |
 | --- | --- |
-| Mutable scratch RAM for reference types; required on many params/locals/returns. | No-op, accepted for porting. Emits a warning ("data location modifier is a no-op... all data lives on-stack"). Codegen is identical to omitting it. |
+| Mutable scratch RAM for reference types; required on many params/locals/returns. | The mutable on-stack default - the same behavior as omitting it. Writing it is allowed (this is what distinguishes it from read-only `calldata`). It does not change codegen, and it does **not** provide Solidity's memory aliasing (see the divergence note below). |
 
 ### `calldata`
 
 | EVM | SolidCash |
 | --- | --- |
-| The read-only, immutable, cheaper input region; the default for external-function reference params. | No-op, accepted for porting (same warning as `memory`). Arguments do arrive via the unlock script, but the keyword changes nothing - they are pushed to the stack like any other value. |
+| The read-only, immutable, cheaper input region; the default for external-function reference params. | **Enforced read-only**: writing a `calldata` parameter or local is a compile error (`CalldataModificationError`), matching Solidity. Reading, passing, slicing, and returning it are fine; to modify, copy it into a plain (memory) variable first. The value still arrives via the unlock script and lives on-stack; "read-only" is the part that is enforced. |
 
 ### `storage`
 
@@ -87,6 +87,15 @@ See [arrays.md](./arrays.md) and [structs.md](./structs.md) for the layout detai
 int storage p = this.balances[user];
 p = p + amount;            // == this.balances[user] = this.balances[user] + amount;
 ```
+
+### Divergence: no memory aliasing
+
+SolidCash is value-semantic. Solidity's `memory` is reference-semantic: `bytes memory a = b;` makes `a` and
+`b` the same buffer, so `a[0] = x` also changes `b`, and a `memory` argument passed to an internal function is
+mutated in place. SolidCash has no heap or pointers - locals and arguments are independent stack values, so
+assignment and argument passing **copy**, and mutations never propagate back. This is the one Solidity
+`memory` behavior SolidCash does not reproduce; it is rarely relied upon (and a frequent footgun when it is).
+The write-through `storage` alias above is the only aliasing mechanism, and it targets state, not locals.
 
 ## The lifetime modifiers
 
@@ -119,8 +128,10 @@ also forms a top-level definition).
 
 ## Cheat sheet
 
-- Writing a `bytes` / `string` / array / struct parameter or local? Write **no location** - it is on the
-  stack. `memory` / `calldata` are accepted but do nothing.
+- Writing a mutable `bytes` / `string` / array / struct parameter or local? Write **no location** (or
+  `memory`) - it is a mutable on-stack value.
+- Want a parameter the function must not modify? `calldata` - it is enforced read-only. Copy it into a plain
+  variable to work with a mutable version.
 - Want persistent state? Declare a **state variable**; it defaults to the right backend for its type. No
   keyword needed.
 - Want a writable shorthand for a deep collection entry? `T storage p = this.m[k];`.

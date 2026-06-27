@@ -29,8 +29,8 @@ Some Solidity modifiers map cleanly, some are accepted purely so real `.sol` sou
 | `constant` | data / lifetime | top-level def, var | compile-time inlined (def) / write-protected (var) |
 | `immutable` | data / lifetime | state var | set-once in constructor, then read-only |
 | `transient` | data / lifetime | state var | lowered to per-function zero-init local |
-| `memory` | data / lifetime | param, local | accepted, no-op (warned) |
-| `calldata` | data / lifetime | param, local | accepted, no-op (warned) |
+| `memory` | data / lifetime | param, local | mutable on-stack default |
+| `calldata` | data / lifetime | param, local | enforced read-only |
 | `storage` | data / lifetime | local | write-through alias for a collection entry |
 | `packed` | data / lifetime | array / struct state | dense single-blob state field |
 | `public` / `external` | visibility | function | unlock path (entry point) |
@@ -83,9 +83,12 @@ Full treatment: [solidity-import-compat.md](./solidity-import-compat.md), "trans
 
 ### `memory` / `calldata`
 
-| EVM | SolidCash |
-| --- | --- |
-| Data location for reference-type params/returns. `memory` is mutable scratch RAM; `calldata` is the read-only, cheaper call input. One is required on reference types. | Accepted for porting and ignored (warned): the BCH VM has only a stack, so all locals and params already live on-stack. Neither changes codegen. |
+| Modifier | EVM | SolidCash |
+| --- | --- | --- |
+| `memory` | Mutable scratch RAM for reference types. | The mutable on-stack default (same as omitting it). No memory aliasing - SolidCash is value-semantic. |
+| `calldata` | Read-only, cheaper call input; default for external reference params. | Enforced read-only: writing a `calldata` param/local is a compile error. Copy it into a plain variable to modify. |
+
+Deep dive, the no-modifier default, and the no-aliasing divergence: [data-locations.md](./data-locations.md).
 
 ### `storage`
 
@@ -252,7 +255,7 @@ Validated in `SymbolTableTraversal.validateModifiers`. The general rules:
 - `unsafe(N)` requires `N` in `{0, 1, 2}`.
 - `delegate` bodies cannot contain a low-level `delegatecall`.
 
-Accepted-but-inert: `virtual` (no-op, warned); `memory` / `calldata` (no-op, warned); `pure` / `view`
+Accepted-but-inert: `virtual` (no-op, warned); `pure` / `view`
 (unenforced). `payable` is inert as a value gate but enables `msg.value`.
 
 ## See also

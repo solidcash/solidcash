@@ -115,6 +115,7 @@ import {
   UndefinedReferenceError,
   InvalidSymbolTypeError,
   ConstantModificationError,
+  CalldataModificationError,
   UndefinedStateVariableError,
   UndefinedCollectionError,
   MappingAccessInConstructorError,
@@ -862,13 +863,6 @@ export default class SymbolTableTraversal extends AstTraversal {
     }
     if (this.symbolTables[0].get(node.name)) {
       throw new VariableRedefinitionError(node);
-    }
-
-    for (const mod of node.modifier) {
-      if (mod === Modifier.MEMORY || mod === Modifier.CALLDATA) {
-        const loc = node.location ? ` at line ${node.location.start.line}` : '';
-        console.log(`Warning: '${mod}' data location modifier is a no-op in SolidCash${loc}. All data lives on-stack in the BCH VM.`);
-      }
     }
 
     this.symbolTables[0].set(Symbol.variable(node));
@@ -3275,13 +3269,6 @@ export default class SymbolTableTraversal extends AstTraversal {
       }
     }
 
-    for (const mod of node.modifier) {
-      if (mod === Modifier.MEMORY || mod === Modifier.CALLDATA) {
-        const loc = node.location ? ` at line ${node.location.start.line}` : '';
-        console.log(`Warning: '${mod}' data location modifier is a no-op in SolidCash${loc}. All data lives on-stack in the BCH VM.`);
-      }
-    }
-
     if (node.expression) node.expression = this.visit(node.expression);
 
     this.symbolTables[0].set(Symbol.variable(node));
@@ -3295,14 +3282,20 @@ export default class SymbolTableTraversal extends AstTraversal {
     return node;
   }
 
-  private checkConstantModification(sym: Symbol): void {
+  // Read-only enforcement, shared by every write path (assign, compound, element, push/pop, delete):
+  // a top-level `constant`, a `constant`-modified binding, or a `calldata` binding cannot be written.
+  private checkReadOnlyModification(sym: Symbol): void {
     if (sym.symbolType === SymbolType.CONSTANT) {
       throw new ConstantModificationError(sym.definition as ConstantDefinitionNode);
     }
+    // Both VariableDefinitionNode (locals) and ParameterNode (params) expose `.modifier`.
     const v = sym.definition as VariableDefinitionNode;
     v?.modifier?.forEach((modifier) => {
       if (modifier === Modifier.CONSTANT) {
         throw new ConstantModificationError(v);
+      }
+      if (modifier === Modifier.CALLDATA) {
+        throw new CalldataModificationError(v as VariableDefinitionNode | ParameterNode);
       }
     });
   }
@@ -3318,7 +3311,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     }
 
     if (sym) {
-      this.checkConstantModification(sym);
+      this.checkReadOnlyModification(sym);
     }
 
     super.visitAssign(node);
@@ -3378,7 +3371,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     if (!sym) {
       throw new UndefinedReferenceError({ name: node.name, location: node.location } as IdentifierNode);
     }
-    this.checkConstantModification(sym);
+    this.checkReadOnlyModification(sym);
     if (sym.type instanceof ArrayType) {
       node.arrayType = sym.type;
     }
@@ -3393,7 +3386,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     if (!sym) {
       throw new UndefinedReferenceError({ name: node.name, location: node.location } as IdentifierNode);
     }
-    this.checkConstantModification(sym);
+    this.checkReadOnlyModification(sym);
     if (sym.type instanceof ArrayType) {
       node.arrayType = sym.type;
     }
@@ -3418,7 +3411,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     if (!sym) {
       throw new UndefinedReferenceError({ name: node.name, location: node.location } as IdentifierNode);
     }
-    this.checkConstantModification(sym);
+    this.checkReadOnlyModification(sym);
     if (sym.type instanceof ArrayType) {
       node.arrayType = sym.type;
     }
@@ -3434,7 +3427,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     if (!sym) {
       throw new UndefinedReferenceError({ name: node.name, location: node.location } as IdentifierNode);
     }
-    this.checkConstantModification(sym);
+    this.checkReadOnlyModification(sym);
     if (sym.type instanceof ArrayType) {
       node.arrayType = sym.type;
     }

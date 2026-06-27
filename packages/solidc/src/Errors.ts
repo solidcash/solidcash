@@ -317,6 +317,15 @@ export class ConstantModificationError extends SolidCashError {
   }
 }
 
+export class CalldataModificationError extends SolidCashError {
+  constructor(
+    node: VariableDefinitionNode | ParameterNode,
+  ) {
+    super(node, `Tried to write to read-only 'calldata' variable '${node.name}'. `
+      + 'Copy it into a plain (memory) variable first to modify it.');
+  }
+}
+
 export class ArrayElementError extends SolidCashError {
   constructor(
     node: ArrayNode,

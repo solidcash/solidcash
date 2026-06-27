@@ -1440,3 +1440,23 @@ describe('mapping-bearing struct array fields', () => {
     expect(cc(`${base} function s(uint256 i, address v) public { m.keys[i] = v; } }`)).toBe('C');
   });
 });
+
+describe('using for (library method-call desugar)', () => {
+  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  const lib = 'pragma solidity ^0.8.0; library L { struct Data { uint256 x; }'
+    + ' function getX(L.Data storage d) internal view returns (uint256) { return d.x; }'
+    + ' function setX(L.Data storage d, uint256 v) internal { d.x = v; } }';
+
+  it('desugars a read method d.getX() to L.getX(d)', () => {
+    expect(cc(`${lib} contract C { using L for L.Data; L.Data d;`
+      + ' function f() public returns (uint256) { return d.getX(); } }')).toBe('C');
+  });
+
+  it('desugars a write method d.setX(v) to L.setX(d, v)', () => {
+    expect(cc(`${lib} contract C { using L for L.Data; L.Data d; function f(uint256 v) public { d.setX(v); } }`)).toBe('C');
+  });
+
+  it('keeps the explicit qualified library call working', () => {
+    expect(cc(`${lib} contract C { L.Data d; function f(uint256 v) public { L.setX(d, v); } }`)).toBe('C');
+  });
+});

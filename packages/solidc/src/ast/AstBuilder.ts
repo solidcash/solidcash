@@ -286,6 +286,10 @@ export default class AstBuilder
   // vars; reads of `<var>.<field>` are rewritten to the flattened name (visitFieldAccess).
   private mappingStructStateVars: Map<string, StructType> = new Map();
 
+  // `using L for T`: bare struct type name -> library, so `d.method(args)` on a T-typed struct var desugars
+  // to `L.method(d, args)`.
+  private usingForLibraries: Map<string, string> = new Map();
+
   // Local struct-typed vars, to desugar member assignment `s.field = v` (no direct codegen) into a struct
   // rebuild `s = S(.., v, ..)`. Per-function, like storageAliases.
   private localStructTypes: Map<string, StructType> = new Map();
@@ -585,6 +589,15 @@ export default class AstBuilder
       (u) => this.visit(u) as UsingForDirectiveNode,
     );
 
+    // Map each `using L for T` target struct type (bare name) to its library, for method-call desugaring.
+    this.usingForLibraries = new Map();
+    for (const u of usingForDirectives) {
+      if (u.libraryName && u.targetTypeName) {
+        const t = u.targetTypeName;
+        this.usingForLibraries.set(t.includes('.') ? t.slice(t.lastIndexOf('.') + 1) : t, u.libraryName);
+      }
+    }
+
     // Visit state variable declarations and separate into state variables vs collections
     let stateVariables: StateVariableNode[] = [];
     const collections: CollectionNode[] = [];
@@ -823,6 +836,11 @@ export default class AstBuilder
     this.localStructTypes = new Map();
     const name = ctx.anyIdentifier().getText();
     const parameters = ctx.parameterList().parameter_list().map((p) => this.visit(p) as ParameterNode);
+    // Struct-typed params (incl. `storage` struct pointers) participate in struct-field-write desugaring,
+    // so `d.x = v` in a library/helper body rebuilds the struct as for a local.
+    for (const p of parameters) {
+      if (p.type instanceof StructType) this.localStructTypes.set(p.name, p.type);
+    }
     const statements = this.flattenStatements(ctx.statement_list().map((s) => this.visit(s) as StatementNode));
     const block = new BlockNode(statements);
     block.location = Location.fromCtx(ctx);
@@ -913,8 +931,14 @@ export default class AstBuilder
   }
 
   visitFreeFunctionDefinition(ctx: FreeFunctionDefinitionContext): FunctionDefinitionNode {
+    this.storageAliases = new Map();
+    this.localStructTypes = new Map();
     const name = ctx.anyIdentifier().getText();
     const parameters = ctx.parameterList().parameter_list().map((p) => this.visit(p) as ParameterNode);
+    // Struct-typed params (incl. `storage` struct pointers) participate in struct-field-write desugaring.
+    for (const p of parameters) {
+      if (p.type instanceof StructType) this.localStructTypes.set(p.name, p.type);
+    }
     const statements = this.flattenStatements(ctx.statement_list().map((s) => this.visit(s) as StatementNode));
     const block = new BlockNode(statements);
     block.location = Location.fromCtx(ctx);
@@ -1655,6 +1679,22 @@ export default class AstBuilder
     const identifier = new IdentifierNode(name);
     identifier.location = Location.fromToken(identifiers[0].symbol);
     const parameters = ctx.expressionList().expression_list().map((e) => this.visit(e));
+
+    // using-for: `recv.method(args)` where recv is a struct var bound to a library -> `Library.method(recv, args)`.
+    if (identifiers.length > 1 && this.usingForLibraries.size > 0) {
+      const recvName = identifiers[0].getText();
+      const recvStruct = this.localStructTypes.get(recvName) ?? this.stateStructVars.get(recvName)
+        ?? this.mappingStructStateVars.get(recvName);
+      if (recvStruct && this.usingForLibraries.has(recvStruct.name)) {
+        const libId = new IdentifierNode(`${this.usingForLibraries.get(recvStruct.name)!}.${identifiers[1].getText()}`);
+        libId.location = identifier.location;
+        const recv = new IdentifierNode(recvName);
+        recv.location = Location.fromToken(identifiers[0].symbol);
+        const call = new FunctionCallNode(libId, [recv, ...(parameters as ExpressionNode[])]);
+        call.location = Location.fromCtx(ctx);
+        return call;
+      }
+    }
 
     // `Color(i)` where Color is an enum is an int -> enum cast, not a function call.
     const enumType = identifiers.length === 1 ? this.enumMap.get(name) : undefined;
@@ -2702,6 +2742,23 @@ export default class AstBuilder
       return node;
     }
 
+    // using-for: `recv.method(args)` where recv is a struct var bound to a library -> `Library.method(recv, args)`.
+    if (this.usingForLibraries.size > 0) {
+      const recvName = object instanceof IdentifierNode ? object.name
+        : object instanceof StateAccessNode ? object.name : undefined;
+      const recvStruct = recvName !== undefined
+        ? (this.localStructTypes.get(recvName) ?? this.stateStructVars.get(recvName)
+          ?? this.mappingStructStateVars.get(recvName))
+        : undefined;
+      if (recvStruct && this.usingForLibraries.has(recvStruct.name)) {
+        const id = new IdentifierNode(`${this.usingForLibraries.get(recvStruct.name)!}.${methodName}`);
+        id.location = Location.fromCtx(ctx);
+        const call = new FunctionCallNode(id, [object, ...parameters]);
+        call.location = Location.fromCtx(ctx);
+        return call;
+      }
+    }
+
     const node = new MethodCallNode(object, methodName, parameters);
     node.callOptions = callOpts;
     node.location = Location.fromCtx(ctx);
@@ -3083,6 +3140,25 @@ export default class AstBuilder
   ): FunctionCallStatementNode | MethodCallStatementNode | LowLevelCallStatementNode {
     const identifiers = ctx.Identifier_list();
     const expressionLists = ctx.expressionList_list();
+
+    // using-for: `recv.method(args);` where recv is a struct var bound to a library -> `Library.method(recv, args);`.
+    if (identifiers.length === 2 && expressionLists.length === 1 && this.usingForLibraries.size > 0) {
+      const recvName = identifiers[0].getText();
+      const recvStruct = this.localStructTypes.get(recvName) ?? this.stateStructVars.get(recvName)
+        ?? this.mappingStructStateVars.get(recvName);
+      if (recvStruct && this.usingForLibraries.has(recvStruct.name)) {
+        const libId = new IdentifierNode(`${this.usingForLibraries.get(recvStruct.name)!}.${identifiers[1].getText()}`);
+        libId.location = Location.fromToken(identifiers[0].symbol);
+        const recv = new IdentifierNode(recvName);
+        recv.location = Location.fromToken(identifiers[0].symbol);
+        const args = expressionLists[0].expression_list().map((e) => this.visit(e) as ExpressionNode);
+        const call = new FunctionCallNode(libId, [recv, ...args]);
+        call.location = Location.fromCtx(ctx);
+        const stmt = new FunctionCallStatementNode(call);
+        stmt.location = Location.fromCtx(ctx);
+        return stmt;
+      }
+    }
 
     // Named-arg call statement: foo({a: x}) or Lib.foo({a: x}). Args reorder against the callee in semantics.
     if (expressionLists.length === 0) {

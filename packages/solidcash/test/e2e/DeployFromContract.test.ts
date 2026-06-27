@@ -457,13 +457,13 @@ describe('StatefulContract.deployFrom()', () => {
       await provider.addUtxo(p2pkh.address, childFundingUtxo);
 
       // --- Predict address BEFORE deployment ---
-      // The child's categoryId will be the funding UTXO's txid.
-      // Constructing a Contract with the same artifact, args, and salt
-      // gives us the same address the deployed child will have.
+      // The child's categoryId will be the funding UTXO's txid. Constructing a Contract with the same artifact,
+      // args, and category (the SDK self-pin) gives the same address the create2-deployed child will have -
+      // demonstrating SDK-direct and create2 use the identical self-pin mechanism.
       const predictedCategoryId = childFundingUtxo.txid;
       const predictedChild = new Contract(childArtifact, [alicePkh], {
         provider,
-        salt: hexToBin(predictedCategoryId),
+        category: hexToBin(predictedCategoryId),
       });
       const predictedAddress = predictedChild.address;
       const predictedTokenAddress = predictedChild.tokenAddress;

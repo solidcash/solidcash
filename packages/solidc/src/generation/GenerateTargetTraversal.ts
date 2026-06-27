@@ -6456,8 +6456,35 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.pushToStack('(redeemScript)');
     }
 
-    // Step 2: Salt is a no-op for contract deployment (cleared in semantic analysis).
-    // Each deployment gets a unique category from the genesis input, making salt unnecessary.
+    // Step 2: Category self-pin (stateful children). Prepend the same prologue the SDK bakes in Contract.ts -
+    // <cat||0x02> OP_INPUTINDEX OP_UTXOTOKENCATEGORY OP_EQUALVERIFY - so a child deployed via this factory has
+    // the identical self-pinned address to one instantiated directly by the SDK (create2 == SDK). The child's
+    // category is the genesis input's outpoint txhash (read again in step 4 for the deploy covenant). User salt
+    // is a no-op here (factory children default to self-pin only; a salted child is an SDK-side concern).
+    if (node.isStatefulDeploy) {
+      // Read the genesis category (mirrors step 4): verify the deploy input's vout == 0, take its txhash.
+      this.emitBlockSlotIndex('deploy', this.deployCounter, locationData);
+      this.emit(Op.OP_DUP, locationData);
+      this.emit(Op.OP_OUTPOINTINDEX, locationData);
+      this.emit(encodeInt(0n), locationData);
+      this.emit(Op.OP_EQUALVERIFY, locationData);
+      this.emit(Op.OP_OUTPOINTTXHASH, locationData); // [redeemScript, cat]
+      this.pushToStack('(deploy_self_pin_cat)');
+      // Build the prologue bytecode 0x21 || cat || 0x02c0ce88 = push33(cat||0x02) OP_INPUTINDEX
+      // OP_UTXOTOKENCATEGORY OP_EQUALVERIFY, then prepend it to the redeem script.
+      this.emit(hexToBin('21'), locationData);
+      this.pushToStack('(value)');
+      this.emit(Op.OP_SWAP, locationData);
+      this.emit(Op.OP_CAT, locationData); // [redeemScript, 0x21||cat]
+      this.popFromStack();
+      this.emit(hexToBin('02c0ce88'), locationData);
+      this.pushToStack('(value)');
+      this.emit(Op.OP_CAT, locationData); // [redeemScript, prologue]
+      this.popFromStack();
+      this.emit(Op.OP_SWAP, locationData);
+      this.emit(Op.OP_CAT, locationData); // [prologue||redeemScript]
+      this.popFromStack();
+    }
 
     // Step 3: Compute P2SH32 locking bytecode: OP_HASH256 -> 0xaa20 || hash || 0x87
     // (matches existing P2SH32 pattern in emitContainerLbc/emitExternalCallVerification)

@@ -1307,21 +1307,18 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
 
     const masterUtxo = onChainState.masterUtxo;
 
-    // Create an unsalted child contract for building the deploy transaction.
-    // The compiler's `new ContractName(...)` produces unsalted locking bytecode,
-    // so the covenant verification expects unsalted P2SH32 addresses in outputs.
+    // Self-pin the child by category, identical to the compiler's `new ContractName(...)` covenant and to an
+    // SDK-direct deploy (Contract.ts bakes <cat||0x02> OP_INPUTINDEX OP_UTXOTOKENCATEGORY OP_EQUALVERIFY). The
+    // category provides per-deployment address uniqueness, so no salt is needed by default. This address is what
+    // the deploy covenant verifies in the genesis outputs.
     const childContractUnsalted = new Contract(childArtifact, childConstructorArgs as any, {
       provider,
       addressType,
+      category: hexToBin(childCategoryId),
     });
 
-    // Create the salted child contract for the returned ConnectedStatefulContract.
-    // Salt = childCategoryId ensures each deployed child has a unique address.
-    const childContract = new Contract(childArtifact, childConstructorArgs as any, {
-      provider,
-      addressType,
-      salt: hexToBin(childCategoryId),
-    });
+    // The returned handle uses the same self-pinned address as the deployed genesis.
+    const childContract = childContractUnsalted;
 
     const childLayout = childArtifact.stateLayout!;
 
@@ -1600,9 +1597,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
 
     const tx = await builder.send();
 
-    // Connect the child with its categoryId. The compiler's `new C(...)` codegen deploys it to an
-    // UNSALTED/un-self-pinned address, so keep childContract's salt-only form: wrap directly rather than
-    // via withCategory (which would add the pin). Self-pinning is a compiler-side follow-up.
+    // Connect the child with its categoryId. The compiler's `new C(...)` codegen now self-pins the child by
+    // category (matching the SDK), so childContract's self-pinned address equals the deployed genesis address.
     // See docs/external-contract-calls.md.
     const childStateful = new StatefulContract(childContract, childCategoryId) as ConnectedStatefulContract<T>;
 

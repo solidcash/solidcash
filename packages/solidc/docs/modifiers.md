@@ -53,6 +53,8 @@ Some Solidity modifiers map cleanly, some are accepted purely so real `.sol` sou
 
 ## Data location and lifetime
 
+Deep dive, including the no-modifier default in every context: [data-locations.md](./data-locations.md).
+
 ### `constant`
 
 Two distinct uses share the keyword.
@@ -255,6 +257,7 @@ Accepted-but-inert: `virtual` (no-op, warned); `memory` / `calldata` (no-op, war
 
 ## See also
 
+- [data-locations.md](./data-locations.md) - data-location/lifetime modifiers and the no-modifier default, in depth
 - [solidity-import-compat.md](./solidity-import-compat.md) - which Solidity modifiers are porting affordances
 - [selfdestruct.md](./selfdestruct.md) - the `selfdestruct` modifier and statement
 - [external-contract-calls.md](./external-contract-calls.md) - `deploy`, create2, cross-contract reads

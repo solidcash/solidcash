@@ -2131,6 +2131,20 @@ export default class AstBuilder
         assign.location = loc;
         return assign;
       }
+      if (field && field.type instanceof ArrayType && keyCtxs.length === 1) {
+        const flatName = `${rawName}__${fieldName}`;
+        const key = (): ExpressionNode => this.visit(keyCtxs[0]) as ExpressionNode;
+        const value = op === '='
+          ? this.visit(valueCtx!) as ExpressionNode
+          : this.compoundRhs((() => {
+            const a = new ArrayAccessNode(new IdentifierNode(flatName), key());
+            a.location = nameLoc;
+            return a;
+          })(), op, valueCtx, loc);
+        const assign = new StateArrayAssignNode(flatName, key(), value);
+        assign.location = loc;
+        return assign;
+      }
     }
 
     // Struct field-chain write `<base>.f1.f2...fn op= v` where base is a local or state struct variable (no
@@ -3187,8 +3201,15 @@ export default class AstBuilder
   }
 
   visitArrayPushStatement(ctx: ArrayPushStatementContext): ArrayPushNode | StateArrayPushNode {
-    const name = ctx.Identifier().getText();
+    const ids = ctx.Identifier_list();
     const value = this.visit(ctx.expression());
+    // `structVar.arrayField.push(x)` on a mapping-bearing struct -> push the flattened state array.
+    if (ids.length === 2) {
+      const node = new StateArrayPushNode(`${ids[0].getText()}__${ids[1].getText()}`, value);
+      node.location = Location.fromCtx(ctx);
+      return node;
+    }
+    const name = ids[0].getText();
     // Bare `arr.push(x)` on a state array (Solidity's idiom - storage arrays only) routes to the state push,
     // matching the bare state element-access routing. `this.arr.push(x)` already hits visitStateArrayPushStatement.
     const node = this.packedStateArrayNames.has(name)
@@ -3199,7 +3220,13 @@ export default class AstBuilder
   }
 
   visitArrayPopStatement(ctx: ArrayPopStatementContext): ArrayPopNode | StateArrayPopNode {
-    const name = ctx.Identifier().getText();
+    const ids = ctx.Identifier_list();
+    if (ids.length === 2) {
+      const node = new StateArrayPopNode(`${ids[0].getText()}__${ids[1].getText()}`);
+      node.location = Location.fromCtx(ctx);
+      return node;
+    }
+    const name = ids[0].getText();
     const node = this.packedStateArrayNames.has(name)
       ? new StateArrayPopNode(name)
       : new ArrayPopNode(name);

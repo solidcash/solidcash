@@ -368,10 +368,12 @@ assignStatement
 
 arrayPushStatement
     : Identifier '.push' '(' expression ')' ';'
+    | Identifier '.' Identifier '.push' '(' expression ')' ';'
     ;
 
 arrayPopStatement
     : Identifier '.pop' '(' ')' ';'
+    | Identifier '.' Identifier '.pop' '(' ')' ';'
     ;
 
 

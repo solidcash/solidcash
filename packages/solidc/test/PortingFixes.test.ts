@@ -1418,3 +1418,25 @@ describe('dotted-op token boundary (lexer)', () => {
     expect(compileString('contract C() { function f() { require(tx.outputs[0].value == 1000); } }').contractName).toBe('C');
   });
 });
+
+describe('mapping-bearing struct array fields', () => {
+  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  const base = 'pragma solidity ^0.8.0; contract C { struct Map { address[] keys; mapping(address => uint256) vals; } Map m;';
+
+  it('pushes to a struct array field (m.keys.push)', () => {
+    expect(cc(`${base} function p(address k) public { m.keys.push(k); } }`)).toBe('C');
+  });
+
+  it('pops a struct array field (m.keys.pop)', () => {
+    expect(cc(`${base} function pp() public { m.keys.pop(); } }`)).toBe('C');
+  });
+
+  it('reads length and index of a struct array field', () => {
+    expect(cc(`${base} function n() public returns (uint256) { return m.keys.length; }`
+      + ' function g(uint256 i) public returns (address) { return m.keys[i]; } }')).toBe('C');
+  });
+
+  it('writes a struct array field element (m.keys[i] = v)', () => {
+    expect(cc(`${base} function s(uint256 i, address v) public { m.keys[i] = v; } }`)).toBe('C');
+  });
+});

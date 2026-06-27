@@ -122,7 +122,7 @@ structDefinition
     ;
 
 structField
-    : (typeName | arrayType) anyIdentifier ';'
+    : (typeName | arrayType | mappingType) anyIdentifier ';'
     ;
 
 enumDefinition
@@ -324,6 +324,7 @@ assignmentStatement
     : 'this' '.' Identifier (('[' expression ']')+)? ('.' Identifier)* op=('=' | '+=' | '-=' | '*=' | '/=' | '%=' | '&=' | '|=' | '^=' | '<<=' | '>>=') expression ';'
     | Identifier ('[' expression ']')+ ('.' Identifier)* op=('=' | '+=' | '-=' | '*=' | '/=' | '%=' | '&=' | '|=' | '^=' | '<<=' | '>>=') expression ';'
     | Identifier ('.' Identifier)+ op=('=' | '+=' | '-=' | '*=' | '/=' | '%=' | '&=' | '|=' | '^=' | '<<=' | '>>=') expression ';'
+    | Identifier ('.' Identifier)+ ('[' expression ']')+ op=('=' | '+=' | '-=' | '*=' | '/=' | '%=' | '&=' | '|=' | '^=' | '<<=' | '>>=') expression ';'
     | 'this' '.' Identifier (('[' expression ']')+)? ('.' Identifier)* op=('++' | '--') ';'
     | Identifier ('[' expression ']')+ ('.' Identifier)* op=('++' | '--') ';'
     | Identifier ('.' Identifier)+ op=('++' | '--') ';'

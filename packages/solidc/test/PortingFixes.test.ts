@@ -1383,3 +1383,40 @@ describe('storage-pointer parameters and constant-index state access', () => {
     expect(cc('pragma solidity ^0.8.0; contract C { function g(uint256[] memory a) public returns (uint256[] memory) {} }')).toBe('C');
   });
 });
+
+describe('mapping-bearing struct state variables (flattened)', () => {
+  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+
+  it('compiles a struct with a mapping field used as state', () => {
+    expect(cc('pragma solidity ^0.8.0; contract C { struct Holder { mapping(address => uint256) bal; } Holder h;'
+      + ' function f() public { require(true); } }')).toBe('C');
+  });
+
+  it('reads a mapping struct field (h.bal[k])', () => {
+    expect(cc('pragma solidity ^0.8.0; contract C { struct Holder { mapping(address => uint256) bal; } Holder h;'
+      + ' function g(address k) public returns (uint256) { return h.bal[k]; } }')).toBe('C');
+  });
+
+  it('writes a mapping struct field (h.bal[k] = v) and compound (+=)', () => {
+    expect(cc('pragma solidity ^0.8.0; contract C { struct Holder { mapping(address => uint256) bal; } Holder h;'
+      + ' function s(address k, uint256 v) public { h.bal[k] = v; h.bal[k] += v; } }')).toBe('C');
+  });
+
+  it('flattens multiple mapping fields into independent collections (set/get)', () => {
+    expect(cc('pragma solidity ^0.8.0; contract C { struct M { mapping(address => uint256) bal; mapping(address => bool) seen; } M m;'
+      + ' function set(address k, uint256 v) public { m.bal[k] = v; m.seen[k] = true; }'
+      + ' function get(address k) public returns (uint256) { if (!m.seen[k]) { return 0; } return m.bal[k]; } }')).toBe('C');
+  });
+
+  it('exposes flattened mapping fields as named collections in the artifact', () => {
+    const art = compileString('pragma solidity ^0.8.0; contract C { struct M { mapping(address => uint256) bal; } M m;'
+      + ' function s(address k, uint256 v) public { m.bal[k] = v; } }', { solidityImportCompat: true });
+    const names = (art.stateLayout?.collections ?? []).map((c) => c.name);
+    expect(names).toContain('m__bal');
+  });
+
+  it('still rejects an unsupported (non-mapping) struct field type', () => {
+    expect(() => cc('pragma solidity ^0.8.0; contract C { struct Bad { function() external f; } Bad b;'
+      + ' function f() public { require(true); } }')).toThrow();
+  });
+});

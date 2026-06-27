@@ -282,6 +282,10 @@ export default class AstBuilder
   private storageAliases: Map<string, { container: string; keys: ExpressionNode[]; access: ExpressionNode }> =
     new Map();
 
+  // State vars of a mapping-bearing struct type, flattened to per-field `<var>__<field>` collections/state
+  // vars; reads of `<var>.<field>` are rewritten to the flattened name (visitFieldAccess).
+  private mappingStructStateVars: Map<string, StructType> = new Map();
+
   // Local struct-typed vars, to desugar member assignment `s.field = v` (no direct codegen) into a struct
   // rebuild `s = S(.., v, ..)`. Per-function, like storageAliases.
   private localStructTypes: Map<string, StructType> = new Map();
@@ -592,6 +596,24 @@ export default class AstBuilder
         stateVariables.push(visited as StateVariableNode);
       }
     }
+
+    // Flatten state vars of a mapping-bearing struct type: a struct with a mapping field has no value
+    // representation, so each field becomes its own state element, namespaced `<var>__<field>`.
+    this.mappingStructStateVars = new Map();
+    const expandedStateVars: StateVariableNode[] = [];
+    for (const sv of stateVariables) {
+      if (sv.type instanceof StructType && sv.type.fields.some((f) => f.type instanceof MappingType)) {
+        this.mappingStructStateVars.set(sv.name, sv.type);
+        for (const field of sv.type.fields) {
+          const flat = this.buildFlattenedStructField(field.type, `${sv.name}__${field.name}`, sv.location);
+          if (flat instanceof CollectionNode) collections.push(flat);
+          else expandedStateVars.push(flat);
+        }
+      } else {
+        expandedStateVars.push(sv);
+      }
+    }
+    stateVariables = expandedStateVars;
 
     // `transient` state vars (EIP-1153) have no UTXO analog (BCH has no transaction-scoped contract storage,
     // and one spend = one function execution with no cross-call). They lower to a per-function zero-init local,
@@ -1044,6 +1066,29 @@ export default class AstBuilder
     const variableDefinition = new VariableDefinitionNode(type, modifiers, name, expression);
     variableDefinition.location = Location.fromCtx(ctx);
     return variableDefinition;
+  }
+
+  // Build the flattened state node for one field of a mapping-bearing struct: mapping -> collection, a dynamic
+  // chunk-packable array -> dynamic state var, other array -> collection, value type -> state var.
+  private buildFlattenedStructField(
+    fieldType: Type, flatName: string, location: Location | undefined,
+  ): StateVariableNode | CollectionNode {
+    let node: StateVariableNode | CollectionNode;
+    if (fieldType instanceof MappingType) {
+      node = new CollectionNode(fieldType, flatName);
+    } else if (fieldType instanceof ArrayType) {
+      if (this.chunkedArrays && fieldType.bound === undefined && isChunkPackableElementType(fieldType.elementType)) {
+        const sv = new StateVariableNode(fieldType, flatName);
+        sv.isDynamic = true;
+        node = sv;
+      } else {
+        node = new CollectionNode(fieldType, flatName);
+      }
+    } else {
+      node = new StateVariableNode(fieldType, flatName);
+    }
+    if (location) node.location = location;
+    return node;
   }
 
   // Extract { container, keys } from a storage-location expression: `this.m[k]` (MappingAccess) or a bare
@@ -2068,6 +2113,26 @@ export default class AstBuilder
     const valueCtx = isIncDec ? undefined : exprCtxs[exprCtxs.length - 1];
     const loc = Location.fromCtx(ctx);
 
+    // Mapping-bearing struct field write: `<var>.<field>[k...] op= v` -> write the flattened state collection
+    // `<var>__<field>` (it is a state mapping). Handles `=` and compound ops.
+    if (!isThis && !isIncDec && fieldName && keyCtxs.length > 0 && this.mappingStructStateVars.has(rawName)) {
+      const field = this.mappingStructStateVars.get(rawName)!.fields.find((f) => f.name === fieldName);
+      if (field && field.type instanceof MappingType) {
+        const flatName = `${rawName}__${fieldName}`;
+        const flatKeys = (): ExpressionNode[] => keyCtxs.map((e) => this.visit(e) as ExpressionNode);
+        const value = op === '='
+          ? this.visit(valueCtx!) as ExpressionNode
+          : this.compoundRhs((() => {
+            const m = new MappingAccessNode(flatName, flatKeys());
+            m.location = nameLoc;
+            return m;
+          })(), op, valueCtx, loc);
+        const assign = new MappingAssignNode(flatName, flatKeys(), value);
+        assign.location = loc;
+        return assign;
+      }
+    }
+
     // Struct field-chain write `<base>.f1.f2...fn op= v` where base is a local or state struct variable (no
     // index, no alias). Struct fields have no in-place write codegen, so rebuild the base value from the
     // innermost field outward and assign it back: `base = T(base.g0, .., (g==f1 ? <rebuilt f1> : base.g), ..)`.
@@ -2368,8 +2433,11 @@ export default class AstBuilder
     const structName = ctx.Identifier().getText();
     const fields = ctx.structField_list().map((fieldCtx) => ({
       name: fieldCtx.anyIdentifier().getText(),
-      // A field may be a plain typeName or an arrayType (`int[]`, `bytes20[3]`).
-      type: this.resolveType((fieldCtx.typeName() ?? fieldCtx.arrayType())!.getText()),
+      // A field may be a plain typeName, an arrayType (`int[]`, `bytes20[3]`), or a mapping (flattened to
+      // per-field state vars when the struct is used as a state variable).
+      type: fieldCtx.mappingType()
+        ? this.buildMappingType(fieldCtx.mappingType()!)
+        : this.resolveType((fieldCtx.typeName() ?? fieldCtx.arrayType())!.getText()),
     }));
     const node = new StructDefinitionNode(structName, fields);
     node.location = Location.fromCtx(ctx);
@@ -2555,6 +2623,14 @@ export default class AstBuilder
     // Storage-pointer read: `alias.field` -> `container[keys].field` (clone the access path per use site).
     if (expression instanceof IdentifierNode && this.storageAliases.has(expression.name)) {
       expression = cloneNode(this.storageAliases.get(expression.name)!.access);
+    }
+
+    // Mapping-bearing struct state var: `<var>.<field>` resolves to the flattened state element `<var>__<field>`.
+    if (expression instanceof IdentifierNode && this.mappingStructStateVars.has(expression.name)
+      && this.mappingStructStateVars.get(expression.name)!.fields.some((f) => f.name === fieldName)) {
+      const flat = new IdentifierNode(`${expression.name}__${fieldName}`);
+      flat.location = Location.fromCtx(ctx);
+      return flat;
     }
     const node = new FieldAccessNode(expression, fieldName);
     node.location = Location.fromCtx(ctx);

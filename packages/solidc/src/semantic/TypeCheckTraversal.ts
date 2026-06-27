@@ -16,6 +16,7 @@ import {
   TokenContainerType,
   AddressType,
   FunctionType,
+  MappingType,
   Op,
 } from '@solidcash/utils';
 import {
@@ -605,6 +606,9 @@ export default class TypeCheckTraversal extends AstTraversal {
 
   visitStructDefinition(node: StructDefinitionNode): Node {
     for (const field of node.fields) {
+      // A mapping field is permitted: a mapping-bearing struct is flattened to per-field state when used as a
+      // state variable (it has no value form, so it cannot be a local/param).
+      if (field.type instanceof MappingType) continue;
       if (!isValidStateType(field.type)) {
         throw new UnsupportedStructFieldTypeError(node, field.type);
       }

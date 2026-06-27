@@ -185,6 +185,10 @@ export function generateArtifact(
   if (contract.constructorDef) {
     abi.push({
       name: contract.constructorDef.name, // '__construct'
+      // The selector is needed to spend down the constructor branch at genesis (the SDK deploy probe and the
+      // genesis tx push it ahead of the redeem script); without it the entry dispatch underflows.
+      ...(contract.constructorDef.functionSelector
+        && { selector: binToHex(contract.constructorDef.functionSelector) }),
       inputs: contract.constructorDef.parameters.map((parameter) => ({
         name: parameter.name,
         type: abiTypeString(parameter.type),

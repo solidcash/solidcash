@@ -2135,6 +2135,19 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         (nft, i) => probeBuilder.addInput(nft, dataNftUnlockers[i]),
       );
 
+      // Plain (no-token) inputs at the constructor's entry-write slots, so the write covenant's slot-exists
+      // check reads "empty" -> new entry (genesis has no pre-existing entries). Placed right after the data
+      // NFTs to match the block layout (master, data NFTs, entries) for a constructor without external reads.
+      for (let e = 0; e < entryCount; e++) {
+        probeBuilder.addInput(
+          { txid: `${'00'.repeat(31)}ee`, vout: e, satoshis: dataNftAmount },
+          {
+            generateLockingBytecode: (): Uint8Array => DUMMY_FUNDER_LOCKING_BYTECODE,
+            generateUnlockingBytecode: (): Uint8Array => DUMMY_FUNDER_UNLOCKING_BYTECODE,
+          },
+        );
+      }
+
       // Output 0: master preserved
       probeBuilder.addOutput({
         to: constructorUnlocker.generateLockingBytecode(),

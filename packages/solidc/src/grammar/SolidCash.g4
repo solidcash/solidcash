@@ -1,5 +1,14 @@
 grammar SolidCash;
 
+@lexer::members {
+// True when the next input char cannot continue an identifier, so a dotted op like `.value` is a complete
+// token rather than the prefix of a longer member name like `.values` (which must lex as `.` + `values`).
+dotOpBoundary(): boolean {
+  const c = this._input.LA(1);
+  return !((c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c === 95);
+}
+}
+
 sourceFile
     : pragmaDirective* importDirective* (constantDefinition | enumDefinition | structDefinition | typeDefinition | usingForDirective | errorDefinition | interfaceDefinition | freeFunctionDefinition | libraryDefinition | contractDefinition)* EOF
     ;
@@ -812,6 +821,27 @@ HexStringLiteral
     : 'hex' '"' [0-9a-fA-F _]* '"'
     | 'hex' '\'' [0-9a-fA-F _]* '\''
     ;
+
+// Dotted introspection/member/method ops, each gated so it only matches at an identifier boundary (so e.g.
+// `.values` lexes as `.` + `values`, not `.value` + `s`, and a field named `pushCount` is not `.push`+`Count`).
+// See dotOpBoundary in @lexer::members.
+DotValue : '.value' {this.dotOpBoundary()}? ;
+DotLength : '.length' {this.dotOpBoundary()}? ;
+DotPush : '.push' {this.dotOpBoundary()}? ;
+DotPop : '.pop' {this.dotOpBoundary()}? ;
+DotSplit : '.split' {this.dotOpBoundary()}? ;
+DotSlice : '.slice' {this.dotOpBoundary()}? ;
+DotDelete : '.delete' {this.dotOpBoundary()}? ;
+DotCode : '.code' {this.dotOpBoundary()}? ;
+DotCodehash : '.codehash' {this.dotOpBoundary()}? ;
+DotLockingBytecode : '.lockingBytecode' {this.dotOpBoundary()}? ;
+DotTokenCategory : '.tokenCategory' {this.dotOpBoundary()}? ;
+DotNftCommitment : '.nftCommitment' {this.dotOpBoundary()}? ;
+DotTokenAmount : '.tokenAmount' {this.dotOpBoundary()}? ;
+DotOutpointTransactionHash : '.outpointTransactionHash' {this.dotOpBoundary()}? ;
+DotOutpointIndex : '.outpointIndex' {this.dotOpBoundary()}? ;
+DotUnlockingBytecode : '.unlockingBytecode' {this.dotOpBoundary()}? ;
+DotSequenceNumber : '.sequenceNumber' {this.dotOpBoundary()}? ;
 
 Identifier
     : [a-zA-Z_] [a-zA-Z0-9_]*

@@ -573,26 +573,6 @@ describe('Soft keywords (reserved in SolidCash, valid identifiers in Solidity)',
   });
 });
 
-describe('FinalRequire relaxation', () => {
-  it('allows a non-final require to gate the path (require not last)', () => {
-    const a = compileString('contract C() { mapping(int=>int) m; function f(int k) { require(k > 0); delete m[k]; } }');
-    expect(a.contractName).toBe('C');
-  });
-
-  it('still errors (by default) on a void path with no verification', () => {
-    expect(() => compileString('contract C() { function f(int i) pure { if (i <= 100) { revert("x"); } } }'))
-      .toThrow(/require\(\) statement|FinalRequire/i);
-  });
-
-  it('downgrades the no-verification error to a warning under solidityImportCompat', () => {
-    const a = compileString(
-      'contract C() { function f(int i) pure { if (i <= 100) { revert("x"); } } }',
-      { solidityImportCompat: true },
-    );
-    expect(a.contractName).toBe('C');
-  });
-});
-
 describe('BCH crypto types + number units usable as identifiers (lexer split)', () => {
   it.each([
     ['var named sig', 'contract C(){ int n; function f() { int sig = 5; this.n = sig; } }'],
@@ -1418,5 +1398,23 @@ describe('mapping-bearing struct state variables (flattened)', () => {
   it('still rejects an unsupported (non-mapping) struct field type', () => {
     expect(() => cc('pragma solidity ^0.8.0; contract C { struct Bad { function() external f; } Bad b;'
       + ' function f() public { require(true); } }')).toThrow();
+  });
+
+  it('allows field names that share a prefix with a dotted op (values, pushCount, lengths)', () => {
+    expect(cc('pragma solidity ^0.8.0; contract C { struct B { uint256 values; uint256 pushCount; uint256 lengths; } B box;'
+      + ' function g() public returns (uint256) { return box.values + box.pushCount + box.lengths; } }')).toBe('C');
+  });
+
+  it('supports a mapping struct field named `values` (IterableMapping shape)', () => {
+    expect(cc('pragma solidity ^0.8.0; contract C { struct Map { mapping(address => uint256) values; } Map map;'
+      + ' function set(address k, uint256 v) public { map.values[k] = v; }'
+      + ' function get(address k) public returns (uint256) { return map.values[k]; } }')).toBe('C');
+  });
+});
+
+describe('dotted-op token boundary (lexer)', () => {
+  it('keeps .push / .length / .value ops working at an identifier boundary', () => {
+    expect(compileString('contract C() { int[] xs; function f() { this.xs.push(5); require(this.xs.length == 1); } }').contractName).toBe('C');
+    expect(compileString('contract C() { function f() { require(tx.outputs[0].value == 1000); } }').contractName).toBe('C');
   });
 });

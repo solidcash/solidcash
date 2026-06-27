@@ -43,7 +43,7 @@ import { EmptyFunctionError, FinalRequireStatementError, MissingReturnError, Ret
 export default class EnsureFinalRequireTraversal extends AstTraversal {
   private isStatefulContract: boolean = false;
 
-  constructor(private solidityImportCompat: boolean = false) {
+  constructor(private enforceFinalRequire: boolean = false) {
     super();
   }
 
@@ -143,7 +143,10 @@ export default class EnsureFinalRequireTraversal extends AstTraversal {
       && containsStatefulOperation(node.body.statements);
 
     if (!hasStateWrites) {
-      ensureFinalStatementIsRequire(node.body.statements, this.solidityImportCompat);
+      // selfdestruct functions skip all covenant codegen, so a missing require() means any caller can trigger
+      // the destruction. Keep that a hard error regardless of enforceFinalRequire (the general no-verification
+      // path is only a warning by default).
+      ensureFinalStatementIsRequire(node.body.statements, this.enforceFinalRequire || isSelfdestruct);
     }
 
     return node;
@@ -151,10 +154,10 @@ export default class EnsureFinalRequireTraversal extends AstTraversal {
 }
 
 // A path with no verification (no require/assert/revert/timeop) and no state change compiles as
-// unconditionally-spendable (codegen ends it with OP_1). Under solidityImportCompat this is a warning
-// (matches Solidity); otherwise a hard error, so SolidCash can't silently expose an always-spendable path.
-function warnOrThrowUnverified(node: Node, compat: boolean): void {
-  if (!compat) throw new FinalRequireStatementError(node);
+// unconditionally-spendable (codegen ends it with OP_1). By default this is a warning; with the
+// enforceFinalRequire option it is a hard error, so a build can forbid always-spendable paths (e.g. in CI).
+function warnOrThrowUnverified(node: Node, strict: boolean): void {
+  if (strict) throw new FinalRequireStatementError(node);
   const line = node.location?.start?.line;
   console.log(`Warning: a spending path${line ? ` near line ${line}` : ''} performs no require()/verification `
     + 'and changes no state; it compiles as an unconditionally-spendable path. Add a require() to constrain it.');
@@ -189,8 +192,8 @@ class SignatureCheckFinder extends AstTraversal {
 // selfdestruct(addr) value-pins the freed balance to outputs[0] == addr, but addr is whatever the covenant
 // reads. If addr is caller-controlled (a function parameter) AND the function has no signature check, ANY
 // caller can pass their own address and take the balance. The two safe forms - authenticate the function, or
-// take the destination from contract state / a constant - are not flagged. Warning only (porting compat); the
-// author may have a non-signature authorization. See docs/selfdestruct.md (Security considerations).
+// take the destination from contract state / a constant - are not flagged. Warning only; the author may
+// have a non-signature authorization. See docs/selfdestruct.md (Security considerations).
 function warnUnauthenticatedSelfdestruct(node: FunctionDefinitionNode): void {
   const selfdestructs = (node.body.statements ?? [])
     .filter((s): s is SelfdestructStatementNode => s instanceof SelfdestructStatementNode);
@@ -215,7 +218,7 @@ function warnUnauthenticatedSelfdestruct(node: FunctionDefinitionNode): void {
   }
 }
 
-function ensureFinalStatementIsRequire(statements: StatementNode[] = [], compat = false): void {
+function ensureFinalStatementIsRequire(statements: StatementNode[] = [], strict = false): void {
   const statementsWithoutLogs = statements.filter((statement) => !(statement instanceof ConsoleStatementNode));
   const finalStatement = statementsWithoutLogs[statementsWithoutLogs.length - 1];
 
@@ -230,19 +233,19 @@ function ensureFinalStatementIsRequire(statements: StatementNode[] = [], compat 
   // An if-without-else without a preceding unconditional require leaves the else path unverified.
   if (finalStatement instanceof BranchNode) {
     if (!finalStatement.elseBlock) {
-      warnOrThrowUnverified(finalStatement, compat);
+      warnOrThrowUnverified(finalStatement, strict);
       return;
     }
-    ensureFinalStatementIsRequire(finalStatement.ifBlock.statements, compat);
-    ensureFinalStatementIsRequire(finalStatement.elseBlock.statements, compat);
+    ensureFinalStatementIsRequire(finalStatement.ifBlock.statements, strict);
+    ensureFinalStatementIsRequire(finalStatement.elseBlock.statements, strict);
     return;
   }
 
   // If the final statement is a try/catch, check both the try block and all catch clauses
   if (finalStatement instanceof TryCatchNode) {
-    ensureFinalStatementIsRequire(finalStatement.tryBlock.statements, compat);
+    ensureFinalStatementIsRequire(finalStatement.tryBlock.statements, strict);
     for (const clause of finalStatement.catchClauses) {
-      ensureFinalStatementIsRequire(clause.block.statements, compat);
+      ensureFinalStatementIsRequire(clause.block.statements, strict);
     }
     return;
   }
@@ -253,21 +256,21 @@ function ensureFinalStatementIsRequire(statements: StatementNode[] = [], compat 
   // sequentially - the require() is always reached on each iteration.
   if (finalStatement instanceof DoWhileNode || finalStatement instanceof WhileNode) {
     if (!containsRequire(finalStatement.block.statements)) {
-      warnOrThrowUnverified(finalStatement, compat);
+      warnOrThrowUnverified(finalStatement, strict);
     }
     return;
   }
 
   if (finalStatement instanceof CollectionIterationNode) {
     if (!containsRequire(finalStatement.body.statements)) {
-      warnOrThrowUnverified(finalStatement, compat);
+      warnOrThrowUnverified(finalStatement, strict);
     }
     return;
   }
 
   // Unchecked blocks are transparent - check their inner statements
   if (finalStatement instanceof UncheckedNode) {
-    ensureFinalStatementIsRequire(finalStatement.block.statements, compat);
+    ensureFinalStatementIsRequire(finalStatement.block.statements, strict);
     return;
   }
 
@@ -275,20 +278,20 @@ function ensureFinalStatementIsRequire(statements: StatementNode[] = [], compat 
   // A switch without a default case (and no preceding unconditional require) leaves unmatched values unverified.
   if (finalStatement instanceof SwitchNode) {
     if (!finalStatement.defaultCase) {
-      warnOrThrowUnverified(finalStatement, compat);
+      warnOrThrowUnverified(finalStatement, strict);
       return;
     }
     for (const c of finalStatement.cases) {
-      ensureFinalStatementIsRequire(c.body.statements, compat);
+      ensureFinalStatementIsRequire(c.body.statements, strict);
     }
-    ensureFinalStatementIsRequire(finalStatement.defaultCase.statements, compat);
+    ensureFinalStatementIsRequire(finalStatement.defaultCase.statements, strict);
     return;
   }
 
   // The final statement needs to be a require(), assert(), or revert
   if (!(finalStatement instanceof RequireNode || finalStatement instanceof TimeOpNode
     || finalStatement instanceof RevertNode || finalStatement instanceof AssertNode)) {
-    warnOrThrowUnverified(finalStatement, compat);
+    warnOrThrowUnverified(finalStatement, strict);
   }
 }
 

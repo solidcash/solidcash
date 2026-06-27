@@ -223,6 +223,7 @@ export default class TypeCheckTraversal extends AstTraversal {
 
   visitConstantDefinition(node: ConstantDefinitionNode): Node {
     node.expression = this.visit(node.expression);
+    node.expression = this.maybeCoerceHexToInt(node.expression, node.type);
     expectAssignable(
       new VariableDefinitionNode(node.type, [], node.name, node.expression),
       node.expression.type,
@@ -541,6 +542,10 @@ export default class TypeCheckTraversal extends AstTraversal {
     }
     node.expression = this.visit(node.expression);
     if (node.collection) {
+      const expectedValueType = node.arrayIndex
+        ? (node.collection.innermostValueType as ArrayType).elementType
+        : node.collection.innermostValueType;
+      node.expression = this.maybeCoerceHexToInt(node.expression, expectedValueType);
       const allKeyTypes = node.collection.allKeyTypes;
       for (let i = 0; i < node.keys.length; i++) {
         if (node.keys[i].type && !implicitlyCastable(node.keys[i].type, allKeyTypes[i])) {
@@ -768,6 +773,7 @@ export default class TypeCheckTraversal extends AstTraversal {
       }
     }
     node.expression = this.visit(node.expression);
+    node.expression = this.maybeCoerceHexToInt(node.expression, node.stateVariable?.type);
     if (node.stateVariable && node.expression.type) {
       if (!implicitlyCastable(node.expression.type, node.stateVariable.type)) {
         throw new StateAssignTypeError(node, node.expression.type, node.stateVariable.type);
@@ -792,6 +798,7 @@ export default class TypeCheckTraversal extends AstTraversal {
     // Uninitialized declaration (`int x;`): no initializer to type-check; codegen emits the zero value.
     if (node.expression) {
       node.expression = this.visit(node.expression);
+      node.expression = this.maybeCoerceHexToInt(node.expression, node.type);
       expectAssignable(node, node.expression.type, node.type);
     }
 
@@ -877,6 +884,7 @@ export default class TypeCheckTraversal extends AstTraversal {
       node.expression.type = node.identifier.type;
     }
     node.expression = this.visit(node.expression);
+    node.expression = this.maybeCoerceHexToInt(node.expression, node.identifier.type);
     expectAssignable(node, node.expression.type, node.identifier.type);
     return node;
   }
@@ -1146,6 +1154,7 @@ export default class TypeCheckTraversal extends AstTraversal {
     // Indirect call through a function-typed value: check args against the signature, result is its returns.
     if (node.identifier.type instanceof FunctionType && !this.functionDefinitions.has(node.identifier.name)) {
       const ft = node.identifier.type;
+      node.parameters = this.coerceHexArgs(node.parameters, ft.parameterTypes);
       expectParameters(node, node.parameters.map((p) => p.type!), ft.parameterTypes);
       node.type = ft.returnTypes.length === 1 ? ft.returnTypes[0]
         : ft.returnTypes.length > 1 ? new TupleType(ft.returnTypes) : PrimitiveType.VOID;
@@ -1195,6 +1204,7 @@ export default class TypeCheckTraversal extends AstTraversal {
       // Validate parameter types against the resolved overload
       this.forwardInternalReturnOutputIdx(node, node.resolvedFunction);
       const resolvedParamTypes = node.resolvedFunction.parameters.map((p) => p.type);
+      node.parameters = this.coerceHexArgs(node.parameters, resolvedParamTypes);
       expectParameters(node, node.parameters.map((p) => p.type!), resolvedParamTypes);
 
       return node;
@@ -1203,8 +1213,9 @@ export default class TypeCheckTraversal extends AstTraversal {
     // Single overload resolved from SymbolTableTraversal - validate params
     if (node.resolvedFunction) {
       this.forwardInternalReturnOutputIdx(node, node.resolvedFunction);
-      const argTypes = node.parameters.map((p) => p.type!);
       const resolvedParamTypes = node.resolvedFunction.parameters.map((p) => p.type);
+      node.parameters = this.coerceHexArgs(node.parameters, resolvedParamTypes);
+      const argTypes = node.parameters.map((p) => p.type!);
       expectParameters(node, argTypes, resolvedParamTypes);
 
       const resolvedReturnType = node.resolvedFunction.returnTypes.length === 1
@@ -1219,6 +1230,7 @@ export default class TypeCheckTraversal extends AstTraversal {
     const { definition, type } = node.identifier;
     if (!definition || !definition.parameters) return node; // already checked in symbol table
 
+    node.parameters = this.coerceHexArgs(node.parameters, definition.parameters);
     const parameterTypes = node.parameters.map((p) => p.type!);
     expectParameters(node, parameterTypes, definition.parameters);
 
@@ -1273,8 +1285,9 @@ export default class TypeCheckTraversal extends AstTraversal {
     node.expressions = this.visitList(node.expressions);
     // Type check return values against enclosing function's declared return types
     if (this.currentFunction && this.currentFunction.returnTypes.length > 0) {
-      const actualTypes = node.expressions.map((e) => e.type!);
       const expectedTypes = this.currentFunction.returnTypes;
+      node.expressions = node.expressions.map((e, i) => this.maybeCoerceHexToInt(e, expectedTypes[i]));
+      const actualTypes = node.expressions.map((e) => e.type!);
       if (actualTypes.length !== expectedTypes.length) {
         throw new ReturnTypeMismatchError(node, expectedTypes, actualTypes);
       }
@@ -1366,6 +1379,7 @@ export default class TypeCheckTraversal extends AstTraversal {
     const { definition, type } = node.identifier;
     if (!definition || !definition.parameters) return node; // already checked in symbol table
 
+    node.parameters = this.coerceHexArgs(node.parameters, definition.parameters);
     const parameterTypes = node.parameters.map((p) => p.type!);
     expectParameters(node, parameterTypes, definition.parameters);
 
@@ -1436,6 +1450,27 @@ export default class TypeCheckTraversal extends AstTraversal {
     return intNode;
   }
 
+  private isIntegerType(t?: Type): boolean {
+    return t === PrimitiveType.INT || t === PrimitiveType.BIGINT || t instanceof IntType;
+  }
+
+  // Solidity treats a `0x..` literal as a big-endian NUMBER whose concrete type is context-driven: in an
+  // integer context it is that integer value (Solidity docs: "Conversions between Literals and Elementary
+  // Types"). SolidCash natively types `0x..` as a bytes value (the deliberate inverse), so under
+  // solidityImportCompat reinterpret it as an int when the target type is integral. Non-integer targets
+  // (bytesN etc.) keep the native bytes literal.
+  private maybeCoerceHexToInt(expr: ExpressionNode, expected?: Type): ExpressionNode {
+    if (!this.solidityImportCompat) return expr;
+    if (expr instanceof HexLiteralNode && this.isIntegerType(expected)) return this.hexLiteralToInt(expr);
+    return expr;
+  }
+
+  // Coerce each `0x..` argument against its target parameter type (the call-site analogue of the above).
+  private coerceHexArgs(args: ExpressionNode[], expected: (Type | undefined)[]): ExpressionNode[] {
+    if (!this.solidityImportCompat) return args;
+    return args.map((a, i) => this.maybeCoerceHexToInt(a, expected[i]));
+  }
+
   // An internal call to a `public` function that RETURNS a value targets the function's internal-call
   // subroutine, which still carries the injected `__internal__returnOutputIdx` param. The Solidity-source call
   // site can't know about it, so auto-supply -1 (the internal subroutine produces no return event - the value
@@ -1483,11 +1518,10 @@ export default class TypeCheckTraversal extends AstTraversal {
     // Solidity hex number literals (`0x100...`) are big-endian integers, not byte strings. On a hex-vs-int
     // pairing (e.g. `x >= 0x100000000000000000000000000000000`), reinterpret the literal as its integer
     // value. Only fires on that pairing, which would otherwise be a type error, so it never changes working code.
-    const isIntType = (t?: Type): boolean => t === PrimitiveType.BIGINT || t instanceof IntType;
     if (this.solidityImportCompat) {
-      if (node.left instanceof HexLiteralNode && isIntType(node.right.type)) {
+      if (node.left instanceof HexLiteralNode && this.isIntegerType(node.right.type)) {
         node.left = this.hexLiteralToInt(node.left);
-      } else if (node.right instanceof HexLiteralNode && isIntType(node.left.type)) {
+      } else if (node.right instanceof HexLiteralNode && this.isIntegerType(node.left.type)) {
         node.right = this.hexLiteralToInt(node.right);
       }
     }

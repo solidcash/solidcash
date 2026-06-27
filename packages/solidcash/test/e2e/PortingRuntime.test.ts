@@ -62,6 +62,14 @@ describe('empty void functions (runtime; Solidity porting)', () => {
   });
 });
 
+describe('hex literals as Solidity numbers (runtime)', () => {
+  it('uses a hex literal as its big-endian integer value (0x0102 == 258)', async () => {
+    const source = 'pragma solidity ^0.8.0; contract C { function f() external { uint x = 0x0102; require(x == 258); } }';
+    const tx = await spend(source, { solidityImportCompat: true }, (c) => c.unlock.f());
+    expect(tx.txid).toBeDefined();
+  });
+});
+
 describe('transient state variables (runtime; EIP-1153 porting)', () => {
   it('spends a transient zero-init guard (locked starts at 0 each spend)', async () => {
     const source = `pragma solidity ^0.8.24;

@@ -29,6 +29,7 @@ import { AbstractContractNotCompilableError, CircularContractReferenceError, Lib
 export const DEFAULT_COMPILER_OPTIONS: CompilerOptions = {
   enforceFunctionParameterTypes: true,
   enforceLocktimeGuard: true,
+  enforceFinalRequire: false,
   commitmentLimit: 128,
   chunkedArrays: true,
   chainId: 0,
@@ -100,7 +101,7 @@ export function compileString(code: string, compilerOptions: CompileOptions = {}
   // Semantic analysis
   ast = ast.accept(new SymbolTableTraversal(mergedCompilerOptions)) as Ast;
   ast = ast.accept(new TypeCheckTraversal(mergedCompilerOptions.solidityImportCompat)) as Ast;
-  ast = ast.accept(new EnsureFinalRequireTraversal(mergedCompilerOptions.solidityImportCompat)) as Ast;
+  ast = ast.accept(new EnsureFinalRequireTraversal(mergedCompilerOptions.enforceFinalRequire)) as Ast;
 
   // Inject synthetic tx.locktime guard where tx.locktime is used without a protocol-enforcing time check
   if (mergedCompilerOptions.enforceLocktimeGuard) {
@@ -205,7 +206,7 @@ function compileReferencedContracts(
     singleAst = singleAst.accept(new SynthesizeBlockOracle(compilerOptions.solidityImportCompat)) as Ast;
     singleAst = singleAst.accept(new SymbolTableTraversal(compilerOptions)) as Ast;
     singleAst = singleAst.accept(new TypeCheckTraversal(compilerOptions.solidityImportCompat)) as Ast;
-    singleAst = singleAst.accept(new EnsureFinalRequireTraversal(compilerOptions.solidityImportCompat)) as Ast;
+    singleAst = singleAst.accept(new EnsureFinalRequireTraversal(compilerOptions.enforceFinalRequire)) as Ast;
     if (compilerOptions.enforceLocktimeGuard) {
       singleAst = singleAst.accept(new InjectLocktimeGuardTraversal()) as Ast;
     }

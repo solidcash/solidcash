@@ -1,17 +1,51 @@
 # Solidity import compatibility and porting notes
 
 This documents `solidityImportCompat` and the language-level features added so real Solidity sources (the
-Sablier exercises) compile as SolidCash with minimal edits. Tests: `test/PortingFixes.test.ts`.
+Sablier exercises) compile as SolidCash with minimal edits. Tests: `test/PortingFixes.test.ts`,
+`test/SafetyDefaults.test.ts`.
 
 ## `solidityImportCompat`
 
-A `CompilerOptions` flag. When set:
+A `CompilerOptions` flag scoped to compiling Solidity *source*: import/parse handling plus the few source-level
+semantics that differ between the two languages and so cannot be a SolidCash default. When set:
 
 - `.sol` files are parsed as SolidCash (the import resolver also tries `.sol` candidates).
 - `pragma solidity ...` is accepted (treated like `pragma solidcash`); the version constraint is not enforced.
+- `block.timestamp` lowers to `tx.locktime` instead of the native oracle-backed register (see
+  docs/block-and-transaction-properties.md). The native default is the oracle register.
+- A `0x..` hex literal coerces to a big-endian integer in any integer context (assignment, argument, return,
+  comparison, ...). Natively a `0x..` literal is a *bytes* value (the deliberate inverse of Solidity, where
+  `0x..` is a number), so these uses are a type error without the flag. See "Hex literals" below.
+- An empty *regular* function body is synthesized to `return <defaults>` / `require(true)`. Natively this is an
+  `EmptyFunctionError`; empty `receive()`/`fallback()` are exempt (synthesized by default, see below).
 
-It only changes parsing/resolution of imports; it does not add EVM semantics. Without it, a `.sol` pragma is a
-clean error pointing at the flag.
+It adds no EVM execution semantics. Without it, a `.sol` pragma is a clean error pointing at the flag.
+
+These behaviors used to be gated behind this flag but are now plain SolidCash defaults (they help porting but
+never relax soundness, so they apply to every compilation):
+
+- A spending path that performs no `require()`/verification and changes no state compiles to an
+  unconditionally-spendable script. This is a **warning** by default; pass `enforceFinalRequire: true` to turn
+  it back into a hard `FinalRequireStatementError` (e.g. for CI). A `selfdestruct` function with no `require()`
+  stays a hard error regardless of the option - it skips all covenant codegen, so a missing guard means any
+  caller can trigger the destruction.
+- Empty `receive()`/`fallback()` synthesize a state-preserving no-op spend path (`require(true)`), with a
+  warning. They are idiomatic in Solidity and need no flag.
+
+### Hex literals
+
+Solidity's `0x..` is a *number* literal whose concrete type is context-driven (Solidity docs: "Conversions
+between Literals and Elementary Types"): it converts implicitly to an integer type if it fits, or to `bytesN`
+only when the hex-digit count is exactly `2N` (zero converts to any `bytesN`). SolidCash natively treats `0x..`
+as a `bytes` value (the deliberate inverse), so the reinterpretation is gated behind the flag.
+
+Under solidityImportCompat a `0x..` literal coerces to its big-endian integer value in every **integer
+context**: variable init, (state/local) assignment, mapping value, constant, return, function/internal-call
+argument, and comparison/binary op. A non-integer target (`bytesN` etc.) keeps the native bytes literal, so
+`bytes2 b = 0x1234;` is unchanged in both modes. The coercion is value-preserving but does not enforce
+Solidity's exact size/fit rules (SolidCash's integer model is unbounded); multi-overload resolution and
+constructor-argument positions are not covered. Tests: `test/PortingFixes.test.ts` (hex describe),
+`test/e2e/PortingRuntime.test.ts`.
 
 ## Features added while porting
 

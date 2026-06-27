@@ -67,10 +67,18 @@ export default class NamedReturnTransformation extends AstTraversal {
 
     // Empty-body VOID function (e.g. `receive() external payable {}`, an empty payable `deposit()`): Solidity
     // accepts the call and does nothing. Synthesize `require(true);` so it compiles - a state-preserving no-op
-    // spend path. Porting mode only - native keeps EmptyFunctionError as a guard. Constructors may stay empty
-    // (parent-only) and abstract functions have no body, so both are excluded.
-    if (this.solidityImportCompat && node.body && (node.body.statements?.length ?? 0) === 0
+    // spend path. Empty receive()/fallback() are idiomatic, so they are allowed natively (with a warning);
+    // other empty functions still need porting mode (native keeps EmptyFunctionError as a guard). Constructors
+    // may stay empty (parent-only) and abstract functions have no body, so both are excluded.
+    const isReceiveOrFallback = node.name === '__receive' || node.name === '__fallback';
+    if ((this.solidityImportCompat || isReceiveOrFallback) && node.body
+      && (node.body.statements?.length ?? 0) === 0
       && node.returnTypes.length === 0 && node.name !== '__construct') {
+      if (isReceiveOrFallback && !this.solidityImportCompat) {
+        const fn = node.name === '__receive' ? 'receive()' : 'fallback()';
+        console.warn(`Warning: ${fn} has an empty body; SolidCash synthesizes a state-preserving no-op spend `
+          + 'path (require(true)). Add explicit logic if it should do more.');
+      }
       const cond = new BoolLiteralNode(true);
       cond.location = node.location;
       const req = new RequireNode(cond);

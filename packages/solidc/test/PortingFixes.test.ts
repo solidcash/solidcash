@@ -801,6 +801,33 @@ describe('SBE-9: imported enum/struct types + hex-literal-as-int + implicit name
     expect(() => compileString('contract C() { function f() { require(tx.version == 0x02); } }')).toThrow();
   });
 
+  // Solidity hex `0x..` is a context-driven number literal. Under compat it coerces to int in every integer
+  // context (not just comparisons); natively `0x..` stays bytes, so each native form is a type error.
+  describe('hex literals are Solidity-compatible numbers in integer contexts (compat)', () => {
+    const intContexts: [string, string][] = [
+      ['local var init', 'contract C() { function f() { int x = 0xff; require(x == 255); } }'],
+      ['state assign', 'contract C() { int n; function f(sig s, pubkey pk) { require(checkSig(s, pk)); this.n = 0xff; } }'],
+      ['return value', 'contract C() { function f() returns (int) { return 0xff; } }'],
+      ['function argument', 'contract C() { function g(int v) internal returns (bool) { return v >= 0; } function f() { require(g(0xff)); } }'],
+      ['mapping value', 'contract C() { mapping(int => int) m; function f(sig s, pubkey pk) { require(checkSig(s, pk)); m[1] = 0xff; } }'],
+      ['constant', 'contract C() { int constant MASK = 0xff; function f() { require(MASK == 255); } }'],
+    ];
+
+    it.each(intContexts)('coerces hex -> int under compat: %s', (_label, src) => {
+      expect(compileString(src, { solidityImportCompat: true }).contractName).toBe('C');
+    });
+
+    it.each(intContexts)('keeps it a type error natively: %s', (_label, src) => {
+      expect(() => compileString(src)).toThrow();
+    });
+
+    it('leaves a bytesN target as a bytes literal in both modes (no coercion)', () => {
+      const src = 'contract C() { function f() { bytes2 b = 0x1234; require(b == 0x1234); } }';
+      expect(compileString(src).contractName).toBe('C');
+      expect(compileString(src, { solidityImportCompat: true }).contractName).toBe('C');
+    });
+  });
+
   it('returns named returns implicitly when there is no explicit return', () => {
     const a = compileString('contract C() { function f(int x, sig s, pubkey pk) returns (int r) { r = x + 1; require(checkSig(s, pk)); } }');
     expect(a.contractName).toBe('C');

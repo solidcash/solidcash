@@ -1,8 +1,0 @@
-contract Test() {
-    function test() {
-        int[] arr = [1, 2, 3];
-        int x = 5;
-        console.log(x);
-        arr.push(1);
-    }
-}

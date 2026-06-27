@@ -8,6 +8,10 @@ export type ImportResolverFn = (importPath: string, currentFile: string) => Reso
 export interface CompilerOptions {
   enforceFunctionParameterTypes?: boolean;
   enforceLocktimeGuard?: boolean;
+  // Treat a spending path that performs no require()/verification and changes no state as a hard error
+  // (FinalRequireStatementError) rather than the default warning. Such a path compiles to an
+  // unconditionally-spendable script; enable this to enforce that every path is guarded (e.g. in CI).
+  enforceFinalRequire?: boolean;
   commitmentLimit?: number;
   importResolver?: ImportResolverFn;
   rootFileId?: string;

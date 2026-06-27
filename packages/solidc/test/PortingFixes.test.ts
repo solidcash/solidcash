@@ -466,6 +466,52 @@ describe('uint256 <-> int compatibility', () => {
   });
 });
 
+describe('transient state variables (EIP-1153 porting)', () => {
+  const layout = (body: string): { variables: { name: string }[] } | undefined =>
+    compileString(`pragma solidity ^0.8.24;\n${body}`, { solidityImportCompat: true }).stateLayout;
+
+  it('excludes a transient var from the persisted state layout (only `n` is stored)', () => {
+    const sl = layout('contract C() { uint256 n; uint256 transient scratch;'
+      + ' function bump() { scratch = 5; this.n = this.n + scratch; } }');
+    expect(sl?.variables.map((v) => v.name)).toEqual(['n']);
+  });
+
+  it('a transient-only contract stays stateless (no data NFT, zero state overhead)', () => {
+    // The read-before-write guard also proves the lowered local is zero-init each spend.
+    expect(layout('contract C() { uint256 transient locked;'
+      + ' function enter() { require(locked == 0); locked = 1; require(locked == 1); } }')).toBeUndefined();
+  });
+
+  it('lowers a transient var to a usable zero-init local (read + write)', () => {
+    const art = compileString('pragma solidity ^0.8.24;\ncontract C() { uint256 transient tmp;'
+      + ' function f(uint256 x) { tmp = x; require(tmp == x); } }', { solidityImportCompat: true });
+    expect(art.contractName).toBe('C');
+  });
+
+  it('works in native mode too (transient is not gated on solidityImportCompat)', () => {
+    const art = compileString('contract C() { uint256 transient tmp;'
+      + ' function f(uint256 x) { tmp = x; require(tmp == x); } }');
+    expect(art.contractName).toBe('C');
+  });
+
+  it('warns once per transient var that it has no UTXO analogue', () => {
+    const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    compileString('pragma solidity ^0.8.24;\ncontract C() { uint256 transient a; uint256 transient b;'
+      + ' function f() { a = 1; b = 2; require(a == 1); } }', { solidityImportCompat: true });
+    const w = spy.mock.calls.filter((c) => String(c[0]).includes('has no UTXO analogue'));
+    spy.mockRestore();
+    expect(w.length).toBe(2);
+  });
+
+  it('does not inject the transient local into functions that never reference it', () => {
+    // `ignoresIt` never touches scratch; compilation must still succeed and persist only `n`.
+    const sl = layout('contract C() { uint256 n; uint256 transient scratch;'
+      + ' function usesIt() { scratch = 3; this.n = scratch; }'
+      + ' function ignoresIt() { this.n = 7; } }');
+    expect(sl?.variables.map((v) => v.name)).toEqual(['n']);
+  });
+});
+
 describe('address casts + enum state + unresolved-type params', () => {
   it('allows the explicit address(int) cast (e.g. address(0))', () => {
     const a = compileString('contract C() { address a; function f() { this.a = address(0); } }');

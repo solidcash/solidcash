@@ -169,33 +169,34 @@ export default class SolidCashParser extends Parser {
 	public static readonly T__148 = 149;
 	public static readonly T__149 = 150;
 	public static readonly T__150 = 151;
-	public static readonly VersionLiteral = 152;
-	public static readonly BooleanLiteral = 153;
-	public static readonly NumberUnit = 154;
-	public static readonly BchUnit = 155;
-	public static readonly DecimalLiteral = 156;
-	public static readonly NumberLiteral = 157;
-	public static readonly PrimitiveType = 158;
-	public static readonly CryptoType = 159;
-	public static readonly UnboundedBytes = 160;
-	public static readonly BoundedBytes = 161;
-	public static readonly Bound = 162;
-	public static readonly StringLiteral = 163;
-	public static readonly DateLiteral = 164;
-	public static readonly HexLiteral = 165;
-	public static readonly TxVar = 166;
-	public static readonly UnsafeCast = 167;
-	public static readonly BoundedSignedInt = 168;
-	public static readonly BoundedUnsignedInt = 169;
-	public static readonly BoundedSignedFixed = 170;
-	public static readonly BoundedUnsignedFixed = 171;
-	public static readonly NullaryOp = 172;
-	public static readonly UnicodeLiteral = 173;
-	public static readonly HexStringLiteral = 174;
-	public static readonly Identifier = 175;
-	public static readonly WHITESPACE = 176;
-	public static readonly COMMENT = 177;
-	public static readonly LINE_COMMENT = 178;
+	public static readonly T__151 = 152;
+	public static readonly VersionLiteral = 153;
+	public static readonly BooleanLiteral = 154;
+	public static readonly NumberUnit = 155;
+	public static readonly BchUnit = 156;
+	public static readonly DecimalLiteral = 157;
+	public static readonly NumberLiteral = 158;
+	public static readonly PrimitiveType = 159;
+	public static readonly CryptoType = 160;
+	public static readonly UnboundedBytes = 161;
+	public static readonly BoundedBytes = 162;
+	public static readonly Bound = 163;
+	public static readonly StringLiteral = 164;
+	public static readonly DateLiteral = 165;
+	public static readonly HexLiteral = 166;
+	public static readonly TxVar = 167;
+	public static readonly UnsafeCast = 168;
+	public static readonly BoundedSignedInt = 169;
+	public static readonly BoundedUnsignedInt = 170;
+	public static readonly BoundedSignedFixed = 171;
+	public static readonly BoundedUnsignedFixed = 172;
+	public static readonly NullaryOp = 173;
+	public static readonly UnicodeLiteral = 174;
+	public static readonly HexStringLiteral = 175;
+	public static readonly Identifier = 176;
+	public static readonly WHITESPACE = 177;
+	public static readonly COMMENT = 178;
+	public static readonly LINE_COMMENT = 179;
 	public static override readonly EOF = Token.EOF;
 	public static readonly RULE_sourceFile = 0;
 	public static readonly RULE_importDirective = 1;
@@ -421,6 +422,7 @@ export default class SolidCashParser extends Parser {
                                                             "'calldata'", 
                                                             "'storage'", 
                                                             "'immutable'", 
+                                                            "'transient'", 
                                                             "'address'", 
                                                             "'fixed'", "'ufixed'", 
                                                             null, null, 
@@ -504,7 +506,7 @@ export default class SolidCashParser extends Parser {
                                                              null, null, 
                                                              null, null, 
                                                              null, null, 
-                                                             "VersionLiteral", 
+                                                             null, "VersionLiteral", 
                                                              "BooleanLiteral", 
                                                              "NumberUnit", 
                                                              "BchUnit", 
@@ -614,7 +616,7 @@ export default class SolidCashParser extends Parser {
 			this.state = 262;
 			this._errHandler.sync(this);
 			_la = this._input.LA(1);
-			while (_la===7 || _la===8 || ((((_la - 35)) & ~0x1F) === 0 && ((1 << (_la - 35)) & 1842241) !== 0) || ((((_la - 149)) & ~0x1F) === 0 && ((1 << (_la - 149)) & 74980871) !== 0)) {
+			while (_la===7 || _la===8 || ((((_la - 35)) & ~0x1F) === 0 && ((1 << (_la - 35)) & 1842241) !== 0) || ((((_la - 150)) & ~0x1F) === 0 && ((1 << (_la - 150)) & 74980871) !== 0)) {
 				{
 				this.state = 260;
 				this._errHandler.sync(this);
@@ -886,7 +888,7 @@ export default class SolidCashParser extends Parser {
 			this.state = 316;
 			this._errHandler.sync(this);
 			_la = this._input.LA(1);
-			while (((((_la - 7)) & ~0x1F) === 0 && ((1 << (_la - 7)) & 1072693397) !== 0) || ((((_la - 49)) & ~0x1F) === 0 && ((1 << (_la - 49)) & 235013185) !== 0) || ((((_la - 87)) & ~0x1F) === 0 && ((1 << (_la - 87)) & 4291950819) !== 0) || ((((_la - 119)) & ~0x1F) === 0 && ((1 << (_la - 119)) & 3221488143) !== 0) || ((((_la - 151)) & ~0x1F) === 0 && ((1 << (_la - 151)) & 33519605) !== 0)) {
+			while (((((_la - 7)) & ~0x1F) === 0 && ((1 << (_la - 7)) & 1072693397) !== 0) || ((((_la - 49)) & ~0x1F) === 0 && ((1 << (_la - 49)) & 235013185) !== 0) || ((((_la - 87)) & ~0x1F) === 0 && ((1 << (_la - 87)) & 4291950819) !== 0) || ((((_la - 119)) & ~0x1F) === 0 && ((1 << (_la - 119)) & 2147746319) !== 0) || ((((_la - 151)) & ~0x1F) === 0 && ((1 << (_la - 151)) & 67039211) !== 0)) {
 				{
 				{
 				this.state = 313;
@@ -939,18 +941,18 @@ export default class SolidCashParser extends Parser {
 				this._errHandler.sync(this);
 				switch (this._input.LA(1)) {
 				case 7:
-				case 149:
 				case 150:
 				case 151:
-				case 158:
+				case 152:
 				case 159:
 				case 160:
 				case 161:
-				case 168:
+				case 162:
 				case 169:
 				case 170:
 				case 171:
-				case 175:
+				case 172:
+				case 176:
 					{
 					this.state = 324;
 					this.typeName();
@@ -1025,18 +1027,18 @@ export default class SolidCashParser extends Parser {
 				this._errHandler.sync(this);
 				switch (this._input.LA(1)) {
 				case 7:
-				case 149:
 				case 150:
 				case 151:
-				case 158:
+				case 152:
 				case 159:
 				case 160:
 				case 161:
-				case 168:
+				case 162:
 				case 169:
 				case 170:
 				case 171:
-				case 175:
+				case 172:
+				case 176:
 					{
 					this.state = 347;
 					this.typeName();
@@ -1174,7 +1176,7 @@ export default class SolidCashParser extends Parser {
 			{
 			this.state = 369;
 			_la = this._input.LA(1);
-			if(!(((((_la - 11)) & ~0x1F) === 0 && ((1 << (_la - 11)) & 66977793) !== 0) || ((((_la - 155)) & ~0x1F) === 0 && ((1 << (_la - 155)) & 1048593) !== 0))) {
+			if(!(((((_la - 11)) & ~0x1F) === 0 && ((1 << (_la - 11)) & 66977793) !== 0) || ((((_la - 156)) & ~0x1F) === 0 && ((1 << (_la - 156)) & 1048593) !== 0))) {
 			this._errHandler.recoverInline(this);
 			}
 			else {
@@ -1274,7 +1276,7 @@ export default class SolidCashParser extends Parser {
 			this.state = 380;
 			this._errHandler.sync(this);
 			_la = this._input.LA(1);
-			if (((((_la - 20)) & ~0x1F) === 0 && ((1 << (_la - 20)) & 1048783) !== 0) || _la===152) {
+			if (((((_la - 20)) & ~0x1F) === 0 && ((1 << (_la - 20)) & 1048783) !== 0) || _la===153) {
 				{
 				this.state = 379;
 				this.versionConstraint();
@@ -1870,7 +1872,7 @@ export default class SolidCashParser extends Parser {
 			this.state = 540;
 			this._errHandler.sync(this);
 			_la = this._input.LA(1);
-			while (((((_la - 7)) & ~0x1F) === 0 && ((1 << (_la - 7)) & 268435459) !== 0) || ((((_la - 43)) & ~0x1F) === 0 && ((1 << (_la - 43)) & 37411875) !== 0) || ((((_la - 149)) & ~0x1F) === 0 && ((1 << (_la - 149)) & 74980871) !== 0)) {
+			while (((((_la - 7)) & ~0x1F) === 0 && ((1 << (_la - 7)) & 268435459) !== 0) || ((((_la - 43)) & ~0x1F) === 0 && ((1 << (_la - 43)) & 37411875) !== 0) || ((((_la - 150)) & ~0x1F) === 0 && ((1 << (_la - 150)) & 74980871) !== 0)) {
 				{
 				this.state = 538;
 				this._errHandler.sync(this);
@@ -2050,7 +2052,7 @@ export default class SolidCashParser extends Parser {
 			this.state = 561;
 			this._errHandler.sync(this);
 			_la = this._input.LA(1);
-			while (_la===175) {
+			while (_la===176) {
 				{
 				{
 				this.state = 558;
@@ -2107,7 +2109,7 @@ export default class SolidCashParser extends Parser {
 			this.state = 583;
 			this._errHandler.sync(this);
 			_la = this._input.LA(1);
-			if (_la===7 || ((((_la - 149)) & ~0x1F) === 0 && ((1 << (_la - 149)) & 74980871) !== 0)) {
+			if (_la===7 || ((((_la - 150)) & ~0x1F) === 0 && ((1 << (_la - 150)) & 74980871) !== 0)) {
 				{
 				this.state = 572;
 				this.eventParameter();
@@ -2228,7 +2230,7 @@ export default class SolidCashParser extends Parser {
 			this.state = 611;
 			this._errHandler.sync(this);
 			_la = this._input.LA(1);
-			if (_la===7 || ((((_la - 149)) & ~0x1F) === 0 && ((1 << (_la - 149)) & 74980871) !== 0)) {
+			if (_la===7 || ((((_la - 150)) & ~0x1F) === 0 && ((1 << (_la - 150)) & 74980871) !== 0)) {
 				{
 				this.state = 600;
 				this.errorParameter();
@@ -2337,7 +2339,7 @@ export default class SolidCashParser extends Parser {
 				this.state = 625;
 				this._errHandler.sync(this);
 				_la = this._input.LA(1);
-			} while (_la===7 || ((((_la - 149)) & ~0x1F) === 0 && ((1 << (_la - 149)) & 74980871) !== 0));
+			} while (_la===7 || ((((_la - 150)) & ~0x1F) === 0 && ((1 << (_la - 150)) & 74980871) !== 0));
 			this.state = 627;
 			this.match(SolidCashParser.T__5);
 			}
@@ -2604,7 +2606,7 @@ export default class SolidCashParser extends Parser {
 			this.state = 681;
 			this._errHandler.sync(this);
 			_la = this._input.LA(1);
-			while (_la===175) {
+			while (_la===176) {
 				{
 				{
 				this.state = 678;
@@ -2620,7 +2622,7 @@ export default class SolidCashParser extends Parser {
 			this.state = 688;
 			this._errHandler.sync(this);
 			_la = this._input.LA(1);
-			while (((((_la - 7)) & ~0x1F) === 0 && ((1 << (_la - 7)) & 1072693397) !== 0) || ((((_la - 49)) & ~0x1F) === 0 && ((1 << (_la - 49)) & 235013185) !== 0) || ((((_la - 87)) & ~0x1F) === 0 && ((1 << (_la - 87)) & 4291950819) !== 0) || ((((_la - 119)) & ~0x1F) === 0 && ((1 << (_la - 119)) & 3221488143) !== 0) || ((((_la - 151)) & ~0x1F) === 0 && ((1 << (_la - 151)) & 33519605) !== 0)) {
+			while (((((_la - 7)) & ~0x1F) === 0 && ((1 << (_la - 7)) & 1072693397) !== 0) || ((((_la - 49)) & ~0x1F) === 0 && ((1 << (_la - 49)) & 235013185) !== 0) || ((((_la - 87)) & ~0x1F) === 0 && ((1 << (_la - 87)) & 4291950819) !== 0) || ((((_la - 119)) & ~0x1F) === 0 && ((1 << (_la - 119)) & 2147746319) !== 0) || ((((_la - 151)) & ~0x1F) === 0 && ((1 << (_la - 151)) & 67039211) !== 0)) {
 				{
 				{
 				this.state = 685;
@@ -2680,7 +2682,7 @@ export default class SolidCashParser extends Parser {
 			this.state = 705;
 			this._errHandler.sync(this);
 			_la = this._input.LA(1);
-			while (_la===175) {
+			while (_la===176) {
 				{
 				{
 				this.state = 702;
@@ -2696,7 +2698,7 @@ export default class SolidCashParser extends Parser {
 			this.state = 712;
 			this._errHandler.sync(this);
 			_la = this._input.LA(1);
-			while (((((_la - 7)) & ~0x1F) === 0 && ((1 << (_la - 7)) & 1072693397) !== 0) || ((((_la - 49)) & ~0x1F) === 0 && ((1 << (_la - 49)) & 235013185) !== 0) || ((((_la - 87)) & ~0x1F) === 0 && ((1 << (_la - 87)) & 4291950819) !== 0) || ((((_la - 119)) & ~0x1F) === 0 && ((1 << (_la - 119)) & 3221488143) !== 0) || ((((_la - 151)) & ~0x1F) === 0 && ((1 << (_la - 151)) & 33519605) !== 0)) {
+			while (((((_la - 7)) & ~0x1F) === 0 && ((1 << (_la - 7)) & 1072693397) !== 0) || ((((_la - 49)) & ~0x1F) === 0 && ((1 << (_la - 49)) & 235013185) !== 0) || ((((_la - 87)) & ~0x1F) === 0 && ((1 << (_la - 87)) & 4291950819) !== 0) || ((((_la - 119)) & ~0x1F) === 0 && ((1 << (_la - 119)) & 2147746319) !== 0) || ((((_la - 151)) & ~0x1F) === 0 && ((1 << (_la - 151)) & 67039211) !== 0)) {
 				{
 				{
 				this.state = 709;
@@ -2795,7 +2797,7 @@ export default class SolidCashParser extends Parser {
 			this.state = 731;
 			this._errHandler.sync(this);
 			_la = this._input.LA(1);
-			while (((((_la - 7)) & ~0x1F) === 0 && ((1 << (_la - 7)) & 1072693397) !== 0) || ((((_la - 49)) & ~0x1F) === 0 && ((1 << (_la - 49)) & 235013185) !== 0) || ((((_la - 87)) & ~0x1F) === 0 && ((1 << (_la - 87)) & 4291950819) !== 0) || ((((_la - 119)) & ~0x1F) === 0 && ((1 << (_la - 119)) & 3221488143) !== 0) || ((((_la - 151)) & ~0x1F) === 0 && ((1 << (_la - 151)) & 33519605) !== 0)) {
+			while (((((_la - 7)) & ~0x1F) === 0 && ((1 << (_la - 7)) & 1072693397) !== 0) || ((((_la - 49)) & ~0x1F) === 0 && ((1 << (_la - 49)) & 235013185) !== 0) || ((((_la - 87)) & ~0x1F) === 0 && ((1 << (_la - 87)) & 4291950819) !== 0) || ((((_la - 119)) & ~0x1F) === 0 && ((1 << (_la - 119)) & 2147746319) !== 0) || ((((_la - 151)) & ~0x1F) === 0 && ((1 << (_la - 151)) & 67039211) !== 0)) {
 				{
 				{
 				this.state = 728;
@@ -2878,7 +2880,7 @@ export default class SolidCashParser extends Parser {
 				this.state = 746;
 				this._errHandler.sync(this);
 				_la = this._input.LA(1);
-				while (_la===33 || _la===56 || ((((_la - 145)) & ~0x1F) === 0 && ((1 << (_la - 145)) & 15) !== 0)) {
+				while (_la===33 || _la===56 || ((((_la - 145)) & ~0x1F) === 0 && ((1 << (_la - 145)) & 31) !== 0)) {
 					{
 					{
 					this.state = 743;
@@ -2917,7 +2919,7 @@ export default class SolidCashParser extends Parser {
 				this.state = 761;
 				this._errHandler.sync(this);
 				_la = this._input.LA(1);
-				while (_la===33 || _la===56 || ((((_la - 145)) & ~0x1F) === 0 && ((1 << (_la - 145)) & 15) !== 0)) {
+				while (_la===33 || _la===56 || ((((_la - 145)) & ~0x1F) === 0 && ((1 << (_la - 145)) & 31) !== 0)) {
 					{
 					{
 					this.state = 758;
@@ -2964,7 +2966,7 @@ export default class SolidCashParser extends Parser {
 				this.state = 778;
 				this._errHandler.sync(this);
 				_la = this._input.LA(1);
-				while (((((_la - 33)) & ~0x1F) === 0 && ((1 << (_la - 33)) & 1115687937) !== 0) || ((((_la - 145)) & ~0x1F) === 0 && ((1 << (_la - 145)) & 15) !== 0)) {
+				while (((((_la - 33)) & ~0x1F) === 0 && ((1 << (_la - 33)) & 1115687937) !== 0) || ((((_la - 145)) & ~0x1F) === 0 && ((1 << (_la - 145)) & 31) !== 0)) {
 					{
 					{
 					this.state = 775;
@@ -2999,7 +3001,7 @@ export default class SolidCashParser extends Parser {
 				this.state = 791;
 				this._errHandler.sync(this);
 				_la = this._input.LA(1);
-				while (((((_la - 33)) & ~0x1F) === 0 && ((1 << (_la - 33)) & 1115687937) !== 0) || ((((_la - 145)) & ~0x1F) === 0 && ((1 << (_la - 145)) & 15) !== 0)) {
+				while (((((_la - 33)) & ~0x1F) === 0 && ((1 << (_la - 33)) & 1115687937) !== 0) || ((((_la - 145)) & ~0x1F) === 0 && ((1 << (_la - 145)) & 31) !== 0)) {
 					{
 					{
 					this.state = 788;
@@ -3058,6 +3060,7 @@ export default class SolidCashParser extends Parser {
 			case 146:
 			case 147:
 			case 148:
+			case 149:
 				this.enterOuterAlt(localctx, 1);
 				{
 				this.state = 803;
@@ -3146,7 +3149,7 @@ export default class SolidCashParser extends Parser {
 				this.state = 813;
 				this._errHandler.sync(this);
 				_la = this._input.LA(1);
-				if (_la===175) {
+				if (_la===176) {
 					{
 					this.state = 812;
 					this.match(SolidCashParser.Identifier);
@@ -3160,7 +3163,7 @@ export default class SolidCashParser extends Parser {
 				this.state = 818;
 				this._errHandler.sync(this);
 				_la = this._input.LA(1);
-				if (_la===175) {
+				if (_la===176) {
 					{
 					this.state = 817;
 					this.match(SolidCashParser.Identifier);
@@ -3183,7 +3186,7 @@ export default class SolidCashParser extends Parser {
 				this.state = 826;
 				this._errHandler.sync(this);
 				_la = this._input.LA(1);
-				if (_la===175) {
+				if (_la===176) {
 					{
 					this.state = 825;
 					this.match(SolidCashParser.Identifier);
@@ -3210,7 +3213,7 @@ export default class SolidCashParser extends Parser {
 				this.state = 836;
 				this._errHandler.sync(this);
 				_la = this._input.LA(1);
-				if (_la===175) {
+				if (_la===176) {
 					{
 					this.state = 835;
 					this.match(SolidCashParser.Identifier);
@@ -3224,7 +3227,7 @@ export default class SolidCashParser extends Parser {
 				this.state = 841;
 				this._errHandler.sync(this);
 				_la = this._input.LA(1);
-				if (_la===175) {
+				if (_la===176) {
 					{
 					this.state = 840;
 					this.match(SolidCashParser.Identifier);
@@ -3390,7 +3393,7 @@ export default class SolidCashParser extends Parser {
 			this.state = 880;
 			this._errHandler.sync(this);
 			_la = this._input.LA(1);
-			while (((((_la - 7)) & ~0x1F) === 0 && ((1 << (_la - 7)) & 1072693397) !== 0) || ((((_la - 49)) & ~0x1F) === 0 && ((1 << (_la - 49)) & 236061761) !== 0) || ((((_la - 87)) & ~0x1F) === 0 && ((1 << (_la - 87)) & 4291950819) !== 0) || ((((_la - 119)) & ~0x1F) === 0 && ((1 << (_la - 119)) & 3221488143) !== 0) || ((((_la - 151)) & ~0x1F) === 0 && ((1 << (_la - 151)) & 33519605) !== 0)) {
+			while (((((_la - 7)) & ~0x1F) === 0 && ((1 << (_la - 7)) & 1072693397) !== 0) || ((((_la - 49)) & ~0x1F) === 0 && ((1 << (_la - 49)) & 236061761) !== 0) || ((((_la - 87)) & ~0x1F) === 0 && ((1 << (_la - 87)) & 4291950819) !== 0) || ((((_la - 119)) & ~0x1F) === 0 && ((1 << (_la - 119)) & 2147746319) !== 0) || ((((_la - 151)) & ~0x1F) === 0 && ((1 << (_la - 151)) & 67039211) !== 0)) {
 				{
 				{
 				this.state = 877;
@@ -3483,21 +3486,20 @@ export default class SolidCashParser extends Parser {
 			case 122:
 			case 128:
 			case 137:
-			case 149:
 			case 150:
 			case 151:
-			case 153:
-			case 155:
+			case 152:
+			case 154:
 			case 156:
 			case 157:
 			case 158:
 			case 159:
 			case 160:
 			case 161:
-			case 163:
+			case 162:
 			case 164:
 			case 165:
-			case 167:
+			case 166:
 			case 168:
 			case 169:
 			case 170:
@@ -3506,6 +3508,7 @@ export default class SolidCashParser extends Parser {
 			case 173:
 			case 174:
 			case 175:
+			case 176:
 				this.enterOuterAlt(localctx, 2);
 				{
 				this.state = 886;
@@ -3588,7 +3591,7 @@ export default class SolidCashParser extends Parser {
 			this.state = 904;
 			this._errHandler.sync(this);
 			_la = this._input.LA(1);
-			while (_la===175) {
+			while (_la===176) {
 				{
 				{
 				this.state = 901;
@@ -3614,7 +3617,7 @@ export default class SolidCashParser extends Parser {
 			this.state = 914;
 			this._errHandler.sync(this);
 			_la = this._input.LA(1);
-			while (((((_la - 7)) & ~0x1F) === 0 && ((1 << (_la - 7)) & 1072693397) !== 0) || ((((_la - 49)) & ~0x1F) === 0 && ((1 << (_la - 49)) & 235013185) !== 0) || ((((_la - 87)) & ~0x1F) === 0 && ((1 << (_la - 87)) & 4291950819) !== 0) || ((((_la - 119)) & ~0x1F) === 0 && ((1 << (_la - 119)) & 3221488143) !== 0) || ((((_la - 151)) & ~0x1F) === 0 && ((1 << (_la - 151)) & 33519605) !== 0)) {
+			while (((((_la - 7)) & ~0x1F) === 0 && ((1 << (_la - 7)) & 1072693397) !== 0) || ((((_la - 49)) & ~0x1F) === 0 && ((1 << (_la - 49)) & 235013185) !== 0) || ((((_la - 87)) & ~0x1F) === 0 && ((1 << (_la - 87)) & 4291950819) !== 0) || ((((_la - 119)) & ~0x1F) === 0 && ((1 << (_la - 119)) & 2147746319) !== 0) || ((((_la - 151)) & ~0x1F) === 0 && ((1 << (_la - 151)) & 67039211) !== 0)) {
 				{
 				{
 				this.state = 911;
@@ -3994,7 +3997,7 @@ export default class SolidCashParser extends Parser {
 				this.state = 981;
 				this._errHandler.sync(this);
 				_la = this._input.LA(1);
-				if (((((_la - 11)) & ~0x1F) === 0 && ((1 << (_la - 11)) & 66977793) !== 0) || ((((_la - 155)) & ~0x1F) === 0 && ((1 << (_la - 155)) & 1048593) !== 0)) {
+				if (((((_la - 11)) & ~0x1F) === 0 && ((1 << (_la - 11)) & 66977793) !== 0) || ((((_la - 156)) & ~0x1F) === 0 && ((1 << (_la - 156)) & 1048593) !== 0)) {
 					{
 					this.state = 980;
 					this.anyIdentifier();
@@ -4027,7 +4030,7 @@ export default class SolidCashParser extends Parser {
 				this.state = 991;
 				this._errHandler.sync(this);
 				_la = this._input.LA(1);
-				if (((((_la - 11)) & ~0x1F) === 0 && ((1 << (_la - 11)) & 66977793) !== 0) || ((((_la - 155)) & ~0x1F) === 0 && ((1 << (_la - 155)) & 1048593) !== 0)) {
+				if (((((_la - 11)) & ~0x1F) === 0 && ((1 << (_la - 11)) & 66977793) !== 0) || ((((_la - 156)) & ~0x1F) === 0 && ((1 << (_la - 156)) & 1048593) !== 0)) {
 					{
 					this.state = 990;
 					this.anyIdentifier();
@@ -4066,7 +4069,7 @@ export default class SolidCashParser extends Parser {
 			this.state = 1007;
 			this._errHandler.sync(this);
 			_la = this._input.LA(1);
-			if (_la===7 || ((((_la - 149)) & ~0x1F) === 0 && ((1 << (_la - 149)) & 74980871) !== 0)) {
+			if (_la===7 || ((((_la - 150)) & ~0x1F) === 0 && ((1 << (_la - 150)) & 74980871) !== 0)) {
 				{
 				this.state = 996;
 				this.parameter();
@@ -4153,7 +4156,7 @@ export default class SolidCashParser extends Parser {
 				this.state = 1019;
 				this._errHandler.sync(this);
 				_la = this._input.LA(1);
-				if (((((_la - 11)) & ~0x1F) === 0 && ((1 << (_la - 11)) & 66977793) !== 0) || ((((_la - 155)) & ~0x1F) === 0 && ((1 << (_la - 155)) & 1048593) !== 0)) {
+				if (((((_la - 11)) & ~0x1F) === 0 && ((1 << (_la - 11)) & 66977793) !== 0) || ((((_la - 156)) & ~0x1F) === 0 && ((1 << (_la - 156)) & 1048593) !== 0)) {
 					{
 					this.state = 1018;
 					this.anyIdentifier();
@@ -4186,7 +4189,7 @@ export default class SolidCashParser extends Parser {
 				this.state = 1029;
 				this._errHandler.sync(this);
 				_la = this._input.LA(1);
-				if (((((_la - 11)) & ~0x1F) === 0 && ((1 << (_la - 11)) & 66977793) !== 0) || ((((_la - 155)) & ~0x1F) === 0 && ((1 << (_la - 155)) & 1048593) !== 0)) {
+				if (((((_la - 11)) & ~0x1F) === 0 && ((1 << (_la - 11)) & 66977793) !== 0) || ((((_la - 156)) & ~0x1F) === 0 && ((1 << (_la - 156)) & 1048593) !== 0)) {
 					{
 					this.state = 1028;
 					this.anyIdentifier();
@@ -4228,7 +4231,7 @@ export default class SolidCashParser extends Parser {
 				this.state = 1037;
 				this._errHandler.sync(this);
 				_la = this._input.LA(1);
-				while (((((_la - 7)) & ~0x1F) === 0 && ((1 << (_la - 7)) & 1072693397) !== 0) || ((((_la - 49)) & ~0x1F) === 0 && ((1 << (_la - 49)) & 235013185) !== 0) || ((((_la - 87)) & ~0x1F) === 0 && ((1 << (_la - 87)) & 4291950819) !== 0) || ((((_la - 119)) & ~0x1F) === 0 && ((1 << (_la - 119)) & 3221488143) !== 0) || ((((_la - 151)) & ~0x1F) === 0 && ((1 << (_la - 151)) & 33519605) !== 0)) {
+				while (((((_la - 7)) & ~0x1F) === 0 && ((1 << (_la - 7)) & 1072693397) !== 0) || ((((_la - 49)) & ~0x1F) === 0 && ((1 << (_la - 49)) & 235013185) !== 0) || ((((_la - 87)) & ~0x1F) === 0 && ((1 << (_la - 87)) & 4291950819) !== 0) || ((((_la - 119)) & ~0x1F) === 0 && ((1 << (_la - 119)) & 2147746319) !== 0) || ((((_la - 151)) & ~0x1F) === 0 && ((1 << (_la - 151)) & 67039211) !== 0)) {
 					{
 					{
 					this.state = 1034;
@@ -4292,21 +4295,20 @@ export default class SolidCashParser extends Parser {
 			case 122:
 			case 128:
 			case 137:
-			case 149:
 			case 150:
 			case 151:
-			case 153:
-			case 155:
+			case 152:
+			case 154:
 			case 156:
 			case 157:
 			case 158:
 			case 159:
 			case 160:
 			case 161:
-			case 163:
+			case 162:
 			case 164:
 			case 165:
-			case 167:
+			case 166:
 			case 168:
 			case 169:
 			case 170:
@@ -4315,6 +4317,7 @@ export default class SolidCashParser extends Parser {
 			case 173:
 			case 174:
 			case 175:
+			case 176:
 				this.enterOuterAlt(localctx, 2);
 				{
 				this.state = 1041;
@@ -4824,7 +4827,7 @@ export default class SolidCashParser extends Parser {
 				this.state = 1156;
 				this._errHandler.sync(this);
 				_la = this._input.LA(1);
-				if (_la===175) {
+				if (_la===176) {
 					{
 					this.state = 1145;
 					this.namedArg();
@@ -5053,7 +5056,7 @@ export default class SolidCashParser extends Parser {
 				this.state = 1219;
 				this._errHandler.sync(this);
 				_la = this._input.LA(1);
-				if (_la===175) {
+				if (_la===176) {
 					{
 					this.state = 1208;
 					this.namedArg();
@@ -5797,7 +5800,7 @@ export default class SolidCashParser extends Parser {
 				this.state = 1444;
 				this._errHandler.sync(this);
 				_la = this._input.LA(1);
-				while (_la===33 || _la===56 || ((((_la - 145)) & ~0x1F) === 0 && ((1 << (_la - 145)) & 15) !== 0)) {
+				while (_la===33 || _la===56 || ((((_la - 145)) & ~0x1F) === 0 && ((1 << (_la - 145)) & 31) !== 0)) {
 					{
 					{
 					this.state = 1441;
@@ -6586,7 +6589,7 @@ export default class SolidCashParser extends Parser {
 			this.state = 1621;
 			this._errHandler.sync(this);
 			_la = this._input.LA(1);
-			if (_la===175) {
+			if (_la===176) {
 				{
 				this.state = 1620;
 				this.forUpdate();
@@ -6626,7 +6629,7 @@ export default class SolidCashParser extends Parser {
 			this.state = 1630;
 			this._errHandler.sync(this);
 			_la = this._input.LA(1);
-			while (_la===33 || _la===56 || ((((_la - 145)) & ~0x1F) === 0 && ((1 << (_la - 145)) & 15) !== 0)) {
+			while (_la===33 || _la===56 || ((((_la - 145)) & ~0x1F) === 0 && ((1 << (_la - 145)) & 31) !== 0)) {
 				{
 				{
 				this.state = 1627;
@@ -6871,7 +6874,7 @@ export default class SolidCashParser extends Parser {
 			this.state = 1673;
 			this._errHandler.sync(this);
 			_la = this._input.LA(1);
-			while (((((_la - 157)) & ~0x1F) === 0 && ((1 << (_la - 157)) & 262401) !== 0)) {
+			while (((((_la - 158)) & ~0x1F) === 0 && ((1 << (_la - 158)) & 262401) !== 0)) {
 				{
 				{
 				this.state = 1670;
@@ -6910,7 +6913,7 @@ export default class SolidCashParser extends Parser {
 			{
 			this.state = 1678;
 			_la = this._input.LA(1);
-			if(!(((((_la - 157)) & ~0x1F) === 0 && ((1 << (_la - 157)) & 262401) !== 0))) {
+			if(!(((((_la - 158)) & ~0x1F) === 0 && ((1 << (_la - 158)) & 262401) !== 0))) {
 			this._errHandler.recoverInline(this);
 			}
 			else {
@@ -6948,7 +6951,7 @@ export default class SolidCashParser extends Parser {
 			this.state = 1685;
 			this._errHandler.sync(this);
 			_la = this._input.LA(1);
-			while (((((_la - 7)) & ~0x1F) === 0 && ((1 << (_la - 7)) & 1072693397) !== 0) || ((((_la - 49)) & ~0x1F) === 0 && ((1 << (_la - 49)) & 235013185) !== 0) || ((((_la - 87)) & ~0x1F) === 0 && ((1 << (_la - 87)) & 4291950819) !== 0) || ((((_la - 119)) & ~0x1F) === 0 && ((1 << (_la - 119)) & 3221488143) !== 0) || ((((_la - 151)) & ~0x1F) === 0 && ((1 << (_la - 151)) & 33519605) !== 0)) {
+			while (((((_la - 7)) & ~0x1F) === 0 && ((1 << (_la - 7)) & 1072693397) !== 0) || ((((_la - 49)) & ~0x1F) === 0 && ((1 << (_la - 49)) & 235013185) !== 0) || ((((_la - 87)) & ~0x1F) === 0 && ((1 << (_la - 87)) & 4291950819) !== 0) || ((((_la - 119)) & ~0x1F) === 0 && ((1 << (_la - 119)) & 2147746319) !== 0) || ((((_la - 151)) & ~0x1F) === 0 && ((1 << (_la - 151)) & 67039211) !== 0)) {
 				{
 				{
 				this.state = 1682;
@@ -7054,7 +7057,7 @@ export default class SolidCashParser extends Parser {
 			this.state = 1712;
 			this._errHandler.sync(this);
 			_la = this._input.LA(1);
-			while (((((_la - 7)) & ~0x1F) === 0 && ((1 << (_la - 7)) & 1072693397) !== 0) || ((((_la - 49)) & ~0x1F) === 0 && ((1 << (_la - 49)) & 235013185) !== 0) || ((((_la - 87)) & ~0x1F) === 0 && ((1 << (_la - 87)) & 4291950819) !== 0) || ((((_la - 119)) & ~0x1F) === 0 && ((1 << (_la - 119)) & 3221488143) !== 0) || ((((_la - 151)) & ~0x1F) === 0 && ((1 << (_la - 151)) & 33519605) !== 0)) {
+			while (((((_la - 7)) & ~0x1F) === 0 && ((1 << (_la - 7)) & 1072693397) !== 0) || ((((_la - 49)) & ~0x1F) === 0 && ((1 << (_la - 49)) & 235013185) !== 0) || ((((_la - 87)) & ~0x1F) === 0 && ((1 << (_la - 87)) & 4291950819) !== 0) || ((((_la - 119)) & ~0x1F) === 0 && ((1 << (_la - 119)) & 2147746319) !== 0) || ((((_la - 151)) & ~0x1F) === 0 && ((1 << (_la - 151)) & 67039211) !== 0)) {
 				{
 				{
 				this.state = 1709;
@@ -7096,7 +7099,7 @@ export default class SolidCashParser extends Parser {
 			this.state = 1720;
 			this._errHandler.sync(this);
 			_la = this._input.LA(1);
-			while (((((_la - 7)) & ~0x1F) === 0 && ((1 << (_la - 7)) & 1072693397) !== 0) || ((((_la - 49)) & ~0x1F) === 0 && ((1 << (_la - 49)) & 235013185) !== 0) || ((((_la - 87)) & ~0x1F) === 0 && ((1 << (_la - 87)) & 4291950819) !== 0) || ((((_la - 119)) & ~0x1F) === 0 && ((1 << (_la - 119)) & 3221488143) !== 0) || ((((_la - 151)) & ~0x1F) === 0 && ((1 << (_la - 151)) & 33519605) !== 0)) {
+			while (((((_la - 7)) & ~0x1F) === 0 && ((1 << (_la - 7)) & 1072693397) !== 0) || ((((_la - 49)) & ~0x1F) === 0 && ((1 << (_la - 49)) & 235013185) !== 0) || ((((_la - 87)) & ~0x1F) === 0 && ((1 << (_la - 87)) & 4291950819) !== 0) || ((((_la - 119)) & ~0x1F) === 0 && ((1 << (_la - 119)) & 2147746319) !== 0) || ((((_la - 151)) & ~0x1F) === 0 && ((1 << (_la - 151)) & 67039211) !== 0)) {
 				{
 				{
 				this.state = 1717;
@@ -7200,7 +7203,7 @@ export default class SolidCashParser extends Parser {
 			this.state = 1747;
 			this._errHandler.sync(this);
 			_la = this._input.LA(1);
-			if (_la===7 || ((((_la - 149)) & ~0x1F) === 0 && ((1 << (_la - 149)) & 74980871) !== 0)) {
+			if (_la===7 || ((((_la - 150)) & ~0x1F) === 0 && ((1 << (_la - 150)) & 74980871) !== 0)) {
 				{
 				this.state = 1736;
 				this.parameter();
@@ -7284,7 +7287,7 @@ export default class SolidCashParser extends Parser {
 				this.state = 1767;
 				this._errHandler.sync(this);
 				_la = this._input.LA(1);
-				if (_la===7 || ((((_la - 149)) & ~0x1F) === 0 && ((1 << (_la - 149)) & 74980871) !== 0)) {
+				if (_la===7 || ((((_la - 150)) & ~0x1F) === 0 && ((1 << (_la - 150)) & 74980871) !== 0)) {
 					{
 					this.state = 1756;
 					this.parameter();
@@ -7404,14 +7407,14 @@ export default class SolidCashParser extends Parser {
 			this.state = 1783;
 			this._errHandler.sync(this);
 			switch (this._input.LA(1)) {
-			case 163:
+			case 164:
 				this.enterOuterAlt(localctx, 1);
 				{
 				this.state = 1780;
 				this.match(SolidCashParser.StringLiteral);
 				}
 				break;
-			case 175:
+			case 176:
 				this.enterOuterAlt(localctx, 2);
 				{
 				this.state = 1781;
@@ -7474,7 +7477,7 @@ export default class SolidCashParser extends Parser {
 				this.state = 1804;
 				this._errHandler.sync(this);
 				_la = this._input.LA(1);
-				if (_la===175) {
+				if (_la===176) {
 					{
 					this.state = 1793;
 					this.namedArg();
@@ -7627,21 +7630,21 @@ export default class SolidCashParser extends Parser {
 			this.state = 1837;
 			this._errHandler.sync(this);
 			switch (this._input.LA(1)) {
-			case 175:
+			case 176:
 				this.enterOuterAlt(localctx, 1);
 				{
 				this.state = 1835;
 				this.match(SolidCashParser.Identifier);
 				}
 				break;
-			case 153:
-			case 156:
+			case 154:
 			case 157:
-			case 163:
+			case 158:
 			case 164:
 			case 165:
-			case 173:
+			case 166:
 			case 174:
+			case 175:
 				this.enterOuterAlt(localctx, 2);
 				{
 				this.state = 1836;
@@ -7680,7 +7683,7 @@ export default class SolidCashParser extends Parser {
 			this.state = 1851;
 			this._errHandler.sync(this);
 			_la = this._input.LA(1);
-			if (((((_la - 153)) & ~0x1F) === 0 && ((1 << (_la - 153)) & 7347225) !== 0)) {
+			if (((((_la - 154)) & ~0x1F) === 0 && ((1 << (_la - 154)) & 7347225) !== 0)) {
 				{
 				this.state = 1840;
 				this.consoleParameter();
@@ -7777,7 +7780,7 @@ export default class SolidCashParser extends Parser {
 				this.state = 1875;
 				this._errHandler.sync(this);
 				_la = this._input.LA(1);
-				if (_la===175) {
+				if (_la===176) {
 					{
 					this.state = 1864;
 					this.namedArg();
@@ -7877,7 +7880,7 @@ export default class SolidCashParser extends Parser {
 			this.state = 1897;
 			this._errHandler.sync(this);
 			_la = this._input.LA(1);
-			if (((((_la - 11)) & ~0x1F) === 0 && ((1 << (_la - 11)) & 67043337) !== 0) || ((((_la - 49)) & ~0x1F) === 0 && ((1 << (_la - 49)) & 33686593) !== 0) || ((((_la - 112)) & ~0x1F) === 0 && ((1 << (_la - 112)) & 33622015) !== 0) || ((((_la - 149)) & ~0x1F) === 0 && ((1 << (_la - 149)) & 134078423) !== 0)) {
+			if (((((_la - 11)) & ~0x1F) === 0 && ((1 << (_la - 11)) & 67043337) !== 0) || ((((_la - 49)) & ~0x1F) === 0 && ((1 << (_la - 49)) & 33686593) !== 0) || ((((_la - 112)) & ~0x1F) === 0 && ((1 << (_la - 112)) & 33622015) !== 0) || ((((_la - 150)) & ~0x1F) === 0 && ((1 << (_la - 150)) & 134078423) !== 0)) {
 				{
 				this.state = 1886;
 				this.expression(0);
@@ -8446,7 +8449,7 @@ export default class SolidCashParser extends Parser {
 				this.state = 2037;
 				this._errHandler.sync(this);
 				_la = this._input.LA(1);
-				if (((((_la - 11)) & ~0x1F) === 0 && ((1 << (_la - 11)) & 67043337) !== 0) || ((((_la - 49)) & ~0x1F) === 0 && ((1 << (_la - 49)) & 33686593) !== 0) || ((((_la - 112)) & ~0x1F) === 0 && ((1 << (_la - 112)) & 33622015) !== 0) || ((((_la - 149)) & ~0x1F) === 0 && ((1 << (_la - 149)) & 134078423) !== 0)) {
+				if (((((_la - 11)) & ~0x1F) === 0 && ((1 << (_la - 11)) & 67043337) !== 0) || ((((_la - 49)) & ~0x1F) === 0 && ((1 << (_la - 49)) & 33686593) !== 0) || ((((_la - 112)) & ~0x1F) === 0 && ((1 << (_la - 112)) & 33622015) !== 0) || ((((_la - 150)) & ~0x1F) === 0 && ((1 << (_la - 150)) & 134078423) !== 0)) {
 					{
 					this.state = 2026;
 					this.expression(0);
@@ -8979,7 +8982,7 @@ export default class SolidCashParser extends Parser {
 						this.state = 2160;
 						this._errHandler.sync(this);
 						_la = this._input.LA(1);
-						if (_la===175) {
+						if (_la===176) {
 							{
 							this.state = 2149;
 							this.namedArg();
@@ -9203,7 +9206,7 @@ export default class SolidCashParser extends Parser {
 			{
 			this.state = 2193;
 			_la = this._input.LA(1);
-			if(!(_la===33 || _la===56 || ((((_la - 145)) & ~0x1F) === 0 && ((1 << (_la - 145)) & 15) !== 0))) {
+			if(!(_la===33 || _la===56 || ((((_la - 145)) & ~0x1F) === 0 && ((1 << (_la - 145)) & 31) !== 0))) {
 			this._errHandler.recoverInline(this);
 			}
 			else {
@@ -9235,28 +9238,28 @@ export default class SolidCashParser extends Parser {
 			this.state = 2209;
 			this._errHandler.sync(this);
 			switch (this._input.LA(1)) {
-			case 153:
+			case 154:
 				this.enterOuterAlt(localctx, 1);
 				{
 				this.state = 2195;
 				this.match(SolidCashParser.BooleanLiteral);
 				}
 				break;
-			case 157:
+			case 158:
 				this.enterOuterAlt(localctx, 2);
 				{
 				this.state = 2196;
 				this.numberLiteral();
 				}
 				break;
-			case 156:
+			case 157:
 				this.enterOuterAlt(localctx, 3);
 				{
 				this.state = 2197;
 				this.decimalLiteral();
 				}
 				break;
-			case 163:
+			case 164:
 				this.enterOuterAlt(localctx, 4);
 				{
 				this.state = 2198;
@@ -9279,28 +9282,28 @@ export default class SolidCashParser extends Parser {
 				}
 				}
 				break;
-			case 173:
+			case 174:
 				this.enterOuterAlt(localctx, 5);
 				{
 				this.state = 2205;
 				this.match(SolidCashParser.UnicodeLiteral);
 				}
 				break;
-			case 174:
+			case 175:
 				this.enterOuterAlt(localctx, 6);
 				{
 				this.state = 2206;
 				this.match(SolidCashParser.HexStringLiteral);
 				}
 				break;
-			case 164:
+			case 165:
 				this.enterOuterAlt(localctx, 7);
 				{
 				this.state = 2207;
 				this.match(SolidCashParser.DateLiteral);
 				}
 				break;
-			case 165:
+			case 166:
 				this.enterOuterAlt(localctx, 8);
 				{
 				this.state = 2208;
@@ -9342,7 +9345,7 @@ export default class SolidCashParser extends Parser {
 				{
 				this.state = 2212;
 				_la = this._input.LA(1);
-				if(!(_la===154 || _la===155)) {
+				if(!(_la===155 || _la===156)) {
 				this._errHandler.recoverInline(this);
 				}
 				else {
@@ -9406,7 +9409,7 @@ export default class SolidCashParser extends Parser {
 				this.enterOuterAlt(localctx, 1);
 				{
 				this.state = 2217;
-				this.match(SolidCashParser.T__148);
+				this.match(SolidCashParser.T__149);
 				this.state = 2218;
 				this.match(SolidCashParser.T__58);
 				}
@@ -9415,7 +9418,7 @@ export default class SolidCashParser extends Parser {
 				this.enterOuterAlt(localctx, 2);
 				{
 				this.state = 2219;
-				this.match(SolidCashParser.T__148);
+				this.match(SolidCashParser.T__149);
 				}
 				break;
 			case 3:
@@ -9464,14 +9467,14 @@ export default class SolidCashParser extends Parser {
 				this.enterOuterAlt(localctx, 9);
 				{
 				this.state = 2226;
-				this.match(SolidCashParser.T__149);
+				this.match(SolidCashParser.T__150);
 				}
 				break;
 			case 10:
 				this.enterOuterAlt(localctx, 10);
 				{
 				this.state = 2227;
-				this.match(SolidCashParser.T__150);
+				this.match(SolidCashParser.T__151);
 				}
 				break;
 			case 11:
@@ -9498,7 +9501,7 @@ export default class SolidCashParser extends Parser {
 				this.state = 2240;
 				this._errHandler.sync(this);
 				_la = this._input.LA(1);
-				if (_la===7 || ((((_la - 149)) & ~0x1F) === 0 && ((1 << (_la - 149)) & 74980871) !== 0)) {
+				if (_la===7 || ((((_la - 150)) & ~0x1F) === 0 && ((1 << (_la - 150)) & 74980871) !== 0)) {
 					{
 					this.state = 2232;
 					this.typeName();
@@ -9601,7 +9604,7 @@ export default class SolidCashParser extends Parser {
 			{
 			this.state = 2263;
 			_la = this._input.LA(1);
-			if(!(_la===59 || ((((_la - 149)) & ~0x1F) === 0 && ((1 << (_la - 149)) & 8134151) !== 0))) {
+			if(!(_la===59 || ((((_la - 150)) & ~0x1F) === 0 && ((1 << (_la - 150)) & 8134151) !== 0))) {
 			this._errHandler.recoverInline(this);
 			}
 			else {
@@ -9691,7 +9694,7 @@ export default class SolidCashParser extends Parser {
 		return true;
 	}
 
-	public static readonly _serializedATN: number[] = [4,1,178,2266,2,0,7,0,
+	public static readonly _serializedATN: number[] = [4,1,179,2266,2,0,7,0,
 	2,1,7,1,2,2,7,2,2,3,7,3,2,4,7,4,2,5,7,5,2,6,7,6,2,7,7,7,2,8,7,8,2,9,7,9,
 	2,10,7,10,2,11,7,11,2,12,7,12,2,13,7,13,2,14,7,14,2,15,7,15,2,16,7,16,2,
 	17,7,17,2,18,7,18,2,19,7,19,2,20,7,20,2,21,7,21,2,22,7,22,2,23,7,23,2,24,
@@ -9883,12 +9886,12 @@ export default class SolidCashParser extends Parser {
 	116,118,120,122,124,126,128,130,132,134,136,138,140,142,144,146,148,150,
 	152,154,156,158,160,162,164,166,168,170,172,174,176,178,180,182,184,186,
 	188,190,192,194,196,198,200,202,204,206,208,210,212,214,216,218,220,222,
-	224,226,228,230,232,234,236,0,22,2,0,10,10,13,27,5,0,11,11,28,36,155,155,
-	159,159,175,175,1,0,38,39,3,0,20,23,26,27,40,40,1,0,43,44,2,0,43,44,58,
-	59,3,0,43,44,58,58,63,63,2,0,40,40,77,86,1,0,87,88,3,0,157,157,165,165,
-	175,175,1,0,123,127,2,0,123,127,129,132,3,0,14,14,27,27,137,137,2,0,10,
+	224,226,228,230,232,234,236,0,22,2,0,10,10,13,27,5,0,11,11,28,36,156,156,
+	160,160,176,176,1,0,38,39,3,0,20,23,26,27,40,40,1,0,43,44,2,0,43,44,58,
+	59,3,0,43,44,58,58,63,63,2,0,40,40,77,86,1,0,87,88,3,0,158,158,166,166,
+	176,176,1,0,123,127,2,0,123,127,129,132,3,0,14,14,27,27,137,137,2,0,10,
 	10,15,16,1,0,13,14,1,0,138,139,1,0,20,23,1,0,18,19,1,0,133,134,3,0,33,33,
-	56,56,145,148,1,0,154,155,4,0,59,59,149,151,158,161,167,171,2546,0,241,
+	56,56,145,149,1,0,155,156,4,0,59,59,150,152,159,162,168,172,2546,0,241,
 	1,0,0,0,2,293,1,0,0,0,4,295,1,0,0,0,6,300,1,0,0,0,8,356,1,0,0,0,10,358,
 	1,0,0,0,12,367,1,0,0,0,14,369,1,0,0,0,16,371,1,0,0,0,18,376,1,0,0,0,20,
 	378,1,0,0,0,22,383,1,0,0,0,24,387,1,0,0,0,26,389,1,0,0,0,28,428,1,0,0,0,
@@ -9925,21 +9928,21 @@ export default class SolidCashParser extends Parser {
 	260,254,1,0,0,0,260,255,1,0,0,0,260,256,1,0,0,0,260,257,1,0,0,0,260,258,
 	1,0,0,0,260,259,1,0,0,0,261,264,1,0,0,0,262,260,1,0,0,0,262,263,1,0,0,0,
 	263,265,1,0,0,0,264,262,1,0,0,0,265,266,5,0,0,1,266,1,1,0,0,0,267,268,5,
-	1,0,0,268,269,5,163,0,0,269,294,5,2,0,0,270,271,5,1,0,0,271,272,5,163,0,
-	0,272,273,5,3,0,0,273,274,5,175,0,0,274,294,5,2,0,0,275,276,5,1,0,0,276,
+	1,0,0,268,269,5,164,0,0,269,294,5,2,0,0,270,271,5,1,0,0,271,272,5,164,0,
+	0,272,273,5,3,0,0,273,274,5,176,0,0,274,294,5,2,0,0,275,276,5,1,0,0,276,
 	277,5,4,0,0,277,282,3,4,2,0,278,279,5,5,0,0,279,281,3,4,2,0,280,278,1,0,
 	0,0,281,284,1,0,0,0,282,280,1,0,0,0,282,283,1,0,0,0,283,286,1,0,0,0,284,
 	282,1,0,0,0,285,287,5,5,0,0,286,285,1,0,0,0,286,287,1,0,0,0,287,288,1,0,
-	0,0,288,289,5,6,0,0,289,290,5,175,0,0,290,291,5,163,0,0,291,292,5,2,0,0,
+	0,0,288,289,5,6,0,0,289,290,5,176,0,0,290,291,5,164,0,0,291,292,5,2,0,0,
 	292,294,1,0,0,0,293,267,1,0,0,0,293,270,1,0,0,0,293,275,1,0,0,0,294,3,1,
-	0,0,0,295,298,5,175,0,0,296,297,5,3,0,0,297,299,5,175,0,0,298,296,1,0,0,
+	0,0,0,295,298,5,176,0,0,296,297,5,3,0,0,297,299,5,176,0,0,298,296,1,0,0,
 	0,298,299,1,0,0,0,299,5,1,0,0,0,300,301,5,7,0,0,301,302,3,14,7,0,302,306,
 	3,104,52,0,303,305,3,94,47,0,304,303,1,0,0,0,305,308,1,0,0,0,306,304,1,
 	0,0,0,306,307,1,0,0,0,307,310,1,0,0,0,308,306,1,0,0,0,309,311,3,100,50,
 	0,310,309,1,0,0,0,310,311,1,0,0,0,311,312,1,0,0,0,312,316,5,4,0,0,313,315,
 	3,110,55,0,314,313,1,0,0,0,315,318,1,0,0,0,316,314,1,0,0,0,316,317,1,0,
 	0,0,317,319,1,0,0,0,318,316,1,0,0,0,319,320,5,6,0,0,320,7,1,0,0,0,321,322,
-	5,8,0,0,322,323,5,175,0,0,323,326,5,9,0,0,324,327,3,234,117,0,325,327,5,
+	5,8,0,0,322,323,5,176,0,0,323,326,5,9,0,0,324,327,3,234,117,0,325,327,5,
 	10,0,0,326,324,1,0,0,0,326,325,1,0,0,0,327,329,1,0,0,0,328,330,5,11,0,0,
 	329,328,1,0,0,0,329,330,1,0,0,0,330,331,1,0,0,0,331,357,5,2,0,0,332,333,
 	5,8,0,0,333,334,5,4,0,0,334,339,3,10,5,0,335,336,5,5,0,0,336,338,3,10,5,
@@ -9949,16 +9952,16 @@ export default class SolidCashParser extends Parser {
 	350,5,10,0,0,349,347,1,0,0,0,349,348,1,0,0,0,350,352,1,0,0,0,351,353,5,
 	11,0,0,352,351,1,0,0,0,352,353,1,0,0,0,353,354,1,0,0,0,354,355,5,2,0,0,
 	355,357,1,0,0,0,356,321,1,0,0,0,356,332,1,0,0,0,357,9,1,0,0,0,358,361,5,
-	175,0,0,359,360,5,12,0,0,360,362,5,175,0,0,361,359,1,0,0,0,361,362,1,0,
+	176,0,0,359,360,5,12,0,0,360,362,5,176,0,0,361,359,1,0,0,0,361,362,1,0,
 	0,0,362,365,1,0,0,0,363,364,5,3,0,0,364,366,3,12,6,0,365,363,1,0,0,0,365,
 	366,1,0,0,0,366,11,1,0,0,0,367,368,7,0,0,0,368,13,1,0,0,0,369,370,7,1,0,
 	0,370,15,1,0,0,0,371,372,5,37,0,0,372,373,3,18,9,0,373,374,3,20,10,0,374,
 	375,5,2,0,0,375,17,1,0,0,0,376,377,7,2,0,0,377,19,1,0,0,0,378,380,3,22,
 	11,0,379,381,3,22,11,0,380,379,1,0,0,0,380,381,1,0,0,0,381,21,1,0,0,0,382,
 	384,3,24,12,0,383,382,1,0,0,0,383,384,1,0,0,0,384,385,1,0,0,0,385,386,5,
-	152,0,0,386,23,1,0,0,0,387,388,7,3,0,0,388,25,1,0,0,0,389,390,5,41,0,0,
-	390,400,5,175,0,0,391,392,5,42,0,0,392,397,5,175,0,0,393,394,5,5,0,0,394,
-	396,5,175,0,0,395,393,1,0,0,0,396,399,1,0,0,0,397,395,1,0,0,0,397,398,1,
+	153,0,0,386,23,1,0,0,0,387,388,7,3,0,0,388,25,1,0,0,0,389,390,5,41,0,0,
+	390,400,5,176,0,0,391,392,5,42,0,0,392,397,5,176,0,0,393,394,5,5,0,0,394,
+	396,5,176,0,0,395,393,1,0,0,0,396,399,1,0,0,0,397,395,1,0,0,0,397,398,1,
 	0,0,0,398,401,1,0,0,0,399,397,1,0,0,0,400,391,1,0,0,0,400,401,1,0,0,0,401,
 	402,1,0,0,0,402,413,5,4,0,0,403,412,3,56,28,0,404,412,3,52,26,0,405,412,
 	3,60,30,0,406,412,3,44,22,0,407,412,3,48,24,0,408,412,3,30,15,0,409,412,
@@ -9966,15 +9969,15 @@ export default class SolidCashParser extends Parser {
 	0,0,411,406,1,0,0,0,411,407,1,0,0,0,411,408,1,0,0,0,411,409,1,0,0,0,411,
 	410,1,0,0,0,412,415,1,0,0,0,413,411,1,0,0,0,413,414,1,0,0,0,414,416,1,0,
 	0,0,415,413,1,0,0,0,416,417,5,6,0,0,417,27,1,0,0,0,418,419,3,32,16,0,419,
-	420,3,80,40,0,420,421,5,175,0,0,421,422,5,2,0,0,422,429,1,0,0,0,423,424,
-	3,32,16,0,424,425,3,82,41,0,425,426,5,175,0,0,426,427,5,2,0,0,427,429,1,
+	420,3,80,40,0,420,421,5,176,0,0,421,422,5,2,0,0,422,429,1,0,0,0,423,424,
+	3,32,16,0,424,425,3,82,41,0,425,426,5,176,0,0,426,427,5,2,0,0,427,429,1,
 	0,0,0,428,418,1,0,0,0,428,423,1,0,0,0,429,29,1,0,0,0,430,431,3,32,16,0,
-	431,432,3,234,117,0,432,433,5,175,0,0,433,434,5,2,0,0,434,31,1,0,0,0,435,
-	436,7,4,0,0,436,33,1,0,0,0,437,438,5,7,0,0,438,439,5,175,0,0,439,443,3,
+	431,432,3,234,117,0,432,433,5,176,0,0,433,434,5,2,0,0,434,31,1,0,0,0,435,
+	436,7,4,0,0,436,33,1,0,0,0,437,438,5,7,0,0,438,439,5,176,0,0,439,443,3,
 	104,52,0,440,442,3,94,47,0,441,440,1,0,0,0,442,445,1,0,0,0,443,441,1,0,
 	0,0,443,444,1,0,0,0,444,447,1,0,0,0,445,443,1,0,0,0,446,448,3,100,50,0,
 	447,446,1,0,0,0,447,448,1,0,0,0,448,449,1,0,0,0,449,450,5,2,0,0,450,35,
-	1,0,0,0,451,452,5,45,0,0,452,453,5,175,0,0,453,457,5,4,0,0,454,456,3,56,
+	1,0,0,0,451,452,5,45,0,0,452,453,5,176,0,0,453,457,5,4,0,0,454,456,3,56,
 	28,0,455,454,1,0,0,0,456,459,1,0,0,0,457,455,1,0,0,0,457,458,1,0,0,0,458,
 	463,1,0,0,0,459,457,1,0,0,0,460,462,3,52,26,0,461,460,1,0,0,0,462,465,1,
 	0,0,0,463,461,1,0,0,0,463,464,1,0,0,0,464,469,1,0,0,0,465,463,1,0,0,0,466,
@@ -9989,7 +9992,7 @@ export default class SolidCashParser extends Parser {
 	3,0,497,496,1,0,0,0,498,501,1,0,0,0,499,497,1,0,0,0,499,500,1,0,0,0,500,
 	502,1,0,0,0,501,499,1,0,0,0,502,503,5,6,0,0,503,37,1,0,0,0,504,506,5,46,
 	0,0,505,504,1,0,0,0,505,506,1,0,0,0,506,507,1,0,0,0,507,508,5,47,0,0,508,
-	510,5,175,0,0,509,511,3,104,52,0,510,509,1,0,0,0,510,511,1,0,0,0,511,521,
+	510,5,176,0,0,509,511,3,104,52,0,510,509,1,0,0,0,510,511,1,0,0,0,511,521,
 	1,0,0,0,512,513,5,42,0,0,513,518,3,40,20,0,514,515,5,5,0,0,515,517,3,40,
 	20,0,516,514,1,0,0,0,517,520,1,0,0,0,518,516,1,0,0,0,518,519,1,0,0,0,519,
 	522,1,0,0,0,520,518,1,0,0,0,521,512,1,0,0,0,521,522,1,0,0,0,522,523,1,0,
@@ -10001,38 +10004,38 @@ export default class SolidCashParser extends Parser {
 	0,0,538,530,1,0,0,0,538,531,1,0,0,0,538,532,1,0,0,0,538,533,1,0,0,0,538,
 	534,1,0,0,0,538,535,1,0,0,0,538,536,1,0,0,0,538,537,1,0,0,0,539,542,1,0,
 	0,0,540,538,1,0,0,0,540,541,1,0,0,0,541,543,1,0,0,0,542,540,1,0,0,0,543,
-	544,5,6,0,0,544,39,1,0,0,0,545,547,5,175,0,0,546,548,3,214,107,0,547,546,
+	544,5,6,0,0,544,39,1,0,0,0,545,547,5,176,0,0,546,548,3,214,107,0,547,546,
 	1,0,0,0,547,548,1,0,0,0,548,41,1,0,0,0,549,550,5,7,0,0,550,551,3,14,7,0,
 	551,555,3,104,52,0,552,554,3,94,47,0,553,552,1,0,0,0,554,557,1,0,0,0,555,
 	553,1,0,0,0,555,556,1,0,0,0,556,561,1,0,0,0,557,555,1,0,0,0,558,560,3,92,
 	46,0,559,558,1,0,0,0,560,563,1,0,0,0,561,559,1,0,0,0,561,562,1,0,0,0,562,
 	565,1,0,0,0,563,561,1,0,0,0,564,566,3,100,50,0,565,564,1,0,0,0,565,566,
 	1,0,0,0,566,567,1,0,0,0,567,568,5,2,0,0,568,43,1,0,0,0,569,570,5,48,0,0,
-	570,571,5,175,0,0,571,583,5,49,0,0,572,577,3,46,23,0,573,574,5,5,0,0,574,
+	570,571,5,176,0,0,571,583,5,49,0,0,572,577,3,46,23,0,573,574,5,5,0,0,574,
 	576,3,46,23,0,575,573,1,0,0,0,576,579,1,0,0,0,577,575,1,0,0,0,577,578,1,
 	0,0,0,578,581,1,0,0,0,579,577,1,0,0,0,580,582,5,5,0,0,581,580,1,0,0,0,581,
 	582,1,0,0,0,582,584,1,0,0,0,583,572,1,0,0,0,583,584,1,0,0,0,584,585,1,0,
 	0,0,585,587,5,50,0,0,586,588,5,51,0,0,587,586,1,0,0,0,587,588,1,0,0,0,588,
 	589,1,0,0,0,589,590,5,2,0,0,590,45,1,0,0,0,591,593,3,234,117,0,592,594,
-	5,52,0,0,593,592,1,0,0,0,593,594,1,0,0,0,594,595,1,0,0,0,595,596,5,175,
-	0,0,596,47,1,0,0,0,597,598,5,35,0,0,598,599,5,175,0,0,599,611,5,49,0,0,
+	5,52,0,0,593,592,1,0,0,0,593,594,1,0,0,0,594,595,1,0,0,0,595,596,5,176,
+	0,0,596,47,1,0,0,0,597,598,5,35,0,0,598,599,5,176,0,0,599,611,5,49,0,0,
 	600,605,3,50,25,0,601,602,5,5,0,0,602,604,3,50,25,0,603,601,1,0,0,0,604,
 	607,1,0,0,0,605,603,1,0,0,0,605,606,1,0,0,0,606,609,1,0,0,0,607,605,1,0,
 	0,0,608,610,5,5,0,0,609,608,1,0,0,0,609,610,1,0,0,0,610,612,1,0,0,0,611,
 	600,1,0,0,0,611,612,1,0,0,0,612,613,1,0,0,0,613,614,5,50,0,0,614,615,5,
-	2,0,0,615,49,1,0,0,0,616,617,3,234,117,0,617,618,5,175,0,0,618,51,1,0,0,
-	0,619,620,5,53,0,0,620,621,5,175,0,0,621,623,5,4,0,0,622,624,3,54,27,0,
+	2,0,0,615,49,1,0,0,0,616,617,3,234,117,0,617,618,5,176,0,0,618,51,1,0,0,
+	0,619,620,5,53,0,0,620,621,5,176,0,0,621,623,5,4,0,0,622,624,3,54,27,0,
 	623,622,1,0,0,0,624,625,1,0,0,0,625,623,1,0,0,0,625,626,1,0,0,0,626,627,
 	1,0,0,0,627,628,5,6,0,0,628,53,1,0,0,0,629,632,3,234,117,0,630,632,3,82,
 	41,0,631,629,1,0,0,0,631,630,1,0,0,0,632,633,1,0,0,0,633,634,3,14,7,0,634,
-	635,5,2,0,0,635,55,1,0,0,0,636,637,5,54,0,0,637,638,5,175,0,0,638,639,5,
+	635,5,2,0,0,635,55,1,0,0,0,636,637,5,54,0,0,637,638,5,176,0,0,638,639,5,
 	4,0,0,639,644,3,58,29,0,640,641,5,5,0,0,641,643,3,58,29,0,642,640,1,0,0,
 	0,643,646,1,0,0,0,644,642,1,0,0,0,644,645,1,0,0,0,645,648,1,0,0,0,646,644,
 	1,0,0,0,647,649,5,5,0,0,648,647,1,0,0,0,648,649,1,0,0,0,649,650,1,0,0,0,
-	650,651,5,6,0,0,651,57,1,0,0,0,652,655,5,175,0,0,653,654,5,40,0,0,654,656,
-	5,157,0,0,655,653,1,0,0,0,655,656,1,0,0,0,656,59,1,0,0,0,657,658,5,55,0,
-	0,658,659,5,175,0,0,659,660,5,42,0,0,660,661,3,234,117,0,661,662,5,2,0,
-	0,662,61,1,0,0,0,663,664,3,234,117,0,664,665,5,56,0,0,665,666,5,175,0,0,
+	650,651,5,6,0,0,651,57,1,0,0,0,652,655,5,176,0,0,653,654,5,40,0,0,654,656,
+	5,158,0,0,655,653,1,0,0,0,655,656,1,0,0,0,656,59,1,0,0,0,657,658,5,55,0,
+	0,658,659,5,176,0,0,659,660,5,42,0,0,660,661,3,234,117,0,661,662,5,2,0,
+	0,662,61,1,0,0,0,663,664,3,234,117,0,664,665,5,56,0,0,665,666,5,176,0,0,
 	666,667,5,40,0,0,667,668,3,222,111,0,668,669,5,2,0,0,669,63,1,0,0,0,670,
 	671,5,57,0,0,671,675,3,104,52,0,672,674,7,5,0,0,673,672,1,0,0,0,674,677,
 	1,0,0,0,675,673,1,0,0,0,675,676,1,0,0,0,676,681,1,0,0,0,677,675,1,0,0,0,
@@ -10050,45 +10053,45 @@ export default class SolidCashParser extends Parser {
 	720,719,1,0,0,0,721,69,1,0,0,0,722,723,5,62,0,0,723,724,5,49,0,0,724,725,
 	5,50,0,0,725,726,5,44,0,0,726,727,5,59,0,0,727,731,5,4,0,0,728,730,3,110,
 	55,0,729,728,1,0,0,0,730,733,1,0,0,0,731,729,1,0,0,0,731,732,1,0,0,0,732,
-	734,1,0,0,0,733,731,1,0,0,0,734,735,5,6,0,0,735,71,1,0,0,0,736,737,5,175,
+	734,1,0,0,0,733,731,1,0,0,0,734,735,5,6,0,0,735,71,1,0,0,0,736,737,5,176,
 	0,0,737,738,3,214,107,0,738,73,1,0,0,0,739,741,3,78,39,0,740,739,1,0,0,
 	0,740,741,1,0,0,0,741,742,1,0,0,0,742,746,3,234,117,0,743,745,3,226,113,
 	0,744,743,1,0,0,0,745,748,1,0,0,0,746,744,1,0,0,0,746,747,1,0,0,0,747,749,
-	1,0,0,0,748,746,1,0,0,0,749,752,5,175,0,0,750,751,5,40,0,0,751,753,3,222,
+	1,0,0,0,748,746,1,0,0,0,749,752,5,176,0,0,750,751,5,40,0,0,751,753,3,222,
 	111,0,752,750,1,0,0,0,752,753,1,0,0,0,753,754,1,0,0,0,754,755,5,2,0,0,755,
 	802,1,0,0,0,756,757,3,234,117,0,757,761,3,78,39,0,758,760,3,226,113,0,759,
 	758,1,0,0,0,760,763,1,0,0,0,761,759,1,0,0,0,761,762,1,0,0,0,762,764,1,0,
-	0,0,763,761,1,0,0,0,764,767,5,175,0,0,765,766,5,40,0,0,766,768,3,222,111,
+	0,0,763,761,1,0,0,0,764,767,5,176,0,0,765,766,5,40,0,0,766,768,3,222,111,
 	0,767,765,1,0,0,0,767,768,1,0,0,0,768,769,1,0,0,0,769,770,5,2,0,0,770,802,
 	1,0,0,0,771,773,3,78,39,0,772,771,1,0,0,0,772,773,1,0,0,0,773,774,1,0,0,
 	0,774,778,3,80,40,0,775,777,3,76,38,0,776,775,1,0,0,0,777,780,1,0,0,0,778,
-	776,1,0,0,0,778,779,1,0,0,0,779,781,1,0,0,0,780,778,1,0,0,0,781,782,5,175,
+	776,1,0,0,0,778,779,1,0,0,0,779,781,1,0,0,0,780,778,1,0,0,0,781,782,5,176,
 	0,0,782,783,5,2,0,0,783,802,1,0,0,0,784,786,3,78,39,0,785,784,1,0,0,0,785,
 	786,1,0,0,0,786,787,1,0,0,0,787,791,3,82,41,0,788,790,3,76,38,0,789,788,
 	1,0,0,0,790,793,1,0,0,0,791,789,1,0,0,0,791,792,1,0,0,0,792,794,1,0,0,0,
-	793,791,1,0,0,0,794,797,5,175,0,0,795,796,5,40,0,0,796,798,3,222,111,0,
+	793,791,1,0,0,0,794,797,5,176,0,0,795,796,5,40,0,0,796,798,3,222,111,0,
 	797,795,1,0,0,0,797,798,1,0,0,0,798,799,1,0,0,0,799,800,5,2,0,0,800,802,
 	1,0,0,0,801,740,1,0,0,0,801,756,1,0,0,0,801,772,1,0,0,0,801,785,1,0,0,0,
 	802,75,1,0,0,0,803,806,3,226,113,0,804,806,3,78,39,0,805,803,1,0,0,0,805,
 	804,1,0,0,0,806,77,1,0,0,0,807,808,7,6,0,0,808,79,1,0,0,0,809,810,5,64,
-	0,0,810,811,5,49,0,0,811,813,3,234,117,0,812,814,5,175,0,0,813,812,1,0,
+	0,0,810,811,5,49,0,0,811,813,3,234,117,0,812,814,5,176,0,0,813,812,1,0,
 	0,0,813,814,1,0,0,0,814,815,1,0,0,0,815,816,5,65,0,0,816,818,3,234,117,
-	0,817,819,5,175,0,0,818,817,1,0,0,0,818,819,1,0,0,0,819,820,1,0,0,0,820,
+	0,817,819,5,176,0,0,818,817,1,0,0,0,818,819,1,0,0,0,819,820,1,0,0,0,820,
 	821,5,50,0,0,821,846,1,0,0,0,822,823,5,64,0,0,823,824,5,49,0,0,824,826,
-	3,234,117,0,825,827,5,175,0,0,826,825,1,0,0,0,826,827,1,0,0,0,827,828,1,
+	3,234,117,0,825,827,5,176,0,0,826,825,1,0,0,0,826,827,1,0,0,0,827,828,1,
 	0,0,0,828,829,5,65,0,0,829,830,3,80,40,0,830,831,5,50,0,0,831,846,1,0,0,
-	0,832,833,5,64,0,0,833,834,5,49,0,0,834,836,3,234,117,0,835,837,5,175,0,
+	0,832,833,5,64,0,0,833,834,5,49,0,0,834,836,3,234,117,0,835,837,5,176,0,
 	0,836,835,1,0,0,0,836,837,1,0,0,0,837,838,1,0,0,0,838,839,5,65,0,0,839,
-	841,3,82,41,0,840,842,5,175,0,0,841,840,1,0,0,0,841,842,1,0,0,0,842,843,
+	841,3,82,41,0,840,842,5,176,0,0,841,840,1,0,0,0,841,842,1,0,0,0,842,843,
 	1,0,0,0,843,844,5,50,0,0,844,846,1,0,0,0,845,809,1,0,0,0,845,822,1,0,0,
 	0,845,832,1,0,0,0,846,81,1,0,0,0,847,848,6,41,-1,0,848,849,3,234,117,0,
-	849,850,5,66,0,0,850,851,5,157,0,0,851,852,5,67,0,0,852,858,1,0,0,0,853,
+	849,850,5,66,0,0,850,851,5,158,0,0,851,852,5,67,0,0,852,858,1,0,0,0,853,
 	854,3,234,117,0,854,855,5,66,0,0,855,856,5,67,0,0,856,858,1,0,0,0,857,847,
 	1,0,0,0,857,853,1,0,0,0,858,868,1,0,0,0,859,860,10,2,0,0,860,861,5,66,0,
-	0,861,862,5,157,0,0,862,867,5,67,0,0,863,864,10,1,0,0,864,865,5,66,0,0,
+	0,861,862,5,158,0,0,862,867,5,67,0,0,863,864,10,1,0,0,864,865,5,66,0,0,
 	865,867,5,67,0,0,866,859,1,0,0,0,866,863,1,0,0,0,867,870,1,0,0,0,868,866,
 	1,0,0,0,868,869,1,0,0,0,869,83,1,0,0,0,870,868,1,0,0,0,871,872,5,68,0,0,
-	872,874,5,175,0,0,873,875,3,104,52,0,874,873,1,0,0,0,874,875,1,0,0,0,875,
+	872,874,5,176,0,0,873,875,3,104,52,0,874,873,1,0,0,0,874,875,1,0,0,0,875,
 	876,1,0,0,0,876,880,5,4,0,0,877,879,3,86,43,0,878,877,1,0,0,0,879,882,1,
 	0,0,0,880,878,1,0,0,0,880,881,1,0,0,0,881,883,1,0,0,0,882,880,1,0,0,0,883,
 	884,5,6,0,0,884,85,1,0,0,0,885,888,3,88,44,0,886,888,3,110,55,0,887,885,
@@ -10100,7 +10103,7 @@ export default class SolidCashParser extends Parser {
 	1,0,0,0,907,909,3,100,50,0,908,907,1,0,0,0,908,909,1,0,0,0,909,910,1,0,
 	0,0,910,914,5,4,0,0,911,913,3,110,55,0,912,911,1,0,0,0,913,916,1,0,0,0,
 	914,912,1,0,0,0,914,915,1,0,0,0,915,917,1,0,0,0,916,914,1,0,0,0,917,918,
-	5,6,0,0,918,91,1,0,0,0,919,921,5,175,0,0,920,922,3,214,107,0,921,920,1,
+	5,6,0,0,918,91,1,0,0,0,919,921,5,176,0,0,920,922,3,214,107,0,921,920,1,
 	0,0,0,921,922,1,0,0,0,922,93,1,0,0,0,923,938,5,70,0,0,924,938,5,71,0,0,
 	925,938,5,58,0,0,926,938,5,44,0,0,927,938,5,43,0,0,928,938,5,63,0,0,929,
 	938,5,59,0,0,930,938,3,96,48,0,931,938,5,61,0,0,932,938,3,98,49,0,933,938,
@@ -10108,11 +10111,11 @@ export default class SolidCashParser extends Parser {
 	0,0,937,924,1,0,0,0,937,925,1,0,0,0,937,926,1,0,0,0,937,927,1,0,0,0,937,
 	928,1,0,0,0,937,929,1,0,0,0,937,930,1,0,0,0,937,931,1,0,0,0,937,932,1,0,
 	0,0,937,933,1,0,0,0,937,934,1,0,0,0,937,935,1,0,0,0,937,936,1,0,0,0,938,
-	95,1,0,0,0,939,950,5,72,0,0,940,941,5,49,0,0,941,946,5,175,0,0,942,943,
-	5,5,0,0,943,945,5,175,0,0,944,942,1,0,0,0,945,948,1,0,0,0,946,944,1,0,0,
+	95,1,0,0,0,939,950,5,72,0,0,940,941,5,49,0,0,941,946,5,176,0,0,942,943,
+	5,5,0,0,943,945,5,176,0,0,944,942,1,0,0,0,945,948,1,0,0,0,946,944,1,0,0,
 	0,946,947,1,0,0,0,947,949,1,0,0,0,948,946,1,0,0,0,949,951,5,50,0,0,950,
 	940,1,0,0,0,950,951,1,0,0,0,951,97,1,0,0,0,952,956,5,32,0,0,953,954,5,49,
-	0,0,954,955,5,157,0,0,955,957,5,50,0,0,956,953,1,0,0,0,956,957,1,0,0,0,
+	0,0,954,955,5,158,0,0,955,957,5,50,0,0,956,953,1,0,0,0,956,957,1,0,0,0,
 	957,99,1,0,0,0,958,959,5,73,0,0,959,960,5,49,0,0,960,965,3,102,51,0,961,
 	962,5,5,0,0,962,964,3,102,51,0,963,961,1,0,0,0,964,967,1,0,0,0,965,963,
 	1,0,0,0,965,966,1,0,0,0,966,969,1,0,0,0,967,965,1,0,0,0,968,970,5,5,0,0,
@@ -10156,11 +10159,11 @@ export default class SolidCashParser extends Parser {
 	0,0,1075,1067,1,0,0,0,1075,1068,1,0,0,0,1075,1069,1,0,0,0,1075,1070,1,0,
 	0,0,1075,1071,1,0,0,0,1075,1072,1,0,0,0,1075,1073,1,0,0,0,1075,1074,1,0,
 	0,0,1076,111,1,0,0,0,1077,1078,5,74,0,0,1078,1079,5,12,0,0,1079,1080,5,
-	175,0,0,1080,1081,5,49,0,0,1081,1082,3,222,111,0,1082,1083,5,5,0,0,1083,
+	176,0,0,1080,1081,5,49,0,0,1081,1082,3,222,111,0,1082,1083,5,5,0,0,1083,
 	1084,3,222,111,0,1084,1085,5,50,0,0,1085,1086,5,2,0,0,1086,113,1,0,0,0,
-	1087,1088,5,74,0,0,1088,1089,5,12,0,0,1089,1090,5,175,0,0,1090,1091,5,66,
+	1087,1088,5,74,0,0,1088,1089,5,12,0,0,1089,1090,5,176,0,0,1090,1091,5,66,
 	0,0,1091,1092,3,222,111,0,1092,1093,5,67,0,0,1093,1094,5,12,0,0,1094,1095,
-	5,175,0,0,1095,1096,5,49,0,0,1096,1101,3,222,111,0,1097,1098,5,5,0,0,1098,
+	5,176,0,0,1095,1096,5,49,0,0,1096,1101,3,222,111,0,1097,1098,5,5,0,0,1098,
 	1100,3,222,111,0,1099,1097,1,0,0,0,1100,1103,1,0,0,0,1101,1099,1,0,0,0,
 	1101,1102,1,0,0,0,1102,1104,1,0,0,0,1103,1101,1,0,0,0,1104,1105,5,50,0,
 	0,1105,1106,5,2,0,0,1106,115,1,0,0,0,1107,1108,5,75,0,0,1108,1137,5,2,0,
@@ -10173,68 +10176,68 @@ export default class SolidCashParser extends Parser {
 	0,0,0,1130,1132,5,5,0,0,1131,1130,1,0,0,0,1131,1132,1,0,0,0,1132,1133,1,
 	0,0,0,1133,1134,5,50,0,0,1134,1135,5,2,0,0,1135,1137,1,0,0,0,1136,1107,
 	1,0,0,0,1136,1109,1,0,0,0,1136,1120,1,0,0,0,1137,117,1,0,0,0,1138,1141,
-	5,175,0,0,1139,1140,5,12,0,0,1140,1142,5,175,0,0,1141,1139,1,0,0,0,1141,
+	5,176,0,0,1139,1140,5,12,0,0,1140,1142,5,176,0,0,1141,1139,1,0,0,0,1141,
 	1142,1,0,0,0,1142,1143,1,0,0,0,1143,1144,5,49,0,0,1144,1156,5,4,0,0,1145,
 	1150,3,212,106,0,1146,1147,5,5,0,0,1147,1149,3,212,106,0,1148,1146,1,0,
 	0,0,1149,1152,1,0,0,0,1150,1148,1,0,0,0,1150,1151,1,0,0,0,1151,1154,1,0,
 	0,0,1152,1150,1,0,0,0,1153,1155,5,5,0,0,1154,1153,1,0,0,0,1154,1155,1,0,
 	0,0,1155,1157,1,0,0,0,1156,1145,1,0,0,0,1156,1157,1,0,0,0,1157,1158,1,0,
 	0,0,1158,1159,5,6,0,0,1159,1160,5,50,0,0,1160,1184,5,2,0,0,1161,1162,5,
-	175,0,0,1162,1163,3,214,107,0,1163,1164,5,2,0,0,1164,1184,1,0,0,0,1165,
-	1166,5,175,0,0,1166,1167,5,12,0,0,1167,1168,5,175,0,0,1168,1169,3,214,107,
-	0,1169,1170,5,2,0,0,1170,1184,1,0,0,0,1171,1172,5,175,0,0,1172,1173,3,214,
-	107,0,1173,1174,5,12,0,0,1174,1175,5,175,0,0,1175,1176,5,12,0,0,1176,1178,
-	5,175,0,0,1177,1179,3,216,108,0,1178,1177,1,0,0,0,1178,1179,1,0,0,0,1179,
+	176,0,0,1162,1163,3,214,107,0,1163,1164,5,2,0,0,1164,1184,1,0,0,0,1165,
+	1166,5,176,0,0,1166,1167,5,12,0,0,1167,1168,5,176,0,0,1168,1169,3,214,107,
+	0,1169,1170,5,2,0,0,1170,1184,1,0,0,0,1171,1172,5,176,0,0,1172,1173,3,214,
+	107,0,1173,1174,5,12,0,0,1174,1175,5,176,0,0,1175,1176,5,12,0,0,1176,1178,
+	5,176,0,0,1177,1179,3,216,108,0,1178,1177,1,0,0,0,1178,1179,1,0,0,0,1179,
 	1180,1,0,0,0,1180,1181,3,214,107,0,1181,1182,5,2,0,0,1182,1184,1,0,0,0,
 	1183,1138,1,0,0,0,1183,1161,1,0,0,0,1183,1165,1,0,0,0,1183,1171,1,0,0,0,
-	1184,119,1,0,0,0,1185,1186,3,222,111,0,1186,1187,5,12,0,0,1187,1189,5,175,
+	1184,119,1,0,0,0,1185,1186,3,222,111,0,1186,1187,5,12,0,0,1187,1189,5,176,
 	0,0,1188,1190,3,216,108,0,1189,1188,1,0,0,0,1189,1190,1,0,0,0,1190,1191,
 	1,0,0,0,1191,1192,3,214,107,0,1192,1193,5,2,0,0,1193,121,1,0,0,0,1194,1195,
 	5,31,0,0,1195,1196,5,49,0,0,1196,1197,3,222,111,0,1197,1198,5,50,0,0,1198,
-	1199,5,2,0,0,1199,123,1,0,0,0,1200,1201,5,76,0,0,1201,1204,5,175,0,0,1202,
-	1203,5,12,0,0,1203,1205,5,175,0,0,1204,1202,1,0,0,0,1204,1205,1,0,0,0,1205,
+	1199,5,2,0,0,1199,123,1,0,0,0,1200,1201,5,76,0,0,1201,1204,5,176,0,0,1202,
+	1203,5,12,0,0,1203,1205,5,176,0,0,1204,1202,1,0,0,0,1204,1205,1,0,0,0,1205,
 	1206,1,0,0,0,1206,1207,5,49,0,0,1207,1219,5,4,0,0,1208,1213,3,212,106,0,
 	1209,1210,5,5,0,0,1210,1212,3,212,106,0,1211,1209,1,0,0,0,1212,1215,1,0,
 	0,0,1213,1211,1,0,0,0,1213,1214,1,0,0,0,1214,1217,1,0,0,0,1215,1213,1,0,
 	0,0,1216,1218,5,5,0,0,1217,1216,1,0,0,0,1217,1218,1,0,0,0,1218,1220,1,0,
 	0,0,1219,1208,1,0,0,0,1219,1220,1,0,0,0,1220,1221,1,0,0,0,1221,1222,5,6,
 	0,0,1222,1223,5,50,0,0,1223,1234,5,2,0,0,1224,1225,5,76,0,0,1225,1228,5,
-	175,0,0,1226,1227,5,12,0,0,1227,1229,5,175,0,0,1228,1226,1,0,0,0,1228,1229,
+	176,0,0,1226,1227,5,12,0,0,1227,1229,5,176,0,0,1228,1226,1,0,0,0,1228,1229,
 	1,0,0,0,1229,1230,1,0,0,0,1230,1231,3,214,107,0,1231,1232,5,2,0,0,1232,
 	1234,1,0,0,0,1233,1200,1,0,0,0,1233,1224,1,0,0,0,1234,125,1,0,0,0,1235,
-	1236,5,74,0,0,1236,1237,5,12,0,0,1237,1246,5,175,0,0,1238,1239,5,66,0,0,
+	1236,5,74,0,0,1236,1237,5,12,0,0,1237,1246,5,176,0,0,1238,1239,5,66,0,0,
 	1239,1240,3,222,111,0,1240,1241,5,67,0,0,1241,1243,1,0,0,0,1242,1238,1,
 	0,0,0,1243,1244,1,0,0,0,1244,1242,1,0,0,0,1244,1245,1,0,0,0,1245,1247,1,
 	0,0,0,1246,1242,1,0,0,0,1246,1247,1,0,0,0,1247,1252,1,0,0,0,1248,1249,5,
-	12,0,0,1249,1251,5,175,0,0,1250,1248,1,0,0,0,1251,1254,1,0,0,0,1252,1250,
+	12,0,0,1249,1251,5,176,0,0,1250,1248,1,0,0,0,1251,1254,1,0,0,0,1252,1250,
 	1,0,0,0,1252,1253,1,0,0,0,1253,1255,1,0,0,0,1254,1252,1,0,0,0,1255,1256,
 	7,7,0,0,1256,1257,3,222,111,0,1257,1258,5,2,0,0,1258,1341,1,0,0,0,1259,
-	1264,5,175,0,0,1260,1261,5,66,0,0,1261,1262,3,222,111,0,1262,1263,5,67,
+	1264,5,176,0,0,1260,1261,5,66,0,0,1261,1262,3,222,111,0,1262,1263,5,67,
 	0,0,1263,1265,1,0,0,0,1264,1260,1,0,0,0,1265,1266,1,0,0,0,1266,1264,1,0,
 	0,0,1266,1267,1,0,0,0,1267,1272,1,0,0,0,1268,1269,5,12,0,0,1269,1271,5,
-	175,0,0,1270,1268,1,0,0,0,1271,1274,1,0,0,0,1272,1270,1,0,0,0,1272,1273,
+	176,0,0,1270,1268,1,0,0,0,1271,1274,1,0,0,0,1272,1270,1,0,0,0,1272,1273,
 	1,0,0,0,1273,1275,1,0,0,0,1274,1272,1,0,0,0,1275,1276,7,7,0,0,1276,1277,
-	3,222,111,0,1277,1278,5,2,0,0,1278,1341,1,0,0,0,1279,1282,5,175,0,0,1280,
-	1281,5,12,0,0,1281,1283,5,175,0,0,1282,1280,1,0,0,0,1283,1284,1,0,0,0,1284,
+	3,222,111,0,1277,1278,5,2,0,0,1278,1341,1,0,0,0,1279,1282,5,176,0,0,1280,
+	1281,5,12,0,0,1281,1283,5,176,0,0,1282,1280,1,0,0,0,1283,1284,1,0,0,0,1284,
 	1282,1,0,0,0,1284,1285,1,0,0,0,1285,1286,1,0,0,0,1286,1287,7,7,0,0,1287,
 	1288,3,222,111,0,1288,1289,5,2,0,0,1289,1341,1,0,0,0,1290,1291,5,74,0,0,
-	1291,1292,5,12,0,0,1292,1301,5,175,0,0,1293,1294,5,66,0,0,1294,1295,3,222,
+	1291,1292,5,12,0,0,1292,1301,5,176,0,0,1293,1294,5,66,0,0,1294,1295,3,222,
 	111,0,1295,1296,5,67,0,0,1296,1298,1,0,0,0,1297,1293,1,0,0,0,1298,1299,
 	1,0,0,0,1299,1297,1,0,0,0,1299,1300,1,0,0,0,1300,1302,1,0,0,0,1301,1297,
 	1,0,0,0,1301,1302,1,0,0,0,1302,1307,1,0,0,0,1303,1304,5,12,0,0,1304,1306,
-	5,175,0,0,1305,1303,1,0,0,0,1306,1309,1,0,0,0,1307,1305,1,0,0,0,1307,1308,
+	5,176,0,0,1305,1303,1,0,0,0,1306,1309,1,0,0,0,1307,1305,1,0,0,0,1307,1308,
 	1,0,0,0,1308,1310,1,0,0,0,1309,1307,1,0,0,0,1310,1311,7,8,0,0,1311,1341,
-	5,2,0,0,1312,1317,5,175,0,0,1313,1314,5,66,0,0,1314,1315,3,222,111,0,1315,
+	5,2,0,0,1312,1317,5,176,0,0,1313,1314,5,66,0,0,1314,1315,3,222,111,0,1315,
 	1316,5,67,0,0,1316,1318,1,0,0,0,1317,1313,1,0,0,0,1318,1319,1,0,0,0,1319,
 	1317,1,0,0,0,1319,1320,1,0,0,0,1320,1325,1,0,0,0,1321,1322,5,12,0,0,1322,
-	1324,5,175,0,0,1323,1321,1,0,0,0,1324,1327,1,0,0,0,1325,1323,1,0,0,0,1325,
+	1324,5,176,0,0,1323,1321,1,0,0,0,1324,1327,1,0,0,0,1325,1323,1,0,0,0,1325,
 	1326,1,0,0,0,1326,1328,1,0,0,0,1327,1325,1,0,0,0,1328,1329,7,8,0,0,1329,
-	1330,5,2,0,0,1330,1341,1,0,0,0,1331,1334,5,175,0,0,1332,1333,5,12,0,0,1333,
-	1335,5,175,0,0,1334,1332,1,0,0,0,1335,1336,1,0,0,0,1336,1334,1,0,0,0,1336,
+	1330,5,2,0,0,1330,1341,1,0,0,0,1331,1334,5,176,0,0,1332,1333,5,12,0,0,1333,
+	1335,5,176,0,0,1334,1332,1,0,0,0,1335,1336,1,0,0,0,1336,1334,1,0,0,0,1336,
 	1337,1,0,0,0,1337,1338,1,0,0,0,1338,1339,7,8,0,0,1339,1341,5,2,0,0,1340,
 	1235,1,0,0,0,1340,1259,1,0,0,0,1340,1279,1,0,0,0,1340,1290,1,0,0,0,1340,
 	1312,1,0,0,0,1340,1331,1,0,0,0,1341,127,1,0,0,0,1342,1343,5,74,0,0,1343,
-	1344,5,12,0,0,1344,1351,5,175,0,0,1345,1346,5,66,0,0,1346,1347,3,222,111,
+	1344,5,12,0,0,1344,1351,5,176,0,0,1345,1346,5,66,0,0,1346,1347,3,222,111,
 	0,1347,1348,5,67,0,0,1348,1350,1,0,0,0,1349,1345,1,0,0,0,1350,1353,1,0,
 	0,0,1351,1349,1,0,0,0,1351,1352,1,0,0,0,1352,1354,1,0,0,0,1353,1351,1,0,
 	0,0,1354,1355,5,89,0,0,1355,1356,5,49,0,0,1356,1357,3,222,111,0,1357,1358,
@@ -10248,8 +10251,8 @@ export default class SolidCashParser extends Parser {
 	1384,3,14,7,0,1382,1383,5,40,0,0,1383,1385,3,222,111,0,1384,1382,1,0,0,
 	0,1384,1385,1,0,0,0,1385,1386,1,0,0,0,1386,1387,5,2,0,0,1387,1389,1,0,0,
 	0,1388,1360,1,0,0,0,1388,1374,1,0,0,0,1389,131,1,0,0,0,1390,1391,3,234,
-	117,0,1391,1396,5,175,0,0,1392,1393,5,5,0,0,1393,1394,3,234,117,0,1394,
-	1395,5,175,0,0,1395,1397,1,0,0,0,1396,1392,1,0,0,0,1397,1398,1,0,0,0,1398,
+	117,0,1391,1396,5,176,0,0,1392,1393,5,5,0,0,1393,1394,3,234,117,0,1394,
+	1395,5,176,0,0,1395,1397,1,0,0,0,1396,1392,1,0,0,0,1397,1398,1,0,0,0,1398,
 	1396,1,0,0,0,1398,1399,1,0,0,0,1399,1400,1,0,0,0,1400,1401,5,40,0,0,1401,
 	1402,3,222,111,0,1402,1403,5,2,0,0,1403,1439,1,0,0,0,1404,1405,5,49,0,0,
 	1405,1408,3,134,67,0,1406,1407,5,5,0,0,1407,1409,3,134,67,0,1408,1406,1,
@@ -10264,34 +10267,34 @@ export default class SolidCashParser extends Parser {
 	5,2,0,0,1437,1439,1,0,0,0,1438,1390,1,0,0,0,1438,1404,1,0,0,0,1438,1425,
 	1,0,0,0,1439,133,1,0,0,0,1440,1444,3,234,117,0,1441,1443,3,226,113,0,1442,
 	1441,1,0,0,0,1443,1446,1,0,0,0,1444,1442,1,0,0,0,1444,1445,1,0,0,0,1445,
-	1447,1,0,0,0,1446,1444,1,0,0,0,1447,1448,5,175,0,0,1448,1452,1,0,0,0,1449,
-	1452,5,175,0,0,1450,1452,1,0,0,0,1451,1440,1,0,0,0,1451,1449,1,0,0,0,1451,
-	1450,1,0,0,0,1452,135,1,0,0,0,1453,1454,5,175,0,0,1454,1455,7,7,0,0,1455,
-	1456,3,222,111,0,1456,1457,5,2,0,0,1457,1465,1,0,0,0,1458,1459,5,175,0,
-	0,1459,1460,7,8,0,0,1460,1465,5,2,0,0,1461,1462,7,8,0,0,1462,1463,5,175,
+	1447,1,0,0,0,1446,1444,1,0,0,0,1447,1448,5,176,0,0,1448,1452,1,0,0,0,1449,
+	1452,5,176,0,0,1450,1452,1,0,0,0,1451,1440,1,0,0,0,1451,1449,1,0,0,0,1451,
+	1450,1,0,0,0,1452,135,1,0,0,0,1453,1454,5,176,0,0,1454,1455,7,7,0,0,1455,
+	1456,3,222,111,0,1456,1457,5,2,0,0,1457,1465,1,0,0,0,1458,1459,5,176,0,
+	0,1459,1460,7,8,0,0,1460,1465,5,2,0,0,1461,1462,7,8,0,0,1462,1463,5,176,
 	0,0,1463,1465,5,2,0,0,1464,1453,1,0,0,0,1464,1458,1,0,0,0,1464,1461,1,0,
-	0,0,1465,137,1,0,0,0,1466,1467,5,175,0,0,1467,1468,5,90,0,0,1468,1469,5,
+	0,0,1465,137,1,0,0,0,1466,1467,5,176,0,0,1467,1468,5,90,0,0,1468,1469,5,
 	49,0,0,1469,1470,3,222,111,0,1470,1471,5,50,0,0,1471,1472,5,2,0,0,1472,
-	139,1,0,0,0,1473,1474,5,175,0,0,1474,1475,5,91,0,0,1475,1476,5,49,0,0,1476,
-	1477,5,50,0,0,1477,1478,5,2,0,0,1478,141,1,0,0,0,1479,1480,5,175,0,0,1480,
+	139,1,0,0,0,1473,1474,5,176,0,0,1474,1475,5,91,0,0,1475,1476,5,49,0,0,1476,
+	1477,5,50,0,0,1477,1478,5,2,0,0,1478,141,1,0,0,0,1479,1480,5,176,0,0,1480,
 	1481,5,89,0,0,1481,1482,5,49,0,0,1482,1483,3,222,111,0,1483,1484,5,50,0,
 	0,1484,1485,5,2,0,0,1485,143,1,0,0,0,1486,1487,5,74,0,0,1487,1488,5,12,
-	0,0,1488,1489,5,175,0,0,1489,1490,5,90,0,0,1490,1491,5,49,0,0,1491,1492,
+	0,0,1488,1489,5,176,0,0,1489,1490,5,90,0,0,1490,1491,5,49,0,0,1491,1492,
 	3,222,111,0,1492,1493,5,50,0,0,1493,1494,5,2,0,0,1494,145,1,0,0,0,1495,
-	1496,5,74,0,0,1496,1497,5,12,0,0,1497,1498,5,175,0,0,1498,1499,5,91,0,0,
+	1496,5,74,0,0,1496,1497,5,12,0,0,1497,1498,5,176,0,0,1498,1499,5,91,0,0,
 	1499,1500,5,49,0,0,1500,1501,5,50,0,0,1501,1502,5,2,0,0,1502,147,1,0,0,
-	0,1503,1504,5,92,0,0,1504,1505,5,175,0,0,1505,1538,5,2,0,0,1506,1507,5,
-	92,0,0,1507,1508,5,74,0,0,1508,1509,5,12,0,0,1509,1510,5,175,0,0,1510,1538,
+	0,1503,1504,5,92,0,0,1504,1505,5,176,0,0,1505,1538,5,2,0,0,1506,1507,5,
+	92,0,0,1507,1508,5,74,0,0,1508,1509,5,12,0,0,1509,1510,5,176,0,0,1510,1538,
 	5,2,0,0,1511,1512,5,92,0,0,1512,1513,5,74,0,0,1513,1514,5,12,0,0,1514,1519,
-	5,175,0,0,1515,1516,5,66,0,0,1516,1517,3,222,111,0,1517,1518,5,67,0,0,1518,
+	5,176,0,0,1515,1516,5,66,0,0,1516,1517,3,222,111,0,1517,1518,5,67,0,0,1518,
 	1520,1,0,0,0,1519,1515,1,0,0,0,1520,1521,1,0,0,0,1521,1519,1,0,0,0,1521,
 	1522,1,0,0,0,1522,1523,1,0,0,0,1523,1524,5,2,0,0,1524,1538,1,0,0,0,1525,
-	1526,5,92,0,0,1526,1531,5,175,0,0,1527,1528,5,66,0,0,1528,1529,3,222,111,
+	1526,5,92,0,0,1526,1531,5,176,0,0,1527,1528,5,66,0,0,1528,1529,3,222,111,
 	0,1529,1530,5,67,0,0,1530,1532,1,0,0,0,1531,1527,1,0,0,0,1532,1533,1,0,
 	0,0,1533,1531,1,0,0,0,1533,1534,1,0,0,0,1534,1535,1,0,0,0,1535,1536,5,2,
 	0,0,1536,1538,1,0,0,0,1537,1503,1,0,0,0,1537,1506,1,0,0,0,1537,1511,1,0,
 	0,0,1537,1525,1,0,0,0,1538,149,1,0,0,0,1539,1540,5,93,0,0,1540,1541,5,49,
-	0,0,1541,1542,5,166,0,0,1542,1543,5,23,0,0,1543,1546,3,222,111,0,1544,1545,
+	0,0,1541,1542,5,167,0,0,1542,1543,5,23,0,0,1543,1546,3,222,111,0,1544,1545,
 	5,5,0,0,1545,1547,3,200,100,0,1546,1544,1,0,0,0,1546,1547,1,0,0,0,1547,
 	1548,1,0,0,0,1548,1549,5,50,0,0,1549,1550,5,2,0,0,1550,151,1,0,0,0,1551,
 	1552,5,93,0,0,1552,1553,5,49,0,0,1553,1556,3,222,111,0,1554,1555,5,5,0,
@@ -10303,26 +10306,26 @@ export default class SolidCashParser extends Parser {
 	87,0,1572,1577,3,164,82,0,1573,1577,3,158,79,0,1574,1577,3,160,80,0,1575,
 	1577,3,162,81,0,1576,1570,1,0,0,0,1576,1571,1,0,0,0,1576,1572,1,0,0,0,1576,
 	1573,1,0,0,0,1576,1574,1,0,0,0,1576,1575,1,0,0,0,1577,157,1,0,0,0,1578,
-	1579,5,9,0,0,1579,1580,5,49,0,0,1580,1581,3,234,117,0,1581,1582,5,175,0,
-	0,1582,1583,5,5,0,0,1583,1584,3,234,117,0,1584,1585,5,175,0,0,1585,1586,
-	5,96,0,0,1586,1587,5,74,0,0,1587,1588,5,12,0,0,1588,1589,5,175,0,0,1589,
+	1579,5,9,0,0,1579,1580,5,49,0,0,1580,1581,3,234,117,0,1581,1582,5,176,0,
+	0,1582,1583,5,5,0,0,1583,1584,3,234,117,0,1584,1585,5,176,0,0,1585,1586,
+	5,96,0,0,1586,1587,5,74,0,0,1587,1588,5,12,0,0,1588,1589,5,176,0,0,1589,
 	1590,5,12,0,0,1590,1591,5,34,0,0,1591,1592,5,50,0,0,1592,1593,3,108,54,
 	0,1593,159,1,0,0,0,1594,1595,5,9,0,0,1595,1596,5,49,0,0,1596,1597,3,234,
-	117,0,1597,1598,5,175,0,0,1598,1599,5,97,0,0,1599,1600,5,74,0,0,1600,1601,
-	5,12,0,0,1601,1602,5,175,0,0,1602,1603,5,50,0,0,1603,1604,3,108,54,0,1604,
+	117,0,1597,1598,5,176,0,0,1598,1599,5,97,0,0,1599,1600,5,74,0,0,1600,1601,
+	5,12,0,0,1601,1602,5,176,0,0,1602,1603,5,50,0,0,1603,1604,3,108,54,0,1604,
 	161,1,0,0,0,1605,1606,5,9,0,0,1606,1607,5,49,0,0,1607,1608,3,234,117,0,
-	1608,1609,5,175,0,0,1609,1610,5,96,0,0,1610,1611,5,74,0,0,1611,1612,5,12,
-	0,0,1612,1613,5,175,0,0,1613,1614,5,50,0,0,1614,1615,3,108,54,0,1615,163,
+	1608,1609,5,176,0,0,1609,1610,5,96,0,0,1610,1611,5,74,0,0,1611,1612,5,12,
+	0,0,1612,1613,5,176,0,0,1613,1614,5,50,0,0,1614,1615,3,108,54,0,1615,163,
 	1,0,0,0,1616,1617,5,9,0,0,1617,1618,5,49,0,0,1618,1619,3,166,83,0,1619,
 	1621,3,168,84,0,1620,1622,3,170,85,0,1621,1620,1,0,0,0,1621,1622,1,0,0,
 	0,1622,1623,1,0,0,0,1623,1624,5,50,0,0,1624,1625,3,108,54,0,1625,165,1,
 	0,0,0,1626,1630,3,234,117,0,1627,1629,3,226,113,0,1628,1627,1,0,0,0,1629,
 	1632,1,0,0,0,1630,1628,1,0,0,0,1630,1631,1,0,0,0,1631,1633,1,0,0,0,1632,
-	1630,1,0,0,0,1633,1636,5,175,0,0,1634,1635,5,40,0,0,1635,1637,3,222,111,
+	1630,1,0,0,0,1633,1636,5,176,0,0,1634,1635,5,40,0,0,1635,1637,3,222,111,
 	0,1636,1634,1,0,0,0,1636,1637,1,0,0,0,1637,1638,1,0,0,0,1638,1639,5,2,0,
 	0,1639,167,1,0,0,0,1640,1641,3,222,111,0,1641,1642,5,2,0,0,1642,169,1,0,
-	0,0,1643,1644,5,175,0,0,1644,1645,7,7,0,0,1645,1649,3,222,111,0,1646,1647,
-	5,175,0,0,1647,1649,7,8,0,0,1648,1643,1,0,0,0,1648,1646,1,0,0,0,1649,171,
+	0,0,1643,1644,5,176,0,0,1644,1645,7,7,0,0,1645,1649,3,222,111,0,1646,1647,
+	5,176,0,0,1647,1649,7,8,0,0,1648,1643,1,0,0,0,1648,1646,1,0,0,0,1649,171,
 	1,0,0,0,1650,1651,5,98,0,0,1651,1652,3,108,54,0,1652,1653,5,99,0,0,1653,
 	1654,5,49,0,0,1654,1655,3,222,111,0,1655,1656,5,50,0,0,1656,1657,5,2,0,
 	0,1657,173,1,0,0,0,1658,1659,5,99,0,0,1659,1660,5,49,0,0,1660,1661,3,222,
@@ -10352,7 +10355,7 @@ export default class SolidCashParser extends Parser {
 	1739,1,0,0,0,1741,1742,1,0,0,0,1742,1745,1,0,0,0,1743,1741,1,0,0,0,1744,
 	1746,5,5,0,0,1745,1744,1,0,0,0,1745,1746,1,0,0,0,1746,1748,1,0,0,0,1747,
 	1736,1,0,0,0,1747,1748,1,0,0,0,1748,1749,1,0,0,0,1749,1750,5,50,0,0,1750,
-	193,1,0,0,0,1751,1753,5,108,0,0,1752,1754,5,175,0,0,1753,1752,1,0,0,0,1753,
+	193,1,0,0,0,1751,1753,5,108,0,0,1752,1754,5,176,0,0,1753,1752,1,0,0,0,1753,
 	1754,1,0,0,0,1754,1770,1,0,0,0,1755,1767,5,49,0,0,1756,1761,3,106,53,0,
 	1757,1758,5,5,0,0,1758,1760,3,106,53,0,1759,1757,1,0,0,0,1760,1763,1,0,
 	0,0,1761,1759,1,0,0,0,1761,1762,1,0,0,0,1762,1765,1,0,0,0,1763,1761,1,0,
@@ -10361,37 +10364,37 @@ export default class SolidCashParser extends Parser {
 	0,0,1770,1755,1,0,0,0,1770,1771,1,0,0,0,1771,1772,1,0,0,0,1772,1773,3,108,
 	54,0,1773,195,1,0,0,0,1774,1775,5,109,0,0,1775,1776,5,2,0,0,1776,197,1,
 	0,0,0,1777,1778,5,110,0,0,1778,1779,5,2,0,0,1779,199,1,0,0,0,1780,1784,
-	5,163,0,0,1781,1782,5,175,0,0,1782,1784,3,214,107,0,1783,1780,1,0,0,0,1783,
-	1781,1,0,0,0,1784,201,1,0,0,0,1785,1786,5,36,0,0,1786,1789,5,175,0,0,1787,
-	1788,5,12,0,0,1788,1790,5,175,0,0,1789,1787,1,0,0,0,1789,1790,1,0,0,0,1790,
+	5,164,0,0,1781,1782,5,176,0,0,1782,1784,3,214,107,0,1783,1780,1,0,0,0,1783,
+	1781,1,0,0,0,1784,201,1,0,0,0,1785,1786,5,36,0,0,1786,1789,5,176,0,0,1787,
+	1788,5,12,0,0,1788,1790,5,176,0,0,1789,1787,1,0,0,0,1789,1790,1,0,0,0,1790,
 	1791,1,0,0,0,1791,1792,5,49,0,0,1792,1804,5,4,0,0,1793,1798,3,212,106,0,
 	1794,1795,5,5,0,0,1795,1797,3,212,106,0,1796,1794,1,0,0,0,1797,1800,1,0,
 	0,0,1798,1796,1,0,0,0,1798,1799,1,0,0,0,1799,1802,1,0,0,0,1800,1798,1,0,
 	0,0,1801,1803,5,5,0,0,1802,1801,1,0,0,0,1802,1803,1,0,0,0,1803,1805,1,0,
 	0,0,1804,1793,1,0,0,0,1804,1805,1,0,0,0,1805,1806,1,0,0,0,1806,1807,5,6,
 	0,0,1807,1808,5,50,0,0,1808,1828,5,2,0,0,1809,1810,5,36,0,0,1810,1813,5,
-	175,0,0,1811,1812,5,12,0,0,1812,1814,5,175,0,0,1813,1811,1,0,0,0,1813,1814,
+	176,0,0,1811,1812,5,12,0,0,1812,1814,5,176,0,0,1813,1811,1,0,0,0,1813,1814,
 	1,0,0,0,1814,1815,1,0,0,0,1815,1816,3,214,107,0,1816,1817,5,2,0,0,1817,
-	1828,1,0,0,0,1818,1819,5,36,0,0,1819,1820,5,49,0,0,1820,1821,5,163,0,0,
+	1828,1,0,0,0,1818,1819,5,36,0,0,1819,1820,5,49,0,0,1820,1821,5,164,0,0,
 	1821,1822,5,50,0,0,1822,1828,5,2,0,0,1823,1824,5,36,0,0,1824,1825,5,49,
 	0,0,1825,1826,5,50,0,0,1826,1828,5,2,0,0,1827,1785,1,0,0,0,1827,1809,1,
 	0,0,0,1827,1818,1,0,0,0,1827,1823,1,0,0,0,1828,203,1,0,0,0,1829,1830,5,
 	111,0,0,1830,1831,5,49,0,0,1831,1832,3,222,111,0,1832,1833,5,50,0,0,1833,
-	1834,5,2,0,0,1834,205,1,0,0,0,1835,1838,5,175,0,0,1836,1838,3,228,114,0,
+	1834,5,2,0,0,1834,205,1,0,0,0,1835,1838,5,176,0,0,1836,1838,3,228,114,0,
 	1837,1835,1,0,0,0,1837,1836,1,0,0,0,1838,207,1,0,0,0,1839,1851,5,49,0,0,
 	1840,1845,3,206,103,0,1841,1842,5,5,0,0,1842,1844,3,206,103,0,1843,1841,
 	1,0,0,0,1844,1847,1,0,0,0,1845,1843,1,0,0,0,1845,1846,1,0,0,0,1846,1849,
 	1,0,0,0,1847,1845,1,0,0,0,1848,1850,5,5,0,0,1849,1848,1,0,0,0,1849,1850,
 	1,0,0,0,1850,1852,1,0,0,0,1851,1840,1,0,0,0,1851,1852,1,0,0,0,1852,1853,
-	1,0,0,0,1853,1854,5,50,0,0,1854,209,1,0,0,0,1855,1856,5,175,0,0,1856,1880,
-	3,214,107,0,1857,1858,5,175,0,0,1858,1859,5,12,0,0,1859,1860,5,175,0,0,
-	1860,1880,3,214,107,0,1861,1862,5,175,0,0,1862,1863,5,49,0,0,1863,1875,
+	1,0,0,0,1853,1854,5,50,0,0,1854,209,1,0,0,0,1855,1856,5,176,0,0,1856,1880,
+	3,214,107,0,1857,1858,5,176,0,0,1858,1859,5,12,0,0,1859,1860,5,176,0,0,
+	1860,1880,3,214,107,0,1861,1862,5,176,0,0,1862,1863,5,49,0,0,1863,1875,
 	5,4,0,0,1864,1869,3,212,106,0,1865,1866,5,5,0,0,1866,1868,3,212,106,0,1867,
 	1865,1,0,0,0,1868,1871,1,0,0,0,1869,1867,1,0,0,0,1869,1870,1,0,0,0,1870,
 	1873,1,0,0,0,1871,1869,1,0,0,0,1872,1874,5,5,0,0,1873,1872,1,0,0,0,1873,
 	1874,1,0,0,0,1874,1876,1,0,0,0,1875,1864,1,0,0,0,1875,1876,1,0,0,0,1876,
 	1877,1,0,0,0,1877,1878,5,6,0,0,1878,1880,5,50,0,0,1879,1855,1,0,0,0,1879,
-	1857,1,0,0,0,1879,1861,1,0,0,0,1880,211,1,0,0,0,1881,1882,5,175,0,0,1882,
+	1857,1,0,0,0,1879,1861,1,0,0,0,1880,211,1,0,0,0,1881,1882,5,176,0,0,1882,
 	1883,5,105,0,0,1883,1884,3,222,111,0,1884,213,1,0,0,0,1885,1897,5,49,0,
 	0,1886,1891,3,222,111,0,1887,1888,5,5,0,0,1888,1890,3,222,111,0,1889,1887,
 	1,0,0,0,1890,1893,1,0,0,0,1891,1889,1,0,0,0,1891,1892,1,0,0,0,1892,1895,
@@ -10401,34 +10404,34 @@ export default class SolidCashParser extends Parser {
 	3,218,109,0,1903,1904,5,5,0,0,1904,1906,3,218,109,0,1905,1903,1,0,0,0,1906,
 	1909,1,0,0,0,1907,1905,1,0,0,0,1907,1908,1,0,0,0,1908,1911,1,0,0,0,1909,
 	1907,1,0,0,0,1910,1912,5,5,0,0,1911,1910,1,0,0,0,1911,1912,1,0,0,0,1912,
-	1913,1,0,0,0,1913,1914,5,6,0,0,1914,217,1,0,0,0,1915,1916,5,175,0,0,1916,
+	1913,1,0,0,0,1913,1914,5,6,0,0,1914,217,1,0,0,0,1915,1916,5,176,0,0,1916,
 	1917,5,105,0,0,1917,1918,3,222,111,0,1918,219,1,0,0,0,1919,1920,5,49,0,
 	0,1920,1925,3,234,117,0,1921,1922,5,5,0,0,1922,1924,3,234,117,0,1923,1921,
 	1,0,0,0,1924,1927,1,0,0,0,1925,1923,1,0,0,0,1925,1926,1,0,0,0,1926,1929,
 	1,0,0,0,1927,1925,1,0,0,0,1928,1930,5,5,0,0,1929,1928,1,0,0,0,1929,1930,
 	1,0,0,0,1930,1931,1,0,0,0,1931,1932,5,50,0,0,1932,221,1,0,0,0,1933,1934,
-	6,111,-1,0,1934,1935,5,49,0,0,1935,1936,5,175,0,0,1936,1937,7,7,0,0,1937,
+	6,111,-1,0,1934,1935,5,49,0,0,1935,1936,5,176,0,0,1936,1937,7,7,0,0,1937,
 	1938,3,222,111,0,1938,1939,5,50,0,0,1939,2069,1,0,0,0,1940,1941,5,49,0,
 	0,1941,1942,3,222,111,0,1942,1943,5,50,0,0,1943,2069,1,0,0,0,1944,1945,
 	3,236,118,0,1945,1946,5,49,0,0,1946,1948,3,222,111,0,1947,1949,5,5,0,0,
 	1948,1947,1,0,0,0,1948,1949,1,0,0,0,1949,1950,1,0,0,0,1950,1951,5,50,0,
 	0,1951,2069,1,0,0,0,1952,2069,3,210,105,0,1953,1954,5,112,0,0,1954,1956,
-	5,175,0,0,1955,1957,3,216,108,0,1956,1955,1,0,0,0,1956,1957,1,0,0,0,1957,
+	5,176,0,0,1955,1957,3,216,108,0,1956,1955,1,0,0,0,1956,1957,1,0,0,0,1957,
 	1958,1,0,0,0,1958,2069,3,214,107,0,1959,1960,5,112,0,0,1960,1961,3,234,
 	117,0,1961,1962,5,66,0,0,1962,1963,5,67,0,0,1963,1964,5,49,0,0,1964,1965,
 	3,222,111,0,1965,1966,5,50,0,0,1966,2069,1,0,0,0,1967,1968,5,55,0,0,1968,
 	1969,5,49,0,0,1969,1970,3,234,117,0,1970,1971,5,50,0,0,1971,1972,5,12,0,
-	0,1972,1973,5,175,0,0,1973,2069,1,0,0,0,1974,1975,5,113,0,0,1975,2069,3,
+	0,1972,1973,5,176,0,0,1973,2069,1,0,0,0,1974,1975,5,113,0,0,1975,2069,3,
 	214,107,0,1976,1977,5,114,0,0,1977,2069,3,214,107,0,1978,1979,5,115,0,0,
 	1979,2069,3,214,107,0,1980,1981,5,116,0,0,1981,2069,3,214,107,0,1982,1983,
-	5,117,0,0,1983,1984,5,49,0,0,1984,1985,5,175,0,0,1985,1986,5,12,0,0,1986,
-	1987,5,175,0,0,1987,1988,5,5,0,0,1988,1989,3,214,107,0,1989,1990,5,50,0,
+	5,117,0,0,1983,1984,5,49,0,0,1984,1985,5,176,0,0,1985,1986,5,12,0,0,1986,
+	1987,5,176,0,0,1987,1988,5,5,0,0,1988,1989,3,214,107,0,1989,1990,5,50,0,
 	0,1990,2069,1,0,0,0,1991,1992,5,118,0,0,1992,2069,3,214,107,0,1993,1994,
 	5,119,0,0,1994,2069,3,214,107,0,1995,1996,5,120,0,0,1996,1997,5,49,0,0,
 	1997,1998,3,222,111,0,1998,1999,5,5,0,0,1999,2000,3,220,110,0,2000,2001,
 	5,50,0,0,2001,2069,1,0,0,0,2002,2003,5,121,0,0,2003,2004,5,49,0,0,2004,
 	2005,3,222,111,0,2005,2006,5,5,0,0,2006,2007,3,220,110,0,2007,2008,5,5,
-	0,0,2008,2009,5,157,0,0,2009,2010,5,50,0,0,2010,2069,1,0,0,0,2011,2012,
+	0,0,2008,2009,5,158,0,0,2009,2010,5,50,0,0,2010,2069,1,0,0,0,2011,2012,
 	5,122,0,0,2012,2013,5,66,0,0,2013,2014,3,222,111,0,2014,2015,5,67,0,0,2015,
 	2016,7,10,0,0,2016,2069,1,0,0,0,2017,2018,5,128,0,0,2018,2019,5,66,0,0,
 	2019,2020,3,222,111,0,2020,2021,5,67,0,0,2021,2022,7,11,0,0,2022,2069,1,
@@ -10438,13 +10441,13 @@ export default class SolidCashParser extends Parser {
 	0,0,2033,2031,1,0,0,0,2034,2036,5,5,0,0,2035,2034,1,0,0,0,2035,2036,1,0,
 	0,0,2036,2038,1,0,0,0,2037,2026,1,0,0,0,2037,2038,1,0,0,0,2038,2039,1,0,
 	0,0,2039,2069,5,67,0,0,2040,2041,5,74,0,0,2041,2042,5,12,0,0,2042,2043,
-	5,175,0,0,2043,2044,5,12,0,0,2044,2045,5,175,0,0,2045,2046,5,66,0,0,2046,
+	5,176,0,0,2043,2044,5,12,0,0,2044,2045,5,176,0,0,2045,2046,5,66,0,0,2046,
 	2047,3,222,111,0,2047,2048,5,67,0,0,2048,2049,3,224,112,0,2049,2069,1,0,
-	0,0,2050,2051,5,74,0,0,2051,2052,5,12,0,0,2052,2057,5,175,0,0,2053,2054,
+	0,0,2050,2051,5,74,0,0,2051,2052,5,12,0,0,2052,2057,5,176,0,0,2053,2054,
 	5,66,0,0,2054,2055,3,222,111,0,2055,2056,5,67,0,0,2056,2058,1,0,0,0,2057,
 	2053,1,0,0,0,2058,2059,1,0,0,0,2059,2057,1,0,0,0,2059,2060,1,0,0,0,2060,
-	2069,1,0,0,0,2061,2062,5,74,0,0,2062,2063,5,12,0,0,2063,2069,5,175,0,0,
-	2064,2069,5,74,0,0,2065,2069,5,172,0,0,2066,2069,3,14,7,0,2067,2069,3,228,
+	2069,1,0,0,0,2061,2062,5,74,0,0,2062,2063,5,12,0,0,2063,2069,5,176,0,0,
+	2064,2069,5,74,0,0,2065,2069,5,173,0,0,2066,2069,3,14,7,0,2067,2069,3,228,
 	114,0,2068,1933,1,0,0,0,2068,1940,1,0,0,0,2068,1944,1,0,0,0,2068,1952,1,
 	0,0,0,2068,1953,1,0,0,0,2068,1959,1,0,0,0,2068,1967,1,0,0,0,2068,1974,1,
 	0,0,0,2068,1976,1,0,0,0,2068,1978,1,0,0,0,2068,1980,1,0,0,0,2068,1982,1,
@@ -10465,21 +10468,21 @@ export default class SolidCashParser extends Parser {
 	0,0,2105,2106,3,222,111,0,2106,2107,5,105,0,0,2107,2108,3,222,111,9,2108,
 	2174,1,0,0,0,2109,2110,10,32,0,0,2110,2111,5,66,0,0,2111,2112,3,222,111,
 	0,2112,2113,5,105,0,0,2113,2114,3,222,111,0,2114,2115,5,67,0,0,2115,2174,
-	1,0,0,0,2116,2117,10,31,0,0,2117,2118,5,66,0,0,2118,2119,5,157,0,0,2119,
+	1,0,0,0,2116,2117,10,31,0,0,2117,2118,5,66,0,0,2118,2119,5,158,0,0,2119,
 	2174,5,67,0,0,2120,2121,10,30,0,0,2121,2122,5,66,0,0,2122,2123,3,222,111,
 	0,2123,2124,5,67,0,0,2124,2174,1,0,0,0,2125,2126,10,27,0,0,2126,2174,7,
 	18,0,0,2127,2128,10,26,0,0,2128,2129,5,135,0,0,2129,2130,5,49,0,0,2130,
 	2131,3,222,111,0,2131,2132,5,50,0,0,2132,2174,1,0,0,0,2133,2134,10,25,0,
 	0,2134,2135,5,136,0,0,2135,2136,5,49,0,0,2136,2137,3,222,111,0,2137,2138,
 	5,5,0,0,2138,2139,3,222,111,0,2139,2140,5,50,0,0,2140,2174,1,0,0,0,2141,
-	2142,10,24,0,0,2142,2143,5,12,0,0,2143,2145,5,175,0,0,2144,2146,3,216,108,
+	2142,10,24,0,0,2142,2143,5,12,0,0,2143,2145,5,176,0,0,2144,2146,3,216,108,
 	0,2145,2144,1,0,0,0,2145,2146,1,0,0,0,2146,2147,1,0,0,0,2147,2148,5,49,
 	0,0,2148,2160,5,4,0,0,2149,2154,3,212,106,0,2150,2151,5,5,0,0,2151,2153,
 	3,212,106,0,2152,2150,1,0,0,0,2153,2156,1,0,0,0,2154,2152,1,0,0,0,2154,
 	2155,1,0,0,0,2155,2158,1,0,0,0,2156,2154,1,0,0,0,2157,2159,5,5,0,0,2158,
 	2157,1,0,0,0,2158,2159,1,0,0,0,2159,2161,1,0,0,0,2160,2149,1,0,0,0,2160,
 	2161,1,0,0,0,2161,2162,1,0,0,0,2162,2163,5,6,0,0,2163,2174,5,50,0,0,2164,
-	2165,10,23,0,0,2165,2166,5,12,0,0,2166,2168,5,175,0,0,2167,2169,3,216,108,
+	2165,10,23,0,0,2165,2166,5,12,0,0,2166,2168,5,176,0,0,2167,2169,3,216,108,
 	0,2168,2167,1,0,0,0,2168,2169,1,0,0,0,2169,2170,1,0,0,0,2170,2174,3,214,
 	107,0,2171,2172,10,22,0,0,2172,2174,3,224,112,0,2173,2070,1,0,0,0,2173,
 	2073,1,0,0,0,2173,2076,1,0,0,0,2173,2079,1,0,0,0,2173,2082,1,0,0,0,2173,
@@ -10488,26 +10491,26 @@ export default class SolidCashParser extends Parser {
 	2116,1,0,0,0,2173,2120,1,0,0,0,2173,2125,1,0,0,0,2173,2127,1,0,0,0,2173,
 	2133,1,0,0,0,2173,2141,1,0,0,0,2173,2164,1,0,0,0,2173,2171,1,0,0,0,2174,
 	2177,1,0,0,0,2175,2173,1,0,0,0,2175,2176,1,0,0,0,2176,223,1,0,0,0,2177,
-	2175,1,0,0,0,2178,2179,5,12,0,0,2179,2192,5,175,0,0,2180,2192,5,123,0,0,
+	2175,1,0,0,0,2178,2179,5,12,0,0,2179,2192,5,176,0,0,2180,2192,5,123,0,0,
 	2181,2192,5,124,0,0,2182,2192,5,125,0,0,2183,2192,5,126,0,0,2184,2192,5,
 	127,0,0,2185,2192,5,129,0,0,2186,2192,5,130,0,0,2187,2192,5,131,0,0,2188,
 	2192,5,132,0,0,2189,2192,5,143,0,0,2190,2192,5,144,0,0,2191,2178,1,0,0,
 	0,2191,2180,1,0,0,0,2191,2181,1,0,0,0,2191,2182,1,0,0,0,2191,2183,1,0,0,
 	0,2191,2184,1,0,0,0,2191,2185,1,0,0,0,2191,2186,1,0,0,0,2191,2187,1,0,0,
 	0,2191,2188,1,0,0,0,2191,2189,1,0,0,0,2191,2190,1,0,0,0,2192,225,1,0,0,
-	0,2193,2194,7,19,0,0,2194,227,1,0,0,0,2195,2210,5,153,0,0,2196,2210,3,230,
-	115,0,2197,2210,3,232,116,0,2198,2202,5,163,0,0,2199,2201,5,163,0,0,2200,
+	0,2193,2194,7,19,0,0,2194,227,1,0,0,0,2195,2210,5,154,0,0,2196,2210,3,230,
+	115,0,2197,2210,3,232,116,0,2198,2202,5,164,0,0,2199,2201,5,164,0,0,2200,
 	2199,1,0,0,0,2201,2204,1,0,0,0,2202,2200,1,0,0,0,2202,2203,1,0,0,0,2203,
-	2210,1,0,0,0,2204,2202,1,0,0,0,2205,2210,5,173,0,0,2206,2210,5,174,0,0,
-	2207,2210,5,164,0,0,2208,2210,5,165,0,0,2209,2195,1,0,0,0,2209,2196,1,0,
+	2210,1,0,0,0,2204,2202,1,0,0,0,2205,2210,5,174,0,0,2206,2210,5,175,0,0,
+	2207,2210,5,165,0,0,2208,2210,5,166,0,0,2209,2195,1,0,0,0,2209,2196,1,0,
 	0,0,2209,2197,1,0,0,0,2209,2198,1,0,0,0,2209,2205,1,0,0,0,2209,2206,1,0,
-	0,0,2209,2207,1,0,0,0,2209,2208,1,0,0,0,2210,229,1,0,0,0,2211,2213,5,157,
+	0,0,2209,2207,1,0,0,0,2209,2208,1,0,0,0,2210,229,1,0,0,0,2211,2213,5,158,
 	0,0,2212,2214,7,20,0,0,2213,2212,1,0,0,0,2213,2214,1,0,0,0,2214,231,1,0,
-	0,0,2215,2216,5,156,0,0,2216,233,1,0,0,0,2217,2218,5,149,0,0,2218,2262,
-	5,59,0,0,2219,2262,5,149,0,0,2220,2262,5,158,0,0,2221,2262,5,159,0,0,2222,
-	2262,5,161,0,0,2223,2262,5,160,0,0,2224,2262,5,168,0,0,2225,2262,5,169,
-	0,0,2226,2262,5,150,0,0,2227,2262,5,151,0,0,2228,2262,5,170,0,0,2229,2262,
-	5,171,0,0,2230,2231,5,7,0,0,2231,2240,5,49,0,0,2232,2237,3,234,117,0,2233,
+	0,0,2215,2216,5,157,0,0,2216,233,1,0,0,0,2217,2218,5,150,0,0,2218,2262,
+	5,59,0,0,2219,2262,5,150,0,0,2220,2262,5,159,0,0,2221,2262,5,160,0,0,2222,
+	2262,5,162,0,0,2223,2262,5,161,0,0,2224,2262,5,169,0,0,2225,2262,5,170,
+	0,0,2226,2262,5,151,0,0,2227,2262,5,152,0,0,2228,2262,5,171,0,0,2229,2262,
+	5,172,0,0,2230,2231,5,7,0,0,2231,2240,5,49,0,0,2232,2237,3,234,117,0,2233,
 	2234,5,5,0,0,2234,2236,3,234,117,0,2235,2233,1,0,0,0,2236,2239,1,0,0,0,
 	2237,2235,1,0,0,0,2237,2238,1,0,0,0,2238,2241,1,0,0,0,2239,2237,1,0,0,0,
 	2240,2232,1,0,0,0,2240,2241,1,0,0,0,2241,2242,1,0,0,0,2242,2255,5,50,0,
@@ -10515,8 +10518,8 @@ export default class SolidCashParser extends Parser {
 	5,5,0,0,2247,2249,3,234,117,0,2248,2246,1,0,0,0,2249,2252,1,0,0,0,2250,
 	2248,1,0,0,0,2250,2251,1,0,0,0,2251,2253,1,0,0,0,2252,2250,1,0,0,0,2253,
 	2254,5,50,0,0,2254,2256,1,0,0,0,2255,2243,1,0,0,0,2255,2256,1,0,0,0,2256,
-	2262,1,0,0,0,2257,2258,5,175,0,0,2258,2259,5,12,0,0,2259,2262,5,175,0,0,
-	2260,2262,5,175,0,0,2261,2217,1,0,0,0,2261,2219,1,0,0,0,2261,2220,1,0,0,
+	2262,1,0,0,0,2257,2258,5,176,0,0,2258,2259,5,12,0,0,2259,2262,5,176,0,0,
+	2260,2262,5,176,0,0,2261,2217,1,0,0,0,2261,2219,1,0,0,0,2261,2220,1,0,0,
 	0,2261,2221,1,0,0,0,2261,2222,1,0,0,0,2261,2223,1,0,0,0,2261,2224,1,0,0,
 	0,2261,2225,1,0,0,0,2261,2226,1,0,0,0,2261,2227,1,0,0,0,2261,2228,1,0,0,
 	0,2261,2229,1,0,0,0,2261,2230,1,0,0,0,2261,2257,1,0,0,0,2261,2260,1,0,0,

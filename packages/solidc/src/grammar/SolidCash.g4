@@ -615,6 +615,7 @@ modifier
     | 'calldata'
     | 'storage'
     | 'immutable'
+    | 'transient'
     ;
 
 literal

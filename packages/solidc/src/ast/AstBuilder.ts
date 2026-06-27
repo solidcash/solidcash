@@ -242,6 +242,7 @@ import type {
 } from '../grammar/SolidCashParser.js';
 import SolidCashVisitor from '../grammar/SolidCashVisitor.js';
 import { Location } from './Location.js';
+import AstTraversal from './AstTraversal.js';
 import {
   Modifier,
   NumberUnit,
@@ -568,7 +569,7 @@ export default class AstBuilder
     );
 
     // Visit state variable declarations and separate into state variables vs collections
-    const stateVariables: StateVariableNode[] = [];
+    let stateVariables: StateVariableNode[] = [];
     const collections: CollectionNode[] = [];
     for (const svCtx of ctx.stateVariableDeclaration_list()) {
       const visited = this.visit(svCtx);
@@ -578,6 +579,12 @@ export default class AstBuilder
         stateVariables.push(visited as StateVariableNode);
       }
     }
+
+    // `transient` state vars (EIP-1153) have no UTXO analog (BCH has no transaction-scoped contract storage,
+    // and one spend = one function execution with no cross-call). They lower to a per-function zero-init local,
+    // so drop them from the persisted state here; the injection happens after functions are built (below).
+    const transientStateVars = stateVariables.filter((sv) => sv.isTransient);
+    stateVariables = stateVariables.filter((sv) => !sv.isTransient);
 
     // Track dense-indexable state array names for routing this.arr[i], this.arr.push/pop, this.arr.delete(i):
     // both packed (inline blob) and chunk-packed (dynamic) arrays share the same `pushdata(count)++elems`
@@ -653,6 +660,28 @@ export default class AstBuilder
         block.location = Location.fromCtx(ctx);
         constructorDef = new FunctionDefinitionNode('__construct', [], block);
         constructorDef.location = Location.fromCtx(ctx);
+      }
+    }
+
+    // Lower each `transient` state var into a zero-init local in every function that references it: the value
+    // resets to 0 at the start of each spend (matching transient's zero-at-tx-start semantics) and never
+    // persists. One spend = one execution, so cross-call transient state is N/A on BCH - warned per var.
+    if (transientStateVars.length > 0) {
+      const allFns = [constructorDef, ...functions, fallbackDef, receiveDef]
+        .filter((f): f is FunctionDefinitionNode => !!f);
+      for (const tv of transientStateVars) {
+        const at = tv.location ? ` (line ${tv.location.start.line})` : '';
+        console.log(`Warning: transient state variable '${tv.name}'${at} has no UTXO analogue; SolidCash lowers `
+          + 'it to a transaction-local (zero at the start of each spend). It does not persist across spends, and '
+          + 'cross-call transient state is impossible on BCH (one spend = one execution).');
+        for (const fn of allFns) {
+          if (fn.body && new IdentifierReferenceFinder(tv.name).has(fn.body)) {
+            const local = new VariableDefinitionNode(tv.type, [], tv.name);
+            local.allowUnused = true;
+            local.location = tv.location;
+            fn.body.statements = [local, ...(fn.body.statements ?? [])];
+          }
+        }
       }
     }
 
@@ -1891,6 +1920,7 @@ export default class AstBuilder
     if (contractTypeName) node.contractTypeName = contractTypeName;
     node.visibility = visibility;
     node.immutable = isImmutable;
+    node.isTransient = allModTexts.includes('transient'); // lowered to a per-function local in visitContract
     const initCtx = ctx.expression?.();
     if (initCtx) node.initializer = this.visit(initCtx) as ExpressionNode;
     node.location = Location.fromCtx(ctx);
@@ -3006,3 +3036,22 @@ const parseNumberString = (numberString: string): bigint => {
   const [coefficient, exponent] = cleanedNumberString.split(/[eE]/);
   return BigInt(coefficient) * BigInt(10) ** BigInt(exponent);
 };
+
+// Returns whether an AST subtree references a given identifier name. Used to lower `transient` state vars into
+// per-function locals only in the functions that actually use them (avoids dead locals / name collisions).
+class IdentifierReferenceFinder extends AstTraversal {
+  private found = false;
+
+  constructor(private targetName: string) { super(); }
+
+  has(node: Node): boolean {
+    this.found = false;
+    this.visit(node);
+    return this.found;
+  }
+
+  visitIdentifier(node: IdentifierNode): Node {
+    if (node.name === this.targetName) this.found = true;
+    return node;
+  }
+}

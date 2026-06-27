@@ -269,6 +269,10 @@ export class ParameterNode extends Node implements Named, Typed {
 export class StateVariableNode extends Node implements Named, Typed {
   immutable: boolean = false;
   isPacked: boolean = false;
+  // Solidity `transient` (EIP-1153): a transaction-scoped state var. BCH has no transaction-scoped contract
+  // storage, and one spend = one function execution (no cross-call), so it lowers to a per-function zero-init
+  // local (the AstBuilder removes it from the state layout). See docs/solidity-import-compat.md.
+  isTransient: boolean = false;
   // Dynamic-storage var (string / unbounded bytes): the data-NFT field holds a uint32 length header
   // (<name>$len) and the value lives in chunk UTXOs. See docs/dynamic-storage.md.
   isDynamic: boolean = false;

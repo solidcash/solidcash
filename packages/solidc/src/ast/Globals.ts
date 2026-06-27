@@ -63,6 +63,7 @@ export enum Modifier {
   CALLDATA = 'calldata',
   STORAGE = 'storage',
   IMMUTABLE = 'immutable',
+  TRANSIENT = 'transient',
 }
 
 export const GLOBAL_SYMBOL_TABLE = new SymbolTable();

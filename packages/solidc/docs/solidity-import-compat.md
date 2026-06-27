@@ -62,6 +62,39 @@ Resolution is the scope chain: a local/parameter is found first; only an unshado
 state variable (SolidCash additionally rejects declaring a local that collides with a state name, so the two
 never ambiguously coexist).
 
+## `transient` state variables (EIP-1153)
+
+Solidity's `transient` storage (EIP-1153, `TSTORE`/`TLOAD`) is a transaction-scoped slot: written and read
+across calls within one transaction, then zeroed when the transaction ends. Its headline use is a cheap
+reentrancy guard.
+
+BCH has no transaction-scoped contract storage, and the execution model removes the need for one: a covenant
+runs exactly once per spend with no nested/cross-contract call re-entering the same script. So the EIP-1153
+feature has no analogue, and the reentrancy-guard use case is moot. SolidCash keeps the keyword for source
+compatibility and lowers it to the sound analog: a `transient` state variable becomes a per-function local,
+zero-initialized at the start of every spend.
+
+- It is dropped from the persisted state layout (no data NFT field, no covenant overhead). A contract whose
+  only state is transient stays stateless.
+- In each function that references it, a `T name;` zero-init local is injected at the top, so a read-before-write
+  sees 0 (matching "zeroed at transaction start") and writes are visible to the rest of that function body.
+- It never persists across spends. Code that assumes a transient value survives can never satisfy its own
+  invariant (the value always reads 0). This matches EIP-1153 between transactions; it differs only in that BCH
+  has no within-transaction cross-call to carry the value, because that scenario cannot occur.
+
+The compiler emits a warning per transient variable. A reentrancy-guard port compiles unchanged:
+
+```solidity
+contract Guard {
+    uint256 transient locked;        // not persisted; a fresh 0 each spend
+    function enter() public {
+        require(locked == 0);        // always true (zero-init)
+        locked = 1;                  // visible within this body only
+        // ... protected logic ...
+    }
+}
+```
+
 ## Sablier Flow exercise: where "compile as-is" stops
 
 `solidityImportCompat` resolves every real import (`@openzeppelin@5.3.0`, `@prb/math@4.1.0`,

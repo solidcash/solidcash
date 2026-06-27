@@ -721,6 +721,9 @@ export class MappingAccessNode extends ExpressionNode implements Named {
   packedStateVariable?: StateVariableNode;
   tokenContainerSlotIndex: number = -1;
   arrayIndex?: ExpressionNode; // Set when innermost value is ArrayType and extra key provided
+  // A mapping read in the constructor: genesis has no input entry NFTs, so it resolves to the type default
+  // (empty mapping). Codegen emits the default directly (no input read, no entry slot). See visitMappingAccess.
+  isGenesisRead?: boolean;
 
   constructor(
     public name: string,

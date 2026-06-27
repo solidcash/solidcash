@@ -7889,6 +7889,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       return this.emitPackedStateArrayAccess(node);
     }
 
+    // Genesis read: a mapping read in the constructor. The mapping is empty at genesis (no input entry NFTs),
+    // so resolve to the type default with no input read and no entry slot (excluded from entryAccesses).
+    if (node.isGenesisRead) {
+      const gLoc = { location: node.location, positionHint: PositionHint.START };
+      this.emitDefaultValue(gLoc, node.collection!.innermostValueType);
+      this.pushToStack('(value)');
+      return node;
+    }
+
     const slotIndex = node.entrySlotIndex;
     const collection = node.collection!;
     const locationData = { location: node.location, positionHint: PositionHint.START };

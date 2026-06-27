@@ -2151,6 +2151,9 @@ export default class SymbolTableTraversal extends AstTraversal {
     }
 
     if (node instanceof MappingAccessNode && node.collection) {
+      // Constructor mapping reads are genesis reads (default value, no input entry NFT). They are NOT entry
+      // accesses: no slot, no input/output. Codegen emits the type default directly.
+      if (this.insideConstructor) return;
       const { keyParams, keySources } = this.getMappingKeyDescriptors(node.keys);
       const slotKey = `${node.collection.name}:${keyParams.join(':')}`;
       const existing = map.get(slotKey);
@@ -3915,13 +3918,14 @@ export default class SymbolTableTraversal extends AstTraversal {
   }
 
   visitMappingAccess(node: MappingAccessNode): Node {
-    if (this.insideConstructor) {
-      // Check if this is a token container access
-      if (node.name === 'tokens' && this.isStatefulContract) {
-        throw new TokenContainerAccessInConstructorError(node);
-      }
-      throw new MappingAccessInConstructorError(node);
+    // Token containers still cannot be read at genesis (no input container exists yet).
+    if (this.insideConstructor && node.name === 'tokens' && this.isStatefulContract) {
+      throw new TokenContainerAccessInConstructorError(node);
     }
+    // Mapping/collection READS in the constructor are allowed: at genesis there are no input entry NFTs, so
+    // every read resolves to the type default (empty mapping) via the emitSlotExistsCheck ELSE branch. This
+    // supports read-before-write of an uninitialized element, e.g. the MultiSig uniqueness pattern
+    // `require(!this.isOwner[a]); this.isOwner[a] = true;`. (Writes already worked; deletes stay blocked.)
 
     // Check if this is a packed or chunk-packed state array access (this.scores[index]). Both store a
     // `pushdata(count)++elems` blob (inline for packed, reassembled from chunks for dynamic), so element
@@ -3960,6 +3964,11 @@ export default class SymbolTableTraversal extends AstTraversal {
       throw new PrivateCollectionAccessError(node, coll.name, coll.inheritedFrom);
     }
     node.collection = coll;
+    // In the constructor, a mapping read resolves to the type default (genesis is empty - no input entries).
+    // Flag it so codegen emits the default directly; it is not collected as an entry access (no slot / output).
+    if (this.insideConstructor) {
+      node.isGenesisRead = true;
+    }
     // Detect array element access: extra key beyond mapping dimensions when value is ArrayType
     const allKeyTypes = coll.allKeyTypes;
     if (node.keys.length === allKeyTypes.length + 1 && coll.innermostValueType instanceof ArrayType) {

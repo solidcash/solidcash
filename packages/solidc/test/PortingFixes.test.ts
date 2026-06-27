@@ -1221,3 +1221,21 @@ describe('calldata read-only enforcement (Solidity data-location parity)', () =>
     expect(noop).toBe(false);
   });
 });
+
+describe('mapping reads in the constructor (genesis = empty mapping)', () => {
+  it('allows the read-before-write uniqueness pattern (read resolves to the genesis default)', () => {
+    // The MultiSig `require(!isOwner[a])` pattern: at genesis the mapping is empty, so the read is false.
+    expect(compileString('contract C(bytes20 a) { mapping(bytes20 => bool) isOwner; int n;'
+      + ' constructor() { require(!this.isOwner[a]); this.isOwner[a] = true; this.n = 1; } }').contractName).toBe('C');
+  });
+
+  it('allows reading an uninitialized mapping element into a local in the constructor', () => {
+    expect(compileString('contract C(int k) { mapping(int=>int) m; int n;'
+      + ' constructor() { int v = this.m[k]; this.n = v; } }').contractName).toBe('C');
+  });
+
+  it('still blocks mapping deletes in the constructor', () => {
+    expect(() => compileString('contract C(int k) { mapping(int=>int) m; int n;'
+      + ' constructor() { delete this.m[k]; this.n = 1; } }')).toThrow();
+  });
+});

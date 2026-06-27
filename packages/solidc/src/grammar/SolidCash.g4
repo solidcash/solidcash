@@ -545,6 +545,7 @@ typeList
 expression
     : '(' Identifier op=('=' | '+=' | '-=' | '*=' | '/=' | '%=' | '&=' | '|=' | '^=' | '<<=' | '>>=') expression ')' # AssignmentExpression
     | '(' expression ')' # Parenthesised
+    | '(' expression (',' expression)+ ')' # TupleExpression
     | typeCast '(' castable=expression ','? ')' # Cast
     | functionCall # FunctionCallExpression
     | 'new' Identifier callOptions? expressionList #Instantiation

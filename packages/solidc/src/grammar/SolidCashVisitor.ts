@@ -124,6 +124,7 @@ import { CastContext } from "./SolidCashParser.js";
 import { AbiEncodeContext } from "./SolidCashParser.js";
 import { TypeIntrospectionContext } from "./SolidCashParser.js";
 import { OutStateMappingFieldAccessContext } from "./SolidCashParser.js";
+import { TupleExpressionContext } from "./SolidCashParser.js";
 import { AbiDecodeAtContext } from "./SolidCashParser.js";
 import { MethodCallContext } from "./SolidCashParser.js";
 import { FunctionCallExpressionContext } from "./SolidCashParser.js";
@@ -911,6 +912,13 @@ export default class SolidCashVisitor<Result> extends ParseTreeVisitor<Result> {
 	 * @return the visitor result
 	 */
 	visitOutStateMappingFieldAccess?: (ctx: OutStateMappingFieldAccessContext) => Result;
+	/**
+	 * Visit a parse tree produced by the `TupleExpression`
+	 * labeled alternative in `SolidCashParser.expression`.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	visitTupleExpression?: (ctx: TupleExpressionContext) => Result;
 	/**
 	 * Visit a parse tree produced by the `AbiDecodeAt`
 	 * labeled alternative in `SolidCashParser.expression`.

@@ -1283,3 +1283,41 @@ describe('const array dimensions T[N] (Solidity parity)', () => {
     expect(withConst.stateLayout).toEqual(withLiteral.stateLayout);
   });
 });
+
+describe('tuple ternary cond ? (a, b) : (c, d) (Solidity parity)', () => {
+  const c = (src: string): string => compileString(src).contractName;
+
+  it('compiles a tuple destructure from a ternary', () => {
+    expect(c('contract C() { function f(bool b) returns (int)'
+      + ' { (int x, int y) = b ? (1, 2) : (3, 4); return x + y; } }')).toBe('C');
+  });
+
+  it('compiles the 4-element CSAMM/CPAMM swap-direction pattern', () => {
+    expect(c('contract C() { function f(bool b, int t0, int t1) returns (int)'
+      + ' { (int a, int bb, int c2, int d) = b ? (t0, t1, 1, 2) : (t1, t0, 2, 1); return a + bb + c2 + d; } }')).toBe('C');
+  });
+
+  it('compiles a tuple-ternary return', () => {
+    expect(c('contract C() { function f(bool b) returns (int, int) { return b ? (1, 2) : (3, 4); } }')).toBe('C');
+  });
+
+  it('compiles into existing (non-declaration) tuple slots', () => {
+    expect(c('contract C() { function f(bool b) returns (int)'
+      + ' { int x; int y; (x, y) = b ? (1, 2) : (3, 4); return x + y; } }')).toBe('C');
+  });
+
+  it('still parses a normal tuple return and scalar ternary', () => {
+    expect(c('contract C() { function f(int a, int b) returns (int, int) { return (a / b, a % b); } }')).toBe('C');
+    expect(c('contract C() { function f(bool b) returns (int) { return b ? 1 : 2; } }')).toBe('C');
+  });
+
+  it('rejects a bare tuple expression (only valid as a ternary branch)', () => {
+    expect(() => c('contract C() { function f() returns (int) { int x = (1, 2); return x; } }'))
+      .toThrow(/tuple expression is only valid/i);
+  });
+
+  it('rejects branches of different arity', () => {
+    expect(() => c('contract C() { function f(bool b) returns (int)'
+      + ' { (int x, int y) = b ? (1, 2, 3) : (4, 5); return x; } }')).toThrow(/different arities/i);
+  });
+});

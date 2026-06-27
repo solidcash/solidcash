@@ -100,3 +100,29 @@ describe('transient state variables (runtime; EIP-1153 porting)', () => {
     expect(tx.txid).toBeDefined();
   });
 });
+
+describe('tuple ternary (runtime; Solidity porting)', () => {
+  // `(x, y) = cond ? (1, 2) : (3, 4)` desugars to a hoisted cond temp + per-element ternaries; a successful
+  // spend proves the right branch's tuple is selected end-to-end.
+  const source = `contract C() {
+    function check(int sel, int ex, int ey) {
+      (int x, int y) = (sel == 1) ? (1, 2) : (3, 4);
+      require(x == ex);
+      require(y == ey);
+    }
+  }`;
+
+  it('selects the true-branch tuple (sel==1 -> (1, 2))', async () => {
+    const tx = await spend(source, {}, (c) => c.unlock.check(1n, 1n, 2n));
+    expect(tx.txid).toBeDefined();
+  });
+
+  it('selects the false-branch tuple (sel!=1 -> (3, 4))', async () => {
+    const tx = await spend(source, {}, (c) => c.unlock.check(0n, 3n, 4n));
+    expect(tx.txid).toBeDefined();
+  });
+
+  it('rejects when the wrong branch values are expected (the ternary really selects)', async () => {
+    await expect(spend(source, {}, (c) => c.unlock.check(1n, 3n, 4n))).rejects.toThrow();
+  });
+});

@@ -194,7 +194,6 @@ import type {
   CustomModifierInvocationContext,
   EnumDefinitionContext,
   TypeDefinitionContext,
-  TernaryOpContext,
   WhileStatementContext,
   AssemblyStatementContext,
   BreakStatementContext,
@@ -240,6 +239,8 @@ import type {
   UsingLibraryForContext,
   UsingFunctionsForContext,
 } from '../grammar/SolidCashParser.js';
+// Value imports (not type-only): needed for `instanceof` when detecting a tuple-valued ternary.
+import { TernaryOpContext, TupleExpressionContext } from '../grammar/SolidCashParser.js';
 import SolidCashVisitor from '../grammar/SolidCashVisitor.js';
 import { Location } from './Location.js';
 import AstTraversal from './AstTraversal.js';
@@ -286,6 +287,8 @@ export default class AstBuilder
   private localStructTypes: Map<string, StructType> = new Map();
 
   private forOfArrayCounter = 0; // uniquifies the temp locals of a desugared `for..of` over a state array
+
+  private tupleTernaryCounter = 0; // uniquifies the hoisted condition temp of a desugared tuple ternary
 
   // Integer-literal constants (`int constant N = 3;`), so a const can be used as an array dimension `T[N]`.
   // Populated by a pre-scan of constant definitions before any types are built (see scanConstantDimensions).
@@ -1060,7 +1063,53 @@ export default class AstBuilder
     return undefined;
   }
 
-  visitTupleAssignment(ctx: TupleAssignmentContext): TupleAssignmentNode {
+  // A tuple expression `(a, b, ...)` is only meaningful as a ternary branch in a tuple assignment or return;
+  // anywhere else it is a misuse (e.g. `int x = (1, 2)`), reported here.
+  visitTupleExpression(ctx: TupleExpressionContext): Node {
+    throw new ParseError(
+      'A tuple expression is only valid as a ternary branch in a tuple assignment or return, '
+      + 'e.g. `(a, b) = cond ? (x, y) : (p, q);`',
+      Location.fromCtx(ctx),
+    );
+  }
+
+  // Is `ctx` a `cond ? (..) : (..)` whose branches are both tuple expressions?
+  private isTupleTernary(ctx: ExpressionContext | undefined): boolean {
+    return ctx instanceof TernaryOpContext
+      && ctx._ifTrue instanceof TupleExpressionContext
+      && ctx._ifFalse instanceof TupleExpressionContext;
+  }
+
+  // Desugar `cond ? (A0, A1, ..) : (B0, B1, ..)`: hoist `cond` into a bool temp (evaluated exactly once, per
+  // Solidity ternary semantics) and produce a per-element ternary `__t ? Ai : Bi`. The existing scalar-ternary
+  // type-check then validates each component's common type, matching Solidity's conditional rule.
+  private desugarTupleTernary(ctx: TernaryOpContext): { tempDecl: VariableDefinitionNode; values: ExpressionNode[] } {
+    const trueElems = (ctx._ifTrue as TupleExpressionContext).expression_list();
+    const falseElems = (ctx._ifFalse as TupleExpressionContext).expression_list();
+    if (trueElems.length !== falseElems.length) {
+      throw new ParseError(
+        `Tuple ternary branches have different arities (${trueElems.length} vs ${falseElems.length})`,
+        Location.fromCtx(ctx),
+      );
+    }
+    const name = `__tcond_${this.tupleTernaryCounter++}`;
+    const tempDecl = new VariableDefinitionNode(
+      PrimitiveType.BOOL, [], name, this.visit(ctx._condition) as ExpressionNode,
+    );
+    tempDecl.location = Location.fromCtx(ctx);
+    const values = trueElems.map((te, i) => {
+      const condRef = new IdentifierNode(name);
+      condRef.location = Location.fromCtx(ctx);
+      const ternary = new TernaryOpNode(
+        condRef, this.visit(te) as ExpressionNode, this.visit(falseElems[i]) as ExpressionNode,
+      );
+      ternary.location = Location.fromCtx(ctx);
+      return ternary;
+    });
+    return { tempDecl, values };
+  }
+
+  visitTupleAssignment(ctx: TupleAssignmentContext): Node {
     const slots = ctx.tupleSlot_list();
     let elements: { name?: string, type?: Type, skip?: boolean, existing?: boolean }[];
     if (slots.length > 0) {
@@ -1081,6 +1130,18 @@ export default class AstBuilder
     const parenthesised = ctx.getText().startsWith('(');
     // `(a, b) = (e1, e2)` parses N RHS expressions; the other forms parse one tuple-valued expression.
     const exprs = ctx.expression_list();
+    // Tuple ternary RHS `(a, b) = cond ? (..) : (..)`: hoist cond, then an N-value assignment of per-element
+    // ternaries. Returned as a block so flattenStatements splices the temp + assignment at the same scope.
+    if (exprs.length === 1 && this.isTupleTernary(exprs[0])) {
+      const { tempDecl, values } = this.desugarTupleTernary(exprs[0] as TernaryOpContext);
+      const tupleAssign = new TupleAssignmentNode(
+        elements, undefined as unknown as ExpressionNode, parenthesised, values,
+      );
+      tupleAssign.location = Location.fromCtx(ctx);
+      const block = new BlockNode([tempDecl, tupleAssign]);
+      block.location = Location.fromCtx(ctx);
+      return block;
+    }
     const tupleAssignment = exprs.length > 1
       ? new TupleAssignmentNode(elements, undefined as unknown as ExpressionNode, parenthesised,
         exprs.map((e) => this.visit(e) as ExpressionNode))
@@ -2888,8 +2949,25 @@ export default class AstBuilder
     return node;
   }
 
-  visitReturnStatement(ctx: ReturnStatementContext): ReturnNode {
-    const expressions = ctx.expression_list().map((e) => this.visit(e) as ExpressionNode);
+  visitReturnStatement(ctx: ReturnStatementContext): Node {
+    const exprCtxs = ctx.expression_list();
+    // Tuple ternary return `return cond ? (..) : (..)`: hoist cond, then a tuple return of per-element ternaries.
+    if (exprCtxs.length === 1 && this.isTupleTernary(exprCtxs[0])) {
+      const { tempDecl, values } = this.desugarTupleTernary(exprCtxs[0] as TernaryOpContext);
+      const returnNode = new ReturnNode(values);
+      returnNode.location = Location.fromCtx(ctx);
+      const block = new BlockNode([tempDecl, returnNode]);
+      block.location = Location.fromCtx(ctx);
+      return block;
+    }
+    // `return (a, b)` parses the tuple as one TupleExpression (the `return expression` alt outranks the
+    // dedicated return-tuple form); unpack it back into a tuple return.
+    if (exprCtxs.length === 1 && exprCtxs[0] instanceof TupleExpressionContext) {
+      const returnNode = new ReturnNode(exprCtxs[0].expression_list().map((e) => this.visit(e) as ExpressionNode));
+      returnNode.location = Location.fromCtx(ctx);
+      return returnNode;
+    }
+    const expressions = exprCtxs.map((e) => this.visit(e) as ExpressionNode);
     const returnNode = new ReturnNode(expressions);
     returnNode.location = Location.fromCtx(ctx);
     return returnNode;

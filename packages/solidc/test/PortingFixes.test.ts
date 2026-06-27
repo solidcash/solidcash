@@ -1138,6 +1138,13 @@ describe('++ / -- on state-variable and element lvalues (common Solidity idiom)'
       .toBe(compileString('contract C() { int n; function f() { this.n -= 1; } }').debug.bytecode);
   });
 
+  it('accepts pre-increment/decrement in a for-loop update (for (; ; ++i) / (--i))', () => {
+    expect(compileString('contract C() { function f() { int t = 0; for (int i = 0; i < 3; ++i) { t = t + i; } require(t == 3); } }')
+      .contractName).toBe('C');
+    expect(compileString('contract C() { function f() { int t = 0; for (int i = 3; i > 0; --i) { t = t + i; } require(t == 6); } }')
+      .contractName).toBe('C');
+  });
+
   it('still parses a bare local ++ (unchanged)', () => {
     expect(compileString('contract C() { int n; function f() { int i = 0; i++; this.n = i; } }').contractName)
       .toBe('C');

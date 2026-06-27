@@ -444,6 +444,7 @@ forCondition
 forUpdate
     : Identifier op=('=' | '+=' | '-=' | '*=' | '/=' | '%=' | '&=' | '|=' | '^=' | '<<=' | '>>=') expression
     | Identifier op=('++' | '--')
+    | op=('++' | '--') Identifier
     ;
 
 doWhileStatement

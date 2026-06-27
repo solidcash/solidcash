@@ -1348,3 +1348,38 @@ describe('array event parameters (Solidity parity)', () => {
     expect(art.events![0].parameters[0].type).toMatch(/\[\]/);
   });
 });
+
+describe('storage-pointer parameters and constant-index state access', () => {
+  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+
+  it('inlines a void mapping-storage-pointer mutator (m[k] = v)', () => {
+    expect(cc('pragma solidity ^0.8.0; contract C { mapping(address => uint256) bal;'
+      + ' function f(address k, uint256 v) public { _set(bal, k, v); }'
+      + ' function _set(mapping(address => uint256) storage m, address k, uint256 v) internal { m[k] = v; } }')).toBe('C');
+  });
+
+  it('inlines array and struct storage-pointer params (DataLocations _f shape)', () => {
+    expect(cc('pragma solidity ^0.8.0; contract C { struct S { uint256 foo; } uint256[] arr; mapping(uint256 => S) ms;'
+      + ' function f() public { _f(arr, ms[1]); }'
+      + ' function _f(uint256[] storage a, S storage s) internal {} }')).toBe('C');
+  });
+
+  it('resolves bare state mapping access with a constant key (m[1].foo)', () => {
+    expect(cc('pragma solidity ^0.8.0; contract C { struct S { uint256 foo; } mapping(uint256 => S) m;'
+      + ' function f() public returns (uint256) { return m[1].foo; } }')).toBe('C');
+  });
+
+  it('aliases and reads a storage pointer bound to a constant-key mapping element', () => {
+    expect(cc('pragma solidity ^0.8.0; contract C { struct S { uint256 foo; } mapping(uint256 => S) m;'
+      + ' function f() public returns (uint256) { S storage s = m[1]; return s.foo; } }')).toBe('C');
+  });
+
+  it('still treats a real multi-return tuple index as a tuple', () => {
+    expect(cc('pragma solidity ^0.8.0; contract C { function f() public pure returns (uint256) { (uint256 a, uint256 b) = g(); return a + b; }'
+      + ' function g() internal pure returns (uint256, uint256) { return (1, 2); } }')).toBe('C');
+  });
+
+  it('synthesizes a default empty-array return for an empty-bodied array-returning function', () => {
+    expect(cc('pragma solidity ^0.8.0; contract C { function g(uint256[] memory a) public returns (uint256[] memory) {} }')).toBe('C');
+  });
+});

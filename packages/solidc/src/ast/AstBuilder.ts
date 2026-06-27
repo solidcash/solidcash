@@ -987,6 +987,9 @@ export default class AstBuilder
     let type: Type;
     if (ctx.arrayType()) {
       type = this.buildArrayType(ctx.arrayType()!);
+    } else if (ctx.mappingType()) {
+      // `mapping(...) storage` parameter: a storage-pointer reference (inlined away pre-semantic).
+      type = this.buildMappingType(ctx.mappingType()!);
     } else {
       // Unknown (contract/interface) type name falls back to address (validated later in semantic analysis);
       // the name is kept on the handle so an interface-typed param (`IERC20 token`) routes `token.method(..)`.
@@ -1051,12 +1054,21 @@ export default class AstBuilder
     if (expr instanceof MappingAccessNode) {
       return { container: expr.name, keys: [...expr.keys] };
     }
-    if (expr instanceof ArrayAccessNode) {
+    if (expr instanceof ArrayAccessNode || expr instanceof TupleIndexOpNode) {
+      // `m[numLit]` parses as a tuple index (grammar) but a bare-identifier base is a container access;
+      // unwrap a mixed ArrayAccess/TupleIndex chain down to the base identifier.
       const keys: ExpressionNode[] = [];
       let cur: ExpressionNode = expr;
-      while (cur instanceof ArrayAccessNode) {
-        keys.unshift(cur.index);
-        cur = cur.array;
+      while (cur instanceof ArrayAccessNode || cur instanceof TupleIndexOpNode) {
+        if (cur instanceof ArrayAccessNode) {
+          keys.unshift(cur.index);
+          cur = cur.array;
+        } else {
+          const idx = new IntLiteralNode(BigInt(cur.index));
+          idx.location = cur.location;
+          keys.unshift(idx);
+          cur = cur.tuple;
+        }
       }
       if (cur instanceof IdentifierNode) return { container: cur.name, keys };
     }

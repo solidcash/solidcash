@@ -1,4 +1,4 @@
-import { BytesType, PrimitiveType, StructType, Type } from '@solidcash/utils';
+import { ArrayType, BytesType, PrimitiveType, StructType, Type } from '@solidcash/utils';
 import {
   BoolLiteralNode,
   ExpressionNode,
@@ -6,6 +6,7 @@ import {
   HexLiteralNode,
   IdentifierNode,
   IntLiteralNode,
+  NewArrayNode,
   StringLiteralNode,
 } from './AST.js';
 import { Location } from './Location.js';
@@ -25,6 +26,11 @@ export function createDefaultValueExpression(type: Type, location: Location): Ex
     const identifier = new IdentifierNode(type.name);
     identifier.location = location;
     node = new FunctionCallNode(identifier, type.fields.map((f) => createDefaultValueExpression(f.type, location)));
+  } else if (type instanceof ArrayType) {
+    // Array default: a zero-length array `new T[](0)` (bounded T[N] gets N zero-init elements).
+    const size = new IntLiteralNode(BigInt(type.bound ?? 0));
+    size.location = location;
+    node = new NewArrayNode(type.elementType, size);
   } else {
     // int, bytes (unbounded), and all other numeric types default to 0
     node = new IntLiteralNode(0n);

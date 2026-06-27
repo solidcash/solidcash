@@ -775,7 +775,7 @@ function substituteInExpression(
 /**
  * Apply substitution to all statements in a function body.
  */
-function substituteInFunction(
+export function substituteInFunction(
   func: FunctionDefinitionNode,
   subs: Map<string, ExpressionNode>,
 ): void {

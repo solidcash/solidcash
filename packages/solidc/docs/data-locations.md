@@ -44,6 +44,23 @@ The unlock script (the spending input's signature script) is the closest analog 
 the function selector and the argument values that get pushed onto the stack. But it is just the stack at
 execution time; there is no distinct calldata region.
 
+## `storage` parameters
+
+An internal function may take `mapping(...) storage`, `T[] storage`, or `StructType storage` parameters: a
+compile-time reference to the caller's state, exactly as in Solidity. A storage reference has no on-stack
+value, so such a function is inlined at each call site with the parameter aliased to the argument's state
+path; the original is not emitted as a callable subroutine. This ports Solidity library/helper mutators
+unchanged:
+
+```solidity
+function f() public { _set(balances, k, v); }
+function _set(mapping(address => uint256) storage m, address k, uint256 v) internal { m[k] = v; }
+```
+
+`f` compiles to a direct `balances[k] = v`. Relatedly, a bare state element with a constant index
+(`balances[1]`, `arr[0]`) resolves as state access: Solidity parses `x[<number-literal>]` as a tuple index,
+but a state variable is never a tuple, so it is routed to the normal mapping/array access path.
+
 ### State-variable default backend, by type
 
 A no-modifier state variable is persistent, but *how* it is stored depends on the declared type. SolidCash

@@ -3340,6 +3340,21 @@ export default class SymbolTableTraversal extends AstTraversal {
     return { base: cur, keys };
   }
 
+  visitTupleIndexOp(node: TupleIndexOpNode): Node {
+    // `stateVar[numLit]` parses as a tuple index (grammar `expression '[' NumberLiteral ']'`), but a state
+    // variable is never a tuple: route it through the array/mapping access path like `stateVar[k]`.
+    if (node.tuple instanceof IdentifierNode
+      && (this.isStateCollectionName(node.tuple.name)
+        || this.symbolTables[0].get(node.tuple.name)?.symbolType === SymbolType.STATE_VARIABLE)) {
+      const idx = new IntLiteralNode(BigInt(node.index));
+      idx.location = node.location;
+      const access = new ArrayAccessNode(node.tuple, idx);
+      access.location = node.location;
+      return this.visit(access);
+    }
+    return super.visitTupleIndexOp(node);
+  }
+
   visitArrayAccess(node: ArrayAccessNode): Node {
     // Bare state read `m[k]` / `m[k1][k2]` (no shadowing local): resolve as `this.m[...]`. Build one
     // MappingAccessNode with all keys and let visitMappingAccess do the multi-key/packed-array resolution.

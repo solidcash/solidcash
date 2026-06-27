@@ -239,6 +239,7 @@ parameterList
 parameter
     : typeName modifier* anyIdentifier?
     | arrayType modifier* anyIdentifier?
+    | mappingType modifier* anyIdentifier?
     ;
 
 block

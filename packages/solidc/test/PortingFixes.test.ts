@@ -1054,10 +1054,12 @@ describe('SBE-20: selfdestruct(addr) implies the selfdestruct modifier and pins 
     expect(stmt).toContain('OP_OUTPUTVALUE OP_SUB');
   });
 
-  it('rejects an unauthenticated selfdestruct (the final require guard is mandatory)', () => {
-    expect(() => compileString(
-      'contract C(pubkey admin) { int counter; function kill(address to) { selfdestruct(to); } }',
-    )).toThrow();
+  it('accepts a selfdestruct as a valid terminal statement (no trailing require needed)', () => {
+    // selfdestruct halts the contract, so - like Solidity revert/return - it ends a path validly without a
+    // forced require. The caller-controlled-destination risk is surfaced separately as a warning (below).
+    expect(compileString(
+      'contract C() { address beneficiary; function kill() { selfdestruct(this.beneficiary); } }',
+    ).contractName).toBe('C');
   });
 });
 

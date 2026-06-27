@@ -288,9 +288,12 @@ function ensureFinalStatementIsRequire(statements: StatementNode[] = [], strict 
     return;
   }
 
-  // The final statement needs to be a require(), assert(), or revert
+  // The final statement needs to be a require(), assert(), revert, or selfdestruct. selfdestruct halts the
+  // contract (a terminal like revert), so it ends a path validly; the caller-controlled-destination risk is
+  // surfaced separately by warnUnauthenticatedSelfdestruct.
   if (!(finalStatement instanceof RequireNode || finalStatement instanceof TimeOpNode
-    || finalStatement instanceof RevertNode || finalStatement instanceof AssertNode)) {
+    || finalStatement instanceof RevertNode || finalStatement instanceof AssertNode
+    || finalStatement instanceof SelfdestructStatementNode)) {
     warnOrThrowUnverified(finalStatement, strict);
   }
 }

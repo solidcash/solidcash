@@ -184,9 +184,9 @@ mappingType
     ;
 
 arrayType
-    : typeName '[' NumberLiteral ']'
+    : typeName '[' (NumberLiteral | Identifier) ']'
     | typeName '[' ']'
-    | arrayType '[' NumberLiteral ']'
+    | arrayType '[' (NumberLiteral | Identifier) ']'
     | arrayType '[' ']'
     ;
 

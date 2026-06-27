@@ -287,6 +287,10 @@ export default class AstBuilder
 
   private forOfArrayCounter = 0; // uniquifies the temp locals of a desugared `for..of` over a state array
 
+  // Integer-literal constants (`int constant N = 3;`), so a const can be used as an array dimension `T[N]`.
+  // Populated by a pre-scan of constant definitions before any types are built (see scanConstantDimensions).
+  private constantIntValues: Map<string, number> = new Map();
+
   constructor(private tree: ParseTree, private solidityImportCompat = false, private chunkedArrays = true) {
     super();
   }
@@ -303,6 +307,9 @@ export default class AstBuilder
     ctx.pragmaDirective_list().forEach((pragma) => {
       this.processPragma(pragma);
     });
+
+    // File-level integer constants usable as array dimensions in file-level definitions and in contracts below.
+    this.scanConstantDimensions(ctx.constantDefinition_list());
 
     const imports = ctx.importDirective_list().map(
       (i) => this.visit(i) as ImportNode,
@@ -512,6 +519,9 @@ export default class AstBuilder
 
   visitContractDefinition(ctx: ContractDefinitionContext): ContractNode {
     const name = ctx.Identifier().getText();
+    // Resolve integer-literal constants up front so a const can be used as an array dimension `T[N]` anywhere
+    // in the contract body (state vars, params, locals, struct fields), regardless of declaration order.
+    this.scanConstantDimensions(ctx.constantDefinition_list());
     const specs = ctx.inheritanceSpecifier_list();
     const implementsList = specs.map((s) => s.Identifier().getText());
     // Inheritance-list constructor args (`is X("a")`) -> parent invocations, same as a constructor-level X("a").
@@ -2245,9 +2255,40 @@ export default class AstBuilder
     } else {
       elementType = this.resolveType(ctx.typeName().getText());
     }
-    const numberLiteral = ctx.NumberLiteral();
-    const bound = numberLiteral ? parseInt(numberLiteral.getText(), 10) : undefined;
+    const bound = this.resolveArrayBound(ctx);
     return new ArrayType(elementType, bound);
+  }
+
+  // Resolve an array dimension `[N]` to a number: a numeric literal directly, or a named integer constant
+  // (`int constant N = 3; T[N]`) via the pre-scanned constant map. Unbounded `[]` -> undefined.
+  private resolveArrayBound(ctx: ArrayTypeContext): number | undefined {
+    const numberLiteral = ctx.NumberLiteral();
+    if (numberLiteral) return parseInt(numberLiteral.getText(), 10);
+    const identifier = ctx.Identifier();
+    if (identifier) {
+      const name = identifier.getText();
+      const value = this.constantIntValues.get(name);
+      if (value === undefined) {
+        throw new ParseError(
+          `Array dimension '${name}' must be a compile-time integer constant`, Location.fromCtx(ctx),
+        );
+      }
+      // A zero / out-of-range constant is caught downstream by the existing InvalidArrayBoundError check, the
+      // same path a numeric-literal bound takes - so the Solidity zero-length rule is enforced uniformly.
+      return value;
+    }
+    return undefined; // unbounded `[]`
+  }
+
+  // Pre-scan: record plain integer-literal constants so they can be used as array dimensions `T[N]`. Computed
+  // or non-integer constants are not recorded; using one as a dimension is a clear ParseError in resolveArrayBound.
+  private scanConstantDimensions(ctxs: ConstantDefinitionContext[]): void {
+    for (const c of ctxs) {
+      const text = c.expression().getText().replace(/_/g, '');
+      if (/^[0-9]+$/.test(text)) {
+        this.constantIntValues.set(c.Identifier().getText(), parseInt(text, 10));
+      }
+    }
   }
 
   visitStructDefinition(ctx: StructDefinitionContext): StructDefinitionNode {

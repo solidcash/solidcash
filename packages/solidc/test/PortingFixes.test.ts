@@ -1239,3 +1239,36 @@ describe('mapping reads in the constructor (genesis = empty mapping)', () => {
       + ' constructor() { delete this.m[k]; this.n = 1; } }')).toThrow();
   });
 });
+
+describe('const array dimensions T[N] (Solidity parity)', () => {
+  const c = (src: string): string => compileString(src).contractName;
+
+  it('resolves a named integer constant as a state-var array dimension', () => {
+    expect(c('contract C() { int constant N = 3; int[N] xs; address[N] a;'
+      + ' function f() { require(true); } }')).toBe('C');
+  });
+
+  it('resolves a const dimension in a local and a parameter', () => {
+    expect(c('contract C() { int constant N = 3;'
+      + ' function f(int[N] p) returns (int) { int[N] y = [1,2,3]; return y[0] + p[0]; } }')).toBe('C');
+  });
+
+  it('still accepts literal and unbounded dimensions', () => {
+    expect(c('contract C() { int[3] a; int[] b; function f() { require(true); } }')).toBe('C');
+  });
+
+  it('rejects an unknown identifier as a dimension', () => {
+    expect(() => c('contract C() { int[NOPE] xs; function f() { require(true); } }'))
+      .toThrow(/compile-time integer constant/);
+  });
+
+  it('rejects a non-integer constant as a dimension', () => {
+    expect(() => c('contract C() { bytes constant S = 0x00; int[S] xs; function f() { require(true); } }'))
+      .toThrow(/compile-time integer constant/);
+  });
+
+  it('rejects a zero-valued const dimension (Solidity zero-length rule, via the existing bound check)', () => {
+    expect(() => c('contract C() { int constant Z = 0; int[Z] xs; function f() { require(true); } }'))
+      .toThrow(/positive integer/i);
+  });
+});

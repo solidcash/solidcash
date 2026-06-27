@@ -28,7 +28,7 @@ describe('type utilities', () => {
     });
 
     it('rejects variable-width types', () => {
-      expect(isFixedWidthType('int')).toBe(false); // plain int is value-dependent
+      expect(isFixedWidthType('bigint')).toBe(false); // plain int is value-dependent
       expect(isFixedWidthType('bytes')).toBe(false); // unbounded
       expect(isFixedWidthType('string')).toBe(false);
       expect(() => fixedWidthBytes('string')).toThrow();
@@ -82,7 +82,7 @@ describe('type utilities', () => {
 
   describe('parseType()', () => {
     it('should parse primitive type strings', () => {
-      expect(parseType('int')).toEqual(PrimitiveType.BIGINT);
+      expect(parseType('bigint')).toEqual(PrimitiveType.BIGINT);
       expect(parseType('bool')).toEqual(PrimitiveType.BOOL);
       expect(parseType('string')).toEqual(PrimitiveType.STRING);
       expect(parseType('pubkey')).toEqual(PrimitiveType.PUBKEY);

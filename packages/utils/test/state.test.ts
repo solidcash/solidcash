@@ -26,8 +26,8 @@ import {
 } from '../src/index.js';
 
 describe('getDefaultStateValue', () => {
-  it('should return 0n for "int"', () => {
-    expect(getDefaultStateValue('int')).toBe(0n);
+  it('should return 0n for "bigint"', () => {
+    expect(getDefaultStateValue('bigint')).toBe(0n);
   });
 
   it('should return false for "bool"', () => {
@@ -71,8 +71,8 @@ describe('getMaxPushdataEncodedSize', () => {
     expect(getMaxPushdataEncodedSize('bool')).toBe(1);
   });
 
-  it('should return 258 for int', () => {
-    expect(getMaxPushdataEncodedSize('int')).toBe(258);
+  it('should return 258 for bigint', () => {
+    expect(getMaxPushdataEncodedSize('bigint')).toBe(258);
   });
 
   it('should return 34 for pubkey', () => {
@@ -107,42 +107,42 @@ describe('encodePushdataValue / decodePushdataValue roundtrip', () => {
     expect(bytesConsumed).toBe(1);
   });
 
-  it('should roundtrip int 0', () => {
-    const encoded = encodePushdataValue(0n, 'int');
+  it('should roundtrip bigint 0', () => {
+    const encoded = encodePushdataValue(0n, 'bigint');
     expect(encoded).toEqual(new Uint8Array([0x00])); // OP_0
-    const { value } = decodePushdataValue(encoded, 0, 'int');
+    const { value } = decodePushdataValue(encoded, 0, 'bigint');
     expect(value).toBe(0n);
   });
 
-  it('should roundtrip int 1-16 as OP_N', () => {
+  it('should roundtrip bigint 1-16 as OP_N', () => {
     for (let i = 1; i <= 16; i++) {
-      const encoded = encodePushdataValue(BigInt(i), 'int');
+      const encoded = encodePushdataValue(BigInt(i), 'bigint');
       expect(encoded).toEqual(new Uint8Array([0x50 + i])); // OP_1 to OP_16
-      const { value } = decodePushdataValue(encoded, 0, 'int');
+      const { value } = decodePushdataValue(encoded, 0, 'bigint');
       expect(value).toBe(BigInt(i));
     }
   });
 
-  it('should roundtrip int -1 as OP_1NEGATE', () => {
-    const encoded = encodePushdataValue(-1n, 'int');
+  it('should roundtrip bigint -1 as OP_1NEGATE', () => {
+    const encoded = encodePushdataValue(-1n, 'bigint');
     expect(encoded).toEqual(new Uint8Array([0x4f])); // OP_1NEGATE
-    const { value } = decodePushdataValue(encoded, 0, 'int');
+    const { value } = decodePushdataValue(encoded, 0, 'bigint');
     expect(value).toBe(-1n);
   });
 
-  it('should roundtrip int 42', () => {
-    const encoded = encodePushdataValue(42n, 'int');
+  it('should roundtrip bigint 42', () => {
+    const encoded = encodePushdataValue(42n, 'bigint');
     // 42 = 0x2a, encoded as: 0x01 (length=1) 0x2a
     expect(encoded).toEqual(new Uint8Array([0x01, 0x2a]));
-    const { value } = decodePushdataValue(encoded, 0, 'int');
+    const { value } = decodePushdataValue(encoded, 0, 'bigint');
     expect(value).toBe(42n);
   });
 
-  it('should roundtrip int 1000', () => {
-    const encoded = encodePushdataValue(1000n, 'int');
+  it('should roundtrip bigint 1000', () => {
+    const encoded = encodePushdataValue(1000n, 'bigint');
     // 1000 = 0x03e8, LE: e8 03, encoded as: 0x02 (length) e8 03
     expect(encoded).toEqual(new Uint8Array([0x02, 0xe8, 0x03]));
-    const { value } = decodePushdataValue(encoded, 0, 'int');
+    const { value } = decodePushdataValue(encoded, 0, 'bigint');
     expect(value).toBe(1000n);
   });
 
@@ -169,7 +169,7 @@ describe('encodePushdataValue / decodePushdataValue roundtrip', () => {
 describe('buildPushdataCommitment / parsePushdataCommitment', () => {
   const layout: StateLayout = {
     variables: [
-      { name: 'counter', type: 'int', nftIndex: 0, fieldIndex: 0 },
+      { name: 'counter', type: 'bigint', nftIndex: 0, fieldIndex: 0 },
       { name: 'label', type: 'bytes4', nftIndex: 0, fieldIndex: 1 },
     ],
     dataNftCount: 1,
@@ -208,7 +208,7 @@ describe('buildPushdataCommitment / parsePushdataCommitment', () => {
 describe('buildInitialStateCommitments with defaults', () => {
   const layout: StateLayout = {
     variables: [
-      { name: 'counter', type: 'int', nftIndex: 0, fieldIndex: 0 },
+      { name: 'counter', type: 'bigint', nftIndex: 0, fieldIndex: 0 },
       { name: 'label', type: 'bytes4', nftIndex: 0, fieldIndex: 1 },
     ],
     dataNftCount: 1,
@@ -255,8 +255,8 @@ describe('encodePushdataValue input validation', () => {
 describe('decodePushdataValue bounds checking', () => {
   it('should throw on out-of-bounds offset', () => {
     const data = new Uint8Array([0x00]);
-    expect(() => decodePushdataValue(data, 1, 'int')).toThrow('out of bounds');
-    expect(() => decodePushdataValue(data, -1, 'int')).toThrow('out of bounds');
+    expect(() => decodePushdataValue(data, 1, 'bigint')).toThrow('out of bounds');
+    expect(() => decodePushdataValue(data, -1, 'bigint')).toThrow('out of bounds');
   });
 
   it('should throw on truncated pubkey data', () => {
@@ -274,24 +274,24 @@ describe('decodePushdataValue bounds checking', () => {
   it('should throw on truncated OP_PUSHDATA1', () => {
     // OP_PUSHDATA1 with length byte saying 10, but only 3 bytes of data
     const data = new Uint8Array([0x4c, 10, 0x01, 0x02, 0x03]);
-    expect(() => decodePushdataValue(data, 0, 'int')).toThrow('unexpected end of data');
+    expect(() => decodePushdataValue(data, 0, 'bigint')).toThrow('unexpected end of data');
   });
 
   it('should throw on truncated OP_PUSHDATA2', () => {
     // OP_PUSHDATA2 with length 256, but no data
     const data = new Uint8Array([0x4d, 0x00, 0x01]);
-    expect(() => decodePushdataValue(data, 0, 'int')).toThrow('unexpected end of data');
+    expect(() => decodePushdataValue(data, 0, 'bigint')).toThrow('unexpected end of data');
   });
 
   it('should throw on truncated standard pushdata', () => {
     // Standard pushdata: length 5, but only 2 bytes of data
     const data = new Uint8Array([0x05, 0x01, 0x02]);
-    expect(() => decodePushdataValue(data, 0, 'int')).toThrow('unexpected end of data');
+    expect(() => decodePushdataValue(data, 0, 'bigint')).toThrow('unexpected end of data');
   });
 
   it('should succeed on valid data', () => {
-    const encoded = encodePushdataValue(42n, 'int');
-    expect(() => decodePushdataValue(encoded, 0, 'int')).not.toThrow();
+    const encoded = encodePushdataValue(42n, 'bigint');
+    expect(() => decodePushdataValue(encoded, 0, 'bigint')).not.toThrow();
   });
 });
 
@@ -493,8 +493,8 @@ describe('buildSatoshiContainerCovenantScript', () => {
 
 describe('nested struct encode/decode roundtrip', () => {
   const structs: readonly StructDefinitionInfo[] = [
-    { name: 'Inner', fields: [{ name: 'x', type: 'int' }, { name: 'y', type: 'int' }] },
-    { name: 'Outer', fields: [{ name: 'inner', type: 'Inner' }, { name: 'z', type: 'int' }] },
+    { name: 'Inner', fields: [{ name: 'x', type: 'bigint' }, { name: 'y', type: 'bigint' }] },
+    { name: 'Outer', fields: [{ name: 'inner', type: 'Inner' }, { name: 'z', type: 'bigint' }] },
   ];
 
   it('should encode and decode a flat struct', () => {
@@ -541,8 +541,8 @@ describe('nested struct encode/decode roundtrip', () => {
 
 describe('nested struct getDefaultStateValue', () => {
   const structs: readonly StructDefinitionInfo[] = [
-    { name: 'Inner', fields: [{ name: 'x', type: 'int' }, { name: 'y', type: 'int' }] },
-    { name: 'Outer', fields: [{ name: 'inner', type: 'Inner' }, { name: 'z', type: 'int' }] },
+    { name: 'Inner', fields: [{ name: 'x', type: 'bigint' }, { name: 'y', type: 'bigint' }] },
+    { name: 'Outer', fields: [{ name: 'inner', type: 'Inner' }, { name: 'z', type: 'bigint' }] },
   ];
 
   it('should return nested default for flat struct', () => {
@@ -558,8 +558,8 @@ describe('nested struct getDefaultStateValue', () => {
 
 describe('nested struct getMaxPushdataEncodedSize', () => {
   const structs: readonly StructDefinitionInfo[] = [
-    { name: 'Inner', fields: [{ name: 'x', type: 'int' }, { name: 'y', type: 'int' }] },
-    { name: 'Outer', fields: [{ name: 'inner', type: 'Inner' }, { name: 'z', type: 'int' }] },
+    { name: 'Inner', fields: [{ name: 'x', type: 'bigint' }, { name: 'y', type: 'bigint' }] },
+    { name: 'Outer', fields: [{ name: 'inner', type: 'Inner' }, { name: 'z', type: 'bigint' }] },
   ];
 
   it('should compute size for flat struct', () => {
@@ -575,8 +575,8 @@ describe('nested struct getMaxPushdataEncodedSize', () => {
 
 describe('nested struct state commitment roundtrip', () => {
   const structs: readonly StructDefinitionInfo[] = [
-    { name: 'Inner', fields: [{ name: 'x', type: 'int' }, { name: 'y', type: 'int' }] },
-    { name: 'Outer', fields: [{ name: 'inner', type: 'Inner' }, { name: 'z', type: 'int' }] },
+    { name: 'Inner', fields: [{ name: 'x', type: 'bigint' }, { name: 'y', type: 'bigint' }] },
+    { name: 'Outer', fields: [{ name: 'inner', type: 'Inner' }, { name: 'z', type: 'bigint' }] },
   ];
 
   const layout: StateLayout = {
@@ -604,7 +604,7 @@ describe('nested struct state commitment roundtrip', () => {
   it('should handle mixed nested struct and primitive state variables', () => {
     const mixedLayout: StateLayout = {
       variables: [
-        { name: 'count', type: 'int', nftIndex: 0, fieldIndex: 0 },
+        { name: 'count', type: 'bigint', nftIndex: 0, fieldIndex: 0 },
         { name: 'data', type: 'Outer', nftIndex: 1, fieldIndex: 0 },
       ],
       dataNftCount: 2,

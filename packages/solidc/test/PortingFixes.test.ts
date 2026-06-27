@@ -1271,4 +1271,15 @@ describe('const array dimensions T[N] (Solidity parity)', () => {
     expect(() => c('contract C() { int constant Z = 0; int[Z] xs; function f() { require(true); } }'))
       .toThrow(/positive integer/i);
   });
+
+  it('compiles byte-identically to the equivalent literal dimension (no new runtime surface)', () => {
+    // A const dim resolves to the same ArrayType as the literal, so bytecode + state layout converge - the
+    // feature is parse-time only and its runtime is covered by existing fixed-array e2e tests.
+    const withConst = compileString('contract C() { int constant N = 3; int[N] xs;'
+      + ' function g(int i, int v) { this.xs[i] = v; } }');
+    const withLiteral = compileString('contract C() { int[3] xs;'
+      + ' function g(int i, int v) { this.xs[i] = v; } }');
+    expect(withConst.bytecode).toBe(withLiteral.bytecode);
+    expect(withConst.stateLayout).toEqual(withLiteral.stateLayout);
+  });
 });

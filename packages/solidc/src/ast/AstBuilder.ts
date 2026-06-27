@@ -1197,7 +1197,9 @@ export default class AstBuilder
       // Parenthesised form: a declaration `type name`, a bare `name` (existing lvalue), or an empty slot.
       elements = slots.map((slot) => {
         const tn = slot.typeName();
-        if (tn) return { name: slot.Identifier()!.getText(), type: this.resolveType(tn.getText()) };
+        // Unknown (contract/interface) type name -> keep it on the address handle, so a tuple-destructured
+        // interface var (`(IERC20 a, ..) = ..`) routes `a.method(..)` to an external call (as locals/params do).
+        if (tn) return { name: slot.Identifier()!.getText(), type: this.resolveType(tn.getText()) ?? new AddressType(false, tn.getText()) };
         const id = slot.Identifier();
         if (id) return { name: id.getText(), existing: true };
         return { skip: true };
@@ -1206,7 +1208,10 @@ export default class AstBuilder
       // Unparenthesised declaration form: type a, type b = expr;
       const names = ctx.Identifier_list();
       const types = ctx.typeName_list();
-      elements = names.map((name, i) => ({ name: name.getText(), type: this.resolveType(types[i].getText()) }));
+      elements = names.map((name, i) => ({
+        name: name.getText(),
+        type: this.resolveType(types[i].getText()) ?? new AddressType(false, types[i].getText()),
+      }));
     }
     const parenthesised = ctx.getText().startsWith('(');
     // `(a, b) = (e1, e2)` parses N RHS expressions; the other forms parse one tuple-valued expression.

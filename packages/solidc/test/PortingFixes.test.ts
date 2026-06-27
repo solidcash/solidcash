@@ -1496,3 +1496,23 @@ describe('using for (library method-call desugar)', () => {
     expect(cc(`${lib} contract C { L.Data d; function f(uint256 v) public { L.setX(d, v); } }`)).toBe('C');
   });
 });
+
+describe('external call on a tuple-destructured / copied local interface var', () => {
+  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  const iface = 'interface IERC20 { function transferFrom(address f, address t, uint256 a) external returns (bool);'
+    + ' function balanceOf(address o) external view returns (uint256); function transfer(address t, uint256 a) external returns (bool); }';
+
+  it('routes a method call on a tuple-destructured interface var to an external call', () => {
+    expect(cc(`${iface} contract C { IERC20 token0; IERC20 token1;`
+      + ' function swap(uint256 amt) public { (IERC20 tokenIn, IERC20 tokenOut) = (token0, token1);'
+      + ' tokenIn.transferFrom(msg.sender, address(this), amt); require(true); } }')).toBe('C');
+  });
+
+  it('routes a method call on a tuple-ternary-destructured interface var (CSAMM shape)', () => {
+    expect(cc(`${iface} contract C { IERC20 token0; IERC20 token1;`
+      + ' function swap(bool isToken0, uint256 amt) public {'
+      + ' (IERC20 tokenIn, IERC20 tokenOut) = isToken0 ? (token0, token1) : (token1, token0);'
+      + ' tokenIn.transferFrom(msg.sender, address(this), amt);'
+      + ' uint256 x = tokenIn.balanceOf(address(this)); tokenOut.transfer(msg.sender, x); require(true); } }')).toBe('C');
+  });
+});

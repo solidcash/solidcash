@@ -113,4 +113,21 @@ describe('delegate libraries lower to a delegate contract (3b step 2)', () => {
     const add = ast.freeFunctions.find((f) => f.name.endsWith('.add'))!;
     expect(add.modifiers).not.toContain('delegate');
   });
+
+  // 3b `L.f()` sugar, pieces 2-3: a consumer that imports a state-touching library and calls `L.f()` has it
+  // desugared to a delegatecall, with a synthesized library-address constructor arg.
+  it('desugars L.f() to a delegatecall + synthesizes the library-address ctor arg', () => {
+    const COUNTER = 'library Counter { bigint count; function increment() public { this.count = this.count + 1; } }';
+    const resolver = (p: string): { source: string; id: string } | undefined =>
+      (p.includes('counter') ? { source: COUNTER, id: 'counter' } : undefined);
+    const consumer = 'import { Counter } from "./counter.scash"; '
+      + 'contract C() { bigint count; function bump() { Counter.increment(); } }';
+    const art = compileString(consumer, { importResolver: resolver });
+
+    expect(art.constructorInputs.map((i) => i.name)).toContain('__libAddr_Counter');
+    const bump = art.abi.find((f) => f.name === 'bump')!;
+    expect(bump.lowLevelCalls).toEqual([{ callMode: 'delegatecall' }]);
+    // (the delegate's selector/args are supplied by the SDK at spend time, not baked in the consumer script;
+    // the SDK auto-wire + e2e validation is the next piece.)
+  });
 });

@@ -17,6 +17,7 @@ import InjectLocktimeGuardTraversal from './semantic/InjectLocktimeGuardTraversa
 import EarlyReturnTransformation from './semantic/EarlyReturnTransformation.js';
 import NamedReturnTransformation from './semantic/NamedReturnTransformation.js';
 import SynthesizeExternalAddressLocals from './semantic/SynthesizeExternalAddressLocals.js';
+import SynthesizeLibraryDelegateCalls from './semantic/SynthesizeLibraryDelegateCalls.js';
 import InlineExternalCallHelpers from './semantic/InlineExternalCallHelpers.js';
 import InlineStoragePointerCalls from './semantic/InlineStoragePointerCalls.js';
 import CacheDynamicArrayInLoop from './semantic/CacheDynamicArrayInLoop.js';
@@ -107,6 +108,9 @@ export function compileString(code: string, compilerOptions: CompileOptions = {}
   // Interface-typed state vars used as external-call targets -> synthesized address locals (reuses the
   // local-interface-var dispatch).
   ast = ast.accept(new SynthesizeExternalAddressLocals()) as Ast;
+  // `L.f()` calls to a state-touching (delegate) library -> a delegatecall against the caller's state (with a
+  // synthesized library-address constructor arg). See docs/library-contracts.md (3b sugar).
+  ast = ast.accept(new SynthesizeLibraryDelegateCalls()) as Ast;
   // Oracle-backed block.* reads -> injected uint32 state-var registers + desugared state reads.
   const blockOracle = new SynthesizeBlockOracle(mergedCompilerOptions.solidityImportCompat);
   ast = ast.accept(blockOracle) as Ast;

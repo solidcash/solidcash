@@ -296,7 +296,17 @@ return); pure value-returning helpers use the precompile path.
    Solidity has no `delegate` keyword (public library functions are delegatecalled implicitly), so ported
    source needs none. This reuses `_proxyMasterIndex` + `emitDelegateSelfPreservation` verbatim: a delegate
    library compiles BYTE-IDENTICAL to the hand-written `public delegate` contract (LibraryContracts.test.ts).
-   The `storage self` surface sugar over this state-vars layout is deferred (it would desugar to the same).
+
+   **On `storage self` (EVM parity):** Solidity's `storage self` library pattern is ALREADY supported - via
+   `using for` over an explicit struct instance: `library L { struct Data { uint x; } function getX(L.Data
+   storage d) internal ... } ... using L for L.Data; L.Data d; d.getX()` desugars to `L.getX(d)` (the existing
+   storage-pointer / inline-helper path; PortingFixes.test.ts "using for"). That matches Solidity's semantics
+   exactly: `self` is ONE of possibly many struct instances in the caller's storage. A delegate library, by
+   contrast, operates on the caller's WHOLE single state (one master NFT), which the state-vars form above
+   expresses directly. A separate "`storage self` => delegate whole-state" desugar was prototyped and dropped:
+   it collides with the `using for` path (same syntax, incompatible single-vs-multi-instance semantics). So the
+   two map cleanly onto the two existing forms - `using for` + `storage self` (inline, multi-instance) and the
+   state-vars delegate library (deployed, whole-state) - and no new syntax was added.
 3. **Consumer-side call**: the WHOLE-SPEND form already WORKS by reuse - a consumer delegatecalls the library
    via the existing `addr.delegatecall(input)` codegen + SDK `withDelegatecall`, and the library's function runs
    against the consumer's state (PROVEN e2e on mocknet: `test/e2e/LibraryDelegate.test.ts`, a state-touching

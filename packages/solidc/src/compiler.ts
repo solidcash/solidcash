@@ -1,6 +1,6 @@
 import { CharStream, CommonTokenStream } from 'antlr4';
 import { binToHex } from '@bitauth/libauth';
-import { Artifact, BytesType, CompilerOptions, computeBytecodeFingerprintWithConstructorArgs, generateSourceMap, optimiseBytecode, optimiseBytecodeOld, scriptToAsm, scriptToBytecode, sourceMapToLocationData } from '@solidcash/utils';
+import { Artifact, ArrayType, AddressType, BytesType, CompilerOptions, computeBytecodeFingerprintWithConstructorArgs, generateSourceMap, optimiseBytecode, optimiseBytecodeOld, scriptToAsm, scriptToBytecode, sourceMapToLocationData, StructType, Type } from '@solidcash/utils';
 import { generateArtifact } from './artifact/Artifact.js';
 import {
   Ast, ContractNode, ContractReferenceNode, FunctionModifier, InstantiationNode, ParameterNode,
@@ -62,6 +62,10 @@ export function compileString(code: string, compilerOptions: CompileOptions = {}
       mergedCompilerOptions.importResolver, mergedCompilerOptions.solidityImportCompat,
     );
     ast = resolver.resolve(ast, mergedCompilerOptions.rootFileId ?? 'main');
+    // Types are resolved during parse, before imports merge, so an imported struct used as an array element
+    // (`Todo[]` where `Todo` is imported) parses to a named AddressType placeholder. Now that imported struct
+    // definitions are merged, re-resolve those placeholders to the real StructType.
+    reresolveImportedStructTypes(ast);
   }
 
   // A library file compiled directly: if its primary library has explicitly public/external functions, lower
@@ -387,4 +391,27 @@ export function parseCode(
   const ast = new AstBuilder(parseTree, solidityImportCompat, chunkedArrays).build() as Ast;
 
   return ast;
+}
+
+// Re-resolve array element types that parsed to a named AddressType placeholder (an imported struct not yet
+// merged at parse time) to the real StructType, now that imports are merged. Scoped to the main contract's
+// state variables + collections (the array-bearing declarations); a non-struct placeholder (interface array
+// or a typo) is left untouched and validated downstream as before.
+function reresolveImportedStructTypes(ast: Ast): void {
+  const contract = ast.contract;
+  if (!contract) return;
+  const structMap = new Map<string, StructType>();
+  for (const sd of ast.structDefinitions ?? []) structMap.set(sd.name, new StructType(sd.name, sd.fields));
+  for (const sd of contract.structDefinitions) structMap.set(sd.name, new StructType(sd.name, sd.fields));
+  if (structMap.size === 0) return;
+  const fix = (t: Type): Type => {
+    if (t instanceof ArrayType) { t.elementType = fix(t.elementType); return t; }
+    if (t instanceof AddressType && t.interfaceName && structMap.has(t.interfaceName)) {
+      return structMap.get(t.interfaceName)!;
+    }
+    return t;
+  };
+  for (const sv of contract.stateVariables) sv.type = fix(sv.type);
+  // CollectionNode.type is ArrayType | MappingType; fix() mutates an array's element in place, so just call it.
+  for (const col of contract.collections) if (col.type instanceof ArrayType) fix(col.type);
 }

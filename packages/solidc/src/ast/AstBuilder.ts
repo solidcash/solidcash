@@ -2510,7 +2510,11 @@ export default class AstBuilder
     if (ctx.arrayType()) {
       elementType = this.buildArrayType(ctx.arrayType());
     } else {
-      elementType = this.resolveType(ctx.typeName().getText());
+      // Mirror the scalar path (visitStateVariableDeclaration): an unresolved name (e.g. an imported struct
+      // not yet merged, or an interface) becomes a named AddressType placeholder rather than `undefined`, so
+      // routing sees a chunk-packable element and a post-import pass (reresolveImportedTypes) can resolve it.
+      const elemName = ctx.typeName().getText();
+      elementType = this.resolveType(elemName) ?? new AddressType(false, elemName);
     }
     const bound = this.resolveArrayBound(ctx);
     return new ArrayType(elementType, bound);

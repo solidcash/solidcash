@@ -5275,12 +5275,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // store only the tight elements (count recoverable as A$len/width); for a variable-width element type
     // keep the count prefix (it cannot be recovered). The epilogue's chunk write loop handles the rest.
     if (sv.isDynamic) {
-      if (this.pendingDynamicWrites.has(sv.name)) {
-        throw new Error(
-          `Dynamic-storage write to '${sv.name}' is only supported once per function (phase 1). `
-          + 'See docs/dynamic-storage.md.',
-        );
-      }
       this.emitRegisterDynamicWrite(sv, key, locationData, isFixedWidthType((sv.type as ArrayType).elementType));
       return;
     }
@@ -5312,6 +5306,23 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     loc: SingleLocationData,
     stripCount: boolean,
   ): void {
+    // W3 coalescing: if a prior write to this var is already pending (arr.push();arr.push(), idx-write +
+    // pop, or a re-assignment), the new value on top supersedes it - and already incorporates the prior one
+    // via read-after-write (emitReadDynamicScalar). Drop the prior pending value blob and its A$len
+    // state-write (both below the new value), then re-register below as the sole pending write for this var.
+    if (this.pendingDynamicWrites.has(sv.name)) {
+      const prevValue = this.pendingDynamicWrites.get(sv.name)!.valueStackName;
+      for (const tmp of [`__internal__state_write_${sv.name}`, prevValue]) {
+        const idx = this.getStackIndex(tmp);
+        this.emit(encodeInt(BigInt(idx)), loc);
+        this.emit(Op.OP_ROLL, loc);
+        this.emit(Op.OP_DROP, loc);
+        this.removeFromStack(idx);
+      }
+      this.pendingDynamicWrites.delete(sv.name);
+      this.pendingStateWrites.delete(key);
+      this.preAllocatedStateWrites.delete(key);
+    }
     if (stripCount) {
       this.emitPushdataDecode(PrimitiveType.BIGINT, loc); // [count, elements]
       this.emit(Op.OP_NIP, loc); // [elements]
@@ -7488,12 +7499,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Dynamic-storage write (string / unbounded bytes): the data-NFT field holds uint32 A$len; the value
     // is split into chunk UTXOs verified in the epilogue. Keep the raw value on the stack until then.
     if (sv.isDynamic) {
-      if (this.preAllocatedStateWrites.has(key) || this.pendingDynamicWrites.has(sv.name)) {
-        throw new Error(
-          `Dynamic-storage write to '${sv.name}' is only supported as a top-level statement, once per `
-          + 'function (phase 1). See docs/dynamic-storage.md.',
-        );
-      }
       // 1. Evaluate expression -> raw value bytes on top, then register the chunk write. A chunk-packed
       // array's on-stack form is `pushdata(count)++elems`; strip the count only for a fixed-width element
       // type (recoverable as A$len/width) - variable-width keeps it. Strings/bytes (non-array) never strip.

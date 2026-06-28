@@ -189,6 +189,40 @@ describe('chunk-packed array: element ops (read-modify-write)', () => {
   });
 });
 
+// W3: multiple writes to the SAME dynamic var in ONE function coalesce into a single final-value write -
+// each op after the first reads the prior op's pending value via read-after-write. push;push, push x3
+// (across a chunk-count boundary), idx-write + pop. Unblocks Structs.sol (push x3) + ArrayReplaceFromEnd.sol.
+const MULTIW = `pragma solidcash >=0.8.0;
+contract C() {
+  uint256[] nums;
+  function pushTwo(uint256 a, uint256 b, pubkey pk, sig s) { require(checkSig(s, pk)); this.nums.push(a); this.nums.push(b); }
+  function pushThree(uint256 a, uint256 b, uint256 c, pubkey pk, sig s) {
+    require(checkSig(s, pk)); this.nums.push(a); this.nums.push(b); this.nums.push(c);
+  }
+  function setAndPop(int i, uint256 v, pubkey pk, sig s) { require(checkSig(s, pk)); this.nums[i] = v; this.nums.pop(); }
+}`;
+
+describe('chunk-packed array: multiple writes per function (W3 coalescing)', () => {
+  const provider = createTestProvider();
+  const sig = (): SignatureTemplate => new SignatureTemplate(alicePriv);
+
+  it('coalesces push;push, push x3 (across a chunk boundary), and idx-write + pop', async () => {
+    const artifact = compileString(MULTIW, { chunkedArrays: true });
+    const contract = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, contract, artifact.stateLayout!, { nums: [] }, { saltContract: true },
+    );
+    const sc = StatefulContract.withCategory(contract, categoryId);
+
+    await sc.pushTwo(10n, 20n, alicePub, sig()).send();
+    expect((await sc.getState()).nums).toEqual([10n, 20n]);
+    await sc.pushThree(30n, 40n, 50n, alicePub, sig()).send(); // 2 -> 5 elems, crosses 1->2 chunk boundary
+    expect((await sc.getState()).nums).toEqual([10n, 20n, 30n, 40n, 50n]);
+    await sc.setAndPop(0n, 99n, alicePub, sig()).send(); // nums[0]=99 then pop last -> [99,20,30,40]
+    expect((await sc.getState()).nums).toEqual([99n, 20n, 30n, 40n]);
+  });
+});
+
 // for..of (#17): desugars to an index loop over a once-cached local, so it works on chunk-packed (and
 // packed) arrays, which aren't collections. The loop var may go unused (e.g. counting), like a collection.
 const ITER = `pragma solidcash >=0.8.0;

@@ -208,8 +208,12 @@ chunks verify at `blockSize + sum(prior written-var counts) + i` in state-var DE
   ~9089). The hard part: read-only chunks are PRESERVED as outputs at their input index, colliding with new
   write-chunk outputs at `blockSize`; needs the write OUTPUT base to clear the preserved-read outputs AND
   the SDK to emit iteration-entry (preserved read) outputs before chunk outputs. See Phase 2 scope.
-- **W3 (same var written twice, e.g. `arr.push();arr.push()` or idx-write + `pop()`) - still rejected**
-  (`visitStateAssign` ~7491). Fix = COALESCE to one final-value write (layout-neutral). See Phase 2 scope.
+- **W3 (same var written twice, e.g. `arr.push();arr.push()`, idx-write + `pop()`, or re-assignment) -
+  DONE** (this work). COALESCED to one final-value write: `emitRegisterDynamicWrite`, when the var is
+  already pending, drops the prior pending value + A$len and re-registers the new value (which already
+  incorporates the prior via read-after-write). Layout-neutral (one write var). Guards at
+  `emitWriteStateArrayBlob` + `visitStateAssign` removed. e2e: push;push, push x3 across a chunk boundary,
+  idx-write + pop. Unblocks Structs.sol + ArrayReplaceFromEnd.sol.
 - **W4 (dynamic op + collection iteration) - still rejected** (~9097/~9281). Same trailing-space
   unification as W2 generalized to iterations.
 

@@ -126,4 +126,15 @@ describe('dynamic-storage phase-1 coexistence guards', () => {
       + ' function f(){ require(bytes(this.a).length + bytes(this.b).length + bytes(this.c).length >= 0); } }',
     )).not.toThrow();
   });
+
+  // W3 (lifted): multiple writes to the SAME dynamic var in one function coalesce to one final-value write.
+  it('compiles same-var multiple writes: push;push, idx-write + pop, scalar reassign (W3)', () => {
+    const ok = (src: string): void => expect(() => compileString(src)).not.toThrow();
+    ok('pragma solidcash >=0.8.0; contract C(){ uint256[] a;'
+      + ' function f(uint256 x, uint256 y, pubkey pk, sig s){ require(checkSig(s,pk)); a.push(x); a.push(y); } }');
+    ok('pragma solidcash >=0.8.0; contract C(){ uint256[] a;'
+      + ' function f(int i, uint256 v, pubkey pk, sig s){ require(checkSig(s,pk)); a[i]=v; a.pop(); } }');
+    ok('pragma solidcash >=0.8.0; contract C(){ string s;'
+      + ' function f(string x, string y, pubkey pk, sig sg){ require(checkSig(sg,pk)); s=x; s=y; } }');
+  });
 });

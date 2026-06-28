@@ -2902,6 +2902,21 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_ADD, locationData);
   }
 
+  /**
+   * Add the total collection-iteration entry count to the trailing-offset partial already on top (W4).
+   * Collection-iter entries occupy [blockSize, blockSize+sum(counts)) in the trailing input/output space,
+   * BEFORE dynamic-storage read/write chunks - so a dynamic read/write loop adds this sum to its base.
+   * No-op when the function has no collection iterations. Assumes one untracked offset partial on top.
+   */
+  private emitAddCollectionIterCounts(locationData: SingleLocationData): void {
+    const iterCount = this.currentFunction.collectionIterations?.length ?? 0;
+    for (let j = 0; j < iterCount; j++) {
+      this.emit(encodeInt(BigInt(this.getStackIndex(`__internal__collectionIterCount_${j}`) + 1)), locationData);
+      this.emit(Op.OP_PICK, locationData);
+      this.emit(Op.OP_ADD, locationData);
+    }
+  }
+
   visitAssemblyStatement(node: AssemblyStatementNode): Node {
     if (node.assemblyBody.trim().length === 0) return node;
 
@@ -9096,12 +9111,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // not a preserved output, so it is excluded here - matching the SDK's iterationEntryInputs.)
     const writtenNames = node.dynamicWrites ?? [];
     const foreignReads = (node.dynamicReads ?? []).filter((r) => !writtenNames.includes(r));
-    if ((node.collectionIterations?.length ?? 0) > 0) {
-      throw new Error(
-        'A dynamic-storage write and a collection iteration in the same function are not yet supported '
-        + '(phase 1). Use separate functions. See docs/dynamic-storage.md.',
-      );
-    }
     const fReadTempNames: string[] = [];
     for (let k = 0; k < foreignReads.length; k++) {
       const rsv = this.stateVariables.find((v) => v.name === foreignReads[k])!;
@@ -9215,10 +9224,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.popFromStack(); // [..., (dyn_expected) = full expected]
 
       // --- verify chunk output i (untracked working values; expected is already built & tracked) ---
-      // outIdx = masterInputIndex + blockSize + sum(foreign-read counts) + sum(prior written-var counts) + i
+      // outIdx = masterInputIndex + blockSize + sum(collection-iter counts) + sum(foreign-read counts)
+      //          + sum(prior written-var counts) + i
       this.emitMasterInputIndex(loc);
       this.emit(encodeInt(BigInt(blockSize)), loc);
       this.emit(Op.OP_ADD, loc);
+      this.emitAddCollectionIterCounts(loc); // collection-iter entry outputs precede chunk outputs (W4)
       for (const ft of fReadTempNames) {
         this.emit(encodeInt(BigInt(this.getStackIndex(ft) + 1)), loc); // +1: running outIdx-partial untracked
         this.emit(Op.OP_PICK, loc);
@@ -9334,15 +9345,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       return;
     }
     const reads = (this.currentFunction.dynamicReads ??= []);
-    if (!reads.includes(sv.name)) {
-      if ((this.currentFunction.collectionIterations?.length ?? 0) > 0) {
-        throw new Error(
-          `Reading persisted dynamic-storage '${sv.name}' alongside a collection iteration is not yet `
-          + 'supported (phase 1). Read it in a separate function. See docs/dynamic-storage.md.',
-        );
-      }
-      reads.push(sv.name);
-    }
+    if (!reads.includes(sv.name)) reads.push(sv.name);
     this.emitDynamicReadLoop(sv, loc);
   }
 
@@ -9546,10 +9549,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const stackBeforeBody = [...this.stack];
     const stackDepth = this.stack.length;
 
-    // inputIdx = masterInputIndex + blockSize + sum(prior read-var chunk counts) + i
+    // inputIdx = masterInputIndex + blockSize + sum(collection-iter counts) + sum(prior read counts) + i
     this.emitMasterInputIndex(loc);
     this.emit(encodeInt(BigInt(blockSize)), loc);
     this.emit(Op.OP_ADD, loc);
+    this.emitAddCollectionIterCounts(loc); // collection-iter entries precede read chunks (W4)
     for (const pt of priorTempNames) {
       this.emit(encodeInt(BigInt(this.getStackIndex(pt) + 1)), loc); // +1: running inputIdx-partial untracked
       this.emit(Op.OP_PICK, loc);

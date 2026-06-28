@@ -216,10 +216,15 @@ chunks verify at `blockSize + sum(prior written-var counts) + i` in state-var DE
   incorporates the prior via read-after-write). Layout-neutral (one write var). Guards at
   `emitWriteStateArrayBlob` + `visitStateAssign` removed. e2e: push;push, push x3 across a chunk boundary,
   idx-write + pop. Unblocks Structs.sol + ArrayReplaceFromEnd.sol.
-- **W4 (dynamic op + collection iteration) - still rejected** (~9097/~9281). Same trailing-space
-  unification as W2 generalized to iterations.
+- **W4 (dynamic op + collection iteration) - DONE** (this work). Collection-iter entries occupy
+  `[blockSize, blockSize+count)` in the trailing input/output space, before dynamic read/write chunks. The
+  read loop and write loop add the total collection-iter count (`emitAddCollectionIterCounts` PICKs each
+  `__internal__collectionIterCount_j`) to their base; the SDK already appends collection-iter entries then
+  read chunks to `iterationEntryInputs` and `getChunkOutputBase` counts both. Guards removed. e2e:
+  write-then-read a 2-chunk dynamic var while iterating a 2-entry mapping.
 
-Still allowed beyond W1/W5: a single read, read-after-write (same var), reading the same var twice.
+All coexistence limits (W1-W5) are now lifted. Still by design: chunk reads/writes are co-spent trailing
+UTXOs, so a function's dynamic ops scale its input/output count.
 
 ## Phasing
 1. `string` / `bytes` (the motivating case): read (loop-concat), write (loop-split + mint/destroy +

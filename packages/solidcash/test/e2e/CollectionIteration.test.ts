@@ -281,3 +281,70 @@ describe('Collection Iteration', () => {
     });
   });
 });
+
+// W4: a dynamic-storage read/write coexisting with a collection iteration. Collection-iter entries occupy
+// [blockSize, blockSize+count) in the trailing input/output space; a dynamic read/write loop adds that count
+// to its offset so its chunks land after the preserved entry outputs.
+const W4_CONTRACT = `
+pragma solidcash >=0.8.0;
+contract C() {
+  bigint total;
+  string log;
+  mapping(bytes20 => bigint) balances;
+
+  function sumAndLog(string msg) {
+    bigint sum = 0;
+    for (bigint value of this.balances) { sum = sum + value; }
+    this.log = msg;
+    this.total = sum;
+  }
+
+  function verifyLogSum(string expected, bigint expectedTotal) {
+    require(this.log == expected);
+    bigint sum = 0;
+    for (bigint value of this.balances) { sum = sum + value; }
+    require(sum == expectedTotal);
+  }
+}
+`;
+
+describe('Collection iteration + dynamic storage (W4)', () => {
+  const artifact = compileString(W4_CONTRACT);
+  const stateLayout = artifact.stateLayout!;
+
+  it('writes then reads a multi-chunk dynamic var while iterating a collection', async () => {
+    const provider = createTestProvider();
+    const contract = new Contract(artifact, [], { provider });
+    const { categoryId } = await (provider as any).addTokenUtxosDynamic((cat: string) => {
+      const salted = contract.withCategory(hexToBin(cat));
+      const commitments = buildInitialStateCommitments(stateLayout, { total: 0n, log: '' });
+      const entryAddress = getEntryNftAddress(salted, cat, 'balances');
+      return [
+        { address: salted.tokenAddress, satoshis: 10000n,
+          token: { nft: { capability: 'minting', commitment: '' } } },
+        { address: getDataNftAddress(salted, cat), satoshis: 10000n,
+          token: { nft: { capability: 'mutable', commitment: commitments[0] } } },
+        { address: entryAddress, satoshis: 10000n,
+          token: { nft: { capability: 'mutable', commitment: buildEntryCommitment(alicePkh, 'bytes20', 100n, 'bigint') } } },
+        { address: entryAddress, satoshis: 10000n,
+          token: { nft: { capability: 'mutable', commitment: buildEntryCommitment(bobPkh, 'bytes20', 200n, 'bigint') } } },
+      ];
+    });
+    const sc = StatefulContract.withCategory(contract, categoryId);
+
+    // write + iteration: sum the 2 entries (300) and write a 2-chunk log in one function (the chunks land
+    // after the 2 preserved entry outputs).
+    const bigLog = 'W'.repeat(120) + '4'.repeat(10); // 130 bytes -> 2 chunks
+    await sc.sumAndLog(bigLog).send();
+    let state = await sc.getState();
+    expect(state.total).toBe(300n);
+    expect(state.log).toBe(bigLog);
+
+    // read + iteration: read the dynamic log AND iterate the collection in one function (log's chunks are
+    // co-spent read-only after the entry inputs).
+    await sc.verifyLogSum(bigLog, 300n).send();
+    state = await sc.getState();
+    expect(state.log).toBe(bigLog); // preserved (read-only)
+    expect(state.total).toBe(300n);
+  });
+});

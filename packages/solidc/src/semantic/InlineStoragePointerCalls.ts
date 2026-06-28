@@ -72,8 +72,10 @@ export default class InlineStoragePointerCalls extends AstTraversal {
     }
     if (this.inlinedFns.size === 0) return node;
 
-    for (const fn of node.functions) {
-      if (fn.body) fn.body.statements = this.inlineStatements(fn.body.statements ?? [], [fn.name]);
+    // Inline calls in every function body AND the constructor/fallback/receive - a constructor calling an
+    // inherited `_mint`-style entry-reading helper is the common ERC20 pattern, and the helper is dropped below.
+    for (const fn of [...node.functions, node.constructorDef, node.fallbackDef, node.receiveDef]) {
+      if (fn?.body) fn.body.statements = this.inlineStatements(fn.body.statements ?? [], [fn.name]);
     }
     // A storage parameter has no value representation, and a subroutine cannot read a state entry (the
     // entry-access input slots live only in an entry-point's block layout); so the original cannot stand

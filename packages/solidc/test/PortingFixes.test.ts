@@ -1537,6 +1537,18 @@ describe('internal helpers that read a state entry (inlined, not subroutined)', 
       + ' function _set(address k, uint256 v) private { bal[k] = v; }'
       + ' function f(address k, uint256 v) external { _set(k, v); require(true); } }')).toBe('C');
   });
+
+  it('inlines an entry-reading helper called from the CONSTRUCTOR (the _mint-in-ctor pattern)', () => {
+    expect(cc('pragma solidity ^0.8.0; contract C { mapping(address => uint256) bal; uint256 total;'
+      + ' function _mint(address to, uint256 amt) private { bal[to] += amt; total += amt; }'
+      + ' constructor() { _mint(msg.sender, 100); } function f() external { require(true); } }')).toBe('C');
+  });
+
+  it('inlines an inherited entry-reading helper called from a child constructor', () => {
+    expect(cc('pragma solidity ^0.8.0; contract Base { mapping(address => uint256) bal;'
+      + ' constructor(uint256 x) {} function _mint(address to, uint256 amt) internal { bal[to] += amt; } }'
+      + ' contract C is Base { constructor() Base(1) { _mint(msg.sender, 100); } function f() external { require(true); } }')).toBe('C');
+  });
 });
 
 describe('public state vars satisfy interface getter compliance (ERC20 pattern)', () => {

@@ -246,16 +246,19 @@ library) is a harder generalization, deferred.
    `StateLayout` matches the impl/library's at each impl field (same slot `nftIndex:fieldIndex`, name, type) and
    throws on mismatch (`assertDelegateLayoutCompatible`, StatefulContract.ts), so a wrong-layout delegatecall is
    caught at build time - for BOTH libraries AND the existing proxy/impl (which previously had no check). Test:
-   `test/e2e/LibraryDelegate.test.ts` (mismatch rejected). NOTE: this is a build-time GUARD, not on-chain
-   soundness - the SDK is untrusted; a fully sound version is a COMPILE-TIME check at a static `L.f()` call site
-   (needs the sugar below, where the library is statically known, so both layouts are in one compilation).
+   `test/e2e/LibraryDelegate.test.ts` (mismatch rejected). The build-time GUARD is now complemented by a
+   **COMPILE-TIME check [DONE]** at the static `L.f()` call site: `ImportResolver` conveys the imported library's
+   declared layout (`SourceFileNode.importedLibraryLayouts`) and `SynthesizeLibraryDelegateCalls.checkLayoutCompat`
+   rejects a consumer whose state layout does not lead with the library's fields (same order/name/type) -
+   untrusted-SDK-proof, since both layouts are in one compilation (LibraryContracts.test.ts).
 
-Next (ergonomics, not load-bearing - the mechanism already works via low-level delegatecall): **`L.f(this, args)`
-sugar.** A consumer that imports library `L` calls `L.f(args)`; it desugars to a delegatecall to L. Open design
-fork = how the consumer links L's address: recommended is constructor-arg linking (a synthesized `address`
-ctor param baked at deploy, EVM-link-like) over a state field or an explicit arg. The desugar reuses the
-existing delegatecall codegen + SDK; the compile-time layout-compat check rides here (L statically known).
-Then return values / pre+post logic, and (4) brand/master-gate contention.
+**`L.f()` sugar [DONE].** A consumer that imports library `L` calls `L.f()`; `SynthesizeLibraryDelegateCalls`
+desugars it to `__libAddr_L.delegatecall(<f selector>)`, with `__libAddr_L` a synthesized `address` ctor param
+(EVM-link-style: the SDK supplies L's address and co-spends it). **SDK auto-wire [DONE].** The desugar records
+`{library, functionName}` in the artifact (`AbiFunction.libraryDelegateCalls`); `StatefulContract.registerLibrary`
+registers a deployed library, and the call builder derives the `withDelegatecall` co-spend automatically - the
+caller names the library function only once (in source). Remaining: argument passing + return values (first form
+is no-arg void), and (4) brand/master-gate contention.
 2. **Library-side lowering. [DONE.]** A library may now declare state vars (the shared layout it operates on):
    the grammar gained `stateVariableDeclaration*` in `libraryDefinition` (regen) and AstBuilder carries them
    into the lowered contract. A state-touching library's public/external functions are AUTO-marked `delegate` -
@@ -266,9 +269,9 @@ Then return values / pre+post logic, and (4) brand/master-gate contention.
 3. **Consumer-side call**: the WHOLE-SPEND form already WORKS by reuse - a consumer delegatecalls the library
    via the existing `addr.delegatecall(input)` codegen + SDK `withDelegatecall`, and the library's function runs
    against the consumer's state (PROVEN e2e on mocknet: `test/e2e/LibraryDelegate.test.ts`, a state-touching
-   library written as plain Solidity increments the proxy's state). Remaining: the ergonomic `L.f(this, args)`
-   sugar (vs low-level delegatecall), plus return values / pre+post consumer logic (the deferred
-   generalizations). Steps 1 (layout-compat) and 4 (contention) harden it.
+   library written as plain Solidity increments the proxy's state). The ergonomic `L.f()` sugar + SDK auto-wire
+   are now DONE (above); remaining = argument passing / return values / pre+post consumer logic (the deferred
+   generalizations). Steps 1 (layout-compat, DONE) and 4 (contention) harden it.
 4. **Contention**: brand L with the caller's category + master-gate (see "Contention resolution").
 5. **SDK + e2e** (mocknet + regtest): co-spend/recreate the branded library, supply its address.
 

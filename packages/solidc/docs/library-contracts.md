@@ -257,8 +257,24 @@ desugars it to `__libAddr_L.delegatecall(<f selector>)`, with `__libAddr_L` a sy
 (EVM-link-style: the SDK supplies L's address and co-spends it). **SDK auto-wire [DONE].** The desugar records
 `{library, functionName}` in the artifact (`AbiFunction.libraryDelegateCalls`); `StatefulContract.registerLibrary`
 registers a deployed library, and the call builder derives the `withDelegatecall` co-spend automatically - the
-caller names the library function only once (in source). Remaining: argument passing + return values (first form
-is no-arg void), and (4) brand/master-gate contention.
+caller names the library function only once (in source).
+
+**Arguments [DONE].** A consumer forwards its own function parameters to a library call -
+`function bumpBy(bigint n) { Counter.incrementBy(n); }`. The desugar records the forwarded parameter names
+(`libraryDelegateCalls.argParams`); the SDK reads their values from the consumer call and supplies them to the
+library unlocker (the delegatecall data is not on-chain, so the SDK is the courier). Only forwarding the
+enclosing function's parameters is supported - literals, computed expressions, and state reads throw a clear
+error. The forwarded param is no longer reported "unused" (`ParameterNode.forwardedToLibrary`).
+
+**Return values - by design, via shared state (not a return channel).** A delegate library is co-spent with NO
+synchronous return on BCH (the delegatecall data is not even on-chain), so a library function cannot hand a value
+back to the caller's script. Using a library call as a value (`r = L.f(x)`) is a clear compile error. The
+delegate model instead communicates results through the SHARED STATE: the library writes a state field and the
+caller reads it from its OWN state afterward (proven by the args e2e - the library mutates `count`, the
+consumer's state reflects it). Value-returning PURE helpers (e.g. SafeMath.add) belong to the precompile path
+(external-libraries.md), which is a synchronous inline subroutine and does return a value.
+
+Remaining: (4) brand/master-gate contention.
 2. **Library-side lowering. [DONE.]** A library may now declare state vars (the shared layout it operates on):
    the grammar gained `stateVariableDeclaration*` in `libraryDefinition` (regen) and AstBuilder carries them
    into the lowered contract. A state-touching library's public/external functions are AUTO-marked `delegate` -

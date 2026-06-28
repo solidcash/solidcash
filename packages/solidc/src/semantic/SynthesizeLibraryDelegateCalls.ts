@@ -2,7 +2,7 @@ import { AddressType, computeFunctionSignature, computeFunctionSelector } from '
 import {
   SourceFileNode, ContractNode, Node, FunctionCallStatementNode, LowLevelCallStatementNode,
   IdentifierNode, HexLiteralNode, ParameterNode, FunctionModifier, StateVariableNode,
-  FunctionDefinitionNode,
+  FunctionDefinitionNode, FunctionCallNode,
 } from '../ast/AST.js';
 import AstTraversal from '../ast/AstTraversal.js';
 
@@ -68,6 +68,24 @@ export default class SynthesizeLibraryDelegateCalls extends AstTraversal {
     const result = super.visitFunctionDefinition(node);
     this.currentFn = prev;
     return result;
+  }
+
+  // A delegate library call in expression position (its return value is used) is rejected: a delegate library
+  // is co-spent with no synchronous return on BCH. Statement-form calls are rewritten in
+  // visitFunctionCallStatement and never reach here.
+  visitFunctionCall(node: FunctionCallNode): Node {
+    const name = node.identifier?.name;
+    const info = name ? this.delegateLibFns.get(name) : undefined;
+    if (info) {
+      throw new Error(
+        `Delegate library call '${name}' is used as a value, but a delegate library cannot return a value to the `
+        + 'caller (it is co-spent with no synchronous return on BCH). Have '
+        + `'${info.libName}.${info.fnName}' write its result to the shared state and read it from the caller's own `
+        + 'state afterward, or use a pure library (precompile) for value-returning helpers. '
+        + 'See docs/library-contracts.md.',
+      );
+    }
+    return super.visitFunctionCall(node);
   }
 
   visitFunctionCallStatement(node: FunctionCallStatementNode): Node {

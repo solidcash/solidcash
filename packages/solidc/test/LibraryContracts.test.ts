@@ -178,4 +178,16 @@ describe('delegate library forwarded arguments (3b)', () => {
       + 'contract C() { bigint count; function bump() { Counter.incrementBy(5); } }';
     expect(() => compileString(consumer, { importResolver: resolver })).toThrow(/forwarding the enclosing/i);
   });
+
+  // A delegate library is co-spent with no synchronous return; using its call as a value must fail clearly,
+  // pointing to the shared-state pattern (the library writes state the caller reads) or pure-library precompiles.
+  it('rejects using a delegate library call as a value (no synchronous return)', () => {
+    const retLib = 'library Counter { bigint count; '
+      + 'function getAndInc() public returns (bigint) { this.count = this.count + 1; return this.count; } }';
+    const retResolver = (p: string): { source: string; id: string } | undefined =>
+      (p.includes('counter') ? { source: retLib, id: 'counter' } : undefined);
+    const consumer = 'import { Counter } from "./counter.scash"; '
+      + 'contract C() { bigint count; function f() returns (bigint) { bigint x = Counter.getAndInc(); return x; } }';
+    expect(() => compileString(consumer, { importResolver: retResolver })).toThrow(/cannot return a value/i);
+  });
 });

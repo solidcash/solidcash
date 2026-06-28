@@ -315,8 +315,9 @@ describe('library-contracts 3b: branded library master-gate (contention)', () =>
 
   // A branded library through the L.f() auto-wire path (registerLibrary), not just the proxy/impl withDelegatecall
   // path. Both categories are pre-chosen (categoryOverride) so the consumer can link to the branded library
-  // address while the library is branded to the consumer's category - no deploy-time circularity.
-  it('works through the L.f() auto-wire path (registerLibrary)', async () => {
+  // address while the library is branded to the consumer's category - no deploy-time circularity. Mock-only:
+  // categoryOverride seeds UTXOs at a chosen category via addUtxo, which a real regtest node cannot do.
+  it.skipIf(process.env.TESTS_USE_REGTEST)('works through the L.f() auto-wire path (registerLibrary)', async () => {
     const provider = createTestProvider();
     const COUNTER = 'library Counter { bigint counter; function increment() public { this.counter = this.counter + 1; } }';
     const resolver = (p: string): { source: string; id: string } | undefined =>

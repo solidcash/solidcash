@@ -259,12 +259,14 @@ desugars it to `__libAddr_L.delegatecall(<f selector>)`, with `__libAddr_L` a sy
 registers a deployed library, and the call builder derives the `withDelegatecall` co-spend automatically - the
 caller names the library function only once (in source).
 
-**Arguments [DONE].** A consumer forwards its own function parameters to a library call -
-`function bumpBy(bigint n) { Counter.incrementBy(n); }`. The desugar records the forwarded parameter names
-(`libraryDelegateCalls.argParams`); the SDK reads their values from the consumer call and supplies them to the
-library unlocker (the delegatecall data is not on-chain, so the SDK is the courier). Only forwarding the
-enclosing function's parameters is supported - literals, computed expressions, and state reads throw a clear
-error. The forwarded param is no longer reported "unused" (`ParameterNode.forwardedToLibrary`).
+**Arguments [DONE].** A library call's args are positional: a forwarded enclosing-function parameter
+(`function bumpBy(bigint n) { Counter.incrementBy(n); }`) or a compile-time literal (`Counter.incrementBy(5)`).
+The desugar records each as a `LibraryCallArg` (`{param}` | `{literal, kind}`), encoding literals per the library
+parameter's type; the SDK resolves them (forwarded params from the consumer call, literals reconstructed by kind)
+and supplies them to the library unlocker (the delegatecall data is not on-chain, so the SDK is the courier).
+Computed expressions and state reads throw a clear error (the SDK cannot evaluate them); a literal whose kind
+does not match the parameter type is also rejected. A forwarded param is not reported "unused"
+(`ParameterNode.syntheticallyUsed`).
 
 **Return values - by design, via shared state (not a return channel).** A delegate library is co-spent with NO
 synchronous return on BCH (the delegatecall data is not even on-chain), so a library function cannot hand a value

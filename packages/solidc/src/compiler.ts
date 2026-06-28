@@ -19,6 +19,7 @@ import NamedReturnTransformation from './semantic/NamedReturnTransformation.js';
 import SynthesizeExternalAddressLocals from './semantic/SynthesizeExternalAddressLocals.js';
 import InlineExternalCallHelpers from './semantic/InlineExternalCallHelpers.js';
 import InlineStoragePointerCalls from './semantic/InlineStoragePointerCalls.js';
+import CacheDynamicArrayInLoop from './semantic/CacheDynamicArrayInLoop.js';
 import SynthesizeBlockOracle from './semantic/SynthesizeBlockOracle.js';
 import expandModifiers from './semantic/ModifierExpansionTransformation.js';
 import expandBreakContinue from './semantic/BreakContinueTransformation.js';
@@ -90,6 +91,10 @@ export function compileString(code: string, compilerOptions: CompileOptions = {}
   // Inline void calls to functions taking `storage` reference params; a storage pointer has no value
   // representation, so the callee is substituted into the caller as direct state access.
   ast = ast.accept(new InlineStoragePointerCalls()) as Ast;
+
+  // A dynamic (chunk-backed) array written inside a loop can't use the once-per-function pending-value write
+  // model; cache it in a local, mutate the local in the loop, flush back once.
+  ast = ast.accept(new CacheDynamicArrayInLoop()) as Ast;
 
   // Interface-typed state vars used as external-call targets -> synthesized address locals (reuses the
   // local-interface-var dispatch).
@@ -202,6 +207,7 @@ function compileReferencedContracts(
     singleAst = singleAst.accept(new NamedReturnTransformation(compilerOptions.solidityImportCompat)) as Ast;
     singleAst = singleAst.accept(new InlineExternalCallHelpers()) as Ast;
     singleAst = singleAst.accept(new InlineStoragePointerCalls()) as Ast;
+    singleAst = singleAst.accept(new CacheDynamicArrayInLoop()) as Ast;
     singleAst = singleAst.accept(new SynthesizeExternalAddressLocals()) as Ast;
     singleAst = singleAst.accept(new SynthesizeBlockOracle(compilerOptions.solidityImportCompat)) as Ast;
     singleAst = singleAst.accept(new SymbolTableTraversal(compilerOptions)) as Ast;

@@ -273,12 +273,18 @@ choosing coalesce vs sequence for same-var writes (recommend coalesce).
 `arr[i]`, `arr[0]`, `arr[i]=arr[j]` work. Fix the index-expression grammar rule. Needed by
 ArrayReplaceFromEnd, ArrayRemoveByShifting.
 
-### P2c - write-in-loop [hardest, builds on P2a coalescing]
-`for(...) arr[i]=arr[i+1]` then `pop()`; `push()` inside nested loops. The chunk-mutation count is
-runtime-variable. Clean lowering on top of P2a's coalescing: **whole-value read -> in-memory mutate
-(source loop runs on the on-stack array) -> whole-value write** at loop exit, reusing the existing read +
-write loops untouched. Cost: rewrites the whole array per call (fine for the small corpus arrays; bounded
-by the 10k stack-element limit). Unblocks ArrayRemoveByShifting, MerkleTree.
+### P2c - write-in-loop [DONE]
+`for(...) arr.push()` / `arr[i]=arr[i+1]` then `pop()`. A dynamic write inside a loop breaks the
+pending-value model (emitted once, runs N times). DONE as a pre-semantic AST pass `CacheDynamicArrayInLoop`
+(wired after `InlineStoragePointerCalls`): a dynamic array V written inside a loop is desugared to
+**read-once / mutate-local / write-once** - prepend `T[] __dlcache_V = V`, redirect every V access to the
+local (state-array write nodes StateArrayPush/Pop/Assign/Delete -> local Array* nodes; bare `V[i]=`/reads
+are ArrayAssign/Identifier/MappingAccess that resolve to the local by name after a rename), append
+`V = __dlcache_V`. Local array ops update an on-stack slot in place (stack-neutral) so they work in loops.
+The target was validated as a manual pattern before building. e2e: push-in-loop + shift-remove-in-loop
+(ChunkedArrays.test.ts). Unblocks ArrayRemoveByShifting + MerkleTree (bench 75->77). Bare (Solidity-style)
+access only; `this.V` whole-reads (StateAccessNode) inside a loop-cached fn are not redirected (corpus uses
+bare access).
 
 ### Corpus impact (examples/solidity-by-example, single-wall unless noted)
 - P2a: Structs (`push` x3), MyToken (verify - two-string-WRITE already compiles but is W5; if it READS two

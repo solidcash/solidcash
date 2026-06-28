@@ -223,6 +223,42 @@ describe('chunk-packed array: multiple writes per function (W3 coalescing)', () 
   });
 });
 
+// P2c: a dynamic array mutated INSIDE a loop is auto-cached in a local (read once, mutate local in the loop,
+// flush back once). push-in-loop and the shift-remove idiom (arr[i]=arr[i+1] + pop) - the Solidity-style
+// bare-access forms the corpus uses (ArrayRemoveByShifting, MerkleTree).
+const LOOPW = `pragma solidcash >=0.8.0;
+contract C {
+  uint256[] nums;
+  function setNums(uint256 a, uint256 b, uint256 c, pubkey pk, sig s) external { require(checkSig(s, pk)); nums = [a, b, c]; }
+  function appendRange(uint256 n, pubkey pk, sig s) external { require(checkSig(s, pk)); for (uint256 i = 0; i < n; i++) { nums.push(i); } }
+  function removeAt(uint256 index, pubkey pk, sig s) external {
+    require(checkSig(s, pk));
+    for (uint256 i = index; i < nums.length - 1; i++) { nums[i] = nums[i + 1]; }
+    nums.pop();
+  }
+}`;
+
+describe('chunk-packed array: write inside a loop (P2c local-cache transform)', () => {
+  const provider = createTestProvider();
+  const sig = (): SignatureTemplate => new SignatureTemplate(alicePriv);
+
+  it('push-in-loop and shift-remove-in-loop produce correct state', async () => {
+    const artifact = compileString(LOOPW, { solidityImportCompat: true });
+    const contract = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, contract, artifact.stateLayout!, { nums: [] }, { saltContract: true },
+    );
+    const sc = StatefulContract.withCategory(contract, categoryId);
+
+    await sc.setNums(1n, 2n, 3n, alicePub, sig()).send();
+    expect((await sc.getState()).nums).toEqual([1n, 2n, 3n]);
+    await sc.appendRange(2n, alicePub, sig()).send(); // push 0,1 in a loop -> [1,2,3,0,1]
+    expect((await sc.getState()).nums).toEqual([1n, 2n, 3n, 0n, 1n]);
+    await sc.removeAt(1n, alicePub, sig()).send(); // shift-remove index 1 in a loop -> [1,3,0,1]
+    expect((await sc.getState()).nums).toEqual([1n, 3n, 0n, 1n]);
+  });
+});
+
 // for..of (#17): desugars to an index loop over a once-cached local, so it works on chunk-packed (and
 // packed) arrays, which aren't collections. The loop var may go unused (e.g. counting), like a collection.
 const ITER = `pragma solidcash >=0.8.0;

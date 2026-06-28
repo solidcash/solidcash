@@ -438,6 +438,30 @@ export default class AstBuilder
       node.isLibrary = true;
       node.libraryName = libName;
       node.location = Location.fromCtx(ctx);
+
+      // Lower the primary library to a stateless contract when it has explicitly public/external functions, so
+      // it can be compiled directly into an artifact (docs/library-contracts.md Phase 2). Functions without an
+      // explicit public/external modifier become internal inline helpers (the inline-only library is preserved:
+      // an all-unmarked library has no entry point and stays non-compilable).
+      if (lastLib) {
+        const libFns = lastLib.freeFunctionDefinition_list().map((f) => {
+          const fn = this.visitFreeFunctionDefinition(f);
+          fn.isFreeFunction = false;
+          const deployed = fn.modifiers.includes(FunctionModifier.PUBLIC)
+            || fn.modifiers.includes(FunctionModifier.EXTERNAL);
+          if (!deployed && !fn.modifiers.includes(FunctionModifier.INTERNAL)
+            && !fn.modifiers.includes(FunctionModifier.PRIVATE)) {
+            fn.modifiers.push(FunctionModifier.INTERNAL);
+          }
+          return fn;
+        });
+        if (libFns.some((f) => f.isEntryPoint)) {
+          const libContract = new ContractNode(libName, [], [], [], [], [], [], undefined, libFns);
+          libContract.location = Location.fromCtx(lastLib);
+          node.libraryContract = libContract;
+        }
+      }
+
       return node;
     }
 

@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { parseCode } from '../src/compiler.js';
+import { parseCode, compileString } from '../src/compiler.js';
+import * as Errors from '../src/Errors.js';
 import type { SourceFileNode, FunctionDefinitionNode } from '../src/ast/AST.js';
 
 // Library-contract-class feature - docs/library-contracts.md.
@@ -31,5 +32,38 @@ describe('library function visibility (Phase 1)', () => {
       'library L { function g(int x) private returns (int) { return x; } }',
     ) as SourceFileNode;
     expect(find(ast, '.g').visibility).toBe('private');
+  });
+});
+
+// Phase 2: a library with explicitly public/external functions compiles directly to a stateless contract
+// artifact; a library with only inline (internal/unmarked) functions stays non-compilable.
+describe('library compiles to a stateless contract artifact (Phase 2)', () => {
+  it('compiles a library with a public function to an artifact', () => {
+    const artifact = compileString(
+      'library Math { function add(int a, int b) public returns (int) { return a + b; } }',
+    );
+    expect(artifact.contractName).toBe('Math');
+    expect(artifact.abi.map((f) => f.name)).toContain('add');
+    expect(artifact.bytecode.length).toBeGreaterThan(0);
+  });
+
+  it('exposes only public functions in the ABI; internal helpers stay callable but unexposed', () => {
+    const artifact = compileString(
+      'library Math { function addOne(int a) public returns (int) { return bump(a); }'
+      + ' function bump(int x) internal returns (int) { return x + 1; } }',
+    );
+    expect(artifact.abi.map((f) => f.name)).toEqual(['addOne']);
+  });
+
+  it('still rejects a library whose functions are all unmarked (inline-only)', () => {
+    expect(() => compileString(
+      'library Math { function add(int a, int b) returns (int) { return a + b; } }',
+    )).toThrow(Errors.LibraryNotCompilableError);
+  });
+
+  it('still rejects an internal-only library', () => {
+    expect(() => compileString(
+      'library Math { function h(int x) internal returns (int) { return x; } }',
+    )).toThrow(Errors.LibraryNotCompilableError);
   });
 });

@@ -90,6 +90,10 @@ export class SourceFileNode extends Node {
   importedContracts: ContractNode[] = [];
   isLibrary: boolean = false;
   libraryName?: string;
+  // For a library file compiled directly (not imported): the primary library lowered to a stateless contract,
+  // present only when it has >=1 explicitly public/external function. compiler.ts swaps it in for ast.contract
+  // so the library produces an artifact. See docs/library-contracts.md (Phase 2).
+  libraryContract?: ContractNode;
 
   constructor(
     public contract: ContractNode,

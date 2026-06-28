@@ -154,17 +154,23 @@ the existing delegate-impl compilation path; Phase 3+ is the genuinely new mecha
    modifiers (today it drops them), so library/free functions carry visibility (the grammar already allows it
    via `functionModifier`). No compilation-behavior change yet. Tests: `parseCode` a library and assert each
    function keeps its declared visibility. [KICKOFF.]
-2. **Compile a deploy-eligible library to a stateless contract artifact.** Build a real (stateless) ContractNode
-   from a library that has >=1 public/external function: public fns -> contract entry functions marked
-   `delegate` (reuse the delegate-impl path for self-preservation), internal fns -> inline helpers; enforce
-   statelessness. Lift `LibraryNotCompilableError` for this case (a library with ONLY internal functions stays
-   inline-only / importable, no artifact). Mark the artifact as a library + emit its public ABI. Tests: library
-   compiles to an artifact; bytecode carries delegate self-preservation; ABI lists public fns; internal-only
-   library still imports + inlines.
-3. **Consumer-side call protocol: mid-body `r = L.f(x)`.** Compose delegate caller-context execution with the
-   external-call return-event so a contract calls a library function mid-body and consumes its result. Add the
-   contention design: brand the deployed library with the consumer's category (self-pin) + master-gate. This is
-   the load-bearing new work (see "Granularity" and "Contention resolution").
+2. **Compile a deploy-eligible library to a stateless contract artifact. [DONE.]** A library with >=1
+   EXPLICITLY public/external function lowers to a stateless ContractNode (public/external fns -> entry points,
+   internal/unmarked fns -> inline helpers); `LibraryNotCompilableError` is lifted for that case. A library with
+   only inline (internal/unmarked) functions has no entry point and stays non-compilable - this preserves
+   existing behavior (an all-unmarked using-for library like the `math_lib` fixture still throws), so deployment
+   is an explicit opt-in via `public`/`external`. Statelessness is grammar-enforced (libraries have no state
+   vars). Implementation: AstBuilder stashes `SourceFileNode.libraryContract`; compiler.ts swaps it in for
+   `ast.contract`. Tests: `test/LibraryContracts.test.ts`. NOTE: for now the entry points compile as plain
+   external functions; the deployed-library covenant (delegate self-preservation, the library artifact marker)
+   moves to Phase 3 with the call protocol, so the Phase-2 artifact is a normal stateless-contract artifact and
+   not yet a reusable on-chain library.
+3. **Consumer-side call protocol + deployed-library covenant: mid-body `r = L.f(x)`.** Compose delegate
+   caller-context execution with the external-call return-event so a contract calls a library function mid-body
+   and consumes its result. Mark public functions `delegate` and emit self-preservation so the deployed library
+   UTXO is reusable; add the library artifact marker the SDK keys on. Add the contention design: brand the
+   deployed library with the consumer's category (self-pin) + master-gate. This is the load-bearing new work
+   (see "Granularity" and "Contention resolution").
 4. **SDK.** Deploy the library UTXO (branded, self-preserving), auto-co-spend on calls, link-by-address, thread
    through auto-derivation. Mirror the precompile side-car SDK flow where it applies.
 5. **State-touching libraries + polish.** `storage self`-style caller-state access for state-mutating library

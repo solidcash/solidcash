@@ -62,9 +62,17 @@ export function compileString(code: string, compilerOptions: CompileOptions = {}
     ast = resolver.resolve(ast, mergedCompilerOptions.rootFileId ?? 'main');
   }
 
-  // Check if this is a library file (cannot be compiled to an artifact)
+  // A library file compiled directly: if its primary library has explicitly public/external functions, lower
+  // it to a stateless contract artifact (docs/library-contracts.md Phase 2). A library with only inline
+  // (internal/unmarked) functions has no entry point and cannot be compiled standalone.
   if (ast.isLibrary) {
-    throw new LibraryNotCompilableError(ast.libraryName ?? 'unknown');
+    if (!ast.libraryContract) {
+      throw new LibraryNotCompilableError(ast.libraryName ?? 'unknown');
+    }
+    ast.contract = ast.libraryContract;
+    ast.isLibrary = false;
+    const prefix = `${ast.libraryName}.`;
+    ast.freeFunctions = ast.freeFunctions.filter((f) => !f.name.startsWith(prefix));
   }
 
   // Inheritance expansion (after import resolution, before modifier expansion)

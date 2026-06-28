@@ -127,8 +127,9 @@ describe('delegate libraries lower to a delegate contract (3b step 2)', () => {
     expect(art.constructorInputs.map((i) => i.name)).toContain('__libAddr_Counter');
     const bump = art.abi.find((f) => f.name === 'bump')!;
     expect(bump.lowLevelCalls).toEqual([{ callMode: 'delegatecall' }]);
-    // (the delegate's selector/args are supplied by the SDK at spend time, not baked in the consumer script;
-    // the SDK auto-wire + e2e validation is the next piece.)
+    // The target library+function is recorded so the SDK auto-wires the delegatecall co-spend (no manual
+    // withDelegatecall). The delegate's selector/args are supplied by the SDK at spend time, not baked in.
+    expect(bump.libraryDelegateCalls).toEqual([{ library: 'Counter', functionName: 'increment' }]);
   });
 
   // 3b layout-compat (compile-time): a consumer of a delegate library must declare a matching state layout,

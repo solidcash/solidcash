@@ -588,6 +588,22 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     this._externalArrayRegistry.set(interfaceName, instances);
   }
 
+  // Deployed delegate-library instances, keyed by library name. A consumer's `L.f()` (artifact
+  // libraryDelegateCalls) auto-wires its delegatecall co-spend from here, so the caller need not name the
+  // library function again via withDelegatecall. See docs/library-contracts.md (3b auto-wire).
+  private _libraryRegistry: Map<string, StatefulContract> = new Map();
+
+  /** Register a deployed delegate library so `L.f()` calls in this contract auto-wire their delegatecall. */
+  registerLibrary(name: string, instance: StatefulContract): this {
+    this._libraryRegistry.set(name, instance);
+    return this;
+  }
+
+  /** Look up a registered delegate library by name (used by the call builder's auto-wire). */
+  _getLibrary(name: string): StatefulContract | undefined {
+    return this._libraryRegistry.get(name);
+  }
+
   /** Bound signer for automatic transaction funding. Set via `connect(signer)`. */
   _signer?: Signer;
 
@@ -741,6 +757,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     for (const [name, ext] of this._externalRegistry) {
       (sc as StatefulContract)._externalRegistry.set(name, ext);
     }
+    for (const [name, lib] of this._libraryRegistry) {
+      (sc as StatefulContract)._libraryRegistry.set(name, lib);
+    }
     (sc as StatefulContract)._signer = signer;
     return sc;
   }
@@ -755,6 +774,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     );
     for (const [name, ext] of this._externalRegistry) {
       (sc as StatefulContract)._externalRegistry.set(name, ext);
+    }
+    for (const [name, lib] of this._libraryRegistry) {
+      (sc as StatefulContract)._libraryRegistry.set(name, lib);
     }
     if (this._signer) (sc as StatefulContract)._signer = this._signer;
     return sc;
@@ -774,6 +796,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // Preserve external registry across re-attachments
     for (const [name, ext] of this._externalRegistry) {
       (sc as StatefulContract)._externalRegistry.set(name, ext);
+    }
+    for (const [name, lib] of this._libraryRegistry) {
+      (sc as StatefulContract)._libraryRegistry.set(name, lib);
     }
     return sc;
   }
@@ -6295,11 +6320,38 @@ export class StatefulFunctionCall {
     return undefined;
   }
 
+  // Auto-wire the delegatecall co-spend for each `L.f()` the called function performs (artifact
+  // libraryDelegateCalls), from the consumer's registered library instances - so the caller need not repeat the
+  // library function via withDelegatecall. A manual withDelegatecall for the same function takes precedence.
+  private _autoWireLibraryDelegatecalls(): void {
+    if (!this.parentContract || !this.functionName) return;
+    const abiFunc = this.parentContract.inner.artifact.abi.find((f) => f.name === this.functionName);
+    const libCalls = abiFunc?.libraryDelegateCalls;
+    if (!libCalls || libCalls.length === 0) return;
+    for (const lc of libCalls) {
+      if (this.callInfos.some((ci) => ci.type === 'stateful' && ci.functionName === lc.functionName)) continue;
+      const lib = this.parentContract._getLibrary(lc.library);
+      if (!lib) {
+        throw new Error(
+          `Library '${lc.library}' is delegate-called by '${this.functionName}' but no instance was registered. `
+          + `Call registerLibrary('${lc.library}', <deployed library>) before .send().`,
+        );
+      }
+      assertDelegateLayoutCompatible(
+        this.parentContract.inner.artifact.stateLayout,
+        lib.inner.artifact.stateLayout,
+        lib.inner.artifact.contractName,
+      );
+      this.callInfos.push({ type: 'stateful', contract: lib, functionName: lc.functionName, args: [] });
+    }
+  }
+
   private async _applyOverrides(): Promise<StatefulTransactionBuilder> {
     // If external calls were added, rebuild the builder with external call context
     let builder: StatefulTransactionBuilder;
     let derived: Record<string, any> | undefined;
 
+    this._autoWireLibraryDelegatecalls();
     const needsRebuild = (this.externalCallInfos.length > 0 || this.callInfos.length > 0
       || this.entryKeyOverrides.size > 0 || this.externalEntryKeyOverrides.size > 0 || this.emitReturnFlag)
       && this.parentContract && this.functionName && this.functionArgs;

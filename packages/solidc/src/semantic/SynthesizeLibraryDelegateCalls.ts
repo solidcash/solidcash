@@ -2,6 +2,7 @@ import { AddressType, computeFunctionSignature, computeFunctionSelector } from '
 import {
   SourceFileNode, ContractNode, Node, FunctionCallStatementNode, LowLevelCallStatementNode,
   IdentifierNode, HexLiteralNode, ParameterNode, FunctionModifier, StateVariableNode,
+  FunctionDefinitionNode,
 } from '../ast/AST.js';
 import AstTraversal from '../ast/AstTraversal.js';
 
@@ -21,8 +22,9 @@ import AstTraversal from '../ast/AstTraversal.js';
  * First form: no-argument library functions (args via abi.encodeWithSelector + return values are follow-ups).
  */
 export default class SynthesizeLibraryDelegateCalls extends AstTraversal {
-  private delegateLibFns = new Map<string, { libName: string; selector: Uint8Array }>();
+  private delegateLibFns = new Map<string, { libName: string; fnName: string; selector: Uint8Array }>();
   private usedLibs = new Set<string>();
+  private currentFn?: FunctionDefinitionNode;
 
   visitSourceFile(node: SourceFileNode): Node {
     this.delegateLibFns = new Map();
@@ -33,7 +35,7 @@ export default class SynthesizeLibraryDelegateCalls extends AstTraversal {
       const libName = fn.name.slice(0, dot);
       const fnName = fn.name.slice(dot + 1);
       const sig = computeFunctionSignature(fnName, fn.parameters.map((p) => p.type.toString()));
-      this.delegateLibFns.set(fn.name, { libName, selector: computeFunctionSelector(sig) });
+      this.delegateLibFns.set(fn.name, { libName, fnName, selector: computeFunctionSelector(sig) });
     }
     if (this.delegateLibFns.size === 0) return node;
 
@@ -60,6 +62,14 @@ export default class SynthesizeLibraryDelegateCalls extends AstTraversal {
     return node;
   }
 
+  visitFunctionDefinition(node: FunctionDefinitionNode): Node {
+    const prev = this.currentFn;
+    this.currentFn = node;
+    const result = super.visitFunctionDefinition(node);
+    this.currentFn = prev;
+    return result;
+  }
+
   visitFunctionCallStatement(node: FunctionCallStatementNode): Node {
     const name = node.call.identifier?.name;
     const info = name ? this.delegateLibFns.get(name) : undefined;
@@ -72,6 +82,10 @@ export default class SynthesizeLibraryDelegateCalls extends AstTraversal {
       );
     }
     this.usedLibs.add(info.libName);
+    // Record the target so the SDK auto-wires the delegatecall co-spend (no manual withDelegatecall).
+    if (this.currentFn) {
+      (this.currentFn.libraryDelegateCalls ??= []).push({ library: info.libName, functionName: info.fnName });
+    }
     const addr = new IdentifierNode(`__libAddr_${info.libName}`);
     addr.location = node.location;
     const data = new HexLiteralNode(info.selector);

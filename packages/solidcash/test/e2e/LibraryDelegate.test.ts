@@ -137,4 +137,61 @@ describe('library-contracts 3b: L.f() sugar end-to-end', () => {
     const state = parsePushdataCommitment(consumerNft!.token!.nft!.commitment, consumerArt.stateLayout!, 0);
     expect(state.count).toBe(1n);
   });
+
+  // Auto-wire: the caller registers the library once (registerLibrary) and calls L.f() with NO manual
+  // withDelegatecall - the SDK derives the delegatecall co-spend from the artifact's libraryDelegateCalls.
+  it('auto-wires the delegatecall from registerLibrary (no manual withDelegatecall)', async () => {
+    const provider = createTestProvider();
+    const resolver = (p: string): { source: string; id: string } | undefined =>
+      (p.includes('counter') ? { source: COUNTER, id: 'counter' } : undefined);
+    const counterArt = compileString(COUNTER);
+    const consumerArt = compileString(CONSUMER, { importResolver: resolver });
+
+    const counter = new Contract(counterArt, [], { provider });
+    const { categoryId: counterCat } = await setupStatefulUtxos(
+      provider, counter, counterArt.stateLayout!, { count: 0n }, { saltContract: true },
+    );
+    const counterAddr = hexToBin(counter.withCategory(hexToBin(counterCat)).lockingBytecode);
+
+    const consumer = new Contract(consumerArt, [counterAddr], { provider });
+    const { categoryId: consumerCat } = await setupStatefulUtxos(
+      provider, consumer, consumerArt.stateLayout!, { count: 0n }, { saltContract: true },
+    );
+
+    const consumerSc = StatefulContract.withCategory(consumer, consumerCat);
+    const counterSc = StatefulContract.withCategory(counter, counterCat);
+
+    consumerSc.registerLibrary('Counter', counterSc);
+    const tx = await consumerSc.call.bump().send();
+    expect(tx.txid).toBeDefined();
+
+    const consumerNft = getTxOutputs(tx).find(
+      (o) => o.token?.nft?.capability === 'mutable' && o.token?.category === consumerCat,
+    );
+    const state = parsePushdataCommitment(consumerNft!.token!.nft!.commitment, consumerArt.stateLayout!, 0);
+    expect(state.count).toBe(1n);
+  });
+
+  // Auto-wire safety: calling L.f() without registering the library is a clear build error, not a silent
+  // missing co-spend.
+  it('throws a clear error if the library is not registered', async () => {
+    const provider = createTestProvider();
+    const resolver = (p: string): { source: string; id: string } | undefined =>
+      (p.includes('counter') ? { source: COUNTER, id: 'counter' } : undefined);
+    const counterArt = compileString(COUNTER);
+    const consumerArt = compileString(CONSUMER, { importResolver: resolver });
+
+    const counter = new Contract(counterArt, [], { provider });
+    const { categoryId: counterCat } = await setupStatefulUtxos(
+      provider, counter, counterArt.stateLayout!, { count: 0n }, { saltContract: true },
+    );
+    const counterAddr = hexToBin(counter.withCategory(hexToBin(counterCat)).lockingBytecode);
+    const consumer = new Contract(consumerArt, [counterAddr], { provider });
+    const { categoryId: consumerCat } = await setupStatefulUtxos(
+      provider, consumer, consumerArt.stateLayout!, { count: 0n }, { saltContract: true },
+    );
+    const consumerSc = StatefulContract.withCategory(consumer, consumerCat);
+
+    await expect(consumerSc.call.bump().send()).rejects.toThrow(/not.*registered|registerLibrary/i);
+  });
 });

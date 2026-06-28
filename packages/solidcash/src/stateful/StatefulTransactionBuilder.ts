@@ -12,7 +12,7 @@ import {
   FunctionBlockLayout,
   BlockSlotKind,
 } from '@solidcash/utils';
-import { binToHex, hexToBin, isHex, encodeTransaction } from '@bitauth/libauth';
+import { binToHex, hexToBin, isHex, encodeTransaction, createVirtualMachineBch2026 } from '@bitauth/libauth';
 import { getDustThreshold } from '@mem-cash/validation';
 import {
   buildEventNftCovenantScript, computeEventNameHash, buildSidecarRedeem,
@@ -1808,6 +1808,43 @@ export class StatefulTransactionBuilder {
     };
   }
 
+  /**
+   * On a covenant script failure, log an accurate op-level VM trace of the submitted tx. Runs the 2026 VM
+   * (the one mocknet uses) so it executes the optimised subroutine bytecode the source-map debug can't track,
+   * pinpointing the exact failing opcode + stack. Finds the failing input (named in the error, else scanned)
+   * and prints a window of ops ending at the failure. Best-effort: the caller swallows any error here.
+   */
+  private _logCovenantFailureTrace(builder: TransactionBuilder, reason: string): void {
+    const transaction = builder.buildLibauthTransaction(true);
+    const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
+    const vm = createVirtualMachineBch2026();
+    const named = reason.match(/input(?: index)? (\d+)/);
+    const candidates = named ? [Number(named[1])] : transaction.inputs.map((_u, i) => i);
+    for (const idx of candidates) {
+      if (idx < 0 || idx >= transaction.inputs.length) continue;
+      const states = vm.debug({ inputIndex: idx, sourceOutputs, transaction }) as unknown as Array<{
+        ip: number; instructions?: Array<{ opcode: number }>; stack?: Uint8Array[]; error?: string;
+      }>;
+      const errAt = states.findIndex((s) => s.error);
+      if (errAt < 0) continue;
+      const lines = [`[covenant VM trace] input ${idx}: ${states[errAt].error}`];
+      for (let i = Math.max(0, errAt - 12); i <= errAt; i += 1) {
+        const s = states[i];
+        const opcode = s.instructions?.[s.ip]?.opcode ?? 0;
+        const top = (s.stack ?? []).slice(-2).map((b) => {
+          const h = binToHex(b);
+          return h.length > 20 ? `${h.slice(0, 20)}..` : (h || '(empty)');
+        }).join(' ');
+        const marker = i === errAt ? '  <-- FAILS HERE' : '';
+        lines.push(`  ip=${s.ip} op=0x${opcode.toString(16).padStart(2, '0')} `
+          + `depth=${(s.stack ?? []).length} top=[${top}]${marker}`);
+      }
+      // eslint-disable-next-line no-console
+      console.error(lines.join('\n'));
+      return;
+    }
+  }
+
   async send(): Promise<TransactionDetails> {
     const provider = this.builderOptions.provider;
     if (!provider) {
@@ -1973,7 +2010,19 @@ export class StatefulTransactionBuilder {
     }
 
     // -- Phase 5: submit --
-    const txid = await provider.sendRawTransaction(rawTx);
+    let txid: string;
+    try {
+      txid = await provider.sendRawTransaction(rawTx);
+    } catch (submitErr) {
+      // On a covenant script failure, emit an accurate op-level trace of the actual submitted tx using the
+      // 2026 VM (the one mocknet uses). The source-map best-effort above mis-attributes on optimised
+      // subroutine bytecode; this points at the exact failing opcode + stack. Diagnostic only - rethrow as-is.
+      const reason = (submitErr as Error)?.message ?? '';
+      if (/script-verify|OP_[A-Z]|evaluating input/.test(reason)) {
+        try { this._logCovenantFailureTrace(finalBuilder, reason); } catch { /* trace is best-effort */ }
+      }
+      throw submitErr;
+    }
 
     const expectedTxid = binToHex(hash256(rawTxBin).reverse());
     if (txid !== expectedTxid) {

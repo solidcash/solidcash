@@ -57,4 +57,36 @@ describe('library-contracts 3b: consumer delegatecalls a state-touching library'
     const state = parsePushdataCommitment(proxyDataNft!.token!.nft!.commitment, proxyArt.stateLayout!, 0);
     expect(state.counter).toBe(1n);
   });
+
+  // Soundness guard: the caller's state layout must match the library's, or the delegate writes the wrong
+  // field and corrupts caller state. The library's `counter` is at slot 0; this proxy has `other` at slot 0.
+  it('rejects a caller whose state layout does not match the library', async () => {
+    const provider = createTestProvider();
+    const libArt = compileString(LIB);
+    const MISMATCH_PROXY = `pragma solidcash >=0.8.0;
+contract DelegatecallProxy() {
+  bigint other;
+  bigint counter;
+  function authorize(pubkey pk, sig s) unsafe { require(checkSig(s, pk)); }
+  fallback(bytes input) external {
+    address impl = address(0x76a91489abcdefabbaabbaabbaabbaabbaabbaabbaabba88ac);
+    impl.delegatecall(input);
+    require(input.length > 0);
+  }
+}`;
+    const proxyArt = compileString(MISMATCH_PROXY);
+    const proxyContract = new Contract(proxyArt, [], { provider });
+    const { categoryId: proxyCatId } = await setupStatefulUtxos(
+      provider, proxyContract, proxyArt.stateLayout!, { other: 0n, counter: 0n }, { saltContract: true },
+    );
+    const libContract = new Contract(libArt, [], { provider });
+    const { categoryId: libCatId } = await setupStatefulUtxos(
+      provider, libContract, libArt.stateLayout!, { counter: 0n }, { saltContract: true },
+    );
+    const proxySc = StatefulContract.withCategory(proxyContract, proxyCatId);
+    const libSc = StatefulContract.withCategory(libContract, libCatId);
+
+    expect(() => proxySc.call.__fallback().withDelegatecall(libSc, 'increment', []))
+      .toThrow(/layout mismatch/i);
+  });
 });

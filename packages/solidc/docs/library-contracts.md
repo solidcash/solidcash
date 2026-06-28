@@ -242,10 +242,20 @@ library) is a harder generalization, deferred.
 
 ### Gate-lifts + build order
 
-1. **Layout-compatibility check** (the load-bearing soundness piece, STILL OPEN): verify a caller's
-   `StateLayout` matches the library's declared shape at accessed fields; hard error on mismatch. Today this
-   relies on the developer declaring matching layouts (the same caveat the existing proxy/impl delegatecall has
-   - Delegatecall.test.ts:268-275); the compile-time check is the remaining soundness work.
+1. **Layout-compatibility check. [SDK guard DONE.]** The SDK `withDelegatecall` now verifies the caller's
+   `StateLayout` matches the impl/library's at each impl field (same slot `nftIndex:fieldIndex`, name, type) and
+   throws on mismatch (`assertDelegateLayoutCompatible`, StatefulContract.ts), so a wrong-layout delegatecall is
+   caught at build time - for BOTH libraries AND the existing proxy/impl (which previously had no check). Test:
+   `test/e2e/LibraryDelegate.test.ts` (mismatch rejected). NOTE: this is a build-time GUARD, not on-chain
+   soundness - the SDK is untrusted; a fully sound version is a COMPILE-TIME check at a static `L.f()` call site
+   (needs the sugar below, where the library is statically known, so both layouts are in one compilation).
+
+Next (ergonomics, not load-bearing - the mechanism already works via low-level delegatecall): **`L.f(this, args)`
+sugar.** A consumer that imports library `L` calls `L.f(args)`; it desugars to a delegatecall to L. Open design
+fork = how the consumer links L's address: recommended is constructor-arg linking (a synthesized `address`
+ctor param baked at deploy, EVM-link-like) over a state field or an explicit arg. The desugar reuses the
+existing delegatecall codegen + SDK; the compile-time layout-compat check rides here (L statically known).
+Then return values / pre+post logic, and (4) brand/master-gate contention.
 2. **Library-side lowering. [DONE.]** A library may now declare state vars (the shared layout it operates on):
    the grammar gained `stateVariableDeclaration*` in `libraryDefinition` (regen) and AstBuilder carries them
    into the lowered contract. A state-touching library's public/external functions are AUTO-marked `delegate` -

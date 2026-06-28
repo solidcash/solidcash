@@ -5747,6 +5747,27 @@ export class TokenContainerAccessor {
   }
 }
 
+// A delegate implementation/library operates on the CALLER's state at the impl's own compile-time field
+// offsets, so each impl state variable must sit at the same slot (nftIndex:fieldIndex), name and type in the
+// caller's layout - otherwise the delegate writes the wrong field and silently corrupts the caller's state.
+// This is the proxy/impl storage-layout-compatibility rule (as in EVM), checked across the delegatecall.
+// See docs/library-contracts.md ("3b design").
+function assertDelegateLayoutCompatible(
+  callerLayout: StateLayout | undefined, implLayout: StateLayout | undefined, implName: string,
+): void {
+  if (!callerLayout || !implLayout) return;
+  for (const iv of implLayout.variables) {
+    const cv = callerLayout.variables.find((v) => v.nftIndex === iv.nftIndex && v.fieldIndex === iv.fieldIndex);
+    if (!cv || cv.name !== iv.name || cv.type !== iv.type) {
+      throw new Error(
+        `Delegate layout mismatch: '${implName}' state field '${iv.name}' (${iv.type}) is not at the same `
+        + "slot in the caller's state. A delegate library/implementation and its caller must declare a "
+        + 'compatible state layout (the same field at the same slot). See docs/library-contracts.md.',
+      );
+    }
+  }
+}
+
 export class StatefulFunctionCall {
   private builderPromise: Promise<StatefulTransactionBuilder>;
   private parentContract?: StatefulContract;
@@ -5982,6 +6003,11 @@ export class StatefulFunctionCall {
     args: FunctionArgument[],
     proxyMasterIndex?: number,
   ): this {
+    assertDelegateLayoutCompatible(
+      this.parentContract?.inner.artifact.stateLayout,
+      impl.inner.artifact.stateLayout,
+      impl.inner.artifact.contractName,
+    );
     this.callInfos.push({
       type: 'stateful',
       contract: impl,

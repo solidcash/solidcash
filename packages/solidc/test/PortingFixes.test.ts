@@ -1516,3 +1516,25 @@ describe('external call on a tuple-destructured / copied local interface var', (
       + ' uint256 x = tokenIn.balanceOf(address(this)); tokenOut.transfer(msg.sender, x); require(true); } }')).toBe('C');
   });
 });
+
+describe('internal helpers that read a state entry (inlined, not subroutined)', () => {
+  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+
+  it('inlines a void private helper with a compound mapping write (_mint pattern)', () => {
+    expect(cc('pragma solidity ^0.8.0; contract C { mapping(address => uint256) bal; uint256 totalSupply;'
+      + ' function _mint(address to, uint256 amt) private { bal[to] += amt; totalSupply += amt; }'
+      + ' function mint(address to, uint256 amt) external { _mint(to, amt); require(true); } }')).toBe('C');
+  });
+
+  it('inlines a void private helper that reads a mapping then writes', () => {
+    expect(cc('pragma solidity ^0.8.0; contract C { mapping(address => uint256) bal;'
+      + ' function _m(address k, uint256 v) private { uint256 old = bal[k]; bal[k] = old + v; }'
+      + ' function f(address k, uint256 v) external { _m(k, v); require(true); } }')).toBe('C');
+  });
+
+  it('leaves a simple-write private helper (no entry read) compiling as before', () => {
+    expect(cc('pragma solidity ^0.8.0; contract C { mapping(address => uint256) bal;'
+      + ' function _set(address k, uint256 v) private { bal[k] = v; }'
+      + ' function f(address k, uint256 v) external { _set(k, v); require(true); } }')).toBe('C');
+  });
+});

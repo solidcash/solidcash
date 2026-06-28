@@ -13,6 +13,8 @@ import {
   WhileNode,
   DoWhileNode,
   UncheckedNode,
+  MappingAccessNode,
+  ArrayAccessNode,
 } from '../ast/AST.js';
 import { Modifier } from '../ast/Globals.js';
 import AstTraversal from '../ast/AstTraversal.js';
@@ -36,12 +38,19 @@ import { substituteInFunction } from './InheritanceExpansionTransformation.js';
  * Runs before semantic analysis so the substituted accesses collect entry slots normally. Value
  * parameters and locals are alpha-renamed per call site; storage parameters are substituted. The
  * original storage-parameter function is removed (it cannot stand alone as a subroutine).
+ *
+ * ALSO inlines void internal/private functions that READ a state entry (a mapping/collection element, incl.
+ * the read half of a compound write `m[k] += v`). Entry-access input slots live only in an entry-point's
+ * block layout, so such a function cannot compile as an OP_INVOKE subroutine ("Block layout not available");
+ * inlining moves the read into the entry-point caller's layout. This is what makes a Solidity `_mint`-style
+ * private helper that touches a mapping work.
  */
 const PREFIX = '__sp';
 
 export default class InlineStoragePointerCalls extends AstTraversal {
   private funcByName: Map<string, FunctionDefinitionNode> = new Map();
-  private storagePointerFns: Set<string> = new Set();
+  private inlinedFns: Set<string> = new Set();
+  private collectionNames: Set<string> = new Set();
   private counter = 0;
 
   visitSourceFile(node: SourceFileNode): Node {
@@ -52,26 +61,48 @@ export default class InlineStoragePointerCalls extends AstTraversal {
   visitContract(node: ContractNode): Node {
     this.funcByName = new Map();
     for (const fn of node.functions) this.funcByName.set(fn.name, fn);
+    this.collectionNames = new Set(node.collections.map((c) => c.name));
 
-    this.storagePointerFns = new Set();
+    this.inlinedFns = new Set();
     for (const fn of node.functions) {
-      if (fn.body && fn.returnTypes.length === 0 && this.hasStoragePointerParam(fn)) {
-        this.storagePointerFns.add(fn.name);
+      if (fn.body && fn.returnTypes.length === 0
+        && (this.hasStoragePointerParam(fn) || (this.isInternalHelper(fn) && this.readsEntry(fn)))) {
+        this.inlinedFns.add(fn.name);
       }
     }
-    if (this.storagePointerFns.size === 0) return node;
+    if (this.inlinedFns.size === 0) return node;
 
     for (const fn of node.functions) {
       if (fn.body) fn.body.statements = this.inlineStatements(fn.body.statements ?? [], [fn.name]);
     }
-    // A storage parameter has no value representation, so the original cannot compile as a subroutine;
-    // every call was inlined above, so drop it.
-    node.functions = node.functions.filter((fn) => !this.storagePointerFns.has(fn.name));
+    // A storage parameter has no value representation, and a subroutine cannot read a state entry (the
+    // entry-access input slots live only in an entry-point's block layout); so the original cannot stand
+    // alone as a subroutine. Every call was inlined above, so drop it.
+    node.functions = node.functions.filter((fn) => !this.inlinedFns.has(fn.name));
     return node;
   }
 
   private hasStoragePointerParam(fn: FunctionDefinitionNode): boolean {
     return fn.parameters.some((p) => p.modifier.includes(Modifier.STORAGE));
+  }
+
+  private isInternalHelper(fn: FunctionDefinitionNode): boolean {
+    return fn.isFreeFunction || fn.visibility === 'private' || fn.visibility === 'internal';
+  }
+
+  // A function reads a state entry if it reads a mapping/collection element - a MappingAccess, or a bare
+  // ArrayAccess on a collection name (incl. the read half of a compound write `m[k] += v`). Such a read needs
+  // an entry-access input slot, which only an entry-point's block layout provides, so a private function
+  // doing it cannot be an OP_INVOKE subroutine and is inlined.
+  private readsEntry(fn: FunctionDefinitionNode): boolean {
+    let found = false;
+    this.walk(fn.body, (n) => {
+      if (found) return;
+      if (n instanceof MappingAccessNode && this.collectionNames.has(n.name)) found = true;
+      else if (n instanceof ArrayAccessNode && n.array instanceof IdentifierNode
+        && this.collectionNames.has(n.array.name)) found = true;
+    });
+    return found;
   }
 
   // Rewrite a statement list, replacing eligible storage-pointer-call statements with the inlined body.
@@ -82,7 +113,7 @@ export default class InlineStoragePointerCalls extends AstTraversal {
       if (stmt instanceof FunctionCallStatementNode) {
         const name = stmt.call.identifier.name;
         const callee = this.funcByName.get(name);
-        if (!name.includes('.') && callee && this.storagePointerFns.has(name) && !stack.includes(name)
+        if (!name.includes('.') && callee && this.inlinedFns.has(name) && !stack.includes(name)
           && stmt.call.parameters.length === callee.parameters.length) {
           out.push(...this.inlineCall(callee, stmt.call.parameters, stack));
           continue;

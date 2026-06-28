@@ -94,7 +94,7 @@ interfaceFunction
     ;
 
 libraryDefinition
-    : 'library' Identifier '{' enumDefinition* structDefinition* typeDefinition* eventDefinition* errorDefinition* constantDefinition* usingForDirective* freeFunctionDefinition* '}'
+    : 'library' Identifier '{' enumDefinition* structDefinition* typeDefinition* eventDefinition* errorDefinition* constantDefinition* stateVariableDeclaration* usingForDirective* freeFunctionDefinition* '}'
     ;
 
 contractDefinition

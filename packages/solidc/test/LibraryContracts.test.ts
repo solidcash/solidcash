@@ -76,3 +76,23 @@ describe('library compiles to a stateless contract artifact (Phase 2)', () => {
     expect(normal.isLibrary).toBeUndefined();
   });
 });
+
+// 3b step 2: a state-touching library declares the shared state layout it operates on (as state vars); its
+// public functions are auto-delegated (Solidity has no `delegate` keyword - public library functions are
+// delegatecalled implicitly), and it lowers to a delegate contract (reuses the delegate-impl path).
+describe('delegate libraries lower to a delegate contract (3b step 2)', () => {
+  // Plain Solidity source - no SolidCash-specific `delegate` keyword.
+  const LIB = 'library Counter { bigint count; function inc() public { this.count = this.count + 1; } }';
+
+  it('compiles a state-touching library with a public function to an artifact', () => {
+    const lib = compileString(LIB);
+    expect(lib.isLibrary).toBe(true);
+    expect(lib.contractName).toBe('Counter');
+    expect(lib.abi.map((f) => f.name)).toContain('inc');
+  });
+
+  it('auto-delegates: lowers to the same bytecode as a hand-written `public delegate` contract', () => {
+    const contract = 'contract Counter() { bigint count; function inc() public delegate { this.count = this.count + 1; } }';
+    expect(compileString(LIB).bytecode).toBe(compileString(contract).bytecode);
+  });
+});

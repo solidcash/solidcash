@@ -244,10 +244,13 @@ library) is a harder generalization, deferred.
 
 1. **Layout-compatibility check** (the load-bearing soundness piece): verify a caller's `StateLayout` matches
    the library's declared shape at accessed fields; hard error on mismatch.
-2. **Library-side lowering**: let a library declare the state shape (grammar barrier SolidCash.g4:96-97 - no
-   state vars in a library; or accept it only via a `storage self` struct param) and mark its state-touching
-   public functions `delegate` (semantic barrier SymbolTableTraversal.ts ~1852 - delegate requires
-   `stateVariables.length > 0`). Reuse `_proxyMasterIndex` + `emitDelegateSelfPreservation`.
+2. **Library-side lowering. [DONE.]** A library may now declare state vars (the shared layout it operates on):
+   the grammar gained `stateVariableDeclaration*` in `libraryDefinition` (regen) and AstBuilder carries them
+   into the lowered contract. A state-touching library's public/external functions are AUTO-marked `delegate` -
+   Solidity has no `delegate` keyword (public library functions are delegatecalled implicitly), so ported
+   source needs none. This reuses `_proxyMasterIndex` + `emitDelegateSelfPreservation` verbatim: a delegate
+   library compiles BYTE-IDENTICAL to the hand-written `public delegate` contract (LibraryContracts.test.ts).
+   The `storage self` surface sugar over this state-vars layout is deferred (it would desugar to the same).
 3. **Consumer-side call**: `L.f(this, args)` -> co-spend L + set `_proxyMasterIndex` = caller's master + read
    the `_Return_` result; reuse the external-call return path.
 4. **Contention**: brand L with the caller's category + master-gate (see "Contention resolution").

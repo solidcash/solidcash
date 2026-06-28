@@ -444,6 +444,14 @@ export default class AstBuilder
       // explicit public/external modifier become internal inline helpers (the inline-only library is preserved:
       // an all-unmarked library has no entry point and stays non-compilable).
       if (lastLib) {
+        // A delegate library declares the shared state layout it operates on as state vars (the EVM proxy/impl
+        // storage-declaration pattern); carry them into the lowered contract so `delegate` functions resolve
+        // `this.field` against that layout (docs/library-contracts.md "3b design").
+        const libDecls = lastLib.stateVariableDeclaration_list()
+          .map((sv) => this.visitStateVariableDeclaration(sv));
+        const libStateVars = libDecls.filter((d): d is StateVariableNode => d instanceof StateVariableNode);
+        const libCollections = libDecls.filter((d): d is CollectionNode => d instanceof CollectionNode);
+        const hasSharedState = libStateVars.length > 0 || libCollections.length > 0;
         const libFns = lastLib.freeFunctionDefinition_list().map((f) => {
           const fn = this.visitFreeFunctionDefinition(f);
           fn.isFreeFunction = false;
@@ -453,10 +461,18 @@ export default class AstBuilder
             && !fn.modifiers.includes(FunctionModifier.PRIVATE)) {
             fn.modifiers.push(FunctionModifier.INTERNAL);
           }
+          // Solidity has no `delegate` keyword - a library's public functions are delegatecalled implicitly.
+          // For a state-touching library (one that declares a shared state layout) auto-mark its public/external
+          // functions `delegate`, so ported Solidity source needs no SolidCash-specific keyword.
+          if (deployed && hasSharedState && !fn.modifiers.includes(FunctionModifier.DELEGATE)) {
+            fn.modifiers.push(FunctionModifier.DELEGATE);
+          }
           return fn;
         });
         if (libFns.some((f) => f.isEntryPoint)) {
-          const libContract = new ContractNode(libName, [], [], [], [], [], [], undefined, libFns);
+          const libContract = new ContractNode(
+            libName, [], [], [], [], libStateVars, libCollections, undefined, libFns,
+          );
           libContract.location = Location.fromCtx(lastLib);
           libContract.isLibraryContract = true;
           node.libraryContract = libContract;

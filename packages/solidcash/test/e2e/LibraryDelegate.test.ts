@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { compileString } from 'solidc';
+import { hexToBin } from '@bitauth/libauth';
 import { Contract, StatefulContract } from '../../src/index.js';
 import { parsePushdataCommitment } from '@solidcash/utils';
 import { createTestProvider, getTxOutputs, setupStatefulUtxos } from '../test-util.js';
@@ -88,5 +89,52 @@ contract DelegatecallProxy() {
 
     expect(() => proxySc.call.__fallback().withDelegatecall(libSc, 'increment', []))
       .toThrow(/layout mismatch/i);
+  });
+});
+
+// 3b `L.f()` sugar, end-to-end: a consumer written in plain Solidity (imports the library, calls `L.f()`,
+// no delegate/delegatecall keyword) runs the library function against its OWN state. The compiler desugars
+// `Counter.increment()` to a delegatecall (+ a synthesized __libAddr_Counter ctor arg); the SDK co-spends the
+// library via withDelegatecall.
+describe('library-contracts 3b: L.f() sugar end-to-end', () => {
+  const COUNTER = 'library Counter { bigint count; function increment() public { this.count = this.count + 1; } }';
+  const CONSUMER = 'import { Counter } from "./counter.scash"; '
+    + 'contract C() { bigint count; function bump() { Counter.increment(); } }';
+
+  it('a consumer calling L.f() mutates its own state through the library', async () => {
+    const provider = createTestProvider();
+    const resolver = (p: string): { source: string; id: string } | undefined =>
+      (p.includes('counter') ? { source: COUNTER, id: 'counter' } : undefined);
+    const counterArt = compileString(COUNTER);
+    const consumerArt = compileString(CONSUMER, { importResolver: resolver });
+
+    // Deploy the library.
+    const counter = new Contract(counterArt, [], { provider });
+    const { categoryId: counterCat } = await setupStatefulUtxos(
+      provider, counter, counterArt.stateLayout!, { count: 0n }, { saltContract: true },
+    );
+    const counterAddr = hexToBin(counter.withCategory(hexToBin(counterCat)).lockingBytecode);
+
+    // Deploy the consumer, linked to the library's address (the synthesized __libAddr_Counter ctor arg).
+    const consumer = new Contract(consumerArt, [counterAddr], { provider });
+    const { categoryId: consumerCat } = await setupStatefulUtxos(
+      provider, consumer, consumerArt.stateLayout!, { count: 0n }, { saltContract: true },
+    );
+
+    const consumerSc = StatefulContract.withCategory(consumer, consumerCat);
+    const counterSc = StatefulContract.withCategory(counter, counterCat);
+
+    const tx = await consumerSc.call.bump()
+      .withDelegatecall(counterSc, 'increment', [])
+      .send();
+    expect(tx.txid).toBeDefined();
+
+    // The consumer's own state was incremented through the library: count 0 -> 1.
+    const consumerNft = getTxOutputs(tx).find(
+      (o) => o.token?.nft?.capability === 'mutable' && o.token?.category === consumerCat,
+    );
+    expect(consumerNft).toBeDefined();
+    const state = parsePushdataCommitment(consumerNft!.token!.nft!.commitment, consumerArt.stateLayout!, 0);
+    expect(state.count).toBe(1n);
   });
 });

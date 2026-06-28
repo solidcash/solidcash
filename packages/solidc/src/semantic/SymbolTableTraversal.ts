@@ -2907,6 +2907,15 @@ export default class SymbolTableTraversal extends AstTraversal {
     if ('expression' in node && (node as any).expression instanceof Node) {
       this.collectExternalCalls((node as any).expression, slots);
     }
+    // FunctionCallStatementNode holds its internal call in `call`; its args may contain external calls
+    // (e.g. `_update(token0.balanceOf(this), ...)`). Must mirror assignExternalCallSlotIndices exactly.
+    if ('call' in node && (node as any).call instanceof Node) {
+      this.collectExternalCalls((node as any).call, slots);
+    }
+    // ReturnNode holds its values in `expressions` (plural): `return (...) / token.balanceOf(this);`.
+    if ('expressions' in node && Array.isArray((node as any).expressions)) {
+      for (const e of (node as any).expressions) if (e instanceof Node) this.collectExternalCalls(e, slots);
+    }
     if ('tuple' in node && (node as any).tuple instanceof Node) {
       this.collectExternalCalls((node as any).tuple, slots);
     }
@@ -2987,6 +2996,14 @@ export default class SymbolTableTraversal extends AstTraversal {
     }
     if ('expression' in node && (node as any).expression instanceof Node) {
       this.assignExternalCallSlotIndices((node as any).expression, slots, counter);
+    }
+    // FunctionCallStatementNode holds its internal call in `call` (mirror collectExternalCalls exactly).
+    if ('call' in node && (node as any).call instanceof Node) {
+      this.assignExternalCallSlotIndices((node as any).call, slots, counter);
+    }
+    // ReturnNode holds its values in `expressions` (plural) (mirror collectExternalCalls exactly).
+    if ('expressions' in node && Array.isArray((node as any).expressions)) {
+      for (const e of (node as any).expressions) if (e instanceof Node) this.assignExternalCallSlotIndices(e, slots, counter);
     }
     if ('tuple' in node && (node as any).tuple instanceof Node) {
       this.assignExternalCallSlotIndices((node as any).tuple, slots, counter);

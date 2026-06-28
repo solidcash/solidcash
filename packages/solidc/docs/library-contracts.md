@@ -165,12 +165,26 @@ the existing delegate-impl compilation path; Phase 3+ is the genuinely new mecha
    external functions; the deployed-library covenant (delegate self-preservation, the library artifact marker)
    moves to Phase 3 with the call protocol, so the Phase-2 artifact is a normal stateless-contract artifact and
    not yet a reusable on-chain library.
-3. **Consumer-side call protocol + deployed-library covenant: mid-body `r = L.f(x)`.** Compose delegate
-   caller-context execution with the external-call return-event so a contract calls a library function mid-body
-   and consumes its result. Mark public functions `delegate` and emit self-preservation so the deployed library
-   UTXO is reusable; add the library artifact marker the SDK keys on. Add the contention design: brand the
-   deployed library with the consumer's category (self-pin) + master-gate. This is the load-bearing new work
-   (see "Granularity" and "Contention resolution").
+3. **Consumer-side call protocol (the load-bearing work).** Investigation (2026-06-28) found the existing
+   external-contract-call machinery (docs/external-contract-calls.md) largely serves PURE library calls, which
+   splits Phase 3 in two. (This also vindicates Phase 2's choice to compile library entry points as plain
+   external functions: that is exactly the callee shape 3a wants.)
+   - **3a - pure library call via the external-call path.** A pure (no-caller-state) public library function is
+     called like `IContract(addr).f(x)`: the consumer co-spends the library UTXO, verifies `OP_UTXOBYTECODE ==
+     addr`, and reads the result via the existing `_Return_` event. The spec already blesses stateless callees
+     (external-contract-calls.md S3.2 / S9.3: "stateless callees may be addressed with the same check, nothing
+     to forge"), and the consumer-side call-site codegen reuses cleanly. GAPS: (i) the external-call path assumes
+     a stateful callee with data NFTs - handle a zero-NFT stateless callee; (ii) the library UTXO must
+     SELF-PRESERVE (recreate itself: input LBC == output LBC) or anyone could consume it - emit a library
+     self-preservation covenant, reinforced by the brand + master-gate contention design; (iii) the SDK needs a
+     "stateless external contract" mode (today `getFullState()` assumes state). Optional sugar: `L.f(x)`
+     resolving to the co-spend instead of explicit `IL(addr).f()`.
+   - **3b - state-touching library via delegate.** A library function that mutates the caller's state needs the
+     delegate (caller-context) execution composed with a mid-body value return - genuinely new (today's delegate
+     is whole-spend proxy forwarding). Harder; sequence after 3a. Marks those functions `delegate`.
+
+   Groundwork landed first: an `isLibrary` artifact marker the codegen self-preservation and SDK co-spend key
+   on. 3a is then a coherent chunk (stateless-callee self-pres + zero-NFT handling + SDK + e2e) done together.
 4. **SDK.** Deploy the library UTXO (branded, self-preserving), auto-co-spend on calls, link-by-address, thread
    through auto-derivation. Mirror the precompile side-car SDK flow where it applies.
 5. **State-touching libraries + polish.** `storage self`-style caller-state access for state-mutating library

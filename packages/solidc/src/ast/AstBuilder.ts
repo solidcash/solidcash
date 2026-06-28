@@ -458,6 +458,7 @@ export default class AstBuilder
         if (libFns.some((f) => f.isEntryPoint)) {
           const libContract = new ContractNode(libName, [], [], [], [], [], [], undefined, libFns);
           libContract.location = Location.fromCtx(lastLib);
+          libContract.isLibraryContract = true;
           node.libraryContract = libContract;
         }
       }

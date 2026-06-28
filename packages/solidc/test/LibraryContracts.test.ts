@@ -66,4 +66,13 @@ describe('library compiles to a stateless contract artifact (Phase 2)', () => {
       'library Math { function h(int x) internal returns (int) { return x; } }',
     )).toThrow(Errors.LibraryNotCompilableError);
   });
+
+  it('marks the artifact as a library (isLibrary), and a normal contract is not', () => {
+    const lib = compileString(
+      'library Math { function add(int a, int b) public returns (int) { return a + b; } }',
+    );
+    expect(lib.isLibrary).toBe(true);
+    const normal = compileString('contract C() { function f() { require(true); } }');
+    expect(normal.isLibrary).toBeUndefined();
+  });
 });

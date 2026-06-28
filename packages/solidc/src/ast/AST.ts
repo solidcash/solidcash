@@ -124,6 +124,9 @@ export class ContractNode extends Node implements Named {
   typeDefinitions: TypeDefinitionNode[] = [];
   usingForDirectives: UsingForDirectiveNode[] = [];
   isAbstract: boolean = false;
+  // Set when this contract was lowered from a `library` (docs/library-contracts.md). Surfaced as the artifact
+  // `isLibrary` flag; the deployed-library codegen (self-preservation) and SDK co-spend key on it.
+  isLibraryContract: boolean = false;
   implements: string[] = [];
   parentInvocations: ParentInvocation[] = [];
   fallbackDef: FunctionDefinitionNode | undefined;

@@ -282,16 +282,15 @@ describe('library-contracts 3b: branded library master-gate (contention)', () =>
     expect(libArt.brandedLibrary).toBe(true);
     const proxyArt = compileString(PROXY);
 
-    // Owning consumer first, so its category is known; then brand the library to it. OP_UTXOTOKENCATEGORY
-    // returns the category in internal (VM) byte order, reversed from the display categoryId, so __brand is the
-    // reversed bytes.
+    // Owning consumer first, so its category is known; then brand the library to it via the SDK helper
+    // (StatefulContract.libraryBrand reverses the display categoryId to the internal order OP_UTXOTOKENCATEGORY
+    // returns).
     const proxyContract = new Contract(proxyArt, [], { provider });
     const { categoryId: proxyCat } = await setupStatefulUtxos(
       provider, proxyContract, proxyArt.stateLayout!, { counter: 0n }, { saltContract: true },
     );
 
-    const brand = hexToBin(proxyCat).reverse();
-    const libContract = new Contract(libArt, [brand], { provider });
+    const libContract = new Contract(libArt, [StatefulContract.libraryBrand(proxyCat)], { provider });
     const { categoryId: libCat } = await setupStatefulUtxos(
       provider, libContract, libArt.stateLayout!, { counter: 0n }, { saltContract: true },
     );
@@ -312,5 +311,63 @@ describe('library-contracts 3b: branded library master-gate (contention)', () =>
     await expect(
       foreignSc.call.__fallback().withDelegatecall(libSc, 'increment', []).send(),
     ).rejects.toThrow();
+  });
+
+  // A branded library through the L.f() auto-wire path (registerLibrary), not just the proxy/impl withDelegatecall
+  // path. Both categories are pre-chosen (categoryOverride) so the consumer can link to the branded library
+  // address while the library is branded to the consumer's category - no deploy-time circularity.
+  it('works through the L.f() auto-wire path (registerLibrary)', async () => {
+    const provider = createTestProvider();
+    const COUNTER = 'library Counter { bigint counter; function increment() public { this.counter = this.counter + 1; } }';
+    const resolver = (p: string): { source: string; id: string } | undefined =>
+      (p.includes('counter') ? { source: COUNTER, id: 'counter' } : undefined);
+    const CONSUMER = 'import { Counter } from "./counter.scash"; '
+      + 'contract C() { bigint counter; function bump() { Counter.increment(); } }';
+    const libArt = compileString(COUNTER, { brandLibrary: true });
+    const consumerArt = compileString(CONSUMER, { importResolver: resolver });
+
+    const consumerCat = `${'11'.repeat(31)}aa`;
+    const libCat = `${'22'.repeat(31)}bb`;
+
+    // Library branded to the consumer's category; its address is then known and linked into the consumer.
+    const libContract = new Contract(libArt, [StatefulContract.libraryBrand(consumerCat)], { provider });
+    const libAddr = hexToBin(libContract.withCategory(hexToBin(libCat)).lockingBytecode);
+    const consumer = new Contract(consumerArt, [libAddr], { provider });
+
+    await setupStatefulUtxos(
+      provider, libContract, libArt.stateLayout!, { counter: 0n }, { saltContract: true, categoryOverride: libCat },
+    );
+    await setupStatefulUtxos(
+      provider, consumer, consumerArt.stateLayout!, { counter: 0n },
+      { saltContract: true, categoryOverride: consumerCat },
+    );
+
+    const consumerSc = StatefulContract.withCategory(consumer, consumerCat);
+    const libSc = StatefulContract.withCategory(libContract, libCat);
+
+    consumerSc.registerLibrary('Counter', libSc);
+    const tx = await consumerSc.call.bump().send();
+    const consumerNft = getTxOutputs(tx).find(
+      (o) => o.token?.nft?.capability === 'mutable' && o.token?.category === consumerCat,
+    );
+    const state = parsePushdataCommitment(consumerNft!.token!.nft!.commitment, consumerArt.stateLayout!, 0);
+    expect(state.counter).toBe(1n);
+  });
+
+  // registerLibrary catches a library branded to the WRONG category at registration time (before send).
+  it('registerLibrary rejects a library branded to a different category', () => {
+    const provider = createTestProvider();
+    const libArt = compileString(LIB, { brandLibrary: true });
+    const proxyArt = compileString(PROXY);
+    const consumerCat = `${'33'.repeat(31)}cc`;
+    const consumer = new Contract(proxyArt, [], { provider });
+    const consumerSc = StatefulContract.withCategory(consumer, consumerCat);
+
+    // Branded to some OTHER category, not consumerCat.
+    const wrongBrand = StatefulContract.libraryBrand(`${'44'.repeat(31)}dd`);
+    const libContract = new Contract(libArt, [wrongBrand], { provider });
+    const libSc = StatefulContract.withCategory(libContract, `${'55'.repeat(31)}ee`);
+
+    expect(() => consumerSc.registerLibrary('Counter', libSc)).toThrow(/not branded to this contract/i);
   });
 });

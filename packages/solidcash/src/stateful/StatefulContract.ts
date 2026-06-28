@@ -593,8 +593,30 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
   // library function again via withDelegatecall. See docs/library-contracts.md (3b auto-wire).
   private _libraryRegistry: Map<string, StatefulContract> = new Map();
 
+  /**
+   * Internal-order brand bytes for a branded library's `__brand` constructor argument. The brand-check compares
+   * the proxy master's OP_UTXOTOKENCATEGORY (internal byte order) to `__brand`, which is reversed from the
+   * display categoryId. Use as: new Contract(brandedLibArt, [StatefulContract.libraryBrand(consumerCategoryId)]).
+   */
+  static libraryBrand(categoryId: string): Uint8Array {
+    return hexToBin(categoryId).reverse();
+  }
+
   /** Register a deployed delegate library so `L.f()` calls in this contract auto-wire their delegatecall. */
   registerLibrary(name: string, instance: StatefulContract): this {
+    // A branded library must be branded to THIS consumer's category, else its master-gate would reject the
+    // co-spend at send time; catch the mis-branding early.
+    if (instance.inner.artifact.brandedLibrary && this.categoryId) {
+      const idx = instance.inner.artifact.constructorInputs.findIndex((i) => i.name === '__brand');
+      const supplied = idx >= 0 ? instance.inner.constructorArgs[idx] : undefined;
+      const expected = StatefulContract.libraryBrand(this.categoryId);
+      if (!(supplied instanceof Uint8Array) || binToHex(supplied) !== binToHex(expected)) {
+        throw new Error(
+          `Branded library '${name}' is not branded to this contract's category. Construct it with `
+          + `StatefulContract.libraryBrand('${this.categoryId}') as its __brand constructor argument.`,
+        );
+      }
+    }
     this._libraryRegistry.set(name, instance);
     return this;
   }

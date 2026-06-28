@@ -235,12 +235,37 @@ export async function setupStatefulUtxos(
   contract: Contract,
   stateLayout: StateLayout,
   initialState: Record<string, any>,
-  opts?: { masterSatoshis?: bigint; dataNftSatoshis?: bigint; saltContract?: boolean },
+  opts?: {
+    masterSatoshis?: bigint; dataNftSatoshis?: bigint; saltContract?: boolean; categoryOverride?: string;
+  },
 ): Promise<StatefulUtxoSetup> {
   const masterSatoshis = opts?.masterSatoshis ?? 10000n;
   const dataNftSatoshis = opts?.dataNftSatoshis ?? 10000n;
   const commitments = buildInitialStateCommitments(stateLayout, initialState);
   const dataNftCount = commitments.length;
+
+  // Chosen-category genesis (mock only): seed master+data at txid=categoryId via addUtxo. Needed when a
+  // category must be known BEFORE building a dependent contract - e.g. a branded library whose __brand is the
+  // owning consumer's category, which the consumer also links to (otherwise a deploy-time circular dependency).
+  if (opts?.categoryOverride) {
+    const categoryId = opts.categoryOverride;
+    const pinnedContract = contract.category ? contract : contract.withCategory(hexToBin(categoryId));
+    const masterUtxo = await (provider as any).addUtxo(pinnedContract.tokenAddress, {
+      txid: categoryId, vout: 0, satoshis: masterSatoshis,
+      token: { category: categoryId, amount: 0n, nft: { capability: 'minting', commitment: '' } },
+    });
+    const dataNftUtxos: Utxo[] = [];
+    const dataNftAddresses: string[] = [];
+    for (let i = 0; i < commitments.length; i++) {
+      const addr = getDataNftAddress(pinnedContract, categoryId);
+      dataNftAddresses.push(addr);
+      dataNftUtxos.push(await (provider as any).addUtxo(addr, {
+        txid: categoryId, vout: i + 1, satoshis: dataNftSatoshis,
+        token: { category: categoryId, amount: 0n, nft: { capability: 'mutable', commitment: commitments[i] } },
+      }));
+    }
+    return { categoryId, masterUtxo, dataNftUtxos, dataNftAddresses };
+  }
 
   // Use addTokenUtxosDynamic for proper genesis on both providers.
   // The callback receives the categoryId and returns addresses derived from it.

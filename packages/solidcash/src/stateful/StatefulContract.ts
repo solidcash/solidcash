@@ -602,6 +602,24 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     return hexToBin(categoryId).reverse();
   }
 
+  /**
+   * Construct a delegate library branded to its owning consumer's category - appends the `__brand` constructor
+   * argument (StatefulContract.libraryBrand) so the caller need not thread it manually. `otherArgs` are the
+   * library's other constructor arguments (usually none), in declared order before `__brand`. Deploy / set up
+   * the returned Contract as usual, then registerLibrary it on the consumer.
+   */
+  static brandedLibrary(
+    artifact: Artifact, consumerCategoryId: string, options: ContractOptions,
+    otherArgs: ConstructorArgument[] = [],
+  ): Contract {
+    if (!artifact.brandedLibrary) {
+      throw new Error(
+        `Artifact '${artifact.contractName}' is not a branded library; compile it with { brandLibrary: true }.`,
+      );
+    }
+    return new Contract(artifact, [...otherArgs, StatefulContract.libraryBrand(consumerCategoryId)], options);
+  }
+
   /** Register a deployed delegate library so `L.f()` calls in this contract auto-wire their delegatecall. */
   registerLibrary(name: string, instance: StatefulContract): this {
     // A branded library must be branded to THIS consumer's category, else its master-gate would reject the

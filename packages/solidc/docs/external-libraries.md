@@ -176,3 +176,14 @@ Decide (1) reference model and (2) declaration keyword first (they shape the pub
 extend the descriptor to multi-function, add the library compilation mode (dispatcher reads selector from
 stack, functions return to stack, pure/stateless enforcement), generalize codegen call sites to
 `<args> <selector> OP_INVOKE`, and the SDK is mostly unchanged (blob co-spend/inline already generic).
+
+## Related: libraries as a contract class (a separate concern)
+
+The `library` keyword compiled to a stateless, delegatecall-able CONTRACT - its own artifact, co-spent and
+run as a separate evaluation against the caller's state - is a DIFFERENT mechanism from the script precompiles
+in this document. Precompiles here are pure Script subroutines reused by hash via `OP_INVOKE`; a library
+contract is a deployed contract reused by address/brand via `delegate`. The two are orthogonal and composable
+(a library contract may call external-library precompiles). That design lives in `library-contracts.md`.
+
+Note: Phase 6 above (compile a `.scash` source into a single blob with a selector dispatcher) is still the
+precompile concern - it produces a blob invoked via `OP_INVOKE`, not a deployed contract.

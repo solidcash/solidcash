@@ -109,4 +109,21 @@ describe('dynamic-storage phase-1 coexistence guards', () => {
       + ' function f(string x, string y, pubkey pk, sig s){ require(checkSig(s, pk)); this.a = x; this.b = y; } }',
     )).toThrow(/more than one dynamic-storage var/);
   });
+
+  // W1 (lifted): reading two distinct persisted dynamic vars now compiles - each read loop co-spends its
+  // chunks at blockSize + sum(prior read-var counts) + i (shared trailing-counter), matching the SDK order.
+  it('compiles reading two distinct persisted dynamic vars (W1 lifted)', () => {
+    expect(() => compileString(
+      'pragma solidcash >=0.8.0; contract C(){ string a; string b;'
+      + ' function f(){ require(bytes(this.a).length + bytes(this.b).length >= 0); } }',
+    )).not.toThrow();
+  });
+
+  // Three distinct reads also compile (exercises 2+ prior-count temps accumulating).
+  it('compiles reading three distinct persisted dynamic vars (W1)', () => {
+    expect(() => compileString(
+      'pragma solidcash >=0.8.0; contract C(){ string a; string b; string c;'
+      + ' function f(){ require(bytes(this.a).length + bytes(this.b).length + bytes(this.c).length >= 0); } }',
+    )).not.toThrow();
+  });
 });

@@ -9294,13 +9294,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           + 'supported (phase 1). Read it in a separate function. See docs/dynamic-storage.md.',
         );
       }
-      if (reads.length > 0) {
-        throw new Error(
-          `Reading more than one persisted dynamic-storage var in one function ('${reads[0]}' and `
-          + `'${sv.name}') is not yet supported (phase 1). Read them in separate functions. `
-          + 'See docs/dynamic-storage.md.',
-        );
-      }
       reads.push(sv.name);
     }
     this.emitDynamicReadLoop(sv, loc);
@@ -9431,6 +9424,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const lenType = new IntType(false, 32);
     const chunkHash = computeCollectionHash(computeCollectionSignature(sv.name, sv.type.toString()));
     const blockSize = this.currentFunction.blockLayout?.blockSize ?? 1;
+    // Persisted dynamic reads share the trailing-input space: read var R's chunks live at
+    // blockSize + sum(chunk counts of the read vars before R) + i. priorNodes = those earlier read vars,
+    // in the same dynamicReads order the SDK co-spends them.
+    const reads = this.currentFunction.dynamicReads ?? [];
+    const selfIdx = reads.indexOf(sv.name);
+    const priorNodes = (selfIdx > 0 ? reads.slice(0, selfIdx) : [])
+      .map((n) => this.stateVariables.find((v) => v.name === n)!);
     const fieldsInNft = this.stateVariables
       .filter((v) => v.nftIndex === sv.nftIndex)
       .sort((a, b) => a.fieldIndex - b.fieldIndex);
@@ -9460,6 +9460,19 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emitP2sh32FromCovenant((cat) => buildEntryNftCovenantScript(cat, chunkHash), loc);
     this.stack[0] = '(dyn_rchunkaddr)';
 
+    // --- prior read-var chunk counts as loop-invariant temps: ceil(len_v/CHUNK) per earlier read var, so
+    // this loop reads at blockSize + sum(prior counts) + i. Empty list for the first/only read (no temps,
+    // bytecode identical to single-read). ---
+    const priorTempNames: string[] = [];
+    for (let k = 0; k < priorNodes.length; k++) {
+      this.emitReadDynamicLen(priorNodes[k], `(dyn_rprior_${k})`, loc); // len_v, tracked
+      this.emit(encodeInt(BigInt(CHUNK - 1)), loc);
+      this.emit(Op.OP_ADD, loc);
+      this.emit(encodeInt(BigInt(CHUNK)), loc);
+      this.emit(Op.OP_DIV, loc); // ceil(len_v/CHUNK); top stays tracked as (dyn_rprior_k)
+      priorTempNames.push(`(dyn_rprior_${k})`);
+    }
+
     // --- count = ceil(len/CHUNK) '(dyn_rcount)', accumulator '(dyn_racc)', counter '(dyn_ri)' ---
     this.emit(encodeInt(BigInt(this.getStackIndex('(dyn_rlen)'))), loc);
     this.emit(Op.OP_PICK, loc);
@@ -9486,10 +9499,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const stackBeforeBody = [...this.stack];
     const stackDepth = this.stack.length;
 
-    // inputIdx = masterInputIndex + blockSize + i
+    // inputIdx = masterInputIndex + blockSize + sum(prior read-var chunk counts) + i
     this.emitMasterInputIndex(loc);
     this.emit(encodeInt(BigInt(blockSize)), loc);
     this.emit(Op.OP_ADD, loc);
+    for (const pt of priorTempNames) {
+      this.emit(encodeInt(BigInt(this.getStackIndex(pt) + 1)), loc); // +1: running inputIdx-partial untracked
+      this.emit(Op.OP_PICK, loc);
+      this.emit(Op.OP_ADD, loc);
+    }
     this.emit(encodeInt(BigInt(this.getStackIndex('(dyn_ri)') + 1)), loc); // +1: inputIdx-partial untracked
     this.emit(Op.OP_PICK, loc);
     this.emit(Op.OP_ADD, loc);
@@ -9554,7 +9572,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emitReplace(this.getStackIndex('(dyn_racc)') + 1, this.currentFunction);
 
     // clean up temps, leaving '(dyn_racc)' (the value) on top; rename it
-    for (const tmp of ['(dyn_ri)', '(dyn_rcount)', '(dyn_rchunkaddr)', '(dyn_rlen)']) {
+    for (const tmp of ['(dyn_ri)', '(dyn_rcount)', '(dyn_rchunkaddr)', '(dyn_rlen)', ...priorTempNames]) {
       const idx = this.getStackIndex(tmp);
       this.emit(encodeInt(BigInt(idx)), loc);
       this.emit(Op.OP_ROLL, loc);

@@ -215,6 +215,52 @@ describe('string state variable: persisted on-chain read loop', () => {
   });
 });
 
+// Reading TWO distinct persisted dynamic vars in one function (phase-2 W1). Each var's chunks are co-spent
+// as a contiguous trailing-input run in dynamicReads order; the covenant reads var R at
+// blockSize + sum(prior read-var chunk counts) + i. Different chunk counts (3 vs 2) make a fixed-offset
+// bug misread the second var, so this proves the shared-trailing-counter arithmetic.
+const READ_TWO_SOURCE = `
+pragma solidcash >=0.8.0;
+
+contract ReadTwo() {
+    string a;
+    string b;
+
+    function setA(string v, pubkey pk, sig s) { require(checkSig(s, pk)); this.a = v; }
+    function setB(string v, pubkey pk, sig s) { require(checkSig(s, pk)); this.b = v; }
+
+    function checkBoth(string ea, string eb) {
+        require(this.a == ea);
+        require(this.b == eb);
+    }
+}
+`;
+
+describe('string state variable: multiple persisted reads in one function (W1)', () => {
+  const provider = createTestProvider();
+  const artifact = compileString(READ_TWO_SOURCE);
+  const sig = (): SignatureTemplate => new SignatureTemplate(alicePriv);
+
+  it('reassembles two distinct persisted vars with different chunk counts', async () => {
+    const contract = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, contract, artifact.stateLayout!, { a: '', b: '' }, { saltContract: true },
+    );
+    const sc = StatefulContract.withCategory(contract, categoryId);
+
+    const va = 'A'.repeat(120) + 'B'.repeat(120) + 'C'.repeat(10); // 250 -> 3 chunks
+    const vb = 'X'.repeat(120) + 'Y'.repeat(10); // 130 -> 2 chunks
+    await sc.setA(va, alicePub, sig()).send();
+    await sc.setB(vb, alicePub, sig()).send();
+
+    await sc.checkBoth(va, vb).send(); // both reassembled correctly via accumulated offsets
+    // a wrong second value fails the require - proves b is read from its own chunk run, not a's.
+    let threw = false;
+    try { await sc.checkBoth(va, 'wrong').send(); } catch { threw = true; }
+    expect(threw).toBe(true);
+  });
+});
+
 // The write covenant pins exactly ceil(A$len/120) chunk-address outputs (orphan-bound) and forces all
 // ceil(oldLen/120) old chunks to be co-spent (old-chunk consumption), so no stray/duplicate chunk can
 // survive to corrupt a future read. The grow/shrink suite above exercises the accept path across counts;

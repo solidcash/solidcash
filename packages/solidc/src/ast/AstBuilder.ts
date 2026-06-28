@@ -947,6 +947,14 @@ export default class AstBuilder
     functionDefinition.location = Location.fromCtx(ctx);
     functionDefinition.isFreeFunction = true;
 
+    // Parse function modifiers (visibility etc.). Library/free functions carry visibility so a library can be
+    // classified into inline (internal/private) vs deployable (public/external) functions - see
+    // docs/library-contracts.md (Phase 1). Inert for existing free functions, which declare no modifiers.
+    const modifierContexts = ctx.functionModifier_list();
+    if (modifierContexts && modifierContexts.length > 0) {
+      this.parseFunctionModifiers(modifierContexts, functionDefinition);
+    }
+
     // Parse return types
     const returnTypeCtx = ctx.returnType();
     if (returnTypeCtx) {

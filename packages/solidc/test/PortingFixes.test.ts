@@ -989,14 +989,16 @@ describe('SBE-17: this.<fn>.selector resolves to the function selector (bytes4)'
 });
 
 describe('SBE-18: parent-constructor args (inheritance-list + constructor-level) inline the parent ctor body', () => {
-  const BASES = 'contract X { string nm; constructor(string _n) { nm = _n; } }'
-    + ' contract Y { string tt; constructor(string _t) { tt = _t; } }';
-  it('inheritance-list args: contract B is X("a"), Y("b")', () => {
-    expect(compileString(`${BASES} contract B is X("a"), Y("b") {}`, { solidityImportCompat: true }).contractName)
+  // Uses int state vars (not string) so the two inlined parent writes don't hit the W5 two-distinct-dynamic-
+  // var-write limit (the ERC20 name+symbol pattern), which is orthogonal to the inlining feature under test.
+  const BASES = 'contract X { int nm; constructor(int _n) { nm = _n; } }'
+    + ' contract Y { int tt; constructor(int _t) { tt = _t; } }';
+  it('inheritance-list args: contract B is X(1), Y(2)', () => {
+    expect(compileString(`${BASES} contract B is X(1), Y(2) {}`, { solidityImportCompat: true }).contractName)
       .toBe('B');
   });
-  it('constructor-level args: constructor() X("a") Y("b")', () => {
-    expect(compileString(`${BASES} contract E is X, Y { constructor() X("a") Y("b") {} }`,
+  it('constructor-level args: constructor() X(1) Y(2)', () => {
+    expect(compileString(`${BASES} contract E is X, Y { constructor() X(1) Y(2) {} }`,
       { solidityImportCompat: true }).contractName).toBe('E');
   });
   it('inlines + substitutes the parent ctor body (a wrong-typed arg is a type error)', () => {

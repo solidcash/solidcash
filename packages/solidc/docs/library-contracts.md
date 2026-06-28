@@ -274,7 +274,20 @@ caller reads it from its OWN state afterward (proven by the args e2e - the libra
 consumer's state reflects it). Value-returning PURE helpers (e.g. SafeMath.add) belong to the precompile path
 (external-libraries.md), which is a synchronous inline subroutine and does return a value.
 
-Remaining: (4) brand/master-gate contention.
+**Contention - brand + master-gate [DONE].** A delegate library compiled with `{ brandLibrary: true }` pins the
+co-spent proxy master's category to a synthesized `bytes32 __brand` ctor arg (the owning consumer's category):
+the delegate master-validation, which already requires a co-spent self-preserving MINTING master, now also
+verifies that master's category == `__brand` instead of dropping it. So the library is spendable ONLY alongside
+its owning consumer's master - it rides that one master's serialization (zero marginal contention) rather than
+being a shared, contended UTXO; shard by minting a per-consumer branded copy. Gated on `isBrandedLibrary`, so an
+unbranded delegate/library is byte-identical (no regression). `__brand` is the category in internal (VM) byte
+order, reversed from the display categoryId. Pure libraries are never branded. Proven e2e: a branded library
+accepts its owning consumer's master and rejects a foreign master (LibraryDelegate.test.ts).
+
+The library-contract feature is now COMPLETE: lower -> deploy -> `L.f(args)` -> auto-wire -> compile-time +
+runtime layout guard -> branded master-gate. Returns are by design via shared state (delegate has no synchronous
+return); pure value-returning helpers use the precompile path.
+
 2. **Library-side lowering. [DONE.]** A library may now declare state vars (the shared layout it operates on):
    the grammar gained `stateVariableDeclaration*` in `libraryDefinition` (regen) and AstBuilder carries them
    into the lowered contract. A state-touching library's public/external functions are AUTO-marked `delegate` -
@@ -288,8 +301,9 @@ Remaining: (4) brand/master-gate contention.
    library written as plain Solidity increments the proxy's state). The ergonomic `L.f()` sugar + SDK auto-wire
    are now DONE (above); remaining = argument passing / return values / pre+post consumer logic (the deferred
    generalizations). Steps 1 (layout-compat, DONE) and 4 (contention) harden it.
-4. **Contention**: brand L with the caller's category + master-gate (see "Contention resolution").
-5. **SDK + e2e** (mocknet + regtest): co-spend/recreate the branded library, supply its address.
+4. **Contention [DONE]**: brand L with the caller's category + master-gate (see "Contention resolution" above).
+5. **SDK + e2e [DONE]**: the existing co-spend recreates the (branded) library; the consumer supplies its
+   address. Branded e2e in LibraryDelegate.test.ts (owning consumer accepted, foreign master rejected).
 
 Constraints to accept (all EVM-parity-ish): the caller's state layout must match the library's shape
 (proxy/impl storage rule); per-function delegation first; sub-struct genericity and arbitrary mid-body

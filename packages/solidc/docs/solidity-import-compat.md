@@ -63,6 +63,11 @@ Each was surfaced by a real Solidity line and has a clean BCH mapping.
 - **`address` as an event parameter type.**
 - A returning function that **reads a mapping** does not crash (its result is returned in an output, like a
   logged event).
+- **Public state-var / mapping getters** synthesized as real dispatchable entry-point functions
+  (`T x` -> `x() returns (T)`, `mapping(K=>V) m` -> `m(K) returns (V)`), so a callee invoked through its getter
+  (e.g. `timeLock.lockTime(addr)`) has a target the caller can resolve + selector-verify. Restricted to plain
+  value types; enum/contract/address/struct/array/nested-mapping getters are skipped (placeholder types resolve
+  differently pre-semantic, and complex getters differ in ABI shape).
 
 ### Surfaced by the modern Sablier Flow port
 

@@ -108,7 +108,7 @@ export default class SynthesizeLibraryDelegateCalls extends AstTraversal {
           + 'expressions, and state reads are not yet supported. See docs/library-contracts.md.',
         );
       }
-      param.forwardedToLibrary = true; // used via SDK forwarding; suppress the unused-variable warning
+      param.syntheticallyUsed = true; // used via SDK forwarding; suppress the unused-variable warning
       argParams.push(param.name);
     }
     this.usedLibs.add(info.libName);

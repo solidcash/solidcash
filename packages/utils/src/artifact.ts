@@ -37,6 +37,10 @@ export interface CompilerOptions {
   // blockhash() n->hash oracle token category (32-byte display hex). Required for blockhash() consumers;
   // baked into the read as the trust anchor (OP_UTXOTOKENCATEGORY == this). See docs/block-and-transaction-properties.md s11.
   blockhashOracleCategory?: string;
+  // Brand a delegate library: its covenant verifies the co-spent proxy master's category == the library's
+  // `__brand` ctor arg, so the library is spendable only alongside its owning consumer's master (rides one
+  // master's serialization, zero marginal contention). See docs/library-contracts.md (3b contention).
+  brandLibrary?: boolean;
 }
 
 export interface AbiInput {
@@ -338,6 +342,7 @@ export interface Artifact {
   enums?: readonly EnumDefinitionAbi[];
   externalLibraries?: readonly ExternalLibraryAbi[];  // external script libraries this contract depends on
   isLibrary?: boolean;  // compiled from a `library` (stateless contract class); see docs/library-contracts.md
+  brandedLibrary?: boolean;  // delegate library branded to its consumer's category; SDK supplies the __brand arg
   usesBlockhash?: boolean;  // contract reads blockhash(n); keeper maintains the (n->hash) oracle
   compiler: {
     name: string;

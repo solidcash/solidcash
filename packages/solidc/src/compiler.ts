@@ -1,9 +1,10 @@
 import { CharStream, CommonTokenStream } from 'antlr4';
 import { binToHex } from '@bitauth/libauth';
-import { Artifact, CompilerOptions, computeBytecodeFingerprintWithConstructorArgs, generateSourceMap, optimiseBytecode, optimiseBytecodeOld, scriptToAsm, scriptToBytecode, sourceMapToLocationData } from '@solidcash/utils';
+import { Artifact, BytesType, CompilerOptions, computeBytecodeFingerprintWithConstructorArgs, generateSourceMap, optimiseBytecode, optimiseBytecodeOld, scriptToAsm, scriptToBytecode, sourceMapToLocationData } from '@solidcash/utils';
 import { generateArtifact } from './artifact/Artifact.js';
 import {
-  Ast, ContractNode, ContractReferenceNode, InstantiationNode, SourceFileNode, TypeIntrospectionNode,
+  Ast, ContractNode, ContractReferenceNode, FunctionModifier, InstantiationNode, ParameterNode,
+  SourceFileNode, TypeIntrospectionNode,
 } from './ast/AST.js';
 import AstBuilder from './ast/AstBuilder.js';
 import { ThrowingErrorListener, SolidCashErrorListener, ForwardingErrorListener } from './ast/error-listeners.js';
@@ -74,6 +75,18 @@ export function compileString(code: string, compilerOptions: CompileOptions = {}
     ast.isLibrary = false;
     const prefix = `${ast.libraryName}.`;
     ast.freeFunctions = ast.freeFunctions.filter((f) => !f.name.startsWith(prefix));
+
+    // Brand a state-touching (delegate) library: append a `bytes32 __brand` ctor arg (the owning consumer's
+    // category) so the delegate covenant can pin the co-spent proxy master to it. Only meaningful when the
+    // library delegates (the brand-check lives in the delegate master-validation). See docs/library-contracts.md.
+    if (mergedCompilerOptions.brandLibrary
+      && ast.contract.functions.some((f) => f.modifiers.includes(FunctionModifier.DELEGATE))) {
+      ast.contract.isBrandedLibrary = true;
+      const brandParam = new ParameterNode(new BytesType(32), '__brand');
+      brandParam.location = ast.contract.location;
+      brandParam.syntheticallyUsed = true; // used by the brand-check covenant, not an AST reference
+      ast.contract.parameters.push(brandParam);
+    }
   }
 
   // Inheritance expansion (after import resolution, before modifier expansion)

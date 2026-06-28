@@ -130,6 +130,11 @@ export class ContractNode extends Node implements Named {
   // Set when this contract was lowered from a `library` (docs/library-contracts.md). Surfaced as the artifact
   // `isLibrary` flag; the deployed-library codegen (self-preservation) and SDK co-spend key on it.
   isLibraryContract: boolean = false;
+  // Set for a branded delegate library (compilerOptions.brandLibrary): the delegate covenant additionally
+  // verifies the co-spent proxy master's category == this library's `__brand` ctor arg, so the library can be
+  // spent only alongside its owning consumer's master - it rides that one master's serialization (zero marginal
+  // contention). See docs/library-contracts.md (3b contention).
+  isBrandedLibrary: boolean = false;
   implements: string[] = [];
   parentInvocations: ParentInvocation[] = [];
   fallbackDef: FunctionDefinitionNode | undefined;
@@ -269,10 +274,10 @@ export class FunctionDefinitionNode extends Node implements Named {
 }
 
 export class ParameterNode extends Node implements Named, Typed {
-  // Set by SynthesizeLibraryDelegateCalls when this param is forwarded to a delegate library (`L.f(x)`). It is
-  // used (forwarded to the library via the SDK) even though desugar leaves no on-chain reference, so the
+  // Set for a synthesized param that is used by generated covenant code or the SDK rather than by an AST
+  // reference (a delegate-library forwarded arg `L.f(x)`, or a branded library's `__brand` ctor arg). The
   // unused-variable warning must skip it.
-  forwardedToLibrary = false;
+  syntheticallyUsed = false;
 
   constructor(
     public type: Type,

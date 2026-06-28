@@ -237,3 +237,47 @@ describe('library-contracts 3b: forwarded arguments end-to-end', () => {
     expect(state.count).toBe(5n);
   });
 });
+
+// 3b contention: a BRANDED library (compilerOptions.brandLibrary) pins the co-spent proxy master's category to
+// its `__brand` ctor arg, so it can be spent only alongside its owning consumer's master - it rides that one
+// master's serialization (zero marginal contention). Verified here: the owning consumer succeeds; a foreign
+// consumer's master is rejected by the brand-check.
+describe('library-contracts 3b: branded library master-gate (contention)', () => {
+  it('accepts the owning consumer master and rejects a foreign master', async () => {
+    const provider = createTestProvider();
+    const libArt = compileString(LIB, { brandLibrary: true });
+    expect(libArt.brandedLibrary).toBe(true);
+    const proxyArt = compileString(PROXY);
+
+    // Owning consumer first, so its category is known; then brand the library to it. OP_UTXOTOKENCATEGORY
+    // returns the category in internal (VM) byte order, reversed from the display categoryId, so __brand is the
+    // reversed bytes.
+    const proxyContract = new Contract(proxyArt, [], { provider });
+    const { categoryId: proxyCat } = await setupStatefulUtxos(
+      provider, proxyContract, proxyArt.stateLayout!, { counter: 0n }, { saltContract: true },
+    );
+
+    const brand = hexToBin(proxyCat).reverse();
+    const libContract = new Contract(libArt, [brand], { provider });
+    const { categoryId: libCat } = await setupStatefulUtxos(
+      provider, libContract, libArt.stateLayout!, { counter: 0n }, { saltContract: true },
+    );
+
+    const proxySc = StatefulContract.withCategory(proxyContract, proxyCat);
+    const libSc = StatefulContract.withCategory(libContract, libCat);
+
+    // Owning consumer (master category == brand) succeeds.
+    const tx = await proxySc.call.__fallback().withDelegatecall(libSc, 'increment', []).send();
+    expect(tx.txid).toBeDefined();
+
+    // Foreign consumer (master category != brand) is rejected by the brand-check.
+    const foreignProxy = new Contract(proxyArt, [], { provider });
+    const { categoryId: foreignCat } = await setupStatefulUtxos(
+      provider, foreignProxy, proxyArt.stateLayout!, { counter: 0n }, { saltContract: true },
+    );
+    const foreignSc = StatefulContract.withCategory(foreignProxy, foreignCat);
+    await expect(
+      foreignSc.call.__fallback().withDelegatecall(libSc, 'increment', []).send(),
+    ).rejects.toThrow();
+  });
+});

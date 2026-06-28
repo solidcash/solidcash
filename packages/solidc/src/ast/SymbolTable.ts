@@ -90,6 +90,6 @@ export class SymbolTable {
     return Array.from(this.symbols)
       .map((e) => e[1])
       .filter((s) => s.references.length === 0 && s.definition !== undefined
-        && !(s.definition as { forwardedToLibrary?: boolean }).forwardedToLibrary);
+        && !(s.definition as { syntheticallyUsed?: boolean }).syntheticallyUsed);
   }
 }

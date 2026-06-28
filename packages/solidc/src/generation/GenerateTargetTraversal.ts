@@ -374,6 +374,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   // Delegatecall tracking
   private functionHasDelegatecall: boolean = false;
   private currentFunctionIsDelegate: boolean = false;
+  // True while generating a branded delegate library: the delegate master-validation pins the co-spent proxy
+  // master's category to the library's `__brand` ctor arg (docs/library-contracts.md 3b contention).
+  private currentContractIsBrandedLibrary: boolean = false;
 
   // Unchecked block depth: when > 0, bounds checks emit wrapping instead of OP_VERIFY
   private uncheckedDepth: number = 0;
@@ -535,6 +538,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   visitContract(node: ContractNode): Node {
+    this.currentContractIsBrandedLibrary = node.isBrandedLibrary;
     node.parameters = this.visitList(node.parameters) as ParameterNode[];
 
     // Register contract-level constants for inline substitution
@@ -1375,7 +1379,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(encodeInt(32n), loc);
       this.emit(Op.OP_SPLIT, loc);    // [idx, category_32, capability_byte]
       this.emit(Op.OP_SWAP, loc);     // [idx, capability_byte, category_32]
-      this.emit(Op.OP_DROP, loc);     // [idx, capability_byte]
+      if (this.currentContractIsBrandedLibrary) {
+        // Branded library: pin the proxy master's category to this library's `__brand` ctor arg, so only the
+        // owning consumer's master can co-spend it (rides one master's serialization). The 3 manual items above
+        // the tracked stack at this point (idx, capability_byte, category_32) offset the __brand pick depth.
+        const brandIdx = this.getStackIndex('__brand');
+        this.emit(encodeInt(BigInt(brandIdx + 3)), loc);
+        this.emit(Op.OP_PICK, loc);        // [idx, capability_byte, category_32, __brand]
+        this.emit(Op.OP_EQUALVERIFY, loc); // [idx, capability_byte]  proxy category == brand
+      } else {
+        this.emit(Op.OP_DROP, loc);     // [idx, capability_byte]
+      }
       this.emit(encodeInt(2n), loc);   // 0x02 = minting capability
       this.emit(Op.OP_EQUALVERIFY, loc); // [idx]
 

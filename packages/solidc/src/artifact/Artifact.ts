@@ -406,6 +406,7 @@ export function generateArtifact(
     ...(enums && { enums }),
     ...(externalLibraries && { externalLibraries }),
     ...(contract.isLibraryContract && { isLibrary: true }),
+    ...(contract.isBrandedLibrary && { brandedLibrary: true }),
     compiler: {
       name: 'solidc',
       version,

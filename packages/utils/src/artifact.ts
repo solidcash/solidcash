@@ -35,7 +35,8 @@ export interface CompilerOptions {
   // mainnet 0, chipnet 1, testnet4 2, regtest -1 (0xff). User-land; see docs/block-and-transaction-properties.md.
   chainId?: number;
   // blockhash() n->hash oracle token category (32-byte display hex). Required for blockhash() consumers;
-  // baked into the read as the trust anchor (OP_UTXOTOKENCATEGORY == this). See docs/block-and-transaction-properties.md s11.
+  // baked into the read as the trust anchor (OP_UTXOTOKENCATEGORY == this).
+  // See docs/block-and-transaction-properties.md s11.
   blockhashOracleCategory?: string;
   // Brand a delegate library: its covenant verifies the co-spent proxy master's category == the library's
   // `__brand` ctor arg, so the library is spendable only alongside its owning consumer's master (rides one

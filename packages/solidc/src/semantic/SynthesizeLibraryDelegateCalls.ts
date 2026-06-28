@@ -24,10 +24,10 @@ import AstTraversal from '../ast/AstTraversal.js';
  * Arguments may forward the enclosing function's parameters or pass literals (encoded per the library param
  * type); the SDK resolves them and supplies them to the library unlocker. Return values are via shared state.
  */
+type DelegateLibFn = { libName: string; fnName: string; selector: Uint8Array; paramTypes: string[] };
+
 export default class SynthesizeLibraryDelegateCalls extends AstTraversal {
-  private delegateLibFns = new Map<
-    string, { libName: string; fnName: string; selector: Uint8Array; paramTypes: string[] }
-  >();
+  private delegateLibFns = new Map<string, DelegateLibFn>();
   private usedLibs = new Set<string>();
   private currentFn?: FunctionDefinitionNode;
 

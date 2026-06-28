@@ -190,3 +190,69 @@ Note: Phase 2 currently lowers ANY library with public functions to a contract a
 Under the decision above, pure libraries should route to the precompile path instead; reconciling Phase 2's
 routing (pure -> precompile blob, state-touching -> this delegate contract) is part of the precompile workstream
 (external-libraries.md Phase 6) and tracked there.
+
+## 3b design: caller-state access through delegate (design pass, 2026-06-28)
+
+The blocker for 3b is letting a stateless library read/write the CALLER's state. Grounded in the codegen:
+
+- State field access is a **compile-time-fixed offset**: a `this.field` read emits
+  `emitMasterInputIndex; <encodeInt(compactOffsetMap[nftIndex])>; OP_ADD; OP_UTXOTOKENCOMMITMENT` with the
+  field skipped by unrolled steps (GenerateTargetTraversal.ts ~2329-2345). There is NO runtime-offset
+  commitment access anywhere.
+- `delegate` already redirects that access to the caller's master: `emitMasterInputIndex` (~10647) reads
+  `_proxyMasterIndex` from the altstack instead of `OP_INPUTINDEX`. Offsets resolve against the FUNCTION'S OWN
+  declared `StateLayout`, so a delegate impl and its proxy must declare matching state (Delegatecall.test.ts:
+  both declare `bigint counter`).
+- Storage-pointer params are pure compile-time substitution (`InlineStoragePointerCalls`: "a storage pointer
+  has no value representation"); they cannot cross a co-spend/delegate boundary as a runtime value.
+
+### Two models
+
+- **(a) Shared-layout (RECOMMENDED, low effort - reuses everything).** The library declares the state SHAPE it
+  operates on; `this.field`/`self.field` resolve to the caller's master at the compile-time offset via the
+  existing `_proxyMasterIndex` path. The caller's layout must be compatible (the library's fields at the same
+  offsets). This is exactly the EVM upgradeable-proxy storage-layout-compatibility rule - an accepted,
+  EVM-parity constraint - and needs NO new codegen, only gate-lifts.
+- **(b) Runtime storage pointer (DEFERRED, high effort).** The caller passes a runtime field handle and the
+  library does generic offset-addressed commitment read/write. Nothing does runtime-offset commitment access
+  today, and pushdata's length-prefix format has no generic "skip N bytes"; ~500+ lines + new stack patterns.
+  More generic (a library over ANY caller's sub-struct, Solidity `storage self` semantics) but out of scope.
+
+### Recommended mechanism (model a)
+
+Keep Solidity's `storage self` SYNTAX, give it shared-layout SEMANTICS: in a delegate library,
+`function f(Data storage self, ...)` means "`self` is the caller's state interpreted as the declared struct
+`Data`"; `self.x` resolves to the caller's master commitment at `Data.x`'s compile-time offset (reusing the
+struct-field-offset codegen + `_proxyMasterIndex`) - NOT a runtime slot. The caller invokes `L.f(this, ...)`
+(its whole state as `self`); the compiler VERIFIES the caller's `StateLayout` matches `Data` at the accessed
+fields (a prefix match on `nftIndex:fieldIndex`/width). A mismatch is a hard error (mismatched offsets would
+corrupt caller state - this check is load-bearing). First form: `self` is the caller's whole state; operating
+on a sub-struct of an arbitrary caller is the (b)-flavored generalization, deferred.
+
+### The call is not synchronous
+
+BCH has no synchronous cross-input call, so `r = L.f(args)` is NOT a function call - it is: co-spend the
+library UTXO (its script runs in its own evaluation) + the library operates on the caller's master via
+`_proxyMasterIndex` (delegate) + the result returns via the existing `_Return_` event the caller reads. The
+caller is the proxy and the library is the impl for that spend; as today, the caller's covenant defers state
+verification to the delegate (Delegatecall.test.ts: "compiler skips auto-covenant state verification for
+delegatecall functions"). First form is per-FUNCTION deferral (one function's whole state transition runs in
+the library); arbitrary mid-body logic before AND after one call (splitting a transition across caller and
+library) is a harder generalization, deferred.
+
+### Gate-lifts + build order
+
+1. **Layout-compatibility check** (the load-bearing soundness piece): verify a caller's `StateLayout` matches
+   the library's declared shape at accessed fields; hard error on mismatch.
+2. **Library-side lowering**: let a library declare the state shape (grammar barrier SolidCash.g4:96-97 - no
+   state vars in a library; or accept it only via a `storage self` struct param) and mark its state-touching
+   public functions `delegate` (semantic barrier SymbolTableTraversal.ts ~1852 - delegate requires
+   `stateVariables.length > 0`). Reuse `_proxyMasterIndex` + `emitDelegateSelfPreservation`.
+3. **Consumer-side call**: `L.f(this, args)` -> co-spend L + set `_proxyMasterIndex` = caller's master + read
+   the `_Return_` result; reuse the external-call return path.
+4. **Contention**: brand L with the caller's category + master-gate (see "Contention resolution").
+5. **SDK + e2e** (mocknet + regtest): co-spend/recreate the branded library, supply its address.
+
+Constraints to accept (all EVM-parity-ish): the caller's state layout must match the library's shape
+(proxy/impl storage rule); per-function delegation first; sub-struct genericity and arbitrary mid-body
+splitting are deferred to the harder model (b).

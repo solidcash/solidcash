@@ -9100,18 +9100,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         + '(phase 1). Use separate functions. See docs/dynamic-storage.md.',
       );
     }
-    // W5 (phase 1): two distinct written dynamic vars would both emit chunk outputs at the fixed
-    // blockSize+i offset while the SDK places the second at an accumulated offset -> runtime collision.
-    // Guard until the shared trailing-counter arithmetic lands (phase 2). See docs/dynamic-storage.md.
-    if (this.pendingDynamicWrites.size > 1) {
-      const names = [...this.pendingDynamicWrites.keys()];
-      throw new Error(
-        `Writing more than one dynamic-storage var in one function ('${names[0]}' and '${names[1]}') is not `
-        + 'yet supported (phase 1). Write them in separate functions. See docs/dynamic-storage.md.',
-      );
-    }
+    // Multiple distinct written dynamic vars share the trailing-OUTPUT space: var W's new chunks verify at
+    // blockSize + sum(new-chunk counts of the written vars before W) + i. Process in state-var DECLARATION
+    // order (this.stateVariables) - the same order the SDK emits chunk outputs (dynamicChunkVars =
+    // stateLayout.variables filtered to dynamicWrites). Each var's value stays on the stack (cleanup deferred
+    // to the end) so a prior var's count is ceil(size(value)/CHUNK), computed on demand.
+    const declIndex = (n: string): number => this.stateVariables.findIndex((v) => v.name === n);
+    const writesInDeclOrder = [...this.pendingDynamicWrites.entries()]
+      .sort(([a], [b]) => declIndex(a) - declIndex(b));
+    const writtenValueStackNames: string[] = [];
 
-    for (const [name, { valueStackName, sv }] of this.pendingDynamicWrites) {
+    for (const [name, { valueStackName, sv }] of writesInDeclOrder) {
       const chunkHash = computeCollectionHash(computeCollectionSignature(name, sv.type.toString()));
       // Multi-chunk write loop. The raw value lives on the stack (valueStackName); split it into
       // CHUNK-byte pieces and verify each as a trailing chunk output (output index blockSize+i) via the
@@ -9140,6 +9139,23 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_ADD, loc);
       this.emit(encodeInt(BigInt(CHUNK)), loc);
       this.emit(Op.OP_DIV, loc); // nNew = (size + CHUNK-1) / CHUNK; 0 when empty
+
+      // --- prior written-var output counts as loop-invariant temps: ceil(size(value_P)/CHUNK) per written
+      // var declared before this one, so this var's chunks verify at blockSize + sum(prior counts) + i.
+      // Empty for the first written var (no temps, single-write bytecode identical). ---
+      const wPriorTempNames: string[] = [];
+      for (let k = 0; k < writtenValueStackNames.length; k++) {
+        this.emit(encodeInt(BigInt(this.getStackIndex(writtenValueStackNames[k]))), loc);
+        this.emit(Op.OP_PICK, loc); // copy prior value
+        this.pushToStack(`(dyn_wprior_${k})`);
+        this.emit(Op.OP_SIZE, loc);
+        this.emit(Op.OP_NIP, loc);
+        this.emit(encodeInt(BigInt(CHUNK - 1)), loc);
+        this.emit(Op.OP_ADD, loc);
+        this.emit(encodeInt(BigInt(CHUNK)), loc);
+        this.emit(Op.OP_DIV, loc); // ceil(size/CHUNK); top stays tracked as (dyn_wprior_k)
+        wPriorTempNames.push(`(dyn_wprior_${k})`);
+      }
 
       // --- loop counter i = 0 ('(dyn_i)') ---
       this.emit(encodeInt(0n), loc);
@@ -9188,10 +9204,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.popFromStack(); // [..., (dyn_expected) = full expected]
 
       // --- verify chunk output i (untracked working values; expected is already built & tracked) ---
-      // outIdx = masterInputIndex + blockSize + i
+      // outIdx = masterInputIndex + blockSize + sum(prior written-var counts) + i
       this.emitMasterInputIndex(loc);
       this.emit(encodeInt(BigInt(blockSize)), loc);
       this.emit(Op.OP_ADD, loc);
+      for (const pt of wPriorTempNames) {
+        this.emit(encodeInt(BigInt(this.getStackIndex(pt) + 1)), loc); // +1: running outIdx-partial untracked
+        this.emit(Op.OP_PICK, loc);
+        this.emit(Op.OP_ADD, loc);
+      }
       this.emit(encodeInt(BigInt(this.getStackIndex('(dyn_i)') + 1)), loc); // +1: outIdx-partial untracked
       this.emit(Op.OP_PICK, loc);
       this.emit(Op.OP_ADD, loc); // [..., outIdx]
@@ -9250,14 +9271,24 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emitVerifyChunkUtxoCount('(dyn_nnew)', true, loc);
       this.emitDynamicOldChunkConsumption(sv, loc);
 
-      // --- post-loop cleanup: remove i, nNew, chunkaddr, and the value (top-down keeps indices valid) ---
-      for (const tmp of ['(dyn_i)', '(dyn_nnew)', '(dyn_chunkaddr)', valueStackName]) {
+      // --- post-loop cleanup: remove loop temps (top-down keeps indices valid). The value is kept on the
+      // stack (recorded below) so vars declared after this one can read its chunk count for their offset. ---
+      writtenValueStackNames.push(valueStackName);
+      for (const tmp of ['(dyn_i)', '(dyn_nnew)', '(dyn_chunkaddr)', ...wPriorTempNames]) {
         const idx = this.getStackIndex(tmp);
         this.emit(encodeInt(BigInt(idx)), loc);
         this.emit(Op.OP_ROLL, loc);
         this.emit(Op.OP_DROP, loc);
         this.removeFromStack(idx);
       }
+    }
+    // --- final cleanup: drop the deferred written-var values (kept so each var could read prior counts) ---
+    for (const vsn of writtenValueStackNames) {
+      const idx = this.getStackIndex(vsn);
+      this.emit(encodeInt(BigInt(idx)), loc);
+      this.emit(Op.OP_ROLL, loc);
+      this.emit(Op.OP_DROP, loc);
+      this.removeFromStack(idx);
     }
   }
 

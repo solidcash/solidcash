@@ -229,6 +229,14 @@ contract ReadTwo() {
     function setA(string v, pubkey pk, sig s) { require(checkSig(s, pk)); this.a = v; }
     function setB(string v, pubkey pk, sig s) { require(checkSig(s, pk)); this.b = v; }
 
+    // writes BOTH dynamic vars in one function, in reverse-of-declaration source order (b then a) to
+    // exercise the declaration-order output-offset accumulation (W5).
+    function setBoth(string va, string vb, pubkey pk, sig s) {
+        require(checkSig(s, pk));
+        this.b = vb;
+        this.a = va;
+    }
+
     function checkBoth(string ea, string eb) {
         require(this.a == ea);
         require(this.b == eb);
@@ -236,7 +244,7 @@ contract ReadTwo() {
 }
 `;
 
-describe('string state variable: multiple persisted reads in one function (W1)', () => {
+describe('string state variable: multiple persisted reads + distinct writes in one function (W1/W5)', () => {
   const provider = createTestProvider();
   const artifact = compileString(READ_TWO_SOURCE);
   const sig = (): SignatureTemplate => new SignatureTemplate(alicePriv);
@@ -258,6 +266,21 @@ describe('string state variable: multiple persisted reads in one function (W1)',
     let threw = false;
     try { await sc.checkBoth(va, 'wrong').send(); } catch { threw = true; }
     expect(threw).toBe(true);
+  });
+
+  it('writes two distinct dynamic vars in one function with different chunk counts (W5)', async () => {
+    const contract = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, contract, artifact.stateLayout!, { a: '', b: '' }, { saltContract: true },
+    );
+    const sc = StatefulContract.withCategory(contract, categoryId);
+
+    const va = 'A'.repeat(120) + 'B'.repeat(120) + 'C'.repeat(10); // 250 -> 3 chunks
+    const vb = 'X'.repeat(120) + 'Y'.repeat(10); // 130 -> 2 chunks
+    await sc.setBoth(va, vb, alicePub, sig()).send(); // writes both, reverse source order, diff counts
+    expect((await sc.getState()).a).toBe(va);
+    expect((await sc.getState()).b).toBe(vb);
+    await sc.checkBoth(va, vb).send(); // on-chain read-back of both (also W1 multi-read)
   });
 });
 

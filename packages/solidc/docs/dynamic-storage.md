@@ -194,27 +194,26 @@ Rejected alternatives (recorded for posterity):
   (`len=0`, empty data) so reads can force-co-spend it; otherwise a spender withholds chunk 0 and a
   non-empty value reads as empty. Costs >= 1 chunk for every string incl. empty. Not chosen.
 
-## Phase-1 coexistence limits (MOSTLY guarded - one unguarded hole, see W5)
-The read loop reads chunks at the fixed trailing offset `blockSize + i` (GTT 9479) and the write loop
-emits chunk outputs there (GTT 9181) - neither accumulates a per-var base. So a function may do **at most
-one** of {one dynamic write, one persisted dynamic read of a single var} and may **not** combine it with a
-collection iteration. The compiler rejects (clean errors):
-- W1 a second distinct persisted read (`emitReadDynamicScalar` ~9287)
-- W2 a dynamic write + persisted read of a different var (`emitDynamicWriteVerification` ~9089)
-- W3 the same var written twice, e.g. `arr.push();arr.push()` or idx-write + `pop()` (`visitStateAssign` ~7491)
-- W4 a dynamic write + collection iteration (~9097); a persisted read + collection iteration (~9281)
+## Coexistence limits (W1 + W5 lifted; W2/W3/W4 remain)
+The read/write loops apply the collection-iteration shared trailing-counter arithmetic: read var R reads at
+`blockSize + sum(prior read-var chunk counts) + i` (GTT `emitDynamicReadLoop`), and written var W's new
+chunks verify at `blockSize + sum(prior written-var counts) + i` in state-var DECLARATION order (GTT
+`emitDynamicWriteVerification`, matching the SDK's `dynamicChunkVars` placement). Status:
+- **W1 (multiple persisted reads) - DONE** (commit df125a7b). Reading 2+ distinct dynamic vars works;
+  e2e: two vars, different chunk counts.
+- **W5 (multiple distinct writes) - DONE** (this work). Writing 2+ distinct dynamic vars works; the SDK
+  already accumulated `chunkOffset += nNew` per var, so no SDK change. e2e: two writes, reverse source
+  order, different chunk counts, verified off-chain + on-chain. Was a latent collision; now correct.
+- **W2 (write + persisted read of a DIFFERENT var) - still rejected** (`emitDynamicWriteVerification`
+  ~9089). The hard part: read-only chunks are PRESERVED as outputs at their input index, colliding with new
+  write-chunk outputs at `blockSize`; needs the write OUTPUT base to clear the preserved-read outputs AND
+  the SDK to emit iteration-entry (preserved read) outputs before chunk outputs. See Phase 2 scope.
+- **W3 (same var written twice, e.g. `arr.push();arr.push()` or idx-write + `pop()`) - still rejected**
+  (`visitStateAssign` ~7491). Fix = COALESCE to one final-value write (layout-neutral). See Phase 2 scope.
+- **W4 (dynamic op + collection iteration) - still rejected** (~9097/~9281). Same trailing-space
+  unification as W2 generalized to iterations.
 
-Still allowed: a single read, a single write, read-after-write (same var), reading the same var twice.
-
-**W5 (UNGUARDED HOLE, found 2026-06-28):** two *different-var* writes (`s1 = a; s2 = b;`) COMPILE - no
-guard fires (7491 keys on the var name; 9089 is write+read, not write+write). But the write loop emits both
-var chunk-sets at `blockSize + i`, while the SDK places var2 at the accumulated `chunkOffset += nNew1`
-(`StatefulContract.ts` ~3144). The offsets drift -> var2's on-chain verification reads var1's output slots
--> runtime collision. Mechanically certain by code inspection (not yet reproduced e2e). Interim fix if
-phase-2 is deferred: add a guard rejecting >1 distinct written dynamic var.
-
-Lifting W1-W5 needs the collection-iteration shared trailing-counter arithmetic (accumulate prior
-trailing-input/output counts). See the Phase 2 scope below.
+Still allowed beyond W1/W5: a single read, read-after-write (same var), reading the same var twice.
 
 ## Phasing
 1. `string` / `bytes` (the motivating case): read (loop-concat), write (loop-split + mint/destroy +

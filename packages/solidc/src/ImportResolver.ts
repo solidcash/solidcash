@@ -88,6 +88,11 @@ export class ImportResolver {
     source: SourceFileNode,
     importNode: ImportNode,
   ): void {
+    // Convey a state-touching (delegate) library's declared layout so a consumer's L.f() call site can verify
+    // its own state layout matches (SynthesizeLibraryDelegateCalls). See docs/library-contracts.md (3b).
+    if (source.isLibrary && source.libraryContract && source.libraryName) {
+      target.importedLibraryLayouts.set(source.libraryName, source.libraryContract.stateVariables);
+    }
     switch (importNode.kind) {
       case 'wildcard':
         // Import everything: contract, constants, enums, structs, types,

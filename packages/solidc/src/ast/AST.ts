@@ -94,6 +94,9 @@ export class SourceFileNode extends Node {
   // present only when it has >=1 explicitly public/external function. compiler.ts swaps it in for ast.contract
   // so the library produces an artifact. See docs/library-contracts.md (Phase 2).
   libraryContract?: ContractNode;
+  // Per imported state-touching library: its declared state-var layout (libraryName -> state vars). Set by the
+  // ImportResolver; used to check a consumer's layout matches a delegate library it calls. See library-contracts.md.
+  importedLibraryLayouts: Map<string, StateVariableNode[]> = new Map();
 
   constructor(
     public contract: ContractNode,

@@ -1,7 +1,7 @@
 import { AddressType, computeFunctionSignature, computeFunctionSelector } from '@solidcash/utils';
 import {
   SourceFileNode, ContractNode, Node, FunctionCallStatementNode, LowLevelCallStatementNode,
-  IdentifierNode, HexLiteralNode, ParameterNode, FunctionModifier,
+  IdentifierNode, HexLiteralNode, ParameterNode, FunctionModifier, StateVariableNode,
 } from '../ast/AST.js';
 import AstTraversal from '../ast/AstTraversal.js';
 
@@ -40,6 +40,14 @@ export default class SynthesizeLibraryDelegateCalls extends AstTraversal {
     this.usedLibs = new Set();
     node.contract = this.visit(node.contract) as ContractNode;
 
+    // Verify the consumer's state layout matches each delegate library it calls: the library operates on the
+    // caller's state at the library's own compile-time field offsets, so a mismatched layout silently corrupts
+    // the caller's state. (Compile-time, untrusted-SDK-proof; complements the SDK withDelegatecall guard.)
+    for (const libName of this.usedLibs) {
+      const libVars = node.importedLibraryLayouts.get(libName);
+      if (libVars) checkLayoutCompat(libName, libVars, node.contract.stateVariables);
+    }
+
     // One synthesized address constructor arg per library used (the library's deployed address; the SDK
     // supplies it and co-spends the library at call time).
     for (const libName of this.usedLibs) {
@@ -71,5 +79,23 @@ export default class SynthesizeLibraryDelegateCalls extends AstTraversal {
     const ll = new LowLevelCallStatementNode(addr, data, 'delegatecall');
     ll.location = node.location;
     return ll;
+  }
+}
+
+// The consumer's state layout must have the library's declared fields first, in the same order, with the same
+// name and type (the proxy/impl storage-compatibility rule, checked across the delegatecall). A mismatch would
+// make the library read/write the wrong field of the caller's commitment.
+function checkLayoutCompat(libName: string, libVars: StateVariableNode[], consumerVars: StateVariableNode[]): void {
+  for (let i = 0; i < libVars.length; i++) {
+    const lv = libVars[i];
+    const cv = consumerVars[i];
+    if (!cv || cv.name !== lv.name || cv.type.toString() !== lv.type.toString()) {
+      const got = cv ? `'${cv.name}' (${cv.type.toString()})` : 'no such field';
+      throw new Error(
+        `Library '${libName}' expects the caller's state field #${i} to be '${lv.name}' (${lv.type.toString()}), `
+        + `but the caller has ${got}. A consumer of a delegate library must declare a compatible state layout `
+        + '(the library\'s fields first, same order, name and type). See docs/library-contracts.md.',
+      );
+    }
   }
 }

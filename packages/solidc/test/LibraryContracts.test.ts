@@ -130,4 +130,15 @@ describe('delegate libraries lower to a delegate contract (3b step 2)', () => {
     // (the delegate's selector/args are supplied by the SDK at spend time, not baked in the consumer script;
     // the SDK auto-wire + e2e validation is the next piece.)
   });
+
+  // 3b layout-compat (compile-time): a consumer of a delegate library must declare a matching state layout,
+  // else the library writes the wrong field of the caller's state. Here `count` is at the wrong slot.
+  it('rejects a consumer whose state layout does not match the imported library', () => {
+    const COUNTER = 'library Counter { bigint count; function increment() public { this.count = this.count + 1; } }';
+    const resolver = (p: string): { source: string; id: string } | undefined =>
+      (p.includes('counter') ? { source: COUNTER, id: 'counter' } : undefined);
+    const consumer = 'import { Counter } from "./counter.scash"; '
+      + 'contract C() { bigint other; bigint count; function bump() { Counter.increment(); } }';
+    expect(() => compileString(consumer, { importResolver: resolver })).toThrow(/expects the caller/i);
+  });
 });

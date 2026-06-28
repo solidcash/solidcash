@@ -2795,7 +2795,9 @@ export default class SymbolTableTraversal extends AstTraversal {
         ? addressParam.slice('__extaddr_'.length) : undefined;
       // Array-element target `IFoo(arr[i]).m()` (typically inside a `for` over the array): record the state
       // array. The SDK co-spends every element as a callee and the epilogue loop-verifies each; addressParam
-      // stays undefined (the address is per-element, not a single param).
+      // stays undefined (the address is per-element, not a single param). State-array element access is a
+      // MappingAccessNode (the flattened state-array model); a real mapping reaches the same branch and is
+      // rejected later in emitArrayExternalCallLoop ("must be a state array"). Local arrays use ArrayAccessNode.
       let loopArrayVar: string | undefined;
       if (!addressParam) {
         const ae = node.addressExpression;

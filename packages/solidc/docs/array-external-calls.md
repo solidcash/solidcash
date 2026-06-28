@@ -94,7 +94,10 @@ e2e), not a one-wall change. It should be implemented and e2e-validated as a foc
 ## Status: implemented
 
 Detection: `collectExternalCalls` (SymbolTableTraversal) sets `slot.loopArrayVar` when the call address is
-`arr[i]` / `map[k]` with no `addressParam`; surfaced to the artifact as `externalCalls[].loopArrayVar`.
+`arr[i]` with no `addressParam`; surfaced to the artifact as `externalCalls[].loopArrayVar`. Note a STATE-array
+element access in the cast `IFoo(arr[i])` is a `MappingAccessNode` (the flattened state-array model), so that
+branch is load-bearing; a real `mapping(k=>address)` reaches it too and is rejected in codegen
+("must be a state array"). Tested: basic (1 chunk), multi-chunk (boundary straddle), mapping-rejection.
 
 Codegen: `emitArrayExternalCallLoop` (GTT) reads the whole array to a blob (`emitReadStateArrayBlob`, which
 co-spends the array's chunks once), decodes the count, then loops `OP_BEGIN..OP_UNTIL` decoding each framed

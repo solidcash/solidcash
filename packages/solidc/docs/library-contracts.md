@@ -165,27 +165,28 @@ the existing delegate-impl compilation path; Phase 3+ is the genuinely new mecha
    external functions; the deployed-library covenant (delegate self-preservation, the library artifact marker)
    moves to Phase 3 with the call protocol, so the Phase-2 artifact is a normal stateless-contract artifact and
    not yet a reusable on-chain library.
-3. **Consumer-side call protocol (the load-bearing work).** Investigation (2026-06-28) found the existing
-   external-contract-call machinery (docs/external-contract-calls.md) largely serves PURE library calls, which
-   splits Phase 3 in two. (This also vindicates Phase 2's choice to compile library entry points as plain
-   external functions: that is exactly the callee shape 3a wants.)
-   - **3a - pure library call via the external-call path.** A pure (no-caller-state) public library function is
-     called like `IContract(addr).f(x)`: the consumer co-spends the library UTXO, verifies `OP_UTXOBYTECODE ==
-     addr`, and reads the result via the existing `_Return_` event. The spec already blesses stateless callees
-     (external-contract-calls.md S3.2 / S9.3: "stateless callees may be addressed with the same check, nothing
-     to forge"), and the consumer-side call-site codegen reuses cleanly. GAPS: (i) the external-call path assumes
-     a stateful callee with data NFTs - handle a zero-NFT stateless callee; (ii) the library UTXO must
-     SELF-PRESERVE (recreate itself: input LBC == output LBC) or anyone could consume it - emit a library
-     self-preservation covenant, reinforced by the brand + master-gate contention design; (iii) the SDK needs a
-     "stateless external contract" mode (today `getFullState()` assumes state). Optional sugar: `L.f(x)`
-     resolving to the co-spend instead of explicit `IL(addr).f()`.
-   - **3b - state-touching library via delegate.** A library function that mutates the caller's state needs the
-     delegate (caller-context) execution composed with a mid-body value return - genuinely new (today's delegate
-     is whole-spend proxy forwarding). Harder; sequence after 3a. Marks those functions `delegate`.
+3. **State-touching libraries via delegate - the remaining work for this class.** [DECISION 2026-06-28: 3a
+   (pure library via the external-call path) is DROPPED. Pure-library reuse is the precompile path's job
+   (external-libraries.md "Phase 6": .scash source -> blob, OP_INVOKE, branded side-car) - lighter and already
+   mostly built; a stateless-external-contract path here would duplicate it heavier. Confirmed from the SDK: the
+   external-call path (`StatefulContract.withExternalCall`, `setupStatefulUtxos`) is built entirely for STATEFUL
+   callees - a stateless library does not fit it.] What is UNIQUE to the library-contract-class is the
+   caller-state-mutating library lowered to a delegate contract. Remaining (a coupled design+build, NOT a series
+   of quick commits - needs its own design pass before codegen):
+   - **Caller-state access (the core blocker).** A library is stateless and cannot declare the caller's state
+     layout, so it needs a way to name the caller's state THROUGH delegate - a `storage self`-style reference
+     resolved across the delegate boundary, or a shared-layout convention. Today's storage-pointer params are
+     INLINED (`InlineStoragePointerCalls`); a delegate library needs them resolved at the co-spend boundary
+     instead. This is the central new design; everything else depends on it.
+   - **Library side.** Mark caller-state-touching public functions `delegate`; reuse the delegate-impl machinery
+     (`_proxyMasterIndex` altstack, `emitDelegateSelfPreservation`) so the deployed library UTXO self-preserves.
+   - **Consumer side: mid-body `r = L.f(args)`.** Co-spend L, run f in the caller's covenant context (delegate),
+     return a value mid-body. Today's delegate is whole-spend (a proxy fallback forwards all calldata); a
+     mid-body, value-returning delegate call composed with the return-event is genuinely new.
+   - **Contention + SDK + e2e.** Brand the library with the consumer's category + master-gate (see "Contention
+     resolution"); the SDK co-spends/recreates the branded library and supplies the address; mocknet + regtest.
 
-   Groundwork landed first: an `isLibrary` artifact marker the codegen self-preservation and SDK co-spend key
-   on. 3a is then a coherent chunk (stateless-callee self-pres + zero-NFT handling + SDK + e2e) done together.
-4. **SDK.** Deploy the library UTXO (branded, self-preserving), auto-co-spend on calls, link-by-address, thread
-   through auto-derivation. Mirror the precompile side-car SDK flow where it applies.
-5. **State-touching libraries + polish.** `storage self`-style caller-state access for state-mutating library
-   functions; user-controlled inline-vs-externalize (extend `inlineLibraries`); tests + regtest.
+Note: Phase 2 currently lowers ANY library with public functions to a contract artifact, pure ones included.
+Under the decision above, pure libraries should route to the precompile path instead; reconciling Phase 2's
+routing (pure -> precompile blob, state-touching -> this delegate contract) is part of the precompile workstream
+(external-libraries.md Phase 6) and tracked there.

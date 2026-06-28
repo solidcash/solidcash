@@ -9086,24 +9086,31 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private emitDynamicWriteVerification(node: FunctionDefinitionNode): void {
     const loc = { location: node.body.location, positionHint: PositionHint.END };
     const blockSize = this.currentFunction.blockLayout?.blockSize ?? 1;
+    const CHUNK = 120;
 
-    // Phase 1: a dynamic write emits chunk outputs at blockSize+i, so it cannot share the trailing
-    // input/output space with a persisted read of a DIFFERENT var or a collection iteration. Reading the
-    // SAME written var is fine (element ops, read-modify-write): the read co-spends its old chunks as
-    // inputs and the write recreates them as outputs.
+    // A persisted read of a DIFFERENT var (one not also written) co-spends that var's chunks read-only; the
+    // chunk covenant recreates them as iteration-entry outputs at their input index [blockSize, blockSize+
+    // count) (output==input). So a written var's NEW chunks must start AFTER those preserved outputs. Compute
+    // each foreign read's chunk count (ceil(A$len/CHUNK)) as a loop-invariant temp; the write output offset
+    // adds their sum. (Reading the SAME written var is read-modify-write: consumed + recreated by the write,
+    // not a preserved output, so it is excluded here - matching the SDK's iterationEntryInputs.)
     const writtenNames = node.dynamicWrites ?? [];
     const foreignReads = (node.dynamicReads ?? []).filter((r) => !writtenNames.includes(r));
-    if (foreignReads.length > 0) {
-      throw new Error(
-        `A dynamic-storage write and a persisted read of a different var ('${foreignReads[0]}') in the same `
-        + 'function are not yet supported (phase 1). Use separate functions. See docs/dynamic-storage.md.',
-      );
-    }
     if ((node.collectionIterations?.length ?? 0) > 0) {
       throw new Error(
         'A dynamic-storage write and a collection iteration in the same function are not yet supported '
         + '(phase 1). Use separate functions. See docs/dynamic-storage.md.',
       );
+    }
+    const fReadTempNames: string[] = [];
+    for (let k = 0; k < foreignReads.length; k++) {
+      const rsv = this.stateVariables.find((v) => v.name === foreignReads[k])!;
+      this.emitReadDynamicLen(rsv, `(dyn_wfread_${k})`, loc);
+      this.emit(encodeInt(BigInt(CHUNK - 1)), loc);
+      this.emit(Op.OP_ADD, loc);
+      this.emit(encodeInt(BigInt(CHUNK)), loc);
+      this.emit(Op.OP_DIV, loc); // ceil(A$len/CHUNK); top stays tracked as (dyn_wfread_k)
+      fReadTempNames.push(`(dyn_wfread_${k})`);
     }
     // Multiple distinct written dynamic vars share the trailing-OUTPUT space: var W's new chunks verify at
     // blockSize + sum(new-chunk counts of the written vars before W) + i. Process in state-var DECLARATION
@@ -9122,7 +9129,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // tight `<expected> <idx> OP_OUTPUTTOKENCOMMITMENT OP_EQUALVERIFY` pattern (the SDK extractor reads
       // each expected progressively across derivation iterations). Modeled on visitCollectionIteration, so
       // the body is runtime-stack-neutral by construction.
-      const CHUNK = 120;
 
       // --- loop-invariant temp: chunk address locking bytecode ('(dyn_chunkaddr)') ---
       this.emitMasterInputIndex(loc);
@@ -9209,10 +9215,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.popFromStack(); // [..., (dyn_expected) = full expected]
 
       // --- verify chunk output i (untracked working values; expected is already built & tracked) ---
-      // outIdx = masterInputIndex + blockSize + sum(prior written-var counts) + i
+      // outIdx = masterInputIndex + blockSize + sum(foreign-read counts) + sum(prior written-var counts) + i
       this.emitMasterInputIndex(loc);
       this.emit(encodeInt(BigInt(blockSize)), loc);
       this.emit(Op.OP_ADD, loc);
+      for (const ft of fReadTempNames) {
+        this.emit(encodeInt(BigInt(this.getStackIndex(ft) + 1)), loc); // +1: running outIdx-partial untracked
+        this.emit(Op.OP_PICK, loc);
+        this.emit(Op.OP_ADD, loc);
+      }
       for (const pt of wPriorTempNames) {
         this.emit(encodeInt(BigInt(this.getStackIndex(pt) + 1)), loc); // +1: running outIdx-partial untracked
         this.emit(Op.OP_PICK, loc);
@@ -9287,9 +9298,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.removeFromStack(idx);
       }
     }
-    // --- final cleanup: drop the deferred written-var values (kept so each var could read prior counts) ---
-    for (const vsn of writtenValueStackNames) {
-      const idx = this.getStackIndex(vsn);
+    // --- final cleanup: drop the deferred written-var values + the foreign-read count temps ---
+    for (const tmp of [...writtenValueStackNames, ...fReadTempNames]) {
+      const idx = this.getStackIndex(tmp);
       this.emit(encodeInt(BigInt(idx)), loc);
       this.emit(Op.OP_ROLL, loc);
       this.emit(Op.OP_DROP, loc);

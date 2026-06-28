@@ -687,7 +687,10 @@ export class StatefulTransactionBuilder {
    * trailing position when no block layout is present.
    */
   getChunkOutputBase(): number {
-    return this.blockLayout?.blockSize ?? this.getEventOutputBase() + this.getEventOutputCount();
+    // New write chunks come AFTER the preserved iteration-entry outputs (read-only co-spent chunks /
+    // collection-iter entries), which occupy [blockSize, blockSize+count) to match their input indices.
+    const base = this.blockLayout?.blockSize ?? this.getEventOutputBase() + this.getEventOutputCount();
+    return base + this.iterationEntryInputs.length;
   }
 
   private _dynamicChunkOutputCount(): number {
@@ -1446,8 +1449,26 @@ export class StatefulTransactionBuilder {
       });
     }
 
-    // Dynamic-storage chunk outputs (trailing, after the fixed block). One mutable NFT per chunk of
-    // each dynamic var; commitments come from auto-derivation (the covenant builds them on-chain).
+    // Iteration entry outputs (read-only co-spent chunks / collection-iter entries) come FIRST in the trailing
+    // region, preserved at their input index [blockSize, blockSize+count) (the chunk covenant pins
+    // output==input). New chunk outputs follow, after getChunkOutputBase() (which includes this count).
+    for (const iterUtxo of this.iterationEntryInputs) {
+      builder.addOutput({
+        to: iterUtxo.unlocker.generateLockingBytecode(),
+        amount: iterUtxo.satoshis,
+        token: {
+          amount: iterUtxo.token?.amount ?? 0n,
+          category: this.categoryId,
+          nft: {
+            capability: 'mutable',
+            commitment: iterUtxo.token?.nft?.commitment ?? '',
+          },
+        },
+      });
+    }
+
+    // Dynamic-storage chunk outputs (trailing, after the preserved iteration-entry outputs). One mutable NFT
+    // per chunk of each dynamic var; commitments come from auto-derivation (the covenant builds them on-chain).
     for (const dv of this.dynamicChunkVars) {
       const commitments = this.chunkRawCommitments.get(dv.name) ?? [];
       for (const commitment of commitments) {
@@ -1464,22 +1485,6 @@ export class StatefulTransactionBuilder {
         chunkOutput.amount = BigInt(Math.max(1200, calculateDust(chunkOutput)));
         builder.addOutput(chunkOutput);
       }
-    }
-
-    // Iteration entry outputs (after fixed block, matching input ordering)
-    for (const iterUtxo of this.iterationEntryInputs) {
-      builder.addOutput({
-        to: iterUtxo.unlocker.generateLockingBytecode(),
-        amount: iterUtxo.satoshis,
-        token: {
-          amount: iterUtxo.token?.amount ?? 0n,
-          category: this.categoryId,
-          nft: {
-            capability: 'mutable',
-            commitment: iterUtxo.token?.nft?.commitment ?? '',
-          },
-        },
-      });
     }
 
     // Append any extra outputs buffered via addOutput()

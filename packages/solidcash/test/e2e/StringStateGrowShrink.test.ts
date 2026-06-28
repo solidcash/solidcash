@@ -284,6 +284,54 @@ describe('string state variable: multiple persisted reads + distinct writes in o
   });
 });
 
+// Reading one persisted var while WRITING a different var in one function (W2). The read var's chunks are
+// co-spent read-only and preserved as outputs at [blockSize, blockSize+count) (the covenant pins
+// output==input); the written var's new chunks come after them. Different chunk counts make a wrong output
+// offset corrupt the preserved read var, so this proves the output-layout reconciliation.
+const READ_WRITE_SOURCE = `
+pragma solidcash >=0.8.0;
+
+contract ReadWrite() {
+    string a;
+    string b;
+
+    function setA(string v, pubkey pk, sig s) { require(checkSig(s, pk)); this.a = v; }
+
+    function readAWriteB(string ea, string vb, pubkey pk, sig s) {
+        require(checkSig(s, pk));
+        require(this.a == ea);
+        this.b = vb;
+    }
+
+    function checkBoth(string ea, string eb) {
+        require(this.a == ea);
+        require(this.b == eb);
+    }
+}
+`;
+
+describe('string state variable: read one var + write another in one function (W2)', () => {
+  const provider = createTestProvider();
+  const artifact = compileString(READ_WRITE_SOURCE);
+  const sig = (): SignatureTemplate => new SignatureTemplate(alicePriv);
+
+  it('preserves the read var while writing a different var (different chunk counts)', async () => {
+    const contract = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, contract, artifact.stateLayout!, { a: '', b: '' }, { saltContract: true },
+    );
+    const sc = StatefulContract.withCategory(contract, categoryId);
+
+    const va = 'A'.repeat(120) + 'B'.repeat(120) + 'C'.repeat(10); // 250 -> 3 chunks
+    const vb = 'X'.repeat(120) + 'Y'.repeat(10); // 130 -> 2 chunks
+    await sc.setA(va, alicePub, sig()).send();
+    await sc.readAWriteB(va, vb, alicePub, sig()).send(); // read a (preserved), write b (new chunks after)
+    expect((await sc.getState()).a).toBe(va); // a preserved intact
+    expect((await sc.getState()).b).toBe(vb); // b written
+    await sc.checkBoth(va, vb).send(); // on-chain read-back of both
+  });
+});
+
 // The write covenant pins exactly ceil(A$len/120) chunk-address outputs (orphan-bound) and forces all
 // ceil(oldLen/120) old chunks to be co-spent (old-chunk consumption), so no stray/duplicate chunk can
 // survive to corrupt a future read. The grow/shrink suite above exercises the accept path across counts;

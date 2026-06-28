@@ -204,10 +204,12 @@ chunks verify at `blockSize + sum(prior written-var counts) + i` in state-var DE
 - **W5 (multiple distinct writes) - DONE** (this work). Writing 2+ distinct dynamic vars works; the SDK
   already accumulated `chunkOffset += nNew` per var, so no SDK change. e2e: two writes, reverse source
   order, different chunk counts, verified off-chain + on-chain. Was a latent collision; now correct.
-- **W2 (write + persisted read of a DIFFERENT var) - still rejected** (`emitDynamicWriteVerification`
-  ~9089). The hard part: read-only chunks are PRESERVED as outputs at their input index, colliding with new
-  write-chunk outputs at `blockSize`; needs the write OUTPUT base to clear the preserved-read outputs AND
-  the SDK to emit iteration-entry (preserved read) outputs before chunk outputs. See Phase 2 scope.
+- **W2 (write + persisted read of a DIFFERENT var) - DONE** (this work). Read-only chunks are preserved as
+  outputs at their input index `[blockSize, blockSize+count)` (covenant pins output==input), so the written
+  var's new chunks now start AFTER them: the SDK emits iteration-entry (preserved read) outputs before chunk
+  outputs and `getChunkOutputBase += iterationEntryInputs.length`; the codegen write output offset adds the
+  foreign-read chunk count (ceil(A$len/CHUNK) per read var not also written). e2e: read a 3-chunk var
+  (preserved) while writing a 2-chunk var. Backward-compatible (0 foreign reads -> +0).
 - **W3 (same var written twice, e.g. `arr.push();arr.push()`, idx-write + `pop()`, or re-assignment) -
   DONE** (this work). COALESCED to one final-value write: `emitRegisterDynamicWrite`, when the var is
   already pending, drops the prior pending value + A$len and re-registers the new value (which already

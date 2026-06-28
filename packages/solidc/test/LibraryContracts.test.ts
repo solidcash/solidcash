@@ -95,4 +95,22 @@ describe('delegate libraries lower to a delegate contract (3b step 2)', () => {
     const contract = 'contract Counter() { bigint count; function inc() public delegate { this.count = this.count + 1; } }';
     expect(compileString(LIB).bytecode).toBe(compileString(contract).bytecode);
   });
+
+  // 3b `L.f()` sugar, piece 1: the auto-delegate also applies on the import/free-function path, so a consumer
+  // importing a state-touching library sees its functions as delegate calls (routed in a later piece).
+  it('auto-delegates state-touching library functions on the free-function (import) path', () => {
+    const ast = parseCode(
+      'library Counter { bigint count; function increment() public { this.count = this.count + 1; } }',
+    ) as SourceFileNode;
+    const inc = ast.freeFunctions.find((f) => f.name.endsWith('.increment'))!;
+    expect(inc.modifiers).toContain('delegate');
+  });
+
+  it('does not auto-delegate a pure library function (stays inline)', () => {
+    const ast = parseCode(
+      'library Math { function add(int a, int b) public returns (int) { return a + b; } }',
+    ) as SourceFileNode;
+    const add = ast.freeFunctions.find((f) => f.name.endsWith('.add'))!;
+    expect(add.modifiers).not.toContain('delegate');
+  });
 });

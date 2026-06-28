@@ -409,11 +409,22 @@ export default class AstBuilder
       );
       constantDefinitions.push(...libConstants);
 
-      // Library functions get namespaced names (e.g. SafeMath.add)
+      // Library functions get namespaced names (e.g. SafeMath.add). A state-touching library's public/external
+      // functions are auto-marked `delegate` (Solidity has no `delegate` keyword) so a consumer that imports the
+      // library can route `L.f()` to a delegatecall. Mirrors the root-compilation auto-delegate in the
+      // library-only branch below. See docs/library-contracts.md (3b, `L.f()` sugar).
+      const libHasState = libCtx.stateVariableDeclaration_list().length > 0;
       const libFunctions = libCtx.freeFunctionDefinition_list().map(
         (f) => {
           const func = this.visitFreeFunctionDefinition(f);
           func.name = `${libName}.${func.name}`;
+          if (libHasState) {
+            const deployed = func.modifiers.includes(FunctionModifier.PUBLIC)
+              || func.modifiers.includes(FunctionModifier.EXTERNAL);
+            if (deployed && !func.modifiers.includes(FunctionModifier.DELEGATE)) {
+              func.modifiers.push(FunctionModifier.DELEGATE);
+            }
+          }
           return func;
         },
       );

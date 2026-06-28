@@ -854,8 +854,10 @@ describe('SBE-10: storage-pointer locals + block.timestamp + stmt-form interface
   });
 
   it('maps block.timestamp to tx.locktime under solidityImportCompat', () => {
+    // private `t`: a public state var synthesizes a getter that triggers subroutine extraction, hex-encoding
+    // OP_TXLOCKTIME. The mapping under test is visibility-independent.
     const a = compileString(`pragma solidity ^0.8.26;
-      contract C { uint256 t; function f(uint256 startAt) external { require(startAt >= block.timestamp); t = startAt; } }`,
+      contract C { uint256 private t; function f(uint256 startAt) external { require(startAt >= block.timestamp); t = startAt; } }`,
     { solidityImportCompat: true });
     expect(a.bytecode).toContain('OP_TXLOCKTIME');
   });

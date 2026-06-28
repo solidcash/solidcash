@@ -23,6 +23,7 @@ import InlineExternalCallHelpers from './semantic/InlineExternalCallHelpers.js';
 import InlineStoragePointerCalls from './semantic/InlineStoragePointerCalls.js';
 import CacheDynamicArrayInLoop from './semantic/CacheDynamicArrayInLoop.js';
 import SynthesizeBlockOracle from './semantic/SynthesizeBlockOracle.js';
+import SynthesizePublicGetters from './semantic/SynthesizePublicGetters.js';
 import expandModifiers from './semantic/ModifierExpansionTransformation.js';
 import expandBreakContinue from './semantic/BreakContinueTransformation.js';
 import expandInheritance from './semantic/InheritanceExpansionTransformation.js';
@@ -100,6 +101,10 @@ export function compileString(code: string, compilerOptions: CompileOptions = {}
   if (ast.contract.isAbstract) {
     throw new AbstractContractNotCompilableError(ast.contract.name);
   }
+
+  // Solidity public state-var/mapping auto-getters -> real entry-point functions, so a ported callee invoked
+  // via a getter (`timeLock.lockTime(addr)`) actually dispatches it. Gated on solidityImportCompat.
+  ast = ast.accept(new SynthesizePublicGetters(mergedCompilerOptions.solidityImportCompat ?? false)) as Ast;
 
   // Modifier expansion (before semantic analysis)
   ast = expandModifiers(ast);

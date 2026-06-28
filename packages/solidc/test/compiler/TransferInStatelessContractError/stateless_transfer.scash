@@ -1,6 +1,0 @@
-contract Test() {
-    function pay(address payable dst, sig s, pubkey pk) {
-        dst.transfer(1000);
-        require(checkSig(s, pk));
-    }
-}

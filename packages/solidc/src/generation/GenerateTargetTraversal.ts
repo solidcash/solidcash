@@ -457,6 +457,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private emitBlockSlotIndex(
     kind: BlockSlotKind, slotIndex: number | undefined, locationData: SingleLocationData,
   ): void {
+    // Stateless contract (no block layout): a transfer output sits at the absolute index transferIndex in
+    // [0, N) - there is no input-index-relative block to offset from.
+    if (!this.currentFunction.blockLayout && kind === 'transfer') {
+      this.emit(encodeInt(BigInt(slotIndex ?? 0)), locationData);
+      return;
+    }
     const offset = this.getBlockSlotOffset(kind, slotIndex);
     this.emitMasterInputIndex(locationData);
     if (offset > 0) {
@@ -11770,7 +11776,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // First verify satoshi container identity at block layout offset
     // actually point to the real satoshi container covenant UTXOs
     // (mirrors emitTokenContainerIdentityVerification for token containers)
-    if (this.pendingTransfers.length > 0) {
+    if (this.pendingTransfers.length > 0 && this.currentFunction.blockLayout) {
       // Build expected satoshi container P2SH32 LBC from master's category
       this.emitMasterInputIndex(locationData);
       this.emit(Op.OP_UTXOTOKENCATEGORY, locationData);
@@ -11820,7 +11826,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
 
     // containerInputSats <= containerOutputSats + sum(transferValues)
-    if (this.pendingTransfers.length > 0) {
+    if (this.pendingTransfers.length > 0 && this.currentFunction.blockLayout) {
       // Read satoshi container input value
       this.emitBlockSlotIndex('satoshiContainer', undefined, locationData);
       this.emit(Op.OP_UTXOVALUE, locationData);
@@ -12133,6 +12139,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * Stack after:  [..., value]
    */
   private emitMsgValue(locationData: SingleLocationData): void {
+    // Stateless contract (no block layout / satoshi container): msg.value is just the satoshi value of the
+    // contract input being spent - there is no persistent balance to diff against.
+    if (!this.currentFunction.blockLayout) {
+      this.emit(Op.OP_INPUTINDEX, locationData);
+      this.emit(Op.OP_UTXOVALUE, locationData);
+      this.pushToStack('(value)');
+      return;
+    }
     // Get own category (32 bytes, strip capability flag)
     this.emitMasterInputIndex(locationData);
     this.emit(Op.OP_UTXOTOKENCATEGORY, locationData);

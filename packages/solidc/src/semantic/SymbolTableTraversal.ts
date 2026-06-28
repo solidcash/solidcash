@@ -148,7 +148,6 @@ import {
   ExternalReadArgCountError,
   UndefinedInterfaceFunctionError,
   MethodCallNotSupportedError,
-  TransferInStatelessContractError,
   UsingForUndefinedLibraryError,
   UsingForUndefinedFunctionError,
   OperatorOverloadNonUDVTError,
@@ -1196,13 +1195,10 @@ export default class SymbolTableTraversal extends AstTraversal {
       this.collectTransferStatements(node.body, transferInfos);
 
       if (transferInfos.length > 0) {
-        // Satoshi transfers are enforced via the stateful covenant block layout; a stateless contract
-        // (no state vars/collections/events) has no such block, so reject them with a clear error.
-        if (!this.isStatefulContract) {
-          throw new TransferInStatelessContractError(node);
-        }
+        // Stateful: transfers occupy block-layout output slots (input-index relative). Stateless (no state):
+        // no block, so transfer outputs are verified at absolute indices [0, N) and the value comes from the
+        // input being spent (no satoshi container). Record them either way; the codegen branches on layout.
         node.transferInfos = transferInfos;
-
       }
     }
 

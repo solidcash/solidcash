@@ -1,4 +1,4 @@
-import { Type, PrimitiveType, BytesType, MappingType, ArrayType, StructType, EnumType, ValueType, TupleType, FunctionBlockLayout } from '@solidcash/utils';
+import { Type, PrimitiveType, BytesType, MappingType, ArrayType, StructType, EnumType, ValueType, TupleType, FunctionBlockLayout, LibraryCallArg } from '@solidcash/utils';
 import { TimeOp } from './Globals.js';
 import AstVisitor from './AstVisitor.js';
 import { BinaryOperator, NullaryOperator, UnaryOperator } from './Operator.js';
@@ -204,10 +204,9 @@ export class FunctionDefinitionNode extends Node implements Named {
   lowLevelCalls?: { callMode: 'call' | 'staticcall' | 'delegatecall'; dataParamIndex?: number }[];
   // Delegate-library calls desugared from `L.f()` (SynthesizeLibraryDelegateCalls), in source order. The SDK
   // auto-wires the delegatecall co-spend from a registered library instance, so the caller need not name the
-  // library function again. `argParams` are the enclosing function's parameter names forwarded to the library
-  // (positional); the SDK resolves their values from the consumer call and passes them to the library unlocker.
-  // See docs/library-contracts.md (3b auto-wire + arguments).
-  libraryDelegateCalls?: { library: string; functionName: string; argParams: string[] }[];
+  // library function again. `args` are positional: a forwarded enclosing-function parameter or a literal; the
+  // SDK resolves them and passes them to the library unlocker. See docs/library-contracts.md (3b auto-wire + args).
+  libraryDelegateCalls?: { library: string; functionName: string; args: LibraryCallArg[] }[];
   collectionIterations?: CollectionIterationInfo[];
   // Dynamic-storage vars (string / unbounded bytes) read on-chain (not written here); recorded during codegen.
   // SDK co-spends their chunk UTXOs as read-only trailing inputs.

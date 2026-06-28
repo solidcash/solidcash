@@ -106,7 +106,7 @@ function buildFunctionAbiMetadata(func: FunctionDefinitionNode): Partial<AbiFunc
       libraryDelegateCalls: func.libraryDelegateCalls.map((ld) => ({
         library: ld.library,
         functionName: ld.functionName,
-        ...(ld.argParams.length > 0 && { argParams: ld.argParams }),
+        ...(ld.args.length > 0 && { args: ld.args }),
       })),
     }),
     ...(func.collectionIterations && func.collectionIterations.length > 0 && {

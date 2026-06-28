@@ -144,21 +144,32 @@ describe('delegate libraries lower to a delegate contract (3b step 2)', () => {
   });
 });
 
-// 3b arguments: a consumer may forward its own parameters to a library call; the SDK supplies their values to
-// the library unlocker (the delegatecall data is not on-chain). Only parameter forwarding is supported.
-describe('delegate library forwarded arguments (3b)', () => {
+// 3b arguments: a consumer may forward its own parameters OR pass literals to a library call; the SDK supplies
+// their values to the library unlocker (the delegatecall data is not on-chain). Computed expressions and state
+// reads are unsupported (the SDK cannot evaluate them).
+describe('delegate library arguments (3b)', () => {
   const COUNTER = 'library Counter { bigint count; '
     + 'function incrementBy(bigint n) public { this.count = this.count + n; } }';
   const resolver = (p: string): { source: string; id: string } | undefined =>
     (p.includes('counter') ? { source: COUNTER, id: 'counter' } : undefined);
 
-  it('records the forwarded parameter names in libraryDelegateCalls', () => {
+  it('records a forwarded parameter in libraryDelegateCalls', () => {
     const consumer = 'import { Counter } from "./counter.scash"; '
       + 'contract C() { bigint count; function bumpBy(bigint n) { Counter.incrementBy(n); } }';
     const art = compileString(consumer, { importResolver: resolver });
     const bumpBy = art.abi.find((f) => f.name === 'bumpBy')!;
     expect(bumpBy.libraryDelegateCalls).toEqual(
-      [{ library: 'Counter', functionName: 'incrementBy', argParams: ['n'] }],
+      [{ library: 'Counter', functionName: 'incrementBy', args: [{ param: 'n' }] }],
+    );
+  });
+
+  it('records a literal argument encoded by the library parameter type', () => {
+    const consumer = 'import { Counter } from "./counter.scash"; '
+      + 'contract C() { bigint count; function bump() { Counter.incrementBy(5); } }';
+    const art = compileString(consumer, { importResolver: resolver });
+    const bump = art.abi.find((f) => f.name === 'bump')!;
+    expect(bump.libraryDelegateCalls).toEqual(
+      [{ library: 'Counter', functionName: 'incrementBy', args: [{ literal: '5', kind: 'int' }] }],
     );
   });
 
@@ -173,10 +184,16 @@ describe('delegate library forwarded arguments (3b)', () => {
     expect(warns.some((w) => /Low-level \.delegatecall/.test(w))).toBe(false);
   });
 
-  it('rejects a non-parameter argument (literal / computed expression)', () => {
+  it('rejects a computed-expression argument (the SDK cannot evaluate it)', () => {
     const consumer = 'import { Counter } from "./counter.scash"; '
-      + 'contract C() { bigint count; function bump() { Counter.incrementBy(5); } }';
-    expect(() => compileString(consumer, { importResolver: resolver })).toThrow(/forwarding the enclosing/i);
+      + 'contract C() { bigint count; function bumpBy(bigint n) { Counter.incrementBy(n + 1); } }';
+    expect(() => compileString(consumer, { importResolver: resolver })).toThrow(/parameter or a int literal/i);
+  });
+
+  it('rejects a literal whose kind does not match the library parameter type', () => {
+    const consumer = 'import { Counter } from "./counter.scash"; '
+      + 'contract C() { bigint count; function bump() { Counter.incrementBy(true); } }';
+    expect(() => compileString(consumer, { importResolver: resolver })).toThrow(/int literal/i);
   });
 
   // A delegate library is co-spent with no synchronous return; using its call as a value must fail clearly,

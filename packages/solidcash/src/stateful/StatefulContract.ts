@@ -6342,16 +6342,23 @@ export class StatefulFunctionCall {
         lib.inner.artifact.stateLayout,
         lib.inner.artifact.contractName,
       );
-      // Forward the named consumer parameters to the library unlocker (positional, in argParams order).
-      const args = (lc.argParams ?? []).map((pname) => {
-        const idx = abiFunc!.inputs.findIndex((inp) => inp.name === pname);
-        if (idx < 0 || !this.functionArgs || idx >= this.functionArgs.length) {
-          throw new Error(
-            `Cannot resolve argument '${pname}' forwarded to library '${lc.library}.${lc.functionName}' `
-            + `from the call to '${this.functionName}'.`,
-          );
+      // Resolve each positional arg for the library unlocker: a forwarded consumer parameter (by name, from the
+      // consumer call) or a compile-time literal (reconstructed by kind).
+      const args = (lc.args ?? []).map((a) => {
+        if ('param' in a) {
+          const idx = abiFunc!.inputs.findIndex((inp) => inp.name === a.param);
+          if (idx < 0 || !this.functionArgs || idx >= this.functionArgs.length) {
+            throw new Error(
+              `Cannot resolve argument '${a.param}' forwarded to library '${lc.library}.${lc.functionName}' `
+              + `from the call to '${this.functionName}'.`,
+            );
+          }
+          return this.functionArgs[idx];
         }
-        return this.functionArgs[idx];
+        if (a.kind === 'int') return BigInt(a.literal);
+        if (a.kind === 'bool') return a.literal === 'true';
+        if (a.kind === 'bytes') return hexToBin(a.literal);
+        return a.literal; // string
       });
       this.callInfos.push({ type: 'stateful', contract: lib, functionName: lc.functionName, args });
     }

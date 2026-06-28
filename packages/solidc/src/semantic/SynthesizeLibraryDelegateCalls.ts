@@ -1,8 +1,10 @@
-import { AddressType, computeFunctionSignature, computeFunctionSelector } from '@solidcash/utils';
+import { binToHex } from '@bitauth/libauth';
+import { AddressType, computeFunctionSignature, computeFunctionSelector, LibraryCallArg } from '@solidcash/utils';
 import {
   SourceFileNode, ContractNode, Node, FunctionCallStatementNode, LowLevelCallStatementNode,
   IdentifierNode, HexLiteralNode, ParameterNode, FunctionModifier, StateVariableNode,
-  FunctionDefinitionNode, FunctionCallNode,
+  FunctionDefinitionNode, FunctionCallNode, IntLiteralNode, BoolLiteralNode, StringLiteralNode,
+  ExpressionNode,
 } from '../ast/AST.js';
 import AstTraversal from '../ast/AstTraversal.js';
 
@@ -19,10 +21,13 @@ import AstTraversal from '../ast/AstTraversal.js';
  *
  * Runs pre-semantic, after import resolution. The library's deployed address is a synthesized constructor arg
  * (EVM-link style): the SDK supplies it and co-spends the library. See docs/library-contracts.md (3b sugar).
- * First form: no-argument library functions (args via abi.encodeWithSelector + return values are follow-ups).
+ * Arguments may forward the enclosing function's parameters or pass literals (encoded per the library param
+ * type); the SDK resolves them and supplies them to the library unlocker. Return values are via shared state.
  */
 export default class SynthesizeLibraryDelegateCalls extends AstTraversal {
-  private delegateLibFns = new Map<string, { libName: string; fnName: string; selector: Uint8Array }>();
+  private delegateLibFns = new Map<
+    string, { libName: string; fnName: string; selector: Uint8Array; paramTypes: string[] }
+  >();
   private usedLibs = new Set<string>();
   private currentFn?: FunctionDefinitionNode;
 
@@ -34,8 +39,9 @@ export default class SynthesizeLibraryDelegateCalls extends AstTraversal {
       if (dot < 0) continue;
       const libName = fn.name.slice(0, dot);
       const fnName = fn.name.slice(dot + 1);
-      const sig = computeFunctionSignature(fnName, fn.parameters.map((p) => p.type.toString()));
-      this.delegateLibFns.set(fn.name, { libName, fnName, selector: computeFunctionSelector(sig) });
+      const paramTypes = fn.parameters.map((p) => p.type.toString());
+      const sig = computeFunctionSignature(fnName, paramTypes);
+      this.delegateLibFns.set(fn.name, { libName, fnName, selector: computeFunctionSelector(sig), paramTypes });
     }
     if (this.delegateLibFns.size === 0) return node;
 
@@ -93,29 +99,24 @@ export default class SynthesizeLibraryDelegateCalls extends AstTraversal {
     const info = name ? this.delegateLibFns.get(name) : undefined;
     if (!info) return super.visitFunctionCallStatement(node);
 
-    // Arguments are limited to forwarding the enclosing function's parameters (the SDK resolves their values
-    // from the consumer call and supplies them to the library unlocker; the delegatecall data is not on-chain).
-    // Literals, computed expressions, and state reads are not yet supported.
-    const argParams: string[] = [];
-    for (const arg of node.call.parameters) {
-      const param = arg instanceof IdentifierNode
-        ? this.currentFn?.parameters.find((p) => p.name === arg.name)
-        : undefined;
-      if (!param) {
-        throw new Error(
-          `Library delegate call '${name}' supports only forwarding the enclosing function's parameters as `
-          + `arguments (e.g. function f(int x) { ${info.libName}.${info.fnName}(x); }). Literals, computed `
-          + 'expressions, and state reads are not yet supported. See docs/library-contracts.md.',
-        );
-      }
-      param.syntheticallyUsed = true; // used via SDK forwarding; suppress the unused-variable warning
-      argParams.push(param.name);
+    // Arguments are positional: a forwarded enclosing-function parameter (the SDK reads its value from the
+    // consumer call) or a literal (encoded per the library param type; the SDK reconstructs it). Both reach the
+    // library via its SDK-built unlocker, since the delegatecall data is not on-chain. Computed expressions and
+    // state reads are not supported (the SDK cannot evaluate them).
+    if (node.call.parameters.length !== info.paramTypes.length) {
+      throw new Error(
+        `Library delegate call '${name}' expects ${info.paramTypes.length} argument(s) but got `
+        + `${node.call.parameters.length}.`,
+      );
     }
+    const args: LibraryCallArg[] = node.call.parameters.map(
+      (arg, i) => this.toLibraryCallArg(arg, info.paramTypes[i], name!),
+    );
     this.usedLibs.add(info.libName);
     // Record the target so the SDK auto-wires the delegatecall co-spend (no manual withDelegatecall).
     if (this.currentFn) {
       (this.currentFn.libraryDelegateCalls ??= []).push(
-        { library: info.libName, functionName: info.fnName, argParams },
+        { library: info.libName, functionName: info.fnName, args },
       );
     }
     const addr = new IdentifierNode(`__libAddr_${info.libName}`);
@@ -127,6 +128,43 @@ export default class SynthesizeLibraryDelegateCalls extends AstTraversal {
     ll.location = node.location;
     return ll;
   }
+
+  // Map one call argument to a LibraryCallArg: a forwarded enclosing-function parameter, or a literal encoded
+  // per the library parameter's type. Throws on anything else (computed expression, state read, or a literal
+  // whose kind does not match the parameter type).
+  private toLibraryCallArg(arg: ExpressionNode, paramType: string, callName: string): LibraryCallArg {
+    if (arg instanceof IdentifierNode) {
+      const param = this.currentFn?.parameters.find((p) => p.name === arg.name);
+      if (!param) {
+        throw new Error(
+          `Library delegate call '${callName}' argument '${arg.name}' is not a parameter of the enclosing `
+          + 'function. Only enclosing-function parameters and literals are supported (computed expressions and '
+          + 'state reads are not). See docs/library-contracts.md.',
+        );
+      }
+      param.syntheticallyUsed = true; // used via SDK forwarding; suppress the unused-variable warning
+      return { param: param.name };
+    }
+    const kind = literalKindForType(paramType);
+    if (kind === 'int' && arg instanceof IntLiteralNode) return { literal: arg.value.toString(), kind };
+    if (kind === 'bool' && arg instanceof BoolLiteralNode) return { literal: arg.value ? 'true' : 'false', kind };
+    if (kind === 'bytes' && arg instanceof HexLiteralNode) return { literal: binToHex(arg.value), kind };
+    if (kind === 'string' && arg instanceof StringLiteralNode) return { literal: arg.value, kind };
+    throw new Error(
+      `Library delegate call '${callName}' argument must be an enclosing-function parameter or a ${kind} literal `
+      + `matching the parameter type '${paramType}'. Computed expressions and state reads are not supported. `
+      + 'See docs/library-contracts.md.',
+    );
+  }
+}
+
+// The literal encoding for a library parameter type: int-like -> 'int', bool -> 'bool', string -> 'string',
+// everything else (bytes, bytesN, address, pubkey, sig, ...) -> 'bytes'.
+function literalKindForType(t: string): 'int' | 'bool' | 'bytes' | 'string' {
+  if (t === 'bool') return 'bool';
+  if (t === 'string') return 'string';
+  if (t === 'bigint' || /^u?int\d*$/.test(t)) return 'int';
+  return 'bytes';
 }
 
 // The consumer's state layout must have the library's declared fields first, in the same order, with the same

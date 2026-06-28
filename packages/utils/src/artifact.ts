@@ -62,6 +62,13 @@ export interface TokenContainerAccessAbi {
   transferNftCount?: number;   // number of transferNft() calls (>1 for fan-out)
 }
 
+// A positional argument to a delegate-library call (`L.f(...)`). Either a forwarded enclosing-function
+// parameter (resolved from the consumer call at spend time) or a compile-time literal encoded as a string with
+// its kind (the SDK reconstructs: int -> BigInt, bool -> ===\"true\", bytes -> hexToBin, string -> as-is).
+export type LibraryCallArg =
+  | { param: string }
+  | { literal: string; kind: 'int' | 'bool' | 'bytes' | 'string' };
+
 export interface AbiOutput {
   type: string;
 }
@@ -118,9 +125,11 @@ export interface AbiFunction {
   mergeCountParam?: string;
   lowLevelCalls?: readonly { callMode: 'call' | 'staticcall' | 'delegatecall'; dataParamIndex?: number }[];
   // Delegate-library calls (`L.f()`); the SDK auto-wires each one's delegatecall co-spend from a registered
-  // library instance (registerLibrary). `argParams` are the enclosing function's parameter names forwarded to
-  // the library (the SDK reads their values from the consumer call). See docs/library-contracts.md (3b auto-wire).
-  libraryDelegateCalls?: readonly { library: string; functionName: string; argParams?: readonly string[] }[];
+  // library instance (registerLibrary). `args` are positional: a forwarded enclosing-function parameter (the SDK
+  // reads its value from the consumer call) or a compile-time literal. See docs/library-contracts.md (3b).
+  libraryDelegateCalls?: readonly {
+    library: string; functionName: string; args?: readonly LibraryCallArg[];
+  }[];
   collectionIterations?: readonly CollectionIterationAbi[];
   // Persisted dynamic-storage vars read on-chain; the SDK co-spends their chunks as read-only inputs.
   dynamicReads?: readonly string[];

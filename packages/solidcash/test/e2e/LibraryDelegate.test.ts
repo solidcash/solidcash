@@ -236,6 +236,39 @@ describe('library-contracts 3b: forwarded arguments end-to-end', () => {
     const state = parsePushdataCommitment(consumerNft!.token!.nft!.commitment, consumerArt.stateLayout!, 0);
     expect(state.count).toBe(5n);
   });
+
+  it('passes a literal argument through to the library (SDK reconstructs it)', async () => {
+    const provider = createTestProvider();
+    const resolver = (p: string): { source: string; id: string } | undefined =>
+      (p.includes('counter') ? { source: COUNTER_ARG, id: 'counter' } : undefined);
+    // Consumer passes a compile-time literal, not a forwarded parameter.
+    const litConsumerSrc = 'import { Counter } from "./counter.scash"; '
+      + 'contract C() { bigint count; function bump() { Counter.incrementBy(7); } }';
+    const counterArt = compileString(COUNTER_ARG);
+    const consumerArt = compileString(litConsumerSrc, { importResolver: resolver });
+
+    const counter = new Contract(counterArt, [], { provider });
+    const { categoryId: counterCat } = await setupStatefulUtxos(
+      provider, counter, counterArt.stateLayout!, { count: 0n }, { saltContract: true },
+    );
+    const counterAddr = hexToBin(counter.withCategory(hexToBin(counterCat)).lockingBytecode);
+
+    const consumer = new Contract(consumerArt, [counterAddr], { provider });
+    const { categoryId: consumerCat } = await setupStatefulUtxos(
+      provider, consumer, consumerArt.stateLayout!, { count: 0n }, { saltContract: true },
+    );
+
+    const consumerSc = StatefulContract.withCategory(consumer, consumerCat);
+    const counterSc = StatefulContract.withCategory(counter, counterCat);
+
+    consumerSc.registerLibrary('Counter', counterSc);
+    const tx = await consumerSc.call.bump().send();
+    const consumerNft = getTxOutputs(tx).find(
+      (o) => o.token?.nft?.capability === 'mutable' && o.token?.category === consumerCat,
+    );
+    const state = parsePushdataCommitment(consumerNft!.token!.nft!.commitment, consumerArt.stateLayout!, 0);
+    expect(state.count).toBe(7n);
+  });
 });
 
 // 3b contention: a BRANDED library (compilerOptions.brandLibrary) pins the co-spent proxy master's category to

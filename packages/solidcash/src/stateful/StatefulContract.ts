@@ -579,6 +579,14 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
   readonly tokens: { [tokenContainerCategoryIdHex: string]: TokenContainerAccessor };
 
   private _externalRegistry: Map<string, ConnectedStatefulContract> = new Map();
+  // Callee instances for an array-element external call `IFoo(arr[i]).m()`, co-spent in array order. The
+  // covenant verifies each co-spent callee against arr[i], so this list must match the on-chain array.
+  private _externalArrayRegistry: Map<string, ConnectedStatefulContract[]> = new Map();
+
+  /** Register the callee instances for an array-element external call `IFoo(arr[i]).m()` (in array order). */
+  registerExternalArray(interfaceName: string, instances: ConnectedStatefulContract[]): void {
+    this._externalArrayRegistry.set(interfaceName, instances);
+  }
 
   /** Bound signer for automatic transaction funding. Set via `connect(signer)`. */
   _signer?: Signer;
@@ -3831,7 +3839,30 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     let outStateInputCount = 0;
 
     // Handle external function calls (cross-contract calls via interfaces)
-    const externalCalls = abiFunction?.externalCalls;
+    let externalCalls = abiFunction?.externalCalls;
+    // Expand an array-element external call `IFoo(arr[i]).m()` into one concrete call per registered callee
+    // instance (co-spent in array order; the covenant verifies each against the on-chain arr[i]).
+    let presetResolved: (ExternalCallInfo | undefined)[] | undefined;
+    if (externalCalls?.some((ec) => ec.loopArrayVar)) {
+      const expanded: ExternalCallAbi[] = [];
+      presetResolved = [];
+      for (const ec of externalCalls) {
+        if (ec.loopArrayVar) {
+          const list = this._externalArrayRegistry.get(ec.interfaceName) ?? [];
+          const resolvedArgs = this._resolveExternalArgs(ec.argSources, args, this.inner.artifact) ?? [];
+          for (const inst of list) {
+            expanded.push({ ...ec, loopArrayVar: undefined });
+            presetResolved.push({
+              externalContract: inst as unknown as StatefulContract, functionName: ec.functionName, args: resolvedArgs,
+            });
+          }
+        } else {
+          expanded.push(ec);
+          presetResolved.push(undefined);
+        }
+      }
+      externalCalls = expanded;
+    }
     let externalCallUtxoGroups: ExternalCallUtxoGroup[] = [];
     // Total return event count including transitive chains (updated in external call block)
     // Combined metadata for all groups (direct + transitive); used by _deriveFullTransactionState
@@ -3845,7 +3876,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     if (externalCalls && externalCalls.length > 0 && !resolvedExternalCalls) {
       const autoResolved: ExternalCallInfo[] = [];
       let canAutoResolve = true;
-      for (const ec of externalCalls) {
+      for (let eci = 0; eci < externalCalls.length; eci++) {
+        const ec = externalCalls[eci];
+        // Array-element call: the callee instance was already resolved during expansion.
+        if (presetResolved?.[eci]) { autoResolved.push(presetResolved[eci]!); continue; }
         const registered = this._externalRegistry.get(ec.interfaceName);
         if (!registered) {
           canAutoResolve = false;
@@ -4261,7 +4295,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       }
 
       // _externalCallInputBase: runtime param (needed for mutual A<->B calls)
-      const externalCallInputBase = 1 + requiredNftIndices.length + externalReadUtxos.length + outStateInputCount;
+      // When the function reads a dynamic-storage array (loop external calls over arr[i]), the
+      // chunk run sits right after the block (read at blockSize+i); the callees are appended
+      // AFTER that chunk run, so the base advances by the chunk count.
+      let externalCallInputBase = 1 + requiredNftIndices.length + externalReadUtxos.length + outStateInputCount;
+      if (iterationEntryInputs.length > 0) externalCallInputBase += iterationEntryInputs.length;
       finalArgs = [...finalArgs, BigInt(externalCallInputBase)];
 
       // Count all returning call groups (direct + transitive) for return event output computation

@@ -371,6 +371,22 @@ export class StatefulTransactionBuilder {
     }
 
     // Legacy ordering - funders go at the end (past all covenant inputs).
+    // When the function also reads a dynamic-storage array (iterationEntryInputs = chunk run),
+    // the covenant reads those chunks at blockSize+i, so they must sit immediately after the
+    // block with nothing between. Loop external-call callees therefore go AFTER the chunk run
+    // (their base is computed as blockSize+chunkCount), not in the pre-entry external-call slot.
+    if (this.iterationEntryInputs.length > 0 && externalCallInputs.length > 0) {
+      return [
+        this.masterUtxo, ...this.dataNftUtxos, ...this.readOnlyDataNftUtxos, ...this.blockhashCoSpendUtxos,
+        ...externalOutStateInputs,
+        ...lowLevelCallInputs, ...this.lowLevelCallRawInputs,
+        ...entryInputs, ...this.iterationEntryInputs,
+        ...externalCallInputs,
+        ...this.dynamicChunkInputs,
+        ...tokenContainerInputs, ...satoshiContainerInputs,
+        ...this.funderUtxos,
+      ];
+    }
     return [
       this.masterUtxo, ...this.dataNftUtxos, ...this.readOnlyDataNftUtxos, ...this.blockhashCoSpendUtxos,
       ...externalOutStateInputs, ...externalCallInputs,
@@ -759,6 +775,9 @@ export class StatefulTransactionBuilder {
     for (const g of this.externalOutStateUtxoGroups) {
       base += 1 + g.dataNftUtxos.length;
     }
+    // Loop external-call case: the read array's chunk run is co-spent BEFORE the callees (see _buildInputs),
+    // so callee inputs are shifted by the chunk count. Zero when no dynamic-array read is co-spent.
+    base += this.iterationEntryInputs.length;
     for (let i = 0; i < groupIdx; i++) {
       const g = this.externalCallUtxoGroups[i];
       base += g.blockInputs ? g.blockInputs.length : 1 + g.dataNftUtxos.length;
@@ -776,6 +795,9 @@ export class StatefulTransactionBuilder {
     for (const g of this.externalOutStateUtxoGroups) {
       base += 1 + g.dataNftUtxos.length;
     }
+    // Loop external-call case: the read array's chunk preservation outputs precede the callee outputs
+    // (see build()), shifting them by the chunk count. Zero when no dynamic-array read is co-spent.
+    base += this.iterationEntryInputs.length;
     for (let i = 0; i < groupIdx; i++) {
       const g = this.externalCallUtxoGroups[i];
       // Use full block size when available
@@ -971,6 +993,25 @@ export class StatefulTransactionBuilder {
               capability: nftUtxo.token?.nft?.capability ?? 'mutable',
               commitment,
             },
+          },
+        });
+      }
+    }
+
+    // Loop external-call case: the read array's chunk run is co-spent BEFORE the callees (input order
+    // master..chunk..callees), and the covenant verifies callee output==input by index, so the chunk
+    // preservation outputs must precede the callee outputs here too. Emit them now; the trailing
+    // iteration-entry block below skips itself when this fired.
+    const loopChunkBeforeCallees = this.iterationEntryInputs.length > 0 && this.externalCallUtxoGroups.length > 0;
+    if (loopChunkBeforeCallees) {
+      for (const iterUtxo of this.iterationEntryInputs) {
+        builder.addOutput({
+          to: iterUtxo.unlocker.generateLockingBytecode(),
+          amount: iterUtxo.satoshis,
+          token: {
+            amount: iterUtxo.token?.amount ?? 0n,
+            category: this.categoryId,
+            nft: { capability: 'mutable', commitment: iterUtxo.token?.nft?.commitment ?? '' },
           },
         });
       }
@@ -1452,7 +1493,8 @@ export class StatefulTransactionBuilder {
     // Iteration entry outputs (read-only co-spent chunks / collection-iter entries) come FIRST in the trailing
     // region, preserved at their input index [blockSize, blockSize+count) (the chunk covenant pins
     // output==input). New chunk outputs follow, after getChunkOutputBase() (which includes this count).
-    for (const iterUtxo of this.iterationEntryInputs) {
+    // Skipped when already emitted before the callee outputs (loop external-call case).
+    for (const iterUtxo of (loopChunkBeforeCallees ? [] : this.iterationEntryInputs)) {
       builder.addOutput({
         to: iterUtxo.unlocker.generateLockingBytecode(),
         amount: iterUtxo.satoshis,

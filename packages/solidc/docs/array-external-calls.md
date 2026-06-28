@@ -1,7 +1,9 @@
 # External calls on array-element targets (`IFoo(arr[i]).m()` in a loop)
 
-Status: DESIGN (not yet implemented). Motivating corpus contract: `events-advanced/EventsAdvanced.sol`
+Status: IMPLEMENTED & e2e-green (Phase 1). Motivating corpus contract: `events-advanced/EventsAdvanced.sol`
 (`for (i < subscriberList.length) IEventSubscriber(subscriberList[i]).handleTransferEvent(...)`).
+e2e: `packages/solidcash/test/e2e/ArrayExternalCall.test.ts`. See "Status: implemented" at the end for the
+final composition (the hard part).
 
 ## The pattern
 
@@ -88,3 +90,36 @@ model would let a signed spender fake the subscriber set - rejected.)
 This is security-critical covenant codegen in a loop with a real soundness model - comparable in size to the
 whole dynamic-storage phase-2 effort (multiple interlocking parts: codegen loop, SDK co-spend, block layout,
 e2e), not a one-wall change. It should be implemented and e2e-validated as a focused effort, not rushed.
+
+## Status: implemented
+
+Detection: `collectExternalCalls` (SymbolTableTraversal) sets `slot.loopArrayVar` when the call address is
+`arr[i]` / `map[k]` with no `addressParam`; surfaced to the artifact as `externalCalls[].loopArrayVar`.
+
+Codegen: `emitArrayExternalCallLoop` (GTT) reads the whole array to a blob (`emitReadStateArrayBlob`, which
+co-spends the array's chunks once), decodes the count, then loops `OP_BEGIN..OP_UNTIL` decoding each framed
+element and verifying `callee[externalCallInputBase + i*stride].master.LBC == arr[i]` plus master/category
+preservation and the selector. The source `for` loop is left as harmless iteration; this epilogue is the
+real check. Strict: count pinned to N, each callee verified against arr[i].
+
+SDK: `registerExternalArray(interfaceName, instances)` lists the callee instances (array order);
+`_createBuilder` expands the one loop slot into N concrete calls (`presetResolved`) so the existing
+auto-derivation co-spends + state-derives each callee.
+
+The hard part - trailing-input composition. The array's chunk run (read at `blockSize+i`) and the loop's
+callee run share the trailing input space. Resolution: the chunk run is co-spent immediately after the block
+(nothing between, so `blockSize+i` is correct) and the callees go AFTER it. Four coordinated SDK points, all
+keyed off `iterationEntryInputs.length` (0 when no array read, so single-call paths are unchanged):
+- `_buildInputs`: when chunks + external calls, callees are placed after the chunk run (input order
+  `master..chunk..callees`).
+- `externalCallInputBase` (StatefulContract): `+= iterationEntryInputs.length`.
+- `build()` outputs: the chunk preservation outputs are emitted BEFORE the callee outputs (the covenant
+  checks callee `output[idx] == input[idx]` by index, so output order must mirror input order).
+- `getExternalCallMasterInputIndex` / `getExternalCallOutputBase`: `+= iterationEntryInputs.length` so the
+  auto-derivation probes the right callee input/output (else each callee's state stays underived = 0).
+
+Subscribers update state permissionlessly when co-spent: the publisher's sig authorizes only the publisher's
+input and is NOT forwarded (one sig cannot validate multiple inputs - distinct sighashes per input).
+
+Phase-2 leftovers (unchanged): per-element return values, loop-variable args, entries/low-level co-resident
+with the array read (the input/output order above handles only the array-read + callee combination).

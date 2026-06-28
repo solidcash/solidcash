@@ -246,6 +246,7 @@ export interface ExternalCallAbi {
   functionName: string;
   addressParam?: string;
   addressStateVar?: string; // interface-typed state var holding the callee address (read from state, not caller-provided)
+  loopArrayVar?: string; // state array of callee addresses: every element is co-spent + loop-verified (IFoo(arr[i]).m())
   requiredDataNftIndices: number[];
   hasReturnValues?: boolean;
   returnTypes?: readonly string[];

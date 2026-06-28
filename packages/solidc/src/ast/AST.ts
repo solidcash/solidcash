@@ -1629,6 +1629,10 @@ export interface ExternalCallSlot {
   functionName: string;
   addressParam?: string;
   addressStateVar?: string; // interface-typed state var holding the callee address (read from state)
+  // Set when the call target is an array element `IFoo(arr[i]).m()`: the state array (of addresses) whose
+  // every element is co-spent + verified as a callee in a loop (the source `for` loop is left as harmless
+  // iteration; the epilogue reads the array and loop-verifies callee[base+i].master.LBC == arr[i]).
+  loopArrayVar?: string;
   slotIndex: number;
   requiredDataNftIndices: number[];
   hasReturnValues?: boolean;

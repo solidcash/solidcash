@@ -10200,6 +10200,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const locationData = { location: node.location, positionHint: PositionHint.END };
 
     for (const slot of this.externalCallSlots) {
+      // Array-element target `IFoo(arr[i]).m()`: verify EVERY co-spent callee against the array in a loop.
+      if (slot.loopArrayVar) {
+        this.emitArrayExternalCallLoop(slot, node);
+        continue;
+      }
       const callMode = slot.callMode ?? ExternalCallMode.REGULAR;
 
       // Compute B's master input index (compile-time constant)
@@ -10288,6 +10293,140 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
       // Drop the remaining idx from the stack
       this.emit(Op.OP_DROP, locationData);
+    }
+  }
+
+  /**
+   * Verify an array-element external call `IFoo(arr[i]).m()`: every element of the state array `arr` (callee
+   * addresses) is co-spent as a callee at the trailing external-call run and verified against arr[i] in a
+   * loop. The source `for` loop is left as harmless iteration (its body external call emits nothing); this
+   * epilogue reads the array once and loop-verifies callee[base + computedOffset + i*stride].master.LBC ==
+   * arr[i] (+ master/category preservation + selector). Modeled on emitDynamicReadLoop (runtime-stack-neutral
+   * OP_BEGIN/OP_UNTIL) + emitExternalCallVerification. count comes from the array (state), so no orphan-bound
+   * is needed - every element is verified and the spender cannot skip or substitute one.
+   */
+  private emitArrayExternalCallLoop(slot: ExternalCallSlot, node: FunctionDefinitionNode): void {
+    const loc = { location: node.location, positionHint: PositionHint.END };
+    const sv = this.stateVariables.find((v) => v.name === slot.loopArrayVar);
+    if (!sv) throw new Error(`array external-call target '${slot.loopArrayVar}' must be a state array`);
+    const stride = 1 + slot.requiredDataNftIndices.length;
+    const callMode = slot.callMode ?? ExternalCallMode.REGULAR;
+
+    // --- read whole array -> blob (pushdata(count) ++ framed element LBCs); co-spends arr's chunks once ---
+    this.emitReadStateArrayBlob(sv, loc, '(aec_blob)'); // [..., (aec_blob)]
+    this.emitPushdataDecode(PrimitiveType.BIGINT, loc); // [count, remainder] remainder top
+    this.emit(Op.OP_SWAP, loc);                          // [remainder, count] count top
+    this.popFromStack();                                 // drop (aec_blob) tracking
+    this.pushToStack('(aec_rem)');
+    this.pushToStack('(aec_count)');
+    this.emit(encodeInt(0n), loc);
+    this.pushToStack('(aec_i)');
+
+    this.scopeDepth += 1;
+    this.emit(Op.OP_BEGIN, loc);
+    // cond: i < count
+    this.emit(encodeInt(BigInt(this.getStackIndex('(aec_i)'))), loc);
+    this.emit(Op.OP_PICK, loc);
+    this.emit(encodeInt(BigInt(this.getStackIndex('(aec_count)') + 1)), loc);
+    this.emit(Op.OP_PICK, loc);
+    this.emit(Op.OP_LESSTHAN, loc);
+    this.emit(Op.OP_IF, loc);
+
+    const stackBeforeBody = [...this.stack];
+    const stackDepth = this.stack.length;
+
+    // --- decode arr[i] from (aec_rem); store the new remainder back into (aec_rem); leave elem (the callee
+    // LBC) as the bottom untracked working value ---
+    this.emit(encodeInt(BigInt(this.getStackIndex('(aec_rem)'))), loc);
+    this.emit(Op.OP_PICK, loc);                          // copy remainder [..., remcopy]
+    this.emitPushdataDecode(new BytesType(), loc);       // [..., elem, newrem] newrem top
+    this.emitReplace(this.getStackIndex('(aec_rem)') + 2, this.currentFunction); // (aec_rem) := newrem
+    // [..., elem]  (1 untracked: elem)
+
+    // --- callee master idx = externalCallInputBase + computedOffset + i*stride ---
+    this.emit(encodeInt(BigInt(this.getStackIndex('__internal__externalCallInputBase') + 1)), loc); // +1: elem
+    this.emit(Op.OP_PICK, loc);                          // [elem, base]
+    if (slot.computedOffset !== 0) {
+      this.emit(encodeInt(BigInt(slot.computedOffset)), loc);
+      this.emit(Op.OP_ADD, loc);
+    }
+    this.emit(encodeInt(BigInt(this.getStackIndex('(aec_i)') + 2)), loc); // +2: elem, base-partial
+    this.emit(Op.OP_PICK, loc);                          // [elem, base, i]
+    if (stride !== 1) {
+      this.emit(encodeInt(BigInt(stride)), loc);
+      this.emit(Op.OP_MUL, loc);                         // [elem, base, i*stride]
+    }
+    this.emit(Op.OP_ADD, loc);                           // [elem, idx]
+
+    // 1. IDENTITY: callee master LBC == arr[i] (elem at depth 2 under [idx, callee_bc])
+    this.emit(Op.OP_DUP, loc);                           // [elem, idx, idx]
+    this.emit(Op.OP_UTXOBYTECODE, loc);                  // [elem, idx, callee_bc]
+    this.emit(encodeInt(2n), loc);
+    this.emit(Op.OP_PICK, loc);                          // [elem, idx, callee_bc, elem]
+    this.emit(Op.OP_EQUALVERIFY, loc);                   // [elem, idx]
+
+    if (callMode === ExternalCallMode.REGULAR || callMode === ExternalCallMode.STATICCALL) {
+      // 2. master bytecode preservation (input == output)
+      this.emit(Op.OP_DUP, loc);
+      this.emit(Op.OP_UTXOBYTECODE, loc);
+      this.emit(Op.OP_OVER, loc);
+      this.emit(Op.OP_OUTPUTBYTECODE, loc);
+      this.emit(Op.OP_EQUALVERIFY, loc);                 // [elem, idx]
+      // 3. category preservation
+      this.emit(Op.OP_DUP, loc);
+      this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
+      this.emit(Op.OP_OVER, loc);
+      this.emit(Op.OP_OUTPUTTOKENCATEGORY, loc);
+      this.emit(Op.OP_EQUALVERIFY, loc);                 // [elem, idx]
+    }
+
+    // 4. selector (REGULAR + needsSelectorVerification)
+    if (callMode === ExternalCallMode.REGULAR && slot.needsSelectorVerification) {
+      const slotsNeedingSelector = this.externalCallSlots.filter((s) => s.needsSelectorVerification);
+      this.emit(Op.OP_DUP, loc);                         // [elem, idx, idx]
+      this.emit(Op.OP_INPUTBYTECODE, loc);               // [elem, idx, inBC]
+      this.emit(encodeInt(1n), loc);
+      this.emit(Op.OP_SPLIT, loc);
+      this.emit(Op.OP_NIP, loc);                         // [elem, idx, rest]
+      this.emit(encodeInt(4n), loc);
+      this.emit(Op.OP_SPLIT, loc);
+      this.emit(Op.OP_DROP, loc);                        // [elem, idx, selector]
+      const selectorName = slotsNeedingSelector.length === 1
+        ? '__internal__externalCallSelector' : `__internal__externalCallSelector${slot.slotIndex}`;
+      this.emit(encodeInt(BigInt(this.getStackIndex(selectorName) + 3)), loc); // +3: elem, idx, selector
+      this.emit(Op.OP_PICK, loc);
+      this.emit(Op.OP_EQUALVERIFY, loc);                 // [elem, idx]
+    }
+
+    this.emit(Op.OP_DROP, loc);                          // drop idx -> [elem]
+    this.emit(Op.OP_DROP, loc);                          // drop elem -> []
+    this.removeScopedVariables(stackDepth, this.currentFunction);
+
+    // increment i in place
+    this.emit(encodeInt(BigInt(this.getStackIndex('(aec_i)'))), loc);
+    this.emit(Op.OP_PICK, loc);
+    this.emit(Op.OP_1ADD, loc);
+    this.emitReplace(this.getStackIndex('(aec_i)') + 1, this.currentFunction);
+    this.popFromStack();
+
+    this.emit(encodeBool(false), loc);
+    this.pushToStack('(aec_loop_continue)');
+    this.emit(Op.OP_ELSE, loc);
+    this.stack = [...stackBeforeBody];
+    this.emit(encodeBool(true), loc);
+    this.pushToStack('(aec_loop_exit)');
+    this.emit(Op.OP_ENDIF, loc);
+    this.emit(Op.OP_UNTIL, loc);
+    this.popFromStack();
+    this.scopeDepth -= 1;
+
+    // cleanup loop temps
+    for (const tmp of ['(aec_i)', '(aec_count)', '(aec_rem)']) {
+      const idx = this.getStackIndex(tmp);
+      this.emit(encodeInt(BigInt(idx)), loc);
+      this.emit(Op.OP_ROLL, loc);
+      this.emit(Op.OP_DROP, loc);
+      this.removeFromStack(idx);
     }
   }
 

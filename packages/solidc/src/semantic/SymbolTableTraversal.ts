@@ -2793,6 +2793,15 @@ export default class SymbolTableTraversal extends AstTraversal {
       // SynthesizeExternalAddressLocals); record the underlying state var so the SDK resolves it from state.
       const addressStateVar = addressParam?.startsWith('__extaddr_')
         ? addressParam.slice('__extaddr_'.length) : undefined;
+      // Array-element target `IFoo(arr[i]).m()` (typically inside a `for` over the array): record the state
+      // array. The SDK co-spends every element as a callee and the epilogue loop-verifies each; addressParam
+      // stays undefined (the address is per-element, not a single param).
+      let loopArrayVar: string | undefined;
+      if (!addressParam) {
+        const ae = node.addressExpression;
+        if (ae instanceof MappingAccessNode) loopArrayVar = ae.name;
+        else if (ae instanceof ArrayAccessNode && ae.array instanceof IdentifierNode) loopArrayVar = ae.array.name;
+      }
       // Determine if selector verification is needed: only when the callee interface
       // has >1 callable function AND mode is REGULAR (call/staticcall skip selectors)
       const callMode = node.callInfo.callMode;
@@ -2870,6 +2879,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         functionName: node.callInfo.functionName,
         addressParam,
         addressStateVar,
+        loopArrayVar,
         slotIndex: -1,
         requiredDataNftIndices: dataNftIndices,
         computedOffset: 0,

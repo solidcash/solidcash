@@ -9100,6 +9100,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         + '(phase 1). Use separate functions. See docs/dynamic-storage.md.',
       );
     }
+    // W5 (phase 1): two distinct written dynamic vars would both emit chunk outputs at the fixed
+    // blockSize+i offset while the SDK places the second at an accumulated offset -> runtime collision.
+    // Guard until the shared trailing-counter arithmetic lands (phase 2). See docs/dynamic-storage.md.
+    if (this.pendingDynamicWrites.size > 1) {
+      const names = [...this.pendingDynamicWrites.keys()];
+      throw new Error(
+        `Writing more than one dynamic-storage var in one function ('${names[0]}' and '${names[1]}') is not `
+        + 'yet supported (phase 1). Write them in separate functions. See docs/dynamic-storage.md.',
+      );
+    }
 
     for (const [name, { valueStackName, sv }] of this.pendingDynamicWrites) {
       const chunkHash = computeCollectionHash(computeCollectionSignature(name, sv.type.toString()));

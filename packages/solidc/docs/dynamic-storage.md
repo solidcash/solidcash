@@ -194,21 +194,105 @@ Rejected alternatives (recorded for posterity):
   (`len=0`, empty data) so reads can force-co-spend it; otherwise a spender withholds chunk 0 and a
   non-empty value reads as empty. Costs >= 1 chunk for every string incl. empty. Not chosen.
 
-## Phase-1 coexistence limits (GUARDED - clean compile errors, not silent-wrong)
-The read loop reads chunks at the fixed trailing offset `blockSize + i` and the write loop emits chunk
-outputs there, so a function may do **at most one** of {one dynamic write, one persisted dynamic read of a
-single var} and may **not** combine it with a collection iteration. The compiler rejects: a second
-distinct persisted read, a persisted read + collection iteration, a dynamic write + persisted read, and a
-dynamic write + collection iteration. Still allowed: a single read, a single write, read-after-write
-(same var), and reading the same var more than once. Lifting these needs the collection-iteration shared
-trailing-counter arithmetic (accumulate prior trailing-input/output counts) - a phase-2 item.
+## Phase-1 coexistence limits (MOSTLY guarded - one unguarded hole, see W5)
+The read loop reads chunks at the fixed trailing offset `blockSize + i` (GTT 9479) and the write loop
+emits chunk outputs there (GTT 9181) - neither accumulates a per-var base. So a function may do **at most
+one** of {one dynamic write, one persisted dynamic read of a single var} and may **not** combine it with a
+collection iteration. The compiler rejects (clean errors):
+- W1 a second distinct persisted read (`emitReadDynamicScalar` ~9287)
+- W2 a dynamic write + persisted read of a different var (`emitDynamicWriteVerification` ~9089)
+- W3 the same var written twice, e.g. `arr.push();arr.push()` or idx-write + `pop()` (`visitStateAssign` ~7491)
+- W4 a dynamic write + collection iteration (~9097); a persisted read + collection iteration (~9281)
+
+Still allowed: a single read, a single write, read-after-write (same var), reading the same var twice.
+
+**W5 (UNGUARDED HOLE, found 2026-06-28):** two *different-var* writes (`s1 = a; s2 = b;`) COMPILE - no
+guard fires (7491 keys on the var name; 9089 is write+read, not write+write). But the write loop emits both
+var chunk-sets at `blockSize + i`, while the SDK places var2 at the accumulated `chunkOffset += nNew1`
+(`StatefulContract.ts` ~3144). The offsets drift -> var2's on-chain verification reads var1's output slots
+-> runtime collision. Mechanically certain by code inspection (not yet reproduced e2e). Interim fix if
+phase-2 is deferred: add a guard rejecting >1 distinct written dynamic var.
+
+Lifting W1-W5 needs the collection-iteration shared trailing-counter arithmetic (accumulate prior
+trailing-input/output counts). See the Phase 2 scope below.
 
 ## Phasing
 1. `string` / `bytes` (the motivating case): read (loop-concat), write (loop-split + mint/destroy +
    `A$len`), empty <-> non-empty. On-chain + off-chain. **SHIPPED & GREEN** (write, read-after-write,
    persisted read loop; phase-1 coexistence guarded).
-2. Dynamic arrays `T[]` (same machinery, element-typed chunks; element access = chunk + offset).
+2. Coexistence + dynamic arrays - see "Phase 2 scope" below.
 3. Nested dynamic types.
+
+## Phase 2 scope (2026-06-28)
+
+Recon done; no code written. Grounding probes (single ops on a chunk-packed `uint256[]`): single `push`,
+single `pop`, single `arr[i]=v`, single `arr[i]` read **all already work**; `unpackFixedWidthArray`
+already reads chunk-packed arrays SDK-side. **So "dynamic arrays `T[]`" as a type is largely shipped.**
+What's missing for the corpus is OPERATING on dynamic state more than once per function (coexistence) and
+in loops - plus one grammar gap. The SDK already loops over `dynamicReads`/`dynamicWrites` arrays and
+accumulates `chunkOffset` per var (`StatefulContract.ts` ~3144, ~3676, ~4854), so the bulk of phase 2 is
+**compiler-only**.
+
+The root mechanism: every variable-count trailing input/output today assumes its own run starts at
+`blockSize`. Collection iteration already solved this for trailing INPUTS via `emitCollectionIterInputIndex`
+(`blockSize + sum(prior __internal__collectionIterCount_j) + i`, synthetic count params injected by
+SymbolTableTraversal, passed by the SDK). Phase 2 = generalize that **shared trailing-counter** to ALL
+trailing consumers (chunk reads, old-chunk co-spends, new-chunk write outputs, collection iterations) so
+their runs stack instead of colliding.
+
+### P2a - Coexistence (the shared trailing-counter generalization) [foundational, highest ROI]
+Closes W1-W5. Compiler-only (SDK ready). Work:
+1. **Trailing-run manifest** in the artifact / `FunctionBlockLayout`: the ordered list of trailing runs a
+   function uses (each persisted dyn-read var; each written var's old-chunk co-spend run; each written
+   var's new-chunk output run; each collection iteration), so codegen and SDK share ONE source of truth
+   for offsets (the W5 bug is exactly these two drifting apart).
+2. **Synthetic count params** for the runtime-counted INPUT runs: `__internal__dynamicReadCount_R` (chunks
+   of read var R) and `__internal__dynamicWriteOldCount_W` (old chunks of written var W), modeled on
+   `__internal__collectionIterCount_N`. New-chunk OUTPUT counts are derived on-chain (live `(dyn_nnew)`),
+   so they accumulate from stack values, not params.
+3. **Read loop** (GTT 9479) + **write loop** (GTT 9181): replace the literal `blockSize + i` with
+   `blockSize + sum(prior-run counts) + i`, reusing `emitCollectionIterInputIndex`'s accumulation. Inputs
+   (reads + iterations + old-chunk co-spends) share the trailing-input space; outputs (new chunks) share
+   the trailing-output space.
+4. **Same-var multiple writes** (W3: `push;push`, idx-write + `pop`): these are N mutations of ONE value,
+   not N chunk-sets. **Recommend coalescing**: track the live on-stack value per dyn var across the body
+   (extends what read-after-write already does), fold each push/pop/idx-write into it, emit ONE write loop
+   at function end. Simpler than sequencing, and it is the lever P2c needs.
+5. **Orphan-bound** (`emitVerifyChunkUtxoCount`): already per-address, so distinct-var writes are fine once
+   offsets stack; coalescing collapses same-var writes to one count pin.
+6. Drop guards W1-W4; remove the W5 hole.
+
+Hard parts: keeping codegen offsets and SDK placement in lockstep (solved by the shared manifest);
+choosing coalesce vs sequence for same-var writes (recommend coalesce).
+
+### P2b - grammar: complex index expressions [small, orthogonal]
+`arr[arr.length - 1]` (and any member/expression index) currently parse-errors ("Missing ';' at '['");
+`arr[i]`, `arr[0]`, `arr[i]=arr[j]` work. Fix the index-expression grammar rule. Needed by
+ArrayReplaceFromEnd, ArrayRemoveByShifting.
+
+### P2c - write-in-loop [hardest, builds on P2a coalescing]
+`for(...) arr[i]=arr[i+1]` then `pop()`; `push()` inside nested loops. The chunk-mutation count is
+runtime-variable. Clean lowering on top of P2a's coalescing: **whole-value read -> in-memory mutate
+(source loop runs on the on-stack array) -> whole-value write** at loop exit, reusing the existing read +
+write loops untouched. Cost: rewrites the whole array per call (fine for the small corpus arrays; bounded
+by the 10k stack-element limit). Unblocks ArrayRemoveByShifting, MerkleTree.
+
+### Corpus impact (examples/solidity-by-example, single-wall unless noted)
+- P2a: Structs (`push` x3), MyToken (verify - two-string-WRITE already compiles but is W5; if it READS two
+  strings it is W1). + ArrayReplaceFromEnd once P2b lands.
+- P2c: ArrayRemoveByShifting, MerkleTree.
+- EventsAdvanced: multi-wall (also needs external-call-on-state-array).
+- Full phase 2 ~= 5-6 single-wall contracts.
+
+### Recommended order
+1. **P2a first** - foundational, mostly compiler-only, closes the W5 latent bug, unblocks the static
+   multi-op contracts. Adopt the coalesce-to-one-write-per-var model.
+2. **P2b** alongside - tiny grammar fix.
+3. **P2c** - reuses P2a's coalescing; unblocks the loop-array contracts.
+4. Dynamic arrays `T[]` as a dedicated type: **already shipped** for single ops; no separate workstream.
+
+If phase 2 is deferred, still add the W5 guard (reject >1 distinct written dynamic var) so the hole errors
+cleanly instead of compiling to a runtime collision.
 
 ## Implementation recon (2026-06-22) - findings that refine the above
 

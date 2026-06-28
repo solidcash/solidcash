@@ -97,3 +97,16 @@ describe('chunk-packed arrays: layout/desugar (chunkedArrays flag)', () => {
     )).not.toThrow();
   });
 });
+
+// Phase-1 coexistence limits (docs/dynamic-storage.md). Lifting these is the phase-2 shared-trailing-counter
+// work; until then a function may touch dynamic storage in only limited ways, enforced as clean compile errors.
+describe('dynamic-storage phase-1 coexistence guards', () => {
+  // W5: two DISTINCT written dynamic vars both emit chunk outputs at the fixed blockSize+i offset while the
+  // SDK places the second at an accumulated offset -> runtime collision. Guard until phase-2 lands.
+  it('rejects writing two distinct dynamic vars in one function (W5)', () => {
+    expect(() => compileString(
+      'pragma solidcash >=0.8.0; contract C(){ string a; string b;'
+      + ' function f(string x, string y, pubkey pk, sig s){ require(checkSig(s, pk)); this.a = x; this.b = y; } }',
+    )).toThrow(/more than one dynamic-storage var/);
+  });
+});

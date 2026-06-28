@@ -1538,3 +1538,20 @@ describe('internal helpers that read a state entry (inlined, not subroutined)', 
       + ' function f(address k, uint256 v) external { _set(k, v); require(true); } }')).toBe('C');
   });
 });
+
+describe('public state vars satisfy interface getter compliance (ERC20 pattern)', () => {
+  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+
+  it('a public state var / mapping satisfies an interface getter function', () => {
+    expect(cc('interface IERC20 { function totalSupply() external view returns (uint256);'
+      + ' function balanceOf(address a) external view returns (uint256);'
+      + ' function allowance(address o, address s) external view returns (uint256); }'
+      + ' contract C is IERC20 { uint256 public totalSupply; mapping(address => uint256) public balanceOf;'
+      + ' mapping(address => mapping(address => uint256)) public allowance; function f() external { require(true); } }')).toBe('C');
+  });
+
+  it('still rejects a genuinely missing interface function', () => {
+    expect(() => cc('interface I { function foo(uint256 x) external returns (uint256); }'
+      + ' contract C is I { uint256 public bar; function f() external { require(true); } }')).toThrow();
+  });
+});

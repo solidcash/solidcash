@@ -739,15 +739,8 @@ export default class SymbolTableTraversal extends AstTraversal {
       // Collect all functions including inherited ones
       const allFunctions = this.getAllInterfaceFunctions(iface);
       for (const ifaceFunc of allFunctions) {
-        const overloads = this.functionDefinitions.get(ifaceFunc.name);
-        if (!overloads || overloads.length === 0) {
-          const paramSig = ifaceFunc.parameters.map((p) => p.type.toString()).join(', ');
-          throw new InterfaceComplianceError(
-            node,
-            `Contract '${node.name}' does not implement function '${ifaceFunc.name}(${paramSig})' required by interface '${ifaceName}'`,
-          );
-        }
-        // Check that at least one overload matches signature
+        const overloads = this.functionDefinitions.get(ifaceFunc.name) ?? [];
+        // At least one overload must match the signature...
         const hasMatch = overloads.some((func) => {
           if (func.parameters.length !== ifaceFunc.parameters.length) return false;
           for (let i = 0; i < func.parameters.length; i++) {
@@ -759,7 +752,10 @@ export default class SymbolTableTraversal extends AstTraversal {
           }
           return true;
         });
-        if (!hasMatch) {
+        // ...or a `public`/`external` state var or mapping satisfies it via its auto-generated getter
+        // (Solidity: `uint public totalSupply` implements `totalSupply()`, `mapping(address=>uint) public
+        // balanceOf` implements `balanceOf(address)`).
+        if (!hasMatch && !this.publicStateVarSatisfiesGetter(ifaceFunc)) {
           const paramSig = ifaceFunc.parameters.map((p) => p.type.toString()).join(', ');
           throw new InterfaceComplianceError(
             node,
@@ -4618,6 +4614,32 @@ export default class SymbolTableTraversal extends AstTraversal {
     }
 
     return [...funcMap.values()];
+  }
+
+  // A `public`/`external` state var or mapping auto-generates a getter (Solidity), which satisfies an interface
+  // getter function: `T x` -> `x() returns (T)`; `mapping(K1 => .. => V) m` -> `m(K1, ..) returns (V)`.
+  private publicStateVarSatisfiesGetter(ifaceFunc: InterfaceFunctionNode): boolean {
+    if (ifaceFunc.returnTypes.length !== 1) return false;
+    const ret = ifaceFunc.returnTypes[0].toString();
+    const isPublic = (v: StateVariableVisibility): boolean =>
+      v === StateVariableVisibility.PUBLIC || v === StateVariableVisibility.EXTERNAL;
+    const sv = this.stateVariableMap.get(ifaceFunc.name);
+    if (sv && isPublic(sv.visibility) && ifaceFunc.parameters.length === 0 && sv.type.toString() === ret) {
+      return true;
+    }
+    const coll = this.collectionMap.get(ifaceFunc.name);
+    if (coll && isPublic(coll.visibility) && coll.type instanceof MappingType) {
+      const keys: string[] = [];
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      let t: any = coll.type;
+      while (t instanceof MappingType) { keys.push(t.keyType.toString()); t = t.valueType; }
+      if (keys.length === ifaceFunc.parameters.length
+        && keys.every((k, i) => k === ifaceFunc.parameters[i].type.toString())
+        && t.toString() === ret) {
+        return true;
+      }
+    }
+    return false;
   }
 
   // Callable functions for an external-call target name: an interface's functions, or - treating a contract

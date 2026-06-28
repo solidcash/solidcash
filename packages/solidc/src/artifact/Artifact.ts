@@ -103,7 +103,11 @@ function buildFunctionAbiMetadata(func: FunctionDefinitionNode): Partial<AbiFunc
       lowLevelCalls: func.lowLevelCalls.map((lc) => ({ callMode: lc.callMode })),
     }),
     ...(func.libraryDelegateCalls && func.libraryDelegateCalls.length > 0 && {
-      libraryDelegateCalls: func.libraryDelegateCalls.map((ld) => ({ library: ld.library, functionName: ld.functionName })),
+      libraryDelegateCalls: func.libraryDelegateCalls.map((ld) => ({
+        library: ld.library,
+        functionName: ld.functionName,
+        ...(ld.argParams.length > 0 && { argParams: ld.argParams }),
+      })),
     }),
     ...(func.collectionIterations && func.collectionIterations.length > 0 && {
       collectionIterations: func.collectionIterations.map((ci) => ({

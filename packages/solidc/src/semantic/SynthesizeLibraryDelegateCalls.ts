@@ -75,22 +75,37 @@ export default class SynthesizeLibraryDelegateCalls extends AstTraversal {
     const info = name ? this.delegateLibFns.get(name) : undefined;
     if (!info) return super.visitFunctionCallStatement(node);
 
-    if (node.call.parameters.length > 0) {
-      throw new Error(
-        `Library delegate call '${name}' with arguments is not yet supported (no-argument library functions `
-        + 'only for now). See docs/library-contracts.md.',
-      );
+    // Arguments are limited to forwarding the enclosing function's parameters (the SDK resolves their values
+    // from the consumer call and supplies them to the library unlocker; the delegatecall data is not on-chain).
+    // Literals, computed expressions, and state reads are not yet supported.
+    const argParams: string[] = [];
+    for (const arg of node.call.parameters) {
+      const param = arg instanceof IdentifierNode
+        ? this.currentFn?.parameters.find((p) => p.name === arg.name)
+        : undefined;
+      if (!param) {
+        throw new Error(
+          `Library delegate call '${name}' supports only forwarding the enclosing function's parameters as `
+          + `arguments (e.g. function f(int x) { ${info.libName}.${info.fnName}(x); }). Literals, computed `
+          + 'expressions, and state reads are not yet supported. See docs/library-contracts.md.',
+        );
+      }
+      param.forwardedToLibrary = true; // used via SDK forwarding; suppress the unused-variable warning
+      argParams.push(param.name);
     }
     this.usedLibs.add(info.libName);
     // Record the target so the SDK auto-wires the delegatecall co-spend (no manual withDelegatecall).
     if (this.currentFn) {
-      (this.currentFn.libraryDelegateCalls ??= []).push({ library: info.libName, functionName: info.fnName });
+      (this.currentFn.libraryDelegateCalls ??= []).push(
+        { library: info.libName, functionName: info.fnName, argParams },
+      );
     }
     const addr = new IdentifierNode(`__libAddr_${info.libName}`);
     addr.location = node.location;
     const data = new HexLiteralNode(info.selector);
     data.location = node.location;
     const ll = new LowLevelCallStatementNode(addr, data, 'delegatecall');
+    ll.synthesizedFromLibraryCall = true;
     ll.location = node.location;
     return ll;
   }

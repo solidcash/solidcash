@@ -195,3 +195,45 @@ describe('library-contracts 3b: L.f() sugar end-to-end', () => {
     await expect(consumerSc.call.bump().send()).rejects.toThrow(/not.*registered|registerLibrary/i);
   });
 });
+
+// 3b arguments: a consumer forwards its OWN parameter to the library (`function bumpBy(n) { L.incrementBy(n); }`).
+// The SDK reads the consumer call's value and supplies it to the library unlocker (the delegatecall data is not
+// on-chain), so the library mutates the consumer's shared state by that amount.
+describe('library-contracts 3b: forwarded arguments end-to-end', () => {
+  const COUNTER_ARG = 'library Counter { bigint count; '
+    + 'function incrementBy(bigint n) public { this.count = this.count + n; } }';
+  const CONSUMER_ARG = 'import { Counter } from "./counter.scash"; '
+    + 'contract C() { bigint count; function bumpBy(bigint n) { Counter.incrementBy(n); } }';
+
+  it('forwards the consumer parameter to the library and mutates shared state by that amount', async () => {
+    const provider = createTestProvider();
+    const resolver = (p: string): { source: string; id: string } | undefined =>
+      (p.includes('counter') ? { source: COUNTER_ARG, id: 'counter' } : undefined);
+    const counterArt = compileString(COUNTER_ARG);
+    const consumerArt = compileString(CONSUMER_ARG, { importResolver: resolver });
+
+    const counter = new Contract(counterArt, [], { provider });
+    const { categoryId: counterCat } = await setupStatefulUtxos(
+      provider, counter, counterArt.stateLayout!, { count: 0n }, { saltContract: true },
+    );
+    const counterAddr = hexToBin(counter.withCategory(hexToBin(counterCat)).lockingBytecode);
+
+    const consumer = new Contract(consumerArt, [counterAddr], { provider });
+    const { categoryId: consumerCat } = await setupStatefulUtxos(
+      provider, consumer, consumerArt.stateLayout!, { count: 0n }, { saltContract: true },
+    );
+
+    const consumerSc = StatefulContract.withCategory(consumer, consumerCat);
+    const counterSc = StatefulContract.withCategory(counter, counterCat);
+
+    consumerSc.registerLibrary('Counter', counterSc);
+    const tx = await consumerSc.call.bumpBy(5n).send();
+    expect(tx.txid).toBeDefined();
+
+    const consumerNft = getTxOutputs(tx).find(
+      (o) => o.token?.nft?.capability === 'mutable' && o.token?.category === consumerCat,
+    );
+    const state = parsePushdataCommitment(consumerNft!.token!.nft!.commitment, consumerArt.stateLayout!, 0);
+    expect(state.count).toBe(5n);
+  });
+});

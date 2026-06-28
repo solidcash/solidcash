@@ -114,8 +114,9 @@ export interface AbiFunction {
   mergeCountParam?: string;
   lowLevelCalls?: readonly { callMode: 'call' | 'staticcall' | 'delegatecall'; dataParamIndex?: number }[];
   // Delegate-library calls (`L.f()`); the SDK auto-wires each one's delegatecall co-spend from a registered
-  // library instance (registerLibrary). See docs/library-contracts.md (3b auto-wire).
-  libraryDelegateCalls?: readonly { library: string; functionName: string }[];
+  // library instance (registerLibrary). `argParams` are the enclosing function's parameter names forwarded to
+  // the library (the SDK reads their values from the consumer call). See docs/library-contracts.md (3b auto-wire).
+  libraryDelegateCalls?: readonly { library: string; functionName: string; argParams?: readonly string[] }[];
   collectionIterations?: readonly CollectionIterationAbi[];
   // Persisted dynamic-storage vars read on-chain; the SDK co-spends their chunks as read-only inputs.
   dynamicReads?: readonly string[];

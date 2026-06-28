@@ -143,3 +143,39 @@ describe('delegate libraries lower to a delegate contract (3b step 2)', () => {
     expect(() => compileString(consumer, { importResolver: resolver })).toThrow(/expects the caller/i);
   });
 });
+
+// 3b arguments: a consumer may forward its own parameters to a library call; the SDK supplies their values to
+// the library unlocker (the delegatecall data is not on-chain). Only parameter forwarding is supported.
+describe('delegate library forwarded arguments (3b)', () => {
+  const COUNTER = 'library Counter { bigint count; '
+    + 'function incrementBy(bigint n) public { this.count = this.count + n; } }';
+  const resolver = (p: string): { source: string; id: string } | undefined =>
+    (p.includes('counter') ? { source: COUNTER, id: 'counter' } : undefined);
+
+  it('records the forwarded parameter names in libraryDelegateCalls', () => {
+    const consumer = 'import { Counter } from "./counter.scash"; '
+      + 'contract C() { bigint count; function bumpBy(bigint n) { Counter.incrementBy(n); } }';
+    const art = compileString(consumer, { importResolver: resolver });
+    const bumpBy = art.abi.find((f) => f.name === 'bumpBy')!;
+    expect(bumpBy.libraryDelegateCalls).toEqual(
+      [{ library: 'Counter', functionName: 'incrementBy', argParams: ['n'] }],
+    );
+  });
+
+  it('does not warn that the forwarded parameter is unused (it is forwarded to the library)', () => {
+    const consumer = 'import { Counter } from "./counter.scash"; '
+      + 'contract C() { bigint count; function bumpBy(bigint n) { Counter.incrementBy(n); } }';
+    const warns: string[] = [];
+    const orig = console.log;
+    console.log = (m?: unknown): void => { warns.push(String(m)); };
+    try { compileString(consumer, { importResolver: resolver }); } finally { console.log = orig; }
+    expect(warns.some((w) => /unused variable 'n'/.test(w))).toBe(false);
+    expect(warns.some((w) => /Low-level \.delegatecall/.test(w))).toBe(false);
+  });
+
+  it('rejects a non-parameter argument (literal / computed expression)', () => {
+    const consumer = 'import { Counter } from "./counter.scash"; '
+      + 'contract C() { bigint count; function bump() { Counter.incrementBy(5); } }';
+    expect(() => compileString(consumer, { importResolver: resolver })).toThrow(/forwarding the enclosing/i);
+  });
+});

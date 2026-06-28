@@ -5778,7 +5778,9 @@ export default class SymbolTableTraversal extends AstTraversal {
 
   visitLowLevelCallStatement(node: LowLevelCallStatementNode): Node {
     const loc = node.location ? ` at line ${node.location.start.line}` : '';
-    console.log(`Warning: Low-level .${node.callMode}() used${loc}. Low-level calls bypass type safety and contract verification. Consider using typed interface calls instead.`);
+    if (!node.synthesizedFromLibraryCall) {
+      console.log(`Warning: Low-level .${node.callMode}() used${loc}. Low-level calls bypass type safety and contract verification. Consider using typed interface calls instead.`);
+    }
     // Visit targetExpression for symbol resolution unless it's an interface/contract FunctionCallNode
     if (!(node.targetExpression instanceof FunctionCallNode
       && (this.interfaceMap.has(node.targetExpression.identifier.name)

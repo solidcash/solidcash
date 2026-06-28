@@ -199,8 +199,10 @@ export class FunctionDefinitionNode extends Node implements Named {
   lowLevelCalls?: { callMode: 'call' | 'staticcall' | 'delegatecall'; dataParamIndex?: number }[];
   // Delegate-library calls desugared from `L.f()` (SynthesizeLibraryDelegateCalls), in source order. The SDK
   // auto-wires the delegatecall co-spend from a registered library instance, so the caller need not name the
-  // library function again. See docs/library-contracts.md (3b auto-wire).
-  libraryDelegateCalls?: { library: string; functionName: string }[];
+  // library function again. `argParams` are the enclosing function's parameter names forwarded to the library
+  // (positional); the SDK resolves their values from the consumer call and passes them to the library unlocker.
+  // See docs/library-contracts.md (3b auto-wire + arguments).
+  libraryDelegateCalls?: { library: string; functionName: string; argParams: string[] }[];
   collectionIterations?: CollectionIterationInfo[];
   // Dynamic-storage vars (string / unbounded bytes) read on-chain (not written here); recorded during codegen.
   // SDK co-spends their chunk UTXOs as read-only trailing inputs.
@@ -267,6 +269,11 @@ export class FunctionDefinitionNode extends Node implements Named {
 }
 
 export class ParameterNode extends Node implements Named, Typed {
+  // Set by SynthesizeLibraryDelegateCalls when this param is forwarded to a delegate library (`L.f(x)`). It is
+  // used (forwarded to the library via the SDK) even though desugar leaves no on-chain reference, so the
+  // unused-variable warning must skip it.
+  forwardedToLibrary = false;
+
   constructor(
     public type: Type,
     public name: string,
@@ -2012,6 +2019,9 @@ export class LowLevelCallStatementNode extends StatementNode {
   callIndex: number = 0;
   callOptions?: CallOptions;
   valueTransferIndex: number = -1;
+  // Set when synthesized from `L.f()` library-call sugar (SynthesizeLibraryDelegateCalls): the user wrote a
+  // typed library call, not a raw delegatecall, so suppress the low-level-call warning.
+  synthesizedFromLibraryCall = false;
 
   constructor(
     public targetExpression: ExpressionNode,

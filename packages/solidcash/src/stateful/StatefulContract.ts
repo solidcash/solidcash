@@ -6342,7 +6342,18 @@ export class StatefulFunctionCall {
         lib.inner.artifact.stateLayout,
         lib.inner.artifact.contractName,
       );
-      this.callInfos.push({ type: 'stateful', contract: lib, functionName: lc.functionName, args: [] });
+      // Forward the named consumer parameters to the library unlocker (positional, in argParams order).
+      const args = (lc.argParams ?? []).map((pname) => {
+        const idx = abiFunc!.inputs.findIndex((inp) => inp.name === pname);
+        if (idx < 0 || !this.functionArgs || idx >= this.functionArgs.length) {
+          throw new Error(
+            `Cannot resolve argument '${pname}' forwarded to library '${lc.library}.${lc.functionName}' `
+            + `from the call to '${this.functionName}'.`,
+          );
+        }
+        return this.functionArgs[idx];
+      });
+      this.callInfos.push({ type: 'stateful', contract: lib, functionName: lc.functionName, args });
     }
   }
 

@@ -1569,3 +1569,15 @@ describe('public state vars satisfy interface getter compliance (ERC20 pattern)'
       + ' contract C is I { uint256 public bar; function f() external { require(true); } }')).toThrow();
   });
 });
+
+describe('SBE-21: external call on a state-var target in fallback/receive', () => {
+  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  // SynthesizeExternalAddressLocals visits fallback/receive too, so a re-entrancy-style fallback that calls
+  // back into an interface/contract-typed state var resolves the target like any function (unblocks ReEntrancy).
+  it('compiles a fallback + receive that call a contract-typed state var', () => {
+    expect(cc('contract Store { int counter; function withdraw() external { require(true); } }'
+      + ' contract C { Store s; constructor(address a){ s = Store(a); }'
+      + ' fallback() external { s.withdraw(); }'
+      + ' receive() external payable { s.withdraw(); } }')).toBe('C');
+  });
+});

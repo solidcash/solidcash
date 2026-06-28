@@ -49,6 +49,10 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
     }
     if (this.stateVarIface.size > 0) {
       node.functions = this.visitList(node.functions) as FunctionDefinitionNode[];
+      // fallback/receive are external entry points like any function (e.g. a re-entrancy fallback that calls
+      // back into another contract); visit them too. The state var is already set by the time they run.
+      if (node.fallbackDef) node.fallbackDef = this.visitFunctionDefinition(node.fallbackDef) as FunctionDefinitionNode;
+      if (node.receiveDef) node.receiveDef = this.visitFunctionDefinition(node.receiveDef) as FunctionDefinitionNode;
     }
     return node;
   }

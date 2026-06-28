@@ -242,8 +242,10 @@ library) is a harder generalization, deferred.
 
 ### Gate-lifts + build order
 
-1. **Layout-compatibility check** (the load-bearing soundness piece): verify a caller's `StateLayout` matches
-   the library's declared shape at accessed fields; hard error on mismatch.
+1. **Layout-compatibility check** (the load-bearing soundness piece, STILL OPEN): verify a caller's
+   `StateLayout` matches the library's declared shape at accessed fields; hard error on mismatch. Today this
+   relies on the developer declaring matching layouts (the same caveat the existing proxy/impl delegatecall has
+   - Delegatecall.test.ts:268-275); the compile-time check is the remaining soundness work.
 2. **Library-side lowering. [DONE.]** A library may now declare state vars (the shared layout it operates on):
    the grammar gained `stateVariableDeclaration*` in `libraryDefinition` (regen) and AstBuilder carries them
    into the lowered contract. A state-touching library's public/external functions are AUTO-marked `delegate` -
@@ -251,8 +253,12 @@ library) is a harder generalization, deferred.
    source needs none. This reuses `_proxyMasterIndex` + `emitDelegateSelfPreservation` verbatim: a delegate
    library compiles BYTE-IDENTICAL to the hand-written `public delegate` contract (LibraryContracts.test.ts).
    The `storage self` surface sugar over this state-vars layout is deferred (it would desugar to the same).
-3. **Consumer-side call**: `L.f(this, args)` -> co-spend L + set `_proxyMasterIndex` = caller's master + read
-   the `_Return_` result; reuse the external-call return path.
+3. **Consumer-side call**: the WHOLE-SPEND form already WORKS by reuse - a consumer delegatecalls the library
+   via the existing `addr.delegatecall(input)` codegen + SDK `withDelegatecall`, and the library's function runs
+   against the consumer's state (PROVEN e2e on mocknet: `test/e2e/LibraryDelegate.test.ts`, a state-touching
+   library written as plain Solidity increments the proxy's state). Remaining: the ergonomic `L.f(this, args)`
+   sugar (vs low-level delegatecall), plus return values / pre+post consumer logic (the deferred
+   generalizations). Steps 1 (layout-compat) and 4 (contention) harden it.
 4. **Contention**: brand L with the caller's category + master-gate (see "Contention resolution").
 5. **SDK + e2e** (mocknet + regtest): co-spend/recreate the branded library, supply its address.
 

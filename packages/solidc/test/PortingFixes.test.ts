@@ -1666,6 +1666,34 @@ describe('SBE-24: named returns of address/pubkey/sig zero-init correctly', () =
   });
 });
 
+describe('SBE-26: a constructor declaring its own params can pass them to a parent invocation', () => {
+  // Solidity pattern `constructor(uint256 _x) Base(_x) {}`: the ctor declares its OWN params (no contract-level
+  // equivalent). They must be registered so the parent-invocation args (and body) resolve; previously they were
+  // dropped (assuming the native pattern where ctor params mirror contract-level params).
+  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+
+  it('resolves the ctor param in the parent invocation', () => {
+    expect(cc('abstract contract B { uint256 n; constructor(uint256 _n) { n = _n; } }'
+      + ' contract C is B { constructor(uint256 _x) B(_x) {} function f() external { require(true); } }'))
+      .toBe('C');
+  });
+});
+
+describe('SBE-27: block.chainid is uint256 under solidityImportCompat', () => {
+  it('assigns block.chainid to a uint256 state variable', () => {
+    const a = compileString(
+      'contract C { uint256 id; function f() external { this.id = block.chainid; } }',
+      { solidityImportCompat: true },
+    );
+    expect(a.contractName).toBe('C');
+  });
+
+  it('keeps block.chainid as bytes1 without the flag (native network byte)', () => {
+    const a = compileString('contract C { bytes1 id; function f() external { this.id = block.chainid; } }');
+    expect(a.contractName).toBe('C');
+  });
+});
+
 describe('SBE-25: msg.sender category forwarded across internal calls', () => {
   // A function using msg.sender gets a synthetic `bytes32 __internal__msgSenderCategory` param. A positional
   // internal call to such a function must forward the caller's own category (msg.sender is identical across an

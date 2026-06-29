@@ -1733,7 +1733,10 @@ export default class TypeCheckTraversal extends AstTraversal {
         node.type = new BytesType(4);
         return node;
       case NullaryOperator.CHAIN_ID:
-        node.type = new BytesType(1);
+        // Solidity's block.chainid is uint256; native solidcash exposes a single network-id byte (see
+        // BlockOracle.test). Match Solidity under the porting flag so ported code (e.g. EIP-712 domain
+        // separators: `INITIAL_CHAIN_ID = block.chainid`) typechecks as a number.
+        node.type = this.solidityImportCompat ? new IntType(false, 256) : new BytesType(1);
         return node;
       case NullaryOperator.BLOCK_PREVRANDAO:
         // uint256 (a non-negative hash-derived value); see block-and-transaction-properties.md

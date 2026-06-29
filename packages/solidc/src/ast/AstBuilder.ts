@@ -279,6 +279,9 @@ export default class AstBuilder
   private stateStructVars: Map<string, StructType> = new Map();
   // State array variables -> ArrayType, so `using L for T[]` desugars `arr.method(args)` to `L.method(arr, args)`.
   private stateArrayVarTypes: Map<string, ArrayType> = new Map();
+  // Contract-level param names (`contract C(int x)`), so a constructor with a parent invocation drops only the
+  // params that MIRROR contract params (native pattern), keeping its own declared params (Solidity pattern).
+  private contractParamNames: Set<string> = new Set();
   // Storage-pointer locals: `T storage x = container[k];` makes `x` a compile-time alias for access path
   // `container[k]`; reads/writes of `x` are rewritten to that path. Per-function (cleared at each entry).
   private storageAliases: Map<string, { container: string; keys: ExpressionNode[]; access: ExpressionNode }> =
@@ -722,6 +725,7 @@ export default class AstBuilder
     const constructorCtx = this.atMostOne(ctx.constructorDefinition_list(), 'constructor', ctx);
     let constructorDef: FunctionDefinitionNode | undefined;
     if (constructorCtx) {
+      this.contractParamNames = new Set(parameters.map((p) => p.name));
       constructorDef = this.visitConstructorDefinition(constructorCtx);
     }
 
@@ -828,10 +832,14 @@ export default class AstBuilder
           location: Location.fromCtx(piCtx),
         }),
       );
-      // When parent invocations are present, the constructor's param list mirrors
-      // the contract params (already in scope). Don't register them as function params
-      // to avoid VariableRedefinitionError. The constructor body can access contract params.
-      const functionDefinition = new FunctionDefinitionNode('__construct', [], block);
+      // Native pattern: the constructor's params MIRROR the contract-level params (already in scope) - drop
+      // those to avoid VariableRedefinitionError; the body reads the contract params. Solidity pattern:
+      // `constructor(uint256 _x) Base(_x)` declares its OWN params with no contract-level equivalent - keep
+      // those so the parent-invocation args and the body resolve.
+      const ownParams = ctx.parameterList().parameter_list()
+        .map((p) => this.visit(p) as ParameterNode)
+        .filter((p) => !this.contractParamNames.has(p.name));
+      const functionDefinition = new FunctionDefinitionNode('__construct', ownParams, block);
       functionDefinition.location = Location.fromCtx(ctx);
       return functionDefinition;
     }

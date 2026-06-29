@@ -1665,3 +1665,26 @@ describe('SBE-24: named returns of address/pubkey/sig zero-init correctly', () =
       .toBe('C');
   });
 });
+
+describe('SBE-25: msg.sender category forwarded across internal calls', () => {
+  // A function using msg.sender gets a synthetic `bytes32 __internal__msgSenderCategory` param. A positional
+  // internal call to such a function must forward the caller's own category (msg.sender is identical across an
+  // internal call), otherwise the call is short an argument -> InvalidParameterTypeError. Unblocks ERC721
+  // (safeTransferFrom -> transferFrom) and WETH (fallback -> deposit -> _mint(msg.sender, ..)).
+  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+
+  it('forwards the synthetic category on an internal call to a msg.sender-using function', () => {
+    expect(cc('contract C { mapping(uint256 => address) o;'
+      + ' function inner(address from, uint256 id) public { require(msg.sender == o[id]); o[id] = from; }'
+      + ' function outer(address from, uint256 id) external { require(msg.sender != address(0)); inner(from, id); } }'))
+      .toBe('C');
+  });
+
+  it('compiles the ERC721 safeTransferFrom -> transferFrom shape', () => {
+    expect(cc('contract C { mapping(uint256 => address) _ownerOf; mapping(address => uint256) _balanceOf;'
+      + ' function transferFrom(address from, address to, uint256 id) public {'
+      + ' require(from == _ownerOf[id]); require(msg.sender == from); _balanceOf[from]--; _balanceOf[to]++; _ownerOf[id] = to; }'
+      + ' function safeTransferFrom(address from, address to, uint256 id) external { transferFrom(from, to, id); } }'))
+      .toBe('C');
+  });
+});

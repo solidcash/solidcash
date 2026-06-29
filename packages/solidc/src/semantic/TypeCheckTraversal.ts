@@ -1478,12 +1478,30 @@ export default class TypeCheckTraversal extends AstTraversal {
   // the sole synthetic param; transitive cases (msg.sender / external-call params) are left to fail.
   private forwardInternalReturnOutputIdx(node: FunctionCallNode, fn: FunctionDefinitionNode): void {
     const synthetic = fn.parameters.filter((p) => p.name.startsWith('__internal__'));
+    if (synthetic.length === 0) return;
+    // Only auto-forward when the call site passed exactly the user-visible args (synthetic params are never
+    // written at the call site).
     if (node.parameters.length !== fn.parameters.length - synthetic.length) return;
-    if (synthetic.length !== 1 || synthetic[0].name !== '__internal__returnOutputIdx') return;
-    const minusOne = new IntLiteralNode(-1n);
-    minusOne.location = node.location;
-    minusOne.type = PrimitiveType.INT;
-    node.parameters.push(minusOne);
+    // Forward only synthetic params that propagate unchanged across an internal call: returnOutputIdx (the
+    // subroutine emits no return event -> -1), and the tx-level msg.sender category / blockhash input index
+    // (msg.sender and the co-spend indices are identical throughout an internal call, so reference the caller's
+    // own same-named param). Bail on anything else (e.g. external-call selector/index params) so the normal
+    // arity check still fires.
+    const FORWARDABLE = new Set(['__internal__msgSenderCategory', '__internal__blockhashInputIndex']);
+    if (!synthetic.every((p) => p.name === '__internal__returnOutputIdx' || FORWARDABLE.has(p.name))) return;
+    for (const p of synthetic) {
+      if (p.name === '__internal__returnOutputIdx') {
+        const minusOne = new IntLiteralNode(-1n);
+        minusOne.location = node.location;
+        minusOne.type = PrimitiveType.INT;
+        node.parameters.push(minusOne);
+      } else {
+        const ref = new IdentifierNode(p.name);
+        ref.location = node.location;
+        ref.type = p.type;
+        node.parameters.push(ref);
+      }
+    }
   }
 
   visitBinaryOp(node: BinaryOpNode): Node {

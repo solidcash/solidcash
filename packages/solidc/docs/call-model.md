@@ -206,6 +206,17 @@ So generic dispatch = target is any witnessed address; function/args are witness
 binds the return event's category to that co-spent input, and matches the selector against the callee's
 attestation - but applies **no sanctioned-set check**.
 
+The calldata is NOT opaque: `data = selector(4) || abi-encoded args`. The selector identifies the function, so
+when the target's ABI is known at build time (the common case - a dApp aggregating calls to contracts it knows)
+args and the return decode to TYPED values, not raw `bytes`; the SDK builds the callee unlocker from `data` and
+the caller can use a typed result. Only a genuinely-unknown-ABI target degrades to opaque-bytes forwarding (the
+4-byte selector is a non-invertible hash, so arg/return types can't be recovered) - and even then the call
+works, with the callee decoding its own args and the caller treating the return as opaque `bytes`. This is why
+`targets[i].staticcall(data[i])` (MultiCall) and `transaction.to.call{value}(transaction.data)` (MultiSigWallet)
+are **implementable** under this design (co-spend the target(s) - the array-of-targets co-spend already exists,
+section 4 / array-external-calls - plus runtime-selector dispatch), not fundamental EVM-only patterns. The
+residual work is runtime-selector dispatch codegen + SDK typed-calldata decode.
+
 ### Guard regions: `before` / invoke / `after`
 
 There is no temporal invoke, so "pre/after" is about **which facts a predicate references**, not when it

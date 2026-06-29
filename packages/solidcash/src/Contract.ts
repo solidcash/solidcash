@@ -24,7 +24,7 @@ import {
 } from './utils.js';
 import SignatureTemplate from './SignatureTemplate.js';
 import { ParamsToTuple, AbiToFunctionMap } from './types/type-inference.js';
-import { buildOpaqueLoopCallTransaction, type BuildOpaqueLoopCallOptions } from './loop-call.js';
+import { buildOpaqueLoopCallTransaction, type OpaqueLoopCallContext } from './loop-call.js';
 import type { TransactionBuilder } from './TransactionBuilder.js';
 import semver from 'semver';
 
@@ -231,10 +231,12 @@ export class Contract<
         (ec) => ec.opaqueReturn && ec.loopArrayVar && fn.inputs.some((inp) => inp.name === ec.loopArrayVar),
       );
       if (isLoopDispatch && !(fn.name in this)) {
+        // contract.multiCall(targets, data, ctx) - targets/data mirror the Solidity signature; ctx carries the
+        // BCH co-spend context (caller UTXO, per-target co-spends, funder).
         (this as any)[fn.name] = (
-          opts: Omit<BuildOpaqueLoopCallOptions, 'provider' | 'contract' | 'functionName'>,
+          targets: Uint8Array[], data: Uint8Array[], ctx: OpaqueLoopCallContext,
         ): TransactionBuilder => buildOpaqueLoopCallTransaction({
-          provider: this.provider, contract: this, functionName: fn.name, ...opts,
+          provider: this.provider, contract: this, functionName: fn.name, targets, data, ...ctx,
         });
       }
     }

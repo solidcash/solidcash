@@ -122,7 +122,7 @@ describe('Inline loop-indexed external dispatch (MultiCall covenant)', () => {
     expect(tb.inputs.length).toBe(4);
   });
 
-  it('contract.multiCall({...}) - the loop dispatch as a direct fluent method', async () => {
+  it('contract.multiCall(targets, data, ctx) - Solidity-faithful direct method', async () => {
     const art = compileString(MULTICALL_SRC, { solidityImportCompat: true });
     const provider = createTestProvider();
     const contract = new Contract(art, [], { provider });
@@ -137,15 +137,19 @@ describe('Inline loop-indexed external dispatch (MultiCall covenant)', () => {
     };
     const funder = await createFeeFunder(provider, 10000n);
 
-    // The opaque loop-dispatch function is exposed directly on the contract instance.
-    const tb = (contract as any).multiCall({
-      callerUtxo,
-      targets: [
-        { utxo: t0, unlocker: trueUnlocker(), lockingBytecode: OP_TRUE, data: new Uint8Array([]), returnData: hexToBin('deadbeef') },
-        { utxo: t1, unlocker: trueUnlocker(), lockingBytecode: OP_TRUE, data: new Uint8Array([]), returnData: hexToBin('cafe') },
-      ],
-      funder,
-    }) as TransactionBuilder;
+    // Mirrors Solidity's multiCall(address[] targets, bytes[] data); ctx carries the BCH co-spend context.
+    const tb = (contract as any).multiCall(
+      [OP_TRUE, OP_TRUE],                          // address[] targets
+      [new Uint8Array([]), new Uint8Array([])],    // bytes[] data
+      {
+        callerUtxo,
+        cospends: [
+          { utxo: t0, unlocker: trueUnlocker(), returnData: hexToBin('deadbeef') },
+          { utxo: t1, unlocker: trueUnlocker(), returnData: hexToBin('cafe') },
+        ],
+        funder,
+      },
+    ) as TransactionBuilder;
     verifyTransaction(tb);
     expect(tb.inputs.length).toBe(4);
   });

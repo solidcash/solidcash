@@ -17,11 +17,27 @@ const YUL_NO_BCH_EQUIVALENT: Record<string, string> = {
   dataoffset: 'EVM bytecode-object builtin has no BCH analogue',
   datacopy: 'EVM bytecode-object builtin has no BCH analogue',
   linkersymbol: 'the EVM library-linking placeholder has no BCH analogue',
+  // Yul create deploys runtime init bytecode (from memory). BCH deploys a typed compiled contract via `new`,
+  // not arbitrary runtime bytecode, so the Yul form is untranslatable (the high-level `new C(...)` is the path).
+  create: 'deploying runtime bytecode has no BCH analogue (use a typed `new Contract(...)`, not Yul create)',
+  create2: 'deploying runtime bytecode has no BCH analogue (use a typed `new Contract(...)`, not Yul create2)',
+};
+
+// Routable in principle, but only to a KNOWN target interface with a constant selector. The proxy/forwarding
+// patterns in practice forward opaque/arbitrary calldata to an opaque address, which has no BCH analogue.
+const YUL_NEEDS_TYPED_TARGET: Record<string, string> = {
+  call: 'a low-level call needs a known target interface and a constant selector to route to a typed external '
+    + 'call; forwarding opaque calldata is not supported (use `IContract(addr).method(...)`)',
+  delegatecall: 'a low-level delegatecall needs a known target; forwarding opaque calldata to an opaque '
+    + 'implementation (the proxy pattern) has no BCH analogue',
+  staticcall: 'a low-level staticcall needs a known target interface and a constant selector to route to a '
+    + 'typed external call; forwarding opaque calldata is not supported',
+  callcode: 'callcode has no BCH analogue',
 };
 
 function noBchEquivalent(name: string): string | undefined {
   if (name.startsWith('verbatim')) return 'raw EVM bytecode injection cannot be translated to BCH script';
-  return YUL_NO_BCH_EQUIVALENT[name];
+  return YUL_NO_BCH_EQUIVALENT[name] ?? YUL_NEEDS_TYPED_TARGET[name];
 }
 
 interface Walk { calls: YulFunctionCallNode[]; fnDef: boolean; }

@@ -37,9 +37,9 @@ routes.
 | Block hash | `blockhash` | ROUTE | existing `blockhash(n)` oracle |
 | Logs | `log0 log1 log2 log3 log4` | ROUTE | `Event` / `emit` |
 | Lifecycle | `selfdestruct` | ROUTE | existing `selfdestruct(addr)` statement |
-| External call | `call delegatecall staticcall` | ROUTE (calldata-decode) | `ExternalCall` (has a delegatecall flag); decode selector+args; see "Routing" |
-| Return data | `returndatasize returndatacopy` | ROUTE (deferred) | the external-call return; needs the call decode (Phase 6) |
-| Contract create | `create create2` | ROUTE (partial) | `InstantiationNode` deploy (`isStatefulDeploy`); BCH deploy semantics differ |
+| External call | `call delegatecall staticcall` | OUT (Yul form) | corpus uses only opaque-calldata forwarding to an opaque target; the typed call is the high-level `IContract(addr).method(...)`, not Yul (Phase 6) |
+| Return data | `returndatasize returndatacopy` | OUT | only used by the opaque-proxy forward |
+| Contract create | `create create2` | OUT | deploys runtime/opaque bytecode; typed deploy is the high-level `new Contract(...)`, not Yul (Phase 6) |
 | Immutables | `setimmutable loadimmutable` | ROUTE (deferred) | solidcash immutables; rare (compiler-generated) |
 | Genuinely out | `verbatim pc datasize dataoffset datacopy linkersymbol` + free-pointer memory + opaque-bytecode proxy | OUT | no analogue; see "Genuinely out" |
 
@@ -283,10 +283,19 @@ selector word (offset 0), non-aligned/dynamic offsets, non-int params, and `call
       re-lowering assumes the stored value is not mutated between `mstore` and the read (the usual
       store-then-hash shape); `mstore8`, dynamic/free-pointer offsets, and `return`/`revert` with data are
       deferred.
-- [ ] Phase 6 - decode-routed calls + deploy. `call`/`staticcall`/`delegatecall` -> `ExternalCall` by
-      decoding the constant in-region (`selector || args`); `create`/`create2` -> typed `new Contract`
-      deploy. Needs the memory model (phase 5) and coordination with the arbitrary-calldata external-call
-      work (call-model.md s10) - do not duplicate it.
+- [x] Phase 6 - call / create. DONE as diagnostics, NOT codegen - the premise did not survive the evidence.
+      Reading every `call`/`create` assembly in the corpus from source: all are the fundamental opaque case.
+      `create`/`create2` deploy a runtime `bytes memory` blob or hand-built EIP-1167 bytecode (Factory,
+      Proxy, MinimalProxy, Create2's FactoryAssembly) - never a compile-time-known contract, so they do not
+      map to a typed `new`. UpgradeableProxy `calldatacopy(0,0,calldatasize())` + `delegatecall(gas(), impl,
+      ...)` forwards *all* calldata to an *opaque* implementation - no known interface, no constant selector.
+      The "decode the constant `selector || args` region and route to ExternalCall" precondition never occurs,
+      so there is nothing sound to lower (building it would be speculative codegen no file exercises). Instead:
+      `create`/`create2` are now hard-rejected ("deploying runtime bytecode has no BCH analogue; use a typed
+      `new Contract(...)`"), and `call`/`delegatecall`/`staticcall` get a precise diagnostic ("needs a known
+      target interface and a constant selector ... forwarding opaque calldata is not supported"). The typed
+      external call stays the high-level `IContract(addr).method(...)` path (external-contract-calls.md), not
+      Yul. No bench change (those files are multi-wall regardless).
 - [ ] Phase 7 (stretch) - bytes-memory layout (`mload(add(ptr, const))` -> byte slice) and packed storage
       slots. Higher risk / lower payoff; gated on demand.
 

@@ -1,0 +1,8 @@
+contract C() {
+    function f() {
+        assembly {
+            let a := create(0, 0, 0)
+        }
+        require(true);
+    }
+}

@@ -44,6 +44,26 @@ describe('Yul inline assembly (Phase 1: parse + diagnostics)', () => {
       }`)).toThrow(/'pc' has no BCH equivalent/);
   });
 
+  it('rejects Yul create (runtime-bytecode deploy) and explains the typed-new path', () => {
+    expect(() => compileString(`
+      contract C() {
+        function f() {
+          assembly { let a := create(0, 0, 0) }
+          require(true);
+        }
+      }`)).toThrow(/'create' has no BCH equivalent.*new Contract/);
+  });
+
+  it('rejects a low-level delegatecall and explains it needs a known target', () => {
+    expect(() => compileString(`
+      contract C() {
+        function f(address impl) {
+          assembly { let r := delegatecall(gas(), impl, 0, 0, 0, 0) }
+          require(true);
+        }
+      }`)).toThrow(/'delegatecall' has no BCH equivalent.*known target/);
+  });
+
   it('compiles calldataload/calldatasize against function parameters', () => {
     // calldata = msg.sig ++ abi-encoded args; calldataload(4 + 32*k) reads the k-th arg, calldatasize = 4+32n.
     expect(() => compileString(`

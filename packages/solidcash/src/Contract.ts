@@ -232,12 +232,25 @@ export class Contract<
       );
       if (isLoopDispatch && !(fn.name in this)) {
         // contract.multiCall(targets, data, ctx) - targets/data mirror the Solidity signature; ctx carries the
-        // BCH co-spend context (caller UTXO, per-target co-spends, funder).
-        (this as any)[fn.name] = (
+        // BCH co-spend context. callerUtxo is auto-derived from the contract's own UTXOs when omitted (the only
+        // ctx field derivable on-chain - the per-target co-spends and funder are caller/off-chain knowledge).
+        const fnName = fn.name;
+        (this as any)[fnName] = async (
           targets: Uint8Array[], data: Uint8Array[], ctx: OpaqueLoopCallContext,
-        ): TransactionBuilder => buildOpaqueLoopCallTransaction({
-          provider: this.provider, contract: this, functionName: fn.name, targets, data, ...ctx,
-        });
+        ): Promise<TransactionBuilder> => {
+          let { callerUtxo } = ctx;
+          if (!callerUtxo) {
+            const plain = (await this.getUtxos()).filter((u) => !u.token)
+              .sort((a, b) => Number(b.satoshis - a.satoshis));
+            if (plain.length === 0) {
+              throw new Error(`${fnName}: no plain caller UTXO at ${this.address}; pass ctx.callerUtxo`);
+            }
+            [callerUtxo] = plain;
+          }
+          return buildOpaqueLoopCallTransaction({
+            provider: this.provider, contract: this, functionName: fnName, targets, data, ...ctx, callerUtxo,
+          });
+        };
       }
     }
   }

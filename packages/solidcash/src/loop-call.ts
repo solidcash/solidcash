@@ -19,8 +19,8 @@ export interface OpaqueLoopCoSpend {
 
 /** BCH execution context for an opaque loop dispatch (everything not in the Solidity signature). */
 export interface OpaqueLoopCallContext {
-  /** The caller contract's own UTXO; self-preserved at output 0. */
-  callerUtxo: Utxo;
+  /** The caller contract's own UTXO; self-preserved at output 0. Auto-derived from the contract when omitted. */
+  callerUtxo?: Utxo;
   /** Per-target co-spend info, aligned with `targets`/`data`. */
   cospends: OpaqueLoopCoSpend[];
   /** Funds the return-event satoshis + fee (the self-preserved caller value cannot be drawn down). */
@@ -43,6 +43,8 @@ export interface BuildOpaqueLoopCallOptions extends OpaqueLoopCallContext {
   targets: Uint8Array[];
   /** bytes[] - per-target payloads; advisory in the opaque model (Solidity arg 2). */
   data: Uint8Array[];
+  /** Required here (the sync builder does no lookups); contract.multiCall(...) auto-derives it when omitted. */
+  callerUtxo: Utxo;
 }
 
 /**

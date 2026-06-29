@@ -122,11 +122,12 @@ describe('Inline loop-indexed external dispatch (MultiCall covenant)', () => {
     expect(tb.inputs.length).toBe(4);
   });
 
-  it('contract.multiCall(targets, data, ctx) - Solidity-faithful direct method', async () => {
+  it('contract.multiCall(targets, data, ctx) - Solidity-faithful, auto-derives callerUtxo', async () => {
     const art = compileString(MULTICALL_SRC, { solidityImportCompat: true });
     const provider = createTestProvider();
     const contract = new Contract(art, [], { provider });
-    const callerUtxo = { txid: 'cc'.repeat(32), vout: 0, satoshis: 100000n };
+    // register the caller's own UTXO so callerUtxo is auto-derived (omitted from ctx below)
+    await provider.addUtxo(contract.address, { txid: 'cc'.repeat(32), vout: 0, satoshis: 100000n });
     const t0 = {
       txid: '01'.repeat(32), vout: 0, satoshis: 1200n,
       token: { category: C0, amount: 0n, nft: { capability: 'minting' as const, commitment: '' } },
@@ -138,11 +139,11 @@ describe('Inline loop-indexed external dispatch (MultiCall covenant)', () => {
     const funder = await createFeeFunder(provider, 10000n);
 
     // Mirrors Solidity's multiCall(address[] targets, bytes[] data); ctx carries the BCH co-spend context.
-    const tb = (contract as any).multiCall(
+    // callerUtxo is omitted - auto-derived from the contract's own UTXOs.
+    const tb = await (contract as any).multiCall(
       [OP_TRUE, OP_TRUE],                          // address[] targets
       [new Uint8Array([]), new Uint8Array([])],    // bytes[] data
       {
-        callerUtxo,
         cospends: [
           { utxo: t0, unlocker: trueUnlocker(), returnData: hexToBin('deadbeef') },
           { utxo: t1, unlocker: trueUnlocker(), returnData: hexToBin('cafe') },

@@ -1662,6 +1662,10 @@ export interface ExternalCallSlot {
   callMode?: ExternalCallMode;
   argSources?: ExternalCallArgSource[];
   opaqueReturn?: boolean; // generic dynamic dispatch: opaque bytes return, identity-bound to the witnessed address
+  // Set by visitExternalFunctionCall when a loop call over a calldata/param address array with an opaque return
+  // (the MultiCall pattern) is emitted INLINE per-iteration (co-spend + return read keyed on the live index).
+  // Both epilogues (emitExternalCallVerification, emitExternalReturnEventVerification) skip such slots.
+  inlineLoopDispatch?: boolean;
 }
 
 export interface ExternalOutputStateAccessInfo {

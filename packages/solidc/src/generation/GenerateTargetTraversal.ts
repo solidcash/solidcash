@@ -7673,6 +7673,19 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     const locationData = { location: node.location, positionHint: PositionHint.START };
 
+    // Inline loop-indexed dispatch: `targets[i].call/staticcall(data[i])` over a calldata/param address array
+    // whose per-element return is consumed in the loop body (MultiCall). The source for-loop is a runtime loop,
+    // so this runs once per iteration with the live index. Marks the slot so both epilogues skip it.
+    if (node.callInfo && node.opaqueReturn && node.addressExpression instanceof ArrayAccessNode) {
+      const loopSlot = this.externalCallSlots[node.callInfo.externalCallSlotIndex];
+      if (loopSlot?.loopArrayVar
+          && this.currentFunction?.parameters.some((p) => p.name === loopSlot.loopArrayVar)) {
+        loopSlot.inlineLoopDispatch = true;
+        this.emitInlineLoopExternalCall(node, loopSlot, locationData);
+        return node;
+      }
+    }
+
     // Handle {value: X} call option - emit a transfer to the callee's address
     if (node.callOptions?.value && node.valueTransferIndex >= 0 && node.callInfo) {
       const slot = this.externalCallSlots[node.callInfo.externalCallSlotIndex];
@@ -10237,6 +10250,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     for (const slot of this.externalCallSlots) {
       // Array-element target `IFoo(arr[i]).m()`: verify EVERY co-spent callee against the array in a loop.
+      if (slot.inlineLoopDispatch) continue; // handled inline per-iteration in visitExternalFunctionCall
       if (slot.loopArrayVar) {
         this.emitArrayExternalCallLoop(slot, node);
         continue;
@@ -10480,6 +10494,153 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
   }
 
+  /**
+   * Inline loop-indexed external dispatch for `targets[i].call/staticcall(data[i])` over a calldata/parameter
+   * address array whose per-element return is consumed in the loop body (the MultiCall pattern). The source
+   * for-loop is a runtime OP_BEGIN/OP_UNTIL loop, so this runs once per iteration with the live index `i`:
+   *   - co-spend callee master = externalCallInputBase + computedOffset + i*stride, identity-bound to targets[i]
+   *     (+ master bytecode/category preservation; commitments preserved for staticcall)
+   *   - read + verify the return event at externalReturnOutputIdx + i, leaving [(success)=true, (returnData)]
+   *     for the tuple assignment.
+   * Distinct from the fixed-slot single call (emitExternalCallVerification) and the void state-array epilogue
+   * loop (emitArrayExternalCallLoop). The input index is tracked as (ilc_inidx) so the stack tracker stays
+   * consistent across the picks.
+   */
+  private emitInlineLoopExternalCall(
+    node: ExternalFunctionCallNode, slot: ExternalCallSlot, loc: SingleLocationData,
+  ): void {
+    const stride = 1 + slot.requiredDataNftIndices.length;
+    const callMode = slot.callMode ?? ExternalCallMode.REGULAR;
+    const idxExpr = (node.addressExpression as ArrayAccessNode).index;
+
+    // --- evaluate the live index i and the target address targets[i] (both tracked) ---
+    this.visit(idxExpr);                  // [..., i]
+    this.popFromStack(); this.pushToStack('(ilc_i)');
+    this.visit(node.addressExpression);   // [..., i, addr]
+    this.popFromStack(); this.pushToStack('(ilc_addr)');
+
+    // --- callee master input index = externalCallInputBase + computedOffset + i*stride (tracked) ---
+    this.emit(encodeInt(BigInt(this.getStackIndex('__internal__externalCallInputBase'))), loc);
+    this.emit(Op.OP_PICK, loc);           // [..., i, addr, base]
+    if (slot.computedOffset !== 0) {
+      this.emit(encodeInt(BigInt(slot.computedOffset)), loc);
+      this.emit(Op.OP_ADD, loc);
+    }
+    this.emit(encodeInt(BigInt(this.getStackIndex('(ilc_i)') + 1)), loc); // +1: untracked base
+    this.emit(Op.OP_PICK, loc);           // [..., i, addr, base, i]
+    if (stride !== 1) {
+      this.emit(encodeInt(BigInt(stride)), loc);
+      this.emit(Op.OP_MUL, loc);
+    }
+    this.emit(Op.OP_ADD, loc);            // [..., i, addr, inputidx]
+    this.pushToStack('(ilc_inidx)');
+
+    // 1. IDENTITY: callee master UTXO bytecode == targets[i]
+    this.emit(encodeInt(BigInt(this.getStackIndex('(ilc_inidx)'))), loc);
+    this.emit(Op.OP_PICK, loc);           // [..., inputidx_copy]
+    this.emit(Op.OP_UTXOBYTECODE, loc);   // [..., utxobc]
+    this.emit(encodeInt(BigInt(this.getStackIndex('(ilc_addr)') + 1)), loc); // +1: utxobc
+    this.emit(Op.OP_PICK, loc);           // [..., utxobc, addr]
+    this.emit(Op.OP_EQUALVERIFY, loc);    // [...]
+
+    // 2-3. master bytecode + category preservation (REGULAR + STATICCALL)
+    if (callMode === ExternalCallMode.REGULAR || callMode === ExternalCallMode.STATICCALL) {
+      this.emitInlinePreserve(Op.OP_UTXOBYTECODE, Op.OP_OUTPUTBYTECODE, loc);
+      this.emitInlinePreserve(Op.OP_UTXOTOKENCATEGORY, Op.OP_OUTPUTTOKENCATEGORY, loc);
+    }
+    // commitment preservation (STATICCALL only): master + data NFTs
+    if (callMode === ExternalCallMode.STATICCALL) {
+      this.emitInlinePreserve(Op.OP_UTXOTOKENCOMMITMENT, Op.OP_OUTPUTTOKENCOMMITMENT, loc);
+      for (const nftIdx of slot.requiredDataNftIndices) {
+        this.emit(encodeInt(BigInt(this.getStackIndex('(ilc_inidx)'))), loc);
+        this.emit(Op.OP_PICK, loc);                          // [..., masterIdx]
+        this.emit(encodeInt(BigInt(1 + nftIdx)), loc);
+        this.emit(Op.OP_ADD, loc);                            // [..., dataNftIdx]
+        this.emit(Op.OP_DUP, loc);
+        this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc);
+        this.emit(Op.OP_OVER, loc);
+        this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, loc);
+        this.emit(Op.OP_EQUALVERIFY, loc);                   // [..., dataNftIdx]
+        this.emit(Op.OP_DROP, loc);                          // [...]
+      }
+    }
+
+    // --- return event: idx = externalReturnOutputIdx + i ; verify + read commitment as returnData ---
+    this.emit(encodeInt(BigInt(this.getStackIndex('__internal__externalReturnOutputIdx'))), loc);
+    this.emit(Op.OP_PICK, loc);           // [..., retbase]
+    this.emit(encodeInt(BigInt(this.getStackIndex('(ilc_i)') + 1)), loc); // +1: retbase
+    this.emit(Op.OP_PICK, loc);           // [..., retbase, i]
+    this.emit(Op.OP_ADD, loc);            // [..., retidx]  (1 untracked: retidx)
+
+    // a. return-event category == callee master category (cross-check via (ilc_inidx))
+    this.emit(Op.OP_DUP, loc);            // [..., retidx, retidx]
+    this.emit(Op.OP_OUTPUTTOKENCATEGORY, loc);
+    this.emit(encodeInt(32n), loc);
+    this.emit(Op.OP_SPLIT, loc);
+    this.emit(Op.OP_DROP, loc);           // [..., retidx, retcat32]
+    this.emit(encodeInt(BigInt(this.getStackIndex('(ilc_inidx)') + 2)), loc); // +2: retidx, retcat32
+    this.emit(Op.OP_PICK, loc);           // [..., retidx, retcat32, masterIdx]
+    this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
+    this.emit(encodeInt(32n), loc);
+    this.emit(Op.OP_SPLIT, loc);
+    this.emit(Op.OP_DROP, loc);           // [..., retidx, retcat32, calleecat32]
+    this.emit(Op.OP_EQUALVERIFY, loc);    // [..., retidx]
+
+    // b. capability 'none' (no trailing capability byte)
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_OUTPUTTOKENCATEGORY, loc);
+    this.emit(encodeInt(32n), loc);
+    this.emit(Op.OP_SPLIT, loc);
+    this.emit(Op.OP_SWAP, loc);
+    this.emit(Op.OP_DROP, loc);
+    this.emit(encodeInt(0n), loc);
+    this.emit(Op.OP_EQUALVERIFY, loc);    // [..., retidx]
+    // c. FT amount 0
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_OUTPUTTOKENAMOUNT, loc);
+    this.emit(encodeInt(0n), loc);
+    this.emit(Op.OP_EQUALVERIFY, loc);
+    // d. anyone-can-spend (OP_TRUE locking bytecode)
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_OUTPUTBYTECODE, loc);
+    this.emit(hexToBin('51'), loc);
+    this.emit(Op.OP_EQUALVERIFY, loc);
+    // e. value bounded
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_OUTPUTVALUE, loc);
+    this.emit(encodeInt(1200n), loc);
+    this.emit(Op.OP_LESSTHANOREQUAL, loc);
+    this.emit(Op.OP_VERIFY, loc);         // [..., retidx]
+
+    // read commitment as returnData; success = true (opaque)
+    this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, loc); // [..., returnData]
+    this.emit(Op.OP_1, loc);                      // [..., returnData, true]
+    this.emit(Op.OP_SWAP, loc);                   // [..., true, returnData]
+    this.pushToStack('(success)');
+    this.pushToStack('(returnData)');
+
+    // --- cleanup the temps below the results (keep (success),(returnData) on top) ---
+    for (const tmp of ['(ilc_inidx)', '(ilc_addr)', '(ilc_i)']) {
+      const idx = this.getStackIndex(tmp);
+      this.emit(encodeInt(BigInt(idx)), loc);
+      this.emit(Op.OP_ROLL, loc);
+      this.emit(Op.OP_DROP, loc);
+      this.removeFromStack(idx);
+    }
+  }
+
+  /** Input==output preservation for the callee master at (ilc_inidx): `<read>` UTXO op vs `<write>` output op. */
+  private emitInlinePreserve(readOp: Op, writeOp: Op, loc: SingleLocationData): void {
+    this.emit(encodeInt(BigInt(this.getStackIndex('(ilc_inidx)'))), loc);
+    this.emit(Op.OP_PICK, loc);           // [..., masterIdx]
+    this.emit(Op.OP_DUP, loc);            // [..., masterIdx, masterIdx]
+    this.emit(readOp, loc);               // [..., masterIdx, inputVal]
+    this.emit(Op.OP_OVER, loc);           // [..., masterIdx, inputVal, masterIdx]
+    this.emit(writeOp, loc);              // [..., masterIdx, inputVal, outputVal]
+    this.emit(Op.OP_EQUALVERIFY, loc);    // [..., masterIdx]
+    this.emit(Op.OP_DROP, loc);           // [...]
+  }
+
   private emitStaticCallCommitmentPreservation(
     slot: ExternalCallSlot, locationData: SingleLocationData,
   ): void {
@@ -10607,7 +10768,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // 2. The event UTXO commitment encodes the expected return values
     // (The actual return value reading is done in visitExternalFunctionCall)
 
-    const returningSlots = this.externalCallSlots.filter((s) => s.hasReturnValues);
+    const returningSlots = this.externalCallSlots.filter((s) => s.hasReturnValues && !s.inlineLoopDispatch);
 
     for (const slot of returningSlots) {
       // Determine the parameter name for this slot's return output index

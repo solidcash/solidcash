@@ -21,6 +21,7 @@ import SynthesizeExternalAddressLocals from './semantic/SynthesizeExternalAddres
 import SynthesizeLibraryDelegateCalls from './semantic/SynthesizeLibraryDelegateCalls.js';
 import InlineExternalCallHelpers from './semantic/InlineExternalCallHelpers.js';
 import InlineStoragePointerCalls from './semantic/InlineStoragePointerCalls.js';
+import InlineReturningStateHelpers from './semantic/InlineReturningStateHelpers.js';
 import CacheDynamicArrayInLoop from './semantic/CacheDynamicArrayInLoop.js';
 import SynthesizeBlockOracle from './semantic/SynthesizeBlockOracle.js';
 import SynthesizePublicGetters from './semantic/SynthesizePublicGetters.js';
@@ -118,6 +119,11 @@ export function compileString(code: string, compilerOptions: CompileOptions = {}
   // Inline void helpers that make external calls into their internal call sites (the external co-spend can't
   // cross an OP_INVOKE boundary); reduces to the entry-point-body external-call case.
   ast = ast.accept(new InlineExternalCallHelpers()) as Ast;
+
+  // Inline value-returning private helpers that read a state entry at their expression call sites (hoist the
+  // body, capture the return in a temp). Same block-layout reason as the void case below; run first so a void
+  // helper containing such a call is resolved before it is itself inlined.
+  ast = ast.accept(new InlineReturningStateHelpers()) as Ast;
 
   // Inline void calls to functions taking `storage` reference params; a storage pointer has no value
   // representation, so the callee is substituted into the caller as direct state access.
@@ -242,6 +248,7 @@ function compileReferencedContracts(
     let singleAst: Ast = new SourceFileNode(contract);
     singleAst = singleAst.accept(new NamedReturnTransformation(compilerOptions.solidityImportCompat)) as Ast;
     singleAst = singleAst.accept(new InlineExternalCallHelpers()) as Ast;
+    singleAst = singleAst.accept(new InlineReturningStateHelpers()) as Ast;
     singleAst = singleAst.accept(new InlineStoragePointerCalls()) as Ast;
     singleAst = singleAst.accept(new CacheDynamicArrayInLoop()) as Ast;
     singleAst = singleAst.accept(new SynthesizeExternalAddressLocals()) as Ast;

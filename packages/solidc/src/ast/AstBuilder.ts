@@ -1259,7 +1259,12 @@ export default class AstBuilder
         const tn = slot.typeName();
         // Unknown (contract/interface) type name -> keep it on the address handle, so a tuple-destructured
         // interface var (`(IERC20 a, ..) = ..`) routes `a.method(..)` to an external call (as locals/params do).
-        if (tn) return { name: slot.Identifier()!.getText(), type: this.resolveType(tn.getText()) ?? new AddressType(false, tn.getText()) };
+        if (tn) {
+          return {
+            name: slot.Identifier()!.getText(),
+            type: this.resolveType(tn.getText()) ?? new AddressType(false, tn.getText()),
+          };
+        }
         const id = slot.Identifier();
         if (id) return { name: id.getText(), existing: true };
         return { skip: true };

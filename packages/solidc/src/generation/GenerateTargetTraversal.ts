@@ -4331,7 +4331,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emitIntrospectionSum(Op.OP_TXINPUTCOUNT, [Op.OP_INPUTBYTECODE, Op.OP_SIZE, Op.OP_NIP], loc); // [fee, bc_in]
     this.emit([Op.OP_TXINPUTCOUNT, encodeInt(41n), Op.OP_MUL, Op.OP_ADD], loc);     // [fee, in_size]
     // out_size = sum(locking script len) + 9 * nOut
-    this.emitIntrospectionSum(Op.OP_TXOUTPUTCOUNT, [Op.OP_OUTPUTBYTECODE, Op.OP_SIZE, Op.OP_NIP], loc); // [fee, in_size, bc_out]
+    // [fee, in_size, bc_out]
+    this.emitIntrospectionSum(Op.OP_TXOUTPUTCOUNT, [Op.OP_OUTPUTBYTECODE, Op.OP_SIZE, Op.OP_NIP], loc);
     this.emit([Op.OP_TXOUTPUTCOUNT, encodeInt(9n), Op.OP_MUL, Op.OP_ADD], loc);     // [fee, in_size, out_size]
     // size = in_size + out_size + 10 (header)
     this.emit([Op.OP_ADD, encodeInt(10n), Op.OP_ADD], loc);                         // [fee, size]

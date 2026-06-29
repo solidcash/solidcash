@@ -1718,7 +1718,8 @@ export default class TypeCheckTraversal extends AstTraversal {
         node.type = new BytesType(1);
         return node;
       case NullaryOperator.BLOCK_PREVRANDAO:
-        node.type = new IntType(false, 256); // uint256 (a non-negative hash-derived value); see block-and-transaction-properties.md
+        // uint256 (a non-negative hash-derived value); see block-and-transaction-properties.md
+        node.type = new IntType(false, 256);
         return node;
       case NullaryOperator.TX_GASPRICE:
         node.type = new IntType(false, 32); // uint (sat/KB fee rate), same nominal type as block.basefee

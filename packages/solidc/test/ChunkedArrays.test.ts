@@ -129,7 +129,7 @@ describe('dynamic-storage phase-1 coexistence guards', () => {
 
   // W3 (lifted): multiple writes to the SAME dynamic var in one function coalesce to one final-value write.
   it('compiles same-var multiple writes: push;push, idx-write + pop, scalar reassign (W3)', () => {
-    const ok = (src: string): void => expect(() => compileString(src)).not.toThrow();
+    const ok = (source: string): void => expect(() => compileString(source)).not.toThrow();
     ok('pragma solidcash >=0.8.0; contract C(){ uint256[] a;'
       + ' function f(uint256 x, uint256 y, pubkey pk, sig s){ require(checkSig(s,pk)); a.push(x); a.push(y); } }');
     ok('pragma solidcash >=0.8.0; contract C(){ uint256[] a;'

@@ -213,7 +213,10 @@ export class BlockOracleUpdater {
 
     const redeem = scriptToBytecode(buildBlockhashOracleCovenantScript(cat, n));
     const wipeUnlock = scriptToBytecode([encodeInt(1n), redeem]); // flag 1 = wipe branch
-    const unlocker = { generateLockingBytecode: (): Uint8Array => addrN, generateUnlockingBytecode: (): Uint8Array => wipeUnlock };
+    const unlocker = {
+      generateLockingBytecode: (): Uint8Array => addrN,
+      generateUnlockingBytecode: (): Uint8Array => wipeUnlock,
+    };
 
     const builder = new TransactionBuilder({ provider: this.cfg.contract.provider, allowImplicitNftBurn: true });
     let reclaimed = 0n;

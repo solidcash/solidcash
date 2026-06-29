@@ -2999,7 +2999,9 @@ export default class SymbolTableTraversal extends AstTraversal {
     }
     // ReturnNode holds its values in `expressions` (plural) (mirror collectExternalCalls exactly).
     if ('expressions' in node && Array.isArray((node as any).expressions)) {
-      for (const e of (node as any).expressions) if (e instanceof Node) this.assignExternalCallSlotIndices(e, slots, counter);
+      for (const e of (node as any).expressions) {
+        if (e instanceof Node) this.assignExternalCallSlotIndices(e, slots, counter);
+      }
     }
     if ('tuple' in node && (node as any).tuple instanceof Node) {
       this.assignExternalCallSlotIndices((node as any).tuple, slots, counter);

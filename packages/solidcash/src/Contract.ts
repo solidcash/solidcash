@@ -263,7 +263,8 @@ export class Contract<
       if (args.length !== visibleInputs.length && args.length !== abiFunction.inputs.length) {
         throw new Error(`Incorrect number of arguments passed to function ${abiFunction.name}. Expected ${visibleInputs.length} arguments (${visibleInputs.map((input) => input.type)}) but got ${args.length}`);
       }
-      const internalsProvided = args.length === abiFunction.inputs.length && abiFunction.inputs.length !== visibleInputs.length;
+      const internalsProvided = args.length === abiFunction.inputs.length
+        && abiFunction.inputs.length !== visibleInputs.length;
       const argInputs = internalsProvided ? abiFunction.inputs : visibleInputs;
 
       const bytecode = hexToBin(this.bytecode);

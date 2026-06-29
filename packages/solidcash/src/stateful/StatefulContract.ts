@@ -2714,7 +2714,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             if (typeof bn !== 'bigint' || bhSeen.has(String(bn))) continue;
             bhSeen.add(String(bn));
             const cs = await resolveBlockhashCoSpend(this.inner.provider, bhCategory, bn);
-            if (cs) bhProbeCoSpends.push({ utxo: cs.utxo, unlocker: cs.unlocker, recreate: cs.recreateOutput, locktime: cs.locktime });
+            if (cs) {
+              bhProbeCoSpends.push({
+                utxo: cs.utxo, unlocker: cs.unlocker, recreate: cs.recreateOutput, locktime: cs.locktime,
+              });
+            }
           }
         }
       }

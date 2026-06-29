@@ -3,6 +3,7 @@ import { compileString } from 'solidc';
 import { hexToBin, binToHex } from '@bitauth/libauth';
 import { Contract, StatefulContract, TransactionBuilder, SignatureTemplate, resolveBlockhashCoSpend } from '../../src/index.js';
 import { randomUtxo } from '../../src/utils.js';
+import { Utxo } from '../../src/interfaces.js';
 import { createTestProvider, createFeeFunder, setupStatefulUtxos } from '../test-util.js';
 import { alicePub, alicePriv, bobPriv, aliceAddress } from '../fixture/vars.js';
 import {
@@ -420,7 +421,9 @@ describe('blobhash / blockhash', () => {
 // auto-discovery + keeper minting are the next increment - docs/block-and-transaction-properties.md s11.)
 const BH_CAT = 'cc'.repeat(32);
 
-async function spendBlockhash(argN: number, storedN: number, storedHash: Uint8Array, expectHash: Uint8Array): Promise<string> {
+async function spendBlockhash(
+  argN: number, storedN: number, storedHash: Uint8Array, expectHash: Uint8Array,
+): Promise<string> {
   const provider = createTestProvider();
   const artifact = compileString(
     'contract B(){ function f(int bn, bytes32 h){ require(blockhash(bn) == h); } }',
@@ -527,7 +530,9 @@ describe('blockhash(n) auto-injection (SDK)', () => {
   const H = hexToBin('aa'.repeat(32));
   const SRC = 'contract B(){ function f(int bn, bytes32 h){ require(blockhash(bn) == h); } }';
 
-  async function setup() {
+  async function setup(): Promise<{
+    provider: ReturnType<typeof createTestProvider>; contract: Contract; contractUtxo: Utxo;
+  }> {
     const provider = createTestProvider();
     const contract = new Contract(compileString(SRC, { blockhashOracleCategory: BH_CAT }), [], { provider });
     const contractUtxo = await provider.addUtxo(contract.address, randomUtxo({ satoshis: 100000n }));

@@ -221,7 +221,10 @@ export default class SynthesizeBlockOracle extends AstTraversal {
       )) as StateAssignNode);
     }
 
-    node.functions.push(this.at(new FunctionDefinitionNode(UPDATE_FN, params, this.at(new BlockNode(body)) as BlockNode)) as FunctionDefinitionNode);
+    const updateFn = this.at(
+      new FunctionDefinitionNode(UPDATE_FN, params, this.at(new BlockNode(body)) as BlockNode),
+    ) as FunctionDefinitionNode;
+    node.functions.push(updateFn);
   }
 
   private stateAccess(name: string, src: NullaryOpNode): StateAccessNode {

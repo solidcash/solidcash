@@ -1,7 +1,7 @@
 contract C() {
     function f() {
         assembly {
-            let x := calldataload(0)
+            let x := pc()
         }
         require(true);
     }

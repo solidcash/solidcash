@@ -6,25 +6,17 @@ import {
 } from '../ast/YulAST.js';
 import { UnsupportedInlineAssemblyError } from '../Errors.js';
 
-// Yul builtins with no BCH analogue (see docs/yul-inline-assembly.md "Genuinely out"). Anything NOT listed
-// is value-computation or routes to an existing solidcash primitive, and is deferred to Yul codegen.
+// Yul builtins with genuinely no BCH analogue (see docs/yul-inline-assembly.md "Genuinely out"). Kept tight
+// on purpose: anything that is value-computation OR routes to an existing solidcash primitive is NOT here -
+// it gets the "codegen not yet implemented" message instead. In particular calldata* / codesize / codecopy
+// are routable (calldata = msg.sig ++ abi-encoded args; own code = this.activeBytecode), so they are deferred,
+// not rejected.
 const YUL_NO_BCH_EQUIVALENT: Record<string, string> = {
-  calldataload: 'EVM calldata has no BCH analogue',
-  calldatasize: 'EVM calldata has no BCH analogue',
-  calldatacopy: 'EVM calldata has no BCH analogue',
-  returndatasize: 'EVM return-data buffer has no BCH analogue',
-  returndatacopy: 'EVM return-data buffer has no BCH analogue',
-  codesize: 'own-code introspection has no BCH analogue',
-  codecopy: 'own-code introspection has no BCH analogue',
-  msize: 'EVM memory size has no BCH analogue',
-  pc: 'EVM program counter has no BCH analogue',
-  callcode: 'EVM callcode has no BCH analogue',
-  datasize: 'EVM object/linking builtin has no BCH analogue',
-  dataoffset: 'EVM object/linking builtin has no BCH analogue',
-  datacopy: 'EVM object/linking builtin has no BCH analogue',
-  setimmutable: 'EVM object/linking builtin has no BCH analogue',
-  loadimmutable: 'EVM object/linking builtin has no BCH analogue',
-  linkersymbol: 'EVM object/linking builtin has no BCH analogue',
+  pc: 'the EVM program counter has no BCH analogue',
+  datasize: 'EVM bytecode-object builtin has no BCH analogue',
+  dataoffset: 'EVM bytecode-object builtin has no BCH analogue',
+  datacopy: 'EVM bytecode-object builtin has no BCH analogue',
+  linkersymbol: 'the EVM library-linking placeholder has no BCH analogue',
 };
 
 function noBchEquivalent(name: string): string | undefined {

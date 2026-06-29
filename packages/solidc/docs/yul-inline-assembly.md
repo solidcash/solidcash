@@ -32,14 +32,16 @@ routes.
 | Context | `caller callvalue origin gasprice chainid number timestamp gaslimit difficulty prevrandao coinbase basefee blobbasefee gas` | ROUTE | existing NullaryOperator / shims; see "Routing" |
 | Crypto / math | `keccak256(hash) addmod mulmod` | ROUTE | existing GlobalFunction codegen |
 | Balance / code | `balance selfbalance extcodesize extcodehash` | ROUTE | `addr.balance`, `address(this).balance`, `addr.code.length`, `addr.codehash` |
-| Code copy | `extcodecopy` | ROUTE (via memory) | write `addr.code` into the memory buffer (constant region) |
+| Code copy / size | `extcodecopy extcodesize codesize codecopy` | ROUTE | `addr.code` / `this.activeBytecode` (own code) + memory buffer; see "Routing" |
+| Calldata | `calldataload calldatasize calldatacopy` | ROUTE | synthesized EVM calldata `msg.sig ++ abi-encoded args`; see "Calldata model" |
 | Block hash | `blockhash` | ROUTE | existing `blockhash(n)` oracle |
 | Logs | `log0 log1 log2 log3 log4` | ROUTE | `Event` / `emit` |
 | Lifecycle | `selfdestruct` | ROUTE | existing `selfdestruct(addr)` statement |
 | External call | `call delegatecall staticcall` | ROUTE (calldata-decode) | `ExternalCall` (has a delegatecall flag); decode selector+args; see "Routing" |
+| Return data | `returndatasize returndatacopy` | ROUTE (deferred) | the external-call return; needs the call decode (Phase 6) |
 | Contract create | `create create2` | ROUTE (partial) | `InstantiationNode` deploy (`isStatefulDeploy`); BCH deploy semantics differ |
-| Raw bytecode / dynamic mem / proxy-forward | `verbatim` + free-pointer memory + opaque-bytecode proxy (`calldatacopy`/`returndatacopy` forward to an opaque impl) | OUT | no analogue; see "Genuinely out" |
-| Object / linking | `datasize dataoffset datacopy setimmutable loadimmutable linkersymbol` | OUT | EVM object/immutables/linking model |
+| Immutables | `setimmutable loadimmutable` | ROUTE (deferred) | solidcash immutables; rare (compiler-generated) |
+| Genuinely out | `verbatim pc datasize dataoffset datacopy linkersymbol` + free-pointer memory + opaque-bytecode proxy | OUT | no analogue; see "Genuinely out" |
 
 ROUTE = re-spell the Yul op onto the *existing* solidcash codegen for that primitive, so behaviour and
 soundness are inherited from the high-level path (it is just another surface syntax). OUT ops get a clear
@@ -87,6 +89,8 @@ inherited. Anchors are where the high-level primitive is defined today.
 | `extcodesize(a)` | `a.code.length` | GTT `'code'` (`.code` = the redeem script) |
 | `extcodehash(a)` | `a.codehash` | GTT `'codehash'` (BCH script-hash, not EVM keccak-of-code - see note) |
 | `extcodecopy(a, dst, off, len)` | `a.code` into the memory buffer | GTT `'code'` + memory model |
+| `codesize()` / `codecopy(...)` | `this.activeBytecode` (own redeem script) + memory buffer | `ast/Operator.ts` NullaryOperator.BYTECODE |
+| `calldataload(p)` / `calldatasize()` / `calldatacopy(...)` | slice/length of synthesized EVM calldata | `msg.sig` + `abi.encode`; see "Calldata model" |
 | `log0`..`log4` | `emit Event(...)` | `ast/AST.ts` `class Event` |
 | `selfdestruct(a)` | `selfdestruct(a)` statement | GTT selfdestruct |
 | `call` / `staticcall` | `IContract(addr).method(args)` | `ast/AST.ts` ExternalCall; needs calldata decode (below) |
@@ -144,8 +148,9 @@ Genuinely out (small residual - no BCH analogue):
 |---|---|
 | app/minimal-proxy/MinimalProxy.sol, app/deploy-any-contract/Proxy.sol | deploy + run *arbitrary raw EVM bytecode* (proxy delegating to an opaque impl) - no EVM bytecode at a BCH address |
 | app/upgradeable-proxy/UpgradeableProxy.sol | generic `calldatacopy` + `delegatecall(arbitrary impl)` + `returndatacopy` forward of opaque calldata to an opaque target |
-| evm/memory/YulMem.sol | free-memory-pointer / growable dynamic memory |
+| evm/memory/YulMem.sol | free-memory-pointer / growable dynamic memory (calldatacopy here is fine; the wall is dynamic memory) |
 | `verbatim` | raw EVM bytecode injection - opaque EVM opcode bytes spliced into output; no BCH meaning, hard-reject |
+| `pc`, `datasize`/`dataoffset`/`datacopy`, `linkersymbol` | EVM program counter / bytecode-object / library-linking; no BCH analogue (and compiler-internal, not hand-written) |
 
 ## Memory model (mload / mstore)
 
@@ -198,6 +203,26 @@ function-execution-scoped local** - no UTXO, no state UTXO, just a stack slot.
   as ERC20Permit's EIP-712 path.
 - Non-constant keys: reject in v1.
 
+## Calldata model (calldataload / calldatasize / calldatacopy)
+
+EVM calldata is `selector(4 bytes) || abi-encoded args`. solidcash already exposes the pieces - `msg.sig`
+(the 4-byte selector), `msg.data`, and `abi.encode` - so we synthesize the EVM-calldata view of the current
+call and read from it. Note this is a *synthesized* view: solidcash's own `msg.data` is the BCH unlocking
+layout (length-prefixed pushes), not 32-byte-aligned EVM words, so we do not slice `msg.data` directly; we
+build `calldata = msg.sig ++ abi.encode(param0, param1, ...)` from the known function signature.
+
+- `calldataload(p)` -> the 32-byte word of `calldata` at byte offset `p`, zero-padded past the end (EVM
+  semantics). For the dominant constant-aligned case `calldataload(4 + 32*k)` this is just `param k`
+  ABI-encoded to `bytes32` - a direct map to the k-th parameter. `calldataload(0)` is the selector in the
+  top 4 bytes followed by the first 28 bytes of `param0`. General/unaligned/dynamic `p` slices the built
+  `calldata` buffer.
+- `calldatasize()` -> `4 + 32 * <static-arg-count>`, a compile-time constant from the signature.
+- `calldatacopy(dst, off, len)` -> write the `calldata[off:off+len]` slice into the memory buffer (memory
+  model), same shape as `extcodecopy`.
+
+Routable, not fundamental. The only hard residual nearby is forwarding *opaque* calldata to an *opaque*
+delegatecall target (UpgradeableProxy) - that wall is the opaque-bytecode impl, not the calldata ops.
+
 ## Phased implementation plan
 
 - [x] Phase 1 - front-end + diagnostics. DONE. Yul sub-grammar in `SolidCash.g4` (replaces the old
@@ -248,10 +273,12 @@ function-execution-scoped local** - no UTXO, no state UTXO, just a stack slot.
   verbatim/extcodecopy): stay out.
 
 Net: this is not a narrow "value computation" subset - because solidcash already implements the context
-surface, external calls, events, deploy, selfdestruct, balance, code-size/hash/copy, most of the EVM opcode
-set ROUTES to existing codegen. The only genuinely out residual is `verbatim` (raw EVM bytecode), growable
+surface, external calls, events, deploy, selfdestruct, balance, code (size/hash/copy, own + external), and
+calldata (`msg.sig ++ abi.encode(args)`), most of the EVM opcode set ROUTES to existing codegen. The only
+genuinely out residual is `verbatim` (raw EVM bytecode), `pc` / object / linking builtins, growable
 free-pointer dynamic memory, and opaque-bytecode proxies. That makes the achievable Yul coverage much wider
-than the original "pure computation only" framing.
+than the original "pure computation only" framing - the "no BCH equivalent" bucket has repeatedly turned out
+smaller than first assumed (calldata and own-code were both initially miscategorised).
 
 ## Open questions / risks
 

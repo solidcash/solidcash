@@ -38,10 +38,21 @@ describe('Yul inline assembly (Phase 1: parse + diagnostics)', () => {
     expect(() => compileString(`
       contract C() {
         function f() {
-          assembly { let x := calldataload(0) }
+          assembly { let x := pc() }
           require(true);
         }
-      }`)).toThrow(/'calldataload' has no BCH equivalent/);
+      }`)).toThrow(/'pc' has no BCH equivalent/);
+  });
+
+  it('treats calldataload as supportable (pending), not "no BCH equivalent"', () => {
+    // calldata = msg.sig ++ abi-encoded args, so calldataload routes; it is deferred to codegen, not rejected.
+    expect(() => compileString(`
+      contract C() {
+        function f() {
+          assembly { let x := calldataload(4) }
+          require(true);
+        }
+      }`)).toThrow(/Yul code generation is not yet implemented/);
   });
 
   it('hard-rejects verbatim (raw EVM bytecode injection)', () => {

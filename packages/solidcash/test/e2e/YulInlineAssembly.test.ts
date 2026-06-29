@@ -59,6 +59,13 @@ contract YulCheck() {
         assembly { a := calldatasize() }
         require(a == expected);
     }
+
+    // transient store/load within one execution behaves as a function-scoped local.
+    function transientRoundtrip(uint256 v, uint256 expected) {
+        uint256 a = 0;
+        assembly { tstore(3, v) a := tload(3) }
+        require(a == expected);
+    }
 }
 `;
 
@@ -109,5 +116,10 @@ describe('Yul inline assembly runtime correctness', () => {
   it('calldatasize is 4 + 32 * argCount', async () => {
     await expect(spend('dataSize', [5n, 68n])).resolves.toBeDefined(); // 4 + 32*2
     await expect(spend('dataSize', [5n, 67n])).rejects.toThrow();
+  });
+
+  it('transient tstore/tload round-trips within one execution', async () => {
+    await expect(spend('transientRoundtrip', [42n, 42n])).resolves.toBeDefined();
+    await expect(spend('transientRoundtrip', [42n, 41n])).rejects.toThrow();
   });
 });

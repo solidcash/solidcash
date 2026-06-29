@@ -4,6 +4,7 @@ import {
   Node, StatementNode, ExpressionNode, AssemblyStatementNode, BlockNode, VariableDefinitionNode,
   AssignNode, RequireNode, BranchNode, WhileNode, BreakNode, ContinueNode, BinaryOpNode, UnaryOpNode,
   CastNode, IdentifierNode, IntLiteralNode, BoolLiteralNode, ParameterNode, FunctionDefinitionNode,
+  StateAssignNode, StateAccessNode, StateVariableNode, ContractNode,
 } from '../ast/AST.js';
 import { BinaryOperator, UnaryOperator } from '../ast/Operator.js';
 import {
@@ -23,6 +24,36 @@ const UINT256 = new IntType(false, 256);
 // The enclosing function's user parameters, used for the EVM-calldata view (selector ++ abi.encode(params)).
 // Set per function while lowering its body. solidc has no nested functions, so a module-level slot is safe.
 let currentParams: ParameterNode[] = [];
+
+// The enclosing contract's state variables (declaration order = EVM slot number), for sstore/sload.
+let currentStateVars: StateVariableNode[] = [];
+
+// Resolve a Yul storage-slot argument to a simple value-type state variable. Supports a literal slot number
+// (`sstore(0, ..)`) and the `.slot` form (`sstore(x.slot, ..)`). Packed/dynamic/mapping/array slots are later
+// phases (their slot semantics differ from one-var-per-slot).
+function resolveSlotVar(slotArg: YulExpressionNode): StateVariableNode | undefined {
+  let sv: StateVariableNode | undefined;
+  if (isIntLiteral(slotArg)) {
+    sv = currentStateVars[Number(BigInt(slotArg.raw))];
+  } else if (slotArg instanceof YulPathNode && slotArg.members.length === 1 && slotArg.members[0] === 'slot') {
+    sv = currentStateVars.find((v) => v.name === slotArg.base);
+  }
+  if (sv && sv.type instanceof IntType && !sv.isPacked && !sv.isDynamic) return sv;
+  return undefined;
+}
+
+// Transient storage (tstore/tload) maps to a zero-initialized, function-execution-scoped local keyed by the
+// constant slot. BCH has no tx-scoped contract storage and one spend = one execution, so this is compile
+// parity (e.g. a reentrancy guard is inert). The key must be a literal or a bare (constant) identifier.
+// Keys used while lowering one assembly block (local name -> a source node for location); declarations are
+// hoisted to the block's top.
+const transientKeys = new Map<string, YulExpressionNode>();
+
+function transientLocalName(keyArg: YulExpressionNode): string | undefined {
+  if (isIntLiteral(keyArg)) return `__yul_tslot_${BigInt(keyArg.raw)}`;
+  if (keyArg instanceof YulPathNode && keyArg.members.length === 0) return `__yul_tslot_${keyArg.base}`;
+  return undefined;
+}
 
 // Yul binary builtins -> solidc operators (value `a op b`).
 const ARITH_OPS: Record<string, BinaryOperator> = {
@@ -113,6 +144,21 @@ function lowerCall(call: YulFunctionCallNode): ExpressionNode {
     }
     throw new YulNotLowerable(); // selector region / non-aligned offset / non-int param (later phase)
   }
+  // sload(slot) -> read the state variable at that slot (one value-type var per slot).
+  if (name === 'sload' && args.length === 1) {
+    const sv = resolveSlotVar(args[0]);
+    if (sv) return loc(new StateAccessNode(sv.name), call);
+    throw new YulNotLowerable();
+  }
+  // tload(key) -> read the transient local for that constant key.
+  if (name === 'tload' && args.length === 1) {
+    const local = transientLocalName(args[0]);
+    if (local) {
+      transientKeys.set(local, call);
+      return loc(new IdentifierNode(local), call);
+    }
+    throw new YulNotLowerable();
+  }
   throw new YulNotLowerable();
 }
 
@@ -154,9 +200,24 @@ function lowerStatement(stmt: YulStatementNode): StatementNode {
 
   if (stmt instanceof YulExpressionStatementNode) {
     const e = stmt.expression;
-    // The only supported bare-call statement is `revert(0, 0)` (abort with no return data).
-    if (e instanceof YulFunctionCallNode && e.name === 'revert' && isZeroRevert(e)) {
-      return loc(new RequireNode(loc(new BoolLiteralNode(false), stmt)), stmt);
+    if (e instanceof YulFunctionCallNode) {
+      // revert(0, 0): abort with no return data.
+      if (e.name === 'revert' && isZeroRevert(e)) {
+        return loc(new RequireNode(loc(new BoolLiteralNode(false), stmt)), stmt);
+      }
+      // sstore(slot, v): write the state variable at that slot.
+      if (e.name === 'sstore' && e.args.length === 2) {
+        const sv = resolveSlotVar(e.args[0]);
+        if (sv) return loc(new StateAssignNode(sv.name, lowerValue(e.args[1])), stmt);
+      }
+      // tstore(key, v): write the transient local for that constant key.
+      if (e.name === 'tstore' && e.args.length === 2) {
+        const local = transientLocalName(e.args[0]);
+        if (local) {
+          transientKeys.set(local, e.args[0]);
+          return loc(new AssignNode(loc(new IdentifierNode(local), stmt), lowerValue(e.args[1])), stmt);
+        }
+      }
     }
     throw new YulNotLowerable();
   }
@@ -209,6 +270,14 @@ function lowerBlock(block: YulBlockNode): BlockNode {
 // existing codegen (stack model, control flow, type checking). Unsupported Yul is left untouched for the
 // inline-assembly diagnostic. Native BCH-ASM (no yulBlock) is unaffected. See docs/yul-inline-assembly.md.
 export default class LowerInlineAssembly extends AstTraversal {
+  // Track the enclosing contract's state variables so sstore/sload can resolve slot numbers.
+  visitContract(node: ContractNode): Node {
+    currentStateVars = node.stateVariables;
+    const result = super.visitContract(node);
+    currentStateVars = [];
+    return result;
+  }
+
   // Track the current function's parameters so calldataload/calldatasize can resolve against them.
   visitFunctionDefinition(node: FunctionDefinitionNode): Node {
     currentParams = node.parameters;
@@ -219,8 +288,17 @@ export default class LowerInlineAssembly extends AstTraversal {
 
   visitAssemblyStatement(node: AssemblyStatementNode): Node {
     if (!node.yulBlock) return node;
+    transientKeys.clear();
     try {
-      return lowerBlock(node.yulBlock);
+      const block = lowerBlock(node.yulBlock);
+      // Hoist a zero-init declaration for each transient key used (tload may precede tstore in the block).
+      if (transientKeys.size > 0) {
+        const decls = [...transientKeys].map(
+          ([name, src]) => loc(new VariableDefinitionNode(UINT256, [], name, intLit(0n, src)), src) as StatementNode,
+        );
+        block.statements = [...decls, ...(block.statements ?? [])];
+      }
+      return block;
     } catch (e) {
       if (e instanceof YulNotLowerable) return node;
       throw e;

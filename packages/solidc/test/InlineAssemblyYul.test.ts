@@ -96,3 +96,38 @@ describe('Yul inline assembly (Phase 1: parse + diagnostics)', () => {
       }`)).not.toThrow();
   });
 });
+
+// Phase 4: sstore/sload route to the existing state read/write codegen, tstore/tload to a function-scoped
+// local. Verified by byte-identical compilation to the direct (heavily-tested) forms.
+describe('Yul storage and transient lowering', () => {
+  it('sstore(slot)/sload(slot) compile identically to direct state access', () => {
+    const yul = compileString(
+      'contract C(){uint256 s_x;uint256 s_y;function f(uint256 v){assembly{sstore(1,v)}require(true);}}',
+    );
+    const direct = compileString(
+      'contract C(){uint256 s_x;uint256 s_y;function f(uint256 v){this.s_y=v;require(true);}}',
+    );
+    expect(yul.bytecode).toBe(direct.bytecode);
+  });
+
+  it('the .slot form resolves to the same state variable as the literal slot', () => {
+    const bySlotName = compileString(
+      'contract C(){uint256 s_x;uint256 s_y;function f(uint256 v){assembly{sstore(s_y.slot,v)}require(true);}}',
+    );
+    const byNumber = compileString(
+      'contract C(){uint256 s_x;uint256 s_y;function f(uint256 v){assembly{sstore(1,v)}require(true);}}',
+    );
+    expect(bySlotName.bytecode).toBe(byNumber.bytecode);
+  });
+
+  it('tstore/tload compile to a zero-init function-scoped local', () => {
+    const yul = compileString(
+      'contract C(){function f(uint256 v,uint256 e){uint256 a=0;assembly{tstore(7,v) a:=tload(7)}require(a==e);}}',
+    );
+    const direct = compileString(
+      'contract C(){function f(uint256 v,uint256 e){uint256 __yul_tslot_7=0;uint256 a=0;'
+      + '__yul_tslot_7=v;a=__yul_tslot_7;require(a==e);}}',
+    );
+    expect(yul.bytecode).toBe(direct.bytecode);
+  });
+});

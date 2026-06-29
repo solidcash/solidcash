@@ -264,9 +264,15 @@ selector word (offset 0), non-aligned/dynamic offsets, non-int params, and `call
       `extcodesize`, `blockhash`, `log0..4`, `selfdestruct`) lowers to the existing AST node / operator for
       that primitive. Cheap and sound (reuses tested codegen). Unblocks ContractSize.sol (extcodesize ->
       .code.length).
-- [ ] Phase 4 - storage + transient. Virtual-slot table (value-type, one-per-slot) for `sstore`/`sload` +
-      `.slot`; constant-key `tstore`/`tload` as function-scoped locals. Sound because storage routes
-      through existing state codegen.
+- [x] Phase 4 - storage + transient. DONE. `sstore(slot, v)` / `sload(slot)` lower to `StateAssignNode` /
+      `StateAccessNode` for the value-type state var at that slot (declaration order = slot number); the
+      `.slot` form (`sstore(x.slot, v)`) resolves to the named var. Verified by byte-identical compilation to
+      the direct `this.x = v` / `this.x` forms - i.e. it IS the existing, tested state codegen. Packed /
+      dynamic / mapping / array slots stay deferred (Phase 7). `tstore(key, v)` / `tload(key)` (constant key)
+      lower to a zero-initialized, function-execution-scoped local hoisted to the assembly block top (so
+      `tload` may precede `tstore`, e.g. an inert reentrancy guard); byte-identical to an explicit local, and
+      a stateless e2e round-trips it. No bench movement (EVMStorage needs packed slots; TransientStorage is
+      multi-wall) - shipped for completeness.
 - [ ] Phase 5 - memory scratch. Constant-offset word buffer; `keccak256`/`return`/`revert` over a constant
       region -> concat + builtin. Unblocks Hashes.sol.
 - [ ] Phase 6 - decode-routed calls + deploy. `call`/`staticcall`/`delegatecall` -> `ExternalCall` by

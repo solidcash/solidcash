@@ -1679,18 +1679,17 @@ describe('SBE-26: a constructor declaring its own params can pass them to a pare
   });
 });
 
-describe('SBE-27: block.chainid is uint256 under solidityImportCompat', () => {
-  it('assigns block.chainid to a uint256 state variable', () => {
-    const a = compileString(
+describe('SBE-27: block.chainid is uint256 (Solidity parity)', () => {
+  it('assigns block.chainid to a uint256 state variable (with the flag)', () => {
+    expect(compileString(
       'contract C { uint256 id; function f() external { this.id = block.chainid; } }',
       { solidityImportCompat: true },
-    );
-    expect(a.contractName).toBe('C');
+    ).contractName).toBe('C');
   });
 
-  it('keeps block.chainid as bytes1 without the flag (native network byte)', () => {
-    const a = compileString('contract C { bytes1 id; function f() external { this.id = block.chainid; } }');
-    expect(a.contractName).toBe('C');
+  it('is uint256 even without the flag (the value stays a minimal 1-byte number)', () => {
+    expect(compileString('contract C { uint256 id; function f() external { this.id = block.chainid; } }')
+      .contractName).toBe('C');
   });
 });
 

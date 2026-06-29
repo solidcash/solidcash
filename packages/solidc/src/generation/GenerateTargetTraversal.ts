@@ -4360,13 +4360,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emitTxOrigin(locationData);
         break;
       case NullaryOperator.CHAIN_ID:
-        // Native: a single network-id byte (regtest -1 -> 0xff), typed bytes1. Under solidityImportCompat:
-        // the chain id as a uint256 int (Solidity parity) so it assigns/compares as a number.
-        if (this.compilerOptions.solidityImportCompat) {
-          this.emit(encodeInt(BigInt(this.compilerOptions.chainId ?? 0)), locationData);
-        } else {
-          this.emit(Uint8Array.from([(this.compilerOptions.chainId ?? 0) & 0xff]), locationData);
-        }
+        // block.chainid is uint256 (Solidity parity). Emit the network selector as its UNSIGNED byte value
+        // (`chainId & 0xff`: mainnet 0, chipnet 1, testnet4 2, regtest 255) so it is a valid non-negative
+        // uint256, encoded minimally (<=2 bytes) rather than a fixed-width 32-byte value.
+        this.emit(encodeInt(BigInt(this.compilerOptions.chainId ?? 0) & 0xffn), locationData);
         break;
       case NullaryOperator.BLOCK_PREVRANDAO:
         // Transaction-local randomness shim: abs(int(sha256(input[0] prevout txid))). No secure source on

@@ -12,25 +12,26 @@ import {
 } from '@solidcash/utils';
 import { BlockOracleUpdater, fetchBlockOracleFields, RpcLike } from '../../src/oracle/blockOracleUpdater.js';
 
-// block.chainid is a baked single-byte network constant (chainId & 0xff), typed bytes1, compared
-// bytewise. The contract requires the baked byte equals an unlock arg, so the spend only succeeds when
-// the byte compiled for `chainId` matches what the caller expects under the VM.
+// block.chainid is uint256 (Solidity parity); the baked network selector is a minimal int on-stack. The
+// contract requires it equals an unlock arg (numeric compare), so the spend only succeeds when the value
+// compiled for `chainId` matches what the caller expects under the VM.
 const SOURCE = `
 contract ChainIdCheck() {
-    function check(bytes1 expected) {
+    function check(uint256 expected) {
         require(block.chainid == expected);
     }
 }`;
 
-// User-land convention: mainnet 0, chipnet 1, testnet4 2, regtest -1 (0xff).
+// User-land selector chainId -> the uint256 block.chainid value (its unsigned byte, `chainId & 0xff`):
+// mainnet 0, chipnet 1, testnet4 2, regtest (-1) -> 255.
 const NETWORKS = [
-  { name: 'mainnet', chainId: 0, hex: '00' },
-  { name: 'chipnet', chainId: 1, hex: '01' },
-  { name: 'testnet4', chainId: 2, hex: '02' },
-  { name: 'regtest', chainId: -1, hex: 'ff' },
+  { name: 'mainnet', chainId: 0, expected: 0 },
+  { name: 'chipnet', chainId: 1, expected: 1 },
+  { name: 'testnet4', chainId: 2, expected: 2 },
+  { name: 'regtest', chainId: -1, expected: 255 },
 ];
 
-async function spendCheck(chainId: number, expectedHex: string): Promise<string> {
+async function spendCheck(chainId: number, expected: number): Promise<string> {
   const provider = createTestProvider();
   const artifact = compileString(SOURCE, { chainId });
   const contract = new Contract(artifact, [], { provider });
@@ -39,7 +40,7 @@ async function spendCheck(chainId: number, expectedHex: string): Promise<string>
   const feeFunder = await createFeeFunder(provider, 20000n);
 
   const tx = await new TransactionBuilder({ provider })
-    .addInput(contractUtxo, contract.unlock.check(hexToBin(expectedHex)))
+    .addInput(contractUtxo, contract.unlock.check(BigInt(expected)))
     .addInput(feeFunder.utxo, feeFunder.unlocker)
     .addOutput({ to: contract.address, amount: 110000n })
     .send();
@@ -47,9 +48,9 @@ async function spendCheck(chainId: number, expectedHex: string): Promise<string>
 }
 
 // Spend a no-arg contract whose body hardcodes a network-byte check.
-async function spendLiteral(chainId: number | undefined, literalHex: string): Promise<string> {
+async function spendLiteral(chainId: number | undefined, literal: number): Promise<string> {
   const provider = createTestProvider();
-  const src = `contract C() { function f() { require(block.chainid == 0x${literalHex}); } }`;
+  const src = `contract C() { function f() { require(block.chainid == ${literal}); } }`;
   const artifact = compileString(src, chainId === undefined ? {} : { chainId });
   const contract = new Contract(artifact, [], { provider });
 
@@ -66,36 +67,34 @@ async function spendLiteral(chainId: number | undefined, literalHex: string): Pr
 
 describe('block.chainid e2e', () => {
   for (const net of NETWORKS) {
-    it(`bakes ${net.name} (chainId ${net.chainId}) as 0x${net.hex} and enforces it on the VM`, async () => {
-      const txid = await spendCheck(net.chainId, net.hex);
+    it(`bakes ${net.name} (chainId ${net.chainId}) as ${net.expected} and enforces it on the VM`, async () => {
+      const txid = await spendCheck(net.chainId, net.expected);
       expect(txid).toMatch(/^[0-9a-f]{64}$/);
     });
 
-    it(`rejects a mismatched network byte for ${net.name}`, async () => {
-      const wrongHex = net.hex === '00' ? '01' : '00';
-      await expect(spendCheck(net.chainId, wrongHex)).rejects.toThrow();
+    it(`rejects a mismatched chain id for ${net.name}`, async () => {
+      await expect(spendCheck(net.chainId, net.expected === 0 ? 1 : 0)).rejects.toThrow();
     });
   }
 
-  it('defaults to mainnet (0x00) when chainId is omitted', async () => {
-    const txid = await spendLiteral(undefined, '00');
+  it('defaults to mainnet (0) when chainId is omitted', async () => {
+    const txid = await spendLiteral(undefined, 0);
     expect(txid).toMatch(/^[0-9a-f]{64}$/);
   });
 
-  it('a chipnet-compiled contract fails a hardcoded mainnet check (0x01 != 0x00)', async () => {
-    await expect(spendLiteral(1, '00')).rejects.toThrow();
+  it('a chipnet-compiled contract fails a hardcoded mainnet check (1 != 0)', async () => {
+    await expect(spendLiteral(1, 0)).rejects.toThrow();
   });
 });
 
 describe('block.chainid compilation', () => {
-  it('bakes a different byte per chainId', () => {
+  it('bakes a different value per chainId', () => {
     const mainnet = compileString(SOURCE, { chainId: 0 }).bytecode;
     const chipnet = compileString(SOURCE, { chainId: 1 }).bytecode;
     const regtest = compileString(SOURCE, { chainId: -1 }).bytecode;
     expect(mainnet).not.toEqual(chipnet);
     expect(chipnet).not.toEqual(regtest);
-    // regtest -1 -> the literal byte 0xff
-    expect(regtest).toContain('ff');
+    expect(mainnet).not.toEqual(regtest);
   });
 
   it('defaults to mainnet when chainId is omitted (same bytecode as chainId 0)', () => {

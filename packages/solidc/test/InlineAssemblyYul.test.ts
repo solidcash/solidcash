@@ -44,15 +44,18 @@ describe('Yul inline assembly (Phase 1: parse + diagnostics)', () => {
       }`)).toThrow(/'pc' has no BCH equivalent/);
   });
 
-  it('treats calldataload as supportable (pending), not "no BCH equivalent"', () => {
-    // calldata = msg.sig ++ abi-encoded args, so calldataload routes; it is deferred to codegen, not rejected.
+  it('compiles calldataload/calldatasize against function parameters', () => {
+    // calldata = msg.sig ++ abi-encoded args; calldataload(4 + 32*k) reads the k-th arg, calldatasize = 4+32n.
     expect(() => compileString(`
       contract C() {
-        function f() {
-          assembly { let x := calldataload(4) }
-          require(true);
+        function f(uint256 x, uint256 y) {
+          uint256 a = 0;
+          uint256 n = 0;
+          assembly { a := calldataload(36) n := calldatasize() }
+          require(a == y);
+          require(n == 68);
         }
-      }`)).toThrow(/Yul code generation is not yet implemented/);
+      }`)).not.toThrow();
   });
 
   it('hard-rejects verbatim (raw EVM bytecode injection)', () => {

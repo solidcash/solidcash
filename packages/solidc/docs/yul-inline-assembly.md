@@ -223,6 +223,11 @@ build `calldata = msg.sig ++ abi.encode(param0, param1, ...)` from the known fun
 Routable, not fundamental. The only hard residual nearby is forwarding *opaque* calldata to an *opaque*
 delegatecall target (UpgradeableProxy) - that wall is the opaque-bytecode impl, not the calldata ops.
 
+DONE (Phase 2): `calldataload(4 + 32*k)` with a constant aligned offset lowers to the k-th `int`/`uint`
+parameter, and `calldatasize()` lowers to `4 + 32 * paramCount`. Verified on the VM (solidcash e2e). The
+selector word (offset 0), non-aligned/dynamic offsets, non-int params, and `calldatacopy` are deferred
+(left to the inline-assembly diagnostic).
+
 ## Phased implementation plan
 
 - [x] Phase 1 - front-end + diagnostics. DONE. Yul sub-grammar in `SolidCash.g4` (replaces the old

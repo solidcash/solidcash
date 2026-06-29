@@ -3,7 +3,7 @@ import AstTraversal from '../ast/AstTraversal.js';
 import {
   Node, StatementNode, ExpressionNode, AssemblyStatementNode, BlockNode, VariableDefinitionNode,
   AssignNode, RequireNode, BranchNode, WhileNode, BreakNode, ContinueNode, BinaryOpNode, UnaryOpNode,
-  CastNode, IdentifierNode, IntLiteralNode, BoolLiteralNode,
+  CastNode, IdentifierNode, IntLiteralNode, BoolLiteralNode, ParameterNode, FunctionDefinitionNode,
 } from '../ast/AST.js';
 import { BinaryOperator, UnaryOperator } from '../ast/Operator.js';
 import {
@@ -19,6 +19,10 @@ class YulNotLowerable extends Error {}
 // Yul words are unsigned 256-bit. A bounded IntType is required for integer bitwise (`&`/`|`/`^`), and works
 // for arithmetic too; comparisons are cast to it so their 0/1 result is bitwise/arithmetic-usable.
 const UINT256 = new IntType(false, 256);
+
+// The enclosing function's user parameters, used for the EVM-calldata view (selector ++ abi.encode(params)).
+// Set per function while lowering its body. solidc has no nested functions, so a module-level slot is safe.
+let currentParams: ParameterNode[] = [];
 
 // Yul binary builtins -> solidc operators (value `a op b`).
 const ARITH_OPS: Record<string, BinaryOperator> = {
@@ -95,6 +99,19 @@ function lowerCall(call: YulFunctionCallNode): ExpressionNode {
   }
   if (name === 'iszero' && args.length === 1) {
     return boolToWord(loc(new BinaryOpNode(lowerValue(args[0]), BinaryOperator.EQ, intLit(0n, call)), call), call);
+  }
+  // EVM calldata = selector(4) ++ abi-encoded args. calldataload(4+32k) is the k-th param's word;
+  // calldatasize is 4 + 32*argCount. See docs/yul-inline-assembly.md "Calldata model".
+  if (name === 'calldatasize' && args.length === 0) {
+    return intLit(BigInt(4 + 32 * currentParams.length), call);
+  }
+  if (name === 'calldataload' && args.length === 1 && isIntLiteral(args[0])) {
+    const p = BigInt(args[0].raw);
+    if (p >= 4n && (p - 4n) % 32n === 0n) {
+      const param = currentParams[Number((p - 4n) / 32n)];
+      if (param && param.type instanceof IntType) return loc(new IdentifierNode(param.name), call);
+    }
+    throw new YulNotLowerable(); // selector region / non-aligned offset / non-int param (later phase)
   }
   throw new YulNotLowerable();
 }
@@ -192,6 +209,14 @@ function lowerBlock(block: YulBlockNode): BlockNode {
 // existing codegen (stack model, control flow, type checking). Unsupported Yul is left untouched for the
 // inline-assembly diagnostic. Native BCH-ASM (no yulBlock) is unaffected. See docs/yul-inline-assembly.md.
 export default class LowerInlineAssembly extends AstTraversal {
+  // Track the current function's parameters so calldataload/calldatasize can resolve against them.
+  visitFunctionDefinition(node: FunctionDefinitionNode): Node {
+    currentParams = node.parameters;
+    const result = super.visitFunctionDefinition(node);
+    currentParams = [];
+    return result;
+  }
+
   visitAssemblyStatement(node: AssemblyStatementNode): Node {
     if (!node.yulBlock) return node;
     try {

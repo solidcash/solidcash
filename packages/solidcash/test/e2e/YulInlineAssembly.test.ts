@@ -45,6 +45,20 @@ contract YulCheck() {
         }
         require(z == expected);
     }
+
+    // calldataload(4 + 32*k) reads the k-th arg's word; here k=1 (second param y).
+    function readArg(uint256 x, uint256 y, uint256 expected) {
+        uint256 a = 0;
+        assembly { a := calldataload(36) }
+        require(a == expected);
+    }
+
+    // calldatasize() = 4 + 32 * argCount; this function has 2 params -> 68.
+    function dataSize(uint256 x, uint256 expected) {
+        uint256 a = 0;
+        assembly { a := calldatasize() }
+        require(a == expected);
+    }
 }
 `;
 
@@ -85,5 +99,15 @@ describe('Yul inline assembly runtime correctness', () => {
     await expect(spend('classify', [0n, 100n])).resolves.toBeDefined();
     await expect(spend('classify', [7n, 300n])).resolves.toBeDefined();
     await expect(spend('classify', [7n, 200n])).rejects.toThrow();
+  });
+
+  it('calldataload reads the matching argument word', async () => {
+    await expect(spend('readArg', [10n, 99n, 99n])).resolves.toBeDefined(); // arg 1 (y) = 99
+    await expect(spend('readArg', [10n, 99n, 98n])).rejects.toThrow();
+  });
+
+  it('calldatasize is 4 + 32 * argCount', async () => {
+    await expect(spend('dataSize', [5n, 68n])).resolves.toBeDefined(); // 4 + 32*2
+    await expect(spend('dataSize', [5n, 67n])).rejects.toThrow();
   });
 });

@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { compileString } from 'solidc';
 import { hexToBin, binToHex } from '@bitauth/libauth';
 import { encodePushdataValue } from '@solidcash/utils';
-import { Contract, TransactionBuilder } from '../../src/index.js';
+import { Contract, TransactionBuilder, buildOpaqueLoopCallTransaction } from '../../src/index.js';
 import { createTestProvider, verifyTransaction, createFeeFunder } from '../test-util.js';
 
 // Minimal isolation of the inline loop-indexed external dispatch (the MultiCall covenant): a stateless
@@ -118,6 +118,36 @@ describe('Inline loop-indexed external dispatch (MultiCall covenant)', () => {
 
   it('the real solidity-by-example MultiCall verifies end-to-end (returns bytes[])', async () => {
     const tb = await buildTx(MULTICALL_SRC, multiUnlock, [OP_TRUE, OP_TRUE]);
+    verifyTransaction(tb);
+    expect(tb.inputs.length).toBe(4);
+  });
+
+  it('buildOpaqueLoopCallTransaction helper drives MultiCall in one call', async () => {
+    const art = compileString(MULTICALL_SRC, { solidityImportCompat: true });
+    const provider = createTestProvider();
+    const contract = new Contract(art, [], { provider });
+    const callerUtxo = { txid: 'cc'.repeat(32), vout: 0, satoshis: 100000n };
+    const t0 = {
+      txid: '01'.repeat(32), vout: 0, satoshis: 1200n,
+      token: { category: C0, amount: 0n, nft: { capability: 'minting' as const, commitment: '' } },
+    };
+    const t1 = {
+      txid: '02'.repeat(32), vout: 0, satoshis: 1200n,
+      token: { category: C1, amount: 0n, nft: { capability: 'minting' as const, commitment: '' } },
+    };
+    const funder = await createFeeFunder(provider, 10000n);
+
+    const tb = buildOpaqueLoopCallTransaction({
+      provider,
+      contract,
+      functionName: 'multiCall',
+      callerUtxo,
+      targets: [
+        { utxo: t0, unlocker: trueUnlocker(), lockingBytecode: OP_TRUE, data: new Uint8Array([]), returnData: hexToBin('deadbeef') },
+        { utxo: t1, unlocker: trueUnlocker(), lockingBytecode: OP_TRUE, data: new Uint8Array([]), returnData: hexToBin('cafe') },
+      ],
+      funder,
+    });
     verifyTransaction(tb);
     expect(tb.inputs.length).toBe(4);
   });

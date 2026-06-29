@@ -26,6 +26,25 @@ const OP_TRUE = hexToBin('51'); // anyone-can-spend
 const C0 = 'a0'.repeat(32);
 const C1 = 'b1'.repeat(32);
 
+// The real solidity-by-example MultiCall: stateless, returns bytes[]. The function-return event is skipped
+// by passing __internal__returnOutputIdx = -1 (standalone call), so it reuses the same dispatch covenant.
+const MULTICALL_SRC = `
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.26;
+contract MultiCall {
+    function multiCall(address[] calldata targets, bytes[] calldata data)
+        external view returns (bytes[] memory) {
+        require(targets.length == data.length, "target length != data length");
+        bytes[] memory results = new bytes[](data.length);
+        for (uint256 i; i < targets.length; i++) {
+            (bool success, bytes memory result) = targets[i].staticcall(data[i]);
+            require(success, "call failed");
+            results[i] = result;
+        }
+        return results;
+    }
+}`;
+
 // trivial co-spend unlocker for an anyone-can-spend (OP_TRUE) UTXO
 function trueUnlocker(): { generateLockingBytecode: () => Uint8Array; generateUnlockingBytecode: () => Uint8Array } {
   return {
@@ -36,9 +55,14 @@ function trueUnlocker(): { generateLockingBytecode: () => Uint8Array; generateUn
 
 // Build the multi-call transaction. `targetsArg` is what the witness CLAIMS the targets are (the address[]
 // the covenant verifies each co-spent input against); the co-spent inputs are always the two real OP_TRUE
-// token UTXOs. Passing a mismatching targetsArg proves the identity binding rejects.
-async function buildTx(targetsArg: Uint8Array[]): Promise<TransactionBuilder> {
-  const art = compileString(SRC, { solidityImportCompat: true });
+// token UTXOs. Passing a mismatching targetsArg proves the identity binding rejects. `makeUnlock` produces
+// the contract unlocker from the encoded (targets, data) args - lets each contract supply its own arg shape.
+async function buildTx(
+  src: string,
+  makeUnlock: (contract: Contract, targets: Uint8Array, data: Uint8Array) => unknown,
+  targetsArg: Uint8Array[],
+): Promise<TransactionBuilder> {
+  const art = compileString(src, { solidityImportCompat: true });
   const provider = createTestProvider();
   const contract = new Contract(art, [], { provider });
 
@@ -58,7 +82,7 @@ async function buildTx(targetsArg: Uint8Array[]): Promise<TransactionBuilder> {
 
   // base=1 (targets at input 1,2), externalReturnOutputIdx=3 (return events at output 3,4)
   const tb = new TransactionBuilder({ provider });
-  tb.addInput(contractUtxo, contract.unlock.run(targets, data, 1n, 3n));
+  tb.addInput(contractUtxo, makeUnlock(contract, targets, data) as any);
   tb.addInput(t0, trueUnlocker());
   tb.addInput(t1, trueUnlocker());
   tb.addInput(feeFunder.utxo, feeFunder.unlocker);
@@ -74,9 +98,13 @@ async function buildTx(targetsArg: Uint8Array[]): Promise<TransactionBuilder> {
   return tb;
 }
 
+const miniUnlock = (c: Contract, t: Uint8Array, d: Uint8Array): unknown => c.unlock.run(t, d, 1n, 3n);
+// MultiCall: (targets, data, externalCallInputBase, returnOutputIdx=-1 (skip fn return event), externalReturnOutputIdx)
+const multiUnlock = (c: Contract, t: Uint8Array, d: Uint8Array): unknown => c.unlock.multiCall(t, d, 1n, -1n, 3n);
+
 describe('Inline loop-indexed external dispatch (MultiCall covenant)', () => {
   it('co-spends N witness targets + mints N return events (staticcall)', async () => {
-    const tb = await buildTx([OP_TRUE, OP_TRUE]);
+    const tb = await buildTx(SRC, miniUnlock, [OP_TRUE, OP_TRUE]);
     verifyTransaction(tb);
     expect(tb.inputs.length).toBe(4);
   });
@@ -84,7 +112,13 @@ describe('Inline loop-indexed external dispatch (MultiCall covenant)', () => {
   it('rejects a co-spent input whose bytecode != the claimed target[i] (identity binding)', async () => {
     // claim targets[0] is a different locking bytecode than the co-spent input[1] (which is OP_TRUE)
     const wrong = hexToBin('5152'); // OP_1 OP_2 - not equal to the co-spent OP_TRUE input
-    const tb = await buildTx([wrong, OP_TRUE]);
+    const tb = await buildTx(SRC, miniUnlock, [wrong, OP_TRUE]);
     expect(() => verifyTransaction(tb)).toThrow();
+  });
+
+  it('the real solidity-by-example MultiCall verifies end-to-end (returns bytes[])', async () => {
+    const tb = await buildTx(MULTICALL_SRC, multiUnlock, [OP_TRUE, OP_TRUE]);
+    verifyTransaction(tb);
+    expect(tb.inputs.length).toBe(4);
   });
 });

@@ -68,6 +68,11 @@ Each was surfaced by a real Solidity line and has a clean BCH mapping.
   (e.g. `timeLock.lockTime(addr)`) has a target the caller can resolve + selector-verify. Restricted to plain
   value types; enum/contract/address/struct/array/nested-mapping getters are skipped (placeholder types resolve
   differently pre-semantic, and complex getters differ in ABI shape).
+- **Declaration-only files compile to a minimal artifact** (ABI + empty bytecode), mirroring solc. A file with
+  no executable contract - a standalone `interface`, a file-level `enum`/`struct`, or an inline-only `library` -
+  is a valid Solidity compilation unit. The artifact carries the primary interface's ABI and any declared
+  enums/events/errors, with `bytecode: ''` and `isLibrary: true` (not instantiable). Without the flag, native
+  solidcash keeps the `LibraryNotCompilableError` guard.
 
 ### Surfaced by the modern Sablier Flow port
 

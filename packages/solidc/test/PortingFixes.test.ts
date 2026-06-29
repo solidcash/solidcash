@@ -1583,3 +1583,38 @@ describe('SBE-21: external call on a state-var target in fallback/receive', () =
       + ' receive() external payable { s.withdraw(); } }')).toBe('C');
   });
 });
+
+describe('SBE-22: declaration-only files compile under solidityImportCompat (solc parity)', () => {
+  // solc emits an ABI + empty bytecode for a file with no executable contract (a standalone interface, a
+  // file-level enum/struct, or an inline-only library). Mirror that under the flag; native solidcash keeps the
+  // LibraryNotCompilableError guard.
+  it('compiles a standalone interface to its ABI with empty bytecode', () => {
+    const a = compileString(
+      'interface IERC20 { function transfer(address to, uint256 amt) external returns (bool);'
+      + ' function balanceOf(address who) external view returns (uint256); }',
+      { solidityImportCompat: true },
+    );
+    expect(a.contractName).toBe('IERC20');
+    expect(a.bytecode).toBe('');
+    expect(a.abi.map((f) => f.name).sort()).toEqual(['balanceOf', 'transfer']);
+    expect(a.isLibrary).toBe(true);
+  });
+
+  it('compiles a file-level enum declaration (carries the enum)', () => {
+    const a = compileString('enum Status { Pending, Shipped, Accepted }', { solidityImportCompat: true });
+    expect(a.bytecode).toBe('');
+    expect(a.enums?.[0]?.name).toBe('Status');
+    expect(a.enums?.[0]?.members.map((m) => m.name)).toEqual(['Pending', 'Shipped', 'Accepted']);
+  });
+
+  it('compiles a file-level struct declaration', () => {
+    const a = compileString('struct Todo { string text; bool done; }', { solidityImportCompat: true });
+    expect(a.bytecode).toBe('');
+    expect(a.abi).toHaveLength(0);
+  });
+
+  it('still throws LibraryNotCompilableError without the flag (native guard preserved)', () => {
+    expect(() => compileString('interface IERC20 { function transfer(address to, uint256 amt) external; }'))
+      .toThrow('libraries do not produce artifacts');
+  });
+});

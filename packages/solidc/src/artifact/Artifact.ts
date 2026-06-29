@@ -152,6 +152,71 @@ function mappingNameFields(type: Type): Record<string, unknown> {
   return result;
 }
 
+// A source file with no compilable contract - a standalone interface, a file-level enum/struct, or an
+// inline-only library - is a valid compilation unit in Solidity (solc emits an ABI with empty bytecode).
+// Mirror that: emit a minimal artifact carrying the primary interface's ABI and any declared enums / events /
+// errors, with empty bytecode. There is no executable contract, so it is not instantiable (isLibrary: true).
+export function generateDeclarationArtifact(
+  ast: Ast,
+  source: string,
+): Artifact {
+  const primary = ast.interfaceDefinitions.find((i) => i.name === ast.libraryName)
+    ?? ast.interfaceDefinitions[0];
+  const abi: AbiFunction[] = (primary?.functions ?? []).map((fn) => ({
+    name: fn.name,
+    inputs: fn.parameters.map((p) => ({ name: p.name, type: abiTypeString(p.type) })),
+    ...(fn.returnTypes.length > 0 && { outputs: fn.returnTypes.map((t) => ({ type: t.toString() })) }),
+  }));
+
+  const allEnums = [
+    ...(ast.enumDefinitions || []),
+    ...ast.interfaceDefinitions.flatMap((i) => i.enumDefinitions || []),
+  ];
+  const enums = allEnums.length > 0
+    ? allEnums.map((e) => ({
+      name: e.name,
+      members: e.members.map((m) => ({ name: m.name, value: m.value.toString() })),
+    }))
+    : undefined;
+
+  const allEventDefs = ast.eventDefinitions || [];
+  const events = allEventDefs.length > 0
+    ? allEventDefs.map((ev) => ({
+      name: ev.name,
+      signature: ev.signature,
+      parameters: ev.parameters.map((p) => ({
+        name: p.name,
+        type: p.type.toString(),
+        ...(p.indexed && { indexed: true }),
+      })),
+      ...(ev.isAnonymous && { anonymous: true }),
+    }))
+    : undefined;
+
+  const allErrors = ast.errorDefinitions || [];
+  const errors = allErrors.length > 0
+    ? allErrors.map((err) => ({
+      name: err.name,
+      signature: err.signature,
+      parameters: err.parameters.map((p) => ({ name: p.name, type: p.type.toString() })),
+    }))
+    : undefined;
+
+  return {
+    contractName: ast.libraryName ?? 'definitions',
+    constructorInputs: [],
+    abi,
+    bytecode: '',
+    source,
+    isLibrary: true,
+    ...(enums && { enums }),
+    ...(events && { events }),
+    ...(errors && { errors }),
+    compiler: { name: 'solidc', version },
+    updatedAt: new Date().toISOString(),
+  };
+}
+
 export function generateArtifact(
   ast: Ast,
   script: Script,

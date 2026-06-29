@@ -1,7 +1,7 @@
 import { CharStream, CommonTokenStream } from 'antlr4';
 import { binToHex } from '@bitauth/libauth';
 import { Artifact, ArrayType, AddressType, BytesType, CompilerOptions, computeBytecodeFingerprintWithConstructorArgs, generateSourceMap, optimiseBytecode, optimiseBytecodeOld, scriptToAsm, scriptToBytecode, sourceMapToLocationData, StructType, Type } from '@solidcash/utils';
-import { generateArtifact } from './artifact/Artifact.js';
+import { generateArtifact, generateDeclarationArtifact } from './artifact/Artifact.js';
 import {
   Ast, ContractNode, ContractReferenceNode, FunctionModifier, InstantiationNode, ParameterNode,
   SourceFileNode, TypeIntrospectionNode,
@@ -75,6 +75,12 @@ export function compileString(code: string, compilerOptions: CompileOptions = {}
   // (internal/unmarked) functions has no entry point and cannot be compiled standalone.
   if (ast.isLibrary) {
     if (!ast.libraryContract) {
+      // A standalone interface, a file-level enum/struct, or an inline-only library has no executable
+      // contract. Under solidityImportCompat (porting Solidity, where solc compiles these to an ABI + empty
+      // bytecode) emit a minimal declaration artifact instead of erroring; native solidcash keeps the guard.
+      if (mergedCompilerOptions.solidityImportCompat) {
+        return generateDeclarationArtifact(ast, code);
+      }
       throw new LibraryNotCompilableError(ast.libraryName ?? 'unknown');
     }
     ast.contract = ast.libraryContract;

@@ -1,0 +1,11 @@
+contract C() {
+    function f() {
+        assembly {
+            function double(v) -> r {
+                r := mul(v, 2)
+            }
+            let x := double(2)
+        }
+        require(true);
+    }
+}

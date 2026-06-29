@@ -1,0 +1,8 @@
+contract C() {
+    function f() {
+        assembly {
+            let x := verbatim_0i_1o(hex"60")
+        }
+        require(true);
+    }
+}

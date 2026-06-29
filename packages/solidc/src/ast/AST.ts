@@ -3,6 +3,7 @@ import { TimeOp } from './Globals.js';
 import AstVisitor from './AstVisitor.js';
 import { BinaryOperator, NullaryOperator, UnaryOperator } from './Operator.js';
 import { Location } from './Location.js';
+import { YulBlockNode } from './YulAST.js';
 import { SymbolTable, Symbol } from './SymbolTable.js';
 import { binToHex } from '@bitauth/libauth';
 
@@ -597,6 +598,10 @@ export class CollectionIterationNode extends StatementNode {
 }
 
 export class AssemblyStatementNode extends StatementNode {
+  // Set for Solidity inline assembly (Yul): holds the parsed Yul sub-tree, and assemblyBody is empty.
+  // When absent, assemblyBody is native BCH-ASM passed to asmToScript.
+  yulBlock?: YulBlockNode;
+
   constructor(
     public assemblyBody: string,
   ) {

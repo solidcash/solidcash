@@ -1,0 +1,9 @@
+contract C() {
+    function f(int a, int b) {
+        int z = 0;
+        assembly {
+            z := add(a, b)
+        }
+        require(z == 0);
+    }
+}

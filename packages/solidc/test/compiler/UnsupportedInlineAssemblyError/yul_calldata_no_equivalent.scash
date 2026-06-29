@@ -1,0 +1,8 @@
+contract C() {
+    function f() {
+        assembly {
+            let x := calldataload(0)
+        }
+        require(true);
+    }
+}

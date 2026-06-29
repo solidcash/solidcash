@@ -99,7 +99,33 @@ import { DoWhileStatementContext } from "./SolidCashParser.js";
 import { WhileStatementContext } from "./SolidCashParser.js";
 import { ConsoleStatementContext } from "./SolidCashParser.js";
 import { AssemblyStatementContext } from "./SolidCashParser.js";
-import { AssemblyTokenContext } from "./SolidCashParser.js";
+import { YulBlockContext } from "./SolidCashParser.js";
+import { YulNestedBlockStmtContext } from "./SolidCashParser.js";
+import { YulVarDeclStmtContext } from "./SolidCashParser.js";
+import { YulAssignStmtContext } from "./SolidCashParser.js";
+import { YulIfStmtContext } from "./SolidCashParser.js";
+import { YulSwitchStmtContext } from "./SolidCashParser.js";
+import { YulForStmtContext } from "./SolidCashParser.js";
+import { YulFunctionDefStmtContext } from "./SolidCashParser.js";
+import { YulBreakStmtContext } from "./SolidCashParser.js";
+import { YulContinueStmtContext } from "./SolidCashParser.js";
+import { YulLeaveStmtContext } from "./SolidCashParser.js";
+import { YulCallStmtContext } from "./SolidCashParser.js";
+import { YulPathStmtContext } from "./SolidCashParser.js";
+import { YulLiteralStmtContext } from "./SolidCashParser.js";
+import { YulVariableDeclarationContext } from "./SolidCashParser.js";
+import { YulAssignmentContext } from "./SolidCashParser.js";
+import { YulIfContext } from "./SolidCashParser.js";
+import { YulSwitchContext } from "./SolidCashParser.js";
+import { YulCaseContext } from "./SolidCashParser.js";
+import { YulDefaultContext } from "./SolidCashParser.js";
+import { YulForLoopContext } from "./SolidCashParser.js";
+import { YulFunctionDefinitionContext } from "./SolidCashParser.js";
+import { YulExpressionContext } from "./SolidCashParser.js";
+import { YulFunctionCallContext } from "./SolidCashParser.js";
+import { YulFunctionNameContext } from "./SolidCashParser.js";
+import { YulPathContext } from "./SolidCashParser.js";
+import { YulLiteralContext } from "./SolidCashParser.js";
 import { UncheckedStatementContext } from "./SolidCashParser.js";
 import { SwitchStatementContext } from "./SolidCashParser.js";
 import { SwitchCaseContext } from "./SolidCashParser.js";
@@ -760,11 +786,180 @@ export default class SolidCashVisitor<Result> extends ParseTreeVisitor<Result> {
 	 */
 	visitAssemblyStatement?: (ctx: AssemblyStatementContext) => Result;
 	/**
-	 * Visit a parse tree produced by `SolidCashParser.assemblyToken`.
+	 * Visit a parse tree produced by `SolidCashParser.yulBlock`.
 	 * @param ctx the parse tree
 	 * @return the visitor result
 	 */
-	visitAssemblyToken?: (ctx: AssemblyTokenContext) => Result;
+	visitYulBlock?: (ctx: YulBlockContext) => Result;
+	/**
+	 * Visit a parse tree produced by the `YulNestedBlockStmt`
+	 * labeled alternative in `SolidCashParser.yulStatement`.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	visitYulNestedBlockStmt?: (ctx: YulNestedBlockStmtContext) => Result;
+	/**
+	 * Visit a parse tree produced by the `YulVarDeclStmt`
+	 * labeled alternative in `SolidCashParser.yulStatement`.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	visitYulVarDeclStmt?: (ctx: YulVarDeclStmtContext) => Result;
+	/**
+	 * Visit a parse tree produced by the `YulAssignStmt`
+	 * labeled alternative in `SolidCashParser.yulStatement`.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	visitYulAssignStmt?: (ctx: YulAssignStmtContext) => Result;
+	/**
+	 * Visit a parse tree produced by the `YulIfStmt`
+	 * labeled alternative in `SolidCashParser.yulStatement`.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	visitYulIfStmt?: (ctx: YulIfStmtContext) => Result;
+	/**
+	 * Visit a parse tree produced by the `YulSwitchStmt`
+	 * labeled alternative in `SolidCashParser.yulStatement`.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	visitYulSwitchStmt?: (ctx: YulSwitchStmtContext) => Result;
+	/**
+	 * Visit a parse tree produced by the `YulForStmt`
+	 * labeled alternative in `SolidCashParser.yulStatement`.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	visitYulForStmt?: (ctx: YulForStmtContext) => Result;
+	/**
+	 * Visit a parse tree produced by the `YulFunctionDefStmt`
+	 * labeled alternative in `SolidCashParser.yulStatement`.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	visitYulFunctionDefStmt?: (ctx: YulFunctionDefStmtContext) => Result;
+	/**
+	 * Visit a parse tree produced by the `YulBreakStmt`
+	 * labeled alternative in `SolidCashParser.yulStatement`.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	visitYulBreakStmt?: (ctx: YulBreakStmtContext) => Result;
+	/**
+	 * Visit a parse tree produced by the `YulContinueStmt`
+	 * labeled alternative in `SolidCashParser.yulStatement`.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	visitYulContinueStmt?: (ctx: YulContinueStmtContext) => Result;
+	/**
+	 * Visit a parse tree produced by the `YulLeaveStmt`
+	 * labeled alternative in `SolidCashParser.yulStatement`.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	visitYulLeaveStmt?: (ctx: YulLeaveStmtContext) => Result;
+	/**
+	 * Visit a parse tree produced by the `YulCallStmt`
+	 * labeled alternative in `SolidCashParser.yulStatement`.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	visitYulCallStmt?: (ctx: YulCallStmtContext) => Result;
+	/**
+	 * Visit a parse tree produced by the `YulPathStmt`
+	 * labeled alternative in `SolidCashParser.yulStatement`.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	visitYulPathStmt?: (ctx: YulPathStmtContext) => Result;
+	/**
+	 * Visit a parse tree produced by the `YulLiteralStmt`
+	 * labeled alternative in `SolidCashParser.yulStatement`.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	visitYulLiteralStmt?: (ctx: YulLiteralStmtContext) => Result;
+	/**
+	 * Visit a parse tree produced by `SolidCashParser.yulVariableDeclaration`.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	visitYulVariableDeclaration?: (ctx: YulVariableDeclarationContext) => Result;
+	/**
+	 * Visit a parse tree produced by `SolidCashParser.yulAssignment`.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	visitYulAssignment?: (ctx: YulAssignmentContext) => Result;
+	/**
+	 * Visit a parse tree produced by `SolidCashParser.yulIf`.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	visitYulIf?: (ctx: YulIfContext) => Result;
+	/**
+	 * Visit a parse tree produced by `SolidCashParser.yulSwitch`.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	visitYulSwitch?: (ctx: YulSwitchContext) => Result;
+	/**
+	 * Visit a parse tree produced by `SolidCashParser.yulCase`.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	visitYulCase?: (ctx: YulCaseContext) => Result;
+	/**
+	 * Visit a parse tree produced by `SolidCashParser.yulDefault`.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	visitYulDefault?: (ctx: YulDefaultContext) => Result;
+	/**
+	 * Visit a parse tree produced by `SolidCashParser.yulForLoop`.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	visitYulForLoop?: (ctx: YulForLoopContext) => Result;
+	/**
+	 * Visit a parse tree produced by `SolidCashParser.yulFunctionDefinition`.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	visitYulFunctionDefinition?: (ctx: YulFunctionDefinitionContext) => Result;
+	/**
+	 * Visit a parse tree produced by `SolidCashParser.yulExpression`.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	visitYulExpression?: (ctx: YulExpressionContext) => Result;
+	/**
+	 * Visit a parse tree produced by `SolidCashParser.yulFunctionCall`.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	visitYulFunctionCall?: (ctx: YulFunctionCallContext) => Result;
+	/**
+	 * Visit a parse tree produced by `SolidCashParser.yulFunctionName`.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	visitYulFunctionName?: (ctx: YulFunctionNameContext) => Result;
+	/**
+	 * Visit a parse tree produced by `SolidCashParser.yulPath`.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	visitYulPath?: (ctx: YulPathContext) => Result;
+	/**
+	 * Visit a parse tree produced by `SolidCashParser.yulLiteral`.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	visitYulLiteral?: (ctx: YulLiteralContext) => Result;
 	/**
 	 * Visit a parse tree produced by `SolidCashParser.uncheckedStatement`.
 	 * @param ctx the parse tree

@@ -244,6 +244,8 @@ import type {
 import { TernaryOpContext, TupleExpressionContext } from '../grammar/SolidCashParser.js';
 import SolidCashVisitor from '../grammar/SolidCashVisitor.js';
 import { Location } from './Location.js';
+import { buildYulBlock } from './YulAstBuilder.js';
+import { isBchAsmBlock } from './YulAST.js';
 import AstTraversal from './AstTraversal.js';
 import {
   Modifier,
@@ -1612,9 +1614,17 @@ export default class AstBuilder
   }
 
   visitAssemblyStatement(ctx: AssemblyStatementContext): AssemblyStatementNode {
-    const tokens = ctx.assemblyToken_list().map((t) => t.getText());
-    const assemblyBody = tokens.join(' ');
-    const node = new AssemblyStatementNode(assemblyBody);
+    const block = buildYulBlock(ctx.yulBlock());
+    if (isBchAsmBlock(block)) {
+      // Native BCH-ASM: reconstruct the space-separated opcode body for asmToScript.
+      const body = ctx.yulBlock().yulStatement_list().map((s) => s.getText()).join(' ');
+      const node = new AssemblyStatementNode(body);
+      node.location = Location.fromCtx(ctx);
+      return node;
+    }
+    // Solidity inline assembly (Yul): keep the parsed sub-tree for diagnostics/codegen.
+    const node = new AssemblyStatementNode('');
+    node.yulBlock = block;
     node.location = Location.fromCtx(ctx);
     return node;
   }

@@ -221,6 +221,12 @@ export class InvalidAssemblyError extends SolidCashError {
   }
 }
 
+export class UnsupportedInlineAssemblyError extends SolidCashError {
+  constructor(node: AssemblyStatementNode, detail: string) {
+    super(node, `Unsupported inline assembly (Yul): ${detail}`);
+  }
+}
+
 export class BreakOutsideLoopError extends SolidCashError {
   constructor(node: Node) {
     super(node, '\'break\' statement must be inside a loop');

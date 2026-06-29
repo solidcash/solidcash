@@ -165,6 +165,7 @@ import {
 import { isNumericType } from '../utils.js';
 import { getStackEffect } from '../asmStackEffects.js';
 import { InvalidModifierCombinationError } from '../Errors.js';
+import { analyzeInlineAssembly } from '../semantic/InlineAssemblyDiagnostics.js';
 
 // Locking bytecode template fragments - correspond to libauth's
 // encodeLockingBytecodeP2pkh / P2sh20 / P2sh32 but used as partial
@@ -2938,6 +2939,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   visitAssemblyStatement(node: AssemblyStatementNode): Node {
+    // Solidity inline assembly (Yul): not yet codegen'd. Throw a clear diagnostic (never silently ignore).
+    if (node.yulBlock) {
+      analyzeInlineAssembly(node);
+    }
+
     if (node.assemblyBody.trim().length === 0) return node;
 
     const script = asmToScript(node.assemblyBody);

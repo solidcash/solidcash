@@ -1,0 +1,269 @@
+# Inline assembly (Yul) support
+
+Status: PROPOSAL / tracking doc. No codegen shipped yet.
+
+Solidity inline `assembly { ... }` blocks are written in Yul. Porting real Solidity (and the
+solidity-by-example bench) keeps hitting Yul: 23 of the bench `.sol` files use `assembly`, and today every
+one of them fails at parse on the Yul `:=` token (the opaque `:` ParseError cluster). This doc tracks which
+Yul we can map onto Bitcoin Cash script, which is fundamentally EVM-only, and the plan to support the
+mappable subset.
+
+There are three buckets, not two. **Value computation** (arithmetic / bitwise / control-flow) maps directly
+to BCH script. **Machine-resource ops that solidcash already exposes at the high level** - the context
+surface (`msg.*`/`block.*`/`tx.*`), external calls, events, contract deploy, `selfdestruct`, `.balance`,
+`.code.length`, plus modelled memory / storage / transient - ROUTE onto that existing codegen. Only a small
+residual (raw EVM bytecode, growable dynamic memory, opaque-bytecode proxies) is genuinely absent on BCH and
+gets rejected. An earlier draft of this doc over-counted the rejected bucket; most of the EVM opcode set
+routes.
+
+## Supported-subset boundary
+
+| Yul family | Builtins | Status | BCH mapping |
+|---|---|---|---|
+| Variables | `let`, `:=`, identifier read/write | IN | stack locals; Solidity vars by name; all values are 256-bit words |
+| Arithmetic | `add sub mul div sdiv mod smod exp addmod mulmod` | IN | `OP_ADD/SUB/MUL/DIV/MOD`, existing `addmod/mulmod` |
+| Bitwise | `and or xor not shl shr sar byte` | IN | integer-bitwise codegen; `shl(n,x)=x*2^n`, `shr(n,x)=x/2^n` |
+| Comparison | `lt gt slt sgt eq iszero` | IN | `OP_LESSTHAN/GREATERTHAN/NUMEQUAL`, `iszero=OP_NOT` |
+| Control flow | `if`, `for`, `switch/case/default`, `leave`, `break`, `continue` | IN | `OP_IF`; `for`->existing loop codegen; `switch`->nested `OP_IF` |
+| Abort | `revert(0, 0)`, `return(p, 0)` | IN | unconditional fail / function exit |
+| Memory | `mstore mload mstore8 keccak256(p,l) return(p,l) revert(p,l)` | IN (constant-region only) | compile-time word-addressed buffer; see "Memory model" |
+| Storage | `sstore sload`, `.slot`, `.offset` | IN (value-type slots) | virtual-slot table over state vars; see "Storage model" |
+| Transient | `tstore tload` | IN (constant key) | zero-init function-scoped local, no UTXO; see "Transient model" |
+| Context | `caller callvalue origin gasprice chainid number timestamp gaslimit difficulty prevrandao coinbase basefee blobbasefee gas` | ROUTE | existing NullaryOperator / shims; see "Routing" |
+| Crypto / math | `keccak256(hash) addmod mulmod` | ROUTE | existing GlobalFunction codegen |
+| Balance / code | `balance selfbalance extcodesize extcodehash` | ROUTE | `addr.balance`, `address(this).balance`, `addr.code.length`, `addr.codehash` |
+| Code copy | `extcodecopy` | ROUTE (via memory) | write `addr.code` into the memory buffer (constant region) |
+| Block hash | `blockhash` | ROUTE | existing `blockhash(n)` oracle |
+| Logs | `log0 log1 log2 log3 log4` | ROUTE | `Event` / `emit` |
+| Lifecycle | `selfdestruct` | ROUTE | existing `selfdestruct(addr)` statement |
+| External call | `call delegatecall staticcall` | ROUTE (calldata-decode) | `ExternalCall` (has a delegatecall flag); decode selector+args; see "Routing" |
+| Contract create | `create create2` | ROUTE (partial) | `InstantiationNode` deploy (`isStatefulDeploy`); BCH deploy semantics differ |
+| Raw bytecode / dynamic mem / proxy-forward | `verbatim` + free-pointer memory + opaque-bytecode proxy (`calldatacopy`/`returndatacopy` forward to an opaque impl) | OUT | no analogue; see "Genuinely out" |
+| Object / linking | `datasize dataoffset datacopy setimmutable loadimmutable linkersymbol` | OUT | EVM object/immutables/linking model |
+
+ROUTE = re-spell the Yul op onto the *existing* solidcash codegen for that primitive, so behaviour and
+soundness are inherited from the high-level path (it is just another surface syntax). OUT ops get a clear
+diagnostic (`inline-assembly 'verbatim' has no BCH equivalent`) instead of the opaque parse error.
+
+### Framing: Yul builtins are the EVM instruction set
+
+Confirmed against solc (`libyul/backends/evm/EVMDialect.cpp:136`, `for (auto const& instr: evmasm::c_instructions)`):
+the Yul builtin set is generated directly from the EVM instruction set, plus a small set of object/linking
+builtins. So the boundary above is a partition of the EVM opcodes into three buckets, not two:
+
+1. Compute on a value -> direct BCH codegen (arithmetic / bitwise / comparison / control-flow / let).
+2. Touch a machine resource solidcash already exposes -> ROUTE to the existing primitive. This is the large
+   bucket and the reason most of the "EVM-only" verdict was wrong: solidcash already implements the context
+   surface, external calls, events, deploy, selfdestruct, balance, and code-size. Re-spelling the Yul op
+   onto that codegen reuses a tested, sound path.
+3. Touch a resource with genuinely no BCH analogue -> reject with a clear diagnostic (small residual set).
+
+Yul allows local function definitions (`function f(a, b) -> r { ... }`, AST `FunctionDefinition`). Rare in
+the bench but common in real libs; treat like a solidcash internal function (inline or subroutine). Deferred.
+
+## Routing to existing solidcash primitives
+
+Every row here re-spells a Yul builtin onto codegen that already exists, so semantics and soundness are
+inherited. Anchors are where the high-level primitive is defined today.
+
+| Yul builtin | solidcash primitive | Anchor |
+|---|---|---|
+| `caller()` | `msg.sender` | `ast/Operator.ts` NullaryOperator.MSG_SENDER |
+| `callvalue()` | `msg.value` | NullaryOperator.MSG_VALUE |
+| `origin()` | `tx.origin` | NullaryOperator.TX_ORIGIN |
+| `gasprice()` | `tx.gasprice` | NullaryOperator.TX_GASPRICE |
+| `chainid()` | `block.chainid` | NullaryOperator.CHAIN_ID |
+| `number()` | `block.number` | NullaryOperator.BLOCK_NUMBER |
+| `timestamp()` | `block.timestamp` | NullaryOperator.BLOCK_TIMESTAMP |
+| `gaslimit()` | `block.gaslimit` | NullaryOperator.BLOCK_GASLIMIT |
+| `difficulty()` / `prevrandao()` | `block.prevrandao` | NullaryOperator.BLOCK_PREVRANDAO |
+| `coinbase()` | `block.coinbase` | NullaryOperator.BLOCK_COINBASE |
+| `basefee()` / `blobbasefee()` | `block.basefee` / `block.blobbasefee` | NullaryOperator.BLOCK_BASEFEE / BLOCK_BLOBBASEFEE |
+| `gas()` | gasleft shim | `semantic/SynthesizeBlockOracle.ts` |
+| `keccak256(p,l)` | `keccak256(...)` | `ast/Globals.ts` GlobalFunction.KECCAK256 (+ memory model for the region) |
+| `addmod` / `mulmod` | `addmod` / `mulmod` | GlobalFunction.ADDMOD / MULMOD |
+| `blockhash(n)` | `blockhash(n)` | GlobalFunction.BLOCKHASH |
+| `balance(a)` / `selfbalance()` | `a.balance` / `address(this).balance` | `generation/GenerateTargetTraversal.ts` `'balance'` |
+| `extcodesize(a)` | `a.code.length` | GTT `'code'` (`.code` = the redeem script) |
+| `extcodehash(a)` | `a.codehash` | GTT `'codehash'` (BCH script-hash, not EVM keccak-of-code - see note) |
+| `extcodecopy(a, dst, off, len)` | `a.code` into the memory buffer | GTT `'code'` + memory model |
+| `log0`..`log4` | `emit Event(...)` | `ast/AST.ts` `class Event` |
+| `selfdestruct(a)` | `selfdestruct(a)` statement | GTT selfdestruct |
+| `call` / `staticcall` | `IContract(addr).method(args)` | `ast/AST.ts` ExternalCall; needs calldata decode (below) |
+| `delegatecall` | `ExternalCall` with delegatecall flag / `library` delegate | ExternalCall.delegatecall |
+| `create` / `create2` | `new Contract(...)` deploy | `ast/AST.ts` InstantiationNode (`isStatefulDeploy`) |
+
+Two routes need a decode step, not just a rename:
+
+- `call(gas, addr, value, inOff, inLen, outOff, outLen)` / `staticcall` / `delegatecall`. The in-region is
+  EVM calldata = `selector(4) || abi-encoded args`. For a known-ABI target the selector identifies the
+  function and the args decode by its signature, so this routes to `ExternalCall` once the memory model can
+  read the constant in-region. This is the same insight as the arbitrary-calldata external-call work
+  (call-model.md s10) - coordinate with that, do not duplicate.
+- `create(value, off, len)` / `create2(value, off, len, salt)`. The off/len region is init bytecode. On BCH
+  there is no init-bytecode-at-runtime; what maps is the typed `new Contract(args)` deploy
+  (`InstantiationNode`, which already supports stateful deploy + a salt-style path via create3 deployFrom).
+  Generic "deploy these raw bytes" (MinimalProxy/Factory/Create2.sol) stays out; typed deploy routes.
+
+## Survey: the 23 bench files
+
+Pure computation (single-wall, unblocked by the value subset alone):
+
+| File | Yul used |
+|---|---|
+| assembly-variable/AssemblyVariable.sol | `let`, `:=` |
+| assembly-math/AssemblyMath.sol | add/mul/div, switch, if, overflow check |
+| assembly-loop/AssemblyLoop.sol | `for` loops |
+| assembly-if/AssemblyIf.sol | `if`, `switch/case/default` |
+| assembly-error/AssemblyError.sol | `if gt(...) { revert(0,0) }` |
+| app/assembly-bin-exp/AssemblyBinExp.sol | binary exponentiation (mul/loop) |
+| bitwise/MostSignificantBitAssembly.sol | shl/shr/gt/or |
+| user-defined-value-types/UserDefinedValueTypes.sol | or/shl/shr bit-packing (UDVT itself already compiles) |
+
+Machine-state, mappable through a solidcash model:
+
+| File | Family | Mappable? |
+|---|---|---|
+| app/airdrop/Hashes.sol | memory scratch + keccak256 | Yes (constant offsets 0x00/0x20/0x40) |
+| evm/storage/EVMStorage.sol | storage slots (single + packed) + pure | Partial: single-var slots yes; packed slots = stretch |
+| transient-storage/TransientStorage.sol | tstore/tload + low-level `.call` + fallback | tstore/tload yes; file is multi-wall (`.call`, reentrancy) |
+| signature/Signature.sol | `mload(add(sig,32))` bytes split + ecrecover | Harder: bytes-memory layout; ecrecover inert |
+| app/.../ECDSA.sol (x3) | same bytes-split pattern | Harder (same) |
+| evm/memory/YulMem.sol | general memory + calldatacopy + keccak | No (dynamic/free-pointer memory) |
+
+Routable to an existing primitive (was previously mislabelled fundamental):
+
+| File | Family | Route |
+|---|---|---|
+| hacks/contract-size/ContractSize.sol | `extcodesize(addr)` | `addr.code.length` - likely a clean single-wall close |
+| app/simple-bytecode-contract/Factory.sol, app/create2/Create2.sol | `create` / `create2` | typed `new Contract` deploy if the target is a known contract; raw-init-bytecode form stays out |
+
+Genuinely out (small residual - no BCH analogue):
+
+| File / op | Why |
+|---|---|
+| app/minimal-proxy/MinimalProxy.sol, app/deploy-any-contract/Proxy.sol | deploy + run *arbitrary raw EVM bytecode* (proxy delegating to an opaque impl) - no EVM bytecode at a BCH address |
+| app/upgradeable-proxy/UpgradeableProxy.sol | generic `calldatacopy` + `delegatecall(arbitrary impl)` + `returndatacopy` forward of opaque calldata to an opaque target |
+| evm/memory/YulMem.sol | free-memory-pointer / growable dynamic memory |
+| `verbatim` | raw EVM bytecode injection - opaque EVM opcode bytes spliced into output; no BCH meaning, hard-reject |
+
+## Memory model (mload / mstore)
+
+EVM memory is a linear byte-addressable array; there is no such thing on a stack machine. But the common
+assembly patterns address it at compile-time-constant offsets, so we model it as a **compile-time
+word-addressed buffer** rather than runtime memory.
+
+Two tractable sub-cases:
+
+1. Constant absolute offset (scratch space). `mstore(0x00, a)` records word@0x00 = a; `mload(0x00)` reads
+   it. `keccak256(0x00, 0x40)` (or `return`/`revert` over a constant region) emits the byte-concatenation
+   of the covered words and applies the keccak builtin: `keccak256(a . b)`. This unblocks the OZ
+   `_efficientKeccak256` pattern (Hashes.sol).
+2. `bytes memory` base + constant offset. `mload(add(sig, 32))` reads the first data word of a `bytes`
+   argument (offset 32 skips the EVM length word). Maps to byte-slicing the bytes argument:
+   `r = sig[0:32]`, `s = sig[32:64]`, `v = sig[64]`. Requires modelling the EVM length-prefixed bytes
+   layout; covers the canonical ECDSA r/s/v split.
+
+Rejected: runtime-computed offsets, free-memory-pointer arithmetic (`mload(0x40)` as an allocator),
+growable buffers, `abi.encode` of dynamic data. Clear diagnostic.
+
+## Storage model (sstore / sload)
+
+Assign each state variable a **virtual EVM slot number** in Solidity declaration order, and resolve
+`x.slot` / `x.offset` to compile-time constants. `sstore(slot, v)` and `sload(slot)` then route through the
+*same* state read/write codegen as the high-level `stateVar = v` / `stateVar`, so encoding stays consistent
+and the mapping is sound (it is just an alternate spelling of the existing state access).
+
+- Value-type, one var per slot (`EVMStorageSingleSlot`: `sstore(0,111)` -> `s_x`, `sload(1)` -> `s_y`):
+  direct and sound. Both the literal-slot form `sstore(0, v)` and the `.slot` form `sstore(s_x.slot, v)`
+  resolve to the same var.
+- Packed slot (`EVMStoragePackedSlot`: four vars masked into slot 0): `sload(0)` must return the packed
+  32-byte word (concat of the packed vars) and `sstore(0, masked)` must decompose a word back into the
+  separate var storages. This is the "offsets inside slots" case - real but a stretch goal; the risk is
+  keeping the packing layout identical to what the assembly's hand-written masks assume.
+- Mapping / dynamic-array storage (keccak-derived slots `keccak256(key . slot)`): out of scope unless the
+  slot-derivation pattern is recognized; reject otherwise.
+
+## Transient model (tstore / tload)
+
+EIP-1153 transient storage is tx-scoped and cleared at the end of the transaction. A BCH contract execution
+is a single atomic script run, so transient storage with a constant key maps to a **zero-initialized,
+function-execution-scoped local** - no UTXO, no state UTXO, just a stack slot.
+
+- `tstore(constKey, v)` / `tload(constKey)` -> a virtual local keyed by the constant; reads before any
+  write yield 0 (matching EVM's zero default).
+- The reentrancy-guard pattern (`if tload(SLOT) { revert } tstore(SLOT, 1); _; tstore(SLOT, 0)`) compiles
+  but is *inert*: BCH has no EVM-style reentrancy (an external call is a co-spent UTXO, not a nested
+  re-entry into the same script), so the guard never trips. Compile parity, inert semantics - same posture
+  as ERC20Permit's EIP-712 path.
+- Non-constant keys: reject in v1.
+
+## Phased implementation plan
+
+- [x] Phase 1 - front-end + diagnostics. DONE. Yul sub-grammar in `SolidCash.g4` (replaces the old
+      BCH-ASM-only `assemblyToken` stub) + ANTLR regen. Standalone Yul AST (`ast/YulAST.ts`, mirrors solc
+      `libyul/AST.h`) built by `ast/YulAstBuilder.ts`, hung off `AssemblyStatementNode.yulBlock` so the main
+      visitor system still treats assembly as an opaque leaf. Disambiguation: a block of only bare
+      paths/literals (`OP_*`) stays native BCH-ASM (existing `asmToScript` path, unchanged); any structural
+      Yul (`let`/`:=`/call/control-flow) is Yul. Diagnostic (`semantic/InlineAssemblyDiagnostics.ts`, called
+      from GTT `visitAssemblyStatement`) throws `UnsupportedInlineAssemblyError`: OUT builtins ->
+      "no BCH equivalent"; `verbatim` -> hard reject; Yul function defs -> not-yet-supported; otherwise
+      "Yul code generation is not yet implemented". Codegen-time diagnosis (not an early pass) is deliberate:
+      it rejects executable assembly while letting declaration-only libraries / non-main contracts compile,
+      matching solc. Grammar gotcha fixed: `byte` is the `BoundedBytes` lexer token, so `yulFunctionName`
+      references that token rather than minting a rival `'byte'` literal (which had hijacked the `byte` type).
+      Result: bench 98 -> 102 (Hashes declaration-library + Create2/ContractSize multi-contract files now
+      parse), 1443 compiler tests green (test/InlineAssemblyYul.test.ts + UnsupportedInlineAssemblyError
+      fixtures). No more opaque `:` ParseError on any of the 23 assembly files.
+- [ ] Phase 2 - value-computation codegen. Arithmetic / bitwise / comparison / control-flow / `let` /
+      `revert(0,0)`. Unblocks the 8 pure-computation files (+8 bench). Subtleties: Yul locals sharing the
+      Solidity stack; `shl`/`shr` value semantics; `for`->loop desugar; Yul unchecked-wrapping arithmetic
+      vs solidcash int256 semantics (see open questions).
+- [ ] Phase 3 - route the rename-only primitives. Each Yul builtin in the "Routing" table that needs no
+      decode (`caller`/`callvalue`/context, `keccak256`(value form)/`addmod`/`mulmod`, `balance`/`selfbalance`/
+      `extcodesize`, `blockhash`, `log0..4`, `selfdestruct`) lowers to the existing AST node / operator for
+      that primitive. Cheap and sound (reuses tested codegen). Unblocks ContractSize.sol (extcodesize ->
+      .code.length).
+- [ ] Phase 4 - storage + transient. Virtual-slot table (value-type, one-per-slot) for `sstore`/`sload` +
+      `.slot`; constant-key `tstore`/`tload` as function-scoped locals. Sound because storage routes
+      through existing state codegen.
+- [ ] Phase 5 - memory scratch. Constant-offset word buffer; `keccak256`/`return`/`revert` over a constant
+      region -> concat + builtin. Unblocks Hashes.sol.
+- [ ] Phase 6 - decode-routed calls + deploy. `call`/`staticcall`/`delegatecall` -> `ExternalCall` by
+      decoding the constant in-region (`selector || args`); `create`/`create2` -> typed `new Contract`
+      deploy. Needs the memory model (phase 5) and coordination with the arbitrary-calldata external-call
+      work (call-model.md s10) - do not duplicate it.
+- [ ] Phase 7 (stretch) - bytes-memory layout (`mload(add(ptr, const))` -> byte slice) and packed storage
+      slots. Higher risk / lower payoff; gated on demand.
+
+## Expected bench payoff
+
+- Phase 2: +8 (the pure-computation files), solid.
+- Phase 3: ContractSize.sol (extcodesize -> .code.length) likely +1; the rest of the routed primitives
+  mostly help multi-wall files rather than close them alone.
+- Phase 5-6: Hashes.sol (+1), EVMStorage.sol (+1 if packed slots land in phase 7). Transient and the
+  ECDSA/Signature files are multi-wall (low-level `.call`, fallback, ecrecover-inert) so they need the
+  call-routing too. Factory/Create2 depend on whether the deploy target is a known typed contract.
+- Genuinely fundamental (raw-bytecode proxy MinimalProxy/Proxy/UpgradeableProxy, free-pointer YulMem,
+  verbatim/extcodecopy): stay out.
+
+Net: this is not a narrow "value computation" subset - because solidcash already implements the context
+surface, external calls, events, deploy, selfdestruct, balance, code-size/hash/copy, most of the EVM opcode
+set ROUTES to existing codegen. The only genuinely out residual is `verbatim` (raw EVM bytecode), growable
+free-pointer dynamic memory, and opaque-bytecode proxies. That makes the achievable Yul coverage much wider
+than the original "pure computation only" framing.
+
+## Open questions / risks
+
+- Yul arithmetic is unchecked and wraps mod 2^256; solidcash int256 may over/underflow-check or hit BCH
+  number-size limits differently. Bench values are tiny so it does not bite there, but a faithful subset
+  should document `add`/`mul`/etc. as wrapping (or reject when wrapping is observable).
+- Packed-storage soundness hinges on solidcash's state layout matching the bit positions the hand-written
+  masks assume; safest to keep packed slots a stretch goal behind an explicit opt-in.
+- `byte(n, x)`, `sar` (signed shift), `signextend`, `addmod`/`mulmod` overflow semantics need exact-match
+  tests against EVM before claiming parity.
+- `extcodehash` routes to `.codehash`, but BCH `.codehash` is the script hash (hash256/hash160 of the redeem
+  script), not EVM `keccak256(code)`. Fine for "is this a known contract" comparisons (both sides on-chain),
+  not byte-identical to EVM. Document as a routed-but-not-identical op.
+
+Bench runner: `examples/solidity-by-example/bench.mjs` (`node bench.mjs`).

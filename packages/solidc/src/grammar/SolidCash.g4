@@ -460,13 +460,91 @@ consoleStatement
     ;
 
 assemblyStatement
-    : 'assembly' '{' assemblyToken* '}'
+    : 'assembly' yulBlock
     ;
 
-assemblyToken
+// Yul sub-grammar (Solidity inline assembly). A block of only bare paths/literals (OP_* opcodes) is
+// classified as native BCH-ASM in the builder; any structural Yul (let/:=/call/control-flow) is Yul.
+yulBlock
+    : '{' yulStatement* '}'
+    ;
+
+yulStatement
+    : yulBlock                       # YulNestedBlockStmt
+    | yulVariableDeclaration         # YulVarDeclStmt
+    | yulAssignment                  # YulAssignStmt
+    | yulIf                          # YulIfStmt
+    | yulSwitch                      # YulSwitchStmt
+    | yulForLoop                     # YulForStmt
+    | yulFunctionDefinition          # YulFunctionDefStmt
+    | 'break'                        # YulBreakStmt
+    | 'continue'                     # YulContinueStmt
+    | 'leave'                        # YulLeaveStmt
+    | yulFunctionCall                # YulCallStmt
+    | yulPath                        # YulPathStmt
+    | yulLiteral                     # YulLiteralStmt
+    ;
+
+yulVariableDeclaration
+    : 'let' Identifier (',' Identifier)* (':=' yulExpression)?
+    ;
+
+yulAssignment
+    : yulPath (',' yulPath)* ':=' yulExpression
+    ;
+
+yulIf
+    : 'if' yulExpression yulBlock
+    ;
+
+yulSwitch
+    : 'switch' yulExpression (yulCase+ yulDefault? | yulDefault)
+    ;
+
+yulCase
+    : 'case' yulLiteral yulBlock
+    ;
+
+yulDefault
+    : 'default' yulBlock
+    ;
+
+yulForLoop
+    : 'for' yulBlock yulExpression yulBlock yulBlock
+    ;
+
+yulFunctionDefinition
+    : 'function' Identifier '(' (Identifier (',' Identifier)*)? ')' ('->' Identifier (',' Identifier)*)? yulBlock
+    ;
+
+yulExpression
+    : yulFunctionCall
+    | yulPath
+    | yulLiteral
+    ;
+
+yulFunctionCall
+    : yulFunctionName '(' (yulExpression (',' yulExpression)*)? ')'
+    ;
+
+// Yul builtin names that collide with solidc keyword tokens (so they are not lexed as Identifier).
+// `byte` is the BoundedBytes token (a bytesN type), referenced directly so we do not mint a rival token.
+yulFunctionName
     : Identifier
+    | 'return' | 'revert' | 'selfdestruct' | 'address'
+    | BoundedBytes
+    ;
+
+yulPath
+    : Identifier ('.' Identifier)*
+    ;
+
+yulLiteral
+    : NumberLiteral
     | HexLiteral
-    | NumberLiteral
+    | HexStringLiteral
+    | StringLiteral
+    | BooleanLiteral
     ;
 
 uncheckedStatement

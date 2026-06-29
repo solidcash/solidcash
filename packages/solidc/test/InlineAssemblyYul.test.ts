@@ -23,7 +23,7 @@ describe('Yul inline assembly (Phase 1: parse + diagnostics)', () => {
       }`)).not.toThrow();
   });
 
-  it('parses Yul value-computation and reports codegen as not yet implemented', () => {
+  it('compiles Yul value-computation (lowered to the main AST)', () => {
     expect(() => compileString(`
       contract C() {
         function f(int a, int b) {
@@ -31,7 +31,7 @@ describe('Yul inline assembly (Phase 1: parse + diagnostics)', () => {
           assembly { z := add(a, b) }
           require(z == 0);
         }
-      }`)).toThrow(/Yul code generation is not yet implemented/);
+      }`)).not.toThrow();
   });
 
   it('rejects an OUT builtin with a "no BCH equivalent" message', () => {
@@ -78,7 +78,7 @@ describe('Yul inline assembly (Phase 1: parse + diagnostics)', () => {
       }`)).toThrow(/Yul function definitions are not yet supported/);
   });
 
-  it('parses Yul control-flow (for/switch/if) to a clean diagnostic, not a parse error', () => {
+  it('compiles Yul control-flow (for / switch / if) lowered to the main AST', () => {
     expect(() => compileString(`
       contract C() {
         function f() {
@@ -88,8 +88,8 @@ describe('Yul inline assembly (Phase 1: parse + diagnostics)', () => {
             switch z case 0 { z := 1 } default { z := 2 }
             if lt(z, 5) { z := 5 }
           }
-          require(z == 0);
+          require(z == 10);
         }
-      }`)).toThrow(UnsupportedInlineAssemblyError);
+      }`)).not.toThrow();
   });
 });

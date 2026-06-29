@@ -240,10 +240,20 @@ delegatecall target (UpgradeableProxy) - that wall is the opaque-bytecode impl, 
       Result: bench 98 -> 102 (Hashes declaration-library + Create2/ContractSize multi-contract files now
       parse), 1443 compiler tests green (test/InlineAssemblyYul.test.ts + UnsupportedInlineAssemblyError
       fixtures). No more opaque `:` ParseError on any of the 23 assembly files.
-- [ ] Phase 2 - value-computation codegen. Arithmetic / bitwise / comparison / control-flow / `let` /
-      `revert(0,0)`. Unblocks the 8 pure-computation files (+8 bench). Subtleties: Yul locals sharing the
-      Solidity stack; `shl`/`shr` value semantics; `for`->loop desugar; Yul unchecked-wrapping arithmetic
-      vs solidcash int256 semantics (see open questions).
+- [x] Phase 2 - value-computation codegen. DONE (value + control flow). Implemented as a pre-semantic
+      lowering pass (`semantic/LowerInlineAssembly.ts`) that desugars supported Yul into the main AST and
+      reuses the tested codegen (stack model, control flow, type checking) - far lower risk than hand-writing
+      Yul stack bookkeeping. Yul words are typed `uint256` (bounded `IntType`, so integer bitwise works);
+      `shl`/`shr` lower to `*`/`÷` by `2^n` (the `<<`/`>>` operators require bigint/bytes, which would break
+      bitwise on the same value); comparisons lower to `uint256(boolExpr)` (a 0/1 word usable in bitwise and
+      arithmetic, where a ternary would type as unbounded `int` and be rejected); `for` -> `{ init; while }`
+      with `forLoopUpdateCount`; `switch` -> re-evaluated if/else-if chain (no typed temp, so it does not
+      clash with signed operands); `revert(0,0)` -> `require(false)`. Unsupported Yul is left untouched for
+      the diagnostic. Result: bench 102 -> 109 (+7: AssemblyVariable/Math/Loop/If/Error/BinExp +
+      MostSignificantBitAssembly; UserDefinedValueTypes still needs `type.wrap`, a separate non-assembly
+      wall). Runtime correctness verified on the mock VM (solidcash e2e YulInlineAssembly.test.ts: shl/shr/
+      and/lt/add, for-loop, switch). NOTE: lowering types locals as uint256, so a Yul block referencing
+      *signed* int Solidity vars in bitwise may hit a signedness check - standard Yul uses uint256.
 - [ ] Phase 3 - route the rename-only primitives. Each Yul builtin in the "Routing" table that needs no
       decode (`caller`/`callvalue`/context, `keccak256`(value form)/`addmod`/`mulmod`, `balance`/`selfbalance`/
       `extcodesize`, `blockhash`, `log0..4`, `selfdestruct`) lowers to the existing AST node / operator for

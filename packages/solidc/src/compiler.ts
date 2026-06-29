@@ -23,6 +23,7 @@ import InlineExternalCallHelpers from './semantic/InlineExternalCallHelpers.js';
 import InlineStoragePointerCalls from './semantic/InlineStoragePointerCalls.js';
 import InlineReturningStateHelpers from './semantic/InlineReturningStateHelpers.js';
 import DesugarPostfixExpressions from './semantic/DesugarPostfixExpressions.js';
+import LowerInlineAssembly from './semantic/LowerInlineAssembly.js';
 import CacheDynamicArrayInLoop from './semantic/CacheDynamicArrayInLoop.js';
 import SynthesizeBlockOracle from './semantic/SynthesizeBlockOracle.js';
 import SynthesizePublicGetters from './semantic/SynthesizePublicGetters.js';
@@ -125,6 +126,9 @@ export function compileString(code: string, compilerOptions: CompileOptions = {}
 
   // Postfix `lvalue++`/`lvalue--` used as an expression -> read + a hoisted increment (before semantic analysis).
   ast = ast.accept(new DesugarPostfixExpressions()) as Ast;
+
+  // Lower supported Yul inline assembly to equivalent main-AST statements (value computation + control flow).
+  ast = ast.accept(new LowerInlineAssembly()) as Ast;
 
   // Inline void helpers that make external calls into their internal call sites (the external co-spend can't
   // cross an OP_INVOKE boundary); reduces to the entry-point-body external-call case.
@@ -258,6 +262,7 @@ function compileReferencedContracts(
     let singleAst: Ast = new SourceFileNode(contract);
     singleAst = singleAst.accept(new NamedReturnTransformation(compilerOptions.solidityImportCompat)) as Ast;
     singleAst = singleAst.accept(new DesugarPostfixExpressions()) as Ast;
+    singleAst = singleAst.accept(new LowerInlineAssembly()) as Ast;
     singleAst = singleAst.accept(new InlineExternalCallHelpers()) as Ast;
     singleAst = singleAst.accept(new InlineReturningStateHelpers()) as Ast;
     singleAst = singleAst.accept(new InlineStoragePointerCalls()) as Ast;

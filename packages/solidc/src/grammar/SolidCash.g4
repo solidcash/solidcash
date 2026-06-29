@@ -28,8 +28,8 @@ freeFunctionDefinition
     ;
 
 usingForDirective
-    : 'using' Identifier 'for' (typeName | '*') 'global'? ';'                                                     # UsingLibraryFor
-    | 'using' '{' usingFunctionBinding (',' usingFunctionBinding)* ','? '}' 'for' (typeName | '*') 'global'? ';'  # UsingFunctionsFor
+    : 'using' Identifier 'for' (arrayType | typeName | '*') 'global'? ';'                                                     # UsingLibraryFor
+    | 'using' '{' usingFunctionBinding (',' usingFunctionBinding)* ','? '}' 'for' (arrayType | typeName | '*') 'global'? ';'  # UsingFunctionsFor
     ;
 
 usingFunctionBinding

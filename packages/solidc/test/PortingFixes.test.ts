@@ -1618,3 +1618,27 @@ describe('SBE-22: declaration-only files compile under solidityImportCompat (sol
       .toThrow('libraries do not produce artifacts');
   });
 });
+
+describe('SBE-23: using-for on an array type (`using Lib for T[]`)', () => {
+  // Solidity allows binding a library to an array type; `arr.method(args)` desugars to `Lib.method(arr, args)`.
+  // Grammar accepts an arrayType target; the desugar matches a state-array receiver by its ArrayType string.
+  it('desugars arr.method() on a state array bound via using-for', () => {
+    const a = compileString(
+      'library Array { function remove(uint256[] storage arr, uint256 i) public {'
+      + ' require(arr.length > 0); arr[i] = arr[arr.length - 1]; arr.pop(); } }'
+      + ' contract C { using Array for uint256[]; uint256[] public arr;'
+      + ' function f() public { arr.push(1); arr.remove(0); } }',
+      { solidityImportCompat: true },
+    );
+    expect(a.contractName).toBe('C');
+  });
+
+  it('does not affect a struct-type using-for binding', () => {
+    const a = compileString(
+      'library Math { function dbl(uint256 x) internal pure returns (uint256) { return x * 2; } }'
+      + ' contract C { int n; function f(uint256 x) public { this.n = int(Math.dbl(x)); } }',
+      { solidityImportCompat: true },
+    );
+    expect(a.contractName).toBe('C');
+  });
+});

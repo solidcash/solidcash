@@ -277,6 +277,8 @@ export default class AstBuilder
   private packedStructArrayElems: Map<string, StructType> = new Map();
   // State struct variables -> StructType, for desugaring field-chain writes (`this.d.x = v`) to a rebuild.
   private stateStructVars: Map<string, StructType> = new Map();
+  // State array variables -> ArrayType, so `using L for T[]` desugars `arr.method(args)` to `L.method(arr, args)`.
+  private stateArrayVarTypes: Map<string, ArrayType> = new Map();
   // Storage-pointer locals: `T storage x = container[k];` makes `x` a compile-time alias for access path
   // `container[k]`; reads/writes of `x` are rewritten to that path. Per-function (cleared at each entry).
   private storageAliases: Map<string, { container: string; keys: ExpressionNode[]; access: ExpressionNode }> =
@@ -704,6 +706,11 @@ export default class AstBuilder
       stateVariables
         .filter((sv) => sv.type instanceof StructType)
         .map((sv) => [sv.name, sv.type as StructType]),
+    );
+    this.stateArrayVarTypes = new Map(
+      stateVariables
+        .filter((sv) => sv.type instanceof ArrayType)
+        .map((sv) => [sv.name, sv.type as ArrayType]),
     );
 
     // Collect modifier definitions
@@ -1755,8 +1762,10 @@ export default class AstBuilder
       const recvName = identifiers[0].getText();
       const recvStruct = this.localStructTypes.get(recvName) ?? this.stateStructVars.get(recvName)
         ?? this.mappingStructStateVars.get(recvName);
-      if (recvStruct && this.usingForLibraries.has(recvStruct.name)) {
-        const libId = new IdentifierNode(`${this.usingForLibraries.get(recvStruct.name)!}.${identifiers[1].getText()}`);
+      const libName = (recvStruct && this.usingForLibraries.get(recvStruct.name))
+        ?? this.usingForArrayLibrary(recvName);
+      if (libName) {
+        const libId = new IdentifierNode(`${libName}.${identifiers[1].getText()}`);
         libId.location = identifier.location;
         const recv = new IdentifierNode(recvName);
         recv.location = Location.fromToken(identifiers[0].symbol);
@@ -2616,8 +2625,13 @@ export default class AstBuilder
   visitUsingLibraryFor(ctx: UsingLibraryForContext): UsingForDirectiveNode {
     const libraryName = ctx.Identifier().getText();
     const typeNameCtx = ctx.typeName();
-    const isWildcard = !typeNameCtx;
-    const targetTypeName = isWildcard ? undefined : typeNameCtx.getText();
+    const arrayTypeCtx = ctx.arrayType();
+    const isWildcard = !typeNameCtx && !arrayTypeCtx;
+    // An array target (`using Array for uint256[]`) keys on the canonical ArrayType string so an array-typed
+    // receiver matches; a plain type keys on its source text (struct names etc.) as before.
+    const targetTypeName = isWildcard ? undefined
+      : arrayTypeCtx ? this.buildArrayType(arrayTypeCtx).toString()
+        : typeNameCtx!.getText();
     const isGlobal = ctx.getText().includes('global');
     const node = new UsingForDirectiveNode(libraryName, undefined, targetTypeName, isWildcard, isGlobal);
     node.location = Location.fromCtx(ctx);
@@ -2633,8 +2647,11 @@ export default class AstBuilder
       return { funcName, operator };
     });
     const typeNameCtx = ctx.typeName();
-    const isWildcard = !typeNameCtx;
-    const targetTypeName = isWildcard ? undefined : typeNameCtx.getText();
+    const arrayTypeCtx = ctx.arrayType();
+    const isWildcard = !typeNameCtx && !arrayTypeCtx;
+    const targetTypeName = isWildcard ? undefined
+      : arrayTypeCtx ? this.buildArrayType(arrayTypeCtx).toString()
+        : typeNameCtx!.getText();
     const isGlobal = ctx.getText().includes('global');
     const node = new UsingForDirectiveNode(undefined, bindings, targetTypeName, isWildcard, isGlobal);
     node.location = Location.fromCtx(ctx);
@@ -2824,8 +2841,10 @@ export default class AstBuilder
         ? (this.localStructTypes.get(recvName) ?? this.stateStructVars.get(recvName)
           ?? this.mappingStructStateVars.get(recvName))
         : undefined;
-      if (recvStruct && this.usingForLibraries.has(recvStruct.name)) {
-        const id = new IdentifierNode(`${this.usingForLibraries.get(recvStruct.name)!}.${methodName}`);
+      const libName = (recvStruct && this.usingForLibraries.get(recvStruct.name))
+        ?? (recvName !== undefined ? this.usingForArrayLibrary(recvName) : undefined);
+      if (libName) {
+        const id = new IdentifierNode(`${libName}.${methodName}`);
         id.location = Location.fromCtx(ctx);
         const call = new FunctionCallNode(id, [object, ...parameters]);
         call.location = Location.fromCtx(ctx);
@@ -3209,19 +3228,28 @@ export default class AstBuilder
     return returnNode;
   }
 
+  // `using L for T[]`: the library bound to a state array receiver's type, for desugaring `arr.method(args)`
+  // -> `L.method(arr, args)`. undefined when the receiver isn't an array bound via using-for.
+  private usingForArrayLibrary(recvName: string): string | undefined {
+    const arrType = this.stateArrayVarTypes.get(recvName);
+    return arrType ? this.usingForLibraries.get(arrType.toString()) : undefined;
+  }
+
   visitFunctionCallStatement(
     ctx: FunctionCallStatementContext,
   ): FunctionCallStatementNode | MethodCallStatementNode | LowLevelCallStatementNode {
     const identifiers = ctx.Identifier_list();
     const expressionLists = ctx.expressionList_list();
 
-    // using-for: `recv.method(args);` where recv is a struct var bound to a library -> `Library.method(recv, args);`.
+    // using-for: `recv.method(args);` where recv is a struct/array var bound to a library -> `Library.method(recv, args);`.
     if (identifiers.length === 2 && expressionLists.length === 1 && this.usingForLibraries.size > 0) {
       const recvName = identifiers[0].getText();
       const recvStruct = this.localStructTypes.get(recvName) ?? this.stateStructVars.get(recvName)
         ?? this.mappingStructStateVars.get(recvName);
-      if (recvStruct && this.usingForLibraries.has(recvStruct.name)) {
-        const libId = new IdentifierNode(`${this.usingForLibraries.get(recvStruct.name)!}.${identifiers[1].getText()}`);
+      const libName = (recvStruct && this.usingForLibraries.get(recvStruct.name))
+        ?? this.usingForArrayLibrary(recvName);
+      if (libName) {
+        const libId = new IdentifierNode(`${libName}.${identifiers[1].getText()}`);
         libId.location = Location.fromToken(identifiers[0].symbol);
         const recv = new IdentifierNode(recvName);
         recv.location = Location.fromToken(identifiers[0].symbol);

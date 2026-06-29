@@ -26,7 +26,7 @@ import SignatureTemplate from './SignatureTemplate.js';
 import { ParamsToTuple, AbiToFunctionMap } from './types/type-inference.js';
 import {
   buildOpaqueLoopCallTransaction, deriveOpaqueLoopCoSpends,
-  type OpaqueLoopCallContext, type OpaqueLoopContractCall, type OpaqueLoopCoSpend,
+  type OpaqueLoopCallContext, type OpaqueLoopContractCall, type OpaqueLoopCoSpend, type ExternalTargetEntry,
 } from './loop-call.js';
 import type { TransactionBuilder } from './TransactionBuilder.js';
 import semver from 'semver';
@@ -60,9 +60,10 @@ export class Contract<
   encodedConstructorArgs: Uint8Array[];
   private rawConstructorArgs: TResolved['constructorInputs'];
 
-  // Registries for opaque loop dispatch (contract.multiCall): known target contracts (keyed by locking
-  // bytecode) so cospends auto-derive, and a funder for the return-event sats + fee.
-  private loopTargets = new Map<string, OpaqueLoopContractCall>();
+  // Unified external-target registry (address-keyed): the single store for both the typed array external-call
+  // path (IFoo(arr[i]).m(), grouped by interfaceName) and opaque loop dispatch (contract.multiCall, by address).
+  // Plus a funder for the opaque path's return-event sats + fee.
+  private externalTargets: ExternalTargetEntry[] = [];
   private loopFunder?: { utxo: Utxo; unlocker: Unlocker };
 
   constructor(
@@ -283,13 +284,36 @@ export class Contract<
     return salt;
   }
 
+  // --- Unified external-target registry API (shared by the typed array path + opaque loop dispatch) ---
+
+  /** Add an entry to the unified external-target registry (keyed by address). */
+  registerExternalTarget(entry: ExternalTargetEntry): this {
+    this.externalTargets.push(entry);
+    return this;
+  }
+
+  /** Look up a registered external target by address (locking bytecode hex). */
+  getExternalTargetByAddress(addressHex: string): ExternalTargetEntry | undefined {
+    return this.externalTargets.find((e) => e.address === addressHex);
+  }
+
+  /** The registered instances for a typed array external call `IFoo(arr[i]).m()`, in registration order. */
+  getExternalTargetInstancesByInterface(interfaceName: string): unknown[] {
+    return this.externalTargets.filter((e) => e.interfaceName === interfaceName).map((e) => e.instance);
+  }
+
+  /** All registry entries (used to copy the registry across connect()). */
+  getExternalTargetEntries(): ExternalTargetEntry[] {
+    return this.externalTargets;
+  }
+
   /**
    * Register known target contracts for opaque loop dispatch (contract.multiCall). BCH must know a co-spent
    * contract to satisfy its script, so this is where the artifact/category come in; once registered, multiCall's
    * cospends auto-derive (UTXO via the category-pinned address, unlocker from the artifact, return from state).
    */
   registerLoopTargets(calls: OpaqueLoopContractCall[]): this {
-    for (const call of calls) this.loopTargets.set(call.contract.lockingBytecode, call);
+    for (const call of calls) this.registerExternalTarget({ address: call.contract.lockingBytecode, coSpend: call });
     return this;
   }
 
@@ -305,7 +329,7 @@ export class Contract<
     let cospends: OpaqueLoopCoSpend[] | undefined = ctx.cospends;
     if (!cospends) {
       const calls = targets.map((t) => {
-        const spec = this.loopTargets.get(binToHex(t));
+        const spec = this.getExternalTargetByAddress(binToHex(t))?.coSpend;
         if (!spec) {
           throw new Error(`${fnName}: target ${binToHex(t)} not registered; call registerLoopTargets or pass ctx.cospends`);
         }

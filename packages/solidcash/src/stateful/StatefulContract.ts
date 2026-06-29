@@ -579,13 +579,17 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
   readonly tokens: { [tokenContainerCategoryIdHex: string]: TokenContainerAccessor };
 
   private _externalRegistry: Map<string, ConnectedStatefulContract> = new Map();
-  // Callee instances for an array-element external call `IFoo(arr[i]).m()`, co-spent in array order. The
-  // covenant verifies each co-spent callee against arr[i], so this list must match the on-chain array.
-  private _externalArrayRegistry: Map<string, ConnectedStatefulContract[]> = new Map();
 
-  /** Register the callee instances for an array-element external call `IFoo(arr[i]).m()` (in array order). */
+  /**
+   * Register the callee instances for an array-element external call `IFoo(arr[i]).m()` (in array order).
+   * Stored in the base Contract's unified external-target registry (keyed by each instance's address), shared
+   * with opaque loop dispatch (contract.multiCall). The covenant verifies each co-spent callee against arr[i],
+   * so the registration order must match the on-chain array.
+   */
   registerExternalArray(interfaceName: string, instances: ConnectedStatefulContract[]): void {
-    this._externalArrayRegistry.set(interfaceName, instances);
+    for (const inst of instances) {
+      this.inner.registerExternalTarget({ address: inst.inner.lockingBytecode, interfaceName, instance: inst });
+    }
   }
 
   // Deployed delegate-library instances, keyed by library name. A consumer's `L.f()` (artifact
@@ -3917,7 +3921,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       presetResolved = [];
       for (const ec of externalCalls) {
         if (ec.loopArrayVar) {
-          const list = this._externalArrayRegistry.get(ec.interfaceName) ?? [];
+          const list = this.inner.getExternalTargetInstancesByInterface(ec.interfaceName) as ConnectedStatefulContract[];
           const resolvedArgs = this._resolveExternalArgs(ec.argSources, args, this.inner.artifact) ?? [];
           for (const inst of list) {
             expanded.push({ ...ec, loopArrayVar: undefined });

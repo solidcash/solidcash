@@ -7,6 +7,22 @@ import { Utxo, Unlocker } from './interfaces.js';
 
 const OP_TRUE = new Uint8Array([0x51]);
 
+/**
+ * One entry in the unified external-target registry (keyed by address = locking bytecode hex). Serves both the
+ * typed array external-call path (IFoo(arr[i]).m(), grouped by interfaceName + instance) and opaque loop
+ * dispatch (contract.multiCall, by address + coSpend). A registration populates whichever fields apply.
+ */
+export interface ExternalTargetEntry {
+  /** Locking bytecode hex - the canonical key (address <-> category <-> instance are 1:1). */
+  address: string;
+  /** Typed array external call grouping (`IFoo(arr[i]).m()` resolves its instances by this). */
+  interfaceName?: string;
+  /** The instance used by the typed array path (a ConnectedStatefulContract; opaque entries omit it). */
+  instance?: unknown;
+  /** Opaque loop-dispatch co-spend spec (contract.multiCall); typed-only entries omit it. */
+  coSpend?: OpaqueLoopContractCall;
+}
+
 /** A co-spendable contract instance: enough of Contract/StatefulContract to derive its co-spend. */
 export interface CoSpendableContract {
   address: string;

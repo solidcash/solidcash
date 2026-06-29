@@ -22,6 +22,7 @@ import SynthesizeLibraryDelegateCalls from './semantic/SynthesizeLibraryDelegate
 import InlineExternalCallHelpers from './semantic/InlineExternalCallHelpers.js';
 import InlineStoragePointerCalls from './semantic/InlineStoragePointerCalls.js';
 import InlineReturningStateHelpers from './semantic/InlineReturningStateHelpers.js';
+import DesugarPostfixExpressions from './semantic/DesugarPostfixExpressions.js';
 import CacheDynamicArrayInLoop from './semantic/CacheDynamicArrayInLoop.js';
 import SynthesizeBlockOracle from './semantic/SynthesizeBlockOracle.js';
 import SynthesizePublicGetters from './semantic/SynthesizePublicGetters.js';
@@ -121,6 +122,9 @@ export function compileString(code: string, compilerOptions: CompileOptions = {}
 
   // Named-return desugar (before semantic analysis): named returns become default-init locals.
   ast = ast.accept(new NamedReturnTransformation(mergedCompilerOptions.solidityImportCompat)) as Ast;
+
+  // Postfix `lvalue++`/`lvalue--` used as an expression -> read + a hoisted increment (before semantic analysis).
+  ast = ast.accept(new DesugarPostfixExpressions()) as Ast;
 
   // Inline void helpers that make external calls into their internal call sites (the external co-spend can't
   // cross an OP_INVOKE boundary); reduces to the entry-point-body external-call case.
@@ -253,6 +257,7 @@ function compileReferencedContracts(
     // producing different (larger) bytecode than standalone compilation.
     let singleAst: Ast = new SourceFileNode(contract);
     singleAst = singleAst.accept(new NamedReturnTransformation(compilerOptions.solidityImportCompat)) as Ast;
+    singleAst = singleAst.accept(new DesugarPostfixExpressions()) as Ast;
     singleAst = singleAst.accept(new InlineExternalCallHelpers()) as Ast;
     singleAst = singleAst.accept(new InlineReturningStateHelpers()) as Ast;
     singleAst = singleAst.accept(new InlineStoragePointerCalls()) as Ast;

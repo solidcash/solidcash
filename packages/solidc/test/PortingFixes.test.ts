@@ -1694,6 +1694,29 @@ describe('SBE-27: block.chainid is uint256 under solidityImportCompat', () => {
   });
 });
 
+describe('SBE-28: postfix ++/-- as an expression (yields the pre-mutation value)', () => {
+  // `lvalue++` used as an expression (e.g. the EIP-2612 `nonces[owner]++`) desugars to a read of the old value
+  // plus a hoisted `lvalue = lvalue +/- 1`. Supported at statement scope, on locals / state vars / mapping
+  // entries; rejected (clean error) in return / ternary / short-circuit / loop-condition positions.
+  it('compiles a local postfix increment in an expression', () => {
+    expect(compileString('contract C() { function f() { int i = 0; int x = i++ * 2; require(x == 0); } }')
+      .contractName).toBe('C');
+  });
+
+  it('compiles a mapping-entry postfix increment in abi.encode (the permit nonce pattern)', () => {
+    expect(compileString(
+      'contract C { mapping(address => uint256) nonces; bytes blob;'
+      + ' function f(address owner) external { this.blob = abi.encode(owner, nonces[owner]++); } }',
+      { solidityImportCompat: true },
+    ).contractName).toBe('C');
+  });
+
+  it('rejects a postfix increment in a return position with a clear error', () => {
+    expect(() => compileString('contract C() { int n; function f() returns (int) { int i = 0; return i++; } }'))
+      .toThrow('only supported at statement scope');
+  });
+});
+
 describe('SBE-25: msg.sender category forwarded across internal calls', () => {
   // A function using msg.sender gets a synthetic `bytes32 __internal__msgSenderCategory` param. A positional
   // internal call to such a function must forward the caller's own category (msg.sender is identical across an

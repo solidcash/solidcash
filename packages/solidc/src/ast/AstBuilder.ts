@@ -137,6 +137,7 @@ import type {
   ParenthesisedContext,
   FunctionCallExpressionContext,
   UnaryOpContext,
+  PostfixOpContext,
   BinaryOpContext,
   IdentifierContext,
   LiteralExpressionContext,
@@ -1864,6 +1865,16 @@ export default class AstBuilder
     const unaryOp = new UnaryOpNode(operator, expression);
     unaryOp.location = Location.fromCtx(ctx);
     return unaryOp;
+  }
+
+  // Postfix `lvalue++` / `lvalue--` as an EXPRESSION (e.g. `abi.encode(.., nonces[owner]++, ..)`). Represented
+  // as a UnaryOpNode with a postfix operator; DesugarPostfixExpressions lowers it to a hoisted read + increment.
+  visitPostfixOp(ctx: PostfixOpContext): UnaryOpNode {
+    const operator = ctx._op.text === '++' ? UnaryOperator.POSTFIX_INCREMENT : UnaryOperator.POSTFIX_DECREMENT;
+    const operand = this.visit(ctx.expression());
+    const node = new UnaryOpNode(operator, operand);
+    node.location = Location.fromCtx(ctx);
+    return node;
   }
 
   visitBinaryOp(ctx: BinaryOpContext): BinaryOpNode {

@@ -29,6 +29,10 @@ export enum UnaryOperator {
   NOT = '!',
   NEGATE = '-',
   INVERT = '~',
+  // Postfix `lvalue++` / `lvalue--` used as an EXPRESSION (yields the pre-mutation value). Desugared away by
+  // DesugarPostfixExpressions before semantic analysis; no later pass sees these operators.
+  POSTFIX_INCREMENT = 'post++',
+  POSTFIX_DECREMENT = 'post--',
   SIZE = '.length',
   REVERSE = '.reverse()',
   INPUT_VALUE = 'tx.inputs[i].value',

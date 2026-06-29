@@ -585,6 +585,7 @@ expression
     | expression '.' Identifier callOptions? '(' '{' (namedArg (',' namedArg)* ','?)? '}' ')' # MethodCallNamed
     | expression '.' Identifier callOptions? expressionList # MethodCall
     | expression memberName # FieldAccess
+    | expression op=('++' | '--') # PostfixOp
     | op=('!' | '-' | '~') expression # UnaryOp
     | <assoc=right> left=expression op='**' right=expression # BinaryOp
     | left=expression op=('*' | '/' | '%') right=expression # BinaryOp

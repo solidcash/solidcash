@@ -241,6 +241,10 @@ export function compileBinaryOp(op: BinaryOperator, numeric: boolean = false): S
 }
 
 export function compileUnaryOp(op: UnaryOperator): Op[] {
+  // Postfix `++`/`--` are lowered by DesugarPostfixExpressions before codegen; reaching here is a bug.
+  if (op === UnaryOperator.POSTFIX_INCREMENT || op === UnaryOperator.POSTFIX_DECREMENT) {
+    throw new Error(`postfix '${op}' reached codegen; it must be desugared before semantic analysis`);
+  }
   const mapping = {
     [UnaryOperator.NOT]: [Op.OP_NOT],
     [UnaryOperator.NEGATE]: [Op.OP_NEGATE],
@@ -263,7 +267,7 @@ export function compileUnaryOp(op: UnaryOperator): Op[] {
     [UnaryOperator.OUTPUT_TOKEN_AMOUNT]: [Op.OP_OUTPUTTOKENAMOUNT],
   };
 
-  return mapping[op];
+  return mapping[op as keyof typeof mapping];
 }
 
 // Returns true if the type has a fixed byte width (suitable for abi.encodePacked).

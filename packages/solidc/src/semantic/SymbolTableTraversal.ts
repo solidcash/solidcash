@@ -856,7 +856,14 @@ export default class SymbolTableTraversal extends AstTraversal {
     if (node.name.startsWith('__internal__')) {
       throw new Error(`Identifier '${node.name}' uses reserved prefix '__internal__'`);
     }
-    if (this.symbolTables[0].get(node.name)) {
+    const existing = this.symbolTables[0].get(node.name);
+    // A param may shadow a state variable (Solidity semantics: the param wins in the function scope; the state
+    // var stays reachable via `this.name`) - e.g. `constructor(string name, ..) Base(name, ..)` over an
+    // inherited `string name`. A collision with another param/local is a genuine redefinition. Native solidcash
+    // keeps the strict check.
+    const shadowsStateVar = this.compilerOptions.solidityImportCompat
+      && existing?.symbolType === SymbolType.STATE_VARIABLE;
+    if (existing && !shadowsStateVar) {
       throw new VariableRedefinitionError(node);
     }
 

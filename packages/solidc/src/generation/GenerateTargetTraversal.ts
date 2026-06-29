@@ -10344,7 +10344,21 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private emitArrayExternalCallLoop(slot: ExternalCallSlot, node: FunctionDefinitionNode): void {
     const loc = { location: node.location, positionHint: PositionHint.END };
     const sv = this.stateVariables.find((v) => v.name === slot.loopArrayVar);
-    if (!sv) throw new Error(`array external-call target '${slot.loopArrayVar}' must be a state array`);
+    if (!sv) {
+      // A loop slot whose array is a function PARAMETER is a witness/calldata address array - e.g. MultiCall's
+      // `targets[i].staticcall(data[i])` returning bytes[]. That needs inline loop-indexed dispatch (co-spend +
+      // per-element return-event read keyed on the live index), a separate model from this state-array epilogue
+      // loop; it is not yet implemented. See docs/call-model.md section 10. Any other target (e.g. a mapping)
+      // simply is not a state array.
+      if (node.parameters.some((p) => p.name === slot.loopArrayVar)) {
+        throw new Error(
+          `per-element external calls over the calldata/parameter array '${slot.loopArrayVar}' `
+          + '(dynamic dispatch, e.g. the MultiCall pattern) are not yet supported; only state arrays can back '
+          + 'an array-element external call. See docs/call-model.md section 10.',
+        );
+      }
+      throw new Error(`array external-call target '${slot.loopArrayVar}' must be a state array`);
+    }
     const stride = 1 + slot.requiredDataNftIndices.length;
     const callMode = slot.callMode ?? ExternalCallMode.REGULAR;
 

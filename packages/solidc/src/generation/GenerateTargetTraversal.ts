@@ -8421,6 +8421,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const canChain = this.pendingEntryWrites.has(slotIndex)
       && !this.preAllocatedEntryWrites.has(slotIndex)
       && this.getStackIndex(prevValueName, true) !== -1;
+    // Chaining inside a branch/loop (scopeDepth > 0): the pending key/value were pushed below this scope's
+    // base, so the flat drop+re-push relocates them above the base where removeScopedVariables discards them
+    // (and conditionally mutating below-scope stack unbalances the branch). Instead update the value in place
+    // via emitReplace in Part 3 - the same mechanism the pre-allocated path uses - leaving the unchanged key.
+    // (A same-scope double-write is pre-allocated, not chained, so canChain + scopeDepth>0 means an outer write.)
+    const chainInPlace = canChain && this.scopeDepth > 0;
 
     if (canChain) {
       // Chain from previous partial field assignment's output.
@@ -8429,21 +8435,23 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(encodeInt(BigInt(prevValueIdx)), locationData);
       this.emit(Op.OP_PICK, locationData);
       // 1 untracked value on stack (the copied blob)
-      // Remove old key and value from the REAL stack (not just tracking) so that
-      // subsequent PICK indices in field surgery and covenant verification are correct.
-      this.pendingEntryWrites.delete(slotIndex);
-      // Roll old key to top (accounting for 1 untracked blob) and drop it
-      const oldKeyIdx = this.getStackIndex(prevKeyName);
-      this.emit(encodeInt(BigInt(oldKeyIdx + 1)), locationData); // +1 for untracked blob
-      this.emit(Op.OP_ROLL, locationData);
-      this.emit(Op.OP_DROP, locationData);
-      this.removeFromStack(this.getStackIndex(prevKeyName));
-      // Roll old value to top (still 1 untracked blob) and drop it
-      const oldValIdx = this.getStackIndex(prevValueName);
-      this.emit(encodeInt(BigInt(oldValIdx + 1)), locationData); // +1 for untracked blob
-      this.emit(Op.OP_ROLL, locationData);
-      this.emit(Op.OP_DROP, locationData);
-      this.removeFromStack(this.getStackIndex(prevValueName));
+      if (!chainInPlace) {
+        // Flat case: remove old key and value from the REAL stack (not just tracking) so that
+        // subsequent PICK indices in field surgery and covenant verification are correct.
+        this.pendingEntryWrites.delete(slotIndex);
+        // Roll old key to top (accounting for 1 untracked blob) and drop it
+        const oldKeyIdx = this.getStackIndex(prevKeyName);
+        this.emit(encodeInt(BigInt(oldKeyIdx + 1)), locationData); // +1 for untracked blob
+        this.emit(Op.OP_ROLL, locationData);
+        this.emit(Op.OP_DROP, locationData);
+        this.removeFromStack(this.getStackIndex(prevKeyName));
+        // Roll old value to top (still 1 untracked blob) and drop it
+        const oldValIdx = this.getStackIndex(prevValueName);
+        this.emit(encodeInt(BigInt(oldValIdx + 1)), locationData); // +1 for untracked blob
+        this.emit(Op.OP_ROLL, locationData);
+        this.emit(Op.OP_DROP, locationData);
+        this.removeFromStack(this.getStackIndex(prevValueName));
+      }
     } else {
       // First assignment to this slot - read from input NFT
 
@@ -8662,6 +8670,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         }
       }
       this.emitReplace(this.getStackIndex(keyStackName), node);
+      this.popFromStack();
+    } else if (chainInPlace) {
+      // Chained write inside a branch/loop: update the existing entry value in place (key and
+      // pendingEntryWrites are unchanged - same entry, same key), so the covenant key/value survive the
+      // scope's removeScopedVariables and the branch stays balanced.
+      this.pushToStack('(value)');
+      this.emitReplace(this.getStackIndex(prevValueName), node);
       this.popFromStack();
     } else {
       // Normal path

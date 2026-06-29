@@ -199,3 +199,40 @@ describe('Yul memory (constant-offset scratch)', () => {
     )).not.toThrow();
   });
 });
+
+// Phase 7b: packed storage slots. sload(slot) combines the sub-word vars sharing that slot into a word;
+// sstore(slot, w) decomposes the word back. Single full-width vars are unchanged (still byte-identical).
+describe('Yul packed storage slots', () => {
+  const POW = (n: number): string => (2n ** BigInt(n)).toString();
+
+  it('sload(0) combines packed sub-word vars (uint256(a) + uint256(b)*2^128 + ...)', () => {
+    const yul = compileString(
+      'contract C(){uint128 a;uint64 b;uint32 c;uint32 d;function f()returns(uint256 w){assembly{w:=sload(0)}}}',
+      { solidityImportCompat: true },
+    );
+    const direct = compileString(
+      'contract C(){uint128 a;uint64 b;uint32 c;uint32 d;function f()returns(uint256 w){'
+      + `w=uint256(this.a)+uint256(this.b)*${POW(128)}+uint256(this.c)*${POW(192)}+uint256(this.d)*${POW(224)};}}`,
+      { solidityImportCompat: true },
+    );
+    expect(yul.bytecode).toBe(direct.bytecode);
+  });
+
+  it('compiles the EVMStoragePackedSlot read-mask-write pattern', () => {
+    expect(() => compileString(
+      'contract C(){uint128 s_a;uint64 s_b;uint32 s_c;uint32 s_d;function f(){assembly{'
+      + 'let v:=sload(0) let m:=not(sub(shl(128,1),1)) v:=and(v,m) v:=or(v,11) sstore(0,v)}require(true);}}',
+      { solidityImportCompat: true },
+    )).not.toThrow();
+  });
+
+  it('leaves a single full-width var byte-identical to direct state access', () => {
+    const yul = compileString(
+      'contract C(){uint256 x;uint256 y;function f(uint256 v){assembly{sstore(1,v)}require(true);}}',
+    );
+    const direct = compileString(
+      'contract C(){uint256 x;uint256 y;function f(uint256 v){this.y=v;require(true);}}',
+    );
+    expect(yul.bytecode).toBe(direct.bytecode);
+  });
+});

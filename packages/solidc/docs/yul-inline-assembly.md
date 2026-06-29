@@ -303,12 +303,16 @@ selector word (offset 0), non-aligned/dynamic offsets, non-int params, and `call
       variable named `sig`/`pubkey`/`datasig`/etc. parses (ECDSA's `sig` param). Byte slices flowing into
       arithmetic / `byte(0, mload(...))` are not yet handled. No bench target (ECDSA/Signature are
       libraries / fail on other walls), but the byte-split is a common real-world pattern.
-- [ ] Phase 7b (deferred) - packed storage slots. `sload(slot)` returning a packed word + `sstore(slot,
-      masked)` decomposing back into multiple sub-word vars. Deferred deliberately: no corpus target
-      (EVMStorage.sol fails earlier on a mapping-array `.push`, and the packed contract is non-main so it is
-      not codegen'd anyway); it would emulate EVM storage packing on solidc's non-slot data-NFT model
-      (solidc has its own `isPacked`, unrelated to EVM bit-packing), and soundness hinges on the combine /
-      decompose exactly matching the hand-written masks. Build only behind an explicit need.
+- [x] Phase 7b - packed storage slots. DONE. solidc stores sub-word state vars as separate fields (its
+      `isPacked` is the explicit `packed` modifier, unrelated to EVM bit-packing), so an EVM slot view is
+      computed (declaration-order packing into 32-byte slots) and `sload(slot)` combines the slot's int
+      fields into a word (`uint256(v0) + uint256(v1)*2^off1 + ...`) while `sstore(slot, w)` decomposes it
+      (`vi = type((w / 2^offi) % 2^widthi)`, via DIV/MOD to avoid bitwise on literals). A single full-width
+      var stays byte-identical to direct state access; the packed combine is byte-identical to the explicit
+      expression. Also fixed a P2 type-friction surfaced here: integer bitwise / `not` now cast operands to
+      uint256, so literal masks (`or(v, 11)`, `not(sub(shl(128,1),1))`) work - the EVMStoragePackedSlot
+      read-mask-write pattern compiles. Slots holding a non-int var (address/bytes/mapping) stay NotLowerable.
+      No bench target (EVMStorage.sol fails earlier on a mapping `.push`), shipped for completeness.
 
 ## Expected bench payoff
 

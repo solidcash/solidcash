@@ -1,4 +1,4 @@
-import { IntType, BytesType } from '@solidcash/utils';
+import { IntType, BytesType, AddressType, PrimitiveType } from '@solidcash/utils';
 import AstTraversal from '../ast/AstTraversal.js';
 import {
   Node, StatementNode, ExpressionNode, AssemblyStatementNode, BlockNode, VariableDefinitionNode,
@@ -26,21 +26,86 @@ const UINT256 = new IntType(false, 256);
 // Set per function while lowering its body. solidc has no nested functions, so a module-level slot is safe.
 let currentParams: ParameterNode[] = [];
 
-// The enclosing contract's state variables (declaration order = EVM slot number), for sstore/sload.
-let currentStateVars: StateVariableNode[] = [];
+// EVM storage layout of the enclosing contract: each state var packed into a 32-byte slot in declaration
+// order (Solidity rules), so sload/sstore on a slot can map to the var(s) at that slot. A single full-width
+// var (the common uint256 case) stays a plain read/write; a packed slot combines/decomposes its sub-word vars.
+interface SlotField { sv: StateVariableNode; bitOffset: bigint; bitWidth: bigint; }
+let currentSlots = new Map<bigint, SlotField[]>();
+let currentVarSlot = new Map<string, bigint>();
 
-// Resolve a Yul storage-slot argument to a simple value-type state variable. Supports a literal slot number
-// (`sstore(0, ..)`) and the `.slot` form (`sstore(x.slot, ..)`). Packed/dynamic/mapping/array slots are later
-// phases (their slot semantics differ from one-var-per-slot).
-function resolveSlotVar(slotArg: YulExpressionNode): StateVariableNode | undefined {
-  let sv: StateVariableNode | undefined;
-  if (isIntLiteral(slotArg)) {
-    sv = currentStateVars[Number(BigInt(slotArg.raw))];
-  } else if (slotArg instanceof YulPathNode && slotArg.members.length === 1 && slotArg.members[0] === 'slot') {
-    sv = currentStateVars.find((v) => v.name === slotArg.base);
+function stateVarByteWidth(sv: StateVariableNode): number {
+  const t = sv.type;
+  if (sv.isDynamic) return 32;
+  if (t instanceof IntType) return t.bits / 8;
+  if (t instanceof AddressType) return 20;
+  if (t instanceof BytesType) return t.bound ?? 32;
+  if (t === PrimitiveType.BOOL) return 1;
+  return 32; // mapping / array / struct: occupies its own slot
+}
+
+function computeStorageLayout(vars: StateVariableNode[]): void {
+  currentSlots = new Map();
+  currentVarSlot = new Map();
+  let slot = 0n;
+  let byteOff = 0;
+  for (const sv of vars) {
+    const w = stateVarByteWidth(sv);
+    if (byteOff + w > 32) { slot += 1n; byteOff = 0; }
+    if (!currentSlots.has(slot)) currentSlots.set(slot, []);
+    currentSlots.get(slot)!.push({ sv, bitOffset: BigInt(byteOff * 8), bitWidth: BigInt(w * 8) });
+    currentVarSlot.set(sv.name, slot);
+    byteOff += w;
+    if (byteOff >= 32) { slot += 1n; byteOff = 0; }
   }
-  if (sv && sv.type instanceof IntType && !sv.isPacked && !sv.isDynamic) return sv;
+}
+
+// Resolve a Yul slot argument (literal `sstore(0,..)` or `.slot` form `sstore(x.slot,..)`) to the int-typed
+// fields of that slot. Slots holding a non-int var (address/bytes/mapping) are not handled (NotLowerable).
+function resolveSlotFields(slotArg: YulExpressionNode): SlotField[] | undefined {
+  let slotNum: bigint | undefined;
+  if (isIntLiteral(slotArg)) {
+    slotNum = BigInt(slotArg.raw);
+  } else if (slotArg instanceof YulPathNode && slotArg.members.length === 1 && slotArg.members[0] === 'slot') {
+    slotNum = currentVarSlot.get(slotArg.base);
+  }
+  if (slotNum === undefined) return undefined;
+  const fields = currentSlots.get(slotNum);
+  if (fields && fields.every((f) => f.sv.type instanceof IntType)) return fields;
   return undefined;
+}
+
+function isFullWord(fields: SlotField[]): boolean {
+  return fields.length === 1 && fields[0].bitOffset === 0n && fields[0].bitWidth === 256n;
+}
+
+// sload(slot): combine the slot's fields into a word, `uint256(v0) + uint256(v1)*2^off1 + ...`.
+function combineSlot(fields: SlotField[], src: YulExpressionNode): ExpressionNode {
+  if (isFullWord(fields)) return loc(new StateAccessNode(fields[0].sv.name), src);
+  let expr: ExpressionNode | undefined;
+  for (const f of fields) {
+    const word = loc(new CastNode(UINT256, loc(new StateAccessNode(f.sv.name), src), false), src);
+    const term = f.bitOffset === 0n
+      ? word
+      : loc(new BinaryOpNode(word, BinaryOperator.MUL, intLit(2n ** f.bitOffset, src)), src);
+    expr = expr ? loc(new BinaryOpNode(expr, BinaryOperator.PLUS, term), src) : term;
+  }
+  return expr!;
+}
+
+// sstore(slot, word): decompose the word into the slot's fields, `vi = type((word / 2^offi) % 2^widthi)`.
+// The word is bound to a temp so it is evaluated once.
+function decomposeSlot(fields: SlotField[], valueExpr: YulExpressionNode, src: YulExpressionNode): StatementNode {
+  if (isFullWord(fields)) return loc(new StateAssignNode(fields[0].sv.name, lowerValue(valueExpr)), src);
+  const tempName = '__yul_slot';
+  const stmts: StatementNode[] = [loc(new VariableDefinitionNode(UINT256, [], tempName, lowerValue(valueExpr)), src)];
+  for (const f of fields) {
+    let field: ExpressionNode = loc(new IdentifierNode(tempName), src);
+    if (f.bitOffset > 0n) field = loc(new BinaryOpNode(field, BinaryOperator.DIV, intLit(2n ** f.bitOffset, src)), src);
+    field = loc(new BinaryOpNode(field, BinaryOperator.MOD, intLit(2n ** f.bitWidth, src)), src);
+    const cast = loc(new CastNode(f.sv.type, field, false), src);
+    stmts.push(loc(new StateAssignNode(f.sv.name, cast), src));
+  }
+  return loc(new BlockNode(stmts), src);
 }
 
 // Transient storage (tstore/tload) maps to a zero-initialized, function-execution-scoped local keyed by the
@@ -99,11 +164,15 @@ function lowerKeccak(call: YulFunctionCallNode): ExpressionNode {
   return loc(new FunctionCallNode(loc(new IdentifierNode('keccak256'), call), [concat]), call);
 }
 
-// Yul binary builtins -> solidc operators (value `a op b`).
+// Yul arithmetic builtins -> solidc operators (value `a op b`).
 const ARITH_OPS: Record<string, BinaryOperator> = {
   add: BinaryOperator.PLUS, sub: BinaryOperator.MINUS, mul: BinaryOperator.MUL,
   div: BinaryOperator.DIV, sdiv: BinaryOperator.DIV, mod: BinaryOperator.MOD, smod: BinaryOperator.MOD,
-  exp: BinaryOperator.POW, and: BinaryOperator.BIT_AND, or: BinaryOperator.BIT_OR, xor: BinaryOperator.BIT_XOR,
+  exp: BinaryOperator.POW,
+};
+// Integer bitwise needs both operands to be a bounded int, so literal operands are cast to uint256.
+const BITWISE_OPS: Record<string, BinaryOperator> = {
+  and: BinaryOperator.BIT_AND, or: BinaryOperator.BIT_OR, xor: BinaryOperator.BIT_XOR,
 };
 // Yul comparison builtins -> solidc comparison operator (boolean result).
 const CMP_OPS: Record<string, BinaryOperator> = {
@@ -127,6 +196,12 @@ function isIntLiteral(e: YulExpressionNode): e is YulLiteralNode {
 // Cast a boolean expression to a uint256 0/1 word (so Yul comparisons stay usable in any position).
 function boolToWord(boolExpr: ExpressionNode, src: { location?: Node['location'] }): ExpressionNode {
   return loc(new CastNode(UINT256, boolExpr, false), src);
+}
+
+// Integer bitwise/not require a bounded int; a literal or all-literal-arithmetic operand types as unbounded
+// `int`, so cast every bitwise operand to uint256 (a no-op for an already-uint256 value).
+function lowerBitwiseOperand(arg: YulExpressionNode): ExpressionNode {
+  return loc(new CastNode(UINT256, lowerValue(arg), false), arg);
 }
 
 // Lower a Yul expression in value position to a 256-bit-word (uint256) expression.
@@ -157,6 +232,9 @@ function lowerCall(call: YulFunctionCallNode): ExpressionNode {
   if (name in ARITH_OPS && args.length === 2) {
     return loc(new BinaryOpNode(lowerValue(args[0]), ARITH_OPS[name], lowerValue(args[1])), call);
   }
+  if (name in BITWISE_OPS && args.length === 2) {
+    return loc(new BinaryOpNode(lowerBitwiseOperand(args[0]), BITWISE_OPS[name], lowerBitwiseOperand(args[1])), call);
+  }
   // shl(shift, value)=value*2^shift, shr/sar(shift, value)=value/2^shift. Avoids the `<<`/`>>` operators,
   // which require bigint/bytes; staying on uint256 keeps bitwise on the same value valid.
   if ((name === 'shl' || name === 'shr' || name === 'sar') && args.length === 2) {
@@ -170,7 +248,7 @@ function lowerCall(call: YulFunctionCallNode): ExpressionNode {
     return boolToWord(loc(new BinaryOpNode(lowerValue(args[0]), CMP_OPS[name], lowerValue(args[1])), call), call);
   }
   if (name === 'not' && args.length === 1) {
-    return loc(new UnaryOpNode(UnaryOperator.INVERT, lowerValue(args[0])), call);
+    return loc(new UnaryOpNode(UnaryOperator.INVERT, lowerBitwiseOperand(args[0])), call);
   }
   if (name === 'iszero' && args.length === 1) {
     return boolToWord(loc(new BinaryOpNode(lowerValue(args[0]), BinaryOperator.EQ, intLit(0n, call)), call), call);
@@ -188,10 +266,10 @@ function lowerCall(call: YulFunctionCallNode): ExpressionNode {
     }
     throw new YulNotLowerable(); // selector region / non-aligned offset / non-int param (later phase)
   }
-  // sload(slot) -> read the state variable at that slot (one value-type var per slot).
+  // sload(slot) -> the word at that storage slot (a single var, or the combined packed sub-word vars).
   if (name === 'sload' && args.length === 1) {
-    const sv = resolveSlotVar(args[0]);
-    if (sv) return loc(new StateAccessNode(sv.name), call);
+    const fields = resolveSlotFields(args[0]);
+    if (fields) return combineSlot(fields, call);
     throw new YulNotLowerable();
   }
   // tload(key) -> read the transient local for that constant key.
@@ -264,10 +342,10 @@ function lowerStatement(stmt: YulStatementNode): StatementNode {
       if (e.name === 'revert' && isZeroRevert(e)) {
         return loc(new RequireNode(loc(new BoolLiteralNode(false), stmt)), stmt);
       }
-      // sstore(slot, v): write the state variable at that slot.
+      // sstore(slot, v): write the word to that storage slot (a single var, or decomposed into packed vars).
       if (e.name === 'sstore' && e.args.length === 2) {
-        const sv = resolveSlotVar(e.args[0]);
-        if (sv) return loc(new StateAssignNode(sv.name, lowerValue(e.args[1])), stmt);
+        const fields = resolveSlotFields(e.args[0]);
+        if (fields) return decomposeSlot(fields, e.args[1], e);
       }
       // tstore(key, v): write the transient local for that constant key.
       if (e.name === 'tstore' && e.args.length === 2) {
@@ -336,9 +414,10 @@ function lowerBlock(block: YulBlockNode): BlockNode {
 export default class LowerInlineAssembly extends AstTraversal {
   // Track the enclosing contract's state variables so sstore/sload can resolve slot numbers.
   visitContract(node: ContractNode): Node {
-    currentStateVars = node.stateVariables;
+    computeStorageLayout(node.stateVariables);
     const result = super.visitContract(node);
-    currentStateVars = [];
+    currentSlots = new Map();
+    currentVarSlot = new Map();
     return result;
   }
 

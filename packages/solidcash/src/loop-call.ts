@@ -64,14 +64,18 @@ export interface OpaqueLoopCoSpend {
   returnData: Uint8Array;
 }
 
-/** BCH execution context for an opaque loop dispatch (everything not in the Solidity signature). */
+/**
+ * Optional BCH execution context for `contract.multiCall(targets, data, ctx?)`. Every field is derivable, so
+ * ctx may be omitted entirely once targets + a funder are registered (registerLoopTargets / registerLoopFunder):
+ * callerUtxo from the contract's UTXOs, cospends from the registered targets, funder from the registered funder.
+ */
 export interface OpaqueLoopCallContext {
   /** The caller contract's own UTXO; self-preserved at output 0. Auto-derived from the contract when omitted. */
   callerUtxo?: Utxo;
-  /** Per-target co-spend info, aligned with `targets`/`data`. */
-  cospends: OpaqueLoopCoSpend[];
-  /** Funds the return-event satoshis + fee (the self-preserved caller value cannot be drawn down). */
-  funder: { utxo: Utxo; unlocker: Unlocker };
+  /** Per-target co-spend info aligned with targets/data. Derived from registered targets when omitted. */
+  cospends?: OpaqueLoopCoSpend[];
+  /** Funds the return-event satoshis + fee. Falls back to the registered funder when omitted. */
+  funder?: { utxo: Utxo; unlocker: Unlocker };
   /** Per return-event output value (default 1000). */
   returnDust?: bigint;
   /** Locking bytecode for the change output (default anyone-can-spend OP_TRUE). */
@@ -80,7 +84,8 @@ export interface OpaqueLoopCallContext {
   fee?: bigint;
 }
 
-export interface BuildOpaqueLoopCallOptions extends OpaqueLoopCallContext {
+/** Fully-resolved options for the sync builder buildOpaqueLoopCallTransaction (no lookups - everything present). */
+export interface BuildOpaqueLoopCallOptions {
   provider: NetworkProvider;
   /** The stateless caller contract whose function does the loop dispatch. */
   contract: Contract;
@@ -90,8 +95,18 @@ export interface BuildOpaqueLoopCallOptions extends OpaqueLoopCallContext {
   targets: Uint8Array[];
   /** bytes[] - per-target payloads; advisory in the opaque model (Solidity arg 2). */
   data: Uint8Array[];
-  /** Required here (the sync builder does no lookups); contract.multiCall(...) auto-derives it when omitted. */
+  /** The caller contract's own UTXO; self-preserved at output 0. */
   callerUtxo: Utxo;
+  /** Per-target co-spend info, aligned with targets/data. */
+  cospends: OpaqueLoopCoSpend[];
+  /** Funds the return-event satoshis + fee (the self-preserved caller value cannot be drawn down). */
+  funder: { utxo: Utxo; unlocker: Unlocker };
+  /** Per return-event output value (default 1000). */
+  returnDust?: bigint;
+  /** Locking bytecode for the change output (default anyone-can-spend OP_TRUE). */
+  changeLockingBytecode?: Uint8Array;
+  /** Flat fee in satoshis (default 1000). */
+  fee?: bigint;
 }
 
 /**

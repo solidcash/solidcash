@@ -24,7 +24,10 @@ import {
 } from './utils.js';
 import SignatureTemplate from './SignatureTemplate.js';
 import { ParamsToTuple, AbiToFunctionMap } from './types/type-inference.js';
-import { buildOpaqueLoopCallTransaction, type OpaqueLoopCallContext } from './loop-call.js';
+import {
+  buildOpaqueLoopCallTransaction, deriveOpaqueLoopCoSpends,
+  type OpaqueLoopCallContext, type OpaqueLoopContractCall, type OpaqueLoopCoSpend,
+} from './loop-call.js';
 import type { TransactionBuilder } from './TransactionBuilder.js';
 import semver from 'semver';
 
@@ -56,6 +59,11 @@ export class Contract<
 
   encodedConstructorArgs: Uint8Array[];
   private rawConstructorArgs: TResolved['constructorInputs'];
+
+  // Registries for opaque loop dispatch (contract.multiCall): known target contracts (keyed by locking
+  // bytecode) so cospends auto-derive, and a funder for the return-event sats + fee.
+  private loopTargets = new Map<string, OpaqueLoopContractCall>();
+  private loopFunder?: { utxo: Utxo; unlocker: Unlocker };
 
   constructor(
     public artifact: TArtifact,
@@ -231,26 +239,13 @@ export class Contract<
         (ec) => ec.opaqueReturn && ec.loopArrayVar && fn.inputs.some((inp) => inp.name === ec.loopArrayVar),
       );
       if (isLoopDispatch && !(fn.name in this)) {
-        // contract.multiCall(targets, data, ctx) - targets/data mirror the Solidity signature; ctx carries the
-        // BCH co-spend context. callerUtxo is auto-derived from the contract's own UTXOs when omitted (the only
-        // ctx field derivable on-chain - the per-target co-spends and funder are caller/off-chain knowledge).
+        // contract.multiCall(targets, data, ctx?) - targets/data mirror the Solidity signature; ctx is optional.
+        // When omitted, cospends derive from registerLoopTargets, funder from registerLoopFunder, and callerUtxo
+        // from the contract's own UTXOs - so a fully-registered caller can write contract.multiCall(targets, data).
         const fnName = fn.name;
-        (this as any)[fnName] = async (
-          targets: Uint8Array[], data: Uint8Array[], ctx: OpaqueLoopCallContext,
-        ): Promise<TransactionBuilder> => {
-          let { callerUtxo } = ctx;
-          if (!callerUtxo) {
-            const plain = (await this.getUtxos()).filter((u) => !u.token)
-              .sort((a, b) => Number(b.satoshis - a.satoshis));
-            if (plain.length === 0) {
-              throw new Error(`${fnName}: no plain caller UTXO at ${this.address}; pass ctx.callerUtxo`);
-            }
-            [callerUtxo] = plain;
-          }
-          return buildOpaqueLoopCallTransaction({
-            provider: this.provider, contract: this, functionName: fnName, targets, data, ...ctx, callerUtxo,
-          });
-        };
+        (this as any)[fnName] = (
+          targets: Uint8Array[], data: Uint8Array[], ctx: OpaqueLoopCallContext = {},
+        ): Promise<TransactionBuilder> => this.dispatchOpaqueLoop(fnName, targets, data, ctx);
       }
     }
   }
@@ -286,6 +281,50 @@ export class Contract<
     const salt = new Uint8Array(length);
     crypto.getRandomValues(salt);
     return salt;
+  }
+
+  /**
+   * Register known target contracts for opaque loop dispatch (contract.multiCall). BCH must know a co-spent
+   * contract to satisfy its script, so this is where the artifact/category come in; once registered, multiCall's
+   * cospends auto-derive (UTXO via the category-pinned address, unlocker from the artifact, return from state).
+   */
+  registerLoopTargets(calls: OpaqueLoopContractCall[]): this {
+    for (const call of calls) this.loopTargets.set(call.contract.lockingBytecode, call);
+    return this;
+  }
+
+  /** Register the funding UTXO for opaque loop dispatch (pays the return-event sats + fee). */
+  registerLoopFunder(utxo: Utxo, unlocker: Unlocker): this {
+    this.loopFunder = { utxo, unlocker };
+    return this;
+  }
+
+  private async dispatchOpaqueLoop(
+    fnName: string, targets: Uint8Array[], data: Uint8Array[], ctx: OpaqueLoopCallContext,
+  ): Promise<TransactionBuilder> {
+    let cospends: OpaqueLoopCoSpend[] | undefined = ctx.cospends;
+    if (!cospends) {
+      const calls = targets.map((t) => {
+        const spec = this.loopTargets.get(binToHex(t));
+        if (!spec) {
+          throw new Error(`${fnName}: target ${binToHex(t)} not registered; call registerLoopTargets or pass ctx.cospends`);
+        }
+        return spec;
+      });
+      ({ cospends } = await deriveOpaqueLoopCoSpends(calls));
+    }
+    const funder = ctx.funder ?? this.loopFunder;
+    if (!funder) throw new Error(`${fnName}: no funder; call registerLoopFunder or pass ctx.funder`);
+    let callerUtxo = ctx.callerUtxo;
+    if (!callerUtxo) {
+      const plain = (await this.getUtxos()).filter((u) => !u.token).sort((a, b) => Number(b.satoshis - a.satoshis));
+      if (plain.length === 0) throw new Error(`${fnName}: no plain caller UTXO at ${this.address}; pass ctx.callerUtxo`);
+      [callerUtxo] = plain;
+    }
+    return buildOpaqueLoopCallTransaction({
+      provider: this.provider, contract: this, functionName: fnName, targets, data, cospends, funder, callerUtxo,
+      returnDust: ctx.returnDust, changeLockingBytecode: ctx.changeLockingBytecode, fee: ctx.fee,
+    });
   }
 
   private createUnlocker(abiFunction: AbiFunction, selector?: Uint8Array): ContractFunctionUnlocker {

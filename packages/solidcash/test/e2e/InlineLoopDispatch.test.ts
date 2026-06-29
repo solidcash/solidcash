@@ -3,7 +3,7 @@ import { compileString } from 'solidc';
 import { hexToBin, binToHex } from '@bitauth/libauth';
 import { encodePushdataValue } from '@solidcash/utils';
 import {
-  Contract, SignatureTemplate, TransactionBuilder, deriveOpaqueLoopCoSpends,
+  Contract, SignatureTemplate, TransactionBuilder,
 } from '../../src/index.js';
 import { createTestProvider, verifyTransaction, createFeeFunder } from '../test-util.js';
 import { alicePub, alicePriv } from '../fixture/vars.js';
@@ -168,7 +168,7 @@ describe('Inline loop-indexed external dispatch (MultiCall covenant)', () => {
     expect(tb.inputs.length).toBe(4);
   });
 
-  it('deriveOpaqueLoopCoSpends: cospends auto-derived from real category-pinned target contracts', async () => {
+  it('contract.multiCall(targets, data) - fully internal via registerLoopTargets / registerLoopFunder', async () => {
     const provider = createTestProvider();
     const sig = (): SignatureTemplate => new SignatureTemplate(alicePriv);
     const callerArt = compileString(MULTICALL_SRC, { solidityImportCompat: true });
@@ -189,21 +189,19 @@ describe('Inline loop-indexed external dispatch (MultiCall covenant)', () => {
     };
     const t0 = await makeTarget(C0, '01');
     const t1 = await makeTarget(C1, '02');
+    const funder = await createFeeFunder(provider, 10000n);
 
-    // the user said this is fundamentally available on BCH: utxo (Fulcrum lookup) + unlocker (artifact) +
-    // returnData (on-chain state) all derived from the known contracts.
-    const { targets, cospends } = await deriveOpaqueLoopCoSpends([
+    // one-time registration: the contracts BCH must know to co-spend them, plus the funder
+    caller.registerLoopTargets([
       { contract: t0, fn: 'cospend', args: [alicePub, sig()] },
       { contract: t1, fn: 'cospend', args: [alicePub, sig()] },
     ]);
-    expect(targets.length).toBe(2);
-    expect(cospends.every((c) => c.utxo.token?.nft?.capability === 'minting')).toBe(true);
+    caller.registerLoopFunder(funder.utxo, funder.unlocker);
 
-    const funder = await createFeeFunder(provider, 10000n);
+    // now the call mirrors Solidity exactly - no BCH context param; cospends/funder/callerUtxo all internal
     const tb = await (caller as any).multiCall(
-      targets,
+      [hexToBin(t0.lockingBytecode), hexToBin(t1.lockingBytecode)],
       [new Uint8Array([]), new Uint8Array([])],
-      { cospends, funder },
     ) as TransactionBuilder;
     verifyTransaction(tb);
     expect(tb.inputs.length).toBe(4);

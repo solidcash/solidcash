@@ -7128,7 +7128,7 @@ export default class SolidCashParser extends Parser {
 			this.state = 1765;
 			this._errHandler.sync(this);
 			_la = this._input.LA(1);
-			while ((((_la) & ~0x1F) === 0 && ((1 << _la) & 2147484304) !== 0) || _la===36 || ((((_la - 75)) & ~0x1F) === 0 && ((1 << (_la - 75)) & 788594689) !== 0) || _la===108 || ((((_la - 141)) & ~0x1F) === 0 && ((1 << (_la - 141)) & 2102545) !== 0) || _la===180) {
+			while ((((_la) & ~0x1F) === 0 && ((1 << _la) & 4026534544) !== 0) || ((((_la - 32)) & ~0x1F) === 0 && ((1 << (_la - 32)) & 31) !== 0) || ((((_la - 75)) & ~0x1F) === 0 && ((1 << (_la - 75)) & 788594689) !== 0) || _la===108 || ((((_la - 141)) & ~0x1F) === 0 && ((1 << (_la - 141)) & 2102613) !== 0) || _la===180) {
 				{
 				{
 				this.state = 1762;
@@ -7296,7 +7296,7 @@ export default class SolidCashParser extends Parser {
 			this.state = 1785;
 			this.match(SolidCashParser.T__101);
 			this.state = 1786;
-			this.match(SolidCashParser.Identifier);
+			this.anyIdentifier();
 			this.state = 1791;
 			this._errHandler.sync(this);
 			_la = this._input.LA(1);
@@ -7306,7 +7306,7 @@ export default class SolidCashParser extends Parser {
 				this.state = 1787;
 				this.match(SolidCashParser.T__4);
 				this.state = 1788;
-				this.match(SolidCashParser.Identifier);
+				this.anyIdentifier();
 				}
 				}
 				this.state = 1793;
@@ -7721,7 +7721,7 @@ export default class SolidCashParser extends Parser {
 			this.state = 1881;
 			this._errHandler.sync(this);
 			_la = this._input.LA(1);
-			if (_la===31 || _la===36 || _la===75 || _la===108 || ((((_la - 141)) & ~0x1F) === 0 && ((1 << (_la - 141)) & 2102545) !== 0) || _la===180) {
+			if (((((_la - 11)) & ~0x1F) === 0 && ((1 << (_la - 11)) & 66977793) !== 0) || _la===75 || _la===108 || ((((_la - 141)) & ~0x1F) === 0 && ((1 << (_la - 141)) & 2102613) !== 0) || _la===180) {
 				{
 				this.state = 1873;
 				this.yulExpression();
@@ -7804,7 +7804,7 @@ export default class SolidCashParser extends Parser {
 			this.enterOuterAlt(localctx, 1);
 			{
 			this.state = 1887;
-			this.match(SolidCashParser.Identifier);
+			this.anyIdentifier();
 			this.state = 1892;
 			this._errHandler.sync(this);
 			_la = this._input.LA(1);
@@ -7814,7 +7814,7 @@ export default class SolidCashParser extends Parser {
 				this.state = 1888;
 				this.match(SolidCashParser.T__11);
 				this.state = 1889;
-				this.match(SolidCashParser.Identifier);
+				this.anyIdentifier();
 				}
 				}
 				this.state = 1894;
@@ -11373,8 +11373,8 @@ export default class SolidCashParser extends Parser {
 	0,1783,1770,1,0,0,0,1783,1771,1,0,0,0,1783,1772,1,0,0,0,1783,1773,1,0,0,
 	0,1783,1774,1,0,0,0,1783,1775,1,0,0,0,1783,1776,1,0,0,0,1783,1777,1,0,0,
 	0,1783,1778,1,0,0,0,1783,1779,1,0,0,0,1783,1780,1,0,0,0,1783,1781,1,0,0,
-	0,1783,1782,1,0,0,0,1784,183,1,0,0,0,1785,1786,5,102,0,0,1786,1791,5,180,
-	0,0,1787,1788,5,5,0,0,1788,1790,5,180,0,0,1789,1787,1,0,0,0,1790,1793,1,
+	0,1783,1782,1,0,0,0,1784,183,1,0,0,0,1785,1786,5,102,0,0,1786,1791,3,14,
+	7,0,1787,1788,5,5,0,0,1788,1790,3,14,7,0,1789,1787,1,0,0,0,1790,1793,1,
 	0,0,0,1791,1789,1,0,0,0,1791,1792,1,0,0,0,1792,1796,1,0,0,0,1793,1791,1,
 	0,0,0,1794,1795,5,103,0,0,1795,1797,3,200,100,0,1796,1794,1,0,0,0,1796,
 	1797,1,0,0,0,1797,185,1,0,0,0,1798,1803,3,206,103,0,1799,1800,5,5,0,0,1800,
@@ -11404,17 +11404,17 @@ export default class SolidCashParser extends Parser {
 	1,0,0,0,1878,1876,1,0,0,0,1878,1879,1,0,0,0,1879,1882,1,0,0,0,1880,1878,
 	1,0,0,0,1881,1873,1,0,0,0,1881,1882,1,0,0,0,1882,1883,1,0,0,0,1883,1884,
 	5,50,0,0,1884,203,1,0,0,0,1885,1886,7,10,0,0,1886,205,1,0,0,0,1887,1892,
-	5,180,0,0,1888,1889,5,12,0,0,1889,1891,5,180,0,0,1890,1888,1,0,0,0,1891,
-	1894,1,0,0,0,1892,1890,1,0,0,0,1892,1893,1,0,0,0,1893,207,1,0,0,0,1894,
-	1892,1,0,0,0,1895,1896,7,11,0,0,1896,209,1,0,0,0,1897,1898,5,109,0,0,1898,
-	1902,5,4,0,0,1899,1901,3,110,55,0,1900,1899,1,0,0,0,1901,1904,1,0,0,0,1902,
-	1900,1,0,0,0,1902,1903,1,0,0,0,1903,1905,1,0,0,0,1904,1902,1,0,0,0,1905,
-	1906,5,6,0,0,1906,211,1,0,0,0,1907,1908,5,104,0,0,1908,1909,5,49,0,0,1909,
-	1910,3,250,125,0,1910,1911,5,50,0,0,1911,1915,5,4,0,0,1912,1914,3,214,107,
-	0,1913,1912,1,0,0,0,1914,1917,1,0,0,0,1915,1913,1,0,0,0,1915,1916,1,0,0,
-	0,1916,1919,1,0,0,0,1917,1915,1,0,0,0,1918,1920,3,216,108,0,1919,1918,1,
-	0,0,0,1919,1920,1,0,0,0,1920,1921,1,0,0,0,1921,1922,5,6,0,0,1922,213,1,
-	0,0,0,1923,1924,5,105,0,0,1924,1925,3,250,125,0,1925,1929,5,110,0,0,1926,
+	3,14,7,0,1888,1889,5,12,0,0,1889,1891,3,14,7,0,1890,1888,1,0,0,0,1891,1894,
+	1,0,0,0,1892,1890,1,0,0,0,1892,1893,1,0,0,0,1893,207,1,0,0,0,1894,1892,
+	1,0,0,0,1895,1896,7,11,0,0,1896,209,1,0,0,0,1897,1898,5,109,0,0,1898,1902,
+	5,4,0,0,1899,1901,3,110,55,0,1900,1899,1,0,0,0,1901,1904,1,0,0,0,1902,1900,
+	1,0,0,0,1902,1903,1,0,0,0,1903,1905,1,0,0,0,1904,1902,1,0,0,0,1905,1906,
+	5,6,0,0,1906,211,1,0,0,0,1907,1908,5,104,0,0,1908,1909,5,49,0,0,1909,1910,
+	3,250,125,0,1910,1911,5,50,0,0,1911,1915,5,4,0,0,1912,1914,3,214,107,0,
+	1913,1912,1,0,0,0,1914,1917,1,0,0,0,1915,1913,1,0,0,0,1915,1916,1,0,0,0,
+	1916,1919,1,0,0,0,1917,1915,1,0,0,0,1918,1920,3,216,108,0,1919,1918,1,0,
+	0,0,1919,1920,1,0,0,0,1920,1921,1,0,0,0,1921,1922,5,6,0,0,1922,213,1,0,
+	0,0,1923,1924,5,105,0,0,1924,1925,3,250,125,0,1925,1929,5,110,0,0,1926,
 	1928,3,110,55,0,1927,1926,1,0,0,0,1928,1931,1,0,0,0,1929,1927,1,0,0,0,1929,
 	1930,1,0,0,0,1930,215,1,0,0,0,1931,1929,1,0,0,0,1932,1933,5,106,0,0,1933,
 	1937,5,110,0,0,1934,1936,3,110,55,0,1935,1934,1,0,0,0,1936,1939,1,0,0,0,
@@ -14940,11 +14940,11 @@ export class YulVariableDeclarationContext extends ParserRuleContext {
 		super(parent, invokingState);
     	this.parser = parser;
 	}
-	public Identifier_list(): TerminalNode[] {
-	    	return this.getTokens(SolidCashParser.Identifier);
+	public anyIdentifier_list(): AnyIdentifierContext[] {
+		return this.getTypedRuleContexts(AnyIdentifierContext) as AnyIdentifierContext[];
 	}
-	public Identifier(i: number): TerminalNode {
-		return this.getToken(SolidCashParser.Identifier, i);
+	public anyIdentifier(i: number): AnyIdentifierContext {
+		return this.getTypedRuleContext(AnyIdentifierContext, i) as AnyIdentifierContext;
 	}
 	public yulExpression(): YulExpressionContext {
 		return this.getTypedRuleContext(YulExpressionContext, 0) as YulExpressionContext;
@@ -15236,11 +15236,11 @@ export class YulPathContext extends ParserRuleContext {
 		super(parent, invokingState);
     	this.parser = parser;
 	}
-	public Identifier_list(): TerminalNode[] {
-	    	return this.getTokens(SolidCashParser.Identifier);
+	public anyIdentifier_list(): AnyIdentifierContext[] {
+		return this.getTypedRuleContexts(AnyIdentifierContext) as AnyIdentifierContext[];
 	}
-	public Identifier(i: number): TerminalNode {
-		return this.getToken(SolidCashParser.Identifier, i);
+	public anyIdentifier(i: number): AnyIdentifierContext {
+		return this.getTypedRuleContext(AnyIdentifierContext, i) as AnyIdentifierContext;
 	}
     public get ruleIndex(): number {
     	return SolidCashParser.RULE_yulPath;

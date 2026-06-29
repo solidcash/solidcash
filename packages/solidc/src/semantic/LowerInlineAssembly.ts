@@ -5,6 +5,7 @@ import {
   AssignNode, RequireNode, BranchNode, WhileNode, BreakNode, ContinueNode, BinaryOpNode, UnaryOpNode,
   CastNode, IdentifierNode, IntLiteralNode, BoolLiteralNode, ParameterNode, FunctionDefinitionNode,
   StateAssignNode, StateAccessNode, StateVariableNode, ContractNode, BytesConcatNode, FunctionCallNode,
+  SliceNode,
 } from '../ast/AST.js';
 import { BinaryOperator, UnaryOperator } from '../ast/Operator.js';
 import {
@@ -62,6 +63,23 @@ const BYTES32 = new BytesType(32);
 // keccak over a constant region). The stored value is re-lowered at each read, which is correct as long as it
 // is not mutated between the mstore and the read (the usual store-then-hash shape).
 const memory = new Map<bigint, YulExpressionNode>();
+
+// EVM `bytes memory` layout is [length(32)][data...], so `mload(add(ptr, off))` reads the 32-byte word at
+// data[off-32 : off]. For a bytes-typed parameter that lowers to a byte slice `bytes32(ptr[off-32 : off])`.
+function bytesMemorySlice(memArg: YulExpressionNode): ExpressionNode | undefined {
+  if (!(memArg instanceof YulFunctionCallNode) || memArg.name !== 'add' || memArg.args.length !== 2) return undefined;
+  const [base, offArg] = memArg.args;
+  if (!(base instanceof YulPathNode) || base.members.length > 0 || !isIntLiteral(offArg)) return undefined;
+  const param = currentParams.find((p) => p.name === base.base && p.type instanceof BytesType);
+  if (!param) return undefined;
+  const start = BigInt(offArg.raw) - 32n; // skip the length word
+  if (start < 0n) return undefined;
+  const slice = loc(
+    new SliceNode(loc(new IdentifierNode(base.base), memArg), intLit(start, memArg), intLit(start + 32n, memArg)),
+    memArg,
+  );
+  return loc(new CastNode(BYTES32, slice, false), memArg);
+}
 
 // keccak256(p, len): hash the constant region [p, p+len) = the words at p, p+32, ... concatenated. Each word is
 // rendered as bytes32 (no-op for a bytes32 value, big-endian for an int) before concatenation.
@@ -185,10 +203,15 @@ function lowerCall(call: YulFunctionCallNode): ExpressionNode {
     }
     throw new YulNotLowerable();
   }
-  // mload(p) -> the word stored at that constant offset (compile-time memory model).
-  if (name === 'mload' && args.length === 1 && isIntLiteral(args[0])) {
-    const v = memory.get(BigInt(args[0].raw));
-    if (v !== undefined) return lowerValue(v);
+  // mload(p) -> the word stored at that constant offset (compile-time memory model), or a `bytes memory`
+  // slice for the `mload(add(ptr, off))` parameter-reading form.
+  if (name === 'mload' && args.length === 1) {
+    if (isIntLiteral(args[0])) {
+      const v = memory.get(BigInt(args[0].raw));
+      if (v !== undefined) return lowerValue(v);
+    }
+    const slice = bytesMemorySlice(args[0]);
+    if (slice) return slice;
     throw new YulNotLowerable(); // uninitialized / dynamic offset
   }
   // keccak256(p, len) -> hash the constant memory region.

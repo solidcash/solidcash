@@ -178,4 +178,24 @@ describe('Yul memory (constant-offset scratch)', () => {
     );
     expect(yul.bytecode).toBe(direct.bytecode);
   });
+
+  it('mload(add(ptr, off)) on a bytes parameter == bytes32(ptr[off-32 : off]) (the ECDSA-split pattern)', () => {
+    const yul = compileString(
+      'contract C(){function f(bytes buf)returns(bytes32 r,bytes32 s){'
+      + 'assembly{r:=mload(add(buf,32)) s:=mload(add(buf,64))}}}',
+      { solidityImportCompat: true },
+    );
+    const direct = compileString(
+      'contract C(){function f(bytes buf)returns(bytes32 r,bytes32 s){r=bytes32(buf[0:32]);s=bytes32(buf[32:64]);}}',
+      { solidityImportCompat: true },
+    );
+    expect(yul.bytecode).toBe(direct.bytecode);
+  });
+
+  it('accepts soft-keyword identifiers (e.g. sig) as Yul variables', () => {
+    expect(() => compileString(
+      'contract C(){function f(bytes sig)returns(bytes32 r){assembly{r:=mload(add(sig,32))}}}',
+      { solidityImportCompat: true },
+    )).not.toThrow();
+  });
 });

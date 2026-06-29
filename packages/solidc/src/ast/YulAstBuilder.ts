@@ -49,7 +49,7 @@ function buildYulStatement(ctx: YulStatementContext): YulStatementNode {
 }
 
 function buildYulVariableDeclaration(ctx: YulVariableDeclarationContext): YulVariableDeclarationNode {
-  const names = ctx.Identifier_list().map((t) => t.getText());
+  const names = ctx.anyIdentifier_list().map((t) => t.getText());
   const valueCtx = ctx.yulExpression();
   return loc(new YulVariableDeclarationNode(names, valueCtx ? buildYulExpression(valueCtx) : undefined), ctx);
 }
@@ -105,7 +105,7 @@ function buildYulFunctionCall(ctx: YulFunctionCallContext): YulFunctionCallNode 
 }
 
 function buildYulPath(ctx: YulPathContext): YulPathNode {
-  const ids = ctx.Identifier_list().map((t) => t.getText());
+  const ids = ctx.anyIdentifier_list().map((t) => t.getText());
   return loc(new YulPathNode(ids[0], ids.slice(1)), ctx);
 }
 

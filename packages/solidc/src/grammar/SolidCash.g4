@@ -486,7 +486,7 @@ yulStatement
     ;
 
 yulVariableDeclaration
-    : 'let' Identifier (',' Identifier)* (':=' yulExpression)?
+    : 'let' anyIdentifier (',' anyIdentifier)* (':=' yulExpression)?
     ;
 
 yulAssignment
@@ -536,7 +536,7 @@ yulFunctionName
     ;
 
 yulPath
-    : Identifier ('.' Identifier)*
+    : anyIdentifier ('.' anyIdentifier)*
     ;
 
 yulLiteral

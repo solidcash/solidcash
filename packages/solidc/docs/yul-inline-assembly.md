@@ -296,8 +296,19 @@ selector word (offset 0), non-aligned/dynamic offsets, non-int params, and `call
       target interface and a constant selector ... forwarding opaque calldata is not supported"). The typed
       external call stays the high-level `IContract(addr).method(...)` path (external-contract-calls.md), not
       Yul. No bench change (those files are multi-wall regardless).
-- [ ] Phase 7 (stretch) - bytes-memory layout (`mload(add(ptr, const))` -> byte slice) and packed storage
-      slots. Higher risk / lower payoff; gated on demand.
+- [x] Phase 7a - bytes-memory layout. DONE. `mload(add(ptr, off))` for a `bytes`-typed parameter lowers to
+      `bytes32(ptr[off-32 : off])` (EVM `bytes memory` is `[length(32)][data]`, so `add(ptr, 32)` is the data
+      start) - byte-identical to the direct slice, the canonical ECDSA signature-split shape. Also fixed a
+      real grammar wart found here: Yul identifiers now accept solidc soft keywords (`anyIdentifier`), so a
+      variable named `sig`/`pubkey`/`datasig`/etc. parses (ECDSA's `sig` param). Byte slices flowing into
+      arithmetic / `byte(0, mload(...))` are not yet handled. No bench target (ECDSA/Signature are
+      libraries / fail on other walls), but the byte-split is a common real-world pattern.
+- [ ] Phase 7b (deferred) - packed storage slots. `sload(slot)` returning a packed word + `sstore(slot,
+      masked)` decomposing back into multiple sub-word vars. Deferred deliberately: no corpus target
+      (EVMStorage.sol fails earlier on a mapping-array `.push`, and the packed contract is non-main so it is
+      not codegen'd anyway); it would emulate EVM storage packing on solidc's non-slot data-NFT model
+      (solidc has its own `isPacked`, unrelated to EVM bit-packing), and soundness hinges on the combine /
+      decompose exactly matching the hand-written masks. Build only behind an explicit need.
 
 ## Expected bench payoff
 

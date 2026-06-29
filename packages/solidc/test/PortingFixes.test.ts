@@ -1642,3 +1642,26 @@ describe('SBE-23: using-for on an array type (`using Lib for T[]`)', () => {
     expect(a.contractName).toBe('C');
   });
 });
+
+describe('SBE-24: named returns of address/pubkey/sig zero-init correctly', () => {
+  // A named return desugars to a local pre-initialized to the type's default. address/pubkey/sig/datasig have
+  // no int-0 default, so the prior explicit-0 init tripped AssignTypeError. Uninitialized declarations zero-init
+  // via the delete path for every type, so the desugar now uses that.
+  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+
+  it('compiles a named address return assigned from a mapping read (ERC721 ownerOf shape)', () => {
+    expect(cc('contract C { mapping(uint256 => address) _ownerOf;'
+      + ' function ownerOf(uint256 id) external view returns (address owner) {'
+      + ' owner = _ownerOf[id]; require(owner != address(0)); } }')).toBe('C');
+  });
+
+  it('compiles a named address return from a parameter', () => {
+    expect(cc('contract C { int n; function f(address a) external returns (address owner) { owner = a; this.n = 1; } }'))
+      .toBe('C');
+  });
+
+  it('compiles a named pubkey return', () => {
+    expect(cc('contract C { int n; function f(pubkey p) external returns (pubkey k) { k = p; this.n = 1; } }'))
+      .toBe('C');
+  });
+});

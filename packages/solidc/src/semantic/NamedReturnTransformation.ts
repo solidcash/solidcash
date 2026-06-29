@@ -91,12 +91,14 @@ export default class NamedReturnTransformation extends AstTraversal {
       return node;
     }
 
-    // Prepend a default-initialized local for each named return.
+    // Prepend an uninitialized local for each named return. An uninitialized declaration zero-inits via the
+    // same path as `delete`, which is correct for EVERY type - including address/pubkey/sig/datasig, which have
+    // no int-0 default (createDefaultValueExpression falls through to `0` for them, tripping AssignTypeError).
+    // An assigned named return overwrites this; an unassigned one returns the type's zero.
     const defaults = node.returnNames.map((name, i) => {
-      const def = new VariableDefinitionNode(
-        node.returnTypes[i], [], name, createDefaultValueExpression(node.returnTypes[i], node.location),
-      );
+      const def = new VariableDefinitionNode(node.returnTypes[i], [], name);
       def.location = node.location;
+      def.allowUnused = true;
       return def;
     });
     node.body.statements = [...defaults, ...(node.body.statements ?? [])];

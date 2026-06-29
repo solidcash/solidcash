@@ -5686,12 +5686,47 @@ export default class SymbolTableTraversal extends AstTraversal {
       // table or the state-var map, and treat msg.sender / tx.origin (NullaryOps typed `address`) as addresses.
       const isAddressNullary = node.object instanceof NullaryOpNode
         && (node.object.operator === NullaryOperator.MSG_SENDER || node.object.operator === NullaryOperator.TX_ORIGIN);
-      const objType = node.object.type
+      let objType = node.object.type
         ?? (objName ? this.symbolTables[0].get(objName)?.type ?? this.stateVariableMap.get(objName)?.type : undefined)
         ?? (isAddressNullary ? new AddressType() : undefined);
+      // Complex address receiver: an `address[]` element `arr[i]` resolves to the array's element type, so a
+      // runtime array-element target dispatches (e.g. MultiCall `targets[i].staticcall(data[i])`). `arr[i]`
+      // parses as a TupleIndexOpNode (array-vs-tuple is type-resolved later) or an ArrayAccessNode; the base
+      // array's type comes from the scope chain (usually a calldata/memory parameter) or a state var.
+      const arrayBase = node.object instanceof TupleIndexOpNode ? node.object.tuple
+        : node.object instanceof ArrayAccessNode ? node.object.array : undefined;
+      if (!objType && arrayBase instanceof IdentifierNode) {
+        let arrType: Type | undefined;
+        for (let i = this.symbolTables.length - 1; i >= 0 && !arrType; i -= 1) {
+          arrType = this.symbolTables[i]?.get(arrayBase.name)?.type;
+        }
+        arrType = arrType ?? this.stateVariableMap.get(arrayBase.name)?.type;
+        if (arrType instanceof ArrayType) objType = arrType.elementType;
+      }
       if (objType instanceof AddressType) {
         const data = node.parameters.length === 1
           ? this.visit(node.parameters[0]) as ExpressionNode : node.parameters[0];
+        // EVM-parity sound low-level call: `(bool, bytes) = addr.call/staticcall(payload)` co-spends the callee
+        // and returns its REAL integrity-bound return (identity + return-event); staticcall is the read-only
+        // variant (preserves the callee's commitments). The `{value:}`/`{gas:}` forms keep the existing weak
+        // path for now (value-transfer handling), and delegatecall self-verifies via _proxyMasterIndex.
+        if ((node.methodName === 'call' || node.methodName === 'staticcall') && !node.callOptions) {
+          const mode = node.methodName === 'staticcall' ? ExternalCallMode.STATICCALL : ExternalCallMode.REGULAR;
+          const callNode = new ExternalFunctionCallNode('__raw__', node.object as ExpressionNode, '__raw__', [data]);
+          callNode.opaqueReturn = true;
+          callNode.type = new TupleType([PrimitiveType.BOOL, new BytesType()]);
+          callNode.callInfo = {
+            interfaceName: '__raw__',
+            functionName: '__raw__',
+            externalCallSlotIndex: -1,
+            hasReturnValues: true,
+            returnTypes: [new BytesType()],
+            returnEventSignature: '_Return___raw__(bytes)',
+            callMode: mode,
+          };
+          callNode.location = node.location;
+          return callNode;
+        }
         const callNode = new LowLevelCallNode(node.object, data, node.methodName);
         callNode.callOptions = node.callOptions;
         callNode.valueTransferIndex = node.valueTransferIndex;

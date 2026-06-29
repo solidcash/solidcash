@@ -1,4 +1,4 @@
-import { binToHex } from '@bitauth/libauth';
+import { binToHex, hexToBin } from '@bitauth/libauth';
 import { encodePushdataValue } from '@solidcash/utils';
 import type { Contract } from './Contract.js';
 import { TransactionBuilder } from './TransactionBuilder.js';
@@ -6,6 +6,53 @@ import { NetworkProvider } from './network/index.js';
 import { Utxo, Unlocker } from './interfaces.js';
 
 const OP_TRUE = new Uint8Array([0x51]);
+
+/** A co-spendable contract instance: enough of Contract/StatefulContract to derive its co-spend. */
+export interface CoSpendableContract {
+  address: string;
+  lockingBytecode: string;
+  unlock: Record<string, (...args: any[]) => Unlocker>;
+  getUtxos: () => Promise<Utxo[]>;
+}
+
+/** A known-contract call to co-spend in an opaque loop dispatch. */
+export interface OpaqueLoopContractCall {
+  /** The target contract instance (artifact + category-pinned address - so its UTXO is Fulcrum-discoverable). */
+  contract: CoSpendableContract;
+  /** Function to co-spend it with. For a staticcall it must preserve the target (e.g. an unsafe(0) co-spend). */
+  fn: string;
+  /** Args for that function (incl. any auth the target requires). */
+  args: any[];
+  /** Override the derived return (default: the target's current NFT commitment - i.e. its on-chain state). */
+  returnData?: Uint8Array;
+}
+
+/**
+ * Derive the (targets, cospends) for an opaque loop dispatch from known contract instances - what the user
+ * said is fundamentally available on BCH: each target's locking bytecode (category-pinned address), its UTXO
+ * (Fulcrum lookup), its unlocker (artifact + the chosen function/args), and its return (its on-chain state).
+ * Picks the target's minting-NFT master UTXO (the category-bearing one needed to mint the return event).
+ */
+export async function deriveOpaqueLoopCoSpends(
+  calls: OpaqueLoopContractCall[],
+): Promise<{ targets: Uint8Array[]; cospends: OpaqueLoopCoSpend[] }> {
+  const targets: Uint8Array[] = [];
+  const cospends: OpaqueLoopCoSpend[] = [];
+  for (const call of calls) {
+    const utxos = await call.contract.getUtxos();
+    const utxo = utxos.find((u) => u.token?.nft?.capability === 'minting') ?? utxos.find((u) => u.token) ?? utxos[0];
+    if (!utxo) throw new Error(`deriveOpaqueLoopCoSpends: no co-spendable UTXO at ${call.contract.address}`);
+    const unlockFactory = call.contract.unlock[call.fn];
+    if (!unlockFactory) throw new Error(`deriveOpaqueLoopCoSpends: no unlocker '${call.fn}' on the target`);
+    targets.push(hexToBin(call.contract.lockingBytecode));
+    cospends.push({
+      utxo,
+      unlocker: unlockFactory(...call.args),
+      returnData: call.returnData ?? hexToBin(utxo.token?.nft?.commitment ?? ''),
+    });
+  }
+  return { targets, cospends };
+}
 
 /** Per-target co-spend context for an opaque loop dispatch, aligned by index with `targets`/`data`. */
 export interface OpaqueLoopCoSpend {

@@ -2,8 +2,11 @@ import { describe, it, expect } from 'vitest';
 import { compileString } from 'solidc';
 import { hexToBin, binToHex } from '@bitauth/libauth';
 import { encodePushdataValue } from '@solidcash/utils';
-import { Contract, TransactionBuilder } from '../../src/index.js';
+import {
+  Contract, SignatureTemplate, TransactionBuilder, deriveOpaqueLoopCoSpends,
+} from '../../src/index.js';
 import { createTestProvider, verifyTransaction, createFeeFunder } from '../test-util.js';
+import { alicePub, alicePriv } from '../fixture/vars.js';
 
 // Minimal isolation of the inline loop-indexed external dispatch (the MultiCall covenant): a stateless
 // contract that staticcalls each element of a calldata address array and consumes the per-element return,
@@ -20,6 +23,16 @@ contract MiniMultiCall() {
         }
         require(total >= 0);
     }
+}`;
+
+// A real category-pinned target contract whose UTXO is Fulcrum-discoverable from its artifact + category. Its
+// co-spend function is unsafe(0) (zero covenant) so it PERMITS the multiCall's output structure (preserved
+// target + minted return event). A strict stateful covenant would reject that extra minted output of its
+// category - the one genuine residual constraint on auto-deriving the return.
+const TARGET_SRC = `pragma solidcash >=0.8.0;
+contract Target() {
+  int value;
+  function cospend(pubkey pk, sig s) unsafe(0) { require(checkSig(s, pk)); }
 }`;
 
 const OP_TRUE = hexToBin('51'); // anyone-can-spend
@@ -150,6 +163,47 @@ describe('Inline loop-indexed external dispatch (MultiCall covenant)', () => {
         ],
         funder,
       },
+    ) as TransactionBuilder;
+    verifyTransaction(tb);
+    expect(tb.inputs.length).toBe(4);
+  });
+
+  it('deriveOpaqueLoopCoSpends: cospends auto-derived from real category-pinned target contracts', async () => {
+    const provider = createTestProvider();
+    const sig = (): SignatureTemplate => new SignatureTemplate(alicePriv);
+    const callerArt = compileString(MULTICALL_SRC, { solidityImportCompat: true });
+    const targetArt = compileString(TARGET_SRC);
+
+    const caller = new Contract(callerArt, [], { provider });
+    await provider.addUtxo(caller.address, { txid: 'cc'.repeat(32), vout: 0, satoshis: 100000n });
+
+    // two real targets, each category-pinned so its master UTXO is discoverable from the artifact + category
+    // (Contract.withCategory bakes the category self-pin -> a deterministic locking bytecode -> Fulcrum lookup).
+    const makeTarget = async (categoryHex: string, txidByte: string): Promise<Contract> => {
+      const t = new Contract(targetArt, [], { provider }).withCategory(hexToBin(categoryHex));
+      await provider.addUtxo(t.tokenAddress, {
+        txid: txidByte.repeat(32), vout: 0, satoshis: 1200n,
+        token: { category: categoryHex, amount: 0n, nft: { capability: 'minting', commitment: '' } },
+      });
+      return t;
+    };
+    const t0 = await makeTarget(C0, '01');
+    const t1 = await makeTarget(C1, '02');
+
+    // the user said this is fundamentally available on BCH: utxo (Fulcrum lookup) + unlocker (artifact) +
+    // returnData (on-chain state) all derived from the known contracts.
+    const { targets, cospends } = await deriveOpaqueLoopCoSpends([
+      { contract: t0, fn: 'cospend', args: [alicePub, sig()] },
+      { contract: t1, fn: 'cospend', args: [alicePub, sig()] },
+    ]);
+    expect(targets.length).toBe(2);
+    expect(cospends.every((c) => c.utxo.token?.nft?.capability === 'minting')).toBe(true);
+
+    const funder = await createFeeFunder(provider, 10000n);
+    const tb = await (caller as any).multiCall(
+      targets,
+      [new Uint8Array([]), new Uint8Array([])],
+      { cospends, funder },
     ) as TransactionBuilder;
     verifyTransaction(tb);
     expect(tb.inputs.length).toBe(4);

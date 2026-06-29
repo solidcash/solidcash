@@ -2,8 +2,11 @@ export { default as SignatureTemplate } from './SignatureTemplate.js';
 export { default as Signer } from './Signer.js';
 export { Contract } from './Contract.js';
 export { TransactionBuilder } from './TransactionBuilder.js';
-export { buildOpaqueLoopCallTransaction } from './loop-call.js';
-export type { OpaqueLoopCoSpend, OpaqueLoopCallContext, BuildOpaqueLoopCallOptions } from './loop-call.js';
+export { buildOpaqueLoopCallTransaction, deriveOpaqueLoopCoSpends } from './loop-call.js';
+export type {
+  OpaqueLoopCoSpend, OpaqueLoopCallContext, BuildOpaqueLoopCallOptions,
+  CoSpendableContract, OpaqueLoopContractCall,
+} from './loop-call.js';
 export * from './stateful/index.js';
 export * from './oracle/blockOracleUpdater.js';
 export * from './oracle/blockhashCoSpend.js';

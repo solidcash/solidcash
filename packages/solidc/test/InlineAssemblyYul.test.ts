@@ -131,3 +131,31 @@ describe('Yul storage and transient lowering', () => {
     expect(yul.bytecode).toBe(direct.bytecode);
   });
 });
+
+// Phase 5: constant-offset memory scratch. mstore records a word, keccak256 over a constant region concats the
+// covered words. Verified by byte-identical compilation to keccak256(bytes.concat(...)) and to a direct read.
+describe('Yul memory (constant-offset scratch)', () => {
+  it('mstore + keccak256 over a constant region == keccak256(bytes.concat(...))', () => {
+    const yul = compileString(
+      'contract C(){function f(bytes32 a,bytes32 b)returns(bytes32 value){'
+      + 'assembly{mstore(0,a) mstore(0x20,b) value:=keccak256(0,0x40)}}}',
+      { solidityImportCompat: true },
+    );
+    const direct = compileString(
+      'contract C(){function f(bytes32 a,bytes32 b)returns(bytes32 value){'
+      + 'value=keccak256(bytes.concat(bytes32(a),bytes32(b)));}}',
+      { solidityImportCompat: true },
+    );
+    expect(yul.bytecode).toBe(direct.bytecode);
+  });
+
+  it('mstore + mload round-trips the stored word', () => {
+    const yul = compileString(
+      'contract C(){function f(uint256 x,uint256 e){uint256 a=0;assembly{mstore(0,x) a:=mload(0)}require(a==e);}}',
+    );
+    const direct = compileString(
+      'contract C(){function f(uint256 x,uint256 e){uint256 a=0;a=x;require(a==e);}}',
+    );
+    expect(yul.bytecode).toBe(direct.bytecode);
+  });
+});

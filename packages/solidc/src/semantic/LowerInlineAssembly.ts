@@ -1,10 +1,10 @@
-import { IntType } from '@solidcash/utils';
+import { IntType, BytesType } from '@solidcash/utils';
 import AstTraversal from '../ast/AstTraversal.js';
 import {
   Node, StatementNode, ExpressionNode, AssemblyStatementNode, BlockNode, VariableDefinitionNode,
   AssignNode, RequireNode, BranchNode, WhileNode, BreakNode, ContinueNode, BinaryOpNode, UnaryOpNode,
   CastNode, IdentifierNode, IntLiteralNode, BoolLiteralNode, ParameterNode, FunctionDefinitionNode,
-  StateAssignNode, StateAccessNode, StateVariableNode, ContractNode,
+  StateAssignNode, StateAccessNode, StateVariableNode, ContractNode, BytesConcatNode, FunctionCallNode,
 } from '../ast/AST.js';
 import { BinaryOperator, UnaryOperator } from '../ast/Operator.js';
 import {
@@ -53,6 +53,32 @@ function transientLocalName(keyArg: YulExpressionNode): string | undefined {
   if (isIntLiteral(keyArg)) return `__yul_tslot_${BigInt(keyArg.raw)}`;
   if (keyArg instanceof YulPathNode && keyArg.members.length === 0) return `__yul_tslot_${keyArg.base}`;
   return undefined;
+}
+
+const BYTES32 = new BytesType(32);
+
+// Compile-time word-addressed memory (constant byte offset -> the stored Yul value), per assembly block. This
+// is not EVM linear memory: it models the common keccak/abi scratch pattern (mstore at constant offsets, then
+// keccak over a constant region). The stored value is re-lowered at each read, which is correct as long as it
+// is not mutated between the mstore and the read (the usual store-then-hash shape).
+const memory = new Map<bigint, YulExpressionNode>();
+
+// keccak256(p, len): hash the constant region [p, p+len) = the words at p, p+32, ... concatenated. Each word is
+// rendered as bytes32 (no-op for a bytes32 value, big-endian for an int) before concatenation.
+function lowerKeccak(call: YulFunctionCallNode): ExpressionNode {
+  const [pArg, lenArg] = call.args;
+  if (!isIntLiteral(pArg) || !isIntLiteral(lenArg)) throw new YulNotLowerable();
+  const p = BigInt(pArg.raw);
+  const len = BigInt(lenArg.raw);
+  if (len <= 0n || len % 32n !== 0n) throw new YulNotLowerable();
+  const words: ExpressionNode[] = [];
+  for (let off = p; off < p + len; off += 32n) {
+    const v = memory.get(off);
+    if (v === undefined) throw new YulNotLowerable(); // region not fully covered by mstore'd words
+    words.push(loc(new CastNode(BYTES32, lowerValue(v), false), call));
+  }
+  const concat = loc(new BytesConcatNode(words), call);
+  return loc(new FunctionCallNode(loc(new IdentifierNode('keccak256'), call), [concat]), call);
 }
 
 // Yul binary builtins -> solidc operators (value `a op b`).
@@ -159,6 +185,16 @@ function lowerCall(call: YulFunctionCallNode): ExpressionNode {
     }
     throw new YulNotLowerable();
   }
+  // mload(p) -> the word stored at that constant offset (compile-time memory model).
+  if (name === 'mload' && args.length === 1 && isIntLiteral(args[0])) {
+    const v = memory.get(BigInt(args[0].raw));
+    if (v !== undefined) return lowerValue(v);
+    throw new YulNotLowerable(); // uninitialized / dynamic offset
+  }
+  // keccak256(p, len) -> hash the constant memory region.
+  if (name === 'keccak256' && args.length === 2) {
+    return lowerKeccak(call);
+  }
   throw new YulNotLowerable();
 }
 
@@ -217,6 +253,11 @@ function lowerStatement(stmt: YulStatementNode): StatementNode {
           transientKeys.set(local, e.args[0]);
           return loc(new AssignNode(loc(new IdentifierNode(local), stmt), lowerValue(e.args[1])), stmt);
         }
+      }
+      // mstore(p, v): record the word in the compile-time memory model (no emitted statement).
+      if (e.name === 'mstore' && e.args.length === 2 && isIntLiteral(e.args[0])) {
+        memory.set(BigInt(e.args[0].raw), e.args[1]);
+        return loc(new BlockNode([]), stmt);
       }
     }
     throw new YulNotLowerable();
@@ -289,6 +330,7 @@ export default class LowerInlineAssembly extends AstTraversal {
   visitAssemblyStatement(node: AssemblyStatementNode): Node {
     if (!node.yulBlock) return node;
     transientKeys.clear();
+    memory.clear();
     try {
       const block = lowerBlock(node.yulBlock);
       // Hoist a zero-init declaration for each transient key used (tload may precede tstore in the block).

@@ -66,6 +66,13 @@ contract YulCheck() {
         assembly { tstore(3, v) a := tload(3) }
         require(a == expected);
     }
+
+    // memory scratch: mstore a word then mload it back.
+    function memRoundtrip(uint256 v, uint256 expected) {
+        uint256 a = 0;
+        assembly { mstore(0, v) a := mload(0) }
+        require(a == expected);
+    }
 }
 `;
 
@@ -121,5 +128,10 @@ describe('Yul inline assembly runtime correctness', () => {
   it('transient tstore/tload round-trips within one execution', async () => {
     await expect(spend('transientRoundtrip', [42n, 42n])).resolves.toBeDefined();
     await expect(spend('transientRoundtrip', [42n, 41n])).rejects.toThrow();
+  });
+
+  it('memory mstore/mload round-trips a word', async () => {
+    await expect(spend('memRoundtrip', [77n, 77n])).resolves.toBeDefined();
+    await expect(spend('memRoundtrip', [77n, 76n])).rejects.toThrow();
   });
 });

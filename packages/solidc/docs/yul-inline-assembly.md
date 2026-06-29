@@ -273,8 +273,16 @@ selector word (offset 0), non-aligned/dynamic offsets, non-int params, and `call
       `tload` may precede `tstore`, e.g. an inert reentrancy guard); byte-identical to an explicit local, and
       a stateless e2e round-trips it. No bench movement (EVMStorage needs packed slots; TransientStorage is
       multi-wall) - shipped for completeness.
-- [ ] Phase 5 - memory scratch. Constant-offset word buffer; `keccak256`/`return`/`revert` over a constant
-      region -> concat + builtin. Unblocks Hashes.sol.
+- [x] Phase 5 - memory scratch. DONE (`mstore`/`mload`/`keccak256`). A per-block compile-time word-addressed
+      map (constant offset -> stored Yul value): `mstore(p, v)` records (no emitted statement), `mload(p)`
+      re-lowers the stored value, `keccak256(p, len)` concatenates the covered words (each wrapped `bytes32`)
+      and applies the keccak builtin -> byte-identical to `keccak256(bytes.concat(bytes32(w0), ...))` and an
+      `mload` round-trip is byte-identical to a direct read (so it reuses the tested keccak/concat codegen).
+      Hashes.sol already compiled via the declaration-library path (counted in Phase 1), so no new bench, but
+      this is the real codegen and the base for the bytes-memory and call/create-decode phases. Limitation:
+      re-lowering assumes the stored value is not mutated between `mstore` and the read (the usual
+      store-then-hash shape); `mstore8`, dynamic/free-pointer offsets, and `return`/`revert` with data are
+      deferred.
 - [ ] Phase 6 - decode-routed calls + deploy. `call`/`staticcall`/`delegatecall` -> `ExternalCall` by
       decoding the constant in-region (`selector || args`); `create`/`create2` -> typed `new Contract`
       deploy. Needs the memory model (phase 5) and coordination with the arbitrary-calldata external-call

@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { compileString } from 'solidc';
 import { hexToBin, binToHex } from '@bitauth/libauth';
 import { encodePushdataValue } from '@solidcash/utils';
-import { Contract, TransactionBuilder, buildOpaqueLoopCallTransaction } from '../../src/index.js';
+import { Contract, TransactionBuilder } from '../../src/index.js';
 import { createTestProvider, verifyTransaction, createFeeFunder } from '../test-util.js';
 
 // Minimal isolation of the inline loop-indexed external dispatch (the MultiCall covenant): a stateless
@@ -122,7 +122,7 @@ describe('Inline loop-indexed external dispatch (MultiCall covenant)', () => {
     expect(tb.inputs.length).toBe(4);
   });
 
-  it('buildOpaqueLoopCallTransaction helper drives MultiCall in one call', async () => {
+  it('contract.multiCall({...}) - the loop dispatch as a direct fluent method', async () => {
     const art = compileString(MULTICALL_SRC, { solidityImportCompat: true });
     const provider = createTestProvider();
     const contract = new Contract(art, [], { provider });
@@ -137,17 +137,15 @@ describe('Inline loop-indexed external dispatch (MultiCall covenant)', () => {
     };
     const funder = await createFeeFunder(provider, 10000n);
 
-    const tb = buildOpaqueLoopCallTransaction({
-      provider,
-      contract,
-      functionName: 'multiCall',
+    // The opaque loop-dispatch function is exposed directly on the contract instance.
+    const tb = (contract as any).multiCall({
       callerUtxo,
       targets: [
         { utxo: t0, unlocker: trueUnlocker(), lockingBytecode: OP_TRUE, data: new Uint8Array([]), returnData: hexToBin('deadbeef') },
         { utxo: t1, unlocker: trueUnlocker(), lockingBytecode: OP_TRUE, data: new Uint8Array([]), returnData: hexToBin('cafe') },
       ],
       funder,
-    });
+    }) as TransactionBuilder;
     verifyTransaction(tb);
     expect(tb.inputs.length).toBe(4);
   });

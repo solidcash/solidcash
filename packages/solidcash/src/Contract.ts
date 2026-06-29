@@ -24,6 +24,8 @@ import {
 } from './utils.js';
 import SignatureTemplate from './SignatureTemplate.js';
 import { ParamsToTuple, AbiToFunctionMap } from './types/type-inference.js';
+import { buildOpaqueLoopCallTransaction, type BuildOpaqueLoopCallOptions } from './loop-call.js';
+import type { TransactionBuilder } from './TransactionBuilder.js';
 import semver from 'semver';
 
 export class Contract<
@@ -219,6 +221,23 @@ export class Contract<
     this.lockingBytecode = this.addressType === 'p2s' ? this.bytecode : binToHex(addressToLockScript(this.address));
     this.bytesize = calculateBytesize(contractBytecodeScript);
     this.opcount = countOpcodes(contractBytecodeScript);
+
+    // Expose opaque loop-dispatch functions (the MultiCall pattern) as direct fluent methods, so a caller can
+    // write `contract.multiCall({ callerUtxo, targets, funder })` instead of buildOpaqueLoopCallTransaction(...).
+    // Detected from the ABI: an external call with an opaque return over a calldata/param address array. Skipped
+    // when the name would shadow a built-in member.
+    for (const fn of artifact.abi) {
+      const isLoopDispatch = fn.externalCalls?.some(
+        (ec) => ec.opaqueReturn && ec.loopArrayVar && fn.inputs.some((inp) => inp.name === ec.loopArrayVar),
+      );
+      if (isLoopDispatch && !(fn.name in this)) {
+        (this as any)[fn.name] = (
+          opts: Omit<BuildOpaqueLoopCallOptions, 'provider' | 'contract' | 'functionName'>,
+        ): TransactionBuilder => buildOpaqueLoopCallTransaction({
+          provider: this.provider, contract: this, functionName: fn.name, ...opts,
+        });
+      }
+    }
   }
 
   get stateLayout(): StateLayout | undefined {

@@ -1,6 +1,6 @@
 import { binToHex } from '@bitauth/libauth';
 import { encodePushdataValue } from '@solidcash/utils';
-import { Contract } from './Contract.js';
+import type { Contract } from './Contract.js';
 import { TransactionBuilder } from './TransactionBuilder.js';
 import { NetworkProvider } from './network/index.js';
 import { Utxo, Unlocker } from './interfaces.js';

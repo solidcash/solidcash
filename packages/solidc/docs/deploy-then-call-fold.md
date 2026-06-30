@@ -71,21 +71,43 @@ assert at 9991-10019) must emit, per child data-NFT, the **post-`foo`** commitme
 - **Direct-setter fast path** (`this.field = param`): skip the subroutine; emit the parent's arg
   expression for that field directly. (Optimization; same observable result.)
 
-### 3. SDK - read the genesis back from the trace
+### 3. SDK - read the genesis back from the trace (DONE for `deployFrom`)
 
-Today the child genesis is static defaults (`StatefulContract.ts:1403`, `buildInitialStateCommitments`).
-Because the covenant pushes its expected commitment immediately before each `OP_EQUALVERIFY`, the SDK reads
-it straight out of the deploy probe rather than recomputing:
+The child genesis used to be static defaults (`StatefulContract.ts:1403`, `buildInitialStateCommitments`).
+Because the covenant pushes its expected commitment immediately before each `OP_EQUALVERIFY`, the SDK now
+reads it straight out of the deploy probe rather than recomputing:
 
-- extend `extractCommitmentsFromTrace` (`StatefulContract.ts:305-389`, value read at line 360) usage so the
-  child data-NFT output range is captured from the **parent's deploy probe** (the same probe `deployFrom`
-  already runs at `_deriveCommitments:1531`, child outputs passed as `extraOutputs`);
-- feed those extracted commitments into the child outputs (1517-1527 probe / 1647-1657 final tx) instead of
-  `buildInitialStateCommitments`. SDK reads exactly what the covenant computes => match by construction, no
-  double execution, works for any `foo` the covenant can run.
+- `_deriveCommitments` takes a `childDataNftCount` param and, after deriving the factory state, runs one
+  extra probe pass with the factory state correct (`runProbe(commitmentHexes)`) so the trace reaches the
+  child genesis verify (which sits after the factory-state + entry verifies). `extractCommitmentsFromTrace`
+  reads the expected commitment for the child data-NFT output range
+  (`{min: 1 + nfts + bhCoSpends + entryCount + 1, ...}`) and returns it as `childCommitments`.
+- `deployFrom` passes `childLayout.dataNftCount`, then uses `effectiveChildCommitments[i] =
+  derivedChildCommitments[i] ?? childCommitments[i]` for the final child outputs (1647-1657). A plain deploy
+  emits its defaults, so the trace value equals the static one; a folded deploy emits the post-call state.
+  SDK reads exactly what the covenant computes => match by construction, works for any `foo` the covenant runs.
+
+Limitation: a deploy function that **writes mapping entries** is unsupported in the fold path - the entry
+verify would abort before the child verify is reached, so the extra pass can't capture the child commitment.
 
 For the direct-`deploy()` path (`_deriveDeployCommitments:2130`), the analogous hook is a second probe after
 the constructor-convergence loop that re-runs with the child's `foo` unlocker (agent-identified, ~2199/2388).
+Not yet wired (only `deployFrom` is done).
+
+### Codegen gotcha: the folded field must be OP_PICK, not OP_ROLL
+
+The deploy covenant genesis loop (GTT:~10001) emits the folded field value with `this.visit(foldedExpr)`,
+where `foldedExpr` is the parent's arg node (e.g. a function parameter `c0`). Two things were required to
+make it execute:
+
+1. **Force OP_PICK** by bumping `this.scopeDepth` around the visit. The folded arg node is registered as the
+   variable's *final use* (the call that referenced it was folded away, so it is never emitted in the body),
+   so `visitIdentifier` would otherwise OP_ROLL it - consuming the param off the stack - while the
+   `this.stack = savedStack` restore puts it back in the model. That model/runtime drift makes every later
+   `OP_PICK`/`OP_ROLL` in the covenant read the wrong depth ("read from an empty stack").
+2. **Keep visit()'s tracked entry** (do *not* popFromStack). `emitPushdataEncode` consumes one tracked value,
+   and a subsequent folded field's pick depth must account for this field's runtime push. The final
+   `savedStack` restore discards the accumulation.
 
 ## Multi-data-NFT caveat (fix as part of this)
 
@@ -114,7 +136,11 @@ targeted multi-NFT deploy test to pin parity before/while building the fold.
   fires for non-foldable and for the previously-unsound case; foldable case is detected (no external call
   collected).
 - **P2:** multi-NFT commitment-tag parity fix + test.
-- **P3 (codegen):** the state-transition subroutine in the deploy covenant; SDK trace-extraction of the
-  child genesis. e2e: child lands configured in one tx; wrong folded genesis rejected on-chain.
-- **P4:** direct-setter fast path; `deploy()`-path second probe; broaden foldable surface; docs in
-  external-contract-calls.md / modifiers.md.
+- **P3 (codegen) - DONE for direct setters:** deploy covenant emits the post-call field values (folded
+  arg via OP_PICK); SDK trace-extraction of the child genesis (`deployFrom`). e2e
+  (`DeployThenCallFold.e2e.test.ts`): a two-field direct setter folds and the child lands configured in one
+  tx - the covenant runs on `send()`, so success proves it accepted the SDK-supplied post-call genesis.
+- **P4 (open):** generalize beyond direct setters (a state-transition subroutine for any covenant-runnable
+  `foo`); folded deploy + mapping-entry writes; multi-data-NFT commitment-tag parity (P2 above); the
+  direct-`deploy()`-path second probe; broaden foldable surface; docs in external-contract-calls.md /
+  modifiers.md.

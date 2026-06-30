@@ -571,15 +571,15 @@ const RESERVED_NAMES = new Set([
 
 export type ConnectedStatefulContract<T extends Artifact = Artifact> =
   StatefulContract<T>
-  & AbiToFunctionMap<T['abi'], StatefulFunctionCall>
-  & Omit<StateGetterMap<T>, keyof AbiToFunctionMap<T['abi'], StatefulFunctionCall>>;
+  & AbiToFunctionMap<T['abi'], StatefulFunctionCall, DeployFunctionCall>
+  & Omit<StateGetterMap<T>, keyof AbiToFunctionMap<T['abi'], StatefulFunctionCall, DeployFunctionCall>>;
 
 export class StatefulContract<TArtifact extends Artifact = Artifact> {
   readonly inner: Contract<TArtifact>;
   readonly categoryId: string;
 
   readonly state: StateGetterMap<TArtifact>;
-  readonly call: AbiToFunctionMap<TArtifact['abi'], StatefulFunctionCall>;
+  readonly call: AbiToFunctionMap<TArtifact['abi'], StatefulFunctionCall, DeployFunctionCall>;
   readonly functions: AbiToFunctionMap<TArtifact['abi'], Promise<StatefulTransactionBuilder>>;
   readonly tokens: { [tokenContainerCategoryIdHex: string]: TokenContainerAccessor };
 
@@ -785,7 +785,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const stateVarNames = new Set(contract.stateLayout.variables.map((v) => v.name));
 
     // Build call namespace (returns StatefulFunctionCall)
-    this.call = {} as AbiToFunctionMap<TArtifact['abi'], StatefulFunctionCall>;
+    this.call = {} as AbiToFunctionMap<TArtifact['abi'], StatefulFunctionCall, DeployFunctionCall>;
     for (const abiFunction of contract.artifact.abi) {
       // A deploy-modifier function returns a thenable DeployFunctionCall: `await factory.deployFn(...args)`
       // funds + runs the deploy via the connected signer (no normal builder is eagerly created for it).
@@ -2813,7 +2813,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
   private async _deriveCommitments(
     functionName: string,
     args: any[],
-    requiredNftIndices: number[],
+    requiredNftIndices: readonly number[],
     extraOutputs?: Array<{ to: string | Uint8Array; amount: bigint; token?: any }>,
     extraInputs?: Array<{ utxo: Utxo; unlocker: Unlocker }>,
     entryOutputCount: number = 0,
@@ -3008,7 +3008,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         }
 
         return {
-          state: commitmentsToState(commitmentHexes, stateLayout, requiredNftIndices),
+          state: commitmentsToState(commitmentHexes, stateLayout, [...requiredNftIndices]),
           entryCommitments,
           childCommitments,
         };
@@ -3039,7 +3039,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
    */
   private async _deriveFullTransactionState(
     stb: StatefulTransactionBuilder,
-    requiredNftIndices: number[],
+    requiredNftIndices: readonly number[],
     externalCallUtxoGroups: ExternalCallUtxoGroup[],
     externalCalls: readonly { hasReturnValues?: boolean; requiredDataNftIndices: number[] }[],
     entryAccesses?: readonly EntryAccessAbi[],
@@ -5180,7 +5180,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       dataNftUtxos: unlockableDataNfts,
       stateLayout,
       categoryId: this.categoryId,
-      requiredNftIndices,
+      requiredNftIndices: [...requiredNftIndices],
       entryNfts,
       entryAccesses,
       entryNftLockingBytecodes,

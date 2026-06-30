@@ -144,7 +144,7 @@ export class StatefulTransactionBuilder {
   private masterUtxo: UnlockableUtxo;
   private dataNftUtxos: UnlockableUtxo[];
   private categoryId: string;
-  private requiredNftIndices: number[];
+  private requiredNftIndices: readonly number[];
   private stateUpdates: Map<
   string, StateValue
   > = new Map();

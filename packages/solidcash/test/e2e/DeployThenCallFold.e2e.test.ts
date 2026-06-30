@@ -2,69 +2,34 @@ import { compileString } from 'solidc';
 import { hexToBin, binToHex } from '@bitauth/libauth';
 import { ResolvedImport, parsePushdataCommitment } from '@solidcash/utils';
 import {
-  Contract, SignatureTemplate, StatefulContract, DeployFunctionCall, Signer,
+  Contract, SignatureTemplate, StatefulContract, Signer,
 } from '../../src/index.js';
+import type { ConnectedStatefulContract } from '../../src/index.js';
 import {
   alicePriv, alicePub, alicePkh, bobPkh,
 } from '../fixture/vars.js';
 import { createTestProvider, getTxOutputs } from '../test-util.js';
 import { Utxo } from '../../src/interfaces.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
+import foldChildArtifact from '../fixture/fold_child.artifact.js';
+import foldFactoryArtifact from '../fixture/fold_factory.artifact.js';
 
 // A same-tx `child.configure(args)` on a freshly-deployed local is folded into the deploy genesis: the
 // child is born already-configured in ONE transaction, with no co-spend. The covenant computes the
 // post-configure genesis on-chain; the SDK reads it from the deploy probe trace (no childInitialState).
 // See docs/deploy-then-call-fold.md.
 
-const childSource = `
-  contract FoldChild(bytes20 owner) {
-    int counter;
-    bytes20 admin;
-
-    function configure(int c, bytes20 a) {
-      this.counter = c;
-      this.admin = a;
-      require(true);
-    }
-  }
-`;
-
-const factorySource = `
-  import "./fold_child.scash";
-  contract FoldFactory(pubkey factoryOwner) {
-    int deployCount;
-
-    function deployConfigured(sig s, bytes20 childOwner, int c0, bytes20 a0) deploy {
-      require(checkSig(s, factoryOwner));
-      FoldChild child = new FoldChild(childOwner);
-      child.configure(c0, a0);
-      this.deployCount = this.deployCount + 1;
-    }
-  }
-`;
-
-function createMapResolver(files: Record<string, string>) {
-  return (importPath: string, currentFile: string): ResolvedImport | undefined => {
-    const dir = currentFile.substring(0, currentFile.lastIndexOf('/') + 1);
-    let resolved = dir + importPath.replace('./', '');
-    if (!resolved.endsWith('.scash')) resolved += '.scash';
-    const source = files[resolved];
-    if (source === undefined) return undefined;
-    return { source, id: resolved };
-  };
-}
-
+// FoldChild / FoldFactory are compiled to typed `.ts` artifacts (test/fixture/fold_{child,factory}.artifact.ts,
+// `as const`) so that `factory.deployConfigured(...)` is typed - a deploy-modifier function maps to a thenable
+// DeployFunctionCall - with no cast. The contract sources are embedded in the artifacts' `source` field.
 describe('deploy-then-call fold (deployFrom e2e)', () => {
-  const childArtifact = compileString(childSource);
-  const factoryArtifact = compileString(factorySource, {
-    importResolver: createMapResolver({ '/fold_child.scash': childSource }),
-    rootFileId: '/main.scash',
-  });
+  const childArtifact = foldChildArtifact;
+  const factoryArtifact = foldFactoryArtifact;
 
   const provider = createTestProvider();
   const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
 
-  let factory: Awaited<ReturnType<typeof StatefulContract.deploy>>['contract'];
+  let factory: ConnectedStatefulContract<typeof factoryArtifact>;
 
   it('the configure call is folded into the deploy genesis (no co-spend external call)', () => {
     const make = factoryArtifact.abi.find((f) => f.name === 'deployConfigured')!;
@@ -93,16 +58,15 @@ describe('deploy-then-call fold (deployFrom e2e)', () => {
     const c0 = 42n;
     // Full ethers-style flow: a connected signer encapsulates funding (it picks a genesis-valid vout-0 UTXO
     // from its address), spending and change; the child artifact is registered and its constructor args
-    // (new FoldChild(childOwner) -> the childOwner deploy arg) are derived. So the deploy is a single terminal
-    // call - await factory.deployConfigured(...). Its funding UTXO txid becomes the child category, so the
-    // child address derives forward. (A real generated artifact types the method name; compileString returns a
-    // generic Artifact, hence the cast.)
+    // (new FoldChild(childOwner) -> the childOwner deploy arg) are derived. So the deploy is a single terminal,
+    // TYPED call - `await signed.deployConfigured(...)` - no cast, since the typed artifact maps the
+    // deploy-modifier function to a thenable DeployFunctionCall. Its funding UTXO txid becomes the child
+    // category, so the child address derives forward.
     const signer = new Signer(alicePriv, provider);
     const fundingUtxo: Utxo = { txid: 'fb2d'.repeat(16), vout: 0, satoshis: 50000n };
     await provider.addUtxo(signer.getAddress(), fundingUtxo);
 
-    factory.registerChild(childArtifact);
-    const signed = factory.connect(signer) as unknown as Record<string, (...a: unknown[]) => DeployFunctionCall>;
+    const signed = factory.registerChild(childArtifact).connect(signer);
     const result = await signed.deployConfigured(new SignatureTemplate(alicePriv), alicePkh, c0, bobPkh);
 
     // send() ran the deploy covenant: a successful tx means the covenant accepted the SDK-supplied
@@ -367,7 +331,7 @@ describe('multi-data-NFT child deploy (nftIndex tag parity)', () => {
   const plainFactoryArtifact = compileString(plainMultiFactorySource, {
     importResolver: multiResolver, rootFileId: '/main.scash',
   });
-  const foldFactoryArtifact = compileString(foldMultiFactorySource, {
+  const multiFactoryArtifact = compileString(foldMultiFactorySource, {
     importResolver: multiResolver, rootFileId: '/main.scash',
   });
 
@@ -425,7 +389,7 @@ describe('multi-data-NFT child deploy (nftIndex tag parity)', () => {
 
     const factoryFunding: Utxo = { txid: 'cc1d'.repeat(16), vout: 0, satoshis: 200000n };
     await provider.addUtxo(p2pkh.address, factoryFunding);
-    const { contract: factory } = await StatefulContract.deploy(foldFactoryArtifact, [alicePub], {
+    const { contract: factory } = await StatefulContract.deploy(multiFactoryArtifact, [alicePub], {
       provider,
       fundingUtxo: factoryFunding,
       funder: p2pkh.unlock.spend(alicePub, new SignatureTemplate(alicePriv)),

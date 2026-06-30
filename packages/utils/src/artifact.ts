@@ -102,7 +102,7 @@ export interface BlockLayoutSlot {
 /** 1:1 input/output block layout for a stateful function. */
 export interface FunctionBlockLayout {
   blockSize: number;         // total number of slots in this contract's block
-  slots: BlockLayoutSlot[];
+  slots: readonly BlockLayoutSlot[];
 }
 
 export interface AbiFunction {
@@ -111,7 +111,7 @@ export interface AbiFunction {
   inputs: readonly AbiInput[];
   outputs?: readonly AbiOutput[];       // return types (omitted for void functions)
   modifiers?: readonly string[];        // function modifiers (omitted if default external)
-  requiredNftIndices?: number[];  // sorted NFT indices this function accesses (absent = all)
+  requiredNftIndices?: readonly number[];  // sorted NFT indices this function accesses (absent = all)
   entryAccesses?: readonly EntryAccessAbi[];
   externalReads?: readonly ExternalReadAbi[];
   externalCalls?: readonly ExternalCallAbi[];

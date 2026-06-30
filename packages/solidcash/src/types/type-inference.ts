@@ -45,9 +45,22 @@ export type ParamsToTuple<Params> = Params extends readonly [infer Head, ...infe
 // Branches:
 // - Branch 1: If `Function` is an object with `name` and `inputs`, it creates a function mapping.
 // - Branch 2: If `Function` does not match the expected shape, it returns an empty object.
-type ProcessFunction<Function, ReturnType> = Function extends { name: string; inputs: readonly any[] }
+// Pick the deploy-aware return type: a function whose `modifiers` LITERALLY include 'deploy' returns
+// DeployReturnType; everything else - including a generic `readonly string[]` modifiers (e.g. from a
+// non-`as const` artifact) or no modifiers at all - returns ReturnType.
+type DeployAwareReturn<Function, ReturnType, DeployReturnType> =
+  Function extends { modifiers: readonly string[] }
+    ? string extends Function['modifiers'][number]
+      ? ReturnType
+      : 'deploy' extends Function['modifiers'][number]
+        ? DeployReturnType
+        : ReturnType
+    : ReturnType;
+
+type ProcessFunction<Function, ReturnType, DeployReturnType> = Function extends { name: string; inputs: readonly any[] }
   ? {
-    [functionName in Function['name']]: (...functionParameters: ParamsToTuple<Function['inputs']>) => ReturnType;
+    [functionName in Function['name']]:
+    (...functionParameters: ParamsToTuple<Function['inputs']>) => DeployAwareReturn<Function, ReturnType, DeployReturnType>;
   }
   : {};
 
@@ -63,12 +76,12 @@ type ProcessFunction<Function, ReturnType> = Function extends { name: string; in
 // - Branch 2: If `Abi` is a tuple with a `Head`, process `Head` using `ProcessFunction` and recurse on the `Tail`.
 // - Branch 3: If `Abi` is an empty tuple, return an empty object.
 // - Branch 4: If `Abi` is not an array or tuple, return a generic function map.
-type InternalAbiToFunctionMap<Abi, ReturnType> =
+type InternalAbiToFunctionMap<Abi, ReturnType, DeployReturnType> =
   // Check if Abi is typed as `any`, in which case we return a default function map
   unknown extends Abi
     ? GenericFunctionMap<ReturnType>
     : Abi extends readonly [infer Head, ...infer Tail]
-      ? ProcessFunction<Head, ReturnType> & InternalAbiToFunctionMap<Tail, ReturnType>
+      ? ProcessFunction<Head, ReturnType, DeployReturnType> & InternalAbiToFunctionMap<Tail, ReturnType, DeployReturnType>
       : Abi extends readonly []
         ? {}
         : GenericFunctionMap<ReturnType>;
@@ -79,4 +92,5 @@ type GenericFunctionMap<ReturnType> = { [functionName: string]: (...functionPara
 // Example: {foo: "foo"} & {bar: "bar"} -> {foo: "foo", bar: "bar"}
 type Prettify<T> = { [K in keyof T]: T[K] } & {};
 
-export type AbiToFunctionMap<T, ReturnType> = Prettify<InternalAbiToFunctionMap<T, ReturnType>>;
+export type AbiToFunctionMap<T, ReturnType, DeployReturnType = ReturnType> =
+  Prettify<InternalAbiToFunctionMap<T, ReturnType, DeployReturnType>>;

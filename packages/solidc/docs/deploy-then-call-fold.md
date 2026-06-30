@@ -99,11 +99,27 @@ reads it straight out of the deploy probe rather than recomputing:
 Limitation: a deploy function that **writes mapping entries** is unsupported in the fold path - the entry
 verify would abort before the child verify is reached, so the extra pass can't capture the child commitment.
 
-**Ergonomic sugar.** `StatefulFunctionCall.deploy(options)` lets a deploy be written as a method on the
-factory: `await factory.deployFn(...args).deploy({ childArtifact, childConstructorArgs, fundingUtxo, funder,
-changeAddress })`. The provider, factory, deploy-function name and args come from the call; `DeployFromCallOptions`
-is `DeployFromOptions` minus those four. It forwards to `StatefulContract.deployFrom` (which still validates
-the `deploy` modifier). A generated `.ts` artifact types the method name; `compileString`'s generic `Artifact`
+**Ergonomic sugar + context resolution.** `StatefulFunctionCall.deploy(options)` lets a deploy be written as
+a method on the factory; `DeployFromCallOptions` is `DeployFromOptions` minus the four call-derived fields
+(provider, factory, deploy-function name, args). On top of that, `deployFrom` resolves the rest from context,
+so after a one-time setup a deploy is just the function args + the per-deploy funding UTXO:
+
+```
+factory.registerChild(childArtifact);                       // child artifact by contract name
+factory.setDeployDefaults({ funder, changeAddress });       // funding context
+await factory.deployConfigured(sig, owner, c0, a0).deploy({ fundingUtxo });
+```
+
+- **childArtifact**: explicit option, else the registered artifact for the deploy target's `contractName`.
+- **childConstructorArgs**: explicit, else derived from the compiler-recorded `new C(param)` mapping
+  (`deployTargets[].constructorArgs`: the deploy-parameter name per child ctor arg, null for a non-trivial
+  expression) applied to the deploy args. The child category is the funding UTXO's txid (vout 0), so the
+  child address derives forward from (artifact, ctor args, category) - no trace reverse-derivation (a p2sh
+  hashes the redeem script, so the args are not recoverable from the trace anyway).
+- **funder / changeAddress**: explicit, else `factory.setDeployDefaults(...)`.
+
+Falls back to requiring explicit values when the mapping is absent (old artifact) or a ctor arg is a
+non-trivial expression. A generated `.ts` artifact types the method name; `compileString`'s generic `Artifact`
 needs a cast.
 
 For the direct-`deploy()` path (`_deriveDeployCommitments:2130`), the analogous hook is a second probe after

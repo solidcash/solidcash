@@ -48,13 +48,15 @@ covenant-verified (no SDK-trusted genesis).
 - Keep keying on *deploy-result local*, not merely `interfaceName` - the legitimate `IC token` param /
   `IC(addr)` external-call patterns share the same `AddressType.interfaceName` routing and must keep working.
 
-**Foldability** (a `foo` is foldable iff it is a pure `(state, args) -> state` transition):
-- Allowed: reads/writes of `this.<field>`, pure computation, local variables, control flow (if/loops),
-  calls to other foldable functions of the same contract.
-- Forbidden (-> diagnostic): `tx.*` introspection, `msg.sender`/`msg.value`, external calls, `emit`,
-  `blockhash`/block.*, `new`/`deploy`, `selfdestruct`, `require` on tx context. Determined by scanning the
-  resolved `foo` body for these constructs (reuse the collectors that already gate `usesMsgSender`,
-  `externalCalls`, `deployTargets`, blockhash reads, etc.).
+**Foldability.** The eventual target is any pure `(state, args) -> state` transition. **Implemented today**
+(`tryFoldDeployCall`): a `foo` whose body is a set of `this.<field> = <expr>` assignments (plus an optional
+trailing `require`), where each RHS is **pure over `foo`'s params + literals** - arithmetic, comparison,
+bitwise, cast, ternary (`isPureFoldableExpr`). Each RHS is cloned and has `foo`'s params substituted by the
+caller's arg expressions, so the covenant computes it in the parent's context on the child's default state.
+- Not yet foldable (-> `DeployThenCallError`): state reads (`this.counter + 1`), local variables, contract
+  constants, function calls, control flow; and the always-forbidden `tx.*`, `msg.sender`/`msg.value`,
+  external calls, `emit`, `blockhash`/block.*, `new`/`deploy`, `selfdestruct`. Extending to state reads
+  (default-substituted) + locals + control flow is the remaining "general `foo`" work below.
 
 ### 2. Codegen - covenant verifies the post-`foo` genesis
 
@@ -152,10 +154,13 @@ child spanning 2 data NFTs deploys both plain (tagged defaults) and folded (conf
   collected).
 - **P2 - DONE:** multi-data-NFT child deploys (stale count recompute + genesis nftIndex tag + OP_CAT model
   + SDK iterative child extraction) + plain & folded multi-NFT e2e. See "Multi-data-NFT child deploys" above.
-- **P3 (codegen) - DONE for direct setters:** deploy covenant emits the post-call field values (folded
-  arg via OP_PICK); SDK trace-extraction of the child genesis (`deployFrom`). e2e
-  (`DeployThenCallFold.e2e.test.ts`): a two-field direct setter folds and the child lands configured in one
-  tx - the covenant runs on `send()`, so success proves it accepted the SDK-supplied post-call genesis.
-- **P4 (open):** generalize beyond direct setters (a state-transition subroutine for any covenant-runnable
-  `foo`); folded deploy + factory mapping-entry writes; the direct-`deploy()`-path second probe; broaden
-  foldable surface; docs in external-contract-calls.md / modifiers.md.
+- **P3 (codegen) - DONE for setters computed from params:** deploy covenant emits the post-call field
+  values (folded expr via OP_PICK leaves); SDK trace-extraction of the child genesis (`deployFrom`). Each
+  field's RHS may be any expression pure over the callee's params + literals (arithmetic / cast / ternary),
+  not just a bare param. e2e (`DeployThenCallFold.e2e.test.ts`): direct setters, a computed callee
+  (`total=sup*2`, `half=amt/2+1`, evaluated on-chain), and multi-NFT - all land configured in one tx; the
+  covenant runs on `send()`, so success proves it accepted the SDK-supplied post-call genesis.
+- **P4 (open):** broaden foldability further - state reads (default-substituted), local variables, control
+  flow (a true state-transition subroutine for any covenant-runnable `foo`); folded deploy + factory
+  mapping-entry writes; the direct-`deploy()`-path second probe; docs in external-contract-calls.md /
+  modifiers.md.

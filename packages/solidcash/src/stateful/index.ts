@@ -12,6 +12,7 @@ export {
 export {
   StatefulContract,
   StatefulFunctionCall,
+  DeployFunctionCall,
   TokenContainerAccessor,
   type ConnectedStatefulContract,
   type DeployOptions,

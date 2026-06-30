@@ -683,6 +683,60 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     return this._deployDefaults;
   }
 
+  /**
+   * Execute a deploy-modifier function: resolve the child + funding and run deployFrom. Powers the thenable
+   * `await factory.deployFn(...args)` (funded by the connected signer) and the explicit
+   * `factory.deployFn(...args).deploy({ fundingUtxo, ... })`. With no explicit fundingUtxo it picks a
+   * genesis-valid UTXO from the signer and uses the signer's p2pkh unlocker + address for funder + change.
+   */
+  async _deployFromSigner<T extends Artifact>(
+    functionName: string,
+    args: FunctionArgument[],
+    override: DeployFromCallOptions<T> = {} as DeployFromCallOptions<T>,
+  ): Promise<DeployFromResult<T>> {
+    const base = {
+      provider: this.provider,
+      factory: this as unknown as ConnectedStatefulContract,
+      deployFunctionName: functionName,
+      deployFunctionArgs: args,
+    };
+    if (override.fundingUtxo) {
+      return StatefulContract.deployFrom({ ...base, ...override });
+    }
+    if (!this._signer) {
+      throw new Error(
+        `Deploying '${functionName}' needs a funding UTXO or a signer: connect(signer) then `
+        + `await factory.${functionName}(...), or pass .deploy({ fundingUtxo, funder, changeAddress }).`,
+      );
+    }
+    const fundingUtxo = await this._selectGenesisFundingUtxo(functionName);
+    return StatefulContract.deployFrom({
+      ...base,
+      ...(override as Omit<DeployFromCallOptions<T>, 'fundingUtxo'>), // fundingUtxo is unset in this branch
+      fundingUtxo,
+      funder: override.funder ?? this._signer.unlockP2PKH(),
+      changeAddress: override.changeAddress ?? this._signer.getAddress(),
+    });
+  }
+
+  /** Pick a genesis-valid (vout 0, token-free) funding UTXO from the signer with enough satoshis to deploy. */
+  private async _selectGenesisFundingUtxo(functionName: string): Promise<Utxo> {
+    const signer = this._signer!;
+    const utxos = await signer.getUtxos();
+    const target = this.inner.artifact.abi.find((f) => f.name === functionName)?.deployTargets?.[0];
+    const childArt = target ? this._getChild(target.contractName) : undefined;
+    const dataNfts = BigInt(childArt?.stateLayout?.dataNftCount ?? target?.dataNftCount ?? 1);
+    const cost = 1200n + 1200n * dataNfts + 5000n + 2400n; // master + data NFTs + fee + entry buffer
+    const utxo = utxos.find((u) => u.vout === 0 && !u.token && u.satoshis >= cost);
+    if (!utxo) {
+      throw new Error(
+        `Signer has no genesis-valid funding UTXO (vout 0, token-free, >= ${cost} sats) at `
+        + `${signer.getAddress()} to deploy '${functionName}'. A token genesis requires a fresh vout-0 UTXO.`,
+      );
+    }
+    return utxo;
+  }
+
   /** Bound signer for automatic transaction funding. Set via `connect(signer)`. */
   _signer?: Signer;
 
@@ -733,10 +787,16 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // Build call namespace (returns StatefulFunctionCall)
     this.call = {} as AbiToFunctionMap<TArtifact['abi'], StatefulFunctionCall>;
     for (const abiFunction of contract.artifact.abi) {
-      const caller = (...args: any[]): StatefulFunctionCall => new StatefulFunctionCall(
-        this._createBuilder(abiFunction.name, args),
-        this as StatefulContract, abiFunction.name, args,
-      );
+      // A deploy-modifier function returns a thenable DeployFunctionCall: `await factory.deployFn(...args)`
+      // funds + runs the deploy via the connected signer (no normal builder is eagerly created for it).
+      const caller = abiFunction.modifiers?.includes('deploy')
+        ? (...args: any[]): DeployFunctionCall => new DeployFunctionCall(
+          this as StatefulContract, abiFunction.name, args as FunctionArgument[],
+        )
+        : (...args: any[]): StatefulFunctionCall => new StatefulFunctionCall(
+          this._createBuilder(abiFunction.name, args),
+          this as StatefulContract, abiFunction.name, args,
+        );
 
       // @ts-ignore - dynamic property assignment
       this.call[abiFunction.name] = caller;
@@ -839,6 +899,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     for (const [name, lib] of this._libraryRegistry) {
       (sc as StatefulContract)._libraryRegistry.set(name, lib);
     }
+    for (const [name, art] of this._childRegistry) {
+      (sc as StatefulContract)._childRegistry.set(name, art);
+    }
+    (sc as StatefulContract)._deployDefaults = { ...this._deployDefaults };
     (sc as StatefulContract)._signer = signer;
     return sc;
   }
@@ -5995,6 +6059,36 @@ function assertDelegateLayoutCompatible(
   }
 }
 
+/**
+ * A pending deploy-modifier function call, returned by `factory.deployFn(...args)`. Thenable, so
+ * `await factory.deployFn(...args)` funds the deploy via the factory's connected signer and runs it
+ * (ethers-style). For explicit control (no signer, or a specific funding UTXO) use
+ * `.deploy({ fundingUtxo, funder, changeAddress, ... })`. childArtifact / childConstructorArgs are resolved
+ * from the factory's child registry + the recorded new-C(...) mapping; see deployFrom.
+ */
+export class DeployFunctionCall {
+  constructor(
+    private factory: StatefulContract,
+    private functionName: string,
+    private args: FunctionArgument[],
+  ) {}
+
+  /** Explicit deploy with child/funding overrides (e.g. an explicit fundingUtxo when there is no signer). */
+  deploy<T extends Artifact>(
+    options: DeployFromCallOptions<T> = {} as DeployFromCallOptions<T>,
+  ): Promise<DeployFromResult<T>> {
+    return this.factory._deployFromSigner(this.functionName, this.args, options);
+  }
+
+  // Thenable: awaiting the call funds + runs the deploy via the signer.
+  then<R1 = DeployFromResult, R2 = never>(
+    onFulfilled?: ((value: DeployFromResult) => R1 | PromiseLike<R1>) | null,
+    onRejected?: ((reason: unknown) => R2 | PromiseLike<R2>) | null,
+  ): Promise<R1 | R2> {
+    return this.factory._deployFromSigner(this.functionName, this.args).then(onFulfilled, onRejected);
+  }
+}
+
 export class StatefulFunctionCall {
   private builderPromise: Promise<StatefulTransactionBuilder>;
   private parentContract?: StatefulContract;
@@ -6054,22 +6148,6 @@ export class StatefulFunctionCall {
     this.parentContract = parentContract;
     this.functionName = functionName;
     this.functionArgs = functionArgs;
-  }
-
-  // Sugar for a deploy-modifier function: `factory.deployFn(...args).deploy({ childArtifact, ... })`. The
-  // provider, factory, deploy-function name and args come from this call; only the child + funding remain.
-  // Throws (via deployFrom) if the called function does not have the 'deploy' modifier.
-  deploy<T extends Artifact>(options: DeployFromCallOptions<T>): Promise<DeployFromResult<T>> {
-    if (!this.parentContract || !this.functionName) {
-      throw new Error('.deploy() must be called on a stateful contract function (factory.deployFn(...).deploy()).');
-    }
-    return StatefulContract.deployFrom({
-      provider: this.parentContract.provider,
-      factory: this.parentContract as unknown as ConnectedStatefulContract,
-      deployFunctionName: this.functionName,
-      deployFunctionArgs: (this.functionArgs ?? []) as FunctionArgument[],
-      ...options,
-    });
   }
 
   setState(name: string, value: StateValueType): this;

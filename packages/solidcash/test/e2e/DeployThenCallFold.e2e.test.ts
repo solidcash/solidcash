@@ -2,7 +2,7 @@ import { compileString } from 'solidc';
 import { hexToBin, binToHex } from '@bitauth/libauth';
 import { ResolvedImport, parsePushdataCommitment } from '@solidcash/utils';
 import {
-  Contract, SignatureTemplate, StatefulContract, StatefulFunctionCall,
+  Contract, SignatureTemplate, StatefulContract, DeployFunctionCall, Signer,
 } from '../../src/index.js';
 import {
   alicePriv, alicePub, alicePkh, bobPkh,
@@ -90,24 +90,20 @@ describe('deploy-then-call fold (deployFrom e2e)', () => {
   });
 
   it('deploys the child already-configured in one tx (counter=c0, admin=a0)', async () => {
-    const fundingUtxo: Utxo = { txid: 'fb2d'.repeat(16), vout: 0, satoshis: 50000n };
-    await provider.addUtxo(p2pkh.address, fundingUtxo);
-
     const c0 = 42n;
-    // Fully reduced call: register the child artifact + set deploy defaults once, and the child artifact, its
-    // constructor args (new FoldChild(childOwner) -> the childOwner deploy arg, derived via the recorded
-    // mapping), funder and changeAddress are all resolved. Only the per-deploy funding UTXO remains - its txid
-    // (vout 0) becomes the child category, so the child address derives forward with no extra input.
-    // (A real generated artifact types the method name; compileString returns a generic Artifact, hence the cast.)
+    // Full ethers-style flow: a connected signer encapsulates funding (it picks a genesis-valid vout-0 UTXO
+    // from its address), spending and change; the child artifact is registered and its constructor args
+    // (new FoldChild(childOwner) -> the childOwner deploy arg) are derived. So the deploy is a single terminal
+    // call - await factory.deployConfigured(...). Its funding UTXO txid becomes the child category, so the
+    // child address derives forward. (A real generated artifact types the method name; compileString returns a
+    // generic Artifact, hence the cast.)
+    const signer = new Signer(alicePriv, provider);
+    const fundingUtxo: Utxo = { txid: 'fb2d'.repeat(16), vout: 0, satoshis: 50000n };
+    await provider.addUtxo(signer.getAddress(), fundingUtxo);
+
     factory.registerChild(childArtifact);
-    factory.setDeployDefaults({
-      funder: p2pkh.unlock.spend(alicePub, new SignatureTemplate(alicePriv)),
-      changeAddress: p2pkh.address,
-    });
-    const sugarFactory = factory as unknown as Record<string, (...a: unknown[]) => StatefulFunctionCall>;
-    const result = await sugarFactory
-      .deployConfigured(new SignatureTemplate(alicePriv), alicePkh, c0, bobPkh)
-      .deploy({ fundingUtxo });
+    const signed = factory.connect(signer) as unknown as Record<string, (...a: unknown[]) => DeployFunctionCall>;
+    const result = await signed.deployConfigured(new SignatureTemplate(alicePriv), alicePkh, c0, bobPkh);
 
     // send() ran the deploy covenant: a successful tx means the covenant accepted the SDK-supplied
     // post-configure child genesis. (A wrong genesis - e.g. default counter=0 - would fail the covenant.)

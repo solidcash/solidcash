@@ -17,8 +17,9 @@ import {
   scriptToBytecode,
 } from '@solidcash/utils';
 import { encodeFunctionArgument, FunctionArgument } from '../Argument.js';
-import { AddressType, ContractUnlocker } from '../interfaces.js';
+import { AddressType, ContractUnlocker, Utxo } from '../interfaces.js';
 import { Contract } from '../Contract.js';
+import type NetworkProvider from '../network/NetworkProvider.js';
 import { createUnlockingBytecode, scriptToAddress, scriptToLockingBytecode } from '../utils.js';
 import { StateReader, OnChainState } from './StateReader.js';
 
@@ -32,6 +33,30 @@ export function validateMasterInputIndex(index: number): void {
   if (!Number.isInteger(index) || index < 0) {
     throw new Error(`Invalid masterInputIndex: expected a non-negative integer, got ${index}`);
   }
+}
+
+function categoryOf(utxos: Utxo[], where: string): string {
+  const tokenUtxo = utxos.find((u) => u.token?.category);
+  if (!tokenUtxo) {
+    throw new Error(`No token UTXO at ${where} - cannot resolve the contract category (is it deployed?).`);
+  }
+  return tokenUtxo.token!.category;
+}
+
+/**
+ * Resolve a stateful contract's token category straight from the indexer: the UTXOs at its address carry
+ * `token: { category }`, so a deployed instance's category needs no SDK-side registry (see
+ * docs/multi-contract-artifacts.md s13). Throws if there is no token UTXO (not deployed / fully spent).
+ */
+export async function resolveCategoryFromAddress(provider: NetworkProvider, address: string): Promise<string> {
+  return categoryOf(await provider.getUtxos(address), `address ${address}`);
+}
+
+/** As resolveCategoryFromAddress, but keyed by locking bytecode (e.g. a co-spend target's baked address arg). */
+export async function resolveCategoryFromLockingBytecode(
+  provider: NetworkProvider, lockingBytecode: Uint8Array,
+): Promise<string> {
+  return categoryOf(await provider.getUtxosForLockingBytecode(lockingBytecode), 'the given locking bytecode');
 }
 
 /**

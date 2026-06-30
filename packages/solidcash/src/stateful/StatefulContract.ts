@@ -61,7 +61,7 @@ import {
   createDynamicChunkUnlocker, createReadOnlyDynamicChunkUnlocker,
   createEventNftUnlocker, createAnonymousEventNftUnlocker,
   createTokenContainerUnlocker, createSatoshiContainerUnlocker,
-  resolveCollectionSignature,
+  resolveCollectionSignature, resolveCategoryFromLockingBytecode,
 } from './covenant-helpers.js';
 import { ConstructorArgument, FunctionArgument } from '../Argument.js';
 import { AbiToFunctionMap } from '../types/type-inference.js';
@@ -6613,6 +6613,44 @@ export class StatefulFunctionCall {
     return undefined;
   }
 
+  // When `L.f()` is auto-wired but no library INSTANCE was registered, resolve it from the bundle: the artifact
+  // comes from the registered ArtifactMap (registerArtifacts / ContractBundle) and the live category from the
+  // indexer (the consumer baked the library address as its __libAddr_<name> ctor arg). Retires registerLibrary
+  // for any bundle-deployed library. See docs/multi-contract-artifacts.md (Phase 3).
+  private async _resolveLibrariesFromRegistry(): Promise<void> {
+    if (!this.parentContract || !this.functionName) return;
+    const consumer = this.parentContract;
+    const abiFunc = consumer.inner.artifact.abi.find((f) => f.name === this.functionName);
+    const libCalls = abiFunc?.libraryDelegateCalls;
+    if (!libCalls?.length) return;
+    for (const lc of libCalls) {
+      if (consumer._getLibrary(lc.library)) continue; // an explicit registerLibrary wins
+      const libArtifact = consumer._getChild(lc.library);
+      if (!libArtifact?.stateLayout) continue; // not in a registered bundle -> let auto-wire raise its error
+      // The synthesized __libAddr_<name> ctor arg holds the deployed library's locking bytecode.
+      const addrName = `__libAddr_${lc.library}`;
+      const addrIdx = consumer.inner.artifact.constructorInputs.findIndex((i) => i.name === addrName);
+      if (addrIdx < 0) continue;
+      const baked = consumer.inner.constructorArgs[addrIdx];
+      if (!(baked instanceof Uint8Array)) continue;
+      // Reconstruct the library's constructor args (branded -> __brand = consumer category; else none) so the
+      // rebuilt instance hashes to the same address; bail to the manual path on any other constructor shape.
+      let libArgs: ConstructorArgument[];
+      if (libArtifact.brandedLibrary) {
+        if (!consumer.categoryId || libArtifact.constructorInputs.length !== 1) continue;
+        libArgs = [StatefulContract.libraryBrand(consumer.categoryId)];
+      } else if (libArtifact.constructorInputs.length === 0) {
+        libArgs = [];
+      } else {
+        continue;
+      }
+      const libCat = await resolveCategoryFromLockingBytecode(consumer.inner.provider, baked);
+      const libContract = new Contract(libArtifact, libArgs as never[], { provider: consumer.inner.provider });
+      if (libContract.withCategory(hexToBin(libCat)).lockingBytecode !== binToHex(baked)) continue;
+      consumer.registerLibrary(lc.library, StatefulContract.withCategory(libContract, libCat));
+    }
+  }
+
   // Auto-wire the delegatecall co-spend for each `L.f()` the called function performs (artifact
   // libraryDelegateCalls), from the consumer's registered library instances - so the caller need not repeat the
   // library function via withDelegatecall. A manual withDelegatecall for the same function takes precedence.
@@ -6662,6 +6700,7 @@ export class StatefulFunctionCall {
     let builder: StatefulTransactionBuilder;
     let derived: Record<string, any> | undefined;
 
+    await this._resolveLibrariesFromRegistry();
     this._autoWireLibraryDelegatecalls();
     const needsRebuild = (this.externalCallInfos.length > 0 || this.callInfos.length > 0
       || this.entryKeyOverrides.size > 0 || this.externalEntryKeyOverrides.size > 0 || this.emitReturnFlag)

@@ -1,12 +1,15 @@
 import { Artifact, ArtifactMap } from '@solidcash/utils';
 import { Contract } from '../Contract.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
-import { AddressType, Utxo } from '../interfaces.js';
+import { AddressType } from '../interfaces.js';
 import { ConstructorArgument } from '../Argument.js';
 import {
   StatefulContract, ConnectedStatefulContract, DeployOptions, DeployResult,
 } from './StatefulContract.js';
+import { resolveCategoryFromAddress, resolveCategoryFromLockingBytecode } from './covenant-helpers.js';
 import type Signer from '../Signer.js';
+
+export { resolveCategoryFromAddress, resolveCategoryFromLockingBytecode };
 
 export interface ContractBundleOptions {
   provider: NetworkProvider;
@@ -90,18 +93,4 @@ export class ContractBundle {
     (contract as StatefulContract).registerArtifacts(this.artifacts);
     return this.bundleOptions.signer ? contract.connect(this.bundleOptions.signer) : contract;
   }
-}
-
-/**
- * Resolve a stateful contract's token category from its p2sh address via the indexer - the UTXOs at the
- * address carry `token: { category }`, so no registry of the deployed instance is needed (see
- * docs/multi-contract-artifacts.md s13). Throws if the address has no token UTXO (not deployed / fully spent).
- */
-export async function resolveCategoryFromAddress(provider: NetworkProvider, address: string): Promise<string> {
-  const utxos: Utxo[] = await provider.getUtxos(address);
-  const tokenUtxo = utxos.find((u) => u.token?.category);
-  if (!tokenUtxo) {
-    throw new Error(`No token UTXO at ${address} - cannot resolve the contract category (is it deployed?).`);
-  }
-  return tokenUtxo.token!.category;
 }

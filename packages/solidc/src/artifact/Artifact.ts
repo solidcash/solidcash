@@ -50,6 +50,7 @@ function buildFunctionAbiMetadata(func: FunctionDefinitionNode): Partial<AbiFunc
       deployTargets: func.deployTargets.map((dt) => ({
         contractName: dt.contractName,
         dataNftCount: dt.dataNftCount,
+        ...(dt.constructorArgs && { constructorArgs: dt.constructorArgs }),
       })),
     }),
     ...(func.externalReads && func.externalReads.length > 0 && {

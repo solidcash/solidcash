@@ -164,11 +164,11 @@ export interface DeployFromOptions<T extends Artifact = Artifact> {
   factory: ConnectedStatefulContract;        // the factory contract
   deployFunctionName: string;                // must have 'deploy' modifier
   deployFunctionArgs: FunctionArgument[];    // user args to the factory's deploy function
-  childArtifact: T;                          // artifact of the contract to deploy
-  childConstructorArgs: ConstructorArgument[];
+  childArtifact?: T;                         // child artifact; else resolved via factory.registerChild()
+  childConstructorArgs?: ConstructorArgument[]; // else derived from the deploy args (new C(param) mapping)
   childInitialState?: Record<string, StateValueType>; // optional initial state for child
-  fundingUtxo: Utxo;                         // must be at vout 0 for token genesis
-  funder: Unlocker;                          // unlocker for funding UTXO
+  fundingUtxo: Utxo;                         // must be at vout 0 for token genesis (becomes child category)
+  funder?: Unlocker;                         // unlocker for funding UTXO; else factory.setDeployDefaults()
   addressType?: AddressType;
   fee?: bigint;                              // default: 1000n
   maxFee?: bigint;                           // maximum allowed fee (throws if exceeded)
@@ -651,6 +651,36 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
   /** Look up a registered delegate library by name (used by the call builder's auto-wire). */
   _getLibrary(name: string): StatefulContract | undefined {
     return this._libraryRegistry.get(name);
+  }
+
+  // Child artifacts a deploy function may instantiate, keyed by contract name. deployFrom resolves the child
+  // (and derives its constructor args) from here via the deploy function's deployTarget, so a call need not
+  // repeat childArtifact / childConstructorArgs each time.
+  private _childRegistry: Map<string, Artifact> = new Map();
+
+  // Default funder / changeAddress for deployFrom calls on this factory, so they need not be repeated.
+  private _deployDefaults: { funder?: Unlocker; changeAddress?: string } = {};
+
+  /** Register a child contract artifact so deployFrom can resolve it by the deploy function's deployTarget. */
+  registerChild(artifact: Artifact): this {
+    this._childRegistry.set(artifact.contractName, artifact);
+    return this;
+  }
+
+  /** Look up a registered child artifact by contract name. */
+  _getChild(contractName: string): Artifact | undefined {
+    return this._childRegistry.get(contractName);
+  }
+
+  /** Set default funder / changeAddress for deployFrom calls on this factory (override per call as needed). */
+  setDeployDefaults(defaults: { funder?: Unlocker; changeAddress?: string }): this {
+    this._deployDefaults = { ...this._deployDefaults, ...defaults };
+    return this;
+  }
+
+  /** The deploy defaults set via setDeployDefaults (used by deployFrom). */
+  get deployDefaults(): { funder?: Unlocker; changeAddress?: string } {
+    return this._deployDefaults;
   }
 
   /** Bound signer for automatic transaction funding. Set via `connect(signer)`. */
@@ -1338,7 +1368,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
   ): Promise<DeployFromResult<T>> {
     const {
       provider, factory, deployFunctionName, deployFunctionArgs,
-      childArtifact, childConstructorArgs,
     } = options;
 
     // Validate the deploy function exists and has the 'deploy' modifier
@@ -1356,6 +1385,39 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         + 'Only functions with the deploy modifier can be used for contract deployment.',
       );
     }
+
+    // Resolve the child + funding from the call, the factory's child registry, the recorded `new C(param)`
+    // argument mapping, and the factory's deploy defaults - so a call need only pass what isn't already known.
+    // The child's category is the funding UTXO's txid (vout 0), so its address derives forward from
+    // (artifact, constructorArgs, category) - no extra input and no trace reverse-derivation needed.
+    const deployTarget = deployAbi.deployTargets?.[0];
+    const childArtifact = (options.childArtifact
+      ?? (deployTarget ? (factory as StatefulContract)._getChild(deployTarget.contractName) : undefined)) as T;
+    if (!childArtifact) {
+      throw new Error(
+        `No child artifact for deploy function '${deployFunctionName}'. Pass childArtifact or register it `
+        + 'with factory.registerChild(artifact).',
+      );
+    }
+    let childConstructorArgs = options.childConstructorArgs;
+    if (!childConstructorArgs && deployTarget?.constructorArgs?.every((n) => n !== null)) {
+      const derived = deployTarget.constructorArgs.map((name) => {
+        const idx = deployAbi.inputs.findIndex((inp) => inp.name === name);
+        return idx >= 0 ? deployFunctionArgs[idx] : undefined;
+      });
+      if (derived.every((v) => v !== undefined)) childConstructorArgs = derived as ConstructorArgument[];
+    }
+    if (!childConstructorArgs) {
+      throw new Error(
+        `Cannot derive constructor args for 'new ${deployTarget?.contractName ?? '?'}(...)' in `
+        + `'${deployFunctionName}'. Pass childConstructorArgs (the new-C(...) args are not all plain parameters).`,
+      );
+    }
+    const funder = options.funder ?? (factory as StatefulContract).deployDefaults.funder;
+    if (!funder) {
+      throw new Error('No funder for deployFrom. Pass funder or set factory.setDeployDefaults({ funder }).');
+    }
+    const changeAddress = options.changeAddress ?? (factory as StatefulContract).deployDefaults.changeAddress;
 
     // Validate child artifact is stateful
     if (!childArtifact.stateLayout) {
@@ -1538,7 +1600,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     } = await (factory as StatefulContract)._deriveCommitments(
       deployFunctionName, finalArgs, requiredNftIndices,
       [...entryPlaceholderOutputs, ...childExtraOutputs],
-      [...entryExtraInputs, { utxo: options.fundingUtxo, unlocker: options.funder }],
+      [...entryExtraInputs, { utxo: options.fundingUtxo, unlocker: funder }],
       entryInfos.length,
       childLayout!.dataNftCount,
     );
@@ -1597,7 +1659,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     }
 
     // Funding UTXO for child's token genesis
-    builder.addInput(options.fundingUtxo, options.funder);
+    builder.addInput(options.fundingUtxo, funder);
 
     // === Factory outputs (first) ===
 
@@ -1679,13 +1741,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const totalEntryCost = dataNftAmount * newEntryCount;
     const changeAmount = options.fundingUtxo.satoshis - totalChildCost - totalEntryCost - fee;
     if (changeAmount > 0n) {
-      if (!options.changeAddress) {
+      if (!changeAddress) {
         throw new Error(
           `deployFrom has ${changeAmount} satoshis of excess funding but no changeAddress was provided. `
-          + 'Specify changeAddress in options to avoid losing funds as miner fee.',
+          + 'Specify changeAddress in options or via factory.setDeployDefaults({ changeAddress }).',
         );
       }
-      builder.addOutput({ to: options.changeAddress, amount: changeAmount });
+      builder.addOutput({ to: changeAddress, amount: changeAmount });
     }
 
     const tx = await builder.send();

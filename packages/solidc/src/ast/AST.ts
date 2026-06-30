@@ -201,7 +201,14 @@ export class FunctionDefinitionNode extends Node implements Named {
   externalOutStateReads?: ExternalOutStateSlot[];
   emitInfos?: EmitInfo[];
   transferInfos?: TransferInfo[];
-  deployTargets?: { contractName: string; dataNftCount: number }[];
+  deployTargets?: {
+    contractName: string; dataNftCount: number;
+    // Per child constructor argument: the deploy-function parameter name it forwards (a direct `new C(param)`
+    // reference), or null if it is a non-trivial expression. Lets the SDK derive childConstructorArgs from the
+    // deploy-function args instead of requiring them again.
+    constructorArgs?: (string | null)[];
+  }[];
+
   lowLevelCalls?: { callMode: 'call' | 'staticcall' | 'delegatecall'; dataParamIndex?: number }[];
   // Delegate-library calls desugared from `L.f()` (SynthesizeLibraryDelegateCalls), in source order. The SDK
   // auto-wires the delegatecall co-spend from a registered library instance, so the caller need not name the

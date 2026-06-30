@@ -118,7 +118,12 @@ export interface AbiFunction {
   externalOutStateReads?: readonly ExternalOutStateAbi[];
   emits?: readonly EmitAbi[];
   transferCount?: number;
-  deployTargets?: readonly { contractName: string; dataNftCount: number }[];
+  deployTargets?: readonly {
+    contractName: string; dataNftCount: number;
+    // Per child constructor argument: the deploy-function parameter name it forwards (direct `new C(param)`),
+    // or null for a non-trivial expression. Lets the SDK derive childConstructorArgs from the deploy args.
+    constructorArgs?: readonly (string | null)[];
+  }[];
   tokenContainerAccesses?: readonly TokenContainerAccessAbi[];
   usesMsgSender?: boolean;
   unsafeTier?: number;

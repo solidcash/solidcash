@@ -6643,13 +6643,21 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         node,
       });
 
-      // Record deploy target on current function for ABI generation
+      // Record deploy target on current function for ABI generation. Map each child constructor argument to
+      // the deploy-function parameter it forwards (a direct `new C(param)` reference), so the SDK can derive
+      // childConstructorArgs from the deploy-function args instead of requiring them again; null for any
+      // non-trivial argument expression.
       if (!this.currentFunction.deployTargets) {
         this.currentFunction.deployTargets = [];
       }
+      const deployFnParamNames = new Set(this.currentFunction.parameters.map((p) => p.name));
+      const constructorArgs = node.parameters.map((p) => (
+        p instanceof IdentifierNode && deployFnParamNames.has(p.name) ? p.name : null
+      ));
       this.currentFunction.deployTargets.push({
         contractName: node.referencedContract!.name,
         dataNftCount: node.deployedDataNftCount,
+        constructorArgs,
       });
 
       // Copy master LBC back to top as the expression result via OP_PICK

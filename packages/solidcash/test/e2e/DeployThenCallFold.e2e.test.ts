@@ -68,7 +68,9 @@ describe('deploy-then-call fold (deployFrom e2e)', () => {
 
   it('the configure call is folded into the deploy genesis (no co-spend external call)', () => {
     const make = factoryArtifact.abi.find((f) => f.name === 'deployConfigured')!;
-    expect(make.deployTargets).toEqual([{ contractName: 'FoldChild', dataNftCount: 1 }]);
+    // constructorArgs records that new FoldChild(childOwner) forwards the 'childOwner' deploy param, so the
+    // SDK can derive childConstructorArgs from the deploy args.
+    expect(make.deployTargets).toEqual([{ contractName: 'FoldChild', dataNftCount: 1, constructorArgs: ['childOwner'] }]);
     expect((make as { externalCalls?: unknown[] }).externalCalls).toBeUndefined();
   });
 
@@ -92,21 +94,20 @@ describe('deploy-then-call fold (deployFrom e2e)', () => {
     await provider.addUtxo(p2pkh.address, fundingUtxo);
 
     const c0 = 42n;
-    // Reduced sugar form: factory.deployFn(...args).deploy({ child + funding }). Provider, factory, the
-    // deploy-function name and its args all come from the call. (A real generated artifact types the method
-    // name; compileString returns a generic Artifact, hence the cast.) Equivalent to StatefulContract.deployFrom.
+    // Fully reduced call: register the child artifact + set deploy defaults once, and the child artifact, its
+    // constructor args (new FoldChild(childOwner) -> the childOwner deploy arg, derived via the recorded
+    // mapping), funder and changeAddress are all resolved. Only the per-deploy funding UTXO remains - its txid
+    // (vout 0) becomes the child category, so the child address derives forward with no extra input.
+    // (A real generated artifact types the method name; compileString returns a generic Artifact, hence the cast.)
+    factory.registerChild(childArtifact);
+    factory.setDeployDefaults({
+      funder: p2pkh.unlock.spend(alicePub, new SignatureTemplate(alicePriv)),
+      changeAddress: p2pkh.address,
+    });
     const sugarFactory = factory as unknown as Record<string, (...a: unknown[]) => StatefulFunctionCall>;
     const result = await sugarFactory
       .deployConfigured(new SignatureTemplate(alicePriv), alicePkh, c0, bobPkh)
-      .deploy({
-        childArtifact,
-        childConstructorArgs: [alicePkh],
-        // NOTE: no childInitialState - the post-configure genesis is computed by the covenant and
-        // read back from the deploy probe trace.
-        fundingUtxo,
-        funder: p2pkh.unlock.spend(alicePub, new SignatureTemplate(alicePriv)),
-        changeAddress: p2pkh.address,
-      });
+      .deploy({ fundingUtxo });
 
     // send() ran the deploy covenant: a successful tx means the covenant accepted the SDK-supplied
     // post-configure child genesis. (A wrong genesis - e.g. default counter=0 - would fail the covenant.)

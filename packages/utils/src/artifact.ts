@@ -371,6 +371,13 @@ export interface Artifact {
   updatedAt: string;
 }
 
+/**
+ * All artifacts produced by one compilation, keyed by declaration name - every top-level concrete contract,
+ * library, and contract-less declaration (interface, etc.). Mirrors solc's Standard-JSON `contracts[name]`
+ * shape. Returned by `compileStringMulti` / `compileFileMulti`. See docs/multi-contract-artifacts.md.
+ */
+export type ArtifactMap = Record<string, Artifact>;
+
 export function formatArtifact(artifact: Artifact, format: 'json' | 'ts'): string {
   if (format === 'ts') {
     // We remove any undefined values to make the artifact serializable using stringifyAsTs

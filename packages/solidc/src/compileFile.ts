@@ -1,10 +1,14 @@
 import fs, { PathLike } from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { Artifact } from '@solidcash/utils';
-import { compileString, CompileOptions } from './compiler.js';
+import { Artifact, ArtifactMap } from '@solidcash/utils';
+import { compileString, compileStringMulti, CompileOptions } from './compiler.js';
 
-export function compileFile(codeFile: PathLike, compilerOptions: CompileOptions = {}): Artifact {
+// Read a file + build the node import resolver, returning the source and the options to pass to
+// compileString / compileStringMulti. Shared by compileFile and compileFileMulti.
+function readSourceWithResolver(
+  codeFile: PathLike, compilerOptions: CompileOptions,
+): { code: string; options: CompileOptions } {
   const code = fs.readFileSync(codeFile, { encoding: 'utf-8' });
 
   // Convert URL objects to file paths, then resolve to absolute
@@ -46,9 +50,24 @@ export function compileFile(codeFile: PathLike, compilerOptions: CompileOptions 
     return undefined;
   };
 
-  return compileString(code, {
-    ...compilerOptions,
-    importResolver: compilerOptions.importResolver ?? nodeResolver,
-    rootFileId: compilerOptions.rootFileId ?? filePath,
-  });
+  return {
+    code,
+    options: {
+      ...compilerOptions,
+      importResolver: compilerOptions.importResolver ?? nodeResolver,
+      rootFileId: compilerOptions.rootFileId ?? filePath,
+    },
+  };
+}
+
+export function compileFile(codeFile: PathLike, compilerOptions: CompileOptions = {}): Artifact {
+  const { code, options } = readSourceWithResolver(codeFile, compilerOptions);
+  return compileString(code, options);
+}
+
+/** Like compileFile, but returns an Artifact per top-level declaration (a map keyed by name). See
+ *  docs/multi-contract-artifacts.md. */
+export function compileFileMulti(codeFile: PathLike, compilerOptions: CompileOptions = {}): ArtifactMap {
+  const { code, options } = readSourceWithResolver(codeFile, compilerOptions);
+  return compileStringMulti(code, options);
 }

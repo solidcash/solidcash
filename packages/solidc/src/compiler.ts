@@ -1,6 +1,6 @@
 import { CharStream, CommonTokenStream } from 'antlr4';
 import { binToHex } from '@bitauth/libauth';
-import { Artifact, ArrayType, AddressType, BytesType, CompilerOptions, computeBytecodeFingerprintWithConstructorArgs, generateSourceMap, optimiseBytecode, optimiseBytecodeOld, scriptToAsm, scriptToBytecode, sourceMapToLocationData, StructType, Type } from '@solidcash/utils';
+import { Artifact, ArtifactMap, ArrayType, AddressType, BytesType, CompilerOptions, computeBytecodeFingerprintWithConstructorArgs, generateSourceMap, optimiseBytecode, optimiseBytecodeOld, scriptToAsm, scriptToBytecode, sourceMapToLocationData, StructType, Type } from '@solidcash/utils';
 import { generateArtifact, generateDeclarationArtifact } from './artifact/Artifact.js';
 import {
   Ast, ContractNode, ContractReferenceNode, FunctionModifier, InstantiationNode, ParameterNode,
@@ -49,13 +49,23 @@ export interface CompileOptions extends CompilerOptions {
 export function compileString(code: string, compilerOptions: CompileOptions = {}): Artifact {
   const { errorListener, ...artifactCompilerOptions } = compilerOptions;
   const mergedCompilerOptions = { ...DEFAULT_COMPILER_OPTIONS, ...artifactCompilerOptions };
+  const ast = parseAndResolve(code, mergedCompilerOptions, errorListener);
+  return compileResolvedAst(ast, code, mergedCompilerOptions);
+}
 
+// Parse + (optionally re-select a non-default primary contract) + resolve imports. The default primary is the
+// LAST top-level contract (AstBuilder); `primaryName` re-selects one for compileStringMulti's per-contract pass.
+function parseAndResolve(
+  code: string, mergedCompilerOptions: CompilerOptions, errorListener?: SolidCashErrorListener,
+  primaryName?: string,
+): Ast {
   // Lexing + parsing
   let ast = parseCode(code, errorListener, mergedCompilerOptions.solidityImportCompat,
     mergedCompilerOptions.chunkedArrays);
+  const hadImports = ast.imports.length > 0;
 
-  // Resolve imports
-  if (ast.imports.length > 0) {
+  // Resolve imports first, so an imported contract is available for setPrimaryContract (compileStringMulti).
+  if (hadImports) {
     if (!mergedCompilerOptions.importResolver) {
       throw new Error(
         'Source contains imports but no importResolver provided. '
@@ -66,12 +76,30 @@ export function compileString(code: string, compilerOptions: CompileOptions = {}
       mergedCompilerOptions.importResolver, mergedCompilerOptions.solidityImportCompat,
     );
     ast = resolver.resolve(ast, mergedCompilerOptions.rootFileId ?? 'main');
-    // Types are resolved during parse, before imports merge, so an imported struct used as an array element
-    // (`Todo[]` where `Todo` is imported) parses to a named AddressType placeholder. Now that imported struct
-    // definitions are merged, re-resolve those placeholders to the real StructType.
-    reresolveImportedStructTypes(ast);
   }
 
+  if (primaryName) setPrimaryContract(ast, primaryName);
+
+  // Types are resolved during parse, before imports merge, so an imported struct used as an array element
+  // (`Todo[]` where `Todo` is imported) parses to a named AddressType placeholder. Now that imported struct
+  // definitions are merged (and the primary is chosen), re-resolve those placeholders to the real StructType.
+  if (hadImports) reresolveImportedStructTypes(ast);
+  return ast;
+}
+
+// Make `name` the primary contract (the one compiled to the artifact); the rest stay as available siblings/
+// imports. Used by compileStringMulti to compile each top-level contract in turn. No-op if not found.
+function setPrimaryContract(ast: Ast, name: string): void {
+  const all = [...ast.importedContracts, ast.contract].filter(Boolean);
+  const target = all.find((c) => c?.name === name);
+  if (!target) return;
+  ast.contract = target;
+  ast.importedContracts = all.filter((c) => c !== target);
+}
+
+// Compile a parsed+resolved AST (whose `contract` is the chosen primary) into a single Artifact. Shared by
+// compileString and compileStringMulti.
+function compileResolvedAst(ast: Ast, code: string, mergedCompilerOptions: CompilerOptions): Artifact {
   // A library file compiled directly: if its primary library has explicitly public/external functions, lower
   // it to a stateless contract artifact (docs/library-contracts.md Phase 2). A library with only inline
   // (internal/unmarked) functions has no entry point and cannot be compiled standalone.
@@ -224,6 +252,57 @@ export function compileString(code: string, compilerOptions: CompileOptions = {}
   // Marker for the off-chain keeper: this contract reads blockhash(n) -> maintain the (n->hash) oracle.
   if (blockOracle.usesBlockhash) artifact.usesBlockhash = true;
   return artifact;
+}
+
+/**
+ * Compile EVERY top-level declaration in `code` (and its imports) to its own Artifact, keyed by name -
+ * solc's `contracts[name]` model. Each concrete contract / library is compiled with itself as the primary
+ * (the others available as siblings/imports); each interface yields an ABI-only declaration artifact.
+ * Abstract contracts are excluded (not deployable). `compileString` is unchanged (single primary artifact).
+ * See docs/multi-contract-artifacts.md.
+ */
+export function compileStringMulti(code: string, compilerOptions: CompileOptions = {}): ArtifactMap {
+  const { errorListener, ...artifactCompilerOptions } = compilerOptions;
+  const mergedCompilerOptions = { ...DEFAULT_COMPILER_OPTIONS, ...artifactCompilerOptions };
+
+  // Enumerate the top-level contracts (after import resolution, so imported deps are included). The default
+  // parse leaves the last as primary; the full set is [...importedContracts, contract].
+  const probe = parseAndResolve(code, mergedCompilerOptions, errorListener);
+  const allContracts = [...probe.importedContracts, probe.contract].filter(Boolean);
+  const interfaces = probe.interfaceDefinitions ?? [];
+
+  const map: ArtifactMap = {};
+  const seen = new Set<string>();
+  for (const contract of allContracts) {
+    if (!contract || seen.has(contract.name)) continue;
+    seen.add(contract.name);
+    if (contract.isAbstract) continue; // abstract contracts are not deployable - excluded, like solc
+    // Re-parse + resolve fresh per contract (the per-contract pipeline mutates the AST); select it as primary.
+    const ast = parseAndResolve(code, mergedCompilerOptions, errorListener, contract.name);
+    map[contract.name] = compileResolvedAst(ast, code, mergedCompilerOptions);
+  }
+
+  // Contract-less: each interface -> an ABI-only declaration artifact (function dispatch for external calls).
+  for (const iface of interfaces) {
+    if (map[iface.name]) continue; // a concrete contract of the same name wins
+    map[iface.name] = generateInterfaceArtifact(probe, iface.name, code);
+  }
+
+  return map;
+}
+
+/**
+ * An ABI-only declaration artifact for a single interface, reusing generateDeclarationArtifact (which keys on
+ * `ast.libraryName`). Carries the interface's functions + the file's shared enums/events/errors; no bytecode.
+ */
+function generateInterfaceArtifact(ast: Ast, interfaceName: string, code: string): Artifact {
+  const savedLibraryName = ast.libraryName;
+  ast.libraryName = interfaceName;
+  try {
+    return generateDeclarationArtifact(ast, code);
+  } finally {
+    ast.libraryName = savedLibraryName;
+  }
 }
 
 /**

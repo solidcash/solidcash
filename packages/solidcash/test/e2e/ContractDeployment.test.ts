@@ -226,41 +226,35 @@ describe('Contract Deployment (new Contract(...))', () => {
     });
   });
 
-  describe('salt is no-op for deployment', () => {
-    it('salt is ignored - compiler produces unsalted locking bytecode', async () => {
-      // The unsalted lbc should match the SDK's Contract class WITHOUT salt
+  describe('salt is honored for deployment (create2)', () => {
+    const saltA = hexToBin('deadbeef01020304');
+    const saltB = hexToBin('ffffffffffffffff');
+
+    it('salt is honored - compiled lbc matches the SDK Contract salt address', async () => {
+      // The salted on-chain lbc should match the SDK's Contract class constructed WITH the same salt.
       const targetArtifact = compileString(targetSource);
       const targetProvider = createTestProvider();
-      const unsaltedTarget = new Contract(
+      const saltedTarget = new Contract(
         targetArtifact, [bobPkh],
-        { provider: targetProvider, addressType: 'p2sh32' },
+        { provider: targetProvider, addressType: 'p2sh32', salt: saltA },
       );
-      const expectedLbc = hexToBin(unsaltedTarget.lockingBytecode);
+      const expectedLbc = hexToBin(saltedTarget.lockingBytecode);
 
-      // Compile the salted deployer - salt arg is still accepted but ignored
       const deployerArtifact = compileString(saltedDeployerSource, {
         importResolver: createMapResolver(files),
         rootFileId: '/main.scash',
       });
       const provider = createTestProvider();
-      const deployerContract = new Contract(
-        deployerArtifact, [alicePub], { provider },
-      );
+      const deployerContract = new Contract(deployerArtifact, [alicePub], { provider });
       await addUtxos(provider, deployerContract.address);
 
       const to = deployerContract.address;
       const amount = 1000n;
-      const { utxos, changeAmount } = gatherUtxos(
-        await deployerContract.getUtxos(), { amount },
-      );
+      const { utxos, changeAmount } = gatherUtxos(await deployerContract.getUtxos(), { amount });
 
-      // Salt param is still passed but compiler ignores it - lbc matches unsalted
       const tx = await new TransactionBuilder({ provider })
         .addInputs(utxos, deployerContract.unlock.verifyDeployment(
-          new SignatureTemplate(alicePriv),
-          bobPkh,
-          hexToBin('deadbeef01020304'),
-          expectedLbc,
+          new SignatureTemplate(alicePriv), bobPkh, saltA, expectedLbc,
         ))
         .addOutput({ to, amount })
         .addOutput({ to, amount: changeAmount })
@@ -269,45 +263,36 @@ describe('Contract Deployment (new Contract(...))', () => {
       expect(tx.txid).toBeDefined();
     });
 
-    it('different salts produce the SAME locking bytecode', async () => {
-      // Since salt is now a no-op, different salt values don't change the output
+    it('different salts produce DIFFERENT locking bytecode (a mismatched salt fails the on-chain check)', async () => {
       const targetArtifact = compileString(targetSource);
       const targetProvider = createTestProvider();
-      const unsaltedTarget = new Contract(
+      // Expected address is for saltA, but the deployer is given saltB - the salted lbc differs, so the
+      // on-chain `new T{saltB}() == expectedLbc(saltA)` fails.
+      const saltedTargetA = new Contract(
         targetArtifact, [bobPkh],
-        { provider: targetProvider, addressType: 'p2sh32' },
+        { provider: targetProvider, addressType: 'p2sh32', salt: saltA },
       );
-      const expectedLbc = hexToBin(unsaltedTarget.lockingBytecode);
+      const expectedLbc = hexToBin(saltedTargetA.lockingBytecode);
 
       const deployerArtifact = compileString(saltedDeployerSource, {
         importResolver: createMapResolver(files),
         rootFileId: '/main.scash',
       });
       const provider = createTestProvider();
-      const deployerContract = new Contract(
-        deployerArtifact, [alicePub], { provider },
-      );
+      const deployerContract = new Contract(deployerArtifact, [alicePub], { provider });
       await addUtxos(provider, deployerContract.address);
 
       const to = deployerContract.address;
       const amount = 1000n;
-      const { utxos, changeAmount } = gatherUtxos(
-        await deployerContract.getUtxos(), { amount },
-      );
+      const { utxos, changeAmount } = gatherUtxos(await deployerContract.getUtxos(), { amount });
 
-      // Pass a completely different salt - still matches unsalted lbc
-      const tx = await new TransactionBuilder({ provider })
+      await expect(new TransactionBuilder({ provider })
         .addInputs(utxos, deployerContract.unlock.verifyDeployment(
-          new SignatureTemplate(alicePriv),
-          bobPkh,
-          hexToBin('ffffffffffffffff'),
-          expectedLbc,
+          new SignatureTemplate(alicePriv), bobPkh, saltB, expectedLbc,
         ))
         .addOutput({ to, amount })
         .addOutput({ to, amount: changeAmount })
-        .send();
-
-      expect(tx.txid).toBeDefined();
+        .send()).rejects.toThrow();
     });
   });
 
@@ -353,6 +338,52 @@ describe('Contract Deployment (new Contract(...))', () => {
           bobPkh,
         ))
         .addOutput({ to: targetContract.address, amount: 2000n })
+        .addOutput({ to: deployerContract.address, amount: changeAmount })
+        .send();
+
+      expect(tx.txid).toBeDefined();
+    });
+
+    it('create2: a salted new Target{salt}() matches the SDK Contract salt address', async () => {
+      // EVM create2: `new T{salt}(args)` yields a deterministic, salt-distinguished p2sh address. The on-chain
+      // salted locking bytecode the compiler builds must equal the address the SDK Contract derives for the
+      // same (artifact, args, salt). Output 0 is sent to the SDK-salted address; the covenant requires it to
+      // equal the compiler-computed `new Target{salt}(targetPkh)`, so a passing send proves the parity.
+      const salt = hexToBin('ab'.repeat(32));
+      const saltVerifierSource = `
+        import "./target.scash";
+        contract SaltVerifier(pubkey owner) {
+          function sendToSalted(sig s, bytes20 targetPkh, bytes32 salt) {
+            require(checkSig(s, owner));
+            bytes deployedLbc = new Target{salt: salt}(targetPkh);
+            require(tx.outputs[0].lockingBytecode == deployedLbc);
+          }
+        }
+      `;
+
+      const targetArtifact = compileString(targetSource);
+      const targetProvider = createTestProvider();
+      const targetContract = new Contract(
+        targetArtifact, [bobPkh], { provider: targetProvider, addressType: 'p2sh32', salt },
+      );
+
+      const deployerArtifact = compileString(saltVerifierSource, {
+        importResolver: createMapResolver(files),
+        rootFileId: '/main.scash',
+      });
+      const provider = createTestProvider();
+      const deployerContract = new Contract(deployerArtifact, [alicePub], { provider });
+      await addUtxos(provider, deployerContract.address);
+
+      const { utxos, changeAmount } = gatherUtxos(
+        await deployerContract.getUtxos(), { amount: 2000n },
+      );
+
+      const tx = await new TransactionBuilder({ provider })
+        .addInputs(utxos, deployerContract.unlock.sendToSalted(
+          new SignatureTemplate(alicePriv), bobPkh, salt,
+        ))
+        .addOutput({ to: targetContract.address, amount: 2000n }) // SDK-salted address
         .addOutput({ to: deployerContract.address, amount: changeAmount })
         .send();
 

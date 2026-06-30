@@ -6,7 +6,6 @@
 
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { vi } from 'vitest';
 import { compileFile, compileString, createMapResolver } from '../../src/index.js';
 import type { ResolvedImport } from '@solidcash/utils';
 import {
@@ -3524,17 +3523,14 @@ describe('Imports', () => {
       expect(deployFn!.deployTargets![0].dataNftCount).toBe(1);
     });
 
-    it('should emit salt warning but still compile with salt', () => {
-      const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
-      try {
-        const artifact = compileFile(path.join(fixtures, 'deploy_with_salt.scash'));
-        expect(artifact).toBeDefined();
-        expect(consoleSpy).toHaveBeenCalledWith(
-          expect.stringContaining('salt'),
-        );
-      } finally {
-        consoleSpy.mockRestore();
-      }
+    it('honors salt for create2 deployment (baked as a <salt> OP_DROP address segment, not a no-op)', () => {
+      // salt is no longer ignored: `new T{salt}(...)` bakes a deterministic, salt-distinguished p2sh address
+      // (composed with the category self-pin for stateful targets). Parity with the SDK Contract salt is
+      // covered by the create2 e2e in ContractDeployment.test.ts.
+      const artifact = compileFile(path.join(fixtures, 'deploy_with_salt.scash'));
+      expect(artifact).toBeDefined();
+      const run = artifact.abi.find((f) => f.name === 'run');
+      expect(run).toBeDefined();
     });
   });
 });

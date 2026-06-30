@@ -6589,6 +6589,21 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.popFromStack();
     }
 
+    // Step 2.5: User CREATE2 salt (stateless targets only - cleared for stateful in semantics). Bake the
+    // outermost `<salt> OP_DROP` segment - identical to the SDK's Contract.ts - so `new T{salt}(...)` yields a
+    // deterministic, salt-distinguished p2sh address (EVM create2). Stack: [redeem] -> [<salt-push><0x75>||redeem].
+    if (node.callOptions?.salt) {
+      this.visit(node.callOptions.salt); // [redeem, salt]
+      this.emitPushdataEncode(node.callOptions.salt.type!, locationData); // [redeem, <push>salt]
+      this.emit(new Uint8Array([0x75]), locationData); // OP_DROP byte
+      this.pushToStack('(value)');
+      this.emit(Op.OP_CAT, locationData); // [redeem, saltSegment]
+      this.popFromStack();
+      this.emit(Op.OP_SWAP, locationData); // [saltSegment, redeem]
+      this.emit(Op.OP_CAT, locationData); // [saltSegment||redeem]
+      this.popFromStack();
+    }
+
     // Step 3: Compute P2SH32 locking bytecode: OP_HASH256 -> 0xaa20 || hash || 0x87
     // (matches existing P2SH32 pattern in emitContainerLbc/emitExternalCallVerification)
     this.emit(Op.OP_HASH256, locationData);

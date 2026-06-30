@@ -4091,12 +4091,12 @@ export default class SymbolTableTraversal extends AstTraversal {
       if (node.callOptions?.value) {
         node.callOptions.value = this.visit(node.callOptions.value) as ExpressionNode;
       }
-      // Salt: visit for type-checking but emit warning and clear - salt is a no-op for deployments
+      // Salt (EVM create2): honored - baked as an outermost `<salt> OP_DROP` address segment in codegen,
+      // COMPOSED with the category self-pin for a stateful target (`<salt> OP_DROP | <cat self-pin> | base`,
+      // exactly as the SDK's Contract layers it), so `new T{salt}(...)` yields a deterministic,
+      // salt-distinguished p2sh address. (create3 = a factory's `mapping(salt => categoryId)`; salt is the key.)
       if (node.callOptions?.salt) {
         node.callOptions.salt = this.visit(node.callOptions.salt) as ExpressionNode;
-        const line = node.location ? ` at line ${node.location.start.line}` : '';
-        console.log(`Warning: 'salt' is ignored for contract deployment${line} - each deployment gets a unique category from the genesis input.`);
-        node.callOptions.salt = undefined;
       }
 
       return node;

@@ -112,6 +112,13 @@ await signed.deployConfigured(sig, owner, c0, a0);
   signer's `unlockP2PKH()` + address for funder + change. `.deploy({ fundingUtxo, ... })` stays for explicit
   / no-signer control; `DeployFromCallOptions` is `DeployFromOptions` minus the four call-derived fields
   (provider, factory, deploy-function name, args).
+- **Typed, no cast.** With a generated `.ts` artifact (`formatArtifact(art, 'ts')` -> `export default {...}
+  as const`), `signed.deployConfigured(...)` is fully typed: `AbiToFunctionMap` takes a third
+  `DeployReturnType` (default = `ReturnType`) and maps a function whose `modifiers` literally include
+  `'deploy'` to `DeployFunctionCall`. This required making the ABI types fully `readonly` (only
+  `AbiFunction.requiredNftIndices` and `FunctionBlockLayout.slots` were mutable) so an `as const` artifact
+  satisfies `Artifact`. A non-`as const` artifact (e.g. from `compileString`) maps deploy functions to the
+  default `StatefulFunctionCall` (its `modifiers` is a generic `readonly string[]`).
 - The child + funding are resolved from context (so even the explicit form is short):
 
 - **childArtifact**: explicit option, else the registered artifact for the deploy target's `contractName`.

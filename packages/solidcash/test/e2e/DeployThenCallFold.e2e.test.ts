@@ -1,4 +1,5 @@
 import { compileString } from 'solidc';
+import { hexToBin, binToHex } from '@bitauth/libauth';
 import { ResolvedImport, parsePushdataCommitment } from '@solidcash/utils';
 import {
   Contract, SignatureTemplate, StatefulContract,
@@ -127,5 +128,160 @@ describe('deploy-then-call fold (deployFrom e2e)', () => {
       childDataOutput!.token!.nft!.commitment, childArtifact.stateLayout!, 0,
     );
     expect(childState.counter).toBe(c0);
+  });
+});
+
+// A child whose fixed-size state spans more than one data NFT prepends a verifiable nftIndex tag to every
+// commitment (so a higher-index NFT can't be substituted for a lower one - they share one covenant address).
+// The deploy covenant's genesis builder must stamp the same tag the child's own covenant + the SDK do, else
+// the child is born in a state its own covenant can't read. These tests pin that parity for plain and folded
+// multi-NFT deploys.
+
+const multiChildSource = `
+  contract MultiChild(bytes20 owner) {
+    bytes32 a;
+    bytes32 b;
+    bytes32 c;
+    bytes32 d;
+
+    function configure(bytes32 va, bytes32 vb, bytes32 vc, bytes32 vd) {
+      this.a = va; this.b = vb; this.c = vc; this.d = vd;
+      require(true);
+    }
+  }
+`;
+
+const plainMultiFactorySource = `
+  import "./multi_child.scash";
+  contract PlainMultiFactory(pubkey factoryOwner) {
+    int deployCount;
+    function deployPlain(sig s, bytes20 childOwner) deploy {
+      require(checkSig(s, factoryOwner));
+      MultiChild child = new MultiChild(childOwner);
+      this.deployCount = this.deployCount + 1;
+    }
+  }
+`;
+
+const foldMultiFactorySource = `
+  import "./multi_child.scash";
+  contract FoldMultiFactory(pubkey factoryOwner) {
+    int deployCount;
+    function deployConfigured(sig s, bytes20 childOwner, bytes32 va, bytes32 vb, bytes32 vc, bytes32 vd) deploy {
+      require(checkSig(s, factoryOwner));
+      MultiChild child = new MultiChild(childOwner);
+      child.configure(va, vb, vc, vd);
+      this.deployCount = this.deployCount + 1;
+    }
+  }
+`;
+
+describe('multi-data-NFT child deploy (nftIndex tag parity)', () => {
+  const multiResolver = (importPath: string, currentFile: string): ResolvedImport | undefined => {
+    const dir = currentFile.substring(0, currentFile.lastIndexOf('/') + 1);
+    let resolved = dir + importPath.replace('./', '');
+    if (!resolved.endsWith('.scash')) resolved += '.scash';
+    return resolved === '/multi_child.scash' ? { source: multiChildSource, id: resolved } : undefined;
+  };
+
+  const childArtifact = compileString(multiChildSource);
+  const plainFactoryArtifact = compileString(plainMultiFactorySource, {
+    importResolver: multiResolver, rootFileId: '/main.scash',
+  });
+  const foldFactoryArtifact = compileString(foldMultiFactorySource, {
+    importResolver: multiResolver, rootFileId: '/main.scash',
+  });
+
+  it('the child spans two data NFTs', () => {
+    expect(childArtifact.stateLayout!.dataNftCount).toBe(2);
+  });
+
+  // Find the child's two data NFT outputs in tx order (master, then NFT 0, then NFT 1).
+  const childDataNfts = (txOutputs: ReturnType<typeof getTxOutputs>, categoryId: string): string[] =>
+    txOutputs
+      .filter((o) => o.token?.category === categoryId && o.token?.nft?.capability === 'mutable')
+      .map((o) => o.token!.nft!.commitment);
+
+  it('plain deploy lands the multi-NFT child at tagged defaults (one tx)', async () => {
+    const provider = createTestProvider();
+    const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
+
+    const factoryFunding: Utxo = { txid: 'ca1d'.repeat(16), vout: 0, satoshis: 200000n };
+    await provider.addUtxo(p2pkh.address, factoryFunding);
+    const { contract: factory } = await StatefulContract.deploy(plainFactoryArtifact, [alicePub], {
+      provider,
+      fundingUtxo: factoryFunding,
+      funder: p2pkh.unlock.spend(alicePub, new SignatureTemplate(alicePriv)),
+      initialState: { deployCount: 0n },
+      changeAddress: p2pkh.address,
+    });
+
+    const childFunding: Utxo = { txid: 'cb2d'.repeat(16), vout: 0, satoshis: 50000n };
+    await provider.addUtxo(p2pkh.address, childFunding);
+    const result = await StatefulContract.deployFrom({
+      provider,
+      factory,
+      deployFunctionName: 'deployPlain',
+      deployFunctionArgs: [new SignatureTemplate(alicePriv), alicePkh],
+      childArtifact,
+      childConstructorArgs: [alicePkh],
+      fundingUtxo: childFunding,
+      funder: p2pkh.unlock.spend(alicePub, new SignatureTemplate(alicePriv)),
+      changeAddress: p2pkh.address,
+    });
+
+    // send() ran the covenant: success proves the genesis stamped the same tag the child covenant expects.
+    const commits = childDataNfts(getTxOutputs(result.tx), result.childCategoryId);
+    expect(commits).toHaveLength(2);
+    // parsePushdataCommitment verifies the leading nftIndex tag and throws on mismatch.
+    const nft0 = parsePushdataCommitment(commits[0], childArtifact.stateLayout!, 0);
+    const nft1 = parsePushdataCommitment(commits[1], childArtifact.stateLayout!, 1);
+    expect(binToHex(nft0.a as Uint8Array)).toBe('00'.repeat(32));
+    expect(binToHex(nft1.d as Uint8Array)).toBe('00'.repeat(32));
+  });
+
+  it('folded deploy configures the multi-NFT child across both NFTs (one tx)', async () => {
+    const provider = createTestProvider();
+    const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
+
+    const factoryFunding: Utxo = { txid: 'cc1d'.repeat(16), vout: 0, satoshis: 200000n };
+    await provider.addUtxo(p2pkh.address, factoryFunding);
+    const { contract: factory } = await StatefulContract.deploy(foldFactoryArtifact, [alicePub], {
+      provider,
+      fundingUtxo: factoryFunding,
+      funder: p2pkh.unlock.spend(alicePub, new SignatureTemplate(alicePriv)),
+      initialState: { deployCount: 0n },
+      changeAddress: p2pkh.address,
+    });
+
+    const va = hexToBin('11'.repeat(32));
+    const vb = hexToBin('22'.repeat(32));
+    const vc = hexToBin('33'.repeat(32));
+    const vd = hexToBin('44'.repeat(32));
+
+    const childFunding: Utxo = { txid: 'cd2d'.repeat(16), vout: 0, satoshis: 50000n };
+    await provider.addUtxo(p2pkh.address, childFunding);
+    const result = await StatefulContract.deployFrom({
+      provider,
+      factory,
+      deployFunctionName: 'deployConfigured',
+      deployFunctionArgs: [new SignatureTemplate(alicePriv), alicePkh, va, vb, vc, vd],
+      childArtifact,
+      childConstructorArgs: [alicePkh],
+      fundingUtxo: childFunding,
+      funder: p2pkh.unlock.spend(alicePub, new SignatureTemplate(alicePriv)),
+      changeAddress: p2pkh.address,
+    });
+
+    // Both NFTs land in their post-configure state, carrying the correct per-NFT tag (verified on send()
+    // and re-verified by parsePushdataCommitment). NFT 1 proves the iterative child extraction reached it.
+    const commits = childDataNfts(getTxOutputs(result.tx), result.childCategoryId);
+    expect(commits).toHaveLength(2);
+    const nft0 = parsePushdataCommitment(commits[0], childArtifact.stateLayout!, 0);
+    const nft1 = parsePushdataCommitment(commits[1], childArtifact.stateLayout!, 1);
+    expect(binToHex(nft0.a as Uint8Array)).toBe('11'.repeat(32));
+    expect(binToHex(nft0.b as Uint8Array)).toBe('22'.repeat(32));
+    expect(binToHex(nft0.c as Uint8Array)).toBe('33'.repeat(32));
+    expect(binToHex(nft1.d as Uint8Array)).toBe('44'.repeat(32));
   });
 });

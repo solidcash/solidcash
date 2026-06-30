@@ -6627,6 +6627,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_OUTPOINTTXHASH, locationData);
       this.pushToStack(categoryStackName);
 
+      // deployedDataNftCount was computed in semantic analysis from the child's nftIndex values, but a child
+      // imported from another file may not have had its state packed into NFTs yet at that point (the parent's
+      // `new C()` is visited before the child's bin-packing). The state-var nodes are now packed, so recompute
+      // the true per-NFT count from them before any consumer (deployTarget ABI, covenant loop, deploy offset).
+      if (node.deployedStateVars.length > 0) {
+        node.deployedDataNftCount = Math.max(...node.deployedStateVars.map((sv) => sv.nftIndex)) + 1;
+      }
+
       // Register pending deploy for covenant verification
       this.pendingDeploys.push({
         deployIndex: deployIdx,
@@ -9998,6 +10006,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
         const savedStack = [...this.stack];
         let firstField = true;
+        // Multi-data-NFT child: stamp the leading nftIndex tag so the genesis commitment matches the
+        // child's own covenant (and the SDK's buildPushdataCommitment), both of which prepend + verify it
+        // on every commitment. Keyed on the CHILD's NFT count, not the parent factory's (isMultiDataNft).
+        if (dataNftCount > 1) {
+          this.emit(encodeNftIndexTag(nftIdx), locationData);
+          this.pushToStack('(value)');
+          firstField = false;
+        }
         for (const field of fieldsInNft) {
           // Deploy-then-call fold: a field set by a same-tx folded call takes its post-call value (the
           // parent-context arg expression) instead of the type default, so the child lands configured.
@@ -10012,10 +10028,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
             this.scopeDepth -= 1;
           } else {
             this.emitDefaultValue(locationData, field.type);
+            // emitDefaultValue leaves its pushed value untracked; track it so a later folded field's pick
+            // depth (and the nftIndex-tag CAT below) accounts for this field's runtime push. Model-only.
+            this.pushToStack('(value)');
           }
           this.emitPushdataEncode(field.type, locationData);
           if (!firstField) {
             this.emit(Op.OP_CAT, locationData);
+            this.popFromStack(); // CAT nets -1 on the stack; keep the model in step for later fold picks
           }
           firstField = false;
         }

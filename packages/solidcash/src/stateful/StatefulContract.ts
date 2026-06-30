@@ -2839,13 +2839,24 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         // would abort at the entry verify before reaching the child verify (folded deploy + entries
         // unsupported for now).
         let childCommitments: string[] = [];
-        if (childDataNftCount > 0 && commitmentHexes) {
+        if (childDataNftCount > 0 && commitmentHexes && extraOutputs) {
           const extraBase = 1 + requiredNftIndices.length + bhProbeCoSpends.length;
           const childBase = extraBase + entryOutputCount + 1; // skip entry outputs + the child master NFT
-          childCommitments = extractCommitmentsFromTrace(
-            runProbe(commitmentHexes), childDataNftCount,
-            { min: childBase, max: childBase + childDataNftCount },
-          ) ?? [];
+          const childOutStart = entryOutputCount + 1; // child data NFT 0's index within extraOutputs
+          const childRange = { min: childBase, max: childBase + childDataNftCount };
+          // The covenant verifies the child data NFTs in order and aborts at the first mismatch. A plain
+          // deploy lands at defaults (probe outputs match -> one pass captures all), but a folded multi-NFT
+          // child's NFT 0 mismatches -> capture it, feed it back into the probe output, and re-run to reach
+          // the next NFT. Mutating extraOutputs is safe: these are probe-only (the final tx uses the result).
+          for (let pass = 0; pass < childDataNftCount; pass++) {
+            childCommitments = extractCommitmentsFromTrace(runProbe(commitmentHexes), childDataNftCount, childRange)
+              ?? [];
+            if (childCommitments.length >= childDataNftCount) break;
+            for (let i = 0; i < childCommitments.length; i++) {
+              const out = extraOutputs[childOutStart + i];
+              if (out?.token?.nft) out.token.nft.commitment = childCommitments[i];
+            }
+          }
         }
 
         if (!commitmentHexes) {

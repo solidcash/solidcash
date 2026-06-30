@@ -1,14 +1,16 @@
 import { compileStringMulti } from 'solidc';
 import { parsePushdataCommitment } from '@solidcash/utils';
-import { Contract, SignatureTemplate, StatefulContract } from '../../src/index.js';
+import {
+  Contract, SignatureTemplate, StatefulContract, ContractBundle,
+} from '../../src/index.js';
 import { alicePriv, alicePub, alicePkh } from '../fixture/vars.js';
 import { createTestProvider, getTxOutputs } from '../test-util.js';
 import { Utxo } from '../../src/interfaces.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 
-// Phase 2: with the whole ArtifactMap registered (factory.registerArtifacts(map)), deployFrom resolves the
-// child artifact from the deploy target's name - no per-child registerChild and no childArtifact in the call.
-// See docs/multi-contract-artifacts.md.
+// A ContractBundle wraps an ArtifactMap (compileStringMulti) + provider as implicit context, so deploy /
+// attach auto-register the whole map - no explicit registerArtifacts, no childArtifact in deployFrom.
+// attach(address) resolves the category from the indexer (getUtxos). See docs/multi-contract-artifacts.md.
 const SOURCE = `
   contract MultiChild(bytes20 owner) {
     int counter;
@@ -24,43 +26,44 @@ const SOURCE = `
   }
 `;
 
-describe('multi-contract deploy (ArtifactMap resolution)', () => {
-  const map = compileStringMulti(SOURCE);
+describe('ContractBundle (implicit ArtifactMap context)', () => {
   const provider = createTestProvider();
+  const bundle = ContractBundle.from(compileStringMulti(SOURCE), { provider });
   const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
-  let factory: Awaited<ReturnType<typeof StatefulContract.deploy>>['contract'];
 
-  it('compiles a factory + child map', () => {
-    expect(Object.keys(map).sort()).toEqual(['MultiChild', 'MultiFactory']);
-    expect(map.MultiFactory.abi.find((f) => f.name === 'deployChild')!.deployTargets![0].contractName)
-      .toBe('MultiChild');
+  let factory: Awaited<ReturnType<typeof StatefulContract.deploy>>['contract'];
+  let factoryCategoryId: string;
+  let factoryAddress: string;
+
+  it('exposes the compiled artifacts by name', () => {
+    expect(Object.keys(bundle.artifacts).sort()).toEqual(['MultiChild', 'MultiFactory']);
+    expect(() => bundle.get('Nope')).toThrow(/not in this bundle/);
   });
 
-  it('deploys the factory from map.MultiFactory', async () => {
+  it('deploys a named contract via the bundle (artifacts auto-registered)', async () => {
     const fundingUtxo: Utxo = { txid: 'ba1d'.repeat(16), vout: 0, satoshis: 200000n };
     await provider.addUtxo(p2pkh.address, fundingUtxo);
-    const result = await StatefulContract.deploy(map.MultiFactory, [alicePub], {
-      provider,
+    const result = await bundle.deploy('MultiFactory', [alicePub], {
       fundingUtxo,
       funder: p2pkh.unlock.spend(alicePub, new SignatureTemplate(alicePriv)),
       initialState: { deployCount: 0n },
       changeAddress: p2pkh.address,
     });
     factory = result.contract;
+    factoryCategoryId = result.categoryId;
+    factoryAddress = factory.address;
+    expect(factory.categoryId).toBe(factoryCategoryId);
   });
 
-  it('deploys the child resolved from the registered ArtifactMap (no childArtifact, no registerChild)', async () => {
+  it('deploys the child with NO registerArtifacts and NO childArtifact (resolved from the bundle)', async () => {
     const fundingUtxo: Utxo = { txid: 'bb2d'.repeat(16), vout: 0, satoshis: 50000n };
     await provider.addUtxo(p2pkh.address, fundingUtxo);
 
-    // Register the whole map once; childArtifact + childConstructorArgs are resolved from it + the deploy args.
-    factory.registerArtifacts(map);
     const result = await StatefulContract.deployFrom({
       provider,
-      factory,
+      factory, // already carries the bundle's artifacts (bundle.deploy registered them)
       deployFunctionName: 'deployChild',
       deployFunctionArgs: [new SignatureTemplate(alicePriv), alicePkh],
-      // NOTE: no childArtifact - resolved from map[deployTargets[0].contractName] = map.MultiChild.
       childConstructorArgs: [alicePkh],
       fundingUtxo,
       funder: p2pkh.unlock.spend(alicePub, new SignatureTemplate(alicePriv)),
@@ -68,12 +71,20 @@ describe('multi-contract deploy (ArtifactMap resolution)', () => {
     });
 
     expect(result.tx.txid).toBeDefined();
-    expect(result.childCategoryId).toBe(fundingUtxo.txid);
-
     const childData = getTxOutputs(result.tx).find(
       (o) => o.token?.category === fundingUtxo.txid && o.token?.nft?.capability === 'mutable',
     );
-    const state = parsePushdataCommitment(childData!.token!.nft!.commitment, map.MultiChild.stateLayout!, 0);
+    const state = parsePushdataCommitment(
+      childData!.token!.nft!.commitment, bundle.get('MultiChild').stateLayout!, 0,
+    );
     expect(state.counter).toBe(0n);
+  });
+
+  it('attaches by address - the category is resolved from the indexer (getUtxos), not a registry', async () => {
+    const attached = await bundle.attach('MultiFactory', factoryAddress, [alicePub]);
+    // getUtxos(address) -> token category == the deployed factory's category.
+    expect(attached.categoryId).toBe(factoryCategoryId);
+    // It is the same self-pinned address.
+    expect(attached.address).toBe(factoryAddress);
   });
 });

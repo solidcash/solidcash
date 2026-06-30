@@ -9,6 +9,7 @@ export {
   type ExternalCallUtxoGroup,
   type StatefulTransactionOptions,
 } from './StatefulTransactionBuilder.js';
+export { ContractBundle, resolveCategoryFromAddress, type ContractBundleOptions } from './ContractBundle.js';
 export {
   StatefulContract,
   StatefulFunctionCall,

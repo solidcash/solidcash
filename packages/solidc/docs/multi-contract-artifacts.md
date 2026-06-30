@@ -198,8 +198,15 @@ first-class, schema-carrying map entries keyed by name alongside the concrete co
 1. **Phase 1 (this):** `compileStringMulti` / `compileFileMulti` -> `ArtifactMap`, including **imported**
    contracts (not just same-file siblings - dependencies are usually `import`ed) and the contract-less
    entries above. `compileString` / `compileFile` unchanged.
-2. **Phase 2 (SDK):** `deployFrom` (and, later, the call/delegate paths) resolve the dependency artifact from
-   a passed/attached `ArtifactMap` by the ABI's recorded name, instead of the registry; registry kept as the
+2. **Phase 2 (SDK, done):** `StatefulContract.registerArtifacts(map)` loads a whole `ArtifactMap` into the
+   child registry in one call; `deployFrom` resolves the dependency artifact from the ABI's recorded
+   `deployTargets[].contractName`, no per-child `registerChild`, no `childArtifact`. The registry stays as the
    fallback for a foreign pre-deployed instance.
-3. **Phase 3 (later):** a deploy-graph helper that deploys a contract and its lib/child deps from the map in
-   order, auto-wiring instances; external/delegate co-spend resolves the category via `getUtxos(address)`.
+3. **Phase 2b (SDK, done):** `ContractBundle.from(map, { provider })` wraps the map + provider (+ optional
+   signer) as the implicit deploy context. `deploy` / `withCategory` / `attach` auto-register the whole map, so
+   the consumer never calls `registerArtifacts`. `attach(name, address)` resolves the **live category** from
+   the indexer via `getUtxos(address).token.category` (`resolveCategoryFromAddress`), confirming the
+   category half of the registry is redundant for any deployed instance.
+4. **Phase 3 (in progress):** a deploy-graph helper that deploys a contract and its lib/child deps from the
+   map in order, auto-wiring instances; external/delegate co-spend resolves the category via
+   `getUtxos(address)` (the same mechanism `attach` already uses) instead of the instance registry.

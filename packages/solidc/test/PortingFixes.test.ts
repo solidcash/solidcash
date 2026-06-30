@@ -1738,3 +1738,24 @@ describe('SBE-25: msg.sender category forwarded across internal calls', () => {
       .toBe('C');
   });
 });
+
+describe('Library sibling calls and UDVT wrap/unwrap', () => {
+  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+
+  it('a library function resolves an unqualified call to a sibling library function', () => {
+    expect(cc('library L { function a(int x) internal returns (int) { return b(x) + 1; }'
+      + ' function b(int x) internal returns (int) { return x * 2; } }'
+      + ' contract C { using L for int; function f(int x) { require(x.a() == x * 2 + 1); } }')).toBe('C');
+  });
+
+  it('UDVT wrap/unwrap are identity casts to/from the underlying type', () => {
+    expect(cc('type D is uint64; contract C { function f(uint64 x, uint64 e) {'
+      + ' D d = D.wrap(x); require(D.unwrap(d) == e); } }')).toBe('C');
+  });
+
+  it('a UDVT wrap/unwrap name does not capture a library method of the same name', () => {
+    expect(cc('type D is uint64; library Lib { function wrap(uint64 a, uint64 bb) internal returns (uint64)'
+      + ' { return a + bb; } } contract C { using Lib for uint64;'
+      + ' function f(uint64 x) { require(Lib.wrap(x, 1) == x + 1); } }')).toBe('C');
+  });
+});

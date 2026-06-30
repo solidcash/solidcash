@@ -1802,6 +1802,28 @@ export default class AstBuilder
       return cast;
     }
 
+    // UDVT `Duration.wrap(x)` / `Duration.unwrap(x)`. A user-defined value type is identity at runtime over its
+    // underlying type, so wrap/unwrap are casts: unwrap -> the underlying type; wrap -> the underlying then the
+    // UDVT (wrap takes the underlying type, so a literal arg is first cast to it). The typeDefMap check
+    // distinguishes this from a library method named wrap/unwrap (e.g. `LibClock.wrap(d, t)`).
+    if (identifiers.length === 2 && parameters.length === 1) {
+      const udvt = this.typeDefMap.get(identifiers[0].getText());
+      const method = identifiers[1].getText();
+      if (udvt && (method === 'wrap' || method === 'unwrap')) {
+        const arg = parameters[0] as ExpressionNode;
+        if (method === 'unwrap') {
+          const cast = new CastNode(udvt.underlyingType, arg, false);
+          cast.location = Location.fromCtx(ctx);
+          return cast;
+        }
+        const toUnderlying = new CastNode(udvt.underlyingType, arg, false);
+        toUnderlying.location = Location.fromCtx(ctx);
+        const cast = new CastNode(udvt, toUnderlying, false);
+        cast.location = Location.fromCtx(ctx);
+        return cast;
+      }
+    }
+
     const functionCall = new FunctionCallNode(identifier, parameters);
     functionCall.location = Location.fromCtx(ctx);
     return functionCall;

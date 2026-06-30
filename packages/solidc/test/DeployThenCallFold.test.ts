@@ -63,8 +63,8 @@ contract Factory(pubkey deployer) {
     expect((make as { externalCalls?: unknown[] }).externalCalls).toBeUndefined();
   });
 
-  it('rejects a callee that reads state (not pure over params)', () => {
-    // `bump` does `this.counter = this.counter + 1` - reads child state, so it is not foldable.
+  it('folds a callee that reads default child state (this.counter + 1 = 1 on a fresh deploy)', () => {
+    // A fresh child starts at default state, so `this.counter` reads 0 and the genesis becomes 1.
     const src = `
 contract Child(bytes20 owner) {
     int counter;
@@ -79,6 +79,27 @@ contract Factory(pubkey deployer) {
         this.deployed = this.deployed + 1;
     }
 }`;
-    expect(() => compileString(src)).toThrow(/Cannot call 'bump\(\)'/);
+    const art = compileString(src);
+    const make = art.abi.find((f) => f.name === 'make')!;
+    expect(make.deployTargets).toEqual([{ contractName: 'Child', dataNftCount: 1 }]);
+    expect((make as { externalCalls?: unknown[] }).externalCalls).toBeUndefined();
+  });
+
+  it('rejects a callee with control flow (not yet foldable - only straight-line assignments fold)', () => {
+    const src = `
+contract Child(bytes20 owner) {
+    int counter;
+    function configure(int t) { if (t > 0) { this.counter = t; } require(true); }
+}
+contract Factory(pubkey deployer) {
+    int deployed;
+    function make(sig s, bytes20 owner, int t) deploy {
+        require(checkSig(s, deployer));
+        Child child = new Child(owner);
+        child.configure(t);
+        this.deployed = this.deployed + 1;
+    }
+}`;
+    expect(() => compileString(src)).toThrow(/Cannot call 'configure\(\)'/);
   });
 });

@@ -1,18 +1,23 @@
-// Deploying a stateful child and calling a method on it in the same transaction is rejected: the call
-// would co-spend the child, which this transaction creates as an output. (One-tx folding is planned.)
+// Calling a method on a freshly-deployed child in the same transaction is rejected unless the method folds
+// into the deploy genesis. A method with CONTROL FLOW does not (yet) fold - only straight-line local/field
+// assignments do - so it is still rejected: the call would co-spend the child, which this tx creates as an
+// output, and a UTXO cannot be both created and spent in one transaction.
 contract Child(bytes20 owner) {
     int counter;
-    function bump() {
-        this.counter = this.counter + 1;
+    function configure(int target) {
+        if (target > 0) {
+            this.counter = target;
+        }
+        require(true);
     }
 }
 
 contract Factory(pubkey deployer) {
     int deployed;
-    function make(sig s, bytes20 owner) deploy {
+    function make(sig s, bytes20 owner, int target) deploy {
         require(checkSig(s, deployer));
         Child c = new Child(owner);
-        c.bump();
+        c.configure(target);
         this.deployed = this.deployed + 1;
     }
 }

@@ -220,6 +220,97 @@ describe('deploy-then-call fold with a computed callee (deployFrom e2e)', () => 
   });
 });
 
+// A folded callee may also be a straight-line sequence using LOCAL variables, reads of fields written
+// EARLIER in the call, and reads of fields not yet written (which resolve to the child's default state).
+// The deploy covenant evaluates the whole sequence on-chain. See foldGenesisExpr.
+const seqChildSource = `
+  contract SeqChild(bytes20 owner) {
+    int a;
+    int b;
+    int c;
+
+    function init(int sup) {
+      int x = sup * 2;        // local
+      this.a = x;             // a = sup*2
+      this.b = this.a + 1;    // read field written earlier -> sup*2 + 1
+      this.c = this.c + 5;    // read field at default (0) -> 5
+      require(true);
+    }
+  }
+`;
+
+const seqFactorySource = `
+  import "./seq_child.scash";
+  contract SeqFactory(pubkey factoryOwner) {
+    int deployCount;
+
+    function deploySeq(sig s, bytes20 childOwner, int sup) deploy {
+      require(checkSig(s, factoryOwner));
+      SeqChild child = new SeqChild(childOwner);
+      child.init(sup);
+      this.deployCount = this.deployCount + 1;
+    }
+  }
+`;
+
+describe('deploy-then-call fold with locals + state reads (deployFrom e2e)', () => {
+  const childArtifact = compileString(seqChildSource);
+  const factoryArtifact = compileString(seqFactorySource, {
+    importResolver: (importPath: string, currentFile: string): ResolvedImport | undefined => {
+      const dir = currentFile.substring(0, currentFile.lastIndexOf('/') + 1);
+      let resolved = dir + importPath.replace('./', '');
+      if (!resolved.endsWith('.scash')) resolved += '.scash';
+      return resolved === '/seq_child.scash' ? { source: seqChildSource, id: resolved } : undefined;
+    },
+    rootFileId: '/main.scash',
+  });
+
+  const provider = createTestProvider();
+  const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
+  let factory: Awaited<ReturnType<typeof StatefulContract.deploy>>['contract'];
+
+  it('deploys the factory', async () => {
+    const fundingUtxo: Utxo = { txid: 'ea1d'.repeat(16), vout: 0, satoshis: 200000n };
+    await provider.addUtxo(p2pkh.address, fundingUtxo);
+    const result = await StatefulContract.deploy(factoryArtifact, [alicePub], {
+      provider,
+      fundingUtxo,
+      funder: p2pkh.unlock.spend(alicePub, new SignatureTemplate(alicePriv)),
+      initialState: { deployCount: 0n },
+      changeAddress: p2pkh.address,
+    });
+    factory = result.contract;
+  });
+
+  it('evaluates the local + sequential field reads on-chain (a=sup*2, b=a+1, c=default+5)', async () => {
+    const fundingUtxo: Utxo = { txid: 'eb2d'.repeat(16), vout: 0, satoshis: 50000n };
+    await provider.addUtxo(p2pkh.address, fundingUtxo);
+
+    const sup = 10n;
+    const result = await StatefulContract.deployFrom({
+      provider,
+      factory,
+      deployFunctionName: 'deploySeq',
+      deployFunctionArgs: [new SignatureTemplate(alicePriv), alicePkh, sup],
+      childArtifact,
+      childConstructorArgs: [alicePkh],
+      fundingUtxo,
+      funder: p2pkh.unlock.spend(alicePub, new SignatureTemplate(alicePriv)),
+      changeAddress: p2pkh.address,
+    });
+
+    const childDataOutput = getTxOutputs(result.tx).find(
+      (o) => o.token?.category === result.childCategoryId && o.token?.nft?.capability === 'mutable',
+    );
+    const st = parsePushdataCommitment(
+      childDataOutput!.token!.nft!.commitment, childArtifact.stateLayout!, 0,
+    );
+    expect(st.a).toBe(sup * 2n); // 20
+    expect(st.b).toBe(sup * 2n + 1n); // 21
+    expect(st.c).toBe(5n); // default 0 + 5
+  });
+});
+
 // A child whose fixed-size state spans more than one data NFT prepends a verifiable nftIndex tag to every
 // commitment (so a higher-index NFT can't be substituted for a lower one - they share one covenant address).
 // The deploy covenant's genesis builder must stamp the same tag the child's own covenant + the SDK do, else

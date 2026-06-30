@@ -108,7 +108,6 @@ import { SymbolTable, Symbol, SymbolType } from '../ast/SymbolTable.js';
 import { BinaryOperator, NullaryOperator, UnaryOperator } from '../ast/Operator.js';
 import { createDefaultValueExpression } from '../ast/defaults.js';
 import { cloneNode } from '../ast/clone.js';
-import { substituteInExpression } from './InheritanceExpansionTransformation.js';
 import {
   FunctionRedefinitionError,
   VariableRedefinitionError,
@@ -941,52 +940,89 @@ export default class SymbolTableTraversal extends AstTraversal {
     return fn.body ? walk(fn.body) : true;
   }
 
-  // An assignment RHS folds iff it is PURE over the callee's params and literals: arithmetic / comparison /
-  // bitwise / cast / ternary only - no state reads, locals, constants, or calls. The covenant computes it on
-  // the child's default (zero) state, so for a fresh deploy the value depends only on the forwarded args.
-  private isPureFoldableExpr(expr: ExpressionNode, paramNames: Set<string>): boolean {
-    if (expr instanceof LiteralNode) return true;
-    if (expr instanceof IdentifierNode) return paramNames.has(expr.name);
+  // Fold one expression into a parent-context genesis expression, or null if not foldable. The child starts
+  // at default (zero) state, so a `this.<field>` read resolves to the field's value WRITTEN EARLIER in foo
+  // (fieldExprs) or its type default. Identifiers resolve to a forwarded arg or an earlier local (subs).
+  // Allowed node shapes: literals, those identifiers/state-reads, and pure arithmetic/comparison/bitwise/
+  // cast/ternary. Anything else (calls, control flow, unknown identifiers) is unfoldable. Mutates `expr`.
+  private foldGenesisExpr(
+    expr: ExpressionNode, subs: Map<string, ExpressionNode>, fieldExprs: Map<string, ExpressionNode>,
+    fieldType: (name: string) => Type | undefined,
+  ): ExpressionNode | null {
+    if (expr instanceof LiteralNode) return expr;
+    if (expr instanceof IdentifierNode) {
+      const sub = subs.get(expr.name);
+      return sub ? cloneNode(sub) : null; // forwarded arg or earlier local; unknown -> not foldable
+    }
+    if (expr instanceof StateAccessNode) {
+      const prior = fieldExprs.get(expr.name);
+      if (prior) return cloneNode(prior);
+      const t = fieldType(expr.name);
+      return t ? createDefaultValueExpression(t, expr.location!) : null; // fresh read = type default
+    }
     if (expr instanceof BinaryOpNode) {
-      return this.isPureFoldableExpr(expr.left, paramNames) && this.isPureFoldableExpr(expr.right, paramNames);
+      const l = this.foldGenesisExpr(expr.left, subs, fieldExprs, fieldType);
+      const r = this.foldGenesisExpr(expr.right, subs, fieldExprs, fieldType);
+      if (!l || !r) return null;
+      expr.left = l; expr.right = r;
+      return expr;
     }
-    if (expr instanceof UnaryOpNode) return this.isPureFoldableExpr(expr.expression, paramNames);
-    if (expr instanceof CastNode) return this.isPureFoldableExpr(expr.expression, paramNames);
+    if (expr instanceof UnaryOpNode) {
+      const e = this.foldGenesisExpr(expr.expression, subs, fieldExprs, fieldType);
+      if (!e) return null;
+      expr.expression = e;
+      return expr;
+    }
+    if (expr instanceof CastNode) {
+      const e = this.foldGenesisExpr(expr.expression, subs, fieldExprs, fieldType);
+      if (!e) return null;
+      expr.expression = e;
+      return expr;
+    }
     if (expr instanceof TernaryOpNode) {
-      return this.isPureFoldableExpr(expr.condition, paramNames)
-        && this.isPureFoldableExpr(expr.ifTrue, paramNames)
-        && this.isPureFoldableExpr(expr.ifFalse, paramNames);
+      const c = this.foldGenesisExpr(expr.condition, subs, fieldExprs, fieldType);
+      const t = this.foldGenesisExpr(expr.ifTrue, subs, fieldExprs, fieldType);
+      const f = this.foldGenesisExpr(expr.ifFalse, subs, fieldExprs, fieldType);
+      if (!c || !t || !f) return null;
+      expr.condition = c; expr.ifTrue = t; expr.ifFalse = f;
+      return expr;
     }
-    return false;
+    return null;
   }
 
-  // Try to fold a same-tx `deployLocal.foo(args)` into the deploy genesis. Handles a foo whose body is a set
-  // of `this.field = <pure expr over foo's params + literals>` assignments, plus an optional trailing require
-  // (not enforced at deploy). Records, per child field, that expression with foo's params substituted by the
-  // caller's arg expressions, so the deploy covenant computes the genesis value instead of using the default.
-  // Returns false (caller errors) for anything else.
+  // Try to fold a same-tx `deployLocal.foo(args)` into the deploy genesis. Handles a foo whose body is a
+  // straight-line sequence of `T local = expr;` and `this.field = expr;` assignments (plus an optional
+  // trailing require, not enforced at deploy), where each expr folds (foldGenesisExpr). Records, per child
+  // field, its final genesis expression in the parent's context, so the deploy covenant computes the value
+  // instead of using the default. Returns false (caller errors) for anything else.
   private tryFoldDeployCall(
     deployNode: InstantiationNode, foo: FunctionDefinitionNode, parentArgs: ExpressionNode[],
   ): boolean {
     const statements = (foo.body as BlockNode | undefined)?.statements ?? [];
     if (statements.length === 0) return false;
-    const subs = new Map<string, ExpressionNode>();
+    const fieldType = (name: string): Type | undefined => deployNode.referencedContract?.stateVariables
+      .find((sv) => sv.name === name)?.type;
+    const subs = new Map<string, ExpressionNode>(); // forwarded args + earlier locals -> parent-context expr
     foo.parameters.forEach((p, i) => { if (i < parentArgs.length) subs.set(p.name, parentArgs[i]); });
-    const paramNames = new Set(subs.keys()); // only params with a forwarded arg are substitutable
-    const map = new Map<string, ExpressionNode>();
+    const fieldExprs = new Map<string, ExpressionNode>(); // child field -> folded value written so far
     for (let i = 0; i < statements.length; i += 1) {
       const stmt = statements[i];
-      if (stmt instanceof StateAssignNode && this.isPureFoldableExpr(stmt.expression, paramNames)) {
-        // Substitute foo's params with the caller's arg expressions so the genesis value is computed in the
-        // parent covenant's context. TypeCheck types the cloned result (see visitInstantiation).
-        map.set(stmt.name, substituteInExpression(cloneNode(stmt.expression), subs));
+      if (stmt instanceof VariableDefinitionNode) {
+        if (!stmt.expression) return false; // uninitialized local
+        const folded = this.foldGenesisExpr(cloneNode(stmt.expression), subs, fieldExprs, fieldType);
+        if (!folded) return false;
+        subs.set(stmt.name, folded); // inline this local into later expressions
+      } else if (stmt instanceof StateAssignNode) {
+        const folded = this.foldGenesisExpr(cloneNode(stmt.expression), subs, fieldExprs, fieldType);
+        if (!folded) return false;
+        fieldExprs.set(stmt.name, folded);
       } else if (!(i === statements.length - 1 && stmt instanceof RequireNode)) {
-        return false; // only pure-over-params setters (+ an optional trailing require) fold
+        return false; // only straight-line local/field assignments (+ an optional trailing require) fold
       }
     }
-    if (map.size === 0) return false;
+    if (fieldExprs.size === 0) return false;
     const init = deployNode.foldedStateInit ?? new Map<string, ExpressionNode>();
-    for (const [k, v] of map) init.set(k, v); // a later folded call overrides an earlier one
+    for (const [k, v] of fieldExprs) init.set(k, v); // a later folded call overrides an earlier one
     deployNode.foldedStateInit = init;
     return true;
   }

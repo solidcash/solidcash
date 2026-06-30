@@ -32,7 +32,11 @@ honoring - not bypassing - the self-pin.
   `<salt> OP_DROP` segment (step 2.5, after the self-pin), so the address is deterministic from
   `(bytecode, args, salt[, category])`. Parity with `new Contract(artifact, args, { salt })` is exact
   (e2e: ContractDeployment.test.ts "create2"). For stateless this is the full EVM create2; for stateful the
-  category already provides per-deploy determinism, with the salt as an extra composed segment.
+  category already provides per-deploy determinism, with the salt as an extra composed segment. A stateful
+  `new C{salt}()` deploys end-to-end via `deployFrom`: the compiler records the salt per deploy target
+  (`deployTargets[].salt` = a forwarded param name, a hex literal, or `{ computed: true }`), and `deployFrom`
+  derives it (or takes an explicit `childSalt`) and builds the child `Contract` with it, so the SDK-supplied
+  genesis address equals the covenant's.
 - **create3** - a `deploy` factory writes `mapping(salt => categoryId)` (no `new T()`); `StatefulContract
   .deployFrom` mints the child whose category is the funding-UTXO txid and records `children[salt] =
   categoryId` as an entry NFT. The salt is the user-chosen logical key; the lookup `factory.children[salt]`

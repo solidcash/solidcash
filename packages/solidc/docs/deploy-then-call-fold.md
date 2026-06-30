@@ -49,14 +49,21 @@ covenant-verified (no SDK-trusted genesis).
   `IC(addr)` external-call patterns share the same `AddressType.interfaceName` routing and must keep working.
 
 **Foldability.** The eventual target is any pure `(state, args) -> state` transition. **Implemented today**
-(`tryFoldDeployCall`): a `foo` whose body is a set of `this.<field> = <expr>` assignments (plus an optional
-trailing `require`), where each RHS is **pure over `foo`'s params + literals** - arithmetic, comparison,
-bitwise, cast, ternary (`isPureFoldableExpr`). Each RHS is cloned and has `foo`'s params substituted by the
-caller's arg expressions, so the covenant computes it in the parent's context on the child's default state.
-- Not yet foldable (-> `DeployThenCallError`): state reads (`this.counter + 1`), local variables, contract
-  constants, function calls, control flow; and the always-forbidden `tx.*`, `msg.sender`/`msg.value`,
-  external calls, `emit`, `blockhash`/block.*, `new`/`deploy`, `selfdestruct`. Extending to state reads
-  (default-substituted) + locals + control flow is the remaining "general `foo`" work below.
+(`tryFoldDeployCall` + `foldGenesisExpr`): a `foo` whose body is a **straight-line** sequence of
+`T local = <expr>;` and `this.<field> = <expr>;` assignments (plus an optional trailing `require`). Each RHS
+folds into a parent-context expression where, on the child's default state:
+- an identifier resolves to a forwarded arg or an earlier local;
+- a `this.<field>` read resolves to the value written EARLIER in the call (`fieldExprs`) or, if not yet
+  written, the field's type default (`createDefaultValueExpression`);
+- the operators allowed are arithmetic / comparison / bitwise / cast / ternary.
+
+So `this.counter = this.counter + 1` folds to `1`; `int x = sup*2; this.a = x` inlines the local;
+`this.a = sup; this.b = this.a + 1` chains. The folded expressions are cloned, so the child's own
+compilation is untouched; TypeCheck types them (see `visitInstantiation`).
+- Not yet foldable (-> `DeployThenCallError`): **control flow** (if/loops), function calls, contract
+  constants; and the always-forbidden `tx.*`, `msg.sender`/`msg.value`, external calls, `emit`,
+  `blockhash`/block.*, `new`/`deploy`, `selfdestruct`. Control flow needs the state-transition subroutine
+  below.
 
 ### 2. Codegen - covenant verifies the post-`foo` genesis
 
@@ -154,13 +161,13 @@ child spanning 2 data NFTs deploys both plain (tagged defaults) and folded (conf
   collected).
 - **P2 - DONE:** multi-data-NFT child deploys (stale count recompute + genesis nftIndex tag + OP_CAT model
   + SDK iterative child extraction) + plain & folded multi-NFT e2e. See "Multi-data-NFT child deploys" above.
-- **P3 (codegen) - DONE for setters computed from params:** deploy covenant emits the post-call field
-  values (folded expr via OP_PICK leaves); SDK trace-extraction of the child genesis (`deployFrom`). Each
-  field's RHS may be any expression pure over the callee's params + literals (arithmetic / cast / ternary),
-  not just a bare param. e2e (`DeployThenCallFold.e2e.test.ts`): direct setters, a computed callee
-  (`total=sup*2`, `half=amt/2+1`, evaluated on-chain), and multi-NFT - all land configured in one tx; the
-  covenant runs on `send()`, so success proves it accepted the SDK-supplied post-call genesis.
-- **P4 (open):** broaden foldability further - state reads (default-substituted), local variables, control
-  flow (a true state-transition subroutine for any covenant-runnable `foo`); folded deploy + factory
-  mapping-entry writes; the direct-`deploy()`-path second probe; docs in external-contract-calls.md /
-  modifiers.md.
+- **P3 (codegen) - DONE for straight-line callees:** deploy covenant emits the post-call field values
+  (folded expr via OP_PICK leaves); SDK trace-extraction of the child genesis (`deployFrom`). Each field's
+  RHS may be any straight-line expression over the callee's params, earlier locals, and `this.field` reads
+  (earlier-write or default) - arithmetic / cast / ternary. e2e (`DeployThenCallFold.e2e.test.ts`): direct
+  setters, a computed callee (`total=sup*2`), a local + sequential + default-read callee (`a=sup*2`,
+  `b=a+1`, `c=default+5`), and multi-NFT - all evaluated on-chain in one tx; the covenant runs on `send()`,
+  so success proves it accepted the SDK-supplied post-call genesis.
+- **P4 (open):** control flow (if/loops) via a true state-transition subroutine that decodes the default
+  commitment and runs `foo`'s body; folded deploy + factory mapping-entry writes; the direct-`deploy()`-path
+  second probe; docs in external-contract-calls.md / modifiers.md.

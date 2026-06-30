@@ -207,6 +207,20 @@ first-class, schema-carrying map entries keyed by name alongside the concrete co
    the consumer never calls `registerArtifacts`. `attach(name, address)` resolves the **live category** from
    the indexer via `getUtxos(address).token.category` (`resolveCategoryFromAddress`), confirming the
    category half of the registry is redundant for any deployed instance.
-4. **Phase 3 (in progress):** a deploy-graph helper that deploys a contract and its lib/child deps from the
-   map in order, auto-wiring instances; external/delegate co-spend resolves the category via
-   `getUtxos(address)` (the same mechanism `attach` already uses) instead of the instance registry.
+4. **Phase 3a (SDK, done):** the DELEGATE-library co-spend resolves from the bundle via `getUtxos`, with no
+   `registerLibrary`. When a consumer registered the `ArtifactMap` (so the library artifact is in its child
+   registry) but no library instance, `_resolveLibrariesFromRegistry` takes the artifact by name, reads the
+   library's live category from the indexer (`resolveCategoryFromLockingBytecode` on the consumer's baked
+   `__libAddr_<name>` ctor arg), rebuilds the instance (branded -> `__brand` = consumer category; else no args)
+   and registers it only if it hashes back to the baked address. Purely additive: it fires only in the path that
+   previously threw, so registered-instance flows are byte-identical.
+5. **Phase 3b (remaining, shape TBD):** the same retirement for **external** calls/reads. Harder than delegates:
+   externals are self-pinned, so the target address is derived *from* the category (circular - only the
+   consumer's baked `addressParam` breaks it, and only for direct externals; transitive external graphs chain
+   through categories), and `_buildExternalGraph` runs synchronously at `withCategory`/`from`, so `getUtxos`
+   either forces the connect API async or moves external-graph construction to call-time. Artifact resolution is
+   by interface name, so bundle auto-resolution also needs an interface->implementation convention.
+6. **Phase 3c (remaining):** a deploy-graph helper that deploys a contract and its lib deps from the map in
+   order, auto-wiring. Bounded for non-branded libraries (deploy the library, link the consumer to its address,
+   calls auto-wire via 3a); branded libraries carry a deploy-time category circularity that needs pre-chosen
+   categories.

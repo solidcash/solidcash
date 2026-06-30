@@ -99,6 +99,13 @@ reads it straight out of the deploy probe rather than recomputing:
 Limitation: a deploy function that **writes mapping entries** is unsupported in the fold path - the entry
 verify would abort before the child verify is reached, so the extra pass can't capture the child commitment.
 
+**Ergonomic sugar.** `StatefulFunctionCall.deploy(options)` lets a deploy be written as a method on the
+factory: `await factory.deployFn(...args).deploy({ childArtifact, childConstructorArgs, fundingUtxo, funder,
+changeAddress })`. The provider, factory, deploy-function name and args come from the call; `DeployFromCallOptions`
+is `DeployFromOptions` minus those four. It forwards to `StatefulContract.deployFrom` (which still validates
+the `deploy` modifier). A generated `.ts` artifact types the method name; `compileString`'s generic `Artifact`
+needs a cast.
+
 For the direct-`deploy()` path (`_deriveDeployCommitments:2130`), the analogous hook is a second probe after
 the constructor-convergence loop that re-runs with the child's `foo` unlocker (agent-identified, ~2199/2388).
 Not yet wired (only `deployFrom` is done).

@@ -631,7 +631,12 @@ callOption
     ;
 
 typeList
-    : '(' typeName (',' typeName)* ','? ')'
+    : '(' typeListItem (',' typeListItem)* ','? ')'
+    ;
+
+typeListItem
+    : typeName
+    | arrayType
     ;
 
 expression

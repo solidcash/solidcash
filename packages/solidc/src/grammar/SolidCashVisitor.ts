@@ -146,6 +146,7 @@ import { ExpressionListContext } from "./SolidCashParser.js";
 import { CallOptionsContext } from "./SolidCashParser.js";
 import { CallOptionContext } from "./SolidCashParser.js";
 import { TypeListContext } from "./SolidCashParser.js";
+import { TypeListItemContext } from "./SolidCashParser.js";
 import { CastContext } from "./SolidCashParser.js";
 import { AbiEncodeContext } from "./SolidCashParser.js";
 import { TypeIntrospectionContext } from "./SolidCashParser.js";
@@ -1080,6 +1081,12 @@ export default class SolidCashVisitor<Result> extends ParseTreeVisitor<Result> {
 	 * @return the visitor result
 	 */
 	visitTypeList?: (ctx: TypeListContext) => Result;
+	/**
+	 * Visit a parse tree produced by `SolidCashParser.typeListItem`.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	visitTypeListItem?: (ctx: TypeListItemContext) => Result;
 	/**
 	 * Visit a parse tree produced by the `Cast`
 	 * labeled alternative in `SolidCashParser.expression`.

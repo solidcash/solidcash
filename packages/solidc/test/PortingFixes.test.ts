@@ -1759,3 +1759,18 @@ describe('Library sibling calls and UDVT wrap/unwrap', () => {
       + ' function f(uint64 x) { require(Lib.wrap(x, 1) == x + 1); } }')).toBe('C');
   });
 });
+
+describe('abi.decode with array and struct types in the type list', () => {
+  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+
+  it('accepts an array type (uint256[]) in the abi.decode type list', () => {
+    expect(cc('contract C { function f(bytes data) returns (uint256 x, uint256[] arr) {'
+      + ' (x, arr) = abi.decode(data, (uint256, uint256[])); } }')).toBe('C');
+  });
+
+  it('accepts a struct type in the abi.decode type list', () => {
+    expect(cc('struct S { uint256 a; } contract C {'
+      + ' function f(bytes data) returns (uint256 x, uint256[] arr, S s) {'
+      + ' (x, arr, s) = abi.decode(data, (uint256, uint256[], S)); } }')).toBe('C');
+  });
+});

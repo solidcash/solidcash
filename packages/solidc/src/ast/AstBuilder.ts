@@ -3078,7 +3078,12 @@ export default class AstBuilder
 
   visitAbiDecode(ctx: AbiDecodeContext): AbiDecodeNode {
     const data = this.visit(ctx.expression());
-    const schema = ctx.typeList().typeName_list().map((t) => parseType(t.getText()));
+    const schema = ctx.typeList().typeListItem_list().map((t) => {
+      const text = t.getText();
+      const ty = parseType(text) ?? this.resolveType(text);
+      if (!ty) throw new Error(`Unsupported type '${text}' in abi.decode`);
+      return ty;
+    });
     const node = new AbiDecodeNode(data, schema);
     node.location = Location.fromCtx(ctx);
     return node;
@@ -3086,7 +3091,12 @@ export default class AstBuilder
 
   visitAbiDecodeAt(ctx: AbiDecodeAtContext): AbiDecodeAtNode {
     const data = this.visit(ctx.expression());
-    const schema = ctx.typeList().typeName_list().map((t) => parseType(t.getText()));
+    const schema = ctx.typeList().typeListItem_list().map((t) => {
+      const text = t.getText();
+      const ty = parseType(text) ?? this.resolveType(text);
+      if (!ty) throw new Error(`Unsupported type '${text}' in abi.decode`);
+      return ty;
+    });
     const index = parseInt(ctx.NumberLiteral().getText(), 10);
     const node = new AbiDecodeAtNode(data, schema, index);
     node.location = Location.fromCtx(ctx);

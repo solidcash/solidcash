@@ -4051,10 +4051,22 @@ export default class SymbolTableTraversal extends AstTraversal {
       }
 
       const isStatefulTarget = contract.stateVariables.length > 0 || contract.collections.length > 0;
-      const isInDeployFunction = this.currentFunction?.modifiers?.includes(FunctionModifier.DEPLOY) ?? false;
+      let isInDeployFunction = this.currentFunction?.modifiers?.includes(FunctionModifier.DEPLOY) ?? false;
 
+      // Infer the `deploy` modifier: instantiating a stateful contract (`new T()` mints the child's genesis)
+      // IS deploying it, so the keyword is optional. The deploy covenant rides the parent's block layout, so
+      // inference only applies inside a STATEFUL contract's function; a non-stateful parent (or a `new T()`
+      // with no enclosing function, e.g. a state-var initializer) cannot host a deploy and still errors.
+      // (Create3-style deploys that synthesize the child with no `new T()` still declare `deploy` explicitly.)
       if (isStatefulTarget && !isInDeployFunction) {
-        throw new StatefulContractDeploymentError(node, contract.name);
+        if (this.currentFunction && this.isStatefulContract) {
+          if (!this.currentFunction.modifiers.includes(FunctionModifier.DEPLOY)) {
+            this.currentFunction.modifiers.push(FunctionModifier.DEPLOY);
+          }
+          isInDeployFunction = true;
+        } else {
+          throw new StatefulContractDeploymentError(node, contract.name);
+        }
       }
 
       if (node.callOptions?.value && !this.isStatefulContract) {

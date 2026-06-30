@@ -24,6 +24,27 @@ contract Factory(pubkey deployer) {
 }`;
 
 describe('deploy-then-call fold (compiler)', () => {
+  it('infers the deploy modifier from new Child() (deploy keyword optional)', () => {
+    // `make` has no `deploy` keyword; instantiating a stateful Child infers it.
+    const src = `
+contract Child(bytes20 owner) {
+    int counter;
+    function configure(int c) { this.counter = c; require(true); }
+}
+contract Factory(pubkey deployer) {
+    int deployed;
+    function make(sig s, bytes20 owner, int c0) {
+        require(checkSig(s, deployer));
+        Child child = new Child(owner);
+        child.configure(c0);
+        this.deployed = this.deployed + 1;
+    }
+}`;
+    const make = compileString(src).abi.find((f) => f.name === 'make')!;
+    expect(make.modifiers).toContain('deploy');
+    expect(make.deployTargets).toEqual([{ contractName: 'Child', dataNftCount: 1, constructorArgs: ['owner'] }]);
+  });
+
   it('folds a direct-setter call into the deploy genesis (no co-spend, covenant carries the post-call state)', () => {
     const folded = compileString(factory('child.configure(c0, a0);'));
     const make = folded.abi.find((f) => f.name === 'make')!;

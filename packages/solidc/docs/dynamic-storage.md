@@ -194,7 +194,7 @@ Rejected alternatives (recorded for posterity):
   (`len=0`, empty data) so reads can force-co-spend it; otherwise a spender withholds chunk 0 and a
   non-empty value reads as empty. Costs >= 1 chunk for every string incl. empty. Not chosen.
 
-## Coexistence limits (W1 + W5 lifted; W2/W3/W4 remain)
+## Coexistence limits (W1-W5 all lifted)
 The read/write loops apply the collection-iteration shared trailing-counter arithmetic: read var R reads at
 `blockSize + sum(prior read-var chunk counts) + i` (GTT `emitDynamicReadLoop`), and written var W's new
 chunks verify at `blockSize + sum(prior written-var counts) + i` in state-var DECLARATION order (GTT

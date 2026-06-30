@@ -39,11 +39,9 @@ import { cloneNode } from '../ast/clone.js';
  * }
  * ```
  *
- * Runs before semantic analysis (and before InlineStoragePointerCalls) so the hoisted accesses collect entry
- * slots normally. Restricted to single-tail-return helpers (the body linearizes soundly). Hoisting is
- * suppressed where the call is conditionally evaluated (loop conditions, ternary branches, short-circuit
- * right operands) so it cannot change revert/effect semantics; at the remaining unconditional positions it is
- * order-preserving. A helper still referenced after the pass (an un-hoistable call) is kept, not dropped.
+ * Runs pre-semantic (before InlineStoragePointerCalls). Restricted to single-tail-return helpers; hoisting is
+ * suppressed at conditionally-evaluated positions (loop conditions, ternary branches, short-circuit right
+ * operands) to preserve revert/effect semantics. An un-hoistable call keeps its helper.
  */
 const PREFIX = '__rh';
 

@@ -44,10 +44,9 @@ export interface OpaqueLoopContractCall {
 }
 
 /**
- * Derive the (targets, cospends) for an opaque loop dispatch from known contract instances - what the user
- * said is fundamentally available on BCH: each target's locking bytecode (category-pinned address), its UTXO
- * (Fulcrum lookup), its unlocker (artifact + the chosen function/args), and its return (its on-chain state).
- * Picks the target's minting-NFT master UTXO (the category-bearing one needed to mint the return event).
+ * Derive (targets, cospends) for an opaque loop dispatch from known contract instances: each target's locking
+ * bytecode, its UTXO (provider lookup), its unlocker (artifact + chosen fn/args), and its return (on-chain
+ * state). Picks the minting-NFT master UTXO, needed to mint the return event.
  */
 export async function deriveOpaqueLoopCoSpends(
   calls: OpaqueLoopContractCall[],

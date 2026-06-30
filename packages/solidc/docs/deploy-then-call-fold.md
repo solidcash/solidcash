@@ -34,6 +34,13 @@ covenant-verified (no SDK-trusted genesis).
 
 ### 1. Semantic - detect + fold, don't co-spend
 
+- **Deploy modifier is inferred**: `new StatefulContract()` mints the child's genesis, so it IS a deploy.
+  At the instantiation site (`SymbolTableTraversal` ~4056) a stateful `new T()` inside a STATEFUL contract's
+  function pushes `FunctionModifier.DEPLOY` onto the function (instead of raising
+  `StatefulContractDeploymentError`) - the `deploy` keyword is optional. Set in the first semantic pass, so
+  it flows to the ABI + the deploy covenant. Guards: a non-stateful parent (the deploy covenant rides the
+  parent's block layout) or a `new T()` with no enclosing function still errors; create3-style deploys that
+  synthesize the child with no `new T()` still declare `deploy` explicitly.
 - Track **deploy-result locals**: in `SymbolTableTraversal.visitVariableDefinition` (~3296), record a
   per-function `Map<varName, InstantiationNode>` when `expression instanceof InstantiationNode &&
   expression.referencedContract`.

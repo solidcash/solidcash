@@ -99,16 +99,20 @@ reads it straight out of the deploy probe rather than recomputing:
 Limitation: a deploy function that **writes mapping entries** is unsupported in the fold path - the entry
 verify would abort before the child verify is reached, so the extra pass can't capture the child commitment.
 
-**Ergonomic sugar + context resolution.** `StatefulFunctionCall.deploy(options)` lets a deploy be written as
-a method on the factory; `DeployFromCallOptions` is `DeployFromOptions` minus the four call-derived fields
-(provider, factory, deploy-function name, args). On top of that, `deployFrom` resolves the rest from context,
-so after a one-time setup a deploy is just the function args + the per-deploy funding UTXO:
+**Ergonomic sugar + context resolution.** A deploy-modifier function is a single terminal call. With a
+connected signer (the existing `Signer` abstraction - ethers-style) it is just the function args:
 
 ```
-factory.registerChild(childArtifact);                       // child artifact by contract name
-factory.setDeployDefaults({ funder, changeAddress });       // funding context
-await factory.deployConfigured(sig, owner, c0, a0).deploy({ fundingUtxo });
+const signed = factory.registerChild(childArtifact).connect(signer);
+await signed.deployConfigured(sig, owner, c0, a0);
 ```
+
+- The instance method for a deploy function returns a **thenable** `DeployFunctionCall`; awaiting it runs
+  `_deployFromSigner`, which picks a genesis-valid (vout 0, token-free) UTXO from the signer and uses the
+  signer's `unlockP2PKH()` + address for funder + change. `.deploy({ fundingUtxo, ... })` stays for explicit
+  / no-signer control; `DeployFromCallOptions` is `DeployFromOptions` minus the four call-derived fields
+  (provider, factory, deploy-function name, args).
+- The child + funding are resolved from context (so even the explicit form is short):
 
 - **childArtifact**: explicit option, else the registered artifact for the deploy target's `contractName`.
 - **childConstructorArgs**: explicit, else derived from the compiler-recorded `new C(param)` mapping

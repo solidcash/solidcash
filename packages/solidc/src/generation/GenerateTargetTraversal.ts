@@ -6669,10 +6669,24 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       const constructorArgs = node.parameters.map((p) => (
         p instanceof IdentifierNode && deployFnParamNames.has(p.name) ? p.name : null
       ));
+      // create2 salt: record so the SDK builds the child Contract with the matching salt (the deploy covenant
+      // verifies the salt-composed address). A `new C{salt: param}()` records the forwarded param name; a hex
+      // literal records its value; a non-trivial expression is `{ computed: true }` (SDK needs an explicit
+      // childSalt). See docs/contract-creation.md.
+      const saltExpr = node.callOptions?.salt;
+      let salt: { param: string } | { literal: string } | { computed: true } | undefined;
+      if (saltExpr instanceof IdentifierNode && deployFnParamNames.has(saltExpr.name)) {
+        salt = { param: saltExpr.name };
+      } else if (saltExpr instanceof HexLiteralNode) {
+        salt = { literal: binToHex(saltExpr.value) };
+      } else if (saltExpr) {
+        salt = { computed: true };
+      }
       this.currentFunction.deployTargets.push({
         contractName: node.referencedContract!.name,
         dataNftCount: node.deployedDataNftCount,
         constructorArgs,
+        ...(salt && { salt }),
       });
 
       // Copy master LBC back to top as the expression result via OP_PICK

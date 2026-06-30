@@ -207,6 +207,9 @@ export class FunctionDefinitionNode extends Node implements Named {
     // reference), or null if it is a non-trivial expression. Lets the SDK derive childConstructorArgs from the
     // deploy-function args instead of requiring them again.
     constructorArgs?: (string | null)[];
+    // create2 salt (`new C{salt}()`): the forwarded param name, a hex literal, or computed (non-trivial -
+    // SDK needs an explicit childSalt). Lets the SDK build the child Contract with the salt the covenant pins.
+    salt?: { param: string } | { literal: string } | { computed: true };
   }[];
 
   lowLevelCalls?: { callMode: 'call' | 'staticcall' | 'delegatecall'; dataParamIndex?: number }[];

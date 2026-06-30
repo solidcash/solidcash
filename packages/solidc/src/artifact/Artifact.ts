@@ -51,6 +51,7 @@ function buildFunctionAbiMetadata(func: FunctionDefinitionNode): Partial<AbiFunc
         contractName: dt.contractName,
         dataNftCount: dt.dataNftCount,
         ...(dt.constructorArgs && { constructorArgs: dt.constructorArgs }),
+        ...(dt.salt && { salt: dt.salt }),
       })),
     }),
     ...(func.externalReads && func.externalReads.length > 0 && {

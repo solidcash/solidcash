@@ -166,6 +166,7 @@ export interface DeployFromOptions<T extends Artifact = Artifact> {
   deployFunctionArgs: FunctionArgument[];    // user args to the factory's deploy function
   childArtifact?: T;                         // child artifact; else resolved via factory.registerChild()
   childConstructorArgs?: ConstructorArgument[]; // else derived from the deploy args (new C(param) mapping)
+  childSalt?: Uint8Array;                    // create2 salt; else derived from the recorded new C{salt}() mapping
   childInitialState?: Record<string, StateValueType>; // optional initial state for child
   fundingUtxo: Utxo;                         // must be at vout 0 for token genesis (becomes child category)
   funder?: Unlocker;                         // unlocker for funding UTXO; else factory.setDeployDefaults()
@@ -1477,6 +1478,25 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         + `'${deployFunctionName}'. Pass childConstructorArgs (the new-C(...) args are not all plain parameters).`,
       );
     }
+    // create2 salt: build the child with the salt the deploy covenant pins (composed with the self-pin).
+    // Resolve from an explicit childSalt, else the recorded `new C{salt}()` mapping (a forwarded deploy param
+    // or a hex literal). A computed salt with no explicit childSalt is an error (the address can't be rebuilt).
+    let childSalt = options.childSalt;
+    if (!childSalt && deployTarget?.salt) {
+      const s = deployTarget.salt;
+      if ('param' in s) {
+        const idx = deployAbi.inputs.findIndex((inp) => inp.name === s.param);
+        const arg = idx >= 0 ? deployFunctionArgs[idx] : undefined;
+        if (arg instanceof Uint8Array) childSalt = arg;
+      } else if ('literal' in s) {
+        childSalt = hexToBin(s.literal);
+      } else if (s.computed) {
+        throw new Error(
+          `'new ${deployTarget.contractName}{salt}()' in '${deployFunctionName}' uses a computed salt; pass `
+          + 'childSalt explicitly so the SDK can build the child address.',
+        );
+      }
+    }
     const funder = options.funder ?? (factory as StatefulContract).deployDefaults.funder;
     if (!funder) {
       throw new Error('No funder for deployFrom. Pass funder or set factory.setDeployDefaults({ funder }).');
@@ -1516,13 +1536,14 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const masterUtxo = onChainState.masterUtxo;
 
     // Self-pin the child by category, identical to the compiler's `new ContractName(...)` covenant and to an
-    // SDK-direct deploy (Contract.ts bakes <cat||0x02> OP_INPUTINDEX OP_UTXOTOKENCATEGORY OP_EQUALVERIFY). The
-    // category provides per-deployment address uniqueness, so no salt is needed by default. This address is what
-    // the deploy covenant verifies in the genesis outputs.
+    // SDK-direct deploy (Contract.ts bakes <cat||0x02> OP_INPUTINDEX OP_UTXOTOKENCATEGORY OP_EQUALVERIFY). A
+    // create2 salt (if any) composes outside the self-pin (<salt> OP_DROP | <self-pin> | base), matching the
+    // compiler. This address is what the deploy covenant verifies in the genesis outputs.
     const childContractUnsalted = new Contract(childArtifact, childConstructorArgs as any, {
       provider,
       addressType,
       category: hexToBin(childCategoryId),
+      ...(childSalt && { salt: childSalt }),
     });
 
     // The returned handle uses the same self-pinned address as the deployed genesis.

@@ -428,3 +428,94 @@ describe('multi-data-NFT child deploy (nftIndex tag parity)', () => {
     expect(binToHex(nft1.d as Uint8Array)).toBe('44'.repeat(32));
   });
 });
+
+// create2 for a STATEFUL child: `new C{salt}()` composes the salt with the category self-pin
+// (<salt> OP_DROP | <self-pin> | base). The compiler records the salt mapping; deployFrom derives it and
+// builds the child Contract with the salt, so the address matches the deploy covenant. A successful deploy
+// proves the SDK-supplied salt-composed address equals the covenant's. See docs/contract-creation.md.
+const saltChildSource = `
+  contract SaltChild(bytes20 owner) {
+    int counter;
+    function bump() { this.counter = this.counter + 1; require(true); }
+  }
+`;
+
+const saltFactorySource = `
+  import "./salt_child.scash";
+  contract SaltFactory(pubkey factoryOwner) {
+    int deployCount;
+
+    function deploySalted(sig s, bytes20 childOwner, bytes32 salt) deploy {
+      require(checkSig(s, factoryOwner));
+      SaltChild child = new SaltChild{salt: salt}(childOwner);
+      this.deployCount = this.deployCount + 1;
+    }
+  }
+`;
+
+describe('create2: stateful deploy with a salt (composed with the self-pin)', () => {
+  const childArtifact = compileString(saltChildSource);
+  const factoryArtifact = compileString(saltFactorySource, {
+    importResolver: (importPath: string, currentFile: string): ResolvedImport | undefined => {
+      const dir = currentFile.substring(0, currentFile.lastIndexOf('/') + 1);
+      let resolved = dir + importPath.replace('./', '');
+      if (!resolved.endsWith('.scash')) resolved += '.scash';
+      return resolved === '/salt_child.scash' ? { source: saltChildSource, id: resolved } : undefined;
+    },
+    rootFileId: '/main.scash',
+  });
+
+  const provider = createTestProvider();
+  const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
+  let factory: Awaited<ReturnType<typeof StatefulContract.deploy>>['contract'];
+
+  it('records the salt mapping in the deploy target', () => {
+    const make = factoryArtifact.abi.find((f) => f.name === 'deploySalted')!;
+    expect(make.deployTargets![0]).toMatchObject({ contractName: 'SaltChild', salt: { param: 'salt' } });
+  });
+
+  it('deploys the factory', async () => {
+    const fundingUtxo: Utxo = { txid: 'fc1d'.repeat(16), vout: 0, satoshis: 200000n };
+    await provider.addUtxo(p2pkh.address, fundingUtxo);
+    const result = await StatefulContract.deploy(factoryArtifact, [alicePub], {
+      provider,
+      fundingUtxo,
+      funder: p2pkh.unlock.spend(alicePub, new SignatureTemplate(alicePriv)),
+      initialState: { deployCount: 0n },
+      changeAddress: p2pkh.address,
+    });
+    factory = result.contract;
+  });
+
+  it('deploys a salted child; the address composes the salt with the self-pin', async () => {
+    const salt = hexToBin('cd'.repeat(32));
+    const fundingUtxo: Utxo = { txid: 'fd2d'.repeat(16), vout: 0, satoshis: 50000n };
+    await provider.addUtxo(p2pkh.address, fundingUtxo);
+
+    const result = await StatefulContract.deployFrom({
+      provider,
+      factory,
+      deployFunctionName: 'deploySalted',
+      deployFunctionArgs: [new SignatureTemplate(alicePriv), alicePkh, salt],
+      childArtifact,
+      childConstructorArgs: [alicePkh],
+      fundingUtxo,
+      funder: p2pkh.unlock.spend(alicePub, new SignatureTemplate(alicePriv)),
+      changeAddress: p2pkh.address,
+    });
+
+    // send() ran the deploy covenant: success means the SDK-supplied salt-composed child address equals the
+    // covenant's. Cross-check: it equals an SDK Contract built with the same (args, category, salt).
+    expect(result.tx.txid).toBeDefined();
+    const expected = new Contract(childArtifact, [alicePkh], {
+      provider, addressType: 'p2sh32', category: hexToBin(result.childCategoryId), salt,
+    });
+    expect(result.child.address).toBe(expected.address);
+
+    // And it differs from the unsalted address (the salt is actually applied).
+    const unsalted = new Contract(childArtifact, [alicePkh], {
+      provider, addressType: 'p2sh32', category: hexToBin(result.childCategoryId),
+    });
+    expect(result.child.address).not.toBe(unsalted.address);
+  });
+});

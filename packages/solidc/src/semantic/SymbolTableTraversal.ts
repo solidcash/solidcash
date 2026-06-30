@@ -107,6 +107,8 @@ import AstTraversal from '../ast/AstTraversal.js';
 import { SymbolTable, Symbol, SymbolType } from '../ast/SymbolTable.js';
 import { BinaryOperator, NullaryOperator, UnaryOperator } from '../ast/Operator.js';
 import { createDefaultValueExpression } from '../ast/defaults.js';
+import { cloneNode } from '../ast/clone.js';
+import { substituteInExpression } from './InheritanceExpansionTransformation.js';
 import {
   FunctionRedefinitionError,
   VariableRedefinitionError,
@@ -939,25 +941,47 @@ export default class SymbolTableTraversal extends AstTraversal {
     return fn.body ? walk(fn.body) : true;
   }
 
-  // Try to fold a same-tx `deployLocal.foo(args)` into the deploy genesis. v1 handles a DIRECT SETTER foo
-  // (body = `this.field = param` assignments, plus an optional trailing require that is not enforced at
-  // deploy): records, per child field, the parent-context arg expression its genesis value takes, so the
-  // deploy covenant emits that instead of the default. Returns false (caller errors) for anything else.
+  // An assignment RHS folds iff it is PURE over the callee's params and literals: arithmetic / comparison /
+  // bitwise / cast / ternary only - no state reads, locals, constants, or calls. The covenant computes it on
+  // the child's default (zero) state, so for a fresh deploy the value depends only on the forwarded args.
+  private isPureFoldableExpr(expr: ExpressionNode, paramNames: Set<string>): boolean {
+    if (expr instanceof LiteralNode) return true;
+    if (expr instanceof IdentifierNode) return paramNames.has(expr.name);
+    if (expr instanceof BinaryOpNode) {
+      return this.isPureFoldableExpr(expr.left, paramNames) && this.isPureFoldableExpr(expr.right, paramNames);
+    }
+    if (expr instanceof UnaryOpNode) return this.isPureFoldableExpr(expr.expression, paramNames);
+    if (expr instanceof CastNode) return this.isPureFoldableExpr(expr.expression, paramNames);
+    if (expr instanceof TernaryOpNode) {
+      return this.isPureFoldableExpr(expr.condition, paramNames)
+        && this.isPureFoldableExpr(expr.ifTrue, paramNames)
+        && this.isPureFoldableExpr(expr.ifFalse, paramNames);
+    }
+    return false;
+  }
+
+  // Try to fold a same-tx `deployLocal.foo(args)` into the deploy genesis. Handles a foo whose body is a set
+  // of `this.field = <pure expr over foo's params + literals>` assignments, plus an optional trailing require
+  // (not enforced at deploy). Records, per child field, that expression with foo's params substituted by the
+  // caller's arg expressions, so the deploy covenant computes the genesis value instead of using the default.
+  // Returns false (caller errors) for anything else.
   private tryFoldDeployCall(
     deployNode: InstantiationNode, foo: FunctionDefinitionNode, parentArgs: ExpressionNode[],
   ): boolean {
     const statements = (foo.body as BlockNode | undefined)?.statements ?? [];
     if (statements.length === 0) return false;
+    const subs = new Map<string, ExpressionNode>();
+    foo.parameters.forEach((p, i) => { if (i < parentArgs.length) subs.set(p.name, parentArgs[i]); });
+    const paramNames = new Set(subs.keys()); // only params with a forwarded arg are substitutable
     const map = new Map<string, ExpressionNode>();
     for (let i = 0; i < statements.length; i += 1) {
       const stmt = statements[i];
-      if (stmt instanceof StateAssignNode && stmt.expression instanceof IdentifierNode) {
-        const valueName = stmt.expression.name;
-        const paramIdx = foo.parameters.findIndex((p) => p.name === valueName);
-        if (paramIdx < 0 || paramIdx >= parentArgs.length) return false; // value is not a direct param ref
-        map.set(stmt.name, parentArgs[paramIdx]);
+      if (stmt instanceof StateAssignNode && this.isPureFoldableExpr(stmt.expression, paramNames)) {
+        // Substitute foo's params with the caller's arg expressions so the genesis value is computed in the
+        // parent covenant's context. TypeCheck types the cloned result (see visitInstantiation).
+        map.set(stmt.name, substituteInExpression(cloneNode(stmt.expression), subs));
       } else if (!(i === statements.length - 1 && stmt instanceof RequireNode)) {
-        return false; // only direct setters (+ an optional trailing require) fold in v1
+        return false; // only pure-over-params setters (+ an optional trailing require) fold
       }
     }
     if (map.size === 0) return false;

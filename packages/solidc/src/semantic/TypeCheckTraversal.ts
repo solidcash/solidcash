@@ -1359,6 +1359,14 @@ export default class TypeCheckTraversal extends AstTraversal {
       const expectedTypes = node.referencedContract.parameters.map((p) => p.type);
       expectParameters(node, parameterTypes, expectedTypes);
 
+      // Deploy-then-call fold: type the per-field genesis expressions (param-substituted clones of the
+      // folded callee's body) so the deploy covenant codegen has operand types. See tryFoldDeployCall.
+      if (node.foldedStateInit) {
+        for (const [field, expr] of node.foldedStateInit) {
+          node.foldedStateInit.set(field, this.visit(expr) as ExpressionNode);
+        }
+      }
+
       if (node.callOptions?.value) {
         node.callOptions.value = this.visit(node.callOptions.value);
         expectInt(node as any, node.callOptions.value.type);

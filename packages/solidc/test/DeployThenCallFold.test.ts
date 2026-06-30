@@ -37,8 +37,34 @@ describe('deploy-then-call fold (compiler)', () => {
     expect(folded.bytecode).not.toBe(plain.bytecode);
   });
 
-  it('still rejects a non-direct-setter call (computed state) as not-yet-foldable', () => {
-    // `bump` does `this.counter = this.counter + 1` - not a direct param setter, so it is not folded.
+  it('folds a callee that COMPUTES fields from its params (arithmetic over params + literals)', () => {
+    const src = `
+contract Child(bytes20 owner) {
+    int total;
+    int half;
+    function configure(int supply, int amount) {
+        this.total = supply * 2;
+        this.half = amount / 2 + 1;
+        require(true);
+    }
+}
+contract Factory(pubkey deployer) {
+    int deployed;
+    function make(sig s, bytes20 owner, int sup, int amt) deploy {
+        require(checkSig(s, deployer));
+        Child child = new Child(owner);
+        child.configure(sup, amt);
+        this.deployed = this.deployed + 1;
+    }
+}`;
+    const art = compileString(src);
+    const make = art.abi.find((f) => f.name === 'make')!;
+    expect(make.deployTargets).toEqual([{ contractName: 'Child', dataNftCount: 1 }]);
+    expect((make as { externalCalls?: unknown[] }).externalCalls).toBeUndefined();
+  });
+
+  it('rejects a callee that reads state (not pure over params)', () => {
+    // `bump` does `this.counter = this.counter + 1` - reads child state, so it is not foldable.
     const src = `
 contract Child(bytes20 owner) {
     int counter;

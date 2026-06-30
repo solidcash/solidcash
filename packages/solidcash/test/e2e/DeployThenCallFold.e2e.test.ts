@@ -131,6 +131,95 @@ describe('deploy-then-call fold (deployFrom e2e)', () => {
   });
 });
 
+// A folded callee may COMPUTE each field from its params (arithmetic / cast / ternary over params + literals,
+// no state reads), not just assign a param directly. The deploy covenant evaluates the expression on the
+// child's default state, so the child is born in the computed post-call state. See tryFoldDeployCall.
+const computedChildSource = `
+  contract ComputedChild(bytes20 owner) {
+    int total;
+    int half;
+
+    function configure(int supply, int amount) {
+      this.total = supply * 2;
+      this.half = amount / 2 + 1;
+      require(true);
+    }
+  }
+`;
+
+const computedFactorySource = `
+  import "./computed_child.scash";
+  contract ComputedFactory(pubkey factoryOwner) {
+    int deployCount;
+
+    function deployComputed(sig s, bytes20 childOwner, int sup, int amt) deploy {
+      require(checkSig(s, factoryOwner));
+      ComputedChild child = new ComputedChild(childOwner);
+      child.configure(sup, amt);
+      this.deployCount = this.deployCount + 1;
+    }
+  }
+`;
+
+describe('deploy-then-call fold with a computed callee (deployFrom e2e)', () => {
+  const childArtifact = compileString(computedChildSource);
+  const factoryArtifact = compileString(computedFactorySource, {
+    importResolver: (importPath: string, currentFile: string): ResolvedImport | undefined => {
+      const dir = currentFile.substring(0, currentFile.lastIndexOf('/') + 1);
+      let resolved = dir + importPath.replace('./', '');
+      if (!resolved.endsWith('.scash')) resolved += '.scash';
+      return resolved === '/computed_child.scash' ? { source: computedChildSource, id: resolved } : undefined;
+    },
+    rootFileId: '/main.scash',
+  });
+
+  const provider = createTestProvider();
+  const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
+  let factory: Awaited<ReturnType<typeof StatefulContract.deploy>>['contract'];
+
+  it('deploys the factory', async () => {
+    const fundingUtxo: Utxo = { txid: 'da1d'.repeat(16), vout: 0, satoshis: 200000n };
+    await provider.addUtxo(p2pkh.address, fundingUtxo);
+    const result = await StatefulContract.deploy(factoryArtifact, [alicePub], {
+      provider,
+      fundingUtxo,
+      funder: p2pkh.unlock.spend(alicePub, new SignatureTemplate(alicePriv)),
+      initialState: { deployCount: 0n },
+      changeAddress: p2pkh.address,
+    });
+    factory = result.contract;
+  });
+
+  it('deploys the child in its computed post-call state (total=sup*2, half=amt/2+1) in one tx', async () => {
+    const fundingUtxo: Utxo = { txid: 'db2d'.repeat(16), vout: 0, satoshis: 50000n };
+    await provider.addUtxo(p2pkh.address, fundingUtxo);
+
+    const sup = 21n;
+    const amt = 100n;
+    const result = await StatefulContract.deployFrom({
+      provider,
+      factory,
+      deployFunctionName: 'deployComputed',
+      deployFunctionArgs: [new SignatureTemplate(alicePriv), alicePkh, sup, amt],
+      childArtifact,
+      childConstructorArgs: [alicePkh],
+      fundingUtxo,
+      funder: p2pkh.unlock.spend(alicePub, new SignatureTemplate(alicePriv)),
+      changeAddress: p2pkh.address,
+    });
+
+    // send() ran the covenant, which evaluated supply*2 and amount/2+1 on-chain.
+    const childDataOutput = getTxOutputs(result.tx).find(
+      (o) => o.token?.category === result.childCategoryId && o.token?.nft?.capability === 'mutable',
+    );
+    const childState = parsePushdataCommitment(
+      childDataOutput!.token!.nft!.commitment, childArtifact.stateLayout!, 0,
+    );
+    expect(childState.total).toBe(sup * 2n); // 42
+    expect(childState.half).toBe(amt / 2n + 1n); // 51
+  });
+});
+
 // A child whose fixed-size state spans more than one data NFT prepends a verifiable nftIndex tag to every
 // commitment (so a higher-index NFT can't be substituted for a lower one - they share one covenant address).
 // The deploy covenant's genesis builder must stamp the same tag the child's own covenant + the SDK do, else

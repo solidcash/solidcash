@@ -620,7 +620,7 @@ function mergeNamedList(
  * Recursively substitute IdentifierNode references in an expression tree.
  * Returns a new expression if substitution occurred, otherwise returns the original.
  */
-function substituteInExpression(
+export function substituteInExpression(
   expr: ExpressionNode,
   subs: Map<string, ExpressionNode>,
 ): ExpressionNode {

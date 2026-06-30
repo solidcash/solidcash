@@ -3572,7 +3572,18 @@ export default class SymbolTableTraversal extends AstTraversal {
     return params.map((p) => args[fieldNames.indexOf(p.name)]);
   }
 
+  // Inside a library function `Lib.f`, an unqualified call to a sibling library function (`b(..)`) resolves to
+  // `Lib.b` (library functions are stored as namespaced free functions). Rewrites the identifier in place.
+  private qualifyLibrarySiblingCall(identifier: IdentifierNode): void {
+    const fnName = this.currentFunction?.name;
+    if (fnName && fnName.includes('.') && !identifier.name.includes('.')) {
+      const qualified = `${fnName.split('.')[0]}.${identifier.name}`;
+      if (this.functionDefinitions.has(qualified)) identifier.name = qualified;
+    }
+  }
+
   visitFunctionCall(node: FunctionCallNode): Node {
+    this.qualifyLibrarySiblingCall(node.identifier);
     // Check if this is an address method call: dest.send(amount), dest.connect(category),
     // dest.call(data), dest.staticcall(data)
     const callName = node.identifier.name;

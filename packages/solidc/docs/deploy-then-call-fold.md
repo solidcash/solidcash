@@ -109,13 +109,28 @@ make it execute:
    and a subsequent folded field's pick depth must account for this field's runtime push. The final
    `savedStack` restore discards the accumulation.
 
-## Multi-data-NFT caveat (fix as part of this)
+## Multi-data-NFT child deploys (DONE)
 
-The SDK's `buildPushdataCommitment` prepends an `encodeNftIndexTag(nftIndex)` byte when `dataNftCount > 1`
-(`utils/src/state.ts:830-832`), but the deploy covenant's inline commitment builder (GTT:9993-10006) does
-**not** stamp that tag. For multi-data-NFT children the SDK-built and on-chain-expected commitments would
-diverge by that leading byte. The covenant must stamp the same nft-index tag (or both must drop it). Add a
-targeted multi-NFT deploy test to pin parity before/while building the fold.
+A child whose fixed-size state spans more than one data NFT was never actually deployable via a factory.
+Three compounding bugs, all fixed:
+
+1. **Stale `deployedDataNftCount`.** Semantic analysis computes it from the child's `nftIndex` values
+   (`SymbolTableTraversal.ts:4012`), but an imported child has not been bin-packed into NFTs yet when the
+   parent's `new C()` is visited (cross-file order), so the count came out 1. Recompute it from the
+   now-packed `deployedStateVars` in `emitContractDeployment` (GTT), before the deployTarget ABI / covenant
+   loop / deploy offset read it. (Single-NFT children: `max(0)+1 = 1`, unchanged.)
+2. **Missing nftIndex tag in the genesis.** `buildPushdataCommitment` prepends `encodeNftIndexTag(nftIndex)`
+   when `dataNftCount > 1` (`utils/src/state.ts:830`), and the child's own covenant verifies it, but the
+   deploy genesis builder didn't stamp it - so the child was born in a state its own covenant can't read.
+   Stamp it (GTT genesis loop), keyed on the CHILD's NFT count, mirroring the canonical write path (GTT:8932).
+3. **Unmodeled OP_CAT.** The genesis loop emitted `OP_CAT` without updating the stack model, so after the
+   first CAT a folded field's `visit()` pick depth drifted by one. Track `emitDefaultValue`'s push and model
+   the CAT's net -1 - both model-only, so existing deploy bytecode is byte-identical.
+
+SDK: `_deriveCommitments` iterates the child extraction - the covenant verifies child NFTs in order and
+aborts at the first mismatch, so for a folded multi-NFT child it captures NFT 0, feeds it back into the
+probe output, and re-runs to reach NFT 1 (a plain deploy resolves in one pass). Pinned by e2e: a 4x bytes32
+child spanning 2 data NFTs deploys both plain (tagged defaults) and folded (configured across both NFTs).
 
 ## Anchors
 
@@ -135,12 +150,12 @@ targeted multi-NFT deploy test to pin parity before/while building the fold.
   `DeployFoldError` diagnostic (closes the unsound-tx hole); suppress the external call. Tests: diagnostic
   fires for non-foldable and for the previously-unsound case; foldable case is detected (no external call
   collected).
-- **P2:** multi-NFT commitment-tag parity fix + test.
+- **P2 - DONE:** multi-data-NFT child deploys (stale count recompute + genesis nftIndex tag + OP_CAT model
+  + SDK iterative child extraction) + plain & folded multi-NFT e2e. See "Multi-data-NFT child deploys" above.
 - **P3 (codegen) - DONE for direct setters:** deploy covenant emits the post-call field values (folded
   arg via OP_PICK); SDK trace-extraction of the child genesis (`deployFrom`). e2e
   (`DeployThenCallFold.e2e.test.ts`): a two-field direct setter folds and the child lands configured in one
   tx - the covenant runs on `send()`, so success proves it accepted the SDK-supplied post-call genesis.
 - **P4 (open):** generalize beyond direct setters (a state-transition subroutine for any covenant-runnable
-  `foo`); folded deploy + mapping-entry writes; multi-data-NFT commitment-tag parity (P2 above); the
-  direct-`deploy()`-path second probe; broaden foldable surface; docs in external-contract-calls.md /
-  modifiers.md.
+  `foo`); folded deploy + factory mapping-entry writes; the direct-`deploy()`-path second probe; broaden
+  foldable surface; docs in external-contract-calls.md / modifiers.md.

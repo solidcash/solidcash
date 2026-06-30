@@ -7721,6 +7721,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   visitExternalFunctionCall(node: ExternalFunctionCallNode): Node {
+    // A call folded into a deploy genesis is inert here - its effect is emitted by the deploy covenant.
+    if (node.foldedIntoDeploy) return node;
     // Do NOT visit categoryExpression or parameters here - they were resolved during
     // semantic analysis. Visiting them would cause stack operations (OP_ROLL/OP_PICK)
     // that consume constructor parameters needed later by emitExternalCallVerification.
@@ -9997,7 +9999,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         const savedStack = [...this.stack];
         let firstField = true;
         for (const field of fieldsInNft) {
-          this.emitDefaultValue(locationData, field.type);
+          // Deploy-then-call fold: a field set by a same-tx folded call takes its post-call value (the
+          // parent-context arg expression) instead of the type default, so the child lands configured.
+          const foldedExpr = deployNode.foldedStateInit?.get(field.name);
+          if (foldedExpr) {
+            this.visit(foldedExpr);
+          } else {
+            this.emitDefaultValue(locationData, field.type);
+          }
           this.emitPushdataEncode(field.type, locationData);
           if (!firstField) {
             this.emit(Op.OP_CAT, locationData);

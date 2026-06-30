@@ -882,6 +882,10 @@ export class InstantiationNode extends ExpressionNode {
   isStatefulDeploy: boolean = false;
   deployedDataNftCount: number = 0;
   deployedStateVars: StateVariableNode[] = [];
+  // Deploy-then-call fold: a same-tx `a.foo(x)` on this deploy result is folded into the genesis - the
+  // child is deployed in its post-foo state. Maps a child state-var name to the (parent-context) expression
+  // its value should hold; the deploy covenant emits this instead of the default for that field.
+  foldedStateInit?: Map<string, ExpressionNode>;
 
   constructor(
     public identifier: IdentifierNode,
@@ -1621,6 +1625,9 @@ export class ExternalFunctionCallNode extends ExpressionNode {
   callMode?: ExternalCallMode;
   callOptions?: CallOptions;
   valueTransferIndex: number = -1;
+  // Set when this call on a freshly-deployed local was folded into the deploy genesis (no co-spend): the
+  // node is inert - skipped by external-call collection and codegen.
+  foldedIntoDeploy?: boolean;
   // EVM-parity expression-form low-level call `(bool, bytes) = addr.call(payload)`: the callee's type/function
   // are unknown at compile time, the return is read as a single opaque bytes blob, identity-bound to addr.
   opaqueReturn?: boolean;

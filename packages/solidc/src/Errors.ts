@@ -988,6 +988,18 @@ export class MethodCallNotSupportedError extends SolidCashError {
   }
 }
 
+export class DeployThenCallError extends SolidCashError {
+  constructor(node: Node, varName: string, methodName: string, contractName: string) {
+    super(
+      node,
+      `Cannot call '${methodName}()' on '${varName}' in the transaction that deploys it with 'new ${contractName}(...)': `
+      + `the call would co-spend ${contractName} as an input, but this transaction creates it as an output, and a UTXO `
+      + 'cannot be both created and spent in one transaction. Move the call to a separate transaction. One-transaction '
+      + 'deploy-then-configure folding is planned (see packages/solidc/docs/deploy-then-call-fold.md).',
+    );
+  }
+}
+
 export class UsingForUndefinedLibraryError extends SolidCashError {
   constructor(node: Node, libraryName: string) {
     super(node, `Library '${libraryName}' referenced in 'using for' directive is not defined or imported`);

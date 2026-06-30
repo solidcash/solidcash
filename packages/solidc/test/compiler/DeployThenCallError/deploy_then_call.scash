@@ -1,0 +1,18 @@
+// Deploying a stateful child and calling a method on it in the same transaction is rejected: the call
+// would co-spend the child, which this transaction creates as an output. (One-tx folding is planned.)
+contract Child(bytes20 owner) {
+    int counter;
+    function bump() {
+        this.counter = this.counter + 1;
+    }
+}
+
+contract Factory(pubkey deployer) {
+    int deployed;
+    function make(sig s, bytes20 owner) deploy {
+        require(checkSig(s, deployer));
+        Child c = new Child(owner);
+        c.bump();
+        this.deployed = this.deployed + 1;
+    }
+}

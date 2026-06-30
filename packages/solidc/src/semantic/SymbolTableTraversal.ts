@@ -148,6 +148,7 @@ import {
   ExternalReadArgCountError,
   UndefinedInterfaceFunctionError,
   MethodCallNotSupportedError,
+  DeployThenCallError,
   UsingForUndefinedLibraryError,
   UsingForUndefinedFunctionError,
   OperatorOverloadNonUDVTError,
@@ -915,8 +916,11 @@ export default class SymbolTableTraversal extends AstTraversal {
     }
   }
 
+  private deployResultLocals = new Set<string>(); // locals assigned `new C(...)` in the current function
+
   visitFunctionDefinition(node: FunctionDefinitionNode): Node {
     this.currentFunction = node;
+    this.deployResultLocals = new Set(); // reset per function body
     this.conditionalBranchDepth = 0;
     this.conditionalRefNames = new Set();
 
@@ -3307,6 +3311,13 @@ export default class SymbolTableTraversal extends AstTraversal {
 
     if (node.expression) node.expression = this.visit(node.expression);
 
+    // A local bound to `new C(...)` holds a contract this tx will CREATE as an output; it can never be
+    // co-spent as an input in this same tx, so calling a method on it later is rejected (see the two
+    // external-call sites below). Tracked per function body.
+    if (node.expression instanceof InstantiationNode && node.expression.referencedContract) {
+      this.deployResultLocals.add(node.name);
+    }
+
     this.symbolTables[0].set(Symbol.variable(node));
     // A synthesized binding allowed to be unused (e.g. a desugared for..of loop var): self-reference it so
     // the unused-variable check passes, matching collection iteration's loop variable.
@@ -3668,6 +3679,9 @@ export default class SymbolTableTraversal extends AstTraversal {
                 node.fieldNames = undefined;
               }
               const parameters = this.visitList(node.parameters) as ExpressionNode[];
+              if (this.deployResultLocals.has(varName)) {
+                throw new DeployThenCallError(node, varName, methodName, calleeName);
+              }
               // `foo.bar(args)` parses as a namespaced function call, which carries no `{value:}` call
               // options (those arrive via the MethodCall path), so none are threaded here.
               const callNode = new ExternalFunctionCallNode(calleeName, visitedVar, methodName, parameters);
@@ -5775,6 +5789,9 @@ export default class SymbolTableTraversal extends AstTraversal {
       const calleeFns = calleeName ? this.getCalleeFunctions(calleeName) : undefined;
       const ifaceFunc = calleeFns?.find((f) => f.name === node.methodName);
       if (calleeName && ifaceFunc) {
+        if (this.deployResultLocals.has(varName)) {
+          throw new DeployThenCallError(node, varName, node.methodName, calleeName);
+        }
         if (node.fieldNames) {
           node.parameters = this.reorderNamedArgsByParams(
             node.fieldNames, ifaceFunc.parameters, node.parameters, node, `'${calleeName}.${ifaceFunc.name}'`,

@@ -177,6 +177,11 @@ export interface DeployFromOptions<T extends Artifact = Artifact> {
   dataNftAmount?: bigint;                    // default: 1200n per data NFT
 }
 
+// Options for the `factory.deployFn(...args).deploy({...})` sugar: the provider, factory, deploy-function
+// name and args are taken from the call itself, leaving only the child + funding details.
+export type DeployFromCallOptions<T extends Artifact = Artifact> =
+  Omit<DeployFromOptions<T>, 'provider' | 'factory' | 'deployFunctionName' | 'deployFunctionArgs'>;
+
 export interface DeployFromResult<T extends Artifact = Artifact> {
   factory: ConnectedStatefulContract;        // factory with updated state
   child: ConnectedStatefulContract<T>;       // newly deployed child contract
@@ -5987,6 +5992,22 @@ export class StatefulFunctionCall {
     this.parentContract = parentContract;
     this.functionName = functionName;
     this.functionArgs = functionArgs;
+  }
+
+  // Sugar for a deploy-modifier function: `factory.deployFn(...args).deploy({ childArtifact, ... })`. The
+  // provider, factory, deploy-function name and args come from this call; only the child + funding remain.
+  // Throws (via deployFrom) if the called function does not have the 'deploy' modifier.
+  deploy<T extends Artifact>(options: DeployFromCallOptions<T>): Promise<DeployFromResult<T>> {
+    if (!this.parentContract || !this.functionName) {
+      throw new Error('.deploy() must be called on a stateful contract function (factory.deployFn(...).deploy()).');
+    }
+    return StatefulContract.deployFrom({
+      provider: this.parentContract.provider,
+      factory: this.parentContract as unknown as ConnectedStatefulContract,
+      deployFunctionName: this.functionName,
+      deployFunctionArgs: (this.functionArgs ?? []) as FunctionArgument[],
+      ...options,
+    });
   }
 
   setState(name: string, value: StateValueType): this;

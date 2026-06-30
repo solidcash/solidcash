@@ -2,7 +2,7 @@ import { compileString } from 'solidc';
 import { hexToBin, binToHex } from '@bitauth/libauth';
 import { ResolvedImport, parsePushdataCommitment } from '@solidcash/utils';
 import {
-  Contract, SignatureTemplate, StatefulContract,
+  Contract, SignatureTemplate, StatefulContract, StatefulFunctionCall,
 } from '../../src/index.js';
 import {
   alicePriv, alicePub, alicePkh, bobPkh,
@@ -92,19 +92,21 @@ describe('deploy-then-call fold (deployFrom e2e)', () => {
     await provider.addUtxo(p2pkh.address, fundingUtxo);
 
     const c0 = 42n;
-    const result = await StatefulContract.deployFrom({
-      provider,
-      factory,
-      deployFunctionName: 'deployConfigured',
-      deployFunctionArgs: [new SignatureTemplate(alicePriv), alicePkh, c0, bobPkh],
-      childArtifact,
-      childConstructorArgs: [alicePkh],
-      // NOTE: no childInitialState - the post-configure genesis is computed by the covenant and
-      // read back from the deploy probe trace.
-      fundingUtxo,
-      funder: p2pkh.unlock.spend(alicePub, new SignatureTemplate(alicePriv)),
-      changeAddress: p2pkh.address,
-    });
+    // Reduced sugar form: factory.deployFn(...args).deploy({ child + funding }). Provider, factory, the
+    // deploy-function name and its args all come from the call. (A real generated artifact types the method
+    // name; compileString returns a generic Artifact, hence the cast.) Equivalent to StatefulContract.deployFrom.
+    const sugarFactory = factory as unknown as Record<string, (...a: unknown[]) => StatefulFunctionCall>;
+    const result = await sugarFactory
+      .deployConfigured(new SignatureTemplate(alicePriv), alicePkh, c0, bobPkh)
+      .deploy({
+        childArtifact,
+        childConstructorArgs: [alicePkh],
+        // NOTE: no childInitialState - the post-configure genesis is computed by the covenant and
+        // read back from the deploy probe trace.
+        fundingUtxo,
+        funder: p2pkh.unlock.spend(alicePub, new SignatureTemplate(alicePriv)),
+        changeAddress: p2pkh.address,
+      });
 
     // send() ran the deploy covenant: a successful tx means the covenant accepted the SDK-supplied
     // post-configure child genesis. (A wrong genesis - e.g. default counter=0 - would fail the covenant.)

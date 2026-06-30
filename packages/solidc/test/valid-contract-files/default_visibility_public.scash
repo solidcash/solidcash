@@ -1,0 +1,13 @@
+// A function without a visibility specifier defaults to public (as in Solidity), so it is both an entry
+// point AND callable internally. `caller` invokes `callee` directly - this would have been an
+// InternalCallToExternalError under the old external-default.
+contract DefaultVisibilityPublic(int y) {
+    function caller(int x) {
+        callee(x);
+        require(x == y);
+    }
+
+    function callee(int a) {
+        require(a + 5 == 10);
+    }
+}

@@ -20,11 +20,11 @@ describe('library function visibility (Phase 1)', () => {
     expect(find(ast, '.helper').visibility).toBe('internal');
   });
 
-  it('defaults library function visibility to external when unspecified', () => {
+  it('defaults library function visibility to public when unspecified', () => {
     const ast = parseCode(
       'library L { function f(int x) returns (int) { return x; } }',
     ) as SourceFileNode;
-    expect(find(ast, '.f').visibility).toBe('external');
+    expect(find(ast, '.f').visibility).toBe('public');
   });
 
   it('captures private visibility too', () => {

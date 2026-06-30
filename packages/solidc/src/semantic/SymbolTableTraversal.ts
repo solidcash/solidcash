@@ -630,8 +630,11 @@ export default class SymbolTableTraversal extends AstTraversal {
 
       const visibility = func.visibility;
       if (visibility === 'internal' || visibility === 'private' || visibility === 'public') {
-        // Only register first overload of a name in the symbol table (for identifier resolution)
-        if (!this.functionDefinitions.has(func.name)) {
+        // Register for identifier resolution (function pointers), first overload only. Skip if the name is
+        // already taken by a constructor param / state var, so a bare identifier still resolves to that
+        // variable (the function stays callable via functionDefinitions). Matters now that the default
+        // visibility is public: an entry point sharing a name with a param must not shadow it.
+        if (!this.functionDefinitions.has(func.name) && !this.symbolTables[0].get(func.name)) {
           const returnType = func.returnTypes.length === 1
             ? func.returnTypes[0]
             : func.returnTypes.length > 1

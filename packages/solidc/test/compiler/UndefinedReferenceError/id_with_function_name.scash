@@ -3,7 +3,7 @@ contract Test() {
         require(world);
     }
 
-    function world(int a) {
+    function world(int a) external {
         require(a + 5 == 10);
     }
 }

@@ -256,9 +256,9 @@ export class FunctionDefinitionNode extends Node implements Named {
 
   get visibility(): 'external' | 'internal' | 'public' | 'private' {
     if (this.modifiers.includes(FunctionModifier.INTERNAL)) return 'internal';
-    if (this.modifiers.includes(FunctionModifier.PUBLIC)) return 'public';
     if (this.modifiers.includes(FunctionModifier.PRIVATE)) return 'private';
-    return 'external';
+    if (this.modifiers.includes(FunctionModifier.EXTERNAL)) return 'external';
+    return 'public'; // explicit `public` or no specifier -> public (default, as in Solidity)
   }
 
   get isEntryPoint(): boolean {

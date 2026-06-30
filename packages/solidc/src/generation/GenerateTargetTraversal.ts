@@ -665,10 +665,36 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     return node;
   }
 
+  // Collect functionIds targeted by an internal call (a FunctionCallNode with a resolved contract-function
+  // target). A public function only needs its internal-subroutine OP_DEFINE when it is actually invoked
+  // internally; otherwise it compiles as an entry point only (like external) - so a constructor-param-using
+  // entry point is not forced through the param-less subroutine path.
+  private collectInvokedFunctionIds(
+    node: Node, ids: Set<number> = new Set(), visited: Set<Node> = new Set(),
+  ): Set<number> {
+    if (visited.has(node)) return ids;
+    visited.add(node);
+    if (node instanceof FunctionCallNode && node.resolvedFunction?.functionId !== undefined) {
+      ids.add(node.resolvedFunction.functionId);
+    }
+    for (const [key, value] of Object.entries(node)) {
+      if (key === 'resolvedFunction') continue; // back-reference; targets are walked via node.functions
+      if (value instanceof Node) this.collectInvokedFunctionIds(value, ids, visited);
+      else if (Array.isArray(value)) {
+        for (const item of value) if (item instanceof Node) this.collectInvokedFunctionIds(item, ids, visited);
+      }
+    }
+    return ids;
+  }
+
   /** Emit OP_DEFINEs for all functions plus the dispatcher (or inline a single function). */
   private emitFunctionDefinesAndDispatch(node: ContractNode): void {
-    // Emit OP_DEFINE for internal/public functions that have a functionId
-    const definedFunctions = node.functions.filter((f) => f.functionId !== undefined);
+    // OP_DEFINE internal/private functions (subroutine-only by design) + public functions actually invoked
+    // internally. A public entry point never called internally needs no subroutine define (compiles like
+    // external), so default-public entry points using constructor params are not broken.
+    const invoked = this.collectInvokedFunctionIds(node);
+    const definedFunctions = node.functions.filter((f) =>
+      f.functionId !== undefined && (f.visibility !== 'public' || invoked.has(f.functionId)));
     for (const f of definedFunctions) {
       this.emitFunctionDefine(f);
     }

@@ -916,11 +916,32 @@ export default class SymbolTableTraversal extends AstTraversal {
     }
   }
 
-  private deployResultLocals = new Set<string>(); // locals assigned `new C(...)` in the current function
+  private deployResultLocals = new Map<string, InstantiationNode>(); // locals = `new C(...)` in the current fn
+
+  // A child function is FOLDABLE into its deploy (genesis becomes its post-call state) iff it is a pure
+  // (state, args) -> state transition: no external calls, no nested deploys, no contract-instantiation. (tx.*
+  // / events / msg.sender exclusion is tightened when the fold codegen consumes this; for now the diagnostic
+  // is best-effort.) Pure AST scan so it does not depend on traversal order.
+  private isDeployFoldable(fn: FunctionDefinitionNode, visited: Set<Node> = new Set()): boolean {
+    const walk = (node: Node): boolean => {
+      if (visited.has(node)) return true;
+      visited.add(node);
+      if (node instanceof ExternalFunctionCallNode || node instanceof InstantiationNode) return false;
+      for (const value of Object.values(node)) {
+        if (value instanceof Node) {
+          if (!walk(value)) return false;
+        } else if (Array.isArray(value)) {
+          for (const item of value) if (item instanceof Node && !walk(item)) return false;
+        }
+      }
+      return true;
+    };
+    return fn.body ? walk(fn.body) : true;
+  }
 
   visitFunctionDefinition(node: FunctionDefinitionNode): Node {
     this.currentFunction = node;
-    this.deployResultLocals = new Set(); // reset per function body
+    this.deployResultLocals = new Map(); // reset per function body
     this.conditionalBranchDepth = 0;
     this.conditionalRefNames = new Set();
 
@@ -3315,7 +3336,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     // co-spent as an input in this same tx, so calling a method on it later is rejected (see the two
     // external-call sites below). Tracked per function body.
     if (node.expression instanceof InstantiationNode && node.expression.referencedContract) {
-      this.deployResultLocals.add(node.name);
+      this.deployResultLocals.set(node.name, node.expression);
     }
 
     this.symbolTables[0].set(Symbol.variable(node));
@@ -3680,7 +3701,7 @@ export default class SymbolTableTraversal extends AstTraversal {
               }
               const parameters = this.visitList(node.parameters) as ExpressionNode[];
               if (this.deployResultLocals.has(varName)) {
-                throw new DeployThenCallError(node, varName, methodName, calleeName);
+                throw new DeployThenCallError(node, varName, methodName, calleeName, this.isDeployFoldable(ifaceFunc));
               }
               // `foo.bar(args)` parses as a namespaced function call, which carries no `{value:}` call
               // options (those arrive via the MethodCall path), so none are threaded here.
@@ -5790,7 +5811,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       const ifaceFunc = calleeFns?.find((f) => f.name === node.methodName);
       if (calleeName && ifaceFunc) {
         if (this.deployResultLocals.has(varName)) {
-          throw new DeployThenCallError(node, varName, node.methodName, calleeName);
+          throw new DeployThenCallError(node, varName, node.methodName, calleeName, this.isDeployFoldable(ifaceFunc));
         }
         if (node.fieldNames) {
           node.parameters = this.reorderNamedArgsByParams(

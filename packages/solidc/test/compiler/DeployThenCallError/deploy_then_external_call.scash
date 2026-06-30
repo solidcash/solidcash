@@ -1,0 +1,24 @@
+// Non-foldable variant: the called child method itself makes an external call, so it can never be folded
+// into the deploy genesis - it must be a separate transaction. Still rejected with DeployThenCallError.
+pragma solidcash >=0.8.0;
+
+interface IThing {
+    function ping();
+}
+
+contract Child(bytes20 owner) {
+    int counter;
+    function callOut(bytes20 t) {
+        IThing(t).ping();
+    }
+}
+
+contract Factory(pubkey deployer) {
+    int deployed;
+    function make(sig s, bytes20 owner, bytes20 t) deploy {
+        require(checkSig(s, deployer));
+        Child c = new Child(owner);
+        c.callOut(t);
+        this.deployed = this.deployed + 1;
+    }
+}

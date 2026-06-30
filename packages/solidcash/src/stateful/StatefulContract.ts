@@ -1528,11 +1528,22 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
 
     // Derive factory state + entry commitments via VM probe. Inputs: master, data NFTs,
     // existing entries, funding. Outputs: master, data NFTs, entries, child outputs.
-    const { state: derivedState, entryCommitments } = await (factory as StatefulContract)._deriveCommitments(
+    const {
+      state: derivedState, entryCommitments, childCommitments: derivedChildCommitments,
+    } = await (factory as StatefulContract)._deriveCommitments(
       deployFunctionName, finalArgs, requiredNftIndices,
       [...entryPlaceholderOutputs, ...childExtraOutputs],
       [...entryExtraInputs, { utxo: options.fundingUtxo, unlocker: options.funder }],
       entryInfos.length,
+      childLayout!.dataNftCount,
+    );
+
+    // Deploy-then-call fold: the covenant may verify a post-call child genesis (a same-tx
+    // `child.foo(args)` folded into the deploy). Prefer the trace-derived commitment; fall back to the
+    // static initial state for a plain deploy that lands the child at default. See deploy-then-call-fold.md.
+    const effectiveChildCommitments = Array.from(
+      { length: childLayout!.dataNftCount },
+      (_, i) => derivedChildCommitments[i] ?? childCommitments[i],
     );
     if (entryInfos.length > 0 && entryCommitments.length < entryInfos.length) {
       throw new Error(
@@ -1651,7 +1662,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         token: {
           category: childCategoryId,
           amount: 0n,
-          nft: { capability: 'mutable', commitment: childCommitments[i] },
+          nft: { capability: 'mutable', commitment: effectiveChildCommitments[i] },
         },
       });
     }
@@ -2675,7 +2686,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     extraOutputs?: Array<{ to: string | Uint8Array; amount: bigint; token?: any }>,
     extraInputs?: Array<{ utxo: Utxo; unlocker: Unlocker }>,
     entryOutputCount: number = 0,
-  ): Promise<{ state: Record<string, StateValueType> | undefined; entryCommitments: string[] }> {
+    childDataNftCount: number = 0,
+  ): Promise<{
+      state: Record<string, StateValueType> | undefined;
+      entryCommitments: string[];
+      childCommitments: string[];
+    }> {
     const stateLayout = this.inner.stateLayout!;
 
     const abiFunction = this.inner.artifact.abi.find((f) => f.name === functionName);
@@ -2814,6 +2830,24 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           ) ?? [];
         }
 
+        // Deploy-fold: the deploy covenant verifies the child's genesis at outputs after the factory
+        // state and entries. When a freshly-deployed local was configured in the same tx, that genesis
+        // is the child's post-call state, computed on-chain by the covenant. Re-run with the derived
+        // factory state so the trace reaches the child genesis verify, then read the expected commitment
+        // (captured before the verify) for each child data NFT. Falls back to the static initial state
+        // for a plain deploy that lands at default. Note: a deploy function that writes mapping entries
+        // would abort at the entry verify before reaching the child verify (folded deploy + entries
+        // unsupported for now).
+        let childCommitments: string[] = [];
+        if (childDataNftCount > 0 && commitmentHexes) {
+          const extraBase = 1 + requiredNftIndices.length + bhProbeCoSpends.length;
+          const childBase = extraBase + entryOutputCount + 1; // skip entry outputs + the child master NFT
+          childCommitments = extractCommitmentsFromTrace(
+            runProbe(commitmentHexes), childDataNftCount,
+            { min: childBase, max: childBase + childDataNftCount },
+          ) ?? [];
+        }
+
         if (!commitmentHexes) {
           // No OP_OUTPUTTOKENCOMMITMENT patterns found - this is a read-only function.
           // Return the current on-chain state (unchanged) so the builder outputs current commitments.
@@ -2828,10 +2862,14 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               }
             }
           }
-          return { state: currentState, entryCommitments };
+          return { state: currentState, entryCommitments, childCommitments };
         }
 
-        return { state: commitmentsToState(commitmentHexes, stateLayout, requiredNftIndices), entryCommitments };
+        return {
+          state: commitmentsToState(commitmentHexes, stateLayout, requiredNftIndices),
+          entryCommitments,
+          childCommitments,
+        };
       } catch (e) {
         if (e instanceof AutoDerivationError) throw e;
         throw new AutoDerivationError(
@@ -2842,7 +2880,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     } catch (e) {
       // Only swallow AutoDerivationError - let all other errors propagate.
       if (e instanceof AutoDerivationError) {
-        return { state: undefined, entryCommitments: [] };
+        return { state: undefined, entryCommitments: [], childCommitments: [] };
       }
       throw e;
     }

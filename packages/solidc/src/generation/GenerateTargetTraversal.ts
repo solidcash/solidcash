@@ -10003,7 +10003,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           // parent-context arg expression) instead of the type default, so the child lands configured.
           const foldedExpr = deployNode.foldedStateInit?.get(field.name);
           if (foldedExpr) {
+            // scopeDepth > 0 forces OP_PICK (a non-consuming copy) over OP_ROLL, so the param stays on
+            // the stack for later fields + the savedStack restore. visit() tracks the picked value, which
+            // emitPushdataEncode then consumes; keeping it tracked also makes a subsequent folded field's
+            // pick depth account for this field's runtime push. The savedStack restore discards the rest.
+            this.scopeDepth += 1;
             this.visit(foldedExpr);
+            this.scopeDepth -= 1;
           } else {
             this.emitDefaultValue(locationData, field.type);
           }

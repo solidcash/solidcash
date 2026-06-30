@@ -1,5 +1,6 @@
 import {
   Artifact,
+  ArtifactMap,
   AbiFunction,
   ArgSource,
   ExternalCallAbi,
@@ -665,6 +666,19 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
   /** Register a child contract artifact so deployFrom can resolve it by the deploy function's deployTarget. */
   registerChild(artifact: Artifact): this {
     this._childRegistry.set(artifact.contractName, artifact);
+    return this;
+  }
+
+  /**
+   * Register a whole `ArtifactMap` (from `compileStringMulti`/`compileFileMulti`) at once, so deployFrom can
+   * resolve any child contract from it by the deploy target's name - one call instead of per-child
+   * registerChild. The compiler already knows the dependency graph, so the map is the canonical source; see
+   * docs/multi-contract-artifacts.md. Stateless entries (interfaces, libraries) are kept too (harmless lookups).
+   */
+  registerArtifacts(map: ArtifactMap): this {
+    for (const artifact of Object.values(map)) {
+      this._childRegistry.set(artifact.contractName, artifact);
+    }
     return this;
   }
 

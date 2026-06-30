@@ -355,8 +355,8 @@ tupleAssignment
     ;
 
 tupleSlot
-    : typeName modifier* Identifier
-    | Identifier
+    : typeName modifier* anyIdentifier
+    | anyIdentifier
     |
     ;
 

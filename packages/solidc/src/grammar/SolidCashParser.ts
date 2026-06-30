@@ -5947,8 +5947,8 @@ export default class SolidCashParser extends Parser {
 	public tupleSlot(): TupleSlotContext {
 		let localctx: TupleSlotContext = new TupleSlotContext(this, this._ctx, this.state);
 		this.enterRule(localctx, 134, SolidCashParser.RULE_tupleSlot);
-		let _la: number;
 		try {
+			let _alt: number;
 			this.state = 1520;
 			this._errHandler.sync(this);
 			switch ( this._interp.adaptivePredict(this._input, 168, this._ctx) ) {
@@ -5959,27 +5959,29 @@ export default class SolidCashParser extends Parser {
 				this.typeName();
 				this.state = 1513;
 				this._errHandler.sync(this);
-				_la = this._input.LA(1);
-				while (_la===33 || _la===56 || ((((_la - 133)) & ~0x1F) === 0 && ((1 << (_la - 133)) & 31) !== 0)) {
-					{
-					{
-					this.state = 1510;
-					this.modifier();
-					}
+				_alt = this._interp.adaptivePredict(this._input, 167, this._ctx);
+				while (_alt !== 2 && _alt !== ATN.INVALID_ALT_NUMBER) {
+					if (_alt === 1) {
+						{
+						{
+						this.state = 1510;
+						this.modifier();
+						}
+						}
 					}
 					this.state = 1515;
 					this._errHandler.sync(this);
-					_la = this._input.LA(1);
+					_alt = this._interp.adaptivePredict(this._input, 167, this._ctx);
 				}
 				this.state = 1516;
-				this.match(SolidCashParser.Identifier);
+				this.anyIdentifier();
 				}
 				break;
 			case 2:
 				this.enterOuterAlt(localctx, 2);
 				{
 				this.state = 1518;
-				this.match(SolidCashParser.Identifier);
+				this.anyIdentifier();
 				}
 				break;
 			case 3:
@@ -11293,8 +11295,8 @@ export default class SolidCashParser extends Parser {
 	5,2,0,0,1506,1508,1,0,0,0,1507,1459,1,0,0,0,1507,1473,1,0,0,0,1507,1494,
 	1,0,0,0,1508,133,1,0,0,0,1509,1513,3,262,131,0,1510,1512,3,254,127,0,1511,
 	1510,1,0,0,0,1512,1515,1,0,0,0,1513,1511,1,0,0,0,1513,1514,1,0,0,0,1514,
-	1516,1,0,0,0,1515,1513,1,0,0,0,1516,1517,5,180,0,0,1517,1521,1,0,0,0,1518,
-	1521,5,180,0,0,1519,1521,1,0,0,0,1520,1509,1,0,0,0,1520,1518,1,0,0,0,1520,
+	1516,1,0,0,0,1515,1513,1,0,0,0,1516,1517,3,14,7,0,1517,1521,1,0,0,0,1518,
+	1521,3,14,7,0,1519,1521,1,0,0,0,1520,1509,1,0,0,0,1520,1518,1,0,0,0,1520,
 	1519,1,0,0,0,1521,135,1,0,0,0,1522,1523,5,180,0,0,1523,1524,7,8,0,0,1524,
 	1525,3,250,125,0,1525,1526,5,2,0,0,1526,1534,1,0,0,0,1527,1528,5,180,0,
 	0,1528,1529,7,9,0,0,1529,1534,5,2,0,0,1530,1531,7,9,0,0,1531,1532,5,180,
@@ -13978,8 +13980,8 @@ export class TupleSlotContext extends ParserRuleContext {
 	public typeName(): TypeNameContext {
 		return this.getTypedRuleContext(TypeNameContext, 0) as TypeNameContext;
 	}
-	public Identifier(): TerminalNode {
-		return this.getToken(SolidCashParser.Identifier, 0);
+	public anyIdentifier(): AnyIdentifierContext {
+		return this.getTypedRuleContext(AnyIdentifierContext, 0) as AnyIdentifierContext;
 	}
 	public modifier_list(): ModifierContext[] {
 		return this.getTypedRuleContexts(ModifierContext) as ModifierContext[];

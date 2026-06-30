@@ -1,0 +1,9 @@
+contract TupleSoftKeywordName() {
+    // Soft keywords (e.g. `error`) are valid variable names in a tuple destructuring, matching how they
+    // already work in a single declaration. Surfaced by OpenZeppelin ECDSA's
+    // `(address recovered, RecoverError error) = tryRecover(...)`.
+    function f() {
+        (int a, int error) = (1, 2);
+        require(a + error == 3);
+    }
+}

@@ -1279,11 +1279,11 @@ export default class AstBuilder
         // interface var (`(IERC20 a, ..) = ..`) routes `a.method(..)` to an external call (as locals/params do).
         if (tn) {
           return {
-            name: slot.Identifier()!.getText(),
+            name: slot.anyIdentifier()!.getText(),
             type: this.resolveType(tn.getText()) ?? new AddressType(false, tn.getText()),
           };
         }
-        const id = slot.Identifier();
+        const id = slot.anyIdentifier();
         if (id) return { name: id.getText(), existing: true };
         return { skip: true };
       });

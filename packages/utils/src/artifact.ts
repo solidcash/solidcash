@@ -143,6 +143,7 @@ export interface AbiFunction {
   isFallback?: boolean;
   isReceive?: boolean;
   externalLibraries?: readonly string[];  // names of external script libraries this function uses (e.g. 'keccak256')
+  externalLibraryCalls?: Readonly<Record<string, number>>;  // per-library call-site count (sizes the SDK budget pad)
 }
 
 export interface CollectionIterationAbi {

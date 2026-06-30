@@ -20,10 +20,18 @@ export const INLINE_MAX_BLOB_LENGTH = 256;
 
 export interface ExternalLibrary {
   name: string;             // builtin resolves its library by this name (e.g. 'keccak256')
-  blob: Uint8Array;         // the library script (a function inputs -> outputs)
+  blob: Uint8Array;         // the library script (a function inputs -> outputs, or a registrar - see below)
   blobHash: Uint8Array;     // hash256(blob); the integrity check baked into the loader
   functionId: bigint;       // OP_DEFINE id the library is registered under (>= 0x1009)
   abi: { inputs: AbiInput[]; outputs: AbiOutput[] };  // call signature, e.g. (bytes) -> bytes32
+  // When set, the blob is a one-shot REGISTRAR: run once with the callable id on the stack, it OP_DEFINEs
+  // the library function at THAT id plus any internal helper functions. The loader pushes functionId,
+  // defines the registrar under a transient setup id, and INVOKEs it once (rather than defining the blob
+  // directly as functionId). The callable id is supplied by the loader, NOT baked into the blob, so it can
+  // never collide with another library's id. Required for a library whose body OP_DEFINEs helpers (e.g.
+  // keccak256's round) - otherwise a 2nd call would redefine them. A plain body (no internal OP_DEFINE) is
+  // already re-entrant when defined directly, so it leaves this unset.
+  registrar?: boolean;
 }
 
 // Built-in precompiles. User libraries (blob+ABI, or compiled from .scash) are merged into this set at
@@ -35,6 +43,7 @@ export const BUILTIN_LIBRARIES: Record<string, ExternalLibrary> = {
     blobHash: hexToBin(KECCAK256_LIBRARY_BLOB_HASH),
     functionId: KECCAK256_LIBRARY_ID,
     abi: { inputs: [{ name: 'message', type: 'bytes' }], outputs: [{ type: 'bytes32' }] },
+    registrar: true, // blob defines the round + keccak-main when run once -> re-entrant keccak256
   },
 };
 
@@ -42,8 +51,9 @@ export const BUILTIN_LIBRARIES: Record<string, ExternalLibrary> = {
 // compiler via the `userLibraries` option; resolved into the registry alongside the built-ins.
 export interface UserLibraryInput {
   name: string;
-  code: string; // hex-encoded library blob (a function inputs -> outputs)
+  code: string; // hex-encoded library blob (a function inputs -> outputs, or a registrar if registrar:true)
   abi: { inputs: AbiInput[]; outputs: AbiOutput[] };
+  registrar?: boolean; // the blob is a one-shot registrar that OP_DEFINEs the function + helpers (see ExternalLibrary)
 }
 
 // The full library set for a compilation: built-in precompiles + user libraries. User libraries get
@@ -54,7 +64,10 @@ export function resolveLibraries(userLibraries?: readonly UserLibraryInput[]): R
   for (const ul of userLibraries ?? []) {
     if (resolved[ul.name]) throw new Error(`External library '${ul.name}' is already defined`);
     const blob = hexToBin(ul.code);
-    resolved[ul.name] = { name: ul.name, blob, blobHash: hash256(blob), functionId: nextId, abi: ul.abi };
+    resolved[ul.name] = {
+      name: ul.name, blob, blobHash: hash256(blob), functionId: nextId, abi: ul.abi,
+      ...(ul.registrar && { registrar: true }),
+    };
     nextId += 1n;
   }
   return resolved;

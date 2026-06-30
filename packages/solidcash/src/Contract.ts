@@ -452,8 +452,14 @@ export class Contract<
       return (arg instanceof Uint8Array && (type === 'bytes' || type.startsWith('bytes')))
         ? Math.max(max, arg.length) : max;
     }, 0);
-    const blocks = Math.min(3, Math.max(1, Math.floor(inputBytes / 136) + 1));
-    return new Uint8Array(blocks * 2900);
+    // Each keccak256 call costs ~1 block of budget per its message block(s); size the pad to the total
+    // across all call sites (~2900 unlocking bytes fund one block), so keccak256(keccak256(x)) and
+    // multiple keccak256(...) calls are funded. The per-input ~3-block budget limit caps what can fit, so
+    // beyond that the tx fails on budget regardless.
+    const blocksPerCall = Math.max(1, Math.floor(inputBytes / 136) + 1);
+    const calls = abiFunction.externalLibraryCalls?.keccak256 ?? 1;
+    const totalBlocks = Math.min(3, calls * blocksPerCall);
+    return new Uint8Array(totalBlocks * 2900);
   }
 }
 

@@ -98,6 +98,8 @@ function buildFunctionAbiMetadata(func: FunctionDefinitionNode): Partial<AbiFunc
     }),
     ...(func.usesMsgSender && { usesMsgSender: true }),
     ...(func.usedLibraries && func.usedLibraries.length > 0 && { externalLibraries: func.usedLibraries }),
+    ...(func.libraryCallCounts && func.libraryCallCounts.size > 0
+      && { externalLibraryCalls: Object.fromEntries(func.libraryCallCounts) }),
     ...(func.unsafeTier !== undefined && { unsafeTier: func.unsafeTier }),
     ...(func.lowLevelCalls && func.lowLevelCalls.length > 0 && {
       lowLevelCalls: func.lowLevelCalls.map((lc) => ({ callMode: lc.callMode })),

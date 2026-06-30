@@ -59,11 +59,25 @@ const BUILTIN_LIBRARIES = { keccak256: {...}, /* another hashing scheme: {...} *
 
 1. Symbol table registers every library (built-in + user) as a callable global function: `lib`'s ABI
    gives the parameter/return types so `lib(args)` type-checks.
-2. Codegen for `lib(args)`: **inline** (used once + fits + option allows) emits `<blob> <id> OP_DEFINE`
-   in the function prologue; **side-car** emits the loader (read last input -> strip `codeBegin/End` ->
-   `OP_HASH256 == blobHash` -> `OP_DEFINE`). Each call site: `<args> <id> OP_INVOKE`.
-3. The blob's internal sub-functions use ids below the 0x1000 subroutine registry; library ids start at
-   0x1009 (keccak256), incrementing per library.
+2. Codegen for `lib(args)`: the blob is registered once in the function prologue. **inline** (used once +
+   fits + option allows) pushes `<blob>` from the contract bytecode; **side-car** emits the loader (read
+   last input -> strip `codeBegin/End` -> `OP_HASH256 == blobHash`). Then it is registered (see step 3).
+   Each call site: `<args> <id> OP_INVOKE`.
+3. Registration depends on `registrar`. A plain body (no internal `OP_DEFINE`) is defined directly as its
+   id: `<id> OP_DEFINE` - already re-entrant since the body can be OP_INVOKEd repeatedly. A **registrar**
+   blob (`registrar: true`, e.g. keccak256) defines the library function *plus its internal helpers* when
+   run. The loader supplies the callable id rather than the blob baking it: it pushes `<id>`, `OP_SWAP`s the
+   blob back on top, defines the registrar under a transient setup id (`id + 0x1000`), and OP_INVOKEs it
+   ONCE; the registrar reads `id` off the stack and OP_DEFINEs the library function at it (+ its helpers).
+   Call sites then OP_INVOKE `id` with the helpers defined exactly once. Because the id is loader-supplied,
+   **the blob never bakes a library id and cannot collide with another library's** (the compiler
+   deconflicts ids). This is what makes a helper-defining library re-entrant: `keccak256(keccak256(x))` and
+   multiple `keccak256(...)` calls in one input no longer hit a "previously-defined function identifier"
+   abort (the round is defined once, never redefined). The only remaining limit is the shared per-input
+   compute budget (~3 keccak blocks total; see docs/evm-storage-parity.md).
+4. A registrar's internal helper ids are reserved keccak-private constants below the 0x1000 subroutine
+   registry (keccak256's round is id 2); callable library ids are loader-supplied (the compiler assigns
+   from 0x1009, incrementing per library, deconflicted); setup ids are `id + 0x1000`.
 
 ## SDK
 

@@ -63,6 +63,28 @@ co-spend library** (OP_DEFINE/OP_INVOKE blob), which is computationally heavy - 
 input risks exhausting the per-input compute budget. So the load-bearing question for this model is: **how
 often must keccak run in-script?**
 
+### Measured cost (BCH-2026 VM)
+
+A direct measurement (`packages/solidcash/test/Keccak256.test.ts`, "compute-budget bench") pins the numbers
+along two axes. The side-car only *defines* the body; the `OP_INVOKE` executes in the **spending (main)
+input** and consumes that input's operation-cost budget.
+
+- **Cost scales per 136-byte message block** (~2.26M op cost/block): 32 B -> 1 block ~2.29M (21,116
+  instructions, 41 hash-digest iterations); 200 B -> 2 blocks ~4.54M; 272 B -> 3 blocks ~6.78M; 408 B -> 4
+  blocks, over budget. The per-input budget is `operationCostBudgetPerByte(800) * densityControlLength`,
+  and density tracks the spent script size, so **padding raises the budget at ~800 per byte** (a 1000-byte
+  pad adds ~808k). At the 10,000-byte consensus bytecode limit the budget tops out near ~8M op, which caps
+  **one keccak256 at ~3 blocks (~407 bytes)**. (Matches `keccak-poc/README.md`.)
+- **Distinct calls are capped at one per input.** The library blob `OP_DEFINE`s helper functions inside its
+  invoked body, so a 2nd keccak256 call in the same input aborts ("previously-defined function
+  identifier"). The ~3-block capacity is therefore reachable only as ONE call over a long message, not as 3
+  separate calls.
+
+So one input affords ~3 keccak block-permutations (~8M budget), spent as a single keccak256 of up to ~407
+bytes. Real in-script keccak is expensive (a whole input budget for a few blocks), and the storage hot path
+would need one per slot access - infeasible. The sha256-slot approach (zero in-script keccak for storage) is
+not an optimization but a necessity.
+
 The answer is **basically never for storage**, because slot hashing does not need to match Ethereum's slot
 hashing - it only needs to be internally consistent and collision-resistant. So:
 

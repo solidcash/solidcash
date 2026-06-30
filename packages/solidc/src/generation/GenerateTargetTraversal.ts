@@ -951,18 +951,41 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_DEFINE, locationData);
   }
 
-  // Inline a library: push its blob from the contract bytecode and OP_DEFINE it (no side-car, no
-  // integrity hash). Net-0 on the data stack.
+  // OP_DEFINE the just-pushed/loaded library blob (on the data stack) so its function(s) are callable.
+  // Two shapes (lib.registrar): a plain body is defined directly as functionId - already re-entrant since
+  // a body that does not OP_DEFINE at top level can be OP_INVOKEd repeatedly. A REGISTRAR blob defines the
+  // library function + its internal helpers when run. We assign the CALLABLE id here (the blob does not bake
+  // it, so it can never collide with another library's id): push functionId, define the registrar under a
+  // transient setup id (functionId + 0x1000, clear of function ids, the reserved keccak round id, and the
+  // 0x1000-0x1008 subroutine registry), and OP_INVOKE it once - the registrar reads functionId and defines
+  // the library function at it. Call-sites then OP_INVOKE functionId repeatedly with the helpers defined
+  // exactly once (re-entrant keccak256, keccak256(keccak256(x)), etc.). Net-0 on the data stack.
+  private emitLibraryRegister(lib: ExternalLibrary, loc: SingleLocationData): void {
+    if (!lib.registrar) {
+      this.emit(encodeInt(lib.functionId), loc);
+      this.emit(Op.OP_DEFINE, loc);
+      return;
+    }
+    const setupId = lib.functionId + 0x1000n;
+    this.emit(encodeInt(lib.functionId), loc); // consumer-assigned callable id -> [blob, functionId]
+    this.emit(Op.OP_SWAP, loc);                // -> [functionId, blob]
+    this.emit(encodeInt(setupId), loc);
+    this.emit(Op.OP_DEFINE, loc);              // define the registrar under the setup id -> [functionId]
+    this.emit(encodeInt(setupId), loc);
+    this.emit(Op.OP_INVOKE, loc);              // run once; registrar consumes functionId, defines the lib fn
+  }
+
+  // Inline a library: push its blob from the contract bytecode and register it (no side-car, no integrity
+  // hash). Net-0 on the data stack.
   private emitInlineLibraryDefine(lib: ExternalLibrary, loc: SingleLocationData): void {
     this.emit(lib.blob, loc);
-    this.emit(encodeInt(lib.functionId), loc);
-    this.emit(Op.OP_DEFINE, loc);
+    this.emitLibraryRegister(lib, loc);
   }
 
   /**
    * Load an external library blob from its side-car (the last tx input's revealed P2SH redeem), verify it
-   * by hash, and OP_DEFINE it under the library's function id. Net-zero on the data stack. Strip offsets
-   * come from the blob (sidecarStripOffsets) and match the SDK's side-car redeem layout. See
+   * by hash, and register it (define its function(s)). Net-zero on the data stack. Strip offsets come from
+   * the blob (sidecarStripOffsets) and match the SDK's side-car redeem layout. See
    * packages/solidc/docs/external-libraries.md.
    */
   private emitExternalLibraryLoader(lib: ExternalLibrary, loc: SingleLocationData): void {
@@ -984,8 +1007,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_HASH256, loc);
     this.emit(lib.blobHash, loc);                 // integrity: blob is the genuine library
     this.emit(Op.OP_EQUALVERIFY, loc);
-    this.emit(encodeInt(lib.functionId), loc);
-    this.emit(Op.OP_DEFINE, loc);
+    this.emitLibraryRegister(lib, loc);
   }
 
   /**

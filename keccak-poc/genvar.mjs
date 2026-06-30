@@ -44,8 +44,18 @@ function emitAbsorbBlock25(e) {
   }
   for (let k = 0; k < 26; k++) e.raw('<25> OP_ROLL OP_DROP', -1);  // drop old 25 + block'
 }
-// keccak256 of an arbitrary-length message on top. in: [msg]. out: [hash32].
-export function genKeccak256var(assemble) {
+// Round-body define: assemble the round (theta,rho,pi,chi) body and OP_DEFINE it under fnId. Run ONCE.
+// Net-0 on the data stack. Hoisting this OUT of the keccak body (to the loader) makes keccak256
+// re-entrant: the body can be OP_INVOKEd many times in one input without redefining the round.
+export function genRoundDefine(assemble, fnId = 2) {
+  const body = new Emit(); body.size = 25; emitRoundBody25(body);
+  return `<0x${assemble(body.ops.join(' '))}> <${fnId}> OP_DEFINE`;
+}
+
+// keccak256 of an arbitrary-length message, assuming the round fn (roundFnId) is ALREADY defined.
+// in: [msg]. out: [hash32]. Pair with genRoundDefine (run once before any invoke). Re-entrant: a fresh
+// invoke reuses the pre-defined round and defines nothing, so it can be called many times per input.
+export function genKeccak256varBody(roundFnId = 2) {
   const e = new Emit(); e.size = 1;
   // pad: msg || 0x01 || zeros(Z) to a multiple of 136, then last byte |= 0x80
   e.pushHex('01'); e.raw('OP_CAT', -1);                         // msg||0x01
@@ -56,15 +66,12 @@ export function genKeccak256var(assemble) {
   e.raw('OP_TOALTSTACK', -1);
   for (let i = 0; i < 25; i++) e.pushHex(ZERO);
   e.raw('OP_FROMALTSTACK', 1);                                  // [25 zeros, padded]
-  // define round body once
-  const body = new Emit(); body.size = 25; emitRoundBody25(body);
-  e.raw(`<0x${assemble(body.ops.join(' '))}> <2> OP_DEFINE`, 0);
   // block loop: absorb + permute per 136-byte block, until the padded message is consumed
   e.raw('OP_BEGIN', 0);
   e.raw('<136> OP_SPLIT', 1);                                   // [25 state, block, rest]
   e.raw('OP_TOALTSTACK', -1);                                   // stash rest
   emitAbsorbBlock25(e);                                         // [25 new state]
-  for (let r = 0; r < 24; r++) { e.raw('<2> OP_INVOKE', 0); e.raw(`<0x${be(RC[r])}> OP_XOR`, 0); }
+  for (let r = 0; r < 24; r++) { e.raw(`<${roundFnId}> OP_INVOKE`, 0); e.raw(`<0x${be(RC[r])}> OP_XOR`, 0); }
   e.raw('OP_FROMALTSTACK', 1);                                  // [25 permuted, rest]
   e.raw('OP_SIZE <0> OP_NUMEQUAL', 1);                          // isEmpty(rest)
   e.raw('OP_UNTIL', -1);
@@ -74,4 +81,22 @@ export function genKeccak256var(assemble) {
   e.raw('OP_SWAP OP_REVERSEBYTES OP_CAT OP_SWAP OP_REVERSEBYTES OP_CAT OP_SWAP OP_REVERSEBYTES OP_CAT', -3);
   for (let k = 0; k < 21; k++) e.raw('OP_NIP', -1);
   return e.ops.join(' ');
+}
+
+// Single-shot form (back-compat): define the round inline, then run the body. NOT re-entrant - a 2nd
+// invoke would redefine the round. The re-entrant integration uses genRoundDefine + genKeccak256varBody.
+// in: [msg]. out: [hash32].
+export function genKeccak256var(assemble) {
+  return `${genRoundDefine(assemble)} ${genKeccak256varBody()}`;
+}
+
+// The on-chain library blob shipped in @solidcash/utils: a one-shot REGISTRAR. Stack in: [callableId].
+// Run once, it OP_DEFINEs the round (roundFnId, a reserved keccak-internal id) and the keccak-main at the
+// CONSUMER-PROVIDED callableId (OP_SWAP lifts it above the body for OP_DEFINE), consuming callableId. The
+// callable id is NOT baked here: the contract loader pushes the compiler-assigned, deconflicted id, so the
+// blob never assumes a fixed library id. The loader runs the registrar once under a transient setup id;
+// call-sites then OP_INVOKE callableId any number of times (re-entrant - the round is defined once).
+// assemble: ASM -> bytecode hex.
+export function genKeccakRegistrar(assemble, roundFnId = 2) {
+  return `${genRoundDefine(assemble, roundFnId)} <0x${assemble(genKeccak256varBody(roundFnId))}> OP_SWAP OP_DEFINE`;
 }

@@ -24,16 +24,15 @@ contract NamedReturns() {
 }
 `;
 
-async function spend(fn: string, ...args: bigint[]): Promise<unknown> {
-  const sc = await deployStateful(compileString(SOURCE, { forceStateful: true }));
-  return sc.call[fn](...args); // thenable: the caller awaits, which sends
-}
+const artifact = compileString(SOURCE, { forceStateful: true });
 
 describe('Named return values', () => {
   it('binds assigned named returns correctly', async () => {
-    await expect(spend('check', 3n, 4n)).resolves.toBeDefined();
+    const sc = await deployStateful(artifact);
+    await expect(sc.check(3n, 4n)).resolves.toBeDefined();
   });
   it('defaults an unassigned named return to 0', async () => {
-    await expect(spend('defaultReturn')).resolves.toBeDefined();
+    const sc = await deployStateful(artifact);
+    await expect(sc.defaultReturn()).resolves.toBeDefined();
   });
 });

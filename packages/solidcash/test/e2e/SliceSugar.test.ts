@@ -11,18 +11,16 @@ contract SliceSugar() {
     }
 }
 `;
-
-async function spend(arg: Uint8Array): Promise<unknown> {
-  const sc = await deployStateful(compileString(SOURCE, { forceStateful: true }));
-  return sc.call.check(arg); // thenable: the caller awaits, which sends
-}
+const artifact = compileString(SOURCE, { forceStateful: true });
 
 describe('Index-range slice sugar x[a:b]', () => {
   it('slices the same bytes as .slice() on the VM', async () => {
-    await expect(spend(Uint8Array.from([0x00, 0x11, 0x22, 0x33]))).resolves.toBeDefined();
+    const sc = await deployStateful(artifact);
+    await expect(sc.check(Uint8Array.from([0x00, 0x11, 0x22, 0x33]))).resolves.toBeDefined();
   });
 
   it('fails when the slice does not match', async () => {
-    await expect(spend(Uint8Array.from([0x00, 0x99, 0x99, 0x33]))).rejects.toThrow();
+    const sc = await deployStateful(artifact);
+    await expect(sc.check(Uint8Array.from([0x00, 0x99, 0x99, 0x33]))).rejects.toThrow();
   });
 });

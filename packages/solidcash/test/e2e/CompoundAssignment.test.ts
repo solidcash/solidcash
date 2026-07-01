@@ -27,23 +27,22 @@ contract CompoundAssign() {
     }
 }
 `;
-
-async function spend(fn: string, arg: bigint | Uint8Array): Promise<unknown> {
-  const sc = await deployStateful(compileString(SOURCE, { forceStateful: true }));
-  return sc.call[fn](arg); // thenable: the caller awaits, which sends
-}
+const artifact = compileString(SOURCE, { forceStateful: true });
 
 describe('Compound assignment operators', () => {
   it('arithmetic/shift compound ops on int compute the expected result', async () => {
-    await expect(spend('arith', 10n)).resolves.toBeDefined();
+    const sc = await deployStateful(artifact);
+    await expect(sc.arith(10n)).resolves.toBeDefined();
   });
 
   it('arithmetic compound ops fail when the result differs', async () => {
     // x=0 -> 5,2,4,1,1,8,4 -> a==4, not 8
-    await expect(spend('arith', 0n)).rejects.toThrow();
+    const sc = await deployStateful(artifact);
+    await expect(sc.arith(0n)).rejects.toThrow();
   });
 
   it('bitwise compound ops on bytes compute the expected result', async () => {
-    await expect(spend('bitwise', Uint8Array.from([0xff]))).resolves.toBeDefined();
+    const sc = await deployStateful(artifact);
+    await expect(sc.bitwise(Uint8Array.from([0xff]))).resolves.toBeDefined();
   });
 });

@@ -5,7 +5,7 @@ import { deployStateful } from '../test-util.js';
 // Internal function types (function pointers). A function value is the target's integer functionId;
 // an indirect call is `<functionId> OP_INVOKE`. The contract recomputes via the pointer and requires
 // the expected result, so the spend only succeeds if dispatch is correct on the VM.
-// Compiled with { forceStateful: true } so each spend is the short `await sc.call.<fn>(args)` self-poke
+// Compiled with { forceStateful: true } so each spend is the short `await sc.<fn>(args)` self-poke
 // covenant (no dummy state, no manual UTXO gathering).
 const SOURCE = `
 contract FnPtr() {
@@ -57,43 +57,47 @@ contract FnPtr() {
     }
 }
 `;
-
-async function spend(fn: string, args: unknown[]): Promise<unknown> {
-  const sc = await deployStateful(compileString(SOURCE, { forceStateful: true }));
-  return sc.call[fn](...args); // thenable: the caller awaits, which sends
-}
+const artifact = compileString(SOURCE, { forceStateful: true });
 
 describe('internal function types', () => {
   it('passes a function name as a callback argument', async () => {
-    await expect(spend('viaApply', [21n, 42n])).resolves.toBeDefined();
+    const sc = await deployStateful(artifact);
+    await expect(sc.viaApply(21n, 42n)).resolves.toBeDefined();
   });
 
   it('calls through a function-typed local (default branch)', async () => {
-    await expect(spend('viaLocal', [21n, false, 42n])).resolves.toBeDefined();
+    const sc = await deployStateful(artifact);
+    await expect(sc.viaLocal(21n, false, 42n)).resolves.toBeDefined();
   });
 
   it('calls through a function-typed local (reassigned branch)', async () => {
-    await expect(spend('viaLocal', [21n, true, 63n])).resolves.toBeDefined();
+    const sc = await deployStateful(artifact);
+    await expect(sc.viaLocal(21n, true, 63n)).resolves.toBeDefined();
   });
 
   it('calls a function pointer returned from another function', async () => {
-    await expect(spend('viaReturn', [21n, true, 63n])).resolves.toBeDefined();
+    const sc = await deployStateful(artifact);
+    await expect(sc.viaReturn(21n, true, 63n)).resolves.toBeDefined();
   });
 
   it('discards the result of a statement-form indirect call without corrupting the stack', async () => {
-    await expect(spend('viaStatement', [21n, 42n])).resolves.toBeDefined();
+    const sc = await deployStateful(artifact);
+    await expect(sc.viaStatement(21n, 42n)).resolves.toBeDefined();
   });
 
   it('dispatches through an array of function pointers (index 0)', async () => {
-    await expect(spend('dispatch', [0n, 21n, 42n])).resolves.toBeDefined();
+    const sc = await deployStateful(artifact);
+    await expect(sc.dispatch(0n, 21n, 42n)).resolves.toBeDefined();
   });
 
   it('dispatches through an array of function pointers (index 1)', async () => {
-    await expect(spend('dispatch', [1n, 21n, 63n])).resolves.toBeDefined();
+    const sc = await deployStateful(artifact);
+    await expect(sc.dispatch(1n, 21n, 63n)).resolves.toBeDefined();
   });
 
   it('rejects when the pointer yields the wrong result', async () => {
-    await expect(spend('viaLocal', [21n, false, 63n])).rejects.toThrow();
+    const sc = await deployStateful(artifact);
+    await expect(sc.viaLocal(21n, false, 63n)).rejects.toThrow();
   });
 
   it('rejects function-type parameters on an external/public function', () => {

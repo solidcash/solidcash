@@ -52,20 +52,15 @@ contract D is B, C {
 }
 `;
 
-// forceStateful: true so the spend is the short `await sc.call.run(...)` self-poke covenant (no dummy state).
-async function spendDiamond(x: bigint, expected: bigint): Promise<unknown> {
-  const artifact = compileString(DIAMOND, {
-    importResolver: resolverFor(DIAMOND_FILES),
-    rootFileId: '/main.scash',
-    forceStateful: true,
-  });
-  const sc = await deployStateful(artifact);
-  return sc.call.run(x, expected); // thenable: the caller awaits, which sends
-}
-
+// forceStateful: true so the spend is the short `await sc.run(...)` self-poke covenant (no dummy state).
 describe('virtual + override(A, B)', () => {
   it('compiles and runs an explicit override(B, C) over both diamond bases', async () => {
-    await expect(spendDiamond(0n, 7n)).resolves.toBeDefined();
+    const sc = await deployStateful(compileString(DIAMOND, {
+      importResolver: resolverFor(DIAMOND_FILES),
+      rootFileId: '/main.scash',
+      forceStateful: true,
+    }));
+    await expect(sc.run(0n, 7n)).resolves.toBeDefined();
   });
 
   it('rejects overriding a function the parent did not mark virtual', () => {

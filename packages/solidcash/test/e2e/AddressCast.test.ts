@@ -21,33 +21,34 @@ const leUint = (bytes: Uint8Array): bigint => {
   return v;
 };
 
-// Compiled with { forceStateful: true } so each spend is the short `await sc.call.<fn>(args)` self-poke
+// Compiled with { forceStateful: true } so each spend is the short `await sc.<fn>(args)` self-poke
 // covenant (no dummy state, no manual UTXO gathering).
-async function spend(fn: string, ...args: any[]): Promise<unknown> {
-  const sc = await deployStateful(compileString(SOURCE, { forceStateful: true }));
-  return sc.call[fn](...args); // thenable: the caller awaits, which sends
-}
+const artifact = compileString(SOURCE, { forceStateful: true });
 
 describe('bytes20(address) / uint160(address) narrowing casts (runtime)', () => {
   const addr = p2pkh(alicePkh); // a P2PKH address whose embedded 20-byte hash is alicePkh
 
   it('bytes20(address) extracts the embedded P2PKH pubkey-hash', async () => {
-    const txid = await spend('checkBytes20', addr, alicePkh);
+    const sc = await deployStateful(artifact);
+    const txid = await sc.checkBytes20(addr, alicePkh);
     expect(txid).toBeDefined();
   });
 
   it('bytes20(address) does not match a different hash', async () => {
-    await expect(spend('checkBytes20', addr, new Uint8Array(20))).rejects.toThrow();
+    const sc = await deployStateful(artifact);
+    await expect(sc.checkBytes20(addr, new Uint8Array(20))).rejects.toThrow();
   });
 
   it('uint160(address) is the unsigned little-endian value of that hash', async () => {
-    const txid = await spend('checkUint160', addr, leUint(alicePkh));
+    const sc = await deployStateful(artifact);
+    const txid = await sc.checkUint160(addr, leUint(alicePkh));
     expect(txid).toBeDefined();
   });
 
   it('uint160(address) is non-negative even when the hash high bit is set', async () => {
+    const sc = await deployStateful(artifact);
     const highBit = new Uint8Array(20).fill(0xff); // top bit set -> would be negative without the 0x00 fix
-    const txid = await spend('uint160NonNegative', p2pkh(highBit));
+    const txid = await sc.uint160NonNegative(p2pkh(highBit));
     expect(txid).toBeDefined();
   });
 });

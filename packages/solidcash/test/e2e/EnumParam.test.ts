@@ -4,7 +4,7 @@ import { deployStateful } from '../test-util.js';
 
 // Enum-typed function parameters: previously crashed the compiler (p.type undefined). The ABI
 // exposes the enum name; the SDK encodes the int-backed enum value as an int.
-// Compiled with { forceStateful: true } so each spend is the short `await sc.call.pick(arg)` self-poke covenant.
+// Compiled with { forceStateful: true } so each spend is the short `await sc.pick(arg)` self-poke covenant.
 const SOURCE = `
 contract EnumParam() {
     enum Color { Red, Green, Blue }
@@ -13,18 +13,16 @@ contract EnumParam() {
     }
 }
 `;
-
-async function spend(arg: bigint): Promise<unknown> {
-  const sc = await deployStateful(compileString(SOURCE, { forceStateful: true }));
-  return sc.call.pick(arg); // thenable: the caller awaits, which sends
-}
+const artifact = compileString(SOURCE, { forceStateful: true });
 
 describe('Enum-typed function parameters', () => {
   it('compiles, and the SDK encodes the enum value (Color.Green = 1)', async () => {
-    await expect(spend(1n)).resolves.toBeDefined();
+    const sc = await deployStateful(artifact);
+    await expect(sc.pick(1n)).resolves.toBeDefined();
   });
   it('fails when the enum value does not match', async () => {
-    await expect(spend(0n)).rejects.toThrow();
+    const sc = await deployStateful(artifact);
+    await expect(sc.pick(0n)).rejects.toThrow();
   });
   it('exposes the enum name in the ABI', () => {
     const art = compileString(SOURCE);

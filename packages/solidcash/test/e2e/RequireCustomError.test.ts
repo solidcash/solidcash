@@ -4,7 +4,7 @@ import { deployStateful } from '../test-util.js';
 
 // require(cond, CustomError(args)): reverts with the custom error if cond is false. On BCH the
 // error is tooling metadata (no revert data); the runtime behaviour is require(cond).
-// Compiled with { forceStateful: true } so each spend is the short `await sc.call.f(arg)` self-poke
+// Compiled with { forceStateful: true } so each spend is the short `await sc.f(arg)` self-poke
 // covenant (no dummy state, no manual UTXO gathering).
 const SOURCE = `
 contract RequireError() {
@@ -14,17 +14,15 @@ contract RequireError() {
     }
 }
 `;
-
-async function spend(arg: bigint): Promise<unknown> {
-  const sc = await deployStateful(compileString(SOURCE, { forceStateful: true }));
-  return sc.call.f(arg); // thenable: the caller awaits, which sends
-}
+const artifact = compileString(SOURCE, { forceStateful: true });
 
 describe('require with custom error', () => {
   it('passes when the condition holds', async () => {
-    await expect(spend(15n)).resolves.toBeDefined();
+    const sc = await deployStateful(artifact);
+    await expect(sc.f(15n)).resolves.toBeDefined();
   });
   it('fails when the condition is false', async () => {
-    await expect(spend(5n)).rejects.toThrow();
+    const sc = await deployStateful(artifact);
+    await expect(sc.f(5n)).rejects.toThrow();
   });
 });

@@ -2,7 +2,6 @@ import { readFileSync } from 'fs';
 import { dirname, resolve } from 'path';
 import { fileURLToPath } from 'url';
 import { compileString } from 'solidc';
-import { TransactionDetails } from '../../src/index.js';
 import { deployStateful } from '../test-util.js';
 import { hexToBin, binToHex } from '@bitauth/libauth';
 import { computeFunctionSelector, computeFunctionSignature } from '@solidcash/utils';
@@ -18,11 +17,7 @@ function loadCash(name: string): string {
 }
 
 // Self-poke covenant: deploy the single stateless contract as forceStateful and spend its own UTXO
-// via the short `sc.call.test(...)` path (no manual funding/change wiring).
-async function spendTest(source: string, ...args: any[]): Promise<TransactionDetails> {
-  const sc = await deployStateful(compileString(source, { forceStateful: true }));
-  return sc.call.test(...args);
-}
+// via the short `sc.test(...)` path (no manual funding/change wiring).
 
 describe('ABI Encode Advanced', () => {
   describe('abi.encodeWithSelector', () => {
@@ -30,7 +25,8 @@ describe('ABI Encode Advanced', () => {
 
     it('should compile and run with a 4-byte selector', async () => {
       const selector = hexToBin('deadbeef');
-      const tx = await spendTest(source, selector, 42n, alicePub);
+      const sc = await deployStateful(compileString(source, { forceStateful: true }));
+      const tx = await sc.test(selector, 42n, alicePub);
       expect(tx.txid).toBeDefined();
     });
   });
@@ -39,7 +35,8 @@ describe('ABI Encode Advanced', () => {
     const source = loadCash('abi_encode_with_signature.scash');
 
     it('should compile and run with a string signature', async () => {
-      const tx = await spendTest(source, 42n, alicePub);
+      const sc = await deployStateful(compileString(source, { forceStateful: true }));
+      const tx = await sc.test(42n, alicePub);
       expect(tx.txid).toBeDefined();
     });
   });
@@ -48,7 +45,8 @@ describe('ABI Encode Advanced', () => {
     const source = loadCash('abi_encode_call.scash');
 
     it('should compile and run with interface function reference', async () => {
-      const tx = await spendTest(source, alicePub, 100n);
+      const sc = await deployStateful(compileString(source, { forceStateful: true }));
+      const tx = await sc.test(alicePub, 100n);
       expect(tx.txid).toBeDefined();
     });
   });

@@ -18,13 +18,6 @@ function loadCash(name: string): string {
   return readFileSync(resolve(VALID_DIR, name), 'utf-8');
 }
 
-// Self-poke covenant spend: deploy the (forceStateful) contract, then the short
-// `await sc.call.<fn>(args)` self-preserving spend.
-async function spend(source: string, fn: string, ...args: unknown[]): Promise<any> {
-  const sc = await deployStateful(compileString(source, { forceStateful: true }));
-  return sc.call[fn](...args); // thenable: the caller awaits, which sends
-}
-
 // --- Tests ------------------------------------------------------------------
 
 describe('Concat Functions', () => {
@@ -34,8 +27,8 @@ describe('Concat Functions', () => {
     const source = loadCash('bytes_concat.scash');
 
     it('should concatenate two byte sequences', async () => {
-      const tx = await spend(
-        source, 'concatTwo',
+      const sc = await deployStateful(compileString(source, { forceStateful: true }));
+      const tx = await sc.concatTwo(
         hexToBin('aabbcc'), hexToBin('ddeeff'),
         alicePub, new SignatureTemplate(alicePriv),
       );
@@ -43,8 +36,8 @@ describe('Concat Functions', () => {
     });
 
     it('should concatenate three fixed-size bytes', async () => {
-      const tx = await spend(
-        source, 'concatThree',
+      const sc = await deployStateful(compileString(source, { forceStateful: true }));
+      const tx = await sc.concatThree(
         hexToBin('11223344'), hexToBin('55667788'), hexToBin('99aabbcc'),
         alicePub, new SignatureTemplate(alicePriv),
       );
@@ -52,8 +45,8 @@ describe('Concat Functions', () => {
     });
 
     it('should concatenate mixed types (bytes4, string, bytes)', async () => {
-      const tx = await spend(
-        source, 'concatMixed',
+      const sc = await deployStateful(compileString(source, { forceStateful: true }));
+      const tx = await sc.concatMixed(
         hexToBin('deadbeef'), 'hello', hexToBin('ff'),
         alicePub, new SignatureTemplate(alicePriv),
       );
@@ -61,16 +54,16 @@ describe('Concat Functions', () => {
     });
 
     it('should return empty bytes for zero arguments', async () => {
-      const tx = await spend(
-        source, 'concatEmpty',
+      const sc = await deployStateful(compileString(source, { forceStateful: true }));
+      const tx = await sc.concatEmpty(
         alicePub, new SignatureTemplate(alicePriv),
       );
       expect(tx.txid).toBeDefined();
     });
 
     it('should return the same value for a single argument', async () => {
-      const tx = await spend(
-        source, 'concatSingle',
+      const sc = await deployStateful(compileString(source, { forceStateful: true }));
+      const tx = await sc.concatSingle(
         hexToBin('cafebabe'),
         alicePub, new SignatureTemplate(alicePriv),
       );
@@ -84,8 +77,8 @@ describe('Concat Functions', () => {
     const source = loadCash('string_concat.scash');
 
     it('should concatenate two strings', async () => {
-      const tx = await spend(
-        source, 'concatStrings',
+      const sc = await deployStateful(compileString(source, { forceStateful: true }));
+      const tx = await sc.concatStrings(
         'Hello', ' World',
         alicePub, new SignatureTemplate(alicePriv),
       );
@@ -93,8 +86,8 @@ describe('Concat Functions', () => {
     });
 
     it('should return empty string for zero arguments', async () => {
-      const tx = await spend(
-        source, 'concatEmpty',
+      const sc = await deployStateful(compileString(source, { forceStateful: true }));
+      const tx = await sc.concatEmpty(
         alicePub, new SignatureTemplate(alicePriv),
       );
       expect(tx.txid).toBeDefined();
@@ -112,7 +105,8 @@ describe('Concat Functions', () => {
             }
         }
       `;
-      const tx = await spend(source, 'test', hexToBin('aabb'), hexToBin('ccdd'));
+      const sc = await deployStateful(compileString(source, { forceStateful: true }));
+      const tx = await sc.test(hexToBin('aabb'), hexToBin('ccdd'));
       expect(tx.txid).toBeDefined();
     });
 
@@ -124,8 +118,8 @@ describe('Concat Functions', () => {
             }
         }
       `;
-      const tx = await spend(
-        source, 'test',
+      const sc = await deployStateful(compileString(source, { forceStateful: true }));
+      const tx = await sc.test(
         hexToBin('aa'), hexToBin('bb'), hexToBin('cc'), hexToBin('dd'),
         hexToBin('aabbccdd'),
       );
@@ -141,8 +135,8 @@ describe('Concat Functions', () => {
             }
         }
       `;
-      const txPromise = spend(source, 'test', hexToBin('aa'), hexToBin('bb'));
-      await expect(txPromise).rejects.toThrow();
+      const sc = await deployStateful(compileString(source, { forceStateful: true }));
+      await expect(sc.test(hexToBin('aa'), hexToBin('bb'))).rejects.toThrow();
     });
   });
 
@@ -155,7 +149,8 @@ describe('Concat Functions', () => {
             }
         }
       `;
-      const tx = await spend(source, 'test', 'Hello', ' World');
+      const sc = await deployStateful(compileString(source, { forceStateful: true }));
+      const tx = await sc.test('Hello', ' World');
       expect(tx.txid).toBeDefined();
     });
 
@@ -167,7 +162,8 @@ describe('Concat Functions', () => {
             }
         }
       `;
-      const tx = await spend(source, 'test', 'foo', 'bar', 'baz', 'foobarbaz');
+      const sc = await deployStateful(compileString(source, { forceStateful: true }));
+      const tx = await sc.test('foo', 'bar', 'baz', 'foobarbaz');
       expect(tx.txid).toBeDefined();
     });
 
@@ -179,7 +175,8 @@ describe('Concat Functions', () => {
             }
         }
       `;
-      const tx = await spend(source, 'test', '', 'hello');
+      const sc = await deployStateful(compileString(source, { forceStateful: true }));
+      const tx = await sc.test('', 'hello');
       expect(tx.txid).toBeDefined();
     });
   });

@@ -15,17 +15,15 @@ contract TupleSkip() {
     }
 }
 `;
-
-async function spend(fn: string, b: Uint8Array): Promise<unknown> {
-  const sc = await deployStateful(compileString(SOURCE, { forceStateful: true }));
-  return sc.call[fn](b); // thenable: the caller awaits, which sends
-}
+const artifact = compileString(SOURCE, { forceStateful: true });
 
 describe('Tuple destructuring with skipped slots', () => {
   it('(, y) keeps the second value', async () => {
-    await expect(spend('keepSecond', Uint8Array.from([0x00, 0x11, 0x22, 0x33]))).resolves.toBeDefined();
+    const sc = await deployStateful(artifact);
+    await expect(sc.keepSecond(Uint8Array.from([0x00, 0x11, 0x22, 0x33]))).resolves.toBeDefined();
   });
   it('(x, ) keeps the first value', async () => {
-    await expect(spend('keepFirst', Uint8Array.from([0x00, 0x11, 0x22, 0x33]))).resolves.toBeDefined();
+    const sc = await deployStateful(artifact);
+    await expect(sc.keepFirst(Uint8Array.from([0x00, 0x11, 0x22, 0x33]))).resolves.toBeDefined();
   });
 });

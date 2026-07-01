@@ -15,37 +15,36 @@ contract BytesOrder() {
     }
 }
 `;
-
-async function spend(
-  a: Uint8Array, b: Uint8Array, eLt: boolean, eLe: boolean, eGt: boolean, eGe: boolean,
-): Promise<unknown> {
-  const sc = await deployStateful(compileString(SOURCE, { forceStateful: true }));
-  return sc.call.cmp(a, b, eLt, eLe, eGt, eGe); // thenable: the caller awaits, which sends
-}
+const artifact = compileString(SOURCE, { forceStateful: true });
 
 const B = (...bytes: number[]): Uint8Array => Uint8Array.from(bytes);
 
 describe('bytesN ordering', () => {
   it('orders by value (1 < 2)', async () => {
-    await expect(spend(B(0, 0, 0, 1), B(0, 0, 0, 2), true, true, false, false)).resolves.toBeDefined();
+    const sc = await deployStateful(artifact);
+    await expect(sc.cmp(B(0, 0, 0, 1), B(0, 0, 0, 2), true, true, false, false)).resolves.toBeDefined();
   });
 
   // 0x01000000 (big-endian = 16777216) > 0x00000002: proves the leftmost byte is most significant.
   it('treats the leftmost byte as most significant', async () => {
-    await expect(spend(B(1, 0, 0, 0), B(0, 0, 0, 2), false, false, true, true)).resolves.toBeDefined();
+    const sc = await deployStateful(artifact);
+    await expect(sc.cmp(B(1, 0, 0, 0), B(0, 0, 0, 2), false, false, true, true)).resolves.toBeDefined();
   });
 
   // 0x80000000 > 0x7FFFFFFF: proves the high bit is treated as magnitude (unsigned), not sign.
   it('compares as unsigned (high bit is magnitude)', async () => {
-    await expect(spend(B(0x80, 0, 0, 0), B(0x7f, 0xff, 0xff, 0xff), false, false, true, true)).resolves.toBeDefined();
+    const sc = await deployStateful(artifact);
+    await expect(sc.cmp(B(0x80, 0, 0, 0), B(0x7f, 0xff, 0xff, 0xff), false, false, true, true)).resolves.toBeDefined();
   });
 
   it('handles equality for <= and >=', async () => {
-    await expect(spend(B(0x12, 0x34, 0x56, 0x78), B(0x12, 0x34, 0x56, 0x78), false, true, false, true))
+    const sc = await deployStateful(artifact);
+    await expect(sc.cmp(B(0x12, 0x34, 0x56, 0x78), B(0x12, 0x34, 0x56, 0x78), false, true, false, true))
       .resolves.toBeDefined();
   });
 
   it('rejects a wrong expected relation', async () => {
-    await expect(spend(B(0, 0, 0, 1), B(0, 0, 0, 2), false, true, false, false)).rejects.toThrow();
+    const sc = await deployStateful(artifact);
+    await expect(sc.cmp(B(0, 0, 0, 1), B(0, 0, 0, 2), false, true, false, false)).rejects.toThrow();
   });
 });

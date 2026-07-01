@@ -13,32 +13,29 @@ contract MemoryCalldata() {
 }
 `;
 
-// Compiled with { forceStateful: true } so each spend is the short `sc.call.test(args)` self-poke
-// covenant (no dummy state, no manual UTXO gathering).
-async function spend(data: Uint8Array, value: bigint): Promise<any> {
-  const sc = await deployStateful(compileString(MEMORY_CALLDATA_CONTRACT, { forceStateful: true }));
-  return sc.call.test(data, value); // thenable: the caller awaits, which sends
-}
-
 describe('MemoryCalldata', () => {
   const artifact = compileString(MEMORY_CALLDATA_CONTRACT);
 
   describe('test', () => {
     it('should succeed with valid data and positive value', async () => {
-      const tx = await spend(new Uint8Array([1, 2, 3]), 100n);
+      const sc = await deployStateful(compileString(MEMORY_CALLDATA_CONTRACT, { forceStateful: true }));
+      const tx = await sc.test(new Uint8Array([1, 2, 3]), 100n);
       expect(tx.txid).toBeDefined();
     });
 
     it('should fail with empty data (data.length > 0 fails)', async () => {
-      await expect(spend(new Uint8Array([]), 100n)).rejects.toThrow();
+      const sc = await deployStateful(compileString(MEMORY_CALLDATA_CONTRACT, { forceStateful: true }));
+      await expect(sc.test(new Uint8Array([]), 100n)).rejects.toThrow();
     });
 
     it('should fail with non-positive value (value > 0 fails)', async () => {
-      await expect(spend(new Uint8Array([1]), 0n)).rejects.toThrow();
+      const sc = await deployStateful(compileString(MEMORY_CALLDATA_CONTRACT, { forceStateful: true }));
+      await expect(sc.test(new Uint8Array([1]), 0n)).rejects.toThrow();
     });
 
     it('should fail with negative value', async () => {
-      await expect(spend(new Uint8Array([1]), -5n)).rejects.toThrow();
+      const sc = await deployStateful(compileString(MEMORY_CALLDATA_CONTRACT, { forceStateful: true }));
+      await expect(sc.test(new Uint8Array([1]), -5n)).rejects.toThrow();
     });
   });
 

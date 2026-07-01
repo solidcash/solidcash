@@ -7,7 +7,7 @@ import { deployStateful } from '../test-util.js';
 // overridden parent body is preserved under an internal name so super/Base can still reach it. The
 // contract recomputes through the parent chain and requires the result, so the spend only succeeds if
 // dispatch resolves to the right ancestor on the VM.
-// Compiled with { forceStateful: true } so each spend is the short `await sc.call.<fn>(args)` self-poke covenant.
+// Compiled with { forceStateful: true } so each spend is the short `await sc.<fn>(args)` self-poke covenant.
 
 function normalize(path: string): string {
   const out: string[] = [];
@@ -51,26 +51,27 @@ contract Child is B {
 }
 `;
 
-async function spend(fn: string, args: unknown[]): Promise<unknown> {
-  const artifact = compileString(MAIN, {
-    importResolver: resolverFor(LIB), rootFileId: '/main.scash', forceStateful: true,
-  });
-  const sc = await deployStateful(artifact);
-  return sc.call[fn](...args); // thenable: the caller awaits, which sends
-}
-
 describe('super.f() / Base.f() parent calls', () => {
   it('resolves super through a two-level override chain (C -> B -> A)', async () => {
     // ((2 + 1) * 10) + 5 = 35
-    await expect(spend('viaSuper', [2n, 35n])).resolves.toBeDefined();
+    const sc = await deployStateful(compileString(MAIN, {
+      importResolver: resolverFor(LIB), rootFileId: '/main.scash', forceStateful: true,
+    }));
+    await expect(sc.viaSuper(2n, 35n)).resolves.toBeDefined();
   });
 
   it('resolves an explicit ancestor call Base.f()', async () => {
     // A.f(2) = 3
-    await expect(spend('viaBase', [2n, 3n])).resolves.toBeDefined();
+    const sc = await deployStateful(compileString(MAIN, {
+      importResolver: resolverFor(LIB), rootFileId: '/main.scash', forceStateful: true,
+    }));
+    await expect(sc.viaBase(2n, 3n)).resolves.toBeDefined();
   });
 
   it('rejects when the parent-chain result is wrong', async () => {
-    await expect(spend('viaSuper', [2n, 30n])).rejects.toThrow();
+    const sc = await deployStateful(compileString(MAIN, {
+      importResolver: resolverFor(LIB), rootFileId: '/main.scash', forceStateful: true,
+    }));
+    await expect(sc.viaSuper(2n, 30n)).rejects.toThrow();
   });
 });

@@ -2,16 +2,8 @@ import { describe, it, expect } from 'vitest';
 import { compileString } from 'solidc';
 import { deployStateful } from '../test-util.js';
 
-// --- Helpers -------------------------------------------------------------
-
-// forceStateful compiles each contract as a self-poke covenant, so the spend is the short
-// `await sc.call.<fn>(args)` (no dummy state var, no manual UTXO gathering).
-async function spend(source: string, fn: string, ...args: any[]): Promise<any> {
-  const sc = await deployStateful(compileString(source, { forceStateful: true }));
-  return sc.call[fn](...args); // thenable: the caller awaits, which sends
-}
-
-// --- Tests ---------------------------------------------------------------
+// forceStateful compiles each contract as a self-poke covenant, so each test can deploy + call
+// directly (`const sc = await deployStateful(...); await sc.check(args)`).
 
 describe('Switch Statement - SDK e2e', () => {
   describe('basic case matching', () => {
@@ -33,28 +25,32 @@ describe('Switch Statement - SDK e2e', () => {
     `;
 
     it('matches case 1', async () => {
-      const tx = await spend(code, 'check', 1n);
+      const sc = await deployStateful(compileString(code, { forceStateful: true }));
+      const tx = await sc.check(1n);
       expect(tx.txid).toBeDefined();
     });
 
     it('matches case 2', async () => {
-      const tx = await spend(code, 'check', 2n);
+      const sc = await deployStateful(compileString(code, { forceStateful: true }));
+      const tx = await sc.check(2n);
       expect(tx.txid).toBeDefined();
     });
 
     it('matches case 3', async () => {
-      const tx = await spend(code, 'check', 3n);
+      const sc = await deployStateful(compileString(code, { forceStateful: true }));
+      const tx = await sc.check(3n);
       expect(tx.txid).toBeDefined();
     });
 
     it('falls to default when no case matches', async () => {
-      const tx = await spend(code, 'check', 99n);
+      const sc = await deployStateful(compileString(code, { forceStateful: true }));
+      const tx = await sc.check(99n);
       expect(tx.txid).toBeDefined();
     });
 
     it('default fails require for wrong value', async () => {
-      const txPromise = spend(code, 'check', 50n);
-      await expect(txPromise).rejects.toThrow();
+      const sc = await deployStateful(compileString(code, { forceStateful: true }));
+      await expect(sc.check(50n)).rejects.toThrow();
     });
   });
 
@@ -75,7 +71,8 @@ describe('Switch Statement - SDK e2e', () => {
       `;
 
       // action=5 doesn't match any case, switch is no-op, require(5 >= 0) passes
-      const tx = await spend(code, 'check', 5n);
+      const sc = await deployStateful(compileString(code, { forceStateful: true }));
+      const tx = await sc.check(5n);
       expect(tx.txid).toBeDefined();
     });
 
@@ -94,7 +91,8 @@ describe('Switch Statement - SDK e2e', () => {
         }
       `;
 
-      const tx = await spend(code, 'check', 1n);
+      const sc = await deployStateful(compileString(code, { forceStateful: true }));
+      const tx = await sc.check(1n);
       expect(tx.txid).toBeDefined();
     });
   });
@@ -116,7 +114,8 @@ describe('Switch Statement - SDK e2e', () => {
         }
       `;
 
-      const tx1 = await spend(code, 'check', 15n);
+      const sc = await deployStateful(compileString(code, { forceStateful: true }));
+      const tx1 = await sc.check(15n);
       expect(tx1.txid).toBeDefined();
     });
 
@@ -136,7 +135,8 @@ describe('Switch Statement - SDK e2e', () => {
         }
       `;
 
-      const tx = await spend(code, 'check', 40n);
+      const sc = await deployStateful(compileString(code, { forceStateful: true }));
+      const tx = await sc.check(40n);
       expect(tx.txid).toBeDefined();
     });
   });
@@ -160,10 +160,12 @@ describe('Switch Statement - SDK e2e', () => {
         }
       `;
 
-      const tx1 = await spend(code, 'check', 1n);
+      const sc1 = await deployStateful(compileString(code, { forceStateful: true }));
+      const tx1 = await sc1.check(1n);
       expect(tx1.txid).toBeDefined();
 
-      const tx2 = await spend(code, 'check', 2n);
+      const sc2 = await deployStateful(compileString(code, { forceStateful: true }));
+      const tx2 = await sc2.check(2n);
       expect(tx2.txid).toBeDefined();
     });
   });
@@ -187,7 +189,8 @@ describe('Switch Statement - SDK e2e', () => {
         }
       `;
 
-      const tx = await spend(code, 'check', 2n, 20n);
+      const sc = await deployStateful(compileString(code, { forceStateful: true }));
+      const tx = await sc.check(2n, 20n);
       expect(tx.txid).toBeDefined();
     });
 
@@ -207,8 +210,8 @@ describe('Switch Statement - SDK e2e', () => {
         }
       `;
 
-      const txPromise = spend(code, 'check', 2n, 99n);
-      await expect(txPromise).rejects.toThrow();
+      const sc = await deployStateful(compileString(code, { forceStateful: true }));
+      await expect(sc.check(2n, 99n)).rejects.toThrow();
     });
   });
 
@@ -229,7 +232,8 @@ describe('Switch Statement - SDK e2e', () => {
         }
       `;
 
-      const tx = await spend(code, 'check', 5n);
+      const sc = await deployStateful(compileString(code, { forceStateful: true }));
+      const tx = await sc.check(5n);
       expect(tx.txid).toBeDefined();
     });
   });
@@ -249,10 +253,12 @@ describe('Switch Statement - SDK e2e', () => {
         }
       `;
 
-      const tx1 = await spend(code, 'check', 1n);
+      const sc1 = await deployStateful(compileString(code, { forceStateful: true }));
+      const tx1 = await sc1.check(1n);
       expect(tx1.txid).toBeDefined();
 
-      const tx2 = await spend(code, 'check', 42n);
+      const sc2 = await deployStateful(compileString(code, { forceStateful: true }));
+      const tx2 = await sc2.check(42n);
       expect(tx2.txid).toBeDefined();
     });
   });
@@ -273,7 +279,8 @@ describe('Switch Statement - SDK e2e', () => {
         }
       `;
 
-      const tx = await spend(code, 'check', true);
+      const sc = await deployStateful(compileString(code, { forceStateful: true }));
+      const tx = await sc.check(true);
       expect(tx.txid).toBeDefined();
     });
   });

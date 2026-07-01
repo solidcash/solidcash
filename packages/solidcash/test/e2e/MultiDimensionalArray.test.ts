@@ -1,15 +1,6 @@
 import { compileString } from 'solidc';
 import { deployStateful } from '../test-util.js';
 
-// --- Helpers -------------------------------------------------------------
-
-// Compiled with { forceStateful: true } so each spend is the short `await sc.call.<fn>(args)` self-poke
-// covenant (no dummy state, no manual UTXO gathering).
-async function spend(source: string, fn: string, ...args: any[]): Promise<any> {
-  const sc = await deployStateful(compileString(source, { forceStateful: true }));
-  return sc.call[fn](...args); // thenable: the caller awaits, which sends
-}
-
 // --- Contract sources (kept small to avoid exceeding bytecode limit) -----
 
 const LITERAL_ACCESS_SOURCE = `
@@ -242,27 +233,32 @@ describe('Multi-Dimensional Arrays', () => {
     });
 
     it('access identity matrix diagonal (0,0)=1', async () => {
-      const tx = await spend(LITERAL_ACCESS_SOURCE, 'testAccess', 0n, 0n);
+      const sc = await deployStateful(compileString(LITERAL_ACCESS_SOURCE, { forceStateful: true }));
+      const tx = await sc.testAccess(0n, 0n);
       expect(tx.txid).toBeDefined();
     });
 
     it('access identity matrix off-diagonal (0,1)=0', async () => {
-      const tx = await spend(LITERAL_ACCESS_SOURCE, 'testAccess', 0n, 1n);
+      const sc = await deployStateful(compileString(LITERAL_ACCESS_SOURCE, { forceStateful: true }));
+      const tx = await sc.testAccess(0n, 1n);
       expect(tx.txid).toBeDefined();
     });
 
     it('access identity matrix last element (2,2)=1', async () => {
-      const tx = await spend(LITERAL_ACCESS_SOURCE, 'testAccess', 2n, 2n);
+      const sc = await deployStateful(compileString(LITERAL_ACCESS_SOURCE, { forceStateful: true }));
+      const tx = await sc.testAccess(2n, 2n);
       expect(tx.txid).toBeDefined();
     });
 
     it('access identity matrix bottom-left (2,0)=0', async () => {
-      const tx = await spend(LITERAL_ACCESS_SOURCE, 'testAccess', 2n, 0n);
+      const sc = await deployStateful(compileString(LITERAL_ACCESS_SOURCE, { forceStateful: true }));
+      const tx = await sc.testAccess(2n, 0n);
       expect(tx.txid).toBeDefined();
     });
 
     it('verify all constant-indexed values', async () => {
-      const tx = await spend(LITERAL_ACCESS_SOURCE, 'testConstants');
+      const sc = await deployStateful(compileString(LITERAL_ACCESS_SOURCE, { forceStateful: true }));
+      const tx = await sc.testConstants();
       expect(tx.txid).toBeDefined();
     });
   });
@@ -270,12 +266,14 @@ describe('Multi-Dimensional Arrays', () => {
   // -- push and pop ----------------------------------------------------
   describe('push and pop', () => {
     it('push row, verify, pop, verify original intact', async () => {
-      const tx = await spend(PUSH_POP_SOURCE, 'testPushPop');
+      const sc = await deployStateful(compileString(PUSH_POP_SOURCE, { forceStateful: true }));
+      const tx = await sc.testPushPop();
       expect(tx.txid).toBeDefined();
     });
 
     it('push 3 rows to empty array, verify all values', async () => {
-      const tx = await spend(PUSH_POP_SOURCE, 'testMultiplePush');
+      const sc = await deployStateful(compileString(PUSH_POP_SOURCE, { forceStateful: true }));
+      const tx = await sc.testMultiplePush();
       expect(tx.txid).toBeDefined();
     });
   });
@@ -283,12 +281,14 @@ describe('Multi-Dimensional Arrays', () => {
   // -- inner row extraction --------------------------------------------
   describe('inner row extraction', () => {
     it('extract row0 and row1, verify all elements', async () => {
-      const tx = await spend(INNER_EXTRACT_SOURCE, 'testExtractRow');
+      const sc = await deployStateful(compileString(INNER_EXTRACT_SOURCE, { forceStateful: true }));
+      const tx = await sc.testExtractRow();
       expect(tx.txid).toBeDefined();
     });
 
     it('outer length of 3-row matrix == 3', async () => {
-      const tx = await spend(INNER_EXTRACT_SOURCE, 'testOuterLength');
+      const sc = await deployStateful(compileString(INNER_EXTRACT_SOURCE, { forceStateful: true }));
+      const tx = await sc.testOuterLength();
       expect(tx.txid).toBeDefined();
     });
   });
@@ -296,17 +296,20 @@ describe('Multi-Dimensional Arrays', () => {
   // -- diagonal pattern with parameterized index -----------------------
   describe('diagonal access with parameterized index', () => {
     it('matrix[0][0] == 1', async () => {
-      const tx = await spend(DIAGONAL_SOURCE, 'testDiagonal', 0n);
+      const sc = await deployStateful(compileString(DIAGONAL_SOURCE, { forceStateful: true }));
+      const tx = await sc.testDiagonal(0n);
       expect(tx.txid).toBeDefined();
     });
 
     it('matrix[1][1] == 1', async () => {
-      const tx = await spend(DIAGONAL_SOURCE, 'testDiagonal', 1n);
+      const sc = await deployStateful(compileString(DIAGONAL_SOURCE, { forceStateful: true }));
+      const tx = await sc.testDiagonal(1n);
       expect(tx.txid).toBeDefined();
     });
 
     it('matrix[2][2] == 1', async () => {
-      const tx = await spend(DIAGONAL_SOURCE, 'testDiagonal', 2n);
+      const sc = await deployStateful(compileString(DIAGONAL_SOURCE, { forceStateful: true }));
+      const tx = await sc.testDiagonal(2n);
       expect(tx.txid).toBeDefined();
     });
   });
@@ -314,7 +317,8 @@ describe('Multi-Dimensional Arrays', () => {
   // -- delete ----------------------------------------------------------
   describe('delete from 2D array', () => {
     it('delete middle row, verify remaining rows', async () => {
-      const tx = await spend(DELETE_SOURCE, 'testDelete');
+      const sc = await deployStateful(compileString(DELETE_SOURCE, { forceStateful: true }));
+      const tx = await sc.testDelete();
       expect(tx.txid).toBeDefined();
     });
   });
@@ -322,12 +326,14 @@ describe('Multi-Dimensional Arrays', () => {
   // -- outer assign ----------------------------------------------------
   describe('outer row assignment', () => {
     it('replace row[0] with new values, other row unchanged', async () => {
-      const tx = await spend(ASSIGN_SOURCE, 'testOuterAssign');
+      const sc = await deployStateful(compileString(ASSIGN_SOURCE, { forceStateful: true }));
+      const tx = await sc.testOuterAssign();
       expect(tx.txid).toBeDefined();
     });
 
     it('push then assign - build array then overwrite rows', async () => {
-      const tx = await spend(ASSIGN_SOURCE, 'testPushThenAssign');
+      const sc = await deployStateful(compileString(ASSIGN_SOURCE, { forceStateful: true }));
+      const tx = await sc.testPushThenAssign();
       expect(tx.txid).toBeDefined();
     });
   });
@@ -335,12 +341,14 @@ describe('Multi-Dimensional Arrays', () => {
   // -- bool 2D arrays --------------------------------------------------
   describe('bool 2D arrays', () => {
     it('bool 2D literal - verify all true/false values', async () => {
-      const tx = await spend(BOOL_2D_SOURCE, 'testLiteral');
+      const sc = await deployStateful(compileString(BOOL_2D_SOURCE, { forceStateful: true }));
+      const tx = await sc.testLiteral();
       expect(tx.txid).toBeDefined();
     });
 
     it('bool 2D push - push new bool row', async () => {
-      const tx = await spend(BOOL_2D_SOURCE, 'testPush');
+      const sc = await deployStateful(compileString(BOOL_2D_SOURCE, { forceStateful: true }));
+      const tx = await sc.testPush();
       expect(tx.txid).toBeDefined();
     });
   });
@@ -348,12 +356,14 @@ describe('Multi-Dimensional Arrays', () => {
   // -- bytes4 2D arrays ------------------------------------------------
   describe('bytes4 2D arrays', () => {
     it('bytes4 2D literal - verify hex values', async () => {
-      const tx = await spend(BYTES_2D_SOURCE, 'testLiteral', new Uint8Array([0x00, 0x00, 0x00, 0x00]));
+      const sc = await deployStateful(compileString(BYTES_2D_SOURCE, { forceStateful: true }));
+      const tx = await sc.testLiteral(new Uint8Array([0x00, 0x00, 0x00, 0x00]));
       expect(tx.txid).toBeDefined();
     });
 
     it('bytes4 2D push - push new bytes pair', async () => {
-      const tx = await spend(BYTES_2D_SOURCE, 'testPush');
+      const sc = await deployStateful(compileString(BYTES_2D_SOURCE, { forceStateful: true }));
+      const tx = await sc.testPush();
       expect(tx.txid).toBeDefined();
     });
   });
@@ -361,19 +371,22 @@ describe('Multi-Dimensional Arrays', () => {
   // -- fixed-size 2D arrays (both dimensions bounded) ------------------
   describe('fixed-size 2D arrays - bigint[3][2]', () => {
     it('access all corners of 2x3 grid', async () => {
-      const tx = await spend(FIXED_2D_SOURCE, 'testAccess');
+      const sc = await deployStateful(compileString(FIXED_2D_SOURCE, { forceStateful: true }));
+      const tx = await sc.testAccess();
       expect(tx.txid).toBeDefined();
     });
 
     it('assign - replace a row', async () => {
-      const tx = await spend(FIXED_2D_SOURCE, 'testAssign');
+      const sc = await deployStateful(compileString(FIXED_2D_SOURCE, { forceStateful: true }));
+      const tx = await sc.testAssign();
       expect(tx.txid).toBeDefined();
     });
   });
 
   describe('fixed-size 2D - inner row extraction', () => {
     it('extract inner row and check length', async () => {
-      const tx = await spend(FIXED_INNER_SOURCE, 'testInnerLength');
+      const sc = await deployStateful(compileString(FIXED_INNER_SOURCE, { forceStateful: true }));
+      const tx = await sc.testInnerLength();
       expect(tx.txid).toBeDefined();
     });
   });
@@ -381,15 +394,18 @@ describe('Multi-Dimensional Arrays', () => {
   // -- failure paths ---------------------------------------------------
   describe('failure paths - wrong assertions verify correctness', () => {
     it('wrong value - pairs[0][0] != 999', async () => {
-      await expect(spend(FAILURE_VALUE_SOURCE, 'testWrongValue')).rejects.toThrow();
+      const sc = await deployStateful(compileString(FAILURE_VALUE_SOURCE, { forceStateful: true }));
+      await expect(sc.testWrongValue()).rejects.toThrow();
     });
 
     it('wrong length - pairs.length != 5', async () => {
-      await expect(spend(FAILURE_LENGTH_SOURCE, 'testWrongLength')).rejects.toThrow();
+      const sc = await deployStateful(compileString(FAILURE_LENGTH_SOURCE, { forceStateful: true }));
+      await expect(sc.testWrongLength()).rejects.toThrow();
     });
 
     it('wrong after push - pushed value != 99', async () => {
-      await expect(spend(FAILURE_PUSH_SOURCE, 'testWrongAfterPush')).rejects.toThrow();
+      const sc = await deployStateful(compileString(FAILURE_PUSH_SOURCE, { forceStateful: true }));
+      await expect(sc.testWrongAfterPush()).rejects.toThrow();
     });
   });
 });

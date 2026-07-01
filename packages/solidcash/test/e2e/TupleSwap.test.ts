@@ -44,31 +44,32 @@ contract TupleSwap() {
     }
 }
 `;
-
-async function spend(fn: string, args: unknown[]): Promise<unknown> {
-  const sc = await deployStateful(compileString(SOURCE, { forceStateful: true }));
-  return sc.call[fn](...args); // thenable: the caller awaits, which sends
-}
+const artifact = compileString(SOURCE, { forceStateful: true });
 
 describe('tuple assignment to existing lvalues', () => {
   it('swaps the top two stack vars (OP_SWAP fast-path)', async () => {
-    await expect(spend('swapTopTwo', [10n, 20n])).resolves.toBeDefined();
+    const sc = await deployStateful(artifact);
+    await expect(sc.swapTopTwo(10n, 20n)).resolves.toBeDefined();
   });
 
   it('swaps vars below another local (roll-based fallback)', async () => {
-    await expect(spend('swapDeep', [10n, 20n])).resolves.toBeDefined();
+    const sc = await deployStateful(artifact);
+    await expect(sc.swapDeep(10n, 20n)).resolves.toBeDefined();
   });
 
   it('rotates three existing lvalues', async () => {
-    await expect(spend('rotate', [1n, 2n, 3n])).resolves.toBeDefined();
+    const sc = await deployStateful(artifact);
+    await expect(sc.rotate(1n, 2n, 3n)).resolves.toBeDefined();
   });
 
   it('assigns existing lvalues from arithmetic using old values', async () => {
-    await expect(spend('assignExisting', [20n, 10n])).resolves.toBeDefined();
+    const sc = await deployStateful(artifact);
+    await expect(sc.assignExisting(20n, 10n)).resolves.toBeDefined();
   });
 
   it('assigns existing lvalues from a split', async () => {
-    await expect(spend('fromSplit', [Uint8Array.from([0x12, 0x34, 0x56, 0x78])])).resolves.toBeDefined();
+    const sc = await deployStateful(artifact);
+    await expect(sc.fromSplit(Uint8Array.from([0x12, 0x34, 0x56, 0x78]))).resolves.toBeDefined();
   });
 });
 

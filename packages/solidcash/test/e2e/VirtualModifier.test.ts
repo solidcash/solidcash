@@ -78,7 +78,7 @@ describe('VirtualModifier', () => {
         }
       `, { forceStateful: true }), [alicePub]);
 
-      const tx = await sc.call.spend(new SignatureTemplate(alicePriv));
+      const tx = await sc.spend(new SignatureTemplate(alicePriv));
 
       expect(tx.txid).toBeDefined();
     });

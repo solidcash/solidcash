@@ -215,22 +215,26 @@ export function createTestProvider(): MockNetworkProvider | RegtestNetworkProvid
 }
 
 /**
- * Deploy a stateful (or forceStateful) contract for a test and return a ready-to-use StatefulContract, attached
- * by address: seeds the master + data NFTs (setupStatefulUtxos) and resolves the category from the indexer, so
- * a test can go straight to `await sc.fn(args)`. Collapses the compile -> new Contract -> setupStatefulUtxos ->
- * withCategory -> new StatefulContract boilerplate to one call. A fresh MockNetworkProvider is created unless one
- * is passed (reachable afterwards as `sc.provider`).
+ * Deploy a stateful (or forceStateful) contract for a test and return a ready-to-use StatefulContract, so a
+ * test can go straight to `await sc.fn(args)`. Signature mirrors hardhat-ethers `deployContract(name, args?,
+ * opts?)`: positional constructor args, then options. Collapses the compile -> new Contract ->
+ * setupStatefulUtxos -> withCategory -> new StatefulContract boilerplate to one call. A fresh
+ * MockNetworkProvider is created unless one is passed (reachable afterwards as `sc.provider`).
+ *
+ * The SDK's `StatefulContract.deploy(artifact, args, opts)` is the ethers/hardhat-equivalent REAL genesis
+ * deploy (funding UTXO + tx); this helper is the fast mock-seed for unit tests, `initialState` in place of a
+ * Solidity constructor (BCH state lives in the data NFT).
  */
 export async function deployStateful<T extends Artifact>(
   artifact: T,
+  args: ConstructorArgument[] = [],
   opts: {
     provider?: MockNetworkProvider | RegtestNetworkProvider;
     initialState?: Record<string, any>;
-    constructorArgs?: ConstructorArgument[];
   } = {},
 ): Promise<ConnectedStatefulContract<T>> {
   const provider = opts.provider ?? createTestProvider();
-  const contract = new Contract(artifact, (opts.constructorArgs ?? []) as never[], { provider });
+  const contract = new Contract(artifact, args as never[], { provider });
   const { categoryId } = await setupStatefulUtxos(
     provider, contract, artifact.stateLayout!, opts.initialState ?? {}, { saltContract: true },
   );

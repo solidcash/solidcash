@@ -42,6 +42,7 @@ import {
 } from '@bitauth/libauth';
 import { Contract } from '../Contract.js';
 import { resolveBlockhashCoSpend } from '../oracle/blockhashCoSpend.js';
+import { attachWait } from '../wait.js';
 import Signer from '../Signer.js';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
 import { AddressType, ContractOptions, LibauthOutput, Output, TransactionDetails, UnlockableUtxo, Unlocker, Utxo } from '../interfaces.js';
@@ -6935,7 +6936,7 @@ export class StatefulFunctionCall {
       );
     }
 
-    return { ...decoded, txid, hex: rawTx } as TransactionDetails;
+    return attachWait({ ...decoded, txid, hex: rawTx } as TransactionDetails, builder.provider);
   }
 
   /**

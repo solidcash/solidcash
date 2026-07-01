@@ -22,6 +22,7 @@ import { TransactionBuilder, TransactionBuilderOptions } from '../TransactionBui
 import { CovenantTransactionBuilder } from './CovenantTransactionBuilder.js';
 import { scriptToLockingBytecode, generateLibauthSourceOutputs, calculateDust } from '../utils.js';
 import type { LibauthOutput } from '../interfaces.js';
+import { attachWait } from '../wait.js';
 import {
   Utxo, UnlockableUtxo, TransactionDetails,
 } from '../interfaces.js';
@@ -2033,6 +2034,6 @@ export class StatefulTransactionBuilder {
     }
 
     const decoded = decodeTransactionUnsafe(rawTxBin);
-    return { ...decoded, txid, hex: rawTx } as TransactionDetails;
+    return attachWait({ ...decoded, txid, hex: rawTx } as TransactionDetails, this.builderOptions.provider);
   }
 }

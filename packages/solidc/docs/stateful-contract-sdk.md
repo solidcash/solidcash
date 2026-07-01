@@ -28,6 +28,37 @@ recovered from the address. Omit them for a no-arg contract or read-only use; pr
 ethers, the constructor is sync and hits the network lazily (on the first `getState` / send); `at()` resolves
 eagerly. See [multi-contract-artifacts.md](multi-contract-artifacts.md) s13.
 
+### Factory deploy (ethers/hardhat)
+
+For a real genesis deploy, use the ethers/hardhat-style factory. A `Signer` runner auto-selects a genesis-valid
+funding UTXO and funds+signs; the returned contract is ready to call and carries `deploymentTransaction()` +
+`waitForDeployment()`:
+
+```ts
+// ethers ContractFactory:
+const factory = new ContractFactory(artifact, signer);
+const token = await factory.deploy(1000n);           // positional ctor args (+ optional trailing overrides)
+await token.waitForDeployment();
+await token.transfer(bob, 10n);
+
+// hardhat shortcuts:
+const token = await deployContract(artifact, [1000n], signer);
+const factory = getContractFactory(artifact, signer);
+
+// a NetworkProvider runner needs explicit funding:
+await new ContractFactory(artifact, provider).deploy({ fundingUtxo, funder, changeAddress });
+```
+
+### `tx.wait()`
+
+Every `.send()` / deploy result carries an ethers-style `wait()` - resolves once the provider knows the tx
+(mined), `wait(n)` waits n confirmations. Instant on `MockNetworkProvider` (mined on send):
+
+```ts
+const tx = await token.transfer(bob, 10n);
+await tx.wait();
+```
+
 ### Pure covenant contracts: `forceStateful`
 
 A contract with zero state variables (a pure covenant like `require(block.chainid == e)`) compiles stateless by

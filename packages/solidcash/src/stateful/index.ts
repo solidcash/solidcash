@@ -37,6 +37,10 @@ export {
   ContractBundle, resolveCategoryFromAddress, resolveCategoryFromLockingBytecode, type ContractBundleOptions,
 } from './ContractBundle.js';
 export {
+  ContractFactory, getContractFactory, deployContract,
+  type DeployContractOptions, type DeployedContract,
+} from './ContractFactory.js';
+export {
   StatefulFunctionCall,
   DeployFunctionCall,
   TokenContainerAccessor,

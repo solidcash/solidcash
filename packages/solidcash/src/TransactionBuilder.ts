@@ -46,6 +46,7 @@ import { debugLibauthTemplate, getLibauthTemplate, getBitauthUri } from './libau
 import { getWcContractInfo, WcSourceOutput, WcTransactionOptions } from './walletconnect-utils.js';
 import semver from 'semver';
 import { WcTransactionObject } from './walletconnect-utils.js';
+import { attachWait } from './wait.js';
 
 export interface TransactionBuilderOptions {
   provider: NetworkProvider;
@@ -616,7 +617,7 @@ export class TransactionBuilder {
         if (raw) return hex;
 
         const libauthTransaction = decodeTransaction(hexToBin(hex)) as LibauthTransaction;
-        return { ...libauthTransaction, txid, hex };
+        return attachWait({ ...libauthTransaction, txid, hex }, this.provider);
       } catch (e: any) {
         // Propagate txid mismatch errors immediately - they indicate provider tampering
         if (e?.message?.includes('does not match expected txid')) {

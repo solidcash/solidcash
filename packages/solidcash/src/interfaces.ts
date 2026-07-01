@@ -171,6 +171,10 @@ export type VmTarget = (typeof VmTarget)[keyof typeof VmTarget];
 export interface TransactionDetails extends Transaction {
   txid: string;
   hex: string;
+  // Wait until the transaction is confirmed (ethers `tx.wait`). Resolves once the provider knows the tx (mined);
+  // for `confirmations > 1` it additionally waits that many blocks. Instant on MockNetworkProvider (mined on
+  // send). Present on results from `.send()` / a deploy; optional so hand-built TransactionDetails stay valid.
+  wait?: (confirmations?: number) => Promise<TransactionDetails>;
 }
 
 export interface ContractOptions {

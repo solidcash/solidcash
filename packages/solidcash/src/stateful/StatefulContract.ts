@@ -61,7 +61,7 @@ import {
   createDynamicChunkUnlocker, createReadOnlyDynamicChunkUnlocker,
   createEventNftUnlocker, createAnonymousEventNftUnlocker,
   createTokenContainerUnlocker, createSatoshiContainerUnlocker,
-  resolveCollectionSignature, resolveCategoryFromLockingBytecode,
+  resolveCollectionSignature, resolveCategoryFromLockingBytecode, resolveCategoryFromAddress,
 } from './covenant-helpers.js';
 import { ConstructorArgument, FunctionArgument } from '../Argument.js';
 import { AbiToFunctionMap } from '../types/type-inference.js';
@@ -562,28 +562,35 @@ function commitmentsToState(
   return derivedState;
 }
 
-// Property names reserved by StatefulContract - state variables with these names
-// are only accessible via the `state` namespace to avoid shadowing class members.
-const RESERVED_NAMES = new Set([
-  'inner', 'categoryId', 'state', 'call', 'functions',
-  'address', 'tokenAddress', 'name', 'provider', 'getState',
-  'tokens', 'connect', 'attach', 'getFullState',
-  'getBalance',
-]);
-
 export type ConnectedStatefulContract<T extends Artifact = Artifact> =
   StatefulContract<T>
   & AbiToFunctionMap<T['abi'], StatefulFunctionCall, DeployFunctionCall>
   & Omit<StateGetterMap<T>, keyof AbiToFunctionMap<T['abi'], StatefulFunctionCall, DeployFunctionCall>>;
 
+// ethers-v6-style runner: a NetworkProvider makes the instance read-only (state / view reads); a Signer makes
+// it read-write (it also carries the provider, and funds + signs sends). See the lean StatefulContract
+// constructor and StatefulContract.at().
+export type ContractRunner = NetworkProvider | Signer;
+
+/** Options for the lean StatefulContract constructor / StatefulContract.at(). */
+export interface LeanContractOptions {
+  // Constructor args baked into the p2sh redeem script - required to SPEND (a p2sh address hashes the script,
+  // so they cannot be recovered from it); omit for a no-arg contract. Reads that only need the category work
+  // without them.
+  constructorArgs?: ConstructorArgument[];
+  addressType?: AddressType;
+}
+
+const CATEGORY_HEX = /^[0-9a-fA-F]{64}$/;
+
 export class StatefulContract<TArtifact extends Artifact = Artifact> {
   readonly inner: Contract<TArtifact>;
   readonly categoryId: string;
 
-  readonly state: StateGetterMap<TArtifact>;
-  readonly call: AbiToFunctionMap<TArtifact['abi'], StatefulFunctionCall, DeployFunctionCall>;
-  readonly functions: AbiToFunctionMap<TArtifact['abi'], Promise<StatefulTransactionBuilder>>;
-  readonly tokens: { [tokenContainerCategoryIdHex: string]: TokenContainerAccessor };
+  state!: StateGetterMap<TArtifact>;
+  call!: AbiToFunctionMap<TArtifact['abi'], StatefulFunctionCall, DeployFunctionCall>;
+  functions!: AbiToFunctionMap<TArtifact['abi'], Promise<StatefulTransactionBuilder>>;
+  tokens!: { [tokenContainerCategoryIdHex: string]: TokenContainerAccessor };
 
   private _externalRegistry: Map<string, ConnectedStatefulContract> = new Map();
 
@@ -763,47 +770,77 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
    */
   maxDerivationIterations: number = 20;
 
-  private constructor(contract: Contract<TArtifact>, categoryId: string) {
+  // ethers-v6-flavored constructor. Two forms:
+  //  - internal `(contract, categoryId)` - used by withCategory / from / deploy.
+  //  - lean `(categoryId, artifact, runner, options?)` - build from a category + artifact with a NetworkProvider
+  //    (read-only) or Signer (read-write) runner. To attach by ADDRESS use `StatefulContract.at(address, ...)`
+  //    (async - the category is read from the indexer).
+  // Every instance is returned wrapped in a Proxy so `sc.doStuff(...)` / `sc.myVar()` dispatch to the ABI
+  // function / state getter on the bare name (v6 dispatch). A framework member wins a name collision; the
+  // shadowed function stays reachable via `sc.getFunction(name)`.
+  constructor(contract: Contract<TArtifact>, categoryId: string);
+  constructor(categoryId: string, artifact: TArtifact, runner: ContractRunner, options?: LeanContractOptions);
+  constructor(
+    a: Contract<TArtifact> | string,
+    b: string | TArtifact,
+    runner?: ContractRunner,
+    options?: LeanContractOptions,
+  ) {
+    const contract = typeof a === 'string'
+      ? StatefulContract._contractFromLean(a, b as TArtifact, runner as ContractRunner, options)
+      : a;
+    const categoryId = typeof a === 'string' ? a : (b as string);
+
     if (!contract.isStateful || !contract.stateLayout) {
       throw new Error(`Contract ${contract.name} is not a stateful contract`);
     }
-
     if (contract.addressType !== 'p2sh32') {
       throw new Error(
-        `Stateful contract '${contract.name}' must use p2sh32 address type. `
-        + `Got '${contract.addressType}'.`,
+        `Stateful contract '${contract.name}' must use p2sh32 address type. Got '${contract.addressType}'.`,
       );
     }
 
     this.inner = contract;
     this.categoryId = categoryId;
+    if (runner instanceof Signer) this._signer = runner;
 
-    // Build state getters on the `state` namespace
+    this._buildNamespaces(contract);
+
+    // eslint-disable-next-line no-constructor-return
+    return this._withDispatchProxy();
+  }
+
+  // Build the read-only p2sh contract for the lean constructor from a category id + artifact + runner.
+  private static _contractFromLean<T extends Artifact>(
+    categoryId: string, artifact: T, runner: ContractRunner, options?: LeanContractOptions,
+  ): Contract<T> {
+    if (!CATEGORY_HEX.test(categoryId)) {
+      throw new Error(
+        `'${categoryId}' is not a 64-char category id. To attach by address use `
+        + 'StatefulContract.at(address, artifact, runner) (async - the category is read from the indexer).',
+      );
+    }
+    const provider = runner instanceof Signer ? runner.provider : runner;
+    const bare = new Contract(artifact, (options?.constructorArgs ?? []) as any, {
+      provider, addressType: options?.addressType ?? 'p2sh32',
+    });
+    return bare.withCategory(hexToBin(categoryId));
+  }
+
+  // Build the state / call / functions / tokens namespaces from the (resolved) inner contract's artifact.
+  // Bare-name dispatch is handled by the Proxy (see _withDispatchProxy), so nothing is mirrored on `this`.
+  private _buildNamespaces(contract: Contract<TArtifact>): void {
     this.state = {} as StateGetterMap<TArtifact>;
-    for (const variable of contract.stateLayout.variables) {
-      const getter = async (): Promise<any> => {
-        const state = await this.getState();
-        return state[variable.name];
-      };
-
+    for (const variable of contract.stateLayout!.variables) {
       // @ts-ignore - dynamic property assignment for type-safe getters
-      this.state[variable.name] = getter;
-
-      // Also expose directly on the instance (e.g. sc.counter()) unless it
-      // would shadow a built-in property.
-      if (!RESERVED_NAMES.has(variable.name)) {
-        (this as any)[variable.name] = getter;
-      }
+      this.state[variable.name] = async (): Promise<any> => (await this.getState())[variable.name];
     }
 
-    // Collect state variable names so we can detect collisions with ABI functions
-    const stateVarNames = new Set(contract.stateLayout.variables.map((v) => v.name));
-
-    // Build call namespace (returns StatefulFunctionCall)
+    // A deploy-modifier function returns a thenable DeployFunctionCall (funds + runs via the connected signer);
+    // every other function returns a StatefulFunctionCall wrapping a lazily-built transaction builder.
     this.call = {} as AbiToFunctionMap<TArtifact['abi'], StatefulFunctionCall, DeployFunctionCall>;
+    this.functions = {} as AbiToFunctionMap<TArtifact['abi'], Promise<StatefulTransactionBuilder>>;
     for (const abiFunction of contract.artifact.abi) {
-      // A deploy-modifier function returns a thenable DeployFunctionCall: `await factory.deployFn(...args)`
-      // funds + runs the deploy via the connected signer (no normal builder is eagerly created for it).
       const caller = abiFunction.modifiers?.includes('deploy')
         ? (...args: any[]): DeployFunctionCall => new DeployFunctionCall(
           this as StatefulContract, abiFunction.name, args as FunctionArgument[],
@@ -812,31 +849,69 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           this._createBuilder(abiFunction.name, args),
           this as StatefulContract, abiFunction.name, args,
         );
-
       // @ts-ignore - dynamic property assignment
       this.call[abiFunction.name] = caller;
-
-      // Also expose directly on the instance (e.g. sc.update(...)) unless it
-      // would shadow a built-in property or a state getter.
-      if (!RESERVED_NAMES.has(abiFunction.name) && !stateVarNames.has(abiFunction.name)) {
-        (this as any)[abiFunction.name] = caller;
-      }
-    }
-
-    // Build functions namespace (returns Promise<StatefulTransactionBuilder>)
-    this.functions = {} as AbiToFunctionMap<TArtifact['abi'], Promise<StatefulTransactionBuilder>>;
-    for (const abiFunction of contract.artifact.abi) {
       // @ts-ignore - dynamic property assignment
       this.functions[abiFunction.name] = (...args: any[]) => this._createBuilder(abiFunction.name, args);
     }
 
-    // Build tokens Proxy for token container sugar (sc.tokens[categoryHex])
+    // Token container sugar (sc.tokens[categoryHex]).
     this.tokens = new Proxy({} as Record<string, TokenContainerAccessor>, {
-      get: (_target, prop) => {
-        if (typeof prop !== 'string') return undefined;
-        return new TokenContainerAccessor(this, prop);
+      get: (_target, prop) => (typeof prop === 'string' ? new TokenContainerAccessor(this, prop) : undefined),
+    });
+  }
+
+  // Wrap the instance in a Proxy so a bare `sc.name` resolves to the ABI function / state getter when `name` is
+  // not a framework member (v6 dispatch: contract routine wins the bare name). Framework members (in the target)
+  // win a collision; the shadowed function is reachable via getFunction(). Internal `this.*` access binds to the
+  // target, so this never affects the class's own methods.
+  private _withDispatchProxy(): this {
+    const abiNames = new Set(this.inner.artifact.abi.map((f) => f.name));
+    const stateNames = new Set((this.inner.stateLayout?.variables ?? []).map((v) => v.name));
+    return new Proxy(this, {
+      get(target, prop, receiver) {
+        if (typeof prop === 'string' && !(prop in target)) {
+          if (abiNames.has(prop)) return (target.call as any)[prop];
+          if (stateNames.has(prop)) return (target.state as any)[prop];
+        }
+        return Reflect.get(target, prop, receiver);
+      },
+      has(target, prop) {
+        if (typeof prop === 'string' && (abiNames.has(prop) || stateNames.has(prop))) return true;
+        return Reflect.has(target, prop);
       },
     });
+  }
+
+  /**
+   * Resolve an ABI function by name, bypassing any framework-member collision (ethers-v6 escape hatch). Use this
+   * when a contract function shares a name with a StatefulContract member (e.g. `connect`): `sc.connect` is the
+   * framework method, `sc.getFunction('connect')(...)` is the contract routine.
+   */
+  getFunction(name: string): (...args: any[]) => StatefulFunctionCall | DeployFunctionCall {
+    const fn = (this.call as Record<string, (...args: any[]) => StatefulFunctionCall | DeployFunctionCall>)[name];
+    if (!fn) {
+      const available = this.inner.artifact.abi.map((f) => f.name).join(', ');
+      throw new Error(`No function '${name}' on ${this.inner.name}. Available: ${available}.`);
+    }
+    return fn;
+  }
+
+  /**
+   * Lean attach (ethers-v6 `new Contract(address, abi, runner)`). Resolve a deployed stateful contract from its
+   * ADDRESS or category id + artifact + runner: a NetworkProvider is read-only (state / view reads), a Signer is
+   * read-write. Given an address, the token category is read from the indexer (getUtxos); given a 64-char
+   * category id it is used directly. `constructorArgs` are required to SPEND (a p2sh address hashes the redeem
+   * script) - omit them for a no-arg contract or read-only use.
+   */
+  static async at<T extends Artifact>(
+    addressOrCategory: string, artifact: T, runner: ContractRunner, options?: LeanContractOptions,
+  ): Promise<ConnectedStatefulContract<T>> {
+    const provider = runner instanceof Signer ? runner.provider : runner;
+    const categoryId = CATEGORY_HEX.test(addressOrCategory)
+      ? addressOrCategory
+      : await resolveCategoryFromAddress(provider, addressOrCategory);
+    return new StatefulContract(categoryId, artifact, runner, options) as ConnectedStatefulContract<T>;
   }
 
   static withCategory<T extends Artifact>(

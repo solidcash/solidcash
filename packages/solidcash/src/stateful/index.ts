@@ -30,6 +30,8 @@ export {
   type ExternalContractSpec,
   type StatefulConnectOptions,
   type CallInfo,
+  type ContractRunner,
+  type LeanContractOptions,
 } from './StatefulContract.js';
 export {
   StateReader, type OnChainState, type ParsedEvent, type EventFilter,

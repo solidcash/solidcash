@@ -1,14 +1,13 @@
 import { describe, it, expect } from 'vitest';
 import { compileString } from 'solidc';
 import { ResolvedImport } from '@solidcash/utils';
-import { Contract, MockNetworkProvider, TransactionBuilder } from '../../src/index.js';
-import { randomUtxo } from '../../src/utils.js';
-import { createTestProvider, gatherUtxos } from '../test-util.js';
+import { deployStateful } from '../test-util.js';
 
 // super.f() / Base.f(): qualified parent calls. Inheritance is flattened at compile time; an
 // overridden parent body is preserved under an internal name so super/Base can still reach it. The
 // contract recomputes through the parent chain and requires the result, so the spend only succeeds if
 // dispatch resolves to the right ancestor on the VM.
+// Compiled with { forceStateful: true } so each spend is the short `await sc.call.<fn>(args)` self-poke covenant.
 
 function normalize(path: string): string {
   const out: string[] = [];
@@ -53,17 +52,11 @@ contract Child is B {
 `;
 
 async function spend(fn: string, args: unknown[]): Promise<unknown> {
-  const provider: MockNetworkProvider = createTestProvider();
-  const artifact = compileString(MAIN, { importResolver: resolverFor(LIB), rootFileId: '/main.scash' });
-  const contract = new Contract(artifact, [], { provider });
-  await provider.addUtxo(contract.address, randomUtxo({ satoshis: 10000n }));
-  const amount = 1000n;
-  const { utxos, changeAmount } = gatherUtxos(await contract.getUtxos(), { amount });
-  return new TransactionBuilder({ provider })
-    .addInputs(utxos, contract.unlock[fn](...args))
-    .addOutput({ to: contract.address, amount })
-    .addOutput({ to: contract.address, amount: changeAmount })
-    .send();
+  const artifact = compileString(MAIN, {
+    importResolver: resolverFor(LIB), rootFileId: '/main.scash', forceStateful: true,
+  });
+  const sc = await deployStateful(artifact);
+  return sc.call[fn](...args); // thenable: the caller awaits, which sends
 }
 
 describe('super.f() / Base.f() parent calls', () => {

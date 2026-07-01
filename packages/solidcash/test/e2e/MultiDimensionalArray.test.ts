@@ -1,60 +1,13 @@
 import { compileString } from 'solidc';
-import {
-  Contract, MockNetworkProvider, TransactionBuilder, FailedRequireError,
-} from '../../src/index.js';
-import { randomUtxo } from '../../src/utils.js';
-import { createTestProvider, gatherUtxos, verifyTransaction } from '../test-util.js';
+import { deployStateful } from '../test-util.js';
 
 // --- Helpers -------------------------------------------------------------
 
-function setupContract(source: string, constructorArgs: any[] = []): {
-  provider: MockNetworkProvider;
-  contract: Contract;
-} {
-  const provider = createTestProvider();
-  const artifact = compileString(source);
-  const contract = new Contract(artifact, constructorArgs, { provider });
-  return { provider, contract };
-}
-
-async function sendTx(
-  provider: MockNetworkProvider,
-  contract: Contract,
-  unlocker: ReturnType<Contract['unlock'][string]>,
-): Promise<any> {
-  const to = contract.address;
-  const amount = 1000n;
-  const { utxos, changeAmount } = gatherUtxos(await contract.getUtxos(), { amount, fee: 25000n });
-
-  const builder = new TransactionBuilder({ provider })
-    .addInputs(utxos, unlocker)
-    .addOutput({ to, amount })
-    .addOutput({ to, amount: changeAmount });
-
-  verifyTransaction(builder);
-  return builder.send();
-}
-
-async function sendTxExpectFail(
-  provider: MockNetworkProvider,
-  contract: Contract,
-  unlocker: ReturnType<Contract['unlock'][string]>,
-): Promise<any> {
-  const to = contract.address;
-  const amount = 1000n;
-  const { utxos, changeAmount } = gatherUtxos(await contract.getUtxos(), { amount, fee: 25000n });
-
-  return new TransactionBuilder({ provider })
-    .addInputs(utxos, unlocker)
-    .addOutput({ to, amount })
-    .addOutput({ to, amount: changeAmount })
-    .send();
-}
-
-async function addUtxos(provider: MockNetworkProvider, address: string, count: number): void {
-  for (let i = 0; i < count; i++) {
-    await provider.addUtxo(address, randomUtxo({ satoshis: 100000n }));
-  }
+// Compiled with { forceStateful: true } so each spend is the short `await sc.call.<fn>(args)` self-poke
+// covenant (no dummy state, no manual UTXO gathering).
+async function spend(source: string, fn: string, ...args: any[]): Promise<any> {
+  const sc = await deployStateful(compileString(source, { forceStateful: true }));
+  return sc.call[fn](...args); // thenable: the caller awaits, which sends
 }
 
 // --- Contract sources (kept small to avoid exceeding bytecode limit) -----
@@ -284,176 +237,143 @@ contract FailurePush() {
 describe('Multi-Dimensional Arrays', () => {
   // -- 2D literal and chained access -----------------------------------
   describe('2D literal and chained access', () => {
-    const { provider, contract } = setupContract(LITERAL_ACCESS_SOURCE);
-    beforeAll(() => addUtxos(provider, contract.address, 6));
-
     it('should compile with correct ABI', () => {
-      expect(contract.artifact.abi).toHaveLength(2);
+      expect(compileString(LITERAL_ACCESS_SOURCE).abi).toHaveLength(2);
     });
 
     it('access identity matrix diagonal (0,0)=1', async () => {
-      const tx = await sendTx(provider, contract, contract.unlock.testAccess(0n, 0n));
+      const tx = await spend(LITERAL_ACCESS_SOURCE, 'testAccess', 0n, 0n);
       expect(tx.txid).toBeDefined();
     });
 
     it('access identity matrix off-diagonal (0,1)=0', async () => {
-      const tx = await sendTx(provider, contract, contract.unlock.testAccess(0n, 1n));
+      const tx = await spend(LITERAL_ACCESS_SOURCE, 'testAccess', 0n, 1n);
       expect(tx.txid).toBeDefined();
     });
 
     it('access identity matrix last element (2,2)=1', async () => {
-      const tx = await sendTx(provider, contract, contract.unlock.testAccess(2n, 2n));
+      const tx = await spend(LITERAL_ACCESS_SOURCE, 'testAccess', 2n, 2n);
       expect(tx.txid).toBeDefined();
     });
 
     it('access identity matrix bottom-left (2,0)=0', async () => {
-      const tx = await sendTx(provider, contract, contract.unlock.testAccess(2n, 0n));
+      const tx = await spend(LITERAL_ACCESS_SOURCE, 'testAccess', 2n, 0n);
       expect(tx.txid).toBeDefined();
     });
 
     it('verify all constant-indexed values', async () => {
-      const tx = await sendTx(provider, contract, contract.unlock.testConstants());
+      const tx = await spend(LITERAL_ACCESS_SOURCE, 'testConstants');
       expect(tx.txid).toBeDefined();
     });
   });
 
   // -- push and pop ----------------------------------------------------
   describe('push and pop', () => {
-    const { provider, contract } = setupContract(PUSH_POP_SOURCE);
-    beforeAll(() => addUtxos(provider, contract.address, 4));
-
     it('push row, verify, pop, verify original intact', async () => {
-      const tx = await sendTx(provider, contract, contract.unlock.testPushPop());
+      const tx = await spend(PUSH_POP_SOURCE, 'testPushPop');
       expect(tx.txid).toBeDefined();
     });
 
     it('push 3 rows to empty array, verify all values', async () => {
-      const tx = await sendTx(provider, contract, contract.unlock.testMultiplePush());
+      const tx = await spend(PUSH_POP_SOURCE, 'testMultiplePush');
       expect(tx.txid).toBeDefined();
     });
   });
 
   // -- inner row extraction --------------------------------------------
   describe('inner row extraction', () => {
-    const { provider, contract } = setupContract(INNER_EXTRACT_SOURCE);
-    beforeAll(() => addUtxos(provider, contract.address, 4));
-
     it('extract row0 and row1, verify all elements', async () => {
-      const tx = await sendTx(provider, contract, contract.unlock.testExtractRow());
+      const tx = await spend(INNER_EXTRACT_SOURCE, 'testExtractRow');
       expect(tx.txid).toBeDefined();
     });
 
     it('outer length of 3-row matrix == 3', async () => {
-      const tx = await sendTx(provider, contract, contract.unlock.testOuterLength());
+      const tx = await spend(INNER_EXTRACT_SOURCE, 'testOuterLength');
       expect(tx.txid).toBeDefined();
     });
   });
 
   // -- diagonal pattern with parameterized index -----------------------
   describe('diagonal access with parameterized index', () => {
-    const { provider, contract } = setupContract(DIAGONAL_SOURCE);
-    beforeAll(() => addUtxos(provider, contract.address, 5));
-
     it('matrix[0][0] == 1', async () => {
-      const tx = await sendTx(provider, contract, contract.unlock.testDiagonal(0n));
+      const tx = await spend(DIAGONAL_SOURCE, 'testDiagonal', 0n);
       expect(tx.txid).toBeDefined();
     });
 
     it('matrix[1][1] == 1', async () => {
-      const tx = await sendTx(provider, contract, contract.unlock.testDiagonal(1n));
+      const tx = await spend(DIAGONAL_SOURCE, 'testDiagonal', 1n);
       expect(tx.txid).toBeDefined();
     });
 
     it('matrix[2][2] == 1', async () => {
-      const tx = await sendTx(provider, contract, contract.unlock.testDiagonal(2n));
+      const tx = await spend(DIAGONAL_SOURCE, 'testDiagonal', 2n);
       expect(tx.txid).toBeDefined();
     });
   });
 
   // -- delete ----------------------------------------------------------
   describe('delete from 2D array', () => {
-    const { provider, contract } = setupContract(DELETE_SOURCE);
-    beforeAll(() => addUtxos(provider, contract.address, 2));
-
     it('delete middle row, verify remaining rows', async () => {
-      const tx = await sendTx(provider, contract, contract.unlock.testDelete());
+      const tx = await spend(DELETE_SOURCE, 'testDelete');
       expect(tx.txid).toBeDefined();
     });
   });
 
   // -- outer assign ----------------------------------------------------
   describe('outer row assignment', () => {
-    const { provider, contract } = setupContract(ASSIGN_SOURCE);
-    beforeAll(() => addUtxos(provider, contract.address, 4));
-
     it('replace row[0] with new values, other row unchanged', async () => {
-      const tx = await sendTx(provider, contract, contract.unlock.testOuterAssign());
+      const tx = await spend(ASSIGN_SOURCE, 'testOuterAssign');
       expect(tx.txid).toBeDefined();
     });
 
     it('push then assign - build array then overwrite rows', async () => {
-      const tx = await sendTx(provider, contract, contract.unlock.testPushThenAssign());
+      const tx = await spend(ASSIGN_SOURCE, 'testPushThenAssign');
       expect(tx.txid).toBeDefined();
     });
   });
 
   // -- bool 2D arrays --------------------------------------------------
   describe('bool 2D arrays', () => {
-    const { provider, contract } = setupContract(BOOL_2D_SOURCE);
-    beforeAll(() => addUtxos(provider, contract.address, 4));
-
     it('bool 2D literal - verify all true/false values', async () => {
-      const tx = await sendTx(provider, contract, contract.unlock.testLiteral());
+      const tx = await spend(BOOL_2D_SOURCE, 'testLiteral');
       expect(tx.txid).toBeDefined();
     });
 
     it('bool 2D push - push new bool row', async () => {
-      const tx = await sendTx(provider, contract, contract.unlock.testPush());
+      const tx = await spend(BOOL_2D_SOURCE, 'testPush');
       expect(tx.txid).toBeDefined();
     });
   });
 
   // -- bytes4 2D arrays ------------------------------------------------
   describe('bytes4 2D arrays', () => {
-    const { provider, contract } = setupContract(BYTES_2D_SOURCE);
-    beforeAll(() => addUtxos(provider, contract.address, 4));
-
     it('bytes4 2D literal - verify hex values', async () => {
-      const tx = await sendTx(
-        provider, contract,
-        contract.unlock.testLiteral(new Uint8Array([0x00, 0x00, 0x00, 0x00])),
-      );
+      const tx = await spend(BYTES_2D_SOURCE, 'testLiteral', new Uint8Array([0x00, 0x00, 0x00, 0x00]));
       expect(tx.txid).toBeDefined();
     });
 
     it('bytes4 2D push - push new bytes pair', async () => {
-      const tx = await sendTx(provider, contract, contract.unlock.testPush());
+      const tx = await spend(BYTES_2D_SOURCE, 'testPush');
       expect(tx.txid).toBeDefined();
     });
   });
 
   // -- fixed-size 2D arrays (both dimensions bounded) ------------------
   describe('fixed-size 2D arrays - bigint[3][2]', () => {
-    const { provider, contract } = setupContract(FIXED_2D_SOURCE);
-    beforeAll(() => addUtxos(provider, contract.address, 4));
-
     it('access all corners of 2x3 grid', async () => {
-      const tx = await sendTx(provider, contract, contract.unlock.testAccess());
+      const tx = await spend(FIXED_2D_SOURCE, 'testAccess');
       expect(tx.txid).toBeDefined();
     });
 
     it('assign - replace a row', async () => {
-      const tx = await sendTx(provider, contract, contract.unlock.testAssign());
+      const tx = await spend(FIXED_2D_SOURCE, 'testAssign');
       expect(tx.txid).toBeDefined();
     });
   });
 
   describe('fixed-size 2D - inner row extraction', () => {
-    const { provider, contract } = setupContract(FIXED_INNER_SOURCE);
-    beforeAll(() => addUtxos(provider, contract.address, 2));
-
     it('extract inner row and check length', async () => {
-      const tx = await sendTx(provider, contract, contract.unlock.testInnerLength());
+      const tx = await spend(FIXED_INNER_SOURCE, 'testInnerLength');
       expect(tx.txid).toBeDefined();
     });
   });
@@ -461,27 +381,15 @@ describe('Multi-Dimensional Arrays', () => {
   // -- failure paths ---------------------------------------------------
   describe('failure paths - wrong assertions verify correctness', () => {
     it('wrong value - pairs[0][0] != 999', async () => {
-      const { provider, contract } = setupContract(FAILURE_VALUE_SOURCE);
-      await addUtxos(provider, contract.address, 2);
-      await expect(
-        sendTxExpectFail(provider, contract, contract.unlock.testWrongValue()),
-      ).rejects.toThrow(FailedRequireError);
+      await expect(spend(FAILURE_VALUE_SOURCE, 'testWrongValue')).rejects.toThrow();
     });
 
     it('wrong length - pairs.length != 5', async () => {
-      const { provider, contract } = setupContract(FAILURE_LENGTH_SOURCE);
-      await addUtxos(provider, contract.address, 2);
-      await expect(
-        sendTxExpectFail(provider, contract, contract.unlock.testWrongLength()),
-      ).rejects.toThrow(FailedRequireError);
+      await expect(spend(FAILURE_LENGTH_SOURCE, 'testWrongLength')).rejects.toThrow();
     });
 
     it('wrong after push - pushed value != 99', async () => {
-      const { provider, contract } = setupContract(FAILURE_PUSH_SOURCE);
-      await addUtxos(provider, contract.address, 2);
-      await expect(
-        sendTxExpectFail(provider, contract, contract.unlock.testWrongAfterPush()),
-      ).rejects.toThrow(FailedRequireError);
+      await expect(spend(FAILURE_PUSH_SOURCE, 'testWrongAfterPush')).rejects.toThrow();
     });
   });
 });

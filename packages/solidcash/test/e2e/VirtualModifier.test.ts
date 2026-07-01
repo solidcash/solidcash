@@ -1,9 +1,6 @@
 import { compileString } from 'solidc';
-import {
-  Contract, TransactionBuilder, SignatureTemplate,
-} from '../../src/index.js';
-import { randomUtxo } from '../../src/utils.js';
-import { createTestProvider, gatherUtxos } from '../test-util.js';
+import { SignatureTemplate } from '../../src/index.js';
+import { deployStateful } from '../test-util.js';
 import { alicePriv, alicePub } from '../fixture/vars.js';
 
 describe('VirtualModifier', () => {
@@ -73,27 +70,15 @@ describe('VirtualModifier', () => {
 
   describe('e2e', () => {
     it('should execute correctly with virtual modifier', async () => {
-      const provider = createTestProvider();
-      const artifact = compileString(`
+      const sc = await deployStateful(compileString(`
         contract Test(pubkey owner) {
             function spend(sig s) virtual {
                 require(checkSig(s, owner));
             }
         }
-      `);
-      const contract = new Contract(artifact, [alicePub], { provider });
+      `, { forceStateful: true }), [alicePub]);
 
-      await provider.addUtxo(contract.address, randomUtxo({ satoshis: 10000n }));
-
-      const to = contract.address;
-      const amount = 1000n;
-      const { utxos, changeAmount } = gatherUtxos(await contract.getUtxos(), { amount });
-
-      const tx = await new TransactionBuilder({ provider })
-        .addInputs(utxos, contract.unlock.spend(new SignatureTemplate(alicePriv)))
-        .addOutput({ to, amount })
-        .addOutput({ to, amount: changeAmount })
-        .send();
+      const tx = await sc.call.spend(new SignatureTemplate(alicePriv));
 
       expect(tx.txid).toBeDefined();
     });

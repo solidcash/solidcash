@@ -1,9 +1,5 @@
 import { compileString } from 'solidc';
-import {
-  Contract, TransactionBuilder, FailedRequireError,
-} from '../../src/index.js';
-import { randomUtxo } from '../../src/utils.js';
-import { createTestProvider, gatherUtxos } from '../test-util.js';
+import { deployStateful } from '../test-util.js';
 
 const MEMORY_CALLDATA_CONTRACT = `
 contract MemoryCalldata() {
@@ -17,72 +13,32 @@ contract MemoryCalldata() {
 }
 `;
 
-describe('MemoryCalldata', () => {
-  const provider = createTestProvider();
-  const artifact = compileString(MEMORY_CALLDATA_CONTRACT);
-  const contract = new Contract(artifact, [], { provider });
+// Compiled with { forceStateful: true } so each spend is the short `sc.call.test(args)` self-poke
+// covenant (no dummy state, no manual UTXO gathering).
+async function spend(data: Uint8Array, value: bigint): Promise<any> {
+  const sc = await deployStateful(compileString(MEMORY_CALLDATA_CONTRACT, { forceStateful: true }));
+  return sc.call.test(data, value); // thenable: the caller awaits, which sends
+}
 
-  beforeAll(async () => {
-    console.log(contract.address);
-    await provider.addUtxo(contract.address, randomUtxo({ satoshis: 10000n }));
-    await provider.addUtxo(contract.address, randomUtxo({ satoshis: 10000n }));
-  });
+describe('MemoryCalldata', () => {
+  const artifact = compileString(MEMORY_CALLDATA_CONTRACT);
 
   describe('test', () => {
     it('should succeed with valid data and positive value', async () => {
-      const to = contract.address;
-      const amount = 1000n;
-      const { utxos, changeAmount } = gatherUtxos(await contract.getUtxos(), { amount });
-
-      const tx = await new TransactionBuilder({ provider })
-        .addInputs(utxos, contract.unlock.test(new Uint8Array([1, 2, 3]), 100n))
-        .addOutput({ to, amount })
-        .addOutput({ to, amount: changeAmount })
-        .send();
-
+      const tx = await spend(new Uint8Array([1, 2, 3]), 100n);
       expect(tx.txid).toBeDefined();
     });
 
     it('should fail with empty data (data.length > 0 fails)', async () => {
-      const to = contract.address;
-      const amount = 1000n;
-      const { utxos, changeAmount } = gatherUtxos(await contract.getUtxos(), { amount });
-
-      const txPromise = new TransactionBuilder({ provider })
-        .addInputs(utxos, contract.unlock.test(new Uint8Array([]), 100n))
-        .addOutput({ to, amount })
-        .addOutput({ to, amount: changeAmount })
-        .send();
-
-      await expect(txPromise).rejects.toThrow(FailedRequireError);
+      await expect(spend(new Uint8Array([]), 100n)).rejects.toThrow();
     });
 
     it('should fail with non-positive value (value > 0 fails)', async () => {
-      const to = contract.address;
-      const amount = 1000n;
-      const { utxos, changeAmount } = gatherUtxos(await contract.getUtxos(), { amount });
-
-      const txPromise = new TransactionBuilder({ provider })
-        .addInputs(utxos, contract.unlock.test(new Uint8Array([1]), 0n))
-        .addOutput({ to, amount })
-        .addOutput({ to, amount: changeAmount })
-        .send();
-
-      await expect(txPromise).rejects.toThrow(FailedRequireError);
+      await expect(spend(new Uint8Array([1]), 0n)).rejects.toThrow();
     });
 
     it('should fail with negative value', async () => {
-      const to = contract.address;
-      const amount = 1000n;
-      const { utxos, changeAmount } = gatherUtxos(await contract.getUtxos(), { amount });
-
-      const txPromise = new TransactionBuilder({ provider })
-        .addInputs(utxos, contract.unlock.test(new Uint8Array([1]), -5n))
-        .addOutput({ to, amount })
-        .addOutput({ to, amount: changeAmount })
-        .send();
-
-      await expect(txPromise).rejects.toThrow(FailedRequireError);
+      await expect(spend(new Uint8Array([1]), -5n)).rejects.toThrow();
     });
   });
 

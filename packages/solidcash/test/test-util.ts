@@ -239,7 +239,9 @@ export async function deployStateful<T extends Artifact>(
     provider, contract, artifact.stateLayout!, opts.initialState ?? {}, { saltContract: true },
   );
   const address = contract.withCategory(hexToBin(categoryId)).address;
-  return new StatefulContract(address, artifact, provider) as ConnectedStatefulContract<T>;
+  return new StatefulContract(
+    address, artifact, provider, { constructorArgs: args },
+  ) as ConnectedStatefulContract<T>;
 }
 
 export interface StatefulUtxoSetup {

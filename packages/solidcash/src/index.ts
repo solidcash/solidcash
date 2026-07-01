@@ -1,5 +1,8 @@
 export { default as SignatureTemplate } from './SignatureTemplate.js';
 export { default as Signer } from './Signer.js';
+export {
+  HDSigner, HDPublicSigner, signersFromMnemonic, BCH_DEFAULT_HD_PATH, BCH_ACCOUNT_BRANCH,
+} from './HDSigner.js';
 export { Contract } from './Contract.js';
 export { TransactionBuilder } from './TransactionBuilder.js';
 export { buildOpaqueLoopCallTransaction, deriveOpaqueLoopCoSpends } from './loop-call.js';

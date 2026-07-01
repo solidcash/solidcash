@@ -15,11 +15,11 @@ import { BlockOracleUpdater, fetchBlockOracleFields, RpcLike } from '../../src/o
 // block.chainid is uint256 (Solidity parity); the baked network selector is a minimal int on-stack. The
 // contract requires it equals an unlock arg (numeric compare), so the spend only succeeds when the value
 // compiled for `chainId` matches what the caller expects under the VM.
-// A nominal `nonce` state field makes this a stateful contract, so it can be spent with the short
-// `sc.check(expected).send()` call (auto-funded, self-preserving) instead of a hand-rolled TransactionBuilder.
+// Compiled with { forceStateful: true } so this zero-state covenant is a stateful contract (master-NFT
+// self-pin, empty stateLayout), and can be spent with the short `sc.check(expected).send()` call instead of a
+// hand-rolled TransactionBuilder - no dummy state field.
 const SOURCE = `
 contract ChainIdCheck() {
-    int nonce;
     function check(uint256 expected) {
         require(block.chainid == expected);
     }
@@ -36,27 +36,29 @@ const NETWORKS = [
 
 async function spendCheck(chainId: number, expected: number): Promise<string> {
   const provider = createTestProvider();
-  const artifact = compileString(SOURCE, { chainId });
+  const artifact = compileString(SOURCE, { chainId, forceStateful: true });
   const contract = new Contract(artifact, [], { provider });
   const { categoryId } = await setupStatefulUtxos(
-    provider, contract, artifact.stateLayout!, { nonce: 0n }, { saltContract: true },
+    provider, contract, artifact.stateLayout!, {}, { saltContract: true },
   );
-  const sc = new StatefulContract(categoryId, artifact, provider);
-  const tx = await sc.check(BigInt(expected)).send();
+  const address = contract.withCategory(hexToBin(categoryId)).address;
+  const sc = new StatefulContract(address, artifact, provider); // attach by address
+  const tx = await sc.check(BigInt(expected)); // thenable: awaiting sends
   return tx.txid;
 }
 
 // Spend a no-arg contract whose body hardcodes a network-byte check.
 async function spendLiteral(chainId: number | undefined, literal: number): Promise<string> {
   const provider = createTestProvider();
-  const src = `contract C() { int nonce; function f() { require(block.chainid == ${literal}); } }`;
-  const artifact = compileString(src, chainId === undefined ? {} : { chainId });
+  const src = `contract C() { function f() { require(block.chainid == ${literal}); } }`;
+  const artifact = compileString(src, { ...(chainId === undefined ? {} : { chainId }), forceStateful: true });
   const contract = new Contract(artifact, [], { provider });
   const { categoryId } = await setupStatefulUtxos(
-    provider, contract, artifact.stateLayout!, { nonce: 0n }, { saltContract: true },
+    provider, contract, artifact.stateLayout!, {}, { saltContract: true },
   );
-  const sc = new StatefulContract(categoryId, artifact, provider);
-  const tx = await sc.f().send();
+  const address = contract.withCategory(hexToBin(categoryId)).address;
+  const sc = new StatefulContract(address, artifact, provider); // attach by address
+  const tx = await sc.f(); // thenable: awaiting sends
   return tx.txid;
 }
 

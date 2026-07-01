@@ -47,6 +47,30 @@ members that have no UTXO meaning - `getNonce`, `estimateGas`, `call`, `populate
 `resolveName` (ENS), `signTypedData` (EIP-712), `sendTransaction`/`signTransaction`, `populateAuthorization`/
 `authorize` (EIP-7702) - are present for surface parity and throw a clear "no equivalent on Bitcoin Cash" error.
 
+## Events (ethers `queryFilter` / `filters` / `on`)
+
+BCH events are NFT commitments; the facade maps ethers' event API onto them (backed by `queryEvents` /
+`StateReader`). `queryFilter` returns `EventLog`s (`args`, `eventName`, `eventSignature`, and `txid`/`vout` in
+place of blockNumber/logIndex, since events are a UTXO set):
+
+```ts
+const logs = await sc.queryFilter('Transfer');          // by name or signature; '*' for all events
+logs[0].args;                                           // { from, to, amount }
+
+// filters build indexed-parameter filters (null = wildcard), exactly like ethers:
+await sc.queryFilter(sc.filters.Transfer(alicePkh));    // Transfer where indexed `from` == alicePkh
+await sc.queryFilter(sc.filters.Transfer(null, bobPkh)); // wildcard from, indexed `to` == bobPkh
+sc.getEvent('Transfer');                                // the callable event handle
+
+// on/once poll the indexer (BCH has no push events) at `sc.pollingInterval` ms and fire for new events:
+await sc.on('Transfer', (log) => console.log(log.args));
+await sc.once(sc.filters.Transfer(alicePkh), handler);
+await sc.off('Transfer', handler);   // + removeAllListeners / listenerCount / listeners / add/removeListener
+```
+
+`fromBlock`/`toBlock` are accepted on `queryFilter` for ethers parity but ignored - the current UTXO set is
+always returned.
+
 ## Proxy dispatch (v6)
 
 Every instance is wrapped in a Proxy, so the ABI function / state getter is reachable on the **bare name**:

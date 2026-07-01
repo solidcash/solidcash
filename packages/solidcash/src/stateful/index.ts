@@ -55,6 +55,11 @@ export {
   type CallInfo,
   type ContractRunner,
   type LeanContractOptions,
+  type EventLog,
+  type DeferredEventFilter,
+  type StatefulContractEvent,
+  type ContractEventName,
+  type EventListener,
 } from './StatefulContract.js';
 export {
   StateReader, type OnChainState, type ParsedEvent, type EventFilter,

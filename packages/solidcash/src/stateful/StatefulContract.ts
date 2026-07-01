@@ -26,6 +26,7 @@ import {
   ExternalReadAbi,
   EntryAccessAbi,
   EmitAbi,
+  EventDefinitionAbi,
   sidecarLockingBytecode,
   resolveLibraryBlob,
   SHARED_LIBRARY_SALT,
@@ -582,6 +583,43 @@ export interface LeanContractOptions {
 }
 
 const CATEGORY_HEX = /^[0-9a-fA-F]{64}$/;
+
+// ---- ethers-v6 events facade types ----
+
+/**
+ * A decoded contract event, ethers-`EventLog`-flavored. `args` are the decoded parameters. A Bitcoin Cash event
+ * lives in an NFT UTXO (txid/vout) rather than a block-indexed log, so those replace blockNumber/logIndex.
+ */
+export interface EventLog {
+  eventName: string;
+  eventSignature: string;
+  args: Record<string, StateValueType>;
+  txid: string;
+  vout: number;
+}
+
+/** The bound filter produced by `contract.filters.EventName(...indexedArgs)` (ethers `DeferredTopicFilter`). */
+export interface DeferredEventFilter {
+  eventDef: EventDefinitionAbi;
+  filter: EventFilter;
+}
+
+/**
+ * A callable event handle (ethers `ContractEvent`), from `contract.filters.EventName` / `contract.getEvent(name)`.
+ * Call it with indexed argument values (null/undefined = match any) to build a DeferredEventFilter.
+ */
+export interface StatefulContractEvent {
+  (...indexedArgs: Array<StateValueType | null | undefined>): DeferredEventFilter;
+  eventName: string;
+  signature: string;
+  eventDef: EventDefinitionAbi;
+}
+
+/** An accepted event argument for queryFilter/on/off (ethers `ContractEventName`). */
+export type ContractEventName = string | StatefulContractEvent | DeferredEventFilter;
+
+/** An event listener (ethers `Listener`). */
+export type EventListener = (log: EventLog) => void;
 
 export class StatefulContract<TArtifact extends Artifact = Artifact> {
   // Backing for inner / categoryId. When constructed from an ADDRESS the category is unknown until the first
@@ -2837,6 +2875,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     eventNameOrSignature: string,
     filters?: EventFilter,
   ): Promise<ParsedEvent[]> {
+    await this._ensureResolved();
     const artifact = this.inner.artifact;
     const eventDefs = artifact.events ?? [];
     const provider = this.inner.provider;
@@ -2887,6 +2926,212 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     return readEventsFiltered(
       provider, eventAddress, this.categoryId, eventDef, filters, structs,
     );
+  }
+
+  // ---- ethers-v6 events facade (queryFilter / filters / getEvent / on ...), backed by queryEvents ----
+
+  private _resolveEventDef(nameOrSignature: string): EventDefinitionAbi {
+    const eventDefs = this.inner.artifact.events ?? [];
+    const eventDef = nameOrSignature.includes('(')
+      ? eventDefs.find((e) => e.signature === nameOrSignature)
+      : eventDefs.find((e) => e.name === nameOrSignature);
+    if (!eventDef) throw new Error(`Unknown event: ${nameOrSignature}`);
+    return eventDef;
+  }
+
+  /**
+   * Resolve an event to a callable filter handle (ethers `contract.getEvent(name)`). Call the handle with indexed
+   * argument values (null/undefined = wildcard) to build a filter for queryFilter / on: `sc.getEvent('Transfer')(from)`.
+   */
+  getEvent(nameOrSignature: string): StatefulContractEvent {
+    const eventDef = this._resolveEventDef(nameOrSignature);
+    const indexed = eventDef.parameters.filter((p) => p.indexed);
+    const handle = ((...indexedArgs: Array<StateValueType | null | undefined>): DeferredEventFilter => {
+      if (indexedArgs.length > indexed.length) {
+        throw new Error(
+          `Event '${eventDef.name}' has ${indexed.length} indexed parameter(s), got ${indexedArgs.length}.`,
+        );
+      }
+      const filter: EventFilter = {};
+      indexedArgs.forEach((val, i) => {
+        if (val !== null && val !== undefined) filter[indexed[i].name] = val;
+      });
+      return { eventDef, filter };
+    }) as StatefulContractEvent;
+    handle.eventName = eventDef.name;
+    handle.signature = eventDef.signature;
+    handle.eventDef = eventDef;
+    return handle;
+  }
+
+  /**
+   * Lazy event-filter builders (ethers `contract.filters`): `sc.filters.Transfer(from)` returns a
+   * DeferredEventFilter for queryFilter / on. `sc.filters.Transfer` (uncalled) is the event handle itself.
+   */
+  get filters(): Record<string, StatefulContractEvent> {
+    if (!this._filtersProxy) {
+      this._filtersProxy = new Proxy({} as Record<string, StatefulContractEvent>, {
+        get: (_t, prop) => {
+          if (typeof prop !== 'string') return undefined;
+          try { return this.getEvent(prop); } catch { return undefined; }
+        },
+        has: (_t, prop) => typeof prop === 'string'
+          && (this.inner.artifact.events ?? []).some((e) => e.name === prop || e.signature === prop),
+      });
+    }
+    return this._filtersProxy;
+  }
+
+  private _filtersProxy?: Record<string, StatefulContractEvent>;
+
+  private _eventLog(p: ParsedEvent, eventDef?: EventDefinitionAbi): EventLog {
+    return {
+      eventName: p.eventName ?? eventDef?.name ?? '',
+      eventSignature: p.eventSignature ?? eventDef?.signature ?? '',
+      args: p.values as Record<string, StateValueType>,
+      txid: p.txid,
+      vout: p.vout,
+    };
+  }
+
+  /**
+   * Read historic events (ethers `contract.queryFilter`). `event` is an event name/signature, a
+   * `filters.Name(...)` result, or `'*'` for all events. Returns EventLog[]. The fromBlock/toBlock arguments are
+   * accepted for ethers parity but Bitcoin Cash events are a UTXO set, so the current set is always returned.
+   */
+  async queryFilter(
+    event: ContractEventName, _fromBlock?: number | string, _toBlock?: number | string,
+  ): Promise<EventLog[]> {
+    if (event === '*') {
+      const perEvent = await Promise.all(
+        (this.inner.artifact.events ?? []).map(async (e) => (await this.queryEvents(e.signature))
+          .map((p) => this._eventLog(p, e))),
+      );
+      return perEvent.flat();
+    }
+    let eventDef: EventDefinitionAbi;
+    let filter: EventFilter | undefined;
+    if (typeof event === 'string') {
+      eventDef = this._resolveEventDef(event);
+    } else if (typeof event === 'function') { // StatefulContractEvent handle (no bound args)
+      eventDef = event.eventDef;
+    } else { // DeferredEventFilter
+      eventDef = event.eventDef;
+      filter = event.filter;
+    }
+    const parsed = await this.queryEvents(eventDef.signature, filter);
+    return parsed.map((p) => this._eventLog(p, eventDef));
+  }
+
+  // Polling event subscriptions (ethers on/once). BCH has no push events, so listeners poll the indexer at
+  // `pollingInterval` ms and fire for events not seen before. Keyed by event signature + indexed filter.
+  private _eventSubs = new Map<string, { event: ContractEventName; listeners: Set<EventListener>;
+    seen: Set<string>; }>();
+
+  private _eventPoller?: ReturnType<typeof setInterval>;
+
+  /** Poll interval (ms) for on()/once() event listeners. */
+  pollingInterval = 4000;
+
+  private static _eventKey(event: ContractEventName): string {
+    if (typeof event === 'string') return `name:${event}`;
+    const { eventDef, filter } = typeof event === 'function' ? { eventDef: event.eventDef, filter: {} } : event;
+    const f = Object.keys(filter).sort()
+      .map((k) => `${k}=${filter[k] instanceof Uint8Array ? binToHex(filter[k] as Uint8Array) : String(filter[k])}`)
+      .join('&');
+    return `sig:${eventDef.signature}|${f}`;
+  }
+
+  private static _logKey(log: EventLog): string { return `${log.txid}:${log.vout}`; }
+
+  private async _pollEvents(): Promise<void> {
+    for (const sub of this._eventSubs.values()) {
+      let logs: EventLog[];
+      try { logs = await this.queryFilter(sub.event); } catch { continue; }
+      for (const log of logs) {
+        const k = StatefulContract._logKey(log);
+        if (sub.seen.has(k)) continue;
+        sub.seen.add(k);
+        for (const listener of [...sub.listeners]) listener(log);
+      }
+    }
+  }
+
+  private _ensurePolling(): void {
+    if (this._eventPoller || this._eventSubs.size === 0) return;
+    this._eventPoller = setInterval(() => { void this._pollEvents(); }, this.pollingInterval);
+    (this._eventPoller as { unref?: () => void }).unref?.(); // do not keep the process alive
+  }
+
+  private _maybeStopPolling(): void {
+    if (this._eventPoller && this._eventSubs.size === 0) {
+      clearInterval(this._eventPoller);
+      this._eventPoller = undefined;
+    }
+  }
+
+  /** Subscribe to new events (ethers `contract.on`). Existing events are seeded as "seen" so only events that
+   * appear after subscribing fire the listener. */
+  async on(event: ContractEventName, listener: EventListener): Promise<this> {
+    const key = StatefulContract._eventKey(event);
+    let sub = this._eventSubs.get(key);
+    if (!sub) {
+      const current = await this.queryFilter(event);
+      sub = { event, listeners: new Set(), seen: new Set(current.map(StatefulContract._logKey)) };
+      this._eventSubs.set(key, sub);
+    }
+    sub.listeners.add(listener);
+    this._ensurePolling();
+    return this;
+  }
+
+  /** Subscribe to the next occurrence of an event, then auto-unsubscribe (ethers `contract.once`). */
+  async once(event: ContractEventName, listener: EventListener): Promise<this> {
+    const wrapper: EventListener = (log) => { void this.off(event, wrapper); listener(log); };
+    return this.on(event, wrapper);
+  }
+
+  /** Remove a listener (or all listeners for an event) (ethers `contract.off`). */
+  async off(event: ContractEventName, listener?: EventListener): Promise<this> {
+    const sub = this._eventSubs.get(StatefulContract._eventKey(event));
+    if (sub) {
+      if (listener) sub.listeners.delete(listener); else sub.listeners.clear();
+      if (sub.listeners.size === 0) this._eventSubs.delete(StatefulContract._eventKey(event));
+    }
+    this._maybeStopPolling();
+    return this;
+  }
+
+  /** Remove all listeners, optionally for a single event (ethers `contract.removeAllListeners`). */
+  async removeAllListeners(event?: ContractEventName): Promise<this> {
+    if (event === undefined) this._eventSubs.clear();
+    else this._eventSubs.delete(StatefulContract._eventKey(event));
+    this._maybeStopPolling();
+    return this;
+  }
+
+  /** Count listeners, optionally for a single event (ethers `contract.listenerCount`). */
+  async listenerCount(event?: ContractEventName): Promise<number> {
+    if (event === undefined) {
+      return [...this._eventSubs.values()].reduce((n, s) => n + s.listeners.size, 0);
+    }
+    return this._eventSubs.get(StatefulContract._eventKey(event))?.listeners.size ?? 0;
+  }
+
+  /** List listeners, optionally for a single event (ethers `contract.listeners`). */
+  async listeners(event?: ContractEventName): Promise<EventListener[]> {
+    if (event === undefined) return [...this._eventSubs.values()].flatMap((s) => [...s.listeners]);
+    return [...(this._eventSubs.get(StatefulContract._eventKey(event))?.listeners ?? [])];
+  }
+
+  /** Alias for on (ethers `contract.addListener`). */
+  async addListener(event: ContractEventName, listener: EventListener): Promise<this> {
+    return this.on(event, listener);
+  }
+
+  /** Alias for off (ethers `contract.removeListener`). */
+  async removeListener(event: ContractEventName, listener: EventListener): Promise<this> {
+    return this.off(event, listener);
   }
 
   /**

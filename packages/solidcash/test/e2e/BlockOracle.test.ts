@@ -15,8 +15,11 @@ import { BlockOracleUpdater, fetchBlockOracleFields, RpcLike } from '../../src/o
 // block.chainid is uint256 (Solidity parity); the baked network selector is a minimal int on-stack. The
 // contract requires it equals an unlock arg (numeric compare), so the spend only succeeds when the value
 // compiled for `chainId` matches what the caller expects under the VM.
+// A nominal `nonce` state field makes this a stateful contract, so it can be spent with the short
+// `sc.check(expected).send()` call (auto-funded, self-preserving) instead of a hand-rolled TransactionBuilder.
 const SOURCE = `
 contract ChainIdCheck() {
+    int nonce;
     function check(uint256 expected) {
         require(block.chainid == expected);
     }
@@ -35,33 +38,25 @@ async function spendCheck(chainId: number, expected: number): Promise<string> {
   const provider = createTestProvider();
   const artifact = compileString(SOURCE, { chainId });
   const contract = new Contract(artifact, [], { provider });
-
-  const contractUtxo = await provider.addUtxo(contract.address, randomUtxo({ satoshis: 100000n }));
-  const feeFunder = await createFeeFunder(provider, 20000n);
-
-  const tx = await new TransactionBuilder({ provider })
-    .addInput(contractUtxo, contract.unlock.check(BigInt(expected)))
-    .addInput(feeFunder.utxo, feeFunder.unlocker)
-    .addOutput({ to: contract.address, amount: 110000n })
-    .send();
+  const { categoryId } = await setupStatefulUtxos(
+    provider, contract, artifact.stateLayout!, { nonce: 0n }, { saltContract: true },
+  );
+  const sc = new StatefulContract(categoryId, artifact, provider);
+  const tx = await sc.check(BigInt(expected)).send();
   return tx.txid;
 }
 
 // Spend a no-arg contract whose body hardcodes a network-byte check.
 async function spendLiteral(chainId: number | undefined, literal: number): Promise<string> {
   const provider = createTestProvider();
-  const src = `contract C() { function f() { require(block.chainid == ${literal}); } }`;
+  const src = `contract C() { int nonce; function f() { require(block.chainid == ${literal}); } }`;
   const artifact = compileString(src, chainId === undefined ? {} : { chainId });
   const contract = new Contract(artifact, [], { provider });
-
-  const contractUtxo = await provider.addUtxo(contract.address, randomUtxo({ satoshis: 100000n }));
-  const feeFunder = await createFeeFunder(provider, 20000n);
-
-  const tx = await new TransactionBuilder({ provider })
-    .addInput(contractUtxo, contract.unlock.f())
-    .addInput(feeFunder.utxo, feeFunder.unlocker)
-    .addOutput({ to: contract.address, amount: 110000n })
-    .send();
+  const { categoryId } = await setupStatefulUtxos(
+    provider, contract, artifact.stateLayout!, { nonce: 0n }, { saltContract: true },
+  );
+  const sc = new StatefulContract(categoryId, artifact, provider);
+  const tx = await sc.f().send();
   return tx.txid;
 }
 

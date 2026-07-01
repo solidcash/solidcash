@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { compileString } from 'solidc';
-import { deployStateful } from '../test-util.js';
+import { getContractFactory } from '../../src/index.js';
+import { fundedSigner } from '../test-util.js';
 
 // Enum-typed function parameters: previously crashed the compiler (p.type undefined). The ABI
 // exposes the enum name; the SDK encodes the int-backed enum value as an int.
@@ -17,11 +18,13 @@ const artifact = compileString(SOURCE, { forceStateful: true });
 
 describe('Enum-typed function parameters', () => {
   it('compiles, and the SDK encodes the enum value (Color.Green = 1)', async () => {
-    const sc = await deployStateful(artifact);
+    const factory = getContractFactory(artifact, await fundedSigner());
+    const sc = await factory.deploy();
     await expect(sc.pick(1n)).resolves.toBeDefined();
   });
   it('fails when the enum value does not match', async () => {
-    const sc = await deployStateful(artifact);
+    const factory = getContractFactory(artifact, await fundedSigner());
+    const sc = await factory.deploy();
     await expect(sc.pick(0n)).rejects.toThrow();
   });
   it('exposes the enum name in the ABI', () => {

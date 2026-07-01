@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { compileString } from 'solidc';
-import { deployStateful } from '../test-util.js';
+import { getContractFactory } from '../../src/index.js';
+import { fundedSigner } from '../test-util.js';
 
 // Compound assignment operators desugar to `x = x <op> e` and inherit the binary operator's type
 // rules (arithmetic/shift on int; bitwise on bytes). Each function computes a known result and
@@ -31,18 +32,21 @@ const artifact = compileString(SOURCE, { forceStateful: true });
 
 describe('Compound assignment operators', () => {
   it('arithmetic/shift compound ops on int compute the expected result', async () => {
-    const sc = await deployStateful(artifact);
+    const factory = getContractFactory(artifact, await fundedSigner());
+    const sc = await factory.deploy();
     await expect(sc.arith(10n)).resolves.toBeDefined();
   });
 
   it('arithmetic compound ops fail when the result differs', async () => {
     // x=0 -> 5,2,4,1,1,8,4 -> a==4, not 8
-    const sc = await deployStateful(artifact);
+    const factory = getContractFactory(artifact, await fundedSigner());
+    const sc = await factory.deploy();
     await expect(sc.arith(0n)).rejects.toThrow();
   });
 
   it('bitwise compound ops on bytes compute the expected result', async () => {
-    const sc = await deployStateful(artifact);
+    const factory = getContractFactory(artifact, await fundedSigner());
+    const sc = await factory.deploy();
     await expect(sc.bitwise(Uint8Array.from([0xff]))).resolves.toBeDefined();
   });
 });

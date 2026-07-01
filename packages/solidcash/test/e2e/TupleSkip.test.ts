@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { compileString } from 'solidc';
-import { deployStateful } from '../test-util.js';
+import { getContractFactory } from '../../src/index.js';
+import { fundedSigner } from '../test-util.js';
 
 // Tuple destructuring with skipped slots: the skipped value is dropped, the kept value bound.
 const SOURCE = `
@@ -19,11 +20,13 @@ const artifact = compileString(SOURCE, { forceStateful: true });
 
 describe('Tuple destructuring with skipped slots', () => {
   it('(, y) keeps the second value', async () => {
-    const sc = await deployStateful(artifact);
+    const factory = getContractFactory(artifact, await fundedSigner());
+    const sc = await factory.deploy();
     await expect(sc.keepSecond(Uint8Array.from([0x00, 0x11, 0x22, 0x33]))).resolves.toBeDefined();
   });
   it('(x, ) keeps the first value', async () => {
-    const sc = await deployStateful(artifact);
+    const factory = getContractFactory(artifact, await fundedSigner());
+    const sc = await factory.deploy();
     await expect(sc.keepFirst(Uint8Array.from([0x00, 0x11, 0x22, 0x33]))).resolves.toBeDefined();
   });
 });

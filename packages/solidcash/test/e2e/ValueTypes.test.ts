@@ -1,39 +1,9 @@
 import { compileString } from 'solidc';
-import {
-  Contract, MockNetworkProvider, TransactionBuilder, FailedRequireError,
-} from '../../src/index.js';
-import { randomUtxo } from '../../src/utils.js';
-import { createTestProvider, gatherUtxos } from '../test-util.js';
+import { getContractFactory } from '../../src/index.js';
+import { fundedSigner } from '../test-util.js';
 
-// --- Helpers ----------------------------------------------------------------
-
-function setupContract(source: string, constructorArgs: any[] = []): {
-  provider: MockNetworkProvider;
-  contract: Contract;
-} {
-  const provider = createTestProvider();
-  const artifact = compileString(source);
-  const contract = new Contract(artifact, constructorArgs, { provider });
-  return { provider, contract };
-}
-
-async function sendTx(
-  provider: MockNetworkProvider,
-  contract: Contract,
-  unlocker: ReturnType<Contract['unlock'][string]>,
-): Promise<any> {
-  const to = contract.address;
-  const amount = 1000n;
-  const { utxos, changeAmount } = gatherUtxos(await contract.getUtxos(), { amount });
-
-  return new TransactionBuilder({ provider })
-    .addInputs(utxos, unlocker)
-    .addOutput({ to, amount })
-    .addOutput({ to, amount: changeAmount })
-    .send();
-}
-
-// --- Tests ------------------------------------------------------------------
+// forceStateful compiles each contract as a self-poke covenant, so each test can deploy + call
+// directly (`const sc = await getContractFactory(...).deploy(); await sc.test(args)`).
 
 describe('Value Types', () => {
   describe('wrap and unwrap', () => {
@@ -48,11 +18,9 @@ describe('Value Types', () => {
             }
         }
       `;
-      const { provider, contract } = setupContract(source);
-      await provider.addUtxo(contract.address, randomUtxo({ satoshis: 10000n }));
-      await provider.addUtxo(contract.address, randomUtxo({ satoshis: 10000n }));
-
-      const tx = await sendTx(provider, contract, contract.unlock.test(42n));
+      const factory = getContractFactory(compileString(source, { forceStateful: true }), await fundedSigner());
+      const sc = await factory.deploy();
+      const tx = await sc.test(42n);
       expect(tx.txid).toBeDefined();
     });
 
@@ -66,11 +34,9 @@ describe('Value Types', () => {
             }
         }
       `;
-      const { provider, contract } = setupContract(source);
-      await provider.addUtxo(contract.address, randomUtxo({ satoshis: 10000n }));
-      await provider.addUtxo(contract.address, randomUtxo({ satoshis: 10000n }));
-
-      const tx = await sendTx(provider, contract, contract.unlock.test());
+      const factory = getContractFactory(compileString(source, { forceStateful: true }), await fundedSigner());
+      const sc = await factory.deploy();
+      const tx = await sc.test();
       expect(tx.txid).toBeDefined();
     });
 
@@ -84,11 +50,9 @@ describe('Value Types', () => {
             }
         }
       `;
-      const { provider, contract } = setupContract(source);
-      await provider.addUtxo(contract.address, randomUtxo({ satoshis: 10000n }));
-      await provider.addUtxo(contract.address, randomUtxo({ satoshis: 10000n }));
-
-      const tx = await sendTx(provider, contract, contract.unlock.test(-100n));
+      const factory = getContractFactory(compileString(source, { forceStateful: true }), await fundedSigner());
+      const sc = await factory.deploy();
+      const tx = await sc.test(-100n);
       expect(tx.txid).toBeDefined();
     });
   });
@@ -105,11 +69,9 @@ describe('Value Types', () => {
             }
         }
       `;
-      const { provider, contract } = setupContract(source);
-      await provider.addUtxo(contract.address, randomUtxo({ satoshis: 10000n }));
-      await provider.addUtxo(contract.address, randomUtxo({ satoshis: 10000n }));
-
-      const tx = await sendTx(provider, contract, contract.unlock.test(99n));
+      const factory = getContractFactory(compileString(source, { forceStateful: true }), await fundedSigner());
+      const sc = await factory.deploy();
+      const tx = await sc.test(99n);
       expect(tx.txid).toBeDefined();
     });
 
@@ -124,12 +86,9 @@ describe('Value Types', () => {
             }
         }
       `;
-      const { provider, contract } = setupContract(source);
-      await provider.addUtxo(contract.address, randomUtxo({ satoshis: 10000n }));
-      await provider.addUtxo(contract.address, randomUtxo({ satoshis: 10000n }));
-
-      const txPromise = sendTx(provider, contract, contract.unlock.test(10n, 20n));
-      await expect(txPromise).rejects.toThrow(FailedRequireError);
+      const factory = getContractFactory(compileString(source, { forceStateful: true }), await fundedSigner());
+      const sc = await factory.deploy();
+      await expect(sc.test(10n, 20n)).rejects.toThrow();
     });
   });
 
@@ -147,11 +106,9 @@ describe('Value Types', () => {
             }
         }
       `;
-      const { provider, contract } = setupContract(source);
-      await provider.addUtxo(contract.address, randomUtxo({ satoshis: 10000n }));
-      await provider.addUtxo(contract.address, randomUtxo({ satoshis: 10000n }));
-
-      const tx = await sendTx(provider, contract, contract.unlock.test(7n, 8n));
+      const factory = getContractFactory(compileString(source, { forceStateful: true }), await fundedSigner());
+      const sc = await factory.deploy();
+      const tx = await sc.test(7n, 8n);
       expect(tx.txid).toBeDefined();
     });
 
@@ -165,11 +122,9 @@ describe('Value Types', () => {
             }
         }
       `;
-      const { provider, contract } = setupContract(source);
-      await provider.addUtxo(contract.address, randomUtxo({ satoshis: 10000n }));
-      await provider.addUtxo(contract.address, randomUtxo({ satoshis: 10000n }));
-
-      const tx = await sendTx(provider, contract, contract.unlock.test(100n, 50n));
+      const factory = getContractFactory(compileString(source, { forceStateful: true }), await fundedSigner());
+      const sc = await factory.deploy();
+      const tx = await sc.test(100n, 50n);
       expect(tx.txid).toBeDefined();
     });
 
@@ -183,12 +138,9 @@ describe('Value Types', () => {
             }
         }
       `;
-      const { provider, contract } = setupContract(source);
-      await provider.addUtxo(contract.address, randomUtxo({ satoshis: 10000n }));
-      await provider.addUtxo(contract.address, randomUtxo({ satoshis: 10000n }));
-
-      const txPromise = sendTx(provider, contract, contract.unlock.test(10n, 50n));
-      await expect(txPromise).rejects.toThrow(FailedRequireError);
+      const factory = getContractFactory(compileString(source, { forceStateful: true }), await fundedSigner());
+      const sc = await factory.deploy();
+      await expect(sc.test(10n, 50n)).rejects.toThrow();
     });
   });
 
@@ -207,11 +159,9 @@ describe('Value Types', () => {
             }
         }
       `;
-      const { provider, contract } = setupContract(source);
-      await provider.addUtxo(contract.address, randomUtxo({ satoshis: 10000n }));
-      await provider.addUtxo(contract.address, randomUtxo({ satoshis: 10000n }));
-
-      const tx = await sendTx(provider, contract, contract.unlock.test(5n, 3n));
+      const factory = getContractFactory(compileString(source, { forceStateful: true }), await fundedSigner());
+      const sc = await factory.deploy();
+      const tx = await sc.test(5n, 3n);
       expect(tx.txid).toBeDefined();
     });
   });
@@ -226,12 +176,10 @@ describe('Value Types', () => {
             }
         }
       `;
-      const { provider, contract } = setupContract(source);
-      await provider.addUtxo(contract.address, randomUtxo({ satoshis: 10000n }));
-      await provider.addUtxo(contract.address, randomUtxo({ satoshis: 10000n }));
-
+      const factory = getContractFactory(compileString(source, { forceStateful: true }), await fundedSigner());
+      const sc = await factory.deploy();
       // Value type parameters appear as 'bigint' in the ABI, so we pass a bigint
-      const tx = await sendTx(provider, contract, contract.unlock.test(42n));
+      const tx = await sc.test(42n);
       expect(tx.txid).toBeDefined();
     });
 
@@ -246,11 +194,9 @@ describe('Value Types', () => {
             }
         }
       `;
-      const { provider, contract } = setupContract(source);
-      await provider.addUtxo(contract.address, randomUtxo({ satoshis: 10000n }));
-      await provider.addUtxo(contract.address, randomUtxo({ satoshis: 10000n }));
-
-      const tx = await sendTx(provider, contract, contract.unlock.test(10n, 5n));
+      const factory = getContractFactory(compileString(source, { forceStateful: true }), await fundedSigner());
+      const sc = await factory.deploy();
+      const tx = await sc.test(10n, 5n);
       expect(tx.txid).toBeDefined();
     });
   });
@@ -266,14 +212,12 @@ describe('Value Types', () => {
             }
         }
       `;
-      const { provider, contract } = setupContract(source);
-      await provider.addUtxo(contract.address, randomUtxo({ satoshis: 10000n }));
-      await provider.addUtxo(contract.address, randomUtxo({ satoshis: 10000n }));
-
       const { hexToBin } = await import('@bitauth/libauth');
       const testBytes = hexToBin('deadbeef');
 
-      const tx = await sendTx(provider, contract, contract.unlock.test(testBytes));
+      const factory = getContractFactory(compileString(source, { forceStateful: true }), await fundedSigner());
+      const sc = await factory.deploy();
+      const tx = await sc.test(testBytes);
       expect(tx.txid).toBeDefined();
     });
   });

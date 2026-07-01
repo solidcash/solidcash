@@ -1,5 +1,6 @@
 import { compileString } from 'solidc';
-import { deployStateful } from '../test-util.js';
+import { getContractFactory } from '../../src/index.js';
+import { fundedSigner } from '../test-util.js';
 
 // --- Contract sources (kept small to avoid exceeding bytecode limit) -----
 
@@ -233,31 +234,46 @@ describe('Multi-Dimensional Arrays', () => {
     });
 
     it('access identity matrix diagonal (0,0)=1', async () => {
-      const sc = await deployStateful(compileString(LITERAL_ACCESS_SOURCE, { forceStateful: true }));
+      const factory = getContractFactory(
+        compileString(LITERAL_ACCESS_SOURCE, { forceStateful: true }), await fundedSigner(),
+      );
+      const sc = await factory.deploy();
       const tx = await sc.testAccess(0n, 0n);
       expect(tx.txid).toBeDefined();
     });
 
     it('access identity matrix off-diagonal (0,1)=0', async () => {
-      const sc = await deployStateful(compileString(LITERAL_ACCESS_SOURCE, { forceStateful: true }));
+      const factory = getContractFactory(
+        compileString(LITERAL_ACCESS_SOURCE, { forceStateful: true }), await fundedSigner(),
+      );
+      const sc = await factory.deploy();
       const tx = await sc.testAccess(0n, 1n);
       expect(tx.txid).toBeDefined();
     });
 
     it('access identity matrix last element (2,2)=1', async () => {
-      const sc = await deployStateful(compileString(LITERAL_ACCESS_SOURCE, { forceStateful: true }));
+      const factory = getContractFactory(
+        compileString(LITERAL_ACCESS_SOURCE, { forceStateful: true }), await fundedSigner(),
+      );
+      const sc = await factory.deploy();
       const tx = await sc.testAccess(2n, 2n);
       expect(tx.txid).toBeDefined();
     });
 
     it('access identity matrix bottom-left (2,0)=0', async () => {
-      const sc = await deployStateful(compileString(LITERAL_ACCESS_SOURCE, { forceStateful: true }));
+      const factory = getContractFactory(
+        compileString(LITERAL_ACCESS_SOURCE, { forceStateful: true }), await fundedSigner(),
+      );
+      const sc = await factory.deploy();
       const tx = await sc.testAccess(2n, 0n);
       expect(tx.txid).toBeDefined();
     });
 
     it('verify all constant-indexed values', async () => {
-      const sc = await deployStateful(compileString(LITERAL_ACCESS_SOURCE, { forceStateful: true }));
+      const factory = getContractFactory(
+        compileString(LITERAL_ACCESS_SOURCE, { forceStateful: true }), await fundedSigner(),
+      );
+      const sc = await factory.deploy();
       const tx = await sc.testConstants();
       expect(tx.txid).toBeDefined();
     });
@@ -266,13 +282,15 @@ describe('Multi-Dimensional Arrays', () => {
   // -- push and pop ----------------------------------------------------
   describe('push and pop', () => {
     it('push row, verify, pop, verify original intact', async () => {
-      const sc = await deployStateful(compileString(PUSH_POP_SOURCE, { forceStateful: true }));
+      const factory = getContractFactory(compileString(PUSH_POP_SOURCE, { forceStateful: true }), await fundedSigner());
+      const sc = await factory.deploy();
       const tx = await sc.testPushPop();
       expect(tx.txid).toBeDefined();
     });
 
     it('push 3 rows to empty array, verify all values', async () => {
-      const sc = await deployStateful(compileString(PUSH_POP_SOURCE, { forceStateful: true }));
+      const factory = getContractFactory(compileString(PUSH_POP_SOURCE, { forceStateful: true }), await fundedSigner());
+      const sc = await factory.deploy();
       const tx = await sc.testMultiplePush();
       expect(tx.txid).toBeDefined();
     });
@@ -281,13 +299,15 @@ describe('Multi-Dimensional Arrays', () => {
   // -- inner row extraction --------------------------------------------
   describe('inner row extraction', () => {
     it('extract row0 and row1, verify all elements', async () => {
-      const sc = await deployStateful(compileString(INNER_EXTRACT_SOURCE, { forceStateful: true }));
+      const factory = getContractFactory(compileString(INNER_EXTRACT_SOURCE, { forceStateful: true }), await fundedSigner());
+      const sc = await factory.deploy();
       const tx = await sc.testExtractRow();
       expect(tx.txid).toBeDefined();
     });
 
     it('outer length of 3-row matrix == 3', async () => {
-      const sc = await deployStateful(compileString(INNER_EXTRACT_SOURCE, { forceStateful: true }));
+      const factory = getContractFactory(compileString(INNER_EXTRACT_SOURCE, { forceStateful: true }), await fundedSigner());
+      const sc = await factory.deploy();
       const tx = await sc.testOuterLength();
       expect(tx.txid).toBeDefined();
     });
@@ -296,19 +316,22 @@ describe('Multi-Dimensional Arrays', () => {
   // -- diagonal pattern with parameterized index -----------------------
   describe('diagonal access with parameterized index', () => {
     it('matrix[0][0] == 1', async () => {
-      const sc = await deployStateful(compileString(DIAGONAL_SOURCE, { forceStateful: true }));
+      const factory = getContractFactory(compileString(DIAGONAL_SOURCE, { forceStateful: true }), await fundedSigner());
+      const sc = await factory.deploy();
       const tx = await sc.testDiagonal(0n);
       expect(tx.txid).toBeDefined();
     });
 
     it('matrix[1][1] == 1', async () => {
-      const sc = await deployStateful(compileString(DIAGONAL_SOURCE, { forceStateful: true }));
+      const factory = getContractFactory(compileString(DIAGONAL_SOURCE, { forceStateful: true }), await fundedSigner());
+      const sc = await factory.deploy();
       const tx = await sc.testDiagonal(1n);
       expect(tx.txid).toBeDefined();
     });
 
     it('matrix[2][2] == 1', async () => {
-      const sc = await deployStateful(compileString(DIAGONAL_SOURCE, { forceStateful: true }));
+      const factory = getContractFactory(compileString(DIAGONAL_SOURCE, { forceStateful: true }), await fundedSigner());
+      const sc = await factory.deploy();
       const tx = await sc.testDiagonal(2n);
       expect(tx.txid).toBeDefined();
     });
@@ -317,7 +340,8 @@ describe('Multi-Dimensional Arrays', () => {
   // -- delete ----------------------------------------------------------
   describe('delete from 2D array', () => {
     it('delete middle row, verify remaining rows', async () => {
-      const sc = await deployStateful(compileString(DELETE_SOURCE, { forceStateful: true }));
+      const factory = getContractFactory(compileString(DELETE_SOURCE, { forceStateful: true }), await fundedSigner());
+      const sc = await factory.deploy();
       const tx = await sc.testDelete();
       expect(tx.txid).toBeDefined();
     });
@@ -326,13 +350,15 @@ describe('Multi-Dimensional Arrays', () => {
   // -- outer assign ----------------------------------------------------
   describe('outer row assignment', () => {
     it('replace row[0] with new values, other row unchanged', async () => {
-      const sc = await deployStateful(compileString(ASSIGN_SOURCE, { forceStateful: true }));
+      const factory = getContractFactory(compileString(ASSIGN_SOURCE, { forceStateful: true }), await fundedSigner());
+      const sc = await factory.deploy();
       const tx = await sc.testOuterAssign();
       expect(tx.txid).toBeDefined();
     });
 
     it('push then assign - build array then overwrite rows', async () => {
-      const sc = await deployStateful(compileString(ASSIGN_SOURCE, { forceStateful: true }));
+      const factory = getContractFactory(compileString(ASSIGN_SOURCE, { forceStateful: true }), await fundedSigner());
+      const sc = await factory.deploy();
       const tx = await sc.testPushThenAssign();
       expect(tx.txid).toBeDefined();
     });
@@ -341,13 +367,15 @@ describe('Multi-Dimensional Arrays', () => {
   // -- bool 2D arrays --------------------------------------------------
   describe('bool 2D arrays', () => {
     it('bool 2D literal - verify all true/false values', async () => {
-      const sc = await deployStateful(compileString(BOOL_2D_SOURCE, { forceStateful: true }));
+      const factory = getContractFactory(compileString(BOOL_2D_SOURCE, { forceStateful: true }), await fundedSigner());
+      const sc = await factory.deploy();
       const tx = await sc.testLiteral();
       expect(tx.txid).toBeDefined();
     });
 
     it('bool 2D push - push new bool row', async () => {
-      const sc = await deployStateful(compileString(BOOL_2D_SOURCE, { forceStateful: true }));
+      const factory = getContractFactory(compileString(BOOL_2D_SOURCE, { forceStateful: true }), await fundedSigner());
+      const sc = await factory.deploy();
       const tx = await sc.testPush();
       expect(tx.txid).toBeDefined();
     });
@@ -356,13 +384,15 @@ describe('Multi-Dimensional Arrays', () => {
   // -- bytes4 2D arrays ------------------------------------------------
   describe('bytes4 2D arrays', () => {
     it('bytes4 2D literal - verify hex values', async () => {
-      const sc = await deployStateful(compileString(BYTES_2D_SOURCE, { forceStateful: true }));
+      const factory = getContractFactory(compileString(BYTES_2D_SOURCE, { forceStateful: true }), await fundedSigner());
+      const sc = await factory.deploy();
       const tx = await sc.testLiteral(new Uint8Array([0x00, 0x00, 0x00, 0x00]));
       expect(tx.txid).toBeDefined();
     });
 
     it('bytes4 2D push - push new bytes pair', async () => {
-      const sc = await deployStateful(compileString(BYTES_2D_SOURCE, { forceStateful: true }));
+      const factory = getContractFactory(compileString(BYTES_2D_SOURCE, { forceStateful: true }), await fundedSigner());
+      const sc = await factory.deploy();
       const tx = await sc.testPush();
       expect(tx.txid).toBeDefined();
     });
@@ -371,13 +401,15 @@ describe('Multi-Dimensional Arrays', () => {
   // -- fixed-size 2D arrays (both dimensions bounded) ------------------
   describe('fixed-size 2D arrays - bigint[3][2]', () => {
     it('access all corners of 2x3 grid', async () => {
-      const sc = await deployStateful(compileString(FIXED_2D_SOURCE, { forceStateful: true }));
+      const factory = getContractFactory(compileString(FIXED_2D_SOURCE, { forceStateful: true }), await fundedSigner());
+      const sc = await factory.deploy();
       const tx = await sc.testAccess();
       expect(tx.txid).toBeDefined();
     });
 
     it('assign - replace a row', async () => {
-      const sc = await deployStateful(compileString(FIXED_2D_SOURCE, { forceStateful: true }));
+      const factory = getContractFactory(compileString(FIXED_2D_SOURCE, { forceStateful: true }), await fundedSigner());
+      const sc = await factory.deploy();
       const tx = await sc.testAssign();
       expect(tx.txid).toBeDefined();
     });
@@ -385,7 +417,8 @@ describe('Multi-Dimensional Arrays', () => {
 
   describe('fixed-size 2D - inner row extraction', () => {
     it('extract inner row and check length', async () => {
-      const sc = await deployStateful(compileString(FIXED_INNER_SOURCE, { forceStateful: true }));
+      const factory = getContractFactory(compileString(FIXED_INNER_SOURCE, { forceStateful: true }), await fundedSigner());
+      const sc = await factory.deploy();
       const tx = await sc.testInnerLength();
       expect(tx.txid).toBeDefined();
     });
@@ -394,17 +427,22 @@ describe('Multi-Dimensional Arrays', () => {
   // -- failure paths ---------------------------------------------------
   describe('failure paths - wrong assertions verify correctness', () => {
     it('wrong value - pairs[0][0] != 999', async () => {
-      const sc = await deployStateful(compileString(FAILURE_VALUE_SOURCE, { forceStateful: true }));
+      const factory = getContractFactory(compileString(FAILURE_VALUE_SOURCE, { forceStateful: true }), await fundedSigner());
+      const sc = await factory.deploy();
       await expect(sc.testWrongValue()).rejects.toThrow();
     });
 
     it('wrong length - pairs.length != 5', async () => {
-      const sc = await deployStateful(compileString(FAILURE_LENGTH_SOURCE, { forceStateful: true }));
+      const factory = getContractFactory(
+        compileString(FAILURE_LENGTH_SOURCE, { forceStateful: true }), await fundedSigner(),
+      );
+      const sc = await factory.deploy();
       await expect(sc.testWrongLength()).rejects.toThrow();
     });
 
     it('wrong after push - pushed value != 99', async () => {
-      const sc = await deployStateful(compileString(FAILURE_PUSH_SOURCE, { forceStateful: true }));
+      const factory = getContractFactory(compileString(FAILURE_PUSH_SOURCE, { forceStateful: true }), await fundedSigner());
+      const sc = await factory.deploy();
       await expect(sc.testWrongAfterPush()).rejects.toThrow();
     });
   });

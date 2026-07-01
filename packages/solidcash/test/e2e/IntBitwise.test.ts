@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { compileString } from 'solidc';
-import { deployStateful } from '../test-util.js';
+import { getContractFactory } from '../../src/index.js';
+import { fundedSigner } from '../test-util.js';
 
 // Integer bitwise & | ^ ~ on fixed-width ints. The contract recomputes each op and requires it equals
 // the expected value passed in, so the spend only succeeds if the sign-magnitude <-> two's-complement
@@ -27,18 +28,21 @@ const artifact = compileString(SOURCE, { forceStateful: true });
 describe('integer bitwise', () => {
   // a=0xCC, b=0xAA -> and=0x88, or=0xEE, xor=0x66, ~a=0x33
   it('unsigned & | ^ ~ on uint8', async () => {
-    const sc = await deployStateful(artifact);
+    const factory = getContractFactory(artifact, await fundedSigner());
+    const sc = await factory.deploy();
     await expect(sc.checkUnsigned(204n, 170n, 136n, 238n, 102n, 51n)).resolves.toBeDefined();
   });
 
   // a=-2 (0xFE), b=3 (0x03) -> and=2, or=-1, xor=-3, ~a=1
   it('signed & | ^ ~ on int8 with negatives', async () => {
-    const sc = await deployStateful(artifact);
+    const factory = getContractFactory(artifact, await fundedSigner());
+    const sc = await factory.deploy();
     await expect(sc.checkSigned(-2n, 3n, 2n, -1n, -3n, 1n)).resolves.toBeDefined();
   });
 
   it('rejects a wrong expected result', async () => {
-    const sc = await deployStateful(artifact);
+    const factory = getContractFactory(artifact, await fundedSigner());
+    const sc = await factory.deploy();
     await expect(sc.checkUnsigned(204n, 170n, 0n, 238n, 102n, 51n)).rejects.toThrow();
   });
 });

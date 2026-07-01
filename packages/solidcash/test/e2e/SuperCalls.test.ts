@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { compileString } from 'solidc';
 import { ResolvedImport } from '@solidcash/utils';
-import { deployStateful } from '../test-util.js';
+import { getContractFactory } from '../../src/index.js';
+import { fundedSigner } from '../test-util.js';
 
 // super.f() / Base.f(): qualified parent calls. Inheritance is flattened at compile time; an
 // overridden parent body is preserved under an internal name so super/Base can still reach it. The
@@ -54,24 +55,27 @@ contract Child is B {
 describe('super.f() / Base.f() parent calls', () => {
   it('resolves super through a two-level override chain (C -> B -> A)', async () => {
     // ((2 + 1) * 10) + 5 = 35
-    const sc = await deployStateful(compileString(MAIN, {
+    const factory = getContractFactory(compileString(MAIN, {
       importResolver: resolverFor(LIB), rootFileId: '/main.scash', forceStateful: true,
-    }));
+    }), await fundedSigner());
+    const sc = await factory.deploy();
     await expect(sc.viaSuper(2n, 35n)).resolves.toBeDefined();
   });
 
   it('resolves an explicit ancestor call Base.f()', async () => {
     // A.f(2) = 3
-    const sc = await deployStateful(compileString(MAIN, {
+    const factory = getContractFactory(compileString(MAIN, {
       importResolver: resolverFor(LIB), rootFileId: '/main.scash', forceStateful: true,
-    }));
+    }), await fundedSigner());
+    const sc = await factory.deploy();
     await expect(sc.viaBase(2n, 3n)).resolves.toBeDefined();
   });
 
   it('rejects when the parent-chain result is wrong', async () => {
-    const sc = await deployStateful(compileString(MAIN, {
+    const factory = getContractFactory(compileString(MAIN, {
       importResolver: resolverFor(LIB), rootFileId: '/main.scash', forceStateful: true,
-    }));
+    }), await fundedSigner());
+    const sc = await factory.deploy();
     await expect(sc.viaSuper(2n, 30n)).rejects.toThrow();
   });
 });

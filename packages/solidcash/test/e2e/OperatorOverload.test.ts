@@ -1,42 +1,9 @@
 import { compileString } from 'solidc';
-import {
-  Contract, MockNetworkProvider, TransactionBuilder } from '../../src/index.js';
-import { randomUtxo } from '../../src/utils.js';
-import { createTestProvider, gatherUtxos } from '../test-util.js';
+import { getContractFactory } from '../../src/index.js';
+import { fundedSigner } from '../test-util.js';
 
-// --- Helpers -------------------------------------------------------------
-
-function setupContract(source: string, constructorArgs: any[] = []): {
-  provider: MockNetworkProvider;
-  contract: Contract;
-} {
-  const provider = createTestProvider();
-  const artifact = compileString(source);
-  const contract = new Contract(artifact, constructorArgs, { provider });
-  return { provider, contract };
-}
-
-async function addUtxos(provider: MockNetworkProvider, address: string, count: number = 2): void {
-  for (let i = 0; i < count; i++) {
-    await provider.addUtxo(address, randomUtxo({ satoshis: 10000n }));
-  }
-}
-
-async function sendTx(
-  provider: MockNetworkProvider,
-  contract: Contract,
-  unlocker: ReturnType<Contract['unlock'][string]>,
-): Promise<any> {
-  const to = contract.address;
-  const amount = 1000n;
-  const { utxos, changeAmount } = gatherUtxos(await contract.getUtxos(), { amount });
-
-  return new TransactionBuilder({ provider })
-    .addInputs(utxos, unlocker)
-    .addOutput({ to, amount })
-    .addOutput({ to, amount: changeAmount })
-    .send();
-}
+// forceStateful compiles each contract as a self-poke covenant, so each test can deploy + call
+// directly (`const sc = await getContractFactory(...).deploy(); await sc.<fn>(args)`).
 
 // --- Shared contract source ---------------------------------------------
 
@@ -120,100 +87,100 @@ const OPERATOR_OVERLOAD_CODE = `
     }
   }
 `;
+const artifact = compileString(OPERATOR_OVERLOAD_CODE, { forceStateful: true });
 
 // --- Tests ---------------------------------------------------------------
 
 describe('Operator Overloading - SDK e2e', () => {
   describe('arithmetic operators', () => {
     it('add two Price values', async () => {
-      const { provider, contract } = setupContract(OPERATOR_OVERLOAD_CODE);
-      await addUtxos(provider, contract.address);
-      const tx = await sendTx(provider, contract, contract.unlock.testAdd(100n, 200n));
+      const factory = getContractFactory(artifact, await fundedSigner());
+      const sc = await factory.deploy();
+      const tx = await sc.testAdd(100n, 200n);
       expect(tx.txid).toBeDefined();
     });
 
     it('subtract two Price values', async () => {
-      const { provider, contract } = setupContract(OPERATOR_OVERLOAD_CODE);
-      await addUtxos(provider, contract.address);
-      const tx = await sendTx(provider, contract, contract.unlock.testSub(500n, 200n));
+      const factory = getContractFactory(artifact, await fundedSigner());
+      const sc = await factory.deploy();
+      const tx = await sc.testSub(500n, 200n);
       expect(tx.txid).toBeDefined();
     });
 
     it('multiply two Price values', async () => {
-      const { provider, contract } = setupContract(OPERATOR_OVERLOAD_CODE);
-      await addUtxos(provider, contract.address);
-      const tx = await sendTx(provider, contract, contract.unlock.testMul(10n, 20n));
+      const factory = getContractFactory(artifact, await fundedSigner());
+      const sc = await factory.deploy();
+      const tx = await sc.testMul(10n, 20n);
       expect(tx.txid).toBeDefined();
     });
 
     it('chain arithmetic: a + b + c', async () => {
-      const { provider, contract } = setupContract(OPERATOR_OVERLOAD_CODE);
-      await addUtxos(provider, contract.address);
-      const tx = await sendTx(provider, contract, contract.unlock.testChained(10n, 20n, 30n));
+      const factory = getContractFactory(artifact, await fundedSigner());
+      const sc = await factory.deploy();
+      const tx = await sc.testChained(10n, 20n, 30n);
       expect(tx.txid).toBeDefined();
     });
   });
 
   describe('comparison operators', () => {
     it('equality check passes for equal values', async () => {
-      const { provider, contract } = setupContract(OPERATOR_OVERLOAD_CODE);
-      await addUtxos(provider, contract.address);
-      const tx = await sendTx(provider, contract, contract.unlock.testEquality(42n, 42n));
+      const factory = getContractFactory(artifact, await fundedSigner());
+      const sc = await factory.deploy();
+      const tx = await sc.testEquality(42n, 42n);
       expect(tx.txid).toBeDefined();
     });
 
     it('equality check fails for different values', async () => {
-      const { provider, contract } = setupContract(OPERATOR_OVERLOAD_CODE);
-      await addUtxos(provider, contract.address);
-      const txPromise = sendTx(provider, contract, contract.unlock.testEquality(42n, 99n));
-      await expect(txPromise).rejects.toThrow();
+      const factory = getContractFactory(artifact, await fundedSigner());
+      const sc = await factory.deploy();
+      await expect(sc.testEquality(42n, 99n)).rejects.toThrow();
     });
 
     it('inequality check passes for different values', async () => {
-      const { provider, contract } = setupContract(OPERATOR_OVERLOAD_CODE);
-      await addUtxos(provider, contract.address);
-      const tx = await sendTx(provider, contract, contract.unlock.testInequality(42n, 99n));
+      const factory = getContractFactory(artifact, await fundedSigner());
+      const sc = await factory.deploy();
+      const tx = await sc.testInequality(42n, 99n);
       expect(tx.txid).toBeDefined();
     });
 
     it('less-than comparison in condition (true path)', async () => {
-      const { provider, contract } = setupContract(OPERATOR_OVERLOAD_CODE);
-      await addUtxos(provider, contract.address);
-      const tx = await sendTx(provider, contract, contract.unlock.testLessThan(10n, 20n));
+      const factory = getContractFactory(artifact, await fundedSigner());
+      const sc = await factory.deploy();
+      const tx = await sc.testLessThan(10n, 20n);
       expect(tx.txid).toBeDefined();
     });
 
     it('less-than comparison in condition (false path)', async () => {
-      const { provider, contract } = setupContract(OPERATOR_OVERLOAD_CODE);
-      await addUtxos(provider, contract.address);
-      const tx = await sendTx(provider, contract, contract.unlock.testLessThan(20n, 10n));
+      const factory = getContractFactory(artifact, await fundedSigner());
+      const sc = await factory.deploy();
+      const tx = await sc.testLessThan(20n, 10n);
       expect(tx.txid).toBeDefined();
     });
   });
 
   describe('unary operators', () => {
     it('negate a Price value', async () => {
-      const { provider, contract } = setupContract(OPERATOR_OVERLOAD_CODE);
-      await addUtxos(provider, contract.address);
-      const tx = await sendTx(provider, contract, contract.unlock.testNegate(42n));
+      const factory = getContractFactory(artifact, await fundedSigner());
+      const sc = await factory.deploy();
+      const tx = await sc.testNegate(42n);
       expect(tx.txid).toBeDefined();
     });
   });
 
   describe('mixed types', () => {
     it('UDVT cast to underlying type works alongside overloaded ops', async () => {
-      const { provider, contract } = setupContract(OPERATOR_OVERLOAD_CODE);
-      await addUtxos(provider, contract.address);
-      const tx = await sendTx(provider, contract, contract.unlock.testMixed(100n, 100n));
+      const factory = getContractFactory(artifact, await fundedSigner());
+      const sc = await factory.deploy();
+      const tx = await sc.testMixed(100n, 100n);
       expect(tx.txid).toBeDefined();
     });
   });
 
   describe('complex expressions', () => {
     it('chained add and sub with equality check', async () => {
-      const { provider, contract } = setupContract(OPERATOR_OVERLOAD_CODE);
-      await addUtxos(provider, contract.address);
-      const tx = await sendTx(provider, contract, contract.unlock.testComplexExpr(100n, 50n, 30n));
+      const factory = getContractFactory(artifact, await fundedSigner());
+      const sc = await factory.deploy();
+      const tx = await sc.testComplexExpr(100n, 50n, 30n);
       expect(tx.txid).toBeDefined();
     });
   });
@@ -237,10 +204,10 @@ describe('Operator Overloading - SDK e2e', () => {
         }
       `;
 
-      const { provider, contract } = setupContract(code);
-      await addUtxos(provider, contract.address);
+      const factory = getContractFactory(compileString(code, { forceStateful: true }), await fundedSigner());
+      const sc = await factory.deploy();
       // Just verify it compiles and can be instantiated
-      expect(contract.address).toBeDefined();
+      expect(sc.address).toBeDefined();
     });
 
     it('global using-for works end-to-end', async () => {
@@ -261,9 +228,9 @@ describe('Operator Overloading - SDK e2e', () => {
         }
       `;
 
-      const { provider, contract } = setupContract(code);
-      await addUtxos(provider, contract.address);
-      const tx = await sendTx(provider, contract, contract.unlock.check(100n, 200n));
+      const factory = getContractFactory(compileString(code, { forceStateful: true }), await fundedSigner());
+      const sc = await factory.deploy();
+      const tx = await sc.check(100n, 200n);
       expect(tx.txid).toBeDefined();
     });
   });
@@ -292,9 +259,9 @@ describe('Operator Overloading - SDK e2e', () => {
         }
       `;
 
-      const { provider, contract } = setupContract(code);
-      await addUtxos(provider, contract.address);
-      const tx = await sendTx(provider, contract, contract.unlock.check(10n));
+      const factory = getContractFactory(compileString(code, { forceStateful: true }), await fundedSigner());
+      const sc = await factory.deploy();
+      const tx = await sc.check(10n);
       expect(tx.txid).toBeDefined();
     });
   });

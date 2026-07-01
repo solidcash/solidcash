@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { compileString } from 'solidc';
-import { deployStateful } from '../test-util.js';
+import { getContractFactory } from '../../src/index.js';
+import { fundedSigner } from '../test-util.js';
 
 // bytesN ordering < <= > >=: equal-width fixed bytes compare as unsigned big-endian (Solidity).
 // The contract recomputes each comparison and requires it equals the expected bool, so the spend only
@@ -21,30 +22,35 @@ const B = (...bytes: number[]): Uint8Array => Uint8Array.from(bytes);
 
 describe('bytesN ordering', () => {
   it('orders by value (1 < 2)', async () => {
-    const sc = await deployStateful(artifact);
+    const factory = getContractFactory(artifact, await fundedSigner());
+    const sc = await factory.deploy();
     await expect(sc.cmp(B(0, 0, 0, 1), B(0, 0, 0, 2), true, true, false, false)).resolves.toBeDefined();
   });
 
   // 0x01000000 (big-endian = 16777216) > 0x00000002: proves the leftmost byte is most significant.
   it('treats the leftmost byte as most significant', async () => {
-    const sc = await deployStateful(artifact);
+    const factory = getContractFactory(artifact, await fundedSigner());
+    const sc = await factory.deploy();
     await expect(sc.cmp(B(1, 0, 0, 0), B(0, 0, 0, 2), false, false, true, true)).resolves.toBeDefined();
   });
 
   // 0x80000000 > 0x7FFFFFFF: proves the high bit is treated as magnitude (unsigned), not sign.
   it('compares as unsigned (high bit is magnitude)', async () => {
-    const sc = await deployStateful(artifact);
+    const factory = getContractFactory(artifact, await fundedSigner());
+    const sc = await factory.deploy();
     await expect(sc.cmp(B(0x80, 0, 0, 0), B(0x7f, 0xff, 0xff, 0xff), false, false, true, true)).resolves.toBeDefined();
   });
 
   it('handles equality for <= and >=', async () => {
-    const sc = await deployStateful(artifact);
+    const factory = getContractFactory(artifact, await fundedSigner());
+    const sc = await factory.deploy();
     await expect(sc.cmp(B(0x12, 0x34, 0x56, 0x78), B(0x12, 0x34, 0x56, 0x78), false, true, false, true))
       .resolves.toBeDefined();
   });
 
   it('rejects a wrong expected relation', async () => {
-    const sc = await deployStateful(artifact);
+    const factory = getContractFactory(artifact, await fundedSigner());
+    const sc = await factory.deploy();
     await expect(sc.cmp(B(0, 0, 0, 1), B(0, 0, 0, 2), false, true, false, false)).rejects.toThrow();
   });
 });

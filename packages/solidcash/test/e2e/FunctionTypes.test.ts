@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { compileString } from 'solidc';
-import { deployStateful } from '../test-util.js';
+import { getContractFactory } from '../../src/index.js';
+import { fundedSigner } from '../test-util.js';
 
 // Internal function types (function pointers). A function value is the target's integer functionId;
 // an indirect call is `<functionId> OP_INVOKE`. The contract recomputes via the pointer and requires
@@ -61,42 +62,50 @@ const artifact = compileString(SOURCE, { forceStateful: true });
 
 describe('internal function types', () => {
   it('passes a function name as a callback argument', async () => {
-    const sc = await deployStateful(artifact);
+    const factory = getContractFactory(artifact, await fundedSigner());
+    const sc = await factory.deploy();
     await expect(sc.viaApply(21n, 42n)).resolves.toBeDefined();
   });
 
   it('calls through a function-typed local (default branch)', async () => {
-    const sc = await deployStateful(artifact);
+    const factory = getContractFactory(artifact, await fundedSigner());
+    const sc = await factory.deploy();
     await expect(sc.viaLocal(21n, false, 42n)).resolves.toBeDefined();
   });
 
   it('calls through a function-typed local (reassigned branch)', async () => {
-    const sc = await deployStateful(artifact);
+    const factory = getContractFactory(artifact, await fundedSigner());
+    const sc = await factory.deploy();
     await expect(sc.viaLocal(21n, true, 63n)).resolves.toBeDefined();
   });
 
   it('calls a function pointer returned from another function', async () => {
-    const sc = await deployStateful(artifact);
+    const factory = getContractFactory(artifact, await fundedSigner());
+    const sc = await factory.deploy();
     await expect(sc.viaReturn(21n, true, 63n)).resolves.toBeDefined();
   });
 
   it('discards the result of a statement-form indirect call without corrupting the stack', async () => {
-    const sc = await deployStateful(artifact);
+    const factory = getContractFactory(artifact, await fundedSigner());
+    const sc = await factory.deploy();
     await expect(sc.viaStatement(21n, 42n)).resolves.toBeDefined();
   });
 
   it('dispatches through an array of function pointers (index 0)', async () => {
-    const sc = await deployStateful(artifact);
+    const factory = getContractFactory(artifact, await fundedSigner());
+    const sc = await factory.deploy();
     await expect(sc.dispatch(0n, 21n, 42n)).resolves.toBeDefined();
   });
 
   it('dispatches through an array of function pointers (index 1)', async () => {
-    const sc = await deployStateful(artifact);
+    const factory = getContractFactory(artifact, await fundedSigner());
+    const sc = await factory.deploy();
     await expect(sc.dispatch(1n, 21n, 63n)).resolves.toBeDefined();
   });
 
   it('rejects when the pointer yields the wrong result', async () => {
-    const sc = await deployStateful(artifact);
+    const factory = getContractFactory(artifact, await fundedSigner());
+    const sc = await factory.deploy();
     await expect(sc.viaLocal(21n, false, 63n)).rejects.toThrow();
   });
 

@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { compileString } from 'solidc';
-import { deployStateful } from '../test-util.js';
+import { getContractFactory } from '../../src/index.js';
+import { fundedSigner } from '../test-util.js';
 
 // `x[a:b]` index-range syntax is sugar for `x.slice(a, b)` (byte-identical output).
 const SOURCE = `
@@ -15,12 +16,14 @@ const artifact = compileString(SOURCE, { forceStateful: true });
 
 describe('Index-range slice sugar x[a:b]', () => {
   it('slices the same bytes as .slice() on the VM', async () => {
-    const sc = await deployStateful(artifact);
+    const factory = getContractFactory(artifact, await fundedSigner());
+    const sc = await factory.deploy();
     await expect(sc.check(Uint8Array.from([0x00, 0x11, 0x22, 0x33]))).resolves.toBeDefined();
   });
 
   it('fails when the slice does not match', async () => {
-    const sc = await deployStateful(artifact);
+    const factory = getContractFactory(artifact, await fundedSigner());
+    const sc = await factory.deploy();
     await expect(sc.check(Uint8Array.from([0x00, 0x99, 0x99, 0x33]))).rejects.toThrow();
   });
 });

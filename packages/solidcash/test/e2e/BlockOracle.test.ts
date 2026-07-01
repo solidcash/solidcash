@@ -1,11 +1,13 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import { compileString } from 'solidc';
 import { hexToBin, binToHex } from '@bitauth/libauth';
-import { Contract, StatefulContract, TransactionBuilder, SignatureTemplate, resolveBlockhashCoSpend } from '../../src/index.js';
+import {
+  Contract, StatefulContract, TransactionBuilder, SignatureTemplate, resolveBlockhashCoSpend, getContractFactory,
+} from '../../src/index.js';
 import { randomUtxo } from '../../src/utils.js';
 import { Utxo } from '../../src/interfaces.js';
 import {
-  createTestProvider, createFeeFunder, setupStatefulUtxos, deployStateful,
+  createTestProvider, createFeeFunder, setupStatefulUtxos, fundedSigner,
 } from '../test-util.js';
 import { alicePub, alicePriv, bobPriv, aliceAddress } from '../fixture/vars.js';
 import {
@@ -42,25 +44,35 @@ const LITERAL_SRC = 'contract C() { function f() { require(block.chainid == 0); 
 describe('block.chainid e2e', () => {
   for (const net of NETWORKS) {
     it(`bakes ${net.name} (chainId ${net.chainId}) as ${net.expected} and enforces it on the VM`, async () => {
-      const sc = await deployStateful(compileString(SOURCE, { chainId: net.chainId, forceStateful: true }));
+      const factory = getContractFactory(
+        compileString(SOURCE, { chainId: net.chainId, forceStateful: true }), await fundedSigner(),
+      );
+      const sc = await factory.deploy();
       const tx = await sc.check(BigInt(net.expected));
       expect(tx.txid).toMatch(/^[0-9a-f]{64}$/);
     });
 
     it(`rejects a mismatched chain id for ${net.name}`, async () => {
-      const sc = await deployStateful(compileString(SOURCE, { chainId: net.chainId, forceStateful: true }));
+      const factory = getContractFactory(
+        compileString(SOURCE, { chainId: net.chainId, forceStateful: true }), await fundedSigner(),
+      );
+      const sc = await factory.deploy();
       await expect(sc.check(BigInt(net.expected === 0 ? 1 : 0))).rejects.toThrow();
     });
   }
 
   it('defaults to mainnet (0) when chainId is omitted', async () => {
-    const sc = await deployStateful(compileString(LITERAL_SRC, { forceStateful: true }));
+    const factory = getContractFactory(compileString(LITERAL_SRC, { forceStateful: true }), await fundedSigner());
+    const sc = await factory.deploy();
     const tx = await sc.f();
     expect(tx.txid).toMatch(/^[0-9a-f]{64}$/);
   });
 
   it('a chipnet-compiled contract fails a hardcoded mainnet check (1 != 0)', async () => {
-    const sc = await deployStateful(compileString(LITERAL_SRC, { chainId: 1, forceStateful: true }));
+    const factory = getContractFactory(
+      compileString(LITERAL_SRC, { chainId: 1, forceStateful: true }), await fundedSigner(),
+    );
+    const sc = await factory.deploy();
     await expect(sc.f()).rejects.toThrow();
   });
 });

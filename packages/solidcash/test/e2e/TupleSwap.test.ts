@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { compileString } from 'solidc';
-import { deployStateful } from '../test-util.js';
+import { getContractFactory } from '../../src/index.js';
+import { fundedSigner } from '../test-util.js';
 
 // Tuple assignment to existing lvalues + swap. RHS is fully evaluated before any assignment, so swaps
 // and self-references are clobber-safe. The contract requires the post-assignment values, so the spend
@@ -48,27 +49,32 @@ const artifact = compileString(SOURCE, { forceStateful: true });
 
 describe('tuple assignment to existing lvalues', () => {
   it('swaps the top two stack vars (OP_SWAP fast-path)', async () => {
-    const sc = await deployStateful(artifact);
+    const factory = getContractFactory(artifact, await fundedSigner());
+    const sc = await factory.deploy();
     await expect(sc.swapTopTwo(10n, 20n)).resolves.toBeDefined();
   });
 
   it('swaps vars below another local (roll-based fallback)', async () => {
-    const sc = await deployStateful(artifact);
+    const factory = getContractFactory(artifact, await fundedSigner());
+    const sc = await factory.deploy();
     await expect(sc.swapDeep(10n, 20n)).resolves.toBeDefined();
   });
 
   it('rotates three existing lvalues', async () => {
-    const sc = await deployStateful(artifact);
+    const factory = getContractFactory(artifact, await fundedSigner());
+    const sc = await factory.deploy();
     await expect(sc.rotate(1n, 2n, 3n)).resolves.toBeDefined();
   });
 
   it('assigns existing lvalues from arithmetic using old values', async () => {
-    const sc = await deployStateful(artifact);
+    const factory = getContractFactory(artifact, await fundedSigner());
+    const sc = await factory.deploy();
     await expect(sc.assignExisting(20n, 10n)).resolves.toBeDefined();
   });
 
   it('assigns existing lvalues from a split', async () => {
-    const sc = await deployStateful(artifact);
+    const factory = getContractFactory(artifact, await fundedSigner());
+    const sc = await factory.deploy();
     await expect(sc.fromSplit(Uint8Array.from([0x12, 0x34, 0x56, 0x78]))).resolves.toBeDefined();
   });
 });

@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { compileString } from 'solidc';
-import { deployStateful } from '../test-util.js';
+import { getContractFactory } from '../../src/index.js';
+import { fundedSigner } from '../test-util.js';
 
 // require(cond, CustomError(args)): reverts with the custom error if cond is false. On BCH the
 // error is tooling metadata (no revert data); the runtime behaviour is require(cond).
@@ -18,11 +19,13 @@ const artifact = compileString(SOURCE, { forceStateful: true });
 
 describe('require with custom error', () => {
   it('passes when the condition holds', async () => {
-    const sc = await deployStateful(artifact);
+    const factory = getContractFactory(artifact, await fundedSigner());
+    const sc = await factory.deploy();
     await expect(sc.f(15n)).resolves.toBeDefined();
   });
   it('fails when the condition is false', async () => {
-    const sc = await deployStateful(artifact);
+    const factory = getContractFactory(artifact, await fundedSigner());
+    const sc = await factory.deploy();
     await expect(sc.f(5n)).rejects.toThrow();
   });
 });

@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { compileString } from 'solidc';
-import { deployStateful } from '../test-util.js';
+import { getContractFactory } from '../../src/index.js';
+import { fundedSigner } from '../test-util.js';
 
 // addmod(x,y,k) = (x+y)%k, mulmod(x,y,k) = (x*y)%k. The contract recomputes the result and requires
 // it equals the builtin, so the spend only succeeds if both builtins are correct on the VM.
@@ -18,7 +19,8 @@ const artifact = compileString(SOURCE, { forceStateful: true });
 
 describe('addmod / mulmod', () => {
   it('computes (x+y)%k and (x*y)%k on the VM', async () => {
-    const sc = await deployStateful(artifact);
+    const factory = getContractFactory(artifact, await fundedSigner());
+    const sc = await factory.deploy();
     await expect(sc.check(7n, 5n, 6n)).resolves.toBeDefined();
   });
 });

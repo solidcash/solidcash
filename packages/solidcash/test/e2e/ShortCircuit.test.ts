@@ -1,11 +1,12 @@
 import { describe, it, expect } from 'vitest';
 import { compileString } from 'solidc';
-import { deployStateful } from '../test-util.js';
+import { getContractFactory } from '../../src/index.js';
+import { fundedSigner } from '../test-util.js';
 
 // `&&` / `||` must short-circuit (Solidity semantics): the right operand is only evaluated when
 // needed. Each function's RHS divides by the argument, which FAILS the script (div-by-zero) if the
 // VM ever evaluates it. Spending with the short-circuiting argument must therefore succeed.
-// Compiled with { forceStateful: true } so each test can deploy + call directly (`await sc.<fn>(arg)`).
+// Compiled with { forceStateful: true } so it deploys via the ContractFactory and calls directly.
 const SOURCE = `
 contract ShortCircuit() {
     function spendOr(int x) {
@@ -23,17 +24,20 @@ const artifact = compileString(SOURCE, { forceStateful: true });
 
 describe('Short-circuit && / ||', () => {
   it('|| skips the right operand (would div-by-zero) when the left is true', async () => {
-    const sc = await deployStateful(artifact);
+    const factory = getContractFactory(artifact, await fundedSigner());
+    const sc = await factory.deploy();
     await expect(sc.spendOr(0n)).resolves.toBeDefined();
   });
 
   it('|| still evaluates the right operand when the left is false', async () => {
-    const sc = await deployStateful(artifact);
+    const factory = getContractFactory(artifact, await fundedSigner());
+    const sc = await factory.deploy();
     await expect(sc.spendOr(5n)).resolves.toBeDefined();
   });
 
   it('&& skips the right operand (would div-by-zero) when the left is false', async () => {
-    const sc = await deployStateful(artifact);
+    const factory = getContractFactory(artifact, await fundedSigner());
+    const sc = await factory.deploy();
     await expect(sc.spendAnd(0n)).resolves.toBeDefined();
   });
 });

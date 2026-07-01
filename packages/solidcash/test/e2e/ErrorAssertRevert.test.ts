@@ -1,6 +1,6 @@
 import { compileString } from 'solidc';
-import { SignatureTemplate } from '../../src/index.js';
-import { deployStateful } from '../test-util.js';
+import { SignatureTemplate, getContractFactory } from '../../src/index.js';
+import { fundedSigner } from '../test-util.js';
 import { alicePriv, alicePub, bobPriv } from '../fixture/vars.js';
 
 // Each test compiles its inline source with { forceStateful: true } and deploys directly, so the spend is
@@ -85,7 +85,8 @@ describe('Error, Assert, and Revert - SDK e2e', () => {
         }
       `;
 
-      const sc = await deployStateful(compileString(code, { forceStateful: true }), [alicePub]);
+      const factory = getContractFactory(compileString(code, { forceStateful: true }), await fundedSigner());
+      const sc = await factory.deploy(alicePub);
       const tx = await sc.check(new SignatureTemplate(alicePriv), true);
       expect(tx.txid).toBeDefined();
     });
@@ -100,7 +101,8 @@ describe('Error, Assert, and Revert - SDK e2e', () => {
         }
       `;
 
-      const sc = await deployStateful(compileString(code, { forceStateful: true }), [alicePub]);
+      const factory = getContractFactory(compileString(code, { forceStateful: true }), await fundedSigner());
+      const sc = await factory.deploy(alicePub);
       const txPromise = sc.check(new SignatureTemplate(alicePriv), false);
       await expect(txPromise).rejects.toThrow();
     });
@@ -115,7 +117,8 @@ describe('Error, Assert, and Revert - SDK e2e', () => {
         }
       `;
 
-      const sc = await deployStateful(compileString(code, { forceStateful: true }), [alicePub]);
+      const factory = getContractFactory(compileString(code, { forceStateful: true }), await fundedSigner());
+      const sc = await factory.deploy(alicePub);
       const tx = await sc.check(new SignatureTemplate(alicePriv), 5n);
       expect(tx.txid).toBeDefined();
     });
@@ -130,7 +133,8 @@ describe('Error, Assert, and Revert - SDK e2e', () => {
         }
       `;
 
-      const sc = await deployStateful(compileString(code, { forceStateful: true }), [alicePub]);
+      const factory = getContractFactory(compileString(code, { forceStateful: true }), await fundedSigner());
+      const sc = await factory.deploy(alicePub);
       const txPromise = sc.check(new SignatureTemplate(alicePriv), 0n);
       await expect(txPromise).rejects.toThrow();
     });
@@ -151,7 +155,8 @@ describe('Error, Assert, and Revert - SDK e2e', () => {
         }
       `;
 
-      const sc = await deployStateful(compileString(code, { forceStateful: true }), [alicePub]);
+      const factory = getContractFactory(compileString(code, { forceStateful: true }), await fundedSigner());
+      const sc = await factory.deploy(alicePub);
       const txPromise = sc.fail(new SignatureTemplate(alicePriv));
       await expect(txPromise).rejects.toThrow();
     });
@@ -166,7 +171,8 @@ describe('Error, Assert, and Revert - SDK e2e', () => {
         }
       `;
 
-      const sc = await deployStateful(compileString(code, { forceStateful: true }), [alicePub]);
+      const factory = getContractFactory(compileString(code, { forceStateful: true }), await fundedSigner());
+      const sc = await factory.deploy(alicePub);
       const txPromise = sc.fail(new SignatureTemplate(alicePriv));
       await expect(txPromise).rejects.toThrow();
     });
@@ -186,7 +192,8 @@ describe('Error, Assert, and Revert - SDK e2e', () => {
       `;
 
       // amount > balance triggers revert
-      const sc = await deployStateful(compileString(code, { forceStateful: true }), [alicePub]);
+      const factory = getContractFactory(compileString(code, { forceStateful: true }), await fundedSigner());
+      const sc = await factory.deploy(alicePub);
       const txPromise = sc.withdraw(new SignatureTemplate(alicePriv), 100n, 50n);
       await expect(txPromise).rejects.toThrow();
     });
@@ -206,7 +213,8 @@ describe('Error, Assert, and Revert - SDK e2e', () => {
       `;
 
       // amount <= balance, revert is not reached
-      const sc = await deployStateful(compileString(code, { forceStateful: true }), [alicePub]);
+      const factory = getContractFactory(compileString(code, { forceStateful: true }), await fundedSigner());
+      const sc = await factory.deploy(alicePub);
       const tx = await sc.withdraw(new SignatureTemplate(alicePriv), 30n, 50n);
       expect(tx.txid).toBeDefined();
     });
@@ -226,12 +234,14 @@ describe('Error, Assert, and Revert - SDK e2e', () => {
       `;
 
       // allowed = false triggers revert
-      const scDenied = await deployStateful(compileString(code, { forceStateful: true }), [alicePub]);
+      const factoryDenied = getContractFactory(compileString(code, { forceStateful: true }), await fundedSigner());
+      const scDenied = await factoryDenied.deploy(alicePub);
       const txPromise = scDenied.restricted(new SignatureTemplate(alicePriv), false);
       await expect(txPromise).rejects.toThrow();
 
       // allowed = true passes
-      const scAllowed = await deployStateful(compileString(code, { forceStateful: true }), [alicePub]);
+      const factoryAllowed = getContractFactory(compileString(code, { forceStateful: true }), await fundedSigner());
+      const scAllowed = await factoryAllowed.deploy(alicePub);
       const tx = await scAllowed.restricted(new SignatureTemplate(alicePriv), true);
       expect(tx.txid).toBeDefined();
     });
@@ -275,49 +285,57 @@ describe('Error, Assert, and Revert - SDK e2e', () => {
     `;
 
     it('checkBalance succeeds when amount <= balance', async () => {
-      const sc = await deployStateful(compileString(combinedCode, { forceStateful: true }), [alicePub]);
+      const factory = getContractFactory(compileString(combinedCode, { forceStateful: true }), await fundedSigner());
+      const sc = await factory.deploy(alicePub);
       const tx = await sc.checkBalance(new SignatureTemplate(alicePriv), 10n, 100n);
       expect(tx.txid).toBeDefined();
     });
 
     it('checkBalance fails when amount > balance (revert)', async () => {
-      const sc = await deployStateful(compileString(combinedCode, { forceStateful: true }), [alicePub]);
+      const factory = getContractFactory(compileString(combinedCode, { forceStateful: true }), await fundedSigner());
+      const sc = await factory.deploy(alicePub);
       const txPromise = sc.checkBalance(new SignatureTemplate(alicePriv), 100n, 10n);
       await expect(txPromise).rejects.toThrow();
     });
 
     it('checkBalance fails when amount <= 0 (assert)', async () => {
-      const sc = await deployStateful(compileString(combinedCode, { forceStateful: true }), [alicePub]);
+      const factory = getContractFactory(compileString(combinedCode, { forceStateful: true }), await fundedSigner());
+      const sc = await factory.deploy(alicePub);
       const txPromise = sc.checkBalance(new SignatureTemplate(alicePriv), 0n, 100n);
       await expect(txPromise).rejects.toThrow();
     });
 
     it('checkBalance fails with wrong signature', async () => {
-      const sc = await deployStateful(compileString(combinedCode, { forceStateful: true }), [alicePub]);
+      const factory = getContractFactory(compileString(combinedCode, { forceStateful: true }), await fundedSigner());
+      const sc = await factory.deploy(alicePub);
       const txPromise = sc.checkBalance(new SignatureTemplate(bobPriv), 10n, 100n);
       await expect(txPromise).rejects.toThrow();
     });
 
     it('failAlways always fails', async () => {
-      const sc = await deployStateful(compileString(combinedCode, { forceStateful: true }), [alicePub]);
+      const factory = getContractFactory(compileString(combinedCode, { forceStateful: true }), await fundedSigner());
+      const sc = await factory.deploy(alicePub);
       const txPromise = sc.failAlways(new SignatureTemplate(alicePriv));
       await expect(txPromise).rejects.toThrow();
     });
 
     it('failEmpty always fails', async () => {
-      const sc = await deployStateful(compileString(combinedCode, { forceStateful: true }), [alicePub]);
+      const factory = getContractFactory(compileString(combinedCode, { forceStateful: true }), await fundedSigner());
+      const sc = await factory.deploy(alicePub);
       const txPromise = sc.failEmpty(new SignatureTemplate(alicePriv));
       await expect(txPromise).rejects.toThrow();
     });
 
     it('simpleAssert(true) succeeds', async () => {
-      const sc = await deployStateful(compileString(combinedCode, { forceStateful: true }), [alicePub]);
+      const factory = getContractFactory(compileString(combinedCode, { forceStateful: true }), await fundedSigner());
+      const sc = await factory.deploy(alicePub);
       const tx = await sc.simpleAssert(new SignatureTemplate(alicePriv), true);
       expect(tx.txid).toBeDefined();
     });
 
     it('simpleAssert(false) fails', async () => {
-      const sc = await deployStateful(compileString(combinedCode, { forceStateful: true }), [alicePub]);
+      const factory = getContractFactory(compileString(combinedCode, { forceStateful: true }), await fundedSigner());
+      const sc = await factory.deploy(alicePub);
       const txPromise = sc.simpleAssert(new SignatureTemplate(alicePriv), false);
       await expect(txPromise).rejects.toThrow();
     });

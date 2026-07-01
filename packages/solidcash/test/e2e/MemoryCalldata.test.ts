@@ -1,5 +1,6 @@
 import { compileString } from 'solidc';
-import { deployStateful } from '../test-util.js';
+import { getContractFactory } from '../../src/index.js';
+import { fundedSigner } from '../test-util.js';
 
 const MEMORY_CALLDATA_CONTRACT = `
 contract MemoryCalldata() {
@@ -18,23 +19,35 @@ describe('MemoryCalldata', () => {
 
   describe('test', () => {
     it('should succeed with valid data and positive value', async () => {
-      const sc = await deployStateful(compileString(MEMORY_CALLDATA_CONTRACT, { forceStateful: true }));
+      const factory = getContractFactory(
+        compileString(MEMORY_CALLDATA_CONTRACT, { forceStateful: true }), await fundedSigner(),
+      );
+      const sc = await factory.deploy();
       const tx = await sc.test(new Uint8Array([1, 2, 3]), 100n);
       expect(tx.txid).toBeDefined();
     });
 
     it('should fail with empty data (data.length > 0 fails)', async () => {
-      const sc = await deployStateful(compileString(MEMORY_CALLDATA_CONTRACT, { forceStateful: true }));
+      const factory = getContractFactory(
+        compileString(MEMORY_CALLDATA_CONTRACT, { forceStateful: true }), await fundedSigner(),
+      );
+      const sc = await factory.deploy();
       await expect(sc.test(new Uint8Array([]), 100n)).rejects.toThrow();
     });
 
     it('should fail with non-positive value (value > 0 fails)', async () => {
-      const sc = await deployStateful(compileString(MEMORY_CALLDATA_CONTRACT, { forceStateful: true }));
+      const factory = getContractFactory(
+        compileString(MEMORY_CALLDATA_CONTRACT, { forceStateful: true }), await fundedSigner(),
+      );
+      const sc = await factory.deploy();
       await expect(sc.test(new Uint8Array([1]), 0n)).rejects.toThrow();
     });
 
     it('should fail with negative value', async () => {
-      const sc = await deployStateful(compileString(MEMORY_CALLDATA_CONTRACT, { forceStateful: true }));
+      const factory = getContractFactory(
+        compileString(MEMORY_CALLDATA_CONTRACT, { forceStateful: true }), await fundedSigner(),
+      );
+      const sc = await factory.deploy();
       await expect(sc.test(new Uint8Array([1]), -5n)).rejects.toThrow();
     });
   });

@@ -1,9 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { compileString } from 'solidc';
 import { ResolvedImport } from '@solidcash/utils';
-import { Contract, MockNetworkProvider, TransactionBuilder } from '../../src/index.js';
-import { randomUtxo } from '../../src/utils.js';
-import { createTestProvider, gatherUtxos } from '../test-util.js';
+import { getContractFactory } from '../../src/index.js';
+import { fundedSigner } from '../test-util.js';
 
 // C3 linearization. In a diamond (D is B, C ; B is A ; C is A) the MRO is [D, B, C, A], so `super`
 // in B must reach the *sibling* C before the shared ancestor A - cooperative super. The accumulated
@@ -55,27 +54,25 @@ contract D is B, C {
 }
 `;
 
-async function spendDiamond(x: bigint, expected: bigint): Promise<unknown> {
-  const provider: MockNetworkProvider = createTestProvider();
-  const artifact = compileString(DIAMOND, { importResolver: resolverFor(FILES), rootFileId: '/main.scash' });
-  const contract = new Contract(artifact, [], { provider });
-  await provider.addUtxo(contract.address, randomUtxo({ satoshis: 10000n }));
-  const amount = 1000n;
-  const { utxos, changeAmount } = gatherUtxos(await contract.getUtxos(), { amount });
-  return new TransactionBuilder({ provider })
-    .addInputs(utxos, contract.unlock.run(x, expected))
-    .addOutput({ to: contract.address, amount })
-    .addOutput({ to: contract.address, amount: changeAmount })
-    .send();
-}
-
 describe('C3 linearization', () => {
   it('cooperative super visits the sibling branch (C3 MRO D->B->C->A)', async () => {
-    await expect(spendDiamond(0n, 1111n)).resolves.toBeDefined();
+    const factory = getContractFactory(compileString(DIAMOND, {
+      importResolver: resolverFor(FILES),
+      rootFileId: '/main.scash',
+      forceStateful: true,
+    }), await fundedSigner());
+    const sc = await factory.deploy();
+    await expect(sc.run(0n, 1111n)).resolves.toBeDefined();
   });
 
   it('rejects the depth-first result that skips the sibling', async () => {
-    await expect(spendDiamond(0n, 1011n)).rejects.toThrow();
+    const factory = getContractFactory(compileString(DIAMOND, {
+      importResolver: resolverFor(FILES),
+      rootFileId: '/main.scash',
+      forceStateful: true,
+    }), await fundedSigner());
+    const sc = await factory.deploy();
+    await expect(sc.run(0n, 1011n)).rejects.toThrow();
   });
 
   it('rejects an inheritance hierarchy with no valid C3 linearization', () => {

@@ -6,15 +6,14 @@ import {
   encodeTransaction,
 } from '@bitauth/libauth';
 import { createTxVerifier } from '@mem-cash/validation';
-import { buildInitialStateCommitments, type StateLayout, type Artifact } from '@solidcash/utils';
+import { buildInitialStateCommitments, type StateLayout } from '@solidcash/utils';
 import { Output, Network, Utxo } from '../src/interfaces.js';
 import {
-  Contract, TransactionBuilder, StatefulContract,
-  type ConnectedStatefulContract, type ConstructorArgument,
+  Contract, TransactionBuilder, Signer,
 } from '../src/index.js';
 import { MockNetworkProvider, RegtestNetworkProvider } from '../src/index.js';
 import { getDataNftAddress, getTokenContainerAddress } from '../src/stateful/covenant-helpers.js';
-import { network as defaultNetwork } from './fixture/vars.js';
+import { network as defaultNetwork, alicePriv } from './fixture/vars.js';
 import { generateLibauthSourceOutputs, getNetworkPrefix, libauthOutputToSolidCashOutput } from '../src/utils.js';
 import { utxoComparator } from '../src/utils.js';
 
@@ -214,34 +213,22 @@ export function createTestProvider(): MockNetworkProvider | RegtestNetworkProvid
   return new MockNetworkProvider();
 }
 
+let fundingNonce = 0x1000;
+
 /**
- * Deploy a stateful (or forceStateful) contract for a test and return a ready-to-use StatefulContract, so a
- * test can go straight to `await sc.fn(args)`. Signature mirrors hardhat-ethers `deployContract(name, args?,
- * opts?)`: positional constructor args, then options. Collapses the compile -> new Contract ->
- * setupStatefulUtxos -> withCategory -> new StatefulContract boilerplate to one call. A fresh
- * MockNetworkProvider is created unless one is passed (reachable afterwards as `sc.provider`).
- *
- * The SDK's `StatefulContract.deploy(artifact, args, opts)` is the ethers/hardhat-equivalent REAL genesis
- * deploy (funding UTXO + tx); this helper is the fast mock-seed for unit tests, `initialState` in place of a
- * Solidity constructor (BCH state lives in the data NFT).
+ * A Signer on a fresh MockNetworkProvider seeded with `count` genesis-valid funding UTXO(s) (vout 0, token-free)
+ * - the test analogue of hardhat's pre-funded `getSigners()`. Use as the runner for a ContractFactory:
+ * `const sc = await getContractFactory(artifact, await fundedSigner()).deploy(...)`. Each funding UTXO backs one
+ * `factory.deploy()` (its txid becomes the token category); pass `count > 1` for a test that deploys repeatedly.
  */
-export async function deployStateful<T extends Artifact>(
-  artifact: T,
-  args: ConstructorArgument[] = [],
-  opts: {
-    provider?: MockNetworkProvider | RegtestNetworkProvider;
-    initialState?: Record<string, any>;
-  } = {},
-): Promise<ConnectedStatefulContract<T>> {
-  const provider = opts.provider ?? createTestProvider();
-  const contract = new Contract(artifact, args as never[], { provider });
-  const { categoryId } = await setupStatefulUtxos(
-    provider, contract, artifact.stateLayout!, opts.initialState ?? {}, { saltContract: true },
-  );
-  const address = contract.withCategory(hexToBin(categoryId)).address;
-  return new StatefulContract(
-    address, artifact, provider, { constructorArgs: args },
-  ) as ConnectedStatefulContract<T>;
+export async function fundedSigner(count = 1, satoshis = 1_000_000n): Promise<Signer> {
+  const provider = createTestProvider();
+  const signer = new Signer(alicePriv, provider);
+  for (let i = 0; i < count; i++) {
+    const txid = (fundingNonce++).toString(16).padStart(64, '0');
+    await provider.addUtxo(signer.getAddress(), { txid, vout: 0, satoshis });
+  }
+  return signer;
 }
 
 export interface StatefulUtxoSetup {

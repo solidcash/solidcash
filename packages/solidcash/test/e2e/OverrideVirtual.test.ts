@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { compileString } from 'solidc';
 import { ResolvedImport } from '@solidcash/utils';
-import { deployStateful } from '../test-util.js';
+import { getContractFactory } from '../../src/index.js';
+import { fundedSigner } from '../test-util.js';
 
 // Meaningful `virtual` (a function must be virtual to be overridden) and the explicit `override(A, B)`
 // base list (must name ancestor contracts that declare the function).
@@ -55,11 +56,12 @@ contract D is B, C {
 // forceStateful: true so the spend is the short `await sc.run(...)` self-poke covenant (no dummy state).
 describe('virtual + override(A, B)', () => {
   it('compiles and runs an explicit override(B, C) over both diamond bases', async () => {
-    const sc = await deployStateful(compileString(DIAMOND, {
+    const factory = getContractFactory(compileString(DIAMOND, {
       importResolver: resolverFor(DIAMOND_FILES),
       rootFileId: '/main.scash',
       forceStateful: true,
-    }));
+    }), await fundedSigner());
+    const sc = await factory.deploy();
     await expect(sc.run(0n, 7n)).resolves.toBeDefined();
   });
 

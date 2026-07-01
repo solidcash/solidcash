@@ -1,9 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import { compileString } from 'solidc';
-import { deployStateful } from '../test-util.js';
+import { getContractFactory } from '../../src/index.js';
+import { fundedSigner } from '../test-util.js';
 
 // forceStateful compiles each contract as a self-poke covenant, so each test can deploy + call
-// directly (`const sc = await deployStateful(...); await sc.check(args)`).
+// directly (`const sc = await getContractFactory(...).deploy(); await sc.check(args)`).
 
 describe('Switch Statement - SDK e2e', () => {
   describe('basic case matching', () => {
@@ -25,31 +26,36 @@ describe('Switch Statement - SDK e2e', () => {
     `;
 
     it('matches case 1', async () => {
-      const sc = await deployStateful(compileString(code, { forceStateful: true }));
+      const factory = getContractFactory(compileString(code, { forceStateful: true }), await fundedSigner());
+      const sc = await factory.deploy();
       const tx = await sc.check(1n);
       expect(tx.txid).toBeDefined();
     });
 
     it('matches case 2', async () => {
-      const sc = await deployStateful(compileString(code, { forceStateful: true }));
+      const factory = getContractFactory(compileString(code, { forceStateful: true }), await fundedSigner());
+      const sc = await factory.deploy();
       const tx = await sc.check(2n);
       expect(tx.txid).toBeDefined();
     });
 
     it('matches case 3', async () => {
-      const sc = await deployStateful(compileString(code, { forceStateful: true }));
+      const factory = getContractFactory(compileString(code, { forceStateful: true }), await fundedSigner());
+      const sc = await factory.deploy();
       const tx = await sc.check(3n);
       expect(tx.txid).toBeDefined();
     });
 
     it('falls to default when no case matches', async () => {
-      const sc = await deployStateful(compileString(code, { forceStateful: true }));
+      const factory = getContractFactory(compileString(code, { forceStateful: true }), await fundedSigner());
+      const sc = await factory.deploy();
       const tx = await sc.check(99n);
       expect(tx.txid).toBeDefined();
     });
 
     it('default fails require for wrong value', async () => {
-      const sc = await deployStateful(compileString(code, { forceStateful: true }));
+      const factory = getContractFactory(compileString(code, { forceStateful: true }), await fundedSigner());
+      const sc = await factory.deploy();
       await expect(sc.check(50n)).rejects.toThrow();
     });
   });
@@ -71,7 +77,8 @@ describe('Switch Statement - SDK e2e', () => {
       `;
 
       // action=5 doesn't match any case, switch is no-op, require(5 >= 0) passes
-      const sc = await deployStateful(compileString(code, { forceStateful: true }));
+      const factory = getContractFactory(compileString(code, { forceStateful: true }), await fundedSigner());
+      const sc = await factory.deploy();
       const tx = await sc.check(5n);
       expect(tx.txid).toBeDefined();
     });
@@ -91,7 +98,8 @@ describe('Switch Statement - SDK e2e', () => {
         }
       `;
 
-      const sc = await deployStateful(compileString(code, { forceStateful: true }));
+      const factory = getContractFactory(compileString(code, { forceStateful: true }), await fundedSigner());
+      const sc = await factory.deploy();
       const tx = await sc.check(1n);
       expect(tx.txid).toBeDefined();
     });
@@ -114,7 +122,8 @@ describe('Switch Statement - SDK e2e', () => {
         }
       `;
 
-      const sc = await deployStateful(compileString(code, { forceStateful: true }));
+      const factory = getContractFactory(compileString(code, { forceStateful: true }), await fundedSigner());
+      const sc = await factory.deploy();
       const tx1 = await sc.check(15n);
       expect(tx1.txid).toBeDefined();
     });
@@ -135,7 +144,8 @@ describe('Switch Statement - SDK e2e', () => {
         }
       `;
 
-      const sc = await deployStateful(compileString(code, { forceStateful: true }));
+      const factory = getContractFactory(compileString(code, { forceStateful: true }), await fundedSigner());
+      const sc = await factory.deploy();
       const tx = await sc.check(40n);
       expect(tx.txid).toBeDefined();
     });
@@ -160,11 +170,13 @@ describe('Switch Statement - SDK e2e', () => {
         }
       `;
 
-      const sc1 = await deployStateful(compileString(code, { forceStateful: true }));
+      const factory1 = getContractFactory(compileString(code, { forceStateful: true }), await fundedSigner());
+      const sc1 = await factory1.deploy();
       const tx1 = await sc1.check(1n);
       expect(tx1.txid).toBeDefined();
 
-      const sc2 = await deployStateful(compileString(code, { forceStateful: true }));
+      const factory2 = getContractFactory(compileString(code, { forceStateful: true }), await fundedSigner());
+      const sc2 = await factory2.deploy();
       const tx2 = await sc2.check(2n);
       expect(tx2.txid).toBeDefined();
     });
@@ -189,7 +201,8 @@ describe('Switch Statement - SDK e2e', () => {
         }
       `;
 
-      const sc = await deployStateful(compileString(code, { forceStateful: true }));
+      const factory = getContractFactory(compileString(code, { forceStateful: true }), await fundedSigner());
+      const sc = await factory.deploy();
       const tx = await sc.check(2n, 20n);
       expect(tx.txid).toBeDefined();
     });
@@ -210,7 +223,8 @@ describe('Switch Statement - SDK e2e', () => {
         }
       `;
 
-      const sc = await deployStateful(compileString(code, { forceStateful: true }));
+      const factory = getContractFactory(compileString(code, { forceStateful: true }), await fundedSigner());
+      const sc = await factory.deploy();
       await expect(sc.check(2n, 99n)).rejects.toThrow();
     });
   });
@@ -232,7 +246,8 @@ describe('Switch Statement - SDK e2e', () => {
         }
       `;
 
-      const sc = await deployStateful(compileString(code, { forceStateful: true }));
+      const factory = getContractFactory(compileString(code, { forceStateful: true }), await fundedSigner());
+      const sc = await factory.deploy();
       const tx = await sc.check(5n);
       expect(tx.txid).toBeDefined();
     });
@@ -253,11 +268,13 @@ describe('Switch Statement - SDK e2e', () => {
         }
       `;
 
-      const sc1 = await deployStateful(compileString(code, { forceStateful: true }));
+      const factory1 = getContractFactory(compileString(code, { forceStateful: true }), await fundedSigner());
+      const sc1 = await factory1.deploy();
       const tx1 = await sc1.check(1n);
       expect(tx1.txid).toBeDefined();
 
-      const sc2 = await deployStateful(compileString(code, { forceStateful: true }));
+      const factory2 = getContractFactory(compileString(code, { forceStateful: true }), await fundedSigner());
+      const sc2 = await factory2.deploy();
       const tx2 = await sc2.check(42n);
       expect(tx2.txid).toBeDefined();
     });
@@ -279,7 +296,8 @@ describe('Switch Statement - SDK e2e', () => {
         }
       `;
 
-      const sc = await deployStateful(compileString(code, { forceStateful: true }));
+      const factory = getContractFactory(compileString(code, { forceStateful: true }), await fundedSigner());
+      const sc = await factory.deploy();
       const tx = await sc.check(true);
       expect(tx.txid).toBeDefined();
     });

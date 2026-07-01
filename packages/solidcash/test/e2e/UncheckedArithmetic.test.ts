@@ -1,8 +1,9 @@
 import { compileString } from 'solidc';
-import { deployStateful } from '../test-util.js';
+import { getContractFactory } from '../../src/index.js';
+import { fundedSigner } from '../test-util.js';
 
 // forceStateful compiles each contract as a self-poke covenant, so each test can deploy + call
-// directly (`const sc = await deployStateful(...); await sc.check(args)`).
+// directly (`const sc = await getContractFactory(...).deploy(); await sc.check(args)`).
 
 describe('Unchecked Arithmetic - SDK e2e', () => {
   describe('unsigned overflow wrapping', () => {
@@ -18,7 +19,8 @@ describe('Unchecked Arithmetic - SDK e2e', () => {
         }
       `;
 
-      const sc = await deployStateful(compileString(code, { forceStateful: true }));
+      const factory = getContractFactory(compileString(code, { forceStateful: true }), await fundedSigner());
+      const sc = await factory.deploy();
       const tx = await sc.check();
       expect(tx.txid).toBeDefined();
     });
@@ -35,7 +37,8 @@ describe('Unchecked Arithmetic - SDK e2e', () => {
         }
       `;
 
-      const sc = await deployStateful(compileString(code, { forceStateful: true }));
+      const factory = getContractFactory(compileString(code, { forceStateful: true }), await fundedSigner());
+      const sc = await factory.deploy();
       const tx = await sc.check();
       expect(tx.txid).toBeDefined();
     });
@@ -54,7 +57,8 @@ describe('Unchecked Arithmetic - SDK e2e', () => {
         }
       `;
 
-      const sc = await deployStateful(compileString(code, { forceStateful: true }));
+      const factory = getContractFactory(compileString(code, { forceStateful: true }), await fundedSigner());
+      const sc = await factory.deploy();
       const tx = await sc.check();
       expect(tx.txid).toBeDefined();
     });
@@ -71,7 +75,8 @@ describe('Unchecked Arithmetic - SDK e2e', () => {
         }
       `;
 
-      const sc = await deployStateful(compileString(code, { forceStateful: true }));
+      const factory = getContractFactory(compileString(code, { forceStateful: true }), await fundedSigner());
+      const sc = await factory.deploy();
       const tx = await sc.check();
       expect(tx.txid).toBeDefined();
     });
@@ -90,7 +95,8 @@ describe('Unchecked Arithmetic - SDK e2e', () => {
         }
       `;
 
-      const sc = await deployStateful(compileString(code, { forceStateful: true }));
+      const factory = getContractFactory(compileString(code, { forceStateful: true }), await fundedSigner());
+      const sc = await factory.deploy();
       const tx = await sc.check();
       expect(tx.txid).toBeDefined();
     });
@@ -107,7 +113,8 @@ describe('Unchecked Arithmetic - SDK e2e', () => {
         }
       `;
 
-      const sc = await deployStateful(compileString(code, { forceStateful: true }));
+      const factory = getContractFactory(compileString(code, { forceStateful: true }), await fundedSigner());
+      const sc = await factory.deploy();
       const tx = await sc.check();
       expect(tx.txid).toBeDefined();
     });
@@ -126,7 +133,8 @@ describe('Unchecked Arithmetic - SDK e2e', () => {
         }
       `;
 
-      const sc = await deployStateful(compileString(code, { forceStateful: true }));
+      const factory = getContractFactory(compileString(code, { forceStateful: true }), await fundedSigner());
+      const sc = await factory.deploy();
       const tx = await sc.check();
       expect(tx.txid).toBeDefined();
     });
@@ -145,7 +153,8 @@ describe('Unchecked Arithmetic - SDK e2e', () => {
         }
       `;
 
-      const sc = await deployStateful(compileString(code, { forceStateful: true }));
+      const factory = getContractFactory(compileString(code, { forceStateful: true }), await fundedSigner());
+      const sc = await factory.deploy();
       const tx = await sc.check();
       expect(tx.txid).toBeDefined();
     });
@@ -162,7 +171,8 @@ describe('Unchecked Arithmetic - SDK e2e', () => {
         }
       `;
 
-      const sc = await deployStateful(compileString(code, { forceStateful: true }));
+      const factory = getContractFactory(compileString(code, { forceStateful: true }), await fundedSigner());
+      const sc = await factory.deploy();
       const tx = await sc.check();
       expect(tx.txid).toBeDefined();
     });
@@ -181,7 +191,8 @@ describe('Unchecked Arithmetic - SDK e2e', () => {
         }
       `;
 
-      const sc = await deployStateful(compileString(code, { forceStateful: true }));
+      const factory = getContractFactory(compileString(code, { forceStateful: true }), await fundedSigner());
+      const sc = await factory.deploy();
       const tx = await sc.check();
       expect(tx.txid).toBeDefined();
     });
@@ -202,7 +213,8 @@ describe('Unchecked Arithmetic - SDK e2e', () => {
         }
       `;
 
-      const sc = await deployStateful(compileString(code, { forceStateful: true }));
+      const factory = getContractFactory(compileString(code, { forceStateful: true }), await fundedSigner());
+      const sc = await factory.deploy();
       const tx = await sc.check(100n);
       expect(tx.txid).toBeDefined();
     });
@@ -218,7 +230,8 @@ describe('Unchecked Arithmetic - SDK e2e', () => {
       `;
 
       // 255 + 1 overflows in checked mode -> should fail (bounds check OP_VERIFY)
-      const sc = await deployStateful(compileString(code, { forceStateful: true }));
+      const factory = getContractFactory(compileString(code, { forceStateful: true }), await fundedSigner());
+      const sc = await factory.deploy();
       await expect(sc.check(255n)).rejects.toThrow();
     });
   });
@@ -237,7 +250,8 @@ describe('Unchecked Arithmetic - SDK e2e', () => {
       `;
 
       // 200 + 100 = 300, wraps to 300 % 256 = 44
-      const sc = await deployStateful(compileString(code, { forceStateful: true }));
+      const factory = getContractFactory(compileString(code, { forceStateful: true }), await fundedSigner());
+      const sc = await factory.deploy();
       const tx = await sc.check(200n, 100n, 44n);
       expect(tx.txid).toBeDefined();
     });
@@ -255,7 +269,8 @@ describe('Unchecked Arithmetic - SDK e2e', () => {
       `;
 
       // -100 - 100 = -200, wraps: (-200 - (-128)) = -72, (-72 % 256 + 256) % 256 = 184, 184 + (-128) = 56
-      const sc = await deployStateful(compileString(code, { forceStateful: true }));
+      const factory = getContractFactory(compileString(code, { forceStateful: true }), await fundedSigner());
+      const sc = await factory.deploy();
       const tx = await sc.check(-100n, 100n, 56n);
       expect(tx.txid).toBeDefined();
     });
@@ -273,7 +288,8 @@ describe('Unchecked Arithmetic - SDK e2e', () => {
       `;
 
       // 200 + 100 wraps to 44, but we pass 45 -> should fail
-      const sc = await deployStateful(compileString(code, { forceStateful: true }));
+      const factory = getContractFactory(compileString(code, { forceStateful: true }), await fundedSigner());
+      const sc = await factory.deploy();
       await expect(sc.check(200n, 100n, 45n)).rejects.toThrow();
     });
   });
@@ -291,7 +307,8 @@ describe('Unchecked Arithmetic - SDK e2e', () => {
         }
       `;
 
-      const sc = await deployStateful(compileString(code, { forceStateful: true }));
+      const factory = getContractFactory(compileString(code, { forceStateful: true }), await fundedSigner());
+      const sc = await factory.deploy();
       const tx = await sc.check();
       expect(tx.txid).toBeDefined();
     });
@@ -314,7 +331,8 @@ describe('Unchecked Arithmetic - SDK e2e', () => {
         }
       `;
 
-      const sc = await deployStateful(compileString(code, { forceStateful: true }));
+      const factory = getContractFactory(compileString(code, { forceStateful: true }), await fundedSigner());
+      const sc = await factory.deploy();
       const tx = await sc.check();
       expect(tx.txid).toBeDefined();
     });

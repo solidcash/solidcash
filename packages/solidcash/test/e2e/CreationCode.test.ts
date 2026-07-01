@@ -2,9 +2,8 @@ import { describe, it, expect } from 'vitest';
 import { compileString } from 'solidc';
 import { ResolvedImport } from '@solidcash/utils';
 import { hexToBin } from '@bitauth/libauth';
-import { Contract, MockNetworkProvider, TransactionBuilder } from '../../src/index.js';
-import { randomUtxo } from '../../src/utils.js';
-import { createTestProvider, gatherUtxos } from '../test-util.js';
+import { getContractFactory } from '../../src/index.js';
+import { fundedSigner } from '../test-util.js';
 
 // type(C).creationCode returns the child contract's compiled redeem script (BCH has no separate
 // creation vs runtime code). The factory recomputes against the bytes the child compiles to, so the
@@ -53,33 +52,32 @@ contract Factory() {
 }
 `;
 
-const factoryArtifact = compileString(FACTORY, { importResolver: resolverFor(FILES), rootFileId: '/main.scash' });
-// The child's standalone-compiled redeem script equals the bytes the factory embeds.
-const childBytecode = hexToBin(compileString(CHILD_SOURCE).debug!.bytecode.replace(/ /g, ''));
-
-async function spend(fn: string, arg: Uint8Array): Promise<unknown> {
-  const provider: MockNetworkProvider = createTestProvider();
-  const contract = new Contract(factoryArtifact, [], { provider });
-  await provider.addUtxo(contract.address, randomUtxo({ satoshis: 10000n }));
-  const amount = 1000n;
-  const { utxos, changeAmount } = gatherUtxos(await contract.getUtxos(), { amount });
-  return new TransactionBuilder({ provider })
-    .addInputs(utxos, contract.unlock[fn](arg))
-    .addOutput({ to: contract.address, amount })
-    .addOutput({ to: contract.address, amount: changeAmount })
-    .send();
-}
+const factoryArtifact = compileString(
+  FACTORY,
+  { importResolver: resolverFor(FILES), rootFileId: '/main.scash', forceStateful: true },
+);
+// The child's standalone-compiled redeem script equals the bytes the factory embeds. The factory
+// compiles referenced contracts with its own options, so match forceStateful here too.
+const childBytecode = hexToBin(
+  compileString(CHILD_SOURCE, { forceStateful: true }).debug!.bytecode.replace(/ /g, ''),
+);
 
 describe('type(C).creationCode', () => {
   it('embeds the child contract bytecode (matches the child compilation)', async () => {
-    await expect(spend('check', childBytecode)).resolves.toBeDefined();
+    const factory = getContractFactory(factoryArtifact, await fundedSigner());
+    const sc = await factory.deploy();
+    await expect(sc.check(childBytecode)).resolves.toBeDefined();
   });
 
   it('runtimeCode returns the same bytecode on BCH', async () => {
-    await expect(spend('checkRuntime', childBytecode)).resolves.toBeDefined();
+    const factory = getContractFactory(factoryArtifact, await fundedSigner());
+    const sc = await factory.deploy();
+    await expect(sc.checkRuntime(childBytecode)).resolves.toBeDefined();
   });
 
   it('rejects a mismatched bytecode', async () => {
-    await expect(spend('check', Uint8Array.from([0x00, 0x11]))).rejects.toThrow();
+    const factory = getContractFactory(factoryArtifact, await fundedSigner());
+    const sc = await factory.deploy();
+    await expect(sc.check(Uint8Array.from([0x00, 0x11]))).rejects.toThrow();
   });
 });

@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { compileString } from 'solidc';
-import { deployStateful } from '../test-util.js';
+import { getContractFactory } from '../../src/index.js';
+import { fundedSigner } from '../test-util.js';
 
 // Named returns desugar to default-initialized locals + `return <names>;`. compute() assigns named
 // returns then bare-returns; zero() never assigns its named return (defaults to 0).
@@ -28,11 +29,13 @@ const artifact = compileString(SOURCE, { forceStateful: true });
 
 describe('Named return values', () => {
   it('binds assigned named returns correctly', async () => {
-    const sc = await deployStateful(artifact);
+    const factory = getContractFactory(artifact, await fundedSigner());
+    const sc = await factory.deploy();
     await expect(sc.check(3n, 4n)).resolves.toBeDefined();
   });
   it('defaults an unassigned named return to 0', async () => {
-    const sc = await deployStateful(artifact);
+    const factory = getContractFactory(artifact, await fundedSigner());
+    const sc = await factory.deploy();
     await expect(sc.defaultReturn()).resolves.toBeDefined();
   });
 });

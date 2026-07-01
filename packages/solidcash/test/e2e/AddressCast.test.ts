@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { compileString } from 'solidc';
 import { binToHex, hexToBin } from '@bitauth/libauth';
-import { deployStateful } from '../test-util.js';
+import { getContractFactory } from '../../src/index.js';
+import { fundedSigner } from '../test-util.js';
 import { alicePkh } from '../fixture/vars.js';
 
 // Solidity-compat narrowing casts: bytes20(address) / uint160(address) extract the embedded 20-byte hash
@@ -29,24 +30,28 @@ describe('bytes20(address) / uint160(address) narrowing casts (runtime)', () => 
   const addr = p2pkh(alicePkh); // a P2PKH address whose embedded 20-byte hash is alicePkh
 
   it('bytes20(address) extracts the embedded P2PKH pubkey-hash', async () => {
-    const sc = await deployStateful(artifact);
+    const factory = getContractFactory(artifact, await fundedSigner());
+    const sc = await factory.deploy();
     const txid = await sc.checkBytes20(addr, alicePkh);
     expect(txid).toBeDefined();
   });
 
   it('bytes20(address) does not match a different hash', async () => {
-    const sc = await deployStateful(artifact);
+    const factory = getContractFactory(artifact, await fundedSigner());
+    const sc = await factory.deploy();
     await expect(sc.checkBytes20(addr, new Uint8Array(20))).rejects.toThrow();
   });
 
   it('uint160(address) is the unsigned little-endian value of that hash', async () => {
-    const sc = await deployStateful(artifact);
+    const factory = getContractFactory(artifact, await fundedSigner());
+    const sc = await factory.deploy();
     const txid = await sc.checkUint160(addr, leUint(alicePkh));
     expect(txid).toBeDefined();
   });
 
   it('uint160(address) is non-negative even when the hash high bit is set', async () => {
-    const sc = await deployStateful(artifact);
+    const factory = getContractFactory(artifact, await fundedSigner());
+    const sc = await factory.deploy();
     const highBit = new Uint8Array(20).fill(0xff); // top bit set -> would be negative without the 0x00 fix
     const txid = await sc.uint160NonNegative(p2pkh(highBit));
     expect(txid).toBeDefined();

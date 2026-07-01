@@ -2,8 +2,8 @@ import { readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, resolve } from 'path';
 import { compileString } from 'solidc';
-import { SignatureTemplate } from '../../src/index.js';
-import { deployStateful } from '../test-util.js';
+import { SignatureTemplate, getContractFactory } from '../../src/index.js';
+import { fundedSigner } from '../test-util.js';
 import { hexToBin } from '@bitauth/libauth';
 import { alicePriv, alicePub } from '../fixture/vars.js';
 
@@ -27,7 +27,8 @@ describe('Concat Functions', () => {
     const source = loadCash('bytes_concat.scash');
 
     it('should concatenate two byte sequences', async () => {
-      const sc = await deployStateful(compileString(source, { forceStateful: true }));
+      const factory = getContractFactory(compileString(source, { forceStateful: true }), await fundedSigner());
+      const sc = await factory.deploy();
       const tx = await sc.concatTwo(
         hexToBin('aabbcc'), hexToBin('ddeeff'),
         alicePub, new SignatureTemplate(alicePriv),
@@ -36,7 +37,8 @@ describe('Concat Functions', () => {
     });
 
     it('should concatenate three fixed-size bytes', async () => {
-      const sc = await deployStateful(compileString(source, { forceStateful: true }));
+      const factory = getContractFactory(compileString(source, { forceStateful: true }), await fundedSigner());
+      const sc = await factory.deploy();
       const tx = await sc.concatThree(
         hexToBin('11223344'), hexToBin('55667788'), hexToBin('99aabbcc'),
         alicePub, new SignatureTemplate(alicePriv),
@@ -45,7 +47,8 @@ describe('Concat Functions', () => {
     });
 
     it('should concatenate mixed types (bytes4, string, bytes)', async () => {
-      const sc = await deployStateful(compileString(source, { forceStateful: true }));
+      const factory = getContractFactory(compileString(source, { forceStateful: true }), await fundedSigner());
+      const sc = await factory.deploy();
       const tx = await sc.concatMixed(
         hexToBin('deadbeef'), 'hello', hexToBin('ff'),
         alicePub, new SignatureTemplate(alicePriv),
@@ -54,7 +57,8 @@ describe('Concat Functions', () => {
     });
 
     it('should return empty bytes for zero arguments', async () => {
-      const sc = await deployStateful(compileString(source, { forceStateful: true }));
+      const factory = getContractFactory(compileString(source, { forceStateful: true }), await fundedSigner());
+      const sc = await factory.deploy();
       const tx = await sc.concatEmpty(
         alicePub, new SignatureTemplate(alicePriv),
       );
@@ -62,7 +66,8 @@ describe('Concat Functions', () => {
     });
 
     it('should return the same value for a single argument', async () => {
-      const sc = await deployStateful(compileString(source, { forceStateful: true }));
+      const factory = getContractFactory(compileString(source, { forceStateful: true }), await fundedSigner());
+      const sc = await factory.deploy();
       const tx = await sc.concatSingle(
         hexToBin('cafebabe'),
         alicePub, new SignatureTemplate(alicePriv),
@@ -77,7 +82,8 @@ describe('Concat Functions', () => {
     const source = loadCash('string_concat.scash');
 
     it('should concatenate two strings', async () => {
-      const sc = await deployStateful(compileString(source, { forceStateful: true }));
+      const factory = getContractFactory(compileString(source, { forceStateful: true }), await fundedSigner());
+      const sc = await factory.deploy();
       const tx = await sc.concatStrings(
         'Hello', ' World',
         alicePub, new SignatureTemplate(alicePriv),
@@ -86,7 +92,8 @@ describe('Concat Functions', () => {
     });
 
     it('should return empty string for zero arguments', async () => {
-      const sc = await deployStateful(compileString(source, { forceStateful: true }));
+      const factory = getContractFactory(compileString(source, { forceStateful: true }), await fundedSigner());
+      const sc = await factory.deploy();
       const tx = await sc.concatEmpty(
         alicePub, new SignatureTemplate(alicePriv),
       );
@@ -105,7 +112,8 @@ describe('Concat Functions', () => {
             }
         }
       `;
-      const sc = await deployStateful(compileString(source, { forceStateful: true }));
+      const factory = getContractFactory(compileString(source, { forceStateful: true }), await fundedSigner());
+      const sc = await factory.deploy();
       const tx = await sc.test(hexToBin('aabb'), hexToBin('ccdd'));
       expect(tx.txid).toBeDefined();
     });
@@ -118,7 +126,8 @@ describe('Concat Functions', () => {
             }
         }
       `;
-      const sc = await deployStateful(compileString(source, { forceStateful: true }));
+      const factory = getContractFactory(compileString(source, { forceStateful: true }), await fundedSigner());
+      const sc = await factory.deploy();
       const tx = await sc.test(
         hexToBin('aa'), hexToBin('bb'), hexToBin('cc'), hexToBin('dd'),
         hexToBin('aabbccdd'),
@@ -135,7 +144,8 @@ describe('Concat Functions', () => {
             }
         }
       `;
-      const sc = await deployStateful(compileString(source, { forceStateful: true }));
+      const factory = getContractFactory(compileString(source, { forceStateful: true }), await fundedSigner());
+      const sc = await factory.deploy();
       await expect(sc.test(hexToBin('aa'), hexToBin('bb'))).rejects.toThrow();
     });
   });
@@ -149,7 +159,8 @@ describe('Concat Functions', () => {
             }
         }
       `;
-      const sc = await deployStateful(compileString(source, { forceStateful: true }));
+      const factory = getContractFactory(compileString(source, { forceStateful: true }), await fundedSigner());
+      const sc = await factory.deploy();
       const tx = await sc.test('Hello', ' World');
       expect(tx.txid).toBeDefined();
     });
@@ -162,7 +173,8 @@ describe('Concat Functions', () => {
             }
         }
       `;
-      const sc = await deployStateful(compileString(source, { forceStateful: true }));
+      const factory = getContractFactory(compileString(source, { forceStateful: true }), await fundedSigner());
+      const sc = await factory.deploy();
       const tx = await sc.test('foo', 'bar', 'baz', 'foobarbaz');
       expect(tx.txid).toBeDefined();
     });
@@ -175,7 +187,8 @@ describe('Concat Functions', () => {
             }
         }
       `;
-      const sc = await deployStateful(compileString(source, { forceStateful: true }));
+      const factory = getContractFactory(compileString(source, { forceStateful: true }), await fundedSigner());
+      const sc = await factory.deploy();
       const tx = await sc.test('', 'hello');
       expect(tx.txid).toBeDefined();
     });

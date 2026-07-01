@@ -2,7 +2,8 @@ import { readFileSync } from 'fs';
 import { dirname, resolve } from 'path';
 import { fileURLToPath } from 'url';
 import { compileString } from 'solidc';
-import { deployStateful } from '../test-util.js';
+import { getContractFactory } from '../../src/index.js';
+import { fundedSigner } from '../test-util.js';
 import { hexToBin, binToHex } from '@bitauth/libauth';
 import { computeFunctionSelector, computeFunctionSignature } from '@solidcash/utils';
 import { alicePub } from '../fixture/vars.js';
@@ -25,7 +26,8 @@ describe('ABI Encode Advanced', () => {
 
     it('should compile and run with a 4-byte selector', async () => {
       const selector = hexToBin('deadbeef');
-      const sc = await deployStateful(compileString(source, { forceStateful: true }));
+      const factory = getContractFactory(compileString(source, { forceStateful: true }), await fundedSigner());
+      const sc = await factory.deploy();
       const tx = await sc.test(selector, 42n, alicePub);
       expect(tx.txid).toBeDefined();
     });
@@ -35,7 +37,8 @@ describe('ABI Encode Advanced', () => {
     const source = loadCash('abi_encode_with_signature.scash');
 
     it('should compile and run with a string signature', async () => {
-      const sc = await deployStateful(compileString(source, { forceStateful: true }));
+      const factory = getContractFactory(compileString(source, { forceStateful: true }), await fundedSigner());
+      const sc = await factory.deploy();
       const tx = await sc.test(42n, alicePub);
       expect(tx.txid).toBeDefined();
     });
@@ -45,7 +48,8 @@ describe('ABI Encode Advanced', () => {
     const source = loadCash('abi_encode_call.scash');
 
     it('should compile and run with interface function reference', async () => {
-      const sc = await deployStateful(compileString(source, { forceStateful: true }));
+      const factory = getContractFactory(compileString(source, { forceStateful: true }), await fundedSigner());
+      const sc = await factory.deploy();
       const tx = await sc.test(alicePub, 100n);
       expect(tx.txid).toBeDefined();
     });

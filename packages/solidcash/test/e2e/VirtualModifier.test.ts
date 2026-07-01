@@ -1,6 +1,6 @@
 import { compileString } from 'solidc';
-import { SignatureTemplate } from '../../src/index.js';
-import { deployStateful } from '../test-util.js';
+import { getContractFactory, SignatureTemplate } from '../../src/index.js';
+import { fundedSigner } from '../test-util.js';
 import { alicePriv, alicePub } from '../fixture/vars.js';
 
 describe('VirtualModifier', () => {
@@ -70,13 +70,14 @@ describe('VirtualModifier', () => {
 
   describe('e2e', () => {
     it('should execute correctly with virtual modifier', async () => {
-      const sc = await deployStateful(compileString(`
+      const factory = getContractFactory(compileString(`
         contract Test(pubkey owner) {
             function spend(sig s) virtual {
                 require(checkSig(s, owner));
             }
         }
-      `, { forceStateful: true }), [alicePub]);
+      `, { forceStateful: true }), await fundedSigner());
+      const sc = await factory.deploy(alicePub);
 
       const tx = await sc.spend(new SignatureTemplate(alicePriv));
 

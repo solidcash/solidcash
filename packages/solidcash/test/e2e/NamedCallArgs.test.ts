@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { compileString } from 'solidc';
-import { deployStateful } from '../test-util.js';
+import { getContractFactory } from '../../src/index.js';
+import { fundedSigner } from '../test-util.js';
 
 // Named call args f({b:.., a:..}) reorder to the function's declared parameter order. sub is
 // non-commutative, so a wrong binding would compute the wrong result and fail the require.
@@ -20,7 +21,8 @@ const artifact = compileString(SOURCE, { forceStateful: true });
 
 describe('Named call arguments', () => {
   it('binds named args to the right parameters regardless of source order', async () => {
-    const sc = await deployStateful(artifact);
+    const factory = getContractFactory(artifact, await fundedSigner());
+    const sc = await factory.deploy();
     await expect(sc.check(10n, 3n)).resolves.toBeDefined();
   });
 });

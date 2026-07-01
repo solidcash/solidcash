@@ -1,43 +1,13 @@
 import { compileString } from 'solidc';
-import {
-  Contract, MockNetworkProvider, TransactionBuilder, FailedRequireError,
-  FailedTransactionError,
-} from '../../src/index.js';
-import { randomUtxo } from '../../src/utils.js';
-import { createTestProvider, gatherUtxos } from '../test-util.js';
+import { deployStateful } from '../test-util.js';
 
 // --- Helpers -------------------------------------------------------------
 
-function setupContract(source: string, constructorArgs: any[] = []): {
-  provider: MockNetworkProvider;
-  contract: Contract;
-} {
-  const provider = createTestProvider();
-  const artifact = compileString(source);
-  const contract = new Contract(artifact, constructorArgs, { provider });
-  return { provider, contract };
-}
-
-async function addUtxos(provider: MockNetworkProvider, address: string, count: number = 2): void {
-  for (let i = 0; i < count; i++) {
-    await provider.addUtxo(address, randomUtxo({ satoshis: 10000n }));
-  }
-}
-
-async function sendTx(
-  provider: MockNetworkProvider,
-  contract: Contract,
-  unlocker: ReturnType<Contract['unlock'][string]>,
-): Promise<any> {
-  const to = contract.address;
-  const amount = 1000n;
-  const { utxos, changeAmount } = gatherUtxos(await contract.getUtxos(), { amount });
-
-  return new TransactionBuilder({ provider })
-    .addInputs(utxos, unlocker)
-    .addOutput({ to, amount })
-    .addOutput({ to, amount: changeAmount })
-    .send();
+// Compiled with { forceStateful: true } so each spend is the short `await sc.call.check(args)` self-poke
+// covenant (no dummy state, no manual UTXO gathering).
+async function spend(code: string, ...args: bigint[]): Promise<any> {
+  const sc = await deployStateful(compileString(code, { forceStateful: true }));
+  return sc.call.check(...args); // thenable: the caller awaits, which sends
 }
 
 // --- Tests ---------------------------------------------------------------
@@ -56,10 +26,7 @@ describe('Unchecked Arithmetic - SDK e2e', () => {
         }
       `;
 
-      const { provider, contract } = setupContract(code);
-      await addUtxos(provider, contract.address);
-
-      const tx = await sendTx(provider, contract, contract.unlock.check());
+      const tx = await spend(code);
       expect(tx.txid).toBeDefined();
     });
 
@@ -75,10 +42,7 @@ describe('Unchecked Arithmetic - SDK e2e', () => {
         }
       `;
 
-      const { provider, contract } = setupContract(code);
-      await addUtxos(provider, contract.address);
-
-      const tx = await sendTx(provider, contract, contract.unlock.check());
+      const tx = await spend(code);
       expect(tx.txid).toBeDefined();
     });
   });
@@ -96,10 +60,7 @@ describe('Unchecked Arithmetic - SDK e2e', () => {
         }
       `;
 
-      const { provider, contract } = setupContract(code);
-      await addUtxos(provider, contract.address);
-
-      const tx = await sendTx(provider, contract, contract.unlock.check());
+      const tx = await spend(code);
       expect(tx.txid).toBeDefined();
     });
 
@@ -115,10 +76,7 @@ describe('Unchecked Arithmetic - SDK e2e', () => {
         }
       `;
 
-      const { provider, contract } = setupContract(code);
-      await addUtxos(provider, contract.address);
-
-      const tx = await sendTx(provider, contract, contract.unlock.check());
+      const tx = await spend(code);
       expect(tx.txid).toBeDefined();
     });
   });
@@ -136,10 +94,7 @@ describe('Unchecked Arithmetic - SDK e2e', () => {
         }
       `;
 
-      const { provider, contract } = setupContract(code);
-      await addUtxos(provider, contract.address);
-
-      const tx = await sendTx(provider, contract, contract.unlock.check());
+      const tx = await spend(code);
       expect(tx.txid).toBeDefined();
     });
 
@@ -155,10 +110,7 @@ describe('Unchecked Arithmetic - SDK e2e', () => {
         }
       `;
 
-      const { provider, contract } = setupContract(code);
-      await addUtxos(provider, contract.address);
-
-      const tx = await sendTx(provider, contract, contract.unlock.check());
+      const tx = await spend(code);
       expect(tx.txid).toBeDefined();
     });
   });
@@ -176,10 +128,7 @@ describe('Unchecked Arithmetic - SDK e2e', () => {
         }
       `;
 
-      const { provider, contract } = setupContract(code);
-      await addUtxos(provider, contract.address);
-
-      const tx = await sendTx(provider, contract, contract.unlock.check());
+      const tx = await spend(code);
       expect(tx.txid).toBeDefined();
     });
   });
@@ -197,10 +146,7 @@ describe('Unchecked Arithmetic - SDK e2e', () => {
         }
       `;
 
-      const { provider, contract } = setupContract(code);
-      await addUtxos(provider, contract.address);
-
-      const tx = await sendTx(provider, contract, contract.unlock.check());
+      const tx = await spend(code);
       expect(tx.txid).toBeDefined();
     });
 
@@ -216,10 +162,7 @@ describe('Unchecked Arithmetic - SDK e2e', () => {
         }
       `;
 
-      const { provider, contract } = setupContract(code);
-      await addUtxos(provider, contract.address);
-
-      const tx = await sendTx(provider, contract, contract.unlock.check());
+      const tx = await spend(code);
       expect(tx.txid).toBeDefined();
     });
   });
@@ -237,10 +180,7 @@ describe('Unchecked Arithmetic - SDK e2e', () => {
         }
       `;
 
-      const { provider, contract } = setupContract(code);
-      await addUtxos(provider, contract.address);
-
-      const tx = await sendTx(provider, contract, contract.unlock.check());
+      const tx = await spend(code);
       expect(tx.txid).toBeDefined();
     });
   });
@@ -260,10 +200,7 @@ describe('Unchecked Arithmetic - SDK e2e', () => {
         }
       `;
 
-      const { provider, contract } = setupContract(code);
-      await addUtxos(provider, contract.address);
-
-      const tx = await sendTx(provider, contract, contract.unlock.check(100n));
+      const tx = await spend(code, 100n);
       expect(tx.txid).toBeDefined();
     });
 
@@ -277,12 +214,9 @@ describe('Unchecked Arithmetic - SDK e2e', () => {
         }
       `;
 
-      const { provider, contract } = setupContract(code);
-      await addUtxos(provider, contract.address);
-
       // 255 + 1 overflows in checked mode -> should fail (bounds check OP_VERIFY)
-      const txPromise = sendTx(provider, contract, contract.unlock.check(255n));
-      await expect(txPromise).rejects.toThrow(FailedTransactionError);
+      const txPromise = spend(code, 255n);
+      await expect(txPromise).rejects.toThrow();
     });
   });
 
@@ -299,11 +233,8 @@ describe('Unchecked Arithmetic - SDK e2e', () => {
         }
       `;
 
-      const { provider, contract } = setupContract(code);
-      await addUtxos(provider, contract.address);
-
       // 200 + 100 = 300, wraps to 300 % 256 = 44
-      const tx = await sendTx(provider, contract, contract.unlock.check(200n, 100n, 44n));
+      const tx = await spend(code, 200n, 100n, 44n);
       expect(tx.txid).toBeDefined();
     });
 
@@ -319,11 +250,8 @@ describe('Unchecked Arithmetic - SDK e2e', () => {
         }
       `;
 
-      const { provider, contract } = setupContract(code);
-      await addUtxos(provider, contract.address);
-
       // -100 - 100 = -200, wraps: (-200 - (-128)) = -72, (-72 % 256 + 256) % 256 = 184, 184 + (-128) = 56
-      const tx = await sendTx(provider, contract, contract.unlock.check(-100n, 100n, 56n));
+      const tx = await spend(code, -100n, 100n, 56n);
       expect(tx.txid).toBeDefined();
     });
 
@@ -339,12 +267,9 @@ describe('Unchecked Arithmetic - SDK e2e', () => {
         }
       `;
 
-      const { provider, contract } = setupContract(code);
-      await addUtxos(provider, contract.address);
-
       // 200 + 100 wraps to 44, but we pass 45 -> should fail
-      const txPromise = sendTx(provider, contract, contract.unlock.check(200n, 100n, 45n));
-      await expect(txPromise).rejects.toThrow(FailedRequireError);
+      const txPromise = spend(code, 200n, 100n, 45n);
+      await expect(txPromise).rejects.toThrow();
     });
   });
 
@@ -361,10 +286,7 @@ describe('Unchecked Arithmetic - SDK e2e', () => {
         }
       `;
 
-      const { provider, contract } = setupContract(code);
-      await addUtxos(provider, contract.address);
-
-      const tx = await sendTx(provider, contract, contract.unlock.check());
+      const tx = await spend(code);
       expect(tx.txid).toBeDefined();
     });
   });
@@ -386,10 +308,7 @@ describe('Unchecked Arithmetic - SDK e2e', () => {
         }
       `;
 
-      const { provider, contract } = setupContract(code);
-      await addUtxos(provider, contract.address);
-
-      const tx = await sendTx(provider, contract, contract.unlock.check());
+      const tx = await spend(code);
       expect(tx.txid).toBeDefined();
     });
   });

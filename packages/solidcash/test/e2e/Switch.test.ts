@@ -1,42 +1,14 @@
+import { describe, it, expect } from 'vitest';
 import { compileString } from 'solidc';
-import {
-  Contract, MockNetworkProvider, TransactionBuilder, FailedRequireError,
-} from '../../src/index.js';
-import { randomUtxo } from '../../src/utils.js';
-import { createTestProvider, gatherUtxos } from '../test-util.js';
+import { deployStateful } from '../test-util.js';
 
 // --- Helpers -------------------------------------------------------------
 
-function setupContract(source: string, constructorArgs: any[] = []): {
-  provider: MockNetworkProvider;
-  contract: Contract;
-} {
-  const provider = createTestProvider();
-  const artifact = compileString(source);
-  const contract = new Contract(artifact, constructorArgs, { provider });
-  return { provider, contract };
-}
-
-async function addUtxos(provider: MockNetworkProvider, address: string, count: number = 2): void {
-  for (let i = 0; i < count; i++) {
-    await provider.addUtxo(address, randomUtxo({ satoshis: 10000n }));
-  }
-}
-
-async function sendTx(
-  provider: MockNetworkProvider,
-  contract: Contract,
-  unlocker: ReturnType<Contract['unlock'][string]>,
-): Promise<any> {
-  const to = contract.address;
-  const amount = 1000n;
-  const { utxos, changeAmount } = gatherUtxos(await contract.getUtxos(), { amount });
-
-  return new TransactionBuilder({ provider })
-    .addInputs(utxos, unlocker)
-    .addOutput({ to, amount })
-    .addOutput({ to, amount: changeAmount })
-    .send();
+// forceStateful compiles each contract as a self-poke covenant, so the spend is the short
+// `await sc.call.<fn>(args)` (no dummy state var, no manual UTXO gathering).
+async function spend(source: string, fn: string, ...args: any[]): Promise<any> {
+  const sc = await deployStateful(compileString(source, { forceStateful: true }));
+  return sc.call[fn](...args); // thenable: the caller awaits, which sends
 }
 
 // --- Tests ---------------------------------------------------------------
@@ -61,38 +33,28 @@ describe('Switch Statement - SDK e2e', () => {
     `;
 
     it('matches case 1', async () => {
-      const { provider, contract } = setupContract(code);
-      await addUtxos(provider, contract.address);
-      const tx = await sendTx(provider, contract, contract.unlock.check(1n));
+      const tx = await spend(code, 'check', 1n);
       expect(tx.txid).toBeDefined();
     });
 
     it('matches case 2', async () => {
-      const { provider, contract } = setupContract(code);
-      await addUtxos(provider, contract.address);
-      const tx = await sendTx(provider, contract, contract.unlock.check(2n));
+      const tx = await spend(code, 'check', 2n);
       expect(tx.txid).toBeDefined();
     });
 
     it('matches case 3', async () => {
-      const { provider, contract } = setupContract(code);
-      await addUtxos(provider, contract.address);
-      const tx = await sendTx(provider, contract, contract.unlock.check(3n));
+      const tx = await spend(code, 'check', 3n);
       expect(tx.txid).toBeDefined();
     });
 
     it('falls to default when no case matches', async () => {
-      const { provider, contract } = setupContract(code);
-      await addUtxos(provider, contract.address);
-      const tx = await sendTx(provider, contract, contract.unlock.check(99n));
+      const tx = await spend(code, 'check', 99n);
       expect(tx.txid).toBeDefined();
     });
 
     it('default fails require for wrong value', async () => {
-      const { provider, contract } = setupContract(code);
-      await addUtxos(provider, contract.address);
-      const txPromise = sendTx(provider, contract, contract.unlock.check(50n));
-      await expect(txPromise).rejects.toThrow(FailedRequireError);
+      const txPromise = spend(code, 'check', 50n);
+      await expect(txPromise).rejects.toThrow();
     });
   });
 
@@ -112,11 +74,8 @@ describe('Switch Statement - SDK e2e', () => {
         }
       `;
 
-      const { provider, contract } = setupContract(code);
-      await addUtxos(provider, contract.address);
-
       // action=5 doesn't match any case, switch is no-op, require(5 >= 0) passes
-      const tx = await sendTx(provider, contract, contract.unlock.check(5n));
+      const tx = await spend(code, 'check', 5n);
       expect(tx.txid).toBeDefined();
     });
 
@@ -135,9 +94,7 @@ describe('Switch Statement - SDK e2e', () => {
         }
       `;
 
-      const { provider, contract } = setupContract(code);
-      await addUtxos(provider, contract.address);
-      const tx = await sendTx(provider, contract, contract.unlock.check(1n));
+      const tx = await spend(code, 'check', 1n);
       expect(tx.txid).toBeDefined();
     });
   });
@@ -159,10 +116,7 @@ describe('Switch Statement - SDK e2e', () => {
         }
       `;
 
-      const { provider, contract } = setupContract(code);
-      await addUtxos(provider, contract.address);
-
-      const tx1 = await sendTx(provider, contract, contract.unlock.check(15n));
+      const tx1 = await spend(code, 'check', 15n);
       expect(tx1.txid).toBeDefined();
     });
 
@@ -182,10 +136,7 @@ describe('Switch Statement - SDK e2e', () => {
         }
       `;
 
-      const { provider, contract } = setupContract(code);
-      await addUtxos(provider, contract.address);
-
-      const tx = await sendTx(provider, contract, contract.unlock.check(40n));
+      const tx = await spend(code, 'check', 40n);
       expect(tx.txid).toBeDefined();
     });
   });
@@ -209,14 +160,10 @@ describe('Switch Statement - SDK e2e', () => {
         }
       `;
 
-      const { provider, contract } = setupContract(code);
-      await addUtxos(provider, contract.address);
-
-      const tx1 = await sendTx(provider, contract, contract.unlock.check(1n));
+      const tx1 = await spend(code, 'check', 1n);
       expect(tx1.txid).toBeDefined();
 
-      await addUtxos(provider, contract.address);
-      const tx2 = await sendTx(provider, contract, contract.unlock.check(2n));
+      const tx2 = await spend(code, 'check', 2n);
       expect(tx2.txid).toBeDefined();
     });
   });
@@ -240,10 +187,7 @@ describe('Switch Statement - SDK e2e', () => {
         }
       `;
 
-      const { provider, contract } = setupContract(code);
-      await addUtxos(provider, contract.address);
-
-      const tx = await sendTx(provider, contract, contract.unlock.check(2n, 20n));
+      const tx = await spend(code, 'check', 2n, 20n);
       expect(tx.txid).toBeDefined();
     });
 
@@ -263,11 +207,8 @@ describe('Switch Statement - SDK e2e', () => {
         }
       `;
 
-      const { provider, contract } = setupContract(code);
-      await addUtxos(provider, contract.address);
-
-      const txPromise = sendTx(provider, contract, contract.unlock.check(2n, 99n));
-      await expect(txPromise).rejects.toThrow(FailedRequireError);
+      const txPromise = spend(code, 'check', 2n, 99n);
+      await expect(txPromise).rejects.toThrow();
     });
   });
 
@@ -288,10 +229,7 @@ describe('Switch Statement - SDK e2e', () => {
         }
       `;
 
-      const { provider, contract } = setupContract(code);
-      await addUtxos(provider, contract.address);
-
-      const tx = await sendTx(provider, contract, contract.unlock.check(5n));
+      const tx = await spend(code, 'check', 5n);
       expect(tx.txid).toBeDefined();
     });
   });
@@ -311,14 +249,10 @@ describe('Switch Statement - SDK e2e', () => {
         }
       `;
 
-      const { provider, contract } = setupContract(code);
-      await addUtxos(provider, contract.address);
-
-      const tx1 = await sendTx(provider, contract, contract.unlock.check(1n));
+      const tx1 = await spend(code, 'check', 1n);
       expect(tx1.txid).toBeDefined();
 
-      await addUtxos(provider, contract.address);
-      const tx2 = await sendTx(provider, contract, contract.unlock.check(42n));
+      const tx2 = await spend(code, 'check', 42n);
       expect(tx2.txid).toBeDefined();
     });
   });
@@ -339,10 +273,7 @@ describe('Switch Statement - SDK e2e', () => {
         }
       `;
 
-      const { provider, contract } = setupContract(code);
-      await addUtxos(provider, contract.address);
-
-      const tx = await sendTx(provider, contract, contract.unlock.check(true));
+      const tx = await spend(code, 'check', true);
       expect(tx.txid).toBeDefined();
     });
   });

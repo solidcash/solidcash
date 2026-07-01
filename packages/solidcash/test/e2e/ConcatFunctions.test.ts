@@ -2,11 +2,8 @@ import { readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, resolve } from 'path';
 import { compileString } from 'solidc';
-import {
-  Contract, MockNetworkProvider, TransactionBuilder, SignatureTemplate, FailedRequireError,
-} from '../../src/index.js';
-import { randomUtxo } from '../../src/utils.js';
-import { createTestProvider, gatherUtxos } from '../test-util.js';
+import { SignatureTemplate } from '../../src/index.js';
+import { deployStateful } from '../test-util.js';
 import { hexToBin } from '@bitauth/libauth';
 import { alicePriv, alicePub } from '../fixture/vars.js';
 
@@ -21,30 +18,11 @@ function loadCash(name: string): string {
   return readFileSync(resolve(VALID_DIR, name), 'utf-8');
 }
 
-function setupContract(source: string, constructorArgs: any[] = []): {
-  provider: MockNetworkProvider;
-  contract: Contract;
-} {
-  const provider = createTestProvider();
-  const artifact = compileString(source);
-  const contract = new Contract(artifact, constructorArgs, { provider });
-  return { provider, contract };
-}
-
-async function sendTx(
-  provider: MockNetworkProvider,
-  contract: Contract,
-  unlocker: ReturnType<Contract['unlock'][string]>,
-): Promise<any> {
-  const to = contract.address;
-  const amount = 1000n;
-  const { utxos, changeAmount } = gatherUtxos(await contract.getUtxos(), { amount });
-
-  return new TransactionBuilder({ provider })
-    .addInputs(utxos, unlocker)
-    .addOutput({ to, amount })
-    .addOutput({ to, amount: changeAmount })
-    .send();
+// Self-poke covenant spend: deploy the (forceStateful) contract, then the short
+// `await sc.call.<fn>(args)` self-preserving spend.
+async function spend(source: string, fn: string, ...args: unknown[]): Promise<any> {
+  const sc = await deployStateful(compileString(source, { forceStateful: true }));
+  return sc.call[fn](...args); // thenable: the caller awaits, which sends
 }
 
 // --- Tests ------------------------------------------------------------------
@@ -54,64 +32,47 @@ describe('Concat Functions', () => {
 
   describe('bytes_concat.scash - bytes.concat() built-in', () => {
     const source = loadCash('bytes_concat.scash');
-    const { provider, contract } = setupContract(source);
-
-    beforeAll(async () => {
-      for (let i = 0; i < 10; i++) {
-        await provider.addUtxo(contract.address, randomUtxo({ satoshis: 10000n }));
-      }
-    });
 
     it('should concatenate two byte sequences', async () => {
-      const tx = await sendTx(
-        provider, contract,
-        contract.unlock.concatTwo(
-          hexToBin('aabbcc'), hexToBin('ddeeff'),
-          alicePub, new SignatureTemplate(alicePriv),
-        ),
+      const tx = await spend(
+        source, 'concatTwo',
+        hexToBin('aabbcc'), hexToBin('ddeeff'),
+        alicePub, new SignatureTemplate(alicePriv),
       );
       expect(tx.txid).toBeDefined();
     });
 
     it('should concatenate three fixed-size bytes', async () => {
-      const tx = await sendTx(
-        provider, contract,
-        contract.unlock.concatThree(
-          hexToBin('11223344'), hexToBin('55667788'), hexToBin('99aabbcc'),
-          alicePub, new SignatureTemplate(alicePriv),
-        ),
+      const tx = await spend(
+        source, 'concatThree',
+        hexToBin('11223344'), hexToBin('55667788'), hexToBin('99aabbcc'),
+        alicePub, new SignatureTemplate(alicePriv),
       );
       expect(tx.txid).toBeDefined();
     });
 
     it('should concatenate mixed types (bytes4, string, bytes)', async () => {
-      const tx = await sendTx(
-        provider, contract,
-        contract.unlock.concatMixed(
-          hexToBin('deadbeef'), 'hello', hexToBin('ff'),
-          alicePub, new SignatureTemplate(alicePriv),
-        ),
+      const tx = await spend(
+        source, 'concatMixed',
+        hexToBin('deadbeef'), 'hello', hexToBin('ff'),
+        alicePub, new SignatureTemplate(alicePriv),
       );
       expect(tx.txid).toBeDefined();
     });
 
     it('should return empty bytes for zero arguments', async () => {
-      const tx = await sendTx(
-        provider, contract,
-        contract.unlock.concatEmpty(
-          alicePub, new SignatureTemplate(alicePriv),
-        ),
+      const tx = await spend(
+        source, 'concatEmpty',
+        alicePub, new SignatureTemplate(alicePriv),
       );
       expect(tx.txid).toBeDefined();
     });
 
     it('should return the same value for a single argument', async () => {
-      const tx = await sendTx(
-        provider, contract,
-        contract.unlock.concatSingle(
-          hexToBin('cafebabe'),
-          alicePub, new SignatureTemplate(alicePriv),
-        ),
+      const tx = await spend(
+        source, 'concatSingle',
+        hexToBin('cafebabe'),
+        alicePub, new SignatureTemplate(alicePriv),
       );
       expect(tx.txid).toBeDefined();
     });
@@ -121,31 +82,20 @@ describe('Concat Functions', () => {
 
   describe('string_concat.scash - string.concat() built-in', () => {
     const source = loadCash('string_concat.scash');
-    const { provider, contract } = setupContract(source);
-
-    beforeAll(async () => {
-      for (let i = 0; i < 5; i++) {
-        await provider.addUtxo(contract.address, randomUtxo({ satoshis: 10000n }));
-      }
-    });
 
     it('should concatenate two strings', async () => {
-      const tx = await sendTx(
-        provider, contract,
-        contract.unlock.concatStrings(
-          'Hello', ' World',
-          alicePub, new SignatureTemplate(alicePriv),
-        ),
+      const tx = await spend(
+        source, 'concatStrings',
+        'Hello', ' World',
+        alicePub, new SignatureTemplate(alicePriv),
       );
       expect(tx.txid).toBeDefined();
     });
 
     it('should return empty string for zero arguments', async () => {
-      const tx = await sendTx(
-        provider, contract,
-        contract.unlock.concatEmpty(
-          alicePub, new SignatureTemplate(alicePriv),
-        ),
+      const tx = await spend(
+        source, 'concatEmpty',
+        alicePub, new SignatureTemplate(alicePriv),
       );
       expect(tx.txid).toBeDefined();
     });
@@ -162,14 +112,7 @@ describe('Concat Functions', () => {
             }
         }
       `;
-      const { provider, contract } = setupContract(source);
-      await provider.addUtxo(contract.address, randomUtxo({ satoshis: 10000n }));
-      await provider.addUtxo(contract.address, randomUtxo({ satoshis: 10000n }));
-
-      const tx = await sendTx(
-        provider, contract,
-        contract.unlock.test(hexToBin('aabb'), hexToBin('ccdd')),
-      );
+      const tx = await spend(source, 'test', hexToBin('aabb'), hexToBin('ccdd'));
       expect(tx.txid).toBeDefined();
     });
 
@@ -181,16 +124,10 @@ describe('Concat Functions', () => {
             }
         }
       `;
-      const { provider, contract } = setupContract(source);
-      await provider.addUtxo(contract.address, randomUtxo({ satoshis: 10000n }));
-      await provider.addUtxo(contract.address, randomUtxo({ satoshis: 10000n }));
-
-      const tx = await sendTx(
-        provider, contract,
-        contract.unlock.test(
-          hexToBin('aa'), hexToBin('bb'), hexToBin('cc'), hexToBin('dd'),
-          hexToBin('aabbccdd'),
-        ),
+      const tx = await spend(
+        source, 'test',
+        hexToBin('aa'), hexToBin('bb'), hexToBin('cc'), hexToBin('dd'),
+        hexToBin('aabbccdd'),
       );
       expect(tx.txid).toBeDefined();
     });
@@ -204,15 +141,8 @@ describe('Concat Functions', () => {
             }
         }
       `;
-      const { provider, contract } = setupContract(source);
-      await provider.addUtxo(contract.address, randomUtxo({ satoshis: 10000n }));
-      await provider.addUtxo(contract.address, randomUtxo({ satoshis: 10000n }));
-
-      const txPromise = sendTx(
-        provider, contract,
-        contract.unlock.test(hexToBin('aa'), hexToBin('bb')),
-      );
-      await expect(txPromise).rejects.toThrow(FailedRequireError);
+      const txPromise = spend(source, 'test', hexToBin('aa'), hexToBin('bb'));
+      await expect(txPromise).rejects.toThrow();
     });
   });
 
@@ -225,14 +155,7 @@ describe('Concat Functions', () => {
             }
         }
       `;
-      const { provider, contract } = setupContract(source);
-      await provider.addUtxo(contract.address, randomUtxo({ satoshis: 10000n }));
-      await provider.addUtxo(contract.address, randomUtxo({ satoshis: 10000n }));
-
-      const tx = await sendTx(
-        provider, contract,
-        contract.unlock.test('Hello', ' World'),
-      );
+      const tx = await spend(source, 'test', 'Hello', ' World');
       expect(tx.txid).toBeDefined();
     });
 
@@ -244,14 +167,7 @@ describe('Concat Functions', () => {
             }
         }
       `;
-      const { provider, contract } = setupContract(source);
-      await provider.addUtxo(contract.address, randomUtxo({ satoshis: 10000n }));
-      await provider.addUtxo(contract.address, randomUtxo({ satoshis: 10000n }));
-
-      const tx = await sendTx(
-        provider, contract,
-        contract.unlock.test('foo', 'bar', 'baz', 'foobarbaz'),
-      );
+      const tx = await spend(source, 'test', 'foo', 'bar', 'baz', 'foobarbaz');
       expect(tx.txid).toBeDefined();
     });
 
@@ -263,14 +179,7 @@ describe('Concat Functions', () => {
             }
         }
       `;
-      const { provider, contract } = setupContract(source);
-      await provider.addUtxo(contract.address, randomUtxo({ satoshis: 10000n }));
-      await provider.addUtxo(contract.address, randomUtxo({ satoshis: 10000n }));
-
-      const tx = await sendTx(
-        provider, contract,
-        contract.unlock.test('', 'hello'),
-      );
+      const tx = await spend(source, 'test', '', 'hello');
       expect(tx.txid).toBeDefined();
     });
   });

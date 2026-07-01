@@ -4,7 +4,9 @@ import { hexToBin, binToHex } from '@bitauth/libauth';
 import { Contract, StatefulContract, TransactionBuilder, SignatureTemplate, resolveBlockhashCoSpend } from '../../src/index.js';
 import { randomUtxo } from '../../src/utils.js';
 import { Utxo } from '../../src/interfaces.js';
-import { createTestProvider, createFeeFunder, setupStatefulUtxos } from '../test-util.js';
+import {
+  createTestProvider, createFeeFunder, setupStatefulUtxos, deployStateful,
+} from '../test-util.js';
 import { alicePub, alicePriv, bobPriv, aliceAddress } from '../fixture/vars.js';
 import {
   buildBlockhashOracleCovenantScript, blockhashOracleLockingBytecode, buildBlockhashCommitment, scriptToBytecode,
@@ -35,29 +37,16 @@ const NETWORKS = [
 ];
 
 async function spendCheck(chainId: number, expected: number): Promise<string> {
-  const provider = createTestProvider();
-  const artifact = compileString(SOURCE, { chainId, forceStateful: true });
-  const contract = new Contract(artifact, [], { provider });
-  const { categoryId } = await setupStatefulUtxos(
-    provider, contract, artifact.stateLayout!, {}, { saltContract: true },
-  );
-  const address = contract.withCategory(hexToBin(categoryId)).address;
-  const sc = new StatefulContract(address, artifact, provider); // attach by address
+  const sc = await deployStateful(compileString(SOURCE, { chainId, forceStateful: true }));
   const tx = await sc.check(BigInt(expected)); // thenable: awaiting sends
   return tx.txid;
 }
 
 // Spend a no-arg contract whose body hardcodes a network-byte check.
 async function spendLiteral(chainId: number | undefined, literal: number): Promise<string> {
-  const provider = createTestProvider();
   const src = `contract C() { function f() { require(block.chainid == ${literal}); } }`;
   const artifact = compileString(src, { ...(chainId === undefined ? {} : { chainId }), forceStateful: true });
-  const contract = new Contract(artifact, [], { provider });
-  const { categoryId } = await setupStatefulUtxos(
-    provider, contract, artifact.stateLayout!, {}, { saltContract: true },
-  );
-  const address = contract.withCategory(hexToBin(categoryId)).address;
-  const sc = new StatefulContract(address, artifact, provider); // attach by address
+  const sc = await deployStateful(artifact);
   const tx = await sc.f(); // thenable: awaiting sends
   return tx.txid;
 }

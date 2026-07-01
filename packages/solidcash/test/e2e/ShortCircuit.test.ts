@@ -1,13 +1,11 @@
 import { describe, it, expect } from 'vitest';
 import { compileString } from 'solidc';
-import { hexToBin } from '@bitauth/libauth';
-import { Contract, StatefulContract } from '../../src/index.js';
-import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
+import { deployStateful } from '../test-util.js';
 
 // `&&` / `||` must short-circuit (Solidity semantics): the right operand is only evaluated when
 // needed. Each function's RHS divides by the argument, which FAILS the script (div-by-zero) if the
 // VM ever evaluates it. Spending with the short-circuiting argument must therefore succeed.
-// Compiled with { forceStateful: true } so each spend is the short `sc.<fn>(arg).send()` (no dummy state).
+// Compiled with { forceStateful: true } so each spend is the short `await sc.<fn>(arg)` (no dummy state).
 const SOURCE = `
 contract ShortCircuit() {
     function spendOr(int x) {
@@ -23,14 +21,7 @@ contract ShortCircuit() {
 `;
 
 async function spend(fn: string, arg: bigint): Promise<unknown> {
-  const provider = createTestProvider();
-  const artifact = compileString(SOURCE, { forceStateful: true });
-  const contract = new Contract(artifact, [], { provider });
-  const { categoryId } = await setupStatefulUtxos(
-    provider, contract, artifact.stateLayout!, {}, { saltContract: true },
-  );
-  const address = contract.withCategory(hexToBin(categoryId)).address;
-  const sc = new StatefulContract(address, artifact, provider); // attach by address
+  const sc = await deployStateful(compileString(SOURCE, { forceStateful: true }));
   return sc.call[fn](arg); // thenable: the caller awaits, which sends
 }
 

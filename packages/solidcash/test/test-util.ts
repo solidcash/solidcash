@@ -6,9 +6,12 @@ import {
   encodeTransaction,
 } from '@bitauth/libauth';
 import { createTxVerifier } from '@mem-cash/validation';
-import { buildInitialStateCommitments, type StateLayout } from '@solidcash/utils';
+import { buildInitialStateCommitments, type StateLayout, type Artifact } from '@solidcash/utils';
 import { Output, Network, Utxo } from '../src/interfaces.js';
-import { Contract, TransactionBuilder } from '../src/index.js';
+import {
+  Contract, TransactionBuilder, StatefulContract,
+  type ConnectedStatefulContract, type ConstructorArgument,
+} from '../src/index.js';
 import { MockNetworkProvider, RegtestNetworkProvider } from '../src/index.js';
 import { getDataNftAddress, getTokenContainerAddress } from '../src/stateful/covenant-helpers.js';
 import { network as defaultNetwork } from './fixture/vars.js';
@@ -209,6 +212,30 @@ export function createTestProvider(): MockNetworkProvider | RegtestNetworkProvid
   }
 
   return new MockNetworkProvider();
+}
+
+/**
+ * Deploy a stateful (or forceStateful) contract for a test and return a ready-to-use StatefulContract, attached
+ * by address: seeds the master + data NFTs (setupStatefulUtxos) and resolves the category from the indexer, so
+ * a test can go straight to `await sc.fn(args)`. Collapses the compile -> new Contract -> setupStatefulUtxos ->
+ * withCategory -> new StatefulContract boilerplate to one call. A fresh MockNetworkProvider is created unless one
+ * is passed (reachable afterwards as `sc.provider`).
+ */
+export async function deployStateful<T extends Artifact>(
+  artifact: T,
+  opts: {
+    provider?: MockNetworkProvider | RegtestNetworkProvider;
+    initialState?: Record<string, any>;
+    constructorArgs?: ConstructorArgument[];
+  } = {},
+): Promise<ConnectedStatefulContract<T>> {
+  const provider = opts.provider ?? createTestProvider();
+  const contract = new Contract(artifact, (opts.constructorArgs ?? []) as never[], { provider });
+  const { categoryId } = await setupStatefulUtxos(
+    provider, contract, artifact.stateLayout!, opts.initialState ?? {}, { saltContract: true },
+  );
+  const address = contract.withCategory(hexToBin(categoryId)).address;
+  return new StatefulContract(address, artifact, provider) as ConnectedStatefulContract<T>;
 }
 
 export interface StatefulUtxoSetup {

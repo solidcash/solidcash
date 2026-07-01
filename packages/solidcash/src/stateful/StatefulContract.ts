@@ -5496,11 +5496,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     }
 
     // Create unlockable UTXOs (after all synthetic params are appended to finalArgs)
-    // Contract.ts registers fallback/receive unlockers as 'fallback'/'receive',
-    // but ABI names are '__fallback'/'__receive'.
+    // Contract.ts registers fallback/receive unlockers as 'fallback'/'receive' on the multi-function path,
+    // but a single-function contract registers under the plain ABI name ('__fallback'/'__receive'). Prefer
+    // the mapped name, fall back to the ABI name so receive/fallback-only contracts still dispatch.
     const unlockName = functionName === '__fallback' ? 'fallback'
       : functionName === '__receive' ? 'receive' : functionName;
-    const masterUnlocker = (this.inner.unlock as any)[unlockName](...finalArgs);
+    const unlockFn = (this.inner.unlock as any)[unlockName] ?? (this.inner.unlock as any)[functionName];
+    const masterUnlocker = unlockFn(...finalArgs);
     const dataNftUnlockers = filteredDataNftUtxos.map(
       () => createDataNftUnlocker(this.inner, 0, this.categoryId),
     );

@@ -35,6 +35,18 @@ eagerly. See [multi-contract-artifacts.md](multi-contract-artifacts.md) s13.
 - **`Signer`** - read-write. Carries its own provider and funds + signs sends. Equivalent to
   `sc.connect(signer)`.
 
+## ethers parity accessors
+
+`StatefulContract` exposes the ethers `BaseContract` surface: `runner` (Signer when read-write, else the
+NetworkProvider), `interface` (the artifact / ABI), `target` and `getAddress()` (the p2sh address), `connect(runner)`
+(Signer binds funding+signing; NetworkProvider rebinds read-only), and `attach(target)` / `withProvider(runner)`.
+
+`Signer` mirrors ethers: `provider`, `getAddress()`, `connect(provider)`, and `signMessage(message)` (standard
+Bitcoin-signed-message: a base64 recoverable compact signature over `Signer.hashMessage(message)`). EVM-only
+members that have no UTXO meaning - `getNonce`, `estimateGas`, `call`, `populateCall`/`populateTransaction`,
+`resolveName` (ENS), `signTypedData` (EIP-712), `sendTransaction`/`signTransaction`, `populateAuthorization`/
+`authorize` (EIP-7702) - are present for surface parity and throw a clear "no equivalent on Bitcoin Cash" error.
+
 ## Proxy dispatch (v6)
 
 Every instance is wrapped in a Proxy, so the ABI function / state getter is reachable on the **bare name**:

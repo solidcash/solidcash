@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { compileString } from 'solidc';
-import { hexToBin } from '@bitauth/libauth';
+import {
+  hexToBin, binToHex, base64ToBin, secp256k1,
+} from '@bitauth/libauth';
 import { parsePushdataCommitment } from '@solidcash/utils';
 import {
   Contract, StatefulContract, StatefulFunctionCall, Signer,
@@ -100,5 +102,51 @@ describe('StatefulContract v6 flavor: lean constructor + at() + Proxy dispatch',
     );
     const state = parsePushdataCommitment(dataNft!.token!.nft!.commitment, art.stateLayout!, 0);
     expect(state.count).toBe(5n);
+  });
+
+  it('exposes ethers-style accessors: runner / interface / target / getAddress / connect(runner)', async () => {
+    const { provider, categoryId, address } = await deployCounter();
+    const sc = new StatefulContract(categoryId, art, provider, { constructorArgs: [5n] });
+    expect(sc.runner).toBe(provider); // NetworkProvider runner = read-only
+    expect(sc.interface).toBe(art);
+    expect(sc.target).toBe(address);
+    expect(await sc.getAddress()).toBe(address);
+    // connect(signer) -> runner is the signer; connect(provider) rebinds read-only.
+    const signer = new Signer(alicePriv, provider);
+    expect(sc.connect(signer).runner).toBe(signer);
+    expect(sc.connect(provider).runner).toBe(provider);
+  });
+});
+
+describe('Signer ethers parity', () => {
+  const MSG = 'hello cashtokens';
+
+  it('connect(provider) returns a new signer for the same key', () => {
+    const provider = createTestProvider();
+    const s = new Signer(alicePriv, provider);
+    const s2 = s.connect(provider);
+    expect(s2).not.toBe(s);
+    expect(binToHex(s2.publicKey)).toBe(binToHex(s.publicKey));
+  });
+
+  it('signMessage produces a recoverable Bitcoin-signed-message that round-trips to the signer pubkey', () => {
+    const provider = createTestProvider();
+    const s = new Signer(alicePriv, provider);
+    const sig = s.signMessage(MSG);
+    const bytes = base64ToBin(sig);
+    expect(bytes.length).toBe(65); // 1 header + 64 compact sig
+    const recoveryId = (bytes[0] - 31) as 0 | 1 | 2 | 3;
+    const recovered = secp256k1.recoverPublicKeyCompressed(bytes.slice(1), recoveryId, Signer.hashMessage(MSG));
+    expect(typeof recovered).not.toBe('string'); // no recovery error
+    expect(binToHex(recovered as Uint8Array)).toBe(binToHex(s.publicKey));
+  });
+
+  it('EVM-specific members throw a clear "no equivalent on Bitcoin Cash" error', () => {
+    const s = new Signer(alicePriv, createTestProvider());
+    expect(() => s.getNonce()).toThrow(/no equivalent on Bitcoin Cash/);
+    expect(() => s.estimateGas()).toThrow(/no equivalent on Bitcoin Cash/);
+    expect(() => s.signTypedData()).toThrow(/no equivalent on Bitcoin Cash/);
+    expect(() => s.resolveName()).toThrow(/no equivalent on Bitcoin Cash/);
+    expect(() => s.sendTransaction()).toThrow(/no equivalent on Bitcoin Cash/);
   });
 });

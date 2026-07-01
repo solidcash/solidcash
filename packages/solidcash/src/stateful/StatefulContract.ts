@@ -980,21 +980,16 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
   }
 
   /**
-   * Return a new instance with the same target (categoryId + artifact) but a different runner (provider).
-   * Analogous to ethers.js `contract.connect(runner)`.
-   */
-  /**
-   * Bind a signer to this contract for automatic transaction funding.
-   * The signer provides UTXOs, signing, and change address.
-   *
-   * Analogous to ethers.js `contract.connect(signer)`.
+   * Return a new instance bound to a different runner (ethers.js `contract.connect(runner)`). A Signer binds
+   * automatic funding + signing; a NetworkProvider rebinds read-only (delegates to withProvider).
    *
    * ```typescript
-   * const signer = new Signer(privateKey, provider);
-   * await sc.connect(signer).call.increment().send();
+   * await sc.connect(signer).increment().send();
    * ```
    */
-  connect(signer: Signer): ConnectedStatefulContract<TArtifact> {
+  connect(runner: ContractRunner): ConnectedStatefulContract<TArtifact> {
+    if (!(runner instanceof Signer)) return this.withProvider(runner);
+    const signer = runner;
     const sc = StatefulContract.from(
       this.inner.artifact,
       this.inner.constructorArgs,
@@ -2746,6 +2741,27 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
 
   get provider(): NetworkProvider {
     return this.inner.provider;
+  }
+
+  /** The runner bound to this contract: a Signer when connected read-write, else the read-only NetworkProvider
+   * (ethers.js `contract.runner`). */
+  get runner(): ContractRunner {
+    return this._signer ?? this.provider;
+  }
+
+  /** The contract's ABI + layout artifact (ethers.js `contract.interface`). */
+  get interface(): TArtifact {
+    return this.inner.artifact;
+  }
+
+  /** The contract's on-chain identifier - its p2sh address (ethers.js `contract.target`). */
+  get target(): string {
+    return this.address;
+  }
+
+  /** The contract's p2sh address (async, ethers.js `contract.getAddress()`). */
+  async getAddress(): Promise<string> {
+    return this.address;
   }
 
   async getState(): Promise<Record<string, StateValueType>> {

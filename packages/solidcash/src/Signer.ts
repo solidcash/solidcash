@@ -1,5 +1,8 @@
-import { secp256k1, encodeCashAddress, hexToBin, isHex } from '@bitauth/libauth';
-import { hash160 } from '@solidcash/utils';
+import {
+  secp256k1, encodeCashAddress, hexToBin, isHex,
+  utf8ToBin, binToBase64, flattenBinArray, bigIntToCompactUint,
+} from '@bitauth/libauth';
+import { hash160, hash256 } from '@solidcash/utils';
 import type NetworkProvider from './network/NetworkProvider.js';
 import type { Utxo, UnlockableUtxo } from './interfaces.js';
 import { Network } from './interfaces.js';
@@ -77,4 +80,62 @@ export default class Signer {
   getLockingBytecode(): Uint8Array {
     return publicKeyToP2PKHLockingBytecode(this.publicKey);
   }
+
+  /** Return a new Signer for the same key bound to a different provider (ethers.js `Signer.connect`). */
+  connect(provider: NetworkProvider): Signer {
+    return new Signer(this.privateKey, provider);
+  }
+
+  /** The "Bitcoin Signed Message" double-SHA256 digest for a message (magic-prefixed, length-delimited). */
+  static hashMessage(message: string | Uint8Array): Uint8Array {
+    const msg = typeof message === 'string' ? utf8ToBin(message) : message;
+    const magic = utf8ToBin('Bitcoin Signed Message:\n');
+    return hash256(flattenBinArray([
+      bigIntToCompactUint(BigInt(magic.length)), magic,
+      bigIntToCompactUint(BigInt(msg.length)), msg,
+    ]));
+  }
+
+  /**
+   * Sign a message with this key in the standard Bitcoin Cash "signed message" format: a base64 recoverable
+   * compact signature over hashMessage(message). Analogous to ethers.js `Signer.signMessage`.
+   */
+  signMessage(message: string | Uint8Array): string {
+    const result = secp256k1.signMessageHashRecoverableCompact(this.privateKey, Signer.hashMessage(message));
+    if (typeof result === 'string') throw new Error(`Failed to sign message: ${result}`);
+    const header = 31 + result.recoveryId; // 27 + 4 (compressed pubkey) + recoveryId
+    return binToBase64(flattenBinArray([Uint8Array.of(header), result.signature]));
+  }
+
+  // The following ethers.js Signer members have no Bitcoin Cash (UTXO) equivalent - there are no account nonces,
+  // gas, eth_call, ENS, EIP-712 typed data or EIP-7702 authorizations. They are present for surface parity and
+  // throw a clear error. Use SignatureTemplate / the (Stateful)TransactionBuilder to sign and broadcast.
+  private static _na(method: string): never {
+    throw new Error(
+      `Signer.${method}() has no equivalent on Bitcoin Cash (UTXO). Build and sign transactions with the `
+      + 'TransactionBuilder / StatefulContract and SignatureTemplate instead.',
+    );
+  }
+
+  getNonce(): Promise<number> { return Signer._na('getNonce'); }
+
+  estimateGas(): Promise<bigint> { return Signer._na('estimateGas'); }
+
+  call(): Promise<string> { return Signer._na('call'); }
+
+  populateCall(): Promise<never> { return Signer._na('populateCall'); }
+
+  populateTransaction(): Promise<never> { return Signer._na('populateTransaction'); }
+
+  resolveName(): Promise<null | string> { return Signer._na('resolveName'); }
+
+  sendTransaction(): Promise<never> { return Signer._na('sendTransaction'); }
+
+  signTransaction(): Promise<string> { return Signer._na('signTransaction'); }
+
+  signTypedData(): Promise<string> { return Signer._na('signTypedData'); }
+
+  populateAuthorization(): Promise<never> { return Signer._na('populateAuthorization'); }
+
+  authorize(): Promise<never> { return Signer._na('authorize'); }
 }

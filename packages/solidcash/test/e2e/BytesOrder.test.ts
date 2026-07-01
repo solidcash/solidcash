@@ -1,8 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { compileString } from 'solidc';
-import { Contract, MockNetworkProvider, TransactionBuilder } from '../../src/index.js';
-import { randomUtxo } from '../../src/utils.js';
-import { createTestProvider, gatherUtxos } from '../test-util.js';
+import { deployStateful } from '../test-util.js';
 
 // bytesN ordering < <= > >=: equal-width fixed bytes compare as unsigned big-endian (Solidity).
 // The contract recomputes each comparison and requires it equals the expected bool, so the spend only
@@ -21,16 +19,8 @@ contract BytesOrder() {
 async function spend(
   a: Uint8Array, b: Uint8Array, eLt: boolean, eLe: boolean, eGt: boolean, eGe: boolean,
 ): Promise<unknown> {
-  const provider: MockNetworkProvider = createTestProvider();
-  const contract = new Contract(compileString(SOURCE), [], { provider });
-  await provider.addUtxo(contract.address, randomUtxo({ satoshis: 10000n }));
-  const amount = 1000n;
-  const { utxos, changeAmount } = gatherUtxos(await contract.getUtxos(), { amount });
-  return new TransactionBuilder({ provider })
-    .addInputs(utxos, contract.unlock.cmp(a, b, eLt, eLe, eGt, eGe))
-    .addOutput({ to: contract.address, amount })
-    .addOutput({ to: contract.address, amount: changeAmount })
-    .send();
+  const sc = await deployStateful(compileString(SOURCE, { forceStateful: true }));
+  return sc.call.cmp(a, b, eLt, eLe, eGt, eGe); // thenable: the caller awaits, which sends
 }
 
 const B = (...bytes: number[]): Uint8Array => Uint8Array.from(bytes);

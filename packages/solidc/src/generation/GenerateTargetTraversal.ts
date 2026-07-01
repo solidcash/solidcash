@@ -1530,7 +1530,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // unsafe(2): master + minting + value preservation
     // split/merge: dedicated covenant verification
     const isStatefulContract = this.stateVariables.length > 0
-      || this.collectionCount > 0 || this.eventDefinitions.length > 0;
+      || this.collectionCount > 0 || this.eventDefinitions.length > 0
+      || (this.compilerOptions.forceStateful ?? false);
     const isUnsafe = node.modifiers.includes(FunctionModifier.UNSAFE);
     const unsafeTier = isUnsafe ? (node.unsafeTier ?? 0) : null;
     const isUpgrade = node.modifiers.includes(FunctionModifier.UPGRADE);

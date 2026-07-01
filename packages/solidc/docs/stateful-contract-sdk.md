@@ -28,6 +28,22 @@ recovered from the address. Omit them for a no-arg contract or read-only use; pr
 ethers, the constructor is sync and hits the network lazily (on the first `getState` / send); `at()` resolves
 eagerly. See [multi-contract-artifacts.md](multi-contract-artifacts.md) s13.
 
+### Pure covenant contracts: `forceStateful`
+
+A contract with zero state variables (a pure covenant like `require(block.chainid == e)`) compiles stateless by
+default, so `StatefulContract` can't wrap it. Compile it with `{ forceStateful: true }` and it becomes a
+stateful contract with an **empty** `stateLayout` (`variables: []`) and the master-NFT self-preservation
+covenant - then it spends with the short call, no dummy state field:
+
+```ts
+const artifact = compileString(src, { forceStateful: true });
+const contract = new Contract(artifact, [], { provider });
+const { categoryId } = await setupStatefulUtxos(provider, contract, artifact.stateLayout!, {}, { saltContract: true });
+const address = contract.withCategory(hexToBin(categoryId)).address;
+const sc = new StatefulContract(address, artifact, provider);   // attach by address (category read from indexer)
+await sc.check(expected);   // spend the covenant, self-preserving
+```
+
 ## Runner: provider vs signer
 
 - **`NetworkProvider`** - read-only-first. `getState()` / `state.x()` / view reads work. Sends still work when
@@ -76,9 +92,12 @@ always returned.
 Every instance is wrapped in a Proxy, so the ABI function / state getter is reachable on the **bare name**:
 
 ```ts
-await counter.increment().send();   // same as counter.call.increment().send()
-await counter.count();              // same as counter.state.count()
+await counter.increment();          // thenable: awaiting sends (== counter.increment().send())
+await counter.count();              // == counter.state.count()
 ```
+
+A function call is a thenable, so `await sc.fn(args)` builds and sends in one step - the preferred short form.
+`.send()` / `.buildUnsigned()` / `.withDelegatecall(...)` remain for when you need the intermediate builder.
 
 A framework member wins a name collision (so `counter.connect`, `counter.state`, `counter.getState` stay the
 framework members). A contract function that is shadowed by a framework name stays reachable via the escape

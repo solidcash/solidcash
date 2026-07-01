@@ -297,9 +297,11 @@ export function generateArtifact(
 
   const bytecode = scriptToAsm(script);
 
-  // Build state layout if contract has state variables or collections
+  // Build state layout if the contract has state variables or collections, or forceStateful is set (a
+  // zero-state stateful contract gets an empty stateLayout so the SDK sees it as stateful and bakes the
+  // master-NFT self-pin covenant; see the forceStateful compiler option).
   let stateLayout: StateLayout | undefined;
-  if (contract.stateVariables.length > 0 || contract.collections.length > 0) {
+  if (contract.stateVariables.length > 0 || contract.collections.length > 0 || compilerOptions.forceStateful) {
     stateLayout = {
       variables: contract.stateVariables.map((sv) => ({
         name: sv.name,

@@ -42,6 +42,11 @@ export interface CompilerOptions {
   // `__brand` ctor arg, so the library is spendable only alongside its owning consumer's master (rides one
   // master's serialization, zero marginal contention). See docs/library-contracts.md (3b contention).
   brandLibrary?: boolean;
+  // Compile a contract that has ZERO state variables (and no collections) as a STATEFUL contract anyway: it
+  // gets an empty stateLayout `{ variables: [] }` and the master-NFT self-preservation covenant, so a pure
+  // covenant check (e.g. `require(block.chainid == e)`) can be spent with the short `sc.check(e).send()` call
+  // instead of a hand-rolled TransactionBuilder. No dummy state field needed. See docs/stateful-contract-sdk.md.
+  forceStateful?: boolean;
 }
 
 export interface AbiInput {

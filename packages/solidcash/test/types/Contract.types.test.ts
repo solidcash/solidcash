@@ -1,5 +1,7 @@
 /* eslint-disable */
-import { Artifact, Contract, MockNetworkProvider, SignatureTemplate } from 'solidcash';
+import {
+  Artifact, Contract, MockNetworkProvider, SignatureTemplate, StatefulContract,
+} from 'solidcash';
 import p2pkhArtifact from '../fixture/p2pkh.artifact';
 import p2pkhArtifactJsonNotConst from '../fixture/p2pkh.json' with { type: 'json' };
 import announcementArtifact from '../fixture/announcement.artifact';
@@ -211,6 +213,49 @@ const provider = new MockNetworkProvider();
   }
 }
 
+
+// describe('StatefulContract v6: new(...) / at(...) are typed as the connected (ABI-typed) instance')
+{
+  interface CounterArtifactType extends Artifact {
+    constructorInputs: [{ name: 'step', type: 'int' }],
+    abi: [
+      { name: 'increment', inputs: [{ name: 'by', type: 'int' }] },
+      { name: 'setOwner', inputs: [{ name: 'o', type: 'address' }] },
+    ],
+    stateLayout: {
+      variables: [{
+        name: 'count', type: 'int', nftIndex: 0, fieldIndex: 0,
+      }],
+      dataNftCount: 1,
+      commitmentLimit: 0,
+    },
+  }
+  const counterArt = {} as CounterArtifactType;
+  const category = 'ab'.repeat(32);
+
+  // new StatefulContract(category, artifact, runner) is typed WITHOUT a cast - bare-name dispatch resolves.
+  const sc = new StatefulContract(category, counterArt, provider);
+  sc.increment(5n);
+  sc.setOwner(alicePkh);
+  sc.increment(5n).send();
+
+  // it('rejects wrong bare-name function argument types')
+  // @ts-expect-error - increment expects a bigint, not a boolean
+  sc.increment(true);
+  // @ts-expect-error - setOwner expects address bytes, not a bigint
+  sc.setOwner(1000n);
+  // @ts-expect-error - not a function on the contract
+  sc.notAFunction();
+
+  // at(...) is typed the same way.
+  async function checkAt(): Promise<void> {
+    const live = await StatefulContract.at(category, counterArt, provider);
+    live.increment(7n);
+    // @ts-expect-error - wrong argument type
+    live.increment('nope');
+  }
+  void checkAt;
+}
 
 // describe('address + array parameter typing (TypeMap address entry + MapType array recursion)')
 {

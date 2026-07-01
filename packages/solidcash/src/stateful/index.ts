@@ -1,3 +1,27 @@
+import { Artifact } from '@solidcash/utils';
+import { Contract } from '../Contract.js';
+import {
+  StatefulContract as StatefulContractClass,
+  type ConnectedStatefulContract as ConnectedStatefulContractType,
+  type ContractRunner as ContractRunnerType,
+  type LeanContractOptions as LeanContractOptionsType,
+} from './StatefulContract.js';
+
+// `new StatefulContract(...)` returns the ABI-typed connected instance (the runtime is a Proxy providing exactly
+// that surface). A class constructor otherwise yields the bare class type, so strip the generated construct
+// signatures (mapped type over the statics) and re-declare the lean + legacy forms as returning the connected
+// type. See docs/stateful-contract-sdk.md.
+type StatefulContractCtor =
+  { [K in keyof typeof StatefulContractClass]: (typeof StatefulContractClass)[K] }
+  & {
+    new <T extends Artifact>(
+      categoryId: string, artifact: T, runner: ContractRunnerType, options?: LeanContractOptionsType,
+    ): ConnectedStatefulContractType<T>;
+    new <T extends Artifact>(contract: Contract<T>, categoryId: string): ConnectedStatefulContractType<T>;
+  };
+export const StatefulContract = StatefulContractClass as unknown as StatefulContractCtor;
+export type StatefulContract<T extends Artifact = Artifact> = ConnectedStatefulContractType<T>;
+
 export {
   StatefulTransactionBuilder,
   type EntryNftInfo,
@@ -13,7 +37,6 @@ export {
   ContractBundle, resolveCategoryFromAddress, resolveCategoryFromLockingBytecode, type ContractBundleOptions,
 } from './ContractBundle.js';
 export {
-  StatefulContract,
   StatefulFunctionCall,
   DeployFunctionCall,
   TokenContainerAccessor,

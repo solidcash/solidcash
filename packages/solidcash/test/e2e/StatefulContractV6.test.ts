@@ -46,10 +46,10 @@ describe('StatefulContract v6 flavor: lean constructor + at() + Proxy dispatch',
   it('Proxy dispatch: bare-name state getter and ABI function', async () => {
     const { provider, categoryId } = await deployCounter();
     const sc = new StatefulContract(categoryId, art, provider, { constructorArgs: [5n] });
-    // Bare-name state getter (sc.count()) resolves through the proxy.
-    expect(await (sc as any).count()).toBe(0n);
+    // Bare-name state getter (sc.count()) resolves through the proxy - no cast needed (new is typed).
+    expect(await sc.count()).toBe(0n);
     // Bare-name ABI function (sc.increment()) returns a StatefulFunctionCall, same as sc.call.increment().
-    expect((sc as any).increment()).toBeInstanceOf(StatefulFunctionCall);
+    expect(sc.increment()).toBeInstanceOf(StatefulFunctionCall);
     expect(sc.getFunction('increment')).toBe((sc.call as any).increment);
     expect(() => sc.getFunction('nope')).toThrow(/No function 'nope'/);
     // 'increment' and 'count' report present via the has trap.
@@ -71,7 +71,7 @@ describe('StatefulContract v6 flavor: lean constructor + at() + Proxy dispatch',
     const { provider, categoryId } = await deployCounter();
     const signer = new Signer(alicePriv, provider);
     const sc = await StatefulContract.at(categoryId, art, signer, { constructorArgs: [5n] });
-    const tx = await (sc as any).increment().send();
+    const tx = await sc.increment().send();
     expect(tx.txid).toBeDefined();
     const dataNft = getTxOutputs(tx).find(
       (o) => o.token?.nft?.capability === 'mutable' && o.token?.category === categoryId,

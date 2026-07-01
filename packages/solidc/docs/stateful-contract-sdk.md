@@ -52,10 +52,20 @@ counter.getFunction('connect')(...args).send();   // the ABI function named `con
 
 Internal class methods bind to the underlying target, so dispatch never affects the framework's own behavior.
 
-### Typing note
+### Typing
 
-`StatefulContract.at(...)` returns a `ConnectedStatefulContract<T>`, so bare-name calls (`counter.increment(...)`)
-are fully typed from an `as const` artifact. A direct `new StatefulContract(category, artifact, runner)` returns
-the base `StatefulContract<T>` type; use `at()` (works with a category id too), the classic statics, or
-`counter.call.increment(...)` for typed bare-name dispatch, or annotate the result as
-`ConnectedStatefulContract<typeof artifact>`.
+Both `new StatefulContract(category, artifact, runner)` and `StatefulContract.at(...)` return a
+`ConnectedStatefulContract<T>`, so bare-name calls are fully typed from an `as const` artifact - no cast:
+
+```ts
+counter.increment(5n);            // typed: (by: bigint) => StatefulFunctionCall
+counter.increment(5n).send();     // -> Promise<TransactionDetails>
+await counter.count();            // typed state getter -> bigint
+counter.increment(true);          // type error
+counter.frobnicate();             // type error - not a function on the contract
+```
+
+The constructor is typed via a construct-signature cast on the export (`type-inference` strips the class's
+generated construct signature and re-declares the lean + legacy forms as returning `ConnectedStatefulContract`),
+since a class constructor otherwise yields the bare class type. Argument types come from the ABI via
+`AbiToFunctionMap` (`int -> bigint`, `address`/`bytesN` -> `Uint8Array | string`, `T[]` -> arrays, etc.).

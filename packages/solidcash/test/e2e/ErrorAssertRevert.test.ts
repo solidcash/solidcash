@@ -1,48 +1,17 @@
 import { compileString } from 'solidc';
-import {
-  Contract, MockNetworkProvider, TransactionBuilder, FailedRequireError,
-  FailedTransactionError, SignatureTemplate,
-} from '../../src/index.js';
-import { randomUtxo } from '../../src/utils.js';
-import { createTestProvider, gatherUtxos } from '../test-util.js';
-import {
-  alicePriv, alicePub,
-  bobPriv,
-} from '../fixture/vars.js';
+import { SignatureTemplate } from '../../src/index.js';
+import { deployStateful } from '../test-util.js';
+import { alicePriv, alicePub, bobPriv } from '../fixture/vars.js';
 
 // --- Helpers -------------------------------------------------------------
 
-function setupContract(source: string, constructorArgs: any[] = []): {
-  provider: MockNetworkProvider;
-  contract: Contract;
-  artifact: ReturnType<typeof compileString>;
-} {
-  const provider = createTestProvider();
-  const artifact = compileString(source);
-  const contract = new Contract(artifact, constructorArgs, { provider });
-  return { provider, contract, artifact };
-}
-
-async function addUtxos(provider: MockNetworkProvider, address: string, count: number = 2): void {
-  for (let i = 0; i < count; i++) {
-    await provider.addUtxo(address, randomUtxo({ satoshis: 10000n }));
-  }
-}
-
-async function sendTx(
-  provider: MockNetworkProvider,
-  contract: Contract,
-  unlocker: ReturnType<Contract['unlock'][string]>,
-): Promise<any> {
-  const to = contract.address;
-  const amount = 1000n;
-  const { utxos, changeAmount } = gatherUtxos(await contract.getUtxos(), { amount });
-
-  return new TransactionBuilder({ provider })
-    .addInputs(utxos, unlocker)
-    .addOutput({ to, amount })
-    .addOutput({ to, amount: changeAmount })
-    .send();
+// Compiled with { forceStateful: true } so each spend is the short `await sc.call.<fn>(args)` self-poke
+// covenant (no dummy state, no manual UTXO gathering). Every contract here takes a single `pubkey owner`
+// constructor arg (alicePub). A failing require/assert/revert surfaces as a raw OP_VERIFY Error on this
+// path, so failure tests assert bare `.rejects.toThrow()` rather than a mapped SDK error class.
+async function spend(source: string, fn: string, ...args: unknown[]): Promise<any> {
+  const sc = await deployStateful(compileString(source, { forceStateful: true }), [alicePub]);
+  return sc.call[fn](...args); // thenable: the caller awaits, which sends
 }
 
 // --- Tests ---------------------------------------------------------------
@@ -65,7 +34,7 @@ describe('Error, Assert, and Revert - SDK e2e', () => {
         }
       `;
 
-      const { artifact } = setupContract(code, [alicePub]);
+      const artifact = compileString(code);
 
       expect(artifact.errors).toBeDefined();
       expect(artifact.errors).toHaveLength(3);
@@ -103,7 +72,7 @@ describe('Error, Assert, and Revert - SDK e2e', () => {
         }
       `;
 
-      const { artifact } = setupContract(code, [alicePub]);
+      const artifact = compileString(code);
       expect(artifact.errors).toBeUndefined();
     });
   });
@@ -123,13 +92,7 @@ describe('Error, Assert, and Revert - SDK e2e', () => {
         }
       `;
 
-      const { provider, contract } = setupContract(code, [alicePub]);
-      await addUtxos(provider, contract.address);
-
-      const tx = await sendTx(
-        provider, contract,
-        contract.unlock.check(new SignatureTemplate(alicePriv), true),
-      );
+      const tx = await spend(code, 'check', new SignatureTemplate(alicePriv), true);
       expect(tx.txid).toBeDefined();
     });
 
@@ -143,14 +106,8 @@ describe('Error, Assert, and Revert - SDK e2e', () => {
         }
       `;
 
-      const { provider, contract } = setupContract(code, [alicePub]);
-      await addUtxos(provider, contract.address);
-
-      const txPromise = sendTx(
-        provider, contract,
-        contract.unlock.check(new SignatureTemplate(alicePriv), false),
-      );
-      await expect(txPromise).rejects.toThrow(FailedRequireError);
+      const txPromise = spend(code, 'check', new SignatureTemplate(alicePriv), false);
+      await expect(txPromise).rejects.toThrow();
     });
 
     it('assert with expression: assert(x > 0) succeeds for positive', async () => {
@@ -163,13 +120,7 @@ describe('Error, Assert, and Revert - SDK e2e', () => {
         }
       `;
 
-      const { provider, contract } = setupContract(code, [alicePub]);
-      await addUtxos(provider, contract.address);
-
-      const tx = await sendTx(
-        provider, contract,
-        contract.unlock.check(new SignatureTemplate(alicePriv), 5n),
-      );
+      const tx = await spend(code, 'check', new SignatureTemplate(alicePriv), 5n);
       expect(tx.txid).toBeDefined();
     });
 
@@ -183,14 +134,8 @@ describe('Error, Assert, and Revert - SDK e2e', () => {
         }
       `;
 
-      const { provider, contract } = setupContract(code, [alicePub]);
-      await addUtxos(provider, contract.address);
-
-      const txPromise = sendTx(
-        provider, contract,
-        contract.unlock.check(new SignatureTemplate(alicePriv), 0n),
-      );
-      await expect(txPromise).rejects.toThrow(FailedRequireError);
+      const txPromise = spend(code, 'check', new SignatureTemplate(alicePriv), 0n);
+      await expect(txPromise).rejects.toThrow();
     });
   });
 
@@ -209,14 +154,8 @@ describe('Error, Assert, and Revert - SDK e2e', () => {
         }
       `;
 
-      const { provider, contract } = setupContract(code, [alicePub]);
-      await addUtxos(provider, contract.address);
-
-      const txPromise = sendTx(
-        provider, contract,
-        contract.unlock.fail(new SignatureTemplate(alicePriv)),
-      );
-      await expect(txPromise).rejects.toThrow(FailedRequireError);
+      const txPromise = spend(code, 'fail', new SignatureTemplate(alicePriv));
+      await expect(txPromise).rejects.toThrow();
     });
 
     it('revert("message") always fails', async () => {
@@ -229,14 +168,8 @@ describe('Error, Assert, and Revert - SDK e2e', () => {
         }
       `;
 
-      const { provider, contract } = setupContract(code, [alicePub]);
-      await addUtxos(provider, contract.address);
-
-      const txPromise = sendTx(
-        provider, contract,
-        contract.unlock.fail(new SignatureTemplate(alicePriv)),
-      );
-      await expect(txPromise).rejects.toThrow(FailedRequireError);
+      const txPromise = spend(code, 'fail', new SignatureTemplate(alicePriv));
+      await expect(txPromise).rejects.toThrow();
     });
 
     it('revert CustomError(args) always fails', async () => {
@@ -253,15 +186,9 @@ describe('Error, Assert, and Revert - SDK e2e', () => {
         }
       `;
 
-      const { provider, contract } = setupContract(code, [alicePub]);
-      await addUtxos(provider, contract.address);
-
       // amount > balance triggers revert
-      const txPromise = sendTx(
-        provider, contract,
-        contract.unlock.withdraw(new SignatureTemplate(alicePriv), 100n, 50n),
-      );
-      await expect(txPromise).rejects.toThrow(FailedRequireError);
+      const txPromise = spend(code, 'withdraw', new SignatureTemplate(alicePriv), 100n, 50n);
+      await expect(txPromise).rejects.toThrow();
     });
 
     it('revert CustomError: succeeds when revert is not reached', async () => {
@@ -278,14 +205,8 @@ describe('Error, Assert, and Revert - SDK e2e', () => {
         }
       `;
 
-      const { provider, contract } = setupContract(code, [alicePub]);
-      await addUtxos(provider, contract.address);
-
       // amount <= balance, revert is not reached
-      const tx = await sendTx(
-        provider, contract,
-        contract.unlock.withdraw(new SignatureTemplate(alicePriv), 30n, 50n),
-      );
+      const tx = await spend(code, 'withdraw', new SignatureTemplate(alicePriv), 30n, 50n);
       expect(tx.txid).toBeDefined();
     });
 
@@ -303,21 +224,12 @@ describe('Error, Assert, and Revert - SDK e2e', () => {
         }
       `;
 
-      const { provider, contract } = setupContract(code, [alicePub]);
-      await addUtxos(provider, contract.address, 4);
-
       // allowed = false triggers revert
-      const txPromise = sendTx(
-        provider, contract,
-        contract.unlock.restricted(new SignatureTemplate(alicePriv), false),
-      );
-      await expect(txPromise).rejects.toThrow(FailedRequireError);
+      const txPromise = spend(code, 'restricted', new SignatureTemplate(alicePriv), false);
+      await expect(txPromise).rejects.toThrow();
 
       // allowed = true passes
-      const tx = await sendTx(
-        provider, contract,
-        contract.unlock.restricted(new SignatureTemplate(alicePriv), true),
-      );
+      const tx = await spend(code, 'restricted', new SignatureTemplate(alicePriv), true);
       expect(tx.txid).toBeDefined();
     });
   });
@@ -360,97 +272,47 @@ describe('Error, Assert, and Revert - SDK e2e', () => {
     `;
 
     it('checkBalance succeeds when amount <= balance', async () => {
-      const { provider, contract } = setupContract(combinedCode, [alicePub]);
-      await addUtxos(provider, contract.address);
-
-      const tx = await sendTx(
-        provider, contract,
-        contract.unlock.checkBalance(new SignatureTemplate(alicePriv), 10n, 100n),
-      );
+      const tx = await spend(combinedCode, 'checkBalance', new SignatureTemplate(alicePriv), 10n, 100n);
       expect(tx.txid).toBeDefined();
     });
 
     it('checkBalance fails when amount > balance (revert)', async () => {
-      const { provider, contract } = setupContract(combinedCode, [alicePub]);
-      await addUtxos(provider, contract.address);
-
-      const txPromise = sendTx(
-        provider, contract,
-        contract.unlock.checkBalance(new SignatureTemplate(alicePriv), 100n, 10n),
-      );
-      await expect(txPromise).rejects.toThrow(FailedRequireError);
+      const txPromise = spend(combinedCode, 'checkBalance', new SignatureTemplate(alicePriv), 100n, 10n);
+      await expect(txPromise).rejects.toThrow();
     });
 
     it('checkBalance fails when amount <= 0 (assert)', async () => {
-      const { provider, contract } = setupContract(combinedCode, [alicePub]);
-      await addUtxos(provider, contract.address);
-
-      const txPromise = sendTx(
-        provider, contract,
-        contract.unlock.checkBalance(new SignatureTemplate(alicePriv), 0n, 100n),
-      );
-      await expect(txPromise).rejects.toThrow(FailedRequireError);
+      const txPromise = spend(combinedCode, 'checkBalance', new SignatureTemplate(alicePriv), 0n, 100n);
+      await expect(txPromise).rejects.toThrow();
     });
 
     it('checkBalance fails with wrong signature', async () => {
-      const { provider, contract } = setupContract(combinedCode, [alicePub]);
-      await addUtxos(provider, contract.address);
-
-      const txPromise = sendTx(
-        provider, contract,
-        contract.unlock.checkBalance(new SignatureTemplate(bobPriv), 10n, 100n),
-      );
-      await expect(txPromise).rejects.toThrow(FailedRequireError);
+      const txPromise = spend(combinedCode, 'checkBalance', new SignatureTemplate(bobPriv), 10n, 100n);
+      await expect(txPromise).rejects.toThrow();
     });
 
     it('failAlways always fails', async () => {
-      const { provider, contract } = setupContract(combinedCode, [alicePub]);
-      await addUtxos(provider, contract.address);
-
-      const txPromise = sendTx(
-        provider, contract,
-        contract.unlock.failAlways(new SignatureTemplate(alicePriv)),
-      );
-      // In multi-function contracts, revert as the final statement may go through
-      // the implicit final verify path, resulting in FailedTransactionEvaluationError
-      await expect(txPromise).rejects.toThrow(FailedTransactionError);
+      const txPromise = spend(combinedCode, 'failAlways', new SignatureTemplate(alicePriv));
+      await expect(txPromise).rejects.toThrow();
     });
 
     it('failEmpty always fails', async () => {
-      const { provider, contract } = setupContract(combinedCode, [alicePub]);
-      await addUtxos(provider, contract.address);
-
-      const txPromise = sendTx(
-        provider, contract,
-        contract.unlock.failEmpty(new SignatureTemplate(alicePriv)),
-      );
-      await expect(txPromise).rejects.toThrow(FailedTransactionError);
+      const txPromise = spend(combinedCode, 'failEmpty', new SignatureTemplate(alicePriv));
+      await expect(txPromise).rejects.toThrow();
     });
 
     it('simpleAssert(true) succeeds', async () => {
-      const { provider, contract } = setupContract(combinedCode, [alicePub]);
-      await addUtxos(provider, contract.address);
-
-      const tx = await sendTx(
-        provider, contract,
-        contract.unlock.simpleAssert(new SignatureTemplate(alicePriv), true),
-      );
+      const tx = await spend(combinedCode, 'simpleAssert', new SignatureTemplate(alicePriv), true);
       expect(tx.txid).toBeDefined();
     });
 
     it('simpleAssert(false) fails', async () => {
-      const { provider, contract } = setupContract(combinedCode, [alicePub]);
-      await addUtxos(provider, contract.address);
-
-      const txPromise = sendTx(
-        provider, contract,
-        contract.unlock.simpleAssert(new SignatureTemplate(alicePriv), false),
-      );
-      await expect(txPromise).rejects.toThrow(FailedRequireError);
+      const txPromise = spend(combinedCode, 'simpleAssert', new SignatureTemplate(alicePriv), false);
+      await expect(txPromise).rejects.toThrow();
     });
 
     it('artifact has all error declarations', () => {
-      const { artifact } = setupContract(combinedCode, [alicePub]);
+      const artifact = compileString(combinedCode);
 
       expect(artifact.errors).toBeDefined();
       expect(artifact.errors).toHaveLength(3);

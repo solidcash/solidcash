@@ -1,9 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { compileString } from 'solidc';
 import { ResolvedImport } from '@solidcash/utils';
-import { Contract, MockNetworkProvider, TransactionBuilder } from '../../src/index.js';
-import { randomUtxo } from '../../src/utils.js';
-import { createTestProvider, gatherUtxos } from '../test-util.js';
+import { deployStateful } from '../test-util.js';
 
 // Meaningful `virtual` (a function must be virtual to be overridden) and the explicit `override(A, B)`
 // base list (must name ancestor contracts that declare the function).
@@ -54,18 +52,15 @@ contract D is B, C {
 }
 `;
 
+// forceStateful: true so the spend is the short `await sc.call.run(...)` self-poke covenant (no dummy state).
 async function spendDiamond(x: bigint, expected: bigint): Promise<unknown> {
-  const provider: MockNetworkProvider = createTestProvider();
-  const artifact = compileString(DIAMOND, { importResolver: resolverFor(DIAMOND_FILES), rootFileId: '/main.scash' });
-  const contract = new Contract(artifact, [], { provider });
-  await provider.addUtxo(contract.address, randomUtxo({ satoshis: 10000n }));
-  const amount = 1000n;
-  const { utxos, changeAmount } = gatherUtxos(await contract.getUtxos(), { amount });
-  return new TransactionBuilder({ provider })
-    .addInputs(utxos, contract.unlock.run(x, expected))
-    .addOutput({ to: contract.address, amount })
-    .addOutput({ to: contract.address, amount: changeAmount })
-    .send();
+  const artifact = compileString(DIAMOND, {
+    importResolver: resolverFor(DIAMOND_FILES),
+    rootFileId: '/main.scash',
+    forceStateful: true,
+  });
+  const sc = await deployStateful(artifact);
+  return sc.call.run(x, expected); // thenable: the caller awaits, which sends
 }
 
 describe('virtual + override(A, B)', () => {

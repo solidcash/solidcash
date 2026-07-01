@@ -1,10 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import { compileString } from 'solidc';
-import { Contract, MockNetworkProvider, TransactionBuilder } from '../../src/index.js';
-import { randomUtxo } from '../../src/utils.js';
-import { createTestProvider, gatherUtxos } from '../test-util.js';
+import { deployStateful } from '../test-util.js';
 
 // bytesN[k] returns the k-th byte (bytes1): literal index (b[1]) and variable index (b[k]).
+// Compiled with { forceStateful: true } so each spend is the short `await sc.call.f(b, k)` self-poke covenant.
 const SOURCE = `
 contract BytesIndex() {
     function f(bytes4 b, int k) {
@@ -15,16 +14,8 @@ contract BytesIndex() {
 `;
 
 async function spend(b: Uint8Array, k: bigint): Promise<unknown> {
-  const provider: MockNetworkProvider = createTestProvider();
-  const contract = new Contract(compileString(SOURCE), [], { provider });
-  await provider.addUtxo(contract.address, randomUtxo({ satoshis: 10000n }));
-  const amount = 1000n;
-  const { utxos, changeAmount } = gatherUtxos(await contract.getUtxos(), { amount });
-  return new TransactionBuilder({ provider })
-    .addInputs(utxos, contract.unlock.f(b, k))
-    .addOutput({ to: contract.address, amount })
-    .addOutput({ to: contract.address, amount: changeAmount })
-    .send();
+  const sc = await deployStateful(compileString(SOURCE, { forceStateful: true }));
+  return sc.call.f(b, k); // thenable: the caller awaits, which sends
 }
 
 describe('bytesN single-byte index', () => {

@@ -1,12 +1,11 @@
 import { describe, it, expect } from 'vitest';
 import { compileString } from 'solidc';
-import { Contract, MockNetworkProvider, TransactionBuilder } from '../../src/index.js';
-import { randomUtxo } from '../../src/utils.js';
-import { createTestProvider, gatherUtxos } from '../test-util.js';
+import { deployStateful } from '../test-util.js';
 
 // Integer bitwise & | ^ ~ on fixed-width ints. The contract recomputes each op and requires it equals
 // the expected value passed in, so the spend only succeeds if the sign-magnitude <-> two's-complement
 // codegen is correct on the VM (incl. negative signed operands).
+// Compiled with { forceStateful: true } so each spend is the short `sc.call.<fn>(args)` self-poke covenant.
 const SOURCE = `
 contract IntBitwise() {
     function checkUnsigned(uint8 a, uint8 b, uint8 eAnd, uint8 eOr, uint8 eXor, uint8 eNot) {
@@ -25,16 +24,8 @@ contract IntBitwise() {
 `;
 
 async function spend(fn: 'checkUnsigned' | 'checkSigned', args: bigint[]): Promise<unknown> {
-  const provider: MockNetworkProvider = createTestProvider();
-  const contract = new Contract(compileString(SOURCE), [], { provider });
-  await provider.addUtxo(contract.address, randomUtxo({ satoshis: 10000n }));
-  const amount = 1000n;
-  const { utxos, changeAmount } = gatherUtxos(await contract.getUtxos(), { amount });
-  return new TransactionBuilder({ provider })
-    .addInputs(utxos, contract.unlock[fn](...args))
-    .addOutput({ to: contract.address, amount })
-    .addOutput({ to: contract.address, amount: changeAmount })
-    .send();
+  const sc = await deployStateful(compileString(SOURCE, { forceStateful: true }));
+  return sc.call[fn](...args); // thenable: the caller awaits, which sends
 }
 
 describe('integer bitwise', () => {

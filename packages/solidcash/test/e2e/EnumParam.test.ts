@@ -1,11 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import { compileString } from 'solidc';
-import { Contract, MockNetworkProvider, TransactionBuilder } from '../../src/index.js';
-import { randomUtxo } from '../../src/utils.js';
-import { createTestProvider, gatherUtxos } from '../test-util.js';
+import { deployStateful } from '../test-util.js';
 
 // Enum-typed function parameters: previously crashed the compiler (p.type undefined). The ABI
 // exposes the enum name; the SDK encodes the int-backed enum value as an int.
+// Compiled with { forceStateful: true } so each spend is the short `await sc.call.pick(arg)` self-poke covenant.
 const SOURCE = `
 contract EnumParam() {
     enum Color { Red, Green, Blue }
@@ -16,16 +15,8 @@ contract EnumParam() {
 `;
 
 async function spend(arg: bigint): Promise<unknown> {
-  const provider: MockNetworkProvider = createTestProvider();
-  const contract = new Contract(compileString(SOURCE), [], { provider });
-  await provider.addUtxo(contract.address, randomUtxo({ satoshis: 10000n }));
-  const amount = 1000n;
-  const { utxos, changeAmount } = gatherUtxos(await contract.getUtxos(), { amount });
-  return new TransactionBuilder({ provider })
-    .addInputs(utxos, contract.unlock.pick(arg))
-    .addOutput({ to: contract.address, amount })
-    .addOutput({ to: contract.address, amount: changeAmount })
-    .send();
+  const sc = await deployStateful(compileString(SOURCE, { forceStateful: true }));
+  return sc.call.pick(arg); // thenable: the caller awaits, which sends
 }
 
 describe('Enum-typed function parameters', () => {

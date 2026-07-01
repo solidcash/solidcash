@@ -1,11 +1,11 @@
 import { describe, it, expect } from 'vitest';
 import { compileString } from 'solidc';
-import { Contract, MockNetworkProvider, TransactionBuilder } from '../../src/index.js';
-import { randomUtxo } from '../../src/utils.js';
-import { createTestProvider, gatherUtxos } from '../test-util.js';
+import { deployStateful } from '../test-util.js';
 
 // require(cond, CustomError(args)): reverts with the custom error if cond is false. On BCH the
 // error is tooling metadata (no revert data); the runtime behaviour is require(cond).
+// Compiled with { forceStateful: true } so each spend is the short `await sc.call.f(arg)` self-poke
+// covenant (no dummy state, no manual UTXO gathering).
 const SOURCE = `
 contract RequireError() {
     error TooSmall(int min);
@@ -16,16 +16,8 @@ contract RequireError() {
 `;
 
 async function spend(arg: bigint): Promise<unknown> {
-  const provider: MockNetworkProvider = createTestProvider();
-  const contract = new Contract(compileString(SOURCE), [], { provider });
-  await provider.addUtxo(contract.address, randomUtxo({ satoshis: 10000n }));
-  const amount = 1000n;
-  const { utxos, changeAmount } = gatherUtxos(await contract.getUtxos(), { amount });
-  return new TransactionBuilder({ provider })
-    .addInputs(utxos, contract.unlock.f(arg))
-    .addOutput({ to: contract.address, amount })
-    .addOutput({ to: contract.address, amount: changeAmount })
-    .send();
+  const sc = await deployStateful(compileString(SOURCE, { forceStateful: true }));
+  return sc.call.f(arg); // thenable: the caller awaits, which sends
 }
 
 describe('require with custom error', () => {

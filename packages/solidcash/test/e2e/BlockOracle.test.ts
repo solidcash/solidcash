@@ -36,40 +36,32 @@ const NETWORKS = [
   { name: 'regtest', chainId: -1, expected: 255 },
 ];
 
-async function spendCheck(chainId: number, expected: number): Promise<string> {
-  const sc = await deployStateful(compileString(SOURCE, { chainId, forceStateful: true }));
-  const tx = await sc.check(BigInt(expected)); // thenable: awaiting sends
-  return tx.txid;
-}
-
-// Spend a no-arg contract whose body hardcodes a network-byte check.
-async function spendLiteral(chainId: number | undefined, literal: number): Promise<string> {
-  const src = `contract C() { function f() { require(block.chainid == ${literal}); } }`;
-  const artifact = compileString(src, { ...(chainId === undefined ? {} : { chainId }), forceStateful: true });
-  const sc = await deployStateful(artifact);
-  const tx = await sc.f(); // thenable: awaiting sends
-  return tx.txid;
-}
+// A no-arg contract whose body hardcodes a network-byte check.
+const LITERAL_SRC = 'contract C() { function f() { require(block.chainid == 0); } }';
 
 describe('block.chainid e2e', () => {
   for (const net of NETWORKS) {
     it(`bakes ${net.name} (chainId ${net.chainId}) as ${net.expected} and enforces it on the VM`, async () => {
-      const txid = await spendCheck(net.chainId, net.expected);
-      expect(txid).toMatch(/^[0-9a-f]{64}$/);
+      const sc = await deployStateful(compileString(SOURCE, { chainId: net.chainId, forceStateful: true }));
+      const tx = await sc.check(BigInt(net.expected));
+      expect(tx.txid).toMatch(/^[0-9a-f]{64}$/);
     });
 
     it(`rejects a mismatched chain id for ${net.name}`, async () => {
-      await expect(spendCheck(net.chainId, net.expected === 0 ? 1 : 0)).rejects.toThrow();
+      const sc = await deployStateful(compileString(SOURCE, { chainId: net.chainId, forceStateful: true }));
+      await expect(sc.check(BigInt(net.expected === 0 ? 1 : 0))).rejects.toThrow();
     });
   }
 
   it('defaults to mainnet (0) when chainId is omitted', async () => {
-    const txid = await spendLiteral(undefined, 0);
-    expect(txid).toMatch(/^[0-9a-f]{64}$/);
+    const sc = await deployStateful(compileString(LITERAL_SRC, { forceStateful: true }));
+    const tx = await sc.f();
+    expect(tx.txid).toMatch(/^[0-9a-f]{64}$/);
   });
 
   it('a chipnet-compiled contract fails a hardcoded mainnet check (1 != 0)', async () => {
-    await expect(spendLiteral(1, 0)).rejects.toThrow();
+    const sc = await deployStateful(compileString(LITERAL_SRC, { chainId: 1, forceStateful: true }));
+    await expect(sc.f()).rejects.toThrow();
   });
 });
 

@@ -584,8 +584,17 @@ export interface LeanContractOptions {
 const CATEGORY_HEX = /^[0-9a-fA-F]{64}$/;
 
 export class StatefulContract<TArtifact extends Artifact = Artifact> {
-  readonly inner: Contract<TArtifact>;
-  readonly categoryId: string;
+  // Backing for inner / categoryId. When constructed from an ADDRESS the category is unknown until the first
+  // async op resolves it from the indexer (ethers-style lazy network use); `_inner` starts as a category-less
+  // scaffold (artifact/abi/stateLayout are correct) and is rebuilt with the category on resolution.
+  private _inner!: Contract<TArtifact>;
+  private _categoryId = '';
+  private _pendingAddress?: string;
+  private _resolved = false;
+
+  get inner(): Contract<TArtifact> { return this._inner; }
+
+  get categoryId(): string { return this._categoryId; }
 
   state!: StateGetterMap<TArtifact>;
   call!: AbiToFunctionMap<TArtifact['abi'], StatefulFunctionCall, DeployFunctionCall>;
@@ -779,18 +788,45 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
   // function / state getter on the bare name (v6 dispatch). A framework member wins a name collision; the
   // shadowed function stays reachable via `sc.getFunction(name)`.
   constructor(contract: Contract<TArtifact>, categoryId: string);
-  constructor(categoryId: string, artifact: TArtifact, runner: ContractRunner, options?: LeanContractOptions);
+  constructor(
+    addressOrCategory: string, artifact: TArtifact, runner: ContractRunner, options?: LeanContractOptions);
   constructor(
     a: Contract<TArtifact> | string,
     b: string | TArtifact,
     runner?: ContractRunner,
     options?: LeanContractOptions,
   ) {
-    const contract = typeof a === 'string'
-      ? StatefulContract._contractFromLean(a, b as TArtifact, runner as ContractRunner, options)
-      : a;
-    const categoryId = typeof a === 'string' ? a : (b as string);
+    if (typeof a === 'string') {
+      // Lean form: `a` is an ADDRESS (category resolved lazily from the indexer, ethers-style) or a 64-char
+      // category id (used directly). A NetworkProvider runner is read-only-first; a Signer adds funding/signing.
+      const provider = runner instanceof Signer ? runner.provider : (runner as NetworkProvider);
+      if (runner instanceof Signer) this._signer = runner;
+      const bare = new Contract(b as TArtifact, (options?.constructorArgs ?? []) as any, {
+        provider, addressType: options?.addressType ?? 'p2sh32',
+      });
+      StatefulContract._assertStateful(bare);
+      if (CATEGORY_HEX.test(a)) {
+        this._inner = bare.withCategory(hexToBin(a));
+        this._categoryId = a;
+        this._resolved = true;
+      } else {
+        this._inner = bare; // scaffold: correct artifact/abi/stateLayout; category resolved on first async use
+        this._pendingAddress = a;
+      }
+    } else {
+      StatefulContract._assertStateful(a);
+      this._inner = a;
+      this._categoryId = b as string;
+      this._resolved = true;
+    }
 
+    this._buildNamespaces(this._inner);
+
+    // eslint-disable-next-line no-constructor-return
+    return this._withDispatchProxy();
+  }
+
+  private static _assertStateful<T extends Artifact>(contract: Contract<T>): void {
     if (!contract.isStateful || !contract.stateLayout) {
       throw new Error(`Contract ${contract.name} is not a stateful contract`);
     }
@@ -799,32 +835,16 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         `Stateful contract '${contract.name}' must use p2sh32 address type. Got '${contract.addressType}'.`,
       );
     }
-
-    this.inner = contract;
-    this.categoryId = categoryId;
-    if (runner instanceof Signer) this._signer = runner;
-
-    this._buildNamespaces(contract);
-
-    // eslint-disable-next-line no-constructor-return
-    return this._withDispatchProxy();
   }
 
-  // Build the read-only p2sh contract for the lean constructor from a category id + artifact + runner.
-  private static _contractFromLean<T extends Artifact>(
-    categoryId: string, artifact: T, runner: ContractRunner, options?: LeanContractOptions,
-  ): Contract<T> {
-    if (!CATEGORY_HEX.test(categoryId)) {
-      throw new Error(
-        `'${categoryId}' is not a 64-char category id. To attach by address use `
-        + 'StatefulContract.at(address, artifact, runner) (async - the category is read from the indexer).',
-      );
-    }
-    const provider = runner instanceof Signer ? runner.provider : runner;
-    const bare = new Contract(artifact, (options?.constructorArgs ?? []) as any, {
-      provider, addressType: options?.addressType ?? 'p2sh32',
-    });
-    return bare.withCategory(hexToBin(categoryId));
+  // Resolve the token category from the indexer (getUtxos) the first time an address-constructed instance needs
+  // it, then rebuild `inner` with the category baked in. A no-op once resolved / for category-constructed
+  // instances. Called at the top of every async operation that needs the category.
+  async _ensureResolved(): Promise<void> {
+    if (this._resolved) return;
+    this._categoryId = await resolveCategoryFromAddress(this._inner.provider, this._pendingAddress!);
+    this._inner = this._inner.withCategory(hexToBin(this._categoryId));
+    this._resolved = true;
   }
 
   // Build the state / call / functions / tokens namespaces from the (resolved) inner contract's artifact.
@@ -907,11 +927,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
   static async at<T extends Artifact>(
     addressOrCategory: string, artifact: T, runner: ContractRunner, options?: LeanContractOptions,
   ): Promise<ConnectedStatefulContract<T>> {
-    const provider = runner instanceof Signer ? runner.provider : runner;
-    const categoryId = CATEGORY_HEX.test(addressOrCategory)
-      ? addressOrCategory
-      : await resolveCategoryFromAddress(provider, addressOrCategory);
-    return new StatefulContract(categoryId, artifact, runner, options) as ConnectedStatefulContract<T>;
+    const sc = new StatefulContract(addressOrCategory, artifact, runner, options) as ConnectedStatefulContract<T>;
+    await (sc as StatefulContract)._ensureResolved(); // eager: at() returns a fully-resolved instance
+    return sc;
   }
 
   static withCategory<T extends Artifact>(
@@ -2713,7 +2731,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
   }
 
   get address(): string {
-    return this.inner.address;
+    // For an address-constructed instance the address is known immediately (the category-less scaffold's own
+    // address would differ until resolution).
+    return this._pendingAddress ?? this.inner.address;
   }
 
   get tokenAddress(): string {
@@ -2729,11 +2749,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
   }
 
   async getState(): Promise<Record<string, StateValueType>> {
+    await this._ensureResolved();
     const onChainState = await getContractState(this.inner, this.categoryId);
     return onChainState.state as Record<string, StateValueType>;
   }
 
   async getFullState(): Promise<OnChainState> {
+    await this._ensureResolved();
     return getContractState(this.inner, this.categoryId);
   }
 
@@ -2781,6 +2803,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
   }
 
   async getBalance(): Promise<bigint> {
+    await this._ensureResolved();
     return this.satoshiContainer.getBalance();
   }
 
@@ -3768,6 +3791,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       emitReturn?: boolean;
     },
   ): Promise<StatefulTransactionBuilder> {
+    await this._ensureResolved(); // address-constructed instances: resolve the category before building the tx
     const stateLayout = this.inner.stateLayout!;
 
     // Move ABI lookup FIRST so we can determine if full state is needed

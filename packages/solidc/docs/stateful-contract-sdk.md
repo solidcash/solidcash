@@ -6,25 +6,27 @@
 ## Creating an instance
 
 ```ts
-// Lean constructor - you already know the token category (64-char hex):
-//   NetworkProvider runner => read-only-first; Signer runner => adds funding + signing.
-const counter = new StatefulContract(categoryId, artifact, provider, { constructorArgs: [step] });
+// ethers `new Contract(address, abi, runner)` - sync, the token category is resolved lazily from the indexer on
+// the first async op (getState / a send). NetworkProvider runner => read-only-first; Signer => funding+signing.
+const counter = new StatefulContract(address, artifact, provider, { constructorArgs: [step] });
+await counter.getState();   // <- resolves the category here (getUtxos), then reads
 
-// Attach by ADDRESS (ethers `new Contract(address, abi, runner)`). Async because BCH maps address -> category
-// through the indexer (getUtxos); a 64-char category id passed here is used directly.
+// at() is the same thing, but resolves eagerly so the category/id is available immediately after `await`:
 const counter = await StatefulContract.at(address, artifact, signer, { constructorArgs: [step] });
 
-// Classic paths are unchanged and still supported:
+// A 64-char category id may be passed instead of an address anywhere above (used directly, no lookup). Classic
+// paths are unchanged:
 const counter = StatefulContract.withCategory(new Contract(artifact, [step], { provider }), categoryId);
 ```
 
-### Why `constructorArgs`, and why `at()` is async
+### Why `constructorArgs`, and lazy resolution
 
 An EVM address lets you call because the bytecode lives on-chain. A BCH p2sh address is a *hash of the redeem
 script*, so **spending needs the redeem script = bytecode (artifact) + constructor args** - they can't be
 recovered from the address. Omit them for a no-arg contract or read-only use; provide them to spend. The token
-**category** is not part of that irreducible input: it is read from the indexer (`getUtxos(address)`), which is
-why `at(address, ...)` is async. See [multi-contract-artifacts.md](multi-contract-artifacts.md) s13.
+**category** is not part of that irreducible input: it is read from the indexer (`getUtxos(address)`). Like
+ethers, the constructor is sync and hits the network lazily (on the first `getState` / send); `at()` resolves
+eagerly. See [multi-contract-artifacts.md](multi-contract-artifacts.md) s13.
 
 ## Runner: provider vs signer
 

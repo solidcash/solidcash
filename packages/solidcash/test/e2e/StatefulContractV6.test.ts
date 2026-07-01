@@ -80,9 +80,25 @@ describe('StatefulContract v6 flavor: lean constructor + at() + Proxy dispatch',
     expect(state.count).toBe(5n);
   });
 
-  it('the sync constructor rejects an address (points to the async at())', async () => {
-    const { provider, address } = await deployCounter();
-    expect(() => new StatefulContract(address, art, provider, { constructorArgs: [5n] }))
-      .toThrow(/not a 64-char category id.*StatefulContract\.at/s);
+  it('new StatefulContract(ADDRESS, ...) resolves the category lazily from the indexer on first use', async () => {
+    const { provider, categoryId, address } = await deployCounter();
+    // ethers `new Contract(address, abi, provider)`: sync, no category supplied.
+    const sc = new StatefulContract(address, art, provider, { constructorArgs: [5n] });
+    expect(sc.address).toBe(address); // known immediately from the passed address
+    // First async op resolves the category via getUtxos, then reads state.
+    expect(await sc.getState()).toEqual({ count: 0n });
+    expect(sc.categoryId).toBe(categoryId);
+  });
+
+  it('read-write from an ADDRESS: lazy resolution then send (count += step)', async () => {
+    const { provider, categoryId, address } = await deployCounter();
+    const signer = new Signer(alicePriv, provider);
+    const sc = new StatefulContract(address, art, signer, { constructorArgs: [5n] });
+    const tx = await sc.increment().send(); // lazily resolves, then builds + sends
+    const dataNft = getTxOutputs(tx).find(
+      (o) => o.token?.nft?.capability === 'mutable' && o.token?.category === categoryId,
+    );
+    const state = parsePushdataCommitment(dataNft!.token!.nft!.commitment, art.stateLayout!, 0);
+    expect(state.count).toBe(5n);
   });
 });

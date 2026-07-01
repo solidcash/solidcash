@@ -9,11 +9,11 @@ import { createTxVerifier } from '@mem-cash/validation';
 import { buildInitialStateCommitments, type StateLayout } from '@solidcash/utils';
 import { Output, Network, Utxo } from '../src/interfaces.js';
 import {
-  Contract, TransactionBuilder, Signer,
+  Contract, TransactionBuilder, HDSigner, signersFromMnemonic,
 } from '../src/index.js';
 import { MockNetworkProvider, RegtestNetworkProvider } from '../src/index.js';
 import { getDataNftAddress, getTokenContainerAddress } from '../src/stateful/covenant-helpers.js';
-import { network as defaultNetwork, alicePriv } from './fixture/vars.js';
+import { network as defaultNetwork } from './fixture/vars.js';
 import { generateLibauthSourceOutputs, getNetworkPrefix, libauthOutputToSolidCashOutput } from '../src/utils.js';
 import { utxoComparator } from '../src/utils.js';
 
@@ -213,21 +213,62 @@ export function createTestProvider(): MockNetworkProvider | RegtestNetworkProvid
   return new MockNetworkProvider();
 }
 
+// The default hardhat dev mnemonic (a valid BIP-39 phrase). Its accounts are the ones hardhat pre-funds.
+export const DEFAULT_TEST_MNEMONIC = 'test test test test test test test test test test test junk';
+
 let fundingNonce = 0x1000;
+function nextFundingTxid(): string {
+  return (fundingNonce++).toString(16).padStart(64, '0');
+}
+
+async function fundAddress(
+  provider: TestProvider, address: string, utxoCount: number, satoshis: bigint,
+): Promise<void> {
+  for (let i = 0; i < utxoCount; i++) {
+    await provider.addUtxo(address, { txid: nextFundingTxid(), vout: 0, satoshis });
+  }
+}
 
 /**
- * A Signer on a fresh MockNetworkProvider seeded with `count` genesis-valid funding UTXO(s) (vout 0, token-free)
- * - the test analogue of hardhat's pre-funded `getSigners()`. Use as the runner for a ContractFactory:
- * `const sc = await getContractFactory(artifact, await fundedSigner()).deploy(...)`. Each funding UTXO backs one
- * `factory.deploy()` (its txid becomes the token category); pass `count > 1` for a test that deploys repeatedly.
+ * The hardhat `ethers.getSigners()` analogue: `count` HD signers derived from DEFAULT_TEST_MNEMONIC
+ * (m/44'/145'/0'/0/i), each pre-funded with a genesis-valid UTXO on a shared provider. Destructure the famous
+ * way: `const [owner, addr1, addr2] = await getSigners();`. Each is an HDSigner - a drop-in ContractFactory
+ * runner. `fundingUtxos > 1` gives every account multiple funding UTXOs (for accounts that deploy repeatedly).
  */
-export async function fundedSigner(count = 1, satoshis = 1_000_000n): Promise<Signer> {
-  const provider = createTestProvider();
-  const signer = new Signer(alicePriv, provider);
-  for (let i = 0; i < count; i++) {
-    const txid = (fundingNonce++).toString(16).padStart(64, '0');
-    await provider.addUtxo(signer.getAddress(), { txid, vout: 0, satoshis });
+export async function getSigners(
+  count = 20,
+  opts: { provider?: TestProvider; satoshis?: bigint; mnemonic?: string; fundingUtxos?: number } = {},
+): Promise<HDSigner[]> {
+  const provider = opts.provider ?? createTestProvider();
+  const satoshis = opts.satoshis ?? 1_000_000n;
+  const fundingUtxos = opts.fundingUtxos ?? 1;
+  const signers = signersFromMnemonic(opts.mnemonic ?? DEFAULT_TEST_MNEMONIC, provider, { count });
+  for (const signer of signers) {
+    await fundAddress(provider, signer.getAddress(), fundingUtxos, satoshis);
   }
+  return signers;
+}
+
+/** A single pre-funded HD signer at `index` (hardhat `ethers.getSigner`). */
+export async function getSigner(
+  index = 0,
+  opts: { provider?: TestProvider; satoshis?: bigint } = {},
+): Promise<HDSigner> {
+  const provider = opts.provider ?? createTestProvider();
+  const [signer] = signersFromMnemonic(DEFAULT_TEST_MNEMONIC, provider, { initialIndex: index, count: 1 });
+  await fundAddress(provider, signer.getAddress(), 1, opts.satoshis ?? 1_000_000n);
+  return signer;
+}
+
+/**
+ * A single pre-funded signer (account 0) with `count` funding UTXOs - the common shortcut for a
+ * ContractFactory runner: `getContractFactory(artifact, await fundedSigner()).deploy(...)`. Each funding UTXO
+ * backs one `factory.deploy()` (its txid becomes the token category); pass `count > 1` to deploy repeatedly.
+ */
+export async function fundedSigner(count = 1, satoshis = 1_000_000n): Promise<HDSigner> {
+  const provider = createTestProvider();
+  const [signer] = signersFromMnemonic(DEFAULT_TEST_MNEMONIC, provider, { count: 1 });
+  await fundAddress(provider, signer.getAddress(), count, satoshis);
   return signer;
 }
 

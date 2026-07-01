@@ -7,6 +7,7 @@ import {
   HDSigner, HDPublicSigner, signersFromMnemonic, BCH_DEFAULT_HD_PATH, BCH_ACCOUNT_BRANCH,
   Signer, Network, MockNetworkProvider, getContractFactory,
 } from '../../src/index.js';
+import { getSigners, getSigner, DEFAULT_TEST_MNEMONIC } from '../test-util.js';
 
 // Standard BIP-39 test vector (Trezor), 12 words.
 const MNEMONIC = 'legal winner thank year wave sausage worth useful legal winner thank yellow';
@@ -138,5 +139,45 @@ contract Poke() {
     await provider.addUtxo(hd.getAddress(), { txid: `${'00'.repeat(31)}01`, vout: 0, satoshis: 1_000_000n });
     const sc = await getContractFactory(artifact, hd).deploy();
     await expect(sc.poke(1n)).resolves.toBeDefined();
+  });
+});
+
+describe('getSigners (hardhat ethers.getSigners analogue)', () => {
+  const SOURCE = `
+contract Poke() {
+    function poke(int x) {
+        require(x >= 0);
+    }
+}
+`;
+
+  it('returns N pre-funded, distinct signers from the default mnemonic', async () => {
+    const [owner, addr1, addr2] = await getSigners(3);
+    expect(new Set([owner, addr1, addr2].map((s) => s.getAddress())).size).toBe(3);
+    for (const s of [owner, addr1, addr2]) {
+      expect((await s.getUtxos()).length).toBeGreaterThanOrEqual(1);
+    }
+  });
+
+  it('account 0 matches the default-path HDSigner from the hardhat mnemonic', async () => {
+    const [owner] = await getSigners(1);
+    expect(owner.getAddress())
+      .toBe(HDSigner.fromPhrase(DEFAULT_TEST_MNEMONIC, owner.provider).getAddress());
+  });
+
+  it('each signer deploys independently via getContractFactory', async () => {
+    const artifact = compileString(SOURCE, { forceStateful: true });
+    const [owner, addr1] = await getSigners(2);
+    const scA = await getContractFactory(artifact, owner).deploy();
+    const scB = await getContractFactory(artifact, addr1).deploy();
+    await expect(scA.poke(1n)).resolves.toBeDefined();
+    await expect(scB.poke(1n)).resolves.toBeDefined();
+  });
+
+  it('getSigner(i) returns a single funded signer at index i', async () => {
+    const s = await getSigner(2);
+    expect((await s.getUtxos()).length).toBeGreaterThanOrEqual(1);
+    const [, , third] = await getSigners(3);
+    expect(s.getAddress()).toBe(third.getAddress());
   });
 });

@@ -241,6 +241,23 @@ receive-only address gap-scanning and balance monitoring from an xpub.
 
 All three are additive - no change to the existing `Signer` surface, and `HDSigner` is a drop-in `Signer`
 anywhere a runner is accepted (verified: `getContractFactory(artifact, hdSigner).deploy()` funds + deploys).
-14 tests green (structural + libauth cross-check + xprv/xpub round-trips + getSigners agreement + watch-only +
-drop-in runner). Open follow-up: rebuild the test-util `fundedSigner()` on `signersFromMnemonic` so one
-mnemonic backs the pre-funded accounts (hardhat-style).
+18 tests green (structural + libauth cross-check + xprv/xpub round-trips + getSigners agreement + watch-only +
+drop-in runner + `getSigners`).
+
+### `getSigners()` - the hardhat `ethers.getSigners()` analogue (test-util)
+
+The famous entry point `const [owner, addr1, addr2] = await getSigners()` returns pre-funded signers.
+Hardhat's version reads them from a funded local node; ours (in `test/test-util.ts`) is the faithful parallel
+for the mock/regtest provider: it derives accounts from the **same default mnemonic hardhat uses**
+(`DEFAULT_TEST_MNEMONIC = "test test test test test test test test test test test junk"`, a valid BIP-39
+phrase) via `signersFromMnemonic`, and pre-funds each with a genesis-valid UTXO on a shared provider. Each
+returned signer is an `HDSigner`, i.e. a drop-in `ContractFactory` runner.
+
+- `getSigners(count = 20, { provider?, satoshis?, mnemonic?, fundingUtxos? })` - N pre-funded signers.
+- `getSigner(index = 0, { provider?, satoshis? })` - one pre-funded signer at `index`.
+- `fundedSigner(count = 1, satoshis?)` - the account-0 shortcut (rebuilt on the above), with `count` funding
+  UTXOs for a test that deploys repeatedly.
+
+`getSigners` and `fundedSigner` derive from the default mnemonic, so a test's funded identities are
+deterministic across runs (the hardhat property). SDK-side, the primitive under all of them is
+`signersFromMnemonic`; funding is inherently a test/local-node concern, so it lives in test-util.

@@ -6,6 +6,7 @@ import { Utxo, Network, VmTarget, TokenDetails } from '../interfaces.js';
 import NetworkProvider from './NetworkProvider.js';
 import { addressToLockScript, randomUtxo } from '../utils.js';
 import { DEFAULT_VM_TARGET } from '../libauth-template/utils.js';
+import { HDSigner, signersFromMnemonic } from '../HDSigner.js';
 
 export interface TokenGenesisOutput {
   address: string;
@@ -24,6 +25,11 @@ export default class MockNetworkProvider implements NetworkProvider {
   public blockHeight: number = 133700;
   public options: MockNetworkProviderOptions;
   public vmTarget: VmTarget;
+
+  // The default hardhat dev mnemonic (a valid BIP-39 phrase); its accounts are the ones getSigners funds.
+  static readonly DEFAULT_MNEMONIC = 'test test test test test test test test test test test junk';
+
+  private fundingNonce = 0x1000;
 
   constructor(options?: Partial<MockNetworkProviderOptions>) {
     this.options = { updateUtxoSet: true, ...options };
@@ -150,6 +156,42 @@ export default class MockNetworkProvider implements NetworkProvider {
   reset(): void {
     this.indexer.reset();
     this.indexer.setChainTip(this.blockHeight, 1700000000);
+  }
+
+  private nextFundingTxid(): string {
+    return (this.fundingNonce++).toString(16).padStart(64, '0');
+  }
+
+  /**
+   * The hardhat `ethers.getSigners()` analogue: `count` HD signers derived from {@link DEFAULT_MNEMONIC}
+   * (m/44'/145'/0'/0/i), each pre-funded with a genesis-valid UTXO on this provider. Destructure the famous
+   * way: `const [owner, addr1] = await provider.getSigners();`. Each is an HDSigner - a drop-in ContractFactory
+   * runner. `fundingUtxos > 1` gives every account multiple funding UTXOs (for accounts that deploy repeatedly).
+   */
+  async getSigners(
+    count = 20,
+    opts: { satoshis?: bigint; mnemonic?: string; fundingUtxos?: number } = {},
+  ): Promise<HDSigner[]> {
+    const satoshis = opts.satoshis ?? 1_000_000n;
+    const fundingUtxos = opts.fundingUtxos ?? 1;
+    const signers = signersFromMnemonic(opts.mnemonic ?? MockNetworkProvider.DEFAULT_MNEMONIC, this, { count });
+    for (const signer of signers) {
+      for (let i = 0; i < fundingUtxos; i++) {
+        await this.addUtxo(signer.getAddress(), { txid: this.nextFundingTxid(), vout: 0, satoshis });
+      }
+    }
+    return signers;
+  }
+
+  /** A single pre-funded HD signer at `index` (hardhat `ethers.getSigner`). */
+  async getSigner(index = 0, opts: { satoshis?: bigint; mnemonic?: string } = {}): Promise<HDSigner> {
+    const [signer] = signersFromMnemonic(
+      opts.mnemonic ?? MockNetworkProvider.DEFAULT_MNEMONIC, this, { initialIndex: index, count: 1 },
+    );
+    await this.addUtxo(signer.getAddress(), {
+      txid: this.nextFundingTxid(), vout: 0, satoshis: opts.satoshis ?? 1_000_000n,
+    });
+    return signer;
   }
 }
 

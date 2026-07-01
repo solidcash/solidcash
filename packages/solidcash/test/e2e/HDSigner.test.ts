@@ -181,3 +181,47 @@ contract Poke() {
     expect(s.getAddress()).toBe(third.getAddress());
   });
 });
+
+describe('MockNetworkProvider.getSigners (provider-level, hre.ethers.getSigners parity)', () => {
+  const SOURCE = `
+contract Poke() {
+    function poke(int x) {
+        require(x >= 0);
+    }
+}
+`;
+
+  it('returns N pre-funded, distinct signers bound to the provider', async () => {
+    const provider = new MockNetworkProvider();
+    const [owner, addr1, addr2] = await provider.getSigners(3);
+    expect(new Set([owner, addr1, addr2].map((s) => s.getAddress())).size).toBe(3);
+    for (const s of [owner, addr1, addr2]) {
+      expect(s.provider).toBe(provider);
+      expect((await s.getUtxos()).length).toBeGreaterThanOrEqual(1);
+    }
+  });
+
+  it('uses the hardhat default mnemonic', async () => {
+    const provider = new MockNetworkProvider();
+    const [owner] = await provider.getSigners(1);
+    expect(owner.getAddress())
+      .toBe(HDSigner.fromPhrase(MockNetworkProvider.DEFAULT_MNEMONIC, provider).getAddress());
+  });
+
+  it('a provider signer deploys via getContractFactory', async () => {
+    const artifact = compileString(SOURCE, { forceStateful: true });
+    const provider = new MockNetworkProvider();
+    const [owner] = await provider.getSigners(1);
+    const sc = await getContractFactory(artifact, owner).deploy();
+    await expect(sc.poke(1n)).resolves.toBeDefined();
+  });
+
+  it('getSigner(i) returns a single funded signer on the provider', async () => {
+    const provider = new MockNetworkProvider();
+    const s = await provider.getSigner(1);
+    expect((await s.getUtxos()).length).toBeGreaterThanOrEqual(1);
+    expect(s.getAddress()).toBe(
+      HDSigner.fromPhrase(MockNetworkProvider.DEFAULT_MNEMONIC, provider, `${BCH_ACCOUNT_BRANCH}/1`).getAddress(),
+    );
+  });
+});

@@ -247,17 +247,23 @@ drop-in runner + `getSigners`).
 ### `getSigners()` - the hardhat `ethers.getSigners()` analogue (test-util)
 
 The famous entry point `const [owner, addr1, addr2] = await getSigners()` returns pre-funded signers.
-Hardhat's version reads them from a funded local node; ours (in `test/test-util.ts`) is the faithful parallel
-for the mock/regtest provider: it derives accounts from the **same default mnemonic hardhat uses**
-(`DEFAULT_TEST_MNEMONIC = "test test test test test test test test test test test junk"`, a valid BIP-39
-phrase) via `signersFromMnemonic`, and pre-funds each with a genesis-valid UTXO on a shared provider. Each
-returned signer is an `HDSigner`, i.e. a drop-in `ContractFactory` runner.
+Hardhat exposes it on the runtime environment bound to a funded local node (`hre.ethers.getSigners()`); our
+faithful parallel lives on the **`MockNetworkProvider`** itself (the mock is our local node):
 
-- `getSigners(count = 20, { provider?, satoshis?, mnemonic?, fundingUtxos? })` - N pre-funded signers.
-- `getSigner(index = 0, { provider?, satoshis? })` - one pre-funded signer at `index`.
-- `fundedSigner(count = 1, satoshis?)` - the account-0 shortcut (rebuilt on the above), with `count` funding
-  UTXOs for a test that deploys repeatedly.
+```ts
+const provider = new MockNetworkProvider();
+const [owner, addr1, addr2] = await provider.getSigners();   // 20 pre-funded HDSigners on this provider
+const sc = await getContractFactory(artifact, owner).deploy();
+```
 
-`getSigners` and `fundedSigner` derive from the default mnemonic, so a test's funded identities are
-deterministic across runs (the hardhat property). SDK-side, the primitive under all of them is
-`signersFromMnemonic`; funding is inherently a test/local-node concern, so it lives in test-util.
+- **`MockNetworkProvider.getSigners(count = 20, { satoshis?, mnemonic?, fundingUtxos? })`** derives accounts
+  from `MockNetworkProvider.DEFAULT_MNEMONIC` (the **same `"test test … junk"` phrase hardhat uses**, a valid
+  BIP-39 mnemonic) via `signersFromMnemonic`, and pre-funds each with a genesis-valid UTXO on `this` provider.
+  Each returned signer is an `HDSigner`, i.e. a drop-in `ContractFactory` runner.
+- **`MockNetworkProvider.getSigner(index = 0, { satoshis?, mnemonic? })`** - one pre-funded signer at `index`.
+
+The test-util wrappers `getSigners(count, { provider?, ... })` / `getSigner(index, { provider? })` /
+`fundedSigner(count, satoshis?)` (the account-0 shortcut with `count` funding UTXOs) delegate to the provider's
+methods on mock, with a regtest fallback; `DEFAULT_TEST_MNEMONIC` re-exports the provider's default so there is
+a single source. Funded identities are deterministic across runs (the hardhat property). The SDK primitive
+under all of them is `signersFromMnemonic`; funding lives on the mock provider (the local-node concern).

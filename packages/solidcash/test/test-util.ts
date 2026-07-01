@@ -213,8 +213,8 @@ export function createTestProvider(): MockNetworkProvider | RegtestNetworkProvid
   return new MockNetworkProvider();
 }
 
-// The default hardhat dev mnemonic (a valid BIP-39 phrase). Its accounts are the ones hardhat pre-funds.
-export const DEFAULT_TEST_MNEMONIC = 'test test test test test test test test test test test junk';
+// The default hardhat dev mnemonic (a valid BIP-39 phrase). Shared with MockNetworkProvider.getSigners.
+export const DEFAULT_TEST_MNEMONIC = MockNetworkProvider.DEFAULT_MNEMONIC;
 
 let fundingNonce = 0x1000;
 function nextFundingTxid(): string {
@@ -240,11 +240,10 @@ export async function getSigners(
   opts: { provider?: TestProvider; satoshis?: bigint; mnemonic?: string; fundingUtxos?: number } = {},
 ): Promise<HDSigner[]> {
   const provider = opts.provider ?? createTestProvider();
-  const satoshis = opts.satoshis ?? 1_000_000n;
-  const fundingUtxos = opts.fundingUtxos ?? 1;
+  if (provider instanceof MockNetworkProvider) return provider.getSigners(count, opts);
   const signers = signersFromMnemonic(opts.mnemonic ?? DEFAULT_TEST_MNEMONIC, provider, { count });
   for (const signer of signers) {
-    await fundAddress(provider, signer.getAddress(), fundingUtxos, satoshis);
+    await fundAddress(provider, signer.getAddress(), opts.fundingUtxos ?? 1, opts.satoshis ?? 1_000_000n);
   }
   return signers;
 }
@@ -255,6 +254,7 @@ export async function getSigner(
   opts: { provider?: TestProvider; satoshis?: bigint } = {},
 ): Promise<HDSigner> {
   const provider = opts.provider ?? createTestProvider();
+  if (provider instanceof MockNetworkProvider) return provider.getSigner(index, opts);
   const [signer] = signersFromMnemonic(DEFAULT_TEST_MNEMONIC, provider, { initialIndex: index, count: 1 });
   await fundAddress(provider, signer.getAddress(), 1, opts.satoshis ?? 1_000_000n);
   return signer;
@@ -267,6 +267,9 @@ export async function getSigner(
  */
 export async function fundedSigner(count = 1, satoshis = 1_000_000n): Promise<HDSigner> {
   const provider = createTestProvider();
+  if (provider instanceof MockNetworkProvider) {
+    return (await provider.getSigners(1, { fundingUtxos: count, satoshis }))[0];
+  }
   const [signer] = signersFromMnemonic(DEFAULT_TEST_MNEMONIC, provider, { count: 1 });
   await fundAddress(provider, signer.getAddress(), count, satoshis);
   return signer;

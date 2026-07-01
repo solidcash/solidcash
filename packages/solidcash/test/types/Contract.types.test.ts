@@ -212,6 +212,41 @@ const provider = new MockNetworkProvider();
 }
 
 
+// describe('address + array parameter typing (TypeMap address entry + MapType array recursion)')
+{
+  interface AddrArrayArtifactType extends Artifact {
+    constructorInputs: [],
+    abi: [
+      {
+        name: 'route',
+        inputs: [
+          { name: 'to', type: 'address' },
+          { name: 'ids', type: 'int[]' },
+          { name: 'keys', type: 'bytes20[3]' },
+        ],
+      },
+    ]
+  }
+
+  const contract = new Contract<AddrArrayArtifactType>(p2pkhArtifactJsonNotConst as any, [], { provider });
+
+  // it('accepts address as Uint8Array or hex string, int[] as bigint[], bounded bytes20[3] as bytes[]')
+  contract.unlock.route(alicePkh, [1n, 2n, 3n], [alicePkh, binToHex(alicePkh)]);
+  contract.unlock.route(binToHex(alicePkh), [], []);
+
+  // it('rejects a bigint where an address (bytes) is expected')
+  // @ts-expect-error
+  contract.unlock.route(1000n, [1n], [alicePkh]);
+
+  // it('rejects a scalar where an array is expected')
+  // @ts-expect-error
+  contract.unlock.route(alicePkh, 1n, [alicePkh]);
+
+  // it('rejects string elements where a bigint[] is expected')
+  // @ts-expect-error
+  contract.unlock.route(alicePkh, ['a', 'b'], [alicePkh]);
+}
+
 // describe('TransferWithTimeout contract | 3 constructor inputs | two functions (1 arg each)')
 {
   // describe('Constructor arguments')

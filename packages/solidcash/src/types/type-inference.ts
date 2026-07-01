@@ -14,18 +14,27 @@ type TypeMap = {
   pubkey: BytesType;
   sig: SignatureType;
   datasig: BytesType;
+  address: BytesType; // locking bytecode (Uint8Array) or its hex string
+  'address payable': BytesType;
 };
 
-// Helper type to process a single parameter by mapping its `type` to a value in `TypeMap`.
-// Example: { type: "pubkey" } -> Uint8Array
+// Map an ABI type string to its TS value type, recursing through `T[]` / `T[N]` array suffixes.
+// Example: "int" -> bigint; "address[]" -> (Uint8Array | string)[]; "bytes20[3]" -> (Uint8Array | string)[]
 // Branches:
-// - If `Param` is a known type, it maps the `type` to `TypeMap[Type]`.
-// - If `Param` has an unknown `type`, it defaults to `any`.
-// - If `Param` is not an object with `type`, it defaults to `any`.
-type ProcessParam<Param> = Param extends { type: infer Type }
-  ? Type extends keyof TypeMap
+// - If `Type` ends in an array suffix (bounded or not), map the element type and wrap it in an array.
+// - Else if `Type` is a known leaf type, map it via `TypeMap`.
+// - Else default to `any`.
+type MapType<Type> = Type extends `${infer Elem}[${string}]`
+  ? MapType<Elem>[]
+  : Type extends keyof TypeMap
     ? TypeMap[Type]
-    : any
+    : any;
+
+// Helper type to process a single parameter by mapping its `type` to a value type (see MapType).
+// Example: { type: "pubkey" } -> Uint8Array | string; { type: "int[]" } -> bigint[]
+// A param that is not an object with a `type` defaults to `any`.
+type ProcessParam<Param> = Param extends { type: infer Type }
+  ? MapType<Type>
   : any;
 
 // Main type to recursively convert an array of parameter definitions into a tuple.
@@ -70,7 +79,7 @@ type ProcessFunction<Function, ReturnType, DeployReturnType> = Function extends 
 //   { name: "transfer", inputs: [{ type: "int" }] },
 //   { name: "approve", inputs: [{ type: "address" }, { type: "int" }] }
 // ] ->
-// { transfer: (arg0: bigint) => ReturnType; approve: (arg0: string, arg1: bigint) => ReturnType }
+// { transfer: (arg0: bigint) => ReturnType; approve: (arg0: Uint8Array | string, arg1: bigint) => ReturnType }
 // Branches:
 // - Branch 1: If `Abi` is `unknown` or `any`, return a default function map with generic parameters and return type.
 // - Branch 2: If `Abi` is a tuple with a `Head`, process `Head` using `ProcessFunction` and recurse on the `Tail`.

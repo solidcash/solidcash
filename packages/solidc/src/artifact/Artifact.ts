@@ -166,7 +166,13 @@ export function generateDeclarationArtifact(
 ): Artifact {
   const primary = ast.interfaceDefinitions.find((i) => i.name === ast.libraryName)
     ?? ast.interfaceDefinitions[0];
-  const abi: AbiFunction[] = (primary?.functions ?? []).map((fn) => ({
+  // A standalone abstract contract (compiled under solidityImportCompat) has no interface, but its own
+  // public/external functions form the ABI - solc emits an ABI + empty bytecode for abstract contracts.
+  const abstractContract = ast.contract?.isAbstract ? ast.contract : undefined;
+  const declFunctions = primary?.functions
+    ?? abstractContract?.functions.filter((fn) => fn.isEntryPoint)
+    ?? [];
+  const abi: AbiFunction[] = declFunctions.map((fn) => ({
     name: fn.name,
     inputs: fn.parameters.map((p) => ({ name: p.name, type: abiTypeString(p.type) })),
     ...(fn.returnTypes.length > 0 && { outputs: fn.returnTypes.map((t) => ({ type: t.toString() })) }),
@@ -175,6 +181,7 @@ export function generateDeclarationArtifact(
   const allEnums = [
     ...(ast.enumDefinitions || []),
     ...ast.interfaceDefinitions.flatMap((i) => i.enumDefinitions || []),
+    ...(abstractContract?.enumDefinitions || []),
   ];
   const enums = allEnums.length > 0
     ? allEnums.map((e) => ({
@@ -183,7 +190,7 @@ export function generateDeclarationArtifact(
     }))
     : undefined;
 
-  const allEventDefs = ast.eventDefinitions || [];
+  const allEventDefs = [...(ast.eventDefinitions || []), ...(abstractContract?.eventDefinitions || [])];
   const events = allEventDefs.length > 0
     ? allEventDefs.map((ev) => ({
       name: ev.name,
@@ -197,7 +204,7 @@ export function generateDeclarationArtifact(
     }))
     : undefined;
 
-  const allErrors = ast.errorDefinitions || [];
+  const allErrors = [...(ast.errorDefinitions || []), ...(abstractContract?.errorDefinitions || [])];
   const errors = allErrors.length > 0
     ? allErrors.map((err) => ({
       name: err.name,
@@ -207,7 +214,7 @@ export function generateDeclarationArtifact(
     : undefined;
 
   return {
-    contractName: ast.libraryName ?? 'definitions',
+    contractName: ast.libraryName ?? abstractContract?.name ?? 'definitions',
     constructorInputs: [],
     abi,
     bytecode: '',

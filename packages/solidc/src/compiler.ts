@@ -136,6 +136,11 @@ function compileResolvedAst(ast: Ast, code: string, mergedCompilerOptions: Compi
 
   // Check if this is an abstract contract (cannot be compiled to an artifact)
   if (ast.contract.isAbstract) {
+    // Under solidityImportCompat, a standalone abstract contract emits an ABI-only declaration artifact
+    // (solc parity - abstract contracts have an ABI + empty bytecode), like interface / decl-only files.
+    if (mergedCompilerOptions.solidityImportCompat) {
+      return generateDeclarationArtifact(ast, code);
+    }
     throw new AbstractContractNotCompilableError(ast.contract.name);
   }
 

@@ -2192,12 +2192,22 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // Capture the stack state after if-block (may include return values)
       const stackAfterIf = [...this.stack];
 
+      // Representative post-branch stack. When one branch aborts via revert its stack is
+      // irrelevant (execution never reaches the code after the branch on that path), so the
+      // other, falling-through branch is authoritative. This matters after EarlyReturnTransformation
+      // nests statements following a `revert` guard into the else branch: emit/return blobs the
+      // function-end covenant needs live there, not on the reverting if-block's stack. Otherwise
+      // both branches converge (e.g. both return) and the if-block's stack is representative.
+      let representative = stackAfterIf;
       if (node.elseBlock) {
         this.emit(Op.OP_ELSE, { location: node.elseBlock.location, positionHint: PositionHint.START });
         // Restore stack for else-block (both branches see same starting state)
         this.stack = [...stackBeforeBranch];
         node.elseBlock = this.visit(node.elseBlock);
-        // After else-block, stack should match if-block result
+        const stackAfterElse = [...this.stack];
+        if (this.blockEndsWithRevert(node.ifBlock) && !this.blockEndsWithRevert(node.elseBlock)) {
+          representative = stackAfterElse;
+        }
       }
 
       const endLocationData = {
@@ -2207,9 +2217,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_ENDIF, endLocationData);
       this.scopeDepth -= 1;
 
-      // After OP_ENDIF, use the if-block's stack state as representative
-      // (both branches should leave the stack in the same state)
-      this.stack = [...stackAfterIf];
+      this.stack = [...representative];
     } else {
       // Original behavior for non-return branches
       let stackDepth = this.stack.length; // AFTER pre-allocation
@@ -2232,6 +2240,22 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
 
     return node;
+  }
+
+  /**
+   * Whether a block's final (control-flow-relevant) statement aborts via revert, so execution
+   * never falls through to code after it. A trailing if/else where both arms revert counts too.
+   */
+  private blockEndsWithRevert(block: BlockNode): boolean {
+    const stmts = (block.statements ?? []).filter((s) => !(s instanceof ConsoleStatementNode));
+    if (stmts.length === 0) return false;
+    const last = stmts[stmts.length - 1];
+    if (last instanceof RevertNode) return true;
+    if (last instanceof BranchNode) {
+      return this.blockEndsWithRevert(last.ifBlock)
+        && !!last.elseBlock && this.blockEndsWithRevert(last.elseBlock);
+    }
+    return false;
   }
 
   /**

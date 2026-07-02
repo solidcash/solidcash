@@ -18,10 +18,12 @@ import {
   BinaryOpNode,
   TupleAssignmentNode,
 } from '../ast/AST.js';
+import { StructType } from '@solidcash/utils';
 import { Modifier } from '../ast/Globals.js';
 import { BinaryOperator } from '../ast/Operator.js';
 import AstTraversal from '../ast/AstTraversal.js';
 import { cloneNode } from '../ast/clone.js';
+import { substituteInFunction } from './InheritanceExpansionTransformation.js';
 
 /**
  * Inlines internal/private functions that RETURN a value and READ a state entry (a mapping/collection
@@ -50,23 +52,34 @@ export default class InlineReturningStateHelpers extends AstTraversal {
   private funcByName: Map<string, FunctionDefinitionNode> = new Map();
   private inlinedFns: Set<string> = new Set();
   private collectionNames: Set<string> = new Set();
+  private freeFns: FunctionDefinitionNode[] = [];
+  private stillCalled: Set<string> = new Set();
   private counter = 0;
   private hoists: StatementNode[] = [];
   private stack: string[] = [];
   private suppress = false;
 
   visitSourceFile(node: SourceFileNode): Node {
+    this.freeFns = node.freeFunctions ?? [];
     if (node.contract) node.contract = this.visit(node.contract) as ContractNode;
+    // A struct storage-pointer value helper (`get`/`size`) is inlined at every expression call site and cannot
+    // stand alone (its `map__field` accesses are dangling until renamed to the caller's `<arg>__field`), so drop
+    // the fully-inlined ones. Kept if a call remained in a suppressed (conditionally-evaluated) position.
+    node.freeFunctions = (node.freeFunctions ?? [])
+      .filter((f) => !this.inlinedFns.has(f.name) || this.stillCalled.has(f.name));
     return node;
   }
 
   visitContract(node: ContractNode): Node {
     this.funcByName = new Map();
-    for (const fn of node.functions) this.funcByName.set(fn.name, fn);
+    for (const fn of [...node.functions, ...this.freeFns]) this.funcByName.set(fn.name, fn);
     this.collectionNames = new Set(node.collections.map((c) => c.name));
 
     this.inlinedFns = new Set();
-    for (const fn of node.functions) if (this.eligible(fn)) this.inlinedFns.add(fn.name);
+    for (const fn of node.functions) if (this.eligible(fn) || this.eligibleStructPtr(fn)) this.inlinedFns.add(fn.name);
+    // Library free-functions are inlined here ONLY as struct storage-pointer value helpers; other library
+    // functions keep their own (delegate) machinery.
+    for (const fn of this.freeFns) if (this.eligibleStructPtr(fn)) this.inlinedFns.add(fn.name);
     if (this.inlinedFns.size === 0) return node;
 
     const bodies = [...node.functions, node.constructorDef, node.fallbackDef, node.receiveDef];
@@ -84,6 +97,7 @@ export default class InlineReturningStateHelpers extends AstTraversal {
         });
       }
     }
+    this.stillCalled = stillCalled;
     node.functions = node.functions.filter((fn) => !this.inlinedFns.has(fn.name) || stillCalled.has(fn.name));
     return node;
   }
@@ -102,6 +116,21 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     this.walk(fn.body, (n) => { if (n instanceof ReturnNode) returns += 1; });
     if (returns !== 1) return false; // a mid-body return can't linearize into a hoisted prelude
     return this.readsEntry(fn);
+  }
+
+  // A single-tail-return value helper taking a STRUCT storage pointer (`get`/`size` on a `Map storage map`). It
+  // reads state via the pointer (`map.values[k]` -> the caller's `<arg>__values` collection), so like a plain
+  // entry-reading helper it cannot be an OP_INVOKE subroutine and must inline at its expression call site.
+  private eligibleStructPtr(fn: FunctionDefinitionNode): boolean {
+    if (!fn.body || fn.returnTypes.length < 1) return false;
+    if (!fn.parameters.some((p) => p.modifier.includes(Modifier.STORAGE) && p.type instanceof StructType)) return false;
+    const stmts = fn.body.statements ?? [];
+    const last = stmts[stmts.length - 1];
+    if (!(last instanceof ReturnNode)) return false;
+    if (last.expressions.length !== fn.returnTypes.length) return false;
+    let returns = 0;
+    this.walk(fn.body, (n) => { if (n instanceof ReturnNode) returns += 1; });
+    return returns === 1;
   }
 
   // Reads a mapping/collection element (incl. the read half of a compound write) - the access that needs an
@@ -138,7 +167,7 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     node.parameters = this.visitList(node.parameters); // inner calls inlined first
     const name = node.identifier.name;
     const callee = this.funcByName.get(name);
-    if (!this.suppress && callee && this.inlinedFns.has(name) && !name.includes('.')
+    if (!this.suppress && callee && this.inlinedFns.has(name)
       && !this.stack.includes(name) && node.parameters.length === callee.parameters.length
       && callee.returnTypes.length === 1) {
       // A scalar helper inlines at an expression position, replaced by its single return temp. A multi-value
@@ -171,7 +200,7 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     if (this.suppress || !(expr instanceof FunctionCallNode)) return undefined;
     const name = expr.identifier.name;
     const callee = this.funcByName.get(name);
-    if (!callee || !this.inlinedFns.has(name) || name.includes('.') || this.stack.includes(name)
+    if (!callee || !this.inlinedFns.has(name) || this.stack.includes(name)
       || expr.parameters.length !== callee.parameters.length || callee.returnTypes.length < 2) return undefined;
     expr.parameters = this.visitList(expr.parameters) as ExpressionNode[]; // inline nested scalar calls in args
     return this.inlineCall(callee, expr.parameters as ExpressionNode[]);
@@ -223,16 +252,29 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     const cloned = cloneNode(callee) as FunctionDefinitionNode;
 
     const rename = new Map<string, string>();
-    callee.parameters.forEach((p) => rename.set(p.name, `${PREFIX}${n}_${p.name}`));
+    const subs = new Map<string, ExpressionNode>();
+    callee.parameters.forEach((p, i) => {
+      if (p.modifier.includes(Modifier.STORAGE)) {
+        // A storage pointer is a compile-time reference: alias a bare state-var arg by NAME (so `map__field`
+        // renames to the caller's `<arg>__field`), or substitute a complex access path by expression.
+        const arg = args[i];
+        if (arg instanceof IdentifierNode) rename.set(p.name, arg.name);
+        else subs.set(p.name, cloneNode(arg) as ExpressionNode);
+      } else {
+        rename.set(p.name, `${PREFIX}${n}_${p.name}`);
+      }
+    });
     this.walk(cloned.body, (node) => {
-      if (node instanceof VariableDefinitionNode && !rename.has(node.name)) {
+      if (node instanceof VariableDefinitionNode && !rename.has(node.name) && !subs.has(node.name)) {
         rename.set(node.name, `${PREFIX}${n}_${node.name}`);
       }
     });
     this.applyRename(cloned.body, rename);
+    substituteInFunction(cloned, subs);
 
     const bindings: StatementNode[] = [];
     callee.parameters.forEach((p, i) => {
+      if (p.modifier.includes(Modifier.STORAGE)) return; // storage params are substituted, not bound to a value
       const def = new VariableDefinitionNode(p.type, [], rename.get(p.name)!, cloneNode(args[i]) as ExpressionNode);
       def.location = args[i].location ?? callee.location;
       bindings.push(def);
@@ -262,18 +304,21 @@ export default class InlineReturningStateHelpers extends AstTraversal {
   }
 
   private applyRename(root: Node, map: Map<string, string>): void {
+    // Rename `x` (exact), `x.f` (dotted member), and `x__f` (a struct storage pointer's flattened state field,
+    // e.g. `map__values` -> `<arg>__values`) so the inlined body targets the caller's flattened collections.
+    const rn = (name: string): string => {
+      const dot = name.indexOf('.');
+      if (dot > 0 && map.has(name.slice(0, dot))) return map.get(name.slice(0, dot))! + name.slice(dot);
+      const us = name.indexOf('__');
+      if (us > 0 && map.has(name.slice(0, us))) return map.get(name.slice(0, us))! + name.slice(us);
+      return map.get(name) ?? name;
+    };
     this.walk(root, (n) => {
       if (n instanceof IdentifierNode) {
-        const dot = n.name.indexOf('.');
-        if (dot > 0) {
-          const head = n.name.slice(0, dot);
-          if (map.has(head)) n.name = map.get(head)! + n.name.slice(dot);
-        } else if (map.has(n.name)) {
-          n.name = map.get(n.name)!;
-        }
+        n.name = rn(n.name);
       } else {
         const nm = (n as unknown as { name?: unknown }).name;
-        if (typeof nm === 'string' && map.has(nm)) (n as unknown as { name: string }).name = map.get(nm)!;
+        if (typeof nm === 'string') (n as unknown as { name: string }).name = rn(nm);
       }
     });
   }

@@ -15,7 +15,9 @@ import {
   UncheckedNode,
   MappingAccessNode,
   ArrayAccessNode,
+  AssignNode,
 } from '../ast/AST.js';
+import { StructType } from '@solidcash/utils';
 import { Modifier } from '../ast/Globals.js';
 import AstTraversal from '../ast/AstTraversal.js';
 import { cloneNode } from '../ast/clone.js';
@@ -51,22 +53,51 @@ export default class InlineStoragePointerCalls extends AstTraversal {
   private funcByName: Map<string, FunctionDefinitionNode> = new Map();
   private inlinedFns: Set<string> = new Set();
   private collectionNames: Set<string> = new Set();
+  private freeFns: FunctionDefinitionNode[] = [];
   private counter = 0;
 
   visitSourceFile(node: SourceFileNode): Node {
+    this.freeFns = node.freeFunctions ?? [];
     if (node.contract) node.contract = this.visit(node.contract) as ContractNode;
+    // A struct-storage-pointer library fn is inlined at every call site and cannot stand alone (its `map__field`
+    // accesses are dangling until renamed to the caller's `<arg>__field`), so drop the inlined ones.
+    node.freeFunctions = (node.freeFunctions ?? []).filter((f) => !this.inlinedFns.has(f.name));
+    // A `using Lib for T` directive whose library functions were ALL inlined-and-dropped is vestigial: the
+    // method calls it routed were desugared to `Lib.f(recv, ..)` at parse and then inlined. Drop it so the
+    // semantic using-for check does not fail on the now-empty library. Only drop when the library was actually
+    // inlined here (a genuinely-undefined library, with no functions ever, must still raise its error). (The
+    // check reads the CONTRACT node's copy of the directives, so filter that one.)
+    if (node.contract?.usingForDirectives?.length) {
+      const remaining = [...node.freeFunctions, ...node.contract.functions].map((f) => f.name);
+      const inlined = [...this.inlinedFns];
+      node.contract.usingForDirectives = node.contract.usingForDirectives.filter((d) => {
+        if (!d.libraryName) return true;
+        const prefix = `${d.libraryName}.`;
+        const stillHas = remaining.some((nm) => nm.startsWith(prefix));
+        const wasInlined = inlined.some((nm) => nm.startsWith(prefix));
+        return stillHas || !wasInlined;
+      });
+    }
     return node;
   }
 
   visitContract(node: ContractNode): Node {
     this.funcByName = new Map();
-    for (const fn of node.functions) this.funcByName.set(fn.name, fn);
+    for (const fn of [...node.functions, ...this.freeFns]) this.funcByName.set(fn.name, fn);
     this.collectionNames = new Set(node.collections.map((c) => c.name));
 
     this.inlinedFns = new Set();
     for (const fn of node.functions) {
       if (fn.body && fn.returnTypes.length === 0
         && (this.hasStoragePointerParam(fn) || (this.isInternalHelper(fn) && this.readsEntry(fn)))) {
+        this.inlinedFns.add(fn.name);
+      }
+    }
+    // Library free-functions (`Lib.fn`) taking a STRUCT storage pointer are inlined too, but ONLY struct ones:
+    // array/mapping storage-pointer library fns (the `using Lib for T[]` path) have their own machinery a broad
+    // inlining would wrongly intercept. Scoping to StructType keeps that path intact (SBE-23).
+    for (const fn of this.freeFns) {
+      if (fn.body && fn.returnTypes.length === 0 && this.hasStructStoragePointerParam(fn)) {
         this.inlinedFns.add(fn.name);
       }
     }
@@ -86,6 +117,20 @@ export default class InlineStoragePointerCalls extends AstTraversal {
 
   private hasStoragePointerParam(fn: FunctionDefinitionNode): boolean {
     return fn.parameters.some((p) => p.modifier.includes(Modifier.STORAGE));
+  }
+
+  private hasStructStoragePointerParam(fn: FunctionDefinitionNode): boolean {
+    return fn.parameters.some((p) => p.modifier.includes(Modifier.STORAGE) && p.type instanceof StructType);
+  }
+
+  // Whether `name` is the target of a direct assignment anywhere in the body (so it cannot be safely aliased to
+  // the caller's argument variable). Postfix/compound ops desugar to AssignNode before this pass.
+  private isReassigned(body: Node | undefined, name: string): boolean {
+    let found = false;
+    this.walk(body, (n) => {
+      if (!found && n instanceof AssignNode && n.identifier.name === name) found = true;
+    });
+    return found;
   }
 
   private isInternalHelper(fn: FunctionDefinitionNode): boolean {
@@ -115,7 +160,7 @@ export default class InlineStoragePointerCalls extends AstTraversal {
       if (stmt instanceof FunctionCallStatementNode) {
         const name = stmt.call.identifier.name;
         const callee = this.funcByName.get(name);
-        if (!name.includes('.') && callee && this.inlinedFns.has(name) && !stack.includes(name)
+        if (callee && this.inlinedFns.has(name) && !stack.includes(name)
           && stmt.call.parameters.length === callee.parameters.length) {
           out.push(...this.inlineCall(callee, stmt.call.parameters, stack));
           continue;
@@ -149,13 +194,21 @@ export default class InlineStoragePointerCalls extends AstTraversal {
 
     const rename = new Map<string, string>();
     const subs = new Map<string, ExpressionNode>();
+    const inlinedArg = new Set<string>();
     callee.parameters.forEach((p, i) => {
+      const arg = args[i];
       if (p.modifier.includes(Modifier.STORAGE)) {
         // A bare state-var argument is aliased by NAME (covers reads and writes, incl. mapping-assign
         // targets whose container is a string field); a complex access path is substituted by expression.
-        const arg = args[i];
         if (arg instanceof IdentifierNode) rename.set(p.name, arg.name);
         else subs.set(p.name, cloneNode(arg) as ExpressionNode);
+      } else if (arg instanceof IdentifierNode && !this.isReassigned(callee.body, p.name)) {
+        // Substitute a simple identifier value arg by NAME (no local binding). A mapping key that is a caller
+        // PARAMETER thus stays a parameter in the inlined body, so the SDK resolves it directly from call args;
+        // a local binding (`__sp0_k = k`) would make the key an opaque expression the SDK cannot locate on the
+        // read side. Guarded on the param not being reassigned in the callee (else the alias would be unsound).
+        rename.set(p.name, arg.name);
+        inlinedArg.add(p.name);
       } else {
         rename.set(p.name, `${PREFIX}${n}_${p.name}`);
       }
@@ -172,7 +225,7 @@ export default class InlineStoragePointerCalls extends AstTraversal {
 
     const bindings: StatementNode[] = [];
     callee.parameters.forEach((p, i) => {
-      if (p.modifier.includes(Modifier.STORAGE)) return;
+      if (p.modifier.includes(Modifier.STORAGE) || inlinedArg.has(p.name)) return;
       const def = new VariableDefinitionNode(p.type, [], rename.get(p.name)!, cloneNode(args[i]) as never);
       def.location = args[i].location ?? callee.location;
       bindings.push(def);
@@ -182,18 +235,21 @@ export default class InlineStoragePointerCalls extends AstTraversal {
   }
 
   private applyRename(root: Node, map: Map<string, string>): void {
+    // Rename `x` (exact), `x.f` (dotted member), and `x__f` (a struct storage pointer's flattened state field,
+    // e.g. `map__values` -> `<arg>__values`) so the inlined body targets the caller's flattened collections.
+    const rn = (name: string): string => {
+      const dot = name.indexOf('.');
+      if (dot > 0 && map.has(name.slice(0, dot))) return map.get(name.slice(0, dot))! + name.slice(dot);
+      const us = name.indexOf('__');
+      if (us > 0 && map.has(name.slice(0, us))) return map.get(name.slice(0, us))! + name.slice(us);
+      return map.get(name) ?? name;
+    };
     this.walk(root, (n) => {
       if (n instanceof IdentifierNode) {
-        const dot = n.name.indexOf('.');
-        if (dot > 0) {
-          const head = n.name.slice(0, dot);
-          if (map.has(head)) n.name = map.get(head)! + n.name.slice(dot);
-        } else if (map.has(n.name)) {
-          n.name = map.get(n.name)!;
-        }
+        n.name = rn(n.name);
       } else {
         const nm = (n as unknown as { name?: unknown }).name;
-        if (typeof nm === 'string' && map.has(nm)) (n as unknown as { name: string }).name = map.get(nm)!;
+        if (typeof nm === 'string') (n as unknown as { name: string }).name = rn(nm);
       }
     });
   }

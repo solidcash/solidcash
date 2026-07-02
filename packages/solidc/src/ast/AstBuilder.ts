@@ -912,7 +912,9 @@ export default class AstBuilder
     for (const p of parameters) {
       if (p.type instanceof StructType) this.localStructTypes.set(p.name, p.type);
     }
+    const structPtrParams = this.registerStructPointerParams(parameters);
     const statements = this.flattenStatements(ctx.statement_list().map((s) => this.visit(s) as StatementNode));
+    for (const nm of structPtrParams) this.mappingStructStateVars.delete(nm);
     const block = new BlockNode(statements);
     block.location = Location.fromCtx(ctx);
 
@@ -1001,6 +1003,23 @@ export default class AstBuilder
     return functionDefinition;
   }
 
+  // A `storage` pointer to a mapping-bearing struct aliases the caller's flattened state struct. Register each
+  // such param like a state var (returning the names to unregister after the body) so `map.field[k]` in the body
+  // flattens to the `map__field` collection through the SAME path (2309 write / 2872 read) the caller's state
+  // struct uses - identical entry-slot layout. InlineStoragePointerCalls renames `map__field` -> `<arg>__field`
+  // at the call site and drops the function.
+  private registerStructPointerParams(parameters: ParameterNode[]): string[] {
+    const registered: string[] = [];
+    for (const p of parameters) {
+      if (p.modifier.includes(Modifier.STORAGE) && p.type instanceof StructType
+        && p.type.fields.some((f) => f.type instanceof MappingType)) {
+        this.mappingStructStateVars.set(p.name, p.type);
+        registered.push(p.name);
+      }
+    }
+    return registered;
+  }
+
   visitFreeFunctionDefinition(ctx: FreeFunctionDefinitionContext): FunctionDefinitionNode {
     this.storageAliases = new Map();
     this.localStructTypes = new Map();
@@ -1010,7 +1029,9 @@ export default class AstBuilder
     for (const p of parameters) {
       if (p.type instanceof StructType) this.localStructTypes.set(p.name, p.type);
     }
+    const structPtrParams = this.registerStructPointerParams(parameters);
     const statements = this.flattenStatements(ctx.statement_list().map((s) => this.visit(s) as StatementNode));
+    for (const nm of structPtrParams) this.mappingStructStateVars.delete(nm);
     const block = new BlockNode(statements);
     block.location = Location.fromCtx(ctx);
 

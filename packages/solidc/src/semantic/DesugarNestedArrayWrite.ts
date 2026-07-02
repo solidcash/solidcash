@@ -1,0 +1,136 @@
+import { ArrayType, Type } from '@solidcash/utils';
+import {
+  Node,
+  SourceFileNode,
+  ContractNode,
+  BlockNode,
+  StatementNode,
+  FunctionDefinitionNode,
+  ParameterNode,
+  VariableDefinitionNode,
+  MappingAssignNode,
+  ArrayAssignNode,
+  ArrayAccessNode,
+  IdentifierNode,
+  ExpressionNode,
+} from '../ast/AST.js';
+import AstTraversal from '../ast/AstTraversal.js';
+import { cloneNode } from '../ast/clone.js';
+
+/**
+ * Lowers a write to a NESTED local (memory) array element, e.g. `b[i][j] = v` where `b` is a local/param
+ * `T[][]`. The parser makes a MappingAssignNode with >1 key (indistinguishable from a nested mapping write at
+ * parse time), which the symbol table would reject as an undefined mapping. Reads `b[i][j]` already work (an
+ * ArrayAccess chain) and single-level writes `b[i] = x` work (ArrayAssignNode); a nested write desugars into a
+ * read-modify-write over those working forms:
+ *
+ *   b[i][j] = v   ->   T tmp = b[i];  tmp[j] = v;  b[i] = tmp;
+ *
+ * Generalises to any depth by reading down to the innermost array, writing the last index, then writing each
+ * intermediate array back up the chain. Only fires when the base is a known LOCAL/param array (nested mappings
+ * are state vars, never locals, so a state `m[a][b]=v` is left untouched). Runs pre-semantic; each temp is typed
+ * from the base's DECLARED element type (syntactically known), so the emitted temps type-check normally.
+ */
+export default class DesugarNestedArrayWrite extends AstTraversal {
+  private locals = new Map<string, Type>();
+  private counter = 0;
+
+  visitSourceFile(node: SourceFileNode): Node {
+    node.importedContracts = this.visitList(node.importedContracts) as ContractNode[];
+    node.freeFunctions = this.visitList(node.freeFunctions) as FunctionDefinitionNode[];
+    if (node.contract) node.contract = this.visit(node.contract) as ContractNode;
+    return node;
+  }
+
+  visitContract(node: ContractNode): Node {
+    if (node.constructorDef) node.constructorDef = this.visit(node.constructorDef) as FunctionDefinitionNode;
+    node.functions = this.visitList(node.functions) as FunctionDefinitionNode[];
+    return node;
+  }
+
+  visitFunctionDefinition(node: FunctionDefinitionNode): Node {
+    const saved = this.locals;
+    this.locals = new Map();
+    for (const p of node.parameters) if (p instanceof ParameterNode) this.locals.set(p.name, p.type);
+    this.collectLocals(node.body);
+    node.body = this.visit(node.body) as BlockNode;
+    this.locals = saved;
+    return node;
+  }
+
+  // Record every local declaration's declared type so a nested write can be typed + recognised.
+  private collectLocals(node: Node): void {
+    if (node instanceof VariableDefinitionNode) this.locals.set(node.name, node.type);
+    for (const key of Object.keys(node)) {
+      const val = (node as any)[key];
+      if (val instanceof Node) this.collectLocals(val);
+      else if (Array.isArray(val)) for (const v of val) if (v instanceof Node) this.collectLocals(v);
+    }
+  }
+
+  visitBlock(node: BlockNode): Node {
+    const out: StatementNode[] = [];
+    for (const stmt of node.statements ?? []) {
+      const visited = this.visit(stmt) as StatementNode;
+      const desugared = visited instanceof MappingAssignNode ? this.tryDesugar(visited) : undefined;
+      if (desugared) out.push(...desugared);
+      else out.push(visited);
+    }
+    node.statements = out;
+    return node;
+  }
+
+  // `b[k0]..[kn] = v` on a local nested array -> read-modify-write statements; undefined if not applicable.
+  private tryDesugar(node: MappingAssignNode): StatementNode[] | undefined {
+    if (node.keys.length < 2) return undefined;
+    const baseType = this.locals.get(node.name);
+    if (!(baseType instanceof ArrayType)) return undefined;
+
+    const keys = node.keys;
+    const m = keys.length;
+    const clone = (e: ExpressionNode): ExpressionNode => cloneNode(e) as ExpressionNode;
+
+    // Read down to the innermost array: tmp0 = base[k0]; tmp1 = tmp0[k1]; ... typing each temp from the
+    // declared element types. Bail if the declared type is not nested enough (let the type checker report it).
+    const stmts: StatementNode[] = [];
+    const tmpNames: string[] = [];
+    let curType: Type = baseType;
+    let curRead: ExpressionNode = this.ident(node.name, node);
+    for (let i = 0; i < m - 1; i++) {
+      if (!(curType instanceof ArrayType)) return undefined;
+      const elemType: Type = curType.elementType;
+      const tmpName = `__na_tmp_${this.counter++}`;
+      const access = new ArrayAccessNode(curRead, clone(keys[i]));
+      access.location = node.location;
+      const decl = new VariableDefinitionNode(elemType, [], tmpName, access);
+      decl.location = node.location;
+      stmts.push(decl);
+      tmpNames.push(tmpName);
+      curType = elemType;
+      curRead = this.ident(tmpName, node);
+    }
+
+    // Write the last index into the innermost temp.
+    const lastWrite = new ArrayAssignNode(tmpNames[m - 2], clone(keys[m - 1]), node.expression);
+    lastWrite.location = node.location;
+    stmts.push(lastWrite);
+
+    // Write each intermediate temp back up the chain, then the base.
+    for (let i = m - 2; i >= 1; i--) {
+      const back = new ArrayAssignNode(tmpNames[i - 1], clone(keys[i]), this.ident(tmpNames[i], node));
+      back.location = node.location;
+      stmts.push(back);
+    }
+    const baseWrite = new ArrayAssignNode(node.name, clone(keys[0]), this.ident(tmpNames[0], node));
+    baseWrite.location = node.location;
+    stmts.push(baseWrite);
+
+    return stmts;
+  }
+
+  private ident(name: string, at: Node): IdentifierNode {
+    const id = new IdentifierNode(name);
+    id.location = at.location;
+    return id;
+  }
+}

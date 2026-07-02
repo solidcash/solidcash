@@ -646,7 +646,7 @@ expression
     | typeCast '(' castable=expression ','? ')' # Cast
     | functionCall # FunctionCallExpression
     | 'new' Identifier callOptions? expressionList #Instantiation
-    | 'new' typeName '[' ']' '(' expression ')' # NewArray
+    | 'new' typeName ('[' ']')+ '(' expression ')' # NewArray
     | 'type' '(' typeName ')' '.' Identifier # TypeIntrospection
     | 'abi.encode' expressionList # AbiEncode
     | 'abi.encodePacked' expressionList # AbiEncodePacked

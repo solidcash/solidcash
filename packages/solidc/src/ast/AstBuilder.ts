@@ -1843,7 +1843,11 @@ export default class AstBuilder
   }
 
   visitNewArray(ctx: any): NewArrayNode {
-    const elementType = this.resolveType(ctx.typeName().getText());
+    // `new T[]...[](n)` allocates the OUTER dynamic array; each extra `[]` makes the element itself an array.
+    // e.g. `new uint256[][](2)` -> a 2-element array whose element type is `uint256[]`.
+    const dims = (ctx.getText().match(/\[\]/g) ?? ['[]']).length;
+    let elementType = this.resolveType(ctx.typeName().getText());
+    for (let i = 1; i < dims; i++) elementType = new ArrayType(elementType);
     const size = this.visit(ctx.expression()) as ExpressionNode;
     const node = new NewArrayNode(elementType, size);
     node.location = Location.fromCtx(ctx);

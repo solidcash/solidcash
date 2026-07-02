@@ -363,6 +363,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private preAllocatedTokenContainerTransfers: Set<number> = new Set(); // transferIndex
   private preAllocatedEntryWrites: Set<number> = new Set(); // slotIndex
   private preAllocatedEntryDeletes: Set<number> = new Set(); // slotIndex
+  // Dynamic (chunk-backed) writes whose value+A$len slots were pushed before a conditional (branch/switch) with
+  // the current value, so a conditionally-taken write replaces them in place (survives the branch) - by var name.
+  private preAllocatedDynamicWrites: Set<string> = new Set();
 
   // Conditional transfer/emit/tcTransfer indices (only active in one branch)
   private conditionalTransferIndices: Set<number> = new Set();
@@ -1274,6 +1277,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.preAllocatedTokenContainerTransfers = new Set();
     this.preAllocatedEntryWrites = new Set();
     this.preAllocatedEntryDeletes = new Set();
+    this.preAllocatedDynamicWrites = new Set();
     this.conditionalTransferIndices = new Set();
     this.conditionalEmitIndices = new Set();
     this.conditionalTokenContainerTransferIndices = new Set();
@@ -2082,6 +2086,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         if (!this.pendingStateWrites.has(key)) { // skip if already pre-allocated by outer branch
           const [nftIdx, fieldIdx] = key.split(':').map(Number);
           const sv = this.stateVariables.find((v) => v.nftIndex === nftIdx && v.fieldIndex === fieldIdx)!;
+          // A chunk-backed (dynamic) array/string write reserves a value blob + A$len rather than one scalar
+          // commitment field; pre-allocate both so a conditionally-taken chunk write survives the branch.
+          if (sv.isDynamic) {
+            this.preAllocateDynamicWrite(sv, key, locationData);
+            continue;
+          }
           this.emitReadCurrentStateValueEncoded(sv, locationData);
           const stackName = `__internal__state_write_${sv.name}`;
           // emitReadCurrentStateValueEncoded leaves '(value)' on the tracker - rename it
@@ -2475,6 +2485,34 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Re-encode to pushdata format
     // emitPushdataEncode replaces the top tracker entry with '(value)'
     this.emitPushdataEncode(sv.type, locationData);
+  }
+
+  /**
+   * Pre-allocate a dynamic (chunk-backed) state write before a conditional (branch/switch), mirroring the scalar
+   * pre-allocation: read the current persisted value (tight bytes) as `__internal__dynwrite_value_<name>` and its
+   * uint32 A$len as `__internal__state_write_<name>`, so a not-taken path writes the current value back unchanged
+   * (a no-op that co-spends and recreates the same chunks). pendingDynamicWrites is set BEFORE the branch so the
+   * write inside it reads this slot (read-modify-write) instead of re-reading, and replaces it in place.
+   */
+  private preAllocateDynamicWrite(sv: StateVariableNode, key: string, locationData: SingleLocationData): void {
+    this.emitReadDynamicScalar(sv, locationData); // pushes '(value)' = current tight value
+    const valueStackName = `__internal__dynwrite_value_${sv.name}`;
+    this.popFromStack();
+    this.pushToStack(valueStackName);
+
+    this.emit(Op.OP_SIZE, locationData); // [value, size] - OP_SIZE leaves value, pushes size
+    this.pushToStack('(dynlen)');
+    this.emitPushdataEncode(new IntType(false, 32), locationData); // [value, len_encoded]
+    this.popFromStack();
+    const stateWriteStackName = `__internal__state_write_${sv.name}`;
+    this.pushToStack(stateWriteStackName);
+    this.pendingStateWrites.set(key, stateWriteStackName);
+    this.preAllocatedStateWrites.add(key);
+
+    this.pendingDynamicWrites.set(sv.name, { valueStackName, sv });
+    this.preAllocatedDynamicWrites.add(sv.name);
+    const writes = (this.currentFunction.dynamicWrites ??= []);
+    if (!writes.includes(sv.name)) writes.push(sv.name);
   }
 
   visitTryCatch(node: TryCatchNode): Node {
@@ -3084,6 +3122,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         if (!this.pendingStateWrites.has(key)) {
           const [nftIdx, fieldIdx] = key.split(':').map(Number);
           const sv = this.stateVariables.find((v) => v.nftIndex === nftIdx && v.fieldIndex === fieldIdx)!;
+          // Chunk-backed (dynamic) writes reserve a value blob + A$len; a scalar slot can't back them.
+          if (sv.isDynamic) {
+            this.preAllocateDynamicWrite(sv, key, locationData);
+            continue;
+          }
           this.emitReadCurrentStateValueEncoded(sv, locationData);
           const stackName = `__internal__state_write_${sv.name}`;
           this.popFromStack();
@@ -5428,7 +5471,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // store only the tight elements (count recoverable as A$len/width); for a variable-width element type
     // keep the count prefix (it cannot be recovered). The epilogue's chunk write loop handles the rest.
     if (sv.isDynamic) {
-      this.emitRegisterDynamicWrite(sv, key, locationData, isFixedWidthType((sv.type as ArrayType).elementType));
+      this.emitRegisterDynamicWrite(
+        sv, key, locationData, isFixedWidthType((sv.type as ArrayType).elementType), node,
+      );
       return;
     }
 
@@ -5458,7 +5503,29 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     key: string,
     loc: SingleLocationData,
     stripCount: boolean,
+    node: Node,
   ): void {
+    // Pre-allocated by an enclosing conditional (branch/switch): the value + A$len slots sit below the branch
+    // holding the current value, so a not-taken path writes it back unchanged. Replace both slots in place
+    // (depth-neutral) rather than pushing new entries that the branch's scope cleanup would drop, and rather
+    // than the coalescing drop below (which would remove the below-branch slots and unbalance the stack). A
+    // second write to the same var in the branch read this slot (read-modify-write), so replacing supersedes it.
+    if (this.preAllocatedDynamicWrites.has(sv.name)) {
+      if (stripCount) {
+        this.emitPushdataDecode(PrimitiveType.BIGINT, loc); // [count, elements]
+        this.emit(Op.OP_NIP, loc); // [elements]
+      }
+      this.popFromStack();
+      this.pushToStack('(dynwrite_newval)'); // new tight value on top
+      this.emit(Op.OP_SIZE, loc); // [value, size]
+      this.pushToStack('(dynlen)');
+      this.emitPushdataEncode(new IntType(false, 32), loc); // [value, A$len]
+      this.emitReplace(this.getStackIndex(`__internal__state_write_${sv.name}`), node);
+      this.popFromStack(); // A$len stored into its slot; new value back on top
+      this.emitReplace(this.getStackIndex(`__internal__dynwrite_value_${sv.name}`), node);
+      this.popFromStack(); // new value stored into its slot
+      return;
+    }
     // W3 coalescing: if a prior write to this var is already pending (arr.push();arr.push(), idx-write +
     // pop, or a re-assignment), the new value on top supersedes it - and already incorporates the prior one
     // via read-after-write (emitReadDynamicScalar). Drop the prior pending value blob and its A$len
@@ -7702,7 +7769,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // type (recoverable as A$len/width) - variable-width keeps it. Strings/bytes (non-array) never strip.
       node.expression = this.visit(node.expression);
       const stripCount = sv.type instanceof ArrayType && isFixedWidthType((sv.type as ArrayType).elementType);
-      this.emitRegisterDynamicWrite(sv, key, locationData, stripCount);
+      this.emitRegisterDynamicWrite(sv, key, locationData, stripCount, node);
       return node;
     }
 

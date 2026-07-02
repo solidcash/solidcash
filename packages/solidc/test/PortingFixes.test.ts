@@ -1792,3 +1792,20 @@ describe('A contract-level `constant` works as an array dimension', () => {
     expect(a.contractName).toBe('C');
   });
 });
+
+describe('Tuple forwarding and whole fixed-array assignment', () => {
+  it('forwards a tuple-returning call directly in a return statement', () => {
+    // `return g()` where g returns (int, int) forwards the tuple's components (Solidity tuple forwarding),
+    // not a single ((int, int)) value.
+    const a = compileString('contract C { function g() private pure returns (int, int) { return (1, 2); }'
+      + ' function h() private pure returns (int, int) { return g(); }'
+      + ' function f() { (int a, int b) = h(); require(a == 1 && b == 2); } }');
+    expect(a.contractName).toBe('C');
+  });
+
+  it('assigns a whole fixed-size array to a state array element-wise', () => {
+    const a = compileString('contract C { int[2] xs;'
+      + ' function f(int[2] memory _xs) { xs = _xs; require(this.xs[0] == _xs[0]); } }');
+    expect(a.contractName).toBe('C');
+  });
+});

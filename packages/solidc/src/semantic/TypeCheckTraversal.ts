@@ -1286,8 +1286,16 @@ export default class TypeCheckTraversal extends AstTraversal {
     // Type check return values against enclosing function's declared return types
     if (this.currentFunction && this.currentFunction.returnTypes.length > 0) {
       const expectedTypes = this.currentFunction.returnTypes;
-      node.expressions = node.expressions.map((e, i) => this.maybeCoerceHexToInt(e, expectedTypes[i]));
-      const actualTypes = node.expressions.map((e) => e.type!);
+      const soleType = node.expressions.length === 1 ? node.expressions[0].type : undefined;
+      let actualTypes: Type[];
+      if (soleType instanceof TupleType && expectedTypes.length > 1) {
+        // `return f()` where f returns a tuple: forward the tuple's component types (Solidity tuple
+        // forwarding) instead of treating the whole tuple as one return value.
+        actualTypes = soleType.elements;
+      } else {
+        node.expressions = node.expressions.map((e, i) => this.maybeCoerceHexToInt(e, expectedTypes[i]));
+        actualTypes = node.expressions.map((e) => e.type!);
+      }
       if (actualTypes.length !== expectedTypes.length) {
         throw new ReturnTypeMismatchError(node, expectedTypes, actualTypes);
       }

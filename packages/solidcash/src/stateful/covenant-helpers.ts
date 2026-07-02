@@ -1,4 +1,6 @@
-import { hexToBin, isHex } from '@bitauth/libauth';
+import {
+  hexToBin, isHex, cashAddressToLockingBytecode, lockingBytecodeToCashAddress,
+} from '@bitauth/libauth';
 import {
   AbiFunction,
   AbiInput,
@@ -48,8 +50,19 @@ function categoryOf(utxos: Utxo[], where: string): string {
  * `token: { category }`, so a deployed instance's category needs no SDK-side registry (see
  * docs/multi-contract-artifacts.md s13). Throws if there is no token UTXO (not deployed / fully spent).
  */
+// Category resolution is token-seeking: query the token-aware form of the address so providers that gate token
+// UTXOs on address token-awareness (e.g. BCHN listunspent) still return them. No-op for hex / non-cashaddr.
+function toTokenAwareAddress(address: string): string {
+  if (isHex(address)) return address;
+  const decoded = cashAddressToLockingBytecode(address);
+  if (typeof decoded === 'string') return address;
+  const prefix = address.includes(':') ? address.split(':')[0] : 'bitcoincash';
+  const encoded = lockingBytecodeToCashAddress({ bytecode: decoded.bytecode, prefix, tokenSupport: true });
+  return typeof encoded === 'string' ? address : encoded.address;
+}
+
 export async function resolveCategoryFromAddress(provider: NetworkProvider, address: string): Promise<string> {
-  return categoryOf(await provider.getUtxos(address), `address ${address}`);
+  return categoryOf(await provider.getUtxos(toTokenAwareAddress(address)), `address ${address}`);
 }
 
 /** As resolveCategoryFromAddress, but keyed by locking bytecode (e.g. a co-spend target's baked address arg). */

@@ -23,6 +23,7 @@ import InlineExternalCallHelpers from './semantic/InlineExternalCallHelpers.js';
 import InlineStoragePointerCalls from './semantic/InlineStoragePointerCalls.js';
 import InlineReturningStateHelpers from './semantic/InlineReturningStateHelpers.js';
 import DesugarPostfixExpressions from './semantic/DesugarPostfixExpressions.js';
+import DesugarReturnInLoop from './semantic/DesugarReturnInLoop.js';
 import LowerInlineAssembly from './semantic/LowerInlineAssembly.js';
 import CacheDynamicArrayInLoop from './semantic/CacheDynamicArrayInLoop.js';
 import SynthesizeBlockOracle from './semantic/SynthesizeBlockOracle.js';
@@ -150,6 +151,10 @@ function compileResolvedAst(ast: Ast, code: string, mergedCompilerOptions: Compi
 
   // Modifier expansion (before semantic analysis)
   ast = expandModifiers(ast);
+
+  // Desugar `return` inside a loop -> flag + break + post-loop return (before break/continue expansion so the
+  // injected breaks are lowered; internal functions can't raw-return from inside a loop's balanced stack).
+  ast = ast.accept(new DesugarReturnInLoop()) as Ast;
 
   // Break/continue expansion (before semantic analysis)
   ast = expandBreakContinue(ast);

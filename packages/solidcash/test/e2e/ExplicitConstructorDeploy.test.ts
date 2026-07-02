@@ -21,17 +21,21 @@ const p2pkh = new Contract(
   { provider },
 );
 
+// Returns the deploy result plus the genesis funding txid. On mocknet the funding UTXO keeps the given seed
+// txid; on regtest addUtxo mutates it to the real one - either way the derived category equals that txid.
 async function deploy(artifact: ReturnType<typeof compileString>, constructorArgs: unknown[],
-  seed: string, initialState: Record<string, bigint>): ReturnType<typeof StatefulContract.deploy> {
+  seed: string, initialState: Record<string, bigint>):
+  Promise<{ result: Awaited<ReturnType<typeof StatefulContract.deploy>>; categoryId: string }> {
   const fundingUtxo: Utxo = { txid: seed.repeat(16), vout: 0, satoshis: 300000n };
   await provider.addUtxo(p2pkh.address, fundingUtxo);
-  return StatefulContract.deploy(artifact, constructorArgs as never, {
+  const result = await StatefulContract.deploy(artifact, constructorArgs as never, {
     provider,
     fundingUtxo,
     funder: p2pkh.unlock.spend(alicePub, new SignatureTemplate(alicePriv)),
     initialState,
     changeAddress: p2pkh.address,
   });
+  return { result, categoryId: fundingUtxo.txid };
 }
 
 describe('explicit-constructor stateful deploy (genesis derivation)', () => {
@@ -43,8 +47,8 @@ describe('explicit-constructor stateful deploy (genesis derivation)', () => {
           function bump() { this.count = this.count + 1; }
       }
     `);
-    const result = await deploy(artifact, [], 'a1b2', { count: 1n });
-    expect(result.categoryId).toBe('a1b2'.repeat(16));
+    const { result, categoryId } = await deploy(artifact, [], 'a1b2', { count: 1n });
+    expect(result.categoryId).toBe(categoryId);
   });
 
   it('deploys a constructor that reads an uninitialized mapping (read-before-write, returns default)', async () => {
@@ -60,8 +64,8 @@ describe('explicit-constructor stateful deploy (genesis derivation)', () => {
           function join(bytes20 who) { this.isMember[who] = true; this.count = this.count + 1; }
       }
     `);
-    const result = await deploy(artifact, [alicePkh], 'c3d4', { count: 1n });
-    expect(result.categoryId).toBe('c3d4'.repeat(16));
+    const { result, categoryId } = await deploy(artifact, [alicePkh], 'c3d4', { count: 1n });
+    expect(result.categoryId).toBe(categoryId);
   });
 
   it('deploys a constructor that reads then writes a mapping entry; the entry persists', async () => {
@@ -77,8 +81,8 @@ describe('explicit-constructor stateful deploy (genesis derivation)', () => {
           function check(bytes20 who) { require(this.isMember[who]); }
       }
     `);
-    const result = await deploy(artifact, [alicePkh], 'e5f6', { count: 1n });
-    expect(result.categoryId).toBe('e5f6'.repeat(16));
+    const { result, categoryId } = await deploy(artifact, [alicePkh], 'e5f6', { count: 1n });
+    expect(result.categoryId).toBe(categoryId);
 
     // The genesis entry for `owner` exists: check(owner) reads true and spends; check(bob) reads the default
     // (false) and must fail.

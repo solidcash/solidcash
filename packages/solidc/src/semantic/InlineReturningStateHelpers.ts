@@ -16,6 +16,7 @@ import {
   DoWhileNode,
   TernaryOpNode,
   BinaryOpNode,
+  TupleAssignmentNode,
 } from '../ast/AST.js';
 import { Modifier } from '../ast/Globals.js';
 import { BinaryOperator } from '../ast/Operator.js';
@@ -88,11 +89,15 @@ export default class InlineReturningStateHelpers extends AstTraversal {
   }
 
   private eligible(fn: FunctionDefinitionNode): boolean {
-    if (!fn.body || fn.returnTypes.length !== 1) return false;
+    if (!fn.body || fn.returnTypes.length < 1) return false;
     if (!(fn.isFreeFunction || fn.visibility === 'private' || fn.visibility === 'internal')) return false;
     if (fn.parameters.some((p) => p.modifier.includes(Modifier.STORAGE))) return false;
     const stmts = fn.body.statements ?? [];
-    if (stmts.length === 0 || !(stmts[stmts.length - 1] instanceof ReturnNode)) return false;
+    const last = stmts[stmts.length - 1];
+    if (!(last instanceof ReturnNode)) return false;
+    // The final return must be 1:1 with the declared return types, so a multi-value helper returns `(a, b)` (each
+    // split into a temp) rather than a nested tuple-forward `return g()` which can't be split.
+    if (last.expressions.length !== fn.returnTypes.length) return false;
     let returns = 0;
     this.walk(fn.body, (n) => { if (n instanceof ReturnNode) returns += 1; });
     if (returns !== 1) return false; // a mid-body return can't linearize into a hoisted prelude
@@ -134,10 +139,42 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     const name = node.identifier.name;
     const callee = this.funcByName.get(name);
     if (!this.suppress && callee && this.inlinedFns.has(name) && !name.includes('.')
-      && !this.stack.includes(name) && node.parameters.length === callee.parameters.length) {
-      return this.inlineCall(callee, node.parameters as ExpressionNode[]);
+      && !this.stack.includes(name) && node.parameters.length === callee.parameters.length
+      && callee.returnTypes.length === 1) {
+      // A scalar helper inlines at an expression position, replaced by its single return temp. A multi-value
+      // helper can't (one temp can't carry >1 value) - it is inlined only at a statement position, below.
+      return this.inlineCall(callee, node.parameters as ExpressionNode[])[0];
     }
     return node;
+  }
+
+  // Multi-value helpers inline only where the whole call is a statement's value: `return f()` (forward the N
+  // temps) and `(a, b) = f()` (per-slot RHS temps). visitBlock flushes the hoisted body before the statement.
+  visitReturn(node: ReturnNode): Node {
+    const temps = node.expressions.length === 1 ? this.tryInlineMultiValue(node.expressions[0]) : undefined;
+    if (temps) { node.expressions = temps; return node; }
+    node.expressions = this.visitList(node.expressions) as ExpressionNode[];
+    return node;
+  }
+
+  visitTupleAssignment(node: TupleAssignmentNode): Node {
+    if (!node.tupleExpressions && node.tuple) {
+      const temps = this.tryInlineMultiValue(node.tuple);
+      if (temps) { node.tupleExpressions = temps; node.tuple = undefined as unknown as ExpressionNode; return node; }
+    }
+    if (node.tuple) node.tuple = this.visit(node.tuple) as ExpressionNode;
+    if (node.tupleExpressions) node.tupleExpressions = this.visitList(node.tupleExpressions) as ExpressionNode[];
+    return node;
+  }
+
+  private tryInlineMultiValue(expr: ExpressionNode): IdentifierNode[] | undefined {
+    if (this.suppress || !(expr instanceof FunctionCallNode)) return undefined;
+    const name = expr.identifier.name;
+    const callee = this.funcByName.get(name);
+    if (!callee || !this.inlinedFns.has(name) || name.includes('.') || this.stack.includes(name)
+      || expr.parameters.length !== callee.parameters.length || callee.returnTypes.length < 2) return undefined;
+    expr.parameters = this.visitList(expr.parameters) as ExpressionNode[]; // inline nested scalar calls in args
+    return this.inlineCall(callee, expr.parameters as ExpressionNode[]);
   }
 
   // Suppress hoisting where the call is only conditionally evaluated; hoisting it unconditionally would
@@ -179,9 +216,9 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     return r;
   }
 
-  // Expand one returning-helper call: push [param bindings, body-minus-return, return-temp def] to
-  // this.hoists, return an identifier for the return temp.
-  private inlineCall(callee: FunctionDefinitionNode, args: ExpressionNode[]): Node {
+  // Expand one returning-helper call: push [param bindings, body-minus-return, per-value return-temp defs] to
+  // this.hoists, return an identifier per return value (one for a scalar helper, N for a multi-value helper).
+  private inlineCall(callee: FunctionDefinitionNode, args: ExpressionNode[]): IdentifierNode[] {
     const n = this.counter++;
     const cloned = cloneNode(callee) as FunctionDefinitionNode;
 
@@ -209,14 +246,19 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     this.stack = savedStack;
 
     const ret = processed[processed.length - 1] as ReturnNode;
-    const retName = `${PREFIX}${n}__ret`;
-    const retDef = new VariableDefinitionNode(callee.returnTypes[0], [], retName, ret.expressions[0]);
-    retDef.location = callee.location;
-    this.hoists.push(...bindings, ...processed.slice(0, -1), retDef);
-
-    const id = new IdentifierNode(retName);
-    id.location = callee.location;
-    return id;
+    const retDefs: VariableDefinitionNode[] = [];
+    const ids: IdentifierNode[] = [];
+    for (let k = 0; k < ret.expressions.length; k++) {
+      const retName = `${PREFIX}${n}__ret${k}`;
+      const retDef = new VariableDefinitionNode(callee.returnTypes[k], [], retName, ret.expressions[k]);
+      retDef.location = callee.location;
+      retDefs.push(retDef);
+      const id = new IdentifierNode(retName);
+      id.location = callee.location;
+      ids.push(id);
+    }
+    this.hoists.push(...bindings, ...processed.slice(0, -1), ...retDefs);
+    return ids;
   }
 
   private applyRename(root: Node, map: Map<string, string>): void {

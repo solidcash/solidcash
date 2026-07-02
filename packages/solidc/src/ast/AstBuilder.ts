@@ -2201,6 +2201,19 @@ export default class AstBuilder
         return node;
       }
 
+      // Solidity-import compat: a BOUNDED value-type array T[N] is contiguous packed storage in Solidity. Model
+      // it as a packed state-var blob (not an entry-NFT collection) so a fixed address[N]/uint[N] reads as one
+      // field - this backs array-element external calls IFoo(arr[i]).m() over a fixed token set (StableSwap) and
+      // whole-array reads. Native (non-compat) keeps the collection model. See docs/arrays.md.
+      if (this.solidityImportCompat && arrayT.bound !== undefined && isChunkPackableElementType(arrayT.elementType)) {
+        const node = new StateVariableNode(arrayT, name);
+        node.isPacked = true;
+        node.visibility = visibility;
+        node.immutable = isImmutable;
+        node.location = Location.fromCtx(ctx);
+        return node;
+      }
+
       // Non-packed array: store as entry NFTs (collection)
       const node = new CollectionNode(arrayT, name);
       node.visibility = visibility;

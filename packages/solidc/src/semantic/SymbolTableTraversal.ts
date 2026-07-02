@@ -3961,6 +3961,10 @@ export default class SymbolTableTraversal extends AstTraversal {
   }
 
   visitFunctionCallStatement(node: FunctionCallStatementNode): Node {
+    // A library sibling called in statement position (void call, return unused) needs qualifying too - the
+    // qualifier is otherwise only wired into the expression-form visitor, so `_throwError(x);` inside `L.f`
+    // stayed unresolved (only `x = sibling(..)` / `return sibling(..)` resolved).
+    this.qualifyLibrarySiblingCall(node.call.identifier);
     // Check if this is an address method call: dest.transfer(amount)
     const callName = node.call.identifier.name;
     if (callName.includes('.')) {

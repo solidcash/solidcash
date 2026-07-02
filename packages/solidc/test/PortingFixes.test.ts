@@ -1748,6 +1748,14 @@ describe('Library sibling calls and UDVT wrap/unwrap', () => {
       + ' contract C { using L for int; function f(int x) { require(x.a() == x * 2 + 1); } }')).toBe('C');
   });
 
+  it('a library function resolves a private sibling called in statement position (void call)', () => {
+    // Regression: the sibling qualifier was only wired into the expression-form call visitor, so a void
+    // sibling call (return unused, e.g. OZ ECDSA `recover` calling `_throwError(err);`) stayed unresolved.
+    expect(cc('library L { function a(int x) internal returns (int) { check(x); return x; }'
+      + ' function check(int x) private { require(x >= 0); } }'
+      + ' contract C { function f(int x) { require(L.a(x) == x); } }')).toBe('C');
+  });
+
   it('UDVT wrap/unwrap are identity casts to/from the underlying type', () => {
     expect(cc('type D is uint64; contract C { function f(uint64 x, uint64 e) {'
       + ' D d = D.wrap(x); require(D.unwrap(d) == e); } }')).toBe('C');

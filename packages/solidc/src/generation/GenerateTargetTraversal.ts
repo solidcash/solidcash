@@ -3790,6 +3790,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     // For internal functions: clean up local variables below return values
     const returnCount = node.expressions.length;
+
+    // A void `return;` in an internal subroutine has no early-exit opcode to emit. After
+    // EarlyReturnTransformation any following statements are nested into the else branch, so this
+    // return sits in tail position. Emit nothing: the subroutine-end cleanStack drops the params
+    // once. Dropping the whole stack here would clean only the taken branch and imbalance the
+    // sibling branches (e.g. an else-if that still reads a param).
+    if (returnCount === 0 && !this.currentFunction.isEntryPoint) {
+      return node;
+    }
+
     const stackSize = this.stack.length;
     const localsToRemove = stackSize - returnCount;
 

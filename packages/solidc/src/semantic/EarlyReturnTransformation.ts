@@ -50,8 +50,10 @@ export default class EarlyReturnTransformation extends AstTraversal {
   }
 
   visitFunctionDefinition(node: FunctionDefinitionNode): Node {
-    // Only transform functions that have return types
-    if (node.returnTypes.length === 0) {
+    // Functions with return types always get early-return nesting. Internal (non-entry) void
+    // functions need it too: a void `return;` in a subroutine must reach tail position so codegen
+    // can treat it as a no-op (see visitReturn). Entry-point void functions keep prior handling.
+    if (node.returnTypes.length === 0 && node.isEntryPoint) {
       return super.visitFunctionDefinition(node);
     }
 

@@ -96,20 +96,22 @@ export default class CacheDynamicArrayInLoop extends AstTraversal {
     }
   }
 
-  // Walk statement lists (recursing into loops/branches) tracking whether we are inside a loop; record the
-  // names of dynamic arrays that have a write statement (push/pop/assign/delete) somewhere inside a loop.
-  private collectLoopWrites(stmts: StatementNode[], inLoop: boolean, out: Set<string>): void {
+  // Walk statement lists tracking whether we are inside a CONDITIONALLY-executed context (a loop OR an if/else
+  // branch); record the names of dynamic arrays written (push/pop/assign/delete) there. A branch runs its write
+  // 0-or-1 times, so - exactly like a loop's 0-or-N - the codegen pending-value model (which emits the write
+  // once at the function epilogue) desyncs and fails "Expected variable ... does not exist"; caching fixes both.
+  private collectLoopWrites(stmts: StatementNode[], inCond: boolean, out: Set<string>): void {
     for (const stmt of stmts) {
-      if (inLoop && this.writeTargetName(stmt) !== undefined) out.add(this.writeTargetName(stmt)!);
+      if (inCond && this.writeTargetName(stmt) !== undefined) out.add(this.writeTargetName(stmt)!);
       if (stmt instanceof WhileNode || stmt instanceof DoWhileNode) {
         this.collectLoopWrites(stmt.block.statements ?? [], true, out);
       } else if (stmt instanceof BranchNode) {
-        this.collectLoopWrites(stmt.ifBlock.statements ?? [], inLoop, out);
-        if (stmt.elseBlock) this.collectLoopWrites(stmt.elseBlock.statements ?? [], inLoop, out);
+        this.collectLoopWrites(stmt.ifBlock.statements ?? [], true, out);
+        if (stmt.elseBlock) this.collectLoopWrites(stmt.elseBlock.statements ?? [], true, out);
       } else if (stmt instanceof UncheckedNode) {
-        this.collectLoopWrites(stmt.block.statements ?? [], inLoop, out);
+        this.collectLoopWrites(stmt.block.statements ?? [], inCond, out);
       } else if (stmt instanceof BlockNode) {
-        this.collectLoopWrites(stmt.statements ?? [], inLoop, out);
+        this.collectLoopWrites(stmt.statements ?? [], inCond, out);
       }
     }
   }

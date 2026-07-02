@@ -1,4 +1,4 @@
-import { IntType, BytesType, AddressType, PrimitiveType } from '@solidcash/utils';
+import { IntType, BytesType, AddressType, PrimitiveType, ValueType, Type } from '@solidcash/utils';
 import AstTraversal from '../ast/AstTraversal.js';
 import {
   Node, StatementNode, ExpressionNode, AssemblyStatementNode, BlockNode, VariableDefinitionNode,
@@ -25,6 +25,21 @@ const UINT256 = new IntType(false, 256);
 // The enclosing function's user parameters, used for the EVM-calldata view (selector ++ abi.encode(params)).
 // Set per function while lowering its body. solidc has no nested functions, so a module-level slot is safe.
 let currentParams: ParameterNode[] = [];
+
+// Declared type of every in-scope param + local of the enclosing function (name -> Type). A UDVT-typed var is
+// a raw word inside assembly, so it is unwrapped when read and the assembled word is re-wrapped when written.
+let currentVars = new Map<string, Type>();
+
+// Record every local declaration's declared type (named returns are already locals here, after
+// NamedReturnTransformation). Shadowing is rare; the last write wins, which is fine for assembly lowering.
+function collectVarTypes(node: Node, out: Map<string, Type>): void {
+  if (node instanceof VariableDefinitionNode) out.set(node.name, node.type);
+  for (const key of Object.keys(node)) {
+    const val = (node as any)[key];
+    if (val instanceof Node) collectVarTypes(val, out);
+    else if (Array.isArray(val)) for (const v of val) if (v instanceof Node) collectVarTypes(v, out);
+  }
+}
 
 // EVM storage layout of the enclosing contract: each state var packed into a 32-byte slot in declaration
 // order (Solidity rules), so sload/sstore on a slot can map to the var(s) at that slot. A single full-width
@@ -209,7 +224,14 @@ function lowerValue(expr: YulExpressionNode): ExpressionNode {
   if (expr instanceof YulLiteralNode) return lowerLiteral(expr);
   if (expr instanceof YulPathNode) {
     if (expr.members.length > 0) throw new YulNotLowerable(); // `.slot` / `.offset` are storage (later phase)
-    return loc(new IdentifierNode(expr.base), expr);
+    const id = loc(new IdentifierNode(expr.base), expr);
+    // A UDVT-typed operand is a raw word inside assembly; unwrap it to its underlying type so arithmetic /
+    // bitwise ops type-check (e.g. shl(0x40, _duration) where _duration is a `Duration` = uint64).
+    const t = currentVars.get(expr.base);
+    if (t instanceof ValueType) {
+      return loc(new CastNode(t.underlyingType, id, false), expr);
+    }
+    return id;
   }
   if (expr instanceof YulFunctionCallNode) return lowerCall(expr);
   throw new YulNotLowerable();
@@ -238,7 +260,19 @@ function lowerCall(call: YulFunctionCallNode): ExpressionNode {
   // shl(shift, value)=value*2^shift, shr/sar(shift, value)=value/2^shift. Avoids the `<<`/`>>` operators,
   // which require bigint/bytes; staying on uint256 keeps bitwise on the same value valid.
   if ((name === 'shl' || name === 'shr' || name === 'sar') && args.length === 2) {
-    const value = lowerValue(args[1]);
+    // The shifted value is a 256-bit word (`value*2^shift` must not overflow a narrow operand's type, e.g.
+    // shl(0x40, uint64) would truncate to 0); widen it to uint256 to match EVM word arithmetic.
+    const value = loc(new CastNode(UINT256, lowerValue(args[1]), false), call);
+    // shl is 256-bit TRUNCATING: bits shifted past 255 are dropped (EVM mod-2^256). With a literal shift this
+    // is `(value mod 2^(256-s)) * 2^s` - masking the surviving bits first keeps the multiply within uint256 (a
+    // plain value*2^s overflows the checked multiply, e.g. the shl-then-shr low-word mask in optimism LibClock).
+    if (name === 'shl' && isIntLiteral(args[0])) {
+      const s = BigInt(args[0].raw);
+      if (s >= 256n) return intLit(0n, call);
+      if (s === 0n) return value;
+      const masked = loc(new BinaryOpNode(value, BinaryOperator.MOD, intLit(2n ** (256n - s), call)), call);
+      return loc(new BinaryOpNode(masked, BinaryOperator.MUL, intLit(2n ** s, call)), call);
+    }
     const pow2 = isIntLiteral(args[0])
       ? intLit(2n ** BigInt(args[0].raw), call)
       : loc(new BinaryOpNode(intLit(2n, call), BinaryOperator.POW, lowerValue(args[0])), call);
@@ -324,8 +358,19 @@ function lowerStatement(stmt: YulStatementNode): StatementNode {
 
   if (stmt instanceof YulAssignmentNode) {
     if (stmt.paths.length !== 1 || stmt.paths[0].members.length > 0) throw new YulNotLowerable();
-    const target = loc(new IdentifierNode(stmt.paths[0].base), stmt);
-    return loc(new AssignNode(target, lowerValue(stmt.value)), stmt);
+    const name = stmt.paths[0].base;
+    const target = loc(new IdentifierNode(name), stmt);
+    let value = lowerValue(stmt.value);
+    // The assembled value is a 256-bit word; writing it to a narrower var truncates (EVM semantics). Cast to
+    // the target's width so the assignment type-checks; a UDVT narrows to its underlying width then re-wraps.
+    const t = currentVars.get(name);
+    if (t instanceof ValueType) {
+      value = loc(new CastNode(t.underlyingType, value, false), stmt);
+      value = loc(new CastNode(t, value, false), stmt);
+    } else if (t instanceof IntType && t.bits < 256) {
+      value = loc(new CastNode(t, value, false), stmt);
+    }
+    return loc(new AssignNode(target, value), stmt);
   }
 
   if (stmt instanceof YulIfNode) {
@@ -424,8 +469,12 @@ export default class LowerInlineAssembly extends AstTraversal {
   // Track the current function's parameters so calldataload/calldatasize can resolve against them.
   visitFunctionDefinition(node: FunctionDefinitionNode): Node {
     currentParams = node.parameters;
+    currentVars = new Map();
+    for (const p of node.parameters) currentVars.set(p.name, p.type);
+    collectVarTypes(node.body, currentVars);
     const result = super.visitFunctionDefinition(node);
     currentParams = [];
+    currentVars = new Map();
     return result;
   }
 

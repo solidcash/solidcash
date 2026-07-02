@@ -5,7 +5,7 @@ import { encodePushdataValue } from '@solidcash/utils';
 import {
   Contract, SignatureTemplate, TransactionBuilder,
 } from '../../src/index.js';
-import { createTestProvider, verifyTransaction, createFeeFunder } from '../test-util.js';
+import { createTestProvider, verifyTransaction, createFeeFunder, setupStatefulUtxos } from '../test-util.js';
 import { alicePub, alicePriv } from '../fixture/vars.js';
 
 // Minimal isolation of the inline loop-indexed external dispatch (the MultiCall covenant): a stateless
@@ -177,18 +177,15 @@ describe('Inline loop-indexed external dispatch (MultiCall covenant)', () => {
     const caller = new Contract(callerArt, [], { provider });
     await provider.addUtxo(caller.address, { txid: 'cc'.repeat(32), vout: 0, satoshis: 100000n });
 
-    // two real targets, each category-pinned so its master UTXO is discoverable from the artifact + category
-    // (Contract.withCategory bakes the category self-pin -> a deterministic locking bytecode -> Fulcrum lookup).
-    const makeTarget = async (categoryHex: string, txidByte: string): Promise<Contract> => {
-      const t = new Contract(targetArt, [], { provider }).withCategory(hexToBin(categoryHex));
-      await provider.addUtxo(t.tokenAddress, {
-        txid: txidByte.repeat(32), vout: 0, satoshis: 1200n,
-        token: { category: categoryHex, amount: 0n, nft: { capability: 'minting', commitment: '' } },
-      });
-      return t;
+    // two real targets, genesis'd via the token setup so each carries a real minting-NFT category (not a
+    // hardcoded fixture) - its master UTXO is then discoverable from the category-pinned address.
+    const makeTarget = async (): Promise<Contract> => {
+      const t = new Contract(targetArt, [], { provider });
+      const { categoryId } = await setupStatefulUtxos(provider, t, targetArt.stateLayout!, { value: 7n });
+      return t.withCategory(hexToBin(categoryId));
     };
-    const t0 = await makeTarget(C0, '01');
-    const t1 = await makeTarget(C1, '02');
+    const t0 = await makeTarget();
+    const t1 = await makeTarget();
     const funder = await createFeeFunder(provider, 10000n);
 
     // one-time registration: the contracts BCH must know to co-spend them, plus the funder

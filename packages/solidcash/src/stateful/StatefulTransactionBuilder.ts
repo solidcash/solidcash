@@ -511,6 +511,14 @@ export class StatefulTransactionBuilder {
     return this;
   }
 
+  // Whether this entry slot is only conditionally active (a delete/write inside an if/else branch). Such a slot's
+  // presence in the output depends on the taken branch, so it must not be unconditionally deleted from the layout.
+  isEntrySlotConditional(slotIndex: number): boolean {
+    return this.blockLayout?.slots.some(
+      (s) => s.kind === 'entry' && s.slotIndex === slotIndex && s.conditional,
+    ) ?? false;
+  }
+
   /**
    * Add a transfer output (plain BCH, no tokens).
    */

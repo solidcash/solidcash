@@ -5817,6 +5817,16 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       builder.setReturnEventOutput(this.categoryId, blob);
     }
 
+    // Auto-derived entry deletions: a function that runs `delete m[k]` produces no output for that entry, so the
+    // builder must not recreate it. Without this the entry is co-spent as an input AND re-emitted as an identical
+    // output - a no-op update, leaving the old value readable after the delete. The output-count layout above
+    // (entryOutputCount) already excludes these slots; mirror that on the builder so its outputs match. Scoped to
+    // UNCONDITIONAL deletes: a delete inside an if/else branch may or may not run, so its entry can't be
+    // statically dropped (conditional-branch delete round-trip is a separate, deeper derivation concern).
+    for (const slotIndex of entryDeleteSlots) {
+      if (!builder.isEntrySlotConditional(slotIndex)) builder.deleteEntry(slotIndex);
+    }
+
     return builder;
   }
 

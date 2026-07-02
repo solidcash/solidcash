@@ -1338,6 +1338,29 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       };
       findBranchMins(node.body);
 
+      // Entry slots touched inside any if/else/switch are conditionally active (a branch-guarded write/delete may
+      // or may not run). Mark them so the SDK does not statically drop a guarded delete's entry output, which
+      // would wrongly delete the entry on the not-taken path. branchOps/switchOps already aggregate nested arms.
+      const conditionalEntrySlots = new Set<number>();
+      const collectCondEntries = (n: Node | undefined): void => {
+        if (!n) return;
+        if (n instanceof BranchNode && n.branchOps) {
+          n.branchOps.mappingWriteSlots.forEach((s) => conditionalEntrySlots.add(s));
+          n.branchOps.mappingDeleteSlots.forEach((s) => conditionalEntrySlots.add(s));
+        }
+        if (n instanceof SwitchNode && n.switchOps) {
+          n.switchOps.mappingWriteSlots.forEach((s) => conditionalEntrySlots.add(s));
+          n.switchOps.mappingDeleteSlots.forEach((s) => conditionalEntrySlots.add(s));
+        }
+        for (const key of Object.keys(n)) {
+          if (key === 'type' || key === 'symbolTable' || key === 'location') continue;
+          const v = (n as unknown as Record<string, unknown>)[key];
+          if (v instanceof Node) collectCondEntries(v);
+          else if (Array.isArray(v)) for (const it of v) if (it instanceof Node) collectCondEntries(it);
+        }
+      };
+      collectCondEntries(node.body);
+
       // Compute total tcTransfer count (same logic as computeBlockLayout - per operation)
       let totalTcTransfers = 0;
       if (node.tokenContainerAccesses) {
@@ -1362,6 +1385,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           && origSlot.slotIndex >= minCounts.emits) conditional = true;
         if (origSlot.kind === 'tcTransfer' && origSlot.slotIndex !== undefined
           && origSlot.slotIndex >= minCounts.tcTransfers) conditional = true;
+        if (origSlot.kind === 'entry' && origSlot.slotIndex !== undefined
+          && conditionalEntrySlots.has(origSlot.slotIndex)) conditional = true;
         slots.push({ ...origSlot, offset: blOffset++, ...(conditional && { conditional }) });
       }
       node.blockLayout = { blockSize: blOffset, slots };

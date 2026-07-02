@@ -3468,6 +3468,34 @@ export default class SymbolTableTraversal extends AstTraversal {
       return this.visit(stateNode);
     }
 
+    // Whole-array copy into a fixed-size state array `arr = src` (no shadowing local, `src` an array
+    // identifier) -> element-wise `arr[i] = src[i]` over the compile-time bound. Solidity supports whole
+    // fixed-array assignment; solidcash writes state-array elements individually, so desugar it.
+    if (!sym && node.expression instanceof IdentifierNode) {
+      const coll = this.collectionMap.get(node.identifier.name);
+      if (coll && coll.type instanceof ArrayType && coll.type.bound !== undefined) {
+        const srcName = node.expression.name;
+        const srcLoc = node.expression.location;
+        const stmts: StatementNode[] = [];
+        for (let i = 0; i < coll.type.bound; i++) {
+          const srcId = new IdentifierNode(srcName);
+          srcId.location = srcLoc;
+          const readIdx = new IntLiteralNode(BigInt(i));
+          readIdx.location = node.location;
+          const rhsElem = new ArrayAccessNode(srcId, readIdx);
+          rhsElem.location = node.location;
+          const writeIdx = new IntLiteralNode(BigInt(i));
+          writeIdx.location = node.location;
+          const assign = new MappingAssignNode(node.identifier.name, [writeIdx], rhsElem);
+          assign.location = node.location;
+          stmts.push(assign);
+        }
+        const block = new BlockNode(stmts);
+        block.location = node.location;
+        return this.visit(block);
+      }
+    }
+
     if (sym) {
       this.checkReadOnlyModification(sym);
     }

@@ -593,6 +593,7 @@ export default class AstBuilder
     // Resolve integer-literal constants up front so a const can be used as an array dimension `T[N]` anywhere
     // in the contract body (state vars, params, locals, struct fields), regardless of declaration order.
     this.scanConstantDimensions(ctx.constantDefinition_list());
+    this.scanConstantStateVars(ctx.stateVariableDeclaration_list());
     const specs = ctx.inheritanceSpecifier_list();
     const implementsList = specs.map((s) => s.Identifier().getText());
     // Inheritance-list constructor args (`is X("a")`) -> parent invocations, same as a constructor-level X("a").
@@ -2134,7 +2135,10 @@ export default class AstBuilder
     if (name.startsWith('__internal__')) {
       throw new StateVariableNameCollisionError(name, Location.fromCtx(ctx));
     }
-    if (RESERVED_STATE_NAMES.includes(name)) {
+    // Under solidityImportCompat a ported Solidity state var may shadow a solidcash introspection built-in
+    // (age/tokens/categoryId/activeInputIndex/activeBytecode); native keeps the guard so `this.tokens[...]`
+    // etc. stay unambiguous.
+    if (RESERVED_STATE_NAMES.includes(name) && !this.solidityImportCompat) {
       throw new StateVariableNameCollisionError(name, Location.fromCtx(ctx));
     }
 
@@ -2613,6 +2617,22 @@ export default class AstBuilder
       const text = c.expression().getText().replace(/_/g, '');
       if (/^[0-9]+$/.test(text)) {
         this.constantIntValues.set(c.Identifier().getText(), parseInt(text, 10));
+      }
+    }
+  }
+
+  // A `constant` STATE VARIABLE with an integer-literal init (e.g. `uint256 private constant N = 3;`) is
+  // parsed as a stateVariableDeclaration (not a constantDefinition) when it carries a visibility modifier;
+  // record those too so they work as array dimensions `T[N]`.
+  private scanConstantStateVars(ctxs: StateVariableDeclarationContext[]): void {
+    for (const c of ctxs) {
+      const mods = (c.modifier_list?.() ?? []).map((m: { getText(): string }) => m.getText());
+      const expr = c.expression?.();
+      const id = c.Identifier?.();
+      if (!mods.includes('constant') || !expr || !id) continue;
+      const text = expr.getText().replace(/_/g, '');
+      if (/^[0-9]+$/.test(text)) {
+        this.constantIntValues.set(id.getText(), parseInt(text, 10));
       }
     }
   }

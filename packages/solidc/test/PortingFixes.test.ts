@@ -1774,3 +1774,13 @@ describe('abi.decode with array and struct types in the type list', () => {
       + ' (x, arr, s) = abi.decode(data, (uint256, uint256[], S)); } }')).toBe('C');
   });
 });
+
+describe('A contract-level `constant` works as an array dimension', () => {
+  it('accepts `uint256 private constant N = 3; T[N]` (a constant with a visibility modifier)', () => {
+    // A `constant` state var carrying a visibility modifier parses as a stateVariableDeclaration, not a
+    // constantDefinition; it must still be usable as an array bound `T[N]`.
+    const a = compileString('contract C { uint256 private constant N = 3; int[N] xs;'
+      + ' function f() { this.xs[0] = 1; require(this.xs[0] == 1); } }');
+    expect(a.contractName).toBe('C');
+  });
+});

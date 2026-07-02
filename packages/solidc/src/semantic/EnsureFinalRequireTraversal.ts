@@ -118,7 +118,9 @@ export default class EnsureFinalRequireTraversal extends AstTraversal {
       return node;
     }
 
-    // Validate that return statements aren't used in functions without return types
+    // A bare `return;` (void early exit) in an entry-point function is permitted: EarlyReturnTransformation
+    // (which runs later) nests it to a tail no-op, so codegen handles it. A `return value;` in a function
+    // without return types is still invalid (nothing to return).
     if (!hasReturnTypes && containsReturn(node.body.statements)) {
       throw new ReturnInExternalFunctionError(findFirstReturn(node.body.statements)!);
     }
@@ -396,9 +398,11 @@ function allPathsReturn(statements: StatementNode[] = []): boolean {
   return false;
 }
 
+// Whether any VALUED return (`return x;`) appears - invalid in a function without return types. A bare
+// `return;` (void early exit) is allowed and ignored here.
 function containsReturn(statements: StatementNode[] = []): boolean {
   for (const s of statements) {
-    if (s instanceof ReturnNode) return true;
+    if (s instanceof ReturnNode && s.expressions.length > 0) return true;
     if (s instanceof BranchNode) {
       if (containsReturn(s.ifBlock.statements)) return true;
       if (s.elseBlock && containsReturn(s.elseBlock.statements)) return true;
@@ -428,9 +432,10 @@ function containsReturn(statements: StatementNode[] = []): boolean {
   return false;
 }
 
+// The first VALUED return (`return x;`), for error location. Bare `return;` is skipped.
 function findFirstReturn(statements: StatementNode[] = []): ReturnNode | undefined {
   for (const s of statements) {
-    if (s instanceof ReturnNode) return s;
+    if (s instanceof ReturnNode && s.expressions.length > 0) return s;
     if (s instanceof BranchNode) {
       const found = findFirstReturn(s.ifBlock.statements)
         || (s.elseBlock ? findFirstReturn(s.elseBlock.statements) : undefined);

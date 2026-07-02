@@ -108,6 +108,7 @@ import { SymbolTable, Symbol, SymbolType } from '../ast/SymbolTable.js';
 import { BinaryOperator, NullaryOperator, UnaryOperator } from '../ast/Operator.js';
 import { createDefaultValueExpression } from '../ast/defaults.js';
 import { cloneNode } from '../ast/clone.js';
+import { computeBranchOps, countBranchOps } from './branchOps.js';
 import {
   FunctionRedefinitionError,
   VariableRedefinitionError,
@@ -4351,45 +4352,11 @@ export default class SymbolTableTraversal extends AstTraversal {
     const result = super.visitBranch(node);
     this.insideBranch = prev;
 
-    // Post-visit: count restricted operations in each branch and validate balance
-    const ifCounts = this.countBranchOps(node.ifBlock);
-    const elseCounts = node.elseBlock
-      ? this.countBranchOps(node.elseBlock)
-      : {
-        transfers: 0, emits: 0, tokenContainerTransfers: 0,
-        stateWriteKeys: new Set<string>(),
-        mappingWriteSlots: new Set<number>(),
-        mappingDeleteSlots: new Set<number>(),
-      };
-
-    const hasOps = ifCounts.transfers > 0 || ifCounts.emits > 0 || ifCounts.tokenContainerTransfers > 0
-      || ifCounts.stateWriteKeys.size > 0 || ifCounts.mappingWriteSlots.size > 0
-      || ifCounts.mappingDeleteSlots.size > 0
-      || elseCounts.transfers > 0 || elseCounts.emits > 0 || elseCounts.tokenContainerTransfers > 0
-      || elseCounts.stateWriteKeys.size > 0 || elseCounts.mappingWriteSlots.size > 0
-      || elseCounts.mappingDeleteSlots.size > 0;
-
-    if (hasOps) {
-      // Union state write keys and mapping slots across branches
-      const stateWriteKeys = new Set<string>([...ifCounts.stateWriteKeys, ...elseCounts.stateWriteKeys]);
-      const mappingWriteSlots = new Set<number>([...ifCounts.mappingWriteSlots, ...elseCounts.mappingWriteSlots]);
-      const mappingDeleteSlots = new Set<number>([...ifCounts.mappingDeleteSlots, ...elseCounts.mappingDeleteSlots]);
-
-      node.branchOps = {
-        stateWriteKeys,
-        mappingWriteSlots,
-        mappingDeleteSlots,
-        transferCount: Math.max(ifCounts.transfers, elseCounts.transfers),
-        minTransferCount: Math.min(ifCounts.transfers, elseCounts.transfers),
-        ifTransferCount: ifCounts.transfers,
-        emitCount: Math.max(ifCounts.emits, elseCounts.emits),
-        minEmitCount: Math.min(ifCounts.emits, elseCounts.emits),
-        ifEmitCount: ifCounts.emits,
-        tokenContainerTransferCount: Math.max(ifCounts.tokenContainerTransfers, elseCounts.tokenContainerTransfers),
-        minTokenContainerTransferCount: Math.min(ifCounts.tokenContainerTransfers, elseCounts.tokenContainerTransfers),
-        ifTokenContainerTransferCount: ifCounts.tokenContainerTransfers,
-      };
-    }
+    // Post-visit: record restricted operations per branch (pre-allocated before the condition) - shared with
+    // EarlyReturnTransformation, which recomputes this after nesting a `return;`/`revert` guard's following
+    // statements into the else block.
+    const ops = computeBranchOps(node.ifBlock, node.elseBlock);
+    if (ops) node.branchOps = ops;
 
     return result;
   }
@@ -4401,9 +4368,9 @@ export default class SymbolTableTraversal extends AstTraversal {
     this.insideBranch = prev;
 
     // Collect ops from all cases and default
-    const allCounts = node.cases.map((c) => this.countBranchOps(c.body));
+    const allCounts = node.cases.map((c) => countBranchOps(c.body));
     if (node.defaultCase) {
-      allCounts.push(this.countBranchOps(node.defaultCase));
+      allCounts.push(countBranchOps(node.defaultCase));
     }
 
     const hasOps = allCounts.some((c) => c.transfers > 0 || c.emits > 0 || c.tokenContainerTransfers > 0
@@ -4533,113 +4500,6 @@ export default class SymbolTableTraversal extends AstTraversal {
 
     node.block = this.visit(node.block) as BlockNode;
     return node;
-  }
-
-  /**
-   * Count restricted operations within a block (for branch balance validation).
-   */
-  private countBranchOps(block: BlockNode): {
-    transfers: number;
-    emits: number;
-    tokenContainerTransfers: number;
-    stateWriteKeys: Set<string>;
-    mappingWriteSlots: Set<number>;
-    mappingDeleteSlots: Set<number>;
-  } {
-    const result = {
-      transfers: 0,
-      emits: 0,
-      tokenContainerTransfers: 0,
-      stateWriteKeys: new Set<string>(),
-      mappingWriteSlots: new Set<number>(),
-      mappingDeleteSlots: new Set<number>(),
-    };
-    this.countBranchOpsRecursive(block, result);
-    return result;
-  }
-
-  private countBranchOpsRecursive(node: Node, result: {
-    transfers: number;
-    emits: number;
-    tokenContainerTransfers: number;
-    stateWriteKeys: Set<string>;
-    mappingWriteSlots: Set<number>;
-    mappingDeleteSlots: Set<number>;
-  }): void {
-    if (node instanceof TransferStatementNode || node instanceof AddressTransferStatementNode
-      || node instanceof AddressSendExpressionNode) {
-      result.transfers++;
-      return;
-    }
-    // {value: X} call option creates an implicit transfer
-    if (node instanceof LowLevelCallStatementNode && node.callOptions?.value) {
-      result.transfers++;
-      // Don't return - we still need to recurse into child nodes
-    }
-    if (node instanceof MethodCallStatementNode && node.call.callOptions?.value) {
-      result.transfers++;
-    }
-    if (node instanceof EmitStatementNode) {
-      result.emits++;
-      return;
-    }
-    if (node instanceof TokenContainerMethodStatementNode) {
-      result.tokenContainerTransfers++;
-      return;
-    }
-    if (node instanceof StateAssignNode && node.stateVariable) {
-      result.stateWriteKeys.add(`${node.stateVariable.nftIndex}:${node.stateVariable.fieldIndex}`);
-      return;
-    }
-    if (node instanceof DeleteStateNode && node.stateVariable) {
-      result.stateWriteKeys.add(`${node.stateVariable.nftIndex}:${node.stateVariable.fieldIndex}`);
-      return;
-    }
-    if (node instanceof MappingAssignNode) {
-      if (node.entrySlotIndex >= 0) result.mappingWriteSlots.add(node.entrySlotIndex);
-      return;
-    }
-    if (node instanceof MappingDeleteNode) {
-      if (node.entrySlotIndex >= 0) result.mappingDeleteSlots.add(node.entrySlotIndex);
-      return;
-    }
-    if ((node instanceof StateArrayPushNode || node instanceof StateArrayPopNode
-      || node instanceof StateArrayAssignNode || node instanceof StateArrayDeleteNode)
-      && node.stateVariable) {
-      result.stateWriteKeys.add(`${node.stateVariable.nftIndex}:${node.stateVariable.fieldIndex}`);
-      return;
-    }
-    // For nested branches, recurse into both arms
-    if (node instanceof BranchNode) {
-      this.countBranchOpsRecursive(node.ifBlock, result);
-      if (node.elseBlock) this.countBranchOpsRecursive(node.elseBlock, result);
-      return;
-    }
-    // For try/catch, only recurse into try block (catch is dead code)
-    if (node instanceof TryCatchNode) {
-      this.countBranchOpsRecursive(node.tryBlock, result);
-      return;
-    }
-    // For switch, recurse into all cases and default
-    if (node instanceof SwitchNode) {
-      for (const c of node.cases) {
-        this.countBranchOpsRecursive(c.body, result);
-      }
-      if (node.defaultCase) this.countBranchOpsRecursive(node.defaultCase, result);
-      return;
-    }
-    // Generic recursion
-    if ('statements' in node && Array.isArray((node as any).statements)) {
-      for (const stmt of (node as any).statements) {
-        this.countBranchOpsRecursive(stmt, result);
-      }
-    }
-    if ('body' in node && (node as any).body) {
-      this.countBranchOpsRecursive((node as any).body, result);
-    }
-    if ('block' in node && (node as any).block) {
-      this.countBranchOpsRecursive((node as any).block, result);
-    }
   }
 
   visitStateAccess(node: StateAccessNode): Node {

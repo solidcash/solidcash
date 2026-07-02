@@ -14,6 +14,7 @@ import {
   RevertNode,
 } from '../ast/AST.js';
 import AstTraversal from '../ast/AstTraversal.js';
+import { computeBranchOps } from './branchOps.js';
 
 /**
  * Transforms early return statements into nested if-else structures.
@@ -50,13 +51,10 @@ export default class EarlyReturnTransformation extends AstTraversal {
   }
 
   visitFunctionDefinition(node: FunctionDefinitionNode): Node {
-    // Functions with return types always get early-return nesting. Internal (non-entry) void
-    // functions need it too: a void `return;` in a subroutine must reach tail position so codegen
-    // can treat it as a no-op (see visitReturn). Entry-point void functions keep prior handling.
-    if (node.returnTypes.length === 0 && node.isEntryPoint) {
-      return super.visitFunctionDefinition(node);
-    }
-
+    // All functions get early-return nesting so every `return`/`return x` reaches tail position: codegen treats
+    // a void tail `return;` as a no-op and a valued tail return as the result. Entry-point void functions are
+    // included (a `return;` guard, e.g. an inlined library `remove`), whose bare returns EnsureFinalRequire
+    // permits now that they are always nested to a tail no-op here.
     node.parameters = this.visitList(node.parameters) as ParameterNode[];
 
     // Transform the body statements to nest early returns
@@ -146,7 +144,9 @@ function nestEarlyReturns(statements: StatementNode[]): StatementNode[] {
 
         const newBranch = new BranchNode(stmt.condition, transformedIfBlock, elseBlock);
         newBranch.location = stmt.location;
-        newBranch.branchOps = stmt.branchOps;
+        // Recompute: the guard's following statements were just nested into elseBlock, so the original
+        // branchOps (which predates the move) would miss any state write/transfer/emit now in the else.
+        newBranch.branchOps = computeBranchOps(transformedIfBlock, elseBlock);
         result.push(newBranch);
         break; // All remaining statements have been consumed
       }
@@ -174,7 +174,7 @@ function nestEarlyReturns(statements: StatementNode[]): StatementNode[] {
 
         const newBranch = new BranchNode(stmt.condition, ifBlock, transformedElseBlock);
         newBranch.location = stmt.location;
-        newBranch.branchOps = stmt.branchOps;
+        newBranch.branchOps = computeBranchOps(ifBlock, transformedElseBlock);
         result.push(newBranch);
         break;
       }
@@ -222,7 +222,7 @@ function nestEarlyReturns(statements: StatementNode[]): StatementNode[] {
 
       const newBranch = new BranchNode(stmt.condition, transformedIf, transformedElse);
       newBranch.location = stmt.location;
-      newBranch.branchOps = stmt.branchOps;
+      newBranch.branchOps = computeBranchOps(transformedIf, transformedElse);
       result.push(newBranch);
       continue;
     }

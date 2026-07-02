@@ -3815,12 +3815,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // For internal functions: clean up local variables below return values
     const returnCount = node.expressions.length;
 
-    // A void `return;` in an internal subroutine has no early-exit opcode to emit. After
-    // EarlyReturnTransformation any following statements are nested into the else branch, so this
-    // return sits in tail position. Emit nothing: the subroutine-end cleanStack drops the params
-    // once. Dropping the whole stack here would clean only the taken branch and imbalance the
-    // sibling branches (e.g. an else-if that still reads a param).
-    if (returnCount === 0 && !this.currentFunction.isEntryPoint) {
+    // A void `return;` has no early-exit opcode to emit. After EarlyReturnTransformation any following
+    // statements are nested into the else branch, so this return sits in tail position. Emit nothing: the
+    // function-end cleanStack drops the params once. Dropping the whole stack here would clean only the taken
+    // branch and imbalance the sibling branches (e.g. an else-if that still reads a param). Applies to entry-
+    // point void functions too - a `return;` guard nested by EarlyReturnTransformation reaches here as a tail
+    // no-op (before that pass permitted entry-point void returns, this path was unreachable for them).
+    if (returnCount === 0) {
       return node;
     }
 

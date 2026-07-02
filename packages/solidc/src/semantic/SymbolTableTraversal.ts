@@ -2925,6 +2925,9 @@ export default class SymbolTableTraversal extends AstTraversal {
         if (ae instanceof MappingAccessNode) loopArrayVar = ae.name;
         else if (ae instanceof ArrayAccessNode && ae.array instanceof IdentifierNode) loopArrayVar = ae.array.name;
       }
+      // `IFoo(msg.sender).m()`: the callee is the tx-derived msg.sender input (verified against emitMsgSender).
+      const addressIsMsgSender = node.addressExpression instanceof NullaryOpNode
+        && node.addressExpression.operator === NullaryOperator.MSG_SENDER;
       // Determine if selector verification is needed: only when the callee interface
       // has >1 callable function AND mode is REGULAR (call/staticcall skip selectors)
       const callMode = node.callInfo.callMode;
@@ -3003,6 +3006,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         addressParam,
         addressStateVar,
         loopArrayVar,
+        ...(addressIsMsgSender && { addressIsMsgSender: true }),
         slotIndex: -1,
         requiredDataNftIndices: dataNftIndices,
         computedOffset: 0,

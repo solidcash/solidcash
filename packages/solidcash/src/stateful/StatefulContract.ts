@@ -4104,8 +4104,16 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       returnEmitOutputIndex = slot.offset;
     }
     if (abiFunction?.usesMsgSender) {
-      const msgSenderCategory = overrides?.msgSenderCategory ?? new Uint8Array(32);
-      finalArgs = [...finalArgs, msgSenderCategory];
+      let msgSenderCategory = overrides?.msgSenderCategory;
+      if (!msgSenderCategory) {
+        // An IFoo(msg.sender).m() call: msg.sender IS the co-spent callee, so derive its 32-byte category
+        // (reversed = VM order) for the covenant's emitMsgSender - else it falls back to tx.origin and the
+        // callee-identity check fails. The callee comes from withExternalCall()/connect-time externals.
+        const msSlot = abiFunction.externalCalls?.find((ec) => ec.addressIsMsgSender);
+        const info = msSlot && overrides?.externalCalls?.find((ec) => ec.functionName === msSlot.functionName);
+        if (info) msgSenderCategory = hexToBin(info.externalContract.categoryId).reverse();
+      }
+      finalArgs = [...finalArgs, msgSenderCategory ?? new Uint8Array(32)];
     }
     // __internal__blockhashInputIndex: the (n->hash) co-spend's absolute input index = master(0) + the slot
     // offset (the SymbolTable injects this param right after msgSender, so it is pushed here in order).

@@ -10411,6 +10411,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private emitExternalCallVerification(node: FunctionDefinitionNode): void {
     const locationData = { location: node.location, positionHint: PositionHint.END };
 
+    // A msg.sender-target call (IFoo(msg.sender).m()) verifies the co-spent callee against the tx-derived
+    // msg.sender locking bytecode. Compute it once into a tracked temp: emitMsgSender reads _msgSenderCategory
+    // via the tracker, so it must run before the per-slot verification pushes its untracked working values.
+    const msgSenderTemp = this.externalCallSlots.some((s) => s.addressIsMsgSender && !s.loopArrayVar)
+      ? '__internal__extcall_msgsender' : undefined;
+    if (msgSenderTemp) {
+      this.emitMsgSender(locationData);
+      this.pushToStack(msgSenderTemp);
+    }
+
     for (const slot of this.externalCallSlots) {
       // Array-element target `IFoo(arr[i]).m()`: verify EVERY co-spent callee against the array in a loop.
       if (slot.inlineLoopDispatch) continue; // handled inline per-iteration in visitExternalFunctionCall
@@ -10432,11 +10442,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // B's master self-pins its category+capability (Stage 1), so a matching address means the
       // co-spent UTXO is the genuine master holding genuine state - no caller-side category check.
       this.emit(Op.OP_UTXOBYTECODE, locationData);  // [B_master_inputIdx, B_master_bytecode]
-      if (!slot.addressParam) {
+      const addrName = slot.addressIsMsgSender ? msgSenderTemp! : slot.addressParam;
+      if (!addrName) {
         throw new Error('external call target address must be a constructor/function parameter');
       }
       // +2 for the 2 untracked values on the real stack: B_master_bytecode and B_master_inputIdx
-      const addrParamIdx = this.getStackIndex(slot.addressParam);
+      const addrParamIdx = this.getStackIndex(addrName);
       this.emit(encodeInt(BigInt(addrParamIdx + 2)), locationData);
       this.emit(Op.OP_PICK, locationData);          // [idx, B_master_bytecode, expected_addr]
       this.emit(Op.OP_EQUALVERIFY, locationData);   // [idx]
@@ -10506,6 +10517,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
       // Drop the remaining idx from the stack
       this.emit(Op.OP_DROP, locationData);
+    }
+
+    // Drop the msg.sender temp (each slot's verification is stack-neutral, so it is back on top here).
+    if (msgSenderTemp) {
+      this.emit(Op.OP_DROP, locationData);
+      this.popFromStack();
     }
   }
 
@@ -12468,9 +12485,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(encodeInt(BigInt(catIdx)), locationData);
     this.emit(Op.OP_PICK, locationData);
 
-    // Compare to 32 zero bytes
-    this.emit(encodeInt(32n), locationData);
+    // Compare to 32 zero bytes: NUM2BIN takes [value, byteLength] (length on top), so push 0 then 32.
     this.emit(Op.OP_0, locationData);
+    this.emit(encodeInt(32n), locationData);
     this.emit(Op.OP_NUM2BIN, locationData);        // 32 zero bytes
     this.emit(Op.OP_EQUAL, locationData);
 

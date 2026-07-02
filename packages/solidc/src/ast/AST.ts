@@ -1673,6 +1673,9 @@ export interface ExternalCallSlot {
   // every element is co-spent + verified as a callee in a loop (the source `for` loop is left as harmless
   // iteration; the epilogue reads the array and loop-verifies callee[base+i].master.LBC == arr[i]).
   loopArrayVar?: string;
+  // Set when the call target is `msg.sender` (IFoo(msg.sender).m()): the callee is the tx-derived msg.sender
+  // input (category-matched, or tx.origin P2PKH), verified against emitMsgSender's locking bytecode.
+  addressIsMsgSender?: boolean;
   slotIndex: number;
   requiredDataNftIndices: number[];
   hasReturnValues?: boolean;

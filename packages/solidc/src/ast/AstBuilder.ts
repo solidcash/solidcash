@@ -2569,6 +2569,17 @@ export default class AstBuilder
     return node;
   }
 
+  // `delete X.field[keys]` - delete a struct-field mapping entry. The field mapping is the flattened state
+  // collection `X__field` (same as the struct-field mapping write, ~visitAssignmentStatement), so a plain
+  // MappingDelete on it removes the entry (Solidity delete on a mapping element).
+  visitDeleteMemberEntry(ctx: any): MappingDeleteNode {
+    const ids = ctx.Identifier_list();
+    const keys = ctx.expression_list().map((e: any) => this.visit(e)) as ExpressionNode[];
+    const node = new MappingDeleteNode(`${ids[0].getText()}__${ids[1].getText()}`, keys);
+    node.location = Location.fromCtx(ctx);
+    return node;
+  }
+
   private buildMappingType(ctx: MappingTypeContext): MappingType {
     const keyType = parseType(ctx.typeName(0).getText());
     const identifiers = ctx.Identifier_list();

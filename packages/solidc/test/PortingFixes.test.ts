@@ -1854,3 +1854,17 @@ describe('integer literal 0 coerces to bytesN', () => {
       { solidityImportCompat: true })).toThrow(/can not be assigned/);
   });
 });
+
+// The modifier placeholder `_;` may live inside an if/else branch (or loop body), not only at the modifier
+// body top level - the OZ `ifAdmin` proxy pattern. Grammar allows it anywhere a statement is; modifier
+// expansion counts + replaces it recursively.
+describe('`_;` modifier placeholder inside a conditional', () => {
+  it('expands `_;` nested in an if/else branch', () => {
+    const a = compileString(
+      'contract C { int x; modifier ifZero() { if (this.x == 0) { _; } else { require(false); } }'
+      + ' function f() ifZero { this.x = 1; } }',
+      { solidityImportCompat: true },
+    );
+    expect(a.contractName).toBe('C');
+  });
+});

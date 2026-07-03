@@ -124,6 +124,7 @@ import type {
   TupleAssignmentContext,
   ParameterContext,
   AssignStatementContext,
+  PlaceholderStatementContext,
   AssignmentExpressionContext,
   ExpressionContext,
   IfStatementContext,
@@ -1155,6 +1156,14 @@ export default class AstBuilder
   visitStatement(ctx: StatementContext): StatementNode {
     // Statement nodes only have a single child, so we can just visit that child
     return this.visit(ctx.getChild(0));
+  }
+
+  // The modifier placeholder `_;` - allowed anywhere a statement is (e.g. inside an if/else branch, as in a
+  // proxy's `ifAdmin` modifier); modifier expansion still rejects it outside a modifier body.
+  visitPlaceholderStatement(ctx: PlaceholderStatementContext): StatementNode {
+    const placeholder = new PlaceholderStatementNode();
+    placeholder.location = Location.fromCtx(ctx);
+    return placeholder;
   }
 
   visitVariableDefinition(ctx: VariableDefinitionContext): StatementNode {

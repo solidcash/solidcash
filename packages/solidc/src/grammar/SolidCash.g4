@@ -257,7 +257,8 @@ block
     ;
 
 statement
-    : variableDefinition
+    : placeholderStatement
+    | variableDefinition
     | tupleAssignment
     | arrayPushStatement
     | arrayPopStatement

@@ -71,6 +71,43 @@ function renameParamRefs(nodes: Node[], oldNames: string[], newNames: string[]):
   for (const n of nodes) walk(n);
 }
 
+// Count `_;` placeholders in a statement list, recursing into if/else branches + loop bodies (a placeholder
+// may live inside a conditional, e.g. a proxy's `ifAdmin` modifier).
+function countPlaceholdersDeep(stmts: StatementNode[]): number {
+  let n = 0;
+  for (const s of stmts) {
+    if (s instanceof PlaceholderStatementNode) { n += 1; continue; }
+    for (const key of Object.keys(s)) {
+      const val = (s as any)[key];
+      if (val instanceof BlockNode && val.statements) n += countPlaceholdersDeep(val.statements);
+    }
+  }
+  return n;
+}
+
+// Replace each `_;` (recursively, inside nested blocks) with the current function body. The first placeholder
+// reuses the body nodes; each additional placeholder gets a deep clone (no shared references).
+function replacePlaceholdersDeep(
+  stmts: StatementNode[], body: StatementNode[], state: { inserted: boolean },
+): StatementNode[] {
+  const out: StatementNode[] = [];
+  for (const stmt of stmts) {
+    if (stmt instanceof PlaceholderStatementNode) {
+      out.push(...(state.inserted ? body.map((s) => cloneNode(s)) : body));
+      state.inserted = true;
+      continue;
+    }
+    for (const key of Object.keys(stmt)) {
+      const val = (stmt as any)[key];
+      if (val instanceof BlockNode && val.statements) {
+        val.statements = replacePlaceholdersDeep(val.statements, body, state);
+      }
+    }
+    out.push(stmt);
+  }
+  return out;
+}
+
 export default function expandModifiers(ast: SourceFileNode): SourceFileNode {
   const contract = ast.contract;
   const modifierMap = new Map<string, ModifierDefinitionNode>();
@@ -81,10 +118,8 @@ export default function expandModifiers(ast: SourceFileNode): SourceFileNode {
       throw new ModifierRedefinitionError(mod);
     }
 
-    // Validate at least one placeholder
-    const placeholderCount = mod.statements.filter(
-      (s) => s instanceof PlaceholderStatementNode,
-    ).length;
+    // Validate at least one placeholder (recursing into if/else + loops)
+    const placeholderCount = countPlaceholdersDeep(mod.statements);
 
     if (placeholderCount === 0) {
       throw new ModifierPlaceholderError(mod, `Modifier '${mod.name}' must contain at least one '_' placeholder`);
@@ -155,24 +190,10 @@ function expandFunctionModifiers(
     renameParamRefs(clonedStatements, modDef.parameters.map((p) => p.name),
       modDef.parameters.map((p, _idx) => `${p.name}__${i}`));
 
-    // Replace placeholder(s) with current body
-    const expandedStatements: StatementNode[] = [...paramBindings];
-    let placeholderInserted = false;
-    for (const stmt of clonedStatements) {
-      if (stmt instanceof PlaceholderStatementNode) {
-        if (placeholderInserted) {
-          // Deep-clone the body for each additional placeholder to avoid shared node references
-          expandedStatements.push(...currentBody.map((s) => cloneNode(s)));
-        } else {
-          expandedStatements.push(...currentBody);
-          placeholderInserted = true;
-        }
-      } else {
-        expandedStatements.push(stmt);
-      }
-    }
-
-    currentBody = expandedStatements;
+    // Replace placeholder(s) with current body, recursing into nested blocks (if/else, loops).
+    const state = { inserted: false };
+    const replaced = replacePlaceholdersDeep(clonedStatements, currentBody, state);
+    currentBody = [...paramBindings, ...replaced];
   }
 
   // Replace the function body

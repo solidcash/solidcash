@@ -333,8 +333,12 @@ feature-complete** for stateful readers, including:
   `n = block.number - K` from the co-spent `__block_number` **register** (the same value the covenant reads,
   NOT the chain tip), then co-spends the `(n->hash)` oracle for that `n`. `block.number` used inside
   `blockhash` still injects/co-spends the register, so the register and the historical oracle ride the same
-  tx. `blockhash(block.number)` (K=0, the current block) stays unavailable (no oracle pair; EVM returns 0);
-  any other computed `n` is unsupported and warned at compile time.
+  tx. `blockhash(block.number)` (K=0, the current block) stays unavailable (no oracle pair; EVM returns 0).
+  An *arbitrary* computed `n` (not a param, not `block.number - K`) is NOT fundamentally unresolvable: the
+  auto-derivation probe runs the real covenant, which computes `n` on-stack, so the SDK can extract `n` from
+  the trace at the blockhash read (single source of truth) rather than re-derive it. That general extraction
+  is not yet wired (the `block.number - K` register read is a fast-path for the canonical idiom); such `n`
+  is warned at compile time for now.
 
 
 These are **functions** (runtime argument), not the 0-param `block.*` properties, so they lower as

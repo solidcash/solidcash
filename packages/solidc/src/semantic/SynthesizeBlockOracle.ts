@@ -111,9 +111,10 @@ export default class SynthesizeBlockOracle extends AstTraversal {
           this.fnBlockhashArgs.add(encodeBlockNumberReadKey(off));
         } else {
           this.warnShim('blockhash-computed', 'Warning: blockhash(n) with a computed n that is neither a '
-            + 'direct parameter nor `block.number - K` (K a positive constant) cannot be auto-resolved by the '
-            + 'SDK; the (n->hash) oracle co-spend would have to be wired manually. blockhash(block.number) '
-            + '(the current block) is unavailable on-chain and has no oracle pair - use block.number - 1.');
+            + 'direct parameter nor `block.number - K` (K a positive constant) is not YET auto-resolved by '
+            + 'the SDK fast paths (the value is recoverable from the auto-derivation probe trace, just not '
+            + 'wired); wire the (n->hash) oracle co-spend manually for now. blockhash(block.number) (the '
+            + 'current block) is unavailable on-chain and has no oracle pair - use block.number - 1.');
         }
       }
     }

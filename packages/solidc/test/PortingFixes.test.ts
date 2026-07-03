@@ -1809,3 +1809,19 @@ describe('Tuple forwarding and whole fixed-array assignment', () => {
     expect(a.contractName).toBe('C');
   });
 });
+
+// Low-level call `.call{value:}(data)` on a COMPLEX (non-identifier) address receiver: the receiver type is
+// resolved structurally in the symbol-table pass (types are not on nodes yet). Unblocks MultiSigWallet's
+// `transactions[i].to.call{value: ...value}(...data)` (a struct field of an array element).
+describe('Low-level call on a struct-field / array-element address receiver', () => {
+  it('compiles `structVar.field.call{value:}(data)` where the struct is an array element', () => {
+    const a = compileString(
+      'contract C { struct T { address to; uint256 value; bytes data; } T[] txs;'
+      + ' function exec(uint256 i) public { T storage t = txs[i];'
+      + ' (bool ok,) = t.to.call{value: t.value}(t.data); require(ok); } }',
+      { solidityImportCompat: true },
+    );
+    expect(a.contractName).toBe('C');
+    expect(a.bytecode.length).toBeGreaterThan(0);
+  });
+});

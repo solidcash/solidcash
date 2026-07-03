@@ -5670,6 +5670,43 @@ export default class SymbolTableTraversal extends AstTraversal {
     return funcCall;
   }
 
+  // Resolve an address-typed low-level-call receiver's type during the symbol-table pass (expression types
+  // are not on nodes yet). Recurses through identifiers, msg.sender/tx.origin, array/mapping index
+  // (element/value type), tuple index, and struct field access, so `structVar.field`, `arr[i]`,
+  // `arr[i].field`, `map[k].to` all resolve (e.g. MultiSigWallet's `transactions[i].to`).
+  private resolveLowLevelReceiverType(expr: Node): Type | undefined {
+    if (expr instanceof IdentifierNode) {
+      for (let i = this.symbolTables.length - 1; i >= 0; i -= 1) {
+        const t = this.symbolTables[i]?.get(expr.name)?.type;
+        if (t) return t;
+      }
+      return this.stateVariableMap.get(expr.name)?.type;
+    }
+    if (expr instanceof NullaryOpNode
+      && (expr.operator === NullaryOperator.MSG_SENDER || expr.operator === NullaryOperator.TX_ORIGIN)) {
+      return new AddressType();
+    }
+    if (expr instanceof MappingAccessNode) {
+      let base: Type | undefined;
+      for (let i = this.symbolTables.length - 1; i >= 0 && !base; i -= 1) base = this.symbolTables[i]?.get(expr.name)?.type;
+      base = base ?? this.stateVariableMap.get(expr.name)?.type;
+      return base instanceof ArrayType ? base.elementType : base instanceof MappingType ? base.valueType : undefined;
+    }
+    if (expr instanceof ArrayAccessNode) {
+      const base = this.resolveLowLevelReceiverType(expr.array);
+      return base instanceof ArrayType ? base.elementType : base instanceof MappingType ? base.valueType : undefined;
+    }
+    if (expr instanceof TupleIndexOpNode) {
+      const base = this.resolveLowLevelReceiverType(expr.tuple);
+      return base instanceof ArrayType ? base.elementType : undefined;
+    }
+    if (expr instanceof FieldAccessNode) {
+      const base = this.resolveLowLevelReceiverType(expr.expression);
+      return base instanceof StructType ? base.fields.find((f) => f.name === expr.name)?.type : undefined;
+    }
+    return (expr as ExpressionNode).type;
+  }
+
   visitMethodCall(node: MethodCallNode): Node {
     // Detect low-level call: IFoo(cat).bar.call(args) or .staticcall(args)
     // Pattern: MethodCallNode(object=FieldAccessNode(expr=FunctionCallNode), methodName="call"|"staticcall")
@@ -5852,23 +5889,14 @@ export default class SymbolTableTraversal extends AstTraversal {
       // table or the state-var map, and treat msg.sender / tx.origin (NullaryOps typed `address`) as addresses.
       const isAddressNullary = node.object instanceof NullaryOpNode
         && (node.object.operator === NullaryOperator.MSG_SENDER || node.object.operator === NullaryOperator.TX_ORIGIN);
+      // node.object.type isn't assigned yet in this pass. Resolve the receiver's type structurally so a
+      // complex address target dispatches: a bare identifier, msg.sender/tx.origin, an `arr[i]`/`map[k]`
+      // element (MultiCall `targets[i].staticcall(data[i])`), or a struct field - possibly nested, e.g.
+      // MultiSigWallet's `transactions[i].to` (the storage-pointer local `t` inlines to `transactions[i]`).
       let objType = node.object.type
         ?? (objName ? this.symbolTables[0].get(objName)?.type ?? this.stateVariableMap.get(objName)?.type : undefined)
-        ?? (isAddressNullary ? new AddressType() : undefined);
-      // Complex address receiver: an `address[]` element `arr[i]` resolves to the array's element type, so a
-      // runtime array-element target dispatches (e.g. MultiCall `targets[i].staticcall(data[i])`). `arr[i]`
-      // parses as a TupleIndexOpNode (array-vs-tuple is type-resolved later) or an ArrayAccessNode; the base
-      // array's type comes from the scope chain (usually a calldata/memory parameter) or a state var.
-      const arrayBase = node.object instanceof TupleIndexOpNode ? node.object.tuple
-        : node.object instanceof ArrayAccessNode ? node.object.array : undefined;
-      if (!objType && arrayBase instanceof IdentifierNode) {
-        let arrType: Type | undefined;
-        for (let i = this.symbolTables.length - 1; i >= 0 && !arrType; i -= 1) {
-          arrType = this.symbolTables[i]?.get(arrayBase.name)?.type;
-        }
-        arrType = arrType ?? this.stateVariableMap.get(arrayBase.name)?.type;
-        if (arrType instanceof ArrayType) objType = arrType.elementType;
-      }
+        ?? (isAddressNullary ? new AddressType() : undefined)
+        ?? this.resolveLowLevelReceiverType(node.object);
       if (objType instanceof AddressType) {
         const data = node.parameters.length === 1
           ? this.visit(node.parameters[0]) as ExpressionNode : node.parameters[0];

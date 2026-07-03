@@ -245,9 +245,10 @@ export interface CollectionInfo {
 }
 
 export interface KeySourceAbi {
-  kind: 'param' | 'state' | 'expression';
+  kind: 'param' | 'state' | 'expression' | 'stateArrayLast';
   paramName?: string;
   stateVarName?: string;
+  stateArrayName?: string; // kind='stateArrayLast': `arr[arr.length-1]` - SDK resolves the array's last element
   expressionLabel?: string;
 }
 

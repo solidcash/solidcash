@@ -30,6 +30,7 @@ function buildFunctionAbiMetadata(func: FunctionDefinitionNode): Partial<AbiFunc
             kind: ks.kind,
             ...(ks.paramName && { paramName: ks.paramName }),
             ...(ks.stateVarName && { stateVarName: ks.stateVarName }),
+            ...(ks.stateArrayName && { stateArrayName: ks.stateArrayName }),
             ...(ks.kind === 'expression' && { expressionLabel: ks.canonical }),
           })),
         }),

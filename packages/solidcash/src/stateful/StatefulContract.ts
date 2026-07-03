@@ -4217,6 +4217,16 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               );
             }
             keyValues.push(stateValue as bigint | boolean | Uint8Array);
+          } else if (keySource.kind === 'stateArrayLast') {
+            // `arr[arr.length-1]`: resolve the state array's last element so we co-spend the EXISTING entry
+            // for this computed key (else it is treated as a new entry and the old one is left dangling).
+            const arr = onChainState.state[keySource.stateArrayName!] as unknown[] | undefined;
+            if (!Array.isArray(arr) || arr.length === 0) {
+              throw new Error(
+                `Cannot resolve mapping key from '${keySource.stateArrayName}[length-1]': array missing or empty.`,
+              );
+            }
+            keyValues.push(arr[arr.length - 1] as bigint | boolean | Uint8Array);
           } else {
             // Expression: look in user-provided entryKeyOverrides, or compute from
             // paramDerivation metadata, or fall back to placeholder.

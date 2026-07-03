@@ -224,6 +224,9 @@ export default class SymbolTableTraversal extends AstTraversal {
   private symbolTables: SymbolTable[] = [new SymbolTable(GLOBAL_SYMBOL_TABLE)];
   private functionSignatures: Set<string> = new Set();
   private currentFunction: FunctionDefinitionNode;
+  // Local var name -> its initializer expression, for resolving a mapping key that is a local (e.g.
+  // `address lastKey = keys[keys.length-1]; m[lastKey] = v`). Populated per function before the entry pre-scan.
+  private localKeyDefs: Map<string, ExpressionNode> = new Map();
   private currentContract: ContractNode;
   private expectedSymbolType: SymbolType = SymbolType.VARIABLE;
   private insideConsoleStatement: boolean = false;
@@ -1086,6 +1089,7 @@ export default class SymbolTableTraversal extends AstTraversal {
 
     // Entry slot pre-scan: collect unique (collection, keyParam) pairs and assign slot indices
     if (this.collectionMap.size > 0) {
+      this.collectLocalKeyDefs(node.body);
       const entryAccessMap = new Map<string, EntryAccessInfo>();
       this.collectEntryAccesses(node.body, entryAccessMap);
 
@@ -3383,12 +3387,54 @@ export default class SymbolTableTraversal extends AstTraversal {
       if (this.currentFunction.parameters.some((p) => p.name === key.name)) {
         return { kind: 'param', paramName: key.name, canonical: `id:${key.name}` };
       }
+      // A local whose initializer is `arr[arr.length-1]` (IterableMapping's `lastKey`): resolvable from state.
+      const def = this.localKeyDefs.get(key.name);
+      const arrName = def && this.matchStateArrayLast(def);
+      if (arrName) return { kind: 'stateArrayLast', stateArrayName: arrName, canonical: `lastof:${arrName}` };
       return { kind: 'expression', canonical: `id:${key.name}` };
     }
     if (key instanceof StateAccessNode) {
       return { kind: 'state', stateVarName: key.name, canonical: `state:${key.name}` };
     }
+    // Inline `arr[arr.length-1]` used directly as a key.
+    const arrName = this.matchStateArrayLast(key);
+    if (arrName) return { kind: 'stateArrayLast', stateArrayName: arrName, canonical: `lastof:${arrName}` };
     return { kind: 'expression', canonical: this.canonicalizeExpression(key) };
+  }
+
+  // Collect simple `T local = <expr>;` initializers in the function body so a mapping key that is a local can be
+  // resolved back to its initializer (see classifyKeySource). Shallow: a re-declared name keeps the first def.
+  private collectLocalKeyDefs(node: Node | undefined): void {
+    this.localKeyDefs = new Map();
+    const walk = (n: Node | undefined): void => {
+      if (!n) return;
+      if (n instanceof VariableDefinitionNode && n.expression && !this.localKeyDefs.has(n.name)) {
+        this.localKeyDefs.set(n.name, n.expression);
+      }
+      for (const k of Object.keys(n)) {
+        if (k === 'type' || k === 'symbolTable' || k === 'location') continue;
+        const v = (n as unknown as Record<string, unknown>)[k];
+        if (v instanceof Node) walk(v);
+        else if (Array.isArray(v)) for (const it of v) if (it instanceof Node) walk(it);
+      }
+    };
+    walk(node);
+  }
+
+  // Returns the state array name A if `expr` is exactly `A[A.length - 1]` (a state array's last element), else
+  // undefined. The SDK resolves this to the array's last element (a runtime-computed but state-derivable key).
+  // Pre-semantic shape: `this.A[...]` is a MappingAccessNode (array-vs-mapping resolved later), `this.A.length`
+  // is a UnaryOp(SIZE) over a StateAccess(A).
+  private matchStateArrayLast(expr: ExpressionNode): string | undefined {
+    if (!(expr instanceof MappingAccessNode) || expr.keys.length !== 1) return undefined;
+    const arrName = expr.name;
+    const idx = expr.keys[0];
+    if (!(idx instanceof BinaryOpNode) || idx.operator !== BinaryOperator.MINUS) return undefined;
+    if (!(idx.right instanceof IntLiteralNode) || idx.right.value !== 1n) return undefined;
+    const len = idx.left;
+    if (!(len instanceof UnaryOpNode) || len.operator !== UnaryOperator.SIZE) return undefined;
+    if (!(len.expression instanceof StateAccessNode) || len.expression.name !== arrName) return undefined;
+    return arrName;
   }
 
   private getMappingKeyDescriptors(keys: ExpressionNode[]): { keyParams: string[]; keySources: KeySourceInfo[] } {

@@ -72,6 +72,17 @@ describe('IterableMapping remove() - swap-remove with computed-key index update'
     await sc.valOf(a3, 300n).send();
   });
 
+  it('remove the LAST key (key == lastKey): the write aliases the delete, gated off; just pop', async () => {
+    const sc = await seed3();                              // keys=[a1,a2,a3]
+    await sc.remove(a3, alicePub, sig()).send();           // a3 is last -> no swap, pop -> [a1,a2]
+    await sc.size(2n).send();
+    await sc.keyAt(0n, a1).send();
+    await sc.keyAt(1n, a2).send();
+    await sc.valOf(a3, 0n).send();                          // a3 deleted
+    await sc.idxOf(a1, 0n).send();                          // untouched keys keep their indices
+    await sc.idxOf(a2, 1n).send();
+  });
+
   it('remove then re-add gets a fresh index', async () => {
     const sc = await seed3();
     await sc.remove(a1, alicePub, sig()).send();           // [a3,a2]
@@ -79,6 +90,18 @@ describe('IterableMapping remove() - swap-remove with computed-key index update'
     await sc.size(3n).send();
     await sc.valOf(a1, 500n).send();
     await sc.idxOf(a1, 2n).send();
+  });
+
+  it('remove all keys one by one (mixes middle and last removes)', async () => {
+    const sc = await seed3();                              // keys=[a1,a2,a3]
+    await sc.remove(a2, alicePub, sig()).send();           // middle: swap a3->1 -> [a1,a3]
+    await sc.size(2n).send();
+    await sc.remove(a3, alicePub, sig()).send();           // last -> [a1]
+    await sc.size(1n).send();
+    await sc.keyAt(0n, a1).send();
+    await sc.remove(a1, alicePub, sig()).send();           // last -> []
+    await sc.size(0n).send();
+    await sc.valOf(a1, 0n).send();
   });
 
   it('remove a non-existent key is a safe no-op (early return preserves state)', async () => {

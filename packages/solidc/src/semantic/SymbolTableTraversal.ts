@@ -1111,6 +1111,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         // Propagate slot indices to individual mapping nodes (looks up the shared info by key)
         this.assignEntrySlotIndices(node.body, entryAccessMap);
 
+        this.detectAliasConditionalWrites(node.body, ordered);
       }
     }
 
@@ -3435,6 +3436,46 @@ export default class SymbolTableTraversal extends AstTraversal {
     if (!(len instanceof UnaryOpNode) || len.operator !== UnaryOperator.SIZE) return undefined;
     if (!(len.expression instanceof StateAccessNode) || len.expression.name !== arrName) return undefined;
     return arrName;
+  }
+
+  // Mark each WRITE slot that is followed (in source order) by a DELETE of a DIFFERENT key on the SAME
+  // collection (swap-remove's `m[a]=v; delete m[b]`). When a and b alias at runtime the write is redundant
+  // (the delete wins) and the one entry NFT can't back both slots; the covenant then gates the write off and
+  // the SDK funds it. Records the aliasing delete slot's index on the write slot's EntryAccessInfo.
+  private detectAliasConditionalWrites(body: Node, ordered: EntryAccessInfo[]): void {
+    const bySlotKey = new Map<string, EntryAccessInfo>();
+    for (const info of ordered) bySlotKey.set(`${info.collection}:${info.keyParams.join(':')}`, info);
+    const writeOrder = new Map<string, number>();
+    const deleteOrder = new Map<string, number>();
+    let order = 0;
+    const scan = (n: Node | undefined): void => {
+      if (!n) return;
+      if (n instanceof MappingAssignNode && n.collection) {
+        const { keyParams } = this.getMappingKeyDescriptors(n.keys);
+        writeOrder.set(`${n.collection.name}:${keyParams.join(':')}`, order++);
+      } else if (n instanceof MappingDeleteNode && n.collection) {
+        const { keyParams } = this.getMappingKeyDescriptors(n.keys);
+        deleteOrder.set(`${n.collection.name}:${keyParams.join(':')}`, order++);
+      }
+      for (const k of Object.keys(n)) {
+        if (k === 'type' || k === 'symbolTable' || k === 'location') continue;
+        const v = (n as unknown as Record<string, unknown>)[k];
+        if (v instanceof Node) scan(v);
+        else if (Array.isArray(v)) for (const it of v) if (it instanceof Node) scan(it);
+      }
+    };
+    scan(body);
+
+    for (const [wKey, wInfo] of bySlotKey) {
+      if (!wInfo.operations.includes('write')) continue;
+      const wOrder = writeOrder.get(wKey);
+      if (wOrder === undefined) continue;
+      for (const [dKey, dInfo] of bySlotKey) {
+        if (dKey === wKey || dInfo.collection !== wInfo.collection || !dInfo.operations.includes('delete')) continue;
+        const dOrder = deleteOrder.get(dKey);
+        if (dOrder !== undefined && dOrder > wOrder) { wInfo.aliasCondDeleteSlot = dInfo.slotIndex; break; }
+      }
+    }
   }
 
   private getMappingKeyDescriptors(keys: ExpressionNode[]): { keyParams: string[]; keySources: KeySourceInfo[] } {

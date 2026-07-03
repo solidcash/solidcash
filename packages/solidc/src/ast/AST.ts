@@ -175,6 +175,11 @@ export interface EntryAccessInfo {
   keySources: KeySourceInfo[];  // detailed source info per key
   operations: ('read' | 'write' | 'delete')[];
   slotIndex: number;
+  // A WRITE slot on the same collection as a LATER delete of a different key (swap-remove's
+  // `indexOf[lastKey]=v; delete indexOf[key]`). When the two keys alias at runtime the write is redundant
+  // (the delete wins), and the single entry NFT can't be co-spent by both slots. Set to the delete slot's
+  // index: the covenant gates this write off when its key == that slot's key, and the SDK funds it instead.
+  aliasCondDeleteSlot?: number;
 }
 
 export interface TokenContainerAccessInfo {

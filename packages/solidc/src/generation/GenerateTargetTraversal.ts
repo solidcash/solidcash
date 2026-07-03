@@ -9293,6 +9293,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // 1. Verify output commitments for WRITTEN (non-deleted) entries
     for (const [slotIdx, writeInfo] of this.pendingEntryWrites) {
       if (this.pendingEntryDeletes.has(slotIdx) || this.condDeleteSlots.has(slotIdx)) continue;
+      if (this.isAliasCondWrite(slotIdx)) continue; // gated separately below
 
       // Reconstruct expected commitment: key_enc OP_CAT value_enc
       const keyStackIdx = this.getStackIndex(writeInfo.keyStackName);
@@ -9322,6 +9323,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // 2. Verify output token category base matches master for written (non-deleted) entry outputs
     for (const [slotIdx] of this.pendingEntryWrites) {
       if (this.pendingEntryDeletes.has(slotIdx) || this.condDeleteSlots.has(slotIdx)) continue;
+      if (this.isAliasCondWrite(slotIdx)) continue;
 
       // Output category base matches master's
       this.emitEntryOutputIndex(slotIdx, locationData, 0);
@@ -9342,6 +9344,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Construct the expected P2SH32 locking bytecode at runtime (same pattern as event verification)
     for (const [slotIdx] of this.pendingEntryWrites) {
       if (this.pendingEntryDeletes.has(slotIdx) || this.condDeleteSlots.has(slotIdx)) continue;
+      if (this.isAliasCondWrite(slotIdx)) continue;
 
       const entryAccess = this.entrySlots[slotIdx];
       const collectionHash = computeCollectionHash(entryAccess.collectionSignature);
@@ -9369,6 +9372,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.popFromStack(2);
     }
 
+    // 3b. Alias-conditional writes (swap-remove `m[a]=v; delete m[b]`): verify the output ONLY when this write's
+    // key differs from the aliasing delete's key. When they alias (removing the last key) the write is a no-op the
+    // delete supersedes, the SDK funds this slot (no output), and the gate skips reading the absent output.
+    this.emitAliasConditionalWriteVerification(locationData);
+
     // 4. Clean up pending entry write values from the stack. Conditional soft-delete slots are verified LATER
     // (emitConditionalDeleteVerification, after read-only preservation) so their key_enc/value_enc stay for now.
     for (const [slotIdx, writeInfo] of this.pendingEntryWrites) {
@@ -9384,6 +9392,85 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_ROLL, locationData);
       this.emit(Op.OP_DROP, locationData);
       this.removeFromStack(valIdx);
+    }
+  }
+
+  // True for a write slot marked alias-conditional (verified via a runtime key-inequality gate, not the main loops).
+  private isAliasCondWrite(slotIdx: number): boolean {
+    return this.entrySlots[slotIdx]?.aliasCondDeleteSlot !== undefined
+      && this.pendingEntryWrites.has(slotIdx)
+      && !this.pendingEntryDeletes.has(slotIdx) && !this.condDeleteSlots.has(slotIdx);
+  }
+
+  // Verify each alias-conditional write's output ONLY when its key differs from the aliasing delete's key. Both
+  // key_enc values are still on the stack (the soft-delete's are cleaned up later). When the keys are equal
+  // (removing the last key) the gate is false: the delete supersedes the write, the SDK funds this slot with no
+  // output, and the skipped OP_IF body never reads it. Mirrors the commitment/category/bytecode checks in the
+  // main loops for the single gated slot.
+  private emitAliasConditionalWriteVerification(loc: SingleLocationData): void {
+    for (const [slotIdx, writeInfo] of this.pendingEntryWrites) {
+      if (!this.isAliasCondWrite(slotIdx)) continue;
+      const aliasKeyName = `__entry_key_enc_${this.entrySlots[slotIdx].aliasCondDeleteSlot}`;
+      if (this.getStackIndex(aliasKeyName) < 0) continue; // aliasing delete's key not on stack -> cannot gate
+
+      // gate = (write key_enc != alias delete key_enc)
+      this.emit(encodeInt(BigInt(this.getStackIndex(writeInfo.keyStackName))), loc);
+      this.emit(Op.OP_PICK, loc);
+      this.pushToStack('(aliaschk)');
+      this.emit(encodeInt(BigInt(this.getStackIndex(aliasKeyName))), loc);
+      this.emit(Op.OP_PICK, loc);
+      this.pushToStack('(aliaschk)');
+      this.emit(Op.OP_EQUAL, loc);
+      this.popFromStack(2);
+      this.pushToStack('(aliaschk)');
+      this.emit(Op.OP_NOT, loc);
+      this.emit(Op.OP_IF, loc);
+      this.popFromStack();
+
+      // (a) commitment: output[slot] == key_enc ++ value_enc
+      this.emit(encodeInt(BigInt(this.getStackIndex(writeInfo.keyStackName))), loc);
+      this.emit(Op.OP_PICK, loc);
+      this.pushToStack('(value)');
+      this.emit(encodeInt(BigInt(this.getStackIndex(writeInfo.valueStackName))), loc);
+      this.emit(Op.OP_PICK, loc);
+      this.pushToStack('(value)');
+      this.emit(Op.OP_CAT, loc);
+      this.popFromStack(2);
+      this.pushToStack('(value)');
+      this.emitEntryOutputIndex(slotIdx, loc, 0);
+      this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, loc);
+      this.pushToStack('(value)');
+      this.emit(Op.OP_EQUALVERIFY, loc);
+      this.popFromStack(2);
+
+      // (b) category base == master + mutable capability
+      this.emitEntryOutputIndex(slotIdx, loc, 0);
+      this.emit(Op.OP_OUTPUTTOKENCATEGORY, loc);
+      this.emitVerifyCatBaseEqMaster(loc);
+      this.emitEntryOutputIndex(slotIdx, loc, 0);
+      this.emit(Op.OP_OUTPUTTOKENCATEGORY, loc);
+      this.emit(encodeInt(32n), loc);
+      this.emit(Op.OP_SPLIT, loc);
+      this.emit(Op.OP_NIP, loc);
+      this.emit(new Uint8Array([0x01]), loc);
+      this.emit(Op.OP_EQUALVERIFY, loc);
+
+      // (c) locking bytecode == entry NFT P2SH32
+      const collectionHash = computeCollectionHash(this.entrySlots[slotIdx].collectionSignature);
+      this.emitMasterInputIndex(loc);
+      this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
+      this.emit(encodeInt(32n), loc);
+      this.emit(Op.OP_SPLIT, loc);
+      this.emit(Op.OP_DROP, loc);
+      this.pushToStack('(value)');
+      this.emitP2sh32FromCovenant((cat) => buildEntryNftCovenantScript(cat, collectionHash), loc);
+      this.emitEntryOutputIndex(slotIdx, loc, 0);
+      this.emit(Op.OP_OUTPUTBYTECODE, loc);
+      this.pushToStack('(value)');
+      this.emit(Op.OP_EQUALVERIFY, loc);
+      this.popFromStack(2);
+
+      this.emit(Op.OP_ENDIF, loc);
     }
   }
 

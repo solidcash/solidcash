@@ -1174,15 +1174,15 @@ export class StatefulTransactionBuilder {
 
     // Create entry NFT outputs (written/preserved entries, excluding deleted ones). Entry outputs occupy
     // consecutive block-layout offsets; the covenant reads each existing/written slot's output at its FIXED
-    // offset. A slot that produces no output (soft-delete of an ABSENT key) would shift a later real output
-    // down and desync that fixed read, so emit a plain placeholder output for any skipped slot that PRECEDES
-    // the last real entry output. Trailing skipped slots need no placeholder (nothing reads past them).
+    // offset. A slot that produces no output (soft-delete of an ABSENT key, or an alias-skipped write) would
+    // shift a later real output down and desync that fixed read, so emit a plain placeholder output for any
+    // skipped slot below the fill threshold (the last real entry output, or the whole entry region when a
+    // trailing output - a chunk write, transfer, event - sits past it and must land at its fixed offset).
     const sortedEntries = [...this.entryNfts].sort((a, b) => a.slotIndex - b.slotIndex);
-    let lastRealSlotIndex = -1;
-    for (const e of sortedEntries) if (!this.entryDeletes.has(e.slotIndex)) lastRealSlotIndex = e.slotIndex;
+    const fillThreshold = this.entryPlaceholderFillThreshold();
     for (const entry of sortedEntries) {
       if (this.entryDeletes.has(entry.slotIndex)) {
-        if (entry.slotIndex < lastRealSlotIndex) {
+        if (entry.slotIndex < fillThreshold) {
           // Position-holding placeholder: plain BCH (no token) to the collection's entry address. The covenant
           // existence-gates this absent slot away (its input is a funder), so this output is never verified.
           const phLbc = this.entryNftLockingBytecodes.get(entry.collection);
@@ -1662,17 +1662,38 @@ export class StatefulTransactionBuilder {
    */
   getEntryOutputSlotOrder(): number[] {
     // Must mirror build()'s entry-output emission exactly: a real output per non-deleted slot, plus a
-    // position-holding placeholder for each deleted slot that precedes the last real output. The derivation
-    // maps a commitment at output offset O to slotOrder[O - entryOutputBase]; placeholders carry no commitment,
-    // so they just occupy a position and are never looked up.
+    // position-holding placeholder for each deleted slot below the fill threshold. The derivation maps a
+    // commitment at output offset O to slotOrder[O - entryOutputBase]; placeholders carry no commitment, so
+    // they just occupy a position and are never looked up.
     const sorted = [...this.entryNfts].sort((a, b) => a.slotIndex - b.slotIndex);
-    let lastRealSlotIndex = -1;
-    for (const e of sorted) if (!this.entryDeletes.has(e.slotIndex)) lastRealSlotIndex = e.slotIndex;
+    const fillThreshold = this.entryPlaceholderFillThreshold();
     const order: number[] = [];
     for (const e of sorted) {
-      if (!this.entryDeletes.has(e.slotIndex) || e.slotIndex < lastRealSlotIndex) order.push(e.slotIndex);
+      if (!this.entryDeletes.has(e.slotIndex) || e.slotIndex < fillThreshold) order.push(e.slotIndex);
     }
     return order;
+  }
+
+  // The slotIndex below which a skipped (deleted/funded) entry slot needs a placeholder output. Normally the
+  // last real entry output; but when a trailing output (a dynamic chunk write, or a post-entry block-layout
+  // slot) sits past the entry region, the whole region must be occupied so that trailing output lands at its
+  // fixed offset - so fill through the last entry slot.
+  private entryPlaceholderFillThreshold(): number {
+    const sorted = [...this.entryNfts].sort((a, b) => a.slotIndex - b.slotIndex);
+    if (sorted.length === 0) return -1;
+    if (this.hasPostEntryOutput()) return sorted[sorted.length - 1].slotIndex + 1;
+    let lastRealSlotIndex = -1;
+    for (const e of sorted) if (!this.entryDeletes.has(e.slotIndex)) lastRealSlotIndex = e.slotIndex;
+    return lastRealSlotIndex;
+  }
+
+  private hasPostEntryOutput(): boolean {
+    if (this.dynamicChunkVars.length > 0) return true;
+    if (!this.blockLayout) return false;
+    const entryOffsets = this.blockLayout.slots.filter((s) => s.kind === 'entry').map((s) => s.offset);
+    if (entryOffsets.length === 0) return false;
+    const maxEntry = Math.max(...entryOffsets);
+    return this.blockLayout.slots.some((s) => s.offset > maxEntry);
   }
 
   /**

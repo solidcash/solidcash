@@ -35,6 +35,7 @@ function buildFunctionAbiMetadata(func: FunctionDefinitionNode): Partial<AbiFunc
           })),
         }),
         operations: ea.operations,
+        ...(ea.aliasCondDeleteSlot !== undefined && { aliasCondDeleteSlot: ea.aliasCondDeleteSlot }),
       })),
     }),
     ...(func.emitInfos && func.emitInfos.length > 0 && {

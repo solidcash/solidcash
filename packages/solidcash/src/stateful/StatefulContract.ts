@@ -4349,12 +4349,30 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
 
     }
 
+    // Alias-conditional writes (swap-remove of the LAST key): a write slot whose runtime key equals the aliasing
+    // delete slot's key backs the SAME entry NFT. Co-spending it at two input offsets is invalid; the covenant
+    // gates the write off, so fund this slot (no co-spend, no output) - the delete slot owns the entry.
+    const aliasSkipSlots = new Set<number>();
+    if (entryAccesses) {
+      for (const e of entryNfts) {
+        const aliasSlot = entryAccesses[e.slotIndex]?.aliasCondDeleteSlot;
+        if (aliasSlot === undefined) continue;
+        const other = entryNfts.find((o) => o.slotIndex === aliasSlot);
+        if (other && e.collection === other.collection
+          && this._keysMatch(e.keyValue, other.keyValue, e.keyType)) {
+          aliasSkipSlots.add(e.slotIndex);
+          e.exists = false;
+          e.utxo = undefined;
+        }
+      }
+    }
+
     // Determine which entry slots the compiler expects to be deleted (no output)
     // A delete inside a branch (`if(guard) return; delete m[k];`) is lowered to an existence-gated SOFT-DELETE
     // WRITE by the compiler: the entry keeps an output (the type default when the delete ran, the preserved input
     // otherwise) iff it exists. So a conditional delete slot is a WRITE here, not a hard delete - it is co-spent
     // and recreated with the derived commitment, never dropped. Only an UNCONDITIONAL delete drops the entry.
-    const entryDeleteSlots = new Set<number>();
+    const entryDeleteSlots = new Set<number>(aliasSkipSlots);
     const condSoftDeleteSlots = new Set<number>();
     if (entryAccesses) {
       for (let i = 0; i < entryAccesses.length; i++) {

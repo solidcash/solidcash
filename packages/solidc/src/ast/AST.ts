@@ -893,10 +893,10 @@ export class CastNode extends ExpressionNode implements Typed {
 export class FunctionCallNode extends ExpressionNode {
   resolvedFunction?: FunctionDefinitionNode;
   fieldNames?: string[];
-  // Set by SynthesizeBlockOracle on a historical blockhash(block.number - K) call (K a positive constant):
-  // the read's n derives from the co-spent __block_number register, so the SDK resolves the oracle co-spend
-  // from state (not a call arg). Codegen records the synthetic blockhashReads key and gives it its own slot.
-  blockhashBlockNumberOffset?: number;
+  // Set by SynthesizeBlockOracle on a blockhash(<computed n>) call: a stable per-function index for this call
+  // site (codegen runs twice, so the key must not depend on a codegen-visit counter). Keys the read as
+  // <computed:i>; the SDK resolves n from the auto-derivation probe trace.
+  blockhashComputedIndex?: number;
 
   constructor(
     public identifier: IdentifierNode,

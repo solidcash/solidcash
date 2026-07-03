@@ -31,7 +31,7 @@ import {
   resolveLibraryBlob,
   SHARED_LIBRARY_SALT,
   ExternalLibraryAbi,
-  decodeBlockNumberReadKey,
+  isComputedBlockhashKey,
 } from '@solidcash/utils';
 import {
   createVirtualMachineBch2026,
@@ -408,6 +408,40 @@ function extractCommitmentsFromTrace(
   }
 
   return undefined;
+}
+
+/**
+ * Extract blockhash oracle reads from an auto-derivation probe trace - the SINGLE source of truth for a
+ * blockhash(n) reader's n. The covenant, per read, computes n on-stack (from state/args/constants - ANY
+ * expression), picks the oracle input index (base + slot ordinal), then does OP_DUP OP_UTXOTOKENCATEGORY.
+ * At that OP_UTXOTOKENCATEGORY the stack top is the duplicated index (stack[top] === stack[top-1]) and n sits
+ * directly below (stack[top-2]); an index in the reserved blockhash slot range [base, base+slotCount)
+ * identifies the read. So n never has to be re-derived in JS - it is read straight off the covenant's own
+ * computation. (A probe without a given oracle co-spent still reaches this step - it aborts only when
+ * OP_UTXOTOKENCATEGORY executes on the missing input - so callers extract even from a failing probe.)
+ */
+function extractBlockhashReadsFromTrace(
+  fullTrace: AuthenticationProgramStateCommon[], base: number, slotCount: number,
+): Array<{ inputIndex: number; n: bigint }> {
+  const p2shStart = findRedeemScriptStart(fullTrace);
+  const trace = p2shStart >= 0 ? fullTrace.slice(p2shStart) : fullTrace;
+  const reads: Array<{ inputIndex: number; n: bigint }> = [];
+  const seen = new Set<number>();
+  for (const step of trace) {
+    const instruction = step.instructions[step.ip];
+    if (!instruction || instruction.opcode !== Op.OP_UTXOTOKENCATEGORY) continue;
+    if (step.controlStack.some((c) => c === false)) continue;
+    const top = step.stack.length - 1;
+    if (top < 2) continue; // need [n, idx, idx]
+    // blockhash read signature: OP_DUP duplicated the oracle input index (top === top-1). Excludes the
+    // master-category check (OP_INPUTINDEX OP_UTXOTOKENCATEGORY, index not duplicated).
+    if (binToHex(Uint8Array.from(step.stack[top])) !== binToHex(Uint8Array.from(step.stack[top - 1]))) continue;
+    const idx = Number(decodeScriptNumber(Uint8Array.from(step.stack[top])));
+    if (idx < base || idx >= base + slotCount || seen.has(idx)) continue;
+    seen.add(idx);
+    reads.push({ inputIndex: idx, n: decodeScriptNumber(Uint8Array.from(step.stack[top - 2])) });
+  }
+  return reads;
 }
 
 /**
@@ -3233,26 +3267,78 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     return entries;
   }
 
-  // Resolve the block number n for a blockhashReads entry. A param-name key -> the matching call arg. A
-  // block.number-K key (historical blockhash(block.number - K)) -> the co-spent __block_number register value
-  // minus K: the SDK derives n from the register (the same value the covenant reads), NOT the chain tip, so
-  // the co-spent (n->hash) oracle matches the covenant's commitment.n == n check. Returns null to skip.
-  private resolveBlockhashReadN(
-    readKey: string,
-    args: any[],
-    abiFunction: AbiFunction,
-    state: Record<string, StateValueType> | undefined,
-  ): bigint | null {
-    const offset = decodeBlockNumberReadKey(readKey);
-    if (offset !== null) {
-      const bn = state?.__block_number;
-      return typeof bn === 'bigint' ? bn - BigInt(offset) : null;
-    }
+  // n for a PARAM blockhash read = the matching call arg (a direct-identifier n). Computed reads
+  // (<computed:i> keys) are NOT resolved here - they come from the probe trace. Returns null on a non-bigint.
+  private paramBlockhashN(readKey: string, args: any[], abiFunction: AbiFunction): bigint | null {
     const visible = abiFunction.inputs.filter((i) => !i.name.startsWith('__internal__'));
     const pIdx = visible.findIndex((i) => i.name === readKey);
     if (pIdx < 0) return null;
     const bn = args[pIdx];
     return typeof bn === 'bigint' ? bn : null;
+  }
+
+  // Run a minimal covenant probe (master + data NFTs + the already-resolved oracle co-spends, max-height
+  // locktime so any tx.time >= n CLTV passes) and read the blockhash reads' (inputIndex, n) off the trace.
+  // The covenant computes each n on-stack, so ANY expression resolves without JS re-derivation. A read whose
+  // oracle is not yet co-spent aborts the probe at its OP_UTXOTOKENCATEGORY - but the (n, idx) is captured on
+  // the pre-abort step - so the caller resolves reads one at a time in slot order (priorCoSpends grows).
+  private async _extractBlockhashReads(
+    masterUtxo: Utxo, masterUnlocker: Unlocker, dataNftUtxos: Utxo[],
+    priorCoSpends: Array<{ utxo: Utxo; unlocker: Unlocker; recreate: Output }>,
+    base: number, slotCount: number,
+  ): Promise<Array<{ inputIndex: number; n: bigint }>> {
+    const { CovenantTransactionBuilder } = await import('./CovenantTransactionBuilder.js');
+    const vm = createVirtualMachineBch2026();
+    const b = new CovenantTransactionBuilder({ provider: this.inner.provider });
+    b.locktime = 499999999; // max block-height locktime: satisfies any tx.time >= n (height) CLTV
+    const dataUnlockers = dataNftUtxos.map(() => createDataNftUnlocker(this.inner, 0, this.categoryId));
+    b.addInput(masterUtxo, masterUnlocker);
+    dataNftUtxos.forEach((u, i) => b.addInput(u, dataUnlockers[i]));
+    for (const cs of priorCoSpends) b.addInput(cs.utxo, cs.unlocker);
+    b.addOutput({ to: masterUnlocker.generateLockingBytecode(), amount: masterUtxo.satoshis, token: masterUtxo.token });
+    dataNftUtxos.forEach((u, i) => b.addOutput({
+      to: dataUnlockers[i].generateLockingBytecode(), amount: u.satoshis, token: u.token,
+    }));
+    for (const cs of priorCoSpends) b.addOutput(cs.recreate);
+    const transaction = b.buildLibauthTransaction();
+    const sourceOutputs = generateLibauthSourceOutputs(b.inputs);
+    const trace = vm.debug({ inputIndex: 0, sourceOutputs, transaction }) as AuthenticationProgramStateCommon[];
+    return extractBlockhashReadsFromTrace(trace, base, slotCount);
+  }
+
+  // Resolve every blockhash oracle co-spend for a call, ordered by slot (ordinal 0..slotCount-1). Reads are
+  // resolved STRICTLY in slot order so the co-spend inputs stay contiguous from the bottom: a param read's n
+  // is its call arg; a computed read's n is extracted from a probe that co-spends the already-resolved lower
+  // reads (so the covenant reaches this read). Single source of truth: computed n comes from the covenant.
+  private async _resolveBlockhashCoSpends(
+    abiFunction: AbiFunction, args: any[], base: number, slotCount: number,
+    masterUtxo: Utxo, masterUnlocker: Unlocker, dataNftUtxos: Utxo[],
+  ): Promise<Array<{ utxo: Utxo; unlocker: Unlocker; recreate: Output; locktime: number }>> {
+    const reads = abiFunction.blockhashReads ?? [];
+    const ordered: Array<{ utxo: Utxo; unlocker: Unlocker; recreate: Output; locktime: number }> = [];
+    for (let k = 0; k < reads.length; k++) {
+      let n: bigint | null;
+      if (isComputedBlockhashKey(reads[k])) {
+        const extracted = await this._extractBlockhashReads(
+          masterUtxo, masterUnlocker, dataNftUtxos, ordered, base, slotCount,
+        );
+        n = extracted.find((r) => r.inputIndex === base + k)?.n ?? null;
+      } else {
+        n = this.paramBlockhashN(reads[k], args, abiFunction);
+      }
+      if (n === null) throw new Error(`blockhash: could not resolve n for read "${reads[k]}" (slot ${k})`);
+      const cs = await resolveBlockhashCoSpend(this.inner.provider, this.categoryId, n);
+      if (!cs) throw new Error(`blockhash(${n}): no (n->hash) oracle UTXO at addr(${n})`);
+      ordered.push({ utxo: cs.utxo, unlocker: cs.unlocker, recreate: cs.recreateOutput, locktime: cs.locktime });
+    }
+    return ordered;
+  }
+
+  // Absolute input index of the first blockhashOracle slot + the slot count (master is input 0, so the slot
+  // offset is already absolute). Used to fill __internal__blockhashInputIndex and bound the trace extraction.
+  private blockhashSlotBase(abiFunction?: AbiFunction): { base: number; count: number } {
+    const slots = abiFunction?.blockLayout?.slots.filter((s) => s.kind === 'blockhashOracle') ?? [];
+    return { base: slots.length > 0 ? slots[0].offset : 0, count: slots.length };
   }
 
   private async _deriveCommitments(
@@ -3294,26 +3380,15 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         () => createDataNftUnlocker(this.inner, 0, this.categoryId),
       );
 
-      // blockhash(n): resolve each reader's (n->hash) co-spend so the probe's VM run can read input[param]
-      // (the masterUnlocker late-resolves the index from the probe's own sourceOutputs). Placed right after
-      // the data NFTs, matching the blockhashOracle block-layout slot.
-      const bhProbeCoSpends: Array<{ utxo: Utxo; unlocker: Unlocker; recreate: Output; locktime: number }> = [];
-      if (abiFunction.blockhashReads && abiFunction.blockhashReads.length > 0) {
-        const bhCategory = this.categoryId; // oracle branded to the contract's own category (docs s3)
-        if (bhCategory) {
-          // 1:1 with blockhashReads (deduped by key in codegen) so the probe's slots match the real tx. n is
-          // a call arg (param key) or block.number - K read from the register (block.number-K key).
-          for (const readKey of abiFunction.blockhashReads) {
-            const bn = this.resolveBlockhashReadN(readKey, args, abiFunction, onChainState.state);
-            if (bn === null) continue;
-            const cs = await resolveBlockhashCoSpend(this.inner.provider, bhCategory, bn);
-            if (cs) {
-              bhProbeCoSpends.push({
-                utxo: cs.utxo, unlocker: cs.unlocker, recreate: cs.recreateOutput, locktime: cs.locktime,
-              });
-            }
-          }
-        }
+      // blockhash(n): resolve each reader's (n->hash) co-spend so the probe's VM run can read input[slot]. Param
+      // reads use the call arg; computed reads are extracted from a probe (single source of truth). Placed right
+      // after the data NFTs, matching the consecutive blockhashOracle block-layout slots.
+      let bhProbeCoSpends: Array<{ utxo: Utxo; unlocker: Unlocker; recreate: Output; locktime: number }> = [];
+      if (abiFunction.blockhashReads && abiFunction.blockhashReads.length > 0 && this.categoryId) {
+        const { base, count } = this.blockhashSlotBase(abiFunction);
+        bhProbeCoSpends = await this._resolveBlockhashCoSpends(
+          abiFunction, args, base, count, masterUtxo, masterUnlocker, filteredDataNftUtxos,
+        );
       }
 
       // Wrap the VM probe + extraction in AutoDerivationError so failures are
@@ -4581,25 +4656,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
 
     }
 
-    // blockhash(n): resolve each reader's (n->hash) oracle co-spend (matched by n from the call args). The
-    // builder places it at the blockhashOracle block-layout slot; the index param is filled below.
-    const blockhashCoSpendUtxos: UnlockableUtxo[] = [];
+    // blockhash(n) oracle co-spends: resolved AFTER the master unlocker is built (below), since the computed-n
+    // extraction probe needs the complete unlocker (it carries the blockhash slot base index). Placed 1:1 at
+    // the consecutive blockhashOracle slots. Only consumed at builder construction, so resolving them late is
+    // safe.
+    let blockhashCoSpendUtxos: UnlockableUtxo[] = [];
     let maxBhLocktime = 0; // require(tx.time >= n) - the SDK sets the locktime so the derivation probe passes
-    if (abiFunction?.blockhashReads && abiFunction.blockhashReads.length > 0) {
-      // The (n->hash) oracle is branded to the contract's OWN category (docs s3), not a compile option. One
-      // co-spend per distinct blockhashReads entry (deduped by key in codegen), placed 1:1 at the consecutive
-      // blockhashOracle slots so co-spend[k] lands at the slot the k-th read reads (base + k). n is a call arg
-      // (param key) or block.number - K derived from the co-spent __block_number register (block.number-K key).
-      const bhCategory = this.categoryId;
-      for (const readKey of abiFunction.blockhashReads) {
-        const bn = this.resolveBlockhashReadN(readKey, args, abiFunction, onChainState.state);
-        if (bn === null) continue;
-        const cospend = await resolveBlockhashCoSpend(this.inner.provider, bhCategory, bn);
-        if (!cospend) throw new Error(`blockhash(${bn}): no (n->hash) oracle UTXO at addr(${bn})`);
-        blockhashCoSpendUtxos.push({ ...cospend.utxo, unlocker: cospend.unlocker });
-        if (cospend.locktime > maxBhLocktime) maxBhLocktime = cospend.locktime;
-      }
-    }
 
     // Pre-declare outState variables (populated later, but needed for base computations in external calls)
     let externalOutStateUtxoGroups: ExternalCallUtxoGroup[] = [];
@@ -5627,6 +5689,18 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const dataNftUnlockers = filteredDataNftUtxos.map(
       () => createDataNftUnlocker(this.inner, 0, this.categoryId),
     );
+
+    // blockhash(n): resolve the oracle co-spends now that the complete master unlocker exists (the computed-n
+    // extraction probe needs it - it carries the blockhash slot base index). Ordered by slot; the builder
+    // places them at the consecutive blockhashOracle slots and setLocktime(maxBhLocktime) below.
+    if (abiFunction?.blockhashReads && abiFunction.blockhashReads.length > 0 && this.categoryId) {
+      const { base, count } = this.blockhashSlotBase(abiFunction);
+      const resolved = await this._resolveBlockhashCoSpends(
+        abiFunction, args, base, count, masterUtxo, masterUnlocker, filteredDataNftUtxos,
+      );
+      blockhashCoSpendUtxos = resolved.map((cs) => ({ ...cs.utxo, unlocker: cs.unlocker }));
+      maxBhLocktime = resolved.reduce((m, cs) => Math.max(m, cs.locktime), 0);
+    }
 
     const unlockableMaster = {
       ...masterUtxo,

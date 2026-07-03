@@ -325,20 +325,21 @@ feature-complete** for stateful readers, including:
 
 - **Multiple distinct reads per tx** - each distinct `n` rides its OWN consecutive `blockhashOracle`
   block-layout slot (the k-th read reads `input[base + k]`; `blockhashSlotCount` on the fn drives the slot
-  allocation, codegen adds the read ordinal, the SDK co-spends 1:1 with `blockhashReads`). Same `n` read
-  twice shares one slot (deduped by key).
-- **Historical `blockhash(block.number - K)`** (K a positive constant - the canonical idiom) - where `n` is
-  NOT a call arg. `SynthesizeBlockOracle` matches the `block.number - K` shape and records a synthetic
-  `block.number-K` key in `blockhashReads` (which gets its own slot); at build time the SDK derives
-  `n = block.number - K` from the co-spent `__block_number` **register** (the same value the covenant reads,
-  NOT the chain tip), then co-spends the `(n->hash)` oracle for that `n`. `block.number` used inside
-  `blockhash` still injects/co-spends the register, so the register and the historical oracle ride the same
-  tx. `blockhash(block.number)` (K=0, the current block) stays unavailable (no oracle pair; EVM returns 0).
-  An *arbitrary* computed `n` (not a param, not `block.number - K`) is NOT fundamentally unresolvable: the
-  auto-derivation probe runs the real covenant, which computes `n` on-stack, so the SDK can extract `n` from
-  the trace at the blockhash read (single source of truth) rather than re-derive it. That general extraction
-  is not yet wired (the `block.number - K` register read is a fast-path for the canonical idiom); such `n`
-  is warned at compile time for now.
+  allocation, codegen adds the read ordinal, the SDK co-spends 1:1 with `blockhashReads`). A direct-identifier
+  `n` read twice shares one slot (deduped by param name).
+- **Computed `n` - ANY expression** (`block.number - K`, `x - 1`, arbitrary arithmetic), resolved by the
+  **single source of truth**: the auto-derivation probe. The covenant computes `n` on-stack (whatever the
+  expression), so the SDK does NOT re-derive it in JS - it reads `n` straight off the probe trace. Codegen
+  records each computed call site as a per-call-site `<computed:i>` key (its own slot); at build time the SDK
+  runs a minimal covenant probe (master + data NFTs + already-resolved lower reads, max-height locktime) and
+  extracts `(inputIndex, n)` at the read's `OP_UTXOTOKENCATEGORY` (stack `[n, idx, idx]`; `idx` in the
+  reserved slot range identifies it). Reads resolve strictly in slot order so the probe reaches each computed
+  read in turn (`extractBlockhashReadsFromTrace` + `_resolveBlockhashCoSpends` in the SDK). `block.number - K`
+  is just one such expression - its `__block_number` register is co-spent as normal state, so the register and
+  the oracle ride the same tx. `blockhash(block.number)` (K=0, the current block) stays unavailable (no oracle
+  pair; EVM returns 0). (Limitation: a function that co-spends other inputs - entries, external-call targets -
+  *before* the blockhash read would abort the extraction probe early; blockhash composed with those is future
+  work.)
 
 
 These are **functions** (runtime argument), not the 0-param `block.*` properties, so they lower as
@@ -357,9 +358,9 @@ rejected - it silently changes Solidity semantics.
 The current block's own hash is unavailable on-chain (the block is not yet mined; EVM's
 `blockhash(block.number)` is 0), so there is no current-block register - every real use is historical.
 The hard part is historical `n`, which no single register can hold. Design (category-trust, no datasig):
-the `(n->hash)` oracle below. `blockhash(block.number - K)` (the canonical idiom) resolves `n` from the
-contract's own `__block_number` register at build time (s11, "Historical `blockhash(block.number - K)`");
-the oracle serves the resulting `n`.
+the `(n->hash)` oracle below. A computed `n` (`block.number - K`, arbitrary arithmetic) is resolved at build
+time by the SDK extracting it from the auto-derivation probe trace - the covenant's own on-stack computation,
+single source of truth (s11, "Computed `n` - ANY expression"); the oracle serves the resulting `n`.
 
 **The `(n -> hash)` UTXO.** One per block, under a project-global oracle token category `C_oracle`:
 - **Unique address `addr(n)`** (a deterministic function of `n`) - so the SDK/Fulcrum looks it up by exact

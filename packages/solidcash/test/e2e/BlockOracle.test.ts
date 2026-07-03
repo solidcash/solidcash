@@ -443,13 +443,14 @@ describe('blobhash / blockhash', () => {
     expect(BlockOracleUpdater.usesBlockhash(noBh)).toBe(false);
   });
 
-  it('records blockhashReads metadata (the param feeding n) for SDK auto-injection', () => {
+  it('records blockhashReads metadata (param name / computed key) for SDK auto-injection', () => {
     const direct = compileString('contract B(){ function f(int bn, bytes32 h){ require(blockhash(bn) == h); } }');
     expect(direct.abi.find((fn) => fn.name === 'f')?.blockhashReads).toEqual(['bn']);
 
-    // Computed n (not a direct identifier) is NOT recorded -> consumer wires resolveBlockhashCoSpend manually.
+    // Computed n (any non-identifier expression) is recorded as a per-call-site <computed:i> key; the SDK
+    // resolves n from the auto-derivation probe trace (the covenant computes it on-stack).
     const computed = compileString('contract B(){ function f(int bn, bytes32 h){ require(blockhash(bn + 1) == h); } }');
-    expect(computed.abi.find((fn) => fn.name === 'f')?.blockhashReads).toBeUndefined();
+    expect(computed.abi.find((fn) => fn.name === 'f')?.blockhashReads).toEqual(['<computed:0>']);
   });
 });
 
@@ -726,18 +727,19 @@ describe('blockhash(n) stateful reader', () => {
   });
 });
 
-// blockhash(block.number - K): historical read whose n is NOT a call arg. The compiler records the synthetic
-// block.number-K key (own oracle slot); the SDK derives n from the co-spent __block_number register (the same
-// value the covenant reads), computes n = block.number - K, and co-spends the (n->hash) oracle for it.
-describe('blockhash(block.number - K) historical read', () => {
-  it('derives n from the __block_number register and co-spends the block.number - 1 oracle', async () => {
+// blockhash(block.number - K): a computed read whose n is NOT a call arg. The compiler records a per-call-site
+// <computed:i> key (own oracle slot); the SDK resolves n by extracting it from the auto-derivation probe trace
+// (the covenant computes block.number - K on-stack from the co-spent __block_number register), then co-spends
+// the (n->hash) oracle for it. Single source of truth - n is never re-derived in JS.
+describe('blockhash(block.number - K) computed read (probe-trace extraction)', () => {
+  it('extracts n from the covenant trace and co-spends the block.number - 1 oracle', async () => {
     const provider = createTestProvider();
     const oracle = await allocHeight(provider); // the (n->hash) oracle block; set block.number = n + 1
     const n = BigInt(oracle.n); const blockNumber = n + 1n;
     const H = hexToBin('cd'.repeat(32));
     const src = 'contract B(){ function f(bytes32 h){ require(blockhash(block.number - 1) == h); } }';
     const artifact = compileString(src);
-    expect(artifact.abi.find((fn) => fn.name === 'f')?.blockhashReads).toEqual(['block.number-1']);
+    expect(artifact.abi.find((fn) => fn.name === 'f')?.blockhashReads).toEqual(['<computed:0>']);
     const contract = new Contract(artifact, [], { provider });
     const { categoryId } = await setupStatefulUtxos(provider, contract, artifact.stateLayout!, {
       __block_number: blockNumber, __blockOracleOwner: alicePub,
@@ -750,6 +752,29 @@ describe('blockhash(block.number - K) historical read', () => {
     });
     const sc = StatefulContract.withCategory(contract, categoryId);
     const tx = await (sc as any).f(H).send();
+    expect(tx.txid).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  // Arbitrary computed n from pure param arithmetic (no block.* register at all): the reader is stateful only
+  // because of blockhash. n = x - 1 is computed by the covenant; the SDK extracts it from the probe trace.
+  it('extracts n from an arbitrary param expression (blockhash(x - 1)), no register', async () => {
+    const provider = createTestProvider();
+    const oracle = await allocHeight(provider);
+    const n = BigInt(oracle.n); const x = n + 1n; // n = x - 1
+    const H = hexToBin('ee'.repeat(32));
+    const src = 'contract B(){ function f(int x, bytes32 h){ require(blockhash(x - 1) == h); } }';
+    const artifact = compileString(src);
+    expect(artifact.abi.find((fn) => fn.name === 'f')?.blockhashReads).toEqual(['<computed:0>']);
+    const contract = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(provider, contract, artifact.stateLayout!, {}, {
+      saltContract: true,
+      extraOutputs: (cat) => [{
+        address: binToHex(blockhashOracleLockingBytecode(hexToBin(cat), n)), satoshis: 1000n,
+        token: { nft: { capability: 'none', commitment: binToHex(buildBlockhashCommitment(n, H)) } },
+      }],
+    });
+    const sc = StatefulContract.withCategory(contract, categoryId);
+    const tx = await (sc as any).f(x, H).send();
     expect(tx.txid).toMatch(/^[0-9a-f]{64}$/);
   });
 });

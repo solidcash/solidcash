@@ -1545,20 +1545,19 @@ export function blockhashCommitmentNumber(commitment: Uint8Array): bigint {
   return n;
 }
 
-// Synthetic blockhashReads key for a historical block-number-relative read: blockhash(block.number - K), K>=1.
-// The artifact's blockhashReads array holds either a function param name (n = the arg) OR one of these keys,
-// which the SDK resolves against the co-spent __block_number register (n = block.number - K) rather than a
-// call arg. A param name cannot contain '.', so param names and these keys never collide.
-const BLOCK_NUMBER_READ_PREFIX = 'block.number-';
+// A blockhashReads entry is either a function param name (n = the call arg) or a synthetic computed-read key
+// `<computed:i>`. For a computed key the SDK resolves n from the auto-derivation probe trace - the covenant
+// computes n on-stack from ANY expression (block.number - K, arbitrary arithmetic), so n is never re-derived
+// in JS. A param name cannot contain '<', so param names and computed keys never collide. Each computed call
+// site gets its own key/slot (arbitrary expressions cannot be deduped statically).
+const COMPUTED_BLOCKHASH_PREFIX = '<computed:';
 
-export function encodeBlockNumberReadKey(offset: number): string {
-  return `${BLOCK_NUMBER_READ_PREFIX}${offset}`;
+export function encodeComputedBlockhashKey(index: number): string {
+  return `${COMPUTED_BLOCKHASH_PREFIX}${index}>`;
 }
 
-// Returns K for a `block.number-K` key (K>=1), or null for a plain param name.
-export function decodeBlockNumberReadKey(key: string): number | null {
-  const m = /^block\.number-([1-9][0-9]*)$/.exec(key);
-  return m ? Number(m[1]) : null;
+export function isComputedBlockhashKey(key: string): boolean {
+  return key.startsWith(COMPUTED_BLOCKHASH_PREFIX);
 }
 
 /**

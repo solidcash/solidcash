@@ -16,9 +16,8 @@ import {
   IdentifierNode,
   IntLiteralNode,
   BinaryOpNode,
-  ExpressionNode,
 } from '../ast/AST.js';
-import { IntType, AddressType, Type, PrimitiveType, encodeBlockNumberReadKey } from '@solidcash/utils';
+import { IntType, AddressType, Type, PrimitiveType, encodeComputedBlockhashKey } from '@solidcash/utils';
 import { NullaryOperator, BinaryOperator } from '../ast/Operator.js';
 import { TimeOp, GlobalFunction } from '../ast/Globals.js';
 import AstTraversal from '../ast/AstTraversal.js';
@@ -69,8 +68,11 @@ export default class SynthesizeBlockOracle extends AstTraversal {
   // maintain the project-global (n->hash) oracle (docs/block-and-transaction-properties.md).
   usesBlockhash = false;
   private fnUsesBlockhash = false;
-  // Distinct identifier-arg blockhash reads in the current function - each rides its own oracle slot.
+  // Distinct blockhash read keys in the current function - each rides its own oracle slot (param name for a
+  // direct-identifier n; a per-call-site placeholder for a computed n).
   private fnBlockhashArgs = new Set<string>();
+  // Per-function counter for computed-n blockhash reads (each is its own slot).
+  private fnComputedBlockhashCount = 0;
   private warnedShims = new Set<string>();
 
   constructor(private readonly solidityImportCompat = false) {
@@ -97,25 +99,18 @@ export default class SynthesizeBlockOracle extends AstTraversal {
     if (node.identifier.name === GlobalFunction.BLOCKHASH) {
       this.usesBlockhash = true;
       this.fnUsesBlockhash = true;
-      // Each distinct n gets its own consecutive oracle slot (codegen dedups by key, so same n -> one slot):
-      // a direct-identifier n keys on the param name (SDK reads the arg); blockhash(block.number - K) keys on
-      // block.number-K and the SDK derives n from the __block_number register. Matched BEFORE super desugars
-      // block.number to the register read.
+      // Each distinct n gets its own consecutive oracle slot. A direct-identifier n keys on the param name (the
+      // SDK reads the arg; same param -> one slot). ANY computed n (block.number - K, arbitrary arithmetic)
+      // gets its own per-call-site slot; the SDK resolves it from the auto-derivation probe trace (the covenant
+      // computes n on-stack). Only the slot COUNT matters here (codegen assigns the concrete keys), so mark
+      // each computed call site with a unique placeholder.
       const nArg = node.parameters[0];
       if (nArg instanceof IdentifierNode) {
         this.fnBlockhashArgs.add(nArg.name);
       } else {
-        const off = SynthesizeBlockOracle.matchBlockNumberOffset(nArg);
-        if (off !== null) {
-          node.blockhashBlockNumberOffset = off;
-          this.fnBlockhashArgs.add(encodeBlockNumberReadKey(off));
-        } else {
-          this.warnShim('blockhash-computed', 'Warning: blockhash(n) with a computed n that is neither a '
-            + 'direct parameter nor `block.number - K` (K a positive constant) is not YET auto-resolved by '
-            + 'the SDK fast paths (the value is recoverable from the auto-derivation probe trace, just not '
-            + 'wired); wire the (n->hash) oracle co-spend manually for now. blockhash(block.number) (the '
-            + 'current block) is unavailable on-chain and has no oracle pair - use block.number - 1.');
-        }
+        // Stamp a stable per-call-site index (this pass visits each call once; codegen visits twice).
+        node.blockhashComputedIndex = this.fnComputedBlockhashCount++;
+        this.fnBlockhashArgs.add(encodeComputedBlockhashKey(node.blockhashComputedIndex));
       }
     }
     return super.visitFunctionCall(node);
@@ -126,8 +121,10 @@ export default class SynthesizeBlockOracle extends AstTraversal {
   visitFunctionDefinition(node: FunctionDefinitionNode): Node {
     const prev = this.fnUsesBlockhash;
     const prevArgs = this.fnBlockhashArgs;
+    const prevComputed = this.fnComputedBlockhashCount;
     this.fnUsesBlockhash = false;
     this.fnBlockhashArgs = new Set();
+    this.fnComputedBlockhashCount = 0;
     const result = super.visitFunctionDefinition(node) as FunctionDefinitionNode;
     if (this.fnUsesBlockhash) {
       result.usesBlockhash = true;
@@ -135,6 +132,7 @@ export default class SynthesizeBlockOracle extends AstTraversal {
     }
     this.fnUsesBlockhash = prev;
     this.fnBlockhashArgs = prevArgs;
+    this.fnComputedBlockhashCount = prevComputed;
     return result;
   }
 
@@ -258,16 +256,6 @@ export default class SynthesizeBlockOracle extends AstTraversal {
       new FunctionDefinitionNode(UPDATE_FN, params, this.at(new BlockNode(body)) as BlockNode),
     ) as FunctionDefinitionNode;
     node.functions.push(updateFn);
-  }
-
-  // Match a historical block.number-relative blockhash arg: block.number - K (K a positive int literal).
-  // Returns K, or null if the arg isn't that shape. block.number (K=0, the current block) returns null: its
-  // hash is unavailable on-chain (no oracle pair), matching EVM's blockhash(block.number) == 0.
-  private static matchBlockNumberOffset(n: ExpressionNode): number | null {
-    if (!(n instanceof BinaryOpNode) || n.operator !== BinaryOperator.MINUS) return null;
-    if (!(n.left instanceof NullaryOpNode) || n.left.operator !== NullaryOperator.BLOCK_NUMBER) return null;
-    if (!(n.right instanceof IntLiteralNode)) return null;
-    return n.right.value >= 1n ? Number(n.right.value) : null;
   }
 
   private stateAccess(name: string, src: NullaryOpNode): StateAccessNode {

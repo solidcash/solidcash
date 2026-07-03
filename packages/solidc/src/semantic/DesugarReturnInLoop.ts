@@ -80,7 +80,9 @@ export default class DesugarReturnInLoop extends AstTraversal {
       if (s instanceof ReturnNode && loopDepth > 0 && s.expressions.length === this.retCount) {
         // Splice the stash+flag+break directly into the statement list (not wrapped in a block) so the injected
         // `break` is recognised as in-loop by break/continue expansion.
-        for (let k = 0; k < s.expressions.length; k++) out.push(new AssignNode(new IdentifierNode(VAL(k)), s.expressions[k]));
+        for (let k = 0; k < s.expressions.length; k++) {
+          out.push(new AssignNode(new IdentifierNode(VAL(k)), s.expressions[k]));
+        }
         out.push(new AssignNode(new IdentifierNode(FLAG), new BoolLiteralNode(true)));
         out.push(new BreakNode());
         had = true;

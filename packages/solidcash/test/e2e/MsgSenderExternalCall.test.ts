@@ -1,5 +1,4 @@
 import { compileString } from 'solidc';
-import { hexToBin } from '@bitauth/libauth';
 import { Contract, StatefulContract } from '../../src/index.js';
 import type { ConnectedStatefulContract } from '../../src/stateful/StatefulContract.js';
 import { createTestProvider, setupStatefulUtxos } from '../test-util.js';

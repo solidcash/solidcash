@@ -1545,6 +1545,22 @@ export function blockhashCommitmentNumber(commitment: Uint8Array): bigint {
   return n;
 }
 
+// Synthetic blockhashReads key for a historical block-number-relative read: blockhash(block.number - K), K>=1.
+// The artifact's blockhashReads array holds either a function param name (n = the arg) OR one of these keys,
+// which the SDK resolves against the co-spent __block_number register (n = block.number - K) rather than a
+// call arg. A param name cannot contain '.', so param names and these keys never collide.
+const BLOCK_NUMBER_READ_PREFIX = 'block.number-';
+
+export function encodeBlockNumberReadKey(offset: number): string {
+  return `${BLOCK_NUMBER_READ_PREFIX}${offset}`;
+}
+
+// Returns K for a `block.number-K` key (K>=1), or null for a plain param name.
+export function decodeBlockNumberReadKey(key: string): number | null {
+  const m = /^block\.number-([1-9][0-9]*)$/.exec(key);
+  return m ? Number(m[1]) : null;
+}
+
 /**
  * Build the token container covenant script for holding foreign tokens on behalf
  * of a stateful master contract.

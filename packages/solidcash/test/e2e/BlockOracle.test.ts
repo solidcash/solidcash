@@ -726,6 +726,34 @@ describe('blockhash(n) stateful reader', () => {
   });
 });
 
+// blockhash(block.number - K): historical read whose n is NOT a call arg. The compiler records the synthetic
+// block.number-K key (own oracle slot); the SDK derives n from the co-spent __block_number register (the same
+// value the covenant reads), computes n = block.number - K, and co-spends the (n->hash) oracle for it.
+describe('blockhash(block.number - K) historical read', () => {
+  it('derives n from the __block_number register and co-spends the block.number - 1 oracle', async () => {
+    const provider = createTestProvider();
+    const oracle = await allocHeight(provider); // the (n->hash) oracle block; set block.number = n + 1
+    const n = BigInt(oracle.n); const blockNumber = n + 1n;
+    const H = hexToBin('cd'.repeat(32));
+    const src = 'contract B(){ function f(bytes32 h){ require(blockhash(block.number - 1) == h); } }';
+    const artifact = compileString(src);
+    expect(artifact.abi.find((fn) => fn.name === 'f')?.blockhashReads).toEqual(['block.number-1']);
+    const contract = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(provider, contract, artifact.stateLayout!, {
+      __block_number: blockNumber, __blockOracleOwner: alicePub,
+    }, {
+      saltContract: true,
+      extraOutputs: (cat) => [{
+        address: binToHex(blockhashOracleLockingBytecode(hexToBin(cat), n)), satoshis: 1000n,
+        token: { nft: { capability: 'none', commitment: binToHex(buildBlockhashCommitment(n, H)) } },
+      }],
+    });
+    const sc = StatefulContract.withCategory(contract, categoryId);
+    const tx = await (sc as any).f(H).send();
+    expect(tx.txid).toMatch(/^[0-9a-f]{64}$/);
+  });
+});
+
 // tx.gasprice: the CURRENT transaction's realized fee rate (sat/KB) = 1000*(sum in - sum out)/tx_size,
 // reconstructed entirely from introspection (no oracle): value loops for the fee, bytecode-size loops +
 // fixed per-element overheads for the size. See block-and-transaction-properties.md.

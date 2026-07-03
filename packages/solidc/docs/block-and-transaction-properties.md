@@ -321,10 +321,20 @@ category, plus `commitment.n == n` + `require(tx.time >= n)`, returning the 32-b
 The hardened `(n->hash)` covenant (self-pin + self-preserving recreate + CLTV `n+256` wipe), the
 `artifact.usesBlockhash` marker + `abi.blockhashReads`, and keccak side-car coexistence are in place and
 e2e-green. Absent reads error by design (s11.2), not EVM's `bytes32(0)`. **`blockhash(n)` is
-feature-complete** for stateful readers, including **multiple distinct reads per tx**: each distinct
-identifier-arg `n` rides its OWN consecutive `blockhashOracle` block-layout slot (the k-th read reads
-`input[base + k]`; `blockhashSlotCount` on the fn drives the slot allocation, codegen adds the read ordinal,
-and the SDK co-spends 1:1 with `blockhashReads`). Same `n` read twice shares one slot (deduped by name).
+feature-complete** for stateful readers, including:
+
+- **Multiple distinct reads per tx** - each distinct `n` rides its OWN consecutive `blockhashOracle`
+  block-layout slot (the k-th read reads `input[base + k]`; `blockhashSlotCount` on the fn drives the slot
+  allocation, codegen adds the read ordinal, the SDK co-spends 1:1 with `blockhashReads`). Same `n` read
+  twice shares one slot (deduped by key).
+- **Historical `blockhash(block.number - K)`** (K a positive constant - the canonical idiom) - where `n` is
+  NOT a call arg. `SynthesizeBlockOracle` matches the `block.number - K` shape and records a synthetic
+  `block.number-K` key in `blockhashReads` (which gets its own slot); at build time the SDK derives
+  `n = block.number - K` from the co-spent `__block_number` **register** (the same value the covenant reads,
+  NOT the chain tip), then co-spends the `(n->hash)` oracle for that `n`. `block.number` used inside
+  `blockhash` still injects/co-spends the register, so the register and the historical oracle ride the same
+  tx. `blockhash(block.number)` (K=0, the current block) stays unavailable (no oracle pair; EVM returns 0);
+  any other computed `n` is unsupported and warned at compile time.
 
 
 These are **functions** (runtime argument), not the 0-param `block.*` properties, so they lower as
@@ -340,9 +350,12 @@ rejected - it silently changes Solidity semantics.
 
 ### 11.2 blockhash(uint n) -> bytes32: the per-pair (n -> hash) oracle
 
-`block.hash` of the *current* block is just a `bytes32` register field (co-spend, owner-updated, like the
-other block.* fields), so `blockhash(block.number)` resolves locally. The hard part is historical `n`,
-which the single current-block register cannot hold. Design (category-trust, no datasig):
+The current block's own hash is unavailable on-chain (the block is not yet mined; EVM's
+`blockhash(block.number)` is 0), so there is no current-block register - every real use is historical.
+The hard part is historical `n`, which no single register can hold. Design (category-trust, no datasig):
+the `(n->hash)` oracle below. `blockhash(block.number - K)` (the canonical idiom) resolves `n` from the
+contract's own `__block_number` register at build time (s11, "Historical `blockhash(block.number - K)`");
+the oracle serves the resulting `n`.
 
 **The `(n -> hash)` UTXO.** One per block, under a project-global oracle token category `C_oracle`:
 - **Unique address `addr(n)`** (a deterministic function of `n`) - so the SDK/Fulcrum looks it up by exact

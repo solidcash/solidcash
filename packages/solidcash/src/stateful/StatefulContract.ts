@@ -31,6 +31,7 @@ import {
   resolveLibraryBlob,
   SHARED_LIBRARY_SALT,
   ExternalLibraryAbi,
+  decodeBlockNumberReadKey,
 } from '@solidcash/utils';
 import {
   createVirtualMachineBch2026,
@@ -3232,6 +3233,28 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     return entries;
   }
 
+  // Resolve the block number n for a blockhashReads entry. A param-name key -> the matching call arg. A
+  // block.number-K key (historical blockhash(block.number - K)) -> the co-spent __block_number register value
+  // minus K: the SDK derives n from the register (the same value the covenant reads), NOT the chain tip, so
+  // the co-spent (n->hash) oracle matches the covenant's commitment.n == n check. Returns null to skip.
+  private resolveBlockhashReadN(
+    readKey: string,
+    args: any[],
+    abiFunction: AbiFunction,
+    state: Record<string, StateValueType> | undefined,
+  ): bigint | null {
+    const offset = decodeBlockNumberReadKey(readKey);
+    if (offset !== null) {
+      const bn = state?.__block_number;
+      return typeof bn === 'bigint' ? bn - BigInt(offset) : null;
+    }
+    const visible = abiFunction.inputs.filter((i) => !i.name.startsWith('__internal__'));
+    const pIdx = visible.findIndex((i) => i.name === readKey);
+    if (pIdx < 0) return null;
+    const bn = args[pIdx];
+    return typeof bn === 'bigint' ? bn : null;
+  }
+
   private async _deriveCommitments(
     functionName: string,
     args: any[],
@@ -3278,13 +3301,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       if (abiFunction.blockhashReads && abiFunction.blockhashReads.length > 0) {
         const bhCategory = this.categoryId; // oracle branded to the contract's own category (docs s3)
         if (bhCategory) {
-          const bhVisible = abiFunction.inputs.filter((i) => !i.name.startsWith('__internal__'));
-          // 1:1 with blockhashReads (deduped by name in codegen) so the probe's slots match the real tx.
-          for (const paramName of abiFunction.blockhashReads) {
-            const pIdx = bhVisible.findIndex((i) => i.name === paramName);
-            if (pIdx < 0) continue;
-            const bn = args[pIdx];
-            if (typeof bn !== 'bigint') continue;
+          // 1:1 with blockhashReads (deduped by key in codegen) so the probe's slots match the real tx. n is
+          // a call arg (param key) or block.number - K read from the register (block.number-K key).
+          for (const readKey of abiFunction.blockhashReads) {
+            const bn = this.resolveBlockhashReadN(readKey, args, abiFunction, onChainState.state);
+            if (bn === null) continue;
             const cs = await resolveBlockhashCoSpend(this.inner.provider, bhCategory, bn);
             if (cs) {
               bhProbeCoSpends.push({
@@ -4565,16 +4586,14 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const blockhashCoSpendUtxos: UnlockableUtxo[] = [];
     let maxBhLocktime = 0; // require(tx.time >= n) - the SDK sets the locktime so the derivation probe passes
     if (abiFunction?.blockhashReads && abiFunction.blockhashReads.length > 0) {
-      // The (n->hash) oracle is branded to the contract's OWN category (docs s3), not a compile option.
+      // The (n->hash) oracle is branded to the contract's OWN category (docs s3), not a compile option. One
+      // co-spend per distinct blockhashReads entry (deduped by key in codegen), placed 1:1 at the consecutive
+      // blockhashOracle slots so co-spend[k] lands at the slot the k-th read reads (base + k). n is a call arg
+      // (param key) or block.number - K derived from the co-spent __block_number register (block.number-K key).
       const bhCategory = this.categoryId;
-      const bhVisible = abiFunction.inputs.filter((i) => !i.name.startsWith('__internal__'));
-      // One co-spend per distinct blockhashReads entry (already deduped by name in codegen), placed 1:1 at the
-      // consecutive blockhashOracle slots so co-spend[k] lands at the slot the k-th read reads (base + k).
-      for (const paramName of abiFunction.blockhashReads) {
-        const pIdx = bhVisible.findIndex((i) => i.name === paramName);
-        if (pIdx < 0) continue;
-        const bn = args[pIdx];
-        if (typeof bn !== 'bigint') continue;
+      for (const readKey of abiFunction.blockhashReads) {
+        const bn = this.resolveBlockhashReadN(readKey, args, abiFunction, onChainState.state);
+        if (bn === null) continue;
         const cospend = await resolveBlockhashCoSpend(this.inner.provider, bhCategory, bn);
         if (!cospend) throw new Error(`blockhash(${bn}): no (n->hash) oracle UTXO at addr(${bn})`);
         blockhashCoSpendUtxos.push({ ...cospend.utxo, unlocker: cospend.unlocker });

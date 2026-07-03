@@ -42,6 +42,7 @@ import {
   resolveLibraries,
   ExternalLibrary,
   sidecarStripOffsets,
+  encodeBlockNumberReadKey,
 } from '@solidcash/utils';
 import {
   ContractNode,
@@ -3464,17 +3465,23 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       //   co-spent UTXO with that category carries a genuine (n,hash); the n-check disambiguates the block.
       // blockhash forces the contract stateful (usesBlockhash), so the covenant runs on the master (category).
       const loc = { location: node.location, positionHint: PositionHint.START };
-      // SDK auto-injection: if n is a direct identifier (a function param) the SDK reads that arg to
-      // resolve addr(n) and co-spend the (n->hash) UTXO. Computed n (not an identifier) is not recorded;
-      // the consumer wires it via resolveBlockhashCoSpend. The SDK only acts on names that are params.
+      // SDK auto-injection keys on blockhashReads: a direct-identifier n is recorded by param name (the SDK
+      // reads that arg to resolve addr(n)); a historical blockhash(block.number - K) is recorded as the
+      // block.number-K key (the SDK derives n from the co-spent __block_number register). Any other computed n
+      // is unrecorded (unsupported - SynthesizeBlockOracle warned) and has no auto co-spend.
       const nArg = node.parameters[0];
-      // Each DISTINCT identifier-arg n rides its OWN consecutive oracle slot; same n -> same slot (dedup by
-      // name). The read ordinal = its position in blockhashReads (the base slot + ordinal = its input index).
+      // Each DISTINCT n rides its OWN consecutive oracle slot; same n -> same slot (dedup by key). The read
+      // ordinal = its position in blockhashReads (the base slot + ordinal = its co-spend input index).
       let readOrdinal = 0;
-      if (nArg instanceof IdentifierNode) {
+      let readKey: string | undefined;
+      if (nArg instanceof IdentifierNode) readKey = nArg.name;
+      else if (node.blockhashBlockNumberOffset !== undefined) {
+        readKey = encodeBlockNumberReadKey(node.blockhashBlockNumberOffset);
+      }
+      if (readKey !== undefined) {
         const reads = (this.currentFunction.blockhashReads ??= []);
-        if (!reads.includes(nArg.name)) reads.push(nArg.name);
-        readOrdinal = reads.indexOf(nArg.name);
+        if (!reads.includes(readKey)) reads.push(readKey);
+        readOrdinal = reads.indexOf(readKey);
       }
       node.parameters[0] = this.visit(node.parameters[0]); // [n]
       // The co-spend input index comes from the synthesized __internal__blockhashInputIndex param (the SDK

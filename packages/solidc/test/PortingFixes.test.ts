@@ -1868,3 +1868,14 @@ describe('`_;` modifier placeholder inside a conditional', () => {
     expect(a.contractName).toBe('C');
   });
 });
+
+// Event parameters may be unnamed in Solidity (`event Deploy(address)`); the signature uses types only.
+describe('unnamed event parameters', () => {
+  it('compiles `event E(address)` and emits it; signature has no names', () => {
+    const a = compileString(
+      'contract C { event Deploy(address); function f() public { emit Deploy(msg.sender); } }',
+      { solidityImportCompat: true },
+    );
+    expect(a.events?.find((e) => e.name === 'Deploy')?.signature).toBe('Deploy(address)');
+  });
+});

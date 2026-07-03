@@ -80,4 +80,19 @@ describe('IterableMapping remove() - swap-remove with computed-key index update'
     await sc.valOf(a1, 500n).send();
     await sc.idxOf(a1, 2n).send();
   });
+
+  it('remove a non-existent key is a safe no-op (early return preserves state)', async () => {
+    const artifact = compileString(IM, { chunkedArrays: true });
+    const contract = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, contract, artifact.stateLayout!, { keys: [] }, { saltContract: true },
+    );
+    const sc = StatefulContract.withCategory(contract, categoryId);
+    await sc.set(a1, 100n, alicePub, sig()).send();        // keys=[a1]
+    await sc.remove(a2, alicePub, sig()).send();           // a2 not inserted -> guard returns, no-op
+    await sc.size(1n).send();                               // unchanged
+    await sc.keyAt(0n, a1).send();
+    await sc.valOf(a1, 100n).send();                        // preserved
+    await sc.idxOf(a1, 0n).send();
+  });
 });

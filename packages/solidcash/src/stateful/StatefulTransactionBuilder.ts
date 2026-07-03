@@ -1172,9 +1172,24 @@ export class StatefulTransactionBuilder {
       }
     }
 
-    // Create entry NFT outputs (written/preserved entries, excluding deleted ones)
-    for (const entry of this.entryNfts.sort((a, b) => a.slotIndex - b.slotIndex)) {
-      if (this.entryDeletes.has(entry.slotIndex)) continue;
+    // Create entry NFT outputs (written/preserved entries, excluding deleted ones). Entry outputs occupy
+    // consecutive block-layout offsets; the covenant reads each existing/written slot's output at its FIXED
+    // offset. A slot that produces no output (soft-delete of an ABSENT key) would shift a later real output
+    // down and desync that fixed read, so emit a plain placeholder output for any skipped slot that PRECEDES
+    // the last real entry output. Trailing skipped slots need no placeholder (nothing reads past them).
+    const sortedEntries = [...this.entryNfts].sort((a, b) => a.slotIndex - b.slotIndex);
+    let lastRealSlotIndex = -1;
+    for (const e of sortedEntries) if (!this.entryDeletes.has(e.slotIndex)) lastRealSlotIndex = e.slotIndex;
+    for (const entry of sortedEntries) {
+      if (this.entryDeletes.has(entry.slotIndex)) {
+        if (entry.slotIndex < lastRealSlotIndex) {
+          // Position-holding placeholder: plain BCH (no token) to the collection's entry address. The covenant
+          // existence-gates this absent slot away (its input is a funder), so this output is never verified.
+          const phLbc = this.entryNftLockingBytecodes.get(entry.collection);
+          if (phLbc) builder.addOutput({ to: phLbc, amount: 1000n });
+        }
+        continue;
+      }
 
       const value = this.entryUpdates.get(entry.slotIndex);
       const rawCommitment = this.entryRawCommitments.get(entry.slotIndex);
@@ -1646,10 +1661,18 @@ export class StatefulTransactionBuilder {
    * order and to read-only slots that emit no commitment check).
    */
   getEntryOutputSlotOrder(): number[] {
-    return this.entryNfts
-      .filter((e) => !this.entryDeletes.has(e.slotIndex))
-      .sort((a, b) => a.slotIndex - b.slotIndex)
-      .map((e) => e.slotIndex);
+    // Must mirror build()'s entry-output emission exactly: a real output per non-deleted slot, plus a
+    // position-holding placeholder for each deleted slot that precedes the last real output. The derivation
+    // maps a commitment at output offset O to slotOrder[O - entryOutputBase]; placeholders carry no commitment,
+    // so they just occupy a position and are never looked up.
+    const sorted = [...this.entryNfts].sort((a, b) => a.slotIndex - b.slotIndex);
+    let lastRealSlotIndex = -1;
+    for (const e of sorted) if (!this.entryDeletes.has(e.slotIndex)) lastRealSlotIndex = e.slotIndex;
+    const order: number[] = [];
+    for (const e of sorted) {
+      if (!this.entryDeletes.has(e.slotIndex) || e.slotIndex < lastRealSlotIndex) order.push(e.slotIndex);
+    }
+    return order;
   }
 
   /**

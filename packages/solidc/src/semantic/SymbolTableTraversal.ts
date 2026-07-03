@@ -4581,20 +4581,19 @@ export default class SymbolTableTraversal extends AstTraversal {
   }
 
   visitCatchClause(node: CatchClauseNode): Node {
-    // If catch has parameters, register them in the block's symbol table
-    // and mark as referenced (avoids unused-variable error on dead code)
-    if (node.parameters && node.parameters.length > 0) {
-      // Visit block first to create its symbol table
-      node.block = this.visit(node.block) as BlockNode;
-
-      // Register parameters in the block's symbol table and mark as referenced
+    // The catch param (`catch Error(string reason)` / `catch (bytes reason)`) must be registered BEFORE the
+    // block's statements are visited (they reference it, e.g. `emit Log(reason)`) - visiting first left it
+    // undefined. Register in a fresh block scope, then visit the statements. Marked referenced (dead code).
+    if (node.parameters && node.parameters.length > 0 && node.block.statements) {
+      node.block.symbolTable = new SymbolTable(this.symbolTables[0]);
+      this.symbolTables.unshift(node.block.symbolTable);
       for (const param of node.parameters) {
-        if (node.block.symbolTable) {
-          const sym = Symbol.variable(param);
-          sym.references.push({ name: param.name } as IdentifierNode);
-          node.block.symbolTable.set(sym);
-        }
+        const sym = Symbol.variable(param);
+        sym.references.push({ name: param.name } as IdentifierNode);
+        node.block.symbolTable.set(sym);
       }
+      node.block.statements = this.visitOptionalList(node.block.statements) as StatementNode[];
+      this.symbolTables.shift();
       return node;
     }
 

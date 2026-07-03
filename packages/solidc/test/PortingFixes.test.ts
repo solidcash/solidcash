@@ -1943,3 +1943,19 @@ describe('new C(args) with a Solidity constructor', () => {
     )).toThrow(/constructor argument/i);
   });
 });
+
+// A catch clause's error param (`catch Error(string memory reason)` / `catch (bytes memory reason)`) must be
+// in scope for the catch block's statements (`emit Log(reason)`); it was registered after the block visited.
+describe('try/catch clause parameter scope', () => {
+  it('scopes the catch error param in the catch block', () => {
+    const a = compileString(
+      'interface I { function g() external returns (uint256); }'
+      + ' contract A { event L(string m); event LB(bytes d);'
+      + ' function f(I i) public { try i.g() returns (uint256 v) { require(v > 0); }'
+      + ' catch Error(string memory reason) { emit L(reason); }'
+      + ' catch (bytes memory reason) { emit LB(reason); } } }',
+      { solidityImportCompat: true },
+    );
+    expect(a.contractName).toBe('A');
+  });
+});

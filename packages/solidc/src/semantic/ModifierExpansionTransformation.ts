@@ -9,6 +9,10 @@ import {
   FunctionDefinitionNode,
   BlockNode,
   IdentifierNode,
+  StateAccessNode,
+  StateAssignNode,
+  DeleteStateNode,
+  AssignNode,
 } from '../ast/AST.js';
 import {
   ModifierRedefinitionError,
@@ -30,6 +34,25 @@ function cloneNode<T extends Node>(node: T): T {
     }
   }
   return clone;
+}
+
+// Recursively tag every state access in a modifier's own body with its defining contract (fromModifier). Stops
+// at nested placeholder expansions naturally: the caller body is spliced in AFTER this runs, so it stays untagged.
+function tagModifierStateAccess(nodes: (Node | undefined)[], definingContract: string): void {
+  for (const n of nodes) {
+    if (!n) continue;
+    // Pre-semantic a state read/write is an Identifier / Assign; SymbolTable later rewrites it to a
+    // State{Access,Assign,Delete}Node and copies fromModifier across. Tag both forms.
+    if (n instanceof StateAccessNode || n instanceof StateAssignNode || n instanceof DeleteStateNode
+      || n instanceof AssignNode || n instanceof IdentifierNode) {
+      if (n.fromModifier === undefined) n.fromModifier = definingContract;
+    }
+    for (const [key, value] of Object.entries(n)) {
+      if (key === 'type' || key === 'symbolTable' || key === 'location' || key === 'stateVariable') continue;
+      if (value instanceof Node) tagModifierStateAccess([value], definingContract);
+      else if (Array.isArray(value)) tagModifierStateAccess(value.filter((v) => v instanceof Node), definingContract);
+    }
+  }
 }
 
 function renameParamRefs(nodes: Node[], oldNames: string[], newNames: string[]): void {
@@ -99,6 +122,11 @@ function expandFunctionModifiers(
 
     // Clone the modifier body statements
     const clonedStatements = modDef.statements.map((s) => cloneNode(s));
+
+    // Tag state accesses in the modifier's OWN body with the contract that defined the modifier, so the
+    // private-var visibility check allows an inherited modifier to touch its own contract's private state even
+    // once inlined into a derived contract. (The placeholder expands to the caller body, which stays untagged.)
+    if (modDef.inheritedFrom) tagModifierStateAccess(clonedStatements, modDef.inheritedFrom);
 
     // Validate argument count matches parameter count
     if (invocation.args.length !== modDef.parameters.length) {

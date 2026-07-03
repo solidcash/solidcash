@@ -3563,6 +3563,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     if (sym?.symbolType === SymbolType.STATE_VARIABLE) {
       const stateNode = new StateAssignNode(node.identifier.name, node.expression);
       stateNode.location = node.location;
+      stateNode.fromModifier = node.fromModifier; // preserve inlined-modifier origin for the private-var check
       return this.visit(stateNode);
     }
 
@@ -4609,7 +4610,8 @@ export default class SymbolTableTraversal extends AstTraversal {
       throw new UndefinedStateVariableError(node);
     }
     if (sv.visibility === StateVariableVisibility.PRIVATE && sv.inheritedFrom
-      && this.currentFunction.inheritedFrom !== sv.inheritedFrom) {
+      && this.currentFunction.inheritedFrom !== sv.inheritedFrom
+      && node.fromModifier !== sv.inheritedFrom) {
       throw new PrivateStateVariableAccessError(node, sv.name, sv.inheritedFrom);
     }
     node.stateVariable = sv;
@@ -4622,7 +4624,8 @@ export default class SymbolTableTraversal extends AstTraversal {
       throw new UndefinedStateVariableError(node);
     }
     if (sv.visibility === StateVariableVisibility.PRIVATE && sv.inheritedFrom
-      && this.currentFunction.inheritedFrom !== sv.inheritedFrom) {
+      && this.currentFunction.inheritedFrom !== sv.inheritedFrom
+      && node.fromModifier !== sv.inheritedFrom) {
       throw new PrivateStateVariableAccessError(node, sv.name, sv.inheritedFrom);
     }
     if (sv.immutable && !this.insideConstructor) {
@@ -4644,7 +4647,8 @@ export default class SymbolTableTraversal extends AstTraversal {
       throw new UndefinedStateVariableError(node);
     }
     if (sv.visibility === StateVariableVisibility.PRIVATE && sv.inheritedFrom
-      && this.currentFunction.inheritedFrom !== sv.inheritedFrom) {
+      && this.currentFunction.inheritedFrom !== sv.inheritedFrom
+      && node.fromModifier !== sv.inheritedFrom) {
       throw new PrivateStateVariableAccessError(node, sv.name, sv.inheritedFrom);
     }
     if (sv.immutable && !this.insideConstructor) {
@@ -5055,6 +5059,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     if (definition.symbolType === SymbolType.STATE_VARIABLE) {
       const stateNode = new StateAccessNode(node.name);
       stateNode.location = node.location;
+      stateNode.fromModifier = node.fromModifier; // preserve inlined-modifier origin for the private-var check
       return this.visit(stateNode);
     }
 

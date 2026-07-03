@@ -341,6 +341,9 @@ export abstract class StatementNode extends Node { }
 
 export class StateAssignNode extends StatementNode {
   stateVariable?: StateVariableNode;
+  // Set when this access comes from an inlined modifier body: the contract that DEFINED the modifier. A private
+  // var is accessible from code written in its own contract even after that code is inlined into a derived one.
+  fromModifier?: string;
 
   constructor(
     public name: string,
@@ -453,6 +456,8 @@ export class TupleAssignmentNode extends StatementNode {
 }
 
 export class AssignNode extends StatementNode {
+  fromModifier?: string; // see StateAssignNode.fromModifier (propagated when this resolves to a state assign)
+
   constructor(
     public identifier: IdentifierNode,
     public expression: ExpressionNode,
@@ -746,6 +751,7 @@ export class ContractReferenceNode extends ExpressionNode {
 
 export class StateAccessNode extends ExpressionNode implements Named {
   stateVariable?: StateVariableNode;
+  fromModifier?: string; // see StateAssignNode.fromModifier
 
   constructor(
     public name: string,
@@ -833,6 +839,7 @@ export class DeleteLocalNode extends StatementNode {
 
 export class DeleteStateNode extends StatementNode {
   stateVariable?: StateVariableNode;
+  fromModifier?: string; // see StateAssignNode.fromModifier
 
   constructor(
     public name: string,
@@ -1163,6 +1170,7 @@ export class IdentifierNode extends ExpressionNode implements Named {
   // Set when this identifier names a function used as a value (a function pointer); codegen pushes
   // the target's integer functionId.
   functionReference?: FunctionDefinitionNode;
+  fromModifier?: string; // see StateAssignNode.fromModifier (propagated when this resolves to a state access)
 
   constructor(
     public name: string,

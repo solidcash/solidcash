@@ -1640,6 +1640,19 @@ export class StatefulTransactionBuilder {
   }
 
   /**
+   * The entry-slot index of each entry NFT output, in output order (matches the build() output loop:
+   * non-deleted entries sorted by slotIndex). Output at getEntryOutputBase()+k belongs to slot [k].
+   * Lets the derivation map an extracted commitment back to its slot by output index (robust to write
+   * order and to read-only slots that emit no commitment check).
+   */
+  getEntryOutputSlotOrder(): number[] {
+    return this.entryNfts
+      .filter((e) => !this.entryDeletes.has(e.slotIndex))
+      .sort((a, b) => a.slotIndex - b.slotIndex)
+      .map((e) => e.slotIndex);
+  }
+
+  /**
    * Look up a block-layout offset for a given slot kind and optional slotIndex.
    * Returns `undefined` when no block layout is available or the slot is not found.
    */

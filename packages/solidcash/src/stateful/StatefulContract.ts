@@ -306,16 +306,15 @@ function findRedeemScriptStart(fullTrace: AuthenticationProgramStateCommon[]): n
 }
 
 /**
- * Extract expected commitment hex strings from a VM debug trace.
+ * Extract expected commitment hex strings from a VM debug trace, keyed by the output index each verifies.
  *
  * The contract verifies state via: <expected> OP_OUTPUTTOKENCOMMITMENT OP_EQUALVERIFY
- * This scans the trace for those patterns and extracts the expected commitment bytes.
+ * This scans the trace for those patterns and records the expected commitment bytes per output index.
  */
-function extractCommitmentsFromTrace(
+function extractCommitmentMapFromTrace(
   fullTrace: AuthenticationProgramStateCommon[],
-  expectedCount: number,
   outputIndexRange?: { min: number; max: number },
-): string[] | undefined {
+): Map<number, string> {
   // Slice to the redeem (locking) script phase, subroutine-aware (see findRedeemScriptStart).
   const p2shStart = findRedeemScriptStart(fullTrace);
   const lockingScriptTrace = p2shStart >= 0 ? fullTrace.slice(p2shStart) : fullTrace;
@@ -375,8 +374,21 @@ function extractCommitmentsFromTrace(
     }
   }
 
-  // Build final commitment list (both paths now use commitmentsByOutputIndex for correct
-  // "last write wins" semantics when loops overwrite the same output index)
+  return commitmentsByOutputIndex;
+}
+
+/**
+ * Positional commitment list (sorted by output index) from a VM debug trace. Used for output groups whose
+ * i-th verified output maps to the i-th slot (events, chunks, transfers). For ENTRY commitments prefer
+ * extractCommitmentMapFromTrace + a slot mapping: an entry group can skip absent read-only slots (no check),
+ * so positional alignment breaks.
+ */
+function extractCommitmentsFromTrace(
+  fullTrace: AuthenticationProgramStateCommon[],
+  expectedCount: number,
+  outputIndexRange?: { min: number; max: number },
+): string[] | undefined {
+  const commitmentsByOutputIndex = extractCommitmentMapFromTrace(fullTrace, outputIndexRange);
   const commitments = Array.from(commitmentsByOutputIndex.entries())
     .sort(([a], [b]) => a - b)
     .map(([, hex]) => hex);
@@ -3795,16 +3807,22 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             derivedStateCount = Math.max(derivedStateCount, newStateCommitCount);
           }
 
-          // Entry commitments: output indices [entryBase, entryBase + entryCount)
+          // Entry commitments: output indices [entryBase, entryBase + entryCount). Map each verified
+          // commitment to ITS slot by output index (slotOrder[outputIndex - base]) rather than positionally:
+          // the covenant checks written entries in write order and skips absent read-only slots, so a
+          // positional (i-th commitment -> slot i) assignment misaligns when writes are out of slot order.
           if (entryCount > 0) {
             const entryOutputBase = stb.getEntryOutputBase();
             const entryOutputRange = { min: entryOutputBase, max: entryOutputBase + entryCount };
-            const entryCommits = extractCommitmentsFromTrace(fullTrace2, entryCount, entryOutputRange) ?? [];
-            commitmentProgress += entryCommits.length;
-            latestEntryCommits = entryCommits;
-            for (let si = 0; si < Math.min(entryCount, entryCommits.length); si++) {
-              stb.setEntryRawCommitment(si, entryCommits[si]);
+            const commitMap = extractCommitmentMapFromTrace(fullTrace2, entryOutputRange);
+            const slotOrder = stb.getEntryOutputSlotOrder();
+            const orderedCommits: string[] = [];
+            for (const [outIdx, commit] of commitMap) {
+              const slot = slotOrder[outIdx - entryOutputBase];
+              if (slot !== undefined) { stb.setEntryRawCommitment(slot, commit); orderedCommits.push(commit); }
             }
+            commitmentProgress += orderedCommits.length;
+            latestEntryCommits = orderedCommits;
           }
 
           // Dynamic-storage chunk commitments. The data-NFT field holds uint32 A$len; from it we know

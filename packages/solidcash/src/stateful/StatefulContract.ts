@@ -4232,7 +4232,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               const bytesMatch = keyType.match(/^bytes(\d+)$/);
               if (bytesMatch) {
                 keyValues.push(new Uint8Array(parseInt(bytesMatch[1], 10)));
-              } else if (keyType === 'bytes') {
+              } else if (keyType === 'bytes' || keyType === 'address') {
+                // address is a variable-length locking bytecode (Uint8Array); the VM probe fills the real key
                 keyValues.push(new Uint8Array(0));
               } else if (keyType === 'bool') {
                 keyValues.push(false);

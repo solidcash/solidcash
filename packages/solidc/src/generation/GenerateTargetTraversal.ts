@@ -385,6 +385,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   // True while generating a branded delegate library: the delegate master-validation pins the co-spent proxy
   // master's category to the library's `__brand` ctor arg (docs/library-contracts.md 3b contention).
   private currentContractIsBrandedLibrary: boolean = false;
+  // True when the contract reads blockhash(n): forces it stateful (the oracle is branded to its own category).
+  private currentContractUsesBlockhash: boolean = false;
 
   // Unchecked block depth: when > 0, bounds checks emit wrapping instead of OP_VERIFY
   private uncheckedDepth: number = 0;
@@ -553,6 +555,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   visitContract(node: ContractNode): Node {
     this.currentContractIsBrandedLibrary = node.isBrandedLibrary;
+    this.currentContractUsesBlockhash = node.usesBlockhash;
     node.parameters = this.visitList(node.parameters) as ParameterNode[];
 
     // Register contract-level constants for inline substitution
@@ -1576,6 +1579,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // split/merge: dedicated covenant verification
     const isStatefulContract = this.stateVariables.length > 0
       || this.collectionCount > 0 || this.eventDefinitions.length > 0
+      || this.currentContractUsesBlockhash
       || (this.compilerOptions.forceStateful ?? false);
     const isUnsafe = node.modifiers.includes(FunctionModifier.UNSAFE);
     const unsafeTier = isUnsafe ? (node.unsafeTier ?? 0) : null;
@@ -3452,16 +3456,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
 
     if (node.identifier.name === GlobalFunction.BLOCKHASH) {
-      const catHex = this.compilerOptions.blockhashOracleCategory;
-      if (!catHex) {
-        throw new Error('blockhash() requires the blockhashOracleCategory compiler option (the n->hash oracle '
-          + 'token category); see packages/solidc/docs/block-and-transaction-properties.md section 11');
-      }
-      // Read the co-spent (n->hash) oracle UTXO (the last input, MVP convention) and return its hash:
-      //   require(tx.time >= n); category(last) == C_oracle; commitment = n(4 LE) || hash(32), n == arg.
-      // Soundness: C_oracle is mint-once (keeper), so a co-spent UTXO with it carries a genuine (n,hash);
-      // the n-check disambiguates the block; the tx-builder can only present the real pair.
-      const catInternal = hexToBin(catHex).slice().reverse();
+      // The (n->hash) oracle NFT is BRANDED to the contract's OWN category (master-bound, per
+      // docs/block-and-transaction-properties.md s3): there is no separate oracle category and no compile-time
+      // option. Read the co-spent oracle UTXO and return its hash:
+      //   require(tx.time >= n); base(category(oracle)) == base(category(master)); commitment = n(4 LE)||hash,
+      //   n == arg. Soundness: the oracle rides the contract's own category (only the owner mints it), so a
+      //   co-spent UTXO with that category carries a genuine (n,hash); the n-check disambiguates the block.
+      // blockhash forces the contract stateful (usesBlockhash), so the covenant runs on the master (category).
       const loc = { location: node.location, positionHint: PositionHint.START };
       // SDK auto-injection: if n is a direct identifier (a function param) the SDK reads that arg to
       // resolve addr(n) and co-spend the (n->hash) UTXO. Computed n (not an identifier) is not recorded;
@@ -3473,14 +3474,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
       node.parameters[0] = this.visit(node.parameters[0]); // [n]
       // The co-spend input index comes from the synthesized __internal__blockhashInputIndex param (the SDK
-      // locates the C_oracle co-spend and fills it), NOT OP_TXINPUTCOUNT OP_1SUB - the last input belongs to
+      // locates the oracle co-spend and fills it), NOT OP_TXINPUTCOUNT OP_1SUB - the last input belongs to
       // whoever the builder appended last, which breaks under cross-contract composition. Depth is computed
       // with [n] on top; the DUP/CLTV/DROP below is net-zero so the stack is still [n] at the OP_PICK.
       const idxDepth = this.getStackIndex('__internal__blockhashInputIndex');
       this.emit([
         Op.OP_DUP, Op.OP_CHECKLOCKTIMEVERIFY, Op.OP_DROP, // require(tx.time >= n), [n]
         encodeInt(BigInt(idxDepth)), Op.OP_PICK, // co-spend input index (composition-safe), [n, idx]
-        Op.OP_DUP, Op.OP_UTXOTOKENCATEGORY, catInternal, Op.OP_EQUALVERIFY, // category == C_oracle
+        Op.OP_DUP, Op.OP_UTXOTOKENCATEGORY, // [n, idx, oracleCategory]
+      ], loc);
+      this.emitVerifyCatBaseEqMaster(loc); // base(oracle category) == base(contract's own category) -> [n, idx]
+      this.emit([
         Op.OP_UTXOTOKENCOMMITMENT, encodeInt(4n), Op.OP_SPLIT, // [n, n4, hash32]
         Op.OP_SWAP, Op.OP_BIN2NUM, // [n, hash32, commitment.n]
         Op.OP_ROT, Op.OP_EQUALVERIFY, // commitment.n == n -> [hash32]

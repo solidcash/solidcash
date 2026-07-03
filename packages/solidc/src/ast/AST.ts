@@ -136,6 +136,10 @@ export class ContractNode extends Node implements Named {
   // spent only alongside its owning consumer's master - it rides that one master's serialization (zero marginal
   // contention). See docs/library-contracts.md (3b contention).
   isBrandedLibrary: boolean = false;
+  // Set by SynthesizeBlockOracle when any function reads blockhash(n). The (n->hash) oracle is branded to the
+  // contract's OWN category (master-bound, per docs/block-and-transaction-properties.md s3), so a blockhash
+  // reader MUST be stateful (have a master/category to co-spend + anchor the oracle against). Forces stateful.
+  usesBlockhash: boolean = false;
   implements: string[] = [];
   parentInvocations: ParentInvocation[] = [];
   fallbackDef: FunctionDefinitionNode | undefined;

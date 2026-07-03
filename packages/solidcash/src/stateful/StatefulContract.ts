@@ -3276,7 +3276,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       // the data NFTs, matching the blockhashOracle block-layout slot.
       const bhProbeCoSpends: Array<{ utxo: Utxo; unlocker: Unlocker; recreate: Output; locktime: number }> = [];
       if (abiFunction.blockhashReads && abiFunction.blockhashReads.length > 0) {
-        const bhCategory = this.inner.artifact.compiler.options?.blockhashOracleCategory;
+        const bhCategory = this.categoryId; // oracle branded to the contract's own category (docs s3)
         if (bhCategory) {
           const bhVisible = abiFunction.inputs.filter((i) => !i.name.startsWith('__internal__'));
           const bhSeen = new Set<string>();
@@ -4566,8 +4566,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const blockhashCoSpendUtxos: UnlockableUtxo[] = [];
     let maxBhLocktime = 0; // require(tx.time >= n) - the SDK sets the locktime so the derivation probe passes
     if (abiFunction?.blockhashReads && abiFunction.blockhashReads.length > 0) {
-      const bhCategory = this.inner.artifact.compiler.options?.blockhashOracleCategory;
-      if (!bhCategory) throw new Error('blockhash(n): contract compiled without blockhashOracleCategory');
+      // The (n->hash) oracle is branded to the contract's OWN category (docs s3), not a compile option.
+      const bhCategory = this.categoryId;
       const bhVisible = abiFunction.inputs.filter((i) => !i.name.startsWith('__internal__'));
       const bhSeen = new Set<string>();
       for (const paramName of abiFunction.blockhashReads) {

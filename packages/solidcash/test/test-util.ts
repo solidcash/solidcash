@@ -280,6 +280,7 @@ export interface StatefulUtxoSetup {
   masterUtxo: Utxo;
   dataNftUtxos: Utxo[];
   dataNftAddresses: string[];
+  extraUtxos?: Utxo[];
 }
 
 /**
@@ -301,6 +302,9 @@ export async function setupStatefulUtxos(
   initialState: Record<string, any>,
   opts?: {
     masterSatoshis?: bigint; dataNftSatoshis?: bigint; saltContract?: boolean; categoryOverride?: string;
+    // Extra token UTXOs to genesis under the SAME category (e.g. a blockhash (n->hash) oracle NFT branded to
+    // the contract). Receives the resolved categoryId; the seeded UTXOs are returned as `extraUtxos`.
+    extraOutputs?: (categoryId: string) => Array<{ address: string; satoshis: bigint; token: any }>;
   },
 ): Promise<StatefulUtxoSetup> {
   const masterSatoshis = opts?.masterSatoshis ?? 10000n;
@@ -347,6 +351,7 @@ export async function setupStatefulUtxos(
         satoshis: dataNftSatoshis,
         token: { amount: 0n, nft: { capability: 'mutable' as const, commitment: commitments[i] } },
       })),
+      ...(opts?.extraOutputs ? opts.extraOutputs(categoryId) : []),
     ];
   });
 
@@ -360,7 +365,8 @@ export async function setupStatefulUtxos(
   return {
     categoryId,
     masterUtxo: result.utxos[0],
-    dataNftUtxos: result.utxos.slice(1),
+    dataNftUtxos: result.utxos.slice(1, 1 + dataNftCount),
     dataNftAddresses,
+    extraUtxos: result.utxos.slice(1 + dataNftCount),
   };
 }

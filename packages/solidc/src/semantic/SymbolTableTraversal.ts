@@ -440,7 +440,8 @@ export default class SymbolTableTraversal extends AstTraversal {
     this.isStatefulContract = node.stateVariables.length > 0
       || node.collections.length > 0
       || node.eventDefinitions.length > 0
-      || (this.compilerOptions.forceStateful ?? false);
+      || (this.compilerOptions.forceStateful ?? false)
+      || node.usesBlockhash;
 
     node.parameters = this.visitList(node.parameters) as ParameterNode[];
 
@@ -1852,6 +1853,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     const isStatefulContract = contract.stateVariables.length > 0
       || contract.collections.length > 0
       || contract.eventDefinitions.length > 0
+      || contract.usesBlockhash
       || (this.compilerOptions.forceStateful ?? false);
     if (mods.includes(FunctionModifier.UNSAFE) && !isStatefulContract) {
       throw new InvalidModifierCombinationError(node, "'unsafe' is only valid in stateful contracts");

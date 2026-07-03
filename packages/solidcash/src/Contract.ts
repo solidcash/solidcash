@@ -3,7 +3,6 @@ import {
   AbiFunction,
   Artifact,
   asmToScript,
-  blockhashCommitmentNumber,
   calculateBytesize,
   countOpcodes,
   generateContractBytecodeScript,
@@ -410,36 +409,19 @@ export class Contract<
     };
   }
 
-  // Resolve the synthesized blockhash co-spend index: locate the co-spent (n->hash) oracle UTXO among the
-  // spent inputs and return its index as the __internal__blockhashInputIndex arg. Empty when the function
-  // reads no blockhash. Matches by token category == blockhashOracleCategory AND commitment.n == the
-  // reader's n (from the blockhashReads param), so several (n->hash) co-spends in one tx each resolve to the
-  // right reader; absent a direct-identifier n (computed) it falls back to the lone C_oracle co-spend. The
-  // VM re-verifies category + commitment.n, so a wrong index just fails (sound regardless of placement).
+  // blockhash(n) brands its (n->hash) oracle to the contract's OWN category (master-bound), so a reader is
+  // always STATEFUL and its co-spend is resolved by StatefulContract via the blockhashOracle block-layout
+  // slot. Returns [] when the function reads no blockhash; otherwise reaching this base-Contract path means
+  // the call was not built through StatefulContract, which is unsupported - fail loudly.
   private resolveBlockhashIndexArgs(
-    abiFunction: AbiFunction, sourceOutputs: LibauthOutput[], args: FunctionArgument[],
+    abiFunction: AbiFunction, _sourceOutputs: LibauthOutput[], _args: FunctionArgument[],
   ): Uint8Array[] {
     const bhIdx = abiFunction.inputs.find((inp) => inp.name === '__internal__blockhashInputIndex');
     if (!bhIdx) return [];
-    const category = this.artifact.compiler.options?.blockhashOracleCategory;
-    if (!category) throw new Error('blockhash(n): contract compiled without blockhashOracleCategory');
-
-    const reads = abiFunction.blockhashReads ?? [];
-    let n: bigint | undefined;
-    if (reads.length > 0) {
-      const visible = abiFunction.inputs.filter((i) => !i.name.startsWith('__internal__'));
-      const pIdx = visible.findIndex((i) => i.name === reads[0]);
-      if (pIdx >= 0 && typeof args[pIdx] === 'bigint') n = args[pIdx] as bigint;
-    }
-    const index = sourceOutputs.findIndex((so) => so.token
-      && binToHex(so.token.category) === category
-      && (n === undefined || (so.token.nft !== undefined && blockhashCommitmentNumber(so.token.nft.commitment) === n)));
-    if (index < 0) {
-      throw new Error(`blockhash(n): no (n->hash) oracle UTXO co-spent (token category ${category}`
-        + `${n !== undefined ? `, commitment.n ${n}` : ''}); add it via the TransactionBuilder `
-        + 'auto-injection or resolveBlockhashCoSpend.');
-    }
-    return [encodeFunctionArgument(BigInt(index), bhIdx.type) as Uint8Array];
+    // blockhash(n) brands its (n->hash) oracle to the contract's own category, so a reader is always STATEFUL
+    // and its co-spend is resolved by StatefulContract (via the blockhashOracle block-layout slot). Reaching
+    // the base Contract/TransactionBuilder path means the reader was not built through StatefulContract.
+    throw new Error('blockhash(n) is only supported in stateful contracts; build the call via StatefulContract.');
   }
 
   // Size the budget pad for a call. keccak256 functions need the per-input op budget raised

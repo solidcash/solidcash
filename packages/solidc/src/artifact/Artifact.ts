@@ -311,7 +311,8 @@ export function generateArtifact(
   // zero-state stateful contract gets an empty stateLayout so the SDK sees it as stateful and bakes the
   // master-NFT self-pin covenant; see the forceStateful compiler option).
   let stateLayout: StateLayout | undefined;
-  if (contract.stateVariables.length > 0 || contract.collections.length > 0 || compilerOptions.forceStateful) {
+  if (contract.stateVariables.length > 0 || contract.collections.length > 0
+    || compilerOptions.forceStateful || contract.usesBlockhash) {
     stateLayout = {
       variables: contract.stateVariables.map((sv) => ({
         name: sv.name,
@@ -495,8 +496,6 @@ export function generateArtifact(
         enforceFunctionParameterTypes: compilerOptions.enforceFunctionParameterTypes,
         enforceLocktimeGuard: compilerOptions.enforceLocktimeGuard,
         commitmentLimit: compilerOptions.commitmentLimit,
-        // The (n->hash) oracle category, needed by the SDK to auto-resolve blockhash(n) co-spends.
-        ...(compilerOptions.blockhashOracleCategory && { blockhashOracleCategory: compilerOptions.blockhashOracleCategory }),
       },
     },
     updatedAt: new Date().toISOString(),

@@ -122,6 +122,10 @@ export default class SynthesizeBlockOracle extends AstTraversal {
     if (node.fallbackDef) node.fallbackDef = this.visit(node.fallbackDef) as FunctionDefinitionNode;
     if (node.receiveDef) node.receiveDef = this.visit(node.receiveDef) as FunctionDefinitionNode;
 
+    // blockhash(n) brands its (n->hash) oracle to the contract's own category, so the reader must be stateful.
+    node.usesBlockhash = [...node.functions, node.constructorDef, node.fallbackDef, node.receiveDef]
+      .some((f) => f?.usesBlockhash);
+
     if (this.used.size === 0) return node;
 
     const fields = [...this.used];

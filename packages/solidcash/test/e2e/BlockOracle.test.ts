@@ -426,16 +426,16 @@ describe('blobhash / blockhash', () => {
     await expect(spendBlob(`0x01${'00'.repeat(31)}`)).rejects.toThrow();
   });
 
-  it('blockhash(n) requires the blockhashOracleCategory compiler option', () => {
-    expect(() => compileString(`contract B(){ function f(){ require(blockhash(1) == ${B32_ZERO}); } }`))
-      .toThrow(/requires the blockhashOracleCategory/);
+  it('blockhash(n) compiles with no oracle option and forces the contract stateful', () => {
+    // The (n->hash) oracle is branded to the contract's OWN category (master-bound, docs s3) - no compile
+    // option. Using blockhash therefore makes the contract stateful (it needs a master/category to anchor).
+    const a = compileString('contract B(){ function f(int bn, bytes32 h){ require(blockhash(bn) == h); } }');
+    expect(a.usesBlockhash).toBe(true);
+    expect(a.stateLayout).toBeDefined();
   });
 
   it('compiler marks usesBlockhash so the keeper maintains the (n->hash) oracle', () => {
-    const withBh = compileString(
-      'contract B(){ function f(int bn, bytes32 h){ require(blockhash(bn) == h); } }',
-      { blockhashOracleCategory: BH_CAT },
-    );
+    const withBh = compileString('contract B(){ function f(int bn, bytes32 h){ require(blockhash(bn) == h); } }');
     const noBh = compileString(`contract B(){ function f(){ require(blobhash(0) == ${B32_ZERO}); } }`);
     expect(withBh.usesBlockhash).toBe(true);
     expect(BlockOracleUpdater.usesBlockhash(withBh)).toBe(true);
@@ -444,17 +444,11 @@ describe('blobhash / blockhash', () => {
   });
 
   it('records blockhashReads metadata (the param feeding n) for SDK auto-injection', () => {
-    const direct = compileString(
-      'contract B(){ function f(int bn, bytes32 h){ require(blockhash(bn) == h); } }',
-      { blockhashOracleCategory: BH_CAT },
-    );
+    const direct = compileString('contract B(){ function f(int bn, bytes32 h){ require(blockhash(bn) == h); } }');
     expect(direct.abi.find((fn) => fn.name === 'f')?.blockhashReads).toEqual(['bn']);
 
     // Computed n (not a direct identifier) is NOT recorded -> consumer wires resolveBlockhashCoSpend manually.
-    const computed = compileString(
-      'contract B(){ function f(int bn, bytes32 h){ require(blockhash(bn + 1) == h); } }',
-      { blockhashOracleCategory: BH_CAT },
-    );
+    const computed = compileString('contract B(){ function f(int bn, bytes32 h){ require(blockhash(bn + 1) == h); } }');
     expect(computed.abi.find((fn) => fn.name === 'f')?.blockhashReads).toBeUndefined();
   });
 });
@@ -469,27 +463,22 @@ async function spendBlockhash(
   provider: ReturnType<typeof createTestProvider>,
   argN: number, storedN: number, storedHash: Uint8Array, expectHash: Uint8Array,
 ): Promise<string> {
-  // Seed the (n->hash) oracle NFT at its real covenant address addr(storedN) and compile the reader with the
-  // resulting category, then resolve the co-spend pieces via the SDK helper (immutable, category-pinned,
-  // read-only flag 0, self-preserving recreate).
-  const { cat } = await seedOracleNft(provider, BigInt(storedN), storedHash);
-  const artifact = compileString(
-    'contract B(){ function f(int bn, bytes32 h){ require(blockhash(bn) == h); } }',
-    { blockhashOracleCategory: cat },
-  );
+  // The (n->hash) oracle is BRANDED to the contract's own category (master-bound, docs s3). Seed the reader's
+  // master AND the oracle NFT (at addr(storedN)) under ONE category, then read via StatefulContract - it
+  // resolves + co-spends the oracle by the contract's categoryId at the blockhashOracle block-layout slot and
+  // sets the locktime. blockhash forces the reader stateful, so it has a master/category to anchor the oracle.
+  const artifact = compileString('contract B(){ function f(int bn, bytes32 h){ require(blockhash(bn) == h); } }');
   const contract = new Contract(artifact, [], { provider });
-  const contractUtxo = await provider.addUtxo(contract.address, randomUtxo({ satoshis: 100000n }));
-
-  const cospend = await resolveBlockhashCoSpend(provider, cat, BigInt(storedN));
-  if (!cospend) throw new Error('no (n->hash) oracle UTXO at addr(n)');
-
-  const tx = await new TransactionBuilder({ provider })
-    .addInput(contractUtxo, contract.unlock.f(BigInt(argN), expectHash)) // input 0
-    .addInput(cospend.utxo, cospend.unlocker) // input 1 (last) = (n->hash) oracle NFT
-    .addOutput({ to: contract.address, amount: 99000n }) // output 0
-    .addOutput(cospend.recreateOutput) // output 1: self-preserving recreate (matching index)
-    .setLocktime(argN)
-    .send();
+  const { categoryId } = await setupStatefulUtxos(provider, contract, artifact.stateLayout!, {}, {
+    saltContract: true,
+    extraOutputs: (cat) => [{
+      address: binToHex(blockhashOracleLockingBytecode(hexToBin(cat), BigInt(storedN))),
+      satoshis: 1000n,
+      token: { nft: { capability: 'none', commitment: binToHex(buildBlockhashCommitment(BigInt(storedN), storedHash)) } },
+    }],
+  });
+  const sc = StatefulContract.withCategory(contract, categoryId);
+  const tx = await sc.f(BigInt(argN), expectHash).send();
   return tx.txid;
 }
 
@@ -565,93 +554,42 @@ describe('blockhash(n) e2e (real (n->hash) covenant)', () => {
   });
 });
 
-// Auto-injection: the builder reads abi.blockhashReads + the call args, resolves addr(n), and co-spends the
-// (n->hash) UTXO as the last input + self-preserving recreate - no manual resolveBlockhashCoSpend wiring.
-describe('blockhash(n) auto-injection (SDK)', () => {
+// Auto-injection: StatefulContract reads abi.blockhashReads + the call args, resolves addr(n) under the
+// contract's OWN (branded) category, and co-spends the (n->hash) oracle at its block-layout slot + recreates
+// it read-only - no manual wiring. The base TransactionBuilder path is intentionally gone (blockhash forces
+// the contract stateful, so the read must ride the master co-spend; see docs section 3).
+describe('blockhash(n) auto-injection (StatefulContract)', () => {
   const H = hexToBin('aa'.repeat(32));
   const SRC = 'contract B(){ function f(int bn, bytes32 h){ require(blockhash(bn) == h); } }';
 
-  async function setup(): Promise<{
-    provider: ReturnType<typeof createTestProvider>; contract: Contract; contractUtxo: Utxo;
-    n: bigint; h: Uint8Array; cat: string;
-  }> {
+  it('auto-co-spends the (n->hash) oracle from the call args (no manual wiring)', async () => {
     const provider = createTestProvider();
-    const { n: height, hash } = await allocHeight(provider);
-    const n = BigInt(height);
-    const { cat } = await seedOracleNft(provider, n, hash);
-    const contract = new Contract(compileString(SRC, { blockhashOracleCategory: cat }), [], { provider });
-    const contractUtxo = await provider.addUtxo(contract.address, randomUtxo({ satoshis: 100000n }));
-    return { provider, contract, contractUtxo, n, h: hash, cat };
-  }
-
-  it('persists blockhashOracleCategory in the artifact for the SDK', () => {
-    const artifact = compileString(SRC, { blockhashOracleCategory: BH_CAT });
-    expect(artifact.compiler.options?.blockhashOracleCategory).toBe(BH_CAT);
-  });
-
-  it('auto-co-spends the (n->hash) UTXO from the call args (no manual wiring)', async () => {
-    const { provider, contract, contractUtxo, n, h } = await setup();
-    const tx = await new TransactionBuilder({ provider })
-      .addInput(contractUtxo, contract.unlock.f(n, h))
-      .addOutput({ to: contract.address, amount: 99000n })
-      .send();
-    expect(tx.txid).toMatch(/^[0-9a-f]{64}$/);
+    const { n } = await allocHeight(provider);
+    expect(await spendBlockhash(provider, n, n, H, H)).toMatch(/^[0-9a-f]{64}$/);
   });
 
   it('errors clearly when no (n->hash) UTXO exists at addr(n)', async () => {
     const provider = createTestProvider();
-    const { n: height } = await allocHeight(provider); // a fresh height whose addr(n) is empty
-    const contract = new Contract(compileString(SRC, { blockhashOracleCategory: BH_CAT }), [], { provider });
-    const contractUtxo = await provider.addUtxo(contract.address, randomUtxo({ satoshis: 100000n }));
-    await expect(
-      new TransactionBuilder({ provider })
-        .addInput(contractUtxo, contract.unlock.f(BigInt(height), H))
-        .addOutput({ to: contract.address, amount: 99000n })
-        .send(),
-    ).rejects.toThrow(/no \(n->hash\) oracle UTXO/i);
+    const { n } = await allocHeight(provider); // a fresh height whose addr(n) is empty
+    const artifact = compileString(SRC);
+    const contract = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, contract, artifact.stateLayout!, {}, { saltContract: true },
+    );
+    const sc = StatefulContract.withCategory(contract, categoryId);
+    await expect((sc as any).f(BigInt(n), H).send()).rejects.toThrow(/no \(n->hash\) oracle UTXO/i);
   });
 
-  // Composition: the co-spend is NOT the last input (an unrelated input trails it). The reader locates it by
-  // its synthesized index param, not OP_TXINPUTCOUNT OP_1SUB - which would read the trailing input and fail.
-  it('reads the co-spend by index when it is not the last input (composition-safe)', async () => {
-    const { provider, contract, contractUtxo, n, h, cat } = await setup();
-    const cospend = await resolveBlockhashCoSpend(provider, cat, n);
-    if (!cospend) throw new Error('co-spend seeded by setup()');
-    const trailing = { txid: '99'.repeat(32), vout: 0, satoshis: 5000n };
-    await provider.addUtxo(binToHex(MASTER_LBC), trailing); // anyone-can-spend OP_1 p2sh, no token
-
-    const tx = await new TransactionBuilder({ provider })
-      .addInput(contractUtxo, contract.unlock.f(n, h)) // input 0: the reader
-      .addInput(cospend.utxo, cospend.unlocker) // input 1: (n->hash) co-spend (NOT last)
-      .addInput(trailing, { generateLockingBytecode: () => MASTER_LBC, generateUnlockingBytecode: () => MASTER_UNLOCK })
-      .addOutput({ to: contract.address, amount: 99000n }) // output 0
-      .addOutput(cospend.recreateOutput) // output 1: recreate (covenant output[1] == input[1])
-      .addOutput({ to: aliceAddress, amount: 4000n }) // output 2
-      .setLocktime(Number(n))
-      .send();
-    expect(tx.txid).toMatch(/^[0-9a-f]{64}$/);
-  });
-
-  // Multiple readers with different n in one tx: the builder auto-injects both co-spends and each reader's
-  // unlocker resolves its own by commitment.n (not position).
-  it('auto-injects and matches multiple readers, each to its own n', async () => {
-    const provider = createTestProvider();
-    const a = await allocHeight(provider);
-    const b = await allocHeight(provider);
-    const n1 = BigInt(a.n); const n2 = BigInt(b.n);
-    const h1 = a.hash; const h2 = b.hash;
-    const { cat } = await seedOracleNfts(provider, [{ n: n1, hash: h1 }, { n: n2, hash: h2 }]);
-    const contract = new Contract(compileString(SRC, { blockhashOracleCategory: cat }), [], { provider });
-    const utxoA = await provider.addUtxo(contract.address, randomUtxo({ satoshis: 100000n }));
-    const utxoB = await provider.addUtxo(contract.address, randomUtxo({ satoshis: 100000n }));
-
-    const tx = await new TransactionBuilder({ provider })
-      .addInput(utxoA, contract.unlock.f(n1, h1)) // reader for n1
-      .addInput(utxoB, contract.unlock.f(n2, h2)) // reader for n2
-      .addOutput({ to: contract.address, amount: 99000n })
-      .addOutput({ to: contract.address, amount: 99000n })
-      .send(); // auto-injects co-spend(n1) at input/output 2 + co-spend(n2) at input/output 3
-    expect(tx.txid).toMatch(/^[0-9a-f]{64}$/);
+  // Two reads in one reader: the compiler records BOTH params feeding blockhash and forces the contract
+  // stateful. (Runtime co-spend of two distinct (n->hash) oracle slots in one tx is not yet wired; single-read
+  // is the exercised path - the runtime e2e + stateful reader tests cover it.)
+  it('records both params feeding blockhash and forces the reader stateful', () => {
+    const src = 'contract B(){ function f(int x, bytes32 hx, int y, bytes32 hy){'
+      + ' require(blockhash(x)==hx); require(blockhash(y)==hy); } }';
+    const artifact = compileString(src);
+    const f = artifact.abi.find((fn) => fn.name === 'f');
+    expect(f?.blockhashReads).toEqual(['x', 'y']);
+    expect(artifact.stateLayout).toBeDefined(); // blockhash forces stateful (branded oracle needs a master)
   });
 });
 
@@ -667,22 +605,24 @@ describe('blockhash keeper minting', () => {
     const n = BigInt(height);
     const H = hexToBin('cd'.repeat(32));
 
-    // A minting master of the oracle (genesis) category at a trivial OP_1 p2sh (anyone-can-spend for the test).
-    const master = await provider.addTokenUtxosDynamic(() => [
-      { address: binToHex(MASTER_LBC), satoshis: 10000n, token: { nft: { capability: 'minting', commitment: '' } } },
-    ]);
-    const cat = master.categoryId;
-    const [masterUtxo] = master.utxos;
+    // Branded model: the (n->hash) oracle is minted under the CONSUMER's own category. Deploy the stateful
+    // consumer and seed a sibling minting baton of that same category (held at a trivial OP_1 p2sh for the
+    // keeper) so the keeper can mint the pair without touching the consumer's master.
+    const artifact = compileString('contract B(){ function f(int bn, bytes32 h){ require(blockhash(bn) == h); } }');
+    const consumer = new Contract(artifact, [], { provider });
+    const { categoryId, extraUtxos } = await setupStatefulUtxos(provider, consumer, artifact.stateLayout!, {}, {
+      saltContract: true,
+      extraOutputs: () => [
+        { address: binToHex(MASTER_LBC), satoshis: 10000n, token: { nft: { capability: 'minting', commitment: '' } } },
+      ],
+    });
+    const [batonUtxo] = extraUtxos!;
 
-    const consumer = new Contract(
-      compileString('contract B(){ function f(int bn, bytes32 h){ require(blockhash(bn) == h); } }', { blockhashOracleCategory: cat }),
-      [], { provider },
-    );
     const updater = new BlockOracleUpdater({
-      contract: consumer, categoryId: '00'.repeat(32), keeperKey: alicePriv, rpc: fakeRpc(),
-      blockhashOracleCategory: cat,
+      contract: consumer, categoryId, keeperKey: alicePriv, rpc: fakeRpc(),
+      blockhashOracleCategory: categoryId,
       blockhashOracleMaster: {
-        utxo: masterUtxo,
+        utxo: batonUtxo,
         unlocker: { generateLockingBytecode: () => MASTER_LBC, generateUnlockingBytecode: () => MASTER_UNLOCK },
       },
     });
@@ -690,22 +630,9 @@ describe('blockhash keeper minting', () => {
     const mintTxid = await updater.mintBlockhashPair(n, H);
     expect(mintTxid).toMatch(/^[0-9a-f]{64}$/);
 
-    // The minted (n->hash) NFT lives at addr(n); a consumer co-spends it and reads blockhash(n).
-    const catBin = hexToBin(cat);
-    const addrN = blockhashOracleLockingBytecode(catBin, n);
-    const redeem = scriptToBytecode(buildBlockhashOracleCovenantScript(catBin, n));
-    const token = { category: cat, amount: 0n, nft: { capability: 'none' as const, commitment: binToHex(buildBlockhashCommitment(n, H)) } };
-    const [mintedUtxo] = await provider.getUtxosForLockingBytecode(addrN);
-    const contractUtxo = await provider.addUtxo(consumer.address, randomUtxo({ satoshis: 100000n }));
-    const readUnlock = scriptToBytecode([new Uint8Array(0), redeem]);
-
-    const tx = await new TransactionBuilder({ provider })
-      .addInput(contractUtxo, consumer.unlock.f(n, H))
-      .addInput(mintedUtxo, { generateLockingBytecode: () => addrN, generateUnlockingBytecode: () => readUnlock })
-      .addOutput({ to: consumer.address, amount: 99000n })
-      .addOutput({ to: addrN, amount: 1000n, token })
-      .setLocktime(Number(n))
-      .send();
+    // The minted (n->hash) NFT lives at addr_C(n); the consumer reads it via its block-layout slot.
+    const sc = StatefulContract.withCategory(consumer, categoryId);
+    const tx = await (sc as any).f(n, H).send();
     expect(tx.txid).toMatch(/^[0-9a-f]{64}$/);
   });
 });
@@ -758,11 +685,19 @@ describe('blockhash(n) stateful reader', () => {
     const provider = createTestProvider();
     const { n: height } = await allocHeight(provider);
     const n = BigInt(height); const H = hexToBin('aa'.repeat(32));
-    const { cat } = await seedOracleNft(provider, n, H); // the (n->hash) oracle NFT (its own category)
-    const artifact = compileString(BH_STATEFUL_SRC, { blockhashOracleCategory: cat });
+    const artifact = compileString(BH_STATEFUL_SRC);
     const contract = new Contract(artifact, [], { provider });
+    // The (n->hash) oracle is branded to the reader's OWN category: seed it under the same category as the master.
     const { categoryId } = await setupStatefulUtxos(
-      provider, contract, artifact.stateLayout!, { counter: 5n }, { saltContract: true },
+      provider, contract, artifact.stateLayout!, { counter: 5n },
+      {
+        saltContract: true,
+        extraOutputs: (cat) => [{
+          address: binToHex(blockhashOracleLockingBytecode(hexToBin(cat), n)),
+          satoshis: 1000n,
+          token: { nft: { capability: 'none', commitment: binToHex(buildBlockhashCommitment(n, H)) } },
+        }],
+      },
     );
 
     const sc = StatefulContract.withCategory(contract, categoryId);

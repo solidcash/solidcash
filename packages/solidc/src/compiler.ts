@@ -27,7 +27,7 @@ import DesugarNestedArrayWrite from './semantic/DesugarNestedArrayWrite.js';
 import DesugarReturnInLoop from './semantic/DesugarReturnInLoop.js';
 import LowerInlineAssembly from './semantic/LowerInlineAssembly.js';
 import CacheDynamicArrayInLoop from './semantic/CacheDynamicArrayInLoop.js';
-import IfConvertConditionalDelete from './semantic/IfConvertConditionalDelete.js';
+import IfConvertConditionalEntryOp from './semantic/IfConvertConditionalEntryOp.js';
 import SynthesizeBlockOracle from './semantic/SynthesizeBlockOracle.js';
 import SynthesizePublicGetters from './semantic/SynthesizePublicGetters.js';
 import expandModifiers from './semantic/ModifierExpansionTransformation.js';
@@ -192,7 +192,7 @@ function compileResolvedAst(ast: Ast, code: string, mergedCompilerOptions: Compi
 
   // A conditional `delete m[k]` inside a branch does not delete on the taken path (the covenant can't statically
   // tell it ran). If-convert it to an unconditional predicated write `m[k] = cond ? default : m[k]`.
-  ast = ast.accept(new IfConvertConditionalDelete()) as Ast;
+  ast = ast.accept(new IfConvertConditionalEntryOp()) as Ast;
 
   // Interface-typed state vars used as external-call targets -> synthesized address locals (reuses the
   // local-interface-var dispatch).
@@ -366,7 +366,7 @@ function compileReferencedContracts(
     singleAst = singleAst.accept(new InlineReturningStateHelpers()) as Ast;
     singleAst = singleAst.accept(new InlineStoragePointerCalls()) as Ast;
     singleAst = singleAst.accept(new CacheDynamicArrayInLoop()) as Ast;
-    singleAst = singleAst.accept(new IfConvertConditionalDelete()) as Ast;
+    singleAst = singleAst.accept(new IfConvertConditionalEntryOp()) as Ast;
     singleAst = singleAst.accept(new SynthesizeExternalAddressLocals()) as Ast;
     singleAst = singleAst.accept(new SynthesizeBlockOracle(compilerOptions.solidityImportCompat)) as Ast;
     singleAst = singleAst.accept(new SymbolTableTraversal(compilerOptions)) as Ast;

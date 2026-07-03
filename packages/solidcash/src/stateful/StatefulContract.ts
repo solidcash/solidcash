@@ -4321,12 +4321,20 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     }
 
     // Determine which entry slots the compiler expects to be deleted (no output)
+    // A delete inside a branch (`if(guard) return; delete m[k];`) is lowered to an existence-gated SOFT-DELETE
+    // WRITE by the compiler: the entry keeps an output (the type default when the delete ran, the preserved input
+    // otherwise) iff it exists. So a conditional delete slot is a WRITE here, not a hard delete - it is co-spent
+    // and recreated with the derived commitment, never dropped. Only an UNCONDITIONAL delete drops the entry.
     const entryDeleteSlots = new Set<number>();
+    const condSoftDeleteSlots = new Set<number>();
     if (entryAccesses) {
       for (let i = 0; i < entryAccesses.length; i++) {
-        if (entryAccesses[i].operations.includes('delete')) {
-          entryDeleteSlots.add(i);
-        }
+        if (!entryAccesses[i].operations.includes('delete')) continue;
+        const softDelete = abiFunction?.blockLayout?.slots.some(
+          (s) => s.kind === 'entry' && s.slotIndex === i && s.softDelete,
+        );
+        if (softDelete) condSoftDeleteSlots.add(i);
+        else entryDeleteSlots.add(i);
       }
     }
 
@@ -5029,9 +5037,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           }
         }
 
-        const entryOutputCount = entryNfts.filter(
-          (e) => (!e.exists || e.utxo) && !entryDeleteSlots.has(e.slotIndex),
-        ).length;
+        const entryOutputCount = entryNfts.filter((e) => {
+          // A conditional soft-delete slot produces an output only when the entry exists (existence-gated); an
+          // absent key is a no-op with no output.
+          if (condSoftDeleteSlots.has(e.slotIndex)) return !!e.exists;
+          return (!e.exists || e.utxo) && !entryDeleteSlots.has(e.slotIndex);
+        }).length;
         const transferCount = abiFunction?.transferCount ?? 0;
         const satoshiContainerOutputCount = transferCount > 0 ? 1 : 0;
         const tokenContainerTransferCount = abiFunction?.tokenContainerAccesses
@@ -5854,14 +5865,16 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       builder.setReturnEventOutput(this.categoryId, blob);
     }
 
-    // Auto-derived entry deletions: a function that runs `delete m[k]` produces no output for that entry, so the
-    // builder must not recreate it. Without this the entry is co-spent as an input AND re-emitted as an identical
-    // output - a no-op update, leaving the old value readable after the delete. The output-count layout above
-    // (entryOutputCount) already excludes these slots; mirror that on the builder so its outputs match. Scoped to
-    // UNCONDITIONAL deletes: a delete inside an if/else branch may or may not run, so its entry can't be
-    // statically dropped (conditional-branch delete round-trip is a separate, deeper derivation concern).
-    for (const slotIndex of entryDeleteSlots) {
-      if (!builder.isEntrySlotConditional(slotIndex)) builder.deleteEntry(slotIndex);
+    // Auto-derived entry deletions: an UNCONDITIONAL `delete m[k]` produces no output for that entry, so the
+    // builder must not recreate it (else it is co-spent AND re-emitted identically = a no-op, old value stays
+    // readable). entryDeleteSlots already excludes conditional (soft-delete) slots.
+    for (const slotIndex of entryDeleteSlots) builder.deleteEntry(slotIndex);
+
+    // Conditional soft-delete slots are WRITES when the entry exists (output = derived commitment), but on an
+    // absent key the covenant existence-gate emits no output; drop those on the builder so it makes none.
+    for (const slotIndex of condSoftDeleteSlots) {
+      const entry = entryNfts.find((e) => e.slotIndex === slotIndex);
+      if (!entry?.exists) builder.deleteEntry(slotIndex);
     }
 
     return builder;

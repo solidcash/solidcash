@@ -363,6 +363,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private preAllocatedTokenContainerTransfers: Set<number> = new Set(); // transferIndex
   private preAllocatedEntryWrites: Set<number> = new Set(); // slotIndex
   private preAllocatedEntryDeletes: Set<number> = new Set(); // slotIndex
+  // Conditional (branch/switch) delete slots lowered to an existence-gated SOFT-DELETE WRITE: the entry keeps an
+  // output (stable count) that is the type default on the taken branch or the preserved input otherwise. Tracked
+  // so emitEntryCovenantVerification existence-gates them and the artifact tags them for the SDK (write, not delete).
+  private condDeleteSlots: Set<number> = new Set();
   // Dynamic (chunk-backed) writes whose value+A$len slots were pushed before a conditional (branch/switch) with
   // the current value, so a conditionally-taken write replaces them in place (survives the branch) - by var name.
   private preAllocatedDynamicWrites: Set<string> = new Set();
@@ -1277,6 +1281,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.preAllocatedTokenContainerTransfers = new Set();
     this.preAllocatedEntryWrites = new Set();
     this.preAllocatedEntryDeletes = new Set();
+    this.condDeleteSlots = new Set();
     this.preAllocatedDynamicWrites = new Set();
     this.conditionalTransferIndices = new Set();
     this.conditionalEmitIndices = new Set();
@@ -1346,11 +1351,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // or may not run). Mark them so the SDK does not statically drop a guarded delete's entry output, which
       // would wrongly delete the entry on the not-taken path. branchOps/switchOps already aggregate nested arms.
       const conditionalEntrySlots = new Set<number>();
+      // A delete inside an if/else BRANCH is lowered to an existence-gated soft-delete WRITE (visitBranch +
+      // preAllocateCondDeleteWrite); the SDK derives those as writes, not drops. Marked separately so switch/loop
+      // conditional deletes keep the plain path.
+      const softDeleteEntrySlots = new Set<number>();
       const collectCondEntries = (n: Node | undefined): void => {
         if (!n) return;
         if (n instanceof BranchNode && n.branchOps) {
           n.branchOps.mappingWriteSlots.forEach((s) => conditionalEntrySlots.add(s));
-          n.branchOps.mappingDeleteSlots.forEach((s) => conditionalEntrySlots.add(s));
+          n.branchOps.mappingDeleteSlots.forEach((s) => { conditionalEntrySlots.add(s); softDeleteEntrySlots.add(s); });
         }
         if (n instanceof SwitchNode && n.switchOps) {
           n.switchOps.mappingWriteSlots.forEach((s) => conditionalEntrySlots.add(s));
@@ -1391,7 +1400,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           && origSlot.slotIndex >= minCounts.tcTransfers) conditional = true;
         if (origSlot.kind === 'entry' && origSlot.slotIndex !== undefined
           && conditionalEntrySlots.has(origSlot.slotIndex)) conditional = true;
-        slots.push({ ...origSlot, offset: blOffset++, ...(conditional && { conditional }) });
+        const softDelete = origSlot.kind === 'entry' && origSlot.slotIndex !== undefined
+          && softDeleteEntrySlots.has(origSlot.slotIndex);
+        slots.push({
+          ...origSlot, offset: blOffset++, ...(conditional && { conditional }), ...(softDelete && { softDelete }),
+        });
       }
       node.blockLayout = { blockSize: blOffset, slots };
     }
@@ -1621,6 +1634,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // Selfdestruct functions skip - all entries are destroyed
       if (!this.functionHasDelegatecall && hasEntryAccess && !isSelfdestruct) {
         this.emitReadOnlyEntryVerification(node);
+      }
+      // Conditional soft-delete entries: verified AFTER read-only preservation (derivation-order requirement).
+      if (!this.functionHasDelegatecall && this.condDeleteSlots.size > 0) {
+        this.emitConditionalDeleteVerification(node);
       }
       if (!this.functionHasDelegatecall && hasTransfers) {
         this.emitTransferCovenantVerification(node);
@@ -2182,12 +2199,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
     }
 
-    // Mapping deletes: just mark slots
+    // Conditional mapping deletes -> existence-gated soft-delete writes (see preAllocateCondDeleteWrite).
     for (const slotIndex of mappingDeleteSlots) {
-      if (!this.preAllocatedEntryDeletes.has(slotIndex)) {
-        this.pendingEntryDeletes.add(slotIndex);
-        this.preAllocatedEntryDeletes.add(slotIndex);
-      }
+      this.preAllocateCondDeleteWrite(slotIndex, locationData);
     }
 
     // 2. Evaluate condition and branch (existing logic)
@@ -2518,6 +2532,28 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.pushToStack(stackName);
     this.pendingStateWrites.set(key, stackName);
     this.preAllocatedStateWrites.add(key);
+  }
+
+  /**
+   * Pre-allocate a conditional (branch/switch) mapping delete as an existence-gated SOFT-DELETE WRITE. The entry
+   * keeps an output whether or not the deleting branch runs (stable output count), so an absent-key not-taken path
+   * never desyncs the layout. Seed key_enc = the CURRENT INPUT entry commitment and value_enc = empty, so if the
+   * branch is NOT taken the covenant reconstructs key_enc CAT value_enc = the input commitment = PRESERVE; a taken
+   * `delete` (visitMappingDelete) overwrites key_enc = key, value_enc = default = (key||default) = soft-delete.
+   * emitEntryCovenantVerification existence-gates the slot, so an absent entry produces no output.
+   */
+  private preAllocateCondDeleteWrite(slotIndex: number, locationData: SingleLocationData): void {
+    if (this.preAllocatedEntryWrites.has(slotIndex) || this.pendingEntryWrites.has(slotIndex)) return;
+    const keyStackName = `__entry_key_enc_${slotIndex}`;
+    const valueStackName = `__entry_value_enc_${slotIndex}`;
+    this.emitEntryInputIndex(slotIndex, locationData, 0);
+    this.emit(Op.OP_UTXOTOKENCOMMITMENT, locationData);
+    this.pushToStack(keyStackName);
+    this.emit(encodeInt(0n), locationData);
+    this.pushToStack(valueStackName);
+    this.pendingEntryWrites.set(slotIndex, { keyStackName, valueStackName });
+    this.preAllocatedEntryWrites.add(slotIndex);
+    this.condDeleteSlots.add(slotIndex);
   }
 
   visitTryCatch(node: TryCatchNode): Node {
@@ -3180,6 +3216,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.preAllocatedEntryWrites.add(slotIndex);
       }
     }
+    // Switch-case deletes keep the plain conditional-delete path (soft-delete lowering is branch-only for now).
     for (const slotIndex of mappingDeleteSlots) {
       if (!this.preAllocatedEntryDeletes.has(slotIndex)) {
         this.pendingEntryDeletes.add(slotIndex);
@@ -8909,7 +8946,33 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   visitMappingDelete(node: MappingDeleteNode): Node {
     const slotIndex = node.entrySlotIndex;
-    // Mark slot for deletion - covenant verification will not verify output for this slot
+    if (this.condDeleteSlots.has(slotIndex)) {
+      // Conditional (branch/switch) delete: overwrite the pre-allocated soft-delete-write slots with (key,
+      // default) so this taken branch produces output = (key||default); a not-taken branch leaves key_enc = the
+      // input commitment (preserve). Mirrors visitMappingAssign's pre-allocated write path with value = default.
+      const collection = node.collection!;
+      const locationData = { location: node.location, positionHint: PositionHint.END };
+      const allKeyTypes = collection.allKeyTypes;
+      for (let i = 0; i < node.keys.length; i++) {
+        node.keys[i] = this.visit(node.keys[i]);
+        this.emitPushdataEncode(allKeyTypes[i], locationData);
+        if (i > 0) {
+          this.emit(Op.OP_CAT, locationData);
+          this.popFromStack(2);
+          this.pushToStack('(value)');
+        }
+      }
+      this.emitReplace(this.getStackIndex(`__entry_key_enc_${slotIndex}`), node);
+      this.popFromStack();
+
+      this.emitDefaultValue(locationData, collection.innermostValueType);
+      this.pushToStack('(value)');
+      this.emitPushdataEncode(collection.innermostValueType, locationData);
+      this.emitReplace(this.getStackIndex(`__entry_value_enc_${slotIndex}`), node);
+      this.popFromStack();
+      return node;
+    }
+    // Unconditional delete - covenant verification will not verify output for this slot.
     this.pendingEntryDeletes.add(slotIndex);
     return node;
   }
@@ -9232,7 +9295,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     // 1. Verify output commitments for WRITTEN (non-deleted) entries
     for (const [slotIdx, writeInfo] of this.pendingEntryWrites) {
-      if (this.pendingEntryDeletes.has(slotIdx)) continue;
+      if (this.pendingEntryDeletes.has(slotIdx) || this.condDeleteSlots.has(slotIdx)) continue;
 
       // Reconstruct expected commitment: key_enc OP_CAT value_enc
       const keyStackIdx = this.getStackIndex(writeInfo.keyStackName);
@@ -9261,7 +9324,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     // 2. Verify output token category base matches master for written (non-deleted) entry outputs
     for (const [slotIdx] of this.pendingEntryWrites) {
-      if (this.pendingEntryDeletes.has(slotIdx)) continue;
+      if (this.pendingEntryDeletes.has(slotIdx) || this.condDeleteSlots.has(slotIdx)) continue;
 
       // Output category base matches master's
       this.emitEntryOutputIndex(slotIdx, locationData, 0);
@@ -9281,7 +9344,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // 3. Verify output locking bytecode for WRITTEN (non-deleted) entry outputs
     // Construct the expected P2SH32 locking bytecode at runtime (same pattern as event verification)
     for (const [slotIdx] of this.pendingEntryWrites) {
-      if (this.pendingEntryDeletes.has(slotIdx)) continue;
+      if (this.pendingEntryDeletes.has(slotIdx) || this.condDeleteSlots.has(slotIdx)) continue;
 
       const entryAccess = this.entrySlots[slotIdx];
       const collectionHash = computeCollectionHash(entryAccess.collectionSignature);
@@ -9309,14 +9372,95 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.popFromStack(2);
     }
 
-    // 4. Clean up pending entry write values from the stack
-    for (const [, writeInfo] of this.pendingEntryWrites) {
+    // 4. Clean up pending entry write values from the stack. Conditional soft-delete slots are verified LATER
+    // (emitConditionalDeleteVerification, after read-only preservation) so their key_enc/value_enc stay for now.
+    for (const [slotIdx, writeInfo] of this.pendingEntryWrites) {
+      if (this.condDeleteSlots.has(slotIdx)) continue;
       const keyIdx = this.getStackIndex(writeInfo.keyStackName);
       this.emit(encodeInt(BigInt(keyIdx)), locationData);
       this.emit(Op.OP_ROLL, locationData);
       this.emit(Op.OP_DROP, locationData);
       this.removeFromStack(keyIdx);
 
+      const valIdx = this.getStackIndex(writeInfo.valueStackName);
+      this.emit(encodeInt(BigInt(valIdx)), locationData);
+      this.emit(Op.OP_ROLL, locationData);
+      this.emit(Op.OP_DROP, locationData);
+      this.removeFromStack(valIdx);
+    }
+  }
+
+  /**
+   * Verify conditional soft-delete entry slots (a branch/switch `delete m[k]` lowered to a soft-delete write).
+   * EXISTENCE-GATED: an absent entry (a not-taken guard-return on an absent key) has no output. A present entry's
+   * output must equal the reconstructed commitment - the input commitment (preserve) when the delete branch did
+   * not run, or (key||default) when it did. Runs AFTER emitReadOnlyEntryVerification so the derivation probe
+   * extracts the always-passing read-only preservations BEFORE it may fail on an un-derived soft-delete output
+   * (else the extracted commitments would be off by one). Then cleans up the slots' key_enc/value_enc.
+   */
+  private emitConditionalDeleteVerification(node: FunctionDefinitionNode): void {
+    if (this.condDeleteSlots.size === 0) return;
+    const locationData = { location: node.body.location, positionHint: PositionHint.END };
+    for (const slotIdx of this.condDeleteSlots) {
+      const writeInfo = this.pendingEntryWrites.get(slotIdx)!;
+      this.emitSlotExistsCheck('entry', slotIdx, locationData);
+      this.emit(Op.OP_IF, locationData);
+
+      // (a) output commitment == key_enc CAT value_enc
+      this.emit(encodeInt(BigInt(this.getStackIndex(writeInfo.keyStackName))), locationData);
+      this.emit(Op.OP_PICK, locationData);
+      this.pushToStack('(value)');
+      this.emit(encodeInt(BigInt(this.getStackIndex(writeInfo.valueStackName))), locationData);
+      this.emit(Op.OP_PICK, locationData);
+      this.pushToStack('(value)');
+      this.emit(Op.OP_CAT, locationData);
+      this.popFromStack(2);
+      this.pushToStack('(value)');
+      this.emitEntryOutputIndex(slotIdx, locationData, 0);
+      this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, locationData);
+      this.pushToStack('(value)');
+      this.emit(Op.OP_EQUALVERIFY, locationData);
+      this.popFromStack(2);
+
+      // (b) output category base == master + mutable capability
+      this.emitEntryOutputIndex(slotIdx, locationData, 0);
+      this.emit(Op.OP_OUTPUTTOKENCATEGORY, locationData);
+      this.emitVerifyCatBaseEqMaster(locationData);
+      this.emitEntryOutputIndex(slotIdx, locationData, 0);
+      this.emit(Op.OP_OUTPUTTOKENCATEGORY, locationData);
+      this.emit(encodeInt(32n), locationData);
+      this.emit(Op.OP_SPLIT, locationData);
+      this.emit(Op.OP_NIP, locationData);
+      this.emit(new Uint8Array([0x01]), locationData);
+      this.emit(Op.OP_EQUALVERIFY, locationData);
+
+      // (c) output locking bytecode == the entry NFT covenant
+      const entryAccess = this.entrySlots[slotIdx];
+      const collectionHash = computeCollectionHash(entryAccess.collectionSignature);
+      this.emitMasterInputIndex(locationData);
+      this.emit(Op.OP_UTXOTOKENCATEGORY, locationData);
+      this.emit(encodeInt(32n), locationData);
+      this.emit(Op.OP_SPLIT, locationData);
+      this.emit(Op.OP_DROP, locationData);
+      this.pushToStack('(value)');
+      this.emitP2sh32FromCovenant((cat) => buildEntryNftCovenantScript(cat, collectionHash), locationData);
+      this.emitEntryOutputIndex(slotIdx, locationData, 0);
+      this.emit(Op.OP_OUTPUTBYTECODE, locationData);
+      this.pushToStack('(value)');
+      this.emit(Op.OP_EQUALVERIFY, locationData);
+      this.popFromStack(2);
+
+      this.emit(Op.OP_ENDIF, locationData);
+    }
+
+    // Clean up the soft-delete slots' key_enc/value_enc.
+    for (const slotIdx of this.condDeleteSlots) {
+      const writeInfo = this.pendingEntryWrites.get(slotIdx)!;
+      const keyIdx = this.getStackIndex(writeInfo.keyStackName);
+      this.emit(encodeInt(BigInt(keyIdx)), locationData);
+      this.emit(Op.OP_ROLL, locationData);
+      this.emit(Op.OP_DROP, locationData);
+      this.removeFromStack(keyIdx);
       const valIdx = this.getStackIndex(writeInfo.valueStackName);
       this.emit(encodeInt(BigInt(valIdx)), locationData);
       this.emit(Op.OP_ROLL, locationData);

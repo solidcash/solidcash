@@ -102,6 +102,8 @@ export interface BlockLayoutSlot {
   slotIndex?: number;       // for entry/tokenContainer/transfer/event/tcTransfer
   nftIndex?: number;        // for dataNft/readOnlyDataNft
   conditional?: boolean;    // true if slot may be inactive (in if/else branch)
+  softDelete?: boolean;     // entry: a branch delete lowered to an existence-gated soft-delete write (SDK: derive
+                            // as a write, not a drop)
 }
 
 /** 1:1 input/output block layout for a stateful function. */

@@ -3468,19 +3468,27 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // resolve addr(n) and co-spend the (n->hash) UTXO. Computed n (not an identifier) is not recorded;
       // the consumer wires it via resolveBlockhashCoSpend. The SDK only acts on names that are params.
       const nArg = node.parameters[0];
+      // Each DISTINCT identifier-arg n rides its OWN consecutive oracle slot; same n -> same slot (dedup by
+      // name). The read ordinal = its position in blockhashReads (the base slot + ordinal = its input index).
+      let readOrdinal = 0;
       if (nArg instanceof IdentifierNode) {
         const reads = (this.currentFunction.blockhashReads ??= []);
         if (!reads.includes(nArg.name)) reads.push(nArg.name);
+        readOrdinal = reads.indexOf(nArg.name);
       }
       node.parameters[0] = this.visit(node.parameters[0]); // [n]
       // The co-spend input index comes from the synthesized __internal__blockhashInputIndex param (the SDK
-      // locates the oracle co-spend and fills it), NOT OP_TXINPUTCOUNT OP_1SUB - the last input belongs to
-      // whoever the builder appended last, which breaks under cross-contract composition. Depth is computed
-      // with [n] on top; the DUP/CLTV/DROP below is net-zero so the stack is still [n] at the OP_PICK.
+      // locates the oracle co-spend and fills it with the FIRST slot's index), NOT OP_TXINPUTCOUNT OP_1SUB -
+      // the last input belongs to whoever the builder appended last, which breaks under cross-contract
+      // composition. Depth is computed with [n] on top; the DUP/CLTV/DROP + optional ADD below are net-zero so
+      // the stack is still [n] under the picked index at the OP_UTXOTOKENCATEGORY.
       const idxDepth = this.getStackIndex('__internal__blockhashInputIndex');
       this.emit([
         Op.OP_DUP, Op.OP_CHECKLOCKTIMEVERIFY, Op.OP_DROP, // require(tx.time >= n), [n]
-        encodeInt(BigInt(idxDepth)), Op.OP_PICK, // co-spend input index (composition-safe), [n, idx]
+        encodeInt(BigInt(idxDepth)), Op.OP_PICK, // base co-spend input index (composition-safe), [n, base]
+      ], loc);
+      if (readOrdinal > 0) this.emit([encodeInt(BigInt(readOrdinal)), Op.OP_ADD], loc); // base + ordinal -> [n, idx]
+      this.emit([
         Op.OP_DUP, Op.OP_UTXOTOKENCATEGORY, // [n, idx, oracleCategory]
       ], loc);
       this.emitVerifyCatBaseEqMaster(loc); // base(oracle category) == base(contract's own category) -> [n, idx]

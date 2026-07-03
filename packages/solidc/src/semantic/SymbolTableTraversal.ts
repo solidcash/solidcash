@@ -6050,10 +6050,12 @@ export default class SymbolTableTraversal extends AstTraversal {
       }
     }
 
-    // blockhash(n): the (n->hash) oracle co-spend - a read-only, self-preserving 1:1 input/output slot. The
-    // SDK fills __internal__blockhashInputIndex with this slot's absolute index (master input index + offset).
+    // blockhash(n): each distinct identifier-arg read rides its OWN consecutive (n->hash) oracle co-spend -
+    // a read-only, self-preserving 1:1 input/output slot. The SDK fills __internal__blockhashInputIndex with
+    // the FIRST slot's absolute index (master input index + offset); codegen reads input[base + read-ordinal].
     if (node.usesBlockhash) {
-      slots.push({ kind: 'blockhashOracle', offset: offset++ });
+      const bhSlots = Math.max(1, node.blockhashSlotCount ?? 0);
+      for (let i = 0; i < bhSlots; i++) slots.push({ kind: 'blockhashOracle', offset: offset++ });
     }
 
     // Reserve offset space for outState groups (between reads and entries)

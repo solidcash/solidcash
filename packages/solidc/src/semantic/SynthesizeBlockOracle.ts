@@ -68,6 +68,8 @@ export default class SynthesizeBlockOracle extends AstTraversal {
   // maintain the project-global (n->hash) oracle (docs/block-and-transaction-properties.md).
   usesBlockhash = false;
   private fnUsesBlockhash = false;
+  // Distinct identifier-arg blockhash reads in the current function - each rides its own oracle slot.
+  private fnBlockhashArgs = new Set<string>();
   private warnedShims = new Set<string>();
 
   constructor(private readonly solidityImportCompat = false) {
@@ -94,6 +96,9 @@ export default class SynthesizeBlockOracle extends AstTraversal {
     if (node.identifier.name === GlobalFunction.BLOCKHASH) {
       this.usesBlockhash = true;
       this.fnUsesBlockhash = true;
+      // A direct-identifier n gets its own consecutive oracle slot; codegen dedups by name (same n -> one slot).
+      const nArg = node.parameters[0];
+      if (nArg instanceof IdentifierNode) this.fnBlockhashArgs.add(nArg.name);
     }
     return super.visitFunctionCall(node);
   }
@@ -102,10 +107,16 @@ export default class SynthesizeBlockOracle extends AstTraversal {
   // it has validated the user params (the param uses the reserved __internal__ prefix).
   visitFunctionDefinition(node: FunctionDefinitionNode): Node {
     const prev = this.fnUsesBlockhash;
+    const prevArgs = this.fnBlockhashArgs;
     this.fnUsesBlockhash = false;
+    this.fnBlockhashArgs = new Set();
     const result = super.visitFunctionDefinition(node) as FunctionDefinitionNode;
-    if (this.fnUsesBlockhash) result.usesBlockhash = true;
+    if (this.fnUsesBlockhash) {
+      result.usesBlockhash = true;
+      result.blockhashSlotCount = this.fnBlockhashArgs.size;
+    }
     this.fnUsesBlockhash = prev;
+    this.fnBlockhashArgs = prevArgs;
     return result;
   }
 

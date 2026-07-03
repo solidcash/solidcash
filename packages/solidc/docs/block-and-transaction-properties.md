@@ -321,8 +321,10 @@ category, plus `commitment.n == n` + `require(tx.time >= n)`, returning the 32-b
 The hardened `(n->hash)` covenant (self-pin + self-preserving recreate + CLTV `n+256` wipe), the
 `artifact.usesBlockhash` marker + `abi.blockhashReads`, and keccak side-car coexistence are in place and
 e2e-green. Absent reads error by design (s11.2), not EVM's `bytes32(0)`. **`blockhash(n)` is
-feature-complete** for stateful readers (single read per tx exercised end-to-end; two-slot co-spend in one
-tx is compile-recorded but not yet runtime-wired).
+feature-complete** for stateful readers, including **multiple distinct reads per tx**: each distinct
+identifier-arg `n` rides its OWN consecutive `blockhashOracle` block-layout slot (the k-th read reads
+`input[base + k]`; `blockhashSlotCount` on the fn drives the slot allocation, codegen adds the read ordinal,
+and the SDK co-spends 1:1 with `blockhashReads`). Same `n` read twice shares one slot (deduped by name).
 
 
 These are **functions** (runtime argument), not the 0-param `block.*` properties, so they lower as

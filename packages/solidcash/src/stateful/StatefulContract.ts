@@ -3279,13 +3279,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         const bhCategory = this.categoryId; // oracle branded to the contract's own category (docs s3)
         if (bhCategory) {
           const bhVisible = abiFunction.inputs.filter((i) => !i.name.startsWith('__internal__'));
-          const bhSeen = new Set<string>();
+          // 1:1 with blockhashReads (deduped by name in codegen) so the probe's slots match the real tx.
           for (const paramName of abiFunction.blockhashReads) {
             const pIdx = bhVisible.findIndex((i) => i.name === paramName);
             if (pIdx < 0) continue;
             const bn = args[pIdx];
-            if (typeof bn !== 'bigint' || bhSeen.has(String(bn))) continue;
-            bhSeen.add(String(bn));
+            if (typeof bn !== 'bigint') continue;
             const cs = await resolveBlockhashCoSpend(this.inner.provider, bhCategory, bn);
             if (cs) {
               bhProbeCoSpends.push({
@@ -4569,13 +4568,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       // The (n->hash) oracle is branded to the contract's OWN category (docs s3), not a compile option.
       const bhCategory = this.categoryId;
       const bhVisible = abiFunction.inputs.filter((i) => !i.name.startsWith('__internal__'));
-      const bhSeen = new Set<string>();
+      // One co-spend per distinct blockhashReads entry (already deduped by name in codegen), placed 1:1 at the
+      // consecutive blockhashOracle slots so co-spend[k] lands at the slot the k-th read reads (base + k).
       for (const paramName of abiFunction.blockhashReads) {
         const pIdx = bhVisible.findIndex((i) => i.name === paramName);
         if (pIdx < 0) continue;
         const bn = args[pIdx];
-        if (typeof bn !== 'bigint' || bhSeen.has(String(bn))) continue;
-        bhSeen.add(String(bn));
+        if (typeof bn !== 'bigint') continue;
         const cospend = await resolveBlockhashCoSpend(this.inner.provider, bhCategory, bn);
         if (!cospend) throw new Error(`blockhash(${bn}): no (n->hash) oracle UTXO at addr(${bn})`);
         blockhashCoSpendUtxos.push({ ...cospend.utxo, unlocker: cospend.unlocker });

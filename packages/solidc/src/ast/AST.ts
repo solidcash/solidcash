@@ -241,6 +241,10 @@ export class FunctionDefinitionNode extends Node implements Named {
   // Set by SynthesizeBlockOracle when the function reads blockhash(n); SymbolTable then injects the hidden
   // __internal__blockhashInputIndex param (the co-spend's input index) so the read survives composition.
   usesBlockhash?: boolean;
+  // Distinct identifier-arg blockhash(n) reads in the function (counted by SynthesizeBlockOracle before
+  // codegen). Each rides its OWN consecutive blockhashOracle block-layout slot; the k-th read reads
+  // input[base + k]. SymbolTable allocates this many slots (min 1 when usesBlockhash).
+  blockhashSlotCount?: number;
   modifiers: FunctionModifier[] = [];
   customModifiers: CustomModifierInvocation[] = [];
   returnTypes: Type[] = [];

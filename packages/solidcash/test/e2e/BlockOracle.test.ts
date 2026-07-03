@@ -580,16 +580,36 @@ describe('blockhash(n) auto-injection (StatefulContract)', () => {
     await expect((sc as any).f(BigInt(n), H).send()).rejects.toThrow(/no \(n->hash\) oracle UTXO/i);
   });
 
-  // Two reads in one reader: the compiler records BOTH params feeding blockhash and forces the contract
-  // stateful. (Runtime co-spend of two distinct (n->hash) oracle slots in one tx is not yet wired; single-read
-  // is the exercised path - the runtime e2e + stateful reader tests cover it.)
-  it('records both params feeding blockhash and forces the reader stateful', () => {
+  // Two reads in one reader, each to its own n: each DISTINCT identifier-arg read rides its OWN consecutive
+  // blockhashOracle block-layout slot (the k-th read reads input[base + k]); both oracles (same branded
+  // category) are co-spent + recreated read-only, each matched to its own commitment.n.
+  it('reads two blockhashes, each matched to its own n', async () => {
+    const provider = createTestProvider();
+    const a = await allocHeight(provider);
+    const b = await allocHeight(provider);
+    const n1 = BigInt(a.n); const n2 = BigInt(b.n);
+    const H1 = hexToBin('11'.repeat(32)); const H2 = hexToBin('22'.repeat(32));
     const src = 'contract B(){ function f(int x, bytes32 hx, int y, bytes32 hy){'
       + ' require(blockhash(x)==hx); require(blockhash(y)==hy); } }';
     const artifact = compileString(src);
-    const f = artifact.abi.find((fn) => fn.name === 'f');
-    expect(f?.blockhashReads).toEqual(['x', 'y']);
-    expect(artifact.stateLayout).toBeDefined(); // blockhash forces stateful (branded oracle needs a master)
+    expect(artifact.abi.find((fn) => fn.name === 'f')?.blockhashReads).toEqual(['x', 'y']);
+    const contract = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(provider, contract, artifact.stateLayout!, {}, {
+      saltContract: true,
+      extraOutputs: (cat) => [
+        {
+          address: binToHex(blockhashOracleLockingBytecode(hexToBin(cat), n1)), satoshis: 1000n,
+          token: { nft: { capability: 'none', commitment: binToHex(buildBlockhashCommitment(n1, H1)) } },
+        },
+        {
+          address: binToHex(blockhashOracleLockingBytecode(hexToBin(cat), n2)), satoshis: 1000n,
+          token: { nft: { capability: 'none', commitment: binToHex(buildBlockhashCommitment(n2, H2)) } },
+        },
+      ],
+    });
+    const sc = StatefulContract.withCategory(contract, categoryId);
+    const tx = await (sc as any).f(n1, H1, n2, H2).send();
+    expect(tx.txid).toMatch(/^[0-9a-f]{64}$/);
   });
 });
 

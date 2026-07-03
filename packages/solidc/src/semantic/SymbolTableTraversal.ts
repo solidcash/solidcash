@@ -3413,7 +3413,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         this.localKeyDefs.set(n.name, n.expression);
       }
       for (const k of Object.keys(n)) {
-        if (k === 'type' || k === 'symbolTable' || k === 'location') continue;
+        if (k === 'type' || k === 'symbolTable' || k === 'location' || k === 'resolvedFunction') continue;
         const v = (n as unknown as Record<string, unknown>)[k];
         if (v instanceof Node) walk(v);
         else if (Array.isArray(v)) for (const it of v) if (it instanceof Node) walk(it);
@@ -3458,7 +3458,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         deleteOrder.set(`${n.collection.name}:${keyParams.join(':')}`, order++);
       }
       for (const k of Object.keys(n)) {
-        if (k === 'type' || k === 'symbolTable' || k === 'location') continue;
+        if (k === 'type' || k === 'symbolTable' || k === 'location' || k === 'resolvedFunction') continue;
         const v = (n as unknown as Record<string, unknown>)[k];
         if (v instanceof Node) scan(v);
         else if (Array.isArray(v)) for (const it of v) if (it instanceof Node) scan(it);

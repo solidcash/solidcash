@@ -1926,3 +1926,20 @@ describe('function-type mutability + new bytes(constant)', () => {
     expect(a.contractName).toBe('C');
   });
 });
+
+// `new C(args)` where C uses a Solidity `constructor(args)` (params on constructorDef, not the solidcash
+// contract-level parameter list) - the deploy arg-count + arg-type checks now read the effective params.
+describe('new C(args) with a Solidity constructor', () => {
+  it('type-checks constructor args from constructorDef', () => {
+    const a = compileString(
+      'contract Foo { address public owner; constructor(address _owner) { owner = _owner; } }'
+      + ' contract Bar { Foo foo; constructor() { foo = new Foo(msg.sender); } function f() public {} }',
+      { solidityImportCompat: true },
+    );
+    expect(a.contractName).toBe('Bar');
+    expect(() => compileString(
+      'contract Foo { constructor(address a) {} } contract Bar { Foo foo; constructor() { foo = new Foo(); } function f() public {} }',
+      { solidityImportCompat: true },
+    )).toThrow(/constructor argument/i);
+  });
+});

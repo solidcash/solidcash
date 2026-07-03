@@ -4208,8 +4208,12 @@ export default class SymbolTableTraversal extends AstTraversal {
         throw new DeployValueInNonStatefulError(node, contract.name);
       }
 
-      if (node.parameters.length !== contract.parameters.length) {
-        throw new ContractConstructorArgCountError(node, contract.name, contract.parameters.length, node.parameters.length);
+      // Solidity `constructor(args)` puts the deploy params on constructorDef, not the (solidcash) contract-
+      // level parameters; use whichever carries them.
+      const expectedCtorParams = contract.parameters.length > 0
+        ? contract.parameters : (contract.constructorDef?.parameters ?? []);
+      if (node.parameters.length !== expectedCtorParams.length) {
+        throw new ContractConstructorArgCountError(node, contract.name, expectedCtorParams.length, node.parameters.length);
       }
 
       // If deploying a stateful contract, store deployment metadata

@@ -1372,7 +1372,11 @@ export default class TypeCheckTraversal extends AstTraversal {
       // Contract deployment: type-check constructor args
       node.parameters = this.visitList(node.parameters);
       const parameterTypes = node.parameters.map((p) => p.type!);
-      const expectedTypes = node.referencedContract.parameters.map((p) => p.type);
+      // Solidity `constructor(args)` carries the deploy params on constructorDef, not the (solidcash)
+      // contract-level parameters; use whichever has them.
+      const ctorParams = node.referencedContract.parameters.length > 0
+        ? node.referencedContract.parameters : (node.referencedContract.constructorDef?.parameters ?? []);
+      const expectedTypes = ctorParams.map((p) => p.type);
       expectParameters(node, parameterTypes, expectedTypes);
 
       // Deploy-then-call fold: type the per-field genesis expressions (param-substituted clones of the

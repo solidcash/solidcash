@@ -56,7 +56,7 @@ function toTokenAwareAddress(address: string): string {
   if (isHex(address)) return address;
   const decoded = cashAddressToLockingBytecode(address);
   if (typeof decoded === 'string') return address;
-  const prefix = address.includes(':') ? address.split(':')[0] : 'bitcoincash';
+  const prefix = (address.includes(':') ? address.split(':')[0] : 'bitcoincash') as 'bitcoincash' | 'bchtest' | 'bchreg';
   const encoded = lockingBytecodeToCashAddress({ bytecode: decoded.bytecode, prefix, tokenSupport: true });
   return typeof encoded === 'string' ? address : encoded.address;
 }

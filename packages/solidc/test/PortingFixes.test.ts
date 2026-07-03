@@ -1905,3 +1905,24 @@ describe('unnamed custom error parameters', () => {
     expect(a.contractName).toBe('C');
   });
 });
+
+// Function-type params may carry pure/view mutability (`function(uint256) pure returns (uint256)`); and
+// `new bytes(n)` with a constant length folds to an n-zero-byte buffer (dynamic length has no BCH analogue).
+describe('function-type mutability + new bytes(constant)', () => {
+  it('parses a pure/view function-type parameter', () => {
+    const a = compileString(
+      'contract C { function h(function(uint256) view returns (uint256) g) internal pure {}'
+      + ' function f() public pure returns (uint256) { return 1; } }',
+      { solidityImportCompat: true },
+    );
+    expect(a.contractName).toBe('C');
+  });
+
+  it('folds new bytes(3) to a 3-zero-byte buffer', () => {
+    const a = compileString(
+      'contract C { function f() public pure returns (uint256) { bytes memory b = new bytes(3); return b.length; } }',
+      { solidityImportCompat: true },
+    );
+    expect(a.contractName).toBe('C');
+  });
+});

@@ -1884,6 +1884,20 @@ export default class AstBuilder
     return node;
   }
 
+  // `new bytes(n)`: a zero-filled dynamic byte buffer. A constant length folds to an n-zero-byte literal;
+  // a dynamic length would need runtime buffer allocation (no BCH analogue) - error clearly.
+  visitNewDynamicBytes(ctx: any): ExpressionNode {
+    const size = this.visit(ctx.expression()) as ExpressionNode;
+    if (size instanceof IntLiteralNode && size.value >= 0n) {
+      const lit = new HexLiteralNode(new Uint8Array(Number(size.value)));
+      lit.type = new BytesType();
+      lit.location = Location.fromCtx(ctx);
+      return lit;
+    }
+    throw new Error('new bytes(n) with a non-constant length has no BCH analogue (no dynamic buffer '
+      + 'allocation); use a fixed bytesN or build the value from known parts.');
+  }
+
   visitTupleIndexOp(ctx: TupleIndexOpContext): TupleIndexOpNode {
     const tuple = this.visit(ctx.expression());
     const index = parseInt(ctx._index.text, 10);

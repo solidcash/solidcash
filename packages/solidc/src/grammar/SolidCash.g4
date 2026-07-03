@@ -653,6 +653,7 @@ expression
     | functionCall # FunctionCallExpression
     | 'new' Identifier callOptions? expressionList #Instantiation
     | 'new' typeName ('[' ']')+ '(' expression ')' # NewArray
+    | 'new' UnboundedBytes '(' expression ')' # NewDynamicBytes
     | 'type' '(' typeName ')' '.' Identifier # TypeIntrospection
     | 'abi.encode' expressionList # AbiEncode
     | 'abi.encodePacked' expressionList # AbiEncodePacked
@@ -755,7 +756,7 @@ typeName
     | 'ufixed'
     | BoundedSignedFixed
     | BoundedUnsignedFixed
-    | 'function' '(' (typeName (',' typeName)*)? ')' ('returns' '(' typeName (',' typeName)* ')')?
+    | 'function' '(' (typeName (',' typeName)*)? ')' ('pure' | 'view')* ('returns' '(' typeName (',' typeName)* ')')?
     | Identifier '.' Identifier
     | Identifier
     ;

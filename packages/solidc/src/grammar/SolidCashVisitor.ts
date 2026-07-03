@@ -70,6 +70,7 @@ import { AddressMethodStatementContext } from "./SolidCashParser.js";
 import { SelfdestructStatementContext } from "./SolidCashParser.js";
 import { EmitStatementContext } from "./SolidCashParser.js";
 import { AssignmentStatementContext } from "./SolidCashParser.js";
+import { LvMemberContext } from "./SolidCashParser.js";
 import { MappingDeleteStatementContext } from "./SolidCashParser.js";
 import { VariableDefinitionContext } from "./SolidCashParser.js";
 import { TupleAssignmentContext } from "./SolidCashParser.js";
@@ -609,6 +610,12 @@ export default class SolidCashVisitor<Result> extends ParseTreeVisitor<Result> {
 	 * @return the visitor result
 	 */
 	visitAssignmentStatement?: (ctx: AssignmentStatementContext) => Result;
+	/**
+	 * Visit a parse tree produced by `SolidCashParser.lvMember`.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	visitLvMember?: (ctx: LvMemberContext) => Result;
 	/**
 	 * Visit a parse tree produced by `SolidCashParser.mappingDeleteStatement`.
 	 * @param ctx the parse tree

@@ -1825,3 +1825,17 @@ describe('Low-level call on a struct-field / array-element address receiver', ()
     expect(a.bytecode.length).toBeGreaterThan(0);
   });
 });
+
+// `.value` as a writable struct field: `.value` lexes as one DotValue token (for msg.value / {value:} call
+// options), so it was rejected in lvalue member position (reads already worked). A new `lvMember` grammar
+// rule accepts it. Common in OZ StorageSlot (`AddressSlot.value`), ERC checkpoints, etc.
+describe('`.value` as a writable struct field name', () => {
+  it('compiles `s.value = x` / `s.value += x` (assignment + compound)', () => {
+    const a = compileString(
+      'contract C { struct S { uint256 value; } function f(uint256 x) public pure returns (uint256) {'
+      + ' S memory s; s.value = x; s.value += 1; return s.value; } }',
+      { solidityImportCompat: true },
+    );
+    expect(a.contractName).toBe('C');
+  });
+});

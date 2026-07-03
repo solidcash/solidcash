@@ -2312,11 +2312,13 @@ export default class AstBuilder
   // numKeys-0 lvalue is always `this.<scalar>` (the bare-scalar form lives in assignStatement).
   visitAssignmentStatement(ctx: AssignmentStatementContext): StatementNode {
     const isThis = ctx.getText().startsWith('this.');
-    const ids = ctx.Identifier_list();
-    const rawName = ids[0].getText();
-    const nameLoc = Location.fromToken(ids[0].symbol);
-    const hasMember = ids.length > 1;
-    const fieldName = hasMember ? ids[1].getText() : undefined;
+    const baseIdent = ctx.Identifier();
+    const rawName = baseIdent.getText();
+    const nameLoc = Location.fromToken(baseIdent.symbol);
+    // lvMember is `.field` or the `.value` soft-keyword token; extract the field name for each.
+    const members = ctx.lvMember_list().map((m) => (m.Identifier() ? m.Identifier().getText() : 'value'));
+    const hasMember = members.length > 0;
+    const fieldName = hasMember ? members[0] : undefined;
     const op = ctx._op.text;
     // `lvalue++` / `lvalue--`: no RHS expression, so every parsed expression is an index key (not a value).
     const isIncDec = op === '++' || op === '--';
@@ -2363,7 +2365,7 @@ export default class AstBuilder
     // index, no alias). Struct fields have no in-place write codegen, so rebuild the base value from the
     // innermost field outward and assign it back: `base = T(base.g0, .., (g==f1 ? <rebuilt f1> : base.g), ..)`.
     // Recurses for nested chains (`b.a.x = v`, `this.d.a.x = v`).
-    const memberChain = ids.slice(1).map((id) => id.getText());
+    const memberChain = members;
     const baseStructT = (memberChain.length >= 1 && keyCtxs.length === 0 && !this.storageAliases.has(rawName))
       ? (isThis ? this.stateStructVars.get(rawName) : this.localStructTypes.get(rawName))
       : undefined;

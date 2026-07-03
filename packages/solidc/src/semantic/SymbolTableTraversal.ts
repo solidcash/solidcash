@@ -1090,15 +1090,21 @@ export default class SymbolTableTraversal extends AstTraversal {
       this.collectEntryAccesses(node.body, entryAccessMap);
 
       if (entryAccessMap.size > 0) {
-        // Assign sequential slot indices
+        // Assign slot indices with written entries (write / read-write / delete) before pure-read entries. A
+        // pure-read slot at a LOWER index than a written slot desyncs the covenant vs the SDK: an absent read-only
+        // entry emits no output-commitment verification, so the derivation's positional commitment extraction
+        // (i-th commitment -> slot i) misassigns the written entry's commitment. Ordering writes first keeps the
+        // written slots dense from index 0, matching extraction. Stable within each group (access order preserved).
+        const infos = [...entryAccessMap.values()];
+        const isWritten = (info: EntryAccessInfo): boolean => info.operations.includes('write')
+          || info.operations.includes('delete');
+        const ordered = [...infos.filter(isWritten), ...infos.filter((i) => !isWritten(i))];
         let slotIndex = 0;
-        for (const info of entryAccessMap.values()) {
-          info.slotIndex = slotIndex++;
-        }
+        for (const info of ordered) info.slotIndex = slotIndex++;
 
-        node.entryAccesses = [...entryAccessMap.values()];
+        node.entryAccesses = ordered;
 
-        // Propagate slot indices to individual mapping nodes
+        // Propagate slot indices to individual mapping nodes (looks up the shared info by key)
         this.assignEntrySlotIndices(node.body, entryAccessMap);
 
       }

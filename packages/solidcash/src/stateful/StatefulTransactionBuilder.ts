@@ -297,9 +297,15 @@ export class StatefulTransactionBuilder {
       const funderPool = [...this.funderUtxos];
       // Position-indexed array: each element goes at its slot.offset
       const positioned: (UnlockableUtxo | undefined)[] = new Array(this.blockLayout.blockSize);
-      let dataNftIdx = 0, readOnlyIdx = 0, entryIdx = 0, tcIdx = 0;
+      let dataNftIdx = 0, readOnlyIdx = 0, tcIdx = 0;
       let llcIdx = 0; // low-level call input index
       let bhIdx = 0; // blockhash co-spend index
+      // Each entry slot gets ITS OWN existing entry input (by slotIndex), or a funder if absent. Not a dense
+      // pull from entryInputs: an absent lower slot must not shift a higher slot's entry into the gap (the
+      // covenant reads each slot at its fixed offset).
+      const entryInputBySlot = new Map<number, UnlockableUtxo>(
+        this.entryNfts.filter((e) => e.exists && e.utxo).map((e) => [e.slotIndex, e.utxo!]),
+      );
 
       for (const slot of this.blockLayout.slots) {
         switch (slot.kind) {
@@ -317,10 +323,12 @@ export class StatefulTransactionBuilder {
               positioned[slot.offset] = this.blockhashCoSpendUtxos[bhIdx++];
             }
             break;
-          case 'entry':
-            if (entryIdx < entryInputs.length) positioned[slot.offset] = entryInputs[entryIdx++];
+          case 'entry': {
+            const entryInput = slot.slotIndex !== undefined ? entryInputBySlot.get(slot.slotIndex) : undefined;
+            if (entryInput) positioned[slot.offset] = entryInput;
             else { const f = funderPool.shift(); if (f) positioned[slot.offset] = f; }
             break;
+          }
           case 'satoshiContainer':
             if (satoshiContainerInputs.length > 0) positioned[slot.offset] = satoshiContainerInputs[0];
             break;

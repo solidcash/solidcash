@@ -5403,15 +5403,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // a variable-width element type the stored blob already carries its `pushdata(count)` prefix.
     if (sv.isDynamic) {
       this.emitReadDynamicScalar(sv, locationData);
-      const elemType = (sv.type as ArrayType).elementType;
-      if (isFixedWidthType(elemType)) {
-        this.emitPrependArrayCount(getFixedWidth(elemType), locationData);
-      } else {
-        // Variable-width: the count prefix lives in the stored blob, so an empty (A$len=0, never-written)
-        // array reads back as a zero-length blob with no prefix. Canonicalize empty -> pushdata(0) so the
-        // element ops below decode count=0 instead of splitting an empty value.
-        this.emitCanonicalizeEmptyArrayBlob(locationData);
-      }
+      this.emitReframeDynamicArrayRead(sv, locationData);
       this.stack[0] = stackLabel;
       return;
     }
@@ -7702,11 +7694,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // header (A$len); the persisted value lives in chunk UTXOs.
     if (sv.isDynamic) {
       this.emitReadDynamicScalar(sv, locationData);
-      // Chunk-packed FIXED-WIDTH array: the stored blob is tight (no count); rebuild `pushdata(count)++elems`
-      // from count = A$len/width. A variable-width array's stored blob already carries its count prefix.
-      if (sv.type instanceof ArrayType && isFixedWidthType((sv.type as ArrayType).elementType)) {
-        this.emitPrependArrayCount(getFixedWidth((sv.type as ArrayType).elementType), locationData);
-      }
+      // Chunk-packed array: rebuild the canonical `pushdata(count)++elems` form (fixed-width prepends count
+      // from A$len/width; variable-width canonicalizes an empty read to pushdata(0)). Strings/bytes: no-op.
+      this.emitReframeDynamicArrayRead(sv, locationData);
       return node;
     }
 
@@ -9826,6 +9816,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_ROLL, loc);
     this.emit(Op.OP_DROP, loc);
     this.removeFromStack(idx);
+  }
+
+  // Reframe a just-read dynamic-storage value into the canonical array form the element ops expect. For a
+  // fixed-width element type the stored blob is tight, so prepend count = A$len/width; for a variable-width
+  // element type the count prefix is stored, so only canonicalize an empty (A$len=0) read to pushdata(0).
+  // No-op for non-array dynamic vars (string / unbounded bytes keep their raw value).
+  private emitReframeDynamicArrayRead(sv: StateVariableNode, loc: SingleLocationData): void {
+    if (!(sv.type instanceof ArrayType)) return;
+    const elemType = sv.type.elementType;
+    if (isFixedWidthType(elemType)) this.emitPrependArrayCount(getFixedWidth(elemType), loc);
+    else this.emitCanonicalizeEmptyArrayBlob(loc);
   }
 
   // If the top-of-stack blob is empty, replace it with pushdata(0) (a single 0x00 = count-0 prefix). Used on

@@ -49,7 +49,11 @@ export default class RegtestNetworkProvider implements NetworkProvider {
       rpcPassword = 'password',
     } = options;
 
-    this.rpc = new BchnRpcClient({ url: rpcUrl, rpcUser, rpcPassword });
+    // 30s (vs the wrapper's 5s default): network-heavy flows like external-call auto-derivation make many
+    // sequential getUtxos round-trips against a live node, which can exceed the default per-request timeout.
+    this.rpc = new BchnRpcClient({
+      url: rpcUrl, rpcUser, rpcPassword, timeoutMs: 30_000,
+    });
   }
 
   // ---------------------------------------------------------------------------

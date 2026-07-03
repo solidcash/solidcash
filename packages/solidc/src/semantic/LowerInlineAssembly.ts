@@ -1,11 +1,11 @@
-import { IntType, BytesType, AddressType, PrimitiveType, ValueType, Type } from '@solidcash/utils';
+import { IntType, BytesType, AddressType, PrimitiveType, ValueType, Type, MappingType } from '@solidcash/utils';
 import AstTraversal from '../ast/AstTraversal.js';
 import {
   Node, StatementNode, ExpressionNode, AssemblyStatementNode, BlockNode, VariableDefinitionNode,
   AssignNode, RequireNode, BranchNode, WhileNode, BreakNode, ContinueNode, BinaryOpNode, UnaryOpNode,
   CastNode, IdentifierNode, IntLiteralNode, BoolLiteralNode, ParameterNode, FunctionDefinitionNode,
   StateAssignNode, StateAccessNode, StateVariableNode, ContractNode, BytesConcatNode, FunctionCallNode,
-  SliceNode,
+  SliceNode, CollectionNode, MappingAccessNode, MappingAssignNode,
 } from '../ast/AST.js';
 import { BinaryOperator, UnaryOperator } from '../ast/Operator.js';
 import {
@@ -47,6 +47,27 @@ function collectVarTypes(node: Node, out: Map<string, Type>): void {
 interface SlotField { sv: StateVariableNode; bitOffset: bigint; bitWidth: bigint; }
 let currentSlots = new Map<bigint, SlotField[]>();
 let currentVarSlot = new Map<string, bigint>();
+
+// The synthesized EVM-storage register name. A contract whose assembly touches a slot with NO declared var
+// (an arbitrary EVM storage slot, e.g. `sstore(0, v)` with no var at slot 0, or a keccak/sha256-derived slot)
+// gets a `mapping(uint256 => uint256) __evm_storage` = the 2^256 slot space; sstore/sload route to it. See
+// docs/evm-storage-parity.md. Set while lowering; the mapping is synthesized in visitContract afterward.
+const EVM_STORAGE = '__evm_storage';
+let evmStorageUsed = false;
+
+// If a Yul slot argument denotes an arbitrary EVM storage slot (not a declared var), return the lowered slot
+// key for __evm_storage[key]; else undefined (a declared-var slot, handled by resolveSlotFields). A plain int
+// literal whose slot holds a declared var, or a declared var's `x.slot`, is NOT __evm_storage.
+function evmStorageSlotKey(slotArg: YulExpressionNode): ExpressionNode | undefined {
+  if (isIntLiteral(slotArg)) {
+    const slotNum = BigInt(slotArg.raw);
+    return currentSlots.has(slotNum) ? undefined : intLit(slotNum, slotArg);
+  }
+  if (slotArg instanceof YulPathNode && slotArg.members.length === 1 && slotArg.members[0] === 'slot') {
+    return undefined; // `x.slot` of a declared var
+  }
+  return lowerValue(slotArg); // a computed slot expression (arithmetic / hash)
+}
 
 function stateVarByteWidth(sv: StateVariableNode): number {
   const t = sv.type;
@@ -300,10 +321,13 @@ function lowerCall(call: YulFunctionCallNode): ExpressionNode {
     }
     throw new YulNotLowerable(); // selector region / non-aligned offset / non-int param (later phase)
   }
-  // sload(slot) -> the word at that storage slot (a single var, or the combined packed sub-word vars).
+  // sload(slot) -> the word at that storage slot (a single var, or the combined packed sub-word vars), or the
+  // synthesized __evm_storage[slot] register entry for an arbitrary (non-declared) slot.
   if (name === 'sload' && args.length === 1) {
     const fields = resolveSlotFields(args[0]);
     if (fields) return combineSlot(fields, call);
+    const key = evmStorageSlotKey(args[0]);
+    if (key) { evmStorageUsed = true; return loc(new MappingAccessNode(EVM_STORAGE, [key]), call); }
     throw new YulNotLowerable();
   }
   // tload(key) -> read the transient local for that constant key.
@@ -387,10 +411,16 @@ function lowerStatement(stmt: YulStatementNode): StatementNode {
       if (e.name === 'revert' && isZeroRevert(e)) {
         return loc(new RequireNode(loc(new BoolLiteralNode(false), stmt)), stmt);
       }
-      // sstore(slot, v): write the word to that storage slot (a single var, or decomposed into packed vars).
+      // sstore(slot, v): write the word to that storage slot (a single var, or decomposed into packed vars),
+      // or the synthesized __evm_storage[slot] register entry for an arbitrary (non-declared) slot.
       if (e.name === 'sstore' && e.args.length === 2) {
         const fields = resolveSlotFields(e.args[0]);
         if (fields) return decomposeSlot(fields, e.args[1], e);
+        const key = evmStorageSlotKey(e.args[0]);
+        if (key) {
+          evmStorageUsed = true;
+          return loc(new MappingAssignNode(EVM_STORAGE, [key], lowerValue(e.args[1])), e);
+        }
       }
       // tstore(key, v): write the transient local for that constant key.
       if (e.name === 'tstore' && e.args.length === 2) {
@@ -460,7 +490,15 @@ export default class LowerInlineAssembly extends AstTraversal {
   // Track the enclosing contract's state variables so sstore/sload can resolve slot numbers.
   visitContract(node: ContractNode): Node {
     computeStorageLayout(node.stateVariables);
-    const result = super.visitContract(node);
+    evmStorageUsed = false;
+    const result = super.visitContract(node) as ContractNode;
+    // Synthesize the EVM-storage register if any assembly routed a slot to it (docs/evm-storage-parity.md).
+    if (evmStorageUsed && !result.collections.some((c) => c.name === EVM_STORAGE)) {
+      const mapping = new CollectionNode(new MappingType(UINT256, UINT256), EVM_STORAGE);
+      mapping.location = node.location;
+      result.collections.push(mapping);
+    }
+    evmStorageUsed = false;
     currentSlots = new Map();
     currentVarSlot = new Map();
     return result;

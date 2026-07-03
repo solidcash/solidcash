@@ -236,3 +236,34 @@ describe('Yul packed storage slots', () => {
     expect(yul.bytecode).toBe(direct.bytecode);
   });
 });
+
+// EVM-storage foundation: assembly sstore/sload on an arbitrary slot (no declared var at it, or a computed
+// slot) synthesizes a `mapping(uint256 => uint256) __evm_storage` register and routes to it. Declared-var
+// slots are unchanged. See packages/solidc/docs/evm-storage-parity.md.
+describe('EVM-storage foundation: sstore/sload -> __evm_storage', () => {
+  it('synthesizes __evm_storage for a slot with no declared var and compiles', () => {
+    const a = compileString(
+      'contract A { function set(uint256 v) public { assembly { sstore(0, v) } }'
+      + ' function get() public view returns (uint256 r) { assembly { r := sload(0) } } }',
+      { solidityImportCompat: true },
+    );
+    expect(a.stateLayout?.collections?.some((c) => c.name === '__evm_storage')).toBe(true);
+  });
+
+  it('routes a computed (non-literal) slot to __evm_storage', () => {
+    const a = compileString(
+      'contract A { function set(uint256 k, uint256 v) public { assembly { sstore(add(k, 7), v) } } }',
+      { solidityImportCompat: true },
+    );
+    expect(a.stateLayout?.collections?.some((c) => c.name === '__evm_storage')).toBe(true);
+  });
+
+  it('does NOT synthesize __evm_storage when the slot maps to a declared var', () => {
+    const a = compileString(
+      'contract A { uint256 x; function set(uint256 v) public { assembly { sstore(0, v) } }'
+      + ' function get() public view returns (uint256) { return this.x; } }',
+      { solidityImportCompat: true },
+    );
+    expect(a.stateLayout?.collections?.some((c) => c.name === '__evm_storage')).toBeFalsy();
+  });
+});

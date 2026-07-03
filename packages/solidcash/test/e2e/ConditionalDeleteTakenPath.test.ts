@@ -53,4 +53,24 @@ describe('conditional delete taken-path (if-converted)', () => {
     await sc.clearIf(1n, true).send();                     // taken
     await expect(sc.chk(1n, false).send()).resolves.toBeDefined();  // now false
   });
+
+  // Two deletes in one branch to DIFFERENT mappings: the condition is cloned into both predicated writes.
+  const multi = compileString(`
+    contract C {
+      mapping(uint256 => uint256) a;
+      mapping(uint256 => uint256) b;
+      function put(uint256 k, uint256 va, uint256 vb) external { a[k] = va; b[k] = vb; require(true); }
+      function delBoth(uint256 k, bool d) external { if (d) { delete a[k]; delete b[k]; } require(true); }
+      function chk(uint256 k, uint256 ea, uint256 eb) external { require(a[k] == ea); require(b[k] == eb); }
+    }
+  `, { forceStateful: true });
+
+  it('multiple deletes in one branch both take effect (taken) / preserve (not-taken)', async () => {
+    const sc = await getContractFactory(multi, await fundedSigner()).deploy();
+    await sc.put(1n, 3n, 4n).send();
+    await sc.delBoth(1n, false).send();                        // not taken
+    await expect(sc.chk(1n, 3n, 4n)).resolves.toBeDefined();   // both preserved
+    await sc.delBoth(1n, true).send();                         // taken
+    await expect(sc.chk(1n, 0n, 0n)).resolves.toBeDefined();   // both deleted
+  });
 });

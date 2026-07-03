@@ -1721,6 +1721,21 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const entryInfos: Array<{
       collection: string; keyValue: bigint | boolean | Uint8Array; existingUtxo?: Utxo;
     }> = [];
+    // Entries of different collections share the category and are indistinguishable by key; with >1 collection,
+    // match within each collection's own entries (fetched by its entry address) rather than the mixed set.
+    const deployMultiColl = (factoryLayout.collections?.length ?? 0) > 1;
+    const deployCollCache = new Map<string, Utxo[]>();
+    const deployCollectionEntries = async (sig: string): Promise<Utxo[]> => {
+      if (!deployMultiColl) return onChainState.entryNftUtxos;
+      const hit = deployCollCache.get(sig);
+      if (hit) return hit;
+      const addr = getEntryNftAddress(factory.inner, factory.categoryId, sig);
+      const fetched = (await factory.inner.provider.getUtxos(addr)).filter((u) => (
+        u.token?.category === factory.categoryId && !!u.token?.nft?.commitment && u.token.nft.commitment.length > 0
+      ));
+      deployCollCache.set(sig, fetched);
+      return fetched;
+    };
     for (const access of entryAccesses) {
       const collection = factoryLayout.collections?.find((c) => c.name === access.collection);
       if (!collection) {
@@ -1744,7 +1759,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
 
       // Find an existing entry NFT whose key matches (write-to-existing path).
       let existingUtxo: Utxo | undefined;
-      for (const utxo of onChainState.entryNftUtxos) {
+      for (const utxo of await deployCollectionEntries(collection.signature)) {
         if (utxo.token?.category !== factory.categoryId || !utxo.token?.nft?.commitment) continue;
         try {
           const parsed = parseEntryCommitment(
@@ -4128,6 +4143,27 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
 
     if (entryAccesses && entryAccesses.length > 0 && stateLayout.collections) {
       const entryNftUtxos = onChainState.entryNftUtxos;
+      // Entries of DIFFERENT collections share the master's category and are indistinguishable by commitment
+      // when they carry the same key (a[k] and b[k] both parse under either collection's types). onChainState.
+      // entryNftUtxos mixes all collections, so matching by key alone can pick the wrong collection's entry.
+      // When the contract has >1 collection, fetch each accessed collection's entries by its own entry-NFT
+      // address (the covenant differs per collection) and match within that set. Single-collection: the mixed
+      // list already is that collection's entries - unchanged, no extra fetch.
+      const multiCollection = stateLayout.collections.length > 1;
+      const collEntryCache = new Map<string, Utxo[]>();
+      const collectionEntriesFor = async (sig: string): Promise<Utxo[]> => {
+        if (!multiCollection) return entryNftUtxos;
+        const hit = collEntryCache.get(sig);
+        if (hit) return hit;
+        const addr = getEntryNftAddress(this.inner, this.categoryId, sig);
+        const fetched = (await this.inner.provider.getUtxos(addr)).filter((u) => (
+          u.token?.category === this.categoryId
+          && u.token?.nft?.capability === 'mutable'
+          && !!u.token?.nft?.commitment && u.token.nft.commitment.length > 0
+        ));
+        collEntryCache.set(sig, fetched);
+        return fetched;
+      };
 
       for (let slotIndex = 0; slotIndex < entryAccesses.length; slotIndex++) {
         const access = entryAccesses[slotIndex];
@@ -4135,6 +4171,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         if (!collection) {
           throw new Error(`Unknown collection: ${access.collection}`);
         }
+        const collectionEntries = await collectionEntriesFor(collection.signature);
 
         // Determine key types and values (supports multi-key nested mappings)
         const effectiveKeyTypes = collection.keyTypes ?? [collection.keyType];
@@ -4193,7 +4230,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         // For expression key placeholders, collect all parseable entries and pick
         // the right one: if exactly 1, use it; if multiple, treat as not found
         // (auto-derivation will resolve via VM trace with the correct entry).
-        let matchingUtxo: typeof entryNftUtxos[0] | undefined;
+        let matchingUtxo: typeof collectionEntries[0] | undefined;
         const isMultiKey = effectiveKeyTypes.length > 1;
         if (isExpressionKeyPlaceholder) {
           // Expression key: can't match by placeholder value. Try to derive the key
@@ -4208,7 +4245,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           }
 
           // Try matching with derived keys first
-          for (const utxo of entryNftUtxos) {
+          for (const utxo of collectionEntries) {
             if (!utxo.token?.nft?.commitment) continue;
             try {
               const parsed = isMultiKey
@@ -4237,7 +4274,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           }
           // If no match found: matchingUtxo stays undefined (new entry path).
         } else {
-          for (const utxo of entryNftUtxos) {
+          for (const utxo of collectionEntries) {
             if (!utxo.token?.nft?.commitment) continue;
             try {
               if (isMultiKey) {

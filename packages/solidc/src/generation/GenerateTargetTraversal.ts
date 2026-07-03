@@ -5404,7 +5404,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (sv.isDynamic) {
       this.emitReadDynamicScalar(sv, locationData);
       const elemType = (sv.type as ArrayType).elementType;
-      if (isFixedWidthType(elemType)) this.emitPrependArrayCount(getFixedWidth(elemType), locationData);
+      if (isFixedWidthType(elemType)) {
+        this.emitPrependArrayCount(getFixedWidth(elemType), locationData);
+      } else {
+        // Variable-width: the count prefix lives in the stored blob, so an empty (A$len=0, never-written)
+        // array reads back as a zero-length blob with no prefix. Canonicalize empty -> pushdata(0) so the
+        // element ops below decode count=0 instead of splitting an empty value.
+        this.emitCanonicalizeEmptyArrayBlob(locationData);
+      }
       this.stack[0] = stackLabel;
       return;
     }
@@ -9819,6 +9826,20 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_ROLL, loc);
     this.emit(Op.OP_DROP, loc);
     this.removeFromStack(idx);
+  }
+
+  // If the top-of-stack blob is empty, replace it with pushdata(0) (a single 0x00 = count-0 prefix). Used on
+  // the variable-width dynamic read path so an empty array decodes as count=0. Stack-neutral (leaves the blob).
+  private emitCanonicalizeEmptyArrayBlob(loc: SingleLocationData): void {
+    this.emit(Op.OP_SIZE, loc); // [blob, size] - size is a small number, safe to test
+    this.pushToStack('(dynsz)');
+    this.emit(Op.OP_0NOTEQUAL, loc);
+    this.emit(Op.OP_IF, loc);
+    this.popFromStack();
+    this.emit(Op.OP_ELSE, loc);
+    this.emit(Op.OP_DROP, loc); // drop the empty blob
+    this.emit(new Uint8Array([0x00]), loc); // pushdata(count=0)
+    this.emit(Op.OP_ENDIF, loc);
   }
 
   /**

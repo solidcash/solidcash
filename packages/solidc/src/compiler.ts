@@ -31,6 +31,7 @@ import IfConvertConditionalEntryOp from './semantic/IfConvertConditionalEntryOp.
 import SynthesizeBlockOracle from './semantic/SynthesizeBlockOracle.js';
 import SynthesizePublicGetters from './semantic/SynthesizePublicGetters.js';
 import expandModifiers from './semantic/ModifierExpansionTransformation.js';
+import FoldHashLiterals from './semantic/FoldHashLiterals.js';
 import expandBreakContinue from './semantic/BreakContinueTransformation.js';
 import expandInheritance from './semantic/InheritanceExpansionTransformation.js';
 import { ImportResolver } from './ImportResolver.js';
@@ -146,6 +147,10 @@ function compileResolvedAst(ast: Ast, code: string, mergedCompilerOptions: Compi
     }
     throw new AbstractContractNotCompilableError(ast.contract.name);
   }
+
+  // Fold keccak256/sha256 of a string/hex literal to a compile-time bytes32 constant (role ids, EIP-712
+  // domains, EVM storage slots). keccak256 uses sha256 under compat (no native keccak; see FoldHashLiterals).
+  ast = ast.accept(new FoldHashLiterals(mergedCompilerOptions.solidityImportCompat ?? false)) as Ast;
 
   // Solidity public state-var/mapping auto-getters -> real entry-point functions, so a ported callee invoked
   // via a getter (`timeLock.lockTime(addr)`) actually dispatches it. Gated on solidityImportCompat.

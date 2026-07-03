@@ -267,3 +267,16 @@ describe('EVM-storage foundation: sstore/sload -> __evm_storage', () => {
     expect(a.stateLayout?.collections?.some((c) => c.name === '__evm_storage')).toBeFalsy();
   });
 });
+
+// keccak256/sha256 of a literal folds to a compile-time bytes32 (role ids, EIP-712 domains, storage slots).
+// keccak256 uses sha256 under compat (no native keccak); plain sha256 folds byte-identically.
+describe('keccak256/sha256 literal folding', () => {
+  it('folds keccak256("ROLE") and sha256("x") to a bytes32 constant', () => {
+    const a = compileString(
+      'contract C { bytes32 constant R = keccak256("MINTER_ROLE"); bytes32 constant H = sha256("x");'
+      + ' function f() public pure returns (bytes32) { return R == H ? R : H; } }',
+      { solidityImportCompat: true },
+    );
+    expect(a.contractName).toBe('C');
+  });
+});

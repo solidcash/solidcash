@@ -300,20 +300,29 @@ Still open:
 
 ## 11. blockhash(n) and blobhash(i)
 
-Status: **blobhash IMPLEMENTED; blockhash IMPLEMENTED (hardened covenant + keeper mint/sweep).**
-`blobhash(i) == bytes32(0)`. `blockhash(n)` co-spends the `(n->hash)` UTXO located via a synthesized
-`__internal__blockhashInputIndex` param (composition-safe; NOT the last input) and verifies
-`OP_UTXOTOKENCATEGORY == blockhashOracleCategory` (compiler option) + `commitment.n == n` +
-`require(tx.time >= n)`, returning the 32-byte hash. The hardened `(n->hash)`
-covenant (self-pin + self-preserving recreate + CLTV `n+256` wipe), the keeper mint + sweep
-(`BlockOracleUpdater.mintBlockhashPair` / `sweepBlockhashPair` / `maintainBlockhashWindow`), the
-`artifact.usesBlockhash` marker, SDK auto-injection (`abi.blockhashReads` +
-`TransactionBuilder.addRequiredBlockhashCoSpends` co-spend `addr(n)` from the call args), and the
-composition-safe index param (SDK fills it by locating the `C_oracle` co-spend, matched on `commitment.n`),
-multiple distinct `n` per tx, keccak side-car coexistence, and stateful readers (via a `blockhashOracle`
-block-layout slot - the co-spend rides the slot, the index is master+offset, the derivation probes co-spend
-it, and the SDK auto-sets the CLTV locktime) are all in place and e2e-green. Absent reads error by design
-(s11.2), not EVM's `bytes32(0)`. **`blockhash(n)` is feature-complete** for stateless and stateful readers.
+Status: **blobhash IMPLEMENTED; blockhash IMPLEMENTED (branded oracle + hardened covenant + keeper
+mint/sweep).** `blobhash(i) == bytes32(0)`. `blockhash(n)` rides the master-bound oracle model (section 3):
+its `(n->hash)` register is **branded to the consuming contract's OWN category**, so using `blockhash`
+**forces the contract stateful** (`ContractNode.usesBlockhash` -> `isStateful` + a `stateLayout`; a branded
+oracle needs a master/category to anchor and co-spend). The covenant verifies the co-spent `(n->hash)`
+NFT's category BASE `== the master's` (`emitVerifyCatBaseEqMaster`, via `OP_INPUTINDEX`), NOT a baked
+category, plus `commitment.n == n` + `require(tx.time >= n)`, returning the 32-byte hash. Consequences:
+
+- **`blockhashOracleCategory` is REMOVED as a compiler option** (and dropped from artifact serialization).
+  No deploy-time oracle-category config: the reader knows its oracle's category because it IS its own.
+- The read path is supported **only through `StatefulContract`**: the co-spend rides a `blockhashOracle`
+  block-layout slot (index = master input index + slot offset), resolved by `StatefulContract` from
+  `this.categoryId`; the derivation probe co-spends it and the SDK auto-sets the CLTV locktime. The base
+  `Contract`/`TransactionBuilder` path fails loudly ("build the call via StatefulContract").
+- The keeper mints/sweeps `(n->hash)` NFTs **under the contract's own category**
+  (`BlockOracleUpdater.mintBlockhashPair` / `sweepBlockhashPair` / `maintainBlockhashWindow`), from a
+  minting baton of that category.
+
+The hardened `(n->hash)` covenant (self-pin + self-preserving recreate + CLTV `n+256` wipe), the
+`artifact.usesBlockhash` marker + `abi.blockhashReads`, and keccak side-car coexistence are in place and
+e2e-green. Absent reads error by design (s11.2), not EVM's `bytes32(0)`. **`blockhash(n)` is
+feature-complete** for stateful readers (single read per tx exercised end-to-end; two-slot co-spend in one
+tx is compile-recorded but not yet runtime-wired).
 
 
 These are **functions** (runtime argument), not the 0-param `block.*` properties, so they lower as
@@ -393,6 +402,14 @@ warning when `blockhash(...)` feeds modulo/arithmetic is advisable.
   liveness on the read path). The escape if you ever want consumer-bootstrapped pairs.
 
 ### 11.5 Compiler / SDK integration
+
+> **Superseded (branded re-architecture).** The bullets below describe the original *stateless*
+> auto-injection model (a separate oracle category passed as `blockhashOracleCategory`, co-spend appended by
+> the base `TransactionBuilder`). That is no longer how it works: `blockhash` now brands its `(n->hash)`
+> oracle to the contract's OWN category, forces the reader stateful, drops the `blockhashOracleCategory`
+> option entirely, and resolves the co-spend through `StatefulContract` at a block-layout slot (see the
+> section 11 status above and section 3). `resolveBlockhashCoSpend` remains only as an internal lookup helper.
+> The historical notes are kept for context.
 
 - Register `blockhash`/`blobhash` as `GlobalFunction`s, signature `(uint) -> bytes32`. `blobhash` -> push
   `bytes32(0)`. `blockhash` -> external read of `C_oracle` (category + `commitment.n` check) + the

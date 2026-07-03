@@ -71,6 +71,18 @@ export default class MockNetworkProvider implements NetworkProvider {
     return this.blockHeight;
   }
 
+  // Test helper mirroring RegtestNetworkProvider: advance the simulated chain tip so height-mode locktimes
+  // become final and each mined height is fresh.
+  async mine(count: number = 1): Promise<void> {
+    this.setBlockHeight(this.blockHeight + count);
+  }
+
+  async getBlockHash(height: number): Promise<string> {
+    const buf = new Uint8Array(4);
+    new DataView(buf.buffer).setUint32(0, height >>> 0, true);
+    return binToHex(sha256(buf)); // deterministic synthetic hash - the mock chain has no real blocks
+  }
+
   async getRawTransaction(txid: string): Promise<string> {
     return this.indexer.getRawTx(txid)!;
   }

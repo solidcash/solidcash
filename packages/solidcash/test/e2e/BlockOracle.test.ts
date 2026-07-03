@@ -16,6 +16,55 @@ import {
 } from '@solidcash/utils';
 import { BlockOracleUpdater, fetchBlockOracleFields, RpcLike } from '../../src/oracle/blockOracleUpdater.js';
 
+// A fixed category used only where the oracle address is expected to be EMPTY (no NFT seeded), so its value is
+// immaterial. Seeded NFTs get a real genesis category (see seedOracleNfts) which the reader is compiled with.
+const BH_CAT = 'cc'.repeat(32);
+
+// Allocate a block height for a height-mode locktime test: mine (1 + headroom) blocks and take the first freshly
+// mined height, so addr(n) is unique and the locktime n (+headroom, e.g. n+256 for a wipe/sweep) is final under
+// the new tip. hash is that block's hash. Uniform across providers: the mock advances a simulated tip.
+async function allocHeight(
+  provider: ReturnType<typeof createTestProvider>, headroom = 0,
+): Promise<{ n: number; hash: Uint8Array }> {
+  const before = await provider.getBlockHeight();
+  await provider.mine(1 + headroom);
+  const n = before + 1;
+  return { n, hash: hexToBin(await provider.getBlockHash(n)) };
+}
+
+interface OraclePair { n: bigint; hash: Uint8Array; satoshis?: bigint; capability?: 'none' | 'minting' }
+
+// Seed one or more (n->hash) oracle NFTs sharing ONE genesis category and return it (the reader covenant must
+// bake it). Token categories are genesis outpoints, so we genesis a real one and mint the NFTs at addr(n) for
+// it. Callers compile the reader with `cat`.
+async function seedOracleNfts(
+  provider: ReturnType<typeof createTestProvider>, pairs: OraclePair[],
+): Promise<{ cat: string; entries: { addrN: Uint8Array; utxo: Utxo }[] }> {
+  const detail = (p: OraclePair): { satoshis: bigint; capability: 'none' | 'minting'; commitment: string } => ({
+    satoshis: p.satoshis ?? 1000n, capability: p.capability ?? 'none', commitment: binToHex(buildBlockhashCommitment(p.n, p.hash)),
+  });
+  const { categoryId, utxos } = await provider.addTokenUtxosDynamic((cat: string) => pairs.map((p) => {
+    const d = detail(p);
+    return {
+      address: binToHex(blockhashOracleLockingBytecode(hexToBin(cat), p.n)),
+      satoshis: d.satoshis,
+      token: { nft: { capability: d.capability, commitment: d.commitment } },
+    };
+  }));
+  const entries = pairs.map((p, i) => ({
+    addrN: blockhashOracleLockingBytecode(hexToBin(categoryId), p.n), utxo: utxos[i],
+  }));
+  return { cat: categoryId, entries };
+}
+
+async function seedOracleNft(
+  provider: ReturnType<typeof createTestProvider>, n: bigint, hash: Uint8Array,
+  opts: { satoshis?: bigint; capability?: 'none' | 'minting' } = {},
+): Promise<{ cat: string; addrN: Uint8Array; utxo: Utxo }> {
+  const { cat, entries } = await seedOracleNfts(provider, [{ n, hash, ...opts }]);
+  return { cat, addrN: entries[0].addrN, utxo: entries[0].utxo };
+}
+
 // block.chainid is uint256 (Solidity parity); the baked network selector is a minimal int on-stack. The
 // contract requires it equals an unlock arg (numeric compare), so the spend only succeeds when the value
 // compiled for `chainId` matches what the caller expects under the VM.
@@ -212,14 +261,16 @@ describe('block.* owner-update path e2e', () => {
   // (a real-node update at the tip would use the live height). The freshness IS the anti-over-reporting:
   // a tx claiming a height the chain has not reached is non-final and unminable.
   it('owner updates the registers (signed + fresh), and the new values read back', async () => {
+    const { n } = await allocHeight(provider);
+    const bn = BigInt(n);
     const sc = StatefulContract.withCategory(contract, categoryId);
-    await sc.__updateBlockOracle(new SignatureTemplate(alicePriv), 100000n, 1700000000n)
-      .setState({ __block_number: 100000n, __block_timestamp: 1700000000n })
-      .setLocktime(100000) // tx.time >= number (height mode), <= chain tip -> final
+    await sc.__updateBlockOracle(new SignatureTemplate(alicePriv), bn, 1700000000n)
+      .setState({ __block_number: bn, __block_timestamp: 1700000000n })
+      .setLocktime(n) // tx.time >= number (height mode), <= chain tip -> final
       .send();
 
     const reader = StatefulContract.withCategory(contract, categoryId);
-    const tx = await reader.readBack(100000n, 1700000000n).send();
+    const tx = await reader.readBack(bn, 1700000000n).send();
     expect(tx.txid).toMatch(/^[0-9a-f]{64}$/);
   });
 
@@ -249,13 +300,17 @@ const FAKE_BLOCK = {
   height: 100000, time: 1782384635, bits: '18026c88', size: 9075,
   tx: [{ vout: [{ value: 50.00031792, scriptPubKey: { hex: CB_HEX } }] }],
 };
-function fakeRpc(tip = 100000): RpcLike {
+function fakeRpc(tip = 100000, height = tip): RpcLike {
+  // The known-block fixture data (coinbase/fees) stays fixed; only the height varies so the on-chain update is
+  // final on a live chain. height < the mainnet halving (210000) keeps subsidy(height)=50 BCH, so totalFees
+  // still resolves to 31792 - real regtest coinbase would follow regtest's own halving and break that math.
+  const block = { ...FAKE_BLOCK, height };
   return {
     request: async (method: string, ...params: any[]) => {
       switch (method) {
         case 'getblockcount': return tip;
         case 'getblockhash': return `hash_${params[0]}`;
-        case 'getblock': return FAKE_BLOCK;
+        case 'getblock': return block;
         default: throw new Error(`unexpected rpc ${method}`);
       }
     },
@@ -291,12 +346,13 @@ describe('block.* off-chain keeper (updater)', () => {
       __block_totalFees: 0n, __block_coinbase: hexToBin('00'), __blockOracleOwner: alicePub,
     }, { saltContract: true });
 
-    const updater = new BlockOracleUpdater({ contract, categoryId, keeperKey: alicePriv, rpc: fakeRpc(100000) });
+    const { n } = await allocHeight(provider);
+    const updater = new BlockOracleUpdater({ contract, categoryId, keeperKey: alicePriv, rpc: fakeRpc(n) });
     expect(await updater.oracleHeight()).toBe(0n);
 
     const txid = await updater.syncOnce();
     expect(txid).toMatch(/^[0-9a-f]{64}$/);
-    expect(await updater.oracleHeight()).toBe(100000n);
+    expect(await updater.oracleHeight()).toBe(BigInt(n));
 
     expect(await updater.syncOnce()).toBeNull(); // chain not ahead -> no update
   });
@@ -408,30 +464,23 @@ describe('blobhash / blockhash', () => {
 // and returns hash. Held here at a trivial anyone-can-spend p2sh32 (redeem OP_1) and recreated for token
 // consistency. n <= 133700 (mock tip) so the freshness locktime is final. (Hardened covenant + SDK
 // auto-discovery + keeper minting are the next increment - docs/block-and-transaction-properties.md s11.)
-const BH_CAT = 'cc'.repeat(32);
 
 async function spendBlockhash(
+  provider: ReturnType<typeof createTestProvider>,
   argN: number, storedN: number, storedHash: Uint8Array, expectHash: Uint8Array,
 ): Promise<string> {
-  const provider = createTestProvider();
+  // Seed the (n->hash) oracle NFT at its real covenant address addr(storedN) and compile the reader with the
+  // resulting category, then resolve the co-spend pieces via the SDK helper (immutable, category-pinned,
+  // read-only flag 0, self-preserving recreate).
+  const { cat } = await seedOracleNft(provider, BigInt(storedN), storedHash);
   const artifact = compileString(
     'contract B(){ function f(int bn, bytes32 h){ require(blockhash(bn) == h); } }',
-    { blockhashOracleCategory: BH_CAT },
+    { blockhashOracleCategory: cat },
   );
   const contract = new Contract(artifact, [], { provider });
   const contractUtxo = await provider.addUtxo(contract.address, randomUtxo({ satoshis: 100000n }));
 
-  // Seed the (n->hash) oracle NFT at its real covenant address addr(storedN), then resolve the co-spend
-  // pieces via the SDK helper (immutable, category-pinned, read-only flag 0, self-preserving recreate).
-  const cat = hexToBin(BH_CAT);
-  const addrN = blockhashOracleLockingBytecode(cat, BigInt(storedN));
-  const token = {
-    category: BH_CAT, amount: 0n,
-    nft: { capability: 'none' as const, commitment: binToHex(buildBlockhashCommitment(BigInt(storedN), storedHash)) },
-  };
-  await provider.addUtxo(binToHex(addrN), { txid: '11'.repeat(32), vout: 0, satoshis: 1000n, token });
-
-  const cospend = await resolveBlockhashCoSpend(provider, BH_CAT, BigInt(storedN));
+  const cospend = await resolveBlockhashCoSpend(provider, cat, BigInt(storedN));
   if (!cospend) throw new Error('no (n->hash) oracle UTXO at addr(n)');
 
   const tx = await new TransactionBuilder({ provider })
@@ -445,21 +494,15 @@ async function spendBlockhash(
 }
 
 // Wipe path: after n+256 anyone may consume (burn) the (n->hash) UTXO; before n+256 the CLTV blocks it.
-async function wipeBlockhash(storedN: number, locktime: number): Promise<string> {
-  const provider = createTestProvider();
-  const cat = hexToBin(BH_CAT);
-  const addrN = blockhashOracleLockingBytecode(cat, BigInt(storedN));
-  const redeem = scriptToBytecode(buildBlockhashOracleCovenantScript(cat, BigInt(storedN)));
-  const token = {
-    category: BH_CAT, amount: 0n,
-    nft: { capability: 'none' as const, commitment: binToHex(buildBlockhashCommitment(BigInt(storedN), new Uint8Array(32))) },
-  };
-  const nhashUtxo = { txid: '22'.repeat(32), vout: 0, satoshis: 5000n, token };
-  await provider.addUtxo(binToHex(addrN), nhashUtxo);
+async function wipeBlockhash(
+  provider: ReturnType<typeof createTestProvider>, storedN: number, locktime: number,
+): Promise<string> {
+  const { cat, addrN, utxo } = await seedOracleNft(provider, BigInt(storedN), new Uint8Array(32), { satoshis: 5000n });
+  const redeem = scriptToBytecode(buildBlockhashOracleCovenantScript(hexToBin(cat), BigInt(storedN)));
   const wipeUnlock = scriptToBytecode([encodeInt(1n), redeem]); // flag 1 (wipe) + redeem
   const unlocker = { generateLockingBytecode: () => addrN, generateUnlockingBytecode: () => wipeUnlock };
   const tx = await new TransactionBuilder({ provider, allowImplicitNftBurn: true })
-    .addInput(nhashUtxo, unlocker)
+    .addInput(utxo, unlocker)
     .addOutput({ to: aliceAddress, amount: 4000n })
     .setLocktime(locktime)
     .send();
@@ -467,45 +510,55 @@ async function wipeBlockhash(storedN: number, locktime: number): Promise<string>
 }
 
 describe('blockhash(n) e2e (real (n->hash) covenant)', () => {
-  const HASH = hexToBin('aa'.repeat(32));
-
   it('returns the attested hash for a matching (n, hash) oracle UTXO', async () => {
-    expect(await spendBlockhash(100000, 100000, HASH, HASH)).toMatch(/^[0-9a-f]{64}$/);
+    const provider = createTestProvider();
+    const { n, hash } = await allocHeight(provider);
+    expect(await spendBlockhash(provider, n, n, hash, hash)).toMatch(/^[0-9a-f]{64}$/);
   });
 
   it('rejects a wrong expected hash', async () => {
-    await expect(spendBlockhash(100000, 100000, HASH, hexToBin('bb'.repeat(32)))).rejects.toThrow();
+    const provider = createTestProvider();
+    const { n, hash } = await allocHeight(provider);
+    await expect(spendBlockhash(provider, n, n, hash, hexToBin('bb'.repeat(32)))).rejects.toThrow();
   });
 
   it('rejects an oracle UTXO whose commitment.n != the requested n', async () => {
-    await expect(spendBlockhash(100000, 99999, HASH, HASH)).rejects.toThrow();
+    const provider = createTestProvider();
+    const { n, hash } = await allocHeight(provider);
+    await expect(spendBlockhash(provider, n, n - 1, hash, hash)).rejects.toThrow(); // stored at n-1, requested n
   });
 
   it('anyone may wipe the (n->hash) UTXO at or after n+256', async () => {
-    expect(await wipeBlockhash(100000, 100256)).toMatch(/^[0-9a-f]{64}$/); // 100000+256 <= mock tip 133700
+    const provider = createTestProvider();
+    const { n } = await allocHeight(provider, 256); // mine headroom so n+256 <= tip
+    expect(await wipeBlockhash(provider, n, n + 256)).toMatch(/^[0-9a-f]{64}$/);
   });
 
   it('rejects a wipe before n+256 (CLTV blocks early cleanup)', async () => {
-    await expect(wipeBlockhash(100000, 100255)).rejects.toThrow();
+    const provider = createTestProvider();
+    const { n } = await allocHeight(provider, 256);
+    await expect(wipeBlockhash(provider, n, n + 255)).rejects.toThrow();
   });
 
   it('resolveBlockhashCoSpend returns null when no UTXO sits at addr(n)', async () => {
-    expect(await resolveBlockhashCoSpend(createTestProvider(), BH_CAT, 100000n)).toBeNull();
+    const provider = createTestProvider();
+    const { n } = await allocHeight(provider); // a fresh height whose addr(n) is empty
+    expect(await resolveBlockhashCoSpend(provider, BH_CAT, BigInt(n))).toBeNull();
   });
 
   it('resolveBlockhashCoSpend yields the live UTXO + a matching self-preserving recreate', async () => {
     const provider = createTestProvider();
-    const cat = hexToBin(BH_CAT);
-    const addrN = blockhashOracleLockingBytecode(cat, 100000n);
+    const { n, hash } = await allocHeight(provider);
+    const bn = BigInt(n);
+    const { cat, addrN } = await seedOracleNft(provider, bn, hash);
     const token = {
-      category: BH_CAT, amount: 0n,
-      nft: { capability: 'none' as const, commitment: binToHex(buildBlockhashCommitment(100000n, HASH)) },
+      category: cat, amount: 0n,
+      nft: { capability: 'none' as const, commitment: binToHex(buildBlockhashCommitment(bn, hash)) },
     };
-    await provider.addUtxo(binToHex(addrN), { txid: '66'.repeat(32), vout: 0, satoshis: 1000n, token });
 
-    const cospend = await resolveBlockhashCoSpend(provider, BH_CAT, 100000n);
+    const cospend = await resolveBlockhashCoSpend(provider, cat, bn);
     expect(cospend).not.toBeNull();
-    expect(cospend!.locktime).toBe(100000); // tx.time floor = n
+    expect(cospend!.locktime).toBe(n); // tx.time floor = n
     expect(cospend!.recreateOutput.to).toEqual(addrN); // recreate at addr(n)
     expect(cospend!.recreateOutput.token).toEqual(token); // identity preserved
     expect(binToHex(cospend!.unlocker.generateLockingBytecode())).toBe(binToHex(addrN));
@@ -515,20 +568,20 @@ describe('blockhash(n) e2e (real (n->hash) covenant)', () => {
 // Auto-injection: the builder reads abi.blockhashReads + the call args, resolves addr(n), and co-spends the
 // (n->hash) UTXO as the last input + self-preserving recreate - no manual resolveBlockhashCoSpend wiring.
 describe('blockhash(n) auto-injection (SDK)', () => {
-  const N = 100000n;
   const H = hexToBin('aa'.repeat(32));
   const SRC = 'contract B(){ function f(int bn, bytes32 h){ require(blockhash(bn) == h); } }';
 
   async function setup(): Promise<{
     provider: ReturnType<typeof createTestProvider>; contract: Contract; contractUtxo: Utxo;
+    n: bigint; h: Uint8Array; cat: string;
   }> {
     const provider = createTestProvider();
-    const contract = new Contract(compileString(SRC, { blockhashOracleCategory: BH_CAT }), [], { provider });
+    const { n: height, hash } = await allocHeight(provider);
+    const n = BigInt(height);
+    const { cat } = await seedOracleNft(provider, n, hash);
+    const contract = new Contract(compileString(SRC, { blockhashOracleCategory: cat }), [], { provider });
     const contractUtxo = await provider.addUtxo(contract.address, randomUtxo({ satoshis: 100000n }));
-    const addrN = blockhashOracleLockingBytecode(hexToBin(BH_CAT), N);
-    const token = { category: BH_CAT, amount: 0n, nft: { capability: 'none' as const, commitment: binToHex(buildBlockhashCommitment(N, H)) } };
-    await provider.addUtxo(binToHex(addrN), { txid: '77'.repeat(32), vout: 0, satoshis: 1000n, token });
-    return { provider, contract, contractUtxo };
+    return { provider, contract, contractUtxo, n, h: hash, cat };
   }
 
   it('persists blockhashOracleCategory in the artifact for the SDK', () => {
@@ -537,9 +590,9 @@ describe('blockhash(n) auto-injection (SDK)', () => {
   });
 
   it('auto-co-spends the (n->hash) UTXO from the call args (no manual wiring)', async () => {
-    const { provider, contract, contractUtxo } = await setup();
+    const { provider, contract, contractUtxo, n, h } = await setup();
     const tx = await new TransactionBuilder({ provider })
-      .addInput(contractUtxo, contract.unlock.f(N, H))
+      .addInput(contractUtxo, contract.unlock.f(n, h))
       .addOutput({ to: contract.address, amount: 99000n })
       .send();
     expect(tx.txid).toMatch(/^[0-9a-f]{64}$/);
@@ -547,33 +600,34 @@ describe('blockhash(n) auto-injection (SDK)', () => {
 
   it('errors clearly when no (n->hash) UTXO exists at addr(n)', async () => {
     const provider = createTestProvider();
+    const { n: height } = await allocHeight(provider); // a fresh height whose addr(n) is empty
     const contract = new Contract(compileString(SRC, { blockhashOracleCategory: BH_CAT }), [], { provider });
     const contractUtxo = await provider.addUtxo(contract.address, randomUtxo({ satoshis: 100000n }));
     await expect(
       new TransactionBuilder({ provider })
-        .addInput(contractUtxo, contract.unlock.f(N, H))
+        .addInput(contractUtxo, contract.unlock.f(BigInt(height), H))
         .addOutput({ to: contract.address, amount: 99000n })
         .send(),
-    ).rejects.toThrow(/No \(n->hash\) oracle UTXO/);
+    ).rejects.toThrow(/no \(n->hash\) oracle UTXO/i);
   });
 
   // Composition: the co-spend is NOT the last input (an unrelated input trails it). The reader locates it by
   // its synthesized index param, not OP_TXINPUTCOUNT OP_1SUB - which would read the trailing input and fail.
   it('reads the co-spend by index when it is not the last input (composition-safe)', async () => {
-    const { provider, contract, contractUtxo } = await setup();
-    const cospend = await resolveBlockhashCoSpend(provider, BH_CAT, N);
+    const { provider, contract, contractUtxo, n, h, cat } = await setup();
+    const cospend = await resolveBlockhashCoSpend(provider, cat, n);
     if (!cospend) throw new Error('co-spend seeded by setup()');
     const trailing = { txid: '99'.repeat(32), vout: 0, satoshis: 5000n };
     await provider.addUtxo(binToHex(MASTER_LBC), trailing); // anyone-can-spend OP_1 p2sh, no token
 
     const tx = await new TransactionBuilder({ provider })
-      .addInput(contractUtxo, contract.unlock.f(N, H)) // input 0: the reader
+      .addInput(contractUtxo, contract.unlock.f(n, h)) // input 0: the reader
       .addInput(cospend.utxo, cospend.unlocker) // input 1: (n->hash) co-spend (NOT last)
       .addInput(trailing, { generateLockingBytecode: () => MASTER_LBC, generateUnlockingBytecode: () => MASTER_UNLOCK })
       .addOutput({ to: contract.address, amount: 99000n }) // output 0
       .addOutput(cospend.recreateOutput) // output 1: recreate (covenant output[1] == input[1])
       .addOutput({ to: aliceAddress, amount: 4000n }) // output 2
-      .setLocktime(Number(N))
+      .setLocktime(Number(n))
       .send();
     expect(tx.txid).toMatch(/^[0-9a-f]{64}$/);
   });
@@ -582,19 +636,14 @@ describe('blockhash(n) auto-injection (SDK)', () => {
   // unlocker resolves its own by commitment.n (not position).
   it('auto-injects and matches multiple readers, each to its own n', async () => {
     const provider = createTestProvider();
-    const contract = new Contract(compileString(SRC, { blockhashOracleCategory: BH_CAT }), [], { provider });
+    const a = await allocHeight(provider);
+    const b = await allocHeight(provider);
+    const n1 = BigInt(a.n); const n2 = BigInt(b.n);
+    const h1 = a.hash; const h2 = b.hash;
+    const { cat } = await seedOracleNfts(provider, [{ n: n1, hash: h1 }, { n: n2, hash: h2 }]);
+    const contract = new Contract(compileString(SRC, { blockhashOracleCategory: cat }), [], { provider });
     const utxoA = await provider.addUtxo(contract.address, randomUtxo({ satoshis: 100000n }));
     const utxoB = await provider.addUtxo(contract.address, randomUtxo({ satoshis: 100000n }));
-
-    const n1 = 100000n; const n2 = 100001n; // both <= mock tip 133700
-    const h1 = hexToBin('a1'.repeat(32)); const h2 = hexToBin('b2'.repeat(32));
-    const seed = async (n: bigint, h: Uint8Array, txid: string): Promise<void> => {
-      const addrN = blockhashOracleLockingBytecode(hexToBin(BH_CAT), n);
-      const token = { category: BH_CAT, amount: 0n, nft: { capability: 'none' as const, commitment: binToHex(buildBlockhashCommitment(n, h)) } };
-      await provider.addUtxo(binToHex(addrN), { txid, vout: 0, satoshis: 1000n, token });
-    };
-    await seed(n1, h1, 'a1'.repeat(32));
-    await seed(n2, h2, 'b2'.repeat(32));
 
     const tx = await new TransactionBuilder({ provider })
       .addInput(utxoA, contract.unlock.f(n1, h1)) // reader for n1
@@ -614,78 +663,80 @@ const MASTER_UNLOCK = hexToBin('0151');
 describe('blockhash keeper minting', () => {
   it('mints a valid (n,hash) oracle UTXO from the C_oracle master, read back via blockhash', async () => {
     const provider = createTestProvider();
-    const masterUtxo = {
-      txid: '33'.repeat(32), vout: 0, satoshis: 10000n,
-      token: { category: BH_CAT, amount: 0n, nft: { capability: 'minting' as const, commitment: '' } },
-    };
-    await provider.addUtxo(binToHex(MASTER_LBC), masterUtxo);
+    const { n: height } = await allocHeight(provider);
+    const n = BigInt(height);
+    const H = hexToBin('cd'.repeat(32));
+
+    // A minting master of the oracle (genesis) category at a trivial OP_1 p2sh (anyone-can-spend for the test).
+    const master = await provider.addTokenUtxosDynamic(() => [
+      { address: binToHex(MASTER_LBC), satoshis: 10000n, token: { nft: { capability: 'minting', commitment: '' } } },
+    ]);
+    const cat = master.categoryId;
+    const [masterUtxo] = master.utxos;
+
     const consumer = new Contract(
-      compileString('contract B(){ function f(int bn, bytes32 h){ require(blockhash(bn) == h); } }', { blockhashOracleCategory: BH_CAT }),
+      compileString('contract B(){ function f(int bn, bytes32 h){ require(blockhash(bn) == h); } }', { blockhashOracleCategory: cat }),
       [], { provider },
     );
     const updater = new BlockOracleUpdater({
       contract: consumer, categoryId: '00'.repeat(32), keeperKey: alicePriv, rpc: fakeRpc(),
-      blockhashOracleCategory: BH_CAT,
+      blockhashOracleCategory: cat,
       blockhashOracleMaster: {
         utxo: masterUtxo,
         unlocker: { generateLockingBytecode: () => MASTER_LBC, generateUnlockingBytecode: () => MASTER_UNLOCK },
       },
     });
 
-    const H = hexToBin('cd'.repeat(32));
-    const mintTxid = await updater.mintBlockhashPair(100000n, H);
+    const mintTxid = await updater.mintBlockhashPair(n, H);
     expect(mintTxid).toMatch(/^[0-9a-f]{64}$/);
 
-    // The minted (n->hash) NFT is output 1 of the mint tx; a consumer co-spends it and reads blockhash(100000).
-    const cat = hexToBin(BH_CAT);
-    const addrN = blockhashOracleLockingBytecode(cat, 100000n);
-    const redeem = scriptToBytecode(buildBlockhashOracleCovenantScript(cat, 100000n));
-    const token = { category: BH_CAT, amount: 0n, nft: { capability: 'none' as const, commitment: binToHex(buildBlockhashCommitment(100000n, H)) } };
-    const mintedUtxo = { txid: mintTxid, vout: 1, satoshis: 1000n, token };
+    // The minted (n->hash) NFT lives at addr(n); a consumer co-spends it and reads blockhash(n).
+    const catBin = hexToBin(cat);
+    const addrN = blockhashOracleLockingBytecode(catBin, n);
+    const redeem = scriptToBytecode(buildBlockhashOracleCovenantScript(catBin, n));
+    const token = { category: cat, amount: 0n, nft: { capability: 'none' as const, commitment: binToHex(buildBlockhashCommitment(n, H)) } };
+    const [mintedUtxo] = await provider.getUtxosForLockingBytecode(addrN);
     const contractUtxo = await provider.addUtxo(consumer.address, randomUtxo({ satoshis: 100000n }));
     const readUnlock = scriptToBytecode([new Uint8Array(0), redeem]);
 
     const tx = await new TransactionBuilder({ provider })
-      .addInput(contractUtxo, consumer.unlock.f(100000n, H))
+      .addInput(contractUtxo, consumer.unlock.f(n, H))
       .addInput(mintedUtxo, { generateLockingBytecode: () => addrN, generateUnlockingBytecode: () => readUnlock })
       .addOutput({ to: consumer.address, amount: 99000n })
       .addOutput({ to: addrN, amount: 1000n, token })
-      .setLocktime(100000)
+      .setLocktime(Number(n))
       .send();
     expect(tx.txid).toMatch(/^[0-9a-f]{64}$/);
   });
 });
 
-function sweepUpdater(provider: ReturnType<typeof createTestProvider>): BlockOracleUpdater {
+function sweepUpdater(provider: ReturnType<typeof createTestProvider>, cat: string = BH_CAT): BlockOracleUpdater {
   const consumer = new Contract(
-    compileString('contract B(){ function f(int bn, bytes32 h){ require(blockhash(bn) == h); } }', { blockhashOracleCategory: BH_CAT }),
+    compileString('contract B(){ function f(int bn, bytes32 h){ require(blockhash(bn) == h); } }', { blockhashOracleCategory: cat }),
     [], { provider },
   );
   return new BlockOracleUpdater({
-    contract: consumer, categoryId: '00'.repeat(32), keeperKey: alicePriv, rpc: fakeRpc(), blockhashOracleCategory: BH_CAT,
+    contract: consumer, categoryId: '00'.repeat(32), keeperKey: alicePriv, rpc: fakeRpc(), blockhashOracleCategory: cat,
   });
 }
 
 describe('blockhash keeper sweep', () => {
   it('wipes the (n->hash) pair that aged out of the window and reclaims the dust', async () => {
     const provider = createTestProvider();
-    const n = 100000n; // swept at n+256 = 100256 <= mock tip 133700
-    const cat = hexToBin(BH_CAT);
-    const addrN = blockhashOracleLockingBytecode(cat, n);
-    const token = {
-      category: BH_CAT, amount: 0n,
-      nft: { capability: 'none' as const, commitment: binToHex(buildBlockhashCommitment(n, hexToBin('ab'.repeat(32)))) },
-    };
-    await provider.addUtxo(binToHex(addrN), { txid: '55'.repeat(32), vout: 0, satoshis: 2000n, token });
+    const { n: height } = await allocHeight(provider, 256); // mine headroom so n+256 <= tip
+    const n = BigInt(height);
+    const { cat, addrN } = await seedOracleNft(provider, n, hexToBin('ab'.repeat(32)), { satoshis: 2000n });
     expect(await provider.getUtxosForLockingBytecode(addrN)).toHaveLength(1);
 
-    const txid = await sweepUpdater(provider).sweepBlockhashPair(n);
+    const txid = await sweepUpdater(provider, cat).sweepBlockhashPair(n);
     expect(txid).toMatch(/^[0-9a-f]{64}$/);
     expect(await provider.getUtxosForLockingBytecode(addrN)).toHaveLength(0);
   });
 
   it('returns null when there is nothing to sweep at addr(n)', async () => {
-    expect(await sweepUpdater(createTestProvider()).sweepBlockhashPair(99999n)).toBeNull();
+    const provider = createTestProvider();
+    const { n } = await allocHeight(provider); // a fresh height whose addr(n) is empty
+    expect(await sweepUpdater(provider).sweepBlockhashPair(BigInt(n))).toBeNull();
   });
 });
 
@@ -705,16 +756,14 @@ contract BH() {
 describe('blockhash(n) stateful reader', () => {
   it('reads blockhash from a stateful function via the block-layout slot', async () => {
     const provider = createTestProvider();
-    const artifact = compileString(BH_STATEFUL_SRC, { blockhashOracleCategory: BH_CAT });
+    const { n: height } = await allocHeight(provider);
+    const n = BigInt(height); const H = hexToBin('aa'.repeat(32));
+    const { cat } = await seedOracleNft(provider, n, H); // the (n->hash) oracle NFT (its own category)
+    const artifact = compileString(BH_STATEFUL_SRC, { blockhashOracleCategory: cat });
     const contract = new Contract(artifact, [], { provider });
     const { categoryId } = await setupStatefulUtxos(
       provider, contract, artifact.stateLayout!, { counter: 5n }, { saltContract: true },
     );
-
-    const n = 100000n; const H = hexToBin('aa'.repeat(32));
-    const addrN = blockhashOracleLockingBytecode(hexToBin(BH_CAT), n);
-    const token = { category: BH_CAT, amount: 0n, nft: { capability: 'none' as const, commitment: binToHex(buildBlockhashCommitment(n, H)) } };
-    await provider.addUtxo(binToHex(addrN), { txid: 'e1'.repeat(32), vout: 0, satoshis: 1000n, token });
 
     const sc = StatefulContract.withCategory(contract, categoryId);
     const tx = await (sc as any).bump(n, H).send();

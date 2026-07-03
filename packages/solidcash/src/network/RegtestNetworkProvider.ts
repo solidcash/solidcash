@@ -2,6 +2,7 @@ import {
   BchnRpcClient,
   type GenerateToAddress,
   type GetBlockCount,
+  type GetBlockHash,
   type GetNewAddress,
   type SendToAddress,
   type FundRawTransaction,
@@ -90,6 +91,11 @@ export default class RegtestNetworkProvider implements NetworkProvider {
   async getBlockHeight(): Promise<number> {
     await this.ensureReady();
     return this.rpc.request<GetBlockCount>('getblockcount');
+  }
+
+  async getBlockHash(height: number): Promise<string> {
+    await this.ensureReady();
+    return this.rpc.request<GetBlockHash>('getblockhash', height);
   }
 
   async getRawTransaction(txid: string): Promise<string> {

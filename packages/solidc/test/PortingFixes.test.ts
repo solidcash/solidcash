@@ -1879,3 +1879,18 @@ describe('unnamed event parameters', () => {
     expect(a.events?.find((e) => e.name === 'Deploy')?.signature).toBe('Deploy(address)');
   });
 });
+
+// The literal-0 -> bytesN coercion applies at every assignment site (not just var-defs): state var, mapping
+// value, array element, function/event args, and return - matching Solidity's `0` -> bytesN convertibility.
+describe('literal 0 -> bytesN at all assignment sites', () => {
+  it('coerces 0 in state/mapping/array/arg/return/emit positions', () => {
+    const a = compileString(
+      'contract C { bytes32 s; bytes32[3] arr; mapping(uint256 => bytes32) m; event E(bytes32 t);'
+      + ' function g(bytes32 x) internal pure {}'
+      + ' function f(uint256 k) public returns (bytes32) { this.s = 0; this.arr[0] = 0; this.m[k] = 0;'
+      + ' g(0); emit E(0); return 0; } }',
+      { solidityImportCompat: true },
+    );
+    expect(a.contractName).toBe('C');
+  });
+});

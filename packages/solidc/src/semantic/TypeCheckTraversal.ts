@@ -303,8 +303,9 @@ export default class TypeCheckTraversal extends AstTraversal {
         throw new EmitArgumentCountError(node, eventDef.parameters.length, node.args.length);
       }
       for (let i = 0; i < node.args.length; i++) {
-        const argType = node.args[i].type;
         const paramType = eventDef.parameters[i].type;
+        node.args[i] = this.maybeCoerceZeroToBytes(node.args[i], paramType);
+        const argType = node.args[i].type;
         if (argType && !implicitlyCastable(argType, paramType)) {
           throw new EmitArgumentTypeError(node, eventDef.parameters[i].name, argType, paramType);
         }
@@ -547,6 +548,7 @@ export default class TypeCheckTraversal extends AstTraversal {
         ? (node.collection.innermostValueType as ArrayType).elementType
         : node.collection.innermostValueType;
       node.expression = this.maybeCoerceHexToInt(node.expression, expectedValueType);
+      node.expression = this.maybeCoerceZeroToBytes(node.expression, expectedValueType);
       const allKeyTypes = node.collection.allKeyTypes;
       for (let i = 0; i < node.keys.length; i++) {
         if (node.keys[i].type && !implicitlyCastable(node.keys[i].type, allKeyTypes[i])) {
@@ -775,6 +777,7 @@ export default class TypeCheckTraversal extends AstTraversal {
     }
     node.expression = this.visit(node.expression);
     node.expression = this.maybeCoerceHexToInt(node.expression, node.stateVariable?.type);
+    node.expression = this.maybeCoerceZeroToBytes(node.expression, node.stateVariable?.type);
     if (node.stateVariable && node.expression.type) {
       if (!implicitlyCastable(node.expression.type, node.stateVariable.type)) {
         throw new StateAssignTypeError(node, node.expression.type, node.stateVariable.type);
@@ -1296,7 +1299,9 @@ export default class TypeCheckTraversal extends AstTraversal {
         // forwarding) instead of treating the whole tuple as one return value.
         actualTypes = soleType.elements;
       } else {
-        node.expressions = node.expressions.map((e, i) => this.maybeCoerceHexToInt(e, expectedTypes[i]));
+        node.expressions = node.expressions.map(
+          (e, i) => this.maybeCoerceZeroToBytes(this.maybeCoerceHexToInt(e, expectedTypes[i]), expectedTypes[i]),
+        );
         actualTypes = node.expressions.map((e) => e.type!);
       }
       if (actualTypes.length !== expectedTypes.length) {
@@ -1498,10 +1503,10 @@ export default class TypeCheckTraversal extends AstTraversal {
     return expr;
   }
 
-  // Coerce each `0x..` argument against its target parameter type (the call-site analogue of the above).
+  // Coerce each `0x..` / literal-0 argument against its target parameter type (the call-site analogue).
   private coerceHexArgs(args: ExpressionNode[], expected: (Type | undefined)[]): ExpressionNode[] {
     if (!this.solidityImportCompat) return args;
-    return args.map((a, i) => this.maybeCoerceHexToInt(a, expected[i]));
+    return args.map((a, i) => this.maybeCoerceZeroToBytes(this.maybeCoerceHexToInt(a, expected[i]), expected[i]));
   }
 
   // An internal call to a `public` function that RETURNS a value targets the function's internal-call
@@ -2023,6 +2028,7 @@ export default class TypeCheckTraversal extends AstTraversal {
     node.value = this.visit(node.value);
     const sv = node.stateVariable!;
     const arrType = sv.type as ArrayType;
+    node.value = this.maybeCoerceZeroToBytes(node.value, arrType.elementType);
     expectInt(node as any, node.index.type);
     if (!implicitlyCastable(node.value.type, arrType.elementType)) {
       throw new StateAssignTypeError(node as any, node.value.type, arrType.elementType);

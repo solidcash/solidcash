@@ -1839,3 +1839,18 @@ describe('`.value` as a writable struct field name', () => {
     expect(a.contractName).toBe('C');
   });
 });
+
+// The integer literal 0 (and only 0) implicitly converts to any bytesN (all-zero bytes) - a common idiom
+// (`bytes32 constant SLOT = 0`, EVM storage slot 0). Non-zero int literals still error, matching Solidity.
+describe('integer literal 0 coerces to bytesN', () => {
+  it('accepts `bytes32 = 0` as local, state-assign, and constant; rejects non-zero', () => {
+    const a = compileString(
+      'contract C { bytes32 constant S = 0; function f() public pure returns (bytes32 x) {'
+      + ' bytes20 y = 0; x = 0; require(x == S); require(y == bytes20(0)); } }',
+      { solidityImportCompat: true },
+    );
+    expect(a.contractName).toBe('C');
+    expect(() => compileString('contract C { function f() public pure returns (bytes32 r) { r = 5; } }',
+      { solidityImportCompat: true })).toThrow(/can not be assigned/);
+  });
+});

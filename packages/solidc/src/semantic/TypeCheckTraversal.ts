@@ -224,6 +224,7 @@ export default class TypeCheckTraversal extends AstTraversal {
   visitConstantDefinition(node: ConstantDefinitionNode): Node {
     node.expression = this.visit(node.expression);
     node.expression = this.maybeCoerceHexToInt(node.expression, node.type);
+    node.expression = this.maybeCoerceZeroToBytes(node.expression, node.type);
     expectAssignable(
       new VariableDefinitionNode(node.type, [], node.name, node.expression),
       node.expression.type,
@@ -799,6 +800,7 @@ export default class TypeCheckTraversal extends AstTraversal {
     if (node.expression) {
       node.expression = this.visit(node.expression);
       node.expression = this.maybeCoerceHexToInt(node.expression, node.type);
+      node.expression = this.maybeCoerceZeroToBytes(node.expression, node.type);
       expectAssignable(node, node.expression.type, node.type);
     }
 
@@ -885,6 +887,7 @@ export default class TypeCheckTraversal extends AstTraversal {
     }
     node.expression = this.visit(node.expression);
     node.expression = this.maybeCoerceHexToInt(node.expression, node.identifier.type);
+    node.expression = this.maybeCoerceZeroToBytes(node.expression, node.identifier.type);
     expectAssignable(node, node.expression.type, node.identifier.type);
     return node;
   }
@@ -1478,6 +1481,20 @@ export default class TypeCheckTraversal extends AstTraversal {
   private maybeCoerceHexToInt(expr: ExpressionNode, expected?: Type): ExpressionNode {
     if (!this.solidityImportCompat) return expr;
     if (expr instanceof HexLiteralNode && this.isIntegerType(expected)) return this.hexLiteralToInt(expr);
+    return expr;
+  }
+
+  // Solidity allows the integer literal `0` (and only 0) to implicitly convert to any bytesN (all-zero bytes),
+  // a common idiom (`bytes32 constant SLOT = 0`, EVM storage-slot zero). Coerce it to an N-zero-byte literal so
+  // it type-checks + codegen emits the right width; non-zero int literals still error (matches Solidity).
+  private maybeCoerceZeroToBytes(expr: ExpressionNode, expected?: Type): ExpressionNode {
+    if (expr instanceof IntLiteralNode && expr.value === 0n
+      && expected instanceof BytesType && expected.bound !== undefined) {
+      const hex = new HexLiteralNode(new Uint8Array(expected.bound));
+      hex.type = expected;
+      hex.location = expr.location;
+      return hex;
+    }
     return expr;
   }
 

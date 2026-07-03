@@ -2082,25 +2082,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // 1. PRE-ALLOCATE before condition evaluation (for branch operations)
     if (ops) {
       // State writes: push encoded current value from input commitment
-      for (const key of ops.stateWriteKeys) {
-        if (!this.pendingStateWrites.has(key)) { // skip if already pre-allocated by outer branch
-          const [nftIdx, fieldIdx] = key.split(':').map(Number);
-          const sv = this.stateVariables.find((v) => v.nftIndex === nftIdx && v.fieldIndex === fieldIdx)!;
-          // A chunk-backed (dynamic) array/string write reserves a value blob + A$len rather than one scalar
-          // commitment field; pre-allocate both so a conditionally-taken chunk write survives the branch.
-          if (sv.isDynamic) {
-            this.preAllocateDynamicWrite(sv, key, locationData);
-            continue;
-          }
-          this.emitReadCurrentStateValueEncoded(sv, locationData);
-          const stackName = `__internal__state_write_${sv.name}`;
-          // emitReadCurrentStateValueEncoded leaves '(value)' on the tracker - rename it
-          this.popFromStack();
-          this.pushToStack(stackName);
-          this.pendingStateWrites.set(key, stackName);
-          this.preAllocatedStateWrites.add(key);
-        }
-      }
+      for (const key of ops.stateWriteKeys) this.preAllocateStateWrite(key, locationData);
 
       // Transfers: push OP_0 dummies for lockingBytecode + amount
       const transferStartIndex = this.pendingTransfers.length;
@@ -2515,6 +2497,29 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (!writes.includes(sv.name)) writes.push(sv.name);
   }
 
+  /**
+   * Pre-allocate one state-write slot before a conditional (branch/switch) or loop, so a conditionally-taken or
+   * looped write reaches the function epilogue. A chunk-backed (dynamic) array/string reserves a value blob +
+   * A$len (preAllocateDynamicWrite, replaced in place by the write); a scalar reserves one encoded commitment
+   * field. No-op if already pre-allocated by an enclosing branch/loop.
+   */
+  private preAllocateStateWrite(key: string, locationData: SingleLocationData): void {
+    if (this.pendingStateWrites.has(key)) return;
+    const [nftIdx, fieldIdx] = key.split(':').map(Number);
+    const sv = this.stateVariables.find((v) => v.nftIndex === nftIdx && v.fieldIndex === fieldIdx)!;
+    if (sv.isDynamic) {
+      this.preAllocateDynamicWrite(sv, key, locationData);
+      return;
+    }
+    this.emitReadCurrentStateValueEncoded(sv, locationData);
+    const stackName = `__internal__state_write_${sv.name}`;
+    // emitReadCurrentStateValueEncoded leaves '(value)' on the tracker - rename it
+    this.popFromStack();
+    this.pushToStack(stackName);
+    this.pendingStateWrites.set(key, stackName);
+    this.preAllocatedStateWrites.add(key);
+  }
+
   visitTryCatch(node: TryCatchNode): Node {
     // No-op: evaluate the expression, bind return parameters if present, then emit try block
     this.visit(node.expression);
@@ -2554,18 +2559,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // State writes: push encoded current value from input commitment
     const stateWriteKeys = new Set<string>();
     this.collectStateWriteKeys(node.block, stateWriteKeys);
-    for (const key of stateWriteKeys) {
-      if (!this.pendingStateWrites.has(key)) {
-        const [nftIdx, fieldIdx] = key.split(':').map(Number);
-        const sv = this.stateVariables.find((v) => v.nftIndex === nftIdx && v.fieldIndex === fieldIdx)!;
-        this.emitReadCurrentStateValueEncoded(sv, locationData);
-        const stackName = `__internal__state_write_${sv.name}`;
-        this.popFromStack();
-        this.pushToStack(stackName);
-        this.pendingStateWrites.set(key, stackName);
-        this.preAllocatedStateWrites.add(key);
-      }
-    }
+    for (const key of stateWriteKeys) this.preAllocateStateWrite(key, locationData);
 
     // Transfers: push OP_0 dummies for lockingBytecode + amount
     const transferIndices = new Set<number>();
@@ -2677,18 +2671,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     const stateWriteKeys = new Set<string>();
     this.collectStateWriteKeys(node.block, stateWriteKeys);
-    for (const key of stateWriteKeys) {
-      if (!this.pendingStateWrites.has(key)) {
-        const [nftIdx, fieldIdx] = key.split(':').map(Number);
-        const sv = this.stateVariables.find((v) => v.nftIndex === nftIdx && v.fieldIndex === fieldIdx)!;
-        this.emitReadCurrentStateValueEncoded(sv, locationData);
-        const stackName = `__internal__state_write_${sv.name}`;
-        this.popFromStack();
-        this.pushToStack(stackName);
-        this.pendingStateWrites.set(key, stackName);
-        this.preAllocatedStateWrites.add(key);
-      }
-    }
+    for (const key of stateWriteKeys) this.preAllocateStateWrite(key, locationData);
 
     const transferIndices = new Set<number>();
     this.collectTransferIndices(node.block, transferIndices);
@@ -2819,18 +2802,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // PRE-ALLOCATE: same as visitDoWhile/visitWhile - scan body for mutations
     const stateWriteKeys = new Set<string>();
     this.collectStateWriteKeys(node.body, stateWriteKeys);
-    for (const key of stateWriteKeys) {
-      if (!this.pendingStateWrites.has(key)) {
-        const [nftIdx, fieldIdx] = key.split(':').map(Number);
-        const sv = this.stateVariables.find((v) => v.nftIndex === nftIdx && v.fieldIndex === fieldIdx)!;
-        this.emitReadCurrentStateValueEncoded(sv, locationData);
-        const stackName = `__internal__state_write_${sv.name}`;
-        this.popFromStack();
-        this.pushToStack(stackName);
-        this.pendingStateWrites.set(key, stackName);
-        this.preAllocatedStateWrites.add(key);
-      }
-    }
+    for (const key of stateWriteKeys) this.preAllocateStateWrite(key, locationData);
 
     const transferIndices = new Set<number>();
     this.collectTransferIndices(node.body, transferIndices);
@@ -3119,21 +3091,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // 1. PRE-ALLOCATE (same pattern as visitBranch)
     if (ops) {
       for (const key of ops.stateWriteKeys) {
-        if (!this.pendingStateWrites.has(key)) {
-          const [nftIdx, fieldIdx] = key.split(':').map(Number);
-          const sv = this.stateVariables.find((v) => v.nftIndex === nftIdx && v.fieldIndex === fieldIdx)!;
-          // Chunk-backed (dynamic) writes reserve a value blob + A$len; a scalar slot can't back them.
-          if (sv.isDynamic) {
-            this.preAllocateDynamicWrite(sv, key, locationData);
-            continue;
-          }
-          this.emitReadCurrentStateValueEncoded(sv, locationData);
-          const stackName = `__internal__state_write_${sv.name}`;
-          this.popFromStack();
-          this.pushToStack(stackName);
-          this.pendingStateWrites.set(key, stackName);
-          this.preAllocatedStateWrites.add(key);
-        }
+        this.preAllocateStateWrite(key, locationData);
       }
 
       const transferStartIndex = this.pendingTransfers.length;

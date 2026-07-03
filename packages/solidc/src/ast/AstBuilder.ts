@@ -3208,8 +3208,9 @@ export default class AstBuilder
 
   visitErrorDefinition(ctx: ErrorDefinitionContext): ErrorDefinitionNode {
     const errorName = ctx.Identifier().getText();
-    const parameters = ctx.errorParameter_list().map((paramCtx) => ({
-      name: paramCtx.Identifier().getText(),
+    const parameters = ctx.errorParameter_list().map((paramCtx, i) => ({
+      // The name is optional in Solidity (`error Bad(uint256)`); synthesize one for an unnamed param.
+      name: paramCtx.Identifier() ? paramCtx.Identifier().getText() : `__unnamed${i}`,
       type: this.resolveType(paramCtx.typeName().getText()),
     }));
     const node = new ErrorDefinitionNode(errorName, parameters);

@@ -123,7 +123,7 @@ errorDefinition
     ;
 
 errorParameter
-    : typeName Identifier
+    : typeName Identifier?
     ;
 
 structDefinition

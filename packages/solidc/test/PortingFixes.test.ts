@@ -1894,3 +1894,14 @@ describe('literal 0 -> bytesN at all assignment sites', () => {
     expect(a.contractName).toBe('C');
   });
 });
+
+// Custom error parameters may be unnamed in Solidity (`error Bad(uint256)`), like event params.
+describe('unnamed custom error parameters', () => {
+  it('compiles `error Bad(uint256)` and reverts with it', () => {
+    const a = compileString(
+      'contract C { error Bad(uint256); function f(uint256 x) public pure { if (x == 0) revert Bad(x); require(true); } }',
+      { solidityImportCompat: true },
+    );
+    expect(a.contractName).toBe('C');
+  });
+});

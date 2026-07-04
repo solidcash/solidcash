@@ -12,6 +12,7 @@ contract AddrCast() {
   function checkBytes20(address a, bytes20 expected) { require(bytes20(a) == expected); }
   function checkUint160(address a, int expected) { require(uint160(a) == expected); }
   function uint160NonNegative(address a) { require(uint160(a) >= 0); }
+  function checkUint256(bytes32 b, uint256 expected) { require(uint256(b) == expected); }
 }`;
 
 const p2pkh = (pkh: Uint8Array): Uint8Array => hexToBin(`76a914${binToHex(pkh)}88ac`);
@@ -54,6 +55,16 @@ describe('bytes20(address) / uint160(address) narrowing casts (runtime)', () => 
     const sc = await factory.deploy();
     const highBit = new Uint8Array(20).fill(0xff); // top bit set -> would be negative without the 0x00 fix
     const txid = await sc.uint160NonNegative(p2pkh(highBit));
+    expect(txid).toBeDefined();
+  });
+
+  it('uint256(bytes32) sign-pads a top-bit-set value to a positive number', async () => {
+    const factory = getContractFactory(artifact, await fundedSigner());
+    const sc = await factory.deploy();
+    // 0xff at the most-significant (last, little-endian) byte -> uint256 value 0xff * 256^31, top bit set. A bare
+    // BIN2NUM would read this as negative and fail the >= 0 bounds check; the cast sign-pads a 0x00.
+    const highBit = hexToBin(`${'00'.repeat(31)}ff`);
+    const txid = await sc.checkUint256(highBit, leUint(highBit));
     expect(txid).toBeDefined();
   });
 });

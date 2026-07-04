@@ -70,8 +70,12 @@ export function compileCast(from: Type, to: Type, isUnsafe: boolean): Script {
   if (from instanceof IntType && to instanceof BytesType && to.bound !== undefined) {
     return [encodeInt(BigInt(to.bound)), Op.OP_NUM2BIN];
   }
-  // BytesType -> IntType: same as bytes -> int, bounds check emitted by caller
-  if (from instanceof BytesType && to instanceof IntType) return [Op.OP_BIN2NUM];
+  // BytesType -> IntType: bytes are read as a script number. For an UNSIGNED target, sign-pad a 0x00 high byte
+  // first so a value with the top bit set (e.g. uint256(keccak256(...))) reads as positive, not negative - a bare
+  // BIN2NUM would read it as a negative number and fail the caller's >= 0 bounds check. Signed targets read as-is.
+  if (from instanceof BytesType && to instanceof IntType) {
+    return to.signed ? [Op.OP_BIN2NUM] : [new Uint8Array([0x00]), Op.OP_CAT, Op.OP_BIN2NUM];
+  }
   // IntType -> bool: same as int -> bool
   if (from instanceof IntType && to === PrimitiveType.BOOL) return [Op.OP_0NOTEQUAL];
   // bool -> IntType: no-op (0 or 1 always in range), bounds check emitted by caller

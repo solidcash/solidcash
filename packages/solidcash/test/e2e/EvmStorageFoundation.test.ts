@@ -64,16 +64,16 @@ contract TestSlot() {
 }`;
 
 // Two uint256-valued slot pointers. The slot key `uint256(SLOT)` is a compile-time constant the compiler resolves
-// (keySource.kind='constant'), so a READ can locate + co-spend the entry without a key arg. Slots "X"/"B" hash to
-// a uint256 with the high bit CLEAR (no sign byte) - a high-bit slot key currently fails the WRITE via a separate
-// uint256(bytes32) sign-byte encoding issue (see docs/evm-storage-parity.md), out of scope for the read fix here.
+// (keySource.kind='constant'), so a READ can locate + co-spend the entry without a key arg. Slot "A" hashes to a
+// uint256 with the top bit SET (uint256(bytes32) sign-pads a 0x00 so it reads positive, not negative); "B" is high
+// bit clear - both roundtrip.
 const SLOTPTR_U256 = `pragma solidcash >=0.8.0;
 library StorageSlot {
   struct Uint256Slot { uint256 value; }
   function getUint256Slot(bytes32 slot) internal pure returns (Uint256Slot storage r) { assembly { r.slot := slot } }
 }
 contract T() {
-  bytes32 constant A = keccak256("X");
+  bytes32 constant A = keccak256("A");
   bytes32 constant B = keccak256("B");
   function setA(uint256 v, pubkey pk, sig s) {
     require(checkSig(s, pk));

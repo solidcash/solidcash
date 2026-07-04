@@ -1236,7 +1236,7 @@ export default class TypeCheckTraversal extends AstTraversal {
       }
 
       // Check visibility of resolved overload
-      if (node.resolvedFunction.visibility === 'external' && !node.resolvedFunction.isFreeFunction) {
+      if (node.resolvedFunction.visibility === 'external' && !node.resolvedFunction.isFreeFunction && !node.fromThisCall) {
         throw new InternalCallToExternalError(node);
       }
 
@@ -1388,7 +1388,7 @@ export default class TypeCheckTraversal extends AstTraversal {
         }
       }
 
-      if (node.call.resolvedFunction.visibility === 'external' && !node.call.resolvedFunction.isFreeFunction) {
+      if (node.call.resolvedFunction.visibility === 'external' && !node.call.resolvedFunction.isFreeFunction && !node.call.fromThisCall) {
         throw new InternalCallToExternalError(node);
       }
 

@@ -653,6 +653,10 @@ export default class SymbolTableTraversal extends AstTraversal {
 
         // Assign OP_DEFINE function ID
         func.functionId = this.nextFunctionId++;
+      } else if (visibility === 'external') {
+        // An external function is NOT registered as an identifier symbol (its name is not usable internally),
+        // but it still gets an OP_DEFINE id so a `this.f()` self-call can invoke it as a subroutine.
+        func.functionId = this.nextFunctionId++;
       }
       const existing = this.functionDefinitions.get(func.name) ?? [];
       existing.push(func);
@@ -868,13 +872,14 @@ export default class SymbolTableTraversal extends AstTraversal {
       throw new Error(`Identifier '${node.name}' uses reserved prefix '__internal__'`);
     }
     const existing = this.symbolTables[0].get(node.name);
-    // A param may shadow a state variable (Solidity semantics: the param wins in the function scope; the state
-    // var stays reachable via `this.name`) - e.g. `constructor(string name, ..) Base(name, ..)` over an
-    // inherited `string name`. A collision with another param/local is a genuine redefinition. Native solidcash
+    // A param / local / named return may shadow an OUTER-scope symbol: a state variable (the param wins in the
+    // function scope; the state var stays reachable via `this.name`) or a FUNCTION - e.g. a named return with
+    // the same name as its function, `function max(..) returns (int max)`, which is legal Solidity. Both live at
+    // contract/library level, so this never masks a genuine same-scope param/local collision. Native solidcash
     // keeps the strict check.
-    const shadowsStateVar = this.compilerOptions.solidityImportCompat
-      && existing?.symbolType === SymbolType.STATE_VARIABLE;
-    if (existing && !shadowsStateVar) {
+    const shadowsOuter = this.compilerOptions.solidityImportCompat
+      && (existing?.symbolType === SymbolType.STATE_VARIABLE || existing?.symbolType === SymbolType.FUNCTION);
+    if (existing && !shadowsOuter) {
       throw new VariableRedefinitionError(node);
     }
 
@@ -4122,7 +4127,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       }
       if (overloads.length === 1) {
         node.resolvedFunction = overloads[0];
-        if (overloads[0].visibility === 'external' && !overloads[0].isFreeFunction) {
+        if (overloads[0].visibility === 'external' && !overloads[0].isFreeFunction && !node.fromThisCall) {
           throw new InternalCallToExternalError(node);
         }
       }
@@ -4134,7 +4139,11 @@ export default class SymbolTableTraversal extends AstTraversal {
     const isIndirect = !this.functionDefinitions.has(node.identifier.name) && calleeSym?.type instanceof FunctionType;
 
     this.expectedSymbolType = isIndirect ? SymbolType.VARIABLE : SymbolType.FUNCTION;
-    node.identifier = this.visit(node.identifier) as IdentifierNode;
+    // A `this.f()` self-call to an external function is resolved via functionDefinitions above (resolvedFunction
+    // is set); external functions are not identifier symbols, so skip the identifier resolution that would fail.
+    if (!(node.fromThisCall && node.resolvedFunction?.visibility === 'external')) {
+      node.identifier = this.visit(node.identifier) as IdentifierNode;
+    }
     this.expectedSymbolType = SymbolType.VARIABLE;
     node.parameters = this.visitList(node.parameters);
     return node;
@@ -4198,7 +4207,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       throw new UndefinedReferenceError(node.call.identifier);
     }
     const anyCallable = overloads.some((f) => f.visibility !== 'external' || f.isFreeFunction);
-    if (!anyCallable) {
+    if (!anyCallable && !node.call.fromThisCall) {
       throw new InternalCallToExternalError(node);
     }
     if (overloads.length === 1) {

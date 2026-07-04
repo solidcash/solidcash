@@ -9,7 +9,9 @@ import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
 const SRC = `contract C() {
   function dbl(int x) internal pure returns(int) { return x * 2; }
   function addOne(int x) returns(int) { return x + 1; }
+  function ext(int x) external pure returns(int) { return x * 3; }
   function check(int v, int e) { require(this.dbl(v) + this.addOne(v) == e); }
+  function checkExt(int v, int e) { require(this.ext(v) == e); }
 }`;
 
 describe('this.f() external self-call resolves to the own function', () => {
@@ -23,5 +25,16 @@ describe('this.f() external self-call resolves to the own function', () => {
     const tx = await sc.check(5n, 16n).send();
     expect(tx.txid).toBeDefined();
     await expect(sc.check(5n, 15n).send()).rejects.toThrow();
+  });
+
+  it('this.ext(v) invokes an external function as a subroutine', async () => {
+    const art = compileString(SRC, { solidityImportCompat: true, forceStateful: true });
+    const contract = new Contract(art, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(provider, contract, art.stateLayout!, {}, { saltContract: true });
+    const sc = StatefulContract.withCategory(contract, categoryId);
+    // ext(4) = 12
+    const tx = await sc.checkExt(4n, 12n).send();
+    expect(tx.txid).toBeDefined();
+    await expect(sc.checkExt(4n, 11n).send()).rejects.toThrow();
   });
 });

@@ -55,13 +55,18 @@ export default class NamedReturnTransformation extends AstTraversal {
   }
 
   visitFunctionDefinition(node: FunctionDefinitionNode): Node {
-    // Empty-body function with (unnamed) return types: Solidity returns the type defaults. Synthesize
-    // `return <defaults>;` so it compiles. Porting mode only - native keeps EmptyFunctionError as a guard.
-    if (this.solidityImportCompat && node.body && (node.body.statements?.length ?? 0) === 0
+    // Function with (unnamed) return types that does not already end in a return: Solidity returns the type
+    // defaults on fall-through (whether the body is empty or just assigns state). Synthesize a trailing
+    // `return <defaults>;` so it compiles - matches the named-return handling below. Porting mode only; native
+    // keeps the MissingReturn / EmptyFunction guards.
+    if (this.solidityImportCompat && node.body
       && node.returnTypes.length > 0 && node.returnNames.length === 0) {
-      const ret = new ReturnNode(node.returnTypes.map((t) => createDefaultValueExpression(t, node.location)));
-      ret.location = node.location;
-      node.body.statements = [ret];
+      const stmts = node.body.statements ?? [];
+      if (!(stmts[stmts.length - 1] instanceof ReturnNode)) {
+        const ret = new ReturnNode(node.returnTypes.map((t) => createDefaultValueExpression(t, node.location)));
+        ret.location = node.location;
+        node.body.statements = [...stmts, ret];
+      }
       return node;
     }
 

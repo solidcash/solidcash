@@ -1870,6 +1870,14 @@ export default class AstBuilder
       return cast;
     }
 
+    // `uint(x)` is the uint256 alias used as a cast. The typeCast grammar only covers bounded `uintN`, so bare
+    // `uint` reaches here as a call; rewrite it to a cast (Solidity's `uint` == `uint256`).
+    if (identifiers.length === 1 && name === 'uint' && parameters.length === 1) {
+      const cast = new CastNode(parseType('uint'), parameters[0] as ExpressionNode, false);
+      cast.location = Location.fromCtx(ctx);
+      return cast;
+    }
+
     // UDVT `Duration.wrap(x)` / `Duration.unwrap(x)`. A user-defined value type is identity at runtime over its
     // underlying type, so wrap/unwrap are casts: unwrap -> the underlying type; wrap -> the underlying then the
     // UDVT (wrap takes the underlying type, so a literal arg is first cast to it). The typeDefMap check

@@ -64,11 +64,15 @@ pragmaName
     ;
 
 pragmaValue
-    : versionConstraint versionConstraint?
+    : versionConstraint+
+    | '*'          // wildcard version (`pragma solidity *;`)
     ;
 
 versionConstraint
-    : versionOperator? VersionLiteral
+    // Accept 2-part versions (DecimalLiteral, e.g. 0.0) in addition to X.Y.Z, so ported `pragma solidity >=0.0;`
+    // forms parse. Bare numbers (`>1`) stay a parse error - they are not valid version constraints. The version
+    // is validated for solidcash pragmas in the AST builder; ignored under solidityImportCompat.
+    : versionOperator? (VersionLiteral | DecimalLiteral)
     ;
 
 versionOperator

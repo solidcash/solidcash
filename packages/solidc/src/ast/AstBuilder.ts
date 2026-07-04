@@ -585,7 +585,9 @@ export default class AstBuilder
 
     ctx.pragmaValue().versionConstraint_list().forEach((constraint) => {
       const op = getVersionOpFromCtx(constraint.versionOperator());
-      const versionConstraint = `${op}${constraint.VersionLiteral().getText()}`;
+      // The version may be a full X.Y.Z (VersionLiteral) or a 2-part (DecimalLiteral, e.g. 0.0).
+      const versionToken = constraint.VersionLiteral() ?? constraint.DecimalLiteral();
+      const versionConstraint = `${op}${versionToken?.getText() ?? ''}`;
       if (!semver.satisfies(actualVersion, versionConstraint)) {
         throw new VersionError(actualVersion, versionConstraint);
       }

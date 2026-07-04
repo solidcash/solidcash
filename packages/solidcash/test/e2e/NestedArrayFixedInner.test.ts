@@ -16,6 +16,7 @@ contract C() {
     require(checkSig(s, pk)); a = [[v0, v1], [v2, v3]];
   }
   function setw(int i, int j, uint256 v, pubkey pk, sig s) { require(checkSig(s, pk)); a[i][j] = v; }
+  function seedLoop(pubkey pk, sig s) { require(checkSig(s, pk)); for (uint i = 0; i < 3; i++) a.push(); }
   function get(int i, int j, uint256 e) { require(a[i][j] == e); }
   function len(int n) { require(a.length == n); }
 }`;
@@ -59,5 +60,21 @@ describe('fixed-inner nested array uint256[2][] (chunk-packed)', () => {
     await sc.get(0n, 1n, 2n).send();
     await sc.get(1n, 0n, 3n).send();
     await sc.get(1n, 1n, 4n).send();
+  });
+
+  it('no-arg push in a loop appends default (zero) rows (loop-cache preserves noArg)', async () => {
+    const art = compileString(SRC, { solidityImportCompat: true });
+    const contract = new Contract(art, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(provider, contract, art.stateLayout!, {}, { saltContract: true });
+    const sc = StatefulContract.withCategory(contract, categoryId);
+
+    await sc.seedLoop(alicePub, sig()).send(); // for (i<3) a.push(); -> [[0,0],[0,0],[0,0]]
+    await sc.len(3n).send();
+    await sc.get(0n, 0n, 0n).send();
+    await sc.get(2n, 1n, 0n).send();
+    await sc.setw(1n, 0n, 42n, alicePub, sig()).send(); // fill one, verify the rest stay zero
+    await sc.get(1n, 0n, 42n).send();
+    await sc.get(1n, 1n, 0n).send();
+    await sc.get(0n, 0n, 0n).send();
   });
 });

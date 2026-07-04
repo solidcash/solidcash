@@ -135,7 +135,9 @@ export default class CacheDynamicArrayInLoop extends AstTraversal {
   private convertWrites(stmts: StatementNode[], name: string, local: string): StatementNode[] {
     return stmts.map((stmt) => {
       if (stmt instanceof StateArrayPushNode && stmt.name === name) {
-        return this.copyLoc(new ArrayPushNode(local, stmt.value), stmt);
+        const push = new ArrayPushNode(local, stmt.value);
+        push.noArg = stmt.noArg; // preserve no-arg push (its value is a placeholder, defaulted at type-check)
+        return this.copyLoc(push, stmt);
       }
       if (stmt instanceof StateArrayPopNode && stmt.name === name) {
         return this.copyLoc(new ArrayPopNode(local), stmt);

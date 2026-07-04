@@ -439,7 +439,11 @@ const getLowestStartLocation = (locations: SingleLocationData[]): SingleLocation
 };
 
 const mergeAsm = (asm1: string, asm2: string): string => {
-  // We merge two ASM strings by adding a space between them, and removing any duplicate spaces
-  // or trailing/leading spaces, which might have been introduced due to regex matching / replacements / empty asm strings
-  return `${asm1} ${asm2}`.replace(/\s+/g, ' ').trim();
+  // Append two ASM strings with a single separating space. asm1 is the accumulated result of prior merges and
+  // is already normalised, so we only normalise the (small) newly-appended asm2 rather than re-scanning the
+  // whole accumulated string on every append - the latter was O(N^2) on large scripts (huge fixed arrays).
+  const b = asm2.replace(/\s+/g, ' ').trim();
+  if (asm1 === '') return b;
+  if (b === '') return asm1;
+  return `${asm1} ${b}`;
 };

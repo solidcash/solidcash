@@ -2128,3 +2128,25 @@ describe('redundant interface cast on a state-var external-call target', () => {
       + ' function f() external { IFoo(pool).bar(); } }')).toBe('C');
   });
 });
+
+// A constructor external read (`token0 = IERC20(pool.token0())`) has no on-chain-constructor analogue on BCH;
+// it is hoisted to a synthesized deploy-input parameter that the deployer resolves off-chain. This lets a
+// read-derived immutable be used as an external-call target (UniswapV3Flash). See docs/deploy-external-reads.md.
+describe('constructor external read hoisted to a deploy input', () => {
+  const compile = (src: string): ReturnType<typeof compileString> =>
+    compileString(src, { solidityImportCompat: true });
+  const pre = 'interface IPool { function token0() external view returns (address); }'
+    + ' interface IERC20 { function tf(address a, uint v) external; } ';
+  const src = `${pre} contract C { IPool immutable pool; IERC20 immutable token0;`
+    + ' constructor(address _p) { pool = IPool(_p); token0 = IERC20(pool.token0()); }'
+    + ' function f() external { token0.tf(msg.sender, 1); } }';
+  it('compiles a call-derived immutable used as an external-call target', () => {
+    expect(compile(src).contractName).toBe('C');
+  });
+  it('surfaces the hoisted read as a constructor input', () => {
+    const inputs = compile(src).stateLayout?.constructorInputs ?? [];
+    expect(inputs.some((i) => i.name.startsWith('__ctorread_pool_token0'))).toBe(true);
+    // The original param stays first; the hoisted read is appended.
+    expect(inputs[0]?.name).toBe('_p');
+  });
+});

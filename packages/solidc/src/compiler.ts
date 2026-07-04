@@ -18,6 +18,7 @@ import InjectLocktimeGuardTraversal from './semantic/InjectLocktimeGuardTraversa
 import EarlyReturnTransformation from './semantic/EarlyReturnTransformation.js';
 import NamedReturnTransformation from './semantic/NamedReturnTransformation.js';
 import SynthesizeExternalAddressLocals from './semantic/SynthesizeExternalAddressLocals.js';
+import PromoteConstructorExternalReads from './semantic/PromoteConstructorExternalReads.js';
 import SynthesizeLibraryDelegateCalls from './semantic/SynthesizeLibraryDelegateCalls.js';
 import InlineExternalCallHelpers from './semantic/InlineExternalCallHelpers.js';
 import InlineStoragePointerCalls from './semantic/InlineStoragePointerCalls.js';
@@ -203,6 +204,9 @@ function compileResolvedAst(ast: Ast, code: string, mergedCompilerOptions: Compi
   // tell it ran). If-convert it to an unconditional predicated write `m[k] = cond ? default : m[k]`.
   ast = ast.accept(new IfConvertConditionalEntryOp()) as Ast;
 
+  // Constructor external reads (`token0 = IERC20(pool.token0())`) -> synthesized deploy-input params (BCH has
+  // no on-chain constructor; the read is resolved off-chain at deploy). Runs before the target-address synth.
+  ast = ast.accept(new PromoteConstructorExternalReads()) as Ast;
   // Interface-typed state vars used as external-call targets -> synthesized address locals (reuses the
   // local-interface-var dispatch).
   ast = ast.accept(new SynthesizeExternalAddressLocals()) as Ast;
@@ -380,6 +384,7 @@ function compileReferencedContracts(
     singleAst = singleAst.accept(new InlineStoragePointerCalls()) as Ast;
     singleAst = singleAst.accept(new CacheDynamicArrayInLoop()) as Ast;
     singleAst = singleAst.accept(new IfConvertConditionalEntryOp()) as Ast;
+    singleAst = singleAst.accept(new PromoteConstructorExternalReads()) as Ast;
     singleAst = singleAst.accept(new SynthesizeExternalAddressLocals()) as Ast;
     singleAst = singleAst.accept(new SynthesizeBlockOracle(compilerOptions.solidityImportCompat)) as Ast;
     singleAst = singleAst.accept(new SymbolTableTraversal(compilerOptions)) as Ast;

@@ -3610,10 +3610,27 @@ export default class AstBuilder
     return node;
   }
 
-  visitStateArrayPushStatement(ctx: StateArrayPushStatementContext): StateArrayPushNode {
-    const name = ctx.Identifier().getText();
-    const value = this.visit(ctx.expression());
-    const node = new StateArrayPushNode(name, value);
+  visitStateArrayPushStatement(ctx: StateArrayPushStatementContext): StateArrayPushNode | MappingAssignNode {
+    const ids = ctx.Identifier_list();
+    const exprs = ctx.expression_list();
+    // `this.m[k].push(v)` / `this.m[k1][k2].push(v)`: one Identifier + index expressions, last is the value.
+    if (ids.length === 1 && exprs.length > 1) {
+      const keys = exprs.slice(0, -1).map((e) => this.visit(e) as ExpressionNode);
+      const value = this.visit(exprs[exprs.length - 1]) as ExpressionNode;
+      const node = new MappingAssignNode(ids[0].getText(), keys, value);
+      node.arrayPush = true;
+      node.location = Location.fromCtx(ctx);
+      return node;
+    }
+    const value = this.visit(exprs[exprs.length - 1]) as ExpressionNode;
+    // `this.s.xs.push(v)`: struct field array -> the flattened state array.
+    if (ids.length === 2) {
+      const node = new StateArrayPushNode(`${ids[0].getText()}__${ids[1].getText()}`, value);
+      node.location = Location.fromCtx(ctx);
+      return node;
+    }
+    // `this.arr.push(v)`.
+    const node = new StateArrayPushNode(ids[0].getText(), value);
     node.location = Location.fromCtx(ctx);
     return node;
   }

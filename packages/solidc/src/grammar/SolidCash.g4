@@ -399,6 +399,10 @@ arrayDeleteStatement
 
 stateArrayPushStatement
     : 'this' '.' Identifier '.push' '(' expression ')' ';'
+    // `this.`-prefixed indexed (`this.m[k].push(v)`) and member (`this.s.xs.push(v)`) forms, mirroring the bare
+    // arrayPushStatement so an explicit-state receiver parses the same as the bare one.
+    | 'this' '.' Identifier ('[' expression ']')+ '.push' '(' expression ')' ';'
+    | 'this' '.' Identifier '.' Identifier '.push' '(' expression ')' ';'
     ;
 
 stateArrayPopStatement

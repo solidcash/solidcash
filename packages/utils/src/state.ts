@@ -1093,9 +1093,10 @@ export function packFixedWidthElement(value: PrimitiveStateValue, elementType: s
     }
     return bytes;
   }
-  // A fixed-inner array element (a `uint256[N]` row): pack its elements tight. Value is the nested row array.
+  // A fixed-inner array element (a `uint256[N]` row): pack its elements tight. Value is the nested row array
+  // (statically PrimitiveStateValue here, so widen through unknown).
   if (t instanceof ArrayType && t.bound !== undefined) {
-    return packFixedWidthArray(value as PrimitiveStateValue[], t.elementType.toString());
+    return packFixedWidthArray(value as unknown as PrimitiveStateValue[], t.elementType.toString());
   }
   throw new Error(`packFixedWidthElement: '${elementType}' is not a supported fixed-width element type`);
 }

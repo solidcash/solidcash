@@ -5669,6 +5669,12 @@ export default class SymbolTableTraversal extends AstTraversal {
     if (!objectType && node.object instanceof StateAccessNode && node.object.stateVariable) {
       objectType = node.object.stateVariable.type;
     }
+    // A builtin-call receiver (e.g. `keccak256(x).toEthSignedMessageHash()`) has no resolvedFunction (builtins are
+    // not user functions) and no .type yet (set in TypeCheck); read the global function's declared return type.
+    if (!objectType && node.object instanceof FunctionCallNode) {
+      const sym = GLOBAL_SYMBOL_TABLE.get(node.object.identifier.name);
+      if (sym?.symbolType === SymbolType.FUNCTION) objectType = sym.type;
+    }
     if (!objectType) return undefined;
 
     const typeStr = objectType.toString();

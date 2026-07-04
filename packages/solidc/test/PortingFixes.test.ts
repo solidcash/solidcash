@@ -1523,6 +1523,17 @@ describe('using for (library method-call desugar)', () => {
   it('keeps the explicit qualified library call working', () => {
     expect(cc(`${lib} contract C { L.Data d; function f(uint256 v) public { L.setX(d, v); } }`)).toBe('C');
   });
+
+  it('resolves a using-for method chained on a builtin call (keccak256(x).toEth().rec(s))', () => {
+    // The receiver keccak256(x) is a builtin FunctionCallNode with no resolvedFunction/type at symbol-table time;
+    // its return type comes from the global symbol table. This is the OZ ECDSA `hash.toEthSignedMessageHash()
+    // .recover(sig)` shape (BiDirectionalPaymentChannel).
+    const e = 'pragma solidity ^0.8.0; library E { function toEth(bytes32 h) internal pure returns (bytes32) { return h; }'
+      + ' function rec(bytes32 h, bytes memory s) internal pure returns (address) { return address(0); } }';
+    expect(cc(`${e} contract C { using E for bytes32;`
+      + ' function f(bytes memory x, bytes memory s) public pure returns (address) { return keccak256(x).toEth().rec(s); } }'))
+      .toBe('C');
+  });
 });
 
 describe('external call on a tuple-destructured / copied local interface var', () => {

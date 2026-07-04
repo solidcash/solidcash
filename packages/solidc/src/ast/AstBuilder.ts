@@ -276,6 +276,8 @@ export default class AstBuilder
   private typeDefMap: Map<string, ValueType> = new Map();
   private pendingParentInvocations: ParentInvocation[] = [];
   private packedStateArrayNames: Set<string> = new Set();
+  // Unbounded `bytes` state vars, for desugaring `.push`/`.pop` to a whole-value concat / slice reassignment.
+  private bytesStateVarNames: Set<string> = new Set();
   // Chunk-packed/packed state struct arrays -> element StructType, for desugaring element-field writes
   // (`arr[i].field = v`) to a whole-element rebuild (`arr[i] = T(arr[i].f0, .., v, ..)`).
   private packedStructArrayElems: Map<string, StructType> = new Map();
@@ -733,6 +735,14 @@ export default class AstBuilder
       stateVariables
         .filter((sv) => sv.type instanceof ArrayType)
         .map((sv) => [sv.name, sv.type as ArrayType]),
+    );
+    // Unbounded `bytes` state vars support `.push(b)` / `.pop()` (Solidity dynamic byte array). These desugar
+    // to a whole-value concat / slice reassignment (a bytes blob has no per-element prefix), reusing the tested
+    // bytes concat + split codegen rather than the length-prefixed array-element path.
+    this.bytesStateVarNames = new Set(
+      stateVariables
+        .filter((sv) => sv.type instanceof BytesType && (sv.type as BytesType).bound === undefined)
+        .map((sv) => sv.name),
     );
 
     // Collect modifier definitions
@@ -3597,7 +3607,37 @@ export default class AstBuilder
     return placeholder;
   }
 
-  visitArrayPushStatement(ctx: ArrayPushStatementContext): ArrayPushNode | StateArrayPushNode | MappingAssignNode {
+  // `bytes b; b.pop()` desugars to `b = b[0 : b.length - 1]` (drop the last byte). Popping an empty bytes slices
+  // to end -1, which fails at runtime - matching Solidity's revert-on-empty-pop.
+  private desugarBytesPop(name: string, ctx: ParserRuleContext): StateAssignNode {
+    const loc = Location.fromCtx(ctx);
+    const stamp = <T extends { location?: Location }>(n: T): T => { n.location = loc; return n; };
+    const len = stamp(new UnaryOpNode(UnaryOperator.SIZE, stamp(new StateAccessNode(name))));
+    const end = stamp(new BinaryOpNode(len, BinaryOperator.MINUS, stamp(new IntLiteralNode(1n))));
+    const slice = stamp(new SliceNode(stamp(new StateAccessNode(name)), stamp(new IntLiteralNode(0n)), end));
+    return stamp(new StateAssignNode(name, slice));
+  }
+
+  // `bytes b; b.push(v)` desugars to `b = b + v` (append). No-arg push appends one zero byte. A bytes blob has
+  // no per-element length prefix, so a concat is the whole-value append - reuses the tested bytes + codegen.
+  private desugarBytesPush(name: string, value: ExpressionNode | undefined, ctx: ParserRuleContext): StateAssignNode {
+    let appended = value;
+    if (appended === undefined) {
+      appended = new HexLiteralNode(new Uint8Array(1)); // no-arg push() appends a single 0x00 byte
+      appended.location = Location.fromCtx(ctx);
+    }
+    const read = new StateAccessNode(name);
+    read.location = Location.fromCtx(ctx);
+    const concat = new BinaryOpNode(read, BinaryOperator.PLUS, appended);
+    concat.location = Location.fromCtx(ctx);
+    const node = new StateAssignNode(name, concat);
+    node.location = Location.fromCtx(ctx);
+    return node;
+  }
+
+  visitArrayPushStatement(
+    ctx: ArrayPushStatementContext,
+  ): ArrayPushNode | StateArrayPushNode | MappingAssignNode | StateAssignNode {
     const ids = ctx.Identifier_list();
     const keys = ctx.expression_list();       // bracket index keys only; the value lives under pushArgument
     const argCtx = ctx.pushArgument();
@@ -3621,6 +3661,10 @@ export default class AstBuilder
       return node;
     }
     const name = ids[0].getText();
+    // Unbounded `bytes` state var: `.push(v)` is a byte-blob append, desugared to a concat reassignment.
+    if (this.bytesStateVarNames.has(name)) {
+      return this.desugarBytesPush(name, noArg ? undefined : value, ctx);
+    }
     // Bare `arr.push(x)` on a state array (Solidity's idiom - storage arrays only) routes to the state push,
     // matching the bare state element-access routing. `this.arr.push(x)` already hits visitStateArrayPushStatement.
     const node = this.packedStateArrayNames.has(name)
@@ -3631,7 +3675,9 @@ export default class AstBuilder
     return node;
   }
 
-  visitArrayPopStatement(ctx: ArrayPopStatementContext): ArrayPopNode | StateArrayPopNode | MappingAssignNode {
+  visitArrayPopStatement(
+    ctx: ArrayPopStatementContext,
+  ): ArrayPopNode | StateArrayPopNode | MappingAssignNode | StateAssignNode {
     const ids = ctx.Identifier_list();
     const exprs = ctx.expression_list();
     // `map[k].pop()` / `m[k1][k2].pop()`: one Identifier + index expressions (the keys), no value.
@@ -3650,6 +3696,8 @@ export default class AstBuilder
       return node;
     }
     const name = ids[0].getText();
+    // Unbounded `bytes` state var: `.pop()` drops the last byte via a slice reassignment.
+    if (this.bytesStateVarNames.has(name)) return this.desugarBytesPop(name, ctx);
     const node = this.packedStateArrayNames.has(name)
       ? new StateArrayPopNode(name)
       : new ArrayPopNode(name);
@@ -3657,12 +3705,18 @@ export default class AstBuilder
     return node;
   }
 
-  visitStateArrayPushStatement(ctx: StateArrayPushStatementContext): StateArrayPushNode | MappingAssignNode {
+  visitStateArrayPushStatement(
+    ctx: StateArrayPushStatementContext,
+  ): StateArrayPushNode | MappingAssignNode | StateAssignNode {
     const ids = ctx.Identifier_list();
     const keys = ctx.expression_list();       // bracket index keys only; the value lives under pushArgument
     const argCtx = ctx.pushArgument();
     const noArg = argCtx === null;
     const value = noArg ? this.noArgPushPlaceholder(ctx) : this.visit(argCtx.expression()) as ExpressionNode;
+    // `this.b.push(v)` on an unbounded `bytes` state var -> concat reassignment (byte-blob append).
+    if (ids.length === 1 && keys.length === 0 && this.bytesStateVarNames.has(ids[0].getText())) {
+      return this.desugarBytesPush(ids[0].getText(), noArg ? undefined : value, ctx);
+    }
     // `this.m[k].push(v)` / `this.m[k1][k2].push(v)`: one Identifier + index keys.
     if (ids.length === 1 && keys.length >= 1) {
       const keyNodes = keys.map((e) => this.visit(e) as ExpressionNode);
@@ -3686,7 +3740,9 @@ export default class AstBuilder
     return node;
   }
 
-  visitStateArrayPopStatement(ctx: StateArrayPopStatementContext): StateArrayPopNode | MappingAssignNode {
+  visitStateArrayPopStatement(
+    ctx: StateArrayPopStatementContext,
+  ): StateArrayPopNode | MappingAssignNode | StateAssignNode {
     const ids = ctx.Identifier_list();
     const exprs = ctx.expression_list();
     // `this.m[k].pop()` / `this.m[k1][k2].pop()`: one Identifier + index expressions (keys), no value.
@@ -3698,6 +3754,10 @@ export default class AstBuilder
       node.arrayPop = true;
       node.location = Location.fromCtx(ctx);
       return node;
+    }
+    // `this.b.pop()` on an unbounded `bytes` state var -> slice reassignment (drop the last byte).
+    if (ids.length === 1 && this.bytesStateVarNames.has(ids[0].getText())) {
+      return this.desugarBytesPop(ids[0].getText(), ctx);
     }
     // `this.s.xs.pop()`: struct field array -> the flattened state array.
     if (ids.length === 2) {

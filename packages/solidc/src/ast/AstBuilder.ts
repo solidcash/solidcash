@@ -2118,9 +2118,23 @@ export default class AstBuilder
     return intLiteral;
   }
 
-  createDecimalLiteral(ctx: LiteralContext): DecimalLiteralNode {
+  createDecimalLiteral(ctx: LiteralContext): DecimalLiteralNode | IntLiteralNode {
     const decCtx = ctx.decimalLiteral();
     const text = decCtx.DecimalLiteral().getText();
+    // A value unit after a decimal (`0.2 ether`, `1.5 gwei`) folds `decimal * unit` to an integer literal when
+    // the product is exact - the same units the integer form (createIntLiteral) already accepts.
+    const unit = (decCtx.NumberUnit?.() ?? decCtx.BchUnit?.())?.getText();
+    if (unit) {
+      const mult = BigInt(NumberUnit[unit.toUpperCase()]);
+      const [intPart, fracPart = ''] = text.replace(/_/g, '').split('.');
+      const scaled = BigInt((intPart || '0') + fracPart); // "0.2" -> 2
+      const denom = 10n ** BigInt(fracPart.length); // 10^(#frac digits)
+      if ((scaled * mult) % denom === 0n) {
+        const intNode = new IntLiteralNode((scaled * mult) / denom);
+        intNode.location = Location.fromCtx(ctx);
+        return intNode;
+      }
+    }
     const node = new DecimalLiteralNode(text);
     node.location = Location.fromCtx(ctx);
     return node;

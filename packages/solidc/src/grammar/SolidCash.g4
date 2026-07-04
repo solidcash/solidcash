@@ -773,7 +773,7 @@ numberLiteral
     ;
 
 decimalLiteral
-    : DecimalLiteral
+    : DecimalLiteral (NumberUnit | BchUnit)?
     ;
 
 typeName

@@ -2184,3 +2184,17 @@ describe('public constant is baked, not stored as state', () => {
     expect((a.stateLayout?.variables ?? []).map((v) => v.name)).not.toContain('TWO');
   });
 });
+
+// A value unit (wei/gwei/ether) after a decimal literal (`0.2 ether`) folds to an integer, the same units the
+// integer form (`1 ether`) already accepts. Common in ported Solidity.
+describe('decimal literal with a value unit (0.2 ether)', () => {
+  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  it('accepts and folds `0.2 ether` to its integer value', () => {
+    expect(cc('contract C { function f() public pure returns (bool) {'
+      + ' require(0.2 ether == 200000000000000000); return true; } }')).toBe('C');
+  });
+  it('accepts `1.5 gwei`', () => {
+    expect(cc('contract C { function f() public pure returns (bool) {'
+      + ' require(1.5 gwei == 1500000000); return true; } }')).toBe('C');
+  });
+});

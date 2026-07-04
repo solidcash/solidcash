@@ -165,9 +165,9 @@ const BYTES32 = new BytesType(32);
 // is not mutated between the mstore and the read (the usual store-then-hash shape).
 const memory = new Map<bigint, YulExpressionNode>();
 
-// EVM `bytes memory` layout is [length(32)][data...], so `mload(add(ptr, off))` reads the 32-byte word at
-// data[off-32 : off]. For a bytes-typed parameter that lowers to a byte slice `bytes32(ptr[off-32 : off])`.
-function bytesMemorySlice(memArg: YulExpressionNode): ExpressionNode | undefined {
+// EVM `bytes memory` layout is [length(32)][data...], so `add(ptr, off)` points at data[off-32]. Parse the
+// `add(<bytesParam>, <const off>)` pointer form to { name, start=off-32 } (start = the byte offset into the value).
+function parseBytesPtr(memArg: YulExpressionNode): { name: string; start: bigint } | undefined {
   if (!(memArg instanceof YulFunctionCallNode) || memArg.name !== 'add' || memArg.args.length !== 2) return undefined;
   const [base, offArg] = memArg.args;
   if (!(base instanceof YulPathNode) || base.members.length > 0 || !isIntLiteral(offArg)) return undefined;
@@ -175,8 +175,15 @@ function bytesMemorySlice(memArg: YulExpressionNode): ExpressionNode | undefined
   if (!param) return undefined;
   const start = BigInt(offArg.raw) - 32n; // skip the length word
   if (start < 0n) return undefined;
+  return { name: base.base, start };
+}
+
+// `mload(add(ptr, off))` reads the 32-byte word at data[off-32 : off] -> `bytes32(ptr[off-32 : off])`.
+function bytesMemorySlice(memArg: YulExpressionNode): ExpressionNode | undefined {
+  const ptr = parseBytesPtr(memArg);
+  if (!ptr) return undefined;
   const slice = loc(
-    new SliceNode(loc(new IdentifierNode(base.base), memArg), intLit(start, memArg), intLit(start + 32n, memArg)),
+    new SliceNode(loc(new IdentifierNode(ptr.name), memArg), intLit(ptr.start, memArg), intLit(ptr.start + 32n, memArg)),
     memArg,
   );
   return loc(new CastNode(BYTES32, slice, false), memArg);
@@ -338,6 +345,24 @@ function lowerCall(call: YulFunctionCallNode): ExpressionNode {
       return loc(new IdentifierNode(local), call);
     }
     throw new YulNotLowerable();
+  }
+  // byte(n, x): the n-th byte (big-endian, 0 = most significant) of the 32-byte word x -> bytes1. Backs the
+  // signature-split idiom `v := byte(0, mload(add(sig, 96)))`. Only a literal, in-range index is lowered.
+  if (name === 'byte' && args.length === 2 && isIntLiteral(args[0])) {
+    const n = BigInt(args[0].raw);
+    if (n < 0n || n > 31n) throw new YulNotLowerable();
+    // byte(n, mload(add(param, off))) needs only ONE byte (param[off-32+n]); fold to it so a full 32-byte word
+    // read past the end of a short value (the v byte of a 65-byte sig reads word [64:96]) never happens.
+    const inner = args[1];
+    if (inner instanceof YulFunctionCallNode && inner.name === 'mload' && inner.args.length === 1) {
+      const ptr = parseBytesPtr(inner.args[0]);
+      if (ptr) {
+        const at = ptr.start + n;
+        return loc(new SliceNode(loc(new IdentifierNode(ptr.name), call), intLit(at, call), intLit(at + 1n, call)), call);
+      }
+    }
+    const word = loc(new CastNode(BYTES32, lowerValue(args[1]), false), call);
+    return loc(new SliceNode(word, intLit(n, call), intLit(n + 1n, call)), call);
   }
   // mload(p) -> the word stored at that constant offset (compile-time memory model), or a `bytes memory`
   // slice for the `mload(add(ptr, off))` parameter-reading form.

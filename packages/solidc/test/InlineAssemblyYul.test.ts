@@ -198,6 +198,28 @@ describe('Yul memory (constant-offset scratch)', () => {
       { solidityImportCompat: true },
     )).not.toThrow();
   });
+
+  it('byte(0, mload(add(sig, 96))) folds to a single in-bounds byte (the v of a 65-byte sig)', () => {
+    // A full 32-byte word read at offset 64 of a 65-byte value would be out of bounds; byte(0, ...) needs only
+    // sig[64], so it must fold to a 1-byte slice, not a bytes32 read.
+    const yul = compileString(
+      'contract C(){function f(bytes65 sig)returns(uint8 v){assembly{v:=byte(0,mload(add(sig,96)))}}}',
+      { solidityImportCompat: true },
+    );
+    const direct = compileString(
+      'contract C(){function f(bytes65 sig)returns(uint8 v){v=uint8(sig[64:65]);}}',
+      { solidityImportCompat: true },
+    );
+    expect(yul.bytecode).toBe(direct.bytecode);
+  });
+
+  it('compiles the full ecrecover splitSignature (r/s via mload, v via byte(0, mload))', () => {
+    expect(() => compileString(
+      'contract C(){function f(bytes65 sig)returns(bytes32 r,bytes32 s,uint8 v){'
+      + 'assembly{r:=mload(add(sig,32)) s:=mload(add(sig,64)) v:=byte(0,mload(add(sig,96)))}}}',
+      { solidityImportCompat: true },
+    )).not.toThrow();
+  });
 });
 
 // Phase 7b: packed storage slots. sload(slot) combines the sub-word vars sharing that slot into a word;

@@ -3559,7 +3559,13 @@ export default class SymbolTableTraversal extends AstTraversal {
       // the second init re-declares a name still in scope. Allow it only when both the old and new bindings
       // are loop variables (the prior loop is dead and its body already resolved in-order); set() overwrites.
       const existingDef = existing.definition as VariableDefinitionNode | undefined;
-      if (!(node.isLoopVariable && existingDef?.isLoopVariable)) {
+      const loopReuse = node.isLoopVariable && existingDef?.isLoopVariable;
+      // A local may shadow an OUTER-scope function or state variable (both declared at contract/library level) -
+      // e.g. a named return with the same name as its function, `function max(..) returns (int max)`, legal in
+      // Solidity. set() below adds it to the inner scope, so the shadow resolves correctly.
+      const shadowsOuter = this.compilerOptions.solidityImportCompat
+        && (existing.symbolType === SymbolType.FUNCTION || existing.symbolType === SymbolType.STATE_VARIABLE);
+      if (!loopReuse && !shadowsOuter) {
         throw new VariableRedefinitionError(node);
       }
     }

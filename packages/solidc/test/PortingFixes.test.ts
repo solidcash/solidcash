@@ -2150,3 +2150,18 @@ describe('constructor external read hoisted to a deploy input', () => {
     expect(inputs[0]?.name).toBe('_p');
   });
 });
+
+// A named return may share the name of its own function - `function max(..) returns (int max)` - which is
+// legal Solidity (the named return shadows the function name within the body). A local may shadow an outer
+// function or state variable in general (both are contract/library-level, never a same-scope collision).
+describe('local / named return may shadow an outer function or state var', () => {
+  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  it('accepts a named return with the same name as its function', () => {
+    expect(cc('contract C { function max(int x) public pure returns (int max) { max = x; }'
+      + ' function f() public pure returns (int) { return max(3); } }')).toBe('C');
+  });
+  it('accepts a local shadowing a function name', () => {
+    expect(cc('contract C { function helper() internal pure returns (uint) { return 1; }'
+      + ' function f() public pure returns (uint) { uint helper = 5; return helper; } }')).toBe('C');
+  });
+});

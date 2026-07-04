@@ -686,12 +686,12 @@ export default class AstBuilder
       }
     }
 
-    // Flatten state vars of a mapping-bearing struct type: a struct with a mapping field has no value
-    // representation, so each field becomes its own state element, namespaced `<var>__<field>`.
+    // Flatten state vars of a struct with no single-value representation - a mapping field, or a dynamic
+    // chunk-packed array field - into per-field state elements namespaced `<var>__<field>`.
     this.mappingStructStateVars = new Map();
     const expandedStateVars: StateVariableNode[] = [];
     for (const sv of stateVariables) {
-      if (sv.type instanceof StructType && sv.type.fields.some((f) => f.type instanceof MappingType)) {
+      if (sv.type instanceof StructType && this.structNeedsFieldFlattening(sv.type)) {
         this.mappingStructStateVars.set(sv.name, sv.type);
         for (const field of sv.type.fields) {
           const flat = this.buildFlattenedStructField(field.type, `${sv.name}__${field.name}`, sv.location);
@@ -1215,7 +1215,15 @@ export default class AstBuilder
     return variableDefinition;
   }
 
-  // Build the flattened state node for one field of a mapping-bearing struct: mapping -> collection, a dynamic
+  // A struct state var is flattened field-by-field when it has no single-value representation: a mapping field,
+  // or a dynamic chunk-packed array field (both back their own state element; see buildFlattenedStructField).
+  private structNeedsFieldFlattening(t: StructType): boolean {
+    return t.fields.some((f) => f.type instanceof MappingType
+      || (this.chunkedArrays && f.type instanceof ArrayType && f.type.bound === undefined
+        && isChunkPackableElementType(f.type.elementType)));
+  }
+
+  // Build the flattened state node for one field of a flattened struct: mapping -> collection, a dynamic
   // chunk-packable array -> dynamic state var, other array -> collection, value type -> state var.
   private buildFlattenedStructField(
     fieldType: Type, flatName: string, location: Location | undefined,

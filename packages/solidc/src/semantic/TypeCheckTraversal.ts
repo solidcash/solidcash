@@ -7,6 +7,7 @@ import {
   ArrayType,
   TupleType,
   BytesType,
+  encodeString,
   IntType,
   FixedType,
   Type,
@@ -41,6 +42,7 @@ import {
   SliceNode,
   IntLiteralNode,
   HexLiteralNode,
+  StringLiteralNode,
   DecimalLiteralNode,
   DoWhileNode,
   WhileNode,
@@ -544,29 +546,44 @@ export default class TypeCheckTraversal extends AstTraversal {
     }
     node.expression = this.visit(node.expression);
     if (node.collection) {
-      const expectedValueType = node.arrayIndex
-        ? (node.collection.innermostValueType as ArrayType).elementType
-        : node.collection.innermostValueType;
-      node.expression = this.maybeCoerceHexToInt(node.expression, expectedValueType);
-      node.expression = this.maybeCoerceZeroToBytes(node.expression, expectedValueType);
+      const innerType = node.collection.innermostValueType;
+      // `map[k].push(v)` / `.pop()` / `map[k][i] = v` operate on the array's element type; a whole-value assign
+      // uses the value type. push/pop require the mapping value to be an array.
+      const isArrayOp = node.arrayIndex !== undefined || node.arrayPush || node.arrayPop;
+      if ((node.arrayPush || node.arrayPop) && !(innerType instanceof ArrayType)) {
+        throw new MappingAssignTypeError(node, innerType, innerType);
+      }
+      const expectedValueType = isArrayOp && innerType instanceof ArrayType ? innerType.elementType : innerType;
+      if (!node.arrayPop) {
+        node.expression = this.maybeCoerceHexToInt(node.expression, expectedValueType);
+        node.expression = this.maybeCoerceZeroToBytes(node.expression, expectedValueType);
+      }
       const allKeyTypes = node.collection.allKeyTypes;
       for (let i = 0; i < node.keys.length; i++) {
         if (node.keys[i].type && !implicitlyCastable(node.keys[i].type, allKeyTypes[i])) {
           throw new TypeError(node, node.keys[i].type, allKeyTypes[i]);
         }
       }
-      if (node.arrayIndex) {
+      if (node.arrayPop) {
+        // pop takes no value; the array-ness check above is all that is needed.
+      } else if (node.arrayIndex) {
         // Array element assign: validate index is int, expression matches element type
         if (node.arrayIndex.type && !implicitlyCastable(node.arrayIndex.type, PrimitiveType.BIGINT)) {
           throw new TypeError(node, node.arrayIndex.type, PrimitiveType.BIGINT);
         }
-        const arrType = node.collection.innermostValueType as ArrayType;
+        const arrType = innerType as ArrayType;
+        if (node.expression.type && !implicitlyCastable(node.expression.type, arrType.elementType)) {
+          throw new MappingAssignTypeError(node, node.expression.type, arrType.elementType);
+        }
+      } else if (node.arrayPush) {
+        // Append: the pushed value matches the element type.
+        const arrType = innerType as ArrayType;
         if (node.expression.type && !implicitlyCastable(node.expression.type, arrType.elementType)) {
           throw new MappingAssignTypeError(node, node.expression.type, arrType.elementType);
         }
       } else {
-        if (node.expression.type && !implicitlyCastable(node.expression.type, node.collection.innermostValueType)) {
-          throw new MappingAssignTypeError(node, node.expression.type, node.collection.innermostValueType);
+        if (node.expression.type && !implicitlyCastable(node.expression.type, innerType)) {
+          throw new MappingAssignTypeError(node, node.expression.type, innerType);
         }
       }
     }
@@ -804,6 +821,7 @@ export default class TypeCheckTraversal extends AstTraversal {
       node.expression = this.visit(node.expression);
       node.expression = this.maybeCoerceHexToInt(node.expression, node.type);
       node.expression = this.maybeCoerceZeroToBytes(node.expression, node.type);
+      node.expression = this.maybeCoerceStringToBytesN(node.expression, node.type);
       expectAssignable(node, node.expression.type, node.type);
     }
 
@@ -1520,10 +1538,31 @@ export default class TypeCheckTraversal extends AstTraversal {
     return expr;
   }
 
+  // Solidity right-pads a string literal into a fixed bytesN when it fits (e.g. `bytes32 x = "abc"`). Convert it
+  // to a bytesN hex literal so the existing fixed-bytes codegen handles it (string -> dynamic bytes already
+  // works). Porting mode only. Over-long literals fall through to the normal (rejecting) assignability check.
+  private maybeCoerceStringToBytesN(expr: ExpressionNode, expected?: Type): ExpressionNode {
+    if (this.solidityImportCompat && expr instanceof StringLiteralNode
+      && expected instanceof BytesType && expected.bound !== undefined) {
+      const bytes = encodeString(expr.value);
+      if (bytes.length <= expected.bound) {
+        const padded = new Uint8Array(expected.bound);
+        padded.set(bytes);
+        const hex = new HexLiteralNode(padded);
+        hex.type = expected;
+        hex.location = expr.location;
+        return hex;
+      }
+    }
+    return expr;
+  }
+
   // Coerce each `0x..` / literal-0 argument against its target parameter type (the call-site analogue).
   private coerceHexArgs(args: ExpressionNode[], expected: (Type | undefined)[]): ExpressionNode[] {
     if (!this.solidityImportCompat) return args;
-    return args.map((a, i) => this.maybeCoerceZeroToBytes(this.maybeCoerceHexToInt(a, expected[i]), expected[i]));
+    return args.map((a, i) => this.maybeCoerceStringToBytesN(
+      this.maybeCoerceZeroToBytes(this.maybeCoerceHexToInt(a, expected[i]), expected[i]), expected[i],
+    ));
   }
 
   // An internal call to a `public` function that RETURNS a value targets the function's internal-call

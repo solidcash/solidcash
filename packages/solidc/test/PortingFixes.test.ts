@@ -2222,3 +2222,17 @@ describe('unspaced subtraction of a number literal (i-1)', () => {
       + ' require(v == 0); } }', { solidityImportCompat: true })).toThrow();
   });
 });
+
+// `delete X.field` (reset a struct field to its default) resets it via the same struct-rebuild path as
+// `X.field = <default>`. Only `delete X`, `delete X[k]` were supported before.
+describe('delete on a struct field (delete X.field)', () => {
+  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  it('deletes a scalar struct field', () => {
+    expect(cc('contract C { struct S { uint x; bytes32 h; }'
+      + ' function f() public pure returns (uint) { S memory s; s.x = 5; delete s.h; return s.x; } }')).toBe('C');
+  });
+  it('deletes a nested struct field (b.a.x)', () => {
+    expect(cc('contract C { struct A { uint x; } struct B { A a; uint y; }'
+      + ' function f() public pure returns (uint) { B memory b; b.y = 3; delete b.a.x; return b.y; } }')).toBe('C');
+  });
+});

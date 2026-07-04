@@ -431,6 +431,7 @@ deleteStatement
     | 'delete' 'this' '.' Identifier ('[' expression ']')+ ';'     # DeleteMappingEntry
     | 'delete' Identifier ('[' expression ']')+ ';'                # DeleteIndexed
     | 'delete' Identifier ('.' Identifier)+ ('[' expression ']')+ ';' # DeleteMemberEntry
+    | 'delete' Identifier ('.' Identifier)+ ';'                    # DeleteMember
     ;
 
 timeOpStatement

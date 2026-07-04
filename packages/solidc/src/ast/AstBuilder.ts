@@ -115,6 +115,7 @@ import {
   UsingForBinding,
 } from './AST.js';
 import { cloneNode } from './clone.js';
+import { createDefaultValueExpression } from './defaults.js';
 import { UnaryOperator, BinaryOperator, NullaryOperator } from './Operator.js';
 import type {
   ContractDefinitionContext,
@@ -255,7 +256,7 @@ import {
 } from './Globals.js';
 import { getPragmaName, PragmaName, getVersionOpFromCtx } from './Pragma.js';
 import { version } from '../index.js';
-import { ParseError, StateVariableNameCollisionError, VersionError } from '../Errors.js';
+import { ParseError, StateVariableNameCollisionError, UnsupportedTypeError, VersionError } from '../Errors.js';
 
 const RESERVED_STATE_NAMES = ['age', 'activeInputIndex', 'activeBytecode', 'categoryId', 'tokens'];
 
@@ -353,11 +354,7 @@ export default class AstBuilder
 
     // File-level struct definitions (must be registered before interfaces for type resolution)
     const structDefinitions: StructDefinitionNode[] = [];
-    for (const sdCtx of ctx.structDefinition_list()) {
-      const sd = this.visitStructDefinition(sdCtx);
-      structDefinitions.push(sd);
-      this.structMap.set(sd.name, new StructType(sd.name, sd.fields));
-    }
+    this.registerStructDefinitions(ctx.structDefinition_list(), structDefinitions);
 
     // File-level type definitions (user-defined value types)
     const typeDefinitions: TypeDefinitionNode[] = [];
@@ -395,11 +392,7 @@ export default class AstBuilder
       }
 
       // Library struct definitions
-      for (const sdCtx of libCtx.structDefinition_list()) {
-        const sd = this.visitStructDefinition(sdCtx);
-        structDefinitions.push(sd);
-        this.structMap.set(sd.name, new StructType(sd.name, sd.fields));
-      }
+      this.registerStructDefinitions(libCtx.structDefinition_list(), structDefinitions);
 
       // Library type definitions
       for (const tdCtx of libCtx.typeDefinition_list()) {
@@ -641,11 +634,7 @@ export default class AstBuilder
 
     // Collect struct definitions first (they must be available for type resolution)
     const structDefinitions: StructDefinitionNode[] = [];
-    for (const sdCtx of ctx.structDefinition_list()) {
-      const sd = this.visitStructDefinition(sdCtx);
-      structDefinitions.push(sd);
-      this.structMap.set(sd.name, new StructType(sd.name, sd.fields));
-    }
+    this.registerStructDefinitions(ctx.structDefinition_list(), structDefinitions);
 
     // Collect type definitions (user-defined value types)
     const typeDefinitions: TypeDefinitionNode[] = [];
@@ -2517,52 +2506,14 @@ export default class AstBuilder
     // index, no alias). Struct fields have no in-place write codegen, so rebuild the base value from the
     // innermost field outward and assign it back: `base = T(base.g0, .., (g==f1 ? <rebuilt f1> : base.g), ..)`.
     // Recurses for nested chains (`b.a.x = v`, `this.d.a.x = v`).
-    const memberChain = members;
-    // A bare `s.field = v` where `s` is a state struct var (not shadowed by a local) is the Solidity form of
-    // `this.s.field = v`; bare state reads already resolve this way, so treat the write as a state field write.
-    const bareStateStruct = !isThis && !this.localStructTypes.has(rawName) && this.stateStructVars.has(rawName);
-    const useState = isThis || bareStateStruct;
-    const baseStructT = (memberChain.length >= 1 && keyCtxs.length === 0 && !this.storageAliases.has(rawName))
-      ? (useState ? this.stateStructVars.get(rawName) : this.localStructTypes.get(rawName))
-      : undefined;
-    if (baseStructT && this.chainStructTypes(baseStructT, memberChain)) {
-      const baseRead = (): ExpressionNode => {
-        const r: ExpressionNode = useState ? new StateAccessNode(rawName) : new IdentifierNode(rawName);
-        r.location = nameLoc;
-        return r;
-      };
-      const fieldAccess = (expr: ExpressionNode, field: string): ExpressionNode => {
-        const fa = new FieldAccessNode(expr, field);
-        fa.location = loc;
-        return fa;
-      };
-      // Rebuild `structExpr` (struct type t) with `structExpr.chain` replaced by finalValue.
-      const rebuild = (structExpr: ExpressionNode, t: StructType, chain: string[], finalValue: ExpressionNode):
-      ExpressionNode => {
-        const [head, ...rest] = chain;
-        const newField = rest.length === 0
-          ? finalValue
-          : rebuild(fieldAccess(cloneNode(structExpr), head), this.resolveFieldStruct(t, head)!, rest, finalValue);
-        const ctorId = new IdentifierNode(t.name);
-        ctorId.location = nameLoc;
-        const ctor = new FunctionCallNode(
-          ctorId,
-          t.fields.map((f) => (f.name === head ? newField : fieldAccess(cloneNode(structExpr), f.name))),
-        );
-        ctor.location = loc;
-        return ctor;
-      };
-      let chainRead = baseRead();
-      for (const m of memberChain) chainRead = fieldAccess(chainRead, m);
-      const finalValue = op === '='
-        ? this.visit(valueCtx!) as ExpressionNode
-        : this.compoundRhs(chainRead, op, valueCtx, loc);
-      const rebuilt = rebuild(baseRead(), baseStructT, memberChain, finalValue);
-      const assign: StatementNode = useState
-        ? new StateAssignNode(rawName, rebuilt)
-        : new AssignNode(baseRead() as IdentifierNode, rebuilt); // local: baseRead() is an IdentifierNode
-      assign.location = loc;
-      return assign;
+    // Struct field-chain write `<base>.f1..fn op= v` (no index/alias): rebuild the base with the field replaced
+    // and assign it back (struct fields have no in-place write codegen). See buildStructFieldRebuild.
+    if (keyCtxs.length === 0) {
+      const rebuilt = this.buildStructFieldRebuild(rawName, nameLoc, members, isThis, loc,
+        (chainRead) => (op === '='
+          ? this.visit(valueCtx!) as ExpressionNode
+          : this.compoundRhs(chainRead, op, valueCtx, loc)));
+      if (rebuilt) return rebuilt;
     }
 
     // Storage-pointer write: `alias.field op= v` (or `alias[k]... op= v`) -> rewrite to the aliased container
@@ -2720,6 +2671,77 @@ export default class AstBuilder
     return node;
   }
 
+  // `delete base.f1..fn;` (delete a struct field) - reset it to the field type's default via the same
+  // struct-rebuild path as `base.f1..fn = <default>`. base is a local or state struct variable.
+  visitDeleteMember(ctx: any): StatementNode {
+    const baseIdent = ctx.Identifier_list()[0];
+    const rawName = baseIdent.getText();
+    const nameLoc = Location.fromToken(baseIdent.symbol);
+    const members: string[] = ctx.Identifier_list().slice(1).map((id: { getText(): string }) => id.getText());
+    const loc = Location.fromCtx(ctx);
+    const isThis = ctx.getText().startsWith('deletethis.');
+    const rebuilt = this.buildStructFieldRebuild(rawName, nameLoc, members, isThis, loc,
+      (_chainRead, fieldType) => createDefaultValueExpression(fieldType, loc));
+    if (rebuilt) return rebuilt;
+    throw new UnsupportedTypeError({ location: loc } as any);
+  }
+
+  // Rebuild a struct's value with the field at `members` (a field-name chain) replaced by `finalValueFn`'s
+  // result, and assign it back (struct fields have no in-place write codegen). base is a local/state struct
+  // variable; returns undefined when it is not a matching struct field chain (caller falls through). Shared by
+  // the struct-field assignment path and `delete base.field`.
+  private buildStructFieldRebuild(
+    rawName: string, nameLoc: Location, members: string[], isThis: boolean, loc: Location,
+    finalValueFn: (chainRead: ExpressionNode, finalFieldType: Type) => ExpressionNode,
+  ): StatementNode | undefined {
+    // A bare `s.field` where `s` is a state struct var (not shadowed by a local) is the Solidity form of
+    // `this.s.field`; bare state reads already resolve this way, so treat the write as a state field write.
+    const bareStateStruct = !isThis && !this.localStructTypes.has(rawName) && this.stateStructVars.has(rawName);
+    const useState = isThis || bareStateStruct;
+    const baseStructT = (members.length >= 1 && !this.storageAliases.has(rawName))
+      ? (useState ? this.stateStructVars.get(rawName) : this.localStructTypes.get(rawName))
+      : undefined;
+    const chainTypes = baseStructT ? this.chainStructTypes(baseStructT, members) : undefined;
+    if (!baseStructT || !chainTypes) return undefined;
+
+    const baseRead = (): ExpressionNode => {
+      const r: ExpressionNode = useState ? new StateAccessNode(rawName) : new IdentifierNode(rawName);
+      r.location = nameLoc;
+      return r;
+    };
+    const fieldAccess = (expr: ExpressionNode, field: string): ExpressionNode => {
+      const fa = new FieldAccessNode(expr, field);
+      fa.location = loc;
+      return fa;
+    };
+    // Rebuild `structExpr` (struct type t) with `structExpr.chain` replaced by finalValue.
+    const rebuild = (structExpr: ExpressionNode, t: StructType, chain: string[], finalValue: ExpressionNode):
+    ExpressionNode => {
+      const [head, ...rest] = chain;
+      const newField = rest.length === 0
+        ? finalValue
+        : rebuild(fieldAccess(cloneNode(structExpr), head), this.resolveFieldStruct(t, head)!, rest, finalValue);
+      const ctorId = new IdentifierNode(t.name);
+      ctorId.location = nameLoc;
+      const ctor = new FunctionCallNode(
+        ctorId,
+        t.fields.map((f) => (f.name === head ? newField : fieldAccess(cloneNode(structExpr), f.name))),
+      );
+      ctor.location = loc;
+      return ctor;
+    };
+    let chainRead = baseRead();
+    for (const m of members) chainRead = fieldAccess(chainRead, m);
+    const finalStruct = chainTypes[chainTypes.length - 1];
+    const finalFieldType = finalStruct.fields.find((f) => f.name === members[members.length - 1])!.type;
+    const rebuilt = rebuild(baseRead(), baseStructT, members, finalValueFn(chainRead, finalFieldType));
+    const assign: StatementNode = useState
+      ? new StateAssignNode(rawName, rebuilt)
+      : new AssignNode(baseRead() as IdentifierNode, rebuilt); // local: baseRead() is an IdentifierNode
+    assign.location = loc;
+    return assign;
+  }
+
   visitDeleteState(ctx: DeleteStateContext): DeleteStateNode {
     const node = new DeleteStateNode(ctx.Identifier().getText());
     node.location = Location.fromCtx(ctx);
@@ -2847,15 +2869,34 @@ export default class AstBuilder
     }
   }
 
+  // Register a list of struct definitions: pre-register every struct NAME (empty) FIRST so field-type
+  // resolution can see forward and self / mutually recursive references (`struct S{T[] x;} struct T{...}`,
+  // `struct R{R[] c;}`), then resolve each struct's fields into the pre-registered type in place (same object,
+  // so references already handed out observe the filled fields).
+  private registerStructDefinitions(ctxList: StructDefinitionContext[], out: StructDefinitionNode[]): void {
+    for (const sdCtx of ctxList) {
+      const name = sdCtx.Identifier().getText();
+      this.structMap.set(name, new StructType(name, []));
+    }
+    for (const sdCtx of ctxList) {
+      const sd = this.visitStructDefinition(sdCtx);
+      out.push(sd);
+      this.structMap.get(sd.name)!.fields = sd.fields;
+    }
+  }
+
   visitStructDefinition(ctx: StructDefinitionContext): StructDefinitionNode {
     const structName = ctx.Identifier().getText();
     const fields = ctx.structField_list().map((fieldCtx) => ({
       name: fieldCtx.anyIdentifier().getText(),
-      // A field may be a plain typeName, an arrayType (`int[]`, `bytes20[3]`), or a mapping (flattened to
-      // per-field state vars when the struct is used as a state variable).
+      // A field may be a plain typeName, an arrayType (`int[]`, `bytes20[3]`, `T[]`), or a mapping (flattened to
+      // per-field state vars when the struct is used as a state variable). An array field goes through
+      // buildArrayType so a struct/enum element type (`T[]`) resolves, not just primitives.
       type: fieldCtx.mappingType()
         ? this.buildMappingType(fieldCtx.mappingType()!)
-        : this.resolveType((fieldCtx.typeName() ?? fieldCtx.arrayType())!.getText()),
+        : fieldCtx.arrayType()
+          ? this.buildArrayType(fieldCtx.arrayType()!)
+          : this.resolveType(fieldCtx.typeName()!.getText()),
     }));
     const node = new StructDefinitionNode(structName, fields);
     node.location = Location.fromCtx(ctx);
@@ -2957,11 +2998,7 @@ export default class AstBuilder
 
     // Interface-level struct definitions (must be registered before collection type resolution)
     const structDefs: StructDefinitionNode[] = [];
-    for (const sdCtx of ctx.structDefinition_list()) {
-      const sd = this.visitStructDefinition(sdCtx);
-      structDefs.push(sd);
-      this.structMap.set(sd.name, new StructType(sd.name, sd.fields));
-    }
+    this.registerStructDefinitions(ctx.structDefinition_list(), structDefs);
 
     // Interface-level type definitions
     const typeDefs: TypeDefinitionNode[] = [];

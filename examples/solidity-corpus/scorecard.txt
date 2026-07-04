@@ -1,5 +1,5 @@
 
-=== SOLC-CORPUS SCORECARD: 2335/4876 single-file in-scope compiled (2541 failed) | 1694 negative (correctly rejected) | 496 NEG-ACCEPTED (solc rejects, we compiled) | 277 multifile-skipped | 7343 total ===
+=== SOLC-CORPUS SCORECARD: 2342/4876 single-file in-scope compiled (2534 failed) | 1694 negative (correctly rejected) | 496 NEG-ACCEPTED (solc rejects, we compiled) | 277 multifile-skipped | 7343 total ===
 
 --- TOP FAILURE REASONS ---
   672  ParseError: Unexpected token '..' at Line N, Column N
@@ -9,9 +9,9 @@
   132  UnsupportedInlineAssemblyError: Unsupported inline assembly (Yul): Yul code generation is 
    74  ParseError: Mismatched input '..' expecting {'..', '..'} at Line N, Column N
    56  StateAssignTypeError: Type '..' can not be assigned to state variable of type '..' at Line
+   48  UnequalTypeError: Tried to apply operator '..' to unequal types '..' and '..' at Line N, C
    47  ParseError: Mismatched input '..' expecting {'..', '..', '..'} at Line N, Column N
-   45  UnequalTypeError: Tried to apply operator '..' to unequal types '..' and '..' at Line N, C
-   45  AssignTypeError: Type '..' can not be assigned to variable of type '..' at Line N, Column 
+   37  AssignTypeError: Type '..' can not be assigned to variable of type '..' at Line N, Column 
    33  ParseError: Missing '..' at '..' at Line N, Column N
    30  UnsupportedInlineAssemblyError: Unsupported inline assembly (Yul): local Yul function defi
    30  ParseError: Mismatched input '..' expecting {'..', '..', '..', '..', '..', '..', '..', Ide

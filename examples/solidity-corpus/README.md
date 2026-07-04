@@ -29,7 +29,7 @@ Buckets (so the denominator is meaningful):
 After the pragma unblocks (abicoder/experimental d0a990f9 + typo-reject 8359e4c1; version formats 5a4b6f48):
 
 ```
-2335/4876 single-file in-scope compiled (~48%)   |   2541 failed   (+399 vs the 1936 pre-pragma baseline)
+2342/4876 single-file in-scope compiled (~48%)   |   2534 failed   (+406 vs the 1936 pre-pragma baseline)
 1699 negative correctly rejected (parity)
  491 NEG-ACCEPTED (solc rejects, we compiled) - mostly natspec / EVM-only rejection reasons
  277 multifile-skipped

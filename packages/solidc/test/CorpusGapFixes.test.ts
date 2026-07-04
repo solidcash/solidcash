@@ -129,3 +129,24 @@ describe('bare state-struct field write (Solidity form of this.s.field = v)', ()
     expect(art.contractName).toBe('C');
   });
 });
+
+describe('mapping-bearing struct scalar field write (flattened to s__field)', () => {
+  // A struct state var with a mapping field flattens to per-field state (`s__a` scalar + `s__c` mapping). The
+  // read side already resolves `s.a` -> `s__a`; the scalar field WRITE `s.a = v` must mirror it (a mapping/array
+  // field with a key keeps its own collection-write path). Runtime is covered by MappingStructScalarWrite e2e.
+  const decl = 'struct S { uint256 a; bytes b; mapping(uint256 => uint256) c; } S s;';
+
+  it('writes a scalar field of a mapping-bearing struct', () => {
+    const art = compileString(`contract C() { ${decl}
+      function f(uint256 e) { s.a = 7; require(s.a == e); }
+    }`, { solidityImportCompat: true });
+    expect(art.contractName).toBe('C');
+  });
+
+  it('writes a bytes field and a compound scalar, and the mapping field still uses a keyed write', () => {
+    const art = compileString(`contract C() { ${decl}
+      function f(uint256 k, uint256 v) { s.a = 2; s.a += 5; s.b = 0x616263; s.c[k] = v; require(s.c[k] == v); }
+    }`, { solidityImportCompat: true });
+    expect(art.contractName).toBe('C');
+  });
+});

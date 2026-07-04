@@ -2010,9 +2010,17 @@ export default class AstBuilder
     return unaryOp;
   }
 
-  visitUnaryOp(ctx: UnaryOpContext): UnaryOpNode {
+  visitUnaryOp(ctx: UnaryOpContext): UnaryOpNode | IntLiteralNode {
     const operator = ctx._op.text as UnaryOperator;
     const expression = this.visit(ctx.expression());
+    // Fold `-<int literal>` to a negative literal. The lexer no longer emits signed literals (a leading `-` made
+    // `i-1` tokenize as `i` `-1`), so negation is a parser-level unary op - but `-1` must stay a compile-time
+    // constant so negative array indices / shift counts / etc. are still caught. `x - 1` keeps a BinaryOp.
+    if (operator === UnaryOperator.NEGATE && expression instanceof IntLiteralNode) {
+      const negated = new IntLiteralNode(-expression.value);
+      negated.location = Location.fromCtx(ctx);
+      return negated;
+    }
     const unaryOp = new UnaryOpNode(operator, expression);
     unaryOp.location = Location.fromCtx(ctx);
     return unaryOp;
@@ -2479,6 +2487,27 @@ export default class AstBuilder
             return a;
           })(), op, valueCtx, loc);
         const assign = new StateArrayAssignNode(flatName, key(), value);
+        assign.location = loc;
+        return assign;
+      }
+    }
+
+    // Mapping-bearing struct SCALAR/bytes field write `<var>.<field> op= v` (no key) -> the flattened state var
+    // `<var>__<field>` (reads already resolve this way at visitFieldAccess). Mapping/array fields (with a key)
+    // are handled above; nested field chains fall through to the rebuild path below.
+    if (!isThis && !isIncDec && fieldName && members.length === 1 && keyCtxs.length === 0
+      && this.mappingStructStateVars.has(rawName)) {
+      const field = this.mappingStructStateVars.get(rawName)!.fields.find((f) => f.name === fieldName);
+      if (field && !(field.type instanceof MappingType) && !(field.type instanceof ArrayType)) {
+        const flatName = `${rawName}__${fieldName}`;
+        const value = op === '='
+          ? this.visit(valueCtx!) as ExpressionNode
+          : this.compoundRhs((() => {
+            const a = new StateAccessNode(flatName);
+            a.location = nameLoc;
+            return a;
+          })(), op, valueCtx, loc);
+        const assign = new StateAssignNode(flatName, value);
         assign.location = loc;
         return assign;
       }

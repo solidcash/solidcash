@@ -2198,3 +2198,27 @@ describe('decimal literal with a value unit (0.2 ether)', () => {
       + ' require(1.5 gwei == 1500000000); return true; } }')).toBe('C');
   });
 });
+
+// Unspaced subtraction of a number literal (`i-1`, `a[i-1]`, `i-2*3`) was lexed as `i` `-1` (a signed literal),
+// so it failed to parse. A leading minus is no longer part of a number literal; negation is a unary operator.
+describe('unspaced subtraction of a number literal (i-1)', () => {
+  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  it('parses `i-1`', () => {
+    expect(cc('contract C { function f(uint i) public pure returns (uint) { return i-1; } }')).toBe('C');
+  });
+  it('parses `a[i-1]` (subtraction in an index)', () => {
+    expect(cc('contract C { function f(uint[] memory a, uint i) public pure returns (uint) {'
+      + ' return a[i-1]; } }')).toBe('C');
+  });
+  it('parses `i-2*3`', () => {
+    expect(cc('contract C { function f(uint i) public pure returns (uint) { uint x = i-2*3; return x; } }'))
+      .toBe('C');
+  });
+  it('still folds `-1` to a negative literal', () => {
+    expect(cc('contract C { function f() public pure returns (int) { require(-1 < 0); return -1; } }')).toBe('C');
+  });
+  it('still rejects a constant negative array index', () => {
+    expect(() => compileString('contract C { function f() public pure { uint[3] memory a; uint v = a[-1];'
+      + ' require(v == 0); } }', { solidityImportCompat: true })).toThrow();
+  });
+});

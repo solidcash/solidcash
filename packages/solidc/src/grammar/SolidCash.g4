@@ -829,12 +829,14 @@ BchUnit
     : 'satoshis' | 'sats' | 'finney' | 'bits' | 'bitcoin'
     ;
 
+// No leading `-`: a minus is always the unary/binary operator (parsed via UnaryOp/BinaryOp). Lexing `-1` as a
+// single literal made `i-1` tokenize as `i` `-1` (two operands) - breaking every unspaced `x-1`, `a[i-1]`, etc.
 DecimalLiteral
-    : '-'? NumberPart '.' [0-9]+
+    : NumberPart '.' [0-9]+
     ;
 
 NumberLiteral
-    : '-'? NumberPart ExponentPart?
+    : NumberPart ExponentPart?
     ;
 
 fragment NumberPart

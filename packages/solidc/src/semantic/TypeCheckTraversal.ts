@@ -1996,6 +1996,12 @@ export default class TypeCheckTraversal extends AstTraversal {
     node.array = this.visit(node.array);
     node.index = this.visit(node.index);
 
+    // A constant negative index (`arr[-1]`) is out of bounds. (Negation is now a folded unary op, not a signed
+    // literal token, so check the folded value here.)
+    if (node.index instanceof IntLiteralNode && node.index.value < 0n) {
+      throw new IndexOutOfBoundsError(node as any);
+    }
+
     // bytes[k] / bytesN[k]: index a single byte (Solidity returns bytes1).
     if (node.array.type instanceof BytesType) {
       expectInt(node as any, node.index.type);

@@ -2064,3 +2064,24 @@ describe('state variable override specifier', () => {
     expect(cc('contract C { uint256[] public override xs; function f() public { require(true); } }')).toBe('C');
   });
 });
+
+// A library-level constant is in scope inside the library's own functions (unqualified), like a sibling
+// function call. A local/param of the same name still shadows it (Solidity scoping).
+describe('library constant scope inside library functions', () => {
+  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  it('resolves an unqualified sibling library constant', () => {
+    expect(cc('library L { uint constant A = 5;'
+      + ' function f(uint y) internal pure returns (uint) { return y + A; } }'
+      + ' contract C { function g() public pure returns (uint) { return L.f(2); } }')).toBe('C');
+  });
+  it('lets a local shadow the library constant', () => {
+    expect(cc('library L { uint constant A = 5;'
+      + ' function f() internal pure returns (uint) { uint A = 9; return A; } }'
+      + ' contract C { function g() public pure returns (uint) { return L.f(); } }')).toBe('C');
+  });
+  it('lets a parameter shadow the library constant', () => {
+    expect(cc('library L { uint constant A = 5;'
+      + ' function f(uint A) internal pure returns (uint) { return A; } }'
+      + ' contract C { function g() public pure returns (uint) { return L.f(7); } }')).toBe('C');
+  });
+});

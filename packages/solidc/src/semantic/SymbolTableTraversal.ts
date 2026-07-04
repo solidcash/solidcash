@@ -3875,6 +3875,18 @@ export default class SymbolTableTraversal extends AstTraversal {
     }
   }
 
+  // Inside a library function `Lib.f`, an unqualified reference to a sibling library constant (`A`) resolves to
+  // `Lib.A` (library constants are stored namespaced). Only rewrites when no in-scope name shadows it, so a
+  // local/param named `A` still wins (Solidity scoping).
+  private qualifyLibrarySiblingConstant(identifier: IdentifierNode): void {
+    const fnName = this.currentFunction?.name;
+    if (fnName && fnName.includes('.') && !identifier.name.includes('.')
+      && !this.symbolTables[0].get(identifier.name)) {
+      const qualified = `${fnName.split('.')[0]}.${identifier.name}`;
+      if (this.symbolTables[0].get(qualified)) identifier.name = qualified;
+    }
+  }
+
   visitFunctionCall(node: FunctionCallNode): Node {
     this.qualifyLibrarySiblingCall(node.identifier);
     // Check if this is an address method call: dest.send(amount), dest.connect(category),
@@ -5093,6 +5105,7 @@ export default class SymbolTableTraversal extends AstTraversal {
   }
 
   visitIdentifier(node: IdentifierNode): Node {
+    this.qualifyLibrarySiblingConstant(node);
     const definition = this.symbolTables[0].get(node.name);
     if (!definition) {
       throw new UndefinedReferenceError(node);

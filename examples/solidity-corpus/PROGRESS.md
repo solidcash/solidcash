@@ -15,8 +15,13 @@ the current number with `node examples/solidity-corpus/bench.mjs` (the scorecard
 | 2026-07-04 | 2335 / 4876 | f28d743c | +36 | unnamed returns default on fall-through (`function f() returns(uint){ a=x; }`) |
 | 2026-07-04 | 2342 / 4876 | 6083d3b8 | +7 | string literal → `bytesN` (right-padded, `bytes32 name = "TKN"`) |
 | 2026-07-04 | 2349 / 4876 | cd291385 | +7 | string literal → `bytesN` in comparisons (`id == "abc"`) |
+| 2026-07-04 | 2464 / 4876 | (interim) | +115 | re-measured baseline: this-prefix push/pop, struct dynamic-array-field flatten, no-arg push + grammar peels (for-init, receive/override modifiers) |
+| 2026-07-04 | 2492 / 4876 | 499f9327, e070e558 | +28 | bare `uint(x)` cast; enum / contract mapping key types (were crashing on `.toString`) |
+| 2026-07-04 | 2500 / 4876 | 35e74dd0 | +8 | UDVT over address (`type MyAddr is address`) |
+| 2026-07-04 | 2515 / 4876 | 11225bd5 | +15 | `bytes` `.push()` / `.pop()` (desugar to concat / slice reassignment) |
+| 2026-07-04 | 2527 / 4876 | 7500e2e3 | +12 | bare `uint`/`int` in `type()` introspection (compat-gated) |
 
-Total so far: **1936 → 2349** (+413). Update this table whenever the number moves.
+Total so far: **1936 → 2527** (+591). Update this table whenever the number moves.
 
 ## Notes
 
@@ -25,5 +30,10 @@ Total so far: **1936 → 2349** (+413). Update this table whenever the number mo
   than to full compiles.
 - Corpus completion also required the O(N) optimiser fixes (fc474241, e3e2060d) - large fixed-size arrays
   (`uint256[500]`) previously drove the peephole optimiser O(N^2) and hung the run.
-- ~55% of remaining failures are still ParseErrors (the grammar wall). 20 files still crash internally with
-  `TypeError: cannot read undefined` (deeper type-check/codegen null gaps) - a robustness follow-up.
+- ~55% of remaining failures are still ParseErrors (the grammar wall). Internal `TypeError: cannot read
+  undefined` crashes are down to ~4 (was 20): the enum/contract mapping-key `.toString` crash (17 files) is
+  fixed; the rest are assignment-as-expression `.type` (2, SMT tests) and `.length` (2).
+- Remaining top gaps are fundamental or feature-scale, not resolution tweaks: method-calls-on-non-contract
+  receivers, Yul, nested-array state vars (`uint[][] a; a = d`), ABIEncoderV2 memory structs, `new C()` outside
+  a `deploy` function (correct-by-design on UTXO). Enum-key mappings compile but need an SDK-side encoder for
+  the int-backed key before they run.

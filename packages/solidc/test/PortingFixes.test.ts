@@ -2165,3 +2165,22 @@ describe('local / named return may shadow an outer function or state var', () =>
       + ' function f() public pure returns (uint) { uint helper = 5; return helper; } }')).toBe('C');
   });
 });
+
+// A `public constant` at contract level parses as a state variable (constantDefinition has no visibility slot),
+// but it is a compile-time constant and must be baked, not stored in the state NFT.
+describe('public constant is baked, not stored as state', () => {
+  const compile = (src: string): ReturnType<typeof compileString> =>
+    compileString(src, { solidityImportCompat: true });
+  it('does not put a public constant in the state layout', () => {
+    const a = compile('contract C { uint256 public constant ONE = 5;'
+      + ' function f() public pure returns (uint256) { return ONE; } }');
+    // A contract with only a `public constant` (no real state) is not stateful at all.
+    const stateNames = (a.stateLayout?.variables ?? []).map((v) => v.name);
+    expect(stateNames).not.toContain('ONE');
+  });
+  it('accepts the modifier order `uint constant public X` too', () => {
+    const a = compile('contract C { uint256 constant public TWO = 2;'
+      + ' function f() public pure returns (uint256) { return TWO; } }');
+    expect((a.stateLayout?.variables ?? []).map((v) => v.name)).not.toContain('TWO');
+  });
+});

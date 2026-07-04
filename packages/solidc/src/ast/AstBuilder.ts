@@ -273,6 +273,8 @@ export default class AstBuilder
   implements SolidCashVisitor<Node> {
   private structMap: Map<string, StructType> = new Map();
   private enumMap: Map<string, EnumType> = new Map();
+  // Library names, so a library-namespaced enum access `L.E.Member` can strip the `L.` to the bare enum.
+  private libraryNames: Set<string> = new Set();
   private typeDefMap: Map<string, ValueType> = new Map();
   private pendingParentInvocations: ParentInvocation[] = [];
   private packedStateArrayNames: Set<string> = new Set();
@@ -312,6 +314,10 @@ export default class AstBuilder
   // Integer-literal constants (`int constant N = 3;`), so a const can be used as an array dimension `T[N]`.
   // Populated by a pre-scan of constant definitions before any types are built (see scanConstantDimensions).
   private constantIntValues: Map<string, number> = new Map();
+  // True while visiting a library's own state-variable declarations. A `public constant` in a library is left
+  // as-is (it feeds the library's shared-state/delegate machinery); only CONTRACT-level `public constant` is
+  // rerouted to a baked constant (see visitStateVariableDeclaration).
+  private inLibraryDecl = false;
 
   constructor(private tree: ParseTree, private solidityImportCompat = false, private chunkedArrays = true) {
     super();
@@ -381,6 +387,7 @@ export default class AstBuilder
     const allLibEventDefs: EventDefinitionNode[] = [];
     for (const libCtx of allLibDefs) {
       const libName = libCtx.Identifier().getText();
+      this.libraryNames.add(libName);
 
       // Library enum definitions
       for (const edCtx of libCtx.enumDefinition_list()) {
@@ -469,8 +476,10 @@ export default class AstBuilder
         // A delegate library declares the shared state layout it operates on as state vars (the EVM proxy/impl
         // storage-declaration pattern); carry them into the lowered contract so `delegate` functions resolve
         // `this.field` against that layout (docs/library-contracts.md "3b design").
+        this.inLibraryDecl = true;
         const libDecls = lastLib.stateVariableDeclaration_list()
           .map((sv) => this.visitStateVariableDeclaration(sv));
+        this.inLibraryDecl = false;
         const libStateVars = libDecls.filter((d): d is StateVariableNode => d instanceof StateVariableNode);
         const libCollections = libDecls.filter((d): d is CollectionNode => d instanceof CollectionNode);
         const hasSharedState = libStateVars.length > 0 || libCollections.length > 0;
@@ -683,6 +692,8 @@ export default class AstBuilder
       const visited = this.visit(svCtx);
       if (visited instanceof CollectionNode) {
         collections.push(visited);
+      } else if (visited instanceof ConstantDefinitionNode) {
+        constantDefinitions.push(visited); // `<vis> constant X` is a baked constant, not stored state
       } else {
         stateVariables.push(visited as StateVariableNode);
       }
@@ -1835,7 +1846,11 @@ export default class AstBuilder
     // Named-arg struct initialization: Person({name: "Alice", age: 30}) or Person({})
     // The named-arg alternative has no expressionList, so check for that
     if (!ctx.expressionList()) {
-      const name = identifiers[0].getText();
+      // A library-namespaced call `L.f({named})` keeps its qualified name (mirrors the positional form below);
+      // a bare `Person({named})` uses the single identifier.
+      const name = identifiers.length > 1
+        ? `${identifiers[0].getText()}.${identifiers[1].getText()}`
+        : identifiers[0].getText();
       const identifier = new IdentifierNode(name);
       identifier.location = Location.fromToken(identifiers[0].symbol);
       const namedArgs = ctx.namedArg_list();
@@ -2232,7 +2247,9 @@ export default class AstBuilder
     return hexLiteral;
   }
 
-  visitStateVariableDeclaration(ctx: StateVariableDeclarationContext): StateVariableNode | CollectionNode {
+  visitStateVariableDeclaration(
+    ctx: StateVariableDeclarationContext,
+  ): StateVariableNode | CollectionNode | ConstantDefinitionNode {
     const name = ctx.Identifier().getText();
 
     if (name.startsWith('__internal__')) {
@@ -2263,6 +2280,20 @@ export default class AstBuilder
       if (visChild) { visibility = visChild.getText() as StateVariableVisibility; }
     }
     const isImmutable = allModTexts.includes('immutable');
+
+    // A `constant` state var (`uint public constant ONE = 5`) parses as a state variable because the dedicated
+    // constantDefinition rule has no visibility slot. It is a compile-time constant, not stored state - route it
+    // to the constant path so it is baked into the bytecode, not placed in the state NFT (and does not make a
+    // library look state-touching). Constants are value-typed, so only the scalar form applies.
+    const scalarTypeCtx = ctx.typeName();
+    const constExpr = ctx.expression?.();
+    if (allModTexts.includes('constant') && scalarTypeCtx && constExpr && !this.inLibraryDecl) {
+      const cnode = new ConstantDefinitionNode(
+        this.resolveType(scalarTypeCtx.getText()), name, this.visit(constExpr) as ExpressionNode,
+      );
+      cnode.location = Location.fromCtx(ctx);
+      return cnode;
+    }
 
     // Check if this is a mapping type declaration
     const mappingTypeCtx = ctx.mappingType();
@@ -2982,6 +3013,15 @@ export default class AstBuilder
       flat.location = Location.fromCtx(ctx);
       return flat;
     }
+
+    // Library-namespaced enum: `L.E` (L a library, E a library enum) -> the bare enum `E`, so `L.E.Member` and
+    // `L.E`-as-type behave like the unqualified enum (library enums are registered under their bare name).
+    if (expression instanceof IdentifierNode && this.libraryNames.has(expression.name)
+      && this.enumMap.has(fieldName)) {
+      const bare = new IdentifierNode(fieldName);
+      bare.location = Location.fromCtx(ctx);
+      return bare;
+    }
     const node = new FieldAccessNode(expression, fieldName);
     node.location = Location.fromCtx(ctx);
     return node;
@@ -3084,6 +3124,16 @@ export default class AstBuilder
     const methodName = ctx.Identifier().getText();
     const namedArgs = ctx.namedArg_list();
     const parameters = namedArgs.map((na) => this.visit(na.expression()) as ExpressionNode);
+    // `L.f({named})` where L is a library -> a namespaced library function call `L.f(...)` (matches the positional
+    // `L.f(a, b)`, which parses as a FunctionCall). Otherwise it stays a method call on the receiver.
+    if (object instanceof IdentifierNode && this.libraryNames.has(object.name)) {
+      const id = new IdentifierNode(`${object.name}.${methodName}`);
+      id.location = Location.fromCtx(ctx);
+      const call = new FunctionCallNode(id, parameters);
+      call.fieldNames = namedArgs.map((na) => na.Identifier().getText());
+      call.location = Location.fromCtx(ctx);
+      return call;
+    }
     const node = new MethodCallNode(object, methodName, parameters);
     node.fieldNames = namedArgs.map((na) => na.Identifier().getText());
     node.callOptions = this.parseCallOptions(ctx.callOptions());

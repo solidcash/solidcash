@@ -1636,6 +1636,9 @@ export default class TypeCheckTraversal extends AstTraversal {
       } else if (node.right instanceof HexLiteralNode && this.isIntegerType(node.left.type)) {
         node.right = this.hexLiteralToInt(node.right);
       }
+      // A string literal compared against bytesN (`id == "abc"`): coerce the literal to a padded bytesN value.
+      node.left = this.maybeCoerceStringToBytesN(node.left, node.right.type);
+      node.right = this.maybeCoerceStringToBytesN(node.right, node.left.type);
     }
 
     const resType = resultingTypeForBinaryOp(node.operator, node.left.type!, node.right.type!);

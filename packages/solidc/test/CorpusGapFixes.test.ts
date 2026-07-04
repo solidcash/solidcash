@@ -101,3 +101,31 @@ describe('library-namespaced member access', () => {
     expect(named).toBe(positional);
   });
 });
+
+describe('bare state-struct field write (Solidity form of this.s.field = v)', () => {
+  // In Solidity a state var is written without `this.`; `s.field = v` where s is a state struct rebuilds the
+  // struct and stores it back, identical to the explicit `this.s.field = v` (byte-for-byte).
+  it('bare s.field = v matches this.s.field = v bytecode', () => {
+    const bare = compileString(`contract C() { struct S { uint256 x; uint256 y; } S s;
+      function f(uint256 e) { s.x = 13; s.y = 4; require(s.x == e); }
+    }`, { solidityImportCompat: true }).bytecode;
+    const thisPrefixed = compileString(`contract C() { struct S { uint256 x; uint256 y; } S s;
+      function f(uint256 e) { this.s.x = 13; this.s.y = 4; require(this.s.x == e); }
+    }`, { solidityImportCompat: true }).bytecode;
+    expect(bare).toBe(thisPrefixed);
+  });
+
+  it('handles a nested field chain (a.b.x = v)', () => {
+    const art = compileString(`contract C() { struct Inner { uint256 x; } struct Outer { Inner b; } Outer a;
+      function f(uint256 e) { a.b.x = 13; require(a.b.x == e); }
+    }`, { solidityImportCompat: true });
+    expect(art.contractName).toBe('C');
+  });
+
+  it('a local struct field write is unaffected (stays a local rebuild)', () => {
+    const art = compileString(`contract C() { struct S { uint256 x; }
+      function f(uint256 e) { S memory s = S(1); s.x = 13; require(s.x == e); }
+    }`, { solidityImportCompat: true });
+    expect(art.contractName).toBe('C');
+  });
+});

@@ -2489,12 +2489,16 @@ export default class AstBuilder
     // innermost field outward and assign it back: `base = T(base.g0, .., (g==f1 ? <rebuilt f1> : base.g), ..)`.
     // Recurses for nested chains (`b.a.x = v`, `this.d.a.x = v`).
     const memberChain = members;
+    // A bare `s.field = v` where `s` is a state struct var (not shadowed by a local) is the Solidity form of
+    // `this.s.field = v`; bare state reads already resolve this way, so treat the write as a state field write.
+    const bareStateStruct = !isThis && !this.localStructTypes.has(rawName) && this.stateStructVars.has(rawName);
+    const useState = isThis || bareStateStruct;
     const baseStructT = (memberChain.length >= 1 && keyCtxs.length === 0 && !this.storageAliases.has(rawName))
-      ? (isThis ? this.stateStructVars.get(rawName) : this.localStructTypes.get(rawName))
+      ? (useState ? this.stateStructVars.get(rawName) : this.localStructTypes.get(rawName))
       : undefined;
     if (baseStructT && this.chainStructTypes(baseStructT, memberChain)) {
       const baseRead = (): ExpressionNode => {
-        const r: ExpressionNode = isThis ? new StateAccessNode(rawName) : new IdentifierNode(rawName);
+        const r: ExpressionNode = useState ? new StateAccessNode(rawName) : new IdentifierNode(rawName);
         r.location = nameLoc;
         return r;
       };
@@ -2525,9 +2529,9 @@ export default class AstBuilder
         ? this.visit(valueCtx!) as ExpressionNode
         : this.compoundRhs(chainRead, op, valueCtx, loc);
       const rebuilt = rebuild(baseRead(), baseStructT, memberChain, finalValue);
-      const assign: StatementNode = isThis
+      const assign: StatementNode = useState
         ? new StateAssignNode(rawName, rebuilt)
-        : new AssignNode(baseRead() as IdentifierNode, rebuilt); // !isThis: baseRead() is an IdentifierNode
+        : new AssignNode(baseRead() as IdentifierNode, rebuilt); // local: baseRead() is an IdentifierNode
       assign.location = loc;
       return assign;
     }

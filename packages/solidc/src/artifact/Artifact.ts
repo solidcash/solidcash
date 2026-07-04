@@ -11,7 +11,10 @@ import {
 } from '../ast/AST.js';
 
 /** Unwrap ValueType to its underlying type string for ABI serialization. */
-function abiTypeString(type: Type): string {
+function abiTypeString(type: Type | undefined): string {
+  // A contract-reference type (e.g. an imported contract used as a parameter/event type) has no resolved Type;
+  // on BCH a contract handle is an address, so default to 'address' rather than crashing on undefined.toString().
+  if (!type) return 'address';
   if (type instanceof ValueType) return type.underlyingType.toString();
   return type.toString();
 }
@@ -179,7 +182,7 @@ export function generateDeclarationArtifact(
   const abi: AbiFunction[] = declFunctions.map((fn) => ({
     name: fn.name,
     inputs: fn.parameters.map((p) => ({ name: p.name, type: abiTypeString(p.type) })),
-    ...(fn.returnTypes.length > 0 && { outputs: fn.returnTypes.map((t) => ({ type: t.toString() })) }),
+    ...(fn.returnTypes.length > 0 && { outputs: fn.returnTypes.map((t) => ({ type: abiTypeString(t) })) }),
   }));
 
   const allEnums = [
@@ -190,7 +193,9 @@ export function generateDeclarationArtifact(
   const enums = allEnums.length > 0
     ? allEnums.map((e) => ({
       name: e.name,
-      members: e.members.map((m) => ({ name: m.name, value: m.value.toString() })),
+      // Enum values are ordinals; fall back to the member index if a merged/reconstructed enum lost its value
+      // (some import-merge paths carry names only) rather than crashing on undefined.toString().
+      members: e.members.map((m, i) => ({ name: m.name, value: (m.value ?? BigInt(i)).toString() })),
     }))
     : undefined;
 
@@ -201,7 +206,7 @@ export function generateDeclarationArtifact(
       signature: ev.signature,
       parameters: ev.parameters.map((p) => ({
         name: p.name,
-        type: p.type.toString(),
+        type: abiTypeString(p.type),
         ...(p.indexed && { indexed: true }),
       })),
       ...(ev.isAnonymous && { anonymous: true }),
@@ -213,7 +218,7 @@ export function generateDeclarationArtifact(
     ? allErrors.map((err) => ({
       name: err.name,
       signature: err.signature,
-      parameters: err.parameters.map((p) => ({ name: p.name, type: p.type.toString() })),
+      parameters: err.parameters.map((p) => ({ name: p.name, type: abiTypeString(p.type) })),
     }))
     : undefined;
 
@@ -260,7 +265,7 @@ export function generateArtifact(
       type: abiTypeString(parameter.type),
     })),
     ...(func.returnTypes.length > 0 && {
-      outputs: func.returnTypes.map((type) => ({ type: type.toString() })),
+      outputs: func.returnTypes.map((type) => ({ type: abiTypeString(type) })),
     }),
     ...(func.modifiers.length > 0 && {
       modifiers: func.modifiers.map((m) => m.toString()),
@@ -333,7 +338,7 @@ export function generateArtifact(
       ...(contract.constructorDef && {
         constructorInputs: contract.constructorDef.parameters.map((p) => ({
           name: p.name,
-          type: p.type.toString(),
+          type: abiTypeString(p.type),
         })),
       }),
       ...(contract.collections.length > 0 && {
@@ -391,7 +396,7 @@ export function generateArtifact(
       signature: ev.signature,
       parameters: ev.parameters.map((p) => ({
         name: p.name,
-        type: p.type.toString(),
+        type: abiTypeString(p.type),
         ...(p.indexed && { indexed: true }),
       })),
       ...(ev.isAnonymous && { anonymous: true }),
@@ -404,7 +409,7 @@ export function generateArtifact(
     ? allErrors.map((err) => ({
       name: err.name,
       signature: err.signature,
-      parameters: err.parameters.map((p) => ({ name: p.name, type: p.type.toString() })),
+      parameters: err.parameters.map((p) => ({ name: p.name, type: abiTypeString(p.type) })),
     }))
     : undefined;
 
@@ -417,7 +422,9 @@ export function generateArtifact(
   const enums = allEnums.length > 0
     ? allEnums.map((e) => ({
       name: e.name,
-      members: e.members.map((m) => ({ name: m.name, value: m.value.toString() })),
+      // Enum values are ordinals; fall back to the member index if a merged/reconstructed enum lost its value
+      // (some import-merge paths carry names only) rather than crashing on undefined.toString().
+      members: e.members.map((m, i) => ({ name: m.name, value: (m.value ?? BigInt(i)).toString() })),
     }))
     : undefined;
 

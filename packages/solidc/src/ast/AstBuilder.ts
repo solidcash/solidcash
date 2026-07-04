@@ -3216,8 +3216,11 @@ export default class AstBuilder
     const parameters = ctx.eventParameter_list().map((paramCtx, i) => {
       const indexed = paramCtx.children?.some((c) => c.getText() === 'indexed') === true;
       const tn = paramCtx.typeName();
-      // An event parameter may be a plain type or an array type (`int[]`, `bytes20[3]`).
-      const type = tn ? this.resolveType(tn.getText()) : this.buildArrayType(paramCtx.arrayType()!);
+      // An event parameter may be a plain type or an array type (`int[]`, `bytes20[3]`). An unknown type name is
+      // a contract reference (address on BCH) - default it, as function params do, so it is never undefined.
+      const type = tn
+        ? (this.resolveType(tn.getText()) ?? new AddressType(false, tn.getText()))
+        : this.buildArrayType(paramCtx.arrayType()!);
       // The name is optional in Solidity (`event Deploy(address)`); the signature uses types only, so a
       // synthetic name for an unnamed param is internal-only.
       const idCtx = paramCtx.Identifier();

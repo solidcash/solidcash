@@ -326,7 +326,7 @@ export default class SymbolTableTraversal extends AstTraversal {
 
     // Register file-level events (from library imports)
     for (const ev of node.eventDefinitions) {
-      const sig = computeEventSignature(ev.name, ev.parameters.map((p) => p.type.toString()));
+      const sig = computeEventSignature(ev.name, ev.parameters.map((p) => p.type?.toString() ?? 'address'));
       ev.signature = sig;
       if (!this.eventMap.has(sig)) {
         this.eventMap.set(sig, ev);
@@ -357,7 +357,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       }
       // Register interface-level events
       for (const ev of iface.eventDefinitions) {
-        const sig = computeEventSignature(ev.name, ev.parameters.map((p) => p.type.toString()));
+        const sig = computeEventSignature(ev.name, ev.parameters.map((p) => p.type?.toString() ?? 'address'));
         ev.signature = sig;
         if (!this.eventMap.has(sig)) {
           this.eventMap.set(sig, ev);
@@ -471,7 +471,7 @@ export default class SymbolTableTraversal extends AstTraversal {
 
     // Register event definitions (keyed by full signature to allow overloading)
     for (const ev of node.eventDefinitions) {
-      const sig = computeEventSignature(ev.name, ev.parameters.map((p) => p.type.toString()));
+      const sig = computeEventSignature(ev.name, ev.parameters.map((p) => p.type?.toString() ?? 'address'));
       ev.signature = sig;
       if (this.eventMap.has(sig)) {
         throw new EventRedefinitionError(ev);

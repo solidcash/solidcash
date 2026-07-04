@@ -1114,6 +1114,19 @@ export default class TypeCheckTraversal extends AstTraversal {
         + 'bytecode) to its embedded 20-byte hash; this is lossy and differs from a fixed-width EVM address.');
     }
 
+    // The reverse: `address(bytes20)` / `address(uint160)`. A BCH address is a variable-length locking bytecode,
+    // not a fixed 20-byte hash, so treating a 20-byte value AS an address is incorrect (the raw hash is not a valid
+    // locking bytecode). Wrap it explicitly instead, e.g. `new LockingBytecodeP2PKH(hash)`. Unbounded `bytes` (a
+    // full locking bytecode) is not warned. Warn once at the cast site.
+    if (node.type instanceof AddressType && !(node.expression.type instanceof AddressType)
+      && ((node.expression.type instanceof BytesType && node.expression.type.bound === 20)
+        || node.expression.type instanceof IntType)) {
+      const loc = node.location ? ` at line ${node.location.start.line}` : '';
+      console.log(`Warning: address(${node.expression.type})${loc} treats a fixed 20-byte value as an address, but `
+        + 'a BCH address is a variable-length locking bytecode, not a 20-byte hash; this does not yield a valid '
+        + 'address (wrap the hash explicitly, e.g. new LockingBytecodeP2PKH(hash)).');
+    }
+
     // Warn if integer literal exceeds target type's range
     if (node.expression instanceof IntLiteralNode) {
       const litValue = node.expression.value;

@@ -1128,6 +1128,22 @@ describe('uint160(address) / bytes20(address) Solidity-compat narrowing casts', 
     expect(warn.mock.calls.some((c) => String(c[0]).includes('narrows a variable-length BCH address'))).toBe(false);
     warn.mockRestore();
   });
+
+  it('address(bytes20) / address(uint160) warn (a BCH address is variable-length, not a 20-byte hash)', () => {
+    const warn = vi.spyOn(console, 'log').mockImplementation(() => {});
+    compileString('contract C() { function f(bytes20 b) { address x = address(b); require(x == x); } }');
+    compileString('contract C() { function f(int i) { address x = address(uint160(i)); require(x == x); } }');
+    const fired = warn.mock.calls.filter((c) => String(c[0]).includes('does not yield a valid'));
+    expect(fired.length).toBe(2);
+    warn.mockRestore();
+  });
+
+  it('address(bytes) (a full locking bytecode) does NOT warn', () => {
+    const warn = vi.spyOn(console, 'log').mockImplementation(() => {});
+    compileString('contract C() { function f(bytes b) { address x = address(b); require(x == x); } }');
+    expect(warn.mock.calls.some((c) => String(c[0]).includes('does not yield a valid'))).toBe(false);
+    warn.mockRestore();
+  });
 });
 
 describe('++ / -- on state-variable and element lvalues (common Solidity idiom)', () => {

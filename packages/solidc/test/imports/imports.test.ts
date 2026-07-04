@@ -9,7 +9,7 @@ import { fileURLToPath } from 'url';
 import { compileFile, compileString, createMapResolver } from '../../src/index.js';
 import type { ResolvedImport } from '@solidcash/utils';
 import {
-  CircularImportError,
+  CircularContractInheritanceError,
   UnresolvedImportError,
   ImportSymbolNotFoundError,
   ContractNoArgsRequiredError,
@@ -112,10 +112,9 @@ describe('Imports', () => {
       ).toThrow(ImportSymbolNotFoundError);
     });
 
-    it('should throw CircularImportError for circular imports', () => {
-      expect(
-        () => compileFile(path.join(fixtures, 'error_circular_a.scash')),
-      ).toThrow(CircularImportError);
+    it('compiles a benign circular import (legal in Solidity - files import each other)', () => {
+      const artifact = compileFile(path.join(fixtures, 'error_circular_a.scash'));
+      expect(artifact.contractName).toBe('CircularA');
     });
   });
 
@@ -905,11 +904,12 @@ describe('Imports', () => {
       expect(artifact.constructorInputs[2].name).toBe('minAmount');
     });
 
-    it('should throw CircularImportError for circular contract inheritance via imports', () => {
-      // File-based circular contract inheritance is caught at import level first
+    it('should throw CircularContractInheritanceError for circular contract inheritance via imports', () => {
+      // Benign circular imports are now allowed; a genuine inheritance cycle across files is caught at
+      // C3 linearization (not at the import level, which no longer rejects cycles).
       expect(
         () => compileFile(path.join(fixtures, 'error_circular_inherit_a.scash')),
-      ).toThrow(CircularImportError);
+      ).toThrow(CircularContractInheritanceError);
     });
 
     it('should throw CircularContractInheritanceError for circular inline inheritance', () => {
@@ -957,8 +957,8 @@ describe('Imports', () => {
         };
       }
 
-      // When both contracts exist in separate files but imported via map resolver,
-      // the circular import is detected at import resolution level
+      // Both contracts exist in separate files imported via the map resolver; the benign import cycle is
+      // allowed, and the genuine inheritance cycle (A is B, B is A) is caught at C3 linearization.
       expect(
         () => compileString(`
           import "./lib/a.scash";
@@ -968,7 +968,7 @@ describe('Imports', () => {
             }
           }
         `, { importResolver: createMapResolver2(files), rootFileId: '/main.scash' }),
-      ).toThrow(CircularImportError);
+      ).toThrow(CircularContractInheritanceError);
     });
   });
 

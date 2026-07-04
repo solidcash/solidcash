@@ -121,10 +121,16 @@ function computeLinearization(contract: ContractNode, contractMap: Map<string, C
     return implementsList.filter((n) => contractMap.has(n));
   };
 
-  const linearize = (name: string): string[] => {
+  const linearize = (name: string, stack: Set<string> = new Set()): string[] => {
+    // Guard against circular inheritance (A is B, B is A) so the recursion throws cleanly instead of
+    // overflowing the stack. Cross-file cycles reach here once circular imports are allowed.
+    if (stack.has(name)) {
+      throw new CircularContractInheritanceError(name === contract.name ? contract : contractMap.get(name)!);
+    }
     const parents = parentsOf(name);
     if (parents.length === 0) return [name];
-    const sequences = [...parents.map((p) => linearize(p)), [...parents]];
+    const nextStack = new Set(stack).add(name);
+    const sequences = [...parents.map((p) => linearize(p, nextStack)), [...parents]];
     return [name, ...c3Merge(sequences, contract)];
   };
 

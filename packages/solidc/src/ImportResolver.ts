@@ -1,15 +1,16 @@
 import { ImportResolverFn } from '@solidcash/utils';
 import { SourceFileNode, ImportNode } from './ast/AST.js';
 import { parseCode } from './compiler.js';
-import { CircularImportError, UnresolvedImportError, ImportSymbolNotFoundError, UnsafeImportPathError } from './Errors.js';
+import { UnresolvedImportError, ImportSymbolNotFoundError, UnsafeImportPathError } from './Errors.js';
 
 export class ImportResolver {
   private resolvedFiles = new Map<string, SourceFileNode>();
-  private resolving = new Set<string>();
 
   constructor(private resolver: ImportResolverFn, private solidityImportCompat = false) {}
 
   resolve(ast: SourceFileNode, currentFileId: string): SourceFileNode {
+    // Register this file up-front so a cyclic import back to it reuses this in-progress AST (see the loop).
+    if (!this.resolvedFiles.has(currentFileId)) this.resolvedFiles.set(currentFileId, ast);
     for (const importNode of ast.imports) {
       // Basic path traversal sanitization: reject null bytes and paths with
       // excessive parent directory traversal (e.g. "../../../../../../etc/passwd")
@@ -47,20 +48,17 @@ export class ImportResolver {
 
       const resolvedId = resolved.id;
 
-      if (this.resolving.has(resolvedId)) {
-        throw new CircularImportError(resolvedId);
-      }
-
-      if (!this.resolvedFiles.has(resolvedId)) {
-        this.resolving.add(resolvedId);
-        const importedAst = parseCode(resolved.source, undefined, this.solidityImportCompat);
-        // Recursively resolve imports in the imported file
-        this.resolve(importedAst, resolvedId);
+      // Circular imports are legal in Solidity (A imports B, B imports A). Register each file BEFORE recursing
+      // into its own imports so a cycle back to it reuses the in-progress AST instead of re-parsing and
+      // recursing forever. A genuinely-invalid cycle (circular inheritance) is still caught downstream by
+      // InheritanceExpansionTransformation / the interface-inheritance check.
+      let importedAst = this.resolvedFiles.get(resolvedId);
+      if (!importedAst) {
+        importedAst = parseCode(resolved.source, undefined, this.solidityImportCompat);
         this.resolvedFiles.set(resolvedId, importedAst);
-        this.resolving.delete(resolvedId);
+        this.resolve(importedAst, resolvedId);
       }
 
-      const importedAst = this.resolvedFiles.get(resolvedId)!;
       importNode.resolvedAst = importedAst;
       this.mergeImports(ast, importedAst, importNode);
     }

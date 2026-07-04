@@ -45,6 +45,21 @@ describe('enum / contract mapping key types', () => {
   });
 });
 
+describe('bare uint/int in type() introspection (compat only)', () => {
+  it('type(uint).max / type(int).min resolve under solidityImportCompat', () => {
+    const art = compileString(`contract C() {
+      function f(uint256 a, int b) { require(type(uint).max == a); require(type(int).min == b); }
+    }`, { solidityImportCompat: true });
+    expect(art.contractName).toBe('C');
+  });
+
+  it('native solidcash still requires the explicit width (type(int) throws)', () => {
+    expect(() => compileString(`contract C() {
+      function f(int e) { require(type(int).min == e); }
+    }`)).toThrow(/introspection/);
+  });
+});
+
 describe('user-defined value type over address', () => {
   // `type MyAddr is address;` - address is bytes-backed (a locking bytecode), so it is a valid UDVT underlying
   // type. wrap/unwrap are identity casts over the address.

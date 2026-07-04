@@ -5420,6 +5420,12 @@ export default class SymbolTableTraversal extends AstTraversal {
   }
 
   private resolveNumericType(typeText: string): IntType | FixedType | undefined {
+    // Under Solidity-compat, bare `uint`/`int` alias uint256/int256 (so `type(uint).max` works like
+    // `type(uint256).max`). Native solidcash requires the explicit width (int is the unbounded VM integer).
+    if (this.compilerOptions.solidityImportCompat) {
+      if (typeText === 'uint') return new IntType(false, 256);
+      if (typeText === 'int') return new IntType(true, 256);
+    }
     // Bounded integer: int8, uint256, etc.
     const intMatch = typeText.match(/^(u?int)(\d+)$/);
     if (intMatch) {

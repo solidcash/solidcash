@@ -181,7 +181,7 @@ import {
 } from '@solidcash/utils';
 import { binToHex } from '@bitauth/libauth';
 
-function getMaxPushdataEncodedSizeForType(type: Type): number {
+function getMaxPushdataEncodedSizeForType(type: Type, seen: Set<string> = new Set()): number {
   if (type === PrimitiveType.BOOL) return 1;
   if (type === PrimitiveType.BIGINT) return 9;
   if (type === PrimitiveType.PUBKEY) return 34;
@@ -209,13 +209,20 @@ function getMaxPushdataEncodedSizeForType(type: Type): number {
     return n + 3;
   }
   if (type instanceof AddressType) return 9; // Address uses pushdata encoding
-  if (type instanceof ValueType) return getMaxPushdataEncodedSizeForType(type.underlyingType);
+  if (type instanceof ValueType) return getMaxPushdataEncodedSizeForType(type.underlyingType, seen);
   if (type instanceof StructType) {
-    return type.fields.reduce((sum, f) => sum + getMaxPushdataEncodedSizeForType(f.type), 0);
+    // A struct reaches itself only through a dynamic array / mapping (returns a bounded handle below). A direct
+    // or fixed-array self / mutual reference has no finite size - reject cleanly rather than recursing forever.
+    if (seen.has(type.name)) {
+      throw new Error(`Recursive struct '${type.name}' has no bounded size; a struct may only reference itself `
+        + 'through a dynamic array or mapping');
+    }
+    const next = new Set(seen).add(type.name);
+    return type.fields.reduce((sum, f) => sum + getMaxPushdataEncodedSizeForType(f.type, next), 0);
   }
   if (type instanceof ArrayType && type.bound !== undefined) {
-    return getMaxPushdataEncodedSizeForType(PrimitiveType.BIGINT)
-      + type.bound * getMaxPushdataEncodedSizeForType(type.elementType);
+    return getMaxPushdataEncodedSizeForType(PrimitiveType.BIGINT, seen)
+      + type.bound * getMaxPushdataEncodedSizeForType(type.elementType, seen);
   }
   return 9;
 }

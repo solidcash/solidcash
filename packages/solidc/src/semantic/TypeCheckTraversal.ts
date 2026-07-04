@@ -800,6 +800,7 @@ export default class TypeCheckTraversal extends AstTraversal {
     node.expression = this.visit(node.expression);
     node.expression = this.maybeCoerceHexToInt(node.expression, node.stateVariable?.type);
     node.expression = this.maybeCoerceZeroToBytes(node.expression, node.stateVariable?.type);
+    node.expression = this.maybeCoerceStringToBytesN(node.expression, node.stateVariable?.type);
     // A nested array literal is inferred as unbounded (`uint256[][]`); coerce it to the declared type so a
     // fixed-inner nested array (`uint256[N][]`) encodes its rows fixed-width (bounded inner => packed).
     if (node.stateVariable?.type instanceof ArrayType && node.expression instanceof ArrayNode) {
@@ -919,6 +920,7 @@ export default class TypeCheckTraversal extends AstTraversal {
     node.expression = this.visit(node.expression);
     node.expression = this.maybeCoerceHexToInt(node.expression, node.identifier.type);
     node.expression = this.maybeCoerceZeroToBytes(node.expression, node.identifier.type);
+    node.expression = this.maybeCoerceStringToBytesN(node.expression, node.identifier.type);
     expectAssignable(node, node.expression.type, node.identifier.type);
     return node;
   }
@@ -1552,8 +1554,9 @@ export default class TypeCheckTraversal extends AstTraversal {
   // to a bytesN hex literal so the existing fixed-bytes codegen handles it (string -> dynamic bytes already
   // works). Porting mode only. Over-long literals fall through to the normal (rejecting) assignability check.
   private maybeCoerceStringToBytesN(expr: ExpressionNode, expected?: Type): ExpressionNode {
-    if (this.solidityImportCompat && expr instanceof StringLiteralNode
-      && expected instanceof BytesType && expected.bound !== undefined) {
+    if (!this.solidityImportCompat || !(expected instanceof BytesType) || expected.bound === undefined) return expr;
+    // String literal -> bytesN: right-pad the UTF-8 bytes to the target width.
+    if (expr instanceof StringLiteralNode) {
       const bytes = encodeString(expr.value);
       if (bytes.length <= expected.bound) {
         const padded = new Uint8Array(expected.bound);
@@ -1563,6 +1566,17 @@ export default class TypeCheckTraversal extends AstTraversal {
         hex.location = expr.location;
         return hex;
       }
+    }
+    // Hex string literal shorter than the target bytesN: right-pad (Solidity widens a `hex"..."` bytes literal
+    // to a larger bytesN). An over-long literal is left to fail the assignability check.
+    if (expr instanceof HexLiteralNode && expr.type instanceof BytesType && expr.type.bound !== undefined
+      && expr.type.bound < expected.bound) {
+      const padded = new Uint8Array(expected.bound);
+      padded.set(expr.value);
+      const hex = new HexLiteralNode(padded);
+      hex.type = expected;
+      hex.location = expr.location;
+      return hex;
     }
     return expr;
   }
@@ -2360,7 +2374,7 @@ const inferPaddedBytesType = (node: FunctionCallNode): Type => {
   return new BytesType();
 };
 
-function isValidStateType(type: Type): boolean {
+function isValidStateType(type: Type, seen: Set<string> = new Set()): boolean {
   if (type === PrimitiveType.BIGINT || type === PrimitiveType.BOOL) return true;
   if (type === PrimitiveType.STRING) return true;
   if (type === PrimitiveType.PUBKEY) return true;
@@ -2373,9 +2387,15 @@ function isValidStateType(type: Type): boolean {
   if (type instanceof BytesType) return true;
   if (type instanceof AddressType) return true;
   if (type instanceof EnumType) return true; // int-backed: stored as the underlying integer
-  if (type instanceof ValueType) return isValidStateType(type.underlyingType);
-  if (type instanceof StructType) return type.fields.every((f) => isValidStateType(f.type));
-  if (type instanceof ArrayType) return isValidStateType(type.elementType);
+  if (type instanceof ValueType) return isValidStateType(type.underlyingType, seen);
+  if (type instanceof StructType) {
+    // A self / mutually recursive struct reaches itself only through a dynamic array (a separate chunk), so a
+    // back-edge to an already-visited struct is valid; guard against the cycle to avoid infinite recursion.
+    if (seen.has(type.name)) return true;
+    seen.add(type.name);
+    return type.fields.every((f) => isValidStateType(f.type, seen));
+  }
+  if (type instanceof ArrayType) return isValidStateType(type.elementType, seen);
   return false;
 }
 

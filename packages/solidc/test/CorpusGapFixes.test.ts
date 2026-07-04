@@ -150,3 +150,54 @@ describe('mapping-bearing struct scalar field write (flattened to s__field)', ()
     expect(art.contractName).toBe('C');
   });
 });
+
+describe('hex string literal -> bytesN (right-padded)', () => {
+  // Solidity widens a short `hex"..."` bytes literal to a larger bytesN by right-padding (the same rule as a
+  // string literal). Verified byte-identical to the explicitly padded literal.
+  it('assigns a short hex literal to a wider bytesN, byte-identical to the padded form', () => {
+    const short = compileString(`contract C() {
+      function f() returns (bytes5 b) { b = hex"043245"; require(b != 0x0000000000); }
+    }`, { solidityImportCompat: true }).bytecode;
+    const padded = compileString(`contract C() {
+      function f() returns (bytes5 b) { b = hex"0432450000"; require(b != 0x0000000000); }
+    }`, { solidityImportCompat: true }).bytecode;
+    expect(short).toBe(padded);
+  });
+
+  it('coerces in a declaration and a state assignment; over-long is still rejected', () => {
+    expect(compileString(`contract C() { bytes8 s;
+      function f() { bytes32 b = hex"012233"; s = hex"0102"; require(b != 0x0 || s != 0x0); }
+    }`, { solidityImportCompat: true }).contractName).toBe('C');
+    expect(() => compileString(`contract C() {
+      function f() { bytes2 b = hex"010203"; require(b != 0x0); }
+    }`, { solidityImportCompat: true })).toThrow(/can not be assigned/);
+  });
+});
+
+describe('struct field types: struct arrays and forward / recursive references', () => {
+  // A struct field may be an array of a struct/enum (`T[]`), and struct names are pre-registered so a field can
+  // reference a struct defined LATER (forward reference) or itself through a dynamic array (recursive).
+  it('resolves a struct-array field with the element struct defined first', () => {
+    const art = compileString(`contract C() {
+      struct T { uint256 x; } struct S { uint256 a; T[] sub; } S s;
+      function f() { s.a = 1; }
+    }`, { solidityImportCompat: true });
+    expect(art.contractName).toBe('C');
+  });
+
+  it('resolves a forward reference to a struct defined later', () => {
+    const art = compileString(`contract C() {
+      struct S { uint256 a; T[] sub; bytes b; } struct T { uint256 x; } S s;
+      function f() { s.a = 1; }
+    }`, { solidityImportCompat: true });
+    expect(art.contractName).toBe('C');
+  });
+
+  it('compiles a self-recursive struct declaration without stack-overflowing', () => {
+    const art = compileString(`contract C() {
+      struct R { uint256 v; R[] children; } R r;
+      function f() { r.v = 1; }
+    }`, { solidityImportCompat: true });
+    expect(art.contractName).toBe('C');
+  });
+});

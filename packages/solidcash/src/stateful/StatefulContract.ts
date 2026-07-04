@@ -69,7 +69,9 @@ import {
 import { ConstructorArgument, FunctionArgument } from '../Argument.js';
 import { AbiToFunctionMap } from '../types/type-inference.js';
 import { StateGetterMap, StateValueType } from '../types/state-inference.js';
-import { findLastIndex, generateLibauthSourceOutputs, scriptToAddress, scriptToLockingBytecode } from '../utils.js';
+import {
+  addressToLockScript, findLastIndex, generateLibauthSourceOutputs, scriptToAddress, scriptToLockingBytecode,
+} from '../utils.js';
 import NetworkProvider from '../network/NetworkProvider.js';
 
 // P2SH32-wrapped OP_TRUE for consensus-valid dummy funders.
@@ -4301,7 +4303,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             if (keyParamIndex < 0) {
               throw new Error(`Key parameter '${keySource.paramName}' not found in function inputs`);
             }
-            keyValues.push(args[keyParamIndex] as bigint | boolean | Uint8Array);
+            let kv = args[keyParamIndex] as bigint | boolean | Uint8Array | string;
+            // Normalize a CashAddress string for an address key to its locking bytecode, matching how the covenant
+            // stores it (Argument encoding does the same) - else the search cannot match the on-chain entry.
+            if (effectiveKeyTypes[ki] === 'address' && typeof kv === 'string' && kv.includes(':')) {
+              kv = addressToLockScript(kv);
+            }
+            keyValues.push(kv as bigint | boolean | Uint8Array);
           } else if (keySource.kind === 'state') {
             // Auto-resolve from on-chain state
             const stateValue = onChainState.state[keySource.stateVarName!];

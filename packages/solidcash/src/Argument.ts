@@ -1,6 +1,7 @@
 import { hexToBin } from '@bitauth/libauth';
 import {
   AbiFunction,
+  AddressType,
   Artifact,
   BytesType,
   encodeBool,
@@ -14,6 +15,7 @@ import {
 } from '@solidcash/utils';
 import { TypeError } from './Errors.js';
 import SignatureTemplate from './SignatureTemplate.js';
+import { addressToLockScript } from './utils.js';
 
 export type ConstructorArgument = bigint | boolean | string | Uint8Array;
 export type FunctionArgument = ConstructorArgument | SignatureTemplate;
@@ -77,6 +79,13 @@ export function encodeFunctionArgument(argument: FunctionArgument, typeStr: stri
   }
 
   if (type === PrimitiveType.SIG && argument instanceof SignatureTemplate) return argument;
+
+  // An `address` argument given as a CashAddress string (has a `prefix:` part) -> its locking bytecode. A
+  // hex-encoded locking bytecode still falls through to hexToBin below. Prevents silently hexToBin-ing a
+  // CashAddress into garbage bytes (which then mismatch the real address everywhere it is used).
+  if (type instanceof AddressType && typeof argument === 'string' && argument.includes(':')) {
+    argument = addressToLockScript(argument);
+  }
 
   // Convert hex string to Uint8Array
   if (typeof argument === 'string') {

@@ -332,9 +332,23 @@ export interface StateLayout {
   dataNftCount: number;
   commitmentLimit: number;
   constructorInputs?: readonly AbiInput[];
+  deployReads?: readonly DeployReadHint[];
   collections?: readonly CollectionInfo[];
   mappings?: readonly CollectionInfo[];
   structs?: readonly StructDefinitionInfo[];
+}
+
+/**
+ * A constructor external read hoisted to a deploy input (see docs/deploy-external-reads.md). The value is
+ * resolved off-chain at deploy by reading `read` (a state var / getter) from the contract of type `contractType`
+ * at the address held by constructor input `addressInput`. The SDK can auto-resolve it (resolveDeployReads) when
+ * that contract's artifact is registered; otherwise the deployer supplies `input` directly.
+ */
+export interface DeployReadHint {
+  input: string;        // synthesized constructor input to fill, e.g. '__ctorread_pool_token0_0'
+  addressInput: string; // constructor input holding the target contract's address, e.g. '_pool'
+  contractType: string; // the target's interface/contract type name, e.g. 'IUniswapV3Pool'
+  read: string;         // the state var / getter to read from the target, e.g. 'token0'
 }
 
 /**

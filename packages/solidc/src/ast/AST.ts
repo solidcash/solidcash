@@ -144,6 +144,9 @@ export class ContractNode extends Node implements Named {
   parentInvocations: ParentInvocation[] = [];
   fallbackDef: FunctionDefinitionNode | undefined;
   receiveDef: FunctionDefinitionNode | undefined;
+  // Constructor external reads hoisted to deploy inputs by PromoteConstructorExternalReads. Surfaced as
+  // stateLayout.deployReads so the SDK can auto-resolve them (read the target's state at deploy).
+  deployReads: { input: string; addressInput: string; contractType: string; read: string }[] = [];
 
   constructor(
     public name: string,
@@ -901,6 +904,9 @@ export class FunctionCallNode extends ExpressionNode {
   // site (codegen runs twice, so the key must not depend on a codegen-visit counter). Keys the read as
   // <computed:i>; the SDK resolves n from the auto-derivation probe trace.
   blockhashComputedIndex?: number;
+  // Set when this call was desugared from `this.f(args)` (an external self-call). On BCH the covenant is the
+  // contract itself, so calling an `external` function this way is allowed (the internal-call guard is bypassed).
+  fromThisCall?: boolean;
 
   constructor(
     public identifier: IdentifierNode,

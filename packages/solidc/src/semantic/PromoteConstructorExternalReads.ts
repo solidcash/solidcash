@@ -7,6 +7,7 @@ import {
   FunctionCallNode,
   IdentifierNode,
   ParameterNode,
+  AssignNode,
 } from '../ast/AST.js';
 import { AddressType } from '@solidcash/utils';
 import AstTraversal from '../ast/AstTraversal.js';
@@ -27,7 +28,9 @@ const ADDRESS_METHODS = new Set(['send', 'call', 'staticcall', 'delegatecall', '
 
 export default class PromoteConstructorExternalReads extends AstTraversal {
   private stateVarIface = new Map<string, string>(); // interface-typed state var name -> interface name
-  private promoted: { param: string; read: string }[] = [];
+  private addressSource = new Map<string, string>(); // interface state var -> constructor input it is assigned from
+  private ctorParams = new Set<string>(); // the constructor's declared parameter names
+  private promoted: { param: string; read: string; addressInput?: string; contractType: string }[] = [];
   private counter = 0;
   private active = false;
 
@@ -46,6 +49,18 @@ export default class PromoteConstructorExternalReads extends AstTraversal {
     }
     if (this.stateVarIface.size === 0) return node;
 
+    // Trace `stateVar = IFace(input)` / `stateVar = input` assignments so a promoted read on that state var can
+    // record which constructor input holds the target's address (lets the SDK auto-resolve it at deploy).
+    this.ctorParams = new Set(node.constructorDef.parameters.map((p) => p.name));
+    this.addressSource = new Map();
+    for (const stmt of node.constructorDef.body?.statements ?? []) {
+      if (stmt instanceof AssignNode && stmt.identifier instanceof IdentifierNode
+        && this.stateVarIface.has(stmt.identifier.name)) {
+        const src = this.assignedInput(stmt.expression);
+        if (src) this.addressSource.set(stmt.identifier.name, src);
+      }
+    }
+
     this.promoted = [];
     this.counter = 0;
     this.active = true;
@@ -56,14 +71,29 @@ export default class PromoteConstructorExternalReads extends AstTraversal {
       const param = new ParameterNode(new AddressType(), p.param, []);
       param.location = node.constructorDef.location;
       node.constructorDef.parameters.push(param);
+      if (p.addressInput) {
+        node.deployReads.push({
+          input: p.param, addressInput: p.addressInput, contractType: p.contractType, read: p.read,
+        });
+      }
     }
     if (this.promoted.length > 0) {
-      const list = this.promoted.map((p) => `${p.param} = ${p.read}`).join(', ');
+      const list = this.promoted.map((p) => `${p.param} = ${p.read}()`).join(', ');
       console.warn(`Warning: constructor external read(s) hoisted to deploy inputs (${list}). BCH has no `
-        + 'on-chain constructor, so supply the resolved address(es) at deploy (read them off-chain from the '
-        + 'target contract). See docs/deploy-external-reads.md.');
+        + 'on-chain constructor; supply the resolved address(es) at deploy (read them off-chain from the '
+        + 'target contract, or use the SDK resolveDeployReads helper). See docs/deploy-external-reads.md.');
     }
     return node;
+  }
+
+  // The constructor input a state var is assigned from: `X = IFace(input)` (cast) or `X = input` (bare).
+  private assignedInput(value: ExpressionNode): string | undefined {
+    if (value instanceof IdentifierNode && this.ctorParams.has(value.name)) return value.name;
+    if (value instanceof FunctionCallNode && value.parameters.length === 1) {
+      const arg = value.parameters[0];
+      if (arg instanceof IdentifierNode && this.ctorParams.has(arg.name)) return arg.name;
+    }
+    return undefined;
   }
 
   visitFunctionCall(node: FunctionCallNode): Node {
@@ -77,7 +107,12 @@ export default class PromoteConstructorExternalReads extends AstTraversal {
         const method = name.slice(dot + 1);
         if (this.stateVarIface.has(varName) && !ADDRESS_METHODS.has(method)) {
           const paramName = `__ctorread_${varName}_${method}_${this.counter++}`;
-          this.promoted.push({ param: paramName, read: `${varName}.${method}()` });
+          this.promoted.push({
+            param: paramName,
+            read: method,
+            addressInput: this.addressSource.get(varName),
+            contractType: this.stateVarIface.get(varName)!,
+          });
           const id = new IdentifierNode(paramName);
           id.location = node.location;
           return id;

@@ -40,9 +40,32 @@ other constructor-provided immutable. The compiler emits a warning listing each 
 
 ## Supplying the values at deploy
 
-The deployer (or SDK) resolves each read **off-chain** and passes it as the corresponding constructor input -
-e.g. query `pool.token0()` / `pool.token1()` from the target contract, then deploy with those addresses. This
-matches Solidity's deploy-time-read intent; the read simply happens off-chain instead of on-chain.
+Each hoisted read is recorded in `stateLayout.deployReads`:
+
+```json
+[{ "input": "__ctorread_pool_token0_0", "addressInput": "_pool",
+   "contractType": "IUniswapV3Pool", "read": "token0" }, ...]
+```
+
+i.e. "fill input `__ctorread_pool_token0_0` by reading the `token0` state var of the `IUniswapV3Pool` at the
+address held by input `_pool`". You can either pass the resolved addresses yourself, or let the SDK read them
+on-chain with `resolveDeployReads`:
+
+```ts
+import { resolveDeployReads } from 'solidcash';
+
+// Provide only the non-hoisted inputs; register the target's artifact so its state can be decoded.
+const args = await resolveDeployReads(
+  UniswapV3FlashArtifact,
+  { _pool: poolAddress },
+  { runner: provider, artifacts: { IUniswapV3Pool: PoolArtifact } },
+);
+// args === [poolAddress, <pool.token0()>, <pool.token1()>] - ready to deploy.
+```
+
+`resolveDeployReads` reads the real on-chain value, so it does not depend on the deployer supplying a correct
+value by hand. It matches Solidity's deploy-time-read intent; the read simply happens off-chain instead of
+on-chain.
 
 ## Soundness
 

@@ -348,6 +348,7 @@ export function generateArtifact(
           type: abiTypeString(p.type),
         })),
       }),
+      ...(contract.deployReads.length > 0 && { deployReads: contract.deployReads }),
       ...(contract.collections.length > 0 && {
         collections: contract.collections.map((coll) => ({
           name: coll.name,

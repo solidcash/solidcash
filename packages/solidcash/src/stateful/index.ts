@@ -72,6 +72,7 @@ export {
   readAnonymousEventsFromChain, valuesEqual,
 } from './StateReader.js';
 export { ThreadManager, ThreadHandle, type SplitOptions, type MergeOptions } from './ThreadManager.js';
+export { resolveDeployReads, type DeployReadResolveOptions } from './resolveDeployReads.js';
 export {
   getDataNftAddress,
   getDataNftLockingBytecode,

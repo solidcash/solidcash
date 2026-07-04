@@ -3038,6 +3038,21 @@ export default class AstBuilder
       return node;
     }
 
+    // `this.f(args)`: an external self-call to the contract's OWN function `f`. On BCH the covenant IS the
+    // contract, so resolve it to a direct call to `f` (a subroutine). Solidity's external-self-call semantics
+    // (fresh calldata, `msg.sender` = the contract) do not apply here.
+    if (ctx.expression().getText() === 'this' && !callOpts) {
+      const line = `:${Location.fromCtx(ctx).start.line}`;
+      console.log(`Warning: 'this.${methodName}(...)'${line} is an external self-call in Solidity; on BCH it is a `
+        + `direct internal call to '${methodName}' (no separate calldata, msg.sender is not re-set to self).`);
+      const id = new IdentifierNode(methodName);
+      id.location = Location.fromCtx(ctx);
+      const call = new FunctionCallNode(id, parameters as ExpressionNode[]);
+      call.fromThisCall = true;
+      call.location = Location.fromCtx(ctx);
+      return call;
+    }
+
     // using-for: `recv.method(args)` where recv is a struct var bound to a library -> `Library.method(recv, args)`.
     if (this.usingForLibraries.size > 0) {
       const recvName = object instanceof IdentifierNode ? object.name

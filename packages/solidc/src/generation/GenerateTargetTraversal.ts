@@ -4698,6 +4698,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // Convert VM number to fixed-width sign-magnitude bytes
       this.emit(encodeInt(BigInt(elemType.byteWidth)), locationData);
       this.emit(Op.OP_NUM2BIN, locationData);
+    } else if (elemType instanceof ArrayType && elemType.bound !== undefined) {
+      // A fixed-inner row value (`pushdata(count) ++ tight elements`) stores as just the tight element blob:
+      // strip the leading count prefix, so rows sit back-to-back at a fixed stride (bound * innerWidth).
+      this.emitPushdataDecode(PrimitiveType.BIGINT, locationData); // [count, elements]
+      this.emit(Op.OP_NIP, locationData); // [elements]
     }
     // For bytesN/pubkey: already correct width, no encoding needed
     // For structs of bounded fields: already correct width
@@ -4713,6 +4718,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     } else if (elemType instanceof FixedType) {
       // Convert fixed-width sign-magnitude bytes back to VM number
       this.emit(Op.OP_BIN2NUM, locationData);
+    } else if (elemType instanceof ArrayType && elemType.bound !== undefined) {
+      // A fixed-inner row is stored tight (no count prefix); reframe it into a proper array value by prepending
+      // its element count, so `a[i]` behaves like a normal array (and `a[i][j]` can index into it).
+      this.emitPrependArrayCount(getFixedWidth(elemType.elementType), locationData);
     }
     // For bytesN/pubkey: already in correct format
   }
@@ -4849,6 +4858,51 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_DROP, locationData); // drop counter (0)
   }
 
+  // Index into an array VALUE already on the stack (`pushdata(count) ++ elems`): visits `indexNode`, leaves the
+  // element value. Shared by visitArrayAccess and the extra-key drill of a fixed-inner packed state array
+  // (`a[i][j]`: after reading the row, index into it).
+  private emitIndexIntoArrayBlob(
+    elemType: Type, indexNode: ExpressionNode, locationData: SingleLocationData,
+  ): ExpressionNode {
+    const fixedWidth = isFixedWidthType(elemType);
+    this.emitPushdataDecode(PrimitiveType.BIGINT, locationData);
+    this.emit(Op.OP_SWAP, locationData); // [..., elements_blob, length]
+    this.popFromStack();
+    this.pushToStack('(elements)');
+    this.pushToStack('(length)');
+    const visitedIndex = this.visit(indexNode) as ExpressionNode;
+    this.emit(Op.OP_SWAP, locationData); // [..., elements_blob, index, length]
+    this.emitBoundsCheck(locationData); // [..., elements_blob, index]
+    this.popFromStack(2);
+    this.pushToStack('(index)');
+    if (fixedWidth) {
+      const width = getFixedWidth(elemType);
+      this.emit(encodeInt(BigInt(width)), locationData);
+      this.emit(Op.OP_MUL, locationData); // [..., elements_blob, offset]
+      this.emit(Op.OP_SPLIT, locationData);
+      this.emit(Op.OP_NIP, locationData); // [..., right]
+      this.popFromStack(2);
+      this.pushToStack('(value)');
+      this.emit(encodeInt(BigInt(width)), locationData);
+      this.emit(Op.OP_SPLIT, locationData); // [..., element, rest]
+      this.emit(Op.OP_DROP, locationData); // [..., element]
+      this.emitDecodeElementPacked(elemType, locationData);
+    } else {
+      this.popFromStack(2);
+      this.pushToStack('(elements)');
+      this.pushToStack('(count)');
+      this.emitScanLoop(elemType, locationData);
+      this.popFromStack(2);
+      this.pushToStack('(remaining)');
+      this.emitPushdataDecode(elemType, locationData);
+      this.emit(Op.OP_SWAP, locationData);
+      this.emit(Op.OP_NIP, locationData);
+      this.popFromStack();
+      this.pushToStack('(value)');
+    }
+    return visitedIndex;
+  }
+
   visitArrayAccess(node: ArrayAccessNode): Node {
     const locationData = { location: node.location, positionHint: PositionHint.END };
 
@@ -4869,63 +4923,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     const arrType = node.array.type as ArrayType;
     const elemType = arrType.elementType;
-    const fixedWidth = isFixedWidthType(elemType);
 
-    // Push array blob onto stack
+    // Push array blob onto stack, then index into it (visits node.index inside the helper).
     node.array = this.visit(node.array);
-
-    // Decode length prefix: [blob] -> [length, elements_blob]
-    this.emitPushdataDecode(PrimitiveType.BIGINT, locationData);
-    // Bitcoin stack: [..., length, elements_blob]
-    this.emit(Op.OP_SWAP, locationData); // [..., elements_blob, length]
-    this.popFromStack(); // remove blob tracking
-    this.pushToStack('(elements)');
-    this.pushToStack('(length)');
-
-    // Visit index
-    node.index = this.visit(node.index);
-    // Bitcoin stack: [..., elements_blob, length, index]
-
-    // Bounds check: require(index < length)
-    this.emit(Op.OP_SWAP, locationData); // [..., elements_blob, index, length]
-    this.emitBoundsCheck(locationData); // [..., elements_blob, index]
-    this.popFromStack(2); // remove length and index tracking
-    this.pushToStack('(index)');
-
-    if (fixedWidth) {
-      const width = getFixedWidth(elemType);
-      // O(1) access: compute byte offset
-      this.emit(encodeInt(BigInt(width)), locationData);
-      this.emit(Op.OP_MUL, locationData); // [..., elements_blob, offset]
-
-      this.emit(Op.OP_SPLIT, locationData); // [..., left, right]
-      this.emit(Op.OP_NIP, locationData); // [..., right]
-      this.popFromStack(2);
-      this.pushToStack('(value)');
-
-      this.emit(encodeInt(BigInt(width)), locationData);
-      this.emit(Op.OP_SPLIT, locationData); // [..., element, rest]
-      this.emit(Op.OP_DROP, locationData); // [..., element]
-
-      this.emitDecodeElementPacked(elemType, locationData);
-    } else {
-      // O(n) access: scan loop to skip `index` elements
-      // Bitcoin stack: [..., elements_blob, index]
-      this.popFromStack(2);
-      this.pushToStack('(elements)');
-      this.pushToStack('(count)');
-      this.emitScanLoop(elemType, locationData);
-      this.popFromStack(2); // remove elements and count
-      this.pushToStack('(remaining)');
-
-      // Decode the target element from remaining
-      this.emitPushdataDecode(elemType, locationData);
-      // [..., decoded_value, remainder]
-      this.emit(Op.OP_SWAP, locationData); // [..., remainder, decoded_value]
-      this.emit(Op.OP_NIP, locationData); // [..., decoded_value]
-      this.popFromStack();
-      this.pushToStack('(value)');
-    }
+    node.index = this.emitIndexIntoArrayBlob(elemType, node.index, locationData);
 
     return node;
   }
@@ -6062,6 +6063,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_NIP, locationData);
       this.popFromStack();
       this.pushToStack('(value)');
+    }
+
+    // Extra keys drill into a fixed-inner array element: `a[i][j]` reads the row (above) then indexes into it.
+    let rowType: Type = elemType;
+    for (let k = 1; k < node.keys.length; k++) {
+      const rowArr = rowType as ArrayType;
+      node.keys[k] = this.emitIndexIntoArrayBlob(rowArr.elementType, node.keys[k], locationData);
+      rowType = rowArr.elementType;
     }
 
     return node;

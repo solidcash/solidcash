@@ -4330,8 +4330,17 @@ export default class SymbolTableTraversal extends AstTraversal {
     if (packedSv && (packedSv.isPacked || packedSv.isDynamic) && packedSv.type instanceof ArrayType) {
       node.isPackedStateArrayAccess = true;
       node.packedStateVariable = packedSv;
-      node.type = (packedSv.type as ArrayType).elementType;
       node.keys = this.visitList(node.keys);
+      // The first key indexes the packed/dynamic array; extra keys drill into a fixed-inner array element
+      // (`uint256[N][]`: a[i] is the row uint256[N], a[i][j] the scalar).
+      let resultType: Type = (packedSv.type as ArrayType).elementType;
+      for (let k = 1; k < node.keys.length; k++) {
+        if (!(resultType instanceof ArrayType)) {
+          throw new Error(`Too many index expressions for '${node.name}' at line ${node.location?.start.line}`);
+        }
+        resultType = resultType.elementType;
+      }
+      node.type = resultType;
       return node;
     }
 

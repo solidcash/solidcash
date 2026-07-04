@@ -657,6 +657,9 @@ export function isFixedWidthType(type: Type | string): boolean {
   if (t instanceof BytesType) return t.bound !== undefined;
   if (t instanceof IntType || t instanceof FixedType) return true;
   if (t instanceof StructType) return t.fields.every((f) => isFixedWidthType(f.type));
+  // A bounded array of fixed-width elements is itself fixed-width (bound * elementWidth). This lets a fixed-inner
+  // nested array (`uint256[N][]`) back a chunk-packed dynamic array whose element is the N-wide row.
+  if (t instanceof ArrayType) return t.bound !== undefined && isFixedWidthType(t.elementType);
   return false;
 }
 
@@ -686,6 +689,7 @@ export function fixedWidthBytes(type: Type | string): number {
   if (t instanceof BytesType && t.bound !== undefined) return t.bound;
   if (t instanceof IntType || t instanceof FixedType) return t.byteWidth;
   if (t instanceof StructType) return t.fields.reduce((sum, f) => sum + fixedWidthBytes(f.type), 0);
+  if (t instanceof ArrayType && t.bound !== undefined) return t.bound * fixedWidthBytes(t.elementType);
   throw new Error(`Type is not fixed-width: ${t}`);
 }
 

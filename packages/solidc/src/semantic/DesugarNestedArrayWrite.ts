@@ -1,4 +1,4 @@
-import { ArrayType, Type } from '@solidcash/utils';
+import { ArrayType, Type, isChunkPackableElementType } from '@solidcash/utils';
 import {
   Node,
   SourceFileNode,
@@ -10,6 +10,7 @@ import {
   VariableDefinitionNode,
   MappingAssignNode,
   ArrayAssignNode,
+  StateArrayAssignNode,
   ArrayAccessNode,
   IdentifierNode,
   ExpressionNode,
@@ -33,6 +34,9 @@ import { cloneNode } from '../ast/clone.js';
  */
 export default class DesugarNestedArrayWrite extends AstTraversal {
   private locals = new Map<string, Type>();
+  // Fixed-inner nested state arrays (`uint256[N][]`): chunk-packed, so `a[i]` is a whole-row state read/write.
+  // A nested write `a[i][j] = v` desugars like the local case, but the base write-back is a StateArrayAssign.
+  private stateArrays = new Map<string, Type>();
   private counter = 0;
 
   visitSourceFile(node: SourceFileNode): Node {
@@ -43,6 +47,13 @@ export default class DesugarNestedArrayWrite extends AstTraversal {
   }
 
   visitContract(node: ContractNode): Node {
+    this.stateArrays = new Map();
+    for (const sv of node.stateVariables) {
+      if (sv.type instanceof ArrayType && sv.type.elementType instanceof ArrayType
+        && isChunkPackableElementType(sv.type.elementType)) {
+        this.stateArrays.set(sv.name, sv.type);
+      }
+    }
     if (node.constructorDef) node.constructorDef = this.visit(node.constructorDef) as FunctionDefinitionNode;
     node.functions = this.visitList(node.functions) as FunctionDefinitionNode[];
     return node;
@@ -83,7 +94,9 @@ export default class DesugarNestedArrayWrite extends AstTraversal {
   // `b[k0]..[kn] = v` on a local nested array -> read-modify-write statements; undefined if not applicable.
   private tryDesugar(node: MappingAssignNode): StatementNode[] | undefined {
     if (node.keys.length < 2) return undefined;
-    const baseType = this.locals.get(node.name);
+    // A local shadows a state var of the same name; the base is a state array only when no local matches.
+    const isState = !this.locals.has(node.name) && this.stateArrays.has(node.name);
+    const baseType = this.locals.get(node.name) ?? this.stateArrays.get(node.name);
     if (!(baseType instanceof ArrayType)) return undefined;
 
     const keys = node.keys;
@@ -121,7 +134,10 @@ export default class DesugarNestedArrayWrite extends AstTraversal {
       back.location = node.location;
       stmts.push(back);
     }
-    const baseWrite = new ArrayAssignNode(node.name, clone(keys[0]), this.ident(tmpNames[0], node));
+    // The base write-back is a state element write for a state array (`a[i] = tmp`), a local write otherwise.
+    const baseWrite = isState
+      ? new StateArrayAssignNode(node.name, clone(keys[0]), this.ident(tmpNames[0], node))
+      : new ArrayAssignNode(node.name, clone(keys[0]), this.ident(tmpNames[0], node));
     baseWrite.location = node.location;
     stmts.push(baseWrite);
 

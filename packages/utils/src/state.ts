@@ -2,7 +2,7 @@ import { AbiFunction, Artifact, StateLayout, StateVariableInfo, StructDefinition
 import { bytecodeToAsm, Op, Script, scriptToBytecode } from './script.js';
 import { encodeInt, encodeIntAsFixedBytes, decodeIntFixedWidth } from './data.js';
 import {
-  BytesType, FixedType, IntType, parseTypeStrict, PrimitiveType, fixedWidthBytes, isFixedWidthType,
+  ArrayType, BytesType, FixedType, IntType, parseTypeStrict, PrimitiveType, fixedWidthBytes, isFixedWidthType,
 } from './types.js';
 import {
   bigIntToVmNumber, binToHex, binToUtf8, hexToBin, utf8ToBin, vmNumberToBigInt, isVmNumberError,
@@ -1093,6 +1093,10 @@ export function packFixedWidthElement(value: PrimitiveStateValue, elementType: s
     }
     return bytes;
   }
+  // A fixed-inner array element (a `uint256[N]` row): pack its elements tight. Value is the nested row array.
+  if (t instanceof ArrayType && t.bound !== undefined) {
+    return packFixedWidthArray(value as PrimitiveStateValue[], t.elementType.toString());
+  }
   throw new Error(`packFixedWidthElement: '${elementType}' is not a supported fixed-width element type`);
 }
 
@@ -1102,6 +1106,10 @@ export function unpackFixedWidthElement(bytes: Uint8Array, elementType: string):
   if (t === PrimitiveType.BOOL) return bytes.length > 0 && bytes[0] !== 0;
   if (t instanceof IntType || t instanceof FixedType) return decodeIntFixedWidth(bytes);
   if ((t instanceof BytesType && t.bound !== undefined) || t === PrimitiveType.PUBKEY) return bytes;
+  // A fixed-inner array element (a `uint256[N]` row): unpack the tight row into its nested element array.
+  if (t instanceof ArrayType && t.bound !== undefined) {
+    return unpackFixedWidthArray(bytes, t.elementType.toString()) as unknown as PrimitiveStateValue;
+  }
   throw new Error(`unpackFixedWidthElement: '${elementType}' is not a supported fixed-width element type`);
 }
 

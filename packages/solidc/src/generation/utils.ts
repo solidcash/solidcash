@@ -1,5 +1,6 @@
 import {
   AddressType,
+  ArrayType,
   BytesType,
   EnumType,
   FixedType,
@@ -283,6 +284,9 @@ export function isFixedWidthType(type: Type): boolean {
   if (type instanceof BytesType && type.bound !== undefined) return true;
   if (type instanceof IntType) return true;
   if (type instanceof FixedType) return true;
+  // A bounded array of fixed-width elements is fixed-width (a `uint256[N]` row is bound * elementWidth bytes),
+  // so a fixed-inner nested array `uint256[N][]` chunk-packs as a dynamic array of fixed-width rows.
+  if (type instanceof ArrayType) return type.bound !== undefined && isFixedWidthType(type.elementType);
   // StructType intentionally excluded - uses pushdata encoding, not packed
   return false; // int, bytes (unbounded), string, struct
 }
@@ -297,6 +301,7 @@ export function getFixedWidth(type: Type): number {
   if (type instanceof StructType) {
     return type.fields.reduce((sum, f) => sum + getFixedWidth(f.type), 0);
   }
+  if (type instanceof ArrayType && type.bound !== undefined) return type.bound * getFixedWidth(type.elementType);
   throw new Error(`Type is not fixed-width: ${type}`);
 }
 

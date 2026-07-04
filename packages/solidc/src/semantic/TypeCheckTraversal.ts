@@ -800,6 +800,11 @@ export default class TypeCheckTraversal extends AstTraversal {
     node.expression = this.visit(node.expression);
     node.expression = this.maybeCoerceHexToInt(node.expression, node.stateVariable?.type);
     node.expression = this.maybeCoerceZeroToBytes(node.expression, node.stateVariable?.type);
+    // A nested array literal is inferred as unbounded (`uint256[][]`); coerce it to the declared type so a
+    // fixed-inner nested array (`uint256[N][]`) encodes its rows fixed-width (bounded inner => packed).
+    if (node.stateVariable?.type instanceof ArrayType && node.expression instanceof ArrayNode) {
+      coerceArrayLiteralType(node.expression, node.stateVariable.type);
+    }
     if (node.stateVariable && node.expression.type) {
       if (!implicitlyCastable(node.expression.type, node.stateVariable.type)) {
         throw new StateAssignTypeError(node, node.expression.type, node.stateVariable.type);
@@ -2084,6 +2089,10 @@ export default class TypeCheckTraversal extends AstTraversal {
     if (node.noArg) {
       node.value = createDefaultValueExpression(arrType.elementType, node.location!);
     }
+    // A fixed-inner row (`a.push([x, y])` on `uint256[N][]`) is blob-encoded so its elements pack fixed-width.
+    if (node.value instanceof ArrayNode) {
+      node.value.blobEncoded = true;
+    }
     node.value = this.visit(node.value);
     if (!implicitlyCastable(node.value.type, arrType.elementType)) {
       throw new StateAssignTypeError(node as any, node.value.type, arrType.elementType);
@@ -2362,6 +2371,18 @@ function isValidStateType(type: Type): boolean {
   if (type instanceof StructType) return type.fields.every((f) => isValidStateType(f.type));
   if (type instanceof ArrayType) return isValidStateType(type.elementType);
   return false;
+}
+
+// Coerce a (possibly nested) array literal's inferred type to a declared array type, so a fixed-inner nested
+// array's rows carry their bound (`uint256[N]`) and thus encode fixed-width (packed) rather than framed.
+function coerceArrayLiteralType(arr: ArrayNode, target: Type): void {
+  if (!(target instanceof ArrayType)) return;
+  arr.type = target;
+  if (target.elementType instanceof ArrayType) {
+    for (const el of arr.elements) {
+      if (el instanceof ArrayNode) coerceArrayLiteralType(el, target.elementType);
+    }
+  }
 }
 
 function isValidMappingKeyType(type: Type): boolean {

@@ -1,34 +1,34 @@
 
-=== SOLC-CORPUS SCORECARD: 1936/4876 single-file in-scope compiled (2940 failed) | 1734 negative (correctly rejected) | 456 NEG-ACCEPTED (solc rejects, we compiled) | 277 multifile-skipped | 7343 total ===
+=== SOLC-CORPUS SCORECARD: 2107/4876 single-file in-scope compiled (2769 failed) | 1699 negative (correctly rejected) | 491 NEG-ACCEPTED (solc rejects, we compiled) | 277 multifile-skipped | 7343 total ===
 
 --- TOP FAILURE REASONS ---
-  638  ParseError: Unexpected token '..' at Line N, Column N
-  441  ParseError: Mismatched input '..' expecting {'..', '..'} at Line N, Column N
+  682  ParseError: Unexpected token '..' at Line N, Column N
   277  ParseError: Mismatched input '..' expecting VersionLiteral at Line N, Column N
-  189  ParseError: Mismatched input '..' expecting '..' at Line N, Column N
-  160  ParseError: Mismatched input '..' expecting {'..', '..', '..', '..', '..', '..', '..', '..
-  128  UnsupportedInlineAssemblyError: Unsupported inline assembly (Yul): Yul code generation is 
-  128  MethodCallNotSupportedError: Method calls are only supported on interface or contract inst
-   47  StateAssignTypeError: Type '..' can not be assigned to state variable of type '..' at Line
+  207  ParseError: Mismatched input '..' expecting '..' at Line N, Column N
+  171  ParseError: Mismatched input '..' expecting {'..', '..', '..', '..', '..', '..', '..', '..
+  158  MethodCallNotSupportedError: Method calls are only supported on interface or contract inst
+  132  UnsupportedInlineAssemblyError: Unsupported inline assembly (Yul): Yul code generation is 
+   74  ParseError: Mismatched input '..' expecting {'..', '..'} at Line N, Column N
+   55  StateAssignTypeError: Type '..' can not be assigned to state variable of type '..' at Line
    46  ParseError: Mismatched input '..' expecting {'..', '..', '..'} at Line N, Column N
+   42  AssignTypeError: Type '..' can not be assigned to variable of type '..' at Line N, Column 
    39  MissingReturnError: Function '..' must return a value on all code paths at Line N, Column 
-   38  AssignTypeError: Type '..' can not be assigned to variable of type '..' at Line N, Column 
-   34  UnequalTypeError: Tried to apply operator '..' to unequal types '..' and '..' at Line N, C
+   39  UnequalTypeError: Tried to apply operator '..' to unequal types '..' and '..' at Line N, C
+   31  ParseError: Missing '..' at '..' at Line N, Column N
    29  UnsupportedInlineAssemblyError: Unsupported inline assembly (Yul): local Yul function defi
    28  ParseError: Mismatched input '..' expecting {'..', '..', '..', '..', '..', '..', '..', Ver
-   28  ParseError: Missing '..' at '..' at Line N, Column N
-   27  ParseError: Mismatched input '..' expecting {'..', '..', '..', '..', '..', '..', '..', Ide
+   28  ParseError: Mismatched input '..' expecting {'..', '..', '..', '..', '..', '..', '..', Ide
+   26  UndefinedCollectionError: Undefined mapping '..' at Line N, Column N
    26  UnsupportedTypeError: Found type '..' where type '..' was expected at Line N, Column N
    25  StatefulContractDeploymentError: Cannot use '..' for stateful contracts outside a '..' fun
+   24  UndefinedReferenceError: Undefined reference to symbol uint at Line N, Column N
+   23  UnsupportedStructFieldTypeError: Type '..' is not supported as a struct field type at Line
    22  NonCompileTimeExpressionError: Constant '..' must be initialized with a compile-time expre
-   21  UndefinedCollectionError: Undefined mapping '..' at Line N, Column N
+   20  TypeError: Cannot read properties of undefined (reading '..')
    20  UnsupportedTypeError: Tried to apply operator '..' to unsupported type '..' at Line N, Col
-   20  UndefinedReferenceError: Undefined reference to symbol uint at Line N, Column N
+   19  Error: Type definition '..' has unsupported underlying type '..'. User-defined value types
+   19  UndefinedReferenceError: Undefined reference to symbol L at Line N, Column N
+   18  UndefinedStateVariableError: Undefined state variable '..' at Line N, Column N
    18  Error: external call target address must be a constructor/function parameter
-   18  UndefinedReferenceError: Undefined reference to symbol L at Line N, Column N
-   17  Error: Type definition '..' has unsupported underlying type '..'. User-defined value types
    17  Error: Expected variable '..' does not exist on the stack
-   16  UndefinedStateVariableError: Undefined state variable '..' at Line N, Column N
-   16  UndefinedReferenceError: Undefined reference to symbol ercN at Line N, Column N
-   15  ParseError: Mismatched input '..' expecting Identifier at Line N, Column N
-   14  UnsupportedStructFieldTypeError: Type '..' is not supported as a struct field type at Line
+   16  ParseError: Mismatched input '..' expecting Identifier at Line N, Column N

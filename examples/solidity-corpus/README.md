@@ -26,12 +26,25 @@ Buckets (so the denominator is meaningful):
 
 ## Scorecard (2026-07, 7343 files)
 
+After the `pragma abicoder` / `pragma experimental` unblock (grammar d0a990f9 + typo-reject 8359e4c1):
+
 ```
-1936/4876 single-file in-scope compiled (~40%)   |   2940 failed
-1734 negative correctly rejected (parity)
- 456 NEG-ACCEPTED (solc rejects, we compiled) - 428 in syntaxTests: a validation-gap surface to audit
+2107/4876 single-file in-scope compiled (~43%)   |   2769 failed   (+171 vs the 1936 pre-pragma baseline)
+1699 negative correctly rejected (parity)
+ 491 NEG-ACCEPTED (solc rejects, we compiled) - mostly natspec / EVM-only rejection reasons
  277 multifile-skipped
 ```
+
+The pragma unblock moved ~560 files past the first line; ~171 fully compile, the rest fail on the EVM content
+behind it (Yul, ABIEncoderV2 structs, etc.). Running the full corpus also relies on the optimiser perf fix
+(fc474241) - large fixed-array files (e.g. `uint256[500]`) previously stalled the run.
+
+### Next cheap unblock (newly exposed)
+
+The 277 remaining "expecting VersionLiteral" failures are NOT abicoder/experimental - they are `pragma solidity`
+*version formats* the grammar rejects: `pragma solidity >=0.0;` (273) and `pragma solidity *;` (28) - 2-part
+versions and wildcards. Under solidityImportCompat the version is ignored anyway, so broadening the version
+grammar (or tolerating these forms) is another ~300-file parse unblock.
 
 ## Failure breakdown (the gap list)
 

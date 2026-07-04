@@ -36,6 +36,7 @@ for (const f of files) {
   const cls = classify(src);
   if (cls === 'MULTIFILE') { results.push({ rel, status: 'MULTIFILE' }); i++; continue; }
   if (cls === 'NEGATIVE') { results.push({ rel, status: tryCompile(f) ? 'NEGATIVE' : 'NEG_ACCEPTED' }); i++; continue; }
+  writeFileSync('/Code/cashscript/examples/solidity-corpus/current.txt', rel); // culprit marker if it crashes/hangs
   const err = tryCompile(f);
   results.push({ rel, status: err ? 'FAIL' : 'OK', err });
   if (++i % 500 === 0) process.stderr.write(`  ...${i}/${files.length}\n`);

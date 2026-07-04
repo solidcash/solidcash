@@ -1,7 +1,7 @@
 import {
   AbiFunction, Artifact, CompilerOptions, DebugInformation, Script, scriptToAsm, StateLayout, ArrayType,
   computeCollectionSignature, computeFunctionSelectorHex, ExternalInterfaceInfo, MappingType, Type, ValueType,
-  ExternalLibraryAbi, BUILTIN_LIBRARIES, resolveLibraries, sidecarCodeRange,
+  EnumType, ExternalLibraryAbi, BUILTIN_LIBRARIES, resolveLibraries, sidecarCodeRange,
 } from '@solidcash/utils';
 import { binToHex } from '@bitauth/libauth';
 import { version } from '../index.js';
@@ -9,6 +9,13 @@ import {
   Ast, StateVariableVisibility, InterfaceNode, InterfaceCollectionNode, ExternalCallMode,
   StructDefinitionNode, FunctionDefinitionNode,
 } from '../ast/AST.js';
+
+/** The mapping key type as the SDK must ENCODE it. An enum key is int-backed (the compiler stores/derives it as
+ * its integer member value), so it encodes as 'bigint' - its VM representation - not the enum name. The enum
+ * name is still surfaced in the ABI (function params); only the state-encoding key type is normalized. */
+function keyEncodingTypeString(type: Type): string {
+  return type instanceof EnumType ? 'bigint' : type.toString();
+}
 
 /** Unwrap ValueType to its underlying type string for ABI serialization. */
 function abiTypeString(type: Type | undefined): string {
@@ -346,10 +353,10 @@ export function generateArtifact(
           name: coll.name,
           signature: computeCollectionSignature(coll.name, coll.type.toString()),
           kind: (coll.type instanceof ArrayType ? 'array' : 'mapping') as 'mapping' | 'array',
-          keyType: coll.keyType.toString(),
+          keyType: keyEncodingTypeString(coll.keyType),
           valueType: coll.innermostValueType.toString(),
           ...(coll.depth > 1 && {
-            keyTypes: coll.allKeyTypes.map((t) => t.toString()),
+            keyTypes: coll.allKeyTypes.map(keyEncodingTypeString),
           }),
           ...mappingNameFields(coll.type),
           ...(coll.type instanceof ArrayType && {
@@ -366,10 +373,10 @@ export function generateArtifact(
             name: coll.name,
             signature: computeCollectionSignature(coll.name, coll.type.toString()),
             kind: 'mapping' as const,
-            keyType: coll.keyType.toString(),
+            keyType: keyEncodingTypeString(coll.keyType),
             valueType: coll.innermostValueType.toString(),
             ...(coll.depth > 1 && {
-              keyTypes: coll.allKeyTypes.map((t) => t.toString()),
+              keyTypes: coll.allKeyTypes.map(keyEncodingTypeString),
             }),
             ...mappingNameFields(coll.type),
             ...(coll.immutable && { immutable: true }),
@@ -565,7 +572,7 @@ function buildExternalInterfaceInfo(
       name: coll.name,
       signature: computeCollectionSignature(coll.name, coll.type.toString()),
       kind: (coll.type instanceof ArrayType ? 'array' : 'mapping') as 'mapping' | 'array',
-      keyType: coll.keyType.toString(),
+      keyType: keyEncodingTypeString(coll.keyType),
       valueType: coll.innermostValueType.toString(),
       ...mappingNameFields(coll.type),
     }))

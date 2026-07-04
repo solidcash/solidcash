@@ -575,12 +575,24 @@ export function decodePushdataValue(
     if (len < 0 || len > 10000) {
       throw new Error(`Array length ${len} exceeds safe decoding limit (max 10000)`);
     }
-    // Decode elements
+    // Decode elements. Fixed-width elements (uint256, bytesN, ...) are PACKED - fixedWidthBytes each, no per-
+    // element pushdata length prefix (packFixedWidthArray) - so read them by width. Variable-width elements
+    // (bigint, string, bytes, structs) are pushdata-encoded.
     const arr: StateValue[] = [];
+    const packed = isFixedWidthType(arrInfo.elementType);
+    const elemWidth = packed ? fixedWidthBytes(parseTypeStrict(arrInfo.elementType)) : 0;
     for (let i = 0; i < len; i++) {
-      const { value: elem, bytesConsumed } = decodePushdataValue(data, offset + totalConsumed, arrInfo.elementType, structs);
-      arr.push(elem);
-      totalConsumed += bytesConsumed;
+      if (packed) {
+        const elemBytes = data.slice(offset + totalConsumed, offset + totalConsumed + elemWidth);
+        arr.push(unpackFixedWidthElement(elemBytes, arrInfo.elementType));
+        totalConsumed += elemWidth;
+      } else {
+        const { value: elem, bytesConsumed } = decodePushdataValue(
+          data, offset + totalConsumed, arrInfo.elementType, structs,
+        );
+        arr.push(elem);
+        totalConsumed += bytesConsumed;
+      }
     }
     return { value: arr, bytesConsumed: totalConsumed };
   }

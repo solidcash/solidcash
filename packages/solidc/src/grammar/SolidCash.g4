@@ -101,7 +101,7 @@ interfaceFunction
     ;
 
 libraryDefinition
-    : 'library' Identifier '{' enumDefinition* structDefinition* typeDefinition* eventDefinition* errorDefinition* constantDefinition* stateVariableDeclaration* usingForDirective* freeFunctionDefinition* '}'
+    : 'library' Identifier '{' (enumDefinition | structDefinition | typeDefinition | eventDefinition | errorDefinition | constantDefinition | stateVariableDeclaration | usingForDirective | freeFunctionDefinition)* '}'
     ;
 
 contractDefinition
@@ -170,7 +170,12 @@ fallbackModifier
     ;
 
 receiveDefinition
-    : 'receive' '(' ')' 'external' 'payable' '{' statement* '}'
+    : 'receive' '(' ')' receiveModifier* 'external' receiveModifier* 'payable' receiveModifier* '{' statement* '}'
+    ;
+
+// external + payable stay required (a receive must be both); virtual/override may be interleaved in any order.
+receiveModifier
+    : 'virtual' | overrideSpecifier
     ;
 
 parentInvocation
@@ -178,10 +183,11 @@ parentInvocation
     ;
 
 stateVariableDeclaration
-    : stateVariableVisibility? typeName modifier* Identifier ('=' expression)? ';'
+    : stateVariableVisibility? typeName (modifier | overrideSpecifier)* Identifier ('=' expression)? ';'
     // modifiers may appear on either side of the visibility, so `uint constant public X` (as well as
-    // `uint public constant X`) parses - Solidity allows any order.
-    | typeName modifier* stateVariableVisibility modifier* Identifier ('=' expression)? ';'
+    // `uint public constant X`) parses - Solidity allows any order. `override` (a public state var
+    // overriding a base getter) is accepted and ignored: EVM inheritance is a no-op in SolidCash.
+    | typeName (modifier | overrideSpecifier)* stateVariableVisibility (modifier | overrideSpecifier)* Identifier ('=' expression)? ';'
     | stateVariableVisibility? mappingType collectionModifier* Identifier ';'
     | stateVariableVisibility? arrayType collectionModifier* Identifier ('=' expression)? ';'
     ;
@@ -189,6 +195,7 @@ stateVariableDeclaration
 collectionModifier
     : modifier
     | stateVariableVisibility
+    | overrideSpecifier
     ;
 
 stateVariableVisibility

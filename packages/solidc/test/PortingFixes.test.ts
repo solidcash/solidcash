@@ -2028,3 +2028,39 @@ describe('for-loop init: bare-assignment and empty forms', () => {
       + ' uint s = 0; for (uint i = 0; i < 5; i++) { s = s + i; } return s; } }')).toBe('C');
   });
 });
+
+// Solidity library bodies allow declarations in any order; the grammar previously fixed the order
+// (enums, then structs, then ...), rejecting a struct declared after a constant.
+describe('library body: any declaration order', () => {
+  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  it('accepts a struct declared after a constant', () => {
+    expect(cc('library L { uint constant A = 1; struct S { uint x; }'
+      + ' function f(uint y) internal pure returns (uint) { return y + 1; } }'
+      + ' contract C { function g() public pure returns (uint) { return L.f(2); } }')).toBe('C');
+  });
+});
+
+// A receive() must stay external + payable, but Solidity allows virtual/override interleaved in any order.
+describe('receive(): virtual/override interleaved with external payable', () => {
+  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  it('accepts `receive() external virtual payable`', () => {
+    expect(cc('contract C { uint bal; receive() external virtual payable { bal = 1; }'
+      + ' function f() public { require(true); } }')).toBe('C');
+  });
+  it('still rejects a receive() missing payable', () => {
+    expect(() => compileString('contract C { receive() external { } function f() public { require(true); } }',
+      { solidityImportCompat: true })).toThrow();
+  });
+});
+
+// A public state variable may carry `override` (its auto-getter overrides a base getter). EVM inheritance
+// is a no-op in SolidCash, so `override` is accepted and ignored.
+describe('state variable override specifier', () => {
+  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  it('accepts `uint256 public override x`', () => {
+    expect(cc('contract C { uint256 public override x; function f() public { x = 1; require(true); } }')).toBe('C');
+  });
+  it('accepts override on a public array state variable', () => {
+    expect(cc('contract C { uint256[] public override xs; function f() public { require(true); } }')).toBe('C');
+  });
+});

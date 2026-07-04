@@ -42,6 +42,7 @@ import { ConstructorDefinitionContext } from "./SolidCashParser.js";
 import { FallbackDefinitionContext } from "./SolidCashParser.js";
 import { FallbackModifierContext } from "./SolidCashParser.js";
 import { ReceiveDefinitionContext } from "./SolidCashParser.js";
+import { ReceiveModifierContext } from "./SolidCashParser.js";
 import { ParentInvocationContext } from "./SolidCashParser.js";
 import { StateVariableDeclarationContext } from "./SolidCashParser.js";
 import { CollectionModifierContext } from "./SolidCashParser.js";
@@ -444,6 +445,12 @@ export default class SolidCashVisitor<Result> extends ParseTreeVisitor<Result> {
 	 * @return the visitor result
 	 */
 	visitReceiveDefinition?: (ctx: ReceiveDefinitionContext) => Result;
+	/**
+	 * Visit a parse tree produced by `SolidCashParser.receiveModifier`.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	visitReceiveModifier?: (ctx: ReceiveModifierContext) => Result;
 	/**
 	 * Visit a parse tree produced by `SolidCashParser.parentInvocation`.
 	 * @param ctx the parse tree

@@ -2102,4 +2102,13 @@ describe('unnamed-return fall-through: no dead default when all paths return', (
     expect(cc('contract C { function f(uint x) internal pure returns (uint r) { if (x > 0) { r = x; } }'
       + ' function g() public pure { require(f(0) == 0); } }')).toBe('C');
   });
+  it('synthesizes a type-correct default for a genuine fall-through returning address', () => {
+    // The unnamed-return default for address is address(0) (a cast), not int 0 (which does not type-check).
+    expect(cc('contract C { function f(uint x) internal pure returns (address) { if (x > 0) { return address(uint160(1)); } }'
+      + ' function g() public pure { require(f(0) == address(0)); } }')).toBe('C');
+  });
+  it('synthesizes a type-correct default for a genuine fall-through returning an enum', () => {
+    expect(cc('contract C { enum E { A, B } function f(uint x) internal pure returns (E) { if (x > 0) { return E.B; } }'
+      + ' function g() public pure { require(f(0) == E.A); } }')).toBe('C');
+  });
 });

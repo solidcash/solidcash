@@ -1,6 +1,7 @@
-import { ArrayType, BytesType, PrimitiveType, StructType, Type } from '@solidcash/utils';
+import { AddressType, ArrayType, BytesType, EnumType, PrimitiveType, StructType, Type } from '@solidcash/utils';
 import {
   BoolLiteralNode,
+  CastNode,
   ExpressionNode,
   FunctionCallNode,
   HexLiteralNode,
@@ -31,6 +32,13 @@ export function createDefaultValueExpression(type: Type, location: Location): Ex
     const size = new IntLiteralNode(BigInt(type.bound ?? 0));
     size.location = location;
     node = new NewArrayNode(type.elementType, size);
+  } else if (type instanceof AddressType || type instanceof EnumType) {
+    // address / enum have no int-0 literal of their own type: `0` is typed int and does not implicitly cast to
+    // address (and reads confusingly for enums). Wrap in a cast to the target type, mirroring `address(0)` /
+    // `E(0)` written by hand - the cast carries the type so a fall-through `return <defaults>` type-checks.
+    const zero = new IntLiteralNode(0n);
+    zero.location = location;
+    node = new CastNode(type, zero, false);
   } else {
     // int, bytes (unbounded), and all other numeric types default to 0
     node = new IntLiteralNode(0n);

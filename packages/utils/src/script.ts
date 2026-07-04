@@ -155,6 +155,11 @@ interface OptimiseBytecodeResult {
   requires: RequireStatement[];
 }
 
+// Above this op count, skip the optimiseBytecodeOld backwards-compat cross-check (its up-to-1000-pass fixpoint
+// is prohibitively slow on very large scripts). The new optimiser's output is what ships; the check never
+// changes it. Well above any hand-written contract - only pathological generated scripts (huge arrays) hit it.
+export const OPTIMISER_COMPAT_CHECK_MAX_OPS = 5000;
+
 export function optimiseBytecode(
   script: Script,
   locationData: FullLocationData,
@@ -219,8 +224,11 @@ function replaceOpsOld(script: Script, optimisations: string[][]): Script {
   // partial matching (e.g., OP_EQUAL matching inside OP_EQUALVERIFY).
   optimisations.forEach(([pattern, replacement]) => {
     const boundedPattern = pattern.replace(/(OP_\w+)/g, '$1(?=\\s|$)');
-    asm = asm.replace(new RegExp(boundedPattern, 'g'), replacement);
-    asm = asm.replace(/\s+/g, ' ').trim();
+    const next = asm.replace(new RegExp(boundedPattern, 'g'), replacement);
+    // Only re-normalize whitespace when a replacement actually happened (empty replacements can leave double
+    // spaces that break the next pattern). Skipping the no-op normalize on non-matching patterns avoids an
+    // O(len) whitespace pass per pattern - the dominant cost on very large scripts (e.g. big fixed arrays).
+    if (next !== asm) asm = next.replace(/\s+/g, ' ').trim();
   });
 
   // Add optimisations that are not compatible with CashProof
@@ -264,6 +272,9 @@ function replaceOps(
 
   optimisations.forEach(([pattern, replacement]) => {
     let processedAsm = '';
+    // Opcode count of processedAsm, tracked incrementally so scriptIndex is O(slice) per match rather than an
+    // O(len) matchAll rescan of the whole accumulated prefix - the latter made large scripts O(N^2).
+    let processedTokens = 0;
     let asmToSearch = asm;
 
     // We add a space or end of string to the end of the pattern to ensure that we match the whole pattern
@@ -273,11 +284,13 @@ function replaceOps(
     let matchIndex = asmToSearch.search(regex);
     while (matchIndex !== -1) {
       // We add the part before the match to the processed asm
-      processedAsm = mergeAsm(processedAsm, asmToSearch.slice(0, matchIndex));
+      const beforeMatch = asmToSearch.slice(0, matchIndex);
+      processedAsm = mergeAsm(processedAsm, beforeMatch);
+      processedTokens += (beforeMatch.match(/\S+/g) || []).length;
 
-      // We count the number of spaces in the processed asm + 1, which is equal to the script index
-      // We do the same thing to calculate the number of opcodes in the pattern and replacement
-      const scriptIndex = processedAsm === '' ? 0 : [...processedAsm.matchAll(/\s+/g)].length + 1;
+      // The script index is the opcode count of processedAsm (tracked incrementally above).
+      // We count the opcodes in the pattern and replacement the same way.
+      const scriptIndex = processedTokens;
       const patternLength = [...pattern.matchAll(/\s+/g)].length + 1;
       const replacementLength = replacement === '' ? 0 : [...replacement.matchAll(/\s+/g)].length + 1;
 
@@ -367,6 +380,7 @@ function replaceOps(
 
       // We add the replacement to the processed asm
       processedAsm = mergeAsm(processedAsm, replacement);
+      processedTokens += replacementLength;
 
       // We do not add the matched pattern anywhere since it gets replaced
 

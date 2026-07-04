@@ -33,6 +33,7 @@ import {
   FunctionDebugInformation,
   optimiseBytecode,
   optimiseBytecodeOld,
+  OPTIMISER_COMPAT_CHECK_MAX_OPS,
   AddressType,
   ValueType,
   EnumType,
@@ -1209,8 +1210,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Use the sub-traversal's location data (same-class private field access)
     const normalizedLocationData = subTraversal.locationData.slice(0, normalizedOutput.length);
 
-    // Optimize: same dual-optimizer approach as main script (compiler.ts)
-    const optimisedBytecodeOld = optimiseBytecodeOld(normalizedOutput);
+    // Optimize: same dual-optimizer approach as main script (compiler.ts). optimiseBytecodeOld is a compat
+    // cross-check only; skip it above a size threshold where its fixpoint is prohibitively slow (huge arrays).
     const optimisationResult = optimiseBytecode(
       normalizedOutput,
       normalizedLocationData,
@@ -1219,8 +1220,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       0, // no constructor param pushes in function body bytecode
     );
 
-    if (scriptToAsm(optimisedBytecodeOld) !== scriptToAsm(optimisationResult.script)) {
-      throw new Error('Function body optimisation mismatch - please report this issue');
+    if (normalizedOutput.length <= OPTIMISER_COMPAT_CHECK_MAX_OPS) {
+      const optimisedBytecodeOld = optimiseBytecodeOld(normalizedOutput);
+      if (scriptToAsm(optimisedBytecodeOld) !== scriptToAsm(optimisationResult.script)) {
+        throw new Error('Function body optimisation mismatch - please report this issue');
+      }
     }
 
     const selectorHex = binToHex(func.functionSelector!);

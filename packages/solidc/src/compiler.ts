@@ -1,6 +1,6 @@
 import { CharStream, CommonTokenStream } from 'antlr4';
 import { binToHex } from '@bitauth/libauth';
-import { Artifact, ArtifactMap, ArrayType, AddressType, BytesType, CompilerOptions, computeBytecodeFingerprintWithConstructorArgs, generateSourceMap, optimiseBytecode, optimiseBytecodeOld, scriptToAsm, scriptToBytecode, sourceMapToLocationData, StructType, Type } from '@solidcash/utils';
+import { Artifact, ArtifactMap, ArrayType, AddressType, BytesType, CompilerOptions, computeBytecodeFingerprintWithConstructorArgs, generateSourceMap, optimiseBytecode, optimiseBytecodeOld, OPTIMISER_COMPAT_CHECK_MAX_OPS, scriptToAsm, scriptToBytecode, sourceMapToLocationData, StructType, Type } from '@solidcash/utils';
 import { generateArtifact, generateDeclarationArtifact } from './artifact/Artifact.js';
 import {
   Ast, ContractNode, ContractReferenceNode, FunctionModifier, InstantiationNode, ParameterNode,
@@ -236,8 +236,9 @@ function compileResolvedAst(ast: Ast, code: string, mergedCompilerOptions: Compi
 
   const constructorParamLength = ast.contract.parameters.length;
 
-  // Bytecode optimisation
-  const optimisedBytecodeOld = optimiseBytecodeOld(traversal.output);
+  // Bytecode optimisation. The emitted bytecode is the new optimiser's output; optimiseBytecodeOld is only a
+  // backwards-compat cross-check, and it runs its own up-to-1000-pass fixpoint, prohibitively slow on very large
+  // scripts (e.g. big fixed-size arrays). Skip the cross-check above a size threshold - it never changes output.
   const optimisationResult = optimiseBytecode(
     traversal.output,
     sourceMapToLocationData(traversal.sourceMap),
@@ -246,10 +247,13 @@ function compileResolvedAst(ast: Ast, code: string, mergedCompilerOptions: Compi
     constructorParamLength,
   );
 
-  if (scriptToAsm(optimisedBytecodeOld) !== scriptToAsm(optimisationResult.script)) {
-    console.error(scriptToAsm(optimisedBytecodeOld));
-    console.error(scriptToAsm(optimisationResult.script));
-    throw new Error('New bytecode optimisation is not backwards compatible, please report this issue to the SolidCash team');
+  if (traversal.output.length <= OPTIMISER_COMPAT_CHECK_MAX_OPS) {
+    const optimisedBytecodeOld = optimiseBytecodeOld(traversal.output);
+    if (scriptToAsm(optimisedBytecodeOld) !== scriptToAsm(optimisationResult.script)) {
+      console.error(scriptToAsm(optimisedBytecodeOld));
+      console.error(scriptToAsm(optimisationResult.script));
+      throw new Error('New bytecode optimisation is not backwards compatible, please report this issue to the SolidCash team');
+    }
   }
 
   // Attach debug information

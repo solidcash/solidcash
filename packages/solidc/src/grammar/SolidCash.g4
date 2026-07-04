@@ -114,7 +114,7 @@ inheritanceSpecifier
     ;
 
 abstractFunctionDefinition
-    : 'function' anyIdentifier parameterList functionModifier* customModifierInvocation* returnType? ';'
+    : 'function' anyIdentifier parameterList (functionModifier | customModifierInvocation)* returnType? ';'
     ;
 
 eventDefinition
@@ -222,7 +222,7 @@ placeholderStatement
     ;
 
 functionDefinition
-    : 'function' anyIdentifier parameterList functionModifier* customModifierInvocation* returnType? '{' statement* '}'
+    : 'function' anyIdentifier parameterList (functionModifier | customModifierInvocation)* returnType? '{' statement* '}'
     ;
 
 customModifierInvocation

@@ -1994,3 +1994,19 @@ describe('try/catch clause parameter scope', () => {
     expect(a.contractName).toBe('A');
   });
 });
+
+describe('function modifier / custom-modifier interleaving (Solidity allows any order)', () => {
+  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  it('accepts a custom modifier invocation BEFORE visibility (function f() M(1) public {})', () => {
+    expect(cc('pragma solidity ^0.8.0; contract C { modifier M(uint i){_;}'
+      + ' function f() M(1) public { require(true); } }')).toBe('C');
+  });
+  it('accepts multiple custom modifiers interleaved with visibility/mutability', () => {
+    expect(cc('pragma solidity ^0.8.0; contract C { modifier A{_;} modifier B{_;}'
+      + ' function f() A public B view { require(true); } }')).toBe('C');
+  });
+  it('still accepts the visibility-first order', () => {
+    expect(cc('pragma solidity ^0.8.0; contract C { modifier M(uint i){_;}'
+      + ' function f() public M(1) { require(true); } }')).toBe('C');
+  });
+});

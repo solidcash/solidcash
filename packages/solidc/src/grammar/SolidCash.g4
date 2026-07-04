@@ -179,7 +179,9 @@ parentInvocation
 
 stateVariableDeclaration
     : stateVariableVisibility? typeName modifier* Identifier ('=' expression)? ';'
-    | typeName stateVariableVisibility modifier* Identifier ('=' expression)? ';'
+    // modifiers may appear on either side of the visibility, so `uint constant public X` (as well as
+    // `uint public constant X`) parses - Solidity allows any order.
+    | typeName modifier* stateVariableVisibility modifier* Identifier ('=' expression)? ';'
     | stateVariableVisibility? mappingType collectionModifier* Identifier ';'
     | stateVariableVisibility? arrayType collectionModifier* Identifier ('=' expression)? ';'
     ;
@@ -381,11 +383,13 @@ assignStatement
 arrayPushStatement
     : Identifier '.push' '(' expression ')' ';'
     | Identifier '.' Identifier '.push' '(' expression ')' ';'
+    | Identifier ('[' expression ']')+ '.push' '(' expression ')' ';'
     ;
 
 arrayPopStatement
     : Identifier '.pop' '(' ')' ';'
     | Identifier '.' Identifier '.pop' '(' ')' ';'
+    | Identifier ('[' expression ']')+ '.pop' '(' ')' ';'
     ;
 
 

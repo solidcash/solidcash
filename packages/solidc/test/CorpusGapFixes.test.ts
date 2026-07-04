@@ -21,3 +21,26 @@ describe('bare uint(x) cast == uint256(x)', () => {
     expect(art.contractName).toBe('C');
   });
 });
+
+describe('enum / contract mapping key types', () => {
+  // A mapping key of an enum, or of a contract type, previously left the key type undefined and crashed a later
+  // pass on `.toString()`. Enum keys are int-backed; a contract-type key resolves to an address handle.
+  it('compiles mapping(Enum => V) (int-backed key)', () => {
+    const art = compileString(`contract C() {
+      enum Status { Pending, Active, Closed }
+      mapping(Status => uint256) counts;
+      function set(Status k, uint256 v, pubkey pk, sig s) { require(checkSig(s, pk)); counts[k] = v; }
+    }`, { solidityImportCompat: true });
+    expect(art.contractName).toBe('C');
+  });
+
+  it('compiles a contract-type mapping key (resolves to an address handle)', () => {
+    const art = compileString(`contract C() {
+      enum E { A, B }
+      mapping(C => bool) a;
+      mapping(address => bool) b;
+      mapping(E => bool) c;
+    }`, { solidityImportCompat: true });
+    expect(art.contractName).toBe('C');
+  });
+});

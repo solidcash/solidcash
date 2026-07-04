@@ -2672,7 +2672,10 @@ export default class AstBuilder
   }
 
   private buildMappingType(ctx: MappingTypeContext): MappingType {
-    const keyType = parseType(ctx.typeName(0).getText());
+    // Resolve (not just parseType) so a user enum / value-type key resolves; an unknown name (a contract type)
+    // defaults to an address handle, matching function params. parseType alone left these undefined -> crash.
+    const keyText = ctx.typeName(0).getText();
+    const keyType = this.resolveType(keyText) ?? new AddressType(false, keyText);
     const identifiers = ctx.Identifier_list();
 
     const nestedMappingCtx = ctx.mappingType();

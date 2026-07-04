@@ -2371,6 +2371,7 @@ function isValidMappingKeyType(type: Type): boolean {
   if (type instanceof IntType) return true;
   if (type instanceof BytesType) return true;
   if (type instanceof AddressType) return true;
+  if (type instanceof EnumType) return true; // int-backed: stored as the underlying integer
   if (type instanceof ValueType) return isValidMappingKeyType(type.underlyingType);
   return false;
 }

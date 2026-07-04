@@ -99,6 +99,17 @@ describe('EVM-storage: OZ StorageSlot pointer (write-to-any-slot)', () => {
     expect(ks?.kind).toBe('constant');
   });
 
+  // A BCH `address` is a full locking bytecode (e.g. a 25-byte P2PKH `76a914<hash>88ac`), NOT a 20-byte hash, so an
+  // AddressSlot cannot round-trip cleanly through the uint256 register (uint160 keeps only the embedded hash and
+  // drops the address type/prefix). Address-valued slots COMPILE but are out of scope at runtime - skipped, not
+  // forced. uint256/bool/bytes32 slots round-trip (below).
+  it.skip('reads an address slot back (out of scope: a BCH address is a 25-byte lbc, not a 20-byte hash)', async () => {
+    const sc = await deploy(SLOTPTR_ADDR);
+    const { aliceAddress } = await import('../fixture/vars.js');
+    await (sc as any).setAddr(aliceAddress, alicePub, sig()).send();
+    await (sc as any).checkAddr(aliceAddress).send();
+  });
+
   it('writes a slot then reads it back through the pointer (constant key resolved)', async () => {
     const sc = await deploy(SLOTPTR_U256);
     await (sc as any).setA(42n, alicePub, sig()).send();

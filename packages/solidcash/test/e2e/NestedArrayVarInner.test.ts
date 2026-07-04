@@ -15,6 +15,8 @@ contract C() {
     require(checkSig(s, pk)); a.push([v0, v1, v2]);
   }
   function setw(int i, int j, uint256 v, pubkey pk, sig s) { require(checkSig(s, pk)); a[i][j] = v; }
+  function ipush(int i, uint256 v, pubkey pk, sig s) { require(checkSig(s, pk)); a[i].push(v); }
+  function ipop(int i, pubkey pk, sig s) { require(checkSig(s, pk)); a[i].pop(); }
   function seedRagged(uint256 x, uint256 y, uint256 z, pubkey pk, sig s) {
     require(checkSig(s, pk)); a = [[x], [y, z]];
   }
@@ -66,5 +68,21 @@ describe('variable-inner nested array uint256[][] (framed, differing row lengths
     await sc.get(0n, 0n, 7n).send();
     await sc.get(1n, 0n, 8n).send();
     await sc.get(1n, 1n, 9n).send();
+  });
+
+  it('nested push/pop a[i].push(v) / a[i].pop() grows and shrinks a row', async () => {
+    const art = compileString(SRC, { solidityImportCompat: true });
+    const contract = new Contract(art, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(provider, contract, art.stateLayout!, {}, { saltContract: true });
+    const sc = StatefulContract.withCategory(contract, categoryId);
+
+    await sc.push2(11n, 22n, alicePub, sig()).send();   // a = [[11,22]]
+    await sc.ipush(0n, 33n, alicePub, sig()).send();     // a[0].push(33) -> [[11,22,33]]
+    await sc.rowlen(0n, 3n).send();
+    await sc.get(0n, 2n, 33n).send();
+    await sc.get(0n, 0n, 11n).send();                    // existing elements preserved
+    await sc.ipop(0n, alicePub, sig()).send();           // a[0].pop() -> [[11,22]]
+    await sc.rowlen(0n, 2n).send();
+    await sc.get(0n, 1n, 22n).send();
   });
 });

@@ -12,6 +12,8 @@ import {
   ArrayAssignNode,
   StateArrayAssignNode,
   ArrayAccessNode,
+  ArrayPushNode,
+  ArrayPopNode,
   IdentifierNode,
   ExpressionNode,
 } from '../ast/AST.js';
@@ -83,12 +85,45 @@ export default class DesugarNestedArrayWrite extends AstTraversal {
     const out: StatementNode[] = [];
     for (const stmt of node.statements ?? []) {
       const visited = this.visit(stmt) as StatementNode;
-      const desugared = visited instanceof MappingAssignNode ? this.tryDesugar(visited) : undefined;
+      const desugared = visited instanceof MappingAssignNode
+        ? (this.tryDesugar(visited) ?? this.tryDesugarNestedPushPop(visited))
+        : undefined;
       if (desugared) out.push(...desugared);
       else out.push(visited);
     }
     node.statements = out;
     return node;
+  }
+
+  // `a[i].push(v)` / `a[i].pop()` on a nested state array (`uint256[][]`): a read-modify-write of row i via a
+  // local push/pop -> `T[] t = a[i]; t.push(v); a[i] = t;`. Returns undefined if not applicable.
+  private tryDesugarNestedPushPop(node: MappingAssignNode): StatementNode[] | undefined {
+    if (!(node.arrayPush || node.arrayPop) || node.keys.length !== 1) return undefined;
+    const isState = !this.locals.has(node.name) && this.stateArrays.has(node.name);
+    if (!isState) return undefined;
+    const rowType = (this.stateArrays.get(node.name) as ArrayType).elementType;
+    if (!(rowType instanceof ArrayType)) return undefined; // only nested (element is itself an array)
+
+    const clone = (e: ExpressionNode): ExpressionNode => cloneNode(e) as ExpressionNode;
+    const tmpName = `__np_tmp_${this.counter++}`;
+    const read = new ArrayAccessNode(this.ident(node.name, node), clone(node.keys[0]));
+    read.location = node.location;
+    const decl = new VariableDefinitionNode(rowType, [], tmpName, read);
+    decl.location = node.location;
+
+    let op: StatementNode;
+    if (node.arrayPush) {
+      const push = new ArrayPushNode(tmpName, node.expression);
+      push.noArg = node.noArg;
+      op = push;
+    } else {
+      op = new ArrayPopNode(tmpName);
+    }
+    op.location = node.location;
+
+    const back = new StateArrayAssignNode(node.name, clone(node.keys[0]), this.ident(tmpName, node));
+    back.location = node.location;
+    return [decl, op, back];
   }
 
   // `b[k0]..[kn] = v` on a local nested array -> read-modify-write statements; undefined if not applicable.

@@ -380,10 +380,16 @@ assignStatement
     | op=('++' | '--') Identifier ';'
     ;
 
+// The pushed value is wrapped in `pushArgument` so it is separable from the bracket index keys, and optional so
+// `arr.push()` / `m[k].push()` append the element type's default (Solidity's no-arg push).
 arrayPushStatement
-    : Identifier '.push' '(' expression ')' ';'
-    | Identifier '.' Identifier '.push' '(' expression ')' ';'
-    | Identifier ('[' expression ']')+ '.push' '(' expression ')' ';'
+    : Identifier '.push' '(' pushArgument? ')' ';'
+    | Identifier '.' Identifier '.push' '(' pushArgument? ')' ';'
+    | Identifier ('[' expression ']')+ '.push' '(' pushArgument? ')' ';'
+    ;
+
+pushArgument
+    : expression
     ;
 
 arrayPopStatement
@@ -398,11 +404,11 @@ arrayDeleteStatement
     ;
 
 stateArrayPushStatement
-    : 'this' '.' Identifier '.push' '(' expression ')' ';'
+    : 'this' '.' Identifier '.push' '(' pushArgument? ')' ';'
     // `this.`-prefixed indexed (`this.m[k].push(v)`) and member (`this.s.xs.push(v)`) forms, mirroring the bare
     // arrayPushStatement so an explicit-state receiver parses the same as the bare one.
-    | 'this' '.' Identifier ('[' expression ']')+ '.push' '(' expression ')' ';'
-    | 'this' '.' Identifier '.' Identifier '.push' '(' expression ')' ';'
+    | 'this' '.' Identifier ('[' expression ']')+ '.push' '(' pushArgument? ')' ';'
+    | 'this' '.' Identifier '.' Identifier '.push' '(' pushArgument? ')' ';'
     ;
 
 stateArrayPopStatement

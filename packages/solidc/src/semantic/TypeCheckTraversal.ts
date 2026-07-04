@@ -152,6 +152,7 @@ import {
 } from '../Errors.js';
 import { BinaryOperator, NullaryOperator, UnaryOperator } from '../ast/Operator.js';
 import { Symbol } from '../ast/SymbolTable.js';
+import { createDefaultValueExpression } from '../ast/defaults.js';
 import { GlobalFunction, Modifier } from '../ast/Globals.js';
 import { isNumericType, resultingTypeForBinaryOp } from '../utils.js';
 import { getStackEffect } from '../asmStackEffects.js';
@@ -543,6 +544,10 @@ export default class TypeCheckTraversal extends AstTraversal {
     node.keys = this.visitList(node.keys);
     if (node.arrayIndex) {
       node.arrayIndex = this.visit(node.arrayIndex);
+    }
+    // No-arg `map[k].push()`: append the entry array's element-type default value.
+    if (node.noArg && node.arrayPush && node.collection?.innermostValueType instanceof ArrayType) {
+      node.expression = createDefaultValueExpression(node.collection.innermostValueType.elementType, node.location!);
     }
     node.expression = this.visit(node.expression);
     if (node.collection) {
@@ -2003,6 +2008,10 @@ export default class TypeCheckTraversal extends AstTraversal {
   }
 
   visitArrayPush(node: ArrayPushNode): Node {
+    // No-arg `arr.push()`: append the element type's default value.
+    if (node.noArg && node.arrayType) {
+      node.value = createDefaultValueExpression(node.arrayType.elementType, node.location!);
+    }
     // Ensure array literal values are blob-encoded (needed for multi-dimensional arrays)
     if (node.value instanceof ArrayNode) {
       node.value.blobEncoded = true;
@@ -2069,9 +2078,13 @@ export default class TypeCheckTraversal extends AstTraversal {
   }
 
   visitStateArrayPush(node: StateArrayPushNode): Node {
-    node.value = this.visit(node.value);
     const sv = node.stateVariable!;
     const arrType = sv.type as ArrayType;
+    // No-arg `this.arr.push()`: append the element type's default value.
+    if (node.noArg) {
+      node.value = createDefaultValueExpression(arrType.elementType, node.location!);
+    }
+    node.value = this.visit(node.value);
     if (!implicitlyCastable(node.value.type, arrType.elementType)) {
       throw new StateAssignTypeError(node as any, node.value.type, arrType.elementType);
     }

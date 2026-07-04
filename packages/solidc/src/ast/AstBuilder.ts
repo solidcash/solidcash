@@ -1,4 +1,4 @@
-import { ParseTree, ParseTreeVisitor } from 'antlr4';
+import { ParseTree, ParseTreeVisitor, ParserRuleContext } from 'antlr4';
 import { hexToBin } from '@bitauth/libauth';
 import { parseType, MappingType, ArrayType, StructType, IntType, FixedType, Type, AddressType, ValueType, BytesType, PrimitiveType, EnumType, isChunkPackableElementType } from '@solidcash/utils';
 import semver from 'semver';
@@ -3577,23 +3577,33 @@ export default class AstBuilder
     return node;
   }
 
+  // Placeholder value for a no-arg `push()`; the type checker replaces it with the element type's default.
+  private noArgPushPlaceholder(ctx: ParserRuleContext): ExpressionNode {
+    const placeholder = new IntLiteralNode(0n);
+    placeholder.location = Location.fromCtx(ctx);
+    return placeholder;
+  }
+
   visitArrayPushStatement(ctx: ArrayPushStatementContext): ArrayPushNode | StateArrayPushNode | MappingAssignNode {
     const ids = ctx.Identifier_list();
-    const exprs = ctx.expression_list();
-    // `map[k].push(v)` / `m[k1][k2].push(v)`: one Identifier + index expressions, last expression is the value.
-    // Model as a MappingAssignNode(arrayPush) - a read-modify-write appending to the entry's array value.
-    if (ids.length === 1 && exprs.length > 1) {
-      const keys = exprs.slice(0, -1).map((e) => this.visit(e) as ExpressionNode);
-      const value = this.visit(exprs[exprs.length - 1]) as ExpressionNode;
-      const node = new MappingAssignNode(ids[0].getText(), keys, value);
+    const keys = ctx.expression_list();       // bracket index keys only; the value lives under pushArgument
+    const argCtx = ctx.pushArgument();
+    const noArg = argCtx === null;
+    const value = noArg ? this.noArgPushPlaceholder(ctx) : this.visit(argCtx.expression()) as ExpressionNode;
+    // `map[k].push(v)` / `m[k1][k2].push(v)`: one Identifier + index keys. Model as a MappingAssignNode(arrayPush)
+    // - a read-modify-write appending to the entry's array value.
+    if (ids.length === 1 && keys.length >= 1) {
+      const keyNodes = keys.map((e) => this.visit(e) as ExpressionNode);
+      const node = new MappingAssignNode(ids[0].getText(), keyNodes, value);
       node.arrayPush = true;
+      node.noArg = noArg;
       node.location = Location.fromCtx(ctx);
       return node;
     }
-    const value = this.visit(exprs[0]) as ExpressionNode;
-    // `structVar.arrayField.push(x)` on a mapping-bearing struct -> push the flattened state array.
+    // `structVar.arrayField.push(x)` on a flattened struct -> push the flattened state array.
     if (ids.length === 2) {
       const node = new StateArrayPushNode(`${ids[0].getText()}__${ids[1].getText()}`, value);
+      node.noArg = noArg;
       node.location = Location.fromCtx(ctx);
       return node;
     }
@@ -3603,6 +3613,7 @@ export default class AstBuilder
     const node = this.packedStateArrayNames.has(name)
       ? new StateArrayPushNode(name, value)
       : new ArrayPushNode(name, value);
+    node.noArg = noArg;
     node.location = Location.fromCtx(ctx);
     return node;
   }
@@ -3635,25 +3646,29 @@ export default class AstBuilder
 
   visitStateArrayPushStatement(ctx: StateArrayPushStatementContext): StateArrayPushNode | MappingAssignNode {
     const ids = ctx.Identifier_list();
-    const exprs = ctx.expression_list();
-    // `this.m[k].push(v)` / `this.m[k1][k2].push(v)`: one Identifier + index expressions, last is the value.
-    if (ids.length === 1 && exprs.length > 1) {
-      const keys = exprs.slice(0, -1).map((e) => this.visit(e) as ExpressionNode);
-      const value = this.visit(exprs[exprs.length - 1]) as ExpressionNode;
-      const node = new MappingAssignNode(ids[0].getText(), keys, value);
+    const keys = ctx.expression_list();       // bracket index keys only; the value lives under pushArgument
+    const argCtx = ctx.pushArgument();
+    const noArg = argCtx === null;
+    const value = noArg ? this.noArgPushPlaceholder(ctx) : this.visit(argCtx.expression()) as ExpressionNode;
+    // `this.m[k].push(v)` / `this.m[k1][k2].push(v)`: one Identifier + index keys.
+    if (ids.length === 1 && keys.length >= 1) {
+      const keyNodes = keys.map((e) => this.visit(e) as ExpressionNode);
+      const node = new MappingAssignNode(ids[0].getText(), keyNodes, value);
       node.arrayPush = true;
+      node.noArg = noArg;
       node.location = Location.fromCtx(ctx);
       return node;
     }
-    const value = this.visit(exprs[exprs.length - 1]) as ExpressionNode;
     // `this.s.xs.push(v)`: struct field array -> the flattened state array.
     if (ids.length === 2) {
       const node = new StateArrayPushNode(`${ids[0].getText()}__${ids[1].getText()}`, value);
+      node.noArg = noArg;
       node.location = Location.fromCtx(ctx);
       return node;
     }
     // `this.arr.push(v)`.
     const node = new StateArrayPushNode(ids[0].getText(), value);
+    node.noArg = noArg;
     node.location = Location.fromCtx(ctx);
     return node;
   }

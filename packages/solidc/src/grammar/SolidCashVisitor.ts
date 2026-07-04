@@ -77,6 +77,7 @@ import { TupleAssignmentContext } from "./SolidCashParser.js";
 import { TupleSlotContext } from "./SolidCashParser.js";
 import { AssignStatementContext } from "./SolidCashParser.js";
 import { ArrayPushStatementContext } from "./SolidCashParser.js";
+import { PushArgumentContext } from "./SolidCashParser.js";
 import { ArrayPopStatementContext } from "./SolidCashParser.js";
 import { ArrayDeleteStatementContext } from "./SolidCashParser.js";
 import { StateArrayPushStatementContext } from "./SolidCashParser.js";
@@ -653,6 +654,12 @@ export default class SolidCashVisitor<Result> extends ParseTreeVisitor<Result> {
 	 * @return the visitor result
 	 */
 	visitArrayPushStatement?: (ctx: ArrayPushStatementContext) => Result;
+	/**
+	 * Visit a parse tree produced by `SolidCashParser.pushArgument`.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	visitPushArgument?: (ctx: PushArgumentContext) => Result;
 	/**
 	 * Visit a parse tree produced by `SolidCashParser.arrayPopStatement`.
 	 * @param ctx the parse tree

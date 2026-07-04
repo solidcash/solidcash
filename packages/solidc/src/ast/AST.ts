@@ -804,6 +804,7 @@ export class MappingAssignNode extends StatementNode implements Named {
   arrayIndex?: ExpressionNode; // Set when innermost value is ArrayType and extra key provided
   arrayPush?: boolean; // Set for `map[k].push(v)`: append `expression` to the entry's array value (no arrayIndex)
   arrayPop?: boolean;  // Set for `map[k].pop()`: drop the last element of the entry's array value (expression unused)
+  noArg?: boolean;     // Set for `map[k].push()`: `expression` is a placeholder, replaced with the element default
 
   constructor(
     public name: string,
@@ -1061,6 +1062,7 @@ export class ArrayAccessNode extends ExpressionNode {
 
 export class ArrayPushNode extends StatementNode implements Named {
   arrayType?: ArrayType;
+  noArg?: boolean; // Set for `arr.push()`: `value` is a placeholder, replaced with the element default at type-check
 
   constructor(
     public name: string,
@@ -1122,6 +1124,7 @@ export class ArrayDeleteNode extends StatementNode implements Named {
 // Packed state array operations - array stored as single blob in data NFT
 export class StateArrayPushNode extends StatementNode implements Named {
   stateVariable?: StateVariableNode;
+  noArg?: boolean; // Set for `this.arr.push()`: `value` is a placeholder, replaced with the element default
 
   constructor(
     public name: string,

@@ -66,6 +66,14 @@ describe('solidityImportCompat', () => {
     expect(() => compileString(SRC)).toThrow(/solidityImportCompat/);
   });
 
+  it('tolerates no-op EVM pragmas (`abicoder`, `experimental`) as no-ops', () => {
+    const abicoder = 'pragma solidity ^0.8.0;\npragma abicoder v2;\ncontract C() { function f() { require(true); } }';
+    expect(compileString(abicoder, { solidityImportCompat: true }).contractName).toBe('C');
+    const experimental = 'pragma experimental ABIEncoderV2;\npragma solidity ^0.8.0;\n'
+      + 'contract C() { function f() { require(true); } }';
+    expect(compileString(experimental, { solidityImportCompat: true }).contractName).toBe('C');
+  });
+
   it('parses an imported source whose own `pragma solidity` would otherwise fail', () => {
     const resolver = (p: string): { source: string; id: string } | undefined => (p.includes('Dep')
       ? { source: 'pragma solidity ^0.5.0;\nlibrary L { function two() returns (int) { return 2; } }', id: 'Dep' }

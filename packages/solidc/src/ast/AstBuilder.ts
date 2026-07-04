@@ -559,6 +559,9 @@ export default class AstBuilder
     // pin old versions like =0.5.17 that the live compiler can't satisfy).
     if (this.solidityImportCompat) return;
 
+    // Tolerated no-op directives (`pragma abicoder v2;`, `pragma experimental X;`) parse without a pragmaName.
+    if (!ctx.pragmaName()) return;
+
     const pragmaName = getPragmaName(ctx.pragmaName().getText());
     if (pragmaName !== PragmaName.SOLIDCASH) {
       throw new ParseError(

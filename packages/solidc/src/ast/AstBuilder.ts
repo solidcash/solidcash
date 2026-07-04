@@ -2796,10 +2796,12 @@ export default class AstBuilder
   visitTypeDefinition(ctx: TypeDefinitionContext): TypeDefinitionNode {
     const name = ctx.Identifier().getText();
     const underlyingType = this.resolveType(ctx.typeName().getText());
-    // Validate that the underlying type is suitable for a UDVT (must be a VM-primitive type)
+    // Validate that the underlying type is suitable for a UDVT (must be a VM-primitive type). Address is
+    // bytes-backed (a locking bytecode), so `type MyAddr is address;` wraps it like any other primitive.
     const isValidUnderlying = underlyingType instanceof BytesType
       || underlyingType instanceof IntType
       || underlyingType instanceof FixedType
+      || underlyingType instanceof AddressType
       || (typeof underlyingType === 'string' && Object.values(PrimitiveType).includes(underlyingType as PrimitiveType));
     if (!isValidUnderlying) {
       throw new Error(

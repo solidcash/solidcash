@@ -44,3 +44,15 @@ describe('enum / contract mapping key types', () => {
     expect(art.contractName).toBe('C');
   });
 });
+
+describe('user-defined value type over address', () => {
+  // `type MyAddr is address;` - address is bytes-backed (a locking bytecode), so it is a valid UDVT underlying
+  // type. wrap/unwrap are identity casts over the address.
+  it('compiles a UDVT wrapping address and its wrap/unwrap', () => {
+    const art = compileString(`contract C() {
+      type A is address;
+      function f(address x, address e) { A a = A.wrap(x); require(A.unwrap(a) == e); }
+    }`, { solidityImportCompat: true });
+    expect(art.contractName).toBe('C');
+  });
+});

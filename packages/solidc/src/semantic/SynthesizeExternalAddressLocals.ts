@@ -91,15 +91,14 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
     return node;
   }
 
-  // `token.method{value:}(..)` form: rewrite the object identifier to the synthesized __extaddr_ local.
+  // `token.method{value:}(..)` form: rewrite the object to the synthesized __extaddr_ local. Also handles a
+  // redundant same-interface cast on a state var (`IFace(pool).method()`, a no-op cast) as the bare form.
   visitMethodCall(node: MethodCallNode): Node {
-    if (
-      node.object instanceof IdentifierNode && this.stateVarIface.has(node.object.name)
-      && !ADDRESS_METHODS.has(node.methodName)
-    ) {
-      this.usedInFn.add(node.object.name);
+    const stateVar = this.externalTargetStateVar(node.object);
+    if (stateVar && !ADDRESS_METHODS.has(node.methodName)) {
+      this.usedInFn.add(stateVar);
       const loc = node.object.location;
-      node.object = new IdentifierNode(PREFIX + node.object.name);
+      node.object = new IdentifierNode(PREFIX + stateVar);
       node.object.location = loc;
     } else {
       node.object = this.visit(node.object) as ExpressionNode;
@@ -108,5 +107,18 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
     if (node.callOptions?.value) node.callOptions.value = this.visit(node.callOptions.value) as ExpressionNode;
     if (node.callOptions?.gas) node.callOptions.gas = this.visit(node.callOptions.gas) as ExpressionNode;
     return node;
+  }
+
+  // The interface-typed state-var name `obj` targets, if any: a bare `pool`, or a redundant same-interface cast
+  // `IFace(pool)` (pool is already IFace-typed, so the cast is a no-op and the call target is pool's address).
+  private externalTargetStateVar(obj: ExpressionNode): string | undefined {
+    if (obj instanceof IdentifierNode && this.stateVarIface.has(obj.name)) return obj.name;
+    if (obj instanceof FunctionCallNode && obj.parameters.length === 1) {
+      const arg = obj.parameters[0];
+      if (arg instanceof IdentifierNode && this.stateVarIface.get(arg.name) === obj.identifier.name) {
+        return arg.name;
+      }
+    }
+    return undefined;
   }
 }

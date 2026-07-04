@@ -2112,3 +2112,19 @@ describe('unnamed-return fall-through: no dead default when all paths return', (
       + ' function g() public pure { require(f(0) == E.A); } }')).toBe('C');
   });
 });
+
+// A redundant same-interface cast on an interface-typed state-var external-call target (`IFoo(pool).bar()`,
+// where `pool` is already IFoo-typed) is a no-op cast; it must route through the same synthesized __extaddr_
+// local as the bare `pool.bar()` form instead of demanding a param target.
+describe('redundant interface cast on a state-var external-call target', () => {
+  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  const iface = 'interface IFoo { function bar() external; }';
+  it('accepts IFoo(statePool).bar() like the bare statePool.bar()', () => {
+    expect(cc(`${iface} contract C { IFoo pool; constructor(address _p) { pool = IFoo(_p); }`
+      + ' function f() external { IFoo(pool).bar(); } }')).toBe('C');
+  });
+  it('accepts the immutable-state-var form too', () => {
+    expect(cc(`${iface} contract C { IFoo immutable pool; constructor(address _p) { pool = IFoo(_p); }`
+      + ' function f() external { IFoo(pool).bar(); } }')).toBe('C');
+  });
+});

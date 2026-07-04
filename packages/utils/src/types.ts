@@ -678,6 +678,9 @@ export function isChunkPackableElementType(type: Type | string): boolean {
   if (t instanceof BytesType) return true; // unbounded bytes (bounded bytesN already fixed-width above)
   if (t instanceof AddressType) return true; // variable-width locking bytecode -> framed layout (like bytes)
   if (t instanceof StructType) return true; // variable-width struct -> framed layout (fixed-width handled above)
+  // A nested array element (`uint256[][]`: a variable-length `uint256[]` row) uses the framed layout too, as
+  // long as its own element type is chunk-packable. Fixed-inner rows (`uint256[N]`) are caught by isFixedWidthType.
+  if (t instanceof ArrayType) return isChunkPackableElementType(t.elementType);
   return false;
 }
 

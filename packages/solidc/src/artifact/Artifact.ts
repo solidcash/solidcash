@@ -31,6 +31,7 @@ function buildFunctionAbiMetadata(func: FunctionDefinitionNode): Partial<AbiFunc
             ...(ks.paramName && { paramName: ks.paramName }),
             ...(ks.stateVarName && { stateVarName: ks.stateVarName }),
             ...(ks.stateArrayName && { stateArrayName: ks.stateArrayName }),
+            ...(ks.kind === 'constant' && { constantValue: ks.constantValue }),
             ...(ks.kind === 'expression' && { expressionLabel: ks.canonical }),
           })),
         }),

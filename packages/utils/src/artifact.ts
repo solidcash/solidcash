@@ -241,10 +241,11 @@ export interface CollectionInfo {
 }
 
 export interface KeySourceAbi {
-  kind: 'param' | 'state' | 'expression' | 'stateArrayLast';
+  kind: 'param' | 'state' | 'expression' | 'stateArrayLast' | 'constant';
   paramName?: string;
   stateVarName?: string;
   stateArrayName?: string; // kind='stateArrayLast': `arr[arr.length-1]` - SDK resolves the array's last element
+  constantValue?: string;  // kind='constant': compile-time-resolved uint key value (decimal string)
   expressionLabel?: string;
 }
 

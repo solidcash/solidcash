@@ -63,20 +63,28 @@ contract TestSlot() {
   }
 }`;
 
-// A uint256-valued slot pointer (no address<->word casts) - proves the write path is covenant-sound: a set
-// through the pointer produces an __evm_storage entry NFT the covenant accepts.
+// Two uint256-valued slot pointers. The slot key `uint256(SLOT)` is a compile-time constant the compiler resolves
+// (keySource.kind='constant'), so a READ can locate + co-spend the entry without a key arg. Slots "X"/"B" hash to
+// a uint256 with the high bit CLEAR (no sign byte) - a high-bit slot key currently fails the WRITE via a separate
+// uint256(bytes32) sign-byte encoding issue (see docs/evm-storage-parity.md), out of scope for the read fix here.
 const SLOTPTR_U256 = `pragma solidcash >=0.8.0;
 library StorageSlot {
   struct Uint256Slot { uint256 value; }
   function getUint256Slot(bytes32 slot) internal pure returns (Uint256Slot storage r) { assembly { r.slot := slot } }
 }
 contract T() {
-  bytes32 constant SLOT = keccak256("X");
-  function setV(uint256 v, pubkey pk, sig s) {
+  bytes32 constant A = keccak256("X");
+  bytes32 constant B = keccak256("B");
+  function setA(uint256 v, pubkey pk, sig s) {
     require(checkSig(s, pk));
-    StorageSlot.Uint256Slot storage d = StorageSlot.getUint256Slot(SLOT);
-    d.value = v;
+    StorageSlot.Uint256Slot storage d = StorageSlot.getUint256Slot(A); d.value = v;
   }
+  function setB(uint256 v, pubkey pk, sig s) {
+    require(checkSig(s, pk));
+    StorageSlot.Uint256Slot storage d = StorageSlot.getUint256Slot(B); d.value = v;
+  }
+  function checkA(uint256 e) { StorageSlot.Uint256Slot storage d = StorageSlot.getUint256Slot(A); require(d.value == e); }
+  function checkB(uint256 e) { StorageSlot.Uint256Slot storage d = StorageSlot.getUint256Slot(B); require(d.value == e); }
 }`;
 
 describe('EVM-storage: OZ StorageSlot pointer (write-to-any-slot)', () => {
@@ -85,12 +93,29 @@ describe('EVM-storage: OZ StorageSlot pointer (write-to-any-slot)', () => {
     expect(art.stateLayout?.collections?.some((c) => c.name === '__evm_storage')).toBe(true);
     // The factory library function is consumed (never emitted as a callable).
     expect(art.abi.some((f) => f.name === 'getAddressSlot')).toBe(false);
+    // A read resolves the constant slot key (kind='constant') so the SDK can locate the entry with no key arg.
+    const ks = (art.abi.find((f) => f.name === 'checkAddr') as { entryAccesses?: { keySources?: { kind: string }[] }[] })
+      ?.entryAccesses?.[0]?.keySources?.[0];
+    expect(ks?.kind).toBe('constant');
   });
 
-  it('a write through a slot pointer produces a covenant-accepted entry', async () => {
+  it('writes a slot then reads it back through the pointer (constant key resolved)', async () => {
     const sc = await deploy(SLOTPTR_U256);
-    // setV alone: the tx is accepted iff the covenant verifies the __evm_storage entry NFT it wrote. Reading a
-    // constant-expression slot key back is a separate SDK entry-lookup step (see docs/evm-storage-parity.md).
-    await (sc as any).setV(42n, alicePub, sig()).send();
+    await (sc as any).setA(42n, alicePub, sig()).send();
+    await (sc as any).checkA(42n).send();
+  });
+
+  it('distinct slots stay independent; an untouched slot reads default 0', async () => {
+    const sc = await deploy(SLOTPTR_U256);
+    await (sc as any).setA(11n, alicePub, sig()).send();
+    await (sc as any).setB(22n, alicePub, sig()).send();
+    await (sc as any).checkA(11n).send();
+    await (sc as any).checkB(22n).send();
+  });
+
+  it('reads an untouched slot as default 0 even when a different slot has an entry', async () => {
+    const sc = await deploy(SLOTPTR_U256);
+    await (sc as any).setA(11n, alicePub, sig()).send();
+    await (sc as any).checkB(0n).send(); // B never written -> co-spends nothing, reads default (not A's entry)
   });
 });

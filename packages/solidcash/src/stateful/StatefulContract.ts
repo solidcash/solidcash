@@ -4322,6 +4322,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               );
             }
             keyValues.push(arr[arr.length - 1] as bigint | boolean | Uint8Array);
+          } else if (keySource.kind === 'constant') {
+            // Compile-time-constant uint key (OZ StorageSlot `uint256(SLOT)`): the compiler resolved the value, so
+            // match the on-chain entry directly (the covenant re-derives + OP_EQUALVERIFYs the same key).
+            keyValues.push(BigInt(keySource.constantValue!));
           } else {
             // Expression: look in user-provided entryKeyOverrides, or compute from
             // paramDerivation metadata, or fall back to placeholder.

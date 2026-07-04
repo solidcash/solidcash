@@ -1103,6 +1103,14 @@ export default class SymbolTableTraversal extends AstTraversal {
         const infos = [...entryAccessMap.values()];
         const isWritten = (info: EntryAccessInfo): boolean => info.operations.includes('write')
           || info.operations.includes('delete');
+        // A constant key only helps a pure READ (locate a non-arg entry to co-spend). A write/delete bakes the key
+        // via the covenant + VM-probes the exact commitment (sign-byte-correct); resolving it SDK-side would mis-
+        // encode high-bit uint256 keys. Downgrade constant->expression on any written access to keep that path.
+        for (const info of infos) {
+          if (!isWritten(info)) continue;
+          info.keySources = info.keySources.map((ks) => (ks.kind === 'constant'
+            ? { kind: 'expression' as const, canonical: ks.canonical } : ks));
+        }
         const ordered = [...infos.filter(isWritten), ...infos.filter((i) => !isWritten(i))];
         let slotIndex = 0;
         for (const info of ordered) info.slotIndex = slotIndex++;
@@ -3385,7 +3393,34 @@ export default class SymbolTableTraversal extends AstTraversal {
     return `expr:${node.constructor.name}`;
   }
 
+  // A compile-time-constant uint mapping key (the OZ StorageSlot idiom `uint256(SLOT)` with a bytes32 constant
+  // SLOT, or any `uint(<const>)`) folds to a fixed value the SDK matches the entry by - without it, a non-arg key
+  // can't be located on a read. `uint(bytesN)` reinterprets the bytes as a little-endian script number; a numeric
+  // constant folds directly. Returns the value, or undefined if not a resolvable constant uint key.
+  private tryEvalConstantUintKey(key: ExpressionNode): bigint | undefined {
+    if (!(key instanceof CastNode) || !(key.type instanceof IntType) || key.type.signed) return undefined;
+    return this.evalConstantOperand(key.expression);
+  }
+
+  private evalConstantOperand(expr: ExpressionNode): bigint | undefined {
+    if (expr instanceof IntLiteralNode) return expr.value;
+    if (expr instanceof HexLiteralNode) {
+      let v = 0n;
+      for (let i = expr.value.length - 1; i >= 0; i--) v = (v << 8n) | BigInt(expr.value[i]); // little-endian
+      return v;
+    }
+    if (expr instanceof IdentifierNode) {
+      const cd = this.constantMap.get(expr.name);
+      if (cd?.expression) return this.evalConstantOperand(cd.expression);
+    }
+    return undefined;
+  }
+
   private classifyKeySource(key: ExpressionNode): KeySourceInfo {
+    const constVal = this.tryEvalConstantUintKey(key);
+    if (constVal !== undefined) {
+      return { kind: 'constant', constantValue: constVal.toString(), canonical: `const:${constVal.toString()}` };
+    }
     if (key instanceof IdentifierNode) {
       if (this.currentFunction.parameters.some((p) => p.name === key.name)) {
         return { kind: 'param', paramName: key.name, canonical: `id:${key.name}` };

@@ -165,10 +165,11 @@ export class ContractNode extends Node implements Named {
 }
 
 export interface KeySourceInfo {
-  kind: 'param' | 'state' | 'expression' | 'stateArrayLast';
+  kind: 'param' | 'state' | 'expression' | 'stateArrayLast' | 'constant';
   paramName?: string;      // kind='param': function parameter name
   stateVarName?: string;   // kind='state': state variable name (e.g. "admin")
   stateArrayName?: string; // kind='stateArrayLast': `arr[arr.length-1]`, the state array name (SDK resolves last elem)
+  constantValue?: string;  // kind='constant': compile-time-resolved uint key value (decimal), SDK matches the entry
   canonical: string;       // canonical string for deduplication (all kinds)
 }
 

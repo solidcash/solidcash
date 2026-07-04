@@ -2312,13 +2312,17 @@ export default class SymbolTableTraversal extends AstTraversal {
       const { keyParams, keySources } = this.getMappingKeyDescriptors(node.keys);
       const slotKey = `${node.collection.name}:${keyParams.join(':')}`;
       const existing = map.get(slotKey);
+      // `map[k].push(v)` / `.pop()` are read-modify-writes of the entry's array: the SDK must CO-SPEND the existing
+      // entry (read its current array) before appending/dropping - a bare 'write' would overwrite it.
+      const rmw = node.arrayPush || node.arrayPop;
       if (existing) {
         if (!existing.operations.includes('write')) existing.operations.push('write');
+        if (rmw && !existing.operations.includes('read')) existing.operations.push('read');
       } else {
         const collSig = computeCollectionSignature(node.collection.name, node.collection.type.toString());
         map.set(slotKey, {
           collection: node.collection.name, collectionSignature: collSig,
-          keyParams, keySources, operations: ['write'], slotIndex: -1,
+          keyParams, keySources, operations: rmw ? ['read', 'write'] : ['write'], slotIndex: -1,
         });
       }
       // Recurse into the value expression (may contain nested mapping accesses)

@@ -3554,9 +3554,20 @@ export default class AstBuilder
     return node;
   }
 
-  visitArrayPushStatement(ctx: ArrayPushStatementContext): ArrayPushNode | StateArrayPushNode {
+  visitArrayPushStatement(ctx: ArrayPushStatementContext): ArrayPushNode | StateArrayPushNode | MappingAssignNode {
     const ids = ctx.Identifier_list();
-    const value = this.visit(ctx.expression());
+    const exprs = ctx.expression_list();
+    // `map[k].push(v)` / `m[k1][k2].push(v)`: one Identifier + index expressions, last expression is the value.
+    // Model as a MappingAssignNode(arrayPush) - a read-modify-write appending to the entry's array value.
+    if (ids.length === 1 && exprs.length > 1) {
+      const keys = exprs.slice(0, -1).map((e) => this.visit(e) as ExpressionNode);
+      const value = this.visit(exprs[exprs.length - 1]) as ExpressionNode;
+      const node = new MappingAssignNode(ids[0].getText(), keys, value);
+      node.arrayPush = true;
+      node.location = Location.fromCtx(ctx);
+      return node;
+    }
+    const value = this.visit(exprs[0]) as ExpressionNode;
     // `structVar.arrayField.push(x)` on a mapping-bearing struct -> push the flattened state array.
     if (ids.length === 2) {
       const node = new StateArrayPushNode(`${ids[0].getText()}__${ids[1].getText()}`, value);
@@ -3573,8 +3584,19 @@ export default class AstBuilder
     return node;
   }
 
-  visitArrayPopStatement(ctx: ArrayPopStatementContext): ArrayPopNode | StateArrayPopNode {
+  visitArrayPopStatement(ctx: ArrayPopStatementContext): ArrayPopNode | StateArrayPopNode | MappingAssignNode {
     const ids = ctx.Identifier_list();
+    const exprs = ctx.expression_list();
+    // `map[k].pop()` / `m[k1][k2].pop()`: one Identifier + index expressions (the keys), no value.
+    if (ids.length === 1 && exprs.length >= 1) {
+      const keys = exprs.map((e) => this.visit(e) as ExpressionNode);
+      const placeholder = new IntLiteralNode(0n); // unused by the arrayPop codegen
+      placeholder.location = Location.fromCtx(ctx);
+      const node = new MappingAssignNode(ids[0].getText(), keys, placeholder);
+      node.arrayPop = true;
+      node.location = Location.fromCtx(ctx);
+      return node;
+    }
     if (ids.length === 2) {
       const node = new StateArrayPopNode(`${ids[0].getText()}__${ids[1].getText()}`);
       node.location = Location.fromCtx(ctx);

@@ -802,6 +802,8 @@ export class MappingAssignNode extends StatementNode implements Named {
   collection?: CollectionNode;
   entrySlotIndex: number = -1;
   arrayIndex?: ExpressionNode; // Set when innermost value is ArrayType and extra key provided
+  arrayPush?: boolean; // Set for `map[k].push(v)`: append `expression` to the entry's array value (no arrayIndex)
+  arrayPop?: boolean;  // Set for `map[k].pop()`: drop the last element of the entry's array value (expression unused)
 
   constructor(
     public name: string,

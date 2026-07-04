@@ -8331,7 +8331,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   visitMappingAssign(node: MappingAssignNode): Node {
-    if (node.arrayIndex) {
+    if (node.arrayIndex || node.arrayPush || node.arrayPop) {
       return this.emitMappingArrayElementAssign(node);
     }
 
@@ -8496,118 +8496,124 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.pushToStack('(elements)');
     this.pushToStack('(arr_length)');
 
-    // Save length for later re-encoding (DUP it)
-    this.emit(Op.OP_DUP, locationData);
-    this.pushToStack('(saved_length)');
-
-    // Visit index.
-    // At this point tracker and runtime are aligned (locals + [(elements), (arr_length),
-    // (saved_length)]), so the visit's OP_PICK computes the correct depth directly.
-    node.arrayIndex = this.visit(node.arrayIndex!);
-    // Stack: [..., elements, arr_length, saved_length, index]
-
-    // Bounds check: we need length on top, then index
-    // Current: [..., elements, arr_length, saved_length, index]
-    // Swap saved_length and index: [..., elements, arr_length, index, saved_length]
-    this.emit(Op.OP_SWAP, locationData);
-    this.emitBoundsCheck(locationData);
-    // Stack: [..., elements, arr_length, index]
-    this.popFromStack(2); // remove saved_length and index tracking from visit
-    this.pushToStack('(index)');
-
-    // Reorder [..., elements, arr_length, index] -> [..., arr_length, elements, index].
-    // arr_length is kept on the stack for re-encoding the length prefix later.
-    this.popFromStack(3);
-    this.emit(Op.OP_ROT, locationData);   // [..., arr_length, index, elements]
-    this.emit(Op.OP_SWAP, locationData);  // [..., arr_length, elements, index]
-    this.pushToStack('(arr_length)');
-    this.pushToStack('(elements)');
-    this.pushToStack('(index)');
-
-    if (fixedWidth) {
-      const width = getFixedWidth(elemType);
-      // Compute byte offset
-      this.emit(encodeInt(BigInt(width)), locationData);
-      this.emit(Op.OP_MUL, locationData);
-      this.popFromStack();
-      this.pushToStack('(offset)');
-
-      // Split at offset: [..., arr_length, left, right]
-      this.emit(Op.OP_SPLIT, locationData);
-      this.popFromStack(2);
-      this.pushToStack('(left)');
-      this.pushToStack('(right)');
-
-      // Split off old element
-      this.emit(encodeInt(BigInt(width)), locationData);
-      this.emit(Op.OP_SPLIT, locationData);
-      this.emit(Op.OP_NIP, locationData); // [..., arr_length, left, remainder]
-      this.popFromStack();
-      this.pushToStack('(remainder)');
-
-      // Encode new value
-      node.expression = this.visit(node.expression);
-      this.emitEncodeElementPacked(elemType, locationData);
-
-      // Reassemble: left ++ new_value ++ remainder
-      this.emit(Op.OP_SWAP, locationData);
-      this.emit(Op.OP_CAT, locationData);
-      this.popFromStack(2);
-      this.pushToStack('(value)');
-      this.emit(Op.OP_CAT, locationData);
-      this.popFromStack(2);
-      this.pushToStack('(elements)');
+    // map[k].push(v) / map[k].pop(): append / drop-last surgery on the entry array, producing
+    // [new_length, new_elements] for the shared re-encode below. Otherwise take the element-index surgery.
+    if (node.arrayPush || node.arrayPop) {
+      this.emitMappingArrayPushPopSurgery(node, elemType, fixedWidth, locationData);
     } else {
-      // Variable-width: scan to element, replace, reassemble
-      // Stack: [..., arr_length, elements, index]
-      this.popFromStack(2);
-      this.pushToStack('(elements)');
-      this.pushToStack('(count)');
+      // Save length for later re-encoding (DUP it)
+      this.emit(Op.OP_DUP, locationData);
+      this.pushToStack('(saved_length)');
 
-      // Duplicate elements for size tracking
-      this.emit(Op.OP_SWAP, locationData); // [..., arr_length, index, elements]
-      this.emit(Op.OP_DUP, locationData); // [..., arr_length, index, elements, elements_copy]
-      this.emit(Op.OP_ROT, locationData); // [..., arr_length, elements, elements_copy, index]
+      // Visit index.
+      // At this point tracker and runtime are aligned (locals + [(elements), (arr_length),
+      // (saved_length)]), so the visit's OP_PICK computes the correct depth directly.
+      node.arrayIndex = this.visit(node.arrayIndex!);
+      // Stack: [..., elements, arr_length, saved_length, index]
 
-      this.popFromStack(2);
-      this.pushToStack('(elements)');
-      this.pushToStack('(count)');
-
-      this.emitScanLoop(elemType, locationData);
-      // [..., arr_length, elements, remaining_of_copy]
-      this.popFromStack(2);
-
-      // Get offset by measuring remaining size
-      this.emit(Op.OP_SIZE, locationData);
-      this.emit(Op.OP_NIP, locationData); // [..., arr_length, elements, remaining_size]
-      this.emit(Op.OP_OVER, locationData);
-      this.emit(Op.OP_SIZE, locationData);
-      this.emit(Op.OP_NIP, locationData); // [..., arr_length, elements, rem_size, total_size]
+      // Bounds check: we need length on top, then index
+      // Current: [..., elements, arr_length, saved_length, index]
+      // Swap saved_length and index: [..., elements, arr_length, index, saved_length]
       this.emit(Op.OP_SWAP, locationData);
-      this.emit(Op.OP_SUB, locationData); // [..., arr_length, elements, offset_to_elem]
-      this.emit(Op.OP_SPLIT, locationData); // [..., arr_length, left, elem_and_rest]
+      this.emitBoundsCheck(locationData);
+      // Stack: [..., elements, arr_length, index]
+      this.popFromStack(2); // remove saved_length and index tracking from visit
+      this.pushToStack('(index)');
 
-      // Skip old element
-      this.pushToStack('(left)');
-      this.pushToStack('(elem_and_rest)');
-      this.emitPushdataSkip(elemType, locationData);
-      // [..., arr_length, left, remainder]
-      this.popFromStack();
-      this.pushToStack('(remainder)');
-
-      // Encode new value
-      node.expression = this.visit(node.expression);
-      this.emitPushdataEncode(elemType, locationData);
-
-      // Reassemble: left ++ encoded_new ++ remainder
-      this.emit(Op.OP_SWAP, locationData);
-      this.emit(Op.OP_CAT, locationData);
-      this.popFromStack(2);
-      this.pushToStack('(value)');
-      this.emit(Op.OP_CAT, locationData);
-      this.popFromStack(2);
+      // Reorder [..., elements, arr_length, index] -> [..., arr_length, elements, index].
+      // arr_length is kept on the stack for re-encoding the length prefix later.
+      this.popFromStack(3);
+      this.emit(Op.OP_ROT, locationData);   // [..., arr_length, index, elements]
+      this.emit(Op.OP_SWAP, locationData);  // [..., arr_length, elements, index]
+      this.pushToStack('(arr_length)');
       this.pushToStack('(elements)');
-    }
+      this.pushToStack('(index)');
+
+      if (fixedWidth) {
+        const width = getFixedWidth(elemType);
+        // Compute byte offset
+        this.emit(encodeInt(BigInt(width)), locationData);
+        this.emit(Op.OP_MUL, locationData);
+        this.popFromStack();
+        this.pushToStack('(offset)');
+
+        // Split at offset: [..., arr_length, left, right]
+        this.emit(Op.OP_SPLIT, locationData);
+        this.popFromStack(2);
+        this.pushToStack('(left)');
+        this.pushToStack('(right)');
+
+        // Split off old element
+        this.emit(encodeInt(BigInt(width)), locationData);
+        this.emit(Op.OP_SPLIT, locationData);
+        this.emit(Op.OP_NIP, locationData); // [..., arr_length, left, remainder]
+        this.popFromStack();
+        this.pushToStack('(remainder)');
+
+        // Encode new value
+        node.expression = this.visit(node.expression);
+        this.emitEncodeElementPacked(elemType, locationData);
+
+        // Reassemble: left ++ new_value ++ remainder
+        this.emit(Op.OP_SWAP, locationData);
+        this.emit(Op.OP_CAT, locationData);
+        this.popFromStack(2);
+        this.pushToStack('(value)');
+        this.emit(Op.OP_CAT, locationData);
+        this.popFromStack(2);
+        this.pushToStack('(elements)');
+      } else {
+        // Variable-width: scan to element, replace, reassemble
+        // Stack: [..., arr_length, elements, index]
+        this.popFromStack(2);
+        this.pushToStack('(elements)');
+        this.pushToStack('(count)');
+
+        // Duplicate elements for size tracking
+        this.emit(Op.OP_SWAP, locationData); // [..., arr_length, index, elements]
+        this.emit(Op.OP_DUP, locationData); // [..., arr_length, index, elements, elements_copy]
+        this.emit(Op.OP_ROT, locationData); // [..., arr_length, elements, elements_copy, index]
+
+        this.popFromStack(2);
+        this.pushToStack('(elements)');
+        this.pushToStack('(count)');
+
+        this.emitScanLoop(elemType, locationData);
+        // [..., arr_length, elements, remaining_of_copy]
+        this.popFromStack(2);
+
+        // Get offset by measuring remaining size
+        this.emit(Op.OP_SIZE, locationData);
+        this.emit(Op.OP_NIP, locationData); // [..., arr_length, elements, remaining_size]
+        this.emit(Op.OP_OVER, locationData);
+        this.emit(Op.OP_SIZE, locationData);
+        this.emit(Op.OP_NIP, locationData); // [..., arr_length, elements, rem_size, total_size]
+        this.emit(Op.OP_SWAP, locationData);
+        this.emit(Op.OP_SUB, locationData); // [..., arr_length, elements, offset_to_elem]
+        this.emit(Op.OP_SPLIT, locationData); // [..., arr_length, left, elem_and_rest]
+
+        // Skip old element
+        this.pushToStack('(left)');
+        this.pushToStack('(elem_and_rest)');
+        this.emitPushdataSkip(elemType, locationData);
+        // [..., arr_length, left, remainder]
+        this.popFromStack();
+        this.pushToStack('(remainder)');
+
+        // Encode new value
+        node.expression = this.visit(node.expression);
+        this.emitPushdataEncode(elemType, locationData);
+
+        // Reassemble: left ++ encoded_new ++ remainder
+        this.emit(Op.OP_SWAP, locationData);
+        this.emit(Op.OP_CAT, locationData);
+        this.popFromStack(2);
+        this.pushToStack('(value)');
+        this.emit(Op.OP_CAT, locationData);
+        this.popFromStack(2);
+        this.pushToStack('(elements)');
+      }
+    } // end (element-index surgery) else-branch of the push/pop check
 
     // Re-encode with saved length prefix
     // Stack: [..., arr_length, modified_elements]
@@ -8660,6 +8666,44 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
 
     return node;
+  }
+
+  /**
+   * Phase 2 surgery for `map[k].push(v)` / `map[k].pop()`. Stack in: [elements, arr_length] (2 tracked). Stack
+   * out: [new_length, new_elements] (2 tracked), matching the shared re-encode. push appends an encoded element
+   * and increments the length; pop (fixed-width only) drops the last element and decrements the length.
+   */
+  private emitMappingArrayPushPopSurgery(
+    node: MappingAssignNode, elemType: Type, fixedWidth: boolean, locationData: SingleLocationData,
+  ): void {
+    if (node.arrayPush) {
+      node.expression = this.visit(node.expression); // [elements, arr_length, value] (3 tracked)
+      if (fixedWidth) this.emitEncodeElementPacked(elemType, locationData);
+      else this.emitPushdataEncode(elemType, locationData); // [elements, arr_length, enc_value]
+      this.emit(Op.OP_ROT, locationData);  // [arr_length, enc_value, elements]
+      this.emit(Op.OP_SWAP, locationData); // [arr_length, elements, enc_value]
+      this.emit(Op.OP_CAT, locationData);  // [arr_length, new_elements]
+      this.popFromStack(2);
+      this.pushToStack('(new_elements)'); // 3 -> 2 tracked
+      this.emit(Op.OP_SWAP, locationData); // [new_elements, arr_length]
+      this.emit(Op.OP_1ADD, locationData); // [new_elements, new_length]
+      this.emit(Op.OP_SWAP, locationData); // [new_length, new_elements]
+      return;
+    }
+    // pop: drop the last element. Variable-width would need a scan-to-last; fixed-width splits off the tail.
+    if (!fixedWidth) throw new Error('.pop() on a variable-width mapping array element is not yet supported');
+    const width = getFixedWidth(elemType);
+    this.emit(Op.OP_1SUB, locationData);  // [elements, new_length]
+    this.emit(Op.OP_SWAP, locationData);  // [new_length, elements]
+    this.emit(Op.OP_OVER, locationData);  // [new_length, elements, new_length]
+    this.pushToStack('(len_copy)');       // 2 -> 3
+    this.emit(encodeInt(BigInt(width)), locationData);
+    this.emit(Op.OP_MUL, locationData);   // [new_length, elements, offset]
+    this.popFromStack();
+    this.pushToStack('(offset)');
+    this.emit(Op.OP_SPLIT, locationData); // [new_length, new_elements, last_elem]
+    this.emit(Op.OP_DROP, locationData);  // [new_length, new_elements]
+    this.popFromStack();                  // 3 -> 2
   }
 
   visitMappingFieldAssign(node: MappingFieldAssignNode): Node {

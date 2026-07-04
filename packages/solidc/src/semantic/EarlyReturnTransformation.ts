@@ -233,7 +233,7 @@ function nestEarlyReturns(statements: StatementNode[]): StatementNode[] {
   return result;
 }
 
-function blockEndsWithReturn(block: BlockNode): boolean {
+export function blockEndsWithReturn(block: BlockNode): boolean {
   if (!block.statements || block.statements.length === 0) return false;
 
   const nonLogStatements = block.statements.filter((s) => !(s instanceof ConsoleStatementNode));

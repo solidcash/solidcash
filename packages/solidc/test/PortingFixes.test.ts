@@ -2085,3 +2085,21 @@ describe('library constant scope inside library functions', () => {
       + ' contract C { function g() public pure returns (uint) { return L.f(7); } }')).toBe('C');
   });
 });
+
+// An unnamed-return function that already returns on every path (a terminal if/else whose branches both
+// return) must NOT get a synthesized fall-through `return <defaults>` - that default is dead code and, for
+// address/enum returns, was typed (int, int), producing a spurious return-type mismatch (OZ ECDSA pattern).
+describe('unnamed-return fall-through: no dead default when all paths return', () => {
+  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  it('compiles an (address, enum) return ending in if/else where both branches return', () => {
+    expect(cc('contract C { enum E { A, B }'
+      + ' function f(uint x) internal pure returns (address, E) {'
+      + ' if (x == 0) { return (address(0), E.B); } else { return (address(0), E.A); } }'
+      + ' function g() public pure { (address a, E e) = f(1); require(a == address(0)); } }')).toBe('C');
+  });
+  it('still synthesizes a default for a genuine fall-through (no return on some path)', () => {
+    // A body that does not return on all paths still gets the fall-through default (uint defaults to 0).
+    expect(cc('contract C { function f(uint x) internal pure returns (uint r) { if (x > 0) { r = x; } }'
+      + ' function g() public pure { require(f(0) == 0); } }')).toBe('C');
+  });
+});

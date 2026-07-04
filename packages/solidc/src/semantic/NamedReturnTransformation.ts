@@ -12,6 +12,7 @@ import {
   BoolLiteralNode,
 } from '../ast/AST.js';
 import { createDefaultValueExpression } from '../ast/defaults.js';
+import { blockEndsWithReturn } from './EarlyReturnTransformation.js';
 import AstTraversal from '../ast/AstTraversal.js';
 
 /**
@@ -61,8 +62,12 @@ export default class NamedReturnTransformation extends AstTraversal {
     // keeps the MissingReturn / EmptyFunction guards.
     if (this.solidityImportCompat && node.body
       && node.returnTypes.length > 0 && node.returnNames.length === 0) {
-      const stmts = node.body.statements ?? [];
-      if (!(stmts[stmts.length - 1] instanceof ReturnNode)) {
+      // Only synthesize a fall-through default return when the body does NOT already return on every path. A
+      // terminal if/else (or switch) whose branches all return needs no default - and the synthesized
+      // `return <defaults>` would be dead code that still type-checks (createDefaultValueExpression yields int 0
+      // for address/enum returns, mismatching the declared types). blockEndsWithReturn covers those shapes.
+      if (!blockEndsWithReturn(node.body)) {
+        const stmts = node.body.statements ?? [];
         const ret = new ReturnNode(node.returnTypes.map((t) => createDefaultValueExpression(t, node.location)));
         ret.location = node.location;
         node.body.statements = [...stmts, ret];

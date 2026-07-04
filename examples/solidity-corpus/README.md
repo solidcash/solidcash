@@ -26,25 +26,27 @@ Buckets (so the denominator is meaningful):
 
 ## Scorecard (2026-07, 7343 files)
 
-After the `pragma abicoder` / `pragma experimental` unblock (grammar d0a990f9 + typo-reject 8359e4c1):
+After the pragma unblocks (abicoder/experimental d0a990f9 + typo-reject 8359e4c1; version formats 5a4b6f48):
 
 ```
-2107/4876 single-file in-scope compiled (~43%)   |   2769 failed   (+171 vs the 1936 pre-pragma baseline)
+2288/4876 single-file in-scope compiled (~47%)   |   2588 failed   (+352 vs the 1936 pre-pragma baseline)
 1699 negative correctly rejected (parity)
  491 NEG-ACCEPTED (solc rejects, we compiled) - mostly natspec / EVM-only rejection reasons
  277 multifile-skipped
 ```
 
-The pragma unblock moved ~560 files past the first line; ~171 fully compile, the rest fail on the EVM content
-behind it (Yul, ABIEncoderV2 structs, etc.). Running the full corpus also relies on the optimiser perf fix
-(fc474241) - large fixed-array files (e.g. `uint256[500]`) previously stalled the run.
+The pragma unblocks moved ~840 files past the first line (+171 abicoder/experimental, +181 version formats);
+the rest fail on the EVM content behind it (Yul, ABIEncoderV2 structs, etc.). The full corpus completes only
+because of the optimiser perf fixes (fc474241 + e3e2060d) - large fixed-array files (e.g. `uint256[500]`)
+previously drove the optimiser O(N^2) and hung the run; it is now O(N).
 
-### Next cheap unblock (newly exposed)
+### Remaining top blockers (the gap list)
 
-The 277 remaining "expecting VersionLiteral" failures are NOT abicoder/experimental - they are `pragma solidity`
-*version formats* the grammar rejects: `pragma solidity >=0.0;` (273) and `pragma solidity *;` (28) - 2-part
-versions and wildcards. Under solidityImportCompat the version is ignored anyway, so broadening the version
-grammar (or tolerating these forms) is another ~300-file parse unblock.
+- **ParseError (still ~55% of failures)** - the grammar wall. Top specific gaps: visibility-modifier positions,
+  `.push`, `mapping`/`memory` in odd positions, `event`, `++`.
+- **MethodCallNotSupported (158)**, **Yul asm (164)**, type checks (StateAssign/Unequal/Assign/MissingReturn).
+- **28 `TypeError: Cannot read properties of undefined`** - internal compiler crashes (should emit a proper
+  diagnostic instead); a robustness follow-up worth triaging.
 
 ## Failure breakdown (the gap list)
 

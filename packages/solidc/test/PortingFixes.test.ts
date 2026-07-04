@@ -2010,3 +2010,21 @@ describe('function modifier / custom-modifier interleaving (Solidity allows any 
       + ' function f() public M(1) { require(true); } }')).toBe('C');
   });
 });
+
+// A Solidity for-loop init may be a declaration (`uint i = 0`), a bare assignment reusing an outer
+// variable (`i = 0`), or empty (`for (; ...)`). The grammar previously only accepted a declaration.
+describe('for-loop init: bare-assignment and empty forms', () => {
+  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  it('accepts a bare-assignment init reusing an outer variable', () => {
+    expect(cc('pragma solidity ^0.8.0; contract C { function f() public pure returns (uint) {'
+      + ' uint i; uint s = 0; for (i = 0; i < 5; i++) { s = s + i; } return s; } }')).toBe('C');
+  });
+  it('accepts an empty init', () => {
+    expect(cc('pragma solidity ^0.8.0; contract C { function f() public pure returns (uint) {'
+      + ' uint i = 0; uint s = 0; for (; i < 5; i++) { s = s + i; } return s; } }')).toBe('C');
+  });
+  it('still accepts a declaration init', () => {
+    expect(cc('pragma solidity ^0.8.0; contract C { function f() public pure returns (uint) {'
+      + ' uint s = 0; for (uint i = 0; i < 5; i++) { s = s + i; } return s; } }')).toBe('C');
+  });
+});

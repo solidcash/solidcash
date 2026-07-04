@@ -1589,24 +1589,39 @@ export default class AstBuilder
     const condCtx = ctx.forCondition() as ForConditionContext;
     const updateCtx = ctx.forUpdate() as ForUpdateContext;
 
-    // Build init: VariableDefinitionNode
-    const initType = this.resolveType(initCtx.typeName().getText());
-    const initModifiers = initCtx.modifier_list().map((m) => m.getText());
-    const initName = initCtx.Identifier().getText();
-    // Initializer is optional (`for (uint i; ...)`); default an omitted one to 0.
-    let initExpr: ExpressionNode;
-    if (initCtx.expression()) {
-      initExpr = this.visit(initCtx.expression()) as ExpressionNode;
-    } else {
-      initExpr = new IntLiteralNode(0n);
-      initExpr.location = Location.fromCtx(initCtx);
+    // Build init. Three forms: a declaration (`uint i = 0`), a bare assignment reusing an outer variable
+    // (`i = 0`), or empty (`for (; ...)`). Only the declaration form introduces a loop variable.
+    let initNode: StatementNode | undefined;
+    if (initCtx.typeName()) {
+      const initType = this.resolveType(initCtx.typeName().getText());
+      const initModifiers = initCtx.modifier_list().map((m) => m.getText());
+      const initName = initCtx.Identifier().getText();
+      // Initializer is optional (`for (uint i; ...)`); default an omitted one to 0.
+      let initExpr: ExpressionNode;
+      if (initCtx.expression()) {
+        initExpr = this.visit(initCtx.expression()) as ExpressionNode;
+      } else {
+        initExpr = new IntLiteralNode(0n);
+        initExpr.location = Location.fromCtx(initCtx);
+      }
+      const varDef = new VariableDefinitionNode(initType, initModifiers, initName, initExpr);
+      varDef.location = Location.fromCtx(initCtx);
+      // The loop variable is block-scoped in Solidity; the for desugars to a flattened `{ init; while }`, so
+      // mark it so a sequential loop reusing the same name can re-declare it (it overwrites the dead prior one;
+      // identifier resolution is in-order, so each loop body already resolved against its own declaration).
+      varDef.isLoopVariable = true;
+      initNode = varDef;
+    } else if (initCtx._op) {
+      // Bare assignment init: `i = 0` reuses a variable declared in an enclosing scope.
+      initNode = this.buildCompoundAssign(
+        initCtx.Identifier().getText(),
+        Location.fromToken(initCtx.Identifier().symbol),
+        initCtx._op.text,
+        initCtx.expression(),
+        Location.fromCtx(initCtx),
+      );
     }
-    const initNode = new VariableDefinitionNode(initType, initModifiers, initName, initExpr);
-    initNode.location = Location.fromCtx(initCtx);
-    // The loop variable is block-scoped in Solidity; the for desugars to a flattened `{ init; while }`, so
-    // mark it so a sequential loop reusing the same name can re-declare it (it overwrites the dead prior one;
-    // identifier resolution is in-order, so each loop body already resolved against its own declaration).
-    initNode.isLoopVariable = true;
+    // else: empty init (`for (; ...)`) - no statement.
 
     // Update clause is optional (`for (...; ...; )`); when present it becomes the trailing body statement.
     const updateNode = updateCtx
@@ -1636,8 +1651,8 @@ export default class AstBuilder
     whileNode.forLoopUpdateCount = updateNode ? 1 : 0;
     whileNode.location = Location.fromCtx(ctx);
 
-    // Wrap: { init; while (cond) { body; update; } }
-    const outerBlock = new BlockNode([initNode, whileNode]);
+    // Wrap: { init; while (cond) { body; update; } } - init omitted for an empty `for (; ...)`.
+    const outerBlock = new BlockNode(initNode ? [initNode, whileNode] : [whileNode]);
     outerBlock.location = Location.fromCtx(ctx);
     return outerBlock;
   }

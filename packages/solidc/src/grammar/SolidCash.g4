@@ -459,6 +459,8 @@ forStatement
 
 forInit
     : typeName modifier* Identifier ('=' expression)? ';'
+    | Identifier op=('=' | '+=' | '-=' | '*=' | '/=' | '%=' | '&=' | '|=' | '^=' | '<<=' | '>>=') expression ';'
+    | ';'
     ;
 
 forCondition

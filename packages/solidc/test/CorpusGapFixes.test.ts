@@ -71,3 +71,33 @@ describe('user-defined value type over address', () => {
     expect(art.contractName).toBe('C');
   });
 });
+
+describe('library-namespaced member access', () => {
+  // A library enum is registered under its bare name, so `L.E.Member` (member access) and `L.E` (as a type)
+  // strip the `L.` and behave like the unqualified enum - byte-identical to the bare form.
+  const lib = 'library L { enum Dir { Left, Right } }\n';
+
+  it('L.E.Member compiles and matches the bare enum member bytecode', () => {
+    const qualified = compileString(`${lib}contract C() {
+      function f(int e) { L.Dir d = L.Dir.Right; require(int(d) == e); }
+    }`, { solidityImportCompat: true }).bytecode;
+    const bare = compileString(`contract C() { enum Dir { Left, Right }
+      function f(int e) { Dir d = Dir.Right; require(int(d) == e); }
+    }`, { solidityImportCompat: true }).bytecode;
+    expect(qualified).toBe(bare);
+  });
+
+  // `L.f({named})` parses as a named method call on `L`; when L is a library it routes to the namespaced library
+  // function call `L.f(...)`, reordered against the callee's params - byte-identical to the positional form.
+  const mathLib = 'library M { function sub(uint256 x, uint256 y) internal pure returns (uint256) { return x - y; } }\n';
+
+  it('L.f({named}) matches the positional call and reorders args', () => {
+    const named = compileString(`${mathLib}contract C() {
+      function f(uint256 e) { require(M.sub({y: 2, x: 9}) == e); }
+    }`, { solidityImportCompat: true }).bytecode;
+    const positional = compileString(`${mathLib}contract C() {
+      function f(uint256 e) { require(M.sub(9, 2) == e); }
+    }`, { solidityImportCompat: true }).bytecode;
+    expect(named).toBe(positional);
+  });
+});

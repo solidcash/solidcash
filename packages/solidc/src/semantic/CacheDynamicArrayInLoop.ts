@@ -23,6 +23,7 @@ import {
   VariableDefinitionNode,
   StateAssignNode,
   StateVariableNode,
+  ReturnNode,
 } from '../ast/AST.js';
 import { ArrayType } from '@solidcash/utils';
 import AstTraversal from '../ast/AstTraversal.js';
@@ -92,7 +93,14 @@ export default class CacheDynamicArrayInLoop extends AstTraversal {
       flushRhs.location = fn.body.location;
       const flush = new StateAssignNode(name, flushRhs);
       flush.location = fn.body.location;
-      fn.body.statements = [cache, ...fn.body.statements, flush];
+      // The flush writes the cache back to state; it must precede a trailing `return` so the return stays the
+      // terminal statement (else the missing-return check trips) and the write-back is not stranded after it.
+      const stmts = fn.body.statements ?? [];
+      if (stmts.length > 0 && stmts[stmts.length - 1] instanceof ReturnNode) {
+        fn.body.statements = [cache, ...stmts.slice(0, -1), flush, stmts[stmts.length - 1]];
+      } else {
+        fn.body.statements = [cache, ...stmts, flush];
+      }
     }
   }
 

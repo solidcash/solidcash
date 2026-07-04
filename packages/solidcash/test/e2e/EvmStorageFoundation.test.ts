@@ -1,4 +1,4 @@
-import { describe, it } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import { compileString } from 'solidc';
 import { Contract, StatefulContract, SignatureTemplate } from '../../src/index.js';
 import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
@@ -39,5 +39,58 @@ describe('EVM-storage foundation: sstore/sload roundtrip via __evm_storage', () 
     await (sc as any).setSlot(9n, 100n, alicePub, sig()).send();  // __evm_storage[9] = 100
     await (sc as any).checkSlot(9n, 100n).send();                 // slot 9 now 100
     await (sc as any).checkSlot(5n, 42n).send();                  // slot 5 unchanged
+  });
+});
+
+// OZ StorageSlot idiom (write-to-any-slot): `XSlot storage d = StorageSlot.getXSlot(SLOT); d.value = v` lowers
+// to __evm_storage[uint256(SLOT)] with per-field-type value casts (LowerStorageSlotPointers). This is the
+// exact OZ StorageSlot library shape - it must COMPILE (synthesize __evm_storage) and a write must persist.
+const SLOTPTR_ADDR = `pragma solidcash >=0.8.0;
+library StorageSlot {
+  struct AddressSlot { address value; }
+  function getAddressSlot(bytes32 slot) internal pure returns (AddressSlot storage r) { assembly { r.slot := slot } }
+}
+contract TestSlot() {
+  bytes32 constant TEST_SLOT = keccak256("ADMIN_SLOT");
+  function setAddr(address a, pubkey pk, sig s) {
+    require(checkSig(s, pk));
+    StorageSlot.AddressSlot storage d = StorageSlot.getAddressSlot(TEST_SLOT);
+    d.value = a;
+  }
+  function checkAddr(address expected) {
+    StorageSlot.AddressSlot storage d = StorageSlot.getAddressSlot(TEST_SLOT);
+    require(d.value == expected);
+  }
+}`;
+
+// A uint256-valued slot pointer (no address<->word casts) - proves the write path is covenant-sound: a set
+// through the pointer produces an __evm_storage entry NFT the covenant accepts.
+const SLOTPTR_U256 = `pragma solidcash >=0.8.0;
+library StorageSlot {
+  struct Uint256Slot { uint256 value; }
+  function getUint256Slot(bytes32 slot) internal pure returns (Uint256Slot storage r) { assembly { r.slot := slot } }
+}
+contract T() {
+  bytes32 constant SLOT = keccak256("X");
+  function setV(uint256 v, pubkey pk, sig s) {
+    require(checkSig(s, pk));
+    StorageSlot.Uint256Slot storage d = StorageSlot.getUint256Slot(SLOT);
+    d.value = v;
+  }
+}`;
+
+describe('EVM-storage: OZ StorageSlot pointer (write-to-any-slot)', () => {
+  it('compiles the OZ StorageSlot idiom (synthesizes __evm_storage)', () => {
+    const art = compileString(SLOTPTR_ADDR, { solidityImportCompat: true });
+    expect(art.stateLayout?.collections?.some((c) => c.name === '__evm_storage')).toBe(true);
+    // The factory library function is consumed (never emitted as a callable).
+    expect(art.abi.some((f) => f.name === 'getAddressSlot')).toBe(false);
+  });
+
+  it('a write through a slot pointer produces a covenant-accepted entry', async () => {
+    const sc = await deploy(SLOTPTR_U256);
+    // setV alone: the tx is accepted iff the covenant verifies the __evm_storage entry NFT it wrote. Reading a
+    // constant-expression slot key back is a separate SDK entry-lookup step (see docs/evm-storage-parity.md).
+    await (sc as any).setV(42n, alicePub, sig()).send();
   });
 });

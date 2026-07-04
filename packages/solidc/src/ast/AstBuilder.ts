@@ -3635,9 +3635,27 @@ export default class AstBuilder
     return node;
   }
 
-  visitStateArrayPopStatement(ctx: StateArrayPopStatementContext): StateArrayPopNode {
-    const name = ctx.Identifier().getText();
-    const node = new StateArrayPopNode(name);
+  visitStateArrayPopStatement(ctx: StateArrayPopStatementContext): StateArrayPopNode | MappingAssignNode {
+    const ids = ctx.Identifier_list();
+    const exprs = ctx.expression_list();
+    // `this.m[k].pop()` / `this.m[k1][k2].pop()`: one Identifier + index expressions (keys), no value.
+    if (ids.length === 1 && exprs.length >= 1) {
+      const keys = exprs.map((e) => this.visit(e) as ExpressionNode);
+      const placeholder = new IntLiteralNode(0n); // unused by the arrayPop codegen
+      placeholder.location = Location.fromCtx(ctx);
+      const node = new MappingAssignNode(ids[0].getText(), keys, placeholder);
+      node.arrayPop = true;
+      node.location = Location.fromCtx(ctx);
+      return node;
+    }
+    // `this.s.xs.pop()`: struct field array -> the flattened state array.
+    if (ids.length === 2) {
+      const node = new StateArrayPopNode(`${ids[0].getText()}__${ids[1].getText()}`);
+      node.location = Location.fromCtx(ctx);
+      return node;
+    }
+    // `this.arr.pop()`.
+    const node = new StateArrayPopNode(ids[0].getText());
     node.location = Location.fromCtx(ctx);
     return node;
   }

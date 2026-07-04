@@ -407,6 +407,9 @@ stateArrayPushStatement
 
 stateArrayPopStatement
     : 'this' '.' Identifier '.pop' '(' ')' ';'
+    // `this.`-prefixed indexed (`this.m[k].pop()`) and member (`this.s.xs.pop()`) forms, mirroring push.
+    | 'this' '.' Identifier ('[' expression ']')+ '.pop' '(' ')' ';'
+    | 'this' '.' Identifier '.' Identifier '.pop' '(' ')' ';'
     ;
 
 deleteStatement

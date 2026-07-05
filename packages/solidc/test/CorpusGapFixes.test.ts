@@ -297,3 +297,27 @@ describe('tuple assignment to state variables ((x, y) = (a, b))', () => {
     }`, { solidityImportCompat: true }).contractName).toBe('C');
   });
 });
+
+describe('EVM storage-layout specifier tolerated (contract C layout at expr)', () => {
+  // `contract C [is ..] layout at <slot>` sets an EVM storage base slot - meaningless on the UTXO model, so the
+  // clause is dropped under solidityImportCompat and the contract compiles as if it were absent.
+  it('drops the layout clause (with and without inheritance)', () => {
+    expect(compileString('contract C layout at 42 { function f(uint256 e) { require(e == e); } }',
+      { solidityImportCompat: true }).contractName).toBe('C');
+    expect(compileString(
+      'contract A {} contract C is A layout at 1234 + 4567 { uint256 x; function f(uint256 e) { x = e; } }',
+      { solidityImportCompat: true }).contractName).toBe('C');
+  });
+
+  it('compiles identically to the contract without the clause', () => {
+    const withLayout = compileString('contract C layout at 99 { uint256 x; function f(uint256 e) { x = e; } }',
+      { solidityImportCompat: true }).bytecode;
+    const without = compileString('contract C { uint256 x; function f(uint256 e) { x = e; } }',
+      { solidityImportCompat: true }).bytecode;
+    expect(withLayout).toBe(without);
+  });
+
+  it('is compat-only: native solidcash still rejects the clause', () => {
+    expect(() => compileString('contract C layout at 42 { function f() {} }', {})).toThrow();
+  });
+});

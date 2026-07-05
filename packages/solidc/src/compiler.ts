@@ -519,6 +519,14 @@ export function parseCode(
   solidityImportCompat = false,
   chunkedArrays = true,
 ): Ast {
+  // Solidity's storage-layout specifier `contract C [is ..] layout at <expr> { }` sets an EVM storage base slot;
+  // it has no meaning on the UTXO model, so drop the clause (compat only) so the contract parses. Anchored to a
+  // `contract Name [is ..]` header (so a `layout at .. {` inside a string / body is not touched) and stopping at
+  // the body `{` on the header line (`[^{};\n]`), preserving line numbers for diagnostics.
+  if (solidityImportCompat) {
+    code = code.replace(/(\bcontract\s+\w+\b(?:\s+is\s+[^{}]*?)?)\s+layout\s+at\s+[^{};\n]+?(?=\s*\{)/g, '$1');
+  }
+
   const syntaxErrorListener = new ForwardingErrorListener(errorListener);
 
   // Lexing (throwing on errors)

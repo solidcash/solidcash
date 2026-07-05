@@ -37,7 +37,9 @@ the current number with `node examples/solidity-corpus/bench.mjs` (the scorecard
 
 | 2026-07-05 | 2789 / 4876 | (this) | +7 | tuple assignment to state variables `(x, y) = (a, b)`: the tuple codegen assigns into stack slots which state vars lack, so a tuple whose targets are all state vars desugars to sequential state assigns (byte-identical to `x=a; y=b`; a swap `(x,y)=(y,x)` stays correct because a state read reads the input commitment) |
 
-Total so far: **1936 → 2789** (+853). Update this table whenever the number moves.
+| 2026-07-05 | 2834 / 4876 | (this) | +45 | tolerate the EVM storage-layout specifier `contract C [is ..] layout at <expr> { }` (compat only): the clause sets an EVM storage base slot, meaningless on UTXO, so it is stripped (anchored to the contract header, byte-identical no-op). Note: also moves ~65 layout NEGATIVE tests to NEG-ACCEPTED (we can't validate invalid layout usage without implementing the feature - same tolerance tradeoff as the pragma peels) |
+
+Total so far: **1936 → 2834** (+898). Update this table whenever the number moves.
 
 ## Notes
 

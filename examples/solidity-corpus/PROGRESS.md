@@ -101,6 +101,6 @@ CONFIRMS the earlier "folding gives no benefit" was a confounded PARTIAL-fold me
 recovers parse to clean-HEAD parity and slightly beats it. Parse-only over 7343 files:
   clean HEAD 3.78ms/file 410MB dfa 43085 | assignment-only 4.60ms 447MB 45196 | fully-folded 3.75ms 416MB 42737.
 (The DFA baseline is the expression rule; folding statements removes the added statement-decision ambiguity.)
-Behavior-preserving (compiler 1628 green throughout); corpus stays 3040. tupleAssignment stays as solc's
+Behavior-preserving (compiler 1628 green throughout); corpus 3040 -> 3065 (+25: the unified call path handles forms the separate rules rejected, e.g. a 2-arg this.f(a,b) self-call). tupleAssignment stays as solc's
 variableDeclarationStatement (its slots can declare); its fully-untyped `(a,b)=..` slice is a minor deviation not
 worth the tuple-assign regression risk for a DFA already below clean HEAD.

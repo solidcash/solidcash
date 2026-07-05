@@ -201,3 +201,30 @@ describe('struct field types: struct arrays and forward / recursive references',
     expect(art.contractName).toBe('C');
   });
 });
+
+describe('Yul assignment across types (assembly { r := x })', () => {
+  // In Yul every value is a 256-bit word; `r := x` copies the raw word. When the target/value differ in type,
+  // the lowering normalizes the value to uint256 then casts to the target so it type-checks (a common EVM idiom
+  // for reinterpreting between address / uint / bytesN / bool). BCH cast semantics apply (compat).
+  const mk = (ret: string, arg: string): string =>
+    `contract C() { function f(${arg} x) external pure returns (${ret} r) { assembly { r := x } } }`;
+
+  it('lowers a value-typed operand to a uint256 target', () => {
+    expect(compileString(mk('uint256', 'address'), { solidityImportCompat: true }).contractName).toBe('C');
+    expect(compileString(mk('uint256', 'bool'), { solidityImportCompat: true }).contractName).toBe('C');
+    expect(compileString(mk('uint256', 'bytes32'), { solidityImportCompat: true }).contractName).toBe('C');
+  });
+
+  it('casts a uint256 word to a differently-typed target', () => {
+    expect(compileString(mk('address', 'uint256'), { solidityImportCompat: true }).contractName).toBe('C');
+    expect(compileString(mk('bool', 'uint256'), { solidityImportCompat: true }).contractName).toBe('C');
+    expect(compileString(mk('bytes32', 'uint256'), { solidityImportCompat: true }).contractName).toBe('C');
+  });
+
+  it('leaves a same-type (uint256) assignment and arithmetic unchanged', () => {
+    expect(compileString(mk('uint256', 'uint256'), { solidityImportCompat: true }).contractName).toBe('C');
+    expect(compileString(`contract C() {
+      function f(uint256 a, uint256 b) external pure returns (uint256 r) { assembly { r := add(a, b) } }
+    }`, { solidityImportCompat: true }).contractName).toBe('C');
+  });
+});

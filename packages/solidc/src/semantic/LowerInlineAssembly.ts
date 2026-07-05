@@ -410,13 +410,22 @@ function lowerStatement(stmt: YulStatementNode): StatementNode {
     const name = stmt.paths[0].base;
     const target = loc(new IdentifierNode(name), stmt);
     let value = lowerValue(stmt.value);
-    // The assembled value is a 256-bit word; writing it to a narrower var truncates (EVM semantics). Cast to
-    // the target's width so the assignment type-checks; a UDVT narrows to its underlying width then re-wraps.
+    // A plain non-word var read (address, bytesN, bool) yields a value of that type; normalize it to the uint256
+    // word so the target-cast below reinterprets it uniformly (EVM `:=` copies the raw word). Complex values
+    // (arith / calls) are already uint256, and mstore etc. keep the un-normalized read (they encode differently).
+    if (stmt.value instanceof YulPathNode && stmt.value.members.length === 0) {
+      const vt = currentVars.get(stmt.value.base);
+      const vIsWord = vt instanceof IntType && !vt.signed && vt.bits === 256;
+      if (vt && !vIsWord && !(vt instanceof ValueType)) value = loc(new CastNode(UINT256, value, false), stmt);
+    }
+    // The assembled value is a uint256 word; a target of a different type reinterprets it (EVM `:=` writes the
+    // raw word). Cast to the target so the lowered assignment type-checks - except when the target IS uint256.
     const t = currentVars.get(name);
+    const isWord = t instanceof IntType && !t.signed && t.bits === 256;
     if (t instanceof ValueType) {
       value = loc(new CastNode(t.underlyingType, value, false), stmt);
       value = loc(new CastNode(t, value, false), stmt);
-    } else if (t instanceof IntType && t.bits < 256) {
+    } else if (t && !isWord) {
       value = loc(new CastNode(t, value, false), stmt);
     }
     return loc(new AssignNode(target, value), stmt);

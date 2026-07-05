@@ -258,3 +258,18 @@ describe('bitwise op with an unbounded-int operand takes the bounded width', () 
     }`, { solidityImportCompat: true })).toThrow();
   });
 });
+
+describe('this.f{value/gas}(args) self-call drops the inert EVM call options', () => {
+  // A `this.f(...)` self-call resolves to a direct subroutine on BCH; `{value:..}` / `{gas:..}` are EVM
+  // message-call options with no analogue on a self-call, so they are dropped (the call still resolves).
+  it('resolves this.g{value:..}/{gas:..}(args) to the own function', () => {
+    expect(compileString(`contract C() {
+      function g(uint256 n) returns (uint256) { return n * 2; }
+      function f(uint256 e) { require(this.g{value: 10}(2) == e); }
+    }`, { solidityImportCompat: true, forceStateful: true }).contractName).toBe('C');
+    expect(compileString(`contract C() {
+      function g(uint256 x) returns (uint256) { return x + 1; }
+      function f(uint256 x, uint256 e) { require(this.g{gas: 8000}(x) == e); }
+    }`, { solidityImportCompat: true, forceStateful: true }).contractName).toBe('C');
+  });
+});

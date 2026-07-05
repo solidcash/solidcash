@@ -3347,10 +3347,13 @@ export default class AstBuilder
     // `this.f(args)`: an external self-call to the contract's OWN function `f`. On BCH the covenant IS the
     // contract, so resolve it to a direct call to `f` (a subroutine). Solidity's external-self-call semantics
     // (fresh calldata, `msg.sender` = the contract) do not apply here.
-    if (ctx.expression().getText() === 'this' && !callOpts) {
+    if (ctx.expression().getText() === 'this') {
       const line = `:${Location.fromCtx(ctx).start.line}`;
+      // `{value:..}` / `{gas:..}` call options are EVM message-call semantics; a self-call is a direct subroutine
+      // on BCH, so they are inert and dropped (like the other EVM shims).
+      const optNote = callOpts ? ' ({value}/{gas} call options are inert on a self-call and ignored)' : '';
       console.log(`Warning: 'this.${methodName}(...)'${line} is an external self-call in Solidity; on BCH it is a `
-        + `direct internal call to '${methodName}' (no separate calldata, msg.sender is not re-set to self).`);
+        + `direct internal call to '${methodName}' (no separate calldata, msg.sender is not re-set to self)${optNote}.`);
       const id = new IdentifierNode(methodName);
       id.location = Location.fromCtx(ctx);
       const call = new FunctionCallNode(id, parameters as ExpressionNode[]);

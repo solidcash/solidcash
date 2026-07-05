@@ -162,7 +162,7 @@ constructorDefinition
     ;
 
 fallbackDefinition
-    : 'fallback' parameterList 'external' fallbackModifier* customModifierInvocation* '{' statement* '}'
+    : 'fallback' parameterList 'external' fallbackModifier* customModifierInvocation* returnType? '{' statement* '}'
     ;
 
 fallbackModifier

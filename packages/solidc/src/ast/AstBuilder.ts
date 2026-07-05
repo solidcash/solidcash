@@ -955,6 +955,11 @@ export default class AstBuilder
       );
     }
 
+    // A Solidity fallback may declare a return type (`fallback(bytes) external returns (bytes)`, the forwarding
+    // proxy form). Lowered like a normal returning function; the body's `return` provides the value.
+    const returnTypeCtx = ctx.returnType();
+    if (returnTypeCtx) this.applyReturnType(node, returnTypeCtx);
+
     return node;
   }
 

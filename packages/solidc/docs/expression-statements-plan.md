@@ -1,8 +1,16 @@
 # Plan: bare expression statements (`expr;`), the Solidity way
 
-Status: **DEFERRED** (design only). The skip-list groundwork is committed (`76485f88`); the grammar refactor
-below is a large, collision-prone change and should be done as a dedicated pass when the parallel agent is NOT
-editing the statement grammar / AstBuilder statement builders (nested-lvalue writes, getters).
+Status: **DONE** (commit `6c51d7c3`, corpus 2874 -> 3040, +166). The shipped approach is narrower and cheaper
+than the full fold sketched below: only **assignment** was left-factored into `expressionStatement`
+(`expression (op= expression)? ';'`). That alone eliminates the full-context blowup (it was the only form needing
+unbounded lookahead - scan the whole lvalue chain for `=`); the other statement forms (push/pop/call) are bounded
+by their `.push`/`.pop`/`(` tokens and were measured to add ZERO further parse/memory cost, so they were left as
+separate rules. `visitAssignmentStatement`'s dispatch was extracted into `buildLvalueAssign`, driven by a new
+`extractLvalue()` that rebuilds the lvalue segments from the parsed LHS expression. The earlier additive
+`expression ';'` prototype's "OOM + 2.7x slowdown" turned out to be a per-parse DFA-reset workaround (removed
+here) plus a pre-existing huge-bounded-array materialization gap (now capped), NOT the ambiguity itself.
+
+Original deferred design (superseded, kept for context):
 
 ## Goal
 

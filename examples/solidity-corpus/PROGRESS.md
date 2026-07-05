@@ -75,3 +75,16 @@ only on name+params, not the declaring scope, so emitting a foreign event is sou
 - Artifact: list emitted sibling-contract events (Solidity ABI parity), deduped by signature.
 +17 (not just the 16 UndefinedEvent files: the library-event drop also broke files using library events elsewhere).
 Over-accept 635 -> 636 (+1, benign: a cross-scope event redefinition solc rejects but we now accept - diagnostic).
+
+## 2874 -> 3040 (+166): bare expression statements (left-factored assignment, solc-style)
+`expression (op= expression)? ';'` folds assignment into the expression rule (parse the LHS once, 1-token decision
+for the assign tail vs bare expression). Removes the unbounded lookahead a separate assignmentStatement rule
+forced -> no full-context LL blowup (the additive `expression ';'` approach OOMed + was 2.7x slower; that 2.7x was
+actually a per-parse DFA-reset workaround, now unneeded). AstBuilder: visitAssignmentStatement's ~10-outcome
+lvalue dispatch extracted into buildLvalueAssign, driven by extractLvalue() (reconstructs lvalue segs from the
+parsed LHS expr); ++/-- route through it. Codegen visitExpressionStatement = visit + OP_DROP per stack slot.
+Also: mixed named/unnamed returns always-on (compat gate removed); MAX_MATERIALIZED_ARRAY_ELEMENTS cap (10000,
+grounded in ~3119 max outputs / ~2437 max inputs of a 100KB standard BCH tx) rejects astronomical bounded arrays
+(uint[..][2999...]) instead of OOMing - a pre-existing gap the feature exposed. Folding push/pop/call too was
+measured to give ZERO further parse/memory benefit (assignment fold captured it all; residual aggregate cost is
+added compilation of the +166 files, not parse), so it was not done. compiler 1628 green. Commit 6c51d7c3.

@@ -2442,3 +2442,23 @@ describe('Yul create with a constant hex bytecode (compile-time p2sh32 deploy)',
       .toThrow(/no BCH|assembly|create/i);
   });
 });
+
+// An extracted/`OP_DEFINE`d function body (e.g. a public `pure` returning function) is compiled by a
+// sub-traversal that must inherit compiledBytecodes, so `type(Child).creationCode` / `new Child()` inside it can
+// embed the child's compiled bytecode. Previously the sub-traversal had an empty map -> "bytecode not available".
+describe('type(C).creationCode inside an extracted function body', () => {
+  const child = 'contract Child { int x; function f() public { this.x = 1; } }';
+  it('resolves type(Child).creationCode from a returning function (the getBytecode idiom)', () => {
+    const a = compileString(`${child} contract P {`
+      + ' function getBytecode() external pure returns (bytes memory) { return type(Child).creationCode; } }',
+    { solidityImportCompat: true });
+    expect(a.contractName).toBe('P');
+  });
+  it('resolves type(Child).creationCode appended with abi.encode args (getBytecode2 idiom)', () => {
+    const a = compileString(`${child} contract P {`
+      + ' function getBytecode(uint256 v) external pure returns (bytes memory) {'
+      + ' return abi.encodePacked(type(Child).creationCode, abi.encode(v)); } }',
+    { solidityImportCompat: true });
+    expect(a.contractName).toBe('P');
+  });
+});

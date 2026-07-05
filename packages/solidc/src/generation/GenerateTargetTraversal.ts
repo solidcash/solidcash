@@ -782,6 +782,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     locationData: SingleLocationData,
   ): { start: number; end: number } {
     const sub = new GenerateTargetTraversalWithLocation(this.compilerOptions);
+    sub.compiledBytecodes = this.compiledBytecodes;
     inlineEmit(sub);
     const bodyBytecode = scriptToBytecode(asmToScript(scriptToAsm(sub.output)));
     const start = this.output.length;
@@ -966,6 +967,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     subTraversal.userFunctionDefs = this.userFunctionDefs;
     subTraversal.isDefineSubTraversal = true;
     subTraversal.constantExpressions = new Map(this.constantExpressions);
+    // Compiled child bytecodes (for `type(C).creationCode` / `new C()` inside an extracted function body).
+    subTraversal.compiledBytecodes = this.compiledBytecodes;
     subTraversal.subroutineDefined = new Map(this.subroutineDefined);
 
     // Start with EMPTY stack -- visitFunctionDefinition will push params

@@ -2513,3 +2513,23 @@ describe('Yul create over a free-memory buffer (EIP-1167 minimal proxy)', () => 
       { solidityImportCompat: true })).toThrow(/no BCH|assembly|create/i);
   });
 });
+
+// The OZ StorageSlot idiom used INLINE (`StorageSlot.getAddressSlot(SLOT).value`, no local `X storage p = ...`).
+// LowerStorageSlotPointers previously only handled the local-alias form; the inline read now lowers too.
+describe('inline StorageSlot pointer read (factory(slot).value)', () => {
+  const LIB = 'library StorageSlot { struct AddressSlot { address value; }'
+    + ' function getAddressSlot(bytes32 slot) internal pure returns (AddressSlot storage pointer) {'
+    + ' assembly { pointer.slot := slot } } }';
+  it('lowers an inline factory(slot).value read to the __evm_storage register', () => {
+    const a = compileString(`${LIB} contract C { bytes32 constant S = keccak256("s");`
+      + ' function f() external view returns (address) { return StorageSlot.getAddressSlot(S).value; } }',
+    { solidityImportCompat: true });
+    expect(a.contractName).toBe('C');
+  });
+  it('still lowers the local-alias form (no regression)', () => {
+    const a = compileString(`${LIB} contract C { bytes32 constant S = keccak256("s");`
+      + ' function f(address v) external { StorageSlot.AddressSlot storage p = StorageSlot.getAddressSlot(S);'
+      + ' p.value = v; } }', { solidityImportCompat: true });
+    expect(a.contractName).toBe('C');
+  });
+});

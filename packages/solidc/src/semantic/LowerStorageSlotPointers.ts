@@ -98,7 +98,7 @@ export default class LowerStorageSlotPointers extends AstTraversal {
     return super.visitAssign(node);
   }
 
-  // `x.value` (read) -> `<cast __evm_storage[slot]>`.
+  // `x.value` (read) -> `<cast __evm_storage[slot]>`; also the inline `factory(slot).value` (no local alias).
   visitFieldAccess(node: FieldAccessNode): Node {
     const alias = node.expression instanceof IdentifierNode ? this.aliases.get(node.expression.name) : undefined;
     if (alias) {
@@ -106,7 +106,22 @@ export default class LowerStorageSlotPointers extends AstTraversal {
       read.location = node.location;
       return this.fromUint(read, alias.struct.fields[0].type);
     }
+    if (node.name === 'value' && node.expression instanceof FunctionCallNode) {
+      const factory = this.factories.get(node.expression.identifier.name);
+      if (factory) {
+        this.used = true;
+        const read = new MappingAccessNode(EVM_STORAGE, [this.slotKey(node.expression, factory)]);
+        read.location = node.location;
+        return this.fromUint(read, factory.struct.fields[0].type);
+      }
+    }
     return super.visitFieldAccess(node);
+  }
+
+  // The uint256 storage key for a factory call `factory(.., slot, ..)`.
+  private slotKey(call: FunctionCallNode, factory: Factory): ExpressionNode {
+    const slot = call.parameters[factory.slotParamIdx];
+    return this.cast(UINT256, cloneNode(slot), slot.location);
   }
 
   private cast(type: Type, expr: ExpressionNode, loc: ExpressionNode['location']): CastNode {

@@ -325,7 +325,7 @@ export function generateArtifact(
   // master-NFT self-pin covenant; see the forceStateful compiler option).
   let stateLayout: StateLayout | undefined;
   if (contract.stateVariables.length > 0 || contract.collections.length > 0
-    || compilerOptions.forceStateful || contract.usesBlockhash) {
+    || compilerOptions.forceStateful || contract.usesBlockhash || contract.deploysStatefulChild) {
     stateLayout = {
       variables: contract.stateVariables.map((sv) => ({
         name: sv.name,

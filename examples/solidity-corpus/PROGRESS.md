@@ -43,7 +43,9 @@ the current number with `node examples/solidity-corpus/bench.mjs` (the scorecard
 
 | 2026-07-05 | 2847 / 4876 | (this) | +7 | string / hex literal coercion at array & mapping ELEMENT writes (`a[i] = "abcd"`, `m[k] = hex".."` -> right-padded bytesN): extended the assign/return literal coercion to visitArrayAssign / visitStateArrayAssign / visitMappingAssign, byte-identical to the padded literal |
 
-Total so far: **1936 → 2847** (+911). Update this table whenever the number moves.
+| 2026-07-05 | 2857 / 4876 | (this) | +10 | a non-stateful contract that instantiates a stateful child (`new T()` where T has state) is made stateful (zero-state) to host the implied deploy - the `deploy` modifier is inferred and the parent gets an empty stateLayout (like forceStateful). Detected pre-visit (SymbolTable) + recorded on the node so artifact generation matches. VM-verified end-to-end: the zero-state parent deploys + mints the stateful child's genesis in one tx |
+
+Total so far: **1936 → 2857** (+921). Update this table whenever the number moves.
 
 ## Notes
 

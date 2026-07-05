@@ -3435,10 +3435,11 @@ describe('Imports', () => {
       }).toThrow(AbstractContractNotCompilableError);
     });
 
-    it('should throw StatefulContractDeploymentError when deploying stateful contract outside deploy function', () => {
-      expect(() => {
-        compileFile(path.join(fixtures, 'error_deploy_stateful.scash'));
-      }).toThrow(StatefulContractDeploymentError);
+    it('deploying a stateful contract in a function implies the deploy (parent is made stateful)', () => {
+      // `new BaseContract(100)` in a plain function no longer errors: instantiating a stateful child IS a
+      // deploy, so the parent is made stateful to host it (the `deploy` modifier is implied).
+      const artifact = compileFile(path.join(fixtures, 'error_deploy_stateful.scash'));
+      expect(artifact.contractName).toBe('ErrorDeployStateful');
     });
 
     it('should throw DeployValueInNonStatefulError when using {value} in non-stateful contract', () => {

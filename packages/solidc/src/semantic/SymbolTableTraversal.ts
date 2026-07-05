@@ -448,7 +448,11 @@ export default class SymbolTableTraversal extends AstTraversal {
       || node.collections.length > 0
       || node.eventDefinitions.length > 0
       || (this.compilerOptions.forceStateful ?? false)
-      || node.usesBlockhash;
+      || node.usesBlockhash
+      // Deploying a stateful child (`new T()` where T has state) IS a deploy, and the deploy covenant rides the
+      // parent's block layout - so a parent that instantiates a stateful contract is itself made stateful (the
+      // `deploy` modifier is implied). Recorded on the node so artifact generation also sees it as stateful.
+      || (node.deploysStatefulChild = this.detectStatefulChildDeploy(node));
 
     node.parameters = this.visitList(node.parameters) as ParameterNode[];
 
@@ -936,6 +940,29 @@ export default class SymbolTableTraversal extends AstTraversal {
   }
 
   private deployResultLocals = new Map<string, InstantiationNode>(); // locals = `new C(...)` in the current fn
+
+  // True if any function of `node` instantiates a stateful contract (`new T()` where T has state / collections).
+  // Such a parent is made stateful to host the (implied) deploy covenant. Pure AST scan (siblings are already in
+  // contractMap from visitSourceFile), only recursing into Node children so a recursive Type cannot loop it.
+  private detectStatefulChildDeploy(node: ContractNode): boolean {
+    const seen = new Set<Node>();
+    let found = false;
+    const walk = (n: Node): void => {
+      if (found || seen.has(n)) return;
+      seen.add(n);
+      if (n instanceof InstantiationNode) {
+        const child = this.contractMap.get(n.identifier?.name);
+        if (child && (child.stateVariables.length > 0 || child.collections.length > 0)) { found = true; return; }
+      }
+      for (const val of Object.values(n as unknown as Record<string, unknown>)) {
+        if (found) return;
+        if (val instanceof Node) walk(val);
+        else if (Array.isArray(val)) for (const x of val) if (x instanceof Node) walk(x);
+      }
+    };
+    for (const fn of node.functions) if (fn.body) walk(fn.body);
+    return found;
+  }
 
   // A child function is FOLDABLE into its deploy (genesis becomes its post-call state) iff it is a pure
   // (state, args) -> state transition: no external calls, no nested deploys, no contract-instantiation. (tx.*
@@ -1659,6 +1686,11 @@ export default class SymbolTableTraversal extends AstTraversal {
         this.assignEmitIndices(node.ifBlock, startIndex);
       }
       return emitIndex;
+    }
+    // try/catch: only the try block is compiled (a failed co-spent call/deploy aborts the whole tx, so the catch
+    // is unreachable and codegen ignores it - see branchOps / collectEmitIndices). Allocate slots for its emits.
+    if (node instanceof TryCatchNode) {
+      return this.collectEmitStatements(node.tryBlock, emitInfos, emitIndex);
     }
     if ('statements' in node && Array.isArray((node as any).statements)) {
       for (const stmt of (node as any).statements) {

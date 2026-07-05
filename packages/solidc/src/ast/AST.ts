@@ -140,6 +140,10 @@ export class ContractNode extends Node implements Named {
   // contract's OWN category (master-bound, per docs/block-and-transaction-properties.md s3), so a blockhash
   // reader MUST be stateful (have a master/category to co-spend + anchor the oracle against). Forces stateful.
   usesBlockhash: boolean = false;
+  // Set when the contract instantiates a stateful child (`new T()` where T has state): deploying it IS a deploy,
+  // so this contract is made stateful to host the (implied) deploy covenant. Read by both the symbol-table pass
+  // (block-layout allocation) and artifact generation (so the SDK sees a zero-state stateful contract).
+  deploysStatefulChild: boolean = false;
   implements: string[] = [];
   parentInvocations: ParentInvocation[] = [];
   fallbackDef: FunctionDefinitionNode | undefined;

@@ -701,8 +701,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (node instanceof FunctionCallNode && node.resolvedFunction?.functionId !== undefined) {
       ids.add(node.resolvedFunction.functionId);
     }
+    // A function used as a value (function pointer / `this.f` self-ref) is invoked indirectly via OP_INVOKE,
+    // so its internal subroutine must be OP_DEFINE'd too.
+    if (node instanceof IdentifierNode && node.functionReference?.functionId !== undefined) {
+      ids.add(node.functionReference.functionId);
+    }
     for (const [key, value] of Object.entries(node)) {
-      if (key === 'resolvedFunction') continue; // back-reference; targets are walked via node.functions
+      if (key === 'resolvedFunction' || key === 'functionReference') continue; // back-references
       if (value instanceof Node) this.collectInvokedFunctionIds(value, ids, visited);
       else if (Array.isArray(value)) {
         for (const item of value) if (item instanceof Node) this.collectInvokedFunctionIds(item, ids, visited);
@@ -1474,6 +1479,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       const syntheticParams = node.parameters.slice(1);
       const visited = this.visitList(syntheticParams) as ParameterNode[];
       node.parameters = [node.parameters[0], ...visited];
+    } else if (this.isDefineSubTraversal) {
+      // Internal subroutine (invoked by functionId via OP_INVOKE): the caller pushes only the DECLARED args,
+      // so skip the synthetic entry-point-only `__internal__returnOutputIdx` param - it is unused here (raw
+      // return, no return event) and would otherwise leave the declared params at the wrong stack offsets.
+      // Do NOT mutate node.parameters: the entry-point define shares this node and needs the full list.
+      for (const p of node.parameters) {
+        if (p.name === '__internal__returnOutputIdx') continue;
+        this.visit(p);
+      }
     } else {
       node.parameters = this.visitList(node.parameters) as ParameterNode[];
     }

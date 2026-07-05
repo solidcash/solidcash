@@ -145,7 +145,6 @@ import {
   NoMatchingOverloadError,
   AmbiguousOverloadError,
   InternalCallToExternalError,
-  ExternalFunctionPointerError,
   ContractConstructorArgTypeError,
   RevertArgumentCountError,
   RevertArgumentTypeError,
@@ -1205,9 +1204,9 @@ export default class TypeCheckTraversal extends AstTraversal {
     // Indirect call through a function-typed value: check args against the signature, result is its returns.
     if (node.identifier.type instanceof FunctionType && !this.functionDefinitions.has(node.identifier.name)) {
       const ft = node.identifier.type;
-      // Internal pointers dispatch via `<functionId> OP_INVOKE`; external pointers (address + selector) are a
-      // cross-contract call - a different mechanism not yet wired, so reject rather than mis-invoke locally.
-      if (ft.isExternal) throw new ExternalFunctionPointerError(node);
+      // Both internal and self-external (`this.f`) pointers dispatch via `<functionId> OP_INVOKE`: an external
+      // FunctionType value has no (address, selector) representation yet (barred from state + ABI), so the only
+      // creatable external pointer is a self-ref carrying a functionId. Foreign IFoo(addr).method is Phase B.
       node.parameters = this.coerceHexArgs(node.parameters, ft.parameterTypes);
       expectParameters(node, node.parameters.map((p) => p.type!), ft.parameterTypes);
       node.type = ft.returnTypes.length === 1 ? ft.returnTypes[0]
@@ -2193,11 +2192,16 @@ export default class TypeCheckTraversal extends AstTraversal {
   }
 
   visitIdentifier(node: IdentifierNode): Node {
-    // Function pointer value: type is the target's signature, not its return type.
+    // Function pointer value: type is the target's signature, not its return type. A `this.f` self-ref is
+    // typed external (Solidity semantics) but still carries the target functionId, so calls route to OP_INVOKE.
+    // Exclude synthetic `__internal__` witness params (return-output-index, selectors, ...) that entry-point
+    // functions accrue - the pointer signature is the DECLARED one the caller wrote.
     if (node.functionReference) {
+      const declaredParams = node.functionReference.parameters.filter((p) => !p.name.startsWith('__internal__'));
       node.type = new FunctionType(
-        node.functionReference.parameters.map((p) => p.type),
+        declaredParams.map((p) => p.type),
         node.functionReference.returnTypes,
+        node.isExternalSelfRef,
       );
       return node;
     }

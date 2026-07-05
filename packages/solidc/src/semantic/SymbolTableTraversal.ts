@@ -4790,6 +4790,17 @@ export default class SymbolTableTraversal extends AstTraversal {
     }
     const sv = this.stateVariableMap.get(node.name);
     if (!sv) {
+      // `this.f` where f is one of the contract's functions (not a state var): a self-targeted external
+      // function pointer. On BCH a self external-call is a direct call to the own function, so resolve it to a
+      // self function-reference (the internal functionId + OP_INVOKE path); typed external via isExternalSelfRef.
+      const overloads = this.functionDefinitions.get(node.name);
+      if (overloads && overloads.length === 1) {
+        const id = new IdentifierNode(node.name);
+        id.location = node.location;
+        id.functionReference = overloads[0];
+        id.isExternalSelfRef = true;
+        return id;
+      }
       throw new UndefinedStateVariableError(node);
     }
     if (sv.visibility === StateVariableVisibility.PRIVATE && sv.inheritedFrom

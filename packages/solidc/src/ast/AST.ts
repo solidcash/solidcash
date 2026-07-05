@@ -1205,6 +1205,10 @@ export class IdentifierNode extends ExpressionNode implements Named {
   // Set when this identifier names a function used as a value (a function pointer); codegen pushes
   // the target's integer functionId.
   functionReference?: FunctionDefinitionNode;
+  // Set when this came from `this.f` / `IFoo(this).method` (a self-targeted EXTERNAL pointer). Solidity
+  // types it `function(...) external`, but on BCH a self external-call is a direct call to the own function,
+  // so it routes through the internal functionId + OP_INVOKE path. Drives FunctionType.isExternal in typing.
+  isExternalSelfRef?: boolean;
   fromModifier?: string; // see StateAssignNode.fromModifier (propagated when this resolves to a state access)
 
   constructor(

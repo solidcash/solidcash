@@ -276,14 +276,8 @@ statement
     : placeholderStatement
     | variableDefinition
     | tupleAssignment
-    | arrayPushStatement
-    | arrayPopStatement
-    | arrayDeleteStatement
-    | stateArrayPushStatement
-    | stateArrayPopStatement
     | prefixIncDecStatement
     | storagePointerWriteStatement
-    | mappingDeleteStatement
     | timeOpStatement
     | requireStatement
     | ifStatement
@@ -313,7 +307,12 @@ statement
 // lookahead (scan the whole lvalue chain for `=`) that a separate assignmentStatement rule forces, so the
 // statement decision stays SLL-cheap. AstBuilder reconstructs the assignment target from the LHS expression.
 expressionStatement
-    : expression (op=('=' | '+=' | '-=' | '*=' | '/=' | '%=' | '&=' | '|=' | '^=' | '<<=' | '>>=') expression)? ';'
+    : expression
+      ( op=('=' | '+=' | '-=' | '*=' | '/=' | '%=' | '&=' | '|=' | '^=' | '<<=' | '>>=') expression
+      | '.push' '(' pushArgument? ')'
+      | '.pop' '(' ')'
+      | '.delete' '(' expression ')'
+      )? ';'
     ;
 
 // Prefix `++x;` / `--x;` as a statement (same effect as postfix at statement scope). Keyword-led by `++`/`--`
@@ -374,10 +373,6 @@ lvPart : '[' expression ']' | lvMember ;
 // checkpoint `.value`, etc.). `.value` lexes as one DotValue token, which `'.' Identifier` cannot match.
 lvMember : '.' Identifier | '.value' ;
 
-mappingDeleteStatement
-    : 'this' '.' Identifier ('[' expression ']')* '.delete' '(' expression ')' ';'
-    ;
-
 variableDefinition
     : typeName modifier* anyIdentifier ('=' expression)? ';'
     | arrayType modifier* anyIdentifier ('=' expression)? ';'
@@ -395,42 +390,10 @@ tupleSlot
     |
     ;
 
-// The pushed value is wrapped in `pushArgument` so it is separable from the bracket index keys, and optional so
-// `arr.push()` / `m[k].push()` append the element type's default (Solidity's no-arg push).
-arrayPushStatement
-    : Identifier '.push' '(' pushArgument? ')' ';'
-    | Identifier '.' Identifier '.push' '(' pushArgument? ')' ';'
-    | Identifier ('[' expression ']')+ '.push' '(' pushArgument? ')' ';'
-    ;
-
+// The pushed value in an `arr.push(v)` expression-statement tail, wrapped so it is separable from the receiver's
+// bracket keys, and optional so `arr.push()` appends the element type's default (Solidity's no-arg push).
 pushArgument
     : expression
-    ;
-
-arrayPopStatement
-    : Identifier '.pop' '(' ')' ';'
-    | Identifier '.' Identifier '.pop' '(' ')' ';'
-    | Identifier ('[' expression ']')+ '.pop' '(' ')' ';'
-    ;
-
-
-arrayDeleteStatement
-    : Identifier '.delete' '(' expression ')' ';'
-    ;
-
-stateArrayPushStatement
-    : 'this' '.' Identifier '.push' '(' pushArgument? ')' ';'
-    // `this.`-prefixed indexed (`this.m[k].push(v)`) and member (`this.s.xs.push(v)`) forms, mirroring the bare
-    // arrayPushStatement so an explicit-state receiver parses the same as the bare one.
-    | 'this' '.' Identifier ('[' expression ']')+ '.push' '(' pushArgument? ')' ';'
-    | 'this' '.' Identifier '.' Identifier '.push' '(' pushArgument? ')' ';'
-    ;
-
-stateArrayPopStatement
-    : 'this' '.' Identifier '.pop' '(' ')' ';'
-    // `this.`-prefixed indexed (`this.m[k].pop()`) and member (`this.s.xs.pop()`) forms, mirroring push.
-    | 'this' '.' Identifier ('[' expression ']')+ '.pop' '(' ')' ';'
-    | 'this' '.' Identifier '.' Identifier '.pop' '(' ')' ';'
     ;
 
 deleteStatement

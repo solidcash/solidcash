@@ -156,7 +156,6 @@ import type {
   StateVariableDeclarationContext,
   ThisExprContext,
   StoragePointerWriteStatementContext,
-  MappingDeleteStatementContext,
   DeleteLocalContext,
   DeleteStateContext,
   DeleteMappingEntryContext,
@@ -196,11 +195,6 @@ import type {
   AssemblyStatementContext,
   BreakStatementContext,
   ContinueStatementContext,
-  ArrayPushStatementContext,
-  ArrayPopStatementContext,
-  ArrayDeleteStatementContext,
-  StateArrayPushStatementContext,
-  StateArrayPopStatementContext,
   WildcardImportContext,
   NamespaceImportContext,
   SelectiveImportContext,
@@ -2875,22 +2869,6 @@ export default class AstBuilder
   }
 
 
-  visitMappingDeleteStatement(ctx: MappingDeleteStatementContext): MappingDeleteNode | StateArrayDeleteNode {
-    const name = ctx.Identifier().getText();
-    // All expressions form the key chain: bracket keys + the delete() argument
-    const keys = ctx.expression_list().map((e) => this.visit(e));
-
-    // Route packed state array deletes to StateArrayDeleteNode
-    if (this.packedStateArrayNames.has(name) && keys.length === 1) {
-      const node = new StateArrayDeleteNode(name, keys[0]);
-      node.location = Location.fromCtx(ctx);
-      return node;
-    }
-
-    const node = new MappingDeleteNode(name, keys);
-    node.location = Location.fromCtx(ctx);
-    return node;
-  }
 
   visitDeleteLocal(ctx: DeleteLocalContext): DeleteLocalNode {
     const identifier = new IdentifierNode(ctx.Identifier().getText());
@@ -3881,6 +3859,64 @@ export default class AstBuilder
     return arrType ? this.usingForLibraries.get(arrType.toString()) : undefined;
   }
 
+  // `receiver.push(value)` on an array / mapping-entry / struct-field / bytes state var, reconstructed from the
+  // parsed receiver (rawName, isThis, keyFns = mapping index keys, member = struct array-field). Unifies the old
+  // bare arrayPushStatement and this-prefixed stateArrayPushStatement dispatch (a name is exactly one of
+  // mapping-entry / bytes / struct-field / plain array, so the branch order is irrelevant).
+  private buildArrayPush(
+    rawName: string, isThis: boolean, keyFns: Array<() => ExpressionNode>, member: string | undefined,
+    value: ExpressionNode, noArg: boolean, ctx: ParserRuleContext,
+  ): StatementNode {
+    const loc = Location.fromCtx(ctx);
+    if (!member && keyFns.length >= 1) {
+      const node = new MappingAssignNode(rawName, keyFns.map((fn) => fn()), value);
+      node.arrayPush = true; node.noArg = noArg; node.location = loc; return node;
+    }
+    if (!member && this.bytesStateVarNames.has(rawName)) {
+      return this.desugarBytesPush(rawName, noArg ? undefined : value, ctx);
+    }
+    if (member) {
+      const node = new StateArrayPushNode(`${rawName}__${member}`, value);
+      node.noArg = noArg; node.location = loc; return node;
+    }
+    const node = (isThis || this.packedStateArrayNames.has(rawName))
+      ? new StateArrayPushNode(rawName, value)
+      : new ArrayPushNode(rawName, value);
+    node.noArg = noArg; node.location = loc; return node;
+  }
+
+  // `receiver.pop()` - mirror of buildArrayPush.
+  private buildArrayPop(
+    rawName: string, isThis: boolean, keyFns: Array<() => ExpressionNode>, member: string | undefined,
+    ctx: ParserRuleContext,
+  ): StatementNode {
+    const loc = Location.fromCtx(ctx);
+    if (!member && keyFns.length >= 1) {
+      const placeholder = new IntLiteralNode(0n); placeholder.location = loc;
+      const node = new MappingAssignNode(rawName, keyFns.map((fn) => fn()), placeholder);
+      node.arrayPop = true; node.location = loc; return node;
+    }
+    if (!member && this.bytesStateVarNames.has(rawName)) return this.desugarBytesPop(rawName, ctx);
+    if (member) { const node = new StateArrayPopNode(`${rawName}__${member}`); node.location = loc; return node; }
+    const node = (isThis || this.packedStateArrayNames.has(rawName))
+      ? new StateArrayPopNode(rawName) : new ArrayPopNode(rawName);
+    node.location = loc; return node;
+  }
+
+  // `receiver.delete(arg)`: bare local `arr.delete(i)` -> ArrayDeleteNode; `this.X[k...].delete(v)` -> the key
+  // chain is the receiver's bracket keys followed by the delete arg (packed state array -> StateArrayDelete).
+  private buildDelete(
+    rawName: string, isThis: boolean, keyFns: Array<() => ExpressionNode>, arg: ExpressionNode, ctx: ParserRuleContext,
+  ): StatementNode {
+    const loc = Location.fromCtx(ctx);
+    if (!isThis && keyFns.length === 0) { const node = new ArrayDeleteNode(rawName, arg); node.location = loc; return node; }
+    const keys = [...keyFns.map((fn) => fn()), arg];
+    if (this.packedStateArrayNames.has(rawName) && keys.length === 1) {
+      const node = new StateArrayDeleteNode(rawName, keys[0]); node.location = loc; return node;
+    }
+    const node = new MappingDeleteNode(rawName, keys); node.location = loc; return node;
+  }
+
   // Reconstruct an lvalue chain (rawName, isThis, ordered segments) from a parsed LHS expression, so the
   // left-factored `expression op= expression` assignment reuses buildLvalueAssign (which the lvPart grammar path
   // also feeds). Walks outside-in, prepending each segment; returns null for a non-lvalue (call, cast, literal).
@@ -3932,6 +3968,29 @@ export default class AstBuilder
       return this.buildLvalueAssign(
         lv.rawName, lv.isThis, lv.nameLoc, lv.segs, ctx._op.text, ctx.expression(1), Location.fromCtx(ctx),
       );
+    }
+    // `receiver.push(v)` / `.pop()` / `.delete(v)` tails: reconstruct the receiver (rawName, isThis, mapping keys,
+    // struct array-field member) from the parsed LHS and dispatch to the array/mapping builder.
+    if (ctx.DotPush() || ctx.DotPop() || ctx.DotDelete()) {
+      const lv = this.extractLvalue(lhsCtx);
+      if (!lv) throw new ParseError('Invalid .push/.pop/.delete target', Location.fromCtx(lhsCtx));
+      const members = lv.segs.filter((s) => s.member !== undefined).map((s) => s.member!);
+      const keyFns = lv.segs.filter((s) => s.key !== undefined).map((s) => s.key!);
+      const member = members.length === 1 && keyFns.length === 0 ? members[0] : undefined;
+      // Only plain (`arr`), single struct-field (`s.xs`), or indexed (`m[k]`) receivers are valid targets - the
+      // same shapes the old rules parsed; a mixed/nested chain (`s.a.b`, `s.xs[k]`) was a parse error, keep it so.
+      if (members.length > 0 && member === undefined) {
+        throw new ParseError('Unsupported .push/.pop/.delete receiver', Location.fromCtx(lhsCtx));
+      }
+      if (ctx.DotPush()) {
+        const argCtx = ctx.pushArgument();
+        const noArg = argCtx === null;
+        const value = noArg ? this.noArgPushPlaceholder(ctx) : this.visit(argCtx.expression()) as ExpressionNode;
+        return this.buildArrayPush(lv.rawName, lv.isThis, keyFns, member, value, noArg, ctx);
+      }
+      if (ctx.DotPop()) return this.buildArrayPop(lv.rawName, lv.isThis, keyFns, member, ctx);
+      const arg = this.visit(ctx.expression(1)) as ExpressionNode;
+      return this.buildDelete(lv.rawName, lv.isThis, keyFns, arg, ctx);
     }
     // Bare `lvalue++;` / `lvalue--;`: the value is discarded, so it is exactly `lvalue += 1` / `-= 1`. Route
     // through buildLvalueAssign (handles every lvalue shape); expression-position postfix (`y = x++`) is left
@@ -4134,150 +4193,6 @@ export default class AstBuilder
     const concat = new BinaryOpNode(read, BinaryOperator.PLUS, appended);
     concat.location = Location.fromCtx(ctx);
     const node = new StateAssignNode(name, concat);
-    node.location = Location.fromCtx(ctx);
-    return node;
-  }
-
-  visitArrayPushStatement(
-    ctx: ArrayPushStatementContext,
-  ): ArrayPushNode | StateArrayPushNode | MappingAssignNode | StateAssignNode {
-    const ids = ctx.Identifier_list();
-    const keys = ctx.expression_list();       // bracket index keys only; the value lives under pushArgument
-    const argCtx = ctx.pushArgument();
-    const noArg = argCtx === null;
-    const value = noArg ? this.noArgPushPlaceholder(ctx) : this.visit(argCtx.expression()) as ExpressionNode;
-    // `map[k].push(v)` / `m[k1][k2].push(v)`: one Identifier + index keys. Model as a MappingAssignNode(arrayPush)
-    // - a read-modify-write appending to the entry's array value.
-    if (ids.length === 1 && keys.length >= 1) {
-      const keyNodes = keys.map((e) => this.visit(e) as ExpressionNode);
-      const node = new MappingAssignNode(ids[0].getText(), keyNodes, value);
-      node.arrayPush = true;
-      node.noArg = noArg;
-      node.location = Location.fromCtx(ctx);
-      return node;
-    }
-    // `structVar.arrayField.push(x)` on a flattened struct -> push the flattened state array.
-    if (ids.length === 2) {
-      const node = new StateArrayPushNode(`${ids[0].getText()}__${ids[1].getText()}`, value);
-      node.noArg = noArg;
-      node.location = Location.fromCtx(ctx);
-      return node;
-    }
-    const name = ids[0].getText();
-    // Unbounded `bytes` state var: `.push(v)` is a byte-blob append, desugared to a concat reassignment.
-    if (this.bytesStateVarNames.has(name)) {
-      return this.desugarBytesPush(name, noArg ? undefined : value, ctx);
-    }
-    // Bare `arr.push(x)` on a state array (Solidity's idiom - storage arrays only) routes to the state push,
-    // matching the bare state element-access routing. `this.arr.push(x)` already hits visitStateArrayPushStatement.
-    const node = this.packedStateArrayNames.has(name)
-      ? new StateArrayPushNode(name, value)
-      : new ArrayPushNode(name, value);
-    node.noArg = noArg;
-    node.location = Location.fromCtx(ctx);
-    return node;
-  }
-
-  visitArrayPopStatement(
-    ctx: ArrayPopStatementContext,
-  ): ArrayPopNode | StateArrayPopNode | MappingAssignNode | StateAssignNode {
-    const ids = ctx.Identifier_list();
-    const exprs = ctx.expression_list();
-    // `map[k].pop()` / `m[k1][k2].pop()`: one Identifier + index expressions (the keys), no value.
-    if (ids.length === 1 && exprs.length >= 1) {
-      const keys = exprs.map((e) => this.visit(e) as ExpressionNode);
-      const placeholder = new IntLiteralNode(0n); // unused by the arrayPop codegen
-      placeholder.location = Location.fromCtx(ctx);
-      const node = new MappingAssignNode(ids[0].getText(), keys, placeholder);
-      node.arrayPop = true;
-      node.location = Location.fromCtx(ctx);
-      return node;
-    }
-    if (ids.length === 2) {
-      const node = new StateArrayPopNode(`${ids[0].getText()}__${ids[1].getText()}`);
-      node.location = Location.fromCtx(ctx);
-      return node;
-    }
-    const name = ids[0].getText();
-    // Unbounded `bytes` state var: `.pop()` drops the last byte via a slice reassignment.
-    if (this.bytesStateVarNames.has(name)) return this.desugarBytesPop(name, ctx);
-    const node = this.packedStateArrayNames.has(name)
-      ? new StateArrayPopNode(name)
-      : new ArrayPopNode(name);
-    node.location = Location.fromCtx(ctx);
-    return node;
-  }
-
-  visitStateArrayPushStatement(
-    ctx: StateArrayPushStatementContext,
-  ): StateArrayPushNode | MappingAssignNode | StateAssignNode {
-    const ids = ctx.Identifier_list();
-    const keys = ctx.expression_list();       // bracket index keys only; the value lives under pushArgument
-    const argCtx = ctx.pushArgument();
-    const noArg = argCtx === null;
-    const value = noArg ? this.noArgPushPlaceholder(ctx) : this.visit(argCtx.expression()) as ExpressionNode;
-    // `this.b.push(v)` on an unbounded `bytes` state var -> concat reassignment (byte-blob append).
-    if (ids.length === 1 && keys.length === 0 && this.bytesStateVarNames.has(ids[0].getText())) {
-      return this.desugarBytesPush(ids[0].getText(), noArg ? undefined : value, ctx);
-    }
-    // `this.m[k].push(v)` / `this.m[k1][k2].push(v)`: one Identifier + index keys.
-    if (ids.length === 1 && keys.length >= 1) {
-      const keyNodes = keys.map((e) => this.visit(e) as ExpressionNode);
-      const node = new MappingAssignNode(ids[0].getText(), keyNodes, value);
-      node.arrayPush = true;
-      node.noArg = noArg;
-      node.location = Location.fromCtx(ctx);
-      return node;
-    }
-    // `this.s.xs.push(v)`: struct field array -> the flattened state array.
-    if (ids.length === 2) {
-      const node = new StateArrayPushNode(`${ids[0].getText()}__${ids[1].getText()}`, value);
-      node.noArg = noArg;
-      node.location = Location.fromCtx(ctx);
-      return node;
-    }
-    // `this.arr.push(v)`.
-    const node = new StateArrayPushNode(ids[0].getText(), value);
-    node.noArg = noArg;
-    node.location = Location.fromCtx(ctx);
-    return node;
-  }
-
-  visitStateArrayPopStatement(
-    ctx: StateArrayPopStatementContext,
-  ): StateArrayPopNode | MappingAssignNode | StateAssignNode {
-    const ids = ctx.Identifier_list();
-    const exprs = ctx.expression_list();
-    // `this.m[k].pop()` / `this.m[k1][k2].pop()`: one Identifier + index expressions (keys), no value.
-    if (ids.length === 1 && exprs.length >= 1) {
-      const keys = exprs.map((e) => this.visit(e) as ExpressionNode);
-      const placeholder = new IntLiteralNode(0n); // unused by the arrayPop codegen
-      placeholder.location = Location.fromCtx(ctx);
-      const node = new MappingAssignNode(ids[0].getText(), keys, placeholder);
-      node.arrayPop = true;
-      node.location = Location.fromCtx(ctx);
-      return node;
-    }
-    // `this.b.pop()` on an unbounded `bytes` state var -> slice reassignment (drop the last byte).
-    if (ids.length === 1 && this.bytesStateVarNames.has(ids[0].getText())) {
-      return this.desugarBytesPop(ids[0].getText(), ctx);
-    }
-    // `this.s.xs.pop()`: struct field array -> the flattened state array.
-    if (ids.length === 2) {
-      const node = new StateArrayPopNode(`${ids[0].getText()}__${ids[1].getText()}`);
-      node.location = Location.fromCtx(ctx);
-      return node;
-    }
-    // `this.arr.pop()`.
-    const node = new StateArrayPopNode(ids[0].getText());
-    node.location = Location.fromCtx(ctx);
-    return node;
-  }
-
-  visitArrayDeleteStatement(ctx: ArrayDeleteStatementContext): ArrayDeleteNode {
-    const name = ctx.Identifier().getText();
-    const index = this.visit(ctx.expression());
-    const node = new ArrayDeleteNode(name, index);
     node.location = Location.fromCtx(ctx);
     return node;
   }

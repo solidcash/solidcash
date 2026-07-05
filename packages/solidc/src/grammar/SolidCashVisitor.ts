@@ -75,16 +75,10 @@ import { EmitStatementContext } from "./SolidCashParser.js";
 import { StoragePointerWriteStatementContext } from "./SolidCashParser.js";
 import { LvPartContext } from "./SolidCashParser.js";
 import { LvMemberContext } from "./SolidCashParser.js";
-import { MappingDeleteStatementContext } from "./SolidCashParser.js";
 import { VariableDefinitionContext } from "./SolidCashParser.js";
 import { TupleAssignmentContext } from "./SolidCashParser.js";
 import { TupleSlotContext } from "./SolidCashParser.js";
-import { ArrayPushStatementContext } from "./SolidCashParser.js";
 import { PushArgumentContext } from "./SolidCashParser.js";
-import { ArrayPopStatementContext } from "./SolidCashParser.js";
-import { ArrayDeleteStatementContext } from "./SolidCashParser.js";
-import { StateArrayPushStatementContext } from "./SolidCashParser.js";
-import { StateArrayPopStatementContext } from "./SolidCashParser.js";
 import { DeleteLocalContext } from "./SolidCashParser.js";
 import { DeleteStateContext } from "./SolidCashParser.js";
 import { DeleteMappingEntryContext } from "./SolidCashParser.js";
@@ -648,12 +642,6 @@ export default class SolidCashVisitor<Result> extends ParseTreeVisitor<Result> {
 	 */
 	visitLvMember?: (ctx: LvMemberContext) => Result;
 	/**
-	 * Visit a parse tree produced by `SolidCashParser.mappingDeleteStatement`.
-	 * @param ctx the parse tree
-	 * @return the visitor result
-	 */
-	visitMappingDeleteStatement?: (ctx: MappingDeleteStatementContext) => Result;
-	/**
 	 * Visit a parse tree produced by `SolidCashParser.variableDefinition`.
 	 * @param ctx the parse tree
 	 * @return the visitor result
@@ -672,41 +660,11 @@ export default class SolidCashVisitor<Result> extends ParseTreeVisitor<Result> {
 	 */
 	visitTupleSlot?: (ctx: TupleSlotContext) => Result;
 	/**
-	 * Visit a parse tree produced by `SolidCashParser.arrayPushStatement`.
-	 * @param ctx the parse tree
-	 * @return the visitor result
-	 */
-	visitArrayPushStatement?: (ctx: ArrayPushStatementContext) => Result;
-	/**
 	 * Visit a parse tree produced by `SolidCashParser.pushArgument`.
 	 * @param ctx the parse tree
 	 * @return the visitor result
 	 */
 	visitPushArgument?: (ctx: PushArgumentContext) => Result;
-	/**
-	 * Visit a parse tree produced by `SolidCashParser.arrayPopStatement`.
-	 * @param ctx the parse tree
-	 * @return the visitor result
-	 */
-	visitArrayPopStatement?: (ctx: ArrayPopStatementContext) => Result;
-	/**
-	 * Visit a parse tree produced by `SolidCashParser.arrayDeleteStatement`.
-	 * @param ctx the parse tree
-	 * @return the visitor result
-	 */
-	visitArrayDeleteStatement?: (ctx: ArrayDeleteStatementContext) => Result;
-	/**
-	 * Visit a parse tree produced by `SolidCashParser.stateArrayPushStatement`.
-	 * @param ctx the parse tree
-	 * @return the visitor result
-	 */
-	visitStateArrayPushStatement?: (ctx: StateArrayPushStatementContext) => Result;
-	/**
-	 * Visit a parse tree produced by `SolidCashParser.stateArrayPopStatement`.
-	 * @param ctx the parse tree
-	 * @return the visitor result
-	 */
-	visitStateArrayPopStatement?: (ctx: StateArrayPopStatementContext) => Result;
 	/**
 	 * Visit a parse tree produced by the `DeleteLocal`
 	 * labeled alternative in `SolidCashParser.deleteStatement`.

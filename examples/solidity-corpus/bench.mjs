@@ -35,7 +35,10 @@ for (const f of files) {
   let src; try { src = readFileSync(f, 'utf8'); } catch { results.push({ rel, status: 'READERR' }); continue; }
   const cls = classify(src);
   if (cls === 'MULTIFILE') { results.push({ rel, status: 'MULTIFILE' }); i++; continue; }
-  if (cls === 'NEGATIVE') { results.push({ rel, status: tryCompile(f) ? 'NEGATIVE' : 'NEG_ACCEPTED' }); i++; continue; }
+  // True negatives (solc rejects them via the `// ----` Error trailer) are deliberately-uncompilable test
+  // fixtures, not real contracts, so they are SKIPPED (never scored). Whether SolidCash also happens to accept
+  // one is kept only as an over-permissiveness diagnostic (`overAccepted`), not counted against the score.
+  if (cls === 'NEGATIVE') { results.push({ rel, status: 'NEGATIVE', overAccepted: !tryCompile(f) }); i++; continue; }
   writeFileSync('/Code/cashscript/examples/solidity-corpus/current.txt', rel); // culprit marker if it crashes/hangs
   const err = tryCompile(f);
   results.push({ rel, status: err ? 'FAIL' : 'OK', err });
@@ -43,13 +46,14 @@ for (const f of files) {
 }
 
 const by = (s) => results.filter(r => r.status === s);
-const ok = by('OK'), fail = by('FAIL'), neg = by('NEGATIVE'), negAcc = by('NEG_ACCEPTED'), multi = by('MULTIFILE');
+const ok = by('OK'), fail = by('FAIL'), neg = by('NEGATIVE'), multi = by('MULTIFILE');
+const overAcc = neg.filter(r => r.overAccepted).length; // solc-negative fixtures we also accept (diagnostic only)
 const inScope = ok.length + fail.length;
 writeFileSync('/Code/cashscript/examples/solidity-corpus/results.json', JSON.stringify(results, null, 1));
 
 console.log(`\n=== SOLC-CORPUS SCORECARD: ${ok.length}/${inScope} single-file in-scope compiled `
-  + `(${fail.length} failed) | ${neg.length} negative (correctly rejected) | ${negAcc.length} NEG-ACCEPTED `
-  + `(solc rejects, we compiled) | ${multi.length} multifile-skipped | ${results.length} total ===\n`);
+  + `(${fail.length} failed) | ${neg.length} negative-skipped (solc rejects; ${overAcc} of them we also accept, `
+  + `diagnostic) | ${multi.length} multifile-skipped | ${results.length} total ===\n`);
 
 // Top failure reasons (grouped by error head) - the actionable gap signal.
 const groups = {};

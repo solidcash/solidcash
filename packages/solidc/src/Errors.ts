@@ -687,15 +687,6 @@ export class InternalCallToExternalError extends SolidCashError {
   }
 }
 
-export class ExternalFunctionPointerError extends SolidCashError {
-  constructor(node: Node) {
-    super(node, 'Calling an external function pointer is valid Solidity but not yet supported in SolidCash: on BCH '
-      + 'a cross-contract call is a co-spend + covenant (the target UTXO must be in the same tx), and a pointer\'s '
-      + 'target + selector are runtime values, whereas SolidCash resolves external-call targets at compile time. '
-      + 'Use an internal function pointer, or call the target contract directly (IFoo(addr).method()).');
-  }
-}
-
 export class ReturnTypeMismatchError extends SolidCashError {
   constructor(node: ReturnNode, expected: Type[], actual: Type[]) {
     super(node, `Return type mismatch: expected (${expected.join(', ')}) but found (${actual.join(', ')})`);

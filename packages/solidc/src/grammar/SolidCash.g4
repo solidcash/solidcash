@@ -726,7 +726,7 @@ typeName
     | 'ufixed'
     | BoundedSignedFixed
     | BoundedUnsignedFixed
-    | 'function' '(' (typeName (',' typeName)*)? ')' ('pure' | 'view')* ('returns' '(' typeName (',' typeName)* ')')?
+    | 'function' '(' (typeName (',' typeName)*)? ')' ('pure' | 'view' | 'internal' | 'external' | 'payable')* ('returns' '(' typeName (',' typeName)* ')')?
     | Identifier '.' Identifier
     | Identifier
     ;

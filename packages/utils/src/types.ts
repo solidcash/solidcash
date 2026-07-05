@@ -178,17 +178,20 @@ export class TupleType {
   }
 }
 
-// Internal function type (function pointer). At the VM level a value of this type is the target's
-// integer functionId; an indirect call is `<functionId> OP_INVOKE`. Internal-only (no external/ABI).
+// Function type (function pointer). An INTERNAL pointer's VM value is the target's integer functionId;
+// an indirect call is `<functionId> OP_INVOKE`. An EXTERNAL pointer (isExternal) is a call to another
+// contract (address + selector), a different mechanism - tracked here so it is never mis-compiled as an
+// internal invoke. `external` is encoded in toString so structural equality keeps the two kinds distinct.
 export class FunctionType {
   constructor(
     public parameterTypes: Type[],
     public returnTypes: Type[],
+    public isExternal: boolean = false,
   ) {}
 
   toString(): string {
     const params = this.parameterTypes.map((t) => t.toString()).join(',');
-    const base = `function(${params})`;
+    const base = `function(${params})${this.isExternal ? 'external' : ''}`;
     if (this.returnTypes.length === 0) return base;
     return `${base}returns(${this.returnTypes.map((t) => t.toString()).join(',')})`;
   }
@@ -697,15 +700,26 @@ export function fixedWidthBytes(type: Type | string): number {
 }
 
 // Parse `function(<types>)` or `function(<types>)returns(<types>)` (no whitespace) into a FunctionType.
+// Type-modifier keywords (pure/view/internal/external/payable) sit between the params `)` and `returns`
+// with no separators once whitespace is stripped; skip them so `returns(...)` is still detected.
+const FUNCTION_TYPE_MODIFIERS = ['pure', 'view', 'internal', 'external', 'payable', 'public', 'private'];
 function parseFunctionType(str: string): FunctionType {
-  const afterKeyword = str.slice('function'.length); // "(params)..." or "(params)returns(rets)"
-  const [paramsInner, rest] = splitParenGroup(afterKeyword);
+  const afterKeyword = str.slice('function'.length); // "(params)..." or "(params)[mods]returns(rets)"
+  const [paramsInner, restRaw] = splitParenGroup(afterKeyword);
+  let rest = restRaw;
+  let isExternal = false;
+  for (let stripped = true; stripped;) {
+    stripped = false;
+    for (const mod of FUNCTION_TYPE_MODIFIERS) {
+      if (rest.startsWith(mod)) { if (mod === 'external') isExternal = true; rest = rest.slice(mod.length); stripped = true; }
+    }
+  }
   let returnTypes: Type[] = [];
   if (rest.startsWith('returns(')) {
     const [retsInner] = splitParenGroup(rest.slice('returns'.length));
     returnTypes = splitTopLevelCommas(retsInner).map(parseType);
   }
-  return new FunctionType(splitTopLevelCommas(paramsInner).map(parseType), returnTypes);
+  return new FunctionType(splitTopLevelCommas(paramsInner).map(parseType), returnTypes, isExternal);
 }
 
 // Given a string starting with '(', return [inside, remainder-after-matching-paren].

@@ -145,6 +145,7 @@ import {
   NoMatchingOverloadError,
   AmbiguousOverloadError,
   InternalCallToExternalError,
+  ExternalFunctionPointerError,
   ContractConstructorArgTypeError,
   RevertArgumentCountError,
   RevertArgumentTypeError,
@@ -1204,6 +1205,9 @@ export default class TypeCheckTraversal extends AstTraversal {
     // Indirect call through a function-typed value: check args against the signature, result is its returns.
     if (node.identifier.type instanceof FunctionType && !this.functionDefinitions.has(node.identifier.name)) {
       const ft = node.identifier.type;
+      // Internal pointers dispatch via `<functionId> OP_INVOKE`; external pointers (address + selector) are a
+      // cross-contract call - a different mechanism not yet wired, so reject rather than mis-invoke locally.
+      if (ft.isExternal) throw new ExternalFunctionPointerError(node);
       node.parameters = this.coerceHexArgs(node.parameters, ft.parameterTypes);
       expectParameters(node, node.parameters.map((p) => p.type!), ft.parameterTypes);
       node.type = ft.returnTypes.length === 1 ? ft.returnTypes[0]
@@ -2401,8 +2405,9 @@ function isValidStateType(type: Type, seen: Set<string> = new Set()): boolean {
   if (type === PrimitiveType.PUBKEY) return true;
   if (type === PrimitiveType.SIG) return true;
   if (type === PrimitiveType.DATASIG) return true;
-  // Function pointers store as their integer functionId (immutable per covenant bytecode).
-  if (type instanceof FunctionType) return true;
+  // Internal function pointers store as their integer functionId (immutable per covenant bytecode).
+  // External pointers are (address, selector), not a stable functionId - not a valid state type.
+  if (type instanceof FunctionType) return !type.isExternal;
   if (type instanceof IntType) return true;
   if (type instanceof FixedType) return true;
   if (type instanceof BytesType) return true;

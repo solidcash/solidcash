@@ -1,11 +1,11 @@
-import { IntType, BytesType, AddressType, PrimitiveType, ValueType, Type, MappingType } from '@solidcash/utils';
+import { IntType, BytesType, AddressType, PrimitiveType, ValueType, Type, MappingType, hash256 } from '@solidcash/utils';
 import AstTraversal from '../ast/AstTraversal.js';
 import {
   Node, StatementNode, ExpressionNode, AssemblyStatementNode, BlockNode, VariableDefinitionNode,
   AssignNode, RequireNode, BranchNode, WhileNode, BreakNode, ContinueNode, BinaryOpNode, UnaryOpNode,
   CastNode, IdentifierNode, IntLiteralNode, BoolLiteralNode, ParameterNode, FunctionDefinitionNode,
   StateAssignNode, StateAccessNode, StateVariableNode, ContractNode, BytesConcatNode, FunctionCallNode,
-  SliceNode, CollectionNode, MappingAccessNode, MappingAssignNode,
+  SliceNode, CollectionNode, MappingAccessNode, MappingAssignNode, HexLiteralNode,
 } from '../ast/AST.js';
 import { BinaryOperator, UnaryOperator } from '../ast/Operator.js';
 import {
@@ -29,11 +29,17 @@ let currentParams: ParameterNode[] = [];
 // Declared type of every in-scope param + local of the enclosing function (name -> Type). A UDVT-typed var is
 // a raw word inside assembly, so it is unwrapped when read and the assembled word is re-wrapped when written.
 let currentVars = new Map<string, Type>();
+// Constant hex-literal-initialized locals (`bytes memory b = hex"..."`), so Yul `create(0, add(b,0x20), n)` can
+// resolve b to a compile-time bytecode blob and derive the deployed contract's p2sh32 address.
+let currentVarValues = new Map<string, Uint8Array>();
 
 // Record every local declaration's declared type (named returns are already locals here, after
 // NamedReturnTransformation). Shadowing is rare; the last write wins, which is fine for assembly lowering.
 function collectVarTypes(node: Node, out: Map<string, Type>): void {
-  if (node instanceof VariableDefinitionNode) out.set(node.name, node.type);
+  if (node instanceof VariableDefinitionNode) {
+    out.set(node.name, node.type);
+    if (node.expression instanceof HexLiteralNode) currentVarValues.set(node.name, node.expression.value);
+  }
   for (const key of Object.keys(node)) {
     const val = (node as any)[key];
     if (val instanceof Node) collectVarTypes(val, out);
@@ -236,6 +242,19 @@ function isIntLiteral(e: YulExpressionNode): e is YulLiteralNode {
   return e instanceof YulLiteralNode && (e.kind === YulLiteralKind.NUMBER || e.kind === YulLiteralKind.HEX);
 }
 
+// Resolve a Yul `create` offset operand to a compile-time bytecode blob: `add(<hexLocal>, 0x20)` (EVM skips the
+// bytes length word) or a bare `<hexLocal>` -> the local's hex-literal bytes. undefined if not a constant local.
+function resolveConstantBytecode(offset: YulExpressionNode): Uint8Array | undefined {
+  let base: string | undefined;
+  if (offset instanceof YulFunctionCallNode && offset.name === 'add' && offset.args.length === 2
+    && offset.args[0] instanceof YulPathNode && isIntLiteral(offset.args[1]) && BigInt(offset.args[1].raw) === 0x20n) {
+    base = offset.args[0].base;
+  } else if (offset instanceof YulPathNode) {
+    base = offset.base;
+  }
+  return base ? currentVarValues.get(base) : undefined;
+}
+
 // Cast a boolean expression to a uint256 0/1 word (so Yul comparisons stay usable in any position).
 function boolToWord(boolExpr: ExpressionNode, src: { location?: Node['location'] }): ExpressionNode {
   return loc(new CastNode(UINT256, boolExpr, false), src);
@@ -314,6 +333,20 @@ function lowerCall(call: YulFunctionCallNode): ExpressionNode {
   }
   if (name === 'iszero' && args.length === 1) {
     return boolToWord(loc(new BinaryOpNode(lowerValue(args[0]), BinaryOperator.EQ, intLit(0n, call)), call), call);
+  }
+  // create(value, offset, size): deploy the bytecode at [offset, offset+size). Only a COMPILE-TIME-CONSTANT
+  // bytecode is derivable on BCH: treat the blob as the contract's redeem script and return its p2sh32 address
+  // (`0xaa20 || hash256(blob) || 0x87`), computed here. Value must be 0 (a funded deploy needs an output, not
+  // lowered here); runtime-constructed bytecode stays unlowerable and hits the inline-assembly diagnostic.
+  if (name === 'create' && args.length === 3) {
+    const blob = resolveConstantBytecode(args[1]);
+    if (blob && isIntLiteral(args[0]) && BigInt(args[0].raw) === 0n) {
+      const p2sh32 = Uint8Array.from([0xaa, 0x20, ...hash256(blob), 0x87]);
+      const lit = new HexLiteralNode(p2sh32);
+      lit.type = new AddressType();
+      return loc(lit, call);
+    }
+    throw new YulNotLowerable();
   }
   // EVM calldata = selector(4) ++ abi-encoded args. calldataload(4+32k) is the k-th param's word;
   // calldatasize is 4 + 32*argCount. See docs/yul-inline-assembly.md "Calldata model".
@@ -542,11 +575,13 @@ export default class LowerInlineAssembly extends AstTraversal {
   visitFunctionDefinition(node: FunctionDefinitionNode): Node {
     currentParams = node.parameters;
     currentVars = new Map();
+    currentVarValues = new Map();
     for (const p of node.parameters) currentVars.set(p.name, p.type);
     collectVarTypes(node.body, currentVars);
     const result = super.visitFunctionDefinition(node);
     currentParams = [];
     currentVars = new Map();
+    currentVarValues = new Map();
     return result;
   }
 

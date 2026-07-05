@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
-import { hexToBin } from '@bitauth/libauth';
-import { bytecodeToAsm } from '@solidcash/utils';
+import { hexToBin, binToHex } from '@bitauth/libauth';
+import { bytecodeToAsm, hash256 } from '@solidcash/utils';
 import { compileString } from '../src/index.js';
 
 // Compiler features surfaced by porting Solidity (Sablier) to SolidCash.
@@ -2419,5 +2419,26 @@ describe('public address state-var auto-getter (external-callable)', () => {
     const abi = compileString('contract C { enum S { A, B } S public status; int n; function f() public { this.n = 1; } }',
       { solidityImportCompat: true }).abi;
     expect(abi.some((f) => f.name === 'status')).toBe(false);
+  });
+});
+
+// Yul `create(0, add(b, 0x20), n)` where `b` is a compile-time hex-literal `bytes` local is NOT fundamental: the
+// blob is the contract's redeem script, so the deployed p2sh32 address (0xaa20 || hash256(blob) || 0x87) is
+// derivable at compile time. Runtime-constructed bytecode stays unlowerable (hits the assembly diagnostic).
+describe('Yul create with a constant hex bytecode (compile-time p2sh32 deploy)', () => {
+  const factory = (body: string): string => 'contract F { event Log(address a); function deploy() external { '
+    + 'bytes memory bytecode = hex"6960ff60005260206000f3600052600a6016f3"; address addr; ' + body
+    + ' require(addr != address(0)); emit Log(addr); } }';
+  it('lowers create(0, add(bytecode, 0x20), size) to the derived p2sh32 address', () => {
+    const a = compileString(factory('assembly { addr := create(0, add(bytecode, 0x20), 0x13) }'),
+      { solidityImportCompat: true });
+    const blob = hexToBin('6960ff60005260206000f3600052600a6016f3');
+    const p2sh32 = binToHex(Uint8Array.from([0xaa, 0x20, ...hash256(blob), 0x87]));
+    expect(a.bytecode.includes(p2sh32)).toBe(true);
+  });
+  it('still rejects runtime-constructed bytecode (create on a parameter) as unlowerable', () => {
+    expect(() => compileString('contract F { function deploy(bytes memory code) external returns (address addr) {'
+      + ' assembly { addr := create(0, add(code, 0x20), mload(code)) } } }', { solidityImportCompat: true }))
+      .toThrow(/no BCH|assembly|create/i);
   });
 });

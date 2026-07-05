@@ -2487,3 +2487,29 @@ describe('type(X).creationCode constructor-args warning', () => {
     expect(w.length).toBe(0);
   });
 });
+
+// EIP-1167 minimal-proxy `create(0, clone, 0x37)` where `clone := mload(0x40)` is a free-memory buffer built by
+// mstore (const prefix, runtime address, const suffix) is NOT fundamental: reconstruct the blob and derive its
+// p2sh32 address at runtime (0xaa20 || hash256(prefix||target||suffix) || 0x87).
+describe('Yul create over a free-memory buffer (EIP-1167 minimal proxy)', () => {
+  const clone = 'contract C { function clone(address target) external returns (address result) {'
+    + ' bytes20 tb = bytes20(target); assembly {'
+    + ' let ptr := mload(0x40)'
+    + ' mstore(ptr, 0x3d602d80600a3d3981f3363d3d373d3d3d363d73000000000000000000000000)'
+    + ' mstore(add(ptr, 0x14), tb)'
+    + ' mstore(add(ptr, 0x28), 0x5af43d82803e903d91602b57fd5bf30000000000000000000000000000000000)'
+    + ' result := create(0, ptr, 0x37) } } }';
+  it('compiles and derives the p2sh32 from the reconstructed clone bytecode', () => {
+    const a = compileString(clone, { solidityImportCompat: true });
+    expect(a.contractName).toBe('C');
+    // buffer = prefix(20) || target(20) || suffix(15), hashed, wrapped as p2sh32
+    expect(a.bytecode).toContain('3d602d80600a3d3981f3363d3d373d3d3d363d73'); // 20-byte prefix slice
+    expect(a.bytecode).toContain('5af43d82803e903d91602b57fd5bf3'); // 15-byte suffix slice
+    expect(a.bytecode).toContain('OP_HASH256');
+    expect(a.bytecode).toContain('OP_CAT');
+  });
+  it('still rejects a non-zero-value buffer create (funded deploy needs an output)', () => {
+    expect(() => compileString(clone.replace('create(0, ptr, 0x37)', 'create(1, ptr, 0x37)'),
+      { solidityImportCompat: true })).toThrow(/no BCH|assembly|create/i);
+  });
+});

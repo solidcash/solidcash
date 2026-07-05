@@ -33,6 +33,11 @@ let currentVars = new Map<string, Type>();
 // resolve b to a compile-time bytecode blob and derive the deployed contract's p2sh32 address.
 let currentVarValues = new Map<string, Uint8Array>();
 
+// Free-memory-pointer byte buffers (`let clone := mload(0x40)`) and their ordered mstore writes, so an EIP-1167
+// minimal-proxy style `create(0, clone, size)` can reconstruct the blob (const||runtime||const) and derive the
+// deployed p2sh32 address at runtime. Each write records a byte offset + the mstore'd word.
+let bufferWrites = new Map<string, Array<{ off: bigint; value: YulExpressionNode }>>();
+
 // Record every local declaration's declared type (named returns are already locals here, after
 // NamedReturnTransformation). Shadowing is rare; the last write wins, which is fine for assembly lowering.
 function collectVarTypes(node: Node, out: Map<string, Type>): void {
@@ -255,6 +260,55 @@ function resolveConstantBytecode(offset: YulExpressionNode): Uint8Array | undefi
   return base ? currentVarValues.get(base) : undefined;
 }
 
+// `mload(0x40)` reads Solidity's free-memory pointer - the start of a fresh scratch buffer.
+function isFreeMemPtr(v: YulExpressionNode | undefined): boolean {
+  return v instanceof YulFunctionCallNode && v.name === 'mload' && v.args.length === 1
+    && isIntLiteral(v.args[0]) && BigInt(v.args[0].raw) === 0x40n;
+}
+
+// Resolve a Yul memory pointer to a (buffer var, byte offset): a bare buffer var (offset 0) or `add(buf, const)`.
+function resolveBufferPtr(ptr: YulExpressionNode): { buffer: string; off: bigint } | undefined {
+  if (ptr instanceof YulPathNode && ptr.members.length === 0 && bufferWrites.has(ptr.base)) {
+    return { buffer: ptr.base, off: 0n };
+  }
+  if (ptr instanceof YulFunctionCallNode && ptr.name === 'add' && ptr.args.length === 2
+    && ptr.args[0] instanceof YulPathNode && bufferWrites.has(ptr.args[0].base) && isIntLiteral(ptr.args[1])) {
+    return { buffer: ptr.args[0].base, off: BigInt(ptr.args[1].raw) };
+  }
+  return undefined;
+}
+
+// The top `width` (<=32) bytes of an mstore'd 32-byte word: a constant renders big-endian and slices; a runtime
+// bytesN local is left-aligned so its top N bytes ARE the value (only the exact width===N case is lowered).
+function sliceWord(value: YulExpressionNode, width: number, src: { location?: Node['location'] }): ExpressionNode {
+  if (isIntLiteral(value)) {
+    let w = BigInt(value.raw);
+    const full = new Uint8Array(32);
+    for (let i = 31; i >= 0; i -= 1) { full[i] = Number(w & 0xffn); w >>= 8n; }
+    return loc(new HexLiteralNode(full.slice(0, width)), src);
+  }
+  if (value instanceof YulPathNode && value.members.length === 0) {
+    const vt = currentVars.get(value.base);
+    if (vt instanceof BytesType && vt.bound === width) return loc(new IdentifierNode(value.base), src);
+  }
+  throw new YulNotLowerable();
+}
+
+// Reconstruct a byte buffer [0, size) from its ordered mstore writes: strictly-increasing contiguous offsets
+// from 0, each write contributing bytes [off, nextOff) of its word. Returns the concatenated bytes expression.
+function reconstructBuffer(buffer: string, size: bigint, src: { location?: Node['location'] }): ExpressionNode {
+  const writes = [...(bufferWrites.get(buffer) ?? [])].sort((a, b) => Number(a.off - b.off));
+  if (writes.length === 0 || writes[0].off !== 0n) throw new YulNotLowerable();
+  const parts: ExpressionNode[] = [];
+  for (let i = 0; i < writes.length; i += 1) {
+    const start = writes[i].off;
+    const next = i + 1 < writes.length ? writes[i + 1].off : size;
+    if (next <= start || next - start > 32n) throw new YulNotLowerable(); // gap / overlap-past-word / non-contiguous
+    parts.push(sliceWord(writes[i].value, Number(next - start), src));
+  }
+  return loc(new BytesConcatNode(parts), src);
+}
+
 // Cast a boolean expression to a uint256 0/1 word (so Yul comparisons stay usable in any position).
 function boolToWord(boolExpr: ExpressionNode, src: { location?: Node['location'] }): ExpressionNode {
   return loc(new CastNode(UINT256, boolExpr, false), src);
@@ -346,6 +400,18 @@ function lowerCall(call: YulFunctionCallNode): ExpressionNode {
       lit.type = new AddressType();
       return loc(lit, call);
     }
+    // Runtime free-memory buffer (EIP-1167 clone: const||address||const built via mstore) -> derive the p2sh32
+    // address on-stack: `0xaa20 || hash256(buffer) || 0x87`. Value must be 0 (a funded deploy needs an output).
+    const bufPtr = resolveBufferPtr(args[1]);
+    if (bufPtr && bufPtr.off === 0n && isIntLiteral(args[0]) && BigInt(args[0].raw) === 0n && isIntLiteral(args[2])) {
+      const buffer = reconstructBuffer(bufPtr.buffer, BigInt(args[2].raw), call);
+      const hashed = loc(new FunctionCallNode(loc(new IdentifierNode('hash256'), call), [buffer]), call);
+      const p2sh = loc(new BytesConcatNode([
+        loc(new HexLiteralNode(Uint8Array.from([0xaa, 0x20])), call), hashed,
+        loc(new HexLiteralNode(Uint8Array.from([0x87])), call),
+      ]), call);
+      return loc(new CastNode(new AddressType(), p2sh, false), call);
+    }
     throw new YulNotLowerable();
   }
   // EVM calldata = selector(4) ++ abi-encoded args. calldataload(4+32k) is the k-th param's word;
@@ -434,6 +500,11 @@ function lowerStatement(stmt: YulStatementNode): StatementNode {
 
   if (stmt instanceof YulVariableDeclarationNode) {
     if (stmt.names.length !== 1) throw new YulNotLowerable(); // multi-value `let x, y := f()` (later)
+    // `let buf := mload(0x40)` allocates a fresh free-memory byte buffer; track its mstore writes, emit nothing.
+    if (isFreeMemPtr(stmt.value)) {
+      bufferWrites.set(stmt.names[0], []);
+      return loc(new BlockNode([]), stmt);
+    }
     const expr = stmt.value ? lowerValue(stmt.value) : undefined;
     return loc(new VariableDefinitionNode(UINT256, [], stmt.names[0], expr), stmt);
   }
@@ -497,10 +568,18 @@ function lowerStatement(stmt: YulStatementNode): StatementNode {
           return loc(new AssignNode(loc(new IdentifierNode(local), stmt), lowerValue(e.args[1])), stmt);
         }
       }
-      // mstore(p, v): record the word in the compile-time memory model (no emitted statement).
-      if (e.name === 'mstore' && e.args.length === 2 && isIntLiteral(e.args[0])) {
-        memory.set(BigInt(e.args[0].raw), e.args[1]);
-        return loc(new BlockNode([]), stmt);
+      // mstore(p, v): record the word in a free-memory buffer (`mstore(buf/add(buf,off), v)`) or the
+      // compile-time constant-offset memory model. No emitted statement either way (read at create/keccak time).
+      if (e.name === 'mstore' && e.args.length === 2) {
+        const bufPtr = resolveBufferPtr(e.args[0]);
+        if (bufPtr) {
+          bufferWrites.get(bufPtr.buffer)!.push({ off: bufPtr.off, value: e.args[1] });
+          return loc(new BlockNode([]), stmt);
+        }
+        if (isIntLiteral(e.args[0])) {
+          memory.set(BigInt(e.args[0].raw), e.args[1]);
+          return loc(new BlockNode([]), stmt);
+        }
       }
     }
     throw new YulNotLowerable();
@@ -576,12 +655,14 @@ export default class LowerInlineAssembly extends AstTraversal {
     currentParams = node.parameters;
     currentVars = new Map();
     currentVarValues = new Map();
+    bufferWrites = new Map();
     for (const p of node.parameters) currentVars.set(p.name, p.type);
     collectVarTypes(node.body, currentVars);
     const result = super.visitFunctionDefinition(node);
     currentParams = [];
     currentVars = new Map();
     currentVarValues = new Map();
+    bufferWrites = new Map();
     return result;
   }
 

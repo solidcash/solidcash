@@ -61,3 +61,17 @@ Total so far: **1936 → 2857** (+921). Update this table whenever the number mo
   receivers, Yul, nested-array state vars (`uint[][] a; a = d`), ABIEncoderV2 memory structs, `new C()` outside
   a `deploy` function (correct-by-design on UTXO). Enum-key mappings compile but need an SDK-side encoder for
   the int-backed key before they run.
+
+## 2857 -> 2874 (+17): qualified event emit from a library or sibling contract
+`emit L.e(...)` / `emit C.E(...)` where the event is declared in a same-file library or sibling contract now
+resolves and compiles (was UndefinedEvent, the top-of-list bucket). The event's NFT-commitment encoding depends
+only on name+params, not the declaring scope, so emitting a foreign event is sound.
+- AstBuilder: carry library event defs into the multi-contract SourceFileNode (the library-only path already
+  did; the multi-contract path passed `[]`, dropping them).
+- SymbolTable: register sibling/imported-contract events; emitting ANY event (incl. foreign) forces the contract
+  stateful (the commitment rides a state NFT). Redefinition check is now within-contract only (a same-sig event
+  in another scope is not a redefinition).
+- codegen: build the block layout when the contract emits, not only when it declares events (two gates).
+- Artifact: list emitted sibling-contract events (Solidity ABI parity), deduped by signature.
++17 (not just the 16 UndefinedEvent files: the library-event drop also broke files using library events elsewhere).
+Over-accept 635 -> 636 (+1, benign: a cross-scope event redefinition solc rejects but we now accept - diagnostic).

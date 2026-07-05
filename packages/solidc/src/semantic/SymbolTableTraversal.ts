@@ -5456,6 +5456,19 @@ export default class SymbolTableTraversal extends AstTraversal {
           node, typeText, node.property, ['name', 'creationCode', 'runtimeCode'],
         );
       }
+      // On BCH the deployed redeem script is `pushdata(ctorArgs) || bodyBytecode` (constructor args PREPENDED),
+      // whereas Solidity's `abi.encodePacked(creationCode, abi.encode(args))` APPENDS them. So for a contract
+      // with constructor parameters, a `create2` over that appended bytecode will NOT reproduce the address of
+      // a `new X(args)` deploy. Warn once so ported factory code does not silently compute a wrong address.
+      const ctorParamCount = contract.constructorDef
+        ? contract.constructorDef.parameters.length : contract.parameters.length;
+      if ((node.property === 'creationCode' || node.property === 'runtimeCode') && ctorParamCount > 0) {
+        const cloc = node.location ? ` at line ${node.location.start.line}` : '';
+        console.log(`Warning: type(${contract.name}).${node.property}${cloc} does not include constructor `
+          + 'arguments. On BCH the deploy redeem script prepends (not appends) constructor args, so '
+          + `create2 over abi.encodePacked(${node.property}, abi.encode(args)) will not match a `
+          + `new ${contract.name}(args) address; use new ${contract.name}(args) for a correct deterministic address.`);
+      }
       return node;
     }
 

@@ -2462,3 +2462,28 @@ describe('type(C).creationCode inside an extracted function body', () => {
     expect(a.contractName).toBe('P');
   });
 });
+
+// `type(X).creationCode` on BCH is X's redeem script WITHOUT constructor args (args are prepended at deploy).
+// The Solidity idiom appends them (`abi.encodePacked(creationCode, abi.encode(args))`), which will not match a
+// `new X(args)` address on BCH - so warn for a contract that HAS constructor parameters (only).
+describe('type(X).creationCode constructor-args warning', () => {
+  const child = (ctor: string): string => `contract Child { uint x; ${ctor} function f() public view returns (uint) { return x; } }`;
+  const use = 'contract P { function g(uint v) external pure returns (bytes memory) {'
+    + ' return abi.encodePacked(type(Child).creationCode, abi.encode(v)); } }';
+  it('warns when the child has constructor parameters', () => {
+    const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    compileString(child('constructor(uint _x) { x = _x; }') + use, { solidityImportCompat: true });
+    const w = spy.mock.calls.filter((c) => String(c[0]).includes('does not include constructor'));
+    spy.mockRestore();
+    expect(w.length).toBe(1);
+  });
+  it('does not warn for a child with no constructor parameters', () => {
+    const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    compileString('contract Child { int x; function f() public { this.x = 1; } }'
+      + ' contract P { function g() external pure returns (bytes memory) { return type(Child).creationCode; } }',
+    { solidityImportCompat: true });
+    const w = spy.mock.calls.filter((c) => String(c[0]).includes('does not include constructor'));
+    spy.mockRestore();
+    expect(w.length).toBe(0);
+  });
+});

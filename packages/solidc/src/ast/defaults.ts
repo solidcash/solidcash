@@ -1,4 +1,6 @@
-import { AddressType, ArrayType, BytesType, EnumType, PrimitiveType, StructType, Type } from '@solidcash/utils';
+import {
+  AddressType, ArrayType, BytesType, EnumType, PrimitiveType, StructType, Type, ValueType,
+} from '@solidcash/utils';
 import {
   BoolLiteralNode,
   CastNode,
@@ -39,6 +41,13 @@ export function createDefaultValueExpression(type: Type, location: Location): Ex
     const zero = new IntLiteralNode(0n);
     zero.location = location;
     node = new CastNode(type, zero, false);
+  } else if (type instanceof ValueType) {
+    // A user-defined value type wraps its underlying type; default to the underlying default wrapped in the
+    // UDVT (an identity cast). The inner value is typed as the exact underlying type so the wrap cast (which
+    // requires source == underlying) type-checks, and a fall-through `return <default>` compiles.
+    const inner = createDefaultValueExpression(type.underlyingType, location);
+    inner.type = type.underlyingType;
+    node = new CastNode(type, inner, false);
   } else {
     // int, bytes (unbounded), and all other numeric types default to 0
     node = new IntLiteralNode(0n);

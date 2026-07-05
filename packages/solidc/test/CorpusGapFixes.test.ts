@@ -321,3 +321,23 @@ describe('EVM storage-layout specifier tolerated (contract C layout at expr)', (
     expect(() => compileString('contract C layout at 42 { function f() {} }', {})).toThrow();
   });
 });
+
+describe('user-defined value type default (unnamed UDVT return fall-through)', () => {
+  // A function with a UDVT return type and no explicit return defaults to the wrapped underlying default
+  // (`T.wrap(<underlying default>)`), so it compiles - byte-identical to the named-return default.
+  it('defaults an unnamed UDVT return (over int / uint / address / bytes)', () => {
+    for (const u of ['int8', 'uint256', 'address', 'bytes32']) {
+      const art = compileString(`contract C() { type T is ${u}; function f() returns (T) {} }`,
+        { solidityImportCompat: true });
+      expect(art.contractName).toBe('C');
+    }
+  });
+
+  it('matches the named-return default byte-for-byte', () => {
+    const unnamed = compileString('contract C() { type I8 is int8; function f() returns (I8) {} }',
+      { solidityImportCompat: true }).bytecode;
+    const named = compileString('contract C() { type I8 is int8; function f() returns (I8 r) {} }',
+      { solidityImportCompat: true }).bytecode;
+    expect(unnamed).toBe(named);
+  });
+});

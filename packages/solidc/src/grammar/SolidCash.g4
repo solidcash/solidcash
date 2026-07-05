@@ -682,6 +682,7 @@ typeListItem
 
 expression
     : '(' Identifier op=('=' | '+=' | '-=' | '*=' | '/=' | '%=' | '&=' | '|=' | '^=' | '<<=' | '>>=') expression ')' # AssignmentExpression
+    | '(' 'new' Identifier ')' callOptions expressionList # InstantiationWithOptions
     | '(' expression ')' # Parenthesised
     | '(' expression (',' expression)+ ')' # TupleExpression
     | typeCast '(' castable=expression ','? ')' # Cast

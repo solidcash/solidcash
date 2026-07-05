@@ -1996,6 +1996,18 @@ export default class AstBuilder
     return instantiation;
   }
 
+  // Parenthesized instantiation with options `(new C){value:.., salt:..}(args)` (Solidity's create/create2 form).
+  // Same InstantiationNode as `new C{opts}(args)`; the parens are required by Solidity when options are present.
+  visitInstantiationWithOptions(ctx: any): InstantiationNode {
+    const identifier = new IdentifierNode(ctx.Identifier().getText());
+    identifier.location = Location.fromToken(ctx.Identifier().symbol);
+    const parameters = ctx.expressionList().expression_list().map((e: ExpressionContext) => this.visit(e));
+    const instantiation = new InstantiationNode(identifier, parameters);
+    instantiation.location = Location.fromCtx(ctx);
+    instantiation.callOptions = this.parseCallOptions(ctx.callOptions());
+    return instantiation;
+  }
+
   visitNewArray(ctx: any): NewArrayNode {
     // `new T[]...[](n)` allocates the OUTER dynamic array; each extra `[]` makes the element itself an array.
     // e.g. `new uint256[][](2)` -> a 2-element array whose element type is `uint256[]`.

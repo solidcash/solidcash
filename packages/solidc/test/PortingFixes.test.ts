@@ -1979,6 +1979,33 @@ describe('new C(args) with a Solidity constructor', () => {
   });
 });
 
+// Solidity wraps `new C` in parens when passing create/create2 options: `(new C){value:.., salt:..}(args)`.
+// Same InstantiationNode as the already-supported `new C{opts}(args)`. `{value}` funds the deploy; `{salt}` is
+// inert on BCH (contract addresses are content-addressed P2SH32, so create2 determinism is native).
+describe('parenthesized instantiation with options ((new C){value/salt}(args))', () => {
+  const base = 'contract Car { address o; constructor(address _o) payable { o = _o; } }';
+  const cc = (body: string): string => compileString(
+    `${base} contract F { Car[] cars; function c(address o, bytes32 s) public payable { ${body} cars.push(car); } }`,
+    { solidityImportCompat: true },
+  ).contractName;
+  it('accepts {value:} (create with value)', () => {
+    expect(cc('Car car = (new Car){value: msg.value}(o);')).toBe('F');
+  });
+  it('accepts {salt:} (create2)', () => {
+    expect(cc('Car car = (new Car){salt: s}(o);')).toBe('F');
+  });
+  it('accepts {value:, salt:} together', () => {
+    expect(cc('Car car = (new Car){value: msg.value, salt: s}(o);')).toBe('F');
+  });
+  it('matches the non-parenthesized `new C{opts}(args)` form byte-for-byte', () => {
+    const paren = compileString(`${base} contract F { Car[] cars; function c(address o) public payable {`
+      + ' Car car = (new Car){value: msg.value}(o); cars.push(car); } }', { solidityImportCompat: true });
+    const bare = compileString(`${base} contract F { Car[] cars; function c(address o) public payable {`
+      + ' Car car = new Car{value: msg.value}(o); cars.push(car); } }', { solidityImportCompat: true });
+    expect(paren.bytecode).toBe(bare.bytecode);
+  });
+});
+
 // A catch clause's error param (`catch Error(string memory reason)` / `catch (bytes memory reason)`) must be
 // in scope for the catch block's statements (`emit Log(reason)`); it was registered after the block visited.
 describe('try/catch clause parameter scope', () => {

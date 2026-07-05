@@ -334,14 +334,6 @@ emitStatement
     | 'emit' Identifier ('.' Identifier)? expressionList ';'
     ;
 
-// An ordered lvalue suffix: an index `[expr]` or a struct/pointer member. The chain preserves interleaving so
-// alternating shapes (`m[i].arr[j]`, `providers[k].data[k2].valid`) resolve to the right nested target.
-lvPart : '[' expression ']' | lvMember ;
-
-// A struct/pointer member in an lvalue: `.field` or the `.value` soft-keyword (OZ StorageSlot's `x.value`,
-// checkpoint `.value`, etc.). `.value` lexes as one DotValue token, which `'.' Identifier` cannot match.
-lvMember : '.' Identifier | '.value' ;
-
 variableDefinition
     : typeName modifier* anyIdentifier ('=' expression)? ';'
     | arrayType modifier* anyIdentifier ('=' expression)? ';'

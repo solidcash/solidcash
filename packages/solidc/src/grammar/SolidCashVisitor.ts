@@ -68,8 +68,6 @@ import { PrefixIncDecStatementContext } from "./SolidCashParser.js";
 import { ReturnStatementContext } from "./SolidCashParser.js";
 import { SelfdestructStatementContext } from "./SolidCashParser.js";
 import { EmitStatementContext } from "./SolidCashParser.js";
-import { LvPartContext } from "./SolidCashParser.js";
-import { LvMemberContext } from "./SolidCashParser.js";
 import { VariableDefinitionContext } from "./SolidCashParser.js";
 import { TupleAssignmentContext } from "./SolidCashParser.js";
 import { TupleSlotContext } from "./SolidCashParser.js";
@@ -594,18 +592,6 @@ export default class SolidCashVisitor<Result> extends ParseTreeVisitor<Result> {
 	 * @return the visitor result
 	 */
 	visitEmitStatement?: (ctx: EmitStatementContext) => Result;
-	/**
-	 * Visit a parse tree produced by `SolidCashParser.lvPart`.
-	 * @param ctx the parse tree
-	 * @return the visitor result
-	 */
-	visitLvPart?: (ctx: LvPartContext) => Result;
-	/**
-	 * Visit a parse tree produced by `SolidCashParser.lvMember`.
-	 * @param ctx the parse tree
-	 * @return the visitor result
-	 */
-	visitLvMember?: (ctx: LvMemberContext) => Result;
 	/**
 	 * Visit a parse tree produced by `SolidCashParser.variableDefinition`.
 	 * @param ctx the parse tree

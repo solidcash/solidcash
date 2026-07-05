@@ -317,6 +317,9 @@ export default class AstBuilder
   private constantIntValues: Map<string, number> = new Map();
   // Counter for synthesized temp locals used to desugar nested lvalue writes (`s.arr[i] = v`, `m[i].arr[j] = v`).
   private nestedLvalueCounter = 0;
+  // State mapping name -> its resolved value struct type, for desugaring `m[i].arr[j] = v` (mapping -> struct ->
+  // array-field element). Populated per contract from the mapping collections; empty for non-struct mappings.
+  private stateMappingValueStruct: Map<string, StructType> = new Map();
   // True while visiting a library's own state-variable declarations. A `public constant` in a library is left
   // as-is (it feeds the library's shared-state/delegate machinery); only CONTRACT-level `public constant` is
   // rerouted to a baked constant (see visitStateVariableDeclaration).
@@ -707,6 +710,19 @@ export default class AstBuilder
       }
     }
     stateVariables = expandedStateVars;
+
+    // Record state mappings whose value is a struct, so `m[i].arr[j] = v` can desugar (read the struct into a
+    // temp, write the array-field element, write it back). Covers plain `mapping(K => S)` and the flattened
+    // mapping-in-struct fields `X__field` (their value structs). Resolves a placeholder (defined-later) value.
+    this.stateMappingValueStruct = new Map();
+    for (const col of collections) {
+      if (!(col.type instanceof MappingType)) continue;
+      const vt = col.type.valueType;
+      const st = vt instanceof StructType
+        ? vt
+        : (vt instanceof AddressType && vt.interfaceName ? this.structMap.get(vt.interfaceName) : undefined);
+      if (st) this.stateMappingValueStruct.set(col.name, st);
+    }
 
     // `transient` state vars (EIP-1153) have no UTXO analog (BCH has no transaction-scoped contract storage,
     // and one spend = one function execution with no cross-call). They lower to a per-function zero-init local,
@@ -2437,16 +2453,20 @@ export default class AstBuilder
     const baseIdent = ctx.Identifier();
     const rawName = baseIdent.getText();
     const nameLoc = Location.fromToken(baseIdent.symbol);
-    // lvMember is `.field` or the `.value` soft-keyword token; extract the field name for each.
-    const members = ctx.lvMember_list().map((m) => (m.Identifier() ? m.Identifier().getText() : 'value'));
+    // Each lvPart is an index `[expr]` (has expression) or a member `.field`/`.value` (has lvMember). Keep the
+    // flat per-kind lists in source order (existing branches read these) plus the interleaved `parts` (alternating
+    // chains like `m[i].arr[j]` need the order). The value expression is the single direct-child expression.
+    const parts = ctx.lvPart_list();
+    const members = parts.filter((p) => p.lvMember()).map((p) => {
+      const lm = p.lvMember();
+      return lm.Identifier() ? lm.Identifier().getText() : 'value';
+    });
+    const keyCtxs = parts.filter((p) => p.expression()).map((p) => p.expression());
     const hasMember = members.length > 0;
     const fieldName = hasMember ? members[0] : undefined;
     const op = ctx._op.text;
-    // `lvalue++` / `lvalue--`: no RHS expression, so every parsed expression is an index key (not a value).
     const isIncDec = op === '++' || op === '--';
-    const exprCtxs = ctx.expression_list();
-    const keyCtxs = isIncDec ? exprCtxs : exprCtxs.slice(0, -1);
-    const valueCtx = isIncDec ? undefined : exprCtxs[exprCtxs.length - 1];
+    const valueCtx = isIncDec ? undefined : ctx.expression();
     const loc = Location.fromCtx(ctx);
 
     // Mapping-bearing struct field write: `<var>.<field>[k...] op= v` -> write the flattened state collection
@@ -2504,31 +2524,39 @@ export default class AstBuilder
       }
     }
 
-    // Local struct ARRAY-field element write `s.arr[i] op= v`: struct fields have no in-place element write, so
-    // read the array field into a fresh temp local, write the element, then rebuild the struct (`s.arr = temp`).
-    // Returned as a block so flattenStatements splices the three statements at this scope.
+    // Local struct ARRAY-field element write `s.arr[i] op= v` (member then index): struct fields have no in-place
+    // element write, so read-modify-rebuild via buildLocalStructArrayFieldWrite.
     if (!isThis && !isIncDec && fieldName && members.length === 1 && keyCtxs.length === 1
-      && this.localStructTypes.has(rawName)) {
+      && parts.length === 2 && parts[0].lvMember() && this.localStructTypes.has(rawName)) {
       const field = this.localStructTypes.get(rawName)!.fields.find((f) => f.name === fieldName);
+      if (field && field.type instanceof ArrayType) {
+        return this.buildLocalStructArrayFieldWrite(rawName, fieldName, field.type,
+          () => this.visit(keyCtxs[0]) as ExpressionNode, op, valueCtx, loc);
+      }
+    }
+
+    // State mapping -> struct -> array-field element write `m[i].arr[j] op= v` (index, member, index): the mapping
+    // value struct has no in-place element write, so read the entry struct into a temp, write the array element
+    // (the local-struct desugar above, on the temp), and write the struct back: `S t = m[i]; t.arr[j] = v; m[i] = t`.
+    if (!isThis && !isIncDec && fieldName && members.length === 1 && keyCtxs.length === 2
+      && parts.length === 3 && parts[0].expression() && parts[1].lvMember() && parts[2].expression()
+      && this.stateMappingValueStruct.has(rawName)) {
+      const structT = this.stateMappingValueStruct.get(rawName)!;
+      const field = structT.fields.find((f) => f.name === fieldName);
       if (field && field.type instanceof ArrayType) {
         const idAt = (n: string): IdentifierNode => { const i = new IdentifierNode(n); i.location = loc; return i; };
         const tmpName = `__nlv_${this.nestedLvalueCounter++}`;
-        const sField = new FieldAccessNode(idAt(rawName), fieldName);
-        sField.location = loc;
-        const decl = new VariableDefinitionNode(field.type, [], tmpName, sField);
+        const mapKey = (): ExpressionNode => this.visit(keyCtxs[0]) as ExpressionNode;
+        const mapRead = new MappingAccessNode(rawName, [mapKey()]);
+        mapRead.location = nameLoc;
+        const decl = new VariableDefinitionNode(structT, [], tmpName, mapRead);
         decl.location = loc;
-        const value = op === '='
-          ? this.visit(valueCtx!) as ExpressionNode
-          : this.compoundRhs((() => {
-            const r = new ArrayAccessNode(idAt(tmpName), this.visit(keyCtxs[0]) as ExpressionNode);
-            r.location = loc;
-            return r;
-          })(), op, valueCtx, loc);
-        const elemAssign = new ArrayAssignNode(tmpName, this.visit(keyCtxs[0]) as ExpressionNode, value);
-        elemAssign.location = loc;
-        const rebuild = this.buildStructFieldRebuild(rawName, nameLoc, [fieldName], false, loc,
-          () => idAt(tmpName))!;
-        const block = new BlockNode([decl, elemAssign, rebuild]);
+        this.localStructTypes.set(tmpName, structT); // so the array-field write helper resolves the temp's type
+        const inner = this.buildLocalStructArrayFieldWrite(tmpName, fieldName, field.type,
+          () => this.visit(keyCtxs[1]) as ExpressionNode, op, valueCtx, loc);
+        const back = new MappingAssignNode(rawName, [mapKey()], idAt(tmpName));
+        back.location = loc;
+        const block = new BlockNode([decl, ...(inner.statements ?? []), back]);
         block.location = loc;
         return block;
       }
@@ -2772,6 +2800,34 @@ export default class AstBuilder
       : new AssignNode(baseRead() as IdentifierNode, rebuilt); // local: baseRead() is an IdentifierNode
     assign.location = loc;
     return assign;
+  }
+
+  // Desugar an array-field element write on a LOCAL struct var (`sv.field[idx] op= v`) into a read-modify-rebuild
+  // block: `T tmp = sv.field; tmp[idx] = value; sv.field = tmp;`. `structVarName` must be registered in
+  // localStructTypes. Returned as a block so flattenStatements splices the three statements at the call scope.
+  private buildLocalStructArrayFieldWrite(
+    structVarName: string, fieldName: string, arrayFieldType: Type, indexVisit: () => ExpressionNode,
+    op: string, valueCtx: ExpressionContext | undefined, loc: Location,
+  ): BlockNode {
+    const idAt = (n: string): IdentifierNode => { const i = new IdentifierNode(n); i.location = loc; return i; };
+    const tmpName = `__nlv_${this.nestedLvalueCounter++}`;
+    const sField = new FieldAccessNode(idAt(structVarName), fieldName);
+    sField.location = loc;
+    const decl = new VariableDefinitionNode(arrayFieldType, [], tmpName, sField);
+    decl.location = loc;
+    const value = op === '='
+      ? this.visit(valueCtx!) as ExpressionNode
+      : this.compoundRhs((() => {
+        const r = new ArrayAccessNode(idAt(tmpName), indexVisit());
+        r.location = loc;
+        return r;
+      })(), op, valueCtx, loc);
+    const elemAssign = new ArrayAssignNode(tmpName, indexVisit(), value);
+    elemAssign.location = loc;
+    const rebuild = this.buildStructFieldRebuild(structVarName, loc, [fieldName], false, loc, () => idAt(tmpName))!;
+    const block = new BlockNode([decl, elemAssign, rebuild]);
+    block.location = loc;
+    return block;
   }
 
   visitDeleteState(ctx: DeleteStateContext): DeleteStateNode {

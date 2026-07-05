@@ -71,6 +71,7 @@ import { AddressMethodStatementContext } from "./SolidCashParser.js";
 import { SelfdestructStatementContext } from "./SolidCashParser.js";
 import { EmitStatementContext } from "./SolidCashParser.js";
 import { AssignmentStatementContext } from "./SolidCashParser.js";
+import { LvPartContext } from "./SolidCashParser.js";
 import { LvMemberContext } from "./SolidCashParser.js";
 import { MappingDeleteStatementContext } from "./SolidCashParser.js";
 import { VariableDefinitionContext } from "./SolidCashParser.js";
@@ -88,6 +89,7 @@ import { DeleteStateContext } from "./SolidCashParser.js";
 import { DeleteMappingEntryContext } from "./SolidCashParser.js";
 import { DeleteIndexedContext } from "./SolidCashParser.js";
 import { DeleteMemberEntryContext } from "./SolidCashParser.js";
+import { DeleteMemberContext } from "./SolidCashParser.js";
 import { TimeOpStatementContext } from "./SolidCashParser.js";
 import { RequireStatementContext } from "./SolidCashParser.js";
 import { IfStatementContext } from "./SolidCashParser.js";
@@ -620,6 +622,12 @@ export default class SolidCashVisitor<Result> extends ParseTreeVisitor<Result> {
 	 */
 	visitAssignmentStatement?: (ctx: AssignmentStatementContext) => Result;
 	/**
+	 * Visit a parse tree produced by `SolidCashParser.lvPart`.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	visitLvPart?: (ctx: LvPartContext) => Result;
+	/**
 	 * Visit a parse tree produced by `SolidCashParser.lvMember`.
 	 * @param ctx the parse tree
 	 * @return the visitor result
@@ -726,6 +734,13 @@ export default class SolidCashVisitor<Result> extends ParseTreeVisitor<Result> {
 	 * @return the visitor result
 	 */
 	visitDeleteMemberEntry?: (ctx: DeleteMemberEntryContext) => Result;
+	/**
+	 * Visit a parse tree produced by the `DeleteMember`
+	 * labeled alternative in `SolidCashParser.deleteStatement`.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	visitDeleteMember?: (ctx: DeleteMemberContext) => Result;
 	/**
 	 * Visit a parse tree produced by `SolidCashParser.timeOpStatement`.
 	 * @param ctx the parse tree

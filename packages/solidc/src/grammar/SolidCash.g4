@@ -347,14 +347,15 @@ emitStatement
 // lvalue shape is resolved to the right target (state var, collection, local) in AstBuilder/semantic. Bare
 // scalar `x op= v` stays in assignStatement (which also handles `++`/`--`).
 assignmentStatement
-    : 'this' '.' Identifier (('[' expression ']')+)? lvMember* op=('=' | '+=' | '-=' | '*=' | '/=' | '%=' | '&=' | '|=' | '^=' | '<<=' | '>>=') expression ';'
-    | Identifier ('[' expression ']')+ lvMember* op=('=' | '+=' | '-=' | '*=' | '/=' | '%=' | '&=' | '|=' | '^=' | '<<=' | '>>=') expression ';'
-    | Identifier lvMember+ op=('=' | '+=' | '-=' | '*=' | '/=' | '%=' | '&=' | '|=' | '^=' | '<<=' | '>>=') expression ';'
-    | Identifier lvMember+ ('[' expression ']')+ op=('=' | '+=' | '-=' | '*=' | '/=' | '%=' | '&=' | '|=' | '^=' | '<<=' | '>>=') expression ';'
-    | 'this' '.' Identifier (('[' expression ']')+)? lvMember* op=('++' | '--') ';'
-    | Identifier ('[' expression ']')+ lvMember* op=('++' | '--') ';'
-    | Identifier lvMember+ op=('++' | '--') ';'
+    : 'this' '.' Identifier lvPart* op=('=' | '+=' | '-=' | '*=' | '/=' | '%=' | '&=' | '|=' | '^=' | '<<=' | '>>=') expression ';'
+    | Identifier lvPart+ op=('=' | '+=' | '-=' | '*=' | '/=' | '%=' | '&=' | '|=' | '^=' | '<<=' | '>>=') expression ';'
+    | 'this' '.' Identifier lvPart* op=('++' | '--') ';'
+    | Identifier lvPart+ op=('++' | '--') ';'
     ;
+
+// An ordered lvalue suffix: an index `[expr]` or a struct/pointer member. The chain preserves interleaving so
+// alternating shapes (`m[i].arr[j]`, `providers[k].data[k2].valid`) resolve to the right nested target.
+lvPart : '[' expression ']' | lvMember ;
 
 // A struct/pointer member in an lvalue: `.field` or the `.value` soft-keyword (OZ StorageSlot's `x.value`,
 // checkpoint `.value`, etc.). `.value` lexes as one DotValue token, which `'.' Identifier` cannot match.

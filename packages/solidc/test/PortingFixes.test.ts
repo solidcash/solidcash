@@ -2254,3 +2254,29 @@ describe('nested lvalue write: local struct array-field element (s.arr[i] = v)',
       + ' function f() public pure returns (uint) { S memory s; s.x = 5; return s.x; } }')).toBe('C');
   });
 });
+
+// `m[i].arr[j] = v` (state mapping -> struct value -> array-field element) desugars to a read-modify-write:
+// `S t = m[i]; t.arr[j] = v; m[i] = t;`. The interleaved index-member-index chain now parses (lvPart grammar).
+describe('nested lvalue write: state mapping struct array-field element (m[i].arr[j] = v)', () => {
+  const pre = 'contract C { struct S { uint[3] arr; } mapping(uint=>S) m;'
+    + ' function f(uint i, uint j, uint v, sig s, pubkey pk) public { require(checkSig(s,pk)); ';
+  const post = ' } }';
+  const cc = (body: string): string =>
+    compileString(pre + body + post, { solidityImportCompat: true }).contractName;
+  it('compiles the write', () => {
+    expect(cc('m[i].arr[j] = v;')).toBe('C');
+  });
+  it('supports compound assignment', () => {
+    expect(cc('m[i].arr[j] += v;')).toBe('C');
+  });
+  it('desugars byte-for-byte to the explicit `S t = m[i]; t.arr[j] = v; m[i] = t;` form', () => {
+    const item1 = compileString(pre + 'm[i].arr[j] = v;' + post, { solidityImportCompat: true });
+    const explicit = compileString(pre + 'S t = m[i]; t.arr[j] = v; m[i] = t;' + post, { solidityImportCompat: true });
+    expect(item1.bytecode).toBe(explicit.bytecode);
+  });
+  it('does not regress a mapping struct scalar field write (m[i].a = v)', () => {
+    expect(compileString('contract C { struct S { uint a; } mapping(uint=>S) m;'
+      + ' function f(uint i, uint v, sig s, pubkey pk) public { require(checkSig(s,pk)); m[i].a = v; } }',
+    { solidityImportCompat: true }).contractName).toBe('C');
+  });
+});

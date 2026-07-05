@@ -284,11 +284,7 @@ statement
     | loopStatement
     | consoleStatement
     | emitStatement
-    | transferStatement
-    | tokenContainerMethodStatement
     | returnStatement
-    | functionCallStatement
-    | addressMethodStatement
     | selfdestructStatement
     | assemblyStatement
     | tryCatchStatement
@@ -322,29 +318,10 @@ prefixIncDecStatement
     : op=('++' | '--') expression ';'
     ;
 
-transferStatement
-    : 'this' '.' Identifier '(' expression ',' expression ')' ';'
-    ;
-
-tokenContainerMethodStatement
-    : 'this' '.' Identifier '[' expression ']' '.' Identifier '(' expression (',' expression)* ')' ';'
-    ;
-
 returnStatement
     : 'return' ';'
     | 'return' expression (',' expression)* ';'
     | 'return' '(' expression (',' expression)* ','? ')' ';'
-    ;
-
-functionCallStatement
-    : Identifier ('.' Identifier)? '(' '{' (namedArg (',' namedArg)* ','?)? '}' ')' ';'
-    | Identifier expressionList ';'
-    | Identifier '.' Identifier expressionList ';'
-    | Identifier expressionList '.' Identifier '.' Identifier callOptions? expressionList ';'
-    ;
-
-addressMethodStatement
-    : expression '.' Identifier callOptions? expressionList ';'
     ;
 
 // EVM-style `selfdestruct(addr)`: destroys the contract and forwards its value to addr (function-based form of

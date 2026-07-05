@@ -136,7 +136,6 @@ import type {
   BlockContext,
   TimeOpStatementContext,
   ArrayContext,
-  FunctionCallExpressionContext,
   UnaryOpContext,
   BinaryOpContext,
   LiteralExpressionContext,
@@ -174,15 +173,12 @@ import type {
   StructDefinitionContext,
   EventDefinitionContext,
   EmitStatementContext,
-  TransferStatementContext,
-  TokenContainerMethodStatementContext,
   ForStatementContext,
   ForInitContext,
   ForConditionContext,
   ForUpdateContext,
   FunctionModifierContext,
   ReturnStatementContext,
-  FunctionCallStatementContext,
   ExpressionStatementContext,
   PrefixIncDecStatementContext,
   ConstantDefinitionContext,
@@ -209,9 +205,6 @@ import type {
   ErrorDefinitionContext,
   RevertStatementContext,
   AssertStatementContext,
-  MethodCallContext,
-  MethodCallNamedContext,
-  AddressMethodStatementContext,
   SelfdestructStatementContext,
   CallOptionsContext,
   OutStateMappingFieldAccessContext,
@@ -236,6 +229,7 @@ import { TernaryOpContext, TupleExpressionContext } from '../grammar/SolidCashPa
 import {
   ParenthesisedContext, ArrayAccessContext, FieldAccessContext, MappingAccessContext,
   StateAccessContext, IdentifierContext, PostfixOpContext, TupleIndexOpContext,
+  FunctionCallExpressionContext, MethodCallContext, MethodCallNamedContext,
 } from '../grammar/SolidCashParser.js';
 import SolidCashVisitor from '../grammar/SolidCashVisitor.js';
 import { Location } from './Location.js';
@@ -3769,64 +3763,7 @@ export default class AstBuilder
     return node;
   }
 
-  visitTransferStatement(ctx: TransferStatementContext): TransferStatementNode {
-    const methodName = ctx.Identifier().getText();
-    if (methodName !== 'transfer') {
-      throw new ParseError(
-        `Unknown method 'this.${methodName}()', did you mean 'this.transfer()'?`,
-        Location.fromCtx(ctx),
-      );
-    }
-    const expressions = ctx.expression_list();
-    const node = new TransferStatementNode(
-      this.visit(expressions[0]) as ExpressionNode,
-      this.visit(expressions[1]) as ExpressionNode,
-    );
-    node.location = Location.fromCtx(ctx);
-    return node;
-  }
 
-  visitTokenContainerMethodStatement(ctx: TokenContainerMethodStatementContext): TokenContainerMethodStatementNode {
-    const identifiers = ctx.Identifier_list();
-    const containerName = identifiers[0].getText();
-    if (containerName !== 'tokens') {
-      throw new ParseError(
-        `Unknown method 'this.${containerName}[...]', did you mean 'this.tokens[...]'?`,
-        Location.fromCtx(ctx),
-      );
-    }
-
-    const methodName = identifiers[1].getText();
-    if (methodName !== 'transfer' && methodName !== 'transferNft') {
-      throw new ParseError(
-        `Unknown token container method '${methodName}', expected 'transfer' or 'transferNft'`,
-        Location.fromCtx(ctx),
-      );
-    }
-
-    const expressions = ctx.expression_list();
-    // First expression is the key (category), rest are method arguments
-    const keyExpression = this.visit(expressions[0]) as ExpressionNode;
-    const args = expressions.slice(1).map((e) => this.visit(e) as ExpressionNode);
-
-    // Validate argument count
-    if (methodName === 'transfer' && args.length !== 2) {
-      throw new ParseError(
-        `this.tokens[...].transfer() expects 2 arguments (to, amount) but got ${args.length}`,
-        Location.fromCtx(ctx),
-      );
-    }
-    if (methodName === 'transferNft' && args.length !== 3) {
-      throw new ParseError(
-        `this.tokens[...].transferNft() expects 3 arguments (to, commitment, capability) but got ${args.length}`,
-        Location.fromCtx(ctx),
-      );
-    }
-
-    const node = new TokenContainerMethodStatementNode(keyExpression, methodName, args);
-    node.location = Location.fromCtx(ctx);
-    return node;
-  }
 
   visitReturnStatement(ctx: ReturnStatementContext): Node {
     const exprCtxs = ctx.expression_list();
@@ -4005,11 +3942,86 @@ export default class AstBuilder
         lv.rawName, lv.isThis, lv.nameLoc, lv.segs, lhsCtx._op.text, undefined, Location.fromCtx(ctx),
       );
     }
-    // Otherwise a bare expression, computed and dropped: a call (side effect is its covenant) or a pure value.
+    // A call used as a statement (`f(args);`, `x.f(args);`, `x.call(data);`, `this.transfer(a,b);`, ...): route
+    // to the right call-statement node (the folded functionCall/addressMethod/transfer/tokenContainer forms).
+    if (lhsCtx instanceof FunctionCallExpressionContext || lhsCtx instanceof MethodCallContext
+      || lhsCtx instanceof MethodCallNamedContext) {
+      return this.buildCallStatement(lhsCtx);
+    }
+    // Otherwise a bare expression, computed and dropped: a pure value or a side-effect-free access.
     const expression = this.visit(lhsCtx) as ExpressionNode;
     const node = new ExpressionStatementNode(expression);
     node.location = Location.fromCtx(ctx);
     return node;
+  }
+
+  // Build the statement for a call-shaped bare expression. Statement-only forms (low-level `.call`/`.staticcall`/
+  // `.delegatecall`, satoshi `addr.transfer(v)`, `this.transfer(a,b)`, `this.tokens[c].transfer(...)`) are matched
+  // before visiting (the expression visitor would mis-handle `this.transfer` as a self-call); everything else is
+  // visited and wrapped by node kind (FunctionCall / MethodCall -> the matching statement node; a dropped value
+  // like `.send`'s bool -> ExpressionStatement).
+  private buildCallStatement(lhsCtx: ExpressionContext): StatementNode {
+    const wrap = (n: ExpressionNode): StatementNode => {
+      const s = n instanceof FunctionCallNode ? new FunctionCallStatementNode(n)
+        : n instanceof MethodCallNode ? new MethodCallStatementNode(n)
+          : new ExpressionStatementNode(n);
+      s.location = Location.fromCtx(lhsCtx);
+      return s;
+    };
+    // `a.call(d)` / `a.staticcall(d)` / `a.delegatecall(d)` on a simple identifier parse as a namespaced
+    // FunctionCall (`a.call`), not a MethodCall, so match the low-level routing here too (no call options - the
+    // `a.call{value:}(d)` form is a MethodCall, handled below).
+    if (lhsCtx instanceof FunctionCallExpressionContext) {
+      const fc = lhsCtx.functionCall();
+      const ids = fc.Identifier_list();
+      const llMethod = ids.length === 2 ? ids[1].getText() : undefined;
+      const llArgs = fc.expressionList()?.expression_list();
+      if ((llMethod === 'call' || llMethod === 'staticcall' || llMethod === 'delegatecall') && llArgs?.length === 1) {
+        const args = llArgs;
+        const target = new IdentifierNode(ids[0].getText());
+        target.location = Location.fromToken(ids[0].symbol);
+        const node = new LowLevelCallStatementNode(target, this.visit(args[0]) as ExpressionNode, llMethod);
+        node.location = Location.fromCtx(lhsCtx); return node;
+      }
+      return wrap(this.visit(lhsCtx) as ExpressionNode);
+    }
+    if (lhsCtx instanceof MethodCallNamedContext) {
+      return wrap(this.visit(lhsCtx) as ExpressionNode);
+    }
+    const ctx = lhsCtx as MethodCallContext;
+    const method = ctx.Identifier().getText();
+    const recvCtx = ctx.expression();
+    const loc = Location.fromCtx(ctx);
+    const argCtxs = ctx.expressionList().expression_list();
+    // Low-level `.call`/`.staticcall`/`.delegatecall(payload)` takes exactly one arg. A same-named method with a
+    // different arity (e.g. `IFoo(c).increment.call()` - an interface method reached via a field access) is not a
+    // low-level call and falls through to the generic method-call wrap below.
+    if ((method === 'call' || method === 'staticcall' || method === 'delegatecall') && argCtxs.length === 1) {
+      const node = new LowLevelCallStatementNode(this.visit(recvCtx) as ExpressionNode, this.visit(argCtxs[0]) as ExpressionNode, method);
+      node.callOptions = this.parseCallOptions(ctx.callOptions()); node.location = loc; return node;
+    }
+    if (recvCtx instanceof MappingAccessContext && recvCtx.Identifier().getText() === 'tokens') {
+      if (method !== 'transfer' && method !== 'transferNft') {
+        throw new ParseError(`Unknown token container method '${method}', expected 'transfer' or 'transferNft'`, loc);
+      }
+      const keyExpr = this.visit(recvCtx.expression_list()[0]) as ExpressionNode;
+      const args = argCtxs.map((e) => this.visit(e) as ExpressionNode);
+      if (method === 'transfer' && args.length !== 2) throw new ParseError('this.tokens[...].transfer() expects 2 arguments (to, amount)', loc);
+      if (method === 'transferNft' && args.length !== 3) throw new ParseError('this.tokens[...].transferNft() expects 3 arguments (to, commitment, capability)', loc);
+      const node = new TokenContainerMethodStatementNode(keyExpr, method, args); node.location = loc; return node;
+    }
+    if (method === 'transfer') {
+      if (recvCtx.getText() === 'this') {
+        if (argCtxs.length !== 2) throw new ParseError('this.transfer() expects 2 arguments (lockingBytecode, amount)', loc);
+        const node = new TransferStatementNode(this.visit(argCtxs[0]) as ExpressionNode, this.visit(argCtxs[1]) as ExpressionNode);
+        node.location = loc; return node;
+      }
+      if (argCtxs.length === 1 && ctx.callOptions() === null) {
+        const node = new AddressTransferStatementNode(this.visit(recvCtx) as ExpressionNode, this.visit(argCtxs[0]) as ExpressionNode);
+        node.location = loc; return node;
+      }
+    }
+    return wrap(this.visit(lhsCtx) as ExpressionNode);
   }
 
   visitPrefixIncDecStatement(ctx: PrefixIncDecStatementContext): StatementNode {
@@ -4019,140 +4031,7 @@ export default class AstBuilder
     return this.buildLvalueAssign(lv.rawName, lv.isThis, lv.nameLoc, lv.segs, ctx._op.text, undefined, Location.fromCtx(ctx));
   }
 
-  visitFunctionCallStatement(
-    ctx: FunctionCallStatementContext,
-  ): FunctionCallStatementNode | MethodCallStatementNode | LowLevelCallStatementNode {
-    const identifiers = ctx.Identifier_list();
-    const expressionLists = ctx.expressionList_list();
 
-    // using-for: `recv.method(args);` where recv is a struct/array var bound to a library -> `Library.method(recv, args);`.
-    if (identifiers.length === 2 && expressionLists.length === 1 && this.usingForLibraries.size > 0) {
-      const recvName = identifiers[0].getText();
-      const recvStruct = this.localStructTypes.get(recvName) ?? this.stateStructVars.get(recvName)
-        ?? this.mappingStructStateVars.get(recvName);
-      const libName = (recvStruct && this.usingForLibraries.get(recvStruct.name))
-        ?? this.usingForArrayLibrary(recvName);
-      if (libName) {
-        const libId = new IdentifierNode(`${libName}.${identifiers[1].getText()}`);
-        libId.location = Location.fromToken(identifiers[0].symbol);
-        const recv = new IdentifierNode(recvName);
-        recv.location = Location.fromToken(identifiers[0].symbol);
-        const args = expressionLists[0].expression_list().map((e) => this.visit(e) as ExpressionNode);
-        const call = new FunctionCallNode(libId, [recv, ...args]);
-        call.location = Location.fromCtx(ctx);
-        const stmt = new FunctionCallStatementNode(call);
-        stmt.location = Location.fromCtx(ctx);
-        return stmt;
-      }
-    }
-
-    // Named-arg call statement: foo({a: x}) or Lib.foo({a: x}). Args reorder against the callee in semantics.
-    if (expressionLists.length === 0) {
-      const name = identifiers.length > 1
-        ? `${identifiers[0].getText()}.${identifiers[1].getText()}`
-        : identifiers[0].getText();
-      const identifier = new IdentifierNode(name);
-      identifier.location = Location.fromToken(identifiers[0].symbol);
-      const namedArgs = ctx.namedArg_list();
-      const params = namedArgs.map((na) => this.visit(na.expression()) as ExpressionNode);
-      const functionCall = new FunctionCallNode(identifier, params);
-      functionCall.fieldNames = namedArgs.map((na) => na.Identifier().getText());
-      functionCall.location = Location.fromCtx(ctx);
-      const stmt = new FunctionCallStatementNode(functionCall);
-      stmt.location = Location.fromCtx(ctx);
-      return stmt;
-    }
-
-    // Alternative 3: Identifier expressionList '.' Identifier '.' Identifier callOptions? expressionList ';'
-    // Pattern: IFoo(cat).bar.call{value:X}(args)  ->  MethodCallNode(FieldAccessNode(FunctionCallNode), "call", args)
-    if (identifiers.length === 3 && expressionLists.length === 2) {
-      const interfaceIdentifier = new IdentifierNode(identifiers[0].getText());
-      interfaceIdentifier.location = Location.fromToken(identifiers[0].symbol);
-
-      const interfaceArgs = expressionLists[0].expression_list().map((e) => this.visit(e));
-      const funcCallNode = new FunctionCallNode(interfaceIdentifier, interfaceArgs);
-      funcCallNode.location = Location.fromCtx(ctx);
-
-      const fieldAccessNode = new FieldAccessNode(funcCallNode, identifiers[1].getText());
-      fieldAccessNode.location = Location.fromCtx(ctx);
-
-      const callOpts = this.parseCallOptions(ctx.callOptions());
-
-      const methodArgs = expressionLists[1].expression_list().map((e) => this.visit(e));
-      const methodCallNode = new MethodCallNode(fieldAccessNode, identifiers[2].getText(), methodArgs);
-      methodCallNode.callOptions = callOpts;
-      methodCallNode.location = Location.fromCtx(ctx);
-
-      const stmt = new MethodCallStatementNode(methodCallNode);
-      stmt.location = Location.fromCtx(ctx);
-      return stmt;
-    }
-
-    // Alternative 2: Identifier '.' Identifier expressionList ';'
-    // Check if this is variable.call(data) or variable.staticcall(data)
-    if (identifiers.length === 2) {
-      const methodName = identifiers[1].getText();
-      if (methodName === 'call' || methodName === 'staticcall' || methodName === 'delegatecall') {
-        const targetIdentifier = new IdentifierNode(identifiers[0].getText());
-        targetIdentifier.location = Location.fromToken(identifiers[0].symbol);
-        const args = expressionLists[0].expression_list().map((e) => this.visit(e));
-        const dataArg = args[0] as ExpressionNode;
-        const node = new LowLevelCallStatementNode(targetIdentifier, dataArg, methodName);
-        node.location = Location.fromCtx(ctx);
-        return node;
-      }
-    }
-
-    // Alternatives 1 & 2: plain or namespaced function call
-    const name = identifiers.length > 1
-      ? `${identifiers[0].getText()}.${identifiers[1].getText()}`
-      : identifiers[0].getText();
-    const identifier = new IdentifierNode(name);
-    identifier.location = Location.fromToken(identifiers[0].symbol);
-    const parameters = expressionLists[0].expression_list().map((e) => this.visit(e));
-    const functionCall = new FunctionCallNode(identifier, parameters);
-    functionCall.location = Location.fromCtx(ctx);
-    const stmt = new FunctionCallStatementNode(functionCall);
-    stmt.location = Location.fromCtx(ctx);
-    return stmt;
-  }
-
-  visitAddressMethodStatement(ctx: AddressMethodStatementContext): StatementNode {
-    const addressExpression = this.visit(ctx.expression()) as ExpressionNode;
-    const methodName = ctx.Identifier().getText();
-    const args = ctx.expressionList().expression_list().map((e) => this.visit(e) as ExpressionNode);
-    const callOpts = this.parseCallOptions(ctx.callOptions());
-
-    if (methodName === 'call' || methodName === 'staticcall' || methodName === 'delegatecall') {
-      if (args.length !== 1) {
-        throw new ParseError(
-          `'${methodName}()' expects exactly one argument (the payload)`,
-          Location.fromCtx(ctx),
-        );
-      }
-      const node = new LowLevelCallStatementNode(addressExpression, args[0], methodName);
-      node.callOptions = callOpts;
-      node.location = Location.fromCtx(ctx);
-      return node;
-    }
-
-    // Satoshi send `addr.transfer(amount)`: exactly one argument and no `{value:}`. A same-named interface
-    // method (e.g. ERC20 `transfer(to, amount)`) differs in arity/shape and falls through below.
-    if (methodName === 'transfer' && args.length === 1 && !callOpts) {
-      const node = new AddressTransferStatementNode(addressExpression, args[0]);
-      node.location = Location.fromCtx(ctx);
-      return node;
-    }
-
-    // External interface function call: IFoo(cat).bar{value: X}(args)
-    const methodCallNode = new MethodCallNode(addressExpression, methodName, args);
-    methodCallNode.callOptions = callOpts;
-    methodCallNode.location = Location.fromCtx(ctx);
-
-    const stmt = new MethodCallStatementNode(methodCallNode);
-    stmt.location = Location.fromCtx(ctx);
-    return stmt;
-  }
 
   visitArrayAccess(ctx: ArrayAccessContext): ArrayAccessNode {
     const array = this.visit(ctx.expression(0));

@@ -65,11 +65,7 @@ import { BlockContext } from "./SolidCashParser.js";
 import { StatementContext } from "./SolidCashParser.js";
 import { ExpressionStatementContext } from "./SolidCashParser.js";
 import { PrefixIncDecStatementContext } from "./SolidCashParser.js";
-import { TransferStatementContext } from "./SolidCashParser.js";
-import { TokenContainerMethodStatementContext } from "./SolidCashParser.js";
 import { ReturnStatementContext } from "./SolidCashParser.js";
-import { FunctionCallStatementContext } from "./SolidCashParser.js";
-import { AddressMethodStatementContext } from "./SolidCashParser.js";
 import { SelfdestructStatementContext } from "./SolidCashParser.js";
 import { EmitStatementContext } from "./SolidCashParser.js";
 import { StoragePointerWriteStatementContext } from "./SolidCashParser.js";
@@ -582,35 +578,11 @@ export default class SolidCashVisitor<Result> extends ParseTreeVisitor<Result> {
 	 */
 	visitPrefixIncDecStatement?: (ctx: PrefixIncDecStatementContext) => Result;
 	/**
-	 * Visit a parse tree produced by `SolidCashParser.transferStatement`.
-	 * @param ctx the parse tree
-	 * @return the visitor result
-	 */
-	visitTransferStatement?: (ctx: TransferStatementContext) => Result;
-	/**
-	 * Visit a parse tree produced by `SolidCashParser.tokenContainerMethodStatement`.
-	 * @param ctx the parse tree
-	 * @return the visitor result
-	 */
-	visitTokenContainerMethodStatement?: (ctx: TokenContainerMethodStatementContext) => Result;
-	/**
 	 * Visit a parse tree produced by `SolidCashParser.returnStatement`.
 	 * @param ctx the parse tree
 	 * @return the visitor result
 	 */
 	visitReturnStatement?: (ctx: ReturnStatementContext) => Result;
-	/**
-	 * Visit a parse tree produced by `SolidCashParser.functionCallStatement`.
-	 * @param ctx the parse tree
-	 * @return the visitor result
-	 */
-	visitFunctionCallStatement?: (ctx: FunctionCallStatementContext) => Result;
-	/**
-	 * Visit a parse tree produced by `SolidCashParser.addressMethodStatement`.
-	 * @param ctx the parse tree
-	 * @return the visitor result
-	 */
-	visitAddressMethodStatement?: (ctx: AddressMethodStatementContext) => Result;
 	/**
 	 * Visit a parse tree produced by `SolidCashParser.selfdestructStatement`.
 	 * @param ctx the parse tree

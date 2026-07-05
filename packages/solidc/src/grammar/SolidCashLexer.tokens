@@ -266,10 +266,10 @@ LINE_COMMENT=183
 '>>='=83
 '++'=84
 '--'=85
-'this'=86
-'return'=87
-'emit'=88
-'delete'=89
+'return'=86
+'emit'=87
+'delete'=88
+'this'=89
 'require'=90
 'if'=91
 'else'=92

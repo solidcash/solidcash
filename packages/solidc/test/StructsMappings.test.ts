@@ -353,6 +353,22 @@ describe('nested lvalue write: state mapping struct array-field element (m[i].ar
   });
 });
 
+// `m[i].f = v` where m is a LOCAL struct array (`S[] memory`): the parser makes a MappingFieldAssignNode the
+// symbol table would reject (m is not a state collection). Desugars to an element rebuild with field f replaced:
+// `m[i] = S(m[i].f0, .., v, ..)` - reads m[i].f and whole-element writes already work. Sound by reduction.
+describe('local struct-array element field write (S[] memory m; m[i].f = v)', () => {
+  const P = 'contract C(){struct S{int a;int b;}function f()external{S[] memory m=new S[](3);';
+  it('compiles a local memory struct-array field write', () => {
+    expect(compileString(`${P}m[0].a=1;m[1].b=2;require(m[0].a==1);}}`, { solidityImportCompat: true }).contractName)
+      .toBe('C');
+  });
+  it('is byte-identical to the explicit element rebuild (sound by reduction)', () => {
+    const sugar = compileString(`${P}m[0].a=1;require(m[0].a==1);}}`, { solidityImportCompat: true });
+    const hand = compileString(`${P}m[0]=S(1,m[0].b);require(m[0].a==1);}}`, { solidityImportCompat: true });
+    expect(sugar.bytecode).toBe(hand.bytecode);
+  });
+});
+
 // A struct-with-a-mapping-field flattens each field to a `<var>__<field>` state collection; a trailing member
 // after the flattened mapping index (`o.data[k2].valid = v`) writes the value-struct scalar field.
 describe('nested lvalue write: struct-with-mapping field (o.data[k2].valid = v)', () => {

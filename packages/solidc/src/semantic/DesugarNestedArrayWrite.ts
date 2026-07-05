@@ -1,4 +1,4 @@
-import { ArrayType, Type, isChunkPackableElementType } from '@solidcash/utils';
+import { ArrayType, StructType, Type, isChunkPackableElementType } from '@solidcash/utils';
 import {
   Node,
   SourceFileNode,
@@ -9,11 +9,14 @@ import {
   ParameterNode,
   VariableDefinitionNode,
   MappingAssignNode,
+  MappingFieldAssignNode,
   ArrayAssignNode,
   StateArrayAssignNode,
   ArrayAccessNode,
   ArrayPushNode,
   ArrayPopNode,
+  FieldAccessNode,
+  FunctionCallNode,
   IdentifierNode,
   ExpressionNode,
 } from '../ast/AST.js';
@@ -87,7 +90,9 @@ export default class DesugarNestedArrayWrite extends AstTraversal {
       const visited = this.visit(stmt) as StatementNode;
       const desugared = visited instanceof MappingAssignNode
         ? (this.tryDesugar(visited) ?? this.tryDesugarNestedPushPop(visited))
-        : undefined;
+        : visited instanceof MappingFieldAssignNode
+          ? this.tryDesugarLocalStructArrayField(visited)
+          : undefined;
       if (desugared) out.push(...desugared);
       else out.push(visited);
     }
@@ -124,6 +129,35 @@ export default class DesugarNestedArrayWrite extends AstTraversal {
     const back = new StateArrayAssignNode(node.name, clone(node.keys[0]), this.ident(tmpName, node));
     back.location = node.location;
     return [decl, op, back];
+  }
+
+  // `m[i].f = v` where m is a LOCAL struct array (`S[] memory`): the parser makes a MappingFieldAssignNode which
+  // the symbol table rejects (m is not a state collection). Reads `m[i].f` and whole-element writes `m[i] = S(..)`
+  // already work, so rebuild the element with field f replaced: `m[i] = S(m[i].f0, .., v, ..)`. Only a LOCAL
+  // struct array fires here - a state struct array handles a simple field write in place.
+  private tryDesugarLocalStructArrayField(node: MappingFieldAssignNode): StatementNode[] | undefined {
+    if (node.keys.length !== 1) return undefined;
+    const baseType = this.locals.get(node.name);
+    if (!(baseType instanceof ArrayType) || !(baseType.elementType instanceof StructType)) return undefined;
+    const struct = baseType.elementType;
+    if (!struct.fields.some((f) => f.name === node.fieldName)) return undefined;
+
+    const clone = (e: ExpressionNode): ExpressionNode => cloneNode(e) as ExpressionNode;
+    const elemRead = (field: string): ExpressionNode => {
+      const acc = new ArrayAccessNode(this.ident(node.name, node), clone(node.keys[0]));
+      acc.location = node.location;
+      const fa = new FieldAccessNode(acc, field);
+      fa.location = node.location;
+      return fa;
+    };
+    const ctor = new FunctionCallNode(
+      this.ident(struct.name, node),
+      struct.fields.map((f) => (f.name === node.fieldName ? node.expression : elemRead(f.name))),
+    );
+    ctor.location = node.location;
+    const assign = new ArrayAssignNode(node.name, clone(node.keys[0]), ctor);
+    assign.location = node.location;
+    return [assign];
   }
 
   // `b[k0]..[kn] = v` on a local nested array -> read-modify-write statements; undefined if not applicable.

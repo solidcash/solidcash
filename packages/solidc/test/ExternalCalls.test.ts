@@ -202,3 +202,38 @@ describe('public address state-var auto-getter (external-callable)', () => {
     expect(abi.some((f) => f.name === 'status')).toBe(false);
   });
 });
+
+describe('Named-arg external interface call', () => {
+  it('reorders named args into the interface function param order', () => {
+    const a = compileString(`
+      interface IBank { function balanceOf(address who, int day) external view returns (int); }
+      contract C() {
+        int n;
+        function f(bytes32 cat, address who) { int b = IBank(cat).balanceOf({day: 5, who: who}); this.n = b; }
+      }`);
+    expect(a.contractName).toBe('C');
+  });
+});
+
+describe('SBE-25: msg.sender category forwarded across internal calls', () => {
+  // A function using msg.sender gets a synthetic `bytes32 __internal__msgSenderCategory` param. A positional
+  // internal call to such a function must forward the caller's own category (msg.sender is identical across an
+  // internal call), otherwise the call is short an argument -> InvalidParameterTypeError. Unblocks ERC721
+  // (safeTransferFrom -> transferFrom) and WETH (fallback -> deposit -> _mint(msg.sender, ..)).
+  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+
+  it('forwards the synthetic category on an internal call to a msg.sender-using function', () => {
+    expect(cc('contract C { mapping(uint256 => address) o;'
+      + ' function inner(address from, uint256 id) public { require(msg.sender == o[id]); o[id] = from; }'
+      + ' function outer(address from, uint256 id) external { require(msg.sender != address(0)); inner(from, id); } }'))
+      .toBe('C');
+  });
+
+  it('compiles the ERC721 safeTransferFrom -> transferFrom shape', () => {
+    expect(cc('contract C { mapping(uint256 => address) _ownerOf; mapping(address => uint256) _balanceOf;'
+      + ' function transferFrom(address from, address to, uint256 id) public {'
+      + ' require(from == _ownerOf[id]); require(msg.sender == from); _balanceOf[from]--; _balanceOf[to]++; _ownerOf[id] = to; }'
+      + ' function safeTransferFrom(address from, address to, uint256 id) external { transferFrom(from, to, id); } }'))
+      .toBe('C');
+  });
+});

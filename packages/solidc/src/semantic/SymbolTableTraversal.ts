@@ -1198,6 +1198,15 @@ export default class SymbolTableTraversal extends AstTraversal {
         }
         node.externalCalls = externalCallSlots;
 
+        // External-call address locals must survive to the epilogue: emitExternalCallVerification reads
+        // slot.addressParam off the stack after the body, so a regular body use (e.g. `address(car).balance`
+        // alongside `car.method()`) must not OP_ROLL-consume it. Same rationale as the token-container key params.
+        for (const slot of externalCallSlots) {
+          if (slot.addressParam && !slot.addressIsMsgSender) {
+            node.opRolls.delete(slot.addressParam);
+          }
+        }
+
         // Propagate slot indices to individual external call nodes
         this.assignExternalCallSlotIndices(node.body, externalCallSlots, { idx: 0 });
 

@@ -2381,3 +2381,20 @@ describe('nested lvalue write: mapping of struct-with-mapping (providers[k].data
     expect(flattened.bytecode).toBe(manual.bytecode);
   });
 });
+
+// An external-call address local must survive to the covenant epilogue. Reading the same handle another way in
+// the same function (`address(car).balance` alongside `car.method()`) must not OP_ROLL-consume it as a last use.
+describe('external-call address local survives a same-function balance read', () => {
+  const base = 'contract Car { address owner; constructor(address _o) { owner = _o; }'
+    + ' function owner_() external view returns (address) { return owner; } }';
+  const cc = (body: string): string => compileString(
+    `${base} contract F { Car[] cars; function g(uint i) public view returns (${body} } }`,
+    { solidityImportCompat: true },
+  ).contractName;
+  it('compiles ext-call then address(handle).balance in a tuple', () => {
+    expect(cc('address, uint) { Car car = cars[i]; return (car.owner_(), address(car).balance);')).toBe('F');
+  });
+  it('does not regress an ext-call with no balance read', () => {
+    expect(cc('address) { Car car = cars[i]; return car.owner_();')).toBe('F');
+  });
+});

@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { compileString } from '../src/index.js';
+import { hexToBin, binToHex } from '@bitauth/libauth';
+import { hash256 } from '@solidcash/utils';
 import { UnsupportedInlineAssemblyError } from '../src/Errors.js';
 
 // Phase 1 of Yul inline-assembly support: the Yul sub-grammar parses (no more opaque ':' ParseError on `:=`)
@@ -300,5 +302,132 @@ describe('keccak256/sha256 literal folding', () => {
       { solidityImportCompat: true },
     );
     expect(a.contractName).toBe('C');
+  });
+});
+
+describe('dotted-op token boundary (lexer)', () => {
+  it('keeps .push / .length / .value ops working at an identifier boundary', () => {
+    expect(compileString('contract C() { int[] xs; function f() { this.xs.push(5); require(this.xs.length == 1); } }').contractName).toBe('C');
+    expect(compileString('contract C() { function f() { require(tx.outputs[0].value == 1000); } }').contractName).toBe('C');
+  });
+});
+
+// Yul `create(0, add(b, 0x20), n)` where `b` is a compile-time hex-literal `bytes` local is NOT fundamental: the
+// blob is the contract's redeem script, so the deployed p2sh32 address (0xaa20 || hash256(blob) || 0x87) is
+// derivable at compile time. Runtime-constructed bytecode stays unlowerable (hits the assembly diagnostic).
+describe('Yul create with a constant hex bytecode (compile-time p2sh32 deploy)', () => {
+  const factory = (body: string): string => 'contract F { event Log(address a); function deploy() external { '
+    + 'bytes memory bytecode = hex"6960ff60005260206000f3600052600a6016f3"; address addr; ' + body
+    + ' require(addr != address(0)); emit Log(addr); } }';
+  it('lowers create(0, add(bytecode, 0x20), size) to the derived p2sh32 address', () => {
+    const a = compileString(factory('assembly { addr := create(0, add(bytecode, 0x20), 0x13) }'),
+      { solidityImportCompat: true });
+    const blob = hexToBin('6960ff60005260206000f3600052600a6016f3');
+    const p2sh32 = binToHex(Uint8Array.from([0xaa, 0x20, ...hash256(blob), 0x87]));
+    expect(a.bytecode.includes(p2sh32)).toBe(true);
+  });
+  it('still rejects runtime-constructed bytecode (create on a parameter) as unlowerable', () => {
+    expect(() => compileString('contract F { function deploy(bytes memory code) external returns (address addr) {'
+      + ' assembly { addr := create(0, add(code, 0x20), mload(code)) } } }', { solidityImportCompat: true }))
+      .toThrow(/no BCH|assembly|create/i);
+  });
+});
+
+// EIP-1167 minimal-proxy `create(0, clone, 0x37)` where `clone := mload(0x40)` is a free-memory buffer built by
+// mstore (const prefix, runtime address, const suffix) is NOT fundamental: reconstruct the blob and derive its
+// p2sh32 address at runtime (0xaa20 || hash256(prefix||target||suffix) || 0x87).
+describe('Yul create over a free-memory buffer (EIP-1167 minimal proxy)', () => {
+  const clone = 'contract C { function clone(address target) external returns (address result) {'
+    + ' bytes20 tb = bytes20(target); assembly {'
+    + ' let ptr := mload(0x40)'
+    + ' mstore(ptr, 0x3d602d80600a3d3981f3363d3d373d3d3d363d73000000000000000000000000)'
+    + ' mstore(add(ptr, 0x14), tb)'
+    + ' mstore(add(ptr, 0x28), 0x5af43d82803e903d91602b57fd5bf30000000000000000000000000000000000)'
+    + ' result := create(0, ptr, 0x37) } } }';
+  it('compiles and derives the p2sh32 from the reconstructed clone bytecode', () => {
+    const a = compileString(clone, { solidityImportCompat: true });
+    expect(a.contractName).toBe('C');
+    // buffer = prefix(20) || target(20) || suffix(15), hashed, wrapped as p2sh32
+    expect(a.bytecode).toContain('3d602d80600a3d3981f3363d3d373d3d3d363d73'); // 20-byte prefix slice
+    expect(a.bytecode).toContain('5af43d82803e903d91602b57fd5bf3'); // 15-byte suffix slice
+    expect(a.bytecode).toContain('OP_HASH256');
+    expect(a.bytecode).toContain('OP_CAT');
+  });
+  it('still rejects a non-zero-value buffer create (funded deploy needs an output)', () => {
+    expect(() => compileString(clone.replace('create(0, ptr, 0x37)', 'create(1, ptr, 0x37)'),
+      { solidityImportCompat: true })).toThrow(/no BCH|assembly|create/i);
+  });
+});
+
+// The OZ StorageSlot idiom used INLINE (`StorageSlot.getAddressSlot(SLOT).value`, no local `X storage p = ...`).
+// LowerStorageSlotPointers previously only handled the local-alias form; the inline read now lowers too.
+describe('inline StorageSlot pointer read (factory(slot).value)', () => {
+  const LIB = 'library StorageSlot { struct AddressSlot { address value; }'
+    + ' function getAddressSlot(bytes32 slot) internal pure returns (AddressSlot storage pointer) {'
+    + ' assembly { pointer.slot := slot } } }';
+  it('lowers an inline factory(slot).value read to the __evm_storage register', () => {
+    const a = compileString(`${LIB} contract C { bytes32 constant S = keccak256("s");`
+      + ' function f() external view returns (address) { return StorageSlot.getAddressSlot(S).value; } }',
+    { solidityImportCompat: true });
+    expect(a.contractName).toBe('C');
+  });
+  it('still lowers the local-alias form (no regression)', () => {
+    const a = compileString(`${LIB} contract C { bytes32 constant S = keccak256("s");`
+      + ' function f(address v) external { StorageSlot.AddressSlot storage p = StorageSlot.getAddressSlot(S);'
+      + ' p.value = v; } }', { solidityImportCompat: true });
+    expect(a.contractName).toBe('C');
+  });
+});
+
+// The inline OZ StorageSlot WRITE `StorageSlot.getAddressSlot(SLOT).value = v` (no local pointer) - the lvalue
+// has a call in the chain, so it needs its own grammar rule + desugar to the local-pointer form. Byte-identical
+// to the hand-written `T storage p = factory(SLOT); p.value = v` (sound by reduction).
+describe('inline StorageSlot pointer write (factory(slot).value = v)', () => {
+  const LIB = 'library StorageSlot { struct AddressSlot { address value; }'
+    + ' function getAddressSlot(bytes32 slot) internal pure returns (AddressSlot storage pointer) {'
+    + ' assembly { pointer.slot := slot } } }';
+  it('compiles an inline factory(slot).value write', () => {
+    const a = compileString(`${LIB} contract C { bytes32 constant S = keccak256("s");`
+      + ' function f(address a) external { StorageSlot.getAddressSlot(S).value = a; } }', { solidityImportCompat: true });
+    expect(a.contractName).toBe('C');
+  });
+  it('is byte-identical to the local-pointer form', () => {
+    const pre = `${LIB} contract C { bytes32 constant S = keccak256("s"); function f(address a) external { `;
+    const inline = compileString(`${pre} StorageSlot.getAddressSlot(S).value = a; } }`, { solidityImportCompat: true });
+    const local = compileString(`${pre} StorageSlot.AddressSlot storage p = StorageSlot.getAddressSlot(S); p.value = a; } }`,
+      { solidityImportCompat: true });
+    expect(inline.bytecode).toBe(local.bytecode);
+  });
+});
+
+// Three Solidity-compat gaps surfaced by evm/memory/YulMem.sol (its primary MemExp compiles; a parse/AstBuilder
+// error in a non-primary contract fails the whole file, so each must parse / defer rather than hard-error).
+describe('YulMem.sol compat gaps', () => {
+  it('parses the Yul calldata accessors data.offset / data.length (non-primary; unlowerable body is fine)', () => {
+    // `data.length` (a DotLength token) previously failed to parse, failing the whole file. Now it parses; the
+    // calldatacopy body is unlowerable but lives in a non-primary contract, so the primary still compiles.
+    const a = compileString('contract Uses { function f(address t, bytes calldata data) external view {'
+      + ' assembly { let p := mload(0x40) calldatacopy(p, data.offset, data.length) } } }'
+      + ' contract Prim { function g() external pure returns (uint256) { return 1; } }',
+    { solidityImportCompat: true });
+    expect(a.contractName).toBe('Prim');
+  });
+  it('accepts a mix of named and unnamed return values under compat', () => {
+    const a = compileString('contract C { function f() public pure returns (bytes32 p, uint256[] memory) {'
+      + ' p = bytes32(0); uint256[] memory a2; return (p, a2); } }', { solidityImportCompat: true });
+    expect(a.contractName).toBe('C');
+  });
+  it('still rejects a mix of named/unnamed returns natively', () => {
+    expect(() => compileString('contract C { function f() returns (int p, int) { return (1, 2); } }'))
+      .toThrow(/All return values must be named/);
+  });
+  it('defers new bytes(n): a runtime-length use is deferred (no whole-file failure) but errors when compiled', () => {
+    // Compiled use -> the deferred codegen error fires (sound, not a silent empty-bytes value).
+    expect(() => compileString('contract C { function f(uint n) external pure returns (bytes memory) {'
+      + ' return new bytes(n); } }', { solidityImportCompat: true })).toThrow(/no BCH analogue/);
+  });
+  it('still folds new bytes(constant) to a zero-filled literal', () => {
+    expect(compileString('contract C { function f() external pure returns (bytes memory) { return new bytes(4); } }',
+      { solidityImportCompat: true }).contractName).toBe('C');
   });
 });

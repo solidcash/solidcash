@@ -1,0 +1,204 @@
+import { describe, it, expect } from 'vitest';
+import { compileString } from '../src/index.js';
+
+// External and low-level calls: interface-typed targets, call{value}, transfer/send, and their receivers.
+
+describe('Low-level call options + tuple-slot modifiers + value units', () => {
+  it('supports the {value:} call option on a low-level call', () => {
+    const a = compileString('contract C() { int n; function f(address to, bytes data, int v) { (bool ok, bytes res) = to.call{value: v}(data); require(ok); this.n = res.length; } }');
+    expect(a.contractName).toBe('C');
+  });
+
+  it('supports a data-location modifier in a tuple slot', () => {
+    const a = compileString('contract C() { int n; function f(address to, bytes data) { (bool ok, bytes memory res) = to.call(data); require(ok); this.n = res.length; } }');
+    expect(a.contractName).toBe('C');
+  });
+
+  it.each([
+    ['ether', 'this.n = 1 ether;'],
+    ['gwei', 'this.n = 2 gwei;'],
+    ['wei', 'this.n = 100 wei;'],
+  ])('accepts the %s value unit', (_l, body) => {
+    expect(compileString(`contract C() { int n; function f() { ${body} } }`).contractName).toBe('C');
+  });
+});
+
+describe('SBE-6: external calls on interface-typed variables (EVM parity)', () => {
+  const IFACE = 'interface IERC20 { function transferFrom(address f, address t, int a) external returns (bool); }';
+  it('routes a method call on an interface-typed state var to an external call', () => {
+    const a = compileString(`${IFACE}
+      contract C(IERC20 token) {
+        function f(address from, address to, sig s, pubkey pk) {
+          bool ok = token.transferFrom(from, to, 5);
+          require(checkSig(s, pk));
+        }
+      }`);
+    expect(a.contractName).toBe('C');
+  });
+  it('routes a method call on an interface-typed local (IFoo x = IFoo(addr))', () => {
+    const a = compileString(`interface IFoo { function bar(int x) external returns (int); }
+      contract C() {
+        function f(address a, sig s, pubkey pk) { IFoo foo = IFoo(a); int r = foo.bar(5); require(checkSig(s, pk)); }
+      }`);
+    expect(a.contractName).toBe('C');
+  });
+  it('routes a method call on an interface-typed parameter', () => {
+    const a = compileString(`interface IFoo { function bar(int x) external returns (int); }
+      contract C() { function f(IFoo foo, sig s, pubkey pk) { int r = foo.bar(5); require(checkSig(s, pk)); } }`);
+    expect(a.contractName).toBe('C');
+  });
+});
+
+describe('SBE-7: ether-send via low-level call{value:}', () => {
+  it('addr.call{value:}(data) on an address variable', () => {
+    const a = compileString('contract C() { function f(address dst, sig s, pubkey pk) { (bool ok, bytes d) = dst.call{value: 100}(0x); require(checkSig(s, pk)); } }');
+    expect(a.contractName).toBe('C');
+  });
+  it('msg.sender.call{value:}(data)', () => {
+    const a = compileString('contract C() { function f(sig s, pubkey pk) { (bool ok, bytes d) = msg.sender.call{value: 100}(0x); require(checkSig(s, pk)); } }');
+    expect(a.contractName).toBe('C');
+  });
+});
+
+describe('SBE-8: stateless value-send (transfer/send) compiles (no stateful block required)', () => {
+  it('compiles address.transfer() in a stateless contract (output verified at an absolute index)', () => {
+    const a = compileString('contract C() { function f(address payable dst, sig s, pubkey pk) { dst.transfer(100); require(checkSig(s, pk)); } }');
+    expect(a.contractName).toBe('C');
+  });
+  it('compiles address.send() in a stateless contract', () => {
+    const a = compileString('contract C() { function f(address payable dst, sig s, pubkey pk) { bool ok = dst.send(100); require(checkSig(s, pk)); } }');
+    expect(a.contractName).toBe('C');
+  });
+  it('still allows address.transfer() in a stateful contract', () => {
+    const a = compileString('contract C() { int n; function f(address payable dst, sig s, pubkey pk) { dst.transfer(100); this.n = 1; require(checkSig(s, pk)); } }');
+    expect(a.contractName).toBe('C');
+  });
+});
+
+describe('SBE-13: void external-call helpers are inlined at internal call sites (SafeERC20 pattern)', () => {
+  const IFACE = 'interface IERC20 { function transferFrom(address f, address t, int a) external returns (bool); }';
+  it('inlines a helper called twice; each inline collects its own external call', () => {
+    const a = compileString(`${IFACE}
+      contract C(IERC20 token1, IERC20 token2) {
+        int n;
+        function _safe(IERC20 t, address f, address r, int v) {
+          bool sent = t.transferFrom(f, r, v); require(sent);
+        }
+        function go(address f, address r, sig s, pubkey pk) {
+          require(checkSig(s, pk));
+          _safe(token1, f, r, 5);
+          _safe(token2, r, f, 7);
+          this.n = 1;
+        }
+      }`);
+    // Two internal calls -> two inlined transferFrom external calls in `go` (the helper's `sent` local is
+    // alpha-renamed per inline, so the two copies do not collide).
+    const go = a.abi.find((f) => f.name === 'go');
+    expect(go?.externalCalls?.length).toBe(2);
+    expect(go?.externalCalls?.every((c) => c.functionName === 'transferFrom')).toBe(true);
+  });
+});
+
+describe('external call on a tuple-destructured / copied local interface var', () => {
+  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  const iface = 'interface IERC20 { function transferFrom(address f, address t, uint256 a) external returns (bool);'
+    + ' function balanceOf(address o) external view returns (uint256); function transfer(address t, uint256 a) external returns (bool); }';
+
+  it('routes a method call on a tuple-destructured interface var to an external call', () => {
+    expect(cc(`${iface} contract C { IERC20 token0; IERC20 token1;`
+      + ' function swap(uint256 amt) public { (IERC20 tokenIn, IERC20 tokenOut) = (token0, token1);'
+      + ' tokenIn.transferFrom(msg.sender, address(this), amt); require(true); } }')).toBe('C');
+  });
+
+  it('routes a method call on a tuple-ternary-destructured interface var (CSAMM shape)', () => {
+    expect(cc(`${iface} contract C { IERC20 token0; IERC20 token1;`
+      + ' function swap(bool isToken0, uint256 amt) public {'
+      + ' (IERC20 tokenIn, IERC20 tokenOut) = isToken0 ? (token0, token1) : (token1, token0);'
+      + ' tokenIn.transferFrom(msg.sender, address(this), amt);'
+      + ' uint256 x = tokenIn.balanceOf(address(this)); tokenOut.transfer(msg.sender, x); require(true); } }')).toBe('C');
+  });
+});
+
+describe('SBE-21: external call on a state-var target in fallback/receive', () => {
+  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  // SynthesizeExternalAddressLocals visits fallback/receive too, so a re-entrancy-style fallback that calls
+  // back into an interface/contract-typed state var resolves the target like any function (unblocks ReEntrancy).
+  it('compiles a fallback + receive that call a contract-typed state var', () => {
+    expect(cc('contract Store { int counter; function withdraw() external { require(true); } }'
+      + ' contract C { Store s; constructor(address a){ s = Store(a); }'
+      + ' fallback() external { s.withdraw(); }'
+      + ' receive() external payable { s.withdraw(); } }')).toBe('C');
+  });
+});
+
+// Low-level call `.call{value:}(data)` on a COMPLEX (non-identifier) address receiver: the receiver type is
+// resolved structurally in the symbol-table pass (types are not on nodes yet). Unblocks MultiSigWallet's
+// `transactions[i].to.call{value: ...value}(...data)` (a struct field of an array element).
+describe('Low-level call on a struct-field / array-element address receiver', () => {
+  it('compiles `structVar.field.call{value:}(data)` where the struct is an array element', () => {
+    const a = compileString(
+      'contract C { struct T { address to; uint256 value; bytes data; } T[] txs;'
+      + ' function exec(uint256 i) public { T storage t = txs[i];'
+      + ' (bool ok,) = t.to.call{value: t.value}(t.data); require(ok); } }',
+      { solidityImportCompat: true },
+    );
+    expect(a.contractName).toBe('C');
+    expect(a.bytecode.length).toBeGreaterThan(0);
+  });
+});
+
+// A redundant same-interface cast on an interface-typed state-var external-call target (`IFoo(pool).bar()`,
+// where `pool` is already IFoo-typed) is a no-op cast; it must route through the same synthesized __extaddr_
+// local as the bare `pool.bar()` form instead of demanding a param target.
+describe('redundant interface cast on a state-var external-call target', () => {
+  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  const iface = 'interface IFoo { function bar() external; }';
+  it('accepts IFoo(statePool).bar() like the bare statePool.bar()', () => {
+    expect(cc(`${iface} contract C { IFoo pool; constructor(address _p) { pool = IFoo(_p); }`
+      + ' function f() external { IFoo(pool).bar(); } }')).toBe('C');
+  });
+  it('accepts the immutable-state-var form too', () => {
+    expect(cc(`${iface} contract C { IFoo immutable pool; constructor(address _p) { pool = IFoo(_p); }`
+      + ' function f() external { IFoo(pool).bar(); } }')).toBe('C');
+  });
+});
+
+// An external-call address local must survive to the covenant epilogue. Reading the same handle another way in
+// the same function (`address(car).balance` alongside `car.method()`) must not OP_ROLL-consume it as a last use.
+describe('external-call address local survives a same-function balance read', () => {
+  const base = 'contract Car { address owner; constructor(address _o) { owner = _o; }'
+    + ' function owner_() external view returns (address) { return owner; } }';
+  const cc = (body: string): string => compileString(
+    `${base} contract F { Car[] cars; function g(uint i) public view returns (${body} } }`,
+    { solidityImportCompat: true },
+  ).contractName;
+  it('compiles ext-call then address(handle).balance in a tuple', () => {
+    expect(cc('address, uint) { Car car = cars[i]; return (car.owner_(), address(car).balance);')).toBe('F');
+  });
+  it('does not regress an ext-call with no balance read', () => {
+    expect(cc('address) { Car car = cars[i]; return car.owner_();')).toBe('F');
+  });
+});
+
+// Solidity auto-generates an external getter for every `public` state var. Genuine `address` getters are now
+// synthesized (so `other.owner()` resolves), while enum/contract-typed vars stay skipped: they are AddressType
+// placeholders pre-semantic (interfaceName set) and a placeholder-typed getter would trip ReturnTypeMismatch.
+describe('public address state-var auto-getter (external-callable)', () => {
+  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  it('synthesizes an address getter and resolves an external call to it', () => {
+    expect(cc('contract Car { address public owner; constructor(address _o) { owner = _o; } }'
+      + ' contract F { Car[] cars; function g(uint i) public view returns (address) {'
+      + ' Car car = cars[i]; return car.owner(); } }')).toBe('F');
+  });
+  it('exposes the address getter in the contract ABI', () => {
+    const abi = compileString('contract Car { address public owner; constructor(address _o) { owner = _o; } }',
+      { solidityImportCompat: true }).abi;
+    const g = abi.find((f) => f.name === 'owner');
+    expect(g?.outputs?.[0]?.type).toBe('address');
+  });
+  it('still skips an enum-typed public var (no unsound placeholder getter)', () => {
+    const abi = compileString('contract C { enum S { A, B } S public status; int n; function f() public { this.n = 1; } }',
+      { solidityImportCompat: true }).abi;
+    expect(abi.some((f) => f.name === 'status')).toBe(false);
+  });
+});

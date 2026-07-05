@@ -2280,3 +2280,55 @@ describe('nested lvalue write: state mapping struct array-field element (m[i].ar
     { solidityImportCompat: true }).contractName).toBe('C');
   });
 });
+
+// A struct-with-a-mapping-field flattens each field to a `<var>__<field>` state collection; a trailing member
+// after the flattened mapping index (`o.data[k2].valid = v`) writes the value-struct scalar field.
+describe('nested lvalue write: struct-with-mapping field (o.data[k2].valid = v)', () => {
+  const decl = 'contract C { struct Inner { bool valid; } struct Outer { mapping(uint=>Inner) data; } Outer o;';
+  const cc = (body: string): string => compileString(
+    `${decl} function f(uint k2, bool b, sig s, pubkey pk) public { require(checkSig(s,pk)); ${body} } }`,
+    { solidityImportCompat: true },
+  ).contractName;
+  it('writes a scalar field of the value struct behind the flattened mapping', () => {
+    expect(cc('o.data[k2].valid = b;')).toBe('C');
+  });
+  it('still writes the whole value struct (o.data[k2] = Inner(b))', () => {
+    expect(cc('o.data[k2] = Inner(b);')).toBe('C');
+  });
+});
+
+// The deepest case: `mapping(K => struct{ mapping })`. The value struct's mapping field flattens through the outer
+// key into a nested state mapping `providers__data[k][k2]`, so `providers[k].data[k2].valid = v` resolves.
+describe('nested lvalue write: mapping of struct-with-mapping (providers[k].data[k2].valid = v)', () => {
+  const decl = 'contract C { struct Inner { bool valid; uint amt; } struct Outer { mapping(uint=>Inner) data; bool active; }'
+    + ' mapping(address=>Outer) providers;';
+  const cc = (body: string): string => compileString(
+    `${decl} function f(address k, uint k2, bool b, uint v, sig s, pubkey pk) public { require(checkSig(s,pk)); ${body} } }`,
+    { solidityImportCompat: true },
+  ).contractName;
+  it('writes a scalar field of the innermost value struct', () => {
+    expect(cc('providers[k].data[k2].valid = b;')).toBe('C');
+  });
+  it('supports a compound write on the innermost value struct field', () => {
+    expect(cc('providers[k].data[k2].amt += v;')).toBe('C');
+  });
+  it('writes the whole innermost value struct', () => {
+    expect(cc('providers[k].data[k2] = Inner(b, v);')).toBe('C');
+  });
+  it('writes a scalar field of the outer value struct (providers[k].active = b)', () => {
+    expect(cc('providers[k].active = b;')).toBe('C');
+  });
+  it('reads through the whole chain (providers[k].data[k2].valid)', () => {
+    expect(cc('require(providers[k].data[k2].valid == b);')).toBe('C');
+  });
+  it('desugars byte-for-byte to the manually-flattened nested mapping form', () => {
+    const flattened = compileString('contract C { struct Inner { bool valid; } struct Outer { mapping(uint=>Inner) data; }'
+      + ' mapping(address=>Outer) providers;'
+      + ' function f(address k, uint k2, bool b, sig s, pubkey pk) public { require(checkSig(s,pk));'
+      + ' providers[k].data[k2].valid = b; } }', { solidityImportCompat: true });
+    const manual = compileString('contract C { struct Inner { bool valid; } mapping(address=>mapping(uint=>Inner)) providers__data;'
+      + ' function f(address k, uint k2, bool b, sig s, pubkey pk) public { require(checkSig(s,pk));'
+      + ' providers__data[k][k2].valid = b; } }', { solidityImportCompat: true });
+    expect(flattened.bytecode).toBe(manual.bytecode);
+  });
+});

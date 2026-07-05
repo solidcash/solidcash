@@ -300,6 +300,11 @@ export default class AstBuilder
   // vars; reads of `<var>.<field>` are rewritten to the flattened name (visitFieldAccess).
   private mappingStructStateVars: Map<string, StructType> = new Map();
 
+  // State mappings `mapping(K => Struct)` whose value struct itself bears a mapping/dynamic field. Flattened by
+  // prepending the outer key: `providers[k].data[k2]` -> `providers__data[k][k2]` (a nested state mapping).
+  // Maps the mapping name to its value struct; reads/writes of `<var>[k].<field>` route to the flattened name.
+  private mappingStructValueVars: Map<string, StructType> = new Map();
+
   // `using L for T`: bare struct type name -> library, so `d.method(args)` on a T-typed struct var desugars
   // to `L.method(d, args)`.
   private usingForLibraries: Map<string, string> = new Map();
@@ -711,16 +716,36 @@ export default class AstBuilder
     }
     stateVariables = expandedStateVars;
 
+    // Flatten single-key state mappings whose value struct itself bears a mapping/dynamic field (no single-value
+    // representation): `mapping(K => Outer)` -> one flattened collection per Outer field, keyed by the outer key
+    // prepended: `providers__data : mapping(K => <Outer.data type>)`. `providers[k].data[k2]` then routes to the
+    // nested state mapping `providers__data[k][k2]`.
+    this.mappingStructValueVars = new Map();
+    const expandedCollections: CollectionNode[] = [];
+    for (const col of collections) {
+      const valStruct = col.type instanceof MappingType ? this.structFromType(col.type.valueType) : undefined;
+      if (col.type instanceof MappingType && valStruct && this.structNeedsFieldFlattening(valStruct)) {
+        this.mappingStructValueVars.set(col.name, valStruct);
+        for (const field of valStruct.fields) {
+          const flatType = new MappingType(col.type.keyType, field.type, col.type.keyName);
+          const flat = new CollectionNode(flatType, `${col.name}__${field.name}`);
+          flat.location = col.location;
+          expandedCollections.push(flat);
+        }
+      } else {
+        expandedCollections.push(col);
+      }
+    }
+    collections.length = 0;
+    collections.push(...expandedCollections);
+
     // Record state mappings whose value is a struct, so `m[i].arr[j] = v` can desugar (read the struct into a
     // temp, write the array-field element, write it back). Covers plain `mapping(K => S)` and the flattened
     // mapping-in-struct fields `X__field` (their value structs). Resolves a placeholder (defined-later) value.
     this.stateMappingValueStruct = new Map();
     for (const col of collections) {
       if (!(col.type instanceof MappingType)) continue;
-      const vt = col.type.valueType;
-      const st = vt instanceof StructType
-        ? vt
-        : (vt instanceof AddressType && vt.interfaceName ? this.structMap.get(vt.interfaceName) : undefined);
+      const st = this.structFromType(col.type.valueType);
       if (st) this.stateMappingValueStruct.set(col.name, st);
     }
 
@@ -2445,6 +2470,13 @@ export default class AstBuilder
     return undefined;
   }
 
+  // Resolve a type to its StructType (directly, or via an interface-name placeholder for a defined-later struct).
+  private structFromType(t: Type): StructType | undefined {
+    if (t instanceof StructType) return t;
+    if (t instanceof AddressType && t.interfaceName) return this.structMap.get(t.interfaceName);
+    return undefined;
+  }
+
   // Unified lvalue assignment: `this.x`, `this.m[k]`, `this.m[k].f`, `m[k]`, `m[k].f`, `m[k1][k2]` (with any
   // compound op). The lvalue shape selects the assignment node; semantic analysis routes state vs local. A
   // numKeys-0 lvalue is always `this.<scalar>` (the bare-scalar form lives in assignStatement).
@@ -2469,6 +2501,32 @@ export default class AstBuilder
     const valueCtx = isIncDec ? undefined : ctx.expression();
     const loc = Location.fromCtx(ctx);
 
+    // Mapping-of-flattened-struct write: `providers[k].data[k2] op= v` / `providers[k].data[k2].valid op= v` /
+    // `providers[k].scalar op= v` -> the flattened nested state mapping `providers__<field>` with all keys and a
+    // trailing scalar field. All the index keys index the flattened nested mapping (outer key + field-mapping key).
+    if (!isThis && !isIncDec && fieldName && this.mappingStructValueVars.has(rawName)
+      && this.mappingStructValueVars.get(rawName)!.fields.some((f) => f.name === fieldName)) {
+      const flatName = `${rawName}__${fieldName}`;
+      const trailing = members.slice(1); // field chain into the flattened mapping's value struct
+      const keys = (): ExpressionNode[] => keyCtxs.map((e) => this.visit(e) as ExpressionNode);
+      if (trailing.length <= 1) {
+        const read = (): ExpressionNode => {
+          const acc = new MappingAccessNode(flatName, keys());
+          acc.location = nameLoc;
+          if (trailing.length === 0) return acc;
+          const fa = new FieldAccessNode(acc, trailing[0]);
+          fa.location = loc;
+          return fa;
+        };
+        const value = op === '=' ? this.visit(valueCtx!) as ExpressionNode : this.compoundRhs(read(), op, valueCtx, loc);
+        const assign = trailing.length === 0
+          ? new MappingAssignNode(flatName, keys(), value)
+          : new MappingFieldAssignNode(flatName, keys(), trailing[0], value);
+        assign.location = loc;
+        return assign;
+      }
+    }
+
     // Mapping-bearing struct field write: `<var>.<field>[k...] op= v` -> write the flattened state collection
     // `<var>__<field>` (it is a state mapping). Handles `=` and compound ops.
     if (!isThis && !isIncDec && fieldName && keyCtxs.length > 0 && this.mappingStructStateVars.has(rawName)) {
@@ -2476,16 +2534,37 @@ export default class AstBuilder
       if (field && field.type instanceof MappingType) {
         const flatName = `${rawName}__${fieldName}`;
         const flatKeys = (): ExpressionNode[] => keyCtxs.map((e) => this.visit(e) as ExpressionNode);
-        const value = op === '='
-          ? this.visit(valueCtx!) as ExpressionNode
-          : this.compoundRhs((() => {
-            const m = new MappingAccessNode(flatName, flatKeys());
-            m.location = nameLoc;
-            return m;
-          })(), op, valueCtx, loc);
-        const assign = new MappingAssignNode(flatName, flatKeys(), value);
-        assign.location = loc;
-        return assign;
+        // Trailing scalar member into the mapping value struct: `o.data[k].valid op= v` -> a field write on the
+        // flattened mapping (same shape as `m[k].field op= v`). Depth-1 scalar field of the value struct only.
+        if (members.length === 2) {
+          const vf = this.structFromType(field.type.valueType)?.fields.find((f) => f.name === members[1]);
+          if (vf && !(vf.type instanceof MappingType) && !(vf.type instanceof ArrayType)) {
+            const value = op === '='
+              ? this.visit(valueCtx!) as ExpressionNode
+              : this.compoundRhs((() => {
+                const acc = new MappingAccessNode(flatName, flatKeys());
+                acc.location = nameLoc;
+                const fa = new FieldAccessNode(acc, members[1]);
+                fa.location = loc;
+                return fa;
+              })(), op, valueCtx, loc);
+            const assign = new MappingFieldAssignNode(flatName, flatKeys(), members[1], value);
+            assign.location = loc;
+            return assign;
+          }
+        }
+        if (members.length === 1) {
+          const value = op === '='
+            ? this.visit(valueCtx!) as ExpressionNode
+            : this.compoundRhs((() => {
+              const m = new MappingAccessNode(flatName, flatKeys());
+              m.location = nameLoc;
+              return m;
+            })(), op, valueCtx, loc);
+          const assign = new MappingAssignNode(flatName, flatKeys(), value);
+          assign.location = loc;
+          return assign;
+        }
       }
       if (field && field.type instanceof ArrayType && keyCtxs.length === 1) {
         const flatName = `${rawName}__${fieldName}`;
@@ -3184,6 +3263,21 @@ export default class AstBuilder
       const flat = new IdentifierNode(`${expression.name}__${fieldName}`);
       flat.location = Location.fromCtx(ctx);
       return flat;
+    }
+
+    // Mapping-of-flattened-struct read: `providers[k].<field>` -> `providers__<field>[k]` (prepend the outer
+    // key(s) into the flattened nested state mapping). Enables `providers[k].data[k2]...`.
+    const msvPath = this.extractStorageAccessPath(expression);
+    if (msvPath && this.mappingStructValueVars.has(msvPath.container)
+      && this.mappingStructValueVars.get(msvPath.container)!.fields.some((f) => f.name === fieldName)) {
+      let acc: ExpressionNode = new IdentifierNode(`${msvPath.container}__${fieldName}`);
+      acc.location = Location.fromCtx(ctx);
+      for (const k of msvPath.keys) {
+        const next = new ArrayAccessNode(acc, cloneNode(k));
+        next.location = Location.fromCtx(ctx);
+        acc = next;
+      }
+      return acc;
     }
 
     // Library-namespaced enum: `L.E` (L a library, E a library enum) -> the bare enum `E`, so `L.E.Member` and

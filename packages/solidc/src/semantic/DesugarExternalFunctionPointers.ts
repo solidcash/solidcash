@@ -11,6 +11,8 @@ import {
   FunctionCallStatementNode,
   MethodCallNode,
   MethodCallStatementNode,
+  ExpressionStatementNode,
+  TernaryOpNode,
   FieldAccessNode,
   IdentifierNode,
   ExpressionNode,
@@ -19,20 +21,22 @@ import AstTraversal from '../ast/AstTraversal.js';
 import { cloneNode } from '../ast/clone.js';
 
 /**
- * Straight-line FOREIGN external function pointers. A `function(...) external f = IFoo(addr).method` targets
- * ANOTHER contract, so `f(args)` is a cross-contract call. When f is a simple compile-time alias (assigned once
- * to a foreign interface member, then called), desugar it to the existing external-call form - sound by
- * reduction to the tested external-call covenant + SDK path:
+ * FOREIGN external function pointers. A `function(...) external f = IFoo(addr).method` targets ANOTHER contract,
+ * so `f(args)` is a cross-contract call. When f is a compile-time alias, desugar it to the external-call form:
  *
- *   function() external f = IFoo(addr).method;   f(args)   ->   IFoo(addr).method(args)
+ *   FIXED method:           function() external f = IFoo(addr).method;         f(args) -> IFoo(addr).method(args)
+ *   SAME-ADDRESS VARYING:   function() external f = cond ? IC(addr).a : IC(addr).b;
+ *                           f(args) -> IC(addr).a(args) with a RUNTIME selector `cond ? IC.a.selector : IC.b.selector`
  *
- * Self pointers (`this.f`) are handled earlier as internal OP_INVOKE and never reach here (they parse as
- * StateAccess, not a FieldAccess over an interface instance). A pointer that is reassigned, stored, or passed
- * is left untouched - its external FunctionType has no value representation yet, so the type checker reports it.
- * Only the straight-line alias case fires.
+ * The fixed case reduces to the tested external call (sound by reduction). The varying case is the same address
+ * with a runtime method choice: ONE co-spend of the target, the covenant asserting the co-spent selector equals
+ * the runtime selector (bound to cond) - avoiding the two-slot duplicate co-spend of an if-conversion.
+ *
+ * Self pointers (`this.f`) are handled earlier as internal OP_INVOKE (StateAccess, not a FieldAccess over an
+ * interface instance). A pointer that is reassigned, stored, or passed is left untouched.
  */
 export default class DesugarExternalFunctionPointers extends AstTraversal {
-  private aliases = new Map<string, FieldAccessNode>();
+  private aliases = new Map<string, ExpressionNode>();
 
   visitSourceFile(node: SourceFileNode): Node {
     node.importedContracts = this.visitList(node.importedContracts) as ContractNode[];
@@ -58,13 +62,12 @@ export default class DesugarExternalFunctionPointers extends AstTraversal {
     return node;
   }
 
-  // Collect single-assignment foreign external-pointer aliases (`function(...) external f = IFoo(addr).method`).
-  // A name defined more than once is dropped, so it stays a normal (type-checker-rejected) pointer.
+  // Collect single-assignment foreign external-pointer aliases. A name defined more than once is dropped.
   private collectAliases(node: Node): void {
     const seen = new Set<string>();
     const walk = (n: Node): void => {
       if (n instanceof VariableDefinitionNode && n.type instanceof FunctionType && n.type.isExternal
-          && n.expression instanceof FieldAccessNode) {
+          && n.expression && this.isRewritableAlias(n.expression)) {
         if (seen.has(n.name)) this.aliases.delete(n.name);
         else { this.aliases.set(n.name, n.expression); seen.add(n.name); }
       }
@@ -77,6 +80,37 @@ export default class DesugarExternalFunctionPointers extends AstTraversal {
     walk(node);
   }
 
+  // A rewritable alias RHS is a foreign interface member `IFoo(addr).method` (FIXED), or a ternary of two
+  // members on the SAME interface-cast receiver `cond ? IC(addr).a : IC(addr).b` (SAME-ADDRESS VARYING).
+  private isRewritableAlias(expr: ExpressionNode): boolean {
+    if (expr instanceof FieldAccessNode) return true;
+    if (expr instanceof TernaryOpNode
+        && expr.ifTrue instanceof FieldAccessNode && expr.ifFalse instanceof FieldAccessNode) {
+      const recv = this.castInterfaceName(expr.ifTrue.expression);
+      return recv !== undefined && recv === this.castInterfaceName(expr.ifFalse.expression)
+        && this.sameReceiver(expr.ifTrue.expression, expr.ifFalse.expression);
+    }
+    return false;
+  }
+
+  // The interface name of an `IFace(addr)` cast receiver, or undefined if not a plain interface cast.
+  private castInterfaceName(expr: ExpressionNode): string | undefined {
+    return expr instanceof FunctionCallNode && expr.identifier instanceof IdentifierNode
+      ? expr.identifier.name : undefined;
+  }
+
+  // Structural equality of two receiver expressions (enough for `IFace(addr)` casts: same identifier + args).
+  private sameReceiver(a: ExpressionNode, b: ExpressionNode): boolean {
+    if (a instanceof IdentifierNode && b instanceof IdentifierNode) return a.name === b.name;
+    if (a instanceof FunctionCallNode && b instanceof FunctionCallNode) {
+      return a.identifier instanceof IdentifierNode && b.identifier instanceof IdentifierNode
+        && a.identifier.name === b.identifier.name
+        && a.parameters.length === b.parameters.length
+        && a.parameters.every((p, i) => this.sameReceiver(p, b.parameters[i]));
+    }
+    return false;
+  }
+
   visitBlock(node: BlockNode): Node {
     const out: StatementNode[] = [];
     for (const stmt of node.statements ?? []) {
@@ -84,12 +118,14 @@ export default class DesugarExternalFunctionPointers extends AstTraversal {
       // has(): an uninitialized local has expression===undefined, which must not match a non-alias name.
       if (stmt instanceof VariableDefinitionNode && this.aliases.has(stmt.name)
           && this.aliases.get(stmt.name) === stmt.expression) continue;
-      // A bare `f(args);` statement wraps the call; rewrite the wrapper to a method-call statement.
+      // A bare `f(args);` statement wraps the call; rewrite the wrapper (MethodCall -> method-call statement).
       if (stmt instanceof FunctionCallStatementNode && this.callAlias(stmt.call)) {
-        const mc = this.rewriteCall(stmt.call);
-        const mcs = new MethodCallStatementNode(mc);
-        mcs.location = stmt.location;
-        out.push(mcs);
+        const rewritten = this.rewriteCall(stmt.call);
+        const wrapped = rewritten instanceof MethodCallNode
+          ? new MethodCallStatementNode(rewritten)
+          : new ExpressionStatementNode(rewritten);
+        wrapped.location = stmt.location;
+        out.push(wrapped);
         continue;
       }
       out.push(this.visit(stmt) as StatementNode);
@@ -99,24 +135,48 @@ export default class DesugarExternalFunctionPointers extends AstTraversal {
   }
 
   visitFunctionCall(node: FunctionCallNode): Node {
-    // `f(args)` in expression position (e.g. `require(f(z) == z)`) -> IFoo(addr).method(args).
+    // `f(args)` in expression position (e.g. `require(f(z) == z)`) -> the external call.
     if (this.callAlias(node)) return this.rewriteCall(node);
     return super.visitFunctionCall(node);
   }
 
-  private callAlias(node: FunctionCallNode): FieldAccessNode | undefined {
+  private callAlias(node: FunctionCallNode): ExpressionNode | undefined {
     const id = node.identifier;
     return id instanceof IdentifierNode ? this.aliases.get(id.name) : undefined;
   }
 
-  private rewriteCall(node: FunctionCallNode): MethodCallNode {
-    const fa = this.callAlias(node)!;
-    const mc = new MethodCallNode(
-      cloneNode(fa.expression) as ExpressionNode,
-      fa.name,
-      this.visitList(node.parameters) as ExpressionNode[],
+  private rewriteCall(node: FunctionCallNode): ExpressionNode {
+    const rhs = this.callAlias(node)!;
+    const args = node.parameters.map((a) => cloneNode(a) as ExpressionNode);
+    if (rhs instanceof FieldAccessNode) {
+      const mc = new MethodCallNode(cloneNode(rhs.expression) as ExpressionNode, rhs.name, args);
+      mc.location = node.location;
+      return mc;
+    }
+    // SAME-ADDRESS VARYING: one call on the shared receiver + a runtime selector `cond ? m1.sel : m2.sel`.
+    const t = rhs as TernaryOpNode;
+    const mTrue = t.ifTrue as FieldAccessNode;
+    const mFalse = t.ifFalse as FieldAccessNode;
+    const iface = this.castInterfaceName(mTrue.expression)!;
+    const mc = new MethodCallNode(cloneNode(mTrue.expression) as ExpressionNode, mTrue.name, args);
+    mc.runtimeSelector = new TernaryOpNode(
+      cloneNode(t.condition) as ExpressionNode,
+      this.selectorOf(iface, mTrue.name, node),
+      this.selectorOf(iface, mFalse.name, node),
     );
+    mc.runtimeSelector.location = node.location;
     mc.location = node.location;
     return mc;
+  }
+
+  // `IFace.method.selector` (a bytes4 that folds to the method's compile-time selector).
+  private selectorOf(iface: string, method: string, at: Node): FieldAccessNode {
+    const id = new IdentifierNode(iface);
+    id.location = at.location;
+    const methodAccess = new FieldAccessNode(id, method);
+    methodAccess.location = at.location;
+    const sel = new FieldAccessNode(methodAccess, 'selector');
+    sel.location = at.location;
+    return sel;
   }
 }

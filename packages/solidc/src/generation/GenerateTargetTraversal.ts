@@ -10858,6 +10858,18 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.pushToStack(msgSenderTemp);
     }
 
+    // Same-address varying-method pointer: evaluate each slot's RUNTIME selector (`cond ? a.sel : b.sel`) into
+    // a named temp here, on the clean stack (its `cond` param is on the tracked stack; no working values yet).
+    // The per-slot selector check picks it (like the witness param) to bind the co-spent method to cond.
+    const rtSelTemps = new Map<number, string>();
+    for (const slot of this.externalCallSlots) {
+      if (!slot.runtimeSelector) continue;
+      this.visit(slot.runtimeSelector);
+      const name = `__internal__extcall_rtsel_${slot.slotIndex}`;
+      this.stack[0] = name; // rename the just-evaluated top of the tracked stack
+      rtSelTemps.set(slot.slotIndex, name);
+    }
+
     for (const slot of this.externalCallSlots) {
       // Array-element target `IFoo(arr[i]).m()`: verify EVERY co-spent callee against the array in a loop.
       if (slot.inlineLoopDispatch) continue; // handled inline per-iteration in visitExternalFunctionCall
@@ -10936,9 +10948,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emit(Op.OP_SPLIT, locationData);          // [idx, selector, remainder]
         this.emit(Op.OP_DROP, locationData);           // [idx, selector]
 
-        // Compare to expected selector from per-slot selector parameter
-        const selectorName = slotsNeedingSelector.length === 1
-          ? '__internal__externalCallSelector' : `__internal__externalCallSelector${slot.slotIndex}`;
+        // Compare to the expected selector: the runtime selector temp (varying-method pointer) if present,
+        // else the compile-time witness param. Both sit below the 2 untracked working values (+2).
+        const selectorName = rtSelTemps.get(slot.slotIndex)
+          ?? (slotsNeedingSelector.length === 1
+            ? '__internal__externalCallSelector' : `__internal__externalCallSelector${slot.slotIndex}`);
         const selectorIdx = this.getStackIndex(selectorName);
         this.emit(encodeInt(BigInt(selectorIdx + 2)), locationData);
         this.emit(Op.OP_PICK, locationData);

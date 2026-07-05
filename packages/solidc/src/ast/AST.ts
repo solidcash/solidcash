@@ -1699,6 +1699,11 @@ export class ExternalFunctionCallNode extends ExpressionNode {
   // EVM-parity expression-form low-level call `(bool, bytes) = addr.call(payload)`: the callee's type/function
   // are unknown at compile time, the return is read as a single opaque bytes blob, identity-bound to addr.
   opaqueReturn?: boolean;
+  // Set for a same-address varying-method function pointer `f = cond ? c.a : c.b; f(args)`: the RUNTIME selector
+  // expression (`cond ? c.a.selector : c.b.selector`). Codegen stashes it into a temp and the covenant asserts
+  // the co-spent callee's selector == it (instead of the compile-time witness), binding the co-spent method to
+  // `cond`. One co-spend, one epilogue verification (no per-branch duplicate).
+  runtimeSelector?: ExpressionNode;
 
   constructor(
     public interfaceName: string,
@@ -1742,6 +1747,9 @@ export interface ExternalCallSlot {
   computedOffset: number;
   returnSlotIndex?: number; // sequential index among slots with hasReturnValues
   needsSelectorVerification?: boolean; // true when callee interface has >1 callable function
+  // Same-address varying-method pointer: the RUNTIME selector expression (`cond ? a.selector : b.selector`).
+  // The epilogue evaluates it and asserts the co-spent callee's selector == it, instead of the witness param.
+  runtimeSelector?: ExpressionNode;
   callMode?: ExternalCallMode;
   argSources?: ExternalCallArgSource[];
   opaqueReturn?: boolean; // generic dynamic dispatch: opaque bytes return, identity-bound to the witnessed address
@@ -1799,6 +1807,9 @@ export class MethodCallNode extends ExpressionNode {
   callOptions?: CallOptions;
   valueTransferIndex: number = -1; // temporary carrier for pre-scan before transformation
   fieldNames?: string[]; // set for named-arg calls obj.f({a: x}); reordered against the callee's params
+  // Set by DesugarExternalFunctionPointers for a same-address varying-method pointer call: the runtime selector
+  // expression (`cond ? c.a.selector : c.b.selector`); threaded to the external call node in semantic analysis.
+  runtimeSelector?: ExpressionNode;
 
   constructor(
     public object: ExpressionNode,

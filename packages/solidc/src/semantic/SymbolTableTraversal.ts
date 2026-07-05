@@ -3059,6 +3059,9 @@ export default class SymbolTableTraversal extends AstTraversal {
         const calleeFns = this.getCalleeFunctions(node.callInfo.interfaceName);
         if (calleeFns) needsSelectorVerification = calleeFns.length > 1;
       }
+      // A same-address varying-method pointer always needs selector verification (the covenant binds the
+      // co-spent method to the runtime selector, even if the callee has only these two functions).
+      if (node.runtimeSelector) needsSelectorVerification = true;
 
       // Callee data NFT count (for computedOffset + commitment preservation). Interface: from its computed
       // layout; contract callee: from its state vars' nftIndex. A wrong count fails loudly at the dispatch's
@@ -3134,6 +3137,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         requiredDataNftIndices: dataNftIndices,
         computedOffset: 0,
         needsSelectorVerification,
+        ...(node.runtimeSelector && { runtimeSelector: node.runtimeSelector }),
         ...(node.opaqueReturn && { opaqueReturn: true }),
         ...(callMode && callMode !== ExternalCallMode.REGULAR && { callMode }),
         ...(node.callInfo.hasReturnValues && {
@@ -6184,6 +6188,9 @@ export default class SymbolTableTraversal extends AstTraversal {
         const callNode = new ExternalFunctionCallNode(calleeName, visitedVar, node.methodName, parameters);
         callNode.callOptions = node.callOptions;
         callNode.valueTransferIndex = node.valueTransferIndex;
+        // Same-address varying-method pointer: carry + resolve the runtime selector (`cond ? a.selector :
+        // b.selector`, folds to a runtime bytes4). The covenant binds the co-spent method to it (see codegen).
+        if (node.runtimeSelector) callNode.runtimeSelector = this.visit(node.runtimeSelector) as ExpressionNode;
         if (callNode.callOptions?.value) {
           callNode.callOptions.value = this.visit(callNode.callOptions.value) as ExpressionNode;
         }

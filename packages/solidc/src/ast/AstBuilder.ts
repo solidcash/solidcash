@@ -2043,8 +2043,14 @@ export default class AstBuilder
       lit.location = Location.fromCtx(ctx);
       return lit;
     }
-    throw new Error('new bytes(n) with a non-constant length has no BCH analogue (no dynamic buffer '
-      + 'allocation); use a fixed bytesN or build the value from known parts.');
+    // A runtime length has no BCH analogue (no dynamic buffer allocation). Defer the error to codegen via a
+    // placeholder so a NON-primary contract using it does not fail the whole file (only a compiled use errors).
+    const placeholder = new HexLiteralNode(new Uint8Array(0));
+    placeholder.type = new BytesType();
+    placeholder.codegenError = 'new bytes(n) with a non-constant length has no BCH analogue (no dynamic buffer '
+      + 'allocation); use a fixed bytesN or build the value from known parts.';
+    placeholder.location = Location.fromCtx(ctx);
+    return placeholder;
   }
 
   visitTupleIndexOp(ctx: TupleIndexOpContext): TupleIndexOpNode {
@@ -3532,11 +3538,14 @@ export default class AstBuilder
     const params = ctx.returnParam_list();
     fn.returnTypes = params.map((p) => this.returnParamType(p));
     const named = params.filter((p) => p.anyIdentifier() !== null);
-    if (named.length > 0 && named.length !== params.length) {
+    // Solidity allows a mix of named and unnamed return values; SolidCash needs all-or-none. Under compat,
+    // synthesize a name for each unnamed slot so all are named (a named return may be returned implicitly; an
+    // explicit `return (...)` overrides). Natively, keep the all-or-none requirement.
+    if (named.length > 0 && named.length !== params.length && !this.solidityImportCompat) {
       throw new ParseError('All return values must be named, or none of them', Location.fromCtx(ctx));
     }
-    if (named.length === params.length) {
-      fn.returnNames = params.map((p) => p.anyIdentifier()!.getText());
+    if (named.length === params.length || (named.length > 0 && this.solidityImportCompat)) {
+      fn.returnNames = params.map((p, i) => (p.anyIdentifier() ? p.anyIdentifier()!.getText() : `__ret_${i}`));
     }
     // Warn about no-op data-location modifiers
     for (const p of params) {

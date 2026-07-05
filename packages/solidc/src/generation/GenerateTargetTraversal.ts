@@ -6154,6 +6154,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   visitHexLiteral(node: HexLiteralNode): Node {
+    // A placeholder for an unsupported-but-valid construct (e.g. `new bytes(n)` with a runtime length) that was
+    // deferred from AstBuilder so non-primary contracts do not fail the file; error now that it is being compiled.
+    if (node.codegenError) throw new Error(node.codegenError);
     this.emit(node.value, { location: node.location, positionHint: PositionHint.START });
     this.pushToStack('(value)');
     return node;

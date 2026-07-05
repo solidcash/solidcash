@@ -105,8 +105,15 @@ function buildYulFunctionCall(ctx: YulFunctionCallContext): YulFunctionCallNode 
 }
 
 function buildYulPath(ctx: YulPathContext): YulPathNode {
-  const ids = ctx.anyIdentifier_list().map((t) => t.getText());
-  return loc(new YulPathNode(ids[0], ids.slice(1)), ctx);
+  // Walk children in order so `.length` (a single DotLength token) is captured as a member alongside the
+  // `.` + anyIdentifier members (`.offset`, `.slot`). Skip the bare `.` separators.
+  const parts: string[] = [];
+  for (const child of ctx.children ?? []) {
+    const t = child.getText();
+    if (t === '.') continue;
+    parts.push(t === '.length' ? 'length' : t);
+  }
+  return loc(new YulPathNode(parts[0], parts.slice(1)), ctx);
 }
 
 function buildYulLiteral(ctx: YulLiteralContext): YulLiteralNode {

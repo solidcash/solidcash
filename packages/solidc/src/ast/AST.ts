@@ -1285,6 +1285,11 @@ export class StringLiteralNode extends LiteralNode<string> {
 }
 
 export class HexLiteralNode extends LiteralNode<Uint8Array> {
+  // Set when this literal is a placeholder for an unsupported-but-valid construct (e.g. `new bytes(n)` with a
+  // runtime length): it type-checks as bytes so a NON-primary contract using it does not fail the file, but
+  // codegen throws this message if a compiled contract actually reaches it. See visitHexLiteral.
+  codegenError?: string;
+
   constructor(
     public value: Uint8Array,
   ) {

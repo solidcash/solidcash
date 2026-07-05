@@ -2554,3 +2554,35 @@ describe('inline StorageSlot pointer write (factory(slot).value = v)', () => {
     expect(inline.bytecode).toBe(local.bytecode);
   });
 });
+
+// Three Solidity-compat gaps surfaced by evm/memory/YulMem.sol (its primary MemExp compiles; a parse/AstBuilder
+// error in a non-primary contract fails the whole file, so each must parse / defer rather than hard-error).
+describe('YulMem.sol compat gaps', () => {
+  it('parses the Yul calldata accessors data.offset / data.length (non-primary; unlowerable body is fine)', () => {
+    // `data.length` (a DotLength token) previously failed to parse, failing the whole file. Now it parses; the
+    // calldatacopy body is unlowerable but lives in a non-primary contract, so the primary still compiles.
+    const a = compileString('contract Uses { function f(address t, bytes calldata data) external view {'
+      + ' assembly { let p := mload(0x40) calldatacopy(p, data.offset, data.length) } } }'
+      + ' contract Prim { function g() external pure returns (uint256) { return 1; } }',
+    { solidityImportCompat: true });
+    expect(a.contractName).toBe('Prim');
+  });
+  it('accepts a mix of named and unnamed return values under compat', () => {
+    const a = compileString('contract C { function f() public pure returns (bytes32 p, uint256[] memory) {'
+      + ' p = bytes32(0); uint256[] memory a2; return (p, a2); } }', { solidityImportCompat: true });
+    expect(a.contractName).toBe('C');
+  });
+  it('still rejects a mix of named/unnamed returns natively', () => {
+    expect(() => compileString('contract C { function f() returns (int p, int) { return (1, 2); } }'))
+      .toThrow(/All return values must be named/);
+  });
+  it('defers new bytes(n): a runtime-length use is deferred (no whole-file failure) but errors when compiled', () => {
+    // Compiled use -> the deferred codegen error fires (sound, not a silent empty-bytes value).
+    expect(() => compileString('contract C { function f(uint n) external pure returns (bytes memory) {'
+      + ' return new bytes(n); } }', { solidityImportCompat: true })).toThrow(/no BCH analogue/);
+  });
+  it('still folds new bytes(constant) to a zero-filled literal', () => {
+    expect(compileString('contract C { function f() external pure returns (bytes memory) { return new bytes(4); } }',
+      { solidityImportCompat: true }).contractName).toBe('C');
+  });
+});

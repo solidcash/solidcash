@@ -154,7 +154,6 @@ import type {
   LoopStatementContext,
   StateVariableDeclarationContext,
   ThisExprContext,
-  StoragePointerWriteStatementContext,
   DeleteLocalContext,
   DeleteStateContext,
   DeleteMappingEntryContext,
@@ -2786,40 +2785,6 @@ export default class AstBuilder
   // Inline storage-pointer write `Lib.f(args).field op= v` (OZ StorageSlot). Desugar to the local-pointer form
   // `RetStruct __t = Lib.f(args); __t.field op= v;` (a block spliced by flattenStatements), which
   // LowerStorageSlotPointers then lowers to the __evm_storage register. Needs Lib.f's return struct type.
-  visitStoragePointerWriteStatement(ctx: StoragePointerWriteStatementContext): StatementNode {
-    const loc = Location.fromCtx(ctx);
-    const fnName = ctx.Identifier(1).getText();
-    const retStruct = this.functionReturnStructs.get(fnName);
-    if (!retStruct) {
-      throw new ParseError(
-        `Cannot resolve the storage-pointer factory '${fnName}' for an inline '.value' write; `
-        + 'assign it to a `T storage` local first, then write its member.', loc,
-      );
-    }
-    const exprs = ctx.expression_list();
-    const valueCtx = exprs[exprs.length - 1];
-    const callArgCtxs = exprs.slice(0, -1);
-    const members = ctx.lvMember_list().map((m) => (m.Identifier() ? m.Identifier().getText() : 'value'));
-    const op = ctx._op.text;
-
-    const tmpName = `__nlv_${this.nestedLvalueCounter++}`;
-    // Library functions are keyed by their qualified name (`Lib.f`) in the factory registry, so build the call
-    // with the qualifier to match how the normal `Lib.f(args)` call resolves in LowerStorageSlotPointers.
-    const fnId = new IdentifierNode(`${ctx.Identifier(0).getText()}.${fnName}`);
-    fnId.location = loc;
-    const factoryCall = new FunctionCallNode(fnId, callArgCtxs.map((e) => this.visit(e) as ExpressionNode));
-    factoryCall.location = loc;
-    const decl = new VariableDefinitionNode(retStruct, [], tmpName, factoryCall);
-    decl.location = loc;
-    this.localStructTypes.set(tmpName, retStruct); // so buildStructFieldRebuild types the temp's field write
-    const rebuilt = this.buildStructFieldRebuild(tmpName, loc, members, false, loc,
-      (chainRead) => (op === '='
-        ? this.visit(valueCtx) as ExpressionNode
-        : this.compoundRhs(chainRead, op, valueCtx, loc)))!;
-    const block = new BlockNode([decl, rebuilt]);
-    block.location = loc;
-    return block;
-  }
 
   visitMappingAccess(ctx: MappingAccessContext): MappingAccessNode {
     const name = ctx.Identifier().getText();
@@ -3796,6 +3761,45 @@ export default class AstBuilder
     return arrType ? this.usingForLibraries.get(arrType.toString()) : undefined;
   }
 
+  // Inline storage-pointer write `Lib.f(args).field... op= v` (OpenZeppelin StorageSlot): a call sits at the base
+  // of the lvalue chain, which extractLvalue cannot represent, so desugar to `RetStruct __t = Lib.f(args);
+  // __t.field... op= v;`. Returns undefined when the LHS is not a `.field` chain over a `Lib.f(args)` call.
+  private buildStoragePointerWrite(
+    lhsCtx: ExpressionContext, op: string, valueCtx: ExpressionContext, loc: Location,
+  ): StatementNode | undefined {
+    const members: string[] = [];
+    let cur: ExpressionContext = lhsCtx;
+    while (cur instanceof FieldAccessContext) {
+      const mn = cur.memberName();
+      const member = mn.Identifier() ? mn.Identifier().getText() : (mn.getText() === '.value' ? 'value' : null);
+      if (member === null) return undefined;
+      members.unshift(member);
+      cur = cur.expression();
+    }
+    if (members.length === 0 || !(cur instanceof FunctionCallExpressionContext)) return undefined;
+    const fc = cur.functionCall();
+    const ids = fc.Identifier_list();
+    if (ids.length !== 2 || !fc.expressionList()) return undefined; // must be a namespaced `Lib.f(args)`
+    const fnName = ids[1].getText();
+    const retStruct = this.functionReturnStructs.get(fnName);
+    if (!retStruct) {
+      throw new ParseError(
+        `Cannot resolve the storage-pointer factory '${fnName}' for an inline '.value' write; `
+        + 'assign it to a `T storage` local first, then write its member.', loc,
+      );
+    }
+    const tmpName = `__nlv_${this.nestedLvalueCounter++}`;
+    const fnId = new IdentifierNode(`${ids[0].getText()}.${fnName}`); fnId.location = loc;
+    const factoryCall = new FunctionCallNode(fnId, fc.expressionList().expression_list().map((e) => this.visit(e) as ExpressionNode));
+    factoryCall.location = loc;
+    const decl = new VariableDefinitionNode(retStruct, [], tmpName, factoryCall); decl.location = loc;
+    this.localStructTypes.set(tmpName, retStruct);
+    const rebuilt = this.buildStructFieldRebuild(tmpName, loc, members, false, loc,
+      (chainRead) => (op === '=' ? this.visit(valueCtx) as ExpressionNode : this.compoundRhs(chainRead, op, valueCtx, loc)))!;
+    const block = new BlockNode([decl, rebuilt]); block.location = loc;
+    return block;
+  }
+
   // `receiver.push(value)` on an array / mapping-entry / struct-field / bytes state var, reconstructed from the
   // parsed receiver (rawName, isThis, keyFns = mapping index keys, member = struct array-field). Unifies the old
   // bare arrayPushStatement and this-prefixed stateArrayPushStatement dispatch (a name is exactly one of
@@ -3900,6 +3904,10 @@ export default class AstBuilder
     // Assignment `lvalue op= value` (left-factored): reconstruct the lvalue segments from the parsed LHS and
     // delegate to the shared builder (the same one the lvPart assignmentStatement path uses).
     if (ctx._op) {
+      // Storage-pointer inline write `Lib.f(args).field op= v` (a call in the lvalue chain, which extractLvalue
+      // cannot represent): desugar to a `T storage` local first.
+      const sp = this.buildStoragePointerWrite(lhsCtx, ctx._op.text, ctx.expression(1), Location.fromCtx(ctx));
+      if (sp) return sp;
       const lv = this.extractLvalue(lhsCtx);
       if (!lv) throw new ParseError('Invalid assignment target', Location.fromCtx(lhsCtx));
       return this.buildLvalueAssign(

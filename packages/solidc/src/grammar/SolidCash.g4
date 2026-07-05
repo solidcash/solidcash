@@ -277,7 +277,6 @@ statement
     | variableDefinition
     | tupleAssignment
     | prefixIncDecStatement
-    | storagePointerWriteStatement
     | timeOpStatement
     | requireStatement
     | ifStatement
@@ -333,13 +332,6 @@ selfdestructStatement
 emitStatement
     : 'emit' Identifier ('.' Identifier)? '(' '{' (namedArg (',' namedArg)* ','?)? '}' ')' ';'
     | 'emit' Identifier ('.' Identifier)? expressionList ';'
-    ;
-
-// A storage-pointer-factory call as an assignment target: `Lib.f(args).field op= v` (OpenZeppelin StorageSlot
-// inline write). The call in the lvalue chain is not an lvPart, so it needs its own rule; AstBuilder desugars it
-// to the local-pointer form (`T tmp = Lib.f(args); tmp.field op= v;`) which LowerStorageSlotPointers lowers.
-storagePointerWriteStatement
-    : Identifier '.' Identifier '(' (expression (',' expression)*)? ')' lvMember+ op=('=' | '+=' | '-=' | '*=' | '/=' | '%=' | '&=' | '|=' | '^=' | '<<=' | '>>=') expression ';'
     ;
 
 // An ordered lvalue suffix: an index `[expr]` or a struct/pointer member. The chain preserves interleaving so

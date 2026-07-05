@@ -1,11 +1,14 @@
 # Plan: bare expression statements (`expr;`), the Solidity way
 
-Status: **DONE** (commit `6c51d7c3`, corpus 2874 -> 3040, +166). The shipped approach is narrower and cheaper
-than the full fold sketched below: only **assignment** was left-factored into `expressionStatement`
-(`expression (op= expression)? ';'`). That alone eliminates the full-context blowup (it was the only form needing
-unbounded lookahead - scan the whole lvalue chain for `=`); the other statement forms (push/pop/call) are bounded
-by their `.push`/`.pop`/`(` tokens and were measured to add ZERO further parse/memory cost, so they were left as
-separate rules. `visitAssignmentStatement`'s dispatch was extracted into `buildLvalueAssign`, driven by a new
+Status: **DONE** (corpus 2874 -> 3040, +166). Landed in phases: assignment left-factored (`6c51d7c3`), then the
+FULL fold of the remaining expression-like forms into `expressionStatement` - push/pop/delete (`ffc3d38e`), calls
+(`1017495a`), storage-pointer write (`30952bea`). The statement rule is now solc's 2-way structure: keyword-led
+forms + the declaration forms (`variableDefinition`/`tupleAssignment` = solc's `variableDeclarationStatement`) +
+`expressionStatement` (+ the `console` debug builtin). Parse recovers to clean-HEAD parity and slightly beats it
+(7343-file parse-only: clean HEAD 3.78ms/file 43085 DFA states; fully-folded 3.75ms/file 42737). An earlier
+"folding push/pop/call gives zero benefit" reading was a confounded PARTIAL fold (residual forms masked the gain);
+the COMPLETE fold does recover the overhead. `tupleAssignment` stays (its slots can declare types); its
+fully-untyped `(a,b)=..` slice is a minor deviation kept out of the tuple-assign critical path. `visitAssignmentStatement`'s dispatch was extracted into `buildLvalueAssign`, driven by a new
 `extractLvalue()` that rebuilds the lvalue segments from the parsed LHS expression. The earlier additive
 `expression ';'` prototype's "OOM + 2.7x slowdown" turned out to be a per-parse DFA-reset workaround (removed
 here) plus a pre-existing huge-bounded-array materialization gap (now capped), NOT the ambiguity itself.

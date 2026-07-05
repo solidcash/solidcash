@@ -88,3 +88,19 @@ grounded in ~3119 max outputs / ~2437 max inputs of a 100KB standard BCH tx) rej
 (uint[..][2999...]) instead of OOMing - a pre-existing gap the feature exposed. Folding push/pop/call too was
 measured to give ZERO further parse/memory benefit (assignment fold captured it all; residual aggregate cost is
 added compilation of the +166 files, not parse), so it was not done. compiler 1628 green. Commit 6c51d7c3.
+
+## Full statement fold completed (commits ffc3d38e + 1017495a + 30952bea)
+Extended the assignment left-factoring to fold ALL remaining expression-like statement forms into
+expressionStatement, reaching solc's clean 2-way statement rule (keyword-led forms + the declaration forms
+variableDefinition/tupleAssignment + expressionStatement; consoleStatement is a debug builtin). Phases:
+- push/pop/delete tails (buildArrayPush/Pop/Delete, receiver via extractLvalue).
+- calls (buildCallStatement: low-level/.transfer/tokens/interface/self-call routing, intercepting statement-only
+  forms before visiting since visitMethodCall would mis-read this.transfer as a self-call).
+- storage-pointer write (buildStoragePointerWrite: `Lib.f(args).field op= v` desugar in the assignment path).
+CONFIRMS the earlier "folding gives no benefit" was a confounded PARTIAL-fold measurement: the COMPLETE fold
+recovers parse to clean-HEAD parity and slightly beats it. Parse-only over 7343 files:
+  clean HEAD 3.78ms/file 410MB dfa 43085 | assignment-only 4.60ms 447MB 45196 | fully-folded 3.75ms 416MB 42737.
+(The DFA baseline is the expression rule; folding statements removes the added statement-decision ambiguity.)
+Behavior-preserving (compiler 1628 green throughout); corpus stays 3040. tupleAssignment stays as solc's
+variableDeclarationStatement (its slots can declare); its fully-untyped `(a,b)=..` slice is a minor deviation not
+worth the tuple-assign regression risk for a DFA already below clean HEAD.

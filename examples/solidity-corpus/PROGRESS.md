@@ -104,3 +104,11 @@ recovers parse to clean-HEAD parity and slightly beats it. Parse-only over 7343 
 Behavior-preserving (compiler 1628 green throughout); corpus 3040 -> 3065 (+25: the unified call path handles forms the separate rules rejected, e.g. a 2-arg this.f(a,b) self-call). tupleAssignment stays as solc's
 variableDeclarationStatement (its slots can declare); its fully-untyped `(a,b)=..` slice is a minor deviation not
 worth the tuple-assign regression risk for a DFA already below clean HEAD.
+
+## +10: interface base in an explicit override(A,B) list (commit b4f969e1)
+`function f(...) override(Contract, Interface)` was rejected ("'Interface' is not a base"): the validation
+required a resolvable super impl (superImplFor), but an interface base only DECLARES the function (no body) and is
+excluded from the contract linearization (computeLinearization filters to contractMap, contracts only). Fix:
+accept a base that stays in `contract.implements` after inheritance expansion (a directly-implemented interface).
+10/20 OverrideBaseListError files now compile. Remaining 10 = transitive interfaces (override(IBase) via a parent)
++ abstract contract bases (override(B) where B declares f with no body) - both need broader inheritance data.

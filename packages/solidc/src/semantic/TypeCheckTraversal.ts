@@ -562,6 +562,7 @@ export default class TypeCheckTraversal extends AstTraversal {
       if (!node.arrayPop) {
         node.expression = this.maybeCoerceHexToInt(node.expression, expectedValueType);
         node.expression = this.maybeCoerceZeroToBytes(node.expression, expectedValueType);
+        node.expression = this.maybeCoerceStringToBytesN(node.expression, expectedValueType);
       }
       const allKeyTypes = node.collection.allKeyTypes;
       for (let i = 0; i < node.keys.length; i++) {
@@ -2096,6 +2097,10 @@ export default class TypeCheckTraversal extends AstTraversal {
     if (!node.arrayType) {
       throw new UnsupportedTypeError(node as any);
     }
+    // Coerce a literal value to the element type (`arr[i] = "abcd"` -> bytesN, `arr[i] = 0x..` -> int / bytes).
+    node.value = this.maybeCoerceHexToInt(node.value, node.arrayType.elementType);
+    node.value = this.maybeCoerceZeroToBytes(node.value, node.arrayType.elementType);
+    node.value = this.maybeCoerceStringToBytesN(node.value, node.arrayType.elementType);
     // Validate element type compatibility
     if (!implicitlyCastable(node.value.type, node.arrayType.elementType)) {
       throw new TypeError(node as any, node.value.type, node.arrayType.elementType);
@@ -2145,6 +2150,7 @@ export default class TypeCheckTraversal extends AstTraversal {
     const sv = node.stateVariable!;
     const arrType = sv.type as ArrayType;
     node.value = this.maybeCoerceZeroToBytes(node.value, arrType.elementType);
+    node.value = this.maybeCoerceStringToBytesN(node.value, arrType.elementType);
     expectInt(node as any, node.index.type);
     if (!implicitlyCastable(node.value.type, arrType.elementType)) {
       throw new StateAssignTypeError(node as any, node.value.type, arrType.elementType);

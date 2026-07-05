@@ -41,7 +41,9 @@ the current number with `node examples/solidity-corpus/bench.mjs` (the scorecard
 
 | 2026-07-05 | 2838 / 4876 | (this) | +4 | user-defined value type default: a function with a UDVT return type and no explicit return (`function f() returns (T) {}`) now defaults to the wrapped underlying default (`T.wrap(<default>)`) - createDefaultValueExpression gained a ValueType branch, byte-identical to the named-return default. Foundational (also covers no-arg push / delete synthesis) |
 
-Total so far: **1936 → 2838** (+902). Update this table whenever the number moves.
+| 2026-07-05 | 2847 / 4876 | (this) | +7 | string / hex literal coercion at array & mapping ELEMENT writes (`a[i] = "abcd"`, `m[k] = hex".."` -> right-padded bytesN): extended the assign/return literal coercion to visitArrayAssign / visitStateArrayAssign / visitMappingAssign, byte-identical to the padded literal |
+
+Total so far: **1936 → 2847** (+911). Update this table whenever the number moves.
 
 ## Notes
 

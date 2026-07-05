@@ -341,3 +341,23 @@ describe('user-defined value type default (unnamed UDVT return fall-through)', (
     expect(unnamed).toBe(named);
   });
 });
+
+describe('string / hex literal coercion at array & mapping element writes', () => {
+  // The literal coercion the assignment / return paths apply also applies to an element write: a string or hex
+  // literal written to an array / mapping element of type bytesN is right-padded to the element width.
+  it('coerces a string / hex literal at array and mapping element writes', () => {
+    const srcs = [
+      'contract C() { bytes4[] a; function f(uint256 i) { a[i] = "abcd"; } }',
+      'contract C() { function f(uint256 i) { bytes4[3] memory a; a[i] = "abcd"; require(a[i] != 0x0); } }',
+      'contract C() { mapping(uint256 => bytes4) m; function f(uint256 k) { m[k] = "abcd"; } }',
+      'contract C() { bytes8[] a; function f(uint256 i) { a[i] = hex"0102"; } }',
+    ];
+    for (const s of srcs) expect(compileString(s, { solidityImportCompat: true, forceStateful: true }).contractName).toBe('C');
+  });
+
+  it('right-pads to the element width (byte-identical to the padded literal)', () => {
+    const bc = (v) => compileString(`contract C() { bytes4[] a; function f(uint256 i) { a[i] = ${v}; } }`,
+      { solidityImportCompat: true, forceStateful: true }).bytecode;
+    expect(bc('"abcd"')).toBe(bc('0x61626364'));
+  });
+});

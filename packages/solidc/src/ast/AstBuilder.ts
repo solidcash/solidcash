@@ -1264,6 +1264,32 @@ export default class AstBuilder
     // An omitted initializer (`int x;`) leaves expression undefined; codegen emits the type's zero value.
     const expression = ctx.expression() ? this.visit(ctx.expression()) : undefined;
 
+    // `T storage x = arr.push();`: Solidity's no-arg push returns a reference to the freshly-appended element.
+    // Desugar to capturing the pre-push length (the new element's index), pushing a default element, and
+    // aliasing `x` -> `arr[__idx]` - every read/write of `x` then rewrites to the real array element (reusing
+    // the storage-pointer alias machinery + array push). The captured index stays valid across later pushes.
+    if (ctx.DotPush() && expression instanceof IdentifierNode) {
+      const arrName = expression.name;
+      const loc = Location.fromCtx(ctx);
+      const stamp = <T extends { location?: Location }>(n: T): T => { n.location = loc; return n; };
+      const ident = (nm: string): IdentifierNode => stamp(new IdentifierNode(nm));
+      const uid = this.nestedLvalueCounter++;
+      const idxName = `__pushPtr_i_${uid}`;
+      const defName = `__pushPtr_def_${uid}`;
+      // uint __idx = arr.length;  (pre-push length = the appended element's index)
+      const idxDef = stamp(new VariableDefinitionNode(
+        PrimitiveType.BIGINT, [], idxName, stamp(new UnaryOpNode(UnaryOperator.SIZE, ident(arrName)))));
+      idxDef.allowUnused = true;
+      // T __def;  (uninitialized -> the element type's zero value, pushed as the new element)
+      const defDef = stamp(new VariableDefinitionNode(type, [], defName, undefined));
+      defDef.allowUnused = true;
+      const push = this.buildArrayPush(arrName, false, [], undefined, ident(defName), false, ctx);
+      // alias x -> arr[__idx]  (same shape as `T storage x = arr[k]`; not a real local, so not tracked as one)
+      const access = stamp(new ArrayAccessNode(ident(arrName), ident(idxName)));
+      this.storageAliases.set(name, { container: arrName, keys: [ident(idxName)], access });
+      return stamp(new BlockNode([idxDef, defDef, push]));
+    }
+
     // Storage pointer: `T storage x = container[k];` aliases `x` to the access path. Record the alias and
     // drop the declaration (no runtime value); reads/writes of `x` are rewritten to `container[k]`.
     if (modifiers.includes(Modifier.STORAGE) && expression) {

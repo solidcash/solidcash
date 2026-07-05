@@ -336,7 +336,7 @@ emitStatement
     ;
 
 variableDefinition
-    : typeName modifier* anyIdentifier ('=' expression)? ';'
+    : typeName modifier* anyIdentifier ('=' expression ('.push' '(' ')')?)? ';'
     | arrayType modifier* anyIdentifier ('=' expression)? ';'
     ;
 

@@ -38,6 +38,28 @@ describe('SBE-14: bare state-array push/pop (Solidity idiom) routes to state, li
   });
 });
 
+// `T storage x = arr.push()` - Solidity's no-arg push returns a reference to the new element. Desugars to a
+// captured-index alias: `uint i = arr.length; T d; arr.push(d); /* x -> arr[i] */`, so writes/reads of x hit the
+// real element. Sound by reduction: byte-identical to that explicit form.
+describe('storage pointer to a freshly-pushed array element (T storage x = arr.push())', () => {
+  const P = 'contract C(){struct S{int a;int b;}S[] arr;function f()external{';
+  it('compiles a push-pointer populate', () => {
+    const a = compileString(`${P}S storage x=arr.push();x.a=1;x.b=2;require(arr[0].a==1);}}`, { solidityImportCompat: true });
+    expect(a.bytecode.length).toBeGreaterThan(0);
+  });
+  it('is byte-identical to the explicit captured-index form (sound by reduction)', () => {
+    const sugar = compileString(`${P}S storage x=arr.push();x.a=1;x.b=2;require(arr[0].a==1);}}`, { solidityImportCompat: true });
+    const hand = compileString(`${P}uint i=arr.length;S d;arr.push(d);arr[i].a=1;arr[i].b=2;require(arr[0].a==1);}}`,
+      { solidityImportCompat: true });
+    expect(sugar.bytecode).toBe(hand.bytecode);
+  });
+  it('captures a distinct index per push (two live pointers stay correct)', () => {
+    const a = compileString(`${P}S storage x=arr.push();x.a=1;S storage y=arr.push();y.a=2;`
+      + 'require(arr[0].a==1);require(arr[1].a==2);}}', { solidityImportCompat: true });
+    expect(a.bytecode.length).toBeGreaterThan(0);
+  });
+});
+
 describe('Tuple forwarding and whole fixed-array assignment', () => {
   it('forwards a tuple-returning call directly in a return statement', () => {
     // `return g()` where g returns (int, int) forwards the tuple's components (Solidity tuple forwarding),

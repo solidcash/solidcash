@@ -338,6 +338,7 @@ emitStatement
 variableDefinition
     : typeName modifier* anyIdentifier ('=' expression ('.push' '(' ')')?)? ';'
     | arrayType modifier* anyIdentifier ('=' expression)? ';'
+    | mappingType modifier* anyIdentifier ('=' expression)? ';'
     ;
 
 tupleAssignment

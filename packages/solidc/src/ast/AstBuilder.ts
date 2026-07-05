@@ -1253,6 +1253,9 @@ export default class AstBuilder
     let type: Type;
     if (ctx.arrayType()) {
       type = this.buildArrayType(ctx.arrayType()!);
+    } else if (ctx.mappingType()) {
+      // `mapping(...) storage p = m;` - a storage-pointer alias to a state mapping (like a mapping param).
+      type = this.buildMappingType(ctx.mappingType()!);
     } else {
       // Keep an unknown (contract/interface) type name on the address handle so a local interface-typed
       // var (`IERC20 token = IERC20(addr)`) can route `token.method(..)` to an external call.
@@ -1296,6 +1299,15 @@ export default class AstBuilder
       const path = this.extractStorageAccessPath(expression as ExpressionNode);
       if (path) {
         this.storageAliases.set(name, { ...path, access: expression as ExpressionNode });
+        const dropped = new BlockNode([]);
+        dropped.location = Location.fromCtx(ctx);
+        return dropped;
+      }
+      // `mapping(...) storage p = m;`: a whole-mapping alias to a bare state-mapping identifier (no keys).
+      // `p[k]...` rewrites to `m[k]...` (empty alias keys), and passing `p` substitutes `m` - mirrors the
+      // storage-pointer parameter, without a call. The declaration carries no runtime value, so drop it.
+      if (type instanceof MappingType && expression instanceof IdentifierNode) {
+        this.storageAliases.set(name, { container: expression.name, keys: [], access: expression });
         const dropped = new BlockNode([]);
         dropped.location = Location.fromCtx(ctx);
         return dropped;
@@ -2160,6 +2172,16 @@ export default class AstBuilder
   visitIdentifier(ctx: IdentifierContext): IdentifierNode {
     const identifier = new IdentifierNode(ctx.anyIdentifier().getText());
     identifier.location = Location.fromCtx(ctx);
+    // Whole-container storage alias (`mapping(...) storage p = m;`): a read of `p` resolves to the aliased
+    // container identifier `m`, so `p[k]`, `f(p)`, `return p`, etc. operate on the real mapping. Only bare
+    // identifier-to-identifier aliases substitute here; element/field aliases (access is an index/field path)
+    // stay per-context (visitFieldAccess / buildLvalueAssign), which the read-side identifier form never hits.
+    const alias = this.storageAliases.get(identifier.name);
+    if (alias && alias.access instanceof IdentifierNode) {
+      const sub = cloneNode(alias.access) as IdentifierNode;
+      sub.location = identifier.location;
+      return sub;
+    }
     return identifier;
   }
 

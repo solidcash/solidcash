@@ -116,6 +116,22 @@ describe('SBE-10: storage-pointer locals + block.timestamp + stmt-form interface
   });
 });
 
+// Raw `mapping(K=>V) storage p = m;` local pointer (not struct-wrapped): a whole-mapping alias, so `p[k]...`
+// rewrites to `m[k]...` and passing `p` substitutes `m`. Mirrors the storage-pointer parameter, without a call.
+describe('raw mapping storage pointer local (mapping(K=>V) storage p = m)', () => {
+  const P = 'contract C(){mapping(uint=>uint) m;function f()external{';
+  it('is byte-identical to direct mapping access (sound by reduction)', () => {
+    const ptr = compileString(`${P}mapping(uint=>uint) storage p=m;p[0]=1;require(p[0]==1);}}`, { solidityImportCompat: true });
+    const direct = compileString(`${P}m[0]=1;require(m[0]==1);}}`, { solidityImportCompat: true });
+    expect(ptr.bytecode).toBe(direct.bytecode);
+  });
+  it('passes the pointer to a mapping-storage-param helper', () => {
+    const a = compileString('contract C(){mapping(uint=>uint) m;function h(mapping(uint=>uint) storage a)internal{a[0]=1;}'
+      + `${'function f()external{'}mapping(uint=>uint) storage p=m;h(p);require(m[0]==1);}}`, { solidityImportCompat: true });
+    expect(a.contractName).toBe('C');
+  });
+});
+
 describe('SBE-11: local struct member assignment (desugars to a struct rebuild)', () => {
   it('assigns a field of a local struct', () => {
     const a = compileString('contract C() { struct S { int a; bool b; } int n; function f(int v) { S memory s; s.a = v; this.n = s.a; } }');

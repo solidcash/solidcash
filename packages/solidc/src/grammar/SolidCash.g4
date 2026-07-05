@@ -304,6 +304,7 @@ statement
 expressionStatement
     : expression
       ( op=('=' | '+=' | '-=' | '*=' | '/=' | '%=' | '&=' | '|=' | '^=' | '<<=' | '>>=') expression
+      | '.push' '(' ')' '=' expression
       | '.push' '(' pushArgument? ')'
       | '.pop' '(' ')'
       | '.delete' '(' expression ')'

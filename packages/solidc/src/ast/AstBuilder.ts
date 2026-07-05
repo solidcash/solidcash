@@ -3928,6 +3928,12 @@ export default class AstBuilder
         throw new ParseError('Unsupported .push/.pop/.delete receiver', Location.fromCtx(lhsCtx));
       }
       if (ctx.DotPush()) {
+        // Solidity `arr.push() = value` appends the element type's default then writes it - equivalent to
+        // `arr.push(value)` (the value expression is the second `expression` child, present only for this form).
+        const assignVal = ctx.expression(1);
+        if (assignVal) {
+          return this.buildArrayPush(lv.rawName, lv.isThis, keyFns, member, this.visit(assignVal) as ExpressionNode, false, ctx);
+        }
         const argCtx = ctx.pushArgument();
         const noArg = argCtx === null;
         const value = noArg ? this.noArgPushPlaceholder(ctx) : this.visit(argCtx.expression()) as ExpressionNode;

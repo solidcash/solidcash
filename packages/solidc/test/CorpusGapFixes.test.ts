@@ -376,3 +376,15 @@ describe('override list may name an interface base', () => {
     expect(art.contractName).toBe('Token');
   });
 });
+
+// Solidity `arr.push() = value` (no-arg push returns a reference to the new element, then assigns it) is
+// exactly `arr.push(value)` on BCH (push the element type's default, then set it == push the value).
+describe('arr.push() = value == arr.push(value)', () => {
+  it('compiles push()=value byte-identically to push(value)', () => {
+    const a = compileString('contract C{uint[] a;function f(uint v){a.push()=v;require(true);}}',
+      { solidityImportCompat: true, forceStateful: true }).bytecode;
+    const b = compileString('contract C{uint[] a;function f(uint v){a.push(v);require(true);}}',
+      { solidityImportCompat: true, forceStateful: true }).bytecode;
+    expect(a).toBe(b);
+  });
+});

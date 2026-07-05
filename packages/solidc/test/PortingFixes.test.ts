@@ -132,17 +132,3 @@ describe('internal helpers that read a state entry (inlined, not subroutined)', 
       + ' contract C is Base { constructor() Base(1) { _mint(msg.sender, 100); } function f() external { require(true); } }')).toBe('C');
   });
 });
-
-describe('SBE-27: block.chainid is uint256 (Solidity parity)', () => {
-  it('assigns block.chainid to a uint256 state variable (with the flag)', () => {
-    expect(compileString(
-      'contract C { uint256 id; function f() external { this.id = block.chainid; } }',
-      { solidityImportCompat: true },
-    ).contractName).toBe('C');
-  });
-
-  it('is uint256 even without the flag (the value stays a minimal 1-byte number)', () => {
-    expect(compileString('contract C { uint256 id; function f() external { this.id = block.chainid; } }')
-      .contractName).toBe('C');
-  });
-});

@@ -315,6 +315,8 @@ export default class AstBuilder
   // Integer-literal constants (`int constant N = 3;`), so a const can be used as an array dimension `T[N]`.
   // Populated by a pre-scan of constant definitions before any types are built (see scanConstantDimensions).
   private constantIntValues: Map<string, number> = new Map();
+  // Counter for synthesized temp locals used to desugar nested lvalue writes (`s.arr[i] = v`, `m[i].arr[j] = v`).
+  private nestedLvalueCounter = 0;
   // True while visiting a library's own state-variable declarations. A `public constant` in a library is left
   // as-is (it feeds the library's shared-state/delegate machinery); only CONTRACT-level `public constant` is
   // rerouted to a baked constant (see visitStateVariableDeclaration).
@@ -2499,6 +2501,36 @@ export default class AstBuilder
         const assign = new StateAssignNode(flatName, value);
         assign.location = loc;
         return assign;
+      }
+    }
+
+    // Local struct ARRAY-field element write `s.arr[i] op= v`: struct fields have no in-place element write, so
+    // read the array field into a fresh temp local, write the element, then rebuild the struct (`s.arr = temp`).
+    // Returned as a block so flattenStatements splices the three statements at this scope.
+    if (!isThis && !isIncDec && fieldName && members.length === 1 && keyCtxs.length === 1
+      && this.localStructTypes.has(rawName)) {
+      const field = this.localStructTypes.get(rawName)!.fields.find((f) => f.name === fieldName);
+      if (field && field.type instanceof ArrayType) {
+        const idAt = (n: string): IdentifierNode => { const i = new IdentifierNode(n); i.location = loc; return i; };
+        const tmpName = `__nlv_${this.nestedLvalueCounter++}`;
+        const sField = new FieldAccessNode(idAt(rawName), fieldName);
+        sField.location = loc;
+        const decl = new VariableDefinitionNode(field.type, [], tmpName, sField);
+        decl.location = loc;
+        const value = op === '='
+          ? this.visit(valueCtx!) as ExpressionNode
+          : this.compoundRhs((() => {
+            const r = new ArrayAccessNode(idAt(tmpName), this.visit(keyCtxs[0]) as ExpressionNode);
+            r.location = loc;
+            return r;
+          })(), op, valueCtx, loc);
+        const elemAssign = new ArrayAssignNode(tmpName, this.visit(keyCtxs[0]) as ExpressionNode, value);
+        elemAssign.location = loc;
+        const rebuild = this.buildStructFieldRebuild(rawName, nameLoc, [fieldName], false, loc,
+          () => idAt(tmpName))!;
+        const block = new BlockNode([decl, elemAssign, rebuild]);
+        block.location = loc;
+        return block;
       }
     }
 

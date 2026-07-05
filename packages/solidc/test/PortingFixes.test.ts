@@ -2236,3 +2236,21 @@ describe('delete on a struct field (delete X.field)', () => {
       + ' function f() public pure returns (uint) { B memory b; b.y = 3; delete b.a.x; return b.y; } }')).toBe('C');
   });
 });
+
+// A struct field has no in-place element write, so `s.arr[i] = v` (local struct, array field) desugars to a
+// read-modify-rebuild: `T tmp = s.arr; tmp[i] = v; s.arr = tmp;`. Reduces to tested array-write + rebuild.
+describe('nested lvalue write: local struct array-field element (s.arr[i] = v)', () => {
+  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  it('writes an element of a fixed-size array field', () => {
+    expect(cc('contract C { struct S { uint[3] arr; }'
+      + ' function f(uint i) public pure returns (uint) { S memory s; s.arr[i] = 5; return s.arr[i]; } }')).toBe('C');
+  });
+  it('supports compound assignment on an array-field element', () => {
+    expect(cc('contract C { struct S { uint[3] arr; }'
+      + ' function f(uint i) public pure returns (uint) { S memory s; s.arr[i] += 5; return s.arr[i]; } }')).toBe('C');
+  });
+  it('does not regress a plain struct scalar field write', () => {
+    expect(cc('contract C { struct S { uint x; }'
+      + ' function f() public pure returns (uint) { S memory s; s.x = 5; return s.x; } }')).toBe('C');
+  });
+});

@@ -388,3 +388,27 @@ describe('arr.push() = value == arr.push(value)', () => {
     expect(a).toBe(b);
   });
 });
+
+// A straight-line FOREIGN external function pointer desugars to the existing external call:
+// `function() external f = IFoo(addr).method; f(args)` == `IFoo(addr).method(args)` (byte-identical, sound
+// by reduction to the tested external-call covenant + SDK path).
+describe('foreign external function pointer == direct external call', () => {
+  const IFACE = 'interface ICounter { function increment(uint256 x) external returns (uint256); }';
+  it('desugars `f = IFoo(addr).method; f(z)` byte-identically to `IFoo(addr).method(z)`', () => {
+    const ptr = `${IFACE} contract C { function run(ICounter c, uint256 z) public {`
+      + ' function(uint256) external returns (uint256) f = c.increment; uint256 r = f(z); require(r == z + 1); } }';
+    const direct = `${IFACE} contract C { function run(ICounter c, uint256 z) public {`
+      + ' uint256 r = c.increment(z); require(r == z + 1); } }';
+    const a = compileString(ptr, { solidityImportCompat: true }).bytecode;
+    const b = compileString(direct, { solidityImportCompat: true }).bytecode;
+    expect(a).toBe(b);
+  });
+  it('rewrites a bare `f(z);` statement form too', () => {
+    const ptr = `${IFACE} contract C { function run(ICounter c, uint256 z) public {`
+      + ' function(uint256) external returns (uint256) f = c.increment; f(z); require(true); } }';
+    const direct = `${IFACE} contract C { function run(ICounter c, uint256 z) public {`
+      + ' c.increment(z); require(true); } }';
+    expect(compileString(ptr, { solidityImportCompat: true }).bytecode)
+      .toBe(compileString(direct, { solidityImportCompat: true }).bytecode);
+  });
+});

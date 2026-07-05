@@ -25,6 +25,7 @@ import InlineStoragePointerCalls from './semantic/InlineStoragePointerCalls.js';
 import InlineReturningStateHelpers from './semantic/InlineReturningStateHelpers.js';
 import DesugarPostfixExpressions from './semantic/DesugarPostfixExpressions.js';
 import DesugarNestedArrayWrite from './semantic/DesugarNestedArrayWrite.js';
+import DesugarExternalFunctionPointers from './semantic/DesugarExternalFunctionPointers.js';
 import DesugarReturnInLoop from './semantic/DesugarReturnInLoop.js';
 import LowerInlineAssembly from './semantic/LowerInlineAssembly.js';
 import CacheDynamicArrayInLoop from './semantic/CacheDynamicArrayInLoop.js';
@@ -179,6 +180,10 @@ function compileResolvedAst(ast: Ast, code: string, mergedCompilerOptions: Compi
 
   // Nested local-array element write `b[i][j] = v` -> read-modify-write over single-level ops (before semantic).
   ast = ast.accept(new DesugarNestedArrayWrite()) as Ast;
+
+  // Straight-line foreign external function pointer `function() external f = IFoo(addr).method; f(args)` ->
+  // `IFoo(addr).method(args)` (the existing external call); before the external-call passes + semantic.
+  ast = ast.accept(new DesugarExternalFunctionPointers()) as Ast;
 
   // Lower supported Yul inline assembly to equivalent main-AST statements (value computation + control flow).
   ast = ast.accept(new LowerInlineAssembly()) as Ast;

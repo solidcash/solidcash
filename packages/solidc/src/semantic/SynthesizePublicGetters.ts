@@ -11,19 +11,21 @@ import {
   ParameterNode,
   StateVariableVisibility,
 } from '../ast/AST.js';
-import { MappingType, IntType, BytesType, PrimitiveType, Type } from '@solidcash/utils';
+import { MappingType, IntType, BytesType, PrimitiveType, AddressType, Type } from '@solidcash/utils';
 import AstTraversal from '../ast/AstTraversal.js';
 
 // Only synthesize getters for types whose declared type resolves byte-identically to `this.x` during semantic
-// analysis. Enum/contract/address state vars are stored as AddressType placeholders pre-semantic but resolve to
-// EnumType/contract addresses later, so a placeholder-typed getter trips ReturnTypeMismatch; struct/array/mapping
-// getters have different ABI shapes. Restrict to plain value types to stay sound.
+// analysis. Enum/contract state vars are stored as AddressType placeholders (interfaceName set) pre-semantic but
+// resolve to EnumType/contract addresses later, so a placeholder-typed getter trips ReturnTypeMismatch;
+// struct/array getters have different ABI shapes. Restrict to plain value types + a GENUINE address (no
+// interfaceName - a real `address`, not an enum/contract placeholder) to stay sound.
 const SAFE_PRIMS = new Set<unknown>([
   PrimitiveType.BOOL, PrimitiveType.STRING, PrimitiveType.BIGINT, PrimitiveType.INT,
   PrimitiveType.PUBKEY, PrimitiveType.SIG, PrimitiveType.DATASIG,
 ]);
 const isSafeGetterType = (t: Type): boolean =>
-  t instanceof IntType || t instanceof BytesType || SAFE_PRIMS.has(t);
+  t instanceof IntType || t instanceof BytesType || SAFE_PRIMS.has(t)
+  || (t instanceof AddressType && !t.interfaceName);
 
 /**
  * Solidity auto-generates an external getter for every `public` state variable / mapping:

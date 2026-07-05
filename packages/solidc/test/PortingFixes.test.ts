@@ -2398,3 +2398,26 @@ describe('external-call address local survives a same-function balance read', ()
     expect(cc('address) { Car car = cars[i]; return car.owner_();')).toBe('F');
   });
 });
+
+// Solidity auto-generates an external getter for every `public` state var. Genuine `address` getters are now
+// synthesized (so `other.owner()` resolves), while enum/contract-typed vars stay skipped: they are AddressType
+// placeholders pre-semantic (interfaceName set) and a placeholder-typed getter would trip ReturnTypeMismatch.
+describe('public address state-var auto-getter (external-callable)', () => {
+  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  it('synthesizes an address getter and resolves an external call to it', () => {
+    expect(cc('contract Car { address public owner; constructor(address _o) { owner = _o; } }'
+      + ' contract F { Car[] cars; function g(uint i) public view returns (address) {'
+      + ' Car car = cars[i]; return car.owner(); } }')).toBe('F');
+  });
+  it('exposes the address getter in the contract ABI', () => {
+    const abi = compileString('contract Car { address public owner; constructor(address _o) { owner = _o; } }',
+      { solidityImportCompat: true }).abi;
+    const g = abi.find((f) => f.name === 'owner');
+    expect(g?.outputs?.[0]?.type).toBe('address');
+  });
+  it('still skips an enum-typed public var (no unsound placeholder getter)', () => {
+    const abi = compileString('contract C { enum S { A, B } S public status; int n; function f() public { this.n = 1; } }',
+      { solidityImportCompat: true }).abi;
+    expect(abi.some((f) => f.name === 'status')).toBe(false);
+  });
+});

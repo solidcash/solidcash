@@ -1343,7 +1343,10 @@ export default class TypeCheckTraversal extends AstTraversal {
         actualTypes = soleType.elements;
       } else {
         node.expressions = node.expressions.map(
-          (e, i) => this.maybeCoerceZeroToBytes(this.maybeCoerceHexToInt(e, expectedTypes[i]), expectedTypes[i]),
+          (e, i) => this.maybeCoerceStringToBytesN(
+            this.maybeCoerceZeroToBytes(this.maybeCoerceHexToInt(e, expectedTypes[i]), expectedTypes[i]),
+            expectedTypes[i],
+          ),
         );
         actualTypes = node.expressions.map((e) => e.type!);
       }
@@ -1727,6 +1730,18 @@ export default class TypeCheckTraversal extends AstTraversal {
       case BinaryOperator.BIT_AND:
       case BinaryOperator.BIT_OR:
       case BinaryOperator.BIT_XOR: {
+        // An unbounded-int operand takes the bounded operand's fixed width (Solidity), so `x | 1` or
+        // `x | (c ? 1 : 2)` bitwise-ORs at x's width. A literal just adopts the type; any other unbounded-int
+        // expression is cast so it carries a defined width for the fixed-width bitwise op.
+        const lBounded = node.left.type instanceof IntType ? node.left.type : undefined;
+        const rBounded = node.right.type instanceof IntType ? node.right.type : undefined;
+        const unboundedInt = (ty?: Type): boolean => ty === PrimitiveType.BIGINT || ty === PrimitiveType.INT;
+        const toBounded = (e: ExpressionNode, b: IntType): ExpressionNode => {
+          if (e instanceof IntLiteralNode) { e.type = b; return e; }
+          const c = new CastNode(b, e, false); c.type = b; c.location = e.location; return c;
+        };
+        if (lBounded && unboundedInt(node.right.type)) node.right = toBounded(node.right, lBounded);
+        else if (rBounded && unboundedInt(node.left.type)) node.left = toBounded(node.left, rBounded);
         // Integer bitwise (fixed-width two's-complement) when at least one operand is a bounded int.
         const lt = node.left.type;
         const rt = node.right.type;

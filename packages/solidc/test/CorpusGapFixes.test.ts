@@ -228,3 +228,33 @@ describe('Yul assignment across types (assembly { r := x })', () => {
     }`, { solidityImportCompat: true }).contractName).toBe('C');
   });
 });
+
+describe('return-site literal coercion (string / hex -> bytesN)', () => {
+  // The same literal coercion applied at assignment sites also applies to a `return` value: a string or hex
+  // literal returned where a wider bytesN is declared is right-padded to the return type.
+  it('coerces a string / hex literal to the declared bytesN return type', () => {
+    expect(compileString(`contract C() { function f() returns (bytes32) { return "abc"; } }`,
+      { solidityImportCompat: true }).contractName).toBe('C');
+    expect(compileString(`contract C() { function f() returns (bytes8) { return hex"0102"; } }`,
+      { solidityImportCompat: true }).contractName).toBe('C');
+  });
+});
+
+describe('bitwise op with an unbounded-int operand takes the bounded width', () => {
+  // `x | 1`, `x & 0xff`, `x | (c ? 1 : 2)` - a bounded int bitwise-combined with an int literal or a `?:` of
+  // literals (an unbounded int) adopts the bounded operand's fixed width instead of failing as "unsupported".
+  it('coerces an int literal / conditional operand to the bounded operand type', () => {
+    expect(compileString(`contract C() { function f(uint256 a) returns (uint256) { return a | 1; } }`,
+      { solidityImportCompat: true }).contractName).toBe('C');
+    expect(compileString(`contract C() { function f(uint256 a) returns (uint256) { return a & 0xff; } }`,
+      { solidityImportCompat: true }).contractName).toBe('C');
+    expect(compileString(`contract C() { function f(bool b) returns (uint256 x) { x = 0; x |= b ? 1 : 2; } }`,
+      { solidityImportCompat: true }).contractName).toBe('C');
+  });
+
+  it('still rejects two bounded ints of different width', () => {
+    expect(() => compileString(`contract C() {
+      function f(uint8 a, uint16 b) returns (uint16) { return a | b; }
+    }`, { solidityImportCompat: true })).toThrow();
+  });
+});

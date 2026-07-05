@@ -361,3 +361,18 @@ describe('string / hex literal coercion at array & mapping element writes', () =
     expect(bc('"abcd"')).toBe(bc('0x61626364'));
   });
 });
+
+// An explicit `override(A, B)` list may name an interface base. An interface only DECLARES the overridden
+// function (no body), so it has no super implementation to resolve - it must not be rejected as "not a base".
+describe('override list may name an interface base', () => {
+  it('accepts override(Contract, Interface) when overriding a function declared in both', () => {
+    const art = compileString(
+      'interface ERC20 { function transfer(address to, uint amount) external returns (bool); }'
+      + ' contract ERC21 { function transfer(address to, uint amount) virtual external returns (bool) { return false; } }'
+      + ' contract Token is ERC21, ERC20 {'
+      + '   function transfer(address to, uint amount) override(ERC21, ERC20) external returns (bool) { return false; } }',
+      { solidityImportCompat: true },
+    );
+    expect(art.contractName).toBe('Token');
+  });
+});

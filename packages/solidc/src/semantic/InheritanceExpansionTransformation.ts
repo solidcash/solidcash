@@ -425,9 +425,13 @@ function resolveSuperAndBaseCalls(contract: ContractNode, linearization: string[
   const indexOf = new Map(linearization.map((name, i) => [name, i]));
   const references = new Map<string, Set<string>>(); // function name -> preserved impls it calls
 
-  // Validate explicit `override(A, B)` base lists: each named base must be an ancestor that declares it.
+  // Validate explicit `override(A, B)` base lists: each named base must be a base of this contract. A CONTRACT
+  // base must also have a resolvable super implementation (for `super.f()`); an INTERFACE base (which remains in
+  // `implements` after expansion) only declares the function - no implementation to resolve - so it is accepted
+  // as long as it is a directly-implemented interface.
   for (const fn of contract.functions) {
     for (const base of fn.overrideBases) {
+      if (contract.implements.includes(base)) continue; // interface base: declares the function, no super impl
       if (!ancestors.has(base) || !superImplFor(contract, base, fn.name)) {
         throw new OverrideBaseListError(fn, fn.name, base);
       }

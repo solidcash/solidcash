@@ -74,6 +74,7 @@ import {
   TokenContainerMethodStatementNode,
   ReturnNode,
   FunctionCallStatementNode,
+  ExpressionStatementNode,
   ConstantDefinitionNode,
   TernaryOpNode,
   BreakNode,
@@ -186,6 +187,7 @@ export default abstract class AstVisitor<T> {
   abstract visitTokenContainerMethodStatement(node: TokenContainerMethodStatementNode): T;
   abstract visitReturn(node: ReturnNode): T;
   abstract visitFunctionCallStatement(node: FunctionCallStatementNode): T;
+  abstract visitExpressionStatement(node: ExpressionStatementNode): T;
   abstract visitMethodCallStatement(node: MethodCallStatementNode): T;
   abstract visitBreak(node: BreakNode): T;
   abstract visitContinue(node: ContinueNode): T;

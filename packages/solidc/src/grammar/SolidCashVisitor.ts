@@ -63,6 +63,8 @@ import { ParameterListContext } from "./SolidCashParser.js";
 import { ParameterContext } from "./SolidCashParser.js";
 import { BlockContext } from "./SolidCashParser.js";
 import { StatementContext } from "./SolidCashParser.js";
+import { ExpressionStatementContext } from "./SolidCashParser.js";
+import { PrefixIncDecStatementContext } from "./SolidCashParser.js";
 import { TransferStatementContext } from "./SolidCashParser.js";
 import { TokenContainerMethodStatementContext } from "./SolidCashParser.js";
 import { ReturnStatementContext } from "./SolidCashParser.js";
@@ -70,7 +72,6 @@ import { FunctionCallStatementContext } from "./SolidCashParser.js";
 import { AddressMethodStatementContext } from "./SolidCashParser.js";
 import { SelfdestructStatementContext } from "./SolidCashParser.js";
 import { EmitStatementContext } from "./SolidCashParser.js";
-import { AssignmentStatementContext } from "./SolidCashParser.js";
 import { StoragePointerWriteStatementContext } from "./SolidCashParser.js";
 import { LvPartContext } from "./SolidCashParser.js";
 import { LvMemberContext } from "./SolidCashParser.js";
@@ -78,7 +79,6 @@ import { MappingDeleteStatementContext } from "./SolidCashParser.js";
 import { VariableDefinitionContext } from "./SolidCashParser.js";
 import { TupleAssignmentContext } from "./SolidCashParser.js";
 import { TupleSlotContext } from "./SolidCashParser.js";
-import { AssignStatementContext } from "./SolidCashParser.js";
 import { ArrayPushStatementContext } from "./SolidCashParser.js";
 import { PushArgumentContext } from "./SolidCashParser.js";
 import { ArrayPopStatementContext } from "./SolidCashParser.js";
@@ -576,6 +576,18 @@ export default class SolidCashVisitor<Result> extends ParseTreeVisitor<Result> {
 	 */
 	visitStatement?: (ctx: StatementContext) => Result;
 	/**
+	 * Visit a parse tree produced by `SolidCashParser.expressionStatement`.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	visitExpressionStatement?: (ctx: ExpressionStatementContext) => Result;
+	/**
+	 * Visit a parse tree produced by `SolidCashParser.prefixIncDecStatement`.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	visitPrefixIncDecStatement?: (ctx: PrefixIncDecStatementContext) => Result;
+	/**
 	 * Visit a parse tree produced by `SolidCashParser.transferStatement`.
 	 * @param ctx the parse tree
 	 * @return the visitor result
@@ -618,12 +630,6 @@ export default class SolidCashVisitor<Result> extends ParseTreeVisitor<Result> {
 	 */
 	visitEmitStatement?: (ctx: EmitStatementContext) => Result;
 	/**
-	 * Visit a parse tree produced by `SolidCashParser.assignmentStatement`.
-	 * @param ctx the parse tree
-	 * @return the visitor result
-	 */
-	visitAssignmentStatement?: (ctx: AssignmentStatementContext) => Result;
-	/**
 	 * Visit a parse tree produced by `SolidCashParser.storagePointerWriteStatement`.
 	 * @param ctx the parse tree
 	 * @return the visitor result
@@ -665,12 +671,6 @@ export default class SolidCashVisitor<Result> extends ParseTreeVisitor<Result> {
 	 * @return the visitor result
 	 */
 	visitTupleSlot?: (ctx: TupleSlotContext) => Result;
-	/**
-	 * Visit a parse tree produced by `SolidCashParser.assignStatement`.
-	 * @param ctx the parse tree
-	 * @return the visitor result
-	 */
-	visitAssignStatement?: (ctx: AssignStatementContext) => Result;
 	/**
 	 * Visit a parse tree produced by `SolidCashParser.arrayPushStatement`.
 	 * @param ctx the parse tree

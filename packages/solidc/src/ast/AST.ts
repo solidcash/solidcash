@@ -2047,6 +2047,21 @@ export class FunctionCallStatementNode extends StatementNode {
   }
 }
 
+// A bare expression used as a statement (`x + 1;`, `arr[i];`, `c ? a : b;`). Only side-effect-free expressions
+// reach here (specific statement forms - assignment, call, push/pop, delete - are matched first). Codegen
+// computes the value and drops it.
+export class ExpressionStatementNode extends StatementNode {
+  constructor(
+    public expression: ExpressionNode,
+  ) {
+    super();
+  }
+
+  accept<T>(visitor: AstVisitor<T>): T {
+    return visitor.visitExpressionStatement(this);
+  }
+}
+
 export class MethodCallStatementNode extends StatementNode {
   expression?: ExpressionNode; // After semantic analysis, holds the transformed ExternalFunctionCallNode
 

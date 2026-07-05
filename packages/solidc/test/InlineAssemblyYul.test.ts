@@ -417,9 +417,9 @@ describe('YulMem.sol compat gaps', () => {
       + ' p = bytes32(0); uint256[] memory a2; return (p, a2); } }', { solidityImportCompat: true });
     expect(a.contractName).toBe('C');
   });
-  it('still rejects a mix of named/unnamed returns natively', () => {
-    expect(() => compileString('contract C { function f() returns (int p, int) { return (1, 2); } }'))
-      .toThrow(/All return values must be named/);
+  it('accepts a mix of named/unnamed returns natively (always on, the default)', () => {
+    const a = compileString('contract C { function f() returns (int p, int) { return (1, 2); } }');
+    expect(a.contractName).toBe('C');
   });
   it('defers new bytes(n): a runtime-length use is deferred (no whole-file failure) but errors when compiled', () => {
     // Compiled use -> the deferred codegen error fires (sound, not a silent empty-bytes value).

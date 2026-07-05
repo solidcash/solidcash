@@ -281,8 +281,7 @@ statement
     | arrayDeleteStatement
     | stateArrayPushStatement
     | stateArrayPopStatement
-    | assignStatement
-    | assignmentStatement
+    | prefixIncDecStatement
     | storagePointerWriteStatement
     | mappingDeleteStatement
     | timeOpStatement
@@ -306,6 +305,22 @@ statement
     | switchStatement
     | breakStatement
     | continueStatement
+    | expressionStatement
+    ;
+
+// A bare expression, or an assignment, used as a statement. Left-factored (solc-style): the LHS `expression` is
+// parsed ONCE, then a 1-token decision picks the assignment tail vs a bare expression. This avoids the unbounded
+// lookahead (scan the whole lvalue chain for `=`) that a separate assignmentStatement rule forces, so the
+// statement decision stays SLL-cheap. AstBuilder reconstructs the assignment target from the LHS expression.
+expressionStatement
+    : expression (op=('=' | '+=' | '-=' | '*=' | '/=' | '%=' | '&=' | '|=' | '^=' | '<<=' | '>>=') expression)? ';'
+    ;
+
+// Prefix `++x;` / `--x;` as a statement (same effect as postfix at statement scope). Keyword-led by `++`/`--`
+// (no other statement or expression starts with them), so it needs no left-factoring; the target reuses the
+// lvalue reconstruction + assignment builder.
+prefixIncDecStatement
+    : op=('++' | '--') expression ';'
     ;
 
 transferStatement
@@ -344,16 +359,6 @@ emitStatement
     | 'emit' Identifier ('.' Identifier)? expressionList ';'
     ;
 
-// Unified lvalue assignment: scalar/element/member, `this.`-prefixed or bare, with optional compound op. The
-// lvalue shape is resolved to the right target (state var, collection, local) in AstBuilder/semantic. Bare
-// scalar `x op= v` stays in assignStatement (which also handles `++`/`--`).
-assignmentStatement
-    : 'this' '.' Identifier lvPart* op=('=' | '+=' | '-=' | '*=' | '/=' | '%=' | '&=' | '|=' | '^=' | '<<=' | '>>=') expression ';'
-    | Identifier lvPart+ op=('=' | '+=' | '-=' | '*=' | '/=' | '%=' | '&=' | '|=' | '^=' | '<<=' | '>>=') expression ';'
-    | 'this' '.' Identifier lvPart* op=('++' | '--') ';'
-    | Identifier lvPart+ op=('++' | '--') ';'
-    ;
-
 // A storage-pointer-factory call as an assignment target: `Lib.f(args).field op= v` (OpenZeppelin StorageSlot
 // inline write). The call in the lvalue chain is not an lvPart, so it needs its own rule; AstBuilder desugars it
 // to the local-pointer form (`T tmp = Lib.f(args); tmp.field op= v;`) which LowerStorageSlotPointers lowers.
@@ -388,12 +393,6 @@ tupleSlot
     : typeName modifier* anyIdentifier
     | anyIdentifier
     |
-    ;
-
-assignStatement
-    : Identifier op=('=' | '+=' | '-=' | '*=' | '/=' | '%=' | '&=' | '|=' | '^=' | '<<=' | '>>=') expression ';'
-    | Identifier op=('++' | '--') ';'
-    | op=('++' | '--') Identifier ';'
     ;
 
 // The pushed value is wrapped in `pushArgument` so it is separable from the bracket index keys, and optional so

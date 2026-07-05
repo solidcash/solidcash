@@ -78,6 +78,7 @@ import {
   FunctionModifier,
   ReturnNode,
   FunctionCallStatementNode,
+  ExpressionStatementNode,
   ConstantDefinitionNode,
   EnumDefinitionNode,
   TypeDefinitionNode,
@@ -124,7 +125,6 @@ import type {
   VariableDefinitionContext,
   TupleAssignmentContext,
   ParameterContext,
-  AssignStatementContext,
   PlaceholderStatementContext,
   AssignmentExpressionContext,
   ExpressionContext,
@@ -136,14 +136,10 @@ import type {
   BlockContext,
   TimeOpStatementContext,
   ArrayContext,
-  ParenthesisedContext,
   FunctionCallExpressionContext,
   UnaryOpContext,
-  PostfixOpContext,
   BinaryOpContext,
-  IdentifierContext,
   LiteralExpressionContext,
-  TupleIndexOpContext,
   RequireStatementContext,
   PragmaDirectiveContext,
   InstantiationContext,
@@ -158,11 +154,8 @@ import type {
   DoWhileStatementContext,
   LoopStatementContext,
   StateVariableDeclarationContext,
-  StateAccessContext,
   ThisExprContext,
-  AssignmentStatementContext,
   StoragePointerWriteStatementContext,
-  MappingAccessContext,
   MappingDeleteStatementContext,
   DeleteLocalContext,
   DeleteStateContext,
@@ -180,7 +173,6 @@ import type {
   MappingTypeContext,
   ArrayTypeContext,
   StructDefinitionContext,
-  FieldAccessContext,
   EventDefinitionContext,
   EmitStatementContext,
   TransferStatementContext,
@@ -192,6 +184,8 @@ import type {
   FunctionModifierContext,
   ReturnStatementContext,
   FunctionCallStatementContext,
+  ExpressionStatementContext,
+  PrefixIncDecStatementContext,
   ConstantDefinitionContext,
   FreeFunctionDefinitionContext,
   ModifierDefinitionContext,
@@ -202,7 +196,6 @@ import type {
   AssemblyStatementContext,
   BreakStatementContext,
   ContinueStatementContext,
-  ArrayAccessContext,
   ArrayPushStatementContext,
   ArrayPopStatementContext,
   ArrayDeleteStatementContext,
@@ -245,6 +238,11 @@ import type {
 } from '../grammar/SolidCashParser.js';
 // Value imports (not type-only): needed for `instanceof` when detecting a tuple-valued ternary.
 import { TernaryOpContext, TupleExpressionContext } from '../grammar/SolidCashParser.js';
+// Imported as values (not `import type`) for runtime `instanceof` in extractLvalue / visitExpressionStatement.
+import {
+  ParenthesisedContext, ArrayAccessContext, FieldAccessContext, MappingAccessContext,
+  StateAccessContext, IdentifierContext, PostfixOpContext, TupleIndexOpContext,
+} from '../grammar/SolidCashParser.js';
 import SolidCashVisitor from '../grammar/SolidCashVisitor.js';
 import { Location } from './Location.js';
 import { buildYulBlock } from './YulAstBuilder.js';
@@ -269,6 +267,16 @@ const COMPOUND_OPS: Record<string, BinaryOperator> = {
   '&=': BinaryOperator.BIT_AND, '|=': BinaryOperator.BIT_OR, '^=': BinaryOperator.BIT_XOR,
   '<<=': BinaryOperator.SHIFT_LEFT, '>>=': BinaryOperator.SHIFT_RIGHT,
 };
+
+// One ordered segment of an lvalue chain: a `.member` (or `.value`), or an `[index]` key. The interleaved order
+// is preserved (alternating chains like `m[i].arr[j]` depend on it). The key is a THUNK producing a FRESH key
+// node per call (read + write nodes must not share instances) - re-visiting a key context (lvPart / ArrayAccess)
+// or building a literal (a NumberLiteral index parses as TupleIndexOp, not a wrapped expression). Built from the
+// lvPart grammar list or reconstructed from a parsed LHS expression; consumed by buildLvalueAssign.
+interface LvSeg {
+  member?: string;
+  key?: () => ExpressionNode;
+}
 
 export default class AstBuilder
   extends ParseTreeVisitor<Node>
@@ -1460,16 +1468,6 @@ export default class AstBuilder
     return tupleAssignment;
   }
 
-  visitAssignStatement(ctx: AssignStatementContext): AssignNode {
-    return this.buildCompoundAssign(
-      ctx.Identifier().getText(),
-      Location.fromToken(ctx.Identifier().symbol),
-      ctx._op.text,
-      ctx.expression(),
-      Location.fromCtx(ctx),
-    );
-  }
-
   // `(x op= rhs)` as an expression: build the desugared assignment, wrap it so codegen yields x's new value.
   visitAssignmentExpression(ctx: AssignmentExpressionContext): AssignmentExpressionNode {
     const assign = this.buildCompoundAssign(
@@ -2533,26 +2531,27 @@ export default class AstBuilder
   // Unified lvalue assignment: `this.x`, `this.m[k]`, `this.m[k].f`, `m[k]`, `m[k].f`, `m[k1][k2]` (with any
   // compound op). The lvalue shape selects the assignment node; semantic analysis routes state vs local. A
   // numKeys-0 lvalue is always `this.<scalar>` (the bare-scalar form lives in assignStatement).
-  visitAssignmentStatement(ctx: AssignmentStatementContext): StatementNode {
-    const isThis = ctx.getText().startsWith('this.');
-    const baseIdent = ctx.Identifier();
-    const rawName = baseIdent.getText();
-    const nameLoc = Location.fromToken(baseIdent.symbol);
-    // Each lvPart is an index `[expr]` (has expression) or a member `.field`/`.value` (has lvMember). Keep the
-    // flat per-kind lists in source order (existing branches read these) plus the interleaved `parts` (alternating
-    // chains like `m[i].arr[j]` need the order). The value expression is the single direct-child expression.
-    const parts = ctx.lvPart_list();
-    const members = parts.filter((p) => p.lvMember()).map((p) => {
-      const lm = p.lvMember();
-      return lm.Identifier() ? lm.Identifier().getText() : 'value';
-    });
-    const keyCtxs = parts.filter((p) => p.expression()).map((p) => p.expression());
+  // Build the assignment / compound-assign / inc-dec statement for an lvalue described by (rawName, isThis, segs)
+  // - the interleaved member/index chain - with operator `op` and value expression `valueCtx`. Driven by
+  // visitExpressionStatement / visitPrefixIncDecStatement, which reconstruct the segments from the parsed LHS
+  // expression (extractLvalue). The per-kind flat lists (members/keyFns) and interleaved segs are derived here.
+  private buildLvalueAssign(
+    rawName: string, isThis: boolean, nameLoc: Location, segs: LvSeg[],
+    op: string, valueCtx: ExpressionContext | undefined, loc: Location,
+  ): StatementNode {
+    const members = segs.filter((s) => s.member !== undefined).map((s) => s.member!);
+    const keyFns = segs.filter((s) => s.key !== undefined).map((s) => s.key!);
     const hasMember = members.length > 0;
     const fieldName = hasMember ? members[0] : undefined;
-    const op = ctx._op.text;
     const isIncDec = op === '++' || op === '--';
-    const valueCtx = isIncDec ? undefined : ctx.expression();
-    const loc = Location.fromCtx(ctx);
+
+    // Bare local scalar `x op= v` / `x++` (no `this.`, no index/member): a plain local assignment. (The old
+    // assignmentStatement grammar required an lvPart for the bare-Identifier form, so this fell to assignStatement;
+    // left-factored, it now arrives here.) An unqualified name that is actually a state var / collection is
+    // resolved downstream by semantic analysis, same as assignStatement's AssignNode.
+    if (!isThis && segs.length === 0) {
+      return this.buildCompoundAssign(rawName, nameLoc, op, valueCtx ?? null, loc);
+    }
 
     // Mapping-of-flattened-struct write: `providers[k].data[k2] op= v` / `providers[k].data[k2].valid op= v` /
     // `providers[k].scalar op= v` -> the flattened nested state mapping `providers__<field>` with all keys and a
@@ -2561,7 +2560,7 @@ export default class AstBuilder
       && this.mappingStructValueVars.get(rawName)!.fields.some((f) => f.name === fieldName)) {
       const flatName = `${rawName}__${fieldName}`;
       const trailing = members.slice(1); // field chain into the flattened mapping's value struct
-      const keys = (): ExpressionNode[] => keyCtxs.map((e) => this.visit(e) as ExpressionNode);
+      const keys = (): ExpressionNode[] => keyFns.map((fn) => fn());
       if (trailing.length <= 1) {
         const read = (): ExpressionNode => {
           const acc = new MappingAccessNode(flatName, keys());
@@ -2582,11 +2581,11 @@ export default class AstBuilder
 
     // Mapping-bearing struct field write: `<var>.<field>[k...] op= v` -> write the flattened state collection
     // `<var>__<field>` (it is a state mapping). Handles `=` and compound ops.
-    if (!isThis && !isIncDec && fieldName && keyCtxs.length > 0 && this.mappingStructStateVars.has(rawName)) {
+    if (!isThis && !isIncDec && fieldName && keyFns.length > 0 && this.mappingStructStateVars.has(rawName)) {
       const field = this.mappingStructStateVars.get(rawName)!.fields.find((f) => f.name === fieldName);
       if (field && field.type instanceof MappingType) {
         const flatName = `${rawName}__${fieldName}`;
-        const flatKeys = (): ExpressionNode[] => keyCtxs.map((e) => this.visit(e) as ExpressionNode);
+        const flatKeys = (): ExpressionNode[] => keyFns.map((fn) => fn());
         // Trailing scalar member into the mapping value struct: `o.data[k].valid op= v` -> a field write on the
         // flattened mapping (same shape as `m[k].field op= v`). Depth-1 scalar field of the value struct only.
         if (members.length === 2) {
@@ -2619,9 +2618,9 @@ export default class AstBuilder
           return assign;
         }
       }
-      if (field && field.type instanceof ArrayType && keyCtxs.length === 1) {
+      if (field && field.type instanceof ArrayType && keyFns.length === 1) {
         const flatName = `${rawName}__${fieldName}`;
-        const key = (): ExpressionNode => this.visit(keyCtxs[0]) as ExpressionNode;
+        const key = (): ExpressionNode => keyFns[0]();
         const value = op === '='
           ? this.visit(valueCtx!) as ExpressionNode
           : this.compoundRhs((() => {
@@ -2638,7 +2637,7 @@ export default class AstBuilder
     // Mapping-bearing struct SCALAR/bytes field write `<var>.<field> op= v` (no key) -> the flattened state var
     // `<var>__<field>` (reads already resolve this way at visitFieldAccess). Mapping/array fields (with a key)
     // are handled above; nested field chains fall through to the rebuild path below.
-    if (!isThis && !isIncDec && fieldName && members.length === 1 && keyCtxs.length === 0
+    if (!isThis && !isIncDec && fieldName && members.length === 1 && keyFns.length === 0
       && this.mappingStructStateVars.has(rawName)) {
       const field = this.mappingStructStateVars.get(rawName)!.fields.find((f) => f.name === fieldName);
       if (field && !(field.type instanceof MappingType) && !(field.type instanceof ArrayType)) {
@@ -2658,34 +2657,34 @@ export default class AstBuilder
 
     // Local struct ARRAY-field element write `s.arr[i] op= v` (member then index): struct fields have no in-place
     // element write, so read-modify-rebuild via buildLocalStructArrayFieldWrite.
-    if (!isThis && !isIncDec && fieldName && members.length === 1 && keyCtxs.length === 1
-      && parts.length === 2 && parts[0].lvMember() && this.localStructTypes.has(rawName)) {
+    if (!isThis && !isIncDec && fieldName && members.length === 1 && keyFns.length === 1
+      && segs.length === 2 && segs[0].member !== undefined && this.localStructTypes.has(rawName)) {
       const field = this.localStructTypes.get(rawName)!.fields.find((f) => f.name === fieldName);
       if (field && field.type instanceof ArrayType) {
         return this.buildLocalStructArrayFieldWrite(rawName, fieldName, field.type,
-          () => this.visit(keyCtxs[0]) as ExpressionNode, op, valueCtx, loc);
+          () => keyFns[0](), op, valueCtx, loc);
       }
     }
 
     // State mapping -> struct -> array-field element write `m[i].arr[j] op= v` (index, member, index): the mapping
     // value struct has no in-place element write, so read the entry struct into a temp, write the array element
     // (the local-struct desugar above, on the temp), and write the struct back: `S t = m[i]; t.arr[j] = v; m[i] = t`.
-    if (!isThis && !isIncDec && fieldName && members.length === 1 && keyCtxs.length === 2
-      && parts.length === 3 && parts[0].expression() && parts[1].lvMember() && parts[2].expression()
-      && this.stateMappingValueStruct.has(rawName)) {
+    if (!isThis && !isIncDec && fieldName && members.length === 1 && keyFns.length === 2
+      && segs.length === 3 && segs[0].key !== undefined && segs[1].member !== undefined
+      && segs[2].key !== undefined && this.stateMappingValueStruct.has(rawName)) {
       const structT = this.stateMappingValueStruct.get(rawName)!;
       const field = structT.fields.find((f) => f.name === fieldName);
       if (field && field.type instanceof ArrayType) {
         const idAt = (n: string): IdentifierNode => { const i = new IdentifierNode(n); i.location = loc; return i; };
         const tmpName = `__nlv_${this.nestedLvalueCounter++}`;
-        const mapKey = (): ExpressionNode => this.visit(keyCtxs[0]) as ExpressionNode;
+        const mapKey = (): ExpressionNode => keyFns[0]();
         const mapRead = new MappingAccessNode(rawName, [mapKey()]);
         mapRead.location = nameLoc;
         const decl = new VariableDefinitionNode(structT, [], tmpName, mapRead);
         decl.location = loc;
         this.localStructTypes.set(tmpName, structT); // so the array-field write helper resolves the temp's type
         const inner = this.buildLocalStructArrayFieldWrite(tmpName, fieldName, field.type,
-          () => this.visit(keyCtxs[1]) as ExpressionNode, op, valueCtx, loc);
+          () => keyFns[1](), op, valueCtx, loc);
         const back = new MappingAssignNode(rawName, [mapKey()], idAt(tmpName));
         back.location = loc;
         const block = new BlockNode([decl, ...(inner.statements ?? []), back]);
@@ -2700,7 +2699,7 @@ export default class AstBuilder
     // Recurses for nested chains (`b.a.x = v`, `this.d.a.x = v`).
     // Struct field-chain write `<base>.f1..fn op= v` (no index/alias): rebuild the base with the field replaced
     // and assign it back (struct fields have no in-place write codegen). See buildStructFieldRebuild.
-    if (keyCtxs.length === 0) {
+    if (keyFns.length === 0) {
       const rebuilt = this.buildStructFieldRebuild(rawName, nameLoc, members, isThis, loc,
         (chainRead) => (op === '='
           ? this.visit(valueCtx!) as ExpressionNode
@@ -2714,7 +2713,7 @@ export default class AstBuilder
     const name = alias ? alias.container : rawName;
     // Build the key list fresh each call (read + assign nodes must not share key node instances).
     const buildKeys = (): ExpressionNode[] => {
-      const idxKeys = keyCtxs.map((e) => this.visit(e) as ExpressionNode);
+      const idxKeys = keyFns.map((fn) => fn());
       return alias ? [...alias.keys.map((k) => cloneNode(k)), ...idxKeys] : idxKeys;
     };
     const keys = buildKeys();
@@ -3538,13 +3537,10 @@ export default class AstBuilder
     const params = ctx.returnParam_list();
     fn.returnTypes = params.map((p) => this.returnParamType(p));
     const named = params.filter((p) => p.anyIdentifier() !== null);
-    // Solidity allows a mix of named and unnamed return values; SolidCash needs all-or-none. Under compat,
-    // synthesize a name for each unnamed slot so all are named (a named return may be returned implicitly; an
-    // explicit `return (...)` overrides). Natively, keep the all-or-none requirement.
-    if (named.length > 0 && named.length !== params.length && !this.solidityImportCompat) {
-      throw new ParseError('All return values must be named, or none of them', Location.fromCtx(ctx));
-    }
-    if (named.length === params.length || (named.length > 0 && this.solidityImportCompat)) {
+    // Solidity allows a mix of named and unnamed return values (always on, the default). Synthesize a name for
+    // each unnamed slot so all are named (a named return may be returned implicitly; an explicit `return (...)`
+    // overrides).
+    if (named.length > 0) {
       fn.returnNames = params.map((p, i) => (p.anyIdentifier() ? p.anyIdentifier()!.getText() : `__ret_${i}`));
     }
     // Warn about no-op data-location modifiers
@@ -3883,6 +3879,85 @@ export default class AstBuilder
   private usingForArrayLibrary(recvName: string): string | undefined {
     const arrType = this.stateArrayVarTypes.get(recvName);
     return arrType ? this.usingForLibraries.get(arrType.toString()) : undefined;
+  }
+
+  // Reconstruct an lvalue chain (rawName, isThis, ordered segments) from a parsed LHS expression, so the
+  // left-factored `expression op= expression` assignment reuses buildLvalueAssign (which the lvPart grammar path
+  // also feeds). Walks outside-in, prepending each segment; returns null for a non-lvalue (call, cast, literal).
+  private extractLvalue(
+    ctx: ExpressionContext,
+  ): { rawName: string; isThis: boolean; nameLoc: Location; segs: LvSeg[] } | null {
+    const segs: LvSeg[] = [];
+    let cur: ExpressionContext = ctx;
+    for (;;) {
+      if (cur instanceof ParenthesisedContext) {
+        cur = cur.expression();
+      } else if (cur instanceof ArrayAccessContext) {
+        const keyCtx = cur.expression(1);
+        segs.unshift({ key: () => this.visit(keyCtx) as ExpressionNode });
+        cur = cur.expression(0);
+      } else if (cur instanceof TupleIndexOpContext) {
+        // `arr[0]` with a NumberLiteral index parses as TupleIndexOp (not a wrapped expression); the index is a
+        // literal token, so build a fresh IntLiteralNode for the key rather than re-visiting a context.
+        const numTok = cur.NumberLiteral();
+        const keyLoc = Location.fromToken(numTok.symbol);
+        segs.unshift({ key: () => { const n = new IntLiteralNode(BigInt(numTok.getText())); n.location = keyLoc; return n; } });
+        cur = cur.expression();
+      } else if (cur instanceof FieldAccessContext) {
+        const mn = cur.memberName();
+        const member = mn.Identifier() ? mn.Identifier().getText() : (mn.getText() === '.value' ? 'value' : null);
+        if (member === null) return null; // a non-field member (.length, .lockingBytecode, ...) is not an lvalue
+        segs.unshift({ member });
+        cur = cur.expression();
+      } else if (cur instanceof MappingAccessContext) {
+        cur.expression_list().slice().reverse().forEach((e) => segs.unshift({ key: () => this.visit(e) as ExpressionNode }));
+        return { rawName: cur.Identifier().getText(), isThis: true, nameLoc: Location.fromToken(cur.Identifier().symbol), segs };
+      } else if (cur instanceof StateAccessContext) {
+        return { rawName: cur.Identifier().getText(), isThis: true, nameLoc: Location.fromToken(cur.Identifier().symbol), segs };
+      } else if (cur instanceof IdentifierContext) {
+        return { rawName: cur.anyIdentifier().getText(), isThis: false, nameLoc: Location.fromCtx(cur), segs };
+      } else {
+        return null;
+      }
+    }
+  }
+
+  visitExpressionStatement(ctx: ExpressionStatementContext): StatementNode {
+    const lhsCtx = ctx.expression(0);
+    // Assignment `lvalue op= value` (left-factored): reconstruct the lvalue segments from the parsed LHS and
+    // delegate to the shared builder (the same one the lvPart assignmentStatement path uses).
+    if (ctx._op) {
+      const lv = this.extractLvalue(lhsCtx);
+      if (!lv) throw new ParseError('Invalid assignment target', Location.fromCtx(lhsCtx));
+      return this.buildLvalueAssign(
+        lv.rawName, lv.isThis, lv.nameLoc, lv.segs, ctx._op.text, ctx.expression(1), Location.fromCtx(ctx),
+      );
+    }
+    // Bare `lvalue++;` / `lvalue--;`: the value is discarded, so it is exactly `lvalue += 1` / `-= 1`. Route
+    // through buildLvalueAssign (handles every lvalue shape); expression-position postfix (`y = x++`) is left
+    // for DesugarPostfixExpressions.
+    if (lhsCtx instanceof PostfixOpContext) {
+      const lv = this.extractLvalue(lhsCtx.expression());
+      if (!lv) {
+        // The operand is not an lvalue (a chained `x++++;`, `f()++;`, etc.) - not a valid increment target.
+        throw new ParseError('Invalid increment/decrement target', Location.fromCtx(lhsCtx));
+      }
+      return this.buildLvalueAssign(
+        lv.rawName, lv.isThis, lv.nameLoc, lv.segs, lhsCtx._op.text, undefined, Location.fromCtx(ctx),
+      );
+    }
+    // Otherwise a bare expression, computed and dropped: a call (side effect is its covenant) or a pure value.
+    const expression = this.visit(lhsCtx) as ExpressionNode;
+    const node = new ExpressionStatementNode(expression);
+    node.location = Location.fromCtx(ctx);
+    return node;
+  }
+
+  visitPrefixIncDecStatement(ctx: PrefixIncDecStatementContext): StatementNode {
+    // `++x;` / `--x;` at statement scope is exactly `x += 1` / `x -= 1`; reuse the lvalue reconstruction + builder.
+    const lv = this.extractLvalue(ctx.expression());
+    if (!lv) throw new ParseError('Invalid increment/decrement target', Location.fromCtx(ctx.expression()));
+    return this.buildLvalueAssign(lv.rawName, lv.isThis, lv.nameLoc, lv.segs, ctx._op.text, undefined, Location.fromCtx(ctx));
   }
 
   visitFunctionCallStatement(

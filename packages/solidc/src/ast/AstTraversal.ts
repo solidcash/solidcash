@@ -76,6 +76,7 @@ import {
   TokenContainerMethodStatementNode,
   ReturnNode,
   FunctionCallStatementNode,
+  ExpressionStatementNode,
   MethodCallStatementNode,
   ExpressionNode,
   ConstantDefinitionNode,
@@ -545,6 +546,11 @@ export default class AstTraversal extends AstVisitor<Node> {
 
   visitFunctionCallStatement(node: FunctionCallStatementNode): Node {
     node.call = this.visit(node.call) as FunctionCallNode;
+    return node;
+  }
+
+  visitExpressionStatement(node: ExpressionStatementNode): Node {
+    node.expression = this.visit(node.expression) as ExpressionNode;
     return node;
   }
 

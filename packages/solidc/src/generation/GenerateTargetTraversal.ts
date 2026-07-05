@@ -8,6 +8,7 @@ import {
   Op,
   OpOrData,
   PrimitiveType,
+  TupleType,
   Script,
   scriptToAsm,
   scriptToBytecode,
@@ -111,6 +112,7 @@ import {
   TransferInfo,
   ReturnNode,
   FunctionCallStatementNode,
+  ExpressionStatementNode,
   MethodCallStatementNode,
   ExpressionNode,
   ConstantDefinitionNode,
@@ -168,6 +170,14 @@ import { isNumericType } from '../utils.js';
 import { getStackEffect } from '../asmStackEffects.js';
 import { InvalidModifierCombinationError } from '../Errors.js';
 import { analyzeInlineAssembly } from '../semantic/InlineAssemblyDiagnostics.js';
+
+// Upper bound on the element count of a bounded array whose default value is materialized inline. A covenant
+// array maps to transaction inputs/outputs, so it cannot meaningfully exceed a transaction's input/output count:
+// in a standard 100000-byte BCH transaction that ceiling is ~3119 minimal outputs (~2437 minimal inputs). 10000
+// sits comfortably above that (so no real array is rejected) and matches the array safe-decode limit already used
+// in @solidcash/utils (state.ts); an astronomical bound (a ported Solidity type solc itself rejects as "too
+// large for memory") is refused here rather than exhausting memory emitting it.
+const MAX_MATERIALIZED_ARRAY_ELEMENTS = 10000;
 
 // Locking bytecode template fragments - correspond to libauth's
 // encodeLockingBytecodeP2pkh / P2sh20 / P2sh32 but used as partial
@@ -3954,6 +3964,24 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.popFromStack();
     }
 
+    return node;
+  }
+
+  visitExpressionStatement(node: ExpressionStatementNode): Node {
+    const locationData = { location: node.location, positionHint: PositionHint.END };
+    node.expression = this.visit(node.expression) as ExpressionNode;
+    // Compute the value and drop it (a bare expression statement has no effect). Drop one slot per value:
+    // a tuple pushes one per element; a void expression pushes nothing.
+    const type = node.expression.type;
+    const dropCount = type instanceof TupleType
+      ? type.elements.length
+      : type === PrimitiveType.VOID
+        ? 0
+        : 1;
+    for (let i = 0; i < dropCount; i++) {
+      this.emit(Op.OP_DROP, locationData);
+      this.popFromStack();
+    }
     return node;
   }
 
@@ -9120,6 +9148,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (type instanceof ArrayType) {
       const savedStack = [...this.stack];
       if (type.bound !== undefined) {
+        // A bounded array materializes `bound` default elements inline; an absurd bound (e.g. a ported
+        // `uint[20][20][2999...]`, which solc itself rejects as "Type too large for memory") would emit an
+        // astronomical script, so reject it here rather than exhaust memory building it.
+        if (type.bound > MAX_MATERIALIZED_ARRAY_ELEMENTS) {
+          throw new Error(`Array type is too large to materialize (${type.bound} elements); reduce the bound.`);
+        }
         // Bounded: length prefix + bound default elements
         this.emit(encodeInt(BigInt(type.bound)), locationData);
         this.emitPushdataEncode(PrimitiveType.BIGINT, locationData);

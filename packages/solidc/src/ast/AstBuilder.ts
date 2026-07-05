@@ -161,6 +161,7 @@ import type {
   StateAccessContext,
   ThisExprContext,
   AssignmentStatementContext,
+  StoragePointerWriteStatementContext,
   MappingAccessContext,
   MappingDeleteStatementContext,
   DeleteLocalContext,
@@ -324,6 +325,10 @@ export default class AstBuilder
   private constantIntValues: Map<string, number> = new Map();
   // Counter for synthesized temp locals used to desugar nested lvalue writes (`s.arr[i] = v`, `m[i].arr[j] = v`).
   private nestedLvalueCounter = 0;
+  // Function name -> its return struct type (for functions returning a struct, e.g. the OZ StorageSlot factory
+  // `getAddressSlot(bytes32) returns (AddressSlot storage)`), so an inline `Lib.f(slot).value = v` write can
+  // desugar to a typed temp local. Populated as functions are built (callee declared before the caller).
+  private functionReturnStructs: Map<string, StructType> = new Map();
   // State mapping name -> its resolved value struct type, for desugaring `m[i].arr[j] = v` (mapping -> struct ->
   // array-field element). Populated per contract from the mapping collections; empty for non-struct mappings.
   private stateMappingValueStruct: Map<string, StructType> = new Map();
@@ -1024,6 +1029,10 @@ export default class AstBuilder
     if (returnTypeCtx) {
       this.applyReturnType(functionDefinition, returnTypeCtx);
     }
+    // Record a struct-returning function (for inline storage-pointer writes `Lib.f(slot).value = v`).
+    if (functionDefinition.returnTypes?.length === 1 && functionDefinition.returnTypes[0] instanceof StructType) {
+      this.functionReturnStructs.set(name, functionDefinition.returnTypes[0]);
+    }
 
     // `selfdestruct(addr)` in the body implies the selfdestruct modifier (collapse all state UTXOs, no
     // recreation). The destination is enforced in codegen (visitSelfdestructStatement pins tx.outputs[0] to
@@ -1127,6 +1136,10 @@ export default class AstBuilder
     const returnTypeCtx = ctx.returnType();
     if (returnTypeCtx) {
       this.applyReturnType(functionDefinition, returnTypeCtx);
+    }
+    // Record a struct-returning free/library function (the OZ StorageSlot factory is a library function).
+    if (functionDefinition.returnTypes?.length === 1 && functionDefinition.returnTypes[0] instanceof StructType) {
+      this.functionReturnStructs.set(functionDefinition.name, functionDefinition.returnTypes[0]);
     }
 
     return functionDefinition;
@@ -2775,6 +2788,44 @@ export default class AstBuilder
     }
     node.location = loc;
     return node;
+  }
+
+  // Inline storage-pointer write `Lib.f(args).field op= v` (OZ StorageSlot). Desugar to the local-pointer form
+  // `RetStruct __t = Lib.f(args); __t.field op= v;` (a block spliced by flattenStatements), which
+  // LowerStorageSlotPointers then lowers to the __evm_storage register. Needs Lib.f's return struct type.
+  visitStoragePointerWriteStatement(ctx: StoragePointerWriteStatementContext): StatementNode {
+    const loc = Location.fromCtx(ctx);
+    const fnName = ctx.Identifier(1).getText();
+    const retStruct = this.functionReturnStructs.get(fnName);
+    if (!retStruct) {
+      throw new ParseError(
+        `Cannot resolve the storage-pointer factory '${fnName}' for an inline '.value' write; `
+        + 'assign it to a `T storage` local first, then write its member.', loc,
+      );
+    }
+    const exprs = ctx.expression_list();
+    const valueCtx = exprs[exprs.length - 1];
+    const callArgCtxs = exprs.slice(0, -1);
+    const members = ctx.lvMember_list().map((m) => (m.Identifier() ? m.Identifier().getText() : 'value'));
+    const op = ctx._op.text;
+
+    const tmpName = `__nlv_${this.nestedLvalueCounter++}`;
+    // Library functions are keyed by their qualified name (`Lib.f`) in the factory registry, so build the call
+    // with the qualifier to match how the normal `Lib.f(args)` call resolves in LowerStorageSlotPointers.
+    const fnId = new IdentifierNode(`${ctx.Identifier(0).getText()}.${fnName}`);
+    fnId.location = loc;
+    const factoryCall = new FunctionCallNode(fnId, callArgCtxs.map((e) => this.visit(e) as ExpressionNode));
+    factoryCall.location = loc;
+    const decl = new VariableDefinitionNode(retStruct, [], tmpName, factoryCall);
+    decl.location = loc;
+    this.localStructTypes.set(tmpName, retStruct); // so buildStructFieldRebuild types the temp's field write
+    const rebuilt = this.buildStructFieldRebuild(tmpName, loc, members, false, loc,
+      (chainRead) => (op === '='
+        ? this.visit(valueCtx) as ExpressionNode
+        : this.compoundRhs(chainRead, op, valueCtx, loc)))!;
+    const block = new BlockNode([decl, rebuilt]);
+    block.location = loc;
+    return block;
   }
 
   visitMappingAccess(ctx: MappingAccessContext): MappingAccessNode {

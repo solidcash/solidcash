@@ -2533,3 +2533,24 @@ describe('inline StorageSlot pointer read (factory(slot).value)', () => {
     expect(a.contractName).toBe('C');
   });
 });
+
+// The inline OZ StorageSlot WRITE `StorageSlot.getAddressSlot(SLOT).value = v` (no local pointer) - the lvalue
+// has a call in the chain, so it needs its own grammar rule + desugar to the local-pointer form. Byte-identical
+// to the hand-written `T storage p = factory(SLOT); p.value = v` (sound by reduction).
+describe('inline StorageSlot pointer write (factory(slot).value = v)', () => {
+  const LIB = 'library StorageSlot { struct AddressSlot { address value; }'
+    + ' function getAddressSlot(bytes32 slot) internal pure returns (AddressSlot storage pointer) {'
+    + ' assembly { pointer.slot := slot } } }';
+  it('compiles an inline factory(slot).value write', () => {
+    const a = compileString(`${LIB} contract C { bytes32 constant S = keccak256("s");`
+      + ' function f(address a) external { StorageSlot.getAddressSlot(S).value = a; } }', { solidityImportCompat: true });
+    expect(a.contractName).toBe('C');
+  });
+  it('is byte-identical to the local-pointer form', () => {
+    const pre = `${LIB} contract C { bytes32 constant S = keccak256("s"); function f(address a) external { `;
+    const inline = compileString(`${pre} StorageSlot.getAddressSlot(S).value = a; } }`, { solidityImportCompat: true });
+    const local = compileString(`${pre} StorageSlot.AddressSlot storage p = StorageSlot.getAddressSlot(S); p.value = a; } }`,
+      { solidityImportCompat: true });
+    expect(inline.bytecode).toBe(local.bytecode);
+  });
+});

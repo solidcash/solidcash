@@ -286,6 +286,8 @@ export default class AstBuilder
   private packedStructArrayElems: Map<string, StructType> = new Map();
   // State struct variables -> StructType, for desugaring field-chain writes (`this.d.x = v`) to a rebuild.
   private stateStructVars: Map<string, StructType> = new Map();
+  // All state variable names, so a tuple assignment to state vars `(x, y) = (a, b)` desugars to state assigns.
+  private stateVarNames: Set<string> = new Set();
   // State array variables -> ArrayType, so `using L for T[]` desugars `arr.method(args)` to `L.method(arr, args)`.
   private stateArrayVarTypes: Map<string, ArrayType> = new Map();
   // Contract-level param names (`contract C(int x)`), so a constructor with a parent invocation drops only the
@@ -774,6 +776,7 @@ export default class AstBuilder
         .filter((sv) => sv.type instanceof StructType)
         .map((sv) => [sv.name, sv.type as StructType]),
     );
+    this.stateVarNames = new Set(stateVariables.map((sv) => sv.name));
     this.stateArrayVarTypes = new Map(
       stateVariables
         .filter((sv) => sv.type instanceof ArrayType)
@@ -1419,6 +1422,20 @@ export default class AstBuilder
       );
       tupleAssign.location = Location.fromCtx(ctx);
       const block = new BlockNode([tempDecl, tupleAssign]);
+      block.location = Location.fromCtx(ctx);
+      return block;
+    }
+    // `(x, y) = (a, b)` where every target is a state variable: the tuple codegen assigns into stack slots,
+    // which state vars do not have. Desugar to sequential state assigns - clobber-safe because a state read
+    // always reads the input commitment, so a swap `(x, y) = (y, x)` still exchanges correctly.
+    if (exprs.length > 1
+      && elements.every((e) => e.existing && e.name !== undefined && this.stateVarNames.has(e.name))) {
+      const stmts: StatementNode[] = elements.map((e, i) => {
+        const sa = new StateAssignNode(e.name!, this.visit(exprs[i]) as ExpressionNode);
+        sa.location = Location.fromCtx(ctx);
+        return sa;
+      });
+      const block = new BlockNode(stmts);
       block.location = Location.fromCtx(ctx);
       return block;
     }

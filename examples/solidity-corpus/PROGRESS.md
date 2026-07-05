@@ -35,7 +35,9 @@ the current number with `node examples/solidity-corpus/bench.mjs` (the scorecard
 
 | 2026-07-05 | 2782 / 4876 | (this) | +2 | `this.f{value/gas}(args)` self-call: drop the inert EVM message-call options (no analogue on a BCH direct-subroutine self-call) and resolve to the own function, instead of falling through to MethodCallNotSupported |
 
-Total so far: **1936 → 2782** (+846). Update this table whenever the number moves.
+| 2026-07-05 | 2789 / 4876 | (this) | +7 | tuple assignment to state variables `(x, y) = (a, b)`: the tuple codegen assigns into stack slots which state vars lack, so a tuple whose targets are all state vars desugars to sequential state assigns (byte-identical to `x=a; y=b`; a swap `(x,y)=(y,x)` stays correct because a state read reads the input commitment) |
+
+Total so far: **1936 → 2789** (+853). Update this table whenever the number moves.
 
 ## Notes
 

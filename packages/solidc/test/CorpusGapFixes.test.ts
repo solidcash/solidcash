@@ -273,3 +273,27 @@ describe('this.f{value/gas}(args) self-call drops the inert EVM call options', (
     }`, { solidityImportCompat: true, forceStateful: true }).contractName).toBe('C');
   });
 });
+
+describe('tuple assignment to state variables ((x, y) = (a, b))', () => {
+  // The tuple codegen assigns into stack slots, which state vars lack. A tuple assignment whose targets are all
+  // state vars desugars to sequential state assigns - byte-identical to the manual form, and a swap stays
+  // correct because a state read always reads the input commitment.
+  const bc = (body: string): string => compileString(
+    `contract C() { uint256 x; uint256 y; function f(uint256 a, uint256 b) { ${body} } }`,
+    { solidityImportCompat: true, forceStateful: true },
+  ).bytecode;
+
+  it('(x, y) = (a, b) matches x = a; y = b', () => {
+    expect(bc('(x, y) = (a, b);')).toBe(bc('x = a; y = b;'));
+  });
+
+  it('(x, y) = (y, x) swap matches x = y; y = x (input-read semantics)', () => {
+    expect(bc('(x, y) = (y, x);')).toBe(bc('x = y; y = x;'));
+  });
+
+  it('a tuple assignment to locals is unaffected', () => {
+    expect(compileString(`contract C() {
+      function f(uint256 a, uint256 b) { uint256 p; uint256 q; (p, q) = (a, b); require(p == a); }
+    }`, { solidityImportCompat: true }).contractName).toBe('C');
+  });
+});

@@ -529,7 +529,7 @@ export default class AstBuilder
     const contract = contracts[contracts.length - 1];
     const sourceFileNode = new SourceFileNode(
       contract, constantDefinitions, enumDefinitions, structDefinitions, typeDefinitions,
-      errorDefinitions, [], interfaceDefinitions, freeFunctions, imports, usingForDirectives,
+      errorDefinitions, allLibEventDefs, interfaceDefinitions, freeFunctions, imports, usingForDirectives,
     );
     sourceFileNode.importedContracts.push(...contracts.slice(0, -1));
     sourceFileNode.location = Location.fromCtx(ctx);

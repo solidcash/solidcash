@@ -1,7 +1,41 @@
 import { describe, it, expect } from 'vitest';
 import { compileString } from '../src/index.js';
 
-// Functions, modifiers, and visibility: receive/fallback, named returns, modifier interleaving.
+// Functions: visibility, unused params, named returns, mutability, internal-helper inlining.
+
+describe('internal helpers that read a state entry (inlined, not subroutined)', () => {
+  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+
+  it('inlines a void private helper with a compound mapping write (_mint pattern)', () => {
+    expect(cc('pragma solidity ^0.8.0; contract C { mapping(address => uint256) bal; uint256 totalSupply;'
+      + ' function _mint(address to, uint256 amt) private { bal[to] += amt; totalSupply += amt; }'
+      + ' function mint(address to, uint256 amt) external { _mint(to, amt); require(true); } }')).toBe('C');
+  });
+
+  it('inlines a void private helper that reads a mapping then writes', () => {
+    expect(cc('pragma solidity ^0.8.0; contract C { mapping(address => uint256) bal;'
+      + ' function _m(address k, uint256 v) private { uint256 old = bal[k]; bal[k] = old + v; }'
+      + ' function f(address k, uint256 v) external { _m(k, v); require(true); } }')).toBe('C');
+  });
+
+  it('leaves a simple-write private helper (no entry read) compiling as before', () => {
+    expect(cc('pragma solidity ^0.8.0; contract C { mapping(address => uint256) bal;'
+      + ' function _set(address k, uint256 v) private { bal[k] = v; }'
+      + ' function f(address k, uint256 v) external { _set(k, v); require(true); } }')).toBe('C');
+  });
+
+  it('inlines an entry-reading helper called from the CONSTRUCTOR (the _mint-in-ctor pattern)', () => {
+    expect(cc('pragma solidity ^0.8.0; contract C { mapping(address => uint256) bal; uint256 total;'
+      + ' function _mint(address to, uint256 amt) private { bal[to] += amt; total += amt; }'
+      + ' constructor() { _mint(msg.sender, 100); } function f() external { require(true); } }')).toBe('C');
+  });
+
+  it('inlines an inherited entry-reading helper called from a child constructor', () => {
+    expect(cc('pragma solidity ^0.8.0; contract Base { mapping(address => uint256) bal;'
+      + ' constructor(uint256 x) {} function _mint(address to, uint256 amt) internal { bal[to] += amt; } }'
+      + ' contract C is Base { constructor() Base(1) { _mint(msg.sender, 100); } function f() external { require(true); } }')).toBe('C');
+  });
+});
 
 describe('Visibility on free / library functions', () => {
   it('accepts visibility/mutability on a free function (ignored)', () => {
@@ -70,25 +104,6 @@ describe('SBE-15: empty-body returning function + named-arg call to a returning 
   });
 });
 
-describe('empty void functions synthesize a no-op body (Solidity porting: receive/fallback/payable)', () => {
-  it('compiles empty receive(), payable, and plain void functions under solidityImportCompat', () => {
-    for (const body of [
-      'function inc() public { n++; } receive() external payable {}',
-      'function deposit() public payable {} function inc() public { n++; }',
-      'function f() public {} function inc() public { n++; }',
-      'function inc() public { n++; } fallback() external payable {}',
-    ]) {
-      const src = `pragma solidity ^0.8.0; contract C { int n; ${body} }`;
-      expect(compileString(src, { solidityImportCompat: true }).contractName).toBe('C');
-    }
-  });
-
-  it('still rejects an empty function in native mode (the guard is preserved)', () => {
-    expect(() => compileString('contract C() { int n; function f() {} }'))
-      .toThrow(/contains no statements/);
-  });
-});
-
 describe('SBE-24: named returns of address/pubkey/sig zero-init correctly', () => {
   // A named return desugars to a local pre-initialized to the type's default. address/pubkey/sig/datasig have
   // no int-0 default, so the prior explicit-0 init tripped AssignTypeError. Uninitialized declarations zero-init
@@ -112,20 +127,6 @@ describe('SBE-24: named returns of address/pubkey/sig zero-init correctly', () =
   });
 });
 
-// The modifier placeholder `_;` may live inside an if/else branch (or loop body), not only at the modifier
-// body top level - the OZ `ifAdmin` proxy pattern. Grammar allows it anywhere a statement is; modifier
-// expansion counts + replaces it recursively.
-describe('`_;` modifier placeholder inside a conditional', () => {
-  it('expands `_;` nested in an if/else branch', () => {
-    const a = compileString(
-      'contract C { int x; modifier ifZero() { if (this.x == 0) { _; } else { require(false); } }'
-      + ' function f() ifZero { this.x = 1; } }',
-      { solidityImportCompat: true },
-    );
-    expect(a.contractName).toBe('C');
-  });
-});
-
 // Function-type params may carry pure/view mutability (`function(uint256) pure returns (uint256)`); and
 // `new bytes(n)` with a constant length folds to an n-zero-byte buffer (dynamic length has no BCH analogue).
 describe('function-type mutability + new bytes(constant)', () => {
@@ -144,57 +145,6 @@ describe('function-type mutability + new bytes(constant)', () => {
       { solidityImportCompat: true },
     );
     expect(a.contractName).toBe('C');
-  });
-});
-
-describe('function modifier / custom-modifier interleaving (Solidity allows any order)', () => {
-  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
-  it('accepts a custom modifier invocation BEFORE visibility (function f() M(1) public {})', () => {
-    expect(cc('pragma solidity ^0.8.0; contract C { modifier M(uint i){_;}'
-      + ' function f() M(1) public { require(true); } }')).toBe('C');
-  });
-  it('accepts multiple custom modifiers interleaved with visibility/mutability', () => {
-    expect(cc('pragma solidity ^0.8.0; contract C { modifier A{_;} modifier B{_;}'
-      + ' function f() A public B view { require(true); } }')).toBe('C');
-  });
-  it('still accepts the visibility-first order', () => {
-    expect(cc('pragma solidity ^0.8.0; contract C { modifier M(uint i){_;}'
-      + ' function f() public M(1) { require(true); } }')).toBe('C');
-  });
-});
-
-// A receive() must stay external + payable, but Solidity allows virtual/override interleaved in any order.
-describe('receive(): virtual/override interleaved with external payable', () => {
-  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
-  it('accepts `receive() external virtual payable`', () => {
-    expect(cc('contract C { uint bal; receive() external virtual payable { bal = 1; }'
-      + ' function f() public { require(true); } }')).toBe('C');
-  });
-  it('still rejects a receive() missing payable', () => {
-    expect(() => compileString('contract C { receive() external { } function f() public { require(true); } }',
-      { solidityImportCompat: true })).toThrow();
-  });
-});
-
-// A Solidity forwarding-proxy fallback declares a return type: `fallback(bytes) external payable returns (bytes)`.
-// Lowers like the already-supported fallback-with-params plus a returns clause; the body forwards via the same
-// opaque-data low-level call model as MultiSigWallet (`target.call{value}(data)`), which is covenant-sound.
-describe('fallback with input + return type (forwarding proxy)', () => {
-  const SRC = 'contract C { address immutable target; constructor(address _t) { target = _t; }'
-    + ' fallback(bytes calldata data) external payable returns (bytes memory) {'
-    + ' (bool ok, bytes memory res) = target.call{value: msg.value}(data); require(ok); return res; } }';
-  it('parses and compiles a fallback with a bytes return type', () => {
-    expect(compileString(SRC, { solidityImportCompat: true }).contractName).toBe('C');
-  });
-  it('captures the forward as a low-level call (sound forwarding covenant)', () => {
-    const fb = compileString(SRC, { solidityImportCompat: true }).abi.find((f) => f.name === '__fallback');
-    expect(fb?.isFallback).toBe(true);
-    expect(fb?.lowLevelCalls?.[0]?.callMode).toBe('call');
-  });
-  it('still accepts a fallback with params but no return type (no regression)', () => {
-    expect(compileString('contract C { int n; fallback(bytes calldata data) external payable {'
-      + ' (bool ok, bytes memory res) = msg.sender.call{value: msg.value}(data); require(ok); this.n = res.length; } }',
-    { solidityImportCompat: true }).contractName).toBe('C');
   });
 });
 

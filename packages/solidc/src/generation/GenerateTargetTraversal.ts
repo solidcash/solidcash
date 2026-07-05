@@ -389,6 +389,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private currentContractIsBrandedLibrary: boolean = false;
   // True when the contract reads blockhash(n): forces it stateful (the oracle is branded to its own category).
   private currentContractUsesBlockhash: boolean = false;
+  private currentContractEmitsEvent: boolean = false;
 
   // Unchecked block depth: when > 0, bounds checks emit wrapping instead of OP_VERIFY
   private uncheckedDepth: number = 0;
@@ -558,6 +559,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   visitContract(node: ContractNode): Node {
     this.currentContractIsBrandedLibrary = node.isBrandedLibrary;
     this.currentContractUsesBlockhash = node.usesBlockhash;
+    this.currentContractEmitsEvent = node.emitsEvent;
     node.parameters = this.visitList(node.parameters) as ParameterNode[];
 
     // Register contract-level constants for inline substitution
@@ -818,7 +820,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    */
   private subroutineUseProbe(node: ContractNode): Map<bigint, number> | null {
     // Subroutine sites only arise from packed state/entry reads, state/entry writes, or events.
-    if (this.stateVariables.length === 0 && this.collectionCount === 0 && this.eventDefinitions.length === 0) {
+    if (this.stateVariables.length === 0 && this.collectionCount === 0 && this.eventDefinitions.length === 0
+      && !node.emitsEvent) {
       return null;
     }
     // Body gen mutates deployTargets accumulatively; snapshot/restore so the probe leaves it clean.
@@ -1588,6 +1591,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const isStatefulContract = this.stateVariables.length > 0
       || this.collectionCount > 0 || this.eventDefinitions.length > 0
       || this.currentContractUsesBlockhash
+      || this.currentContractEmitsEvent
       || (this.compilerOptions.forceStateful ?? false);
     const isUnsafe = node.modifiers.includes(FunctionModifier.UNSAFE);
     const unsafeTier = isUnsafe ? (node.unsafeTier ?? 0) : null;

@@ -251,6 +251,9 @@ export default class SymbolTableTraversal extends AstTraversal {
   private typeDefMap: Map<string, ValueType> = new Map();
   private enumMap: Map<string, EnumType> = new Map();
   private eventMap: Map<string, EventDefinitionNode> = new Map();
+  // Events declared in a sibling/imported contract (not the target contract nor a library): a qualified
+  // `emit C.E(...)` of one is recorded on the emitting contract so the artifact lists it (Solidity ABI parity).
+  private siblingContractEvents: WeakSet<EventDefinitionNode> = new WeakSet();
   private errorMap: Map<string, ErrorDefinitionNode> = new Map();
   private insideBranch: boolean = false;
   private isStatefulContract: boolean = false;
@@ -337,6 +340,20 @@ export default class SymbolTableTraversal extends AstTraversal {
       ev.signature = sig;
       if (!this.eventMap.has(sig)) {
         this.eventMap.set(sig, ev);
+      }
+    }
+
+    // Register events declared in sibling/imported contracts, so a qualified `emit C.E(...)` resolves (the event's
+    // commitment encoding depends only on its name+params, not the declaring scope). Skip-if-exists: a same-sig
+    // event in another scope is semantically identical, not a redefinition.
+    for (const imported of node.importedContracts) {
+      for (const ev of imported.eventDefinitions) {
+        const sig = computeEventSignature(ev.name, ev.parameters.map((p) => p.type?.toString() ?? 'address'));
+        ev.signature = sig;
+        this.siblingContractEvents.add(ev);
+        if (!this.eventMap.has(sig)) {
+          this.eventMap.set(sig, ev);
+        }
       }
     }
 
@@ -452,7 +469,9 @@ export default class SymbolTableTraversal extends AstTraversal {
       // Deploying a stateful child (`new T()` where T has state) IS a deploy, and the deploy covenant rides the
       // parent's block layout - so a parent that instantiates a stateful contract is itself made stateful (the
       // `deploy` modifier is implied). Recorded on the node so artifact generation also sees it as stateful.
-      || (node.deploysStatefulChild = this.detectStatefulChildDeploy(node));
+      || (node.deploysStatefulChild = this.detectStatefulChildDeploy(node))
+      // Emitting any event (including a foreign/library event) needs a state NFT for the commitment -> stateful.
+      || (node.emitsEvent = this.detectEmitsEvent(node));
 
     node.parameters = this.visitList(node.parameters) as ParameterNode[];
 
@@ -480,14 +499,19 @@ export default class SymbolTableTraversal extends AstTraversal {
       this.typeDefMap.set(td.name, td.valueType);
     }
 
-    // Register event definitions (keyed by full signature to allow overloading)
+    // Register event definitions (keyed by full signature to allow overloading). The redefinition check is
+    // within-contract only: a same-sig event registered by a sibling/library scope is not a redefinition.
+    const localEventSigs = new Set<string>();
     for (const ev of node.eventDefinitions) {
       const sig = computeEventSignature(ev.name, ev.parameters.map((p) => p.type?.toString() ?? 'address'));
       ev.signature = sig;
-      if (this.eventMap.has(sig)) {
+      if (localEventSigs.has(sig)) {
         throw new EventRedefinitionError(ev);
       }
-      this.eventMap.set(sig, ev);
+      localEventSigs.add(sig);
+      if (!this.eventMap.has(sig)) {
+        this.eventMap.set(sig, ev);
+      }
     }
 
     // Register error definitions (keyed by full signature to allow overloading)
@@ -961,6 +985,26 @@ export default class SymbolTableTraversal extends AstTraversal {
       }
     };
     for (const fn of node.functions) if (fn.body) walk(fn.body);
+    return found;
+  }
+
+  // A contract that emits ANY event (including a foreign/library event it does not itself declare) needs a state
+  // NFT to carry the event commitment, so emitting - like declaring an event - forces the contract stateful.
+  private detectEmitsEvent(node: ContractNode): boolean {
+    const seen = new Set<Node>();
+    let found = false;
+    const walk = (n: Node): void => {
+      if (found || seen.has(n)) return;
+      seen.add(n);
+      if (n instanceof EmitStatementNode) { found = true; return; }
+      for (const val of Object.values(n as unknown as Record<string, unknown>)) {
+        if (found) return;
+        if (val instanceof Node) walk(val);
+        else if (Array.isArray(val)) for (const x of val) if (x instanceof Node) walk(x);
+      }
+    };
+    const allFns = [node.constructorDef, node.fallbackDef, node.receiveDef, ...node.functions];
+    for (const fn of allFns) if (fn?.body) walk(fn.body);
     return found;
   }
 
@@ -4563,6 +4607,17 @@ export default class SymbolTableTraversal extends AstTraversal {
     } else {
       // Multiple overloads: defer resolution to TypeCheckTraversal
       node.eventCandidates = candidates;
+    }
+
+    // Record any emitted event declared in a sibling contract so the artifact lists it (library events already
+    // reach the artifact via file-level eventDefinitions; the contract's own events are listed directly).
+    if (this.currentContract) {
+      for (const ev of node.eventDefinition ? [node.eventDefinition] : (node.eventCandidates ?? [])) {
+        if (this.siblingContractEvents.has(ev)
+          && !this.currentContract.emittedForeignEvents.some((e) => e.signature === ev.signature)) {
+          this.currentContract.emittedForeignEvents.push(ev);
+        }
+      }
     }
 
     node.args = this.visitList(node.args);

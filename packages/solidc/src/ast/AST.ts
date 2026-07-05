@@ -144,6 +144,13 @@ export class ContractNode extends Node implements Named {
   // so this contract is made stateful to host the (implied) deploy covenant. Read by both the symbol-table pass
   // (block-layout allocation) and artifact generation (so the SDK sees a zero-state stateful contract).
   deploysStatefulChild: boolean = false;
+  // Set when the contract emits ANY event (including a foreign/library event it does not itself declare): the
+  // event commitment rides a state NFT, so emitting forces the contract stateful. Read by the symbol-table pass
+  // (statefulness) and codegen (block-layout gates).
+  emitsEvent: boolean = false;
+  // Events this contract emits that are declared in a sibling/imported contract (`emit C.E(...)`). Recorded so
+  // artifact generation lists them (Solidity puts emitted foreign events in the emitter's ABI). Deduped by sig.
+  emittedForeignEvents: EventDefinitionNode[] = [];
   implements: string[] = [];
   parentInvocations: ParentInvocation[] = [];
   fallbackDef: FunctionDefinitionNode | undefined;

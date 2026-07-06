@@ -460,6 +460,12 @@ export default class AstBuilder
       freeFunctions.push(...libFunctions);
     }
 
+    // File-level event declarations (Solidity 0.8.22+ allows events at file scope). Accumulated with library
+    // events into SourceFileNode.eventDefinitions, which the symbol table registers globally so `emit E()` resolves.
+    for (const evCtx of ctx.eventDefinition_list()) {
+      allLibEventDefs.push(this.visitEventDefinition(evCtx));
+    }
+
     const contractCtxs = ctx.contractDefinition_list();
 
     // No contract definition (library-only, or interface/type-only file): return a definitions-only node,

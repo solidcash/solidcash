@@ -10,7 +10,7 @@ dotOpBoundary(): boolean {
 }
 
 sourceFile
-    : pragmaDirective* importDirective* (constantDefinition | enumDefinition | structDefinition | typeDefinition | usingForDirective | errorDefinition | interfaceDefinition | freeFunctionDefinition | libraryDefinition | contractDefinition)* EOF
+    : pragmaDirective* importDirective* (constantDefinition | enumDefinition | structDefinition | typeDefinition | usingForDirective | errorDefinition | eventDefinition | interfaceDefinition | freeFunctionDefinition | libraryDefinition | contractDefinition)* EOF
     ;
 
 importDirective

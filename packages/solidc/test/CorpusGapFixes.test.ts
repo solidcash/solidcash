@@ -655,3 +655,17 @@ describe('using-for on non-struct receiver types (address / string / contract)',
       + ' function f(string memory s) external pure returns (uint256) { return s.len(); } }')).toBe('C');
   });
 });
+
+describe('free function shadowed by a same-name contract function (compat)', () => {
+  it('allows a contract function to shadow a free function of the same signature', () => {
+    expect(compileString('function f() pure returns (uint256) { return 1; }'
+      + ' contract C { function f() public pure returns (uint256) { return 2; }'
+      + ' function g() external pure returns (uint256) { return f(); } }',
+    { solidityImportCompat: true }).contractName).toBe('C');
+  });
+  it('still rejects two free functions with the same signature', () => {
+    expect(() => compileString('function f() pure returns (uint256) { return 1; }'
+      + ' function f() pure returns (uint256) { return 2; } contract C { function g() external pure {} }',
+    { solidityImportCompat: true })).toThrow(/Redefinition of function/);
+  });
+});

@@ -230,6 +230,11 @@ function getMaxPushdataEncodedSizeForType(type: Type, seen: Set<string> = new Se
 export default class SymbolTableTraversal extends AstTraversal {
   private symbolTables: SymbolTable[] = [new SymbolTable(GLOBAL_SYMBOL_TABLE)];
   private functionSignatures: Set<string> = new Set();
+
+  // Free (file-level) function signatures are tracked separately from contract-member signatures: a contract
+  // function may share a name/signature with a free function (it shadows it within the contract), which is legal
+  // Solidity and must not trip FunctionRedefinitionError. Free-vs-free collisions are still caught here.
+  private freeFunctionSignatures: Set<string> = new Set();
   private currentFunction: FunctionDefinitionNode;
   // Local var name -> its initializer expression, for resolving a mapping key that is a local (e.g.
   // `address lastKey = keys[keys.length-1]; m[lastKey] = v`). Populated per function before the entry pre-scan.
@@ -419,10 +424,10 @@ export default class SymbolTableTraversal extends AstTraversal {
     for (const func of node.freeFunctions) {
       const paramTypes = func.parameters.map((p) => p.type);
       const sig = computeFunctionSignature(func.name, paramTypes.map((t) => t.toString()));
-      if (this.functionSignatures.has(sig)) {
+      if (this.freeFunctionSignatures.has(sig)) {
         throw new FunctionRedefinitionError(func, paramTypes.map((t) => t.toString()).join(', '));
       }
-      this.functionSignatures.add(sig);
+      this.freeFunctionSignatures.add(sig);
 
       const returnType = func.returnTypes.length === 1
         ? func.returnTypes[0]
@@ -668,7 +673,10 @@ export default class SymbolTableTraversal extends AstTraversal {
 
       const paramTypes = func.parameters.map((p) => p.type);
       const sig = computeFunctionSignature(func.name, paramTypes.map((t) => t.toString()));
-      if (this.functionSignatures.has(sig)) {
+      // A contract function may shadow a same-signature FREE function under Solidity-compat (legal Solidity);
+      // native solidcash keeps the strict check (the free/contract collision is an error there).
+      const collidesFree = !this.compilerOptions.solidityImportCompat && this.freeFunctionSignatures.has(sig);
+      if (this.functionSignatures.has(sig) || collidesFree) {
         throw new FunctionRedefinitionError(func, paramTypes.map((t) => t.toString()).join(', '));
       }
       this.functionSignatures.add(sig);

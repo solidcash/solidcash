@@ -45,3 +45,8 @@ super/C3 inheritance, multifile symbol resolution.
 - **abi.decode with contract types** (`abi.decode(x, (O))` / `(O[])`): abi.decode's schema rejects a contract type
   ("Unsupported type O"); the array form types-mismatches (O[] vs address[]). ~2 files. Contract-as-address in the
   abi.decode schema + return-type compat - deferred (deeper schema change).
+
+- **Array slices on non-bytes arrays** (`int[] b[start:end]`, ~10 files): bytes slices work; array slices need
+  element-width offset-scaling + fixed-width-element gate + calldata-array blob-framing care. Deferred (representation
+  subtleties). Omitted-bound slices DONE for bytes.
+- **Tuple for-init** (`for((uint x, uint y) = (0,1); ..)`, ~2 files): forInit lacks a tuple-declaration form.

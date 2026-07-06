@@ -5,9 +5,9 @@ import {
   AssignNode, RequireNode, BranchNode, WhileNode, BreakNode, ContinueNode, BinaryOpNode, UnaryOpNode,
   CastNode, IdentifierNode, IntLiteralNode, BoolLiteralNode, ParameterNode, FunctionDefinitionNode,
   StateAssignNode, StateAccessNode, StateVariableNode, ContractNode, BytesConcatNode, FunctionCallNode,
-  SliceNode, CollectionNode, MappingAccessNode, MappingAssignNode, HexLiteralNode,
+  SliceNode, CollectionNode, MappingAccessNode, MappingAssignNode, HexLiteralNode, NullaryOpNode,
 } from '../ast/AST.js';
-import { BinaryOperator, UnaryOperator } from '../ast/Operator.js';
+import { BinaryOperator, UnaryOperator, NullaryOperator } from '../ast/Operator.js';
 import {
   YulBlockNode, YulStatementNode, YulExpressionNode, YulVariableDeclarationNode, YulAssignmentNode,
   YulIfNode, YulSwitchNode, YulForLoopNode, YulExpressionStatementNode, YulBreakNode, YulContinueNode,
@@ -233,6 +233,27 @@ const CMP_OPS: Record<string, BinaryOperator> = {
   lt: BinaryOperator.LT, slt: BinaryOperator.LT, gt: BinaryOperator.GT, sgt: BinaryOperator.GT,
   eq: BinaryOperator.EQ,
 };
+// Nullary Yul context builtins -> the solidc global they name (the same NullaryOp the front end emits for
+// `msg.*`/`tx.*`/`block.*`). Each is a plain 1:1 rename; `caller()`/`callvalue()`/`timestamp()`/... just read
+// the value they already denote in solidc.
+const NULLARY_CONTEXT: Record<string, NullaryOperator> = {
+  caller: NullaryOperator.MSG_SENDER,
+  callvalue: NullaryOperator.MSG_VALUE,
+  origin: NullaryOperator.TX_ORIGIN,
+  gasprice: NullaryOperator.TX_GASPRICE,
+  chainid: NullaryOperator.CHAIN_ID,
+  number: NullaryOperator.BLOCK_NUMBER,
+  timestamp: NullaryOperator.BLOCK_TIMESTAMP,
+  difficulty: NullaryOperator.BLOCK_DIFFICULTY,
+  prevrandao: NullaryOperator.BLOCK_PREVRANDAO,
+  basefee: NullaryOperator.BLOCK_BASEFEE,
+  blobbasefee: NullaryOperator.BLOCK_BLOBBASEFEE,
+  gaslimit: NullaryOperator.BLOCK_GASLIMIT,
+  coinbase: NullaryOperator.BLOCK_COINBASE,
+};
+// Address-typed context builtins - in Yul these are plain 256-bit words, so wrap the solidc `address` result in
+// a uint256 cast to keep it usable in the word-typed assembly context.
+const ADDRESS_CONTEXT = new Set(['caller', 'origin', 'coinbase']);
 
 function loc<T extends { location?: Node['location'] }>(node: T, src: { location?: Node['location'] }): T {
   node.location = src.location;
@@ -352,6 +373,10 @@ function lowerLiteral(lit: YulLiteralNode): ExpressionNode {
 
 function lowerCall(call: YulFunctionCallNode): ExpressionNode {
   const { name, args } = call;
+  if (name in NULLARY_CONTEXT && args.length === 0) {
+    const nullary = loc(new NullaryOpNode(NULLARY_CONTEXT[name]), call);
+    return ADDRESS_CONTEXT.has(name) ? loc(new CastNode(UINT256, nullary, false), call) : nullary;
+  }
   if (name in ARITH_OPS && args.length === 2) {
     return loc(new BinaryOpNode(lowerValue(args[0]), ARITH_OPS[name], lowerValue(args[1])), call);
   }

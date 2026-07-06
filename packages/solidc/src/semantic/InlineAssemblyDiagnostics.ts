@@ -49,6 +49,9 @@ const LOWERABLE_BUILTINS = new Set<string>([
   'lt', 'slt', 'gt', 'sgt', 'eq', 'iszero',
   'sload', 'sstore', 'tload', 'tstore', 'mload', 'mstore',
   'calldataload', 'calldatasize', 'keccak256', 'revert',
+  // nullary context builtins -> msg.*/tx.*/block.* NullaryOps
+  'caller', 'callvalue', 'origin', 'gasprice', 'chainid', 'number', 'timestamp', 'difficulty',
+  'prevrandao', 'basefee', 'blobbasefee', 'gaslimit', 'coinbase',
 ]);
 
 interface Walk { calls: YulFunctionCallNode[]; fnDef: boolean; }

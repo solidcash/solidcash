@@ -103,6 +103,26 @@ describe('Yul inline assembly (Phase 1: parse + diagnostics)', () => {
       }`)).toThrow(/Yul function definitions are not yet supported/);
   });
 
+  it('lowers nullary context builtins to the matching msg.*/block.*/tx.* global (sound by reduction)', () => {
+    const asm = (yul: string): string =>
+      `contract C() { function f() { uint x; assembly { x := ${yul} } require(x == x); } }`;
+    const bare = (sol: string): string =>
+      `contract C() { function f() { uint x; x = ${sol}; require(x == x); } }`;
+    // Integer context builtins -> the bare global; address ones -> a uint256(...) word cast.
+    const intPairs: Array<[string, string]> = [
+      ['callvalue()', 'msg.value'], ['timestamp()', 'block.timestamp'], ['number()', 'block.number'],
+      ['chainid()', 'block.chainid'], ['gaslimit()', 'block.gaslimit'], ['gasprice()', 'tx.gasprice'],
+    ];
+    for (const [yul, sol] of intPairs) {
+      expect(compileString(asm(yul), { solidityImportCompat: true }).bytecode)
+        .toBe(compileString(bare(sol), { solidityImportCompat: true }).bytecode);
+    }
+    expect(compileString(asm('caller()'), { solidityImportCompat: true }).bytecode)
+      .toBe(compileString(bare('uint256(msg.sender)'), { solidityImportCompat: true }).bytecode);
+    expect(compileString(asm('coinbase()'), { solidityImportCompat: true }).bytecode)
+      .toBe(compileString(bare('uint256(block.coinbase)'), { solidityImportCompat: true }).bytecode);
+  });
+
   it('names the specific unlowerable builtin rather than claiming Yul is wholly unsupported', () => {
     // A block whose only blocker is an un-lowered builtin (mcopy) reports that builtin by name.
     expect(() => compileString(`

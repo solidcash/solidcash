@@ -788,3 +788,13 @@ describe('constructor with a modifier invocation', () => {
       + ' function f() external view returns (int256) { return x; } }')).toBe('C');
   });
 });
+
+describe('for loop with an empty condition (for(;;) / for(init;;update))', () => {
+  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  it('treats an omitted for-condition as an implicit true (break-terminated)', () => {
+    expect(cc('contract C { function f() external pure returns (uint256) {'
+      + ' uint256 i = 0; for (;;) { i++; if (i > 3) break; } return i; } }')).toBe('C');
+    expect(cc('contract C { function f() external pure returns (uint256) {'
+      + ' uint256 i = 0; for (uint256 j = 0; ; j++) { i++; if (i > 3) break; } return i; } }')).toBe('C');
+  });
+});

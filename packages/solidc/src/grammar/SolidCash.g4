@@ -415,7 +415,7 @@ forInit
     ;
 
 forCondition
-    : expression ';'
+    : expression? ';'
     ;
 
 forUpdate

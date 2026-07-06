@@ -1819,8 +1819,11 @@ export default class AstBuilder
       )
       : undefined;
 
-    // Build condition
-    const condition = this.visit(condCtx.expression());
+    // Build condition. An omitted condition (`for (init; ; update)`) is an implicit `true` (Solidity infinite
+    // loop, terminated by a break inside the body).
+    const condition = condCtx.expression()
+      ? this.visit(condCtx.expression())
+      : Object.assign(new BoolLiteralNode(true), { location: Location.fromCtx(condCtx) });
 
     // Build body block, appending update as last statement when present
     const bodyBlock = this.visit(ctx.block()) as BlockNode;

@@ -775,3 +775,16 @@ describe('slice with omitted bounds (a[:2] / a[2:] / a[:])', () => {
       + ' return bytes.concat(a[:2], a[2:]); } }')).toBe('C');
   });
 });
+
+describe('constructor with a modifier invocation', () => {
+  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  it('accepts a modifier on a constructor (no args)', () => {
+    expect(cc('contract C { int256 x; modifier m { x = 1; _; } constructor() m { x = 2; }'
+      + ' function f() external view returns (int256) { return x; } }')).toBe('C');
+  });
+  it('accepts a parent invocation followed by a modifier', () => {
+    expect(cc('contract A { constructor(uint256 a) {} }'
+      + ' contract C is A { int256 x; modifier m { x = 1; _; } constructor() A(1) m { x = 2; }'
+      + ' function f() external view returns (int256) { return x; } }')).toBe('C');
+  });
+});

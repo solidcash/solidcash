@@ -159,7 +159,7 @@ constantDefinition
     ;
 
 constructorDefinition
-    : 'constructor' parameterList ('public' | 'internal' | 'external' | 'payable')* parentInvocation* '{' statement* '}'
+    : 'constructor' parameterList ('public' | 'internal' | 'external' | 'payable')* parentInvocation* customModifierInvocation* '{' statement* '}'
     ;
 
 fallbackDefinition

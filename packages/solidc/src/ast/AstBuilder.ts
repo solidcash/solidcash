@@ -2064,8 +2064,13 @@ export default class AstBuilder
       return cast;
     }
 
-    // `Color(i)` where Color is an enum is an int -> enum cast, not a function call.
-    const enumType = identifiers.length === 1 ? this.enumMap.get(name) : undefined;
+    // `Color(i)` where Color is an enum is an int -> enum cast, not a function call. Also `L.Color(i)` /
+    // `Contract.Color(i)` - a library/contract/interface-qualified enum cast (enums register under their bare name).
+    const enumType = identifiers.length === 1
+      ? this.enumMap.get(name)
+      : (identifiers.length === 2
+        && (this.libraryNames.has(identifiers[0].getText()) || this.contractInterfaceNames.has(identifiers[0].getText()))
+        ? this.enumMap.get(identifiers[1].getText()) : undefined);
     if (enumType && parameters.length === 1) {
       const cast = new CastNode(enumType, parameters[0] as ExpressionNode, false);
       cast.location = Location.fromCtx(ctx);

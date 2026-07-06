@@ -669,3 +669,11 @@ describe('free function shadowed by a same-name contract function (compat)', () 
     { solidityImportCompat: true })).toThrow(/Redefinition of function/);
   });
 });
+
+describe('library/contract-qualified enum cast (L.E(x) / Contract.E(x))', () => {
+  it('resolves L.E(x) as an int -> enum cast', () => {
+    expect(compileString('library L { enum E { A, B } }'
+      + ' contract C { function f(uint256 c) external pure returns (uint256) { return uint256(L.E(c)); } }',
+    { solidityImportCompat: true }).contractName).toBe('C');
+  });
+});

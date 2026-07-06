@@ -1690,6 +1690,9 @@ export default class TypeCheckTraversal extends AstTraversal {
       // A string literal compared against bytesN (`id == "abc"`): coerce the literal to a padded bytesN value.
       node.left = this.maybeCoerceStringToBytesN(node.left, node.right.type);
       node.right = this.maybeCoerceStringToBytesN(node.right, node.left.type);
+      // A literal 0 compared against bytesN (`data[i] == 0`): coerce it to the zero-filled bytesN value.
+      node.left = this.maybeCoerceZeroToBytes(node.left, node.right.type);
+      node.right = this.maybeCoerceZeroToBytes(node.right, node.left.type);
     }
 
     const resType = resultingTypeForBinaryOp(node.operator, node.left.type!, node.right.type!);

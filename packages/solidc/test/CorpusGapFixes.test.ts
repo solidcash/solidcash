@@ -689,3 +689,11 @@ describe('delete on a bytes element (delete data[i] -> zero byte)', () => {
     expect(s.bytecode).toBe(h.bytecode);
   });
 });
+
+describe('bytesN compared against literal 0 (data[i] == 0)', () => {
+  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  it('coerces 0 to the zero-filled bytesN in == / !=', () => {
+    expect(cc('contract C { function f(bytes1 b) external pure returns (bool) { return b == 0; } }')).toBe('C');
+    expect(cc('contract C { function f(bytes32 b) external pure returns (bool) { return b != 0; } }')).toBe('C');
+  });
+});

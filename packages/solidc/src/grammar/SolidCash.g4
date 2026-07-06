@@ -55,7 +55,7 @@ pragmaDirective
     : 'pragma' pragmaName pragmaValue ';'
     // Tolerated no-op directives (abicoder / experimental ...): EVM-specific compiler switches with no BCH
     // effect. Matched via Identifier so they stay non-reserved; the AST builder ignores them.
-    | 'pragma' Identifier (Identifier | VersionLiteral | NumberLiteral | StringLiteral)* ';'
+    | 'pragma' Identifier (Identifier | VersionLiteral | NumberLiteral | StringLiteral | 'solidity')* ';'
     ;
 
 pragmaName

@@ -707,3 +707,10 @@ describe('file-level UDVT-typed constant (T constant g = T.wrap(x))', () => {
       + ' contract C { function f() external pure returns (uint256) { return U.unwrap(h); } }')).toBe('C');
   });
 });
+
+describe('pragma experimental solidity (tolerated no-op)', () => {
+  it('parses `pragma experimental solidity;`', () => {
+    expect(compileString('pragma experimental solidity; contract C { function f() external pure returns (uint256) { return 1; } }',
+      { solidityImportCompat: true }).contractName).toBe('C');
+  });
+});

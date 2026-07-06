@@ -320,6 +320,8 @@ export default class AstBuilder
   // Local struct-ARRAY vars (`S[] memory m`) -> element struct type, to desugar an interleaved element array-field
   // write `m[i].c[j] = v` (whole-element read-modify-write). Per-function, like localStructTypes.
   private localStructArrayTypes: Map<string, StructType> = new Map();
+  // Local unbounded `bytes` vars, to desugar an element write `d[i] = v` to a slice+concat rebuild. Per-function.
+  private localBytesVars: Set<string> = new Set();
 
   private forOfArrayCounter = 0; // uniquifies the temp locals of a desugared `for..of` over a state array
 
@@ -921,6 +923,7 @@ export default class AstBuilder
   visitConstructorDefinition(ctx: ConstructorDefinitionContext): FunctionDefinitionNode {
     this.storageAliases = new Map();
     this.localStructTypes = new Map();
+    this.localBytesVars = new Set();
     this.localStructArrayTypes = new Map();
     const statements = this.flattenStatements(ctx.statement_list().map((s) => this.visit(s) as StatementNode));
     const block = new BlockNode(statements);
@@ -1010,6 +1013,7 @@ export default class AstBuilder
   visitFunctionDefinition(ctx: FunctionDefinitionContext): FunctionDefinitionNode {
     this.storageAliases = new Map();
     this.localStructTypes = new Map();
+    this.localBytesVars = new Set();
     this.localStructArrayTypes = new Map();
     const name = ctx.anyIdentifier().getText();
     const parameters = ctx.parameterList().parameter_list().map((p) => this.visit(p) as ParameterNode);
@@ -1133,6 +1137,7 @@ export default class AstBuilder
   visitFreeFunctionDefinition(ctx: FreeFunctionDefinitionContext): FunctionDefinitionNode {
     this.storageAliases = new Map();
     this.localStructTypes = new Map();
+    this.localBytesVars = new Set();
     this.localStructArrayTypes = new Map();
     const name = ctx.anyIdentifier().getText();
     const parameters = ctx.parameterList().parameter_list().map((p) => this.visit(p) as ParameterNode);
@@ -1174,6 +1179,7 @@ export default class AstBuilder
   visitModifierDefinition(ctx: ModifierDefinitionContext): ModifierDefinitionNode {
     this.storageAliases = new Map();
     this.localStructTypes = new Map();
+    this.localBytesVars = new Set();
     this.localStructArrayTypes = new Map();
     const name = ctx.Identifier().getText();
     const parameters = ctx.parameterList()
@@ -1352,6 +1358,8 @@ export default class AstBuilder
     if (type instanceof ArrayType && type.elementType instanceof StructType) {
       this.localStructArrayTypes.set(name, type.elementType);
     }
+    // Track local unbounded bytes vars so `d[i] = v` can desugar to a slice+concat rebuild (see buildLvalueAssign).
+    if (type instanceof BytesType && type.bound === undefined) this.localBytesVars.add(name);
 
     const variableDefinition = new VariableDefinitionNode(type, modifiers, name, expression);
     variableDefinition.location = Location.fromCtx(ctx);
@@ -2654,11 +2662,12 @@ export default class AstBuilder
       return this.buildCompoundAssign(rawName, nameLoc, op, valueCtx ?? null, loc);
     }
 
-    // Bytes state var element write `data[i] = v` -> reassign the whole blob with byte i replaced:
-    // `data = data[0:i] ++ v ++ data[i+1:]`. Reuses the bytes slice/concat codegen (like .push/.pop).
-    if (!isThis && !isIncDec && !hasMember && keyFns.length === 1 && op === '='
-      && this.bytesStateVarNames.has(rawName) && valueCtx) {
-      return this.desugarBytesElementWrite(rawName, keyFns[0], this.visit(valueCtx) as ExpressionNode, loc);
+    // Bytes var element write `data[i] = v` (state OR local/memory) -> reassign the whole blob with byte i
+    // replaced: `data = data[0:i] ++ v ++ data[i+1:]`. Reuses the bytes slice/concat codegen (like .push/.pop).
+    if (!isThis && !isIncDec && !hasMember && keyFns.length === 1 && op === '=' && valueCtx
+      && (this.bytesStateVarNames.has(rawName) || this.localBytesVars.has(rawName))) {
+      const isState = this.bytesStateVarNames.has(rawName);
+      return this.desugarBytesElementWrite(rawName, keyFns[0], this.visit(valueCtx) as ExpressionNode, loc, isState);
     }
 
     // Mapping-of-flattened-struct write: `providers[k].data[k2] op= v` / `providers[k].data[k2].valid op= v` /
@@ -4278,19 +4287,22 @@ export default class AstBuilder
 
   // `bytes b; b.pop()` desugars to `b = b[0 : b.length - 1]` (drop the last byte). Popping an empty bytes slices
   // to end -1, which fails at runtime - matching Solidity's revert-on-empty-pop.
-  // `data[i] = v` on an unbounded bytes state var -> `data = data[0:i] ++ v ++ data[i+1:size(data)]`.
+  // `data[i] = v` on an unbounded bytes var -> `data = data[0:i] ++ v ++ data[i+1:size(data)]`. Works for a state
+  // var (StateAccess/StateAssign) or a local/memory var (Identifier/Assign), selected by `isState`.
   private desugarBytesElementWrite(
-    name: string, indexFn: () => ExpressionNode, value: ExpressionNode, loc: Location,
-  ): StateAssignNode {
+    name: string, indexFn: () => ExpressionNode, value: ExpressionNode, loc: Location, isState: boolean,
+  ): StatementNode {
     const stamp = <T extends { location?: Location }>(n: T): T => { n.location = loc; return n; };
-    const read = (): StateAccessNode => stamp(new StateAccessNode(name));
+    const read = (): ExpressionNode => stamp(isState ? new StateAccessNode(name) : new IdentifierNode(name));
     const len = stamp(new UnaryOpNode(UnaryOperator.SIZE, read()));
     const iPlus1 = stamp(new BinaryOpNode(indexFn(), BinaryOperator.PLUS, stamp(new IntLiteralNode(1n))));
     const prefix = stamp(new SliceNode(read(), stamp(new IntLiteralNode(0n)), indexFn()));
     const suffix = stamp(new SliceNode(read(), iPlus1, len));
     const cat1 = stamp(new BinaryOpNode(prefix, BinaryOperator.PLUS, value));
     const cat2 = stamp(new BinaryOpNode(cat1, BinaryOperator.PLUS, suffix));
-    return stamp(new StateAssignNode(name, cat2));
+    return isState
+      ? stamp(new StateAssignNode(name, cat2))
+      : stamp(new AssignNode(stamp(new IdentifierNode(name)), cat2));
   }
 
   private desugarBytesPop(name: string, ctx: ParserRuleContext): StateAssignNode {

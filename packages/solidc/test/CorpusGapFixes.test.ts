@@ -555,3 +555,18 @@ describe('bytes state-var element write (data[i] = v)', () => {
     expect(sugar.bytecode).toBe(hand.bytecode);
   });
 });
+
+describe('bytes memory/local element write (bytes memory d; d[i] = v)', () => {
+  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  it('compiles a local bytes byte write with literal and variable value', () => {
+    expect(cc('contract C { function f(uint256 i, bytes1 v) external pure returns (bytes memory) {'
+      + ' bytes memory d = new bytes(9); d[0] = "A"; d[i] = v; return d; } }')).toBe('C');
+  });
+  it('is byte-identical to the hand-written local slice+concat', () => {
+    const sugar = compileString('contract C { function f(uint256 i, bytes1 v) external pure returns (bytes memory) {'
+      + ' bytes memory d = new bytes(9); d[i] = v; return d; } }', { solidityImportCompat: true });
+    const hand = compileString('contract C { function f(uint256 i, bytes1 v) external pure returns (bytes memory) {'
+      + ' bytes memory d = new bytes(9); d = d[0:i] + v + d[i+1:d.length]; return d; } }', { solidityImportCompat: true });
+    expect(sugar.bytecode).toBe(hand.bytecode);
+  });
+});

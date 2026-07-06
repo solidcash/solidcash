@@ -850,3 +850,12 @@ describe('super in a constructor (C3-linearized, matching solc)', () => {
       + ' function f() public override(B, C) pure returns (uint256) { return 15; } }')).toBe('D');
   });
 });
+
+describe('fixed-point is a solidcash extension (solc leaves it unimplemented)', () => {
+  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  it('compiles fixed-point arithmetic that solc rejects (UnimplementedFeatureError)', () => {
+    expect(cc('contract C { function f() external pure returns (ufixed) { ufixed a = 1.5; ufixed b = 2.5; return a + b; } }'))
+      .toBe('C');
+    expect(cc('contract C { function f() external pure returns (fixed) { fixed a = -1.5; return a; } }')).toBe('C');
+  });
+});

@@ -266,6 +266,20 @@ interface LvSeg {
   key?: () => ExpressionNode;
 }
 
+// Fixed-point (`fixed`/`ufixed` types, decimal literals like `1.5`) is NOT implemented in Solidity (solc emits
+// "UnimplementedFeatureError 1834: Fixed point types not implemented"). solidcash implements it as a decimal-scaled
+// integer (value * 10^N), so the behaviour differs from standard Solidity - warn once so a port does not assume
+// solc-parity. Module-level (not a class field) so the AstBuilder class shape stays put - a subtle V8 stack-frame
+// shift there tips the deep compiler-inlining recursion of recursive functions over the stack limit.
+let warnedFixedPoint = false;
+function warnFixedPointOnce(): void {
+  if (warnedFixedPoint) return;
+  warnedFixedPoint = true;
+  console.log('Warning: fixed-point (fixed/ufixed types, decimal literals) is not implemented in Solidity '
+    + '(solc: "Fixed point types not implemented"); solidcash compiles it with its own decimal-scaled-integer '
+    + 'implementation, which differs - do not assume cross-compiler parity.');
+}
+
 export default class AstBuilder
   extends ParseTreeVisitor<Node>
   implements SolidCashVisitor<Node> {
@@ -2425,6 +2439,7 @@ export default class AstBuilder
         return intNode;
       }
     }
+    warnFixedPointOnce();
     const node = new DecimalLiteralNode(text);
     node.location = Location.fromCtx(ctx);
     return node;
@@ -3789,6 +3804,7 @@ export default class AstBuilder
   }
 
   private validateFixedType(typeText: string): void {
+    if (/^u?fixed(\d+x\d+)?$/.test(typeText)) warnFixedPointOnce();
     const fixedMatch = typeText.match(/^(u?fixed)(\d+)x(\d+)$/);
     if (fixedMatch) {
       const bits = parseInt(fixedMatch[2], 10);

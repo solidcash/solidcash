@@ -50,3 +50,27 @@ super/C3 inheritance, multifile symbol resolution.
   element-width offset-scaling + fixed-width-element gate + calldata-array blob-framing care. Deferred (representation
   subtleties). Omitted-bound slices DONE for bytes.
 - **Tuple for-init** (`for((uint x, uint y) = (0,1); ..)`, ~2 files): forInit lacks a tuple-declaration form.
+
+## Remaining tractable-but-complex veins (need your greenlight / VM verification)
+
+At 3431/4876 the CLEAN peel/coercion/resolution veins are mined out. These remain, each with a sketch:
+
+- **Array slices on non-bytes arrays** (`int[] b[start:end]`, ~10 files): the array blob is `pushdata(length) ++
+  elements_blob`, elements at byte i*elemWidth (fixed-width). A slice = decode length -> bytes-slice
+  elements_blob[start*W : end*W] -> re-frame `pushdata(end-start) ++ slice`. New codegen in visitSlice (gated on a
+  fixed-width ArrayType element); NEEDS VM VERIFICATION (I won't commit array codegen unverified). Biggest single vein.
+- **Tuple for-init** (`for((uint x, uint y) = (0,1); ..)`, ~2-3 files): forInit needs a tuple-destructure alt; the
+  builder must replicate visitTupleAssignment (parenthesised slots + N-expr / tuple-valued / ternary RHS). Moderate.
+- **Computed array dimension** (`uint[2**10]`, `uint[(a/b)*b]`, ~3 small): array-size grammar allows only
+  NumberLiteral|Identifier. Full `expression` in the dimension risks the ANTLR ALL(*) OOM (see expr-statement note);
+  a narrow const-arith sub-rule would be safe. Most `2**N` are oversized (hit the array cap) so low yield.
+- **Parenthesized call** (`(free2)()`, `(L.g)()`, ~2 files): calling a parenthesized expression - function-pointer
+  adjacent grammar (`expression '(' args ')'`); risk of ambiguity.
+- **abi.decode with contract types** / **nested-array element delete+increment** / **public struct getter tuples**
+  / **whole-struct-to-mapping copy `m[k]=s`**: all in the parallel agent's flattening/struct area or need schema work.
+
+## Fundamental (need EVM features BCH lacks - would be research-level or unsound)
+Function-pointer ABI (function-type params, fun.selector/.address, array-of-function-pointers - dominate the
+remaining parse `(`/`memory`/FunctionTypeNotEncodable clusters), genuine int+uint signedness (solc rejects too),
+fixed-point (5.2), external-call-on-array-element, deploy-then-call `new C().m()`, ABIEncoderV2 calldata structs,
+super/C3, Yul EVM-memory/storage/calldata, multifile symbols, gnosis circular-import.

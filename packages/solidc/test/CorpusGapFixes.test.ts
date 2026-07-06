@@ -448,3 +448,27 @@ describe('file-level (free) enum-typed + string/bytesN constants', () => {
       + ' contract C { function f() external pure returns (bytes32) { return st; } }')).toBe('C');
   });
 });
+
+describe('implicit bytesN -> bytesM widening (M >= N), matching solc', () => {
+  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  it('assigns a bytes20 result (ripemd160) to a bytes32 variable', () => {
+    expect(cc('contract C { function f(bytes memory b) external pure returns (bytes32) {'
+      + ' bytes32 r = ripemd160(b); return r; } }')).toBe('C');
+  });
+  it('widens on return, state assignment and local assignment', () => {
+    expect(cc('contract C { bytes32 rip;'
+      + ' function g(bytes4 x) external pure returns (bytes8) { return x; }'
+      + ' function h(bytes memory b) external { rip = ripemd160(b); require(true); } }')).toBe('C');
+  });
+  it('produces the same bytecode as an explicit widening cast', () => {
+    const sugar = compileString('contract C { function f(bytes20 x) external pure returns (bytes32) { bytes32 r = x; return r; } }',
+      { solidityImportCompat: true });
+    const hand = compileString('contract C { function f(bytes20 x) external pure returns (bytes32) { bytes32 r = bytes32(x); return r; } }',
+      { solidityImportCompat: true });
+    expect(sugar.bytecode).toBe(hand.bytecode);
+  });
+  it('still rejects narrowing (bytes32 -> bytes20)', () => {
+    expect(() => cc('contract C { function f(bytes32 x) external pure returns (bytes20) { bytes20 y = x; return y; } }'))
+      .toThrow(/can not be assigned/);
+  });
+});

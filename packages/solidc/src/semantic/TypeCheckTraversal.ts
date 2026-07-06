@@ -229,6 +229,7 @@ export default class TypeCheckTraversal extends AstTraversal {
     node.expression = this.maybeCoerceHexToInt(node.expression, node.type);
     node.expression = this.maybeCoerceZeroToBytes(node.expression, node.type);
     node.expression = this.maybeCoerceStringToBytesN(node.expression, node.type);
+    node.expression = this.maybeCoerceBytesWiden(node.expression, node.type);
     expectAssignable(
       new VariableDefinitionNode(node.type, [], node.name, node.expression),
       node.expression.type,
@@ -564,6 +565,7 @@ export default class TypeCheckTraversal extends AstTraversal {
         node.expression = this.maybeCoerceHexToInt(node.expression, expectedValueType);
         node.expression = this.maybeCoerceZeroToBytes(node.expression, expectedValueType);
         node.expression = this.maybeCoerceStringToBytesN(node.expression, expectedValueType);
+        node.expression = this.maybeCoerceBytesWiden(node.expression, expectedValueType);
       }
       const allKeyTypes = node.collection.allKeyTypes;
       for (let i = 0; i < node.keys.length; i++) {
@@ -803,6 +805,7 @@ export default class TypeCheckTraversal extends AstTraversal {
     node.expression = this.maybeCoerceHexToInt(node.expression, node.stateVariable?.type);
     node.expression = this.maybeCoerceZeroToBytes(node.expression, node.stateVariable?.type);
     node.expression = this.maybeCoerceStringToBytesN(node.expression, node.stateVariable?.type);
+    node.expression = this.maybeCoerceBytesWiden(node.expression, node.stateVariable?.type);
     // A nested array literal is inferred as unbounded (`uint256[][]`); coerce it to the declared type so a
     // fixed-inner nested array (`uint256[N][]`) encodes its rows fixed-width (bounded inner => packed).
     if (node.stateVariable?.type instanceof ArrayType && node.expression instanceof ArrayNode) {
@@ -835,6 +838,7 @@ export default class TypeCheckTraversal extends AstTraversal {
       node.expression = this.maybeCoerceHexToInt(node.expression, node.type);
       node.expression = this.maybeCoerceZeroToBytes(node.expression, node.type);
       node.expression = this.maybeCoerceStringToBytesN(node.expression, node.type);
+    node.expression = this.maybeCoerceBytesWiden(node.expression, node.type);
       expectAssignable(node, node.expression.type, node.type);
     }
 
@@ -923,6 +927,7 @@ export default class TypeCheckTraversal extends AstTraversal {
     node.expression = this.maybeCoerceHexToInt(node.expression, node.identifier.type);
     node.expression = this.maybeCoerceZeroToBytes(node.expression, node.identifier.type);
     node.expression = this.maybeCoerceStringToBytesN(node.expression, node.identifier.type);
+    node.expression = this.maybeCoerceBytesWiden(node.expression, node.identifier.type);
     expectAssignable(node, node.expression.type, node.identifier.type);
     return node;
   }
@@ -1348,10 +1353,10 @@ export default class TypeCheckTraversal extends AstTraversal {
         actualTypes = soleType.elements;
       } else {
         node.expressions = node.expressions.map(
-          (e, i) => this.maybeCoerceStringToBytesN(
+          (e, i) => this.maybeCoerceBytesWiden(this.maybeCoerceStringToBytesN(
             this.maybeCoerceZeroToBytes(this.maybeCoerceHexToInt(e, expectedTypes[i]), expectedTypes[i]),
             expectedTypes[i],
-          ),
+          ), expectedTypes[i]),
         );
         actualTypes = node.expressions.map((e) => e.type!);
       }
@@ -1589,12 +1594,26 @@ export default class TypeCheckTraversal extends AstTraversal {
     return expr;
   }
 
+  // Solidity implicitly widens a fixed bytesN to a wider bytesM (M >= N), right-padding with zero bytes
+  // (FixedBytesType::isImplicitlyConvertibleTo: convertTo.m_bytes >= m_bytes). Insert an explicit cast so the
+  // working bytesN-cast codegen performs the zero-pad. Porting mode only; the reverse (narrowing) still fails.
+  private maybeCoerceBytesWiden(expr: ExpressionNode, expected?: Type): ExpressionNode {
+    if (!this.solidityImportCompat) return expr;
+    if (!(expected instanceof BytesType) || expected.bound === undefined) return expr;
+    if (!(expr.type instanceof BytesType) || expr.type.bound === undefined) return expr;
+    if (expr.type.bound >= expected.bound) return expr;
+    const cast = new CastNode(expected, expr, false);
+    cast.type = expected;
+    cast.location = expr.location;
+    return cast;
+  }
+
   // Coerce each `0x..` / literal-0 argument against its target parameter type (the call-site analogue).
   private coerceHexArgs(args: ExpressionNode[], expected: (Type | undefined)[]): ExpressionNode[] {
     if (!this.solidityImportCompat) return args;
-    return args.map((a, i) => this.maybeCoerceStringToBytesN(
+    return args.map((a, i) => this.maybeCoerceBytesWiden(this.maybeCoerceStringToBytesN(
       this.maybeCoerceZeroToBytes(this.maybeCoerceHexToInt(a, expected[i]), expected[i]), expected[i],
-    ));
+    ), expected[i]));
   }
 
   // An internal call to a `public` function that RETURNS a value targets the function's internal-call

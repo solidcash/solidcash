@@ -90,6 +90,12 @@ import {
   StringLiteralNode,
   AbiEncodeWithSignatureNode,
   AbiEncodeCallNode,
+  AbiEncodeNode,
+  AbiEncodePackedNode,
+  AbiEncodeWithSelectorNode,
+  BytesConcatNode,
+  StringConcatNode,
+  NewArrayNode,
   LowLevelCallNode,
   LowLevelCallStatementNode,
   CollectionIterationNode,
@@ -3522,8 +3528,76 @@ export default class SymbolTableTraversal extends AstTraversal {
       const args = node.parameters.map((p) => this.canonicalizeExpression(p)).join(',');
       return `new:${node.identifier.name}(${args})`;
     }
-    // Fallback for any other expression type
-    return `expr:${node.constructor.name}`;
+    // Composite-key idioms (struct/contract field, method calls, hashing over abi.encode*, bytes/string concat).
+    // Each MUST fold its operands in so two source-distinct keys never share a canonical string (finding C4).
+    if (node instanceof FieldAccessNode) {
+      return `field:${node.name}(${this.canonicalizeExpression(node.expression)})`;
+    }
+    if (node instanceof MethodCallNode) {
+      const args = node.parameters.map((p) => this.canonicalizeExpression(p)).join(',');
+      return `method:${node.methodName}(${this.canonicalizeExpression(node.object)};${args})`;
+    }
+    if (node instanceof AbiEncodeNode) {
+      return `abienc(${node.parameters.map((p) => this.canonicalizeExpression(p)).join(',')})`;
+    }
+    if (node instanceof AbiEncodePackedNode) {
+      return `abiencpacked(${node.parameters.map((p) => this.canonicalizeExpression(p)).join(',')})`;
+    }
+    if (node instanceof AbiEncodeWithSelectorNode) {
+      const args = node.parameters.map((p) => this.canonicalizeExpression(p)).join(',');
+      return `abiencsel(${this.canonicalizeExpression(node.selector)};${args})`;
+    }
+    if (node instanceof AbiEncodeWithSignatureNode) {
+      const args = node.parameters.map((p) => this.canonicalizeExpression(p)).join(',');
+      return `abiencsig(${this.canonicalizeExpression(node.signature)};${args})`;
+    }
+    if (node instanceof AbiEncodeCallNode) {
+      const args = node.parameters.map((p) => this.canonicalizeExpression(p)).join(',');
+      return `abienccall:${node.interfaceName}.${node.functionName}(${args})`;
+    }
+    if (node instanceof BytesConcatNode) {
+      return `bytescat(${node.parameters.map((p) => this.canonicalizeExpression(p)).join(',')})`;
+    }
+    if (node instanceof StringConcatNode) {
+      return `strcat(${node.parameters.map((p) => this.canonicalizeExpression(p)).join(',')})`;
+    }
+    if (node instanceof ArrayNode) {
+      return `arr(${node.elements.map((e) => this.canonicalizeExpression(e)).join(',')})`;
+    }
+    if (node instanceof NewArrayNode) {
+      return `newarr:${node.elementType.toString()}(${this.canonicalizeExpression(node.size)})`;
+    }
+    // Generic structural fallback for every other expression type. Must remain operand-injective: silently
+    // collapsing two distinct keys into one entry slot is the C4 state-write mis-targeting bug.
+    return this.canonicalizeGeneric(node);
+  }
+
+  // Structural, operand-injective canonicalization for any expression not given an explicit case above. Recurses
+  // into every child expression and folds primitive discriminants (names, operators, indices) into the string,
+  // while skipping source locations, cached types and derived byte blobs that don't distinguish two source keys.
+  // Hard-rejects a node that yields no operand content rather than risk a silent slot collapse (finding C4).
+  private canonicalizeGeneric(node: ExpressionNode): string {
+    const parts: string[] = [];
+    for (const key of Object.keys(node).sort()) {
+      if (key === 'location' || key === 'type') continue; // never identity-bearing for a key expression
+      const enc = this.canonicalizeValue((node as any)[key]);
+      if (enc !== '') parts.push(`${key}=${enc}`);
+    }
+    if (parts.length === 0) {
+      throw new Error(
+        `Cannot canonicalize mapping key of type '${node.constructor.name}': no distinguishing operands found. `
+        + 'This key form is not supported as a mapping key; distinct keys could collapse to one storage slot.',
+      );
+    }
+    return `${node.constructor.name}{${parts.join(',')}}`;
+  }
+
+  private canonicalizeValue(val: unknown): string {
+    if (val instanceof ExpressionNode) return this.canonicalizeExpression(val);
+    if (Array.isArray(val)) return `[${val.map((v) => this.canonicalizeValue(v)).join(',')}]`;
+    const t = typeof val;
+    if (t === 'string' || t === 'number' || t === 'bigint' || t === 'boolean') return String(val);
+    return ''; // objects (location, Type, cached bytes, symbols): not identity-bearing for a key here
   }
 
   // A compile-time-constant uint mapping key (the OZ StorageSlot idiom `uint256(SLOT)` with a bytes32 constant

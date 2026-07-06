@@ -286,6 +286,9 @@ export default class AstBuilder
   private stateVarNames: Set<string> = new Set();
   // State array variables -> ArrayType, so `using L for T[]` desugars `arr.method(args)` to `L.method(arr, args)`.
   private stateArrayVarTypes: Map<string, ArrayType> = new Map();
+  // State mapping variables -> MappingType, so `using L for mapping(K=>V)` desugars `m.method(args)` to
+  // `L.method(m, args)` (m becomes a mapping-storage param, inlined at the call site).
+  private mappingStateVarTypes: Map<string, MappingType> = new Map();
   // Contract-level param names (`contract C(int x)`), so a constructor with a parent invocation drops only the
   // params that MIRROR contract params (native pattern), keeping its own declared params (Solidity pattern).
   private contractParamNames: Set<string> = new Set();
@@ -784,6 +787,11 @@ export default class AstBuilder
       stateVariables
         .filter((sv) => sv.type instanceof ArrayType)
         .map((sv) => [sv.name, sv.type as ArrayType]),
+    );
+    this.mappingStateVarTypes = new Map(
+      collections
+        .filter((c) => c.type instanceof MappingType)
+        .map((c) => [c.name, c.type as MappingType]),
     );
     // Unbounded `bytes` state vars support `.push(b)` / `.pop()` (Solidity dynamic byte array). These desugar
     // to a whole-value concat / slice reassignment (a bytes blob has no per-element prefix), reusing the tested
@@ -1976,7 +1984,8 @@ export default class AstBuilder
       const recvStruct = this.localStructTypes.get(recvName) ?? this.stateStructVars.get(recvName)
         ?? this.mappingStructStateVars.get(recvName);
       const libName = (recvStruct && this.usingForLibraries.get(recvStruct.name))
-        ?? this.usingForArrayLibrary(recvName);
+        ?? this.usingForArrayLibrary(recvName)
+        ?? this.usingForMappingLibrary(recvName);
       if (libName) {
         const libId = new IdentifierNode(`${libName}.${identifiers[1].getText()}`);
         libId.location = identifier.location;
@@ -3230,12 +3239,15 @@ export default class AstBuilder
     const libraryName = ctx.Identifier().getText();
     const typeNameCtx = ctx.typeName();
     const arrayTypeCtx = ctx.arrayType();
-    const isWildcard = !typeNameCtx && !arrayTypeCtx;
-    // An array target (`using Array for uint256[]`) keys on the canonical ArrayType string so an array-typed
-    // receiver matches; a plain type keys on its source text (struct names etc.) as before.
+    const mappingTypeCtx = ctx.mappingType();
+    const isWildcard = !typeNameCtx && !arrayTypeCtx && !mappingTypeCtx;
+    // An array (`using Array for uint256[]`) or mapping (`using L for mapping(uint=>uint)`) target keys on the
+    // canonical type string so an array/mapping-typed receiver matches; a plain type keys on its source text
+    // (struct names etc.) as before.
     const targetTypeName = isWildcard ? undefined
       : arrayTypeCtx ? this.buildArrayType(arrayTypeCtx).toString()
-        : typeNameCtx!.getText();
+        : mappingTypeCtx ? this.buildMappingType(mappingTypeCtx).toString()
+          : typeNameCtx!.getText();
     const isGlobal = ctx.getText().includes('global');
     const node = new UsingForDirectiveNode(libraryName, undefined, targetTypeName, isWildcard, isGlobal);
     node.location = Location.fromCtx(ctx);
@@ -3845,6 +3857,11 @@ export default class AstBuilder
   private usingForArrayLibrary(recvName: string): string | undefined {
     const arrType = this.stateArrayVarTypes.get(recvName);
     return arrType ? this.usingForLibraries.get(arrType.toString()) : undefined;
+  }
+
+  private usingForMappingLibrary(recvName: string): string | undefined {
+    const mapType = this.mappingStateVarTypes.get(recvName);
+    return mapType ? this.usingForLibraries.get(mapType.toString()) : undefined;
   }
 
   // Inline storage-pointer write `Lib.f(args).field... op= v` (OpenZeppelin StorageSlot): a call sits at the base

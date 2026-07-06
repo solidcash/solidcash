@@ -67,6 +67,42 @@ describe('SBE-23: using-for on an array type (`using Lib for T[]`)', () => {
   });
 });
 
+// using-for on a mapping type (`using L for mapping(K=>V)`): `m.method(args)` desugars to `L.method(m, args)`,
+// the mapping receiver becoming a storage-pointer param. A VALUE-returning storage-pointer function is inlined
+// in expression position (it has no standalone value representation) - the call is replaced by its substituted
+// return expression. Matches the array (SBE-23) path, keyed on the canonical MappingType string.
+describe('using-for on a mapping type (`using L for mapping(K=>V)`)', () => {
+  const LIB = 'library L { function at(mapping(uint256=>uint256) storage a, uint256 i) internal view'
+    + ' returns (uint256) { return a[i]; } }';
+  const UF = `${LIB} contract C { using L for mapping(uint256=>uint256); mapping(uint256=>uint256) mp;`;
+  it('desugars m.at(k) on a state mapping and inlines the value-returning helper', () => {
+    const a = compileString(`${UF} function f(uint256 k) public returns (uint256) { mp[42]=36; return mp.at(k); } }`,
+      { solidityImportCompat: true });
+    expect(a.contractName).toBe('C');
+  });
+  it('is byte-identical to the explicit L.at(mp, k) call (desugar + inline are sound)', () => {
+    const sugar = compileString(`${UF} function f(uint256 k) public returns (uint256) { mp[42]=36; return mp.at(k); } }`,
+      { solidityImportCompat: true });
+    const explicit = compileString(`${LIB} contract C { mapping(uint256=>uint256) mp;`
+      + ' function f(uint256 k) public returns (uint256) { mp[42]=36; return L.at(mp, k); } }', { solidityImportCompat: true });
+    expect(sugar.bytecode).toBe(explicit.bytecode);
+  });
+});
+
+// A value-returning function with a single `return <expr>` body and a storage-pointer param is inlined in
+// expression position (a storage param has no standalone value). `at(mp, k)` -> `mp[k]`, byte-identical.
+describe('value-returning storage-pointer function inlining', () => {
+  it('inlines at(mp, k) { return a[i]; } to a direct mapping read (byte-identical)', () => {
+    const pre = 'contract C { mapping(uint256=>uint256) mp;';
+    const inlined = compileString(`${pre} function at(mapping(uint256=>uint256) storage a, uint256 i) internal`
+      + ' returns (uint256) { return a[i]; }'
+      + ' function f(uint256 k) external returns (uint256) { mp[5]=9; return at(mp, k); } }', { solidityImportCompat: true });
+    const direct = compileString(`${pre} function f(uint256 k) external returns (uint256) { mp[5]=9; return mp[k]; } }`,
+      { solidityImportCompat: true });
+    expect(inlined.bytecode).toBe(direct.bytecode);
+  });
+});
+
 describe('Library sibling calls and UDVT wrap/unwrap', () => {
   const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
 

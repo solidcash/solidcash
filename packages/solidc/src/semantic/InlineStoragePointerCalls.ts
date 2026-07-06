@@ -16,6 +16,9 @@ import {
   MappingAccessNode,
   ArrayAccessNode,
   AssignNode,
+  ReturnNode,
+  FunctionCallNode,
+  ConsoleStatementNode,
 } from '../ast/AST.js';
 import { StructType } from '@solidcash/utils';
 import { Modifier } from '../ast/Globals.js';
@@ -55,6 +58,10 @@ export default class InlineStoragePointerCalls extends AstTraversal {
   private collectionNames: Set<string> = new Set();
   private freeFns: FunctionDefinitionNode[] = [];
   private counter = 0;
+  // Value-returning functions with a single `return <expr>` body and a storage-pointer param: inlined in
+  // EXPRESSION position (they have no standalone value representation). exprStack guards against recursion.
+  private exprInlinableFns: Map<string, FunctionDefinitionNode> = new Map();
+  private exprStack: string[] = [];
 
   visitSourceFile(node: SourceFileNode): Node {
     this.freeFns = node.freeFunctions ?? [];
@@ -101,12 +108,28 @@ export default class InlineStoragePointerCalls extends AstTraversal {
         this.inlinedFns.add(fn.name);
       }
     }
-    if (this.inlinedFns.size === 0) return node;
+    // Value-returning single-`return` storage-pointer functions (contract or library, e.g. a `using L for
+    // mapping` helper `at(mapping storage a, uint i) returns (uint) { return a[i]; }`) are inlined in expression
+    // position: the call is replaced by the substituted return expression (`m.at(k)` -> `L.at(m, k)` -> `m[k]`).
+    this.exprInlinableFns = new Map();
+    for (const fn of [...node.functions, ...this.freeFns]) {
+      if (this.isSingleReturnStoragePointerFn(fn)) this.exprInlinableFns.set(fn.name, fn);
+    }
+    if (this.inlinedFns.size === 0 && this.exprInlinableFns.size === 0) return node;
 
     // Inline calls in every function body AND the constructor/fallback/receive - a constructor calling an
     // inherited `_mint`-style entry-reading helper is the common ERC20 pattern, and the helper is dropped below.
     for (const fn of [...node.functions, node.constructorDef, node.fallbackDef, node.receiveDef]) {
       if (fn?.body) fn.body.statements = this.inlineStatements(fn.body.statements ?? [], [fn.name]);
+    }
+    // Expression-position inlining of value-returning storage-pointer calls (after the void statement inlining;
+    // the two function sets are disjoint - void vs value-returning). Traverse via the visitor so a call in any
+    // expression slot (`return f(..)`, `x = f(..)`, `f(..)[k]`) is replaced.
+    if (this.exprInlinableFns.size > 0) {
+      for (const fn of [...node.functions, node.constructorDef, node.fallbackDef, node.receiveDef]) {
+        if (fn?.body) { this.exprStack = []; fn.body = this.visit(fn.body) as BlockNode; }
+      }
+      for (const name of this.exprInlinableFns.keys()) this.inlinedFns.add(name);
     }
     // A storage parameter has no value representation, and a subroutine cannot read a state entry (the
     // entry-access input slots live only in an entry-point's block layout); so the original cannot stand
@@ -121,6 +144,50 @@ export default class InlineStoragePointerCalls extends AstTraversal {
 
   private hasStructStoragePointerParam(fn: FunctionDefinitionNode): boolean {
     return fn.parameters.some((p) => p.modifier.includes(Modifier.STORAGE) && p.type instanceof StructType);
+  }
+
+  // A value-returning function whose body is a single `return <expr>;` and that takes a storage-pointer param.
+  // Such a function has no standalone value representation (the storage param is a compile-time reference), so
+  // its calls are inlined by substituting the return expression at the call site.
+  private isSingleReturnStoragePointerFn(fn: FunctionDefinitionNode): boolean {
+    if (!fn.body || fn.returnTypes.length === 0 || !this.hasStoragePointerParam(fn)) return false;
+    const stmts = (fn.body.statements ?? []).filter((s) => !(s instanceof ConsoleStatementNode));
+    return stmts.length === 1 && stmts[0] instanceof ReturnNode && stmts[0].expressions.length === 1;
+  }
+
+  // Replace a call to a value-returning storage-pointer function with its (substituted) return expression.
+  visitFunctionCall(node: FunctionCallNode): Node {
+    const visited = super.visitFunctionCall(node) as FunctionCallNode; // recurse into args (nested inlinable calls)
+    const callee = this.exprInlinableFns.get(visited.identifier.name);
+    if (callee && !this.exprStack.includes(callee.name)
+      && visited.parameters.length === callee.parameters.length) {
+      this.exprStack.push(callee.name);
+      const replacement = this.buildInlinedReturnExpr(callee, visited.parameters as ExpressionNode[]);
+      this.exprStack.pop();
+      if (replacement) return this.visit(replacement); // re-visit for nested inlinable calls in the return expr
+    }
+    return visited;
+  }
+
+  // Clone the callee, bind params to the call args (a bare-identifier arg renames the param; any other arg is
+  // substituted by expression), then return the substituted single-return expression.
+  private buildInlinedReturnExpr(
+    callee: FunctionDefinitionNode, args: ExpressionNode[],
+  ): ExpressionNode | undefined {
+    const cloned = cloneNode(callee) as FunctionDefinitionNode;
+    const rename = new Map<string, string>();
+    const subs = new Map<string, ExpressionNode>();
+    callee.parameters.forEach((p, i) => {
+      const arg = args[i];
+      if (arg instanceof IdentifierNode) rename.set(p.name, arg.name);
+      else subs.set(p.name, cloneNode(arg) as ExpressionNode);
+    });
+    this.applyRename(cloned.body, rename);
+    substituteInFunction(cloned, subs);
+    const stmts = (cloned.body.statements ?? []).filter((s) => !(s instanceof ConsoleStatementNode));
+    const ret = stmts[stmts.length - 1];
+    if (!(ret instanceof ReturnNode) || ret.expressions.length !== 1) return undefined;
+    return ret.expressions[0];
   }
 
   // Whether `name` is the target of a direct assignment anywhere in the body (so it cannot be safely aliased to

@@ -171,7 +171,7 @@ fallbackModifier
     ;
 
 receiveDefinition
-    : 'receive' '(' ')' receiveModifier* 'external' receiveModifier* 'payable' receiveModifier* '{' statement* '}'
+    : 'receive' '(' ')' receiveModifier* 'external' receiveModifier* 'payable' receiveModifier* ('{' statement* '}' | ';')
     ;
 
 // external + payable stay required (a receive must be both); virtual/override may be interleaved in any order.
@@ -217,7 +217,7 @@ arrayType
     ;
 
 modifierDefinition
-    : 'modifier' Identifier parameterList? ('virtual' | overrideSpecifier)* '{' modifierStatement* '}'
+    : 'modifier' Identifier parameterList? ('virtual' | overrideSpecifier)* ('{' modifierStatement* '}' | ';')
     ;
 
 modifierStatement

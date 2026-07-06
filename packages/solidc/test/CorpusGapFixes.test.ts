@@ -798,3 +798,15 @@ describe('for loop with an empty condition (for(;;) / for(init;;update))', () =>
       + ' uint256 i = 0; for (uint256 j = 0; ; j++) { i++; if (i > 3) break; } return i; } }')).toBe('C');
   });
 });
+
+describe('abstract modifier and receive (no body)', () => {
+  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  it('accepts an abstract modifier declaration', () => {
+    expect(cc('abstract contract C { modifier mod virtual;'
+      + ' function h() external pure returns (uint256) { return 1; } }')).toBe('C');
+  });
+  it('accepts an abstract receive declaration', () => {
+    expect(cc('abstract contract C { receive() external virtual payable;'
+      + ' function h() external pure returns (uint256) { return 1; } }')).toBe('C');
+  });
+});

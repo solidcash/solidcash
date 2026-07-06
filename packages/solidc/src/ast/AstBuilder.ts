@@ -323,6 +323,9 @@ export default class AstBuilder
   // Local unbounded `bytes` vars, to desugar an element write `d[i] = v` to a slice+concat rebuild. Per-function.
   private localBytesVars: Set<string> = new Set();
 
+  // Warn only once that erc7201(...) is aliased to sha256 (no EVM storage layout on BCH).
+  private warnedErc7201 = false;
+
   private forOfArrayCounter = 0; // uniquifies the temp locals of a desugared `for..of` over a state array
 
   private tupleTernaryCounter = 0; // uniquifies the hoisted condition temp of a desugared tuple ternary
@@ -2021,6 +2024,22 @@ export default class AstBuilder
         call.location = Location.fromCtx(ctx);
         return call;
       }
+    }
+
+    // `erc7201(id)` (Solidity's ERC-7201 namespaced storage-slot hash) has no EVM storage layout on BCH; alias it
+    // to sha256(id) with a warning (like keccak256). Not byte-identical to Ethereum's keccak-based erc7201 - sound
+    // only for internal, same-contract slot derivation, never cross-chain.
+    if (identifiers.length === 1 && name === 'erc7201' && parameters.length === 1) {
+      if (!this.warnedErc7201) {
+        console.log('Warning: erc7201(...) is not supported in SolidCash (no EVM storage layout); it is aliased to '
+          + 'sha256(...). The result differs from Ethereum ERC-7201 and must not be relied on cross-chain.');
+        this.warnedErc7201 = true;
+      }
+      const sha = new IdentifierNode('sha256');
+      sha.location = identifier.location;
+      const call = new FunctionCallNode(sha, [parameters[0] as ExpressionNode]);
+      call.location = Location.fromCtx(ctx);
+      return call;
     }
 
     // `Color(i)` where Color is an enum is an int -> enum cast, not a function call.

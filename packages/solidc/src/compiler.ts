@@ -545,7 +545,16 @@ export function parseCode(
   // `contract Name [is ..]` header (so a `layout at .. {` inside a string / body is not touched) and stopping at
   // the body `{` on the header line (`[^{};\n]`), preserving line numbers for diagnostics.
   if (solidityImportCompat) {
-    code = code.replace(/(\bcontract\s+\w+\b(?:\s+is\s+[^{}]*?)?)\s+layout\s+at\s+[^{};\n]+?(?=\s*\{)/g, '$1');
+    code = code.replace(
+      /(\bcontract\s+\w+\b(?:\s+is\s+[^{}]*?)?)\s+layout\s+at\s+([^{};\n]+?)(?=\s*\{)/g,
+      (_m, header, expr) => {
+        if (/\berc7201\b/.test(expr)) {
+          console.log('Warning: `layout at erc7201(...)` is not supported in SolidCash - storage is not offset by a '
+            + 'base slot on the UTXO model, so the layout specifier is ignored.');
+        }
+        return header;
+      },
+    );
   }
 
   const syntaxErrorListener = new ForwardingErrorListener(errorListener);

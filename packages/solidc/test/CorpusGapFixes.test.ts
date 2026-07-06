@@ -570,3 +570,21 @@ describe('bytes memory/local element write (bytes memory d; d[i] = v)', () => {
     expect(sugar.bytecode).toBe(hand.bytecode);
   });
 });
+
+describe('erc7201 not supported: function -> sha256 alias + layout clause ignored', () => {
+  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  it('aliases erc7201(id) to sha256(id)', () => {
+    expect(cc('contract C { function f() external pure returns (bytes32) {'
+      + ' return bytes32(erc7201("openzeppelin.storage.X")); } }')).toBe('C');
+  });
+  it('is byte-identical to sha256(id)', () => {
+    const a = compileString('contract C { function f() external pure returns (bytes32) { return bytes32(erc7201("ns")); } }',
+      { solidityImportCompat: true });
+    const b = compileString('contract C { function f() external pure returns (bytes32) { return bytes32(sha256("ns")); } }',
+      { solidityImportCompat: true });
+    expect(a.bytecode).toBe(b.bytecode);
+  });
+  it('ignores a `contract C layout at erc7201(...)` storage-layout clause', () => {
+    expect(cc('contract C layout at erc7201("x") { uint256 n; function f() external { this.n = 1; } }')).toBe('C');
+  });
+});

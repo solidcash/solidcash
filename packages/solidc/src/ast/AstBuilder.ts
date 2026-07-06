@@ -3904,6 +3904,38 @@ export default class AstBuilder
     return block;
   }
 
+  // `f()[k] = v` where f() returns a reassigned `mapping storage` pointer: extractLvalue cannot represent a call
+  // base, so desugar to a storage-pointer local `mapping storage __t = f(); __t[k] = v;` (InlineMappingReturnFunctions
+  // resolves f into its side effects + final mapping, LowerMappingStorageAlias then resolves the alias). The
+  // placeholder mapping type never reaches type-checking - the local is dropped once aliased. Plain-call base with a
+  // single index key and `=` only; anything else falls through to the ordinary lvalue path.
+  private buildMappingReturnIndexedWrite(
+    lhsCtx: ExpressionContext, op: string, valueCtx: ExpressionContext, loc: Location,
+  ): StatementNode | undefined {
+    if (op !== '=') return undefined;
+    const keys: Array<() => ExpressionNode> = [];
+    let cur: ExpressionContext = lhsCtx;
+    for (;;) {
+      if (cur instanceof ParenthesisedContext) { cur = cur.expression(); } else if (cur instanceof ArrayAccessContext) {
+        const k = cur.expression(1); keys.unshift(() => this.visit(k) as ExpressionNode); cur = cur.expression(0);
+      } else if (cur instanceof TupleIndexOpContext) {
+        const numTok = cur.NumberLiteral(); const kl = Location.fromToken(numTok.symbol);
+        keys.unshift(() => { const n = new IntLiteralNode(BigInt(numTok.getText())); n.location = kl; return n; });
+        cur = cur.expression();
+      } else break;
+    }
+    if (keys.length !== 1 || !(cur instanceof FunctionCallExpressionContext)) return undefined;
+    if (cur.functionCall().Identifier_list().length !== 1) return undefined; // plain `f(...)`, not namespaced/method
+    const callNode = this.visit(cur) as ExpressionNode;
+    if (!(callNode instanceof FunctionCallNode)) return undefined;
+    const tmpName = `__mrv_${this.nestedLvalueCounter++}`;
+    const placeholder = new MappingType(PrimitiveType.BIGINT, PrimitiveType.BIGINT);
+    const decl = new VariableDefinitionNode(placeholder, [Modifier.STORAGE], tmpName, callNode); decl.location = loc;
+    const write = new ArrayAssignNode(tmpName, keys[0](), this.visit(valueCtx) as ExpressionNode); write.location = loc;
+    const block = new BlockNode([decl, write]); block.location = loc;
+    return block;
+  }
+
   // `receiver.push(value)` on an array / mapping-entry / struct-field / bytes state var, reconstructed from the
   // parsed receiver (rawName, isThis, keyFns = mapping index keys, member = struct array-field). Unifies the old
   // bare arrayPushStatement and this-prefixed stateArrayPushStatement dispatch (a name is exactly one of
@@ -4012,6 +4044,8 @@ export default class AstBuilder
       // cannot represent): desugar to a `T storage` local first.
       const sp = this.buildStoragePointerWrite(lhsCtx, ctx._op.text, ctx.expression(1), Location.fromCtx(ctx));
       if (sp) return sp;
+      const mrv = this.buildMappingReturnIndexedWrite(lhsCtx, ctx._op.text, ctx.expression(1), Location.fromCtx(ctx));
+      if (mrv) return mrv;
       const lv = this.extractLvalue(lhsCtx);
       if (!lv) throw new ParseError('Invalid assignment target', Location.fromCtx(lhsCtx));
       return this.buildLvalueAssign(

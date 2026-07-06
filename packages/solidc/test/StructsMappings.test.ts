@@ -167,6 +167,38 @@ describe('returns (mapping storage) - pointer-returning function + conditional a
   });
 });
 
+// A function returning a REASSIGNED `mapping storage` pointer (`returns (mapping storage r){ r=a; r[1]=42; r=b;
+// r[1]=84; }`) is resolved by InlineMappingReturnFunctions into its ordered side effects (each `r[k]=v` bound to
+// whichever mapping r aliases at that point) + the mapping it finally aliases, and inlined at call sites. Sound by
+// reduction: byte-identical to the hand-resolved side effects. Also covers `f()[k]=v` (a call-indexed write,
+// desugared to a `mapping storage __t = f(); __t[k]=v` local at parse).
+describe('returns (reassigned mapping storage) - dataflow-resolved + inlined', () => {
+  const F = 'mapping(uint256=>uint256) a; mapping(uint256=>uint256) b;'
+    + ' function f() internal returns (mapping(uint256=>uint256) storage r) { r=a; r[1]=42; r=b; r[1]=84; }';
+  it('`mapping storage m = f(); m[k]=v` is byte-identical to the hand-resolved side effects', () => {
+    const sugar = compileString(`contract C { ${F} function h() external { mapping(uint256=>uint256) storage m = f();`
+      + ' m[2]=17; require(true); } }', { solidityImportCompat: true });
+    const hand = compileString('contract C { mapping(uint256=>uint256) a; mapping(uint256=>uint256) b;'
+      + ' function h() external { a[1]=42; b[1]=84; b[2]=17; require(true); } }', { solidityImportCompat: true });
+    expect(sugar.bytecode).toBe(hand.bytecode);
+  });
+  it('`f()[k]=v` (call-indexed write) is byte-identical to the hand-resolved side effects', () => {
+    const sugar = compileString(`contract C { ${F} function g() external { f()[2]=21; require(true); } }`,
+      { solidityImportCompat: true });
+    const hand = compileString('contract C { mapping(uint256=>uint256) a; mapping(uint256=>uint256) b;'
+      + ' function g() external { a[1]=42; b[1]=84; b[2]=21; require(true); } }', { solidityImportCompat: true });
+    expect(sugar.bytecode).toBe(hand.bytecode);
+  });
+  it('resolves a pointer reassigned to a conditional (both g() and h() call sites)', () => {
+    const a = compileString(`contract test { mapping(uint8 => uint8) a; mapping(uint8 => uint8) b;`
+      + ' function f() internal returns (mapping(uint8 => uint8) storage r) { r = a; r[1] = 42; r = b; r[1] = 84; }'
+      + ' function g() public returns (uint8, uint8) { f()[2] = 21; return (a[1], b[2]); }'
+      + ' function h() public returns (uint8, uint8) { mapping(uint8 => uint8) storage m = f(); m[2] = 17;'
+      + ' return (a[1], b[2]); } }', { solidityImportCompat: true });
+    expect(a.contractName).toBe('test');
+  });
+});
+
 describe('SBE-11: local struct member assignment (desugars to a struct rebuild)', () => {
   it('assigns a field of a local struct', () => {
     const a = compileString('contract C() { struct S { int a; bool b; } int n; function f(int v) { S memory s; s.a = v; this.n = s.a; } }');

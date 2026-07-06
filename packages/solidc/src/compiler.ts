@@ -22,6 +22,7 @@ import PromoteConstructorExternalReads from './semantic/PromoteConstructorExtern
 import SynthesizeLibraryDelegateCalls from './semantic/SynthesizeLibraryDelegateCalls.js';
 import InlineExternalCallHelpers from './semantic/InlineExternalCallHelpers.js';
 import InlineStoragePointerCalls from './semantic/InlineStoragePointerCalls.js';
+import InlineMappingReturnFunctions from './semantic/InlineMappingReturnFunctions.js';
 import LowerMappingStorageAlias from './semantic/LowerMappingStorageAlias.js';
 import InlineReturningStateHelpers from './semantic/InlineReturningStateHelpers.js';
 import DesugarPostfixExpressions from './semantic/DesugarPostfixExpressions.js';
@@ -202,6 +203,10 @@ function compileResolvedAst(ast: Ast, code: string, mergedCompilerOptions: Compi
   // Inline void calls to functions taking `storage` reference params; a storage pointer has no value
   // representation, so the callee is substituted into the caller as direct state access.
   ast = ast.accept(new InlineStoragePointerCalls()) as Ast;
+  // A function returning a REASSIGNED `mapping storage` pointer (`returns (mapping storage r){ r=a; r=b; }`) is
+  // resolved by straight-line dataflow into its side effects + the mapping it finally aliases, and inlined at call
+  // sites - producing bare `mapping storage m = <mapping>` aliases the next pass handles.
+  ast = ast.accept(new InlineMappingReturnFunctions()) as Ast;
   // A `mapping(..) storage m = get()` local (get() inlined above to a bare mapping or `c ? a : b`) has no runtime
   // value; rewrite each `m[k]` use to the underlying mapping (or a branch/ternary) and drop the declaration.
   ast = ast.accept(new LowerMappingStorageAlias()) as Ast;
@@ -395,6 +400,7 @@ function compileReferencedContracts(
     singleAst = singleAst.accept(new InlineExternalCallHelpers()) as Ast;
     singleAst = singleAst.accept(new InlineReturningStateHelpers()) as Ast;
     singleAst = singleAst.accept(new InlineStoragePointerCalls()) as Ast;
+    singleAst = singleAst.accept(new InlineMappingReturnFunctions()) as Ast;
     singleAst = singleAst.accept(new LowerMappingStorageAlias()) as Ast;
     singleAst = singleAst.accept(new DesugarDynamicArrayCopyCast()) as Ast;
     singleAst = singleAst.accept(new CacheDynamicArrayInLoop()) as Ast;

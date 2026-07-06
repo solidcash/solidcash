@@ -4992,6 +4992,22 @@ export default class SymbolTableTraversal extends AstTraversal {
   }
 
   visitAbiEncodeCall(node: AbiEncodeCallNode): Node {
+    // `abi.encodeCall(this.method, (args))` targets a function of the current contract, not an interface.
+    if (node.interfaceName === 'this') {
+      const fn = this.currentContract?.functions.find((f) => f.name === node.functionName);
+      if (!fn) {
+        throw new AbiEncodeCallUndefinedFunctionError(node, 'this', node.functionName);
+      }
+      if (node.parameters.length !== fn.parameters.length) {
+        throw new AbiEncodeCallArgCountError(node, fn.parameters.length, node.parameters.length);
+      }
+      const selfParamTypes = fn.parameters.map((p) => p.type.toString());
+      node.computedSelector = computeFunctionSelector(computeFunctionSignature(node.functionName, selfParamTypes));
+      node.resolvedParamTypes = fn.parameters.map((p) => p.type);
+      node.parameters = this.visitList(node.parameters);
+      return node;
+    }
+
     const iface = this.interfaceMap.get(node.interfaceName);
     if (!iface) {
       throw new AbiEncodeCallUndefinedInterfaceError(node, node.interfaceName);

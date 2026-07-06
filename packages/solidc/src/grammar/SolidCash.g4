@@ -634,7 +634,7 @@ expression
     | 'abi.encodePacked' expressionList # AbiEncodePacked
     | 'abi.encodeWithSelector' expressionList # AbiEncodeWithSelector
     | 'abi.encodeWithSignature' expressionList # AbiEncodeWithSignature
-    | 'abi.encodeCall' '(' Identifier '.' Identifier ',' expressionList ')' # AbiEncodeCall
+    | 'abi.encodeCall' '(' ('this' | Identifier) '.' Identifier ',' expressionList ')' # AbiEncodeCall
     | 'bytes.concat' expressionList # BytesConcat
     | 'string.concat' expressionList # StringConcat
     | 'abi.decode' '(' expression ',' typeList ')' # AbiDecode

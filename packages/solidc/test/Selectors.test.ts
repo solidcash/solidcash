@@ -42,3 +42,25 @@ describe('SBE-19: Interface.method.selector / Contract.method.selector resolve t
       { solidityImportCompat: true }).contractName).toBe('C');
   });
 });
+
+describe('abi.encodeCall(this.method, (args)) targets a current-contract function', () => {
+  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  it('resolves this.method with a multi-arg tuple', () => {
+    expect(cc('contract C { function g(uint256 a, uint256 b) external {}'
+      + ' function f() external pure returns (bytes memory) { return abi.encodeCall(this.g, (1, 2)); } }')).toBe('C');
+  });
+  it('resolves this.method with an empty tuple', () => {
+    expect(cc('contract C { function g() external {}'
+      + ' function f() external pure returns (bytes memory) { return abi.encodeCall(this.g, ()); } }')).toBe('C');
+  });
+  it('still resolves an interface target (Interface.method)', () => {
+    expect(cc('interface IFoo { function bar(address a, uint256 b) external; }'
+      + ' contract C { function f(address to, uint256 amt) external pure returns (bytes memory) {'
+      + ' return abi.encodeCall(IFoo.bar, (to, amt)); } }')).toBe('C');
+  });
+  it('rejects an undefined this.method', () => {
+    expect(() => cc('contract C { function g() external {}'
+      + ' function f() external pure returns (bytes memory) { return abi.encodeCall(this.nope, ()); } }'))
+      .toThrow(/not found/);
+  });
+});

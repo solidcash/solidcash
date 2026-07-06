@@ -3703,8 +3703,10 @@ export default class AstBuilder
 
   visitAbiEncodeCall(ctx: AbiEncodeCallContext): AbiEncodeCallNode {
     const ids = ctx.Identifier_list();
-    const interfaceName = ids[0].getText();
-    const functionName = ids[1].getText();
+    // `this.method` -> only one Identifier (`this` is a keyword token); interfaceName sentinel 'this'
+    // resolves to a function of the current contract in SymbolTableTraversal.
+    const interfaceName = ids.length === 1 ? 'this' : ids[0].getText();
+    const functionName = ids.length === 1 ? ids[0].getText() : ids[1].getText();
     const params = ctx.expressionList().expression_list()?.map((e) => this.visit(e)) ?? [];
     const node = new AbiEncodeCallNode(interfaceName, functionName, params);
     node.location = Location.fromCtx(ctx);

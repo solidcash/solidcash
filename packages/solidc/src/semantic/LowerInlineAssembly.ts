@@ -386,7 +386,14 @@ function lowerBitwiseOperand(arg: YulExpressionNode): ExpressionNode {
 function lowerValue(expr: YulExpressionNode): ExpressionNode {
   if (expr instanceof YulLiteralNode) return lowerLiteral(expr);
   if (expr instanceof YulPathNode) {
-    if (expr.members.length > 0) throw new YulNotLowerable(); // `.slot` / `.offset` are storage (later phase)
+    // `x.slot` of a state var is its (constant) storage-slot number in the computed layout - consistent with the
+    // sload/sstore slot resolution + the __evm_storage register. `.offset`/`.length` (calldata slices) stay deferred.
+    if (expr.members.length === 1 && expr.members[0] === 'slot') {
+      const slot = currentVarSlot.get(expr.base);
+      if (slot !== undefined) return intLit(slot, expr);
+      throw new YulNotLowerable();
+    }
+    if (expr.members.length > 0) throw new YulNotLowerable(); // `.offset` / `.length` are calldata (later phase)
     const id = loc(new IdentifierNode(expr.base), expr);
     // A UDVT-typed operand is a raw word inside assembly; unwrap it to its underlying type so arithmetic /
     // bitwise ops type-check (e.g. shl(0x40, _duration) where _duration is a `Duration` = uint64).

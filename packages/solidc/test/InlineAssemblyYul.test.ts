@@ -203,6 +203,16 @@ describe('Yul inline assembly (Phase 1: parse + diagnostics)', () => {
     expect(noop.bytecode).toBe(direct.bytecode);
   });
 
+  it('lowers `x.slot` of a state var to its constant storage-slot number', () => {
+    const slotv = compileString('contract C() { int a; int s; function f() returns (uint z) { assembly { z := s.slot } } }',
+      { solidityImportCompat: true });
+    const num = compileString('contract C() { int a; int s; function f() returns (uint z) { assembly { z := 1 } } }',
+      { solidityImportCompat: true });
+    expect(slotv.bytecode).toBe(num.bytecode); // s is the 2nd state var -> slot 1
+    expect(() => compileString('contract C() { int x; function f() { assembly { sstore(add(x.slot, 1), 4) } require(true); } }',
+      { solidityImportCompat: true })).not.toThrow();
+  });
+
   it('lowers Yul string / hex-string literals to their left-aligned word', () => {
     const strv = compileString('contract C() { function f() returns (uint x) { assembly { x := "abc" } } }',
       { solidityImportCompat: true });

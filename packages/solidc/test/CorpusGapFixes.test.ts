@@ -641,3 +641,17 @@ describe('bytes element compound write (data[i] |= v / &=)', () => {
     expect(s.bytecode).toBe(h.bytecode);
   });
 });
+
+describe('using-for on non-struct receiver types (address / string / contract)', () => {
+  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  it('resolves x.method() for `using L for address`', () => {
+    expect(cc('library L { function foo(address a) internal pure returns (address) { return a; } }'
+      + ' contract C { using L for address;'
+      + ' function f(address a) external pure returns (address) { return a.foo(); } }')).toBe('C');
+  });
+  it('resolves s.method() for `using L for string`', () => {
+    expect(cc('library L { function len(string memory s) internal pure returns (uint256) { return bytes(s).length; } }'
+      + ' contract C { using L for string;'
+      + ' function f(string memory s) external pure returns (uint256) { return s.len(); } }')).toBe('C');
+  });
+});

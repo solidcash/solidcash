@@ -323,6 +323,11 @@ export default class AstBuilder
   // Local unbounded `bytes` vars, to desugar an element write `d[i] = v` to a slice+concat rebuild. Per-function.
   private localBytesVars: Set<string> = new Set();
 
+  // Local/param vars (name -> using-for type key) for NON-struct types (enum/address/contract/string/bytes/int),
+  // so a `using L for T` method call `x.method(args)` -> `L.method(x, args)` resolves for any receiver type
+  // (structs go through localStructTypes). Per-function.
+  private localSimpleTypeKeys: Map<string, string> = new Map();
+
   // Warn only once that erc7201(...) is aliased to sha256 (no EVM storage layout on BCH).
   private warnedErc7201 = false;
 
@@ -927,6 +932,7 @@ export default class AstBuilder
     this.storageAliases = new Map();
     this.localStructTypes = new Map();
     this.localBytesVars = new Set();
+    this.localSimpleTypeKeys = new Map();
     this.localStructArrayTypes = new Map();
     const statements = this.flattenStatements(ctx.statement_list().map((s) => this.visit(s) as StatementNode));
     const block = new BlockNode(statements);
@@ -1017,6 +1023,7 @@ export default class AstBuilder
     this.storageAliases = new Map();
     this.localStructTypes = new Map();
     this.localBytesVars = new Set();
+    this.localSimpleTypeKeys = new Map();
     this.localStructArrayTypes = new Map();
     const name = ctx.anyIdentifier().getText();
     const parameters = ctx.parameterList().parameter_list().map((p) => this.visit(p) as ParameterNode);
@@ -1025,6 +1032,7 @@ export default class AstBuilder
     for (const p of parameters) {
       if (p.type instanceof StructType) this.localStructTypes.set(p.name, p.type);
       if (p.type instanceof BytesType && p.type.bound === undefined) this.localBytesVars.add(p.name);
+      { const k = this.usingForTypeKey(p.type); if (k) this.localSimpleTypeKeys.set(p.name, k); }
     }
     const structPtrParams = this.registerStructPointerParams(parameters);
     const statements = this.flattenStatements(ctx.statement_list().map((s) => this.visit(s) as StatementNode));
@@ -1142,6 +1150,7 @@ export default class AstBuilder
     this.storageAliases = new Map();
     this.localStructTypes = new Map();
     this.localBytesVars = new Set();
+    this.localSimpleTypeKeys = new Map();
     this.localStructArrayTypes = new Map();
     const name = ctx.anyIdentifier().getText();
     const parameters = ctx.parameterList().parameter_list().map((p) => this.visit(p) as ParameterNode);
@@ -1149,6 +1158,7 @@ export default class AstBuilder
     for (const p of parameters) {
       if (p.type instanceof StructType) this.localStructTypes.set(p.name, p.type);
       if (p.type instanceof BytesType && p.type.bound === undefined) this.localBytesVars.add(p.name);
+      { const k = this.usingForTypeKey(p.type); if (k) this.localSimpleTypeKeys.set(p.name, k); }
     }
     const structPtrParams = this.registerStructPointerParams(parameters);
     const statements = this.flattenStatements(ctx.statement_list().map((s) => this.visit(s) as StatementNode));
@@ -1185,6 +1195,7 @@ export default class AstBuilder
     this.storageAliases = new Map();
     this.localStructTypes = new Map();
     this.localBytesVars = new Set();
+    this.localSimpleTypeKeys = new Map();
     this.localStructArrayTypes = new Map();
     const name = ctx.Identifier().getText();
     const parameters = ctx.parameterList()
@@ -1365,6 +1376,9 @@ export default class AstBuilder
     }
     // Track local unbounded bytes vars so `d[i] = v` can desugar to a slice+concat rebuild (see buildLvalueAssign).
     if (type instanceof BytesType && type.bound === undefined) this.localBytesVars.add(name);
+    // Track the using-for type key of a non-struct local so `x.method(args)` under `using L for T` resolves.
+    const ufKey = this.usingForTypeKey(type);
+    if (ufKey) this.localSimpleTypeKeys.set(name, ufKey);
 
     const variableDefinition = new VariableDefinitionNode(type, modifiers, name, expression);
     variableDefinition.location = Location.fromCtx(ctx);
@@ -2014,9 +2028,11 @@ export default class AstBuilder
       const recvName = identifiers[0].getText();
       const recvStruct = this.localStructTypes.get(recvName) ?? this.stateStructVars.get(recvName)
         ?? this.mappingStructStateVars.get(recvName);
+      const simpleKey = this.localSimpleTypeKeys.get(recvName);
       const libName = (recvStruct && this.usingForLibraries.get(recvStruct.name))
         ?? this.usingForArrayLibrary(recvName)
-        ?? this.usingForMappingLibrary(recvName);
+        ?? this.usingForMappingLibrary(recvName)
+        ?? (simpleKey !== undefined ? this.usingForLibraries.get(simpleKey) : undefined);
       if (libName) {
         const libId = new IdentifierNode(`${libName}.${identifiers[1].getText()}`);
         libId.location = identifier.location;
@@ -3603,8 +3619,10 @@ export default class AstBuilder
         ? (this.localStructTypes.get(recvName) ?? this.stateStructVars.get(recvName)
           ?? this.mappingStructStateVars.get(recvName))
         : undefined;
+      const simpleKey = recvName !== undefined ? this.localSimpleTypeKeys.get(recvName) : undefined;
       const libName = (recvStruct && this.usingForLibraries.get(recvStruct.name))
-        ?? (recvName !== undefined ? this.usingForArrayLibrary(recvName) : undefined);
+        ?? (recvName !== undefined ? this.usingForArrayLibrary(recvName) : undefined)
+        ?? (simpleKey !== undefined ? this.usingForLibraries.get(simpleKey) : undefined);
       if (libName) {
         const id = new IdentifierNode(`${libName}.${methodName}`);
         id.location = Location.fromCtx(ctx);
@@ -4314,6 +4332,19 @@ export default class AstBuilder
 
   // `bytes b; b.pop()` desugars to `b = b[0 : b.length - 1]` (drop the last byte). Popping an empty bytes slices
   // to end -1, which fails at runtime - matching Solidity's revert-on-empty-pop.
+  // The `using L for <key>` key a receiver of this type matches: enum / UDVT name, a contract interface name or
+  // 'address', 'string', 'bytes'/'bytesN', 'uintN'/'intN'. Mirrors the usingForLibraries keying (bare type name).
+  // Structs are resolved via localStructTypes, so they are intentionally not returned here.
+  private usingForTypeKey(type: Type): string | undefined {
+    if (type instanceof EnumType) return type.name;
+    if (type instanceof ValueType) return type.name;
+    if (type instanceof AddressType) return type.interfaceName ?? 'address';
+    if (type === PrimitiveType.STRING) return 'string';
+    if (type instanceof BytesType) return type.bound === undefined ? 'bytes' : `bytes${type.bound}`;
+    if (type instanceof IntType) return `${type.signed ? 'int' : 'uint'}${type.bits}`;
+    return undefined;
+  }
+
   // `data[i] op= v` on an unbounded bytes var -> `data = data[0:i] ++ (data[i] op v) ++ data[i+1:size(data)]`
   // (plain `=` uses v directly). Works for a state var (StateAccess/StateAssign) or a local/memory var
   // (Identifier/Assign), selected by `isState`.

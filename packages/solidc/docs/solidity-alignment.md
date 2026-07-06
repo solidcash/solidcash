@@ -3,6 +3,16 @@
 Outcomes of aligning solidcash's Solidity-compat mode with `../solidity` (the ethereum/solidity reference) on
 four items: the ABI-coder pragmas, super/C3 inheritance, fixed-point, and signedness/casts.
 
+**Summary of outcomes:**
+1. **ABI-coder pragmas** - CONFIRMED already no-ops (v2 is the solc 0.8 default). Guard test added.
+2. **super/C3** - DISCREPANCY FOUND + FIXED: super/Base calls in the constructor/fallback/receive were not
+   rewritten (a direct `super.f()` in a constructor failed). +4 corpus.
+3. **Fixed-point** - solc leaves it unimplemented; solidcash implements it (decimal-scaled int). Kept our
+   implementation, added a one-time "differs from Solidity" warning.
+4. **Signedness** - ASSESSED: not a cast problem. Explicit int/uint casts already compile + are value-preserving;
+   implicit int+uint mixing is rejected by both (not a discrepancy). Only EVM overflow-wrap / negative->unsigned
+   two's-complement reinterpretation diverges (fundamental BCH sign-magnitude, by-design). No code change needed.
+
 ## 1. `pragma experimental ABIEncoderV2` / `pragma abicoder v2` are no-ops (DONE)
 
 **Confirmed in solc source:** `docs/080-breaking-changes.rst` - "ABI coder v2 is activated by default." Since

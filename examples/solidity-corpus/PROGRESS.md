@@ -308,3 +308,11 @@ params - fundamental), array-of-mappings, complex destructure (indexed/empty slo
 Remaining parse: function pointers (dominant, fundamental), abstract modifier/receive (~2, deferred), computed
 array size / array-of-mappings / chained-assign (deferred, risky). NON-parse remaining mostly fundamental
 (L/super/signedness/external-call/deploy/function-types).
+
+## ~3427 -> ~3436 (autonomous grind cont: abstract decls + tuple-for)
+- 4ef7d408 abstract modifier + receive (no body) (+4); d9c6c69b tuple destructure in for-init/update (+1, complete
+  feature, byte-sound); 9689973c for(;;) empty condition (+9).
+CLEAN VEINS NOW EXHAUSTED. Remaining documented in ATTENTION.md: array slices (need VM-verified codegen),
+function-pointer ABI (fundamental), signedness/fixed-point (fundamental), external-call/deploy, ABIEncoderV2,
+super/C3, Yul EVM-model, multifile, computed-array-size (grammar risk), parenthesized-calls (fn-ptr adjacent).
+Autonomous session total: 3360 -> ~3436 (+76 across ~30 commits, all sound/verified/OWN-files, suite 1754 green).

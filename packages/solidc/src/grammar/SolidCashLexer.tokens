@@ -218,8 +218,8 @@ LINE_COMMENT=183
 'error'=35
 'revert'=36
 'pragma'=37
-'solidcash'=38
-'solidity'=39
+'solidity'=38
+'solidcash'=39
 '='=40
 'interface'=41
 'is'=42

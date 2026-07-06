@@ -266,3 +266,22 @@ describe('public constant is baked, not stored as state', () => {
     expect((a.stateLayout?.variables ?? []).map((v) => v.name)).not.toContain('TWO');
   });
 });
+
+// `delete x` on a BARE state variable (Solidity-import idiom) must route to a state delete, like a bare state
+// write. It used to build a local delete: silently defining a wrong local at top level, and crashing once nested
+// in a branch ("variable 'x' does not exist on the stack"). Now byte-identical to `delete this.x`.
+describe('bare `delete x` on a state variable routes to a state delete', () => {
+  const bareSrc = 'contract C{uint16 y;uint8 x;function f()external returns(uint){y=2;if(x!=1)return 2;delete y;return 1;}}';
+  it('compiles a bare state-var delete nested after an early-return branch', () => {
+    expect(compileString(bareSrc, { solidityImportCompat: true }).contractName).toBe('C');
+  });
+  it('is byte-identical to `delete this.y` (sound - actually deletes the state var)', () => {
+    const explicit = 'contract C{uint16 y;uint8 x;function f()external returns(uint){this.y=2;if(x!=1)return 2;delete this.y;return 1;}}';
+    expect(compileString(bareSrc, { solidityImportCompat: true }).bytecode)
+      .toBe(compileString(explicit, { solidityImportCompat: true }).bytecode);
+  });
+  it('leaves a genuine local delete alone', () => {
+    expect(compileString('contract C{function f(uint x)external returns(uint){uint y=5;if(x!=1)return 2;delete y;return y;}}',
+      { solidityImportCompat: true }).contractName).toBe('C');
+  });
+});

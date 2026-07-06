@@ -4835,6 +4835,15 @@ export default class SymbolTableTraversal extends AstTraversal {
   }
 
   visitDeleteLocal(node: DeleteLocalNode): Node {
+    // Bare `delete x` on a state variable (no shadowing local): route to a state delete, mirroring the bare
+    // state-var write in visitAssign. Otherwise DeleteLocal treats `x` as a stack local - which silently defines
+    // a wrong local at top level, and crashes ("variable does not exist on the stack") once nested in a branch.
+    const sym = this.symbolTables[0].get(node.identifier.name);
+    if (sym?.symbolType === SymbolType.STATE_VARIABLE) {
+      const stateNode = new DeleteStateNode(node.identifier.name);
+      stateNode.location = node.location;
+      return this.visit(stateNode);
+    }
     node.identifier = this.visit(node.identifier) as IdentifierNode;
     return node;
   }

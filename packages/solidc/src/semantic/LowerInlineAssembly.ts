@@ -400,6 +400,14 @@ function lowerValue(expr: YulExpressionNode): ExpressionNode {
   throw new YulNotLowerable();
 }
 
+// A Yul string / hex-string literal is its bytes LEFT-aligned in a 32-byte word (high bytes first).
+function leftAlignedWord(bytes: number[]): bigint {
+  if (bytes.length > 32) throw new YulNotLowerable(); // over one word
+  let v = 0n;
+  for (const b of bytes) v = (v << 8n) | BigInt(b);
+  return v << BigInt((32 - bytes.length) * 8);
+}
+
 function lowerLiteral(lit: YulLiteralNode): ExpressionNode {
   switch (lit.kind) {
     case YulLiteralKind.NUMBER:
@@ -407,8 +415,21 @@ function lowerLiteral(lit: YulLiteralNode): ExpressionNode {
       return intLit(BigInt(lit.raw), lit);
     case YulLiteralKind.BOOL:
       return intLit(lit.raw === 'true' ? 1n : 0n, lit);
+    case YulLiteralKind.STRING: {
+      const inner = lit.raw.slice(1, -1); // strip the surrounding quotes
+      if (inner.includes('\\')) throw new YulNotLowerable(); // escape sequences (later)
+      const bytes = [...inner].map((c) => c.charCodeAt(0));
+      if (bytes.some((b) => b > 0xff)) throw new YulNotLowerable(); // non-latin1 (needs UTF-8 encoding)
+      return intLit(leftAlignedWord(bytes), lit);
+    }
+    case YulLiteralKind.HEXSTRING: {
+      const hex = lit.raw.replace(/^hex/, '').slice(1, -1).replace(/_/g, ''); // strip `hex"` .. `"` and separators
+      const bytes: number[] = [];
+      for (let i = 0; i < hex.length; i += 2) bytes.push(parseInt(hex.slice(i, i + 2), 16));
+      return intLit(leftAlignedWord(bytes), lit);
+    }
     default:
-      throw new YulNotLowerable(); // string / hex-string literals are bytes (later phase)
+      throw new YulNotLowerable();
   }
 }
 

@@ -203,6 +203,16 @@ describe('Yul inline assembly (Phase 1: parse + diagnostics)', () => {
     expect(noop.bytecode).toBe(direct.bytecode);
   });
 
+  it('lowers Yul string / hex-string literals to their left-aligned word', () => {
+    const strv = compileString('contract C() { function f() returns (uint x) { assembly { x := "abc" } } }',
+      { solidityImportCompat: true });
+    const word = compileString(`contract C() { function f() returns (uint x) { assembly { x := ${0x616263n << 232n} } } }`,
+      { solidityImportCompat: true });
+    expect(strv.bytecode).toBe(word.bytecode);
+    expect(() => compileString('contract C() { function f() returns (uint x) { assembly { x := hex"112233" } } }',
+      { solidityImportCompat: true })).not.toThrow();
+  });
+
   it('lowers invalid() to require(false) and stop() to a no-op', () => {
     expect(compileString('contract C() { function f() { assembly { invalid() } require(true); } }',
       { solidityImportCompat: true }).bytecode)

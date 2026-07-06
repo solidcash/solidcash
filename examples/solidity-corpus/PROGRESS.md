@@ -169,3 +169,27 @@ Sub-deltas: 3216->3217 mcopy, ->3219 return, ->3222 low-level call, ->3229 addmo
 ->3255 param'd-fn + signextend + string-lit + x.slot. Remaining Yul is FUNDAMENTAL: a runtime EVM-memory / storage-slot
 / calldata-slice model (.offset/.length, variable-offset mstore/mload, keccak-over-computed-memory, loops) - a research-
 level EVM-layout model, not a builtin to add.
+
+## 3255 -> 3313 (grind: grammar peels + solc conversion rules + free/getter resolution)
+
+Nine commits, mixed grammar-peel + semantic-gap. Grammar peels (each = a rule alternative Solidity allows that we
+rejected): `.selector` on contract vars / contract names / bare functions (c44894d0, +5); the `assembly ("memory-safe")`
+dialect+flags annotation (723b9dd1, +13 - biggest peel, `assemblyStatement += StringLiteral? ('(' StringLiteral,* ')')?`);
+array-typed custom-error params `error E(uint[] a, uint[1])` (6751ffee, +3); `new string(n)` dynamic-string alloc
+(e14d25bd, +2); array-typed tuple destructuring slots `(uint[] memory a, ..) = ..` (4ef4087d, +5); `abi.encodeCall(this.m,
+(args))` self-target (36ec21f0, +1, sentinel interfaceName 'this' -> current-contract fn).
+
+Semantic gaps (higher yield per the standing lesson): file-level enum-typed + string->bytesN constants (b6d52300, +2 -
+THREE ordering/coercion walls: AstBuilder + SymbolTable both built free constants BEFORE registering free enums so
+`E constant c = E.M` typed undefined; visitConstantDefinition never ran maybeCoerceStringToBytesN). **bytesN -> bytesM
+widening (f579d00e, +13 - the clean win): solc's FixedBytesType::isImplicitlyConvertibleTo allows any widen (M >= N),
+so `bytes32 r = ripemd160(data)` (ripemd160 returns bytes20) is valid - we rejected it. maybeCoerceBytesWiden wraps the
+value in an explicit cast (byte-identical to hand `bytes32(x)`, which zero-pads via OP_CAT), wired into constant / decl /
+assign / state-assign / return / call-arg coercion. Narrowing still fails.** Public value-array getter `this.a(i)`
+(4861660f, +1: ArrayType branch in SynthesizePublicGetters, uint256 index -> element, mirrors mapping getter).
+
+LESSON reinforced: reading solc's actual conversion rule (Types.cpp isImplicitlyConvertibleTo) found a 13-file vein a
+grammar scan would never surface. Remaining large clusters are FUNDAMENTAL: Yul EVM-memory/storage/calldata (167), genuine
+signedness + fixed-point + big-address-literal UnequalType (45), external-call-on-array-element + deploy-then-call
+MethodCall (34), runtime function-pointer .selector (30). Niche leftovers: enum/2D-array/struct public getters (pass-order
+wall - SynthesizePublicGetters runs pre-enum-resolution), local-bytes delete-element, 3-file address-literal comparison.

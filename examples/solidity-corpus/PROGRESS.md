@@ -272,3 +272,11 @@ Non-stop autonomous session. Commits:
 An Explore subagent surveyed the remaining tractable veins (free-function-shadow + public-struct-getter-tuples were
 its finds). Remaining big tractable-looking clusters: public struct getter tuples (6, struct getters excluded by
 pass-order), UndefinedCollection struct-field-index chains, MethodCall new-C-then-call (deploy fold). See ATTENTION.md.
+
+## ~3374 -> ~3384 (autonomous grind cont: const-fold ordering + grammar peels)
+- 27841738 file-level UDVT-typed constants `T constant g = T.wrap(x)` (+2): register file-level structs+typeDefs
+  BEFORE constants (mirrors enum-before-constants), so a free const can resolve/fold from a UDVT.
+- 9f39a3b9 `pragma experimental solidity` (+4): add 'solidity' to the tolerant pragma token list (was a keyword
+  the Identifier* tail couldn't match).
+- 9a3b12d5 virtual/override on modifiers + virtual-before-external on fallback (+4): modifierDefinition gained
+  `('virtual'|overrideSpecifier)*`; fallbackModifier* allowed before external too. Inheritance no-ops.

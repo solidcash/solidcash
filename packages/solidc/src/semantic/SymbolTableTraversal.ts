@@ -928,7 +928,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     }
 
     // Validate that the expression is a compile-time constant
-    if (!isCompileTimeExpression(node.expression, this.constantMap)) {
+    if (!isCompileTimeExpression(node.expression, this.constantMap, this.enumMap)) {
       throw new NonCompileTimeExpressionError(node);
     }
 
@@ -960,6 +960,10 @@ export default class SymbolTableTraversal extends AstTraversal {
       this.resolveConstantExpressionIdentifiers(expr.expression);
     } else if (expr instanceof ArrayNode) {
       expr.elements.forEach((e) => this.resolveConstantExpressionIdentifiers(e));
+    } else if (expr instanceof FieldAccessNode) {
+      // Resolve the base of an enum member access `E.B` (E is an enum symbol) so type-checking sees the base's
+      // EnumType and treats `E.B` as a member, not a struct field.
+      this.resolveConstantExpressionIdentifiers(expr.expression);
     }
   }
 
@@ -6409,29 +6413,33 @@ function isEmptyBytesLiteral(expr: ExpressionNode): boolean {
 function isCompileTimeExpression(
   expr: ExpressionNode,
   constantMap: Map<string, ConstantDefinitionNode>,
+  enumMap: Map<string, EnumType>,
 ): boolean {
   if (expr instanceof LiteralNode) return true;
   if (expr instanceof BinaryOpNode) {
-    return isCompileTimeExpression(expr.left, constantMap)
-      && isCompileTimeExpression(expr.right, constantMap);
+    return isCompileTimeExpression(expr.left, constantMap, enumMap)
+      && isCompileTimeExpression(expr.right, constantMap, enumMap);
   }
   if (expr instanceof UnaryOpNode) {
-    return isCompileTimeExpression(expr.expression, constantMap);
+    return isCompileTimeExpression(expr.expression, constantMap, enumMap);
   }
   if (expr instanceof CastNode) {
-    return isCompileTimeExpression(expr.expression, constantMap);
+    return isCompileTimeExpression(expr.expression, constantMap, enumMap);
   }
   if (expr instanceof ArrayNode) {
-    return expr.elements.every((e) => isCompileTimeExpression(e, constantMap));
+    return expr.elements.every((e) => isCompileTimeExpression(e, constantMap, enumMap));
   }
   if (expr instanceof IdentifierNode) {
     // Allow references to other already-registered constants
     return constantMap.has(expr.name);
   }
   if (expr instanceof FieldAccessNode && expr.expression instanceof IdentifierNode) {
-    // Allow namespaced constant references (e.g. SafeMath.MAX_SAFE)
+    // Allow namespaced constant references (e.g. SafeMath.MAX_SAFE) and enum members (E.B): an enum member is a
+    // compile-time integer ordinal.
     const compoundName = `${expr.expression.name}.${expr.name}`;
-    return constantMap.has(compoundName);
+    if (constantMap.has(compoundName)) return true;
+    const en = enumMap.get(expr.expression.name);
+    return !!en && en.members.some((mm) => mm.name === expr.name);
   }
   return false;
 }

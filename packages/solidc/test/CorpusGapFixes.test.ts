@@ -412,3 +412,22 @@ describe('foreign external function pointer == direct external call', () => {
       .toBe(compileString(direct, { solidityImportCompat: true }).bytecode);
   });
 });
+
+// An enum member `E.M` is a compile-time integer ordinal, so it is valid as a `constant` initializer.
+// isCompileTimeExpression now accepts it and the base enum resolves in the constant expression, so the constant
+// folds identically to using `E.M` inline.
+describe('enum member as a constant initializer (E constant X = E.M)', () => {
+  const src = 'contract C{enum E{A,B,C}E constant X=E.B;function f()external returns(E){return X;}}';
+  it('compiles an enum-valued constant (contract-level enum)', () => {
+    expect(compileString(src, { solidityImportCompat: true }).contractName).toBe('C');
+  });
+  it('is byte-identical to using the enum member inline', () => {
+    const inline = 'contract C{enum E{A,B,C}function f()external returns(E){return E.B;}}';
+    expect(compileString(src, { solidityImportCompat: true }).bytecode)
+      .toBe(compileString(inline, { solidityImportCompat: true }).bytecode);
+  });
+  it('accepts a file-level enum with a contract-level constant', () => {
+    expect(compileString('enum E{A,B,C} contract C{E constant X=E.C;function f()external returns(E){return X;}}',
+      { solidityImportCompat: true }).contractName).toBe('C');
+  });
+});

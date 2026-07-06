@@ -26,20 +26,24 @@ import AstTraversal from '../ast/AstTraversal.js';
 import { cloneNode } from '../ast/clone.js';
 
 /**
- * Lowers postfix `lvalue++` / `lvalue--` used as an EXPRESSION (e.g. `abi.encode(.., nonces[owner]++, ..)`,
- * the EIP-2612 nonce pattern). Postfix yields the PRE-mutation value and mutates as a side effect, so it
- * desugars to: replace the expression with a read of the lvalue (the old value), and hoist `lvalue = lvalue +/-
- * 1` immediately AFTER the enclosing statement. (Statement-form `lvalue++;` is a separate grammar path and is
+ * Lowers postfix `lvalue++`/`lvalue--` and prefix `++lvalue`/`--lvalue` used as an EXPRESSION (e.g.
+ * `abi.encode(.., nonces[owner]++, ..)` the EIP-2612 nonce pattern, or `arr[i] = ++x` / `return ++counter`).
+ * Both replace the expression with a read of the lvalue and hoist `lvalue = lvalue +/- 1`; postfix yields the
+ * PRE-mutation value so its increment hoists AFTER the enclosing statement, prefix yields the POST-mutation value
+ * so its increment hoists BEFORE. (Statement-form `lvalue++;`/`++lvalue;` is a separate grammar path and is
  * untouched; for-loop `i++` updates are handled by the for desugar.)
  *
  * Sound only when the lvalue is evaluated exactly once and unconditionally at statement scope - so the hoist is
- * suppressed in conditional/terminal positions (ternary branches, `&&`/`||` right operands, loop conditions,
- * return expressions), where a postfix left in place surfaces as a normal "unsupported here" error rather than
- * a silently mis-ordered side effect.
+ * suppressed in conditional positions (ternary branches, `&&`/`||` right operands, loop conditions), and postfix
+ * additionally in a return (its increment would land after the return, dead); prefix in a return is fine (it
+ * hoists before). A left-in-place op surfaces as a normal "unsupported here" error rather than a mis-ordered side
+ * effect.
  */
 export default class DesugarPostfixExpressions extends AstTraversal {
   private after: StatementNode[] = [];
+  private before: StatementNode[] = [];
   private suppress = false;
+  private inReturn = false;
 
   visitSourceFile(node: SourceFileNode): Node {
     if (node.contract) node.contract = this.visit(node.contract) as ContractNode;
@@ -51,33 +55,39 @@ export default class DesugarPostfixExpressions extends AstTraversal {
   visitBlock(node: BlockNode): Node {
     const out: StatementNode[] = [];
     for (const stmt of node.statements ?? []) {
-      const saved = this.after;
-      this.after = [];
+      const savedAfter = this.after; const savedBefore = this.before;
+      this.after = []; this.before = [];
       const visited = this.visit(stmt) as StatementNode;
-      const mine = this.after;
-      this.after = saved;
-      out.push(visited, ...mine);
+      const before = this.before; const after = this.after;
+      this.after = savedAfter; this.before = savedBefore;
+      // Prefix increments hoist BEFORE the statement (they read the post-mutation value); postfix AFTER.
+      out.push(...before, visited, ...after);
     }
     node.statements = out;
     return node;
   }
 
   visitUnaryOp(node: UnaryOpNode): Node {
-    node.expression = this.visit(node.expression) as ExpressionNode; // inner postfix first
-    if (node.operator !== UnaryOperator.POSTFIX_INCREMENT && node.operator !== UnaryOperator.POSTFIX_DECREMENT) {
-      return node;
-    }
-    if (this.suppress) {
-      // Conditional/terminal position (return, ternary branch, short-circuit right operand, loop condition):
-      // hoisting the increment after the statement would change its ordering/conditionality, so reject rather
-      // than mis-compile. Assigning to a local first is the workaround.
+    node.expression = this.visit(node.expression) as ExpressionNode; // inner postfix/prefix first
+    const op = node.operator;
+    const isPostfix = op === UnaryOperator.POSTFIX_INCREMENT || op === UnaryOperator.POSTFIX_DECREMENT;
+    const isPrefix = op === UnaryOperator.PREFIX_INCREMENT || op === UnaryOperator.PREFIX_DECREMENT;
+    if (!isPostfix && !isPrefix) return node;
+    // Conditional positions (ternary branch, short-circuit right operand, loop condition) make the hoist
+    // conditional either way; postfix additionally cannot hoist after a return (dead). Prefix hoists before the
+    // statement, which is fine in a return. Reject the unsupported combinations rather than mis-compile.
+    if (this.suppress || (isPostfix && this.inReturn)) {
       throw new Error(
-        "postfix '++'/'--' as an expression is only supported at statement scope, not inside a return, "
-        + 'ternary, short-circuit (&&/||), or loop condition; assign it to a variable first',
+        "'++'/'--' as an expression is only supported at statement scope (and prefix additionally in a return), "
+        + 'not inside a ternary, short-circuit (&&/||), or loop condition; assign it to a variable first',
       );
     }
-    const increment = this.buildIncrement(node.expression, node.operator);
+    const increment = this.buildIncrement(node.expression, op);
     if (!increment) return node; // unsupported lvalue shape - leave it
+    if (isPrefix) {
+      this.before.push(increment);
+      return node.expression; // the read = the post-mutation value (increment already ran)
+    }
     this.after.push(increment);
     return node.expression; // the read = the pre-mutation value
   }
@@ -114,9 +124,12 @@ export default class DesugarPostfixExpressions extends AstTraversal {
   }
 
   visitReturn(node: ReturnNode): Node {
-    // The increment would land after the return (dead). Capturing the pre-value pre-return needs a typed temp
-    // (type unknown pre-typecheck); rare, so leave the postfix in place to error rather than mis-compile.
-    node.expressions = this.withSuppressed(() => this.visitList(node.expressions)) as ExpressionNode[];
+    // Prefix `return ++x` hoists `x = x + 1` before the return (fine). Postfix `return x++` would need the
+    // increment after the return (dead), so inReturn keeps postfix rejected while allowing prefix.
+    const saved = this.inReturn;
+    this.inReturn = true;
+    node.expressions = this.visitList(node.expressions) as ExpressionNode[];
+    this.inReturn = saved;
     return node;
   }
 
@@ -130,7 +143,8 @@ export default class DesugarPostfixExpressions extends AstTraversal {
 
   // `lvalue = lvalue +/- 1` for the supported lvalue shapes (local, state var, mapping entry).
   private buildIncrement(operand: ExpressionNode, op: UnaryOperator): StatementNode | undefined {
-    const binop = op === UnaryOperator.POSTFIX_INCREMENT ? BinaryOperator.PLUS : BinaryOperator.MINUS;
+    const isInc = op === UnaryOperator.POSTFIX_INCREMENT || op === UnaryOperator.PREFIX_INCREMENT;
+    const binop = isInc ? BinaryOperator.PLUS : BinaryOperator.MINUS;
     const one = (): IntLiteralNode => { const n = new IntLiteralNode(1n); n.location = operand.location; return n; };
     const sum = (read: ExpressionNode): BinaryOpNode => {
       const b = new BinaryOpNode(read, binop, one()); b.location = operand.location; return b;

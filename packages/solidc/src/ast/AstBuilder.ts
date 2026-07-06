@@ -227,7 +227,7 @@ import { TernaryOpContext, TupleExpressionContext } from '../grammar/SolidCashPa
 // Imported as values (not `import type`) for runtime `instanceof` in extractLvalue / visitExpressionStatement.
 import {
   ParenthesisedContext, ArrayAccessContext, FieldAccessContext, MappingAccessContext,
-  StateAccessContext, IdentifierContext, PostfixOpContext, TupleIndexOpContext,
+  StateAccessContext, IdentifierContext, PostfixOpContext, PrefixOpContext, TupleIndexOpContext,
   FunctionCallExpressionContext, MethodCallContext, MethodCallNamedContext,
 } from '../grammar/SolidCashParser.js';
 import SolidCashVisitor from '../grammar/SolidCashVisitor.js';
@@ -2164,6 +2164,14 @@ export default class AstBuilder
   // as a UnaryOpNode with a postfix operator; DesugarPostfixExpressions lowers it to a hoisted read + increment.
   visitPostfixOp(ctx: PostfixOpContext): UnaryOpNode {
     const operator = ctx._op.text === '++' ? UnaryOperator.POSTFIX_INCREMENT : UnaryOperator.POSTFIX_DECREMENT;
+    const operand = this.visit(ctx.expression());
+    const node = new UnaryOpNode(operator, operand);
+    node.location = Location.fromCtx(ctx);
+    return node;
+  }
+
+  visitPrefixOp(ctx: PrefixOpContext): UnaryOpNode {
+    const operator = ctx._op.text === '++' ? UnaryOperator.PREFIX_INCREMENT : UnaryOperator.PREFIX_DECREMENT;
     const operand = this.visit(ctx.expression());
     const node = new UnaryOpNode(operator, operand);
     node.location = Location.fromCtx(ctx);

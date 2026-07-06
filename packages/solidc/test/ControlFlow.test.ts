@@ -171,6 +171,33 @@ describe('SBE-28: postfix ++/-- as an expression (yields the pre-mutation value)
   });
 });
 
+// Prefix `++lvalue` used as an EXPRESSION yields the POST-mutation value; its increment hoists BEFORE the
+// enclosing statement. Byte-identical to `lvalue = lvalue + 1; <read lvalue>`. Unlike postfix it is allowed in a
+// return (the increment hoists before the return); still rejected in ternary / short-circuit / loop conditions.
+describe('prefix ++/-- as an expression (yields the post-mutation value)', () => {
+  it('is byte-identical to `x = x + 1; <read x>` (sound by reduction)', () => {
+    const sugar = compileString('contract C { function f(uint a) external pure returns (uint) {'
+      + ' uint x = a; uint y = ++x; return x + y; } }', { solidityImportCompat: true });
+    const hand = compileString('contract C { function f(uint a) external pure returns (uint) {'
+      + ' uint x = a; x = x + 1; uint y = x; return x + y; } }', { solidityImportCompat: true });
+    expect(sugar.bytecode).toBe(hand.bytecode);
+  });
+  it('compiles a prefix increment as an array-assignment rvalue', () => {
+    expect(compileString('contract A { function f(uint16 input) external pure returns (uint16[3] memory arr) {'
+      + ' arr[0] = input; arr[1] = ++input; arr[2] = ++input; } }', { solidityImportCompat: true })
+      .contractName).toBe('A');
+  });
+  it('allows a prefix increment in a return (hoists before)', () => {
+    expect(compileString('contract C { int n; function f() external returns (int) {'
+      + ' this.n = this.n + 1; return ++this.n; } }', { solidityImportCompat: true }).contractName).toBe('C');
+  });
+  it('rejects a prefix increment in a ternary branch with a clear error', () => {
+    expect(() => compileString('contract C { function f(bool c) external pure returns (uint) {'
+      + ' uint i = 0; return c ? ++i : i; } }', { solidityImportCompat: true }))
+      .toThrow('not inside a ternary');
+  });
+});
+
 // A Solidity for-loop init may be a declaration (`uint i = 0`), a bare assignment reusing an outer
 // variable (`i = 0`), or empty (`for (; ...)`). The grammar previously only accepted a declaration.
 describe('for-loop init: bare-assignment and empty forms', () => {

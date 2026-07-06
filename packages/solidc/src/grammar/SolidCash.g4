@@ -648,6 +648,7 @@ expression
     | expression '.' Identifier callOptions? expressionList # MethodCall
     | expression memberName # FieldAccess
     | expression op=('++' | '--') # PostfixOp
+    | op=('++' | '--') expression # PrefixOp
     | op=('!' | '-' | '~') expression # UnaryOp
     | <assoc=right> left=expression op='**' right=expression # BinaryOp
     | left=expression op=('*' | '/' | '%') right=expression # BinaryOp

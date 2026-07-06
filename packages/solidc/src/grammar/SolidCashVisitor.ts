@@ -180,6 +180,7 @@ import { FieldAccessContext } from "./SolidCashParser.js";
 import { AbiEncodePackedContext } from "./SolidCashParser.js";
 import { AbiEncodeCallContext } from "./SolidCashParser.js";
 import { ParenthesisedContext } from "./SolidCashParser.js";
+import { PrefixOpContext } from "./SolidCashParser.js";
 import { MemberNameContext } from "./SolidCashParser.js";
 import { ModifierContext } from "./SolidCashParser.js";
 import { LiteralContext } from "./SolidCashParser.js";
@@ -1322,6 +1323,13 @@ export default class SolidCashVisitor<Result> extends ParseTreeVisitor<Result> {
 	 * @return the visitor result
 	 */
 	visitParenthesised?: (ctx: ParenthesisedContext) => Result;
+	/**
+	 * Visit a parse tree produced by the `PrefixOp`
+	 * labeled alternative in `SolidCashParser.expression`.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	visitPrefixOp?: (ctx: PrefixOpContext) => Result;
 	/**
 	 * Visit a parse tree produced by `SolidCashParser.memberName`.
 	 * @param ctx the parse tree

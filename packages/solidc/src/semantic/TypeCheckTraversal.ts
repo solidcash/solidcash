@@ -228,6 +228,7 @@ export default class TypeCheckTraversal extends AstTraversal {
     node.expression = this.visit(node.expression);
     node.expression = this.maybeCoerceHexToInt(node.expression, node.type);
     node.expression = this.maybeCoerceZeroToBytes(node.expression, node.type);
+    node.expression = this.maybeCoerceStringToBytesN(node.expression, node.type);
     expectAssignable(
       new VariableDefinitionNode(node.type, [], node.name, node.expression),
       node.expression.type,

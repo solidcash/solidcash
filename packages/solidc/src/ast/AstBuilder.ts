@@ -362,12 +362,14 @@ export default class AstBuilder
       (i) => this.visit(i) as ImportNode,
     );
 
-    const constantDefinitions = ctx.constantDefinition_list().map(
-      (c) => this.visitConstantDefinition(c),
-    );
-
+    // Enums before constants: a file-level enum-typed constant (`E constant c = E.M;`) resolves its declared
+    // type via resolveType -> enumMap, so the enum must be registered first.
     const enumDefinitions = ctx.enumDefinition_list().map(
       (e) => this.visitEnumDefinition(e),
+    );
+
+    const constantDefinitions = ctx.constantDefinition_list().map(
+      (c) => this.visitConstantDefinition(c),
     );
 
     // File-level struct definitions (must be registered before interfaces for type resolution)

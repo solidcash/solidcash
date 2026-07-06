@@ -431,3 +431,20 @@ describe('enum member as a constant initializer (E constant X = E.M)', () => {
       { solidityImportCompat: true }).contractName).toBe('C');
   });
 });
+
+describe('file-level (free) enum-typed + string/bytesN constants', () => {
+  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  it('resolves a free enum-typed constant initialized from an enum member', () => {
+    expect(cc('enum E { A, B, X } E constant c = E.X;'
+      + ' contract C { function f() external pure returns (uint256) { return uint256(c); } }')).toBe('C');
+  });
+  it('coerces a string literal into a bytesN constant (bytes32 st = "abc")', () => {
+    expect(cc('bytes32 constant st = "abc";'
+      + ' contract C { function f() external pure returns (bytes32) { return st; } }')).toBe('C');
+  });
+  it('handles a file mixing enum, bytes, string and bytesN constants (kitchen sink)', () => {
+    expect(cc('enum E { A, B } bytes constant a = "\\x03\\x01\\x02"; string constant s = "hi";'
+      + ' bytes32 constant st = "abc"; E constant e = E.B;'
+      + ' contract C { function f() external pure returns (bytes32) { return st; } }')).toBe('C');
+  });
+});

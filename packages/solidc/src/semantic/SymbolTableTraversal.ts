@@ -292,11 +292,6 @@ export default class SymbolTableTraversal extends AstTraversal {
       this.contractMap.set(imported.name, imported);
     }
 
-    // Register file-level constants before visiting contract
-    for (const cd of node.constantDefinitions) {
-      this.visitConstantDefinition(cd);
-    }
-
     // Register built-in NftCapability enum (none=0, mutable=1, minting=2)
     const nftCapType = new EnumType('NftCapability', [
       { name: 'none', value: 0n },
@@ -306,9 +301,16 @@ export default class SymbolTableTraversal extends AstTraversal {
     this.enumMap.set('NftCapability', nftCapType);
     this.symbolTables[0].set(Symbol.enumType('NftCapability', nftCapType));
 
-    // Register file-level enums
+    // Register file-level enums BEFORE file-level constants: a free constant may be enum-typed and initialized
+    // from an enum member (`ActionChoices constant c = ActionChoices.Go;`), which is compile-time only if the
+    // enum is already in enumMap.
     for (const ed of node.enumDefinitions) {
       this.registerEnum(ed);
+    }
+
+    // Register file-level constants before visiting contract
+    for (const cd of node.constantDefinitions) {
+      this.visitConstantDefinition(cd);
     }
 
     // Register file-level structs (before interfaces, so interface mapping value types resolve)

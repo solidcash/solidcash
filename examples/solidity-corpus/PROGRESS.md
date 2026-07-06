@@ -293,3 +293,11 @@ pass-order), UndefinedCollection struct-field-index chains, MethodCall new-C-the
   and required equal operands; add POW to the left-operand-type special case (like shifts).
 Two Explore surveys: findings mostly stale (already-fixed 2D-mapping-index, bytes/array element) or complex (array
 slices `b[s:e]` on non-bytes arrays) or fundamental (method-call-on-index, function-type params).
+
+## ~3400 -> ~3417 (autonomous grind cont: parse peels - slices + constructor modifiers)
+- 412fb832 slices with omitted bounds `a[:2]`/`a[2:]`/`a[:]` (+14, BIG): IndexRangeSlice made start/end optional,
+  builder defaults omitted start->0, end->SIZE(element). Common in abi.encode/bytes.concat over calldata slices.
+- b59fa6f4 constructor with a modifier invocation `constructor() mod {` (+5): added customModifierInvocation* to
+  constructorDefinition (parentInvocation requires args, a no-arg modifier lacks them).
+Parse peels remain productive. Remaining parse clusters: function pointers (fun.selector/.address/function-type
+params - fundamental), array-of-mappings, complex destructure (indexed/empty slots), computed array sizes (grammar risk).

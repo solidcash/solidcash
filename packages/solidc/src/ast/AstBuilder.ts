@@ -3925,7 +3925,7 @@ export default class AstBuilder
       } else break;
     }
     if (keys.length !== 1 || !(cur instanceof FunctionCallExpressionContext)) return undefined;
-    if (cur.functionCall().Identifier_list().length !== 1) return undefined; // plain `f(...)`, not namespaced/method
+    if (cur.functionCall().Identifier_list().length > 2) return undefined; // plain `f(...)` or namespaced `L.f(...)`
     const callNode = this.visit(cur) as ExpressionNode;
     if (!(callNode instanceof FunctionCallNode)) return undefined;
     const tmpName = `__mrv_${this.nestedLvalueCounter++}`;

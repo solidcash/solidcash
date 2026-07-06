@@ -13,12 +13,13 @@ import {
   MappingAssignNode,
   ReturnNode,
   FunctionCallNode,
+  ExpressionNode,
 } from '../ast/AST.js';
 import AstTraversal from '../ast/AstTraversal.js';
 import { cloneNode } from '../ast/clone.js';
 
-// A resolved reassignable-mapping-return function: the ordered side-effect statements its body performs, and the
-// name of the mapping its returned pointer finally aliases.
+// A resolved reassignable-mapping-return call: the ordered side-effect statements its body performs (with the
+// callee's params already substituted by the call's args), and the mapping its returned pointer finally aliases.
 interface Resolved { sideEffects: StatementNode[]; finalAlias: string; }
 
 /**
@@ -27,52 +28,66 @@ interface Resolved { sideEffects: StatementNode[]; finalAlias: string; }
  * because the pointer is reassigned:
  *
  *   function f() internal returns (mapping(uint=>uint) storage r) { r = a; r[1] = 42; r = b; r[1] = 84; }
+ *   // or, from a library, with the two mappings passed by storage reference:
+ *   function Lib.f(mapping storage a, mapping storage b) internal returns (mapping storage r) { r=a; ...; r=b; ... }
  *
- * A storage pointer has no runtime value, so the function is resolved by straight-line dataflow into its ordered
- * side effects (each `r[k] = v` bound to whichever mapping `r` aliases at that point) and the mapping its return
- * finally aliases (`b` above). At each call site the side effects are spliced in and the call replaced by that
- * final mapping, so a downstream `mapping storage m = f()` becomes a plain mapping alias LowerMappingStorageAlias
- * then resolves:
+ * A storage pointer has no runtime value, so the function is resolved (per call site, its params bound to the call
+ * args) by straight-line dataflow into its ordered side effects - each `r[k] = v` bound to whichever mapping `r`
+ * aliases at that point - and the mapping its return finally aliases. At each call site the side effects are
+ * spliced in and the call replaced by that final mapping, so a downstream `mapping storage m = f()` becomes a bare
+ * mapping alias LowerMappingStorageAlias then resolves:
  *
- *   mapping storage m = f(); m[2] = 17;   ->   a[1]=42; b[1]=84; mapping storage m = b; m[2]=17;   ->  ...; b[2]=17;
+ *   mapping storage m = f(); m[2]=17;   ->   a[1]=42; b[1]=84; mapping storage m = b; m[2]=17;   ->  ...; b[2]=17;
  *
  * Runs after InlineStoragePointerCalls (multi-statement bodies are not single-return, so that pass leaves them)
- * and before LowerMappingStorageAlias. Only 0-arg straight-line bodies are resolved; anything else is left for a
- * later pass to reject.
+ * and before LowerMappingStorageAlias. Only straight-line bodies whose args are plain mapping identifiers are
+ * resolved; anything else is left for a later pass to reject.
  */
 export default class InlineMappingReturnFunctions extends AstTraversal {
-  private resolved = new Map<string, Resolved>();
+  private candidates = new Map<string, FunctionDefinitionNode>();
 
   visitSourceFile(node: SourceFileNode): Node {
-    if (node.contract) {
-      for (const fn of node.contract.functions) {
-        const r = this.tryResolve(fn);
-        if (r) this.resolved.set(fn.name, r);
-      }
-    }
-    if (this.resolved.size === 0) return node;
+    const collect = (fns: FunctionDefinitionNode[] | undefined): void => {
+      for (const fn of fns ?? []) if (this.isCandidate(fn)) this.candidates.set(fn.name, fn);
+    };
+    if (node.contract) collect(node.contract.functions);
+    collect(node.freeFunctions);
+    if (this.candidates.size === 0) return node;
+    node.freeFunctions = (node.freeFunctions ?? []).filter((f) => !this.candidates.has(f.name));
     if (node.contract) node.contract = this.visit(node.contract) as ContractNode;
     return node;
   }
 
   visitContract(node: ContractNode): Node {
     node.functions = (this.visitList(node.functions) as FunctionDefinitionNode[])
-      .filter((fn) => !this.resolved.has(fn.name)); // drop the resolved functions - fully inlined at call sites
+      .filter((fn) => !this.candidates.has(fn.name)); // drop the resolved functions - fully inlined at call sites
     return node;
   }
 
-  // Straight-line dataflow: walk the body tracking the pointer's current alias, collect its side effects, and the
-  // mapping it finally aliases. Any statement that does not fit the reassignable-pointer shape aborts resolution.
-  private tryResolve(fn: FunctionDefinitionNode): Resolved | undefined {
-    if (fn.parameters.length > 0 || fn.returnTypes.length !== 1) return undefined;
-    if (!(fn.returnTypes[0] instanceof MappingType) || !fn.body) return undefined;
+  // A mapping-returning function with a body - a potential reassignable-pointer return (single-return ones are
+  // already inlined + dropped by InlineStoragePointerCalls, so only reassignable multi-statement bodies reach here).
+  private isCandidate(fn: FunctionDefinitionNode): boolean {
+    return fn.returnTypes.length === 1 && fn.returnTypes[0] instanceof MappingType && !!fn.body;
+  }
+
+  // Resolve a candidate at a call site: bind params to the call args (plain mapping identifiers), then walk the
+  // body by straight-line dataflow. Any statement that does not fit the reassignable-pointer shape aborts.
+  private resolveCall(fn: FunctionDefinitionNode, args: ExpressionNode[]): Resolved | undefined {
+    if (args.length !== fn.parameters.length) return undefined;
+    const paramMap = new Map<string, string>();
+    for (let i = 0; i < args.length; i += 1) {
+      const a = args[i];
+      if (!(a instanceof IdentifierNode)) return undefined; // only mapping-identifier args carry a storage reference
+      paramMap.set(fn.parameters[i].name, a.name);
+    }
+    const stmts = (fn.body!.statements ?? []).map((s) => this.renameParams(this.c(s), paramMap));
     const alias = new Map<string, string>(); // pointer name -> mapping it currently aliases
     const pointers = new Set<string>();
     const sideEffects: StatementNode[] = [];
     let finalAlias: string | undefined;
-    for (const stmt of fn.body.statements ?? []) {
-      // `mapping storage r [= x];` - the returned pointer's declaration (a mapping-typed local is inherently a
-      // storage pointer; NamedReturnTransformation injects it without an explicit `storage` modifier).
+    for (const stmt of stmts) {
+      // `mapping storage r [= x];` - the returned pointer's declaration (a mapping-typed local is a storage pointer;
+      // NamedReturnTransformation injects it without an explicit `storage` modifier).
       if (stmt instanceof VariableDefinitionNode && stmt.type instanceof MappingType) {
         pointers.add(stmt.name);
         if (stmt.expression instanceof IdentifierNode) alias.set(stmt.name, stmt.expression.name);
@@ -103,7 +118,7 @@ export default class InlineMappingReturnFunctions extends AstTraversal {
       }
       // A statement not touching the pointer is an ordinary side effect; one that references it is unsupported.
       if (this.referencesAny(stmt, pointers)) return undefined;
-      sideEffects.push(this.c(stmt));
+      sideEffects.push(stmt);
     }
     if (!finalAlias) return undefined;
     return { sideEffects, finalAlias };
@@ -112,13 +127,16 @@ export default class InlineMappingReturnFunctions extends AstTraversal {
   visitBlock(node: BlockNode): Node {
     const out: StatementNode[] = [];
     for (const stmt of node.statements ?? []) {
-      const call = this.resolvedCall(stmt);
-      // `mapping storage m = f();` -> splice f's side effects, then alias m to f's final mapping.
-      if (stmt instanceof VariableDefinitionNode && call) {
-        for (const se of call.sideEffects) out.push(this.c(se));
-        stmt.expression = this.at(new IdentifierNode(call.finalAlias), stmt);
-        out.push(stmt);
-        continue;
+      // `mapping storage m = f(args);` -> splice f's side effects, then alias m to f's final mapping.
+      if (stmt instanceof VariableDefinitionNode && stmt.expression instanceof FunctionCallNode) {
+        const fn = this.candidates.get(stmt.expression.identifier.name);
+        const res = fn && this.resolveCall(fn, stmt.expression.parameters);
+        if (res) {
+          for (const se of res.sideEffects) out.push(this.c(se));
+          stmt.expression = this.at(new IdentifierNode(res.finalAlias), stmt);
+          out.push(stmt);
+          continue;
+        }
       }
       out.push(this.visit(stmt) as StatementNode);
     }
@@ -126,13 +144,16 @@ export default class InlineMappingReturnFunctions extends AstTraversal {
     return node;
   }
 
-  // A call `f()` to a resolved function, wherever it sits in `stmt` - returns its resolution or undefined.
-  private resolvedCall(stmt: StatementNode): Resolved | undefined {
-    if (stmt instanceof VariableDefinitionNode && stmt.expression instanceof FunctionCallNode
-      && this.resolved.has(stmt.expression.identifier.name)) {
-      return this.resolved.get(stmt.expression.identifier.name);
+  // Rename callee param identifiers to the call's arg names, in place on an already-cloned node.
+  private renameParams(node: Node, map: Map<string, string>): Node {
+    if (node instanceof IdentifierNode && map.has(node.name)) node.name = map.get(node.name)!;
+    for (const key of Object.keys(node)) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const v = (node as any)[key];
+      if (v instanceof Node) this.renameParams(v, map);
+      else if (Array.isArray(v)) for (const it of v) if (it instanceof Node) this.renameParams(it, map);
     }
-    return undefined;
+    return node;
   }
 
   private referencesAny(node: Node, names: Set<string>): boolean {

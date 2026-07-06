@@ -197,6 +197,17 @@ describe('returns (reassigned mapping storage) - dataflow-resolved + inlined', (
       + ' return (a[1], b[2]); } }', { solidityImportCompat: true });
     expect(a.contractName).toBe('test');
   });
+  // A LIBRARY reassignable-return `Lib.f(a, b)` binds the callee's mapping params to the caller's mappings (passed
+  // by storage reference), so its side effects hit the caller's a/b. Byte-identical to the hand-bound side effects.
+  it('binds library-function params to the call args (Lib.f(a,b)[k]=v)', () => {
+    const LIB = 'library Lib { function f(mapping(uint256=>uint256) storage a, mapping(uint256=>uint256) storage b)'
+      + ' internal returns (mapping(uint256=>uint256) storage r) { r=a; r[1]=42; r=b; r[1]=21; } }';
+    const sugar = compileString(`${LIB} contract T { mapping(uint256=>uint256) a; mapping(uint256=>uint256) b;`
+      + ' function h() external { Lib.f(a,b)[2]=84; require(true); } }', { solidityImportCompat: true });
+    const hand = compileString('contract T { mapping(uint256=>uint256) a; mapping(uint256=>uint256) b;'
+      + ' function h() external { a[1]=42; b[1]=21; b[2]=84; require(true); } }', { solidityImportCompat: true });
+    expect(sugar.bytecode).toBe(hand.bytecode);
+  });
 });
 
 describe('SBE-11: local struct member assignment (desugars to a struct rebuild)', () => {

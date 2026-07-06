@@ -241,3 +241,9 @@ EXPLICITLY REVERTED (0-yield, contested area): flattened struct ARRAY-field whol
 byte-sound but the corpus files are multi-wall on `m[k]=s` (whole-struct-to-mapping copy, feature-scale), so +0; kept
 the tree clean. LESSON REAFFIRMED: read the actual type rule (explicitlyCastable) - the payable relaxation was +8 a
 source scan wouldn't surface, same pattern as bytesN-widen.
+
+### bytes[i] write feature completion (65fa601d + 6544fba5, +1)
+- 65fa601d bytes memory-PARAM element write (+0): track unbounded bytes params in localBytesVars (calldata write
+  still rejected by the existing read-only guard). Feature-coherence (local worked, param didn't).
+- 6544fba5 COMPOUND bytes element write `data[i] |= v` / `&=` / ... (+1): the new byte is `data[i] op v` (read old
+  byte, combine), byte-identical to the hand read-modify-slice-concat. bytes[i] write now complete: state/local/param, = and compound.

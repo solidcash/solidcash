@@ -588,3 +588,11 @@ describe('erc7201 not supported: function -> sha256 alias + layout clause ignore
     expect(cc('contract C layout at erc7201("x") { uint256 n; function f() external { this.n = 1; } }')).toBe('C');
   });
 });
+
+describe('erc7201 as a Yul builtin -> sha256 (reuses the erc7201 alias)', () => {
+  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  it('lowers a Yul erc7201(id) call to sha256(id)', () => {
+    expect(cc('contract C { function f() external pure returns (bytes32) {'
+      + ' bytes32 s; assembly { s := erc7201("example.main") } return s; } }')).toBe('C');
+  });
+});

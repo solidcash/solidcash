@@ -42,7 +42,7 @@ const LOWERABLE_BUILTINS = new Set<string>([
   'and', 'or', 'xor', 'not', 'shl', 'shr', 'sar', 'byte',
   'lt', 'slt', 'gt', 'sgt', 'eq', 'iszero',
   'sload', 'sstore', 'tload', 'tstore', 'mload', 'mstore',
-  'calldataload', 'calldatasize', 'keccak256', 'revert',
+  'calldataload', 'calldatasize', 'keccak256', 'erc7201', 'revert',
   // nullary context builtins -> msg.*/tx.*/block.* NullaryOps
   'caller', 'callvalue', 'origin', 'gasprice', 'chainid', 'number', 'timestamp', 'difficulty',
   'prevrandao', 'basefee', 'blobbasefee', 'gaslimit', 'coinbase',

@@ -60,6 +60,8 @@ function collectVarTypes(node: Node, out: Map<string, Type>): void {
 interface SlotField { sv: StateVariableNode; bitOffset: bigint; bitWidth: bigint; }
 let currentSlots = new Map<bigint, SlotField[]>();
 let currentVarSlot = new Map<string, bigint>();
+// Warn only once that the erc7201 Yul builtin is aliased to sha256.
+let warnedErc7201Yul = false;
 
 // The synthesized EVM-storage register name. A contract whose assembly touches a slot with NO declared var
 // (an arbitrary EVM storage slot, e.g. `sstore(0, v)` with no var at slot 0, or a keccak/sha256-derived slot)
@@ -618,6 +620,16 @@ function lowerCall(call: YulFunctionCallNode): ExpressionNode {
   // keccak256(p, len) -> hash the constant memory region.
   if (name === 'keccak256' && args.length === 2) {
     return lowerKeccak(call);
+  }
+  // erc7201(id) - the ERC-7201 namespaced storage-slot dialect builtin. No EVM storage layout on BCH; alias it to
+  // sha256(id), reusing the non-assembly erc7201() alias. Not byte-identical to Ethereum's keccak-based erc7201.
+  if (name === 'erc7201' && args.length === 1) {
+    if (!warnedErc7201Yul) {
+      console.log('Warning: the erc7201 Yul builtin is not supported in SolidCash (no EVM storage layout); it is '
+        + 'aliased to sha256(...). The result differs from Ethereum ERC-7201 and must not be relied on cross-chain.');
+      warnedErc7201Yul = true;
+    }
+    return loc(new FunctionCallNode(loc(new IdentifierNode('sha256'), call), [lowerValue(args[0])]), call);
   }
   throw new YulNotLowerable();
 }

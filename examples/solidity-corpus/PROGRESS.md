@@ -112,3 +112,60 @@ excluded from the contract linearization (computeLinearization filters to contra
 accept a base that stays in `contract.implements` after inheritance expansion (a directly-implemented interface).
 10/20 OverrideBaseListError files now compile. Remaining 10 = transitive interfaces (override(IBase) via a parent)
 + abstract contract bases (override(B) where B declares f with no body) - both need broader inheritance data.
+
+## 3124 -> 3156 (+32): whole array copies + reassignable mapping-storage-return functions
+Two "hard tail" veins that turned out tractable via desugar-to-verified-primitives (byte-identical, asserted).
+- Whole ARRAY COPY with a per-element bytes conversion: fixed `bytes2[N]=bytes1[N]` -> element-wise `d2[i]=bytes2(d1[i])`
+  in visitAssign (2b7c4828); DYNAMIC `bytes10[]=bytes8[]` (packs differently in chunk storage) -> new pre-semantic pass
+  DesugarDynamicArrayCopyCast `delete d2; for(i) d2.push(bytes10(d1[i]))` before CacheDynamicArrayInLoop, reading d1
+  direct (a cached source local crashes dynamic-write slot tracking) - VM-verified round-trip (20f3a956). Nested
+  diff-element-same-dim already worked; diff-DIMENSION pad/truncate is a rare edge, deferred.
+- REASSIGNABLE mapping-storage-return `function f() returns (mapping storage r){ r=a; r[1]=42; r=b; r[1]=84; }`: new pass
+  InlineMappingReturnFunctions resolves it by straight-line dataflow into ordered side effects (each `r[k]=v` bound to
+  whichever mapping r aliases at that point) + the mapping r finally aliases, then inlines at call sites (191b924e).
+  Generalized to LIBRARY functions with mapping params via param->arg binding (ab569fc0). `f()[k]=v` (a call-indexed
+  write, previously "Invalid assignment target") desugars at parse to `mapping storage __t=f(); __t[k]=v` (191b924e).
+  Byte-identical to the hand-resolved side effects. Unblocks mapping_internal_return + mapping_returns_in_library_named.
+  af2bcb39 robustness: drop only the candidates actually inlined (a branchy one stays for a clear diagnostic).
+
+## 3156 -> 3187 (+31): file-level events + prefix ++x/--x as an expression
+- FILE-LEVEL `event E();` (Solidity 0.8.22+): grammar sourceFile += eventDefinition; visitSourceFile collects into
+  SourceFileNode.eventDefinitions (the field library-imported events already flow through, the symbol table registers
+  globally so `emit E()` resolves). Byte-identical to the same event declared inside the contract (ca696b5f).
+- PREFIX `++x`/`--x` in EXPRESSION position (`return ++counter`, `arr[i]=++x`) had no grammar rule (only postfix + the
+  statement forms). Added a PrefixOp rule + PREFIX_INCREMENT/DECREMENT; DesugarPostfixExpressions lowers prefix by
+  hoisting `x = x +/- 1` BEFORE the statement (prefix yields the post-mutation value) and allows it in a return (unlike
+  postfix, whose increment would land after). Byte-identical to `x=x+1; <read x>` (805c8c62).
+- BARE sibling import: `import "math.sol"` (no `./`) failed even with math.sol a sibling - compileFile's resolver only
+  tried node_modules for non-relative paths. Added a source-directory fallback (Solidity base-path behavior), used only
+  when a same-dir file of that name exists so a real package still wins. Unblocks the library-linking tests (ce23a34c).
+
+## 3187 -> 3255 (+68): Yul inline-assembly overhaul (~40 builtins/constructs now lower)
+The generic diagnostic "only native BCH-ASM assembly is currently supported" predated LowerInlineAssembly and was
+false (a large Yul subset already lowered); rewrote it to NAME the actual blocker - a builtin with no BCH analogue, a
+local function definition, an un-lowered builtin, or a structural combination (b6f24b5c). Then closed most remaining
+Yul gaps, each byte-identical to its solidc equivalent or sound-by-construction:
+- CONTEXT builtins -> the matching NullaryOp: caller/callvalue->msg.*, origin/gasprice->tx.*, chainid/number/timestamp/
+  difficulty/prevrandao/basefee/blobbasefee/gaslimit/coinbase->block.* (address ones uint256-cast) (8068fcb9);
+  blockhash(n)->the blockhash oracle builtin (1a517d8c); gas->gasleft, codesize->this.activeBytecode.length,
+  selfbalance->address(this).balance (26843439). [+ bare imports above bundled in this bench: 3187->3216.]
+- mcopy in the compile-time memory model (188ccb90); single-word return(p,32) -> a function return - fixed a nested-
+  block covenant-DUPLICATION bug (~670 bytes): visitBlock now splices a return-terminated assembly block to the
+  function-body tail so the terminal-return codegen sees it (4af9f013).
+- LOW-LEVEL call/staticcall/delegatecall -> the external-call covenant + return-event NFT binding (reusing the VM-
+  verified LowLevelCallNode: addr word-cast to address, payload SDK-supplied); returndatasize/returndatacopy read the
+  tracked return-event bytes. The COMPILER compiles them; nonsense/unresolvable args fail at SDK auto-derivation, not
+  compile time (85032b62).
+- addmod/mulmod -> solidc builtins, pop(x) -> evaluate-a-call / discard-pure (f4041a32); invalid()->require(false),
+  stop()->no-op (125a6a3c); signextend(i,v) const-i via the branchless `((v&mask)^signBit)-signBit` identity (Yul sub
+  wraps mod 2^256) (3b4c21cb).
+- LOCAL Yul FUNCTION inlining: simple 0-param (5ff0daf7) then FULL - parser splits Identifier_list into params/returns
+  at the `->` token (was hardcoded []/[]); inliner binds `let param_i:=arg_i`, declares returns, splices the body with
+  every param/return/local renamed fresh per call site (0-param `r:=expr` fast-path). Leaf-only: recursion/nesting/
+  multi-return bail (2f3feed5).
+- STRING/hex-string literals -> their bytes left-aligned in a 32-byte word (ed7bb54f); `x.slot` of a state var -> its
+  constant storage-slot number, consistent with sload/sstore + the __evm_storage register (a1ce245b).
+Sub-deltas: 3216->3217 mcopy, ->3219 return, ->3222 low-level call, ->3229 addmod/pop/invalid/stop, ->3239 local-fn,
+->3255 param'd-fn + signextend + string-lit + x.slot. Remaining Yul is FUNDAMENTAL: a runtime EVM-memory / storage-slot
+/ calldata-slice model (.offset/.length, variable-offset mstore/mload, keccak-over-computed-memory, loops) - a research-
+level EVM-layout model, not a builtin to add.

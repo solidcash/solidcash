@@ -167,6 +167,7 @@ import { UnaryOpContext } from "./SolidCashParser.js";
 import { PostfixOpContext } from "./SolidCashParser.js";
 import { LiteralExpressionContext } from "./SolidCashParser.js";
 import { BytesConcatContext } from "./SolidCashParser.js";
+import { NewDynamicStringContext } from "./SolidCashParser.js";
 import { IndexRangeSliceContext } from "./SolidCashParser.js";
 import { NewDynamicBytesContext } from "./SolidCashParser.js";
 import { TernaryOpContext } from "./SolidCashParser.js";
@@ -1232,6 +1233,13 @@ export default class SolidCashVisitor<Result> extends ParseTreeVisitor<Result> {
 	 * @return the visitor result
 	 */
 	visitBytesConcat?: (ctx: BytesConcatContext) => Result;
+	/**
+	 * Visit a parse tree produced by the `NewDynamicString`
+	 * labeled alternative in `SolidCashParser.expression`.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	visitNewDynamicString?: (ctx: NewDynamicStringContext) => Result;
 	/**
 	 * Visit a parse tree produced by the `IndexRangeSlice`
 	 * labeled alternative in `SolidCashParser.expression`.

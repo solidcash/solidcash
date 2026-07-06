@@ -41,6 +41,7 @@ import {
   NullaryOpNode,
   SliceNode,
   IntLiteralNode,
+  BoolLiteralNode,
   HexLiteralNode,
   StringLiteralNode,
   DecimalLiteralNode,
@@ -981,6 +982,20 @@ export default class TypeCheckTraversal extends AstTraversal {
     const parameters = node.expression.type ? [node.expression.type] : [];
     expectParameters(node, parameters, [PrimitiveType.BOOL]);
 
+    // C2: warn when a mapping value feeds a NEGATIVE guard (require(!m[k]) / require(m[k] == 0|false)). A spender
+    // can OMIT the entry NFT, forcing the covenant to read the type default (false/0), so the guard passes - BCH
+    // Script cannot force an existing entry UTXO to be co-spent. One-time-write / replay / blacklist / hasVoted
+    // maps are drainable. Positive guards (require(m[k]), require(m[k] >= x)) are fail-safe. See SECURITY-AUDIT C2.
+    const guardedMapping = this.negativeGuardMapping(node.expression);
+    if (guardedMapping) {
+      const line = node.location?.start?.line ? ` (line ${node.location.start.line})` : '';
+      console.log(
+        `Warning: require()${line} negatively guards on mapping '${guardedMapping}'. A spender can omit the entry `
+        + 'NFT so the covenant reads the default (false/0) and the guard passes, bypassing one-time-write / replay '
+        + '/ blacklist patterns (SECURITY-AUDIT C2). Prefer a positive guard, or commit an entry-set accumulator.',
+      );
+    }
+
     // require(cond, CustomError(args)): type-check the error arguments like a revert.
     node.args = this.visitList(node.args);
     if (node.errorDefinition) {
@@ -997,6 +1012,32 @@ export default class TypeCheckTraversal extends AstTraversal {
       }
     }
     return node;
+  }
+
+  // C2 helpers. Returns the mapping name if `cond` is a negative guard on a mapping read: !m[k], m[k] == 0|false,
+  // or the mirror image. Only direct mapping reads are flagged (the common one-time-write / replay / blacklist
+  // idiom); compound conditions are left alone to avoid noise.
+  private negativeGuardMapping(cond: ExpressionNode): string | undefined {
+    if (cond instanceof UnaryOpNode && cond.operator === UnaryOperator.NOT) {
+      const m = this.asMappingRead(cond.expression);
+      if (m) return m;
+    }
+    if (cond instanceof BinaryOpNode && cond.operator === BinaryOperator.EQ) {
+      const lm = this.asMappingRead(cond.left);
+      if (lm && this.isFalsyLiteral(cond.right)) return lm;
+      const rm = this.asMappingRead(cond.right);
+      if (rm && this.isFalsyLiteral(cond.left)) return rm;
+    }
+    return undefined;
+  }
+
+  private asMappingRead(expr: ExpressionNode): string | undefined {
+    return expr instanceof MappingAccessNode ? expr.name : undefined;
+  }
+
+  private isFalsyLiteral(expr: ExpressionNode): boolean {
+    return (expr instanceof BoolLiteralNode && expr.value === false)
+      || (expr instanceof IntLiteralNode && expr.value === 0n);
   }
 
   visitRevert(node: RevertNode): Node {

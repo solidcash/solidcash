@@ -127,6 +127,41 @@ describe('C3: own-category mutable-NFT conservation loop', () => {
   });
 });
 
+// C2 - a mapping read of an OMITTED entry returns the type default (false/0). Script cannot force an existing
+// entry UTXO to be co-spent, so a negative guard (require(!m[k]) / require(m[k]==0|false)) is bypassable by
+// omission - one-time-write / replay / blacklist maps drain. The compiler warns on the negative-guard idiom.
+// See docs/mapping-omission-security.md.
+describe('C2: negative mapping-guard diagnostic', () => {
+  function countC2Warnings(src: string): number {
+    let n = 0;
+    const spy = vi.spyOn(console, 'log').mockImplementation((...a: unknown[]) => {
+      if (a.join(' ').includes('SECURITY-AUDIT C2')) n += 1;
+    });
+    try {
+      compileString(src);
+    } finally {
+      spy.mockRestore();
+    }
+    return n;
+  }
+
+  it.each([
+    ['require(!m[k])', 'contract C { mapping(address=>bool) claimed; function f(address me) external { require(!this.claimed[me]); this.claimed[me]=true; require(true); } }'],
+    ['require(m[k]==false)', 'contract C { mapping(address=>bool) v; function f(address u) external { require(this.v[u]==false); require(true); } }'],
+    ['require(m[k]==0)', 'contract C { mapping(address=>uint256) nonce; function f(address u) external { require(this.nonce[u]==0); require(true); } }'],
+  ])('warns on the negative guard: %s', (_label, src) => {
+    expect(countC2Warnings(src)).toBe(1);
+  });
+
+  it.each([
+    ['positive require(m[k])', 'contract C { mapping(address=>bool) ok; function f(address u) external { require(this.ok[u]); require(true); } }'],
+    ['positive require(m[k]>=x)', 'contract C { mapping(address=>uint256) bal; function f(address u, uint256 a) external { require(this.bal[u]>=a); require(true); } }'],
+    ['non-mapping require(!b)', 'contract C { int n; function f(bool b) external { require(!b); this.n=1; require(true); } }'],
+  ])('does not warn on fail-safe/unrelated guards: %s', (_label, src) => {
+    expect(countC2Warnings(src)).toBe(0);
+  });
+});
+
 describe('C4: composite mapping keys (continued)', () => {
   it('keccak256(abi.encode(...)) keys over distinct operands do not collapse', () => {
     const two = compileString(`

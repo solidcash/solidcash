@@ -411,6 +411,7 @@ forStatement
 forInit
     : typeName modifier* Identifier ('=' expression)? ';'
     | Identifier op=('=' | '+=' | '-=' | '*=' | '/=' | '%=' | '&=' | '|=' | '^=' | '<<=' | '>>=') expression ';'
+    | '(' tupleSlot (',' tupleSlot)+ ')' '=' ('(' expression (',' expression)+ ')' | expression) ';'
     | ';'
     ;
 
@@ -422,6 +423,7 @@ forUpdate
     : Identifier op=('=' | '+=' | '-=' | '*=' | '/=' | '%=' | '&=' | '|=' | '^=' | '<<=' | '>>=') expression
     | Identifier op=('++' | '--')
     | op=('++' | '--') Identifier
+    | '(' tupleSlot (',' tupleSlot)+ ')' '=' ('(' expression (',' expression)+ ')' | expression)
     ;
 
 doWhileStatement

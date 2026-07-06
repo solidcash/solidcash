@@ -124,6 +124,7 @@ import type {
   FunctionDefinitionContext,
   VariableDefinitionContext,
   TupleAssignmentContext,
+  TupleSlotContext,
   ParameterContext,
   PlaceholderStatementContext,
   AssignmentExpressionContext,
@@ -1769,6 +1770,30 @@ export default class AstBuilder
     return stamp(new BlockNode([cacheDef, idxDef, whileNode]));
   }
 
+  // Build a tuple destructure (`(uint x, uint y) = (0, 1)` / `(x, y) = f()`) used in a for-loop init or update,
+  // mirroring the parenthesised tupleAssignment slot handling.
+  private buildForTupleAssign(
+    slots: TupleSlotContext[], exprs: ExpressionContext[], loc: Location,
+  ): TupleAssignmentNode {
+    const elements = slots.map((slot) => {
+      const tn = slot.typeName(); const at = slot.arrayType();
+      if (tn || at) {
+        return {
+          name: slot.anyIdentifier()!.getText(),
+          type: at ? this.buildArrayType(at) : (this.resolveType(tn!.getText()) ?? new AddressType(false, tn!.getText())),
+        };
+      }
+      const id = slot.anyIdentifier();
+      return id ? { name: id.getText(), existing: true } : { skip: true };
+    });
+    const node = exprs.length > 1
+      ? new TupleAssignmentNode(elements, Object.assign(new IntLiteralNode(0n), { location: loc }),
+        true, exprs.map((e) => this.visit(e) as ExpressionNode))
+      : new TupleAssignmentNode(elements, this.visit(exprs[0]) as ExpressionNode, true);
+    node.location = loc;
+    return node;
+  }
+
   visitForStatement(ctx: ForStatementContext): BlockNode {
     const initCtx = ctx.forInit() as ForInitContext;
     const condCtx = ctx.forCondition() as ForConditionContext;
@@ -1783,8 +1808,8 @@ export default class AstBuilder
       const initName = initCtx.Identifier().getText();
       // Initializer is optional (`for (uint i; ...)`); default an omitted one to 0.
       let initExpr: ExpressionNode;
-      if (initCtx.expression()) {
-        initExpr = this.visit(initCtx.expression()) as ExpressionNode;
+      if (initCtx.expression(0)) {
+        initExpr = this.visit(initCtx.expression(0)) as ExpressionNode;
       } else {
         initExpr = new IntLiteralNode(0n);
         initExpr.location = Location.fromCtx(initCtx);
@@ -1802,22 +1827,30 @@ export default class AstBuilder
         initCtx.Identifier().getText(),
         Location.fromToken(initCtx.Identifier().symbol),
         initCtx._op.text,
-        initCtx.expression(),
+        initCtx.expression(0),
         Location.fromCtx(initCtx),
       );
+    } else if (initCtx.tupleSlot_list().length > 0) {
+      // Tuple destructure init: `(uint x, uint y) = (0, 1)` - declare/assign loop-scoped vars (mirrors the
+      // parenthesised tupleAssignment slot handling; the loop desugars to `{ init; while }` so the vars scope right).
+      initNode = this.buildForTupleAssign(initCtx.tupleSlot_list(), initCtx.expression_list(), Location.fromCtx(initCtx));
     }
     // else: empty init (`for (; ...)`) - no statement.
 
-    // Update clause is optional (`for (...; ...; )`); when present it becomes the trailing body statement.
-    const updateNode = updateCtx
-      ? this.buildCompoundAssign(
+    // Update clause is optional (`for (...; ...; )`); when present it becomes the trailing body statement. It can
+    // be a scalar assignment/inc-dec or a tuple destructure `(x, y) = (a, b)`.
+    let updateNode: StatementNode | undefined;
+    if (updateCtx && updateCtx.tupleSlot_list().length > 0) {
+      updateNode = this.buildForTupleAssign(updateCtx.tupleSlot_list(), updateCtx.expression_list(), Location.fromCtx(updateCtx));
+    } else if (updateCtx) {
+      updateNode = this.buildCompoundAssign(
         updateCtx.Identifier().getText(),
         Location.fromToken(updateCtx.Identifier().symbol),
         updateCtx._op.text,
-        updateCtx.expression(),
+        updateCtx.expression(0),
         Location.fromCtx(updateCtx),
-      )
-      : undefined;
+      );
+    }
 
     // Build condition. An omitted condition (`for (init; ; update)`) is an implicit `true` (Solidity infinite
     // loop, terminated by a break inside the body).

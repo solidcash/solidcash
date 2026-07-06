@@ -810,3 +810,18 @@ describe('abstract modifier and receive (no body)', () => {
       + ' function h() external pure returns (uint256) { return 1; } }')).toBe('C');
   });
 });
+
+describe('tuple destructure in a for-loop init and update', () => {
+  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  it('accepts a tuple init and a tuple update', () => {
+    expect(cc('contract C { function f() external pure returns (uint256) { uint256 r = 0;'
+      + ' for ((uint256 x, uint256 y) = (0, 1); x < 10; (x, y) = (x + 1, y + 1)) { r += y; } return r; } }')).toBe('C');
+  });
+  it('a tuple for-init is byte-identical to hand-desugared declarations', () => {
+    const s = compileString('contract C { function f() external pure returns (uint256) { uint256 r = 0;'
+      + ' for ((uint256 x, uint256 y) = (0, 1); x < 3; x++) { r += y; } return r; } }', { solidityImportCompat: true });
+    const h = compileString('contract C { function f() external pure returns (uint256) { uint256 r = 0;'
+      + ' uint256 x = 0; uint256 y = 1; for (; x < 3; x++) { r += y; } return r; } }', { solidityImportCompat: true });
+    expect(s.bytecode).toBe(h.bytecode);
+  });
+});

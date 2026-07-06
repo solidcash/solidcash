@@ -252,3 +252,23 @@ source scan wouldn't surface, same pattern as bytesN-widen.
 User caught it: erc7201 yields a storage-slot uint256 (spec/tests use it in return-uint256, `uint constant`,
 arithmetic, uint256 comparison), so `erc7201(id)` -> `uint256(sha256(id))` (both the function alias + the Yul
 builtin). bytes32 context still works via `bytes32(erc7201(..))`. erc7201 corpus 6 -> 15.
+
+## 3360 -> ~3374 (autonomous grind: resolution + coercion veins)
+
+Non-stop autonomous session. Commits:
+- a499efbc using-for on NON-struct receivers (+2): `using L for T; x.method()` only resolved struct/array/mapping
+  receivers; track a using-for type key for every non-struct local/param (localSimpleTypeKeys via usingForTypeKey:
+  enum/UDVT name, contract-iface name or 'address', 'string', 'bytes'/'bytesN', 'uintN'/'intN') and consult it.
+- 1f052be7 free function shadowed by a contract function (+3): free (file-scope) + contract-member functions are
+  separate scopes; a contract fn may share a name/sig with a free fn (shadows it). Separate freeFunctionSignatures
+  set; contract-vs-free collision errors only in native mode. Free-vs-free still errors.
+- 7244ca9f library/contract-qualified enum cast `L.E(x)` (+1): a 2-identifier `Qualifier.Enum(x)` missed the enum-cast
+  detection (bare `Color(x)` only); recognize a qualified enum cast. Completes using-for-on-enum.
+- e984151e delete on a bytes element `delete data[i]` (+0 coherent): route to the bytes element-write desugar with a
+  zero byte (was "Undefined mapping"). Completes bytes[i] op set (write/compound/delete), byte-identical to data[i]=0.
+- 5f05123b coerce literal 0 to bytesN in a comparison `data[i] == 0` (+8): apply maybeCoerceZeroToBytes to both
+  visitBinaryOp operands (next to the string-literal->bytesN comparison coercion).
+
+An Explore subagent surveyed the remaining tractable veins (free-function-shadow + public-struct-getter-tuples were
+its finds). Remaining big tractable-looking clusters: public struct getter tuples (6, struct getters excluded by
+pass-order), UndefinedCollection struct-field-index chains, MethodCall new-C-then-call (deploy fold). See ATTENTION.md.

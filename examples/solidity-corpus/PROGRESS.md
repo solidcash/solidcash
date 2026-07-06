@@ -216,3 +216,28 @@ struct/array VALUES (`vk.alpha = Struct(..)`, `src.x = [3]`) = feature-scale, ne
 time (AstBuilder only knows state-var types). FUNDAMENTAL remainder: Yul EVM-mem/storage/calldata (168), signedness
 + fixed-point (46), external-call-target + deploy (34+16), runtime function pointers (19+17), ABIEncoderV2 calldata
 (_v2 stack cluster), gnosis `using Math` circular-import (16), super/C3 inheritance (7), erc7201 (21).
+
+## 3326 -> ~3344 (grind: user-directed local-memory writes + erc7201 + payable casts)
+
+User directives: "take on local-memory element/struct writes", "erc7201: layout ignored + warn, function = sha256
+alias", "support erc7201 as a Yul builtin". Commits:
+- 68a1780c bytes memory/local element write `bytes memory d; d[i] = v` (+4): extended the state-bytes element-write
+  desugar (046c3e5e) to LOCAL bytes vars - track local unbounded bytes decls per function (localBytesVars, like
+  localStructTypes), desugar to a LOCAL assign `d = d[0:i] ++ v ++ d[i+1:size(d)]` (Identifier/Assign vs State).
+  Local-memory STRUCT writes already work (minimal `s.a=P(..)`/`s.x=[..]`/`s=src` all compile); remaining struct
+  failures are STATE-flattened array-field `s.a=x` + whole-struct-to-mapping `m[k]=s` (parallel-agent flattening area).
+- 11c8b66d erc7201 NOT supported (+6): `erc7201(id)` function -> sha256(id) alias (warn, byte-identical to sha256,
+  NOT Ethereum's keccak-based erc7201 - internal same-contract slot derivation only); `contract C layout at
+  erc7201(..)` layout clause stripped (already the layout behaviour) + warning. No EVM storage-base offset on UTXO.
+- e7821429 erc7201 Yul builtin (+0): `assembly { s := erc7201("ns") }` lowers to sha256 in LowerInlineAssembly,
+  reuses the alias (single-arg, warn-once, added to LOWERABLE_BUILTINS). Remaining erc7201 files = yul-optimizer
+  cmdlineTests (multi-wall/opaque).
+- b2830cc5 payable(bytes) casts (+8, the clean win): explicitlyCastable rejected `bytes -> address` when payable, so
+  `payable(this)` (this = the contract's bytes identity; `address(this)` already worked) and `payable(bytes20)`
+  failed. payable is a no-op cosmetic distinction on BCH (every address receives value), so allow bytes->address
+  regardless of the payable flag - identical resulting address. Utils type-system change (170 utils green).
+
+EXPLICITLY REVERTED (0-yield, contested area): flattened struct ARRAY-field whole-assign `s.a=x`->`s__a` - works +
+byte-sound but the corpus files are multi-wall on `m[k]=s` (whole-struct-to-mapping copy, feature-scale), so +0; kept
+the tree clean. LESSON REAFFIRMED: read the actual type rule (explicitlyCastable) - the payable relaxation was +8 a
+source scan wouldn't surface, same pattern as bytesN-widen.

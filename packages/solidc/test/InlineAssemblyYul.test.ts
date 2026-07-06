@@ -102,13 +102,14 @@ describe('Yul inline assembly (Phase 1: parse + diagnostics)', () => {
       }`)).toThrow(UnsupportedInlineAssemblyError);
   });
 
-  it('reports Yul function definitions as not yet supported', () => {
+  it('reports a recursive Yul function definition as not yet supported (leaf functions inline)', () => {
+    // A leaf function inlines (see below); a recursive one has no leaf form to resolve, so it is still reported.
     expect(() => compileString(`
       contract C() {
         function f() {
           assembly {
-            function double(v) -> r { r := mul(v, 2) }
-            let x := double(2)
+            function fac(n) -> r { r := 1 if gt(n, 1) { r := mul(n, fac(sub(n, 1))) } }
+            let x := fac(3)
           }
           require(true);
         }
@@ -171,17 +172,23 @@ describe('Yul inline assembly (Phase 1: parse + diagnostics)', () => {
       + ' pop(staticcall(0, a, 0, 0, 0, 0)) } require(true); } }', { solidityImportCompat: true })).not.toThrow();
   });
 
-  it('inlines a simple 0-param local Yul function (`function f() -> r { r := expr }`)', () => {
-    // The call yields the body expression; byte-identical to writing that expression directly.
+  it('inlines a leaf local Yul function (0-param and parameterised) - param binding + body splice', () => {
+    // 0-param: the call yields the body expression, byte-identical to writing it directly.
     const asm = compileString('contract C() { function g() pure returns (uint ret) {'
       + ' assembly { function konst() -> r { r := 1000 } ret := konst() } } }', { solidityImportCompat: true });
     const direct = compileString('contract C() { function g() pure returns (uint ret) { assembly { ret := 1000 } } }',
       { solidityImportCompat: true });
     expect(asm.bytecode).toBe(direct.bytecode);
-    // A function with a parameter (its body references a free variable) is NOT inlined - stays reported.
-    expect(() => compileString('contract C() { function f() { assembly {'
-      + ' function double(v) -> r { r := mul(v, 2) } let x := double(2) } require(true); } }',
-    { solidityImportCompat: true })).toThrow(/local Yul function definitions/);
+    // Parameterised: `double(a)` binds v:=a, declares the return, splices the body - byte-identical to that manual form.
+    const param = compileString('contract C() { function f(uint a) returns (uint x) {'
+      + ' assembly { function double(v) -> r { r := mul(v, 2) } x := double(a) } } }', { solidityImportCompat: true });
+    const manual = compileString('contract C() { function f(uint a) returns (uint x) {'
+      + ' assembly { let pp := a let rr := 0 rr := mul(pp, 2) x := rr } } }', { solidityImportCompat: true });
+    expect(param.bytecode).toBe(manual.bytecode);
+    // Multi-statement body + the same function called twice (fresh names per call site) compiles.
+    expect(() => compileString('contract C() { function f(uint a) returns (uint x) {'
+      + ' assembly { function sq(v) -> r { r := mul(v, v) } x := add(sq(a), sq(a)) } } }', { solidityImportCompat: true }))
+      .not.toThrow();
   });
 
   it('lowers invalid() to require(false) and stop() to a no-op', () => {

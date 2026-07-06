@@ -1,10 +1,12 @@
 contract C() {
     function f() {
         assembly {
-            function double(v) -> r {
-                r := mul(v, 2)
+            // A recursive local Yul function has no leaf form to inline, so it stays unsupported.
+            function fac(n) -> r {
+                r := 1
+                if gt(n, 1) { r := mul(n, fac(sub(n, 1))) }
             }
-            let x := double(2)
+            let x := fac(3)
         }
         require(true);
     }

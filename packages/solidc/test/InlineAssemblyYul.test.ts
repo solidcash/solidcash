@@ -191,6 +191,18 @@ describe('Yul inline assembly (Phase 1: parse + diagnostics)', () => {
       .not.toThrow();
   });
 
+  it('lowers signextend(i, v) for a constant i (branchless sign-extend identity)', () => {
+    // signextend(0, v) = sign-extend the low byte. Compiles; the identity ((v&mask)^signBit)-signBit is exercised.
+    expect(() => compileString('contract C() { function f(uint v) returns (uint x) { assembly { x := signextend(0, v) } } }',
+      { solidityImportCompat: true })).not.toThrow();
+    // i >= 31 is a no-op (already full width): byte-identical to reading v directly.
+    const noop = compileString('contract C() { function f(uint v) returns (uint x) { assembly { x := signextend(31, v) } } }',
+      { solidityImportCompat: true });
+    const direct = compileString('contract C() { function f(uint v) returns (uint x) { assembly { x := v } } }',
+      { solidityImportCompat: true });
+    expect(noop.bytecode).toBe(direct.bytecode);
+  });
+
   it('lowers invalid() to require(false) and stop() to a no-op', () => {
     expect(compileString('contract C() { function f() { assembly { invalid() } require(true); } }',
       { solidityImportCompat: true }).bytecode)

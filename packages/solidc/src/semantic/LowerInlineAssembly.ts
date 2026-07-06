@@ -428,6 +428,19 @@ function lowerCall(call: YulFunctionCallNode): ExpressionNode {
   if ((name === 'addmod' || name === 'mulmod') && args.length === 3) {
     return loc(new FunctionCallNode(loc(new IdentifierNode(name), call), args.map((a) => lowerValue(a))), call);
   }
+  // signextend(i, v): sign-extend v from the low (i+1) bytes. For a constant i the branchless identity
+  // `((v & mask) ^ signBit) - signBit` computes it in wrapping uint256 arithmetic (sub wraps, as EVM).
+  if (name === 'signextend' && args.length === 2 && isIntLiteral(args[0])) {
+    const raw = lowerValue(args[1]);
+    const i = BigInt(args[0].raw);
+    if (i >= 31n) return raw; // already full-width - no-op
+    const v = loc(new CastNode(UINT256, raw, false), call);
+    const bits = (i + 1n) * 8n;
+    const u256 = (n: bigint): ExpressionNode => loc(new CastNode(UINT256, intLit(n, call), false), call);
+    const masked = loc(new BinaryOpNode(v, BinaryOperator.BIT_AND, u256((1n << bits) - 1n)), call);
+    const xored = loc(new BinaryOpNode(masked, BinaryOperator.BIT_XOR, u256(1n << (bits - 1n))), call);
+    return loc(new BinaryOpNode(xored, BinaryOperator.MINUS, intLit(1n << (bits - 1n), call)), call);
+  }
   // blockhash(n) -> solidc blockhash builtin (a bytes32; SynthesizeBlockOracle, which runs after this pass, wires
   // the n->hash oracle). Cast to a uint256 word for the assembly context.
   if (name === 'blockhash' && args.length === 1) {

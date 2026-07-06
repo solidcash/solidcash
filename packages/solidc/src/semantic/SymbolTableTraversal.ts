@@ -3711,6 +3711,32 @@ export default class SymbolTableTraversal extends AstTraversal {
   visitAssign(node: AssignNode): Node {
     const sym = this.symbolTables[0].get(node.identifier.name);
 
+    // Whole fixed-array copy with a per-element bytes conversion `data2 = data1` where the element types differ
+    // (e.g. `bytes2[N] = bytes1[N]`): the whole-array types are not implicitly castable, so desugar to element-
+    // wise writes with an explicit element cast `data2[i] = bytes2(data1[i])` over the shared compile-time bound.
+    // Same-element copies stay whole (handled as a normal assign); int widening is already implicitly castable.
+    if (node.expression instanceof IdentifierNode) {
+      const tgt = this.stateVariableMap.get(node.identifier.name)?.type;
+      const src = this.stateVariableMap.get(node.expression.name)?.type;
+      if (tgt instanceof ArrayType && src instanceof ArrayType && tgt.bound !== undefined && tgt.bound === src.bound
+        && tgt.elementType instanceof BytesType && src.elementType instanceof BytesType
+        && tgt.elementType.toString() !== src.elementType.toString()) {
+        const srcName = node.expression.name;
+        const stmts: StatementNode[] = [];
+        const lit = (i: number): IntLiteralNode => { const n = new IntLiteralNode(BigInt(i)); n.location = node.location; return n; };
+        for (let i = 0; i < tgt.bound; i++) {
+          const srcId = new IdentifierNode(srcName); srcId.location = node.location;
+          const read = new ArrayAccessNode(srcId, lit(i)); read.location = node.location;
+          const cast = new CastNode(tgt.elementType, read, false); cast.location = node.location;
+          const assign = new ArrayAssignNode(node.identifier.name, lit(i), cast); assign.location = node.location;
+          stmts.push(assign);
+        }
+        const block = new BlockNode(stmts);
+        block.location = node.location;
+        return this.visit(block);
+      }
+    }
+
     // Bare write to a state variable `x = ...` (no shadowing local): route to a state assignment.
     if (sym?.symbolType === SymbolType.STATE_VARIABLE) {
       const stateNode = new StateAssignNode(node.identifier.name, node.expression);

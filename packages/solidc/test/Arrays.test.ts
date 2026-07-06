@@ -92,3 +92,24 @@ describe('Tuple forwarding and whole fixed-array assignment', () => {
     expect(a.contractName).toBe('C');
   });
 });
+
+// Whole fixed-array copy where the element types differ (bytes widening): `bytes2[N] = bytes1[N]`. The whole
+// arrays are not implicitly castable, so it desugars to element-wise writes with an explicit element cast
+// `data2[i] = bytes2(data1[i])` - byte-identical to that form. Same-element / int-widening copies are unaffected.
+describe('whole fixed-array copy with a per-element bytes conversion (bytes2[N] = bytes1[N])', () => {
+  it('compiles bytes1[2] -> bytes2[2] whole-array copy', () => {
+    expect(compileString('contract C{bytes1[2] d1;bytes2[2] d2;function f()external{d2=d1;require(true);}}',
+      { solidityImportCompat: true }).contractName).toBe('C');
+  });
+  it('is byte-identical to the explicit element-wise cast form', () => {
+    const whole = compileString('contract C{bytes1[2] d1;bytes2[2] d2;function f()external{d2=d1;require(true);}}',
+      { solidityImportCompat: true });
+    const explicit = compileString('contract C{bytes1[2] d1;bytes2[2] d2;'
+      + 'function f()external{d2[0]=bytes2(d1[0]);d2[1]=bytes2(d1[1]);require(true);}}', { solidityImportCompat: true });
+    expect(whole.bytecode).toBe(explicit.bytecode);
+  });
+  it('leaves a same-type whole-array copy unchanged', () => {
+    expect(compileString('contract C{uint256[3] d1;uint256[3] d2;function f()external{d2=d1;require(true);}}',
+      { solidityImportCompat: true }).contractName).toBe('C');
+  });
+});

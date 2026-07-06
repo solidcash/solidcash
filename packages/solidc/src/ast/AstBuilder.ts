@@ -272,6 +272,10 @@ export default class AstBuilder
   private enumMap: Map<string, EnumType> = new Map();
   // Library names, so a library-namespaced enum access `L.E.Member` can strip the `L.` to the bare enum.
   private libraryNames: Set<string> = new Set();
+
+  // Contract + interface names, so a contract/interface-namespaced TYPE access `C.T.unwrap` / `I.Enum.Member`
+  // strips the `C.`/`I.` to the bare (globally-registered) type, like the library case.
+  private contractInterfaceNames: Set<string> = new Set();
   private typeDefMap: Map<string, ValueType> = new Map();
   private pendingParentInvocations: ParentInvocation[] = [];
   private packedStateArrayNames: Set<string> = new Set();
@@ -469,6 +473,11 @@ export default class AstBuilder
     }
 
     const contractCtxs = ctx.contractDefinition_list();
+
+    // Collect contract + interface names before visiting bodies, so a namespaced type access inside a body
+    // (`C.T.unwrap`, `I.Enum.Member`) can strip the qualifier to the bare type.
+    for (const cc of contractCtxs) this.contractInterfaceNames.add(cc.Identifier().getText());
+    for (const idef of interfaceDefinitions) this.contractInterfaceNames.add(idef.name);
 
     // No contract definition (library-only, or interface/type-only file): return a definitions-only node,
     // existing only to be imported.
@@ -3442,10 +3451,12 @@ export default class AstBuilder
       return acc;
     }
 
-    // Library-namespaced enum: `L.E` (L a library, E a library enum) -> the bare enum `E`, so `L.E.Member` and
-    // `L.E`-as-type behave like the unqualified enum (library enums are registered under their bare name).
-    if (expression instanceof IdentifierNode && this.libraryNames.has(expression.name)
-      && this.enumMap.has(fieldName)) {
+    // Namespaced TYPE access `Q.T` where Q is a library / contract / interface and T is a globally-registered
+    // enum / UDVT / struct -> the bare type, so `Q.T.Member` / `Q.T.wrap` / `Q.T`-as-type behave like the
+    // unqualified type (types are registered under their bare name, so this is a pure requalification).
+    if (expression instanceof IdentifierNode
+      && (this.libraryNames.has(expression.name) || this.contractInterfaceNames.has(expression.name))
+      && (this.enumMap.has(fieldName) || this.typeDefMap.has(fieldName) || this.structMap.has(fieldName))) {
       const bare = new IdentifierNode(fieldName);
       bare.location = Location.fromCtx(ctx);
       return bare;

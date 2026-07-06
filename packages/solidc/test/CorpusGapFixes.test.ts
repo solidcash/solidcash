@@ -505,3 +505,19 @@ describe('contract-qualified constant access (C.X / Base.X)', () => {
       .toThrow(/Undefined reference/);
   });
 });
+
+describe('contract/interface-qualified type access (C.T / I.Enum)', () => {
+  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  it('resolves an interface-qualified enum member (I.Dir.Right)', () => {
+    expect(cc('interface I { enum Dir { Left, Right } }'
+      + ' contract C is I { function f() external pure returns (uint256) { return uint256(I.Dir.Right); } }')).toBe('C');
+  });
+  it('resolves a contract-qualified enum member on a base', () => {
+    expect(cc('contract A { enum E { X, Y } }'
+      + ' contract B is A { function f() external pure returns (uint256) { return uint256(A.E.Y); } }')).toBe('B');
+  });
+  it('leaves the bare enum member working', () => {
+    expect(cc('interface I { enum Dir { Left, Right } }'
+      + ' contract C is I { function f() external pure returns (uint256) { return uint256(Dir.Right); } }')).toBe('C');
+  });
+});

@@ -49,3 +49,27 @@ class shape is untouched - a class-field there tips the deep recursive-function 
 
 Known solidcash-internal limitation (NOT a solc discrepancy, since solc has no fixed-point): mixed fixed/int
 arithmetic with an int literal (`1.5 * 2`) is an "unequal types" error - use `1.5 * 2.0` or an explicit cast.
+
+## 4. Signedness / int representation (ASSESSED - the issue is NOT about casts; already compatible)
+
+solidcash ints are the BCH VM integer (sign-magnitude, arbitrary precision); EVM ints are 256-bit two's complement.
+Assessment of whether the corpus "signedness" failures are about implicit/explicit casts:
+
+- **Explicit casts already compile + are behaviorally compatible.** `int256(uint256)`, `uint256(int256)`,
+  `int8(uint16)`, `uint128(int64)`, etc. all compile (like solc). int/uint/bigint share ONE BCH integer
+  representation (see Casts.test.ts "uint256 <-> int compatibility"), so an in-range cast is a value-preserving
+  re-label + bounds check - behaviorally identical to solc for in-range values.
+- **Implicit int/uint MIXING is rejected by BOTH.** `int + uint` ("unequal types") is a solc error too
+  (Solidity requires an explicit cast) - NOT a discrepancy. The corpus UnequalType "signedness" lines are this
+  (both reject = negative tests), plus fixed-point (`5.2 % 3`, `uint64(1)+ufixed(2)` - see section 3) and Yul
+  cross-type punning - none are a cast we wrongly reject. Confirmed: zero corpus files reject an int/uint cast solc
+  accepts.
+- **Where the two representations are observable, solidcash already matches EVM two's complement:** bitwise
+  `& | ^` and fixed-bytes conversions go through emitToTwosComplementBytes/emitFromTwosComplementBytes; checked
+  arithmetic (the Solidity 0.8 default) reverts on overflow like solc. `unchecked { }` parses.
+
+**Conclusion:** the signedness issue is not an implicit/explicit-cast compile problem - those are already
+compatible. The only genuine divergence is EVM's modular-WRAP semantics (2^256 overflow, negative->unsigned
+two's-complement reinterpretation) vs BCH's exact sign-magnitude arithmetic with checked bounds. That is
+fundamental to the BCH VM and by-design (safer); a port relying on EVM overflow-wrapping in `unchecked` blocks or
+`uint(negativeValue)` two's-complement reinterpretation would differ. No code change needed for cast compatibility.

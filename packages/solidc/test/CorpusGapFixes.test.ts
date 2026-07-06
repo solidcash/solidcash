@@ -859,3 +859,16 @@ describe('fixed-point is a solidcash extension (solc leaves it unimplemented)', 
     expect(cc('contract C { function f() external pure returns (fixed) { fixed a = -1.5; return a; } }')).toBe('C');
   });
 });
+
+describe('int/uint casts are accepted like solc (signedness)', () => {
+  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  it('accepts explicit int<->uint casts of every width', () => {
+    for (const [from, to] of [['uint256', 'int256'], ['int256', 'uint256'], ['uint16', 'int8'], ['int64', 'uint128']]) {
+      expect(cc(`contract C { function f(${from} x) external pure returns (${to}) { return ${to}(x); } }`)).toBe('C');
+    }
+  });
+  it('rejects implicit int+uint mixing (like solc)', () => {
+    expect(() => cc('contract C { function f(int256 a, uint256 b) external pure returns (uint256) { return a + b; } }'))
+      .toThrow(/unequal types/);
+  });
+});

@@ -45,6 +45,7 @@ interface Resolved { sideEffects: StatementNode[]; finalAlias: string; }
  */
 export default class InlineMappingReturnFunctions extends AstTraversal {
   private candidates = new Map<string, FunctionDefinitionNode>();
+  private inlined = new Set<string>(); // candidates actually resolved+inlined at a call site
 
   visitSourceFile(node: SourceFileNode): Node {
     const collect = (fns: FunctionDefinitionNode[] | undefined): void => {
@@ -53,14 +54,17 @@ export default class InlineMappingReturnFunctions extends AstTraversal {
     if (node.contract) collect(node.contract.functions);
     collect(node.freeFunctions);
     if (this.candidates.size === 0) return node;
-    node.freeFunctions = (node.freeFunctions ?? []).filter((f) => !this.candidates.has(f.name));
     if (node.contract) node.contract = this.visit(node.contract) as ContractNode;
+    // Drop only the functions that were fully inlined; an unresolvable candidate stays for a later pass to reject.
+    node.freeFunctions = (node.freeFunctions ?? []).filter((f) => !this.inlined.has(f.name));
+    if (node.contract) {
+      node.contract.functions = node.contract.functions.filter((f) => !this.inlined.has(f.name));
+    }
     return node;
   }
 
   visitContract(node: ContractNode): Node {
-    node.functions = (this.visitList(node.functions) as FunctionDefinitionNode[])
-      .filter((fn) => !this.candidates.has(fn.name)); // drop the resolved functions - fully inlined at call sites
+    node.functions = this.visitList(node.functions) as FunctionDefinitionNode[];
     return node;
   }
 
@@ -132,6 +136,7 @@ export default class InlineMappingReturnFunctions extends AstTraversal {
         const fn = this.candidates.get(stmt.expression.identifier.name);
         const res = fn && this.resolveCall(fn, stmt.expression.parameters);
         if (res) {
+          this.inlined.add(fn!.name);
           for (const se of res.sideEffects) out.push(this.c(se));
           stmt.expression = this.at(new IdentifierNode(res.finalAlias), stmt);
           out.push(stmt);

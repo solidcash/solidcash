@@ -2209,11 +2209,17 @@ export default class AstBuilder
 
   // `x[a:b]` index-range syntax desugars to the same SliceNode as `x.slice(a, b)`.
   visitIndexRangeSlice(ctx: IndexRangeSliceContext): SliceNode {
-    const element = this.visit(ctx._element);
-    const start = this.visit(ctx._start);
-    const end = this.visit(ctx._end);
+    const loc = Location.fromCtx(ctx);
+    const element = this.visit(ctx._element) as ExpressionNode;
+    // Omitted bounds default to 0 (start) and the element's length (end): `a[:2]`, `a[2:]`, `a[:]`.
+    const start = ctx._start
+      ? this.visit(ctx._start) as ExpressionNode
+      : Object.assign(new IntLiteralNode(0n), { location: loc });
+    const end = ctx._end
+      ? this.visit(ctx._end) as ExpressionNode
+      : Object.assign(new UnaryOpNode(UnaryOperator.SIZE, this.visit(ctx._element) as ExpressionNode), { location: loc });
     const slice = new SliceNode(element, start, end);
-    slice.location = Location.fromCtx(ctx);
+    slice.location = loc;
     return slice;
   }
 

@@ -762,3 +762,16 @@ describe('power operator result type is the base type (-1 ** e)', () => {
     expect(cc('contract C { function f(int256 b, uint256 e) external pure returns (int256) { return b ** e; } }')).toBe('C');
   });
 });
+
+describe('slice with omitted bounds (a[:2] / a[2:] / a[:])', () => {
+  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  it('defaults an omitted start to 0 and an omitted end to the length', () => {
+    expect(cc('contract C { function f(bytes calldata a) external pure returns (bytes memory) { return a[:2]; } }')).toBe('C');
+    expect(cc('contract C { function f(bytes calldata a) external pure returns (bytes memory) { return a[2:]; } }')).toBe('C');
+    expect(cc('contract C { function f(bytes calldata a) external pure returns (bytes memory) { return a[:]; } }')).toBe('C');
+  });
+  it('supports omitted-bound slices inside bytes.concat', () => {
+    expect(cc('contract C { function f(bytes calldata a) external pure returns (bytes memory) {'
+      + ' return bytes.concat(a[:2], a[2:]); } }')).toBe('C');
+  });
+});

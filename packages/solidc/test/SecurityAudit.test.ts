@@ -57,7 +57,48 @@ describe('C4: composite mapping keys allocate distinct slots', () => {
     expect(struct / param).toBeGreaterThan(0.9);
     expect(struct / param).toBeLessThan(1.15);
   });
+});
 
+// C1 - a delegatecall proxy defers state authorization to a co-spent delegate it cannot pin (delegates serve
+// many proxies). Without access control ANY spender co-spends the state NFT with a write flag and rewrites
+// proxy state. The compiler cannot pin the delegate permissionlessly, so it warns when a user-written
+// delegatecall function lacks a signature guard. See docs/delegatecall-security.md.
+describe('C1: delegatecall without access control warns', () => {
+  const proxyImpl = 'address(0x76a91489abcdefabbaabbaabbaabbaabbaabbaabbaabba88ac)';
+
+  function countC1Warnings(src: string): number {
+    let n = 0;
+    const spy = vi.spyOn(console, 'log').mockImplementation((...a: unknown[]) => {
+      if (a.join(' ').includes('SECURITY-AUDIT C1')) n += 1;
+    });
+    try {
+      compileString(src);
+    } finally {
+      spy.mockRestore();
+    }
+    return n;
+  }
+
+  it('warns once on an unguarded delegatecall function', () => {
+    const src = `contract Proxy { bigint counter;
+      function up(bytes input) external { address m = ${proxyImpl}; m.delegatecall(input); require(input.length > 0); } }`;
+    expect(countC1Warnings(src)).toBe(1);
+  });
+
+  it('does not warn when the delegatecall function is gated by checkSig', () => {
+    const src = `contract Proxy { bigint counter;
+      function up(bytes input, pubkey pk, sig s) external { require(checkSig(s, pk)); address m = ${proxyImpl};
+        m.delegatecall(input); require(input.length > 0); } }`;
+    expect(countC1Warnings(src)).toBe(0);
+  });
+
+  it('does not warn for a function with no delegatecall', () => {
+    const src = 'contract C { bigint n; function f() external { require(true); this.n = this.n + 1; } }';
+    expect(countC1Warnings(src)).toBe(0);
+  });
+});
+
+describe('C4: composite mapping keys (continued)', () => {
   it('keccak256(abi.encode(...)) keys over distinct operands do not collapse', () => {
     const two = compileString(`
       contract M {

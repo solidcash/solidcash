@@ -1533,6 +1533,22 @@ export default class SymbolTableTraversal extends AstTraversal {
       throw new InvalidModifierCombinationError(node, "'delegate' functions cannot contain delegatecall calls");
     }
 
+    // C1: an explicit `addr.delegatecall(input)` proxy defers ALL state authorization to a co-spent delegate,
+    // but the proxy cannot pin which delegate ran (delegates serve many proxies by design) and the data-NFT
+    // write path leaves the output commitment to the master, which the delegatecall codegen path skips. With no
+    // access control ANY spender co-spends the state NFT and rewrites proxy state arbitrarily. Warn when a
+    // user-written delegatecall function lacks a signature guard. Library-call sugar (SynthesizeLibraryDelegate-
+    // Calls) is excluded: it is the delegate mechanism, not a bare proxy, and carries its own layout/brand guards.
+    if (this.hasExplicitDelegatecall(node.body) && !this.hasSignatureGuard(node.body)) {
+      const line = node.location?.start?.line ? ` (line ${node.location.start.line})` : '';
+      console.log(
+        `Warning: function '${node.name}'${line} issues delegatecall without access control. A delegatecall `
+        + 'proxy cannot verify which delegate authorized the state change, so ANY spender can co-spend the state '
+        + 'NFT and rewrite proxy state arbitrarily (SECURITY-AUDIT C1). Gate this function with a signature check '
+        + '(e.g. require(checkSig(s, pk))). See packages/solidc/docs/delegatecall-security.md.',
+      );
+    }
+
 
 
     // Inject _proxyMasterIndex for delegate functions
@@ -3480,6 +3496,41 @@ export default class SymbolTableTraversal extends AstTraversal {
         if (param instanceof Node) this.assignExternalOutStateSlotIndices(param, map);
       }
     }
+  }
+
+  // C1 helpers: detect a user-written delegatecall (excluding library-call sugar) and a signature-based access
+  // guard. Recurse into AST children only; a `seen` set breaks cycles from resolved-symbol back-references
+  // (e.g. FunctionCallNode.resolvedFunction on a recursive call).
+  private hasExplicitDelegatecall(node: Node | undefined, seen: Set<Node> = new Set()): boolean {
+    if (!node || seen.has(node)) return false;
+    seen.add(node);
+    if ((node instanceof LowLevelCallNode || node instanceof LowLevelCallStatementNode)
+      && node.callMode === 'delegatecall'
+      && !(node instanceof LowLevelCallStatementNode && node.synthesizedFromLibraryCall)) {
+      return true;
+    }
+    for (const v of Object.values(node)) {
+      if (v instanceof Node) { if (this.hasExplicitDelegatecall(v, seen)) return true; } else if (Array.isArray(v)) {
+        for (const e of v) if (e instanceof Node && this.hasExplicitDelegatecall(e, seen)) return true;
+      }
+    }
+    return false;
+  }
+
+  private hasSignatureGuard(node: Node | undefined, seen: Set<Node> = new Set()): boolean {
+    if (!node || seen.has(node)) return false;
+    seen.add(node);
+    if (node instanceof FunctionCallNode
+      && (node.identifier.name === 'checkSig' || node.identifier.name === 'checkMultiSig'
+        || node.identifier.name === 'checkDataSig')) {
+      return true;
+    }
+    for (const v of Object.values(node)) {
+      if (v instanceof Node) { if (this.hasSignatureGuard(v, seen)) return true; } else if (Array.isArray(v)) {
+        for (const e of v) if (e instanceof Node && this.hasSignatureGuard(e, seen)) return true;
+      }
+    }
+    return false;
   }
 
   private canonicalizeExpression(node: ExpressionNode): string {

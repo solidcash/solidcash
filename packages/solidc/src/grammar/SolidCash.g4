@@ -163,7 +163,7 @@ constructorDefinition
     ;
 
 fallbackDefinition
-    : 'fallback' parameterList 'external' fallbackModifier* customModifierInvocation* returnType? '{' statement* '}'
+    : 'fallback' parameterList fallbackModifier* 'external' fallbackModifier* customModifierInvocation* returnType? '{' statement* '}'
     ;
 
 fallbackModifier
@@ -217,7 +217,7 @@ arrayType
     ;
 
 modifierDefinition
-    : 'modifier' Identifier parameterList? '{' modifierStatement* '}'
+    : 'modifier' Identifier parameterList? ('virtual' | overrideSpecifier)* '{' modifierStatement* '}'
     ;
 
 modifierStatement

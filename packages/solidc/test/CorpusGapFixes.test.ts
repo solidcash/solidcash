@@ -714,3 +714,16 @@ describe('pragma experimental solidity (tolerated no-op)', () => {
       { solidityImportCompat: true }).contractName).toBe('C');
   });
 });
+
+describe('virtual/override on modifiers and fallback', () => {
+  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  it('accepts virtual on a modifier (with and without parens)', () => {
+    expect(cc('contract C { int256 x; modifier m() virtual { x = 2; _; }'
+      + ' function f() external m { require(true); } }')).toBe('C');
+    expect(cc('contract C { int256 x; modifier m virtual { x = 2; _; }'
+      + ' function f() external m { require(true); } }')).toBe('C');
+  });
+  it('accepts virtual before external on a fallback', () => {
+    expect(cc('contract C { int256 x; fallback(bytes calldata i) virtual external { x = 1; } }')).toBe('C');
+  });
+});

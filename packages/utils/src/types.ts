@@ -281,8 +281,10 @@ export function explicitlyCastable(from?: Type, to?: Type): boolean {
 
   // Address type explicit casts
   if (to instanceof AddressType) {
-    // bytes -> address (non-payable only via address() cast)
-    if (from instanceof BytesType && !to.payable) return true;
+    // bytes -> address. Also allows `payable(x)` (address payable) where x is bytes (e.g. `payable(this)`, this
+    // being the contract's bytes identity): payable is a no-op cosmetic distinction on BCH (every address can
+    // receive value), so the payable variant is as valid as the plain address() cast.
+    if (from instanceof BytesType) return true;
     // address -> address (any payable combo, including contract type constructors)
     if (from instanceof AddressType) return true;
     // int -> address: `address(0)` / `address(uint160(x))`. Address is locking bytecode at the VM level;

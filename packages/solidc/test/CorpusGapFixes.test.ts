@@ -596,3 +596,16 @@ describe('erc7201 as a Yul builtin -> sha256 (reuses the erc7201 alias)', () => 
       + ' bytes32 s; assembly { s := erc7201("example.main") } return s; } }')).toBe('C');
   });
 });
+
+describe('payable(x) cast on a bytes source (payable is a no-op on BCH)', () => {
+  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  it('accepts payable(this) (this is the contract bytes identity)', () => {
+    expect(cc('contract C { function f() external view returns (address) { return payable(this); } }')).toBe('C');
+  });
+  it('accepts payable(this).balance', () => {
+    expect(cc('contract C { function f() external view returns (uint256) { return payable(this).balance; } }')).toBe('C');
+  });
+  it('accepts payable(bytes20Value)', () => {
+    expect(cc('contract C { function f(bytes20 b) external pure returns (address) { return payable(b); } }')).toBe('C');
+  });
+});

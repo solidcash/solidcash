@@ -766,6 +766,72 @@ contract Reader(bytes32 counterCategory) {
     });
   });
 
+  // ---------- Multi-return external call bound via `try ... returns (x, y)` (A-side) ----------
+  // Same as the tuple destructure above, but the multi-return call is wrapped in try/catch. The catch is dead on
+  // BCH; the try block must bind BOTH return values. This exercises the try/catch returns-clause rebinding, which
+  // the compiler fix 461d9447 changed from popping 1 stack slot to N - VM-verified end-to-end here.
+  describe('multi-return external call via try...returns (A-side)', () => {
+    const TRY_MULTI_RETURN_READER = `
+pragma solidcash >=0.8.0;
+
+interface IStats {
+    public bigint a;
+    public bigint b;
+    function getStats(pubkey owner, sig s) returns (bigint, bigint);
+}
+
+contract TryStatsReader(bytes statsAddr) {
+    bigint sum;
+
+    function callStats(pubkey pk, sig s) {
+        require(checkSig(s, pk));
+        try IStats(statsAddr).getStats() returns (bigint x, bigint y) {
+            this.sum = x + y;
+        } catch {
+            this.sum = 0;
+        }
+    }
+}
+`;
+    const provider = createTestProvider();
+    const readerArtifact = compileString(TRY_MULTI_RETURN_READER);
+    const statsArtifact = compileString(MULTI_RETURN_CONTRACT);
+    const statsStateLayout = statsArtifact.stateLayout!;
+    const readerStateLayout = readerArtifact.stateLayout!;
+
+    let statsCategoryId: string;
+    let readerCategoryId: string;
+    let statsContract: Contract;
+    let readerContract: Contract;
+
+    beforeAll(async () => {
+      statsContract = new Contract(statsArtifact, [], { provider });
+      ({ categoryId: statsCategoryId } = await setupStatefulUtxos(
+        provider, statsContract, statsStateLayout, { a: 3n, b: 4n }, { saltContract: true },
+      ));
+
+      const statsAddr = statsContract.withCategory(hexToBin(statsCategoryId)).lockingBytecode;
+      readerContract = new Contract(readerArtifact, [statsAddr], { provider });
+      ({ categoryId: readerCategoryId } = await setupStatefulUtxos(
+        provider, readerContract, readerStateLayout, { sum: 0n }, { saltContract: true },
+      ));
+    });
+
+    it('binds BOTH return values inside the try block (sum = x + y = 19)', async () => {
+      const readerSc = StatefulContract.withCategory(readerContract, readerCategoryId);
+      const statsSc = StatefulContract.withCategory(statsContract, statsCategoryId);
+
+      const tx = await readerSc.callStats(alicePub, new SignatureTemplate(alicePriv))
+        .withExternalCall(statsSc, 'getStats', [alicePub, new SignatureTemplate(alicePriv)])
+        .send();
+
+      expect(tx.txid).toBeDefined();
+      // getStats returns (a+b, a*b) = (7, 12); a correct pop-N rebind gives sum = 19. A pop-1 bug would
+      // mis-bind y (or corrupt the stack) and fail the covenant / produce a wrong sum.
+      expect((await readerSc.getState()).sum).toBe(19n);
+    });
+  });
+
   // ---------- Multi-return ABI Tests ----------
 
   describe('multi-return function ABI', () => {

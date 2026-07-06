@@ -213,6 +213,13 @@ describe('Yul inline assembly (Phase 1: parse + diagnostics)', () => {
       { solidityImportCompat: true })).not.toThrow();
   });
 
+  it('accepts the assembly dialect string and ("memory-safe") flags annotation', () => {
+    for (const head of ['assembly', 'assembly "evmasm"', 'assembly ("memory-safe")', 'assembly "evmasm" ("memory-safe")']) {
+      expect(() => compileString(`contract C() { function f() { uint x; ${head} { x := 1 } require(x == 1); } }`,
+        { solidityImportCompat: true })).not.toThrow();
+    }
+  });
+
   it('lowers Yul string / hex-string literals to their left-aligned word', () => {
     const strv = compileString('contract C() { function f() returns (uint x) { assembly { x := "abc" } } }',
       { solidityImportCompat: true });

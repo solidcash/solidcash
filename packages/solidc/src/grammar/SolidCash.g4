@@ -435,7 +435,7 @@ consoleStatement
     ;
 
 assemblyStatement
-    : 'assembly' yulBlock
+    : 'assembly' StringLiteral? ('(' StringLiteral (',' StringLiteral)* ')')? yulBlock
     ;
 
 // Yul sub-grammar (Solidity inline assembly). A block of only bare paths/literals (OP_* opcodes) is

@@ -825,3 +825,12 @@ describe('tuple destructure in a for-loop init and update', () => {
     expect(s.bytecode).toBe(h.bytecode);
   });
 });
+
+describe('ABI-coder pragmas are no-ops (v2 is the Solidity 0.8 default)', () => {
+  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  it('treats experimental ABIEncoderV2 / abicoder v1 / abicoder v2 as no-ops', () => {
+    for (const p of ['pragma experimental ABIEncoderV2;', 'pragma abicoder v2;', 'pragma abicoder v1;']) {
+      expect(cc(`${p} contract C { function f() external pure returns (uint256) { return 1; } }`)).toBe('C');
+    }
+  });
+});

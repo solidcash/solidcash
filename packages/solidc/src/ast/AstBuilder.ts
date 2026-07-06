@@ -382,10 +382,6 @@ export default class AstBuilder
       (e) => this.visitEnumDefinition(e),
     );
 
-    const constantDefinitions = ctx.constantDefinition_list().map(
-      (c) => this.visitConstantDefinition(c),
-    );
-
     // File-level struct definitions (must be registered before interfaces for type resolution)
     const structDefinitions: StructDefinitionNode[] = [];
     this.registerStructDefinitions(ctx.structDefinition_list(), structDefinitions);
@@ -396,6 +392,12 @@ export default class AstBuilder
       const td = this.visitTypeDefinition(tdCtx);
       typeDefinitions.push(td);
     }
+
+    // Constants after enums/structs/typeDefs: a file-level constant may be typed by / initialized from one of them
+    // (`T constant g = T.wrap(true)`). Array-dimension constants are already pre-scanned (scanConstantDimensions).
+    const constantDefinitions = ctx.constantDefinition_list().map(
+      (c) => this.visitConstantDefinition(c),
+    );
 
     const usingForDirectives = ctx.usingForDirective_list().map(
       (u) => this.visit(u) as UsingForDirectiveNode,

@@ -697,3 +697,13 @@ describe('bytesN compared against literal 0 (data[i] == 0)', () => {
     expect(cc('contract C { function f(bytes32 b) external pure returns (bool) { return b != 0; } }')).toBe('C');
   });
 });
+
+describe('file-level UDVT-typed constant (T constant g = T.wrap(x))', () => {
+  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  it('resolves a free UDVT constant initialized from T.wrap of a literal', () => {
+    expect(cc('type T is bool; T constant g = T.wrap(true);'
+      + ' contract C { function f() external pure returns (bool) { return T.unwrap(g); } }')).toBe('C');
+    expect(cc('type U is uint256; U constant h = U.wrap(5);'
+      + ' contract C { function f() external pure returns (uint256) { return U.unwrap(h); } }')).toBe('C');
+  });
+});

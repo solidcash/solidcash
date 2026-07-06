@@ -310,6 +310,9 @@ export default class AstBuilder
   // Local struct-typed vars, to desugar member assignment `s.field = v` (no direct codegen) into a struct
   // rebuild `s = S(.., v, ..)`. Per-function, like storageAliases.
   private localStructTypes: Map<string, StructType> = new Map();
+  // Local struct-ARRAY vars (`S[] memory m`) -> element struct type, to desugar an interleaved element array-field
+  // write `m[i].c[j] = v` (whole-element read-modify-write). Per-function, like localStructTypes.
+  private localStructArrayTypes: Map<string, StructType> = new Map();
 
   private forOfArrayCounter = 0; // uniquifies the temp locals of a desugared `for..of` over a state array
 
@@ -893,6 +896,7 @@ export default class AstBuilder
   visitConstructorDefinition(ctx: ConstructorDefinitionContext): FunctionDefinitionNode {
     this.storageAliases = new Map();
     this.localStructTypes = new Map();
+    this.localStructArrayTypes = new Map();
     const statements = this.flattenStatements(ctx.statement_list().map((s) => this.visit(s) as StatementNode));
     const block = new BlockNode(statements);
     block.location = Location.fromCtx(ctx);
@@ -981,6 +985,7 @@ export default class AstBuilder
   visitFunctionDefinition(ctx: FunctionDefinitionContext): FunctionDefinitionNode {
     this.storageAliases = new Map();
     this.localStructTypes = new Map();
+    this.localStructArrayTypes = new Map();
     const name = ctx.anyIdentifier().getText();
     const parameters = ctx.parameterList().parameter_list().map((p) => this.visit(p) as ParameterNode);
     // Struct-typed params (incl. `storage` struct pointers) participate in struct-field-write desugaring,
@@ -1103,6 +1108,7 @@ export default class AstBuilder
   visitFreeFunctionDefinition(ctx: FreeFunctionDefinitionContext): FunctionDefinitionNode {
     this.storageAliases = new Map();
     this.localStructTypes = new Map();
+    this.localStructArrayTypes = new Map();
     const name = ctx.anyIdentifier().getText();
     const parameters = ctx.parameterList().parameter_list().map((p) => this.visit(p) as ParameterNode);
     // Struct-typed params (incl. `storage` struct pointers) participate in struct-field-write desugaring.
@@ -1143,6 +1149,7 @@ export default class AstBuilder
   visitModifierDefinition(ctx: ModifierDefinitionContext): ModifierDefinitionNode {
     this.storageAliases = new Map();
     this.localStructTypes = new Map();
+    this.localStructArrayTypes = new Map();
     const name = ctx.Identifier().getText();
     const parameters = ctx.parameterList()
       ? ctx.parameterList()!.parameter_list().map((p) => this.visit(p) as ParameterNode)
@@ -1316,6 +1323,10 @@ export default class AstBuilder
 
     // Track local struct-typed vars so `s.field = v` can desugar to a struct rebuild (visitAssignmentStatement).
     if (type instanceof StructType) this.localStructTypes.set(name, type);
+    // Track local struct-array vars (`S[] memory m`) so `m[i].c[j] = v` can desugar (see buildLvalueAssign).
+    if (type instanceof ArrayType && type.elementType instanceof StructType) {
+      this.localStructArrayTypes.set(name, type.elementType);
+    }
 
     const variableDefinition = new VariableDefinitionNode(type, modifiers, name, expression);
     variableDefinition.location = Location.fromCtx(ctx);
@@ -2721,6 +2732,33 @@ export default class AstBuilder
         const inner = this.buildLocalStructArrayFieldWrite(tmpName, fieldName, field.type,
           () => keyFns[1](), op, valueCtx, loc);
         const back = new MappingAssignNode(rawName, [mapKey()], idAt(tmpName));
+        back.location = loc;
+        const block = new BlockNode([decl, ...(inner.statements ?? []), back]);
+        block.location = loc;
+        return block;
+      }
+    }
+
+    // Struct-ARRAY -> array-field element write `X[i].c[j] op= v` (index, member, index) where X is a state or
+    // local struct array and c is an array field. Struct-array elements have no in-place field-array write, so
+    // mirror the mapping case: read the element struct into a temp, write the array element on the temp, write
+    // the whole element back - `S t = X[i]; t.c[j] = v; X[i] = t;` (bare-element read/write resolve state-or-local).
+    if (!isThis && !isIncDec && fieldName && members.length === 1 && keyFns.length === 2
+      && segs.length === 3 && segs[0].key !== undefined && segs[1].member !== undefined && segs[2].key !== undefined) {
+      const stateElem = this.stateArrayVarTypes.get(rawName)?.elementType;
+      const structT = stateElem instanceof StructType ? stateElem : this.localStructArrayTypes.get(rawName);
+      const field = structT?.fields.find((f) => f.name === fieldName);
+      if (structT && field && field.type instanceof ArrayType) {
+        const idAt = (n: string): IdentifierNode => { const i = new IdentifierNode(n); i.location = loc; return i; };
+        const tmpName = `__nlv_${this.nestedLvalueCounter++}`;
+        const elemRead = new ArrayAccessNode(idAt(rawName), keyFns[0]());
+        elemRead.location = nameLoc;
+        const decl = new VariableDefinitionNode(structT, [], tmpName, elemRead);
+        decl.location = loc;
+        this.localStructTypes.set(tmpName, structT); // so the array-field write helper resolves the temp's type
+        const inner = this.buildLocalStructArrayFieldWrite(tmpName, fieldName, field.type,
+          () => keyFns[1](), op, valueCtx, loc);
+        const back = new ArrayAssignNode(rawName, keyFns[0](), idAt(tmpName));
         back.location = loc;
         const block = new BlockNode([decl, ...(inner.statements ?? []), back]);
         block.location = loc;

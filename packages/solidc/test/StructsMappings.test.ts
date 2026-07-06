@@ -369,6 +369,31 @@ describe('local struct-array element field write (S[] memory m; m[i].f = v)', ()
   });
 });
 
+// `X[i].c[j] = v` where X is a state OR local struct array and c is an array field (interleaved index-member-
+// index). Struct-array elements have no in-place field-array write, so desugars to a whole-element RMW
+// `S t = X[i]; t.c[j] = v; X[i] = t;` (bare-element read/write resolve state-or-local). Sound by reduction.
+describe('struct-array element array-field write (X[i].c[j] = v)', () => {
+  const S = 'struct S{int a;int[] c;}';
+  it('compiles a state struct-array nested array-field write', () => {
+    expect(compileString(`contract C(){${S}S[] s;function f()external{s.push(S(1,new int[](3)));`
+      + 's[0].c[1]=9;require(s[0].c[1]==9);}}', { solidityImportCompat: true }).contractName).toBe('C');
+  });
+  it('compiles a local memory struct-array nested array-field write', () => {
+    expect(compileString(`contract C(){${S}function f()external{S[] memory m=new S[](2);m[0].c=new int[](2);`
+      + 'm[0].c[1]=7;require(m[0].c[1]==7);}}', { solidityImportCompat: true }).contractName).toBe('C');
+  });
+  it('supports compound assignment (X[i].c[j] += v)', () => {
+    expect(compileString(`contract C(){${S}S[] s;function f(uint i,uint j,int v)external{s.push(S(1,new int[](3)));`
+      + 's[i].c[j]+=v;require(true);}}', { solidityImportCompat: true }).contractName).toBe('C');
+  });
+  it('is byte-identical to the explicit whole-element RMW (sound by reduction)', () => {
+    const P = `contract C(){${S}S[] s;function f()external{s.push(S(1,new int[](3)));`;
+    const sugar = compileString(`${P}s[0].c[1]=9;require(s[0].c[1]==9);}}`, { solidityImportCompat: true });
+    const hand = compileString(`${P}S t=s[0];t.c[1]=9;s[0]=t;require(s[0].c[1]==9);}}`, { solidityImportCompat: true });
+    expect(sugar.bytecode).toBe(hand.bytecode);
+  });
+});
+
 // A struct-with-a-mapping-field flattens each field to a `<var>__<field>` state collection; a trailing member
 // after the flattened mapping index (`o.data[k2].valid = v`) writes the value-struct scalar field.
 describe('nested lvalue write: struct-with-mapping field (o.data[k2].valid = v)', () => {

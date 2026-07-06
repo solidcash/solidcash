@@ -40,4 +40,11 @@ describe('unnamed custom error parameters', () => {
     );
     expect(a.contractName).toBe('C');
   });
+
+  it('accepts array-typed error parameters (named and unnamed)', () => {
+    expect(compileString('contract C { error E(uint[] a, uint[1] b); function f() { require(false); } }',
+      { solidityImportCompat: true }).contractName).toBe('C');
+    expect(compileString('contract C { error E(uint[], uint[1]); function f() { require(false); } }',
+      { solidityImportCompat: true }).contractName).toBe('C');
+  });
 });

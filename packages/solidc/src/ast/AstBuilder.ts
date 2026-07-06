@@ -3762,7 +3762,9 @@ export default class AstBuilder
     const parameters = ctx.errorParameter_list().map((paramCtx, i) => ({
       // The name is optional in Solidity (`error Bad(uint256)`); synthesize one for an unnamed param.
       name: paramCtx.Identifier() ? paramCtx.Identifier().getText() : `__unnamed${i}`,
-      type: this.resolveType(paramCtx.typeName().getText()),
+      type: paramCtx.typeName()
+        ? this.resolveType(paramCtx.typeName().getText())
+        : this.buildArrayType(paramCtx.arrayType()!),
     }));
     const node = new ErrorDefinitionNode(errorName, parameters);
     node.location = Location.fromCtx(ctx);

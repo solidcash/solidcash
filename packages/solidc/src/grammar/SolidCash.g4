@@ -131,6 +131,7 @@ errorDefinition
 
 errorParameter
     : typeName Identifier?
+    | arrayType Identifier?
     ;
 
 structDefinition

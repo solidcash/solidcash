@@ -621,3 +621,21 @@ describe('bytes memory PARAM element write (function f(bytes memory x) { x[i] = 
       + ' x[i] = v; return x; } }')).toThrow(/read-only/);
   });
 });
+
+describe('bytes element compound write (data[i] |= v / &=)', () => {
+  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  it('compiles a compound byte write on state and local bytes', () => {
+    expect(cc('contract C { bytes data;'
+      + ' function f(uint256 i, bytes1 v) external { data[i] |= v; require(true); } }')).toBe('C');
+    expect(cc('contract C { function f(bytes memory d, uint256 i) external pure returns (bytes memory) {'
+      + ' d[i] &= 0x0f; return d; } }')).toBe('C');
+  });
+  it('is byte-identical to the hand-written read-modify-slice-concat', () => {
+    const s = compileString('contract C { bytes data; function f(uint256 i, bytes1 v) external { data[i] |= v; require(true); } }',
+      { solidityImportCompat: true });
+    const h = compileString('contract C { bytes data;'
+      + ' function f(uint256 i, bytes1 v) external { data = data[0:i] + (data[i] | v) + data[i+1:data.length]; require(true); } }',
+      { solidityImportCompat: true });
+    expect(s.bytecode).toBe(h.bytecode);
+  });
+});

@@ -2683,12 +2683,14 @@ export default class AstBuilder
       return this.buildCompoundAssign(rawName, nameLoc, op, valueCtx ?? null, loc);
     }
 
-    // Bytes var element write `data[i] = v` (state OR local/memory) -> reassign the whole blob with byte i
-    // replaced: `data = data[0:i] ++ v ++ data[i+1:]`. Reuses the bytes slice/concat codegen (like .push/.pop).
-    if (!isThis && !isIncDec && !hasMember && keyFns.length === 1 && op === '=' && valueCtx
+    // Bytes var element write `data[i] op= v` (state OR local/memory) -> reassign the whole blob with byte i
+    // replaced: `data = data[0:i] ++ (data[i] op v) ++ data[i+1:]` (plain `=` uses v directly). Reuses the bytes
+    // slice/concat codegen (like .push/.pop). ++/-- excluded (isIncDec) - byte inc/dec is not a Solidity form.
+    if (!isThis && !isIncDec && !hasMember && keyFns.length === 1 && valueCtx
       && (this.bytesStateVarNames.has(rawName) || this.localBytesVars.has(rawName))) {
       const isState = this.bytesStateVarNames.has(rawName);
-      return this.desugarBytesElementWrite(rawName, keyFns[0], this.visit(valueCtx) as ExpressionNode, loc, isState);
+      return this.desugarBytesElementWrite(
+        rawName, keyFns[0], this.visit(valueCtx) as ExpressionNode, loc, isState, op);
     }
 
     // Mapping-of-flattened-struct write: `providers[k].data[k2] op= v` / `providers[k].data[k2].valid op= v` /
@@ -4308,10 +4310,11 @@ export default class AstBuilder
 
   // `bytes b; b.pop()` desugars to `b = b[0 : b.length - 1]` (drop the last byte). Popping an empty bytes slices
   // to end -1, which fails at runtime - matching Solidity's revert-on-empty-pop.
-  // `data[i] = v` on an unbounded bytes var -> `data = data[0:i] ++ v ++ data[i+1:size(data)]`. Works for a state
-  // var (StateAccess/StateAssign) or a local/memory var (Identifier/Assign), selected by `isState`.
+  // `data[i] op= v` on an unbounded bytes var -> `data = data[0:i] ++ (data[i] op v) ++ data[i+1:size(data)]`
+  // (plain `=` uses v directly). Works for a state var (StateAccess/StateAssign) or a local/memory var
+  // (Identifier/Assign), selected by `isState`.
   private desugarBytesElementWrite(
-    name: string, indexFn: () => ExpressionNode, value: ExpressionNode, loc: Location, isState: boolean,
+    name: string, indexFn: () => ExpressionNode, value: ExpressionNode, loc: Location, isState: boolean, op: string,
   ): StatementNode {
     const stamp = <T extends { location?: Location }>(n: T): T => { n.location = loc; return n; };
     const read = (): ExpressionNode => stamp(isState ? new StateAccessNode(name) : new IdentifierNode(name));
@@ -4319,7 +4322,11 @@ export default class AstBuilder
     const iPlus1 = stamp(new BinaryOpNode(indexFn(), BinaryOperator.PLUS, stamp(new IntLiteralNode(1n))));
     const prefix = stamp(new SliceNode(read(), stamp(new IntLiteralNode(0n)), indexFn()));
     const suffix = stamp(new SliceNode(read(), iPlus1, len));
-    const cat1 = stamp(new BinaryOpNode(prefix, BinaryOperator.PLUS, value));
+    // Compound `op=`: the new byte is the old byte `data[i]` combined with v under the base operator.
+    const newByte = op === '='
+      ? value
+      : stamp(new BinaryOpNode(stamp(new ArrayAccessNode(read(), indexFn())), COMPOUND_OPS[op], value));
+    const cat1 = stamp(new BinaryOpNode(prefix, BinaryOperator.PLUS, newByte));
     const cat2 = stamp(new BinaryOpNode(cat1, BinaryOperator.PLUS, suffix));
     return isState
       ? stamp(new StateAssignNode(name, cat2))

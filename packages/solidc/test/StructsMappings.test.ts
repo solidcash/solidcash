@@ -132,6 +132,41 @@ describe('raw mapping storage pointer local (mapping(K=>V) storage p = m)', () =
   });
 });
 
+// A function returning a `mapping storage` pointer is inlined (no runtime value), then the pointer local is
+// lowered by LowerMappingStorageAlias: `mapping storage m = get()` where get inlines to a bare mapping or a
+// ternary `c ? a : b`. Each `m[k]` use becomes the underlying access / a branch / a ternary. Sound by reduction.
+describe('returns (mapping storage) - pointer-returning function + conditional alias', () => {
+  const CH = 'library L { function ch(mapping(uint256=>uint256) storage a, mapping(uint256=>uint256) storage b, bool c)'
+    + ' internal view returns (mapping(uint256=>uint256) storage) { return c ? a : b; } }';
+  it('unconditional return: `get(){return mp;}` local pointer is byte-identical to direct access', () => {
+    const sugar = compileString('contract C { mapping(uint256=>uint256) mp;'
+      + ' function get() internal view returns (mapping(uint256=>uint256) storage) { return mp; }'
+      + ' function f() external { mapping(uint256=>uint256) storage p = get(); p[0] = 1; require(mp[0]==1); } }',
+    { solidityImportCompat: true });
+    const direct = compileString('contract C { mapping(uint256=>uint256) mp;'
+      + ' function f() external { mp[0] = 1; require(mp[0]==1); } }', { solidityImportCompat: true });
+    expect(sugar.bytecode).toBe(direct.bytecode);
+  });
+  it('conditional local pointer m = c?a:b: reads/writes are byte-identical to the branch/ternary form', () => {
+    const sugar = compileString(`${CH} contract C { mapping(uint256=>uint256) a; mapping(uint256=>uint256) b; bigint r;`
+      + ' function f(bool c, uint256 k, uint256 v) external { mapping(uint256=>uint256) storage m = L.ch(a,b,c);'
+      + ' this.r = m[k]; m[k] = v; require(true); } }', { solidityImportCompat: true });
+    const hand = compileString('contract C { mapping(uint256=>uint256) a; mapping(uint256=>uint256) b; bigint r;'
+      + ' function f(bool c, uint256 k, uint256 v) external { bool __c = c; this.r = __c ? a[k] : b[k];'
+      + ' if (__c) { a[k] = v; } else { b[k] = v; } require(true); } }', { solidityImportCompat: true });
+    expect(sugar.bytecode).toBe(hand.bytecode);
+  });
+  it('direct-indexed call result L.ch(a,b,c)[k] is byte-identical to c ? a[k] : b[k]', () => {
+    const sugar = compileString(`${CH} contract C { mapping(uint256=>uint256) a; mapping(uint256=>uint256) b;`
+      + ' function g(bool c, uint256 k) external view returns (uint256) { return L.ch(a,b,c)[k]; } }',
+    { solidityImportCompat: true });
+    const hand = compileString('contract C { mapping(uint256=>uint256) a; mapping(uint256=>uint256) b;'
+      + ' function g(bool c, uint256 k) external view returns (uint256) { return c ? a[k] : b[k]; } }',
+    { solidityImportCompat: true });
+    expect(sugar.bytecode).toBe(hand.bytecode);
+  });
+});
+
 describe('SBE-11: local struct member assignment (desugars to a struct rebuild)', () => {
   it('assigns a field of a local struct', () => {
     const a = compileString('contract C() { struct S { int a; bool b; } int n; function f(int v) { S memory s; s.a = v; this.n = s.a; } }');

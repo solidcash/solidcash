@@ -3564,6 +3564,7 @@ export default class AstBuilder
   // Resolve a return parameter's type (a plain type, or an array type like `uint256[] memory`).
   private returnParamType(p: ReturnParamContext): Type {
     if (p.arrayType()) return this.buildArrayType(p.arrayType()!);
+    if (p.mappingType()) return this.buildMappingType(p.mappingType()!);
     return this.resolveType(p.typeName()!.getText()) ?? new AddressType(false);
   }
 

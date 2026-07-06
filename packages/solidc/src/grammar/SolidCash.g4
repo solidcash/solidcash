@@ -255,6 +255,7 @@ returnType
 returnParam
     : typeName modifier* anyIdentifier?
     | arrayType modifier* anyIdentifier?
+    | mappingType modifier* anyIdentifier?
     ;
 
 parameterList

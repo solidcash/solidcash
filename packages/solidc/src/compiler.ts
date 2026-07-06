@@ -22,6 +22,7 @@ import PromoteConstructorExternalReads from './semantic/PromoteConstructorExtern
 import SynthesizeLibraryDelegateCalls from './semantic/SynthesizeLibraryDelegateCalls.js';
 import InlineExternalCallHelpers from './semantic/InlineExternalCallHelpers.js';
 import InlineStoragePointerCalls from './semantic/InlineStoragePointerCalls.js';
+import LowerMappingStorageAlias from './semantic/LowerMappingStorageAlias.js';
 import InlineReturningStateHelpers from './semantic/InlineReturningStateHelpers.js';
 import DesugarPostfixExpressions from './semantic/DesugarPostfixExpressions.js';
 import DesugarNestedArrayWrite from './semantic/DesugarNestedArrayWrite.js';
@@ -200,6 +201,9 @@ function compileResolvedAst(ast: Ast, code: string, mergedCompilerOptions: Compi
   // Inline void calls to functions taking `storage` reference params; a storage pointer has no value
   // representation, so the callee is substituted into the caller as direct state access.
   ast = ast.accept(new InlineStoragePointerCalls()) as Ast;
+  // A `mapping(..) storage m = get()` local (get() inlined above to a bare mapping or `c ? a : b`) has no runtime
+  // value; rewrite each `m[k]` use to the underlying mapping (or a branch/ternary) and drop the declaration.
+  ast = ast.accept(new LowerMappingStorageAlias()) as Ast;
 
   // A dynamic (chunk-backed) array written inside a loop can't use the once-per-function pending-value write
   // model; cache it in a local, mutate the local in the loop, flush back once.
@@ -387,6 +391,7 @@ function compileReferencedContracts(
     singleAst = singleAst.accept(new InlineExternalCallHelpers()) as Ast;
     singleAst = singleAst.accept(new InlineReturningStateHelpers()) as Ast;
     singleAst = singleAst.accept(new InlineStoragePointerCalls()) as Ast;
+    singleAst = singleAst.accept(new LowerMappingStorageAlias()) as Ast;
     singleAst = singleAst.accept(new CacheDynamicArrayInLoop()) as Ast;
     singleAst = singleAst.accept(new IfConvertConditionalEntryOp()) as Ast;
     singleAst = singleAst.accept(new PromoteConstructorExternalReads()) as Ast;

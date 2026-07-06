@@ -20,7 +20,7 @@ import {
   FunctionCallNode,
   ConsoleStatementNode,
 } from '../ast/AST.js';
-import { StructType } from '@solidcash/utils';
+import { StructType, MappingType } from '@solidcash/utils';
 import { Modifier } from '../ast/Globals.js';
 import AstTraversal from '../ast/AstTraversal.js';
 import { cloneNode } from '../ast/clone.js';
@@ -150,7 +150,10 @@ export default class InlineStoragePointerCalls extends AstTraversal {
   // Such a function has no standalone value representation (the storage param is a compile-time reference), so
   // its calls are inlined by substituting the return expression at the call site.
   private isSingleReturnStoragePointerFn(fn: FunctionDefinitionNode): boolean {
-    if (!fn.body || fn.returnTypes.length === 0 || !this.hasStoragePointerParam(fn)) return false;
+    if (!fn.body || fn.returnTypes.length === 0) return false;
+    // Non-standalone: takes a storage-pointer param OR returns a storage pointer (a mapping) - the returned
+    // pointer has no runtime value, so `mapping(..) storage m = get()` must inline to the underlying mapping.
+    if (!this.hasStoragePointerParam(fn) && !fn.returnTypes.some((t) => t instanceof MappingType)) return false;
     const stmts = (fn.body.statements ?? []).filter((s) => !(s instanceof ConsoleStatementNode));
     return stmts.length === 1 && stmts[0] instanceof ReturnNode && stmts[0].expressions.length === 1;
   }

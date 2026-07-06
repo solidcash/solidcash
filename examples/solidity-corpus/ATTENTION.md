@@ -35,3 +35,9 @@ Yul EVM-memory/storage/calldata model (offset/length, variable-offset mstore/mlo
 (int+uint mixing, solc rejects too) + fixed-point, external-call-target-must-be-param + deploy-then-call,
 runtime function-pointer `.selector`, ABIEncoderV2 calldata structs, gnosis `using Math` circular-import,
 super/C3 inheritance, multifile symbol resolution.
+
+## Deferred (added during autonomous grind)
+
+- **2D/nested array element delete + increment** (`delete x[3][2]`, `s.a[0][1]++`, `m.a[0][1]++`): ~5 files. The
+  nested-array write desugar (DesugarNestedArrayWrite) handles `a[i][j] = v` but delete/increment on a nested
+  element are not routed through it. In the parallel agent's nested-array area - deferred.

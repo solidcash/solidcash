@@ -301,3 +301,10 @@ slices `b[s:e]` on non-bytes arrays) or fundamental (method-call-on-index, funct
   constructorDefinition (parentInvocation requires args, a no-arg modifier lacks them).
 Parse peels remain productive. Remaining parse clusters: function pointers (fun.selector/.address/function-type
 params - fundamental), array-of-mappings, complex destructure (indexed/empty slots), computed array sizes (grammar risk).
+
+## ~3417 -> ~3427 (autonomous grind cont: for(;;) + power/slice)
+- fe2f7541 power operator result = base type (+7); 76c1c721 address vs hex-literal (+3).
+- 9689973c for loop with empty condition `for(;;)` (+9): forCondition optional, omitted -> implicit true.
+Remaining parse: function pointers (dominant, fundamental), abstract modifier/receive (~2, deferred), computed
+array size / array-of-mappings / chained-assign (deferred, risky). NON-parse remaining mostly fundamental
+(L/super/signedness/external-call/deploy/function-types).

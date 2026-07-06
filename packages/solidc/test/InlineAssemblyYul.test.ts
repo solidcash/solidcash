@@ -148,6 +148,14 @@ describe('Yul inline assembly (Phase 1: parse + diagnostics)', () => {
       { solidityImportCompat: true })).toThrow(/not yet lowerable to BCH script: address/);
   });
 
+  it('lowers mcopy in the compile-time memory model (word-copy = mstore(mload))', () => {
+    const mcopy = compileString('contract C() { function f(uint a) returns (uint) { uint r;'
+      + ' assembly { mstore(0, a) mcopy(64, 0, 32) r := mload(64) } return r; } }', { solidityImportCompat: true });
+    const explicit = compileString('contract C() { function f(uint a) returns (uint) { uint r;'
+      + ' assembly { mstore(0, a) mstore(64, mload(0)) r := mload(64) } return r; } }', { solidityImportCompat: true });
+    expect(mcopy.bytecode).toBe(explicit.bytecode);
+  });
+
   it('names the specific unlowerable builtin rather than claiming Yul is wholly unsupported', () => {
     // A block whose only blocker is an un-lowered builtin (mcopy) reports that builtin by name.
     expect(() => compileString(`

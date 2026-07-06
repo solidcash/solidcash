@@ -630,6 +630,20 @@ function lowerStatement(stmt: YulStatementNode): StatementNode {
           return loc(new BlockNode([]), stmt);
         }
       }
+      // mcopy(dst, src, size): word-copy in the compile-time memory model - each 32-byte word memory[src+i] is
+      // reassigned to memory[dst+i] (the assignment the read later resolves against). Constant, word-aligned, and
+      // every source word already mstore'd; anything else falls through to the diagnostic.
+      if (e.name === 'mcopy' && e.args.length === 3 && e.args.every(isIntLiteral)) {
+        const [dst, src, size] = e.args.map((a) => BigInt((a as YulLiteralNode).raw));
+        if (size % 32n === 0n) {
+          for (let i = 0n; i < size; i += 32n) {
+            const word = memory.get(src + i);
+            if (word === undefined) throw new YulNotLowerable(); // source word not covered by an mstore
+            memory.set(dst + i, word);
+          }
+          return loc(new BlockNode([]), stmt);
+        }
+      }
     }
     throw new YulNotLowerable();
   }

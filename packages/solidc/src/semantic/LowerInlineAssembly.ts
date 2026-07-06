@@ -423,6 +423,10 @@ function lowerCall(call: YulFunctionCallNode): ExpressionNode {
       ? loc(new UnaryOpNode(UnaryOperator.SIZE, loc(new IdentifierNode(lastReturnData), call)), call)
       : intLit(0n, call);
   }
+  // addmod(a,b,n) / mulmod(a,b,n) -> the matching solidc builtin ((a op b) mod n, full-width).
+  if ((name === 'addmod' || name === 'mulmod') && args.length === 3) {
+    return loc(new FunctionCallNode(loc(new IdentifierNode(name), call), args.map((a) => lowerValue(a))), call);
+  }
   // blockhash(n) -> solidc blockhash builtin (a bytes32; SynthesizeBlockOracle, which runs after this pass, wires
   // the n->hash oracle). Cast to a uint256 word for the assembly context.
   if (name === 'blockhash' && args.length === 1) {
@@ -697,6 +701,14 @@ function lowerStatement(stmt: YulStatementNode): StatementNode {
       // returndatacopy(dst, off, len): the last call's return-event data is already the tracked `bytes` var; the
       // copy into scratch memory is a no-op unless later mload'd (which the memory model then rejects cleanly).
       if (e.name === 'returndatacopy' && e.args.length === 3) return loc(new BlockNode([]), stmt);
+      // pop(x): evaluate x and discard. A low-level call is evaluated for its effect; any other value is pure/read
+      // in this model (discard = no-op) - but still lowered first so an unlowerable inner (extcodehash, ...) is
+      // reported as the blocker rather than silently dropped.
+      if (e.name === 'pop' && e.args.length === 1) {
+        if (isLowLevelCall(e.args[0])) return lowerLowLevelCall(e.args[0], `__yul_popok_${yulCallCounter + 1}`, true, stmt);
+        lowerValue(e.args[0]);
+        return loc(new BlockNode([]), stmt);
+      }
       if (e.name === 'return' && e.args.length === 2 && e.args.every(isIntLiteral)) {
         const [ptr, size] = e.args.map((a) => BigInt((a as YulLiteralNode).raw));
         if (size === 32n) {

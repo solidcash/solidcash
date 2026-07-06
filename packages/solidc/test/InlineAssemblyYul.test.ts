@@ -160,6 +160,17 @@ describe('Yul inline assembly (Phase 1: parse + diagnostics)', () => {
       { solidityImportCompat: true })).toThrow(/not yet lowerable to BCH script: address/);
   });
 
+  it('lowers addmod/mulmod to the solidc builtins and pop to a discard/effect', () => {
+    const asm = compileString('contract C() { function f(uint a, uint b, uint n) { uint r;'
+      + ' assembly { r := addmod(a, b, n) } require(r == r); } }', { solidityImportCompat: true });
+    const hand = compileString('contract C() { function f(uint a, uint b, uint n) { uint r;'
+      + ' r = addmod(a, b, n); require(r == r); } }', { solidityImportCompat: true });
+    expect(asm.bytecode).toBe(hand.bytecode);
+    // pop(pure) discards; pop(low-level call) evaluates the call for its effect.
+    expect(() => compileString('contract C() { function f(address a) { assembly { pop(add(1, 2))'
+      + ' pop(staticcall(0, a, 0, 0, 0, 0)) } require(true); } }', { solidityImportCompat: true })).not.toThrow();
+  });
+
   it('lowers a single-word return(p, 32) to a function return, byte-identical to `return v`', () => {
     // The lowered block ends in a return; it must splice into the function body so the return sits at the tail
     // (a nested block would hide it from the terminal-return codegen and duplicate the trailing covenant).

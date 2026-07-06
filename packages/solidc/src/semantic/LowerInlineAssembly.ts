@@ -6,6 +6,7 @@ import {
   CastNode, IdentifierNode, IntLiteralNode, BoolLiteralNode, ParameterNode, FunctionDefinitionNode,
   StateAssignNode, StateAccessNode, StateVariableNode, ContractNode, BytesConcatNode, FunctionCallNode,
   SliceNode, CollectionNode, MappingAccessNode, MappingAssignNode, HexLiteralNode, NullaryOpNode, FieldAccessNode,
+  ReturnNode,
 } from '../ast/AST.js';
 import { BinaryOperator, UnaryOperator, NullaryOperator } from '../ast/Operator.js';
 import {
@@ -644,6 +645,13 @@ function lowerStatement(stmt: YulStatementNode): StatementNode {
           return loc(new BlockNode([]), stmt);
         }
       }
+      if (e.name === 'return' && e.args.length === 2 && e.args.every(isIntLiteral)) {
+        const [ptr, size] = e.args.map((a) => BigInt((a as YulLiteralNode).raw));
+        if (size === 32n) {
+          const word = memory.get(ptr);
+          if (word !== undefined) return loc(new ReturnNode([lowerValue(word)]), stmt);
+        }
+      }
     }
     throw new YulNotLowerable();
   }
@@ -727,6 +735,26 @@ export default class LowerInlineAssembly extends AstTraversal {
     currentVarValues = new Map();
     bufferWrites = new Map();
     return result;
+  }
+
+  // Splice a lowered assembly block that ends in `return` into the parent block so the return sits at the
+  // function-body tail. Left nested, it hides the return from the terminal-return codegen, which then also emits
+  // the function's trailing covenant - duplicating it. A return-terminated block has nothing after it, so its
+  // lowered locals cannot collide with later statements; other assembly blocks stay nested (scoped).
+  visitBlock(node: BlockNode): Node {
+    const out: StatementNode[] = [];
+    for (const stmt of node.statements ?? []) {
+      const wasAssembly = stmt instanceof AssemblyStatementNode;
+      const visited = this.visit(stmt) as StatementNode;
+      const inner = visited instanceof BlockNode ? visited.statements ?? [] : undefined;
+      if (wasAssembly && inner && inner.length > 0 && inner[inner.length - 1] instanceof ReturnNode) {
+        out.push(...inner);
+      } else {
+        out.push(visited);
+      }
+    }
+    node.statements = out;
+    return node;
   }
 
   visitAssemblyStatement(node: AssemblyStatementNode): Node {

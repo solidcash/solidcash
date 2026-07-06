@@ -148,6 +148,15 @@ describe('Yul inline assembly (Phase 1: parse + diagnostics)', () => {
       { solidityImportCompat: true })).toThrow(/not yet lowerable to BCH script: address/);
   });
 
+  it('lowers a single-word return(p, 32) to a function return, byte-identical to `return v`', () => {
+    // The lowered block ends in a return; it must splice into the function body so the return sits at the tail
+    // (a nested block would hide it from the terminal-return codegen and duplicate the trailing covenant).
+    const yul = compileString('contract C() { function f(uint a) returns (uint) { assembly { mstore(0, a) return(0, 32) } } }',
+      { solidityImportCompat: true });
+    const hand = compileString('contract C() { function f(uint a) returns (uint) { return a; } }', { solidityImportCompat: true });
+    expect(yul.bytecode).toBe(hand.bytecode);
+  });
+
   it('lowers mcopy in the compile-time memory model (word-copy = mstore(mload))', () => {
     const mcopy = compileString('contract C() { function f(uint a) returns (uint) { uint r;'
       + ' assembly { mstore(0, a) mcopy(64, 0, 32) r := mload(64) } return r; } }', { solidityImportCompat: true });

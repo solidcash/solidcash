@@ -146,6 +146,11 @@ describe('function-type mutability + new bytes(constant)', () => {
     );
     expect(a.contractName).toBe('C');
   });
+
+  it('folds new string(constant) to an n-zero-byte string', () => {
+    expect(compileString('contract C { function f() public pure returns (string memory) { return new string(5); } }',
+      { solidityImportCompat: true }).contractName).toBe('C');
+  });
 });
 
 // An unnamed-return function that already returns on every path (a terminal if/else whose branches both

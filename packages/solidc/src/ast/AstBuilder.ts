@@ -2102,6 +2102,26 @@ export default class AstBuilder
     return placeholder;
   }
 
+  // `new string(n)` - a dynamic string of n bytes (UTF-8), i.e. n zero bytes typed as string. Only `string` is a
+  // valid dynamic-allocation primitive; any other `new <primitive>(...)` is a placeholder error deferred to codegen.
+  visitNewDynamicString(ctx: any): ExpressionNode {
+    const size = this.visit(ctx.expression()) as ExpressionNode;
+    const isString = ctx.PrimitiveType().getText() === 'string';
+    if (isString && size instanceof IntLiteralNode && size.value >= 0n) {
+      const lit = new HexLiteralNode(new Uint8Array(Number(size.value)));
+      lit.type = PrimitiveType.STRING;
+      lit.location = Location.fromCtx(ctx);
+      return lit;
+    }
+    const placeholder = new HexLiteralNode(new Uint8Array(0));
+    placeholder.type = isString ? PrimitiveType.STRING : new BytesType();
+    placeholder.codegenError = isString
+      ? 'new string(n) with a non-constant length has no BCH analogue (no dynamic buffer allocation)'
+      : `new ${ctx.PrimitiveType().getText()}(...) is not a valid dynamic allocation`;
+    placeholder.location = Location.fromCtx(ctx);
+    return placeholder;
+  }
+
   visitTupleIndexOp(ctx: TupleIndexOpContext): TupleIndexOpNode {
     const tuple = this.visit(ctx.expression());
     const index = parseInt(ctx._index.text, 10);

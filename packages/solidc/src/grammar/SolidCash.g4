@@ -627,6 +627,7 @@ expression
     | 'new' Identifier callOptions? expressionList #Instantiation
     | 'new' typeName ('[' ']')+ '(' expression ')' # NewArray
     | 'new' UnboundedBytes '(' expression ')' # NewDynamicBytes
+    | 'new' PrimitiveType '(' expression ')' # NewDynamicString
     | 'type' '(' typeName ')' '.' Identifier # TypeIntrospection
     | 'abi.encode' expressionList # AbiEncode
     | 'abi.encodePacked' expressionList # AbiEncodePacked

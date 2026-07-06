@@ -193,3 +193,26 @@ grammar scan would never surface. Remaining large clusters are FUNDAMENTAL: Yul 
 signedness + fixed-point + big-address-literal UnequalType (45), external-call-on-array-element + deploy-then-call
 MethodCall (34), runtime function-pointer .selector (30). Niche leftovers: enum/2D-array/struct public getters (pass-order
 wall - SynthesizePublicGetters runs pre-enum-resolution), local-bytes delete-element, 3-file address-literal comparison.
+
+## 3314 -> 3326 (grind: contract/interface-qualified access + bytes element write)
+
+Top non-parse bucket was UndefinedReference (194); after peeling the fundamental symbols (erc7201 Yul-cmdline 21,
+library L 18, super 7) the tractable slice was CONTRACT/INTERFACE-QUALIFIED member access. Four commits:
+- 924c354f contract-qualified CONSTANT `C.X` / `Base.X` (+2): inheritance is flattened before SymbolTableTraversal,
+  so an inherited constant sits in scope under its bare name with inheritedFrom = the defining base. Resolve `Q.X`
+  -> bare `X` only when Q is the current contract or the base X was inherited from (unrelated `Other.X` = different
+  X, stays unresolved - sound).
+- 6337eae3 qualified TYPE strip `I.Enum.Member` / `A.E.Y` (+4): types register under their bare name, so extend the
+  AstBuilder library-name strip (`L.E`->`E`) to contract + interface names (collected before body-visiting) for any
+  registered enum/UDVT/struct. Pure requalification.
+- 810f9fad contract-qualified UDVT wrap/unwrap `C.T.unwrap(x)` (+3): parses as a 3-part method call (the strip makes
+  the object bare `T` but it reaches visitMethodCall, not the 2-identifier FunctionCall the UDVT cast covered);
+  detect wrap/unwrap on a bare-identifier UDVT object there too (typeDefMap-gated so a 2-arg library `wrap` is safe).
+- 046c3e5e bytes state-var element write `data[i] = v` (+1): desugar to `data = data[0:i] ++ v ++ data[i+1:size]`
+  (like .push/.pop; byte-identical to the hand form, out-of-bounds reverts via the slice OP_SPLIT).
+
+Clean veins now thin. NEXT WALLS: memory/local bytes element write + local-memory struct field writes with
+struct/array VALUES (`vk.alpha = Struct(..)`, `src.x = [3]`) = feature-scale, need local-var TYPE tracking at build
+time (AstBuilder only knows state-var types). FUNDAMENTAL remainder: Yul EVM-mem/storage/calldata (168), signedness
++ fixed-point (46), external-call-target + deploy (34+16), runtime function pointers (19+17), ABIEncoderV2 calldata
+(_v2 stack cluster), gnosis `using Math` circular-import (16), super/C3 inheritance (7), erc7201 (21).

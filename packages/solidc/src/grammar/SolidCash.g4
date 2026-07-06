@@ -351,6 +351,7 @@ tupleAssignment
 
 tupleSlot
     : typeName modifier* anyIdentifier
+    | arrayType modifier* anyIdentifier
     | anyIdentifier
     |
     ;

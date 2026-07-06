@@ -1460,12 +1460,13 @@ export default class AstBuilder
       // Parenthesised form: a declaration `type name`, a bare `name` (existing lvalue), or an empty slot.
       elements = slots.map((slot) => {
         const tn = slot.typeName();
+        const at = slot.arrayType();
         // Unknown (contract/interface) type name -> keep it on the address handle, so a tuple-destructured
         // interface var (`(IERC20 a, ..) = ..`) routes `a.method(..)` to an external call (as locals/params do).
-        if (tn) {
+        if (tn || at) {
           return {
             name: slot.anyIdentifier()!.getText(),
-            type: this.resolveType(tn.getText()) ?? new AddressType(false, tn.getText()),
+            type: at ? this.buildArrayType(at) : (this.resolveType(tn!.getText()) ?? new AddressType(false, tn!.getText())),
           };
         }
         const id = slot.anyIdentifier();

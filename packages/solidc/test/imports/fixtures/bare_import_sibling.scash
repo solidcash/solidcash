@@ -1,0 +1,10 @@
+// Imports a sibling by a bare path (`"target"`, no `./`), which resolves against this file's own directory
+// (Solidity base-path behavior).
+import "bare_import_target.scash";
+
+contract BareImporter() {
+    function check(pubkey pk, sig s) {
+        require(checkSig(s, pk));
+        require(BARE_SIBLING_CONST == 42);
+    }
+}

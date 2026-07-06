@@ -47,6 +47,12 @@ function readSourceWithResolver(
       searchDir = parent;
     }
 
+    // A direct import that named no package (`import "sibling.sol"`) resolves against the importing file's own
+    // directory - Solidity's base-path behavior for a non-remapped import. Fallback after node_modules so a real
+    // package still wins; only used when a same-directory file of that name actually exists.
+    const sibling = firstExisting(path.resolve(path.dirname(currentFile), importPath));
+    if (sibling) return { source: fs.readFileSync(sibling, { encoding: 'utf-8' }), id: sibling };
+
     return undefined;
   };
 

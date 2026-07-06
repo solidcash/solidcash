@@ -1,0 +1,2 @@
+// Target of a bare (non-`./`) sibling import - defines a file-level constant.
+int constant BARE_SIBLING_CONST = 42;

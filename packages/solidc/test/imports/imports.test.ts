@@ -79,6 +79,12 @@ describe('Imports', () => {
       expect(artifact.contractName).toBe('NpmImporter');
       expect(artifact.bytecode).toBeDefined();
     });
+
+    it('should resolve a bare (non-`./`) sibling import against the source directory', () => {
+      const artifact = compileFile(path.join(fixtures, 'bare_import_sibling.scash'));
+      expect(artifact.contractName).toBe('BareImporter');
+      expect(artifact.bytecode).toBeDefined();
+    });
   });
 
   describe('Using-for directives', () => {

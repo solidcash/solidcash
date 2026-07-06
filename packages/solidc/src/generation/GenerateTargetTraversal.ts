@@ -2600,19 +2600,26 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   visitTryCatch(node: TryCatchNode): Node {
-    // No-op: evaluate the expression, bind return parameters if present, then emit try block
+    // No-op: evaluate the expression, bind return parameters if present, then emit try block. The catch is dead
+    // code on BCH (a script failure is always fatal), so only the try path is emitted.
     this.visit(node.expression);
 
     if (node.returnParameters && node.returnParameters.length > 0) {
-      // Bind expression result to return parameter names on the stack
-      this.popFromStack();
+      // `try X returns (T a, ..)`: the call left one value per return parameter; rebind them to the param names.
+      for (let i = 0; i < node.returnParameters.length; i++) this.popFromStack();
       for (const param of node.returnParameters) {
         this.pushToStack(param.name);
       }
     } else {
-      // No returns clause: discard the expression result
-      this.emit(Op.OP_DROP, { location: node.location, positionHint: PositionHint.START });
-      this.popFromStack();
+      // No returns clause: drop the call's return values. A VOID external call (e.g. `try this.g(x)` where g
+      // returns nothing) leaves nothing on the stack, so drop zero - dropping one unconditionally would remove
+      // a caller stack slot (a param/local like __internal__returnOutputIdx) and corrupt the trailing covenant.
+      const type = node.expression.type;
+      const dropCount = type instanceof TupleType ? type.elements.length : type === PrimitiveType.VOID ? 0 : 1;
+      for (let i = 0; i < dropCount; i++) {
+        this.emit(Op.OP_DROP, { location: node.location, positionHint: PositionHint.START });
+        this.popFromStack();
+      }
     }
 
     this.visit(node.tryBlock);

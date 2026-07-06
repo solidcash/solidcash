@@ -38,3 +38,28 @@ describe('emit inside a try block (allocate its event slot)', () => {
     expect(a.contractName).toBe('C');
   });
 });
+
+// A `try` on a VOID external call (`try this.g(x)` where g returns nothing) whose try/catch is the terminal
+// statement of an entry-point function with a return type, with `return` in both arms. visitTryCatch used to
+// drop one stack slot as the (nonexistent) call result, removing __internal__returnOutputIdx and crashing the
+// trailing return covenant ("Expected variable ... does not exist on the stack"). It now drops the call's actual
+// return count (0 for a void call).
+describe('try on a void external call, return in both arms (returnOutputIdx stack fix)', () => {
+  const PRE = 'contract C{function g(bool x)external pure{assert(x);}function f(bool x)external returns(uint){';
+  it('compiles a terminal try/catch whose try block returns (void call)', () => {
+    expect(compileString(`${PRE}try this.g(x){return 1;}catch{return 2;}}}`, { solidityImportCompat: true }).contractName)
+      .toBe('C');
+  });
+  it('compiles when the catch reverts instead of returning', () => {
+    expect(compileString(`${PRE}try this.g(x){return 1;}catch{revert();}}}`, { solidityImportCompat: true }).contractName)
+      .toBe('C');
+  });
+  it('still binds return values in a returns-clause try (single and multiple)', () => {
+    const one = 'interface I{function h(uint x)external returns(uint);}'
+      + 'contract C(I t){function f(uint x)external returns(uint){try t.h(x)returns(uint r){return r;}catch{return 0;}}}';
+    const two = 'interface I{function h(uint x)external returns(uint,uint);}'
+      + 'contract C(I t){function f(uint x)external returns(uint){try t.h(x)returns(uint a,uint b){return a+b;}catch{return 0;}}}';
+    expect(compileString(one, { solidityImportCompat: true }).contractName).toBe('C');
+    expect(compileString(two, { solidityImportCompat: true }).contractName).toBe('C');
+  });
+});

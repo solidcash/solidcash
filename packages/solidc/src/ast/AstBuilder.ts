@@ -3156,9 +3156,18 @@ export default class AstBuilder
   }
 
   // Bare indexed delete `delete m[k];` / `delete arr[i];` (no `this.`); resolved to state in semantics.
-  visitDeleteIndexed(ctx: DeleteIndexedContext): MappingDeleteNode | StateArrayDeleteNode {
+  visitDeleteIndexed(ctx: DeleteIndexedContext): StatementNode {
     const name = ctx.Identifier().getText();
     const keys = ctx.expression_list().map((e) => this.visit(e));
+    // `delete data[i]` on an unbounded bytes var sets byte i to its default 0x00 (keeping length) - reuse the
+    // bytes element-write desugar with a zero byte. State or local, selected like the assignment path.
+    if ((this.bytesStateVarNames.has(name) || this.localBytesVars.has(name)) && keys.length === 1) {
+      const isState = this.bytesStateVarNames.has(name);
+      const zero = new HexLiteralNode(new Uint8Array(1));
+      zero.location = Location.fromCtx(ctx);
+      const indexFn = (): ExpressionNode => this.visit(ctx.expression_list()[0]) as ExpressionNode;
+      return this.desugarBytesElementWrite(name, indexFn, zero, Location.fromCtx(ctx), isState, '=');
+    }
     if (this.packedStateArrayNames.has(name) && keys.length === 1) {
       const node = new StateArrayDeleteNode(name, keys[0]);
       node.location = Location.fromCtx(ctx);

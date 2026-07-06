@@ -677,3 +677,15 @@ describe('library/contract-qualified enum cast (L.E(x) / Contract.E(x))', () => 
     { solidityImportCompat: true }).contractName).toBe('C');
   });
 });
+
+describe('delete on a bytes element (delete data[i] -> zero byte)', () => {
+  it('compiles delete on a state and local bytes element, identical to data[i] = 0x00', () => {
+    expect(compileString('contract C { bytes data; function f(uint256 i) external { delete data[i]; require(true); } }',
+      { solidityImportCompat: true }).contractName).toBe('C');
+    const s = compileString('contract C { bytes data; function f(uint256 i) external { delete data[i]; require(true); } }',
+      { solidityImportCompat: true });
+    const h = compileString('contract C { bytes data; function f(uint256 i) external { data[i] = 0x00; require(true); } }',
+      { solidityImportCompat: true });
+    expect(s.bytecode).toBe(h.bytecode);
+  });
+});

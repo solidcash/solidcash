@@ -1813,6 +1813,13 @@ export default class TypeCheckTraversal extends AstTraversal {
   visitUnaryOp(node: UnaryOpNode): Node {
     node.expression = this.visit(node.expression);
 
+    // A negated hex number literal (`-0x42`) is an integer negation in Solidity - hex literals are big-endian
+    // integers in an arithmetic context. Reinterpret it as its integer value (mirrors the binary-op handling).
+    if (this.solidityImportCompat && node.operator === UnaryOperator.NEGATE
+      && node.expression instanceof HexLiteralNode) {
+      node.expression = this.hexLiteralToInt(node.expression);
+    }
+
     switch (node.operator) {
       case UnaryOperator.NOT:
         expectBool(node, node.expression.type);

@@ -737,3 +737,12 @@ describe('library-namespaced constant in a constant initializer (D = L.INT)', ()
       + ' contract C { uint256 constant D = 20 + L2.INT; function f() external pure returns (uint256) { return D; } }')).toBe('C');
   });
 });
+
+describe('negated hex number literal (-0x42)', () => {
+  it('treats -0xNN as an integer negation', () => {
+    expect(compileString('contract C { int256 public a = -0x42; function f() external view returns (int256) { return a; } }',
+      { solidityImportCompat: true }).contractName).toBe('C');
+    expect(compileString('contract C { int256 public a = -0x4200 >> 8; function f() external view returns (int256) { return a; } }',
+      { solidityImportCompat: true }).contractName).toBe('C');
+  });
+});

@@ -280,3 +280,9 @@ pass-order), UndefinedCollection struct-field-index chains, MethodCall new-C-the
   the Identifier* tail couldn't match).
 - 9a3b12d5 virtual/override on modifiers + virtual-before-external on fallback (+4): modifierDefinition gained
   `('virtual'|overrideSpecifier)*`; fallbackModifier* allowed before external too. Inheritance no-ops.
+
+## ~3384 -> ~3390 (autonomous grind cont: const + literal veins)
+- 4a0977a5 library-namespaced constant in a const initializer `D = L.INT` (+2): resolveConstantExpressionIdentifiers
+  now returns the node + rewrites `L.X` -> compound identifier (was type-checked as a struct-field access on L).
+- 9d7d34d9 negated hex number literal `-0x42` (+2): reinterpret a hex literal as its int value under NEGATE
+  (mirrors the binary-op hexLiteralToInt).

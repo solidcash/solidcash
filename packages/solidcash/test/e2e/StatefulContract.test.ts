@@ -4,7 +4,7 @@ import {
   Contract, TransactionBuilder,
   StateReader, SignatureTemplate, StatefulContract,
   StatefulTransactionBuilder,
-  getDataNftAddress, createDataNftUnlocker, getContractState,
+  getDataNftAddress, createDataNftUnlocker, createDestroyDataNftUnlocker, getContractState,
 } from '../../src/index.js';
 import {
   buildInitialStateCommitments, buildPushdataCommitment, parsePushdataCommitment,
@@ -1210,6 +1210,33 @@ describe('Multi-NFT Stateful Contract', () => {
       const newState = reader.readState([dataNft0FromTx, dataNft1FromTx]);
       expect(newState.alpha).toEqual(newAlpha);
       expect(newState.beta).toEqual(zeroBeta);
+    });
+
+    // C3: setAlpha accesses only data NFT 0. An attacker additionally co-spends the un-accessed data NFT 1
+    // with a DESTROY unlocker (flag=2) and emits no output for it, freeing its sats and permanently bricking
+    // that state. The own-category mutable-NFT conservation loop must reject this (2 mutable inputs, 1 output).
+    it('C3: rejects co-spending an un-accessed data NFT for destruction', async () => {
+      const newAlpha = new Uint8Array(100).fill(0xaa);
+      const newCommitment0 = buildPushdataCommitment(stateLayout, { alpha: newAlpha, beta: zeroBeta }, 0);
+      const feeFunder = await createFeeFunder(provider);
+
+      // allowImplicitNftBurn bypasses the SDK's convenience burn guard, exactly as a raw-tx attacker would,
+      // so the transaction actually reaches VM verification where the covenant is the real boundary.
+      const build = new TransactionBuilder({ provider, allowImplicitNftBurn: true })
+        .addInput(masterUtxo, contract.unlock.setAlpha(newAlpha))
+        .addInput(dataNftUtxo0, createDataNftUnlocker(contract, 0, categoryId))
+        .addInput(dataNftUtxo1, createDestroyDataNftUnlocker(contract, 0, categoryId))
+        .addInput(feeFunder.utxo, feeFunder.unlocker)
+        .addOutput({ to: contract.tokenAddress, amount: masterUtxo.satoshis, token: masterUtxo.token })
+        .addOutput({
+          to: dataNftAddress,
+          amount: dataNftUtxo0.satoshis,
+          token: { category: categoryId, amount: 0n, nft: { capability: 'mutable', commitment: newCommitment0 } },
+        });
+      // Deliberately NO output for data NFT 1 (destroyed).
+
+      // The conservation loop fails an OP_VERIFY (2 mutable inputs vs 1 mutable output).
+      await expect(build.send()).rejects.toThrow(/OP_VERIFY|script-verify-flag-failed/);
     });
   });
 

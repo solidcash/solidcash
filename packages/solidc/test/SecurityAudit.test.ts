@@ -98,6 +98,35 @@ describe('C1: delegatecall without access control warns', () => {
   });
 });
 
+// C3 - the master covenant re-creates only the ACCESSED state NFTs; an attacker who additionally co-spends an
+// un-accessed data/entry NFT can destroy it (its sub-covenant self-authorizes given the master's minting NFT
+// is present). The fix emits an own-category mutable(0x01)-NFT input==output conservation loop for functions
+// that don't co-spend a variable count of own-category mutable NFTs. Its distinctive opcode signature is the
+// build of `C ++ 0x01` from the master's `C ++ 0x02` category. (VM-level rejection is covered by the SDK e2e
+// test 'C3: rejects co-spending an un-accessed data NFT for destruction'.)
+describe('C3: own-category mutable-NFT conservation loop', () => {
+  const SIG = 'OP_SPLIT OP_DROP OP_1 OP_CAT';
+
+  it('emits the conservation loop for a plain data-NFT function', () => {
+    const bc = compileString('contract C { int n; function inc() external { this.n = this.n + 1; require(true); } }').bytecode;
+    expect(bc).toContain(SIG);
+  });
+
+  it('emits the conservation loop for a guarded non-state function (blocks the lone-data-NFT destroy vector)', () => {
+    const bc = compileString(
+      'contract G { int n; function f(pubkey pk, sig s) external { require(checkSig(s, pk)); } }',
+    ).bytecode;
+    expect(bc).toContain(SIG);
+  });
+
+  it('is skipped for entry/mapping functions (variable own-category mutable-NFT count)', () => {
+    const bc = compileString(
+      'contract M { mapping(int => int) m; function set(int k, int v) external { this.m[k] = v; require(true); } }',
+    ).bytecode;
+    expect(bc).not.toContain(SIG);
+  });
+});
+
 describe('C4: composite mapping keys (continued)', () => {
   it('keccak256(abi.encode(...)) keys over distinct operands do not collapse', () => {
     const two = compileString(`

@@ -1764,6 +1764,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           this.emitMasterCommitmentPreservation(node);
         }
       }
+      // C3: pin the count of co-spent own-category mutable (0x01) NFTs to exactly the accessed data-NFT count,
+      // so an attacker cannot additionally co-spend an un-accessed data/entry NFT to destroy or corrupt it (its
+      // own sub-covenant self-authorizes on any master-spend). Skipped for functions that legitimately co-spend
+      // a variable count of own-category 0x01 NFTs (entries, token containers, dynamic-storage chunks) or that
+      // use a special NFT topology (deploy/selfdestruct/upgrade/split/merge/delegate); those keep per-slot
+      // verification and are a documented residual. See SECURITY-AUDIT C3.
+      if (!this.functionHasDelegatecall && !this.currentFunctionIsDelegate && isStatefulContract
+        && !isSelfdestruct && !isUpgrade && !hasEntryAccess && !hasTokenContainerAccess
+        && !hasTokenContainerTransfers && this.pendingDynamicWrites.size === 0 && !hasDeploys) {
+        this.emitOwnCategoryMutableNftConservation(node);
+      }
       // Value preservation: satoshi and fungible token amounts
       // Selfdestruct functions skip - all NFTs and containers are being destroyed
       if (!this.functionHasDelegatecall && hasAnyStatefulAccess && !isSelfdestruct) {
@@ -11991,6 +12002,95 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Clean up this_cat_cap
     this.emit(Op.OP_DROP, locationData);
     this.popFromStack(); // remove (this_cat_cap)
+  }
+
+  // C3: conserve the count of co-spent own-category MUTABLE (0x01) NFTs (data + entry NFTs) input->output. In
+  // the gated (non-entry / non-dynamic / non-deploy) case the 0x01-of-C set is fixed - the master is 0x02,
+  // events are 0x00 - so an honest transaction has exactly as many 0x01-of-C outputs as inputs (accessed NFTs
+  // are written or preserved; un-accessed ones co-spent read-only are preserved). An attacker who additionally
+  // co-spends an UN-accessed data/entry NFT and DESTROYS it (flag=2, or an output-free flag=1) - which the
+  // sub-covenant self-authorizes given the master's minting NFT is present - drops the output count below the
+  // input count and is rejected. Mirrors emitMintingNftUniqueness (balance = inputs - outputs), asserting == 0.
+  // Residual: flag=1 corruption that re-emits a 0x01-of-C output keeps the count balanced (see SECURITY-AUDIT C3).
+  private emitOwnCategoryMutableNftConservation(node: FunctionDefinitionNode): void {
+    const loc = { location: node.body.location, positionHint: PositionHint.END };
+
+    // Build this contract's category ++ mutable(0x01) capability from the master's category+minting(0x02).
+    this.emitMasterInputIndex(loc);
+    this.emit(Op.OP_UTXOTOKENCATEGORY, loc); // C ++ 0x02
+    this.emit(encodeInt(32n), loc);
+    this.emit(Op.OP_SPLIT, loc);             // [C_32, 0x02]
+    this.emit(Op.OP_DROP, loc);              // [C_32]
+    this.emit(Op.OP_1, loc);                 // [C_32, 0x01]
+    this.emit(Op.OP_CAT, loc);               // [C ++ 0x01]
+    this.pushToStack('(this_cat_mutable)');
+
+    // balance = inputMutableCount - outputMutableCount, starts at 0
+    this.emit(encodeInt(0n), loc);
+    this.pushToStack('(mutable_balance)');
+
+    // Input loop: +1 per input whose category+capability == C ++ 0x01
+    this.emit(Op.OP_TXINPUTCOUNT, loc);
+    this.emit(Op.OP_1SUB, loc);
+    this.pushToStack('(loop_i)');
+    this.emit(Op.OP_BEGIN, loc);
+    this.emit(Op.OP_DUP, loc);
+    this.emit(encodeInt(0n), loc);
+    this.emit(Op.OP_LESSTHAN, loc);
+    this.emit(Op.OP_IF, loc);
+    this.emit(Op.OP_DROP, loc);
+    this.emit(encodeBool(true), loc);
+    this.emit(Op.OP_ELSE, loc);
+    this.emit(Op.OP_DUP, loc);               // copy i
+    this.emit(Op.OP_UTXOTOKENCATEGORY, loc); // input[i].cat+cap
+    this.emit(encodeInt(3n), loc);           // pick this_cat_mutable (catcap=0, i=1, bal=2, this=3)
+    this.emit(Op.OP_PICK, loc);
+    this.emit(Op.OP_EQUAL, loc);
+    this.emit(Op.OP_IF, loc);
+    this.emit(Op.OP_SWAP, loc);              // [.., bal, i] -> [.., i, bal]
+    this.emit(Op.OP_1ADD, loc);              // bal++
+    this.emit(Op.OP_SWAP, loc);              // [.., bal+1, i]
+    this.emit(Op.OP_ENDIF, loc);
+    this.emit(Op.OP_1SUB, loc);              // i--
+    this.emit(encodeBool(false), loc);
+    this.emit(Op.OP_ENDIF, loc);
+    this.emit(Op.OP_UNTIL, loc);
+    this.popFromStack(); // (loop_i)
+
+    // Output loop: -1 per output whose category+capability == C ++ 0x01
+    this.emit(Op.OP_TXOUTPUTCOUNT, loc);
+    this.emit(Op.OP_1SUB, loc);
+    this.pushToStack('(loop_j)');
+    this.emit(Op.OP_BEGIN, loc);
+    this.emit(Op.OP_DUP, loc);
+    this.emit(encodeInt(0n), loc);
+    this.emit(Op.OP_LESSTHAN, loc);
+    this.emit(Op.OP_IF, loc);
+    this.emit(Op.OP_DROP, loc);
+    this.emit(encodeBool(true), loc);
+    this.emit(Op.OP_ELSE, loc);
+    this.emit(Op.OP_DUP, loc);                 // copy j
+    this.emit(Op.OP_OUTPUTTOKENCATEGORY, loc); // output[j].cat+cap
+    this.emit(encodeInt(3n), loc);             // pick this_cat_mutable (catcap=0, j=1, bal=2, this=3)
+    this.emit(Op.OP_PICK, loc);
+    this.emit(Op.OP_EQUAL, loc);
+    this.emit(Op.OP_IF, loc);
+    this.emit(Op.OP_SWAP, loc);              // [.., bal, j] -> [.., j, bal]
+    this.emit(Op.OP_1SUB, loc);              // bal--
+    this.emit(Op.OP_SWAP, loc);              // [.., bal-1, j]
+    this.emit(Op.OP_ENDIF, loc);
+    this.emit(Op.OP_1SUB, loc);              // j--
+    this.emit(encodeBool(false), loc);
+    this.emit(Op.OP_ENDIF, loc);
+    this.emit(Op.OP_UNTIL, loc);
+    this.popFromStack(); // (loop_j)
+
+    // Assert balance == 0 (inputs preserved to outputs; none destroyed)
+    this.emit(encodeInt(0n), loc);
+    this.emit(Op.OP_NUMEQUALVERIFY, loc);
+    this.popFromStack(); // (mutable_balance)
+    this.emit(Op.OP_DROP, loc);
+    this.popFromStack(); // (this_cat_mutable)
   }
 
   /**

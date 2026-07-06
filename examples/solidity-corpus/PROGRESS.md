@@ -286,3 +286,10 @@ pass-order), UndefinedCollection struct-field-index chains, MethodCall new-C-the
   now returns the node + rewrites `L.X` -> compound identifier (was type-checked as a struct-field access on L).
 - 9d7d34d9 negated hex number literal `-0x42` (+2): reinterpret a hex literal as its int value under NEGATE
   (mirrors the binary-op hexLiteralToInt).
+
+## ~3390 -> ~3400 (autonomous grind cont: power operator + address-literal)
+- 76c1c721 address vs hex address literal `a == 0x1234..` (+3, maybeCoerceHexToAddress in visitBinaryOp).
+- fe2f7541 power operator result type = base's type (+7): `(-1)**e` / `int**uint` - `**` took the exponent's type
+  and required equal operands; add POW to the left-operand-type special case (like shifts).
+Two Explore surveys: findings mostly stale (already-fixed 2D-mapping-index, bytes/array element) or complex (array
+slices `b[s:e]` on non-bytes arrays) or fundamental (method-call-on-index, function-type params).

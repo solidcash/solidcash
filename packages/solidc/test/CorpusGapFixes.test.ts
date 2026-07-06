@@ -488,3 +488,20 @@ describe('public array auto-getter (this.a(i) -> element)', () => {
       + ' function f() external view returns (uint256[] memory) { return this.a; } }')).toBe('C');
   });
 });
+
+describe('contract-qualified constant access (C.X / Base.X)', () => {
+  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  it('resolves a self-qualified constant C.X', () => {
+    expect(cc('contract C { uint256 constant X = 5;'
+      + ' function f() external pure returns (uint256) { return C.X; } }')).toBe('C');
+  });
+  it('resolves a base-qualified inherited constant Base.X', () => {
+    expect(cc('contract A { uint256 constant X = 5; }'
+      + ' contract B is A { function f() external pure returns (uint256) { return A.X; } }')).toBe('B');
+  });
+  it('rejects an unrelated contract Other.X (different X, not in scope)', () => {
+    expect(() => cc('contract A { uint256 constant X = 5; }'
+      + ' contract B { uint256 constant X = 9; function f() external pure returns (uint256) { return A.X; } }'))
+      .toThrow(/Undefined reference/);
+  });
+});

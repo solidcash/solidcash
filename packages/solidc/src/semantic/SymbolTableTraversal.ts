@@ -5421,6 +5421,25 @@ export default class SymbolTableTraversal extends AstTraversal {
       }
     }
 
+    // Contract-qualified constant `C.X` / `Base.X`: inheritance is flattened before this pass, so an inherited
+    // constant already lives in the current contract's scope under its bare name (with inheritedFrom = the
+    // defining base). Resolve `Q.X` -> bare `X` only when Q is the current contract (X own or inherited) or Q is
+    // the base X was inherited from - an unrelated `Other.X` is a different X, not in scope (stays unresolved).
+    if (node.expression instanceof IdentifierNode && this.constantMap.has(node.name)) {
+      const qualifier = node.expression.name;
+      const constDef = this.constantMap.get(node.name)!;
+      if (qualifier === this.currentContract?.name || constDef.inheritedFrom === qualifier) {
+        const identifier = new IdentifierNode(node.name);
+        identifier.location = node.location;
+        const definition = this.symbolTables[0].get(node.name);
+        if (definition) {
+          identifier.definition = definition;
+          definition.references.push(identifier);
+        }
+        return identifier;
+      }
+    }
+
     // Detect cross-contract references: ContractB.lockingBytecode
     if (node.expression instanceof IdentifierNode && node.name === 'lockingBytecode') {
       const contract = this.contractMap.get(node.expression.name);

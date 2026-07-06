@@ -171,6 +171,19 @@ describe('Yul inline assembly (Phase 1: parse + diagnostics)', () => {
       + ' pop(staticcall(0, a, 0, 0, 0, 0)) } require(true); } }', { solidityImportCompat: true })).not.toThrow();
   });
 
+  it('inlines a simple 0-param local Yul function (`function f() -> r { r := expr }`)', () => {
+    // The call yields the body expression; byte-identical to writing that expression directly.
+    const asm = compileString('contract C() { function g() pure returns (uint ret) {'
+      + ' assembly { function konst() -> r { r := 1000 } ret := konst() } } }', { solidityImportCompat: true });
+    const direct = compileString('contract C() { function g() pure returns (uint ret) { assembly { ret := 1000 } } }',
+      { solidityImportCompat: true });
+    expect(asm.bytecode).toBe(direct.bytecode);
+    // A function with a parameter (its body references a free variable) is NOT inlined - stays reported.
+    expect(() => compileString('contract C() { function f() { assembly {'
+      + ' function double(v) -> r { r := mul(v, 2) } let x := double(2) } require(true); } }',
+    { solidityImportCompat: true })).toThrow(/local Yul function definitions/);
+  });
+
   it('lowers invalid() to require(false) and stop() to a no-op', () => {
     expect(compileString('contract C() { function f() { assembly { invalid() } require(true); } }',
       { solidityImportCompat: true }).bytecode)

@@ -12,7 +12,7 @@ import { BinaryOperator, UnaryOperator, NullaryOperator } from '../ast/Operator.
 import {
   YulBlockNode, YulStatementNode, YulExpressionNode, YulVariableDeclarationNode, YulAssignmentNode,
   YulIfNode, YulSwitchNode, YulForLoopNode, YulExpressionStatementNode, YulBreakNode, YulContinueNode,
-  YulFunctionCallNode, YulPathNode, YulLiteralNode, YulLiteralKind,
+  YulFunctionCallNode, YulFunctionDefinitionNode, YulPathNode, YulLiteralNode, YulLiteralKind,
 } from '../ast/YulAST.js';
 
 // Thrown when a Yul construct is outside the supported codegen subset; the block is then left as-is for the
@@ -767,6 +767,68 @@ function lowerForLoop(node: YulForLoopNode): StatementNode {
   return loc(new BlockNode([...initStmts, whileNode]), node);
 }
 
+// Any free-variable reference in a Yul expression. A leaf function's body can only reference its params, returns
+// and locals; with 0 locals and the return excluded, any path is a param - so "no path" == "no params" (the
+// parser does not reliably populate the def's params/returns lists, so this is derived from the body).
+function yulHasPath(e: YulExpressionNode): boolean {
+  if (e instanceof YulPathNode) return true;
+  if (e instanceof YulFunctionCallNode) return e.args.some(yulHasPath);
+  return false;
+}
+
+// Replace `f()` calls with a simple function's inlined expression, recursively.
+function rewriteYulExpr(e: YulExpressionNode, simple: Map<string, YulExpressionNode>): YulExpressionNode {
+  if (e instanceof YulFunctionCallNode) {
+    if (e.args.length === 0 && simple.has(e.name)) return simple.get(e.name)!;
+    e.args = e.args.map((a) => rewriteYulExpr(a, simple));
+  }
+  return e;
+}
+
+function rewriteYulStmts(stmts: YulStatementNode[], simple: Map<string, YulExpressionNode>): YulStatementNode[] {
+  const out: YulStatementNode[] = [];
+  for (const s of stmts) {
+    if (s instanceof YulFunctionDefinitionNode) continue; // drop the (now-inlined) definition
+    if (s instanceof YulVariableDeclarationNode) { if (s.value) s.value = rewriteYulExpr(s.value, simple); }
+    else if (s instanceof YulAssignmentNode) s.value = rewriteYulExpr(s.value, simple);
+    else if (s instanceof YulExpressionStatementNode) s.expression = rewriteYulExpr(s.expression, simple);
+    else if (s instanceof YulIfNode) { s.condition = rewriteYulExpr(s.condition, simple); s.body.statements = rewriteYulStmts(s.body.statements, simple); }
+    else if (s instanceof YulForLoopNode) {
+      s.condition = rewriteYulExpr(s.condition, simple);
+      for (const b of [s.pre, s.post, s.body]) b.statements = rewriteYulStmts(b.statements, simple);
+    } else if (s instanceof YulSwitchNode) {
+      s.expression = rewriteYulExpr(s.expression, simple);
+      for (const c of s.cases) c.body.statements = rewriteYulStmts(c.body.statements, simple);
+      if (s.defaultBody) s.defaultBody.statements = rewriteYulStmts(s.defaultBody.statements, simple);
+    } else if (s instanceof YulBlockNode) s.statements = rewriteYulStmts(s.statements, simple);
+    out.push(s);
+  }
+  return out;
+}
+
+// Inline a leaf local Yul function whose whole body is `ret := <expr>` (0 params, 1 return, expr not referencing
+// ret) - the common `function f() -> r { r := <expr> }` + `x := f()` shape. Only when EVERY definition in the
+// block is that simple; otherwise the block is left for the diagnostic to report the unsupported definition.
+function inlineSimpleYulFunctions(block: YulBlockNode): YulBlockNode {
+  const defs = block.statements.filter((s): s is YulFunctionDefinitionNode => s instanceof YulFunctionDefinitionNode);
+  if (defs.length === 0) return block;
+  const simple = new Map<string, YulExpressionNode>();
+  for (const d of defs) {
+    const b = d.body.statements;
+    const only = b[0];
+    // A single `<retVar> := <expr>` body whose expr has no free variable - so no params (a call yields exactly
+    // <expr>). This is the `function f() -> r { r := <const/global-expr> }` shape.
+    if (b.length === 1 && only instanceof YulAssignmentNode && only.paths.length === 1
+      && only.paths[0].members.length === 0 && !yulHasPath(only.value)) {
+      simple.set(d.name, only.value);
+    } else {
+      return block; // a non-simple definition -> leave the whole block untouched
+    }
+  }
+  block.statements = rewriteYulStmts(block.statements, simple);
+  return block;
+}
+
 function lowerBlock(block: YulBlockNode): BlockNode {
   const out: StatementNode[] = [];
   for (const s of block.statements) {
@@ -843,7 +905,7 @@ export default class LowerInlineAssembly extends AstTraversal {
     memory.clear();
     lastReturnData = undefined;
     try {
-      const block = lowerBlock(node.yulBlock);
+      const block = lowerBlock(inlineSimpleYulFunctions(node.yulBlock));
       // Hoist a zero-init declaration for each transient key used (tload may precede tstore in the block).
       if (transientKeys.size > 0) {
         const decls = [...transientKeys].map(

@@ -41,3 +41,7 @@ super/C3 inheritance, multifile symbol resolution.
 - **2D/nested array element delete + increment** (`delete x[3][2]`, `s.a[0][1]++`, `m.a[0][1]++`): ~5 files. The
   nested-array write desugar (DesugarNestedArrayWrite) handles `a[i][j] = v` but delete/increment on a nested
   element are not routed through it. In the parallel agent's nested-array area - deferred.
+
+- **abi.decode with contract types** (`abi.decode(x, (O))` / `(O[])`): abi.decode's schema rejects a contract type
+  ("Unsupported type O"); the array form types-mismatches (O[] vs address[]). ~2 files. Contract-as-address in the
+  abi.decode schema + return-type compat - deferred (deeper schema change).

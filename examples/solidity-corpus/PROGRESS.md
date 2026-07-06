@@ -247,3 +247,8 @@ source scan wouldn't surface, same pattern as bytesN-widen.
   still rejected by the existing read-only guard). Feature-coherence (local worked, param didn't).
 - 6544fba5 COMPOUND bytes element write `data[i] |= v` / `&=` / ... (+1): the new byte is `data[i] op v` (read old
   byte, combine), byte-identical to the hand read-modify-slice-concat. bytes[i] write now complete: state/local/param, = and compound.
+
+### erc7201 returns uint256 not bytes32 (82e03969, +9)
+User caught it: erc7201 yields a storage-slot uint256 (spec/tests use it in return-uint256, `uint constant`,
+arithmetic, uint256 comparison), so `erc7201(id)` -> `uint256(sha256(id))` (both the function alias + the Yul
+builtin). bytes32 context still works via `bytes32(erc7201(..))`. erc7201 corpus 6 -> 15.

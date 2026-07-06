@@ -746,3 +746,11 @@ describe('negated hex number literal (-0x42)', () => {
       { solidityImportCompat: true }).contractName).toBe('C');
   });
 });
+
+describe('address compared against a hex address literal (a == 0x1234..)', () => {
+  it('casts a 20-byte hex literal to the address type in a comparison', () => {
+    expect(compileString('contract C { function f(address a) external pure returns (bool) {'
+      + ' return a != 0x1234567890123456789012345678901234567890; } }',
+    { solidityImportCompat: true }).contractName).toBe('C');
+  });
+});

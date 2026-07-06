@@ -1608,6 +1608,18 @@ export default class TypeCheckTraversal extends AstTraversal {
     return cast;
   }
 
+  // A hex literal (`0x1234..`) compared/assigned against an address is a Solidity address literal; cast it to
+  // the address type so it is an address value at the VM level. Porting mode only.
+  private maybeCoerceHexToAddress(expr: ExpressionNode, expected?: Type): ExpressionNode {
+    if (!this.solidityImportCompat || !(expected instanceof AddressType) || !(expr instanceof HexLiteralNode)) {
+      return expr;
+    }
+    const cast = new CastNode(expected, expr, false);
+    cast.type = expected;
+    cast.location = expr.location;
+    return cast;
+  }
+
   // Coerce each `0x..` / literal-0 argument against its target parameter type (the call-site analogue).
   private coerceHexArgs(args: ExpressionNode[], expected: (Type | undefined)[]): ExpressionNode[] {
     if (!this.solidityImportCompat) return args;
@@ -1693,6 +1705,10 @@ export default class TypeCheckTraversal extends AstTraversal {
       // A literal 0 compared against bytesN (`data[i] == 0`): coerce it to the zero-filled bytesN value.
       node.left = this.maybeCoerceZeroToBytes(node.left, node.right.type);
       node.right = this.maybeCoerceZeroToBytes(node.right, node.left.type);
+      // A hex literal compared against an address (`a == 0x1234..`, a 20-byte address literal): cast it to the
+      // address type so both sides match (the literal becomes an address value at the VM level).
+      node.left = this.maybeCoerceHexToAddress(node.left, node.right.type);
+      node.right = this.maybeCoerceHexToAddress(node.right, node.left.type);
     }
 
     const resType = resultingTypeForBinaryOp(node.operator, node.left.type!, node.right.type!);

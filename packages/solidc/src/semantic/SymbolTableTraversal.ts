@@ -943,7 +943,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     }
 
     // Resolve identifiers within the constant expression (e.g., references to other constants)
-    this.resolveConstantExpressionIdentifiers(node.expression);
+    node.expression = this.resolveConstantExpressionIdentifiers(node.expression);
 
     const symbol = Symbol.constant(node);
     // Mark as referenced so constants are exempt from unused-variable checking
@@ -954,7 +954,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     return node;
   }
 
-  private resolveConstantExpressionIdentifiers(expr: ExpressionNode): void {
+  private resolveConstantExpressionIdentifiers(expr: ExpressionNode): ExpressionNode {
     if (expr instanceof IdentifierNode) {
       const definition = this.symbolTables[0].get(expr.name);
       if (definition) {
@@ -962,19 +962,33 @@ export default class SymbolTableTraversal extends AstTraversal {
         definition.references.push(expr);
       }
     } else if (expr instanceof BinaryOpNode) {
-      this.resolveConstantExpressionIdentifiers(expr.left);
-      this.resolveConstantExpressionIdentifiers(expr.right);
+      expr.left = this.resolveConstantExpressionIdentifiers(expr.left);
+      expr.right = this.resolveConstantExpressionIdentifiers(expr.right);
     } else if (expr instanceof UnaryOpNode) {
-      this.resolveConstantExpressionIdentifiers(expr.expression);
+      expr.expression = this.resolveConstantExpressionIdentifiers(expr.expression);
     } else if (expr instanceof CastNode) {
-      this.resolveConstantExpressionIdentifiers(expr.expression);
+      expr.expression = this.resolveConstantExpressionIdentifiers(expr.expression);
     } else if (expr instanceof ArrayNode) {
-      expr.elements.forEach((e) => this.resolveConstantExpressionIdentifiers(e));
+      expr.elements = expr.elements.map((e) => this.resolveConstantExpressionIdentifiers(e));
     } else if (expr instanceof FieldAccessNode) {
-      // Resolve the base of an enum member access `E.B` (E is an enum symbol) so type-checking sees the base's
-      // EnumType and treats `E.B` as a member, not a struct field.
-      this.resolveConstantExpressionIdentifiers(expr.expression);
+      // A library/namespaced constant `L.X` -> rewrite to the compound identifier `L.X` so type-checking sees the
+      // constant, not a struct-field access on L (which errors "struct has no field X").
+      if (expr.expression instanceof IdentifierNode) {
+        const compoundName = `${expr.expression.name}.${expr.name}`;
+        const definition = this.symbolTables[0].get(compoundName);
+        if (definition && this.constantMap.has(compoundName)) {
+          const id = new IdentifierNode(compoundName);
+          id.location = expr.location;
+          id.definition = definition;
+          definition.references.push(id);
+          return id;
+        }
+      }
+      // Otherwise resolve the base of an enum member access `E.B` (E is an enum symbol) so type-checking sees the
+      // base's EnumType and treats `E.B` as a member, not a struct field.
+      expr.expression = this.resolveConstantExpressionIdentifiers(expr.expression);
     }
+    return expr;
   }
 
   private deployResultLocals = new Map<string, InstantiationNode>(); // locals = `new C(...)` in the current fn

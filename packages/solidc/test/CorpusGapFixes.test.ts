@@ -727,3 +727,13 @@ describe('virtual/override on modifiers and fallback', () => {
     expect(cc('contract C { int256 x; fallback(bytes calldata i) virtual external { x = 1; } }')).toBe('C');
   });
 });
+
+describe('library-namespaced constant in a constant initializer (D = L.INT)', () => {
+  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  it('resolves L.CONST in a plain and arithmetic constant initializer', () => {
+    expect(cc('library L2 { uint256 constant INT = 5; }'
+      + ' contract C { uint256 constant D = L2.INT; function f() external pure returns (uint256) { return D; } }')).toBe('C');
+    expect(cc('library L2 { uint256 constant INT = 5; }'
+      + ' contract C { uint256 constant D = 20 + L2.INT; function f() external pure returns (uint256) { return D; } }')).toBe('C');
+  });
+});

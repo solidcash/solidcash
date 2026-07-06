@@ -754,3 +754,11 @@ describe('address compared against a hex address literal (a == 0x1234..)', () =>
     { solidityImportCompat: true }).contractName).toBe('C');
   });
 });
+
+describe('power operator result type is the base type (-1 ** e)', () => {
+  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  it('int base ** uint exponent yields the int base type', () => {
+    expect(cc('contract C { function f(uint256 e) external pure returns (int256) { return (-1) ** e; } }')).toBe('C');
+    expect(cc('contract C { function f(int256 b, uint256 e) external pure returns (int256) { return b ** e; } }')).toBe('C');
+  });
+});

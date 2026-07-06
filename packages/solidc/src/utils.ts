@@ -6,7 +6,10 @@ export function resultingTypeForBinaryOp(
   left: Type,
   right: Type,
 ): Type | undefined {
-  if ([BinaryOperator.SHIFT_LEFT, BinaryOperator.SHIFT_RIGHT, BinaryOperator.SPLIT].includes(operator)) return left;
+  // Shift/split/power take the LEFT operand's type: the right operand (shift amount / exponent) is an unsigned
+  // count that need not match the base's type, and the result is the base's type (Solidity `-1 ** e` is int).
+  if ([BinaryOperator.SHIFT_LEFT, BinaryOperator.SHIFT_RIGHT, BinaryOperator.SPLIT, BinaryOperator.POW]
+    .includes(operator)) return left;
 
   if (implicitlyCastable(left, right)) return right;
   if (implicitlyCastable(right, left)) return left;

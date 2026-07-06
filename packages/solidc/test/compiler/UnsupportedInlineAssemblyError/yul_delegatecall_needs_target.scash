@@ -1,8 +1,0 @@
-contract C() {
-    function f(address impl) {
-        assembly {
-            let r := delegatecall(gas(), impl, 0, 0, 0, 0)
-        }
-        require(true);
-    }
-}

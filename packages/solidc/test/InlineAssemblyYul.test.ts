@@ -56,14 +56,26 @@ describe('Yul inline assembly (Phase 1: parse + diagnostics)', () => {
       }`)).toThrow(/'create' has no BCH equivalent.*new Contract/);
   });
 
-  it('rejects a low-level delegatecall and explains it needs a known target', () => {
+  it('lowers a low-level call/staticcall/delegatecall to the external-call covenant (target resolved by the SDK)', () => {
+    // The compiler emits the low-level call + return-event slot (reusing the external-call mechanics); the co-spent
+    // target + payload are supplied at build time via .withExternalCall (see docs/call-model.md s12).
+    for (const mode of ['call', 'staticcall', 'delegatecall']) {
+      const nargs = mode === 'call' ? '0, impl, 0, 0, 0, 0, 0' : '0, impl, 0, 0, 0, 0';
+      expect(() => compileString(`
+        contract C() {
+          function f(address impl) { uint r; assembly { r := ${mode}(${nargs}) } require(r == r); }
+        }`, { solidityImportCompat: true })).not.toThrow();
+    }
+  });
+
+  it('lowers returndatasize()/returndatacopy() referencing the last low-level call result', () => {
     expect(() => compileString(`
       contract C() {
-        function f(address impl) {
-          assembly { let r := delegatecall(gas(), impl, 0, 0, 0, 0) }
-          require(true);
+        function f(address a) returns (uint s) {
+          uint ok;
+          assembly { ok := call(0, a, 0, 0, 0, 0, 0) s := returndatasize() returndatacopy(0, 0, s) }
         }
-      }`)).toThrow(/'delegatecall' has no BCH equivalent.*known target/);
+      }`, { solidityImportCompat: true })).not.toThrow();
   });
 
   it('compiles calldataload/calldatasize against function parameters', () => {

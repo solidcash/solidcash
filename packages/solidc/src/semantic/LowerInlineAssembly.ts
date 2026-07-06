@@ -6,7 +6,7 @@ import {
   CastNode, IdentifierNode, IntLiteralNode, BoolLiteralNode, ParameterNode, FunctionDefinitionNode,
   StateAssignNode, StateAccessNode, StateVariableNode, ContractNode, BytesConcatNode, FunctionCallNode,
   SliceNode, CollectionNode, MappingAccessNode, MappingAssignNode, HexLiteralNode, NullaryOpNode, FieldAccessNode,
-  ReturnNode,
+  ReturnNode, TupleAssignmentNode, LowLevelCallNode,
 } from '../ast/AST.js';
 import { BinaryOperator, UnaryOperator, NullaryOperator } from '../ast/Operator.js';
 import {
@@ -66,6 +66,45 @@ let currentVarSlot = new Map<string, bigint>();
 // docs/evm-storage-parity.md. Set while lowering; the mapping is synthesized in visitContract afterward.
 const EVM_STORAGE = '__evm_storage';
 let evmStorageUsed = false;
+
+// The synthetic `bytes` local holding the most recent low-level call's return-event data, so a following
+// returndatasize()/returndatacopy() reads it (EVM's implicit returndata buffer). Reset per assembly block.
+let lastReturnData: string | undefined;
+let yulCallCounter = 0;
+
+// Map a Yul low-level call `call/staticcall/delegatecall(gas, addr, [value,] argOff, argLen, retOff, retLen)` to a
+// solidc low-level call binding `(bool <ok>, bytes <retVar>) = address(addr).<mode>(data)`, reusing the existing
+// external-call covenant + return-event NFT codegen. The addr word is cast to an address (the SDK resolves the
+// actual co-spent target at build time via .withExternalCall); calldata is the memory buffer at argOff if it was
+// mstore-built, else empty. `retVar` is tracked as the returndata buffer.
+function isLowLevelCall(v: YulExpressionNode | undefined): v is YulFunctionCallNode {
+  return v instanceof YulFunctionCallNode
+    && (v.name === 'call' || v.name === 'staticcall' || v.name === 'delegatecall');
+}
+
+function lowerLowLevelCall(call: YulFunctionCallNode, okVar: string, okIsNew: boolean, src: YulStatementNode): StatementNode {
+  const mode = call.name as 'call' | 'staticcall' | 'delegatecall';
+  const addr = loc(new CastNode(new AddressType(false), lowerValue(call.args[1]), false), call);
+  // The payload is supplied at build time via .withExternalCall (see docs/call-model.md s12); the compiler emits
+  // the covenant + return-event slot with a placeholder empty calldata.
+  const data = loc(new HexLiteralNode(new Uint8Array(0)), src);
+  yulCallCounter += 1;
+  const okTmp = `__yul_callok_${yulCallCounter}`;
+  const retVar = `__yul_returndata_${yulCallCounter}`;
+  lastReturnData = retVar;
+  currentVars.set(retVar, new BytesType());
+  // `(bool <okTmp>, bytes <retVar>) = address(addr).<mode>(data)` - both fresh so the tuple has no mixed slots.
+  const llcall = loc(new LowLevelCallNode(addr, data, mode), call);
+  const tuple = loc(new TupleAssignmentNode(
+    [{ name: okTmp, type: PrimitiveType.BOOL }, { name: retVar, type: new BytesType() }], llcall, true,
+  ), src);
+  // Bind the Yul word var from the bool success (Yul `ok` is a 0/1 word).
+  const okWord = loc(new CastNode(UINT256, loc(new IdentifierNode(okTmp), src), false), src);
+  const okStmt = okIsNew
+    ? loc(new VariableDefinitionNode(UINT256, [], okVar, okWord), src)
+    : loc(new AssignNode(loc(new IdentifierNode(okVar), src), okWord), src);
+  return loc(new BlockNode([tuple, okStmt]), src);
+}
 
 // If a Yul slot argument denotes an arbitrary EVM storage slot (not a declared var), return the lowered slot
 // key for __evm_storage[key]; else undefined (a declared-var slot, handled by resolveSlotFields). A plain int
@@ -378,6 +417,12 @@ function lowerCall(call: YulFunctionCallNode): ExpressionNode {
     const nullary = loc(new NullaryOpNode(NULLARY_CONTEXT[name]), call);
     return ADDRESS_CONTEXT.has(name) ? loc(new CastNode(UINT256, nullary, false), call) : nullary;
   }
+  // returndatasize() -> the length of the last low-level call's return-event data (0 if no call preceded it).
+  if (name === 'returndatasize' && args.length === 0) {
+    return lastReturnData
+      ? loc(new UnaryOpNode(UnaryOperator.SIZE, loc(new IdentifierNode(lastReturnData), call)), call)
+      : intLit(0n, call);
+  }
   // blockhash(n) -> solidc blockhash builtin (a bytes32; SynthesizeBlockOracle, which runs after this pass, wires
   // the n->hash oracle). Cast to a uint256 word for the assembly context.
   if (name === 'blockhash' && args.length === 1) {
@@ -555,6 +600,8 @@ function lowerStatement(stmt: YulStatementNode): StatementNode {
       bufferWrites.set(stmt.names[0], []);
       return loc(new BlockNode([]), stmt);
     }
+    // `let ok := call/staticcall/delegatecall(...)` -> a low-level call binding (reuses the external-call covenant).
+    if (isLowLevelCall(stmt.value)) return lowerLowLevelCall(stmt.value, stmt.names[0], true, stmt);
     const expr = stmt.value ? lowerValue(stmt.value) : undefined;
     return loc(new VariableDefinitionNode(UINT256, [], stmt.names[0], expr), stmt);
   }
@@ -562,6 +609,8 @@ function lowerStatement(stmt: YulStatementNode): StatementNode {
   if (stmt instanceof YulAssignmentNode) {
     if (stmt.paths.length !== 1 || stmt.paths[0].members.length > 0) throw new YulNotLowerable();
     const name = stmt.paths[0].base;
+    // `ok := call/staticcall/delegatecall(...)` -> a low-level call binding onto the existing var.
+    if (isLowLevelCall(stmt.value)) return lowerLowLevelCall(stmt.value, name, false, stmt);
     const target = loc(new IdentifierNode(name), stmt);
     let value = lowerValue(stmt.value);
     // A plain non-word var read (address, bytesN, bool) yields a value of that type; normalize it to the uint256
@@ -645,6 +694,9 @@ function lowerStatement(stmt: YulStatementNode): StatementNode {
           return loc(new BlockNode([]), stmt);
         }
       }
+      // returndatacopy(dst, off, len): the last call's return-event data is already the tracked `bytes` var; the
+      // copy into scratch memory is a no-op unless later mload'd (which the memory model then rejects cleanly).
+      if (e.name === 'returndatacopy' && e.args.length === 3) return loc(new BlockNode([]), stmt);
       if (e.name === 'return' && e.args.length === 2 && e.args.every(isIntLiteral)) {
         const [ptr, size] = e.args.map((a) => BigInt((a as YulLiteralNode).raw));
         if (size === 32n) {
@@ -697,7 +749,16 @@ function lowerForLoop(node: YulForLoopNode): StatementNode {
 }
 
 function lowerBlock(block: YulBlockNode): BlockNode {
-  return loc(new BlockNode(block.statements.map(lowerStatement)), block);
+  const out: StatementNode[] = [];
+  for (const s of block.statements) {
+    const lowered = lowerStatement(s);
+    // Flatten a lowering-artifact block (the low-level-call binding, empty mstore no-ops) into this scope so its
+    // declarations (e.g. the returndata `bytes` var) are visible to later statements; a real nested Yul block
+    // (YulBlockNode) stays a scoped BlockNode.
+    if (lowered instanceof BlockNode && !(s instanceof YulBlockNode)) out.push(...(lowered.statements ?? []));
+    else out.push(lowered);
+  }
+  return loc(new BlockNode(out), block);
 }
 
 // Pre-semantic pass: lower supported Yul inline assembly to equivalent main-AST statements, reusing the
@@ -761,6 +822,7 @@ export default class LowerInlineAssembly extends AstTraversal {
     if (!node.yulBlock) return node;
     transientKeys.clear();
     memory.clear();
+    lastReturnData = undefined;
     try {
       const block = lowerBlock(node.yulBlock);
       // Hoist a zero-init declaration for each transient key used (tload may precede tstore in the block).

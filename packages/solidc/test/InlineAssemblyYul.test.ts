@@ -125,6 +125,29 @@ describe('Yul inline assembly (Phase 1: parse + diagnostics)', () => {
       .toBe(compileString(bare('uint256(blockhash(1))'), { solidityImportCompat: true }).bytecode);
   });
 
+  it('lowers gas/codesize/selfbalance to gasleft()/activeBytecode.length/address(this).balance', () => {
+    const asm = (yul: string): string =>
+      `contract C() { function f() { uint x; assembly { x := ${yul} } require(x == x); } }`;
+    const bare = (sol: string): string =>
+      `contract C() { function f() { uint x; x = ${sol}; require(x == x); } }`;
+    const pairs: Array<[string, string]> = [
+      ['gas()', 'gasleft()'],
+      ['codesize()', 'this.activeBytecode.length'],
+      ['selfbalance()', 'uint256(address(this).balance)'],
+    ];
+    for (const [yul, sol] of pairs) {
+      expect(compileString(asm(yul), { solidityImportCompat: true }).bytecode)
+        .toBe(compileString(bare(sol), { solidityImportCompat: true }).bytecode);
+    }
+  });
+
+  it('still rejects balance(addr) / address() by name (no valid BCH analogue for an arbitrary address)', () => {
+    expect(() => compileString('contract C() { function f(uint a) { uint b; assembly { b := balance(a) } require(b==b); } }',
+      { solidityImportCompat: true })).toThrow(/not yet lowerable to BCH script: balance/);
+    expect(() => compileString('contract C() { function f() { uint a; assembly { a := address() } require(a==a); } }',
+      { solidityImportCompat: true })).toThrow(/not yet lowerable to BCH script: address/);
+  });
+
   it('names the specific unlowerable builtin rather than claiming Yul is wholly unsupported', () => {
     // A block whose only blocker is an un-lowered builtin (mcopy) reports that builtin by name.
     expect(() => compileString(`

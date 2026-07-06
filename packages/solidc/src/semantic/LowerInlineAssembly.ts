@@ -5,7 +5,7 @@ import {
   AssignNode, RequireNode, BranchNode, WhileNode, BreakNode, ContinueNode, BinaryOpNode, UnaryOpNode,
   CastNode, IdentifierNode, IntLiteralNode, BoolLiteralNode, ParameterNode, FunctionDefinitionNode,
   StateAssignNode, StateAccessNode, StateVariableNode, ContractNode, BytesConcatNode, FunctionCallNode,
-  SliceNode, CollectionNode, MappingAccessNode, MappingAssignNode, HexLiteralNode, NullaryOpNode,
+  SliceNode, CollectionNode, MappingAccessNode, MappingAssignNode, HexLiteralNode, NullaryOpNode, FieldAccessNode,
 } from '../ast/AST.js';
 import { BinaryOperator, UnaryOperator, NullaryOperator } from '../ast/Operator.js';
 import {
@@ -382,6 +382,24 @@ function lowerCall(call: YulFunctionCallNode): ExpressionNode {
   if (name === 'blockhash' && args.length === 1) {
     const bh = loc(new FunctionCallNode(loc(new IdentifierNode('blockhash'), call), [lowerValue(args[0])]), call);
     return loc(new CastNode(UINT256, bh, false), call);
+  }
+  // gas() -> gasleft() (a shim on BCH - there is no gas metering; see SynthesizeBlockOracle).
+  if (name === 'gas' && args.length === 0) {
+    return loc(new FunctionCallNode(loc(new IdentifierNode('gasleft'), call), []), call);
+  }
+  // codesize() -> this.activeBytecode.length (the executing contract's own script size).
+  if (name === 'codesize' && args.length === 0) {
+    return loc(new UnaryOpNode(UnaryOperator.SIZE, loc(new NullaryOpNode(NullaryOperator.BYTECODE), call)), call);
+  }
+  // selfbalance() -> address(this).balance: the satoshis this contract controls, summed over the inputs locked to
+  // its own bytecode (`this` = tx.inputs[activeInputIndex].lockingBytecode). Cast to a uint256 word. (balance(addr)
+  // and address() are deliberately NOT lowered - a BCH address is variable-length locking bytecode, so an arbitrary
+  // 20-byte word is not a valid address; only `this` is a genuine one.)
+  if (name === 'selfbalance' && args.length === 0) {
+    const thisLbc = loc(new UnaryOpNode(UnaryOperator.INPUT_LOCKING_BYTECODE,
+      loc(new NullaryOpNode(NullaryOperator.INPUT_INDEX), call)), call);
+    const thisAddr = loc(new CastNode(new AddressType(false), thisLbc, false), call);
+    return loc(new CastNode(UINT256, loc(new FieldAccessNode(thisAddr, 'balance'), call), false), call);
   }
   if (name in ARITH_OPS && args.length === 2) {
     return loc(new BinaryOpNode(lowerValue(args[0]), ARITH_OPS[name], lowerValue(args[1])), call);

@@ -3504,6 +3504,23 @@ export default class AstBuilder
     const parameters = ctx.expressionList().expression_list().map((e) => this.visit(e));
     const callOpts = this.parseCallOptions(ctx.callOptions());
 
+    // UDVT wrap/unwrap reached as a method call: `C.T.unwrap(x)` strips (visitFieldAccess) to object = bare `T`,
+    // an IdentifierNode naming a UDVT, so it arrives here instead of the 2-identifier FunctionCall form. Emit
+    // the same identity cast (unwrap -> underlying; wrap -> underlying then the UDVT). typeDefMap distinguishes it.
+    if (object instanceof IdentifierNode && parameters.length === 1
+      && (methodName === 'wrap' || methodName === 'unwrap')) {
+      const udvt = this.typeDefMap.get(object.name);
+      if (udvt) {
+        const arg = parameters[0] as ExpressionNode;
+        const toUnderlying = new CastNode(udvt.underlyingType, arg, false);
+        toUnderlying.location = Location.fromCtx(ctx);
+        if (methodName === 'unwrap') return toUnderlying;
+        const cast = new CastNode(udvt, toUnderlying, false);
+        cast.location = Location.fromCtx(ctx);
+        return cast;
+      }
+    }
+
     // .send(amount) on an address produces AddressSendExpressionNode
     if (methodName === 'send' && parameters.length === 1) {
       if (callOpts?.value) {

@@ -521,3 +521,20 @@ describe('contract/interface-qualified type access (C.T / I.Enum)', () => {
       + ' contract C is I { function f() external pure returns (uint256) { return uint256(Dir.Right); } }')).toBe('C');
   });
 });
+
+describe('contract-qualified UDVT wrap/unwrap (C.T.wrap / C.T.unwrap)', () => {
+  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  it('resolves C.T.unwrap(C.T.wrap(x)) as identity casts', () => {
+    expect(cc('contract C { type T is bool;'
+      + ' function f() external pure returns (bool) { return C.T.unwrap(C.T.wrap(true)); } }')).toBe('C');
+  });
+  it('leaves the bare T.unwrap(x) working', () => {
+    expect(cc('contract C { type T is uint256;'
+      + ' function f(T x) external pure returns (uint256) { return T.unwrap(x); } }')).toBe('C');
+  });
+  it('does not misread a 2-arg library method named wrap as a UDVT cast', () => {
+    expect(cc('library L { function wrap(uint256 a, uint256 b) internal pure returns (uint256) { return a + b; } }'
+      + ' contract C { using L for uint256;'
+      + ' function f() external pure returns (uint256) { return L.wrap(1, 2); } }')).toBe('C');
+  });
+});

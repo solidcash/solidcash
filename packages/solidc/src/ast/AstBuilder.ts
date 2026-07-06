@@ -2041,7 +2041,11 @@ export default class AstBuilder
       sha.location = identifier.location;
       const call = new FunctionCallNode(sha, [parameters[0] as ExpressionNode]);
       call.location = Location.fromCtx(ctx);
-      return call;
+      // ERC-7201 yields a storage-slot uint256 (not the raw bytes32 hash); return uint256(sha256(id)) so
+      // it composes in the uint256 contexts the spec uses (arithmetic, comparison, slot number).
+      const cast = new CastNode(parseType('uint256'), call, false);
+      cast.location = Location.fromCtx(ctx);
+      return cast;
     }
 
     // `Color(i)` where Color is an enum is an int -> enum cast, not a function call.

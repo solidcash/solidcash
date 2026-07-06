@@ -629,7 +629,8 @@ function lowerCall(call: YulFunctionCallNode): ExpressionNode {
         + 'aliased to sha256(...). The result differs from Ethereum ERC-7201 and must not be relied on cross-chain.');
       warnedErc7201Yul = true;
     }
-    return loc(new FunctionCallNode(loc(new IdentifierNode('sha256'), call), [lowerValue(args[0])]), call);
+    const sha = loc(new FunctionCallNode(loc(new IdentifierNode('sha256'), call), [lowerValue(args[0])]), call);
+    return loc(new CastNode(UINT256, sha, false), call); // erc7201 yields a storage-slot uint256, not bytes32
   }
   throw new YulNotLowerable();
 }

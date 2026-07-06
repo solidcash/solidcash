@@ -571,16 +571,18 @@ describe('bytes memory/local element write (bytes memory d; d[i] = v)', () => {
   });
 });
 
-describe('erc7201 not supported: function -> sha256 alias + layout clause ignored', () => {
+describe('erc7201 not supported: function -> uint256(sha256) alias + layout clause ignored', () => {
   const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
-  it('aliases erc7201(id) to sha256(id)', () => {
-    expect(cc('contract C { function f() external pure returns (bytes32) {'
-      + ' return bytes32(erc7201("openzeppelin.storage.X")); } }')).toBe('C');
+  it('aliases erc7201(id) to a uint256 storage slot (usable in uint256 contexts)', () => {
+    expect(cc('contract C { function f(string memory id) external pure returns (uint256) {'
+      + ' return erc7201(id); } }')).toBe('C');
+    expect(cc('contract C { uint256 constant X = erc7201("openzeppelin.storage.Y");'
+      + ' function f() external pure returns (uint256) { return X; } }')).toBe('C');
   });
-  it('is byte-identical to sha256(id)', () => {
-    const a = compileString('contract C { function f() external pure returns (bytes32) { return bytes32(erc7201("ns")); } }',
+  it('is byte-identical to uint256(sha256(id))', () => {
+    const a = compileString('contract C { function f() external pure returns (uint256) { return erc7201("ns"); } }',
       { solidityImportCompat: true });
-    const b = compileString('contract C { function f() external pure returns (bytes32) { return bytes32(sha256("ns")); } }',
+    const b = compileString('contract C { function f() external pure returns (uint256) { return uint256(sha256("ns")); } }',
       { solidityImportCompat: true });
     expect(a.bytecode).toBe(b.bytecode);
   });

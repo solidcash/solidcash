@@ -609,3 +609,15 @@ describe('payable(x) cast on a bytes source (payable is a no-op on BCH)', () => 
     expect(cc('contract C { function f(bytes20 b) external pure returns (address) { return payable(b); } }')).toBe('C');
   });
 });
+
+describe('bytes memory PARAM element write (function f(bytes memory x) { x[i] = v; })', () => {
+  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  it('accepts a byte write to a bytes memory parameter', () => {
+    expect(cc('contract C { function f(bytes memory x, uint256 i, bytes1 v) external pure returns (bytes memory) {'
+      + ' x[i] = v; return x; } }')).toBe('C');
+  });
+  it('still rejects a write to a bytes calldata parameter (read-only)', () => {
+    expect(() => cc('contract C { function f(bytes calldata x, uint256 i, bytes1 v) external pure returns (bytes memory) {'
+      + ' x[i] = v; return x; } }')).toThrow(/read-only/);
+  });
+});

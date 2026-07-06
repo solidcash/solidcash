@@ -1024,6 +1024,7 @@ export default class AstBuilder
     // so `d.x = v` in a library/helper body rebuilds the struct as for a local.
     for (const p of parameters) {
       if (p.type instanceof StructType) this.localStructTypes.set(p.name, p.type);
+      if (p.type instanceof BytesType && p.type.bound === undefined) this.localBytesVars.add(p.name);
     }
     const structPtrParams = this.registerStructPointerParams(parameters);
     const statements = this.flattenStatements(ctx.statement_list().map((s) => this.visit(s) as StatementNode));
@@ -1147,6 +1148,7 @@ export default class AstBuilder
     // Struct-typed params (incl. `storage` struct pointers) participate in struct-field-write desugaring.
     for (const p of parameters) {
       if (p.type instanceof StructType) this.localStructTypes.set(p.name, p.type);
+      if (p.type instanceof BytesType && p.type.bound === undefined) this.localBytesVars.add(p.name);
     }
     const structPtrParams = this.registerStructPointerParams(parameters);
     const statements = this.flattenStatements(ctx.statement_list().map((s) => this.visit(s) as StatementNode));

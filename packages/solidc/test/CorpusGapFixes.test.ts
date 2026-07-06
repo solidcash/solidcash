@@ -538,3 +538,20 @@ describe('contract-qualified UDVT wrap/unwrap (C.T.wrap / C.T.unwrap)', () => {
       + ' function f() external pure returns (uint256) { return L.wrap(1, 2); } }')).toBe('C');
   });
 });
+
+describe('bytes state-var element write (data[i] = v)', () => {
+  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  it('compiles a byte write with a literal, expression and variable value', () => {
+    expect(cc('contract C { bytes data;'
+      + ' function f(uint256 i, bytes1 v) external { data[31] = 0x77; data[i] = bytes1(uint8(i)); data[0] = v; require(true); } }'))
+      .toBe('C');
+  });
+  it('is byte-identical to the hand-written slice+concat reassignment', () => {
+    const sugar = compileString('contract C { bytes data; function f(uint256 i, bytes1 v) external { data[i] = v; require(true); } }',
+      { solidityImportCompat: true });
+    const hand = compileString('contract C { bytes data;'
+      + ' function f(uint256 i, bytes1 v) external { data = data[0:i] + v + data[i+1:data.length]; require(true); } }',
+      { solidityImportCompat: true });
+    expect(sugar.bytecode).toBe(hand.bytecode);
+  });
+});

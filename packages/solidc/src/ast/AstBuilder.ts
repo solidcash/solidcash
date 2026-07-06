@@ -2654,6 +2654,13 @@ export default class AstBuilder
       return this.buildCompoundAssign(rawName, nameLoc, op, valueCtx ?? null, loc);
     }
 
+    // Bytes state var element write `data[i] = v` -> reassign the whole blob with byte i replaced:
+    // `data = data[0:i] ++ v ++ data[i+1:]`. Reuses the bytes slice/concat codegen (like .push/.pop).
+    if (!isThis && !isIncDec && !hasMember && keyFns.length === 1 && op === '='
+      && this.bytesStateVarNames.has(rawName) && valueCtx) {
+      return this.desugarBytesElementWrite(rawName, keyFns[0], this.visit(valueCtx) as ExpressionNode, loc);
+    }
+
     // Mapping-of-flattened-struct write: `providers[k].data[k2] op= v` / `providers[k].data[k2].valid op= v` /
     // `providers[k].scalar op= v` -> the flattened nested state mapping `providers__<field>` with all keys and a
     // trailing scalar field. All the index keys index the flattened nested mapping (outer key + field-mapping key).
@@ -4271,6 +4278,21 @@ export default class AstBuilder
 
   // `bytes b; b.pop()` desugars to `b = b[0 : b.length - 1]` (drop the last byte). Popping an empty bytes slices
   // to end -1, which fails at runtime - matching Solidity's revert-on-empty-pop.
+  // `data[i] = v` on an unbounded bytes state var -> `data = data[0:i] ++ v ++ data[i+1:size(data)]`.
+  private desugarBytesElementWrite(
+    name: string, indexFn: () => ExpressionNode, value: ExpressionNode, loc: Location,
+  ): StateAssignNode {
+    const stamp = <T extends { location?: Location }>(n: T): T => { n.location = loc; return n; };
+    const read = (): StateAccessNode => stamp(new StateAccessNode(name));
+    const len = stamp(new UnaryOpNode(UnaryOperator.SIZE, read()));
+    const iPlus1 = stamp(new BinaryOpNode(indexFn(), BinaryOperator.PLUS, stamp(new IntLiteralNode(1n))));
+    const prefix = stamp(new SliceNode(read(), stamp(new IntLiteralNode(0n)), indexFn()));
+    const suffix = stamp(new SliceNode(read(), iPlus1, len));
+    const cat1 = stamp(new BinaryOpNode(prefix, BinaryOperator.PLUS, value));
+    const cat2 = stamp(new BinaryOpNode(cat1, BinaryOperator.PLUS, suffix));
+    return stamp(new StateAssignNode(name, cat2));
+  }
+
   private desugarBytesPop(name: string, ctx: ParserRuleContext): StateAssignNode {
     const loc = Location.fromCtx(ctx);
     const stamp = <T extends { location?: Location }>(n: T): T => { n.location = loc; return n; };

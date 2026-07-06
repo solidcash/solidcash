@@ -10,6 +10,7 @@ import {
   VariableDefinitionNode,
   MappingAssignNode,
   MappingFieldAssignNode,
+  MappingDeleteNode,
   ArrayAssignNode,
   StateArrayAssignNode,
   ArrayAccessNode,
@@ -22,6 +23,7 @@ import {
 } from '../ast/AST.js';
 import AstTraversal from '../ast/AstTraversal.js';
 import { cloneNode } from '../ast/clone.js';
+import { createDefaultValueExpression } from '../ast/defaults.js';
 
 /**
  * Lowers a write to a NESTED local (memory) array element, e.g. `b[i][j] = v` where `b` is a local/param
@@ -92,7 +94,9 @@ export default class DesugarNestedArrayWrite extends AstTraversal {
         ? (this.tryDesugar(visited) ?? this.tryDesugarNestedPushPop(visited))
         : visited instanceof MappingFieldAssignNode
           ? this.tryDesugarLocalStructArrayField(visited)
-          : undefined;
+          : visited instanceof MappingDeleteNode
+            ? this.tryDesugarLocalArrayDelete(visited)
+            : undefined;
       if (desugared) out.push(...desugared);
       else out.push(visited);
     }
@@ -156,6 +160,19 @@ export default class DesugarNestedArrayWrite extends AstTraversal {
     );
     ctor.location = node.location;
     const assign = new ArrayAssignNode(node.name, clone(node.keys[0]), ctor);
+    assign.location = node.location;
+    return [assign];
+  }
+
+  // `delete d[i]` where d is a LOCAL array: parses as a MappingDeleteNode the symbol table rejects (d is not a
+  // state collection). Solidity resets the element to its type default, so rewrite to `d[i] = <default>` (a
+  // working local array-element write). State arrays route to StateArrayDelete before ever reaching here.
+  private tryDesugarLocalArrayDelete(node: MappingDeleteNode): StatementNode[] | undefined {
+    if (node.keys.length !== 1) return undefined;
+    const baseType = this.locals.get(node.name);
+    if (!(baseType instanceof ArrayType)) return undefined;
+    const def = createDefaultValueExpression(baseType.elementType, node.location!);
+    const assign = new ArrayAssignNode(node.name, cloneNode(node.keys[0]) as ExpressionNode, def);
     assign.location = node.location;
     return [assign];
   }

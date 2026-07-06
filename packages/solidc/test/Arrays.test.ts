@@ -60,6 +60,22 @@ describe('storage pointer to a freshly-pushed array element (T storage x = arr.p
   });
 });
 
+// `delete d[i]` where d is a LOCAL array resets the element to its type default. It parses as a MappingDeleteNode
+// the symbol table rejects; desugars to `d[i] = <default>` (a working local array-element write). State arrays
+// route to StateArrayDelete before this fires.
+describe('local array-element delete (int[] d; delete d[i])', () => {
+  it('resets a local array element to the type default', () => {
+    expect(compileString('contract C(){function f()external{int[] d=new int[](3);d[0]=5;delete d[0];require(d[0]==0);}}',
+      { solidityImportCompat: true }).contractName).toBe('C');
+  });
+  it('is byte-identical to d[i] = default (sound by reduction)', () => {
+    const pre = 'contract C(){function f()external{int[] d=new int[](3);d[0]=5;';
+    const del = compileString(`${pre}delete d[0];require(d[0]==0);}}`, { solidityImportCompat: true });
+    const assign = compileString(`${pre}d[0]=0;require(d[0]==0);}}`, { solidityImportCompat: true });
+    expect(del.bytecode).toBe(assign.bytecode);
+  });
+});
+
 describe('Tuple forwarding and whole fixed-array assignment', () => {
   it('forwards a tuple-returning call directly in a return statement', () => {
     // `return g()` where g returns (int, int) forwards the tuple's components (Solidity tuple forwarding),

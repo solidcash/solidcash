@@ -472,3 +472,19 @@ describe('implicit bytesN -> bytesM widening (M >= N), matching solc', () => {
       .toThrow(/can not be assigned/);
   });
 });
+
+describe('public array auto-getter (this.a(i) -> element)', () => {
+  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  it('synthesizes a value-array getter callable as this.a(i)', () => {
+    expect(cc('contract C { uint256[] public a;'
+      + ' function f() external view returns (uint256) { uint256 y = this.a(2); return y; } }')).toBe('C');
+  });
+  it('synthesizes an address-array getter', () => {
+    expect(cc('contract C { address[] public owners;'
+      + ' function f() external view returns (address) { return this.owners(0); } }')).toBe('C');
+  });
+  it('leaves the whole-array read (this.a) working', () => {
+    expect(cc('contract C { uint256[] public a;'
+      + ' function f() external view returns (uint256[] memory) { return this.a; } }')).toBe('C');
+  });
+});

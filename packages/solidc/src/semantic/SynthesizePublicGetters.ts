@@ -7,11 +7,12 @@ import {
   ReturnNode,
   StateAccessNode,
   MappingAccessNode,
+  ArrayAccessNode,
   IdentifierNode,
   ParameterNode,
   StateVariableVisibility,
 } from '../ast/AST.js';
-import { MappingType, IntType, BytesType, PrimitiveType, AddressType, Type } from '@solidcash/utils';
+import { MappingType, ArrayType, IntType, BytesType, PrimitiveType, AddressType, Type } from '@solidcash/utils';
 import AstTraversal from '../ast/AstTraversal.js';
 
 // Only synthesize getters for types whose declared type resolves byte-identically to `this.x` during semantic
@@ -58,8 +59,26 @@ export default class SynthesizePublicGetters extends AstTraversal {
 
     for (const sv of node.stateVariables) {
       if (!isPub(sv.visibility) || existing.has(sv.name)) continue;
-      if (!isSafeGetterType(sv.type)) continue;
       const loc = sv.location ?? fallback;
+      // A public array's getter takes a uint index and returns the element (`function a(uint i) returns (T)
+      // { return this.a[i]; }`), like Solidity. Value-element only (struct/nested/enum-placeholder elements
+      // keep the whole-array read model, same restriction as scalars/mappings).
+      if (sv.type instanceof ArrayType) {
+        if (!isSafeGetterType(sv.type.elementType)) continue;
+        const idxName = '__getterIndex';
+        const key = Object.assign(new ParameterNode(new IntType(false, 256), idxName), { location: loc });
+        const stateRead = Object.assign(new StateAccessNode(sv.name), { location: loc });
+        const read = Object.assign(new ArrayAccessNode(stateRead, Object.assign(new IdentifierNode(idxName),
+          { location: loc })), { location: loc });
+        const body = Object.assign(new BlockNode([Object.assign(new ReturnNode([read]), { location: loc })]),
+          { location: loc });
+        const fn = new FunctionDefinitionNode(sv.name, [key], body);
+        fn.returnTypes = [sv.type.elementType];
+        fn.location = loc;
+        getters.push(fn);
+        continue;
+      }
+      if (!isSafeGetterType(sv.type)) continue;
       const read = new StateAccessNode(sv.name); read.location = loc;
       const body = new BlockNode([Object.assign(new ReturnNode([read]), { location: loc })]); body.location = loc;
       const fn = new FunctionDefinitionNode(sv.name, [], body);

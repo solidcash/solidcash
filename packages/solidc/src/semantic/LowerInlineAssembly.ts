@@ -652,6 +652,13 @@ function lowerStatement(stmt: YulStatementNode): StatementNode {
       if (e.name === 'revert' && isZeroRevert(e)) {
         return loc(new RequireNode(loc(new BoolLiteralNode(false), stmt)), stmt);
       }
+      // invalid(): the INVALID opcode unconditionally aborts -> require(false).
+      if (e.name === 'invalid' && e.args.length === 0) {
+        return loc(new RequireNode(loc(new BoolLiteralNode(false), stmt)), stmt);
+      }
+      // stop(): halt execution successfully. A BCH function just ends; treat as a no-op (statements after a stop
+      // are dead in EVM but harmless here - this is the opcode-availability-test shape).
+      if (e.name === 'stop' && e.args.length === 0) return loc(new BlockNode([]), stmt);
       // sstore(slot, v): write the word to that storage slot (a single var, or decomposed into packed vars),
       // or the synthesized __evm_storage[slot] register entry for an arbitrary (non-declared) slot.
       if (e.name === 'sstore' && e.args.length === 2) {

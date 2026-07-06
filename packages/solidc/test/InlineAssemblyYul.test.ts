@@ -171,6 +171,15 @@ describe('Yul inline assembly (Phase 1: parse + diagnostics)', () => {
       + ' pop(staticcall(0, a, 0, 0, 0, 0)) } require(true); } }', { solidityImportCompat: true })).not.toThrow();
   });
 
+  it('lowers invalid() to require(false) and stop() to a no-op', () => {
+    expect(compileString('contract C() { function f() { assembly { invalid() } require(true); } }',
+      { solidityImportCompat: true }).bytecode)
+      .toBe(compileString('contract C() { function f() { require(false); require(true); } }',
+        { solidityImportCompat: true }).bytecode);
+    expect(() => compileString('contract C() { function f() { assembly { stop() pop(add(0, 1)) } require(true); } }',
+      { solidityImportCompat: true })).not.toThrow();
+  });
+
   it('lowers a single-word return(p, 32) to a function return, byte-identical to `return v`', () => {
     // The lowered block ends in a return; it must splice into the function body so the return sits at the tail
     // (a nested block would hide it from the terminal-return codegen and duplicate the trailing covenant).

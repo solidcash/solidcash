@@ -29,4 +29,16 @@ describe('SBE-19: Interface.method.selector / Contract.method.selector resolve t
       + ' return abi.encodeWithSelector(Other.ping.selector, x); } }',
       { solidityImportCompat: true }).contractName).toBe('C');
   });
+  it('resolves a contract/interface-typed VARIABLE method selector (v.method.selector)', () => {
+    expect(compileString(
+      'interface IFoo { function bar(address a) external returns (bool); }'
+      + ' contract C { IFoo t; function f() external returns (bytes4) { return t.bar.selector; } }',
+      { solidityImportCompat: true }).contractName).toBe('C');
+  });
+  it('resolves a bare own/inherited function selector (fn.selector)', () => {
+    expect(compileString(
+      'contract B { function ext(uint256 x) external {} } contract C is B {'
+      + ' function f() external returns (bytes4) { return ext.selector; } }',
+      { solidityImportCompat: true }).contractName).toBe('C');
+  });
 });

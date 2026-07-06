@@ -5350,15 +5350,37 @@ export default class SymbolTableTraversal extends AstTraversal {
       }
     }
 
-    // `Interface.method.selector` -> the interface method's 4-byte selector (bytes4), computed from its
-    // signature. Mirrors `this.<fn>.selector` for own functions.
+    // Bare `<fn>.selector` -> the own/inherited function's 4-byte selector (mirrors `this.<fn>.selector`).
+    if (node.name === 'selector' && node.expression instanceof IdentifierNode) {
+      const fn = this.functionDefinitions.get(node.expression.name)?.[0];
+      if (fn?.functionSelector) {
+        const lit = new HexLiteralNode(fn.functionSelector);
+        lit.location = node.location;
+        return lit;
+      }
+    }
+
+    // `Interface.method.selector` / `Contract.method.selector` -> the method's 4-byte selector (bytes4), computed
+    // from its signature. Mirrors `this.<fn>.selector` for own functions. Also handles a contract- or interface-
+    // typed variable `v.method.selector` (v's declared type names the contract/interface).
     if (node.name === 'selector' && node.expression instanceof FieldAccessNode
       && node.expression.expression instanceof IdentifierNode) {
       const fa = node.expression;
-      const iface = this.interfaceMap.get((fa.expression as IdentifierNode).name);
-      const method = iface?.functions.find((f) => f.name === fa.name);
-      if (method) {
-        const sig = computeFunctionSignature(method.name, method.parameters.map((p) => p.type.toString()));
+      const baseName = (fa.expression as IdentifierNode).name;
+      const params = (name: string): ParameterNode[] | undefined => {
+        const im = this.interfaceMap.get(name)?.functions.find((f) => f.name === fa.name);
+        if (im) return im.parameters;
+        return this.contractMap.get(name)?.functions.find((f) => f.name === fa.name)?.parameters;
+      };
+      // A contract/interface-typed variable carries its type name in AddressType.interfaceName (toString is
+      // just 'address'); look it up in the scope chain, then the state vars.
+      let varType: Type | undefined;
+      for (let i = this.symbolTables.length - 1; i >= 0 && !varType; i -= 1) varType = this.symbolTables[i]?.get(baseName)?.type;
+      varType = varType ?? this.stateVariableMap.get(baseName)?.type;
+      const varContract = varType instanceof AddressType ? varType.interfaceName : undefined;
+      const methodParams = params(baseName) ?? (varContract ? params(varContract) : undefined);
+      if (methodParams) {
+        const sig = computeFunctionSignature(fa.name, methodParams.map((p) => p.type.toString()));
         const lit = new HexLiteralNode(computeFunctionSelector(sig));
         lit.location = node.location;
         return lit;

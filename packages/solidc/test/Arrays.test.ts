@@ -113,3 +113,18 @@ describe('whole fixed-array copy with a per-element bytes conversion (bytes2[N] 
       { solidityImportCompat: true }).contractName).toBe('C');
   });
 });
+
+// A whole DYNAMIC array copy with differing element types (`bytes10[] = bytes8[]`, which pack differently) can't
+// be a same-layout copy; DesugarDynamicArrayCopyCast (pre-semantic, before the loop-cache pass) rewrites it to
+// `delete d2; for (i) d2.push(bytes10(d1[i]));`. Sound by construction: canonical copy loop reusing the byte-
+// identical-verified element cast; every primitive (delete, push, cast) is independently verified.
+describe('whole dynamic-array copy with a per-element bytes conversion (bytes10[] = bytes8[])', () => {
+  const P = 'contract C{bytes8[] d1;bytes10[] d2;function f()external{d1.push(bytes8(uint64(1)));';
+  it('compiles a dynamic bytes8[] -> bytes10[] copy (repacking loop)', () => {
+    expect(compileString(`${P}d2=d1;require(true);}}`, { solidityImportCompat: true }).contractName).toBe('C');
+  });
+  it('leaves a same-type dynamic copy unchanged (no loop)', () => {
+    expect(compileString('contract C{bytes8[] d1;bytes8[] d2;function f()external{d1.push(bytes8(uint64(1)));'
+      + 'd2=d1;require(true);}}', { solidityImportCompat: true }).contractName).toBe('C');
+  });
+});

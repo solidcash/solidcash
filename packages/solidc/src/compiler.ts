@@ -30,6 +30,7 @@ import DesugarExternalFunctionPointers from './semantic/DesugarExternalFunctionP
 import DesugarReturnInLoop from './semantic/DesugarReturnInLoop.js';
 import LowerInlineAssembly from './semantic/LowerInlineAssembly.js';
 import CacheDynamicArrayInLoop from './semantic/CacheDynamicArrayInLoop.js';
+import DesugarDynamicArrayCopyCast from './semantic/DesugarDynamicArrayCopyCast.js';
 import IfConvertConditionalEntryOp from './semantic/IfConvertConditionalEntryOp.js';
 import SynthesizeBlockOracle from './semantic/SynthesizeBlockOracle.js';
 import SynthesizePublicGetters from './semantic/SynthesizePublicGetters.js';
@@ -205,6 +206,9 @@ function compileResolvedAst(ast: Ast, code: string, mergedCompilerOptions: Compi
   // value; rewrite each `m[k]` use to the underlying mapping (or a branch/ternary) and drop the declaration.
   ast = ast.accept(new LowerMappingStorageAlias()) as Ast;
 
+  // A whole dynamic-array copy with a differing element type (`bytes10[] = bytes8[]`) desugars to a delete +
+  // per-element casting push loop; must precede CacheDynamicArrayInLoop so the emitted push-in-loop is cached.
+  ast = ast.accept(new DesugarDynamicArrayCopyCast()) as Ast;
   // A dynamic (chunk-backed) array written inside a loop can't use the once-per-function pending-value write
   // model; cache it in a local, mutate the local in the loop, flush back once.
   ast = ast.accept(new CacheDynamicArrayInLoop()) as Ast;
@@ -392,6 +396,7 @@ function compileReferencedContracts(
     singleAst = singleAst.accept(new InlineReturningStateHelpers()) as Ast;
     singleAst = singleAst.accept(new InlineStoragePointerCalls()) as Ast;
     singleAst = singleAst.accept(new LowerMappingStorageAlias()) as Ast;
+    singleAst = singleAst.accept(new DesugarDynamicArrayCopyCast()) as Ast;
     singleAst = singleAst.accept(new CacheDynamicArrayInLoop()) as Ast;
     singleAst = singleAst.accept(new IfConvertConditionalEntryOp()) as Ast;
     singleAst = singleAst.accept(new PromoteConstructorExternalReads()) as Ast;

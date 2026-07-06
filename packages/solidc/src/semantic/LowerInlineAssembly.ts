@@ -377,6 +377,12 @@ function lowerCall(call: YulFunctionCallNode): ExpressionNode {
     const nullary = loc(new NullaryOpNode(NULLARY_CONTEXT[name]), call);
     return ADDRESS_CONTEXT.has(name) ? loc(new CastNode(UINT256, nullary, false), call) : nullary;
   }
+  // blockhash(n) -> solidc blockhash builtin (a bytes32; SynthesizeBlockOracle, which runs after this pass, wires
+  // the n->hash oracle). Cast to a uint256 word for the assembly context.
+  if (name === 'blockhash' && args.length === 1) {
+    const bh = loc(new FunctionCallNode(loc(new IdentifierNode('blockhash'), call), [lowerValue(args[0])]), call);
+    return loc(new CastNode(UINT256, bh, false), call);
+  }
   if (name in ARITH_OPS && args.length === 2) {
     return loc(new BinaryOpNode(lowerValue(args[0]), ARITH_OPS[name], lowerValue(args[1])), call);
   }

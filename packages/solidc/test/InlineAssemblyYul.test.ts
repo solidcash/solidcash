@@ -121,6 +121,8 @@ describe('Yul inline assembly (Phase 1: parse + diagnostics)', () => {
       .toBe(compileString(bare('uint256(msg.sender)'), { solidityImportCompat: true }).bytecode);
     expect(compileString(asm('coinbase()'), { solidityImportCompat: true }).bytecode)
       .toBe(compileString(bare('uint256(block.coinbase)'), { solidityImportCompat: true }).bytecode);
+    expect(compileString(asm('blockhash(1)'), { solidityImportCompat: true }).bytecode)
+      .toBe(compileString(bare('uint256(blockhash(1))'), { solidityImportCompat: true }).bytecode);
   });
 
   it('names the specific unlowerable builtin rather than claiming Yul is wholly unsupported', () => {

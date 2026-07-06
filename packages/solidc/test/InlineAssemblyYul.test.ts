@@ -103,6 +103,17 @@ describe('Yul inline assembly (Phase 1: parse + diagnostics)', () => {
       }`)).toThrow(/Yul function definitions are not yet supported/);
   });
 
+  it('names the specific unlowerable builtin rather than claiming Yul is wholly unsupported', () => {
+    // A block whose only blocker is an un-lowered builtin (mcopy) reports that builtin by name.
+    expect(() => compileString(`
+      contract C() {
+        function f() {
+          assembly { mcopy(0, 32, 32) }
+          require(true);
+        }
+      }`)).toThrow(/not yet lowerable to BCH script: mcopy/);
+  });
+
   it('compiles Yul control-flow (for / switch / if) lowered to the main AST', () => {
     expect(() => compileString(`
       contract C() {

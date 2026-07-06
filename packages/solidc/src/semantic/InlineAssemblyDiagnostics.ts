@@ -40,6 +40,17 @@ function noBchEquivalent(name: string): string | undefined {
   return YUL_NO_BCH_EQUIVALENT[name] ?? YUL_NEEDS_TYPED_TARGET[name];
 }
 
+// Yul builtins LowerInlineAssembly lowers to solidc AST (arithmetic/bitwise/shift/comparison, storage +
+// transient, memory, calldata, keccak, revert). Keep in sync with LowerInlineAssembly's ARITH_OPS / BITWISE_OPS /
+// CMP_OPS and its `name === '...'` handlers - used only to name the actual blocker in the diagnostic below.
+const LOWERABLE_BUILTINS = new Set<string>([
+  'add', 'sub', 'mul', 'div', 'sdiv', 'mod', 'smod', 'exp',
+  'and', 'or', 'xor', 'not', 'shl', 'shr', 'sar', 'byte',
+  'lt', 'slt', 'gt', 'sgt', 'eq', 'iszero',
+  'sload', 'sstore', 'tload', 'tstore', 'mload', 'mstore',
+  'calldataload', 'calldatasize', 'keccak256', 'revert',
+]);
+
 interface Walk { calls: YulFunctionCallNode[]; fnDef: boolean; }
 
 function walkBlock(block: YulBlockNode, w: Walk): void {
@@ -74,10 +85,11 @@ function walkExpression(e: YulExpressionNode, w: Walk): void {
   // path / literal hold no calls
 }
 
-// Phase 1: validate a Yul inline-assembly block and throw a clear diagnostic. Yul code generation is not
-// implemented yet, so this always throws for Yul - but distinguishes "no BCH equivalent" (fundamental) from
-// "not yet implemented" (value-computation / routable, coming in later phases). Native BCH-ASM is handled
-// separately and is unaffected.
+// Diagnose a Yul inline-assembly block that LowerInlineAssembly could NOT lower (a lowered block never reaches
+// here). LowerInlineAssembly handles a large Yul subset (arithmetic/bitwise/comparison, storage/transient,
+// memory, calldata, keccak, revert, if/switch/for/let); this names the actual reason a given block fell through:
+// a builtin with no BCH analogue (fundamental), a local function definition, a builtin not yet lowered, or - when
+// every builtin is individually lowerable - an unsupported control-flow / access-pattern combination.
 export function analyzeInlineAssembly(node: AssemblyStatementNode): void {
   if (!node.yulBlock) return;
 
@@ -93,8 +105,19 @@ export function analyzeInlineAssembly(node: AssemblyStatementNode): void {
     throw new UnsupportedInlineAssemblyError(node, 'local Yul function definitions are not yet supported');
   }
 
+  // Name the builtins that blocked lowering (mcopy, codesize, return, log*, gas, ...) rather than claiming Yul is
+  // wholesale unsupported - most of it is lowered. If every builtin is lowerable, the blocker is structural.
+  const unlowerable = [...new Set(w.calls.map((c) => c.name))].filter((n) => !LOWERABLE_BUILTINS.has(n));
+  if (unlowerable.length > 0) {
+    throw new UnsupportedInlineAssemblyError(
+      node,
+      `Yul builtin(s) not yet lowerable to BCH script: ${unlowerable.sort().join(', ')}`,
+    );
+  }
+
   throw new UnsupportedInlineAssemblyError(
     node,
-    'Yul code generation is not yet implemented (only native BCH-ASM assembly is currently supported)',
+    'this Yul block is not yet lowerable to BCH script (its builtins are individually supported, but this '
+    + 'control-flow / memory-access combination is not)',
   );
 }

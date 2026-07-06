@@ -834,3 +834,19 @@ describe('ABI-coder pragmas are no-ops (v2 is the Solidity 0.8 default)', () => 
     }
   });
 });
+
+describe('super in a constructor (C3-linearized, matching solc)', () => {
+  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  it('resolves a direct super.f() call in a constructor', () => {
+    expect(cc('contract A { function f() public virtual pure returns (uint256) { return 1; } }'
+      + ' contract B is A { uint256 d; constructor() { d = super.f(); }'
+      + ' function f() public virtual override pure returns (uint256) { return 2; } }')).toBe('B');
+  });
+  it('resolves diamond super.f() in a constructor through the C3 MRO', () => {
+    expect(cc('contract A { function f() public virtual pure returns (uint256) { return 1; } }'
+      + ' contract B is A { function f() public virtual override pure returns (uint256) { return super.f() | 2; } }'
+      + ' contract C is A { function f() public virtual override pure returns (uint256) { return super.f() | 4; } }'
+      + ' contract D is B, C { uint256 d; constructor() { d = super.f() | 8; }'
+      + ' function f() public override(B, C) pure returns (uint256) { return 15; } }')).toBe('D');
+  });
+});

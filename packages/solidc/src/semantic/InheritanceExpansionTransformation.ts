@@ -438,38 +438,53 @@ function resolveSuperAndBaseCalls(contract: ContractNode, linearization: string[
     }
   }
 
+  // Rewrite `super.f` / `Base.f` in a body against `definingContract`'s position in the linearization, recording
+  // the preserved (`__base_`) impls it calls into `used`.
+  const makeResolve = (definingContract: string, used: Set<string>) => (callName: string): string | undefined => {
+    const dot = callName.indexOf('.');
+    if (dot < 0) return undefined;
+    const namespace = callName.slice(0, dot);
+    const target = callName.slice(dot + 1);
+
+    let impl: string | undefined;
+    if (namespace === 'super') {
+      const start = indexOf.get(definingContract);
+      if (start === undefined) return undefined;
+      for (let i = start + 1; i < linearization.length && !impl; i += 1) {
+        impl = superImplFor(contract, linearization[i], target);
+      }
+    } else if (ancestors.has(namespace)) {
+      impl = superImplFor(contract, namespace, target);
+    } else {
+      return undefined; // library / interface / other namespaced call - leave alone
+    }
+
+    if (impl && impl.startsWith('__base_')) used.add(impl);
+    return impl;
+  };
+
   for (const fn of contract.functions) {
     const definingContract = fn.definingContract ?? fn.inheritedFrom ?? contract.name;
     const used = new Set<string>();
-    const resolve = (callName: string): string | undefined => {
-      const dot = callName.indexOf('.');
-      if (dot < 0) return undefined;
-      const namespace = callName.slice(0, dot);
-      const target = callName.slice(dot + 1);
-
-      let impl: string | undefined;
-      if (namespace === 'super') {
-        const start = indexOf.get(definingContract);
-        if (start === undefined) return undefined;
-        for (let i = start + 1; i < linearization.length && !impl; i += 1) {
-          impl = superImplFor(contract, linearization[i], target);
-        }
-      } else if (ancestors.has(namespace)) {
-        impl = superImplFor(contract, namespace, target);
-      } else {
-        return undefined; // library / interface / other namespaced call - leave alone
-      }
-
-      if (impl && impl.startsWith('__base_')) used.add(impl);
-      return impl;
-    };
-    new SuperCallRewriter(resolve).visit(fn.body);
+    new SuperCallRewriter(makeResolve(definingContract, used)).visit(fn.body);
     references.set(fn.name, used);
   }
 
-  // Keep only preserved functions reachable from the non-preserved (real) functions.
-  const reachable = new Set<string>();
-  const queue = contract.functions.filter((f) => !f.name.startsWith('__base_')).map((f) => f.name);
+  // The constructor / fallback / receive can also contain super/Base calls (`constructor() { .. super.f() .. }`);
+  // they are entry points defined by the current contract, so rewrite them and treat the preserved impls they call
+  // as reachability roots.
+  const entryRoots = new Set<string>();
+  for (const special of [contract.constructorDef, contract.fallbackDef, contract.receiveDef]) {
+    if (!special?.body) continue;
+    new SuperCallRewriter(makeResolve(contract.name, entryRoots)).visit(special.body);
+  }
+
+  // Keep only preserved functions reachable from the non-preserved (real) functions + the entry-point members.
+  const reachable = new Set<string>(entryRoots);
+  const queue = [
+    ...contract.functions.filter((f) => !f.name.startsWith('__base_')).map((f) => f.name),
+    ...entryRoots,
+  ];
   while (queue.length > 0) {
     const name = queue.shift()!;
     for (const impl of references.get(name) ?? []) {

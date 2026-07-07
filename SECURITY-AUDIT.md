@@ -14,8 +14,14 @@
 All 4 CRITICAL fixed + regression-tested (`packages/solidc/test/SecurityAudit.test.ts` + Stateful e2e):
 - **C4** FIXED (e5c5d0d0): `canonicalizeExpression` now operand-injective (explicit composite-key cases +
   generic structural fallback + hard-reject operand-less). Distinct struct-field/keccak keys -> distinct slots.
-- **C1** FIXED-mitigated (44bead84): compile-time warning when a user `delegatecall` function lacks a checkSig
-  guard (no permissionless covenant can pin an arbitrary delegate). Docs: `docs/delegatecall-security.md`.
+- **C1** FIXED (44bead84 warning; then hardened e3db4490 / 5581227c / 8849bb79 / e17f24e5 / a2eecc50 after a
+  design review): a delegatecall function may not self-mutate (`DelegatecallSelfMutationError` - the delegate owns
+  all writes); the delegatecall path conserves the proxy's own-category state NFTs (un-touched data NFTs can't be
+  destroyed); and for a **covenant** `impl` the covenant FORCES + PINS the delegate co-spend
+  (`OP_UTXOBYTECODE == impl`, identity) + the forwarded selector (which-function), so {proxy master, data NFT
+  flag=1} with no delegate is rejected. VM-proven; `withDelegatecall` auto-fills the witness. A P2PKH-placeholder
+  `impl` is unpinnable (a P2PKH UTXO authorizes nothing) and keeps the compile-time warning - use the delegate's
+  real covenant address. Docs: `docs/delegatecall-security.md`, `docs/delegatecall.md`, `docs/upgrades.md`.
 - **C3** FIXED (ea67656f): `emitOwnCategoryMutableNftConservation` pins the count of co-spent C-mutable(0x01)
   NFTs input==output for gated (non-entry/dynamic/deploy) functions -> un-accessed NFT DESTRUCTION rejected at
   VM (e2e-proven). Residual: flag=1 balanced-output corruption (needs per-NFT commitment pin).
@@ -388,6 +394,10 @@ Covenant-codegen (C3 + master-commitment LOW), semantic-analysis (C4 + H5-H8 + M
 Remaining follow-up: independent on-chain PoC for H1/H2 (root causes confirmed; full exploit not built).
 
 ## TOP PRIORITIES TO FIX
+> Original pre-remediation action plan. **ALL items below are now FIXED** - see REMEDIATION STATUS at the top
+> (C1 in particular was hardened well past this list's "or gate behind checkSig": the delegate co-spend + selector
+> are now forced + pinned for a covenant `impl`). Kept for the audit trail.
+
 1. **C4 mapping-key collapse** — make `canonicalizeExpression` operand-injective / reject bare `expr:<ctor>`
    (silent state-write mis-targeting; broad blast radius for composite-key contracts).
 2. **C1 delegatecall** — pin the delegate + authorize the commitment (or gate proxies behind checkSig + docs).

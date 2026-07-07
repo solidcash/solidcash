@@ -5,6 +5,7 @@ import {
   VariableDefinitionNode,
   FunctionDefinitionNode,
   IdentifierNode,
+  ExpressionStatementNode,
   StatementNode,
   BlockNode,
   Node,
@@ -4207,6 +4208,23 @@ export default class SymbolTableTraversal extends AstTraversal {
     node.element = this.visit(node.element);
     node.end = this.visit(node.end);
     node.start = this.visit(node.start);
+    return node;
+  }
+
+  // A bare type reference as an expression statement (`A.Foo;`, `Arst.Foo;` after qualifier stripping) is
+  // a Solidity no-op: the enum type name resolves as a valueless CONSTANT symbol that codegen cannot
+  // materialize. Drop the statement.
+  visitExpressionStatement(node: ExpressionStatementNode): Node {
+    node.expression = this.visit(node.expression) as ExpressionNode;
+    if (node.expression instanceof IdentifierNode) {
+      const def = node.expression.definition;
+      if (def !== undefined && def.symbolType === SymbolType.CONSTANT
+        && def.definition === undefined && def.type instanceof EnumType) {
+        const empty = new BlockNode([]);
+        empty.location = node.location;
+        return empty;
+      }
+    }
     return node;
   }
 

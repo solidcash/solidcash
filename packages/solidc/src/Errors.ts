@@ -762,6 +762,17 @@ export class UndefinedModifierError extends SolidCashError {
   }
 }
 
+// C1/B: a function that issues a delegatecall skips its own state-covenant authorization (the delegate is the
+// sole authority), so any self state-write in it is unauthorized. Reject it - the delegate must own all writes.
+export class DelegatecallSelfMutationError extends SolidCashError {
+  constructor(node: Node, funcName: string) {
+    super(node, `Function '${funcName}' issues a delegatecall and also writes contract state. A delegatecall `
+      + 'function must not mutate its own state: it skips its state-covenant authorization and defers ALL state '
+      + 'writes to the co-spent delegate, so a self-write here would be unauthorized. Move the write into the '
+      + 'delegate. See packages/solidc/docs/delegatecall-security.md.');
+  }
+}
+
 // H8: an inline pass must pick a callee body by name + arity, but same-name same-arity overloads are
 // indistinguishable by that key, so it would silently inline the last-defined body (possibly dropping a guard).
 export class AmbiguousInlineOverloadError extends SolidCashError {

@@ -139,6 +139,7 @@ import {
   TokenContainerTransferInConstructorError,
   TokenContainerAccessInConstructorError,
   InvalidModifierCombinationError,
+  DelegatecallSelfMutationError,
   InternalCallToExternalError,
   NamedArgumentError,
   NonCompileTimeExpressionError,
@@ -1544,6 +1545,14 @@ export default class SymbolTableTraversal extends AstTraversal {
     if (node.modifiers.includes(FunctionModifier.DELEGATE)
       && node.lowLevelCalls?.some((llc) => llc.callMode === 'delegatecall')) {
       throw new InvalidModifierCombinationError(node, "'delegate' functions cannot contain delegatecall calls");
+    }
+
+    // C1/B: a delegatecall function skips its own state covenant (emitAutoCovenantVerification is gated
+    // !functionHasDelegatecall) and defers ALL state writes to the co-spent delegate, so any self state-write in
+    // it is unauthorized. Reject it - the delegate must own every proxy write. (Library-call sugar is excluded;
+    // its writes ARE the delegate mechanism.)
+    if (this.hasExplicitDelegatecall(node.body) && this.hasStateWrite(node.body)) {
+      throw new DelegatecallSelfMutationError(node, node.name);
     }
 
     // C1: an explicit `addr.delegatecall(input)` proxy defers ALL state authorization to a co-spent delegate,
@@ -3509,6 +3518,26 @@ export default class SymbolTableTraversal extends AstTraversal {
         if (param instanceof Node) this.assignExternalOutStateSlotIndices(param, map);
       }
     }
+  }
+
+  // C1/B: does this subtree write contract state (state-var / mapping / state-array assign or delete)? A
+  // delegatecall function must not, since it skips its own state authorization. Cycle-safe (seen set).
+  private hasStateWrite(node: Node | undefined, seen: Set<Node> = new Set()): boolean {
+    if (!node || seen.has(node)) return false;
+    seen.add(node);
+    if (node instanceof StateAssignNode || node instanceof MappingAssignNode
+      || node instanceof StateArrayAssignNode || node instanceof MappingFieldAssignNode
+      || node instanceof DeleteStateNode || node instanceof MappingDeleteNode
+      || node instanceof StateArrayPushNode || node instanceof StateArrayPopNode
+      || node instanceof StateArrayDeleteNode) {
+      return true;
+    }
+    for (const v of Object.values(node)) {
+      if (v instanceof Node) { if (this.hasStateWrite(v, seen)) return true; } else if (Array.isArray(v)) {
+        for (const e of v) if (e instanceof Node && this.hasStateWrite(e, seen)) return true;
+      }
+    }
+    return false;
   }
 
   // C1 helpers: detect a user-written delegatecall (excluding library-call sugar) and a signature-based access

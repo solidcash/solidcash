@@ -415,6 +415,30 @@ describe('LOW: odd-length hex literal warning is accurate', () => {
   });
 });
 
+// C1/B - a delegatecall function skips its own state-covenant authorization and defers all writes to the
+// co-spent delegate, so any self state-write in it would be unauthorized. Reject it (the delegate owns writes).
+describe('C1/B: a delegatecall function may not self-mutate', () => {
+  const IMPL = 'address(0x76a91489abcdefabbaabbaabbaabbaabbaabbaabbaabba88ac)';
+
+  it('errors when a delegatecall function writes contract state', () => {
+    const src = `contract P { bigint counter;
+      function up(bytes i, pubkey pk, sig s) external {
+        require(checkSig(s, pk)); this.counter = 1; address m = ${IMPL}; m.delegatecall(i); require(i.length > 0);
+      } }`;
+    expect(() => compileString(src)).toThrow(Errors.DelegatecallSelfMutationError);
+  });
+
+  it('allows a pure-forwarding delegatecall function', () => {
+    const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const src = `contract P { bigint counter;
+      function up(bytes i, pubkey pk, sig s) external {
+        require(checkSig(s, pk)); address m = ${IMPL}; m.delegatecall(i); require(i.length > 0);
+      } }`;
+    expect(compileString(src).contractName).toBe('P');
+    spy.mockRestore();
+  });
+});
+
 describe('C4: composite mapping keys (continued)', () => {
   it('keccak256(abi.encode(...)) keys over distinct operands do not collapse', () => {
     const two = compileString(`

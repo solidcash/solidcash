@@ -257,6 +257,43 @@ describe('H5: fallback modifier is expanded, not dropped', () => {
   });
 });
 
+// H6 - entry parameters are raw attacker-controlled VM numbers and all VM compares are signed, yet bounded
+// ints (uintN/intN), enums and fixed-point params got NO >=min/<=max guard. A `uint256 amount` could carry a
+// negative value and defeat accounting guards. enforceFunctionParameterType now range-checks these (the option
+// defaults on), so an out-of-range param fails an OP_VERIFY.
+describe('H6: bounded int / enum params are range-validated', () => {
+  it('a uint256 param gets a range check (more code than an unbounded bigint param)', () => {
+    const bounded = compileString(
+      'contract C { uint256 x; function f(uint256 amount) external { this.x = amount; require(true); } }',
+    ).bytecode.length;
+    const unbounded = compileString(
+      'contract C { bigint x; function f(bigint amount) external { this.x = amount; require(true); } }',
+    ).bytecode.length;
+    expect(bounded).toBeGreaterThan(unbounded);
+  });
+
+  it('an enum param gets a range check', () => {
+    const withEnum = compileString(
+      'contract C { enum E { A, B, C } int x; function f(E e) external { this.x = 1; require(true); } }',
+    ).bytecode.length;
+    const plain = compileString(
+      'contract C { int x; function f(bigint e) external { this.x = 1; require(true); } }',
+    ).bytecode.length;
+    expect(withEnum).toBeGreaterThan(plain);
+  });
+
+  it('the range check is suppressed under enforceFunctionParameterTypes: false', () => {
+    const on = compileString(
+      'contract C { uint256 x; function f(uint256 amount) external { this.x = amount; require(true); } }',
+    ).bytecode.length;
+    const off = compileString(
+      'contract C { uint256 x; function f(uint256 amount) external { this.x = amount; require(true); } }',
+      { enforceFunctionParameterTypes: false },
+    ).bytecode.length;
+    expect(off).toBeLessThan(on);
+  });
+});
+
 describe('C4: composite mapping keys (continued)', () => {
   it('keccak256(abi.encode(...)) keys over distinct operands do not collapse', () => {
     const two = compileString(`

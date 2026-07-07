@@ -1889,12 +1889,35 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
       // We don't perform any stack operations, because these ops leave the original stack unchanged
     }
+
+    // H6: bounded ints (uintN/intN), enums and fixed-point entry params are raw attacker-controlled VM numbers.
+    // All VM compares are signed, so a `uint256` param can carry a negative value and defeat accounting guards
+    // (e.g. redeem(uint256 amount): -100 <= shares is true, and shares - (-100) inflates shares). Copy the param,
+    // range-check it in place, then drop the copy - the original stack value is unchanged (like bounded bytes).
+    const loc = { location: node.location, positionHint: PositionHint.START };
+    if (effectiveType instanceof IntType) {
+      this.emit(Op.OP_PICK, loc);
+      this.emitIntBoundsCheck(effectiveType, loc);
+      this.emit(Op.OP_DROP, loc);
+    } else if (effectiveType instanceof EnumType) {
+      this.emit(Op.OP_PICK, loc);
+      this.emitEnumBoundsCheck(effectiveType, loc);
+      this.emit(Op.OP_DROP, loc);
+    } else if (effectiveType instanceof FixedType) {
+      this.emit(Op.OP_PICK, loc);
+      this.emitFixedBoundsCheck(effectiveType, loc);
+      this.emit(Op.OP_DROP, loc);
+    }
   }
 
   shouldEnforceFunctionParameterType(node: ParameterNode): boolean {
     const effectiveType = node.type instanceof ValueType ? node.type.underlyingType : node.type;
     if (effectiveType === PrimitiveType.BOOL) return true;
     if (effectiveType instanceof BytesType && effectiveType.bound !== undefined) return true;
+    // H6: range-check bounded ints / enums / fixed-point entry parameters.
+    if (effectiveType instanceof IntType) return true;
+    if (effectiveType instanceof EnumType) return true;
+    if (effectiveType instanceof FixedType) return true;
     return false;
   }
 

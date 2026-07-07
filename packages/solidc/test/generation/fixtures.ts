@@ -1,5 +1,4 @@
 import { Artifact, CompilerOptions } from '@solidcash/utils';
-import { version } from '../../src/index.js';
 
 interface Fixture {
   fn: string,
@@ -53,7 +52,7 @@ export const fixtures: Fixture[] = [
       },
       'compiler': {
         'name': 'solidc',
-        'version': version,
+        'version': '0.13.1',
         'options': {
           'enforceFunctionParameterTypes': true,
           'enforceLocktimeGuard': true,
@@ -115,7 +114,7 @@ export const fixtures: Fixture[] = [
       },
       'compiler': {
         'name': 'solidc',
-        'version': version,
+        'version': '0.13.1',
         'options': {
           'enforceFunctionParameterTypes': true,
           'enforceLocktimeGuard': true,
@@ -154,30 +153,30 @@ export const fixtures: Fixture[] = [
           ],
         },
       ],
-      'bytecode': 'OP_2OVER OP_ADD OP_DUP 000000000000000000000000000000000000000000000000000000000000008080 OP_GREATERTHANOREQUAL OP_VERIFY OP_DUP ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f OP_LESSTHANOREQUAL OP_VERIFY OP_DUP OP_4 OP_PICK OP_SUB OP_DUP 000000000000000000000000000000000000000000000000000000000000008080 OP_GREATERTHANOREQUAL OP_VERIFY OP_DUP ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f OP_LESSTHANOREQUAL OP_VERIFY OP_DUP OP_3 OP_ROLL OP_2 OP_SUB OP_NUMEQUAL OP_IF OP_DUP OP_5 OP_PICK OP_ADD OP_DUP 000000000000000000000000000000000000000000000000000000000000008080 OP_GREATERTHANOREQUAL OP_VERIFY OP_DUP ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f OP_LESSTHANOREQUAL OP_VERIFY OP_4 OP_PICK OP_OVER OP_ADD OP_DUP 000000000000000000000000000000000000000000000000000000000000008080 OP_GREATERTHANOREQUAL OP_VERIFY OP_DUP ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f OP_LESSTHANOREQUAL OP_VERIFY OP_ROT OP_DROP OP_SWAP OP_2DUP OP_LESSTHAN OP_VERIFY OP_DROP OP_ELSE OP_DUP OP_4 OP_PICK OP_NUMEQUALVERIFY OP_ENDIF OP_DUP OP_4 OP_ROLL OP_ADD OP_DUP 000000000000000000000000000000000000000000000000000000000000008080 OP_GREATERTHANOREQUAL OP_VERIFY OP_DUP ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f OP_LESSTHANOREQUAL OP_VERIFY OP_3 OP_ROLL OP_NUMEQUAL OP_NIP OP_NIP OP_NIP',
+      'bytecode': 'OP_2 OP_PICK OP_DUP 000000000000000000000000000000000000000000000000000000000000008080 OP_GREATERTHANOREQUAL OP_VERIFY OP_DUP ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f OP_LESSTHANOREQUAL OP_VERIFY OP_DROP OP_3 OP_PICK OP_DUP 000000000000000000000000000000000000000000000000000000000000008080 OP_GREATERTHANOREQUAL OP_VERIFY OP_DUP ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f OP_LESSTHANOREQUAL OP_VERIFY OP_DROP OP_2OVER OP_ADD OP_DUP 000000000000000000000000000000000000000000000000000000000000008080 OP_GREATERTHANOREQUAL OP_VERIFY OP_DUP ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f OP_LESSTHANOREQUAL OP_VERIFY OP_DUP OP_4 OP_PICK OP_SUB OP_DUP 000000000000000000000000000000000000000000000000000000000000008080 OP_GREATERTHANOREQUAL OP_VERIFY OP_DUP ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f OP_LESSTHANOREQUAL OP_VERIFY OP_DUP OP_3 OP_ROLL OP_2 OP_SUB OP_NUMEQUAL OP_IF OP_DUP OP_5 OP_PICK OP_ADD OP_DUP 000000000000000000000000000000000000000000000000000000000000008080 OP_GREATERTHANOREQUAL OP_VERIFY OP_DUP ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f OP_LESSTHANOREQUAL OP_VERIFY OP_4 OP_PICK OP_OVER OP_ADD OP_DUP 000000000000000000000000000000000000000000000000000000000000008080 OP_GREATERTHANOREQUAL OP_VERIFY OP_DUP ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f OP_LESSTHANOREQUAL OP_VERIFY OP_ROT OP_DROP OP_SWAP OP_2DUP OP_LESSTHAN OP_VERIFY OP_DROP OP_ELSE OP_DUP OP_4 OP_PICK OP_NUMEQUALVERIFY OP_ENDIF OP_DUP OP_4 OP_ROLL OP_ADD OP_DUP 000000000000000000000000000000000000000000000000000000000000008080 OP_GREATERTHANOREQUAL OP_VERIFY OP_DUP ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f OP_LESSTHANOREQUAL OP_VERIFY OP_3 OP_ROLL OP_NUMEQUAL OP_NIP OP_NIP OP_NIP',
       'source': 'contract IfStatement(int x, int y) {\n    function hello(int a, int b) {\n        int d = a + b;\n        d = d - a;\n        if (d == x - 2) {\n            int c = d + b;\n            d = a + c;\n            require(c > d);\n        } else {\n            require(d == a);\n        }\n        d = d + a;\n        require(d == y);\n    }\n}\n',
       'debug': {
-        'bytecode': '70937621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa169765479947621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa16976537a52949c63765579937621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa169547978937621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa1697b757c6e9f6975677654799d6876547a937621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa169537a9c777777',
-        'sourceMap': '3:16:3:21;::::1;;;;;;;;;4:12:4:13:0;:16::17;;:12:::1;;;;;;;;;5::5:13:0;:17::18;;:21::22;:17:::1;:12;:24:9:9:0;6:20:6:21;:24::25;;:20:::1;;;;;;;;;7:16:7:17:0;;:20::21;:16:::1;;;;;;;;;:12::22;;;8:20:8:25:0;::::1;:12::27;5:24:9:9;9:15:11::0;10:20:10:21;:25::26;;:12::28:1;9:15:11:9;12:12:12:13:0;:16::17;;:12:::1;;;;;;;;;13:21:13:22:0;;:8::24:1;2:4:14:5;;',
+        'bytecode': '52797621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa1697553797621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa1697570937621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa169765479947621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa16976537a52949c63765579937621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa169547978937621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa1697b757c6e9f6975677654799d6876547a937621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa169537a9c777777',
+        'sourceMap': '2:19:2:24;;;;;;;;;;;:26::31;;;;;;;;;;;3:16:3:21;::::1;;;;;;;;;4:12:4:13:0;:16::17;;:12:::1;;;;;;;;;5::5:13:0;:17::18;;:21::22;:17:::1;:12;:24:9:9:0;6:20:6:21;:24::25;;:20:::1;;;;;;;;;7:16:7:17:0;;:20::21;:16:::1;;;;;;;;;:12::22;;;8:20:8:25:0;::::1;:12::27;5:24:9:9;9:15:11::0;10:20:10:21;:25::26;;:12::28:1;9:15:11:9;12:12:12:13:0;:16::17;;:12:::1;;;;;;;;;13:21:13:22:0;;:8::24:1;2:4:14:5;;',
         'logs': [],
         'requires': [
           {
-            'ip': 60,
+            'ip': 82,
             'line': 8,
           },
           {
-            'ip': 66,
+            'ip': 88,
             'line': 10,
           },
           {
-            'ip': 83,
+            'ip': 105,
             'line': 13,
           },
         ],
       },
       'compiler': {
         'name': 'solidc',
-        'version': version,
+        'version': '0.13.1',
         'options': {
           'enforceFunctionParameterTypes': true,
           'enforceLocktimeGuard': true,
@@ -266,7 +265,7 @@ export const fixtures: Fixture[] = [
       },
       'compiler': {
         'name': 'solidc',
-        'version': version,
+        'version': '0.13.1',
         'options': {
           'enforceFunctionParameterTypes': true,
           'enforceLocktimeGuard': true,
@@ -315,10 +314,10 @@ export const fixtures: Fixture[] = [
           ],
         },
       ],
-      'bytecode': '70937621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa169765479947621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa1697653799c6352799267006863765679937621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa169557978937621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa1697b757c6e9f6975675479776876557a937621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa169547a9d6d6d51 320abd58 OP_DEFINE 527976529376537a9c63765479937621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa1696e937621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa1697b757c6e9f697568729c7777 a45a12c9 OP_DEFINE OP_DEPTH OP_1SUB OP_ROLL OP_SIZE OP_4 OP_NUMEQUALVERIFY OP_INVOKE',
+      'bytecode': '52797621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa1697553797621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa1697570937621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa169765479947621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa1697653799c6352799267006863765679937621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa169557978937621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa1697b757c6e9f6975675479776876557a937621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa169547a9d6d6d51 320abd58 OP_DEFINE 52797621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa16975527976529376537a9c63765479937621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa1696e937621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa1697b757c6e9f697568729c7777 a45a12c9 OP_DEFINE OP_DEPTH OP_1SUB OP_ROLL OP_SIZE OP_4 OP_NUMEQUALVERIFY OP_INVOKE',
       'source': 'contract MultiFunctionIfStatements(int x, int y) {\n    function transfer(int a, int b) {\n        int d = a + b;\n        d = d - a;\n        if (d == x && bool(x)) {\n            int c = d + b;\n            d = a + c;\n            require(c > d);\n        } else {\n            d = a;\n        }\n        d = d + a;\n        require(d == y);\n    }\n\n    function timeout(int b) {\n        int d = b;\n        d = d + 2;\n        if (d == x) {\n            int c = d + b;\n            d = c + d;\n            require(c > d);\n        }\n        d = b;\n        require(d == y);\n    }\n}\n',
       'debug': {
-        'bytecode': '4d9d0170937621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa169765479947621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa1697653799c6352799267006863765679937621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa169557978937621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa1697b757c6e9f6975675479776876557a937621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa169547a9d6d6d5104320abd58894cae527976529376537a9c63765479937621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa1696e937621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa1697b757c6e9f697568729c777704a45a12c989748c7a82549d8a',
+        'bytecode': '4d350252797621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa1697553797621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa1697570937621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa169765479947621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa1697653799c6352799267006863765679937621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa169557978937621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa1697b757c6e9f6975675479776876557a937621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa169547a9d6d6d5104320abd58894cfa52797621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa16975527976529376537a9c63765479937621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa1696e937621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa1697b757c6e9f697568729c777704a45a12c989748c7a82549d8a',
         'sourceMap': '2:4:14:5;;;16::26;;;1:0:27:1;;;;;;',
         'logs': [],
         'requires': [],
@@ -326,40 +325,40 @@ export const fixtures: Fixture[] = [
           '320abd58': {
             'requires': [
               {
-                'ip': 63,
+                'ip': 85,
                 'line': 8,
               },
               {
-                'ip': 84,
+                'ip': 106,
                 'line': 13,
               },
             ],
-            'sourceMap': '3:16:3:21;::::1;;;;;;;;;4:12:4:13:0;:16::17;;:12:::1;;;;;;;;;5::5:13:0;:17::18;;:12:::1;:::29:0;:27::28;;:22::29:1;:12;;;:31:9:9:0;6:20:6:21;:24::25;;:20:::1;;;;;;;;;7:16:7:17:0;;:20::21;:16:::1;;;;;;;;;:12::22;;;8:20:8:25:0;::::1;:12::27;5:31:9:9;9:15:11::0;10:16:10:17;;:12::18:1;9:15:11:9;12:12:12:13:0;:16::17;;:12:::1;;;;;;;;;13:21:13:22:0;;:8::24:1;2:4:14:5;;',
+            'sourceMap': '2:22:2:27;;;;;;;;;;;:29::34;;;;;;;;;;;3:16:3:21;::::1;;;;;;;;;4:12:4:13:0;:16::17;;:12:::1;;;;;;;;;5::5:13:0;:17::18;;:12:::1;:::29:0;:27::28;;:22::29:1;:12;;;:31:9:9:0;6:20:6:21;:24::25;;:20:::1;;;;;;;;;7:16:7:17:0;;:20::21;:16:::1;;;;;;;;;:12::22;;;8:20:8:25:0;::::1;:12::27;5:31:9:9;9:15:11::0;10:16:10:17;;:12::18:1;9:15:11:9;12:12:12:13:0;:16::17;;:12:::1;;;;;;;;;13:21:13:22:0;;:8::24:1;2:4:14:5;;',
             'logs': [],
           },
           'a45a12c9': {
             'requires': [
               {
-                'ip': 37,
+                'ip': 48,
                 'line': 22,
               },
               {
-                'ip': 42,
+                'ip': 53,
                 'line': 25,
               },
             ],
-            'sourceMap': '17:16:17:17;;18:12:18:13;:16::17;:12:::1;19::19:13:0;:17::18;;:12:::1;:20:23:9:0;20::20:21;:24::25;;:20:::1;;;;;;;;;21:16:21:21:0;::::1;;;;;;;;;:12::22;;;22:20:22:25:0;::::1;:12::27;19:20:23:9;;24:12:25:22:0;25:8::24:1;16:4:26:5;',
+            'sourceMap': '16:21:16:26;;;;;;;;;;;17:16:17:17;;18:12:18:13;:16::17;:12:::1;19::19:13:0;:17::18;;:12:::1;:20:23:9:0;20::20:21;:24::25;;:20:::1;;;;;;;;;21:16:21:21:0;::::1;;;;;;;;;:12::22;;;22:20:22:25:0;::::1;:12::27;19:20:23:9;;24:12:25:22:0;25:8::24:1;16:4:26:5;',
             'logs': [],
           },
         },
       },
       'functionBodies': {
-        '320abd58': '70937621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa169765479947621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa1697653799c6352799267006863765679937621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa169557978937621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa1697b757c6e9f6975675479776876557a937621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa169547a9d6d6d51',
-        'a45a12c9': '527976529376537a9c63765479937621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa1696e937621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa1697b757c6e9f697568729c7777',
+        '320abd58': '52797621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa1697553797621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa1697570937621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa169765479947621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa1697653799c6352799267006863765679937621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa169557978937621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa1697b757c6e9f6975675479776876557a937621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa169547a9d6d6d51',
+        'a45a12c9': '52797621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa16975527976529376537a9c63765479937621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa1696e937621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa1697b757c6e9f697568729c7777',
       },
       'compiler': {
         'name': 'solidc',
-        'version': version,
+        'version': '0.13.1',
         'options': {
           'enforceFunctionParameterTypes': true,
           'enforceLocktimeGuard': true,
@@ -417,7 +416,7 @@ export const fixtures: Fixture[] = [
       },
       'compiler': {
         'name': 'solidc',
-        'version': version,
+        'version': '0.13.1',
         'options': {
           'enforceFunctionParameterTypes': true,
           'enforceLocktimeGuard': true,
@@ -462,7 +461,7 @@ export const fixtures: Fixture[] = [
       },
       'compiler': {
         'name': 'solidc',
-        'version': version,
+        'version': '0.13.1',
         'options': {
           'enforceFunctionParameterTypes': true,
           'enforceLocktimeGuard': true,
@@ -511,7 +510,7 @@ export const fixtures: Fixture[] = [
       },
       'compiler': {
         'name': 'solidc',
-        'version': version,
+        'version': '0.13.1',
         'options': {
           'enforceFunctionParameterTypes': true,
           'enforceLocktimeGuard': true,
@@ -593,7 +592,7 @@ export const fixtures: Fixture[] = [
       },
       'compiler': {
         'name': 'solidc',
-        'version': version,
+        'version': '0.13.1',
         'options': {
           'enforceFunctionParameterTypes': true,
           'enforceLocktimeGuard': true,
@@ -629,7 +628,7 @@ export const fixtures: Fixture[] = [
       },
       'compiler': {
         'name': 'solidc',
-        'version': version,
+        'version': '0.13.1',
         'options': {
           'enforceFunctionParameterTypes': true,
           'enforceLocktimeGuard': true,
@@ -659,22 +658,22 @@ export const fixtures: Fixture[] = [
           ],
         },
       ],
-      'bytecode': 'OP_DUP OP_SIZE OP_4 OP_EQUALVERIFY OP_DROP OP_SWAP OP_4 OP_NUM2BIN OP_EQUAL',
+      'bytecode': 'OP_DUP OP_SIZE OP_4 OP_EQUALVERIFY OP_DROP OP_OVER OP_DUP 000000000000000000000000000000000000000000000000000000000000008080 OP_GREATERTHANOREQUAL OP_VERIFY OP_DUP ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f OP_LESSTHANOREQUAL OP_VERIFY OP_DROP OP_SWAP OP_4 OP_NUM2BIN OP_EQUAL',
       'source': 'contract BoundedBytes() {\n    function spend(bytes4 b, int i) {\n        require(b == toPaddedBytes(i, 4));\n    }\n}\n',
       'debug': {
-        'bytecode': '76825488757c548087',
-        'sourceMap': '2:19:2:27;;;;;3:35:3:36;:38::39;:21::40:1;:8::42',
+        'bytecode': '7682548875787621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa169757c548087',
+        'sourceMap': '2:19:2:27;;;;;:29::34;;;;;;;;;;3:35:3:36;:38::39;:21::40:1;:8::42',
         'logs': [],
         'requires': [
           {
-            'ip': 9,
+            'ip': 19,
             'line': 3,
           },
         ],
       },
       'compiler': {
         'name': 'solidc',
-        'version': version,
+        'version': '0.13.1',
         'options': {
           'enforceFunctionParameterTypes': true,
           'enforceLocktimeGuard': true,
@@ -719,7 +718,7 @@ export const fixtures: Fixture[] = [
       },
       'compiler': {
         'name': 'solidc',
-        'version': version,
+        'version': '0.13.1',
         'options': {
           'enforceFunctionParameterTypes': true,
           'enforceLocktimeGuard': true,
@@ -836,7 +835,7 @@ export const fixtures: Fixture[] = [
       },
       'compiler': {
         'name': 'solidc',
-        'version': version,
+        'version': '0.13.1',
         'options': {
           'enforceFunctionParameterTypes': true,
           'enforceLocktimeGuard': true,
@@ -948,7 +947,7 @@ export const fixtures: Fixture[] = [
       },
       'compiler': {
         'name': 'solidc',
-        'version': version,
+        'version': '0.13.1',
         'options': {
           'enforceFunctionParameterTypes': true,
           'enforceLocktimeGuard': true,
@@ -996,7 +995,7 @@ export const fixtures: Fixture[] = [
       },
       'compiler': {
         'name': 'solidc',
-        'version': version,
+        'version': '0.13.1',
         'options': {
           'enforceFunctionParameterTypes': true,
           'enforceLocktimeGuard': true,
@@ -1037,7 +1036,7 @@ export const fixtures: Fixture[] = [
       },
       'compiler': {
         'name': 'solidc',
-        'version': version,
+        'version': '0.13.1',
         'options': {
           'enforceFunctionParameterTypes': true,
           'enforceLocktimeGuard': true,
@@ -1063,22 +1062,22 @@ export const fixtures: Fixture[] = [
           ],
         },
       ],
-      'bytecode': 'OP_10 OP_SWAP OP_NUM2BIN OP_BIN2NUM OP_DUP 000000000000000000000000000000000000000000000000000000000000008080 OP_GREATERTHANOREQUAL OP_VERIFY OP_DUP ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f OP_LESSTHANOREQUAL OP_VERIFY OP_10 OP_NUMEQUAL',
+      'bytecode': 'OP_DUP OP_DUP 000000000000000000000000000000000000000000000000000000000000008080 OP_GREATERTHANOREQUAL OP_VERIFY OP_DUP ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f OP_LESSTHANOREQUAL OP_VERIFY OP_DROP OP_10 OP_SWAP OP_NUM2BIN OP_BIN2NUM OP_DUP 000000000000000000000000000000000000000000000000000000000000008080 OP_GREATERTHANOREQUAL OP_VERIFY OP_DUP ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f OP_LESSTHANOREQUAL OP_VERIFY OP_10 OP_NUMEQUAL',
       'source': 'contract Num2Bin() {\n    function spend(int size) {\n        bytes byte_ = toPaddedBytes(10, size);\n        require(int(byte_) == 10);\n    }\n}\n',
       'debug': {
-        'bytecode': '5a7c80817621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa1695a9c',
-        'sourceMap': '3:36:3:38;:40::44;:22::45:1;4:16:4:26;;;;;;;;;:30::32:0;:8::34:1',
+        'bytecode': '767621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa169755a7c80817621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa1695a9c',
+        'sourceMap': '2:19:2:27;;;;;;;;;;3:36:3:38;:40::44;:22::45:1;4:16:4:26;;;;;;;;;:30::32:0;:8::34:1',
         'logs': [],
         'requires': [
           {
-            'ip': 14,
+            'ip': 24,
             'line': 4,
           },
         ],
       },
       'compiler': {
         'name': 'solidc',
-        'version': version,
+        'version': '0.13.1',
         'options': {
           'enforceFunctionParameterTypes': true,
           'enforceLocktimeGuard': true,
@@ -1104,32 +1103,32 @@ export const fixtures: Fixture[] = [
           ],
         },
       ],
-      'bytecode': 'OP_DUP OP_1 OP_NUMEQUALVERIFY OP_1ADD OP_2 OP_NUMEQUAL',
+      'bytecode': 'OP_DUP OP_DUP 000000000000000000000000000000000000000000000000000000000000008080 OP_GREATERTHANOREQUAL OP_VERIFY OP_DUP ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f OP_LESSTHANOREQUAL OP_VERIFY OP_DROP OP_DUP OP_1 OP_NUMEQUALVERIFY OP_1ADD OP_2 OP_NUMEQUAL',
       'source': "contract DebugMessages() {\n  function spend(int value) {\n    require(value == 1, \"Wrong value passed\");\n    console.log(value, \"test\");\n    console.log(value, \"test2\");\n    require(value + 1 == 2, \"Sum doesn't work\");\n  }\n}\n",
       'debug': {
-        'bytecode': '76519d8b529c',
-        'sourceMap': '3:12:3:17;:21::22;:4::46:1;6:12:6:21;:25::26:0;:4::48:1',
+        'bytecode': '767621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa1697576519d8b529c',
+        'sourceMap': '2:17:2:26;;;;;;;;;;3:12:3:17;:21::22;:4::46:1;6:12:6:21;:25::26:0;:4::48:1',
         'logs': [
           {
-            'ip': 3,
+            'ip': 13,
             'line': 4,
             'data': [
               {
                 'stackIndex': 0,
                 'type': 'int256',
-                'ip': 3,
+                'ip': 13,
               },
               'test',
             ],
           },
           {
-            'ip': 3,
+            'ip': 13,
             'line': 5,
             'data': [
               {
                 'stackIndex': 0,
                 'type': 'int256',
-                'ip': 3,
+                'ip': 13,
               },
               'test2',
             ],
@@ -1137,12 +1136,12 @@ export const fixtures: Fixture[] = [
         ],
         'requires': [
           {
-            'ip': 2,
+            'ip': 12,
             'line': 3,
             'message': 'Wrong value passed',
           },
           {
-            'ip': 6,
+            'ip': 16,
             'line': 6,
             'message': "Sum doesn't work",
           },
@@ -1150,7 +1149,7 @@ export const fixtures: Fixture[] = [
       },
       'compiler': {
         'name': 'solidc',
-        'version': version,
+        'version': '0.13.1',
         'options': {
           'enforceFunctionParameterTypes': true,
           'enforceLocktimeGuard': true,
@@ -1198,7 +1197,7 @@ export const fixtures: Fixture[] = [
       },
       'compiler': {
         'name': 'solidc',
-        'version': version,
+        'version': '0.13.1',
         'options': {
           'enforceFunctionParameterTypes': true,
           'enforceLocktimeGuard': true,
@@ -1237,30 +1236,30 @@ export const fixtures: Fixture[] = [
           ],
         },
       ],
-      'bytecode': 'OP_ROT OP_SWAP OP_2 OP_SUB OP_NUMEQUAL OP_IF OP_2DUP OP_EQUAL OP_ELSE OP_0 OP_ENDIF OP_IF OP_0 OP_VERIFY OP_ELSE OP_OVER 48656c6c6f20 OP_2 OP_PICK OP_CAT OP_EQUAL OP_IF OP_DUP 576f726c64 OP_EQUALVERIFY OP_ELSE OP_1 OP_0 OP_NOT OP_NOT OP_NOT OP_NUMEQUALVERIFY OP_ENDIF OP_ENDIF OP_2DROP OP_1',
+      'bytecode': 'OP_2 OP_PICK OP_DUP 000000000000000000000000000000000000000000000000000000000000008080 OP_GREATERTHANOREQUAL OP_VERIFY OP_DUP ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f OP_LESSTHANOREQUAL OP_VERIFY OP_DROP OP_ROT OP_SWAP OP_2 OP_SUB OP_NUMEQUAL OP_IF OP_2DUP OP_EQUAL OP_ELSE OP_0 OP_ENDIF OP_IF OP_0 OP_VERIFY OP_ELSE OP_OVER 48656c6c6f20 OP_2 OP_PICK OP_CAT OP_EQUAL OP_IF OP_DUP 576f726c64 OP_EQUALVERIFY OP_ELSE OP_1 OP_0 OP_NOT OP_NOT OP_NOT OP_NUMEQUALVERIFY OP_ENDIF OP_ENDIF OP_2DROP OP_1',
       'source': 'contract MultilineStatements(\n    int x,\n    string y\n) {\n    function spend(\n        int a,\n        string b\n    ) {\n        if (a == x - 2\n         && b == y) {\n            require(false);\n        } else if (b == "Hello "\n        + y) {\n            require(\n                y == "World"\n            );\n        } else {\n            require(true == !!!false);\n        }\n    }\n}\n',
       'debug': {
-        'bytecode': '7b7c52949c636e8767006863006967780648656c6c6f2052797e87637605576f726c64886751009191919d68686d51',
-        'sourceMap': '9:12:9:13;:17::18;:21::22;:17:::1;:12;::10:18:0;10;::::1;9;;;10:20:12:9:0;11::11:25;:12::27:1;12:15:19:9:0;:19:12:20;:24::32;13:10:13:11;;12:24:::1;:19;13:13:17:9:0;15:16:15:17;:21::28;14:12:16:14:1;17:15:19:9:0;18:20:18:24;:31::36;:30:::1;:29;:28;:12::38;17:15:19:9;12;5:4:20:5;',
+        'bytecode': '52797621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa169757b7c52949c636e8767006863006967780648656c6c6f2052797e87637605576f726c64886751009191919d68686d51',
+        'sourceMap': '6:8:6:13;;;;;;;;;;;9:12:9;:17::18;:21::22;:17:::1;:12;::10:18:0;10;::::1;9;;;10:20:12:9:0;11::11:25;:12::27:1;12:15:19:9:0;:19:12:20;:24::32;13:10:13:11;;12:24:::1;:19;13:13:17:9:0;15:16:15:17;:21::28;14:12:16:14:1;17:15:19:9:0;18:20:18:24;:31::36;:30:::1;:29;:28;:12::38;17:15:19:9;12;5:4:20:5;',
         'logs': [],
         'requires': [
           {
-            'ip': 15,
+            'ip': 26,
             'line': 11,
           },
           {
-            'ip': 26,
+            'ip': 37,
             'line': 14,
           },
           {
-            'ip': 33,
+            'ip': 44,
             'line': 18,
           },
         ],
       },
       'compiler': {
         'name': 'solidc',
-        'version': version,
+        'version': '0.13.1',
         'options': {
           'enforceFunctionParameterTypes': true,
           'enforceLocktimeGuard': true,
@@ -1315,7 +1314,7 @@ export const fixtures: Fixture[] = [
       },
       'compiler': {
         'name': 'solidc',
-        'version': version,
+        'version': '0.13.1',
         'options': {
           'enforceFunctionParameterTypes': true,
           'enforceLocktimeGuard': true,
@@ -1356,7 +1355,7 @@ export const fixtures: Fixture[] = [
       },
       'compiler': {
         'name': 'solidc',
-        'version': version,
+        'version': '0.13.1',
         'options': {
           'enforceFunctionParameterTypes': true,
           'enforceLocktimeGuard': true,
@@ -1397,7 +1396,7 @@ export const fixtures: Fixture[] = [
       },
       'compiler': {
         'name': 'solidc',
-        'version': version,
+        'version': '0.13.1',
         'options': {
           'enforceFunctionParameterTypes': true,
           'enforceLocktimeGuard': true,
@@ -1438,7 +1437,7 @@ export const fixtures: Fixture[] = [
       },
       'compiler': {
         'name': 'solidc',
-        'version': version,
+        'version': '0.13.1',
         'options': {
           'enforceFunctionParameterTypes': true,
           'enforceLocktimeGuard': true,
@@ -1490,7 +1489,7 @@ export const fixtures: Fixture[] = [
       },
       'compiler': {
         'name': 'solidc',
-        'version': version,
+        'version': '0.13.1',
         'options': {
           'enforceFunctionParameterTypes': true,
           'enforceLocktimeGuard': true,
@@ -1538,7 +1537,7 @@ export const fixtures: Fixture[] = [
       },
       'compiler': {
         'name': 'solidc',
-        'version': version,
+        'version': '0.13.1',
         'options': {
           'enforceFunctionParameterTypes': true,
           'enforceLocktimeGuard': true,
@@ -1578,7 +1577,7 @@ export const fixtures: Fixture[] = [
       },
       'compiler': {
         'name': 'solidc',
-        'version': version,
+        'version': '0.13.1',
         'options': {
           'enforceFunctionParameterTypes': true,
           'enforceLocktimeGuard': true,
@@ -1616,26 +1615,26 @@ export const fixtures: Fixture[] = [
           ],
         },
       ],
-      'bytecode': 'OP_SWAP OP_0NOTEQUAL OP_2 OP_PICK OP_SIZE OP_4 OP_EQUALVERIFY OP_DROP OP_1 OP_NUMEQUAL OP_IF OP_DUP OP_6 OP_GREATERTHAN OP_VERIFY OP_ELSE OP_OVER OP_3 OP_PICK OP_EQUALVERIFY OP_ENDIF OP_2DROP OP_DROP OP_1',
+      'bytecode': 'OP_DUP OP_DUP 000000000000000000000000000000000000000000000000000000000000008080 OP_GREATERTHANOREQUAL OP_VERIFY OP_DUP ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f OP_LESSTHANOREQUAL OP_VERIFY OP_DROP OP_SWAP OP_0NOTEQUAL OP_2 OP_PICK OP_SIZE OP_4 OP_EQUALVERIFY OP_DROP OP_1 OP_NUMEQUAL OP_IF OP_DUP OP_6 OP_GREATERTHAN OP_VERIFY OP_ELSE OP_OVER OP_3 OP_PICK OP_EQUALVERIFY OP_ENDIF OP_2DROP OP_DROP OP_1',
       'source': 'contract TypeEnforcement() {\n    function spend(\n        int nonEnforcedInt,\n        bool enforcedBool,\n        bytes4 enforcedBytes,\n        bytes nonEnforcedBytes\n    ) {\n        if (enforcedBool == true) {\n            require(nonEnforcedInt > 6);\n        } else {\n            require(enforcedBytes == nonEnforcedBytes);\n        }\n    }\n}\n',
       'debug': {
-        'bytecode': '7c92527982548875519c637656a0696778537988686d7551',
-        'sourceMap': '4:8:4:25;;5::5:28;;;;;;8:28:8:32;:12:::1;:34:10:9:0;9:20:9:34;:37::38;:20:::1;:12::40;10:15:12:9:0;11:20:11:33;:37::53;;:12::55:1;10:15:12:9;2:4:13:5;;',
+        'bytecode': '767621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa169757c92527982548875519c637656a0696778537988686d7551',
+        'sourceMap': '3:8:3:26;;;;;;;;;;4::4:25;;5::5:28;;;;;;8:28:8:32;:12:::1;:34:10:9:0;9:20:9:34;:37::38;:20:::1;:12::40;10:15:12:9:0;11:20:11:33;:37::53;;:12::55:1;10:15:12:9;2:4:13:5;;',
         'logs': [],
         'requires': [
           {
-            'ip': 14,
+            'ip': 24,
             'line': 9,
           },
           {
-            'ip': 19,
+            'ip': 29,
             'line': 11,
           },
         ],
       },
       'compiler': {
         'name': 'solidc',
-        'version': version,
+        'version': '0.13.1',
         'options': {
           'enforceFunctionParameterTypes': true,
           'enforceLocktimeGuard': true,
@@ -1692,7 +1691,7 @@ export const fixtures: Fixture[] = [
       },
       'compiler': {
         'name': 'solidc',
-        'version': version,
+        'version': '0.13.1',
         'options': {
           'enforceFunctionParameterTypes': false,
           'enforceLocktimeGuard': true,
@@ -1785,7 +1784,7 @@ export const fixtures: Fixture[] = [
       },
       'compiler': {
         'name': 'solidc',
-        'version': version,
+        'version': '0.13.1',
         'options': {
           'enforceFunctionParameterTypes': true,
           'enforceLocktimeGuard': true,

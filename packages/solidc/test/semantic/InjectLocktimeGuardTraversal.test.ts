@@ -64,7 +64,7 @@ describe('InjectLocktimeGuardTraversal', () => {
   it('injects guard when tx.locktime is used only inside a branch body', () => {
     const src = `
       contract T() {
-        function spend(int x) {
+        function spend(bigint x) {
           if (x > 0) {
             int y = tx.locktime;
             require(y >= 100);
@@ -73,6 +73,7 @@ describe('InjectLocktimeGuardTraversal', () => {
           }
         }
       }`;
+    // bigint param (no H6 bounds check) so the guard stays at the very start.
     expect(compileString(src).bytecode.startsWith(GUARD_PREFIX)).toBe(true);
   });
 
@@ -204,12 +205,13 @@ describe('InjectLocktimeGuardTraversal', () => {
   it('still injects when require(this.age >= ...) uses a non-literal operand', () => {
     const src = `
       contract T() {
-        function spend(int minAge) {
+        function spend(bigint minAge) {
           require(this.age >= minAge);
           int x = tx.locktime;
           require(x >= 100);
         }
       }`;
+    // bigint param (no H6 bounds check) so the guard stays at the very start.
     expect(compileString(src).bytecode.startsWith(GUARD_PREFIX)).toBe(true);
   });
 

@@ -5892,6 +5892,15 @@ export default class SymbolTableTraversal extends AstTraversal {
         identifier.location = node.location;
         return this.visit(identifier);
       }
+      // `C.f` with C the current contract: an own function used as a value, same as bare `f`. External
+      // functions are not identifier symbols (self external refs route via this.f), so only internal ones.
+      const ownFn = node.expression.name === this.currentContract?.name
+        ? this.functionDefinitions.get(node.name)?.[0] : undefined;
+      if (ownFn && ownFn.visibility !== 'external') {
+        const identifier = new IdentifierNode(node.name);
+        identifier.location = node.location;
+        return this.visit(identifier);
+      }
     }
 
     // Detect namespaced constant access (e.g. SafeMath.MAX_SAFE from a library)

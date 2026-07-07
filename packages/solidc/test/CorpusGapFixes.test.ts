@@ -762,6 +762,21 @@ describe('.selector on a single-assignment function-pointer local folds to the t
     expect(bc(mk('this.f.address == address(this)'))).toBe(bc(mk('address(this) == address(this)')));
   });
 
+  it('synthesizes a struct getter returning members except mappings/arrays (Solidity rule)', () => {
+    // A plain scalar/string-member struct gets a getter (exact shape of solc's
+    // getters/inaccessible_dynamic_type_1.sol). Array/mapping-bearing structs are flattened to per-field
+    // state vars and are deliberately skipped.
+    const src = 'contract C { struct S { string a; uint y; } S public s;'
+      + ' function g() public view returns (uint256) { this.s(); } }';
+    expect(cc(src)).toBe('C');
+  });
+
+  it('resolves C.f (own contract qualifier) as an internal function-pointer value', () => {
+    const src = 'contract C { function f() internal {} function g() internal {}'
+      + ' function test() public pure returns (bool) { function () internal ptr = C.f; return ptr == C.g; } }';
+    expect(cc(src)).toBe('C');
+  });
+
   it('folds L.f.selector for library functions, including storage-pointer fns inlined away', () => {
     // g takes a storage pointer (removed from freeFunctions by the inliner) - the selector must still fold
     // from the parse-time signature. Distinct signatures give distinct selectors; h twice gives the same.

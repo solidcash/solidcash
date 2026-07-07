@@ -8,11 +8,14 @@ import {
   StateAccessNode,
   MappingAccessNode,
   ArrayAccessNode,
+  FieldAccessNode,
   IdentifierNode,
   ParameterNode,
   StateVariableVisibility,
 } from '../ast/AST.js';
-import { MappingType, ArrayType, IntType, BytesType, PrimitiveType, AddressType, Type } from '@solidcash/utils';
+import {
+  MappingType, ArrayType, IntType, BytesType, PrimitiveType, AddressType, StructType, Type,
+} from '@solidcash/utils';
 import AstTraversal from '../ast/AstTraversal.js';
 
 // Only synthesize getters for types whose declared type resolves byte-identically to `this.x` during semantic
@@ -78,6 +81,29 @@ export default class SynthesizePublicGetters extends AstTraversal {
         getters.push(fn);
         continue;
       }
+      // A public struct's getter returns its members except mappings and arrays (Solidity's rule), as field
+      // reads on the struct state var. Mapping-bearing structs are flattened to per-field state vars by
+      // semantic analysis - skipped here (no whole-struct read exists for them).
+      if (sv.type instanceof StructType) {
+        const fields = sv.type.fields ?? [];
+        if (fields.some((f) => f.type instanceof MappingType)) continue;
+        const kept = fields.filter((f) => !(f.type instanceof ArrayType));
+        // Scalar members only: a struct-typed member would make the getter RETURN a struct value from an
+        // entry point - unproven machinery a synthesized body must not depend on (declarations that compile
+        // fine unused would start failing).
+        if (kept.length === 0 || !kept.every((f) => isSafeGetterType(f.type))) continue;
+        const reads = kept.map((f) => {
+          const stateRead = Object.assign(new StateAccessNode(sv.name), { location: loc });
+          return Object.assign(new FieldAccessNode(stateRead, f.name), { location: loc });
+        });
+        const body = Object.assign(new BlockNode([Object.assign(new ReturnNode(reads), { location: loc })]),
+          { location: loc });
+        const fn = new FunctionDefinitionNode(sv.name, [], body);
+        fn.returnTypes = kept.map((f) => f.type);
+        fn.location = loc;
+        getters.push(fn);
+        continue;
+      }
       if (!isSafeGetterType(sv.type)) continue;
       const read = new StateAccessNode(sv.name); read.location = loc;
       const body = new BlockNode([Object.assign(new ReturnNode([read]), { location: loc })]); body.location = loc;
@@ -102,6 +128,9 @@ export default class SynthesizePublicGetters extends AstTraversal {
         keyArgs.push(Object.assign(new IdentifierNode(kn), { location: loc }));
         t = t.valueType;
       }
+      // NOTE: a mapping whose value is an array would take one uint index per dimension (Solidity's rule),
+      // but element reads through a mapping entry's nested arrays are not wired yet - synthesizing a getter
+      // whose body cannot compile would break declarations that compile fine unused. Left unsynthesized.
       if (!isSafeGetterType(t)) continue; // complex value getter (struct/array/enum/address)
       const read = new MappingAccessNode(coll.name, keyArgs); read.location = loc;
       const body = new BlockNode([Object.assign(new ReturnNode([read]), { location: loc })]); body.location = loc;

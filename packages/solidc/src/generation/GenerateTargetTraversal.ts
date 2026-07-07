@@ -6840,8 +6840,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       throw new Error(`Compiled bytecode for contract '${contract.name}' not available`);
     }
 
-    // Step 1: Build redeem script on stack (same pattern as visitContractReference)
-    if (node.parameters.length === 0) {
+    // Step 1: Build redeem script on stack (same pattern as visitContractReference).
+    // Only CONTRACT-LEVEL parameters (solidcash-style) are redeem-script data pushes. A Solidity-style
+    // child's constructor(args) do not enter the address - the SDK instantiates it with no constructor
+    // inputs, and the ctor's effect reaches the genesis via the constructor fold (foldedStateInit).
+    const bakesCtorArgs = contract.parameters.length > 0;
+    if (node.parameters.length === 0 || !bakesCtorArgs) {
       this.emit(bodyBytecode, locationData);
       this.pushToStack('(redeemScript)');
     } else {

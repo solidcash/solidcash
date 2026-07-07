@@ -1096,7 +1096,13 @@ export default class SymbolTableTraversal extends AstTraversal {
     if (expr instanceof LiteralNode) return expr;
     if (expr instanceof IdentifierNode) {
       const sub = subs.get(expr.name);
-      return sub ? cloneNode(sub) : null; // forwarded arg or earlier local; unknown -> not foldable
+      if (sub) return cloneNode(sub); // forwarded arg or earlier local
+      // A not-yet-analyzed child body reads state as a BARE identifier (the StateAccess rewrite happens
+      // in the child's own pass): resolve it like a state read when it names a child field.
+      const prior = fieldExprs.get(expr.name);
+      if (prior) return cloneNode(prior);
+      const t = fieldType(expr.name);
+      return t ? createDefaultValueExpression(t, expr.location!) : null; // unknown name -> not foldable
     }
     if (expr instanceof StateAccessNode) {
       const prior = fieldExprs.get(expr.name);
@@ -1131,26 +1137,31 @@ export default class SymbolTableTraversal extends AstTraversal {
       expr.condition = c; expr.ifTrue = t; expr.ifFalse = f;
       return expr;
     }
+    // Index into a folded array value (`return m_s[i]` where m_s's genesis is a forwarded array arg):
+    // both the array and the index fold to parent-context expressions, so the access does too.
+    if (expr instanceof ArrayAccessNode) {
+      const a = this.foldGenesisExpr(expr.array as ExpressionNode, subs, fieldExprs, fieldType);
+      const idx = this.foldGenesisExpr(expr.index as ExpressionNode, subs, fieldExprs, fieldType);
+      if (!a || !idx) return null;
+      expr.array = a; expr.index = idx;
+      return expr;
+    }
     return null;
   }
 
-  // Try to fold a same-tx `deployLocal.foo(args)` into the deploy genesis. Handles a foo whose body is a
-  // straight-line sequence of `T local = expr;` and `this.field = expr;` assignments (plus an optional
-  // trailing require, not enforced at deploy), where each expr folds (foldGenesisExpr). Records, per child
-  // field, its final genesis expression in the parent's context, so the deploy covenant computes the value
-  // instead of using the default. Returns false (caller errors) for anything else.
-  private tryFoldDeployCall(
-    deployNode: InstantiationNode, foo: FunctionDefinitionNode, parentArgs: ExpressionNode[],
-  ): boolean {
-    const statements = (foo.body as BlockNode | undefined)?.statements ?? [];
-    if (statements.length === 0) return false;
-    const fieldType = (name: string): Type | undefined => deployNode.referencedContract?.stateVariables
-      .find((sv) => sv.name === name)?.type;
-    const subs = new Map<string, ExpressionNode>(); // forwarded args + earlier locals -> parent-context expr
-    foo.parameters.forEach((p, i) => { if (i < parentArgs.length) subs.set(p.name, parentArgs[i]); });
-    const fieldExprs = new Map<string, ExpressionNode>(); // child field -> folded value written so far
+  // Fold a straight-line statement list (`T local = expr;` / `this.field = expr;` / optional trailing
+  // require / optional trailing single-value return) against parent-context substitutions. `fieldExprs`
+  // carries fields already set (the ctor's genesis when folding a post-deploy call) and is mutated with
+  // this list's writes. Returns false when any statement is outside the foldable subset.
+  private foldStatementList(
+    statements: StatementNode[], subs: Map<string, ExpressionNode>,
+    fieldExprs: Map<string, ExpressionNode>, fieldType: (name: string) => Type | undefined,
+  ): false | { returnValue?: ExpressionNode, wrote: boolean } {
+    let returnValue: ExpressionNode | undefined;
+    let wrote = false;
     for (let i = 0; i < statements.length; i += 1) {
       const stmt = statements[i];
+      const isLast = i === statements.length - 1;
       if (stmt instanceof VariableDefinitionNode) {
         if (!stmt.expression) return false; // uninitialized local
         const folded = this.foldGenesisExpr(cloneNode(stmt.expression), subs, fieldExprs, fieldType);
@@ -1160,15 +1171,105 @@ export default class SymbolTableTraversal extends AstTraversal {
         const folded = this.foldGenesisExpr(cloneNode(stmt.expression), subs, fieldExprs, fieldType);
         if (!folded) return false;
         fieldExprs.set(stmt.name, folded);
-      } else if (!(i === statements.length - 1 && stmt instanceof RequireNode)) {
-        return false; // only straight-line local/field assignments (+ an optional trailing require) fold
+        wrote = true;
+      } else if (stmt instanceof AssignNode && stmt.identifier instanceof IdentifierNode) {
+        // A not-yet-analyzed child body writes state as a BARE assign (the StateAssign rewrite happens in
+        // the child's own pass): a local reassign updates subs, a child-field name is a state write.
+        const folded = this.foldGenesisExpr(cloneNode(stmt.expression), subs, fieldExprs, fieldType);
+        if (!folded) return false;
+        if (subs.has(stmt.identifier.name)) {
+          subs.set(stmt.identifier.name, folded);
+        } else if (fieldType(stmt.identifier.name)) {
+          fieldExprs.set(stmt.identifier.name, folded);
+          wrote = true;
+        } else {
+          return false;
+        }
+      } else if (isLast && stmt instanceof RequireNode) {
+        // trailing require: not enforced at deploy (documented fold semantics)
+      } else if (isLast && stmt instanceof ReturnNode && stmt.expressions.length === 1) {
+        const folded = this.foldGenesisExpr(cloneNode(stmt.expressions[0]), subs, fieldExprs, fieldType);
+        if (!folded) return false;
+        returnValue = folded;
+      } else {
+        return false; // only straight-line local/field assignments (+ trailing require/return) fold
       }
     }
-    if (fieldExprs.size === 0) return false;
+    return { returnValue, wrote };
+  }
+
+  // Folded genesis/return expressions embed CLONES of parent-context identifiers that the roll analysis
+  // never visited; the originals must stay on the stack (PICK-only) or the clones' codegen reads a
+  // vanished slot. Registered in conditionalRefNames so a LATER source use cannot re-mark the name as
+  // roll-eligible (clones may be emitted after it). Leftovers are dropped by the epilogue cleanup.
+  private protectFoldedExprVars(exprs: Iterable<ExpressionNode | undefined>): void {
+    if (!this.currentFunction) return;
+    const counter = new IdentifierNameCounter();
+    for (const e of exprs) if (e) counter.visit(e);
+    for (const name of counter.counts.keys()) {
+      this.currentFunction.opRolls.delete(name);
+      this.conditionalRefNames.add(name);
+    }
+  }
+
+  // Fold the child constructor's writes into the deploy genesis, so the covenant verifies the TRUE initial
+  // state instead of type defaults. All-or-nothing: an unfoldable ctor (control flow, msg.sender, external
+  // reads, ...) leaves the default-genesis behavior unchanged. Runs once per `new C(...)` site.
+  private tryFoldChildConstructor(deployNode: InstantiationNode): void {
+    const contract = deployNode.referencedContract;
+    const ctor = contract?.constructorDef;
+    const statements = (ctor?.body as BlockNode | undefined)?.statements ?? [];
+    if (!contract || !ctor || statements.length === 0) return;
+    const fieldType = (name: string): Type | undefined => contract.stateVariables
+      .find((sv) => sv.name === name)?.type;
+    const subs = new Map<string, ExpressionNode>();
+    const declared = ctor.parameters
+      .filter((p) => !p.name.startsWith('__internal__') && !p.name.startsWith('__ctorread_'));
+    declared.forEach((p, i) => { if (i < deployNode.parameters.length) subs.set(p.name, deployNode.parameters[i] as ExpressionNode); });
+    const fieldExprs = new Map<string, ExpressionNode>();
+    const res = this.foldStatementList(statements, subs, fieldExprs, fieldType);
+    if (!res) {
+      deployNode.ctorFoldFailed = true; // genesis of ctor-written fields is unknown to later folds
+      return;
+    }
+    if (fieldExprs.size === 0) return;
     const init = deployNode.foldedStateInit ?? new Map<string, ExpressionNode>();
-    for (const [k, v] of fieldExprs) init.set(k, v); // a later folded call overrides an earlier one
+    for (const [k, v] of fieldExprs) init.set(k, v);
     deployNode.foldedStateInit = init;
-    return true;
+    this.protectFoldedExprVars(init.values());
+  }
+
+  // Try to fold a same-tx `deployLocal.foo(args)` into the deploy genesis. Handles a foo whose body is a
+  // straight-line sequence of `T local = expr;` and `this.field = expr;` assignments (plus an optional
+  // trailing require, not enforced at deploy), where each expr folds (foldGenesisExpr). Records, per child
+  // field, its final genesis expression in the parent's context, so the deploy covenant computes the value
+  // instead of using the default. Returns false (caller errors) for anything else.
+  private tryFoldDeployCall(
+    deployNode: InstantiationNode, foo: FunctionDefinitionNode, parentArgs: ExpressionNode[],
+  ): false | { returnValue?: ExpressionNode } {
+    const statements = (foo.body as BlockNode | undefined)?.statements ?? [];
+    if (statements.length === 0) return false;
+    // An unfolded ctor means the genesis of fields it may have written is unknown: a read miss must fail
+    // the fold (returning the type default would bake a wrong value into the covenant).
+    const fieldType = (name: string): Type | undefined => (deployNode.ctorFoldFailed
+      ? undefined
+      : deployNode.referencedContract?.stateVariables.find((sv) => sv.name === name)?.type);
+    const subs = new Map<string, ExpressionNode>(); // forwarded args + earlier locals -> parent-context expr
+    foo.parameters.forEach((p, i) => { if (i < parentArgs.length) subs.set(p.name, parentArgs[i]); });
+    // Seed with the genesis so far (ctor fold + earlier folded calls): a `this.field` read inside foo must
+    // see the TRUE current value, not the type default.
+    const fieldExprs = new Map<string, ExpressionNode>(deployNode.foldedStateInit ?? []);
+    const res = this.foldStatementList(statements, subs, fieldExprs, fieldType);
+    if (!res) return false;
+    if (!res.wrote && !res.returnValue) return false; // neither a state transition nor a value
+    if (res.wrote) {
+      const init = deployNode.foldedStateInit ?? new Map<string, ExpressionNode>();
+      for (const [k, v] of fieldExprs) init.set(k, v); // a later folded call overrides an earlier one
+      deployNode.foldedStateInit = init;
+      this.protectFoldedExprVars(init.values());
+    }
+    if (res.returnValue) this.protectFoldedExprVars([res.returnValue]);
+    return { returnValue: res.returnValue };
   }
 
   visitFunctionDefinition(node: FunctionDefinitionNode): Node {
@@ -4505,9 +4606,16 @@ export default class SymbolTableTraversal extends AstTraversal {
                 const deployNode = this.deployResultLocals.get(varName)!;
                 // ifaceFunc is a signature-only view; the real body lives on the referenced contract.
                 const realFoo = deployNode.referencedContract?.functions.find((f) => f.name === methodName);
-                if (!realFoo || !this.tryFoldDeployCall(deployNode, realFoo, parameters)) {
+                const foldRes = realFoo ? this.tryFoldDeployCall(deployNode, realFoo, parameters) : false;
+                if (!foldRes) {
                   throw new DeployThenCallError(node, varName, methodName, calleeName,
                     realFoo ? this.isDeployFoldable(realFoo) : false);
+                }
+                // A value-returning folded call IS its genesis expression in the parent's context
+                // (`r = c.m_x()` on a fresh deploy reads the value the deploy covenant verifies).
+                if (foldRes.returnValue) {
+                  foldRes.returnValue.location = node.location;
+                  return foldRes.returnValue;
                 }
                 // Folded into the deploy genesis: an inert external-call node (skipped by collection + codegen).
                 const inert = new ExternalFunctionCallNode(calleeName, visitedVar, methodName, parameters);
@@ -4726,7 +4834,14 @@ export default class SymbolTableTraversal extends AstTraversal {
           wrapper.location = node.location;
           return wrapper;
         }
-        node.call = resolved as FunctionCallNode;
+        // A value-returning deploy-fold resolves the call to a plain expression; as a statement the value
+        // is computed and dropped.
+        if (!(resolved instanceof FunctionCallNode)) {
+          const stmt = new ExpressionStatementNode(resolved as ExpressionNode);
+          stmt.location = node.location;
+          return stmt;
+        }
+        node.call = resolved;
         return node;
       }
     }
@@ -4818,6 +4933,11 @@ export default class SymbolTableTraversal extends AstTraversal {
       }
 
       node.parameters = this.visitList(node.parameters);
+
+      // Fold the child ctor's writes into the genesis: the deploy covenant otherwise verifies TYPE
+      // DEFAULTS, diverging from a ctor that initializes fields from its args. Also seeds later
+      // deploy-then-call folds so their `this.field` reads see the true genesis value.
+      this.tryFoldChildConstructor(node);
 
       if (node.callOptions?.value) {
         node.callOptions.value = this.visit(node.callOptions.value) as ExpressionNode;

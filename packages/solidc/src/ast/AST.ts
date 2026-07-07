@@ -957,6 +957,9 @@ export class InstantiationNode extends ExpressionNode {
   // child is deployed in its post-foo state. Maps a child state-var name to the (parent-context) expression
   // its value should hold; the deploy covenant emits this instead of the default for that field.
   foldedStateInit?: Map<string, ExpressionNode>;
+  // The child has a constructor whose writes could NOT be folded: the true genesis of unwritten fields is
+  // unknown, so later call-folds must not resolve their reads to type defaults.
+  ctorFoldFailed?: boolean;
 
   constructor(
     public identifier: IdentifierNode,

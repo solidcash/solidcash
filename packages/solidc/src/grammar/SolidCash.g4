@@ -272,8 +272,15 @@ block
     | statement
     ;
 
+// A bare braced block used as a statement (Solidity allows `{ ... }` to introduce a nested scope). Distinct
+// from `block` (which also matches a single bare statement) to avoid left-recursion when nested in `statement`.
+blockStatement
+    : '{' statement* '}'
+    ;
+
 statement
     : placeholderStatement
+    | blockStatement
     | variableDefinition
     | tupleAssignment
     | prefixIncDecStatement

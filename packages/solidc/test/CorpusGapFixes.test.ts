@@ -941,3 +941,20 @@ describe('modifier local variables are renamed uniquely per application', () => 
       + ' function f(bool a) public mod1 returns (uint256 r) { return a ? 1 : 0; } }')).toBe('C');
   });
 });
+
+describe('bare block statements introduce a nested scope (VM-verified in solidcash/test/BareBlockScope.test.ts)', () => {
+  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  it('compiles disjoint sibling blocks that reuse a name', () => {
+    expect(cc('contract C { function f() external { { uint x = 1; require(x > 0); } { uint x = 2; require(x > 0); } } }'))
+      .toBe('C');
+  });
+  it('compiles a nested block inside unchecked and a block that reads an outer local', () => {
+    expect(cc('contract C { function f() external { unchecked { { uint m = 5; require(m == 5); } } } }')).toBe('C');
+    expect(cc('contract C { function f() external { uint a = 1; { uint b = 2; require(a + b == 3); } require(a == 1); } }'))
+      .toBe('C');
+  });
+  it('still rejects a block local that shadows a live outer local (codegen slots by name)', () => {
+    expect(() => cc('contract C { function f() external { uint b = 1; { uint b = 2; require(b == 2); } require(b == 1); } }'))
+      .toThrow(/Redefinition/);
+  });
+});

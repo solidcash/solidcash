@@ -135,6 +135,7 @@ import type {
   LiteralContext,
   SourceFileContext,
   BlockContext,
+  BlockStatementContext,
   TimeOpStatementContext,
   ArrayContext,
   UnaryOpContext,
@@ -2005,6 +2006,16 @@ export default class AstBuilder
     return block;
   }
 
+  // A bare `{ ... }` used as a statement (introduces a nested scope). Marked `scoped` so flattenStatements keeps
+  // it intact - its nested variable scope must survive so sibling blocks may reuse a name.
+  visitBlockStatement(ctx: BlockStatementContext): BlockNode {
+    const statements = this.flattenStatements(ctx.statement_list().map((s) => this.visit(s) as StatementNode));
+    const block = new BlockNode(statements);
+    block.scoped = true;
+    block.location = Location.fromCtx(ctx);
+    return block;
+  }
+
   visitParenthesised(ctx: ParenthesisedContext): ExpressionNode {
     return this.visit(ctx.expression());
   }
@@ -3779,7 +3790,9 @@ export default class AstBuilder
 
   // Flatten BlockNode statements into the parent list (used for for-loop desugaring)
   private flattenStatements(statements: StatementNode[]): StatementNode[] {
-    return statements.flatMap((s) => (s instanceof BlockNode && s.statements) ? s.statements : [s]);
+    return statements.flatMap(
+      (s) => (s instanceof BlockNode && s.statements && !s.scoped) ? s.statements : [s],
+    );
   }
 
   private resolveType(typeText: string): Type {

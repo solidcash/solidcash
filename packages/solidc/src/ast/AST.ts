@@ -725,6 +725,11 @@ export class ContinueNode extends StatementNode {
 export class BlockNode extends StatementNode {
   symbolTable?: SymbolTable;
 
+  // A bare `{ ... }` scope block written by the user, as opposed to a desugaring's multi-statement wrapper.
+  // Scoped blocks are NOT flattened into their parent statement list, so their nested variable scope survives
+  // (two sibling blocks may reuse a name; a block local may shadow nothing outside it).
+  scoped?: boolean;
+
   constructor(
     public statements?: StatementNode[],
   ) {

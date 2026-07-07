@@ -3824,7 +3824,9 @@ export default class SymbolTableTraversal extends AstTraversal {
       const loopReuse = node.isLoopVariable && existingDef?.isLoopVariable;
       // A local may shadow an OUTER-scope function or state variable (both declared at contract/library level) -
       // e.g. a named return with the same name as its function, `function max(..) returns (int max)`, legal in
-      // Solidity. set() below adds it to the inner scope, so the shadow resolves correctly.
+      // Solidity. set() below adds it to the inner scope, so the shadow resolves correctly. Shadowing an outer
+      // LOCAL that is still live is NOT accepted: codegen slots locals by name, so a live shadow would reuse the
+      // outer's slot and miscompile - a clean rejection is sound; disjoint sibling scopes reuse names fine.
       const shadowsOuter = this.compilerOptions.solidityImportCompat
         && (existing.symbolType === SymbolType.FUNCTION || existing.symbolType === SymbolType.STATE_VARIABLE);
       if (!loopReuse && !shadowsOuter) {

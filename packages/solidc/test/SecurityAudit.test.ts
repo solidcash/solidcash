@@ -439,6 +439,23 @@ describe('C1/B: a delegatecall function may not self-mutate', () => {
   });
 });
 
+// C1 full-state authority - the co-spent delegate only pins the proxy data NFTs it accesses, so the own-category
+// mutable-NFT conservation loop (the same one VM-proven for C3) is now also emitted on the delegatecall path, so
+// an un-touched proxy data NFT can't be destroyed/count-tampered while the proxy forwards.
+describe('C1: proxy-state conservation runs on the delegatecall path', () => {
+  it('emits the own-category conservation loop for a delegatecall proxy', () => {
+    const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const IMPL = 'address(0x76a91489abcdefabbaabbaabbaabbaabbaabbaabbaabba88ac)';
+    const bc = compileString(
+      `contract P { bigint counter;
+        function up(bytes i, pubkey pk, sig s) external { require(checkSig(s, pk)); address m = ${IMPL};
+          m.delegatecall(i); require(i.length > 0); } }`,
+    ).bytecode;
+    spy.mockRestore();
+    expect(bc).toContain('OP_SPLIT OP_DROP OP_1 OP_CAT');
+  });
+});
+
 describe('C4: composite mapping keys (continued)', () => {
   it('keccak256(abi.encode(...)) keys over distinct operands do not collapse', () => {
     const two = compileString(`

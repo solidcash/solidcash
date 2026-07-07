@@ -365,6 +365,28 @@ describe('MD3: fallback/receive get the locktime guard', () => {
   });
 });
 
+// MD4 - a parent constructor body was inlined ONLY when the child explicitly invoked it (is Parent(args)).
+// Plain `contract Child is Parent` merged the parent's state vars but dropped its constructor init, so
+// guard-relevant state (owner = ...) silently stayed at the zero default. A parameterless parent ctor is now
+// inlined implicitly (Solidity's implicit base-constructor call).
+describe('MD4: implicit base-constructor init is not dropped', () => {
+  it('inlines an un-invoked parameterless parent constructor (matches explicit init)', () => {
+    const inherited = compileString(`contract Parent() {
+        int owner;
+        constructor() { this.owner = 42; }
+      }
+      contract Child is Parent {
+        function f(pubkey pk, sig s) external { require(checkSig(s, pk)); require(this.owner == 42); }
+      }`).bytecode;
+    const standalone = compileString(`contract C() {
+        int owner;
+        constructor() { this.owner = 42; }
+        function f(pubkey pk, sig s) external { require(checkSig(s, pk)); require(this.owner == 42); }
+      }`).bytecode;
+    expect(inherited).toBe(standalone);
+  });
+});
+
 describe('C4: composite mapping keys (continued)', () => {
   it('keccak256(abi.encode(...)) keys over distinct operands do not collapse', () => {
     const two = compileString(`

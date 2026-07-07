@@ -241,12 +241,18 @@ function inlineParentConstructors(
   const parentStmts: StatementNode[] = [];
   for (const parentName of parentNames) {
     const invocation = contract.parentInvocations.find((pi) => pi.parentName === parentName);
-    if (!invocation) continue;
     const parent = contractMap.get(parentName)!;
     if (!parent.constructorDef?.body?.statements?.length) continue;
     const ctorParams = effectiveConstructorParams(parent);
+    // MD4: a parent constructor runs even without an explicit `is Parent(args)` invocation - Solidity's implicit
+    // base-constructor call - otherwise guard-relevant init (e.g. owner = ...) silently stays at the zero default.
+    // Without an invocation we can only run a PARAMETERLESS parent ctor (a parameterized one needs explicit args,
+    // which Solidity requires); skip a parameterized, un-invoked parent as before.
+    if (!invocation && ctorParams.length > 0) continue;
     const clonedCtor = cloneNode(parent.constructorDef);
-    substituteInFunction(clonedCtor, new Map(ctorParams.map((p, i) => [p.name, invocation.args[i]])));
+    if (invocation) {
+      substituteInFunction(clonedCtor, new Map(ctorParams.map((p, i) => [p.name, invocation.args[i]])));
+    }
     parentStmts.push(...(clonedCtor.body.statements ?? []));
   }
   if (parentStmts.length === 0) return;

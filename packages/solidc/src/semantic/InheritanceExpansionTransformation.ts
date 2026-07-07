@@ -98,16 +98,33 @@ export default function expandInheritance(ast: SourceFileNode): SourceFileNode {
     contractMap.set(c.name, c);
   }
 
-  // If the contract doesn't implement anything, nothing to do
+  const expanded = new Set<string>();
+
+  // The primary contract's own ancestors (captured before expansion clears `implements`) are flattened as part
+  // of the primary's expansion below; flattening one independently first would double-merge a shared diamond
+  // ancestor into the primary. So compute the primary's linearization up front and skip those names.
+  const primaryLinearization = ast.contract.implements.length > 0
+    ? computeLinearization(ast.contract, contractMap) : [ast.contract.name];
+  const primaryAncestors = new Set(primaryLinearization);
+
+  // Flatten IMPORTED contracts that carry their own inheritance and are USED/instantiated independently (not a
+  // primary ancestor), so `new Middle()` where `Middle is Oracle` is a complete definition with its base merged
+  // in - otherwise its unresolved base surfaces later as an "undefined interface". expandContract recursively
+  // expands each base first and memoizes via `expanded`, so shared bases are merged once.
+  for (const imported of [...ast.importedContracts]) {
+    if (imported.implements.length > 0 && !expanded.has(imported.name) && !primaryAncestors.has(imported.name)) {
+      const importedLinearization = computeLinearization(imported, contractMap);
+      expandContract(imported, contractMap, expanded, new Set());
+      resolveSuperAndBaseCalls(imported, importedLinearization);
+    }
+  }
+
+  // If the primary contract doesn't implement anything, nothing more to do
   if (ast.contract.implements.length === 0) return ast;
 
-  // Capture the linearization before expansion clears `implements` (used for super resolution).
-  const linearization = computeLinearization(ast.contract, contractMap);
-
-  const expanded = new Set<string>();
   expandContract(ast.contract, contractMap, expanded, new Set());
 
-  resolveSuperAndBaseCalls(ast.contract, linearization);
+  resolveSuperAndBaseCalls(ast.contract, primaryLinearization);
 
   return ast;
 }

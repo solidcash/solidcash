@@ -692,6 +692,22 @@ describe('function overload resolution (inheritance + entry-point synthetic para
   });
 });
 
+describe('imported/sibling contracts with their own inheritance are flattened', () => {
+  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  it('instantiates a sibling contract that inherits a base (base merged in, not an undefined interface)', () => {
+    // Previously only the primary contract was flattened, so a used/instantiated sibling that `is Base` kept an
+    // unresolved base -> "undefined interface". Now non-ancestor imported/sibling contracts are flattened too.
+    expect(cc('contract Base { function isSet() public view returns (bool) { return false; } }'
+      + ' contract Mid is Base { }'
+      + ' contract Top { function make() external returns (Mid) { return new Mid(); } }')).toBe('Top');
+  });
+  it('still resolves the primary contract diamond inheritance (no double-merge of a shared ancestor)', () => {
+    expect(cc('contract A { function a() public pure returns (uint256) { return 1; } }'
+      + ' contract B is A { } contract C is A { }'
+      + ' contract D is B, C { function f() external pure returns (uint256) { return a(); } }')).toBe('D');
+  });
+});
+
 describe('whole fixed-array copy with differing length/element (desugar by reduction)', () => {
   const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
   const bc = (src: string): string => compileString(src, { solidityImportCompat: true }).bytecode;

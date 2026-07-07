@@ -4798,9 +4798,12 @@ export default class SymbolTableTraversal extends AstTraversal {
       }
 
       // Solidity `constructor(args)` puts the deploy params on constructorDef, not the (solidcash) contract-
-      // level parameters; use whichever carries them.
-      const expectedCtorParams = contract.parameters.length > 0
-        ? contract.parameters : (contract.constructorDef?.parameters ?? []);
+      // level parameters; use whichever carries them. Synthetic __internal__ params (a child's own semantic
+      // pass appends them onto the SHARED ctor node, e.g. for a ctor msg.sender read) are never call-site
+      // arguments - count declared params only.
+      const expectedCtorParams = (contract.parameters.length > 0
+        ? contract.parameters : (contract.constructorDef?.parameters ?? []))
+        .filter((p) => !p.name.startsWith('__internal__') && !p.name.startsWith('__ctorread_'));
       if (node.parameters.length !== expectedCtorParams.length) {
         throw new ContractConstructorArgCountError(node, contract.name, expectedCtorParams.length, node.parameters.length);
       }

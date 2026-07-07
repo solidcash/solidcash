@@ -402,7 +402,16 @@ function compileReferencedContracts(
     // to properly populate opRolls (last-use tracking for OP_ROLL optimization).
     // Without this, imported contracts get OP_PICK + OP_NIP instead of OP_ROLL,
     // producing different (larger) bytecode than standalone compilation.
-    let singleAst: Ast = new SourceFileNode(contract);
+    // The wrapper carries the file's DEFINITIONS (sibling contracts, interfaces, enums, structs, type
+    // defs, events, errors) so a child resolves them like the primary does - a chained child (C deploys
+    // B, B declares `A a`) otherwise failed its contract-type validation. These are registration-only in
+    // the child's fresh SymbolTable; free functions / using-for are NOT carried (their bodies were
+    // already desugared by the main pipeline and must not be re-visited).
+    let singleAst: Ast = new SourceFileNode(
+      contract, [], ast.enumDefinitions, ast.structDefinitions, ast.typeDefinitions,
+      ast.errorDefinitions, ast.eventDefinitions, ast.interfaceDefinitions, [], [], [],
+    );
+    singleAst.importedContracts = ast.importedContracts.filter((c) => c.name !== contract.name);
     singleAst = singleAst.accept(new NamedReturnTransformation(compilerOptions.solidityImportCompat)) as Ast;
     singleAst = singleAst.accept(new DesugarNestedBranchReturn()) as Ast;
     singleAst = singleAst.accept(new DesugarPostfixExpressions()) as Ast;
@@ -461,12 +470,33 @@ function compileReferencedContracts(
 function collectContractReferences(ast: Ast): Set<string> {
   const refs = new Set<string>();
   if (ast.importedContracts.length === 0) return refs;
+  const knownNames = new Set(ast.importedContracts.map((c) => c.name));
   const visited = new WeakSet();
-  collectRefsRecursive(ast.contract, refs, visited);
+  collectRefsRecursive(ast.contract, refs, visited, knownNames);
+  // Transitive closure: a referenced child may itself deploy/reference another sibling (C deploys B,
+  // B deploys A) - A's bytecode must be compiled too, or B's codegen fails "bytecode not available".
+  // Each child walk gets a fresh visited set (the primary walk may have marked the child's node without
+  // descending into it).
+  const byName = new Map(ast.importedContracts.map((c) => [c.name, c]));
+  const walked = new Set<string>();
+  let grew = true;
+  while (grew) {
+    grew = false;
+    for (const name of [...refs]) {
+      const child = byName.get(name);
+      if (!child || walked.has(name)) continue;
+      walked.add(name);
+      const before = refs.size;
+      collectRefsRecursive(child, refs, new WeakSet(), knownNames);
+      if (refs.size > before) grew = true;
+    }
+  }
   return refs;
 }
 
-function collectRefsRecursive(node: any, refs: Set<string>, visited: WeakSet<object>): void {
+function collectRefsRecursive(
+  node: any, refs: Set<string>, visited: WeakSet<object>, knownNames?: Set<string>,
+): void {
   if (!node || typeof node !== 'object') return;
   if (visited.has(node)) return;
   visited.add(node);
@@ -475,18 +505,21 @@ function collectRefsRecursive(node: any, refs: Set<string>, visited: WeakSet<obj
     refs.add(node.contractName);
     // Also recurse into constructor args
     for (const arg of node.constructorArgs) {
-      collectRefsRecursive(arg, refs, visited);
+      collectRefsRecursive(arg, refs, visited, knownNames);
     }
     return;
   }
 
-  if (node instanceof InstantiationNode && node.referencedContract) {
+  // referencedContract is stamped by the PRIMARY's semantic pass; a not-yet-analyzed child's `new A()`
+  // carries none, so also match by name against the file's known contracts (transitive closure walks).
+  if (node instanceof InstantiationNode
+    && (node.referencedContract || knownNames?.has(node.identifier.name))) {
     refs.add(node.identifier.name);
     for (const arg of node.parameters) {
-      collectRefsRecursive(arg, refs, visited);
+      collectRefsRecursive(arg, refs, visited, knownNames);
     }
-    if (node.callOptions?.value) collectRefsRecursive(node.callOptions.value, refs, visited);
-    if (node.callOptions?.salt) collectRefsRecursive(node.callOptions.salt, refs, visited);
+    if (node.callOptions?.value) collectRefsRecursive(node.callOptions.value, refs, visited, knownNames);
+    if (node.callOptions?.salt) collectRefsRecursive(node.callOptions.salt, refs, visited, knownNames);
     return;
   }
 
@@ -509,11 +542,11 @@ function collectRefsRecursive(node: any, refs: Set<string>, visited: WeakSet<obj
     const val = node[key];
     if (val instanceof Array) {
       for (const item of val) {
-        if (item && typeof item === 'object') collectRefsRecursive(item, refs, visited);
+        if (item && typeof item === 'object') collectRefsRecursive(item, refs, visited, knownNames);
       }
     } else if (val && typeof val === 'object' && !(val instanceof Map) && !(val instanceof Set)
       && !(val instanceof Uint8Array)) {
-      collectRefsRecursive(val, refs, visited);
+      collectRefsRecursive(val, refs, visited, knownNames);
     }
   }
 }
@@ -530,17 +563,24 @@ function topologicalSort(
   const visited = new Set<string>();
   const visiting = new Set<string>();
 
+  // A referenced contract may itself deploy/reference another sibling (C deploys B, B deploys A):
+  // its dependencies must compile first so their bytecode is available to its codegen.
+  const depsOf = (name: string): string[] => {
+    const c = contractMap.get(name);
+    if (!c) return [];
+    const refs = new Set<string>();
+    collectRefsRecursive(c, refs, new WeakSet(), new Set(contractMap.keys()));
+    refs.delete(name);
+    return [...refs].filter((r) => referencedContracts.has(r));
+  };
+
   function visit(name: string): void {
     if (visited.has(name)) return;
     if (visiting.has(name)) {
       throw new CircularContractReferenceError(name);
     }
     visiting.add(name);
-
-    // For now, imported contracts don't have dependencies on each other
-    // (they're simple standalone contracts). If they reference other contracts,
-    // those would need to be resolved too.
-
+    for (const dep of depsOf(name)) visit(dep);
     visiting.delete(name);
     visited.add(name);
     sorted.push(name);

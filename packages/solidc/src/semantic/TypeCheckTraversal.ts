@@ -1484,9 +1484,11 @@ export default class TypeCheckTraversal extends AstTraversal {
       node.parameters = this.visitList(node.parameters);
       const parameterTypes = node.parameters.map((p) => p.type!);
       // Solidity `constructor(args)` carries the deploy params on constructorDef, not the (solidcash)
-      // contract-level parameters; use whichever has them.
-      const ctorParams = node.referencedContract.parameters.length > 0
-        ? node.referencedContract.parameters : (node.referencedContract.constructorDef?.parameters ?? []);
+      // contract-level parameters; use whichever has them. Synthetic __internal__ params (appended onto
+      // the shared ctor node by the child's own semantic pass) are never call-site arguments.
+      const ctorParams = (node.referencedContract.parameters.length > 0
+        ? node.referencedContract.parameters : (node.referencedContract.constructorDef?.parameters ?? []))
+        .filter((p) => !p.name.startsWith('__internal__') && !p.name.startsWith('__ctorread_'));
       const expectedTypes = ctorParams.map((p) => p.type);
       expectParameters(node, parameterTypes, expectedTypes);
 

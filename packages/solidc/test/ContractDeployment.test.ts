@@ -218,3 +218,29 @@ describe('type(X).creationCode constructor-args warning', () => {
     expect(w.length).toBe(0);
   });
 });
+
+describe('chained sibling deployment (C deploys B, B deploys A)', () => {
+  // The reference collection is transitive and topologically ordered (A compiles before B, B before C),
+  // the child re-analysis wrapper carries the file's definitions, and a child ctor's synthetic
+  // __internal__ params (e.g. a ctor msg.sender read) are excluded from call-site arg checks.
+  it('compiles a three-contract deploy chain with a ctor msg.sender read in the leaf', () => {
+    const src = `
+      contract A {
+          uint x;
+          address immutable owner;
+          constructor() { owner = msg.sender; }
+          function getX() public view returns (uint) { return x; }
+      }
+      contract B {
+          A a;
+          constructor() { a = new A(); }
+          function getX() public view returns (uint) { return a.getX(); }
+      }
+      contract C {
+          B b;
+          constructor() { b = new B(); }
+          function f() public view { assert(b.getX() == 0); }
+      }`;
+    expect(compileString(src, { solidityImportCompat: true }).contractName).toBe('C');
+  });
+});

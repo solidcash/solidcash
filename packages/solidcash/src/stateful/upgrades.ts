@@ -10,22 +10,14 @@ import { FunctionArgument } from '../Argument.js';
 import { addressToLockScript } from '../utils.js';
 import { defaultProxyArtifact } from './defaultProxyArtifact.js';
 
-// OpenZeppelin-hardhat-upgrades-style proxy deployment for stateful contracts.
-//
-// `upgrades.deployProxy(ImplFactory, initialState)` deploys the implementation (a `delegate`-backed contract),
-// deploys a proxy that holds the live state, seeds the proxy state with `initialState`, and returns a handle whose
-// method calls forward to the implementation through a pinned delegatecall (the C1 co-spend pin).
-//
-// By default the built-in `SolidCashProxy` is used: its bytecode is layout-INDEPENDENT (it never reads its own
-// state fields), so deployProxy grafts the implementation's stateLayout onto it and bakes the implementation
-// address as an immutable constructor arg. Pass `options.proxy` to use a custom proxy contract instead. On BCH the
-// proxy and implementation are separate on-chain contracts with a compatible state layout (unlike EVM, where a
-// generic proxy bytecode wraps any implementation). See docs/upgrades.md + docs/delegatecall-security.md.
+// OpenZeppelin-hardhat-upgrades-style `upgrades.deployProxy` for stateful contracts. Unlike EVM's generic proxy
+// bytecode, on BCH the proxy and implementation are separate on-chain contracts with a compatible state layout;
+// the built-in SolidCashProxy sidesteps that (its bytecode is layout-independent). See docs/upgrades.md.
 
-// The forwarding function's calling convention, detected from the proxy ABI:
-//   'baked'    - f(bytes input): the implementation is a baked constructor arg (the default proxy). Permissionless.
-//   'param'    - f(bytes input, address impl, ...auth): the implementation is a call param (custom proxy).
-//   'fallback' - __fallback(): a bare fallback (the implementation is auto-derived from the co-spend).
+// The proxy forwarder's calling convention, detected from its ABI:
+//   'baked'    - f(bytes input): impl is a baked constructor arg (the default proxy)
+//   'param'    - f(bytes input, address impl, ...auth): impl is a call param (custom proxy)
+//   'fallback' - __fallback(): impl auto-derived from the co-spend
 type ForwardMode = 'baked' | 'param' | 'fallback';
 
 interface ForwardShape {
@@ -34,9 +26,8 @@ interface ForwardShape {
 }
 
 export interface DeployProxyOptions {
-  // OZ-style initializer. Default (undefined) auto-detects an `initialize` delegate function and runs it with the
-  // init args through the proxy (the Ethereum flow, for drop-in ports). `false` skips it and seeds state directly
-  // at genesis (the SolidCash-native constructor style). A string names a different initializer function.
+  // OZ-style initializer. Default auto-detects an `initialize` delegate function and runs it with the init args
+  // through the proxy; `false` seeds state at genesis instead; a string names a different initializer.
   initializer?: string | false;
   // A custom proxy contract artifact. Omit to use the built-in layout-independent `SolidCashProxy` (recommended).
   proxy?: Artifact;
@@ -134,9 +125,8 @@ export class ProxyContract<TImpl extends Artifact = Artifact> {
   }
 
   /**
-   * Forward an implementation function through the proxy via a pinned delegatecall. Returns the call builder
-   * (chain `.send()`), so the co-spend + selector pin (finding C1) are wired automatically:
-   *   proxy.forward('increment', [args]).send()
+   * Forward an implementation function through the proxy via the pinned delegatecall (co-spend + selector pin
+   * wired automatically). Returns the call builder; chain `.send()`.
    */
   forward(
     implFunction: string, implArgs: FunctionArgument[] = [], extraForwardArgs: FunctionArgument[] = [],
@@ -183,10 +173,8 @@ function wrapDispatch<TImpl extends Artifact>(handle: ProxyContract<TImpl>): Pro
   });
 }
 
-// Resolve the OZ-style initializer to a function name (or undefined for genesis init). `false` disables it; a
-// string names it (and must exist + be a `delegate`); undefined auto-detects an `initialize` delegate function.
-// EVM proxies must init via a function called through the proxy (a constructor would set the impl's storage, not
-// the proxy's); on BCH genesis sets the proxy's state directly, so a plain state seed is the native equivalent.
+// Resolve the OZ-style initializer to a function name (undefined = seed state at genesis). `false` disables it; a
+// string names it (must exist + be a `delegate`); undefined auto-detects an `initialize` delegate.
 function resolveInitializer(opt: string | false | undefined, impl: Artifact): string | undefined {
   if (opt === false) return undefined;
   const abi = impl.abi as readonly AbiFunction[];
@@ -211,10 +199,9 @@ function graftDefaultProxy(impl: Artifact): Artifact {
 }
 
 /**
- * ethers/hardhat `upgrades.deployProxy(ImplFactory, initialState?, options)`. Deploys the implementation and a
- * state-holding proxy, seeds the proxy state, and returns a handle whose method calls forward to the implementation
- * through a pinned delegatecall. By default the built-in `SolidCashProxy` is used (the implementation address is
- * baked as an immutable constructor arg); pass `options.proxy` to use a custom proxy contract.
+ * ethers/hardhat `upgrades.deployProxy(ImplFactory, initialState?, options)`: deploy the implementation + a
+ * state-holding proxy, seed the state, and return a handle whose method calls forward to the implementation
+ * through the pinned delegatecall. Uses the built-in SolidCashProxy unless `options.proxy` is given.
  */
 export async function deployProxy<TImpl extends Artifact>(
   implementationFactory: ContractFactory<TImpl>,
@@ -251,8 +238,7 @@ export async function deployProxy<TImpl extends Artifact>(
 
   const handle = wrapDispatch(new ProxyContract<TImpl>(proxy, implementation, shape, auth, runner));
 
-  // 3. If an initializer is used, run it through the proxy (the Ethereum flow) - the init args are its positional
-  //    arguments, so the delegate sets the proxy state.
+  // 3. With an initializer, run it through the proxy: its positional args set the proxy state.
   if (initializer) {
     if (initialState !== undefined && !Array.isArray(initialState)) {
       throw new Error(`Initializer '${initializer}' takes positional args - pass initialState as an array (or use { initializer: false } to seed state at genesis).`);

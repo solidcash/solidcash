@@ -1,12 +1,10 @@
 /* eslint-disable */
-// AUTO-GENERATED - do not edit by hand. Regenerate with the source below via:
-//   compileString(DEFAULT_PROXY_SOURCE)  then JSON.stringify (see docs/upgrades.md "Regenerating").
+// AUTO-GENERATED - do not edit by hand. Regenerate from DEFAULT_PROXY_SOURCE via compileString + JSON.stringify
+// (see docs/upgrades.md "Regenerating").
 //
-// The default upgradeable proxy: a layout-INDEPENDENT pinned forwarder. Its bytecode never reads its own state
-// fields (the delegate authorizes state via _proxyMasterIndex; the epilogue's conservation + master-preservation
-// are dynamic input==output loops), so one bytecode serves any implementation layout - deployProxy grafts the
-// implementation's stateLayout onto this artifact at deploy time. `implementation` is a constructor arg (baked,
-// immutable), so the co-spend pin binds the proxy to exactly that implementation (not a caller-forgeable param).
+// The default upgradeable proxy: a layout-independent pinned forwarder (its bytecode never reads its own state
+// fields), so one bytecode serves any implementation - deployProxy grafts the impl's stateLayout on and bakes
+// `implementation` as an immutable constructor arg. Rationale in docs/upgrades.md.
 import { Artifact } from '@solidcash/utils';
 
 export const DEFAULT_PROXY_SOURCE = "pragma solidcash >=0.8.0;\ncontract SolidCashProxy(address implementation) {\n  bigint __proxySlot;\n  function __forward(bytes input) {\n    implementation.delegatecall(input);\n    require(input.length > 0);\n  }\n}\n";

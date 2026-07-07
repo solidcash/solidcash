@@ -4198,6 +4198,18 @@ export default class SymbolTableTraversal extends AstTraversal {
     return node;
   }
 
+  // Codegen emits a slice as split(end)-then-split(start), so it visits END before START. The final-use
+  // (roll) analysis must traverse in that same order: a variable shared by both bounds would otherwise be
+  // marked last-used at the END bound, get rolled there (codegen visits it first), and be gone when the
+  // START bound reads it. Side-effectful bounds are hoisted to statement level by the postfix desugar, so
+  // analysis order here does not change evaluation semantics.
+  visitSlice(node: SliceNode): Node {
+    node.element = this.visit(node.element);
+    node.end = this.visit(node.end);
+    node.start = this.visit(node.start);
+    return node;
+  }
+
   // `(x, y) = <rhs>` where some target is a STATE variable: tuple codegen writes stack slots, which state
   // vars do not have. Rewrite to the hand-written form - capture the RHS into fresh temps, then assign each
   // target sequentially (visitAssign routes state targets to StateAssign). Temps keep swaps clobber-safe.

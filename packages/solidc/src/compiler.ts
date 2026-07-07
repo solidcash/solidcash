@@ -17,6 +17,7 @@ import EnsureFinalRequireTraversal from './semantic/EnsureFinalRequireTraversal.
 import InjectLocktimeGuardTraversal from './semantic/InjectLocktimeGuardTraversal.js';
 import EarlyReturnTransformation from './semantic/EarlyReturnTransformation.js';
 import NamedReturnTransformation from './semantic/NamedReturnTransformation.js';
+import DesugarNestedBranchReturn from './semantic/DesugarNestedBranchReturn.js';
 import SynthesizeExternalAddressLocals from './semantic/SynthesizeExternalAddressLocals.js';
 import PromoteConstructorExternalReads from './semantic/PromoteConstructorExternalReads.js';
 import SynthesizeLibraryDelegateCalls from './semantic/SynthesizeLibraryDelegateCalls.js';
@@ -182,6 +183,10 @@ function compileResolvedAst(ast: Ast, code: string, mergedCompilerOptions: Compi
 
   // Named-return desugar (before semantic analysis): named returns become default-init locals.
   ast = ast.accept(new NamedReturnTransformation(mergedCompilerOptions.solidityImportCompat)) as Ast;
+
+  // A return nested under further conditions with fall-through (internal fns) -> flag + gated tail +
+  // terminal return (after NamedReturn so implicit tails are explicit; before semantic so locals resolve).
+  ast = ast.accept(new DesugarNestedBranchReturn()) as Ast;
 
   // Postfix `lvalue++`/`lvalue--` used as an expression -> read + a hoisted increment (before semantic analysis).
   ast = ast.accept(new DesugarPostfixExpressions()) as Ast;
@@ -399,6 +404,7 @@ function compileReferencedContracts(
     // producing different (larger) bytecode than standalone compilation.
     let singleAst: Ast = new SourceFileNode(contract);
     singleAst = singleAst.accept(new NamedReturnTransformation(compilerOptions.solidityImportCompat)) as Ast;
+    singleAst = singleAst.accept(new DesugarNestedBranchReturn()) as Ast;
     singleAst = singleAst.accept(new DesugarPostfixExpressions()) as Ast;
     singleAst = singleAst.accept(new DesugarNestedArrayWrite()) as Ast;
     singleAst = singleAst.accept(new LowerInlineAssembly()) as Ast;

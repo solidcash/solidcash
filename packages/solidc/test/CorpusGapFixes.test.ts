@@ -692,6 +692,26 @@ describe('function overload resolution (inheritance + entry-point synthetic para
   });
 });
 
+describe('whole fixed-array copy with differing length/element (desugar by reduction)', () => {
+  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  const bc = (src: string): string => compileString(src, { solidityImportCompat: true }).bytecode;
+  it('compiles a diff-length same-element fixed-array copy (copy prefix + zero-fill leftover)', () => {
+    expect(cc('contract C { uint256[4] a; uint256[2] b; function f() external { a = b; require(true); } }')).toBe('C');
+  });
+  it('is byte-identical to the hand-written element-wise copy + zero-fill', () => {
+    const sugar = bc('contract C { uint256[4] a; uint256[2] b; function f() external { a = b; require(true); } }');
+    const hand = bc('contract C { uint256[4] a; uint256[2] b;'
+      + ' function f() external { a[0] = b[0]; a[1] = b[1]; a[2] = 0; a[3] = 0; require(true); } }');
+    expect(sugar).toBe(hand);
+  });
+  it('is byte-identical for a diff-length diff-element (bytesN widening) copy', () => {
+    const sugar = bc('contract C { bytes2[4] a; bytes1[2] b; function f() external { a = b; require(true); } }');
+    const hand = bc('contract C { bytes2[4] a; bytes1[2] b; function f() external {'
+      + ' a[0] = bytes2(b[0]); a[1] = bytes2(b[1]); a[2] = 0x0000; a[3] = 0x0000; require(true); } }');
+    expect(sugar).toBe(hand);
+  });
+});
+
 describe('abi.encodeWithSelector accepts a fitting string/hex literal selector', () => {
   const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
   it('coerces a string literal that fits in 4 bytes to the bytes4 selector', () => {

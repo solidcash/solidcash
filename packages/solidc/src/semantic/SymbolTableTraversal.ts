@@ -3975,24 +3975,36 @@ export default class SymbolTableTraversal extends AstTraversal {
   visitAssign(node: AssignNode): Node {
     const sym = this.symbolTables[0].get(node.identifier.name);
 
-    // Whole fixed-array copy with a per-element bytes conversion `data2 = data1` where the element types differ
-    // (e.g. `bytes2[N] = bytes1[N]`): the whole-array types are not implicitly castable, so desugar to element-
-    // wise writes with an explicit element cast `data2[i] = bytes2(data1[i])` over the shared compile-time bound.
-    // Same-element copies stay whole (handled as a normal assign); int widening is already implicitly castable.
+    // Whole fixed-array copy `data2 = data1` between two fixed STATE arrays whose whole-array types are not
+    // implicitly castable - the element types differ (`bytes2[N] = bytes1[N]`, cast per element) and/or the
+    // lengths differ (`uint[40] = uint[20]`, copy the shared prefix then zero-fill the target's leftover, as
+    // Solidity does). Desugar to element-wise writes over the compile-time bounds. Same-element same-length
+    // copies stay whole (a normal assign); int widening is already implicitly castable.
     if (node.expression instanceof IdentifierNode) {
       const tgt = this.stateVariableMap.get(node.identifier.name)?.type;
       const src = this.stateVariableMap.get(node.expression.name)?.type;
-      if (tgt instanceof ArrayType && src instanceof ArrayType && tgt.bound !== undefined && tgt.bound === src.bound
-        && tgt.elementType instanceof BytesType && src.elementType instanceof BytesType
-        && tgt.elementType.toString() !== src.elementType.toString()) {
+      const sameElem = tgt instanceof ArrayType && src instanceof ArrayType
+        && tgt.elementType.toString() === src.elementType.toString();
+      const bytesWiden = tgt instanceof ArrayType && src instanceof ArrayType
+        && tgt.elementType instanceof BytesType && src.elementType instanceof BytesType;
+      if (tgt instanceof ArrayType && src instanceof ArrayType && tgt.bound !== undefined && src.bound !== undefined
+        && (tgt.bound !== src.bound || !sameElem) && (sameElem || bytesWiden)) {
         const srcName = node.expression.name;
         const stmts: StatementNode[] = [];
         const lit = (i: number): IntLiteralNode => { const n = new IntLiteralNode(BigInt(i)); n.location = node.location; return n; };
-        for (let i = 0; i < tgt.bound; i++) {
+        const copyN = Math.min(tgt.bound, src.bound);
+        for (let i = 0; i < copyN; i++) {
           const srcId = new IdentifierNode(srcName); srcId.location = node.location;
           const read = new ArrayAccessNode(srcId, lit(i)); read.location = node.location;
-          const cast = new CastNode(tgt.elementType, read, false); cast.location = node.location;
-          const assign = new ArrayAssignNode(node.identifier.name, lit(i), cast); assign.location = node.location;
+          const rhs = sameElem ? read : new CastNode(tgt.elementType, read, false);
+          rhs.location = node.location;
+          const assign = new ArrayAssignNode(node.identifier.name, lit(i), rhs); assign.location = node.location;
+          stmts.push(assign);
+        }
+        // Zero-fill the target's leftover elements (Solidity clears the tail on a shorter-source copy).
+        for (let i = copyN; i < tgt.bound; i++) {
+          const zero = createDefaultValueExpression(tgt.elementType, node.location!);
+          const assign = new ArrayAssignNode(node.identifier.name, lit(i), zero); assign.location = node.location;
           stmts.push(assign);
         }
         const block = new BlockNode(stmts);

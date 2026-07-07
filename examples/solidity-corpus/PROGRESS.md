@@ -462,3 +462,24 @@ nowarn_swap_storage_pointers (tuple storage-pointer REBINDING, fundamental), red
 calldata, fundamental). Event .selector (3 files) assessed: needs library-event NAMESPACING (same-name events
 in different libraries collide in eventMap) - medium risk, deferred. library_function_selectors.sol/_struct
 need address(L)+delegatecall+Yul .slot (multi-wall).
+
+## Session 2026-07-07f part 2 (library values + getters, 3601->3614)
+- b2d94acf library function as a fn-pointer VALUE (+4): `ptr = L.f` (FieldAccess) rewrites to the flat
+  registered name -> existing fn-pointer path (functionId + OP_INVOKE). Locals + ctor-stored state
+  fn-pointers. VM-verified (66-mirror + negative + state-ptr deploy).
+- 6d956ac9 struct getters + own-contract-qualified values (+13, the long tail): public STRUCT state var
+  getter = members minus mappings/arrays (scalar/string only; array/mapping-bearing structs are flattened
+  per-field and SKIPPED so synthesized bodies can never fail on unused declarations); `C.f`/`C.x` with C the
+  current contract = own fn as internal fn-ptr value / state read via getter name. Unblocked natspec
+  struct-getter trio, getter smoke tests, state_variable_under_contract_name, fn-type comparison, immutable
+  inheritance-specifier.
+- ASSESSED + REVERTED: mapping->array getters (m(k,i)) - the synthesized BODY hits the unwired
+  mapping-entry nested-array READ machinery (entry[-1] slot / int-where-undefined), and a failing
+  synthesized body would REGRESS declarations that compile fine unused. Same reasoning capped struct
+  getters at scalar members (no struct-typed returns from entry points). nested_arrays_mappings_1-6 stay
+  failing until that read machinery exists.
+- ASSESSED + REVERTED: marking synthesized getters EXTERNAL (Solidity-true) - cost 3 wins (C.x resolution
+  declines external fns) + shifted mapping-arg errors; net negative, reverted.
+- Remaining library-vein deferred: event .selector (library-event namespacing - eventMap is single-slot,
+  same-name events from different libraries collide), address(L)/delegatecall-on-library (+Yul .slot),
+  delegatecall_guard quartet, mapping-alias reassignment (m=m1; ...; m=m2 - flow-sensitive alias regions).

@@ -51,23 +51,37 @@ super/C3 inheritance, multifile symbol resolution.
   subtleties). Omitted-bound slices DONE for bytes.
 - **Tuple for-init** (`for((uint x, uint y) = (0,1); ..)`, ~2 files): forInit lacks a tuple-declaration form.
 
+## DONE 2026-07-07 (was in this list, now shipped + VM-verified, 3436->3495)
+
+- **Array slices on non-bytes arrays** DONE (86247db3, +17): visitSlice codegen for fixed-width ArrayType elements,
+  VM-verified (ArraySlice.test). Struct-element arrays correctly rejected.
+- **Computed array dimension** DONE (509cb858, +17): grammar `typeName '[' expression? ']'` + AstBuilder const-eval.
+  The feared ANTLR OOM did NOT materialize (dimension expression is `]`-bounded; no ambiguity warnings). Bigger yield
+  than the "~3 small" estimate (computed dims appear widely). Non-const dim = clean ParseError.
+- **Inherited modifier override + event/error overload** DONE (092de2a6, +18): false-collision bug fix.
+- **Modifier local vars per application** DONE (5f0f78b0, +5): alpha-rename, VM-verified.
+- **Bare block statements `{ }`** DONE (70d7bfb8, +11): nested scopes, VM-verified. NOTE: a block local shadowing a
+  LIVE outer local stays REJECTED (codegen slots by name -> would miscompile; tried allowing it, VM-proved unsound,
+  reverted). Sound accept needs alpha-renaming the shadow like modifier locals (deferred, ~3-5 files, low yield).
+
 ## Remaining tractable-but-complex veins (need your greenlight / VM verification)
 
-At 3431/4876 the CLEAN peel/coercion/resolution veins are mined out. These remain, each with a sketch:
+At 3495/4876 the CLEAN veins are RE-exhausted. What remains, honest verdicts from this session's scan:
 
-- **Array slices on non-bytes arrays** (`int[] b[start:end]`, ~10 files): the array blob is `pushdata(length) ++
-  elements_blob`, elements at byte i*elemWidth (fixed-width). A slice = decode length -> bytes-slice
-  elements_blob[start*W : end*W] -> re-frame `pushdata(end-start) ++ slice`. New codegen in visitSlice (gated on a
-  fixed-width ArrayType element); NEEDS VM VERIFICATION (I won't commit array codegen unverified). Biggest single vein.
-- **Tuple for-init** (`for((uint x, uint y) = (0,1); ..)`, ~2-3 files): forInit needs a tuple-destructure alt; the
-  builder must replicate visitTupleAssignment (parenthesised slots + N-expr / tuple-valued / ternary RHS). Moderate.
-- **Computed array dimension** (`uint[2**10]`, `uint[(a/b)*b]`, ~3 small): array-size grammar allows only
-  NumberLiteral|Identifier. Full `expression` in the dimension risks the ANTLR ALL(*) OOM (see expr-statement note);
-  a narrow const-arith sub-rule would be safe. Most `2**N` are oversized (hit the array cap) so low yield.
-- **Parenthesized call** (`(free2)()`, `(L.g)()`, ~2 files): calling a parenthesized expression - function-pointer
-  adjacent grammar (`expression '(' args ')'`); risk of ambiguity.
+- **Free functions** already WORK (grammar freeFunctionDefinition + SourceFileNode.freeFunctions + injection). The
+  ~20 "free function" parse-fails actually fail on their BODIES: bare tuple/function-reference expression statements
+  (`(abi.encode, "");`, `free1;`) = the reverted bare-expr-statement-for-tuples + function-pointer walls. NOT a
+  free-function gap.
+- **Tuple for-init** (`for((uint x, uint y) = (0,1); ..)`, ~2-3 files): forInit needs a tuple-destructure alt.
+- **Soft keywords as identifiers** (`enum error {}`, `contract transient {}`, `function fallback()`, ~10-15 files):
+  needs anyIdentifier extended + used for enum/contract/struct/type names. Ambiguity risk (transient/fallback/layout
+  collide with their keyword uses); some are solc-warning/negative edge cases. Fiddly, low confidence.
+- **Scientific-notation decimal mantissa / negative exponent** (`2.5e10`, `200e-2`, ~1-3 files): lexer handles
+  integer-mantissa `2e10` but not decimal-mantissa or `e-N`; interacts with fixed-point. Small/fiddly.
+- **Sound live-outer-local shadow** (~3-5 files, most also fail on assembly/activation): alpha-rename the shadow.
 - **abi.decode with contract types** / **nested-array element delete+increment** / **public struct getter tuples**
-  / **whole-struct-to-mapping copy `m[k]=s`**: all in the parallel agent's flattening/struct area or need schema work.
+  / **whole-struct-to-mapping copy `m[k]=s`** / **no-arg struct-array push `Data[] d; d.push()`** (element type
+  resolves undefined, ~2 files): parallel agent's flattening/struct area or need schema work.
 
 ## Fundamental (need EVM features BCH lacks - would be research-level or unsound)
 Function-pointer ABI (function-type params, fun.selector/.address, array-of-function-pointers - dominate the

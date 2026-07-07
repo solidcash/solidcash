@@ -9,7 +9,7 @@ import {
   ParameterNode,
   AssignNode,
 } from '../ast/AST.js';
-import { AddressType } from '@solidcash/utils';
+import { AddressType, Type } from '@solidcash/utils';
 import AstTraversal from '../ast/AstTraversal.js';
 
 /**
@@ -30,10 +30,28 @@ export default class PromoteConstructorExternalReads extends AstTraversal {
   private promoted: { param: string; read: string; addressInput?: string; contractType: string }[] = [];
   private counter = 0;
   private active = false;
+  private sourceFile?: SourceFileNode;
 
   visitSourceFile(node: SourceFileNode): Node {
+    this.sourceFile = node;
     if (node.contract) node.contract = this.visit(node.contract) as ContractNode;
     return node;
+  }
+
+  // The promoted read's value type: the callee method's single return type, resolved from the file's
+  // interfaces / sibling contracts. `pool.token0()` is an address, but `a.getX()` is whatever getX returns -
+  // typing the synthesized deploy input as address broke every non-address read use site.
+  private readReturnType(contractType: string, method: string): Type | undefined {
+    const iface = this.sourceFile?.interfaceDefinitions.find((i) => i.name === contractType);
+    const ifaceFn = iface?.functions.find((f) => f.name === method);
+    if (ifaceFn?.returnTypes?.length === 1) return ifaceFn.returnTypes[0];
+    const contracts = [this.sourceFile?.contract, ...(this.sourceFile?.importedContracts ?? [])];
+    for (const c of contracts) {
+      if (c?.name !== contractType) continue;
+      const fn = c.functions.find((f) => f.name === method);
+      if (fn?.returnTypes?.length === 1) return fn.returnTypes[0];
+    }
+    return undefined;
   }
 
   visitContract(node: ContractNode): Node {
@@ -65,7 +83,7 @@ export default class PromoteConstructorExternalReads extends AstTraversal {
     this.active = false;
 
     for (const p of this.promoted) {
-      const param = new ParameterNode(new AddressType(), p.param, []);
+      const param = new ParameterNode(this.readReturnType(p.contractType, p.read) ?? new AddressType(), p.param, []);
       param.location = node.constructorDef.location;
       node.constructorDef.parameters.push(param);
       if (p.addressInput) {

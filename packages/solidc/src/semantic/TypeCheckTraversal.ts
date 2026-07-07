@@ -1280,10 +1280,10 @@ export default class TypeCheckTraversal extends AstTraversal {
     const overloads = this.functionDefinitions.get(node.identifier.name);
     if (overloads && overloads.length > 1 && !node.resolvedFunction) {
       const argTypes = node.parameters.map((p) => p.type!);
-      const matches = overloads.filter((f) => {
-        const funcParamTypes = f.parameters.map((p) => p.type);
+      const matches = applyFreeFunctionShadowing(overloads.filter((f) => {
+        const funcParamTypes = declaredParamTypes(f);
         return implicitlyCastableSignature(argTypes, funcParamTypes);
-      });
+      }));
 
       if (matches.length === 0) {
         throw new NoMatchingOverloadError(node);
@@ -1292,7 +1292,7 @@ export default class TypeCheckTraversal extends AstTraversal {
       } else {
         // Try exact match (no implicit casting needed)
         const exactMatches = matches.filter((f) => {
-          const funcParamTypes = f.parameters.map((p) => p.type);
+          const funcParamTypes = declaredParamTypes(f);
           return argTypes.length === funcParamTypes.length
             && argTypes.every((argType, i) => argType?.toString() === funcParamTypes[i]?.toString());
         });
@@ -1437,10 +1437,10 @@ export default class TypeCheckTraversal extends AstTraversal {
       node.call.parameters = this.visitList(node.call.parameters);
 
       const argTypes = node.call.parameters.map((p) => p.type!);
-      const matches = overloads.filter((f) => {
-        const funcParamTypes = f.parameters.map((p) => p.type);
+      const matches = applyFreeFunctionShadowing(overloads.filter((f) => {
+        const funcParamTypes = declaredParamTypes(f);
         return implicitlyCastableSignature(argTypes, funcParamTypes);
-      });
+      }));
 
       if (matches.length === 0) {
         throw new NoMatchingOverloadError(node);
@@ -1448,7 +1448,7 @@ export default class TypeCheckTraversal extends AstTraversal {
         node.call.resolvedFunction = matches[0];
       } else {
         const exactMatches = matches.filter((f) => {
-          const funcParamTypes = f.parameters.map((p) => p.type);
+          const funcParamTypes = declaredParamTypes(f);
           return argTypes.length === funcParamTypes.length
             && argTypes.every((argType, i) => argType?.toString() === funcParamTypes[i]?.toString());
         });
@@ -2420,6 +2420,28 @@ function expectParameters(node: NodeWithParameters, actual: Type[], expected: Ty
   if (!implicitlyCastableSignature(actual, expected)) {
     throw new InvalidParameterTypeError(node, actual, expected);
   }
+}
+
+// The parameter types a caller actually supplies, for overload matching. Excludes synthetic `__internal__*`
+// parameters (returnOutputIdx, msgSenderCategory, external-call input bases) that SymbolTableTraversal injects
+// into entry-point functions - a call's argument list carries only the DECLARED parameters; the synthetic args
+// are threaded in afterwards via forwardInternalReturnOutputIdx.
+function declaredParamTypes(f: FunctionDefinitionNode): Type[] {
+  return f.parameters.filter((p) => !p.name.startsWith('__internal__')).map((p) => p.type!);
+}
+
+// Declared parameter signature (types only) - used to detect a contract function shadowing a same-signature
+// free function.
+function declaredSig(f: FunctionDefinitionNode): string {
+  return declaredParamTypes(f).map(String).join(',');
+}
+
+// A contract function shadows a same-signature FREE function within the contract (legal Solidity). Both live in
+// functionDefinitions, so drop a free match whenever a contract match has the same declared signature - otherwise
+// the two collide as a spurious ambiguous overload.
+function applyFreeFunctionShadowing(matches: FunctionDefinitionNode[]): FunctionDefinitionNode[] {
+  const contractSigs = new Set(matches.filter((f) => !f.isFreeFunction).map(declaredSig));
+  return matches.filter((f) => !(f.isFreeFunction && contractSigs.has(declaredSig(f))));
 }
 
 // We only call this function for the split operator, so we assume that the node.op is SPLIT

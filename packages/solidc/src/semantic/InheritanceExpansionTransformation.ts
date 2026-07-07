@@ -332,15 +332,22 @@ function mergeParent(child: ContractNode, parent: ContractNode): void {
  * original ancestor, the duplicate is silently skipped. If inherited from
  * different ancestors, MissingOverrideError is thrown.
  */
+// Overload key: functions are distinguished by name AND parameter-type signature, so overloaded functions
+// (same name, different parameters) are merged independently. Only same-signature functions collide - which is
+// exactly what override / diamond resolution needs.
+function functionSignature(f: FunctionDefinitionNode): string {
+  return `${f.name}(${f.parameters.map((p) => String(p.type)).join(',')})`;
+}
+
 function mergeFunctions(
   child: ContractNode,
   parent: ContractNode,
   subs?: Map<string, ExpressionNode>,
 ): void {
-  const childFuncMap = new Map(child.functions.map((f) => [f.name, f]));
+  const childFuncMap = new Map(child.functions.map((f) => [functionSignature(f), f]));
 
   for (const parentFunc of parent.functions) {
-    const existingFunc = childFuncMap.get(parentFunc.name);
+    const existingFunc = childFuncMap.get(functionSignature(parentFunc));
 
     if (existingFunc) {
       // Diamond detection: both inherited from the same original ancestor -> skip duplicate
@@ -383,7 +390,7 @@ function mergeFunctions(
         substituteInFunction(cloned, subs);
       }
       child.functions.push(cloned);
-      childFuncMap.set(cloned.name, cloned);
+      childFuncMap.set(functionSignature(cloned), cloned);
     }
   }
 }

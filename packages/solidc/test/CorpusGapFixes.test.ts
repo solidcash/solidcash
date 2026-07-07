@@ -670,6 +670,28 @@ describe('free function shadowed by a same-name contract function (compat)', () 
   });
 });
 
+describe('function overload resolution (inheritance + entry-point synthetic params)', () => {
+  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  it('keeps both inherited overloads after inheritance flattening', () => {
+    // The merge used to key functions by name only and drop the second same-name overload as a diamond dup.
+    expect(cc('contract B { function f(uint a) internal pure returns (uint) { return a; }'
+      + ' function f(uint a, uint b) internal pure returns (uint) { return a + b; } }'
+      + ' contract C is B { function g() external { require(f(1) == 1); require(f(1, 2) == 3); } }')).toBe('C');
+  });
+  it('resolves overloads of public functions (synthetic returnOutputIdx param excluded from matching)', () => {
+    // Public entry points carry a synthetic `__internal__returnOutputIdx` parameter; overload matching must
+    // ignore it, otherwise the 1-arg overload appears to take 2 params and cannot be selected.
+    expect(cc('contract C { function f(uint256 k) public pure returns (uint256) { return k; }'
+      + ' function f(uint256 a, uint256 b) public pure returns (uint256) { return a + b; }'
+      + ' function g(uint256 x) public pure returns (uint256) { return f(x); } }')).toBe('C');
+  });
+  it('resolves base-qualified overloaded calls Base.init(c)', () => {
+    expect(cc('contract Base { uint x; function init(uint a, uint b) public { x = a; }'
+      + ' function init(uint a) public { x = a; } }'
+      + ' contract Child is Base { function ci(uint c) public { Base.init(c); } }')).toBe('Child');
+  });
+});
+
 describe('library/contract-qualified enum cast (L.E(x) / Contract.E(x))', () => {
   it('resolves L.E(x) as an int -> enum cast', () => {
     expect(compileString('library L { enum E { A, B } }'

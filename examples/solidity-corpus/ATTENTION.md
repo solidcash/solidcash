@@ -14,6 +14,19 @@ that the user should review. Grinding continues past these with a documented def
 - **bytes calldata element write**: rejected (matches solc's read-only calldata), though on BCH there is no
   read-only calldata (all data is on-stack). Kept the rejection to match solc. Reconsider if a port needs it.
 
+## Pre-existing codegen limitation discovered 2026-07-07 (public function called internally with a used return)
+
+Calling a PUBLIC function INTERNALLY (bare `f()`, not `this.f()`) and using its return value miscompiles at
+runtime: the covenant leaves extra stack items ("unexpected number of items on the stack"). Reproduced on clean
+HEAD (independent of the overload work). Internal/private functions called internally work fine (VM-verified);
+only PUBLIC (entry-point) functions hit this. Root: a public function's return value is handled via the
+return-event-output covenant path, and the internal-call subroutine form does not cleanly return the value on the
+stack for use by the caller. Affects ANY public-internal-call-with-return, not just overloads. This is why the
+public overload corpus files (resolve_to_first, with_if_else, base_overload) COMPILE (overload resolution is now
+correct) but would not run correctly - the fix is orthogonal codegen work: emit a proper stack-returning
+subroutine for a public function invoked internally (distinct from its entry-point return-event form). Anchor:
+GenerateTargetTraversal subroutineUseProbe (~693) + visitReturn raw-return path + functionHasReturnInLoop.
+
 ## Deferred features (feature-scale, not yet done)
 
 - **Whole-struct-to-mapping copy `m[k] = s`** and **state-flattened struct array-field write `s.a = x`**:

@@ -308,14 +308,16 @@ function mergeParent(child: ContractNode, parent: ContractNode): void {
   // 7. Merge structs
   mergeNamedList(child, parent, 'structDefinitions', 'Struct');
 
-  // 8. Merge events
-  mergeNamedList(child, parent, 'eventDefinitions', 'Event');
+  // 8. Merge events. Events overload on their parameter signature, so same-name/different-signature parent
+  // and child events coexist rather than colliding.
+  mergeNamedList(child, parent, 'eventDefinitions', 'Event', false, true);
 
-  // 9. Merge errors
-  mergeNamedList(child, parent, 'errorDefinitions', 'Error');
+  // 9. Merge errors. Errors overload on signature too.
+  mergeNamedList(child, parent, 'errorDefinitions', 'Error', false, true);
 
-  // 10. Merge modifiers
-  mergeNamedList(child, parent, 'modifierDefinitions', 'Modifier');
+  // 10. Merge modifiers. Modifiers cannot overload, so a child's own same-name modifier overrides the
+  // parent's (most-derived wins) rather than colliding.
+  mergeNamedList(child, parent, 'modifierDefinitions', 'Modifier', true);
 
   // 11. Merge type definitions
   mergeNamedList(child, parent, 'typeDefinitions', 'Type');
@@ -602,6 +604,8 @@ function mergeNamedList(
   parent: ContractNode,
   key: NamedArrayKey,
   kind: string,
+  overridable = false,
+  overloadable = false,
 ): void {
   const parentList = parent[key] as { name: string; inheritedFrom?: string }[];
   const childList = child[key] as { name: string; inheritedFrom?: string }[];
@@ -624,7 +628,27 @@ function mergeNamedList(
         continue;
       }
 
-      throw new InheritanceNameCollisionError(child, kind, parentItem.name, parent.name);
+      // Overridable members (modifiers) cannot overload: a child's OWN same-name definition overrides the
+      // parent's (virtual/override in valid Solidity), so the most-derived one wins and the parent's is dropped.
+      // Inherited functions that reference it resolve to the child's override.
+      if (overridable && !childOrigin) {
+        continue;
+      }
+
+      // Overloadable members (events, errors) coexist when their parameter signatures differ. Keep the parent's
+      // declaration alongside the same-name child/sibling one; skip only an exact-signature duplicate.
+      if (overloadable) {
+        const sigOf = (it: { name: string; parameters?: { type: unknown }[] }): string =>
+          (it.parameters ?? []).map((p) => String(p.type)).join(',');
+        const parentSig = sigOf(parentItem as { name: string; parameters?: { type: unknown }[] });
+        const present = [...childList, ...toInsert as unknown as typeof childList].some(
+          (it) => it.name === parentItem.name
+            && sigOf(it as { name: string; parameters?: { type: unknown }[] }) === parentSig,
+        );
+        if (present) continue;
+      } else {
+        throw new InheritanceNameCollisionError(child, kind, parentItem.name, parent.name);
+      }
     }
 
     // Clone and prepend parent items

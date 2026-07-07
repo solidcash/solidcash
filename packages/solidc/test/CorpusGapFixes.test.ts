@@ -911,3 +911,21 @@ describe('array dimensions accept compile-time constant expressions', () => {
       .toThrow(/compile-time integer constant|Mismatched|Unexpected/);
   });
 });
+
+describe('inherited modifier override + event/error overload do not falsely collide', () => {
+  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  it('lets a child modifier override a parent virtual/abstract modifier of the same name', () => {
+    expect(cc('abstract contract A { function f() public mod returns (bool r) { return true; } modifier mod virtual; }'
+      + ' contract C is A { modifier mod override { if (false) _; } }')).toBe('C');
+  });
+  it('keeps same-name parent+child events when signatures differ (event overloading)', () => {
+    expect(cc('contract A { event Deposit(); } contract B { event Deposit(address a); }'
+      + ' contract C is A, B { event Deposit(address a, uint256 n);'
+      + ' function d() external { emit Deposit(); emit Deposit(address(0)); emit Deposit(address(0), 1); require(true); } }'))
+      .toBe('C');
+  });
+  it('keeps same-name parent+child errors when signatures differ (error overloading)', () => {
+    expect(cc('contract A { error E(); } contract B is A { error E(uint256 n);'
+      + ' function f(bool b) external { if (b) revert E(); revert E(1); } }')).toBe('B');
+  });
+});

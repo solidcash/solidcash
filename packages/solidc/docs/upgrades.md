@@ -15,6 +15,34 @@ await proxy.increment().send();          // forwards through the pinned delegate
 proxy.address;                           // the stable, state-holding proxy address
 ```
 
+## Initial state: constructor style vs `initialize()`
+
+OpenZeppelin upgradeable contracts initialize via an `initialize(...)` function, not a constructor, for two
+EVM-specific reasons: an implementation's constructor runs in the *implementation's* storage (not the proxy's), so
+it cannot set proxy state - init must run *through* the proxy via delegatecall; and `initialize` captures
+`msg.sender` as the owner at call time. **Neither applies on Bitcoin Cash:** the proxy's state is its data NFT
+commitments, seeded **directly at genesis** (no wrong-context problem), and the owner is a genesis value. So a
+constructor/genesis seed is the native equivalent, and no `initialize()` is required.
+
+`deployProxy` supports both, controlled by `options.initializer`:
+
+- **Genesis seed (default when there is no `initialize`)** - the init args populate the proxy's state at genesis in
+  one transaction. Pass a named record `{ counter: 5n }` or an OZ-style positional list `[5n]` (mapped to the
+  implementation's state variables in declaration order).
+- **`initialize()` flow (auto-detected, drop-in for ports)** - if the implementation has an `initialize` delegate
+  function, `deployProxy` deploys the proxy at defaults then forwards `initialize(...initArgs)` through it (a second
+  transaction, the Ethereum flow). Pass the init args as a positional list, exactly like OZ
+  `upgrades.deployProxy(Factory, [a, b, ...])`.
+- Set `options.initializer: false` to force the genesis seed even when an `initialize` exists, or
+  `options.initializer: 'customName'` to run a differently-named initializer.
+
+```typescript
+// Ported OZ contract with `function initialize(int a_, int b_) delegate { ... }`:
+await upgrades.deployProxy(getContractFactory(implArtifact, signer), [7n, 9n]);          // runs initialize(7, 9)
+// Native SolidCash contract - seed state at genesis:
+await upgrades.deployProxy(getContractFactory(implArtifact, signer), { a: 7n, b: 9n });  // genesis (no initialize)
+```
+
 ## The built-in default proxy
 
 You do **not** need to write a proxy. `deployProxy` uses a built-in `SolidCashProxy` unless you pass
@@ -67,7 +95,9 @@ upgrades.deployProxy(implementationFactory, initialState?, options)
 
 - `implementationFactory` - a `ContractFactory` for the implementation (`getContractFactory(implArtifact, runner)`).
 - `initialState` - the proxy's initial state: a named record `{ counter: 5n }`, or an OZ-style positional list
-  `[5n]` mapped to the implementation's declared state variables in order.
+  `[5n]`. With an initializer these are its positional args; otherwise they map to the state variables in order.
+- `options.initializer` - `string | false`. Default auto-detects an `initialize` delegate function (Ethereum flow);
+  `false` seeds state at genesis (constructor style); a string names a different initializer. See above.
 - `options.proxy` (optional) - a custom proxy artifact. Omit to use the built-in `SolidCashProxy`.
 - `options.runner` - Signer/NetworkProvider to deploy + sign with (defaults to the factory's runner).
 - `options.forwardFunction` - name a custom proxy's forwarding function explicitly (else auto-detected).

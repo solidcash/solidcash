@@ -34,6 +34,10 @@ interface ForwardShape {
 }
 
 export interface DeployProxyOptions {
+  // OZ-style initializer. Default (undefined) auto-detects an `initialize` delegate function and runs it with the
+  // init args through the proxy (the Ethereum flow, for drop-in ports). `false` skips it and seeds state directly
+  // at genesis (the SolidCash-native constructor style). A string names a different initializer function.
+  initializer?: string | false;
   // A custom proxy contract artifact. Omit to use the built-in layout-independent `SolidCashProxy` (recommended).
   proxy?: Artifact;
   // Runner (Signer or NetworkProvider) to deploy + sign with. Defaults to the implementation factory's runner.
@@ -179,6 +183,24 @@ function wrapDispatch<TImpl extends Artifact>(handle: ProxyContract<TImpl>): Pro
   });
 }
 
+// Resolve the OZ-style initializer to a function name (or undefined for genesis init). `false` disables it; a
+// string names it (and must exist + be a `delegate`); undefined auto-detects an `initialize` delegate function.
+// EVM proxies must init via a function called through the proxy (a constructor would set the impl's storage, not
+// the proxy's); on BCH genesis sets the proxy's state directly, so a plain state seed is the native equivalent.
+function resolveInitializer(opt: string | false | undefined, impl: Artifact): string | undefined {
+  if (opt === false) return undefined;
+  const abi = impl.abi as readonly AbiFunction[];
+  const name = typeof opt === 'string' ? opt : 'initialize';
+  const fn = abi.find((f) => f.name === name);
+  const isDelegate = !!fn?.modifiers?.includes('delegate');
+  if (typeof opt === 'string') {
+    if (!fn) throw new Error(`Implementation '${impl.contractName}' has no initializer function '${name}'.`);
+    if (!isDelegate) throw new Error(`Initializer '${name}' must be a 'delegate' function (it runs against the proxy state).`);
+    return name;
+  }
+  return isDelegate ? name : undefined; // auto: use `initialize` only if it exists as a delegate, else genesis seed
+}
+
 // Graft an implementation's state layout onto the layout-independent default proxy: its bytecode never reads its
 // own state fields, so it holds any implementation's state. Keep the proxy's own constructorInputs (`implementation`).
 function graftDefaultProxy(impl: Artifact): Artifact {
@@ -202,15 +224,18 @@ export async function deployProxy<TImpl extends Artifact>(
   const runner = options.runner ?? implementationFactory.runner;
   const auth = options.auth ?? defaultAuth;
   const implArtifact = implementationFactory.artifact;
-  const seededState = toInitialState(initialState, implArtifact);
+
+  // An initializer runs after genesis to set state; otherwise the state is seeded directly at genesis.
+  const initializer = resolveInitializer(options.initializer, implArtifact);
+  const seededState = initializer ? undefined : toInitialState(initialState, implArtifact);
 
   // 1. Deploy the implementation (the delegate carrying the logic). Its own state is unused - the proxy holds it.
   const implementation = await implementationFactory.connect(runner).deploy(
     ...(options.implementationOverrides ? [options.implementationOverrides] : []),
   ) as DeployedContract<TImpl>;
 
-  // 2. Deploy the proxy, seeding the live state with initialState. Custom proxy -> its own genesis; default proxy ->
-  //    graft the implementation's layout + bake the implementation's locking bytecode as the constructor arg.
+  // 2. Deploy the proxy. Custom proxy -> its own genesis; default proxy -> graft the implementation's layout + bake
+  //    the implementation's locking bytecode as the constructor arg. With no initializer, seed the state here.
   let proxy: DeployedContract;
   let shape: ForwardShape;
   if (options.proxy) {
@@ -224,7 +249,18 @@ export async function deployProxy<TImpl extends Artifact>(
     shape = { name: '__forward', mode: 'baked' };
   }
 
-  return wrapDispatch(new ProxyContract<TImpl>(proxy, implementation, shape, auth, runner));
+  const handle = wrapDispatch(new ProxyContract<TImpl>(proxy, implementation, shape, auth, runner));
+
+  // 3. If an initializer is used, run it through the proxy (the Ethereum flow) - the init args are its positional
+  //    arguments, so the delegate sets the proxy state.
+  if (initializer) {
+    if (initialState !== undefined && !Array.isArray(initialState)) {
+      throw new Error(`Initializer '${initializer}' takes positional args - pass initialState as an array (or use { initializer: false } to seed state at genesis).`);
+    }
+    await handle.forward(initializer, (initialState ?? []) as FunctionArgument[]).send();
+  }
+
+  return handle;
 }
 
 /** The ethers/hardhat `upgrades` namespace. */

@@ -114,4 +114,35 @@ describe('upgrades.deployProxy (ethers/hardhat OZ-upgrades style)', () => {
     const tx = await proxy.forward('increment', []).send();
     expect(proxyState(tx, proxy.proxy.categoryId, implArtifact.stateLayout).counter).toBe(6n);
   });
+
+  // An `initialize` delegate: state is set by running it through the proxy (the OZ/Ethereum initializer flow).
+  const INIT_IMPL = `pragma solidcash >=0.8.0;
+    contract InitImpl() {
+      int a;
+      int b;
+      function initialize(int a_, int b_) delegate { this.a = a_; this.b = b_; }
+      function auth(pubkey p, sig s) unsafe { require(checkSig(s, p)); }
+    }`;
+
+  it('auto-runs an `initialize` delegate with the init args (Ethereum drop-in flow)', async () => {
+    const signer = await fundedSigner();
+    const proxy = await upgrades.deployProxy(getContractFactory(compileString(INIT_IMPL), signer), [7n, 9n]);
+
+    // deployProxy deployed the proxy at defaults then forwarded initialize(7, 9) - state is set through the proxy.
+    const state = await (proxy.proxy as any).getState();
+    expect(state.a).toBe(7n);
+    expect(state.b).toBe(9n);
+  });
+
+  it('initializer: false seeds state at genesis (SolidCash constructor style)', async () => {
+    const signer = await fundedSigner();
+    // Same contract, but skip the initializer: the positional args seed the state directly at genesis (one tx).
+    const proxy = await upgrades.deployProxy(
+      getContractFactory(compileString(INIT_IMPL), signer), [3n, 4n], { initializer: false },
+    );
+
+    const state = await (proxy.proxy as any).getState();
+    expect(state.a).toBe(3n);
+    expect(state.b).toBe(4n);
+  });
 });

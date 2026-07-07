@@ -71,6 +71,37 @@ function renameParamRefs(nodes: Node[], oldNames: string[], newNames: string[]):
   for (const n of nodes) walk(n);
 }
 
+// Collect the names of local variables DECLARED in a modifier body. Called on the cloned modifier statements
+// before placeholder expansion, so it only sees the modifier's own locals, not the spliced function body.
+function collectLocalDeclNames(nodes: Node[]): string[] {
+  const names: string[] = [];
+  function walk(node: Node): void {
+    if (node instanceof VariableDefinitionNode) names.push(node.name);
+    for (const [, value] of Object.entries(node)) {
+      if (value instanceof Node) walk(value);
+      else if (Array.isArray(value)) { for (const item of value) if (item instanceof Node) walk(item); }
+    }
+  }
+  for (const n of nodes) walk(n);
+  return names;
+}
+
+// Rename local variable declarations AND their references. Unlike renameParamRefs this also rewrites the
+// declaration's own `.name`, since a modifier local is declared inside the body (not injected as a binding).
+function renameLocalDecls(nodes: Node[], oldNames: string[], newNames: string[]): void {
+  const nameMap = new Map(oldNames.map((o, i) => [o, newNames[i]]));
+  function walk(node: Node): void {
+    if ((node instanceof VariableDefinitionNode || node instanceof IdentifierNode) && nameMap.has(node.name)) {
+      node.name = nameMap.get(node.name)!;
+    }
+    for (const [, value] of Object.entries(node)) {
+      if (value instanceof Node) walk(value);
+      else if (Array.isArray(value)) { for (const item of value) if (item instanceof Node) walk(item); }
+    }
+  }
+  for (const n of nodes) walk(n);
+}
+
 // Count `_;` placeholders in a statement list, recursing into if/else branches + loop bodies (a placeholder
 // may live inside a conditional, e.g. a proxy's `ifAdmin` modifier).
 function countPlaceholdersDeep(stmts: StatementNode[]): number {
@@ -195,6 +226,15 @@ function expandFunctionModifiers(
     // Rename parameter references in the cloned modifier body to use unique names
     renameParamRefs(clonedStatements, modDef.parameters.map((p) => p.name),
       modDef.parameters.map((p, _idx) => `${p.name}__${i}`));
+
+    // Rename the modifier's OWN local variables uniquely per application. The same modifier applied more than
+    // once (mod(2) mod(5) mod(x)) or a modifier local that shares a name with a function variable would
+    // otherwise redeclare that name once inlined into one flat block. Runs before placeholder expansion, so
+    // the spliced function body is untouched.
+    const localNames = collectLocalDeclNames(clonedStatements);
+    if (localNames.length > 0) {
+      renameLocalDecls(clonedStatements, localNames, localNames.map((n) => `${n}__mod${i}`));
+    }
 
     // Replace placeholder(s) with current body, recursing into nested blocks (if/else, loops).
     const state = { inserted: false };

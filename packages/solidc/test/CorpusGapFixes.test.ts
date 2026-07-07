@@ -929,3 +929,15 @@ describe('inherited modifier override + event/error overload do not falsely coll
       + ' function f(bool b) external { if (b) revert E(); revert E(1); } }')).toBe('B');
   });
 });
+
+describe('modifier local variables are renamed uniquely per application', () => {
+  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  it('applies the same modifier multiple times without redeclaring its local', () => {
+    expect(cc('contract C { uint256 public a; modifier mod(uint256 x) { uint256 b = x; a += b; _; a -= b; }'
+      + ' function f(uint256 x) public mod(2) mod(5) mod(x) returns (uint256) { return a; } }')).toBe('C');
+  });
+  it('lets a modifier local share a name with a function parameter', () => {
+    expect(cc('contract C { modifier mod1 { uint8 a = 1; uint8 b = 2; _; }'
+      + ' function f(bool a) public mod1 returns (uint256 r) { return a ? 1 : 0; } }')).toBe('C');
+  });
+});

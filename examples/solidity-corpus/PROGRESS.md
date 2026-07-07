@@ -372,3 +372,41 @@ ASSESSED ~0-yield/deferred: msg.data (simple return-msg.data/msg.data.length WOR
   = Yul calldatacopy/return + this-call), tuple bare-expr statements (niche smtChecker/syntax), inheritance edge
   cases (C3/override-base-list/diamond ~26 = deep MRO). CLEAN TRACTABLE VEINS EXHAUSTED; remainder fundamental
   (Yul EVM-model, fn-ptr ABI, external-call/deploy, multifile L/super, memory 2D arrays, nested/multi-dim copies).
+
+## Session 2026-07-07b (fn-pointer ABI remainder + function-type grammar + no-arg struct push)
+- 4fb0f673 .selector on a single-assignment function-pointer LOCAL (+8): `function() external fun = this.f; fun.selector`
+  now folds to that function's selector (byte-identical to `this.f.selector`, sound by reduction). A reassigned
+  pointer is left alone (a solidcash function value is a functionId, not (addr,selector)). Unblocks function_types_sig,
+  function_type_{payable,pure,view}_* and 489/490_function_types_selector.
+- 37138a7a fold (c ? this.f : this.g).selector -> c ? f.selector : g.selector (+1): a ternary of function refs taken
+  .selector -> runtime choice between two compile-time selectors, byte-identical to the hand-written ternary of
+  selectors. Unblocks selector_ternary.sol (empty void stubs f/g reduce to require(true) via NamedReturn already).
+- de95a751 data location on function-TYPE params/returns + no-crash member fallback (+10): the function-type grammar
+  rule only took a bare typeName, so `function(uint256, string memory) external` failed to parse. New dataLocation
+  rule (memory|calldata|storage), inert on BCH, discarded. Also hardened parseFunctionType: an unresolvable member
+  (struct/contract name, function-type array) became undefined in parameterTypes and crashed FunctionType.toString;
+  now falls back to an address handle (member types of a fn pointer are inert on BCH) - 3 crashes -> clean compiles.
+- a9a9b33f no-arg push on a struct array appends the struct default: `Data[] data; data.push();` left the int-0
+  placeholder in place for struct elements (type error int vs struct). The default was built in TypeCheck as an
+  unresolved struct-constructor call. Now built in SymbolTable (visitStateArrayPush + visitArrayPush) so it passes
+  struct-constructor resolution; visitArrayPush also covers the loop-cache rewrite so `while(..) data.push();` works.
+  Byte-identical to data.push(Data(0,0)). Unblocks dynamic_arrays_in_storage, array_copy_storage_storage_struct.
+  KNOWN GOTCHA: noArgPushPlaceholder = IntLiteral(0), so a `!node.value` guard is WRONG (placeholder always truthy);
+  numerics survive only because IntLiteral(0) == the numeric default. Must REPLACE unconditionally on noArg.
+- STILL DEFERRED (fundamental/multi-wall): fn-ptr ARRAYS + indexed invoke `arr[m]()` (memory dyn arrays + fn-ptr
+  storage), external-fn-ptr STATE vars, `function(uint256[] calldata)` (array type inside a fn-type param), method-
+  call-result fn refs `h().f.selector`, assignment-expression ternary condition `(z=true)?...`.
+- 17f4f69e receive()/constructor() payable ordering (+6): grammar forced external-before-payable on receive and
+  modifiers-before-parent-invocations on the constructor; now accept receive() payable external and
+  constructor() A() payable (both orders). AST builder records receive as [external,payable] + reads constructor
+  sub-rules by type, so order is inert. Remaining 2 payable-bucket files fail deeper (method call / modifier combo).
+- 31ec9642 this.<fn>.address -> address(this) (+1): .address on a function pointer = the hosting contract's
+  address; for a self ref that is address(this) = the input's locking bytecode. address is a keyword so added
+  '.address' to memberName, then fold. Byte-identical to address(this). FOREIGN C(addr).f.address (and .selector)
+  still need foreign method-pointer VALUES (deferred, same wall as different-address varying fn pointers).
+- DEFERRED (assessed, not clean): soft-keyword function-call statements `unsafe()/deploy()/delegate()` (~5-7 files):
+  functionCall uses Identifier not anyIdentifier, so free fns named after soft keywords can't be called. Fix risks
+  ambiguity with statement forms (selfdestruct(x); / revert(..); / unsafe(N) cast) AND needs AstBuilder rework
+  (Identifier_list vs anyIdentifier for namespaced calls). Moderate yield, high risk - left for a focused pass.
+  Also assessed fundamental: array-of-mappings `mapping(K=>V)[N]` state/param (storage layout), `(x.f)()` /
+  `g(arr.push())` (fn-ptr value / push-return-as-arg), `*=` on struct-storage-pointer field (using-for library).

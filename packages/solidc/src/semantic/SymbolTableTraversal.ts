@@ -1185,8 +1185,8 @@ export default class SymbolTableTraversal extends AstTraversal {
         } else {
           return false;
         }
-      } else if (isLast && stmt instanceof RequireNode) {
-        // trailing require: not enforced at deploy (documented fold semantics)
+      } else if (stmt instanceof RequireNode) {
+        // requires are not enforced at deploy (documented fold semantics), wherever they appear
       } else if (isLast && stmt instanceof ReturnNode && stmt.expressions.length === 1) {
         const folded = this.foldGenesisExpr(cloneNode(stmt.expressions[0]), subs, fieldExprs, fieldType);
         if (!folded) return false;
@@ -4172,6 +4172,11 @@ export default class SymbolTableTraversal extends AstTraversal {
     }
 
     super.visitAssign(node);
+    // Reassignment of a deploy-result local (`d = new D();` again): later folded calls must bind to the
+    // NEW deploy node - earlier folds correctly stay on the old one.
+    if (node.expression instanceof InstantiationNode && node.expression.referencedContract) {
+      this.deployResultLocals.set(node.identifier.name, node.expression);
+    }
     return node;
   }
 
@@ -7110,13 +7115,36 @@ export default class SymbolTableTraversal extends AstTraversal {
       }
     }
 
-    // Deploy slot (deploy modifier functions have a genesis input for child category)
+    // Deploy slots (deploy modifier functions have a genesis input per child deploy site)
     // Note: deployTargets isn't populated yet at this stage - check modifier instead
     if (node.modifiers.includes(FunctionModifier.DEPLOY)) {
-      slots.push({ kind: 'deploy', offset: offset++, slotIndex: 0 });
+      const deploySites = this.countDeploySites(node.body);
+      for (let i = 0; i < Math.max(1, deploySites); i++) {
+        slots.push({ kind: 'deploy', offset: offset++, slotIndex: i });
+      }
     }
 
     return { blockSize: offset, slots };
+  }
+
+  // Number of `new C(...)` sites in a function body (each needs its own genesis funding input/slot).
+  // Does not descend into referencedContract (a backref to the whole child AST).
+  private countDeploySites(body: Node | undefined): number {
+    if (!body) return 0;
+    let count = 0;
+    const seen = new WeakSet<object>();
+    const walk = (n: unknown): void => {
+      if (Array.isArray(n)) { for (const it of n) walk(it); return; }
+      if (!(n instanceof Node) || seen.has(n)) return;
+      seen.add(n);
+      if (n instanceof InstantiationNode && n.referencedContract) count += 1;
+      for (const [key, value] of Object.entries(n)) {
+        if (key === 'referencedContract' || key === 'definition' || key === 'symbolTable') continue;
+        walk(value);
+      }
+    };
+    walk(body);
+    return count;
   }
 }
 

@@ -4233,9 +4233,49 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   // element.slice(start, end) is equivalent to element.split(end)[0].split(start)[1]
   visitSlice(node: SliceNode): Node {
+    const elemType = node.element.type;
     node.element = this.visit(node.element);
 
     const locationData = { location: node.location, positionHint: PositionHint.END };
+
+    // Fixed-width-element array slice `arr[start:end]`: the value is `pushdata(count) ++ packed elements` (each
+    // element W bytes). Strip the count prefix, byte-slice the element blob at the SCALED offsets
+    // [start*W, end*W), then re-frame with the new count via emitPrependArrayCount. Sound by reduction to the
+    // verified pushdata-decode / bytes-slice / prepend-count primitives.
+    if (elemType instanceof ArrayType && isFixedWidthType(elemType.elementType)) {
+      const width = getFixedWidth(elemType.elementType);
+      // 1. strip the count prefix -> [elements_blob]
+      this.emitPushdataDecode(PrimitiveType.BIGINT, locationData);
+      this.emit(Op.OP_SWAP, locationData); // [elements_blob, count]
+      this.popFromStack();
+      this.pushToStack('(elements)');
+      this.pushToStack('(count)');
+      this.emit(Op.OP_DROP, locationData); // [elements_blob]
+      this.popFromStack();
+      // 2. drop the tail: [elements_blob[0 : end*W]]
+      this.visit(node.end);
+      this.emit(encodeInt(BigInt(width)), locationData);
+      this.pushToStack('(value)');
+      this.emit(Op.OP_MUL, locationData); // [elements_blob, end*W]
+      this.popFromStack();
+      this.emit(Op.OP_SPLIT, locationData);
+      this.emit(Op.OP_DROP, locationData);
+      this.popFromStack(2);
+      this.pushToStack('(value)');
+      // 3. nip the head: [elements_blob[start*W : end*W]]
+      this.visit(node.start);
+      this.emit(encodeInt(BigInt(width)), locationData);
+      this.pushToStack('(value)');
+      this.emit(Op.OP_MUL, locationData); // [prefix, start*W]
+      this.popFromStack();
+      this.emit(Op.OP_SPLIT, locationData);
+      this.emit(Op.OP_NIP, locationData);
+      this.popFromStack(2);
+      this.pushToStack('(value)');
+      // 4. re-frame with the new count (= slicedSize / W = end - start)
+      this.emitPrependArrayCount(width, locationData);
+      return node;
+    }
 
     this.visit(node.end);
     this.emit(Op.OP_SPLIT, locationData);

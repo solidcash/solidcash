@@ -872,3 +872,22 @@ describe('int/uint casts are accepted like solc (signedness)', () => {
       .toThrow(/unequal types/);
   });
 });
+
+describe('fixed-width-element array slice arr[start:end] (VM-verified in solidcash/test/ArraySlice.test.ts)', () => {
+  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  it('compiles slices of value-element arrays (uint256[], int8[], bytes32[])', () => {
+    for (const t of ['uint256', 'int8', 'bytes32']) {
+      expect(cc(`contract C { function f(${t}[] calldata b, uint256 s, uint256 e) external pure returns (${t}[] memory) {`
+        + ' return b[s:e]; } }')).toBe('C');
+    }
+  });
+  it('compiles slices in abi.encode and with omitted bounds', () => {
+    expect(cc('contract C { function f(uint256[] calldata b) external pure returns (bytes memory) {'
+      + ' return abi.encode(b[1:3], b[:], b[2:]); } }')).toBe('C');
+  });
+  it('still rejects a slice of a struct-element array (pushdata, not packed offsets)', () => {
+    expect(() => cc('contract C { struct S { uint256 a; }'
+      + ' function f(S[] calldata b) external pure returns (S[] memory) { return b[1:2]; } }'))
+      .toThrow(/slice/);
+  });
+});

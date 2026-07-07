@@ -18,6 +18,7 @@ import {
   AddressType,
   FunctionType,
   MappingType,
+  isFixedWidthType,
   Op,
 } from '@solidcash/utils';
 import {
@@ -1562,7 +1563,15 @@ export default class TypeCheckTraversal extends AstTraversal {
     node.start = this.visit(node.start);
     node.end = this.visit(node.end);
 
-    expectAnyOfTypes(node, node.element.type, [new BytesType(), PrimitiveType.STRING]);
+    // An array `T[start:end]` slices a fixed-width-ELEMENT array (uint256[], int8[], bytes32[], uint256[N][], ..)
+    // into a sub-array. Struct-element arrays use pushdata (not packed offsets) so they are not sliceable this way;
+    // bytes/string keep their existing byte-level slice.
+    const et = node.element.type;
+    const sliceableArray = et instanceof ArrayType
+      && isFixedWidthType(et.elementType) && !(et.elementType instanceof StructType);
+    if (!sliceableArray) {
+      expectAnyOfTypes(node, et, [new BytesType(), PrimitiveType.STRING]);
+    }
     expectInt(node, node.start.type);
     expectInt(node, node.end.type);
 
@@ -2458,6 +2467,11 @@ function inferSliceType(node: SliceNode): Type {
 
   if (node.end instanceof IntLiteralNode && Number(node.end.value) < 0) {
     throw new IndexOutOfBoundsError(node);
+  }
+
+  // An array slice yields a dynamic array of the same element type (the slice length is a runtime value).
+  if (node.element.type instanceof ArrayType) {
+    return new ArrayType(node.element.type.elementType);
   }
 
   // string.slice() -> string

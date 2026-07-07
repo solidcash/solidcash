@@ -184,6 +184,39 @@ describe('H1: multi-data-NFT self-reads verify the nftIndex tag', () => {
   });
 });
 
+// H2 - the caller reads an external call's return from a free witness index; nothing pinned it to the output
+// the callee constrained, so an attacker could mint a second (category-C, none-cap, FT-0, OP_TRUE) output with
+// a forged commitment and point the witness at it. For a single returning call the fix counts outputs matching
+// the callee's return-event fingerprint (32-byte none-cap category + OP_TRUE bytecode) and requires exactly 1,
+// so no forged twin can co-exist. Regular events carry a P2SH32 covenant bytecode (not OP_TRUE) and are excluded.
+describe('H2: external-call return-event uniqueness', () => {
+  const CALLER = `pragma solidcash >=0.8.0;
+    contract Caller() {
+      bigint r;
+      function go(address t, bigint a, bigint b, pubkey pk, sig s) {
+        require(checkSig(s, pk));
+        bigint result = IAdder(t).add(a, b);
+        this.r = result;
+      }
+    }
+    interface IAdder { function add(bigint a, bigint b) external returns (bigint); }`;
+
+  it('emits the return-event count loop for a single returning external call', () => {
+    // The count loop tests each output's bytecode == OP_TRUE with OP_EQUAL OP_IF (the existing per-slot check
+    // uses OP_EQUALVERIFY), then requires the total == 1.
+    const bc = compileString(CALLER).bytecode;
+    expect(bc).toContain('OP_OUTPUTBYTECODE 51 OP_EQUAL OP_IF');
+    expect(bc).toContain('OP_1 OP_NUMEQUALVERIFY');
+  });
+
+  it('a contract with no external-call returns has no return-event count loop', () => {
+    const bc = compileString(
+      'contract C { bigint r; function f(bigint x, pubkey pk, sig s) external { require(checkSig(s, pk)); this.r = x; } }',
+    ).bytecode;
+    expect(bc).not.toContain('OP_OUTPUTBYTECODE 51 OP_EQUAL OP_IF');
+  });
+});
+
 describe('C4: composite mapping keys (continued)', () => {
   it('keccak256(abi.encode(...)) keys over distinct operands do not collapse', () => {
     const two = compileString(`

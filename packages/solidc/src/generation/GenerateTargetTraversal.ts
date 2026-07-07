@@ -11484,6 +11484,77 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
       this.emit(Op.OP_DROP, locationData);
     }
+
+    // H2: bind the caller's return read to the genuine callee return event by enforcing UNIQUENESS. The caller
+    // reads the return from a free witness index; nothing pinned it to the output the callee constrained, so an
+    // attacker could mint a second (category-C, none-cap, FT-0, OP_TRUE) output with a forged commitment and
+    // point the witness at it (the co-spent callee master authorizes minting category-C outputs). For a single
+    // returning call there is exactly ONE such output (the callee's genuine return; regular events carry a
+    // P2SH32 covenant bytecode, not OP_TRUE). Count them and require == 1 so no forged twin can exist.
+    if (returningSlots.length === 1) {
+      this.emitSingleReturnEventUniqueness(returningSlots[0], locationData);
+    }
+  }
+
+  // H2 helper: require exactly one output matching the return-event fingerprint of `slot`'s callee category
+  // (32-byte none-cap category == B, locking bytecode == OP_TRUE). Mirrors emitMintingNftUniqueness' output loop.
+  private emitSingleReturnEventUniqueness(slot: ExternalCallSlot, loc: SingleLocationData): void {
+    // Compute B's 32-byte category from the co-spent callee master (externalCallInputBase + computedOffset).
+    this.emit(encodeInt(BigInt(this.getStackIndex('__internal__externalCallInputBase'))), loc);
+    this.emit(Op.OP_PICK, loc);
+    if (slot.computedOffset > 0) {
+      this.emit(encodeInt(BigInt(slot.computedOffset)), loc);
+      this.emit(Op.OP_ADD, loc);
+    }
+    this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
+    this.emit(encodeInt(32n), loc);
+    this.emit(Op.OP_SPLIT, loc);
+    this.emit(Op.OP_DROP, loc); // [B_cat32]
+    this.pushToStack('(b_cat)');
+
+    this.emit(encodeInt(0n), loc); // counter
+    this.pushToStack('(re_count)');
+
+    this.emit(Op.OP_TXOUTPUTCOUNT, loc);
+    this.emit(Op.OP_1SUB, loc);
+    this.pushToStack('(loop_j)');
+    this.emit(Op.OP_BEGIN, loc);
+    this.emit(Op.OP_DUP, loc);
+    this.emit(encodeInt(0n), loc);
+    this.emit(Op.OP_LESSTHAN, loc);
+    this.emit(Op.OP_IF, loc);
+    this.emit(Op.OP_DROP, loc);
+    this.emit(encodeBool(true), loc);
+    this.emit(Op.OP_ELSE, loc);
+    // category match: output[j] category (32-byte none-cap) == B_cat32
+    this.emit(Op.OP_DUP, loc);                 // copy j
+    this.emit(Op.OP_OUTPUTTOKENCATEGORY, loc); // outcat (32 for none-cap, 33 otherwise)
+    this.emit(encodeInt(3n), loc);             // pick b_cat (outcat=0, j=1, count=2, b_cat=3)
+    this.emit(Op.OP_PICK, loc);
+    this.emit(Op.OP_EQUAL, loc);               // catMatch
+    this.emit(Op.OP_IF, loc);
+    // bytecode match: output[j] locking bytecode == OP_TRUE (0x51)
+    this.emit(Op.OP_DUP, loc);                 // copy j
+    this.emit(Op.OP_OUTPUTBYTECODE, loc);
+    this.emit(hexToBin('51'), loc);
+    this.emit(Op.OP_EQUAL, loc);
+    this.emit(Op.OP_IF, loc);
+    this.emit(Op.OP_SWAP, loc);                // [.., count, j] -> [.., j, count]
+    this.emit(Op.OP_1ADD, loc);
+    this.emit(Op.OP_SWAP, loc);                // [.., count+1, j]
+    this.emit(Op.OP_ENDIF, loc);
+    this.emit(Op.OP_ENDIF, loc);
+    this.emit(Op.OP_1SUB, loc);                // j--
+    this.emit(encodeBool(false), loc);
+    this.emit(Op.OP_ENDIF, loc);
+    this.emit(Op.OP_UNTIL, loc);
+    this.popFromStack(); // (loop_j)
+
+    this.emit(encodeInt(1n), loc);
+    this.emit(Op.OP_NUMEQUALVERIFY, loc); // exactly one genuine return event
+    this.popFromStack(); // (re_count)
+    this.emit(Op.OP_DROP, loc);
+    this.popFromStack(); // (b_cat)
   }
 
   private emitExternalOutStateVerification(node: FunctionDefinitionNode): void {

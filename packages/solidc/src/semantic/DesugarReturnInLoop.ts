@@ -32,6 +32,9 @@ export default class DesugarReturnInLoop extends AstTraversal {
   visitSourceFile(node: SourceFileNode): Node {
     if (node.contract) node.contract = this.visit(node.contract) as ContractNode;
     node.importedContracts = node.importedContracts.map((c) => this.visit(c) as ContractNode);
+    // Library functions live here as namespaced free functions (Lib.find); they are OP_INVOKE subroutines
+    // with the same broken raw-return-in-loop cleanup as contract-internal functions, so desugar them too.
+    node.freeFunctions = node.freeFunctions.map((f) => this.visit(f) as FunctionDefinitionNode);
     return node;
   }
 

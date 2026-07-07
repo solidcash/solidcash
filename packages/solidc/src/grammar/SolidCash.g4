@@ -707,6 +707,15 @@ modifier
     | 'transient'
     ;
 
+// Data location on a parameter/return inside a function TYPE (`function(string memory) external`). Solidity
+// requires it for reference types; on BCH it is inert (values are not location-tagged), so it is parsed and
+// discarded. Kept separate from `modifier` so only the three real data locations are accepted here.
+dataLocation
+    : 'memory'
+    | 'calldata'
+    | 'storage'
+    ;
+
 literal
     : BooleanLiteral
     | numberLiteral
@@ -739,7 +748,7 @@ typeName
     | 'ufixed'
     | BoundedSignedFixed
     | BoundedUnsignedFixed
-    | 'function' '(' (typeName (',' typeName)*)? ')' ('pure' | 'view' | 'internal' | 'external' | 'payable')* ('returns' '(' typeName (',' typeName)* ')')?
+    | 'function' '(' (typeName dataLocation? (',' typeName dataLocation?)*)? ')' ('pure' | 'view' | 'internal' | 'external' | 'payable')* ('returns' '(' typeName dataLocation? (',' typeName dataLocation?)* ')')?
     | Identifier '.' Identifier
     | Identifier
     ;

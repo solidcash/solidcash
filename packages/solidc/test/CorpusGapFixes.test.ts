@@ -3,6 +3,22 @@ import { compileString } from '../src/index.js';
 
 // Compile-level regression guards for solc-corpus gap fixes (see examples/solidity-corpus/PROGRESS.md).
 
+describe('data location on function-TYPE params/returns (function(string memory) internal)', () => {
+  const ok = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  it('accepts a data location on a function-type parameter', () => {
+    expect(ok('contract C { function h(string memory) internal pure { }'
+      + ' function f() public { function(string memory) internal pure fp = h; fp("x"); require(true); } }')).toBe('C');
+  });
+  it('accepts a data location on a function-type return', () => {
+    expect(ok('contract C { function() pure internal returns (bytes memory) fp;'
+      + ' function f() public { require(true); } }')).toBe('C');
+  });
+  it('does not crash when a function-type member is an unresolvable name (falls back to an address handle)', () => {
+    // IFoo is undeclared; the member must not reach FunctionType.toString as undefined.
+    expect(ok('contract C { function(IFoo memory) internal fp; function f() public { require(true); } }')).toBe('C');
+  });
+});
+
 describe('bare uint(x) cast == uint256(x)', () => {
   // `uint` is Solidity's alias for `uint256`. The typeCast grammar only covers bounded `uintN`, so bare `uint`
   // reaches the function-call builder; it is rewritten to a uint256 cast, producing identical bytecode.

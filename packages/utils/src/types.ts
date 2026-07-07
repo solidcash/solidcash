@@ -719,9 +719,19 @@ function parseFunctionType(str: string): FunctionType {
   let returnTypes: Type[] = [];
   if (rest.startsWith('returns(')) {
     const [retsInner] = splitParenGroup(rest.slice('returns'.length));
-    returnTypes = splitTopLevelCommas(retsInner).map(parseType);
+    returnTypes = splitTopLevelCommas(retsInner).map(parseFunctionTypeMember);
   }
-  return new FunctionType(splitTopLevelCommas(paramsInner).map(parseType), returnTypes, isExternal);
+  return new FunctionType(splitTopLevelCommas(paramsInner).map(parseFunctionTypeMember), returnTypes, isExternal);
+}
+
+// Parse one param/return type of a function TYPE. The source string comes from grammar getText() with no
+// spaces, so a data location is glued to the type (`string memory` -> `stringmemory`). Solidity requires the
+// location on reference-type params; on BCH it is inert, so strip a trailing memory/calldata/storage. A member
+// that does not resolve to a primitive (a struct/contract name, or a function-type array) falls back to an
+// address handle so FunctionType.toString never maps over an undefined - the member types of a function
+// pointer are inert on BCH (the value is a functionId/address), so the placeholder is sound for compilation.
+function parseFunctionTypeMember(member: string): Type {
+  return parseType(member.replace(/(memory|calldata|storage)$/, '')) ?? new AddressType(false);
 }
 
 // Given a string starting with '(', return [inside, remainder-after-matching-paren].

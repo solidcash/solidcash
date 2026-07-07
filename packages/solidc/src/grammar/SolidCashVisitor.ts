@@ -185,6 +185,7 @@ import { ParenthesisedContext } from "./SolidCashParser.js";
 import { PrefixOpContext } from "./SolidCashParser.js";
 import { MemberNameContext } from "./SolidCashParser.js";
 import { ModifierContext } from "./SolidCashParser.js";
+import { DataLocationContext } from "./SolidCashParser.js";
 import { LiteralContext } from "./SolidCashParser.js";
 import { NumberLiteralContext } from "./SolidCashParser.js";
 import { DecimalLiteralContext } from "./SolidCashParser.js";
@@ -1357,6 +1358,12 @@ export default class SolidCashVisitor<Result> extends ParseTreeVisitor<Result> {
 	 * @return the visitor result
 	 */
 	visitModifier?: (ctx: ModifierContext) => Result;
+	/**
+	 * Visit a parse tree produced by `SolidCashParser.dataLocation`.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	visitDataLocation?: (ctx: DataLocationContext) => Result;
 	/**
 	 * Visit a parse tree produced by `SolidCashParser.literal`.
 	 * @param ctx the parse tree

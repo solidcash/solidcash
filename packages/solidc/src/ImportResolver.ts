@@ -96,6 +96,7 @@ export class ImportResolver {
     // L's functions were inlined away (storage-pointer fns) or L is empty.
     target.declaredLibraryNames.push(...source.declaredLibraryNames);
     source.libraryFunctionSignatures.forEach((v, k) => target.libraryFunctionSignatures.set(k, v));
+    source.libraryEventSignatures.forEach((v, k) => target.libraryEventSignatures.set(k, v));
     switch (importNode.kind) {
       case 'wildcard':
         // Import everything: contract, constants, enums, structs, types,

@@ -791,6 +791,16 @@ describe('.selector on a single-assignment function-pointer local folds to the t
     expect(cc(src)).toBe('C');
   });
 
+  it('folds event .selector across library/contract/interface qualifiers and bare inherited events', () => {
+    // Signature-injective: equal signatures (E()) give equal selectors, distinct (E(uint256)) differ;
+    // the bare inherited form equals the base-qualified form. All fold to compile-time bytes32.
+    const src = 'library L { event E(); } library S { event E(uint); } contract B { event E(); }'
+      + ' contract C is B { bytes32 s1 = L.E.selector;'
+      + ' function f() public pure { require(L.E.selector == B.E.selector);'
+      + ' require(L.E.selector != S.E.selector); require(E.selector == B.E.selector); } }';
+    expect(cc(src)).toBe('C');
+  });
+
   it('folds L.f.selector for library functions, including storage-pointer fns inlined away', () => {
     // g takes a storage pointer (removed from freeFunctions by the inliner) - the selector must still fold
     // from the parse-time signature. Distinct signatures give distinct selectors; h twice gives the same.

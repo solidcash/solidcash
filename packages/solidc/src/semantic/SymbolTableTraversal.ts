@@ -181,7 +181,7 @@ import {
 } from '../Errors.js';
 import {
   CompilerOptions, PrimitiveType, BytesType, Type, StructType, EnumType, AddressType, ValueType,
-  computeEventSignature, computeErrorSignature, computeCollectionSignature,
+  computeEventSignature, computeEventSelector, computeErrorSignature, computeCollectionSignature,
   computeFunctionSignature, computeFunctionSelector, TupleType, ArrayType,
   IntType, FixedType, MappingType, FunctionType,
   FunctionBlockLayout, BlockLayoutSlot, resolveLibraries, ExternalLibrary, parseTypeStrict,
@@ -271,6 +271,7 @@ export default class SymbolTableTraversal extends AstTraversal {
   private tupleStateTempCounter: number = 0;
   private knownLibraryNames: Set<string> = new Set();
   private libraryFunctionSignatures: Map<string, string[]> = new Map();
+  private libraryEventSignatures: Map<string, string[]> = new Map();
   private stateVariableMap: Map<string, StateVariableNode> = new Map();
   private collectionMap: Map<string, CollectionNode> = new Map();
   private structMap: Map<string, StructType> = new Map();
@@ -443,6 +444,7 @@ export default class SymbolTableTraversal extends AstTraversal {
 
     this.knownLibraryNames = new Set(node.declaredLibraryNames);
     this.libraryFunctionSignatures = node.libraryFunctionSignatures;
+    this.libraryEventSignatures = node.libraryEventSignatures;
 
     // Pre-register free functions in global scope (so they can call each other and be called from contract)
     for (const func of node.freeFunctions) {
@@ -6008,6 +6010,43 @@ export default class SymbolTableTraversal extends AstTraversal {
         const lit = new HexLiteralNode(computeFunctionSelector(sig));
         lit.location = node.location;
         return lit;
+      }
+    }
+
+    // `Q.E.selector` (library/contract/interface-qualified EVENT) and bare `E.selector`: the 32-byte event
+    // selector = sha256 of the signature (the platform analog of Solidity's topic hash; signature-injective).
+    // Function selectors above take precedence - this only fires when no function matched.
+    if (node.name === 'selector') {
+      const eventSelectorLit = (evName: string, paramTypes?: string[]): HexLiteralNode | undefined => {
+        if (!paramTypes) return undefined;
+        const lit = new HexLiteralNode(computeEventSelector(computeEventSignature(evName, paramTypes)));
+        lit.location = node.location;
+        lit.type = new BytesType(32);
+        return lit;
+      };
+      if (node.expression instanceof FieldAccessNode && node.expression.expression instanceof IdentifierNode) {
+        const q = node.expression.expression.name;
+        const evName = node.expression.name;
+        const fromLib = eventSelectorLit(evName, this.libraryEventSignatures.get(`${q}.${evName}`));
+        if (fromLib) return fromLib;
+        const holder = this.contractMap.get(q) ?? this.interfaceMap.get(q);
+        const ev = holder?.eventDefinitions?.find((e) => e.name === evName);
+        if (ev) {
+          const fromHolder = eventSelectorLit(evName, ev.parameters.map((p) => p.type.toString()));
+          if (fromHolder) return fromHolder;
+        }
+      }
+      if ((node.expression instanceof IdentifierNode || node.expression instanceof StateAccessNode)
+        && !this.functionDefinitions.has(node.expression.name)) {
+        // Own + inherited events live merged on the contract node (available even during state-var
+        // initializers, before eventMap - which is keyed by signature - fills).
+        const bareName = node.expression.name;
+        const ev = this.currentContract?.eventDefinitions?.find((e) => e.name === bareName)
+          ?? [...this.eventMap.values()].find((e) => e.name === bareName);
+        if (ev) {
+          const fromEvent = eventSelectorLit(ev.name, ev.parameters.map((p) => p.type.toString()));
+          if (fromEvent) return fromEvent;
+        }
       }
     }
 

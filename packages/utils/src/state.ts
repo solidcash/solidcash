@@ -1418,6 +1418,15 @@ export function computeEventNameHash(eventSignature: string): Uint8Array {
 }
 
 /**
+ * Compute the 32-byte event selector (`E.selector`, bytes32): the full SHA-256 of the UTF-8 event
+ * signature - the platform's analog of Solidity's keccak-based topic hash (signature-injective, so
+ * equal signatures give equal selectors and distinct signatures distinct ones).
+ */
+export function computeEventSelector(eventSignature: string): Uint8Array {
+  return sha256(utf8ToBin(eventSignature));
+}
+
+/**
  * Build the event-NFT covenant script seeded with a specific token category and event name.
  *
  * The covenant:

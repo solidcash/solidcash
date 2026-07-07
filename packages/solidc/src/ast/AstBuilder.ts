@@ -434,6 +434,7 @@ export default class AstBuilder
     const allLibEventDefs: EventDefinitionNode[] = [];
     const declaredLibraryNames: string[] = [];
     const libraryFunctionSignatures: Map<string, string[]> = new Map();
+    const libraryEventSignatures: Map<string, string[]> = new Map();
     for (const libCtx of allLibDefs) {
       const libName = libCtx.Identifier().getText();
       this.libraryNames.add(libName);
@@ -452,9 +453,12 @@ export default class AstBuilder
         typeDefinitions.push(td);
       }
 
-      // Library event definitions (accumulated across all libraries)
+      // Library event definitions (accumulated across all libraries). Qualified signatures are recorded
+      // for `L.E.selector` folds (bare-name registration collides across libraries).
       for (const evCtx of libCtx.eventDefinition_list()) {
-        allLibEventDefs.push(this.visitEventDefinition(evCtx));
+        const ev = this.visitEventDefinition(evCtx);
+        libraryEventSignatures.set(`${libName}.${ev.name}`, ev.parameters.map((pm) => pm.type.toString()));
+        allLibEventDefs.push(ev);
       }
 
       // Library error definitions (accumulated to file level)
@@ -546,6 +550,7 @@ export default class AstBuilder
       node.libraryName = libName;
       node.declaredLibraryNames = declaredLibraryNames;
       node.libraryFunctionSignatures = libraryFunctionSignatures;
+      node.libraryEventSignatures = libraryEventSignatures;
       node.location = Location.fromCtx(ctx);
 
       // Lower the primary library to a stateless contract when it has explicitly public/external functions, so
@@ -607,6 +612,7 @@ export default class AstBuilder
     sourceFileNode.importedContracts.push(...contracts.slice(0, -1));
     sourceFileNode.declaredLibraryNames = declaredLibraryNames;
     sourceFileNode.libraryFunctionSignatures = libraryFunctionSignatures;
+    sourceFileNode.libraryEventSignatures = libraryEventSignatures;
     sourceFileNode.location = Location.fromCtx(ctx);
     return sourceFileNode;
   }

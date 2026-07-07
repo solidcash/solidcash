@@ -104,6 +104,10 @@ export class SourceFileNode extends Node {
   // Declared parameter-type strings per namespaced library function ("L.f" -> ["uint256", ...]), recorded at
   // parse time so `L.f.selector` folds even for functions later inlined away (storage-pointer fns).
   libraryFunctionSignatures: Map<string, string[]> = new Map();
+  // Declared parameter-type strings per namespaced library event ("L.E" -> ["uint256", ...]): library events
+  // register under bare names (same-name events in different libraries collide), so `L.E.selector` folds from
+  // this parse-time record instead.
+  libraryEventSignatures: Map<string, string[]> = new Map();
 
   constructor(
     public contract: ContractNode,

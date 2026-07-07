@@ -31,6 +31,14 @@ remaining void-internal-call bug. Anchor: GenerateTargetTraversal visitUserFunct
 
 ## Deferred features (feature-scale, not yet done)
 
+- **abicoder `msg.data` / `abi.decode(msg.data[4:], ..)` (FUNDAMENTAL - EVM calldata model):** msg.data in a
+  REGULAR (non-fallback) function fails - the redeemPushSize reconstruction is only threaded into the fallback
+  path (regular entry functions + their subroutine forms don't push __internal__redeemPushSize). Threading it is
+  a codegen fix, BUT the 7 corpus files all `abi.decode(msg.data[4:], (uint,uint))` = decode EVM-ABI-encoded
+  calldata by BYTE OFFSET, which does NOT map to BCH's push-based param structure (params arrive as separate
+  data pushes, not a packed ABI blob). Faking it would silently miscompile (hollow). NOT soundly fixable without
+  an EVM-calldata emulation layer. `abi.encodeWithSelector` string->bytes4 (the clean abicoder slice) IS done
+  (ee49a0c8, +5). The rest of abicoder = this + function-type ABI + Yul + struct-with-function-fields.
 - **Whole-struct-to-mapping copy `m[k] = s`** and **state-flattened struct array-field write `s.a = x`**:
   in the parallel agent's mapping-struct flattening area. `s.a = x` is byte-sound + trivially addable but +0
   alone (multi-wall on `m[k] = s`). Deferred to avoid a 0-yield change in the contested area.

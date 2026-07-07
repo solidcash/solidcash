@@ -483,3 +483,24 @@ need address(L)+delegatecall+Yul .slot (multi-wall).
 - Remaining library-vein deferred: event .selector (library-event namespacing - eventMap is single-slot,
   same-name events from different libraries collide), address(L)/delegatecall-on-library (+Yul .slot),
   delegatecall_guard quartet, mapping-alias reassignment (m=m1; ...; m=m2 - flow-sensitive alias regions).
+
+## Session 2026-07-07f part 3 (precedence + bitwise + deploy chains, 3636 confirmed -> 3647)
+- 5ee3397e GRAMMAR PRECEDENCE (+15, the big one): the expression ladder had C-style precedence (equality
+  above bitwise), so Solidity's `x & y == z` parsed as `x & (y == z)` -> uint-vs-bool UnequalTypeError
+  across the bitwise cluster AND anything comparing masked values (ERC165 homer x2, recursion x2,
+  UDVT-on-constants x3, compound string-literal x2...). Solidity binds & ^ | ABOVE comparisons; reordered
+  alternatives + regenerated parser (NOTE: yarn antlr postantlr sed is BSD-flavored and fails on GNU -
+  harmless when the visitor is unchanged). Byte-identity guards vs parenthesised forms.
+- bc4f678e literal bitwise folding + mixed-width widening (+7): literal&literal folds via BigInt
+  (two's-complement-infinite = Solidity constant eval, negatives incl.); mixed-width SAME-signedness
+  operands widen to the larger width; mixed signedness still rejects (solc parity). Replaced the stale
+  guard asserting the old rejection. VM-verified.
+- 3df706a1 PromoteConstructorExternalReads return typing (+2): the hoisted deploy-input param was ALWAYS
+  address; now typed by the callee method's single return type (a.getX() in ctor was becoming address).
+- 295acaf7 chained sibling deployment C->B->A (+9): child re-analysis wrapper now carries file definitions
+  (registration-only; free fns/using-for excluded - already-desugared bodies must not re-visit);
+  collectContractReferences = transitive closure w/ name-matching (referencedContract only stamped by the
+  primary's pass); topologicalSort got real dependency edges; synthetic __internal__/__ctorread_ ctor
+  params excluded from call-site arg checks (child's own pass mutates the SHARED ctor node first).
+  Unblocked external_call_indirect x5 + inheritance calldata pair + function_type_copy + instantiate.
+UnequalType bucket CLOSED (+24 of 31): remainder = fixed-point literal coercion x3, abicoder x2, deep x2.

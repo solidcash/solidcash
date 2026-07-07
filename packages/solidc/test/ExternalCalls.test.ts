@@ -237,3 +237,32 @@ describe('SBE-25: msg.sender category forwarded across internal calls', () => {
       .toBe('C');
   });
 });
+
+describe('try/catch around a VOID external call', () => {
+  // A void external call sets no expression type (only non-empty returnTypes assign one); the try codegen
+  // treated undefined as one pushed value and emitted a phantom OP_DROP that consumed an unrelated slot
+  // (a pending state write, the __extaddr_ address local) and broke the epilogue. Sound by reduction: the
+  // try form must be byte-identical to the bare call-statement form (catch is dead code on BCH).
+  const DECL = 'abstract contract D { function d() external virtual; }\n';
+  const opts = { solidityImportCompat: true };
+
+  it('is byte-identical to the bare statement form (state-var target, prior state write)', () => {
+    const tryForm = compileString(
+      `${DECL}contract C { int x; D d; function f() public { x = 0; try d.d() {} catch {} } }`, opts,
+    );
+    const stmtForm = compileString(
+      `${DECL}contract C { int x; D d; function f() public { x = 0; d.d(); } }`, opts,
+    );
+    expect(tryForm.bytecode).toBe(stmtForm.bytecode);
+  });
+
+  it('is byte-identical without a prior state write', () => {
+    const tryForm = compileString(
+      `${DECL}contract C { D d; function f() public { try d.d() {} catch {} } }`, opts,
+    );
+    const stmtForm = compileString(
+      `${DECL}contract C { D d; function f() public { d.d(); } }`, opts,
+    );
+    expect(tryForm.bytecode).toBe(stmtForm.bytecode);
+  });
+});

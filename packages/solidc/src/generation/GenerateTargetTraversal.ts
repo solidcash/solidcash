@@ -2652,8 +2652,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // No returns clause: drop the call's return values. A VOID external call (e.g. `try this.g(x)` where g
       // returns nothing) leaves nothing on the stack, so drop zero - dropping one unconditionally would remove
       // a caller stack slot (a param/local like __internal__returnOutputIdx) and corrupt the trailing covenant.
+      // A void EXTERNAL call carries no `type` at all (it is only set when returnTypes is non-empty), so an
+      // undefined type also pushes nothing - dropping on it consumed an unrelated slot (a pending state write,
+      // an __extaddr_ address local) and broke the epilogue.
       const type = node.expression.type;
-      const dropCount = type instanceof TupleType ? type.elements.length : type === PrimitiveType.VOID ? 0 : 1;
+      const dropCount = type instanceof TupleType
+        ? type.elements.length
+        : type === undefined || type === PrimitiveType.VOID
+          ? 0
+          : 1;
       for (let i = 0; i < dropCount; i++) {
         this.emit(Op.OP_DROP, { location: node.location, positionHint: PositionHint.START });
         this.popFromStack();

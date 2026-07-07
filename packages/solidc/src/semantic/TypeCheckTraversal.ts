@@ -1836,6 +1836,18 @@ export default class TypeCheckTraversal extends AstTraversal {
       case BinaryOperator.BIT_AND:
       case BinaryOperator.BIT_OR:
       case BinaryOperator.BIT_XOR: {
+        // Both operands integer literals: fold at compile time. Solidity evaluates constants at arbitrary
+        // precision, and BigInt bitwise is two's-complement-infinite, which matches (incl. negatives).
+        if (node.left instanceof IntLiteralNode && node.right instanceof IntLiteralNode) {
+          const l = node.left.value;
+          const r = node.right.value;
+          const v = node.operator === BinaryOperator.BIT_AND ? (l & r)
+            : node.operator === BinaryOperator.BIT_OR ? (l | r) : (l ^ r);
+          const lit = new IntLiteralNode(v);
+          lit.location = node.location;
+          lit.type = PrimitiveType.INT;
+          return lit;
+        }
         // An unbounded-int operand takes the bounded operand's fixed width (Solidity), so `x | 1` or
         // `x | (c ? 1 : 2)` bitwise-ORs at x's width. A literal just adopts the type; any other unbounded-int
         // expression is cast so it carries a defined width for the fixed-width bitwise op.
@@ -1858,6 +1870,14 @@ export default class TypeCheckTraversal extends AstTraversal {
           if (!bounded) {
             // Unbounded `int` has no fixed width; require intN/uintN for bitwise.
             throw new UnsupportedTypeError(node as any, lt, new IntType(false, 256));
+          }
+          // Mixed widths of the SAME signedness: Solidity implicitly widens the narrower operand.
+          if (lt instanceof IntType && rt instanceof IntType && lt.signed === rt.signed && lt.bits !== rt.bits) {
+            const wide = lt.bits > rt.bits ? lt : rt;
+            if (lt.bits < wide.bits) node.left = toBounded(node.left, wide);
+            if (rt.bits < wide.bits) node.right = toBounded(node.right, wide);
+            node.type = wide;
+            return node;
           }
           if (lt instanceof IntType && rt instanceof IntType
               && (lt.bits !== bounded.bits || rt.bits !== bounded.bits || lt.signed !== rt.signed)) {

@@ -297,9 +297,15 @@ describe('bitwise op with an unbounded-int operand takes the bounded width', () 
       { solidityImportCompat: true }).contractName).toBe('C');
   });
 
-  it('still rejects two bounded ints of different width', () => {
-    expect(() => compileString(`contract C() {
+  it('widens mixed-width same-signedness operands to the larger width (Solidity implicit conversion)', () => {
+    expect(compileString(`contract C() {
       function f(uint8 a, uint16 b) returns (uint16) { return a | b; }
+    }`, { solidityImportCompat: true }).contractName).toBe('C');
+  });
+
+  it('still rejects mixed-signedness bounded operands', () => {
+    expect(() => compileString(`contract C() {
+      function f(int8 a, uint16 b) returns (uint16) { return a | b; }
     }`, { solidityImportCompat: true })).toThrow();
   });
 });

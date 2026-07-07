@@ -95,6 +95,7 @@ export class ImportResolver {
     // Library names travel with every import kind: `using L for T` must know L exists even when all of
     // L's functions were inlined away (storage-pointer fns) or L is empty.
     target.declaredLibraryNames.push(...source.declaredLibraryNames);
+    source.libraryFunctionSignatures.forEach((v, k) => target.libraryFunctionSignatures.set(k, v));
     switch (importNode.kind) {
       case 'wildcard':
         // Import everything: contract, constants, enums, structs, types,

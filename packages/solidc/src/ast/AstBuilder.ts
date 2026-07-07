@@ -433,6 +433,7 @@ export default class AstBuilder
     const allLibDefs = ctx.libraryDefinition_list();
     const allLibEventDefs: EventDefinitionNode[] = [];
     const declaredLibraryNames: string[] = [];
+    const libraryFunctionSignatures: Map<string, string[]> = new Map();
     for (const libCtx of allLibDefs) {
       const libName = libCtx.Identifier().getText();
       this.libraryNames.add(libName);
@@ -506,6 +507,9 @@ export default class AstBuilder
               func.modifiers.push(FunctionModifier.DELEGATE);
             }
           }
+          // Record the declared signature at parse time: `L.f.selector` must fold even when f is later
+          // inlined away (storage-pointer fns are removed from freeFunctions).
+          libraryFunctionSignatures.set(func.name, func.parameters.map((p) => p.type.toString()));
           return func;
         },
       );
@@ -541,6 +545,7 @@ export default class AstBuilder
       node.isLibrary = true;
       node.libraryName = libName;
       node.declaredLibraryNames = declaredLibraryNames;
+      node.libraryFunctionSignatures = libraryFunctionSignatures;
       node.location = Location.fromCtx(ctx);
 
       // Lower the primary library to a stateless contract when it has explicitly public/external functions, so
@@ -601,6 +606,7 @@ export default class AstBuilder
     );
     sourceFileNode.importedContracts.push(...contracts.slice(0, -1));
     sourceFileNode.declaredLibraryNames = declaredLibraryNames;
+    sourceFileNode.libraryFunctionSignatures = libraryFunctionSignatures;
     sourceFileNode.location = Location.fromCtx(ctx);
     return sourceFileNode;
   }

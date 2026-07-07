@@ -101,6 +101,9 @@ export class SourceFileNode extends Node {
   // Names of libraries declared in this file or merged from imports. `using L for T` on a library whose
   // functions were all inlined away (storage-pointer fns) or that is empty must not read as undefined.
   declaredLibraryNames: string[] = [];
+  // Declared parameter-type strings per namespaced library function ("L.f" -> ["uint256", ...]), recorded at
+  // parse time so `L.f.selector` folds even for functions later inlined away (storage-pointer fns).
+  libraryFunctionSignatures: Map<string, string[]> = new Map();
 
   constructor(
     public contract: ContractNode,

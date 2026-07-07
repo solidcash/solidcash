@@ -761,6 +761,19 @@ describe('.selector on a single-assignment function-pointer local folds to the t
     expect(cc(mk('this.f.address == address(this)'))).toBe('C');
     expect(bc(mk('this.f.address == address(this)'))).toBe(bc(mk('address(this) == address(this)')));
   });
+
+  it('folds L.f.selector for library functions, including storage-pointer fns inlined away', () => {
+    // g takes a storage pointer (removed from freeFunctions by the inliner) - the selector must still fold
+    // from the parse-time signature. Distinct signatures give distinct selectors; h twice gives the same.
+    const src = 'library L { function f(uint256 x) external returns (uint) { return x; }'
+      + ' function g(uint256[] storage s) external returns (uint) { return s.length; }'
+      + ' function h(uint256[] memory m) public returns (uint) { return m.length; } }'
+      + ' contract C { function f() public pure {'
+      + ' require(L.f.selector != L.g.selector);'
+      + ' require(L.g.selector != L.h.selector);'
+      + ' require(L.h.selector == L.h.selector); } }';
+    expect(cc(src)).toBe('C');
+  });
 });
 
 describe('contract-typed arrays resolve to address arrays (contract handle = address)', () => {

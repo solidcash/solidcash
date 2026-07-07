@@ -270,6 +270,7 @@ export default class SymbolTableTraversal extends AstTraversal {
   private insideConstructor: boolean = false;
   private tupleStateTempCounter: number = 0;
   private knownLibraryNames: Set<string> = new Set();
+  private libraryFunctionSignatures: Map<string, string[]> = new Map();
   private stateVariableMap: Map<string, StateVariableNode> = new Map();
   private collectionMap: Map<string, CollectionNode> = new Map();
   private structMap: Map<string, StructType> = new Map();
@@ -441,6 +442,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     }
 
     this.knownLibraryNames = new Set(node.declaredLibraryNames);
+    this.libraryFunctionSignatures = node.libraryFunctionSignatures;
 
     // Pre-register free functions in global scope (so they can call each other and be called from contract)
     for (const func of node.freeFunctions) {
@@ -5865,6 +5867,16 @@ export default class SymbolTableTraversal extends AstTraversal {
       const methodParams = params(baseName) ?? (varContract ? params(varContract) : undefined);
       if (methodParams) {
         const sig = computeFunctionSignature(fa.name, methodParams.map((p) => p.type.toString()));
+        const lit = new HexLiteralNode(computeFunctionSelector(sig));
+        lit.location = node.location;
+        return lit;
+      }
+      // `L.f.selector` for a library function: computed from the parse-time declared signature (recorded in
+      // AstBuilder), which also covers functions later inlined away (storage-pointer fns leave no
+      // functionDefinitions entry).
+      const libSig = this.libraryFunctionSignatures.get(`${baseName}.${fa.name}`);
+      if (libSig) {
+        const sig = computeFunctionSignature(fa.name, libSig);
         const lit = new HexLiteralNode(computeFunctionSelector(sig));
         lit.location = node.location;
         return lit;

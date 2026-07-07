@@ -5630,6 +5630,23 @@ export default class SymbolTableTraversal extends AstTraversal {
     return node;
   }
 
+  // Whether a local is assigned again (beyond its initializer) anywhere in the current function body. Keeps the
+  // `fun.selector` fold sound: only a never-reassigned function pointer folds to a compile-time selector.
+  private localIsReassigned(name: string): boolean {
+    let found = false;
+    const walk = (n: Node | undefined): void => {
+      if (!n || found) return;
+      if (n instanceof AssignNode && n.identifier?.name === name) { found = true; return; }
+      for (const [k, v] of Object.entries(n)) {
+        if (k === 'type' || k === 'symbolTable' || k === 'location' || k === 'definition' || k === 'references') continue;
+        if (v instanceof Node) walk(v);
+        else if (Array.isArray(v)) for (const it of v) if (it instanceof Node) walk(it);
+      }
+    };
+    walk(this.currentFunction?.body);
+    return found;
+  }
+
   visitFieldAccess(node: FieldAccessNode): Node {
     // `this.<fn>.selector` -> the function's 4-byte selector (bytes4). `this.<fn>` parses as a state access;
     // intercept before it resolves (it is a function, not a state var) and fold to the precomputed selector.
@@ -5647,6 +5664,21 @@ export default class SymbolTableTraversal extends AstTraversal {
       const fn = this.functionDefinitions.get(node.expression.name)?.[0];
       if (fn?.functionSelector) {
         const lit = new HexLiteralNode(fn.functionSelector);
+        lit.location = node.location;
+        return lit;
+      }
+    }
+
+    // `fun.selector` where `fun` is a function-typed LOCAL initialized from a function reference (`this.f` / a bare
+    // own function) and NEVER reassigned: fold to that function's selector, like `this.f.selector`. A reassigned
+    // pointer would need a runtime selector (a solidcash function value is a functionId, not an (addr, selector)
+    // pair) - leave those to the normal path (they error), so this stays sound.
+    if (node.name === 'selector' && node.expression instanceof IdentifierNode) {
+      const def = this.symbolTables[0].get(node.expression.name)?.definition;
+      if (def instanceof VariableDefinitionNode && def.type instanceof FunctionType
+        && def.expression instanceof IdentifierNode && def.expression.functionReference?.functionSelector
+        && !this.localIsReassigned(node.expression.name)) {
+        const lit = new HexLiteralNode(def.expression.functionReference.functionSelector);
         lit.location = node.location;
         return lit;
       }

@@ -692,6 +692,17 @@ describe('function overload resolution (inheritance + entry-point synthetic para
   });
 });
 
+describe('.selector on a single-assignment function-pointer local folds to the target selector', () => {
+  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  const bc = (src: string): string => compileString(src, { solidityImportCompat: true }).bytecode;
+  it('resolves fun.selector where fun = this.f (byte-identical to this.f.selector)', () => {
+    const src = (sel: string): string => 'contract C { function f() external pure returns (bytes4) { return this.f.selector; }'
+      + ` function g() external returns (bytes4) { function () pure external returns (bytes4) fun = this.f; return ${sel}; } }`;
+    expect(cc(src('fun.selector'))).toBe('C');
+    expect(bc(src('fun.selector'))).toBe(bc(src('this.f.selector')));
+  });
+});
+
 describe('contract-typed arrays resolve to address arrays (contract handle = address)', () => {
   const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
   it('types new C[](n) as an address array, not undefined[]', () => {

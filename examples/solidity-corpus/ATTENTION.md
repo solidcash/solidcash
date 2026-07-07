@@ -14,18 +14,18 @@ that the user should review. Grinding continues past these with a documented def
 - **bytes calldata element write**: rejected (matches solc's read-only calldata), though on BCH there is no
   read-only calldata (all data is on-stack). Kept the rejection to match solc. Reconsider if a port needs it.
 
-## Pre-existing codegen limitation discovered 2026-07-07 (public function called internally with a used return)
+## FIXED 2026-07-07 (public function called internally with a used return) - commit 721c8e14
 
-Calling a PUBLIC function INTERNALLY (bare `f()`, not `this.f()`) and using its return value miscompiles at
-runtime: the covenant leaves extra stack items ("unexpected number of items on the stack"). Reproduced on clean
-HEAD (independent of the overload work). Internal/private functions called internally work fine (VM-verified);
-only PUBLIC (entry-point) functions hit this. Root: a public function's return value is handled via the
-return-event-output covenant path, and the internal-call subroutine form does not cleanly return the value on the
-stack for use by the caller. Affects ANY public-internal-call-with-return, not just overloads. This is why the
-public overload corpus files (resolve_to_first, with_if_else, base_overload) COMPILE (overload resolution is now
-correct) but would not run correctly - the fix is orthogonal codegen work: emit a proper stack-returning
-subroutine for a public function invoked internally (distinct from its entry-point return-event form). Anchor:
-GenerateTargetTraversal subroutineUseProbe (~693) + visitReturn raw-return path + functionHasReturnInLoop.
+Was: calling a PUBLIC function INTERNALLY (bare `f()`) with a used return value left extra stack items. ROOT
+CAUSE (found): the internal-call subroutine skips the synthetic `__internal__returnOutputIdx` param during setup
+(unused for a raw return), and a function-pointer call never pushes it - but a DIRECT internal call DID push it
+(TypeCheck's forwardInternalReturnOutputIdx forwarded it for the arity check). The subroutine never cleaned it ->
+leak. FIX: visitUserFunctionCall no longer pushes the returnOutputIdx arg (matching the subroutine skip + the
+function-pointer path). VM-verified single/chained/multi-return + public overloads. This UNBLOCKED sound public
+overloads and the function-pointer-ABI corpus files (which call public functions internally). REMAINING sub-issue:
+a VOID public function called internally still fails with a different error (OP_SPLIT on empty) - separate bug,
+lower priority (corpus overload/fn-ptr files all return values). Anchor: GenerateTargetTraversal
+visitUserFunctionCall + visitReturn raw-return path.
 
 ## Deferred features (feature-scale, not yet done)
 

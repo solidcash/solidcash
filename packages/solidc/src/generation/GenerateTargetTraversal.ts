@@ -10985,15 +10985,23 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emit(Op.OP_SPLIT, locationData);          // [idx, selector, remainder]
         this.emit(Op.OP_DROP, locationData);           // [idx, selector]
 
-        // Compare to the expected selector: the runtime selector temp (varying-method pointer) if present,
-        // else the compile-time witness param. Both sit below the 2 untracked working values (+2).
-        const selectorName = rtSelTemps.get(slot.slotIndex)
-          ?? (slotsNeedingSelector.length === 1
-            ? '__internal__externalCallSelector' : `__internal__externalCallSelector${slot.slotIndex}`);
-        const selectorIdx = this.getStackIndex(selectorName);
-        this.emit(encodeInt(BigInt(selectorIdx + 2)), locationData);
-        this.emit(Op.OP_PICK, locationData);
-        this.emit(Op.OP_EQUALVERIFY, locationData);
+        // Compare to the expected selector. Priority: the runtime selector temp (varying-method pointer, bound to
+        // `cond`); else the compile-time constant (MD1 - a regular call's target is fixed, so the selector must
+        // not come from a spender witness); else, as a fallback, the witness param. Constant vs picked both leave
+        // [idx].
+        const rtSel = rtSelTemps.get(slot.slotIndex);
+        if (!rtSel && slot.compileTimeSelector) {
+          this.emit(slot.compileTimeSelector, locationData); // [idx, selector, const]
+          this.emit(Op.OP_EQUALVERIFY, locationData);        // [idx]
+        } else {
+          const selectorName = rtSel
+            ?? (slotsNeedingSelector.length === 1
+              ? '__internal__externalCallSelector' : `__internal__externalCallSelector${slot.slotIndex}`);
+          const selectorIdx = this.getStackIndex(selectorName);
+          this.emit(encodeInt(BigInt(selectorIdx + 2)), locationData);
+          this.emit(Op.OP_PICK, locationData);
+          this.emit(Op.OP_EQUALVERIFY, locationData);
+        }
         // Stack: [idx] (1 untracked)
       }
 

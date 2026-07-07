@@ -1747,6 +1747,9 @@ export interface ExternalCallSlot {
   computedOffset: number;
   returnSlotIndex?: number; // sequential index among slots with hasReturnValues
   needsSelectorVerification?: boolean; // true when callee interface has >1 callable function
+  // MD1: the callee function's compile-time selector, baked as a constant OP_EQUALVERIFY for a regular call so a
+  // spender cannot substitute a different method of the callee via the (previously trusted) witness param.
+  compileTimeSelector?: Uint8Array;
   // Same-address varying-method pointer: the RUNTIME selector expression (`cond ? a.selector : b.selector`).
   // The epilogue evaluates it and asserts the co-spent callee's selector == it, instead of the witness param.
   runtimeSelector?: ExpressionNode;

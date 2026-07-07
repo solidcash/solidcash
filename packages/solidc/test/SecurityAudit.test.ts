@@ -320,6 +320,26 @@ describe('H8: refuse to inline same-name same-arity overloads', () => {
   });
 });
 
+// MD1 - for a regular call to a callee with >1 function, the covenant compared the co-spent method's selector
+// to a spender-provided WITNESS param, so an attacker could co-spend a different method of the callee. The
+// target of a regular call is fixed at compile time, so its selector is now baked as a constant.
+describe('MD1: external-call selector is a compile-time constant', () => {
+  it('bakes the called method selector as a constant', () => {
+    // add(bigint,bigint) selector is 3653d938; it must appear as a pushed constant in the covenant.
+    const bc = compileString(`contract C {
+      bigint r;
+      function go(address t, bigint a, bigint b, pubkey pk, sig s) external {
+        require(checkSig(s, pk)); this.r = IMath(t).add(a, b);
+      }
+    }
+    interface IMath {
+      function add(bigint a, bigint b) external returns (bigint);
+      function sub(bigint a, bigint b) external returns (bigint);
+    }`).bytecode;
+    expect(bc).toContain('3653d938');
+  });
+});
+
 describe('C4: composite mapping keys (continued)', () => {
   it('keccak256(abi.encode(...)) keys over distinct operands do not collapse', () => {
     const two = compileString(`

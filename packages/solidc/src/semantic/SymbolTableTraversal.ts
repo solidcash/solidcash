@@ -1332,6 +1332,19 @@ export default class SymbolTableTraversal extends AstTraversal {
         const slotCount = node.externalCalls.length;
         for (let i = 0; i < slotCount; i++) {
           if (!externalCallSlots[i].needsSelectorVerification) continue;
+          const slot = externalCallSlots[i];
+          // MD1: for a regular call (not a varying-method pointer) the target function is fixed at compile time,
+          // so bake its selector as a constant the covenant checks against - a spender must not be able to point
+          // the co-spend at a different method via the selector witness. Varying-method pointers keep the runtime
+          // selector (bound to `cond`).
+          if (!slot.runtimeSelector) {
+            const iface = this.interfaceMap.get(slot.interfaceName);
+            const ifaceFunc = iface && this.getAllInterfaceFunctions(iface).find((f) => f.name === slot.functionName);
+            if (ifaceFunc) {
+              const sig = computeFunctionSignature(slot.functionName, ifaceFunc.parameters.map((p) => p.type.toString()));
+              slot.compileTimeSelector = computeFunctionSelector(sig);
+            }
+          }
           // Backward compat: single slot uses '__internal__externalCallSelector', multiple use indexed names
           const selectorName = slotsNeedingSelector.length === 1
             ? '__internal__externalCallSelector'

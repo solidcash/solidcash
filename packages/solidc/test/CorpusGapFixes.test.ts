@@ -3,6 +3,19 @@ import { compileString } from '../src/index.js';
 
 // Compile-level regression guards for solc-corpus gap fixes (see examples/solidity-corpus/PROGRESS.md).
 
+describe('no-arg push on a struct array appends the struct default (data.push() on Data[])', () => {
+  const bc = (src: string): string => compileString(src, { solidityImportCompat: true }).bytecode;
+  const mk = (body: string): string => 'contract C { struct Data { uint256 x; uint256 y; } Data[] data;'
+    + ` function f(uint256 n) public { ${body} require(true); } }`;
+  it('reduces data.push() to data.push(Data(0,0)) (byte-identical)', () => {
+    expect(bc(mk('data.push();'))).toBe(bc(mk('data.push(Data(0,0));')));
+  });
+  it('handles no-arg struct push inside a while-grow loop (loop-cache path)', () => {
+    expect(bc(mk('while (data.length < n) data.push();')))
+      .toBe(bc(mk('while (data.length < n) data.push(Data(0,0));')));
+  });
+});
+
 describe('data location on function-TYPE params/returns (function(string memory) internal)', () => {
   const ok = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
   it('accepts a data location on a function-type parameter', () => {

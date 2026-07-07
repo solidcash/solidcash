@@ -2164,10 +2164,8 @@ export default class TypeCheckTraversal extends AstTraversal {
   }
 
   visitArrayPush(node: ArrayPushNode): Node {
-    // No-arg `arr.push()`: append the element type's default value.
-    if (node.noArg && node.arrayType) {
-      node.value = createDefaultValueExpression(node.arrayType.elementType, node.location!);
-    }
+    // No-arg `arr.push()` appends the element type's default; SymbolTable builds it (so a struct default
+    // resolves). It is guaranteed set here.
     // Ensure array literal values are blob-encoded (needed for multi-dimensional arrays)
     if (node.value instanceof ArrayNode) {
       node.value.blobEncoded = true;
@@ -2240,11 +2238,8 @@ export default class TypeCheckTraversal extends AstTraversal {
   visitStateArrayPush(node: StateArrayPushNode): Node {
     const sv = node.stateVariable!;
     const arrType = sv.type as ArrayType;
-    // No-arg `this.arr.push()`: append the element type's default value. SymbolTable already builds this (so a
-    // struct default resolves); only synthesize here if it did not (e.g. a node created after SymbolTable).
-    if (node.noArg && !node.value) {
-      node.value = createDefaultValueExpression(arrType.elementType, node.location!);
-    }
+    // No-arg `this.arr.push()` appends the element type's default; SymbolTable builds it (so a struct default
+    // resolves). It is guaranteed set here.
     // A fixed-inner row (`a.push([x, y])` on `uint256[N][]`) is blob-encoded so its elements pack fixed-width.
     if (node.value instanceof ArrayNode) {
       node.value.blobEncoded = true;

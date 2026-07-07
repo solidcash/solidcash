@@ -4129,6 +4129,12 @@ export default class SymbolTableTraversal extends AstTraversal {
     if (sym.type instanceof ArrayType) {
       node.arrayType = sym.type;
     }
+    // No-arg `arr.push()` default: build it here (replacing the int-0 placeholder) so a struct default resolves
+    // via struct-constructor resolution, mirroring visitStateArrayPush. Also covers a push a loop-cache pass
+    // rewrote onto a local array (CacheDynamicArrayInLoop), keeping while-grow `while (..) arr.push();` working.
+    if (node.noArg && node.arrayType) {
+      node.value = createDefaultValueExpression(node.arrayType.elementType, node.location!);
+    }
     sym.references.push({ name: node.name } as IdentifierNode);
     this.currentFunction.opRolls.set(node.name, { name: node.name, location: node.location } as IdentifierNode);
     node.value = this.visit(node.value);
@@ -5179,10 +5185,11 @@ export default class SymbolTableTraversal extends AstTraversal {
       throw new ImmutableStateVariableAssignmentError(node, sv.name);
     }
     node.stateVariable = sv;
-    // No-arg `arr.push()` appends the element type's default. Build it here (not in TypeCheck) so a struct
-    // default `Data(...)` passes through struct-constructor resolution below; created post-SymbolTable it would
-    // stay an unresolved call and type as undefined. Reduces to the hand-written `arr.push(Data(...))`.
-    if (node.noArg && !node.value && sv.type instanceof ArrayType) {
+    // No-arg `arr.push()` appends the element type's default. Build it here (replacing the int-0 placeholder the
+    // AST builder inserts), not in TypeCheck, so a struct default `Data(...)` passes through struct-constructor
+    // resolution below; created post-SymbolTable it would stay an unresolved call and type as undefined. Reduces
+    // to the hand-written `arr.push(Data(...))`.
+    if (node.noArg && sv.type instanceof ArrayType) {
       node.value = createDefaultValueExpression(sv.type.elementType, node.location!);
     }
     node.value = this.visit(node.value);

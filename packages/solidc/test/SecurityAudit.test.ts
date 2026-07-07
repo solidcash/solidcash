@@ -217,6 +217,22 @@ describe('H2: external-call return-event uniqueness', () => {
   });
 });
 
+// H3 - the new optimiser applied `OP_NOT OP_IF -> OP_NOTIF` before the relational-NOT family, the reverse of
+// the old engine's effective order, so `if (!(a < b))` and friends produced semantically-identical but
+// different ASM and tripped the exact-compare backwards-compat assertion, failing the compile. The relational-
+// NOT rules now precede OP_NOT OP_IF so both engines converge.
+describe('H3: relational-NOT + OP_NOT OP_IF compiles (optimiser order)', () => {
+  it.each([
+    ['if (!(a < b))', 'contract C { function f(int a, int b) { if (!(a < b)) { require(a==a); } require(true); } }'],
+    ['if (!(a <= b))', 'contract C { function f(int a, int b) { if (!(a <= b)) { require(a==a); } require(true); } }'],
+    ['if (!(a > b))', 'contract C { function f(int a, int b) { if (!(a > b)) { require(a==a); } require(true); } }'],
+    ['if (!(a >= b))', 'contract C { function f(int a, int b) { if (!(a >= b)) { require(a==a); } require(true); } }'],
+    ['while (!(a < b))', 'contract C { function f(int a, int b) { while (!(a < b)) { a = a + 1; } require(true); } }'],
+  ])('compiles %s without a backwards-compat divergence', (_label, src) => {
+    expect(() => compileString(src)).not.toThrow();
+  });
+});
+
 describe('C4: composite mapping keys (continued)', () => {
   it('keccak256(abi.encode(...)) keys over distinct operands do not collapse', () => {
     const two = compileString(`

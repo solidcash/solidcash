@@ -122,6 +122,16 @@ const provableOptimisations = [
 ] as [string, string][];
 
 const unprovableOptimisations = [
+  // Relational-NOT folding MUST precede 'OP_NOT OP_IF' (H3): the old engine applies these .equiv rules before
+  // its hardcoded OP_NOT OP_IF pass, so `OP_<rel> OP_NOT OP_IF` folds to `OP_<inverse-rel> OP_IF`. The new
+  // engine applies this array in order, so these have to come first or it produces `OP_<rel> OP_NOTIF` instead -
+  // semantically identical but a different ASM string, which trips the exact-compare backwards-compat assertion
+  // and fails the compile of common code like `if (!(a < b))`.
+  ['OP_LESSTHAN OP_NOT', 'OP_GREATERTHANOREQUAL'],
+  ['OP_GREATERTHAN OP_NOT', 'OP_LESSTHANOREQUAL'],
+  ['OP_LESSTHANOREQUAL OP_NOT', 'OP_GREATERTHAN'],
+  ['OP_GREATERTHANOREQUAL OP_NOT', 'OP_LESSTHAN'],
+
   // Hardcoded arithmetic
   // CashProof can't prove OP_IF without parameters
   ['OP_NOT OP_IF', 'OP_NOTIF'],
@@ -145,13 +155,9 @@ const unprovableOptimisations = [
   // TODO: Enable this optimisation when we overhaul the type system
   // (right now bool(4) == true => false, but !!bool(4) == true => true) so can't replace OP_NOT OP_NOT with ''
   // ['OP_NOT OP_NOT', '']
-
-  ['OP_LESSTHAN OP_NOT', 'OP_GREATERTHANOREQUAL'],
-  ['OP_GREATERTHAN OP_NOT', 'OP_LESSTHANOREQUAL'],
-  ['OP_LESSTHANOREQUAL OP_NOT', 'OP_GREATERTHAN'],
-  ['OP_GREATERTHANOREQUAL OP_NOT', 'OP_LESSTHAN'],
 ] as [string, string][];
 
-// Note: we moved these optimisations into a single file, but kept the exact same order as before,
-// because the order in which optimisations are applied can impact the output.
+// Order matters: the sequence in which replacements are applied can change the output. The relational-NOT rules
+// are deliberately placed before 'OP_NOT OP_IF' above so the new engine matches the old engine's effective order
+// (relational-NOT via the .equiv file, then the hardcoded OP_NOT OP_IF pass) - see H3.
 export const optimisationReplacements = [...provableOptimisations, ...unprovableOptimisations];

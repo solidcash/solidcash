@@ -3899,18 +3899,28 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   visitUserFunctionCall(node: FunctionCallNode, targetFunc: FunctionDefinitionNode): Node {
     const locationData = { location: node.location, positionHint: PositionHint.END };
 
+    // The internal-call subroutine skips the synthetic `__internal__returnOutputIdx` param during setup (unused
+    // for a raw return - see visitFunctionDefinition), and a function-pointer call never pushes it. Match that:
+    // don't push the returnOutputIdx arg (TypeCheck forwarded it only to satisfy the arity check), so the
+    // subroutine's declared params line up on the stack. Other synthetic params (msgSenderCategory, ...) ARE
+    // consumed by the subroutine, so they are still pushed.
+    const skipArg = (i: number): boolean => targetFunc.parameters[i]?.name === '__internal__returnOutputIdx';
+
     // Evaluate arguments in REVERSE order so first param ends up on top
     // (matches the SDK's [...encodedArgs].reverse() convention)
+    let pushedArgs = 0;
     for (let i = node.parameters.length - 1; i >= 0; i--) {
+      if (skipArg(i)) continue;
       node.parameters[i] = this.visit(node.parameters[i]);
+      pushedArgs += 1;
     }
 
     // Emit: <function_id> OP_INVOKE
     this.emit(encodeInt(BigInt(targetFunc.functionId!)), locationData);
     this.emit(Op.OP_INVOKE, locationData);
 
-    // Update stack tracking: pop arguments, push return values
-    this.popFromStack(node.parameters.length);
+    // Update stack tracking: pop the pushed arguments, push return values
+    this.popFromStack(pushedArgs);
     for (let i = 0; i < targetFunc.returnTypes.length; i++) {
       this.pushToStack('(value)');
     }

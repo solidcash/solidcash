@@ -6,12 +6,23 @@ import { createTestProvider, verifyTransaction } from './test-util.js';
 
 // VM-verify overload resolution picks the RIGHT overload at runtime. The 1-arg pick adds 100; the 2-arg pick
 // adds its two args. If pick(5,7) mistakenly matched the 1-arg overload it would return 105 and the require
-// would fail. Uses internal functions (public functions called internally have a separate pre-existing
-// return-value limitation - see ATTENTION.md).
+// would fail.
 const SAME_CONTRACT = `
 contract OverloadSame() {
     function pick(int a) internal pure returns (int) { return a + 100; }
     function pick(int a, int b) internal pure returns (int) { return a + b; }
+    function check() {
+        require(pick(5) == 105);
+        require(pick(5, 7) == 12);
+    }
+}`;
+
+// The same on PUBLIC overloads called internally - exercises the entry-point synthetic returnOutputIdx param
+// in BOTH overload matching and the internal-call subroutine return cleanup.
+const PUBLIC_CONTRACT = `
+contract OverloadPublic() {
+    function pick(int a) public pure returns (int) { return a + 100; }
+    function pick(int a, int b) public pure returns (int) { return a + b; }
     function check() {
         require(pick(5) == 105);
         require(pick(5, 7) == 12);
@@ -46,6 +57,10 @@ describe('function overload resolution picks the correct overload (VM-verified)'
 
   it('resolves 1-arg vs 2-arg overloads within a contract at runtime', async () => {
     await run(SAME_CONTRACT);
+  });
+
+  it('resolves public overloads called internally at runtime', async () => {
+    await run(PUBLIC_CONTRACT);
   });
 
   it('resolves inherited overloads that survived inheritance flattening', async () => {

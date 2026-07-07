@@ -5684,6 +5684,27 @@ export default class SymbolTableTraversal extends AstTraversal {
       }
     }
 
+    // `(cond ? A : B).selector` where A and B are each a function reference (`this.f` state access or a bare own
+    // function): fold to `cond ? A.selector : B.selector` - a runtime choice between two compile-time selectors.
+    if (node.name === 'selector' && node.expression instanceof TernaryOpNode) {
+      const branchSelector = (e: Node): Uint8Array | undefined => {
+        if (e instanceof StateAccessNode) return this.functionDefinitions.get(e.name)?.[0]?.functionSelector;
+        if (e instanceof IdentifierNode) return this.functionDefinitions.get(e.name)?.[0]?.functionSelector;
+        return undefined;
+      };
+      const selT = branchSelector(node.expression.ifTrue);
+      const selF = branchSelector(node.expression.ifFalse);
+      if (selT && selF) {
+        const litT = new HexLiteralNode(selT);
+        const litF = new HexLiteralNode(selF);
+        litT.location = node.location;
+        litF.location = node.location;
+        const tern = new TernaryOpNode(this.visit(node.expression.condition) as ExpressionNode, litT, litF);
+        tern.location = node.location;
+        return tern;
+      }
+    }
+
     // `Interface.method.selector` / `Contract.method.selector` -> the method's 4-byte selector (bytes4), computed
     // from its signature. Mirrors `this.<fn>.selector` for own functions. Also handles a contract- or interface-
     // typed variable `v.method.selector` (v's declared type names the contract/interface).

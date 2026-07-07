@@ -701,6 +701,14 @@ describe('.selector on a single-assignment function-pointer local folds to the t
     expect(cc(src('fun.selector'))).toBe('C');
     expect(bc(src('fun.selector'))).toBe(bc(src('this.f.selector')));
   });
+
+  it('folds (c ? this.f : this.g).selector to c ? f.selector : g.selector (byte-identical)', () => {
+    const mk = (expr: string): string => 'contract C { function f() external pure returns (bytes4) { return this.f.selector; }'
+      + ' function g() external pure returns (bytes4) { return this.g.selector; }'
+      + ` function pick(bool c) external pure returns (bytes4) { return ${expr}; } }`;
+    expect(cc(mk('(c ? this.f : this.g).selector'))).toBe('C');
+    expect(bc(mk('(c ? this.f : this.g).selector'))).toBe(bc(mk('c ? this.f.selector : this.g.selector')));
+  });
 });
 
 describe('contract-typed arrays resolve to address arrays (contract handle = address)', () => {

@@ -692,6 +692,18 @@ describe('function overload resolution (inheritance + entry-point synthetic para
   });
 });
 
+describe('contract-typed arrays resolve to address arrays (contract handle = address)', () => {
+  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  it('types new C[](n) as an address array, not undefined[]', () => {
+    expect(cc('contract C { function f() external returns (C[] memory) { C[] memory c = new C[](2); return c; } }'))
+      .toBe('C');
+  });
+  it('types abi.decode(x, (C[])) as an address array', () => {
+    expect(cc('contract C { function f(bytes calldata x) external returns (C[] memory) {'
+      + ' return abi.decode(x, (C[])); } }')).toBe('C');
+  });
+});
+
 describe('imported/sibling contracts with their own inheritance are flattened', () => {
   const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
   it('instantiates a sibling contract that inherits a base (base merged in, not an undefined interface)', () => {

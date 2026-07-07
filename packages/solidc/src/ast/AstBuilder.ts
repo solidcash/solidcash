@@ -2187,7 +2187,11 @@ export default class AstBuilder
     // `new T[]...[](n)` allocates the OUTER dynamic array; each extra `[]` makes the element itself an array.
     // e.g. `new uint256[][](2)` -> a 2-element array whose element type is `uint256[]`.
     const dims = (ctx.getText().match(/\[\]/g) ?? ['[]']).length;
-    let elementType = this.resolveType(ctx.typeName().getText());
+    // An unresolved element name (a contract type like `new C[](n)`) becomes a named AddressType placeholder - a
+    // contract handle is an address on BCH - mirroring the scalar/array type paths, so `C[]` types as address[]
+    // rather than undefined[].
+    const elemName = ctx.typeName().getText();
+    let elementType = this.resolveType(elemName) ?? new AddressType(false, elemName);
     for (let i = 1; i < dims; i++) elementType = new ArrayType(elementType);
     const size = this.visit(ctx.expression()) as ExpressionNode;
     const node = new NewArrayNode(elementType, size);
@@ -3932,14 +3936,26 @@ export default class AstBuilder
     return node;
   }
 
+  // Resolve one abi.decode type-list item. parseType handles primitives + arrays; a contract-type element
+  // (`C[]`) parses to an array with an UNDEFINED element (parseType does not know user contracts), so replace an
+  // undefined array element with a named AddressType placeholder - a contract handle is an address on BCH, so
+  // `C[]` decodes as address[], matching a `C[]` return/variable type.
+  private resolveAbiDecodeType(text: string): Type {
+    const ty = parseType(text) ?? this.resolveType(text);
+    if (!ty) throw new Error(`Unsupported type '${text}' in abi.decode`);
+    const elemName = text.replace(/(\[\])+$/, '');
+    const fixup = (t: Type): Type => {
+      if (t instanceof ArrayType) {
+        return new ArrayType(t.elementType === undefined ? new AddressType(false, elemName) : fixup(t.elementType));
+      }
+      return t;
+    };
+    return fixup(ty);
+  }
+
   visitAbiDecode(ctx: AbiDecodeContext): AbiDecodeNode {
     const data = this.visit(ctx.expression());
-    const schema = ctx.typeList().typeListItem_list().map((t) => {
-      const text = t.getText();
-      const ty = parseType(text) ?? this.resolveType(text);
-      if (!ty) throw new Error(`Unsupported type '${text}' in abi.decode`);
-      return ty;
-    });
+    const schema = ctx.typeList().typeListItem_list().map((t) => this.resolveAbiDecodeType(t.getText()));
     const node = new AbiDecodeNode(data, schema);
     node.location = Location.fromCtx(ctx);
     return node;
@@ -3947,12 +3963,7 @@ export default class AstBuilder
 
   visitAbiDecodeAt(ctx: AbiDecodeAtContext): AbiDecodeAtNode {
     const data = this.visit(ctx.expression());
-    const schema = ctx.typeList().typeListItem_list().map((t) => {
-      const text = t.getText();
-      const ty = parseType(text) ?? this.resolveType(text);
-      if (!ty) throw new Error(`Unsupported type '${text}' in abi.decode`);
-      return ty;
-    });
+    const schema = ctx.typeList().typeListItem_list().map((t) => this.resolveAbiDecodeType(t.getText()));
     const index = parseInt(ctx.NumberLiteral().getText(), 10);
     const node = new AbiDecodeAtNode(data, schema, index);
     node.location = Location.fromCtx(ctx);

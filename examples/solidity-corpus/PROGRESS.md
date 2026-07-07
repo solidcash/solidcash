@@ -531,3 +531,18 @@ library-event namespacing.
   skipped by the fold anywhere in the callee (documented deploy-fold semantics).
 DeployThenCall bucket largely cleared; remainder = external calls inside the callee (external_getter_2,
 by-design unfoldable v1) + Base(x, f(s)) parent-invocation ctors w/ internal calls (arrays_in_constructors).
+
+## Session 2026-07-07f part 6 (event selectors + task-list closure, 3660->3668)
+- 9b882d58 event .selector all qualifier forms (+8): bytes32 = sha256(signature) (signature-injective topic-
+  hash analog). Library events register bare (collide) -> parse-time SourceFileNode.libraryEventSignatures
+  (like the fn-selector map); contract/interface qualifiers via the node's eventDefinitions; BARE INHERITED
+  events via currentContract.eventDefinitions (merged by InheritanceExpansion - the eventMap is keyed by
+  SIGNATURE not name, and is not yet filled during state-var initializers). +5 bonus: file-level events,
+  foreign-contract/interface access, shadowing.
+- TASK-LIST CLOSURE per user directive (ditch or finish): #2 external-call/deploy FINISHED (ctor-genesis +
+  value folds + multi-deploy); #3 library symbols FINISHED (remainder = address(L)/delegatecall-on-library
+  + Yul .slot = EVM delegatecall model, documented and ditched); #5 UnequalType FINISHED (+24/31); #4 crash
+  bucket FINISHED (12/23); #1 memory-2D DITCHED: fails at PARSE (uint[][] memory locals don't parse) and
+  behind it sits a full framed-memory-model feature (grammar + new uint[][] + element read/write codegen)
+  - a multi-session feature, analysis preserved here. ~64 files gated on it (2D parse + .push receivers +
+  storage<->memory nested copies).

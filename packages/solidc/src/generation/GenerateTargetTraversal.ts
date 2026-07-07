@@ -8299,7 +8299,19 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
 
     if (node.callMode === 'delegatecall') {
-      // Delegatecall: proxy doesn't verify delegate's calldata - no stack effect needed
+      // C1/piece-3: FORCE + PIN the delegate co-spend. The input at __internal__delegateInputIndex must have
+      // locking bytecode == impl (the delegatecall target), so a real delegate is required, not optional - the
+      // delegate then authorizes the proxy's state via _proxyMasterIndex. Emitted only when impl is a covenant
+      // (pinsDelegateCoSpend); a P2PKH-placeholder target keeps the C1 warning path.
+      if (this.currentFunction.pinsDelegateCoSpend) {
+        this.visit(node.targetExpression);           // [impl]
+        const idx = this.getStackIndex('__internal__delegateInputIndex');
+        this.emit(encodeInt(BigInt(idx)), locationData);
+        this.emit(Op.OP_PICK, locationData);         // [impl, delegateIdx]
+        this.emit(Op.OP_UTXOBYTECODE, locationData); // [impl, delegate_utxobc]
+        this.emit(Op.OP_EQUALVERIFY, locationData);  // []
+        this.popFromStack();                         // untrack impl
+      }
     } else {
       this.emitLowLevelCallVerification(node.data, node.callIndex, locationData);
       // Stack: [remaining] - drop it

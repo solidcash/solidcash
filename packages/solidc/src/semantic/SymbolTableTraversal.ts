@@ -1550,6 +1550,21 @@ export default class SymbolTableTraversal extends AstTraversal {
       throw new InvalidModifierCombinationError(node, "'delegate' functions cannot contain delegatecall calls");
     }
 
+    // C1/piece-3: a delegatecall FORCES + PINS its delegate co-spend. Inject a witness for the delegate's input
+    // index; codegen verifies OP_UTXOBYTECODE[idx] == impl so the delegate is required, not optional. Emitted
+    // only when impl is NOT the classic P2PKH-placeholder literal (a real delegate is a P2SH covenant); a P2PKH
+    // impl keeps the C1 warning path (a P2PKH UTXO authorizes nothing, so pinning it would be unsound anyway).
+    if (this.hasExplicitDelegatecall(node.body) && !this.delegatecallTargetsP2pkhLiteral(node.body)) {
+      node.pinsDelegateCoSpend = true;
+      const idxParam = new ParameterNode(PrimitiveType.BIGINT, '__internal__delegateInputIndex');
+      idxParam.location = node.location;
+      node.parameters.push(idxParam);
+      this.symbolTables[0].set(Symbol.variable(idxParam));
+      const s = this.symbolTables[0].get('__internal__delegateInputIndex');
+      if (s) s.references.push({ name: '__internal__delegateInputIndex' } as IdentifierNode);
+      this.pushToStack(idxParam);
+    }
+
     // C1/B: a delegatecall function skips its own state covenant (emitAutoCovenantVerification is gated
     // !functionHasDelegatecall) and defers ALL state writes to the co-spent delegate, so any self state-write in
     // it is unauthorized. Reject it - the delegate must own every proxy write. (Library-call sugar is excluded;
@@ -1558,19 +1573,17 @@ export default class SymbolTableTraversal extends AstTraversal {
       throw new DelegatecallSelfMutationError(node, node.name);
     }
 
-    // C1: an explicit `addr.delegatecall(input)` proxy defers ALL state authorization to a co-spent delegate,
-    // but the proxy cannot pin which delegate ran (delegates serve many proxies by design) and the data-NFT
-    // write path leaves the output commitment to the master, which the delegatecall codegen path skips. With no
-    // access control ANY spender co-spends the state NFT and rewrites proxy state arbitrarily. Warn when a
-    // user-written delegatecall function lacks a signature guard. Library-call sugar (SynthesizeLibraryDelegate-
-    // Calls) is excluded: it is the delegate mechanism, not a bare proxy, and carries its own layout/brand guards.
-    if (this.hasExplicitDelegatecall(node.body) && !this.hasSignatureGuard(node.body)) {
+    // C1: a delegatecall against a P2PKH-placeholder impl is NOT pinned (pinsDelegateCoSpend is false), so the
+    // proxy cannot force the delegate to be co-spent - ANY spender then co-spends the state NFT and rewrites
+    // proxy state arbitrarily. Warn unless the function is pinned (a covenant impl, where the co-spend is forced
+    // - see piece 3) or already signature-gated. Library-call sugar is excluded (its own layout/brand guards).
+    if (this.hasExplicitDelegatecall(node.body) && !node.pinsDelegateCoSpend && !this.hasSignatureGuard(node.body)) {
       const line = node.location?.start?.line ? ` (line ${node.location.start.line})` : '';
       console.log(
-        `Warning: function '${node.name}'${line} issues delegatecall without access control. A delegatecall `
-        + 'proxy cannot verify which delegate authorized the state change, so ANY spender can co-spend the state '
-        + 'NFT and rewrite proxy state arbitrarily (SECURITY-AUDIT C1). Gate this function with a signature check '
-        + '(e.g. require(checkSig(s, pk))). See packages/solidc/docs/delegatecall-security.md.',
+        `Warning: function '${node.name}'${line} issues delegatecall against a non-covenant (P2PKH) impl, so the `
+        + 'delegate co-spend cannot be pinned and ANY spender can rewrite proxy state arbitrarily (SECURITY-AUDIT '
+        + 'C1). Use the delegate contract\'s real (covenant) address so the co-spend is forced, or gate this '
+        + 'function with a signature check. See packages/solidc/docs/delegatecall-security.md.',
       );
     }
 
@@ -3521,6 +3534,61 @@ export default class SymbolTableTraversal extends AstTraversal {
         if (param instanceof Node) this.assignExternalOutStateSlotIndices(param, map);
       }
     }
+  }
+
+  // C1/piece-3: is the delegatecall's target a compile-time P2PKH-address literal (the classic placeholder)? A
+  // real delegate is a P2SH covenant; a P2PKH target authorizes nothing, so keep the C1 warning rather than pin
+  // an unsound target. Resolves `impl` through a local `address impl = address(0x..)` initializer.
+  private delegatecallTargetsP2pkhLiteral(body: Node | undefined): boolean {
+    const call = this.findDelegatecallNode(body);
+    if (!call) return false;
+    const bytes = this.resolveConstAddressBytes(call.targetExpression, body);
+    return bytes !== undefined && bytes.length === 25
+      && bytes[0] === 0x76 && bytes[1] === 0xa9 && bytes[2] === 0x14
+      && bytes[23] === 0x88 && bytes[24] === 0xac;
+  }
+
+  private findDelegatecallNode(
+    node: Node | undefined, seen: Set<Node> = new Set(),
+  ): LowLevelCallNode | LowLevelCallStatementNode | undefined {
+    if (!node || seen.has(node)) return undefined;
+    seen.add(node);
+    if ((node instanceof LowLevelCallNode || node instanceof LowLevelCallStatementNode)
+      && node.callMode === 'delegatecall'
+      && !(node instanceof LowLevelCallStatementNode && node.synthesizedFromLibraryCall)) {
+      return node;
+    }
+    for (const v of Object.values(node)) {
+      if (v instanceof Node) { const r = this.findDelegatecallNode(v, seen); if (r) return r; } else if (Array.isArray(v)) {
+        for (const e of v) if (e instanceof Node) { const r = this.findDelegatecallNode(e, seen); if (r) return r; }
+      }
+    }
+    return undefined;
+  }
+
+  // Resolve an address expression to its constant bytes, if statically known: a `bytesN`/hex literal, an
+  // `address(0x..)` cast of one, or a local declared as `address x = <const>`.
+  private resolveConstAddressBytes(expr: ExpressionNode | undefined, body: Node | undefined): Uint8Array | undefined {
+    if (!expr) return undefined;
+    if (expr instanceof HexLiteralNode) return expr.value;
+    if (expr instanceof CastNode) return this.resolveConstAddressBytes(expr.expression, body);
+    if (expr instanceof IdentifierNode) {
+      const def = this.findLocalInit(body, expr.name);
+      if (def) return this.resolveConstAddressBytes(def, body);
+    }
+    return undefined;
+  }
+
+  private findLocalInit(node: Node | undefined, name: string, seen: Set<Node> = new Set()): ExpressionNode | undefined {
+    if (!node || seen.has(node)) return undefined;
+    seen.add(node);
+    if (node instanceof VariableDefinitionNode && node.name === name && node.expression) return node.expression;
+    for (const v of Object.values(node)) {
+      if (v instanceof Node) { const r = this.findLocalInit(v, name, seen); if (r) return r; } else if (Array.isArray(v)) {
+        for (const e of v) if (e instanceof Node) { const r = this.findLocalInit(e, name, seen); if (r) return r; }
+      }
+    }
+    return undefined;
   }
 
   // C1/B: does this subtree write contract state (state-var / mapping / state-array assign or delete)? A

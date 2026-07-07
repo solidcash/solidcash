@@ -456,6 +456,37 @@ describe('C1: proxy-state conservation runs on the delegatecall path', () => {
   });
 });
 
+// C1/piece-3 - the delegatecall now FORCES + PINS the delegate co-spend: the input at
+// __internal__delegateInputIndex must have locking bytecode == impl, so a real delegate is required (closing the
+// "no delegate at all" core C1). Emitted only when impl is a covenant address (a P2PKH placeholder keeps the
+// warning path, since a P2PKH UTXO authorizes nothing).
+describe('C1: delegatecall pins the delegate co-spend', () => {
+  it('emits the pin + delegate-index witness for a covenant (non-P2PKH) impl', () => {
+    const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const a = compileString(
+      'contract P { bigint counter;'
+      + ' function up(bytes i, address impl, pubkey pk, sig s) external {'
+      + ' require(checkSig(s, pk)); impl.delegatecall(i); require(i.length > 0); } }',
+    );
+    spy.mockRestore();
+    expect(JSON.stringify(a.abi)).toContain('__internal__delegateInputIndex');
+    // master self-preservation UTXOBYTECODE + the delegate identity pin = 2 (a P2PKH-impl proxy has only 1).
+    expect((a.bytecode.match(/OP_UTXOBYTECODE/g) ?? []).length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('keeps the warning path (no pin) for a P2PKH-placeholder impl', () => {
+    const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const a = compileString(
+      'contract P { bigint counter;'
+      + ' function up(bytes i, pubkey pk, sig s) external { require(checkSig(s, pk));'
+      + ' address m = address(0x76a91489abcdefabbaabbaabbaabbaabbaabbaabbaabba88ac);'
+      + ' m.delegatecall(i); require(i.length > 0); } }',
+    );
+    spy.mockRestore();
+    expect(JSON.stringify(a.abi)).not.toContain('__internal__delegateInputIndex');
+  });
+});
+
 describe('C4: composite mapping keys (continued)', () => {
   it('keccak256(abi.encode(...)) keys over distinct operands do not collapse', () => {
     const two = compileString(`

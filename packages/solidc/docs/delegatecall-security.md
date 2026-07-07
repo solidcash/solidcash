@@ -101,12 +101,18 @@ inlining a delegatecall into a regular function, which rule B forbids.
 
 ## Implementation status
 
-- **B (no self-mutation in a delegatecall function)** — enforced (hard compile error).
+- **B (no self-mutation in a delegatecall function)** — enforced (hard compile error,
+  `DelegatecallSelfMutationError`).
 - **Full-state authority (own-category conservation on the delegatecall path)** — enforced.
-- **3 (force + pin the delegate co-spend)** — the core closure; requires `impl` to be the delegate's covenant
-  address, the covenant-side co-spend verification, and matching SDK auto-derivation (co-spend the delegate at
-  the verified index + fill the witness) plus reworked examples/e2e. Until 3 lands, a delegatecall function whose
-  co-spend is not yet pinned still emits the `SECURITY-AUDIT C1` warning as the stopgap.
+- **3 (force + pin the delegate co-spend)** — enforced for a **covenant** `impl`. The delegatecall verifies
+  `OP_UTXOBYTECODE[__internal__delegateInputIndex] == impl`, so a real delegate is required at `impl`; the
+  delegate then authorizes the proxy's data NFTs via `_proxyMasterIndex`. VM-proven: a correct delegate passes,
+  a wrong/absent one fails the pin (`Delegatecall` e2e). A **P2PKH-placeholder** `impl` is *not* pinned (a P2PKH
+  UTXO authorizes nothing, so pinning it would be unsound) and still emits the `SECURITY-AUDIT C1` warning — use
+  the delegate contract's real covenant address so the co-spend is forced.
+  - Remaining: `withDelegatecall` auto-derivation for a covenant-impl proxy (fill `__internal__delegateInputIndex`
+    + `impl`) so it needn't be built with a manual `StatefulTransactionBuilder`; and, as a refinement, pinning the
+    forwarded selector so a co-spent-but-wrong delegate *function* can't slip by.
 
 ## Writing a safe proxy
 

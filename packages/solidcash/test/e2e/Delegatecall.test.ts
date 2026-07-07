@@ -403,6 +403,52 @@ describe('Delegatecall', () => {
       expect(parsedState.counter).toBe(6n);
     });
 
+    // C1/piece-3: a proxy with a COVENANT impl (here passed as a param) pins the delegate co-spend -
+    // UTXOBYTECODE[delegateInputIndex] == impl - so the delegate is forced (not optional) and then authorizes
+    // the proxy state via _proxyMasterIndex. The pin fails closed if the wrong delegate (or none) is co-spent.
+    const PINNED_PROXY = `pragma solidcash >=0.8.0;
+      contract PinnedProxy() {
+        bigint counter;
+        function up(bytes input, address impl, pubkey pk, sig s) external {
+          require(checkSig(s, pk));
+          impl.delegatecall(input);
+          require(input.length > 0);
+        }
+      }`;
+
+    it('C1/piece-3: pins the delegate co-spend to impl (correct delegate passes, wrong impl fails)', async () => {
+      const provider = createTestProvider();
+      const pinnedArtifact = compileString(PINNED_PROXY);
+      const proxy = await deploy(provider, pinnedArtifact, [], { counter: 5n });
+      const impl = await deploy(provider, implArtifact, [], { counter: 0n });
+      const implSelector = hexToBin(implArtifact.abi.find((f) => f.name === 'increment')!.selector!);
+      const implLbc = addressToLockScript(impl.contract.address); // the delegate's real locking bytecode
+      const delegateIdx = 2n;                                     // in0 proxy master, in1 proxy data NFT, in2 delegate
+
+      const build = (targetLbc: Uint8Array): Promise<any> => new StatefulTransactionBuilder({
+        provider,
+        stateLayout: pinnedArtifact.stateLayout!,
+        categoryId: proxy.categoryId,
+        masterUtxo: {
+          ...proxy.utxos.master,
+          unlocker: (proxy.contract.unlock as any).up(
+            implSelector, targetLbc, alicePub, new SignatureTemplate(alicePriv), delegateIdx,
+          ),
+        },
+        dataNftUtxos: proxy.utxos.dataNfts.map((nft) => ({
+          ...nft, unlocker: createDataNftUnlocker(proxy.contract, 0, proxy.categoryId),
+        })),
+        externalCallUtxoGroups: [extGroup(impl.categoryId, implArtifact, impl, 'increment', [0n], 2)],
+      }).setState('counter', 6n).send();
+
+      // correct delegate: impl param == the co-spent delegate's locking bytecode -> pin passes
+      const tx = await build(implLbc);
+      expect(tx.txid).toBeDefined();
+
+      // wrong impl: claim a different address than the co-spent delegate -> pin OP_EQUALVERIFY fails
+      await expect(build(addressToLockScript(proxy.contract.address))).rejects.toThrow();
+    });
+
     it('should preserve implementation NFTs in delegate transaction outputs', async () => {
       const provider = createTestProvider();
       const proxy = await deploy(provider, proxyArtifact, [], { counter: 0n });

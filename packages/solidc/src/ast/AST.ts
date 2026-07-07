@@ -267,6 +267,7 @@ export class FunctionDefinitionNode extends Node implements Named {
   functionId?: number;
   functionSelector?: Uint8Array;  // 4-byte hash selector for entry-point functions
   isFreeFunction: boolean = false;
+  pinsDelegateCoSpend: boolean = false; // C1/piece-3: delegatecall pins UTXOBYTECODE[delegateInputIndex] == impl
   isFallback: boolean = false;
   isReceive: boolean = false;
   isAbstract: boolean = false;

@@ -2026,6 +2026,9 @@ export default class TypeCheckTraversal extends AstTraversal {
 
   visitAbiEncodeWithSelector(node: AbiEncodeWithSelectorNode): Node {
     node.selector = this.visit(node.selector) as ExpressionNode;
+    // A string/hex literal selector that fits in 4 bytes is right-padded to bytes4 (Solidity converts a fitting
+    // literal to the bytes4 selector type), e.g. abi.encodeWithSelector("f()", ..).
+    node.selector = this.maybeCoerceStringToBytesN(node.selector, new BytesType(4));
     if (!(node.selector.type instanceof BytesType) || node.selector.type.bound !== 4) {
       throw new TypeError(node, node.selector.type, new BytesType(4));
     }

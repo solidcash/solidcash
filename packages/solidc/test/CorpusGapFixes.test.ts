@@ -692,6 +692,20 @@ describe('function overload resolution (inheritance + entry-point synthetic para
   });
 });
 
+describe('abi.encodeWithSelector accepts a fitting string/hex literal selector', () => {
+  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  it('coerces a string literal that fits in 4 bytes to the bytes4 selector', () => {
+    expect(cc('contract C { function f() external pure returns (bytes memory) {'
+      + ' return abi.encodeWithSelector("f()", uint256(1)); } }')).toBe('C');
+  });
+  it('still accepts an explicit bytes4 selector and rejects an over-long literal', () => {
+    expect(cc('contract C { function f() external pure returns (bytes memory) {'
+      + ' return abi.encodeWithSelector(bytes4(0x12345678), uint256(1)); } }')).toBe('C');
+    expect(() => cc('contract C { function f() external pure returns (bytes memory) {'
+      + ' return abi.encodeWithSelector("toolongselector", uint256(1)); } }')).toThrow(/bytes4|string/);
+  });
+});
+
 describe('external function pointers as public/external parameters (VM-verified in solidcash tests)', () => {
   const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
   it('accepts an external function-type parameter on a public function', () => {

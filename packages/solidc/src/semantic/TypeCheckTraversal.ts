@@ -1603,6 +1603,16 @@ export default class TypeCheckTraversal extends AstTraversal {
     return t === PrimitiveType.INT || t === PrimitiveType.BIGINT || t instanceof IntType;
   }
 
+  // A whole-number literal used where a fixed-point value is expected becomes a decimal literal of the
+  // fixed type (Solidity's implicit literal conversion), so codegen scales it by the type's decimals.
+  private maybeCoerceIntLiteralToFixed(e: ExpressionNode, otherType?: Type): ExpressionNode {
+    if (!(e instanceof IntLiteralNode) || !(otherType instanceof FixedType)) return e;
+    const dec = new DecimalLiteralNode(e.value.toString());
+    dec.location = e.location;
+    dec.type = otherType;
+    return dec;
+  }
+
   // Solidity treats a `0x..` literal as a big-endian NUMBER whose concrete type is context-driven: in an
   // integer context it is that integer value (Solidity docs: "Conversions between Literals and Elementary
   // Types"). SolidCash natively types `0x..` as a bytes value (the deliberate inverse), so under
@@ -1774,6 +1784,10 @@ export default class TypeCheckTraversal extends AstTraversal {
       // address type so both sides match (the literal becomes an address value at the VM level).
       node.left = this.maybeCoerceHexToAddress(node.left, node.right.type);
       node.right = this.maybeCoerceHexToAddress(node.right, node.left.type);
+      // An integer literal paired with a fixed-point operand (`b[0] += 1`): Solidity implicitly converts
+      // whole-number literals to fixed; re-literal as a decimal so codegen scales it to the fixed's decimals.
+      node.left = this.maybeCoerceIntLiteralToFixed(node.left, node.right.type);
+      node.right = this.maybeCoerceIntLiteralToFixed(node.right, node.left.type);
     }
 
     const resType = resultingTypeForBinaryOp(node.operator, node.left.type!, node.right.type!);

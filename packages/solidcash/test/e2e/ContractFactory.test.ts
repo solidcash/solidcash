@@ -60,6 +60,20 @@ describe('ContractFactory (ethers/hardhat-style deploy)', () => {
     await expect(sc.check(43n)).rejects.toThrow();
   });
 
+  it('an internal helper reads a constructor arg (inlined; VM-enforced)', async () => {
+    const { signer } = await fundedSigner('c8');
+    // The helper reads a ctor param, so it cannot be an OP_INVOKE subroutine - the inline passes splice it into
+    // the entry point where the ctor param is on the stack. The require(m == magic) must still be enforced.
+    const art = compileString(
+      'contract OwnedH(int magic) { function _chk(int m) internal returns (bool) { return m == magic; }'
+      + ' function check(int m) external { require(_chk(m)); } }', { forceStateful: true },
+    );
+
+    const sc = await new ContractFactory(art, signer).deploy(42n);
+    await sc.check(42n);
+    await expect(sc.check(43n)).rejects.toThrow();
+  });
+
   it('getContractFactory + deployContract shortcuts', async () => {
     const a = await fundedSigner('a3');
     const scA = await getContractFactory(compileString(CHECK, { forceStateful: true }), a.signer).deploy();

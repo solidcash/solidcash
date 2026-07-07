@@ -213,3 +213,32 @@ describe('external entry points may read constructor parameters', () => {
       + ' function up(bytes input) external { impl.delegatecall(input); require(input.length > 0); } }')).toBe('Pr');
   });
 });
+
+// A helper that reads a constructor parameter cannot compile as an OP_INVOKE subroutine (the ctor param is on
+// the stack only at an entry point), so the inline passes (InlineReturningStateHelpers for value-returning,
+// InlineExternalCallHelpers for void) splice it into the caller. `collectCtorParamReaders` closes this
+// transitively over the call graph. See ctorParamReaders.ts.
+describe('internal helpers may read constructor parameters (inlined, not subroutined)', () => {
+  const cc = (src: string): string => compileString(src, { forceStateful: true }).contractName;
+  it('inlines a value-returning helper that reads a ctor param', () => {
+    expect(cc('contract P(int magic) { function _chk(int m) internal returns (bool) { return m == magic; }'
+      + ' function f(int m) external { require(_chk(m)); } }')).toBe('P');
+  });
+  it('inlines a void helper that reads a ctor param', () => {
+    expect(cc('contract P(int magic) { function _v(int m) internal { require(m == magic); }'
+      + ' function f(int m) external { _v(m); require(true); } }')).toBe('P');
+  });
+  it('inlines a helper reused across two entry points', () => {
+    expect(cc('contract P(int magic) { function _chk(int m) internal returns (bool) { return m == magic; }'
+      + ' function f(int m) external { require(_chk(m)); } function g(int n) external { require(_chk(n)); } }')).toBe('P');
+  });
+  it('inlines transitively: a helper that only calls a ctor-param-reading helper', () => {
+    expect(cc('contract P(int magic) { function _b(int m) internal { require(m == magic); }'
+      + ' function _a(int m) internal { _b(m); } function f(int m) external { _a(m); require(true); } }')).toBe('P');
+  });
+  it('inlines an address ctor param read in a helper (proxy shape)', () => {
+    expect(cc('pragma solidcash >=0.8.0; contract P(address impl) { bigint s;'
+      + ' function _same(address a) internal returns (bool) { return a == impl; }'
+      + ' function f(address a) external { require(_same(a)); require(s == s); } }')).toBe('P');
+  });
+});

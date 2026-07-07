@@ -16,6 +16,7 @@ import {
   UncheckedNode,
 } from '../ast/AST.js';
 import { collectAmbiguousInlineKeys, inlineKey } from './inlineOverloadGuard.js';
+import { collectCtorParamReaders } from './ctorParamReaders.js';
 import { AmbiguousInlineOverloadError } from '../Errors.js';
 import { AddressType, Type } from '@solidcash/utils';
 import AstTraversal from '../ast/AstTraversal.js';
@@ -49,7 +50,8 @@ export default class InlineExternalCallHelpers extends AstTraversal {
   private funcByName: Map<string, FunctionDefinitionNode> = new Map();
   private ambiguousInlineKeys: Set<string> = new Set(); // H8: <name>/<arity> shared by >1 overload.
   private stateVarTypes: Map<string, Type> = new Map();
-  private voidExternalCallHelpers: Set<string> = new Set();
+  private ctorParamReaders: Set<string> = new Set();
+  private voidHelpersToInline: Set<string> = new Set();
   private counter = 0;
 
   visitSourceFile(node: SourceFileNode): Node {
@@ -63,17 +65,42 @@ export default class InlineExternalCallHelpers extends AstTraversal {
     for (const fn of node.functions) this.funcByName.set(fn.name, fn);
     this.stateVarTypes = new Map();
     for (const sv of node.stateVariables) this.stateVarTypes.set(sv.name, sv.type);
+    this.ctorParamReaders = collectCtorParamReaders(node.functions, new Set(node.parameters.map((p) => p.name)));
 
-    this.voidExternalCallHelpers = new Set();
+    // Void helpers that can't compile as an OP_INVOKE subroutine and so must inline into the caller: those that
+    // make an external call (co-spend fixed by the entry point) or read a constructor parameter (transitively;
+    // on the stack only at an entry point). The value-returning analog is InlineReturningStateHelpers.
+    this.voidHelpersToInline = new Set();
+    const ctorParamHelpers = new Set<string>();
     for (const fn of node.functions) {
-      if (fn.body && fn.returnTypes.length === 0 && this.makesExternalCall(fn)) {
-        this.voidExternalCallHelpers.add(fn.name);
+      if (fn.body && fn.returnTypes.length === 0 && (this.makesExternalCall(fn) || this.ctorParamReaders.has(fn.name))) {
+        this.voidHelpersToInline.add(fn.name);
+        if (this.ctorParamReaders.has(fn.name)) ctorParamHelpers.add(fn.name);
       }
     }
-    if (this.voidExternalCallHelpers.size === 0) return node;
+    if (this.voidHelpersToInline.size === 0) return node;
 
-    for (const fn of node.functions) {
-      if (fn.body) fn.body.statements = this.inlineStatements(fn.body.statements ?? [], [fn.name]);
+    const bodies = [...node.functions, node.constructorDef, node.fallbackDef, node.receiveDef];
+    for (const fn of bodies) {
+      if (fn?.body) fn.body.statements = this.inlineStatements(fn.body.statements ?? [], [fn.name]);
+    }
+
+    // A leftover ctor-param helper would compile as a param-less subroutine and crash (its body reads a ctor
+    // param not on the subroutine stack), unlike an external-call helper whose leftover subroutine is inert. Drop
+    // a fully-inlined ctor-param helper; one still called (e.g. a recursive self-call the inliner cannot expand)
+    // is left in place.
+    if (ctorParamHelpers.size > 0) {
+      const stillCalled = new Set<string>();
+      for (const fn of bodies) {
+        if (fn?.body) {
+          this.walk(fn.body, (n) => {
+            if (n instanceof FunctionCallNode && ctorParamHelpers.has(n.identifier.name)) {
+              stillCalled.add(n.identifier.name);
+            }
+          });
+        }
+      }
+      node.functions = node.functions.filter((fn) => !ctorParamHelpers.has(fn.name) || stillCalled.has(fn.name));
     }
     return node;
   }
@@ -108,7 +135,7 @@ export default class InlineExternalCallHelpers extends AstTraversal {
       if (stmt instanceof FunctionCallStatementNode) {
         const name = stmt.call.identifier.name;
         const helper = this.funcByName.get(name);
-        if (!name.includes('.') && helper && this.voidExternalCallHelpers.has(name) && !stack.includes(name)
+        if (!name.includes('.') && helper && this.voidHelpersToInline.has(name) && !stack.includes(name)
           && stmt.call.parameters.length === helper.parameters.length) {
           if (this.ambiguousInlineKeys.has(inlineKey(name, stmt.call.parameters.length))) {
             throw new AmbiguousInlineOverloadError(stmt.call, name, stmt.call.parameters.length);

@@ -334,3 +334,17 @@ POST-3436 (continuing "find next walls"):
   flattenStatements keeps user blocks). Disjoint sibling blocks reuse names; live-outer-local shadow stays
   REJECTED (codegen slots by name - a live shadow would miscompile; clean rejection is sound). VM-verified
   (BareBlockScope). +11. NOTE: outer-local live-shadow needs alpha-rename to be soundly ACCEPTED (deferred).
+
+2026-07-07b (user "let's do function overloading, function-pointer ABI, abicoder" -> chose "1 & 2"), 3495->3512 (+17):
+- d3342d2a function overload resolution (+5): inheritance flattening keyed functions by NAME -> a base's 2 same-name
+  overloads collided + 2nd dropped as diamond-dup; now name+param-signature. Overload matching counted the synthetic
+  __internal__returnOutputIdx param (public entry points) -> declaredParamTypes() excludes __internal__*. Contract fn
+  shadowing a same-sig free fn -> applyFreeFunctionShadowing. VM-verified OverloadResolve.
+- 721c8e14 public fn called INTERNALLY with a used return no longer imbalances the stack (THE UNLOCK): the
+  internal-call subroutine skips the synthetic returnOutputIdx (unused, raw-return) + fn-pointers never push it, but
+  a direct internal call DID push it (forwardInternalReturnOutputIdx, arity check) -> leak. FIX: visitUserFunctionCall
+  no longer pushes it (caller-side; a visitReturn clean instead BREAKS fn-pointers). VM-verified PublicInternalCall.
+- b1e8dfe2 external fn pointers as public/external params (+7): relaxed entry-point FunctionTypeNotEncodable to allow
+  EXTERNAL fn types (internal stay rejected = solc parity); self-call this.ev(this.g,a) routes to internal OP_INVOKE.
+  VM-verified ExternalFnPointerParam. FOLLOW-UP: genuine cross-contract external-ABI fn-ptr passing (SDK encode).
+  abicoder (part 3) not attempted = EVM-calldata-model.

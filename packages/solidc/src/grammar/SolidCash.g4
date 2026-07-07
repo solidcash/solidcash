@@ -210,10 +210,8 @@ mappingType
     ;
 
 arrayType
-    : typeName '[' (NumberLiteral | Identifier) ']'
-    | typeName '[' ']'
-    | arrayType '[' (NumberLiteral | Identifier) ']'
-    | arrayType '[' ']'
+    : typeName '[' expression? ']'
+    | arrayType '[' expression? ']'
     ;
 
 modifierDefinition

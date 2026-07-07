@@ -891,3 +891,23 @@ describe('fixed-width-element array slice arr[start:end] (VM-verified in solidca
       .toThrow(/slice/);
   });
 });
+
+describe('array dimensions accept compile-time constant expressions', () => {
+  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  it('compiles power/arithmetic dimensions (2**10, 2**10 + 3, N * 2)', () => {
+    expect(cc('contract C { uint256[2**10] a; function f() external { require(true); } }')).toBe('C');
+    expect(cc('contract C { uint256[2**10 + 3] a; function f() external { require(true); } }')).toBe('C');
+    expect(cc('contract C { uint256 constant N = 4; uint256[N * 2] a; function f() external { require(true); } }'))
+      .toBe('C');
+  });
+  it('still compiles plain-literal, named-constant, unbounded and nested dimensions', () => {
+    expect(cc('contract C { uint256[5] a; function f() external { require(true); } }')).toBe('C');
+    expect(cc('contract C { uint256 constant N = 3; uint256[N] a; function f() external { require(true); } }')).toBe('C');
+    expect(cc('contract C { uint256[] a; function f() external { require(true); } }')).toBe('C');
+    expect(cc('contract C { uint256[2][3] a; function f() external { require(true); } }')).toBe('C');
+  });
+  it('rejects a non-constant array dimension', () => {
+    expect(() => cc('contract C { function f(uint256 n) external { uint256[n] memory a; require(true); } }'))
+      .toThrow(/compile-time integer constant|Mismatched|Unexpected/);
+  });
+});

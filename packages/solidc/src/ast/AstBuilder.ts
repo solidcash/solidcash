@@ -3291,25 +3291,65 @@ export default class AstBuilder
     return new ArrayType(elementType, bound);
   }
 
-  // Resolve an array dimension `[N]` to a number: a numeric literal directly, or a named integer constant
-  // (`int constant N = 3; T[N]`) via the pre-scanned constant map. Unbounded `[]` -> undefined.
+  // Resolve an array dimension `[expr]` to a number. The dimension is a compile-time-constant expression: a
+  // numeric/hex literal, a named integer constant (`int constant N = 3; T[N]`), or arithmetic over those
+  // (`T[2**10]`, `T[2**10 + 3]`, `T[N * 2]`). Unbounded `[]` -> undefined.
   private resolveArrayBound(ctx: ArrayTypeContext): number | undefined {
-    const numberLiteral = ctx.NumberLiteral();
-    if (numberLiteral) return parseInt(numberLiteral.getText(), 10);
-    const identifier = ctx.Identifier();
-    if (identifier) {
-      const name = identifier.getText();
-      const value = this.constantIntValues.get(name);
-      if (value === undefined) {
-        throw new ParseError(
-          `Array dimension '${name}' must be a compile-time integer constant`, Location.fromCtx(ctx),
-        );
-      }
-      // A zero / out-of-range constant is caught downstream by the existing InvalidArrayBoundError check, the
-      // same path a numeric-literal bound takes - so the Solidity zero-length rule is enforced uniformly.
-      return value;
+    const exprCtx = ctx.expression();
+    if (!exprCtx) return undefined; // unbounded `[]`
+    const node = this.visit(exprCtx) as ExpressionNode;
+    const value = this.evalConstIntNode(node);
+    if (value === undefined) {
+      throw new ParseError(
+        `Array dimension '${exprCtx.getText()}' must be a compile-time integer constant`, Location.fromCtx(ctx),
+      );
     }
-    return undefined; // unbounded `[]`
+    // A zero / out-of-range constant is caught downstream by the existing InvalidArrayBoundError check, the
+    // same path a numeric-literal bound takes - so the Solidity zero-length rule is enforced uniformly.
+    return Number(value);
+  }
+
+  // Compile-time integer evaluation of an expression node used as an array dimension. Returns undefined for
+  // anything that is not a constant integer (a runtime value, an unresolved name, an unsupported operator).
+  private evalConstIntNode(node: ExpressionNode): bigint | undefined {
+    if (node instanceof IntLiteralNode) return node.value;
+    if (node instanceof HexLiteralNode) {
+      let v = 0n;
+      for (let i = node.value.length - 1; i >= 0; i--) v = (v << 8n) | BigInt(node.value[i]); // little-endian
+      return v;
+    }
+    if (node instanceof IdentifierNode) {
+      const known = this.constantIntValues.get(node.name);
+      return known === undefined ? undefined : BigInt(known);
+    }
+    if (node instanceof CastNode) return this.evalConstIntNode(node.expression); // e.g. uint256(N)
+    if (node instanceof UnaryOpNode) {
+      const inner = this.evalConstIntNode(node.expression);
+      if (inner === undefined) return undefined;
+      if (node.operator === UnaryOperator.NEGATE) return -inner;
+      if (node.operator === UnaryOperator.INVERT) return ~inner;
+      return undefined;
+    }
+    if (node instanceof BinaryOpNode) {
+      const l = this.evalConstIntNode(node.left);
+      const r = this.evalConstIntNode(node.right);
+      if (l === undefined || r === undefined) return undefined;
+      switch (node.operator) {
+        case BinaryOperator.PLUS: return l + r;
+        case BinaryOperator.MINUS: return l - r;
+        case BinaryOperator.MUL: return l * r;
+        case BinaryOperator.DIV: return r === 0n ? undefined : l / r;
+        case BinaryOperator.MOD: return r === 0n ? undefined : l % r;
+        case BinaryOperator.POW: return r < 0n ? undefined : l ** r;
+        case BinaryOperator.SHIFT_LEFT: return r < 0n ? undefined : l << r;
+        case BinaryOperator.SHIFT_RIGHT: return r < 0n ? undefined : l >> r;
+        case BinaryOperator.BIT_AND: return l & r;
+        case BinaryOperator.BIT_OR: return l | r;
+        case BinaryOperator.BIT_XOR: return l ^ r;
+        default: return undefined;
+      }
+    }
+    return undefined;
   }
 
   // Pre-scan: record plain integer-literal constants so they can be used as array dimensions `T[N]`. Computed

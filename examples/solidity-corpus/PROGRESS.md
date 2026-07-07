@@ -316,3 +316,11 @@ CLEAN VEINS NOW EXHAUSTED. Remaining documented in ATTENTION.md: array slices (n
 function-pointer ABI (fundamental), signedness/fixed-point (fundamental), external-call/deploy, ABIEncoderV2,
 super/C3, Yul EVM-model, multifile, computed-array-size (grammar risk), parenthesized-calls (fn-ptr adjacent).
 Autonomous session total: 3360 -> ~3436 (+76 across ~30 commits, all sound/verified/OWN-files, suite 1754 green).
+
+POST-3436 (continuing "find next walls"):
+- 86247db3 fixed-width-element array slices arr[start:end] (uint256[]/int8[]/bytes32[]/uint256[N][]); VM-verified
+  end-to-end (solidcash/test/ArraySlice.test.ts: length + element values + omitted bounds). +17 -> 3453. Sound by
+  reduction to VM-verified primitives (emitPushdataDecode, OP_SPLIT bytes-slice, emitPrependArrayCount).
+- (this commit) const-expression array dimensions: arrayType grammar now `typeName '[' expression? ']'` (was
+  NumberLiteral|Identifier only); AstBuilder const-evals the dim (2**10, 2**10 + 3, N*2 over literal/hex/const-id
+  with + - * / % ** << >> & | ^ ~ unary-neg). +17 -> 3470. Non-const dim -> clear ParseError. 1808 compiler green.

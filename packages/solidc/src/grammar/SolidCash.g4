@@ -159,7 +159,9 @@ constantDefinition
     ;
 
 constructorDefinition
-    : 'constructor' parameterList ('public' | 'internal' | 'external' | 'payable')* parentInvocation* customModifierInvocation* '{' statement* '}'
+    // Visibility/payable may appear before AND/OR after the parent invocations (Solidity `constructor() A() payable`);
+    // both groups are the same keywords and the AST builder reads them by rule type, so order does not matter.
+    : 'constructor' parameterList ('public' | 'internal' | 'external' | 'payable')* parentInvocation* ('public' | 'internal' | 'external' | 'payable')* customModifierInvocation* '{' statement* '}'
     ;
 
 fallbackDefinition
@@ -171,7 +173,10 @@ fallbackModifier
     ;
 
 receiveDefinition
+    // external + payable are both required but may appear in either order (Solidity `receive() payable external`
+    // and `receive() external payable`); the AST builder always records both, so order does not matter.
     : 'receive' '(' ')' receiveModifier* 'external' receiveModifier* 'payable' receiveModifier* ('{' statement* '}' | ';')
+    | 'receive' '(' ')' receiveModifier* 'payable' receiveModifier* 'external' receiveModifier* ('{' statement* '}' | ';')
     ;
 
 // external + payable stay required (a receive must be both); virtual/override may be interleaved in any order.

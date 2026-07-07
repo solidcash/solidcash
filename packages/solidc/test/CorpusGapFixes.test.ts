@@ -3,6 +3,22 @@ import { compileString } from '../src/index.js';
 
 // Compile-level regression guards for solc-corpus gap fixes (see examples/solidity-corpus/PROGRESS.md).
 
+describe('payable/external modifier ordering on receive() and constructor()', () => {
+  const ok = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  it('accepts receive() payable external (either order)', () => {
+    const mk = (mods: string): string => `contract C { uint256 y; receive() ${mods} { y = y + 1; require(true); }`
+      + ' function f() public { require(true); } }';
+    expect(ok(mk('payable external'))).toBe('C');
+    expect(ok(mk('external payable'))).toBe('C');
+  });
+  it('accepts payable after the parent invocation in a constructor', () => {
+    const mk = (mods: string): string => 'contract A { constructor() {} }'
+      + ` contract C is A { constructor() ${mods} { } function f() public { require(true); } }`;
+    expect(ok(mk('A() payable'))).toBe('C');
+    expect(ok(mk('payable A()'))).toBe('C');
+  });
+});
+
 describe('no-arg push on a struct array appends the struct default (data.push() on Data[])', () => {
   const bc = (src: string): string => compileString(src, { solidityImportCompat: true }).bytecode;
   const mk = (body: string): string => 'contract C { struct Data { uint256 x; uint256 y; } Data[] data;'

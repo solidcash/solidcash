@@ -365,3 +365,10 @@ POST-3436 (continuing "find next walls"):
   gnosis "undefined interface" cluster. `using Math` (16, gnosis dense-cycle library-registration, fnDefs=[]) DEFERRED.
 - 66c2dc33 Yul blobhash(i) -> 0 (+4): BCH has no blobs, like the Solidity builtin. Yul remainder = deep structural
   (122) / fundamental EVM builtins (return/log/extcode/create) / mixed nested-fns (recursion fundamental).
+- f3ece226 contract-typed arrays -> address arrays (+2): new C[](n) + abi.decode(x,(C[])) typed their element as
+  undefined (parseType/resolveType don't know user contracts) -> C[] became undefined[]; now an unresolved element
+  name becomes a named AddressType placeholder (contract handle = address). visitNewArray + resolveAbiDecodeType.
+ASSESSED ~0-yield/deferred: msg.data (simple return-msg.data/msg.data.length WORK now; 5 corpus files multi-wall
+  = Yul calldatacopy/return + this-call), tuple bare-expr statements (niche smtChecker/syntax), inheritance edge
+  cases (C3/override-base-list/diamond ~26 = deep MRO). CLEAN TRACTABLE VEINS EXHAUSTED; remainder fundamental
+  (Yul EVM-model, fn-ptr ABI, external-call/deploy, multifile L/super, memory 2D arrays, nested/multi-dim copies).

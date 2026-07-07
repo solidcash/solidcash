@@ -1,5 +1,5 @@
 import { ParseTree, ParseTreeVisitor, ParserRuleContext } from 'antlr4';
-import { hexToBin } from '@bitauth/libauth';
+import { hexToBin, binToHex } from '@bitauth/libauth';
 import { parseType, MappingType, ArrayType, StructType, IntType, FixedType, Type, AddressType, ValueType, BytesType, PrimitiveType, EnumType, isChunkPackableElementType } from '@solidcash/utils';
 import semver from 'semver';
 import {
@@ -2555,9 +2555,12 @@ export default class AstBuilder
     if (hexContent.length % 2 !== 0) {
       const loc = Location.fromCtx(ctx);
       const line = loc.start ? ` at line ${loc.start.line}` : '';
+      // Correct the message to match the actual behaviour: the trailing nibble is ZERO-EXTENDED into a full byte
+      // (0xabc -> 0xab0c), not dropped. Kept as a warning (not an error) since existing contracts rely on it.
       console.log(
-        `Warning: hex literal '${hexString}'${line} has an odd number of digits. `
-        + 'The last nibble will be silently dropped. Use an even number of hex digits.',
+        `Warning: hex literal '${hexString}'${line} has an odd number of digits; its last nibble will be `
+        + `zero-extended into a full byte (0x${hexContent} -> 0x${binToHex(hexToBin(hexContent))}). `
+        + 'Use an even number of hex digits.',
       );
     }
     const hexValue = hexToBin(hexContent);

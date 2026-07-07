@@ -905,27 +905,10 @@ export default class AstBuilder
       }
     }
 
-    // Lower each `transient` state var into a zero-init local in every function that references it: the value
-    // resets to 0 at the start of each spend (matching transient's zero-at-tx-start semantics) and never
-    // persists. One spend = one execution, so cross-call transient state is N/A on BCH - warned per var.
-    if (transientStateVars.length > 0) {
-      const allFns = [constructorDef, ...functions, fallbackDef, receiveDef]
-        .filter((f): f is FunctionDefinitionNode => !!f);
-      for (const tv of transientStateVars) {
-        const at = tv.location ? ` (line ${tv.location.start.line})` : '';
-        console.log(`Warning: transient state variable '${tv.name}'${at} has no UTXO analogue; SolidCash lowers `
-          + 'it to a transaction-local (zero at the start of each spend). It does not persist across spends, and '
-          + 'cross-call transient state is impossible on BCH (one spend = one execution).');
-        for (const fn of allFns) {
-          if (fn.body && new IdentifierReferenceFinder(tv.name).has(fn.body)) {
-            const local = new VariableDefinitionNode(tv.type, [], tv.name);
-            local.allowUnused = true;
-            local.location = tv.location;
-            fn.body.statements = [local, ...(fn.body.statements ?? [])];
-          }
-        }
-      }
-    }
+    // `transient` state vars lower to a per-function zero-init local (reset to 0 at the start of each spend,
+    // never persisted). The lowering is deferred to LowerTransientStateVars (a pre-semantic pass) so it runs
+    // AFTER inheritance flattening - a transient var declared in a base must be lowered into the derived
+    // contract's functions too. Just record them on the node here.
 
     const contract = new ContractNode(
       name, parameters, structDefinitions, eventDefinitions, constantDefinitions,
@@ -936,6 +919,7 @@ export default class AstBuilder
     contract.errorDefinitions = errorDefinitions;
     contract.usingForDirectives = usingForDirectives;
     contract.modifierDefinitions = modifierDefinitions;
+    contract.transientStateVars = transientStateVars;
     contract.fallbackDef = fallbackDef;
     contract.receiveDef = receiveDef;
     contract.isAbstract = ctx.children?.some((c) => c.getText() === 'abstract') === true;

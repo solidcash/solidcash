@@ -127,6 +127,9 @@ export class ContractNode extends Node implements Named {
   errorDefinitions: ErrorDefinitionNode[] = [];
   typeDefinitions: TypeDefinitionNode[] = [];
   usingForDirectives: UsingForDirectiveNode[] = [];
+  // `transient` state vars (EIP-1153). Kept off `stateVariables` (no persisted UTXO slot) but here so inheritance
+  // can merge them; LowerTransientStateVars injects a per-function zero-init local for each after flattening.
+  transientStateVars: StateVariableNode[] = [];
   isAbstract: boolean = false;
   // Set when this contract was lowered from a `library` (docs/library-contracts.md). Surfaced as the artifact
   // `isLibrary` flag; the deployed-library codegen (self-preservation) and SDK co-spend key on it.

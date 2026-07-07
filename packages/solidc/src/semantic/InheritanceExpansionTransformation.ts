@@ -296,6 +296,12 @@ function mergeParent(child: ContractNode, parent: ContractNode): void {
   // 3. Merge state variables (with inheritedFrom tracking)
   mergeNamedList(child, parent, 'stateVariables', 'State variable');
 
+  // 3b. Merge transient state vars (kept off `stateVariables`); prepend the parent's, skipping any the child
+  // already declares by name (the derived declaration wins, like a state-variable override).
+  const childTransientNames = new Set(child.transientStateVars.map((tv) => tv.name));
+  const inheritedTransient = parent.transientStateVars.filter((tv) => !childTransientNames.has(tv.name));
+  child.transientStateVars = [...inheritedTransient, ...child.transientStateVars];
+
   // 4. Merge collections (with inheritedFrom tracking)
   mergeNamedList(child, parent, 'collections', 'Collection');
 

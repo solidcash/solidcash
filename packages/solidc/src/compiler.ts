@@ -40,6 +40,7 @@ import FoldHashLiterals from './semantic/FoldHashLiterals.js';
 import LowerStorageSlotPointers from './semantic/LowerStorageSlotPointers.js';
 import expandBreakContinue from './semantic/BreakContinueTransformation.js';
 import expandInheritance from './semantic/InheritanceExpansionTransformation.js';
+import lowerTransientStateVars from './semantic/LowerTransientStateVars.js';
 import { ImportResolver } from './ImportResolver.js';
 import { AbstractContractNotCompilableError, CircularContractReferenceError, LibraryNotCompilableError } from './Errors.js';
 
@@ -143,6 +144,10 @@ function compileResolvedAst(ast: Ast, code: string, mergedCompilerOptions: Compi
 
   // Inheritance expansion (after import resolution, before modifier expansion)
   ast = expandInheritance(ast);
+
+  // Lower `transient` state vars to per-function locals - AFTER inheritance so a base's transient var is lowered
+  // into the derived contract's functions too.
+  ast = lowerTransientStateVars(ast);
 
   // Check if this is an abstract contract (cannot be compiled to an artifact)
   if (ast.contract.isAbstract) {

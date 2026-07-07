@@ -428,6 +428,16 @@ function compileReferencedContracts(
       contract.parameters.length,
     );
 
+    // MD2: run the same backwards-compat cross-check on referenced/child contracts too (it was only applied to
+    // the top-level contract, so an optimiser divergence in a child script would have shipped unchecked).
+    if (traversal.output.length <= OPTIMISER_COMPAT_CHECK_MAX_OPS) {
+      const optimisedOld = optimiseBytecodeOld(traversal.output);
+      if (scriptToAsm(optimisedOld) !== scriptToAsm(optimisationResult.script)) {
+        throw new Error(`New bytecode optimisation is not backwards compatible (referenced contract '${contractName}'), `
+          + 'please report this issue to the SolidCash team');
+      }
+    }
+
     compiledBytecodes.set(contractName, scriptToBytecode(optimisationResult.script));
   }
 

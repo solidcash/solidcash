@@ -416,3 +416,49 @@ ASSESSED ~0-yield/deferred: msg.data (simple return-msg.data/msg.data.length WOR
   resolves), 1849 compiler green. But all 5 candidate corpus files (sig/pubkey/etc) have deeper EVM walls
   (msg.sig/tx.data) -> +0 measured. Reverted to keep commits = measured gains + avoid parser-regen churn. A valid
   consistency fix if ever wanted as code-quality (not corpus).
+
+## Session 2026-07-07f (crash-bucket grind + library registration/selector fixes, 3575->3597)
+Post-crash pickup. Triage insight: the "Expected variable X does not exist on the stack" bucket (23) was NOT
+mostly-fundamental - 12 of 23 fixed via 7 root-cause commits, all VM-verified or byte-identical-by-reduction:
+- 63da621e tuple assignment onto STATE-VAR targets (+2): SymbolTable desugars to temp captures + sequential
+  assigns when >=1 target is a state var (mixed transient/state, (x,y)=f(), ctor immutables). Clobber-safe;
+  struct/array/mapping targets excluded (storage-pointer REBINDING semantics, left crashing on purpose).
+- d159e92a slice-bound roll order (+1): codegen emits split(end)-then-split(start); the final-use analysis now
+  traverses end-before-start so a var shared by both bounds rolls at the START bound (x[c?1:2 : c?3:4]).
+- f191037d bare enum-type-reference statements dropped (+2): `A.Foo;` resolves as a valueless CONSTANT symbol
+  (Symbol.enumType: CONSTANT + definition undefined + EnumType) -> statement is a Solidity no-op, now removed.
+- 2fa4b5f1 try around a VOID external call (+2): a void external call has NO expression type (only set when
+  returnTypes non-empty); try codegen dropped one phantom slot (state-write slot / __extaddr_ local) and broke
+  the epilogue. undefined now drops zero like VOID; guard tests assert try form == bare statement bytecode.
+- 238e70a8 duplicate var across ONE call's arg list (+2): OP_INVOKE args evaluate in REVERSE, analysis marks
+  L-to-R -> roll landed on the use codegen hits first (g(v,v); UDVT add(value, mul(value,p))). Such vars are
+  now PICK-only within that call (order-independent, epilogue cleans the leftover). Applied at user-call,
+  using-for, and operator-overload sites. ALSO unblocked recursive-binary-search (its real blocker was
+  find(_data, 0, _data.length, _value), not recursion!).
+- a6f170c2 DesugarReturnInLoop now visits freeFunctions (+1): library fns (namespaced free fns, OP_INVOKE
+  subroutines) with return-in-loop kept the corrupting raw cleanup (internal_types_in_library).
+- 35c21414 NEW PASS DesugarNestedBranchReturn (+2): a MAY-return arm with fall-through (if(a){if(b){return X;}}
+  rest) has no jump-free linearization without a flag; EarlyReturnTransformation only else-nests ALWAYS-return
+  arms. Rewrites returns to stash+flag, gates tails on !flag, appends one terminal return. Runs after
+  NamedReturn (implicit tails explicit), non-entry fns only, triggers only on the crashing class (working
+  forms byte-identical). VM-verified fall-through/return/post-return-arm paths.
+Then library-registration vein (the gnosis using-Math lead):
+- 03127fdb constants-only libraries are not state-touching (+4): `uint public constant ONE` parses as a state
+  var -> gnosis Math counted state-touching -> public pure fns auto-marked delegate -> delegate+pure error ->
+  EMPTY import registration -> every `using Math for *` consumer failed. libHasState now excludes constant
+  decls; pure-library constants bake as namespaced constants (Math.ONE); sibling-constant qualifier also
+  fires in a library lowered to a contract. Gnosis StandardToken + Math + 2 others; 9 gnosis files advance to
+  their next wall (external calls on state-var members).
+- 06727a5b using-for on a KNOWN but function-less library is a no-op binding (+4): empty `library L {}` and
+  libraries whose fns were ALL inlined away (storage-pointer fns) threw UsingForUndefinedLibraryError.
+  Library names now travel on SourceFileNode.declaredLibraryNames through every import kind; unknown names
+  still error. using_for_storage_structs then compiled fully (the inliner already handled its calls).
+- 44f0b3a5 L.f.selector folds for library functions (+2): declared signatures recorded at parse time on
+  SourceFileNode.libraryFunctionSignatures (survives storage-pointer fns being inlined away), folded via the
+  platform's sha256-based computeFunctionSelector.
+STILL IN crash bucket (deferred to walls): external_call_to_nonexisting x2 + external_call_state_var_address_
+inside_array x2 (external-call machinery/epilogue ordering), state_variable_dynamic_array (layout at),
+nowarn_swap_storage_pointers (tuple storage-pointer REBINDING, fundamental), redeemPushSize x5 (abicoder v2
+calldata, fundamental). Event .selector (3 files) assessed: needs library-event NAMESPACING (same-name events
+in different libraries collide in eventMap) - medium risk, deferred. library_function_selectors.sol/_struct
+need address(L)+delegatecall+Yul .slot (multi-wall).

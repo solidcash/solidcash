@@ -1,6 +1,7 @@
 import { PrimitiveType } from '@solidcash/utils';
 import {
   BlockNode,
+  ContractNode,
   FunctionDefinitionNode,
   IntLiteralNode,
   Node,
@@ -19,6 +20,16 @@ import { NullaryOperator } from '../ast/Operator.js';
 export default class InjectLocktimeGuardTraversal extends AstTraversal {
   private hasTimeCheckOnPath = false;
   private functionNeedsGuard = false;
+
+  // MD3: the base visitContract visits only the constructor + regular functions, so a fallback (the default
+  // dispatch branch) or receive that reads tx.locktime never received the synthetic guard - a time-lock bypass.
+  // Route them through visitFunctionDefinition too.
+  visitContract(node: ContractNode): Node {
+    super.visitContract(node);
+    if (node.fallbackDef) node.fallbackDef = this.visit(node.fallbackDef) as FunctionDefinitionNode;
+    if (node.receiveDef) node.receiveDef = this.visit(node.receiveDef) as FunctionDefinitionNode;
+    return node;
+  }
 
   visitFunctionDefinition(node: FunctionDefinitionNode): Node {
     this.hasTimeCheckOnPath = false;

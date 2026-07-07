@@ -340,6 +340,31 @@ describe('MD1: external-call selector is a compile-time constant', () => {
   });
 });
 
+// MD3 - InjectLocktimeGuardTraversal relied on the base visitContract, which visits the constructor + regular
+// functions but not fallbackDef/receiveDef, so a fallback (the default dispatch branch) or receive reading
+// tx.locktime got no synthetic require(tx.time >= tx.locktime) - a time-lock bypass. Now routed through the guard.
+describe('MD3: fallback/receive get the locktime guard', () => {
+  it('a fallback reading tx.locktime is guarded (more code than one that does not)', () => {
+    const withLt = compileString(
+      'contract C { fallback(bytes input) external { int t = tx.locktime; require(t >= 100); require(input.length >= 0); } }',
+    ).bytecode.length;
+    const noLt = compileString(
+      'contract C { fallback(bytes input) external { int t = 5; require(t >= 100); require(input.length >= 0); } }',
+    ).bytecode.length;
+    expect(withLt).toBeGreaterThan(noLt);
+  });
+
+  it('a receive reading tx.locktime is guarded', () => {
+    const withLt = compileString(
+      'contract C { receive() external payable { int t = tx.locktime; require(t >= 100); } }',
+    ).bytecode.length;
+    const noLt = compileString(
+      'contract C { receive() external payable { int t = 5; require(t >= 100); } }',
+    ).bytecode.length;
+    expect(withLt).toBeGreaterThan(noLt);
+  });
+});
+
 describe('C4: composite mapping keys (continued)', () => {
   it('keccak256(abi.encode(...)) keys over distinct operands do not collapse', () => {
     const two = compileString(`

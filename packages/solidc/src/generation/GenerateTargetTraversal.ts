@@ -718,12 +718,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   /** Emit OP_DEFINEs for all functions plus the dispatcher (or inline a single function). */
   private emitFunctionDefinesAndDispatch(node: ContractNode): void {
-    // OP_DEFINE internal/private functions (subroutine-only by design) + public functions actually invoked
-    // internally. A public entry point never called internally needs no subroutine define (compiles like
-    // external), so default-public entry points using constructor params are not broken.
+    // OP_DEFINE internal/private functions (subroutine-only by design) + entry-point functions actually invoked
+    // internally (via `this.f` / function pointers). An entry point never called internally needs no subroutine
+    // define - external AND public compile as entry points only, so entry points using constructor params are not
+    // broken (the subroutine path is param-less: the caller pushes only the declared args, not the constructor
+    // params). Keying on `!isEntryPoint` (not `visibility !== 'public'`) fixes external entry points, which are
+    // also non-'public' but must not be forced through the param-less subroutine.
     const invoked = this.collectInvokedFunctionIds(node);
     const definedFunctions = node.functions.filter((f) =>
-      f.functionId !== undefined && (f.visibility !== 'public' || invoked.has(f.functionId)));
+      f.functionId !== undefined && (!f.isEntryPoint || invoked.has(f.functionId)));
     for (const f of definedFunctions) {
       this.emitFunctionDefine(f);
     }

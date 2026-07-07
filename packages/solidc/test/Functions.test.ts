@@ -194,3 +194,22 @@ describe('local / named return may shadow an outer function or state var', () =>
       + ' function f() public pure returns (uint) { uint helper = 5; return helper; } }')).toBe('C');
   });
 });
+
+// Regression: an `external` entry point that reads a constructor parameter must not be forced through the
+// param-less internal-subroutine path. `definedFunctions` keyed on `visibility !== 'public'`, which also caught
+// external functions and crashed codegen ("Expected variable 'x' does not exist on the stack"); it now keys on
+// `!isEntryPoint`. A subroutine is emitted only when the function is actually invoked internally.
+describe('external entry points may read constructor parameters', () => {
+  const cc = (src: string): string => compileString(src, { forceStateful: true }).contractName;
+  it('compiles a single external function reading a constructor arg', () => {
+    expect(cc('contract Owned(int magic) { function check(int m) external { require(m == magic); } }')).toBe('Owned');
+  });
+  it('compiles multiple external functions reading a constructor arg', () => {
+    expect(cc('contract P(int x) { function f(int m) external { require(m == x); }'
+      + ' function g(int n) external { require(n > x); } }')).toBe('P');
+  });
+  it('compiles an address constructor arg used as a delegatecall target in an external function', () => {
+    expect(cc('pragma solidcash >=0.8.0; contract Pr(address impl) { bigint s;'
+      + ' function up(bytes input) external { impl.delegatecall(input); require(input.length > 0); } }')).toBe('Pr');
+  });
+});

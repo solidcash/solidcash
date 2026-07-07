@@ -49,6 +49,17 @@ describe('ContractFactory (ethers/hardhat-style deploy)', () => {
     await expect(sc.check(43n)).rejects.toThrow();
   });
 
+  it('an external entry point reads a constructor arg (was a codegen crash; VM-enforced)', async () => {
+    const { signer } = await fundedSigner('c7');
+    // `external` on check used to force the param-less subroutine path and crash codegen. It compiles now, and
+    // the require(m == magic) is enforced at the VM.
+    const art = compileString('contract OwnedExt(int magic) { function check(int m) external { require(m == magic); } }', { forceStateful: true });
+
+    const sc = await new ContractFactory(art, signer).deploy(42n);
+    await sc.check(42n);
+    await expect(sc.check(43n)).rejects.toThrow();
+  });
+
   it('getContractFactory + deployContract shortcuts', async () => {
     const a = await fundedSigner('a3');
     const scA = await getContractFactory(compileString(CHECK, { forceStateful: true }), a.signer).deploy();

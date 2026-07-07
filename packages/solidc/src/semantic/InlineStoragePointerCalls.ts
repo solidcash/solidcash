@@ -16,6 +16,10 @@ import {
   MappingAccessNode,
   ArrayAccessNode,
   AssignNode,
+  StateAssignNode,
+  MappingAssignNode,
+  StateArrayAssignNode,
+  MappingFieldAssignNode,
   ReturnNode,
   FunctionCallNode,
   ConsoleStatementNode,
@@ -203,6 +207,23 @@ export default class InlineStoragePointerCalls extends AstTraversal {
     return found;
   }
 
+  // H7: whether `name` is the target of ANY write in the body - a local reassignment (AssignNode) OR a state /
+  // mapping / array write (StateAssign / MappingAssign / StateArrayAssign / MappingFieldAssign). Solidity value
+  // params are copies; aliasing a value arg to `name` when the body mutates `name` (e.g. a helper that does
+  // `this.accIndex = ...; snapshot[me] = bal + accIndex;`) makes the param read the POST-mutation value. Used to
+  // fall back to a fresh temp (snapshot) instead of aliasing.
+  private isWritten(body: Node | undefined, name: string): boolean {
+    let found = false;
+    this.walk(body, (n) => {
+      if (found) return;
+      if (n instanceof AssignNode && n.identifier.name === name) found = true;
+      else if ((n instanceof StateAssignNode || n instanceof MappingAssignNode
+        || n instanceof StateArrayAssignNode || n instanceof MappingFieldAssignNode)
+        && n.name === name) found = true;
+    });
+    return found;
+  }
+
   private isInternalHelper(fn: FunctionDefinitionNode): boolean {
     return fn.isFreeFunction || fn.visibility === 'private' || fn.visibility === 'internal';
   }
@@ -272,11 +293,13 @@ export default class InlineStoragePointerCalls extends AstTraversal {
         // targets whose container is a string field); a complex access path is substituted by expression.
         if (arg instanceof IdentifierNode) rename.set(p.name, arg.name);
         else subs.set(p.name, cloneNode(arg) as ExpressionNode);
-      } else if (arg instanceof IdentifierNode && !this.isReassigned(callee.body, p.name)) {
+      } else if (arg instanceof IdentifierNode && !this.isReassigned(callee.body, p.name)
+        && !this.isWritten(callee.body, arg.name)) {
         // Substitute a simple identifier value arg by NAME (no local binding). A mapping key that is a caller
         // PARAMETER thus stays a parameter in the inlined body, so the SDK resolves it directly from call args;
         // a local binding (`__sp0_k = k`) would make the key an opaque expression the SDK cannot locate on the
-        // read side. Guarded on the param not being reassigned in the callee (else the alias would be unsound).
+        // read side. Guarded on the param not being reassigned in the callee AND the arg name not being written
+        // (state/local) in the callee - else the alias would break value-copy semantics (H7).
         rename.set(p.name, arg.name);
         inlinedArg.add(p.name);
       } else {

@@ -729,6 +729,41 @@ describe('Delegatecall', () => {
       expect(parsedState.counter).toBe(1n);
     });
 
+    it('C1/piece-3: withDelegatecall auto-fills the delegate-index witness for a covenant-impl proxy', async () => {
+      const provider = createTestProvider();
+      const pinnedArtifact = compileString(`pragma solidcash >=0.8.0;
+        contract PinnedProxy() {
+          bigint counter;
+          function up(bytes input, address impl, pubkey pk, sig s) external {
+            require(checkSig(s, pk)); impl.delegatecall(input); require(input.length > 0);
+          }
+        }`);
+      const proxyContract = new Contract(pinnedArtifact, [], { provider });
+      const { categoryId: proxyCatId } = await setupStatefulUtxos(
+        provider, proxyContract, pinnedArtifact.stateLayout!, { counter: 5n }, { saltContract: true },
+      );
+      const implContract = new Contract(implArtifact, [], { provider });
+      const { categoryId: implCatId } = await setupStatefulUtxos(
+        provider, implContract, implArtifact.stateLayout!, { counter: 0n }, { saltContract: true },
+      );
+      const proxySc = StatefulContract.withCategory(proxyContract, proxyCatId);
+      const implSc = StatefulContract.withCategory(implContract, implCatId);
+      const implSelector = hexToBin(implArtifact.abi.find((f) => f.name === 'increment')!.selector!);
+      const implLbc = addressToLockScript(implSc.address);
+
+      // The covenant-impl proxy pins UTXOBYTECODE[delegateInputIndex] == impl; the SDK auto-fills the witness -
+      // no manual __internal__delegateInputIndex here.
+      const tx = await (proxySc.call as any).up(implSelector, implLbc, alicePub, new SignatureTemplate(alicePriv))
+        .withDelegatecall(implSc, 'increment', [])
+        .send();
+
+      expect(tx.txid).toBeDefined();
+      const out = getTxOutputs(tx).find(
+        (o) => o.token?.nft?.capability === 'mutable' && o.token?.category === proxyCatId,
+      );
+      expect(parsePushdataCommitment(out!.token!.nft!.commitment, pinnedArtifact.stateLayout!, 0).counter).toBe(6n);
+    });
+
     it('should auto-derive with non-zero initial state', async () => {
       const provider = createTestProvider();
       const proxyContract = new Contract(proxyArtifact, [], { provider });

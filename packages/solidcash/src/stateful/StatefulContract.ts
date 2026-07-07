@@ -5467,6 +5467,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const lowLevelCalls = abiFunction?.lowLevelCalls;
     let lowLevelCallUtxoGroups: ExternalCallUtxoGroup[] = [];
     let lowLevelCallRawInputs: UnlockableUtxo[] = [];
+    let lowLevelCallInputBase = 0; // hoisted: the delegatecall-index auto-fill (below) needs it in this scope
 
     // Track per-group proxy master index for delegatecall composability
     const groupProxyMasterIndices: number[] = [];
@@ -5532,7 +5533,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       const externalCallInputCount = externalCallUtxoGroups.reduce(
         (sum, g) => sum + 1 + g.dataNftUtxos.length, 0,
       );
-      let lowLevelCallInputBase = 1 + requiredNftIndices.length
+      lowLevelCallInputBase = 1 + requiredNftIndices.length
         + externalReadUtxos.length + outStateInputCount + externalCallInputCount;
 
       // Fix data NFT unlockers with correct master input index
@@ -5675,6 +5676,24 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           ...finalArgs.slice(0, returnIdxPos),
           BigInt(returnEmitOutputIndex),
           ...finalArgs.slice(returnIdxPos),
+        ];
+      }
+    }
+
+    // C1/piece-3: a pinned delegatecall proxy takes a hidden __internal__delegateInputIndex - the input index of
+    // the co-spent delegate master, which the proxy pins (OP_UTXOBYTECODE[idx] == impl). Auto-fill it with the
+    // delegatecall group's master position so a covenant-impl proxy needs no manual witness.
+    if (abiFunction) {
+      const dIdxPos = abiFunction.inputs.findIndex((inp) => inp.name === '__internal__delegateInputIndex');
+      if (dIdxPos >= 0 && finalArgs.length < abiFunction.inputs.length) {
+        const delegateGroupIdx = lowLevelCallUtxoGroups.findIndex((g) => g.callMode === 'delegatecall');
+        const delegatePos = delegateGroupIdx < 0 ? lowLevelCallInputBase
+          : lowLevelCallInputBase + lowLevelCallUtxoGroups
+            .slice(0, delegateGroupIdx).reduce((s, g) => s + 1 + g.dataNftUtxos.length, 0);
+        finalArgs = [
+          ...finalArgs.slice(0, dIdxPos),
+          BigInt(delegatePos),
+          ...finalArgs.slice(dIdxPos),
         ];
       }
     }

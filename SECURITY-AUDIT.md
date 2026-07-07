@@ -28,6 +28,21 @@ All 4 CRITICAL fixed + regression-tested (`packages/solidc/test/SecurityAudit.te
 - **C2** FIXED-mitigated (daeaa39d): compile-time warning on negative mapping guards
   (`require(!m[k])`/`==0|false`). Full soundness needs an entry-set accumulator. Docs:
   `docs/mapping-omission-security.md`.
+  - **Lineage (recorded 2026-07):** this gap is inherent to the entry-NFT model since the `future` branch
+    (code-traced: `emitSlotExistsCheck` + `OP_ELSE` default, `emitMintingNftUniqueness` counts only the `0x02`
+    master, no `0x01` conservation, no per-mapping entry count). The `SECURITY_AUDIT_2026_03_06.md` pass called
+    the covenants "well-designed" because it verified entry **integrity-when-present** (correct) but its threat
+    model was entirely **presence-based** (injection / forgery / drain / downgrade) with no absence/omission
+    class - it even treats "not included as inputs -> can't be modified" as a *safety* property, the inverse of
+    this attack. Omission is the structural blind spot of covenant auditing. Not a rework regression; our C3
+    conservation loop (absent in `future`) was a net improvement on the sibling destruction vector.
+  - **Sound solution (proposed):** positive guards already sound (fail-safe, O(1), scales); consume-once +
+    provisioned eligibility -> **nullifier** (spend a unique UTXO, consensus double-spend enforces once-ness, O(1)
+    identity pin, no accumulator); persistent readable negative flags / lazy unbounded negative guards ->
+    **authenticated set** (master commits a sorted/indexed-Merkle root, non-membership proof per read, O(log N) -
+    EVM's storage-trie model, caller supplies the witness). Diagnostic escalates warning -> error unless a
+    negative-guarded mapping is nullifier- or accumulator-backed (fail-closed). Full design + phasing in
+    `docs/mapping-omission-security.md`.
 
 All 8 HIGH fixed + regression-tested:
 - **H1** FIXED (cc09895d): multi-data-NFT self-reads now `emitNftIndexTagVerify` (were Skip) - swapped-sibling

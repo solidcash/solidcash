@@ -1,8 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { compileString } from 'solidc';
-import { Contract, TransactionBuilder } from '../src/index.js';
+import { Contract, StatefulContract, TransactionBuilder } from '../src/index.js';
 import { randomUtxo } from '../src/utils.js';
-import { createTestProvider, verifyTransaction } from './test-util.js';
+import { createTestProvider, setupStatefulUtxos, verifyTransaction } from './test-util.js';
 
 // VM-verify that a PUBLIC function called INTERNALLY (bare f(), not this.f()) with a used return value runs
 // correctly. Previously the internal-call subroutine skipped the synthetic __internal__returnOutputIdx param
@@ -36,4 +36,21 @@ describe('public function called internally with a return value (VM-verified)', 
       expect(() => verifyTransaction(tx)).not.toThrow();
     });
   }
+
+  // A VOID public helper called internally from a state-writing entry, in a STATEFUL contract. Needs a real
+  // state NFT (setupStatefulUtxos) - a plain UTXO would fail the state-preservation covenant regardless of the
+  // internal call. Confirms the void-public-internal-call path is sound once the state NFT is present.
+  it('runs a void public helper called internally in a stateful contract', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString('contract C() { int s;'
+      + ' function bump(int a) public { require(a > 0); }'
+      + ' function set(int v) { bump(v); this.s = v; } }');
+    const contract = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, contract, artifact.stateLayout!, { s: 3n }, { saltContract: true },
+    );
+    const sc = StatefulContract.withCategory(contract, categoryId);
+    const tx = await sc.set(7n).send();
+    expect(tx.txid).toMatch(/^[0-9a-f]{64}$/);
+  });
 });

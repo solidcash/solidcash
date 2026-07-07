@@ -22,10 +22,12 @@ CAUSE (found): the internal-call subroutine skips the synthetic `__internal__ret
 (TypeCheck's forwardInternalReturnOutputIdx forwarded it for the arity check). The subroutine never cleaned it ->
 leak. FIX: visitUserFunctionCall no longer pushes the returnOutputIdx arg (matching the subroutine skip + the
 function-pointer path). VM-verified single/chained/multi-return + public overloads. This UNBLOCKED sound public
-overloads and the function-pointer-ABI corpus files (which call public functions internally). REMAINING sub-issue:
-a VOID public function called internally still fails with a different error (OP_SPLIT on empty) - separate bug,
-lower priority (corpus overload/fn-ptr files all return values). Anchor: GenerateTargetTraversal
-visitUserFunctionCall + visitReturn raw-return path.
+overloads and the function-pointer-ABI corpus files (which call public functions internally). The suspected "VOID
+public function called internally still fails (OP_SPLIT on empty)" sub-issue was a FALSE ALARM: it reproduced only
+because the test used a plain UTXO for a STATEFUL contract (whose entry covenant reads the state NFT commitment - a
+32-byte split that fails on an absent NFT). With a proper state NFT (setupStatefulUtxos) a void public helper called
+internally in a stateful contract runs correctly - guarded in solidcash/test/PublicInternalCall.test.ts. NO
+remaining void-internal-call bug. Anchor: GenerateTargetTraversal visitUserFunctionCall + visitReturn raw-return.
 
 ## Deferred features (feature-scale, not yet done)
 

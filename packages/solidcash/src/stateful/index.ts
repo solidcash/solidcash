@@ -41,6 +41,10 @@ export {
   type DeployContractOptions, type DeployedContract,
 } from './ContractFactory.js';
 export {
+  upgrades, deployProxy, ProxyContract,
+  type DeployProxyOptions, type ProxyInitialState,
+} from './upgrades.js';
+export {
   StatefulFunctionCall,
   DeployFunctionCall,
   TokenContainerAccessor,

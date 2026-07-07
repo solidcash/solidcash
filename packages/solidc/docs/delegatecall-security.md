@@ -113,13 +113,22 @@ inlining a delegatecall into a regular function, which rule B forbids.
   - `withDelegatecall` **auto-derivation is done**: `proxySc.call['up'](input, impl, pk, sig).withDelegatecall(
     implSc, 'increment', []).send()` builds a passing transaction — the SDK auto-fills
     `__internal__delegateInputIndex` with the co-spent delegate's position (the caller passes `impl`).
-  - Remaining refinement: pin the forwarded selector so a co-spent-but-wrong delegate *function* can't slip past
-    the identity pin.
+- **Forwarded-selector pin (which-function)** — enforced. On the pinned path the delegatecall also verifies the
+  co-spent delegate's *unlocking* bytecode leads with the forwarded calldata `input` (skip the push-opcode byte,
+  compare the next `|input|` bytes) — mirroring `emitLowLevelCallVerification`. So the delegate must run the
+  function whose selector the proxy forwarded; a co-spent-but-wrong delegate *function* fails the pin. VM-proven:
+  the `Delegatecall` pin e2e checks correct-delegate+selector passes, wrong impl fails the identity pin, a wrong
+  forwarded selector fails the selector pin. **Requirement:** the delegate must be **selector-dispatched**
+  (`>= 2` functions), so its unlocking script leads with the selector. A single-function delegate has no selector
+  (its leading push is `_proxyMasterIndex`), so the pinned path rejects it (fail-closed) — proxy to a multi-function
+  implementation, which is the only case where a "wrong function" is possible anyway.
 
 ## Writing a safe proxy
 
-- Make `impl` the delegate contract's real category-pinned covenant address (not a hardcoded P2PKH).
+- Make `impl` the delegate contract's real category-pinned covenant address (not a hardcoded P2PKH), so the
+  co-spend + selector pins are emitted (a P2PKH `impl` disables them and keeps the C1 warning).
 - Keep the delegatecall function pure-forwarding: **no `this.x = ...`** in it (the delegate owns all writes).
 - Ensure the delegate authorizes/preserves the whole proxy state, not just the fields one call touches.
-- Until the co-spend pin (3) is enforced, gate the delegatecall entry with `require(checkSig(...))` so an
-  unauthenticated spender cannot put the proxy master in play and reach the data NFT's `flag=1`.
+- Delegate to a **selector-dispatched** (multi-function) implementation so the forwarded-selector pin applies.
+- `upgrades.deployProxy` (SDK) wires all of this: it deploys the implementation + a pinned proxy, seeds the state,
+  and forwards `proxy.fn(...)` through the pinned delegatecall. See `docs/upgrades.md`.

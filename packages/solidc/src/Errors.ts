@@ -282,6 +282,13 @@ export class CastTypeError extends TypeError {
 
 export class InvalidFixedPointError extends SolidCashError {}
 
+// A bounded integer literal that does not fit its declared type (e.g. `uint8 x = 1000;` or `uint8 x = -5;`).
+export class IntLiteralOutOfRangeError extends SolidCashError {
+  constructor(node: Node, value: bigint, typeName: string, min: bigint, max: bigint) {
+    super(node, `Integer literal ${value} is out of range for type '${typeName}' (expected ${min}..${max})`);
+  }
+}
+
 export class AssignTypeError extends TypeError {
   constructor(
     node: AssignNode | VariableDefinitionNode,

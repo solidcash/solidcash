@@ -387,6 +387,34 @@ describe('MD4: implicit base-constructor init is not dropped', () => {
   });
 });
 
+// LOW - a bounded integer literal that does not fit its declared type (uint8 x = 1000; uint8 x = -5) used to
+// compile silently (types agree, value out of range). Now rejected at compile time.
+describe('LOW: bounded int literals are range-checked', () => {
+  it.each([
+    'contract C { function f() external { uint8 x = 1000; require(x >= 0); } }',
+    'contract C { function f() external { uint8 x = -5; require(x >= 0); } }',
+    'contract C { function f() external { int8 x = 200; require(x >= 0); } }',
+  ])('rejects an out-of-range literal: %s', (src) => {
+    expect(() => compileString(src)).toThrow(Errors.IntLiteralOutOfRangeError);
+  });
+
+  it('accepts an in-range literal', () => {
+    expect(compileString('contract C { function f() external { uint8 x = 200; require(x >= 0); } }').contractName)
+      .toBe('C');
+  });
+});
+
+// LOW - the odd-length hex-literal warning claimed the last nibble was "dropped" but hexToBin zero-extends it.
+describe('LOW: odd-length hex literal warning is accurate', () => {
+  it('warns that the nibble is zero-extended (not dropped)', () => {
+    const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    compileString('contract C { function f() external { bytes b = 0xabc; require(b.length >= 0); } }');
+    expect(spy).toHaveBeenCalledWith(expect.stringContaining('zero-extended'));
+    expect(spy).not.toHaveBeenCalledWith(expect.stringContaining('dropped'));
+    spy.mockRestore();
+  });
+});
+
 describe('C4: composite mapping keys (continued)', () => {
   it('keccak256(abi.encode(...)) keys over distinct operands do not collapse', () => {
     const two = compileString(`

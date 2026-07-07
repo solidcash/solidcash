@@ -150,6 +150,7 @@ import {
   RevertArgumentCountError,
   RevertArgumentTypeError,
   PackedArrayUnsupportedTypeError,
+  IntLiteralOutOfRangeError,
 } from '../Errors.js';
 import { BinaryOperator, NullaryOperator, UnaryOperator } from '../ast/Operator.js';
 import { Symbol } from '../ast/SymbolTable.js';
@@ -841,6 +842,7 @@ export default class TypeCheckTraversal extends AstTraversal {
       node.expression = this.maybeCoerceStringToBytesN(node.expression, node.type);
     node.expression = this.maybeCoerceBytesWiden(node.expression, node.type);
       expectAssignable(node, node.expression.type, node.type);
+      this.checkIntLiteralRange(node, node.expression, node.type);
     }
 
     // Coerce an array literal to the declared array type so codegen packs at the declared element width
@@ -860,6 +862,18 @@ export default class TypeCheckTraversal extends AstTraversal {
     }
 
     return node;
+  }
+
+  // A bounded integer literal (uint8 x = 1000; uint8 x = -5) must fit its declared type. Types agree
+  // (both IntType), so expectAssignable passes, but the VALUE would silently truncate/misencode - reject it.
+  private checkIntLiteralRange(node: Node, expr: ExpressionNode, targetType: Type): void {
+    if (expr instanceof IntLiteralNode && targetType instanceof IntType) {
+      if (expr.value < targetType.minValue || expr.value > targetType.maxValue) {
+        throw new IntLiteralOutOfRangeError(
+          node, expr.value, targetType.toString(), targetType.minValue, targetType.maxValue,
+        );
+      }
+    }
   }
 
   // Check if a type is fixed-width and therefore suitable for packed array encoding.

@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { compileString } from 'solidc';
-import { hexToBin } from '@bitauth/libauth';
+import { hexToBin, binToHex } from '@bitauth/libauth';
 import { encodePushdataValue } from '@solidcash/utils';
 import {
   Contract, SignatureTemplate, TransactionBuilder,
@@ -166,6 +166,13 @@ describe('Inline loop-indexed external dispatch (MultiCall covenant)', () => {
     ) as TransactionBuilder;
     verifyTransaction(tb);
     expect(tb.inputs.length).toBe(4);
+
+    // H4: with no changeLockingBytecode, the excess change must go to the FUNDER's own locking bytecode, never
+    // to an anyone-can-spend OP_TRUE output (which a bot/miner would sweep).
+    const funderLbc = funder.unlocker.generateLockingBytecode();
+    const changeOut = tb.outputs[tb.outputs.length - 1];
+    expect(binToHex(changeOut.to as Uint8Array)).toBe(binToHex(funderLbc));
+    expect(binToHex(changeOut.to as Uint8Array)).not.toBe(binToHex(OP_TRUE));
   });
 
   it('contract.multiCall(targets, data) - fully internal via registerLoopTargets / registerLoopFunder', async () => {

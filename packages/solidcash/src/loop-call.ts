@@ -93,7 +93,7 @@ export interface OpaqueLoopCallContext {
   funder?: { utxo: Utxo; unlocker: Unlocker };
   /** Per return-event output value (default 1000). */
   returnDust?: bigint;
-  /** Locking bytecode for the change output (default anyone-can-spend OP_TRUE). */
+  /** Locking bytecode for the change output. Defaults to the funder's own locking bytecode (never anyone-can-spend). */
   changeLockingBytecode?: Uint8Array;
   /** Flat fee in satoshis (default 1000). */
   fee?: bigint;
@@ -118,7 +118,7 @@ export interface BuildOpaqueLoopCallOptions {
   funder: { utxo: Utxo; unlocker: Unlocker };
   /** Per return-event output value (default 1000). */
   returnDust?: bigint;
-  /** Locking bytecode for the change output (default anyone-can-spend OP_TRUE). */
+  /** Locking bytecode for the change output. Defaults to the funder's own locking bytecode (never anyone-can-spend). */
   changeLockingBytecode?: Uint8Array;
   /** Flat fee in satoshis (default 1000). */
   fee?: bigint;
@@ -154,7 +154,9 @@ export function buildOpaqueLoopCallTransaction(opts: BuildOpaqueLoopCallOptions)
   }
   const returnDust = opts.returnDust ?? 1000n;
   const fee = opts.fee ?? 1000n;
-  const changeLbc = opts.changeLockingBytecode ?? OP_TRUE;
+  // H4: default change to the FUNDER's own locking bytecode, never an anyone-can-spend OP_TRUE output (which a
+  // mempool bot / miner would sweep -> silent fund loss). The surplus belongs to whoever funded it.
+  const changeLbc = opts.changeLockingBytecode ?? funder.unlocker.generateLockingBytecode();
 
   // Source args, pre-encoded to the framed blobs the covenant decodes.
   const targetsArg = encodePushdataValue(targets, 'address[]');

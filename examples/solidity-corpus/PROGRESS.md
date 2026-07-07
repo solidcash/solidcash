@@ -347,4 +347,6 @@ POST-3436 (continuing "find next walls"):
 - b1e8dfe2 external fn pointers as public/external params (+7): relaxed entry-point FunctionTypeNotEncodable to allow
   EXTERNAL fn types (internal stay rejected = solc parity); self-call this.ev(this.g,a) routes to internal OP_INVOKE.
   VM-verified ExternalFnPointerParam. FOLLOW-UP: genuine cross-contract external-ABI fn-ptr passing (SDK encode).
-  abicoder (part 3) not attempted = EVM-calldata-model.
+- ee49a0c8 abi.encodeWithSelector accepts a fitting string/hex literal selector (+5): maybeCoerceStringToBytesN
+  right-pads "f()" -> bytes4 before the selector type check (Solidity converts a fitting literal). The clean abicoder
+  subset; the rest is fundamental (fn-type ABI, msg.data EVM-calldata, Yul, struct-fn-fields, external-call).

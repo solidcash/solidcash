@@ -350,3 +350,18 @@ POST-3436 (continuing "find next walls"):
 - ee49a0c8 abi.encodeWithSelector accepts a fitting string/hex literal selector (+5): maybeCoerceStringToBytesN
   right-pads "f()" -> bytes4 before the selector type check (Solidity converts a fitting literal). The clean abicoder
   subset; the rest is fundamental (fn-type ABI, msg.data EVM-calldata, Yul, struct-fn-fields, external-call).
+
+2026-07-07c (user "do the walls: nested array copies, gnosis multifile, then yul"), tractable slice of each:
+- 33672499 inherited transient state vars (EIP-1153) lower into derived contracts (+2): were filtered out
+  per-contract in AstBuilder before inheritance; now recorded on the node, InheritanceExpansion merges them, new
+  LowerTransientStateVars pass injects the per-fn zero-init local after flattening. VM-verified.
+- 0c6c77f2 whole fixed-array copy with differing length/element (+5): generalized the fixed state-array copy
+  desugar - diff-length (uint[40]=uint[20], copy prefix + zero-fill leftover) and/or diff-element (bytesN widen),
+  byte-identical to hand-written element-wise. REMAINDER (deferred): nested uint256[2][], multi-dim, calldata/mem
+  source, contract_array.
+- 902028b3 flatten imported/sibling contracts that carry their own inheritance (+10): InheritanceExpansion only
+  flattened the primary; now non-ancestor imported contracts (new Middle() where Middle is Oracle) flatten too
+  (base merged), skipping primary ancestors (avoids diamond double-merge). Byte-identical to inline. Unblocks the
+  gnosis "undefined interface" cluster. `using Math` (16, gnosis dense-cycle library-registration, fnDefs=[]) DEFERRED.
+- 66c2dc33 Yul blobhash(i) -> 0 (+4): BCH has no blobs, like the Solidity builtin. Yul remainder = deep structural
+  (122) / fundamental EVM builtins (return/log/extcode/create) / mixed nested-fns (recursion fundamental).

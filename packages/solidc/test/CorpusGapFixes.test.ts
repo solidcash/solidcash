@@ -692,6 +692,24 @@ describe('function overload resolution (inheritance + entry-point synthetic para
   });
 });
 
+describe('external function pointers as public/external parameters (VM-verified in solidcash tests)', () => {
+  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  it('accepts an external function-type parameter on a public function', () => {
+    expect(cc('contract C { function g(int a) public pure returns (int) { return a + 1; }'
+      + ' function ev(function(int) external returns (int) fp, int a) public returns (int) { return fp(a); }'
+      + ' function f() external { require(this.ev(this.g, 5) == 6); } }')).toBe('C');
+  });
+  it('accepts an external function-type return on a public function', () => {
+    expect(cc('contract C { function g(int a) external pure returns (int) { return a; }'
+      + ' function pick() public view returns (function(int) external returns (int)) { return this.g; }'
+      + ' function f() external { require(true); } }')).toBe('C');
+  });
+  it('still rejects an INTERNAL function-type parameter on a public function (solc rejects too)', () => {
+    expect(() => cc('contract C { function ev(function(int) internal returns (int) fp, int a) public returns (int)'
+      + ' { return fp(a); } function f() external { require(true); } }')).toThrow(/Function types cannot be used/);
+  });
+});
+
 describe('library/contract-qualified enum cast (L.E(x) / Contract.E(x))', () => {
   it('resolves L.E(x) as an int -> enum cast', () => {
     expect(compileString('library L { enum E { A, B } }'

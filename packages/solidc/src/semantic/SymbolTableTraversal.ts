@@ -666,14 +666,17 @@ export default class SymbolTableTraversal extends AstTraversal {
     for (const func of node.functions) {
       this.validateModifiers(func, node);
 
-      // Function pointers are internal-only: an entry point can't receive one (no ABI encoding).
+      // An entry point may take/return an EXTERNAL function pointer (an (address, selector) value). A self-call
+      // (`this.f(this.g, ..)`) routes to the internal OP_INVOKE path, so the pointer stays on the stack and the
+      // existing runtime address+selector call-through applies. An INTERNAL function pointer has no
+      // cross-contract representation, so it stays rejected on an entry point - solc rejects it too.
       if (func.isEntryPoint) {
         for (const p of func.parameters) {
-          if (p.type instanceof FunctionType) {
+          if (p.type instanceof FunctionType && !p.type.isExternal) {
             throw new FunctionTypeNotEncodableError(p, 'parameters of an external/public function');
           }
         }
-        if (func.returnTypes.some((t) => t instanceof FunctionType)) {
+        if (func.returnTypes.some((t) => t instanceof FunctionType && !(t as FunctionType).isExternal)) {
           throw new FunctionTypeNotEncodableError(func, 'return values of an external/public function');
         }
       }

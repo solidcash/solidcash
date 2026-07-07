@@ -1216,6 +1216,20 @@ describe('Multi-NFT Stateful Contract', () => {
     // with a DESTROY unlocker (flag=2) and emits no output for it, freeing its sats and permanently bricking
     // that state. The own-category mutable-NFT conservation loop must reject this (2 mutable inputs, 1 output).
     it('C3: rejects co-spending an un-accessed data NFT for destruction', async () => {
+      // Own fresh genesis so this test does not depend on UTXOs consumed by the other tests in this block.
+      const g = await (provider as any).addTokenUtxosDynamic((catId: string) => {
+        const dnAddr = getDataNftAddress(contract, catId);
+        return [
+          { address: contract.tokenAddress, satoshis: 10000n,
+            token: { amount: 0n, nft: { capability: 'minting', commitment: '' } } },
+          { address: dnAddr, satoshis: 10000n,
+            token: { amount: 0n, nft: { capability: 'mutable', commitment: initialCommitments[0] } } },
+          { address: dnAddr, satoshis: 10000n,
+            token: { amount: 0n, nft: { capability: 'mutable', commitment: initialCommitments[1] } } },
+        ];
+      });
+      const cat = g.categoryId;
+      const dnAddr = getDataNftAddress(contract, cat);
       const newAlpha = new Uint8Array(100).fill(0xaa);
       const newCommitment0 = buildPushdataCommitment(stateLayout, { alpha: newAlpha, beta: zeroBeta }, 0);
       const feeFunder = await createFeeFunder(provider);
@@ -1223,15 +1237,15 @@ describe('Multi-NFT Stateful Contract', () => {
       // allowImplicitNftBurn bypasses the SDK's convenience burn guard, exactly as a raw-tx attacker would,
       // so the transaction actually reaches VM verification where the covenant is the real boundary.
       const build = new TransactionBuilder({ provider, allowImplicitNftBurn: true })
-        .addInput(masterUtxo, contract.unlock.setAlpha(newAlpha))
-        .addInput(dataNftUtxo0, createDataNftUnlocker(contract, 0, categoryId))
-        .addInput(dataNftUtxo1, createDestroyDataNftUnlocker(contract, 0, categoryId))
+        .addInput(g.utxos[0], contract.unlock.setAlpha(newAlpha))
+        .addInput(g.utxos[1], createDataNftUnlocker(contract, 0, cat))
+        .addInput(g.utxos[2], createDestroyDataNftUnlocker(contract, 0, cat))
         .addInput(feeFunder.utxo, feeFunder.unlocker)
-        .addOutput({ to: contract.tokenAddress, amount: masterUtxo.satoshis, token: masterUtxo.token })
+        .addOutput({ to: contract.tokenAddress, amount: g.utxos[0].satoshis, token: g.utxos[0].token })
         .addOutput({
-          to: dataNftAddress,
-          amount: dataNftUtxo0.satoshis,
-          token: { category: categoryId, amount: 0n, nft: { capability: 'mutable', commitment: newCommitment0 } },
+          to: dnAddr,
+          amount: g.utxos[1].satoshis,
+          token: { category: cat, amount: 0n, nft: { capability: 'mutable', commitment: newCommitment0 } },
         });
       // Deliberately NO output for data NFT 1 (destroyed).
 

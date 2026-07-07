@@ -162,6 +162,28 @@ describe('C2: negative mapping-guard diagnostic', () => {
   });
 });
 
+// H1 - in a multi-data-NFT layout, sibling data NFTs share one covenant address+category and are addressed
+// positionally, so a leading nftIndex tag disambiguates them. Self-reads previously SKIPPED the tag (only
+// external/callee reads verified it), letting an attacker reorder co-spent data NFTs to permute fields across
+// NFT boundaries. The fix verifies the tag on self-reads too. The tag==3 check (OP_3 OP_EQUALVERIFY) is a clean
+// signature: 3 is not a token capability value (0x00/0x01/0x02), so it only appears from the tag verification.
+describe('H1: multi-data-NFT self-reads verify the nftIndex tag', () => {
+  it('emits a tag-index verify (OP_3 OP_EQUALVERIFY) when self-reading the 4th data NFT', () => {
+    const bc = compileString(
+      'contract Q { bytes100 a; bytes100 b; bytes100 c; bytes100 d;'
+      + ' function f() external { require(this.d == this.d); require(true); } }',
+    ).bytecode;
+    expect(bc).toContain('OP_3 OP_EQUALVERIFY');
+  });
+
+  it('single-data-NFT contracts carry no nftIndex tag verify', () => {
+    const bc = compileString(
+      'contract S { int n; function f() external { require(this.n == this.n); require(true); } }',
+    ).bytecode;
+    expect(bc).not.toContain('OP_3 OP_EQUALVERIFY');
+  });
+});
+
 describe('C4: composite mapping keys (continued)', () => {
   it('keccak256(abi.encode(...)) keys over distinct operands do not collapse', () => {
     const two = compileString(`

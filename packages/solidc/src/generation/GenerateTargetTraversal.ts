@@ -2515,8 +2515,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Without this entry, it would pop a real variable (e.g. function parameters).
     this.pushToStack('__temp_state_read');
 
-    // Skip the leading nftIndex tag (multi-data-NFT layouts)
-    if (this.isMultiDataNft()) this.emitNftIndexTagSkip(locationData);
+    // Verify the leading nftIndex tag == this field's NFT index (multi-data-NFT anti-substitution, H1)
+    if (this.isMultiDataNft()) this.emitNftIndexTagVerify(sv.nftIndex, locationData);
 
     // Skip preceding fields
     for (let i = 0; i < sv.fieldIndex; i++) {
@@ -5518,8 +5518,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_ADD, locationData);
       this.emit(Op.OP_UTXOTOKENCOMMITMENT, locationData);
 
-      // Skip the leading nftIndex tag (multi-data-NFT layouts)
-      if (this.isMultiDataNft()) this.emitNftIndexTagSkip(locationData);
+      // Verify the leading nftIndex tag == this field's NFT index (multi-data-NFT anti-substitution, H1)
+      if (this.isMultiDataNft()) this.emitNftIndexTagVerify(sv.nftIndex, locationData);
 
       // Skip preceding fields
       for (let i = 0; i < sv.fieldIndex; i++) {
@@ -7582,13 +7582,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /** Consume a leading nftIndex tag without checking it. Stack: [commitment] -> [fields_blob]. */
-  private emitNftIndexTagSkip(locationData: SingleLocationData): void {
-    this.emitPushdataSkip(PrimitiveType.BIGINT, locationData);
-  }
-
   /**
    * Verify a leading nftIndex tag == expected index, consuming it. The adversarial disambiguation for
-   * external reads: a substituted sibling data NFT carries a different tag and fails here.
+   * external AND self reads (H1): a substituted sibling data NFT carries a different tag and fails here.
    * Stack: [commitment] -> [fields_blob].
    */
   private emitNftIndexTagVerify(nftIndex: number, locationData: SingleLocationData): void {
@@ -7827,8 +7823,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_ADD, locationData);
     this.emit(Op.OP_UTXOTOKENCOMMITMENT, locationData);
 
-    // 1b. Skip the leading nftIndex tag (multi-data-NFT layouts)
-    if (this.isMultiDataNft()) this.emitNftIndexTagSkip(locationData);
+    // 1b. Verify the leading nftIndex tag == this field's NFT index (multi-data-NFT anti-substitution, H1)
+    if (this.isMultiDataNft()) this.emitNftIndexTagVerify(sv.nftIndex, locationData);
 
     // 2. Skip preceding fields
     for (let i = 0; i < sv.fieldIndex; i++) {
@@ -9293,8 +9289,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
             this.emit(Op.OP_ADD, locationData);
             this.emit(Op.OP_UTXOTOKENCOMMITMENT, locationData);
 
-            // Skip the leading nftIndex tag (multi-data-NFT layouts)
-            if (this.isMultiDataNft()) this.emitNftIndexTagSkip(locationData);
+            // Verify the leading nftIndex tag == the NFT index (multi-data-NFT anti-substitution, H1)
+            if (this.isMultiDataNft()) this.emitNftIndexTagVerify(nftIdx, locationData);
 
             // Skip preceding fields
             for (let i = 0; i < sv.fieldIndex; i++) {
@@ -9975,7 +9971,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(encodeInt(BigInt(this.compactOffsetMap.get(sv.nftIndex)!)), loc);
     this.emit(Op.OP_ADD, loc);
     this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc);
-    if (this.isMultiDataNft()) this.emitNftIndexTagSkip(loc);
+    if (this.isMultiDataNft()) this.emitNftIndexTagVerify(sv.nftIndex, loc); // H1 anti-substitution
     for (let i = 0; i < sv.fieldIndex; i++) this.emitPushdataSkip(this.physicalFieldType(fieldsInNft[i]), loc);
     if (sv.fieldIndex === fieldsInNft[fieldsInNft.length - 1].fieldIndex) {
       this.emitPushdataDecodeLastField(new IntType(false, 32), loc);
@@ -10132,7 +10128,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(encodeInt(BigInt(this.compactOffsetMap.get(sv.nftIndex)!)), loc);
     this.emit(Op.OP_ADD, loc);
     this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc);
-    if (this.isMultiDataNft()) this.emitNftIndexTagSkip(loc);
+    if (this.isMultiDataNft()) this.emitNftIndexTagVerify(sv.nftIndex, loc); // H1 anti-substitution
     for (let i = 0; i < sv.fieldIndex; i++) this.emitPushdataSkip(this.physicalFieldType(fieldsInNft[i]), loc);
     if (sv.fieldIndex === fieldsInNft[fieldsInNft.length - 1].fieldIndex) {
       this.emitPushdataDecodeLastField(lenType, loc);

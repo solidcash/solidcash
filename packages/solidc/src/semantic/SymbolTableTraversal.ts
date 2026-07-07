@@ -189,6 +189,16 @@ import {
 } from '@solidcash/utils';
 import { binToHex } from '@bitauth/libauth';
 
+// Counts identifier occurrences in an expression subtree (structural children only, no definition backrefs).
+class IdentifierNameCounter extends AstTraversal {
+  counts: Map<string, number> = new Map();
+
+  visitIdentifier(node: IdentifierNode): Node {
+    this.counts.set(node.name, (this.counts.get(node.name) ?? 0) + 1);
+    return node;
+  }
+}
+
 function getMaxPushdataEncodedSizeForType(type: Type, seen: Set<string> = new Set()): number {
   if (type === PrimitiveType.BOOL) return 1;
   if (type === PrimitiveType.BIGINT) return 9;
@@ -4385,6 +4395,21 @@ export default class SymbolTableTraversal extends AstTraversal {
     }
   }
 
+  // visitUserFunctionCall/visitIndirectFunctionCall evaluate OP_INVOKE args in REVERSE order (first param
+  // pushed last, on top), while this analysis marks final uses left-to-right. A variable referenced more than
+  // once within one call's argument list would get its roll placed on a use codegen evaluates FIRST
+  // (`g(v, v)`: the roll lands on arg1, codegen visits arg1 first and rolls v away, then arg0 reads a vanished
+  // slot). Keep such variables PICK-only - the epilogue stack cleanup drops the leftover - which is sound
+  // under either evaluation order. Single-arg lists are safe (reversal only reorders BETWEEN args).
+  private protectDuplicateCallArgVars(parameters: ExpressionNode[]): void {
+    if (!this.currentFunction || parameters.length < 2) return;
+    const counter = new IdentifierNameCounter();
+    for (const p of parameters) counter.visit(p);
+    for (const [name, count] of counter.counts) {
+      if (count >= 2) this.currentFunction.opRolls.delete(name);
+    }
+  }
+
   visitFunctionCall(node: FunctionCallNode): Node {
     this.qualifyLibrarySiblingCall(node.identifier);
     // Check if this is an address method call: dest.send(amount), dest.connect(category),
@@ -4535,6 +4560,7 @@ export default class SymbolTableTraversal extends AstTraversal {
                 funcCall.identifier = this.visit(funcCall.identifier) as IdentifierNode;
                 this.expectedSymbolType = SymbolType.VARIABLE;
                 funcCall.parameters = funcCall.parameters.map((p, i) => (i === 0 ? p : this.visit(p) as ExpressionNode));
+                this.protectDuplicateCallArgVars(funcCall.parameters as ExpressionNode[]);
                 return funcCall;
               }
             }
@@ -4639,6 +4665,9 @@ export default class SymbolTableTraversal extends AstTraversal {
     }
     this.expectedSymbolType = SymbolType.VARIABLE;
     node.parameters = this.visitList(node.parameters);
+    if ((overloads && overloads.length > 0) || isIndirect) {
+      this.protectDuplicateCallArgVars(node.parameters as ExpressionNode[]);
+    }
     return node;
   }
 
@@ -6338,6 +6367,10 @@ export default class SymbolTableTraversal extends AstTraversal {
     this.expectedSymbolType = SymbolType.FUNCTION;
     funcCall.identifier = this.visit(funcCall.identifier) as IdentifierNode;
     this.expectedSymbolType = SymbolType.VARIABLE;
+
+    // The operands were already visited (and roll-marked) by the operator visitor; the rewritten call
+    // evaluates them as reversed OP_INVOKE args, so duplicate operand vars need the same PICK-only guard.
+    this.protectDuplicateCallArgVars(args);
 
     return funcCall;
   }

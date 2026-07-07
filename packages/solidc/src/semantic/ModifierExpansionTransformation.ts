@@ -133,6 +133,12 @@ export default function expandModifiers(ast: SourceFileNode): SourceFileNode {
     expandFunctionModifiers(func, modifierMap);
   }
 
+  // H5: fallback and receive are dispatch entry points too - the fallback is the DEFAULT branch for any
+  // unmatched selector. A guard modifier on them (e.g. a transparent proxy's `ifAdmin` fallback) must be
+  // expanded into its require(), not silently dropped, and an undefined modifier must still error.
+  if (contract.fallbackDef) expandFunctionModifiers(contract.fallbackDef, modifierMap);
+  if (contract.receiveDef) expandFunctionModifiers(contract.receiveDef, modifierMap);
+
   return ast;
 }
 

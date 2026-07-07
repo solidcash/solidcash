@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { compileString } from '../src/index.js';
+import * as Errors from '../src/Errors.js';
 
 // Regression tests for the 2026-07 security audit (see repo-root SECURITY-AUDIT.md). Each block pins the fix
 // for one finding so it cannot silently regress. Findings that need a covenant-design change are exercised at
@@ -230,6 +231,29 @@ describe('H3: relational-NOT + OP_NOT OP_IF compiles (optimiser order)', () => {
     ['while (!(a < b))', 'contract C { function f(int a, int b) { while (!(a < b)) { a = a + 1; } require(true); } }'],
   ])('compiles %s without a backwards-compat divergence', (_label, src) => {
     expect(() => compileString(src)).not.toThrow();
+  });
+});
+
+// H5 - expandModifiers iterated only contract.functions, so a guard modifier on a fallback (the DEFAULT
+// dispatch branch for any unmatched selector - the transparent-proxy `ifAdmin` pattern) was silently dropped:
+// never expanded into its require(), never validated. Fallback/receive now go through expandFunctionModifiers.
+describe('H5: fallback modifier is expanded, not dropped', () => {
+  it('a guard modifier on a fallback injects its body (bytecode grows)', () => {
+    const withMod = compileString(`contract C {
+      int active;
+      modifier whenActive { require(this.active == 1); _; }
+      fallback(bytes input) external whenActive { require(input.length >= 0); }
+    }`).bytecode;
+    const noMod = compileString(`contract C {
+      int active;
+      fallback(bytes input) external { require(input.length >= 0); }
+    }`).bytecode;
+    expect(withMod.length).toBeGreaterThan(noMod.length);
+  });
+
+  it('an undefined modifier on a fallback is a hard error (was silently ignored)', () => {
+    expect(() => compileString('contract C { fallback() external nope { require(true); } }'))
+      .toThrow(Errors.UndefinedModifierError);
   });
 });
 

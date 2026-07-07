@@ -19,7 +19,6 @@ import {
   TupleAssignmentNode,
 } from '../ast/AST.js';
 import { collectAmbiguousInlineKeys, inlineKey } from './inlineOverloadGuard.js';
-import { collectCtorParamReaders } from './ctorParamReaders.js';
 import { AmbiguousInlineOverloadError } from '../Errors.js';
 import { StructType } from '@solidcash/utils';
 import { Modifier } from '../ast/Globals.js';
@@ -56,7 +55,6 @@ export default class InlineReturningStateHelpers extends AstTraversal {
   private ambiguousInlineKeys: Set<string> = new Set(); // H8: <name>/<arity> shared by >1 overload.
   private inlinedFns: Set<string> = new Set();
   private collectionNames: Set<string> = new Set();
-  private ctorParamReaders: Set<string> = new Set();
   private freeFns: FunctionDefinitionNode[] = [];
   private stillCalled: Set<string> = new Set();
   private counter = 0;
@@ -80,9 +78,6 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     for (const fn of [...node.functions, ...this.freeFns]) this.funcByName.set(fn.name, fn);
     this.ambiguousInlineKeys = collectAmbiguousInlineKeys([...node.functions, ...this.freeFns]);
     this.collectionNames = new Set(node.collections.map((c) => c.name));
-    this.ctorParamReaders = collectCtorParamReaders(
-      [...node.functions, ...this.freeFns], new Set(node.parameters.map((p) => p.name)),
-    );
 
     this.inlinedFns = new Set();
     for (const fn of node.functions) if (this.eligible(fn) || this.eligibleStructPtr(fn)) this.inlinedFns.add(fn.name);
@@ -124,7 +119,7 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     let returns = 0;
     this.walk(fn.body, (n) => { if (n instanceof ReturnNode) returns += 1; });
     if (returns !== 1) return false; // a mid-body return can't linearize into a hoisted prelude
-    return this.readsEntry(fn) || this.ctorParamReaders.has(fn.name);
+    return this.readsEntry(fn);
   }
 
   // A single-tail-return value helper taking a STRUCT storage pointer (`get`/`size` on a `Map storage map`). It

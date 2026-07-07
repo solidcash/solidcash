@@ -29,6 +29,8 @@ import { Modifier } from '../ast/Globals.js';
 import AstTraversal from '../ast/AstTraversal.js';
 import { cloneNode } from '../ast/clone.js';
 import { substituteInFunction } from './InheritanceExpansionTransformation.js';
+import { collectAmbiguousInlineKeys, inlineKey } from './inlineOverloadGuard.js';
+import { AmbiguousInlineOverloadError } from '../Errors.js';
 
 /**
  * Inlines internal calls to void functions that take `storage` reference parameters
@@ -58,6 +60,8 @@ const PREFIX = '__sp';
 
 export default class InlineStoragePointerCalls extends AstTraversal {
   private funcByName: Map<string, FunctionDefinitionNode> = new Map();
+  // H8: <name>/<arity> keys that more than one overload shares - inlining one by that key is ambiguous.
+  private ambiguousInlineKeys: Set<string> = new Set();
   private inlinedFns: Set<string> = new Set();
   private collectionNames: Set<string> = new Set();
   private freeFns: FunctionDefinitionNode[] = [];
@@ -95,6 +99,7 @@ export default class InlineStoragePointerCalls extends AstTraversal {
   visitContract(node: ContractNode): Node {
     this.funcByName = new Map();
     for (const fn of [...node.functions, ...this.freeFns]) this.funcByName.set(fn.name, fn);
+    this.ambiguousInlineKeys = collectAmbiguousInlineKeys([...node.functions, ...this.freeFns]);
     this.collectionNames = new Set(node.collections.map((c) => c.name));
 
     this.inlinedFns = new Set();
@@ -168,6 +173,9 @@ export default class InlineStoragePointerCalls extends AstTraversal {
     const callee = this.exprInlinableFns.get(visited.identifier.name);
     if (callee && !this.exprStack.includes(callee.name)
       && visited.parameters.length === callee.parameters.length) {
+      if (this.ambiguousInlineKeys.has(inlineKey(callee.name, callee.parameters.length))) {
+        throw new AmbiguousInlineOverloadError(node, callee.name, callee.parameters.length);
+      }
       this.exprStack.push(callee.name);
       const replacement = this.buildInlinedReturnExpr(callee, visited.parameters as ExpressionNode[]);
       this.exprStack.pop();
@@ -253,6 +261,9 @@ export default class InlineStoragePointerCalls extends AstTraversal {
         const callee = this.funcByName.get(name);
         if (callee && this.inlinedFns.has(name) && !stack.includes(name)
           && stmt.call.parameters.length === callee.parameters.length) {
+          if (this.ambiguousInlineKeys.has(inlineKey(name, stmt.call.parameters.length))) {
+            throw new AmbiguousInlineOverloadError(stmt.call, name, stmt.call.parameters.length);
+          }
           out.push(...this.inlineCall(callee, stmt.call.parameters, stack));
           continue;
         }

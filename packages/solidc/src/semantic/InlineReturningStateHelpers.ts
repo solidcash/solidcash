@@ -18,6 +18,8 @@ import {
   BinaryOpNode,
   TupleAssignmentNode,
 } from '../ast/AST.js';
+import { collectAmbiguousInlineKeys, inlineKey } from './inlineOverloadGuard.js';
+import { AmbiguousInlineOverloadError } from '../Errors.js';
 import { StructType } from '@solidcash/utils';
 import { Modifier } from '../ast/Globals.js';
 import { BinaryOperator } from '../ast/Operator.js';
@@ -50,6 +52,7 @@ const PREFIX = '__rh';
 
 export default class InlineReturningStateHelpers extends AstTraversal {
   private funcByName: Map<string, FunctionDefinitionNode> = new Map();
+  private ambiguousInlineKeys: Set<string> = new Set(); // H8: <name>/<arity> shared by >1 overload.
   private inlinedFns: Set<string> = new Set();
   private collectionNames: Set<string> = new Set();
   private freeFns: FunctionDefinitionNode[] = [];
@@ -73,6 +76,7 @@ export default class InlineReturningStateHelpers extends AstTraversal {
   visitContract(node: ContractNode): Node {
     this.funcByName = new Map();
     for (const fn of [...node.functions, ...this.freeFns]) this.funcByName.set(fn.name, fn);
+    this.ambiguousInlineKeys = collectAmbiguousInlineKeys([...node.functions, ...this.freeFns]);
     this.collectionNames = new Set(node.collections.map((c) => c.name));
 
     this.inlinedFns = new Set();
@@ -170,6 +174,9 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     if (!this.suppress && callee && this.inlinedFns.has(name)
       && !this.stack.includes(name) && node.parameters.length === callee.parameters.length
       && callee.returnTypes.length === 1) {
+      if (this.ambiguousInlineKeys.has(inlineKey(name, node.parameters.length))) {
+        throw new AmbiguousInlineOverloadError(node, name, node.parameters.length);
+      }
       // A scalar helper inlines at an expression position, replaced by its single return temp. A multi-value
       // helper can't (one temp can't carry >1 value) - it is inlined only at a statement position, below.
       return this.inlineCall(callee, node.parameters as ExpressionNode[])[0];
@@ -202,6 +209,9 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     const callee = this.funcByName.get(name);
     if (!callee || !this.inlinedFns.has(name) || this.stack.includes(name)
       || expr.parameters.length !== callee.parameters.length || callee.returnTypes.length < 2) return undefined;
+    if (this.ambiguousInlineKeys.has(inlineKey(name, expr.parameters.length))) {
+      throw new AmbiguousInlineOverloadError(expr, name, expr.parameters.length);
+    }
     expr.parameters = this.visitList(expr.parameters) as ExpressionNode[]; // inline nested scalar calls in args
     return this.inlineCall(callee, expr.parameters as ExpressionNode[]);
   }

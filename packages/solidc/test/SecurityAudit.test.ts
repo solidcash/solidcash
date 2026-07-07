@@ -294,6 +294,32 @@ describe('H6: bounded int / enum params are range-validated', () => {
   });
 });
 
+// H8 - the inline passes look a callee up by name and disambiguate only by argument count, so two same-name
+// same-arity overloads collapsed to a last-wins map entry: inlining one could splice the WRONG body and drop
+// its require guard. The passes now refuse to inline an ambiguous (name, arity) and error.
+describe('H8: refuse to inline same-name same-arity overloads', () => {
+  const ambiguous = `contract C() {
+    mapping(uint=>uint) m;
+    function put(mapping(uint=>uint) storage a, uint256 v) internal { require(v >= 5); a[0] = v; }
+    function put(mapping(uint=>uint) storage a, int256 v) internal { a[0] = uint(v); }
+    function f(uint256 v) external { mapping(uint=>uint) storage p = m; put(p, v); require(m[0] >= 0); }
+  }`;
+  const single = `contract C() {
+    mapping(uint=>uint) m;
+    function put(mapping(uint=>uint) storage a, uint256 v) internal { require(v >= 5); a[0] = v; }
+    function f(uint256 v) external { mapping(uint=>uint) storage p = m; put(p, v); require(m[0] >= 0); }
+  }`;
+
+  it('errors instead of silently inlining the wrong overload body', () => {
+    expect(() => compileString(ambiguous, { solidityImportCompat: true }))
+      .toThrow(Errors.AmbiguousInlineOverloadError);
+  });
+
+  it('a single (non-overloaded) inlined storage-pointer helper still compiles', () => {
+    expect(compileString(single, { solidityImportCompat: true }).contractName).toBe('C');
+  });
+});
+
 describe('C4: composite mapping keys (continued)', () => {
   it('keccak256(abi.encode(...)) keys over distinct operands do not collapse', () => {
     const two = compileString(`

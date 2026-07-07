@@ -755,6 +755,15 @@ export class UndefinedModifierError extends SolidCashError {
   }
 }
 
+// H8: an inline pass must pick a callee body by name + arity, but same-name same-arity overloads are
+// indistinguishable by that key, so it would silently inline the last-defined body (possibly dropping a guard).
+export class AmbiguousInlineOverloadError extends SolidCashError {
+  constructor(node: Node, name: string, arity: number) {
+    super(node, `Cannot inline call to '${name}': it has multiple ${arity}-argument overloads that are `
+      + 'indistinguishable by name and argument count. Rename one overload or give them different arities.');
+  }
+}
+
 export class ModifierPlaceholderError extends SolidCashError {
   constructor(public node: ModifierDefinitionNode, message: string) {
     super(node, message);

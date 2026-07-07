@@ -15,6 +15,8 @@ import {
   FunctionCallNode,
   ExpressionNode,
 } from '../ast/AST.js';
+import { collectAmbiguousInlineKeys, inlineKey } from './inlineOverloadGuard.js';
+import { AmbiguousInlineOverloadError } from '../Errors.js';
 import AstTraversal from '../ast/AstTraversal.js';
 import { cloneNode } from '../ast/clone.js';
 
@@ -46,6 +48,7 @@ interface Resolved { sideEffects: StatementNode[]; finalAlias: string; }
 export default class InlineMappingReturnFunctions extends AstTraversal {
   private candidates = new Map<string, FunctionDefinitionNode>();
   private inlined = new Set<string>(); // candidates actually resolved+inlined at a call site
+  private ambiguousInlineKeys: Set<string> = new Set(); // H8: <name>/<arity> shared by >1 candidate overload.
 
   visitSourceFile(node: SourceFileNode): Node {
     const collect = (fns: FunctionDefinitionNode[] | undefined): void => {
@@ -53,6 +56,9 @@ export default class InlineMappingReturnFunctions extends AstTraversal {
     };
     if (node.contract) collect(node.contract.functions);
     collect(node.freeFunctions);
+    this.ambiguousInlineKeys = collectAmbiguousInlineKeys(
+      [...(node.contract?.functions ?? []), ...(node.freeFunctions ?? [])].filter((f) => this.isCandidate(f)),
+    );
     if (this.candidates.size === 0) return node;
     if (node.contract) node.contract = this.visit(node.contract) as ContractNode;
     // Drop only the functions that were fully inlined; an unresolvable candidate stays for a later pass to reject.
@@ -136,6 +142,9 @@ export default class InlineMappingReturnFunctions extends AstTraversal {
         const fn = this.candidates.get(stmt.expression.identifier.name);
         const res = fn && this.resolveCall(fn, stmt.expression.parameters);
         if (res) {
+          if (this.ambiguousInlineKeys.has(inlineKey(fn!.name, stmt.expression.parameters.length))) {
+            throw new AmbiguousInlineOverloadError(stmt.expression, fn!.name, stmt.expression.parameters.length);
+          }
           this.inlined.add(fn!.name);
           for (const se of res.sideEffects) out.push(this.c(se));
           stmt.expression = this.at(new IdentifierNode(res.finalAlias), stmt);

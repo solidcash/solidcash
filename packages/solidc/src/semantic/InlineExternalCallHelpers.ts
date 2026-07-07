@@ -15,6 +15,8 @@ import {
   DoWhileNode,
   UncheckedNode,
 } from '../ast/AST.js';
+import { collectAmbiguousInlineKeys, inlineKey } from './inlineOverloadGuard.js';
+import { AmbiguousInlineOverloadError } from '../Errors.js';
 import { AddressType, Type } from '@solidcash/utils';
 import AstTraversal from '../ast/AstTraversal.js';
 import { cloneNode } from '../ast/clone.js';
@@ -45,6 +47,7 @@ const PREFIX = '__inl';
 
 export default class InlineExternalCallHelpers extends AstTraversal {
   private funcByName: Map<string, FunctionDefinitionNode> = new Map();
+  private ambiguousInlineKeys: Set<string> = new Set(); // H8: <name>/<arity> shared by >1 overload.
   private stateVarTypes: Map<string, Type> = new Map();
   private voidExternalCallHelpers: Set<string> = new Set();
   private counter = 0;
@@ -55,6 +58,7 @@ export default class InlineExternalCallHelpers extends AstTraversal {
   }
 
   visitContract(node: ContractNode): Node {
+    this.ambiguousInlineKeys = collectAmbiguousInlineKeys(node.functions);
     this.funcByName = new Map();
     for (const fn of node.functions) this.funcByName.set(fn.name, fn);
     this.stateVarTypes = new Map();
@@ -106,6 +110,9 @@ export default class InlineExternalCallHelpers extends AstTraversal {
         const helper = this.funcByName.get(name);
         if (!name.includes('.') && helper && this.voidExternalCallHelpers.has(name) && !stack.includes(name)
           && stmt.call.parameters.length === helper.parameters.length) {
+          if (this.ambiguousInlineKeys.has(inlineKey(name, stmt.call.parameters.length))) {
+            throw new AmbiguousInlineOverloadError(stmt.call, name, stmt.call.parameters.length);
+          }
           out.push(...this.inlineCall(helper, stmt.call.parameters, stack));
           continue;
         }

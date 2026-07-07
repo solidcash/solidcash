@@ -668,12 +668,14 @@ expression
     | <assoc=right> left=expression op='**' right=expression # BinaryOp
     | left=expression op=('*' | '/' | '%') right=expression # BinaryOp
     | left=expression op=('+' | '-') right=expression # BinaryOp
+    // Solidity precedence: bitwise & ^ | bind TIGHTER than comparisons/equality (unlike C), so
+    // `x & y == z` parses as `(x & y) == z`.
     | left=expression op=('>>' | '<<') right=expression # BinaryOp
-    | left=expression op=('<' | '<=' | '>' | '>=') right=expression # BinaryOp
-    | left=expression op=('==' | '!=') right=expression # BinaryOp
     | left=expression op='&' right=expression # BinaryOp
     | left=expression op='^' right=expression # BinaryOp
     | left=expression op='|' right=expression # BinaryOp
+    | left=expression op=('<' | '<=' | '>' | '>=') right=expression # BinaryOp
+    | left=expression op=('==' | '!=') right=expression # BinaryOp
     | left=expression op='&&' right=expression # BinaryOp
     | left=expression op='||' right=expression # BinaryOp
     | <assoc=right> condition=expression '?' ifTrue=expression ':' ifFalse=expression # TernaryOp

@@ -9595,15 +9595,7 @@ export default class SolidCashParser extends Parser {
 							throw this.createFailedPredicateException("this.precpred(this._ctx, 16)");
 						}
 						this.state = 2273;
-						(localctx as BinaryOpContext)._op = this._input.LT(1);
-						_la = this._input.LA(1);
-						if(!((((_la) & ~0x1F) === 0 && ((1 << _la) & 15728640) !== 0))) {
-						    (localctx as BinaryOpContext)._op = this._errHandler.recoverInline(this);
-						}
-						else {
-							this._errHandler.reportMatch(this);
-						    this.consume();
-						}
+						(localctx as BinaryOpContext)._op = this.match(SolidCashParser.T__23);
 						this.state = 2274;
 						(localctx as BinaryOpContext)._right = this.expression(17);
 						}
@@ -9618,15 +9610,7 @@ export default class SolidCashParser extends Parser {
 							throw this.createFailedPredicateException("this.precpred(this._ctx, 15)");
 						}
 						this.state = 2276;
-						(localctx as BinaryOpContext)._op = this._input.LT(1);
-						_la = this._input.LA(1);
-						if(!(_la===18 || _la===19)) {
-						    (localctx as BinaryOpContext)._op = this._errHandler.recoverInline(this);
-						}
-						else {
-							this._errHandler.reportMatch(this);
-						    this.consume();
-						}
+						(localctx as BinaryOpContext)._op = this.match(SolidCashParser.T__25);
 						this.state = 2277;
 						(localctx as BinaryOpContext)._right = this.expression(16);
 						}
@@ -9641,7 +9625,7 @@ export default class SolidCashParser extends Parser {
 							throw this.createFailedPredicateException("this.precpred(this._ctx, 14)");
 						}
 						this.state = 2279;
-						(localctx as BinaryOpContext)._op = this.match(SolidCashParser.T__23);
+						(localctx as BinaryOpContext)._op = this.match(SolidCashParser.T__24);
 						this.state = 2280;
 						(localctx as BinaryOpContext)._right = this.expression(15);
 						}
@@ -9656,7 +9640,15 @@ export default class SolidCashParser extends Parser {
 							throw this.createFailedPredicateException("this.precpred(this._ctx, 13)");
 						}
 						this.state = 2282;
-						(localctx as BinaryOpContext)._op = this.match(SolidCashParser.T__25);
+						(localctx as BinaryOpContext)._op = this._input.LT(1);
+						_la = this._input.LA(1);
+						if(!((((_la) & ~0x1F) === 0 && ((1 << _la) & 15728640) !== 0))) {
+						    (localctx as BinaryOpContext)._op = this._errHandler.recoverInline(this);
+						}
+						else {
+							this._errHandler.reportMatch(this);
+						    this.consume();
+						}
 						this.state = 2283;
 						(localctx as BinaryOpContext)._right = this.expression(14);
 						}
@@ -9671,7 +9663,15 @@ export default class SolidCashParser extends Parser {
 							throw this.createFailedPredicateException("this.precpred(this._ctx, 12)");
 						}
 						this.state = 2285;
-						(localctx as BinaryOpContext)._op = this.match(SolidCashParser.T__24);
+						(localctx as BinaryOpContext)._op = this._input.LT(1);
+						_la = this._input.LA(1);
+						if(!(_la===18 || _la===19)) {
+						    (localctx as BinaryOpContext)._op = this._errHandler.recoverInline(this);
+						}
+						else {
+							this._errHandler.reportMatch(this);
+						    this.consume();
+						}
 						this.state = 2286;
 						(localctx as BinaryOpContext)._right = this.expression(13);
 						}
@@ -11594,11 +11594,11 @@ export default class SolidCashParser extends Parser {
 	1,0,0,0,2260,2261,10,20,0,0,2261,2262,5,17,0,0,2262,2369,3,238,119,20,2263,
 	2264,10,19,0,0,2264,2265,7,17,0,0,2265,2369,3,238,119,20,2266,2267,10,18,
 	0,0,2267,2268,7,18,0,0,2268,2369,3,238,119,19,2269,2270,10,17,0,0,2270,
-	2271,7,19,0,0,2271,2369,3,238,119,18,2272,2273,10,16,0,0,2273,2274,7,20,
-	0,0,2274,2369,3,238,119,17,2275,2276,10,15,0,0,2276,2277,7,21,0,0,2277,
-	2369,3,238,119,16,2278,2279,10,14,0,0,2279,2280,5,24,0,0,2280,2369,3,238,
-	119,15,2281,2282,10,13,0,0,2282,2283,5,26,0,0,2283,2369,3,238,119,14,2284,
-	2285,10,12,0,0,2285,2286,5,25,0,0,2286,2369,3,238,119,13,2287,2288,10,11,
+	2271,7,19,0,0,2271,2369,3,238,119,18,2272,2273,10,16,0,0,2273,2274,5,24,
+	0,0,2274,2369,3,238,119,17,2275,2276,10,15,0,0,2276,2277,5,26,0,0,2277,
+	2369,3,238,119,16,2278,2279,10,14,0,0,2279,2280,5,25,0,0,2280,2369,3,238,
+	119,15,2281,2282,10,13,0,0,2282,2283,7,20,0,0,2283,2369,3,238,119,14,2284,
+	2285,10,12,0,0,2285,2286,7,21,0,0,2286,2369,3,238,119,13,2287,2288,10,11,
 	0,0,2288,2289,5,130,0,0,2289,2369,3,238,119,12,2290,2291,10,10,0,0,2291,
 	2292,5,131,0,0,2292,2369,3,238,119,11,2293,2294,10,9,0,0,2294,2295,5,132,
 	0,0,2295,2296,3,238,119,0,2296,2297,5,110,0,0,2297,2298,3,238,119,9,2298,

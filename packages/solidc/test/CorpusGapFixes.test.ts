@@ -771,6 +771,14 @@ describe('.selector on a single-assignment function-pointer local folds to the t
     expect(cc(src)).toBe('C');
   });
 
+  it('binds & ^ | tighter than comparisons/equality (Solidity precedence, not C)', () => {
+    const mk = (expr: string): string =>
+      `contract C { function f(uint x, uint y, uint z) public pure returns (bool) { return ${expr}; } }`;
+    expect(bc(mk('x & y == z'))).toBe(bc(mk('(x & y) == z')));
+    expect(bc(mk('x ^ y != z'))).toBe(bc(mk('(x ^ y) != z')));
+    expect(bc(mk('x | y < z'))).toBe(bc(mk('(x | y) < z')));
+  });
+
   it('resolves C.f (own contract qualifier) as an internal function-pointer value', () => {
     const src = 'contract C { function f() internal {} function g() internal {}'
       + ' function test() public pure returns (bool) { function () internal ptr = C.f; return ptr == C.g; } }';

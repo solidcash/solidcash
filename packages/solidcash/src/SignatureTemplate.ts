@@ -41,6 +41,18 @@ export default class SignatureTemplate {
       && baseHashType !== HashType.SIGHASH_SINGLE) {
       throw new Error(`Invalid hash type base value: 0x${baseHashType.toString(16).padStart(2, '0')}`);
     }
+
+    // L5: SIGHASH_NONE/SINGLE (and the ANYONECANPAY flag) do not commit to all outputs and/or all inputs, so the
+    // counterparty or a bot can malleate the transaction (redirect outputs, add/remove inputs). The default
+    // (SIGHASH_ALL | SIGHASH_UTXOS) is safe; warn on the opt-in unsafe modes so they aren't selected by accident.
+    const anyoneCanPay = (hashtype & HashType.SIGHASH_ANYONECANPAY) !== 0;
+    if (baseHashType !== HashType.SIGHASH_ALL || anyoneCanPay) {
+      console.warn(
+        `Warning: SignatureTemplate uses a non-default sighash (0x${hashtype.toString(16)}). `
+        + 'SIGHASH_NONE/SINGLE/ANYONECANPAY do not commit to all outputs/inputs, so the transaction can be '
+        + 'malleated by a counterparty. Prefer the default SIGHASH_ALL | SIGHASH_UTXOS unless you need otherwise.',
+      );
+    }
   }
 
   generateSignature(payload: Uint8Array, bchForkId?: boolean): Uint8Array {

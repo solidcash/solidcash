@@ -477,6 +477,13 @@ function lowerCall(call: YulFunctionCallNode): ExpressionNode {
     const bh = loc(new FunctionCallNode(loc(new IdentifierNode('blockhash'), call), [lowerValue(args[0])]), call);
     return loc(new CastNode(UINT256, bh, false), call);
   }
+  // blobhash(i) -> 0: BCH has no blobs (EIP-4844), so - like Solidity's blobhash() builtin - it is always the
+  // zero hash regardless of the index (i >= numBlobs is always true here).
+  if (name === 'blobhash' && args.length === 1) {
+    const zero = new IntLiteralNode(0n);
+    zero.type = UINT256;
+    return loc(zero, call);
+  }
   // gas() -> gasleft() (a shim on BCH - there is no gas metering; see SynthesizeBlockOracle).
   if (name === 'gas' && args.length === 0) {
     return loc(new FunctionCallNode(loc(new IdentifierNode('gasleft'), call), []), call);

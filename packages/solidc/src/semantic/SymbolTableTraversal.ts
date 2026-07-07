@@ -5883,6 +5883,17 @@ export default class SymbolTableTraversal extends AstTraversal {
       }
     }
 
+    // Namespaced library function used as a VALUE (`ptr = L.f`): rewrite to the flat registered name so the
+    // function-pointer path resolves it (single overload -> functionReference; codegen pushes its functionId).
+    if (node.expression instanceof IdentifierNode && this.expectedSymbolType === SymbolType.VARIABLE) {
+      const compoundName = `${node.expression.name}.${node.name}`;
+      if (this.functionDefinitions.has(compoundName)) {
+        const identifier = new IdentifierNode(compoundName);
+        identifier.location = node.location;
+        return this.visit(identifier);
+      }
+    }
+
     // Detect namespaced constant access (e.g. SafeMath.MAX_SAFE from a library)
     if (node.expression instanceof IdentifierNode) {
       const compoundName = `${node.expression.name}.${node.name}`;

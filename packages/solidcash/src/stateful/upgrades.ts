@@ -8,32 +8,39 @@ import Signer from '../Signer.js';
 import SignatureTemplate from '../SignatureTemplate.js';
 import { FunctionArgument } from '../Argument.js';
 import { addressToLockScript } from '../utils.js';
+import { defaultProxyArtifact } from './defaultProxyArtifact.js';
 
 // OpenZeppelin-hardhat-upgrades-style proxy deployment for stateful contracts.
 //
-// `upgrades.deployProxy(ImplFactory, initialState, { proxy })` deploys the implementation (a `delegate`-backed
-// contract), deploys the proxy that holds the live state, seeds the proxy state with `initialState`, and returns a
-// handle whose method calls forward to the implementation through a pinned delegatecall (the C1 co-spend pin).
+// `upgrades.deployProxy(ImplFactory, initialState)` deploys the implementation (a `delegate`-backed contract),
+// deploys a proxy that holds the live state, seeds the proxy state with `initialState`, and returns a handle whose
+// method calls forward to the implementation through a pinned delegatecall (the C1 co-spend pin).
 //
-// On BCH the proxy and implementation are separate on-chain contracts with a compatible state layout (unlike EVM,
-// where a generic proxy bytecode wraps any implementation), so the proxy artifact is provided in `options.proxy`.
-// The forwarding function is auto-detected: a pinned forwarder `f(bytes input, address impl, ...auth)` (preferred,
-// forces + pins the delegate co-spend) or a bare `__fallback()`. See docs/delegatecall-security.md.
+// By default the built-in `SolidCashProxy` is used: its bytecode is layout-INDEPENDENT (it never reads its own
+// state fields), so deployProxy grafts the implementation's stateLayout onto it and bakes the implementation
+// address as an immutable constructor arg. Pass `options.proxy` to use a custom proxy contract instead. On BCH the
+// proxy and implementation are separate on-chain contracts with a compatible state layout (unlike EVM, where a
+// generic proxy bytecode wraps any implementation). See docs/upgrades.md + docs/delegatecall-security.md.
 
-/** The implementation's forwarding function shape, detected from the proxy ABI. */
+// The forwarding function's calling convention, detected from the proxy ABI:
+//   'baked'    - f(bytes input): the implementation is a baked constructor arg (the default proxy). Permissionless.
+//   'param'    - f(bytes input, address impl, ...auth): the implementation is a call param (custom proxy).
+//   'fallback' - __fallback(): a bare fallback (the implementation is auto-derived from the co-spend).
+type ForwardMode = 'baked' | 'param' | 'fallback';
+
 interface ForwardShape {
   name: string;
-  pinned: boolean; // pinned: leads with (bytes input, address impl); else a bare __fallback()
+  mode: ForwardMode;
 }
 
 export interface DeployProxyOptions {
-  // The proxy contract artifact (SolidCash needs a proxy contract separate from the implementation).
-  proxy: Artifact;
+  // A custom proxy contract artifact. Omit to use the built-in layout-independent `SolidCashProxy` (recommended).
+  proxy?: Artifact;
   // Runner (Signer or NetworkProvider) to deploy + sign with. Defaults to the implementation factory's runner.
   runner?: ContractRunner;
-  // The proxy's pure-forwarding function name. Auto-detected ('f(bytes,address,...)' then '__fallback') if omitted.
+  // A custom proxy's forwarding function name. Auto-detected ('f(bytes,address,...)' then '__fallback') if omitted.
   forwardFunction?: string;
-  // Build the pinned forwarder's trailing auth args from the connected signer. Default: [pubkey, SignatureTemplate].
+  // Build a 'param'-mode forwarder's trailing auth args from the connected signer. Default: [pubkey, sigTemplate].
   auth?: (signer: Signer) => FunctionArgument[];
   // Deploy overrides for the proxy genesis / the implementation genesis (funding, fee, addressType, ...).
   proxyOverrides?: DeployContractOptions;
@@ -58,27 +65,33 @@ function toInitialState(initialState: ProxyInitialState | undefined, impl: Artif
   return out;
 }
 
-// Find the proxy's forwarding function: a pinned forwarder `f(bytes input, address impl, ...)` (preferred), else a
-// bare `__fallback()`. An explicit name overrides the search.
+// Classify a forwarding candidate by its leading params: a 'param' forwarder leads with (bytes, address); a
+// 'baked' forwarder leads with bytes only (impl is a baked constructor arg). Returns null if it is not a forwarder.
+function classifyForwarder(fn: AbiFunction): ForwardMode | null {
+  if (fn.inputs.length === 0) return null;
+  if (fn.inputs[0].type !== 'bytes') return null;
+  return fn.inputs[1]?.type === 'address' ? 'param' : 'baked';
+}
+
+// Find a custom proxy's forwarding function: a 'param' forwarder `f(bytes input, address impl, ...)` (preferred),
+// else a 'baked' forwarder `f(bytes input)`, else a bare `__fallback()`. An explicit name overrides the search.
 function detectForwardShape(proxy: Artifact, explicit?: string): ForwardShape {
   const abi = proxy.abi as readonly AbiFunction[];
   if (explicit) {
     const fn = abi.find((f) => f.name === explicit);
     if (!fn) throw new Error(`Proxy has no forwarding function '${explicit}'.`);
-    return { name: fn.name, pinned: isPinnedForwarder(fn) };
+    return { name: fn.name, mode: fn.name === '__fallback' ? 'fallback' : (classifyForwarder(fn) ?? 'fallback') };
   }
-  const pinned = abi.find(isPinnedForwarder);
-  if (pinned) return { name: pinned.name, pinned: true };
+  const param = abi.find((f) => classifyForwarder(f) === 'param');
+  if (param) return { name: param.name, mode: 'param' };
+  const baked = abi.find((f) => f.name !== '__fallback' && classifyForwarder(f) === 'baked');
+  if (baked) return { name: baked.name, mode: 'baked' };
   const fallback = abi.find((f) => f.name === '__fallback');
-  if (fallback) return { name: '__fallback', pinned: false };
+  if (fallback) return { name: '__fallback', mode: 'fallback' };
   throw new Error(
-    'Proxy has no forwarding function: expected a pinned forwarder f(bytes input, address impl, ...) or a '
+    'Proxy has no forwarding function: expected f(bytes input, address impl, ...), f(bytes input), or '
     + "'__fallback()'. Pass options.forwardFunction to name it explicitly.",
   );
-}
-
-function isPinnedForwarder(fn: AbiFunction): boolean {
-  return fn.inputs.length >= 2 && fn.inputs[0].type === 'bytes' && fn.inputs[1].type === 'address';
 }
 
 /**
@@ -129,17 +142,24 @@ export class ProxyContract<TImpl extends Artifact = Artifact> {
     if (!abiFn) throw new Error(`Implementation '${this.implementation.inner.artifact.contractName}' has no function '${implFunction}'.`);
     const implSc = this.implementation as unknown as StatefulContract;
     const proxyCall = (this.proxy.call as Record<string, (...a: unknown[]) => StatefulFunctionCall>);
+    const { name, mode } = this.forwardShape;
 
     let builder: StatefulFunctionCall;
-    if (this.forwardShape.pinned) {
+    if (mode === 'fallback') {
+      builder = proxyCall[name](...extraForwardArgs);
+    } else {
       if (!abiFn.selector) throw new Error(`Implementation function '${implFunction}' has no selector.`);
       const selector = hexToBin(abiFn.selector);
-      const implLbc = addressToLockScript(this.implementation.address);
-      const signer = this.runner instanceof Signer ? this.runner : undefined;
-      const authArgs = signer ? this.auth(signer) : [];
-      builder = proxyCall[this.forwardShape.name](selector, implLbc, ...authArgs, ...extraForwardArgs);
-    } else {
-      builder = proxyCall[this.forwardShape.name](...extraForwardArgs);
+      if (mode === 'baked') {
+        // The impl is a baked constructor arg; forward just the selector (permissionless).
+        builder = proxyCall[name](selector, ...extraForwardArgs);
+      } else {
+        // 'param': the impl is a call param; also pass its locking bytecode + the forwarder's auth args.
+        const implLbc = addressToLockScript(this.implementation.address);
+        const signer = this.runner instanceof Signer ? this.runner : undefined;
+        const authArgs = signer ? this.auth(signer) : [];
+        builder = proxyCall[name](selector, implLbc, ...authArgs, ...extraForwardArgs);
+      }
     }
     return builder.withDelegatecall(implSc, implFunction, implArgs);
   }
@@ -159,39 +179,51 @@ function wrapDispatch<TImpl extends Artifact>(handle: ProxyContract<TImpl>): Pro
   });
 }
 
+// Graft an implementation's state layout onto the layout-independent default proxy: its bytecode never reads its
+// own state fields, so it holds any implementation's state. Keep the proxy's own constructorInputs (`implementation`).
+function graftDefaultProxy(impl: Artifact): Artifact {
+  return {
+    ...defaultProxyArtifact,
+    stateLayout: { ...impl.stateLayout, constructorInputs: defaultProxyArtifact.stateLayout?.constructorInputs },
+  } as Artifact;
+}
+
 /**
  * ethers/hardhat `upgrades.deployProxy(ImplFactory, initialState?, options)`. Deploys the implementation and a
  * state-holding proxy, seeds the proxy state, and returns a handle whose method calls forward to the implementation
- * through a pinned delegatecall. `options.proxy` (the proxy artifact) is required.
+ * through a pinned delegatecall. By default the built-in `SolidCashProxy` is used (the implementation address is
+ * baked as an immutable constructor arg); pass `options.proxy` to use a custom proxy contract.
  */
 export async function deployProxy<TImpl extends Artifact>(
   implementationFactory: ContractFactory<TImpl>,
   initialState?: ProxyInitialState,
-  options?: DeployProxyOptions,
+  options: DeployProxyOptions = {},
 ): Promise<ProxyContract<TImpl>> {
-  if (!options?.proxy) {
-    throw new Error(
-      'deployProxy needs options.proxy (the proxy contract artifact). On BCH the proxy is a separate on-chain '
-      + 'contract with a layout compatible with the implementation. See docs/delegatecall-security.md.',
-    );
-  }
   const runner = options.runner ?? implementationFactory.runner;
   const auth = options.auth ?? defaultAuth;
   const implArtifact = implementationFactory.artifact;
+  const seededState = toInitialState(initialState, implArtifact);
 
   // 1. Deploy the implementation (the delegate carrying the logic). Its own state is unused - the proxy holds it.
   const implementation = await implementationFactory.connect(runner).deploy(
     ...(options.implementationOverrides ? [options.implementationOverrides] : []),
   ) as DeployedContract<TImpl>;
 
-  // 2. Deploy the proxy, seeding the live state with initialState.
-  const proxyFactory = new ContractFactory(options.proxy, runner);
-  const proxy = await proxyFactory.deploy({
-    ...options.proxyOverrides,
-    initialState: toInitialState(initialState, implArtifact),
-  });
+  // 2. Deploy the proxy, seeding the live state with initialState. Custom proxy -> its own genesis; default proxy ->
+  //    graft the implementation's layout + bake the implementation's locking bytecode as the constructor arg.
+  let proxy: DeployedContract;
+  let shape: ForwardShape;
+  if (options.proxy) {
+    proxy = await new ContractFactory(options.proxy, runner)
+      .deploy({ ...options.proxyOverrides, initialState: seededState });
+    shape = detectForwardShape(options.proxy, options.forwardFunction);
+  } else {
+    const implLbc = addressToLockScript(implementation.address);
+    proxy = await new ContractFactory(graftDefaultProxy(implArtifact), runner)
+      .deploy(implLbc, { ...options.proxyOverrides, initialState: seededState });
+    shape = { name: '__forward', mode: 'baked' };
+  }
 
-  const shape = detectForwardShape(options.proxy, options.forwardFunction);
   return wrapDispatch(new ProxyContract<TImpl>(proxy, implementation, shape, auth, runner));
 }
 

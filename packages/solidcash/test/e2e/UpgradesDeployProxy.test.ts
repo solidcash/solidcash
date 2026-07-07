@@ -9,10 +9,10 @@ import { createTestProvider, getTxOutputs } from '../test-util.js';
 
 // ethers/hardhat OpenZeppelin-upgrades-style proxy deploy for stateful contracts:
 //   const Impl = getContractFactory(implArtifact, signer);
-//   const proxy = await upgrades.deployProxy(Impl, [initialState], { proxy: proxyArtifact });
+//   const proxy = await upgrades.deployProxy(Impl, [initialState]);   // built-in default proxy
 //   await proxy.increment().send();
 // The proxy holds the state, the implementation carries the logic; calls forward through a pinned delegatecall
-// (finding C1: the co-spend is forced + the delegate identity AND function are pinned). See docs/upgrades.md.
+// (finding C1: forced co-spend + delegate identity AND function pinned). See docs/upgrades.md.
 
 // A multi-function delegate: selector dispatch makes the forwarded selector real (the pinned proxy pins it).
 const DELEGATE_IMPL = `pragma solidcash >=0.8.0;
@@ -22,8 +22,17 @@ const DELEGATE_IMPL = `pragma solidcash >=0.8.0;
     function authorize(pubkey pk, sig s) unsafe { require(checkSig(s, pk)); }
   }`;
 
-// Pinned proxy: `up(bytes input, address impl, ...)` forces + pins the delegate co-spend (the safe form).
-const PINNED_PROXY = `pragma solidcash >=0.8.0;
+// A two-data-NFT delegate: proves the default proxy bytecode is layout / dataNftCount independent.
+const DELEGATE_IMPL_MULTI = `pragma solidcash >=0.8.0;
+  contract DelegateImplMulti() {
+    bigint counter;
+    bigint total;
+    function bump(bigint by) delegate { this.counter = this.counter + by; this.total = this.total + 1; }
+    function authorize(pubkey pk, sig s) unsafe { require(checkSig(s, pk)); }
+  }`;
+
+// A custom pinned proxy: `up(bytes input, address impl, ...)` takes the impl as a call param (the 'param' mode).
+const CUSTOM_PROXY = `pragma solidcash >=0.8.0;
   contract PinnedProxy() {
     bigint counter;
     function up(bytes input, address impl, pubkey pk, sig s) external {
@@ -42,50 +51,67 @@ async function fundedSigner(): Promise<Signer> {
   return signer;
 }
 
-function proxyCounter(tx: any, categoryId: string, layout: any): bigint {
+function proxyState(tx: any, categoryId: string, layout: any): Record<string, bigint> {
   const out = getTxOutputs(tx).find(
     (o: any) => o.token?.nft?.capability === 'mutable' && o.token?.category === categoryId,
   );
-  return parsePushdataCommitment(out!.token!.nft!.commitment, layout, 0).counter as bigint;
+  return parsePushdataCommitment(out!.token!.nft!.commitment, layout, 0) as Record<string, bigint>;
 }
 
 describe('upgrades.deployProxy (ethers/hardhat OZ-upgrades style)', () => {
-  it('deploys impl + proxy, seeds state, and forwards a call via a pinned delegatecall', async () => {
+  it('uses the built-in default proxy (no proxy artifact needed) and forwards a call', async () => {
     const signer = await fundedSigner();
     const implArtifact = compileString(DELEGATE_IMPL);
-    const proxyArtifact = compileString(PINNED_PROXY);
 
     const Impl = getContractFactory(implArtifact, signer);
-    const proxy = await upgrades.deployProxy(Impl, { counter: 5n }, { proxy: proxyArtifact });
+    const proxy = await upgrades.deployProxy(Impl, { counter: 5n });   // no options.proxy
     await proxy.waitForDeployment();
 
     expect(proxy.address).toMatch(/^bchtest:|^bitcoincash:|^bchreg:/);
     expect(await proxy.getAddress()).toBe(proxy.address);
     expect(proxy.deploymentTransaction().txid).toBeDefined();
 
-    // Forward the implementation's `increment` through the proxy: counter 5 -> 6.
+    // Forward the implementation's `increment` through the default proxy: counter 5 -> 6.
     const tx = await (proxy as any).increment().send();
     expect(tx.txid).toBeDefined();
-    expect(proxyCounter(tx, proxy.proxy.categoryId, proxyArtifact.stateLayout)).toBe(6n);
+    expect(proxyState(tx, proxy.proxy.categoryId, implArtifact.stateLayout).counter).toBe(6n);
   });
 
   it('accepts an OZ-style positional initializer list', async () => {
     const signer = await fundedSigner();
     const implArtifact = compileString(DELEGATE_IMPL);
-    const proxyArtifact = compileString(PINNED_PROXY);
 
     // [42n] maps positionally to the implementation's first state variable (counter).
+    const proxy = await upgrades.deployProxy(getContractFactory(implArtifact, signer), [42n]);
+
+    const tx = await proxy.forward('increment', []).send();
+    expect(proxyState(tx, proxy.proxy.categoryId, implArtifact.stateLayout).counter).toBe(43n);
+  });
+
+  it('the default proxy is layout-independent (multi-data-NFT implementation)', async () => {
+    const signer = await fundedSigner();
+    const implArtifact = compileString(DELEGATE_IMPL_MULTI);
+
     const proxy = await upgrades.deployProxy(
-      getContractFactory(implArtifact, signer), [42n], { proxy: proxyArtifact },
+      getContractFactory(implArtifact, signer), { counter: 5n, total: 0n },
+    );
+
+    // bump(10): counter 5 -> 15, total 0 -> 1, through the SAME default proxy bytecode.
+    const tx = await (proxy as any).bump(10n).send();
+    const state = proxyState(tx, proxy.proxy.categoryId, implArtifact.stateLayout);
+    expect(state.counter).toBe(15n);
+    expect(state.total).toBe(1n);
+  });
+
+  it('accepts a custom proxy contract via options.proxy (param-impl mode)', async () => {
+    const signer = await fundedSigner();
+    const implArtifact = compileString(DELEGATE_IMPL);
+
+    const proxy = await upgrades.deployProxy(
+      getContractFactory(implArtifact, signer), { counter: 5n }, { proxy: compileString(CUSTOM_PROXY) },
     );
 
     const tx = await proxy.forward('increment', []).send();
-    expect(proxyCounter(tx, proxy.proxy.categoryId, proxyArtifact.stateLayout)).toBe(43n);
-  });
-
-  it('rejects without a proxy artifact (BCH needs a separate proxy contract)', async () => {
-    const signer = await fundedSigner();
-    const Impl = getContractFactory(compileString(DELEGATE_IMPL), signer);
-    await expect(upgrades.deployProxy(Impl, { counter: 1n })).rejects.toThrow(/options\.proxy/);
+    expect(proxyState(tx, proxy.proxy.categoryId, implArtifact.stateLayout).counter).toBe(6n);
   });
 });

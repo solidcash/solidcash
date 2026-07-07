@@ -474,7 +474,24 @@ export default class AstBuilder
       // functions are auto-marked `delegate` (Solidity has no `delegate` keyword) so a consumer that imports the
       // library can route `L.f()` to a delegatecall. Mirrors the root-compilation auto-delegate in the
       // library-only branch below. See docs/library-contracts.md (3b, `L.f()` sugar).
-      const libHasState = libCtx.stateVariableDeclaration_list().length > 0;
+      // `uint public constant ONE = ..` parses as a state variable (the constantDefinition rule has no
+      // visibility slot) but is a compile-time constant: it must not make the library look state-touching,
+      // or a constants-only pure library (gnosis Math) gets delegate+pure marked and cannot compile.
+      const libSvCtxs = libCtx.stateVariableDeclaration_list();
+      const isConstDecl = (sv: StateVariableDeclarationContext): boolean => (sv.modifier_list?.() ?? [])
+        .some((m) => m.getText() === 'constant');
+      const libHasState = libSvCtxs.some((sv) => !isConstDecl(sv));
+      // Pure library (constants only): bake those constants as namespaced constants (Math.ONE) - nothing
+      // feeds the delegate machinery. A state-touching library keeps them in its shared-state layout.
+      if (!libHasState) {
+        for (const sv of libSvCtxs) {
+          const cd = this.visitStateVariableDeclaration(sv);
+          if (cd instanceof ConstantDefinitionNode) {
+            cd.name = `${libName}.${cd.name}`;
+            constantDefinitions.push(cd);
+          }
+        }
+      }
       const libFunctions = libCtx.freeFunctionDefinition_list().map(
         (f) => {
           const func = this.visitFreeFunctionDefinition(f);
@@ -530,9 +547,12 @@ export default class AstBuilder
         // A delegate library declares the shared state layout it operates on as state vars (the EVM proxy/impl
         // storage-declaration pattern); carry them into the lowered contract so `delegate` functions resolve
         // `this.field` against that layout (docs/library-contracts.md "3b design").
+        // A constants-only pure library has no shared state: its `public constant` decls were already baked
+        // as namespaced constants above, so the lowered contract carries no layout and no delegate marking.
+        const svCtxs = lastLib.stateVariableDeclaration_list();
+        const pureLib = svCtxs.every((sv) => (sv.modifier_list?.() ?? []).some((m) => m.getText() === 'constant'));
         this.inLibraryDecl = true;
-        const libDecls = lastLib.stateVariableDeclaration_list()
-          .map((sv) => this.visitStateVariableDeclaration(sv));
+        const libDecls = pureLib ? [] : svCtxs.map((sv) => this.visitStateVariableDeclaration(sv));
         this.inLibraryDecl = false;
         const libStateVars = libDecls.filter((d): d is StateVariableNode => d instanceof StateVariableNode);
         const libCollections = libDecls.filter((d): d is CollectionNode => d instanceof CollectionNode);

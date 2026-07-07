@@ -4385,12 +4385,15 @@ export default class SymbolTableTraversal extends AstTraversal {
 
   // Inside a library function `Lib.f`, an unqualified reference to a sibling library constant (`A`) resolves to
   // `Lib.A` (library constants are stored namespaced). Only rewrites when no in-scope name shadows it, so a
-  // local/param named `A` still wins (Solidity scoping).
+  // local/param named `A` still wins (Solidity scoping). A library lowered to a contract (direct compile of a
+  // library file) keeps bare function names, so qualify by the contract's library name there instead.
   private qualifyLibrarySiblingConstant(identifier: IdentifierNode): void {
     const fnName = this.currentFunction?.name;
-    if (fnName && fnName.includes('.') && !identifier.name.includes('.')
-      && !this.symbolTables[0].get(identifier.name)) {
-      const qualified = `${fnName.split('.')[0]}.${identifier.name}`;
+    const libPrefix = fnName?.includes('.')
+      ? fnName.split('.')[0]
+      : (this.currentContract?.isLibraryContract ? this.currentContract.name : undefined);
+    if (libPrefix && !identifier.name.includes('.') && !this.symbolTables[0].get(identifier.name)) {
+      const qualified = `${libPrefix}.${identifier.name}`;
       if (this.symbolTables[0].get(qualified)) identifier.name = qualified;
     }
   }

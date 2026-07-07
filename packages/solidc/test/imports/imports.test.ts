@@ -3540,4 +3540,18 @@ describe('Imports', () => {
       expect(run).toBeDefined();
     });
   });
+
+  describe('constants-only pure library (gnosis Math shape)', () => {
+    // `uint public constant` parses as a state variable; it must not make the library look state-touching
+    // (auto-delegate + pure is invalid) and must be importable + usable via `using L for *`.
+    it('compiles the library standalone (no delegate marking, sibling constant resolves)', () => {
+      const artifact = compileFile(path.join(fixtures, 'pure_library_constants.sol'), { solidityImportCompat: true });
+      expect(artifact.contractName).toBe('PureMath');
+    });
+
+    it('compiles a consumer using the imported library and its namespaced constant', () => {
+      const artifact = compileFile(path.join(fixtures, 'pure_library_consumer.sol'), { solidityImportCompat: true });
+      expect(artifact.contractName).toBe('PureLibConsumer');
+    });
+  });
 });

@@ -110,9 +110,11 @@ inlining a delegatecall into a regular function, which rule B forbids.
   a wrong/absent one fails the pin (`Delegatecall` e2e). A **P2PKH-placeholder** `impl` is *not* pinned (a P2PKH
   UTXO authorizes nothing, so pinning it would be unsound) and still emits the `SECURITY-AUDIT C1` warning — use
   the delegate contract's real covenant address so the co-spend is forced.
-  - Remaining: `withDelegatecall` auto-derivation for a covenant-impl proxy (fill `__internal__delegateInputIndex`
-    + `impl`) so it needn't be built with a manual `StatefulTransactionBuilder`; and, as a refinement, pinning the
-    forwarded selector so a co-spent-but-wrong delegate *function* can't slip by.
+  - `withDelegatecall` **auto-derivation is done**: `proxySc.call['up'](input, impl, pk, sig).withDelegatecall(
+    implSc, 'increment', []).send()` builds a passing transaction — the SDK auto-fills
+    `__internal__delegateInputIndex` with the co-spent delegate's position (the caller passes `impl`).
+  - Remaining refinement: pin the forwarded selector so a co-spent-but-wrong delegate *function* can't slip past
+    the identity pin.
 
 ## Writing a safe proxy
 

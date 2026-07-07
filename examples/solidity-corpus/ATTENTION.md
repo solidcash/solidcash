@@ -31,14 +31,21 @@ remaining void-internal-call bug. Anchor: GenerateTargetTraversal visitUserFunct
 
 ## Deferred features (feature-scale, not yet done)
 
-- **abicoder `msg.data` / `abi.decode(msg.data[4:], ..)` (FUNDAMENTAL - EVM calldata model):** msg.data in a
-  REGULAR (non-fallback) function fails - the redeemPushSize reconstruction is only threaded into the fallback
-  path (regular entry functions + their subroutine forms don't push __internal__redeemPushSize). Threading it is
-  a codegen fix, BUT the 7 corpus files all `abi.decode(msg.data[4:], (uint,uint))` = decode EVM-ABI-encoded
-  calldata by BYTE OFFSET, which does NOT map to BCH's push-based param structure (params arrive as separate
-  data pushes, not a packed ABI blob). Faking it would silently miscompile (hollow). NOT soundly fixable without
-  an EVM-calldata emulation layer. `abi.encodeWithSelector` string->bytes4 (the clean abicoder slice) IS done
-  (ee49a0c8, +5). The rest of abicoder = this + function-type ABI + Yul + struct-with-function-fields.
+- **abicoder `msg.data` / `abi.decode(msg.data[4:], ..)` (DEFERRED - revisit, NOT fundamental):** my first pass
+  called this fundamental; it is NOT. msg.data in a REGULAR (non-fallback) function fails only because the
+  redeemPushSize reconstruction is threaded into the fallback path alone (regular entry functions + their
+  subroutine forms never push __internal__redeemPushSize). TWO sound angles were dismissed too fast:
+  (A) `return msg.data` / `keccak256(msg.data)` in a regular function is a real, SOUND value on BCH
+  (OP_INPUTBYTECODE + redeemPushSize reconstructs the input's unlocking bytecode) - it just needs redeemPushSize
+  threaded into regular entry functions + their internal-call subroutines (same pre-populate as
+  emitEntryPointFunctionDefine ~1208, missing in emitFunctionDefine).
+  (B) `abi.decode(msg.data[k : k + N*32], (types))` on a function's OWN calldata == the function's DECLARED
+  params - the values are ALREADY on the stack, so a param-aligned msg.data slice/decode can DESUGAR straight to
+  the declared params (no EVM-ABI byte decode, no reconstruction). e.g. abi_decode_slice.sol: `f(uint a,uint b)`
+  decodes `msg.data[4:]`->(a,b), `msg.data[4:4+32]`->a, `msg.data[4+32:4+64]`->b. A pre-semantic desugar keyed on
+  (msg.data slice with constant param-aligned bounds) -> the matching declared param(s) is byte-sound.
+  The genuinely-harder remainder = abi.decode/encode of COMPLEX types (dynamic arrays / structs) THROUGH msg.data
+  (EVM-ABI memory layout). `abi.encodeWithSelector` string->bytes4 (the clean slice) is DONE (ee49a0c8, +5).
 - **Whole-struct-to-mapping copy `m[k] = s`** and **state-flattened struct array-field write `s.a = x`**:
   in the parallel agent's mapping-struct flattening area. `s.a = x` is byte-sound + trivially addable but +0
   alone (multi-wall on `m[k] = s`). Deferred to avoid a 0-yield change in the contested area.

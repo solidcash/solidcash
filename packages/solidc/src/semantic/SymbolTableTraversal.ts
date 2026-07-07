@@ -257,6 +257,7 @@ export default class SymbolTableTraversal extends AstTraversal {
 
   private conditionalRefNames: Set<string> = new Set();
   private insideConstructor: boolean = false;
+  private tupleStateTempCounter: number = 0;
   private stateVariableMap: Map<string, StateVariableNode> = new Map();
   private collectionMap: Map<string, CollectionNode> = new Map();
   private structMap: Map<string, StructType> = new Map();
@@ -4197,7 +4198,55 @@ export default class SymbolTableTraversal extends AstTraversal {
     return node;
   }
 
+  // `(x, y) = <rhs>` where some target is a STATE variable: tuple codegen writes stack slots, which state
+  // vars do not have. Rewrite to the hand-written form - capture the RHS into fresh temps, then assign each
+  // target sequentially (visitAssign routes state targets to StateAssign). Temps keep swaps clobber-safe.
+  // Struct/array/mapping targets keep their storage-pointer rebinding semantics and are left alone.
+  private desugarStateTupleAssignment(node: TupleAssignmentNode): Node | undefined {
+    if (node.elements.length === 0 || !node.elements.every((e) => e.existing && e.name)) return undefined;
+    if (node.tupleExpressions && node.tupleExpressions.length !== node.elements.length) return undefined;
+    const syms = node.elements.map((e) => this.symbolTables[0].get(e.name!));
+    if (!syms.every((s) => s?.type)) return undefined;
+    if (!syms.some((s) => s!.symbolType === SymbolType.STATE_VARIABLE)) return undefined;
+    const plainScalar = (t: Type): boolean => !(t instanceof StructType)
+      && !(t instanceof ArrayType) && !(t instanceof MappingType) && !(t instanceof TupleType);
+    if (!syms.every((s) => plainScalar(s!.type!))) return undefined;
+
+    const stmts: StatementNode[] = [];
+    const tmpNames = node.elements.map(() => `__tuple_state_${this.tupleStateTempCounter++}`);
+    if (node.tupleExpressions) {
+      node.tupleExpressions.forEach((expr, i) => {
+        const def = new VariableDefinitionNode(syms[i]!.type!, [], tmpNames[i], expr);
+        def.location = node.location;
+        stmts.push(def);
+      });
+    } else {
+      // Single tuple-valued RHS (e.g. a multi-return call): destructure into temp declarations first.
+      const decl = new TupleAssignmentNode(
+        node.elements.map((_, i) => ({ name: tmpNames[i], type: syms[i]!.type! })),
+        node.tuple, node.parenthesised,
+      );
+      decl.location = node.location;
+      stmts.push(decl);
+    }
+    node.elements.forEach((e, i) => {
+      const target = new IdentifierNode(e.name!);
+      target.location = node.location;
+      const value = new IdentifierNode(tmpNames[i]);
+      value.location = node.location;
+      const assign = new AssignNode(target, value);
+      assign.location = node.location;
+      stmts.push(assign);
+    });
+    const block = new BlockNode(stmts);
+    block.location = node.location;
+    return this.visit(block);
+  }
+
   visitTupleAssignment(node: TupleAssignmentNode): Node {
+    const stateDesugar = this.desugarStateTupleAssignment(node);
+    if (stateDesugar) return stateDesugar;
+
     // Disallow mixing new declarations with existing-lvalue slots in one tuple assignment.
     const hasDeclaration = node.elements.some((e) => !e.skip && !e.existing);
     const hasExisting = node.elements.some((e) => e.existing);

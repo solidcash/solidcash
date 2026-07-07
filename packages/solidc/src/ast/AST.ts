@@ -98,6 +98,9 @@ export class SourceFileNode extends Node {
   // Per imported state-touching library: its declared state-var layout (libraryName -> state vars). Set by the
   // ImportResolver; used to check a consumer's layout matches a delegate library it calls. See library-contracts.md.
   importedLibraryLayouts: Map<string, StateVariableNode[]> = new Map();
+  // Names of libraries declared in this file or merged from imports. `using L for T` on a library whose
+  // functions were all inlined away (storage-pointer fns) or that is empty must not read as undefined.
+  declaredLibraryNames: string[] = [];
 
   constructor(
     public contract: ContractNode,

@@ -3554,4 +3554,16 @@ describe('Imports', () => {
       expect(artifact.contractName).toBe('PureLibConsumer');
     });
   });
+
+  describe('using-for on a known library with no registrable functions', () => {
+    it('accepts an empty library as a no-op binding', () => {
+      const src = 'library L {}\ncontract C { using L for *; function f() public pure { require(true); } }';
+      expect(compileString(src, { solidityImportCompat: true }).contractName).toBe('C');
+    });
+
+    it('still rejects an unknown library name', () => {
+      const src = 'contract C { using Nope for *; function f() public pure { require(true); } }';
+      expect(() => compileString(src, { solidityImportCompat: true })).toThrow(/Nope/);
+    });
+  });
 });

@@ -269,6 +269,7 @@ export default class SymbolTableTraversal extends AstTraversal {
   private conditionalRefNames: Set<string> = new Set();
   private insideConstructor: boolean = false;
   private tupleStateTempCounter: number = 0;
+  private knownLibraryNames: Set<string> = new Set();
   private stateVariableMap: Map<string, StateVariableNode> = new Map();
   private collectionMap: Map<string, CollectionNode> = new Map();
   private structMap: Map<string, StructType> = new Map();
@@ -438,6 +439,8 @@ export default class SymbolTableTraversal extends AstTraversal {
       // Check for circular inheritance
       this.checkCircularInheritance(iface, new Set());
     }
+
+    this.knownLibraryNames = new Set(node.declaredLibraryNames);
 
     // Pre-register free functions in global scope (so they can call each other and be called from contract)
     for (const func of node.freeFunctions) {
@@ -6195,6 +6198,10 @@ export default class SymbolTableTraversal extends AstTraversal {
       const prefix = `${node.libraryName}.`;
       const found = [...this.functionDefinitions.keys()].filter((k) => k.startsWith(prefix));
       if (found.length === 0) {
+        // A KNOWN library with no registrable functions is a no-op binding, not an error: the library may
+        // be empty (`library L {}`) or all its functions inlined away (storage-pointer fns cannot stand
+        // alone as subroutines). Only an unknown name is a genuine undefined reference.
+        if (this.knownLibraryNames.has(node.libraryName)) return node;
         throw new UsingForUndefinedLibraryError(node, node.libraryName);
       }
       const bindings = this.usingForBindings.get(typeKey) ?? [];

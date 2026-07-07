@@ -432,6 +432,7 @@ export default class AstBuilder
     // Process all library definitions (there may be multiple before the contract)
     const allLibDefs = ctx.libraryDefinition_list();
     const allLibEventDefs: EventDefinitionNode[] = [];
+    const declaredLibraryNames: string[] = [];
     for (const libCtx of allLibDefs) {
       const libName = libCtx.Identifier().getText();
       this.libraryNames.add(libName);
@@ -459,6 +460,8 @@ export default class AstBuilder
       for (const erCtx of libCtx.errorDefinition_list()) {
         errorDefinitions.push(this.visitErrorDefinition(erCtx));
       }
+
+      declaredLibraryNames.push(libName);
 
       // Library constants get namespaced names (e.g. SafeMath.MAX_VALUE)
       const libConstants = libCtx.constantDefinition_list().map(
@@ -537,6 +540,7 @@ export default class AstBuilder
       );
       node.isLibrary = true;
       node.libraryName = libName;
+      node.declaredLibraryNames = declaredLibraryNames;
       node.location = Location.fromCtx(ctx);
 
       // Lower the primary library to a stateless contract when it has explicitly public/external functions, so
@@ -596,6 +600,7 @@ export default class AstBuilder
       errorDefinitions, allLibEventDefs, interfaceDefinitions, freeFunctions, imports, usingForDirectives,
     );
     sourceFileNode.importedContracts.push(...contracts.slice(0, -1));
+    sourceFileNode.declaredLibraryNames = declaredLibraryNames;
     sourceFileNode.location = Location.fromCtx(ctx);
     return sourceFileNode;
   }

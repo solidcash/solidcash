@@ -77,6 +77,7 @@ export class ImportResolver {
     ast.interfaceDefinitions = [...new Set(ast.interfaceDefinitions)];
     ast.freeFunctions = [...new Set(ast.freeFunctions)];
     ast.usingForDirectives = [...new Set(ast.usingForDirectives)];
+    ast.declaredLibraryNames = [...new Set(ast.declaredLibraryNames)];
 
     return ast;
   }
@@ -91,6 +92,9 @@ export class ImportResolver {
     if (source.isLibrary && source.libraryContract && source.libraryName) {
       target.importedLibraryLayouts.set(source.libraryName, source.libraryContract.stateVariables);
     }
+    // Library names travel with every import kind: `using L for T` must know L exists even when all of
+    // L's functions were inlined away (storage-pointer fns) or L is empty.
+    target.declaredLibraryNames.push(...source.declaredLibraryNames);
     switch (importNode.kind) {
       case 'wildcard':
         // Import everything: contract, constants, enums, structs, types,

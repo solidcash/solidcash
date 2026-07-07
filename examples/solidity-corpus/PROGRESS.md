@@ -512,3 +512,22 @@ foldGenesisExpr can resolve the getter value at compile time; unlocks much of De
 fallback low-level-call cluster (external-target x26); mapping-entry nested-array READS (unlocks
 nested_arrays_mappings x6 + getter synthesis re-enable); memory 2D arrays (task #1); event .selector
 library-event namespacing.
+
+## Session 2026-07-07f part 5 (ctor-genesis + value folds + multi-deploy, 3649->3660)
+- 908bca9b CONSTRUCTOR-GENESIS FOLD + VALUE-RETURNING CALL FOLDS (+7): (a) child ctor writes fold into the
+  deploy genesis (covenant previously verified TYPE DEFAULTS - silent divergence for arg-initialized ctors;
+  unfoldable ctor sets ctorFoldFailed which BLOCKS later call-folds from defaulting unwritten reads = closes
+  a latent P3b soundness gap); (b) tryFoldDeployCall seeds from genesis-so-far + folds a trailing return ->
+  `r = c.total()` resolves to the genesis expr in the parent (pre-analysis child bodies read/write state as
+  BARE identifiers - now handled; ArrayAccess added to foldGenesisExpr; fold-embedded clones PICK-only via
+  conditionalRefNames, NOT just opRolls.delete - later source uses re-mark otherwise); (c) emitContractDeployment
+  bakes ctor args into the child ADDRESS only for CONTRACT-LEVEL params - Solidity-style constructor(args) are
+  NOT redeem data (SDK instantiates with no constructorInputs) - this mismatch broke every factory deploy of an
+  arg-carrying Solidity child (found via probe-trace debugging: child master lb EQUALVERIFY aa20ee05!=aa209907).
+  NEW CtorGenesisFold e2e: trace-derived genesis (no explicit childInitialState), folded getter requires
+  in-covenant, total=s*2+3 landed+parsed. 1861 compiler + 61 deploy e2e.
+- b06870b1 multi-site deploys + fold relaxations (+4): one deploy block-slot PER `new C()` site (2nd site
+  crashed "Block slot not found: deploy[1]"); deploy-local REASSIGNMENT re-binds fold tracking; require()
+  skipped by the fold anywhere in the callee (documented deploy-fold semantics).
+DeployThenCall bucket largely cleared; remainder = external calls inside the callee (external_getter_2,
+by-design unfoldable v1) + Base(x, f(s)) parent-invocation ctors w/ internal calls (arrays_in_constructors).

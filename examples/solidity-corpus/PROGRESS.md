@@ -504,3 +504,11 @@ need address(L)+delegatecall+Yul .slot (multi-wall).
   params excluded from call-site arg checks (child's own pass mutates the SHARED ctor node first).
   Unblocked external_call_indirect x5 + inheritance calldata pair + function_type_copy + instantiate.
 UnequalType bucket CLOSED (+24 of 31): remainder = fixed-point literal coercion x3, abicoder x2, deep x2.
+- 664d3e07 int literal -> fixed-point implicit conversion (+2): re-literal as a decimal of the fixed type
+  (codegen scales by decimals); b[0] += 1 and -3.5 % 2 forms. Variable int->fixed (uint64 + ufixed) stays
+  rejected (needs runtime scaling). VM-verified. 3647 -> 3649.
+NEXT-SESSION VEINS (triaged, in task list): deploy-fold RETURN VALUES (r = c.m_x() on a fresh deploy -
+foldGenesisExpr can resolve the getter value at compile time; unlocks much of DeployThenCall x18);
+fallback low-level-call cluster (external-target x26); mapping-entry nested-array READS (unlocks
+nested_arrays_mappings x6 + getter synthesis re-enable); memory 2D arrays (task #1); event .selector
+library-event namespacing.

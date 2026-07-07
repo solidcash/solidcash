@@ -5671,6 +5671,19 @@ export default class SymbolTableTraversal extends AstTraversal {
       }
     }
 
+    // `this.<fn>.address` -> the contract's own address (the fn is hosted by this contract), i.e. `address(this)`
+    // = the locking bytecode of the input being spent. Byte-identical to a hand-written `address(this)`.
+    if (node.expression instanceof StateAccessNode && node.name === 'address'
+      && this.functionDefinitions.has(node.expression.name)) {
+      const idx = new NullaryOpNode(NullaryOperator.INPUT_INDEX);
+      idx.location = node.location;
+      const lb = new UnaryOpNode(UnaryOperator.INPUT_LOCKING_BYTECODE, idx);
+      lb.location = node.location;
+      const cast = new CastNode(new AddressType(false), lb, false);
+      cast.location = node.location;
+      return cast;
+    }
+
     // Bare `<fn>.selector` -> the own/inherited function's 4-byte selector (mirrors `this.<fn>.selector`).
     if (node.name === 'selector' && node.expression instanceof IdentifierNode) {
       const fn = this.functionDefinitions.get(node.expression.name)?.[0];

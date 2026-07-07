@@ -689,6 +689,7 @@ expression
 
 memberName
     : '.' Identifier
+    | '.' 'address'    // `.address` on a function pointer (address is a keyword, so not an Identifier)
     | '.value'
     | '.lockingBytecode'
     | '.tokenCategory'

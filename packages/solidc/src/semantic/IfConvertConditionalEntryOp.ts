@@ -65,18 +65,17 @@ interface MergedTarget {
  * covenant machinery. Runs pre-semantic so SymbolTable/TypeCheck resolve and type the new nodes.
  *
  * Scoped to the sound, bounded shape: a branch with NO else whose body is only scalar mapping deletes/writes. A
- * single op is always safe (the condition runs once, exactly as before); multiple ops are converted only when the
- * condition is side-effect-free (no calls), since each predicated write re-evaluates it. Anything else is left
- * untouched (falls through to existing behavior, no regression). The early-return form (remove()'s ops after a
- * guard) is a separate, deeper case and is not handled here.
+ * single op is always safe (the condition runs once); multiple ops are converted only when the condition is
+ * side-effect-free (no calls), since each predicated write re-evaluates it. Anything else is left untouched. The
+ * early-return form (remove()'s ops after a guard) is not handled here.
  *
- * An if/else branch whose arms are scalar entry ops plus trailing LOCAL array ops (a chunk-array push/pop that
- * CacheDynamicArrayInLoop already lowered to a local, since this pass runs after it) is also handled - the
- * IterableMapping set() shape `if(inserted[k]){values[k]=v}else{inserted[k]=true;values[k]=v;idx[k]=len;keys.push(k)}`.
- * The condition is hoisted to a bool local (the predicated writes mutate the mappings the condition reads, so it
- * must be evaluated once), each scalar target is predicated `m[k] = cond ? ifValue : elseValue` (a missing arm
- * preserves the current value), and the local array ops stay in a slimmed `if(cond)` / `if(!cond)` block (a
- * stack-neutral local op works inside a branch). Result: all entry writes are unconditional (stable output count).
+ * An if/else branch whose arms are scalar entry ops plus trailing LOCAL array ops (a chunk-array push/pop
+ * CacheDynamicArrayInLoop already lowered to a local) is also handled - the IterableMapping set() shape
+ * `if(inserted[k]){values[k]=v}else{inserted[k]=true;values[k]=v;idx[k]=len;keys.push(k)}`. The condition is
+ * hoisted to a bool local (evaluated once: the predicated writes mutate the mappings it reads), each scalar
+ * target is predicated `m[k] = cond ? ifValue : elseValue` (a missing arm preserves the current value), and the
+ * local array ops stay in a slimmed `if(cond)` / `if(!cond)` block (a stack-neutral local op works in a branch).
+ * Result: all entry writes are unconditional (stable output count).
  */
 export default class IfConvertConditionalEntryOp extends AstTraversal {
   // Mappings are CollectionNodes (node.collections), not stateVariables, pre-semantic.

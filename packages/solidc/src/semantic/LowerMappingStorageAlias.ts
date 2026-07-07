@@ -35,7 +35,7 @@ interface MapAlias { cond?: ExpressionNode; a: string; b?: string; }
  *   m[k] = v  (write, ArrayAssign) -> x[k] = v    |  if (c) { a[k] = v; } else { b[k] = v; }
  * Only a bare-mapping or ternary-of-bare-mappings initializer is handled; any other shape (a reassigned pointer,
  * a whole-mapping use) is left untouched for a later pass to reject. Runs after InlineStoragePointerCalls and
- * before the symbol table, so the rewritten accesses resolve as ordinary state-mapping reads/writes.
+ * before the symbol table.
  */
 export default class LowerMappingStorageAlias extends AstTraversal {
   private aliases = new Map<string, MapAlias>();

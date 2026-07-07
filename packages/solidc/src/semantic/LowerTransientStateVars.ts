@@ -27,13 +27,13 @@ class ReferenceFinder extends AstTraversal {
 }
 
 /**
- * Lower `transient` state vars (EIP-1153) to a per-function zero-init local. Runs AFTER inheritance flattening,
- * so a transient var declared in a base contract is lowered into the DERIVED contract's functions too (the base's
- * transient vars are merged onto `contract.transientStateVars` by InheritanceExpansion).
+ * Lower `transient` state vars (EIP-1153) to a per-function zero-init local. Runs AFTER inheritance flattening so
+ * base-declared transient vars (merged onto `contract.transientStateVars` by InheritanceExpansion) are lowered
+ * into the DERIVED contract's functions too.
  *
  * BCH has no transaction-scoped contract storage, and one spend = one function execution with no cross-call, so
- * the value simply resets to 0 at the start of each spend (matching transient's zero-at-tx-start semantics) and
- * never persists. Warned per var.
+ * the value resets to 0 at the start of each spend (transient's zero-at-tx-start semantics) and never persists.
+ * Warned per var.
  */
 export default function lowerTransientStateVars(ast: SourceFileNode): SourceFileNode {
   lowerContract(ast.contract);

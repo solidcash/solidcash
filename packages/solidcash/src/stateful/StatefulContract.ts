@@ -418,8 +418,7 @@ function extractCommitmentsFromTrace(
  * expression), picks the oracle input index (base + slot ordinal), then does OP_DUP OP_UTXOTOKENCATEGORY.
  * At that OP_UTXOTOKENCATEGORY the stack top is the duplicated index (stack[top] === stack[top-1]) and n sits
  * directly below (stack[top-2]); an index in the reserved blockhash slot range [base, base+slotCount)
- * identifies the read. So n never has to be re-derived in JS - it is read straight off the covenant's own
- * computation. (A probe without a given oracle co-spent still reaches this step - it aborts only when
+ * identifies the read. (A probe without a given oracle co-spent still reaches this step - it aborts only when
  * OP_UTXOTOKENCATEGORY executes on the missing input - so callers extract even from a failing probe.)
  */
 function extractBlockhashReadsFromTrace(
@@ -3480,14 +3479,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           ) ?? [];
         }
 
-        // Deploy-fold: the deploy covenant verifies the child's genesis at outputs after the factory
-        // state and entries. When a freshly-deployed local was configured in the same tx, that genesis
-        // is the child's post-call state, computed on-chain by the covenant. Re-run with the derived
-        // factory state so the trace reaches the child genesis verify, then read the expected commitment
-        // (captured before the verify) for each child data NFT. Falls back to the static initial state
-        // for a plain deploy that lands at default. Note: a deploy function that writes mapping entries
-        // would abort at the entry verify before reaching the child verify (folded deploy + entries
-        // unsupported for now).
+        // Deploy-fold: the deploy covenant verifies the child's genesis at outputs after the factory state
+        // and entries; with a same-tx `child.foo(args)` folded in, that genesis is the child's post-call state.
+        // Re-run with the derived factory state so the trace reaches the child genesis verify, then read the
+        // expected commitment (captured before the verify) for each child data NFT. Falls back to the static
+        // initial state for a plain deploy at default. A deploy that writes mapping entries aborts at the entry
+        // verify before the child verify (folded deploy + entries unsupported for now).
         let childCommitments: string[] = [];
         if (childDataNftCount > 0 && commitmentHexes && extraOutputs) {
           const extraBase = 1 + requiredNftIndices.length + bhProbeCoSpends.length;

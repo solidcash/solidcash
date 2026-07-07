@@ -1176,8 +1176,7 @@ export class StatefulTransactionBuilder {
     // consecutive block-layout offsets; the covenant reads each existing/written slot's output at its FIXED
     // offset. A slot that produces no output (soft-delete of an ABSENT key, or an alias-skipped write) would
     // shift a later real output down and desync that fixed read, so emit a plain placeholder output for any
-    // skipped slot below the fill threshold (the last real entry output, or the whole entry region when a
-    // trailing output - a chunk write, transfer, event - sits past it and must land at its fixed offset).
+    // skipped slot below the fill threshold (see entryPlaceholderFillThreshold).
     const sortedEntries = [...this.entryNfts].sort((a, b) => a.slotIndex - b.slotIndex);
     const fillThreshold = this.entryPlaceholderFillThreshold();
     for (const entry of sortedEntries) {

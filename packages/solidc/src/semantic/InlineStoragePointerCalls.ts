@@ -77,11 +77,10 @@ export default class InlineStoragePointerCalls extends AstTraversal {
     // A struct-storage-pointer library fn is inlined at every call site and cannot stand alone (its `map__field`
     // accesses are dangling until renamed to the caller's `<arg>__field`), so drop the inlined ones.
     node.freeFunctions = (node.freeFunctions ?? []).filter((f) => !this.inlinedFns.has(f.name));
-    // A `using Lib for T` directive whose library functions were ALL inlined-and-dropped is vestigial: the
-    // method calls it routed were desugared to `Lib.f(recv, ..)` at parse and then inlined. Drop it so the
-    // semantic using-for check does not fail on the now-empty library. Only drop when the library was actually
-    // inlined here (a genuinely-undefined library, with no functions ever, must still raise its error). (The
-    // check reads the CONTRACT node's copy of the directives, so filter that one.)
+    // A `using Lib for T` directive whose library functions were ALL inlined-and-dropped is vestigial (its method
+    // calls were desugared to `Lib.f(recv, ..)` then inlined). Drop it so the using-for check does not fail on the
+    // now-empty library, but only when the library was actually inlined (a genuinely-undefined library must still
+    // raise its error). Filter the CONTRACT node's copy, which the check reads.
     if (node.contract?.usingForDirectives?.length) {
       const remaining = [...node.freeFunctions, ...node.contract.functions].map((f) => f.name);
       const inlined = [...this.inlinedFns];
@@ -155,9 +154,8 @@ export default class InlineStoragePointerCalls extends AstTraversal {
     return fn.parameters.some((p) => p.modifier.includes(Modifier.STORAGE) && p.type instanceof StructType);
   }
 
-  // A value-returning function whose body is a single `return <expr>;` and that takes a storage-pointer param.
-  // Such a function has no standalone value representation (the storage param is a compile-time reference), so
-  // its calls are inlined by substituting the return expression at the call site.
+  // A value-returning fn with a single `return <expr>;` body and a storage-pointer param: no standalone value
+  // representation (the storage param is a compile-time reference), so calls inline by substituting the return expr.
   private isSingleReturnStoragePointerFn(fn: FunctionDefinitionNode): boolean {
     if (!fn.body || fn.returnTypes.length === 0) return false;
     // Non-standalone: takes a storage-pointer param OR returns a storage pointer (a mapping) - the returned
@@ -215,11 +213,9 @@ export default class InlineStoragePointerCalls extends AstTraversal {
     return found;
   }
 
-  // H7: whether `name` is the target of ANY write in the body - a local reassignment (AssignNode) OR a state /
-  // mapping / array write (StateAssign / MappingAssign / StateArrayAssign / MappingFieldAssign). Solidity value
-  // params are copies; aliasing a value arg to `name` when the body mutates `name` (e.g. a helper that does
-  // `this.accIndex = ...; snapshot[me] = bal + accIndex;`) makes the param read the POST-mutation value. Used to
-  // fall back to a fresh temp (snapshot) instead of aliasing.
+  // H7: whether `name` is the target of ANY write in the body - a local reassignment (AssignNode) or a state /
+  // mapping / array write. Solidity value params are copies; aliasing a value arg to `name` when the body mutates
+  // `name` would make the param read the POST-mutation value, so callers fall back to a fresh temp instead.
   private isWritten(body: Node | undefined, name: string): boolean {
     let found = false;
     this.walk(body, (n) => {
@@ -306,11 +302,10 @@ export default class InlineStoragePointerCalls extends AstTraversal {
         else subs.set(p.name, cloneNode(arg) as ExpressionNode);
       } else if (arg instanceof IdentifierNode && !this.isReassigned(callee.body, p.name)
         && !this.isWritten(callee.body, arg.name)) {
-        // Substitute a simple identifier value arg by NAME (no local binding). A mapping key that is a caller
-        // PARAMETER thus stays a parameter in the inlined body, so the SDK resolves it directly from call args;
-        // a local binding (`__sp0_k = k`) would make the key an opaque expression the SDK cannot locate on the
-        // read side. Guarded on the param not being reassigned in the callee AND the arg name not being written
-        // (state/local) in the callee - else the alias would break value-copy semantics (H7).
+        // Substitute a simple identifier value arg by NAME (no local binding): a mapping key that is a caller
+        // PARAMETER stays a parameter in the inlined body, so the SDK resolves it from call args (a `__sp0_k = k`
+        // binding would make the key an opaque expression it cannot locate). Guarded on the param not being
+        // reassigned AND the arg not being written in the callee, else the alias breaks value-copy semantics (H7).
         rename.set(p.name, arg.name);
         inlinedArg.add(p.name);
       } else {

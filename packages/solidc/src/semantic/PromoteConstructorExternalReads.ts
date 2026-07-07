@@ -13,13 +13,10 @@ import { AddressType } from '@solidcash/utils';
 import AstTraversal from '../ast/AstTraversal.js';
 
 /**
- * A Solidity constructor can read a value from another contract - `token0 = IERC20(pool.token0())` - because the
- * constructor runs on-chain at deploy. BCH has no on-chain constructor: immutables are computed off-chain and
- * baked into the contract's initial state. So a zero-arg external read on an interface-typed state var IN THE
- * CONSTRUCTOR is hoisted to a synthesized deploy input (an extra constructor parameter). The deployer/SDK
- * resolves it off-chain (reads pool.token0()) and supplies it at deploy - matching Solidity's deploy-time-read
- * intent. This lets a contract whose immutable external-call targets derive from such a read compile and deploy
- * (the read result becomes a pinnable baked value, like any other constructor-provided immutable).
+ * A Solidity constructor can read a value from another contract - `token0 = IERC20(pool.token0())`. BCH has no
+ * on-chain constructor: immutables are computed off-chain and baked into the contract's initial state. So a
+ * zero-arg external read on an interface-typed state var IN THE CONSTRUCTOR is hoisted to a synthesized deploy
+ * input (an extra constructor parameter); the deployer/SDK resolves it off-chain and supplies it at deploy.
  *
  * Runs before semantic analysis so the synthesized param + its uses resolve normally. Only the constructor is
  * visited (a read in a normal function is a real on-chain external call, handled by SynthesizeExternalAddressLocals).

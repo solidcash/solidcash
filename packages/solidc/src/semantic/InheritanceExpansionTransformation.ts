@@ -464,9 +464,8 @@ function resolveSuperAndBaseCalls(contract: ContractNode, linearization: string[
   const references = new Map<string, Set<string>>(); // function name -> preserved impls it calls
 
   // Validate explicit `override(A, B)` base lists: each named base must be a base of this contract. A CONTRACT
-  // base must also have a resolvable super implementation (for `super.f()`); an INTERFACE base (which remains in
-  // `implements` after expansion) only declares the function - no implementation to resolve - so it is accepted
-  // as long as it is a directly-implemented interface.
+  // base must also have a resolvable super impl (for `super.f()`); an INTERFACE base (still in `implements` after
+  // expansion) only declares the function, so a directly-implemented interface is accepted with no impl to resolve.
   for (const fn of contract.functions) {
     for (const base of fn.overrideBases) {
       if (contract.implements.includes(base)) continue; // interface base: declares the function, no super impl
@@ -659,8 +658,7 @@ function mergeNamedList(
       }
 
       // Overridable members (modifiers) cannot overload: a child's OWN same-name definition overrides the
-      // parent's (virtual/override in valid Solidity), so the most-derived one wins and the parent's is dropped.
-      // Inherited functions that reference it resolve to the child's override.
+      // parent's (most-derived wins), so the parent's is dropped and references resolve to the child's override.
       if (overridable && !childOrigin) {
         continue;
       }

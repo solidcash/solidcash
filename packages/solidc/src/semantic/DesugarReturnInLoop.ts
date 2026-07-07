@@ -45,8 +45,7 @@ export default class DesugarReturnInLoop extends AstTraversal {
 
   visitFunctionDefinition(node: FunctionDefinitionNode): Node {
     if (!node.body || node.returnTypes.length === 0) return node;
-    // Entry-point (public/external) functions already have a non-corrupting return-in-loop path (the blob-stash
-    // in GTT.visitReturn); only internal/private functions fall to the broken raw cleanup, so target those.
+    // Entry-points already have a non-corrupting path; only internal/private hit the broken raw cleanup.
     if (node.isEntryPoint) return node;
     if (!this.hasReturnInLoop(node.body, false)) return node;
 

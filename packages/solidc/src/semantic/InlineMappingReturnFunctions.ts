@@ -41,9 +41,8 @@ interface Resolved { sideEffects: StatementNode[]; finalAlias: string; }
  *
  *   mapping storage m = f(); m[2]=17;   ->   a[1]=42; b[1]=84; mapping storage m = b; m[2]=17;   ->  ...; b[2]=17;
  *
- * Runs after InlineStoragePointerCalls (multi-statement bodies are not single-return, so that pass leaves them)
- * and before LowerMappingStorageAlias. Only straight-line bodies whose args are plain mapping identifiers are
- * resolved; anything else is left for a later pass to reject.
+ * Runs after InlineStoragePointerCalls and before LowerMappingStorageAlias. Only straight-line bodies whose args
+ * are plain mapping identifiers are resolved; anything else is left for a later pass to reject.
  */
 export default class InlineMappingReturnFunctions extends AstTraversal {
   private candidates = new Map<string, FunctionDefinitionNode>();

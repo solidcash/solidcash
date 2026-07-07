@@ -28,12 +28,12 @@ import { cloneNode } from '../ast/clone.js';
  *   SAME-ADDRESS VARYING:   function() external f = cond ? IC(addr).a : IC(addr).b;
  *                           f(args) -> IC(addr).a(args) with a RUNTIME selector `cond ? IC.a.selector : IC.b.selector`
  *
- * The fixed case reduces to the tested external call (sound by reduction). The varying case is the same address
- * with a runtime method choice: ONE co-spend of the target, the covenant asserting the co-spent selector equals
- * the runtime selector (bound to cond) - avoiding the two-slot duplicate co-spend of an if-conversion.
+ * The fixed case reduces to the tested external call (sound by reduction). The varying case is ONE co-spend of
+ * the target, the covenant asserting the co-spent selector equals the runtime selector (bound to cond) -
+ * avoiding the two-slot duplicate co-spend of an if-conversion.
  *
- * Self pointers (`this.f`) are handled earlier as internal OP_INVOKE (StateAccess, not a FieldAccess over an
- * interface instance). A pointer that is reassigned, stored, or passed is left untouched.
+ * Self pointers (`this.f`) are handled earlier as internal OP_INVOKE. A pointer that is reassigned, stored, or
+ * passed is left untouched.
  */
 export default class DesugarExternalFunctionPointers extends AstTraversal {
   private aliases = new Map<string, ExpressionNode>();

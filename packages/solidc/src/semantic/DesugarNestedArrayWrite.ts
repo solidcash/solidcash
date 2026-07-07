@@ -27,17 +27,16 @@ import { createDefaultValueExpression } from '../ast/defaults.js';
 
 /**
  * Lowers a write to a NESTED local (memory) array element, e.g. `b[i][j] = v` where `b` is a local/param
- * `T[][]`. The parser makes a MappingAssignNode with >1 key (indistinguishable from a nested mapping write at
- * parse time), which the symbol table would reject as an undefined mapping. Reads `b[i][j]` already work (an
- * ArrayAccess chain) and single-level writes `b[i] = x` work (ArrayAssignNode); a nested write desugars into a
- * read-modify-write over those working forms:
+ * `T[][]`. The parser makes a MappingAssignNode with >1 key (indistinguishable from a nested mapping write),
+ * which the symbol table would reject as an undefined mapping. Reads `b[i][j]` and single-level writes
+ * `b[i] = x` already work; a nested write desugars to a read-modify-write over those:
  *
  *   b[i][j] = v   ->   T tmp = b[i];  tmp[j] = v;  b[i] = tmp;
  *
  * Generalises to any depth by reading down to the innermost array, writing the last index, then writing each
  * intermediate array back up the chain. Only fires when the base is a known LOCAL/param array (nested mappings
- * are state vars, never locals, so a state `m[a][b]=v` is left untouched). Runs pre-semantic; each temp is typed
- * from the base's DECLARED element type (syntactically known), so the emitted temps type-check normally.
+ * are state vars, so a state `m[a][b]=v` is left untouched). Runs pre-semantic; each temp is typed from the
+ * base's DECLARED element type, so the emitted temps type-check normally.
  */
 export default class DesugarNestedArrayWrite extends AstTraversal {
   private locals = new Map<string, Type>();

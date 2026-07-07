@@ -141,7 +141,7 @@ export class ContractNode extends Node implements Named {
   isBrandedLibrary: boolean = false;
   // Set by SynthesizeBlockOracle when any function reads blockhash(n). The (n->hash) oracle is branded to the
   // contract's OWN category (master-bound, per docs/block-and-transaction-properties.md s3), so a blockhash
-  // reader MUST be stateful (have a master/category to co-spend + anchor the oracle against). Forces stateful.
+  // reader MUST be stateful (have a master/category to co-spend + anchor the oracle against).
   usesBlockhash: boolean = false;
   // Set when the contract instantiates a stateful child (`new T()` where T has state): deploying it IS a deploy,
   // so this contract is made stateful to host the (implied) deploy covenant. Read by both the symbol-table pass

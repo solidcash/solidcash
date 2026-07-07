@@ -257,11 +257,9 @@ const COMPOUND_OPS: Record<string, BinaryOperator> = {
   '<<=': BinaryOperator.SHIFT_LEFT, '>>=': BinaryOperator.SHIFT_RIGHT,
 };
 
-// One ordered segment of an lvalue chain: a `.member` (or `.value`), or an `[index]` key. The interleaved order
-// is preserved (alternating chains like `m[i].arr[j]` depend on it). The key is a THUNK producing a FRESH key
-// node per call (read + write nodes must not share instances) - re-visiting a key context (lvPart / ArrayAccess)
-// or building a literal (a NumberLiteral index parses as TupleIndexOp, not a wrapped expression). Built from the
-// lvPart grammar list or reconstructed from a parsed LHS expression; consumed by buildLvalueAssign.
+// One ordered segment of an lvalue chain: a `.member` (or `.value`), or an `[index]` key. Interleaved order is
+// preserved (alternating chains like `m[i].arr[j]` depend on it). The key is a THUNK yielding a FRESH node per
+// call (read + write nodes must not share instances). Consumed by buildLvalueAssign.
 interface LvSeg {
   member?: string;
   key?: () => ExpressionNode;

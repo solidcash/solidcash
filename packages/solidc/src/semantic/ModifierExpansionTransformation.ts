@@ -228,9 +228,8 @@ function expandFunctionModifiers(
       modDef.parameters.map((p, _idx) => `${p.name}__${i}`));
 
     // Rename the modifier's OWN local variables uniquely per application. The same modifier applied more than
-    // once (mod(2) mod(5) mod(x)) or a modifier local that shares a name with a function variable would
-    // otherwise redeclare that name once inlined into one flat block. Runs before placeholder expansion, so
-    // the spliced function body is untouched.
+    // once (mod(2) mod(5) mod(x)) or a modifier local sharing a name with a function variable would otherwise
+    // redeclare that name in one flat block. Runs before placeholder expansion, so the function body is untouched.
     const localNames = collectLocalDeclNames(clonedStatements);
     if (localNames.length > 0) {
       renameLocalDecls(clonedStatements, localNames, localNames.map((n) => `${n}__mod${i}`));

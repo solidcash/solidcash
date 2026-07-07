@@ -172,11 +172,9 @@ import { InvalidModifierCombinationError } from '../Errors.js';
 import { analyzeInlineAssembly } from '../semantic/InlineAssemblyDiagnostics.js';
 
 // Upper bound on the element count of a bounded array whose default value is materialized inline. A covenant
-// array maps to transaction inputs/outputs, so it cannot meaningfully exceed a transaction's input/output count:
-// in a standard 100000-byte BCH transaction that ceiling is ~3119 minimal outputs (~2437 minimal inputs). 10000
-// sits comfortably above that (so no real array is rejected) and matches the array safe-decode limit already used
-// in @solidcash/utils (state.ts); an astronomical bound (a ported Solidity type solc itself rejects as "too
-// large for memory") is refused here rather than exhausting memory emitting it.
+// array maps to transaction inputs/outputs, so it cannot exceed the tx input/output count (~3119 minimal outputs
+// in a standard 100000-byte BCH tx). 10000 sits above that (rejects no real array) and matches the array
+// safe-decode limit in @solidcash/utils (state.ts); an astronomical bound is refused rather than exhausting memory.
 const MAX_MATERIALIZED_ARRAY_ELEMENTS = 10000;
 
 // Locking bytecode template fragments - correspond to libauth's
@@ -3992,8 +3990,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // statements are nested into the else branch, so this return sits in tail position. Emit nothing: the
     // function-end cleanStack drops the params once. Dropping the whole stack here would clean only the taken
     // branch and imbalance the sibling branches (e.g. an else-if that still reads a param). Applies to entry-
-    // point void functions too - a `return;` guard nested by EarlyReturnTransformation reaches here as a tail
-    // no-op (before that pass permitted entry-point void returns, this path was unreachable for them).
+    // point void functions too: a `return;` guard nested by EarlyReturnTransformation reaches here as a tail no-op.
     if (returnCount === 0) {
       return node;
     }

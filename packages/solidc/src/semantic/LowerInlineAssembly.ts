@@ -76,10 +76,9 @@ let lastReturnData: string | undefined;
 let yulCallCounter = 0;
 
 // Map a Yul low-level call `call/staticcall/delegatecall(gas, addr, [value,] argOff, argLen, retOff, retLen)` to a
-// solidc low-level call binding `(bool <ok>, bytes <retVar>) = address(addr).<mode>(data)`, reusing the existing
-// external-call covenant + return-event NFT codegen. The addr word is cast to an address (the SDK resolves the
-// actual co-spent target at build time via .withExternalCall); calldata is the memory buffer at argOff if it was
-// mstore-built, else empty. `retVar` is tracked as the returndata buffer.
+// solidc binding `(bool <ok>, bytes <retVar>) = address(addr).<mode>(data)`, reusing the external-call covenant +
+// return-event NFT codegen. The addr word casts to an address (SDK resolves the co-spent target at build time via
+// .withExternalCall); calldata = the mstore-built buffer at argOff, else empty. `retVar` tracks the returndata.
 function isLowLevelCall(v: YulExpressionNode | undefined): v is YulFunctionCallNode {
   return v instanceof YulFunctionCallNode
     && (v.name === 'call' || v.name === 'staticcall' || v.name === 'delegatecall');
@@ -277,8 +276,7 @@ const CMP_OPS: Record<string, BinaryOperator> = {
   eq: BinaryOperator.EQ,
 };
 // Nullary Yul context builtins -> the solidc global they name (the same NullaryOp the front end emits for
-// `msg.*`/`tx.*`/`block.*`). Each is a plain 1:1 rename; `caller()`/`callvalue()`/`timestamp()`/... just read
-// the value they already denote in solidc.
+// `msg.*`/`tx.*`/`block.*`). Each is a plain 1:1 rename.
 const NULLARY_CONTEXT: Record<string, NullaryOperator> = {
   caller: NullaryOperator.MSG_SENDER,
   callvalue: NullaryOperator.MSG_VALUE,

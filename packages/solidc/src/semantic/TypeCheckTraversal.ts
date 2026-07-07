@@ -1208,9 +1208,8 @@ export default class TypeCheckTraversal extends AstTraversal {
     }
 
     // The reverse: `address(bytes20)` / `address(uint160)`. A BCH address is a variable-length locking bytecode,
-    // not a fixed 20-byte hash, so treating a 20-byte value AS an address is incorrect (the raw hash is not a valid
-    // locking bytecode). Wrap it explicitly instead, e.g. `new LockingBytecodeP2PKH(hash)`. Unbounded `bytes` (a
-    // full locking bytecode) is not warned. Warn once at the cast site.
+    // not a fixed 20-byte hash, so treating a 20-byte value AS an address is incorrect. Wrap it explicitly, e.g.
+    // `new LockingBytecodeP2PKH(hash)`. Unbounded `bytes` (a full locking bytecode) is not warned.
     if (node.type instanceof AddressType && !(node.expression.type instanceof AddressType)
       && ((node.expression.type instanceof BytesType && node.expression.type.bound === 20)
         || node.expression.type instanceof IntType)) {
@@ -2241,8 +2240,9 @@ export default class TypeCheckTraversal extends AstTraversal {
   visitStateArrayPush(node: StateArrayPushNode): Node {
     const sv = node.stateVariable!;
     const arrType = sv.type as ArrayType;
-    // No-arg `this.arr.push()`: append the element type's default value.
-    if (node.noArg) {
+    // No-arg `this.arr.push()`: append the element type's default value. SymbolTable already builds this (so a
+    // struct default resolves); only synthesize here if it did not (e.g. a node created after SymbolTable).
+    if (node.noArg && !node.value) {
       node.value = createDefaultValueExpression(arrType.elementType, node.location!);
     }
     // A fixed-inner row (`a.push([x, y])` on `uint256[N][]`) is blob-encoded so its elements pack fixed-width.

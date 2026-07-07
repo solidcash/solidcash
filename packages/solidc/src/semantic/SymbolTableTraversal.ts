@@ -4660,7 +4660,6 @@ export default class SymbolTableTraversal extends AstTraversal {
       // IS deploying it, so the keyword is optional. The deploy covenant rides the parent's block layout, so
       // inference only applies inside a STATEFUL contract's function; a non-stateful parent (or a `new T()`
       // with no enclosing function, e.g. a state-var initializer) cannot host a deploy and still errors.
-      // (Create3-style deploys that synthesize the child with no `new T()` still declare `deploy` explicitly.)
       if (isStatefulTarget && !isInDeployFunction) {
         if (this.currentFunction && this.isStatefulContract) {
           if (!this.currentFunction.modifiers.includes(FunctionModifier.DEPLOY)) {
@@ -4701,7 +4700,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       // Salt (EVM create2): honored - baked as an outermost `<salt> OP_DROP` address segment in codegen,
       // COMPOSED with the category self-pin for a stateful target (`<salt> OP_DROP | <cat self-pin> | base`,
       // exactly as the SDK's Contract layers it), so `new T{salt}(...)` yields a deterministic,
-      // salt-distinguished p2sh address. (create3 = a factory's `mapping(salt => categoryId)`; salt is the key.)
+      // salt-distinguished p2sh address.
       if (node.callOptions?.salt) {
         node.callOptions.salt = this.visit(node.callOptions.salt) as ExpressionNode;
       }
@@ -5180,6 +5179,12 @@ export default class SymbolTableTraversal extends AstTraversal {
       throw new ImmutableStateVariableAssignmentError(node, sv.name);
     }
     node.stateVariable = sv;
+    // No-arg `arr.push()` appends the element type's default. Build it here (not in TypeCheck) so a struct
+    // default `Data(...)` passes through struct-constructor resolution below; created post-SymbolTable it would
+    // stay an unresolved call and type as undefined. Reduces to the hand-written `arr.push(Data(...))`.
+    if (node.noArg && !node.value && sv.type instanceof ArrayType) {
+      node.value = createDefaultValueExpression(sv.type.elementType, node.location!);
+    }
     node.value = this.visit(node.value);
     return node;
   }

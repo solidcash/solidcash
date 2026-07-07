@@ -321,6 +321,16 @@ POST-3436 (continuing "find next walls"):
 - 86247db3 fixed-width-element array slices arr[start:end] (uint256[]/int8[]/bytes32[]/uint256[N][]); VM-verified
   end-to-end (solidcash/test/ArraySlice.test.ts: length + element values + omitted bounds). +17 -> 3453. Sound by
   reduction to VM-verified primitives (emitPushdataDecode, OP_SPLIT bytes-slice, emitPrependArrayCount).
-- (this commit) const-expression array dimensions: arrayType grammar now `typeName '[' expression? ']'` (was
+- 509cb858 const-expression array dimensions: arrayType grammar now `typeName '[' expression? ']'` (was
   NumberLiteral|Identifier only); AstBuilder const-evals the dim (2**10, 2**10 + 3, N*2 over literal/hex/const-id
   with + - * / % ** << >> & | ^ ~ unary-neg). +17 -> 3470. Non-const dim -> clear ParseError. 1808 compiler green.
+- 092de2a6 inherited modifier override + event/error overload no longer falsely collide (mergeNamedList
+  overridable/overloadable flags): a child's own same-name modifier overrides the parent's (modifiers cannot
+  overload); same-name events/errors with different signatures coexist. +18 (15 modifier + 3 event/error).
+- 5f0f78b0 alpha-rename modifier LOCAL variables per application (expandFunctionModifiers already renamed params;
+  now renames locals too). mod(2) mod(5) mod(x) / a modifier local sharing a function var's name no longer
+  redeclares. VM-verified (ModifierLocalRename: aliasing would fail the trailing require). +5.
+- 70d7bfb8 bare block statements `{ ... }` as nested scopes (blockStatement grammar + BlockNode.scoped flag so
+  flattenStatements keeps user blocks). Disjoint sibling blocks reuse names; live-outer-local shadow stays
+  REJECTED (codegen slots by name - a live shadow would miscompile; clean rejection is sound). VM-verified
+  (BareBlockScope). +11. NOTE: outer-local live-shadow needs alpha-rename to be soundly ACCEPTED (deferred).

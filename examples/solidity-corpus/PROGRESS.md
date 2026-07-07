@@ -410,3 +410,9 @@ ASSESSED ~0-yield/deferred: msg.data (simple return-msg.data/msg.data.length WOR
   (Identifier_list vs anyIdentifier for namespaced calls). Moderate yield, high risk - left for a focused pass.
   Also assessed fundamental: array-of-mappings `mapping(K=>V)[N]` state/param (storage layout), `(x.f)()` /
   `g(arr.push())` (fn-ptr value / push-return-as-arg), `*=` on struct-storage-pointer field (using-for library).
+- ASSESSED + REVERTED (regression-free but +0 corpus): soft-keyword STATE-VAR names `bytes4 sig;` (locals/params/
+  struct-fields already use anyIdentifier; state vars use Identifier). Change (stateVariableDeclaration name ->
+  anyIdentifier + AstBuilder ctx.Identifier->anyIdentifier at 2 sites) WORKS, no ambiguity (packed name-vs-modifier
+  resolves), 1849 compiler green. But all 5 candidate corpus files (sig/pubkey/etc) have deeper EVM walls
+  (msg.sig/tx.data) -> +0 measured. Reverted to keep commits = measured gains + avoid parser-regen churn. A valid
+  consistency fix if ever wanted as code-quality (not corpus).

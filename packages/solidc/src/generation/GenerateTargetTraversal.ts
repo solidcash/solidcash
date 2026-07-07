@@ -8304,6 +8304,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // delegate then authorizes the proxy's state via _proxyMasterIndex. Emitted only when impl is a covenant
       // (pinsDelegateCoSpend); a P2PKH-placeholder target keeps the C1 warning path.
       if (this.currentFunction.pinsDelegateCoSpend) {
+        // (a) IDENTITY: the delegate at delegateInputIndex is the contract at impl.
         this.visit(node.targetExpression);           // [impl]
         const idx = this.getStackIndex('__internal__delegateInputIndex');
         this.emit(encodeInt(BigInt(idx)), locationData);
@@ -8311,6 +8312,25 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emit(Op.OP_UTXOBYTECODE, locationData); // [impl, delegate_utxobc]
         this.emit(Op.OP_EQUALVERIFY, locationData);  // []
         this.popFromStack();                         // untrack impl
+
+        // (b) SELECTOR: the delegate's unlocking bytecode leads with the forwarded calldata (`input`), so a
+        // co-spent-but-wrong delegate FUNCTION can't slip past the identity pin. Mirrors emitLowLevelCall-
+        // Verification: skip the push-opcode byte, then compare the next |input| bytes against `input`.
+        this.visit(node.data);                       // [input]
+        const idx2 = this.getStackIndex('__internal__delegateInputIndex');
+        this.emit(encodeInt(BigInt(idx2)), locationData);
+        this.emit(Op.OP_PICK, locationData);         // [input, delegateIdx]
+        this.emit(Op.OP_INPUTBYTECODE, locationData); // [input, ubcode]
+        this.emit(encodeInt(1n), locationData);
+        this.emit(Op.OP_SPLIT, locationData);        // [input, pushbyte, ubcode_rest]
+        this.emit(Op.OP_NIP, locationData);          // [input, ubcode_rest]
+        this.emit(Op.OP_OVER, locationData);         // [input, ubcode_rest, input]
+        this.emit(Op.OP_SIZE, locationData);         // [input, ubcode_rest, input, input_len]
+        this.emit(Op.OP_NIP, locationData);          // [input, ubcode_rest, input_len]
+        this.emit(Op.OP_SPLIT, locationData);        // [input, payload, remaining]
+        this.emit(Op.OP_DROP, locationData);         // [input, payload]
+        this.emit(Op.OP_EQUALVERIFY, locationData);  // []
+        this.popFromStack();                         // untrack input
       }
     } else {
       this.emitLowLevelCallVerification(node.data, node.callIndex, locationData);

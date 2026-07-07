@@ -416,7 +416,7 @@ describe('Delegatecall', () => {
         }
       }`;
 
-    it('C1/piece-3: pins the delegate co-spend to impl (correct delegate passes, wrong impl fails)', async () => {
+    it('C1/piece-3: pins the delegate identity AND function (wrong impl or selector fails)', async () => {
       const provider = createTestProvider();
       const pinnedArtifact = compileString(PINNED_PROXY);
       const proxy = await deploy(provider, pinnedArtifact, [], { counter: 5n });
@@ -425,28 +425,32 @@ describe('Delegatecall', () => {
       const implLbc = addressToLockScript(impl.contract.address); // the delegate's real locking bytecode
       const delegateIdx = 2n;                                     // in0 proxy master, in1 proxy data NFT, in2 delegate
 
-      const build = (targetLbc: Uint8Array): Promise<any> => new StatefulTransactionBuilder({
-        provider,
-        stateLayout: pinnedArtifact.stateLayout!,
-        categoryId: proxy.categoryId,
-        masterUtxo: {
-          ...proxy.utxos.master,
-          unlocker: (proxy.contract.unlock as any).up(
-            implSelector, targetLbc, alicePub, new SignatureTemplate(alicePriv), delegateIdx,
-          ),
-        },
-        dataNftUtxos: proxy.utxos.dataNfts.map((nft) => ({
-          ...nft, unlocker: createDataNftUnlocker(proxy.contract, 0, proxy.categoryId),
-        })),
-        externalCallUtxoGroups: [extGroup(impl.categoryId, implArtifact, impl, 'increment', [0n], 2)],
-      }).setState('counter', 6n).send();
+      const build = (targetLbc: Uint8Array, input: Uint8Array = implSelector): Promise<any> =>
+        new StatefulTransactionBuilder({
+          provider,
+          stateLayout: pinnedArtifact.stateLayout!,
+          categoryId: proxy.categoryId,
+          masterUtxo: {
+            ...proxy.utxos.master,
+            unlocker: (proxy.contract.unlock as any).up(
+              input, targetLbc, alicePub, new SignatureTemplate(alicePriv), delegateIdx,
+            ),
+          },
+          dataNftUtxos: proxy.utxos.dataNfts.map((nft) => ({
+            ...nft, unlocker: createDataNftUnlocker(proxy.contract, 0, proxy.categoryId),
+          })),
+          externalCallUtxoGroups: [extGroup(impl.categoryId, implArtifact, impl, 'increment', [0n], 2)],
+        }).setState('counter', 6n).send();
 
-      // correct delegate: impl param == the co-spent delegate's locking bytecode -> pin passes
+      // correct delegate + forwarded selector == the delegate's function -> both pins pass
       const tx = await build(implLbc);
       expect(tx.txid).toBeDefined();
 
-      // wrong impl: claim a different address than the co-spent delegate -> pin OP_EQUALVERIFY fails
+      // wrong impl: claim a different address than the co-spent delegate -> identity pin fails
       await expect(build(addressToLockScript(proxy.contract.address))).rejects.toThrow();
+
+      // wrong selector: forward calldata that isn't the co-spent delegate's function -> selector pin fails
+      await expect(build(implLbc, hexToBin('deadbeef'))).rejects.toThrow();
     });
 
     it('should preserve implementation NFTs in delegate transaction outputs', async () => {

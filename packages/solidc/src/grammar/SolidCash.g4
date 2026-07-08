@@ -810,7 +810,7 @@ BchUnit
 // No leading `-`: a minus is always the unary/binary operator (parsed via UnaryOp/BinaryOp). Lexing `-1` as a
 // single literal made `i-1` tokenize as `i` `-1` (two operands) - breaking every unspaced `x-1`, `a[i-1]`, etc.
 DecimalLiteral
-    : NumberPart '.' [0-9]+
+    : NumberPart '.' [0-9]+ ExponentPart?
     ;
 
 NumberLiteral
@@ -821,8 +821,10 @@ fragment NumberPart
     : [0-9]+ ('_' [0-9]+)*
     ;
 
+// Solidity scientific notation allows a negative exponent (200e-2 == 2); a bare `2e-x` cannot match (the
+// exponent needs digits), so `-` still lexes as the operator there.
 fragment ExponentPart
-    : [eE] NumberPart
+    : [eE] '-'? NumberPart
     ;
 
 PrimitiveType

@@ -2514,7 +2514,13 @@ export default class AstBuilder
     const numberString = numberCtx.NumberLiteral().getText();
     // Units split into time (NumberUnit) and BCH value (BchUnit) tokens; both resolve via the NumberUnit map.
     const numberUnit = (numberCtx.NumberUnit() ?? numberCtx.BchUnit())?.getText();
-    const numberValue = parseNumberString(numberString) * BigInt(numberUnit ? NumberUnit[numberUnit.toUpperCase()] : 1);
+    const parsed = parseNumberString(numberString);
+    if (parsed === undefined) {
+      throw new ParseError(
+        `Scientific-notation literal '${numberString}' is not an integer`, Location.fromCtx(ctx),
+      );
+    }
+    const numberValue = parsed * BigInt(numberUnit ? NumberUnit[numberUnit.toUpperCase()] : 1);
     const intLiteral = new IntLiteralNode(numberValue);
     intLiteral.location = Location.fromCtx(ctx);
     return intLiteral;
@@ -2522,7 +2528,27 @@ export default class AstBuilder
 
   createDecimalLiteral(ctx: LiteralContext): DecimalLiteralNode | IntLiteralNode {
     const decCtx = ctx.decimalLiteral();
-    const text = decCtx.DecimalLiteral().getText();
+    let text = decCtx.DecimalLiteral().getText();
+    // Scientific decimal (2.5e3, 1.5e-1): fold the exponent by shifting the point. An integral result with
+    // no unit becomes a plain int literal; otherwise the normalized decimal flows into the unit/fixed paths.
+    if (/[eE]/.test(text)) {
+      const [mantissa, expStr] = text.replace(/_/g, '').split(/[eE]/);
+      const [ip, fp = ''] = mantissa.split('.');
+      const digits = BigInt((ip || '0') + fp);
+      const shift = BigInt(expStr) - BigInt(fp.length);
+      if (shift >= 0n) {
+        text = (digits * 10n ** shift).toString();
+      } else {
+        const padded = digits.toString().padStart(Number(-shift) + 1, '0');
+        const cut = padded.length + Number(shift);
+        text = `${padded.slice(0, cut)}.${padded.slice(cut)}`;
+      }
+      if (!text.includes('.') && !(decCtx.NumberUnit?.() ?? decCtx.BchUnit?.())) {
+        const intNode = new IntLiteralNode(BigInt(text));
+        intNode.location = Location.fromCtx(ctx);
+        return intNode;
+      }
+    }
     // A value unit after a decimal (`0.2 ether`, `1.5 gwei`) folds `decimal * unit` to an integer literal when
     // the product is exact - the same units the integer form (createIntLiteral) already accepts.
     const unit = (decCtx.NumberUnit?.() ?? decCtx.BchUnit?.())?.getText();
@@ -4722,14 +4748,21 @@ export default class AstBuilder
   }
 }
 
-const parseNumberString = (numberString: string): bigint => {
+// Returns undefined for a non-integral value (a negative exponent that does not divide out, e.g. 1e-3).
+const parseNumberString = (numberString: string): bigint | undefined => {
   const cleanedNumberString = numberString.replace(/_/g, '');
 
   const isScientificNotation = /[eE]/.test(cleanedNumberString);
   if (!isScientificNotation) return BigInt(cleanedNumberString);
 
   const [coefficient, exponent] = cleanedNumberString.split(/[eE]/);
-  return BigInt(coefficient) * BigInt(10) ** BigInt(exponent);
+  const exp = BigInt(exponent);
+  if (exp >= 0n) return BigInt(coefficient) * 10n ** exp;
+  // Negative exponent (200e-2 == 2): only integral results are ints (solc parity for int contexts).
+  const divisor = 10n ** -exp;
+  const mantissa = BigInt(coefficient);
+  if (mantissa % divisor !== 0n) return undefined;
+  return mantissa / divisor;
 };
 
 // Returns whether an AST subtree references a given identifier name. Used to lower `transient` state vars into

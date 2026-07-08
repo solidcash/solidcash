@@ -44,6 +44,15 @@ Two facts kill any single-global-commitment design:
    read a root the tx must co-spend the root's UTXO. A blacklist read by *every* transfer then serializes *all
    transfers* through one hot UTXO - worse than write contention.
 
+**Serialization is a coordination cost, not a throughput cap.** BCH has **no unconfirmed-chain-depth limit** and
+CTOR lets a chain sit in a block in any txid order, so accesses to one hot UTXO can be *chained* arbitrarily deep
+into a single block (block-size-limited), not capped at some ancestor count. The real residual cost is
+**coordination**: building `tx_n` needs `tx_{n-1}`'s output, so two *uncoordinated* parties spending the current
+hot UTXO conflict (double-spend; one wins, the other retries). A **sequencer** (an issuer, a batcher) turns the
+hot path into one deep chain; without one, concurrent access conflict-retries. So a single global root is
+workable *with* a sequencer and painful without - and per-predecessor contention (B2 below) needs sequencing
+only per hot gap.
+
 **Corollary (the fundamental limit):** on UTXO, **contention-free sound reads require the commitment to live in
 the covenant code (baked), not in a UTXO** - because any committed UTXO must be spent to be read. Therefore:
 
@@ -170,3 +179,88 @@ free global consistent state - the same root cause as C2 itself.
 annotation) and require/select the matching representation - nullifier, baked filter, sorted list, or Merkle -
 and error on an unsound-and-unbacked negative guard. The soundness is in matching the structure to the pattern,
 not in any universal accumulator.
+
+## 8. The sorted linked list (B2), in detail
+
+The chosen data-native structure for negative guards under code/data separation. Concrete spec below.
+
+### 8.1 Entry layout
+
+Each entry is an NFT-UTXO; commitment = `pushdata(key) ++ pushdata(nextKey) [++ pushdata(value)]`.
+
+- **Key normalization (EVM-style):** hash any key to a 32-byte slot `slot = H(key)`, exactly as the EVM derives
+  `keccak256(key . p)`. The list is keyed and sorted by the 32-byte slot regardless of source type
+  (address/uint256/string/bytes), so `key + nextKey` = 64 B fits the 128-byte commitment with ~61 B left for an
+  inline value. Collision-resistance makes `slot` a faithful stand-in for `key` (the assumption EVM storage
+  already relies on).
+- **Sentinels:** `nextKey = 0` = +infinity; a reserved head entry `key = 0` anchors the low end. Empty list is
+  one entry `(0, 0)`.
+- **Chunked values:** for a value beyond the inline budget, the link header `(key, nextKey)` sits only on the
+  entry's **head chunk**; the value's data chunks carry no header. So the link overhead is paid **once per
+  entry**, amortized to ~0% for any multi-chunk value.
+
+### 8.2 Transaction shapes  (state: `HEAD[00|10] -> A[10|50|Va] -> B[50|90|Vb] -> C[90|00|Vc]`)
+
+```
+1) INSERT k=40 (gap A: 10<40<50)        2) READ
+   IN                OUT                   non-membership (absent 40)   membership (present 50)
+   A [10|50|Va]  ->  A'[10|40|Va]          A[10|50|Va] -> A'[10|50|Va]  B[50|90|Vb] -> B'[50|90|Vb]
+                     N [40|50|V40]         (unchanged; 10<40<50)        (unchanged; key==50 -> Vb)
+   A ->50-> B  becomes  A ->40-> N ->50-> B      links: none moved            links: none moved
+
+3) UPDATE k=50 -> Vb'                    4) DELETE k=50 (pred P=A, the node whose next==50)
+   IN                OUT                   IN                OUT
+   B [50|90|Vb]  ->  B'[50|90|Vb']         A [10|50|Va]  ->  A'[10|90|Va]   (next 50->90, skip B)
+   links: none moved (value only)         B [50|90|Vb]  ->  (consumed)
+                                          A ->50-> B ->90-> C  becomes  A ->90-> C
+```
+(Every write also co-spends the master for auth; a read usually rides inside a larger function tx.)
+
+### 8.3 How links reorganize
+
+| Op | Entries co-spent | +/- | Link change |
+|---|---|---|---|
+| Insert `k` | predecessor `P` (1) | +1 | `P.next: S -> k`; new `k.next = S` |
+| Read absent | predecessor `P` (1, read-only) | 0 | none |
+| Read present | entry `k` (1, read-only) | 0 | none |
+| Update `k` | entry `k` (1) | 0 | none (value field only) |
+| Delete `k` | predecessor `P` + `k` (2) | -1 | `P.next: k -> k.next` |
+
+Links move **only on insert/delete**, each a single splice touching **only the predecessor** (`P.next`); the
+new/removed node carries the other end in its own `next`, so the successor `S` is never co-spent. Reads preserve
+read-only; updates rewrite only the value.
+
+### 8.4 Singly vs doubly - singly chosen
+
+The hot read path uses only `nextKey`, so `prevKey` adds nothing to non-membership. But doubly forces insert to
+co-spend `L`+`S` (fix `S.prev`) and delete to co-spend `P`+`S`+`k` - 2-3 co-spends vs singly's 1-2 - which is
+*more* contention (the thing we minimize) plus +32 B commitment. Its only benefit, O(1) predecessor location, is
+moot: the covenant traverses forward only and the SDK indexes the list off-chain. Singly wins on every axis.
+
+### 8.5 Compiling Solidity's default-read patterns
+
+Every `m[k]` access compiles to "prove which case, then use the value": present -> membership proof (co-spend
+`k`'s entry) -> real value; absent -> non-membership proof (co-spend the bracketing predecessor) -> the default.
+A write is an **upsert** (insert if absent, update if present). The spender cannot lie (no non-membership proof
+exists for a present key; no entry exists to co-spend for an absent one). So:
+
+- `if (m[k] == false) { m[k] = true; }` -> absent: non-membership + insert; present(true): membership + skip. No
+  revert; matches Solidity's no-op-if-set.
+- `s = m[k]; s.a = "a";` (lazy struct init) -> absent: non-membership + default struct + insert; present:
+  membership + real struct + update.
+
+Only a default-value read whose value *gates an effect* pays a proof; positive reads (`balances[k]`, `>= x`)
+stay free + fail-safe. The omission attack is closed because the sound covenant has **no default-on-absent
+branch** - it *requires* the bracketing witness, so omitting it reverts rather than falling through to false.
+
+### 8.6 Cost vs the present (unsound) model
+
+- **Commitment payload:** the `nextKey` link costs `K+1` B of value budget; with a 32-B slot, inline value
+  `94 -> 61` B (-35%). But **0%** for a set (blacklist - no value), and **~0%** for chunked values (header on
+  head chunk only, 8.1). So it bites only single-commitment scalar-ish values in the 62-94 B band.
+- **Tx size:** a negative-guard read/insert gains ~1 input + 1 output (~250-350 B, dominated by revealing the
+  entry's P2SH redeem script) - vs **0** today for an absent read (which is free precisely because it is
+  forgeable). ~60-90% bump on a small transfer, paid per such op.
+- **Contention:** per hot-gap predecessor, and per 3 a coordination/sequencing cost (no throughput cap on BCH),
+  not a per-block ceiling. Sequenced (issuer/batcher) it is block-size-limited; uncoordinated concurrent
+  hot-gap access conflict-retries.

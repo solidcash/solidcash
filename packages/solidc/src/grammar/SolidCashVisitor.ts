@@ -65,6 +65,7 @@ import { BlockContext } from "./SolidCashParser.js";
 import { BlockStatementContext } from "./SolidCashParser.js";
 import { StatementContext } from "./SolidCashParser.js";
 import { ExpressionStatementContext } from "./SolidCashParser.js";
+import { AssignChainContext } from "./SolidCashParser.js";
 import { PrefixIncDecStatementContext } from "./SolidCashParser.js";
 import { ReturnStatementContext } from "./SolidCashParser.js";
 import { SelfdestructStatementContext } from "./SolidCashParser.js";
@@ -578,6 +579,12 @@ export default class SolidCashVisitor<Result> extends ParseTreeVisitor<Result> {
 	 * @return the visitor result
 	 */
 	visitExpressionStatement?: (ctx: ExpressionStatementContext) => Result;
+	/**
+	 * Visit a parse tree produced by `SolidCashParser.assignChain`.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	visitAssignChain?: (ctx: AssignChainContext) => Result;
 	/**
 	 * Visit a parse tree produced by `SolidCashParser.prefixIncDecStatement`.
 	 * @param ctx the parse tree

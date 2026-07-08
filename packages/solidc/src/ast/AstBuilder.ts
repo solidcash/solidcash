@@ -223,6 +223,7 @@ import type {
   SwitchCaseContext,
   UsingLibraryForContext,
   UsingFunctionsForContext,
+  AssignChainContext,
 } from '../grammar/SolidCashParser.js';
 // Value imports (not type-only): needed for `instanceof` when detecting a tuple-valued ternary.
 import { TernaryOpContext, TupleExpressionContext } from '../grammar/SolidCashParser.js';
@@ -1355,6 +1356,37 @@ export default class AstBuilder
     }
     const modifiers = ctx.modifier_list().map((modifier) => modifier.getText());
     const name = ctx.anyIdentifier().getText();
+
+    // `uint x = y = 3;` - the initializer is an assignment chain: run the chain first, then initialize from
+    // the first target's value (re-read after its write).
+    if (ctx._iop) {
+      const loc = Location.fromCtx(ctx);
+      const initCtx = ctx.expression()!;
+      const { links, valueCtx } = this.unrollAssignChain(initCtx, ctx._iop.text, ctx.assignChain()!);
+      const stmts = this.buildAssignChainStatements(links, valueCtx, loc);
+      const varDef = this.finishVariableDefinition(ctx, type, modifiers, name, this.visit(initCtx) as ExpressionNode);
+      const block = new BlockNode([...stmts, varDef]);
+      block.location = loc;
+      return block;
+    }
+    // `uint x = cond ? y = 3 : 6;` - declare with the type default, then if/else: each arm runs its branch's
+    // assignments and assigns the branch value to x.
+    const initExprCtx = ctx.expression();
+    if (initExprCtx instanceof TernaryOpContext && (initExprCtx._tOp || initExprCtx._fOp)) {
+      const loc = Location.fromCtx(ctx);
+      const decl = this.finishVariableDefinition(ctx, type, modifiers, name, undefined);
+      const branch = this.buildTernaryAssignBranch(initExprCtx, (vctx) => {
+        const target = new IdentifierNode(name);
+        target.location = loc;
+        const assign = new AssignNode(target, this.visit(vctx) as ExpressionNode);
+        assign.location = loc;
+        return assign;
+      }, loc);
+      const block = new BlockNode([decl, branch]);
+      block.location = loc;
+      return block;
+    }
+
     // An omitted initializer (`int x;`) leaves expression undefined; codegen emits the type's zero value.
     const expression = ctx.expression() ? this.visit(ctx.expression()) : undefined;
 
@@ -1405,6 +1437,15 @@ export default class AstBuilder
       }
     }
 
+    return this.finishVariableDefinition(ctx, type, modifiers, name, expression as ExpressionNode | undefined);
+  }
+
+  // Local-type tracking + node construction shared by every variableDefinition path (plain, chain-init,
+  // ternary-assign-init).
+  private finishVariableDefinition(
+    ctx: VariableDefinitionContext, type: Type, modifiers: string[], name: string,
+    expression: ExpressionNode | undefined,
+  ): VariableDefinitionNode {
     // Track local struct-typed vars so `s.field = v` can desugar to a struct rebuild (visitAssignmentStatement).
     if (type instanceof StructType) this.localStructTypes.set(name, type);
     // Track local struct-array vars (`S[] memory m`) so `m[i].c[j] = v` can desugar (see buildLvalueAssign).
@@ -2366,6 +2407,14 @@ export default class AstBuilder
   }
 
   visitTernaryOp(ctx: TernaryOpContext): TernaryOpNode {
+    // Branch assignment tails are desugared where the ternary's value has a home (statement scope, an
+    // initializer, or an assignment value); anywhere else there is no statement to hoist the writes into.
+    if (ctx._tOp || ctx._fOp) {
+      throw new ParseError(
+        'Assignment in a ternary branch is only supported at statement scope, as an initializer, or as an assignment value',
+        Location.fromCtx(ctx),
+      );
+    }
     const condition = this.visit(ctx._condition);
     const ifTrue = this.visit(ctx._ifTrue);
     const ifFalse = this.visit(ctx._ifFalse);
@@ -4120,6 +4169,18 @@ export default class AstBuilder
 
 
   visitReturnStatement(ctx: ReturnStatementContext): Node {
+    // `return lvalue op= value;` (incl. chains): run the assignments, then return the first target's value.
+    if (ctx._rop) {
+      const loc = Location.fromCtx(ctx);
+      const first = ctx.expression(0);
+      const { links, valueCtx } = this.unrollAssignChain(first, ctx._rop.text, ctx.assignChain()!);
+      const stmts = this.buildAssignChainStatements(links, valueCtx, loc);
+      const returnNode = new ReturnNode([this.visit(first) as ExpressionNode]);
+      returnNode.location = loc;
+      const block = new BlockNode([...stmts, returnNode]);
+      block.location = loc;
+      return block;
+    }
     const exprCtxs = ctx.expression_list();
     // Tuple ternary return `return cond ? (..) : (..)`: hoist cond, then a tuple return of per-element ternaries.
     if (exprCtxs.length === 1 && this.isTupleTernary(exprCtxs[0])) {
@@ -4325,22 +4386,107 @@ export default class AstBuilder
     }
   }
 
+  // One assignment statement `lhs op= value`: the storage-pointer / mapping-return special forms, then the
+  // generic lvalue path. Shared by the plain statement, chain, return-assign and decl-init-assign desugars.
+  private buildAssignStatement(
+    lhsCtx: ExpressionContext, op: string, valueCtx: ExpressionContext, loc: Location,
+  ): StatementNode {
+    // Storage-pointer inline write `Lib.f(args).field op= v` (a call in the lvalue chain, which extractLvalue
+    // cannot represent): desugar to a `T storage` local first.
+    const sp = this.buildStoragePointerWrite(lhsCtx, op, valueCtx, loc);
+    if (sp) return sp;
+    const mrv = this.buildMappingReturnIndexedWrite(lhsCtx, op, valueCtx, loc);
+    if (mrv) return mrv;
+    const lv = this.extractLvalue(lhsCtx);
+    if (!lv) throw new ParseError('Invalid assignment target', Location.fromCtx(lhsCtx));
+    return this.buildLvalueAssign(lv.rawName, lv.isThis, lv.nameLoc, lv.segs, op, valueCtx, loc);
+  }
+
+  // Unroll a right-recursive assignChain `lhs0 op0 (lhs1 op1 (... value))` into its links and final value.
+  private unrollAssignChain(
+    firstLhs: ExpressionContext, firstOp: string, chain: AssignChainContext,
+  ): { links: Array<{ lhsCtx: ExpressionContext; op: string }>; valueCtx: ExpressionContext } {
+    const links = [{ lhsCtx: firstLhs, op: firstOp }];
+    let cur = chain;
+    while (cur._op) {
+      links.push({ lhsCtx: cur.expression(), op: cur._op.text });
+      cur = cur.assignChain()!;
+    }
+    return { links, valueCtx: cur.expression() };
+  }
+
+  // Desugar an assignment chain right-to-left: the last link takes the chain value, each earlier link reads its
+  // successor's target back (a re-read after the write yields the assigned value - value-type semantics).
+  private buildAssignChainStatements(
+    links: Array<{ lhsCtx: ExpressionContext; op: string }>, valueCtx: ExpressionContext, loc: Location,
+  ): StatementNode[] {
+    const stmts: StatementNode[] = [];
+    for (let i = links.length - 1; i >= 0; i -= 1) {
+      const v = i === links.length - 1 ? valueCtx : links[i + 1].lhsCtx;
+      stmts.push(this.buildAssignStatement(links[i].lhsCtx, links[i].op, v, loc));
+    }
+    return stmts;
+  }
+
+  // Core desugar for a ternary carrying branch assignment tails (`cond ? a = v : b`): `if (cond) {A} else {B}`.
+  // Each arm runs its branch's assignments; `consume` (when given) then receives the branch's value expression
+  // (the assigned target, re-read after its write, or the plain branch expression) to finish the arm.
+  private buildTernaryAssignBranch(
+    ctx: TernaryOpContext, consume: ((valueCtx: ExpressionContext) => StatementNode) | undefined, loc: Location,
+  ): StatementNode {
+    const arm = (exprCtx: ExpressionContext, opText: string | undefined, chain: AssignChainContext | undefined): BlockNode => {
+      const stmts: StatementNode[] = [];
+      if (opText && chain) {
+        const { links, valueCtx } = this.unrollAssignChain(exprCtx, opText, chain);
+        stmts.push(...this.buildAssignChainStatements(links, valueCtx, loc));
+      }
+      if (consume) stmts.push(consume(exprCtx));
+      const b = new BlockNode(stmts);
+      b.location = loc;
+      return b;
+    };
+    const condition = this.visit(ctx._condition) as ExpressionNode;
+    const branch = new BranchNode(
+      condition,
+      arm(ctx._ifTrue, ctx._tOp?.text, ctx._tVal),
+      arm(ctx._ifFalse, ctx._fOp?.text, ctx._fVal),
+    );
+    branch.location = loc;
+    return branch;
+  }
+
+  // `x op= cond ? a = v : b` - when the assigned value is a ternary with branch assignments, distribute the
+  // outer assignment into both arms (each arm assigns its branch value). Returns undefined when not that shape.
+  private maybeDesugarTernaryAssignValue(
+    valueCtx: ExpressionContext, link: { lhsCtx: ExpressionContext; op: string }, loc: Location,
+  ): StatementNode | undefined {
+    if (!(valueCtx instanceof TernaryOpContext) || (!valueCtx._tOp && !valueCtx._fOp)) return undefined;
+    return this.buildTernaryAssignBranch(
+      valueCtx, (vctx) => this.buildAssignStatement(link.lhsCtx, link.op, vctx, loc), loc,
+    );
+  }
+
   visitExpressionStatement(ctx: ExpressionStatementContext): StatementNode {
     const lhsCtx = ctx.expression(0);
     // Assignment `lvalue op= value` (left-factored): reconstruct the lvalue segments from the parsed LHS and
-    // delegate to the shared builder (the same one the lvPart assignmentStatement path uses).
+    // delegate to the shared builder (the same one the lvPart assignmentStatement path uses). The value side is
+    // an assignChain, so `a = b = c;` desugars to sequential right-to-left assignments.
     if (ctx._op) {
-      // Storage-pointer inline write `Lib.f(args).field op= v` (a call in the lvalue chain, which extractLvalue
-      // cannot represent): desugar to a `T storage` local first.
-      const sp = this.buildStoragePointerWrite(lhsCtx, ctx._op.text, ctx.expression(1), Location.fromCtx(ctx));
-      if (sp) return sp;
-      const mrv = this.buildMappingReturnIndexedWrite(lhsCtx, ctx._op.text, ctx.expression(1), Location.fromCtx(ctx));
-      if (mrv) return mrv;
-      const lv = this.extractLvalue(lhsCtx);
-      if (!lv) throw new ParseError('Invalid assignment target', Location.fromCtx(lhsCtx));
-      return this.buildLvalueAssign(
-        lv.rawName, lv.isThis, lv.nameLoc, lv.segs, ctx._op.text, ctx.expression(1), Location.fromCtx(ctx),
-      );
+      const loc = Location.fromCtx(ctx);
+      const { links, valueCtx } = this.unrollAssignChain(lhsCtx, ctx._op.text, ctx.assignChain()!);
+      if (links.length === 1) {
+        // `x op= cond ? a = v : b` - distribute the outer assignment into the ternary's arms.
+        const t = this.maybeDesugarTernaryAssignValue(valueCtx, links[0], loc);
+        if (t) return t;
+        return this.buildAssignStatement(lhsCtx, ctx._op.text, valueCtx, loc);
+      }
+      const block = new BlockNode(this.buildAssignChainStatements(links, valueCtx, loc));
+      block.location = loc;
+      return block;
+    }
+    // `cond ? a = v : b = v;` - branch assignments at statement scope desugar to if/else.
+    if (lhsCtx instanceof TernaryOpContext && (lhsCtx._tOp || lhsCtx._fOp)) {
+      return this.buildTernaryAssignBranch(lhsCtx, undefined, Location.fromCtx(ctx));
     }
     // `receiver.push(v)` / `.pop()` / `.delete(v)` tails: reconstruct the receiver (rawName, isThis, mapping keys,
     // struct array-field member) from the parsed LHS and dispatch to the array/mapping builder.

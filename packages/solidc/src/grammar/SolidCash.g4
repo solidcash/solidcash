@@ -315,12 +315,19 @@ statement
 // statement decision stays SLL-cheap. AstBuilder reconstructs the assignment target from the LHS expression.
 expressionStatement
     : expression
-      ( op=('=' | '+=' | '-=' | '*=' | '/=' | '%=' | '&=' | '|=' | '^=' | '<<=' | '>>=') expression
+      ( op=('=' | '+=' | '-=' | '*=' | '/=' | '%=' | '&=' | '|=' | '^=' | '<<=' | '>>=') assignChain
       | '.push' '(' ')' '=' expression
       | '.push' '(' pushArgument? ')'
       | '.pop' '(' ')'
       | '.delete' '(' expression ')'
       )? ';'
+    ;
+
+// The value side of an assignment, itself allowed to be another assignment (Solidity's right-associative
+// assignment-as-expression: `a = b = c;`, `a += b += c;`). AstBuilder desugars a chain into sequential
+// assignments right-to-left, reading each middle lvalue back as the next value.
+assignChain
+    : expression (op=('=' | '+=' | '-=' | '*=' | '/=' | '%=' | '&=' | '|=' | '^=' | '<<=' | '>>=') assignChain)?
     ;
 
 // Prefix `++x;` / `--x;` as a statement (same effect as postfix at statement scope). Keyword-led by `++`/`--`
@@ -332,6 +339,7 @@ prefixIncDecStatement
 
 returnStatement
     : 'return' ';'
+    | 'return' expression rop=('=' | '+=' | '-=' | '*=' | '/=' | '%=' | '&=' | '|=' | '^=' | '<<=' | '>>=') assignChain ';'
     | 'return' expression (',' expression)* ';'
     | 'return' '(' expression (',' expression)* ','? ')' ';'
     ;
@@ -348,7 +356,7 @@ emitStatement
     ;
 
 variableDefinition
-    : typeName modifier* anyIdentifier ('=' expression ('.push' '(' ')')?)? ';'
+    : typeName modifier* anyIdentifier ('=' expression (iop=('=' | '+=' | '-=' | '*=' | '/=' | '%=' | '&=' | '|=' | '^=' | '<<=' | '>>=') assignChain | '.push' '(' ')')?)? ';'
     | arrayType modifier* anyIdentifier ('=' expression)? ';'
     | mappingType modifier* anyIdentifier ('=' expression)? ';'
     ;
@@ -678,7 +686,10 @@ expression
     | left=expression op=('==' | '!=') right=expression # BinaryOp
     | left=expression op='&&' right=expression # BinaryOp
     | left=expression op='||' right=expression # BinaryOp
-    | <assoc=right> condition=expression '?' ifTrue=expression ':' ifFalse=expression # TernaryOp
+    // Optional assignment tails in the branches mirror solc (its ternary operands are full expressions, so
+    // `cond ? a = v : b = v` is two branch assignments). Desugared by AstBuilder at statement / initializer /
+    // assignment-value scope only; anywhere else is rejected with a clear ParseError.
+    | <assoc=right> condition=expression '?' ifTrue=expression (tOp=('=' | '+=' | '-=' | '*=' | '/=' | '%=' | '&=' | '|=' | '^=' | '<<=' | '>>=') tVal=assignChain)? ':' ifFalse=expression (fOp=('=' | '+=' | '-=' | '*=' | '/=' | '%=' | '&=' | '|=' | '^=' | '<<=' | '>>=') fVal=assignChain)? # TernaryOp
     | '[' (expression (',' expression)* ','?)? ']' # Array
     | 'this' '.' Identifier '.' Identifier '[' expression ']' memberName # OutStateMappingFieldAccess
     | 'this' '.' Identifier ('[' expression ']')+ # MappingAccess

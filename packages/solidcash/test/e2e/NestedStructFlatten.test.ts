@@ -92,3 +92,48 @@ describe('literal mapping keys resolve as constant key sources (runtime)', () =>
     await expect(sc.r().send()).resolves.toBeDefined();
   });
 });
+
+// Whole-field assign of a chunk-dynamic ARRAY leaf on a flattened struct (`s.a = arr;`): the leaf is a
+// state var of its own, so the write routes like a scalar leaf.
+const ARRAY_LEAF = `pragma solidity ^0.8.0;
+contract ArrayLeaf {
+    struct S { bytes b; uint16[] a; uint16 u; }
+    S s;
+    function w(uint16 v) public {
+        uint16[] memory a = new uint16[](2);
+        a[0] = v;
+        a[1] = 14;
+        s.b = "foo";
+        s.a = a;
+        s.u = 21;
+    }
+    function r(uint16 v) public view {
+        require(s.u == 21 && s.a[0] == v && s.a[1] == 14 && s.b.length == 3);
+    }
+}`;
+
+describe('flattened struct array-leaf whole assign (runtime)', () => {
+  it('assigns a memory array to a chunk-dynamic array leaf and reads elements back', async () => {
+    const art = compileString(ARRAY_LEAF, { solidityImportCompat: true, forceStateful: true, chunkedArrays: true });
+    const contract = new Contract(art, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(provider, contract, art.stateLayout!, {}, { saltContract: true });
+    const sc = StatefulContract.withCategory(contract, categoryId);
+    await expect(sc.w(13n).send()).resolves.toBeDefined();
+    await expect(sc.r(13n).send()).resolves.toBeDefined();
+  });
+});
+
+// State-struct ARRAY-field element writes (`m_x.a[0] = 5`) desugar to the temp roundtrip
+// `X __t = m_x; __t.a[0] = 5; m_x = __t;` - byte-equivalent to the handwritten form. COMPILE-level only:
+// whole-struct state WRITES of structs with fixed-array fields have a PRE-EXISTING runtime gap (verified
+// on baseline with the handwritten roundtrip; fails closed).
+describe('state-struct array-field element write (compile)', () => {
+  it('compiles the temp-roundtrip desugar', () => {
+    const src = `pragma solidity ^0.8.0; contract M {
+      struct X { uint8 x; uint8[2] a; }
+      X m_x;
+      function f() public { m_x.x = 1; m_x.a[0] = 5; m_x.a[1] = 6; }
+    }`;
+    expect(() => compileString(src, { solidityImportCompat: true, forceStateful: true })).not.toThrow();
+  });
+});

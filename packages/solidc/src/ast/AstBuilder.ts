@@ -3028,8 +3028,13 @@ export default class AstBuilder
       && this.mappingStructStateVars.has(rawName)) {
       const field = this.mappingStructStateVars.get(rawName)!.fields.find((f) => f.name === fieldName);
       // A flattened-struct field has no single state element; a whole-subtree assign must not route to the
-      // scalar path (it falls through to the rebuild path's diagnostics).
-      if (field && !(field.type instanceof MappingType) && !(field.type instanceof ArrayType)
+      // scalar path (it falls through to the rebuild path's diagnostics). A chunk-dynamic ARRAY leaf is a
+      // whole state var of its own, so a whole-field assign (`s.a = arr;`) routes here too; collection-model
+      // array leaves stay excluded.
+      const isChunkDynArrayLeaf = field?.type instanceof ArrayType && this.chunkedArrays
+        && field.type.bound === undefined && isChunkPackableElementType(field.type.elementType);
+      if (field && !(field.type instanceof MappingType)
+        && (!(field.type instanceof ArrayType) || isChunkDynArrayLeaf)
         && !(field.type instanceof StructType && this.structNeedsFieldFlattening(field.type))) {
         const flatName = `${rawName}__${fieldName}`;
         const value = op === '='
@@ -3053,6 +3058,32 @@ export default class AstBuilder
       if (field && field.type instanceof ArrayType) {
         return this.buildLocalStructArrayFieldWrite(rawName, fieldName, field.type,
           () => keyFns[0](), op, valueCtx, loc);
+      }
+    }
+
+    // STATE-struct ARRAY-field element write `m_x.a[i] op= v`: a whole-value struct state var has no in-place
+    // element write - read the struct into a temp, write the element on the temp, write the struct back:
+    // `X __t = m_x; __t.a[i] = v; m_x = __t;` (mirrors the mapping-entry roundtrip below).
+    if (!isThis && !isIncDec && fieldName && members.length === 1 && keyFns.length === 1
+      && segs.length === 2 && segs[0].member !== undefined
+      && !this.localStructTypes.has(rawName) && this.stateStructVars.has(rawName)) {
+      const structT = this.stateStructVars.get(rawName)!;
+      const field = structT.fields.find((f) => f.name === fieldName);
+      if (field && field.type instanceof ArrayType) {
+        const idAt = (n: string): IdentifierNode => { const i = new IdentifierNode(n); i.location = loc; return i; };
+        const tmpName = `__nlv_${this.nestedLvalueCounter++}`;
+        const stateRead = new StateAccessNode(rawName);
+        stateRead.location = nameLoc;
+        const decl = new VariableDefinitionNode(structT, [], tmpName, stateRead);
+        decl.location = loc;
+        this.localStructTypes.set(tmpName, structT); // so the array-field write helper resolves the temp's type
+        const inner = this.buildLocalStructArrayFieldWrite(tmpName, fieldName, field.type,
+          () => keyFns[0](), op, valueCtx, loc);
+        const back = new StateAssignNode(rawName, idAt(tmpName));
+        back.location = loc;
+        const block = new BlockNode([decl, ...(inner.statements ?? []), back]);
+        block.location = loc;
+        return block;
       }
     }
 

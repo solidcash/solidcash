@@ -73,16 +73,17 @@ Three cases, exhaustive:
    creation or persistent readable flags (a read consumes nothing).
 
 3. **Persistent readable negative flags** (blacklist / allowlist / isRegistered) and **lazy unbounded negative
-   guards** - **authenticated set**. The master commits a sorted / indexed-Merkle root over the entry set; every
-   insert/delete updates the root (covenant-verified, like count integrity, so no off-book entry can exist). A
-   negative-guard read supplies a **non-membership proof** - a bracketing low leaf with `low.key < k <
-   low.nextKey`, checked against the root - which is O(log N) and carries only the local witness, not the set.
-   Membership proofs serve positive access + write-uniqueness. This is EVM's storage-trie model, except the
-   caller supplies the witness instead of a validator holding the whole trie.
+   guards** - a **non-existence proof against an authenticated commitment**. Several structures work (sorted
+   Merkle tree, sorted linked list of entry-UTXOs, a baked Bloom filter, ...), each with a different
+   contention/read-write profile - a global mutable root is *not* the right default because it serializes reads
+   and writes. The full design space, resource costs, the contention analysis, and a decision matrix are in
+   `mapping-soundness-research.md`.
 
-**Rollout.** The C2 diagnostic escalates from warning to a hard **error** for a negative-guarded mapping that is
-backed by neither a nullifier nor an authenticated set - so the unsound shape cannot ship (fail-closed).
-Positive-guard mappings compile unchanged. Suggested phases: (0) escalate the diagnostic; (1) nullifier
-primitive (reuses the C1 identity-pin machinery); (2) authenticated-set / indexed-Merkle mapping type (master
-root + proof-verification codegen + SDK tree maintenance) - the heavy lift, and the only piece that is
-irreducibly an authenticated-data-structure problem.
+**Rollout.** The fix is the sound *mechanisms* (nullifier / authenticated set) - they make the bug not exist
+regardless of how the guard is phrased. The C2 diagnostic escalating from warning to a hard **error** is only a
+fail-closed **backstop for the shapes it recognizes** (`require(!m[k])` and friends): it is a syntactic filter
+over a semantic hole, dodgeable by `if (!m[k]) {...}`, a laundering local, or indirect data flow, so it is *not*
+a guarantee and is worth turning on only once a sound alternative exists to point authors at. Positive-guard
+mappings compile unchanged. Suggested phases: (1) nullifier primitive (reuses the C1 identity-pin machinery);
+(2) the authenticated-set mapping type(s) matched to the access pattern (the heavy lift, the only irreducibly
+authenticated-data-structure piece); (3) the diagnostic-as-error backstop, once (1)/(2) give a redirect.

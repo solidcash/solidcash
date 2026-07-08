@@ -22,10 +22,15 @@ import {
   HexLiteralNode,
   StringLiteralNode,
   AbiEncodeWithSignatureNode,
+  AbiEncodeWithSelectorNode,
+  AbiEncodeNode,
+  FieldAccessNode,
+  StateAccessNode,
 } from '../ast/AST.js';
 import { AddressType, BytesType } from '@solidcash/utils';
 import { UnaryOperator, NullaryOperator } from '../ast/Operator.js';
 import AstTraversal from '../ast/AstTraversal.js';
+import { cloneNode } from '../ast/clone.js';
 
 /**
  * Lowers `address(this).call(payload)` (a self low-level call) into a plain internal call BEFORE the inline
@@ -109,12 +114,23 @@ export default class LowerSelfLowLevelCalls extends AstTraversal {
   }
 
   // Resolve the self-call into the synthesized internal call + value factories, or undefined when it cannot
-  // be lowered (no fallback for a raw payload, or a fallback that reads msg.data directly).
+  // be lowered (no fallback for a raw payload, or an unloweable msg.data-reading fallback shape).
   private lower(call: MethodCallNode): {
     stmts: StatementNode[]; success: () => ExpressionNode; retval: () => ExpressionNode;
   } | undefined {
     const loc = call.location;
     const payload = call.parameters[0];
+    const emptyBytes = (): ExpressionNode => {
+      const empty = new HexLiteralNode(new Uint8Array(0));
+      empty.type = new BytesType();
+      empty.location = loc;
+      return empty;
+    };
+    const success = (): ExpressionNode => {
+      const t = new BoolLiteralNode(true);
+      t.location = loc;
+      return t;
+    };
     let target: FunctionDefinitionNode | undefined;
     let args: ExpressionNode[] = [];
     if (payload instanceof AbiEncodeWithSignatureNode && payload.signature instanceof StringLiteralNode) {
@@ -125,9 +141,22 @@ export default class LowerSelfLowLevelCalls extends AstTraversal {
         args = payload.parameters;
       }
     }
+    // `abi.encodeWithSelector(this.f.selector, args)`: the selector is still unfolded pre-semantic -
+    // structurally FieldAccess('selector', StateAccess(f)) - so the target resolves by name.
+    if (!target && payload instanceof AbiEncodeWithSelectorNode
+      && payload.selector instanceof FieldAccessNode && payload.selector.name === 'selector'
+      && payload.selector.expression instanceof StateAccessNode) {
+      const fnName = payload.selector.expression.name;
+      const matches = (this.contract?.functions ?? []).filter((f) => f.name === fnName);
+      if (matches.length === 1) {
+        target = matches[0];
+        args = payload.parameters;
+      }
+    }
     if (!target) {
       const fb = this.contract?.fallbackDef;
-      if (!fb || this.bodyReadsMsgData(fb)) return undefined;
+      if (!fb) return undefined;
+      if (this.bodyReadsMsgData(fb)) return this.inlineMsgDataFallback(fb, payload, loc, success, emptyBytes);
       target = fb;
       args = fb.parameters.length > 0 ? [payload] : [];
     }
@@ -148,23 +177,122 @@ export default class LowerSelfLowLevelCalls extends AstTraversal {
         read.location = loc;
         return read;
       };
+    } else if (!target.isFallback && target.returnTypes.length > 0) {
+      // Value-returning static dispatch: capture the returns, retval = abi.encode(them) so the caller's
+      // abi.decode(ret, (...)) roundtrips.
+      const uid = this.counter++;
+      const tmpNames = target.returnTypes.map((_, i) => `${PREFIX}${uid}_v${i}`);
+      if (tmpNames.length === 1) {
+        const def = new VariableDefinitionNode(target.returnTypes[0], [], tmpNames[0], callee);
+        def.location = loc;
+        stmts.push(def);
+      } else {
+        const tup = new TupleAssignmentNode(
+          tmpNames.map((nm, i) => ({ name: nm, type: target!.returnTypes[i] })), callee,
+        );
+        tup.location = loc;
+        stmts.push(tup);
+      }
+      retval = () => {
+        const reads = tmpNames.map((nm) => {
+          const r = new IdentifierNode(nm);
+          r.location = loc;
+          return r;
+        });
+        const enc = new AbiEncodeNode(reads);
+        enc.location = loc;
+        return enc;
+      };
     } else {
       const stmt = new FunctionCallStatementNode(callee);
       stmt.location = loc;
       stmts.push(stmt);
-      retval = () => {
-        const empty = new HexLiteralNode(new Uint8Array(0));
-        empty.type = new BytesType();
-        empty.location = loc;
-        return empty;
-      };
+      retval = emptyBytes;
     }
-    const success = (): ExpressionNode => {
-      const t = new BoolLiteralNode(true);
-      t.location = loc;
-      return t;
-    };
     return { stmts, success, retval };
+  }
+
+  // A fallback whose body reads msg.data inlines AT the call site with msg.data (and a declared bytes input
+  // param, when present) substituted by the payload - the EVM's "callee sees the call's data" semantics.
+  // Restricted to bodies with no early return (at most one trailing ReturnNode); locals are alpha-renamed.
+  private inlineMsgDataFallback(
+    fb: FunctionDefinitionNode, payload: ExpressionNode, loc: typeof fb.location,
+    success: () => ExpressionNode, emptyBytes: () => ExpressionNode,
+  ): { stmts: StatementNode[]; success: () => ExpressionNode; retval: () => ExpressionNode } | undefined {
+    let returns = 0;
+    this.walk(fb.body, (n) => { if (n instanceof ReturnNode) returns += 1; });
+    const bodyStmts = fb.body?.statements ?? [];
+    const last = bodyStmts[bodyStmts.length - 1];
+    if (returns > 1 || (returns === 1 && !(last instanceof ReturnNode))) return undefined;
+
+    const uid = this.counter++;
+    const dataName = `__selffb_${uid}_data`;
+    const stmts: StatementNode[] = [];
+    const dataDef = new VariableDefinitionNode(new BytesType(), [], dataName, payload);
+    dataDef.location = loc;
+    dataDef.allowUnused = true;
+    stmts.push(dataDef);
+
+    const cloned = cloneNode(fb.body!) as BlockNode;
+    // Alpha-rename the fallback's locals and its declared input param; the param reads become payload reads.
+    const rename = new Map<string, string>();
+    for (const p of fb.parameters) rename.set(p.name, dataName);
+    this.walk(cloned, (n) => {
+      if (n instanceof VariableDefinitionNode && !rename.has(n.name)) {
+        rename.set(n.name, `__selffb_${uid}_${n.name}`);
+      }
+    });
+    this.walk(cloned, (n) => {
+      if (n instanceof VariableDefinitionNode && rename.has(n.name)) n.name = rename.get(n.name)!;
+      else if (n instanceof IdentifierNode && rename.has(n.name)) n.name = rename.get(n.name)!;
+    });
+    this.replaceMsgData(cloned, dataName);
+
+    const clonedStmts = [...(cloned.statements ?? [])];
+    let retval: () => ExpressionNode = emptyBytes;
+    if (returns === 1) {
+      const ret = clonedStmts.pop() as ReturnNode;
+      if (ret.expressions.length === 1 && fb.returnTypes.length === 1) {
+        const retName = `${PREFIX}${uid}`;
+        const retDef = new VariableDefinitionNode(fb.returnTypes[0], [], retName, ret.expressions[0]);
+        retDef.location = loc;
+        clonedStmts.push(retDef);
+        retval = () => {
+          const r = new IdentifierNode(retName);
+          r.location = loc;
+          return r;
+        };
+      }
+    }
+    stmts.push(...clonedStmts);
+    return { stmts, success, retval };
+  }
+
+  // Replace every msg.data read in the subtree with a read of the payload temp (node substitution, so it
+  // rewrites the field/array slot holding the NullaryOp).
+  private replaceMsgData(node: Node, dataName: string): void {
+    for (const key of Object.keys(node)) {
+      if (key === 'type' || key === 'symbolTable' || key === 'location') continue;
+      const v = (node as unknown as Record<string, unknown>)[key];
+      if (v instanceof NullaryOpNode && v.operator === NullaryOperator.MSG_DATA) {
+        const read = new IdentifierNode(dataName);
+        read.location = v.location;
+        (node as unknown as Record<string, unknown>)[key] = read;
+      } else if (v instanceof Node) {
+        this.replaceMsgData(v, dataName);
+      } else if (Array.isArray(v)) {
+        for (let i = 0; i < v.length; i += 1) {
+          const it = v[i];
+          if (it instanceof NullaryOpNode && it.operator === NullaryOperator.MSG_DATA) {
+            const read = new IdentifierNode(dataName);
+            read.location = it.location;
+            v[i] = read;
+          } else if (it instanceof Node) {
+            this.replaceMsgData(it, dataName);
+          }
+        }
+      }
+    }
   }
 
   private rewriteStatement(stmt: StatementNode): StatementNode[] | undefined {

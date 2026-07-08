@@ -56,3 +56,52 @@ describe('self low-level call (runtime)', () => {
     await expect(sc.statementForm()).resolves.toBeDefined();
   });
 });
+
+// abi.encodeWithSelector payloads resolve the own target by name (this.f.selector is unfolded pre-semantic);
+// value-returning targets capture their returns and retval = abi.encode(them), so abi.decode roundtrips.
+// A msg.data-reading fallback inlines at the call site with msg.data substituted by the payload.
+const SELECTOR_SRC = `pragma solidity ^0.8.0;
+contract SelfCallSelector {
+    bool flag;
+    bytes data;
+    function c(uint a) external {
+        require(a == 5);
+        flag = true;
+    }
+    function f(uint x) external returns (uint a, uint b) {
+        a = x + 1;
+        b = x * 2;
+    }
+    fallback() external { data = msg.data; }
+    function viaSelector() public {
+        (bool ok, ) = address(this).call(abi.encodeWithSelector(this.c.selector, 5));
+        require(ok && flag);
+    }
+    function retvalRoundtrip() public {
+        (bool ok, bytes memory ret) = address(this).call(abi.encodeWithSelector(this.f.selector, 10));
+        require(ok);
+        (uint a1, uint b1) = abi.decode(ret, (uint, uint));
+        require(a1 == 11 && b1 == 20);
+    }
+    function msgDataSubstitution() public {
+        data = hex"aabb";
+        bytes memory payload;
+        (bool ok, ) = address(this).call(payload);
+        require(ok);
+        require(data.length == 0, "fallback saw the empty payload as msg.data");
+        (bool ok2, ) = address(this).call(hex"010203");
+        require(ok2);
+        require(data.length == 3);
+    }
+}`;
+
+describe('self low-level call: selector dispatch + msg.data substitution (runtime)', () => {
+  const artifact = compileString(SELECTOR_SRC, { solidityImportCompat: true, forceStateful: true });
+  it('dispatches encodeWithSelector, roundtrips encoded retvals, substitutes msg.data', async () => {
+    const factory = getContractFactory(artifact, await fundedSigner());
+    const sc = await factory.deploy();
+    await expect(sc.viaSelector()).resolves.toBeDefined();
+    await expect(sc.retvalRoundtrip()).resolves.toBeDefined();
+    await expect(sc.msgDataSubstitution()).resolves.toBeDefined();
+  });
+});

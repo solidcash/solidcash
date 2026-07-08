@@ -704,3 +704,22 @@ TRIAGE CLOSURES:
   DECOMPOSE `m[0] = s` -> per-field m__f[0] = s__f, (b) whole-read ASSEMBLE `return m[0]` / `S x = s` ->
   per-leaf reads into a struct value, (c) the whole-struct-write bug fix above for roundtrips. Next session
   with fresh context.
+
+## Session 2026-07-08f ("go ahead with what is left", 3738->3740 CONFIRMED by clean full bench)
+- d4f83626 **4TH PRE-EXISTING RUNTIME BUG FIXED (SDK)**: encodePushdataValue's array branch pushdata-encoded
+  each element (OP_N shortcuts: [5,0] -> 52 55 00) while the covenant's in-script struct encode AND the
+  SDK's OWN decodePushdataValue pack fixed-width elements at stride (52 0500 0000) - every whole-struct
+  state write of a struct with a fixed-array field failed the output-commitment EQUALVERIFY. Fixed-width
+  elements now pack via packFixedWidthArray (encoder = decoder = covenant). Trace technique: the failing
+  EQUALVERIFY's two operands (covenant-computed vs OP_OUTPUTTOKENCOMMITMENT) decoded byte-by-byte exposed
+  the OP_N-shortcut framing. The round-5 temp-roundtrip is now RUNTIME-sound (e2e upgraded to VM).
+  DynamicMappingKeys' literal-key assertion updated to the fixed 'constant' classification.
+- 575805ff WHOLE-STRUCT ENTRY COPIES + WHOLE READS (+2): `m[0] = s` decomposes to per-field entry writes
+  (value = flattened state var / whole-var alias / local struct; mapping fields skipped - no value form);
+  whole reads (`S memory x = s` / `= m[k]` / return) ASSEMBLE the struct ctor over leaf / entry reads
+  (recursive for nested flattened state fields; entry side one-level to match the collection flatten;
+  guarded to mapping-free structs). `S storage sLocal = s` = whole-var alias. VM-verified full cycle incl.
+  dynamic (bytes) fields. Unlocks copy_to_mapping + copy_substructures_to_mapping.
+STILL OUT: skip_dynamic_types_for_structs (getter synthesis for flattened structs + tuple-from-self-call =
+double wall); recursive self-mappings; struct ctor values in entry writes (`m[k] = S(...)` - extend the
+decompose with per-arg values if corpus demands).

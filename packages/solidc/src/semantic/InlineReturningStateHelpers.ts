@@ -263,11 +263,27 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     return stmt;
   }
 
+  // A using-for named-arg call arrives as `L.f(recv, named...)` with fieldNames naming the tail; inlining
+  // substitutes POSITIONALLY, so reorder the tail against the callee's params first.
+  private reorderNamedTail(call: FunctionCallNode, callee: FunctionDefinitionNode): void {
+    const fieldNames = call.fieldNames;
+    if (!fieldNames || call.parameters.length !== callee.parameters.length
+      || fieldNames.length !== callee.parameters.length - 1) return;
+    const tailParams = callee.parameters.slice(1);
+    if (!tailParams.every((p) => fieldNames.includes(p.name))) return;
+    call.parameters = [
+      call.parameters[0],
+      ...tailParams.map((p) => call.parameters[1 + fieldNames.indexOf(p.name)]),
+    ];
+    call.fieldNames = undefined;
+  }
+
   visitFunctionCall(node: FunctionCallNode): Node {
     node.identifier = this.visit(node.identifier) as IdentifierNode;
     node.parameters = this.visitList(node.parameters); // inner calls inlined first
     const name = node.identifier.name;
     const callee = this.funcByName.get(name);
+    if (callee) this.reorderNamedTail(node, callee);
     if (!this.suppress && callee && this.inlinedFns.has(name)
       && !this.stack.includes(name) && node.parameters.length === callee.parameters.length
       && callee.returnTypes.length === 1) {

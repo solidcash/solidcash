@@ -4474,6 +4474,15 @@ export default class SymbolTableTraversal extends AstTraversal {
         throw new NamedArgumentError(node, `Unknown named argument '${name}' for function '${func.name}'`);
       }
     }
+    // using-for desugar: `recv.f({named})` arrives as `L.f(recv, named...)` - the receiver is positional,
+    // fieldNames name only the tail. Keep args[0], reorder the tail against the params minus the receiver.
+    if (fieldNames.length === paramNames.length - 1 && node.parameters.length === paramNames.length) {
+      const tailParams = userParams.slice(1);
+      return [
+        node.parameters[0] as ExpressionNode,
+        ...tailParams.map((p) => node.parameters[1 + fieldNames.indexOf(p.name)] as ExpressionNode),
+      ];
+    }
     if (fieldNames.length !== paramNames.length) {
       throw new NamedArgumentError(
         node,
@@ -4720,6 +4729,16 @@ export default class SymbolTableTraversal extends AstTraversal {
       return castNode;
     }
 
+    // Library-qualified struct constructor (`Pairing.G1Point(x, y)`): struct types register bare; when the
+    // post-dot name is a known struct and the prefix is not a value symbol, resolve the bare constructor.
+    if (node.identifier.name.includes('.')) {
+      const bare = node.identifier.name.slice(node.identifier.name.lastIndexOf('.') + 1);
+      const prefix = node.identifier.name.split('.')[0];
+      if (this.structMap.has(bare) && !this.symbolTables[0].get(prefix)
+        && !this.functionDefinitions.has(node.identifier.name)) {
+        node.identifier.name = bare;
+      }
+    }
     // Check if this is a struct constructor call
     const structType = this.structMap.get(node.identifier.name);
     if (structType) {

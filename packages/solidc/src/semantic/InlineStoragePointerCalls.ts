@@ -234,9 +234,25 @@ export default class InlineStoragePointerCalls extends AstTraversal {
   }
 
   // Replace a call to a value-returning storage-pointer function with its (substituted) return expression.
+  // A using-for named-arg call arrives as `L.f(recv, named...)` with fieldNames naming the tail; the inline
+  // passes substitute POSITIONALLY, so reorder the tail against the callee's params before inlining.
+  private reorderNamedTail(call: FunctionCallNode, callee: FunctionDefinitionNode): void {
+    const fieldNames = call.fieldNames;
+    if (!fieldNames || call.parameters.length !== callee.parameters.length
+      || fieldNames.length !== callee.parameters.length - 1) return;
+    const tailParams = callee.parameters.slice(1);
+    if (!tailParams.every((p) => fieldNames.includes(p.name))) return;
+    call.parameters = [
+      call.parameters[0],
+      ...tailParams.map((p) => call.parameters[1 + fieldNames.indexOf(p.name)]),
+    ];
+    call.fieldNames = undefined;
+  }
+
   visitFunctionCall(node: FunctionCallNode): Node {
     const visited = super.visitFunctionCall(node) as FunctionCallNode; // recurse into args (nested inlinable calls)
     const callee = this.exprInlinableFns.get(visited.identifier.name);
+    if (callee) this.reorderNamedTail(visited, callee);
     if (callee && !this.exprStack.includes(callee.name)
       && visited.parameters.length === callee.parameters.length) {
       if (this.ambiguousInlineKeys.has(inlineKey(callee.name, callee.parameters.length))) {
@@ -325,6 +341,7 @@ export default class InlineStoragePointerCalls extends AstTraversal {
         const name = stmt.call.identifier?.name;
         if (name === undefined) { out.push(stmt); continue; }
         const callee = this.funcByName.get(name);
+        if (callee) this.reorderNamedTail(stmt.call, callee);
         if (callee && this.inlinedFns.has(name) && !stack.includes(name)
           && stmt.call.parameters.length === callee.parameters.length) {
           if (this.ambiguousInlineKeys.has(inlineKey(name, stmt.call.parameters.length))) {

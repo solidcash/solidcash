@@ -3902,6 +3902,27 @@ export default class AstBuilder
       call.location = Location.fromCtx(ctx);
       return call;
     }
+    // using-for: `recv.method({named})` where recv's type is bound to a library -> `Library.method(recv,
+    // named...)`. The receiver stays POSITIONAL (fieldNames name only the tail); resolution and the inline
+    // passes reorder the tail against the callee's params minus the receiver.
+    if (object instanceof IdentifierNode && this.usingForLibraries.size > 0) {
+      const recvName = object.name;
+      const recvStruct = this.localStructTypes.get(recvName) ?? this.stateStructVars.get(recvName)
+        ?? this.mappingStructStateVars.get(recvName);
+      const simpleKey = this.localSimpleTypeKeys.get(recvName);
+      const libName = (recvStruct && this.usingForLibraries.get(recvStruct.name))
+        ?? this.usingForArrayLibrary(recvName)
+        ?? this.usingForMappingLibrary(recvName)
+        ?? (simpleKey !== undefined ? this.usingForLibraries.get(simpleKey) : undefined);
+      if (libName) {
+        const libId = new IdentifierNode(`${libName}.${methodName}`);
+        libId.location = Location.fromCtx(ctx);
+        const call = new FunctionCallNode(libId, [object, ...parameters]);
+        call.fieldNames = namedArgs.map((na) => na.Identifier().getText());
+        call.location = Location.fromCtx(ctx);
+        return call;
+      }
+    }
     const node = new MethodCallNode(object, methodName, parameters);
     node.fieldNames = namedArgs.map((na) => na.Identifier().getText());
     node.callOptions = this.parseCallOptions(ctx.callOptions());

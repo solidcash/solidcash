@@ -721,7 +721,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // can read constructor params (the subroutine path is param-less - only declared args are pushed). Key on
     // `!isEntryPoint`, not `visibility !== 'public'`, so external entry points (also non-'public') are not broken.
     const invoked = this.collectInvokedFunctionIds(node);
-    const definedFunctions = node.functions.filter((f) =>
+    // The fallback is a subroutine candidate too: a self low-level call (`address(this).call(data)`) lowers
+    // to an internal `__fallback(data)` invocation, so it needs an internal OP_DEFINE when invoked.
+    const subroutineCandidates = node.fallbackDef ? [...node.functions, node.fallbackDef] : node.functions;
+    const definedFunctions = subroutineCandidates.filter((f) =>
       f.functionId !== undefined && (!f.isEntryPoint || invoked.has(f.functionId)));
     for (const f of definedFunctions) {
       this.emitFunctionDefine(f);
@@ -1470,7 +1473,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     // Fallback with bytes parameter: compute msg.data and bind it as the parameter value.
     // The parameter is NOT passed by the SDK - it's computed inline from OP_INPUTBYTECODE.
-    if (node.isFallback && node.parameters.length > 0 && !node.parameters[0].name.startsWith('__internal__')) {
+    // Entry-point compile only: as an internal subroutine (self low-level call lowering) the caller pushes
+    // the payload as a declared arg, and _redeemPushSize does not exist on the subroutine's stack.
+    if (node.isFallback && node.parameters.length > 0 && !this.isDefineSubTraversal
+      && !node.parameters[0].name.startsWith('__internal__')) {
       const loc: SingleLocationData = { location: node.location, positionHint: PositionHint.START };
       this.emitMsgData(loc);
       this.pushToStack(node.parameters[0].name);

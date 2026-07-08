@@ -12,6 +12,9 @@ import {
   ReturnNode,
   MappingAccessNode,
   ArrayAccessNode,
+  AssignNode,
+  StateAccessNode,
+  StateAssignNode,
   WhileNode,
   DoWhileNode,
   TernaryOpNode,
@@ -57,6 +60,8 @@ export default class InlineReturningStateHelpers extends AstTraversal {
   private collectionNames: Set<string> = new Set();
   private freeFns: FunctionDefinitionNode[] = [];
   private stillCalled: Set<string> = new Set();
+  private stateVarNames: Set<string> = new Set();
+  private keepDefFns: Set<string> = new Set();
   private counter = 0;
   private hoists: StatementNode[] = [];
   private stack: string[] = [];
@@ -78,9 +83,28 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     for (const fn of [...node.functions, ...this.freeFns]) this.funcByName.set(fn.name, fn);
     this.ambiguousInlineKeys = collectAmbiguousInlineKeys([...node.functions, ...this.freeFns]);
     this.collectionNames = new Set(node.collections.map((c) => c.name));
+    this.stateVarNames = new Set(node.stateVariables.map((sv) => sv.name));
 
     this.inlinedFns = new Set();
+    this.keepDefFns = new Set();
     for (const fn of node.functions) if (this.eligible(fn) || this.eligibleStructPtr(fn)) this.inlinedFns.add(fn.name);
+    // State-touching returning ENTRY POINTS called internally have the same subroutine problem; inline the
+    // internal call sites but keep the definition (still dispatchable).
+    for (const fn of node.functions) {
+      if (!this.inlinedFns.has(fn.name) && this.eligibleShape(fn)
+        && (this.readsEntry(fn) || this.touchesScalarState(fn))) {
+        this.inlinedFns.add(fn.name);
+        this.keepDefFns.add(fn.name);
+      }
+    }
+    // The fallback is internally callable via the self low-level-call lowering; a state-touching returning
+    // fallback must inline at those call sites (its definition always stays - it is a dispatched entry point).
+    if (node.fallbackDef && this.eligibleShape(node.fallbackDef)
+      && (this.readsEntry(node.fallbackDef) || this.touchesScalarState(node.fallbackDef))) {
+      this.funcByName.set(node.fallbackDef.name, node.fallbackDef);
+      this.inlinedFns.add(node.fallbackDef.name);
+      this.keepDefFns.add(node.fallbackDef.name);
+    }
     // Library free-functions are inlined here ONLY as struct storage-pointer value helpers; other library
     // functions keep their own (delegate) machinery.
     for (const fn of this.freeFns) if (this.eligibleStructPtr(fn)) this.inlinedFns.add(fn.name);
@@ -102,13 +126,15 @@ export default class InlineReturningStateHelpers extends AstTraversal {
       }
     }
     this.stillCalled = stillCalled;
-    node.functions = node.functions.filter((fn) => !this.inlinedFns.has(fn.name) || stillCalled.has(fn.name));
+    node.functions = node.functions.filter(
+      (fn) => !this.inlinedFns.has(fn.name) || stillCalled.has(fn.name) || this.keepDefFns.has(fn.name),
+    );
     return node;
   }
 
-  private eligible(fn: FunctionDefinitionNode): boolean {
+  // The structural half of `eligible`: single-tail-return, no storage params (visibility-agnostic).
+  private eligibleShape(fn: FunctionDefinitionNode): boolean {
     if (!fn.body || fn.returnTypes.length < 1) return false;
-    if (!(fn.isFreeFunction || fn.visibility === 'private' || fn.visibility === 'internal')) return false;
     if (fn.parameters.some((p) => p.modifier.includes(Modifier.STORAGE))) return false;
     const stmts = fn.body.statements ?? [];
     const last = stmts[stmts.length - 1];
@@ -119,7 +145,28 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     let returns = 0;
     this.walk(fn.body, (n) => { if (n instanceof ReturnNode) returns += 1; });
     if (returns !== 1) return false; // a mid-body return can't linearize into a hoisted prelude
-    return this.readsEntry(fn);
+    return true;
+  }
+
+  private eligible(fn: FunctionDefinitionNode): boolean {
+    if (!(fn.isFreeFunction || fn.visibility === 'private' || fn.visibility === 'internal')) return false;
+    if (!this.eligibleShape(fn)) return false;
+    return this.readsEntry(fn) || this.touchesScalarState(fn);
+  }
+
+  // Reads or writes a plain (scalar) state variable: a `this.x` access/assign, or a bare identifier
+  // read/assign of a declared state-var name. A subroutine's scalar accesses are invisible to the entry
+  // traversal's commitment model, so such helpers must inline. Shadowing can over-match; inlining is
+  // semantics-preserving, so an occasional extra inline is harmless.
+  private touchesScalarState(fn: FunctionDefinitionNode): boolean {
+    let found = false;
+    this.walk(fn.body, (n) => {
+      if (found) return;
+      if (n instanceof StateAccessNode || n instanceof StateAssignNode) found = true;
+      else if (n instanceof IdentifierNode && this.stateVarNames.has(n.name)) found = true;
+      else if (n instanceof AssignNode && this.stateVarNames.has(n.identifier.name)) found = true;
+    });
+    return found;
   }
 
   // A single-tail-return value helper taking a STRUCT storage pointer (`get`/`size` on a `Map storage map`). It

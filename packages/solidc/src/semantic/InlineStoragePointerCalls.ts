@@ -17,6 +17,7 @@ import {
   ArrayAccessNode,
   AssignNode,
   StateAssignNode,
+  StateAccessNode,
   MappingAssignNode,
   StateArrayAssignNode,
   MappingFieldAssignNode,
@@ -64,6 +65,8 @@ export default class InlineStoragePointerCalls extends AstTraversal {
   private ambiguousInlineKeys: Set<string> = new Set();
   private inlinedFns: Set<string> = new Set();
   private collectionNames: Set<string> = new Set();
+  private stateVarNames: Set<string> = new Set();
+  private keepDefFns: Set<string> = new Set();
   private freeFns: FunctionDefinitionNode[] = [];
   private counter = 0;
   // Value-returning functions with a single `return <expr>` body and a storage-pointer param: inlined in
@@ -100,13 +103,32 @@ export default class InlineStoragePointerCalls extends AstTraversal {
     for (const fn of [...node.functions, ...this.freeFns]) this.funcByName.set(fn.name, fn);
     this.ambiguousInlineKeys = collectAmbiguousInlineKeys([...node.functions, ...this.freeFns]);
     this.collectionNames = new Set(node.collections.map((c) => c.name));
+    this.stateVarNames = new Set(node.stateVariables.map((sv) => sv.name));
 
     this.inlinedFns = new Set();
+    this.keepDefFns = new Set();
     for (const fn of node.functions) {
+      // Any state access disqualifies an OP_INVOKE subroutine: entry reads need block-layout slots, and
+      // scalar reads/writes live in the ENTRY traversal's commitment model (a subroutine's are invisible
+      // to it). Inline all state-touching void callees; entry points keep their definition (still
+      // dispatchable), internal helpers are dropped below.
       if (fn.body && fn.returnTypes.length === 0
-        && (this.hasStoragePointerParam(fn) || (this.isInternalHelper(fn) && this.readsEntry(fn)))) {
+        && (this.hasStoragePointerParam(fn)
+          || (this.isInternalHelper(fn) && (this.readsEntry(fn) || this.touchesScalarState(fn))))) {
         this.inlinedFns.add(fn.name);
+      } else if (fn.body && fn.returnTypes.length === 0 && !this.isInternalHelper(fn)
+        && (this.readsEntry(fn) || this.touchesScalarState(fn))) {
+        this.inlinedFns.add(fn.name);
+        this.keepDefFns.add(fn.name);
       }
+    }
+    // The fallback is internally callable via the self low-level-call lowering; a state-touching one must
+    // inline at those call sites (its definition always stays - it is a dispatched entry point).
+    if (node.fallbackDef?.body && node.fallbackDef.returnTypes.length === 0
+      && (this.readsEntry(node.fallbackDef) || this.touchesScalarState(node.fallbackDef))) {
+      this.funcByName.set(node.fallbackDef.name, node.fallbackDef);
+      this.inlinedFns.add(node.fallbackDef.name);
+      this.keepDefFns.add(node.fallbackDef.name);
     }
     // Library free-functions (`Lib.fn`) taking a STRUCT storage pointer are inlined too, but ONLY struct ones:
     // array/mapping storage-pointer library fns (the `using Lib for T[]` path) have their own machinery a broad
@@ -141,9 +163,24 @@ export default class InlineStoragePointerCalls extends AstTraversal {
     }
     // A storage parameter has no value representation, and a subroutine cannot read a state entry (the
     // entry-access input slots live only in an entry-point's block layout); so the original cannot stand
-    // alone as a subroutine. Every call was inlined above, so drop it.
-    node.functions = node.functions.filter((fn) => !this.inlinedFns.has(fn.name));
+    // alone as a subroutine. Every call was inlined above, so drop it - except entry points (keepDefFns),
+    // which stay dispatchable.
+    node.functions = node.functions.filter((fn) => !this.inlinedFns.has(fn.name) || this.keepDefFns.has(fn.name));
     return node;
+  }
+
+  // Reads or writes a plain (scalar) state variable: a `this.x` access/assign, or a bare identifier
+  // read/assign of a declared state-var name. Param/local shadowing can over-match; inlining is
+  // semantics-preserving, so an occasional extra inline is harmless.
+  private touchesScalarState(fn: FunctionDefinitionNode): boolean {
+    let found = false;
+    this.walk(fn.body, (n) => {
+      if (found) return;
+      if (n instanceof StateAccessNode || n instanceof StateAssignNode) found = true;
+      else if (n instanceof IdentifierNode && this.stateVarNames.has(n.name)) found = true;
+      else if (n instanceof AssignNode && this.stateVarNames.has(n.identifier.name)) found = true;
+    });
+    return found;
   }
 
   private hasStoragePointerParam(fn: FunctionDefinitionNode): boolean {

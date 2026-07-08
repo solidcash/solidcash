@@ -737,6 +737,14 @@ export default class SymbolTableTraversal extends AstTraversal {
       this.functionDefinitions.set(func.name, existing);
     }
 
+    // The fallback is internally invokable via the self low-level-call lowering (`address(this).call(data)`
+    // with a raw payload routes to it, like the EVM's raw-calldata path). Register it like an external
+    // function: an OP_DEFINE id + a functionDefinitions entry (its reserved __fallback name cannot collide).
+    if (node.fallbackDef) {
+      node.fallbackDef.functionId = this.nextFunctionId++;
+      this.functionDefinitions.set(node.fallbackDef.name, [node.fallbackDef]);
+    }
+
     // Function pointers in state are positional functionIds, safe only while the bytecode is immutable.
     // An upgrade (rewrites own code) or delegate (swappable logic) contract would remap them - reject.
     const mutatesCode = node.functions.some((f) =>
@@ -4022,6 +4030,11 @@ export default class SymbolTableTraversal extends AstTraversal {
     this.symbolTables.unshift(node.symbolTable);
 
     node.statements = this.visitOptionalList(node.statements) as StatementNode[];
+    // Splice desugar-produced statement groups (blocks without their own scope - e.g. the self low-level
+    // call lowering) into this list, so a trailing ReturnNode stays visible to the may-return analyses.
+    node.statements = node.statements.flatMap(
+      (s) => (s instanceof BlockNode && !s.scoped && !s.symbolTable && s.statements ? s.statements : [s]),
+    );
 
     const unusedSymbols = node.symbolTable.unusedSymbols();
     for (const unused of unusedSymbols) {

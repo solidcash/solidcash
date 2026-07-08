@@ -23,6 +23,7 @@ import PromoteConstructorExternalReads from './semantic/PromoteConstructorExtern
 import SynthesizeLibraryDelegateCalls from './semantic/SynthesizeLibraryDelegateCalls.js';
 import InlineExternalCallHelpers from './semantic/InlineExternalCallHelpers.js';
 import InlineStoragePointerCalls from './semantic/InlineStoragePointerCalls.js';
+import LowerSelfLowLevelCalls from './semantic/LowerSelfLowLevelCalls.js';
 import InlineMappingReturnFunctions from './semantic/InlineMappingReturnFunctions.js';
 import LowerMappingStorageAlias from './semantic/LowerMappingStorageAlias.js';
 import InlineReturningStateHelpers from './semantic/InlineReturningStateHelpers.js';
@@ -204,6 +205,10 @@ function compileResolvedAst(ast: Ast, code: string, mergedCompilerOptions: Compi
   // Inline void helpers that make external calls into their internal call sites (the external co-spend can't
   // cross an OP_INVOKE boundary); reduces to the entry-point-body external-call case.
   ast = ast.accept(new InlineExternalCallHelpers()) as Ast;
+
+  // `address(this).call(payload)` -> a plain internal call (+ constant true success). Before the inline
+  // passes so a state-touching callee (incl. the fallback) is inlined into the entry point like any other.
+  ast = ast.accept(new LowerSelfLowLevelCalls()) as Ast;
 
   // Inline value-returning private helpers that read a state entry at their expression call sites (hoist the
   // body, capture the return in a temp). Same block-layout reason as the void case below; run first so a void

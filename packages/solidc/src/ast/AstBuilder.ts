@@ -2260,15 +2260,30 @@ export default class AstBuilder
   }
 
   visitNewArray(ctx: any): NewArrayNode {
-    // `new T[]...[](n)` allocates the OUTER dynamic array; each extra `[]` makes the element itself an array.
-    // e.g. `new uint256[][](2)` -> a 2-element array whose element type is `uint256[]`.
-    const dims = (ctx.getText().match(/\[\]/g) ?? ['[]']).length;
+    // `new T[]...[](n)` allocates the OUTER (last) dimension, which must be dynamic; earlier bracket groups
+    // read left-to-right like the type form and may carry a fixed size: `new uint[4][](n)` = n elements of
+    // type uint[4], `new uint256[][](2)` = 2 elements of type uint256[].
     // An unresolved element name (a contract type like `new C[](n)`) becomes a named AddressType placeholder - a
     // contract handle is an address on BCH - mirroring the scalar/array type paths, so `C[]` types as address[]
     // rather than undefined[].
     const elemName = ctx.typeName().getText();
     let elementType = this.resolveType(elemName) ?? new AddressType(false, elemName);
-    for (let i = 1; i < dims; i++) elementType = new ArrayType(elementType);
+    // Bracket sizes in source order (undefined = dynamic), read from the token children between the type
+    // name and the size parenthesis (the size expression itself may contain brackets, so no text regex).
+    const sizes: Array<number | undefined> = [];
+    const children: any[] = ctx.children ?? [];
+    for (let i = 2; i < children.length; i += 1) {
+      const text = children[i].getText?.();
+      if (text === '(') break;
+      if (text === '[') {
+        const next = children[i + 1]?.getText?.();
+        sizes.push(next === ']' ? undefined : Number(next));
+      }
+    }
+    if (sizes[sizes.length - 1] !== undefined) {
+      throw new ParseError('The outer dimension of a new array expression must be dynamic', Location.fromCtx(ctx));
+    }
+    for (const bound of sizes.slice(0, -1)) elementType = new ArrayType(elementType, bound);
     const size = this.visit(ctx.expression()) as ExpressionNode;
     const node = new NewArrayNode(elementType, size);
     node.location = Location.fromCtx(ctx);

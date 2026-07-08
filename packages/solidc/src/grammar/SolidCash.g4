@@ -646,7 +646,7 @@ expression
     | typeCast '(' castable=expression ','? ')' # Cast
     | functionCall # FunctionCallExpression
     | 'new' Identifier callOptions? expressionList #Instantiation
-    | 'new' typeName ('[' ']')+ '(' expression ')' # NewArray
+    | 'new' typeName ('[' NumberLiteral? ']')+ '(' expression ')' # NewArray
     | 'new' UnboundedBytes '(' expression ')' # NewDynamicBytes
     | 'new' PrimitiveType '(' expression ')' # NewDynamicString
     | 'type' '(' typeName ')' '.' Identifier # TypeIntrospection

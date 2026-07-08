@@ -1073,6 +1073,7 @@ export default class AstBuilder
       { const k = this.usingForTypeKey(p.type); if (k) this.localSimpleTypeKeys.set(p.name, k); }
     }
     const structPtrParams = this.registerStructPointerParams(parameters);
+    this.registerNamedReturnLocals(ctx.returnType());
     const statements = this.flattenStatements(ctx.statement_list().map((s) => this.visit(s) as StatementNode));
     for (const nm of structPtrParams) this.mappingStructStateVars.delete(nm);
     const block = new BlockNode(statements);
@@ -1199,6 +1200,7 @@ export default class AstBuilder
       { const k = this.usingForTypeKey(p.type); if (k) this.localSimpleTypeKeys.set(p.name, k); }
     }
     const structPtrParams = this.registerStructPointerParams(parameters);
+    this.registerNamedReturnLocals(ctx.returnType());
     const statements = this.flattenStatements(ctx.statement_list().map((s) => this.visit(s) as StatementNode));
     for (const nm of structPtrParams) this.mappingStructStateVars.delete(nm);
     const block = new BlockNode(statements);
@@ -3933,6 +3935,21 @@ export default class AstBuilder
     this.validateBoundedIntType(typeText);
     this.validateFixedType(typeText);
     return parseType(typeText);
+  }
+
+  // Named struct-typed returns participate in struct-field-write desugaring (`s.x = v` on a named return
+  // rebuilds the struct like a local, before NamedReturnTransformation declares it); same registration for
+  // unbounded-bytes named returns (element writes). Runs BEFORE the body build - applyReturnType later only
+  // attaches the metadata to the node.
+  private registerNamedReturnLocals(ctx: ReturnTypeContext | null): void {
+    if (!ctx) return;
+    for (const p of ctx.returnParam_list()) {
+      const nm = p.anyIdentifier()?.getText();
+      if (!nm) continue;
+      const t = this.returnParamType(p);
+      if (t instanceof StructType) this.localStructTypes.set(nm, t);
+      if (t instanceof BytesType && t.bound === undefined) this.localBytesVars.add(nm);
+    }
   }
 
   // Resolve a return parameter's type (a plain type, or an array type like `uint256[] memory`).

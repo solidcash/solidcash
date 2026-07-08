@@ -632,3 +632,27 @@ MethodCallNotSupported bucket triaged: remainder = fn-ptr-in-struct fields (~6),
 state-var targets (~8), using-for named args (2), UDVT walls. UndefinedStateVariable remainder = nested
 state-struct registration (structs.sol data.s1data.x), library-qualified struct ctors (verifier Pairing.
 G1Point), storage-pointer locals into mappings (copy_to_mapping), 2D memory element writes.
+
+## Session 2026-07-08c ("attack remaining triaged veins", 3730->3732 CONFIRMED by clean full bench)
+- 1f7695e3 USING-FOR NAMED ARGS + LIB-QUALIFIED STRUCT CTORS (+2): visitMethodCallNamed gains the using-for
+  route (`recv.method({named})` -> `L.method(recv, named...)`, receiver POSITIONAL + fieldNames = tail);
+  reorderNamedCallArgs offset case (fieldNames == params-1); BOTH inline passes reorder the named tail
+  against callee params before positional substitution (out-of-order {b:1,m:3} VM-verified). Qualified
+  struct ctor `Pairing.G1Point(x,y)` resolves post-dot when the prefix is no value symbol + no function
+  owns the qualified name (VM-verified).
+TRIAGE CLOSURES:
+- gnosis/smtChecker contract-typed state targets (~8+6): MULTI-WALL per file (deploy-into-struct-field
+  state + ctor-time asserts on struct-field deploy results + typed calls on stored struct-field/array-
+  element addresses). Not a clean vein; needs deploy-fold struct-field tracking + external-target-from-
+  struct-field machinery.
+- NESTED STRUCT FLATTEN = THE NEXT-SESSION VEIN (~5+ files: delete_struct, copy_substructures_to_mapping,
+  struct_mapping_abstract_constructor_param, memory_structs_nested_load, +structs.sol/struct_reference if
+  recursion-pruned). DESIGN: structNeedsFieldFlattening/buildFlattenedStructField recurse into struct-typed
+  fields that THEMSELVES need flattening -> leaf names `str__nstr__nestedValue` (scalar SV) /
+  `str__nstr__nestedMapping` (Collection); write/read resolution in buildLvalueAssign + expression chains
+  must resolve multi-level member paths through the flatten registry (today: one level via
+  mappingStructStateVars); `delete str` resets VALUE leaves only (Solidity leaves mappings intact).
+  RECURSIVE self-referencing mappings (structs.sol data.recursive[3].recursive[4], struct_reference) stay
+  out (unbounded flatten; cycle guards reject today).
+- verifier.sol peeled 2 walls (Pairing.G1Point ctor, named struct returns) -> now an internal bool/uint
+  AssignType wall at line 48. snark.sol moved similarly.

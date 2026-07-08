@@ -9301,12 +9301,18 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         if (type.bound > MAX_MATERIALIZED_ARRAY_ELEMENTS) {
           throw new Error(`Array type is too large to materialize (${type.bound} elements); reduce the bound.`);
         }
-        // Bounded: length prefix + bound default elements
+        // Bounded: length prefix + bound default elements. Element framing must match the array literal /
+        // element access model (visitArray / emitIndexIntoArrayBlob): fixed-width elements are PACKED at
+        // their stride, only variable-width elements carry a pushdata frame.
         this.emit(encodeInt(BigInt(type.bound)), locationData);
         this.emitPushdataEncode(PrimitiveType.BIGINT, locationData);
         for (let i = 0; i < type.bound; i++) {
           this.emitDefaultValue(locationData, type.elementType);
-          this.emitPushdataEncode(type.elementType, locationData);
+          if (isFixedWidthType(type.elementType)) {
+            this.emitEncodeElementPacked(type.elementType, locationData);
+          } else {
+            this.emitPushdataEncode(type.elementType, locationData);
+          }
           this.emit(Op.OP_CAT, locationData);
         }
       } else {

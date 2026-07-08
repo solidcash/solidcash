@@ -51,9 +51,9 @@ contract Chains {
         require(y == n && x == n);
     }
     function elementChain() public pure {
-        uint[3] memory arr = [uint(0), 0, 0];
-        arr[1] = arr[2] = 4;
-        require(arr[1] == 4 && arr[2] == 4);
+        uint[10] memory arr;
+        arr[8] = arr[9] = 4;
+        require(arr[8] == 4 && arr[9] == 4 && arr[0] == 0);
     }
     function inner(uint x) internal pure returns (uint) {
         uint v = x;

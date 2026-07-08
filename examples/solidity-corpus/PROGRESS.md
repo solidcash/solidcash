@@ -546,3 +546,60 @@ by-design unfoldable v1) + Base(x, f(s)) parent-invocation ctors w/ internal cal
   behind it sits a full framed-memory-model feature (grammar + new uint[][] + element read/write codegen)
   - a multi-session feature, analysis preserved here. ~64 files gated on it (2D parse + .push receivers +
   storage<->memory nested copies).
+
+## Session 2026-07-08 (assignment-as-expression + self low-level calls + 2 runtime bug fixes, 3668->3702)
+Fresh-session triage CORRECTED the prior "memory-2D fails at parse" framing: 2D/nested memory arrays largely
+ALREADY PARSE (uint[][] memory locals, uint[2][2], 2D storage push all compile); the real parse walls inside
+that bucket were assignment-as-expression (~39 files) and sized dims in `new` (10). All VM-verified.
+- ec99a3f9 ASSIGNMENT-AS-EXPRESSION (+18): new right-recursive `assignChain` grammar rule; chains desugar in
+  AstBuilder right-to-left, each middle lvalue RE-READ as the next value (`a = b = c;` -> `b = c; a = b;`,
+  compound too: `a += b += c` VM-proves b-first ORDER). `return x op= v;` runs assigns then returns the
+  first target re-read. Decl-init chains (`uint y = x = n;`) hoist before the decl (multi-statement desugar
+  = unscoped BlockNode, flattened by AstBuilder's existing flattenStatements). TERNARY BRANCH ASSIGNS mirror
+  solc (its ternary operands are full expressions): optional assign tails on BOTH TernaryOp branches;
+  desugared to if/else at statement scope, decl-default + per-arm assign at initializer scope, distributed
+  outer assignment at assignment-value scope; anywhere else = clear ParseError guard in visitTernaryOp.
+  No new AST nodes - everything lowers to existing tested statements.
+- 000fb5f8 SIZED DIMS IN NEW-ARRAY (+6): `new uint[4][](n)` - bracket groups read left-to-right like the
+  type form, all but the last may carry a size, allocated (last) dim must stay dynamic. Sizes read from
+  token children NOT text regex (the size expression may contain brackets). Unlocked the
+  nested_array_element_* family.
+- 57f506fb ZERO-INIT BOUNDED ARRAY RUNTIME BUG (pre-existing, verified on baseline): emitDefaultValue
+  pushdata-framed every element while the literal/read/write model PACKS fixed-width elements at stride ->
+  `int[10] arr; arr[9] = 4;` split out of range (OP_SPLIT 297 vs 10-byte blob; 297 = 9*33). Fixed-width
+  elements now pack. Fails-closed class, but broke a basic pattern in EVERY compiling file that used it.
+- 5a4b2602 SELF LOW-LEVEL CALLS + INLINE SCALAR-STATE HELPERS (+8 w/ bonus): NEW pre-semantic pass
+  LowerSelfLowLevelCalls rewrites `address(this).call(payload)` (2-slot tuple / return / statement sites)
+  into a plain internal call + constant-true success (internal calls abort, no revert trap):
+  abi.encodeWithSignature("f(..)",args) naming an own fn -> direct `f(args)`; other payloads ->
+  `__fallback(payload)` (fallback gets functionId + functionDefinitions entry + GTT subroutine candidacy;
+  its entry-only msg.data->_input binding gated off the subroutine compile). msg.data-reading fallbacks are
+  NOT lowered (would need payload substitution; copy_from_calldata stays failing).
+  SECOND PRE-EXISTING RUNTIME BUG CLASS FIXED (verified on baseline): internal calls to helpers touching
+  SCALAR state - read OR write - compiled as OP_INVOKE subroutines whose accesses are invisible to the
+  entry's commitment model / NftIndexCollector; EVERY such call failed on the VM (`function inner()
+  internal { x = 3; }` broke). Both inline passes now inline scalar-state-touching callees
+  (InlineStoragePointerCalls void; InlineReturningStateHelpers single-tail-return); state-touching ENTRY
+  POINTS called internally inline at the site but KEEP their definition (new keepDefFns).
+- 69624256 SCIENTIFIC LITERALS (+2): DecimalLiteral takes ExponentPart, ExponentPart takes '-'; builder
+  folds by point-shifting (2.5e3 -> 2500 int; 1.5e-1 -> 0.15 fixed path; 1e-3 int context stays ParseError).
+NOTE: 4 SDK test failures (multi-contract-debugging hardcoded sibling hashes x2, debugging.test.ts:885,
+ForeignFunctionPointer FALSE-branch) are PRE-EXISTING on the pre-session baseline 953fe80a - not from this
+session; full SDK suite otherwise matches baseline exactly.
+REMAINING VEINS (triaged): chained storage push `arr.push().push()` (~11, needs push-returns-ref on 2D);
+MethodCallNotSupported (39, mixed); UndefinedStateVariable/Collection (~40, mixed); `(m = m2)[2]` mapping-
+paren-assign; encodeWithSelector self-dispatch (abicodec); msg.data payload substitution for lowered
+fallbacks; Yul unlowerable (~151, fundamental).
+- 72d493f0 INLINER-CRITERIA HARDENING (final score 3702 CONFIRMED by clean full bench): the broadened
+  scalar-state criteria initially regressed 9 previously-OK files - CAUGHT ONLY BY THE FULL BENCH (refail
+  re-tests failures, it is BLIND to OK-set regressions; found precisely by compiling all current FAILs with
+  the pre-session compiler in a git WORKTREE). Four root causes: (1) named-return struct writes desugar to
+  state-assign-family nodes resolved contextually later -> criterion now requires a DECLARED state-var name
+  + skips param/local-shadowed matches (alpha-rename breaks those clones); (2) fns referenced as VALUES
+  (function pointers) were inlined+dropped -> excluded; (3) inlined INHERITED helpers lost private-state
+  access -> clone's state accesses tagged fromModifier=defining contract (tagModifierStateAccess exported,
+  same mechanism as modifier bodies); (4) expression-inlining a call inside FunctionCallStatement left a
+  bare temp in .call (latent crash unmasked once getters became eligible) -> statement re-wraps as dropped
+  expression; + empty scopeless blocks stay as placeholders in the SymbolTable splice (a body whose only
+  statement was dropped must not trip EmptyFunctionError). BENCH HYGIENE REMINDER confirmed the hard way:
+  a mid-run dist rebuild (baseline stash-dance) corrupted one bench run (3694 phantom score).

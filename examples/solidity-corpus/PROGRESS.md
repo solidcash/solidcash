@@ -683,3 +683,24 @@ TRIAGE CLOSURES:
   STILL OUT: recursive self-mappings (structs.sol depth-2 recursive traversal), whole-subtree struct
   assigns (s.inner = Inner(...) decompose-per-leaf would be the extension), copy_to_mapping (whole-struct
   -> mapping-entry copies), memory_structs_nested_load (struct-field ARRAY-ELEMENT writes m_x.a[0]).
+
+## Session 2026-07-08e (remaining struct walls, 3735->3738 CONFIRMED by clean full bench)
+- 54080371 FLATTENED ARRAY-LEAF ASSIGNS + STATE-STRUCT ARRAY-ELEMENT WRITES (+3): `s.a = arr;` routes a
+  chunk-dynamic array leaf like a scalar leaf (whole state var; collection-model leaves excluded) -
+  VM-verified. `m_x.a[0] = 5` on whole-value struct state vars desugars to the temp roundtrip
+  `X __t = m_x; __t.a[0] = 5; m_x = __t;` (sound by reduction to the handwritten form).
+  Unlocked: memory_structs_nested_load, struct_delete_storage, name_simplifier.
+- **4TH PRE-EXISTING RUNTIME BUG FOUND (baseline-verified, fail-closed): whole-struct STATE writes of
+  structs carrying FIXED-array fields fail the covenant's old/new comparison** (`X memory t; t.x=3;
+  t.a[0]=5; m_x = t;` handwritten fails identically; two same-length blobs differ at the written elem and
+  an EQUALVERIFY treats the var as unwritten or re-encodes differently). Affects the runtime of the
+  temp-roundtrip desugar too (compile-correct, rides the broken primitive). DEDICATED FIX = next-session
+  candidate: trace where whole-struct StateAssign of fixed-array-field structs misses pendingStateWrites /
+  re-encodes (suspect the packed-fixed-array-in-struct encode path, cousin of the zero-init stride bug).
+- subtree assigns (`str.nstr = N(...)`) RESOLVED AS INVALID SOLIDITY for mapping-carrying subtrees (solc
+  rejects constructing structs with mappings) - no corpus value; whole-value struct-field assigns already
+  route via the scalar leaf path.
+- copy_to_mapping cluster DEFERRED W/ DESIGN: whole-struct <-> mapping-entry copies need (a) entry-write
+  DECOMPOSE `m[0] = s` -> per-field m__f[0] = s__f, (b) whole-read ASSEMBLE `return m[0]` / `S x = s` ->
+  per-leaf reads into a struct value, (c) the whole-struct-write bug fix above for roundtrips. Next session
+  with fresh context.

@@ -603,3 +603,32 @@ fallbacks; Yul unlowerable (~151, fundamental).
   expression; + empty scopeless blocks stay as placeholders in the SymbolTable splice (a body whose only
   statement was dropped must not trip EmptyFunctionError). BENCH HYGIENE REMINDER confirmed the hard way:
   a mid-run dist rebuild (baseline stash-dance) corrupted one bench run (3694 phantom score).
+
+## Session 2026-07-08b ("go ahead with next veins", 3702->3730 CONFIRMED by clean full bench)
+- c5912102 CHAINED STORAGE PUSH (+15): grammar depth-2 push alternatives + buildPushStatement desugars onto
+  the EXISTING VM-proven nested keyed-push machinery via pre-push length capture: `c.push().push(v|=v|())` ->
+  `uint __i = c.length; c.push(); c[__i].push(v)`; `b.push() = b.push();` -> rhs index capture + push copy;
+  2-deep value side (`= b.push().push()`) reads the fresh inner's element at LITERAL index 0;
+  `uint[] storage p = c.push();` -> pushPtr alias extended to ARRAY element types (inner default via no-arg
+  push; p.push(v) routes through the alias to c[__idx].push(v)). Depth-3 + member/keyed-receiver chains =
+  clear ParseError. All 6 forms VM-verified (ChainedPush e2e).
+- 3192c71c SELF-CALL EXTENSIONS (+1): abi.encodeWithSelector(this.f.selector, args) resolves the target BY
+  NAME pre-semantic (selector = still-unfolded FieldAccess('selector', StateAccess(f))); value-returning
+  static targets capture returns (tuple for multi-value) + retval = abi.encode(them) -> caller abi.decode
+  ROUNDTRIPS (VM-verified 2-value roundtrip). msg.data-reading fallbacks now INLINE at the call site with
+  msg.data + declared input param substituted by the payload (EVM callee-sees-call-data semantics; locals
+  alpha-renamed; single-trailing-return restriction). copy_from_calldata GREEN. abicodec still blocked on
+  UDVT int->MyInt reinterpretation.
+- ff71c45b INLINE DEPLOY RECEIVERS (+5): new pre-semantic HoistInlineDeployCalls: `(new C()).m()` ->
+  `C __newcall_N = new C(); __newcall_N.m()` EMITTED IN THE NAMESPACED FunctionCall FORM (`__newcall_N.m`)
+  - the deploy-then-call fold route lives in visitFunctionCall's dotted-identifier path; a plain MethodCall
+  on a deploy local hits the v1 no-fold throw (it predates plain calls reaching it). Deploys are not
+  hoisted out of conditionally-evaluated positions (a deploy mints a child). Sound by reduction to the
+  parsed named-local shape.
+- cc1febf6 NAMED STRUCT/BYTES RETURNS (+3): registerNamedReturnLocals BEFORE the body build - `returns (S
+  memory s)` + `s.x = v` desugars via localStructTypes like a declared local (NamedReturnTransformation
+  declares the var later; body-build registration was the only gap). VM-verified combine/extract roundtrip.
+MethodCallNotSupported bucket triaged: remainder = fn-ptr-in-struct fields (~6), gnosis contract-typed
+state-var targets (~8), using-for named args (2), UDVT walls. UndefinedStateVariable remainder = nested
+state-struct registration (structs.sol data.s1data.x), library-qualified struct ctors (verifier Pairing.
+G1Point), storage-pointer locals into mappings (copy_to_mapping), 2D memory element writes.

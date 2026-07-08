@@ -4632,7 +4632,9 @@ export default class AstBuilder
       iDef.allowUnused = true;
       stmts.push(iDef);
       stmts.push(this.buildArrayPush(rawName, false, [], undefined, this.noArgPushPlaceholder(ctx), true, ctx));
-      stmts.push(this.buildArrayPush(rawName, false, [(): ExpressionNode => ident(iName)], undefined, valueExpr, noArgNested, ctx));
+      stmts.push(this.buildArrayPush(
+        rawName, false, [(): ExpressionNode => ident(iName)], undefined, valueExpr, noArgNested, ctx,
+      ));
     } else {
       // 1-deep with a value-side push: `b.push() = b.push();`.
       stmts.push(this.buildArrayPush(rawName, false, [], undefined, valueExpr, false, ctx));

@@ -25,9 +25,13 @@ because consensus arbitrates spend-once and input-unspent, not inclusion.
   budget proportional to its own byte length. Proof data pays for the compute that checks it.
 - **Hashing:** `OP_SHA256`/`OP_HASH256` are single native opcodes (~1 digest iteration per 64-byte block).
   Anchor: this codebase already runs in-script keccak256 (far heavier), so tens of native hashes are trivial.
+- **NFT commitment: 128 bytes** (May 2026 upgrade, up from 40). Enough to store `(key, value, nextKey)` in one
+  commitment - the change that makes the sorted linked list (B2) practical (see below).
 
 Consequence: a ~1 KB proof + ~tens of hashes is ~1% of a tx and well inside the budget. **Compute is never the
 binding constraint** - the constraints are transaction *size* (for co-spend-all) and, decisively, *contention*.
+The 128-byte commitment relaxes a *layout* constraint (per-entry link fields) but changes none of the
+fundamentals: reads still spend, so the contention wall and the code/data principle below stand unchanged.
 
 ## 3. The contention wall (the real constraint)
 
@@ -95,6 +99,10 @@ co-spend (one UTXO), no root.
   Splitting hot gaps (inserting sentinel entries) redistributes read load.
 - The UTXO-native analogue of an indexed Merkle tree, trading the O(log N) path + global root for O(1)
   neighbor co-spend + local contention.
+- **Fits the 128-byte commitment.** `key(32) + nextKey(32) + value(<=64)` = <=128, so a general mapping
+  (key -> value up to 64 B) stores an entry in one commitment - even doubly-linked `(key, prevKey, nextKey)` at
+  96 B leaves room. Under the old 40-byte limit `key+nextKey` (64) did not fit, forcing key truncation or
+  chunking; the May 2026 upgrade removes that, which is what makes B2 clean rather than a hack.
 
 ### C. Approximate membership (Bloom / cuckoo) - **sound non-existence, cheap, bakeable**
 A Bloom filter has **no false negatives**: if any of `k`'s hash-bit positions is 0, `k` was never added ->
@@ -104,9 +112,10 @@ the covenant checks `p` is a valid hash position of `k` and the bit is 0. O(1), 
   (a legit user occasionally blocked), tunable by filter size.
 - Bloom is **add-only** (can't clear bits); use a **cuckoo filter** if deletion is needed.
 - Its free-read appeal was *baking* the filter into the code, which the code/data principle (section 3) rules
-  out. As **data** a filter has no clean home: it exceeds the 40-byte NFT commitment, so it must be chunked
-  across NFTs and a read spends the relevant chunk (contention + `hash(filter)`-committed chunk proofs, i.e. it
-  reduces to B1). So under code/data separation the Bloom filter loses its edge over a Merkle root.
+  out. As **data**, a 128-byte commitment holds a ~100-element filter (at ~1% FP) in one NFT - viable for a
+  small blacklist - but a read still *spends* that NFT (contention, same as a root-NFT), and larger sets chunk
+  and reduce to B1. So under code/data separation the Bloom filter loses its edge over a Merkle root / linked
+  list, other than an O(1) bit-check vs an O(log N) path for a small single-NFT set.
 
 ### D. Baked constant set / root - **RULED OUT** (mixes code and data)
 Putting the commitment (explicit list / Bloom filter / Merkle root) **in the covenant code** gives free parallel

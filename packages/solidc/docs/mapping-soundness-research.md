@@ -48,6 +48,15 @@ the covenant code (baked), not in a UTXO** - because any committed UTXO must be 
 - you cannot have contention-free reads *and* contention-free frequent writes for one globally-consistent sound
   set. That corner is a property of the UTXO model, the same "no free global state" fact that created C2.
 
+**Design principle: separate code from data.** But the baked commitment above *mixes state into the covenant
+code*, and that is rejected. The master UTXO is **code + identity**; all set state is **data** in its own UTXOs.
+Reasons: baking makes a data change a *code* change (new redeem script -> new address -> migrate every UTXO +
+re-audit); it gives each instance a different covenant, breaking one-bytecode-serves-any-layout (the same
+property the layout-independent default proxy relies on). So the "baked" techniques below are ruled out despite
+their free reads - **we take localized contention as the price of code/data separation** - and set state also
+never goes into the *master's* commitment (which would bottleneck the master and its threading); it lives in
+dedicated data UTXOs.
+
 ## 4. Two mechanisms already characterized
 
 - **Nullifier (consume-once).** Represent the right as a unique UTXO; the action spends it; consensus
@@ -69,10 +78,12 @@ suits. Techniques:
 Covered (section 4). The only fully-parallel sound option; requires provisioning. Turns "is k absent" into "is
 k's unique UTXO unspent," which consensus answers for free.
 
-### B1. Indexed / sparse Merkle tree - global root
-Covered (section 4). O(log N), general (unbounded/lazy/persistent), but global-root contention.
+### B1. Indexed / sparse Merkle tree - global root (in a dedicated data NFT)
+Covered (section 4). O(log N), general (unbounded/lazy/persistent). The 32-byte root is **data** in a
+**dedicated root-NFT** - not the master's commitment (which would bottleneck the master + break threading) and
+not the code. Still global-root contention, but cleanly separated.
 
-### B2. Sorted linked list of entry-UTXOs - **no global root** *(localizes contention)*
+### B2. Sorted linked list of entry-UTXOs - **no global root, and the standout under code/data separation**
 Each entry commits `(key, value, nextKey)`; entries are a sorted singly-linked list. Non-membership of `k`:
 **co-spend just the predecessor** `low` with `low.key < k < low.nextKey`. `low` being an input proves it is the
 current (unspent) entry; `nextKey` is committed and maintained on insert (inserting `m` between `low` and its
@@ -92,16 +103,17 @@ the covenant checks `p` is a valid hash position of `k` and the bit is 0. O(1), 
 - False *positives* (all bits set for an absent `k`) cause **over-rejection** - fail-closed for a blacklist
   (a legit user occasionally blocked), tunable by filter size.
 - Bloom is **add-only** (can't clear bits); use a **cuckoo filter** if deletion is needed.
-- **Small/medium sets: bake the filter as a covenant constant** -> free parallel reads + sound non-membership +
-  rare upgrade-writes. Ideal for the real blacklist (rare writes, read-heavy). Large filters (~MB) exceed
-  script size -> commit `hash(filter)` and reveal the relevant word + a Merkle path (reduces to B1).
+- Its free-read appeal was *baking* the filter into the code, which the code/data principle (section 3) rules
+  out. As **data** a filter has no clean home: it exceeds the 40-byte NFT commitment, so it must be chunked
+  across NFTs and a read spends the relevant chunk (contention + `hash(filter)`-committed chunk proofs, i.e. it
+  reduces to B1). So under code/data separation the Bloom filter loses its edge over a Merkle root.
 
-### D. Baked constant set / root - free parallel reads, upgrade writes
-For rarely-written read-heavy sets, put the commitment (a small explicit list, a Bloom filter, or a Merkle root)
-**in the covenant code**. Reads are free and fully parallel (nothing to spend). A change is a covenant
-**upgrade**. Caveat: UTXOs on the old covenant keep the old commitment until they migrate - **staleness lag
-replaces contention** (UTXO can't do EVM's instant global flip). This is the only contention-free-read option
-(section 3 corollary).
+### D. Baked constant set / root - **RULED OUT** (mixes code and data)
+Putting the commitment (explicit list / Bloom filter / Merkle root) **in the covenant code** gives free parallel
+reads - it is the *only* contention-free-read option (section 3 corollary) - but it is the code/data mix the
+design principle forbids (a data change becomes a code upgrade + address change + full migration, and each
+instance is a different bytecode). Recorded as the theoretical free-read ceiling; **not used** unless an author
+explicitly opts into a fixed, baked-in set (e.g. a compile-time-constant allowlist that will never change).
 
 ### E. Complete enumeration (co-spend all) - tiny sets
 Co-spend every entry + a master-committed count; check none equals `k`. O(N) inputs + compares; sound. Only for
@@ -130,10 +142,10 @@ completeness; likely impractical vs B/C. Pairing/KZG needs pairings (not native)
 |---|---|---|---|
 | Positive guard (balances) | none - already sound | none | O(1) |
 | Consume-once, provisioned eligibility | A nullifier | none (parallel) | O(1) op, O(N) setup |
-| Rarely written, read-heavy (blacklist) | D baked (Bloom/list/root) | none on reads | O(1), upgrade-writes |
-| Removable rare-write read-heavy | D baked cuckoo filter | none on reads | O(1), upgrade-writes |
+| Rarely written, read-heavy (blacklist) | B2 linked list (or B1 root-NFT) | local (or global) | O(1) / O(log N) |
+| Fixed set that will never change | D baked (explicit opt-in only) | none on reads | O(1), no writes |
 | Moderate writes, regional locality | B2 sorted linked list | local (predecessors) | O(1) co-spend |
-| Unbounded, general, moderate contention OK | B1 indexed Merkle | global (root) | O(log N) |
+| Unbounded, general, moderate contention OK | B1 indexed Merkle (root-NFT) | global (root) | O(log N) |
 | Tiny set | E enumerate | all-entries | O(N) |
 | Non-instant settlement OK | G optimistic | none up front | challenge window |
 

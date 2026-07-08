@@ -3920,9 +3920,20 @@ export default class SymbolTableTraversal extends AstTraversal {
     if (constVal !== undefined) {
       return { kind: 'constant', constantValue: constVal.toString(), canonical: `const:${constVal.toString()}` };
     }
+    // A bare integer-literal key (`m[0]`): a fixed value the SDK matches the entry by directly - the
+    // 'expression' placeholder route cannot locate an existing entry on a pure read (no arg to derive from).
+    if (key instanceof IntLiteralNode) {
+      return { kind: 'constant', constantValue: key.value.toString(), canonical: `const:${key.value.toString()}` };
+    }
     if (key instanceof IdentifierNode) {
       if (this.currentFunction.parameters.some((p) => p.name === key.name)) {
         return { kind: 'param', paramName: key.name, canonical: `id:${key.name}` };
+      }
+      // An int-constant identifier key resolves the same way (params take precedence above).
+      const cd = this.constantMap.get(key.name);
+      if (cd?.expression instanceof IntLiteralNode) {
+        const v = (cd.expression as IntLiteralNode).value.toString();
+        return { kind: 'constant', constantValue: v, canonical: `const:${v}` };
       }
       // A local whose initializer is `arr[arr.length-1]` (IterableMapping's `lastKey`): resolvable from state.
       const def = this.localKeyDefs.get(key.name);

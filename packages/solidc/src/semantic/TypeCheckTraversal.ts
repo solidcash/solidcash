@@ -642,14 +642,24 @@ export default class TypeCheckTraversal extends AstTraversal {
   }
 
   visitStructDefinition(node: StructDefinitionNode): Node {
-    for (const field of node.fields) {
-      // A mapping field is permitted: a mapping-bearing struct is flattened to per-field state when used as a
-      // state variable (it has no value form, so it cannot be a local/param).
-      if (field.type instanceof MappingType) continue;
-      if (!isValidStateType(field.type)) {
-        throw new UnsupportedStructFieldTypeError(node, field.type);
+    // A mapping field is permitted: a mapping-bearing struct is flattened to per-field state when used as a
+    // state variable (it has no value form, so it cannot be a local/param). The same applies RECURSIVELY to
+    // a struct-typed field carrying mappings (it flattens into nested `outer__inner__leaf` state elements).
+    const validate = (fields: { type: Type }[], seen: Set<Type>): void => {
+      for (const field of fields) {
+        if (field.type instanceof MappingType) continue;
+        if (field.type instanceof StructType) {
+          if (seen.has(field.type)) continue;
+          seen.add(field.type);
+          validate(field.type.fields, seen);
+          continue;
+        }
+        if (!isValidStateType(field.type)) {
+          throw new UnsupportedStructFieldTypeError(node, field.type);
+        }
       }
-    }
+    };
+    validate(node.fields, new Set());
     return node;
   }
 

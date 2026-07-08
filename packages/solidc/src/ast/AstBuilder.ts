@@ -788,17 +788,29 @@ export default class AstBuilder
     }
 
     // Flatten state vars of a struct with no single-value representation - a mapping field, or a dynamic
-    // chunk-packed array field - into per-field state elements namespaced `<var>__<field>`.
+    // chunk-packed array field - into per-field state elements namespaced `<var>__<field>`. RECURSIVE: a
+    // struct-typed field that itself needs flattening expands into its own leaves (`str__nstr__nestedValue`);
+    // each intermediate registers in mappingStructStateVars so reads chain through visitFieldAccess and
+    // writes collapse their leading members (see buildLvalueAssign).
     this.mappingStructStateVars = new Map();
     const expandedStateVars: StateVariableNode[] = [];
+    const flattenInto = (prefix: string, t: StructType, location: Location | undefined, seen: Set<StructType>): void => {
+      if (seen.has(t)) return; // struct-field cycle (invalid Solidity) - refuse to expand infinitely
+      this.mappingStructStateVars.set(prefix, t);
+      for (const field of t.fields) {
+        const name = `${prefix}__${field.name}`;
+        if (field.type instanceof StructType && this.structNeedsFieldFlattening(field.type)) {
+          flattenInto(name, field.type, location, new Set([...seen, t]));
+          continue;
+        }
+        const flat = this.buildFlattenedStructField(field.type, name, location);
+        if (flat instanceof CollectionNode) collections.push(flat);
+        else expandedStateVars.push(flat);
+      }
+    };
     for (const sv of stateVariables) {
       if (sv.type instanceof StructType && this.structNeedsFieldFlattening(sv.type)) {
-        this.mappingStructStateVars.set(sv.name, sv.type);
-        for (const field of sv.type.fields) {
-          const flat = this.buildFlattenedStructField(field.type, `${sv.name}__${field.name}`, sv.location);
-          if (flat instanceof CollectionNode) collections.push(flat);
-          else expandedStateVars.push(flat);
-        }
+        flattenInto(sv.name, sv.type, sv.location, new Set());
       } else {
         expandedStateVars.push(sv);
       }
@@ -1473,10 +1485,15 @@ export default class AstBuilder
 
   // A struct state var is flattened field-by-field when it has no single-value representation: a mapping field,
   // or a dynamic chunk-packed array field (both back their own state element; see buildFlattenedStructField).
-  private structNeedsFieldFlattening(t: StructType): boolean {
+  // Recursive: a struct-typed field whose own type lacks a single-value representation forces flattening too
+  // (its leaves nest as `outer__inner__leaf`). Cycle-safe (struct-field cycles are invalid Solidity anyway).
+  private structNeedsFieldFlattening(t: StructType, seen: Set<StructType> = new Set()): boolean {
+    if (seen.has(t)) return false;
+    seen.add(t);
     return t.fields.some((f) => f.type instanceof MappingType
       || (this.chunkedArrays && f.type instanceof ArrayType && f.type.bound === undefined
-        && isChunkPackableElementType(f.type.elementType)));
+        && isChunkPackableElementType(f.type.elementType))
+      || (f.type instanceof StructType && this.structNeedsFieldFlattening(f.type, seen)));
   }
 
   // Build the flattened state node for one field of a flattened struct: mapping -> collection, a dynamic
@@ -2888,6 +2905,17 @@ export default class AstBuilder
     rawName: string, isThis: boolean, nameLoc: Location, segs: LvSeg[],
     op: string, valueCtx: ExpressionContext | undefined, loc: Location,
   ): StatementNode {
+    // Recursively-flattened struct state: collapse leading members that descend through flattened struct
+    // fields into the name (`str.nstr.nestedValue` -> rawName `str__nstr`, member `nestedValue`), so the
+    // one-level flattened-write paths below apply unchanged at any depth.
+    if (!isThis) {
+      while (segs.length > 1 && segs[0].member !== undefined && this.mappingStructStateVars.has(rawName)) {
+        const field = this.mappingStructStateVars.get(rawName)!.fields.find((f) => f.name === segs[0].member);
+        if (!field || !(field.type instanceof StructType) || !this.structNeedsFieldFlattening(field.type)) break;
+        rawName = `${rawName}__${segs[0].member}`;
+        segs = segs.slice(1);
+      }
+    }
     const members = segs.filter((s) => s.member !== undefined).map((s) => s.member!);
     const keyFns = segs.filter((s) => s.key !== undefined).map((s) => s.key!);
     const hasMember = members.length > 0;
@@ -2999,7 +3027,10 @@ export default class AstBuilder
     if (!isThis && !isIncDec && fieldName && members.length === 1 && keyFns.length === 0
       && this.mappingStructStateVars.has(rawName)) {
       const field = this.mappingStructStateVars.get(rawName)!.fields.find((f) => f.name === fieldName);
-      if (field && !(field.type instanceof MappingType) && !(field.type instanceof ArrayType)) {
+      // A flattened-struct field has no single state element; a whole-subtree assign must not route to the
+      // scalar path (it falls through to the rebuild path's diagnostics).
+      if (field && !(field.type instanceof MappingType) && !(field.type instanceof ArrayType)
+        && !(field.type instanceof StructType && this.structNeedsFieldFlattening(field.type))) {
         const flatName = `${rawName}__${fieldName}`;
         const value = op === '='
           ? this.visit(valueCtx!) as ExpressionNode
@@ -3228,8 +3259,35 @@ export default class AstBuilder
 
 
 
-  visitDeleteLocal(ctx: DeleteLocalContext): DeleteLocalNode {
-    const identifier = new IdentifierNode(ctx.Identifier().getText());
+  visitDeleteLocal(ctx: DeleteLocalContext): StatementNode {
+    const name = ctx.Identifier().getText();
+    // `delete s` on a flattened struct state var: reset every VALUE leaf to its default. Mapping leaves
+    // persist (Solidity: delete does not touch mappings inside structs); array leaves are skipped too
+    // (collection-model deletes have their own statement forms).
+    const flatStruct = this.mappingStructStateVars.get(name);
+    if (flatStruct) {
+      const loc = Location.fromCtx(ctx);
+      const stmts: StatementNode[] = [];
+      const collect = (prefix: string, t: StructType, seen: Set<StructType>): void => {
+        if (seen.has(t)) return;
+        for (const field of t.fields) {
+          const leaf = `${prefix}__${field.name}`;
+          if (field.type instanceof MappingType || field.type instanceof ArrayType) continue;
+          if (field.type instanceof StructType && this.structNeedsFieldFlattening(field.type)) {
+            collect(leaf, field.type, new Set([...seen, t]));
+            continue;
+          }
+          const d = new DeleteStateNode(leaf);
+          d.location = loc;
+          stmts.push(d);
+        }
+      };
+      collect(name, flatStruct, new Set());
+      const block = new BlockNode(stmts);
+      block.location = loc;
+      return block;
+    }
+    const identifier = new IdentifierNode(name);
     identifier.location = Location.fromToken(ctx.Identifier().symbol);
     const node = new DeleteLocalNode(identifier);
     node.location = Location.fromCtx(ctx);

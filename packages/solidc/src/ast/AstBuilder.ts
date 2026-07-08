@@ -4475,7 +4475,9 @@ export default class AstBuilder
   private buildTernaryAssignBranch(
     ctx: TernaryOpContext, consume: ((valueCtx: ExpressionContext) => StatementNode) | undefined, loc: Location,
   ): StatementNode {
-    const arm = (exprCtx: ExpressionContext, opText: string | undefined, chain: AssignChainContext | undefined): BlockNode => {
+    const arm = (
+      exprCtx: ExpressionContext, opText: string | undefined, chain: AssignChainContext | undefined,
+    ): BlockNode => {
       const stmts: StatementNode[] = [];
       if (opText && chain) {
         const { links, valueCtx } = this.unrollAssignChain(exprCtx, opText, chain);

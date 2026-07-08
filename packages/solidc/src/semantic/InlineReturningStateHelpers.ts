@@ -9,6 +9,8 @@ import {
   IdentifierNode,
   ExpressionNode,
   FunctionCallNode,
+  FunctionCallStatementNode,
+  ExpressionStatementNode,
   ReturnNode,
   MappingAccessNode,
   ArrayAccessNode,
@@ -29,6 +31,7 @@ import { BinaryOperator } from '../ast/Operator.js';
 import AstTraversal from '../ast/AstTraversal.js';
 import { cloneNode } from '../ast/clone.js';
 import { substituteInFunction } from './InheritanceExpansionTransformation.js';
+import { tagModifierStateAccess } from './ModifierExpansionTransformation.js';
 
 /**
  * Inlines internal/private functions that RETURN a value and READ a state entry (a mapping/collection
@@ -87,11 +90,18 @@ export default class InlineReturningStateHelpers extends AstTraversal {
 
     this.inlinedFns = new Set();
     this.keepDefFns = new Set();
-    for (const fn of node.functions) if (this.eligible(fn) || this.eligibleStructPtr(fn)) this.inlinedFns.add(fn.name);
+    // A function used as a VALUE (function pointer) must keep a real definition; exclude such names from
+    // the state-touching criteria (its call SITES stay subroutine calls, matching prior behavior).
+    const valueReferenced = this.collectValueReferencedNames(node);
+    for (const fn of node.functions) {
+      if ((this.eligible(fn) && !valueReferenced.has(fn.name)) || this.eligibleStructPtr(fn)) {
+        this.inlinedFns.add(fn.name);
+      }
+    }
     // State-touching returning ENTRY POINTS called internally have the same subroutine problem; inline the
     // internal call sites but keep the definition (still dispatchable).
     for (const fn of node.functions) {
-      if (!this.inlinedFns.has(fn.name) && this.eligibleShape(fn)
+      if (!this.inlinedFns.has(fn.name) && !valueReferenced.has(fn.name) && this.eligibleShape(fn)
         && (this.readsEntry(fn) || this.touchesScalarState(fn))) {
         this.inlinedFns.add(fn.name);
         this.keepDefFns.add(fn.name);
@@ -154,17 +164,44 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     return this.readsEntry(fn) || this.touchesScalarState(fn);
   }
 
-  // Reads or writes a plain (scalar) state variable: a `this.x` access/assign, or a bare identifier
-  // read/assign of a declared state-var name. A subroutine's scalar accesses are invisible to the entry
-  // traversal's commitment model, so such helpers must inline. Shadowing can over-match; inlining is
-  // semantics-preserving, so an occasional extra inline is harmless.
+  // Names referenced as VALUES: an IdentifierNode occurrence that is not the identifier of a plain call.
+  // Such a function is used as a function pointer and must stay a real (subroutine) definition.
+  private collectValueReferencedNames(node: ContractNode): Set<string> {
+    const callIdentifiers = new Set<Node>();
+    const referenced = new Set<string>();
+    const bodies = [...node.functions, node.constructorDef, node.fallbackDef, node.receiveDef];
+    for (const fn of bodies) {
+      if (!fn?.body) continue;
+      this.walk(fn.body, (n) => {
+        if (n instanceof FunctionCallNode && n.identifier) callIdentifiers.add(n.identifier);
+      });
+      this.walk(fn.body, (n) => {
+        if (n instanceof IdentifierNode && !callIdentifiers.has(n)) referenced.add(n.name);
+      });
+    }
+    return referenced;
+  }
+
+  // Reads or writes a plain (scalar) state variable: a `this.x` access/assign OF A DECLARED STATE VAR (a
+  // bare `s.x = v` on a named return desugars to a state-assign node that SymbolTable later resolves
+  // contextually - the name gate keeps those out), or a bare identifier read/assign of a state-var name
+  // that is NOT shadowed by a param/local (a shadowed match would alpha-rename-break the clone). A
+  // subroutine's scalar accesses are invisible to the entry traversal's commitment model, so real ones
+  // must inline.
   private touchesScalarState(fn: FunctionDefinitionNode): boolean {
+    const shadowed = new Set(fn.parameters.map((p) => p.name));
+    this.walk(fn.body, (n) => { if (n instanceof VariableDefinitionNode) shadowed.add(n.name); });
     let found = false;
     this.walk(fn.body, (n) => {
       if (found) return;
-      if (n instanceof StateAccessNode || n instanceof StateAssignNode) found = true;
-      else if (n instanceof IdentifierNode && this.stateVarNames.has(n.name)) found = true;
-      else if (n instanceof AssignNode && this.stateVarNames.has(n.identifier.name)) found = true;
+      if ((n instanceof StateAccessNode || n instanceof StateAssignNode) && this.stateVarNames.has(n.name)) {
+        found = true;
+      } else if (n instanceof IdentifierNode && this.stateVarNames.has(n.name) && !shadowed.has(n.name)) {
+        found = true;
+      } else if (n instanceof AssignNode && this.stateVarNames.has(n.identifier.name)
+        && !shadowed.has(n.identifier.name)) {
+        found = true;
+      }
     });
     return found;
   }
@@ -211,6 +248,19 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     }
     node.statements = out;
     return node;
+  }
+
+  // A call STATEMENT whose call gets expression-inlined must not keep the bare temp inside the
+  // FunctionCallStatement wrapper (later passes read call.identifier); re-wrap as a dropped expression.
+  visitFunctionCallStatement(node: FunctionCallStatementNode): Node {
+    const result = this.visit(node.call);
+    if (result instanceof FunctionCallNode) {
+      node.call = result;
+      return node;
+    }
+    const stmt = new ExpressionStatementNode(result as ExpressionNode);
+    stmt.location = node.location;
+    return stmt;
   }
 
   visitFunctionCall(node: FunctionCallNode): Node {
@@ -328,6 +378,9 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     });
     this.applyRename(cloned.body, rename);
     substituteInFunction(cloned, subs);
+    // An inherited helper's body may legitimately touch its own contract's PRIVATE state; tag the inlined
+    // accesses with the defining contract (same mechanism as inlined modifier bodies).
+    if (callee.inheritedFrom) tagModifierStateAccess([cloned.body], callee.inheritedFrom);
 
     const bindings: StatementNode[] = [];
     callee.parameters.forEach((p, i) => {

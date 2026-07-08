@@ -26,6 +26,7 @@ import {
   ConsoleStatementNode,
 } from '../ast/AST.js';
 import { StructType, MappingType } from '@solidcash/utils';
+import { tagModifierStateAccess } from './ModifierExpansionTransformation.js';
 import { Modifier } from '../ast/Globals.js';
 import AstTraversal from '../ast/AstTraversal.js';
 import { cloneNode } from '../ast/clone.js';
@@ -107,6 +108,9 @@ export default class InlineStoragePointerCalls extends AstTraversal {
 
     this.inlinedFns = new Set();
     this.keepDefFns = new Set();
+    // A function used as a VALUE (function pointer arg / stored pointer) must keep its definition and is
+    // not safely droppable-after-inline; exclude such names from the state-touching criteria.
+    const valueReferenced = this.collectValueReferencedNames(node);
     for (const fn of node.functions) {
       // Any state access disqualifies an OP_INVOKE subroutine: entry reads need block-layout slots, and
       // scalar reads/writes live in the ENTRY traversal's commitment model (a subroutine's are invisible
@@ -114,10 +118,11 @@ export default class InlineStoragePointerCalls extends AstTraversal {
       // dispatchable), internal helpers are dropped below.
       if (fn.body && fn.returnTypes.length === 0
         && (this.hasStoragePointerParam(fn)
-          || (this.isInternalHelper(fn) && (this.readsEntry(fn) || this.touchesScalarState(fn))))) {
+          || (this.isInternalHelper(fn) && !valueReferenced.has(fn.name)
+            && (this.readsEntry(fn) || this.touchesScalarState(fn))))) {
         this.inlinedFns.add(fn.name);
       } else if (fn.body && fn.returnTypes.length === 0 && !this.isInternalHelper(fn)
-        && (this.readsEntry(fn) || this.touchesScalarState(fn))) {
+        && !valueReferenced.has(fn.name) && (this.readsEntry(fn) || this.touchesScalarState(fn))) {
         this.inlinedFns.add(fn.name);
         this.keepDefFns.add(fn.name);
       }
@@ -169,16 +174,42 @@ export default class InlineStoragePointerCalls extends AstTraversal {
     return node;
   }
 
-  // Reads or writes a plain (scalar) state variable: a `this.x` access/assign, or a bare identifier
-  // read/assign of a declared state-var name. Param/local shadowing can over-match; inlining is
-  // semantics-preserving, so an occasional extra inline is harmless.
+  // Names referenced as VALUES: an IdentifierNode occurrence that is not the identifier of a plain call.
+  // Such a function is used as a function pointer and must stay a real (subroutine) definition.
+  private collectValueReferencedNames(node: ContractNode): Set<string> {
+    const callIdentifiers = new Set<Node>();
+    const referenced = new Set<string>();
+    const bodies = [...node.functions, node.constructorDef, node.fallbackDef, node.receiveDef];
+    for (const fn of bodies) {
+      if (!fn?.body) continue;
+      this.walk(fn.body, (n) => {
+        if (n instanceof FunctionCallNode && n.identifier) callIdentifiers.add(n.identifier);
+      });
+      this.walk(fn.body, (n) => {
+        if (n instanceof IdentifierNode && !callIdentifiers.has(n)) referenced.add(n.name);
+      });
+    }
+    return referenced;
+  }
+
+  // Reads or writes a plain (scalar) state variable: a `this.x` access/assign OF A DECLARED STATE VAR (a
+  // bare `s.x = v` on a named return desugars to a state-assign node that SymbolTable later resolves
+  // contextually - the name gate keeps those out), or a bare identifier read/assign of a state-var name
+  // that is NOT shadowed by a param/local (a shadowed match would alpha-rename-break the clone).
   private touchesScalarState(fn: FunctionDefinitionNode): boolean {
+    const shadowed = new Set(fn.parameters.map((p) => p.name));
+    this.walk(fn.body, (n) => { if (n instanceof VariableDefinitionNode) shadowed.add(n.name); });
     let found = false;
     this.walk(fn.body, (n) => {
       if (found) return;
-      if (n instanceof StateAccessNode || n instanceof StateAssignNode) found = true;
-      else if (n instanceof IdentifierNode && this.stateVarNames.has(n.name)) found = true;
-      else if (n instanceof AssignNode && this.stateVarNames.has(n.identifier.name)) found = true;
+      if ((n instanceof StateAccessNode || n instanceof StateAssignNode) && this.stateVarNames.has(n.name)) {
+        found = true;
+      } else if (n instanceof IdentifierNode && this.stateVarNames.has(n.name) && !shadowed.has(n.name)) {
+        found = true;
+      } else if (n instanceof AssignNode && this.stateVarNames.has(n.identifier.name)
+        && !shadowed.has(n.identifier.name)) {
+        found = true;
+      }
     });
     return found;
   }
@@ -290,7 +321,9 @@ export default class InlineStoragePointerCalls extends AstTraversal {
     for (const stmt of stmts) {
       this.recurseNestedBlocks(stmt, stack);
       if (stmt instanceof FunctionCallStatementNode) {
-        const name = stmt.call.identifier.name;
+        // A `this.f()` self-call statement carries no plain identifier - not an inlinable name call.
+        const name = stmt.call.identifier?.name;
+        if (name === undefined) { out.push(stmt); continue; }
         const callee = this.funcByName.get(name);
         if (callee && this.inlinedFns.has(name) && !stack.includes(name)
           && stmt.call.parameters.length === callee.parameters.length) {
@@ -358,6 +391,9 @@ export default class InlineStoragePointerCalls extends AstTraversal {
     // params with their (un-renamed) argument expressions.
     this.applyRename(cloned.body, rename);
     substituteInFunction(cloned, subs);
+    // An inherited helper's body may legitimately touch its own contract's PRIVATE state; tag the inlined
+    // accesses with the defining contract (same mechanism as inlined modifier bodies).
+    if (callee.inheritedFrom) tagModifierStateAccess([cloned.body], callee.inheritedFrom);
 
     const bindings: StatementNode[] = [];
     callee.parameters.forEach((p, i) => {

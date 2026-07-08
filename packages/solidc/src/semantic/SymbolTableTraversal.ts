@@ -4032,8 +4032,11 @@ export default class SymbolTableTraversal extends AstTraversal {
     node.statements = this.visitOptionalList(node.statements) as StatementNode[];
     // Splice desugar-produced statement groups (blocks without their own scope - e.g. the self low-level
     // call lowering) into this list, so a trailing ReturnNode stays visible to the may-return analyses.
+    // Empty scopeless blocks (dropped statements, e.g. a bare enum-type ref) stay as placeholders - a body
+    // whose only statement was dropped must not become empty (the empty-function check would reject it).
     node.statements = node.statements.flatMap(
-      (s) => (s instanceof BlockNode && !s.scoped && !s.symbolTable && s.statements ? s.statements : [s]),
+      (s) => (s instanceof BlockNode && !s.scoped && !s.symbolTable && s.statements && s.statements.length > 0
+        ? s.statements : [s]),
     );
 
     const unusedSymbols = node.symbolTable.unusedSymbols();

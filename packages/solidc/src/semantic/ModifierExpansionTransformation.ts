@@ -38,7 +38,9 @@ function cloneNode<T extends Node>(node: T): T {
 
 // Recursively tag every state access in a modifier's own body with its defining contract (fromModifier). Stops
 // at nested placeholder expansions naturally: the caller body is spliced in AFTER this runs, so it stays untagged.
-function tagModifierStateAccess(nodes: (Node | undefined)[], definingContract: string): void {
+// Exported for the inline passes: an inlined INHERITED helper's state accesses keep their private-access
+// legitimacy the same way an inlined modifier body's do.
+export function tagModifierStateAccess(nodes: (Node | undefined)[], definingContract: string): void {
   for (const n of nodes) {
     if (!n) continue;
     // Pre-semantic a state read/write is an Identifier / Assign; SymbolTable later rewrites it to a

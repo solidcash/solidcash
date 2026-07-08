@@ -149,3 +149,34 @@ describe('state-struct array-field element write (runtime)', () => {
     await expect(sc.r().send()).resolves.toBeDefined();
   });
 });
+
+// Whole-struct entry copies on flattened structs: `m[0] = s` decomposes into per-field entry writes;
+// whole reads (`S memory x = s;` / `= m[0];`) assemble a struct value from the leaves.
+const ENTRY_COPY = `pragma solidity ^0.8.0;
+contract EntryCopy {
+    struct S { bytes b; uint16 u; }
+    S s;
+    mapping(uint => S) m;
+    function seed() public {
+        s.b = "foo";
+        s.u = 21;
+    }
+    function copyToEntry() public { m[0] = s; }
+    function checkEntry() public view { require(m[0].u == 21 && m[0].b.length == 3); }
+    function wholeReads() public view {
+        S memory x = s;
+        require(x.u == 21);
+        S memory y = m[0];
+        require(y.u == 21);
+    }
+}`;
+
+describe('whole-struct entry copies on flattened structs (runtime)', () => {
+  it('copies a flattened struct into an entry and assembles whole reads back', async () => {
+    const sc = await mk(ENTRY_COPY);
+    await expect(sc.seed().send()).resolves.toBeDefined();
+    await expect(sc.copyToEntry().send()).resolves.toBeDefined();
+    await expect(sc.checkEntry().send()).resolves.toBeDefined();
+    await expect(sc.wholeReads().send()).resolves.toBeDefined();
+  });
+});

@@ -1401,6 +1401,13 @@ export default class AstBuilder
       return block;
     }
 
+    // Whole read of a flattened struct state var / flattened-value mapping entry as a NON-storage struct
+    // initializer (`S memory x = s;` / `= m[k];`): assemble the value from its leaves.
+    if (initExprCtx && type instanceof StructType && !modifiers.includes(Modifier.STORAGE)) {
+      const assembled = this.maybeAssembleFlattenedRead(initExprCtx, Location.fromCtx(ctx));
+      if (assembled) return this.finishVariableDefinition(ctx, type, modifiers, name, assembled);
+    }
+
     // An omitted initializer (`int x;`) leaves expression undefined; codegen emits the type's zero value.
     const expression = ctx.expression() ? this.visit(ctx.expression()) : undefined;
 
@@ -1450,6 +1457,15 @@ export default class AstBuilder
       // `p[k]...` rewrites to `m[k]...` (empty alias keys), and passing `p` substitutes `m` - mirrors the
       // storage-pointer parameter, without a call. The declaration carries no runtime value, so drop it.
       if (type instanceof MappingType && expression instanceof IdentifierNode) {
+        this.storageAliases.set(name, { container: expression.name, keys: [], access: expression });
+        const dropped = new BlockNode([]);
+        dropped.location = Location.fromCtx(ctx);
+        return dropped;
+      }
+      // `S storage sLocal = s;` where s is a FLATTENED struct state var: a whole-var alias. Reads of
+      // `sLocal.f` substitute `s` and fold to the flattened leaves like direct accesses.
+      if (type instanceof StructType && expression instanceof IdentifierNode
+        && this.mappingStructStateVars.has(expression.name)) {
         this.storageAliases.set(name, { container: expression.name, keys: [], access: expression });
         const dropped = new BlockNode([]);
         dropped.location = Location.fromCtx(ctx);
@@ -2940,6 +2956,46 @@ export default class AstBuilder
         rawName, keyFns[0], this.visit(valueCtx) as ExpressionNode, loc, isState, op);
     }
 
+    // Whole-ENTRY write of a flattened-value mapping (`m[0] = s;`): decompose into per-field entry writes
+    // `m__f[keys] = <value.f>`. The value must be another flattened struct state var (directly or through a
+    // whole-var storage alias) or a plain local struct; mapping fields keep the entry's own (no value form).
+    // One level only - the collection flatten expands direct fields.
+    if (!isThis && !isIncDec && !hasMember && keyFns.length > 0 && valueCtx && op === '='
+      && this.mappingStructValueVars.has(rawName)) {
+      const valStruct = this.mappingStructValueVars.get(rawName)!;
+      const vlv = this.extractLvalue(valueCtx);
+      if (vlv && !vlv.isThis && vlv.segs.length === 0
+        && !valStruct.fields.some((f) => f.type instanceof StructType && this.structNeedsFieldFlattening(f.type))) {
+        let vName = vlv.rawName;
+        const alias = this.storageAliases.get(vName);
+        if (alias && alias.keys.length === 0) vName = alias.container;
+        const isFlattenedState = this.mappingStructStateVars.has(vName);
+        const isLocalStruct = !isFlattenedState && this.localStructTypes.has(vName);
+        if (isFlattenedState || isLocalStruct) {
+          const stmts: StatementNode[] = [];
+          for (const f of valStruct.fields) {
+            if (f.type instanceof MappingType) continue;
+            let value: ExpressionNode;
+            if (isFlattenedState) {
+              value = new IdentifierNode(`${vName}__${f.name}`);
+              value.location = loc;
+            } else {
+              const base = new IdentifierNode(vName);
+              base.location = loc;
+              value = new FieldAccessNode(base, f.name);
+              value.location = loc;
+            }
+            const assign = new MappingAssignNode(`${rawName}__${f.name}`, keyFns.map((k) => k()), value);
+            assign.location = loc;
+            stmts.push(assign);
+          }
+          const block = new BlockNode(stmts);
+          block.location = loc;
+          return block;
+        }
+      }
+    }
+
     // Mapping-of-flattened-struct write: `providers[k].data[k2] op= v` / `providers[k].data[k2].valid op= v` /
     // `providers[k].scalar op= v` -> the flattened nested state mapping `providers__<field>` with all keys and a
     // trailing scalar field. All the index keys index the flattened nested mapping (outer key + field-mapping key).
@@ -4372,7 +4428,10 @@ export default class AstBuilder
       returnNode.location = Location.fromCtx(ctx);
       return returnNode;
     }
-    const expressions = exprCtxs.map((e) => this.visit(e) as ExpressionNode);
+    // A whole read of a flattened struct / flattened-value entry as a return value assembles from leaves.
+    const expressions = exprCtxs.map(
+      (e) => this.maybeAssembleFlattenedRead(e, Location.fromCtx(ctx)) ?? this.visit(e) as ExpressionNode,
+    );
     const returnNode = new ReturnNode(expressions);
     returnNode.location = Location.fromCtx(ctx);
     return returnNode;
@@ -4640,6 +4699,77 @@ export default class AstBuilder
     return this.buildTernaryAssignBranch(
       valueCtx, (vctx) => this.buildAssignStatement(link.lhsCtx, link.op, vctx, loc), loc,
     );
+  }
+
+  // Whether every leaf of a flattened struct is materializable as a VALUE (no mapping anywhere): only such
+  // structs may be read whole (Solidity: mapping-carrying structs have no memory form).
+  private flattenedStructIsValueReadable(t: StructType, seen: Set<StructType> = new Set()): boolean {
+    if (seen.has(t)) return false;
+    seen.add(t);
+    return t.fields.every((f) => !(f.type instanceof MappingType)
+      && (!(f.type instanceof StructType) || !this.structNeedsFieldFlattening(f.type)
+        || this.flattenedStructIsValueReadable(f.type, seen)));
+  }
+
+  // Assemble a WHOLE-STRUCT VALUE from a flattened struct's leaves: a struct-constructor call whose args are
+  // the per-field leaf reads produced by `leaf(fieldName, fieldType)`. Nested flattened struct fields recurse.
+  private assembleFlattenedStructValue(
+    t: StructType, loc: Location, leaf: (fieldName: string, fieldType: Type) => ExpressionNode,
+  ): ExpressionNode {
+    const args = t.fields.map((f) => {
+      if (f.type instanceof StructType && this.structNeedsFieldFlattening(f.type)) {
+        return this.assembleFlattenedStructValue(f.type, loc, (nm, ft) => leaf(`${f.name}__${nm}`, ft));
+      }
+      return leaf(f.name, f.type);
+    });
+    const id = new IdentifierNode(t.name);
+    id.location = loc;
+    const call = new FunctionCallNode(id, args);
+    call.location = loc;
+    return call;
+  }
+
+  // A whole read of a flattened struct STATE VAR (`S memory x = s;` / `return s;`): ctor of its leaf reads.
+  private assembleFlattenedStateRead(varName: string, loc: Location): ExpressionNode | undefined {
+    const t = this.mappingStructStateVars.get(varName);
+    if (!t || !this.flattenedStructIsValueReadable(t)) return undefined;
+    return this.assembleFlattenedStructValue(t, loc, (nm) => {
+      const r = new IdentifierNode(`${varName}__${nm}`);
+      r.location = loc;
+      return r;
+    });
+  }
+
+  // A whole read of a flattened-value mapping ENTRY (`return m[0];` / `S memory x = m[k];`): ctor of the
+  // per-field entry reads `m__f[keys]`. One level only - the collection flatten expands direct fields.
+  private assembleFlattenedEntryRead(
+    mapName: string, keyFns: Array<() => ExpressionNode>, loc: Location,
+  ): ExpressionNode | undefined {
+    const t = this.mappingStructValueVars.get(mapName);
+    if (!t || !this.flattenedStructIsValueReadable(t)) return undefined;
+    if (t.fields.some((f) => f.type instanceof StructType && this.structNeedsFieldFlattening(f.type))) {
+      return undefined;
+    }
+    return this.assembleFlattenedStructValue(t, loc, (nm) => {
+      const acc = new MappingAccessNode(`${mapName}__${nm}`, keyFns.map((k) => k()));
+      acc.location = loc;
+      return acc;
+    });
+  }
+
+  // Detect a whole-read source CONTEXT: a bare identifier naming a flattened struct state var (through a
+  // whole-var storage alias), or `m[k]` on a flattened-value mapping. Returns the assembled value or undefined.
+  private maybeAssembleFlattenedRead(ctx: ExpressionContext, loc: Location): ExpressionNode | undefined {
+    const lv = this.extractLvalue(ctx);
+    if (!lv || lv.isThis) return undefined;
+    let name = lv.rawName;
+    const alias = this.storageAliases.get(name);
+    if (alias && alias.keys.length === 0 && lv.segs.length === 0) name = alias.container;
+    if (lv.segs.length === 0) return this.assembleFlattenedStateRead(name, loc);
+    if (lv.segs.every((s) => s.key !== undefined) && this.mappingStructValueVars.has(name)) {
+      return this.assembleFlattenedEntryRead(name, lv.segs.map((s) => s.key!), loc);
+    }
+    return undefined;
   }
 
   // All `.push` statement forms. Single pushes keep their original construction; chained forms desugar via

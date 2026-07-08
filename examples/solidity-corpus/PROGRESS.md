@@ -656,3 +656,30 @@ TRIAGE CLOSURES:
   out (unbounded flatten; cycle guards reject today).
 - verifier.sol peeled 2 walls (Pairing.G1Point ctor, named struct returns) -> now an internal bool/uint
   AssignType wall at line 48. snark.sol moved similarly.
+
+## Session 2026-07-08d (nested struct flattening, 3732->3735 CONFIRMED by clean full bench)
+- 3cdacff5 RECURSIVE NESTED STRUCT FLATTENING (+3): struct-typed fields carrying mappings expand into nested
+  leaves (`str__nstr__nestedValue` SV / `str__nstr__nestedMapping` collection). KEY INSIGHT: registering
+  every INTERMEDIATE prefix in mappingStructStateVars makes READS chain through the existing
+  visitFieldAccess fold with ZERO read-path changes (`str.nstr` folds to Identifier('str__nstr'), then the
+  next fold sees a registered flattened struct); WRITES collapse leading members in buildLvalueAssign so
+  the one-level flattened-write paths apply at any depth. structNeedsFieldFlattening + the
+  visitStructDefinition mapping-exemption recurse (cycle-safe seen-sets; struct-field cycles are invalid
+  Solidity). `delete str` expands to per-VALUE-leaf DeleteState resets - mappings persist (Solidity
+  semantics, VM-verified across delete + later-tx persistence). Whole-subtree assigns to flattened-struct
+  fields guarded off the scalar path (fall to rebuild diagnostics).
+  **PRE-EXISTING RUNTIME BUG FIXED (verified on baseline, BOTH modes): bare integer-literal mapping keys
+  (`m[0]`) classified as EXPRESSION key sources; the placeholder route cannot locate an existing entry on a
+  PURE READ -> covenant took the absent-entry branch and read the DEFAULT (require(m[0]==7) failed after
+  m[0]=7 in a prior tx!). Literal + int-constant-identifier keys now classify as CONSTANT key sources (the
+  SDK matches entries directly).** Harness lesson: mapping-bearing contracts need the
+  setupStatefulUtxos + StatefulContract.withCategory harness (getContractFactory deploy alone leaves entry
+  co-spends unresolvable) - the first probe wave false-failed on ALL mapping ops because of this.
+  VM-verified: 2-level write/read/delete/persist, 3-level nesting, literal-key cross-tx roundtrip
+  (NestedStructFlatten e2e); 28 mapping-heavy e2e green. Fixed: delete_struct, recursive_structs,
+  struct_aliasing_parameter_storage_4. Cosmetic shifts: recursive_struct_2/struct_delete_storage_nested_
+  small (permanent Yul-.slot files) surface an int->uint16 flattened-leaf StateAssign coercion gap - only
+  reachable in already-failing files.
+  STILL OUT: recursive self-mappings (structs.sol depth-2 recursive traversal), whole-subtree struct
+  assigns (s.inner = Inner(...) decompose-per-leaf would be the extension), copy_to_mapping (whole-struct
+  -> mapping-entry copies), memory_structs_nested_load (struct-field ARRAY-ELEMENT writes m_x.a[0]).

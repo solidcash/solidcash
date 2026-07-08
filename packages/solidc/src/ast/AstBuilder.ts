@@ -1406,13 +1406,19 @@ export default class AstBuilder
       const idxDef = stamp(new VariableDefinitionNode(
         PrimitiveType.BIGINT, [], idxName, stamp(new UnaryOpNode(UnaryOperator.SIZE, ident(arrName)))));
       idxDef.allowUnused = true;
+      // alias x -> arr[__idx]  (same shape as `T storage x = arr[k]`; not a real local, so not tracked as one)
+      const access = stamp(new ArrayAccessNode(ident(arrName), ident(idxName)));
+      this.storageAliases.set(name, { container: arrName, keys: [ident(idxName)], access });
+      // `uint[] storage p = c.push();` (2D): an array-typed element has no scalar __def local encoding -
+      // append the inner default via the no-arg push path instead.
+      if (type instanceof ArrayType) {
+        const push = this.buildArrayPush(arrName, false, [], undefined, this.noArgPushPlaceholder(ctx), true, ctx);
+        return stamp(new BlockNode([idxDef, push]));
+      }
       // T __def;  (uninitialized -> the element type's zero value, pushed as the new element)
       const defDef = stamp(new VariableDefinitionNode(type, [], defName, undefined));
       defDef.allowUnused = true;
       const push = this.buildArrayPush(arrName, false, [], undefined, ident(defName), false, ctx);
-      // alias x -> arr[__idx]  (same shape as `T storage x = arr[k]`; not a real local, so not tracked as one)
-      const access = stamp(new ArrayAccessNode(ident(arrName), ident(idxName)));
-      this.storageAliases.set(name, { container: arrName, keys: [ident(idxName)], access });
       return stamp(new BlockNode([idxDef, defDef, push]));
     }
 
@@ -4509,6 +4515,114 @@ export default class AstBuilder
     );
   }
 
+  // All `.push` statement forms. Single pushes keep their original construction; chained forms desugar via
+  // the pre-push length capture pattern (the fresh element's index stays valid while it is written):
+  //   `c.push().push(v);`     -> uint __i = c.length; c.push(); c[__i].push(v);
+  //   `c.push().push() = v;`  -> same with v as the nested value
+  //   `b.push() = b.push();`  -> uint __r = b.length; b.push(); b.push(b[__r]);
+  // A receiver aliased by `T[] storage p = c.push();` routes to the aliased container element.
+  private buildPushStatement(
+    ctx: ExpressionStatementContext,
+    lv: { rawName: string; isThis: boolean; segs: LvSeg[] },
+    keyFns: Array<() => ExpressionNode>, member: string | undefined,
+  ): StatementNode {
+    const loc = Location.fromCtx(ctx);
+    const stamp = <T extends { location?: Location }>(n: T): T => { n.location = loc; return n; };
+    const ident = (nm: string): IdentifierNode => stamp(new IdentifierNode(nm));
+
+    // Storage-pointer receiver (`uint[] storage p = c.push(); p.push(v);`): substitute the aliased element.
+    let { rawName, isThis } = lv;
+    let effKeyFns = keyFns;
+    if (!isThis && lv.segs.length === 0) {
+      const alias = this.storageAliases.get(rawName);
+      if (alias && alias.keys.length === 1) {
+        const aliasKey = alias.keys[0];
+        rawName = alias.container;
+        effKeyFns = [(): ExpressionNode => cloneNode(aliasKey) as ExpressionNode];
+      }
+    }
+
+    const assignVal = ctx.expression(1);
+    const hasSecond = !!ctx._second;
+    const hasRhsPush = !!ctx._rhsPush;
+
+    if (!hasSecond && !hasRhsPush) {
+      // Solidity `arr.push() = value` appends the element type's default then writes it - equivalent to
+      // `arr.push(value)` (the value expression is the second `expression` child, present only for this form).
+      if (assignVal) {
+        return this.buildArrayPush(rawName, isThis, effKeyFns, member, this.visit(assignVal) as ExpressionNode, false, ctx);
+      }
+      const argCtx = ctx.pushArgument();
+      const noArg = argCtx === null;
+      const value = noArg ? this.noArgPushPlaceholder(ctx) : this.visit(argCtx.expression()) as ExpressionNode;
+      return this.buildArrayPush(rawName, isThis, effKeyFns, member, value, noArg, ctx);
+    }
+
+    // Chained forms: plain state-array receivers only (no member/keys - the nested push carries the index).
+    if (member !== undefined || effKeyFns.length > 0 || isThis) {
+      throw new ParseError('Chained .push() is only supported on a plain array variable', Location.fromCtx(ctx));
+    }
+    const stmts: StatementNode[] = [];
+
+    // Resolve the pushed value: `= expr`, `= arr2.push()` (append a default to arr2 and read it back),
+    // a final `.push(arg)`, or the no-arg default.
+    let valueExpr: ExpressionNode;
+    let noArgNested = false;
+    if (assignVal) {
+      if (hasRhsPush) {
+        const rhsLv = this.extractLvalue(assignVal);
+        if (!rhsLv || rhsLv.isThis || rhsLv.segs.length !== 0) {
+          throw new ParseError('A value-side .push() is only supported on a plain array variable', Location.fromCtx(ctx));
+        }
+        const rIdxName = `__pushChain_r_${this.nestedLvalueCounter++}`;
+        const rIdxDef = stamp(new VariableDefinitionNode(
+          PrimitiveType.BIGINT, [], rIdxName, stamp(new UnaryOpNode(UnaryOperator.SIZE, ident(rhsLv.rawName)))));
+        rIdxDef.allowUnused = true;
+        stmts.push(rIdxDef);
+        stmts.push(this.buildArrayPush(rhsLv.rawName, false, [], undefined, this.noArgPushPlaceholder(ctx), true, ctx));
+        if (ctx._rhsPush2) {
+          // 2-deep value side (`... = b.push().push();`): append a default to the fresh inner array too;
+          // that inner array was empty, so the appended element sits at index 0.
+          stmts.push(this.buildArrayPush(
+            rhsLv.rawName, false, [(): ExpressionNode => ident(rIdxName)], undefined,
+            this.noArgPushPlaceholder(ctx), true, ctx,
+          ));
+          const zero = stamp(new IntLiteralNode(0n));
+          valueExpr = stamp(new ArrayAccessNode(
+            stamp(new ArrayAccessNode(ident(rhsLv.rawName), ident(rIdxName))), zero,
+          ));
+        } else {
+          valueExpr = stamp(new ArrayAccessNode(ident(rhsLv.rawName), ident(rIdxName)));
+        }
+      } else {
+        valueExpr = this.visit(assignVal) as ExpressionNode;
+      }
+    } else {
+      const argCtx = ctx.pushArgument();
+      if (argCtx) {
+        valueExpr = this.visit(argCtx.expression()) as ExpressionNode;
+      } else {
+        valueExpr = this.noArgPushPlaceholder(ctx);
+        noArgNested = true;
+      }
+    }
+
+    if (hasSecond) {
+      // 2-deep: append a default inner array, then push the value onto it.
+      const iName = `__pushChain_i_${this.nestedLvalueCounter++}`;
+      const iDef = stamp(new VariableDefinitionNode(
+        PrimitiveType.BIGINT, [], iName, stamp(new UnaryOpNode(UnaryOperator.SIZE, ident(rawName)))));
+      iDef.allowUnused = true;
+      stmts.push(iDef);
+      stmts.push(this.buildArrayPush(rawName, false, [], undefined, this.noArgPushPlaceholder(ctx), true, ctx));
+      stmts.push(this.buildArrayPush(rawName, false, [(): ExpressionNode => ident(iName)], undefined, valueExpr, noArgNested, ctx));
+    } else {
+      // 1-deep with a value-side push: `b.push() = b.push();`.
+      stmts.push(this.buildArrayPush(rawName, false, [], undefined, valueExpr, false, ctx));
+    }
+    return stamp(new BlockNode(stmts));
+  }
+
   visitExpressionStatement(ctx: ExpressionStatementContext): StatementNode {
     const lhsCtx = ctx.expression(0);
     // Assignment `lvalue op= value` (left-factored): reconstruct the lvalue segments from the parsed LHS and
@@ -4533,7 +4647,7 @@ export default class AstBuilder
     }
     // `receiver.push(v)` / `.pop()` / `.delete(v)` tails: reconstruct the receiver (rawName, isThis, mapping keys,
     // struct array-field member) from the parsed LHS and dispatch to the array/mapping builder.
-    if (ctx.DotPush() || ctx.DotPop() || ctx.DotDelete()) {
+    if (ctx.DotPush_list().length > 0 || ctx.DotPop() || ctx.DotDelete()) {
       const lv = this.extractLvalue(lhsCtx);
       if (!lv) throw new ParseError('Invalid .push/.pop/.delete target', Location.fromCtx(lhsCtx));
       const members = lv.segs.filter((s) => s.member !== undefined).map((s) => s.member!);
@@ -4544,17 +4658,8 @@ export default class AstBuilder
       if (members.length > 0 && member === undefined) {
         throw new ParseError('Unsupported .push/.pop/.delete receiver', Location.fromCtx(lhsCtx));
       }
-      if (ctx.DotPush()) {
-        // Solidity `arr.push() = value` appends the element type's default then writes it - equivalent to
-        // `arr.push(value)` (the value expression is the second `expression` child, present only for this form).
-        const assignVal = ctx.expression(1);
-        if (assignVal) {
-          return this.buildArrayPush(lv.rawName, lv.isThis, keyFns, member, this.visit(assignVal) as ExpressionNode, false, ctx);
-        }
-        const argCtx = ctx.pushArgument();
-        const noArg = argCtx === null;
-        const value = noArg ? this.noArgPushPlaceholder(ctx) : this.visit(argCtx.expression()) as ExpressionNode;
-        return this.buildArrayPush(lv.rawName, lv.isThis, keyFns, member, value, noArg, ctx);
+      if (ctx.DotPush_list().length > 0) {
+        return this.buildPushStatement(ctx, lv, keyFns, member);
       }
       if (ctx.DotPop()) return this.buildArrayPop(lv.rawName, lv.isThis, keyFns, member, ctx);
       const arg = this.visit(ctx.expression(1)) as ExpressionNode;

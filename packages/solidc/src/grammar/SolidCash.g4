@@ -316,7 +316,12 @@ statement
 expressionStatement
     : expression
       ( op=('=' | '+=' | '-=' | '*=' | '/=' | '%=' | '&=' | '|=' | '^=' | '<<=' | '>>=') assignChain
-      | '.push' '(' ')' '=' expression
+      // Chained push (Solidity's push-returns-reference): `c.push().push()` appends a default element to the
+      // fresh inner array; the `= expression` forms write the appended element; a `.push()` tail on the value
+      // side (`b.push() = b.push();`) appends a default to the value array and reads it back.
+      | '.push' '(' ')' second='.push' '(' ')' '=' expression (rhsPush='.push' '(' ')' (rhsPush2='.push' '(' ')')?)?
+      | '.push' '(' ')' second='.push' '(' pushArgument? ')'
+      | '.push' '(' ')' '=' expression (rhsPush='.push' '(' ')' (rhsPush2='.push' '(' ')')?)?
       | '.push' '(' pushArgument? ')'
       | '.pop' '(' ')'
       | '.delete' '(' expression ')'
@@ -357,7 +362,7 @@ emitStatement
 
 variableDefinition
     : typeName modifier* anyIdentifier ('=' expression (iop=('=' | '+=' | '-=' | '*=' | '/=' | '%=' | '&=' | '|=' | '^=' | '<<=' | '>>=') assignChain | '.push' '(' ')')?)? ';'
-    | arrayType modifier* anyIdentifier ('=' expression)? ';'
+    | arrayType modifier* anyIdentifier ('=' expression ('.push' '(' ')')?)? ';'
     | mappingType modifier* anyIdentifier ('=' expression)? ';'
     ;
 

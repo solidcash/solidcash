@@ -357,9 +357,16 @@ export function encodePushdataValue(
     const parts: Uint8Array[] = [];
     // Length prefix (encoded as int)
     parts.push(encodePushdataValue(BigInt(arr.length), 'bigint'));
-    // Elements
-    for (const elem of arr) {
-      parts.push(encodePushdataValue(elem, arrInfo.elementType, structs));
+    // Elements. Fixed-width elements are PACKED at their stride (the compiler's emitEncodeElementPacked /
+    // the array literal + element access model; decodePushdataValue reads them back the same way) -
+    // per-element pushdata encoding here diverged from the covenant's in-script struct encode and failed
+    // the output-commitment EQUALVERIFY on whole-struct writes.
+    if (isFixedWidthType(arrInfo.elementType)) {
+      parts.push(packFixedWidthArray(arr as PrimitiveStateValue[], arrInfo.elementType));
+    } else {
+      for (const elem of arr) {
+        parts.push(encodePushdataValue(elem, arrInfo.elementType, structs));
+      }
     }
     const totalLen = parts.reduce((acc, p) => acc + p.length, 0);
     const result = new Uint8Array(totalLen);

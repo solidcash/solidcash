@@ -124,16 +124,28 @@ describe('flattened struct array-leaf whole assign (runtime)', () => {
 });
 
 // State-struct ARRAY-field element writes (`m_x.a[0] = 5`) desugar to the temp roundtrip
-// `X __t = m_x; __t.a[0] = 5; m_x = __t;` - byte-equivalent to the handwritten form. COMPILE-level only:
-// whole-struct state WRITES of structs with fixed-array fields have a PRE-EXISTING runtime gap (verified
-// on baseline with the handwritten roundtrip; fails closed).
-describe('state-struct array-field element write (compile)', () => {
-  it('compiles the temp-roundtrip desugar', () => {
-    const src = `pragma solidity ^0.8.0; contract M {
-      struct X { uint8 x; uint8[2] a; }
-      X m_x;
-      function f() public { m_x.x = 1; m_x.a[0] = 5; m_x.a[1] = 6; }
-    }`;
-    expect(() => compileString(src, { solidityImportCompat: true, forceStateful: true })).not.toThrow();
+// `X __t = m_x; __t.a[0] = 5; m_x = __t;` - byte-equivalent to the handwritten form. Runtime-sound since
+// the SDK state encoder packs fixed-width array elements at their stride (it pushdata-encoded each element,
+// diverging from the covenant's in-script struct encode - whole-struct writes of structs with fixed-array
+// fields failed the output-commitment EQUALVERIFY).
+const STATE_ELEM = `pragma solidity ^0.8.0;
+contract StateElem {
+    struct X { uint8 x; uint8[2] a; }
+    X m_x;
+    function w() public {
+        m_x.x = 1;
+        m_x.a[0] = 5;
+        m_x.a[1] = 6;
+    }
+    function r() public view {
+        require(m_x.x == 1 && m_x.a[0] == 5 && m_x.a[1] == 6);
+    }
+}`;
+
+describe('state-struct array-field element write (runtime)', () => {
+  it('writes elements through the temp roundtrip and reads them back in a later tx', async () => {
+    const sc = await mk(STATE_ELEM);
+    await expect(sc.w().send()).resolves.toBeDefined();
+    await expect(sc.r().send()).resolves.toBeDefined();
   });
 });

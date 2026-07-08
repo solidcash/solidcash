@@ -352,7 +352,9 @@ describe('Dynamic Mapping Keys', () => {
 
       const access = getConfigFn!.entryAccesses![0];
       expect(access.keySources).toBeDefined();
-      expect(access.keySources![0].kind).toBe('expression');
+      // A literal key is a CONSTANT key source: the SDK matches the entry directly (the 'expression'
+      // placeholder route cannot locate an existing entry on a pure read).
+      expect(access.keySources![0].kind).toBe('constant');
     });
 
     it('should compile a contract with hash160 computed key', () => {

@@ -915,6 +915,20 @@ describe('delete on a bytes element (delete data[i] -> zero byte)', () => {
   });
 });
 
+describe('contract/interface-typed struct fields (struct S { C y; })', () => {
+  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  it('resolves a scalar contract/interface-typed struct field to an address placeholder', () => {
+    expect(cc('contract C {} contract T { struct S { C y; } S s; function f() external { require(true); } }'))
+      .toBe('T');
+    expect(cc('interface IFoo { function x() external; } '
+      + 'contract T { struct S { uint256 n; IFoo y; address a; } S s; function f() external { require(true); } }'))
+      .toBe('T');
+    // array fields of contract type already worked; keep them green alongside the scalar form
+    expect(cc('contract C {} contract T { struct S { C[] x; C y; } S s; function f() external { require(true); } }'))
+      .toBe('T');
+  });
+});
+
 describe('calling a function pointer from an array element (arr[i]())', () => {
   const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
   it('accepts an indexed function-pointer call, with and without args', () => {

@@ -3885,7 +3885,11 @@ export default class AstBuilder
         ? this.buildMappingType(fieldCtx.mappingType()!)
         : fieldCtx.arrayType()
           ? this.buildArrayType(fieldCtx.arrayType()!)
-          : this.resolveType(fieldCtx.typeName()!.getText()),
+          // A scalar field whose type is a contract/interface name (`C y`) becomes a named AddressType
+          // placeholder (it stores the callee's address), mirroring array fields (buildArrayType) and state
+          // vars. An unknown name stays a placeholder too - a genuine typo fails at use, not definition.
+          : (this.resolveType(fieldCtx.typeName()!.getText())
+            ?? new AddressType(false, fieldCtx.typeName()!.getText())),
     }));
     const node = new StructDefinitionNode(structName, fields);
     node.location = Location.fromCtx(ctx);

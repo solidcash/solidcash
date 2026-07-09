@@ -380,7 +380,8 @@ tupleAssignment
 tupleSlot
     : typeName modifier* anyIdentifier
     | arrayType modifier* anyIdentifier
-    | anyIdentifier
+    // A bare name, or an index/member lvalue chain `x[0]`, `s.e`, `s.a[0]` (existing target, not a declaration).
+    | anyIdentifier ('[' expression ']' | '.' anyIdentifier)*
     |
     ;
 

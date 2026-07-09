@@ -128,7 +128,6 @@ import type {
   ParameterContext,
   PlaceholderStatementContext,
   AssignmentExpressionContext,
-  ExpressionContext,
   IfStatementContext,
   FunctionCallContext,
   CastContext,
@@ -230,6 +229,7 @@ import { TernaryOpContext, TupleExpressionContext } from '../grammar/SolidCashPa
 // Imported as values (not `import type`) for runtime `instanceof` in extractLvalue / visitExpressionStatement.
 import {
   ParenthesisedContext, ArrayAccessContext, FieldAccessContext, MappingAccessContext,
+  AnyIdentifierContext, ExpressionContext,
   StateAccessContext, IdentifierContext, PostfixOpContext, PrefixOpContext, TupleIndexOpContext,
   FunctionCallExpressionContext, MethodCallContext, MethodCallNamedContext,
 } from '../grammar/SolidCashParser.js';
@@ -1610,6 +1610,74 @@ export default class AstBuilder
     return { tempDecl, values };
   }
 
+  // A tuple slot carrying an index/member lvalue chain (`x[0]`, `s.e`, `s.a[0]`) - not a bare name, a
+  // declaration, or an empty slot.
+  private isComplexTupleSlot(slot: TupleSlotContext): boolean {
+    if (slot.typeName() || slot.arrayType()) return false;
+    return slot.anyIdentifier_list().length > 1 || slot.expression_list().length > 0;
+  }
+
+  private isEmptyTupleSlot(slot: TupleSlotContext): boolean {
+    return !slot.typeName() && !slot.arrayType() && slot.anyIdentifier_list().length === 0;
+  }
+
+  // Reconstruct the lvalue segments (`.member` / `[key]`) of a complex tuple slot from its ordered children,
+  // so `s.a[0]` and `s[0].a` are distinguished (a bare identifier list would lose the order).
+  private buildTupleSlotSegs(slot: TupleSlotContext): LvSeg[] {
+    const segs: LvSeg[] = [];
+    let seenBase = false;
+    for (const child of slot.children ?? []) {
+      if (child instanceof AnyIdentifierContext) {
+        if (!seenBase) { seenBase = true; continue; } // the base identifier
+        segs.push({ member: child.getText() });
+      } else if (child instanceof ExpressionContext) {
+        const keyCtx = child;
+        segs.push({ key: () => this.visit(keyCtx) as ExpressionNode });
+      }
+      // separators ('[', ']', '.') are TerminalNodes - ignored
+    }
+    return segs;
+  }
+
+  // Desugar `(lv0, .., lvN) = (e0, .., eN)` where some target is an index/member lvalue. Solidity evaluates the
+  // whole RHS before assigning; direct sequential assignment matches that iff no RHS reads a target's base
+  // variable (a later read could otherwise see a value an earlier write clobbered). When that alias-safety
+  // does not hold - or the RHS is a single tuple-valued expression, or a declaration is mixed in - return null
+  // and let the caller fall through (the general path rejects the unsupported shape as before).
+  private desugarComplexTupleAssignment(ctx: TupleAssignmentContext, slots: TupleSlotContext[]): Node | null {
+    const exprs = ctx.expression_list();
+    if (exprs.length !== slots.length) return null; // only the per-slot RHS form
+    const loc = Location.fromCtx(ctx);
+    const bases: string[] = [];
+    for (const s of slots) {
+      if (this.isEmptyTupleSlot(s)) continue;
+      if (s.typeName() || s.arrayType()) return null; // a declaration cannot mix with existing-lvalue targets
+      bases.push(s.anyIdentifier(0)!.getText());
+    }
+    const aliasSafe = exprs.every((e) => {
+      const text = e.getText();
+      return bases.every((b) => !new RegExp(`\\b${b.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`).test(text));
+    });
+    if (!aliasSafe) return null;
+    const stmts: StatementNode[] = [];
+    slots.forEach((slot, i) => {
+      const eCtx = exprs[i];
+      if (this.isEmptyTupleSlot(slot)) {
+        // Skipped slot: evaluate the RHS for its side effects, drop the value.
+        const es = new ExpressionStatementNode(this.visit(eCtx) as ExpressionNode);
+        es.location = loc;
+        stmts.push(es);
+        return;
+      }
+      const base = slot.anyIdentifier(0)!;
+      const segs = this.buildTupleSlotSegs(slot);
+      stmts.push(this.buildLvalueAssign(base.getText(), false, Location.fromCtx(base), segs, '=', eCtx, loc));
+    });
+    const block = new BlockNode(stmts);
+    block.location = loc;
+    return block;
+  }
+
   visitTupleAssignment(ctx: TupleAssignmentContext): Node {
     // Parenthesised single declaration `(uint a) = expr;` (solc one-element tuple decl): behaves exactly like
     // `uint a = expr;`. Detected by a direct anyIdentifier child (only the two single-decl alts have one).
@@ -1632,6 +1700,12 @@ export default class AstBuilder
       return def;
     }
     const slots = ctx.tupleSlot_list();
+    // Complex-lvalue targets `(x[0], s.e) = (a, b)` (an index/member chain in a slot): desugar to per-slot
+    // writes. Only the per-slot parenthesised RHS form, and only when alias-safe, is handled here.
+    if (slots.length > 0 && slots.some((s) => this.isComplexTupleSlot(s))) {
+      const desugared = this.desugarComplexTupleAssignment(ctx, slots);
+      if (desugared) return desugared;
+    }
     let elements: { name?: string, type?: Type, skip?: boolean, existing?: boolean }[];
     if (slots.length > 0) {
       // Parenthesised form: a declaration `type name`, a bare `name` (existing lvalue), or an empty slot.
@@ -1642,11 +1716,11 @@ export default class AstBuilder
         // interface var (`(IERC20 a, ..) = ..`) routes `a.method(..)` to an external call (as locals/params do).
         if (tn || at) {
           return {
-            name: slot.anyIdentifier()!.getText(),
+            name: slot.anyIdentifier(0)!.getText(),
             type: at ? this.buildArrayType(at) : (this.resolveType(tn!.getText()) ?? new AddressType(false, tn!.getText())),
           };
         }
-        const id = slot.anyIdentifier();
+        const id = slot.anyIdentifier(0);
         if (id) return { name: id.getText(), existing: true };
         return { skip: true };
       });
@@ -1915,11 +1989,11 @@ export default class AstBuilder
       const tn = slot.typeName(); const at = slot.arrayType();
       if (tn || at) {
         return {
-          name: slot.anyIdentifier()!.getText(),
+          name: slot.anyIdentifier(0)!.getText(),
           type: at ? this.buildArrayType(at) : (this.resolveType(tn!.getText()) ?? new AddressType(false, tn!.getText())),
         };
       }
-      const id = slot.anyIdentifier();
+      const id = slot.anyIdentifier(0);
       return id ? { name: id.getText(), existing: true } : { skip: true };
     });
     const node = exprs.length > 1

@@ -1234,3 +1234,21 @@ describe('soft keywords as declaration and variable names', () => {
     expect(cc('contract C { error E(); function f(bool b) external { if (b) revert E(); require(!b); } }')).toBe('C');
   });
 });
+
+describe('complex-lvalue tuple targets (index/member chains in tuple slots)', () => {
+  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  it('assigns to index and member targets, holes, and nested field arrays', () => {
+    expect(cc('contract C { function f(int a, int b) external { int[3] x; (x[0], x[2]) = (a, b);'
+      + ' require(x[0] == a && x[2] == b); } }')).toBe('C');
+    expect(cc('struct S { int v; int w; } contract C { function f() external { S memory s; (s.v, s.w) = (1, 2);'
+      + ' require(s.v == 1 && s.w == 2); } }')).toBe('C');
+    expect(cc('contract C { function f() external { int[3] m; int a; (m[0], , a) = (1, 2, 3);'
+      + ' require(m[0] == 1 && a == 3); } }')).toBe('C');
+  });
+  it('falls back (does not miscompile) when a target aliases an RHS read', () => {
+    // (x[0], x[1]) = (x[1], x[0]) reads target base x in the RHS -> the alias-safe desugar declines it, and the
+    // general tuple path rejects the complex slot rather than emitting a wrong sequential write.
+    expect(() => compileString('contract C { function f() external { int[2] x; (x[0], x[1]) = (x[1], x[0]);'
+      + ' require(true); } }', { solidityImportCompat: true })).toThrow();
+  });
+});

@@ -823,3 +823,26 @@ DEFERRED (assessed this session, documented for next):
   soft keywords (+14), complex-lvalue tuples (+6). +9 NEG-ACCEPTED (missing-strictness on abstract/negative
   override + naming tests, not unsound). Remaining walls all hard/fragmented (fn-ptrs, nested-state push,
   gnosis, extcall pinning, per-builtin const folding) - see corpus_grind_2026_07_09_r2 memory.
+
+## Session 2026-07-09 round 2 cont.2 (crash-bucket triage): 3790 -> 3792 CONFIRMED by clean full bench (+2, 0 reg)
+- 807d8375 **triaged 3 of 9 internal "Cannot read properties of undefined" crashes -> 2 real fixes + 1 diagnostic**:
+  (a) FORWARD-REFERENCE UDVT IN A STRUCT FIELD (+1): `struct S { U u; } ... type U is address;` - file-level
+  struct fields resolved BEFORE UDVTs registered, leaving f.type undefined until artifact gen crashed. Split
+  registerStructDefinitions into registerStructNames + buildStructFields; register UDVTs (primitive-wrapping,
+  never struct-dependent) in between at the file level.
+  (b) SOURCE-MAP GEN (+1): crashed on a compiler-generated instruction with no location; serialise an empty
+  "same-as-previous" entry (solc parity) - source maps are best-effort debug info orthogonal to bytecode.
+  Unblocked compound bitwise assignment `x |= y` (compound_bitwise_or_uint_2).
+  (c) STATE-VAR ASSIGNMENT-AS-EXPRESSION (`(b = false) && ..`) -> clean MsgData-style diagnostic: resolves to a
+  StateAssignNode (no stack slot, no value-form codegen); a short-circuit operand would make the write
+  CONDITIONAL, unsound on a covenant. Reject at type-check instead of crashing on the missing identifier.
+- PROTOTYPED+REVERTED: m[k] = S({named}) mapping-entry write decompose (m[k]=S(..) -> per-field m__f[k]=arg,
+  named or positional) - sound + regression-clean but unlocks 0 files alone. copy_from_mapping/copy_substructures
+  ALSO need whole-entry READ into a state struct var (s = m[7] -> s__f = m__f[7]) + storage-alias reassign
+  (S storage sLocal=s; sLocal=m[7]), both with dynamic bytes/array leaves. Deferred as a dedicated feature.
+- REMAINING 4 CRASHES (hard areas): event-aggregation pair (contract-typed state var c.f()), msg.sig
+  (EVM-specific selector), copy_struct_to_array_stored_in_mapping (complex mapping copy).
+- SESSION 2026-07-09 GRAND TOTAL: 3740 -> 3792 CONFIRMED (+52), 7 feature/fix commits + 4 docs, 0 regressions
+  throughout. C3 direction bug (+27 incl DAO.sol), msg.data-subroutine diagnostic, paren single decl (+3),
+  soft keywords (+14), complex-lvalue tuples (+6 VM-verified), 2 crash fixes (+2). +9 NEG-ACCEPTED
+  (missing-strictness on abstract/negative tests, not unsound).

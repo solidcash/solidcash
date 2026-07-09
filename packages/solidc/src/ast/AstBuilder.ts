@@ -5149,6 +5149,16 @@ export default class AstBuilder
     if (ctx.DotPush_list().length > 0 || ctx.DotPop() || ctx.DotDelete()) {
       const lv = this.extractLvalue(lhsCtx);
       if (!lv) throw new ParseError('Invalid .push/.pop/.delete target', Location.fromCtx(lhsCtx));
+      // Collapse leading members that descend through flattened struct fields into the name (same as
+      // buildLvalueAssign), so `t.s.b.push()` -> receiver `t__s` + member `b` (a single struct-array-field push).
+      if (!lv.isThis) {
+        while (lv.segs.length > 1 && lv.segs[0].member !== undefined && this.mappingStructStateVars.has(lv.rawName)) {
+          const field = this.mappingStructStateVars.get(lv.rawName)!.fields.find((f) => f.name === lv.segs[0].member);
+          if (!field || !(field.type instanceof StructType) || !this.structNeedsFieldFlattening(field.type)) break;
+          lv.rawName = `${lv.rawName}__${lv.segs[0].member}`;
+          lv.segs = lv.segs.slice(1);
+        }
+      }
       const members = lv.segs.filter((s) => s.member !== undefined).map((s) => s.member!);
       const keyFns = lv.segs.filter((s) => s.key !== undefined).map((s) => s.key!);
       const member = members.length === 1 && keyFns.length === 0 ? members[0] : undefined;

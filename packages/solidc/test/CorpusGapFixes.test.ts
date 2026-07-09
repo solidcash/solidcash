@@ -1350,3 +1350,14 @@ describe('mapping-entry array/bytes element access m[k][i] (VM in solidcash/Mapp
       + ' function r() external view { require(m[0].a[1] == 5); } }')).toBe('C');
   });
 });
+
+describe('push onto a nested flattened-struct-field array t.s.b.push() (VM in solidcash/NestedFieldPush.test.ts)', () => {
+  const cc = (src: string): string =>
+    compileString(src, { solidityImportCompat: true, forceStateful: true, chunkedArrays: true }).contractName;
+  it('collapses the nested member chain so the array-field push resolves', () => {
+    expect(cc('contract C { struct Inner { uint[] b; } struct S { Inner s; uint u; } S t;'
+      + ' function f() external { t.s.b.push(1); } }')).toBe('C');
+    expect(cc('contract C { struct Inner { uint[] b; } struct S { Inner s; uint u; } S t;'
+      + ' function f() external { t.s.b.pop(); } }')).toBe('C');
+  });
+});

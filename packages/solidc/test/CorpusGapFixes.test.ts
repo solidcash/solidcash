@@ -915,6 +915,24 @@ describe('delete on a bytes element (delete data[i] -> zero byte)', () => {
   });
 });
 
+describe('nested write to a local-memory struct multi-D array field (s.a[i][j] = v)', () => {
+  const cc = (src: string): string => compileString(src,
+    { solidityImportCompat: true, forceStateful: true, chunkedArrays: true }).contractName;
+  it('accepts s.a[i][j] = v / s.a[i][j]++ / s.a[i][j][k] = v on a local struct', () => {
+    expect(cc('contract C { struct S { uint[][] a; } '
+      + 'function f(uint i,uint j,uint v) public pure { S memory s; s.a[i][j]=v; require(true); } }')).toBe('C');
+    expect(cc('contract C { struct S { uint[][] a; } '
+      + 'function f(uint i,uint j) public pure { S memory s; s.a[i][j]++; require(true); } }')).toBe('C');
+    expect(cc('contract C { struct S { uint[][][] a; } '
+      + 'function f(uint i,uint j,uint k,uint v) public pure { S memory s; s.a[i][j][k]=v; require(true); } }'))
+      .toBe('C');
+  });
+  it('keeps the single-index form working', () => {
+    expect(cc('contract C { struct S { uint[] a; } '
+      + 'function f(uint i,uint v) public pure { S memory s; s.a[i]=v; s.a[i]++; require(true); } }')).toBe('C');
+  });
+});
+
 describe('contract/interface-typed struct fields (struct S { C y; })', () => {
   const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
   it('resolves a scalar contract/interface-typed struct field to an address placeholder', () => {

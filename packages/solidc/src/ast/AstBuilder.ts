@@ -3268,14 +3268,15 @@ export default class AstBuilder
       }
     }
 
-    // Local struct ARRAY-field element write `s.arr[i] op= v` (member then index): struct fields have no in-place
-    // element write, so read-modify-rebuild via buildLocalStructArrayFieldWrite.
-    if (!isThis && !isIncDec && fieldName && members.length === 1 && keyFns.length === 1
-      && segs.length === 2 && segs[0].member !== undefined && this.localStructTypes.has(rawName)) {
+    // Local struct ARRAY-field element write `s.arr[i] op= v` / nested `s.arr[i][j] op= v` (member then index/es):
+    // struct fields have no in-place element write, so read-modify-rebuild via buildLocalStructArrayFieldWrite.
+    // A multi-index write lowers the temp element write to a MappingAssign (DesugarNestedArrayWrite handles it).
+    if (!isThis && fieldName && members.length === 1 && keyFns.length >= 1
+      && segs.length === keyFns.length + 1 && segs[0].member !== undefined && this.localStructTypes.has(rawName)) {
       const field = this.localStructTypes.get(rawName)!.fields.find((f) => f.name === fieldName);
       if (field && field.type instanceof ArrayType) {
         return this.buildLocalStructArrayFieldWrite(rawName, fieldName, field.type,
-          () => keyFns[0](), op, valueCtx, loc, valueNode);
+          keyFns, op, valueCtx, loc, valueNode);
       }
     }
 
@@ -3296,7 +3297,7 @@ export default class AstBuilder
         decl.location = loc;
         this.localStructTypes.set(tmpName, structT); // so the array-field write helper resolves the temp's type
         const inner = this.buildLocalStructArrayFieldWrite(tmpName, fieldName, field.type,
-          () => keyFns[0](), op, valueCtx, loc, valueNode);
+          [() => keyFns[0]()], op, valueCtx, loc, valueNode);
         const back = new StateAssignNode(rawName, idAt(tmpName));
         back.location = loc;
         const block = new BlockNode([decl, ...(inner.statements ?? []), back]);
@@ -3323,7 +3324,7 @@ export default class AstBuilder
         decl.location = loc;
         this.localStructTypes.set(tmpName, structT); // so the array-field write helper resolves the temp's type
         const inner = this.buildLocalStructArrayFieldWrite(tmpName, fieldName, field.type,
-          () => keyFns[1](), op, valueCtx, loc, valueNode);
+          [() => keyFns[1]()], op, valueCtx, loc, valueNode);
         const back = new MappingAssignNode(rawName, [mapKey()], idAt(tmpName));
         back.location = loc;
         const block = new BlockNode([decl, ...(inner.statements ?? []), back]);
@@ -3350,7 +3351,7 @@ export default class AstBuilder
         decl.location = loc;
         this.localStructTypes.set(tmpName, structT); // so the array-field write helper resolves the temp's type
         const inner = this.buildLocalStructArrayFieldWrite(tmpName, fieldName, field.type,
-          () => keyFns[1](), op, valueCtx, loc, valueNode);
+          [() => keyFns[1]()], op, valueCtx, loc, valueNode);
         const back = new ArrayAssignNode(rawName, keyFns[0](), idAt(tmpName));
         back.location = loc;
         const block = new BlockNode([decl, ...(inner.statements ?? []), back]);
@@ -3625,7 +3626,7 @@ export default class AstBuilder
   // block: `T tmp = sv.field; tmp[idx] = value; sv.field = tmp;`. `structVarName` must be registered in
   // localStructTypes. Returned as a block so flattenStatements splices the three statements at the call scope.
   private buildLocalStructArrayFieldWrite(
-    structVarName: string, fieldName: string, arrayFieldType: Type, indexVisit: () => ExpressionNode,
+    structVarName: string, fieldName: string, arrayFieldType: Type, indexVisits: Array<() => ExpressionNode>,
     op: string, valueCtx: ExpressionContext | undefined, loc: Location, valueNode?: ExpressionNode,
   ): BlockNode {
     const idAt = (n: string): IdentifierNode => { const i = new IdentifierNode(n); i.location = loc; return i; };
@@ -3634,14 +3635,20 @@ export default class AstBuilder
     sField.location = loc;
     const decl = new VariableDefinitionNode(arrayFieldType, [], tmpName, sField);
     decl.location = loc;
+    // Nested element access `tmp[k0]..[kn]` (one level per key), for both the compound-op read and the write.
+    const access = (): ExpressionNode => {
+      let acc: ExpressionNode = idAt(tmpName);
+      for (const iv of indexVisits) { acc = new ArrayAccessNode(acc, iv()); acc.location = loc; }
+      return acc;
+    };
     const value = op === '='
       ? (valueNode ?? this.visit(valueCtx!) as ExpressionNode)
-      : this.compoundRhs((() => {
-        const r = new ArrayAccessNode(idAt(tmpName), indexVisit());
-        r.location = loc;
-        return r;
-      })(), op, valueCtx, loc);
-    const elemAssign = new ArrayAssignNode(tmpName, indexVisit(), value);
+      : this.compoundRhs(access(), op, valueCtx, loc);
+    // Single index -> a plain local element write; multi index -> a MappingAssign the nested-array write desugar
+    // (DesugarNestedArrayWrite) lowers to a read-modify-write over `tmp`.
+    const elemAssign: StatementNode = indexVisits.length === 1
+      ? new ArrayAssignNode(tmpName, indexVisits[0](), value)
+      : new MappingAssignNode(tmpName, indexVisits.map((iv) => iv()), value);
     elemAssign.location = loc;
     const rebuild = this.buildStructFieldRebuild(structVarName, loc, [fieldName], false, loc, () => idAt(tmpName))!;
     const block = new BlockNode([decl, elemAssign, rebuild]);

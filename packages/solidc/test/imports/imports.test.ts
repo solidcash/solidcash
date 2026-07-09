@@ -1180,7 +1180,7 @@ describe('Imports', () => {
       expect(artifact.abi.filter((f) => f.name === 'baseFunc')).toHaveLength(1);
     });
 
-    it('should throw DiamondInheritanceError when B overrides shared but D does not explicitly override', () => {
+    it('should compile when one parent version dominates (B overrides shared, C inherits it unchanged)', () => {
       const files: Record<string, string> = {
         '/lib/a.scash': `
           contract A() {
@@ -1217,14 +1217,14 @@ describe('Imports', () => {
         }
       `;
 
-      // B's override creates a different origin than C's inherited version from A,
-      // so D must explicitly override to resolve the conflict
+      // B's override dominates C's unchanged inherited version from A (B is A), so no explicit
+      // child override is needed - solc semantics.
       expect(
         () => compileString(code, {
           importResolver: createMapResolver(files),
           rootFileId: '/main.scash',
         }),
-      ).toThrow(DiamondInheritanceError);
+      ).not.toThrow();
     });
 
     it('should throw MissingOverrideError when both parents independently define same function', () => {
@@ -1436,6 +1436,96 @@ describe('Imports', () => {
       expect(
         () => compileFile(path.join(fixtures, 'error_undefined_parent_invocation.scash')),
       ).toThrow(UndefinedParentInvocationError);
+    });
+
+    it('should linearize most-base-first sibling lists (Solidity C3 direction)', () => {
+      // `is Base, Base1` with Base1 deriving Base is valid Solidity order; Python-direction C3 rejects it.
+      const files: Record<string, string> = {
+        '/lib/chain.scash': `
+          contract Base {
+            int public m_i;
+            constructor(int j) {
+              m_i = j;
+            }
+          }
+          contract Base1 is Base {
+            constructor(int k) Base(k) {}
+          }
+          contract Derived is Base, Base1 {
+            constructor(int i) Base1(i) {}
+          }
+        `,
+      };
+      const code = `
+        import "./lib/chain.scash";
+        contract Final is Derived {
+          constructor() Derived(4) {}
+          function check() public {
+            require(m_i == 4);
+          }
+        }
+      `;
+      expect(
+        () => compileString(code, { importResolver: createMapResolver(files), rootFileId: '/main.scash' }),
+      ).not.toThrow();
+    });
+
+    it('should inline a grandparent constructor invocation (ctor init chain)', () => {
+      const files: Record<string, string> = {
+        '/lib/chain.scash': `
+          contract B {
+            int public a;
+            constructor(int x) {
+              a = x;
+            }
+          }
+          abstract contract C is B {
+          }
+        `,
+      };
+      const code = `
+        import "./lib/chain.scash";
+        contract D is C {
+          constructor(int y) B(y + 1) {}
+          function check(int expected) public {
+            require(a == expected);
+          }
+        }
+      `;
+      const artifact = compileString(code, {
+        importResolver: createMapResolver(files), rootFileId: '/main.scash',
+      });
+      expect(artifact).toBeDefined();
+      expect(artifact.abi.some((f) => f.name === 'check')).toBe(true);
+    });
+
+    it('should route constructor modifier invocations to modifiers, not parent invocations', () => {
+      const files: Record<string, string> = {
+        '/lib/a.scash': `
+          contract A {
+            constructor(int) {}
+          }
+        `,
+      };
+      const code = `
+        import "./lib/a.scash";
+        contract D is A {
+          int public x;
+          modifier m1(int v) {
+            require(v >= 0);
+            _;
+          }
+          constructor() m1(3) A(2) {
+            x = 1;
+          }
+          function check() public {
+            require(x == 1);
+          }
+        }
+      `;
+      expect(
+        () => compileString(code, { importResolver: createMapResolver(files), rootFileId: '/main.scash' }),
+      ).not.toThrow();
     });
   });
 

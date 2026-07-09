@@ -20,6 +20,7 @@ export interface DeployContractOptions {
   addressType?: AddressType;
   threadCount?: number;
   initialBalance?: bigint;
+  initArgs?: DeployOptions['initArgs'];
 }
 
 /** A deployed contract with ethers-style deployment accessors. */
@@ -66,11 +67,17 @@ export class ContractFactory<T extends Artifact = Artifact> {
    */
   async deploy(...args: Array<ConstructorArgument | DeployContractOptions>): Promise<DeployedContract<T>> {
     const ctorCount = this.artifact.constructorInputs.length;
+    // Positional args beyond the contract-level params feed the explicit `constructor(...) {}` block
+    // (ethers passes all deploy args to the constructor; here they split across the two layers).
+    const initCount = this.artifact.abi.find((f) => f.name === '__construct')?.inputs.length ?? 0;
+    const expected = ctorCount + initCount;
     let overrides: DeployContractOptions = {};
-    if (args.length === ctorCount + 1 && looksLikeOverrides(args[args.length - 1])) {
+    if ((args.length === expected + 1 || args.length === ctorCount + 1)
+        && looksLikeOverrides(args[args.length - 1])) {
       overrides = args.pop() as DeployContractOptions;
     }
-    const constructorArgs = args as ConstructorArgument[];
+    const constructorArgs = args.slice(0, ctorCount) as ConstructorArgument[];
+    const positionalInitArgs = args.slice(ctorCount) as NonNullable<DeployOptions['initArgs']>;
 
     const signer = this.runner instanceof Signer ? this.runner : undefined;
     const provider: NetworkProvider = signer ? signer.provider : (this.runner as NetworkProvider);
@@ -101,6 +108,7 @@ export class ContractFactory<T extends Artifact = Artifact> {
       addressType: overrides.addressType,
       threadCount: overrides.threadCount,
       initialBalance: overrides.initialBalance,
+      initArgs: overrides.initArgs ?? (positionalInitArgs.length > 0 ? positionalInitArgs : undefined),
     });
 
     const contract = result.contract as DeployedContract<T>;

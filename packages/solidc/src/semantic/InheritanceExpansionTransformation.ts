@@ -98,13 +98,21 @@ export default function expandInheritance(ast: SourceFileNode): SourceFileNode {
     contractMap.set(c.name, c);
   }
 
+  // Expansion clears each contract's `implements`; snapshot the original hierarchy so linearizations
+  // computed after a sibling expansion (memoized) still see the full parent lists.
+  const originalImplements = new Map<string, string[]>();
+  originalImplements.set(ast.contract.name, [...ast.contract.implements]);
+  for (const c of ast.importedContracts) {
+    if (!originalImplements.has(c.name)) originalImplements.set(c.name, [...c.implements]);
+  }
+
   const expanded = new Set<string>();
 
   // The primary contract's own ancestors (captured before expansion clears `implements`) are flattened as part
   // of the primary's expansion below; flattening one independently first would double-merge a shared diamond
   // ancestor into the primary. So compute the primary's linearization up front and skip those names.
   const primaryLinearization = ast.contract.implements.length > 0
-    ? computeLinearization(ast.contract, contractMap) : [ast.contract.name];
+    ? computeLinearization(ast.contract, contractMap, originalImplements) : [ast.contract.name];
   const primaryAncestors = new Set(primaryLinearization);
 
   // Flatten IMPORTED contracts that carry their own inheritance and are USED/instantiated independently (not a
@@ -113,8 +121,8 @@ export default function expandInheritance(ast: SourceFileNode): SourceFileNode {
   // expands each base first and memoizes via `expanded`, so shared bases are merged once.
   for (const imported of [...ast.importedContracts]) {
     if (imported.implements.length > 0 && !expanded.has(imported.name) && !primaryAncestors.has(imported.name)) {
-      const importedLinearization = computeLinearization(imported, contractMap);
-      expandContract(imported, contractMap, expanded, new Set());
+      const importedLinearization = computeLinearization(imported, contractMap, originalImplements);
+      expandContract(imported, contractMap, expanded, new Set(), originalImplements);
       resolveSuperAndBaseCalls(imported, importedLinearization);
     }
   }
@@ -122,7 +130,7 @@ export default function expandInheritance(ast: SourceFileNode): SourceFileNode {
   // If the primary contract doesn't implement anything, nothing more to do
   if (ast.contract.implements.length === 0) return ast;
 
-  expandContract(ast.contract, contractMap, expanded, new Set());
+  expandContract(ast.contract, contractMap, expanded, new Set(), originalImplements);
 
   resolveSuperAndBaseCalls(ast.contract, primaryLinearization);
 
@@ -132,9 +140,14 @@ export default function expandInheritance(ast: SourceFileNode): SourceFileNode {
 // C3 linearization (the MRO Python/Solidity use): most-derived first, each class before its parents,
 // left-to-right priority, monotonic. Equals depth-first for linear/tree hierarchies, differs only in
 // diamonds. Throws if no consistent linearization exists.
-function computeLinearization(contract: ContractNode, contractMap: Map<string, ContractNode>): string[] {
+function computeLinearization(
+  contract: ContractNode,
+  contractMap: Map<string, ContractNode>,
+  originalImplements?: Map<string, string[]>,
+): string[] {
   const parentsOf = (name: string): string[] => {
-    const implementsList = name === contract.name ? contract.implements : (contractMap.get(name)?.implements ?? []);
+    const implementsList = originalImplements?.get(name)
+      ?? (name === contract.name ? contract.implements : (contractMap.get(name)?.implements ?? []));
     return implementsList.filter((n) => contractMap.has(n));
   };
 
@@ -147,7 +160,10 @@ function computeLinearization(contract: ContractNode, contractMap: Map<string, C
     const parents = parentsOf(name);
     if (parents.length === 0) return [name];
     const nextStack = new Set(stack).add(name);
-    const sequences = [...parents.map((p) => linearize(p, nextStack)), [...parents]];
+    // Solidity lists bases most-base-first, so the C3 merge consumes the REVERSED parent list
+    // (rightmost base = highest priority), unlike Python's left-to-right MRO.
+    const reversed = [...parents].reverse();
+    const sequences = [...reversed.map((p) => linearize(p, nextStack)), [...reversed]];
     return [name, ...c3Merge(sequences, contract)];
   };
 
@@ -188,6 +204,7 @@ function expandContract(
   contractMap: Map<string, ContractNode>,
   expanded: Set<string>,
   expanding: Set<string>,
+  originalImplements?: Map<string, string[]>,
 ): void {
   if (expanding.has(contract.name)) {
     throw new CircularContractInheritanceError(contract);
@@ -208,6 +225,26 @@ function expandContract(
 
   if (parentNames.length === 0) return;
 
+  // `m(args)` and `Base(args)` are grammatically identical in the constructor list, so modifier
+  // invocations parse into parentInvocations - reroute those to the constructor's custom modifiers.
+  // Invocations naming INDIRECT ancestors (grandparent ctor args) are kept for constructor inlining.
+  const linearization = computeLinearization(contract, contractMap, originalImplements);
+  const ancestorSet = new Set(linearization);
+  const modifierNames = new Set(contract.modifierDefinitions.map((m) => m.name));
+  for (const ancestor of linearization) {
+    for (const md of contractMap.get(ancestor)?.modifierDefinitions ?? []) modifierNames.add(md.name);
+  }
+  const rerouted = contract.parentInvocations
+    .filter((pi) => !ancestorSet.has(pi.parentName) && modifierNames.has(pi.parentName));
+  if (rerouted.length > 0 && contract.constructorDef) {
+    contract.constructorDef.customModifiers = [
+      ...contract.constructorDef.customModifiers,
+      ...rerouted.map((pi) => ({ name: pi.parentName, args: pi.args, location: pi.location })),
+    ].sort((a, b) => a.location.start.line - b.location.start.line
+      || a.location.start.column - b.location.start.column);
+    contract.parentInvocations = contract.parentInvocations.filter((pi) => !rerouted.includes(pi));
+  }
+
   // Validate parent invocations
   const invocationNames = new Set<string>();
   for (const pi of contract.parentInvocations) {
@@ -215,12 +252,28 @@ function expandContract(
       throw new DuplicateParentInvocationError(contract, pi.parentName);
     }
     invocationNames.add(pi.parentName);
-    if (!parentNames.includes(pi.parentName)) {
+    if (!ancestorSet.has(pi.parentName)) {
       throw new UndefinedParentInvocationError(contract, pi.parentName);
     }
   }
 
   expanding.add(contract.name);
+
+  // Ancestor relation over the ORIGINAL hierarchy, for diamond dominance (an override in a derived base
+  // beats the overridden ancestor version - not a conflict).
+  const isAncestor = (ancestor: string, descendant: string): boolean => {
+    const seen = new Set<string>();
+    const stack = [...(originalImplements?.get(descendant)
+      ?? contractMap.get(descendant)?.implements ?? [])];
+    while (stack.length > 0) {
+      const n = stack.pop()!;
+      if (n === ancestor) return true;
+      if (seen.has(n)) continue;
+      seen.add(n);
+      stack.push(...(originalImplements?.get(n) ?? contractMap.get(n)?.implements ?? []));
+    }
+    return false;
+  };
 
   // Merge parents left-to-right
   for (const parentName of parentNames) {
@@ -228,13 +281,13 @@ function expandContract(
 
     // Recursively expand parent first (if it has its own parents)
     if (!expanded.has(parentName) && parent.implements.length > 0) {
-      expandContract(parent, contractMap, expanded, new Set(expanding));
+      expandContract(parent, contractMap, expanded, new Set(expanding), originalImplements);
     }
 
-    mergeParent(contract, parent);
+    mergeParent(contract, parent, isAncestor);
   }
 
-  inlineParentConstructors(contract, parentNames, contractMap);
+  inlineParentConstructors(contract, parentNames, contractMap, linearization);
 
   expanding.delete(contract.name);
   expanded.add(contract.name);
@@ -254,8 +307,34 @@ function inlineParentConstructors(
   contract: ContractNode,
   parentNames: string[],
   contractMap: Map<string, ContractNode>,
+  linearization: string[],
 ): void {
   const parentStmts: StatementNode[] = [];
+
+  // Invocations naming INDIRECT ancestors (grandparent ctor args, e.g. `contract D is C { constructor() B(5) }`)
+  // inline that ancestor's (already expanded) ctor first - most-base-first among themselves - since an
+  // uninvoked parameterized link drops the sub-chain from the direct-parent walk below. Chain-covered
+  // ancestors are skipped: parameterless ctors auto-inline through the chain, and an intermediate
+  // invocation already applied its args.
+  const indirect = contract.parentInvocations.filter((pi) => !parentNames.includes(pi.parentName));
+  for (const ancestorName of [...linearization].reverse()) {
+    const invocation = indirect.find((pi) => pi.parentName === ancestorName);
+    if (!invocation) continue;
+    const ancestor = contractMap.get(ancestorName);
+    if (!ancestor?.constructorDef?.body?.statements?.length) continue;
+    const ctorParams = effectiveConstructorParams(ancestor);
+    if (ctorParams.length === 0) continue; // parameterless: chain-inlined already
+    const chainInvoked = linearization.some((name) => name !== contract.name
+      && (contractMap.get(name)?.parentInvocations ?? []).some((pi) => pi.parentName === ancestorName));
+    if (chainInvoked) continue;
+    if (invocation.args.length !== ctorParams.length) {
+      throw new ParentInvocationArgCountError(contract, ancestorName, ctorParams.length, invocation.args.length);
+    }
+    const clonedCtor = cloneNode(ancestor.constructorDef);
+    substituteInFunction(clonedCtor, new Map(ctorParams.map((p, i) => [p.name, invocation.args[i]])));
+    parentStmts.push(...(clonedCtor.body.statements ?? []));
+  }
+
   for (const parentName of parentNames) {
     const invocation = contract.parentInvocations.find((pi) => pi.parentName === parentName);
     const parent = contractMap.get(parentName)!;
@@ -286,7 +365,11 @@ function inlineParentConstructors(
 /**
  * Merge a parent contract's definitions into a child contract.
  */
-function mergeParent(child: ContractNode, parent: ContractNode): void {
+function mergeParent(
+  child: ContractNode,
+  parent: ContractNode,
+  isAncestor?: (ancestor: string, descendant: string) => boolean,
+): void {
   const invocation = child.parentInvocations.find((pi) => pi.parentName === parent.name);
 
   // Build substitution map if explicit invocation exists. A Solidity-style parent declares its constructor
@@ -303,7 +386,7 @@ function mergeParent(child: ContractNode, parent: ContractNode): void {
   }
 
   // 1. Merge functions (with optional substitution)
-  mergeFunctions(child, parent, subs);
+  mergeFunctions(child, parent, subs, isAncestor);
 
   // 2. Merge constructor params only if no explicit invocation
   if (!invocation) {
@@ -366,6 +449,7 @@ function mergeFunctions(
   child: ContractNode,
   parent: ContractNode,
   subs?: Map<string, ExpressionNode>,
+  isAncestor?: (ancestor: string, descendant: string) => boolean,
 ): void {
   const childFuncMap = new Map(child.functions.map((f) => [functionSignature(f), f]));
 
@@ -380,6 +464,20 @@ function mergeFunctions(
       if (childOrigin && childOrigin === parentOrigin) {
         // Same origin ancestor - diamond duplicate, skip silently
         continue;
+      }
+
+      // Related origins: the version from the more-derived contract already overrides the other -
+      // it dominates without an explicit child override (solc semantics).
+      if (childOrigin && isAncestor) {
+        if (isAncestor(parentOrigin, childOrigin)) continue; // existing version dominates
+        if (isAncestor(childOrigin, parentOrigin)) {
+          const cloned = cloneNode(parentFunc);
+          if (!cloned.inheritedFrom) cloned.inheritedFrom = parent.name;
+          if (subs) substituteInFunction(cloned, subs);
+          child.functions[child.functions.indexOf(existingFunc)] = cloned;
+          childFuncMap.set(functionSignature(cloned), cloned);
+          continue;
+        }
       }
 
       // Child's OWN explicit override resolves conflicts (not inherited overrides). Preserve the
@@ -463,13 +561,13 @@ function resolveSuperAndBaseCalls(contract: ContractNode, linearization: string[
   const indexOf = new Map(linearization.map((name, i) => [name, i]));
   const references = new Map<string, Set<string>>(); // function name -> preserved impls it calls
 
-  // Validate explicit `override(A, B)` base lists: each named base must be a base of this contract. A CONTRACT
-  // base must also have a resolvable super impl (for `super.f()`); an INTERFACE base (still in `implements` after
-  // expansion) only declares the function, so a directly-implemented interface is accepted with no impl to resolve.
+  // Validate explicit `override(A, B)` base lists: each named base must be a base of this contract. The base's
+  // declaration may be abstract (no super impl to resolve), so only ancestry is checked; an INTERFACE base
+  // (still in `implements` after expansion) is accepted the same way.
   for (const fn of contract.functions) {
     for (const base of fn.overrideBases) {
       if (contract.implements.includes(base)) continue; // interface base: declares the function, no super impl
-      if (!ancestors.has(base) || !superImplFor(contract, base, fn.name)) {
+      if (!ancestors.has(base)) {
         throw new OverrideBaseListError(fn, fn.name, base);
       }
     }

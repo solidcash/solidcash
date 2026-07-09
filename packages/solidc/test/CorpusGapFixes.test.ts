@@ -1337,3 +1337,16 @@ describe('parenthesised simple call target (foo)() / (L.f)() / (blockhash)(n)', 
       .toBe('C');
   });
 });
+
+describe('mapping-entry array/bytes element access m[k][i] (VM in solidcash/MappingEntryArrayElement.test.ts)', () => {
+  const cc = (src: string): string =>
+    compileString(src, { solidityImportCompat: true, forceStateful: true, chunkedArrays: true }).contractName;
+  it('reads an element of an array/bytes-valued mapping entry (entrySlotIndex now recurses index bases)', () => {
+    expect(cc('contract C { mapping(uint => uint16[]) ma; function r() external view { require(ma[0][0] == 13); } }'))
+      .toBe('C');
+    expect(cc('contract C { mapping(uint => bytes) ma; function r() external view returns (bytes1) { return ma[0][0]; } }'))
+      .toBe('C');
+    expect(cc('contract C { struct S { uint16[] a; } mapping(uint => S) m;'
+      + ' function r() external view { require(m[0].a[1] == 5); } }')).toBe('C');
+  });
+});

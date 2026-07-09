@@ -2729,6 +2729,14 @@ export default class SymbolTableTraversal extends AstTraversal {
     if ('value' in node && (node as any).value instanceof Node) {
       this.collectEntryAccesses((node as any).value, map);
     }
+    // Index/slice bases so a mapping-entry element read `m[k][i]` / `m[k].f[i]` / `m[k][a:b]` collects the
+    // inner `m[k]` entry access (TupleIndexOp.tuple, ArrayAccess.array/index, Slice.element/start/end).
+    if ('tuple' in node && (node as any).tuple instanceof Node) this.collectEntryAccesses((node as any).tuple, map);
+    if ('array' in node && (node as any).array instanceof Node) this.collectEntryAccesses((node as any).array, map);
+    if ('index' in node && (node as any).index instanceof Node) this.collectEntryAccesses((node as any).index, map);
+    if ('element' in node && (node as any).element instanceof Node) this.collectEntryAccesses((node as any).element, map);
+    if ('start' in node && (node as any).start instanceof Node) this.collectEntryAccesses((node as any).start, map);
+    if ('end' in node && (node as any).end instanceof Node) this.collectEntryAccesses((node as any).end, map);
     if ('selector' in node && (node as any).selector instanceof Node) {
       this.collectEntryAccesses((node as any).selector, map);
     }
@@ -2837,6 +2845,13 @@ export default class SymbolTableTraversal extends AstTraversal {
     if ('value' in node && (node as any).value instanceof Node) {
       this.assignEntrySlotIndices((node as any).value, map);
     }
+    // Index/slice bases (mirror collectEntryAccesses) so `m[k][i]` etc. assign the inner `m[k]` slot.
+    if ('tuple' in node && (node as any).tuple instanceof Node) this.assignEntrySlotIndices((node as any).tuple, map);
+    if ('array' in node && (node as any).array instanceof Node) this.assignEntrySlotIndices((node as any).array, map);
+    if ('index' in node && (node as any).index instanceof Node) this.assignEntrySlotIndices((node as any).index, map);
+    if ('element' in node && (node as any).element instanceof Node) this.assignEntrySlotIndices((node as any).element, map);
+    if ('start' in node && (node as any).start instanceof Node) this.assignEntrySlotIndices((node as any).start, map);
+    if ('end' in node && (node as any).end instanceof Node) this.assignEntrySlotIndices((node as any).end, map);
     if ('selector' in node && (node as any).selector instanceof Node) {
       this.assignEntrySlotIndices((node as any).selector, map);
     }

@@ -846,3 +846,25 @@ DEFERRED (assessed this session, documented for next):
   throughout. C3 direction bug (+27 incl DAO.sol), msg.data-subroutine diagnostic, paren single decl (+3),
   soft keywords (+14), complex-lvalue tuples (+6 VM-verified), 2 crash fixes (+2). +9 NEG-ACCEPTED
   (missing-strictness on abstract/negative tests, not unsound).
+
+## Session 2026-07-09 round 2 cont.3 (correctness: mapping-struct-copy + crash triage): 3792 -> 3793 CONFIRMED (+1, 0 reg)
+User directive: TARGET CORRECTNESS, not corpus unlocks ("if it works in Solidity it should work for us too").
+- 45ae91fc **whole-struct <-> mapping-entry copies (VM-VERIFIED, +1 copy_from_mapping_to_mapping)**: reinstated
+  the reverted m[k]=S({named}) write and COMPLETED the cycle. resolveWholeStructValue unifies the value source
+  (a direct S(..) ctor, or a whole read m[k]/state-var assembled into the same ctor shape) so write/read/copy
+  share one decompose. m[k]=S({..})/S(..) -> per-field entry writes; s=m[k]/s=S(..) -> per-field STATE writes
+  (mirror); m2[k]=m[j] entry-to-entry. VM test solidcash/test/e2e/MappingStructCopy.test.ts (5 roundtrips:
+  named/positional write, whole read into state var, wrong-expectation-reverts, entry-to-entry). TWO
+  pre-existing gaps found + BOUNDED (not shipped as compile-but-run-wrong): (a) ARRAY fields inside a
+  mapping-of-struct value hit `Block slot not found: entry[-1]` (affects any mapping-to-array; bytes works,
+  fixed+dynamic arrays do not) - out of scope; (b) storage-alias reassign (sLocal=m[k]) MISCOMPILED so the
+  decompose is restricted to DIRECT state vars and the alias form is left to fail cleanly. copy_from_mapping /
+  copy_substructures stay FAIL (need both gaps) - the SOUND reject, not a miscompile.
+- 79cf1cb0 **crash triage round 2: 3 more crashes -> clean diagnostics**: msg.sig in an INTERNAL function
+  (undefined functionSelector pushed -> libauth crash) -> MsgSigInInternalFunctionError; statement call with
+  no callee identifier (`c=new C(); c.f()` stored-contract cluster) -> MethodCallNotSupportedError. With cont.2
+  this clears 8 of 9 "Cannot read properties of undefined" crashes (2 real fixes +2 corpus, 6 diagnostics);
+  only copy_struct_to_array_stored_in_mapping (mapping-to-array-of-struct) remains.
+- SESSION 2026-07-09 GRAND TOTAL: 3740 -> 3793 CONFIRMED (+53), 9 feature/fix commits + 5 docs, 0 regressions
+  throughout. VM-verified: complex-lvalue tuples, mapping-struct copies. Correctness posture: bounded every
+  pre-existing gap rather than shipping compile-but-run-wrong.

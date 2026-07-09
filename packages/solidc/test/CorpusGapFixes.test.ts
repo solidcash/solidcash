@@ -915,6 +915,18 @@ describe('delete on a bytes element (delete data[i] -> zero byte)', () => {
   });
 });
 
+describe('fallback / receive usable as ordinary identifiers (function/param names)', () => {
+  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  it('accepts fallback/receive as a function name or parameter name', () => {
+    expect(cc('contract C { function fallback() external pure {} }')).toBe('C');
+    expect(cc('contract C { function receive() external pure {} }')).toBe('C');
+    expect(cc('contract C { function f(uint fallback) public pure { require(fallback == 0); } }')).toBe('C');
+  });
+  it('does not disturb the real fallback/receive special functions', () => {
+    expect(cc('contract C { fallback() external {} receive() external payable {} }')).toBe('C');
+  });
+});
+
 describe('indexed struct-field array push/pop (data[i].d.push, s1.arr[i].push, m[k].d.push)', () => {
   const cc = (src: string): string => compileString(src,
     { solidityImportCompat: true, forceStateful: true, chunkedArrays: true }).contractName;

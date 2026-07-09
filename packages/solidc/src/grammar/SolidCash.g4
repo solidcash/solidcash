@@ -48,7 +48,7 @@ userDefinableOperator
 anyIdentifier
     : Identifier
     | 'deploy' | 'delegate' | 'upgrade' | 'selfdestruct' | 'unsafe' | 'packed' | 'entries' | 'error' | 'global' | 'revert'
-    | 'transient' | 'leave'
+    | 'transient' | 'leave' | 'fallback' | 'receive'
     | CryptoType | BchUnit
     ;
 

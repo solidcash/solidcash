@@ -926,3 +926,23 @@ LOCAL-COPY write, not a misclassification). Found + fixed the actual bug:
 - CorpusGapFixes +4 guards (nested delete compile+bytecode-identical, indexed push/pop, 3-level still-rejected). solidc
   1895 green, 0 regressions. **SESSION 2026-07-09 GRAND TOTAL: 3740 -> 3808 CONFIRMED (+68 compile)** + silent-miscompile
   fixes (C3 super direction, struct storage pointer, mapping-of-struct push accumulation) the compile-bench cannot measure.
+
+## Session 2026-07-09 round 2 cont.8 (next-walls: soft-keyword fn/param names): 3808 -> 3812 CONFIRMED (+4, 0 reg)
+- **fallback / receive usable as ordinary identifiers (+4)**: both are contextual (not reserved) in Solidity, so
+  `function fallback() {}` / `function receive() {}` (regular named functions, distinct from the special no-`function`
+  forms) and a param named `fallback`/`receive` are valid. Grammar: added 'fallback' | 'receive' to anyIdentifier
+  (the same soft-keyword list already holding deploy/selfdestruct/error/revert/transient/...). functionDefinition +
+  parameter already use anyIdentifier so no rule change; the special fallbackDefinition/receiveDefinition still match
+  the token so the real fallback/receive functions are unaffected (verified). A named `fallback`/`receive` compiles to
+  a NORMAL ABI entry (no special dispatch). Unblocks fallback_as_function_name, receive_as_function_name,
+  named_fallback_warning, named_receive_warning. `require`/`_` as names NOT added (require needs expression-position
+  identifier support entangled with require(); `_` collides with the modifier placeholder). solidc 1895 + CorpusGapFixes
+  186 green, 0 regressions.
+- **NEXT-WALL TRIAGE at 3812** (surveyed, deferred with reasons so they are not re-chased): function pointers /
+  function types (`function(..) external` types, `[N]` arrays of them, `.selector`/`.address` on functions) ~60+ files
+  = the single largest remaining vein, EVM-model core; Yul ~175 fundamental; recursive structs fundamental; local-memory
+  nested collections (create_memory_array z[i].a[j]) deep memory modeling; **address ordering `a < b` NOT sound on BCH -
+  address is a variable-length locking bytecode, not uint160, so `<`/`>` has no EVM-matching semantics (drop)**; tuple
+  extra-parens/holes (((, a))=..) pathological smtChecker edge; corion/gnosis multi-issue deep DApps. GRAND TOTAL
+  SESSION 2026-07-09: 3740 -> 3812 CONFIRMED (+72 compile) + silent-miscompile fixes (C3, struct storage ptr, mapping-
+  of-struct push accumulation).

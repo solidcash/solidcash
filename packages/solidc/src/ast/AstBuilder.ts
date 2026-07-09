@@ -1466,10 +1466,11 @@ export default class AstBuilder
         dropped.location = Location.fromCtx(ctx);
         return dropped;
       }
-      // `S storage sLocal = s;` where s is a FLATTENED struct state var: a whole-var alias. Reads of
-      // `sLocal.f` substitute `s` and fold to the flattened leaves like direct accesses.
+      // `S storage sLocal = s;` where s is a struct STATE var (flattened or not): a whole-var alias. Reads and
+      // writes of `sLocal`/`sLocal.f` substitute `s` and route through s's own state paths (flattened leaves,
+      // or a non-flattened partial-struct rebuild) - NOT a local copy, which would silently drop writes to s.
       if (type instanceof StructType && expression instanceof IdentifierNode
-        && this.mappingStructStateVars.has(expression.name)) {
+        && (this.mappingStructStateVars.has(expression.name) || this.stateVarNames.has(expression.name))) {
         this.storageAliases.set(name, { container: expression.name, keys: [], access: expression });
         const dropped = new BlockNode([]);
         dropped.location = Location.fromCtx(ctx);
@@ -3030,6 +3031,18 @@ export default class AstBuilder
         segs = segs.slice(1);
       }
     }
+    // Whole-var storage alias to a NON-flattened struct STATE var (`S storage sL = s; sL.f = v` / `sL = ..`):
+    // substitute the container so the write routes through s's own state paths - matching the direct bare form,
+    // NOT a local copy that would silently drop the write. A FLATTENED struct alias uses a different write
+    // path (leaf routing) not covered here, so it stays a clean reject (see mappingStructStateVars exclusion).
+    if (!isThis) {
+      const alias = this.storageAliases.get(rawName);
+      if (alias && alias.keys.length === 0 && this.stateVarNames.has(alias.container)
+        && !this.mappingStructStateVars.has(alias.container)) {
+        rawName = alias.container;
+      }
+    }
+
     const members = segs.filter((s) => s.member !== undefined).map((s) => s.member!);
     const keyFns = segs.filter((s) => s.key !== undefined).map((s) => s.key!);
     const hasMember = members.length > 0;
@@ -3506,11 +3519,18 @@ export default class AstBuilder
   // struct-rebuild path as `base.f1..fn = <default>`. base is a local or state struct variable.
   visitDeleteMember(ctx: any): StatementNode {
     const baseIdent = ctx.Identifier_list()[0];
-    const rawName = baseIdent.getText();
+    let rawName = baseIdent.getText();
     const nameLoc = Location.fromToken(baseIdent.symbol);
     const members: string[] = ctx.Identifier_list().slice(1).map((id: { getText(): string }) => id.getText());
     const loc = Location.fromCtx(ctx);
-    const isThis = ctx.getText().startsWith('deletethis.');
+    let isThis = ctx.getText().startsWith('deletethis.');
+    // `delete x.f` where x is a whole-var storage alias to a NON-flattened struct state var: route to the
+    // container (matches the field-write substitution in buildLvalueAssign - the alias is not a local copy).
+    const alias = this.storageAliases.get(rawName);
+    if (!isThis && alias && alias.keys.length === 0 && this.stateVarNames.has(alias.container)
+      && !this.mappingStructStateVars.has(alias.container)) {
+      rawName = alias.container;
+    }
     const rebuilt = this.buildStructFieldRebuild(rawName, nameLoc, members, isThis, loc,
       (_chainRead, fieldType) => createDefaultValueExpression(fieldType, loc));
     if (rebuilt) return rebuilt;

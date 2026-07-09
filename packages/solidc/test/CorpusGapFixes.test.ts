@@ -1298,3 +1298,13 @@ describe('crash-bucket triage round 2 (internal errors -> clean diagnostics)', (
     expect(() => compileString(src, { solidityImportCompat: true })).toThrow(/Method calls are only supported/);
   });
 });
+
+describe('struct storage pointer to a state variable aliases (VM in solidcash/StructStoragePointer.test.ts)', () => {
+  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  const P = 'contract C { struct S { uint x; uint u; } S s;';
+  it('accepts field write / whole assign / delete through a non-flattened struct storage pointer', () => {
+    expect(cc(`${P} function f() external { S storage sL = s; sL.u = 5; require(true); } }`)).toBe('C');
+    expect(cc(`${P} S s2; function f() external { S storage sL = s; sL = s2; require(true); } }`)).toBe('C');
+    expect(cc(`${P} function f() external { S storage sL = s; delete sL.u; require(true); } }`)).toBe('C');
+  });
+});

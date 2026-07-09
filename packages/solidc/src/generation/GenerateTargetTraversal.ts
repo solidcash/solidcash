@@ -7623,12 +7623,22 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * Stack before: [encoded_blob]
    * Stack after: [remainder_after_field]
    */
+  // Guards emitPushdataSkip against a self/mutually recursive struct type: skipping its encoding would recurse
+  // forever (struct -> array field -> scan element -> same struct). Such a type has no finite inline encoding on
+  // BCH's fixed-layout state, so reject cleanly instead of overflowing the stack.
+  private pushdataSkipStructs: Set<StructType> = new Set();
+
   private emitPushdataSkip(type: Type, locationData: SingleLocationData): void {
     // StructType: skip each field individually
     if (type instanceof StructType) {
+      if (this.pushdataSkipStructs.has(type)) {
+        throw new Error('recursive struct types are not supported (no finite inline encoding on BCH)');
+      }
+      this.pushdataSkipStructs.add(type);
       for (const field of type.fields) {
         this.emitPushdataSkip(field.type, locationData);
       }
+      this.pushdataSkipStructs.delete(type);
       return;
     }
 

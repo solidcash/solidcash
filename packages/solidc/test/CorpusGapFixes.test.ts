@@ -915,6 +915,20 @@ describe('delete on a bytes element (delete data[i] -> zero byte)', () => {
   });
 });
 
+describe('recursive struct types reject cleanly (no compiler stack overflow)', () => {
+  it('rejects a self-referential struct value encoding with a clear error, not a crash', () => {
+    // struct that reaches itself through a dynamic array of itself: its inline encoding is infinite on BCH.
+    const src = 'contract C { struct R { R[] vals; } '
+      + 'function f() public pure { R[1] memory v = [ R(new R[](2)) ]; require(v[0].vals.length == 2); } }';
+    expect(() => compileString(src, { solidityImportCompat: true }))
+      .toThrow(/recursive struct types are not supported/);
+  });
+  it('a non-recursive struct with a dynamic array field still compiles', () => {
+    expect(compileString('contract C { struct S { uint x; uint[] a; } S s; function f() external view { require(s.x == 0); } }',
+      { solidityImportCompat: true, forceStateful: true }).contractName).toBe('C');
+  });
+});
+
 describe('nested write to a local-memory struct multi-D array field (s.a[i][j] = v)', () => {
   const cc = (src: string): string => compileString(src,
     { solidityImportCompat: true, forceStateful: true, chunkedArrays: true }).contractName;

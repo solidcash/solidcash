@@ -886,6 +886,17 @@ LOCAL-COPY write, not a misclassification). Found + fixed the actual bug:
 - SESSION 2026-07-09 GRAND TOTAL: 3740 -> 3793 CONFIRMED (+53 compile) + multiple SILENT-MISCOMPILE fixes
   (struct storage pointer, and every bounded gap), 10 feature/fix commits + docs, 0 regressions throughout.
 
+## Session 2026-07-09 round 2 cont.6 (tasklist: paren-call target): 3797 -> 3804 CONFIRMED (+7, 0 reg)
+- 5e36b05b **parenthesised simple call target (foo)()/(L.f)()/(blockhash)(n) (+7)**: 2 functionCall grammar
+  alts unwrap a SIMPLE parenthesised callee to the same node (Identifier_list+expressionList identical, no
+  builder change). Non-simple ((b?f:g)(), (get_ptr(x))(), x()()) = fn-pointer, unmatched. +7 not +3 (bench
+  found (h)(42)/(x.f)() forms in smtChecker functions_identity_as_tuple / nested_tuple too). 0 regressions.
+- TASKLIST: all 3 open tasks (T2.4 fn-typed, T2.5 push, T3 tier-3) WORKED - banked paren-call(+7)+const-dim(+4);
+  cores DEFERRED as hard (fn-pointers, nested chunk-backed push, dynamic/nested-array copies, deploy-fold P4,
+  contract-typed state) or FUNDAMENTAL (recursive self-mappings/arrays, dynamic-array-as-mapping-value, Yul).
+- **SESSION 2026-07-09 GRAND TOTAL: 3740 -> 3804 CONFIRMED (+64 compile)** + silent-miscompile fixes (C3 super
+  direction, struct storage pointer aliasing) the compile-bench can't measure. ~12 feature/fix commits, 0 regressions.
+
 ## Session 2026-07-09 round 2 cont.5 (tasklist: const-dim arrays): 3793 -> 3797 CONFIRMED (+4, 0 reg)
 - 40a16f74 **parenthesised/arithmetic constant array dimensions (+4)**: resolveArrayBound already evaluates
   the dimension expr (visitParenthesised unwraps), but the constant PRE-SCAN only recorded plain-literal inits

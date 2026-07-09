@@ -723,3 +723,43 @@ TRIAGE CLOSURES:
 STILL OUT: skip_dynamic_types_for_structs (getter synthesis for flattened structs + tuple-from-self-call =
 double wall); recursive self-mappings; struct ctor values in entry writes (`m[k] = S(...)` - extend the
 decompose with per-arg values if corpus demands).
+
+## Session 2026-07-09 (baseline re-confirm + next-walls survey, 3740/4876 STABLE)
+Clean full rerun: 3740 OK / 1136 FAIL / 2190 negative-skipped (895 over-accepted, diagnostic) / 277
+multifile. ZERO regressions, zero drift vs 2026-07-08f. Failure census: parse 342, Yul 168 (fundamental),
+smtCheckerTests 241 / syntaxTests 338 by dir. Ranked walls (samples + counts from results.json):
+- **BUG: C3 linearization direction (11)** - `contract Derived is Base, Base1` (Base1 is Base) rejected
+  "cannot compute linearization" but this IS valid solc order (most-base FIRST; the C3 merge must consume
+  the REVERSED parent list). Python-style C3 w/o reversal fails exactly this. Incl. real DAO.sol.
+  pass_dynamic_arguments_to_the_base_base.sol is the minimal repro. Related: 10x
+  UndefinedParentInvocationError (ctor init chains naming grandparents) may share the hierarchy walk.
+- **CRASH: __internal__redeemPushSize not on stack (13, one root cause)** - self-external `this.g(m)` with
+  fixed-array memory arg (abicoder calldataDecoding cluster), crash inside the internal-call inline pass.
+- **Tuple-LHS holes (~30)** - `(x.executed,) = a.call{...}()` trailing comma (unlocks all 5 MultiSigWallet
+  real contracts incl. factories-by-import), `(m[0], , m[2]) = (1,3,4)` skipped components w/ expr targets,
+  bare tuple statements `(abi.encode, 2);`, corion `(bool a, bool b, uint c) = f()` decl destructure w/
+  delete-on-nested-mapping-path mixed in (9 corion files).
+- **Fn-typed values beyond identifiers (~35)** - `s[0]()` / `arr[m]()` calls on array elements,
+  `function()[]` array types, `.address`/`.selector` on fn values, struct fields holding external fns
+  (= the stored/passed fn-ptrs open item in function_pointers.md).
+- **push nested receivers + push-as-lvalue (24)** - `data[2].d.push()`, `tree.children[0].children.push()`,
+  `c.push().push() = 2` (15x "Unsupported .push receiver" + 9x parse on `.push` LHS).
+- **Soft keywords + literal lexing (~20 cheap grammar)** - `error`/`transient`/`leave`/`fallback`/
+  `receive`/`require` as identifiers; `uint7`/`fixed1x01` as identifiers; underscore separators in
+  hex/decimal literals (3-4 files).
+- **gnosis contract-typed cluster (17 + OptimizorClub)** - `Token[] outcomeTokens` state arrays with
+  element method calls `outcomeTokens[i].balanceOf(..)` (array-element external calls exist for the cast
+  form; typed-state-array sugar missing), named-arg calls `this.foo({c:1})`.
+- **extcall target pinning (19)** - targets not ctor/fn params (hardcoded/derived addresses); sound
+  redesign = state/constant-pinned targets (hardcoded_address_mocks memory).
+- **m[k] = S({named}) ctor-value entry writes + `m = m2` mapping-local reassign (~13 undef-m)** - the
+  noted decompose extension.
+- **StateAssign nested-array copies (16)** - `a = d` nested `uint[][]`, different-base copies, chained
+  `data2[8] = data2[9] = v` on state elements.
+- **NonCompileTime const folding (17)** - `bytes4 constant s = B.g.selector`, contract-typed constants
+  `Identity constant i = Identity(address(0x4))`, abi.encode in const init.
+- **DeployThenCall P4 (14)** - control flow + mapping entries in deploy-folds (known open).
+- **Memory nested collections (18 UndefinedCollection)** - `z[170].b[99]`, `delete x[3][2]`, `s.a[0][1]++`
+  on memory struct/2d-array locals.
+FUNDAMENTAL/SKIP: Yul 168; experimental `type word = __builtin(..)` stubs; ASTJSON/lsp/natspec harness
+files; `layout at` storage-layout specifiers (EVM slot semantics).

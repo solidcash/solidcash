@@ -1212,3 +1212,25 @@ describe('parenthesised single-variable declaration (solc one-element tuple decl
     expect(cc('contract C { function f() external { int a; (a) = 5; require(a == 5); } }')).toBe('C');
   });
 });
+
+describe('soft keywords as declaration and variable names', () => {
+  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  const ok = (src: string): void => { expect(() => compileString(src, { solidityImportCompat: true })).not.toThrow(); };
+  it('accepts contract/struct/enum/type/event named with a soft keyword', () => {
+    ok('contract transient { function f() external pure { require(true); } }');
+    ok('struct transient { uint layout; } contract C { function f() external pure { require(true); } }');
+    ok('enum error { layout, at } contract C { function f() external pure { require(true); } }');
+    ok('type error is int; contract C { function f() external pure { require(true); } }');
+  });
+  it('accepts a state/local variable named with a soft keyword', () => {
+    expect(cc('contract C { uint leave = 1; function f() external { require(leave == 1); } }')).toBe('C');
+    expect(cc('contract C { function f() external { uint leave = 1; require(leave == 1); } }')).toBe('C');
+  });
+  it('accepts an error named with a soft keyword and reverting through it', () => {
+    ok('error error(uint a); contract C { function f() external pure { revert error(2); } }');
+  });
+  it('still parses require/revert statements and the transient data location', () => {
+    expect(cc('contract C { uint transient t; function f(int x) external { t = 1; require(x > 0 && t == 1); } }')).toBe('C');
+    expect(cc('contract C { error E(); function f(bool b) external { if (b) revert E(); require(!b); } }')).toBe('C');
+  });
+});

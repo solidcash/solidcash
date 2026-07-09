@@ -48,6 +48,7 @@ userDefinableOperator
 anyIdentifier
     : Identifier
     | 'deploy' | 'delegate' | 'upgrade' | 'selfdestruct' | 'unsafe' | 'packed' | 'entries' | 'error' | 'global' | 'revert'
+    | 'transient' | 'leave'
     | CryptoType | BchUnit
     ;
 
@@ -105,7 +106,7 @@ libraryDefinition
     ;
 
 contractDefinition
-    : 'abstract'? 'contract' Identifier parameterList? ('is' inheritanceSpecifier (',' inheritanceSpecifier)*)? '{' (enumDefinition | structDefinition | typeDefinition | eventDefinition | errorDefinition | constantDefinition | usingForDirective | stateVariableDeclaration | modifierDefinition | constructorDefinition | functionDefinition | abstractFunctionDefinition | fallbackDefinition | receiveDefinition)* '}'
+    : 'abstract'? 'contract' anyIdentifier parameterList? ('is' inheritanceSpecifier (',' inheritanceSpecifier)*)? '{' (enumDefinition | structDefinition | typeDefinition | eventDefinition | errorDefinition | constantDefinition | usingForDirective | stateVariableDeclaration | modifierDefinition | constructorDefinition | functionDefinition | abstractFunctionDefinition | fallbackDefinition | receiveDefinition)* '}'
     ;
 
 // A base contract in the inheritance list, optionally with constructor args: `is X("a"), Y`.
@@ -118,7 +119,7 @@ abstractFunctionDefinition
     ;
 
 eventDefinition
-    : 'event' Identifier '(' (eventParameter (',' eventParameter)* ','?)? ')' 'anonymous'? ';'
+    : 'event' anyIdentifier '(' (eventParameter (',' eventParameter)* ','?)? ')' 'anonymous'? ';'
     ;
 
 eventParameter
@@ -126,7 +127,7 @@ eventParameter
     ;
 
 errorDefinition
-    : 'error' Identifier '(' (errorParameter (',' errorParameter)* ','?)? ')' ';'
+    : 'error' anyIdentifier '(' (errorParameter (',' errorParameter)* ','?)? ')' ';'
     ;
 
 errorParameter
@@ -135,7 +136,7 @@ errorParameter
     ;
 
 structDefinition
-    : 'struct' Identifier '{' structField+ '}'
+    : 'struct' anyIdentifier '{' structField+ '}'
     ;
 
 structField
@@ -143,19 +144,19 @@ structField
     ;
 
 enumDefinition
-    : 'enum' Identifier '{' enumMember (',' enumMember)* ','? '}'
+    : 'enum' anyIdentifier '{' enumMember (',' enumMember)* ','? '}'
     ;
 
 enumMember
-    : Identifier ('=' NumberLiteral)?
+    : anyIdentifier ('=' NumberLiteral)?
     ;
 
 typeDefinition
-    : 'type' Identifier 'is' typeName ';'
+    : 'type' anyIdentifier 'is' typeName ';'
     ;
 
 constantDefinition
-    : typeName 'constant' Identifier '=' expression ';'
+    : typeName 'constant' anyIdentifier '=' expression ';'
     ;
 
 constructorDefinition
@@ -189,13 +190,13 @@ parentInvocation
     ;
 
 stateVariableDeclaration
-    : stateVariableVisibility? typeName (modifier | overrideSpecifier)* Identifier ('=' expression)? ';'
+    : stateVariableVisibility? typeName (modifier | overrideSpecifier)* anyIdentifier ('=' expression)? ';'
     // modifiers may appear on either side of the visibility, so `uint constant public X` (as well as
     // `uint public constant X`) parses - Solidity allows any order. `override` (a public state var
     // overriding a base getter) is accepted and ignored: EVM inheritance is a no-op in SolidCash.
-    | typeName (modifier | overrideSpecifier)* stateVariableVisibility (modifier | overrideSpecifier)* Identifier ('=' expression)? ';'
-    | stateVariableVisibility? mappingType collectionModifier* Identifier ';'
-    | stateVariableVisibility? arrayType collectionModifier* Identifier ('=' expression)? ';'
+    | typeName (modifier | overrideSpecifier)* stateVariableVisibility (modifier | overrideSpecifier)* anyIdentifier ('=' expression)? ';'
+    | stateVariableVisibility? mappingType collectionModifier* anyIdentifier ';'
+    | stateVariableVisibility? arrayType collectionModifier* anyIdentifier ('=' expression)? ';'
     ;
 
 collectionModifier
@@ -597,8 +598,8 @@ requireMessage
     ;
 
 revertStatement
-    : 'revert' Identifier ('.' Identifier)? '(' '{' (namedArg (',' namedArg)* ','?)? '}' ')' ';'
-    | 'revert' Identifier ('.' Identifier)? expressionList ';'
+    : 'revert' anyIdentifier ('.' Identifier)? '(' '{' (namedArg (',' namedArg)* ','?)? '}' ')' ';'
+    | 'revert' anyIdentifier ('.' Identifier)? expressionList ';'
     | 'revert' '(' StringLiteral ')' ';'
     | 'revert' '(' ')' ';'
     ;

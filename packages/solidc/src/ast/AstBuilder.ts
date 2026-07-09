@@ -531,7 +531,7 @@ export default class AstBuilder
 
     // Collect contract + interface names before visiting bodies, so a namespaced type access inside a body
     // (`C.T.unwrap`, `I.Enum.Member`) can strip the qualifier to the bare type.
-    for (const cc of contractCtxs) this.contractInterfaceNames.add(cc.Identifier().getText());
+    for (const cc of contractCtxs) this.contractInterfaceNames.add(cc.anyIdentifier().getText());
     for (const idef of interfaceDefinitions) this.contractInterfaceNames.add(idef.name);
 
     // No contract definition (library-only, or interface/type-only file): return a definitions-only node,
@@ -707,7 +707,7 @@ export default class AstBuilder
   }
 
   visitContractDefinition(ctx: ContractDefinitionContext): ContractNode {
-    const name = ctx.Identifier().getText();
+    const name = ctx.anyIdentifier().getText();
     // Resolve integer-literal constants up front so a const can be used as an array dimension `T[N]` anywhere
     // in the contract body (state vars, params, locals, struct fields), regardless of declaration order.
     this.scanConstantDimensions(ctx.constantDefinition_list());
@@ -2757,7 +2757,7 @@ export default class AstBuilder
   visitStateVariableDeclaration(
     ctx: StateVariableDeclarationContext,
   ): StateVariableNode | CollectionNode | ConstantDefinitionNode {
-    const name = ctx.Identifier().getText();
+    const name = ctx.anyIdentifier().getText();
 
     if (name.startsWith('__internal__')) {
       throw new StateVariableNameCollisionError(name, Location.fromCtx(ctx));
@@ -3655,7 +3655,7 @@ export default class AstBuilder
     for (const c of ctxs) {
       const text = c.expression().getText().replace(/_/g, '');
       if (/^[0-9]+$/.test(text)) {
-        this.constantIntValues.set(c.Identifier().getText(), parseInt(text, 10));
+        this.constantIntValues.set(c.anyIdentifier().getText(), parseInt(text, 10));
       }
     }
   }
@@ -3667,7 +3667,7 @@ export default class AstBuilder
     for (const c of ctxs) {
       const mods = (c.modifier_list?.() ?? []).map((m: { getText(): string }) => m.getText());
       const expr = c.expression?.();
-      const id = c.Identifier?.();
+      const id = c.anyIdentifier?.();
       if (!mods.includes('constant') || !expr || !id) continue;
       const text = expr.getText().replace(/_/g, '');
       if (/^[0-9]+$/.test(text)) {
@@ -3682,7 +3682,7 @@ export default class AstBuilder
   // so references already handed out observe the filled fields).
   private registerStructDefinitions(ctxList: StructDefinitionContext[], out: StructDefinitionNode[]): void {
     for (const sdCtx of ctxList) {
-      const name = sdCtx.Identifier().getText();
+      const name = sdCtx.anyIdentifier().getText();
       this.structMap.set(name, new StructType(name, []));
     }
     for (const sdCtx of ctxList) {
@@ -3693,7 +3693,7 @@ export default class AstBuilder
   }
 
   visitStructDefinition(ctx: StructDefinitionContext): StructDefinitionNode {
-    const structName = ctx.Identifier().getText();
+    const structName = ctx.anyIdentifier().getText();
     const fields = ctx.structField_list().map((fieldCtx) => ({
       name: fieldCtx.anyIdentifier().getText(),
       // A field may be a plain typeName, an arrayType (`int[]`, `bytes20[3]`, `T[]`), or a mapping (flattened to
@@ -3711,11 +3711,11 @@ export default class AstBuilder
   }
 
   visitEnumDefinition(ctx: EnumDefinitionContext): EnumDefinitionNode {
-    const name = ctx.Identifier().getText();
+    const name = ctx.anyIdentifier().getText();
     const members: { name: string; value: bigint }[] = [];
     let nextValue = 0n;
     for (const memberCtx of ctx.enumMember_list()) {
-      const memberName = memberCtx.Identifier().getText();
+      const memberName = memberCtx.anyIdentifier().getText();
       if (memberCtx.NumberLiteral()) {
         nextValue = BigInt(memberCtx.NumberLiteral().getText());
       }
@@ -3730,7 +3730,7 @@ export default class AstBuilder
   }
 
   visitTypeDefinition(ctx: TypeDefinitionContext): TypeDefinitionNode {
-    const name = ctx.Identifier().getText();
+    const name = ctx.anyIdentifier().getText();
     const underlyingType = this.resolveType(ctx.typeName().getText());
     // Validate that the underlying type is suitable for a UDVT (must be a VM-primitive type). Address is
     // bytes-backed (a locking bytecode), so `type MyAddr is address;` wraps it like any other primitive.
@@ -4305,7 +4305,7 @@ export default class AstBuilder
   }
 
   visitEventDefinition(ctx: EventDefinitionContext): EventDefinitionNode {
-    const eventName = ctx.Identifier().getText();
+    const eventName = ctx.anyIdentifier().getText();
     const parameters = ctx.eventParameter_list().map((paramCtx, i) => {
       const indexed = paramCtx.children?.some((c) => c.getText() === 'indexed') === true;
       const tn = paramCtx.typeName();
@@ -4331,7 +4331,7 @@ export default class AstBuilder
   }
 
   visitErrorDefinition(ctx: ErrorDefinitionContext): ErrorDefinitionNode {
-    const errorName = ctx.Identifier().getText();
+    const errorName = ctx.anyIdentifier().getText();
     const parameters = ctx.errorParameter_list().map((paramCtx, i) => ({
       // The name is optional in Solidity (`error Bad(uint256)`); synthesize one for an unnamed param.
       name: paramCtx.Identifier() ? paramCtx.Identifier().getText() : `__unnamed${i}`,
@@ -4353,11 +4353,11 @@ export default class AstBuilder
 
   visitRevertStatement(ctx: RevertStatementContext): RevertNode {
     let node: RevertNode;
-    const identifiers = ctx.Identifier_list();
-    if (identifiers.length > 0) {
-      // revert CustomError(args) or qualified revert Lib.CustomError(args): the error resolves by its bare
-      // name, so take the last identifier.
-      const errorName = identifiers[identifiers.length - 1].getText();
+    // Grammar: `revert anyIdentifier ('.' Identifier)?`. Qualified `revert Lib.Error(..)` -> trailing Identifier
+    // is the bare error name; unqualified -> the anyIdentifier (which may be a soft keyword like `error`).
+    const anyId = ctx.anyIdentifier();
+    if (anyId) {
+      const errorName = ctx.Identifier() ? ctx.Identifier()!.getText() : anyId.getText();
       if (!ctx.expressionList()) {
         // Named-arg form: revert E({a: x, b: y})
         const namedArgs = ctx.namedArg_list();
@@ -4390,7 +4390,7 @@ export default class AstBuilder
 
   visitConstantDefinition(ctx: ConstantDefinitionContext): ConstantDefinitionNode {
     const type = this.resolveType(ctx.typeName().getText());
-    const name = ctx.Identifier().getText();
+    const name = ctx.anyIdentifier().getText();
     const expression = this.visit(ctx.expression());
     const node = new ConstantDefinitionNode(type, name, expression);
     node.location = Location.fromCtx(ctx);

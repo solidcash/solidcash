@@ -1269,3 +1269,18 @@ describe('crash-bucket triage (internal errors -> clean diagnostics or fixes)', 
     expect(cc('contract C { function f(uint x, uint y) external pure returns (uint) { x |= y; return x; } }')).toBe('C');
   });
 });
+
+describe('whole-struct <-> mapping-entry copies (VM-verified in solidcash/test/e2e/MappingStructCopy.test.ts)', () => {
+  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  const P = 'struct S { bytes b; uint u; } contract C { mapping(uint => S) m; mapping(uint => S) m2; S s;';
+  it('writes a struct constructor into a mapping entry (named and positional)', () => {
+    expect(cc(`${P} function f() external { m[0] = S({b: "x", u: 7}); require(true); } }`)).toBe('C');
+    expect(cc(`${P} function f() external { m[0] = S("x", 7); require(true); } }`)).toBe('C');
+  });
+  it('reads a whole mapping entry into a struct state variable', () => {
+    expect(cc(`${P} function f() external { s = m[0]; require(true); } }`)).toBe('C');
+  });
+  it('copies a whole entry into another mapping entry', () => {
+    expect(cc(`${P} function f() external { m2[0] = m[0]; require(true); } }`)).toBe('C');
+  });
+});

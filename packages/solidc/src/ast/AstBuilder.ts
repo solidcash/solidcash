@@ -3036,6 +3036,19 @@ export default class AstBuilder
     const fieldName = hasMember ? members[0] : undefined;
     const isIncDec = op === '++' || op === '--';
 
+    // Whole assign to a flattened struct STATE var (`s = S(..)` / `s = m[k]` / `s = otherStateStruct`): the var
+    // has no single-value slot, so decompose into per-field state writes `s__f = <value.f>` (mirror of the
+    // whole-entry write). Restricted to a DIRECT state var - a reassigned whole-var storage alias
+    // (`S storage sLocal = s; sLocal = m[k]`) does not lower correctly here, so it is left to fail rather than
+    // miscompile. Falls through (returns null) when the value is not a resolvable whole-struct value.
+    if (!isThis && segs.length === 0 && op === '=' && valueCtx && !this.storageAliases.has(rawName)) {
+      const t = this.mappingStructStateVars.get(rawName);
+      if (t) {
+        const decomposed = this.decomposeStructCtorToStateWrites(rawName, t, valueCtx, loc);
+        if (decomposed) return decomposed;
+      }
+    }
+
     // Bare local scalar `x op= v` / `x++` (no `this.`, no index/member): a plain local assignment. (The old
     // assignmentStatement grammar required an lvPart for the bare-Identifier form, so this fell to assignStatement;
     // left-factored, it now arrives here.) An unqualified name that is actually a state var / collection is
@@ -3052,6 +3065,16 @@ export default class AstBuilder
       const isState = this.bytesStateVarNames.has(rawName);
       return this.desugarBytesElementWrite(
         rawName, keyFns[0], this.visit(valueCtx) as ExpressionNode, loc, isState, op);
+    }
+
+    // Whole-ENTRY write with a struct-CONSTRUCTOR value (`m[k] = S({b:.., a:.., u:..})` / `m[k] = S(b, a, u)`):
+    // decompose into per-field entry writes, each field's value taken from the matching constructor argument
+    // (by name for the `{..}` form, by position otherwise). Mapping fields have no constructor value (skipped).
+    if (!isThis && !isIncDec && !hasMember && keyFns.length > 0 && valueCtx && op === '='
+      && this.mappingStructValueVars.has(rawName)) {
+      const valStruct = this.mappingStructValueVars.get(rawName)!;
+      const decomposed = this.decomposeStructCtorToEntryWrites(rawName, valStruct, keyFns, valueCtx, loc);
+      if (decomposed) return decomposed;
     }
 
     // Whole-ENTRY write of a flattened-value mapping (`m[0] = s;`): decompose into per-field entry writes
@@ -4879,6 +4902,72 @@ export default class AstBuilder
       return this.assembleFlattenedEntryRead(name, lv.segs.map((s) => s.key!), loc);
     }
     return undefined;
+  }
+
+  // Resolve a whole-struct VALUE source for a flattened struct target of type `t`: a struct constructor
+  // `S({..})` / `S(..)`, or a whole read (`m[k]` / a flattened state-struct var) assembled into the same
+  // constructor shape. Returns the constructor node (its args, in field order for the positional/assembled
+  // forms, or named via fieldNames) or undefined when it is neither (leave the caller's other paths to handle).
+  private resolveWholeStructValue(
+    valueCtx: ExpressionContext, t: StructType, loc: Location,
+  ): FunctionCallNode | undefined {
+    if (t.fields.some((f) => f.type instanceof StructType && this.structNeedsFieldFlattening(f.type))) {
+      return undefined; // nested-flattened struct: fields do not decompose one level
+    }
+    const direct = this.visit(valueCtx) as ExpressionNode;
+    if (direct instanceof FunctionCallNode && direct.identifier.name === t.name) return direct;
+    const assembled = this.maybeAssembleFlattenedRead(valueCtx, loc);
+    if (assembled instanceof FunctionCallNode && assembled.identifier.name === t.name) return assembled;
+    return undefined;
+  }
+
+  // The constructor argument for field `fname` (index `i`): by name for the `S({..})` form, else positional.
+  private structCtorArg(ctor: FunctionCallNode, fname: string, i: number): ExpressionNode | undefined {
+    if (ctor.fieldNames) {
+      const idx = ctor.fieldNames.indexOf(fname);
+      return idx >= 0 ? ctor.parameters[idx] : undefined;
+    }
+    return ctor.parameters[i];
+  }
+
+  // `m[keys] = <whole struct value>`: per-field entry writes `m__f[keys] = <value.f>` (mapping fields skipped).
+  private decomposeStructCtorToEntryWrites(
+    mapName: string, t: StructType, keyFns: Array<() => ExpressionNode>, valueCtx: ExpressionContext, loc: Location,
+  ): Node | undefined {
+    const ctor = this.resolveWholeStructValue(valueCtx, t, loc);
+    if (!ctor) return undefined;
+    const stmts: StatementNode[] = [];
+    t.fields.forEach((f, i) => {
+      if (f.type instanceof MappingType) return;
+      const value = this.structCtorArg(ctor, f.name, i);
+      if (!value) return;
+      const assign = new MappingAssignNode(`${mapName}__${f.name}`, keyFns.map((k) => k()), value);
+      assign.location = loc;
+      stmts.push(assign);
+    });
+    const block = new BlockNode(stmts);
+    block.location = loc;
+    return block;
+  }
+
+  // `s = <whole struct value>` for a flattened struct STATE var: per-field state writes `s__f = <value.f>`.
+  private decomposeStructCtorToStateWrites(
+    varName: string, t: StructType, valueCtx: ExpressionContext, loc: Location,
+  ): Node | undefined {
+    const ctor = this.resolveWholeStructValue(valueCtx, t, loc);
+    if (!ctor) return undefined;
+    const stmts: StatementNode[] = [];
+    t.fields.forEach((f, i) => {
+      if (f.type instanceof MappingType) return;
+      const value = this.structCtorArg(ctor, f.name, i);
+      if (!value) return;
+      const assign = new StateAssignNode(`${varName}__${f.name}`, value);
+      assign.location = loc;
+      stmts.push(assign);
+    });
+    const block = new BlockNode(stmts);
+    block.location = loc;
+    return block;
   }
 
   // All `.push` statement forms. Single pushes keep their original construction; chained forms desugar via

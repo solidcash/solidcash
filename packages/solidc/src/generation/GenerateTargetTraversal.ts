@@ -11056,14 +11056,23 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // B's master self-pins its category+capability (Stage 1), so a matching address means the
       // co-spent UTXO is the genuine master holding genuine state - no caller-side category check.
       this.emit(Op.OP_UTXOBYTECODE, locationData);  // [B_master_inputIdx, B_master_bytecode]
+      // Source the EXPECTED address (a value the caller cannot choose - see docs/extcall-target-pinning.md):
+      //   - a param / synthesized __extaddr_ state-read local -> PICK it off the stack;
+      //   - a code-baked address literal -> push the constant bytes (un-satisfiable for a non-locking-bytecode
+      //     value -> fails closed; never a caller input).
+      // No silent fall-through: any other target shape still throws (conservative - the collect phase records
+      // addressParam/addressLiteral ONLY for the recognised sound forms).
       const addrName = slot.addressIsMsgSender ? msgSenderTemp! : slot.addressParam;
-      if (!addrName) {
+      if (addrName) {
+        // +2 for the 2 untracked values on the real stack: B_master_bytecode and B_master_inputIdx
+        const addrParamIdx = this.getStackIndex(addrName);
+        this.emit(encodeInt(BigInt(addrParamIdx + 2)), locationData);
+        this.emit(Op.OP_PICK, locationData);          // [idx, B_master_bytecode, expected_addr]
+      } else if (slot.addressLiteral) {
+        this.emit(hexToBin(slot.addressLiteral), locationData); // [idx, B_master_bytecode, expected_addr]
+      } else {
         throw new Error('external call target address must be a constructor/function parameter');
       }
-      // +2 for the 2 untracked values on the real stack: B_master_bytecode and B_master_inputIdx
-      const addrParamIdx = this.getStackIndex(addrName);
-      this.emit(encodeInt(BigInt(addrParamIdx + 2)), locationData);
-      this.emit(Op.OP_PICK, locationData);          // [idx, B_master_bytecode, expected_addr]
       this.emit(Op.OP_EQUALVERIFY, locationData);   // [idx]
       // Stack: [B_master_inputIdx] (1 untracked)
 

@@ -3284,6 +3284,14 @@ export default class SymbolTableTraversal extends AstTraversal {
       // `IFoo(msg.sender).m()`: the callee is the tx-derived msg.sender input (verified against emitMsgSender).
       const addressIsMsgSender = node.addressExpression instanceof NullaryOpNode
         && node.addressExpression.operator === NullaryOperator.MSG_SENDER;
+      // Address-literal target `IFoo(0x..).m()`: the expected address is a code-baked constant the covenant
+      // pushes (NOT a caller input). A 20-byte ETH literal is not a 35-byte BCH locking bytecode -> the
+      // identity check is un-satisfiable in production (fails closed); a genuine locking-bytecode literal is
+      // callable. Only a real HexLiteralNode qualifies (a codegenError placeholder does not). Conservative:
+      // any unrecognised address shape leaves all sources unset so emitExternalCallVerification still throws.
+      const addressLiteral = node.addressExpression instanceof HexLiteralNode
+        && !node.addressExpression.codegenError
+        ? binToHex(node.addressExpression.value) : undefined;
       // Determine if selector verification is needed: only when the callee interface
       // has >1 callable function AND mode is REGULAR (call/staticcall skip selectors)
       const callMode = node.callInfo.callMode;
@@ -3365,6 +3373,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         addressParam,
         addressStateVar,
         loopArrayVar,
+        ...(addressLiteral && { addressLiteral }),
         ...(addressIsMsgSender && { addressIsMsgSender: true }),
         slotIndex: -1,
         requiredDataNftIndices: dataNftIndices,

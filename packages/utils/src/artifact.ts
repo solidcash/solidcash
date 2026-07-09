@@ -280,6 +280,7 @@ export interface ExternalCallAbi {
   functionName: string;
   addressParam?: string;
   addressStateVar?: string; // interface-typed state var holding the callee address (read from state, not caller-provided)
+  addressLiteral?: string; // code-baked literal address target IFoo(0x..).m(): covenant pushes this constant (un-seedable)
   loopArrayVar?: string; // state array of callee addresses: every element is co-spent + loop-verified (IFoo(arr[i]).m())
   addressIsMsgSender?: boolean; // target is msg.sender: the SDK co-spends the caller-designated msg.sender contract
   requiredDataNftIndices: number[];

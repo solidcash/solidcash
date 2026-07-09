@@ -1770,6 +1770,10 @@ export interface ExternalCallSlot {
   functionName: string;
   addressParam?: string;
   addressStateVar?: string; // interface-typed state var holding the callee address (read from state)
+  // Code-baked address literal target `IFoo(0x..).m()` (hex): the covenant pushes this constant as the
+  // expected address instead of reading a param/state - caller-independent. A non-locking-bytecode literal
+  // (e.g. a 20-byte ETH address) makes the identity check un-satisfiable (fails closed). Never a caller input.
+  addressLiteral?: string;
   // Set when the call target is an array element `IFoo(arr[i]).m()`: the state array (of addresses) whose
   // every element is co-spent + verified as a callee in a loop (the source `for` loop is left as harmless
   // iteration; the epilogue reads the array and loop-verifies callee[base+i].master.LBC == arr[i]).

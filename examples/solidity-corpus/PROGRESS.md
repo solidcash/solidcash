@@ -885,3 +885,11 @@ LOCAL-COPY write, not a misclassification). Found + fixed the actual bug:
   0 regressions / 966 mapping-struct OK files, solidc 1884 green. THIS is the correctness win the bench can't see.
 - SESSION 2026-07-09 GRAND TOTAL: 3740 -> 3793 CONFIRMED (+53 compile) + multiple SILENT-MISCOMPILE fixes
   (struct storage pointer, and every bounded gap), 10 feature/fix commits + docs, 0 regressions throughout.
+
+## Session 2026-07-09 round 2 cont.5 (tasklist: const-dim arrays): 3793 -> 3797 CONFIRMED (+4, 0 reg)
+- 40a16f74 **parenthesised/arithmetic constant array dimensions (+4)**: resolveArrayBound already evaluates
+  the dimension expr (visitParenthesised unwraps), but the constant PRE-SCAN only recorded plain-literal inits
+  (/^[0-9]+$/). Now evaluates each constant's init via evalConstIntNode to a fixpoint (order-independent),
+  gated to int-typed constants (a bytes/bool const whose value looks like an int stays out). Unblocks
+  parentheses/unary_fine/rounding/can_be_recursive_constant; erc7201-dims stay rejected (EVM-specific).
+  0 regressions / 777 OK const+array files. SESSION TOTAL: 3740 -> 3797 (+57 compile) + silent-miscompile fixes.

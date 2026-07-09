@@ -3018,7 +3018,7 @@ export default class AstBuilder
   // expression (extractLvalue). The per-kind flat lists (members/keyFns) and interleaved segs are derived here.
   private buildLvalueAssign(
     rawName: string, isThis: boolean, nameLoc: Location, segs: LvSeg[],
-    op: string, valueCtx: ExpressionContext | undefined, loc: Location,
+    op: string, valueCtx: ExpressionContext | undefined, loc: Location, valueNode?: ExpressionNode,
   ): StatementNode {
     // Recursively-flattened struct state: collapse leading members that descend through flattened struct
     // fields into the name (`str.nstr.nestedValue` -> rawName `str__nstr`, member `nestedValue`), so the
@@ -3147,7 +3147,8 @@ export default class AstBuilder
           fa.location = loc;
           return fa;
         };
-        const value = op === '=' ? this.visit(valueCtx!) as ExpressionNode : this.compoundRhs(read(), op, valueCtx, loc);
+        const value = op === '=' ? (valueNode ?? this.visit(valueCtx!) as ExpressionNode)
+          : this.compoundRhs(read(), op, valueCtx, loc);
         const assign = trailing.length === 0
           ? new MappingAssignNode(flatName, keys(), value)
           : new MappingFieldAssignNode(flatName, keys(), trailing[0], value);
@@ -3169,7 +3170,7 @@ export default class AstBuilder
           const vf = this.structFromType(field.type.valueType)?.fields.find((f) => f.name === members[1]);
           if (vf && !(vf.type instanceof MappingType) && !(vf.type instanceof ArrayType)) {
             const value = op === '='
-              ? this.visit(valueCtx!) as ExpressionNode
+              ? (valueNode ?? this.visit(valueCtx!) as ExpressionNode)
               : this.compoundRhs((() => {
                 const acc = new MappingAccessNode(flatName, flatKeys());
                 acc.location = nameLoc;
@@ -3184,7 +3185,7 @@ export default class AstBuilder
         }
         if (members.length === 1) {
           const value = op === '='
-            ? this.visit(valueCtx!) as ExpressionNode
+            ? (valueNode ?? this.visit(valueCtx!) as ExpressionNode)
             : this.compoundRhs((() => {
               const m = new MappingAccessNode(flatName, flatKeys());
               m.location = nameLoc;
@@ -3199,7 +3200,7 @@ export default class AstBuilder
         const flatName = `${rawName}__${fieldName}`;
         const key = (): ExpressionNode => keyFns[0]();
         const value = op === '='
-          ? this.visit(valueCtx!) as ExpressionNode
+          ? (valueNode ?? this.visit(valueCtx!) as ExpressionNode)
           : this.compoundRhs((() => {
             const a = new ArrayAccessNode(new IdentifierNode(flatName), key());
             a.location = nameLoc;
@@ -3228,7 +3229,7 @@ export default class AstBuilder
         && !(field.type instanceof StructType && this.structNeedsFieldFlattening(field.type))) {
         const flatName = `${rawName}__${fieldName}`;
         const value = op === '='
-          ? this.visit(valueCtx!) as ExpressionNode
+          ? (valueNode ?? this.visit(valueCtx!) as ExpressionNode)
           : this.compoundRhs((() => {
             const a = new StateAccessNode(flatName);
             a.location = nameLoc;
@@ -3247,7 +3248,7 @@ export default class AstBuilder
       const field = this.localStructTypes.get(rawName)!.fields.find((f) => f.name === fieldName);
       if (field && field.type instanceof ArrayType) {
         return this.buildLocalStructArrayFieldWrite(rawName, fieldName, field.type,
-          () => keyFns[0](), op, valueCtx, loc);
+          () => keyFns[0](), op, valueCtx, loc, valueNode);
       }
     }
 
@@ -3268,7 +3269,7 @@ export default class AstBuilder
         decl.location = loc;
         this.localStructTypes.set(tmpName, structT); // so the array-field write helper resolves the temp's type
         const inner = this.buildLocalStructArrayFieldWrite(tmpName, fieldName, field.type,
-          () => keyFns[0](), op, valueCtx, loc);
+          () => keyFns[0](), op, valueCtx, loc, valueNode);
         const back = new StateAssignNode(rawName, idAt(tmpName));
         back.location = loc;
         const block = new BlockNode([decl, ...(inner.statements ?? []), back]);
@@ -3295,7 +3296,7 @@ export default class AstBuilder
         decl.location = loc;
         this.localStructTypes.set(tmpName, structT); // so the array-field write helper resolves the temp's type
         const inner = this.buildLocalStructArrayFieldWrite(tmpName, fieldName, field.type,
-          () => keyFns[1](), op, valueCtx, loc);
+          () => keyFns[1](), op, valueCtx, loc, valueNode);
         const back = new MappingAssignNode(rawName, [mapKey()], idAt(tmpName));
         back.location = loc;
         const block = new BlockNode([decl, ...(inner.statements ?? []), back]);
@@ -3322,7 +3323,7 @@ export default class AstBuilder
         decl.location = loc;
         this.localStructTypes.set(tmpName, structT); // so the array-field write helper resolves the temp's type
         const inner = this.buildLocalStructArrayFieldWrite(tmpName, fieldName, field.type,
-          () => keyFns[1](), op, valueCtx, loc);
+          () => keyFns[1](), op, valueCtx, loc, valueNode);
         const back = new ArrayAssignNode(rawName, keyFns[0](), idAt(tmpName));
         back.location = loc;
         const block = new BlockNode([decl, ...(inner.statements ?? []), back]);
@@ -3340,7 +3341,7 @@ export default class AstBuilder
     if (keyFns.length === 0) {
       const rebuilt = this.buildStructFieldRebuild(rawName, nameLoc, members, isThis, loc,
         (chainRead) => (op === '='
-          ? this.visit(valueCtx!) as ExpressionNode
+          ? (valueNode ?? this.visit(valueCtx!) as ExpressionNode)
           : this.compoundRhs(chainRead, op, valueCtx, loc)));
       if (rebuilt) return rebuilt;
     }
@@ -3371,7 +3372,7 @@ export default class AstBuilder
         return fa;
       };
       const newValue = op === '='
-        ? this.visit(valueCtx!) as ExpressionNode
+        ? (valueNode ?? this.visit(valueCtx!) as ExpressionNode)
         : this.compoundRhs(fieldRead(fieldName!), op, valueCtx, loc);
       const ctorId = new IdentifierNode(structArrayElem.name);
       ctorId.location = nameLoc;
@@ -3414,7 +3415,7 @@ export default class AstBuilder
     };
 
     const value = op === '='
-      ? this.visit(valueCtx!) as ExpressionNode
+      ? (valueNode ?? this.visit(valueCtx!) as ExpressionNode)
       : this.compoundRhs(buildRead(), op, valueCtx, loc);
 
     let node: StatementNode;
@@ -3598,7 +3599,7 @@ export default class AstBuilder
   // localStructTypes. Returned as a block so flattenStatements splices the three statements at the call scope.
   private buildLocalStructArrayFieldWrite(
     structVarName: string, fieldName: string, arrayFieldType: Type, indexVisit: () => ExpressionNode,
-    op: string, valueCtx: ExpressionContext | undefined, loc: Location,
+    op: string, valueCtx: ExpressionContext | undefined, loc: Location, valueNode?: ExpressionNode,
   ): BlockNode {
     const idAt = (n: string): IdentifierNode => { const i = new IdentifierNode(n); i.location = loc; return i; };
     const tmpName = `__nlv_${this.nestedLvalueCounter++}`;
@@ -3607,7 +3608,7 @@ export default class AstBuilder
     const decl = new VariableDefinitionNode(arrayFieldType, [], tmpName, sField);
     decl.location = loc;
     const value = op === '='
-      ? this.visit(valueCtx!) as ExpressionNode
+      ? (valueNode ?? this.visit(valueCtx!) as ExpressionNode)
       : this.compoundRhs((() => {
         const r = new ArrayAccessNode(idAt(tmpName), indexVisit());
         r.location = loc;
@@ -5122,6 +5123,97 @@ export default class AstBuilder
     return stamp(new BlockNode(stmts));
   }
 
+  // Resolve the array type of an indexed struct-field receiver (`data[i].d`, `s1.arr[i]`) by walking the lvalue
+  // segments from the container's declared type: an index key steps into an array element / mapping value, a
+  // member steps into a struct field. Returns the receiver's ArrayType, or undefined if any step is unresolved.
+  private resolvePushReceiverArrayType(
+    lv: { rawName: string; segs: LvSeg[] },
+  ): ArrayType | undefined {
+    let cur: Type | undefined = this.stateArrayVarTypes.get(lv.rawName)
+      ?? this.stateStructVars.get(lv.rawName)
+      ?? this.localStructTypes.get(lv.rawName)
+      ?? this.mappingStructStateVars.get(lv.rawName) // flattened struct state var (`s1.arr[i]`)
+      ?? this.mappingStateVarTypes.get(lv.rawName);
+    // Flattened mapping-of-struct (`m[k].d`): a leading key steps through the mapping to the value struct.
+    if (!cur && this.mappingStructValueVars.has(lv.rawName)) {
+      cur = new MappingType(PrimitiveType.BIGINT, this.mappingStructValueVars.get(lv.rawName)!);
+    }
+    if (!cur) return undefined;
+    for (const seg of lv.segs) {
+      if (seg.member !== undefined) {
+        if (!(cur instanceof StructType)) return undefined;
+        cur = cur.fields.find((f) => f.name === seg.member)?.type;
+      } else {
+        if (cur instanceof ArrayType) cur = cur.elementType;
+        else if (cur instanceof MappingType) cur = cur.valueType;
+        else return undefined;
+      }
+      if (!cur) return undefined;
+    }
+    return cur instanceof ArrayType ? cur : undefined;
+  }
+
+  // `<receiver>.push(v)` / `.pop()` where <receiver> is an indexed struct-field array (`data[i].d`, `s1.arr[i]`):
+  // read the whole array into a temp, push/pop on the temp, write the whole array back. The read is the visited
+  // receiver expression; the write-back reuses buildLvalueAssign with the temp as the value node (so packed and
+  // non-packed element paths lower correctly). Returns undefined when the receiver type or write-back is unsupported.
+  private buildIndexedFieldArrayPushPop(
+    ctx: ExpressionStatementContext, lhsCtx: ExpressionContext,
+    lv: { rawName: string; isThis: boolean; nameLoc: Location; segs: LvSeg[] }, isPop: boolean,
+  ): StatementNode | undefined {
+    if (lv.isThis) return undefined; // `this.`-qualified indexed field push is not a parsed shape
+    // `m[k].d.push(v)` on a mapping whose value struct has a dynamic array field: the field flattens to the
+    // standalone mapping `m__d`, so emit the native entry append `m__d[k].push(v)`. A read-modify-write would
+    // re-read the stale entry (a mapping entry's write is not visible to a later read in the same tx), so multiple
+    // pushes in one tx would not accumulate. Only the mapping-of-struct receiver needs this; array/struct
+    // receivers accumulate correctly under the whole-array rewrite below.
+    const mappingFieldPush = this.tryMappingStructFieldPush(ctx, lv, isPop);
+    if (mappingFieldPush) return mappingFieldPush;
+    const arrType = this.resolvePushReceiverArrayType(lv);
+    if (!arrType) return undefined;
+    const loc = Location.fromCtx(ctx);
+    const idAt = (n: string): IdentifierNode => { const i = new IdentifierNode(n); i.location = loc; return i; };
+    const tmpName = `__pf_${this.nestedLvalueCounter++}`;
+    const readExpr = this.visit(lhsCtx) as ExpressionNode; // whole-array read of the receiver
+    const decl = new VariableDefinitionNode(arrType, [], tmpName, readExpr);
+    decl.location = loc;
+    let op: StatementNode;
+    if (isPop) {
+      op = this.buildArrayPop(tmpName, false, [], undefined, ctx);
+    } else {
+      const argCtx = ctx.pushArgument();
+      const noArg = argCtx === null;
+      const value = noArg ? this.noArgPushPlaceholder(ctx) : this.visit(argCtx!.expression()) as ExpressionNode;
+      op = this.buildArrayPush(tmpName, false, [], undefined, value, noArg, ctx);
+    }
+    const back = this.buildLvalueAssign(lv.rawName, false, lv.nameLoc, lv.segs, '=', undefined, loc, idAt(tmpName));
+    const block = new BlockNode([decl, op, back]);
+    block.location = loc;
+    return block;
+  }
+
+  // `m[k].d.push(v)` / `.pop()` where m is a mapping-of-struct and d is a dynamic array field of the value struct:
+  // the field flattens to the standalone mapping `m__d`, so route to the native entry append/pop on `m__d[k]`.
+  private tryMappingStructFieldPush(
+    ctx: ExpressionStatementContext, lv: { rawName: string; segs: LvSeg[] }, isPop: boolean,
+  ): StatementNode | undefined {
+    if (lv.segs.length !== 2) return undefined;
+    const keySeg = lv.segs.find((s) => s.key !== undefined);
+    const memSeg = lv.segs.find((s) => s.member !== undefined);
+    if (!keySeg || !memSeg) return undefined;
+    const valStruct = this.mappingStructValueVars.get(lv.rawName);
+    if (!valStruct) return undefined;
+    const field = valStruct.fields.find((f) => f.name === memSeg.member);
+    if (!field || !(field.type instanceof ArrayType)) return undefined;
+    const flatName = `${lv.rawName}__${memSeg.member}`;
+    const keyFns = [keySeg.key!];
+    if (isPop) return this.buildArrayPop(flatName, false, keyFns, undefined, ctx);
+    const argCtx = ctx.pushArgument();
+    const noArg = argCtx === null;
+    const value = noArg ? this.noArgPushPlaceholder(ctx) : this.visit(argCtx!.expression()) as ExpressionNode;
+    return this.buildArrayPush(flatName, false, keyFns, undefined, value, noArg, ctx);
+  }
+
   visitExpressionStatement(ctx: ExpressionStatementContext): StatementNode {
     const lhsCtx = ctx.expression(0);
     // Assignment `lvalue op= value` (left-factored): reconstruct the lvalue segments from the parsed LHS and
@@ -5162,6 +5254,14 @@ export default class AstBuilder
       const members = lv.segs.filter((s) => s.member !== undefined).map((s) => s.member!);
       const keyFns = lv.segs.filter((s) => s.key !== undefined).map((s) => s.key!);
       const member = members.length === 1 && keyFns.length === 0 ? members[0] : undefined;
+      // Indexed struct-field array push/pop (`data[i].d.push(v)`, `s1.arr[i].push()`): a receiver mixing an index
+      // key and a struct field. Struct-array elements / struct fields have no in-place inner-array push, so
+      // read-modify-write via a temp: `T[] __pf = <receiver>; __pf.push(v); <receiver> = __pf;` - reusing the
+      // whole-array read and the whole-array write-back (both already lower). Only when the receiver type resolves.
+      if (members.length === 1 && keyFns.length >= 1 && (ctx.DotPush_list().length > 0 || ctx.DotPop())) {
+        const rmw = this.buildIndexedFieldArrayPushPop(ctx, lhsCtx, lv, !!ctx.DotPop());
+        if (rmw) return rmw;
+      }
       // Only plain (`arr`), single struct-field (`s.xs`), or indexed (`m[k]`) receivers are valid targets - the
       // same shapes the old rules parsed; a mixed/nested chain (`s.a.b`, `s.xs[k]`) was a parse error, keep it so.
       if (members.length > 0 && member === undefined) {

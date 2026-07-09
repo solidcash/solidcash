@@ -163,17 +163,29 @@ export default class DesugarNestedArrayWrite extends AstTraversal {
     return [assign];
   }
 
-  // `delete d[i]` where d is a LOCAL array: parses as a MappingDeleteNode the symbol table rejects (d is not a
-  // state collection). Solidity resets the element to its type default, so rewrite to `d[i] = <default>` (a
-  // working local array-element write). State arrays route to StateArrayDelete before ever reaching here.
+  // `delete d[k0]..[kn]` where d is a LOCAL or nested STATE array: parses as a MappingDeleteNode the symbol
+  // table rejects (d is not a mapping). Solidity resets the element to its type default, so rewrite to
+  // `d[k0]..[kn] = <default>` - a single-index write directly, a nested one via the read-modify-write desugar.
+  // (A single-index STATE array delete routes to StateArrayDelete before ever reaching here.)
   private tryDesugarLocalArrayDelete(node: MappingDeleteNode): StatementNode[] | undefined {
-    if (node.keys.length !== 1) return undefined;
-    const baseType = this.locals.get(node.name);
+    const baseType = this.locals.get(node.name) ?? this.stateArrays.get(node.name);
     if (!(baseType instanceof ArrayType)) return undefined;
-    const def = createDefaultValueExpression(baseType.elementType, node.location!);
-    const assign = new ArrayAssignNode(node.name, cloneNode(node.keys[0]) as ExpressionNode, def);
-    assign.location = node.location;
-    return [assign];
+    // Element type after node.keys.length index levels; bail (report at type-check) if not nested enough.
+    let elemType: Type = baseType;
+    for (let i = 0; i < node.keys.length; i++) {
+      if (!(elemType instanceof ArrayType)) return undefined;
+      elemType = elemType.elementType;
+    }
+    const def = createDefaultValueExpression(elemType, node.location!);
+    if (node.keys.length === 1) {
+      const assign = new ArrayAssignNode(node.name, cloneNode(node.keys[0]) as ExpressionNode, def);
+      assign.location = node.location;
+      return [assign];
+    }
+    // Multi-index `delete d[i][j]` -> `d[i][j] = default` via the nested-array write desugar.
+    const write = new MappingAssignNode(node.name, node.keys.map((k) => cloneNode(k) as ExpressionNode), def);
+    write.location = node.location;
+    return this.tryDesugar(write);
   }
 
   // `b[k0]..[kn] = v` on a local nested array -> read-modify-write statements; undefined if not applicable.

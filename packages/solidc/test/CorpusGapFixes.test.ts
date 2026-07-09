@@ -915,6 +915,41 @@ describe('delete on a bytes element (delete data[i] -> zero byte)', () => {
   });
 });
 
+describe('indexed struct-field array push/pop (data[i].d.push, s1.arr[i].push, m[k].d.push)', () => {
+  const cc = (src: string): string => compileString(src,
+    { solidityImportCompat: true, forceStateful: true, chunkedArrays: true }).contractName;
+  it('compiles push/pop on an index+struct-field receiver across array, struct-field, and mapping bases', () => {
+    expect(cc('contract C { struct S { uint[] d; } S[] data; '
+      + 'function f(uint v) external { data[1].d.push(v); data[0].d.pop(); } }')).toBe('C');
+    expect(cc('contract C { struct S { uint[][] arr; } S s1; '
+      + 'function f(uint v) external { s1.arr[0].push(v); s1.arr[1].pop(); } }')).toBe('C');
+    expect(cc('contract C { struct S { uint[] d; } mapping(uint=>S) m; '
+      + 'function f(uint k,uint v) external { m[k].d.push(v); m[k].d.pop(); } }')).toBe('C');
+  });
+  it('still rejects an unsupported 3-level receiver (member-key-member) as a clean parse error', () => {
+    expect(() => compileString('contract C { struct In { uint[] b; } struct Ou { In[] s; } Ou t; '
+      + 'function f() external { t.s[0].b.push(1); } }', { solidityImportCompat: true }))
+      .toThrow(/Unsupported .push\/.pop\/.delete receiver/);
+  });
+});
+
+describe('delete on a nested array element (delete d[i][j] -> element default)', () => {
+  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  it('compiles a 2D/3D delete on memory and state arrays', () => {
+    expect(cc('contract C { function f() public pure { uint[][] memory x = new uint[][](5); '
+      + 'x[3] = new uint[](3); delete x[3][2]; require(true); } }')).toBe('C');
+    expect(cc('contract C { uint[][] arr; function f() external { delete arr[2][3]; require(true); } }')).toBe('C');
+    expect(cc('contract C { function f() public pure { uint[][][] memory x; delete x[1][2][3]; require(true); } }'))
+      .toBe('C');
+  });
+  it('a memory 2D delete is identical to writing the element default in place', () => {
+    const P = 'contract C { function f() public pure { uint[][] memory x = new uint[][](5); x[3] = new uint[](3); ';
+    const del = compileString(`${P} delete x[3][2]; require(true); } }`, { solidityImportCompat: true });
+    const asg = compileString(`${P} x[3][2] = 0; require(true); } }`, { solidityImportCompat: true });
+    expect(del.bytecode).toBe(asg.bytecode);
+  });
+});
+
 describe('bytesN compared against literal 0 (data[i] == 0)', () => {
   const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
   it('coerces 0 to the zero-filled bytesN in == / !=', () => {

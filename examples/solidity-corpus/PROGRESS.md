@@ -904,3 +904,25 @@ LOCAL-COPY write, not a misclassification). Found + fixed the actual bug:
   gated to int-typed constants (a bytes/bool const whose value looks like an int stays out). Unblocks
   parentheses/unary_fine/rounding/can_be_recursive_constant; erc7201-dims stay rejected (EVM-specific).
   0 regressions / 777 OK const+array files. SESSION TOTAL: 3740 -> 3797 (+57 compile) + silent-miscompile fixes.
+
+## Session 2026-07-09 round 2 cont.7 (tasklist: T2.5 push + T3 2D-delete): 3806 -> 3808 CONFIRMED (+2, 0 reg)
+- **indexed struct-field array push/pop (data[i].d.push, s1.arr[i].push, m[k].d.push/pop) (+1 compile, VM-sound)**:
+  the 14-file "Unsupported .push/.pop/.delete receiver" cluster. AstBuilder buildIndexedFieldArrayPushPop lowers a
+  receiver mixing an index key and a struct field to whole-array read-modify-write (T[] __pf=<recv>; __pf.push(v);
+  <recv>=__pf;), reusing buildLvalueAssign for the write-back via a NEW opt-in valueNode param threaded through the
+  6 flattened-field '=' value sites + buildLocalStructArrayFieldWrite (undefined for all existing calls => byte-identical).
+  resolvePushReceiverArrayType walks segs from the container type (stateArray/stateStruct/localStruct/mappingStructState/
+  mappingStructValue) to type the temp. **mapping-of-struct m[k].d routes to the NATIVE flattened m__d[k] append**
+  (tryMappingStructFieldPush) - a RMW re-reads the STALE entry (a mapping entry's in-tx write is invisible to a later
+  read), so multi-push would NOT accumulate = SILENT MISCOMPILE, caught + fixed + VM double-push test. Only
+  length_1d_struct_array_2d_1 flips in the corpus (+1); the rest bundle 3-level member-key-member (t.s[0].b, write-back
+  itself unsupported) or recursive structs (fundamental) or ++x.push() (correctly rejected). solidcash e2e
+  IndexedFieldArrayPush 4/4 (push+pop x array/struct-field/mapping bases). CORRECTNESS-FIRST: the shapes now match
+  Solidity even where the compile-bench can't score them.
+- **2D/3D nested-array delete (delete d[i][j]) (+1 compile, VM-sound)**: DesugarNestedArrayWrite.tryDesugarLocalArrayDelete
+  extended from 1-key to N-key - walks the element type N levels, builds the type default, single-key -> ArrayAssign,
+  multi-key -> MappingAssign default reused through the nested-array write desugar (local + nested-state arrays). Mappings
+  untouched (not in locals/stateArrays -> stays MappingDelete). solidcash e2e NestedArrayDelete 2/2 (zeroes the element).
+- CorpusGapFixes +4 guards (nested delete compile+bytecode-identical, indexed push/pop, 3-level still-rejected). solidc
+  1895 green, 0 regressions. **SESSION 2026-07-09 GRAND TOTAL: 3740 -> 3808 CONFIRMED (+68 compile)** + silent-miscompile
+  fixes (C3 super direction, struct storage pointer, mapping-of-struct push accumulation) the compile-bench cannot measure.

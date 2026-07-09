@@ -227,6 +227,16 @@ export class UnsupportedInlineAssemblyError extends SolidCashError {
   }
 }
 
+export class MsgDataInSubroutineError extends SolidCashError {
+  constructor(node: Node) {
+    super(
+      node,
+      'msg.data is only available at an entry point; reading it inside an internal subroutine or a '
+      + 'self-external-called function (this.f(...)) is not supported',
+    );
+  }
+}
+
 export class BreakOutsideLoopError extends SolidCashError {
   constructor(node: Node) {
     super(node, '\'break\' statement must be inside a loop');

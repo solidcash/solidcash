@@ -1183,3 +1183,16 @@ describe('bare block statements introduce a nested scope (VM-verified in solidca
       .toThrow(/Redefinition/);
   });
 });
+
+describe('msg.data reachability', () => {
+  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  it('accepts msg.data at an external entry point', () => {
+    expect(cc('contract C { function f() external pure returns (bytes memory) { return msg.data; } }')).toBe('C');
+  });
+  it('rejects msg.data inside a self-external-called function instead of crashing', () => {
+    // this.g(...) lowers g to an internal subroutine where _redeemPushSize / OP_ACTIVEBYTECODE are unavailable.
+    const src = 'contract C { function g(uint256 x) external pure returns (bytes memory) { x; return msg.data; }'
+      + ' function f() external view returns (bytes memory) { return this.g(1); } }';
+    expect(() => cc(src)).toThrow(/msg\.data is only available at an entry point/);
+  });
+});

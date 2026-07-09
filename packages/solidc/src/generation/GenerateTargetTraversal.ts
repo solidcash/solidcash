@@ -168,7 +168,7 @@ import {
 } from './utils.js';
 import { isNumericType } from '../utils.js';
 import { getStackEffect } from '../asmStackEffects.js';
-import { InvalidModifierCombinationError } from '../Errors.js';
+import { InvalidModifierCombinationError, MsgDataInSubroutineError } from '../Errors.js';
 import { analyzeInlineAssembly } from '../semantic/InlineAssemblyDiagnostics.js';
 
 // Upper bound on the element count of a bounded array whose default value is materialized inline. A covenant
@@ -13166,6 +13166,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * Stack after:  [..., msgData]
    */
   private emitMsgData(locationData: SingleLocationData): void {
+    // _redeemPushSize is computed once at contract level (where OP_ACTIVEBYTECODE still returns the full
+    // script) and left on the entry-point stack. Inside an OP_DEFINE subroutine it is out of reach and
+    // OP_ACTIVEBYTECODE would return the subroutine body, so msg.data cannot be reconstructed there.
+    if (!this.stack.includes('__internal__redeemPushSize')) {
+      throw new MsgDataInSubroutineError(this.currentFunction ?? { location: locationData.location } as Node);
+    }
     // Get _redeemPushSize from the stack
     const pushSizeIdx = this.getStackIndex('__internal__redeemPushSize');
     this.emit(encodeInt(BigInt(pushSizeIdx)), locationData);

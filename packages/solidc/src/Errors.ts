@@ -6,6 +6,7 @@ import {
   ParameterNode,
   Node,
   FunctionCallNode,
+  IndirectCallNode,
   BinaryOpNode,
   UnaryOpNode,
   TimeOpNode,
@@ -185,11 +186,12 @@ export class TypeError extends SolidCashError {
 
 export class InvalidParameterTypeError extends TypeError {
   constructor(
-    node: FunctionCallNode | RequireNode | InstantiationNode,
+    node: FunctionCallNode | RequireNode | InstantiationNode | IndirectCallNode,
     actual: Type[],
     expected: Type[],
   ) {
-    const name = node instanceof RequireNode ? 'require' : node.identifier.name;
+    const name = node instanceof RequireNode ? 'require'
+      : node instanceof IndirectCallNode ? '<function pointer>' : node.identifier.name;
     super(
       node, actual, expected,
       `Found parameters (${actual}) in call to function '${name}' where parameters (${expected}) were expected`,

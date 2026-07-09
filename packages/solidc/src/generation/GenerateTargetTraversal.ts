@@ -57,6 +57,7 @@ import {
   BranchNode,
   CastNode,
   FunctionCallNode,
+  IndirectCallNode,
   UnaryOpNode,
   BinaryOpNode,
   BoolLiteralNode,
@@ -3960,6 +3961,25 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.pushToStack('(value)');
     }
 
+    return node;
+  }
+
+  // `<expr>(args)`: evaluate the callee expression to its integer functionId then OP_INVOKE - identical dispatch to
+  // visitIndirectFunctionCall, but the pointer value comes from an arbitrary expression (e.g. `arr[i]()`).
+  visitIndirectCall(node: IndirectCallNode): Node {
+    const locationData = { location: node.location, positionHint: PositionHint.END };
+    const funcType = node.callee.type as FunctionType;
+    // Evaluate arguments in REVERSE order so the first param ends up on top.
+    for (let i = node.parameters.length - 1; i >= 0; i--) {
+      node.parameters[i] = this.visit(node.parameters[i]);
+    }
+    // Push the functionId value on top (the callee evaluates to it), then OP_INVOKE consumes it plus the args.
+    node.callee = this.visit(node.callee) as ExpressionNode;
+    this.emit(Op.OP_INVOKE, locationData);
+    this.popFromStack(node.parameters.length + 1);
+    for (let i = 0; i < funcType.returnTypes.length; i++) {
+      this.pushToStack('(value)');
+    }
     return node;
   }
 

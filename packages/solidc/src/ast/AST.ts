@@ -950,6 +950,22 @@ export class FunctionCallNode extends ExpressionNode {
   }
 }
 
+// `<expr>(args)` where the callee is an arbitrary expression evaluating to a function-pointer value (e.g.
+// `arr[i]()`, `x()()`), not a plain name. Dispatched indirectly: evaluate the callee to its integer functionId
+// then OP_INVOKE (the same mechanism as calling a function-pointer variable).
+export class IndirectCallNode extends ExpressionNode {
+  constructor(
+    public callee: ExpressionNode,
+    public parameters: ExpressionNode[],
+  ) {
+    super();
+  }
+
+  accept<T>(visitor: AstVisitor<T>): T {
+    return visitor.visitIndirectCall(this);
+  }
+}
+
 export class InstantiationNode extends ExpressionNode {
   referencedContract?: ContractNode;
   callOptions?: CallOptions;

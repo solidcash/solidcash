@@ -11,6 +11,7 @@ import {
   BranchNode,
   CastNode,
   FunctionCallNode,
+  IndirectCallNode,
   UnaryOpNode,
   BinaryOpNode,
   BoolLiteralNode,
@@ -292,6 +293,12 @@ export default class AstTraversal extends AstVisitor<Node> {
 
   visitFunctionCall(node: FunctionCallNode): Node {
     node.identifier = this.visit(node.identifier) as IdentifierNode;
+    node.parameters = this.visitList(node.parameters);
+    return node;
+  }
+
+  visitIndirectCall(node: IndirectCallNode): Node {
+    node.callee = this.visit(node.callee) as ExpressionNode;
     node.parameters = this.visitList(node.parameters);
     return node;
   }

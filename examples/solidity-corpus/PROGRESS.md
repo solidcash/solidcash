@@ -964,3 +964,22 @@ LOCAL-COPY write, not a misclassification). Found + fixed the actual bug:
   function pointers/types ~60+ (largest), Yul ~175, recursive structs, local-memory nested collections, deploy-then-call
   non-foldable patterns (BCH can't call a same-tx-deployed contract unless folded), address ordering (unsound on BCH).
   GRAND TOTAL SESSION 2026-07-09: 3740 -> 3814 CONFIRMED (+74 compile) + silent-miscompile fixes.
+
+## Session 2026-07-09 round 2 cont.10 (drill: fn-pointer call from array element): 3814 -> 3818 CONFIRMED (+4, VM-sound)
+- **calling a function pointer from an array element `arr[i]()` / `arr[i](x)` / `s.arr[i]()` (+4, VM-verified)**:
+  the dispatch already worked (calling a fn-ptr VARIABLE `f()` compiles+runs); only the grammar lacked a call on a
+  non-name callee. Root finding: most fn-type SYNTAX already parses (param/local/state/array/struct/mapping-value);
+  the "(" parse cluster is specifically CALLING an indexed fn-ptr. Added a NARROW grammar alt
+  `base=expression '[' index=expression ']' expressionList # IndexedFunctionCall` (NOT a broad `expression
+  expressionList` - that stole this.a(i) getters, (foo)() paren-calls, this.transfer(); reverted after 14 suite
+  failures). New isolated IndirectCallNode(callee, params): AstVisitor abstract + AstTraversal default recursion
+  (34 subclasses inherit, only TypeCheck+codegen override). TypeCheck mirrors the fn-ptr-var indirect branch
+  (callee.type must be FunctionType, result = its returns). Codegen mirrors visitIndirectFunctionCall: eval args
+  reverse, eval callee (pushes the integer functionId), OP_INVOKE. solidcash e2e FunctionPointerArrayCall 2/2
+  (a[i]() dispatches to add1/add2/mul10 by index; wrong expectation reverts = real runtime dispatch). Flips 4 OK
+  (calldata_array_function_types_v2, array_function_pointers, function_memory_array) +1 NEG-accepted
+  (calling_uninitialized_function_through_array - missing solc compile diagnostic but SOUND: uninit ptr=0,
+  OP_INVOKE on unknown id hard-fails = Solidity's runtime revert). Uncovered: chained x()() (needs the broad alt),
+  storage fn-ptr arrays, mapping-value fn-ptr storage (entry[-1], separate gap). solidc 1898 + CorpusGapFixes 187 green.
+  **KEY: the fn-pointer "core" is NOT monolithic - the dispatch primitives exist; parse+wire slices are tractable.**
+  SESSION 2026-07-09 GRAND TOTAL: 3740 -> 3818 CONFIRMED (+78 compile).

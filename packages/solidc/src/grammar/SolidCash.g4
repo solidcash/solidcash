@@ -685,6 +685,7 @@ expression
     | element=expression '.slice' '(' start=expression ',' end=expression ')' # Slice
     | expression '.' Identifier callOptions? '(' '{' (namedArg (',' namedArg)* ','?)? '}' ')' # MethodCallNamed
     | expression '.' Identifier callOptions? expressionList # MethodCall
+    | base=expression '[' index=expression ']' expressionList # IndexedFunctionCall
     | expression memberName # FieldAccess
     | expression op=('++' | '--') # PostfixOp
     | op=('++' | '--') expression # PrefixOp

@@ -915,6 +915,21 @@ describe('delete on a bytes element (delete data[i] -> zero byte)', () => {
   });
 });
 
+describe('calling a function pointer from an array element (arr[i]())', () => {
+  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  it('accepts an indexed function-pointer call, with and without args', () => {
+    expect(cc('contract C { function h() internal pure returns (uint) { return 7; } function g() public pure { '
+      + 'function() internal pure returns (uint)[1] memory a; a[0] = h; require(a[0]() == 7); } }')).toBe('C');
+    expect(cc('contract C { function h(uint v) internal pure returns (uint) { return v; } function g() public pure { '
+      + 'function(uint) internal pure returns (uint)[1] memory a; a[0] = h; require(a[0](5) == 5); } }')).toBe('C');
+  });
+  it('does not disturb ordinary calls, getters, or array access', () => {
+    expect(cc('contract C { uint[] public a; function g() external view { this.a(0); } }')).toBe('C');
+    expect(cc('contract C { function foo() internal pure {} function g() public pure { (foo)(); } }')).toBe('C');
+    expect(cc('contract C { function g(uint[] memory a) public pure { require(a[0] == 0); } }')).toBe('C');
+  });
+});
+
 describe('bytes.concat / string.concat in a constant initializer (compile-time fold)', () => {
   const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
   it('accepts bytes.concat/string.concat over constant refs and literals in a constant', () => {

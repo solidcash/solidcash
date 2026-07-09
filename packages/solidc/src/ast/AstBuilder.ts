@@ -15,6 +15,7 @@ import {
   BranchNode,
   CastNode,
   FunctionCallNode,
+  IndirectCallNode,
   UnaryOpNode,
   BinaryOpNode,
   BoolLiteralNode,
@@ -2255,6 +2256,21 @@ export default class AstBuilder
 
   visitFunctionCallExpression(ctx: FunctionCallExpressionContext): ExpressionNode {
     return this.visit(ctx.functionCall()) as ExpressionNode;
+  }
+
+  // `<base>[i](args)`: call a function pointer stored in an array element (`arr[i]()`, `s[0](x)`). The callee is
+  // the element access `base[i]`; lowered to an indirect OP_INVOKE on its function-pointer value. A plain-name or
+  // `a.b` callee stays a normal functionCall/MethodCall - only an indexed callee reaches here.
+  visitIndexedFunctionCall(ctx: any): ExpressionNode {
+    const base = this.visit(ctx._base) as ExpressionNode;
+    const index = this.visit(ctx._index) as ExpressionNode;
+    const callee = new ArrayAccessNode(base, index);
+    callee.location = Location.fromCtx(ctx);
+    const argCtxs = ctx.expressionList().expression_list();
+    const args = argCtxs.map((e: any) => this.visit(e) as ExpressionNode);
+    const node = new IndirectCallNode(callee, args);
+    node.location = Location.fromCtx(ctx);
+    return node;
   }
 
   visitFunctionCall(ctx: FunctionCallContext): ExpressionNode {

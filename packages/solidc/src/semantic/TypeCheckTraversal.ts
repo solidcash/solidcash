@@ -27,6 +27,7 @@ import {
   BranchNode,
   CastNode,
   FunctionCallNode,
+  IndirectCallNode,
   UnaryOpNode,
   BinaryOpNode,
   IdentifierNode,
@@ -1266,6 +1267,22 @@ export default class TypeCheckTraversal extends AstTraversal {
     return node;
   }
 
+  // `<expr>(args)` where the callee evaluates to a function-pointer value. Mirrors the indirect-call branch of
+  // visitFunctionCall: check args against the callee's signature, result type is its returns.
+  visitIndirectCall(node: IndirectCallNode): Node {
+    node.callee = this.visit(node.callee) as ExpressionNode;
+    node.parameters = this.visitList(node.parameters);
+    const ft = node.callee.type;
+    if (!(ft instanceof FunctionType)) {
+      throw new TypeError(node, node.callee.type ?? PrimitiveType.VOID, new FunctionType([], []));
+    }
+    node.parameters = this.coerceHexArgs(node.parameters, ft.parameterTypes);
+    expectParameters(node, node.parameters.map((p: ExpressionNode) => p.type!), ft.parameterTypes);
+    node.type = ft.returnTypes.length === 1 ? ft.returnTypes[0]
+      : ft.returnTypes.length > 1 ? new TupleType(ft.returnTypes) : PrimitiveType.VOID;
+    return node;
+  }
+
   visitFunctionCall(node: FunctionCallNode): Node {
     node.identifier = this.visit(node.identifier) as IdentifierNode;
     node.parameters = this.visitList(node.parameters);
@@ -2469,7 +2486,7 @@ function expectAssignable(node: AssigningNode, actual?: Type, expected?: Type): 
   }
 }
 
-type NodeWithParameters = FunctionCallNode | RequireNode | InstantiationNode;
+type NodeWithParameters = FunctionCallNode | RequireNode | InstantiationNode | IndirectCallNode;
 function expectParameters(node: NodeWithParameters, actual: Type[], expected: Type[]): void {
   if (!implicitlyCastableSignature(actual, expected)) {
     throw new InvalidParameterTypeError(node, actual, expected);

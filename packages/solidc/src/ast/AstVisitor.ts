@@ -11,6 +11,7 @@ import {
   BranchNode,
   CastNode,
   FunctionCallNode,
+  IndirectCallNode,
   UnaryOpNode,
   BinaryOpNode,
   BoolLiteralNode,
@@ -137,6 +138,7 @@ export default abstract class AstVisitor<T> {
   abstract visitBlock(node: BlockNode): T;
   abstract visitCast(node: CastNode): T;
   abstract visitFunctionCall(node: FunctionCallNode): T;
+  abstract visitIndirectCall(node: IndirectCallNode): T;
   abstract visitInstantiation(node: InstantiationNode): T;
   abstract visitSlice(node: SliceNode): T;
   abstract visitTupleIndexOp(node: TupleIndexOpNode): T;

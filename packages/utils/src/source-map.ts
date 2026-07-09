@@ -33,17 +33,22 @@ export function generateSourceMap(locationData: FullLocationData): string {
   let prevHint = PositionHint.START;
 
   return locationData.map(({ location, positionHint }: SingleLocationData) => {
-    const prevStartLineString = prevStartLine === location.start.line ? '' : String(location.start.line);
-    prevStartLine = location.start.line;
+    // A compiler-generated instruction may carry no source location (like solc's empty source-map entries).
+    // Fall back to the previous mapping's positions so the fields serialise as empty ("same as previous")
+    // rather than crashing on a missing location.
+    const start = location?.start ?? { line: prevStartLine, column: prevStartColumn };
+    const end = location?.end ?? { line: prevEndLine, column: prevEndColumn };
+    const prevStartLineString = prevStartLine === start.line ? '' : String(start.line);
+    prevStartLine = start.line;
 
-    const prevStartColumnString = prevStartColumn === location.start.column ? '' : String(location.start.column);
-    prevStartColumn = location.start.column;
+    const prevStartColumnString = prevStartColumn === start.column ? '' : String(start.column);
+    prevStartColumn = start.column;
 
-    const prevEndLineString = prevEndLine === location.end.line ? '' : String(location.end.line);
-    prevEndLine = location.end.line;
+    const prevEndLineString = prevEndLine === end.line ? '' : String(end.line);
+    prevEndLine = end.line;
 
-    const prevEndColumnString = prevEndColumn === location.end.column ? '' : String(location.end.column);
-    prevEndColumn = location.end.column;
+    const prevEndColumnString = prevEndColumn === end.column ? '' : String(end.column);
+    prevEndColumn = end.column;
 
     const hint = positionHint ?? PositionHint.START;
     const prevHintString = prevHint === hint ? '' : String(hint);

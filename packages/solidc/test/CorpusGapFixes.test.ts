@@ -1252,3 +1252,20 @@ describe('complex-lvalue tuple targets (index/member chains in tuple slots)', ()
       + ' require(true); } }', { solidityImportCompat: true })).toThrow();
   });
 });
+
+describe('crash-bucket triage (internal errors -> clean diagnostics or fixes)', () => {
+  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  it('resolves a struct field that forward-references a later user-defined value type', () => {
+    // `struct S { U u; }` before `type U is address;` crashed artifact generation on the unresolved field type.
+    expect(cc('struct S { U u; } contract C { S s; function f() external pure { require(true); } } type U is address;'))
+      .toBe('C');
+  });
+  it('rejects assignment-as-expression on a state variable instead of crashing', () => {
+    expect(() => compileString('contract C { bool b; function f() external { if ((b = false) && b) {} require(true); } }',
+      { solidityImportCompat: true })).toThrow(/assignment-as-expression on state variable/);
+  });
+  it('compiles a compound bitwise assignment whose codegen emits a location-less instruction', () => {
+    // Source-map generation used to crash on the missing location; it now serialises an empty entry.
+    expect(cc('contract C { function f(uint x, uint y) external pure returns (uint) { x |= y; return x; } }')).toBe('C');
+  });
+});

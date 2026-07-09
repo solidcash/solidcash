@@ -960,7 +960,17 @@ export default class TypeCheckTraversal extends AstTraversal {
 
   // `(x op= rhs)` as an expression yields x's (new) value, so its type is x's type.
   visitAssignmentExpression(node: AssignmentExpressionNode): Node {
-    node.assign = this.visit(node.assign) as AssignNode;
+    const assigned = this.visit(node.assign) as AssignNode | StateAssignNode;
+    // A bare state-var target resolves to a StateAssignNode (no stack slot). The value form has no codegen
+    // path, and in a short-circuit operand the write would be conditional - unsound on a covenant. Reject
+    // cleanly instead of crashing on the missing identifier.
+    if (assigned instanceof StateAssignNode) {
+      throw new Error(
+        `assignment-as-expression on state variable '${assigned.name}' is only supported on local variables; `
+        + 'assign it in its own statement first',
+      );
+    }
+    node.assign = assigned;
     node.type = node.assign.identifier.type;
     return node;
   }

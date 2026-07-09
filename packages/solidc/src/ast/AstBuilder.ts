@@ -397,16 +397,20 @@ export default class AstBuilder
       (e) => this.visitEnumDefinition(e),
     );
 
-    // File-level struct definitions (must be registered before interfaces for type resolution)
+    // File-level struct definitions (must be registered before interfaces for type resolution). Register the
+    // NAMES first, then UDVTs, then build fields - so a struct field can forward-reference a later UDVT.
     const structDefinitions: StructDefinitionNode[] = [];
-    this.registerStructDefinitions(ctx.structDefinition_list(), structDefinitions);
+    this.registerStructNames(ctx.structDefinition_list());
 
-    // File-level type definitions (user-defined value types)
+    // File-level type definitions (user-defined value types). UDVTs wrap primitives only, so they never depend
+    // on a struct - safe to register before struct fields are resolved.
     const typeDefinitions: TypeDefinitionNode[] = [];
     for (const tdCtx of ctx.typeDefinition_list()) {
       const td = this.visitTypeDefinition(tdCtx);
       typeDefinitions.push(td);
     }
+
+    this.buildStructFields(ctx.structDefinition_list(), structDefinitions);
 
     // Constants after enums/structs/typeDefs: a file-level constant may be typed by / initialized from one of them
     // (`T constant g = T.wrap(true)`). Array-dimension constants are already pre-scanned (scanConstantDimensions).
@@ -3755,10 +3759,21 @@ export default class AstBuilder
   // `struct R{R[] c;}`), then resolve each struct's fields into the pre-registered type in place (same object,
   // so references already handed out observe the filled fields).
   private registerStructDefinitions(ctxList: StructDefinitionContext[], out: StructDefinitionNode[]): void {
+    this.registerStructNames(ctxList);
+    this.buildStructFields(ctxList, out);
+  }
+
+  // Register struct NAMES (empty placeholders) so a struct's fields can forward-reference a struct declared
+  // later. Split from buildStructFields so a caller can register UDVT names in between, letting a field type
+  // resolve a user-defined value type declared after the struct (`struct S { U u; } type U is address;`).
+  private registerStructNames(ctxList: StructDefinitionContext[]): void {
     for (const sdCtx of ctxList) {
       const name = sdCtx.anyIdentifier().getText();
       this.structMap.set(name, new StructType(name, []));
     }
+  }
+
+  private buildStructFields(ctxList: StructDefinitionContext[], out: StructDefinitionNode[]): void {
     for (const sdCtx of ctxList) {
       const sd = this.visitStructDefinition(sdCtx);
       out.push(sd);

@@ -2273,6 +2273,17 @@ export default class AstBuilder
     return node;
   }
 
+  // `(<callee>)(args)`: call the value of a parenthesised non-simple callee (a ternary picking a function pointer,
+  // etc.). Same indirect dispatch as an indexed callee.
+  visitParenthesizedFunctionCall(ctx: any): ExpressionNode {
+    const callee = this.visit(ctx.expression()) as ExpressionNode;
+    const argCtxs = ctx.expressionList().expression_list();
+    const args = argCtxs.map((e: any) => this.visit(e) as ExpressionNode);
+    const node = new IndirectCallNode(callee, args);
+    node.location = Location.fromCtx(ctx);
+    return node;
+  }
+
   visitFunctionCall(ctx: FunctionCallContext): ExpressionNode {
     const identifiers = ctx.Identifier_list();
 

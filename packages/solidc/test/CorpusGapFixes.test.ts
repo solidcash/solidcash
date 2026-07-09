@@ -928,6 +928,14 @@ describe('calling a function pointer from an array element (arr[i]())', () => {
     expect(cc('contract C { function foo() internal pure {} function g() public pure { (foo)(); } }')).toBe('C');
     expect(cc('contract C { function g(uint[] memory a) public pure { require(a[0] == 0); } }')).toBe('C');
   });
+  it('accepts a parenthesised (ternary) function-pointer callee', () => {
+    expect(cc('contract C { function a(uint x) internal pure returns (uint) { return x; } '
+      + 'function b(uint x) internal pure returns (uint) { return x; } '
+      + 'function g(bool c) public pure returns (uint) { return (c ? a : b)(1); } }')).toBe('C');
+    // parenthesised arithmetic / tuples must still parse normally (not as a call)
+    expect(cc('contract C { function g(uint a, uint b, uint c) public pure returns (uint) { return (a + b) * c; } }'))
+      .toBe('C');
+  });
 });
 
 describe('bytes.concat / string.concat in a constant initializer (compile-time fold)', () => {

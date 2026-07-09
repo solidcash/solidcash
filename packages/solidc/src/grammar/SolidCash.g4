@@ -661,6 +661,9 @@ expression
     | '(' expression (',' expression)+ ')' # TupleExpression
     | typeCast '(' castable=expression ','? ')' # Cast
     | functionCall # FunctionCallExpression
+    // Call the value of a parenthesised non-simple callee: `(cond ? f : g)(args)`, `((super).f)()`. A simple
+    // parenthesised callee `(foo)(args)` is handled by functionCall above; this catches the rest (ternary etc.).
+    | '(' expression ')' expressionList # ParenthesizedFunctionCall
     | 'new' Identifier callOptions? expressionList #Instantiation
     | 'new' typeName ('[' NumberLiteral? ']')+ '(' expression ')' # NewArray
     | 'new' UnboundedBytes '(' expression ')' # NewDynamicBytes

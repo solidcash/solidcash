@@ -983,3 +983,16 @@ LOCAL-COPY write, not a misclassification). Found + fixed the actual bug:
   storage fn-ptr arrays, mapping-value fn-ptr storage (entry[-1], separate gap). solidc 1898 + CorpusGapFixes 187 green.
   **KEY: the fn-pointer "core" is NOT monolithic - the dispatch primitives exist; parse+wire slices are tractable.**
   SESSION 2026-07-09 GRAND TOTAL: 3740 -> 3818 CONFIRMED (+78 compile).
+
+## Session 2026-07-09 round 2 cont.11 (drill: parenthesised/ternary fn-ptr callee): 3818 -> 3826 CONFIRMED (+8, VM-sound)
+- **call the value of a parenthesised callee `(cond ? f : g)(args)` / `((super).f)()` / `(get_ptr(x))()` (+8)**:
+  extends the IndirectCallNode infra from cont.10. One grammar alt `'(' expression ')' expressionList #
+  ParenthesizedFunctionCall` placed AFTER functionCall#FunctionCallExpression so a SIMPLE `(foo)()` still routes to
+  the direct paren-unwrap and only a non-simple parenthesised callee (ternary etc.) reaches here. AstBuilder
+  visitParenthesizedFunctionCall builds IndirectCallNode(callee=inner expr, args) - NO TypeCheck/codegen change
+  (reuses cont.10's node: ternary-of-fn-ptrs types to FunctionType, OP_INVOKE dispatches). +8 not +5: the fix also
+  unblocked files whose first error bucketed elsewhere. solidcash e2e FunctionPointerTernaryCall VM-verified
+  ((c?inc:dec)(v) picks the branch; wrong reverts). Regressions clean: (foo)() simple paren, (a+b)*c arith, (a,b)
+  tuple all still parse right. 0 OK->FAIL, negative-accepted unchanged (907). solidc 1900 + CorpusGapFixes 188 green.
+  Remaining fn-ptr "(" forms: chained x()() (call-result called, needs a call-result alt), x.length() attached-lib,
+  multi_slot_function(this.foo,..) fn-ptr args. SESSION 2026-07-09 GRAND TOTAL: 3740 -> 3826 CONFIRMED (+86 compile).

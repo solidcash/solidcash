@@ -868,3 +868,20 @@ User directive: TARGET CORRECTNESS, not corpus unlocks ("if it works in Solidity
 - SESSION 2026-07-09 GRAND TOTAL: 3740 -> 3793 CONFIRMED (+53), 9 feature/fix commits + 5 docs, 0 regressions
   throughout. VM-verified: complex-lvalue tuples, mapping-struct copies. Correctness posture: bounded every
   pre-existing gap rather than shipping compile-but-run-wrong.
+
+## Session 2026-07-09 round 2 cont.4 (CORRECTNESS: struct storage pointer alias): 3793 STABLE (+0 count, miscompile fixed)
+User directive continued (correctness > unlocks). Investigated "fix the branchOps misclassification for aliased
+writes" - the branchOps hypothesis was WRONG (disassembly showed the divergence was a real state write vs a
+LOCAL-COPY write, not a misclassification). Found + fixed the actual bug:
+- 0791127e **struct storage pointer to a state var SILENTLY COPIED instead of aliasing (miscompile, FIXED)**:
+  `S storage sL = s` on a NON-flattened struct fell through to a local copy (extractStorageAccessPath returns
+  undefined for a bare identifier; the alias branch only fired for flattened mappingStructStateVars). So
+  `sL.f=v` / `sL=other` / `delete sL.f` wrote/cleared the LOCAL and left `s` unchanged. FIX: register the
+  whole-var alias for ANY struct state var, substitute the container in buildLvalueAssign + visitDeleteMember,
+  gated `!mappingStructStateVars.has` (flattened structs keep a clean reject, not a miscompile). VM-verified
+  (solidcash/test/e2e/StructStoragePointer.test.ts, 5 roundtrips: field write / whole assign / read / delete
+  all reach s; wrong expectation reverts). Fixes struct_delete_member (was returning stale data1.m_value).
+  0 corpus count change (the affected files were already OK-but-miscompiling; bench measures compile only),
+  0 regressions / 966 mapping-struct OK files, solidc 1884 green. THIS is the correctness win the bench can't see.
+- SESSION 2026-07-09 GRAND TOTAL: 3740 -> 3793 CONFIRMED (+53 compile) + multiple SILENT-MISCOMPILE fixes
+  (struct storage pointer, and every bounded gap), 10 feature/fix commits + docs, 0 regressions throughout.

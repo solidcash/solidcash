@@ -3770,29 +3770,51 @@ export default class AstBuilder
     return undefined;
   }
 
-  // Pre-scan: record plain integer-literal constants so they can be used as array dimensions `T[N]`. Computed
-  // or non-integer constants are not recorded; using one as a dimension is a clear ParseError in resolveArrayBound.
+  // Pre-scan: record integer constants so they can be used as array dimensions `T[N]`. The init may be a
+  // literal, a parenthesised/arithmetic compile-time expression (`(2)`, `(2 + 1) / 1`), or reference an
+  // earlier such constant; anything not a compile-time integer is skipped (a clear ParseError at use in
+  // resolveArrayBound). Repeated to a fixpoint so a constant referencing a LATER one still resolves.
   private scanConstantDimensions(ctxs: ConstantDefinitionContext[]): void {
-    for (const c of ctxs) {
-      const text = c.expression().getText().replace(/_/g, '');
-      if (/^[0-9]+$/.test(text)) {
-        this.constantIntValues.set(c.anyIdentifier().getText(), parseInt(text, 10));
-      }
-    }
+    this.scanConstantsToFixpoint(ctxs
+      .filter((c) => AstBuilder.isIntTypeName(c.typeName().getText()))
+      .map((c) => ({ name: c.anyIdentifier().getText(), exprCtx: c.expression() })));
   }
 
-  // A `constant` STATE VARIABLE with an integer-literal init (e.g. `uint256 private constant N = 3;`) is
-  // parsed as a stateVariableDeclaration (not a constantDefinition) when it carries a visibility modifier;
-  // record those too so they work as array dimensions `T[N]`.
+  // A `constant` STATE VARIABLE with an integer init (e.g. `uint256 private constant N = 3;`) is parsed as a
+  // stateVariableDeclaration (not a constantDefinition) when it carries a visibility modifier; record those too.
   private scanConstantStateVars(ctxs: StateVariableDeclarationContext[]): void {
+    const entries: { name: string; exprCtx: ExpressionContext }[] = [];
     for (const c of ctxs) {
       const mods = (c.modifier_list?.() ?? []).map((m: { getText(): string }) => m.getText());
       const expr = c.expression?.();
       const id = c.anyIdentifier?.();
-      if (!mods.includes('constant') || !expr || !id) continue;
-      const text = expr.getText().replace(/_/g, '');
-      if (/^[0-9]+$/.test(text)) {
-        this.constantIntValues.set(id.getText(), parseInt(text, 10));
+      if (mods.includes('constant') && expr && id && AstBuilder.isIntTypeName(c.typeName().getText())) {
+        entries.push({ name: id.getText(), exprCtx: expr });
+      }
+    }
+    this.scanConstantsToFixpoint(entries);
+  }
+
+  // A declared type is an integer type (`int`, `uint`, `intN`, `uintN`) - only such constants are usable as an
+  // array dimension. Keeps a `bytes`/`bool`/`address` constant (whose value may evaluate to an int) out.
+  private static isIntTypeName(typeName: string): boolean {
+    return /^u?int(\d+)?$/.test(typeName);
+  }
+
+  // Evaluate each constant's init to a compile-time integer (visiting the expr, then evalConstIntNode over the
+  // constants recorded so far), iterating until no new constant resolves - so declaration order does not matter.
+  private scanConstantsToFixpoint(entries: { name: string; exprCtx: ExpressionContext }[]): void {
+    let progress = true;
+    while (progress) {
+      progress = false;
+      for (const { name, exprCtx } of entries) {
+        if (this.constantIntValues.has(name)) continue;
+        let value: bigint | undefined;
+        try { value = this.evalConstIntNode(this.visit(exprCtx) as ExpressionNode); } catch { value = undefined; }
+        if (value !== undefined) {
+          this.constantIntValues.set(name, Number(value));
+          progress = true;
+        }
       }
     }
   }

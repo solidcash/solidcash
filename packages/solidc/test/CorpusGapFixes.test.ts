@@ -1308,3 +1308,20 @@ describe('struct storage pointer to a state variable aliases (VM in solidcash/St
     expect(cc(`${P} function f() external { S storage sL = s; delete sL.u; require(true); } }`)).toBe('C');
   });
 });
+
+describe('parenthesised / arithmetic constant array dimensions', () => {
+  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  it('accepts a parenthesised or arithmetic constant as an array dimension', () => {
+    expect(cc('contract C { uint constant L1 = (2); uint constant L2 = (2 + 1) / 1; uint[L1] a1; uint[L2] a2;'
+      + ' function f() external { require(a1.length == 2 && a2.length == 3); } }')).toBe('C');
+    expect(cc('contract C { uint[(2 + 1) + 1] a; function f() external { require(a.length == 4); } }')).toBe('C');
+  });
+  it('resolves a constant array dimension that references another constant', () => {
+    expect(cc('contract C { uint constant B = 2; uint constant A = B + 1; uint[A] a;'
+      + ' function f() external { require(a.length == 3); } }')).toBe('C');
+  });
+  it('still rejects a non-integer-typed constant as a dimension', () => {
+    expect(() => compileString('contract C { bytes constant S = 0x00; int[S] xs; function f() external { require(true); } }',
+      { solidityImportCompat: true })).toThrow(/compile-time integer constant/);
+  });
+});

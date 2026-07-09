@@ -1325,3 +1325,15 @@ describe('parenthesised / arithmetic constant array dimensions', () => {
       { solidityImportCompat: true })).toThrow(/compile-time integer constant/);
   });
 });
+
+describe('parenthesised simple call target (foo)() / (L.f)() / (blockhash)(n)', () => {
+  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  it('unwraps redundant parentheses around a simple callee', () => {
+    expect(cc('contract C { function foo() internal pure returns (uint) { return 7; }'
+      + ' function f() external pure returns (uint) { return (foo)(); } }')).toBe('C');
+    expect(cc('library L { function f() internal pure returns (uint) { return 3; } }'
+      + ' contract C { function g() external pure returns (uint) { return (L.f)(); } }')).toBe('C');
+    expect(cc('contract C { function f() external view returns (bytes32) { return (blockhash)(block.number - 1); } }'))
+      .toBe('C');
+  });
+});

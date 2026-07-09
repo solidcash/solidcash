@@ -622,6 +622,11 @@ functionCall
     : Identifier expressionList // Only built-in functions are accepted
     | Identifier '.' Identifier expressionList // Namespaced function call (e.g. SafeMath.add(...))
     | Identifier '(' '{' (namedArg (',' namedArg)* ','?)? '}' ')' // Named-arg struct initialization (e.g. Person({name: "Alice", age: 30}))
+    // Redundant parentheses around a SIMPLE callee: `(foo)(args)` / `(L.f)(args)` / `(blockhash)(n)`. Solidity
+    // allows parenthesising a callable; the AST builder unwraps to the same call. A parenthesised NON-simple
+    // callee (`(b ? f : g)()`, `x()()`) is a function-pointer form, not matched here.
+    | '(' Identifier ')' expressionList
+    | '(' Identifier '.' Identifier ')' expressionList
     ;
 
 namedArg

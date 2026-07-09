@@ -804,3 +804,22 @@ DEFERRED (assessed this session, documented for next):
   init) + .selector/type().name/creationCode constants + contract-typed constants. Fragmented, ~1-2/each.
 - KNOWN over-permissiveness (missing diagnostics, negative tests only): override-list exhaustiveness +
   duplicate-contract detection; `transient` as a state-var name where solc's data-location rule rejects.
+
+## Session 2026-07-09 round 2 cont. (complex-lvalue tuples): 3784 -> 3790 CONFIRMED by clean full bench (+6, 0 reg)
+- d9380e21 **complex-lvalue tuple targets `(x[0], s.e) = (a, b)` (+6)**: tupleSlot accepts an index/member
+  lvalue chain; `(lv0,..,lvN) = (e0,..,eN)` with an index/member target desugars to per-slot writes via
+  buildLvalueAssign (reuses every existing lvalue-write path: local array element, struct member, nested
+  field array). Solidity evaluates the whole RHS before assigning; direct sequential matches iff no RHS
+  reads a target base var, so the desugar is GATED on that alias-safety (word-boundary check) and declines
+  otherwise - a swap-through-the-same-array falls back to the general path (a compile error) rather than
+  miscompiling. Skipped slots evaluate their RHS as an ExpressionStatement so side effects run. VM-VERIFIED
+  (ComplexTupleAssign.test.ts): index/member/skip/nested writes land, untouched elements stay zero.
+  NOT covered: single tuple-valued RHS (a.b() returning a tuple), nested tuples ((a,(b,c))=..), push-in-slot.
+- REVERTED this round: requireMessage `| expression` (accept `require(cond, msgVar)`) - relaxed NATIVE-mode
+  strictness (`require(true, boolVar)` was a correct native reject) for a single corpus file; not worth the
+  fixture churn + a type check to keep native sound. Left as-is.
+- SESSION 2026-07-09 TOTAL: 3740 -> 3790 CONFIRMED (+50), 6 feature/fix commits + 3 docs, 0 regressions
+  throughout. C3 direction bug (+27 incl DAO.sol), msg.data-subroutine diagnostic, paren single decl (+3),
+  soft keywords (+14), complex-lvalue tuples (+6). +9 NEG-ACCEPTED (missing-strictness on abstract/negative
+  override + naming tests, not unsound). Remaining walls all hard/fragmented (fn-ptrs, nested-state push,
+  gnosis, extcall pinning, per-builtin const folding) - see corpus_grind_2026_07_09_r2 memory.

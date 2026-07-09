@@ -1196,3 +1196,19 @@ describe('msg.data reachability', () => {
     expect(() => cc(src)).toThrow(/msg\.data is only available at an entry point/);
   });
 });
+
+describe('parenthesised single-variable declaration (solc one-element tuple decl)', () => {
+  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  it('accepts (T a) = expr as a plain declaration', () => {
+    expect(cc('contract C { function g() internal pure returns (uint) { return 2; }'
+      + ' function f() external { (uint a) = g(); require(a == 2); } }')).toBe('C');
+    expect(cc('contract C { function f() external { (uint d) = 2; require(d == 2); } }')).toBe('C');
+  });
+  it('accepts an array-typed parenthesised single declaration', () => {
+    expect(cc('contract C { function f() external { (uint[3] memory x) = [uint(1), 2, 3]; require(x[0] == 1); } }'))
+      .toBe('C');
+  });
+  it('leaves a parenthesised existing-lvalue assignment (a) = b as a plain assignment', () => {
+    expect(cc('contract C { function f() external { int a; (a) = 5; require(a == 5); } }')).toBe('C');
+  });
+});

@@ -370,6 +370,10 @@ tupleAssignment
     : typeName Identifier (',' typeName Identifier)+ '=' expression ';'
     | '(' tupleSlot (',' tupleSlot)+ ')' '=' '(' expression (',' expression)+ ')' ';'
     | '(' tupleSlot (',' tupleSlot)+ ')' '=' expression ';'
+    // Parenthesised single declaration `(uint a) = expr;` (solc's one-element tuple decl). Restricted to a
+    // declaration (a type is required after `(`) so `(a) = b` stays a plain parenthesised-lvalue assignment.
+    | '(' typeName modifier* anyIdentifier ')' '=' expression ';'
+    | '(' arrayType modifier* anyIdentifier ')' '=' expression ';'
     ;
 
 tupleSlot

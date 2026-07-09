@@ -1611,6 +1611,26 @@ export default class AstBuilder
   }
 
   visitTupleAssignment(ctx: TupleAssignmentContext): Node {
+    // Parenthesised single declaration `(uint a) = expr;` (solc one-element tuple decl): behaves exactly like
+    // `uint a = expr;`. Detected by a direct anyIdentifier child (only the two single-decl alts have one).
+    if (ctx.getText().startsWith('(') && ctx.tupleSlot_list().length === 0 && ctx.anyIdentifier()) {
+      const at = ctx.arrayType();
+      const type = at
+        ? this.buildArrayType(at)
+        : (this.resolveType(ctx.typeName(0)!.getText()) ?? new AddressType(false, ctx.typeName(0)!.getText()));
+      const name = ctx.anyIdentifier()!.getText();
+      const modifiers = ctx.modifier_list().map((m) => m.getText());
+      if (type instanceof StructType) this.localStructTypes.set(name, type);
+      if (type instanceof ArrayType && type.elementType instanceof StructType) {
+        this.localStructArrayTypes.set(name, type.elementType);
+      }
+      if (type instanceof BytesType && type.bound === undefined) this.localBytesVars.add(name);
+      const ufKey = this.usingForTypeKey(type);
+      if (ufKey) this.localSimpleTypeKeys.set(name, ufKey);
+      const def = new VariableDefinitionNode(type, modifiers, name, this.visit(ctx.expression(0)!) as ExpressionNode);
+      def.location = Location.fromCtx(ctx);
+      return def;
+    }
     const slots = ctx.tupleSlot_list();
     let elements: { name?: string, type?: Type, skip?: boolean, existing?: boolean }[];
     if (slots.length > 0) {

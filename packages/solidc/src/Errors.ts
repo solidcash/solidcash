@@ -237,6 +237,16 @@ export class MsgDataInSubroutineError extends SolidCashError {
   }
 }
 
+export class MsgSigInInternalFunctionError extends SolidCashError {
+  constructor(node: Node) {
+    super(
+      node,
+      'msg.sig is only available in a public/external function (its own 4-byte selector); an internal '
+      + 'function has no selector (in the EVM it would be the calling entry point\'s, which is not tracked)',
+    );
+  }
+}
+
 export class BreakOutsideLoopError extends SolidCashError {
   constructor(node: Node) {
     super(node, '\'break\' statement must be inside a loop');

@@ -168,7 +168,7 @@ import {
 } from './utils.js';
 import { isNumericType } from '../utils.js';
 import { getStackEffect } from '../asmStackEffects.js';
-import { InvalidModifierCombinationError, MsgDataInSubroutineError } from '../Errors.js';
+import { InvalidModifierCombinationError, MsgDataInSubroutineError, MsgSigInInternalFunctionError } from '../Errors.js';
 import { analyzeInlineAssembly } from '../semantic/InlineAssemblyDiagnostics.js';
 
 // Upper bound on the element count of a bounded array whose default value is materialized inline. A covenant
@@ -13154,7 +13154,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * This is a compile-time constant: zero runtime cost.
    */
   private emitMsgSig(locationData: SingleLocationData): void {
-    this.emit(this.currentFunction.functionSelector!, locationData);
+    // An internal function has no selector, so msg.sig cannot be a compile-time constant here (in the EVM it
+    // is the calling entry point's selector). Reject cleanly instead of emitting an undefined push.
+    if (!this.currentFunction.functionSelector) {
+      throw new MsgSigInInternalFunctionError(this.currentFunction);
+    }
+    this.emit(this.currentFunction.functionSelector, locationData);
   }
 
   /**

@@ -1284,3 +1284,17 @@ describe('whole-struct <-> mapping-entry copies (VM-verified in solidcash/test/e
     expect(cc(`${P} function f() external { m2[0] = m[0]; require(true); } }`)).toBe('C');
   });
 });
+
+describe('crash-bucket triage round 2 (internal errors -> clean diagnostics)', () => {
+  it('rejects msg.sig in an internal function instead of emitting an undefined push', () => {
+    const src = 'contract C { function f() external pure { g(); } function g() internal pure { require(msg.sig == 0x00000000); } }';
+    expect(() => compileString(src, { solidityImportCompat: true })).toThrow(/msg\.sig is only available in a public/);
+  });
+  it('rejects a statement call on a deploy-into-state contract variable instead of crashing', () => {
+    // `c = new C(); c.f()` on a stored deployed contract (aggregated-contract cluster) has no resolvable
+    // callee identifier as a statement call.
+    const src = 'contract C { event e(); function f() public { emit e(); } }'
+      + ' contract D { C c; constructor() { c = new C(); c.f(); } function g() public { require(true); } }';
+    expect(() => compileString(src, { solidityImportCompat: true })).toThrow(/Method calls are only supported/);
+  });
+});

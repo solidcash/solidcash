@@ -4841,6 +4841,12 @@ export default class SymbolTableTraversal extends AstTraversal {
   }
 
   visitFunctionCallStatement(node: FunctionCallStatementNode): Node {
+    // A statement call with no callee identifier (e.g. `c.f()` on a contract-typed state variable holding a
+    // deployed contract - the stored-contract-call cluster) is not a resolvable named call; reject cleanly
+    // instead of crashing on the missing identifier.
+    if (!node.call.identifier) {
+      throw new MethodCallNotSupportedError(node);
+    }
     // A library sibling called in statement position (void call, return unused) needs qualifying too - the
     // qualifier is otherwise only wired into the expression-form visitor, so `_throwError(x);` inside `L.f`
     // stayed unresolved (only `x = sibling(..)` / `return sibling(..)` resolved).

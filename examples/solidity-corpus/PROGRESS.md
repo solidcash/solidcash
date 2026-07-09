@@ -763,3 +763,44 @@ smtCheckerTests 241 / syntaxTests 338 by dir. Ranked walls (samples + counts fro
   on memory struct/2d-array locals.
 FUNDAMENTAL/SKIP: Yul 168; experimental `type word = __builtin(..)` stubs; ASTJSON/lsp/natspec harness
 files; `layout at` storage-layout specifiers (EVM slot semantics).
+
+## Session 2026-07-09 round 2 (grind tier 1->3): 3740 -> 3784 CONFIRMED by clean full bench (+44, 0 regressions)
+Four commits, all VM/suite-verified, clean full bench diff = 0 OK->FAIL, +44 FAIL->OK, +9 NEG-ACCEPTED
+(all missing-strictness diagnostics on abstract/negative override + naming tests, not unsound codegen).
+- 72da854f **C3 LINEARIZATION DIRECTION BUG + ctor chains + override dominance (+27, incl real DAO.sol)**:
+  Solidity lists bases most-base-first, so the C3 merge must consume the REVERSED parent list (rightmost =
+  highest priority). The Python-direction merge REJECTED valid linear chains (`Derived is Base, Base1` where
+  Base1 is Base) and resolved `super` in multi-base contracts to the wrong side - both VM-verified now
+  (super picks rightmost). Constructor-list entries are grammatically identical for parents vs modifiers:
+  modifier invocations reroute to customModifiers; invocations naming INDIRECT ancestors (grandparent ctor
+  args through abstract links) inline that ancestor's expanded ctor most-base-first, guarded vs chain-covered
+  double runs. Diamond detection resolves RELATED origins by dominance (an override in a derived base beats
+  the overridden ancestor version) instead of throwing; override(A,B) accepts abstract base declarations.
+  SDK: ContractFactory.deploy maps positional args beyond constructorInputs to DeployOptions.initArgs.
+- 19336e28 **msg.data-in-subroutine crash -> clean diagnostic (robustness, 7 files)**: _redeemPushSize is
+  computed once at contract level (OP_ACTIVEBYTECODE = full script) and left on the entry-point stack;
+  reading msg.data inside an OP_DEFINE subroutine (plain internal helper OR self-external this.f() lowering)
+  reached a _redeemPushSize not on the subroutine stack and crashed. Self-external calldata semantics
+  (callee msg.data = the self-call's encoded args) don't map to BCH's single input-bytecode model, so it's a
+  genuine unsupported case: emit MsgDataInSubroutineError at the read site. Entry-point msg.data unaffected.
+- 594de183 **parenthesised single declaration `(uint a) = expr` (+3)**: solc one-element tuple decl. Two
+  grammar alts restricted to a declaration (a type after `(`), so `(a) = b` stays a plain assignment. 0
+  regressions across 2623 OK tuple/paren corpus files. Tuple LHS HOLES already worked pre-session.
+- 2bbecaf3 **soft keywords as declaration/variable names (+14)**: error/revert/transient/leave/global as
+  contract/struct/enum/type/event/error/enumMember/constant names, state-var names, and the revert
+  error-name target route through anyIdentifier (added transient/leave to it). Keyword-led require/revert +
+  the transient data location keep their parse via alt ordering. 0 regressions across all 3740 OK files.
+DEFERRED (assessed this session, documented for next):
+- **Complex-lvalue tuple targets** `(x[0], s.e) = (a, b)` + nested tuples `(a,(b,c))=...`: genuine
+  multi-touch codegen (target-type resolution via a SymbolTable walker like desugarStateTupleAssignment +
+  per-shape lvalue-write node construction for the sound eval-all-then-assign capture). ~12-15 files across
+  tuple + array-copy clusters. MultiSigWallet also blocked on `.call{value:}` to arbitrary addresses.
+- **T2.4 function pointers** (~35, fn-typed array elements arr[i](), function()[] arrays, ternary fn
+  selection (b?f:g)(), x()()()): the stored/passed fn-ptr feature. Tractable non-pointer bits (~5): paren
+  delete `delete(b)`, paren-wrapped call target `(foo)()`.
+- **T2.5 push receivers** (24): mostly nested-STATE-collection push `a.b.push()`, `data[i].d.push()`
+  (chunk-backed nested mutation) + recursive-struct smtCheckerTests (fundamental). Low tractable yield.
+- **const folding** (17): per-builtin compile-time eval (abi.encode/bytes.concat/keccak256/sha256 in const
+  init) + .selector/type().name/creationCode constants + contract-typed constants. Fragmented, ~1-2/each.
+- KNOWN over-permissiveness (missing diagnostics, negative tests only): override-list exhaustiveness +
+  duplicate-contract detection; `transient` as a state-var name where solc's data-location rule rejects.

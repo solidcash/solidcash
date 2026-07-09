@@ -946,3 +946,21 @@ LOCAL-COPY write, not a misclassification). Found + fixed the actual bug:
   extra-parens/holes (((, a))=..) pathological smtChecker edge; corion/gnosis multi-issue deep DApps. GRAND TOTAL
   SESSION 2026-07-09: 3740 -> 3812 CONFIRMED (+72 compile) + silent-miscompile fixes (C3, struct storage ptr, mapping-
   of-struct push accumulation).
+
+## Session 2026-07-09 round 2 cont.9 (next-walls: const bytes/string.concat fold): 3812 -> 3814 CONFIRMED (+2, 0 reg)
+- **bytes.concat / string.concat usable in a constant initializer (+2, VM-sound)**: `bytes constant abc =
+  bytes.concat(aaaa, hex"bbbb", hex"cccc")` folds at compile time. Two symmetric one-liners in SymbolTableTraversal:
+  (1) isCompileTimeExpression accepts BytesConcatNode/StringConcatNode when all args are compile-time; (2)
+  resolveConstantExpressionIdentifiers recurses into their .parameters so a const-ref arg (e.g. aaaa) gets its
+  .definition linked - without (2) the arg reached TypeCheckTraversal.visitBytesConcat with type=undefined
+  ("expects bytes or string, found undefined"). The two functions now cover the SAME node set (Literal/Binary/
+  Unary/Cast/Array/Identifier/FieldAccess/Bytes|StringConcat), closing the "passes compile-time check but leaves a
+  nested ref untyped" bug class. Reference sites re-emit the existing visitBytesConcat/visitStringConcat codegen
+  (concat of the inlined-literal pushes) - VM test (solidcash e2e ConstBytesConcat) confirms abc == hex"aaaabbbbcccc"
+  and a wrong expectation reverts. Unblocks bytes_concat_const_args + string_concat_const_args. The rest of the
+  NonCompileTime cluster needs compile-time keccak256/abi.encode/type().creationCode (deferred, harder). solidc 1898
+  + CorpusGapFixes 185 green, 0 regressions.
+- **CEILING NOTE**: at 3814 the clean tractable veins are mined out. Remaining large clusters are EVM-model cores:
+  function pointers/types ~60+ (largest), Yul ~175, recursive structs, local-memory nested collections, deploy-then-call
+  non-foldable patterns (BCH can't call a same-tx-deployed contract unless folded), address ordering (unsound on BCH).
+  GRAND TOTAL SESSION 2026-07-09: 3740 -> 3814 CONFIRMED (+74 compile) + silent-miscompile fixes.

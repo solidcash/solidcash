@@ -1007,6 +1007,8 @@ export default class SymbolTableTraversal extends AstTraversal {
       expr.expression = this.resolveConstantExpressionIdentifiers(expr.expression);
     } else if (expr instanceof ArrayNode) {
       expr.elements = expr.elements.map((e) => this.resolveConstantExpressionIdentifiers(e));
+    } else if (expr instanceof BytesConcatNode || expr instanceof StringConcatNode) {
+      expr.parameters = expr.parameters.map((e) => this.resolveConstantExpressionIdentifiers(e));
     } else if (expr instanceof FieldAccessNode) {
       // A library/namespaced constant `L.X` -> rewrite to the compound identifier `L.X` so type-checking sees the
       // constant, not a struct-field access on L (which errors "struct has no field X").
@@ -7276,6 +7278,10 @@ function isCompileTimeExpression(
   }
   if (expr instanceof ArrayNode) {
     return expr.elements.every((e) => isCompileTimeExpression(e, constantMap, enumMap));
+  }
+  if (expr instanceof BytesConcatNode || expr instanceof StringConcatNode) {
+    // `bytes.concat`/`string.concat` is a pure concatenation of its args, so it is compile-time when they all are.
+    return expr.parameters.every((e) => isCompileTimeExpression(e, constantMap, enumMap));
   }
   if (expr instanceof IdentifierNode) {
     // Allow references to other already-registered constants

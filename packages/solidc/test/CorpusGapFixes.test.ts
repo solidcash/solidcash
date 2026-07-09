@@ -915,6 +915,18 @@ describe('delete on a bytes element (delete data[i] -> zero byte)', () => {
   });
 });
 
+describe('bytes.concat / string.concat in a constant initializer (compile-time fold)', () => {
+  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  it('accepts bytes.concat/string.concat over constant refs and literals in a constant', () => {
+    expect(cc('bytes constant aaaa = hex"aaaa"; contract C { '
+      + 'bytes constant abc = bytes.concat(aaaa, hex"bbbb", hex"cccc"); '
+      + 'bytes constant abcabc = bytes.concat(abc, aaaa); function f() public pure { require(abc.length == 6); } }'))
+      .toBe('C');
+    expect(cc('string constant a = "foo"; contract C { '
+      + 'string constant b = string.concat(a, "bar"); function f() public pure {} }')).toBe('C');
+  });
+});
+
 describe('fallback / receive usable as ordinary identifiers (function/param names)', () => {
   const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
   it('accepts fallback/receive as a function name or parameter name', () => {

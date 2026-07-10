@@ -7066,6 +7066,43 @@ export default class SymbolTableTraversal extends AstTraversal {
       }
     }
 
+    // A method call on a contract-typed STATE-ARRAY element `arr[i].m()` reduces to `IElem(arr[i]).m()`: the
+    // element's declared contract type supplies the interface, and the co-spent target address is the element
+    // expression itself - the exact address `IFoo(arr[i])` already captures (docs/array-external-calls.md, the
+    // loopArrayVar machinery). Struct-field / nested-state receivers (`s.field.m()`) need a computed-state read
+    // and are a separate follow-up (extcall-target-pinning.md SS7).
+    if (node.object instanceof MappingAccessNode || node.object instanceof ArrayAccessNode
+      || node.object instanceof TupleIndexOpNode) {
+      const recvType = this.resolveLowLevelReceiverType(node.object);
+      const calleeName = recvType instanceof AddressType ? recvType.interfaceName : undefined;
+      const ifaceFunc = calleeName ? this.getCalleeFunctions(calleeName)?.find((f) => f.name === node.methodName) : undefined;
+      if (calleeName && ifaceFunc) {
+        if (node.fieldNames) {
+          node.parameters = this.reorderNamedArgsByParams(
+            node.fieldNames, ifaceFunc.parameters, node.parameters, node, `'${calleeName}.${ifaceFunc.name}'`,
+          );
+          node.fieldNames = undefined;
+        }
+        const addressExpr = this.visit(node.object) as ExpressionNode;
+        const parameters = this.visitList(node.parameters) as ExpressionNode[];
+        const callNode = new ExternalFunctionCallNode(calleeName, addressExpr, node.methodName, parameters);
+        callNode.callOptions = node.callOptions;
+        callNode.valueTransferIndex = node.valueTransferIndex;
+        if (callNode.callOptions?.value) callNode.callOptions.value = this.visit(callNode.callOptions.value) as ExpressionNode;
+        if (callNode.callOptions?.gas) callNode.callOptions.gas = this.visit(callNode.callOptions.gas) as ExpressionNode;
+        callNode.callInfo = { interfaceName: calleeName, functionName: node.methodName, externalCallSlotIndex: -1 };
+        if (ifaceFunc.returnTypes.length > 0) {
+          callNode.type = ifaceFunc.returnTypes.length === 1
+            ? ifaceFunc.returnTypes[0] : new TupleType(ifaceFunc.returnTypes);
+          callNode.callInfo.hasReturnValues = true;
+          callNode.callInfo.returnTypes = ifaceFunc.returnTypes;
+          callNode.callInfo.returnEventSignature = `_Return_${ifaceFunc.name}(${ifaceFunc.returnTypes.map((t) => t.toString()).join(',')})`;
+        }
+        callNode.location = node.location;
+        return callNode;
+      }
+    }
+
     // Not an interface method call - visit the object and try using-for resolution
     if (!node.object.type) node.object = this.visit(node.object);
 

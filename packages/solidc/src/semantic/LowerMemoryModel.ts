@@ -1,4 +1,4 @@
-import { ArrayType, IntType, BytesType, Type } from '@solidcash/utils';
+import { ArrayType, IntType, BytesType, PrimitiveType, Type } from '@solidcash/utils';
 import {
   Node,
   SourceFileNode,
@@ -11,6 +11,8 @@ import {
   ArrayAssignNode,
   ArrayAccessNode,
   TupleIndexOpNode,
+  FieldAccessNode,
+  MappingDeleteNode,
   BinaryOpNode,
   UnaryOpNode,
   CastNode,
@@ -42,6 +44,10 @@ export default class LowerMemoryModel extends AstTraversal {
   // allocation or an alias). Name -> the array type (element type used for encode/decode).
   private memArrays = new Map<string, ArrayType>();
   private usesMemory = false;
+  // SAFETY GATE: names the analysis proved safe to convert this function (every use - and every alias-group
+  // member's use - is a lowering we support). A candidate not in this set falls through to the value-copy path,
+  // so flag-on can never regress. See analyzeConvertible + docs/experimental-memory-model.md SS6.
+  private convertible = new Set<string>();
 
   constructor(private enabled: boolean) {
     super();
@@ -64,8 +70,10 @@ export default class LowerMemoryModel extends AstTraversal {
   visitFunctionDefinition(node: FunctionDefinitionNode): Node {
     const savedMem = this.memArrays;
     const savedUses = this.usesMemory;
+    const savedConv = this.convertible;
     this.memArrays = new Map();
     this.usesMemory = false;
+    this.convertible = node.body ? this.analyzeConvertible(node.body) : new Set();
     if (node.body) {
       // A first pass over the block rewrites decls/writes/reads; if any memory array is allocated, prepend the
       // buffer locals so every `__memory`/`__freeptr` reference resolves.
@@ -82,7 +90,84 @@ export default class LowerMemoryModel extends AstTraversal {
     }
     this.memArrays = savedMem;
     this.usesMemory = savedUses;
+    this.convertible = savedConv;
     return node;
+  }
+
+  // Determine which candidate memory locals are SAFE to convert: every use of the variable, and of every other
+  // variable in its alias group, must be a lowering this pass supports. Any unsupported use (pass to a call,
+  // return, state assign, abi.encode, reassignment, ...) taints the whole group, which then falls back to
+  // value-copy. This is the invariant that makes flag-on non-regressing.
+  private analyzeConvertible(body: BlockNode): Set<string> {
+    // 1. Candidacy: a handled-type local whose init is `new T[](n)` (root) or an identifier (alias). Alias
+    //    candidacy is transitive - resolved to a fixpoint (a chain `a=new; b=a; c=b`).
+    const roots = new Set<string>();          // decl with a fresh allocation
+    const aliasSrc = new Map<string, string>(); // decl `T[] b = a` -> b:a
+    const collectCandidates = (n: Node): void => {
+      if (n instanceof VariableDefinitionNode && this.isHandledMemArray(n.type)) {
+        if (n.expression instanceof NewArrayNode && !n.expression.rawBytes) roots.add(n.name);
+        else if (n.expression instanceof IdentifierNode) aliasSrc.set(n.name, n.expression.name);
+      }
+      this.eachChild(n, collectCandidates);
+    };
+    collectCandidates(body);
+    const candidates = new Set<string>(roots);
+    for (let changed = true; changed;) {
+      changed = false;
+      for (const [name, src] of aliasSrc) {
+        if (!candidates.has(name) && candidates.has(src)) { candidates.add(name); changed = true; }
+      }
+    }
+    if (candidates.size === 0) return new Set();
+
+    // 2. Union-find over alias edges (only between candidates); a non-candidate alias source cannot happen for a
+    //    candidate (it would not have been added above).
+    const parent = new Map<string, string>();
+    const find = (x: string): string => {
+      let r = x;
+      while (parent.get(r) !== undefined && parent.get(r) !== r) r = parent.get(r)!;
+      return r;
+    };
+    const union = (a: string, b: string): void => { parent.set(find(a), find(b)); };
+    for (const c of candidates) if (!parent.has(c)) parent.set(c, c);
+    for (const [name, src] of aliasSrc) if (candidates.has(name) && candidates.has(src)) union(name, src);
+
+    // 3. Taint: walk every use; anything that is not a supported consumer of a candidate taints that candidate.
+    const tainted = new Set<string>();
+    const isCand = (e: unknown): e is IdentifierNode => e instanceof IdentifierNode && candidates.has(e.name);
+    const walk = (n: Node | undefined): void => {
+      if (!n) return;
+      if (n instanceof ArrayAccessNode && isCand(n.array)) { walk(n.index); return; }
+      if (n instanceof TupleIndexOpNode && isCand(n.tuple)) return; // numeric-literal index
+      if (n instanceof UnaryOpNode && n.operator === UnaryOperator.SIZE && isCand(n.expression)) return;
+      if (n instanceof ArrayAssignNode && candidates.has(n.name)) { walk(n.index); walk(n.value); return; }
+      if (n instanceof MappingDeleteNode && candidates.has(n.name) && n.keys.length === 1) { walk(n.keys[0]); return; }
+      if (n instanceof VariableDefinitionNode && candidates.has(n.name)) {
+        if (n.expression instanceof NewArrayNode) walk(n.expression.size); // alias-ident init: the edge, not a use
+        return;
+      }
+      // Any OTHER reference to a candidate - a bare identifier read, or a name-keyed operation the pass does not
+      // handle (push/pop/delete/nested/mapping/state write) - taints it. Name-keyed nodes carry the variable in a
+      // string `name` field (not as an IdentifierNode child), so catch both. FieldAccessNode.name is a member
+      // name, never a variable, so exclude it (its candidate expression, if any, is caught as a child).
+      const nm = (n as unknown as { name?: unknown }).name;
+      if (typeof nm === 'string' && candidates.has(nm) && !(n instanceof FieldAccessNode)) tainted.add(nm);
+      if (n instanceof IdentifierNode) return;
+      this.eachChild(n, walk);
+    };
+    walk(body);
+
+    // 4. A group is convertible iff no member is tainted.
+    const taintedRoots = new Set([...tainted].map(find));
+    return new Set([...candidates].filter((c) => !taintedRoots.has(find(c))));
+  }
+
+  private eachChild(node: Node, fn: (n: Node) => void): void {
+    for (const key of Object.keys(node)) {
+      const val = (node as unknown as Record<string, unknown>)[key];
+      if (val instanceof Node) fn(val);
+      else if (Array.isArray(val)) for (const v of val) if (v instanceof Node) fn(v);
+    }
   }
 
   visitBlock(node: BlockNode): Node {
@@ -90,6 +175,13 @@ export default class LowerMemoryModel extends AstTraversal {
     for (const stmt of node.statements ?? []) {
       const expanded = stmt instanceof VariableDefinitionNode ? this.tryLowerDecl(stmt) : undefined;
       if (expanded) { out.push(...expanded); continue; }
+      // `delete d[i]` on a memory array -> store the element default (0) in place.
+      if (stmt instanceof MappingDeleteNode && this.memArrays.has(stmt.name) && stmt.keys.length === 1) {
+        const arrT = this.memArrays.get(stmt.name)!;
+        const addr = this.elemAddr(new IdentifierNode(stmt.name), this.visit(stmt.keys[0]) as ExpressionNode);
+        out.push(this.at(this.mstore(addr, this.intLit(0n), arrT.elementType), stmt));
+        continue;
+      }
       out.push(this.visit(stmt) as StatementNode);
     }
     node.statements = out;
@@ -100,7 +192,7 @@ export default class LowerMemoryModel extends AstTraversal {
   // copy (alias). Returns the replacement statements, or undefined if this decl is not a handled memory array.
   private tryLowerDecl(node: VariableDefinitionNode): StatementNode[] | undefined {
     const t = node.type;
-    if (!this.isHandledMemArray(t)) return undefined;
+    if (!this.isHandledMemArray(t) || !this.convertible.has(node.name)) return undefined;
     const arrT = t as ArrayType;
 
     // Alias: `T[] memory b = a` where a is already a pointer -> `uint b = a` (share the buffer).
@@ -160,11 +252,13 @@ export default class LowerMemoryModel extends AstTraversal {
     return super.visitTupleIndexOp(node);
   }
 
-  // `a.length` parses as the SIZE unary op -> the length word at `a` (a count, decoded as uint).
+  // `a.length` parses as the SIZE unary op -> the length word at `a`. Value-copy `.length` is BIGINT (coerces
+  // with int and uint); match it so surrounding comparisons type-check identically.
   visitUnaryOp(node: UnaryOpNode): Node {
     if (node.operator === UnaryOperator.SIZE && node.expression instanceof IdentifierNode
       && this.memArrays.has(node.expression.name)) {
-      return this.at(this.mload(new IdentifierNode(node.expression.name), this.uint()), node);
+      const len = this.mload(new IdentifierNode(node.expression.name), this.uint());
+      return this.at(new CastNode(PrimitiveType.BIGINT, len, false), node);
     }
     return super.visitUnaryOp(node);
   }
@@ -196,10 +290,9 @@ export default class LowerMemoryModel extends AstTraversal {
     return new CastNode(this.decodeType(elemType), b32, false);
   }
 
-  // Decode target: the element type for a 256-bit int; else uint256 (widen; narrower ints round-trip through it).
+  // Decode target = the (256-bit) element type, so the read type-checks exactly like the value-copy element read.
   private decodeType(elemType: Type): Type {
-    if (elemType instanceof IntType && elemType.bits === 256) return elemType;
-    return this.uint();
+    return elemType instanceof IntType ? elemType : this.uint();
   }
 
   // &a[i] = a + 32 + i*32
@@ -212,8 +305,12 @@ export default class LowerMemoryModel extends AstTraversal {
     return this.add(this.intLit(WORD), new BinaryOpNode(n, BinaryOperator.MUL, this.intLit(WORD)));
   }
 
+  // Handled today: an unbounded array of a 256-bit int (`uint`/`int`). 32-byte words store the value exactly, so
+  // there is no narrowing/wraparound divergence from value-copy. Narrower ints (`uint8[]`) and other element
+  // types fall back until their packed encoding is handled (P6).
   private isHandledMemArray(t: Type | undefined): boolean {
-    return t instanceof ArrayType && t.bound === undefined && t.elementType instanceof IntType;
+    return t instanceof ArrayType && t.bound === undefined
+      && t.elementType instanceof IntType && t.elementType.bits === 256;
   }
 
   private uint(): IntType { return new IntType(false, 256); }

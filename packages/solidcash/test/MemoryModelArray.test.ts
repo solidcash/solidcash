@@ -29,6 +29,15 @@ contract C() {
         require(b[1] == 8);
         this.counter = 2;
     }
+    function signedRoundTrip() {
+        int[] memory a = new int[](2);
+        a[0] = -7;
+        a[1] = 123;
+        a[0] = -99;
+        require(a[0] == -99);
+        require(a[1] == 123);
+        this.counter = 3;
+    }
 }`;
 
 describe('experimental memory model: uint[] memory', () => {
@@ -55,6 +64,18 @@ describe('experimental memory model: uint[] memory', () => {
     );
     const sc = StatefulContract.withCategory(contract, categoryId);
     const tx = await sc.aliasing().send();
+    expect(tx.txid).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it('round-trips signed int256 elements including negatives', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(SOURCE, opts);
+    const contract = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, contract, artifact.stateLayout!, { counter: 0n }, { saltContract: true },
+    );
+    const sc = StatefulContract.withCategory(contract, categoryId);
+    const tx = await sc.signedRoundTrip().send();
     expect(tx.txid).toMatch(/^[0-9a-f]{64}$/);
   });
 });

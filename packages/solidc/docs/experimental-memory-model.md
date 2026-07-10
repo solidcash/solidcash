@@ -92,15 +92,27 @@ any memory reference type. Passing a memory ref to another function passes the P
 is *more* correct than the current copy); the callee shares the caller's `__mem` (threaded as a hidden in/out
 param) - Phase 4 (start intra-function only).
 
-## 5. Scope / phasing
+## 5. Scope / phasing / STATUS
 
-- **P1 (foundation):** buffer + malloc/mload/mstore/mloadInt/mstoreInt codegen helpers; VM-verify via direct unit
-  tests. Add the `experimentalMemoryModel` flag.
-- **P2 (dynamic arrays):** `new T[](n)`, `a.length`, `a[i]` read/write for value elements; VM-verify multi-write
-  composition. Wire only when the flag is on and the local is a memory dynamic array.
-- **P3 (structs + nested chains):** memory struct alloc/construct, member access, and the §3 address-chain
-  lvalue for arbitrary `s.f[i].g[j]...` reads and writes. VM-verify `s.ts[j].y` multi-write (the target).
-- **P4 (bytes/string memory, cross-function pass-by-ref, returns).**
+Implemented as the `LowerMemoryModel` semantic pass (`packages/solidc/src/semantic/LowerMemoryModel.ts`), wired
+in `compiler.ts` before the value-copy desugars. Strict no-op unless `experimentalMemoryModel` is set.
+
+- **P1 (foundation) - DONE.** `experimentalMemoryModel` flag; runtime `new bytes(n)` (`NewArrayNode.rawBytes` ->
+  `0 n OP_NUM2BIN`) as the malloc growth primitive (VM-verified, RuntimeNewBytes.test.ts).
+- **P2 (dynamic arrays) - DONE + VM-VERIFIED.** `new T[](n)` (malloc: bump `__freeptr`, grow `__memory` by
+  `new bytes(32+n*32)`, store length), `a[i]` read/write (variable index -> ArrayAccess; numeric-literal index ->
+  TupleIndexOp), `a.length` (SIZE op), reference aliasing (`T[] memory b = a` shares the buffer). Element type
+  int/uint. VM-verified (MemoryModelArray.test.ts): multi-write composition AND aliasing hold on-chain (aliasing
+  is the case value-copy cannot express). Bytecode is shorter than value-copy for the alias case.
+- **P3 (structs + nested chains) - TODO (the target `s.ts[j].y`).** Memory struct alloc/construct, member access,
+  and the SS3 address-chain lvalue. BLOCKER: `s.f = v` and `s.ts[j].y = v` are eagerly desugared to value-copy
+  read-modify-rebuild INSIDE AstBuilder (`buildLvalueAssign` -> `buildStructFieldRebuild` /
+  `buildLocalStructArrayFieldWrite`), before this pass runs. Structs are all-or-nothing (a rebuild `s = S(s.f0,v)`
+  on a pointer `s` is nonsense), so P3 must first GATE those AstBuilder desugars off for local memory reference
+  types when the flag is on (thread the flag into AstBuilder like `chunkedArrays`), leaving raw lvalue nodes for
+  this pass to lower to `mstore(addr_chain, v)`. Reads (`s.f`, `s.ts[j]`) are FieldAccess/ArrayAccess (not
+  eagerly desugared) and lower with the §3 walk directly.
+- **P4 (bytes/string memory, cross-function pass-by-ref, returns) - TODO.**
 
 Every phase is behind the flag; the default (value-copy) path is untouched, so this is fully reversible.
 

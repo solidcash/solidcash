@@ -1537,3 +1537,14 @@ describe('chained getters on computed bases + inherited using-for', () => {
   });
 
 });
+
+describe('contract/interface type as a mapping VALUE type', () => {
+  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  // The key type already defaulted an unknown name to an address handle; the value type did not, so
+  // `mapping(K => IFoo)` tripped UnsupportedMappingValueTypeError('undefined'). Now both match.
+  it('resolves an interface/contract mapping value to an address handle', () => {
+    expect(cc('interface IEv {} contract C { mapping(bytes32 => IEv) m;'
+      + ' function f(bytes32 k) public returns (address) { return address(m[k]); } }')).toBe('C');
+    expect(cc('contract Ev {} contract C { mapping(bytes32 => Ev) public events; }')).toBe('C');
+  });
+});

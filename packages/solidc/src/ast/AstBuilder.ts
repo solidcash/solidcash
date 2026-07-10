@@ -3726,7 +3726,13 @@ export default class AstBuilder
       const valueName = identifiers.length > 1 ? identifiers[1].getText() : undefined;
       return new MappingType(keyType, this.buildArrayType(arrayTypeCtx), keyName, valueName);
     }
-    const valueType = this.resolveType(ctx.typeName(1).getText());
+    // An unknown value-type name that is a contract/interface defaults to an address handle rather than
+    // resolving to `undefined` (which trips UnsupportedMappingValueTypeError) - `mapping(K => IFoo)` stores an
+    // address, matching how a contract/interface param is typed. A LIBRARY name stays unresolved so it is
+    // rejected (solc: "Invalid use of a library name"; libraries are not storable value types).
+    const valueText = ctx.typeName(1).getText();
+    const valueType = this.resolveType(valueText)
+      ?? (this.libraryNames.has(valueText) ? undefined : new AddressType(false, valueText));
     const keyName = identifiers.length > 0 ? identifiers[0].getText() : undefined;
     const valueName = identifiers.length > 1 ? identifiers[1].getText() : undefined;
     return new MappingType(keyType, valueType, keyName, valueName);

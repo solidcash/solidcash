@@ -43,6 +43,12 @@ export interface CompilerOptions {
   // covenant check (e.g. `require(block.chainid == e)`) can be spent with the short `sc.check(e).send()` call
   // instead of a hand-rolled TransactionBuilder. No dummy state field needed. See docs/stateful-contract-sdk.md.
   forceStateful?: boolean;
+  // EXPERIMENTAL: use a runtime linear-memory model (a threaded byte buffer + free pointer) for local `memory`
+  // reference types (structs, dynamic arrays), where references are integer pointers and a nested lvalue write
+  // (`s.ts[j].y = v`) is an address-chain + single in-place store - matching solc's memory semantics and
+  // composing across multiple writes (the value-copy model does not). Off by default; see
+  // docs/experimental-memory-model.md. Reversible.
+  experimentalMemoryModel?: boolean;
 }
 
 export interface AbiInput {

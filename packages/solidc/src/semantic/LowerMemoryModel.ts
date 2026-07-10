@@ -6,6 +6,7 @@ import {
   BlockNode,
   StatementNode,
   FunctionDefinitionNode,
+  ParameterNode,
   VariableDefinitionNode,
   AssignNode,
   StateAssignNode,
@@ -96,6 +97,10 @@ export default class LowerMemoryModel extends AstTraversal {
     this.memStructs = new Map();
     this.memStructArrays = new Map();
     this.usesMemory = false;
+    // P4 v2 (c): materialize a memory-array PARAM into the buffer (deserialize the ABI value-copy at entry) so it
+    // is a pointer that a helper can mutate by reference. Only for NON-inlinable functions (an inlinable one is
+    // spliced from its ORIGINAL body, so mutating it here would corrupt the inline source). Runs before the inline.
+    if (node.body && !this.inlinable.has(node.name)) this.materializeParams(node);
     // P4: inline pass-by-reference helper calls BEFORE the gate, so the substituted alias decls are analyzed and
     // lowered like any other alias. Pass-by-ref (convert) vs pass-by-value (fallback) then falls out of the gate.
     if (node.body) this.inlinePassByRef(node.body);
@@ -122,12 +127,13 @@ export default class LowerMemoryModel extends AstTraversal {
     return node;
   }
 
-  // ---- P4: pass-by-reference inlining of internal void helpers ----
+  // ---- P4: pass-by-reference inlining of internal helpers ----
 
-  // Collect internal/private VOID helpers safe to inline for pass-by-reference. Excluded: a `return` anywhere (an
-  // early `return;` spliced mid-caller would return from the CALLER), self-recursion (would inline forever), a
-  // custom modifier (the raw body is spliced, bypassing the modifier wrapper), and no memory-ref param (nothing to
-  // pass by reference). The gate still decides convert vs fallback per call, so this only bounds WHAT may inline.
+  // Collect internal/private helpers safe to inline for pass-by-reference. Two shapes: a VOID helper (its call is a
+  // statement `g(a)`), or a VALUE helper with exactly one non-reference return type and a SINGLE TERMINAL `return E`
+  // (its call is the whole RHS of `T n = g(a)` / `n = g(a)`; the return becomes `n = E`). Both exclude self-
+  // recursion (would inline forever), custom modifiers (the raw body is spliced, bypassing the wrapper), and no
+  // memory-ref param. The gate still decides convert vs fallback per call, so this only bounds WHAT may inline.
   private collectInlinable(node: ContractNode): void {
     this.inlinable = new Map();
     for (const fn of node.functions) {
@@ -138,10 +144,22 @@ export default class LowerMemoryModel extends AstTraversal {
   private isPassByRefInlinable(fn: FunctionDefinitionNode): boolean {
     const vis = fn.visibility;
     if (vis !== 'internal' && vis !== 'private') return false;
-    if (fn.returnTypes.length !== 0 || fn.customModifiers.length !== 0 || !fn.body) return false;
+    if (fn.customModifiers.length !== 0 || !fn.body) return false;
     if (!fn.parameters.some((p) => this.isRefType(p.type))) return false;
-    return !this.bodyHas(fn.body, (n) =>
-      n instanceof ReturnNode || (n instanceof FunctionCallNode && n.identifier?.name === fn.name));
+    if (this.bodyHas(fn.body, (n) => n instanceof FunctionCallNode && n.identifier?.name === fn.name)) return false;
+    const returns = this.countReturns(fn.body);
+    if (fn.returnTypes.length === 0) return returns === 0; // void: no return may splice mid-caller
+    // value: one non-ref return type, exactly one return, and it is the terminal statement.
+    if (fn.returnTypes.length !== 1 || this.isRefType(fn.returnTypes[0]) || returns !== 1) return false;
+    const stmts = fn.body.statements ?? [];
+    const last = stmts[stmts.length - 1];
+    return last instanceof ReturnNode && (last.expressions?.length ?? 0) === 1;
+  }
+
+  private countReturns(body: Node): number {
+    let c = 0;
+    this.eachDescendant(body, (n) => { if (n instanceof ReturnNode) c += 1; });
+    return c;
   }
 
   private bodyHas(node: Node, pred: (n: Node) => boolean): boolean {
@@ -178,7 +196,7 @@ export default class LowerMemoryModel extends AstTraversal {
     const out: StatementNode[] = [];
     for (const stmt of block.statements ?? []) {
       const inlined = this.tryInline(stmt, refLocals);
-      if (inlined) { out.push(inlined); changed = true; continue; }
+      if (inlined) { out.push(...inlined); changed = true; continue; }
       if (stmt instanceof BlockNode) {
         if (this.rewriteInlineCalls(stmt, refLocals)) changed = true;
       } else if (this.recurseChildBlocks(stmt, refLocals)) {
@@ -200,20 +218,47 @@ export default class LowerMemoryModel extends AstTraversal {
     return changed;
   }
 
-  private tryInline(stmt: StatementNode, refLocals: Set<string>): BlockNode | undefined {
-    if (!(stmt instanceof FunctionCallStatementNode)) return undefined;
-    const call = stmt.call;
+  private tryInline(stmt: StatementNode, refLocals: Set<string>): StatementNode[] | undefined {
+    // Void helper: `g(a);`
+    if (stmt instanceof FunctionCallStatementNode) {
+      const fn = this.inlinableCallee(stmt.call, refLocals, true);
+      return fn ? [this.buildInlineBlock(fn, stmt.call, stmt)] : undefined;
+    }
+    // Value helper as a decl init: `T n = g(a);` -> hoist `T n;`, then inline with `return E` rewritten to `n = E`.
+    if (stmt instanceof VariableDefinitionNode && stmt.expression instanceof FunctionCallNode) {
+      const fn = this.inlinableCallee(stmt.expression, refLocals, false);
+      if (fn) {
+        const holder = this.at(new VariableDefinitionNode(stmt.type, stmt.modifier, stmt.name, undefined), stmt);
+        return [holder, this.buildInlineBlock(fn, stmt.expression, stmt, stmt.name)];
+      }
+    }
+    // Value helper as an assign RHS: `n = g(a);` -> inline with `return E` rewritten to `n = E` (n already declared).
+    if (stmt instanceof AssignNode && stmt.identifier instanceof IdentifierNode
+      && stmt.expression instanceof FunctionCallNode) {
+      const fn = this.inlinableCallee(stmt.expression, refLocals, false);
+      if (fn) return [this.buildInlineBlock(fn, stmt.expression, stmt, stmt.identifier.name)];
+    }
+    return undefined;
+  }
+
+  // The inlinable helper a call targets, if it matches the wanted void/value shape, arity, and passes a memory-ref
+  // local (the pass-by-ref trigger). Undefined otherwise.
+  private inlinableCallee(call: FunctionCallNode, refLocals: Set<string>, wantVoid: boolean):
+  FunctionDefinitionNode | undefined {
     if (!(call.identifier instanceof IdentifierNode)) return undefined;
     const fn = this.inlinable.get(call.identifier.name);
     if (!fn || fn.parameters.length !== call.parameters.length) return undefined;
+    if (wantVoid !== (fn.returnTypes.length === 0)) return undefined;
     if (!call.parameters.some((a) => a instanceof IdentifierNode && refLocals.has(a.name))) return undefined;
-    return this.buildInlineBlock(fn, call, stmt);
+    return fn;
   }
 
   // Build `{ <paramBindings>; <renamed g body> }`. Params + g's locals are renamed to fresh unique names so the
   // flat-namespace gate stays unambiguous across call sites; a memory-ref param binds as an ALIAS decl
-  // (`T[] memory __inl_x = <arg>`), a value param as a value copy. Scoped so later passes keep the nesting.
-  private buildInlineBlock(fn: FunctionDefinitionNode, call: FunctionCallNode, src: Node): BlockNode {
+  // (`T[] memory __inl_x = <arg>`), a value param as a value copy. Scoped so later passes keep the nesting. When
+  // returnTarget is set (a value helper), the terminal `return E` is rewritten to `<returnTarget> = E`.
+  private buildInlineBlock(fn: FunctionDefinitionNode, call: FunctionCallNode, src: Node, returnTarget?: string):
+  BlockNode {
     const tag = this.counter++;
     const rename = new Map<string, string>();
     for (const p of fn.parameters) rename.set(p.name, `__inl_${p.name}_${tag}`);
@@ -222,6 +267,13 @@ export default class LowerMemoryModel extends AstTraversal {
       if (n instanceof VariableDefinitionNode) rename.set(n.name, `__inl_${n.name}_${tag}`);
     });
     this.remapNames(bodyClone, rename);
+    if (returnTarget !== undefined) {
+      const stmts = bodyClone.statements ?? [];
+      const ret = stmts[stmts.length - 1];
+      if (ret instanceof ReturnNode && ret.expressions?.length === 1) {
+        stmts[stmts.length - 1] = this.at(new AssignNode(new IdentifierNode(returnTarget), ret.expressions[0]), src);
+      }
+    }
     const bindings = fn.parameters.map((p, i) => this.at(
       new VariableDefinitionNode(p.type, p.modifier, rename.get(p.name)!, this.clone(call.parameters[i])), src));
     const block = new BlockNode([...bindings, ...(bodyClone.statements ?? [])]);
@@ -242,6 +294,50 @@ export default class LowerMemoryModel extends AstTraversal {
   private eachDescendant(node: Node, fn: (n: Node) => void): void {
     fn(node);
     this.eachChild(node, (c) => this.eachDescendant(c, fn));
+  }
+
+  // ---- P4 v2 (c): materialize a memory-array param into the buffer for pass-by-reference ----
+
+  // For each memory value-array param passed to an inlinable helper, rename the param's body uses to a fresh name
+  // and prepend a deserialize loop copying the ABI value-copy into a buffer array, so the helper mutates it by
+  // reference. The param itself is untouched (ABI-stable); only body uses are renamed. If the buffer array does not
+  // convert, the deserialize is a harmless extra copy that behaves exactly like the value-copy param (non-regress).
+  private materializeParams(node: FunctionDefinitionNode): void {
+    if (!node.body || this.inlinable.size === 0) return;
+    for (const p of node.parameters) {
+      if (!this.isHandledMemArray(p.type) || !this.paramPassedToInlinable(node.body, p.name)) continue;
+      const memName = `__mem_${p.name}_${this.counter++}`;
+      this.remapNames(node.body, new Map([[p.name, memName]]));
+      node.body.statements = [...this.deserializeParam(p, memName, node.body), ...(node.body.statements ?? [])];
+    }
+  }
+
+  private paramPassedToInlinable(body: BlockNode, paramName: string): boolean {
+    let found = false;
+    this.eachDescendant(body, (n) => {
+      if (n instanceof FunctionCallNode && n.identifier instanceof IdentifierNode
+        && this.inlinable.has(n.identifier.name)
+        && n.parameters.some((a) => a instanceof IdentifierNode && a.name === paramName)) found = true;
+    });
+    return found;
+  }
+
+  // `uint[] memory memName = new uint[](p.length); uint __mi = 0; while (__mi < p.length) { memName[__mi] = p[__mi];
+  //  __mi = __mi + 1; }` - copies the value-copy param into a fresh buffer array (the inverse of the return-boundary
+  // serialize). memName is a fresh alloc so the gate treats it as a normal memory candidate.
+  private deserializeParam(p: ParameterNode, memName: string, src: Node): StatementNode[] {
+    const arrT = p.type as ArrayType;
+    const idxName = `__mi_${this.counter++}`;
+    const pLen = (): ExpressionNode => new UnaryOpNode(UnaryOperator.SIZE, new IdentifierNode(p.name));
+    const decl = this.at(new VariableDefinitionNode(arrT, ['memory'], memName,
+      new NewArrayNode(arrT.elementType, pLen())), src);
+    const idxDecl = this.at(new VariableDefinitionNode(this.uint(), [], idxName, this.intLit(0n)), src);
+    const pElem = new ArrayAccessNode(new IdentifierNode(p.name), new IdentifierNode(idxName));
+    const write = this.at(new ArrayAssignNode(memName, new IdentifierNode(idxName), pElem), src);
+    const update = this.at(this.assign(idxName, this.add(new IdentifierNode(idxName), this.intLit(1n))), src);
+    const cond = this.at(new BinaryOpNode(new IdentifierNode(idxName), BinaryOperator.LT, pLen()), src);
+    const loop = this.at(new WhileNode(cond, new BlockNode([write, update])), src);
+    return [decl, idxDecl, loop];
   }
 
   // Determine which candidate memory locals are SAFE to convert: every use of the variable, and of every other

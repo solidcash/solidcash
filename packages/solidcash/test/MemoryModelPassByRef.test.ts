@@ -142,4 +142,52 @@ describe('memory model P4: internal pass-by-reference', () => {
       }
     }`);
   });
+
+  it('value-returning helper: mutates the param AND returns a value (uint n = g(a))', async () => {
+    await run(`contract C() {
+      int counter;
+      function g(uint[] memory x) internal returns (uint) { x[0] = 42; return 7; }
+      function f() {
+        uint[] memory a = new uint[](2);
+        a[0] = 1;
+        uint n = g(a);
+        require(a[0] == 42);
+        require(n == 7);
+        require(true);
+      }
+    }`);
+  });
+
+  it('value-returning helper whose return reads the param (with a value param)', async () => {
+    await run(`contract C() {
+      int counter;
+      function sum2(uint[] memory x, uint v) internal returns (uint) { x[0] = v; return x[0] + x[1]; }
+      function f() {
+        uint[] memory a = new uint[](2);
+        a[1] = 3;
+        uint n = sum2(a, 10);
+        require(a[0] == 10);
+        require(n == 13);
+        require(true);
+      }
+    }`);
+  });
+
+  // Materializes a caller PARAM array into the buffer so a helper mutates it by reference (c). `f` takes a real
+  // `uint[] memory` argument (passed from the SDK); it is deserialized into a buffer array at entry, and `g(a)`
+  // inlines against that buffer. Without materialization `a` would be a value-copy and require(a[0]==42) would fail.
+  it('materializes a caller-param array for pass-by-reference (c)', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(`contract C() {
+      int counter;
+      function g(uint[] memory x) internal { x[0] = 42; }
+      function f(uint[] memory a) { g(a); require(a[0] == 42); require(a[1] == 5); require(true); }
+    }`, { experimentalMemoryModel: true });
+    const contract = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, contract, artifact.stateLayout!, { counter: 0n }, { saltContract: true },
+    );
+    const sc = StatefulContract.withCategory(contract, categoryId);
+    await expect(sc.f([1n, 5n]).send()).resolves.toBeDefined();
+  });
 });

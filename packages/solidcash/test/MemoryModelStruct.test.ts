@@ -29,6 +29,13 @@ contract C() {
         require(s.b == 0);
         this.counter = 2;
     }
+    function namedFieldsReordered() {
+        P memory s = P({c: 30, a: 10, b: 20});
+        require(s.a == 10);
+        require(s.b == 20);
+        require(s.c == 30);
+        this.counter = 5;
+    }
     function swap() {
         P memory s = P(10, 20, 30);
         s = P(s.b, s.a, s.c);
@@ -41,7 +48,7 @@ contract C() {
 
 describe('experimental memory model: value-field struct memory', () => {
   const opts = { experimentalMemoryModel: true };
-  const run = async (method: 'compose' | 'uninitialized' | 'swap'): Promise<void> => {
+  const run = async (method: 'compose' | 'uninitialized' | 'swap' | 'namedFieldsReordered'): Promise<void> => {
     const provider = createTestProvider();
     const artifact = compileString(SOURCE, opts);
     const contract = new Contract(artifact, [], { provider });
@@ -56,4 +63,5 @@ describe('experimental memory model: value-field struct memory', () => {
   it('composes multiple in-place field writes', async () => { await run('compose'); });
   it('zero-initializes an uninitialized struct', async () => { await run('uninitialized'); });
   it('handles a self-referential rebuild (field swap) via read-all-then-store', async () => { await run('swap'); });
+  it('stores named-field construction to the right slots (reordered)', async () => { await run('namedFieldsReordered'); });
 });

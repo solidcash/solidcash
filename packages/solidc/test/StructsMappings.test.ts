@@ -440,9 +440,14 @@ describe('local struct-array element field write (S[] memory m; m[i].f = v)', ()
     expect(compileString(`${P}m[0].a=1;m[1].b=2;require(m[0].a==1);}}`, { solidityImportCompat: true }).contractName)
       .toBe('C');
   });
-  it('is byte-identical to the explicit element rebuild (sound by reduction)', () => {
-    const sugar = compileString(`${P}m[0].a=1;require(m[0].a==1);}}`, { solidityImportCompat: true });
-    const hand = compileString(`${P}m[0]=S(1,m[0].b);require(m[0].a==1);}}`, { solidityImportCompat: true });
+  it('value-copy path: byte-identical to the explicit element rebuild (sound by reduction)', () => {
+    // Value-copy lowers `m[i].f=v` via the element-rebuild reduction, so the two forms are byte-identical. The
+    // experimental memory model instead lowers `m[i].f=v` to a single in-place store (distinct bytecode) - which
+    // is MORE faithful to Solidity (arr[i].f=v mutates the element in place; arr[i]=S(..) allocates a new block
+    // and repoints - observably different under aliasing). So pin this reduction test to the value-copy path.
+    const opts = { solidityImportCompat: true, experimentalMemoryModel: false };
+    const sugar = compileString(`${P}m[0].a=1;require(m[0].a==1);}}`, opts);
+    const hand = compileString(`${P}m[0]=S(1,m[0].b);require(m[0].a==1);}}`, opts);
     expect(sugar.bytecode).toBe(hand.bytecode);
   });
 });

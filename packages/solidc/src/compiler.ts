@@ -55,6 +55,11 @@ export const DEFAULT_COMPILER_OPTIONS: CompilerOptions = {
   commitmentLimit: 128,
   chunkedArrays: true,
   chainId: 0,
+  // Default-on: the memory model is proven non-regressing (flag-off and forced-on give the identical corpus
+  // OK/FAIL set + all VM tests green), and its behavior is more Solidity-faithful (in-place nested writes +
+  // aliasing) than value-copy. The safety gate converts only provably-safe locals; everything else falls back to
+  // the value-copy path. Set experimentalMemoryModel: false to opt out.
+  experimentalMemoryModel: true,
 };
 
 export interface CompileOptions extends CompilerOptions {

@@ -299,7 +299,9 @@ export default class LowerMemoryModel extends AstTraversal {
     const walkCtor = (structName: string, ctor: FunctionCallNode): void => {
       const st = structCands.get(structName);
       ctor.parameters.forEach((arg, i) => {
-        const ft = st?.fields[i]?.type;
+        // Named-field ctor reorders: parameter i targets field ctor.fieldNames[i], not position i.
+        const fi = st && ctor.fieldNames ? st.fields.findIndex((f) => f.name === ctor.fieldNames![i]) : i;
+        const ft = st?.fields[fi]?.type;
         if (ft && this.isRefType(ft)) {
           if (!(arg instanceof IdentifierNode && candidates.has(arg.name))) tainted.add(structName);
         } else {
@@ -449,12 +451,15 @@ export default class LowerMemoryModel extends AstTraversal {
     const temps: StatementNode[] = [];
     const stores: StatementNode[] = [];
     ctor.parameters.forEach((arg, i) => {
+      // Named-field construction `S({b: x, a: y})` reorders args: parameter i is the value for field
+      // ctor.fieldNames[i], NOT positional field i. Map to the actual field slot.
+      const fi = ctor.fieldNames ? this.fieldIndex(structT, ctor.fieldNames[i]) : i;
       const tmp = `__ms_${this.counter++}`;
-      const fieldT = structT.fields[i].type;
+      const fieldT = structT.fields[fi].type;
       // A reference-typed field holds a pointer (uint); a value field holds its own type.
       const tempT = this.isRefType(fieldT) ? this.uint() : fieldT;
       temps.push(this.at(new VariableDefinitionNode(tempT, [], tmp, this.visit(arg) as ExpressionNode), src));
-      stores.push(this.at(this.mstore(this.fieldAddr(this.clone(ptr), i), new IdentifierNode(tmp), fieldT), src));
+      stores.push(this.at(this.mstore(this.fieldAddr(this.clone(ptr), fi), new IdentifierNode(tmp), fieldT), src));
     });
     return [...temps, ...stores];
   }

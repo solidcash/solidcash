@@ -1,4 +1,4 @@
-import { ArrayType, IntType, BytesType, PrimitiveType, Type } from '@solidcash/utils';
+import { ArrayType, IntType, BytesType, StructType, PrimitiveType, Type } from '@solidcash/utils';
 import {
   Node,
   SourceFileNode,
@@ -13,6 +13,7 @@ import {
   TupleIndexOpNode,
   FieldAccessNode,
   MappingDeleteNode,
+  FunctionCallNode,
   BinaryOpNode,
   UnaryOpNode,
   CastNode,
@@ -43,11 +44,14 @@ export default class LowerMemoryModel extends AstTraversal {
   // Locals that are memory-model pointers (declared as a handled memory dynamic array, initialized by a fresh
   // allocation or an alias). Name -> the array type (element type used for encode/decode).
   private memArrays = new Map<string, ArrayType>();
+  // Locals that are memory-model STRUCT pointers (block of 32-byte value-field words). Name -> struct type.
+  private memStructs = new Map<string, StructType>();
   private usesMemory = false;
   // SAFETY GATE: names the analysis proved safe to convert this function (every use - and every alias-group
   // member's use - is a lowering we support). A candidate not in this set falls through to the value-copy path,
   // so flag-on can never regress. See analyzeConvertible + docs/experimental-memory-model.md SS6.
   private convertible = new Set<string>();
+  private counter = 0;
 
   constructor(private enabled: boolean) {
     super();
@@ -69,9 +73,11 @@ export default class LowerMemoryModel extends AstTraversal {
 
   visitFunctionDefinition(node: FunctionDefinitionNode): Node {
     const savedMem = this.memArrays;
+    const savedStructs = this.memStructs;
     const savedUses = this.usesMemory;
     const savedConv = this.convertible;
     this.memArrays = new Map();
+    this.memStructs = new Map();
     this.usesMemory = false;
     this.convertible = node.body ? this.analyzeConvertible(node.body) : new Set();
     if (node.body) {
@@ -89,6 +95,7 @@ export default class LowerMemoryModel extends AstTraversal {
       }
     }
     this.memArrays = savedMem;
+    this.memStructs = savedStructs;
     this.usesMemory = savedUses;
     this.convertible = savedConv;
     return node;
@@ -102,11 +109,19 @@ export default class LowerMemoryModel extends AstTraversal {
     // 1. Candidacy: a handled-type local whose init is `new T[](n)` (root) or an identifier (alias). Alias
     //    candidacy is transitive - resolved to a fixpoint (a chain `a=new; b=a; c=b`).
     const roots = new Set<string>();          // decl with a fresh allocation
-    const aliasSrc = new Map<string, string>(); // decl `T[] b = a` -> b:a
+    const aliasSrc = new Map<string, string>(); // array decl `T[] b = a` -> b:a
+    const structCands = new Map<string, StructType>(); // struct-pointer candidates -> type (no aliasing this phase)
     const collectCandidates = (n: Node): void => {
       if (n instanceof VariableDefinitionNode && this.isHandledMemArray(n.type)) {
         if (n.expression instanceof NewArrayNode && !n.expression.rawBytes) roots.add(n.name);
         else if (n.expression instanceof IdentifierNode) aliasSrc.set(n.name, n.expression.name);
+      } else if (n instanceof VariableDefinitionNode && this.isHandledMemStruct(n.type)
+        && (n.expression === undefined || n.expression instanceof FunctionCallNode)) {
+        // A struct built by a constructor or left default. An aliased struct (`S t = s`, ident init) is NOT a
+        // candidate here - its ident init taints the source in the walk, so both fall back (aliasing is a later
+        // phase). This keeps in-place stores correct (no alias observes new-block-vs-in-place).
+        roots.add(n.name);
+        structCands.set(n.name, n.type as StructType);
       }
       this.eachChild(n, collectCandidates);
     };
@@ -142,8 +157,17 @@ export default class LowerMemoryModel extends AstTraversal {
       if (n instanceof UnaryOpNode && n.operator === UnaryOperator.SIZE && isCand(n.expression)) return;
       if (n instanceof ArrayAssignNode && candidates.has(n.name)) { walk(n.index); walk(n.value); return; }
       if (n instanceof MappingDeleteNode && candidates.has(n.name) && n.keys.length === 1) { walk(n.keys[0]); return; }
+      // Struct member read `s.f` (handled) - its candidate expression is not a use to taint.
+      if (n instanceof FieldAccessNode && n.expression instanceof IdentifierNode
+        && structCands.has(n.expression.name)) return;
+      // Struct field write / reassign `s = S(..)` (handled) - only a genuine constructor call for s's own struct
+      // type; `s = someFn()` is not handled and must taint. Walk the ctor args (member reads), keep the LHS.
+      if (n instanceof AssignNode && n.identifier instanceof IdentifierNode && structCands.has(n.identifier.name)
+        && n.expression instanceof FunctionCallNode
+        && n.expression.identifier.name === structCands.get(n.identifier.name)!.name) { walk(n.expression); return; }
       if (n instanceof VariableDefinitionNode && candidates.has(n.name)) {
-        if (n.expression instanceof NewArrayNode) walk(n.expression.size); // alias-ident init: the edge, not a use
+        if (n.expression instanceof NewArrayNode) walk(n.expression.size); // array alias-ident init: the edge
+        else if (n.expression instanceof FunctionCallNode) walk(n.expression); // struct ctor args
         return;
       }
       // Any OTHER reference to a candidate - a bare identifier read, or a name-keyed operation the pass does not
@@ -182,6 +206,15 @@ export default class LowerMemoryModel extends AstTraversal {
         out.push(this.at(this.mstore(addr, this.intLit(0n), arrT.elementType), stmt));
         continue;
       }
+      // `s = S(..)` on a memory struct (a field write `s.f=v` desugars to this) -> store each arg in place. Only a
+      // genuine constructor for s's struct type (guarded identically in the gate, so a non-ctor assign falls back).
+      if (stmt instanceof AssignNode && stmt.identifier instanceof IdentifierNode
+        && this.memStructs.has(stmt.identifier.name) && stmt.expression instanceof FunctionCallNode
+        && stmt.expression.identifier.name === this.memStructs.get(stmt.identifier.name)!.name) {
+        const structT = this.memStructs.get(stmt.identifier.name)!;
+        out.push(...this.storeStructArgs(stmt.identifier, stmt.expression, structT, stmt));
+        continue;
+      }
       out.push(this.visit(stmt) as StatementNode);
     }
     node.statements = out;
@@ -192,7 +225,9 @@ export default class LowerMemoryModel extends AstTraversal {
   // copy (alias). Returns the replacement statements, or undefined if this decl is not a handled memory array.
   private tryLowerDecl(node: VariableDefinitionNode): StatementNode[] | undefined {
     const t = node.type;
-    if (!this.isHandledMemArray(t) || !this.convertible.has(node.name)) return undefined;
+    if (!this.convertible.has(node.name)) return undefined;
+    if (this.isHandledMemStruct(t)) return this.lowerStructDecl(node, t as StructType);
+    if (!this.isHandledMemArray(t)) return undefined;
     const arrT = t as ArrayType;
 
     // Alias: `T[] memory b = a` where a is already a pointer -> `uint b = a` (share the buffer).
@@ -222,6 +257,39 @@ export default class LowerMemoryModel extends AstTraversal {
     }
 
     return undefined;
+  }
+
+  // `S memory s = S(a0,..)` / `S memory s;` -> malloc(32*k) a zero-filled block, then store each constructor arg
+  // (an uninitialized struct leaves the zeros = all fields default). No alias case (aliased structs fall back).
+  private lowerStructDecl(node: VariableDefinitionNode, structT: StructType): StatementNode[] {
+    this.usesMemory = true;
+    this.memStructs.set(node.name, structT);
+    const size = BigInt(32 * structT.fields.length);
+    const ptr = new IdentifierNode(node.name);
+    const decl = this.at(new VariableDefinitionNode(this.uint(), [], node.name, this.mem('__freeptr')), node);
+    const bump = this.at(this.assign('__freeptr', this.add(this.mem('__freeptr'), this.intLit(size))), node);
+    const grow = this.at(this.assign('__memory',
+      new BytesConcatNode([this.mem('__memory'), this.rawBytes(this.intLit(size))])), node);
+    const out: StatementNode[] = [decl, bump, grow];
+    if (node.expression instanceof FunctionCallNode) {
+      out.push(...this.storeStructArgs(ptr, node.expression, structT, node));
+    }
+    return out;
+  }
+
+  // Store each constructor argument at its field slot (`s + 32*i`). Reads ALL args into temps first, then stores,
+  // so a self-referential rebuild (`s = S(s.f1, s.f0)`, or the `s.f=v` field-write desugar `s = S(s.f0,v,s.f2)`)
+  // matches value-copy's read-old-then-write semantics regardless of arg/field ordering.
+  private storeStructArgs(ptr: IdentifierNode, ctor: FunctionCallNode, structT: StructType, src: Node): StatementNode[] {
+    const temps: StatementNode[] = [];
+    const stores: StatementNode[] = [];
+    ctor.parameters.forEach((arg, i) => {
+      const tmp = `__ms_${this.counter++}`;
+      const fieldT = structT.fields[i].type;
+      temps.push(this.at(new VariableDefinitionNode(fieldT, [], tmp, this.visit(arg) as ExpressionNode), src));
+      stores.push(this.at(this.mstore(this.fieldAddr(this.clone(ptr), i), new IdentifierNode(tmp), fieldT), src));
+    });
+    return [...temps, ...stores];
   }
 
   // `a[i] = v` on a memory array -> single in-place store at `a + 32 + i*32`.
@@ -263,6 +331,19 @@ export default class LowerMemoryModel extends AstTraversal {
     return super.visitUnaryOp(node);
   }
 
+  // `s.f` member read on a memory struct -> load the field word at `s + 32*fieldIndex`.
+  visitFieldAccess(node: FieldAccessNode): Node {
+    if (node.expression instanceof IdentifierNode && this.memStructs.has(node.expression.name)) {
+      const structT = this.memStructs.get(node.expression.name)!;
+      const i = structT.fields.findIndex((f) => f.name === node.name);
+      if (i >= 0) {
+        return this.at(this.mload(this.fieldAddr(new IdentifierNode(node.expression.name), i),
+          structT.fields[i].type), node);
+      }
+    }
+    return super.visitFieldAccess(node);
+  }
+
   // ---- desugar building blocks (all normal AST that type-checks + codegens) ----
 
   // mstore(addr, word): __memory = bytes.concat(__memory[0:addr], bytes32(word), __memory[addr+32:]).
@@ -300,6 +381,11 @@ export default class LowerMemoryModel extends AstTraversal {
     return this.add(this.add(ptr, this.intLit(WORD)), new BinaryOpNode(index, BinaryOperator.MUL, this.intLit(WORD)));
   }
 
+  // &s.field_i = s + 32*i (struct block has no length header)
+  private fieldAddr(ptr: ExpressionNode, i: number): ExpressionNode {
+    return i === 0 ? ptr : this.add(ptr, this.intLit(BigInt(32 * i)));
+  }
+
   // 32 + n*32: the byte size of a length-prefixed n-element block.
   private blockBytes(n: ExpressionNode): ExpressionNode {
     return this.add(this.intLit(WORD), new BinaryOpNode(n, BinaryOperator.MUL, this.intLit(WORD)));
@@ -311,6 +397,13 @@ export default class LowerMemoryModel extends AstTraversal {
   private isHandledMemArray(t: Type | undefined): boolean {
     return t instanceof ArrayType && t.bound === undefined
       && t.elementType instanceof IntType && t.elementType.bits === 256;
+  }
+
+  // Handled today: a struct whose fields are all 256-bit ints (value-field words). Structs with reference fields
+  // (arrays/structs/bytes) - needed for the nested `s.ts[j].y` chain - are P5b and fall back for now.
+  private isHandledMemStruct(t: Type | undefined): boolean {
+    return t instanceof StructType
+      && t.fields.every((f) => f.type instanceof IntType && f.type.bits === 256);
   }
 
   private uint(): IntType { return new IntType(false, 256); }

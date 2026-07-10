@@ -113,8 +113,14 @@ full suite with the flag forced on and getting ZERO new failures.
 - **P3 boundary serialization - TODO (COVERAGE, not correctness - see SS4).** SS4 serialize + intercept
   state/return/abi.encode/extcall, marking them HANDLED so a mutated-then-exported array need not fall back.
 - **P4 internal pass-by-ref - TODO.** SS5 inline-or-thread. Closes `g(a)`.
-- **P5 structs + nested chains - TODO.** SS3 for `s.f`, `s.ts[j].y` (the original target). Ref fields hold pointers.
-- **P6 bytes/string memory, wider element types - TODO.**
+- **P5a value-field structs - DONE + VM.** A `struct memory` with all-256-bit-int fields is a pointer to a block
+  of field words: construct (`S(..)` -> malloc + store each), member read (`s.f` -> mload at `s+32*i`), field
+  write (`s.f=v` desugars to `s=S(s.f0,v,..)` -> store each arg via read-all-into-temps-then-store so a
+  self-referential rebuild/swap matches value-copy). Only a genuine `S(..)` ctor for s's own type converts
+  (`s=someFn()` falls back). Aliasing + reference fields fall back via the gate. VM: MemoryModelStruct.test.ts.
+- **P5b struct reference fields + nested chains - TODO (the original target `s.ts[j].y`).** SS3: ref fields hold
+  pointers; the address-chain lvalue. This is where the value-copy nested-write miscompile gets fixed.
+- **P6 bytes/string memory, wider element types, struct aliasing - TODO.**
 - **DEFAULT-ON** once P2.5 holds and coverage is broad enough that the fallback set is small.
 
 ## 8. Non-goals / limits

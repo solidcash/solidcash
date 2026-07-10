@@ -16,6 +16,8 @@ import {
   MappingDeleteNode,
   MappingFieldAssignNode,
   FunctionCallNode,
+  ReturnNode,
+  WhileNode,
   BinaryOpNode,
   UnaryOpNode,
   CastNode,
@@ -234,6 +236,12 @@ export default class LowerMemoryModel extends AstTraversal {
         const recv = n.identifier.name.slice(0, n.identifier.name.indexOf('.'));
         if (candidates.has(recv)) tainted.add(recv);
       }
+      // `return a;` on a value-element array is HANDLED: the boundary serializes the buffer to a value-copy array
+      // (P3), so the pointer never leaks. Other return expressions walk normally.
+      if (n instanceof ReturnNode) {
+        for (const e of n.expressions ?? []) { if (!isValueArr(e)) walk(e); }
+        return;
+      }
       if (n instanceof ArrayAccessNode && isValueArr(n.array)) { walk(n.index); return; }
       if (n instanceof TupleIndexOpNode && isValueArr(n.tuple)) return; // numeric-literal index
       if (n instanceof UnaryOpNode && n.operator === UnaryOperator.SIZE && n.expression instanceof IdentifierNode
@@ -368,10 +376,43 @@ export default class LowerMemoryModel extends AstTraversal {
           continue;
         }
       }
+      // `return a;` on a memory value-array -> serialize the buffer block into a fresh value-copy array and return
+      // that (P3 boundary serialization), so the array can be a memory-model pointer (aliasing/composition) while
+      // still crossing the export boundary in the value-copy blob format.
+      if (stmt instanceof ReturnNode && stmt.expressions?.length === 1
+        && stmt.expressions[0] instanceof IdentifierNode && this.memArrays.has(stmt.expressions[0].name)) {
+        const an = stmt.expressions[0].name;
+        out.push(...this.serializeArrayReturn(an, this.memArrays.get(an)!, stmt));
+        continue;
+      }
       out.push(this.visit(stmt) as StatementNode);
     }
     node.statements = out;
     return node;
+  }
+
+  // Serialize a memory value-array pointer to a fresh value-copy array and return it:
+  //   uint[] __ser = new uint[](a.length); uint __i = 0; while (__i < a.length) { __ser[__i] = a[__i]; __i++; }
+  //   return __ser;
+  // Uses value-copy `new T[]` + element writes (correct blob format) with the element values loaded from the
+  // buffer, avoiding any manual re-encoding of the packed value-copy layout.
+  private serializeArrayReturn(arrName: string, arrT: ArrayType, src: Node): StatementNode[] {
+    const serName = `__ser_${this.counter++}`;
+    const idxName = `__seri_${this.counter++}`;
+    const lenAt = (): ExpressionNode => this.mload(new IdentifierNode(arrName), this.uint()); // a.length word
+    // uint[] __ser = new uint[](a.length);  (a fresh value-copy array - emitted post-analysis, not converted)
+    const serDecl = this.at(new VariableDefinitionNode(arrT, [], serName,
+      new NewArrayNode(arrT.elementType, lenAt())), src);
+    const idxDecl = this.at(new VariableDefinitionNode(this.uint(), [], idxName, this.intLit(0n)), src);
+    // __ser[__i] = a[__i];  (value-copy write of the buffer-loaded element)
+    const elemRead = this.mload(this.elemAddr(new IdentifierNode(arrName), new IdentifierNode(idxName)), arrT.elementType);
+    const write = this.at(new ArrayAssignNode(serName, new IdentifierNode(idxName), elemRead), src);
+    const update = this.at(this.assign(idxName,
+      this.add(new IdentifierNode(idxName), this.intLit(1n))), src);
+    const cond = this.at(new BinaryOpNode(new IdentifierNode(idxName), BinaryOperator.LT, lenAt()), src);
+    const loop = this.at(new WhileNode(cond, new BlockNode([write, update])), src);
+    const ret = this.at(new ReturnNode([new IdentifierNode(serName)]), src);
+    return [serDecl, idxDecl, loop, ret];
   }
 
   // `T[] memory a = new T[](n)` -> allocate a length-prefixed block in `__memory`; `T[] memory b = a` -> pointer

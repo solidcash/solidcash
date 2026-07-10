@@ -44,13 +44,26 @@ const isSafeGetterType = (t: Type): boolean =>
 export default class SynthesizePublicGetters extends AstTraversal {
   constructor(private enabled: boolean) { super(); }
 
+  // Names that are contracts/interfaces (their AddressType placeholder resolves to an address - a getter can
+  // return it soundly), as opposed to enums (whose placeholder resolves to an EnumType with a different ABI).
+  private contractIfaceNames: Set<string> = new Set();
+
   visitSourceFile(node: SourceFileNode): Node {
     if (!this.enabled) return node;
+    this.contractIfaceNames = new Set();
+    if (node.contract) this.contractIfaceNames.add(node.contract.name);
+    for (const c of node.importedContracts) this.contractIfaceNames.add(c.name);
+    for (const i of node.interfaceDefinitions) this.contractIfaceNames.add(i.name);
     if (node.contract) node.contract = this.visit(node.contract) as ContractNode;
     // Secondary contracts in the file (callees, e.g. a `TimeLock` invoked via `timeLock.lockTime(addr)`) need
     // their getters dispatchable too.
     node.importedContracts = node.importedContracts.map((c) => this.visit(c) as ContractNode);
     return node;
+  }
+
+  // A contract/interface-typed placeholder (returns an address - a sound getter return), NOT an enum placeholder.
+  private isContractAddr(t: Type): boolean {
+    return t instanceof AddressType && !!t.interfaceName && this.contractIfaceNames.has(t.interfaceName);
   }
 
   visitContract(node: ContractNode): Node {
@@ -67,7 +80,7 @@ export default class SynthesizePublicGetters extends AstTraversal {
       // { return this.a[i]; }`), like Solidity. Value-element only (struct/nested/enum-placeholder elements
       // keep the whole-array read model, same restriction as scalars/mappings).
       if (sv.type instanceof ArrayType) {
-        if (!isSafeGetterType(sv.type.elementType)) continue;
+        if (!isSafeGetterType(sv.type.elementType) && !this.isContractAddr(sv.type.elementType)) continue;
         const idxName = '__getterIndex';
         const key = Object.assign(new ParameterNode(new IntType(false, 256), idxName), { location: loc });
         const stateRead = Object.assign(new StateAccessNode(sv.name), { location: loc });
@@ -104,7 +117,7 @@ export default class SynthesizePublicGetters extends AstTraversal {
         getters.push(fn);
         continue;
       }
-      if (!isSafeGetterType(sv.type)) continue;
+      if (!isSafeGetterType(sv.type) && !this.isContractAddr(sv.type)) continue;
       const read = new StateAccessNode(sv.name); read.location = loc;
       const body = new BlockNode([Object.assign(new ReturnNode([read]), { location: loc })]); body.location = loc;
       const fn = new FunctionDefinitionNode(sv.name, [], body);

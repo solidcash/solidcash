@@ -25,6 +25,7 @@ import InlineExternalCallHelpers from './semantic/InlineExternalCallHelpers.js';
 import InlineStoragePointerCalls from './semantic/InlineStoragePointerCalls.js';
 import LowerSelfLowLevelCalls from './semantic/LowerSelfLowLevelCalls.js';
 import HoistInlineDeployCalls from './semantic/HoistInlineDeployCalls.js';
+import HoistChainedContractCalls from './semantic/HoistChainedContractCalls.js';
 import InlineMappingReturnFunctions from './semantic/InlineMappingReturnFunctions.js';
 import LowerMappingStorageAlias from './semantic/LowerMappingStorageAlias.js';
 import InlineReturningStateHelpers from './semantic/InlineReturningStateHelpers.js';
@@ -219,6 +220,10 @@ function compileResolvedAst(ast: Ast, code: string, mergedCompilerOptions: Compi
   // `(new C()).m(args)` -> `C __newcall_N = new C(); __newcall_N.m(args)`, so the deploy-then-call fold
   // machinery (which tracks named deploy locals) applies to inline deploy receivers too.
   ast = ast.accept(new HoistInlineDeployCalls()) as Ast;
+
+  // `A.getter().m(args)` (getter returns a contract) -> `IReturn __chaincall_N = A.getter(); __chaincall_N.m(..)`,
+  // so the chained call on the getter's (integrity-bound) return dispatches via the audited interface-local path.
+  ast = ast.accept(new HoistChainedContractCalls()) as Ast;
 
   // Inline value-returning private helpers that read a state entry at their expression call sites (hoist the
   // body, capture the return in a temp). Same block-layout reason as the void case below; run first so a void

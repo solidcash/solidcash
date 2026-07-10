@@ -55,7 +55,7 @@ contract C() {
 }`;
 
 describe('experimental memory model: value-field struct memory', () => {
-  const opts = { experimentalMemoryModel: true };
+  const opts = {};
   const run = async (
     method: 'compose' | 'uninitialized' | 'swap' | 'namedFieldsReordered' | 'aliasing',
   ): Promise<void> => {

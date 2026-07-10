@@ -3,7 +3,7 @@ import { compileString } from 'solidc';
 import { Contract, StatefulContract } from '../src/index.js';
 import { createTestProvider, setupStatefulUtxos } from './test-util.js';
 
-// The safety gate (P2.5): with experimentalMemoryModel ON, an array used in a way the pass does NOT handle (here
+// The safety gate (P2.5): an array used in a way the pass does NOT handle (here
 // abi.encode - a boundary) taints its whole alias group, which falls back to the value-copy path. These are VM
 // gates proving the FALLBACK is runtime-correct: abi.encode(a) must serialize the array CONTENTS (length > 32
 // bytes for a 3-element array), NOT the pointer integer (which would be a single 32-byte word). A gate failure -
@@ -38,7 +38,7 @@ contract C() {
 }`;
 
 describe('experimental memory model: safety gate fallback (P2.5)', () => {
-  const opts = { experimentalMemoryModel: true };
+  const opts = {};
   const run = async (method: 'encodeFallsBack' | 'mixedConvertAndFallback'): Promise<void> => {
     const provider = createTestProvider();
     const artifact = compileString(SOURCE, opts);

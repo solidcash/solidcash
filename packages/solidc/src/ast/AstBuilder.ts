@@ -1374,6 +1374,7 @@ export default class AstBuilder
       type = this.resolveType(tn) ?? new AddressType(false, tn);
     }
     const modifiers = ctx.modifier_list().map((modifier) => modifier.getText());
+    this.warnNoopDataLocation(ctx.modifier_list());
     const name = ctx.anyIdentifier().getText();
 
     // `uint x = y = 3;` - the initializer is an assignment chain: run the chain first, then initialize from
@@ -4348,15 +4349,21 @@ export default class AstBuilder
     if (named.length > 0) {
       fn.returnNames = params.map((p, i) => (p.anyIdentifier() ? p.anyIdentifier()!.getText() : `__ret_${i}`));
     }
-    // Warn about no-op data-location modifiers
-    for (const p of params) {
-      for (const mod of p.modifier_list()) {
-        const text = mod.getText();
-        if (text === Modifier.MEMORY || text === Modifier.CALLDATA) {
-          const loc = Location.fromCtx(mod);
-          const line = loc ? ` at line ${loc.start.line}` : '';
-          console.log(`Warning: '${text}' data location modifier is a no-op in SolidCash${line}. All data lives on-stack in the BCH VM.`);
-        }
+    // Warn about no-op data-location modifiers on parameters.
+    for (const p of params) this.warnNoopDataLocation(p.modifier_list());
+  }
+
+  // `memory` / `calldata` on a local or parameter is a no-op: BCH has no EVM-style data locations, and local
+  // reference types use the memory model regardless of the annotation (`storage` is a real storage pointer, so it
+  // is not warned). Emitted per occurrence at parse time so the source line is reported.
+  private warnNoopDataLocation(modCtxs: { getText(): string }[]): void {
+    for (const mod of modCtxs) {
+      const text = mod.getText();
+      if (text === Modifier.MEMORY || text === Modifier.CALLDATA) {
+        const loc = Location.fromCtx(mod as never);
+        const line = loc ? ` at line ${loc.start.line}` : '';
+        console.log(`Warning: '${text}' data location modifier is a no-op in SolidCash${line}. `
+          + 'All data lives on-stack in the BCH VM; local reference types use the memory model regardless.');
       }
     }
   }

@@ -37,11 +37,13 @@ import { BinaryOperator, UnaryOperator } from '../ast/Operator.js';
 import AstTraversal from '../ast/AstTraversal.js';
 import { cloneNode } from '../ast/clone.js';
 
-// EXPERIMENTAL (flag `experimentalMemoryModel`). Lowers `memory` reference types to integer pointers into a
-// per-function linear byte buffer, so a nested lvalue write is an address-chain + a single in-place store that
-// COMPOSES across statements (the value-copy read-modify-write re-encodes stale aggregate snapshots and does
-// not). See docs/experimental-memory-model.md. Pure desugar to bytes ops (bytes.concat / slice / bytes32/uint
-// casts / `new bytes(n)`) - no codegen changes.
+// Lowers local `memory` reference types to integer pointers into a per-function linear byte buffer, so a nested
+// lvalue write is an address-chain + a single in-place store that COMPOSES across statements (the value-copy
+// read-modify-write re-encodes stale aggregate snapshots and does not). A per-function SAFETY GATE only converts
+// a local when every use (and every alias-group member's use) is a supported lowering, else it falls back to the
+// value-copy path - so the pass is non-regressing by construction. Always on. See
+// docs/experimental-memory-model.md. Pure desugar to bytes ops (bytes.concat / slice / bytes32/uint casts /
+// `new bytes(n)`) - no codegen changes.
 //
 // This first slice handles a memory DYNAMIC ARRAY of an int/uint element type: `new T[](n)`, `a[i]` read/write,
 // `a.length`, and reference aliasing (`T[] memory b = a` shares the buffer). Structs and nested chains build on
@@ -68,12 +70,7 @@ export default class LowerMemoryModel extends AstTraversal {
   private convertible = new Set<string>();
   private counter = 0;
 
-  constructor(private enabled: boolean) {
-    super();
-  }
-
   visitSourceFile(node: SourceFileNode): Node {
-    if (!this.enabled) return node;
     node.importedContracts = this.visitList(node.importedContracts) as ContractNode[];
     node.freeFunctions = this.visitList(node.freeFunctions) as FunctionDefinitionNode[];
     if (node.contract) node.contract = this.visit(node.contract) as ContractNode;

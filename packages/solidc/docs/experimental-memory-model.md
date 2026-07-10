@@ -1,6 +1,9 @@
-# Experimental Solidity-compatible memory model - FINAL SPECIFICATION
+# Solidity-compatible memory model - FINAL SPECIFICATION
 
-Status: EXPERIMENTAL, flag-gated (`experimentalMemoryModel`). Reversible (flag off = strict no-op). Goal:
+Status: SHIPPED, ALWAYS-ON. The `experimentalMemoryModel` flag has been removed - the per-function SAFETY GATE
+(SS6) only converts a local when every use is a supported lowering and otherwise falls back to value-copy, so the
+pass is non-regressing by construction and needs no opt-out. The `memory`/`calldata` data-location keyword is a
+no-op annotation on BCH (the model applies to local reference types regardless); the parser warns on it. Goal:
 Solidity-faithful `memory` semantics on BCH - nested lvalue writes (`s.ts[j].y = v`) that COMPOSE across
 statements, and reference aliasing (`b = a; b[0]=v` makes `a[0]==v`), neither of which the value-copy blob model
 can express. Confirmed against ../solidity: memory reference types are POINTERS; a nested lvalue is a base

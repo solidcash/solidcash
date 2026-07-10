@@ -3,7 +3,7 @@ import { compileString } from 'solidc';
 import { Contract, StatefulContract } from '../src/index.js';
 import { createTestProvider, setupStatefulUtxos } from './test-util.js';
 
-// EXPERIMENTAL memory model (experimentalMemoryModel flag): a `uint[] memory` is a pointer into a per-function
+// Memory model: a `uint[] memory` is a pointer into a per-function
 // linear buffer. Element writes are single in-place stores that compose, and `b = a` shares the buffer (an
 // alias), which the value-copy model cannot express. The require()s are VM gates - a successful send proves the
 // buffer round-trip (bytes32<->uint word), multi-write composition, length, and aliasing all hold on-chain.
@@ -55,7 +55,7 @@ contract C() {
 }`;
 
 describe('experimental memory model: uint[] memory', () => {
-  const opts = { experimentalMemoryModel: true };
+  const opts = {};
 
   it('composes multiple in-place element writes (a[0]=42; a[1]=7; a[0]=99)', async () => {
     const provider = createTestProvider();

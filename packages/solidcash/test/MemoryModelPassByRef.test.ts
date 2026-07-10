@@ -3,15 +3,15 @@ import { compileString } from 'solidc';
 import { Contract, StatefulContract } from '../src/index.js';
 import { createTestProvider, setupStatefulUtxos } from './test-util.js';
 
-// EXPERIMENTAL memory model P4: internal pass-by-reference. A memory array passed to an internal VOID helper is
-// mutated IN PLACE (Solidity semantics): the helper is inlined as `{ T[] memory __inl_x = a; <body> }`, so the
-// param aliases the caller's array via the shared buffer and the helper's writes are visible in the caller. Under
-// value-copy the caller would NOT see the helper's writes (pass-by-value), so each require below is a pass-by-ref
-// proof - and the flag-off case shows the same contract is REJECTED (the divergence P4 closes).
+// Memory model P4: internal pass-by-reference. A memory array passed to an internal VOID helper is mutated IN
+// PLACE (Solidity semantics): the helper is inlined as `{ T[] memory __inl_x = a; <body> }`, so the param aliases
+// the caller's array via the shared buffer and the helper's writes are visible in the caller. Under the old
+// value-copy model the caller would NOT see the helper's writes (pass-by-value), so each require below is a
+// pass-by-ref proof.
 
-async function run(src: string, flag = true): Promise<void> {
+async function run(src: string): Promise<void> {
   const provider = createTestProvider();
-  const artifact = compileString(src, { experimentalMemoryModel: flag });
+  const artifact = compileString(src);
   const contract = new Contract(artifact, [], { provider });
   const { categoryId } = await setupStatefulUtxos(
     provider, contract, artifact.stateLayout!, { counter: 0n }, { saltContract: true },
@@ -35,10 +35,6 @@ const BASIC = `contract C() {
 describe('memory model P4: internal pass-by-reference', () => {
   it('helper mutates the caller array element in place', async () => {
     await run(BASIC);
-  });
-
-  it('value-copy (flag off) does NOT pass by reference - the divergence P4 closes', async () => {
-    await expect(run(BASIC, false)).rejects.toThrow();
   });
 
   it('helper writes value-params through the reference', async () => {
@@ -182,7 +178,7 @@ describe('memory model P4: internal pass-by-reference', () => {
       int counter;
       function g(uint[] memory x) internal { x[0] = 42; }
       function f(uint[] memory a) { g(a); require(a[0] == 42); require(a[1] == 5); require(true); }
-    }`, { experimentalMemoryModel: true });
+    }`, {});
     const contract = new Contract(artifact, [], { provider });
     const { categoryId } = await setupStatefulUtxos(
       provider, contract, artifact.stateLayout!, { counter: 0n }, { saltContract: true },

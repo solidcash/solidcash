@@ -30,7 +30,7 @@ contract C() {
 describe('memory model P3: boundary serialization (state-write)', () => {
   it('writes an aliased memory array to state, serializing the buffer at the boundary', async () => {
     const provider = createTestProvider();
-    const artifact = compileString(SOURCE, { experimentalMemoryModel: true });
+    const artifact = compileString(SOURCE, {});
     const contract = new Contract(artifact, [], { provider });
     const { categoryId } = await setupStatefulUtxos(
       provider, contract, artifact.stateLayout!, { s: [] }, { saltContract: true },

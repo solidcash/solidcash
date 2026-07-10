@@ -8,7 +8,7 @@ import { createTestProvider, setupStatefulUtxos } from './test-util.js';
 // `uint[][]`) is encoded as the value-copy array the covenant decodes (length prefix + packed/nested elements).
 async function call(src: string, method: string, args: FunctionArgument[]): Promise<void> {
   const provider = createTestProvider();
-  const artifact = compileString(src, { experimentalMemoryModel: true });
+  const artifact = compileString(src, {});
   const contract = new Contract(artifact, [], { provider });
   const { categoryId } = await setupStatefulUtxos(
     provider, contract, artifact.stateLayout!, { counter: 0n }, { saltContract: true },

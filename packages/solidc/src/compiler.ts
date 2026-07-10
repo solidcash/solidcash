@@ -55,11 +55,6 @@ export const DEFAULT_COMPILER_OPTIONS: CompilerOptions = {
   commitmentLimit: 128,
   chunkedArrays: true,
   chainId: 0,
-  // Default-on: the memory model is proven non-regressing (flag-off and forced-on give the identical corpus
-  // OK/FAIL set + all VM tests green), and its behavior is more Solidity-faithful (in-place nested writes +
-  // aliasing) than value-copy. The safety gate converts only provably-safe locals; everything else falls back to
-  // the value-copy path. Set experimentalMemoryModel: false to opt out.
-  experimentalMemoryModel: true,
 };
 
 export interface CompileOptions extends CompilerOptions {
@@ -199,9 +194,9 @@ function compileResolvedAst(ast: Ast, code: string, mergedCompilerOptions: Compi
   // Postfix `lvalue++`/`lvalue--` used as an expression -> read + a hoisted increment (before semantic analysis).
   ast = ast.accept(new DesugarPostfixExpressions()) as Ast;
 
-  // EXPERIMENTAL memory model (flag-gated): lower `memory` reference types to linear-buffer pointer ops before
-  // the value-copy desugars, so nested writes compose in place. No-op unless experimentalMemoryModel is set.
-  ast = ast.accept(new LowerMemoryModel(mergedCompilerOptions.experimentalMemoryModel ?? false)) as Ast;
+  // Memory model: lower local `memory` reference types to linear-buffer pointer ops before the value-copy
+  // desugars, so nested writes compose in place. The safety gate falls unsupported locals back to value-copy.
+  ast = ast.accept(new LowerMemoryModel()) as Ast;
 
   // Nested local-array element write `b[i][j] = v` -> read-modify-write over single-level ops (before semantic).
   ast = ast.accept(new DesugarNestedArrayWrite()) as Ast;
@@ -435,7 +430,7 @@ function compileReferencedContracts(
     singleAst = singleAst.accept(new NamedReturnTransformation(compilerOptions.solidityImportCompat)) as Ast;
     singleAst = singleAst.accept(new DesugarNestedBranchReturn()) as Ast;
     singleAst = singleAst.accept(new DesugarPostfixExpressions()) as Ast;
-    singleAst = singleAst.accept(new LowerMemoryModel(compilerOptions.experimentalMemoryModel ?? false)) as Ast;
+    singleAst = singleAst.accept(new LowerMemoryModel()) as Ast;
     singleAst = singleAst.accept(new DesugarNestedArrayWrite()) as Ast;
     singleAst = singleAst.accept(new LowerInlineAssembly()) as Ast;
     singleAst = singleAst.accept(new InlineExternalCallHelpers()) as Ast;

@@ -44,7 +44,7 @@ contract C() {
 }`;
 
 describe('experimental memory model: array of value-field structs (P5b)', () => {
-  const opts = { experimentalMemoryModel: true };
+  const opts = {};
   const run = async (method: 'elemFieldWrites' | 'loopBuild'): Promise<void> => {
     const provider = createTestProvider();
     const artifact = compileString(SOURCE, opts);

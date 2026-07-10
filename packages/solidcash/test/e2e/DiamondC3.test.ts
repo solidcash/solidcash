@@ -78,11 +78,12 @@ describe('C3 linearization', () => {
   it('rejects an inheritance hierarchy with no valid C3 linearization', () => {
     const files = { '/lib/b.scash': 'import "./a.scash"; contract B is A { function g() internal { require(true); } }' };
     files['/lib/a.scash'] = 'contract A { function h() internal { require(true); } }';
-    // D lists A before B, but B already derives from A -> contradictory order.
+    // Solidity requires bases most-base-first. B derives from A, so `is A, B` is the VALID order; the
+    // contradictory one is `is B, A` (a derived contract listed before its own base).
     const bad = `
       import "./lib/a.scash";
       import "./lib/b.scash";
-      contract D is A, B {
+      contract D is B, A {
         function run() { require(true); }
       }
     `;

@@ -17,6 +17,8 @@ import {
   MappingDeleteNode,
   MappingFieldAssignNode,
   FunctionCallNode,
+  FunctionCallStatementNode,
+  StateAccessNode,
   ReturnNode,
   WhileNode,
   BinaryOpNode,
@@ -54,6 +56,10 @@ export default class LowerMemoryModel extends AstTraversal {
   // Locals that are memory-model arrays whose ELEMENTS are struct pointers (`T[] memory`, T a value-field
   // struct). Separate track from memArrays so value-element ops stay untouched. Name -> array type.
   private memStructArrays = new Map<string, ArrayType>();
+  // Internal/private VOID helpers eligible for pass-by-reference inlining (P4): a `g(a)` call site is replaced
+  // with `{ T[] memory __inl_x = a; <g body> }`, so the param aliases the caller's array. Pass-by-ref then falls
+  // out of the alias convert/fallback decision - no new gate logic. Populated per-contract. See visitContract.
+  private inlinable = new Map<string, FunctionDefinitionNode>();
   private usesMemory = false;
   // SAFETY GATE: names the analysis proved safe to convert this function (every use - and every alias-group
   // member's use - is a lowering we support). A candidate not in this set falls through to the value-copy path,
@@ -74,6 +80,7 @@ export default class LowerMemoryModel extends AstTraversal {
   }
 
   visitContract(node: ContractNode): Node {
+    this.collectInlinable(node);
     if (node.constructorDef) node.constructorDef = this.visit(node.constructorDef) as FunctionDefinitionNode;
     node.functions = this.visitList(node.functions) as FunctionDefinitionNode[];
     return node;
@@ -89,6 +96,9 @@ export default class LowerMemoryModel extends AstTraversal {
     this.memStructs = new Map();
     this.memStructArrays = new Map();
     this.usesMemory = false;
+    // P4: inline pass-by-reference helper calls BEFORE the gate, so the substituted alias decls are analyzed and
+    // lowered like any other alias. Pass-by-ref (convert) vs pass-by-value (fallback) then falls out of the gate.
+    if (node.body) this.inlinePassByRef(node.body);
     this.convertible = node.body ? this.analyzeConvertible(node.body) : new Set();
     if (node.body) {
       // A first pass over the block rewrites decls/writes/reads; if any memory array is allocated, prepend the
@@ -110,6 +120,107 @@ export default class LowerMemoryModel extends AstTraversal {
     this.usesMemory = savedUses;
     this.convertible = savedConv;
     return node;
+  }
+
+  // ---- P4: pass-by-reference inlining of internal void helpers ----
+
+  // Collect internal/private VOID helpers safe to inline for pass-by-reference. Excluded: a `return` anywhere (an
+  // early `return;` spliced mid-caller would return from the CALLER), self-recursion (would inline forever), a
+  // custom modifier (the raw body is spliced, bypassing the modifier wrapper), and no memory-ref param (nothing to
+  // pass by reference). The gate still decides convert vs fallback per call, so this only bounds WHAT may inline.
+  private collectInlinable(node: ContractNode): void {
+    this.inlinable = new Map();
+    for (const fn of node.functions) {
+      if (this.isPassByRefInlinable(fn)) this.inlinable.set(fn.name, fn);
+    }
+  }
+
+  private isPassByRefInlinable(fn: FunctionDefinitionNode): boolean {
+    const vis = fn.visibility;
+    if (vis !== 'internal' && vis !== 'private') return false;
+    if (fn.returnTypes.length !== 0 || fn.customModifiers.length !== 0 || !fn.body) return false;
+    if (!fn.parameters.some((p) => this.isRefType(p.type))) return false;
+    return !this.bodyHas(fn.body, (n) =>
+      n instanceof ReturnNode || (n instanceof FunctionCallNode && n.identifier?.name === fn.name));
+  }
+
+  private bodyHas(node: Node, pred: (n: Node) => boolean): boolean {
+    if (pred(node)) return true;
+    let found = false;
+    this.eachChild(node, (c) => { if (!found && this.bodyHas(c, pred)) found = true; });
+    return found;
+  }
+
+  // Replace `g(a)` statement calls to an inlinable helper (where an arg is a memory-ref local) with an inlined
+  // scoped block `{ T[] memory __inl_x = a; <renamed g body> }`. Recurses into nested control-flow blocks. Only
+  // fires when a memory-ref LOCAL is passed, keeping the blast radius to the genuine pass-by-reference case.
+  private inlinePassByRef(body: BlockNode): void {
+    if (this.inlinable.size === 0) return;
+    const refLocals = new Set<string>();
+    this.eachDescendant(body, (n) => {
+      if (n instanceof VariableDefinitionNode && n.type && this.isRefType(n.type)) refLocals.add(n.name);
+    });
+    if (refLocals.size === 0) return;
+    this.rewriteInlineCalls(body, refLocals);
+  }
+
+  private rewriteInlineCalls(block: BlockNode, refLocals: Set<string>): void {
+    const out: StatementNode[] = [];
+    for (const stmt of block.statements ?? []) {
+      const inlined = this.tryInline(stmt, refLocals);
+      if (inlined) { out.push(inlined); continue; }
+      for (const key of Object.keys(stmt)) {
+        const v = (stmt as unknown as Record<string, unknown>)[key];
+        if (v instanceof BlockNode) this.rewriteInlineCalls(v, refLocals);
+        else if (Array.isArray(v)) for (const e of v) if (e instanceof BlockNode) this.rewriteInlineCalls(e, refLocals);
+      }
+      out.push(stmt);
+    }
+    block.statements = out;
+  }
+
+  private tryInline(stmt: StatementNode, refLocals: Set<string>): BlockNode | undefined {
+    if (!(stmt instanceof FunctionCallStatementNode)) return undefined;
+    const call = stmt.call;
+    if (!(call.identifier instanceof IdentifierNode)) return undefined;
+    const fn = this.inlinable.get(call.identifier.name);
+    if (!fn || fn.parameters.length !== call.parameters.length) return undefined;
+    if (!call.parameters.some((a) => a instanceof IdentifierNode && refLocals.has(a.name))) return undefined;
+    return this.buildInlineBlock(fn, call, stmt);
+  }
+
+  // Build `{ <paramBindings>; <renamed g body> }`. Params + g's locals are renamed to fresh unique names so the
+  // flat-namespace gate stays unambiguous across call sites; a memory-ref param binds as an ALIAS decl
+  // (`T[] memory __inl_x = <arg>`), a value param as a value copy. Scoped so later passes keep the nesting.
+  private buildInlineBlock(fn: FunctionDefinitionNode, call: FunctionCallNode, src: Node): BlockNode {
+    const tag = this.counter++;
+    const rename = new Map<string, string>();
+    for (const p of fn.parameters) rename.set(p.name, `__inl_${p.name}_${tag}`);
+    const bodyClone = cloneNode(fn.body) as BlockNode;
+    this.eachDescendant(bodyClone, (n) => {
+      if (n instanceof VariableDefinitionNode) rename.set(n.name, `__inl_${n.name}_${tag}`);
+    });
+    this.remapNames(bodyClone, rename);
+    const bindings = fn.parameters.map((p, i) => this.at(
+      new VariableDefinitionNode(p.type, p.modifier, rename.get(p.name)!, this.clone(call.parameters[i])), src));
+    const block = new BlockNode([...bindings, ...(bodyClone.statements ?? [])]);
+    block.scoped = true;
+    return this.at(block, src);
+  }
+
+  // Rename every local/param reference found in the map. A state variable (StateAccess/StateAssign) name and a
+  // member name (FieldAccess) are never locals, so their `.name` is left alone (children are still walked).
+  private remapNames(node: Node, map: Map<string, string>): void {
+    if (!(node instanceof StateAccessNode || node instanceof StateAssignNode || node instanceof FieldAccessNode)) {
+      const nm = (node as unknown as { name?: unknown }).name;
+      if (typeof nm === 'string' && map.has(nm)) (node as unknown as { name: string }).name = map.get(nm)!;
+    }
+    this.eachChild(node, (c) => this.remapNames(c, map));
+  }
+
+  private eachDescendant(node: Node, fn: (n: Node) => void): void {
+    fn(node);
+    this.eachChild(node, (c) => this.eachDescendant(c, fn));
   }
 
   // Determine which candidate memory locals are SAFE to convert: every use of the variable, and of every other

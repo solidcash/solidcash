@@ -8,6 +8,7 @@ import {
   FunctionDefinitionNode,
   VariableDefinitionNode,
   AssignNode,
+  StateAssignNode,
   TupleAssignmentNode,
   ArrayAssignNode,
   ArrayAccessNode,
@@ -242,6 +243,12 @@ export default class LowerMemoryModel extends AstTraversal {
         for (const e of n.expressions ?? []) { if (!isValueArr(e)) walk(e); }
         return;
       }
+      // `this.s = a;` writing a value-element array to state is HANDLED: the boundary serializes the buffer to a
+      // value-copy array before the state write (P3), so the pointer never leaks. Non-array state writes walk.
+      if (n instanceof StateAssignNode) {
+        if (!isValueArr(n.expression)) walk(n.expression);
+        return;
+      }
       if (n instanceof ArrayAccessNode && isValueArr(n.array)) { walk(n.index); return; }
       if (n instanceof TupleIndexOpNode && isValueArr(n.tuple)) return; // numeric-literal index
       if (n instanceof UnaryOpNode && n.operator === UnaryOperator.SIZE && n.expression instanceof IdentifierNode
@@ -385,18 +392,31 @@ export default class LowerMemoryModel extends AstTraversal {
         out.push(...this.serializeArrayReturn(an, this.memArrays.get(an)!, stmt));
         continue;
       }
+      // `this.s = a;` writing a memory value-array to state -> serialize the buffer into a fresh value-copy array
+      // and write that (P3 boundary serialization), so the array can be a memory-model pointer (aliasing) while
+      // the state write still receives the value-copy blob the state encoder expects.
+      if (stmt instanceof StateAssignNode && stmt.expression instanceof IdentifierNode
+        && this.memArrays.has(stmt.expression.name)) {
+        const an = stmt.expression.name;
+        const { stmts, serName } = this.serializeArray(an, this.memArrays.get(an)!, stmt);
+        out.push(...stmts);
+        const sa = new StateAssignNode(stmt.name, new IdentifierNode(serName));
+        sa.fromModifier = stmt.fromModifier;
+        out.push(this.at(sa, stmt));
+        continue;
+      }
       out.push(this.visit(stmt) as StatementNode);
     }
     node.statements = out;
     return node;
   }
 
-  // Serialize a memory value-array pointer to a fresh value-copy array and return it:
+  // Serialize a memory value-array pointer into a fresh value-copy array local `__ser`; returns the setup
+  // statements and the local's name:
   //   uint[] __ser = new uint[](a.length); uint __i = 0; while (__i < a.length) { __ser[__i] = a[__i]; __i++; }
-  //   return __ser;
   // Uses value-copy `new T[]` + element writes (correct blob format) with the element values loaded from the
-  // buffer, avoiding any manual re-encoding of the packed value-copy layout.
-  private serializeArrayReturn(arrName: string, arrT: ArrayType, src: Node): StatementNode[] {
+  // buffer, avoiding any manual re-encoding of the packed value-copy layout. Shared by every export boundary.
+  private serializeArray(arrName: string, arrT: ArrayType, src: Node): { stmts: StatementNode[]; serName: string } {
     const serName = `__ser_${this.counter++}`;
     const idxName = `__seri_${this.counter++}`;
     const lenAt = (): ExpressionNode => this.mload(new IdentifierNode(arrName), this.uint()); // a.length word
@@ -411,8 +431,13 @@ export default class LowerMemoryModel extends AstTraversal {
       this.add(new IdentifierNode(idxName), this.intLit(1n))), src);
     const cond = this.at(new BinaryOpNode(new IdentifierNode(idxName), BinaryOperator.LT, lenAt()), src);
     const loop = this.at(new WhileNode(cond, new BlockNode([write, update])), src);
-    const ret = this.at(new ReturnNode([new IdentifierNode(serName)]), src);
-    return [serDecl, idxDecl, loop, ret];
+    return { stmts: [serDecl, idxDecl, loop], serName };
+  }
+
+  // `return a;` on a memory value-array -> serialize the buffer then return the value-copy array.
+  private serializeArrayReturn(arrName: string, arrT: ArrayType, src: Node): StatementNode[] {
+    const { stmts, serName } = this.serializeArray(arrName, arrT, src);
+    return [...stmts, this.at(new ReturnNode([new IdentifierNode(serName)]), src)];
   }
 
   // `T[] memory a = new T[](n)` -> allocate a length-prefixed block in `__memory`; `T[] memory b = a` -> pointer

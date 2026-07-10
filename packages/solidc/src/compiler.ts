@@ -455,6 +455,13 @@ function compileReferencedContracts(
     singleAst = singleAst.accept(new PromoteConstructorExternalReads()) as Ast;
     singleAst = singleAst.accept(new SynthesizeExternalAddressLocals()) as Ast;
     singleAst = singleAst.accept(new SynthesizeBlockOracle(compilerOptions.solidityImportCompat)) as Ast;
+    // Carry the file's library free functions in ONLY for symbol resolution + type checking, AFTER the desugar/
+    // inline passes have run (so their already-desugared bodies are not re-desugared, which duplicated locals).
+    // This lets a child's own `using L for T` calls (`funding.sub(x)`) bind + resolve, instead of falling through
+    // to an undefined-symbol error. Library functions are inline-only, so registering them for resolution is
+    // sound; codegen skips their standalone bodies (only the child contract is emitted).
+    (singleAst as SourceFileNode).freeFunctions = ast.freeFunctions;
+    (singleAst as SourceFileNode).constantDefinitions = ast.constantDefinitions; // library constants those fns read
     singleAst = singleAst.accept(new SymbolTableTraversal(compilerOptions)) as Ast;
     singleAst = singleAst.accept(new TypeCheckTraversal(compilerOptions.solidityImportCompat)) as Ast;
     singleAst = singleAst.accept(new EnsureFinalRequireTraversal(compilerOptions.enforceFinalRequire)) as Ast;

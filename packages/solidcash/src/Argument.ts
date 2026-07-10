@@ -6,26 +6,41 @@ import {
   BytesType,
   encodeBool,
   encodeInt,
+  encodePushdataValue,
   encodeString,
   FixedType,
   FunctionType,
   IntType,
   parseType,
   PrimitiveType,
+  StateValue,
+  StructDefinitionInfo,
 } from '@solidcash/utils';
 import { TypeError } from './Errors.js';
 import SignatureTemplate from './SignatureTemplate.js';
 import { addressToLockScript } from './utils.js';
 
-export type ConstructorArgument = bigint | boolean | string | Uint8Array;
+// A `bigint[]`/`boolean[]`/nested array argument for an array-typed parameter (`uint[]`, `int[][]`, `T[]`).
+export type ConstructorArgument = bigint | boolean | string | Uint8Array | ConstructorArgument[];
 export type FunctionArgument = ConstructorArgument | SignatureTemplate;
 
 export type EncodedConstructorArgument = Uint8Array;
 export type EncodedFunctionArgument = Uint8Array | SignatureTemplate;
 
-export type EncodeFunction = (arg: FunctionArgument, typeStr: string) => EncodedFunctionArgument;
+export type EncodeFunction =
+  (arg: FunctionArgument, typeStr: string, structs?: readonly StructDefinitionInfo[]) => EncodedFunctionArgument;
 
-export function encodeFunctionArgument(argument: FunctionArgument, typeStr: string): EncodedFunctionArgument {
+export function encodeFunctionArgument(
+  argument: FunctionArgument,
+  typeStr: string,
+  structs?: readonly StructDefinitionInfo[],
+): EncodedFunctionArgument {
+  // Array-typed parameter (`uint[]`, `int[][]`, `T[]`): encode the value-copy array the covenant decodes -
+  // a length prefix followed by packed fixed-width elements (or per-element encodings) - via the shared
+  // pushdata encoder, so it matches the compiler's runtime array layout / state encoding exactly.
+  if (Array.isArray(argument)) {
+    return encodePushdataValue(argument as StateValue, typeStr, structs);
+  }
   let type = parseType(typeStr);
   if (type === undefined) {
     // Unrecognized type name (e.g. an enum): enum values are int-backed, encode as int.
@@ -135,7 +150,7 @@ export const encodeConstructorArguments = (
   }
 
   const encodedArgs = constructorArgs
-    .map((arg, i) => encodeFunction(arg, artifact.constructorInputs[i].type));
+    .map((arg, i) => encodeFunction(arg, artifact.constructorInputs[i].type, artifact.stateLayout?.structs));
 
   return encodedArgs as Uint8Array[];
 };
@@ -144,8 +159,9 @@ export const encodeFunctionArguments = (
   abiFunction: AbiFunction,
   functionArgs: FunctionArgument[],
   encodeFunction: EncodeFunction = encodeFunctionArgument,
+  structs?: readonly StructDefinitionInfo[],
 ): EncodedFunctionArgument[] => {
-  const encodedArgs = functionArgs.map((arg, i) => encodeFunction(arg, abiFunction.inputs[i].type));
+  const encodedArgs = functionArgs.map((arg, i) => encodeFunction(arg, abiFunction.inputs[i].type, structs));
 
   return encodedArgs;
 };

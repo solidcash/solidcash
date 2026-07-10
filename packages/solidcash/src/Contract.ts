@@ -374,7 +374,7 @@ export class Contract<
         : bytecode;
 
       const encodedArgs = args
-        .map((arg, i) => encodeFunctionArgument(arg, argInputs[i].type));
+        .map((arg, i) => encodeFunctionArgument(arg, argInputs[i].type, this.artifact.stateLayout?.structs));
 
       const generateUnlockingBytecode = (
         { transaction, sourceOutputs, inputIndex }: GenerateUnlockingBytecodeOptions,

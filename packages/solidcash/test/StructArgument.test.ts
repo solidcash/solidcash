@@ -136,3 +136,60 @@ describe('SDK first-class struct arguments', () => {
     }`, 'k', [{ a: { x: 1n, y: 2n }, b: { x: 3n, y: 4n } }]);
   });
 });
+
+// Solidity parity: a struct is a valid CONSTRUCTOR argument (TypeChecker treats a ctor param like an external
+// fn param; syntaxTests/abiEncoder/v2_call_to_v2_constructor_accepting_struct.sol). On BCH the ctor arg is a
+// value-copy blob prepended to the redeem script, and the body reads its fields. VM-executed via verifyTransaction.
+describe('SDK struct constructor arguments', () => {
+  const CTOR_SRC = `contract C(Point p) {
+    struct Point { uint x; uint y; }
+    function f() { require(p.x == 10); require(p.y == 20); }
+  }`;
+
+  const spend = (contract: Contract, provider: ReturnType<typeof createTestProvider>): TransactionBuilder => {
+    const utxo = randomUtxo();
+    provider.addUtxo(contract.address, utxo);
+    return new TransactionBuilder({ provider })
+      .addInput(utxo, contract.unlock.f())
+      .addOutput({ to: contract.address, amount: 10000n });
+  };
+
+  it('object-form struct ctor arg, fields read on-chain', () => {
+    const provider = createTestProvider();
+    const contract = new Contract(compileString(CTOR_SRC), [{ x: 10n, y: 20n }], { provider });
+    expect(() => verifyTransaction(spend(contract, provider))).not.toThrow();
+  });
+
+  it('positional-tuple struct ctor arg, fields read on-chain', () => {
+    const provider = createTestProvider();
+    const contract = new Contract(compileString(CTOR_SRC), [[10n, 20n]], { provider });
+    expect(() => verifyTransaction(spend(contract, provider))).not.toThrow();
+  });
+
+  it('wrong field value fails the spend (decode reads the real bytes, not a stub)', () => {
+    const provider = createTestProvider();
+    const contract = new Contract(compileString(CTOR_SRC), [{ x: 99n, y: 20n }], { provider });
+    expect(() => verifyTransaction(spend(contract, provider))).toThrow();
+  });
+
+  it('nested + multi-field struct ctor arg', () => {
+    const provider = createTestProvider();
+    const src = `contract C(Line l) {
+      struct Point { uint x; uint y; }
+      struct Line { Point a; Point b; uint tag; }
+      function f() { require(l.a.x == 1); require(l.a.y == 2); require(l.b.x == 3); require(l.b.y == 4); require(l.tag == 7); }
+    }`;
+    const contract = new Contract(compileString(src), [{ a: { x: 1n, y: 2n }, b: { x: 3n, y: 4n }, tag: 7n }], { provider });
+    expect(() => verifyTransaction(spend(contract, provider))).not.toThrow();
+  });
+
+  it('struct-with-dynamic-array-field ctor arg (variable-width decode in a redeem-script slot)', () => {
+    const provider = createTestProvider();
+    const src = `contract C(Bag b) {
+      struct Bag { uint id; uint[] xs; }
+      function f() { require(b.id == 7); require(b.xs.length == 3); require(b.xs[0] == 10); require(b.xs[2] == 30); }
+    }`;
+    const contract = new Contract(compileString(src), [{ id: 7n, xs: [10n, 20n, 30n] }], { provider });
+    expect(() => verifyTransaction(spend(contract, provider))).not.toThrow();
+  });
+});

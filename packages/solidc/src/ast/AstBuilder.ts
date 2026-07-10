@@ -727,10 +727,6 @@ export default class AstBuilder
         args: s.expressionList()!.expression_list().map((e) => this.visit(e) as ExpressionNode),
         location: Location.fromCtx(s),
       }));
-    const parameters = ctx.parameterList()
-      ? ctx.parameterList()!.parameter_list().map((p) => this.visit(p) as ParameterNode)
-      : [];
-
     // Collect enum definitions
     const enumDefinitions = ctx.enumDefinition_list().map(
       (e) => this.visitEnumDefinition(e),
@@ -746,6 +742,13 @@ export default class AstBuilder
       const td = this.visitTypeDefinition(tdCtx);
       typeDefinitions.push(td);
     }
+
+    // Contract-level constructor parameters are built AFTER enums/structs/typedefs register so a struct/enum/
+    // UDVT-typed parameter (`contract C(Point p)`) resolves to its real type - Solidity parity, a struct is a
+    // valid constructor arg. In the header position the type name resolved to an address stub -> (non-struct).
+    const parameters = ctx.parameterList()
+      ? ctx.parameterList()!.parameter_list().map((p) => this.visit(p) as ParameterNode)
+      : [];
 
     // Collect event definitions
     const eventDefinitions: EventDefinitionNode[] = [];

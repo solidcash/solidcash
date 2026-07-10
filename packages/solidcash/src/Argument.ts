@@ -20,8 +20,12 @@ import { TypeError } from './Errors.js';
 import SignatureTemplate from './SignatureTemplate.js';
 import { addressToLockScript } from './utils.js';
 
-// A `bigint[]`/`boolean[]`/nested array argument for an array-typed parameter (`uint[]`, `int[][]`, `T[]`).
-export type ConstructorArgument = bigint | boolean | string | Uint8Array | ConstructorArgument[];
+// A struct argument (Solidity's struct = ABI tuple): an object keyed by field name, encoded in declaration
+// order. A struct may also be passed as a positional tuple (the array case below), matching Solidity/ethers.
+export interface StructArgument { [field: string]: ConstructorArgument }
+// A `bigint[]`/`boolean[]`/nested array argument for an array-typed parameter (`uint[]`, `int[][]`, `T[]`), a
+// struct object, or a primitive.
+export type ConstructorArgument = bigint | boolean | string | Uint8Array | ConstructorArgument[] | StructArgument;
 export type FunctionArgument = ConstructorArgument | SignatureTemplate;
 
 export type EncodedConstructorArgument = Uint8Array;

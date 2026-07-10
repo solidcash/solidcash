@@ -75,6 +75,7 @@ import {
 } from '../Errors.js';
 import AstTraversal from '../ast/AstTraversal.js';
 import { cloneNode } from '../ast/clone.js';
+import { tagModifierStateAccess } from './ModifierExpansionTransformation.js';
 
 // Internal name a parent's overridden function is preserved under, so `super.f()` / `Base.f()` can
 // still reach it after the hierarchy is flattened.
@@ -332,6 +333,9 @@ function inlineParentConstructors(
     }
     const clonedCtor = cloneNode(ancestor.constructorDef);
     substituteInFunction(clonedCtor, new Map(ctorParams.map((p, i) => [p.name, invocation.args[i]])));
+    // The ancestor constructor (incl. inlined state-var initializers) legitimately touches the ancestor's OWN
+    // private state; tag its accesses so the flattened child does not trip the private-access check.
+    tagModifierStateAccess(clonedCtor.body.statements ?? [], ancestorName);
     parentStmts.push(...(clonedCtor.body.statements ?? []));
   }
 
@@ -349,6 +353,7 @@ function inlineParentConstructors(
     if (invocation) {
       substituteInFunction(clonedCtor, new Map(ctorParams.map((p, i) => [p.name, invocation.args[i]])));
     }
+    tagModifierStateAccess(clonedCtor.body.statements ?? [], parentName);
     parentStmts.push(...(clonedCtor.body.statements ?? []));
   }
   if (parentStmts.length === 0) return;

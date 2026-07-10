@@ -13,6 +13,7 @@ import {
   StateAssignNode,
   DeleteStateNode,
   AssignNode,
+  FieldAccessNode,
 } from '../ast/AST.js';
 import {
   ModifierRedefinitionError,
@@ -57,20 +58,27 @@ export function tagModifierStateAccess(nodes: (Node | undefined)[], definingCont
   }
 }
 
-function renameParamRefs(nodes: Node[], oldNames: string[], newNames: string[]): void {
-  const nameMap = new Map(oldNames.map((o, i) => [o, newNames[i]]));
+// Rename every reference to a renamed variable: identifier reads AND name-keyed lvalue targets - `s[i] = v`
+// (ArrayAssign), `s[i].f = v` (MappingFieldAssign on a local struct-array), `delete s[i]` (MappingDelete). A
+// state var / member access (State{Access,Assign,Delete}, FieldAccess) never carries a local/param name here, so
+// its `.name` is left alone (its children are still walked). Shared by param- and local-declaration renaming.
+function renameNamedRefs(nodes: Node[], nameMap: Map<string, string>): void {
   function walk(node: Node): void {
-    if (node instanceof IdentifierNode && nameMap.has(node.name)) {
-      node.name = nameMap.get(node.name)!;
+    if (!(node instanceof StateAccessNode || node instanceof StateAssignNode
+      || node instanceof DeleteStateNode || node instanceof FieldAccessNode)) {
+      const nm = (node as unknown as { name?: unknown }).name;
+      if (typeof nm === 'string' && nameMap.has(nm)) (node as unknown as { name: string }).name = nameMap.get(nm)!;
     }
     for (const [, value] of Object.entries(node)) {
       if (value instanceof Node) walk(value);
-      if (Array.isArray(value)) {
-        for (const item of value) { if (item instanceof Node) walk(item); }
-      }
+      else if (Array.isArray(value)) { for (const item of value) if (item instanceof Node) walk(item); }
     }
   }
   for (const n of nodes) walk(n);
+}
+
+function renameParamRefs(nodes: Node[], oldNames: string[], newNames: string[]): void {
+  renameNamedRefs(nodes, new Map(oldNames.map((o, i) => [o, newNames[i]])));
 }
 
 // Collect the names of local variables DECLARED in a modifier body. Called on the cloned modifier statements
@@ -91,17 +99,7 @@ function collectLocalDeclNames(nodes: Node[]): string[] {
 // Rename local variable declarations AND their references. Unlike renameParamRefs this also rewrites the
 // declaration's own `.name`, since a modifier local is declared inside the body (not injected as a binding).
 function renameLocalDecls(nodes: Node[], oldNames: string[], newNames: string[]): void {
-  const nameMap = new Map(oldNames.map((o, i) => [o, newNames[i]]));
-  function walk(node: Node): void {
-    if ((node instanceof VariableDefinitionNode || node instanceof IdentifierNode) && nameMap.has(node.name)) {
-      node.name = nameMap.get(node.name)!;
-    }
-    for (const [, value] of Object.entries(node)) {
-      if (value instanceof Node) walk(value);
-      else if (Array.isArray(value)) { for (const item of value) if (item instanceof Node) walk(item); }
-    }
-  }
-  for (const n of nodes) walk(n);
+  renameNamedRefs(nodes, new Map(oldNames.map((o, i) => [o, newNames[i]])));
 }
 
 // Count `_;` placeholders in a statement list, recursing into if/else branches + loop bodies (a placeholder

@@ -38,6 +38,20 @@ contract C() {
         require(a[1] == 123);
         this.counter = 3;
     }
+    function loopFillAndCompound() {
+        uint[] memory a = new uint[](4);
+        for (uint i = 0; i < a.length; i++) {
+            a[i] = i * 10;
+        }
+        a[2] += 5;
+        uint sum = 0;
+        for (uint j = 0; j < a.length; j++) {
+            sum += a[j];
+        }
+        require(a[2] == 25);
+        require(sum == 0 + 10 + 25 + 30);
+        this.counter = 4;
+    }
 }`;
 
 describe('experimental memory model: uint[] memory', () => {
@@ -76,6 +90,18 @@ describe('experimental memory model: uint[] memory', () => {
     );
     const sc = StatefulContract.withCategory(contract, categoryId);
     const tx = await sc.signedRoundTrip().send();
+    expect(tx.txid).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it('fills the buffer in a native loop and applies compound writes', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(SOURCE, opts);
+    const contract = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, contract, artifact.stateLayout!, { counter: 0n }, { saltContract: true },
+    );
+    const sc = StatefulContract.withCategory(contract, categoryId);
+    const tx = await sc.loopFillAndCompound().send();
     expect(tx.txid).toMatch(/^[0-9a-f]{64}$/);
   });
 });

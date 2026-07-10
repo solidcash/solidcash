@@ -4721,8 +4721,12 @@ export default class SymbolTableTraversal extends AstTraversal {
           const varIdentifier = new IdentifierNode(varName);
           varIdentifier.location = node.identifier.location;
           const visitedVar = this.visit(varIdentifier) as ExpressionNode;
+          // A bare state var resolves to a StateAccessNode whose .type is only set in TypeCheck, so consult
+          // the state-var map (mirrors the interface-method path above). Without this, `stateVar.method()`
+          // using-for calls fall through to the namespaced-function path and throw an undefined-symbol error.
           const objectType = visitedVar.type
-            ?? (visitedVar instanceof IdentifierNode ? visitedVar.definition?.type : undefined);
+            ?? (visitedVar instanceof IdentifierNode ? visitedVar.definition?.type : undefined)
+            ?? this.stateVariableMap.get(varName)?.type;
 
           if (objectType) {
             const typeStr = objectType.toString();

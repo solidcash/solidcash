@@ -427,6 +427,11 @@ function compileReferencedContracts(
       ast.errorDefinitions, ast.eventDefinitions, ast.interfaceDefinitions, [], [], [],
     );
     singleAst.importedContracts = ast.importedContracts.filter((c) => c.name !== contract.name);
+    // Carry the declared library NAMES (not their functions/bodies) so a child that still holds a
+    // `using L for T` directive resolves it as a no-op binding: the `.method()` calls it enabled were
+    // already desugared/inlined by the main pipeline, but the directive node remains and must not throw
+    // UsingForUndefinedLibraryError when re-visited here.
+    singleAst.declaredLibraryNames = ast.declaredLibraryNames;
     singleAst = singleAst.accept(new NamedReturnTransformation(compilerOptions.solidityImportCompat)) as Ast;
     singleAst = singleAst.accept(new DesugarNestedBranchReturn()) as Ast;
     singleAst = singleAst.accept(new DesugarPostfixExpressions()) as Ast;

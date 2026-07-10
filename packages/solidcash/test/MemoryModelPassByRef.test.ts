@@ -112,4 +112,34 @@ describe('memory model P4: internal pass-by-reference', () => {
       }
     }`);
   });
+
+  it('delegation chain f->h->g mutates through two levels (multi-level inline)', async () => {
+    await run(`contract C() {
+      int counter;
+      function g(uint[] memory x) internal { x[0] = 42; }
+      function h(uint[] memory a) internal { g(a); require(a[0] == 42); }
+      function f() {
+        uint[] memory a = new uint[](2);
+        a[0] = 1;
+        h(a);
+        require(a[0] == 42);
+        require(true);
+      }
+    }`);
+  });
+
+  it('delegation chain f->h->g->k mutates through three levels', async () => {
+    await run(`contract C() {
+      int counter;
+      function k(uint[] memory z) internal { z[0] = 9; }
+      function g(uint[] memory y) internal { k(y); y[1] = 8; }
+      function h(uint[] memory a) internal { g(a); }
+      function f() {
+        uint[] memory a = new uint[](2);
+        h(a);
+        require(a[0] == 9); require(a[1] == 8);
+        require(true);
+      }
+    }`);
+  });
 });

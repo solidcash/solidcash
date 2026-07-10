@@ -152,31 +152,52 @@ export default class LowerMemoryModel extends AstTraversal {
   }
 
   // Replace `g(a)` statement calls to an inlinable helper (where an arg is a memory-ref local) with an inlined
-  // scoped block `{ T[] memory __inl_x = a; <renamed g body> }`. Recurses into nested control-flow blocks. Only
-  // fires when a memory-ref LOCAL is passed, keeping the blast radius to the genuine pass-by-reference case.
+  // scoped block `{ T[] memory __inl_x = a; <renamed g body> }`. Only fires when a memory-ref LOCAL is passed,
+  // keeping the blast radius to the genuine pass-by-reference case.
+  //
+  // Iterated to a FIXPOINT: inlining a helper exposes its `__inl_*` alias bindings as new memory-ref locals, which
+  // lets a call one level deeper (a delegation chain `f -> h -> g`) inline on the next pass. The depth cap bounds
+  // mutual recursion (`h <-> g`): a call still un-inlined at the cap simply taints its arg via the normal gate, so
+  // the whole alias chain falls back to value-copy - non-regressing.
   private inlinePassByRef(body: BlockNode): void {
     if (this.inlinable.size === 0) return;
-    const refLocals = new Set<string>();
-    this.eachDescendant(body, (n) => {
-      if (n instanceof VariableDefinitionNode && n.type && this.isRefType(n.type)) refLocals.add(n.name);
-    });
-    if (refLocals.size === 0) return;
-    this.rewriteInlineCalls(body, refLocals);
+    for (let depth = 0; depth < 8; depth++) {
+      const refLocals = new Set<string>();
+      this.eachDescendant(body, (n) => {
+        if (n instanceof VariableDefinitionNode && n.type && this.isRefType(n.type)) refLocals.add(n.name);
+      });
+      if (refLocals.size === 0) return;
+      if (!this.rewriteInlineCalls(body, refLocals)) return; // no inline happened -> fixpoint
+    }
   }
 
-  private rewriteInlineCalls(block: BlockNode, refLocals: Set<string>): void {
+  // Rewrite one block's statements, inlining eligible calls; recurse into nested blocks (a bare scoped block - e.g.
+  // a prior inline - or the sub-blocks of a control-flow statement). Returns whether any call was inlined.
+  private rewriteInlineCalls(block: BlockNode, refLocals: Set<string>): boolean {
+    let changed = false;
     const out: StatementNode[] = [];
     for (const stmt of block.statements ?? []) {
       const inlined = this.tryInline(stmt, refLocals);
-      if (inlined) { out.push(inlined); continue; }
-      for (const key of Object.keys(stmt)) {
-        const v = (stmt as unknown as Record<string, unknown>)[key];
-        if (v instanceof BlockNode) this.rewriteInlineCalls(v, refLocals);
-        else if (Array.isArray(v)) for (const e of v) if (e instanceof BlockNode) this.rewriteInlineCalls(e, refLocals);
+      if (inlined) { out.push(inlined); changed = true; continue; }
+      if (stmt instanceof BlockNode) {
+        if (this.rewriteInlineCalls(stmt, refLocals)) changed = true;
+      } else if (this.recurseChildBlocks(stmt, refLocals)) {
+        changed = true;
       }
       out.push(stmt);
     }
     block.statements = out;
+    return changed;
+  }
+
+  // Recurse into a statement's direct block children (a control-flow if/else/while/do body). Returns whether any
+  // inline happened. Split out of rewriteInlineCalls so the closure is not declared inside its loop.
+  private recurseChildBlocks(stmt: Node, refLocals: Set<string>): boolean {
+    let changed = false;
+    this.eachChild(stmt, (c) => {
+      if (c instanceof BlockNode && this.rewriteInlineCalls(c, refLocals)) changed = true;
+    });
+    return changed;
   }
 
   private tryInline(stmt: StatementNode, refLocals: Set<string>): BlockNode | undefined {

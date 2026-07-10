@@ -1520,3 +1520,20 @@ describe('chained getter returning a contract + using-for on computed receivers'
       + ' function f(uint x, uint a, uint b) public pure returns (uint) { return x.mul(a).add(b); } }')).toBe('C');
   });
 });
+
+describe('chained getters on computed bases + inherited using-for', () => {
+  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  const MM = 'contract MM { function calc(address m, uint o) public returns (uint) { return 0; } }'
+    + ' contract Market { MM public marketMaker; }\n';
+
+  it('resolves a getter chain on a state-ARRAY element (markets[0].g().m())', () => {
+    expect(cc(`${MM}contract C { Market[] markets; function f() public returns (uint)`
+      + ' { return markets[0].marketMaker().calc(address(this), 1); } }')).toBe('C');
+  });
+
+  it('resolves a getter chain on a struct FIELD (s.mkt.g().m())', () => {
+    expect(cc(`${MM}struct S { Market mkt; } contract C { S s; function f() public returns (uint)`
+      + ' { return s.mkt.marketMaker().calc(address(this), 1); } }')).toBe('C');
+  });
+
+});

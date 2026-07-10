@@ -432,6 +432,11 @@ function mergeParent(
 
   // 11. Merge type definitions
   mergeNamedList(child, parent, 'typeDefinitions', 'Type');
+
+  // NOTE: `using L for T` directives are deliberately NOT merged. Solidity does not inherit them into a derived
+  // contract's own code (syntaxTests/scoping/library_inherited.sol is a solc TypeError). A parent FUNCTION that
+  // uses one keeps its declaration context, but that needs per-function lexical scoping, not a contract-wide
+  // merge (which would over-accept the derived contract's new code) - left as a known limit.
 }
 
 /**

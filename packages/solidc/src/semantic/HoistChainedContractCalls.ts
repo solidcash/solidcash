@@ -12,12 +12,16 @@ import {
   FunctionCallNode,
   FunctionCallStatementNode,
   ExpressionNode,
+  FieldAccessNode,
+  ArrayAccessNode,
+  MappingAccessNode,
+  TupleIndexOpNode,
   TernaryOpNode,
   WhileNode,
   DoWhileNode,
 } from '../ast/AST.js';
 import {
-  AddressType, ArrayType, MappingType, Type,
+  AddressType, ArrayType, MappingType, StructType, Type,
 } from '@solidcash/utils';
 import AstTraversal from '../ast/AstTraversal.js';
 
@@ -38,6 +42,13 @@ import AstTraversal from '../ast/AstTraversal.js';
  * condition, short-circuit right operand) are not descended into - a call there keeps its original shape.
  */
 const PREFIX = '__chaincall_';
+
+// The element/value type of an array/mapping (a Solidity array/mapping getter returns it), else undefined.
+function elementOf(t: Type | undefined): Type | undefined {
+  if (t instanceof ArrayType) return t.elementType;
+  if (t instanceof MappingType) return t.valueType;
+  return undefined;
+}
 
 export default class HoistChainedContractCalls extends AstTraversal {
   private counter = 0;
@@ -76,6 +87,7 @@ export default class HoistChainedContractCalls extends AstTraversal {
   visitContract(node: ContractNode): Node {
     this.stateReceiverTypes = new Map();
     for (const sv of node.stateVariables) this.stateReceiverTypes.set(sv.name, sv.type);
+    for (const coll of node.collections) this.stateReceiverTypes.set(coll.name, coll.type);
     const bodies = [...node.functions, node.constructorDef, node.fallbackDef, node.receiveDef];
     for (const fn of bodies) {
       if (!fn?.body) continue;
@@ -113,9 +125,12 @@ export default class HoistChainedContractCalls extends AstTraversal {
   visitMethodCall(node: MethodCallNode): Node {
     const visited = super.visitMethodCall(node) as MethodCallNode; // hoist nested receivers first
     const obj = visited.object;
-    if (obj instanceof FunctionCallNode && obj.identifier.name.includes('.') && !visited.callOptions) {
-      const ret = this.getterReturnType(obj);
-      if (ret instanceof AddressType && ret.interfaceName) {
+    // Hoist when the receiver is itself a CALL returning a contract - `A.g()` (namespaced getter/function) or
+    // `arr[i].g()` / `s.f.g()` (a getter on a computed base). The chained `.method()` then dispatches on the
+    // typed temp via the audited interface-local path (byte-identical to the explicit `T t = <call>; t.m()`).
+    if (!visited.callOptions) {
+      const ret = this.callReturnsContract(obj);
+      if (ret) {
         const tmpName = `${PREFIX}${this.counter++}`;
         const def = new VariableDefinitionNode(ret, [], tmpName, obj);
         def.location = obj.location;
@@ -132,20 +147,43 @@ export default class HoistChainedContractCalls extends AstTraversal {
     return visited;
   }
 
-  // The contract/interface type a namespaced getter call `A.member(...)` returns: A's declared type -> its
-  // contract's `member` -> that member's type, unwrapping array/mapping levels (a Solidity array/mapping getter
-  // returns the element/value). Undefined if A is not a contract receiver or the member is unknown.
-  private getterReturnType(call: FunctionCallNode): Type | undefined {
-    const name = call.identifier.name;
-    const dot = name.indexOf('.');
-    const recv = name.slice(0, dot);
-    const member = name.slice(dot + 1);
-    const recvType = this.receiverTypes.get(recv);
-    if (!(recvType instanceof AddressType) || !recvType.interfaceName) return undefined;
-    let t = this.members.get(recvType.interfaceName)?.get(member);
-    while (t instanceof ArrayType || t instanceof MappingType) {
-      t = t instanceof ArrayType ? t.elementType : t.valueType;
+  // The contract/interface type `obj` returns IF it is a getter/function call whose result is a contract, else
+  // undefined: `A.g()` (namespaced FunctionCall) or `<expr>.g()` (a MethodCall getter on a computed base).
+  private callReturnsContract(obj: ExpressionNode): AddressType | undefined {
+    let ret: Type | undefined;
+    if (obj instanceof FunctionCallNode && obj.identifier.name.includes('.')) {
+      const dot = obj.identifier.name.indexOf('.');
+      ret = this.member(this.receiverType(new IdentifierNode(obj.identifier.name.slice(0, dot))),
+        obj.identifier.name.slice(dot + 1));
+    } else if (obj instanceof MethodCallNode) {
+      ret = this.member(this.receiverType(obj.object), obj.methodName);
     }
+    return ret instanceof AddressType && ret.interfaceName ? ret : undefined;
+  }
+
+  // The declared type of a receiver expression: a state var / param / local / hoisted temp, a struct field, an
+  // array/mapping element, or a contract member reached through any of these. Undefined if not resolvable to a
+  // known type here (mirrors resolveLowLevelReceiverType; the general shape these getter-chain edge cases share).
+  private receiverType(expr: ExpressionNode): Type | undefined {
+    if (expr instanceof IdentifierNode) return this.receiverTypes.get(expr.name);
+    if (expr instanceof ArrayAccessNode) return elementOf(this.receiverType(expr.array));
+    if (expr instanceof TupleIndexOpNode) return elementOf(this.receiverType(expr.tuple));
+    if (expr instanceof MappingAccessNode) return elementOf(this.receiverTypes.get(expr.name));
+    if (expr instanceof FieldAccessNode) {
+      const base = this.receiverType(expr.expression);
+      if (base instanceof StructType) return base.fields.find((f) => f.name === expr.name)?.type;
+      if (base instanceof AddressType && base.interfaceName) return this.member(base, expr.name);
+      return undefined;
+    }
+    if (expr instanceof FunctionCallNode || expr instanceof MethodCallNode) return this.callReturnsContract(expr);
+    return undefined;
+  }
+
+  // The type of `type.member` (a public var, or an array/mapping getter's element/value), for a contract receiver.
+  private member(type: Type | undefined, memberName: string): Type | undefined {
+    if (!(type instanceof AddressType) || !type.interfaceName) return undefined;
+    let t = this.members.get(type.interfaceName)?.get(memberName);
+    while (t instanceof ArrayType || t instanceof MappingType) t = elementOf(t);
     return t;
   }
 

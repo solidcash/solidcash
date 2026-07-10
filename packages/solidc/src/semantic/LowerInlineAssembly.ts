@@ -6,7 +6,7 @@ import {
   CastNode, IdentifierNode, IntLiteralNode, BoolLiteralNode, ParameterNode, FunctionDefinitionNode,
   StateAssignNode, StateAccessNode, StateVariableNode, ContractNode, BytesConcatNode, FunctionCallNode,
   SliceNode, CollectionNode, MappingAccessNode, MappingAssignNode, HexLiteralNode, NullaryOpNode, FieldAccessNode,
-  ReturnNode, TupleAssignmentNode, LowLevelCallNode, NewArrayNode,
+  ReturnNode, TupleAssignmentNode, LowLevelCallNode, NewArrayNode, ConsoleStatementNode,
 } from '../ast/AST.js';
 import { BinaryOperator, UnaryOperator, NullaryOperator } from '../ast/Operator.js';
 import {
@@ -911,6 +911,28 @@ function lowerStatement(stmt: YulStatementNode): StatementNode {
           const word = memory.get(ptr);
           if (word !== undefined) return loc(new ReturnNode([lowerValue(word)]), stmt);
         }
+      }
+      // log0(p,n) .. log4(p,n,t1..t4): EVM event emission. BCH has no event log; the closest facility is
+      // console.log (compile-time debug metadata, no on-chain effect). Log each indexed topic; the data region
+      // mem[p:p+n] (non-indexed fields) is dropped. log0 (data only, no topics) is a no-op.
+      const logArity = ['log0', 'log1', 'log2', 'log3', 'log4'].indexOf(e.name);
+      if (logArity >= 0 && e.args.length === logArity + 2) {
+        const topics = e.args.slice(2);
+        if (topics.length === 0) return loc(new BlockNode([]), stmt);
+        const decls: StatementNode[] = [];
+        const params: IdentifierNode[] = [];
+        for (const t of topics) {
+          let v = lowerValue(t);
+          // lowerValue wraps a UDVT-typed var in a cast; unwrap back to the bare stack var console.log can log.
+          if (v instanceof CastNode && v.expression instanceof IdentifierNode) v = v.expression;
+          if (v instanceof IdentifierNode) { params.push(v); continue; }
+          const name = `__yul_logt_${yulTmpN++}`; // computed topic: bind to a uint256 temp (Yul values are words)
+          const decl = loc(new VariableDefinitionNode(UINT256, [], name, v), stmt);
+          decl.allowUnused = true;
+          decls.push(decl);
+          params.push(loc(new IdentifierNode(name), stmt));
+        }
+        return loc(new BlockNode([...decls, loc(new ConsoleStatementNode(params), stmt)]), stmt);
       }
     }
     throw new YulNotLowerable();

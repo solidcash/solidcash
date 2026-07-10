@@ -11,8 +11,14 @@ import {
   MethodCallNode,
   BlockNode,
   FieldAccessNode,
+  ArrayAccessNode,
+  MappingAccessNode,
+  IntLiteralNode,
+  TupleIndexOpNode,
 } from '../ast/AST.js';
-import { AddressType, StructType } from '@solidcash/utils';
+import {
+  AddressType, StructType, ArrayType, MappingType, Type,
+} from '@solidcash/utils';
 import AstTraversal from '../ast/AstTraversal.js';
 import { cloneNode } from '../ast/clone.js';
 
@@ -36,10 +42,24 @@ import { cloneNode } from '../ast/clone.js';
 const PREFIX = '__extaddr_';
 const ADDRESS_METHODS = new Set(['send', 'call', 'staticcall', 'delegatecall']);
 
+// The element/value type of an array/mapping (for stepping through an access chain), else undefined.
+function elementOf(t: Type | undefined): Type | undefined {
+  if (t instanceof ArrayType) return t.elementType;
+  if (t instanceof MappingType) return t.valueType;
+  return undefined;
+}
+
+// A state root worth visiting: a struct, or an array/mapping whose element/value is a struct (one step to a
+// possible interface-typed field). Over-approximate - the chain resolver does the exact interface-field check.
+function holdsStruct(t: Type): boolean {
+  return t instanceof StructType || elementOf(t) instanceof StructType;
+}
+
 export default class SynthesizeExternalAddressLocals extends AstTraversal {
   private stateVarIface: Map<string, string> = new Map(); // interface-typed state var name -> interface name
   private plainAddrStateVars: Set<string> = new Set();    // plain-`address` state var names (no interfaceName)
-  private structStateVars: Map<string, StructType> = new Map(); // struct-typed state var name -> its struct type
+  private stateRoots: Map<string, Type> = new Map();      // state var / collection name -> declared type (self-pinned)
+  private currentParams: Set<string> = new Set();         // current function's param names (safe at body top)
   private typeNames: Set<string> = new Set();             // interface + contract names usable as a cast target
   // localName -> synthesized decl parts (init reads the self-pinned state; iface = the local's interface type)
   private usedInFn: Map<string, { iface: string; init: ExpressionNode }> = new Map();
@@ -56,14 +76,18 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
   visitContract(node: ContractNode): Node {
     this.stateVarIface = new Map();
     this.plainAddrStateVars = new Set();
-    this.structStateVars = new Map();
+    this.stateRoots = new Map();
     for (const sv of node.stateVariables) {
-      if (sv.type instanceof StructType) { this.structStateVars.set(sv.name, sv.type); continue; }
+      this.stateRoots.set(sv.name, sv.type);
       if (!(sv.type instanceof AddressType)) continue;
       if (sv.type.interfaceName) this.stateVarIface.set(sv.name, sv.type.interfaceName);
       else this.plainAddrStateVars.add(sv.name);
     }
-    if (this.stateVarIface.size > 0 || this.plainAddrStateVars.size > 0 || this.structStateVars.size > 0) {
+    for (const c of node.collections) this.stateRoots.set(c.name, c.type);
+    // A state root can hold an interface-typed field directly (struct var) or one step down (struct array
+    // element / struct mapping value) - visit the functions if any does, so a `s.field.m()` chain is hoisted.
+    const hasStructRoot = [...this.stateRoots.values()].some((t) => holdsStruct(t));
+    if (this.stateVarIface.size > 0 || this.plainAddrStateVars.size > 0 || hasStructRoot) {
       node.functions = this.visitList(node.functions) as FunctionDefinitionNode[];
       // fallback/receive are external entry points like any function (e.g. a re-entrancy fallback that calls
       // back into another contract); visit them too. The state var is already set by the time they run.
@@ -76,6 +100,7 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
   visitFunctionDefinition(node: FunctionDefinitionNode): Node {
     if (!node.body) return node;
     this.usedInFn = new Map();
+    this.currentParams = new Set(node.parameters.map((p) => p.name));
     node.body = this.visit(node.body) as BlockNode;
     if (this.usedInFn.size > 0) {
       const decls = [...this.usedInFn.entries()].map(([localName, { iface, init }]) => {
@@ -110,19 +135,23 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
   // behind an interface cast): rewrite the object to the synthesized __extaddr_ local.
   visitMethodCall(node: MethodCallNode): Node {
     const target = this.externalTargetStateVar(node.object);
-    const structTarget = target ? undefined : this.structFieldTarget(node.object);
+    const chain = target ? undefined : this.chainTarget(node.object);
     if (target && !ADDRESS_METHODS.has(node.methodName)) {
       const localName = this.markUsed(target.name, target.iface, target.isPlain, node.object);
       const loc = node.object.location;
       node.object = new IdentifierNode(localName);
       node.object.location = loc;
-    } else if (structTarget && !ADDRESS_METHODS.has(node.methodName)) {
-      // `s.target.m()` where `s` is a struct STATE var and `target` is an interface/contract-typed field:
-      // hoist the field read into a local so the audited __extaddr_ dispatch pins the co-spend to it. The
-      // field lives in self-pinned state (§4.1), so the read is sound - a caller cannot substitute it.
-      const localName = this.markUsedField(structTarget.sv, structTarget.field, structTarget.iface, node.object);
+    } else if (chain && !ADDRESS_METHODS.has(node.methodName)) {
+      // `s.field.m()` / `ss[i].field.m()` / `ms[k].field.m()` / `s.a.b.m()`: the target is an interface-typed
+      // field reached through a chain of self-pinned STATE (struct fields, array elements, mapping values). Hoist
+      // the whole field read into a local so the audited __extaddr_ dispatch pins the co-spend to it - a caller
+      // cannot substitute a self-pinned value (extcall-target-pinning.md). Indices are params/literals, so the
+      // hoisted decl is valid at the function-body top.
+      if (!this.usedInFn.has(chain.localName)) {
+        this.usedInFn.set(chain.localName, { iface: chain.iface, init: cloneNode(node.object) as ExpressionNode });
+      }
       const loc = node.object.location;
-      node.object = new IdentifierNode(localName);
+      node.object = new IdentifierNode(chain.localName);
       node.object.location = loc;
     } else {
       node.object = this.visit(node.object) as ExpressionNode;
@@ -147,26 +176,73 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
     return localName;
   }
 
-  // `s.field` where `s` is a struct STATE var and `field` is an interface/contract-typed member (sound:
-  // the field is self-pinned state). Single-level only; nested array/struct chains stay unsupported.
-  private structFieldTarget(obj: ExpressionNode): { sv: string; field: string; iface: string } | undefined {
-    if (!(obj instanceof FieldAccessNode) || !(obj.expression instanceof IdentifierNode)) return undefined;
-    const st = this.structStateVars.get(obj.expression.name);
-    if (!st) return undefined;
-    const fieldType = st.fields.find((f) => f.name === obj.name)?.type;
-    if (fieldType instanceof AddressType && fieldType.interfaceName) {
-      return { sv: obj.expression.name, field: obj.name, iface: fieldType.interfaceName };
+  // `obj` is an interface/contract-typed field reached through a chain of self-pinned STATE - a struct field,
+  // array element, or mapping value, possibly nested (`s.field`, `ss[i].field`, `ms[k].field`, `s.a.b`). Returns
+  // the interface + a stable local name (from the chain shape, so identical chains dedup). Returns undefined
+  // unless the whole chain is state-rooted with param/literal indices (sound + valid at the body top).
+  private chainTarget(obj: ExpressionNode): { iface: string; localName: string } | undefined {
+    if (!(obj instanceof FieldAccessNode)) return undefined;
+    const base = this.resolveChainType(obj.expression);
+    if (!(base instanceof StructType)) return undefined;
+    const fieldType = base.fields.find((f) => f.name === obj.name)?.type;
+    if (!(fieldType instanceof AddressType) || !fieldType.interfaceName) return undefined;
+    const key = this.chainKey(obj);
+    if (!key) return undefined;
+    return { iface: fieldType.interfaceName, localName: `${PREFIX}${key}` };
+  }
+
+  // The declared type of a state-rooted access chain (self-pinned): a state var / collection identifier, a
+  // struct field of one, or an array element / mapping value (indexed only by a param or literal, so the read
+  // stays valid when hoisted to the body top). Returns undefined for anything else (a local, an unsafe index).
+  private resolveChainType(expr: ExpressionNode): Type | undefined {
+    if (expr instanceof IdentifierNode) return this.stateRoots.get(expr.name);
+    if (expr instanceof FieldAccessNode) {
+      const base = this.resolveChainType(expr.expression);
+      return base instanceof StructType ? base.fields.find((f) => f.name === expr.name)?.type : undefined;
+    }
+    if (expr instanceof MappingAccessNode) { // pre-semantic `x[i]` (array-vs-mapping not yet resolved)
+      if (!expr.keys.every((k) => this.indexSafe(k))) return undefined;
+      return elementOf(this.stateRoots.get(expr.name));
+    }
+    if (expr instanceof ArrayAccessNode) {
+      if (!this.indexSafe(expr.index)) return undefined;
+      return elementOf(this.resolveChainType(expr.array));
+    }
+    if (expr instanceof TupleIndexOpNode) { // a numeric-literal array index (`ss[0]`) parses as this; always safe
+      return elementOf(this.resolveChainType(expr.tuple));
     }
     return undefined;
   }
 
-  // Record a synthesized `IFace __extaddr_<sv>_<field> = s.field;` local (the init reads self-pinned state).
-  private markUsedField(sv: string, field: string, iface: string, fieldAccess: ExpressionNode): string {
-    const localName = `${PREFIX}${sv}_${field}`;
-    if (!this.usedInFn.has(localName)) {
-      this.usedInFn.set(localName, { iface, init: cloneNode(fieldAccess) as ExpressionNode });
+  // An index safe to evaluate at the function-body top: a literal, or a param (params are in scope there); NOT
+  // a local (declared later) - hoisting a local-indexed read would reference an undeclared name.
+  private indexSafe(e: ExpressionNode): boolean {
+    return e instanceof IntLiteralNode
+      || (e instanceof IdentifierNode && (this.currentParams.has(e.name) || this.stateRoots.has(e.name)));
+  }
+
+  // A stable underscore-joined name fragment for an access chain (root + fields + literal/param indices), so two
+  // syntactically-identical chains map to the same synthesized local. Undefined if any part is not name-able.
+  private chainKey(expr: ExpressionNode): string | undefined {
+    if (expr instanceof IdentifierNode) return expr.name;
+    if (expr instanceof IntLiteralNode) return String(expr.value);
+    if (expr instanceof FieldAccessNode) {
+      const base = this.chainKey(expr.expression);
+      return base && `${base}_${expr.name}`;
     }
-    return localName;
+    if (expr instanceof MappingAccessNode) {
+      const keys = expr.keys.map((k) => this.chainKey(k));
+      return keys.every((k) => k) ? `${expr.name}_${keys.join('_')}` : undefined;
+    }
+    if (expr instanceof ArrayAccessNode) {
+      const arr = this.chainKey(expr.array); const idx = this.chainKey(expr.index);
+      return arr && idx ? `${arr}_${idx}` : undefined;
+    }
+    if (expr instanceof TupleIndexOpNode) {
+      const t = this.chainKey(expr.tuple);
+      return t ? `${t}_${expr.index}` : undefined;
+    }
+    return undefined;
   }
 
   // The state-var external target of `obj`, if any:

@@ -304,3 +304,46 @@ describe('external call on a struct-field target (s.field.m())', () => {
     )).toThrow();
   });
 });
+
+describe('external call on a state-rooted access-chain target (ss[i].f.m(), ms[k].f.m(), s.a.b.m())', () => {
+  const IF = 'interface IFoo { function m() external returns (uint); }\n';
+  const opts = { solidityImportCompat: true };
+  // Each chain hoists to `IFoo x = <chain>; x.m()` - byte-identical to the manual hoist that uses the audited
+  // interface-local dispatch (sound by reduction; every step is self-pinned state).
+
+  it('struct-array element: ss[0].target.m()', () => {
+    const auto = compileString(
+      `${IF}struct S { IFoo target; } contract C { S[] ss; function f() public returns (uint) { return ss[0].target.m(); } }`, opts,
+    );
+    const manual = compileString(
+      `${IF}struct S { IFoo target; } contract C { S[] ss; function f() public returns (uint) { IFoo x = ss[0].target; return x.m(); } }`, opts,
+    );
+    expect(auto.bytecode).toBe(manual.bytecode);
+  });
+
+  it('struct-mapping value with a param key: ms[k].target.m()', () => {
+    const auto = compileString(
+      `${IF}struct S { IFoo target; } contract C { mapping(uint => S) ms; function f(uint k) public returns (uint) { return ms[k].target.m(); } }`, opts,
+    );
+    const manual = compileString(
+      `${IF}struct S { IFoo target; } contract C { mapping(uint => S) ms; function f(uint k) public returns (uint) { IFoo x = ms[k].target; return x.m(); } }`, opts,
+    );
+    expect(auto.bytecode).toBe(manual.bytecode);
+  });
+
+  it('nested struct field: s.inner.target.m()', () => {
+    const auto = compileString(
+      `${IF}struct Inner { IFoo target; } struct S { Inner inner; } contract C { S s; function f() public returns (uint) { return s.inner.target.m(); } }`, opts,
+    );
+    const manual = compileString(
+      `${IF}struct Inner { IFoo target; } struct S { Inner inner; } contract C { S s; function f() public returns (uint) { IFoo x = s.inner.target; return x.m(); } }`, opts,
+    );
+    expect(auto.bytecode).toBe(manual.bytecode);
+  });
+
+  it('gates out a LOCAL-indexed chain (not body-top safe): stays unsupported', () => {
+    expect(() => compileString(
+      `${IF}struct S { IFoo target; } contract C { S[] ss; function f() public returns (uint) { uint i = 0; return ss[i].target.m(); } }`, opts,
+    )).toThrow();
+  });
+});

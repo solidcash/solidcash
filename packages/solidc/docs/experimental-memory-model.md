@@ -137,7 +137,10 @@ full suite with the flag forced on and getting ZERO new failures.
   deserialized into a buffer at entry (inverse of the P3 boundary) so the helper mutates it by reference; only
   non-inlinable functions are materialized so an inline source is never mutated (74d9267f). VM-testing (4) with a
   real array arg needed first-class SDK array arguments (commit 28f4754b) - `encodeFunctionArgument` delegates a
-  JS-array arg to `encodePushdataValue`, matching the covenant decode.
+  JS-array arg to `encodePushdataValue`, matching the covenant decode. Struct args followed (commit 3c4418a2): a
+  struct param accepts an object `{x,y}` or a positional tuple `[x,y]` (Solidity's ABI-tuple form), and the struct
+  field layout is now emitted at the artifact TOP LEVEL (`artifact.structs`) so stateless contracts - which have no
+  `stateLayout` - can encode struct args; the SDK reads `artifact.structs ?? stateLayout.structs`.
 - **P5a value-field structs - DONE + VM.** A `struct memory` with all-256-bit-int fields is a pointer to a block
   of field words: construct (`S(..)` -> malloc + store each), member read (`s.f` -> mload at `s+32*i`), field
   write (`s.f=v` desugars to `s=S(s.f0,v,..)` -> store each arg via read-all-into-temps-then-store so a

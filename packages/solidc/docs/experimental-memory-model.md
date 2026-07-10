@@ -65,6 +65,18 @@ Boundaries that MUST serialize (else the pointer leaks as a small integer = wron
 `this.x = a` (state write), entry-point `return a`, `abi.encode(a)`/`abi.encodePacked`, external `IFoo(x).m(a)`.
 Solidity serializes contents at exactly these points; matching it here closes the correctness gap.
 
+IMPORTANT (reframing after P2.5): the safety gate ALREADY makes all of these correct - a boundary use taints
+the array, which then falls back to the value-copy path. So the `abi.encode` silent miscompile and the
+return/state breaks are CLOSED by fallback. P3 serialization is therefore a COVERAGE/perf expansion - it lets an
+array that is BOTH mutated and returned/stored/encoded use the pointer model for the mutations and serialize at
+the exit, instead of falling back entirely. Not correctness-critical.
+
+Serialization detail: value-copy packs a `uint256` element at `byteWidth = ceil(257/8) = 33` bytes (not 32), so
+either (a) serialize with a runtime loop re-encoding each 32-byte word to the 33-byte packed element + a
+minimal-push length prefix, or (b) store elements in the buffer at the packed width behind the fixed 32-byte
+header so serialize is a straight-line prefix swap `pushdata(len) ++ block[32:]` (redesign of P1/P2 element
+encoding, needs re-VM-verify). (b) is cleaner long-term.
+
 ## 5. Internal pass-by-reference
 
 Solidity passes memory args to internal functions BY REFERENCE (callee mutations visible). Two sound lowerings:
@@ -93,10 +105,13 @@ full suite with the flag forced on and getting ZERO new failures.
 - **P1 foundation - DONE + VM.** flag; runtime `new bytes(n)` (`NewArrayNode.rawBytes`); pass skeleton.
 - **P2 dynamic arrays (int/uint) - DONE + VM.** new/index-rw/length/aliasing. Gotchas: literal index `a[0]` is a
   TupleIndexOp (not ArrayAccess); `a.length` is UnaryOp(SIZE); every emitted node needs a stamped `.location`.
-- **P2.5 SAFETY GATE - IN PROGRESS.** SS6 convertibility analysis; makes flag-on non-regressing. Verify: corpus +
-  suite flag-forced-on = zero new failures.
-- **P3 boundary serialization - TODO.** SS4 serialize/deserialize + intercept state/return/abi.encode/extcall.
-  Closes the `abi.encode` silent miscompile and the `return`/state compile-breaks.
+- **P2.5 SAFETY GATE - DONE + VERIFIED.** SS6 convertibility analysis (candidate fixpoint + union-find alias
+  groups + taint walk over identifier AND name-keyed uses). Restricted handled element to 256-bit int/uint;
+  `.length` decodes as bigint; `delete d[i]` lowers in place. VERIFIED non-regressing with the flag FORCE-ON:
+  1906/1906 solidc tests + corpus 3837/4876 (>= 3834 baseline, ZERO new failures). This closes ALL correctness
+  gaps (unhandled uses fall back to value-copy) and is the prerequisite for default-on.
+- **P3 boundary serialization - TODO (COVERAGE, not correctness - see SS4).** SS4 serialize + intercept
+  state/return/abi.encode/extcall, marking them HANDLED so a mutated-then-exported array need not fall back.
 - **P4 internal pass-by-ref - TODO.** SS5 inline-or-thread. Closes `g(a)`.
 - **P5 structs + nested chains - TODO.** SS3 for `s.f`, `s.ts[j].y` (the original target). Ref fields hold pointers.
 - **P6 bytes/string memory, wider element types - TODO.**

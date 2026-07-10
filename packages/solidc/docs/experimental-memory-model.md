@@ -118,8 +118,19 @@ full suite with the flag forced on and getting ZERO new failures.
   write (`s.f=v` desugars to `s=S(s.f0,v,..)` -> store each arg via read-all-into-temps-then-store so a
   self-referential rebuild/swap matches value-copy). Only a genuine `S(..)` ctor for s's own type converts
   (`s=someFn()` falls back). Aliasing + reference fields fall back via the gate. VM: MemoryModelStruct.test.ts.
-- **P5b struct reference fields + nested chains - TODO (the original target `s.ts[j].y`).** SS3: ref fields hold
-  pointers; the address-chain lvalue. This is where the value-copy nested-write miscompile gets fixed.
+- **P5b-arrays: array of value-field structs - DONE + VM.** `T[] memory arr` (T a value-field struct) is a
+  length-prefixed block of struct POINTERS (separate `memStructArrays` track so value-element ops are untouched).
+  `arr[i]=T(..)` -> alloc a T block + store its pointer at arr[i]; `arr[i].f=v` (MappingFieldAssignNode, lowered
+  BEFORE DesugarNestedArrayWrite) -> a SINGLE in-place store at `mload(arr+32+i*32) + 32*fieldIdx` (the clean SS3
+  approach - this is exactly the case value-copy MISCOMPILES via element-rebuild); `arr[i].f` read -> mload same
+  addr; `arr.length` handled. Gate: standalone `arr[i]` (whole-struct read) taints (fall back); only `arr[i].f`
+  chains + `arr[i]=T(..)` ctor convert. VM: MemoryModelStructArray.test.ts (elem field-write composition +
+  loop build/update). NOTE: forced-on breaks one byte-identity test (StructsMappings `arr[i].f=v` == `arr[i]=S(..)`)
+  BY DESIGN - the memory model lowers the two forms differently (in-place vs rebuild), both correct; flag-off
+  passes. This is the real correctness win over value-copy.
+- **P5b-fields: struct REFERENCE fields + full `s.ts[j].y` - TODO.** A struct field that is itself an array/struct
+  holds a pointer; needs member-read of a ref field to yield the pointer + the recursive resolvePtr chain. Builds
+  on P5b-arrays.
 - **P6 bytes/string memory, wider element types, struct aliasing - TODO.**
 - **DEFAULT-ON** once P2.5 holds and coverage is broad enough that the fallback set is small.
 

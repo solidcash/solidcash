@@ -13,6 +13,7 @@ import {
   TupleIndexOpNode,
   FieldAccessNode,
   MappingDeleteNode,
+  MappingFieldAssignNode,
   FunctionCallNode,
   BinaryOpNode,
   UnaryOpNode,
@@ -46,6 +47,9 @@ export default class LowerMemoryModel extends AstTraversal {
   private memArrays = new Map<string, ArrayType>();
   // Locals that are memory-model STRUCT pointers (block of 32-byte value-field words). Name -> struct type.
   private memStructs = new Map<string, StructType>();
+  // Locals that are memory-model arrays whose ELEMENTS are struct pointers (`T[] memory`, T a value-field
+  // struct). Separate track from memArrays so value-element ops stay untouched. Name -> array type.
+  private memStructArrays = new Map<string, ArrayType>();
   private usesMemory = false;
   // SAFETY GATE: names the analysis proved safe to convert this function (every use - and every alias-group
   // member's use - is a lowering we support). A candidate not in this set falls through to the value-copy path,
@@ -74,10 +78,12 @@ export default class LowerMemoryModel extends AstTraversal {
   visitFunctionDefinition(node: FunctionDefinitionNode): Node {
     const savedMem = this.memArrays;
     const savedStructs = this.memStructs;
+    const savedStructArrays = this.memStructArrays;
     const savedUses = this.usesMemory;
     const savedConv = this.convertible;
     this.memArrays = new Map();
     this.memStructs = new Map();
+    this.memStructArrays = new Map();
     this.usesMemory = false;
     this.convertible = node.body ? this.analyzeConvertible(node.body) : new Set();
     if (node.body) {
@@ -96,6 +102,7 @@ export default class LowerMemoryModel extends AstTraversal {
     }
     this.memArrays = savedMem;
     this.memStructs = savedStructs;
+    this.memStructArrays = savedStructArrays;
     this.usesMemory = savedUses;
     this.convertible = savedConv;
     return node;
@@ -111,10 +118,15 @@ export default class LowerMemoryModel extends AstTraversal {
     const roots = new Set<string>();          // decl with a fresh allocation
     const aliasSrc = new Map<string, string>(); // array decl `T[] b = a` -> b:a
     const structCands = new Map<string, StructType>(); // struct-pointer candidates -> type (no aliasing this phase)
+    const structArrayCands = new Map<string, ArrayType>(); // struct-element array candidates -> type
     const collectCandidates = (n: Node): void => {
       if (n instanceof VariableDefinitionNode && this.isHandledMemArray(n.type)) {
         if (n.expression instanceof NewArrayNode && !n.expression.rawBytes) roots.add(n.name);
         else if (n.expression instanceof IdentifierNode) aliasSrc.set(n.name, n.expression.name);
+      } else if (n instanceof VariableDefinitionNode && this.isHandledMemStructArray(n.type)
+        && n.expression instanceof NewArrayNode && !n.expression.rawBytes) {
+        roots.add(n.name);
+        structArrayCands.set(n.name, n.type as ArrayType);
       } else if (n instanceof VariableDefinitionNode && this.isHandledMemStruct(n.type)
         && (n.expression === undefined || n.expression instanceof FunctionCallNode)) {
         // A struct built by a constructor or left default. An aliased struct (`S t = s`, ident init) is NOT a
@@ -149,14 +161,44 @@ export default class LowerMemoryModel extends AstTraversal {
 
     // 3. Taint: walk every use; anything that is not a supported consumer of a candidate taints that candidate.
     const tainted = new Set<string>();
-    const isCand = (e: unknown): e is IdentifierNode => e instanceof IdentifierNode && candidates.has(e.name);
+    // A VALUE-element array candidate (index r/w yields a value): a candidate that is not a struct/struct-array.
+    const isValueArr = (e: unknown): e is IdentifierNode =>
+      e instanceof IdentifierNode && candidates.has(e.name)
+      && !structArrayCands.has(e.name) && !structCands.has(e.name);
+    // The base identifier of `arr[i]` (ArrayAccess or numeric-literal TupleIndexOp), if it is a struct-array cand.
+    const structArrBase = (e: unknown): string | undefined => {
+      if (e instanceof ArrayAccessNode && e.array instanceof IdentifierNode && structArrayCands.has(e.array.name)) {
+        return e.array.name;
+      }
+      if (e instanceof TupleIndexOpNode && e.tuple instanceof IdentifierNode && structArrayCands.has(e.tuple.name)) {
+        return e.tuple.name;
+      }
+      return undefined;
+    };
     const walk = (n: Node | undefined): void => {
       if (!n) return;
-      if (n instanceof ArrayAccessNode && isCand(n.array)) { walk(n.index); return; }
-      if (n instanceof TupleIndexOpNode && isCand(n.tuple)) return; // numeric-literal index
-      if (n instanceof UnaryOpNode && n.operator === UnaryOperator.SIZE && isCand(n.expression)) return;
-      if (n instanceof ArrayAssignNode && candidates.has(n.name)) { walk(n.index); walk(n.value); return; }
+      if (n instanceof ArrayAccessNode && isValueArr(n.array)) { walk(n.index); return; }
+      if (n instanceof TupleIndexOpNode && isValueArr(n.tuple)) return; // numeric-literal index
+      if (n instanceof UnaryOpNode && n.operator === UnaryOperator.SIZE && n.expression instanceof IdentifierNode
+        && candidates.has(n.expression.name)) return; // .length (only arrays have it; value or struct element)
+      if (n instanceof ArrayAssignNode && isValueArr(new IdentifierNode(n.name))) { walk(n.index); walk(n.value); return; }
+      // `arr[i] = T(..)` struct-element construct (only a struct ctor value is handled).
+      if (n instanceof ArrayAssignNode && structArrayCands.has(n.name)
+        && n.value instanceof FunctionCallNode
+        && n.value.identifier.name === structArrayCands.get(n.name)!.elementType.toString()) {
+        walk(n.index); walk(n.value); return;
+      }
       if (n instanceof MappingDeleteNode && candidates.has(n.name) && n.keys.length === 1) { walk(n.keys[0]); return; }
+      // `arr[i].f = v` struct-element field write (single key).
+      if (n instanceof MappingFieldAssignNode && structArrayCands.has(n.name) && n.keys.length === 1) {
+        walk(n.keys[0]); walk(n.expression); return;
+      }
+      // `arr[i].f` struct-element field read: FieldAccess over a struct-array index. Walk only the index (a
+      // numeric-literal TupleIndexOp has no index expression to walk).
+      if (n instanceof FieldAccessNode && structArrBase(n.expression) !== undefined) {
+        if (n.expression instanceof ArrayAccessNode) walk(n.expression.index);
+        return;
+      }
       // Struct member read `s.f` (handled) - its candidate expression is not a use to taint.
       if (n instanceof FieldAccessNode && n.expression instanceof IdentifierNode
         && structCands.has(n.expression.name)) return;
@@ -215,6 +257,29 @@ export default class LowerMemoryModel extends AstTraversal {
         out.push(...this.storeStructArgs(stmt.identifier, stmt.expression, structT, stmt));
         continue;
       }
+      // `arr[i] = T(..)` on a struct-element array -> allocate a T block, store its pointer at arr[i].
+      if (stmt instanceof ArrayAssignNode && this.memStructArrays.has(stmt.name)
+        && stmt.value instanceof FunctionCallNode) {
+        const structT = this.memStructArrays.get(stmt.name)!.elementType as StructType;
+        if (stmt.value.identifier.name === structT.name) {
+          const sp = `__sp_${this.counter++}`;
+          out.push(...this.allocStructBlock(sp, structT, stmt.value, stmt));
+          const addr = this.elemAddr(new IdentifierNode(stmt.name), this.visit(stmt.index) as ExpressionNode);
+          out.push(this.at(this.mstore(addr, new IdentifierNode(sp), this.uint()), stmt));
+          continue;
+        }
+      }
+      // `arr[i].f = v` on a struct-element array -> single in-place store at (arr[i] ptr) + 32*fieldIndex.
+      if (stmt instanceof MappingFieldAssignNode && this.memStructArrays.has(stmt.name) && stmt.keys.length === 1) {
+        const structT = this.memStructArrays.get(stmt.name)!.elementType as StructType;
+        const fi = this.fieldIndex(structT, stmt.fieldName);
+        if (fi >= 0) {
+          const elemPtr = this.structElemPtr(stmt.name, this.visit(stmt.keys[0]) as ExpressionNode);
+          const addr = this.fieldAddr(elemPtr, fi);
+          out.push(this.at(this.mstore(addr, this.visit(stmt.expression) as ExpressionNode, structT.fields[fi].type), stmt));
+          continue;
+        }
+      }
       out.push(this.visit(stmt) as StatementNode);
     }
     node.statements = out;
@@ -227,20 +292,23 @@ export default class LowerMemoryModel extends AstTraversal {
     const t = node.type;
     if (!this.convertible.has(node.name)) return undefined;
     if (this.isHandledMemStruct(t)) return this.lowerStructDecl(node, t as StructType);
-    if (!this.isHandledMemArray(t)) return undefined;
+    const isStructArr = this.isHandledMemStructArray(t);
+    if (!this.isHandledMemArray(t) && !isStructArr) return undefined;
     const arrT = t as ArrayType;
 
-    // Alias: `T[] memory b = a` where a is already a pointer -> `uint b = a` (share the buffer).
-    if (node.expression instanceof IdentifierNode && this.memArrays.has(node.expression.name)) {
+    // Alias: `T[] memory b = a` where a is already a pointer -> `uint b = a` (share the buffer). Value arrays only.
+    if (!isStructArr && node.expression instanceof IdentifierNode && this.memArrays.has(node.expression.name)) {
       this.usesMemory = true;
       this.memArrays.set(node.name, arrT);
       return [this.at(new VariableDefinitionNode(this.uint(), [], node.name, node.expression), node)];
     }
 
-    // Allocation: `T[] memory a = new T[](n)`.
+    // Allocation: `T[] memory a = new T[](n)`. Struct-element arrays use the same length-prefixed block (elements
+    // are pointer words, zero = null); only the tracking map differs.
     if (node.expression instanceof NewArrayNode && !node.expression.rawBytes) {
       this.usesMemory = true;
-      this.memArrays.set(node.name, arrT);
+      if (isStructArr) this.memStructArrays.set(node.name, arrT);
+      else this.memArrays.set(node.name, arrT);
       const n = node.expression.size;
       const ptr = new IdentifierNode(node.name);
       // uint a = __freeptr;
@@ -262,18 +330,23 @@ export default class LowerMemoryModel extends AstTraversal {
   // `S memory s = S(a0,..)` / `S memory s;` -> malloc(32*k) a zero-filled block, then store each constructor arg
   // (an uninitialized struct leaves the zeros = all fields default). No alias case (aliased structs fall back).
   private lowerStructDecl(node: VariableDefinitionNode, structT: StructType): StatementNode[] {
-    this.usesMemory = true;
     this.memStructs.set(node.name, structT);
+    const ctor = node.expression instanceof FunctionCallNode ? node.expression : undefined;
+    return this.allocStructBlock(node.name, structT, ctor, node);
+  }
+
+  // Allocate a struct block at `ptrName = __freeptr` (bump + grow), then store the constructor args (if any).
+  // Used by both a named struct decl and an anonymous struct-array element block.
+  private allocStructBlock(ptrName: string, structT: StructType, ctor: FunctionCallNode | undefined, src: Node):
+  StatementNode[] {
+    this.usesMemory = true;
     const size = BigInt(32 * structT.fields.length);
-    const ptr = new IdentifierNode(node.name);
-    const decl = this.at(new VariableDefinitionNode(this.uint(), [], node.name, this.mem('__freeptr')), node);
-    const bump = this.at(this.assign('__freeptr', this.add(this.mem('__freeptr'), this.intLit(size))), node);
+    const decl = this.at(new VariableDefinitionNode(this.uint(), [], ptrName, this.mem('__freeptr')), src);
+    const bump = this.at(this.assign('__freeptr', this.add(this.mem('__freeptr'), this.intLit(size))), src);
     const grow = this.at(this.assign('__memory',
-      new BytesConcatNode([this.mem('__memory'), this.rawBytes(this.intLit(size))])), node);
+      new BytesConcatNode([this.mem('__memory'), this.rawBytes(this.intLit(size))])), src);
     const out: StatementNode[] = [decl, bump, grow];
-    if (node.expression instanceof FunctionCallNode) {
-      out.push(...this.storeStructArgs(ptr, node.expression, structT, node));
-    }
+    if (ctor) out.push(...this.storeStructArgs(new IdentifierNode(ptrName), ctor, structT, src));
     return out;
   }
 
@@ -324,7 +397,7 @@ export default class LowerMemoryModel extends AstTraversal {
   // with int and uint); match it so surrounding comparisons type-check identically.
   visitUnaryOp(node: UnaryOpNode): Node {
     if (node.operator === UnaryOperator.SIZE && node.expression instanceof IdentifierNode
-      && this.memArrays.has(node.expression.name)) {
+      && (this.memArrays.has(node.expression.name) || this.memStructArrays.has(node.expression.name))) {
       const len = this.mload(new IdentifierNode(node.expression.name), this.uint());
       return this.at(new CastNode(PrimitiveType.BIGINT, len, false), node);
     }
@@ -335,13 +408,39 @@ export default class LowerMemoryModel extends AstTraversal {
   visitFieldAccess(node: FieldAccessNode): Node {
     if (node.expression instanceof IdentifierNode && this.memStructs.has(node.expression.name)) {
       const structT = this.memStructs.get(node.expression.name)!;
-      const i = structT.fields.findIndex((f) => f.name === node.name);
+      const i = this.fieldIndex(structT, node.name);
       if (i >= 0) {
         return this.at(this.mload(this.fieldAddr(new IdentifierNode(node.expression.name), i),
           structT.fields[i].type), node);
       }
     }
+    // `arr[i].f` member read on a struct-element array -> load (arr[i] ptr) + 32*fieldIndex.
+    const saElem = this.structArrayElem(node.expression);
+    if (saElem) {
+      const fi = this.fieldIndex(saElem.structT, node.name);
+      if (fi >= 0) {
+        return this.at(this.mload(this.fieldAddr(saElem.elemPtr, fi), saElem.structT.fields[fi].type), node);
+      }
+    }
     return super.visitFieldAccess(node);
+  }
+
+  // If `expr` is `arr[i]` on a struct-element array, return the element struct type + its pointer expression.
+  private structArrayElem(expr: ExpressionNode): { structT: StructType, elemPtr: ExpressionNode } | undefined {
+    let name: string | undefined;
+    let index: ExpressionNode | undefined;
+    if (expr instanceof ArrayAccessNode && expr.array instanceof IdentifierNode
+      && this.memStructArrays.has(expr.array.name)) {
+      name = expr.array.name;
+      index = this.visit(expr.index) as ExpressionNode;
+    } else if (expr instanceof TupleIndexOpNode && expr.tuple instanceof IdentifierNode
+      && this.memStructArrays.has(expr.tuple.name)) {
+      name = expr.tuple.name;
+      index = this.intLit(BigInt(expr.index));
+    }
+    if (name === undefined || index === undefined) return undefined;
+    const structT = this.memStructArrays.get(name)!.elementType as StructType;
+    return { structT, elemPtr: this.structElemPtr(name, index) };
   }
 
   // ---- desugar building blocks (all normal AST that type-checks + codegens) ----
@@ -404,6 +503,21 @@ export default class LowerMemoryModel extends AstTraversal {
   private isHandledMemStruct(t: Type | undefined): boolean {
     return t instanceof StructType
       && t.fields.every((f) => f.type instanceof IntType && f.type.bits === 256);
+  }
+
+  // An unbounded array whose elements are handled value-field structs (`T[] memory`). Elements are POINTERS.
+  private isHandledMemStructArray(t: Type | undefined): boolean {
+    return t instanceof ArrayType && t.bound === undefined && this.isHandledMemStruct(t.elementType);
+  }
+
+  // The struct-pointer stored at `arr[i]` = mload(arr + 32 + i*32).
+  private structElemPtr(arrName: string, index: ExpressionNode): ExpressionNode {
+    return this.mload(this.elemAddr(new IdentifierNode(arrName), index), this.uint());
+  }
+
+  // The field index of `f` in a struct type, or -1.
+  private fieldIndex(structT: StructType, f: string): number {
+    return structT.fields.findIndex((fld) => fld.name === f);
   }
 
   private uint(): IntType { return new IntType(false, 256); }

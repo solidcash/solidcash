@@ -599,8 +599,18 @@ export default class LowerMemoryModel extends AstTraversal {
   }
 
   // `S memory s = S(a0,..)` / `S memory s;` -> malloc(32*k) a zero-filled block, then store each constructor arg
-  // (an uninitialized struct leaves the zeros = all fields default). No alias case (aliased structs fall back).
+  // (an uninitialized struct leaves the zeros = all fields default). Pointer-valued init `S memory b = a` (alias)
+  // or `S memory tmp = base.child` (ref-field read) shares the pointer, so a field write through the new name is
+  // visible through the original (Solidity struct-reference aliasing); resolvePtr classifies the source.
   private lowerStructDecl(node: VariableDefinitionNode, structT: StructType): StatementNode[] {
+    if (node.expression && !(node.expression instanceof FunctionCallNode)) {
+      const r = this.resolvePtr(node.expression);
+      if (r && this.isHandledMemStruct(r.memType)) {
+        this.usesMemory = true;
+        this.memStructs.set(node.name, r.memType as StructType);
+        return [this.at(new VariableDefinitionNode(this.uint(), [], node.name, r.ptr), node)];
+      }
+    }
     this.memStructs.set(node.name, structT);
     const ctor = node.expression instanceof FunctionCallNode ? node.expression : undefined;
     return this.allocStructBlock(node.name, structT, ctor, node);

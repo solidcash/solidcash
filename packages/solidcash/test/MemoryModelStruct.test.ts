@@ -44,11 +44,21 @@ contract C() {
         require(s.c == 30);
         this.counter = 3;
     }
+    function aliasing() {
+        P memory a = P(1, 2, 3);
+        P memory b = a;
+        b.a = 5;
+        require(a.a == 5);
+        require(b.b == 2);
+        this.counter = 4;
+    }
 }`;
 
 describe('experimental memory model: value-field struct memory', () => {
   const opts = { experimentalMemoryModel: true };
-  const run = async (method: 'compose' | 'uninitialized' | 'swap' | 'namedFieldsReordered'): Promise<void> => {
+  const run = async (
+    method: 'compose' | 'uninitialized' | 'swap' | 'namedFieldsReordered' | 'aliasing',
+  ): Promise<void> => {
     const provider = createTestProvider();
     const artifact = compileString(SOURCE, opts);
     const contract = new Contract(artifact, [], { provider });
@@ -64,4 +74,5 @@ describe('experimental memory model: value-field struct memory', () => {
   it('zero-initializes an uninitialized struct', async () => { await run('uninitialized'); });
   it('handles a self-referential rebuild (field swap) via read-all-then-store', async () => { await run('swap'); });
   it('stores named-field construction to the right slots (reordered)', async () => { await run('namedFieldsReordered'); });
+  it('shares the buffer on a struct alias (b = a; b.f = v mutates a)', async () => { await run('aliasing'); });
 });

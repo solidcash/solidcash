@@ -98,4 +98,18 @@ describe('memory model P4: internal pass-by-reference', () => {
       }
     }`);
   });
+
+  it('struct param mutated by reference (s.f written in helper is visible in caller)', async () => {
+    await run(`contract C() {
+      int counter;
+      struct P { uint a; uint b; }
+      function g(P memory s) internal { s.a = 42; }
+      function f() {
+        P memory a = P(1, 2);
+        g(a);
+        require(a.a == 42); require(a.b == 2);
+        require(true);
+      }
+    }`);
+  });
 });

@@ -373,8 +373,9 @@ export class Contract<
         ? hexToBin(this.artifact.functionBodies[selectorHex])
         : bytecode;
 
+      const structs = this.artifact.structs ?? this.artifact.stateLayout?.structs;
       const encodedArgs = args
-        .map((arg, i) => encodeFunctionArgument(arg, argInputs[i].type, this.artifact.stateLayout?.structs));
+        .map((arg, i) => encodeFunctionArgument(arg, argInputs[i].type, structs));
 
       const generateUnlockingBytecode = (
         { transaction, sourceOutputs, inputIndex }: GenerateUnlockingBytecodeOptions,

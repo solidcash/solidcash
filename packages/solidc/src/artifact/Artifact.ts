@@ -321,6 +321,15 @@ export function generateArtifact(
 
   const bytecode = scriptToAsm(script);
 
+  // Struct field layouts (name + ordered field types). Emitted so the SDK can encode struct-typed function
+  // and constructor arguments (Solidity encodes a struct as an ABI tuple). Shared by the top-level artifact
+  // field (reachable for stateless contracts, which have no stateLayout) and the stateLayout's own copy (the
+  // stateful state machinery passes the self-contained layout around, not the whole artifact).
+  const structDefs = [...(ast.structDefinitions || []), ...contract.structDefinitions].map((sd) => ({
+    name: sd.name,
+    fields: sd.fields.map((f) => ({ name: f.name, type: f.type.toString() })),
+  }));
+
   // Build state layout if the contract has state variables or collections, or forceStateful is set (a
   // zero-state stateful contract gets an empty stateLayout so the SDK sees it as stateful and bakes the
   // master-NFT self-pin covenant; see the forceStateful compiler option).
@@ -384,15 +393,7 @@ export function generateArtifact(
             ...(coll.immutable && { immutable: true }),
           })),
       }),
-      ...(() => {
-        const allStructs = [...(ast.structDefinitions || []), ...contract.structDefinitions];
-        return allStructs.length > 0 ? {
-          structs: allStructs.map((sd) => ({
-            name: sd.name,
-            fields: sd.fields.map((f) => ({ name: f.name, type: f.type.toString() })),
-          })),
-        } : {};
-      })(),
+      ...(structDefs.length > 0 && { structs: structDefs }),
     };
   }
 
@@ -500,6 +501,7 @@ export function generateArtifact(
     ...(functionBodies && { functionBodies }),
     ...(fingerprint && { fingerprint }),
     ...(stateLayout && { stateLayout }),
+    ...(structDefs.length > 0 && { structs: structDefs }),
     ...(externalInterfaces && externalInterfaces.length > 0 && { externalInterfaces }),
     ...(events && { events }),
     ...(errors && { errors }),

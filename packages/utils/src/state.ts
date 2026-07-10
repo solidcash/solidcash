@@ -334,13 +334,18 @@ export function encodePushdataValue(
       const visited = new Set<string>(_visited);
       if (visited.has(type)) throw new Error(`Circular struct definition detected: ${type}`);
       visited.add(type);
+      // A struct value is either an object keyed by field name or a positional tuple array (Solidity's ABI
+      // tuple form); both lay out fields in declaration order. Positional recurses (a nested struct field is
+      // itself a tuple array), so mixed/nested positional forms compose.
+      const positional = Array.isArray(value);
       const record = value as StateRecord;
+      const tuple = value as StateValue[];
       const parts: Uint8Array[] = [];
-      for (const field of structDef.fields) {
-        const fieldValue = record[field.name]
+      structDef.fields.forEach((field, i) => {
+        const fieldValue = (positional ? tuple[i] : record[field.name])
           ?? getDefaultStateValue(field.type, structs);
         parts.push(encodePushdataValue(fieldValue, field.type, structs, visited));
-      }
+      });
       const totalLen = parts.reduce((acc, p) => acc + p.length, 0);
       const result = new Uint8Array(totalLen);
       let offset = 0;

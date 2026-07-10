@@ -91,9 +91,11 @@ export function createCovenantContractUnlocker(
     addressType,
   });
 
-  // Covenant args are always plain values (never SignatureTemplates), so the cast is safe.
+  // Covenant args are always plain values (never SignatureTemplates), so the cast is safe. Thread the struct
+  // defs so struct-typed covenant args encode as their value-copy blob (same as the direct call path).
+  const structs = contract.artifact.structs ?? contract.artifact.stateLayout?.structs;
   const encodedArgs = args.map(
-    (arg, i) => encodeFunctionArgument(arg, abiInputs[i].type),
+    (arg, i) => encodeFunctionArgument(arg, abiInputs[i].type, structs),
   ) as Uint8Array[];
   const covenantBytecodeBytes = scriptToBytecode(covenantScript);
 

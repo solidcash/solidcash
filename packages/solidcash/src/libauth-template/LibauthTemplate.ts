@@ -19,6 +19,7 @@ import {
   AbiFunction,
   AbiInput,
   Artifact,
+  StructDefinitionInfo,
 } from '@solidcash/utils';
 import { EncodedConstructorArgument, EncodedFunctionArgument, encodeFunctionArguments } from '../Argument.js';
 import { Contract } from '../Contract.js';
@@ -41,6 +42,11 @@ import MockNetworkProvider from '../network/MockNetworkProvider.js';
 import { addHexPrefixExceptEmpty, DEFAULT_VM_TARGET, formatBytecodeForDebugging, formatFunctionBodyForDebugging, formatParametersForDebugging, getBodyLockScriptName, getBodyUnlockScriptName, getLockScriptName, getSignatureAndPubkeyFromP2PKHInput, getUnlockScriptName, serialiseTokenDetails } from './utils.js';
 
 // TODO: Add / improve descriptions throughout the template generation
+
+// Struct field layouts for encoding struct-typed args in the debug template. Top-level `structs` covers
+// stateless contracts (no stateLayout); the stateLayout's copy is the fallback for stateful ones.
+const structsOf = (contract: Contract): readonly StructDefinitionInfo[] | undefined =>
+  contract.artifact.structs ?? contract.artifact.stateLayout?.structs;
 
 // For OP_INVOKE contracts, libauth's Key-based signing computes coveredBytecode from the full
 // redeemScript, but OP_INVOKE changes state.instructions so OP_CHECKSIG uses the function body
@@ -92,7 +98,9 @@ export const getLibauthTemplate = (
     const contract = input.unlocker.contract;
     if (!contract.artifact.functionBodies || Object.keys(contract.artifact.functionBodies).length === 0) return;
 
-    const encodedArgs = encodeFunctionArguments(input.unlocker.abiFunction, input.unlocker.params ?? []);
+    const encodedArgs = encodeFunctionArguments(
+      input.unlocker.abiFunction, input.unlocker.params ?? [], undefined, structsOf(contract),
+    );
     const resolvedArgs = resolveArgsForOpInvoke(
       contract, input.unlocker.abiFunction, encodedArgs, libauthTransaction, inputIndex,
     );
@@ -105,7 +113,10 @@ export const getLibauthTemplate = (
     if (!isStandardUnlockableUtxo(input) || !isContractUnlocker(input.unlocker)) return;
     if (!input.unlocker.contract.artifact.functionBodies
       || Object.keys(input.unlocker.contract.artifact.functionBodies).length === 0) return;
-    originalArgsMap.set(inputIndex, encodeFunctionArguments(input.unlocker.abiFunction, input.unlocker.params ?? []));
+    originalArgsMap.set(inputIndex, encodeFunctionArguments(
+      input.unlocker.abiFunction, input.unlocker.params ?? [], undefined,
+      structsOf(input.unlocker.contract),
+    ));
   });
 
   const vmTarget = transactionBuilder.provider instanceof MockNetworkProvider
@@ -153,7 +164,10 @@ const generateAllTemplateEntities = (
 
     if (isContractUnlocker(input.unlocker)) {
       const encodedArgs = resolvedArgsMap.get(inputIndex)
-        ?? encodeFunctionArguments(input.unlocker.abiFunction, input.unlocker.params ?? []);
+        ?? encodeFunctionArguments(
+          input.unlocker.abiFunction, input.unlocker.params ?? [], undefined,
+          structsOf(input.unlocker.contract),
+        );
       const p2shEntities = generateTemplateEntitiesP2SH(
         input.unlocker.contract, input.unlocker.abiFunction, encodedArgs, inputIndex,
       );
@@ -187,7 +201,10 @@ const generateAllTemplateScripts = (
 
     if (isContractUnlocker(input.unlocker)) {
       const encodedArgs = resolvedArgsMap.get(inputIndex)
-        ?? encodeFunctionArguments(input.unlocker.abiFunction, input.unlocker.params ?? []);
+        ?? encodeFunctionArguments(
+          input.unlocker.abiFunction, input.unlocker.params ?? [], undefined,
+          structsOf(input.unlocker.contract),
+        );
       const p2shScripts = generateTemplateScriptsP2SH(
         input.unlocker.contract,
         input.unlocker.abiFunction,
@@ -249,7 +266,10 @@ const generateAllTemplateScenarios = (
 
     if (isContractUnlocker(input.unlocker)) {
       const encodedArgs = resolvedArgsMap.get(inputIndex)
-        ?? encodeFunctionArguments(input.unlocker.abiFunction, input.unlocker.params ?? []);
+        ?? encodeFunctionArguments(
+          input.unlocker.abiFunction, input.unlocker.params ?? [], undefined,
+          structsOf(input.unlocker.contract),
+        );
       const p2shScenarios = generateTemplateScenarios(
         input.unlocker.contract,
         libauthTransaction,
@@ -611,7 +631,9 @@ const generateUnlockingScriptParams = (
 
   const abiFunction = csInput.unlocker.abiFunction;
   const contract = csInput.unlocker.contract;
-  let encodedFunctionArgs: EncodedFunctionArgument[] = encodeFunctionArguments(abiFunction, csInput.unlocker.params);
+  let encodedFunctionArgs: EncodedFunctionArgument[] = encodeFunctionArguments(
+    abiFunction, csInput.unlocker.params, undefined, structsOf(contract),
+  );
 
   // For OP_INVOKE contracts, extract pre-computed signatures from the built transaction
   // because libauth's Key-based signing uses the wrong coveredBytecode

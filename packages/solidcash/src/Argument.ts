@@ -35,6 +35,18 @@ export function encodeFunctionArgument(
   typeStr: string,
   structs?: readonly StructDefinitionInfo[],
 ): EncodedFunctionArgument {
+  // Struct-typed parameter (Solidity encodes a struct as an ABI tuple): accept an object keyed by field name
+  // or a positional tuple array - both are valid Solidity/ethers forms. Delegate to the shared pushdata
+  // encoder, which lays fields out in declaration order exactly as the covenant's value-copy struct decode
+  // expects. Checked before the array branch so a positional struct tuple is not mistaken for an array.
+  const structDef = structs?.find((s) => s.name === typeStr);
+  if (structDef) {
+    const isObject = typeof argument === 'object'
+      && !(argument instanceof Uint8Array) && !(argument instanceof SignatureTemplate);
+    if (!isObject) throw new TypeError(typeof argument, typeStr);
+    return encodePushdataValue(argument as StateValue, typeStr, structs);
+  }
+
   // Array-typed parameter (`uint[]`, `int[][]`, `T[]`): encode the value-copy array the covenant decodes -
   // a length prefix followed by packed fixed-width elements (or per-element encodings) - via the shared
   // pushdata encoder, so it matches the compiler's runtime array layout / state encoding exactly.
@@ -149,8 +161,9 @@ export const encodeConstructorArguments = (
     throw new Error('Cannot use signatures in constructor');
   }
 
+  const structs = artifact.structs ?? artifact.stateLayout?.structs;
   const encodedArgs = constructorArgs
-    .map((arg, i) => encodeFunction(arg, artifact.constructorInputs[i].type, artifact.stateLayout?.structs));
+    .map((arg, i) => encodeFunction(arg, artifact.constructorInputs[i].type, structs));
 
   return encodedArgs as Uint8Array[];
 };

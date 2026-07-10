@@ -378,6 +378,7 @@ export interface Artifact {
   functionBodies?: Record<string, string>; // selector hex -> hex-encoded function body bytecode
   fingerprint?: string; // SHA256 of the normalized bytecode pattern (BCH bytecode fingerprinting standard)
   stateLayout?: StateLayout;
+  structs?: readonly StructDefinitionInfo[];  // struct field layouts for encoding struct-typed args (ABI tuple)
   externalInterfaces?: readonly ExternalInterfaceInfo[];
   events?: readonly EventDefinitionAbi[];
   errors?: readonly ErrorDefinitionAbi[];

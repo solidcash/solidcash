@@ -119,7 +119,15 @@ full suite with the flag forced on and getting ZERO new failures.
   abi.encode / extcall boundaries DEFERRED as narrow completeness: abi.encode(a) is already byte-identical
   flag-on/off (gate -> value-copy -> encodes CONTENTS not pointer), and the boundary is expression-context hoisting
   with low value (alias-then-encode is rare, common case already correct).
-- **P4 internal pass-by-ref - TODO.** SS5 inline-or-thread. Closes `g(a)`.
+- **P4 internal pass-by-ref - DONE + VM (commit e515120b).** A memory array passed to an internal VOID helper
+  mutates in place (Solidity pass-by-ref; value-copy passed a COPY, a silent divergence). Rather than a
+  calling-convention change, a `g(a)` statement call to an eligible helper is replaced BEFORE the gate with an
+  inlined scoped block `{ T[] memory __inl_x = a; <g body, locals renamed> }`. The binding is the memory model's
+  own alias decl, so convert -> pass-by-ref (shared buffer) and fallback -> value copy (non-regress) fall out of
+  the existing gate; the union-find ties `__inl_x` to `a` atomically. Narrow v1: internal/private, void, no
+  `return`, not self-recursive, no custom modifiers, a memory-ref param, and only when a memory-ref LOCAL is
+  passed. Params/locals renamed per call site. Open v2: value-returning helpers, caller-param arrays,
+  multi-level/mutual recursion, struct params.
 - **P5a value-field structs - DONE + VM.** A `struct memory` with all-256-bit-int fields is a pointer to a block
   of field words: construct (`S(..)` -> malloc + store each), member read (`s.f` -> mload at `s+32*i`), field
   write (`s.f=v` desugars to `s=S(s.f0,v,..)` -> store each arg via read-all-into-temps-then-store so a

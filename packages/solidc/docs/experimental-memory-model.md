@@ -110,8 +110,15 @@ full suite with the flag forced on and getting ZERO new failures.
   `.length` decodes as bigint; `delete d[i]` lowers in place. VERIFIED non-regressing with the flag FORCE-ON:
   1906/1906 solidc tests + corpus 3837/4876 (>= 3834 baseline, ZERO new failures). This closes ALL correctness
   gaps (unhandled uses fall back to value-copy) and is the prerequisite for default-on.
-- **P3 boundary serialization - TODO (COVERAGE, not correctness - see SS4).** SS4 serialize + intercept
-  state/return/abi.encode/extcall, marking them HANDLED so a mutated-then-exported array need not fall back.
+- **P3 boundary serialization - RETURN + STATE-WRITE DONE + VM (COVERAGE, not correctness - see SS4).** `return a`
+  and native `this.s = a` on a memory value-array no longer taint it: it stays a pointer (aliasing/composition work
+  through the body) and a shared `serializeArray` helper emits `uint[] __ser = new uint[](a.length); while(i<len)
+  __ser[i]=a[i];` at the boundary (reuses the value-copy `new T[]`+writes path, each elem mload'd from the buffer -
+  no manual packed re-encode). State-write is native `this.s=a` only: bare `s=a` under solidityImportCompat is an
+  AssignNode at AstBuilder time (state resolution is later, in SymbolTable) so it stays on value-copy fallback.
+  abi.encode / extcall boundaries DEFERRED as narrow completeness: abi.encode(a) is already byte-identical
+  flag-on/off (gate -> value-copy -> encodes CONTENTS not pointer), and the boundary is expression-context hoisting
+  with low value (alias-then-encode is rare, common case already correct).
 - **P4 internal pass-by-ref - TODO.** SS5 inline-or-thread. Closes `g(a)`.
 - **P5a value-field structs - DONE + VM.** A `struct memory` with all-256-bit-int fields is a pointer to a block
   of field words: construct (`S(..)` -> malloc + store each), member read (`s.f` -> mload at `s+32*i`), field

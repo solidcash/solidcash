@@ -266,3 +266,41 @@ describe('try/catch around a VOID external call', () => {
     expect(tryForm.bytecode).toBe(stmtForm.bytecode);
   });
 });
+
+describe('external call on a struct-field target (s.field.m())', () => {
+  const IF = 'interface IFoo { function m() external returns (uint); }\n';
+  const opts = { solidityImportCompat: true };
+
+  it('compiles a call on an interface-typed struct STATE-var field', () => {
+    const a = compileString(
+      `${IF}struct S { IFoo target; uint x; } contract C { S s; function f() public returns (uint) { return s.target.m(); } }`,
+      opts,
+    );
+    expect(a.contractName).toBe('C');
+    const f = a.abi.find((fn) => fn.name === 'f')!;
+    // The field read is hoisted into a synthesized __extaddr_ local that the dispatch PICKs (never a caller
+    // witness); the sound self-pinned-state form records addressParam, not addressLiteral.
+    expect(f.externalCalls?.[0]?.addressParam).toBe('__extaddr_s_target');
+    expect(f.externalCalls?.[0]?.addressLiteral).toBeUndefined();
+  });
+
+  it('is byte-identical to the explicit __extaddr_ hoist (sound by reduction)', () => {
+    const auto = compileString(
+      `${IF}struct S { IFoo target; uint x; } contract C { S s; function f() public returns (uint) { return s.target.m(); } }`,
+      opts,
+    );
+    const manual = compileString(
+      `${IF}struct S { IFoo target; uint x; } contract C { S s; function f() public returns (uint) `
+      + `{ IFoo __extaddr_s_target = s.target; return __extaddr_s_target.m(); } }`,
+      opts,
+    );
+    expect(auto.bytecode).toBe(manual.bytecode);
+  });
+
+  it('leaves a memory-struct-param field unsupported (conservative gate: not self-pinned state)', () => {
+    expect(() => compileString(
+      `${IF}struct S { IFoo target; } contract C { function f(S memory s) public returns (uint) { return s.target.m(); } }`,
+      opts,
+    )).toThrow();
+  });
+});

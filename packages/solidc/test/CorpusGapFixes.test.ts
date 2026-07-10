@@ -1548,3 +1548,20 @@ describe('contract/interface type as a mapping VALUE type', () => {
     expect(cc('contract Ev {} contract C { mapping(bytes32 => Ev) public events; }')).toBe('C');
   });
 });
+
+describe('external call on the current contract type (self-type)', () => {
+  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  it('calls another instance of the contract via a cast to its own type (M(addr).m())', () => {
+    expect(cc('contract M { uint x; function set(uint c) public { x = c; }'
+      + ' function upgrade(address a) public { M(a).set(x); } }')).toBe('M');
+    expect(cc('contract M { uint x; function set(uint c) public { x = c; }'
+      + ' function upgrade(address a) public { M u = M(a); u.set(x); } }')).toBe('M');
+  });
+  it('leaves this.method() self-calls working', () => {
+    expect(cc('contract M { uint x; function set(uint c) public { x = c; } function f() public { this.set(1); } }'))
+      .toBe('M');
+  });
+  it('still rejects an interface inheriting a contract (solc parity)', () => {
+    expect(() => cc('contract C {} interface I is C {}')).toThrow();
+  });
+});

@@ -422,19 +422,34 @@ export default class SymbolTableTraversal extends AstTraversal {
       this.interfaceMap.set(iface.name, iface);
     }
 
-    // Synthesize InterfaceNode from each imported contract (for external call/read support)
+    // Synthesize InterfaceNode from each imported contract (for external call/read support). A contract used as
+    // a callee is registered so `IFoo(addr).m()` / `contractVar.m()` resolve; tracked so it is NOT accepted as an
+    // interface-inheritance parent (solc: "Interfaces can only inherit from other interfaces").
+    const contractDerivedIface = new Set<string>();
     for (const imported of node.importedContracts) {
       if (!this.interfaceMap.has(imported.name)) {
         const synthesized = this.synthesizeInterfaceFromContract(imported);
         this.interfaceMap.set(imported.name, synthesized);
         node.interfaceDefinitions.push(synthesized);
+        contractDerivedIface.add(imported.name);
       }
+    }
+    // The current contract can call ANOTHER instance of its OWN type (`M(addr).m()` - valid Solidity: a contract
+    // invoking a sibling deployment of itself, e.g. Migrations upgrading to a new Migrations). Synthesize its
+    // interface too so the external-call dispatch resolves it (a `this.m()` self-call is a separate path).
+    if (node.contract && !this.interfaceMap.has(node.contract.name)) {
+      const synthesized = this.synthesizeInterfaceFromContract(node.contract);
+      this.interfaceMap.set(node.contract.name, synthesized);
+      node.interfaceDefinitions.push(synthesized);
+      contractDerivedIface.add(node.contract.name);
     }
 
     // Validate interface parent references (after all interfaces are registered)
     for (const iface of node.interfaceDefinitions) {
+      if (contractDerivedIface.has(iface.name)) continue; // a synthesized contract stub, not a user interface
       for (const parentName of iface.parents) {
-        if (!this.interfaceMap.has(parentName)) {
+        // An interface may only inherit interfaces - a contract-derived stub is not a valid parent (solc TypeError).
+        if (!this.interfaceMap.has(parentName) || contractDerivedIface.has(parentName)) {
           throw new UndefinedInterfaceError(iface, parentName);
         }
       }

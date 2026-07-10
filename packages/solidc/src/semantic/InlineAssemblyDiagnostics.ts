@@ -44,6 +44,8 @@ const LOWERABLE_BUILTINS = new Set<string>([
   'sload', 'sstore', 'tload', 'tstore', 'mload', 'mstore',
   // mcopy + msize lower via the runtime __yulmem buffer (P7); mstore8 is still deferred.
   'mcopy', 'msize',
+  // log0-log4 (EVM LOG opcodes = event emission) lower to an anonymous __YulLog event NFT.
+  'log0', 'log1', 'log2', 'log3', 'log4',
   'calldataload', 'calldatasize', 'keccak256', 'erc7201', 'revert',
   // nullary context builtins -> msg.*/tx.*/block.* NullaryOps
   'caller', 'callvalue', 'origin', 'gasprice', 'chainid', 'number', 'timestamp', 'difficulty',

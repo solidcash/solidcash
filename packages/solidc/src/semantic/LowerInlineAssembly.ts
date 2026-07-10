@@ -6,7 +6,7 @@ import {
   CastNode, IdentifierNode, IntLiteralNode, BoolLiteralNode, ParameterNode, FunctionDefinitionNode,
   StateAssignNode, StateAccessNode, StateVariableNode, ContractNode, BytesConcatNode, FunctionCallNode,
   SliceNode, CollectionNode, MappingAccessNode, MappingAssignNode, HexLiteralNode, NullaryOpNode, FieldAccessNode,
-  ReturnNode, TupleAssignmentNode, LowLevelCallNode, NewArrayNode, ConsoleStatementNode,
+  ReturnNode, TupleAssignmentNode, LowLevelCallNode, NewArrayNode, EmitStatementNode, EventDefinitionNode,
 } from '../ast/AST.js';
 import { BinaryOperator, UnaryOperator, NullaryOperator } from '../ast/Operator.js';
 import {
@@ -230,6 +230,12 @@ let yulMemUsed = false;
 let yulTmpN = 0;
 const YULMEM = '__yulmem';
 
+// A Yul log0-log4 (EVM LOG opcodes = event emission) was lowered in the current contract: emit its topics + data
+// region as an anonymous event NFT. Set while lowering; the `event __YulLog(bytes) anonymous` decl is synthesized
+// in visitContract afterward. NOT diagnostics - `console.log` is a separate facility.
+let logEventUsed = false;
+const YUL_LOG_EVENT = '__YulLog';
+
 const yulmem = (src: YulNode): IdentifierNode => loc(new IdentifierNode(YULMEM), src);
 const memLen = (src: YulNode): ExpressionNode => loc(new UnaryOpNode(UnaryOperator.SIZE, yulmem(src)), src);
 const addE = (l: ExpressionNode, r: ExpressionNode, src: YulNode): ExpressionNode =>
@@ -368,6 +374,36 @@ function lowerKeccak(call: YulFunctionCallNode): ExpressionNode {
   }
   const concat = loc(new BytesConcatNode(words), call);
   return loc(new FunctionCallNode(loc(new IdentifierNode('keccak256'), call), [concat]), call);
+}
+
+// Build the anonymous-event emit for a Yul log0-log4: `emit __YulLog(topics ++ mem[p:p+len])`. Each topic is a
+// 32-byte word; the data region reuses the keccak reconstruction (constant word-concat, or a runtime __yulmem
+// slice). Sets logEventUsed so visitContract synthesizes the event decl. log0 has no topics but still emits data.
+function buildLogEmit(
+  topics: YulExpressionNode[], pArg: YulExpressionNode, lenArg: YulExpressionNode, src: YulNode,
+): StatementNode {
+  logEventUsed = true;
+  const parts: ExpressionNode[] = topics.map((t) => loc(new CastNode(BYTES32, lowerValue(t), false), src));
+  if (!(isIntLiteral(lenArg) && BigInt(lenArg.raw) === 0n)) {
+    if (runtimeMem) {
+      yulMemUsed = true;
+      parts.push(loc(new SliceNode(yulmem(src), lowerValue(pArg), addE(lowerValue(pArg), lowerValue(lenArg), src)), src));
+    } else if (isIntLiteral(pArg) && isIntLiteral(lenArg)) {
+      const p = BigInt(pArg.raw); const len = BigInt(lenArg.raw);
+      if (len % 32n !== 0n) throw new YulNotLowerable(); // sub-word data -> re-lower on the runtime buffer
+      for (let off = p; off < p + len; off += 32n) {
+        const v = memory.get(off);
+        if (v === undefined) throw new YulNotLowerable(); // region not fully mstore'd
+        parts.push(loc(new CastNode(BYTES32, lowerValue(v), false), src));
+      }
+    } else {
+      throw new YulNotLowerable(); // dynamic p/len -> retry on the runtime buffer
+    }
+  }
+  const data = parts.length === 0 ? loc(new HexLiteralNode(new Uint8Array(0)), src)
+    : parts.length === 1 ? parts[0]
+      : loc(new BytesConcatNode(parts), src);
+  return loc(new EmitStatementNode(YUL_LOG_EVENT, [data]), src);
 }
 
 // Yul arithmetic builtins -> solidc operators (value `a op b`).
@@ -912,27 +948,14 @@ function lowerStatement(stmt: YulStatementNode): StatementNode {
           if (word !== undefined) return loc(new ReturnNode([lowerValue(word)]), stmt);
         }
       }
-      // log0(p,n) .. log4(p,n,t1..t4): EVM event emission. BCH has no event log; the closest facility is
-      // console.log (compile-time debug metadata, no on-chain effect). Log each indexed topic; the data region
-      // mem[p:p+n] (non-indexed fields) is dropped. log0 (data only, no topics) is a no-op.
+      // log0(p,n) .. log4(p,n,t1..t4): the EVM LOG opcodes = EVENT emission (every `emit E(..)` lowers to a LOGn).
+      // Wire them to SolidCash's event NFT: emit an anonymous `__YulLog(bytes)` whose data is the topics (each a
+      // 32-byte word) concatenated with the data region mem[p:p+n]. log0 carries no topics but STILL emits its
+      // data region - it is not a no-op. The data region reuses the keccak reconstruction (constant word-concat,
+      // or a runtime `__yulmem[p:p+n]` slice).
       const logArity = ['log0', 'log1', 'log2', 'log3', 'log4'].indexOf(e.name);
       if (logArity >= 0 && e.args.length === logArity + 2) {
-        const topics = e.args.slice(2);
-        if (topics.length === 0) return loc(new BlockNode([]), stmt);
-        const decls: StatementNode[] = [];
-        const params: IdentifierNode[] = [];
-        for (const t of topics) {
-          let v = lowerValue(t);
-          // lowerValue wraps a UDVT-typed var in a cast; unwrap back to the bare stack var console.log can log.
-          if (v instanceof CastNode && v.expression instanceof IdentifierNode) v = v.expression;
-          if (v instanceof IdentifierNode) { params.push(v); continue; }
-          const name = `__yul_logt_${yulTmpN++}`; // computed topic: bind to a uint256 temp (Yul values are words)
-          const decl = loc(new VariableDefinitionNode(UINT256, [], name, v), stmt);
-          decl.allowUnused = true;
-          decls.push(decl);
-          params.push(loc(new IdentifierNode(name), stmt));
-        }
-        return loc(new BlockNode([...decls, loc(new ConsoleStatementNode(params), stmt)]), stmt);
+        return buildLogEmit(e.args.slice(2), e.args[0], e.args[1], stmt);
       }
     }
     throw new YulNotLowerable();
@@ -1137,6 +1160,7 @@ export default class LowerInlineAssembly extends AstTraversal {
   visitContract(node: ContractNode): Node {
     computeStorageLayout(node.stateVariables);
     evmStorageUsed = false;
+    logEventUsed = false;
     const result = super.visitContract(node) as ContractNode;
     // Synthesize the EVM-storage register if any assembly routed a slot to it (docs/evm-storage-parity.md).
     if (evmStorageUsed && !result.collections.some((c) => c.name === EVM_STORAGE)) {
@@ -1144,7 +1168,17 @@ export default class LowerInlineAssembly extends AstTraversal {
       mapping.location = node.location;
       result.collections.push(mapping);
     }
+    // Synthesize the anonymous event any lowered Yul log0-log4 emits into (registered by SymbolTableTraversal,
+    // which then numbers the emit + wires its event-NFT covenant like a source-level `emit`).
+    if (logEventUsed && !result.eventDefinitions.some((ev) => ev.name === YUL_LOG_EVENT)) {
+      const ev = new EventDefinitionNode(YUL_LOG_EVENT, [{ name: 'data', type: new BytesType(), indexed: false }]);
+      ev.isAnonymous = true;
+      ev.signature = `${YUL_LOG_EVENT}(bytes)`;
+      ev.location = node.location;
+      result.eventDefinitions.push(ev);
+    }
     evmStorageUsed = false;
+    logEventUsed = false;
     currentSlots = new Map();
     currentVarSlot = new Map();
     return result;

@@ -126,8 +126,15 @@ full suite with the flag forced on and getting ZERO new failures.
   own alias decl, so convert -> pass-by-ref (shared buffer) and fallback -> value copy (non-regress) fall out of
   the existing gate; the union-find ties `__inl_x` to `a` atomically. Narrow v1: internal/private, void, no
   `return`, not self-recursive, no custom modifiers, a memory-ref param, and only when a memory-ref LOCAL is
-  passed. Params/locals renamed per call site. Open v2: value-returning helpers, caller-param arrays,
-  multi-level/mutual recursion, struct params.
+  passed. Params/locals renamed per call site.
+- **P4 v2 - COMPLETE + VM.** (1) struct aliasing `S memory b = a` shares the pointer (commit bf80d498), giving
+  struct pass-by-ref for free. (2) delegation chains `f->h->g` via a fixpoint inline with a depth cap bounding
+  mutual recursion (7152e48d). (3) value-returning helpers `T n = g(a)` inline with `return E` rewritten to `n = E`
+  (74d9267f). (4) caller-param arrays: a memory-array PARAM of a non-inlinable function passed to a helper is
+  deserialized into a buffer at entry (inverse of the P3 boundary) so the helper mutates it by reference; only
+  non-inlinable functions are materialized so an inline source is never mutated (74d9267f). VM-testing (4) with a
+  real array arg needed first-class SDK array arguments (commit 28f4754b) - `encodeFunctionArgument` delegates a
+  JS-array arg to `encodePushdataValue`, matching the covenant decode.
 - **P5a value-field structs - DONE + VM.** A `struct memory` with all-256-bit-int fields is a pointer to a block
   of field words: construct (`S(..)` -> malloc + store each), member read (`s.f` -> mload at `s+32*i`), field
   write (`s.f=v` desugars to `s=S(s.f0,v,..)` -> store each arg via read-all-into-temps-then-store so a

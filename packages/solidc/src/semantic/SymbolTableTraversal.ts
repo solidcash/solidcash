@@ -6923,6 +6923,11 @@ export default class SymbolTableTraversal extends AstTraversal {
         );
         callNode.callOptions = node.callOptions;
         callNode.valueTransferIndex = node.valueTransferIndex;
+        // Same-address varying-method pointer (`f = cond ? IC(a).x : IC(a).y; v = f(args)`): carry the runtime
+        // selector so the covenant binds the co-spent method to `cond` (else it falls back to this method's
+        // compile-time selector and only the TRUE branch's co-spend verifies). Value-producing external calls
+        // reach this path, not the 7037 statement path.
+        if (node.runtimeSelector) callNode.runtimeSelector = this.visit(node.runtimeSelector) as ExpressionNode;
         if (callNode.callOptions?.value) {
           callNode.callOptions.value = this.visit(callNode.callOptions.value) as ExpressionNode;
         }

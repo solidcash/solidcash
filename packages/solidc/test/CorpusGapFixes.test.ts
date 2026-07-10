@@ -1489,3 +1489,34 @@ describe('push onto a nested flattened-struct-field array t.s.b.push() (VM in so
       + ' function f() external { t.s.b.pop(); } }')).toBe('C');
   });
 });
+
+describe('chained getter returning a contract + using-for on computed receivers', () => {
+  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  const MATH = 'library Math { function mul(uint a, uint b) internal pure returns (uint) { return a * b; }'
+    + ' function add(uint a, uint b) internal pure returns (uint) { return a + b; }'
+    + ' function mul(int a, int b) internal pure returns (int) { return a * b; } }\n';
+
+  it('calls a method on the contract a public-var getter returns (A.g().m())', () => {
+    expect(cc('contract Token { function balanceOf(address a) public returns (uint) { return 0; } }'
+      + ' contract Event { Token public collateralToken; }'
+      + ' contract C { Event ev; function f() public returns (uint)'
+      + ' { return ev.collateralToken().balanceOf(address(this)); } }')).toBe('C');
+  });
+
+  it('resolves a chained getter on a contract-typed LOCAL (market = markets[i])', () => {
+    expect(cc('contract Token { function approve(address a, uint v) public returns (bool) { return true; } }'
+      + ' contract Event { Token public collateralToken; }'
+      + ' contract C { Event[] markets; function f(uint i) public returns (bool)'
+      + ' { Event m = markets[i]; return m.collateralToken().approve(address(this), 1); } }')).toBe('C');
+  });
+
+  it('resolves using-for on an arithmetic-expression receiver ((a-b).mul(c))', () => {
+    expect(cc(`${MATH}contract C { using Math for *;`
+      + ' function f(uint a, uint b, uint c) public pure returns (uint) { return (a - b).mul(c); } }')).toBe('C');
+  });
+
+  it('resolves an overloaded chained using-for call (x.mul(a).add(b))', () => {
+    expect(cc(`${MATH}contract C { using Math for *;`
+      + ' function f(uint x, uint a, uint b) public pure returns (uint) { return x.mul(a).add(b); } }')).toBe('C');
+  });
+});

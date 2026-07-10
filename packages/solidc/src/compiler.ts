@@ -426,7 +426,8 @@ function compileReferencedContracts(
     // defs, events, errors) so a child resolves them like the primary does - a chained child (C deploys
     // B, B declares `A a`) otherwise failed its contract-type validation. These are registration-only in
     // the child's fresh SymbolTable; free functions / using-for are NOT carried (their bodies were
-    // already desugared by the main pipeline and must not be re-visited).
+    // already desugared by the main pipeline and re-running the singleAst desugar passes on them duplicates
+    // their locals). A child's own `using L for T` calls therefore stay unresolved here (a known limit).
     let singleAst: Ast = new SourceFileNode(
       contract, [], ast.enumDefinitions, ast.structDefinitions, ast.typeDefinitions,
       ast.errorDefinitions, ast.eventDefinitions, ast.interfaceDefinitions, [], [], [],

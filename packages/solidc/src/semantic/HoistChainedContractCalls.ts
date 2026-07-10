@@ -99,6 +99,17 @@ export default class HoistChainedContractCalls extends AstTraversal {
     return node;
   }
 
+  // Track a contract/interface-typed local (`Market market = markets[i];`) as a receiver, so a chained getter
+  // on it (`market.eventContract()...`) resolves. Declarations are visited in order, so the local is registered
+  // before the statements that use it.
+  visitVariableDefinition(node: VariableDefinitionNode): Node {
+    const visited = super.visitVariableDefinition(node) as VariableDefinitionNode;
+    if (visited.type instanceof AddressType && visited.type.interfaceName) {
+      this.receiverTypes.set(visited.name, visited.type);
+    }
+    return visited;
+  }
+
   visitMethodCall(node: MethodCallNode): Node {
     const visited = super.visitMethodCall(node) as MethodCallNode; // hoist nested receivers first
     const obj = visited.object;

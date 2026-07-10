@@ -6706,15 +6706,14 @@ export default class SymbolTableTraversal extends AstTraversal {
       const sym = GLOBAL_SYMBOL_TABLE.get(node.object.identifier.name);
       if (sym?.symbolType === SymbolType.FUNCTION) objectType = sym.type;
     }
-    if (!objectType) return undefined;
 
-    const typeStr = objectType.toString();
-
-    // Try exact type match first, then wildcard
-    const candidates = [
-      ...(this.usingForBindings.get(typeStr) ?? []),
-      ...(this.usingForBindings.get('*') ?? []),
-    ];
+    // Try exact type match first, then wildcard. A computed receiver (an arithmetic expression `(a-b).mul(c)`,
+    // or an overloaded library call `x.mul(a).add(b)` whose result overload is not yet resolved) has no known
+    // type here, but a wildcard `using L for *` binding still applies - fall back to the wildcard set. The
+    // funcCall's first arg is the receiver expression, whose type TypeCheck validates against the library param.
+    const candidates = objectType
+      ? [...(this.usingForBindings.get(objectType.toString()) ?? []), ...(this.usingForBindings.get('*') ?? [])]
+      : [...(this.usingForBindings.get('*') ?? [])];
 
     const match = candidates.find((c) => c.methodName === node.methodName);
     if (!match) return undefined;

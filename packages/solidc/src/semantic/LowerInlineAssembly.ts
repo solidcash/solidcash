@@ -6,7 +6,7 @@ import {
   CastNode, IdentifierNode, IntLiteralNode, BoolLiteralNode, ParameterNode, FunctionDefinitionNode,
   StateAssignNode, StateAccessNode, StateVariableNode, ContractNode, BytesConcatNode, FunctionCallNode,
   SliceNode, CollectionNode, MappingAccessNode, MappingAssignNode, HexLiteralNode, NullaryOpNode, FieldAccessNode,
-  ReturnNode, TupleAssignmentNode, LowLevelCallNode,
+  ReturnNode, TupleAssignmentNode, LowLevelCallNode, NewArrayNode,
 } from '../ast/AST.js';
 import { BinaryOperator, UnaryOperator, NullaryOperator } from '../ast/Operator.js';
 import {
@@ -217,6 +217,116 @@ const BYTES32 = new BytesType(32);
 // keccak over a constant region). The stored value is re-lowered at each read, which is correct as long as it
 // is not mutated between the mstore and the read (the usual store-then-hash shape).
 const memory = new Map<bigint, YulExpressionNode>();
+
+// ---- P7: runtime linear-memory buffer for Yul memory the compile-time model cannot resolve ----
+// When the compile-time `memory` map fails (dynamic offset, sub-word/dynamic keccak, msize, mcopy), the WHOLE
+// assembly block is re-lowered with `runtimeMem = true`, routing every memory op to a self-declared `__yulmem`
+// byte buffer laid out like EVM memory: reserved region 0x00-0x7f with the free-memory pointer (initial 0x80)
+// stored at slot 0x40 (/Code/solidity CompilerUtils.cpp:45-52, layout_in_memory.rst). Words are 32-byte
+// big-endian; the buffer grows to cover each store. mload of unwritten memory beyond the buffer is not modeled
+// (real code writes before it reads); the heap is bounded by the max stack-element size (experimental-grade).
+let runtimeMem = false;
+let yulMemUsed = false;
+let yulTmpN = 0;
+const YULMEM = '__yulmem';
+
+const yulmem = (src: YulNode): IdentifierNode => loc(new IdentifierNode(YULMEM), src);
+const memLen = (src: YulNode): ExpressionNode => loc(new UnaryOpNode(UnaryOperator.SIZE, yulmem(src)), src);
+const addE = (l: ExpressionNode, r: ExpressionNode, src: YulNode): ExpressionNode =>
+  loc(new BinaryOpNode(l, BinaryOperator.PLUS, r), src);
+function newBytes(size: ExpressionNode, src: YulNode): NewArrayNode {
+  const arr = loc(new NewArrayNode(new BytesType(1), size), src);
+  arr.rawBytes = true;
+  arr.type = new BytesType();
+  return arr;
+}
+
+// `bytes __yulmem = <0x40 zero bytes> ++ bytes32(0x80) ++ <0x20 zero bytes>` - 128 bytes, EVM reserved layout
+// with the free-memory pointer value 0x80 stored at slot 0x40, so `mload(0x40)` reads 0x80.
+function yulMemInit(src: YulNode): StatementNode {
+  const init = loc(new BytesConcatNode([
+    newBytes(intLit(0x40n, src), src),
+    loc(new CastNode(BYTES32, intLit(0x80n, src), false), src),
+    newBytes(intLit(0x20n, src), src),
+  ]), src);
+  return loc(new VariableDefinitionNode(new BytesType(), [], YULMEM, init), src);
+}
+
+// `if (__yulmem.length < <off>+word) __yulmem = bytes.concat(__yulmem, new bytes(<off>+word - __yulmem.length));`
+function growTo(offName: string, word: bigint, src: YulNode): StatementNode {
+  const need = (): ExpressionNode => addE(loc(new IdentifierNode(offName), src), intLit(word, src), src);
+  const cond = loc(new BinaryOpNode(memLen(src), BinaryOperator.LT, need()), src);
+  const pad = newBytes(loc(new BinaryOpNode(need(), BinaryOperator.MINUS, memLen(src)), src), src);
+  const grow = loc(new AssignNode(yulmem(src), loc(new BytesConcatNode([yulmem(src), pad]), src)), src);
+  return loc(new BranchNode(cond, loc(new BlockNode([grow]), src)), src);
+}
+
+// mstore(off, val): grow to cover off+32, then splice the 32-byte big-endian word in place.
+function runtimeMstore(offExpr: ExpressionNode, valExpr: ExpressionNode, src: YulNode): StatementNode {
+  yulMemUsed = true;
+  const offName = `__yoff_${yulTmpN++}`;
+  const off = (): ExpressionNode => loc(new IdentifierNode(offName), src);
+  const decl = loc(new VariableDefinitionNode(UINT256, [], offName, offExpr), src);
+  const head = loc(new SliceNode(yulmem(src), intLit(0n, src), off()), src);
+  const word = loc(new CastNode(BYTES32, valExpr, false), src);
+  const tail = loc(new SliceNode(yulmem(src), addE(off(), intLit(32n, src), src), memLen(src)), src);
+  const store = loc(new AssignNode(yulmem(src), loc(new BytesConcatNode([head, word, tail]), src)), src);
+  return loc(new BlockNode([decl, growTo(offName, 32n, src), store]), src);
+}
+
+// mload(off) -> uint256(bytes32(__yulmem[off : off+32])). A trailing zero word is appended before slicing so a
+// read straddling the written high-water mark returns EVM-faithful zeros (e.g. a full-word mload after an mstore8
+// that only grew the buffer by one byte). Yul offset expressions are pure, so lowering twice is safe.
+function runtimeMload(offArg: YulExpressionNode, src: YulNode): ExpressionNode {
+  yulMemUsed = true;
+  const padded = loc(new BytesConcatNode([yulmem(src), newBytes(intLit(32n, src), src)]), src);
+  const slice = loc(new SliceNode(padded, lowerValue(offArg), addE(lowerValue(offArg), intLit(32n, src), src)), src);
+  return loc(new CastNode(UINT256, loc(new CastNode(BYTES32, slice, false), src), false), src);
+}
+
+// keccak256(p, len) -> keccak256(__yulmem[p : p+len]); len may be sub-word.
+function runtimeKeccak(pArg: YulExpressionNode, lenArg: YulExpressionNode, src: YulNode): ExpressionNode {
+  yulMemUsed = true;
+  const slice = loc(new SliceNode(yulmem(src), lowerValue(pArg), addE(lowerValue(pArg), lowerValue(lenArg), src)), src);
+  return loc(new FunctionCallNode(loc(new IdentifierNode('keccak256'), src), [slice]), src);
+}
+
+// mcopy(dst, src, len): grow to cover both regions, then splice bytes read from the CURRENT buffer at [dst,dst+len).
+// The source slice is evaluated before the assignment, so overlapping copies behave like memmove.
+function runtimeMcopy(dstE: ExpressionNode, srcE: ExpressionNode, lenE: ExpressionNode, src: YulNode): StatementNode {
+  yulMemUsed = true;
+  const d = `__ydst_${yulTmpN++}`; const s = `__ysrc_${yulTmpN++}`; const l = `__ylen_${yulTmpN++}`;
+  const id = (n: string): ExpressionNode => loc(new IdentifierNode(n), src);
+  const decls = [
+    loc(new VariableDefinitionNode(UINT256, [], d, dstE), src),
+    loc(new VariableDefinitionNode(UINT256, [], s, srcE), src),
+    loc(new VariableDefinitionNode(UINT256, [], l, lenE), src),
+  ];
+  const growSrc = growTo2(addE(id(s), id(l), src), src);
+  const growDst = growTo2(addE(id(d), id(l), src), src);
+  const from = loc(new SliceNode(yulmem(src), id(s), addE(id(s), id(l), src)), src);
+  const head = loc(new SliceNode(yulmem(src), intLit(0n, src), id(d)), src);
+  const tail = loc(new SliceNode(yulmem(src), addE(id(d), id(l), src), memLen(src)), src);
+  const store = loc(new AssignNode(yulmem(src), loc(new BytesConcatNode([head, from, tail]), src)), src);
+  return loc(new BlockNode([...decls, growSrc, growDst, store]), src);
+}
+
+// grow to cover an arbitrary need expression (mcopy uses this; the store form uses growTo with a named offset).
+function growTo2(need: ExpressionNode, src: YulNode): StatementNode {
+  const nName = `__yneed_${yulTmpN++}`;
+  const n = (): ExpressionNode => loc(new IdentifierNode(nName), src);
+  const decl = loc(new VariableDefinitionNode(UINT256, [], nName, need), src);
+  const cond = loc(new BinaryOpNode(memLen(src), BinaryOperator.LT, n()), src);
+  const pad = newBytes(loc(new BinaryOpNode(n(), BinaryOperator.MINUS, memLen(src)), src), src);
+  const grow = loc(new AssignNode(yulmem(src), loc(new BytesConcatNode([yulmem(src), pad]), src)), src);
+  return loc(new BlockNode([decl, loc(new BranchNode(cond, loc(new BlockNode([grow]), src)), src)]), src);
+}
+
+// msize() -> current buffer length (the largest word-aligned index reached by the stores above).
+function runtimeMsize(src: YulNode): ExpressionNode {
+  yulMemUsed = true;
+  return loc(new CastNode(UINT256, memLen(src), false), src);
+}
 
 // EVM `bytes memory` layout is [length(32)][data...], so `add(ptr, off)` points at data[off-32]. Parse the
 // `add(<bytesParam>, <const off>)` pointer form to { name, start=off-32 } (start = the byte offset into the value).
@@ -614,6 +724,7 @@ function lowerCall(call: YulFunctionCallNode): ExpressionNode {
   // mload(p) -> the word stored at that constant offset (compile-time memory model), or a `bytes memory`
   // slice for the `mload(add(ptr, off))` parameter-reading form.
   if (name === 'mload' && args.length === 1) {
+    if (runtimeMem) return runtimeMload(args[0], call);
     if (isIntLiteral(args[0])) {
       const v = memory.get(BigInt(args[0].raw));
       if (v !== undefined) return lowerValue(v);
@@ -622,9 +733,16 @@ function lowerCall(call: YulFunctionCallNode): ExpressionNode {
     if (slice) return slice;
     throw new YulNotLowerable(); // uninitialized / dynamic offset
   }
-  // keccak256(p, len) -> hash the constant memory region.
+  // keccak256(p, len) -> hash the memory region (runtime byte-slice, or the constant compile-time region).
   if (name === 'keccak256' && args.length === 2) {
+    if (runtimeMem) return runtimeKeccak(args[0], args[1], call);
     return lowerKeccak(call);
+  }
+  // msize() -> the runtime buffer's high-water mark. Only meaningful in the runtime path; throwing here triggers
+  // the whole-block runtime re-lowering.
+  if (name === 'msize' && args.length === 0) {
+    if (!runtimeMem) throw new YulNotLowerable();
+    return runtimeMsize(call);
   }
   // erc7201(id) - the ERC-7201 namespaced storage-slot dialect builtin. No EVM storage layout on BCH; alias it to
   // sha256(id), reusing the non-assembly erc7201() alias. Not byte-identical to Ethereum's keccak-based erc7201.
@@ -660,7 +778,9 @@ function lowerStatement(stmt: YulStatementNode): StatementNode {
   if (stmt instanceof YulVariableDeclarationNode) {
     if (stmt.names.length !== 1) throw new YulNotLowerable(); // multi-value `let x, y := f()` (later)
     // `let buf := mload(0x40)` allocates a fresh free-memory byte buffer; track its mstore writes, emit nothing.
-    if (isFreeMemPtr(stmt.value)) {
+    // In the runtime path there is no compile-time buffer - it lowers to a real `mload(0x40)` read (the free
+    // pointer stored at slot 0x40), so `buf` holds the allocation base as a runtime value.
+    if (!runtimeMem && isFreeMemPtr(stmt.value)) {
       bufferWrites.set(stmt.names[0], []);
       return loc(new BlockNode([]), stmt);
     }
@@ -738,9 +858,11 @@ function lowerStatement(stmt: YulStatementNode): StatementNode {
           return loc(new AssignNode(loc(new IdentifierNode(local), stmt), lowerValue(e.args[1])), stmt);
         }
       }
-      // mstore(p, v): record the word in a free-memory buffer (`mstore(buf/add(buf,off), v)`) or the
-      // compile-time constant-offset memory model. No emitted statement either way (read at create/keccak time).
+      // mstore(p, v): in the runtime path, a real in-place store into `__yulmem`. Otherwise record the word in a
+      // free-memory buffer (`mstore(buf/add(buf,off), v)`) or the compile-time constant-offset memory model
+      // (emitting nothing, read back at create/keccak time).
       if (e.name === 'mstore' && e.args.length === 2) {
+        if (runtimeMem) return runtimeMstore(lowerValue(e.args[0]), lowerValue(e.args[1]), e);
         const bufPtr = resolveBufferPtr(e.args[0]);
         if (bufPtr) {
           bufferWrites.get(bufPtr.buffer)!.push({ off: bufPtr.off, value: e.args[1] });
@@ -751,18 +873,25 @@ function lowerStatement(stmt: YulStatementNode): StatementNode {
           return loc(new BlockNode([]), stmt);
         }
       }
-      // mcopy(dst, src, size): word-copy in the compile-time memory model - each 32-byte word memory[src+i] is
-      // reassigned to memory[dst+i] (the assignment the read later resolves against). Constant, word-aligned, and
-      // every source word already mstore'd; anything else falls through to the diagnostic.
-      if (e.name === 'mcopy' && e.args.length === 3 && e.args.every(isIntLiteral)) {
-        const [dst, src, size] = e.args.map((a) => BigInt((a as YulLiteralNode).raw));
-        if (size % 32n === 0n) {
-          for (let i = 0n; i < size; i += 32n) {
-            const word = memory.get(src + i);
-            if (word === undefined) throw new YulNotLowerable(); // source word not covered by an mstore
-            memory.set(dst + i, word);
+      // mstore8(p, v): not yet lowered (the runtime store writes the raw low byte, but a faithful msize / word
+      // re-read after a sub-word write needs more care); throwing leaves the block for the assembly diagnostic.
+      // mcopy(dst, src, size): the runtime path is a byte-granular memmove on `__yulmem`. The compile-time model
+      // handles only constant, word-aligned, fully-mstore'd regions (word-copy in the map); anything else throws
+      // and re-lowers at runtime.
+      if (e.name === 'mcopy' && e.args.length === 3) {
+        if (runtimeMem) {
+          return runtimeMcopy(lowerValue(e.args[0]), lowerValue(e.args[1]), lowerValue(e.args[2]), e);
+        }
+        if (e.args.every(isIntLiteral)) {
+          const [dst, src, size] = e.args.map((a) => BigInt((a as YulLiteralNode).raw));
+          if (size % 32n === 0n) {
+            for (let i = 0n; i < size; i += 32n) {
+              const word = memory.get(src + i);
+              if (word === undefined) throw new YulNotLowerable(); // source word not covered by an mstore
+              memory.set(dst + i, word);
+            }
+            return loc(new BlockNode([]), stmt);
           }
-          return loc(new BlockNode([]), stmt);
         }
       }
       // returndatacopy(dst, off, len): the last call's return-event data is already the tracked `bytes` var; the
@@ -1037,22 +1166,40 @@ export default class LowerInlineAssembly extends AstTraversal {
 
   visitAssemblyStatement(node: AssemblyStatementNode): Node {
     if (!node.yulBlock) return node;
+    // Fast path: the compile-time constant-offset memory model. If it rejects a memory op (dynamic offset, msize,
+    // sub-word/dynamic keccak, mstore8, dynamic mcopy), re-lower the WHOLE block on the runtime `__yulmem` buffer -
+    // all-or-nothing, so the two models never mix within a block. bufferWrites is per-function, so snapshot it and
+    // restore before the retry (a partial compile-time attempt may have pushed stale buffer entries).
+    const bufSnapshot = new Map(bufferWrites);
+    const compiled = this.tryLowerAsm(node, false);
+    if (compiled) return compiled;
+    bufferWrites = new Map(bufSnapshot);
+    const runtime = this.tryLowerAsm(node, true);
+    if (!runtime) bufferWrites = new Map(bufSnapshot);
+    return runtime ?? node;
+  }
+
+  private tryLowerAsm(node: AssemblyStatementNode, runtime: boolean): BlockNode | undefined {
     transientKeys.clear();
     memory.clear();
     lastReturnData = undefined;
+    runtimeMem = runtime;
+    yulMemUsed = false;
     try {
-      const block = lowerBlock(inlineLocalYulFunctions(node.yulBlock));
-      // Hoist a zero-init declaration for each transient key used (tload may precede tstore in the block).
-      if (transientKeys.size > 0) {
-        const decls = [...transientKeys].map(
-          ([name, src]) => loc(new VariableDefinitionNode(UINT256, [], name, intLit(0n, src)), src) as StatementNode,
-        );
-        block.statements = [...decls, ...(block.statements ?? [])];
+      const block = lowerBlock(inlineLocalYulFunctions(node.yulBlock!));
+      const prefix: StatementNode[] = [];
+      // Hoist the runtime memory buffer decl (before any use), then a zero-init for each transient key used.
+      if (runtime && yulMemUsed) prefix.push(yulMemInit(node.yulBlock!));
+      for (const [name, src] of transientKeys) {
+        prefix.push(loc(new VariableDefinitionNode(UINT256, [], name, intLit(0n, src)), src));
       }
+      if (prefix.length > 0) block.statements = [...prefix, ...(block.statements ?? [])];
       return block;
     } catch (e) {
-      if (e instanceof YulNotLowerable) return node;
+      if (e instanceof YulNotLowerable) return undefined;
       throw e;
+    } finally {
+      runtimeMem = false;
     }
   }
 }

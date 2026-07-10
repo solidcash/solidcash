@@ -42,6 +42,8 @@ const LOWERABLE_BUILTINS = new Set<string>([
   'and', 'or', 'xor', 'not', 'shl', 'shr', 'sar', 'byte',
   'lt', 'slt', 'gt', 'sgt', 'eq', 'iszero',
   'sload', 'sstore', 'tload', 'tstore', 'mload', 'mstore',
+  // mcopy + msize lower via the runtime __yulmem buffer (P7); mstore8 is still deferred.
+  'mcopy', 'msize',
   'calldataload', 'calldatasize', 'keccak256', 'erc7201', 'revert',
   // nullary context builtins -> msg.*/tx.*/block.* NullaryOps
   'caller', 'callvalue', 'origin', 'gasprice', 'chainid', 'number', 'timestamp', 'difficulty',

@@ -1,0 +1,68 @@
+import { describe, it, expect } from 'vitest';
+import { compileString } from 'solidc';
+import { Contract, StatefulContract } from '../src/index.js';
+import type { FunctionArgument } from '../src/index.js';
+import { createTestProvider, setupStatefulUtxos } from './test-util.js';
+
+// P7: Yul memory the compile-time model cannot resolve (dynamic offset, mcopy, mstore8, msize) is re-lowered onto
+// a runtime `__yulmem` byte buffer laid out like EVM memory (free pointer 0x80 stored at slot 0x40). These tests
+// read the buffer back with mload and require the exact value, so any byte-level error rejects the transaction.
+// (keccak256 over the runtime buffer is exercised separately in Keccak256.test.ts - it needs a side-car library.)
+async function call(method: string, args: FunctionArgument[]): Promise<void> {
+  const provider = createTestProvider();
+  const artifact = compileString(SRC, { solidityImportCompat: true });
+  const contract = new Contract(artifact, [], { provider });
+  const { categoryId } = await setupStatefulUtxos(
+    provider, contract, artifact.stateLayout!, { counter: 0n }, { saltContract: true },
+  );
+  const sc = StatefulContract.withCategory(contract, categoryId);
+  await sc[method](...args).send();
+}
+
+const SRC = `contract C {
+  int counter;
+  // Free-pointer allocation + two dynamically-addressed stores; read both back independently (no corruption).
+  function storeLoad(uint x, uint y) public {
+    uint a; uint b;
+    assembly {
+      let p := mload(0x40)
+      mstore(p, x)
+      mstore(add(p, 0x20), y)
+      a := mload(p)
+      b := mload(add(p, 0x20))
+    }
+    require(a == x); require(b == y);
+  }
+  // Dynamic loop writing i at p+i*32, then summing the loaded values back: 0+1+..+(n-1).
+  function loopStore(uint n) public {
+    uint sum;
+    assembly {
+      let p := mload(0x40)
+      for { let i := 0 } lt(i, n) { i := add(i, 1) } { mstore(add(p, mul(i, 0x20)), i) }
+      for { let j := 0 } lt(j, n) { j := add(j, 1) } { sum := add(sum, mload(add(p, mul(j, 0x20)))) }
+    }
+    require(sum == n * (n - 1) / 2);
+  }
+  // mcopy with dynamic offsets: store at src, memmove to dst, read dst back.
+  function copyBack(uint x, uint off) public {
+    uint r;
+    assembly {
+      mstore(add(0x80, off), x)
+      mcopy(add(0xc0, off), add(0x80, off), 0x20)
+      r := mload(add(0xc0, off))
+    }
+    require(r == x);
+  }
+}`;
+
+describe('P7: runtime Yul memory (readback)', () => {
+  it('two dynamically-addressed stores read back independently', async () => {
+    await call('storeLoad', [123n, 456n]);
+  });
+  it('dynamic loop store/load sums correctly', async () => {
+    await call('loopStore', [5n]); // 0+1+2+3+4 = 10 = 5*4/2
+  });
+  it('mcopy memmove at dynamic offsets reads back', async () => {
+    await call('copyBack', [7777n, 0n]);
+  });
+});

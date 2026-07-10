@@ -105,13 +105,20 @@ in `compiler.ts` before the value-copy desugars. Strict no-op unless `experiment
   int/uint. VM-verified (MemoryModelArray.test.ts): multi-write composition AND aliasing hold on-chain (aliasing
   is the case value-copy cannot express). Bytecode is shorter than value-copy for the alias case.
 - **P3 (structs + nested chains) - TODO (the target `s.ts[j].y`).** Memory struct alloc/construct, member access,
-  and the SS3 address-chain lvalue. BLOCKER: `s.f = v` and `s.ts[j].y = v` are eagerly desugared to value-copy
-  read-modify-rebuild INSIDE AstBuilder (`buildLvalueAssign` -> `buildStructFieldRebuild` /
-  `buildLocalStructArrayFieldWrite`), before this pass runs. Structs are all-or-nothing (a rebuild `s = S(s.f0,v)`
-  on a pointer `s` is nonsense), so P3 must first GATE those AstBuilder desugars off for local memory reference
-  types when the flag is on (thread the flag into AstBuilder like `chunkedArrays`), leaving raw lvalue nodes for
-  this pass to lower to `mstore(addr_chain, v)`. Reads (`s.f`, `s.ts[j]`) are FieldAccess/ArrayAccess (not
-  eagerly desugared) and lower with the §3 walk directly.
+  the ref-field-holds-a-pointer rule, and the SS3 address-chain lvalue. Two viable routes, with a subtlety:
+  - Reads (`s.f`, `s.ts[j]`) are FieldAccess/ArrayAccess/TupleIndexOp (NOT eagerly desugared) - lower directly
+    with the SS3 walk: mload at `s + 32*i`; a ref field/element yields a pointer to deref further.
+  - Writes are eagerly desugared to value-copy read-modify-rebuild INSIDE AstBuilder (`buildLvalueAssign` ->
+    `buildStructFieldRebuild` for `s.f=v`; `buildLocalStructArrayFieldWrite` -> `tmp=s.ts; tmp[j]=T(..); s.ts=tmp`
+    for nested). KEY INSIGHT: that read-modify-rebuild COMPOSES + ALIASES correctly IF the temporaries are
+    POINTERS not copies - i.e. if this pass owns structs/struct-arrays/ref-fields, the existing desugar output
+    already does the right thing (with some orphaned re-allocations). SUBTLETY THAT STILL FORCES A CHOICE:
+    `s.f = v` desugars to `s = S(s.f0, v, s.f2)` and must mutate s's block IN PLACE (aliases must see it), but a
+    genuine reassign `s = S(a,b,c)` must allocate a NEW block (aliases must NOT) - both look identical after
+    desugar. So alias-correct structs need to DISTINGUISH them: either (a) gate the AstBuilder field-write desugar
+    off when the flag is on (thread the flag into AstBuilder like `chunkedArrays`) and lower `s.f=v` to a single
+    `mstore(s+32*i, v)`, or (b) detect the self-reference shape (`S(s.f0, v, s.f2)` with k-1 args being `s.fj`).
+    (a) is cleaner. For NON-aliased structs (the common case) in-place mstore-each-arg composes without either.
 - **P4 (bytes/string memory, cross-function pass-by-ref, returns) - TODO.**
 
 Every phase is behind the flag; the default (value-copy) path is untouched, so this is fully reversible.

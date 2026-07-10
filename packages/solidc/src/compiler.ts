@@ -33,6 +33,7 @@ import DesugarNestedArrayWrite from './semantic/DesugarNestedArrayWrite.js';
 import DesugarExternalFunctionPointers from './semantic/DesugarExternalFunctionPointers.js';
 import DesugarReturnInLoop from './semantic/DesugarReturnInLoop.js';
 import LowerInlineAssembly from './semantic/LowerInlineAssembly.js';
+import LowerMemoryModel from './semantic/LowerMemoryModel.js';
 import CacheDynamicArrayInLoop from './semantic/CacheDynamicArrayInLoop.js';
 import DesugarDynamicArrayCopyCast from './semantic/DesugarDynamicArrayCopyCast.js';
 import IfConvertConditionalEntryOp from './semantic/IfConvertConditionalEntryOp.js';
@@ -192,6 +193,10 @@ function compileResolvedAst(ast: Ast, code: string, mergedCompilerOptions: Compi
 
   // Postfix `lvalue++`/`lvalue--` used as an expression -> read + a hoisted increment (before semantic analysis).
   ast = ast.accept(new DesugarPostfixExpressions()) as Ast;
+
+  // EXPERIMENTAL memory model (flag-gated): lower `memory` reference types to linear-buffer pointer ops before
+  // the value-copy desugars, so nested writes compose in place. No-op unless experimentalMemoryModel is set.
+  ast = ast.accept(new LowerMemoryModel(mergedCompilerOptions.experimentalMemoryModel ?? false)) as Ast;
 
   // Nested local-array element write `b[i][j] = v` -> read-modify-write over single-level ops (before semantic).
   ast = ast.accept(new DesugarNestedArrayWrite()) as Ast;
@@ -425,6 +430,7 @@ function compileReferencedContracts(
     singleAst = singleAst.accept(new NamedReturnTransformation(compilerOptions.solidityImportCompat)) as Ast;
     singleAst = singleAst.accept(new DesugarNestedBranchReturn()) as Ast;
     singleAst = singleAst.accept(new DesugarPostfixExpressions()) as Ast;
+    singleAst = singleAst.accept(new LowerMemoryModel(compilerOptions.experimentalMemoryModel ?? false)) as Ast;
     singleAst = singleAst.accept(new DesugarNestedArrayWrite()) as Ast;
     singleAst = singleAst.accept(new LowerInlineAssembly()) as Ast;
     singleAst = singleAst.accept(new InlineExternalCallHelpers()) as Ast;

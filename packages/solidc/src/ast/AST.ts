@@ -1089,6 +1089,9 @@ export class ArrayNode extends ExpressionNode {
 
 export class NewArrayNode extends ExpressionNode {
   blobEncoded: boolean = true;
+  // `new bytes(n)` with a runtime n: emit exactly n zero bytes (no length prefix), typed `bytes`. The linear
+  // memory model uses this as its malloc growth primitive; also gives source-level runtime `new bytes(n)`.
+  rawBytes: boolean = false;
 
   constructor(
     public elementType: Type,

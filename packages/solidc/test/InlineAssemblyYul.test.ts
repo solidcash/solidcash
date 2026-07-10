@@ -585,10 +585,10 @@ describe('YulMem.sol compat gaps', () => {
     const a = compileString('contract C { function f() returns (int p, int) { return (1, 2); } }');
     expect(a.contractName).toBe('C');
   });
-  it('defers new bytes(n): a runtime-length use is deferred (no whole-file failure) but errors when compiled', () => {
-    // Compiled use -> the deferred codegen error fires (sound, not a silent empty-bytes value).
-    expect(() => compileString('contract C { function f(uint n) external pure returns (bytes memory) {'
-      + ' return new bytes(n); } }', { solidityImportCompat: true })).toThrow(/no BCH analogue/);
+  it('compiles new bytes(n) with a runtime length to n zero bytes (0 n OP_NUM2BIN)', () => {
+    // Runtime `new bytes(n)` is a real allocation now (the memory model's malloc growth primitive).
+    expect(compileString('contract C { function f(uint n) external pure returns (bytes memory) {'
+      + ' return new bytes(n); } }', { solidityImportCompat: true }).contractName).toBe('C');
   });
   it('still folds new bytes(constant) to a zero-filled literal', () => {
     expect(compileString('contract C { function f() external pure returns (bytes memory) { return new bytes(4); } }',

@@ -2467,14 +2467,13 @@ export default class AstBuilder
       lit.location = Location.fromCtx(ctx);
       return lit;
     }
-    // A runtime length has no BCH analogue (no dynamic buffer allocation). Defer the error to codegen via a
-    // placeholder so a NON-primary contract using it does not fail the whole file (only a compiled use errors).
-    const placeholder = new HexLiteralNode(new Uint8Array(0));
-    placeholder.type = new BytesType();
-    placeholder.codegenError = 'new bytes(n) with a non-constant length has no BCH analogue (no dynamic buffer '
-      + 'allocation); use a fixed bytesN or build the value from known parts.';
-    placeholder.location = Location.fromCtx(ctx);
-    return placeholder;
+    // A runtime length: emit n zero bytes via `0 n OP_NUM2BIN` (a raw-bytes NewArrayNode). Matches Solidity's
+    // `new bytes(n)` and is the malloc growth primitive for the experimental memory model.
+    const arr = new NewArrayNode(new BytesType(1), size);
+    arr.rawBytes = true;
+    arr.type = new BytesType();
+    arr.location = Location.fromCtx(ctx);
+    return arr;
   }
 
   // `new string(n)` - a dynamic string of n bytes (UTF-8), i.e. n zero bytes typed as string. Only `string` is a

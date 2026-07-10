@@ -4810,6 +4810,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const elemType = node.elementType;
     const fixedWidth = isFixedWidthType(elemType);
 
+    // `new bytes(n)` (runtime n): n zero bytes, no length prefix. `0 n OP_NUM2BIN`.
+    if (node.rawBytes) {
+      node.size = this.visit(node.size);       // [..., n]
+      this.emit(Op.OP_0, locationData);         // [..., n, 0]
+      this.emit(Op.OP_SWAP, locationData);      // [..., 0, n]
+      this.emit(Op.OP_NUM2BIN, locationData);   // [..., zero_bytes]
+      this.popFromStack();
+      this.pushToStack('(value)');
+      return node;
+    }
+
     // Evaluate size expression - pushes n onto stack
     node.size = this.visit(node.size);
     // stack: [..., n]

@@ -2206,7 +2206,7 @@ export default class TypeCheckTraversal extends AstTraversal {
 
   visitNewArray(node: NewArrayNode): Node {
     node.size = this.visit(node.size);
-    node.type = new ArrayType(node.elementType);
+    node.type = node.rawBytes ? new BytesType() : new ArrayType(node.elementType);
     return node;
   }
 

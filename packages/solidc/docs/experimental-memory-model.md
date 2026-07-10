@@ -128,10 +128,27 @@ full suite with the flag forced on and getting ZERO new failures.
   loop build/update). NOTE: forced-on breaks one byte-identity test (StructsMappings `arr[i].f=v` == `arr[i]=S(..)`)
   BY DESIGN - the memory model lowers the two forms differently (in-place vs rebuild), both correct; flag-off
   passes. This is the real correctness win over value-copy.
-- **P5b-fields: struct REFERENCE fields + full `s.ts[j].y` - TODO.** A struct field that is itself an array/struct
-  holds a pointer; needs member-read of a ref field to yield the pointer + the recursive resolvePtr chain. Builds
-  on P5b-arrays.
-- **P6 bytes/string memory, wider element types, struct aliasing - TODO.**
+- **P5b-fields: struct with ARRAY reference fields - DONE + VM.** `struct S{ uint[] a; uint n; }` - a ref field
+  holds a pointer. `s.a[i]=v` pre-desugars to `uint[] tmp=s.a; tmp[i]=v; s=S(tmp,s.n)`; a GATE FIXPOINT
+  co-discovers tmp as a candidate (its init `s.a` resolves to a ref-field pointer once s is known convertible),
+  and unions tmp + candidate ctor-args with s so a group falls back together. resolvePtr(expr) does the recursive
+  address chain (ident/FieldAccess/ArrayAccess, mload at each ref step) for reads (`s.a[i]`, `s.a.length`).
+  Restricted to array ref fields (NESTED-STRUCT fields excluded - `b.a.x` falls back to value-copy). VM:
+  MemoryModelStructField.test.ts (nested write composes + aliases the source array; loop over `s.a`). The full
+  `s.ts[j].y` (struct with a struct-ARRAY field) still hits a pre-existing AstBuilder desugar gap ("Undefined
+  mapping" - value-copy fails it too). GATE HOLES found+fixed (latent since P2.5): (1) a `using`-attached bound
+  call `x.m()` is a FunctionCall whose identifier is the QUALIFIED name `x.m` (receiver baked into the name, not a
+  child) -> taint the prefix; (2) struct member read `s.f` handled ONLY if f is a real field (else it is a bound
+  fn); (3) an inline `new T[]` / non-candidate struct ctor ref-arg taints the struct; (4) a tuple assignment
+  `(x,y)=g()` to a candidate taints it. VERIFIED non-regressing: flag-off and forced-on give the IDENTICAL
+  3838/4876 OK/FAIL set (per-file diff = 0 regressions, 0 gains).
+- **SOLIDITY FIDELITY (confirmed vs /Code/solidity):** the P5b-arrays byte-identity divergence
+  (`arr[i].f=v` != `arr[i]=T(..)`) is the memory model being MORE correct. Memory struct-array elements are
+  pointers; `arr[i].f=v` is an in-place mstore (aliases see it), `arr[i]=T(..)` allocates a new block + repoints
+  (aliases do not) - reference-types.rst:71-73 + IRGeneratorForStatements.cpp. Value-copy collapses them (it has
+  NO aliasing) = the artifact. The two byte-identity tests (StructsMappings, Arrays) encode value-copy behavior;
+  they pass flag-off (default) and must be UPDATED to the memory-model behavior at default-on.
+- **P6 bytes/string memory, wider element types, struct aliasing, nested-struct fields, full `s.ts[j].y` - TODO.**
 - **DEFAULT-ON** once P2.5 holds and coverage is broad enough that the fallback set is small.
 
 ## 8. Non-goals / limits

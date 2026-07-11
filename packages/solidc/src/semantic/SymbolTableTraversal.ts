@@ -1509,11 +1509,23 @@ export default class SymbolTableTraversal extends AstTraversal {
           this.pushToStack(selectorParam);
         }
 
-        // Foreign fn-ptr calls: a per-call absolute master-input-index param the SDK fills from the real callee
-        // layout it co-spends (the callee's data-NFT count is unknown at compile time, so no fixed block offset).
+        // Per-call absolute master-input-index param the SDK fills from the real callee layout it co-spends.
+        // Needed for: (a) foreign fn-ptr calls (callee data-NFT count unknown at compile time); (b) EVERY slot
+        // in a MULTI-call function - a prior call's callee data-NFT count (from a possibly under-declared
+        // interface) can shift this slot's fixed block offset, so the runtime index makes the covenant read the
+        // right co-spent callee regardless. Single-call functions keep the fixed offset (0, always correct).
+        // Loop slots (array-element dispatch) compute a per-iteration index and are excluded. A function that
+        // contains ANY loop slot keeps the fixed offset for its non-loop slots too (the SDK expands a loop slot
+        // into N co-spend groups, so a runtime per-slot fill cannot be aligned 1:1); the multi-call runtime
+        // index applies only to loop-free functions, counting non-loop slots.
+        const hasLoopSlot = externalCallSlots.some((s) => s.loopArrayVar || s.inlineLoopDispatch);
+        const nonLoopSlotCount = externalCallSlots
+          .filter((s) => !s.loopArrayVar && !s.inlineLoopDispatch).length;
         for (let i = 0; i < slotCount; i++) {
-          if (!externalCallSlots[i].fnPtrCall) continue;
-          const idxName = `__internal__extcallMasterIdx${externalCallSlots[i].slotIndex}`;
+          const slot = externalCallSlots[i];
+          if (slot.loopArrayVar || slot.inlineLoopDispatch) continue;
+          if (!slot.fnPtrCall && (hasLoopSlot || nonLoopSlotCount <= 1)) continue;
+          const idxName = `__internal__extcallMasterIdx${slot.slotIndex}`;
           const idxParam = new ParameterNode(PrimitiveType.BIGINT, idxName);
           idxParam.location = node.location;
           node.parameters.push(idxParam);

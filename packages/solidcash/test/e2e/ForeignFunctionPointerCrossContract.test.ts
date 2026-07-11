@@ -78,15 +78,14 @@ describe('foreign fn-ptr PASSED cross-CONTRACT (A -> B.register -> B.fire)', () 
 // A RETURNS a foreign fn-ptr to a DIFFERENT contract B (as a bounded blob via the return-event NFT); B receives
 // it in a blob local and co-spends the target through it - the cross-CONTRACT return direction. The return-event
 // commitment is extracted from the dedicated return-event section (order-independent), so a returning call
-// followed by another external call threads correctly. IA declares A's state (`dummy`) so the co-spend's
-// compile-time input offset (1 master + declared data NFTs per prior call) matches the runtime layout, which
-// co-spends A's full state - an interface that under-declares the callee's state shifts the next call's offset.
+// followed by another external call threads correctly. IA under-declares A's state (no `dummy`): the per-slot
+// runtime master index keeps the co-spend offsets correct regardless (see UnderDeclaredInterfaceOffset).
 const RET_SRC = `
 interface ITarget { public bigint counter; function inc(pubkey o, sig s) external; }
-interface IA { public bigint dummy; function getPtr(address t) external returns (function(pubkey,sig) external); }
+interface IA { function getPtr(address t) external returns (function(pubkey,sig) external); }
 contract Target is ITarget { bigint counter;
   function inc(pubkey o, sig s) external { require(checkSig(s, o)); this.counter = this.counter + 1; } }
-contract A is IA { bigint dummy;
+contract A { bigint dummy;
   function getPtr(address t) public returns (function(pubkey,sig) external) { return ITarget(t).inc; } }
 contract B {
   bigint n;

@@ -5333,10 +5333,15 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         }
       }
 
-      // Foreign fn-ptr calls: append each fn-ptr slot's callee master input index (per-call, so the covenant
-      // reads the RIGHT co-spent callee for each call without knowing the callee's block layout at compile time).
+      // Per-slot callee master input index (so the covenant reads the RIGHT co-spent callee without a fixed
+      // block offset). Matches the compiler: fn-ptr calls always get one; a loop-free MULTI-call function fills
+      // every slot's index too (robust when a prior callee's data-NFT count - from an under-declared interface -
+      // shifts the fixed offset). A function with any array-element (loop) call keeps the fixed offset (the loop
+      // expands into N groups, so a 1:1 runtime fill cannot be aligned).
+      const hasLoopSlotAbi = (abiFunction?.externalCalls ?? []).some((ec) => ec.loopArrayVar);
       for (let i = 0; i < directGroupCount; i++) {
-        if ((groupMetas[i].ecSlot as { fnPtrCall?: boolean }).fnPtrCall) {
+        const ecSlot = groupMetas[i].ecSlot as { fnPtrCall?: boolean };
+        if (ecSlot.fnPtrCall || (!hasLoopSlotAbi && directGroupCount > 1)) {
           finalArgs = [...finalArgs, BigInt(groupMasterIndices[i])];
         }
       }

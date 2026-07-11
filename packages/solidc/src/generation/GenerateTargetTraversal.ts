@@ -522,6 +522,32 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_ADD, locationData);
   }
 
+  /**
+   * Push a slot's callee master input index. Prefers the SDK-filled per-slot runtime index param
+   * (`__internal__extcallMasterIdx<slotIndex>`, present for fn-ptr calls + every slot of a multi-call
+   * function) so the covenant reads the RIGHT co-spent callee even when a prior callee's data-NFT count
+   * (from an under-declared interface) shifted the fixed block offset. Falls back to the compile-time
+   * `externalCallInputBase + computedOffset` for single-call slots without the param. `untrackedOffset`
+   * accounts for values already pushed on the real stack above the tracked stack. Pushes 1 untracked value.
+   */
+  private emitSlotMasterIndex(
+    slot: ExternalCallSlot, locationData: SingleLocationData, untrackedOffset = 0,
+  ): void {
+    const idxStack = this.getStackIndex(`__internal__extcallMasterIdx${slot.slotIndex}`, true);
+    if (idxStack >= 0) {
+      this.emit(encodeInt(BigInt(idxStack + untrackedOffset)), locationData);
+      this.emit(Op.OP_PICK, locationData);
+      return;
+    }
+    const baseIdx = this.getStackIndex('__internal__externalCallInputBase');
+    this.emit(encodeInt(BigInt(baseIdx + untrackedOffset)), locationData);
+    this.emit(Op.OP_PICK, locationData);
+    if (slot.computedOffset > 0) {
+      this.emit(encodeInt(BigInt(slot.computedOffset)), locationData);
+      this.emit(Op.OP_ADD, locationData);
+    }
+  }
+
   /** Emit introspection-based existence check for an entry or TC slot. Pushes 1 value (0 or 1). */
   private emitSlotExistsCheck(
     kind: BlockSlotKind, slotIndex: number, locationData: SingleLocationData,
@@ -8208,14 +8234,23 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     );
 
     if (osSlot?.sharedWithCallSlotIndex !== undefined) {
-      // Shared with an external call slot - compile-time offset
+      // Shared with an external call slot - read the callee's data NFT at (callee master + 1 + nftIndex).
       const callSlot = this.externalCallSlots.find(
         (cs) => cs.slotIndex === osSlot.sharedWithCallSlotIndex,
       )!;
-      const ecBase = this.getExternalCallBaseOffset();
-      this.emitMasterInputIndex(locationData);
-      this.emit(encodeInt(BigInt(ecBase + callSlot.computedOffset + 1 + info.nftIndex)), locationData);
-      this.emit(Op.OP_ADD, locationData);
+      const idxStack = this.getStackIndex(`__internal__extcallMasterIdx${callSlot.slotIndex}`, true);
+      if (idxStack >= 0) {
+        // Multi-call function: use the SDK-filled runtime callee master index (offset-shift robust).
+        this.emit(encodeInt(BigInt(idxStack)), locationData);
+        this.emit(Op.OP_PICK, locationData);
+        this.emit(encodeInt(BigInt(1 + info.nftIndex)), locationData);
+        this.emit(Op.OP_ADD, locationData);
+      } else {
+        const ecBase = this.getExternalCallBaseOffset();
+        this.emitMasterInputIndex(locationData);
+        this.emit(encodeInt(BigInt(ecBase + callSlot.computedOffset + 1 + info.nftIndex)), locationData);
+        this.emit(Op.OP_ADD, locationData);
+      }
     } else {
       // Not shared - use runtime _externalOutStateInputBase param (direction unknown at compile time)
       let slotOffset = 0;
@@ -11065,14 +11100,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
       const callMode = slot.callMode ?? ExternalCallMode.REGULAR;
 
-      // B's master input index. A foreign fn-ptr call reads a PER-CALL index the SDK filled (the callee's layout
-      // is unknown at compile time); a normal call computes it from the co-spend base + compile-time offset.
-      if (slot.fnPtrCall) {
-        this.emit(encodeInt(BigInt(this.getStackIndex(`__internal__extcallMasterIdx${slot.slotIndex}`))), locationData);
-        this.emit(Op.OP_PICK, locationData);
-      } else {
-        this.emitExternalCallMasterIndex(slot.computedOffset, locationData);
-      }
+      // B's master input index (per-slot runtime index when the SDK filled one - fn-ptr calls + multi-call
+      // slots - else the compile-time co-spend base + offset).
+      this.emitSlotMasterIndex(slot, locationData);
       // Stack: [B_master_inputIdx] (1 untracked)
 
       // DUP for multiple uses
@@ -11655,14 +11685,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_DROP, locationData);
       // Stack: [_externalReturnOutputIdx{N}, output_cat_stripped] (2 untracked)
 
-      // Compare to B's category via runtime _externalCallInputBase (+2 for untracked items)
-      const callBaseIdx = this.getStackIndex('__internal__externalCallInputBase');
-      this.emit(encodeInt(BigInt(callBaseIdx + 2)), locationData);
-      this.emit(Op.OP_PICK, locationData);
-      if (slot.computedOffset > 0) {
-        this.emit(encodeInt(BigInt(slot.computedOffset)), locationData);
-        this.emit(Op.OP_ADD, locationData);
-      }
+      // Compare to B's category via the co-spent callee master (per-slot runtime index or base+offset; +2 for
+      // the untracked items already on the real stack).
+      this.emitSlotMasterIndex(slot, locationData, 2);
       this.emit(Op.OP_UTXOTOKENCATEGORY, locationData);
       this.emit(encodeInt(32n), locationData);
       this.emit(Op.OP_SPLIT, locationData);
@@ -11720,13 +11745,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   // H2 helper: require exactly one output matching the return-event fingerprint of `slot`'s callee category
   // (32-byte none-cap category == B, locking bytecode == OP_TRUE). Mirrors emitMintingNftUniqueness' output loop.
   private emitSingleReturnEventUniqueness(slot: ExternalCallSlot, loc: SingleLocationData): void {
-    // Compute B's 32-byte category from the co-spent callee master (externalCallInputBase + computedOffset).
-    this.emit(encodeInt(BigInt(this.getStackIndex('__internal__externalCallInputBase'))), loc);
-    this.emit(Op.OP_PICK, loc);
-    if (slot.computedOffset > 0) {
-      this.emit(encodeInt(BigInt(slot.computedOffset)), loc);
-      this.emit(Op.OP_ADD, loc);
-    }
+    // Compute B's 32-byte category from the co-spent callee master (per-slot runtime index or base+offset).
+    this.emitSlotMasterIndex(slot, loc);
     this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
     this.emit(encodeInt(32n), loc);
     this.emit(Op.OP_SPLIT, loc);

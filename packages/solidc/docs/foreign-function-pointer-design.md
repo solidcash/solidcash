@@ -79,12 +79,18 @@ reusing the shipped external-call framework. VM-verified: blob struct field (see
 - **#3 cross-CONTRACT PASS DONE** (5beb5a8f, VM). `SplitExternalCallFnPtrArgs`: `IB(b).register(ITarget(t).m, ..)`
   splits the fn-ptr member arg to `(t, ITarget.m.selector, ..)` matching B's lowered param; B stores it and fires
   it against the target in a later tx.
-- **#3 cross-CONTRACT RETURN - OPEN** (attempted 2026-07-11, reverted). The caller side compiles (a blob local
+- **#3 cross-CONTRACT RETURN - OPEN, ROOT-CAUSE ISOLATED** (2026-07-11). The caller side compiles (a blob local
   from a cross-contract call whose interface method returns a fn-ptr, + the interface return retyped to bytes) and
-  the SDK selector-fill was fixed (single-method callee needs no witness selector - a `needsSelectorVerification`
-  ABI flag), but B receives an EMPTY blob: the return-event NFT does not thread A.getPtr's bytes-blob return
-  value across the boundary. A deeper SDK/covenant return-event matter; reverted to avoid compile-succeeds-runtime-
-  fails.
+  the SDK selector-fill fix (a single-method callee needs no witness selector) is correct. The blocker is NOT
+  fn-ptr-specific: a cross-contract **UNBOUNDED `bytes` return** fails at a covenant OP_VERIFY, while a **bounded
+  `bytes<N>` return, a `uint` return, and an in-contract bytes value all WORK** (isolated in
+  `XContractBytesReturn.test.ts`: CONTROL + BOUNDED pass, unbounded skipped). The unbounded path compiles the
+  return-event blob via the generic-pushdata encode/decode SUBROUTINES (2358 vs 1080 bytes); that path disagrees
+  with the return-event covenant for a variable-length value. The foreign fn-ptr blob is `bytes`, so the fn-ptr
+  cross-contract RETURN reduces to this pre-existing return-event bug. TWO fix paths: (a) fix the generic-pushdata
+  return-event encode/decode/verify for unbounded bytes (unblocks ALL cross-contract bytes returns), or (b) return
+  the fn-ptr blob as a BOUNDED bytes (fixed selector4 ++ p2sh32 = 39 bytes; uses the working bounded path). The
+  in-contract fn-ptr blob return (26ca98c0) works because it inlines (no return-event NFT).
 
 ### Historical: the blob validation notes (superseded by the SHIPPED model above)
 

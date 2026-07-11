@@ -100,15 +100,31 @@ real callee (Handler, 1 data NFT) via `withExternalCall`, and the two disagree o
 `INPUTBYTECODE[masterIndex]` lands on a funding/signed input. This is definitively a co-spend LAYOUT mismatch,
 not a selector-value bug.
 
-**The fix (buildable, the user's category insight):** the fn-ptr call's co-spend base/index must come from the
-CALLEE's runtime layout, not a compile-time synth count. Since the pointer's address pins the callee's category
-(read via OP_UTXOTOKENCATEGORY on the co-spent master), the covenant can identify the callee's master + data NFTs
-by category at runtime, independent of a compile-time interface. Concretely: emit the fn-ptr co-spend like the
-array-element loop dispatch (which already verifies a runtime address by LBC) but for a single callee, and derive
-the data-NFT stride from the co-spent category run rather than `requiredDataNftIndices`. Plus the SDK must set
-`__internal__externalCallInputBase` / the co-spend group from the real callee (it already knows it from
-withExternalCall) so caller and covenant agree. This is a bounded covenant + SDK change, now precisely scoped;
-the duality (self-ref params) is the separate size/tag branch.
+### Attempt 4 (2026-07-11): runtime master SCAN - built, hit the multi-call ambiguity
+
+Built `emitForeignFnPtrScanVerification`: loop all inputs, find the master (UTXOBYTECODE == pointer address AND
+minting capability 0x02), verify its selector-first unlocking == the runtime selector, require exactly one match.
+It compiled + executed; VM trace showed an offset bug (the address PICK matched a wrong input - the caller's own
+minting master, whose unlocking is signature-first). That is fixable, BUT the user raised the decisive flaw:
+
+**A scan-for-ANY-match is fundamentally AMBIGUOUS with MULTIPLE fn-ptr calls in one function** (same or different
+selectors). "require exactly one match" breaks the moment two calls co-spend two callees; and matching the FIRST
+input with a given (address, selector) binds a call to the wrong callee. The covenant must pin EACH call to ITS
+proper co-spent callee.
+
+### The correct design (per-call binding, not a global scan)
+
+Bind each fn-ptr call to a SPECIFIC co-spent callee via a PER-CALL master-index parameter that the SDK fills from
+the real callee layout it co-spends (it already knows the callee + its position from withExternalCall). The
+covenant then reads the master at THAT index and runs the normal identity + selector + preservation checks -
+unambiguous across many calls, and layout-independent (the index is SDK-computed, not derived from a compile-time
+synth data-NFT count). This reuses `emitExternalCallVerification` almost verbatim; only the index SOURCE changes
+(a per-call `__internal__fnptr_master_idx_N` param instead of `externalCallInputBase + computedOffset`). The
+category/scan can still be a runtime CHECK (assert the input at that index is the target's minting master) for
+defense-in-depth, but the INDEX itself comes from the SDK per call. Remaining pieces: (1) the per-call index
+param + covenant read; (2) the SDK auto-derivation to fill each fn-ptr call's callee master index; (3) the
+duality (a self-ref param is a functionId, handled by a size/tag branch). This is a bounded covenant + SDK build,
+now fully specified.
 
 ## `store_function` needs a third deep feature regardless
 

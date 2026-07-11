@@ -57,7 +57,24 @@ SDK conditional co-spend), touching the core representation that the 20 passing 
 a dedicated, VM-verified-per-step build, **not a safe single-session partial** — a wrong gate is a silent
 miscompile, which the project's correctness bar forbids.
 
-### `store_function` needs a second deep feature regardless
+### Second blocker, found by BUILDING it: the generic-callee data-NFT count
+
+An attempt (`LowerForeignFunctionPointerParams`, built + reverted 2026-07-11) lowered a called fn-ptr param
+`y(v)` to an external call on a synthesized interface (`__FnPtr_N(y).__call(v)` with a runtime selector = a
+synthetic `bytes4` param). It COMPILED and EXECUTED the covenant end-to-end (co-spend + selector read), but the
+external-call co-spend layout is computed from the callee interface's **data-NFT count**, and a fn-ptr signature
+carries **no state-layout information** - the synth interface has 0 data NFTs. Against a real callee with 1 data
+NFT (a `bigint counter`), the covenant computed the wrong co-spend input index and read the wrong bytecode
+(expected selector `e174892f`, read `dd061921` from the mis-indexed input) -> OP_VERIFY fail. It ALSO broke the
+self-ref param path (the duality: it changed every `function(..) external` param call to foreign; the
+`ExternalFnPointerParam` self-ref VM test failed). Reverted.
+
+So a foreign fn-ptr call needs the callee's data-NFT count at the CALL site, which is unknown for a generic
+pointer. Options: (a) a runtime/opaque co-spend model that reads the callee's NFT count at runtime (bigger
+covenant change); (b) restrict to 0-data-NFT (pure/stateless-on-BCH) callees - which is `store_function`'s
+`Other.addTwo`, so the pure-callee subset is the tractable target once the duality (runtime tag) is solved.
+
+## `store_function` needs a third deep feature regardless
 
 `this.store((new Other()).addTwo); return ev(x)` also deploys `Other` and calls through the stored pointer in
 **one tx** = the deploy-then-call fold intersected with the fn-ptr call. So even a complete runtime-tag does not

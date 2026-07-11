@@ -283,6 +283,7 @@ export interface ExternalCallAbi {
   addressLiteral?: string; // code-baked literal address target IFoo(0x..).m(): covenant pushes this constant (un-seedable)
   loopArrayVar?: string; // state array of callee addresses: every element is co-spent + loop-verified (IFoo(arr[i]).m())
   addressIsMsgSender?: boolean; // target is msg.sender: the SDK co-spends the caller-designated msg.sender contract
+  fnPtrCall?: boolean; // foreign fn-ptr call: the SDK fills a per-call `__internal__extcallMasterIdx<i>` with the callee master index
   requiredDataNftIndices: number[];
   hasReturnValues?: boolean;
   returnTypes?: readonly string[];

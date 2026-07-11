@@ -86,6 +86,7 @@ function buildFunctionAbiMetadata(func: FunctionDefinitionNode): Partial<AbiFunc
         ...(ec.addressLiteral && { addressLiteral: ec.addressLiteral }),
         ...(ec.loopArrayVar && { loopArrayVar: ec.loopArrayVar }),
         ...(ec.addressIsMsgSender && { addressIsMsgSender: true }),
+        ...(ec.fnPtrCall && { fnPtrCall: true }),
         requiredDataNftIndices: ec.requiredDataNftIndices,
         ...(ec.hasReturnValues && { hasReturnValues: true }),
         ...(ec.returnTypes && ec.returnTypes.length > 0 && {

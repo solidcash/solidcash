@@ -1618,3 +1618,27 @@ describe('foreign external fn-ptr state var (fixed method on runtime address)', 
     expect(() => compileString(src, { solidityImportCompat: true })).toThrow();
   });
 });
+
+describe('foreign external fn-ptr parameter (per-call master index)', () => {
+  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  // A called `function(..) external` PARAM lowers to an address param + a bytes4 selector param + a per-call
+  // `__internal__extcallMasterIdx<i>` the SDK fills. VM-verified in ForeignFunctionPointerParam.test.ts
+  // (single + multi-call binding).
+  it('lowers a called foreign fn-ptr param to address + selector + a master-index hidden param', () => {
+    const art = compileString('contract C { function eval(function(uint) external returns(uint) y, uint v)'
+      + ' public returns(uint) { return y(v); } }', { solidityImportCompat: true });
+    const inputs = art.abi.find((f) => f.name === 'eval')!.inputs.map((i) => `${i.name}:${i.type}`);
+    expect(inputs).toContain('y:address');
+    expect(inputs).toContain('__fnsel_y:bytes4');
+    expect(inputs.some((i) => i.startsWith('__internal__extcallMasterIdx'))).toBe(true);
+  });
+  // A fn-ptr param passed a SELF-REF (`this.f`) at an internal call site stays a functionId (not lowered), so the
+  // internal OP_INVOKE path keeps working (the duality: self-ref = functionId, foreign = address+selector).
+  it('does NOT lower a fn-ptr param passed a self-ref internally (stays a functionId)', () => {
+    const art = compileString('contract C { function g(int x) public pure returns(int) { return x + 1; }'
+      + ' function ev(function(int) external returns(int) fp, int a) public returns(int) { return fp(a); }'
+      + ' function u(int x) public { require(this.ev(this.g, x) == x + 1); } }', { solidityImportCompat: true });
+    const evInputs = art.abi.find((f) => f.name === 'ev')!.inputs.map((i) => i.name);
+    expect(evInputs).not.toContain('__fnsel_fp'); // not lowered - stays the internal functionId form
+  });
+});

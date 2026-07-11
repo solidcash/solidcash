@@ -11065,8 +11065,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
       const callMode = slot.callMode ?? ExternalCallMode.REGULAR;
 
-      // Compute B's master input index (compile-time constant)
-      this.emitExternalCallMasterIndex(slot.computedOffset, locationData);
+      // B's master input index. A foreign fn-ptr call reads a PER-CALL index the SDK filled (the callee's layout
+      // is unknown at compile time); a normal call computes it from the co-spend base + compile-time offset.
+      if (slot.fnPtrCall) {
+        this.emit(encodeInt(BigInt(this.getStackIndex(`__internal__extcallMasterIdx${slot.slotIndex}`))), locationData);
+        this.emit(Op.OP_PICK, locationData);
+      } else {
+        this.emitExternalCallMasterIndex(slot.computedOffset, locationData);
+      }
       // Stack: [B_master_inputIdx] (1 untracked)
 
       // DUP for multiple uses

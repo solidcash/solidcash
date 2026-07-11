@@ -5208,10 +5208,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       // Uses ABI-driven param resolution: scans each group's ABI inputs for hidden param names
       // and computes values based on the param name and transaction layout.
       let currentInputBase = externalCallInputBase;
+      const groupMasterIndices: number[] = []; // per co-spend group: its master's absolute input index
       for (let groupIdx = 0; groupIdx < externalCallUtxoGroups.length; groupIdx++) {
         const group = externalCallUtxoGroups[groupIdx];
         const meta = groupMetas[groupIdx];
         const masterInputIndex = currentInputBase;
+        groupMasterIndices[groupIdx] = masterInputIndex;
 
         // Re-create data NFT unlockers with correct master input index
         group.dataNftUtxos = group.dataNftUtxos.map((nftUtxo) => ({
@@ -5327,6 +5329,14 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             );
           }
           finalArgs = [...finalArgs, hexToBin(targetFunc.selector)];
+        }
+      }
+
+      // Foreign fn-ptr calls: append each fn-ptr slot's callee master input index (per-call, so the covenant
+      // reads the RIGHT co-spent callee for each call without knowing the callee's block layout at compile time).
+      for (let i = 0; i < directGroupCount; i++) {
+        if ((groupMetas[i].ecSlot as { fnPtrCall?: boolean }).fnPtrCall) {
+          finalArgs = [...finalArgs, BigInt(groupMasterIndices[i])];
         }
       }
 

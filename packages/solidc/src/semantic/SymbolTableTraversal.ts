@@ -1509,7 +1509,19 @@ export default class SymbolTableTraversal extends AstTraversal {
           this.pushToStack(selectorParam);
         }
 
-
+        // Foreign fn-ptr calls: a per-call absolute master-input-index param the SDK fills from the real callee
+        // layout it co-spends (the callee's data-NFT count is unknown at compile time, so no fixed block offset).
+        for (let i = 0; i < slotCount; i++) {
+          if (!externalCallSlots[i].fnPtrCall) continue;
+          const idxName = `__internal__extcallMasterIdx${externalCallSlots[i].slotIndex}`;
+          const idxParam = new ParameterNode(PrimitiveType.BIGINT, idxName);
+          idxParam.location = node.location;
+          node.parameters.push(idxParam);
+          this.symbolTables[0].set(Symbol.variable(idxParam));
+          const idxSymbol = this.symbolTables[0].get(idxName);
+          if (idxSymbol) idxSymbol.references.push({ name: idxName } as IdentifierNode);
+          this.pushToStack(idxParam);
+        }
       }
     }
 
@@ -3394,6 +3406,9 @@ export default class SymbolTableTraversal extends AstTraversal {
         requiredDataNftIndices: dataNftIndices,
         computedOffset: 0,
         needsSelectorVerification,
+        // A foreign fn-ptr call (synthesized `__FnPtr_` interface): the callee master input index is a per-call
+        // runtime param the SDK fills, not a fixed block offset (the callee's layout is unknown at compile time).
+        ...(node.callInfo.interfaceName.startsWith('__FnPtr_') && { fnPtrCall: true }),
         ...(node.runtimeSelector && { runtimeSelector: node.runtimeSelector }),
         ...(node.opaqueReturn && { opaqueReturn: true }),
         ...(callMode && callMode !== ExternalCallMode.REGULAR && { callMode }),

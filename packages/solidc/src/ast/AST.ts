@@ -1805,6 +1805,12 @@ export interface ExternalCallSlot {
   // (the MultiCall pattern) is emitted INLINE per-iteration (co-spend + return read keyed on the live index).
   // Both epilogues (emitExternalCallVerification, emitExternalReturnEventVerification) skip such slots.
   inlineLoopDispatch?: boolean;
+  // FOREIGN function-pointer call (synthesized `__FnPtr_` callee): the callee's block layout (data-NFT count) is
+  // unknown at compile time, so the co-spend master input index is a PER-CALL runtime param the SDK fills
+  // (`__internal__extcallMasterIdx<slotIndex>`) rather than `externalCallInputBase + computedOffset`. Unambiguous
+  // across many fn-ptr calls (each call reads its own index). Identity + runtime selector + preservation are the
+  // normal checks. See emitExternalCallVerification.
+  fnPtrCall?: boolean;
 }
 
 export interface ExternalOutputStateAccessInfo {

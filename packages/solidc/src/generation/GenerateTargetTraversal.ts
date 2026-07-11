@@ -11139,32 +11139,58 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         // MINIMALDATA guarantees a 4-byte selector uses a 0x04 prefix (1 byte).
         // Same code for P2S, P2SH32, and P2SH20 - no address-type branching needed.
         const slotsNeedingSelector = this.externalCallSlots.filter((s) => s.needsSelectorVerification);
-        // Stack: [idx] (1 untracked)
-        this.emit(Op.OP_DUP, locationData);            // [idx, idx]
-        this.emit(Op.OP_INPUTBYTECODE, locationData);  // [idx, inputBC]
-        this.emit(encodeInt(1n), locationData);
-        this.emit(Op.OP_SPLIT, locationData);          // [idx, prefix, rest]
-        this.emit(Op.OP_NIP, locationData);            // [idx, rest]
-        this.emit(encodeInt(4n), locationData);
-        this.emit(Op.OP_SPLIT, locationData);          // [idx, selector, remainder]
-        this.emit(Op.OP_DROP, locationData);           // [idx, selector]
-
-        // Compare to the expected selector. Priority: the runtime selector temp (varying-method pointer, bound to
-        // `cond`); else the compile-time constant (MD1 - a regular call's target is fixed, so the selector must
-        // not come from a spender witness); else, as a fallback, the witness param. Constant vs picked both leave
-        // [idx].
         const rtSel = rtSelTemps.get(slot.slotIndex);
-        if (!rtSel && slot.compileTimeSelector) {
-          this.emit(slot.compileTimeSelector, locationData); // [idx, selector, const]
-          this.emit(Op.OP_EQUALVERIFY, locationData);        // [idx]
+
+        // Emit `[.., selector] -> [..]`: compare the 4-byte selector to the expected value (runtime temp, then
+        // compile-time constant, then witness param) - each leaves [idx].
+        const emitSelectorCompare = (): void => {
+          if (!rtSel && slot.compileTimeSelector) {
+            this.emit(slot.compileTimeSelector, locationData);
+            this.emit(Op.OP_EQUALVERIFY, locationData);
+          } else {
+            const selectorName = rtSel
+              ?? (slotsNeedingSelector.length === 1
+                ? '__internal__externalCallSelector' : `__internal__externalCallSelector${slot.slotIndex}`);
+            const selectorIdx = this.getStackIndex(selectorName);
+            this.emit(encodeInt(BigInt(selectorIdx + 2)), locationData);
+            this.emit(Op.OP_PICK, locationData);
+            this.emit(Op.OP_EQUALVERIFY, locationData);
+          }
+        };
+
+        if (slot.fnPtrCall) {
+          // A fn-ptr callee may be SINGLE-method: its dispatcher is elided, so its unlocking has NO 4-byte
+          // selector prefix (the first push is the first arg). Verify the selector ONLY when the co-spent
+          // unlocking begins with a 4-byte push (0x04) - a real dispatch selector; a single-method callee is
+          // pinned by the identity check alone (its one method is unambiguous). SOUND: a multi-method callee
+          // ALWAYS has the 0x04 selector prefix, so the wrong method can never be co-spent (worst case a
+          // single-method callee with a 4-byte first arg fails closed, never miscompiles).
+          this.emit(Op.OP_DUP, locationData);            // [idx, idx]
+          this.emit(Op.OP_INPUTBYTECODE, locationData);  // [idx, inputBC]
+          this.emit(encodeInt(1n), locationData);
+          this.emit(Op.OP_SPLIT, locationData);          // [idx, prefix(1), rest]
+          this.emit(Op.OP_SWAP, locationData);           // [idx, rest, prefix]
+          this.emit(encodeInt(4n), locationData);
+          this.emit(Op.OP_EQUAL, locationData);          // [idx, rest, prefix==0x04]
+          this.emit(Op.OP_IF, locationData);             // [idx, rest]
+          this.emit(encodeInt(4n), locationData);
+          this.emit(Op.OP_SPLIT, locationData);          // [idx, selector, remainder]
+          this.emit(Op.OP_DROP, locationData);           // [idx, selector]
+          emitSelectorCompare();                         // [idx]
+          this.emit(Op.OP_ELSE, locationData);           // [idx, rest]
+          this.emit(Op.OP_DROP, locationData);           // [idx]
+          this.emit(Op.OP_ENDIF, locationData);          // [idx]
         } else {
-          const selectorName = rtSel
-            ?? (slotsNeedingSelector.length === 1
-              ? '__internal__externalCallSelector' : `__internal__externalCallSelector${slot.slotIndex}`);
-          const selectorIdx = this.getStackIndex(selectorName);
-          this.emit(encodeInt(BigInt(selectorIdx + 2)), locationData);
-          this.emit(Op.OP_PICK, locationData);
-          this.emit(Op.OP_EQUALVERIFY, locationData);
+          // Stack: [idx] (1 untracked)
+          this.emit(Op.OP_DUP, locationData);            // [idx, idx]
+          this.emit(Op.OP_INPUTBYTECODE, locationData);  // [idx, inputBC]
+          this.emit(encodeInt(1n), locationData);
+          this.emit(Op.OP_SPLIT, locationData);          // [idx, prefix, rest]
+          this.emit(Op.OP_NIP, locationData);            // [idx, rest]
+          this.emit(encodeInt(4n), locationData);
+          this.emit(Op.OP_SPLIT, locationData);          // [idx, selector, remainder]
+          this.emit(Op.OP_DROP, locationData);           // [idx, selector]
+          emitSelectorCompare();
         }
         // Stack: [idx] (1 untracked)
       }

@@ -55,6 +55,12 @@ export default class LowerBlobFunctionPointers extends AstTraversal {
   private hoists: StatementNode[] = [];
   private inBlobReturnFn = false;
   private typeNames = new Set<string>();
+  // `iface.method` -> the fn-ptr type a cross-contract call returns (received as a blob via the return-event NFT)
+  private ifaceFnPtrReturns = new Map<string, FunctionType>();
+  // A fn-ptr blob is a FIXED size: selector(4) ++ p2sh32 locking bytecode(35) = 39 bytes. A RETURNED blob uses a
+  // BOUNDED bytes type so the return-event NFT encodes/decodes it via the simple length-prefix path (the generic-
+  // pushdata path for UNBOUNDED bytes returns is broken cross-contract - see XContractBytesReturn.test.ts).
+  private static readonly BLOB_SIZE = 39;
 
   visitSourceFile(node: SourceFileNode): Node {
     this.synthIfaces = [];
@@ -64,7 +70,18 @@ export default class LowerBlobFunctionPointers extends AstTraversal {
       ...(node.contract ? node.contract.structDefinitions : []),
     ];
     this.typeNames = new Set();
-    for (const iface of node.interfaceDefinitions as InterfaceNode[]) this.typeNames.add(iface.name);
+    this.ifaceFnPtrReturns = new Map();
+    for (const iface of node.interfaceDefinitions as InterfaceNode[]) {
+      this.typeNames.add(iface.name);
+      for (const fn of iface.functions) {
+        if (fn.returnTypes[0] instanceof FunctionType && (fn.returnTypes[0] as FunctionType).isExternal) {
+          // Record the fn-ptr type (for the receiver's synth call) + retype the interface return to the bounded
+          // blob, so a cross-contract call to it yields the blob (matching the implementation's blob return).
+          this.ifaceFnPtrReturns.set(`${iface.name}.${fn.name}`, fn.returnTypes[0] as FunctionType);
+          fn.returnTypes[0] = new BytesType(LowerBlobFunctionPointers.BLOB_SIZE);
+        }
+      }
+    }
     for (const c of node.importedContracts as ContractNode[]) this.typeNames.add(c.name);
     if (node.contract) this.typeNames.add(node.contract.name);
     if (node.contract) node.contract = this.visitContract(node.contract) as ContractNode;
@@ -99,7 +116,7 @@ export default class LowerBlobFunctionPointers extends AstTraversal {
         continue;
       }
       this.blobReturnFns.set(fn.name, { iface: this.synthInterface(fn.returnTypes[0] as FunctionType) });
-      fn.returnTypes[0] = new BytesType();
+      fn.returnTypes[0] = new BytesType(LowerBlobFunctionPointers.BLOB_SIZE);
     }
     this.blobLocals = new Map();
     for (const fn of node.functions) {
@@ -107,7 +124,7 @@ export default class LowerBlobFunctionPointers extends AstTraversal {
       this.collectBlobLocals(fn.body);
     }
 
-    if (this.blobFields.size === 0 && this.blobReturnFns.size === 0) return node;
+    if (this.blobFields.size === 0 && this.blobReturnFns.size === 0 && this.blobLocals.size === 0) return node;
 
     // A param stored into a blob field (a struct constructor arg at a blob-field position) is itself a blob.
     const bodies = [node.constructorDef, ...node.functions, node.fallbackDef, node.receiveDef]
@@ -163,13 +180,21 @@ export default class LowerBlobFunctionPointers extends AstTraversal {
     return fn;
   }
 
-  // A fn-ptr LOCAL assigned a blob-returning call (`function(..) external p = getPtr(a)`) is a bytes blob.
+  // A fn-ptr LOCAL assigned a blob-returning call is a bytes blob: `p = getPtr(a)` (a same-contract blob-return
+  // fn) or `p = IA(a).getPtr(t)` (a CROSS-CONTRACT external call whose interface method returns a fn-ptr).
   private collectBlobLocals(node: Node): void {
     const walk = (n: Node): void => {
-      if (n instanceof VariableDefinitionNode && n.type instanceof FunctionType && (n.type as FunctionType).isExternal
-          && n.expression instanceof FunctionCallNode && n.expression.identifier instanceof IdentifierNode) {
-        const ret = this.blobReturnFns.get(n.expression.identifier.name);
-        if (ret) { this.blobLocals.set(n.name, { iface: ret.iface }); n.type = new BytesType(); }
+      if (n instanceof VariableDefinitionNode && n.type instanceof FunctionType && (n.type as FunctionType).isExternal) {
+        let iface: string | undefined;
+        if (n.expression instanceof FunctionCallNode && n.expression.identifier instanceof IdentifierNode) {
+          iface = this.blobReturnFns.get(n.expression.identifier.name)?.iface;
+        } else if (n.expression instanceof MethodCallNode && n.expression.object instanceof FunctionCallNode
+            && n.expression.object.identifier instanceof IdentifierNode
+            && n.expression.object.parameters.length === 1) {
+          const ft = this.ifaceFnPtrReturns.get(`${n.expression.object.identifier.name}.${n.expression.methodName}`);
+          if (ft) iface = this.synthInterface(ft);
+        }
+        if (iface) { this.blobLocals.set(n.name, { iface }); n.type = new BytesType(LowerBlobFunctionPointers.BLOB_SIZE); }
       }
       for (const key of Object.keys(n)) {
         const val = (n as unknown as Record<string, unknown>)[key];
@@ -241,7 +266,10 @@ export default class LowerBlobFunctionPointers extends AstTraversal {
     const methodAccess = new FieldAccessNode(ifaceId, method); methodAccess.location = at.location;
     const selector = new FieldAccessNode(methodAccess, 'selector'); selector.location = at.location;
     const cat = new BinaryOpNode(selector, BinaryOperator.PLUS, address); cat.location = at.location;
-    return cat;
+    // Fix the blob to the bounded size so the return-event NFT uses the simple length-prefix encode/decode.
+    const bounded = new CastNode(new BytesType(LowerBlobFunctionPointers.BLOB_SIZE), cat, false);
+    bounded.location = at.location;
+    return bounded;
   }
 
   visitFunctionCallStatement(node: FunctionCallStatementNode): Node {

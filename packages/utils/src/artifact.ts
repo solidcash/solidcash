@@ -284,6 +284,7 @@ export interface ExternalCallAbi {
   loopArrayVar?: string; // state array of callee addresses: every element is co-spent + loop-verified (IFoo(arr[i]).m())
   addressIsMsgSender?: boolean; // target is msg.sender: the SDK co-spends the caller-designated msg.sender contract
   fnPtrCall?: boolean; // foreign fn-ptr call: the SDK fills a per-call `__internal__extcallMasterIdx<i>` with the callee master index
+  needsSelectorVerification?: boolean; // regular direct call: true = has a witness selector param the SDK fills; false = single-method callee (none)
   requiredDataNftIndices: number[];
   hasReturnValues?: boolean;
   returnTypes?: readonly string[];

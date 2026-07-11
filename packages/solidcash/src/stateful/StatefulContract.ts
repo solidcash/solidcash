@@ -5316,6 +5316,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           const group = externalCallUtxoGroups[i];
           // call/staticcall/delegatecall modes don't inject selector params - skip them
           if (group.callMode === 'call' || group.callMode === 'staticcall' || group.callMode === 'delegatecall') continue;
+          // A single-method callee has no witness selector param (its unlocking carries no selector); only groups
+          // the compiler marked needsSelectorVerification get a filled selector. Absent (older artifacts) = fill.
+          if ((groupMetas[i].ecSlot as { needsSelectorVerification?: boolean }).needsSelectorVerification === false) continue;
           const bAbi = group.externalContract.inner.artifact.abi as readonly { name: string; selector?: string }[];
           const targetFunc = bAbi.find((f) => f.name === group.functionName);
           if (!targetFunc) {

@@ -87,6 +87,9 @@ function buildFunctionAbiMetadata(func: FunctionDefinitionNode): Partial<AbiFunc
         ...(ec.loopArrayVar && { loopArrayVar: ec.loopArrayVar }),
         ...(ec.addressIsMsgSender && { addressIsMsgSender: true }),
         ...(ec.fnPtrCall && { fnPtrCall: true }),
+        // Explicit (true AND false) for regular direct calls so the SDK skips a single-method callee's (absent)
+        // witness selector; call/staticcall/delegatecall inject no selector param.
+        ...(!ec.callMode && { needsSelectorVerification: !!ec.needsSelectorVerification }),
         requiredDataNftIndices: ec.requiredDataNftIndices,
         ...(ec.hasReturnValues && { hasReturnValues: true }),
         ...(ec.returnTypes && ec.returnTypes.length > 0 && {

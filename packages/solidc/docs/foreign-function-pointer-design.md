@@ -79,18 +79,19 @@ reusing the shipped external-call framework. VM-verified: blob struct field (see
 - **#3 cross-CONTRACT PASS DONE** (5beb5a8f, VM). `SplitExternalCallFnPtrArgs`: `IB(b).register(ITarget(t).m, ..)`
   splits the fn-ptr member arg to `(t, ITarget.m.selector, ..)` matching B's lowered param; B stores it and fires
   it against the target in a later tx.
-- **#3 cross-CONTRACT RETURN - OPEN, ROOT-CAUSE ISOLATED** (2026-07-11). The caller side compiles (a blob local
-  from a cross-contract call whose interface method returns a fn-ptr, + the interface return retyped to bytes) and
-  the SDK selector-fill fix (a single-method callee needs no witness selector) is correct. The blocker is NOT
-  fn-ptr-specific: a cross-contract **UNBOUNDED `bytes` return** fails at a covenant OP_VERIFY, while a **bounded
-  `bytes<N>` return, a `uint` return, and an in-contract bytes value all WORK** (isolated in
-  `XContractBytesReturn.test.ts`: CONTROL + BOUNDED pass, unbounded skipped). The unbounded path compiles the
-  return-event blob via the generic-pushdata encode/decode SUBROUTINES (2358 vs 1080 bytes); that path disagrees
-  with the return-event covenant for a variable-length value. The foreign fn-ptr blob is `bytes`, so the fn-ptr
-  cross-contract RETURN reduces to this pre-existing return-event bug. TWO fix paths: (a) fix the generic-pushdata
-  return-event encode/decode/verify for unbounded bytes (unblocks ALL cross-contract bytes returns), or (b) return
-  the fn-ptr blob as a BOUNDED bytes (fixed selector4 ++ p2sh32 = 39 bytes; uses the working bounded path). The
-  in-contract fn-ptr blob return (26ca98c0) works because it inlines (no return-event NFT).
+- **#3 cross-CONTRACT RETURN - caller+callee COMPILE, runtime BLOCKED by return-event bugs (ROOT-CAUSE ISOLATED,
+  2026-07-11).** SHIPPED compiler side (LowerBlobFunctionPointers): a cross-contract call whose interface method
+  returns a fn-ptr is detected (`ifaceFnPtrReturns`); the interface return + the fn-ptr blob are retyped to a
+  BOUNDED `bytes39` (selector4 ++ p2sh32 35) so the return-event uses the simple length-prefix path; the blob
+  local is sliced into the audited external call. SDK selector-fill fix added (a single-method callee has no
+  witness selector - `needsSelectorVerification` ABI flag). BLOCKED at runtime by TWO isolated return-event bugs,
+  NEITHER fn-ptr-specific (`XContractBytesReturn.test.ts`): (1) a cross-contract **UNBOUNDED `bytes` return** fails
+  (generic-pushdata subroutine path, 2358 vs 1080 bytes); (2) even a **BOUNDED but COMPUTED** bytes return (a
+  concat/cast, not a param passthrough) fails - only a bounded-PARAM passthrough + a `uint` return + an in-contract
+  bytes value WORK. The fn-ptr blob is a computed bounded bytes, so it hits bug (2): B receives an EMPTY blob. The
+  RETURN test is `.skip` (compiles, runtime-blocked). Fix = the return-event encode/decode/verify for computed +
+  unbounded bytes returns (unblocks ALL cross-contract bytes returns). The in-contract fn-ptr blob return
+  (26ca98c0) works because it inlines (no return-event NFT).
 
 ### Historical: the blob validation notes (superseded by the SHIPPED model above)
 

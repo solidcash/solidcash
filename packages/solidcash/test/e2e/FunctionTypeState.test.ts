@@ -70,6 +70,39 @@ describe('function pointers in state (dispatch table)', () => {
     expect(invTx.txid).toBeDefined();
   });
 
+  // An EXTERNAL self-ref pointer (`this.f`) routes to the internal OP_INVOKE dispatch (the only external-pointer
+  // VALUE that exists), so its runtime representation is a functionId - identical to an internal pointer. A
+  // scalar `function(..) external` state var therefore round-trips like the internal case above.
+  const EXT_ROUTER = `
+    pragma solidcash >=0.8.0;
+    contract ExtRouter() {
+        int counter;
+        function(int) external returns (int) handler;
+        function double(int x) external returns (int) { return x * 2; }
+        function register() { this.handler = this.double; this.counter = this.counter + 1; }
+        function invoke(int v, int expected) {
+            function(int) external returns (int) h = this.handler;
+            require(h(v) == expected);
+        }
+    }
+  `;
+
+  it('round-trips a scalar EXTERNAL self-ref function-pointer state var (this.f) on the VM', async () => {
+    const artifact2 = compileString(EXT_ROUTER);
+    const provider = createTestProvider();
+    const contract = new Contract(artifact2, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, contract, artifact2.stateLayout!, { counter: 0n }, { saltContract: true },
+    );
+
+    // Store `this.double`'s functionId in state, then read it back in a later tx and dispatch: double(21) == 42.
+    const sc1 = StatefulContract.withCategory(contract, categoryId);
+    await sc1.register().send();
+    const sc2 = StatefulContract.withCategory(contract, categoryId);
+    const invTx = await sc2.invoke(21n, 42n).send();
+    expect(invTx.txid).toBeDefined();
+  });
+
   it('rejects function-pointer state in a contract that can rewrite its own code', () => {
     const bad = `
       contract Bad() {

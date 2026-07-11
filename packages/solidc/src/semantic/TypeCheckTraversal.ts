@@ -778,7 +778,7 @@ export default class TypeCheckTraversal extends AstTraversal {
     if (node.isDynamic && node.type instanceof ArrayType) {
       return node;
     }
-    if (!(node.type instanceof StructType) && !isValidStateType(node.type)) {
+    if (!(node.type instanceof StructType) && !isValidStateType(node.type, new Set(), true)) {
       throw new UnsupportedStateTypeError(node);
     }
     // Unbounded arrays cannot be scalar state variables (bin-packing requires fixed max size)
@@ -2616,15 +2616,22 @@ const inferPaddedBytesType = (node: FunctionCallNode): Type => {
   return new BytesType();
 };
 
-function isValidStateType(type: Type, seen: Set<string> = new Set()): boolean {
+// allowExternalFnPtr: set ONLY for a bare top-level state variable. A self-ref external pointer (`this.f`) is a
+// functionId at runtime (identical to an internal pointer), so a top-level `function(..) external` state var is
+// sound; but a nested one (struct field / array element / mapping value) is deliberately NOT relaxed here (the
+// recursive calls do not propagate the flag) - that shape is untested and its rejection is codified.
+function isValidStateType(type: Type, seen: Set<string> = new Set(), allowExternalFnPtr = false): boolean {
   if (type === PrimitiveType.BIGINT || type === PrimitiveType.BOOL) return true;
   if (type === PrimitiveType.STRING) return true;
   if (type === PrimitiveType.PUBKEY) return true;
   if (type === PrimitiveType.SIG) return true;
   if (type === PrimitiveType.DATASIG) return true;
-  // Internal function pointers store as their integer functionId (immutable per covenant bytecode).
-  // External pointers are (address, selector), not a stable functionId - not a valid state type.
-  if (type instanceof FunctionType) return !type.isExternal;
+  // Function pointers store as their integer functionId (immutable per covenant bytecode). An INTERNAL pointer
+  // always is one. An EXTERNAL pointer is a functionId too WHEN it is a self-ref (`this.f`, which routes to the
+  // internal OP_INVOKE dispatch - the only external-pointer VALUE that exists today); a genuine foreign
+  // (address, selector) value has no functionId and never resolves to one, so it cannot reach a state store
+  // (it fails at assignment resolution, not silently). So a top-level external fn-ptr state var is sound.
+  if (type instanceof FunctionType) return !type.isExternal || allowExternalFnPtr;
   if (type instanceof IntType) return true;
   if (type instanceof FixedType) return true;
   if (type instanceof BytesType) return true;

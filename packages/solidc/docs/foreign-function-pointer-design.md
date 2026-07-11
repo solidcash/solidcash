@@ -1,7 +1,10 @@
 # Foreign external function pointers: design + the runtime-tag blocker
 
-Status: **PARAMS + STATE storage + nested (struct field / array) all SHIPPED + VM-verified. Remaining: single-
-method-callee selector elision (#5, analyzed/deferred), return/pass a fn-ptr cross-ABI (#3), deploy-fold (#2).**
+Status: **PARAMS + STATE storage + nested (struct field / array) + return/pass through an INTERNAL helper all
+SHIPPED + VM-verified. Remaining: single-method-callee selector (#5, deferred), CROSS-ABI return/pass (#3 public,
+needs the blob + SDK), deploy-fold (#2). Note: `p = (new Other()).addTwo; p(v)` (deploy + local ptr + call)
+already COMPILES via alias + the shipped deploy-then-call fold; store_function's `store((new Other()).addTwo)`
+(deployed method PASSED to a public fn) is the open deploy-fold+param intersection.**
 
 ## SHIPPED map (2026-07-11 session: items 1 + 4 of the 5 gaps)
 
@@ -25,6 +28,15 @@ method-callee selector elision (#5, analyzed/deferred), return/pass a fn-ptr cro
 
 The nested cases (#4) reduce to the fixed-method form (a consistent method contract-wide) - the RECEIVED-value
 nested case (method in the value, runtime selector) needs the general BLOB representation below.
+
+- **#3 (partial) Foreign fn-ptr RETURNED from / PASSED to a side-effect-free INTERNAL helper** - 7d6ff0d7 +
+  dc6b733d. `InlineForeignFunctionPointerReturns` beta-reduces a single-return internal/private helper into its
+  call sites: `p = make(a)` -> `p = IFoo(a).m` (RETURNED), and `relay(IFoo(a).m, v)` -> `IFoo(a).m(v)` (PASSED,
+  via a `cb(args)` -> method-call substitution), which the straight-line desugar reduces to the external call.
+  The self-ref/foreign DUALITY is respected: a helper is inlined only when every external-fn-ptr-param arg is a
+  foreign member (a self-ref `this.g` = a functionId stays on the OP_INVOKE path; internal fn-ptr params are never
+  touched). VM: internal return co-spend + pass-to-helper with the callee's return captured via the return-event
+  NFT. The PUBLIC (cross-ABI) return/pass still needs the blob (a fn-ptr crossing the real ABI boundary).
 
 ### The general nested/return/pass case: the fn-ptr VALUE as a bytes BLOB (validated, not yet built)
 

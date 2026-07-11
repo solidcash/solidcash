@@ -1,8 +1,53 @@
 # Foreign external function pointers: design + the runtime-tag blocker
 
-Status: **foreign fn-ptr PARAMS now SHIPPED + VM-verified (per-call master index, 5096dba6). Self-ref +
-fixed-method-foreign state + dispatch tables already shipped. Remaining: foreign fn-ptr STATE storage +
-deploy-fold (for full store_function).**
+Status: **PARAMS + STATE storage + nested (struct field / array) all SHIPPED + VM-verified. Remaining: single-
+method-callee selector elision (#5, analyzed/deferred), return/pass a fn-ptr cross-ABI (#3), deploy-fold (#2).**
+
+## SHIPPED map (2026-07-11 session: items 1 + 4 of the 5 gaps)
+
+- **#1 Foreign fn-ptr STATE storage of a RECEIVED value** (`x = y`, method carried in the value) - 50766c59.
+  `LowerForeignFunctionPointerStorage` flattens the fn-ptr state var to an `address` field + a `bytes4
+  __fnsel_<name>` companion; a store copies both parts; `x(args)` dispatches through the synth `__FnPtr_S<n>`
+  interface + the per-call master index + a runtime selector sourced from the companion (reduces to the audited
+  state-address external call). `LowerForeignFunctionPointerParams` also lowers a fn-ptr param STORED into such a
+  var (not only called ones). VM: seeded call-from-storage, save->run across txs, and a RETURN value captured back
+  via the return-event NFT (`ForeignFunctionPointerStorage.test.ts`).
+- **#4 Foreign fn-ptr in a STRUCT FIELD**, fixed method - bd6b0f58. `LowerForeignFunctionPointerStructFields`
+  retypes the fn-ptr field to interface-typed, drops `.m` off the struct constructor arg, and rewrites
+  `s.fn(args)` -> `s.fn.m(args)` = the shipped `s.field.m()` co-spend. Lowered only when the field name maps to a
+  single consistent (interface, method) contract-wide.
+- **#4 Foreign fn-ptr ARRAY dispatch table**, fixed method - 15421ec1. `LowerForeignFunctionPointerArrayElements`
+  MOVES the fn-ptr array out of `collections` into a plain `address[]` state var (a fn-ptr array parses as a
+  collection; a plain address array is a dynamic-array state var) and rewrites `fns[i](args)` ->
+  `IFace(fns[i]).m(args)` = the shipped array-element co-spend. Runs FIRST so every later pass sees a native
+  `address[]`. Semantics = BROADCAST (co-spend + call the method on every registered callee); the explicit-loop
+  form is redundant + rejected by codegen (fails closed).
+
+The nested cases (#4) reduce to the fixed-method form (a consistent method contract-wide) - the RECEIVED-value
+nested case (method in the value, runtime selector) needs the general BLOB representation below.
+
+### The general nested/return/pass case: the fn-ptr VALUE as a bytes BLOB (validated, not yet built)
+
+A foreign fn-ptr value = `address_lbc ++ selector4` (a single bytes blob, selector = last 4 bytes). A CALL slices
+it: `bytes a = blob.split(blob.length - 4)[0]; IFace(a).__call(args)` with a runtime selector `bytes4(blob[-4:])`.
+VALIDATED (2026-07-11): a SLICED value in a LOCAL is accepted as an external-call target (addressParam = the
+local), and a bytes struct field sliced into (addr, sel) locals dispatches an external call. So a blob fn-ptr in a
+struct field / array element / calldata / return-event reduces to slice-locals + the synth call. This is the path
+for the general #4 (received value in a struct/array), #3 (return/pass a fn-ptr), and unifies the value
+representation. Remaining build: the slice-desugar pass (construct split/length/index/bytes4-cast nodes) + the
+store-side param coordination + (for #3) SDK blob encode/decode of the (address, selector) calldata/return.
+
+### #5 single-method-callee selector elision (analyzed, deferred)
+
+A single-method contract skips the dispatcher (GTT:756), so its co-spend unlocking has NO 4-byte selector prefix
+and the fn-ptr runtime-selector check reads the first ARG. Sound+complete fix = make single-method callees ALWAYS
+emit the selector dispatcher (GTT:756 + SDK Contract.ts:101 both special-case `abi.length === 1`) but that changes
+EVERY single-method contract's address + unlocking. Caller-side alt = verify the selector only when the co-spent
+unlocking's first push is a 4-byte (`0x04`) push: sound but FALSE-NEGATIVE when a single-method callee's first arg
+is itself 4 bytes. Not corpus-unblocking alone (store_function also needs #2). Deferred.
+
+---
+## Original design notes (params + the runtime-tag journey)
 
 ## SHIPPED: foreign fn-ptr parameters via the PER-CALL master index (5096dba6)
 

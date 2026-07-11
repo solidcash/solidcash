@@ -90,6 +90,26 @@ same-address-varying machinery instead of a synth interface with a witness selec
 for MULTI-call / staticcall cases. Reverted (still breaks self-ref params); the working same-address-varying path
 is the template to build the fn-ptr call on, not a fresh synth interface.
 
+### PINPOINT root cause (2026-07-11, third build + full VM trace)
+
+Dumped the failing `OP_EQUALVERIFY` operands across runs: the selector read produces a value that CHANGES every
+run (`dd061921`, `638d22fc`, `e38eeac5`) preceded by a `0x41` (65-byte) push - i.e. it is reading a **signed
+input's unlocking (a signature), not the callee master's selector-first unlocking**. So the co-spend master
+index is WRONG: it is computed from the CALLER's synth-interface layout (0 data NFTs) while the SDK co-spends the
+real callee (Handler, 1 data NFT) via `withExternalCall`, and the two disagree on where the master sits, so
+`INPUTBYTECODE[masterIndex]` lands on a funding/signed input. This is definitively a co-spend LAYOUT mismatch,
+not a selector-value bug.
+
+**The fix (buildable, the user's category insight):** the fn-ptr call's co-spend base/index must come from the
+CALLEE's runtime layout, not a compile-time synth count. Since the pointer's address pins the callee's category
+(read via OP_UTXOTOKENCATEGORY on the co-spent master), the covenant can identify the callee's master + data NFTs
+by category at runtime, independent of a compile-time interface. Concretely: emit the fn-ptr co-spend like the
+array-element loop dispatch (which already verifies a runtime address by LBC) but for a single callee, and derive
+the data-NFT stride from the co-spent category run rather than `requiredDataNftIndices`. Plus the SDK must set
+`__internal__externalCallInputBase` / the co-spend group from the real callee (it already knows it from
+withExternalCall) so caller and covenant agree. This is a bounded covenant + SDK change, now precisely scoped;
+the duality (self-ref params) is the separate size/tag branch.
+
 ## `store_function` needs a third deep feature regardless
 
 `this.store((new Other()).addTwo); return ev(x)` also deploys `Other` and calls through the stored pointer in

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { compileString } from '../src/index.js';
+import { compileString, compileStringMulti } from '../src/index.js';
 
 // Compile-level regression guards for solc-corpus gap fixes (see examples/solidity-corpus/PROGRESS.md).
 
@@ -1733,5 +1733,22 @@ describe('foreign external fn-ptr RETURNED from an internal helper (beta-reduced
       + ' function relay(function(uint) internal returns(uint) cb, uint v) internal returns(uint) { return cb(v); }'
       + ' function use(uint v) public returns(uint) { return relay(g, v); } }', { solidityImportCompat: true }))
       .not.toThrow();
+  });
+});
+
+describe('deploy-then-call fold THROUGH a local fn-ptr (#2 slice, sound by reduction)', () => {
+  // `p = (new Other()).m; p()` (deploy + take the fresh child's method as a local pointer + call) reduces via
+  // the alias desugar to `(new Other()).m()` = the shipped deploy-then-call fold. Assert byte-identity to the
+  // direct form (the fold is VM-tested), so the fn-ptr form is sound by reduction.
+  it('compiles byte-identically to the direct deploy-then-call fold', () => {
+    const other = 'contract Other { int counter; function bump() external { this.counter = this.counter + 1; require(true); } }';
+    const direct = `${other} contract C { function use() public { (new Other()).bump(); require(true); } }`;
+    const fnptr = `${other} contract C { function use() public {`
+      + ' function() external p = (new Other()).bump; p(); require(true); } }';
+    const a = compileStringMulti(direct, { solidityImportCompat: true }).C;
+    const b = compileStringMulti(fnptr, { solidityImportCompat: true }).C;
+    expect(b.bytecode).toBe(a.bytecode);
+    expect(b.abi.find((f) => f.name === 'use')!.deployTargets)
+      .toEqual(a.abi.find((f) => f.name === 'use')!.deployTargets);
   });
 });

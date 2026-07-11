@@ -38,6 +38,16 @@ nested case (method in the value, runtime selector) needs the general BLOB repre
   touched). VM: internal return co-spend + pass-to-helper with the callee's return captured via the return-event
   NFT. The PUBLIC (cross-ABI) return/pass still needs the blob (a fn-ptr crossing the real ABI boundary).
 
+- **fn-ptr `.selector` / `.address` members** - 643c75a9. `f.selector` -> the aliased member's compile-time
+  selector, `f.address` -> the interface-cast address (the EVM `function external` value members).
+- **#2 deploy-fold through a local ptr** - 8b9a063c (guard only). `p = (new Other()).m; p()` is byte-identical
+  to the shipped direct deploy-then-call fold; sound by reduction. store_function's full deploy+store+fold-in-one-tx
+  is the open deep #2.
+
+Corpus measurement (2026-07-11): 255 fn-ptr-value corpus files -> 102 OK / 153 FAIL, a plateau. The tractable
+veins are exhausted; the remaining fails are diverse/deep (cross-ABI member resolution, EVM `function()`->uint256,
+transient/Yul/parse). The next fn-ptr work is architectural: the unified BLOB value model below + SDK.
+
 ### The general nested/return/pass case: the fn-ptr VALUE as a bytes BLOB (validated, not yet built)
 
 A foreign fn-ptr value = `address_lbc ++ selector4` (a single bytes blob, selector = last 4 bytes). A CALL slices

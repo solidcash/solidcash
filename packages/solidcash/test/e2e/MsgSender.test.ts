@@ -703,11 +703,11 @@ describe('msg.sender and tx.origin', () => {
       const returnOutputIdxB = 6n;
       const returnOutputIdxC = 7n;
 
-      // A.callBothBC params:
-      // (valB, valC, _externalCallInputBase, _externalReturnOutputIdx0, _externalReturnOutputIdx1)
-      // No selectors: IB_Sender and IC_Sender each have only 1 callable function
+      // A.callBothBC params: (valB, valC, _externalCallInputBase, _extcallMasterIdx0, _extcallMasterIdx1,
+      // _externalReturnOutputIdx0, _externalReturnOutputIdx1). Multi-call functions carry a per-slot runtime
+      // master index (B at input 2, C at input 4); no selectors (IB_Sender/IC_Sender each have 1 fn).
       const unlockA = contractA.unlock.callBothBC(
-        3n, 7n, 2n, returnOutputIdxB, returnOutputIdxC,
+        3n, 7n, 2n, 2n, 4n, returnOutputIdxB, returnOutputIdxC,
       );
       const dataNftUnlockA = createDataNftUnlocker(contractA, 0, catA);
 

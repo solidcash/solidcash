@@ -20,6 +20,7 @@ import NamedReturnTransformation from './semantic/NamedReturnTransformation.js';
 import DesugarNestedBranchReturn from './semantic/DesugarNestedBranchReturn.js';
 import SynthesizeExternalAddressLocals from './semantic/SynthesizeExternalAddressLocals.js';
 import CaptureBranchExternalCallTargets from './semantic/CaptureBranchExternalCallTargets.js';
+import InlineForeignFunctionPointerReturns from './semantic/InlineForeignFunctionPointerReturns.js';
 import LowerForeignFunctionPointerVars from './semantic/LowerForeignFunctionPointerVars.js';
 import LowerForeignFunctionPointerParams from './semantic/LowerForeignFunctionPointerParams.js';
 import LowerForeignFunctionPointerStorage from './semantic/LowerForeignFunctionPointerStorage.js';
@@ -212,6 +213,11 @@ function compileResolvedAst(ast: Ast, code: string, mergedCompilerOptions: Compi
 
   // Nested local-array element write `b[i][j] = v` -> read-modify-write over single-level ops (before semantic).
   ast = ast.accept(new DesugarNestedArrayWrite()) as Ast;
+
+  // A foreign fn-ptr RETURNED from a side-effect-free internal helper (`make(a){ return IFoo(a).m; }`) ->
+  // beta-reduced into its call sites (`p = make(a)` -> `p = IFoo(a).m`), so the straight-line desugar below
+  // reduces it to the external call. Before that desugar.
+  ast = ast.accept(new InlineForeignFunctionPointerReturns()) as Ast;
 
   // Straight-line foreign external function pointer `function() external f = IFoo(addr).method; f(args)` ->
   // `IFoo(addr).method(args)` (the existing external call); before the external-call passes + semantic.

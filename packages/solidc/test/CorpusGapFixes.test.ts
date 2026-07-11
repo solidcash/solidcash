@@ -1701,3 +1701,18 @@ describe('foreign external fn-ptr ARRAY dispatch table (fixed method on runtime 
     expect(fire.externalCalls!.some((e) => e.loopArrayVar === 'fns' && e.functionName === 'ping')).toBe(true);
   });
 });
+
+describe('foreign external fn-ptr RETURNED from an internal helper (beta-reduced)', () => {
+  const IF = 'interface IFoo { function addTwo(uint x) external returns(uint); }';
+  // A side-effect-free internal helper returning IFace(a).m inlines into `p = IFace(a).m` at the call site, which
+  // the straight-line desugar reduces to the external call. VM-verified in ForeignFunctionPointerReturn.test.ts.
+  it('inlines the returned pointer into the call site as an external call', () => {
+    const art = compileString(`${IF} contract C {`
+      + ' function make(address a) internal returns (function(uint) external returns(uint)) { return IFoo(a).addTwo; }'
+      + ' function use(address a, uint v) public returns(uint) {'
+      + '   function(uint) external returns(uint) p = make(a); return p(v); } }', { solidityImportCompat: true });
+    const use = art.abi.find((f) => f.name === 'use')!;
+    expect(use.externalCalls!.some((e) => e.interfaceName === 'IFoo' && e.functionName === 'addTwo')).toBe(true);
+    expect(art.abi.some((f) => f.name === 'make')).toBe(false); // the helper is inlined away
+  });
+});

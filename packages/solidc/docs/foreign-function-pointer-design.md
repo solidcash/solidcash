@@ -69,14 +69,22 @@ reusing the shipped external-call framework. VM-verified: blob struct field (see
 
 ### CONCLUSIVE remainders (separate large features, not fn-ptr-value gaps)
 
-- **#10 cross-CONTRACT return/pass** (A hands a fn-ptr to a DIFFERENT contract B over the external-call boundary):
-  needs SDK blob calldata/return-event encode-decode + representation alignment (B's storage of the received
-  value). The in-contract return/pass/nest paths are DONE; the cross-contract transport is a bounded SDK feature.
-- **#2 store_function full** (`store((new Other()).addTwo)`): needs the DEPLOY-FOLD to expose a freshly-deployed
-  child's genesis address as a first-class STORABLE value. Probed (2026-07-11): `Other o = new Other(); this.addr
-  = o` and `o.addTwo` (deployed method as a fn-ptr) both fail - the deploy-fold does not surface the genesis
-  address as a value. This is a deploy-fold architecture extension (+ the one-tx deploy+store+fold-call), NOT a
-  fn-ptr gap. The deploy + LOCAL ptr + fold-call slice IS done (8b9a063c, byte-identical).
+- **#2 store_function - SPLIT form DONE** (ff933949, VM). `install(){ Other o = new Other(); stored = Other(o).addTwo; }`
+  DEPLOYS Other and stores its freshly-deployed method as a fn-ptr - the deploy local's genesis address IS
+  materialized as a value (`stored` == Other's p2sh32 locking bytecode, asserted), lowered by the fixed-method
+  pass. `run(){ stored(v) }` co-spends the deployed Other in a later tx. So a DEPLOYED contract's method can be
+  captured into a fn-ptr and called (the earlier "genesis address not a value" reading was wrong - it IS). OPEN:
+  the ONE-tx form (deploy + store + fold-call in a single tx) is the deploy-fold intersection; a VALUE-returning
+  callee via a fresh deploy hit an OP_VERIFY (return-event NFT interaction) - void callee works.
+- **#3 cross-CONTRACT PASS DONE** (5beb5a8f, VM). `SplitExternalCallFnPtrArgs`: `IB(b).register(ITarget(t).m, ..)`
+  splits the fn-ptr member arg to `(t, ITarget.m.selector, ..)` matching B's lowered param; B stores it and fires
+  it against the target in a later tx.
+- **#3 cross-CONTRACT RETURN - OPEN** (attempted 2026-07-11, reverted). The caller side compiles (a blob local
+  from a cross-contract call whose interface method returns a fn-ptr, + the interface return retyped to bytes) and
+  the SDK selector-fill was fixed (single-method callee needs no witness selector - a `needsSelectorVerification`
+  ABI flag), but B receives an EMPTY blob: the return-event NFT does not thread A.getPtr's bytes-blob return
+  value across the boundary. A deeper SDK/covenant return-event matter; reverted to avoid compile-succeeds-runtime-
+  fails.
 
 ### Historical: the blob validation notes (superseded by the SHIPPED model above)
 

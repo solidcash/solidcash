@@ -1,6 +1,24 @@
 # Foreign external function pointers: design + the runtime-tag blocker
 
-Status: **self-ref + fixed-method-foreign SHIPPED; fully-general foreign is a scoped covenant-architecture build.**
+Status: **foreign fn-ptr PARAMS now SHIPPED + VM-verified (per-call master index, 5096dba6). Self-ref +
+fixed-method-foreign state + dispatch tables already shipped. Remaining: foreign fn-ptr STATE storage +
+deploy-fold (for full store_function).**
+
+## SHIPPED: foreign fn-ptr parameters via the PER-CALL master index (5096dba6)
+
+The per-call-index design below is IMPLEMENTED + VM-verified. A called `function(P) external returns(R)` param
+lowers (LowerForeignFunctionPointerParams) to an external call on a synthesized `__FnPtr_N` interface with an
+`address` param + a `bytes4` selector param (runtime selector). The co-spend MASTER INDEX is a per-call param
+`__internal__extcallMasterIdx<i>` the SDK fills from the real callee layout it co-spends (StatefulContract loop),
+and codegen (GTT, `slot.fnPtrCall`) reads the master at that index + runs identity + runtime-selector +
+preservation. UNAMBIGUOUS across many calls (each reads its own index) - VM-verified with TWO calls to different
+callees (A.inc, B.dec). The DUALITY is handled by a gate: a param passed a self-ref (`this.f` = StateAccess) at an
+internal call site stays a functionId (OP_INVOKE); only foreign params lower. GOTCHAS found while building: (1)
+a bare `y(v);` STATEMENT needs re-wrapping FunctionCallStatement->MethodCallStatement (external-call passes skip a
+MethodCall in a FunctionCallStatement.call slot); (2) a SINGLE-method callee has NO selector in its co-spend
+unlocking (the covenant reads the sig arg) - the runtime-selector check needs a 2+-method callee (single-method
+selector-elision is a follow-up). store_function still needs foreign fn-ptr STATE storage (`x = y`) + the
+deploy-fold (`new Other()`), which are separate.
 
 ## What works today
 

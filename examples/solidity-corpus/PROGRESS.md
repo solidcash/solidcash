@@ -996,3 +996,20 @@ LOCAL-COPY write, not a misclassification). Found + fixed the actual bug:
   tuple all still parse right. 0 OK->FAIL, negative-accepted unchanged (907). solidc 1900 + CorpusGapFixes 188 green.
   Remaining fn-ptr "(" forms: chained x()() (call-result called, needs a call-result alt), x.length() attached-lib,
   multi_slot_function(this.foo,..) fn-ptr args. SESSION 2026-07-09 GRAND TOTAL: 3740 -> 3826 CONFIRMED (+86 compile).
+
+## Session 2026-07-11 (3879 -> 3884 CONFIRMED, +5, 0 regress, NEG-ACCEPTED flat 910)
+- **branch-local external-call target capture (f0bdc31b, +1 Migrations, VM-verified)**: an extcall target that
+  is a contract/interface-typed LOCAL declared in a NON-LOOP branch (e.g. a `restricted` modifier's if-wrapper:
+  `Migrations u = Migrations(a); u.setCompleted(..)`) is popped before the epilogue co-spend verification ->
+  "Expected variable 'u' does not exist on the stack". New pass CaptureBranchExternalCallTargets synthesizes a
+  function-top local, captures the target right after its decl, rewrites the receiver to the capture. Sound by
+  reduction (byte-equivalent to the already-supported inline `if(cond) IFoo(a).m()` form). Loops excluded
+  (per-iteration array dispatch); function-top locals untouched. VM: BranchLocalExternalCall.test.ts.
+- **string/hex/zero literal mapping KEY -> bytesN coercion (97ccaeff, +4)**: `m["foo"]` where the key type is
+  bytesN was rejected while the VALUE side already coerced. Ran node.keys through the same coerceHexArgs pipeline
+  at all 4 key-check sites (access/assign/field-assign/delete). Compat-gated; byte-identical to the explicit
+  `m[hex"666f6f00..00"]` padded literal. Files: implicit_cast_string_literal_byte, mapping_with_cast, mapping_6, +1.
+- **GNOSIS 22->23** (Migrations); remaining 8 all DEEP/FUNDAMENTAL: new-C()-in-ctor-loop (UTXO-fundamental,
+  variable genesis outputs), getter-in-loop / array-alias+chained (deep per-iteration dispatch), 2 one-offs.
+  Clean-slice veins EXHAUSTED - remaining 992 = ParseError-diverse / Yul / type-fundamental / fn-pointers /
+  deep-struct-memory (value-copy model). solidc 1922 + CorpusGapFixes green.

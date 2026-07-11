@@ -105,3 +105,47 @@ describe('foreign fn-ptr PASSED to an internal helper that calls it (beta-reduce
     expect((await passerSc.getState()).last).toBe(6n); // returned via the return-event NFT
   });
 });
+
+// A NON-inlinable (public) fn returning a foreign fn-ptr -> a bytes BLOB `selector ++ address`; the caller
+// receives it in a blob local and slices it into the audited external call (the general return path, blob model).
+const RETURNER = `pragma solidcash >=0.8.0;
+interface ICounter { public bigint counter; function increment(pubkey owner, sig s); }
+contract Returner() {
+  bigint bumps;
+  function getPtr(address a) public returns (function(pubkey, sig) external) { return ICounter(a).increment; }
+  function use(address a, pubkey pk, sig s) {
+    require(checkSig(s, pk));
+    function(pubkey, sig) external p = getPtr(a);
+    p(pk, s);
+    this.bumps = this.bumps + 1;
+  }
+}`;
+
+describe('foreign fn-ptr returned from a PUBLIC fn as a blob (general return path)', () => {
+  const provider = createTestProvider();
+  const sig = (): SignatureTemplate => new SignatureTemplate(alicePriv);
+
+  it('receives the returned blob in a local and co-spends the callee', async () => {
+    const ca = compileString(COUNTER); const ra = compileString(RETURNER);
+
+    const counter = new Contract(ca, [], { provider });
+    const { categoryId: cc } = await setupStatefulUtxos(
+      provider, counter, ca.stateLayout!, { counter: 5n }, { saltContract: true },
+    );
+    const cAddr = counter.withCategory(hexToBin(cc)).lockingBytecode;
+
+    const returner = new Contract(ra, [], { provider });
+    const { categoryId: rc } = await setupStatefulUtxos(
+      provider, returner, ra.stateLayout!, { bumps: 0n }, { saltContract: true },
+    );
+    const returnerSc = StatefulContract.withCategory(returner, rc);
+    const counterSc = StatefulContract.withCategory(counter, cc);
+
+    const tx = await returnerSc.use(hexToBin(cAddr), alicePub, sig())
+      .withExternalCall(counterSc, 'increment', [alicePub, sig()])
+      .send();
+    expect(tx.txid).toBeDefined();
+    expect((await returnerSc.getState()).bumps).toBe(1n);
+    expect((await counterSc.getState()).counter).toBe(6n);
+  });
+});

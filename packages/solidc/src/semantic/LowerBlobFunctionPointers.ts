@@ -10,6 +10,7 @@ import {
   BlockNode,
   StatementNode,
   VariableDefinitionNode,
+  ReturnNode,
   FunctionCallNode,
   FunctionCallStatementNode,
   MethodCallStatementNode,
@@ -47,7 +48,13 @@ export default class LowerBlobFunctionPointers extends AstTraversal {
   private structDefs: StructDefinitionNode[] = [];
   // fn-ptr struct field name -> the synth interface for its call ABI
   private blobFields = new Map<string, { iface: string }>();
+  // fn name (returns a fn-ptr, not inlined) -> the synth interface for the returned value's call ABI
+  private blobReturnFns = new Map<string, { iface: string }>();
+  // fn-ptr LOCAL name -> the synth interface for its call ABI (assigned a blob-returning call)
+  private blobLocals = new Map<string, { iface: string }>();
   private hoists: StatementNode[] = [];
+  private inBlobReturnFn = false;
+  private typeNames = new Set<string>();
 
   visitSourceFile(node: SourceFileNode): Node {
     this.synthIfaces = [];
@@ -56,6 +63,10 @@ export default class LowerBlobFunctionPointers extends AstTraversal {
       ...node.structDefinitions,
       ...(node.contract ? node.contract.structDefinitions : []),
     ];
+    this.typeNames = new Set();
+    for (const iface of node.interfaceDefinitions as InterfaceNode[]) this.typeNames.add(iface.name);
+    for (const c of node.importedContracts as ContractNode[]) this.typeNames.add(c.name);
+    if (node.contract) this.typeNames.add(node.contract.name);
     if (node.contract) node.contract = this.visitContract(node.contract) as ContractNode;
     for (const iface of this.synthIfaces) node.interfaceDefinitions.push(iface);
     return node;
@@ -75,7 +86,28 @@ export default class LowerBlobFunctionPointers extends AstTraversal {
         }
       }
     }
-    if (this.blobFields.size === 0) return node;
+    // A fn that RETURNS a fn-ptr (and reached here = not inlined by InlineForeignFunctionPointerReturns) returns
+    // a bytes BLOB; a fn-ptr LOCAL assigned such a call is a blob too.
+    this.blobReturnFns = new Map();
+    for (const fn of node.functions) {
+      if (!(fn.returnTypes[0] instanceof FunctionType) || !(fn.returnTypes[0] as FunctionType).isExternal) continue;
+      // Only lower a fn whose return is a FOREIGN member `IFace(a).m` to a blob; a self-ref `this.g` stays a
+      // functionId (the existing self-ref return path), and a param passthrough is left untouched.
+      const stmts = fn.body?.statements ?? [];
+      const last = stmts[stmts.length - 1];
+      if (!(last instanceof ReturnNode) || last.expressions.length !== 1 || !this.foreignMember(last.expressions[0])) {
+        continue;
+      }
+      this.blobReturnFns.set(fn.name, { iface: this.synthInterface(fn.returnTypes[0] as FunctionType) });
+      fn.returnTypes[0] = new BytesType();
+    }
+    this.blobLocals = new Map();
+    for (const fn of node.functions) {
+      if (!fn.body) continue;
+      this.collectBlobLocals(fn.body);
+    }
+
+    if (this.blobFields.size === 0 && this.blobReturnFns.size === 0) return node;
 
     // A param stored into a blob field (a struct constructor arg at a blob-field position) is itself a blob.
     const bodies = [node.constructorDef, ...node.functions, node.fallbackDef, node.receiveDef]
@@ -123,8 +155,40 @@ export default class LowerBlobFunctionPointers extends AstTraversal {
   }
 
   private rewrite(fn: FunctionDefinitionNode | undefined): FunctionDefinitionNode | undefined {
-    if (fn?.body) fn.body = this.visit(fn.body) as typeof fn.body;
+    if (fn?.body) {
+      this.inBlobReturnFn = this.blobReturnFns.has(fn.name);
+      fn.body = this.visit(fn.body) as typeof fn.body;
+      this.inBlobReturnFn = false;
+    }
     return fn;
+  }
+
+  // A fn-ptr LOCAL assigned a blob-returning call (`function(..) external p = getPtr(a)`) is a bytes blob.
+  private collectBlobLocals(node: Node): void {
+    const walk = (n: Node): void => {
+      if (n instanceof VariableDefinitionNode && n.type instanceof FunctionType && (n.type as FunctionType).isExternal
+          && n.expression instanceof FunctionCallNode && n.expression.identifier instanceof IdentifierNode) {
+        const ret = this.blobReturnFns.get(n.expression.identifier.name);
+        if (ret) { this.blobLocals.set(n.name, { iface: ret.iface }); n.type = new BytesType(); }
+      }
+      for (const key of Object.keys(n)) {
+        const val = (n as unknown as Record<string, unknown>)[key];
+        if (val instanceof Node) walk(val);
+        else if (Array.isArray(val)) for (const v of val) if (v instanceof Node) walk(v);
+      }
+    };
+    walk(node);
+  }
+
+  // In a blob-returning fn, `return IFace(a).m` -> `return IFace.m.selector + a` (build the blob); a blob
+  // local/param return is already bytes.
+  visitReturn(node: ReturnNode): Node {
+    if (this.inBlobReturnFn && node.expressions.length === 1) {
+      const m = this.foreignMember(node.expressions[0]);
+      if (m) node.expressions[0] = this.buildBlob(m.iface, m.method, m.address, node);
+    }
+    node.expressions = node.expressions.map((e) => this.visit(e) as ExpressionNode);
+    return node;
   }
 
   visitBlock(node: BlockNode): Node {
@@ -140,9 +204,15 @@ export default class LowerBlobFunctionPointers extends AstTraversal {
     return node;
   }
 
-  // `s.fn(args)` where fn is a blob field -> slice the blob into address + selector locals, dispatch the synth call.
+  // `s.fn(args)` (blob field) / `p(args)` (blob local) -> slice the blob into address + selector locals, dispatch
+  // the synth call.
   visitFunctionCall(node: FunctionCallNode): Node {
     const name = node.identifier.name;
+    const local = this.blobLocals.get(name);
+    if (local) {
+      const read = new IdentifierNode(name); read.location = node.location;
+      return this.emitBlobCall(read, local.iface, node);
+    }
     const dot = name.indexOf('.');
     if (dot > 0) {
       const field = name.slice(dot + 1);
@@ -154,6 +224,24 @@ export default class LowerBlobFunctionPointers extends AstTraversal {
       }
     }
     return super.visitFunctionCall(node);
+  }
+
+  // `IFace(addr).method` -> its parts (used to build the return blob).
+  private foreignMember(expr: ExpressionNode): { iface: string; method: string; address: ExpressionNode } | undefined {
+    if (!(expr instanceof FieldAccessNode)) return undefined;
+    const base = expr.expression;
+    if (!(base instanceof FunctionCallNode) || !(base.identifier instanceof IdentifierNode)) return undefined;
+    if (base.parameters.length !== 1 || !this.typeNames.has(base.identifier.name)) return undefined;
+    return { iface: base.identifier.name, method: expr.name, address: base.parameters[0] };
+  }
+
+  // `IFace.method.selector + address` (bytes blob = selector(4) ++ address).
+  private buildBlob(iface: string, method: string, address: ExpressionNode, at: Node): ExpressionNode {
+    const ifaceId = this.id(iface, at);
+    const methodAccess = new FieldAccessNode(ifaceId, method); methodAccess.location = at.location;
+    const selector = new FieldAccessNode(methodAccess, 'selector'); selector.location = at.location;
+    const cat = new BinaryOpNode(selector, BinaryOperator.PLUS, address); cat.location = at.location;
+    return cat;
   }
 
   visitFunctionCallStatement(node: FunctionCallStatementNode): Node {

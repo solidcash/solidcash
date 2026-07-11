@@ -23,6 +23,7 @@ import CaptureBranchExternalCallTargets from './semantic/CaptureBranchExternalCa
 import LowerForeignFunctionPointerVars from './semantic/LowerForeignFunctionPointerVars.js';
 import LowerForeignFunctionPointerParams from './semantic/LowerForeignFunctionPointerParams.js';
 import LowerForeignFunctionPointerStorage from './semantic/LowerForeignFunctionPointerStorage.js';
+import LowerForeignFunctionPointerStructFields from './semantic/LowerForeignFunctionPointerStructFields.js';
 import PromoteConstructorExternalReads from './semantic/PromoteConstructorExternalReads.js';
 import SynthesizeLibraryDelegateCalls from './semantic/SynthesizeLibraryDelegateCalls.js';
 import InlineExternalCallHelpers from './semantic/InlineExternalCallHelpers.js';
@@ -213,6 +214,9 @@ function compileResolvedAst(ast: Ast, code: string, mergedCompilerOptions: Compi
   // A foreign external fn-ptr STATE var holding a fixed method on a runtime address (`function() external x;
   // x = IFoo(a).m; x(v)`) -> an `address` state var + the state-address external call `IFoo(x).m(v)`.
   ast = ast.accept(new LowerForeignFunctionPointerVars()) as Ast;
+  // A foreign fn-ptr STRUCT FIELD holding a fixed method (nested analogue of the state-var pass) -> an
+  // interface-typed field + the shipped struct-field-chain call `s.field.m()`. Before the address-local synth.
+  ast = ast.accept(new LowerForeignFunctionPointerStructFields()) as Ast;
   ast = ast.accept(new LowerForeignFunctionPointerParams()) as Ast;
   // A foreign fn-ptr STATE var holding a RECEIVED value (`x = y`, method carried in the value) -> an `address`
   // field + a `bytes4 __fnsel_x` companion + the state-address external call with a runtime selector. Runs after

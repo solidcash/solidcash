@@ -1671,3 +1671,18 @@ describe('foreign external fn-ptr STATE storage of a received value (x = y)', ()
     expect(stateVars).not.toContain('__fnsel_fp'); // internal pointer keeps its functionId representation
   });
 });
+
+describe('foreign external fn-ptr in a STRUCT FIELD (fixed method on a runtime address)', () => {
+  const IF = 'interface IFoo { function addTwo(uint x) external returns(uint); }';
+  // A fixed-method fn-ptr struct field lowers to an interface-typed field + the shipped `s.field.m()` chain call.
+  // VM-verified in ForeignFunctionPointerStructField.test.ts (seeded + register->call).
+  it('retypes the fn-ptr struct field to interface-typed + dispatches its fixed method', () => {
+    const art = compileString(`${IF} contract C { struct S { function(uint) external returns(uint) fn; uint x; }`
+      + ' S s; function reg(address a) public { s.fn = IFoo(a).addTwo; }'
+      + ' function run(uint v) public returns(uint) { return s.fn(v); } }', { solidityImportCompat: true });
+    const sDef = art.structs!.find((s) => s.name === 'S')!;
+    expect(sDef.fields.find((f) => f.name === 'fn')!.type).toBe('address'); // fn-ptr field lowered to address
+    const run = art.abi.find((f) => f.name === 'run')!;
+    expect(run.externalCalls!.some((e) => e.functionName === 'addTwo')).toBe(true); // fixed-method chain call
+  });
+});

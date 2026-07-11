@@ -1715,4 +1715,23 @@ describe('foreign external fn-ptr RETURNED from an internal helper (beta-reduced
     expect(use.externalCalls!.some((e) => e.interfaceName === 'IFoo' && e.functionName === 'addTwo')).toBe(true);
     expect(art.abi.some((f) => f.name === 'make')).toBe(false); // the helper is inlined away
   });
+  // Passing a foreign member to a helper that calls it inlines to the external call; a self-ref (internal param)
+  // is left to the OP_INVOKE path (the duality). VM-verified in ForeignFunctionPointerReturn.test.ts.
+  it('inlines a foreign member passed to a helper into the external call', () => {
+    const art = compileString(`${IF} contract C {`
+      + ' function relay(function(uint) external returns(uint) cb, uint v) internal returns(uint) { return cb(v); }'
+      + ' function use(address a, uint v) public returns(uint) { return relay(IFoo(a).addTwo, v); } }',
+    { solidityImportCompat: true });
+    const use = art.abi.find((f) => f.name === 'use')!;
+    expect(use.externalCalls!.some((e) => e.interfaceName === 'IFoo' && e.functionName === 'addTwo')).toBe(true);
+    expect(art.abi.some((f) => f.name === 'relay')).toBe(false); // inlined away
+  });
+  it('does NOT inline a self-ref passed to an internal-pointer helper (stays OP_INVOKE)', () => {
+    // internal fn-ptr param + self-ref arg must keep compiling via the existing functionId path.
+    expect(() => compileString('contract C {'
+      + ' function g(uint x) internal returns(uint) { return x + 1; }'
+      + ' function relay(function(uint) internal returns(uint) cb, uint v) internal returns(uint) { return cb(v); }'
+      + ' function use(uint v) public returns(uint) { return relay(g, v); } }', { solidityImportCompat: true }))
+      .not.toThrow();
+  });
 });

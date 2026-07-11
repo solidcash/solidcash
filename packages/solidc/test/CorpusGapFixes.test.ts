@@ -1686,3 +1686,18 @@ describe('foreign external fn-ptr in a STRUCT FIELD (fixed method on a runtime a
     expect(run.externalCalls!.some((e) => e.functionName === 'addTwo')).toBe(true); // fixed-method chain call
   });
 });
+
+describe('foreign external fn-ptr ARRAY dispatch table (fixed method on runtime addresses)', () => {
+  const IF = 'interface IFoo { function ping(uint x) external; }';
+  // A fixed-method fn-ptr array lowers to a plain address[] state var + the shipped array-element co-spend
+  // (broadcast). VM-verified in ForeignFunctionPointerArrayTable.test.ts.
+  it('moves the fn-ptr array to an address[] state var + co-spends via the array loop', () => {
+    const art = compileString(`${IF} contract C { function(uint) external[] fns;`
+      + ' function reg(address a) public { this.fns.push(IFoo(a).ping); }'
+      + ' function fire(uint v) public { fns[0](v); } }', { solidityImportCompat: true });
+    const fns = art.stateLayout!.variables.find((v) => v.name === 'fns')!;
+    expect(fns.type).toBe('address[]'); // fn-ptr array collection moved to a plain address[] state var
+    const fire = art.abi.find((f) => f.name === 'fire')!;
+    expect(fire.externalCalls!.some((e) => e.loopArrayVar === 'fns' && e.functionName === 'ping')).toBe(true);
+  });
+});

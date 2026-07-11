@@ -24,6 +24,7 @@ import LowerForeignFunctionPointerVars from './semantic/LowerForeignFunctionPoin
 import LowerForeignFunctionPointerParams from './semantic/LowerForeignFunctionPointerParams.js';
 import LowerForeignFunctionPointerStorage from './semantic/LowerForeignFunctionPointerStorage.js';
 import LowerForeignFunctionPointerStructFields from './semantic/LowerForeignFunctionPointerStructFields.js';
+import LowerForeignFunctionPointerArrayElements from './semantic/LowerForeignFunctionPointerArrayElements.js';
 import PromoteConstructorExternalReads from './semantic/PromoteConstructorExternalReads.js';
 import SynthesizeLibraryDelegateCalls from './semantic/SynthesizeLibraryDelegateCalls.js';
 import InlineExternalCallHelpers from './semantic/InlineExternalCallHelpers.js';
@@ -168,6 +169,11 @@ function compileResolvedAst(ast: Ast, code: string, mergedCompilerOptions: Compi
     }
     throw new AbstractContractNotCompilableError(ast.contract.name);
   }
+
+  // A foreign fn-ptr ARRAY (dispatch table) with a fixed method -> a plain `address[]` state var + the shipped
+  // array-element co-spend `IFace(fns[i]).m()`. Runs FIRST so the moved array is a native `address[]` to every
+  // later pass (the fn-ptr array parses as a COLLECTION; a plain address array is a dynamic-array STATE VAR).
+  ast = ast.accept(new LowerForeignFunctionPointerArrayElements()) as Ast;
 
   // Fold keccak256/sha256 of a string/hex literal to a compile-time bytes32 constant (role ids, EIP-712
   // domains, EVM storage slots). keccak256 uses sha256 under compat (no native keccak; see FoldHashLiterals).

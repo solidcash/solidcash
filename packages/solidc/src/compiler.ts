@@ -20,6 +20,7 @@ import NamedReturnTransformation from './semantic/NamedReturnTransformation.js';
 import DesugarNestedBranchReturn from './semantic/DesugarNestedBranchReturn.js';
 import SynthesizeExternalAddressLocals from './semantic/SynthesizeExternalAddressLocals.js';
 import CaptureBranchExternalCallTargets from './semantic/CaptureBranchExternalCallTargets.js';
+import SplitExternalCallFnPtrArgs from './semantic/SplitExternalCallFnPtrArgs.js';
 import InlineForeignFunctionPointerReturns from './semantic/InlineForeignFunctionPointerReturns.js';
 import LowerForeignFunctionPointerVars from './semantic/LowerForeignFunctionPointerVars.js';
 import LowerForeignFunctionPointerParams from './semantic/LowerForeignFunctionPointerParams.js';
@@ -214,6 +215,10 @@ function compileResolvedAst(ast: Ast, code: string, mergedCompilerOptions: Compi
 
   // Nested local-array element write `b[i][j] = v` -> read-modify-write over single-level ops (before semantic).
   ast = ast.accept(new DesugarNestedArrayWrite()) as Ast;
+
+  // A foreign fn-ptr PASSED to a DIFFERENT contract over an external call (`IB(b).register(ITarget(t).m, ..)`)
+  // -> split the fn-ptr member arg into (address, selector) to match the callee's lowered fn-ptr param.
+  ast = ast.accept(new SplitExternalCallFnPtrArgs()) as Ast;
 
   // A foreign fn-ptr RETURNED from a side-effect-free internal helper (`make(a){ return IFoo(a).m; }`) ->
   // beta-reduced into its call sites (`p = make(a)` -> `p = IFoo(a).m`), so the straight-line desugar below

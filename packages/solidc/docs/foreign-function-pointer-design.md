@@ -74,6 +74,22 @@ pointer. Options: (a) a runtime/opaque co-spend model that reads the callee's NF
 covenant change); (b) restrict to 0-data-NFT (pure/stateless-on-BCH) callees - which is `store_function`'s
 `Other.addTwo`, so the pure-callee subset is the tractable target once the duality (runtime tag) is solved.
 
+### Deeper diagnosis (2026-07-11 re-attempt, on the hint that the callee ADDRESS carries the CATEGORY)
+
+Re-built the pass + dumped the tx. Refined finding: for a SINGLE call the master IDENTITY check PASSES (the SDK
+orders the callee block master-first, so `externalCallInputBase + 0` = the master - the data-NFT count does NOT
+break the single-call master index, correcting the earlier hypothesis). The failure is in the SELECTOR
+verification: the synth-interface external call carries BOTH a witness `__internal__externalCallSelector` param
+AND the runtime `__fnsel_y`, and the co-spent callee's actual dispatch selector matches NEITHER the ABI selector
+(`e174892f`) NOR the trace-observed value (`dd061921`) when routed through the synth interface `__FnPtr_N`. So the
+synth-interface path does not thread the runtime selector the way the same-address-varying path (which WORKS, see
+ForeignDispatchTable) does. The category hint is right that a stateful callee is reachable (identity + layout are
+fine); what remains is (1) threading the runtime selector correctly for a fn-ptr call (align with the working
+same-address-varying machinery instead of a synth interface with a witness selector), and (2) the duality
+(self-ref params). A category-based co-spend would further remove the need for a synth interface's data-NFT count
+for MULTI-call / staticcall cases. Reverted (still breaks self-ref params); the working same-address-varying path
+is the template to build the fn-ptr call on, not a fresh synth interface.
+
 ## `store_function` needs a third deep feature regardless
 
 `this.store((new Other()).addTwo); return ev(x)` also deploys `Other` and calls through the stored pointer in

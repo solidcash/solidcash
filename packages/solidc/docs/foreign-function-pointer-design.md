@@ -48,7 +48,37 @@ Corpus measurement (2026-07-11): 255 fn-ptr-value corpus files -> 102 OK / 153 F
 veins are exhausted; the remaining fails are diverse/deep (cross-ABI member resolution, EVM `function()`->uint256,
 transient/Yul/parse). The next fn-ptr work is architectural: the unified BLOB value model below + SDK.
 
-### The general nested/return/pass case: the fn-ptr VALUE as a bytes BLOB (validated, not yet built)
+### SHIPPED: the general fn-ptr VALUE model as a bytes BLOB (`selector(4) ++ address`)
+
+`LowerBlobFunctionPointers` (b77d992a + 26ca98c0) represents a fn-ptr value that carries its method at RUNTIME
+(a received value) as a bytes blob, and a call slices it into the audited external call:
+
+- **Struct field** `struct S { function(P) external fn }` -> `bytes fn`; `s.fn(v)` slices; a param stored into it
+  is a blob param.
+- **Return** a non-inlinable fn whose return is a foreign member -> returns a bytes blob (`return IFace.m.selector
+  + a`); a fn-ptr LOCAL assigned such a call is a blob, sliced on call. A self-ref `this.g` return stays a
+  functionId (gated).
+- **#5 single-method callee** (753aef84): the fn-ptr selector check is gated on the co-spent unlocking beginning
+  with a `0x04` push, so a single-method callee (no selector) is pinned by identity alone. Sound (a multi-method
+  callee always has the `0x04` prefix).
+
+The blob CALL desugar hoists `bytes __b = <blob>; bytes __a = __b.split(4)[1]; bytes4 __s = bytes4(__b.split(4)
+[0]);` and dispatches `__FnPtr_B(__a).__call(args)` with runtime selector `__s` + the per-call master index -
+reusing the shipped external-call framework. VM-verified: blob struct field (seed + store->run), blob return
+(public getPtr -> local -> co-spend).
+
+### CONCLUSIVE remainders (separate large features, not fn-ptr-value gaps)
+
+- **#10 cross-CONTRACT return/pass** (A hands a fn-ptr to a DIFFERENT contract B over the external-call boundary):
+  needs SDK blob calldata/return-event encode-decode + representation alignment (B's storage of the received
+  value). The in-contract return/pass/nest paths are DONE; the cross-contract transport is a bounded SDK feature.
+- **#2 store_function full** (`store((new Other()).addTwo)`): needs the DEPLOY-FOLD to expose a freshly-deployed
+  child's genesis address as a first-class STORABLE value. Probed (2026-07-11): `Other o = new Other(); this.addr
+  = o` and `o.addTwo` (deployed method as a fn-ptr) both fail - the deploy-fold does not surface the genesis
+  address as a value. This is a deploy-fold architecture extension (+ the one-tx deploy+store+fold-call), NOT a
+  fn-ptr gap. The deploy + LOCAL ptr + fold-call slice IS done (8b9a063c, byte-identical).
+
+### Historical: the blob validation notes (superseded by the SHIPPED model above)
 
 A foreign fn-ptr value = `address_lbc ++ selector4` (a single bytes blob, selector = last 4 bytes). A CALL slices
 it: `bytes a = blob.split(blob.length - 4)[0]; IFace(a).__call(args)` with a runtime selector `bytes4(blob[-4:])`.

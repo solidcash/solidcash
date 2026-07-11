@@ -19,6 +19,7 @@ import EarlyReturnTransformation from './semantic/EarlyReturnTransformation.js';
 import NamedReturnTransformation from './semantic/NamedReturnTransformation.js';
 import DesugarNestedBranchReturn from './semantic/DesugarNestedBranchReturn.js';
 import SynthesizeExternalAddressLocals from './semantic/SynthesizeExternalAddressLocals.js';
+import CaptureBranchExternalCallTargets from './semantic/CaptureBranchExternalCallTargets.js';
 import PromoteConstructorExternalReads from './semantic/PromoteConstructorExternalReads.js';
 import SynthesizeLibraryDelegateCalls from './semantic/SynthesizeLibraryDelegateCalls.js';
 import InlineExternalCallHelpers from './semantic/InlineExternalCallHelpers.js';
@@ -258,6 +259,9 @@ function compileResolvedAst(ast: Ast, code: string, mergedCompilerOptions: Compi
   // Interface-typed state vars used as external-call targets -> synthesized address locals (reuses the
   // local-interface-var dispatch).
   ast = ast.accept(new SynthesizeExternalAddressLocals()) as Ast;
+  // A contract/interface-typed external-call target LOCAL declared in a branch (e.g. a `restricted` modifier's
+  // if-wrapper) is popped before the epilogue's co-spend verification -> capture it into a function-top local.
+  ast = ast.accept(new CaptureBranchExternalCallTargets()) as Ast;
   // `L.f()` calls to a state-touching (delegate) library -> a delegatecall against the caller's state (with a
   // synthesized library-address constructor arg). See docs/library-contracts.md (3b sugar).
   ast = ast.accept(new SynthesizeLibraryDelegateCalls()) as Ast;
@@ -454,6 +458,7 @@ function compileReferencedContracts(
     singleAst = singleAst.accept(new IfConvertConditionalEntryOp()) as Ast;
     singleAst = singleAst.accept(new PromoteConstructorExternalReads()) as Ast;
     singleAst = singleAst.accept(new SynthesizeExternalAddressLocals()) as Ast;
+    singleAst = singleAst.accept(new CaptureBranchExternalCallTargets()) as Ast;
     singleAst = singleAst.accept(new SynthesizeBlockOracle(compilerOptions.solidityImportCompat)) as Ast;
     // Carry the file's library free functions in ONLY for symbol resolution + type checking, AFTER the desugar/
     // inline passes have run (so their already-desugared bodies are not re-desugared, which duplicated locals).

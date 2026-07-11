@@ -140,6 +140,35 @@ export default class DesugarExternalFunctionPointers extends AstTraversal {
     return super.visitFunctionCall(node);
   }
 
+  // `f.selector` / `f.address` on a foreign fn-ptr alias -> the aliased member's compile-time selector / the
+  // interface-cast address (the EVM `function external` value members).
+  visitFieldAccess(node: FieldAccessNode): Node {
+    if ((node.name === 'selector' || node.name === 'address') && node.expression instanceof IdentifierNode) {
+      const rhs = this.aliases.get(node.expression.name);
+      const member = rhs instanceof FieldAccessNode ? rhs
+        : rhs instanceof TernaryOpNode && rhs.ifTrue instanceof FieldAccessNode ? rhs.ifTrue : undefined;
+      if (member) {
+        const cast = member.expression;
+        if (node.name === 'address' && cast instanceof FunctionCallNode && cast.parameters.length === 1) {
+          return cloneNode(cast.parameters[0]) as ExpressionNode; // IFace(a) -> a
+        }
+        if (node.name === 'selector') {
+          if (rhs instanceof TernaryOpNode && rhs.ifFalse instanceof FieldAccessNode) {
+            // varying method: the runtime selector `cond ? a.selector : b.selector`.
+            const iface = this.castInterfaceName(cast)!;
+            const sel = new TernaryOpNode(cloneNode(rhs.condition) as ExpressionNode,
+              this.selectorOf(iface, member.name, node), this.selectorOf(iface, rhs.ifFalse.name, node));
+            sel.location = node.location;
+            return sel;
+          }
+          const iface = this.castInterfaceName(cast);
+          if (iface) return this.selectorOf(iface, member.name, node);
+        }
+      }
+    }
+    return super.visitFieldAccess(node);
+  }
+
   private callAlias(node: FunctionCallNode): ExpressionNode | undefined {
     const id = node.identifier;
     return id instanceof IdentifierNode ? this.aliases.get(id.name) : undefined;

@@ -1736,6 +1736,26 @@ describe('foreign external fn-ptr RETURNED from an internal helper (beta-reduced
   });
 });
 
+describe('foreign external fn-ptr .selector / .address members', () => {
+  const IF = 'interface IFoo { function addTwo(uint x) external returns(uint); }';
+  // `f.selector` / `f.address` on an alias reduce to the member's compile-time selector / the cast address (the
+  // EVM `function external` value members). f.selector -> IFoo.addTwo.selector (VM-proven in the varying dispatch).
+  it('rewrites f.selector to the aliased member selector (bytes4)', () => {
+    const art = compileString(`${IF} contract C {`
+      + ' function use(address a) public returns(bytes4) {'
+      + '   function(uint) external returns(uint) f = IFoo(a).addTwo; return f.selector; } }',
+    { solidityImportCompat: true });
+    expect(art.abi.find((x) => x.name === 'use')!.outputs![0].type).toBe('bytes4');
+  });
+  it('rewrites f.address to the interface-cast address', () => {
+    const art = compileString(`${IF} contract C {`
+      + ' function use(address a) public returns(address) {'
+      + '   function(uint) external returns(uint) f = IFoo(a).addTwo; return f.address; } }',
+    { solidityImportCompat: true });
+    expect(art.abi.find((x) => x.name === 'use')!.outputs![0].type).toBe('address');
+  });
+});
+
 describe('deploy-then-call fold THROUGH a local fn-ptr (#2 slice, sound by reduction)', () => {
   // `p = (new Other()).m; p()` (deploy + take the fresh child's method as a local pointer + call) reduces via
   // the alias desugar to `(new Other()).m()` = the shipped deploy-then-call fold. Assert byte-identity to the

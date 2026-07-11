@@ -20,6 +20,7 @@ import NamedReturnTransformation from './semantic/NamedReturnTransformation.js';
 import DesugarNestedBranchReturn from './semantic/DesugarNestedBranchReturn.js';
 import SynthesizeExternalAddressLocals from './semantic/SynthesizeExternalAddressLocals.js';
 import CaptureBranchExternalCallTargets from './semantic/CaptureBranchExternalCallTargets.js';
+import LowerForeignFunctionPointerVars from './semantic/LowerForeignFunctionPointerVars.js';
 import PromoteConstructorExternalReads from './semantic/PromoteConstructorExternalReads.js';
 import SynthesizeLibraryDelegateCalls from './semantic/SynthesizeLibraryDelegateCalls.js';
 import InlineExternalCallHelpers from './semantic/InlineExternalCallHelpers.js';
@@ -206,6 +207,10 @@ function compileResolvedAst(ast: Ast, code: string, mergedCompilerOptions: Compi
   // Straight-line foreign external function pointer `function() external f = IFoo(addr).method; f(args)` ->
   // `IFoo(addr).method(args)` (the existing external call); before the external-call passes + semantic.
   ast = ast.accept(new DesugarExternalFunctionPointers()) as Ast;
+
+  // A foreign external fn-ptr STATE var holding a fixed method on a runtime address (`function() external x;
+  // x = IFoo(a).m; x(v)`) -> an `address` state var + the state-address external call `IFoo(x).m(v)`.
+  ast = ast.accept(new LowerForeignFunctionPointerVars()) as Ast;
 
   // Lower supported Yul inline assembly to equivalent main-AST statements (value computation + control flow).
   ast = ast.accept(new LowerInlineAssembly()) as Ast;

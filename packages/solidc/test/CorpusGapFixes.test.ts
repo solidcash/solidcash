@@ -1598,3 +1598,23 @@ describe('string-literal mapping key coerced to bytesN (compat)', () => {
       + ' function f() { this.m["foo"] = 2; } }')).toThrow();
   });
 });
+
+describe('foreign external fn-ptr state var (fixed method on runtime address)', () => {
+  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  const IF = 'interface IFoo { function addTwo(uint x) external returns(uint); }';
+  // `x = IFoo(a).addTwo; x(v)` lowers to an address state var + IFoo(x).addTwo(v) (the tested state-address
+  // external call). Sound by reduction; VM-verified in ForeignFunctionPointerStateVar.test.ts.
+  it('lowers a single-method foreign fn-ptr state var to an address + fixed-method call', () => {
+    expect(cc(`${IF} contract C { function(uint) external returns(uint) x;`
+      + ' function set(address a) public { x = IFoo(a).addTwo; }'
+      + ' function callIt(uint v) public returns(uint) { return x(v); } }')).toBe('C');
+  });
+  // A varying method must NOT be classified (would need a runtime selector) - stays rejected, never miscompiled.
+  it('does not lower a fn-ptr state var whose method varies (stays unclassified)', () => {
+    const src = 'interface IFoo { function a(uint x) external returns(uint); function b(uint x) external returns(uint); }'
+      + ' contract C { function(uint) external returns(uint) x;'
+      + ' function set(address addr, bool t) public { if (t) x = IFoo(addr).a; else x = IFoo(addr).b; }'
+      + ' function callIt(uint v) public returns(uint) { return x(v); } }';
+    expect(() => compileString(src, { solidityImportCompat: true })).toThrow();
+  });
+});

@@ -3622,35 +3622,38 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             transaction,
           }) as AuthenticationProgramStateCommon[];
 
-          // B verifies its data NFT commitments, then (if return values) the return event commitment
+          // B verifies its data NFT commitments; the return event is extracted separately below.
           const bRequiredNftCount = group.requiredDataNftIndices.length;
-          const totalExpected = bRequiredNftCount + (ec.hasReturnValues ? 1 : 0);
 
-          // Filter by output index range: B's data NFTs start after B's master output
+          // Filter by output index range: B's data NFTs start after B's master output. Best-effort: the
+          // probe trace may abort at the return-event check before B reaches the data NFT preservation, so
+          // this can legitimately come back empty - that must NOT skip the return-event extraction below.
           const bOutputBase = stb.getExternalCallOutputBase(groupIdx);
-          const bDataOutputRange = { min: bOutputBase + 1, max: bOutputBase + 1 + totalExpected };
-          const commitments = extractCommitmentsFromTrace(fullTrace, totalExpected, bDataOutputRange);
-          if (!commitments) continue; // No commitment patterns found - skip
+          const bDataOutputRange = { min: bOutputBase + 1, max: bOutputBase + 1 + bRequiredNftCount };
+          const commitments = bRequiredNftCount > 0
+            ? extractCommitmentsFromTrace(fullTrace, bRequiredNftCount, bDataOutputRange)
+            : undefined;
+          if (!commitments && bRequiredNftCount > 0 && !ec.hasReturnValues) continue; // nothing to do
 
           // B's data NFT commitments
-          const bCommitments = commitments.slice(0, bRequiredNftCount);
-          const bState = commitmentsToState(bCommitments, group.stateLayout, group.requiredDataNftIndices);
-          for (const [name, value] of Object.entries(bState)) {
-            stb.setExternalCallState(group.categoryId, name, value);
+          if (commitments && commitments.length > 0) {
+            const bCommitments = commitments.slice(0, bRequiredNftCount);
+            const bState = commitmentsToState(bCommitments, group.stateLayout, group.requiredDataNftIndices);
+            for (const [name, value] of Object.entries(bState)) {
+              stb.setExternalCallState(group.categoryId, name, value);
+            }
           }
 
-          // Return event blob (if B has return values)
-          if (ec.hasReturnValues && commitments.length > bRequiredNftCount) {
-            const returnBlob = commitments[bRequiredNftCount];
-            stb.setReturnEventOutput(group.categoryId, hexToBin(returnBlob));
-          }
-
-          // If the return event commitment was not extracted in the first probe,
-          // re-run B's VM now that data NFT commitments are set. The first probe's
-          // VM stopped at the first mismatching OP_EQUALVERIFY (data NFT), so the
-          // return event verification was never reached. With correct data NFT outputs,
-          // the VM proceeds past those checks and reaches the return event verification.
-          if (ec.hasReturnValues && commitments.length <= bRequiredNftCount) {
+          // Return event blob: extract from the dedicated return-event section, whose index is fixed at the
+          // tx end and therefore order-independent. The inline data-NFT range only coincides with the return
+          // event when the returning call is the LAST external call; a call following it shifts the return
+          // event out of that range, so the extraction MUST target the return-event section directly. The
+          // returning call's covenant pushes the expected return blob before its OP_EQUALVERIFY against the
+          // (placeholder) return-event output, so the value is in the trace even when the probe aborts there.
+          // Re-run B's VM with any data NFT commitments now set so B's script reliably reaches that point.
+          // The range covers all return events (chained A->B->C give each group a distinct index); B's script
+          // verifies only its own, so exactly one matches.
+          if (ec.hasReturnValues) {
             const probeBuilderRet = stb.build();
             const transactionRet = probeBuilderRet.buildLibauthTransaction();
             const sourceOutputsRet = generateLibauthSourceOutputs(probeBuilderRet.inputs);
@@ -3661,11 +3664,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               transaction: transactionRet,
             }) as AuthenticationProgramStateCommon[];
 
-            // Use a range covering all return event outputs. Each group's script only
-            // verifies its own return event, so the trace will only contain one match
-            // within this range. The range must cover all return events because in
-            // chained calls (A->B->C), different groups' return events have different
-            // output indices within the return event section.
             const returnEventOutputBase = stb.getReturnEventOutputBase();
             const totalReturnEvents = externalCalls.filter((e) => e.hasReturnValues).length;
             const returnOutputRange = {

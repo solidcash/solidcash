@@ -76,13 +76,17 @@ describe('foreign fn-ptr PASSED cross-CONTRACT (A -> B.register -> B.fire)', () 
 });
 
 // A RETURNS a foreign fn-ptr to a DIFFERENT contract B (as a bounded blob via the return-event NFT); B receives
-// it in a blob local and co-spends the target through it - the cross-CONTRACT return direction.
+// it in a blob local and co-spends the target through it - the cross-CONTRACT return direction. The return-event
+// commitment is extracted from the dedicated return-event section (order-independent), so a returning call
+// followed by another external call threads correctly. IA declares A's state (`dummy`) so the co-spend's
+// compile-time input offset (1 master + declared data NFTs per prior call) matches the runtime layout, which
+// co-spends A's full state - an interface that under-declares the callee's state shifts the next call's offset.
 const RET_SRC = `
 interface ITarget { public bigint counter; function inc(pubkey o, sig s) external; }
-interface IA { function getPtr(address t) external returns (function(pubkey,sig) external); }
+interface IA { public bigint dummy; function getPtr(address t) external returns (function(pubkey,sig) external); }
 contract Target is ITarget { bigint counter;
   function inc(pubkey o, sig s) external { require(checkSig(s, o)); this.counter = this.counter + 1; } }
-contract A { bigint dummy;
+contract A is IA { bigint dummy;
   function getPtr(address t) public returns (function(pubkey,sig) external) { return ITarget(t).inc; } }
 contract B {
   bigint n;
@@ -93,13 +97,10 @@ contract B {
   }
 }`;
 
-// The caller + callee sides COMPILE (interface fn-ptr return retyped to a bounded blob; a blob local from a
-// cross-contract call detected + sliced). BLOCKED at runtime by a return-event bug isolated to COMPUTED bytes
-// returns: a cross-contract bounded-bytes PARAM return works, but a COMPUTED bounded blob (and any unbounded
-// bytes return) yields an empty blob at B - the return-event NFT does not thread A's computed bytes-blob return
-// across the boundary. Two return-event bugs, not fn-ptr-specific (see XContractBytesReturn.test.ts). Unskip
-// once cross-contract computed/unbounded bytes returns thread correctly.
-describe.skip('foreign fn-ptr RETURNED cross-CONTRACT (B <- A.getPtr) [BLOCKED: computed bytes return-event bug]', () => {
+// The caller retypes the interface fn-ptr return to a bounded blob, detects a blob local from a cross-contract
+// call, and slices it into (address, selector) to dispatch the co-spent target. B captures A's returned blob
+// via the return-event NFT and fires the target through it, all in one transaction.
+describe('foreign fn-ptr RETURNED cross-CONTRACT (B <- A.getPtr)', () => {
   const arts = compileStringMulti(RET_SRC, { solidityImportCompat: true });
   const provider = createTestProvider();
   const sig = (): SignatureTemplate => new SignatureTemplate(alicePriv);

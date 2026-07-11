@@ -305,9 +305,13 @@ describe('mapping-bearing struct state variables (flattened)', () => {
     expect(names).toContain('m__bal');
   });
 
-  it('still rejects an unsupported (non-mapping) struct field type', () => {
-    expect(() => cc('pragma solidity ^0.8.0; contract C { struct Bad { function() external f; } Bad b;'
-      + ' function f() public { require(true); } }')).toThrow();
+  // A foreign external fn-ptr struct field is now SUPPORTED via the blob value model (LowerBlobFunctionPointers):
+  // the field lowers to a bytes blob `selector ++ address`, and a call through it slices the blob into the
+  // audited external call. VM-verified in ForeignFunctionPointerBlobStruct.test.ts.
+  it('accepts a foreign fn-ptr struct field (lowered to a bytes blob)', () => {
+    const art = compileString('pragma solidity ^0.8.0; contract C { struct Box { function() external f; } Box b;'
+      + ' function f() public { require(true); } }', { solidityImportCompat: true });
+    expect(art.structs!.find((s) => s.name === 'Box')!.fields.find((fld) => fld.name === 'f')!.type).toBe('bytes');
   });
 
   it('allows field names that share a prefix with a dotted op (values, pushCount, lengths)', () => {

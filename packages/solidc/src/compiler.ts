@@ -24,6 +24,7 @@ import InlineForeignFunctionPointerReturns from './semantic/InlineForeignFunctio
 import LowerForeignFunctionPointerVars from './semantic/LowerForeignFunctionPointerVars.js';
 import LowerForeignFunctionPointerParams from './semantic/LowerForeignFunctionPointerParams.js';
 import LowerForeignFunctionPointerStorage from './semantic/LowerForeignFunctionPointerStorage.js';
+import LowerBlobFunctionPointers from './semantic/LowerBlobFunctionPointers.js';
 import LowerForeignFunctionPointerStructFields from './semantic/LowerForeignFunctionPointerStructFields.js';
 import LowerForeignFunctionPointerArrayElements from './semantic/LowerForeignFunctionPointerArrayElements.js';
 import PromoteConstructorExternalReads from './semantic/PromoteConstructorExternalReads.js';
@@ -234,6 +235,10 @@ function compileResolvedAst(ast: Ast, code: string, mergedCompilerOptions: Compi
   // field + a `bytes4 __fnsel_x` companion + the state-address external call with a runtime selector. Runs after
   // the PARAM lowering (which splits `y` into address + `__fnsel_y`) that this pass reads the selector from.
   ast = ast.accept(new LowerForeignFunctionPointerStorage()) as Ast;
+  // A RECEIVED-value foreign fn-ptr in a struct field (method carried in the value) -> a bytes BLOB
+  // `selector ++ address`; a call slices it into an audited state-address external call. After the fixed-method
+  // struct-field pass (only received-value fields remain).
+  ast = ast.accept(new LowerBlobFunctionPointers()) as Ast;
 
   // Lower supported Yul inline assembly to equivalent main-AST statements (value computation + control flow).
   ast = ast.accept(new LowerInlineAssembly()) as Ast;

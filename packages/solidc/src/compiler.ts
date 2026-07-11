@@ -22,6 +22,7 @@ import SynthesizeExternalAddressLocals from './semantic/SynthesizeExternalAddres
 import CaptureBranchExternalCallTargets from './semantic/CaptureBranchExternalCallTargets.js';
 import LowerForeignFunctionPointerVars from './semantic/LowerForeignFunctionPointerVars.js';
 import LowerForeignFunctionPointerParams from './semantic/LowerForeignFunctionPointerParams.js';
+import LowerForeignFunctionPointerStorage from './semantic/LowerForeignFunctionPointerStorage.js';
 import PromoteConstructorExternalReads from './semantic/PromoteConstructorExternalReads.js';
 import SynthesizeLibraryDelegateCalls from './semantic/SynthesizeLibraryDelegateCalls.js';
 import InlineExternalCallHelpers from './semantic/InlineExternalCallHelpers.js';
@@ -213,6 +214,10 @@ function compileResolvedAst(ast: Ast, code: string, mergedCompilerOptions: Compi
   // x = IFoo(a).m; x(v)`) -> an `address` state var + the state-address external call `IFoo(x).m(v)`.
   ast = ast.accept(new LowerForeignFunctionPointerVars()) as Ast;
   ast = ast.accept(new LowerForeignFunctionPointerParams()) as Ast;
+  // A foreign fn-ptr STATE var holding a RECEIVED value (`x = y`, method carried in the value) -> an `address`
+  // field + a `bytes4 __fnsel_x` companion + the state-address external call with a runtime selector. Runs after
+  // the PARAM lowering (which splits `y` into address + `__fnsel_y`) that this pass reads the selector from.
+  ast = ast.accept(new LowerForeignFunctionPointerStorage()) as Ast;
 
   // Lower supported Yul inline assembly to equivalent main-AST statements (value computation + control flow).
   ast = ast.accept(new LowerInlineAssembly()) as Ast;

@@ -11,6 +11,8 @@ import {
   MethodCallNode,
   MethodCallStatementNode,
   StateAccessNode,
+  AssignNode,
+  StateAssignNode,
   IdentifierNode,
   ExpressionNode,
 } from '../ast/AST.js';
@@ -33,6 +35,9 @@ export default class LowerForeignFunctionPointerParams extends AstTraversal {
   // funcName -> the arg positions that receive a SELF-REF (`this.f`, a StateAccess) at some internal call site.
   // A fn-ptr param passed a self-ref stays a functionId (internal OP_INVOKE); only genuinely-foreign params lower.
   private selfRefArgPositions = new Map<string, Set<number>>();
+  // Names of the contract's foreign fn-ptr STATE variables; a param STORED into one is a foreign value flow
+  // (LowerForeignFunctionPointerStorage flattens the var + calls through it), so it lowers even if never called.
+  private fnPtrStateVars = new Set<string>();
 
   visitSourceFile(node: SourceFileNode): Node {
     this.synthIfaces = [];
@@ -44,6 +49,11 @@ export default class LowerForeignFunctionPointerParams extends AstTraversal {
 
   visitContract(node: ContractNode): Node {
     this.selfRefArgPositions = this.collectSelfRefArgs(node);
+    this.fnPtrStateVars = new Set(
+      node.stateVariables
+        .filter((sv) => sv.type instanceof FunctionType && (sv.type as FunctionType).isExternal)
+        .map((sv) => sv.name),
+    );
     node.functions = node.functions.map((f) => this.rewriteFn(f));
     return node;
   }
@@ -84,7 +94,10 @@ export default class LowerForeignFunctionPointerParams extends AstTraversal {
       const p = fn.parameters[pos];
       // A fn-ptr param passed a self-ref (`this.f`) at any internal call site stays a functionId (internal
       // OP_INVOKE); do not lower it to a foreign (address, selector) call - that would break the self-ref path.
-      if (fnPtrParams.includes(p) && !selfRefPositions.has(pos) && this.isCalled(fn, p.name)) {
+      // Lower a genuinely-foreign param that is CALLED here, or STORED into a foreign fn-ptr state var (the
+      // storage pass then calls through the stored value).
+      if (fnPtrParams.includes(p) && !selfRefPositions.has(pos)
+        && (this.isCalled(fn, p.name) || this.isStoredToFnPtrState(fn, p.name))) {
         const ft = p.type as FunctionType;
         const ifaceName = this.synthInterface(ft);
         const selName = `__fnsel_${p.name}`;
@@ -141,6 +154,28 @@ export default class LowerForeignFunctionPointerParams extends AstTraversal {
     (iface as InterfaceNode & { __sig?: string }).__sig = sig;
     this.synthIfaces.push(iface);
     return name;
+  }
+
+  // True if `name` is assigned to a foreign fn-ptr state var (`stored = name`) anywhere in fn.
+  private isStoredToFnPtrState(fn: FunctionDefinitionNode, name: string): boolean {
+    let found = false;
+    const isNameRead = (e: unknown): boolean => e instanceof IdentifierNode && e.name === name;
+    const walk = (n: Node): void => {
+      if (found) return;
+      if (n instanceof AssignNode && this.fnPtrStateVars.has(n.identifier.name) && isNameRead(n.expression)) {
+        found = true; return;
+      }
+      if (n instanceof StateAssignNode && this.fnPtrStateVars.has(n.name) && isNameRead(n.expression)) {
+        found = true; return;
+      }
+      for (const key of Object.keys(n)) {
+        const val = (n as unknown as Record<string, unknown>)[key];
+        if (val instanceof Node) walk(val);
+        else if (Array.isArray(val)) for (const v of val) if (v instanceof Node) walk(v);
+      }
+    };
+    if (fn.body) walk(fn.body);
+    return found;
   }
 
   private isCalled(fn: FunctionDefinitionNode, name: string): boolean {

@@ -1642,3 +1642,32 @@ describe('foreign external fn-ptr parameter (per-call master index)', () => {
     expect(evInputs).not.toContain('__fnsel_fp'); // not lowered - stays the internal functionId form
   });
 });
+
+describe('foreign external fn-ptr STATE storage of a received value (x = y)', () => {
+  // A fn-ptr state var assigned a RECEIVED value flattens to an `address` field + a `bytes4 __fnsel_<name>`
+  // companion; the stored param splits into (address, selector) and the call marks fnPtrCall + a per-call index.
+  // VM-verified in ForeignFunctionPointerStorage.test.ts (seed, save->run, and return-event capture).
+  it('flattens the fn-ptr state var + splits the stored param + marks the call fnPtrCall', () => {
+    const art = compileString('contract C { function(uint) external returns(uint) stored;'
+      + ' function save(function(uint) external returns(uint) y) public { stored = y; }'
+      + ' function run(uint v) public returns(uint) { return stored(v); } }', { solidityImportCompat: true });
+    const stateVars = art.stateLayout!.variables.map((v) => `${v.name}:${v.type}`);
+    expect(stateVars).toContain('stored:address');          // fn-ptr var lowered to address
+    expect(stateVars).toContain('__fnsel_stored:bytes4');   // companion selector field injected
+    const saveInputs = art.abi.find((f) => f.name === 'save')!.inputs.map((i) => `${i.name}:${i.type}`);
+    expect(saveInputs).toContain('y:address');              // stored param split: address part
+    expect(saveInputs).toContain('__fnsel_y:bytes4');       // stored param split: selector part
+    const run = art.abi.find((f) => f.name === 'run')!;
+    expect(run.externalCalls!.some((e) => e.fnPtrCall)).toBe(true);
+    expect(run.inputs.some((i) => i.name.startsWith('__internal__extcallMasterIdx'))).toBe(true);
+  });
+  // A self-ref (functionId) fn-ptr state var must NOT be flattened to address+selector (that path is separate).
+  it('does not flatten a fn-ptr state var assigned a self-ref (stays the functionId form)', () => {
+    const art = compileString('contract C { function(uint) internal returns(uint) fp;'
+      + ' function g(uint x) internal returns(uint) { return x + 1; }'
+      + ' function set() public { fp = g; } function run(uint v) public returns(uint) { return fp(v); } }',
+    { solidityImportCompat: true });
+    const stateVars = art.stateLayout!.variables.map((v) => v.name);
+    expect(stateVars).not.toContain('__fnsel_fp'); // internal pointer keeps its functionId representation
+  });
+});

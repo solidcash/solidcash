@@ -1565,3 +1565,36 @@ describe('external call on the current contract type (self-type)', () => {
     expect(() => cc('contract C {} interface I is C {}')).toThrow();
   });
 });
+
+describe('branch-local external-call target capture', () => {
+  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  // A contract/interface-typed local declared inside a branch (here a restricted modifier's if-wrapper) is
+  // popped before the epilogue co-spend verification; the capture pass hoists it to a function-top local.
+  it('compiles an external call on a local declared in a modifier-induced branch (Migrations shape)', () => {
+    expect(cc('contract M { uint x; function set(uint c) public { x = c; }'
+      + ' modifier r() { if (x == 0) _; }'
+      + ' function upgrade(address a) public r { M u = M(a); u.set(x); } }')).toBe('M');
+  });
+  it('compiles an external call on a local declared in an explicit if-branch', () => {
+    expect(cc('interface IM { function set(uint x) external; }'
+      + ' contract C { address t; function f(bool ok) public { if (ok) { IM u = IM(t); u.set(5); } } }')).toBe('C');
+  });
+});
+
+describe('string-literal mapping key coerced to bytesN (compat)', () => {
+  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  // `m["foo"]` where the key type is bytesN right-pads the literal like an assignment value does; byte-identical
+  // to the explicit `m[hex"666f6f00..00"]` form. Native mode stays strict (no implicit coercion).
+  it('coerces a string-literal key on write, read, and delete', () => {
+    expect(cc('contract C { mapping(bytes16 => uint) m;'
+      + ' function f() public { m["foo"] = 2; require(m["foo"] == 2); delete m["foo"]; } }')).toBe('C');
+  });
+  it('coerces an empty-string key against a bytes1 key type', () => {
+    expect(cc('contract C { mapping(bytes1 => uint) m; function f() public { m[""] = 2; require(m[""] == 2); } }'))
+      .toBe('C');
+  });
+  it('still rejects the implicit string->bytesN key in native (strict) mode', () => {
+    expect(() => compileString('pragma solidcash >=0.8.0; contract C() { mapping(bytes16 => int) m;'
+      + ' function f() { this.m["foo"] = 2; } }')).toThrow();
+  });
+});

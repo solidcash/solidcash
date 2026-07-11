@@ -525,6 +525,8 @@ export default class TypeCheckTraversal extends AstTraversal {
 
     if (node.collection) {
       const allKeyTypes = node.collection.allKeyTypes;
+      // A string/hex/zero literal key against a bytesN key type coerces like an assignment value (compat only).
+      node.keys = this.coerceHexArgs(node.keys, allKeyTypes) as typeof node.keys;
       // Each key must type-check against its corresponding level
       for (let i = 0; i < node.keys.length; i++) {
         if (node.keys[i].type && !implicitlyCastable(node.keys[i].type, allKeyTypes[i])) {
@@ -572,6 +574,7 @@ export default class TypeCheckTraversal extends AstTraversal {
         node.expression = this.maybeCoerceBytesWiden(node.expression, expectedValueType);
       }
       const allKeyTypes = node.collection.allKeyTypes;
+      node.keys = this.coerceHexArgs(node.keys, allKeyTypes) as typeof node.keys;
       for (let i = 0; i < node.keys.length; i++) {
         if (node.keys[i].type && !implicitlyCastable(node.keys[i].type, allKeyTypes[i])) {
           throw new TypeError(node, node.keys[i].type, allKeyTypes[i]);
@@ -608,6 +611,7 @@ export default class TypeCheckTraversal extends AstTraversal {
     node.expression = this.visit(node.expression);
     if (node.collection) {
       const allKeyTypes = node.collection.allKeyTypes;
+      node.keys = this.coerceHexArgs(node.keys, allKeyTypes) as typeof node.keys;
       for (let i = 0; i < node.keys.length; i++) {
         if (node.keys[i].type && !implicitlyCastable(node.keys[i].type, allKeyTypes[i])) {
           throw new TypeError(node, node.keys[i].type, allKeyTypes[i]);
@@ -633,6 +637,7 @@ export default class TypeCheckTraversal extends AstTraversal {
     node.keys = this.visitList(node.keys);
     if (node.collection) {
       const allKeyTypes = node.collection.allKeyTypes;
+      node.keys = this.coerceHexArgs(node.keys, allKeyTypes) as typeof node.keys;
       for (let i = 0; i < node.keys.length; i++) {
         if (node.keys[i].type && !implicitlyCastable(node.keys[i].type, allKeyTypes[i])) {
           throw new TypeError(node, node.keys[i].type, allKeyTypes[i]);

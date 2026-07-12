@@ -2339,10 +2339,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     node.condition = this.visit(node.condition);
     this.popFromStack();
 
-    // Check if we're inside a return-type function where branches may contain
-    // return statements. In that case, visitReturn modifies the stack (NIPs out
-    // params), so we need to save/restore the tracker between branches.
-    const hasReturnType = this.currentFunction?.returnTypes?.length > 0;
+    // Check if we're inside a return-type function AND a branch actually contains a return statement. Only then
+    // does visitReturn modify the stack (NIPs out params), needing the save/restore tracker path below. When no
+    // branch returns (`if (c) { T local; } return x;`), route through the normal path so a FALL-THROUGH branch's
+    // scoped locals are dropped via removeScopedVariables - otherwise they linger in the tracker but not on the
+    // not-taken path's real stack, desyncing every later stack read (a not-taken-path-only crash).
+    const branchHasReturn = this.blockContainsReturn(node.ifBlock)
+      || (!!node.elseBlock && this.blockContainsReturn(node.elseBlock));
+    const hasReturnType = (this.currentFunction?.returnTypes?.length > 0) && branchHasReturn;
 
     this.scopeDepth += 1;
     this.emit(Op.OP_IF, { location: node.ifBlock.location, positionHint: PositionHint.START });
@@ -2418,6 +2422,33 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         && !!last.elseBlock && this.blockEndsWithRevert(last.elseBlock);
     }
     return false;
+  }
+
+  /**
+   * Whether a block contains a return statement ANYWHERE within its own control-flow structure (nested blocks,
+   * if/else, loops, switch). A return NIPs the stack, so a branch containing one needs visitBranch's save/restore
+   * tracker path rather than plain scoped-local cleanup. Walks ONLY statement/block structure - never expressions
+   * or resolvedFunction/functionReference back-pointers (a return in a CALLED function is not this branch's, and
+   * following those cycles on a recursive function). A visited guard backstops any residual cycle.
+   */
+  private blockContainsReturn(node: Node | undefined): boolean {
+    const CONTAINER_KEYS = new Set([
+      'statements', 'ifBlock', 'elseBlock', 'block', 'body', 'cases', 'defaultCase', 'call',
+    ]);
+    const visited = new WeakSet<Node>();
+    let found = false;
+    const walk = (n: Node | undefined): void => {
+      if (!n || found || visited.has(n)) return;
+      visited.add(n);
+      if (n instanceof ReturnNode) { found = true; return; }
+      for (const key of CONTAINER_KEYS) {
+        const v = (n as unknown as Record<string, unknown>)[key];
+        if (v instanceof Node) walk(v);
+        else if (Array.isArray(v)) for (const it of v) if (it instanceof Node) walk(it);
+      }
+    };
+    walk(node);
+    return found;
   }
 
   /**

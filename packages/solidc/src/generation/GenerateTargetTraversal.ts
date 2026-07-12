@@ -177,6 +177,10 @@ import { analyzeInlineAssembly } from '../semantic/InlineAssemblyDiagnostics.js'
 // in a standard 100000-byte BCH tx). 10000 sits above that (rejects no real array) and matches the array
 // safe-decode limit in @solidcash/utils (state.ts); an astronomical bound is refused rather than exhausting memory.
 const MAX_MATERIALIZED_ARRAY_ELEMENTS = 10000;
+// The "invalid" internal function-pointer value (Solidity's zero fn-ptr). functionIds are small sequential ints
+// (from 0), so this large sentinel is never a defined id and OP_INVOKE hard-fails on it -> calling a deleted or
+// uninitialized internal fn-ptr reverts, matching Solidity. See emitDefaultValue.
+const INVALID_FUNCTION_POINTER_ID = 0x7fffffffn;
 
 // Locking bytecode template fragments - correspond to libauth's
 // encodeLockingBytecodeP2pkh / P2sh20 / P2sh32 but used as partial
@@ -9423,6 +9427,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(encodeInt(0n), locationData);
       this.emit(encodeInt(BigInt(type.bound)), locationData);
       this.emit(Op.OP_NUM2BIN, locationData);
+      return;
+    }
+    // An INTERNAL function pointer's default/zero value is the "invalid" pointer: Solidity panics when a
+    // deleted or uninitialized internal fn-ptr is CALLED. functionIds are small sequential ints (assigned from
+    // 0), so a large sentinel is always an unknown id and OP_INVOKE hard-fails on it - reverting the call, which
+    // matches Solidity. (0 would be a VALID functionId - the first defined function - so a deleted pointer would
+    // silently dispatch to it instead of reverting.) External fn-ptrs use the (address,selector) model, unchanged.
+    if (type instanceof FunctionType && !type.isExternal) {
+      this.emit(encodeInt(INVALID_FUNCTION_POINTER_ID), locationData);
       return;
     }
     // OP_0 pushes empty bytes which equals 0 for int, false for bool, empty for bytes

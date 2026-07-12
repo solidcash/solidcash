@@ -722,7 +722,12 @@ export class StatefulTransactionBuilder {
   getChunkOutputBase(): number {
     // New write chunks come AFTER the preserved iteration-entry outputs (read-only co-spent chunks /
     // collection-iter entries), which occupy [blockSize, blockSize+count) to match their input indices.
-    const base = this.blockLayout?.blockSize ?? this.getEventOutputBase() + this.getEventOutputCount();
+    let base = this.blockLayout?.blockSize ?? this.getEventOutputBase() + this.getEventOutputCount();
+    // blockSize reserves the returnEvent slot, but a plain send does NOT materialize it (only .emitReturn(), which
+    // populates pendingReturnEventOutputs), so the trailing chunks sit one output lower. Match the covenant's
+    // runtime returnOutputIdx<0 adjustment in emitDynamicWriteVerification.
+    const hasReturnEventSlot = this.blockLayout?.slots.some((s) => s.kind === 'returnEvent') ?? false;
+    if (hasReturnEventSlot && this.pendingReturnEventOutputs.length === 0) base -= 1;
     return base + this.iterationEntryInputs.length;
   }
 

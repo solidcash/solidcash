@@ -9983,6 +9983,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const loc = { location: node.body.location, positionHint: PositionHint.END };
     const blockSize = this.currentFunction.blockLayout?.blockSize ?? 1;
     const CHUNK = 120;
+    // The trailing chunk output index is blockSize+i, but blockSize COUNTS the returnEvent slot, which a plain
+    // send does NOT materialize (only .emitReturn(), i.e. __internal__returnOutputIdx >= 0, creates it). An
+    // unmaterialized returnEvent shifts the trailing chunks down by 1, so subtract 1 at runtime when
+    // returnOutputIdx < 0. The SDK's getChunkOutputBase() makes the SAME adjustment (they must agree - the SDK's
+    // no-emit case is exactly returnOutputIdx = -1). Same family as the return-event x deploy fix (5a691a9a).
+    const hasReturnEventSlot = this.currentFunction.blockLayout?.slots.some((s) => s.kind === 'returnEvent') ?? false;
 
     // A persisted read of a DIFFERENT var (one not also written) co-spends that var's chunks read-only; the
     // chunk covenant recreates them as iteration-entry outputs at their input index [blockSize, blockSize+
@@ -10111,6 +10117,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(encodeInt(BigInt(blockSize)), loc);
       this.emit(Op.OP_ADD, loc);
       this.emitAddCollectionIterCounts(loc); // collection-iter entry outputs precede chunk outputs (W4)
+      // Subtract 1 when the reserved returnEvent slot is NOT materialized (returnOutputIdx < 0) - it does not
+      // occupy an output, so the trailing chunks sit one lower. One untracked value (the running outIdx-partial)
+      // is above the tracked stack here, hence the +1 pick offset.
+      const roiIdx = hasReturnEventSlot ? this.getStackIndex('__internal__returnOutputIdx', true) : -1;
+      if (roiIdx >= 0) {
+        this.emit(encodeInt(BigInt(roiIdx + 1)), loc);
+        this.emit(Op.OP_PICK, loc);          // [..., outIdxPartial, returnOutputIdx]
+        this.emit(encodeInt(0n), loc);
+        this.emit(Op.OP_LESSTHAN, loc);       // [..., outIdxPartial, (returnOutputIdx < 0 ? 1 : 0)]
+        this.emit(Op.OP_SUB, loc);            // [..., outIdxPartial - unmaterialized-returnEvent]
+      }
       for (const ft of fReadTempNames) {
         this.emit(encodeInt(BigInt(this.getStackIndex(ft) + 1)), loc); // +1: running outIdx-partial untracked
         this.emit(Op.OP_PICK, loc);

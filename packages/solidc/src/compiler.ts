@@ -22,6 +22,7 @@ import SynthesizeExternalAddressLocals from './semantic/SynthesizeExternalAddres
 import CaptureBranchExternalCallTargets from './semantic/CaptureBranchExternalCallTargets.js';
 import SplitExternalCallFnPtrArgs from './semantic/SplitExternalCallFnPtrArgs.js';
 import DesugarContractMemberFnPtr from './semantic/DesugarContractMemberFnPtr.js';
+import InterproceduralStoreFold from './semantic/InterproceduralStoreFold.js';
 import InlineForeignFunctionPointerReturns from './semantic/InlineForeignFunctionPointerReturns.js';
 import LowerForeignFunctionPointerVars from './semantic/LowerForeignFunctionPointerVars.js';
 import LowerForeignFunctionPointerParams from './semantic/LowerForeignFunctionPointerParams.js';
@@ -220,6 +221,10 @@ function compileResolvedAst(ast: Ast, code: string, mergedCompilerOptions: Compi
   // A contract instance's method as a fn-ptr VALUE (`o.m` / `(new C()).m`) -> the recognised `C(o).m` member
   // form (inline-new hoisted to a named deploy local). Before the fn-ptr passes so the member flows through.
   ast = ast.accept(new DesugarContractMemberFnPtr()) as Ast;
+
+  // Interprocedural deploy fold through a store helper (store_function core): `store(C(o).m); x(..)` rewrites the
+  // same-tx `x(..)` to `o.m(..)` so a freshly-deployed child called via a stored fn-ptr folds. Before the split.
+  ast = ast.accept(new InterproceduralStoreFold()) as Ast;
 
   // A foreign fn-ptr PASSED to a DIFFERENT contract over an external call (`IB(b).register(ITarget(t).m, ..)`)
   // -> split the fn-ptr member arg into (address, selector) to match the callee's lowered fn-ptr param.

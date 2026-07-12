@@ -8045,13 +8045,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // 2. Encode to pushdata format
     this.emitPushdataEncode(sv.type, locationData);
 
-    if (this.preAllocatedStateWrites.has(key)) {
-      // Replace pre-allocated slot via emitReplace
+    if (this.pendingStateWrites.has(key)) {
+      // The slot is already ON THE STACK (pre-allocated before a branch, OR pushed by an earlier write to this
+      // same var). A re-write must REPLACE it in place - NOT push a new one. Pushing a new slot inside a
+      // conditional desyncs the stack when the branch is not taken (the push never runs at runtime). Keying on
+      // preAllocatedStateWrites alone missed a prior UNCONDITIONAL write (`x = a; if (c) { x = b; }`).
       const stackName = `__internal__state_write_${sv.name}`;
       this.emitReplace(this.getStackIndex(stackName), node);
       this.popFromStack(); // pop the computed value from tracker
     } else {
-      // Normal path (outside branches)
+      // First write to this var: push it as the pending slot.
       this.popFromStack();
       const stackName = `__internal__state_write_${sv.name}`;
       this.pushToStack(stackName);
@@ -8073,8 +8076,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.pushToStack('(value)');
     this.emitPushdataEncode(sv.type, locationData);
 
-    // 3. Follow the same state write path as visitStateAssign
-    if (this.preAllocatedStateWrites.has(key)) {
+    // 3. Follow the same state write path as visitStateAssign: replace an already-on-stack slot in place
+    // (pre-allocated OR pushed by an earlier write to this var), else push the first pending slot.
+    if (this.pendingStateWrites.has(key)) {
       const stackName = `__internal__state_write_${sv.name}`;
       this.emitReplace(this.getStackIndex(stackName), node);
       this.popFromStack();

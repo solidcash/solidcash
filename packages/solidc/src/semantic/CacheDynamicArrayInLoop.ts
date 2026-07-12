@@ -9,6 +9,8 @@ import {
   WhileNode,
   DoWhileNode,
   UncheckedNode,
+  SwitchNode,
+  TryCatchNode,
   StateArrayPushNode,
   StateArrayPopNode,
   StateArrayAssignNode,
@@ -83,25 +85,72 @@ export default class CacheDynamicArrayInLoop extends AstTraversal {
       // Convert write statements (state -> local) and rename reads (state name -> local name) throughout.
       fn.body.statements = this.convertWrites(fn.body.statements ?? [], name, local);
       this.renameReads(fn.body, name, local);
-      // Cache read prepended (reads the persisted V once); flush appended (writes the final local back once).
+      // Cache read prepended (reads the persisted V once); flush written back on every exit path.
       // Built after the rename so they keep the state-var name V.
       const cacheInit = new IdentifierNode(name);
       cacheInit.location = fn.body.location;
       const cache = new VariableDefinitionNode(sv.type, [], local, cacheInit);
       cache.location = fn.body.location;
-      const flushRhs = new IdentifierNode(local);
-      flushRhs.location = fn.body.location;
-      const flush = new StateAssignNode(name, flushRhs);
-      flush.location = fn.body.location;
-      // The flush writes the cache back to state; it must precede a trailing `return` so the return stays the
-      // terminal statement (else the missing-return check trips) and the write-back is not stranded after it.
-      const stmts = fn.body.statements ?? [];
-      if (stmts.length > 0 && stmts[stmts.length - 1] instanceof ReturnNode) {
-        fn.body.statements = [cache, ...stmts.slice(0, -1), flush, stmts[stmts.length - 1]];
-      } else {
-        fn.body.statements = [cache, ...stmts, flush];
+      // The flush writes the cache back to state and must run before EVERY return (else an early return
+      // skips it and the state array is silently never written) and at the fall-through end. It must
+      // precede each `return` so the return stays that path's terminal statement.
+      let stmts = this.insertFlushesBeforeReturns(fn.body.statements ?? [], name, local, fn.body.location);
+      if (stmts.length === 0 || !(stmts[stmts.length - 1] instanceof ReturnNode)) {
+        stmts = [...stmts, this.makeFlush(name, local, fn.body.location)];
       }
+      fn.body.statements = [cache, ...stmts];
     }
+  }
+
+  private makeFlush(name: string, local: string, loc: Node['location']): StateAssignNode {
+    const rhs = new IdentifierNode(local);
+    rhs.location = loc;
+    const flush = new StateAssignNode(name, rhs);
+    flush.location = loc;
+    return flush;
+  }
+
+  // Insert a `V = __dlcache_V` flush immediately before every `return`, recursing into if/else, switch
+  // cases, try/catch and blocks (NOT loops: in-loop returns were already rewritten to flag+break by
+  // DesugarReturnInLoop, and a flush inside a loop body would write on every iteration). Each exit path
+  // thus flushes the final local value. (EarlyReturnTransformation already routes the fall-through flush
+  // for switch/try tails, so those recursions are defensive; the if/else one is load-bearing - that pass
+  // nests the trailing flush into a synthesized else, which the return-taken path would otherwise skip.)
+  private insertFlushesBeforeReturns(
+    stmts: StatementNode[], name: string, local: string, loc: Node['location'],
+  ): StatementNode[] {
+    const out: StatementNode[] = [];
+    for (const stmt of stmts) {
+      if (stmt instanceof ReturnNode) {
+        out.push(this.makeFlush(name, local, loc));
+        out.push(stmt);
+        continue;
+      }
+      if (stmt instanceof BranchNode) {
+        stmt.ifBlock.statements = this.insertFlushesBeforeReturns(stmt.ifBlock.statements ?? [], name, local, loc);
+        if (stmt.elseBlock) {
+          stmt.elseBlock.statements = this.insertFlushesBeforeReturns(stmt.elseBlock.statements ?? [], name, local, loc);
+        }
+      } else if (stmt instanceof SwitchNode) {
+        for (const c of stmt.cases) {
+          c.body.statements = this.insertFlushesBeforeReturns(c.body.statements ?? [], name, local, loc);
+        }
+        if (stmt.defaultCase) {
+          stmt.defaultCase.statements = this.insertFlushesBeforeReturns(stmt.defaultCase.statements ?? [], name, local, loc);
+        }
+      } else if (stmt instanceof TryCatchNode) {
+        stmt.tryBlock.statements = this.insertFlushesBeforeReturns(stmt.tryBlock.statements ?? [], name, local, loc);
+        for (const cc of stmt.catchClauses) {
+          cc.block.statements = this.insertFlushesBeforeReturns(cc.block.statements ?? [], name, local, loc);
+        }
+      } else if (stmt instanceof UncheckedNode) {
+        stmt.block.statements = this.insertFlushesBeforeReturns(stmt.block.statements ?? [], name, local, loc);
+      } else if (stmt instanceof BlockNode) {
+        stmt.statements = this.insertFlushesBeforeReturns(stmt.statements ?? [], name, local, loc);
+      }
+      out.push(stmt);
+    }
+    return out;
   }
 
   // Walk statement lists tracking whether we are inside a CONDITIONALLY-executed context (a loop OR an if/else

@@ -23,6 +23,7 @@ import CaptureBranchExternalCallTargets from './semantic/CaptureBranchExternalCa
 import SplitExternalCallFnPtrArgs from './semantic/SplitExternalCallFnPtrArgs.js';
 import DesugarContractMemberFnPtr from './semantic/DesugarContractMemberFnPtr.js';
 import InterproceduralStoreFold from './semantic/InterproceduralStoreFold.js';
+import EliminateInternalFnPtrAlias from './semantic/EliminateInternalFnPtrAlias.js';
 import InlineForeignFunctionPointerReturns from './semantic/InlineForeignFunctionPointerReturns.js';
 import LowerForeignFunctionPointerVars from './semantic/LowerForeignFunctionPointerVars.js';
 import LowerForeignFunctionPointerParams from './semantic/LowerForeignFunctionPointerParams.js';
@@ -218,9 +219,18 @@ function compileResolvedAst(ast: Ast, code: string, mergedCompilerOptions: Compi
   // Nested local-array element write `b[i][j] = v` -> read-modify-write over single-level ops (before semantic).
   ast = ast.accept(new DesugarNestedArrayWrite()) as Ast;
 
+  // A gratuitous internal fn-ptr state-var alias (`ev = eval; ev(x)`) -> the direct call (`eval(x)`), removing the
+  // alias var. Sidesteps a higher-order internal-fn-ptr type mismatch; before any fn-ptr lowering.
+  ast = ast.accept(new EliminateInternalFnPtrAlias()) as Ast;
+
   // A contract instance's method as a fn-ptr VALUE (`o.m` / `(new C()).m`) -> the recognised `C(o).m` member
   // form (inline-new hoisted to a named deploy local). Before the fn-ptr passes so the member flows through.
   ast = ast.accept(new DesugarContractMemberFnPtr()) as Ast;
+
+  // A foreign fn-ptr RETURNED from / PASSED through a side-effect-free single-return helper (`make(a){ return
+  // IFoo(a).m; }`, `eval(y){ return y(7); }`) -> beta-reduced into its call sites. Before InterproceduralStoreFold
+  // so a helper-returned `x(..)` call (`eval(x)` -> `x(7)`) is present for the fold to rewrite.
+  ast = ast.accept(new InlineForeignFunctionPointerReturns()) as Ast;
 
   // Interprocedural deploy fold through a store helper (store_function core): `store(C(o).m); x(..)` rewrites the
   // same-tx `x(..)` to `o.m(..)` so a freshly-deployed child called via a stored fn-ptr folds. Before the split.
@@ -229,11 +239,6 @@ function compileResolvedAst(ast: Ast, code: string, mergedCompilerOptions: Compi
   // A foreign fn-ptr PASSED to a DIFFERENT contract over an external call (`IB(b).register(ITarget(t).m, ..)`)
   // -> split the fn-ptr member arg into (address, selector) to match the callee's lowered fn-ptr param.
   ast = ast.accept(new SplitExternalCallFnPtrArgs()) as Ast;
-
-  // A foreign fn-ptr RETURNED from a side-effect-free internal helper (`make(a){ return IFoo(a).m; }`) ->
-  // beta-reduced into its call sites (`p = make(a)` -> `p = IFoo(a).m`), so the straight-line desugar below
-  // reduces it to the external call. Before that desugar.
-  ast = ast.accept(new InlineForeignFunctionPointerReturns()) as Ast;
 
   // Straight-line foreign external function pointer `function() external f = IFoo(addr).method; f(args)` ->
   // `IFoo(addr).method(args)` (the existing external call); before the external-call passes + semantic.

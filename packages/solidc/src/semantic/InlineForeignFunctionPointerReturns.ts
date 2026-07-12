@@ -30,8 +30,10 @@ import { cloneNode } from '../ast/clone.js';
  * return/pass still needs the (address, selector) blob value model (future). v1: single-return helpers.
  */
 export default class InlineForeignFunctionPointerReturns extends AstTraversal {
-  // helper name -> { param names, external-fn-ptr param positions, the single returned expression }
-  private candidates = new Map<string, { params: string[]; extPtrParams: Set<number>; returnExpr: ExpressionNode }>();
+  // helper name -> { param names, external-fn-ptr param positions, the single returned expression, isPublic }
+  private candidates = new Map<string,
+    { params: string[]; extPtrParams: Set<number>; returnExpr: ExpressionNode; isPublic: boolean }>();
+  private fnPtrStateVars = new Set<string>(); // foreign fn-ptr state vars - sound to beta-reduce as a helper arg
 
   visitSourceFile(node: SourceFileNode): Node {
     if (node.contract) node.contract = this.visitContract(node.contract) as ContractNode;
@@ -42,9 +44,17 @@ export default class InlineForeignFunctionPointerReturns extends AstTraversal {
     const bodies = [node.constructorDef, ...node.functions, node.fallbackDef, node.receiveDef]
       .filter((f): f is FunctionDefinitionNode => !!f?.body);
 
+    this.fnPtrStateVars = new Set(
+      node.stateVariables
+        .filter((sv) => sv.type instanceof FunctionType && (sv.type as FunctionType).isExternal)
+        .map((sv) => sv.name),
+    );
+
     this.candidates = new Map();
     for (const fn of node.functions) {
-      if (fn.visibility !== 'internal' && fn.visibility !== 'private') continue;
+      // Public helpers are eligible too (`this.eval(x)` is a self-external call to a public fn): inline the
+      // internal call sites but keep the public ABI entry (only remove internal/private candidates below).
+      const isPublic = fn.visibility !== 'internal' && fn.visibility !== 'private';
       const stmts = fn.body?.statements ?? [];
       if (stmts.length !== 1 || !(stmts[0] instanceof ReturnNode)) continue;
       const ret = stmts[0] as ReturnNode;
@@ -55,11 +65,12 @@ export default class InlineForeignFunctionPointerReturns extends AstTraversal {
         if (p.type instanceof FunctionType && (p.type as FunctionType).isExternal) extPtrParams.add(i);
       });
       if (!retsPtr && extPtrParams.size === 0) continue;
-      // A helper with external fn-ptr params inlines only if EVERY call passes a foreign MEMBER for each (a
-      // self-ref would be a functionId - leave it to the OP_INVOKE path).
-      if (extPtrParams.size > 0 && !this.allCallsPassMembers(bodies, fn.name, extPtrParams)) continue;
+      // A helper with external fn-ptr params inlines only if EVERY call passes an arg SAFE to beta-reduce for
+      // each: a foreign MEMBER (`IFace(a).m`) or a foreign fn-ptr STATE VAR (`x`). A self-ref (`this.g`, a
+      // functionId) or any other identifier (a param that could be a self-ref) is NOT - leave those to OP_INVOKE.
+      if (extPtrParams.size > 0 && !this.allCallsPassBetaReducible(bodies, fn.name, extPtrParams)) continue;
       this.candidates.set(fn.name, {
-        params: fn.parameters.map((p) => p.name), extPtrParams, returnExpr: ret.expressions[0],
+        params: fn.parameters.map((p) => p.name), extPtrParams, returnExpr: ret.expressions[0], isPublic,
       });
     }
     if (this.candidates.size === 0) return node;
@@ -68,16 +79,20 @@ export default class InlineForeignFunctionPointerReturns extends AstTraversal {
     node.functions = node.functions.map((f) => this.rewrite(f)!);
     node.fallbackDef = this.rewrite(node.fallbackDef);
     node.receiveDef = this.rewrite(node.receiveDef);
-    node.functions = node.functions.filter((f) => !this.candidates.has(f.name));
+    // Remove only internal/private candidates (fully inlined); a public candidate keeps its ABI entry.
+    node.functions = node.functions.filter((f) => !(this.candidates.get(f.name)?.isPublic === false));
     return node;
   }
 
-  // Every call `name(...)` in the contract passes a foreign member (`IFace(a).m`) at each ext-fn-ptr position.
-  private allCallsPassMembers(bodies: FunctionDefinitionNode[], name: string, positions: Set<number>): boolean {
+  // Every call `name(...)` passes a beta-reducible fn-ptr arg (a foreign member or a foreign fn-ptr state var) at
+  // each ext-fn-ptr position.
+  private allCallsPassBetaReducible(
+    bodies: FunctionDefinitionNode[], name: string, positions: Set<number>,
+  ): boolean {
     let ok = true;
     const walk = (n: Node): void => {
       if (n instanceof FunctionCallNode && n.identifier instanceof IdentifierNode && n.identifier.name === name) {
-        for (const pos of positions) if (!this.isForeignMember(n.parameters[pos])) ok = false;
+        for (const pos of positions) if (!this.isBetaReducibleArg(n.parameters[pos])) ok = false;
       }
       for (const key of Object.keys(n)) {
         const val = (n as unknown as Record<string, unknown>)[key];
@@ -87,6 +102,13 @@ export default class InlineForeignFunctionPointerReturns extends AstTraversal {
     };
     for (const fn of bodies) walk(fn.body!);
     return ok;
+  }
+
+  // A foreign member `IFace(a).m`, or a foreign fn-ptr STATE VAR `x` (its call `x(v)` is handled by the storage
+  // lowering / deploy fold). NOT a bare param/local identifier (could hold a self-ref functionId).
+  private isBetaReducibleArg(expr: ExpressionNode | undefined): boolean {
+    if (this.isForeignMember(expr)) return true;
+    return expr instanceof IdentifierNode && this.fnPtrStateVars.has(expr.name);
   }
 
   private rewrite(fn: FunctionDefinitionNode | undefined): FunctionDefinitionNode | undefined {
@@ -120,6 +142,13 @@ export default class InlineForeignFunctionPointerReturns extends AstTraversal {
         const mc = new MethodCallNode(cloneNode(target.expression) as ExpressionNode, target.name, args);
         mc.location = expr.location;
         return mc;
+      }
+      if (target instanceof IdentifierNode) {
+        // `cb(args)` where cb -> a fn-ptr state var `x`: reduce to `x(args)` (the storage lowering / deploy fold
+        // dispatches it). Gated by isBetaReducibleArg to a foreign fn-ptr state var.
+        const fc = new FunctionCallNode(cloneNode(target) as IdentifierNode, args);
+        fc.location = expr.location;
+        return fc;
       }
       throw new Error('unsupported foreign function-pointer argument in an inlined helper call');
     }

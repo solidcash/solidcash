@@ -1761,6 +1761,24 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       finalArgs = [...finalArgs, new Uint8Array(32)]; // zero bytes = direct call
     }
 
+    // A value-returning deploy function takes a hidden __internal__returnOutputIdx pointing at its return-event
+    // (B8) output slot. On a plain send a returning function's return-event is the LAST block slot, so idx=-1
+    // (no output) is harmless; but a deploy function's deploy slot sits AFTER the return-event slot, so the
+    // return-event output MUST be materialized to keep the deploy genesis at its fixed block-layout offset.
+    // Emit it (idx = the slot offset), and reserve the output below (its commitment is derived from the trace).
+    const returnEventSlot = deployAbi.blockLayout?.slots.find((s) => s.kind === 'returnEvent');
+    const deployReturns = !!returnEventSlot && (deployAbi.outputs?.length ?? 0) > 0;
+    if (deployReturns) {
+      const retIdxPos = deployAbi.inputs.findIndex((inp) => inp.name === '__internal__returnOutputIdx');
+      if (retIdxPos >= 0 && finalArgs.length < deployAbi.inputs.length) {
+        finalArgs = [
+          ...finalArgs.slice(0, retIdxPos),
+          BigInt(returnEventSlot!.offset),
+          ...finalArgs.slice(retIdxPos),
+        ];
+      }
+    }
+
     // Resolve entry NFT accesses (mapping writes): each becomes an entry NFT output keyed
     // by the factory category. Existing entries are also added as inputs; new entries need
     // none (the funding UTXO at the entry slot has no token, so the covenant reads default).
@@ -1882,16 +1900,30 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       });
     }
 
+    // Return-event (B8) placeholder for a returning deploy function, at its block-layout slot (after entries,
+    // before the child genesis). The commitment is derived from the probe trace below and set on the real output.
+    const returnEventPlaceholders: Array<{ to: string | Uint8Array; amount: bigint; token?: any }> = deployReturns
+      ? [{
+        to: new Uint8Array([0x51]), // OP_TRUE (anyone-can-spend return event)
+        amount: 800n,
+        token: {
+          category: factory.categoryId, amount: 0n,
+          nft: { capability: 'none', commitment: '00' },
+        },
+      }]
+      : [];
+
     // Derive factory state + entry commitments via VM probe. Inputs: master, data NFTs,
-    // existing entries, funding. Outputs: master, data NFTs, entries, child outputs.
+    // existing entries, funding. Outputs: master, data NFTs, entries, return event, child outputs.
     const {
-      state: derivedState, entryCommitments, childCommitments: derivedChildCommitments,
+      state: derivedState, entryCommitments, childCommitments: derivedChildCommitments, returnBlob,
     } = await (factory as StatefulContract)._deriveCommitments(
       deployFunctionName, finalArgs, requiredNftIndices,
-      [...entryPlaceholderOutputs, ...childExtraOutputs],
+      [...entryPlaceholderOutputs, ...returnEventPlaceholders, ...childExtraOutputs],
       [...entryExtraInputs, { utxo: options.fundingUtxo, unlocker: funder }],
       entryInfos.length,
       childLayout!.dataNftCount,
+      returnEventPlaceholders.length,
     );
 
     // Deploy-then-call fold: the covenant may verify a post-call child genesis (a same-tx
@@ -1997,6 +2029,25 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       });
     }
 
+    // Return-event (B8) output for a returning deploy function, at its block-layout slot (after entries, before
+    // the child genesis). Commitment = the derived return value; anyone-can-spend (OP_TRUE), factory category.
+    if (returnEventPlaceholders.length > 0) {
+      if (!returnBlob) {
+        throw new Error(
+          `Could not derive the return value of deploy function '${deployFunctionName}' from the VM trace. `
+          + 'The return-event probe did not reach the B8 verify (the covenant may abort earlier).',
+        );
+      }
+      builder.addOutput({
+        to: new Uint8Array([0x51]),
+        amount: 800n,
+        token: {
+          category: factory.categoryId, amount: 0n,
+          nft: { capability: 'none', commitment: binToHex(returnBlob) },
+        },
+      });
+    }
+
     // === Child contract outputs (appended after factory outputs) ===
 
     // Child minting NFT - use unsalted address to match compiler's `new` expression
@@ -2028,7 +2079,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const newEntryCount = BigInt(entryInfos.filter((e) => !e.existingUtxo).length);
     const totalChildCost = masterAmount + (dataNftAmount * BigInt(childLayout!.dataNftCount));
     const totalEntryCost = dataNftAmount * newEntryCount;
-    const changeAmount = options.fundingUtxo.satoshis - totalChildCost - totalEntryCost - fee;
+    const returnEventCost = returnEventPlaceholders.length > 0 ? 800n : 0n;
+    const changeAmount = options.fundingUtxo.satoshis - totalChildCost - totalEntryCost - returnEventCost - fee;
     if (changeAmount > 0n) {
       if (!changeAddress) {
         throw new Error(
@@ -3350,10 +3402,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     extraInputs?: Array<{ utxo: Utxo; unlocker: Unlocker }>,
     entryOutputCount: number = 0,
     childDataNftCount: number = 0,
+    returnEventOutputCount: number = 0,
   ): Promise<{
       state: Record<string, StateValueType> | undefined;
       entryCommitments: string[];
       childCommitments: string[];
+      returnBlob?: Uint8Array;
     }> {
     const stateLayout = this.inner.stateLayout!;
 
@@ -3486,10 +3540,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         // initial state for a plain deploy at default. A deploy that writes mapping entries aborts at the entry
         // verify before the child verify (folded deploy + entries unsupported for now).
         let childCommitments: string[] = [];
+        const extraBase = 1 + requiredNftIndices.length + bhProbeCoSpends.length;
         if (childDataNftCount > 0 && commitmentHexes && extraOutputs) {
-          const extraBase = 1 + requiredNftIndices.length + bhProbeCoSpends.length;
-          const childBase = extraBase + entryOutputCount + 1; // skip entry outputs + the child master NFT
-          const childOutStart = entryOutputCount + 1; // child data NFT 0's index within extraOutputs
+          // A returning deploy function materializes its return-event output between the entries and the child
+          // genesis (block-layout order: entry < returnEvent < deploy), so the child outputs shift by its count.
+          const childBase = extraBase + entryOutputCount + returnEventOutputCount + 1; // + child master NFT
+          const childOutStart = entryOutputCount + returnEventOutputCount + 1; // child data NFT 0 in extraOutputs
           const childRange = { min: childBase, max: childBase + childDataNftCount };
           // The covenant verifies the child data NFTs in order and aborts at the first mismatch. A plain
           // deploy lands at defaults (probe outputs match -> one pass captures all), but a folded multi-NFT
@@ -3506,6 +3562,18 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           }
         }
 
+        // Returning deploy function: extract the entry function's own return value (the B8 return-event blob),
+        // read at the return-event output index in the same trace that now clears the child genesis verify. The
+        // covenant compares the placeholder commitment (fails), but the expected __returnBlob is captured first.
+        let returnBlob: Uint8Array | undefined;
+        if (returnEventOutputCount > 0 && commitmentHexes) {
+          const returnIdx = extraBase + entryOutputCount; // return-event output sits right after the entries
+          const blobs = extractCommitmentsFromTrace(
+            runProbe(commitmentHexes), 1, { min: returnIdx, max: returnIdx + 1 },
+          );
+          if (blobs && blobs.length > 0) returnBlob = hexToBin(blobs[0]);
+        }
+
         if (!commitmentHexes) {
           // No OP_OUTPUTTOKENCOMMITMENT patterns found - this is a read-only function.
           // Return the current on-chain state (unchanged) so the builder outputs current commitments.
@@ -3520,13 +3588,14 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               }
             }
           }
-          return { state: currentState, entryCommitments, childCommitments };
+          return { state: currentState, entryCommitments, childCommitments, returnBlob };
         }
 
         return {
           state: commitmentsToState(commitmentHexes, stateLayout, [...requiredNftIndices]),
           entryCommitments,
           childCommitments,
+          returnBlob,
         };
       } catch (e) {
         if (e instanceof AutoDerivationError) throw e;

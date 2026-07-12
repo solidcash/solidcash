@@ -485,12 +485,25 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(encodeInt(BigInt(slotIndex ?? 0)), locationData);
       return;
     }
-    const offset = this.getBlockSlotOffset(kind, slotIndex);
+    let offset = this.getBlockSlotOffset(kind, slotIndex);
+    // The 'deploy' slot is read as an INPUT index (the child genesis funding input). Output-only slots
+    // (transfer/tcTransfer/event/returnEvent) each take a block-layout offset but consume NO input, so they
+    // must be excluded from an input-relative offset - otherwise the funding input is read one-too-high per
+    // preceding output-only slot (e.g. a value-RETURNING deploy function has a returnEvent output before it).
+    if (kind === 'deploy') offset -= this.countOutputOnlySlotsBefore(offset);
     this.emitMasterInputIndex(locationData);
     if (offset > 0) {
       this.emit(encodeInt(BigInt(offset)), locationData);
       this.emit(Op.OP_ADD, locationData);
     }
+  }
+
+  /** Count output-only block-layout slots (they consume no input) strictly before `offset`. */
+  private countOutputOnlySlotsBefore(offset: number): number {
+    const layout = this.currentFunction.blockLayout;
+    if (!layout) return 0;
+    const outputOnly = new Set<BlockSlotKind>(['transfer', 'tcTransfer', 'event', 'returnEvent']);
+    return layout.slots.filter((s) => outputOnly.has(s.kind) && s.offset < offset).length;
   }
 
   /**

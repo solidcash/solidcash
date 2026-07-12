@@ -7,12 +7,12 @@ import { Utxo } from '../../src/interfaces.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 
 // The Solidity corpus store_function.sol (functionTypes/store_function.sol) chain, adapted to SolidCash (uint ->
-// int) with the result captured into state (`this.result = ev(x)`) instead of returned, since a value-RETURNING
-// entry point combined with a same-tx deploy is a separate return-event/deploy interaction. t(): ev = eval (an
-// internal fn-ptr alias); this.store((new Other()).addTwo) (deploy Other + store the fresh method to state x via
-// a store helper); this.result = ev(x) == eval(x) == x(7) == addTwo(7) == 9. Exercises the full stack shipped
-// this session: gratuitous ev-alias elimination + eval beta-reduction + interprocedural deploy fold +
-// contract-member fn-ptr value + arg-passing.
+// int) with the result captured into STATE (`this.result = ev(x)`). This is the store-result variant; the
+// verbatim value-RETURNING form (`return ev(x)`) is covered by StoreFunctionReturnCorpus now that the
+// return-event x deploy interaction is fixed. t(): ev = eval (an internal fn-ptr alias); this.store((new
+// Other()).addTwo) (deploy Other + store the fresh method to state x via a store helper); this.result = ev(x) ==
+// eval(x) == x(7) == addTwo(7) == 9. Exercises the full fn-ptr stack: gratuitous ev-alias elimination + eval
+// beta-reduction + interprocedural deploy fold + contract-member fn-ptr value + arg-passing.
 const SRC = `contract Other {
   int c;
   function addTwo(int v) external returns (int) { return v + 2; }

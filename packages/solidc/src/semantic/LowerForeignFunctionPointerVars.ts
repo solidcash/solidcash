@@ -5,6 +5,8 @@ import {
   InterfaceNode,
   StateVariableNode,
   FunctionDefinitionNode,
+  VariableDefinitionNode,
+  InstantiationNode,
   AssignNode,
   StateAssignNode,
   FunctionCallNode,
@@ -39,6 +41,10 @@ export default class LowerForeignFunctionPointerVars extends AstTraversal {
   private typeNames = new Set<string>();
   // state var name -> the fixed (interfaceName, methodName) it always points at
   private lowered = new Map<string, { iface: string; method: string }>();
+  // Per-function: a lowered fn-ptr state var stored FROM a freshly-`new`ed local this same function
+  // (`T o = new T(); stored = IFace(o).m;`) -> a same-tx `stored()` call folds into o's deploy genesis. Maps the
+  // state var name to the deploy local + method, so `stored()` rewrites to the direct `o.m()` the fold handles.
+  private sameFnFold = new Map<string, { local: string; method: string }>();
 
   visitSourceFile(node: SourceFileNode): Node {
     this.typeNames = new Set();
@@ -88,8 +94,54 @@ export default class LowerForeignFunctionPointerVars extends AstTraversal {
   }
 
   private rewriteBody(fn: FunctionDefinitionNode | undefined): FunctionDefinitionNode | undefined {
-    if (fn?.body) fn.body = this.visit(fn.body) as typeof fn.body;
+    if (fn?.body) {
+      this.sameFnFold = this.scanSameFnFold(fn);
+      fn.body = this.visit(fn.body) as typeof fn.body;
+      this.sameFnFold = new Map();
+    }
     return fn;
+  }
+
+  // Detect, within one function, `T o = new T(); ... stored = IFace(o).m;` (stored a lowered fn-ptr var, o a
+  // freshly-deployed local). A same-tx `stored()` then reduces to the direct `o.m()` (the deploy-fold form),
+  // which is byte-equivalent to the state-address co-spend when o is an existing callee but ALSO lets the deploy
+  // fold `o.m()` into o's genesis (o cannot be co-spent as an input of its own deploy tx).
+  private scanSameFnFold(fn: FunctionDefinitionNode): Map<string, { local: string; method: string }> {
+    const deployLocals = new Set<string>();
+    const walk = (n: Node): void => {
+      if (n instanceof VariableDefinitionNode && n.expression instanceof InstantiationNode) {
+        deployLocals.add(n.name);
+      }
+      for (const key of Object.keys(n)) {
+        const val = (n as unknown as Record<string, unknown>)[key];
+        if (val instanceof Node) walk(val);
+        else if (Array.isArray(val)) for (const v of val) if (v instanceof Node) walk(v);
+      }
+    };
+    walk(fn.body!);
+    const out = new Map<string, { local: string; method: string }>();
+    if (deployLocals.size === 0) return out;
+    const record = (name: string, rhs: ExpressionNode): void => {
+      if (!this.lowered.has(name)) return;
+      const m = this.foreignMember(rhs);
+      if (!m) return;
+      const base = (rhs as FieldAccessNode).expression as FunctionCallNode;
+      const addr = base.parameters[0];
+      if (addr instanceof IdentifierNode && deployLocals.has(addr.name)) {
+        out.set(name, { local: addr.name, method: m.method });
+      }
+    };
+    const walk2 = (n: Node): void => {
+      if (n instanceof AssignNode) record(n.identifier.name, n.expression);
+      else if (n instanceof StateAssignNode) record(n.name, n.expression);
+      for (const key of Object.keys(n)) {
+        const val = (n as unknown as Record<string, unknown>)[key];
+        if (val instanceof Node) walk2(val);
+        else if (Array.isArray(val)) for (const v of val) if (v instanceof Node) walk2(v);
+      }
+    };
+    walk2(fn.body!);
+    return out;
   }
 
   // Rewrite `x = IFace(addr).method` (address stored) and `x(args)` (fixed-method external call).
@@ -127,6 +179,17 @@ export default class LowerForeignFunctionPointerVars extends AstTraversal {
   }
 
   visitFunctionCall(node: FunctionCallNode): Node {
+    // Same-tx call on a pointer stored from a fresh deploy this function: `stored(args)` -> `o.method(args)`
+    // (a NAMESPACED FunctionCall `o.method`, the exact form the deploy-fold recognizes). The store `stored = o`
+    // still persists for later txs. Byte-equivalent to the state-address co-spend for an existing callee, but
+    // lets the fold bake `o.method()` into o's deploy genesis (o cannot be co-spent in its own deploy tx).
+    const fold = this.sameFnFold.get(node.identifier.name);
+    if (fold) {
+      const callId = new IdentifierNode(`${fold.local}.${fold.method}`); callId.location = node.location;
+      const args = node.parameters.map((a) => this.visit(a) as ExpressionNode);
+      const fc = new FunctionCallNode(callId, args); fc.location = node.location;
+      return fc;
+    }
     const tgt = this.lowered.get(node.identifier.name);
     if (tgt) {
       // `x(args)` -> `IFace(x).method(args)`

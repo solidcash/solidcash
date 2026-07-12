@@ -169,7 +169,9 @@ import {
 } from './utils.js';
 import { isNumericType } from '../utils.js';
 import { getStackEffect } from '../asmStackEffects.js';
-import { InvalidModifierCombinationError, MsgDataInSubroutineError, MsgSigInInternalFunctionError } from '../Errors.js';
+import {
+  InvalidModifierCombinationError, MsgDataInSubroutineError, MsgSigInInternalFunctionError, EntryWriteInLoopError,
+} from '../Errors.js';
 import { analyzeInlineAssembly } from '../semantic/InlineAssemblyDiagnostics.js';
 
 // Upper bound on the element count of a bounded array whose default value is materialized inline. A covenant
@@ -320,6 +322,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private entrySlots: EntryAccessInfo[] = [];
   private pendingEntryWrites: Map<number, { keyStackName: string; valueStackName: string }> = new Map();
   private pendingEntryDeletes: Set<number> = new Set();
+  // Depth of plain counting loops (while / do-while / for) currently being emitted. A mapping WRITE inside such
+  // a loop is unsound: the entry-write model reserves ONE output slot per (mapping, key-descriptor), so a loop
+  // that writes distinct runtime keys keeps only the LAST entry (silent data loss), and a read-modify-write
+  // reads the stale input. Only an invariant-key write would be sound (last-write-wins), which is pointless in
+  // a loop, so any mapping write here is rejected (fail closed). Collection iteration is a distinct node.
+  private plainLoopDepth = 0;
 
   // Dynamic-storage writes (string / unbounded bytes): the value is kept on the stack until the
   // epilogue, where the chunk write loop (split + verify trailing chunk outputs) is emitted.
@@ -1356,6 +1364,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.preAllocatedTokenContainerTransfers = new Set();
     this.preAllocatedEntryWrites = new Set();
     this.preAllocatedEntryDeletes = new Set();
+    this.plainLoopDepth = 0;
     this.condDeleteSlots = new Set();
     this.preAllocatedDynamicWrites = new Set();
     this.conditionalTransferIndices = new Set();
@@ -2862,7 +2871,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_BEGIN, { location: node.location, positionHint: PositionHint.START });
 
     const stackDepth = this.stack.length;
+    this.plainLoopDepth += 1;
     node.block = this.visit(node.block);
+    this.plainLoopDepth -= 1;
     this.removeScopedVariables(stackDepth, node.block);
 
     node.condition = this.visit(node.condition);
@@ -2982,7 +2993,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // If condition is true: execute body, then push 0 (continue looping)
     const stackBeforeBody = [...this.stack];
     const stackDepth = this.stack.length;
+    this.plainLoopDepth += 1;
     node.block = this.visit(node.block);
+    this.plainLoopDepth -= 1;
     this.removeScopedVariables(stackDepth, node.block);
     this.emit(encodeBool(false), { location: node.location, positionHint: PositionHint.END });
     this.pushToStack('(loop_continue)');
@@ -8674,6 +8687,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   visitMappingAssign(node: MappingAssignNode): Node {
+    if (this.plainLoopDepth > 0 && node.entrySlotIndex >= 0) {
+      throw new EntryWriteInLoopError(node, node.collection?.name ?? node.name);
+    }
     if (node.arrayIndex || node.arrayPush || node.arrayPop) {
       return this.emitMappingArrayElementAssign(node);
     }
@@ -9050,6 +9066,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   visitMappingFieldAssign(node: MappingFieldAssignNode): Node {
+    if (this.plainLoopDepth > 0 && node.entrySlotIndex >= 0) {
+      throw new EntryWriteInLoopError(node, node.collection?.name ?? node.name);
+    }
     const slotIndex = node.entrySlotIndex;
     const collection = node.collection!;
     const locationData = { location: node.location, positionHint: PositionHint.END };
@@ -9351,6 +9370,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   visitMappingDelete(node: MappingDeleteNode): Node {
+    if (this.plainLoopDepth > 0 && node.entrySlotIndex >= 0) {
+      throw new EntryWriteInLoopError(node, node.collection?.name ?? node.name);
+    }
     const slotIndex = node.entrySlotIndex;
     if (this.condDeleteSlots.has(slotIndex)) {
       // Conditional (branch/switch) delete: overwrite the pre-allocated soft-delete-write slots with (key,

@@ -510,6 +510,22 @@ export class MappingAccessInConstructorError extends SolidCashError {
   }
 }
 
+// The entry-NFT model reserves ONE output slot per entry-backed access (a mapping keyed by descriptor, or a
+// fixed-size state array element), so writing one inside a plain loop is unsound: distinct runtime keys /
+// indices collapse onto that single slot (only the last survives - silent data loss) and a read-modify-write
+// reads the stale input. Only an invariant write would be sound, which is pointless in a loop. Reject it;
+// accumulate in locals and write once after the loop, or (for a mapping) use a collection iteration.
+export class EntryWriteInLoopError extends SolidCashError {
+  constructor(
+    public node: Node,
+    name: string,
+  ) {
+    super(node, `Writing entry-backed state '${name}' inside a loop is not supported (each iteration `
+      + 'overwrites the same entry slot, and a read-modify-write sees the stale value); accumulate in a local '
+      + 'and write it once after the loop, or iterate a mapping with `for (key, value of this.map.entries)`');
+  }
+}
+
 export class MappingAssignTypeError extends TypeError {
   constructor(
     node: MappingAssignNode,

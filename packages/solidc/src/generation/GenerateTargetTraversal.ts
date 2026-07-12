@@ -8530,6 +8530,21 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const locationData = { location: node.location, positionHint: PositionHint.START };
     const allKeyTypes = collection.allKeyTypes;
 
+    // Read-after-write: a prior straight-line write to this exact slot (same mapping + key descriptor, so the
+    // slotIndex uniquely identifies the runtime key) is already pending, so the on-chain input commitment is
+    // STALE. Decode the pending (encoded) write value instead, so a later read in the same function sees the
+    // update (`m[k]=m[k]+1; m[k]=m[k]+1` -> +2, not a stale +1). Restricted to a scalar whole-value read of a
+    // NON-pre-allocated write: pre-allocated (conditional / loop / delete) slots hold placeholder-encoded
+    // values with different semantics, and an array-element read (node.arrayIndex) needs the array machinery.
+    const pendingWrite = this.pendingEntryWrites.get(slotIndex);
+    if (pendingWrite && !node.arrayIndex && !this.preAllocatedEntryWrites.has(slotIndex)) {
+      this.emit(encodeInt(BigInt(this.getStackIndex(pendingWrite.valueStackName))), locationData);
+      this.emit(Op.OP_PICK, locationData);
+      this.emitPushdataDecodeLastField(collection.innermostValueType, locationData);
+      this.pushToStack('(value)');
+      return node;
+    }
+
     // 1. Check if entry exists via introspection
     this.emitSlotExistsCheck('entry', slotIndex, locationData);
 

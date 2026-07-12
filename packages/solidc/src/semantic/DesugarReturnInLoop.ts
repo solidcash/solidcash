@@ -48,8 +48,10 @@ export default class DesugarReturnInLoop extends AstTraversal {
 
   visitFunctionDefinition(node: FunctionDefinitionNode): Node {
     if (!node.body || node.returnTypes.length === 0) return node;
-    // Entry-points already have a non-corrupting path; only internal/private hit the broken raw cleanup.
-    if (node.isEntryPoint) return node;
+    // Entry-points AND internal/private functions both need this: an in-loop raw return NIPs locals below the
+    // value and corrupts the loop's balanced OP_BEGIN/OP_UNTIL stack. (The old entry-point "blob-stash" path was
+    // broken - a public `for/while (..) { if (c) return X; }` crashed at runtime.) Desugaring to a flag + break +
+    // post-loop return moves the return OUT of the loop, where EarlyReturnTransformation nests it normally.
     if (!this.hasReturnInLoop(node.body, false)) return node;
 
     this.retCount = node.returnTypes.length;
@@ -57,8 +59,30 @@ export default class DesugarReturnInLoop extends AstTraversal {
     for (let k = 0; k < node.returnTypes.length; k++) {
       decls.push(new VariableDefinitionNode(node.returnTypes[k], [], VAL(k)));
     }
+    decls.forEach((d) => this.stampLoc(d, node.location));
     const [stmts] = this.transformStatements(node.body.statements ?? [], 0);
     node.body.statements = [...decls, ...stmts];
+    return node;
+  }
+
+  // Stamp a synthesized node subtree with a source location (only where missing - existing sub-expressions keep
+  // theirs). Entry points read node.location.start (source maps) where internal functions don't, so an unstamped
+  // synthesized node crashed the compiler on public functions. Pre-semantic pass = no resolvedFunction cycles;
+  // a visited guard backstops any residual cycle.
+  private stampLoc<T extends Node>(node: T, loc: Node['location']): T {
+    const visited = new WeakSet<Node>();
+    const walk = (n: Node | undefined): void => {
+      if (!n || visited.has(n)) return;
+      visited.add(n);
+      if (!n.location) n.location = loc;
+      for (const key of Object.keys(n)) {
+        if (key === 'type' || key === 'symbolTable' || key === 'location') continue;
+        const v = (n as unknown as Record<string, unknown>)[key];
+        if (v instanceof Node) walk(v);
+        else if (Array.isArray(v)) for (const it of v) if (it instanceof Node) walk(it);
+      }
+    };
+    walk(node);
     return node;
   }
 
@@ -83,16 +107,16 @@ export default class DesugarReturnInLoop extends AstTraversal {
         // Splice the stash+flag+break directly into the statement list (not wrapped in a block) so the injected
         // `break` is recognised as in-loop by break/continue expansion.
         for (let k = 0; k < s.expressions.length; k++) {
-          out.push(new AssignNode(new IdentifierNode(VAL(k)), s.expressions[k]));
+          out.push(this.stampLoc(new AssignNode(new IdentifierNode(VAL(k)), s.expressions[k]), s.location));
         }
-        out.push(new AssignNode(new IdentifierNode(FLAG), new BoolLiteralNode(true)));
-        out.push(new BreakNode());
+        out.push(this.stampLoc(new AssignNode(new IdentifierNode(FLAG), new BoolLiteralNode(true)), s.location));
+        out.push(this.stampLoc(new BreakNode(), s.location));
         had = true;
       } else if (s instanceof WhileNode || s instanceof DoWhileNode) {
         const [inner, innerHad] = this.transformStatements(s.block.statements ?? [], loopDepth + 1);
         s.block.statements = inner;
         out.push(s);
-        if (innerHad) { out.push(this.propagation(loopDepth)); had = true; }
+        if (innerHad) { out.push(this.stampLoc(this.propagation(loopDepth), s.location)); had = true; }
       } else if (s instanceof BranchNode) {
         const [ifs, ifHad] = this.transformStatements(s.ifBlock.statements ?? [], loopDepth);
         s.ifBlock.statements = ifs;

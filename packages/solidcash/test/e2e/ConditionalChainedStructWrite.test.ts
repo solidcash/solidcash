@@ -114,9 +114,10 @@ describe('Conditional chained struct-entry write (chainInPlace)', () => {
   });
 });
 
-// Consistency guard: read-after-write of the same entry within a function reads the original entry value
-// (a pre-existing solidcash semantic, orthogonal to this fix). The chainInPlace path must not DIVERGE from the
-// flat path here - both must yield the same result, proving the fix did not alter same-entry read semantics.
+// Consistency guard: a read-after-write of the same entry within a function reads the PENDING (just-written)
+// value, Solidity-correct and matching the scalar-entry read-after-write. The flat (scopeDepth 0) and branch
+// (scopeDepth>0) chaining paths must yield the SAME result - both now update the chained field in place so the
+// value read sees the pending write (previously the flat path consumed it early and read the stale input).
 describe('read-after-write same-entry consistency (flat vs branch)', () => {
   const mk = (inBranch: boolean): string => `
 pragma solidcash >=0.8.0;

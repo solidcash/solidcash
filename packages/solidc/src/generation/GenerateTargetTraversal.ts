@@ -9090,7 +9090,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // (and conditionally mutating below-scope stack unbalances the branch). Instead update the value in place
     // via emitReplace in Part 3 - the same mechanism the pre-allocated path uses - leaving the unchanged key.
     // (A same-scope double-write is pre-allocated, not chained, so canChain + scopeDepth>0 means an outer write.)
-    const chainInPlace = canChain && this.scopeDepth > 0;
+    // Always update a chained field write in place (emitReplace in Part 3) rather than the flat drop+re-push.
+    // The in-place path keeps the prior pending write on the stack while Part 2 evaluates node.expression, so
+    // a read of the SAME entry inside that value sees the pending write (`m[k].x = 5; m[k].x = m[k].x + 1` ->
+    // 6), consistent with the read-after-write of a scalar entry. The flat drop+re-push consumed the pending
+    // value first, which made the value read the STALE input and diverge from the branch (scopeDepth>0) path.
+    const chainInPlace = canChain;
 
     if (canChain) {
       // Chain from previous partial field assignment's output.

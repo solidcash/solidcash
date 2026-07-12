@@ -64,4 +64,31 @@ describe('functionTypes corpus behavioral parity', () => {
     const sc = await getContractFactory(art, await fundedSigner()).deploy();
     await expect(sc.delThenCall()).rejects.toThrow();
   });
+
+  // ternary_contract_public_function.sol: `(b ? C.f : C.g)()` with PUBLIC functions -> 1/2 per branch.
+  it('ternary_contract_public_function: public-function ternary dispatches per branch', async () => {
+    const art = compileString(`contract C {
+      function f() public pure returns(int) { return 1; }
+      function g() public pure returns(int) { return 2; }
+      function test(bool b) public returns(int) { return (b ? C.f : C.g)(); }
+      function ok() public returns (bool) { require(test(true) == 1); require(test(false) == 2); return true; }
+    }`, { forceStateful: true });
+    const sc = await getContractFactory(art, await fundedSigner()).deploy();
+    await expect(sc.ok()).resolves.toBeDefined();
+  });
+
+  // same_function_in_construction_and_runtime_equality_check.sol: a SET fn-ptr compares equal to its target
+  // (`x = double; x == double`). Guards the sentinel-default change against breaking fn-ptr equality: a SET
+  // pointer holds the real functionId, never the invalid sentinel.
+  it('fn-ptr equality: a set state fn-ptr equals its target (sentinel default did not break ==)', async () => {
+    const art = compileString(`contract C {
+      function(int) returns (int) internal x;
+      function double(int a) public returns (int) { return a * 2; }
+      function setEq() public returns (bool) { x = double; require(x == double); return true; }
+      function setNeq() public returns (bool) { x = double; require(x != double); return true; }
+    }`, { forceStateful: true });
+    const sc = await getContractFactory(art, await fundedSigner()).deploy();
+    await expect(sc.setEq()).resolves.toBeDefined();
+    await expect(sc.setNeq()).rejects.toThrow();
+  });
 });

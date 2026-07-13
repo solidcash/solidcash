@@ -1998,15 +1998,35 @@ export default class TypeCheckTraversal extends AstTraversal {
           node.type = node.expression.type instanceof IntType ? node.expression.type : PrimitiveType.BIGINT;
         }
         return node;
-      case UnaryOperator.INVERT:
-        // Integer bitwise-not on a bounded int (~a = mask - a); else bytes.
+      case UnaryOperator.INVERT: {
+        // ~literal folds to -literal - 1 (Solidity evaluates ~ at arbitrary precision: ~x == -x - 1).
+        if (node.expression instanceof IntLiteralNode) {
+          const lit = new IntLiteralNode(-node.expression.value - 1n);
+          lit.location = node.location;
+          lit.type = PrimitiveType.INT;
+          return lit;
+        }
+        // Integer bitwise-not on a bounded int (~a = mask - a, handled in codegen).
         if (node.expression.type instanceof IntType) {
           node.type = node.expression.type;
           return node;
         }
+        // Unbounded int (`int`/`bigint` - no fixed width to mask): ~x == -x - 1, desugared to arithmetic so it
+        // reduces to the existing negate + subtract. Sound and representation-independent (matches Solidity).
+        if (node.expression.type === PrimitiveType.INT || node.expression.type === PrimitiveType.BIGINT) {
+          const one = new IntLiteralNode(1n);
+          one.type = PrimitiveType.INT;
+          one.location = node.location;
+          const neg = new UnaryOpNode(UnaryOperator.NEGATE, node.expression);
+          neg.location = node.location;
+          const sub = new BinaryOpNode(neg, BinaryOperator.MINUS, one);
+          sub.location = node.location;
+          return this.visit(sub);
+        }
         expectBytes(node, node.expression.type);
         node.type = node.expression.type;
         return node;
+      }
       case UnaryOperator.SIZE:
         if (node.expression.type instanceof ArrayType) {
           node.type = PrimitiveType.BIGINT;

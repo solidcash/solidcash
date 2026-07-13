@@ -1109,14 +1109,16 @@ function yulBodyUsesLocalFns(node: YulNode, names: Set<string>): boolean {
 }
 
 // Inline one call: bind params, declare returns, splice the freshly-renamed body. Returns the pre-statements and
-// the single return path (undefined for a void function).
-function inlineYulCall(def: YulFunctionDefinitionNode, args: YulExpressionNode[]): { pre: YulStatementNode[]; ret?: YulExpressionNode } {
+// the return paths (0 for a void function, 1 for single-return, N for a multi-return `-> x, y, z`).
+function inlineYulCall(
+  def: YulFunctionDefinitionNode, args: YulExpressionNode[],
+): { pre: YulStatementNode[]; rets: YulExpressionNode[] } {
   // Fast path: a 0-param body `r := <expr>` (no free vars) is exactly <expr> - no return-var indirection.
   if (def.params.length === 0 && def.returns.length === 1 && def.body.statements.length === 1) {
     const only = def.body.statements[0];
     if (only instanceof YulAssignmentNode && only.paths.length === 1
       && only.paths[0].base === def.returns[0] && only.paths[0].members.length === 0) {
-      return { pre: [], ret: yulCloneRename(only.value, new Map()) };
+      return { pre: [], rets: [yulCloneRename(only.value, new Map())] };
     }
   }
   yulCallCounter += 1;
@@ -1131,7 +1133,7 @@ function inlineYulCall(def: YulFunctionDefinitionNode, args: YulExpressionNode[]
   def.params.forEach((p, i) => pre.push(yulAt(new YulVariableDeclarationNode([rn.get(p)!], args[i]), def.body)));
   def.returns.forEach((rv) => pre.push(yulAt(new YulVariableDeclarationNode([rn.get(rv)!]), def.body)));
   for (const s of def.body.statements) pre.push(yulCloneRename(s, rn));
-  return { pre, ret: def.returns.length === 1 ? yulAt(new YulPathNode(rn.get(def.returns[0])!), def.body) : undefined };
+  return { pre, rets: def.returns.map((rv) => yulAt(new YulPathNode(rn.get(rv)!), def.body)) };
 }
 
 // Hoist local-function calls out of an expression: append each call's inlined body to `pre`, replace the call
@@ -1143,7 +1145,7 @@ function hoistYulCalls(e: YulExpressionNode, defs: Map<string, YulFunctionDefini
     if (def) {
       const inl = inlineYulCall(def, args);
       pre.push(...inl.pre);
-      return inl.ret ?? yulAt(new YulLiteralNode(YulLiteralKind.NUMBER, '0'), e);
+      return inl.rets[0] ?? yulAt(new YulLiteralNode(YulLiteralKind.NUMBER, '0'), e);
     }
     return yulAt(new YulFunctionCallNode(e.name, args), e);
   }
@@ -1157,11 +1159,29 @@ function inlineYulStmts(stmts: YulStatementNode[], defs: Map<string, YulFunction
     if (s instanceof YulFunctionDefinitionNode) continue; // drop the inlined definitions
     const pre: YulStatementNode[] = [];
     if (s instanceof YulVariableDeclarationNode) {
-      const v = s.value ? hoistYulCalls(s.value, defs, pre) : undefined;
-      out.push(...pre, yulAt(new YulVariableDeclarationNode(s.names, v), s));
+      // Multi-return direct call `let a, b, c := f(..)`: inline f, bind each name to a return path.
+      const mdef = s.names.length > 1 && s.value instanceof YulFunctionCallNode ? defs.get(s.value.name) : undefined;
+      if (mdef && mdef.returns.length === s.names.length) {
+        const args = (s.value as YulFunctionCallNode).args.map((a) => hoistYulCalls(a, defs, pre));
+        const inl = inlineYulCall(mdef, args);
+        out.push(...pre, ...inl.pre);
+        s.names.forEach((nm, i) => out.push(yulAt(new YulVariableDeclarationNode([nm], inl.rets[i]), s)));
+      } else {
+        const v = s.value ? hoistYulCalls(s.value, defs, pre) : undefined;
+        out.push(...pre, yulAt(new YulVariableDeclarationNode(s.names, v), s));
+      }
     } else if (s instanceof YulAssignmentNode) {
-      const v = hoistYulCalls(s.value, defs, pre);
-      out.push(...pre, yulAt(new YulAssignmentNode(s.paths, v), s));
+      // Multi-return direct call `a, b, c := f(..)`: inline f, assign each path from a return path.
+      const mdef = s.paths.length > 1 && s.value instanceof YulFunctionCallNode ? defs.get(s.value.name) : undefined;
+      if (mdef && mdef.returns.length === s.paths.length) {
+        const args = (s.value as YulFunctionCallNode).args.map((a) => hoistYulCalls(a, defs, pre));
+        const inl = inlineYulCall(mdef, args);
+        out.push(...pre, ...inl.pre);
+        s.paths.forEach((p, i) => out.push(yulAt(new YulAssignmentNode([p], inl.rets[i]), s)));
+      } else {
+        const v = hoistYulCalls(s.value, defs, pre);
+        out.push(...pre, yulAt(new YulAssignmentNode(s.paths, v), s));
+      }
     } else if (s instanceof YulExpressionStatementNode && s.expression instanceof YulFunctionCallNode
       && defs.has(s.expression.name)) {
       const args = s.expression.args.map((a) => hoistYulCalls(a, defs, pre)); // statement-position call: void body
@@ -1190,7 +1210,7 @@ function inlineLocalYulFunctions(block: YulBlockNode): YulBlockNode {
   if (defs.size === 0) return block;
   const names = new Set(defs.keys());
   for (const d of defs.values()) {
-    if (d.returns.length > 1 || yulBodyUsesLocalFns(d.body, names)) return block; // multi-return / recursion / nesting
+    if (yulBodyUsesLocalFns(d.body, names)) return block; // recursion / nested definition / leave
   }
   block.statements = inlineYulStmts(block.statements, defs);
   return block;

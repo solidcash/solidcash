@@ -145,6 +145,5 @@ semantics:
 - An unclassifiable fn-ptr array (never written, or written an unsupported value form) is a specific
   `FnPtrArrayLoweringError` at compile time.
 
-e2e: `SingleElementFnPtrCall.test.ts` (single-element per table kind, returning, mutation lockstep, mixed
-inline+received, state-var-pointer push), `ForeignFunctionPointerArrayTable.test.ts` /
-`ForeignDispatchTableVaryingMethod.test.ts` / `ForeignReceivedFnPtrArray.test.ts` (loop-spelling broadcasts).
+e2e: `FnPtrDispatchTables.test.ts` (all table kinds: loop-spelling broadcasts + single-element calls,
+returning, mutation lockstep, mixed inline+received, state-var-pointer push).

@@ -14,7 +14,7 @@ already COMPILES via alias + the shipped deploy-then-call fold; store_function's
   interface + the per-call master index + a runtime selector sourced from the companion (reduces to the audited
   state-address external call). `LowerForeignFunctionPointerParams` also lowers a fn-ptr param STORED into such a
   var (not only called ones). VM: seeded call-from-storage, save->run across txs, and a RETURN value captured back
-  via the return-event NFT (`ForeignFunctionPointerStorage.test.ts`).
+  via the return-event NFT (`ForeignFunctionPointerForms.test.ts`).
 - **#4 Foreign fn-ptr in a STRUCT FIELD**, fixed method - bd6b0f58. `LowerForeignFunctionPointerStructFields`
   retypes the fn-ptr field to interface-typed, drops `.m` off the struct constructor arg, and rewrites
   `s.fn(args)` -> `s.fn.m(args)` = the shipped `s.field.m()` co-spend. Lowered only when the field name maps to a
@@ -85,7 +85,7 @@ reusing the shipped external-call framework. VM-verified: blob struct field (see
   BOUNDED `bytes39` (selector4 ++ p2sh32 35) so the return-event uses the simple length-prefix path; the blob
   local is sliced into the audited external call. SDK selector-fill fix added (a single-method callee has no
   witness selector - `needsSelectorVerification` ABI flag). BLOCKED at runtime by TWO isolated return-event bugs,
-  NEITHER fn-ptr-specific (`XContractBytesReturn.test.ts`): (1) a cross-contract **UNBOUNDED `bytes` return** fails
+  NEITHER fn-ptr-specific (`CrossContractCallInfra.test.ts`): (1) a cross-contract **UNBOUNDED `bytes` return** fails
   (generic-pushdata subroutine path, 2358 vs 1080 bytes); (2) even a **BOUNDED but COMPUTED** bytes return (a
   concat/cast, not a param passthrough) fails - only a bounded-PARAM passthrough + a `uint` return + an in-contract
   bytes value WORK. The fn-ptr blob is a computed bounded bytes, so it hits bug (2): B receives an EMPTY blob. The
@@ -140,7 +140,7 @@ deploy-fold (`new Other()`), which are separate.
 - **Foreign, fixed method, runtime address** (`LowerForeignFunctionPointerVars`): a `function(P) external x` whose
   every assignment is `x = IFace(addr).method` (one method, varying address) lowers to an `address` var +
   `IFace(x).method(args)` = the audited state-address external call (co-spend). VM-verified
-  (`ForeignFunctionPointerStateVar.test.ts`).
+  (`ForeignFunctionPointerForms.test.ts`).
 
 ## The general case (`store_function`) and why it needs a runtime tag
 

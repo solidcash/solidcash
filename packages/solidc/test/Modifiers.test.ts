@@ -17,6 +17,29 @@ describe('`_;` modifier placeholder inside a conditional', () => {
   });
 });
 
+// `_;` inside a for-loop (`for(...){ _; }` or bare `for(...) _;`). A for-loop desugars to a wrapper block
+// `{ init; while(cond){ body; update } }`, so the placeholder lives inside a top-level BlockNode. Modifier
+// expansion must recurse into such a block; each expansion is byte-identical to the manually-inlined loop
+// (sound by reduction to an already-working for-loop). Was rejected "must contain at least one '_' placeholder".
+describe('`_;` modifier placeholder inside a for-loop', () => {
+  const eq = (mod: string, inlined: string): void => {
+    expect(compileString(mod).bytecode).toBe(compileString(inlined).bytecode);
+  };
+  it('braced for-loop body expands identically to the manual inline', () => {
+    eq('contract C { modifier run(){ for(int i=0;i<3;i++){ _; } } function f(int a) run { require(a > 0); } }',
+      'contract C { function f(int a) { for(int i=0;i<3;i++){ require(a > 0); } } }');
+  });
+  it('bare (unbraced) for-loop body expands identically', () => {
+    eq('contract C { modifier run(){ for(int i=0;i<3;i++) _; } function f(int a) run { require(a > 0); } }',
+      'contract C { function f(int a) { for(int i=0;i<3;i++) require(a > 0); } }');
+  });
+  it('break inside the modifier loop expands identically', () => {
+    eq('contract C { modifier run(){ for(int i=0;i<10;i++){ _; if(i==1){break;} } }'
+      + ' function f(int a) run { require(a > 0); } }',
+      'contract C { function f(int a) { for(int i=0;i<10;i++){ require(a > 0); if(i==1){break;} } } }');
+  });
+});
+
 describe('function modifier / custom-modifier interleaving (Solidity allows any order)', () => {
   const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
   it('accepts a custom modifier invocation BEFORE visibility (function f() M(1) public {})', () => {

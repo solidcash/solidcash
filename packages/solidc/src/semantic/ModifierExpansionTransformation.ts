@@ -108,6 +108,10 @@ function countPlaceholdersDeep(stmts: StatementNode[]): number {
   let n = 0;
   for (const s of stmts) {
     if (s instanceof PlaceholderStatementNode) { n += 1; continue; }
+    // A statement that is ITSELF a block holds its children in `.statements`, not as a BlockNode-typed key, so
+    // the key scan below never reaches them. `for` desugars to a wrapper `{ init; while(cond){ body; update } }`
+    // block (AstBuilder.visitForStatement), so `_` inside a for-loop lives here - recurse in.
+    if (s instanceof BlockNode) { n += countPlaceholdersDeep(s.statements ?? []); continue; }
     for (const key of Object.keys(s)) {
       const val = (s as any)[key];
       if (val instanceof BlockNode && val.statements) n += countPlaceholdersDeep(val.statements);
@@ -126,6 +130,13 @@ function replacePlaceholdersDeep(
     if (stmt instanceof PlaceholderStatementNode) {
       out.push(...(state.inserted ? body.map((s) => cloneNode(s)) : body));
       state.inserted = true;
+      continue;
+    }
+    // Recurse into a statement that is itself a block (desugared for-loop wrapper / bare `{ }`); its children
+    // live in `.statements`, which the BlockNode-typed-key scan below does not reach.
+    if (stmt instanceof BlockNode) {
+      stmt.statements = replacePlaceholdersDeep(stmt.statements ?? [], body, state);
+      out.push(stmt);
       continue;
     }
     for (const key of Object.keys(stmt)) {

@@ -1,22 +1,31 @@
-# Unified linear memory - DESIGN (READ bridge landed; WRITE + full unification remain)
+# Unified linear memory - Yul struct-memory bridge DONE (READ + WRITE); full buffer unification remains
 
-## Implementation status (2026-07-13)
-- **DONE (commit 8798f756): the READ bridge.** `mload(add(s, 32*i))` on a high-level memory struct lowers to
-  `uint256(s.field_i)` (LowerInlineAssembly.resolveStructField + the mload hook). No buffer needed - EVM's one-
-  32-byte-slot-per-field memory struct layout means the Yul memory read at a struct address IS the field read,
-  and mapping to `s.field` (not a byte offset) is sound regardless of the value-copy packed layout. VM-verified
-  (YulStructMemory.test.ts: right field, right value, negative). solc-corpus 3907->3908 (+1 static_struct_v2).
-- **BLOCKED: the WRITE.** `mstore(add(s, 32*i), v)` == `s.field_i = v` needs the value-copy rebuild `s = S(..)`,
-  but emitting that from this LATE pass does not compose with the memory-model conversion of `s` - the store is
-  silently dropped (a bisecting VM test caught `s.a` staying at its init value). So mstore on a struct address is
-  left UNLOWERED (falls back to the prior AssignTypeError, non-regressing) rather than miscompiling. The WRITE
-  needs the pass-order coordination below (U0-U1): either LowerMemoryModel and LowerInlineAssembly share one
-  buffer + one convertible set, or the struct-field-write desugar is re-run over the emitted rebuild. Do NOT
-  re-enable the mstore mapping without that - it is a silent miscompile.
+## Implementation status (2026-07-13) - Yul struct-field READ + WRITE both landed & VM-verified
+The Yul <-> high-level struct-memory interop (the corpus wall this doc opened on) is CLOSED via a lean bridge that
+did NOT require the full buffer unification below: EVM lays a memory struct out as one 32-byte slot per field, so
+`mstore(add(s, 32*i), v)` == `s.field_i = v` and `mload(add(s, 32*i))` == `s.field_i`. Both map to value-copy
+field ops (rebuild / field read) - no buffer, sound by reduction to standard struct field write/read + casts.
+- **READ (commit 8798f756):** `mload` -> `uint256(s.field_i)` (LowerInlineAssembly.resolveStructField + mload hook).
+- **WRITE (commit 441fc26b):** `mstore` -> the value-copy rebuild `s = S(..)`. The fix that unblocked it: a struct
+  whose address Yul takes was being CONVERTED to the pointer model by LowerMemoryModel (the assembly use was
+  invisible to the convertibility gate), so the late-emitted rebuild didn't match the pointer and was DROPPED. The
+  gate now walks assembly blocks (collectYulRefs) and TAINTS any candidate referenced there -> value-copy, so the
+  rebuild composes. Tainting is the safe default => non-regressing.
+- VM: YulStructMemory.test.ts (8: read right-field+value, write both fields, write selectivity, narrow-uint8
+  round-trip, negatives, function-level isolation). solc-corpus 3907->3910 (+3: static_struct_v2 read;
+  assembly_5 + assembly_memory_write write). solidc suite 1948 green, 0 regressions.
+- SEMANTIC caveat (documented, NOT a miscompile): out-of-EVM-range dirty writes and bytesN left/right alignment
+  diverge from EVM (BCH has no shared linear memory), but reduce to sound value-copy field casts. Only value fields
+  map (ref fields - array/struct - fall back). struct_v2 stays blocked (msg.data), dirty_memory_struct stays
+  blocked (uint8[] field = a ref field).
+
+The full buffer-unification design below is NO LONGER REQUIRED for the struct-interop wall (the bridge closed it).
+It remains the path for Yul that does raw pointer arithmetic across allocations / uses the free-memory pointer
+(`mload(0x40)`) together with high-level allocations - not needed by any current corpus file.
 
 ---
 
-# Original scoping doc
+# Original scoping doc (full buffer unification - not needed for the struct bridge, kept for the free-mem-ptr case)
 
 Status: DESIGN ONLY. This scopes the architecture change needed to close the "Yul assembly accessing a
 high-level memory struct/array" corpus wall, so a future dedicated effort can execute it phase-by-phase with a

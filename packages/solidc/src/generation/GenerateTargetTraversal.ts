@@ -395,6 +395,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   // the current value, so a conditionally-taken write replaces them in place (survives the branch) - by var name.
   private preAllocatedDynamicWrites: Set<string> = new Set();
 
+  // Nesting depth of branches whose transfers are already pre-allocated: a branch nested inside another branch's
+  // arm must NOT re-pre-allocate transfer slots (the enclosing branch's max-path transferCount already covers its
+  // mutually-exclusive transfers, which share slots via the semantic index). Only the outermost branch (depth 0)
+  // pre-allocates; nested ones reuse those slots. Without this a nested/else-if transfer over-allocates a slot that
+  // is pushed conditionally and then missing at the epilogue ("__internal__transfer_lb_N does not exist").
+  private transferPreallocDepth: number = 0;
+
   // Conditional transfer/emit/tcTransfer indices (only active in one branch)
   private conditionalTransferIndices: Set<number> = new Set();
   private conditionalEmitIndices: Set<number> = new Set();
@@ -1366,6 +1373,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.preAllocatedEntryWrites = new Set();
     this.preAllocatedEntryDeletes = new Set();
     this.plainLoopDepth = 0;
+    this.transferPreallocDepth = 0;
     this.condDeleteSlots = new Set();
     this.preAllocatedDynamicWrites = new Set();
     this.conditionalTransferIndices = new Set();
@@ -2242,28 +2250,33 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // State writes: push encoded current value from input commitment
       for (const key of ops.stateWriteKeys) this.preAllocateStateWrite(key, locationData);
 
-      // Transfers: push OP_0 dummies for lockingBytecode + amount
-      const transferStartIndex = this.pendingTransfers.length;
-      for (let i = 0; i < ops.transferCount; i++) {
-        // Find the global transfer index from transferInfos
-        const globalIdx = transferStartIndex + i;
-        if (!this.preAllocatedTransfers.has(globalIdx)) {
-          const lbName = `__internal__transfer_lb_${globalIdx}`;
-          const amtName = `__internal__transfer_amt_${globalIdx}`;
-          this.emit(encodeInt(0n), locationData);
-          this.pushToStack(lbName);
-          this.emit(encodeInt(0n), locationData);
-          this.pushToStack(amtName);
-          this.pendingTransfers.push({
-            transferIndex: globalIdx,
-            lockingBytecodeStackName: lbName,
-            amountStackName: amtName,
-          });
-          this.preAllocatedTransfers.add(globalIdx);
-        }
-        // Mark conditional indices (only active in one branch)
-        if (i >= ops.minTransferCount) {
-          this.conditionalTransferIndices.add(transferStartIndex + i);
+      // Transfers: push OP_0 dummies for lockingBytecode + amount. A branch nested inside another branch's arm
+      // skips this: the enclosing (outermost) branch's max-path transferCount already pre-allocated the slots its
+      // mutually-exclusive transfers share (semantic index), and its min/max marked their conditionality. Re-
+      // pre-allocating here would push an extra slot conditionally, missing at the epilogue.
+      if (this.transferPreallocDepth === 0) {
+        const transferStartIndex = this.pendingTransfers.length;
+        for (let i = 0; i < ops.transferCount; i++) {
+          // Find the global transfer index from transferInfos
+          const globalIdx = transferStartIndex + i;
+          if (!this.preAllocatedTransfers.has(globalIdx)) {
+            const lbName = `__internal__transfer_lb_${globalIdx}`;
+            const amtName = `__internal__transfer_amt_${globalIdx}`;
+            this.emit(encodeInt(0n), locationData);
+            this.pushToStack(lbName);
+            this.emit(encodeInt(0n), locationData);
+            this.pushToStack(amtName);
+            this.pendingTransfers.push({
+              transferIndex: globalIdx,
+              lockingBytecodeStackName: lbName,
+              amountStackName: amtName,
+            });
+            this.preAllocatedTransfers.add(globalIdx);
+          }
+          // Mark conditional indices (only active in one branch)
+          if (i >= ops.minTransferCount) {
+            this.conditionalTransferIndices.add(transferStartIndex + i);
+          }
         }
       }
 
@@ -2358,6 +2371,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       || (!!node.elseBlock && this.blockContainsReturn(node.elseBlock));
     const hasReturnType = (this.currentFunction?.returnTypes?.length > 0) && branchHasReturn;
 
+    // A branch visited inside these blocks is nested: it must not re-pre-allocate transfer slots (see
+    // transferPreallocDepth). Bracket the whole if/else emission; restored before returning below.
+    this.transferPreallocDepth += 1;
     this.scopeDepth += 1;
     this.emit(Op.OP_IF, { location: node.ifBlock.location, positionHint: PositionHint.START });
 
@@ -2415,6 +2431,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.scopeDepth -= 1;
     }
 
+    this.transferPreallocDepth -= 1;
     return node;
   }
 

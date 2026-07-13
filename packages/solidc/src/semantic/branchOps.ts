@@ -50,6 +50,49 @@ export function countBranchOps(block: BlockNode): OpCounts {
   return result;
 }
 
+function isValueTransferNode(node: Node): boolean {
+  return node instanceof TransferStatementNode || node instanceof AddressTransferStatementNode
+    || node instanceof AddressSendExpressionNode
+    || (node instanceof LowLevelCallStatementNode && !!node.callOptions?.value)
+    || (node instanceof MethodCallStatementNode && !!node.call.callOptions?.value);
+}
+
+// Min and max value-transfers on any single execution path through `node`. Branch/switch arms are MUTUALLY
+// EXCLUSIVE (only one runs), so they contribute max(arms) to the max and min(arms) to the min - NOT their sum;
+// sequential statements sum. This pins how many transfer slots to pre-allocate (max) and which are conditional
+// (min < max => may not execute). A plain count sums nested/else-if arms, over-allocating slots AND mis-marking a
+// conditional transfer as always-happening. Flat if/else has no nested branch, so min===max===count (unchanged).
+export function countTransfersMinMax(node: Node): { min: number; max: number } {
+  if (node instanceof BranchNode) {
+    const i = countTransfersMinMax(node.ifBlock);
+    const e = node.elseBlock ? countTransfersMinMax(node.elseBlock) : { min: 0, max: 0 };
+    return { min: Math.min(i.min, e.min), max: Math.max(i.max, e.max) };
+  }
+  if (node instanceof SwitchNode) {
+    const arms = node.cases.map((c) => countTransfersMinMax(c.body));
+    if (node.defaultCase) arms.push(countTransfersMinMax(node.defaultCase));
+    // No default: the value may match no case, so a path with zero transfers exists (min 0).
+    const min = node.defaultCase && arms.length > 0 ? Math.min(...arms.map((a) => a.min)) : 0;
+    const max = arms.length > 0 ? Math.max(...arms.map((a) => a.max)) : 0;
+    return { min, max };
+  }
+  if (node instanceof TryCatchNode) return countTransfersMinMax(node.tryBlock);
+  const self = isValueTransferNode(node) ? 1 : 0;
+  let min = self;
+  let max = self;
+  const children: Node[] = [];
+  const anyNode = node as unknown as { statements?: unknown; body?: unknown; block?: unknown };
+  if (Array.isArray(anyNode.statements)) children.push(...(anyNode.statements as Node[]));
+  if (anyNode.body) children.push(anyNode.body as Node);
+  if (anyNode.block) children.push(anyNode.block as Node);
+  for (const child of children) {
+    const c = countTransfersMinMax(child);
+    min += c.min;
+    max += c.max;
+  }
+  return { min, max };
+}
+
 function countBranchOpsRecursive(node: Node, result: OpCounts): void {
   if (node instanceof TransferStatementNode || node instanceof AddressTransferStatementNode
     || node instanceof AddressSendExpressionNode) {
@@ -143,13 +186,19 @@ export function computeBranchOps(ifBlock: BlockNode, elseBlock?: BlockNode): Bra
 
   if (!hasOps) return undefined;
 
+  // Transfers use the min/max path model (mutually-exclusive branch arms don't sum), so nested/else-if value
+  // transfers pre-allocate the right slot count and mark conditional transfers correctly. Emits/token-container
+  // keep the existing per-arm count (their nested-branch handling is unchanged here).
+  const ifT = countTransfersMinMax(ifBlock);
+  const elseT = elseBlock ? countTransfersMinMax(elseBlock) : { min: 0, max: 0 };
+
   return {
     stateWriteKeys: new Set<string>([...ifCounts.stateWriteKeys, ...elseCounts.stateWriteKeys]),
     mappingWriteSlots: new Set<number>([...ifCounts.mappingWriteSlots, ...elseCounts.mappingWriteSlots]),
     mappingDeleteSlots: new Set<number>([...ifCounts.mappingDeleteSlots, ...elseCounts.mappingDeleteSlots]),
-    transferCount: Math.max(ifCounts.transfers, elseCounts.transfers),
-    minTransferCount: Math.min(ifCounts.transfers, elseCounts.transfers),
-    ifTransferCount: ifCounts.transfers,
+    transferCount: Math.max(ifT.max, elseT.max),
+    minTransferCount: Math.min(ifT.min, elseT.min),
+    ifTransferCount: ifT.max,
     emitCount: Math.max(ifCounts.emits, elseCounts.emits),
     minEmitCount: Math.min(ifCounts.emits, elseCounts.emits),
     ifEmitCount: ifCounts.emits,

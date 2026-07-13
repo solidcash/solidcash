@@ -15,13 +15,13 @@ describe('conditional deploy (new C() inside a branch/loop) -> clean actionable 
   const cc = (body: string): string => `${CHILD} contract C { ${body} }`;
   const compat = { solidityImportCompat: true };
 
-  it('deploy inside an if-branch throws a clear "not yet supported" error (not a stack-tracker crash)', () => {
+  it('deploy inside an if-branch throws a clear "not supported" error (not a stack-tracker crash)', () => {
     expect(() => compileString(cc('function f(uint c) external { if (c==1) { Child ch = new Child(); } require(true); }'),
-      compat)).toThrow(/inside a conditional branch or loop is not yet supported/);
+      compat)).toThrow(/inside a conditional branch or loop is not supported/);
   });
   it('deploy inside a for-loop throws the same clean error', () => {
     expect(() => compileString(cc('function f() external { for (uint i=0;i<2;i++) { Child ch = new Child(); } require(true); }'),
-      compat)).toThrow(/inside a conditional branch or loop is not yet supported/);
+      compat)).toThrow(/inside a conditional branch or loop is not supported/);
   });
   it('an unconditional deploy still compiles', () => {
     expect(compileString(cc('function f() external { Child ch = new Child(); require(true); }'), compat).contractName)

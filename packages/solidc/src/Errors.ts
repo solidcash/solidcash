@@ -526,6 +526,22 @@ export class EntryWriteInLoopError extends SolidCashError {
   }
 }
 
+// A second element/push write to a mapping-entry ARRAY value chains from the prior write via the flat
+// drop+re-push, which consumes the pending value before the element value expression is evaluated - so a
+// read of the SAME entry inside that value (or index) reads the STALE input, not the pending write.
+// `m[k][0] = m[k][0] + 1; m[k][0] = m[k][0] + 1` would silently persist 1, not 2. Reject it; read the entry
+// element into a local first. (The scalar and struct-field forms read the pending value; the array-element
+// in-place chaining that would make this work is a deferred follow-up.)
+export class ChainedEntryElementReadError extends SolidCashError {
+  constructor(
+    public node: Node,
+    name: string,
+  ) {
+    super(node, `Reading entry '${name}' inside the value of a second array-element write to the same entry `
+      + 'is not supported (it would read the stale value, not the pending write); read it into a local first');
+  }
+}
+
 export class MappingAssignTypeError extends TypeError {
   constructor(
     node: MappingAssignNode,

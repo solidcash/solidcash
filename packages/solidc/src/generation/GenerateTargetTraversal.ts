@@ -171,6 +171,7 @@ import { isNumericType } from '../utils.js';
 import { getStackEffect } from '../asmStackEffects.js';
 import {
   InvalidModifierCombinationError, MsgDataInSubroutineError, MsgSigInInternalFunctionError, EntryWriteInLoopError,
+  ChainedEntryElementReadError,
 } from '../Errors.js';
 import { analyzeInlineAssembly } from '../semantic/InlineAssemblyDiagnostics.js';
 
@@ -8754,6 +8755,26 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     return node;
   }
 
+  // Whether an expression subtree reads the entry at `slotIndex` (a MappingAccess resolving to that slot).
+  // Used to reject a chained entry-element write whose value/index reads the same entry (stale-read).
+  private expressionReadsEntrySlot(node: Node | undefined, slotIndex: number): boolean {
+    if (!node) return false;
+    const seen = new WeakSet<Node>();
+    let hit = false;
+    const walk = (n: Node): void => {
+      if (hit || seen.has(n)) return;
+      seen.add(n);
+      if (n instanceof MappingAccessNode && n.entrySlotIndex === slotIndex) { hit = true; return; }
+      for (const key of Object.keys(n)) {
+        const v = (n as unknown as Record<string, unknown>)[key];
+        if (v instanceof Node) walk(v);
+        else if (Array.isArray(v)) for (const e of v) if (e instanceof Node) walk(e);
+      }
+    };
+    walk(node);
+    return hit;
+  }
+
   /**
    * Handle array element assignment within a mapping value: this.scores[user][index] = value
    * Combines entry read (like visitMappingFieldAssign) + array surgery (like visitArrayAssign).
@@ -8778,6 +8799,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const canChain = this.pendingEntryWrites.has(slotIndex)
       && !this.preAllocatedEntryWrites.has(slotIndex)
       && this.getStackIndex(prevValueName, true) !== -1;
+
+    // Fail closed on a chained array-element write whose value or index READS the same entry: the flat
+    // drop+re-push below consumes the pending write before the value/index is evaluated, so that read would
+    // see the stale input (`m[k][0] = m[k][0] + 1; m[k][0] = m[k][0] + 1` -> 1, not 2). Read it into a local.
+    if (canChain
+      && (this.expressionReadsEntrySlot(node.expression, slotIndex)
+        || this.expressionReadsEntrySlot(node.arrayIndex, slotIndex))) {
+      throw new ChainedEntryElementReadError(node, node.collection?.name ?? node.name);
+    }
 
     if (canChain) {
       // Chain from previous array element assignment's output.

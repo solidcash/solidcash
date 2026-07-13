@@ -1,4 +1,22 @@
-# Unified linear memory - DESIGN (scoping doc, NOT yet implemented)
+# Unified linear memory - DESIGN (READ bridge landed; WRITE + full unification remain)
+
+## Implementation status (2026-07-13)
+- **DONE (commit 8798f756): the READ bridge.** `mload(add(s, 32*i))` on a high-level memory struct lowers to
+  `uint256(s.field_i)` (LowerInlineAssembly.resolveStructField + the mload hook). No buffer needed - EVM's one-
+  32-byte-slot-per-field memory struct layout means the Yul memory read at a struct address IS the field read,
+  and mapping to `s.field` (not a byte offset) is sound regardless of the value-copy packed layout. VM-verified
+  (YulStructMemory.test.ts: right field, right value, negative). solc-corpus 3907->3908 (+1 static_struct_v2).
+- **BLOCKED: the WRITE.** `mstore(add(s, 32*i), v)` == `s.field_i = v` needs the value-copy rebuild `s = S(..)`,
+  but emitting that from this LATE pass does not compose with the memory-model conversion of `s` - the store is
+  silently dropped (a bisecting VM test caught `s.a` staying at its init value). So mstore on a struct address is
+  left UNLOWERED (falls back to the prior AssignTypeError, non-regressing) rather than miscompiling. The WRITE
+  needs the pass-order coordination below (U0-U1): either LowerMemoryModel and LowerInlineAssembly share one
+  buffer + one convertible set, or the struct-field-write desugar is re-run over the emitted rebuild. Do NOT
+  re-enable the mstore mapping without that - it is a silent miscompile.
+
+---
+
+# Original scoping doc
 
 Status: DESIGN ONLY. This scopes the architecture change needed to close the "Yul assembly accessing a
 high-level memory struct/array" corpus wall, so a future dedicated effort can execute it phase-by-phase with a

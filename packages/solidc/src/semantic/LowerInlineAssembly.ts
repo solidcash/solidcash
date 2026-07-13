@@ -1,4 +1,6 @@
-import { IntType, BytesType, AddressType, PrimitiveType, ValueType, Type, MappingType, hash256 } from '@solidcash/utils';
+import {
+  IntType, BytesType, AddressType, PrimitiveType, ValueType, Type, MappingType, StructType, ArrayType, hash256,
+} from '@solidcash/utils';
 import AstTraversal from '../ast/AstTraversal.js';
 import {
   Node, StatementNode, ExpressionNode, AssemblyStatementNode, BlockNode, VariableDefinitionNode,
@@ -586,6 +588,36 @@ function lowerLiteral(lit: YulLiteralNode): ExpressionNode {
   }
 }
 
+// A Yul memory address that names a high-level struct FIELD: bare `s` (field 0) or `add(s, K)` (K a constant
+// multiple of 32) where `s` is an outer memory struct with a VALUE field at index K/32. EVM lays a memory struct
+// out as one 32-byte slot per field, so `mstore(add(s, 32*i), v)` == `s.field_i = v` and `mload(add(s, 32*i))`
+// == `s.field_i`. Value fields only (a reference field would hold a pointer, not the value); a ref field or a
+// dynamic/misaligned offset returns undefined, so the caller falls through to the buffer path unchanged
+// (non-regressing). This bridges Yul assembly that treats a high-level struct as a memory pointer.
+function resolveStructField(off: YulExpressionNode):
+{ varName: string; struct: StructType; index: number } | undefined {
+  let varName: string;
+  let k = 0n;
+  if (off instanceof YulPathNode && off.members.length === 0) {
+    varName = off.base;
+  } else if (off instanceof YulFunctionCallNode && off.name === 'add' && off.args.length === 2
+    && off.args[0] instanceof YulPathNode && off.args[0].members.length === 0 && isIntLiteral(off.args[1])) {
+    varName = off.args[0].base;
+    k = BigInt(off.args[1].raw);
+  } else {
+    return undefined;
+  }
+  const t = currentVars.get(varName);
+  if (!(t instanceof StructType) || k % 32n !== 0n) return undefined;
+  const index = Number(k / 32n);
+  if (index < 0 || index >= t.fields.length) return undefined;
+  const fieldType = t.fields[index].type;
+  if (fieldType instanceof ArrayType || fieldType instanceof StructType || fieldType instanceof MappingType) {
+    return undefined; // a reference field holds a pointer, not an in-slot value
+  }
+  return { varName, struct: t, index };
+}
+
 function lowerCall(call: YulFunctionCallNode): ExpressionNode {
   const { name, args } = call;
   if (name in NULLARY_CONTEXT && args.length === 0) {
@@ -760,6 +792,13 @@ function lowerCall(call: YulFunctionCallNode): ExpressionNode {
   // mload(p) -> the word stored at that constant offset (compile-time memory model), or a `bytes memory`
   // slice for the `mload(add(ptr, off))` parameter-reading form.
   if (name === 'mload' && args.length === 1) {
+    // `mload(add(s, 32*i))` on a high-level struct == `uint256(s.field_i)` (read the field's 32-byte slot).
+    const sf = resolveStructField(args[0]);
+    if (sf) {
+      const base = loc(new IdentifierNode(sf.varName), call);
+      const field = loc(new FieldAccessNode(base, sf.struct.fields[sf.index].name), call);
+      return loc(new CastNode(UINT256, field, false), call);
+    }
     if (runtimeMem) return runtimeMload(args[0], call);
     if (isIntLiteral(args[0])) {
       const v = memory.get(BigInt(args[0].raw));
@@ -898,6 +937,12 @@ function lowerStatement(stmt: YulStatementNode): StatementNode {
       // free-memory buffer (`mstore(buf/add(buf,off), v)`) or the compile-time constant-offset memory model
       // (emitting nothing, read back at create/keccak time).
       if (e.name === 'mstore' && e.args.length === 2) {
+        // NOTE: `mstore(add(s, 32*i), v)` on a high-level struct (== `s.field_i = v`) is NOT lowered here yet -
+        // the rebuild `s = S(..)` emitted from this late pass does not compose with the memory-model conversion
+        // of `s` (the store is dropped). READ (`mload` on a struct) is handled and VM-verified; WRITE needs the
+        // pass-order coordination scoped in docs/unified-linear-memory.md. A struct-address mstore falls through
+        // to the buffer path (a struct is not a valid buffer pointer -> the block stays unlowered = the prior
+        // behavior, non-regressing) rather than silently miscompiling.
         if (runtimeMem) return runtimeMstore(lowerValue(e.args[0]), lowerValue(e.args[1]), e);
         const bufPtr = resolveBufferPtr(e.args[0]);
         if (bufPtr) {

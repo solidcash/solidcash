@@ -4,7 +4,7 @@ import {
   SourceFileNode, ContractNode, Node, FunctionCallStatementNode, LowLevelCallStatementNode,
   IdentifierNode, HexLiteralNode, ParameterNode, FunctionModifier, StateVariableNode,
   FunctionDefinitionNode, FunctionCallNode, IntLiteralNode, BoolLiteralNode, StringLiteralNode,
-  ExpressionNode,
+  ExpressionNode, CastNode,
 } from '../ast/AST.js';
 import AstTraversal from '../ast/AstTraversal.js';
 
@@ -29,6 +29,7 @@ type DelegateLibFn = { libName: string; fnName: string; selector: Uint8Array; pa
 export default class SynthesizeLibraryDelegateCalls extends AstTraversal {
   private delegateLibFns = new Map<string, DelegateLibFn>();
   private usedLibs = new Set<string>();
+  private knownLibs = new Set<string>();
   private currentFn?: FunctionDefinitionNode;
 
   visitSourceFile(node: SourceFileNode): Node {
@@ -43,7 +44,9 @@ export default class SynthesizeLibraryDelegateCalls extends AstTraversal {
       const sig = computeFunctionSignature(fnName, paramTypes);
       this.delegateLibFns.set(fn.name, { libName, fnName, selector: computeFunctionSelector(sig), paramTypes });
     }
-    if (this.delegateLibFns.size === 0) return node;
+    // Known library names (inline + imported) so `address(L)` resolves to the library's link-time address.
+    this.knownLibs = new Set(node.declaredLibraryNames);
+    if ((this.delegateLibFns.size === 0 && this.knownLibs.size === 0) || !node.contract) return node;
 
     this.usedLibs = new Set();
     node.contract = this.visit(node.contract) as ContractNode;
@@ -74,6 +77,21 @@ export default class SynthesizeLibraryDelegateCalls extends AstTraversal {
     const result = super.visitFunctionDefinition(node);
     this.currentFn = prev;
     return result;
+  }
+
+  // `address(L)` where L is a library resolves to the library's link-time address - the same synthesized
+  // `__libAddr_L` constructor arg the delegate-call path uses (EVM library-linking parity: the SDK supplies the
+  // linked address). Referencing a library only by address still triggers the param synthesis (via usedLibs).
+  visitCast(node: CastNode): Node {
+    if (node.type instanceof AddressType
+      && node.expression instanceof IdentifierNode
+      && this.knownLibs.has(node.expression.name)) {
+      this.usedLibs.add(node.expression.name);
+      const addr = new IdentifierNode(`__libAddr_${node.expression.name}`);
+      addr.location = node.location;
+      return addr;
+    }
+    return super.visitCast(node);
   }
 
   // A delegate library call in expression position (its return value is used) is rejected: a delegate library

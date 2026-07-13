@@ -1782,3 +1782,29 @@ describe('deploy-then-call fold THROUGH a local fn-ptr (#2 slice, sound by reduc
       .toEqual(a.abi.find((f) => f.name === 'use')!.deployTargets);
   });
 });
+
+describe('address(L) library-as-address (EVM library-linking parity, corpus library_to_address.sol)', () => {
+  // `address(L)` where L is a library resolves to the library's link-time address = a synthesized
+  // `__libAddr_L` address constructor arg (the same one the delegate-call path uses). Sound by reduction:
+  // it becomes a read of a normal address constructor param.
+  it('synthesizes a __libAddr_L constructor arg for address(L) on an inline library', () => {
+    const art = compileString(
+      'library L {} contract C { function f() public pure returns (address) { return address(L); } }',
+      { solidityImportCompat: true });
+    expect(art.constructorInputs.find((i) => i.name === '__libAddr_L')?.type).toBe('address');
+  });
+  it('reuses one __libAddr_L param for address(L) alongside a library call', () => {
+    const art = compileString(
+      'library L { function sq(uint v) internal pure returns (uint) { return v*v; } }'
+      + ' contract C { function f() public pure returns (address) { return address(L); }'
+      + ' function g(uint x) public pure returns (uint) { return L.sq(x); } }',
+      { solidityImportCompat: true });
+    expect(art.constructorInputs.filter((i) => i.name === '__libAddr_L').length).toBe(1);
+  });
+  it('does not rewrite address(x) where x is a non-library local', () => {
+    const art = compileString(
+      'contract C { function f(address x) public pure returns (address) { return address(x); } }',
+      { solidityImportCompat: true });
+    expect(art.constructorInputs.find((i) => i.name?.startsWith('__libAddr_'))).toBeUndefined();
+  });
+});

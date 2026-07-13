@@ -1476,11 +1476,13 @@ export default class SymbolTableTraversal extends AstTraversal {
         }
         this.pushToStack(inputBaseParam);
 
-        // Inject per-slot selector parameters (only for slots that need selector verification)
-        const slotsNeedingSelector = externalCallSlots.filter((s) => s.needsSelectorVerification);
+        // Inject per-slot selector parameters (only for slots that need selector verification). A varying-method
+        // array dispatch table (selectorArrayVar) verifies each element against its ON-CHAIN selector array, so
+        // it needs no witness param and no baked compile-time selector - exclude it here.
+        const slotsNeedingSelector = externalCallSlots.filter((s) => s.needsSelectorVerification && !s.selectorArrayVar);
         const slotCount = node.externalCalls.length;
         for (let i = 0; i < slotCount; i++) {
-          if (!externalCallSlots[i].needsSelectorVerification) continue;
+          if (!externalCallSlots[i].needsSelectorVerification || externalCallSlots[i].selectorArrayVar) continue;
           const slot = externalCallSlots[i];
           // MD1: for a regular call (not a varying-method pointer) the target function is fixed at compile time,
           // so bake its selector as a constant the covenant checks against - a spender must not be able to point
@@ -3342,6 +3344,9 @@ export default class SymbolTableTraversal extends AstTraversal {
       // A same-address varying-method pointer always needs selector verification (the covenant binds the
       // co-spent method to the runtime selector, even if the callee has only these two functions).
       if (node.runtimeSelector) needsSelectorVerification = true;
+      // A varying-method array dispatch table needs per-element selector verification: the loop reads each
+      // element's on-chain selector from the parallel selector array and binds the co-spent method to it.
+      if (node.selectorArrayVar) needsSelectorVerification = true;
 
       // Callee data NFT count (for computedOffset + commitment preservation). Interface: from its computed
       // layout; contract callee: from its state vars' nftIndex. A wrong count fails loudly at the dispatch's
@@ -3412,6 +3417,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         addressParam,
         addressStateVar,
         loopArrayVar,
+        ...(node.selectorArrayVar && { selectorArrayVar: node.selectorArrayVar }),
         ...(addressLiteral && { addressLiteral }),
         ...(addressIsMsgSender && { addressIsMsgSender: true }),
         slotIndex: -1,
@@ -6973,6 +6979,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         // compile-time selector and only the TRUE branch's co-spend verifies). Value-producing external calls
         // reach this path, not the 7037 statement path.
         if (node.runtimeSelector) callNode.runtimeSelector = this.visit(node.runtimeSelector) as ExpressionNode;
+        if (node.selectorArrayVar) callNode.selectorArrayVar = node.selectorArrayVar;
         if (callNode.callOptions?.value) {
           callNode.callOptions.value = this.visit(callNode.callOptions.value) as ExpressionNode;
         }
@@ -7090,6 +7097,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         // Same-address varying-method pointer: carry + resolve the runtime selector (`cond ? a.selector :
         // b.selector`, folds to a runtime bytes4). The covenant binds the co-spent method to it (see codegen).
         if (node.runtimeSelector) callNode.runtimeSelector = this.visit(node.runtimeSelector) as ExpressionNode;
+        if (node.selectorArrayVar) callNode.selectorArrayVar = node.selectorArrayVar;
         if (callNode.callOptions?.value) {
           callNode.callOptions.value = this.visit(callNode.callOptions.value) as ExpressionNode;
         }

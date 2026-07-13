@@ -19,6 +19,9 @@ export interface ExternalTargetEntry {
   interfaceName?: string;
   /** The instance used by the typed array path (a ConnectedStatefulContract; opaque entries omit it). */
   instance?: unknown;
+  /** Per-element method for a varying-method dispatch table (`function(P) external[]` with differing methods);
+   * omitted for a fixed-method array (which uses the ABI slot's single functionName). */
+  method?: string;
   /** Opaque loop-dispatch co-spend spec (contract.multiCall); typed-only entries omit it. */
   coSpend?: OpaqueLoopContractCall;
 }

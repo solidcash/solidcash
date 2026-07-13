@@ -85,6 +85,7 @@ function buildFunctionAbiMetadata(func: FunctionDefinitionNode): Partial<AbiFunc
         ...(ec.addressStateVar && { addressStateVar: ec.addressStateVar }),
         ...(ec.addressLiteral && { addressLiteral: ec.addressLiteral }),
         ...(ec.loopArrayVar && { loopArrayVar: ec.loopArrayVar }),
+        ...(ec.selectorArrayVar && { selectorArrayVar: ec.selectorArrayVar }),
         ...(ec.addressIsMsgSender && { addressIsMsgSender: true }),
         ...(ec.fnPtrCall && { fnPtrCall: true }),
         // Explicit (true AND false) for regular direct calls so the SDK skips a single-method callee's (absent)

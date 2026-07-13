@@ -1745,6 +1745,9 @@ export class ExternalFunctionCallNode extends ExpressionNode {
   // the co-spent callee's selector == it (instead of the compile-time witness), binding the co-spent method to
   // `cond`. One co-spend, one epilogue verification (no per-branch duplicate).
   runtimeSelector?: ExpressionNode;
+  // Foreign fn-ptr ARRAY dispatch table with per-element methods: the parallel `bytes4[]` state array of
+  // per-element selectors; the array-call loop asserts the co-spent callee's selector == sel[i].
+  selectorArrayVar?: string;
 
   constructor(
     public interfaceName: string,
@@ -1798,6 +1801,10 @@ export interface ExternalCallSlot {
   // Same-address varying-method pointer: the RUNTIME selector expression (`cond ? a.selector : b.selector`).
   // The epilogue evaluates it and asserts the co-spent callee's selector == it, instead of the witness param.
   runtimeSelector?: ExpressionNode;
+  // Foreign fn-ptr ARRAY dispatch table with per-element methods: the parallel `bytes4[]` state array holding
+  // each element's selector. The array-call loop reads sel[i] and asserts the co-spent callee's selector == it,
+  // instead of a single broadcast witness. Set alongside loopArrayVar for a varying-method table.
+  selectorArrayVar?: string;
   callMode?: ExternalCallMode;
   argSources?: ExternalCallArgSource[];
   opaqueReturn?: boolean; // generic dynamic dispatch: opaque bytes return, identity-bound to the witnessed address
@@ -1864,6 +1871,9 @@ export class MethodCallNode extends ExpressionNode {
   // Set by DesugarExternalFunctionPointers for a same-address varying-method pointer call: the runtime selector
   // expression (`cond ? c.a.selector : c.b.selector`); threaded to the external call node in semantic analysis.
   runtimeSelector?: ExpressionNode;
+  // Set by LowerForeignFunctionPointerArrayElements for a varying-method array dispatch table: the parallel
+  // `bytes4[]` state array of per-element selectors; threaded to the external call slot in semantic analysis.
+  selectorArrayVar?: string;
 
   constructor(
     public object: ExpressionNode,

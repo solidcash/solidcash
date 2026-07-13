@@ -696,10 +696,16 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
    * with opaque loop dispatch (contract.multiCall). The covenant verifies each co-spent callee against arr[i],
    * so the registration order must match the on-chain array.
    */
-  registerExternalArray(interfaceName: string, instances: ConnectedStatefulContract[]): void {
-    for (const inst of instances) {
-      this.inner.registerExternalTarget({ address: inst.inner.lockingBytecode, interfaceName, instance: inst });
-    }
+  // Register the callees for a foreign fn-ptr array `IFoo(fns[i]).m()`, in on-chain array order. For a
+  // varying-method dispatch table pass `methods` (one per element) so each callee is co-spent with its own
+  // method (the covenant verifies each against the on-chain selector array); omit `methods` for a fixed-method
+  // table (it uses the ABI slot's single method).
+  registerExternalArray(interfaceName: string, instances: ConnectedStatefulContract[], methods?: string[]): void {
+    instances.forEach((inst, i) => {
+      this.inner.registerExternalTarget({
+        address: inst.inner.lockingBytecode, interfaceName, instance: inst, method: methods?.[i],
+      });
+    });
   }
 
   // Deployed delegate-library instances, keyed by library name. A consumer's `L.f()` (artifact
@@ -4753,12 +4759,16 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       presetResolved = [];
       for (const ec of externalCalls) {
         if (ec.loopArrayVar) {
-          const list = this.inner.getExternalTargetInstancesByInterface(ec.interfaceName) as ConnectedStatefulContract[];
+          // A varying-method dispatch table co-spends each callee with its OWN registered method (the covenant
+          // verifies it against the on-chain selector array); a fixed-method array uses the ABI functionName.
+          const entries = this.inner.getExternalTargetEntriesByInterface(ec.interfaceName);
           const resolvedArgs = this._resolveExternalArgs(ec.argSources, args, this.inner.artifact) ?? [];
-          for (const inst of list) {
+          for (const entry of entries) {
+            const inst = entry.instance as ConnectedStatefulContract;
+            const functionName = (ec.selectorArrayVar && entry.method) ? entry.method : ec.functionName;
             expanded.push({ ...ec, loopArrayVar: undefined });
             presetResolved.push({
-              externalContract: inst as unknown as StatefulContract, functionName: ec.functionName, args: resolvedArgs,
+              externalContract: inst as unknown as StatefulContract, functionName, args: resolvedArgs,
             });
           }
         } else {

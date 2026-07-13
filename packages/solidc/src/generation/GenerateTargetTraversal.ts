@@ -11429,6 +11429,19 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.popFromStack();                                 // drop (aec_blob) tracking
     this.pushToStack('(aec_rem)');
     this.pushToStack('(aec_count)');
+
+    // Varying-method dispatch table: also read the parallel `bytes[]` selector array; each iteration decodes
+    // its next framed selector (exactly like an address element) and verifies it == the co-spent callee's.
+    if (slot.selectorArrayVar) {
+      const selSv = this.stateVariables.find((v) => v.name === slot.selectorArrayVar);
+      if (!selSv) throw new Error(`selector array '${slot.selectorArrayVar}' must be a state array`);
+      this.emitReadStateArrayBlob(selSv, loc, '(aec_sel_blob)'); // [..., sel_blob]
+      this.emitPushdataDecode(PrimitiveType.BIGINT, loc);        // [..., selcount, sel_rem] sel_rem top
+      this.emit(Op.OP_NIP, loc);                                 // drop selcount -> [..., sel_rem]
+      this.popFromStack();                                       // drop (aec_sel_blob) tracking
+      this.pushToStack('(aec_sel_rem)');
+    }
+
     this.emit(encodeInt(0n), loc);
     this.pushToStack('(aec_i)');
 
@@ -11492,7 +11505,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     // 4. selector (REGULAR + needsSelectorVerification)
     if (callMode === ExternalCallMode.REGULAR && slot.needsSelectorVerification) {
-      const slotsNeedingSelector = this.externalCallSlots.filter((s) => s.needsSelectorVerification);
       this.emit(Op.OP_DUP, loc);                         // [elem, idx, idx]
       this.emit(Op.OP_INPUTBYTECODE, loc);               // [elem, idx, inBC]
       this.emit(encodeInt(1n), loc);
@@ -11500,12 +11512,25 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_NIP, loc);                         // [elem, idx, rest]
       this.emit(encodeInt(4n), loc);
       this.emit(Op.OP_SPLIT, loc);
-      this.emit(Op.OP_DROP, loc);                        // [elem, idx, selector]
-      const selectorName = slotsNeedingSelector.length === 1
-        ? '__internal__externalCallSelector' : `__internal__externalCallSelector${slot.slotIndex}`;
-      this.emit(encodeInt(BigInt(this.getStackIndex(selectorName) + 3)), loc); // +3: elem, idx, selector
-      this.emit(Op.OP_PICK, loc);
-      this.emit(Op.OP_EQUALVERIFY, loc);                 // [elem, idx]
+      this.emit(Op.OP_DROP, loc);                        // [elem, idx, co-spent selector]
+      if (slot.selectorArrayVar) {
+        // Per-element: decode the next framed selector sel[i] from (aec_sel_rem), advance the remainder, and
+        // assert co-spent selector == sel[i] (each callee bound to its OWN on-chain selector).
+        this.emit(encodeInt(BigInt(this.getStackIndex('(aec_sel_rem)') + 3)), loc); // +3: elem, idx, selector
+        this.emit(Op.OP_PICK, loc);                      // copy sel remainder
+        this.emitPushdataDecode(new BytesType(), loc);   // [..., sel_i, new_sel_rem]
+        this.emitReplace(this.getStackIndex('(aec_sel_rem)') + 5, this.currentFunction); // (aec_sel_rem):=new_rem
+        this.emit(Op.OP_EQUALVERIFY, loc);               // [elem, idx]
+      } else {
+        const slotsNeedingSelector = this.externalCallSlots.filter(
+          (s) => s.needsSelectorVerification && !s.selectorArrayVar,
+        );
+        const selectorName = slotsNeedingSelector.length === 1
+          ? '__internal__externalCallSelector' : `__internal__externalCallSelector${slot.slotIndex}`;
+        this.emit(encodeInt(BigInt(this.getStackIndex(selectorName) + 3)), loc); // +3: elem, idx, selector
+        this.emit(Op.OP_PICK, loc);
+        this.emit(Op.OP_EQUALVERIFY, loc);               // [elem, idx]
+      }
     }
 
     this.emit(Op.OP_DROP, loc);                          // drop idx -> [elem]
@@ -11531,7 +11556,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.scopeDepth -= 1;
 
     // cleanup loop temps
-    for (const tmp of ['(aec_i)', '(aec_count)', '(aec_rem)']) {
+    const temps = ['(aec_i)', '(aec_count)', '(aec_rem)'];
+    if (slot.selectorArrayVar) temps.push('(aec_sel_rem)');
+    for (const tmp of temps) {
       const idx = this.getStackIndex(tmp);
       this.emit(encodeInt(BigInt(idx)), loc);
       this.emit(Op.OP_ROLL, loc);

@@ -301,6 +301,11 @@ export class Contract<
     return this.externalTargets.filter((e) => e.interfaceName === interfaceName).map((e) => e.instance);
   }
 
+  /** The registered entries (instance + optional per-element method) for a typed array call, in order. */
+  getExternalTargetEntriesByInterface(interfaceName: string): ExternalTargetEntry[] {
+    return this.externalTargets.filter((e) => e.interfaceName === interfaceName);
+  }
+
   /** All registry entries (used to copy the registry across connect()). */
   getExternalTargetEntries(): ExternalTargetEntry[] {
     return this.externalTargets;

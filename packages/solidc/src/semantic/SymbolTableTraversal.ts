@@ -94,6 +94,8 @@ import {
   AbiEncodeNode,
   AbiEncodePackedNode,
   AbiEncodeWithSelectorNode,
+  AbiDecodeNode,
+  AbiDecodeAtNode,
   BytesConcatNode,
   StringConcatNode,
   NewArrayNode,
@@ -7424,6 +7426,24 @@ function isCompileTimeExpression(
     if (constantMap.has(compoundName)) return true;
     const en = enumMap.get(expr.expression.name);
     return !!en && en.members.some((mm) => mm.name === expr.name);
+  }
+  // Metatype introspection `type(X).creationCode/runtimeCode/name/interfaceId/min/max` is a compile-time constant.
+  if (expr instanceof TypeIntrospectionNode) return true;
+  // abi.encode* / abi.decode* are pure functions of their args - compile-time when every value arg is. Codegen
+  // inlines the constant's initializer at each use site (visitIdentifier), so the existing abi codegen runs there.
+  if (expr instanceof AbiEncodeNode || expr instanceof AbiEncodePackedNode || expr instanceof AbiEncodeCallNode) {
+    return expr.parameters.every((e) => isCompileTimeExpression(e, constantMap, enumMap));
+  }
+  if (expr instanceof AbiEncodeWithSelectorNode) {
+    return isCompileTimeExpression(expr.selector, constantMap, enumMap)
+      && expr.parameters.every((e) => isCompileTimeExpression(e, constantMap, enumMap));
+  }
+  if (expr instanceof AbiEncodeWithSignatureNode) {
+    return isCompileTimeExpression(expr.signature, constantMap, enumMap)
+      && expr.parameters.every((e) => isCompileTimeExpression(e, constantMap, enumMap));
+  }
+  if (expr instanceof AbiDecodeNode || expr instanceof AbiDecodeAtNode) {
+    return isCompileTimeExpression(expr.data, constantMap, enumMap);
   }
   return false;
 }

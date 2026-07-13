@@ -1689,14 +1689,24 @@ describe('foreign external fn-ptr in a STRUCT FIELD (fixed method on a runtime a
 
 describe('foreign external fn-ptr ARRAY dispatch table (fixed method on runtime addresses)', () => {
   const IF = 'interface IFoo { function ping(uint x) external; }';
-  // A fixed-method fn-ptr array lowers to a plain address[] state var + the shipped array-element co-spend
-  // (broadcast). VM-verified in ForeignFunctionPointerArrayTable.test.ts.
-  it('moves the fn-ptr array to an address[] state var + co-spends via the array loop', () => {
+  // A fixed-method fn-ptr array lowers to a plain address[] state var. Solidity call semantics: a bare
+  // `fns[idx](v)` calls ONLY element idx (single computed-receiver co-spend); the notify-all loop spelling
+  // `for (..) { fns[i](v); }` maps to the broadcast covenant. VM-verified in ForeignFunctionPointerArrayTable.
+  it('bare fns[idx](v) is a SINGLE-element call (no broadcast loop)', () => {
     const art = compileString(`${IF} contract C { function(uint) external[] fns;`
       + ' function reg(address a) public { this.fns.push(IFoo(a).ping); }'
       + ' function fire(uint v) public { fns[0](v); } }', { solidityImportCompat: true });
     const fns = art.stateLayout!.variables.find((v) => v.name === 'fns')!;
     expect(fns.type).toBe('address[]'); // fn-ptr array collection moved to a plain address[] state var
+    const fire = art.abi.find((f) => f.name === 'fire')!;
+    expect(fire.externalCalls!.some((e) => !e.loopArrayVar && e.functionName === 'ping')).toBe(true);
+  });
+
+  it('the loop spelling for (..) { fns[i](v); } is the broadcast (array co-spend loop)', () => {
+    const art = compileString(`${IF} contract C { function(uint) external[] fns;`
+      + ' function reg(address a) public { this.fns.push(IFoo(a).ping); }'
+      + ' function fire(uint v) public { for (uint i = 0; i < 2; i++) { fns[i](v); } } }',
+    { solidityImportCompat: true });
     const fire = art.abi.find((f) => f.name === 'fire')!;
     expect(fire.externalCalls!.some((e) => e.loopArrayVar === 'fns' && e.functionName === 'ping')).toBe(true);
   });

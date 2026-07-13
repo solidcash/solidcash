@@ -126,3 +126,25 @@ input and is NOT forwarded (one sig cannot validate multiple inputs - distinct s
 
 Phase-2 leftovers (unchanged): per-element return values, loop-variable args, entries/low-level co-resident
 with the array read (the input/output order above handles only the array-read + callee combination).
+
+## Function-pointer arrays: call semantics (Solidity parity)
+
+A `function(P) external[] fns` table (fixed-method, varying-method, or received-value; lowered to
+`address[]` + a parallel `bytes[] __fnsel_<name>` selector array when methods vary) follows Solidity call
+semantics:
+
+- **`fns[idx](args)` outside a loop calls ONLY element `idx`**: the lowering hoists
+  `address __fnelem = fns[idx];` (+ `bytes4 __fnelemsel = bytes4(__fnsel_fns[idx]);` as a runtime selector
+  when per-element methods exist) and emits one computed-receiver external call. Value-returning calls work
+  in this form.
+- **`fns[i](args)` inside a loop is the notify-all idiom** and maps to the broadcast covenant above (the
+  epilogue co-spends and verifies EVERY element; the source loop is harmless iteration). A broadcast cannot
+  return a value (compile error).
+- Mutations stay in lockstep with the selector array: element assign / `pop()` / `delete fns[i]` rewrite to
+  two-statement blocks mutating both arrays.
+- An unclassifiable fn-ptr array (never written, or written an unsupported value form) is a specific
+  `FnPtrArrayLoweringError` at compile time.
+
+e2e: `SingleElementFnPtrCall.test.ts` (single-element per table kind, returning, mutation lockstep, mixed
+inline+received, state-var-pointer push), `ForeignFunctionPointerArrayTable.test.ts` /
+`ForeignDispatchTableVaryingMethod.test.ts` / `ForeignReceivedFnPtrArray.test.ts` (loop-spelling broadcasts).

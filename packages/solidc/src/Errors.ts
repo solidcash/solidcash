@@ -542,6 +542,18 @@ export class ChainedEntryElementReadError extends SolidCashError {
   }
 }
 
+// A function-pointer ARRAY form the lowering passes cannot express (yet). Raised with a specific reason
+// instead of the misleading downstream "Undefined state variable '<name>'" once no pass claims the array.
+export class FnPtrArrayLoweringError extends SolidCashError {
+  constructor(
+    public node: Node,
+    name: string,
+    detail: string,
+  ) {
+    super(node, `Function-pointer array '${name}': ${detail}`);
+  }
+}
+
 export class MappingAssignTypeError extends TypeError {
   constructor(
     node: MappingAssignNode,

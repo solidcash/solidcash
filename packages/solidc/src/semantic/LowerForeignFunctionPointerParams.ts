@@ -15,6 +15,9 @@ import {
   StateAssignNode,
   StateArrayPushNode,
   ArrayPushNode,
+  StateArrayAssignNode,
+  ArrayAssignNode,
+  MappingAssignNode,
   IdentifierNode,
   ExpressionNode,
 } from '../ast/AST.js';
@@ -190,7 +193,8 @@ export default class LowerForeignFunctionPointerParams extends AstTraversal {
     return found;
   }
 
-  // True if `name` is pushed into a foreign fn-ptr array (`fns.push(name)`) anywhere in fn.
+  // True if `name` is written into a foreign fn-ptr array (`fns.push(name)` / `fns[i] = name`, any parse
+  // flavor) anywhere in fn.
   private isPushedToFnPtrArray(fn: FunctionDefinitionNode, name: string): boolean {
     let found = false;
     const isNameRead = (e: unknown): boolean => e instanceof IdentifierNode && e.name === name;
@@ -198,6 +202,14 @@ export default class LowerForeignFunctionPointerParams extends AstTraversal {
       if (found) return;
       if ((n instanceof StateArrayPushNode || n instanceof ArrayPushNode)
         && this.fnPtrArrayNames.has(n.name) && !n.noArg && isNameRead(n.value)) {
+        found = true; return;
+      }
+      if ((n instanceof StateArrayAssignNode || n instanceof ArrayAssignNode)
+        && this.fnPtrArrayNames.has(n.name) && isNameRead(n.value)) {
+        found = true; return;
+      }
+      if (n instanceof MappingAssignNode && this.fnPtrArrayNames.has(n.name) && !n.arrayPush && !n.arrayPop
+        && isNameRead(n.expression)) {
         found = true; return;
       }
       for (const key of Object.keys(n)) {

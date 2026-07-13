@@ -30,7 +30,7 @@ contract Table() {
     require(checkSig(s, pk)); this.fns.push(IH(a).dec); this.bumps = this.bumps + 1;
   }
   function fireAll(uint256 v, pubkey pk, sig s) {
-    require(checkSig(s, pk)); fns[0](v); this.bumps = this.bumps + 1;
+    require(checkSig(s, pk)); for (int i = 0; i < 2; i++) { fns[i](v); } this.bumps = this.bumps + 1;
   }
 }`;
 

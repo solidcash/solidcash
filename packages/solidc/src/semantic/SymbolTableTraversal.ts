@@ -4209,9 +4209,11 @@ export default class SymbolTableTraversal extends AstTraversal {
       }
       if (modifier === Modifier.CALLDATA) {
         // A whole `x = y` rebind is allowed ONLY for a calldata ARRAY: it rebinds the local pointer to y (reduces
-        // to a value-copy). NOT structs - a calldata struct field write `s.a = v` desugars to a whole `s = S(..)`
-        // rebuild, so allowing struct reassigns would silently permit writes into a read-only calldata struct.
-        // Value-typed calldata (`int calldata`), compound (`x += 1` -> `x = x+1`), and element/field writes reject.
+        // to a value-copy). NOT structs / dynamic bytes / string - their element or field write (`s.a = v`,
+        // `b[0] = v`) desugars to a whole `x = <rebuilt>` reassign, which is INDISTINGUISHABLE from a rebind here,
+        // so allowing them would silently permit writes into read-only calldata (verified: `bytes b; b[0]=v`
+        // compiled). Arrays are safe because their element write goes through a separate ArrayAssign path.
+        // Value-typed calldata (`int`, fixed `bytesN`), compound (`x += 1` -> `x = x+1`), element/field writes reject.
         const t = (sym.definition as { type?: Type })?.type;
         const isRefRebind = isReassign && t instanceof ArrayType;
         if (!isRefRebind) {

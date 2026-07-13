@@ -11318,7 +11318,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         // Selector-first: the selector is always the first push in B's unlocking bytecode.
         // MINIMALDATA guarantees a 4-byte selector uses a 0x04 prefix (1 byte).
         // Same code for P2S, P2SH32, and P2SH20 - no address-type branching needed.
-        const slotsNeedingSelector = this.externalCallSlots.filter((s) => s.needsSelectorVerification);
+        // Filter must match the injection (SymbolTable) exactly: selectorArrayVar slots have NO witness param
+        // (they verify against the on-chain selector array), so they must not shift the naming count here.
+        const slotsNeedingSelector = this.externalCallSlots.filter(
+          (s) => s.needsSelectorVerification && !s.selectorArrayVar,
+        );
         const rtSel = rtSelTemps.get(slot.slotIndex);
 
         // Emit `[.., selector] -> [..]`: compare the 4-byte selector to the expected value (runtime temp, then
@@ -11442,6 +11446,19 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.pushToStack('(aec_sel_rem)');
     }
 
+    // Received-value pointer array (fnPtrCall): the callee layouts are unknown at compile time, so each
+    // iteration reads its callee master input index from the SDK-filled witness list (framed ints) instead of
+    // base + i*stride. SOUND: each index is identity-bound to arr[i] below, and a strictly-increasing check
+    // keeps duplicate-address elements from aliasing one co-spent input. Copy the list; track prev index.
+    if (slot.fnPtrCall) {
+      const listName = `__internal__extcallIdxList${slot.slotIndex}`;
+      this.emit(encodeInt(BigInt(this.getStackIndex(listName))), loc);
+      this.emit(Op.OP_PICK, loc);
+      this.pushToStack('(aec_idx_rem)');
+      this.emit(encodeInt(-1n), loc);
+      this.pushToStack('(aec_previdx)');
+    }
+
     this.emit(encodeInt(0n), loc);
     this.pushToStack('(aec_i)');
 
@@ -11466,20 +11483,36 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emitReplace(this.getStackIndex('(aec_rem)') + 2, this.currentFunction); // (aec_rem) := newrem
     // [..., elem]  (1 untracked: elem)
 
-    // --- callee master idx = externalCallInputBase + computedOffset + i*stride ---
-    this.emit(encodeInt(BigInt(this.getStackIndex('__internal__externalCallInputBase') + 1)), loc); // +1: elem
-    this.emit(Op.OP_PICK, loc);                          // [elem, base]
-    if (slot.computedOffset !== 0) {
-      this.emit(encodeInt(BigInt(slot.computedOffset)), loc);
-      this.emit(Op.OP_ADD, loc);
+    if (slot.fnPtrCall) {
+      // --- callee master idx = next framed int from the witness list; must be strictly increasing ---
+      this.emit(encodeInt(BigInt(this.getStackIndex('(aec_idx_rem)') + 1)), loc); // +1: elem
+      this.emit(Op.OP_PICK, loc);                        // [elem, idxrem copy]
+      this.emitPushdataDecode(PrimitiveType.BIGINT, loc); // [elem, idx, newrem]
+      this.emitReplace(this.getStackIndex('(aec_idx_rem)') + 3, this.currentFunction); // (aec_idx_rem):=newrem
+      this.emit(Op.OP_DUP, loc);                         // [elem, idx, idx]
+      this.emit(encodeInt(BigInt(this.getStackIndex('(aec_previdx)') + 3)), loc);
+      this.emit(Op.OP_PICK, loc);                        // [elem, idx, idx, prev]
+      this.emit(Op.OP_GREATERTHAN, loc);                 // [elem, idx, idx>prev]
+      this.emit(Op.OP_VERIFY, loc);                      // [elem, idx]
+      this.emit(Op.OP_DUP, loc);                         // [elem, idx, idx]
+      this.emitReplace(this.getStackIndex('(aec_previdx)') + 3, this.currentFunction); // (aec_previdx):=idx
+      // [elem, idx]
+    } else {
+      // --- callee master idx = externalCallInputBase + computedOffset + i*stride ---
+      this.emit(encodeInt(BigInt(this.getStackIndex('__internal__externalCallInputBase') + 1)), loc); // +1: elem
+      this.emit(Op.OP_PICK, loc);                        // [elem, base]
+      if (slot.computedOffset !== 0) {
+        this.emit(encodeInt(BigInt(slot.computedOffset)), loc);
+        this.emit(Op.OP_ADD, loc);
+      }
+      this.emit(encodeInt(BigInt(this.getStackIndex('(aec_i)') + 2)), loc); // +2: elem, base-partial
+      this.emit(Op.OP_PICK, loc);                        // [elem, base, i]
+      if (stride !== 1) {
+        this.emit(encodeInt(BigInt(stride)), loc);
+        this.emit(Op.OP_MUL, loc);                       // [elem, base, i*stride]
+      }
+      this.emit(Op.OP_ADD, loc);                         // [elem, idx]
     }
-    this.emit(encodeInt(BigInt(this.getStackIndex('(aec_i)') + 2)), loc); // +2: elem, base-partial
-    this.emit(Op.OP_PICK, loc);                          // [elem, base, i]
-    if (stride !== 1) {
-      this.emit(encodeInt(BigInt(stride)), loc);
-      this.emit(Op.OP_MUL, loc);                         // [elem, base, i*stride]
-    }
-    this.emit(Op.OP_ADD, loc);                           // [elem, idx]
 
     // 1. IDENTITY: callee master LBC == arr[i] (elem at depth 2 under [idx, callee_bc])
     this.emit(Op.OP_DUP, loc);                           // [elem, idx, idx]
@@ -11504,7 +11537,33 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
 
     // 4. selector (REGULAR + needsSelectorVerification)
-    if (callMode === ExternalCallMode.REGULAR && slot.needsSelectorVerification) {
+    if (callMode === ExternalCallMode.REGULAR && slot.needsSelectorVerification
+      && slot.fnPtrCall && slot.selectorArrayVar) {
+      // Received-value pointers: a SINGLE-method callee's dispatcher is elided (no 0x04 selector push), so
+      // decode/advance sel[i] UNCONDITIONALLY (the remainder must never desync), then compare only when the
+      // co-spent unlocking begins with a 4-byte push - same guard as the single fnPtrCall path; a multi-method
+      // callee always has the prefix, so the wrong method can never be co-spent.
+      this.emit(encodeInt(BigInt(this.getStackIndex('(aec_sel_rem)') + 2)), loc); // +2: elem, idx
+      this.emit(Op.OP_PICK, loc);                        // [elem, idx, selrem copy]
+      this.emitPushdataDecode(new BytesType(), loc);     // [elem, idx, sel_i, newrem]
+      this.emitReplace(this.getStackIndex('(aec_sel_rem)') + 4, this.currentFunction); // (aec_sel_rem):=newrem
+      this.emit(Op.OP_OVER, loc);                        // [elem, idx, sel_i, idx]
+      this.emit(Op.OP_INPUTBYTECODE, loc);               // [elem, idx, sel_i, inBC]
+      this.emit(encodeInt(1n), loc);
+      this.emit(Op.OP_SPLIT, loc);                       // [elem, idx, sel_i, prefix, rest]
+      this.emit(Op.OP_SWAP, loc);                        // [elem, idx, sel_i, rest, prefix]
+      this.emit(encodeInt(4n), loc);
+      this.emit(Op.OP_EQUAL, loc);                       // [elem, idx, sel_i, rest, prefix==0x04]
+      this.emit(Op.OP_IF, loc);                          // [elem, idx, sel_i, rest]
+      this.emit(encodeInt(4n), loc);
+      this.emit(Op.OP_SPLIT, loc);                       // [elem, idx, sel_i, cosel, remainder]
+      this.emit(Op.OP_DROP, loc);                        // [elem, idx, sel_i, cosel]
+      this.emit(Op.OP_EQUALVERIFY, loc);                 // [elem, idx]
+      this.emit(Op.OP_ELSE, loc);                        // [elem, idx, sel_i, rest]
+      this.emit(Op.OP_DROP, loc);
+      this.emit(Op.OP_DROP, loc);                        // [elem, idx]
+      this.emit(Op.OP_ENDIF, loc);
+    } else if (callMode === ExternalCallMode.REGULAR && slot.needsSelectorVerification) {
       this.emit(Op.OP_DUP, loc);                         // [elem, idx, idx]
       this.emit(Op.OP_INPUTBYTECODE, loc);               // [elem, idx, inBC]
       this.emit(encodeInt(1n), loc);
@@ -11558,6 +11617,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // cleanup loop temps
     const temps = ['(aec_i)', '(aec_count)', '(aec_rem)'];
     if (slot.selectorArrayVar) temps.push('(aec_sel_rem)');
+    if (slot.fnPtrCall) temps.push('(aec_idx_rem)', '(aec_previdx)');
     for (const tmp of temps) {
       const idx = this.getStackIndex(tmp);
       this.emit(encodeInt(BigInt(idx)), loc);

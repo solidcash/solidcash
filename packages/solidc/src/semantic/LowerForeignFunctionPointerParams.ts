@@ -13,10 +13,12 @@ import {
   StateAccessNode,
   AssignNode,
   StateAssignNode,
+  StateArrayPushNode,
+  ArrayPushNode,
   IdentifierNode,
   ExpressionNode,
 } from '../ast/AST.js';
-import { FunctionType, AddressType, BytesType } from '@solidcash/utils';
+import { FunctionType, AddressType, BytesType, ArrayType } from '@solidcash/utils';
 import AstTraversal from '../ast/AstTraversal.js';
 
 /**
@@ -38,6 +40,9 @@ export default class LowerForeignFunctionPointerParams extends AstTraversal {
   // Names of the contract's foreign fn-ptr STATE variables; a param STORED into one is a foreign value flow
   // (LowerForeignFunctionPointerStorage flattens the var + calls through it), so it lowers even if never called.
   private fnPtrStateVars = new Set<string>();
+  // Names of the contract's foreign fn-ptr ARRAYS (collections); a param PUSHED into one is likewise a foreign
+  // value flow (LowerReceivedFnPtrArray flattens the array + dispatches through the stored value).
+  private fnPtrArrayNames = new Set<string>();
 
   visitSourceFile(node: SourceFileNode): Node {
     this.synthIfaces = [];
@@ -53,6 +58,12 @@ export default class LowerForeignFunctionPointerParams extends AstTraversal {
       node.stateVariables
         .filter((sv) => sv.type instanceof FunctionType && (sv.type as FunctionType).isExternal)
         .map((sv) => sv.name),
+    );
+    this.fnPtrArrayNames = new Set(
+      node.collections
+        .filter((c) => c.type instanceof ArrayType && (c.type.elementType instanceof FunctionType)
+          && (c.type.elementType as FunctionType).isExternal)
+        .map((c) => c.name),
     );
     node.functions = node.functions.map((f) => this.rewriteFn(f));
     return node;
@@ -97,7 +108,8 @@ export default class LowerForeignFunctionPointerParams extends AstTraversal {
       // Lower a genuinely-foreign param that is CALLED here, or STORED into a foreign fn-ptr state var (the
       // storage pass then calls through the stored value).
       if (fnPtrParams.includes(p) && !selfRefPositions.has(pos)
-        && (this.isCalled(fn, p.name) || this.isStoredToFnPtrState(fn, p.name))) {
+        && (this.isCalled(fn, p.name) || this.isStoredToFnPtrState(fn, p.name)
+          || this.isPushedToFnPtrArray(fn, p.name))) {
         const ft = p.type as FunctionType;
         const ifaceName = this.synthInterface(ft);
         const selName = `__fnsel_${p.name}`;
@@ -166,6 +178,26 @@ export default class LowerForeignFunctionPointerParams extends AstTraversal {
         found = true; return;
       }
       if (n instanceof StateAssignNode && this.fnPtrStateVars.has(n.name) && isNameRead(n.expression)) {
+        found = true; return;
+      }
+      for (const key of Object.keys(n)) {
+        const val = (n as unknown as Record<string, unknown>)[key];
+        if (val instanceof Node) walk(val);
+        else if (Array.isArray(val)) for (const v of val) if (v instanceof Node) walk(v);
+      }
+    };
+    if (fn.body) walk(fn.body);
+    return found;
+  }
+
+  // True if `name` is pushed into a foreign fn-ptr array (`fns.push(name)`) anywhere in fn.
+  private isPushedToFnPtrArray(fn: FunctionDefinitionNode, name: string): boolean {
+    let found = false;
+    const isNameRead = (e: unknown): boolean => e instanceof IdentifierNode && e.name === name;
+    const walk = (n: Node): void => {
+      if (found) return;
+      if ((n instanceof StateArrayPushNode || n instanceof ArrayPushNode)
+        && this.fnPtrArrayNames.has(n.name) && !n.noArg && isNameRead(n.value)) {
         found = true; return;
       }
       for (const key of Object.keys(n)) {

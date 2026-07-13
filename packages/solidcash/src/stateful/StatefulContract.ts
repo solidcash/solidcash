@@ -32,6 +32,7 @@ import {
   SHARED_LIBRARY_SALT,
   ExternalLibraryAbi,
   isComputedBlockhashKey,
+  encodePushdataValue,
 } from '@solidcash/utils';
 import {
   createVirtualMachineBch2026,
@@ -4754,6 +4755,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // Expand an array-element external call `IFoo(arr[i]).m()` into one concrete call per registered callee
     // instance (co-spent in array order; the covenant verifies each against the on-chain arr[i]).
     let presetResolved: (ExternalCallInfo | undefined)[] | undefined;
+    // Loop-expanded group ranges: for a received-value pointer array (fnPtrCall loop slot), the covenant reads
+    // each callee's master input index from ONE witness list, so the fill below appends that list (at the
+    // range's position) instead of per-group indices.
+    const loopIdxRanges: { start: number; count: number; fnPtrCall: boolean }[] = [];
     if (externalCalls?.some((ec) => ec.loopArrayVar)) {
       const expanded: ExternalCallAbi[] = [];
       presetResolved = [];
@@ -4763,14 +4768,16 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           // verifies it against the on-chain selector array); a fixed-method array uses the ABI functionName.
           const entries = this.inner.getExternalTargetEntriesByInterface(ec.interfaceName);
           const resolvedArgs = this._resolveExternalArgs(ec.argSources, args, this.inner.artifact) ?? [];
+          const start = expanded.length;
           for (const entry of entries) {
             const inst = entry.instance as ConnectedStatefulContract;
-            const functionName = (ec.selectorArrayVar && entry.method) ? entry.method : ec.functionName;
+            const fnName = (ec.selectorArrayVar && entry.method) ? entry.method : ec.functionName;
             expanded.push({ ...ec, loopArrayVar: undefined });
             presetResolved.push({
-              externalContract: inst as unknown as StatefulContract, functionName, args: resolvedArgs,
+              externalContract: inst as unknown as StatefulContract, functionName: fnName, args: resolvedArgs,
             });
           }
+          loopIdxRanges.push({ start, count: entries.length, fnPtrCall: !!ec.fnPtrCall });
         } else {
           expanded.push(ec);
           presetResolved.push(undefined);
@@ -5418,7 +5425,31 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       // shifts the fixed offset). A function with any array-element (loop) call keeps the fixed offset (the loop
       // expands into N groups, so a 1:1 runtime fill cannot be aligned).
       const hasLoopSlotAbi = (abiFunction?.externalCalls ?? []).some((ec) => ec.loopArrayVar);
-      for (let i = 0; i < directGroupCount; i++) {
+      // A received-value pointer array (fnPtrCall loop slot) gets ONE witness arg: the framed list of its
+      // expanded groups' master input indices (`__internal__extcallIdxList<slot>`), in group order - the
+      // covenant decodes one per iteration and identity-binds it to arr[i].
+      const appendIdxList = (r: { start: number; count: number }): void => {
+        const parts: Uint8Array[] = [];
+        for (let j = r.start; j < r.start + r.count; j++) {
+          parts.push(encodePushdataValue(BigInt(groupMasterIndices[j]), 'bigint'));
+        }
+        const total = parts.reduce((s, p) => s + p.length, 0);
+        const list = new Uint8Array(total);
+        let off = 0;
+        for (const p of parts) { list.set(p, off); off += p.length; }
+        finalArgs = [...finalArgs, list];
+      };
+      for (let i = 0; i <= directGroupCount; i++) {
+        // A zero-instance fnPtrCall loop slot still owns its (empty) witness list arg at its slot position.
+        for (const r of loopIdxRanges) {
+          if (r.start === i && r.count === 0 && r.fnPtrCall) appendIdxList(r);
+        }
+        if (i === directGroupCount) break;
+        const range = loopIdxRanges.find((r) => i >= r.start && i < r.start + r.count);
+        if (range) {
+          if (range.fnPtrCall && i === range.start) appendIdxList(range);
+          continue; // loop-expanded groups never get per-group index args
+        }
         const ecSlot = groupMetas[i].ecSlot as { fnPtrCall?: boolean };
         if (ecSlot.fnPtrCall || (!hasLoopSlotAbi && directGroupCount > 1)) {
           finalArgs = [...finalArgs, BigInt(groupMasterIndices[i])];

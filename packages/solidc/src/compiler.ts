@@ -28,6 +28,7 @@ import InlineForeignFunctionPointerReturns from './semantic/InlineForeignFunctio
 import LowerForeignFunctionPointerVars from './semantic/LowerForeignFunctionPointerVars.js';
 import LowerForeignFunctionPointerParams from './semantic/LowerForeignFunctionPointerParams.js';
 import LowerForeignFunctionPointerStorage from './semantic/LowerForeignFunctionPointerStorage.js';
+import LowerReceivedFnPtrArray from './semantic/LowerReceivedFnPtrArray.js';
 import LowerBlobFunctionPointers from './semantic/LowerBlobFunctionPointers.js';
 import LowerForeignFunctionPointerStructFields from './semantic/LowerForeignFunctionPointerStructFields.js';
 import LowerForeignFunctionPointerArrayElements from './semantic/LowerForeignFunctionPointerArrayElements.js';
@@ -255,6 +256,10 @@ function compileResolvedAst(ast: Ast, code: string, mergedCompilerOptions: Compi
   // field + a `bytes4 __fnsel_x` companion + the state-address external call with a runtime selector. Runs after
   // the PARAM lowering (which splits `y` into address + `__fnsel_y`) that this pass reads the selector from.
   ast = ast.accept(new LowerForeignFunctionPointerStorage()) as Ast;
+  // A foreign fn-ptr ARRAY holding RECEIVED values (`fns.push(p)`) -> `address[]` + a parallel `bytes[]`
+  // selector array + the per-element on-chain-selector dispatch loop with SDK-filled witness master indices
+  // (the array analogue of the storage pass). After the param lowering that splits `p` -> `__fnsel_p`.
+  ast = ast.accept(new LowerReceivedFnPtrArray()) as Ast;
   // A RECEIVED-value foreign fn-ptr in a struct field (method carried in the value) -> a bytes BLOB
   // `selector ++ address`; a call slices it into an audited state-address external call. After the fixed-method
   // struct-field pass (only received-value fields remain).

@@ -1525,7 +1525,22 @@ export default class SymbolTableTraversal extends AstTraversal {
           .filter((s) => !s.loopArrayVar && !s.inlineLoopDispatch).length;
         for (let i = 0; i < slotCount; i++) {
           const slot = externalCallSlots[i];
-          if (slot.loopArrayVar || slot.inlineLoopDispatch) continue;
+          if (slot.loopArrayVar || slot.inlineLoopDispatch) {
+            // A received-value fn-ptr ARRAY loop (fnPtrCall): the callee layouts are unknown at compile time,
+            // so the loop reads each element's callee master input index from ONE SDK-filled witness list
+            // (framed ints), each identity-verified against arr[i] - the list analogue of extcallMasterIdx.
+            if (slot.loopArrayVar && slot.fnPtrCall) {
+              const listName = `__internal__extcallIdxList${slot.slotIndex}`;
+              const listParam = new ParameterNode(new BytesType(), listName);
+              listParam.location = node.location;
+              node.parameters.push(listParam);
+              this.symbolTables[0].set(Symbol.variable(listParam));
+              const listSymbol = this.symbolTables[0].get(listName);
+              if (listSymbol) listSymbol.references.push({ name: listName } as IdentifierNode);
+              this.pushToStack(listParam);
+            }
+            continue;
+          }
           if (!slot.fnPtrCall && (hasLoopSlot || nonLoopSlotCount <= 1)) continue;
           const idxName = `__internal__extcallMasterIdx${slot.slotIndex}`;
           const idxParam = new ParameterNode(PrimitiveType.BIGINT, idxName);

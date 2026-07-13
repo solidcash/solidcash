@@ -25,12 +25,25 @@ import { UnaryOperator, BinaryOperator } from '../ast/Operator.js';
 import AstTraversal from '../ast/AstTraversal.js';
 import { cloneNode } from '../ast/clone.js';
 
-// Count identifier reads named `name` in an AST subtree (skips non-AST metadata keys). Used to detect a postfix
-// lvalue that is observed again in the same statement, which the after-hoist lowering would miscompile.
-function countIdentifierRefs(node: Node, name: string): number {
+// The base variable name of a supported postfix/prefix lvalue (local / state var / mapping entry / bare array
+// element). All of local, `this.s`, `m[k]`, `arr[i]` expose it as an IdentifierNode/State/Mapping `.name` or the
+// array base identifier - so counting nodes named `base` across the statement finds every reference to it.
+function lvalueBaseName(operand: ExpressionNode): string | undefined {
+  if (operand instanceof IdentifierNode) return operand.name;
+  if (operand instanceof StateAccessNode) return operand.name;
+  if (operand instanceof MappingAccessNode) return operand.name;
+  if (operand instanceof ArrayAccessNode && operand.array instanceof IdentifierNode) return operand.array.name;
+  return undefined;
+}
+
+// Count references to base variable `name` in an AST subtree (skips non-AST metadata keys). Detects a postfix
+// lvalue observed again in the same statement, which the naive after-hoist would miscompile. Conservative:
+// counts by base name, so `m[k1]++ + m[k2]` (distinct keys, actually sound) also trips it - safe (a fail-close,
+// never a silent miscompile).
+function countBaseRefs(node: Node, name: string): number {
   let n = 0;
   const walk = (x: Node): void => {
-    if (x instanceof IdentifierNode && x.name === name) n += 1;
+    if ((x as unknown as { name?: unknown }).name === name) n += 1;
     for (const key of Object.keys(x)) {
       if (key === 'location' || key === 'type' || key === 'symbolTable') continue;
       const v = (x as unknown as Record<string, unknown>)[key];
@@ -40,6 +53,48 @@ function countIdentifierRefs(node: Node, name: string): number {
   };
   walk(node);
   return n;
+}
+
+// True if `operand` is the FIRST (eval-order/pre-order) reference to base `name` in `stmt` - i.e. `name` is not
+// read before the postfix. Only then is it sound to hoist the increment before the statement and reconstruct the
+// pre-value as `base -/+ 1`: an earlier read would otherwise see the (hoisted) post-mutation value.
+// True if base `name` is the target of an assignment anywhere in `stmt` (a plain read is fine, a self-write is
+// not): `a = a++` must yield the OLD a, but the reconstruction's hoisted increment races the outer assign. Only
+// reconstruct when the base is read-only apart from the postfix, so self-writes fail closed instead.
+function baseIsWritten(stmt: Node, name: string): boolean {
+  let written = false;
+  const walk = (x: Node): void => {
+    if (written) return;
+    if (x instanceof AssignNode && x.identifier?.name === name) { written = true; return; }
+    if ((x instanceof StateAssignNode || x instanceof MappingAssignNode || x instanceof ArrayAssignNode)
+      && (x as unknown as { name?: string }).name === name) { written = true; return; }
+    for (const key of Object.keys(x)) {
+      if (written) return;
+      if (key === 'location' || key === 'type' || key === 'symbolTable') continue;
+      const v = (x as unknown as Record<string, unknown>)[key];
+      if (v instanceof Node) walk(v);
+      else if (Array.isArray(v)) { for (const it of v) { if (written) break; if (it instanceof Node) walk(it); } }
+    }
+  };
+  walk(stmt);
+  return written;
+}
+
+function isLeftmostBaseRef(stmt: Node, operand: Node, name: string): boolean {
+  let first: Node | undefined;
+  const walk = (x: Node): void => {
+    if (first) return;
+    if ((x as unknown as { name?: unknown }).name === name) { first = x; return; }
+    for (const key of Object.keys(x)) {
+      if (first) return;
+      if (key === 'location' || key === 'type' || key === 'symbolTable') continue;
+      const v = (x as unknown as Record<string, unknown>)[key];
+      if (v instanceof Node) walk(v);
+      else if (Array.isArray(v)) { for (const it of v) { if (first) break; if (it instanceof Node) walk(it); } }
+    }
+  };
+  walk(stmt);
+  return first === operand;
 }
 
 /**
@@ -92,33 +147,46 @@ export default class DesugarPostfixExpressions extends AstTraversal {
     const isPrefix = op === UnaryOperator.PREFIX_INCREMENT || op === UnaryOperator.PREFIX_DECREMENT;
     if (!isPostfix && !isPrefix) return node;
     // Conditional positions (ternary branch, short-circuit right operand, loop condition) make the hoist
-    // conditional either way; postfix additionally cannot hoist after a return (dead). Prefix hoists before the
-    // statement, which is fine in a return. Reject the unsupported combinations rather than mis-compile.
-    if (this.suppress || (isPostfix && this.inReturn)) {
+    // conditional, so it cannot be pulled out of the expression - reject.
+    if (this.suppress) {
       throw new Error(
-        "'++'/'--' as an expression is only supported at statement scope (and prefix additionally in a return), "
-        + 'not inside a ternary, short-circuit (&&/||), or loop condition; assign it to a variable first',
-      );
-    }
-    // Postfix reads the PRE-mutation value and hoists the increment AFTER the statement. That is only sound when
-    // the lvalue is not observed again in the same statement: `a++ + a` must be old + NEW (2a+1), but the after-
-    // hoist makes the second read see OLD (2a) - a silent miscompile. Fail closed for an identifier read more than
-    // once (its postfix operand counts as one). Prefix hoists BEFORE, so re-reads see the new value and are sound.
-    if (isPostfix && node.expression instanceof IdentifierNode && this.currentStmt
-      && countIdentifierRefs(this.currentStmt, node.expression.name) > 1) {
-      throw new Error(
-        `postfix '${node.expression.name}++'/'--' cannot be lowered when '${node.expression.name}' is read again in `
-        + 'the same statement (the increment would be observed out of order); assign it to a plain variable first',
+        "'++'/'--' as an expression is not supported inside a ternary, short-circuit (&&/||), or loop condition; "
+        + 'assign it to a plain variable first',
       );
     }
     const increment = this.buildIncrement(node.expression, op);
     if (!increment) return node; // unsupported lvalue shape - leave it
-    if (isPrefix) {
-      this.before.push(increment);
-      return node.expression; // the read = the post-mutation value (increment already ran)
+    // Prefix yields the POST-mutation value: hoist the increment before, read the (new) lvalue.
+    if (isPrefix) { this.before.push(increment); return node.expression; }
+
+    // Postfix yields the PRE-mutation value. Simple lowering: read the lvalue, hoist the increment AFTER the
+    // statement - correct ONLY when the lvalue is read once and not in a return (an after-return hoist is dead).
+    // When it is re-read (`a++ + a` must be old + NEW, not 2a) or in a return, hoist the increment BEFORE and
+    // reconstruct the pre-value as `base -/+ 1`. This uses the lvalue's OWN type (no temp: `(a-1)+a` type-checks
+    // as a+a), and is sound ONLY when the postfix is the FIRST reference to the lvalue (leftmost) - an earlier
+    // read would otherwise see the hoisted post-value. Non-leftmost re-reads fail closed (never a miscompile).
+    const base = lvalueBaseName(node.expression);
+    const reRead = base !== undefined && this.currentStmt !== undefined
+      && countBaseRefs(this.currentStmt, base) > 1;
+    if (this.inReturn || reRead) {
+      if (base !== undefined && this.currentStmt !== undefined
+        && isLeftmostBaseRef(this.currentStmt, node.expression, base)
+        && !baseIsWritten(this.currentStmt, base)) {
+        this.before.push(increment); // base = base +/- 1 (runs before the statement)
+        const one = new IntLiteralNode(1n); one.location = node.location;
+        const undo = op === UnaryOperator.POSTFIX_INCREMENT ? BinaryOperator.MINUS : BinaryOperator.PLUS;
+        const pre = new BinaryOpNode(cloneNode(node.expression) as ExpressionNode, undo, one);
+        pre.location = node.location;
+        return pre; // pre-mutation value = the already-mutated lvalue, undone by one
+      }
+      throw new Error(
+        `postfix '${base ?? 'x'}++'/'--' cannot be lowered when '${base ?? 'the lvalue'}' is read before the `
+        + 'increment in the same statement (or is an unsupported lvalue); assign it to a plain variable first',
+      );
     }
+    // Single-use postfix at statement scope: read the pre-value, hoist the increment after.
     this.after.push(increment);
-    return node.expression; // the read = the pre-mutation value
+    return node.expression;
   }
 
   // Conditional/terminal positions: hoisting the increment after the statement would change its

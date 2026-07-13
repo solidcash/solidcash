@@ -149,43 +149,41 @@ describe('tuple ternary cond ? (a, b) : (c, d) (Solidity parity)', () => {
 });
 
 describe('SBE-28: postfix ++/-- as an expression (yields the pre-mutation value)', () => {
-  // `lvalue++` used as an expression (e.g. the EIP-2612 `nonces[owner]++`) desugars to a read of the old value
-  // plus a hoisted `lvalue = lvalue +/- 1`. Supported at statement scope, on locals / state vars / mapping
-  // entries; rejected (clean error) in return / ternary / short-circuit / loop-condition positions.
+  // `lvalue++` yields the PRE-mutation value. Single-use at statement scope: read the lvalue, hoist the increment
+  // AFTER. Re-read (`a++ + a`) or in a return: hoist the increment BEFORE and reconstruct the pre-value as
+  // `base -/+ 1` (uses the lvalue's own type, no temp). Sound only when the postfix is the FIRST reference to the
+  // lvalue and the lvalue is not self-written; non-leftmost re-reads (`a + a++`), self-writes (`a = a++`), and
+  // conditional positions (ternary/&&/||/loop) fail closed. VM values in solidcash PostfixReconstruct.test.ts.
+  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
   it('compiles a local postfix increment in an expression', () => {
-    expect(compileString('contract C() { function f() { int i = 0; int x = i++ * 2; require(x == 0); } }')
-      .contractName).toBe('C');
+    expect(cc('contract C() { function f() { int i = 0; int x = i++ * 2; require(x == 0); } }')).toBe('C');
   });
 
   it('compiles a mapping-entry postfix increment in abi.encode (the permit nonce pattern)', () => {
-    expect(compileString(
-      'contract C { mapping(address => uint256) nonces; bytes blob;'
-      + ' function f(address owner) external { this.blob = abi.encode(owner, nonces[owner]++); } }',
-      { solidityImportCompat: true },
-    ).contractName).toBe('C');
+    expect(cc('contract C { mapping(address => uint256) nonces; bytes blob;'
+      + ' function f(address owner) external { this.blob = abi.encode(owner, nonces[owner]++); } }')).toBe('C');
   });
 
-  it('rejects a postfix increment in a return position with a clear error', () => {
-    expect(() => compileString('contract C() { int n; function f() returns (int) { int i = 0; return i++; } }'))
-      .toThrow('only supported at statement scope');
+  it('compiles a postfix increment in a return (reconstructs the pre-value)', () => {
+    expect(cc('contract C() { int n; function f() returns (int) { int i = 0; return i++; } }')).toBe('C');
   });
 
-  // The after-hoist reads the PRE-value and increments after the statement, so a re-read of the same lvalue in the
-  // same statement would see the OLD value: `a++ + a` must be old + NEW (2a+1) but would compile to 2a. Fail closed
-  // rather than silently miscompile (VM-confirmed 2a before this guard). Prefix is unaffected (it hoists before).
-  it('rejects postfix `a++` when `a` is read again in the same statement (would miscompile 2a vs 2a+1)', () => {
-    expect(() => compileString('contract C() { function f() { int a = 5; require(a++ + a == 11); } }'))
-      .toThrow('read again in the same statement');
-  });
-
-  it('rejects a self-referential postfix assign `a = a++`', () => {
-    expect(() => compileString('contract C() { function f() { int a = 5; a = a++; require(a == 5); } }'))
-      .toThrow('read again in the same statement');
+  it('compiles a leftmost re-read `a++ + a` correctly (hoist increment, reconstruct pre-value = 2a+1)', () => {
+    expect(cc('contract C() { function f() { int a = 5; require(a++ + a == 11); } }')).toBe('C');
   });
 
   it('still allows a single-use postfix (not re-read) - `int x = a++`', () => {
-    expect(compileString('contract C() { function f() returns (int) { int a = 5; int x = a++; return x; } }')
-      .contractName).toBe('C');
+    expect(cc('contract C() { function f() returns (int) { int a = 5; int x = a++; return x; } }')).toBe('C');
+  });
+
+  it('fail-closes a non-leftmost re-read `a + a++` (the earlier read would see the hoisted post-value)', () => {
+    expect(() => cc('contract C() { function f() { int a = 5; int x = a + a++; require(x >= 0); } }'))
+      .toThrow('read before the increment');
+  });
+
+  it('fail-closes a self-write postfix `a = a++` (the outer assign races the hoisted increment)', () => {
+    expect(() => cc('contract C() { function f() { int a = 5; a = a++; require(a == 5); } }'))
+      .toThrow('read before the increment');
   });
 });
 
@@ -212,7 +210,7 @@ describe('prefix ++/-- as an expression (yields the post-mutation value)', () =>
   it('rejects a prefix increment in a ternary branch with a clear error', () => {
     expect(() => compileString('contract C { function f(bool c) external pure returns (uint) {'
       + ' uint i = 0; return c ? ++i : i; } }', { solidityImportCompat: true }))
-      .toThrow('not inside a ternary');
+      .toThrow('inside a ternary');
   });
 });
 

@@ -6098,7 +6098,21 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       && emitInfos.length === 0
       && derivTransferCount === 0;
 
-    if (hasNothingToDerive) {
+    // A provably read-only getter (compiler writesState=false) produces output state == input state, so the
+    // builder reproduces the input commitments (empty stateUpdates) and the multi-pass derivation probe is pure
+    // overhead. Skipping it makes getter calls cheap on-chain here AND in production. Guards: value-returning
+    // views (returnEmitOutputIndex>=0) still need the return blob derived, and external call/read groups still
+    // need Phase-1 derivation. Misclassification fails closed - the covenant rejects a mismatched output.
+    // Kill-switch: SC_DISABLE_GETTER_SKIP=1 forces the full probe (escape hatch for the covenant-path change).
+    // Read via globalThis - this is a browser+node library, so `process` is not typed/present in the prod build.
+    const env = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env;
+    const isReadOnlyGetter = env?.SC_DISABLE_GETTER_SKIP !== '1'
+      && abiFunction?.writesState === false
+      && returnEmitOutputIndex < 0
+      && externalCallUtxoGroups.length === 0
+      && externalOutStateUtxoGroups.length === 0;
+
+    if (hasNothingToDerive || isReadOnlyGetter) {
       // Nothing to derive - set empty state so _applyOverrides doesn't throw
       (builder as any).__derivedState = {};
       (builder as any).__vmErrored = false;

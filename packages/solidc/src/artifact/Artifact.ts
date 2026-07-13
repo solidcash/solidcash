@@ -7,8 +7,9 @@ import { binToHex } from '@bitauth/libauth';
 import { version } from '../index.js';
 import {
   Ast, StateVariableVisibility, InterfaceNode, InterfaceCollectionNode, ExternalCallMode,
-  StructDefinitionNode, FunctionDefinitionNode,
+  StructDefinitionNode, FunctionDefinitionNode, FunctionModifier,
 } from '../ast/AST.js';
+import { containsStatefulOperation } from '../semantic/EnsureFinalRequireTraversal.js';
 
 /** The mapping key type as the SDK must ENCODE it. An enum key is int-backed (the compiler stores/derives it as
  * its integer member value), so it encodes as 'bigint' - its VM representation - not the enum name. The enum
@@ -26,9 +27,34 @@ function abiTypeString(type: Type | undefined): string {
   return type.toString();
 }
 
+// Covenant-bypass / full-state modifiers: a function carrying one may touch any state, so treat as a writer.
+const STATE_WRITING_MODIFIERS = [
+  FunctionModifier.UPGRADE, FunctionModifier.SELFDESTRUCT, FunctionModifier.DELEGATE, FunctionModifier.UNSAFE,
+];
+
+/**
+ * Conservatively decide whether a function mutates any covenant-derived state. Returns false ONLY when the body
+ * has no stateful statement (state/array/mapping write, delete, emit, transfer, low-level/token-container op)
+ * AND the function has no external call, child deploy, library delegate, dynamic-storage write, split/merge, or
+ * covenant-bypass modifier. Any doubt -> true, so a misclassified writer never gets the SDK's derivation skip.
+ */
+function computeWritesState(func: FunctionDefinitionNode): boolean {
+  if (containsStatefulOperation(func.body?.statements)) return true;
+  if ((func.externalCalls?.length ?? 0) > 0) return true;
+  if ((func.deployTargets?.length ?? 0) > 0) return true;
+  if ((func.libraryDelegateCalls?.length ?? 0) > 0) return true;
+  if ((func.dynamicWrites?.length ?? 0) > 0) return true;
+  if ((func.lowLevelCalls?.length ?? 0) > 0) return true;
+  if (func.splitCountParam !== undefined || func.mergeCountParam !== undefined) return true;
+  if (func.modifiers.some((m) => STATE_WRITING_MODIFIERS.includes(m))) return true;
+  if (func.entryAccesses?.some((ea) => ea.operations.some((op) => op !== 'read'))) return true;
+  return false;
+}
+
 /** Build the common metadata fields for an ABI function entry. */
-function buildFunctionAbiMetadata(func: FunctionDefinitionNode): Partial<AbiFunction> {
+function buildFunctionAbiMetadata(func: FunctionDefinitionNode, isStateful = false): Partial<AbiFunction> {
   return {
+    ...(isStateful && { writesState: computeWritesState(func) }),
     ...(func.requiredNftIndices !== undefined
       && { requiredNftIndices: func.requiredNftIndices }),
     ...(func.entryAccesses && func.entryAccesses.length > 0 && {
@@ -270,6 +296,10 @@ export function generateArtifact(
     return v !== 'internal' && v !== 'private';
   });
 
+  // Mirror the stateLayout gate below: writesState is only meaningful (and only emitted) for stateful contracts.
+  const isStateful = contract.stateVariables.length > 0 || contract.collections.length > 0
+    || compilerOptions.forceStateful || contract.usesBlockhash || contract.deploysStatefulChild;
+
   const abi: AbiFunction[] = abiFunctions.map((func) => ({
     name: func.name,
     ...(func.functionSelector && { selector: binToHex(func.functionSelector) }),
@@ -283,7 +313,7 @@ export function generateArtifact(
     ...(func.modifiers.length > 0 && {
       modifiers: func.modifiers.map((m) => m.toString()),
     }),
-    ...buildFunctionAbiMetadata(func),
+    ...buildFunctionAbiMetadata(func, isStateful),
     ...(func.splitCountParam && { splitCountParam: func.splitCountParam }),
     ...(func.mergeCountParam && { mergeCountParam: func.mergeCountParam }),
   }));

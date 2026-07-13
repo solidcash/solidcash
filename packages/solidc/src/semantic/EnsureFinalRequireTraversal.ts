@@ -475,7 +475,7 @@ function findFirstReturn(statements: StatementNode[] = []): ReturnNode | undefin
   return undefined;
 }
 
-function containsStatefulOperation(statements: StatementNode[] = []): boolean {
+export function containsStatefulOperation(statements: StatementNode[] = []): boolean {
   for (const s of statements) {
     if (isStatefulOp(s)) return true;
     if (s instanceof BranchNode) {

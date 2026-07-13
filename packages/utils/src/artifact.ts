@@ -115,6 +115,10 @@ export interface AbiFunction {
   outputs?: readonly AbiOutput[];       // return types (omitted for void functions)
   modifiers?: readonly string[];        // function modifiers (omitted if default external)
   requiredNftIndices?: readonly number[];  // sorted NFT indices this function accesses (absent = all)
+  // Stateful contracts only: false = provably read-only (no state/entry write, transfer, emit, deploy, external
+  // call, delegate, dynamic write, split/merge, or covenant-bypass modifier). Lets the SDK skip the multi-pass
+  // derivation probe for getters (output state == input state). Absent = unknown/stateless (treat as writing).
+  writesState?: boolean;
   entryAccesses?: readonly EntryAccessAbi[];
   externalReads?: readonly ExternalReadAbi[];
   externalCalls?: readonly ExternalCallAbi[];

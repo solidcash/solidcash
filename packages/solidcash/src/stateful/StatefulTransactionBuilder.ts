@@ -1653,9 +1653,15 @@ export class StatefulTransactionBuilder {
     const externalCallOutputCount = this.externalCallUtxoGroups.reduce(
       (sum, g) => (g.blockInputs ? sum + g.blockInputs.length : sum + 1 + g.dataNftUtxos.length), 0,
     );
+    // When a dynamic-array read coexists with external calls, build() emits the read chunks' preservation
+    // outputs BEFORE the callee outputs (loopChunkBeforeCallees), so everything downstream of the entries
+    // (transfers, events, RETURN events - this is the chain root they all build on) shifts by the chunk
+    // count. Without external calls the iteration entries trail the block instead (no shift). Must match
+    // the witness-side formula in StatefulContract (returnEventOutputBase counts iterationEntryInputs).
+    const chunkBeforeCalleeCount = this.externalCallUtxoGroups.length > 0 ? this.iterationEntryInputs.length : 0;
     // Low-level call outputs are now AFTER entries/SC/TCs/transfers/events (matching block layout)
     return masterOutputCount + dataNftOutputCount + readOnlyOutputCount + blockhashOutputCount
-      + outStateOutputCount + externalCallOutputCount;
+      + outStateOutputCount + externalCallOutputCount + chunkBeforeCalleeCount;
   }
 
   /**

@@ -618,6 +618,21 @@ function resolveStructField(off: YulExpressionNode):
   return { varName, struct: t, index };
 }
 
+// `mstore(add(s, 32*i), word)` == `s.field_i = word`: rebuild the value-copy struct with field i replaced by the
+// stored word (cast to the field type), the other fields read back from `s` - the value-copy field-write form the
+// AstBuilder desugar produces for `s.f = v`.
+function structFieldStore(
+  sf: { varName: string; struct: StructType; index: number }, word: ExpressionNode, src: YulNode,
+): StatementNode {
+  const args: ExpressionNode[] = sf.struct.fields.map((f, i) => {
+    if (i === sf.index) return loc(new CastNode(f.type, word, false), src);
+    const base = loc(new IdentifierNode(sf.varName), src);
+    return loc(new FieldAccessNode(base, f.name), src);
+  });
+  const ctor = loc(new FunctionCallNode(loc(new IdentifierNode(sf.struct.name), src), args), src);
+  return loc(new AssignNode(loc(new IdentifierNode(sf.varName), src), ctor), src);
+}
+
 function lowerCall(call: YulFunctionCallNode): ExpressionNode {
   const { name, args } = call;
   if (name in NULLARY_CONTEXT && args.length === 0) {
@@ -937,12 +952,9 @@ function lowerStatement(stmt: YulStatementNode): StatementNode {
       // free-memory buffer (`mstore(buf/add(buf,off), v)`) or the compile-time constant-offset memory model
       // (emitting nothing, read back at create/keccak time).
       if (e.name === 'mstore' && e.args.length === 2) {
-        // NOTE: `mstore(add(s, 32*i), v)` on a high-level struct (== `s.field_i = v`) is NOT lowered here yet -
-        // the rebuild `s = S(..)` emitted from this late pass does not compose with the memory-model conversion
-        // of `s` (the store is dropped). READ (`mload` on a struct) is handled and VM-verified; WRITE needs the
-        // pass-order coordination scoped in docs/unified-linear-memory.md. A struct-address mstore falls through
-        // to the buffer path (a struct is not a valid buffer pointer -> the block stays unlowered = the prior
-        // behavior, non-regressing) rather than silently miscompiling.
+        // `mstore(add(s, 32*i), v)` on a high-level struct == `s.field_i = v` (value-copy field rebuild).
+        const sf = resolveStructField(e.args[0]);
+        if (sf) return structFieldStore(sf, lowerValue(e.args[1]), e);
         if (runtimeMem) return runtimeMstore(lowerValue(e.args[0]), lowerValue(e.args[1]), e);
         const bufPtr = resolveBufferPtr(e.args[0]);
         if (bufPtr) {

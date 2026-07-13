@@ -32,7 +32,12 @@ import {
   HexLiteralNode,
   IdentifierNode,
   ExpressionNode,
+  AssemblyStatementNode,
 } from '../ast/AST.js';
+import {
+  YulNode, YulBlockNode, YulPathNode, YulFunctionCallNode, YulExpressionStatementNode, YulAssignmentNode,
+  YulVariableDeclarationNode, YulIfNode, YulSwitchNode, YulForLoopNode, YulFunctionDefinitionNode,
+} from '../ast/YulAST.js';
 import { BinaryOperator, UnaryOperator } from '../ast/Operator.js';
 import AstTraversal from '../ast/AstTraversal.js';
 import { cloneNode } from '../ast/clone.js';
@@ -341,6 +346,34 @@ export default class LowerMemoryModel extends AstTraversal {
   // variable in its alias group, must be a lowering this pass supports. Any unsupported use (pass to a call,
   // return, state assign, abi.encode, reassignment, ...) taints the whole group, which then falls back to
   // value-copy. This is the invariant that makes flag-on non-regressing.
+  // Collect every outer-variable name referenced inside a Yul (inline assembly) sub-tree, so the gate can taint a
+  // memory candidate whose address the assembly takes (assembly is an opaque leaf to the normal AST walk).
+  private collectYulRefs(node: YulNode | undefined, names: Set<string>): void {
+    if (!node) return;
+    if (node instanceof YulPathNode) { names.add(node.base); return; }
+    if (node instanceof YulFunctionCallNode) { node.args.forEach((a) => this.collectYulRefs(a, names)); return; }
+    if (node instanceof YulBlockNode) { node.statements.forEach((s) => this.collectYulRefs(s, names)); return; }
+    if (node instanceof YulExpressionStatementNode) { this.collectYulRefs(node.expression, names); return; }
+    if (node instanceof YulAssignmentNode) {
+      node.paths.forEach((p) => names.add(p.base)); this.collectYulRefs(node.value, names); return;
+    }
+    if (node instanceof YulVariableDeclarationNode) { this.collectYulRefs(node.value, names); return; }
+    if (node instanceof YulIfNode) {
+      this.collectYulRefs(node.condition, names); this.collectYulRefs(node.body, names); return;
+    }
+    if (node instanceof YulSwitchNode) {
+      this.collectYulRefs(node.expression, names);
+      node.cases.forEach((c) => this.collectYulRefs(c.body, names));
+      this.collectYulRefs(node.defaultBody, names);
+      return;
+    }
+    if (node instanceof YulForLoopNode) {
+      this.collectYulRefs(node.pre, names); this.collectYulRefs(node.condition, names);
+      this.collectYulRefs(node.post, names); this.collectYulRefs(node.body, names); return;
+    }
+    if (node instanceof YulFunctionDefinitionNode) { this.collectYulRefs(node.body, names); return; }
+  }
+
   private analyzeConvertible(body: BlockNode): Set<string> {
     // 1. Classify candidate memory locals + their mem type. Roots: fresh alloc / struct ctor / default. Derived:
     //    a decl whose init is another candidate (ident alias) OR a ref-field/element read of one (`tmp = s.a`) -
@@ -455,6 +488,18 @@ export default class LowerMemoryModel extends AstTraversal {
     };
     const walk = (n: Node | undefined): void => {
       if (!n) return;
+      // Raw assembly (Yul) is opaque to this walk, so a candidate whose ADDRESS the assembly takes (`mstore(s)`,
+      // `mload(add(s, K))`) would be invisible and wrongly convert. Taint any candidate referenced in an assembly
+      // block -> value-copy, so the Yul struct-field mload/mstore bridge (LowerInlineAssembly) reads/writes the
+      // value-copy form and composes with this pass (a pointer-model `s` does not survive the late rebuild).
+      if (n instanceof AssemblyStatementNode) {
+        if (n.yulBlock) {
+          const refs = new Set<string>();
+          this.collectYulRefs(n.yulBlock, refs);
+          for (const name of refs) if (candidates.has(name)) tainted.add(name);
+        }
+        return;
+      }
       // A method / `using`-attached bound call `recv.method(args)` is built as a FunctionCall whose identifier is
       // the QUALIFIED name `recv.method` (the receiver is baked into the name string, NOT a child node). If recv
       // is a candidate, this is an unhandled use -> taint it. (Falls through to walk the args below.)

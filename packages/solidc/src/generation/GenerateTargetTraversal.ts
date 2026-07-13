@@ -171,7 +171,7 @@ import { isNumericType } from '../utils.js';
 import { getStackEffect } from '../asmStackEffects.js';
 import {
   InvalidModifierCombinationError, MsgDataInSubroutineError, MsgSigInInternalFunctionError, EntryWriteInLoopError,
-  ChainedEntryElementReadError,
+  ChainedEntryElementReadError, ConditionalDeployError,
 } from '../Errors.js';
 import { analyzeInlineAssembly } from '../semantic/InlineAssemblyDiagnostics.js';
 
@@ -7076,6 +7076,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     // Step 4: If stateful deploy, get child category and register pending deploy
     if (node.isStatefulDeploy) {
+      // A stateful deploy registers its child output at a FIXED transaction-layout slot resolved at the function
+      // epilogue; inside a branch/loop (scopeDepth > 0) its master-LBC/category are pushed only on the taken path,
+      // so the epilogue reads a value that is not on the stack (an internal "does not exist on the stack" crash).
+      // Reject cleanly with an actionable message instead. Unconditional / bare-block / unchecked deploys are
+      // scopeDepth 0 and unaffected.
+      if (this.scopeDepth > 0) throw new ConditionalDeployError(node);
       const deployIdx = this.deployCounter++;
       const masterLbcStackName = `__deploy_master_lbc_${deployIdx}`;
       const categoryStackName = `__deploy_category_${deployIdx}`;

@@ -5,6 +5,34 @@ import { compileString } from '../src/index.js';
 
 // Contract deployment: new C(...), create/create2 options, type(C).creationCode, selfdestruct, parent ctor.
 
+// A stateful `new C(...)` deploy registers its child output at a fixed transaction-layout slot resolved at the
+// function epilogue, so a deploy inside a conditional branch or loop (whose master-LBC/category are pushed only on
+// the taken path) used to crash the codegen stack tracker with an internal "does not exist on the stack" error.
+// It is now rejected cleanly with an actionable message; unconditional / bare-block / unchecked deploys are
+// unaffected (they compile as before).
+describe('conditional deploy (new C() inside a branch/loop) -> clean actionable error, not an internal crash', () => {
+  const CHILD = 'contract Child { int x; constructor() { x = 1; } }';
+  const cc = (body: string): string => `${CHILD} contract C { ${body} }`;
+  const compat = { solidityImportCompat: true };
+
+  it('deploy inside an if-branch throws a clear "not yet supported" error (not a stack-tracker crash)', () => {
+    expect(() => compileString(cc('function f(uint c) external { if (c==1) { Child ch = new Child(); } require(true); }'),
+      compat)).toThrow(/inside a conditional branch or loop is not yet supported/);
+  });
+  it('deploy inside a for-loop throws the same clean error', () => {
+    expect(() => compileString(cc('function f() external { for (uint i=0;i<2;i++) { Child ch = new Child(); } require(true); }'),
+      compat)).toThrow(/inside a conditional branch or loop is not yet supported/);
+  });
+  it('an unconditional deploy still compiles', () => {
+    expect(compileString(cc('function f() external { Child ch = new Child(); require(true); }'), compat).contractName)
+      .toBe('C');
+  });
+  it('a deploy in a bare block (not a branch) still compiles', () => {
+    expect(compileString(cc('function f() external { { Child ch = new Child(); } require(true); }'), compat).contractName)
+      .toBe('C');
+  });
+});
+
 describe('SBE-18: parent-constructor args (inheritance-list + constructor-level) inline the parent ctor body', () => {
   // Uses int state vars (not string) so the two inlined parent writes don't hit the W5 two-distinct-dynamic-
   // var-write limit (the ERC20 name+symbol pattern), which is orthogonal to the inlining feature under test.

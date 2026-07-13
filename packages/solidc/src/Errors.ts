@@ -157,6 +157,19 @@ export class TransferInStatelessContractError extends SolidCashError {
   }
 }
 
+export class ConditionalDeployError extends SolidCashError {
+  constructor(
+    public node: InstantiationNode,
+  ) {
+    super(
+      node,
+      'deploying a contract (new C(...)) inside a conditional branch or loop is not yet supported: the deploy '
+      + 'covenant reserves the child\'s output at a fixed transaction layout slot, which a conditionally-taken or '
+      + 'repeated deploy cannot satisfy. Hoist the `new C(...)` before the if/for and use the result inside it',
+    );
+  }
+}
+
 export class EmptyFunctionError extends SolidCashError {
   constructor(
     public node: FunctionDefinitionNode,

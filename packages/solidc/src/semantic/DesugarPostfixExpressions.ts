@@ -25,6 +25,23 @@ import { UnaryOperator, BinaryOperator } from '../ast/Operator.js';
 import AstTraversal from '../ast/AstTraversal.js';
 import { cloneNode } from '../ast/clone.js';
 
+// Count identifier reads named `name` in an AST subtree (skips non-AST metadata keys). Used to detect a postfix
+// lvalue that is observed again in the same statement, which the after-hoist lowering would miscompile.
+function countIdentifierRefs(node: Node, name: string): number {
+  let n = 0;
+  const walk = (x: Node): void => {
+    if (x instanceof IdentifierNode && x.name === name) n += 1;
+    for (const key of Object.keys(x)) {
+      if (key === 'location' || key === 'type' || key === 'symbolTable') continue;
+      const v = (x as unknown as Record<string, unknown>)[key];
+      if (v instanceof Node) walk(v);
+      else if (Array.isArray(v)) v.forEach((item) => { if (item instanceof Node) walk(item as Node); });
+    }
+  };
+  walk(node);
+  return n;
+}
+
 /**
  * Lowers postfix `lvalue++`/`lvalue--` and prefix `++lvalue`/`--lvalue` used as an EXPRESSION (e.g.
  * `abi.encode(.., nonces[owner]++, ..)` the EIP-2612 nonce pattern, or `arr[i] = ++x` / `return ++counter`).
@@ -44,6 +61,7 @@ export default class DesugarPostfixExpressions extends AstTraversal {
   private before: StatementNode[] = [];
   private suppress = false;
   private inReturn = false;
+  private currentStmt: StatementNode | undefined; // innermost enclosing statement (a sequence point)
 
   visitSourceFile(node: SourceFileNode): Node {
     if (node.contract) node.contract = this.visit(node.contract) as ContractNode;
@@ -55,11 +73,11 @@ export default class DesugarPostfixExpressions extends AstTraversal {
   visitBlock(node: BlockNode): Node {
     const out: StatementNode[] = [];
     for (const stmt of node.statements ?? []) {
-      const savedAfter = this.after; const savedBefore = this.before;
-      this.after = []; this.before = [];
+      const savedAfter = this.after; const savedBefore = this.before; const savedStmt = this.currentStmt;
+      this.after = []; this.before = []; this.currentStmt = stmt;
       const visited = this.visit(stmt) as StatementNode;
       const before = this.before; const after = this.after;
-      this.after = savedAfter; this.before = savedBefore;
+      this.after = savedAfter; this.before = savedBefore; this.currentStmt = savedStmt;
       // Prefix increments hoist BEFORE the statement (they read the post-mutation value); postfix AFTER.
       out.push(...before, visited, ...after);
     }
@@ -80,6 +98,17 @@ export default class DesugarPostfixExpressions extends AstTraversal {
       throw new Error(
         "'++'/'--' as an expression is only supported at statement scope (and prefix additionally in a return), "
         + 'not inside a ternary, short-circuit (&&/||), or loop condition; assign it to a variable first',
+      );
+    }
+    // Postfix reads the PRE-mutation value and hoists the increment AFTER the statement. That is only sound when
+    // the lvalue is not observed again in the same statement: `a++ + a` must be old + NEW (2a+1), but the after-
+    // hoist makes the second read see OLD (2a) - a silent miscompile. Fail closed for an identifier read more than
+    // once (its postfix operand counts as one). Prefix hoists BEFORE, so re-reads see the new value and are sound.
+    if (isPostfix && node.expression instanceof IdentifierNode && this.currentStmt
+      && countIdentifierRefs(this.currentStmt, node.expression.name) > 1) {
+      throw new Error(
+        `postfix '${node.expression.name}++'/'--' cannot be lowered when '${node.expression.name}' is read again in `
+        + 'the same statement (the increment would be observed out of order); assign it to a plain variable first',
       );
     }
     const increment = this.buildIncrement(node.expression, op);

@@ -169,6 +169,24 @@ describe('SBE-28: postfix ++/-- as an expression (yields the pre-mutation value)
     expect(() => compileString('contract C() { int n; function f() returns (int) { int i = 0; return i++; } }'))
       .toThrow('only supported at statement scope');
   });
+
+  // The after-hoist reads the PRE-value and increments after the statement, so a re-read of the same lvalue in the
+  // same statement would see the OLD value: `a++ + a` must be old + NEW (2a+1) but would compile to 2a. Fail closed
+  // rather than silently miscompile (VM-confirmed 2a before this guard). Prefix is unaffected (it hoists before).
+  it('rejects postfix `a++` when `a` is read again in the same statement (would miscompile 2a vs 2a+1)', () => {
+    expect(() => compileString('contract C() { function f() { int a = 5; require(a++ + a == 11); } }'))
+      .toThrow('read again in the same statement');
+  });
+
+  it('rejects a self-referential postfix assign `a = a++`', () => {
+    expect(() => compileString('contract C() { function f() { int a = 5; a = a++; require(a == 5); } }'))
+      .toThrow('read again in the same statement');
+  });
+
+  it('still allows a single-use postfix (not re-read) - `int x = a++`', () => {
+    expect(compileString('contract C() { function f() returns (int) { int a = 5; int x = a++; return x; } }')
+      .contractName).toBe('C');
+  });
 });
 
 // Prefix `++lvalue` used as an EXPRESSION yields the POST-mutation value; its increment hoists BEFORE the

@@ -163,11 +163,11 @@ export class ConditionalDeployError extends SolidCashError {
   ) {
     super(
       node,
-      'deploying a contract (new C(...)) inside a conditional branch or loop is not supported: the deploy covenant '
-      + 'reserves the child\'s output at a FIXED transaction-layout slot, which a conditionally-taken (branch) or '
-      + 'variable-count (loop) deploy cannot satisfy. For a single conditional deploy, hoist the `new C(...)` before '
-      + 'the branch and use the result inside it; a per-iteration deploy (N children in a for-loop) has no '
-      + 'fixed-layout equivalent on BCH',
+      'deploying a contract (new C(...)) inside a conditional branch or loop is not yet implemented: the deploy '
+      + 'covenant currently verifies each child genesis at a FIXED block-layout slot fixed at compile time, so a '
+      + 'conditional (branch) or variable-count (loop) deploy needs conditional / in-loop genesis verification that '
+      + 'is not yet emitted. The SDK auto-derivation already supplies the runtime genesis outputs, so this is a '
+      + 'codegen gap, not a BCH limitation. Workaround: hoist a single deploy before the branch',
     );
   }
 }

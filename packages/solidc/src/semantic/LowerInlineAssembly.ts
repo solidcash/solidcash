@@ -282,6 +282,36 @@ function runtimeMstore(offExpr: ExpressionNode, valExpr: ExpressionNode, src: Yu
   return loc(new BlockNode([decl, growTo(offName, 32n, src), store]), src);
 }
 
+// returndatacopy(dst, off, len): splice the last low-level call's return data (the tracked `bytes` var) into
+// __yulmem[dst : dst+len], so a later mload/return reads the copied data. The return data is captured by the
+// external-call lowering as a `bytes` local (lastReturnData). No-op if no call preceded (empty return data).
+function runtimeReturndatacopy(
+  dstArg: YulExpressionNode, offArg: YulExpressionNode, lenArg: YulExpressionNode, src: YulNode,
+): StatementNode {
+  if (lastReturnData === undefined) return loc(new BlockNode([]), src);
+  yulMemUsed = true;
+  const dstName = `__yrdc_dst_${yulTmpN}`;
+  const lenName = `__yrdc_len_${yulTmpN}`;
+  yulTmpN += 1;
+  const dst = (): ExpressionNode => loc(new IdentifierNode(dstName), src);
+  const len = (): ExpressionNode => loc(new IdentifierNode(lenName), src);
+  const need = (): ExpressionNode => addE(dst(), len(), src);
+  const rd = loc(new IdentifierNode(lastReturnData), src);
+  const off = lowerValue(offArg);
+  const declDst = loc(new VariableDefinitionNode(UINT256, [], dstName, lowerValue(dstArg)), src);
+  const declLen = loc(new VariableDefinitionNode(UINT256, [], lenName, lowerValue(lenArg)), src);
+  const pad = newBytes(loc(new BinaryOpNode(need(), BinaryOperator.MINUS, memLen(src)), src), src);
+  const growAssign = loc(new AssignNode(yulmem(src), loc(new BytesConcatNode([yulmem(src), pad]), src)), src);
+  const grow = loc(new BranchNode(
+    loc(new BinaryOpNode(memLen(src), BinaryOperator.LT, need()), src), loc(new BlockNode([growAssign]), src),
+  ), src);
+  const head = loc(new SliceNode(yulmem(src), intLit(0n, src), dst()), src);
+  const rdSlice = loc(new SliceNode(rd, off, addE(off, len(), src)), src);
+  const tail = loc(new SliceNode(yulmem(src), need(), memLen(src)), src);
+  const store = loc(new AssignNode(yulmem(src), loc(new BytesConcatNode([head, rdSlice, tail]), src)), src);
+  return loc(new BlockNode([declDst, declLen, grow, store]), src);
+}
+
 // mload(off) -> uint256(bytes32(__yulmem[off : off+32])). A trailing zero word is appended before slicing so a
 // read straddling the written high-water mark returns EVM-faithful zeros (e.g. a full-word mload after an mstore8
 // that only grew the buffer by one byte). Yul offset expressions are pure, so lowering twice is safe.
@@ -987,9 +1017,14 @@ function lowerStatement(stmt: YulStatementNode): StatementNode {
           }
         }
       }
-      // returndatacopy(dst, off, len): the last call's return-event data is already the tracked `bytes` var; the
-      // copy into scratch memory is a no-op unless later mload'd (which the memory model then rejects cleanly).
-      if (e.name === 'returndatacopy' && e.args.length === 3) return loc(new BlockNode([]), stmt);
+      // returndatacopy(dst, off, len): in the runtime path, splice the last call's return data (the tracked
+      // `bytes` var) into __yulmem[dst], so a later mload/return reads it. In the compile-time path there is no
+      // buffer, so it is a no-op - fine when the data is consumed via the tracked var; a later mload of the region
+      // is rejected there and re-lowers the block onto the runtime buffer, where the real copy happens.
+      if (e.name === 'returndatacopy' && e.args.length === 3) {
+        if (runtimeMem) return runtimeReturndatacopy(e.args[0], e.args[1], e.args[2], stmt);
+        return loc(new BlockNode([]), stmt);
+      }
       // pop(x): evaluate x and discard. A low-level call is evaluated for its effect; any other value is pure/read
       // in this model (discard = no-op) - but still lowered first so an unlowerable inner (extcodehash, ...) is
       // reported as the blocker rather than silently dropped.

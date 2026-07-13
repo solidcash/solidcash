@@ -78,6 +78,23 @@ describe('Yul inline assembly (Phase 1: parse + diagnostics)', () => {
       }`, { solidityImportCompat: true })).not.toThrow();
   });
 
+  it('returndatacopy then mload reads the copied return data (proper copy, not a rejected no-op)', () => {
+    // returndatacopy(0, 0, returndatasize()) splices the last call's return data into the buffer; a subsequent
+    // mload(0) reads it back. Previously the no-op returndatacopy made the mload of the region reject; the runtime
+    // buffer re-lowering now performs the real copy. Sound by reduction to runtimeMstore's splice.
+    expect(() => compileString(`
+      contract C() {
+        function f(address a) returns (uint r) {
+          uint ok;
+          assembly {
+            ok := call(0, a, 0, 0, 0, 0, 0)
+            returndatacopy(0, 0, returndatasize())
+            r := mload(0)
+          }
+        }
+      }`, { solidityImportCompat: true })).not.toThrow();
+  });
+
   it('compiles calldataload/calldatasize against function parameters', () => {
     // calldata = msg.sig ++ abi-encoded args; calldataload(4 + 32*k) reads the k-th arg, calldatasize = 4+32n.
     expect(() => compileString(`

@@ -19,6 +19,20 @@ describe('calldata read-only enforcement (Solidity data-location parity)', () =>
     expect(() => compiles('function f(int[] calldata xs) { xs[0] = 5; require(true); }')).toThrow(REASON);
   });
 
+  it('allows a whole calldata ARRAY rebind (x = y rebinds the pointer, not a data write)', () => {
+    expect(compiles('function f(uint256[] calldata x, uint256[] calldata y, uint256 i)'
+      + ' external returns (uint256) { x = y; return x[i]; }')).toBe('C');
+  });
+
+  it('rejects a calldata STRUCT field write (calldata structs are read-only)', () => {
+    expect(() => compiles('struct S { int a; } function f(S calldata s) { s.a = 4; require(true); }')).toThrow(REASON);
+  });
+
+  it('rejects a whole calldata STRUCT reassign (a field write desugars to this, so it must stay rejected)', () => {
+    expect(() => compiles('struct S { int a; } function f(S calldata s, S calldata t) { s = t; require(true); }'))
+      .toThrow(REASON);
+  });
+
   it('allows reading a calldata parameter', () => {
     expect(compiles('function f(int calldata x) { require(x > 0); }')).toBe('C');
   });

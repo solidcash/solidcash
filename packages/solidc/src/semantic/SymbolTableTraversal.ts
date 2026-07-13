@@ -4192,7 +4192,10 @@ export default class SymbolTableTraversal extends AstTraversal {
 
   // Read-only enforcement, shared by every write path (assign, compound, element, push/pop, delete):
   // a top-level `constant`, a `constant`-modified binding, or a `calldata` binding cannot be written.
-  private checkReadOnlyModification(sym: Symbol): void {
+  // isReassign = a whole-variable `x = y` rebind (vs a DATA write: `x[i]=v`, `x.push()`, `delete x`, field write).
+  // A calldata binding is read-only DATA, but rebinding the local pointer to another calldata value is allowed in
+  // Solidity (`x = y; x[i]` reads y[i]) - it reduces to a value-copy of y into x. Only data writes are rejected.
+  private checkReadOnlyModification(sym: Symbol, isReassign = false): void {
     if (sym.symbolType === SymbolType.CONSTANT) {
       throw new ConstantModificationError(sym.definition as ConstantDefinitionNode);
     }
@@ -4203,7 +4206,15 @@ export default class SymbolTableTraversal extends AstTraversal {
         throw new ConstantModificationError(v);
       }
       if (modifier === Modifier.CALLDATA) {
-        throw new CalldataModificationError(v as VariableDefinitionNode | ParameterNode);
+        // A whole `x = y` rebind is allowed ONLY for a calldata ARRAY: it rebinds the local pointer to y (reduces
+        // to a value-copy). NOT structs - a calldata struct field write `s.a = v` desugars to a whole `s = S(..)`
+        // rebuild, so allowing struct reassigns would silently permit writes into a read-only calldata struct.
+        // Value-typed calldata (`int calldata`), compound (`x += 1` -> `x = x+1`), and element/field writes reject.
+        const t = (sym.definition as { type?: Type })?.type;
+        const isRefRebind = isReassign && t instanceof ArrayType;
+        if (!isRefRebind) {
+          throw new CalldataModificationError(v as VariableDefinitionNode | ParameterNode);
+        }
       }
     });
   }
@@ -4286,7 +4297,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     }
 
     if (sym) {
-      this.checkReadOnlyModification(sym);
+      this.checkReadOnlyModification(sym, true); // whole `x = y` rebind: allowed for calldata (pointer rebind)
     }
 
     super.visitAssign(node);

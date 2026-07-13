@@ -39,6 +39,9 @@
     "prepare": "yarn build",
     "prepublishOnly": "yarn test && yarn lint",
     "test": "vitest run",
+    "test:unit": "vitest run --exclude 'test/e2e/**'",
+    "test:e2e": "vitest run test/e2e",
+    "test:fast": "vitest run --exclude 'test/e2e/**'",
     "test:regtest": "TESTS_USE_REGTEST=true vitest run --no-file-parallelism"
   },
   "dependencies": {

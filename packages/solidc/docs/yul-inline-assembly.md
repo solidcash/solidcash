@@ -104,10 +104,15 @@ Two routes need a decode step, not just a rename:
   function and the args decode by its signature, so this routes to `ExternalCall` once the memory model can
   read the constant in-region. This is the same insight as the arbitrary-calldata external-call work
   (call-model.md s10) - coordinate with that, do not duplicate.
-- `create(value, off, len)` / `create2(value, off, len, salt)`. The off/len region is init bytecode. On BCH
-  there is no init-bytecode-at-runtime; what maps is the typed `new Contract(args)` deploy
-  (`InstantiationNode`, which already supports stateful deploy + a salt-style path via create3 deployFrom).
-  Generic "deploy these raw bytes" (MinimalProxy/Factory/Create2.sol) stays out; typed deploy routes.
+- `create(0, off, len)` where `(off, len)` addresses the FULL content of a `bytes` local/param
+  (`create(0, add(c, 0x20), mload(c))`, the `type(D).creationCode` idiom) lowers on-stack to the BCH deploy
+  address `p2sh32(c)` = `0xaa20 || hash256(c) || 0x87` - same content-addressing as the compile-time hex-blob and
+  free-memory-buffer forms, only the content source (the named bytes local) differs. A non-zero value needs a
+  funded deploy output, so it stays out. `create2` stays out: its EVM address folds in a salt + deployer, but a
+  BCH p2sh32 is content-only, so two different salts would collide to one address (unsound). Raw init-bytecode at
+  a literal offset (Factory, create_random) has no single bytes value to hash, so it stays out too.
+- Higher-level, the typed `new Contract(args)` deploy (`InstantiationNode`, stateful deploy + create3 salt path)
+  remains the primary route; the Yul `create` lowering above just recognizes the equivalent low-level idiom.
 
 ## Survey: the 23 bench files
 

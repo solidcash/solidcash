@@ -518,6 +518,22 @@ function resolveBufferPtr(ptr: YulExpressionNode): { buffer: string; off: bigint
   return undefined;
 }
 
+// Recognize a `create` (offset, size) pair addressing the FULL content of a bytes-memory local `c` (the
+// `create(v, add(c, 0x20), mload(c))` idiom, typically `c = type(D).creationCode`): offset = `add(c, 0x20)`
+// skips the EVM length word, size = `mload(c)` is c's full length, same c, c a bytes local. Returns the local name.
+// create2 is intentionally excluded: its EVM address folds in a salt, but a BCH p2sh32 is content-only.
+function resolveWholeBytesLocal(offset: YulExpressionNode, size: YulExpressionNode): string | undefined {
+  if (!(offset instanceof YulFunctionCallNode && offset.name === 'add' && offset.args.length === 2
+    && offset.args[0] instanceof YulPathNode && offset.args[0].members.length === 0
+    && isIntLiteral(offset.args[1]) && BigInt(offset.args[1].raw) === 0x20n)) return undefined;
+  const base = offset.args[0].base;
+  if (!(size instanceof YulFunctionCallNode && size.name === 'mload' && size.args.length === 1
+    && size.args[0] instanceof YulPathNode && size.args[0].members.length === 0 && size.args[0].base === base)) {
+    return undefined;
+  }
+  return currentVars.get(base) instanceof BytesType ? base : undefined;
+}
+
 // The top `width` (<=32) bytes of an mstore'd 32-byte word: a constant renders big-endian and slices; a runtime
 // bytesN local is left-aligned so its top N bytes ARE the value (only the exact width===N case is lowered).
 function sliceWord(value: YulExpressionNode, width: number, src: { location?: Node['location'] }): ExpressionNode {
@@ -777,6 +793,20 @@ function lowerCall(call: YulFunctionCallNode): ExpressionNode {
     if (bufPtr && bufPtr.off === 0n && isIntLiteral(args[0]) && BigInt(args[0].raw) === 0n && isIntLiteral(args[2])) {
       const buffer = reconstructBuffer(bufPtr.buffer, BigInt(args[2].raw), call);
       const hashed = loc(new FunctionCallNode(loc(new IdentifierNode('hash256'), call), [buffer]), call);
+      const p2sh = loc(new BytesConcatNode([
+        loc(new HexLiteralNode(Uint8Array.from([0xaa, 0x20])), call), hashed,
+        loc(new HexLiteralNode(Uint8Array.from([0x87])), call),
+      ]), call);
+      return loc(new CastNode(new AddressType(), p2sh, false), call);
+    }
+    // `create(0, add(c, 0x20), mload(c))` deploying the full content of a bytes local `c` (e.g. a typed
+    // `type(D).creationCode`): on BCH a contract's address IS p2sh32(script), so derive it from c's runtime value
+    // `0xaa20 || hash256(c) || 0x87`. Value must be 0 (a funded deploy needs an output). See docs create note.
+    const codeLocal = resolveWholeBytesLocal(args[1], args[2]);
+    if (codeLocal && isIntLiteral(args[0]) && BigInt(args[0].raw) === 0n) {
+      const hashed = loc(new FunctionCallNode(
+        loc(new IdentifierNode('hash256'), call), [loc(new IdentifierNode(codeLocal), call)],
+      ), call);
       const p2sh = loc(new BytesConcatNode([
         loc(new HexLiteralNode(Uint8Array.from([0xaa, 0x20])), call), hashed,
         loc(new HexLiteralNode(Uint8Array.from([0x87])), call),

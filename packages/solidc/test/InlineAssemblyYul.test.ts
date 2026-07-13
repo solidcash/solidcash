@@ -496,7 +496,9 @@ describe('dotted-op token boundary (lexer)', () => {
 
 // Yul `create(0, add(b, 0x20), n)` where `b` is a compile-time hex-literal `bytes` local is NOT fundamental: the
 // blob is the contract's redeem script, so the deployed p2sh32 address (0xaa20 || hash256(blob) || 0x87) is
-// derivable at compile time. Runtime-constructed bytecode stays unlowerable (hits the assembly diagnostic).
+// derivable at compile time. A runtime bytes value (`create(0, add(c, 0x20), mload(c))`, the `type(D).creationCode`
+// idiom) is the same address, derived on-stack from c's runtime value. A non-zero value still needs a funded
+// deploy output, so it stays unlowerable.
 describe('Yul create with a constant hex bytecode (compile-time p2sh32 deploy)', () => {
   const factory = (body: string): string => 'contract F { event Log(address a); function deploy() external { '
     + 'bytes memory bytecode = hex"6960ff60005260206000f3600052600a6016f3"; address addr; ' + body
@@ -508,10 +510,18 @@ describe('Yul create with a constant hex bytecode (compile-time p2sh32 deploy)',
     const p2sh32 = binToHex(Uint8Array.from([0xaa, 0x20, ...hash256(blob), 0x87]));
     expect(a.bytecode.includes(p2sh32)).toBe(true);
   });
-  it('still rejects runtime-constructed bytecode (create on a parameter) as unlowerable', () => {
-    expect(() => compileString('contract F { function deploy(bytes memory code) external returns (address addr) {'
-      + ' assembly { addr := create(0, add(code, 0x20), mload(code)) } } }', { solidityImportCompat: true }))
-      .toThrow(/no BCH|assembly|create/i);
+  it('lowers create(0, add(c, 0x20), mload(c)) on a runtime bytes local to the on-stack-derived p2sh32', () => {
+    // A runtime bytes value (param/local, e.g. type(D).creationCode) has no compile-time blob, but its deploy
+    // address is still p2sh32(c), derived on-stack (OP_HASH256 over c ++ the aa20/87 wrapper). See YulCreateAddress.
+    const a = compileString('contract F { function deploy(bytes memory code) external returns (address addr) {'
+      + ' assembly { addr := create(0, add(code, 0x20), mload(code)) } require(addr != address(0)); } }',
+    { solidityImportCompat: true });
+    expect(a.contractName).toBe('F');
+  });
+  it('still rejects a non-zero-value create on a runtime bytes local (funded deploy needs an output)', () => {
+    expect(() => compileString('contract F { function deploy(bytes memory code, uint256 v) external returns'
+      + ' (address addr) { assembly { addr := create(v, add(code, 0x20), mload(code)) } } }',
+    { solidityImportCompat: true })).toThrow(/no BCH|assembly|create/i);
   });
 });
 

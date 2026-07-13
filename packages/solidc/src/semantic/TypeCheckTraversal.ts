@@ -1879,6 +1879,14 @@ export default class TypeCheckTraversal extends AstTraversal {
           node.type = PrimitiveType.BOOL;
           return node;
         }
+        // address ordering: addresses compare as unsigned big-endian - the BCH analogue of EVM's uint160
+        // ordering (Solidity compares an address as its integer value; BCH addresses are byte data, compared
+        // the same way as bytesN). Note BCH addresses are not 20-byte uint160, so the EVM range invariant
+        // `a <= address(2**160-1)` need not hold, but the ordering itself is sound and deterministic.
+        if (node.left.type instanceof AddressType && node.right.type instanceof AddressType) {
+          node.type = PrimitiveType.BOOL;
+          return node;
+        }
         expectNumeric(node, resType);
         node.type = PrimitiveType.BOOL;
         return node;

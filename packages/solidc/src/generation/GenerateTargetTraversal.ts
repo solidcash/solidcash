@@ -4536,10 +4536,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       || node.operator === BinaryOperator.BIT_XOR) && node.type instanceof IntType) {
       return this.emitIntBitwise(node);
     }
-    // bytesN ordering: compare equal-width fixed bytes as unsigned big-endian numbers.
+    // bytesN / address ordering: compare the byte values as unsigned big-endian numbers (an address is byte
+    // data, the BCH analogue of EVM's uint160 address ordering).
     if ((node.operator === BinaryOperator.LT || node.operator === BinaryOperator.LE
       || node.operator === BinaryOperator.GT || node.operator === BinaryOperator.GE)
-      && node.left.type instanceof BytesType) {
+      && (node.left.type instanceof BytesType || node.left.type instanceof AddressType)) {
       return this.emitBytesCompare(node);
     }
     node.left = this.visit(node.left);

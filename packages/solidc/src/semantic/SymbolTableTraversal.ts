@@ -603,11 +603,15 @@ export default class SymbolTableTraversal extends AstTraversal {
       // struct now that imports are merged (e.g. an imported `enum Status` / `struct Todo`); re-type the
       // state var to the real value type rather than leaving it as a contract address handle.
       if (sv.contractTypeName) {
-        if (this.enumMap.has(sv.contractTypeName)) {
-          sv.type = this.enumMap.get(sv.contractTypeName)!;
+        // A library-qualified struct/enum (`Counters.Counter`) is registered bare (`Counter`); try the stripped
+        // name too so an OZ-style `using Counters for Counters.Counter; Counters.Counter x;` state var resolves.
+        const dot = sv.contractTypeName.lastIndexOf('.');
+        const bare = dot >= 0 ? sv.contractTypeName.slice(dot + 1) : sv.contractTypeName;
+        if (this.enumMap.has(sv.contractTypeName) || this.enumMap.has(bare)) {
+          sv.type = (this.enumMap.get(sv.contractTypeName) ?? this.enumMap.get(bare))!;
           sv.contractTypeName = undefined;
-        } else if (this.structMap.has(sv.contractTypeName)) {
-          sv.type = this.structMap.get(sv.contractTypeName)!;
+        } else if (this.structMap.has(sv.contractTypeName) || this.structMap.has(bare)) {
+          sv.type = (this.structMap.get(sv.contractTypeName) ?? this.structMap.get(bare))!;
           sv.contractTypeName = undefined;
         } else if (!this.contractMap.has(sv.contractTypeName) && !this.interfaceMap.has(sv.contractTypeName)) {
           throw new UnknownContractTypeError(sv, sv.contractTypeName);
@@ -6575,7 +6579,15 @@ export default class SymbolTableTraversal extends AstTraversal {
     // Struct/enum/contract names aren't parseable here, so fall back to the raw name (which matches too).
     let typeKey = node.isWildcard ? '*' : (node.targetTypeName ?? '*');
     if (!node.isWildcard && node.targetTypeName) {
-      try { typeKey = parseTypeStrict(node.targetTypeName).toString(); } catch { /* keep raw name */ }
+      // A library-qualified struct/enum target (`using Counters for Counters.Counter`) keys by the resolved
+      // type's string (the struct is registered bare, `Counter`), so a `x.method()` member call on the
+      // struct-typed value - whose type.toString() is `Counter` - matches the binding.
+      const dot = node.targetTypeName.lastIndexOf('.');
+      const bare = dot >= 0 ? node.targetTypeName.slice(dot + 1) : node.targetTypeName;
+      const resolved = this.structMap.get(node.targetTypeName) ?? this.structMap.get(bare)
+        ?? this.enumMap.get(node.targetTypeName) ?? this.enumMap.get(bare);
+      if (resolved) typeKey = resolved.toString();
+      else { try { typeKey = parseTypeStrict(node.targetTypeName).toString(); } catch { /* keep raw name */ } }
     }
 
     if (node.libraryName) {

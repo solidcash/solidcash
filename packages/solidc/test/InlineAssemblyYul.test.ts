@@ -406,6 +406,43 @@ describe('Yul memory (constant-offset scratch)', () => {
   });
 });
 
+// OZ Address / SafeERC20 assembly builtins: revert(ptr,size) aborts, mload(<bytes var>) is its length,
+// extcodesize(addr) is addr.code.length. All lower (they are not EVM-fundamental).
+describe('Yul revert / extcodesize / bytes-length mload (OZ Address/SafeERC20)', () => {
+  it('revert(add(32, rd), mload(rd)) lowers to an unconditional abort (OZ _revert re-throw)', () => {
+    const a = compileString(
+      'function r(bytes memory rd) pure { assembly { let sz := mload(rd) revert(add(32, rd), sz) } }'
+      + ' contract C { int n; function f(bytes d) public { r(d); this.n = 1; } }',
+      { solidityImportCompat: true },
+    );
+    expect(a.contractName).toBe('C');
+  });
+
+  it('mload(<bytes memory var>) == the value byte length', () => {
+    const yul = compileString(
+      'contract C(){function f(bytes buf)returns(uint256 n){assembly{n:=mload(buf)}}}',
+      { solidityImportCompat: true },
+    );
+    const direct = compileString(
+      'contract C(){function f(bytes buf)returns(uint256 n){n=uint256(buf.length);}}',
+      { solidityImportCompat: true },
+    );
+    expect(yul.bytecode).toBe(direct.bytecode);
+  });
+
+  it('extcodesize(addr) == addr.code.length', () => {
+    const yul = compileString(
+      'contract C(){function f(address a)returns(uint256 s){assembly{s:=extcodesize(a)}}}',
+      { solidityImportCompat: true },
+    );
+    const direct = compileString(
+      'contract C(){function f(address a)returns(uint256 s){s=uint256(a.code.length);}}',
+      { solidityImportCompat: true },
+    );
+    expect(yul.bytecode).toBe(direct.bytecode);
+  });
+});
+
 // Phase 7b: packed storage slots. sload(slot) combines the sub-word vars sharing that slot into a word;
 // sstore(slot, w) decomposes the word back. Single full-width vars are unchanged (still byte-identical).
 describe('Yul packed storage slots', () => {

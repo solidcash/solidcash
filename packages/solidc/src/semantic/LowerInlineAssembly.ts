@@ -729,6 +729,12 @@ function lowerCall(call: YulFunctionCallNode): ExpressionNode {
   if (name === 'codesize' && args.length === 0) {
     return loc(new UnaryOpNode(UnaryOperator.SIZE, loc(new NullaryOpNode(NullaryOperator.BYTECODE), call)), call);
   }
+  // extcodesize(addr) -> addr.code.length: the byte length of the script at that address (the high-level `.code`
+  // member extracts it). Backs OZ Address.isContract's `addr.code.length > 0`.
+  if (name === 'extcodesize' && args.length === 1) {
+    const code = loc(new FieldAccessNode(lowerValue(args[0]), 'code'), call);
+    return loc(new CastNode(UINT256, loc(new UnaryOpNode(UnaryOperator.SIZE, code), call), false), call);
+  }
   // selfbalance() -> address(this).balance: the satoshis this contract controls, summed over the inputs locked to
   // its own bytecode (`this` = tx.inputs[activeInputIndex].lockingBytecode). Cast to a uint256 word. (balance(addr)
   // and address() are deliberately NOT lowered - a BCH address is variable-length locking bytecode, so an arbitrary
@@ -867,6 +873,16 @@ function lowerCall(call: YulFunctionCallNode): ExpressionNode {
   // mload(p) -> the word stored at that constant offset (compile-time memory model), or a `bytes memory`
   // slice for the `mload(add(ptr, off))` parameter-reading form.
   if (name === 'mload' && args.length === 1) {
+    // mload(<bytes memory var>): a bare bytes pointer reads the EVM header word = the value's byte length. (The
+    // data-reading form is mload(add(ptr, off)), handled by bytesMemorySlice.) Backs OZ _revert's
+    // `let size := mload(returndata)`.
+    if (args[0] instanceof YulPathNode && args[0].members.length === 0) {
+      const bp = currentParams.find((p) => p.name === (args[0] as YulPathNode).base && p.type instanceof BytesType);
+      if (bp) {
+        const len = loc(new UnaryOpNode(UnaryOperator.SIZE, loc(new IdentifierNode(bp.name), call)), call);
+        return loc(new CastNode(UINT256, len, false), call);
+      }
+    }
     // `mload(add(s, 32*i))` on a high-level struct == `uint256(s.field_i)` (read the field's 32-byte slot).
     const sf = resolveStructField(args[0]);
     if (sf) {
@@ -978,8 +994,11 @@ function lowerStatement(stmt: YulStatementNode): StatementNode {
   if (stmt instanceof YulExpressionStatementNode) {
     const e = stmt.expression;
     if (e instanceof YulFunctionCallNode) {
-      // revert(0, 0): abort with no return data.
-      if (e.name === 'revert' && isZeroRevert(e)) {
+      // revert(ptr, size): abort. (ptr, size) point at a runtime-built memory blob - an ABI-encoded error or
+      // forwarded callee returndata - so there is no compile-time reason string to carry into require()'s
+      // debugger message; the abort is an unconditional require(false). (A revert with a literal reason keeps its
+      // message on the high-level revert path.)
+      if (e.name === 'revert' && e.args.length === 2) {
         return loc(new RequireNode(loc(new BoolLiteralNode(false), stmt)), stmt);
       }
       // invalid(): the INVALID opcode unconditionally aborts -> require(false).
@@ -1087,10 +1106,6 @@ function lowerStatement(stmt: YulStatementNode): StatementNode {
   if (stmt instanceof YulContinueNode) return loc(new ContinueNode(), stmt);
 
   throw new YulNotLowerable(); // leave / function definition
-}
-
-function isZeroRevert(call: YulFunctionCallNode): boolean {
-  return call.args.length === 2 && call.args.every((a) => isIntLiteral(a) && BigInt(a.raw) === 0n);
 }
 
 // switch e { case v { b } ... default { d } } -> if (e==v) {b} else if (e==v2) {b2} ... else {d}.

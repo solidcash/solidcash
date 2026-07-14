@@ -50,7 +50,7 @@ const LOWERABLE_BUILTINS = new Set<string>([
   // nullary context builtins -> msg.*/tx.*/block.* NullaryOps
   'caller', 'callvalue', 'origin', 'gasprice', 'chainid', 'number', 'timestamp', 'difficulty',
   'prevrandao', 'basefee', 'blobbasefee', 'gaslimit', 'coinbase',
-  'blockhash', 'gas', 'codesize', 'selfbalance', 'addmod', 'mulmod', 'pop', 'invalid', 'stop', 'signextend',
+  'blockhash', 'gas', 'codesize', 'extcodesize', 'selfbalance', 'addmod', 'mulmod', 'pop', 'invalid', 'stop', 'signextend',
   'blobhash',
 ]);
 

@@ -175,6 +175,11 @@ export interface DeployFromOptions<T extends Artifact = Artifact> {
   childConstructorArgs?: ConstructorArgument[]; // else derived from the deploy args (new C(param) mapping)
   childSalt?: Uint8Array;                    // create2 salt; else derived from the recorded new C{salt}() mapping
   childInitialState?: Record<string, StateValueType>; // optional initial state for child
+  // `new Child{value: x}()` transfers x sats from the factory's OWN satoshi container (the value source, like any
+  // scash value transfer - EVM-faithful "from the deployer's balance") to the child's address. deployFrom then
+  // co-spends the factory container (input) + recreates it (output, minus x) + adds the x-sat transfer output.
+  // The factory must have been deployed with an initialBalance >= x. Supply the transferred amount here.
+  childValue?: bigint;
   fundingUtxo: Utxo;                         // must be at vout 0 for token genesis (becomes child category)
   // A LOOP deploy (`for (i<n) new C()`) mints N children - a balanced contract block needs N funding inputs
   // (any value, each vout 0), one per child; child i's category = fundingUtxos[i].txid. When set, this supersedes
@@ -1934,14 +1939,45 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       }]
       : [];
 
+    // `new Child{value: x}()`: the factory co-spends its OWN satoshi container (the value source, like any scash
+    // value transfer) + recreates it (minus x) + adds the x-sat transfer to the child. Detected from the deploy
+    // fn's satoshiContainer block-layout slot; the container input sits after entries (before funding), and the
+    // container + transfer outputs after entries (before return event / child geneses) - matching the layout.
+    const hasSatoshiContainer = deployAbi.blockLayout?.slots.some((s) => s.kind === 'satoshiContainer') ?? false;
+    const containerInputs: Array<{ utxo: Utxo; unlocker: Unlocker }> = [];
+    const containerOutputs: Array<{ to: string | Uint8Array; amount: bigint }> = [];
+    if (hasSatoshiContainer) {
+      const childValue = options.childValue;
+      if (childValue === undefined || childValue <= 0n) {
+        throw new Error(
+          `Deploy function '${deployFunctionName}' sends value to the child (new C{value:...}()); pass `
+          + 'childValue (the sats transferred from the factory\'s satoshi container to the child).',
+        );
+      }
+      const satAddr = getSatoshiContainerAddress(factory.inner, factory.categoryId);
+      const satUtxo = (await provider.getUtxos(satAddr)).find((u) => u.satoshis > childValue);
+      if (!satUtxo) {
+        throw new Error(
+          `Factory '${factory.name}' has no satoshi container with > ${childValue} sats at ${satAddr}. Deploy `
+          + 'the factory with an initialBalance to fund new C{value:}() transfers.',
+        );
+      }
+      containerInputs.push({
+        utxo: satUtxo, unlocker: createSatoshiContainerUnlocker(factory.inner, 0, factory.categoryId),
+      });
+      containerOutputs.push({ to: satAddr, amount: satUtxo.satoshis - childValue });     // recreate the container
+      containerOutputs.push({ to: childContractUnsalted.address, amount: childValue });  // value -> child address
+    }
+
     // Derive factory state + entry commitments via VM probe. Inputs: master, data NFTs,
-    // existing entries, funding. Outputs: master, data NFTs, entries, return event, child outputs.
+    // existing entries, [satoshi container], funding. Outputs: master, data NFTs, entries,
+    // [container, value transfer], return event, child outputs.
     const {
       state: derivedState, entryCommitments, childCommitments: derivedChildCommitments, returnBlob,
     } = await (factory as StatefulContract)._deriveCommitments(
       deployFunctionName, finalArgs, requiredNftIndices,
-      [...entryPlaceholderOutputs, ...returnEventPlaceholders, ...childExtraOutputs],
-      [...entryExtraInputs, ...fundingUtxos.map((fu) => ({ utxo: fu, unlocker: funder }))],
+      [...entryPlaceholderOutputs, ...containerOutputs, ...returnEventPlaceholders, ...childExtraOutputs],
+      [...entryExtraInputs, ...containerInputs, ...fundingUtxos.map((fu) => ({ utxo: fu, unlocker: funder }))],
       entryInfos.length,
       childLayout!.dataNftCount,
       returnEventPlaceholders.length,
@@ -2000,6 +2036,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       builder.addInput(utxo, unlocker);
     }
 
+    // Satoshi container input (the value source for a new C{value:}() transfer), after entries + before funding.
+    for (const ci of containerInputs) {
+      builder.addInput(ci.utxo, ci.unlocker);
+    }
+
     // Funding UTXOs for the children's token genesis - N inputs, one per child (a balanced contract block: N
     // deploy output groups need N balancing inputs). Each is at vout 0 so its txid sources the child's category.
     for (const fu of fundingUtxos) {
@@ -2051,6 +2092,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           nft: { capability: 'mutable', commitment: entryCommitments[i] },
         },
       });
+    }
+
+    // Satoshi container output (recreated, minus the transferred value) + the value transfer to the child, at
+    // their block-layout slots (after entries, before the return event / child geneses). See the new C{value:}()
+    // handling above. Order matches the layout: satoshiContainer, then transfer.
+    for (const co of containerOutputs) {
+      builder.addOutput({ to: co.to, amount: co.amount });
     }
 
     // Return-event (B8) output for a returning deploy function, at its block-layout slot (after entries, before

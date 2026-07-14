@@ -402,3 +402,62 @@ describe('deploy sugar forwards fundingUtxos (factory.makeN(n).deploy({ fundingU
     expect(outs.some((o) => o.token?.category === g1.txid && o.token?.nft?.capability === 'minting')).toBe(true);
   });
 });
+
+// `new Child{value: x}()` sends x sats from the factory's OWN satoshi container (the value source) to the child.
+// deployFrom co-spends the factory container (input) + recreates it (output, minus x) + adds the x-sat transfer.
+// The factory must be deployed with an initialBalance >= x; the caller passes childValue.
+const VALUE_FACTORY = `${CHILD}
+contract ValueFactory(bytes20 owner) {
+    int childCount;
+    function make() {
+        Child ch = new Child{value: 5000}(owner);
+        this.childCount = this.childCount + 1;
+    }
+}
+`;
+
+describe('deploy with value (new Child{value: x}())', () => {
+  const provider = createTestProvider();
+  const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
+  const valueArtifact = compileString(VALUE_FACTORY);
+  const childArtifact = compileString(CHILD);
+
+  it('co-spends the factory satoshi container + materializes the 5000-sat transfer to the child', async () => {
+    const fu: Utxo = { txid: '6a01'.repeat(16), vout: 0, satoshis: 400000n };
+    await provider.addUtxo(p2pkh.address, fu);
+    // The factory holds a balance (initialBalance) - the value source for new Child{value:}().
+    const factory = (await StatefulContract.deploy(valueArtifact, [alicePkh], {
+      provider,
+      fundingUtxo: fu,
+      funder: p2pkh.unlock.spend(alicePub, new SignatureTemplate(alicePriv)),
+      initialState: { childCount: 0n },
+      initialBalance: 20000n,
+      changeAddress: p2pkh.address,
+    })).contract;
+
+    const g0: Utxo = { txid: '6b01'.repeat(16), vout: 0, satoshis: 300000n };
+    await provider.addUtxo(p2pkh.address, g0);
+
+    const result = await StatefulContract.deployFrom({
+      provider,
+      factory,
+      funder: p2pkh.unlock.spend(alicePub, new SignatureTemplate(alicePriv)),
+      fundingUtxo: g0,
+      changeAddress: p2pkh.address,
+      deployFunctionName: 'make',
+      deployFunctionArgs: [],
+      childArtifact,
+      childConstructorArgs: [alicePkh],
+      childInitialState: { counter: 0n },
+      childValue: 5000n,
+    });
+
+    const outs = getTxOutputs(result.tx);
+    // child genesis
+    expect(outs.some((o) => o.token?.category === g0.txid && o.token?.nft?.capability === 'minting')).toBe(true);
+    // the 5000-sat value transfer to the child (a plain, non-token output)
+    expect(outs.some((o) => o.amount === 5000n && !o.token)).toBe(true);
+    // the factory's satoshi container recreated (20000 - 5000 = 15000)
+    expect(outs.some((o) => o.amount === 15000n && !o.token)).toBe(true);
+  });
+});

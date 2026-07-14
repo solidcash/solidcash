@@ -440,6 +440,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private inlineDeployCounterName: string = '__deploy_counter'; // runtime deploys-fired-so-far (loop deploys)
   private inlineDeployActive: boolean = false;      // a loop/function deploy counter is live on the stack
   private functionMultiSiteDeploy: boolean = false; // 2+ same-contract sites w/ a conditional: function counter
+  // A loop `new C{value:V}()` interleaves its transfer per child; the satoshi container that sources them is
+  // conserved (input <= output + counter*V) after the loop's OP_UNTIL. V must be loop-invariant (typically a
+  // literal). Stashed by emitInlineDeployVerification, consumed + cleared by the loop visitor.
+  private loopValueTransferNode: ExpressionNode | undefined = undefined;
 
   // User-defined function tracking (for OP_INVOKE)
   private userFunctionDefs: Map<string, FunctionDefinitionNode> = new Map();
@@ -2822,6 +2826,90 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
+   * Verify the satoshi container's identity: the co-spent input at the container slot is the real container
+   * (LBC == expected, rebuilt from the master's category), and its output either preserves that same LBC or is a
+   * full drain (0-sat OP_RETURN placeholder). The drain-guard - output value must be 0 on any LBC mismatch -
+   * stops a caller from redirecting the container's remaining balance (bounded from below by value conservation)
+   * to a foreign address; the container's OWN covenant does NOT protect its output on the master-spend path.
+   * Shared by straight-line/conditional (emitValuePreservation) and loop (emitLoopValueContainerConservation)
+   * `{value:}` deploys. Net stack/tracker effect: zero.
+   */
+  private emitSatoshiContainerIdentity(loc: SingleLocationData): void {
+    // Build expected satoshi container P2SH32 LBC from master's category.
+    this.emitMasterInputIndex(loc);
+    this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
+    this.emit(encodeInt(32n), loc);
+    this.emit(Op.OP_SPLIT, loc);
+    this.emit(Op.OP_DROP, loc);
+    this.pushToStack('(__scCat)');
+    this.emitSatoshiContainerLbc(loc); // pops '__scCat', pushes expectedLbc
+    // DUP: one copy checks the input identity, one the output identity.
+    this.emit(Op.OP_DUP, loc);
+    this.pushToStack('(__scLbc2)');
+    // Input: UTXOBYTECODE[satoshiContainer] == expectedLbc2.
+    this.emitBlockSlotIndex('satoshiContainer', undefined, loc);
+    this.emit(Op.OP_UTXOBYTECODE, loc);
+    this.emit(Op.OP_EQUALVERIFY, loc);
+    this.popFromStack(); // remove tracked expectedLbc2
+    // Output: OUTPUTBYTECODE[satoshiContainer] == expectedLbc, else require a 0-value (drain) output.
+    this.emitBlockSlotIndex('satoshiContainer', undefined, loc);
+    this.emit(Op.OP_OUTPUTBYTECODE, loc);
+    this.emit(Op.OP_OVER, loc);
+    this.emit(Op.OP_EQUAL, loc);
+    this.emit(Op.OP_IF, loc);
+    this.emit(Op.OP_DROP, loc);            // match: preserved, drop expectedLbc
+    this.emit(Op.OP_ELSE, loc);
+    this.emit(Op.OP_DROP, loc);            // drop expectedLbc
+    this.emitBlockSlotIndex('satoshiContainer', undefined, loc);
+    this.emit(Op.OP_OUTPUTVALUE, loc);
+    this.emit(encodeInt(0n), loc);
+    this.emit(Op.OP_NUMEQUALVERIFY, loc);
+    this.emit(Op.OP_ENDIF, loc);
+    this.popFromStack(); // remove tracked expectedLbc
+  }
+
+  /**
+   * Conserve the satoshi container for a loop `new C{value:V}()`: the container is co-spent as the value source,
+   * so verify containerInput <= containerOutput + counter*V (counter = children minted = transfers sent, V the
+   * per-child value). Emitted after OP_UNTIL while the loop's deploy counter is still on the stack. Mirrors the
+   * container check in emitValuePreservation, but with the runtime counter*V sum instead of a fixed list. The
+   * container identity (input+output LBC) is verified first so the value bound can't be met by redirecting funds.
+   */
+  private emitLoopValueContainerConservation(loc: SingleLocationData): void {
+    if (!this.loopValueTransferNode) return;
+    const counterName = this.inlineDeployCounterName;
+    // Container identity + drain-guard (input is the real container; output preserves it or is a 0-sat drain).
+    this.emitSatoshiContainerIdentity(loc);
+    // containerInput value
+    this.emitBlockSlotIndex('satoshiContainer', undefined, loc);
+    this.emit(Op.OP_UTXOVALUE, loc);
+    this.pushToStack('(sc_in)');
+    // containerOutput value
+    this.emitBlockSlotIndex('satoshiContainer', undefined, loc);
+    this.emit(Op.OP_OUTPUTVALUE, loc);
+    this.pushToStack('(sc_out)');
+    // counter * V
+    this.emit(encodeInt(BigInt(this.getStackIndex(counterName))), loc);
+    this.emit(Op.OP_PICK, loc);
+    this.pushToStack('(value)');
+    this.visit(this.loopValueTransferNode);
+    this.emit(Op.OP_MUL, loc);
+    this.popFromStack(2);
+    this.pushToStack('(value)');
+    // containerOutput + counter*V
+    this.emit(Op.OP_ADD, loc);
+    this.popFromStack(2);
+    this.pushToStack('(value)');
+    // containerInput <= containerOutput + counter*V
+    this.emit(Op.OP_LESSTHANOREQUAL, loc);
+    this.popFromStack(2);
+    this.pushToStack('(value)');
+    this.emit(Op.OP_VERIFY, loc);
+    this.popFromStack();
+    this.loopValueTransferNode = undefined;
+  }
+
+  /**
    * Pre-allocate a conditional (branch/switch) mapping delete as an existence-gated SOFT-DELETE WRITE. The entry
    * keeps an output whether or not the deleting branch runs (stable output count), so an absent-key not-taken path
    * never desyncs the layout. Seed key_enc = the CURRENT INPUT entry commitment and value_enc = empty, so if the
@@ -3007,8 +3095,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_UNTIL, { location: node.location, positionHint: PositionHint.END });
     this.popFromStack();
 
-    // Drop the runtime deploy counter now the loop is done (it lives below the per-iteration working area).
+    // Conserve the satoshi container for a loop {value:} deploy (counter still on the stack), then drop the
+    // runtime deploy counter now the loop is done (it lives below the per-iteration working area).
     if (loopHasDeploy) {
+      this.emitLoopValueContainerConservation({ location: node.location, positionHint: PositionHint.END });
       this.emit(Op.OP_DROP, { location: node.location, positionHint: PositionHint.END });
       this.popFromStack();
       this.inlineDeployActive = false;
@@ -3153,8 +3243,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_UNTIL, { location: node.location, positionHint: PositionHint.END });
     this.popFromStack();
 
-    // Drop the runtime deploy counter now the loop is done (it lives below the per-iteration working area).
+    // Conserve the satoshi container for a loop {value:} deploy (counter still on the stack), then drop the
+    // runtime deploy counter now the loop is done (it lives below the per-iteration working area).
     if (loopHasDeploy) {
+      this.emitLoopValueContainerConservation({ location: node.location, positionHint: PositionHint.END });
       this.emit(Op.OP_DROP, { location: node.location, positionHint: PositionHint.END });
       this.popFromStack();
       this.inlineDeployActive = false;
@@ -7288,11 +7380,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         // 0-or-1, handled by the conditional-transfer machinery - branchOps counts it, visitBranch pre-allocates
         // the slot). A LOOP {value:} deploy would need a variable-count transfer (loop-transfer gap) so it still
         // fails closed; a loop deploy needs its runtime counter set up before OP_BEGIN.
-        if (this.functionDeploySiteCount !== 1 || (inLoop && (hasValue || !this.inlineDeployActive))) {
+        if (this.functionDeploySiteCount !== 1 || (inLoop && !this.inlineDeployActive)) {
           throw new ConditionalDeployError(node);
         }
         this.emitInlineDeployVerification(node, locationData, inLoop);
-        if (hasValue) this.emitInlineDeployValueTransfer(node, locationData);
+        // Branch {value:}: fill the separate pre-allocated transfer slot. Loop {value:}: the transfer is
+        // interleaved into each child's deploy group inside emitInlineDeployVerification (no separate slot).
+        if (hasValue && !inLoop) this.emitInlineDeployValueTransfer(node, locationData);
         return node;
       }
 
@@ -10998,7 +11092,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const slotBase = this.getBlockSlotOffset('deploy', 0);
     const inputBase = slotBase - this.countOutputOnlySlotsBefore(slotBase);
     const dataNftCount = node.deployedDataNftCount;
-    const stride = 1 + dataNftCount;
+    // A LOOP `new C{value:}()` interleaves its value transfer as the LAST output of each child's group (there is
+    // no fixed transfer slot for a runtime-variable count), so the per-child stride grows by 1.
+    const loopValueTransfer = useCounter && !!node.callOptions?.value;
+    const stride = 1 + dataNftCount + (loopValueTransfer ? 1 : 0);
     const counterName = this.inlineDeployCounterName;
 
     // Child master-LBC is on top (p2sh32 lbc from steps 1-3). Name it so PICK/cleanup find it.
@@ -11144,6 +11241,29 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.pushToStack('(value)');
       this.emit(Op.OP_EQUALVERIFY, locationData);
       this.popFromStack(2);
+    }
+
+    // Loop {value:}: verify the interleaved value transfer - the LAST output of this child's group (slot
+    // 1 + dataNftCount): its locking bytecode == the child address, its value == the {value:} amount. The
+    // satoshi container that sources it is verified conserved (input <= output + counter*value) after OP_UNTIL.
+    if (loopValueTransfer) {
+      const extra = 1 + dataNftCount;
+      this.emit(encodeInt(BigInt(this.getStackIndex(masterLbcName))), locationData);
+      this.emit(Op.OP_PICK, locationData);
+      this.pushToStack('(value)');
+      emitOutIndex(extra);
+      this.emit(Op.OP_OUTPUTBYTECODE, locationData);
+      this.pushToStack('(value)');
+      this.emit(Op.OP_EQUALVERIFY, locationData);
+      this.popFromStack(2);
+      emitOutIndex(extra);
+      this.emit(Op.OP_OUTPUTVALUE, locationData);
+      this.pushToStack('(value)');
+      node.callOptions!.value = this.visit(node.callOptions!.value!);
+      this.emit(Op.OP_NUMEQUALVERIFY, locationData);
+      this.popFromStack(2);
+      // Stash V so the loop visitor can conserve the satoshi container (input <= output + counter*V) after the loop.
+      this.loopValueTransferNode = node.callOptions!.value;
     }
 
     // Loop deploy: increment the runtime deploy counter (deploys-fired-so-far) in place, so the next iteration's
@@ -13660,60 +13780,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
 
     // Satoshi container identity + value preservation (only when function has transfers).
-    // SECURITY NOTE: When pendingTransfers is empty, this block is skipped. The satoshi
-    // container is still protected by its own self-guarding covenant script
-    // (buildSatoshiContainerCovenantScript) which enforces bytecode and value preservation
-    // in its merge path, and requires a minting NFT for the master path.
-    // First verify satoshi container identity at block layout offset
-    // actually point to the real satoshi container covenant UTXOs
-    // (mirrors emitTokenContainerIdentityVerification for token containers)
+    // When pendingTransfers is empty the container is not co-spent here, so nothing to preserve; the container's
+    // own covenant still gates its master/merge spends. When it IS co-spent, emitSatoshiContainerIdentity pins
+    // the input to the real container and forces its output to preserve the container LBC or be a 0-sat drain -
+    // the container's own covenant does NOT protect its output on the master-spend path.
     if (this.pendingTransfers.length > 0 && this.currentFunction.blockLayout) {
-      // Build expected satoshi container P2SH32 LBC from master's category
-      this.emitMasterInputIndex(locationData);
-      this.emit(Op.OP_UTXOTOKENCATEGORY, locationData);
-      this.emit(encodeInt(32n), locationData);
-      this.emit(Op.OP_SPLIT, locationData);
-      this.emit(Op.OP_DROP, locationData);
-      this.pushToStack('(__scCat)');
-      // Tracked: [..., masterCat32]
-
-      this.emitSatoshiContainerLbc(locationData);
-      // emitSatoshiContainerLbc: pops '__scCat', pushes '(value)' = expectedLbc
-      // Tracked: [..., expectedLbc]
-
-      // DUP for two checks (input identity + output identity)
-      this.emit(Op.OP_DUP, locationData);
-      this.pushToStack('(__scLbc2)');
-      // Tracked: [..., expectedLbc, expectedLbc2]
-
-      // Verify input: UTXOBYTECODE[satoshiContainer] == expectedLbc2
-      this.emitBlockSlotIndex('satoshiContainer', undefined, locationData);
-      this.emit(Op.OP_UTXOBYTECODE, locationData);
-      // Untracked top: actualInputLbc; tracked top: expectedLbc2
-      this.emit(Op.OP_EQUALVERIFY, locationData);
-      // EQUALVERIFY consumed actualInputLbc + expectedLbc2
-      this.popFromStack(); // remove tracked expectedLbc2
-      // Tracked: [..., expectedLbc]
-
-      // Verify output: when not draining, OUTPUTBYTECODE[satoshiContainer] == expectedLbc.
-      // When drained, the SDK inserts a 0-satoshi OP_RETURN placeholder at this slot,
-      // so OUTPUTBYTECODE won't match expectedLbc. We compare and only VERIFY on match;
-      // on mismatch (drain placeholder) we skip the check.
-      // Stack: [..., expectedLbc]
-      this.emitBlockSlotIndex('satoshiContainer', undefined, locationData);
-      this.emit(Op.OP_OUTPUTBYTECODE, locationData); // actualLbc
-      // Stack: [..., expectedLbc, actualLbc]
-      this.emit(Op.OP_OVER, locationData);            // copy expectedLbc
-      // Stack: [..., expectedLbc, actualLbc, expectedLbc_copy]
-      this.emit(Op.OP_EQUAL, locationData);            // compare
-      // Stack: [..., expectedLbc, isMatch]
-      this.emit(Op.OP_IF, locationData);
-      // Match: container output present, identity verified
-      this.emit(Op.OP_ENDIF, locationData);
-      // Both paths: drop expectedLbc
-      this.emit(Op.OP_DROP, locationData);
-      // Both paths consumed the tracked expectedLbc
-      this.popFromStack();
+      this.emitSatoshiContainerIdentity(locationData);
     }
 
     // containerInputSats <= containerOutputSats + sum(transferValues)

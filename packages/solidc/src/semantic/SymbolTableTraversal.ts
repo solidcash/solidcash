@@ -7365,8 +7365,10 @@ export default class SymbolTableTraversal extends AstTraversal {
       }
     }
 
-    // Transfers (output-only)
-    if (node.transferInfos) {
+    // Transfers (output-only). A LOOP `new C{value:}()` mints a runtime-variable count of value transfers, so
+    // they can't sit in a fixed-size region here - they are interleaved into each child's deploy group instead
+    // (see GTT emitInlineDeployVerification). The satoshi container that sources them stays (co-spent).
+    if (node.transferInfos && !this.hasLoopValueDeploySite(node.body)) {
       for (let i = 0; i < node.transferInfos.length; i++) {
         slots.push({ kind: 'transfer', offset: offset++, slotIndex: i });
       }
@@ -7433,6 +7435,31 @@ export default class SymbolTableTraversal extends AstTraversal {
     };
     walk(body);
     return count;
+  }
+
+  // True if the body contains a `new C{value:}()` deploy INSIDE a loop (while/do-while; for is already
+  // desugared to while here). Such a deploy mints a runtime-variable count of value transfers, so its transfer
+  // is interleaved into each child's deploy group rather than getting a fixed block-layout transfer slot.
+  private hasLoopValueDeploySite(body: Node | undefined): boolean {
+    if (!body) return false;
+    let found = false;
+    const seen = new WeakSet<object>();
+    const walk = (n: unknown, inLoop: boolean): void => {
+      if (found) return;
+      if (Array.isArray(n)) { for (const it of n) walk(it, inLoop); return; }
+      if (!(n instanceof Node) || seen.has(n)) return;
+      seen.add(n);
+      if (inLoop && n instanceof InstantiationNode && n.referencedContract && n.callOptions?.value) {
+        found = true; return;
+      }
+      const childInLoop = inLoop || n instanceof WhileNode || n instanceof DoWhileNode;
+      for (const [key, value] of Object.entries(n)) {
+        if (key === 'referencedContract' || key === 'definition' || key === 'symbolTable') continue;
+        walk(value, childInLoop);
+      }
+    };
+    walk(body, false);
+    return found;
   }
 }
 

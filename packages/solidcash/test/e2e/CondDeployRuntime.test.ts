@@ -529,3 +529,69 @@ describe('conditional deploy with value (if (c==1) new Child{value:5000}())', ()
     await expect(factory.call.make(2n).send()).rejects.toThrow(/transfer amounts could not be auto-derived/);
   });
 });
+
+// A LOOP deploy WITH value: `for (i<n) new Child{value:V}()` mints N children AND sends N value transfers from
+// the factory's own satoshi container - a runtime-variable count. There is no fixed transfer region: each child's
+// V-sat transfer is interleaved as the last output of that child's deploy group (stride = 1 + dataNftCount + 1).
+// The container is co-spent once and conserved by containerIn <= containerOut + counter*V, with its identity
+// (input+output LBC) pinned so the remainder can't be redirected. This VM-proves the whole loop {value:} path.
+const LOOP_VALUE_FACTORY = `${CHILD}
+contract LoopValueFactory(bytes20 owner) {
+    int childCount;
+    function makeN(int n) {
+        for (int i = 0; i < n; i = i + 1) {
+            Child ch = new Child{value: 5000}(owner);
+        }
+        this.childCount = this.childCount + n;
+    }
+}
+`;
+
+describe('loop deploy with value (for (i<n) new Child{value:5000}())', () => {
+  const provider = createTestProvider();
+  const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
+  const loopValueArtifact = compileString(LOOP_VALUE_FACTORY);
+  const childArtifact = compileString(CHILD);
+
+  it('makeN(2): two children each funded 5000 from the container (20000 -> 10000), two interleaved transfers', async () => {
+    const fresh: Utxo = { txid: '40f4'.repeat(16), vout: 0, satoshis: 400000n };
+    await provider.addUtxo(p2pkh.address, fresh);
+    // Factory holds a 20000-sat balance - the source for the two 5000-sat child value transfers.
+    const factory = (await StatefulContract.deploy(loopValueArtifact, [alicePkh], {
+      provider,
+      fundingUtxo: fresh,
+      funder: p2pkh.unlock.spend(alicePub, new SignatureTemplate(alicePriv)),
+      initialState: { childCount: 0n },
+      initialBalance: 20000n,
+      changeAddress: p2pkh.address,
+    })).contract;
+
+    const g0: Utxo = { txid: '4a01'.repeat(16), vout: 0, satoshis: 300000n };
+    const g1: Utxo = { txid: '4b02'.repeat(16), vout: 0, satoshis: 300000n };
+    await provider.addUtxo(p2pkh.address, g0);
+    await provider.addUtxo(p2pkh.address, g1);
+
+    const result = await StatefulContract.deployFrom({
+      provider,
+      factory,
+      funder: p2pkh.unlock.spend(alicePub, new SignatureTemplate(alicePriv)),
+      fundingUtxos: [g0, g1],
+      changeAddress: p2pkh.address,
+      deployFunctionName: 'makeN',
+      deployFunctionArgs: [2n],
+      childArtifact,
+      childConstructorArgs: [alicePkh],
+      childInitialState: { counter: 0n },
+      childValue: 5000n,
+    });
+
+    const outs = getTxOutputs(result.tx);
+    // Two distinct child minting NFTs (child 0 at counter 0, child 1 at counter 1).
+    expect(outs.some((o) => o.token?.category === g0.txid && o.token?.nft?.capability === 'minting')).toBe(true);
+    expect(outs.some((o) => o.token?.category === g1.txid && o.token?.nft?.capability === 'minting')).toBe(true);
+    // Two interleaved 5000-sat value transfers (plain, non-token).
+    expect(outs.filter((o) => o.amount === 5000n && !o.token).length).toBe(2);
+    // Container recreated at 20000 - 2*5000 = 10000.
+    expect(outs.some((o) => o.amount === 10000n && !o.token)).toBe(true);
+  });
+});

@@ -445,4 +445,57 @@ contract FanOut(pubkey admin) {
       expect(transferOutputs.length).toBe(3);
     });
   });
+
+  // SOUNDNESS: the covenant must pin the satoshi container's OUTPUT to the container's own address (or a 0-sat
+  // drain), else a caller could satisfy the value conservation (containerIn <= containerOut + transfers) by
+  // parking the preserved remainder at a FOREIGN address - stealing the contract's balance. The drain-guard
+  // (emitSatoshiContainerIdentity: output LBC == expected OR output value == 0) closes this. This uses a
+  // no-checkSig function so the ONLY covenant that can reject the mutated tx is the container preservation.
+  describe('container output redirect is rejected (drain-guard)', () => {
+    const NOSIG = `
+contract C(bytes20 owner) {
+    int counter;
+    function pay(int amount) {
+        this.transfer(new LockingBytecodeP2PKH(owner), amount);
+    }
+}`;
+    const noSigArtifact = compileString(NOSIG);
+    const provider = createTestProvider();
+    const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
+
+    it('rejects redirecting the preserved container output to a foreign address; honest tx is accepted', async () => {
+      const { addressToLockScript } = await import('../../src/utils.js');
+      const fu: Utxo = { txid: 'ad03'.repeat(16), vout: 0, satoshis: 200000n };
+      await provider.addUtxo(p2pkh.address, fu);
+      const contract = (await StatefulContract.deploy(noSigArtifact, [alicePkh], {
+        provider,
+        fundingUtxo: fu,
+        funder: p2pkh.unlock.spend(alicePub, new SignatureTemplate(alicePriv)),
+        initialState: { counter: 0n },
+        changeAddress: p2pkh.address,
+        initialBalance: 50000n,
+      })).contract;
+
+      // Honest partial transfer: 10000 to owner, container preserved at 40000.
+      const builder = await contract.call.pay(10000n).build();
+      const scIdx = builder.outputs.findIndex((o) => o.amount === 40000n);
+      expect(scIdx).toBeGreaterThanOrEqual(0);
+      const honestRaw = builder.build();
+
+      // ATTACK: redirect the 40000-sat preserved container output to a foreign address, keeping its value
+      // (so the value conservation still holds). Only the LBC identity guard can catch this.
+      builder.outputs[scIdx].to = addressToLockScript(bobAddress);
+      const attackRaw = builder.build();
+
+      // Submitted against LIVE utxos (a rejected tx spends nothing): rejected by the covenant, not a utxo error.
+      let msg = '';
+      await expect(provider.sendRawTransaction(attackRaw).catch((e) => { msg = (e as Error).message; throw e; }))
+        .rejects.toThrow();
+      expect(/missingorspent|inputs/i.test(msg)).toBe(false);
+      expect(/verify|script/i.test(msg)).toBe(true);
+
+      // The honest, container-preserving tx (built before the mutation) IS accepted against the same utxos.
+      await expect(provider.sendRawTransaction(honestRaw)).resolves.toBeDefined();
+    });
+  });
 });

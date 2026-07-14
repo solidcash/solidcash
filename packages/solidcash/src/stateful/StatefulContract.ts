@@ -1904,9 +1904,17 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       () => createDataNftUnlocker(factory.inner, 0, factory.categoryId),
     );
 
+    // A LOOP `new C{value:V}()` has NO standalone transfer block-layout slot (the N value transfers are
+    // interleaved as the LAST output of each child's group). A straight-line / conditional {value:} keeps a
+    // transfer slot (separate output). Both co-spend the factory's satoshi container as the value source.
+    const hasSatoshiContainer = deployAbi.blockLayout?.slots.some((s) => s.kind === 'satoshiContainer') ?? false;
+    const hasTransferSlot = deployAbi.blockLayout?.slots.some((s) => s.kind === 'transfer') ?? false;
+    const isLoopValueDeploy = hasSatoshiContainer && !hasTransferSlot;
+
     // Build child outputs for the VM probe (needed by the deploy covenant verification). N child groups, one per
     // funding UTXO, at consecutive stride-sized slots (the runtime deploy counter indexes them). Each child's
-    // master + data NFTs carry its own category (fundingUtxos[k].txid) and self-pinned address.
+    // master + data NFTs carry its own category (fundingUtxos[k].txid) and self-pinned address; a loop {value:}
+    // group ends with the interleaved value transfer to that child.
     const childExtraOutputs: Array<{ to: string | Uint8Array; amount: bigint; token?: any }> = [];
     for (let k = 0; k < childCount; k++) {
       const cc = childContracts[k];
@@ -1923,6 +1931,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           amount: dataNftAmount,
           token: { category: cat, amount: 0n, nft: { capability: 'mutable', commitment: childCommitments[i] } },
         });
+      }
+      if (isLoopValueDeploy) {
+        childExtraOutputs.push({ to: cc.address, amount: options.childValue ?? 0n });
       }
     }
 
@@ -1943,7 +1954,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // value transfer) + recreates it (minus x) + adds the x-sat transfer to the child. Detected from the deploy
     // fn's satoshiContainer block-layout slot; the container input sits after entries (before funding), and the
     // container + transfer outputs after entries (before return event / child geneses) - matching the layout.
-    const hasSatoshiContainer = deployAbi.blockLayout?.slots.some((s) => s.kind === 'satoshiContainer') ?? false;
+    // hasSatoshiContainer / isLoopValueDeploy computed above (with the child-output interleave). A loop {value:}
+    // deploy's container loses N*childValue (N interleaved transfers); a straight-line / conditional loses V.
     const containerInputs: Array<{ utxo: Utxo; unlocker: Unlocker }> = [];
     const containerOutputs: Array<{ to: string | Uint8Array; amount: bigint }> = [];
     if (hasSatoshiContainer) {
@@ -1954,19 +1966,24 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           + 'childValue (the sats transferred from the factory\'s satoshi container to the child).',
         );
       }
+      const totalValue = isLoopValueDeploy ? childValue * BigInt(childCount) : childValue;
       const satAddr = getSatoshiContainerAddress(factory.inner, factory.categoryId);
-      const satUtxo = (await provider.getUtxos(satAddr)).find((u) => u.satoshis > childValue);
+      const satUtxo = (await provider.getUtxos(satAddr)).find((u) => u.satoshis > totalValue);
       if (!satUtxo) {
         throw new Error(
-          `Factory '${factory.name}' has no satoshi container with > ${childValue} sats at ${satAddr}. Deploy `
+          `Factory '${factory.name}' has no satoshi container with > ${totalValue} sats at ${satAddr}. Deploy `
           + 'the factory with an initialBalance to fund new C{value:}() transfers.',
         );
       }
       containerInputs.push({
         utxo: satUtxo, unlocker: createSatoshiContainerUnlocker(factory.inner, 0, factory.categoryId),
       });
-      containerOutputs.push({ to: satAddr, amount: satUtxo.satoshis - childValue });     // recreate the container
-      containerOutputs.push({ to: childContractUnsalted.address, amount: childValue });  // value -> child address
+      containerOutputs.push({ to: satAddr, amount: satUtxo.satoshis - totalValue });    // recreate the container
+      // Straight-line / conditional: one separate transfer output. Loop: the N transfers are interleaved into
+      // the child groups (added in the child-output construction below), so no separate transfer here.
+      if (!isLoopValueDeploy) {
+        containerOutputs.push({ to: childContractUnsalted.address, amount: childValue });
+      }
     }
 
     // Derive factory state + entry commitments via VM probe. Inputs: master, data NFTs,
@@ -2141,6 +2158,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           amount: dataNftAmount,
           token: { category: cat, amount: 0n, nft: { capability: 'mutable', commitment: effectiveChildCommitments[i] } },
         });
+      }
+      // Loop {value:}: the value transfer to this child, interleaved as the last output of its group.
+      if (isLoopValueDeploy) {
+        builder.addOutput({ to: cc.address, amount: options.childValue ?? 0n });
       }
     }
 

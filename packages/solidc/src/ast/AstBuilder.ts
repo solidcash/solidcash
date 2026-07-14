@@ -4384,7 +4384,10 @@ export default class AstBuilder
   private returnParamType(p: ReturnParamContext): Type {
     if (p.arrayType()) return this.buildArrayType(p.arrayType()!);
     if (p.mappingType()) return this.buildMappingType(p.mappingType()!);
-    return this.resolveType(p.typeName()!.getText()) ?? new AddressType(false);
+    // Keep the unresolved type NAME on the placeholder (like param/state-var types do), so an imported struct
+    // return `returns (Escrow memory)` re-resolves to the real struct once imports merge (reresolveImportedStructTypes).
+    const tn = p.typeName()!.getText();
+    return this.resolveType(tn) ?? new AddressType(false, tn);
   }
 
   // Populate returnTypes and (optionally) returnNames from a `returns (...)` clause.

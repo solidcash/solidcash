@@ -33,6 +33,32 @@ describe('conditional deploy (new C() inside a branch/loop) -> clean actionable 
   });
 });
 
+// `new C()` on a stateful child mints its genesis = IS deploying it, so the `deploy` modifier is inferred and
+// explicit `deploy` is redundant (identical bytecode + ABI). Explicit `deploy` remains the ONLY signal for a
+// deployFrom / create3 factory function that has no literal `new C()` in its body. A stateful `new C()` outside a
+// stateful contract's function has nothing to ride the deploy covenant, so it errors - with the real constraint,
+// not the old (misleading) "use the deploy modifier" advice.
+describe('deploy modifier is inferred from new C() (explicit `deploy` is optional for new-expression deploys)', () => {
+  const CHILD = 'contract Child { int x; constructor(int v) { x = v; }'
+    + ' function authorize(pubkey pk, sig s) unsafe { require(checkSig(s, pk)); } }';
+  const factory = (mod: string): string => `${CHILD} contract F(pubkey a) { int c;`
+    + ` function make(sig s, int v) ${mod} { require(checkSig(s, a)); Child ch = new Child(v); this.c = this.c + 1; }`
+    + ' function authorize(pubkey pk, sig s) unsafe { require(checkSig(s, pk)); } }';
+
+  it('a stateful new C() infers deploy: byte-identical to explicit `deploy` + same ABI modifiers', () => {
+    const inferred = compileString(factory(''));
+    const explicit = compileString(factory('deploy'));
+    expect(inferred.bytecode).toBe(explicit.bytecode);
+    expect(inferred.abi.find((f) => f.name === 'make')?.modifiers).toEqual(['deploy']);
+  });
+
+  it('the inferred-deploy function actually carries a deploy block-layout slot (real deploy, not just a label)', () => {
+    const art = compileString(factory(''));
+    const make = art.abi.find((f) => f.name === 'make');
+    expect(make?.blockLayout?.slots.some((s) => s.kind === 'deploy')).toBe(true);
+  });
+});
+
 describe('SBE-18: parent-constructor args (inheritance-list + constructor-level) inline the parent ctor body', () => {
   // Uses int state vars (not string) so the two inlined parent writes don't hit the W5 two-distinct-dynamic-
   // var-write limit (the ERC20 name+symbol pattern), which is orthogonal to the inlining feature under test.

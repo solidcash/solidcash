@@ -1025,7 +1025,13 @@ export class UnimplementedAbstractFunctionError extends SolidCashError {
 
 export class StatefulContractDeploymentError extends SolidCashError {
   constructor(public node: Node, contractName: string) {
-    super(node, `Cannot use 'new ${contractName}(...)' for stateful contracts outside a 'deploy' function. Use the 'deploy' modifier on the enclosing function.`);
+    super(
+      node,
+      `Cannot deploy stateful contract '${contractName}' here: 'new ${contractName}(...)' mints its genesis, which `
+      + 'must ride the deploy covenant of a STATEFUL parent, so it has to appear inside a function of a stateful '
+      + 'contract (one with state variables). A non-stateful contract or a bare state-variable initializer cannot '
+      + 'host it. The \'deploy\' modifier is inferred automatically from the new-expression - you do not write it.',
+    );
   }
 }
 

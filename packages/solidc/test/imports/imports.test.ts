@@ -192,6 +192,27 @@ describe('Imports', () => {
       expect(artifact.contractName).toBe('C');
     });
 
+    it('rebuilds scalar+array field WRITES on an IMPORTED struct-typed local (byte-equal to same-file)', () => {
+      // Escrow's type is imported, so unknown at parse - the AstBuilder mis-builds `e.split[i]=v` as a mapping-field
+      // assign and `e.claimed=v` as a StateAssign that drops the field. RedesugarImportedStructFieldWrites rewrites
+      // both into the read-modify-rebuild the AstBuilder emits for a same-file struct local. Result must be identical.
+      const escrowStruct = 'struct Escrow { uint16[4] split; uint16 claimed; }';
+      const body = 'interface IU { function getEscrow(uint256 id) external view returns (Escrow memory); }'
+        + ' contract C { int n; function f(IU u, uint256 id) public {'
+        + ' Escrow memory e = u.getEscrow(id); e.split[2] = 10000; e.claimed = 1;'
+        + ' this.n = int(uint(e.split[2])) + int(uint(e.claimed)); } }';
+      const resolver = (importPath: string): { source: string; id: string } | undefined => (
+        importPath === './T.sol' ? { source: escrowStruct, id: '/T.sol' } : undefined);
+      const imported = compileString(`import "./T.sol"; ${body}`, {
+        solidityImportCompat: true, importResolver: resolver, rootFileId: '/main.sol',
+      });
+      const sameFile = compileString(`${escrowStruct} ${body}`, {
+        solidityImportCompat: true, rootFileId: '/main.sol',
+      });
+      expect(imported.contractName).toBe('C');
+      expect(imported.bytecode).toBe(sameFile.bytecode);
+    });
+
     it('should dedup a symbol imported via both a wildcard and a named import', () => {
       const files: Record<string, string> = {
         '/lib/shapes.scash': `

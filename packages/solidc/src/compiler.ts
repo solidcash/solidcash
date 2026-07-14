@@ -54,6 +54,7 @@ import IfConvertConditionalEntryOp from './semantic/IfConvertConditionalEntryOp.
 import SynthesizeBlockOracle from './semantic/SynthesizeBlockOracle.js';
 import PruneUnreachableFreeFunctions from './semantic/PruneUnreachableFreeFunctions.js';
 import RedesugarImportedUsingForCalls from './semantic/RedesugarImportedUsingForCalls.js';
+import RedesugarImportedStructFieldWrites from './semantic/RedesugarImportedStructFieldWrites.js';
 import SynthesizePublicGetters from './semantic/SynthesizePublicGetters.js';
 import expandModifiers from './semantic/ModifierExpansionTransformation.js';
 import FoldHashLiterals from './semantic/FoldHashLiterals.js';
@@ -217,6 +218,12 @@ function compileResolvedAst(ast: Ast, code: string, mergedCompilerOptions: Compi
   // inlined modifier bodies are covered) and reresolveImportedStructTypes (types resolved), before the inline
   // passes (a `T storage`-taking library method is inlined-and-dropped there).
   ast = ast.accept(new RedesugarImportedUsingForCalls()) as Ast;
+
+  // A field write on a LOCAL/PARAM struct var whose struct type was IMPORTED (`escrow.split[j]=v`, `escrow.claimed=v`
+  // on `Escrow memory escrow`) was mis-built at parse - the type was unknown, so the AstBuilder emitted a mapping-field
+  // assign (array field) or a field-dropping StateAssign (scalar field). Rewrite both into the read-modify-rebuild
+  // block the AstBuilder emits for a same-file struct local. Before LowerMemoryModel (which lowers the rebuild).
+  ast = ast.accept(new RedesugarImportedStructFieldWrites()) as Ast;
 
   // Desugar `return` inside a loop -> flag + break + post-loop return (before break/continue expansion so the
   // injected breaks are lowered; internal functions can't raw-return from inside a loop's balanced stack).

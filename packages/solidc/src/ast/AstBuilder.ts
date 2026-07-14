@@ -3487,7 +3487,12 @@ export default class AstBuilder
       : this.compoundRhs(buildRead(), op, valueCtx, loc);
 
     let node: StatementNode;
-    if (keys.length === 0) {
+    if (keys.length === 0 && hasMember) {
+      // `x.field = v` whose struct type was unknown at parse (imported struct local): buildStructFieldRebuild
+      // could not fire above. Preserve the field in a MappingFieldAssign so RedesugarImportedStructFieldWrites
+      // can rebuild it post-merge; a plain StateAssign would silently drop the field.
+      node = new MappingFieldAssignNode(name, keys, fieldName!, value);
+    } else if (keys.length === 0) {
       node = new StateAssignNode(name, value);
     } else if (hasMember) {
       node = new MappingFieldAssignNode(name, keys, fieldName!, value);

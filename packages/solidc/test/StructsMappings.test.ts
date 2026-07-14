@@ -525,3 +525,15 @@ describe('nested lvalue write: mapping of struct-with-mapping (providers[k].data
     expect(flattened.bytecode).toBe(manual.bytecode);
   });
 });
+
+describe('storage-pointer alias to a mapping-value struct: array-field element write', () => {
+  it('desugars `p.arr[j] = v` (p = m[k]) byte-for-byte to the direct `m[k].arr[j] = v`', () => {
+    const alias = compileString('contract C { struct Escrow { uint16[4] split; } mapping(uint256=>Escrow) escrows;'
+      + ' int n; function f(uint256 id, sig s, pubkey pk) public { require(checkSig(s,pk));'
+      + ' Escrow storage escrow = escrows[id]; escrow.split[0] = 10000; this.n = 1; } }', { solidityImportCompat: true });
+    const direct = compileString('contract C { struct Escrow { uint16[4] split; } mapping(uint256=>Escrow) escrows;'
+      + ' int n; function f(uint256 id, sig s, pubkey pk) public { require(checkSig(s,pk));'
+      + ' escrows[id].split[0] = 10000; this.n = 1; } }', { solidityImportCompat: true });
+    expect(alias.bytecode).toBe(direct.bytecode);
+  });
+});

@@ -3388,6 +3388,36 @@ export default class AstBuilder
     // access `container[aliasKeys, ...indexKeys]`. The alias is always an unambiguous state location.
     const alias = !isThis ? this.storageAliases.get(rawName) : undefined;
     const name = alias ? alias.container : rawName;
+
+    // Storage-pointer alias to a mapping-value struct, ARRAY-field element write: `p.arr[j] op= v` where
+    // `T storage p = m[k]` (e.g. Unicrow's `escrow.split[WHO] = v` on `Escrow storage escrow = escrows[id]`).
+    // The trailing `[j]` indexes the array FIELD, not the mapping, so route it through the mapping-value-struct
+    // roundtrip (read entry into a temp, write the element, write back) like the direct `m[k].arr[j]` form -
+    // NOT the alias key-merge below (which would treat `j` as a second mapping key).
+    if (!isThis && !isIncDec && alias && fieldName && members.length === 1 && keyFns.length === 1
+      && segs.length === 2 && segs[0].member !== undefined && segs[1].key !== undefined
+      && this.stateMappingValueStruct.has(alias.container) && alias.keys.length === 1) {
+      const structT = this.stateMappingValueStruct.get(alias.container)!;
+      const field = structT.fields.find((f) => f.name === fieldName);
+      if (field && field.type instanceof ArrayType) {
+        const idAt = (n: string): IdentifierNode => { const i = new IdentifierNode(n); i.location = loc; return i; };
+        const tmpName = `__nlv_${this.nestedLvalueCounter++}`;
+        const mapKey = (): ExpressionNode => cloneNode(alias.keys[0]) as ExpressionNode;
+        const mapRead = new MappingAccessNode(alias.container, [mapKey()]);
+        mapRead.location = nameLoc;
+        const decl = new VariableDefinitionNode(structT, [], tmpName, mapRead);
+        decl.location = loc;
+        this.localStructTypes.set(tmpName, structT); // so the array-field write helper resolves the temp's type
+        const inner = this.buildLocalStructArrayFieldWrite(tmpName, fieldName, field.type,
+          [() => keyFns[0]()], op, valueCtx, loc, valueNode);
+        const back = new MappingAssignNode(alias.container, [mapKey()], idAt(tmpName));
+        back.location = loc;
+        const block = new BlockNode([decl, ...(inner.statements ?? []), back]);
+        block.location = loc;
+        return block;
+      }
+    }
+
     // Build the key list fresh each call (read + assign nodes must not share key node instances).
     const buildKeys = (): ExpressionNode[] => {
       const idxKeys = keyFns.map((fn) => fn());

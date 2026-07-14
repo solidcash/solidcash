@@ -1,0 +1,110 @@
+import { describe, it, expect } from 'vitest';
+import { compileString } from 'solidc';
+import {
+  Contract, SignatureTemplate, StatefulContract,
+} from '../../src/index.js';
+import { alicePub, alicePriv, alicePkh } from '../fixture/vars.js';
+import { createTestProvider, getTxOutputs } from '../test-util.js';
+import { Utxo } from '../../src/interfaces.js';
+import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
+
+// A conditional deploy: `if (c == 1) new Child()` inside a factory function. The genesis is verified INLINE at
+// the creation site (emitInlineDeployVerification), so when the branch fires the child genesis is co-spent and
+// the covenant checks it; when the branch is not taken there is no child. This test proves the FIRED path is
+// runtime-sound - the inline covenant co-spends and verifies a real child genesis (same fixed slot as an
+// unconditional deploy).
+
+const CHILD = `
+contract Child(bytes20 owner) {
+    int counter;
+    function increment() {
+        require(tx.outputs[0].lockingBytecode == new LockingBytecodeP2PKH(owner));
+        this.counter = this.counter + 1;
+    }
+}
+`;
+
+// Factory whose deploy fires only when c == 1. `new Child()` references Child by name, so Child must be in the
+// same compilation unit (compileString returns the last contract, CondFactory, with Child as a referenced child).
+const COND_FACTORY = `${CHILD}
+contract CondFactory(bytes20 owner) {
+    int childCount;
+    function make(int c) {
+        if (c == 1) {
+            Child ch = new Child(owner);
+        }
+        this.childCount = this.childCount + 1;
+    }
+}
+`;
+
+describe('conditional deploy runtime (if (c==1) new Child())', () => {
+  const provider = createTestProvider();
+  const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
+  const factoryArtifact = compileString(COND_FACTORY);
+  const childArtifact = compileString(CHILD);
+
+  let factory: Awaited<ReturnType<typeof StatefulContract.deploy>>['contract'];
+
+  it('compiles the conditional-deploy factory (deploy inferred, verified inline)', () => {
+    const make = factoryArtifact.abi.find((f) => f.name === 'make');
+    expect(make?.modifiers).toContain('deploy');
+    expect(make?.deployTargets?.[0]?.contractName).toBe('Child');
+  });
+
+  it('deploys the factory', async () => {
+    const fundingUtxo: Utxo = { txid: 'ca11'.repeat(16), vout: 0, satoshis: 200000n };
+    await provider.addUtxo(p2pkh.address, fundingUtxo);
+    const result = await StatefulContract.deploy(factoryArtifact, [alicePkh], {
+      provider,
+      fundingUtxo,
+      funder: p2pkh.unlock.spend(alicePub, new SignatureTemplate(alicePriv)),
+      initialState: { childCount: 0n },
+      changeAddress: p2pkh.address,
+    });
+    factory = result.contract;
+    expect(factory.categoryId).toBe(result.categoryId);
+  });
+
+  it('make(1) FIRES the deploy: a real Child genesis is co-spent and verified inline', async () => {
+    const makeAbi = factoryArtifact.abi.find((f) => f.name === 'make')!;
+    const fundingInputIndex = 1 + (makeAbi.requiredNftIndices?.length ?? factoryArtifact.stateLayout!.dataNftCount);
+
+    const genesisFunding: Utxo = { txid: 'c111'.repeat(16), vout: 0, satoshis: 200000n };
+    await provider.addUtxo(p2pkh.address, genesisFunding);
+
+    const result = await StatefulContract.deployFrom({
+      provider,
+      factory,
+      funder: p2pkh.unlock.spend(alicePub, new SignatureTemplate(alicePriv)),
+      fundingUtxo: genesisFunding,
+      changeAddress: p2pkh.address,
+      deployFunctionName: 'make',
+      deployFunctionArgs: [1n],
+      childArtifact,
+      childConstructorArgs: [alicePkh],
+      childInitialState: { counter: 0n },
+    });
+
+    // The child genesis was minted (its category == the genesis funding txid).
+    expect(result.childCategoryId).toBe(genesisFunding.txid);
+    const outs = getTxOutputs(result.tx);
+    // The child master NFT (minting, 0x02) exists among the outputs with the child category.
+    const hasChildMaster = outs.some((o) => o.token?.category === genesisFunding.txid
+      && o.token?.nft?.capability === 'minting');
+    expect(hasChildMaster).toBe(true);
+  });
+
+  it('make(2) does NOT fire the deploy: a plain call, no child genesis, childCount still increments', async () => {
+    // A conditionally-deploying function called with a non-firing arg is just a normal state-write call. The
+    // inline genesis checks live inside `if (c == 1)`, so the covenant verifies no child when c != 1.
+    const before = (await factory.getState()).childCount as bigint;
+    const tx = await factory.call.make(2n).send();
+    expect(tx.txid).toBeDefined();
+    const outs = getTxOutputs(tx);
+    // No child minting NFT: every token output carries the FACTORY category (the master + its data NFT).
+    const factoryCat = factory.categoryId;
+    expect(outs.every((o) => !o.token || o.token.category === factoryCat)).toBe(true);
+    expect((await factory.getState()).childCount).toBe(before + 1n);
+  });
+});

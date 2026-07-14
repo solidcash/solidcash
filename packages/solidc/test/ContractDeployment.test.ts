@@ -10,18 +10,22 @@ import { compileString } from '../src/index.js';
 // the taken path) used to crash the codegen stack tracker with an internal "does not exist on the stack" error.
 // It is now rejected cleanly with an actionable message; unconditional / bare-block / unchecked deploys are
 // unaffected (they compile as before).
-describe('conditional deploy (new C() inside a branch/loop) -> clean actionable error, not an internal crash', () => {
+describe('conditional deploy (new C() inside a branch/loop)', () => {
   const CHILD = 'contract Child { int x; constructor() { x = 1; } }';
   const cc = (body: string): string => `${CHILD} contract C { ${body} }`;
   const compat = { solidityImportCompat: true };
 
-  it('deploy inside an if-branch throws a clear "not yet implemented" error (not a stack-tracker crash)', () => {
-    expect(() => compileString(cc('function f(uint c) external { if (c==1) { Child ch = new Child(); } require(true); }'),
-      compat)).toThrow(/inside a conditional branch or loop is not yet implemented/);
+  it('a SINGLE deploy inside an if-branch now COMPILES (verified inline at the deploy site)', () => {
+    expect(compileString(cc('function f(uint c) external { if (c==1) { Child ch = new Child(); } require(true); }'),
+      compat).contractName).toBe('C');
   });
-  it('deploy inside a for-loop throws the same clean error', () => {
+  it('deploy inside a for-loop still throws the clean "not yet implemented" error (needs a runtime counter)', () => {
     expect(() => compileString(cc('function f() external { for (uint i=0;i<2;i++) { Child ch = new Child(); } require(true); }'),
       compat)).toThrow(/inside a conditional branch or loop is not yet implemented/);
+  });
+  it('MULTIPLE deploy sites with a conditional one still throw (needs a runtime counter to keep slots stable)', () => {
+    expect(() => compileString(cc('function f(uint c) external { Child a = new Child(); if (c==1) { Child b = new Child(); }'
+      + ' require(true); }'), compat)).toThrow(/inside a conditional branch or loop is not yet implemented/);
   });
   it('an unconditional deploy still compiles', () => {
     expect(compileString(cc('function f() external { Child ch = new Child(); require(true); }'), compat).contractName)

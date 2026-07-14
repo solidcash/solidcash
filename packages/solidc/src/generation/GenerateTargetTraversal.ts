@@ -217,6 +217,27 @@ function splitOnDelimiter(bytes: Uint8Array, delim: Uint8Array): Uint8Array[] {
   return out;
 }
 
+// Count `new C(...)` deploy sites in a function body (each mints a child genesis). Mirrors
+// SymbolTableTraversal.countDeploySites so the codegen guard for conditional deploys agrees with the
+// block-layout slot reservation. Skips the referencedContract back-reference (the whole child AST).
+function countInstantiationDeploySites(body: Node | undefined): number {
+  if (!body) return 0;
+  let count = 0;
+  const seen = new WeakSet<object>();
+  const walk = (n: unknown): void => {
+    if (Array.isArray(n)) { for (const it of n) walk(it); return; }
+    if (!(n instanceof Node) || seen.has(n)) return;
+    seen.add(n);
+    if (n instanceof InstantiationNode && n.referencedContract) count += 1;
+    for (const [key, value] of Object.entries(n)) {
+      if (key === 'referencedContract' || key === 'definition' || key === 'symbolTable') continue;
+      walk(value);
+    }
+  };
+  walk(body);
+  return count;
+}
+
 class MsgDataUsageCollector extends AstTraversal {
   found = false;
 
@@ -372,6 +393,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }[] = [];
 
   private deployCounter: number = 0;
+
+  // Inline (conditional) deploy verification. A `new C()` inside a branch cannot use the fixed block-layout
+  // deploy slot the way the epilogue does: when the branch is NOT taken there is no genesis output, and the
+  // master-LBC/category the epilogue reads are never pushed (they live only on the taken path). So a branch
+  // deploy is verified INLINE at the creation site instead - the checks run exactly when `new C()` runs. A
+  // single conditional deploy lands at the same fixed slot as an unconditional one when it fires (deploy is
+  // the trailing output region), so no runtime counter is needed yet. Straight-line deploys (scopeDepth 0)
+  // keep the proven fixed epilogue (emitDeployCovenantVerification) untouched. Loop/variable-count deploys
+  // (a runtime deploy counter) are a follow-up and still hit ConditionalDeployError.
+  private functionDeploySiteCount: number = 0;      // count of `new C()` deploy sites in the current function
 
   // User-defined function tracking (for OP_INVOKE)
   private userFunctionDefs: Map<string, FunctionDefinitionNode> = new Map();
@@ -1366,6 +1397,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emitInfos = node.emitInfos ?? [];
     this.pendingDeploys = [];
     this.deployCounter = 0;
+    this.functionDeploySiteCount = countInstantiationDeploySites(node.body);
     this.preAllocatedStateWrites = new Set();
     this.preAllocatedTransfers = new Set();
     this.preAllocatedEmits = new Set();
@@ -7074,33 +7106,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.pushToStack('(value)');
     // Stack: [..., p2sh32_lbc]
 
-    // Step 4: If stateful deploy, get child category and register pending deploy
+    // Step 4: If stateful deploy, verify the child's genesis outputs.
     if (node.isStatefulDeploy) {
-      // A stateful deploy registers its child output at a FIXED transaction-layout slot resolved at the function
-      // epilogue; inside a branch/loop (scopeDepth > 0) its master-LBC/category are pushed only on the taken path,
-      // so the epilogue reads a value that is not on the stack (an internal "does not exist on the stack" crash).
-      // Reject cleanly with an actionable message instead. Unconditional / bare-block / unchecked deploys are
-      // scopeDepth 0 and unaffected.
-      if (this.scopeDepth > 0) throw new ConditionalDeployError(node);
-      const deployIdx = this.deployCounter++;
-      const masterLbcStackName = `__deploy_master_lbc_${deployIdx}`;
-      const categoryStackName = `__deploy_category_${deployIdx}`;
-
-      // Rename current top (p2sh32_lbc) as master LBC
-      this.popFromStack();
-      this.pushToStack(masterLbcStackName);
-
-      // Get child category ID from genesis input.
-      // Verify outpoint index == 0 (BCH consensus requires vout=0 for token genesis)
-      // then extract the txhash as the category ID.
-      this.emitBlockSlotIndex('deploy', deployIdx, locationData);
-      this.emit(Op.OP_DUP, locationData);
-      this.emit(Op.OP_OUTPOINTINDEX, locationData);
-      this.emit(encodeInt(0n), locationData);
-      this.emit(Op.OP_EQUALVERIFY, locationData);
-      this.emit(Op.OP_OUTPOINTTXHASH, locationData);
-      this.pushToStack(categoryStackName);
-
       // deployedDataNftCount was computed in semantic analysis from the child's nftIndex values, but a child
       // imported from another file may not have had its state packed into NFTs yet at that point (the parent's
       // `new C()` is visited before the child's bin-packing). The state-var nodes are now packed, so recompute
@@ -7109,18 +7116,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         node.deployedDataNftCount = Math.max(...node.deployedStateVars.map((sv) => sv.nftIndex)) + 1;
       }
 
-      // Register pending deploy for covenant verification
-      this.pendingDeploys.push({
-        deployIndex: deployIdx,
-        masterLbcStackName,
-        categoryStackName,
-        node,
-      });
-
-      // Record deploy target on current function for ABI generation. Map each child constructor argument to
-      // the deploy-function parameter it forwards (a direct `new C(param)` reference), so the SDK can derive
-      // childConstructorArgs from the deploy-function args instead of requiring them again; null for any
-      // non-trivial argument expression.
+      // Record deploy target on current function for ABI generation (common to the fixed + inline paths). Map
+      // each child constructor argument to the deploy-function parameter it forwards (a direct `new C(param)`
+      // reference), so the SDK can derive childConstructorArgs from the deploy-function args instead of
+      // requiring them again; null for any non-trivial argument expression.
       if (!this.currentFunction.deployTargets) {
         this.currentFunction.deployTargets = [];
       }
@@ -7146,6 +7145,47 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         dataNftCount: node.deployedDataNftCount,
         constructorArgs,
         ...(salt && { salt }),
+      });
+
+      // Conditional (branch) deploy: the fixed epilogue reads a master-LBC/category pushed only on the taken
+      // path, and the genesis output position depends on whether the deploy fired - so verify INLINE here (runs
+      // iff the branch is taken). Supported now: a SINGLE deploy site in a branch (not a loop), no {value:}
+      // transfer; a single conditional deploy lands at the same fixed slot as an unconditional one when it
+      // fires. Loop / variable-count / multi-site deploys need a runtime deploy counter (follow-up) and still
+      // raise ConditionalDeployError. Straight-line deploys (scopeDepth 0) keep the proven fixed epilogue.
+      if (this.scopeDepth > 0) {
+        if (this.plainLoopDepth > 0 || this.functionDeploySiteCount !== 1 || node.callOptions?.value) {
+          throw new ConditionalDeployError(node);
+        }
+        this.emitInlineDeployVerification(node, locationData);
+        return node;
+      }
+
+      const deployIdx = this.deployCounter++;
+      const masterLbcStackName = `__deploy_master_lbc_${deployIdx}`;
+      const categoryStackName = `__deploy_category_${deployIdx}`;
+
+      // Rename current top (p2sh32_lbc) as master LBC
+      this.popFromStack();
+      this.pushToStack(masterLbcStackName);
+
+      // Get child category ID from genesis input.
+      // Verify outpoint index == 0 (BCH consensus requires vout=0 for token genesis)
+      // then extract the txhash as the category ID.
+      this.emitBlockSlotIndex('deploy', deployIdx, locationData);
+      this.emit(Op.OP_DUP, locationData);
+      this.emit(Op.OP_OUTPOINTINDEX, locationData);
+      this.emit(encodeInt(0n), locationData);
+      this.emit(Op.OP_EQUALVERIFY, locationData);
+      this.emit(Op.OP_OUTPOINTTXHASH, locationData);
+      this.pushToStack(categoryStackName);
+
+      // Register pending deploy for covenant verification
+      this.pendingDeploys.push({
+        deployIndex: deployIdx,
+        masterLbcStackName,
+        categoryStackName,
+        node,
       });
 
       // Copy master LBC back to top as the expression result via OP_PICK
@@ -10797,6 +10837,149 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_CAT, locationData);          // [p2sh32_lbc]
 
     // Stack tracking: category consumed, p2sh32_lbc produced
+    this.popFromStack();
+    this.pushToStack('(value)');
+  }
+
+  /**
+   * Inline genesis verification for a SINGLE conditional (branch) deploy. Runs the same master + data-NFT
+   * checks as emitDeployCovenantVerification, but INLINE at the `new C()` site (so it executes iff the branch
+   * is taken) and reads the child master-LBC from the top of stack (freshly computed by steps 1-3) + the
+   * category from the genesis input, rather than from epilogue-pushed slots. A single conditional deploy lands
+   * at the same fixed deploy slot as an unconditional one when it fires (deploy is the trailing output region),
+   * so no runtime counter is needed. Leaves the child master-LBC on top as the `new C()` expression result.
+   */
+  private emitInlineDeployVerification(node: InstantiationNode, locationData: SingleLocationData): void {
+    const slotBase = this.getBlockSlotOffset('deploy', 0);
+    const inputBase = slotBase - this.countOutputOnlySlotsBefore(slotBase);
+    const dataNftCount = node.deployedDataNftCount;
+
+    // Child master-LBC is on top (p2sh32 lbc from steps 1-3). Name it so PICK/cleanup find it.
+    const masterLbcName = `__ideploy_lbc_${this.deployCounter}`;
+    const categoryName = `__ideploy_cat_${this.deployCounter}`;
+    this.deployCounter += 1;
+    this.popFromStack();
+    this.pushToStack(masterLbcName);
+
+    // Child category = the genesis funding input's txhash (its vout must be 0).
+    this.emitMasterInputIndex(locationData);
+    if (inputBase > 0) {
+      this.emit(encodeInt(BigInt(inputBase)), locationData);
+      this.emit(Op.OP_ADD, locationData);
+    }
+    this.emit(Op.OP_DUP, locationData);
+    this.emit(Op.OP_OUTPOINTINDEX, locationData);
+    this.emit(encodeInt(0n), locationData);
+    this.emit(Op.OP_EQUALVERIFY, locationData);
+    this.emit(Op.OP_OUTPOINTTXHASH, locationData);
+    this.pushToStack(categoryName);
+
+    // Push the genesis OUTPUT index for master (extra 0) or data NFT j (extra 1+j): masterInputIndex + slotBase
+    // + extra. Pushes 1 untracked value (the caller's next emit consumes it).
+    const emitOutIndex = (extra: number): void => {
+      this.emitMasterInputIndex(locationData);
+      const off = slotBase + extra;
+      if (off > 0) {
+        this.emit(encodeInt(BigInt(off)), locationData);
+        this.emit(Op.OP_ADD, locationData);
+      }
+    };
+
+    // --- master NFT output: locking bytecode == child p2sh32 lbc ---
+    this.emit(encodeInt(BigInt(this.getStackIndex(masterLbcName))), locationData);
+    this.emit(Op.OP_PICK, locationData);
+    this.pushToStack('(value)');
+    emitOutIndex(0);
+    this.emit(Op.OP_OUTPUTBYTECODE, locationData);
+    this.pushToStack('(value)');
+    this.emit(Op.OP_EQUALVERIFY, locationData);
+    this.popFromStack(2);
+
+    // --- master NFT output: token category == childCategory || 0x02 (minting) ---
+    this.emit(encodeInt(BigInt(this.getStackIndex(categoryName))), locationData);
+    this.emit(Op.OP_PICK, locationData);
+    this.pushToStack('(value)');
+    this.emit(new Uint8Array([0x02]), locationData);
+    this.pushToStack('(value)');
+    this.emit(Op.OP_CAT, locationData);
+    this.popFromStack(2);
+    this.pushToStack('(value)');
+    emitOutIndex(0);
+    this.emit(Op.OP_OUTPUTTOKENCATEGORY, locationData);
+    this.pushToStack('(value)');
+    this.emit(Op.OP_EQUALVERIFY, locationData);
+    this.popFromStack(2);
+
+    // --- data NFT outputs at slotBase + 1..dataNftCount ---
+    for (let nftIdx = 0; nftIdx < dataNftCount; nftIdx++) {
+      const extra = 1 + nftIdx;
+
+      // locking bytecode == data NFT p2sh32 lbc (from child category)
+      this.emit(encodeInt(BigInt(this.getStackIndex(categoryName))), locationData);
+      this.emit(Op.OP_PICK, locationData);
+      this.pushToStack('(value)');
+      this.emitDataNftLbc(locationData);
+      emitOutIndex(extra);
+      this.emit(Op.OP_OUTPUTBYTECODE, locationData);
+      this.pushToStack('(value)');
+      this.emit(Op.OP_EQUALVERIFY, locationData);
+      this.popFromStack(2);
+
+      // token category == childCategory || 0x01 (mutable)
+      this.emit(encodeInt(BigInt(this.getStackIndex(categoryName))), locationData);
+      this.emit(Op.OP_PICK, locationData);
+      this.pushToStack('(value)');
+      this.emit(new Uint8Array([0x01]), locationData);
+      this.pushToStack('(value)');
+      this.emit(Op.OP_CAT, locationData);
+      this.popFromStack(2);
+      this.pushToStack('(value)');
+      emitOutIndex(extra);
+      this.emit(Op.OP_OUTPUTTOKENCATEGORY, locationData);
+      this.pushToStack('(value)');
+      this.emit(Op.OP_EQUALVERIFY, locationData);
+      this.popFromStack(2);
+
+      // output commitment == default state commitment for this NFT (mirrors the epilogue's inline build)
+      const fieldsInNft = node.deployedStateVars
+        .filter((sv) => sv.nftIndex === nftIdx)
+        .sort((a, b) => a.fieldIndex - b.fieldIndex);
+      const savedStack = [...this.stack];
+      let firstField = true;
+      if (dataNftCount > 1) {
+        this.emit(encodeNftIndexTag(nftIdx), locationData);
+        this.pushToStack('(value)');
+        firstField = false;
+      }
+      for (const field of fieldsInNft) {
+        const foldedExpr = node.foldedStateInit?.get(field.name);
+        if (foldedExpr) {
+          this.scopeDepth += 1;
+          this.visit(foldedExpr);
+          this.scopeDepth -= 1;
+        } else {
+          this.emitDefaultValue(locationData, field.type);
+          this.pushToStack('(value)');
+        }
+        this.emitPushdataEncode(field.type, locationData);
+        if (!firstField) {
+          this.emit(Op.OP_CAT, locationData);
+          this.popFromStack();
+        }
+        firstField = false;
+      }
+      this.stack = savedStack;
+      this.pushToStack('(value)');
+      emitOutIndex(extra);
+      this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, locationData);
+      this.pushToStack('(value)');
+      this.emit(Op.OP_EQUALVERIFY, locationData);
+      this.popFromStack(2);
+    }
+
+    // Cleanup: drop the category (on top); the child master-LBC beneath is the `new C()` result.
+    this.emit(Op.OP_DROP, locationData);
+    this.popFromStack();
     this.popFromStack();
     this.pushToStack('(value)');
   }

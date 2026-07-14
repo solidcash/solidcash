@@ -6860,6 +6860,28 @@ export class DeployFunctionCall {
   ): Promise<R1 | R2> {
     return this.factory._deployFromSigner(this.functionName, this.args).then(onFulfilled, onRejected);
   }
+
+  // A CONDITIONAL deploy (`if (cond) new C()`) invoked with a non-firing argument does not mint a child - it is
+  // just a plain state-write call, and the covenant verifies no child genesis (the inline checks live inside the
+  // untaken branch). `.send()` / `.build()` route to that plain call; `.deploy()` / awaiting still run the
+  // genesis co-spend for the firing case. Building the plain tx when the branch WOULD fire produces a tx the
+  // covenant rejects (the taken branch verifies the missing child), so this stays sound.
+  private _plainCall(): StatefulFunctionCall {
+    return new StatefulFunctionCall(
+      this.factory._createBuilder(this.functionName, this.args),
+      this.factory, this.functionName, this.args,
+    );
+  }
+
+  /** Send WITHOUT deploying: the conditional deploy branch is not taken for these args (plain state call). */
+  send(): Promise<TransactionDetails> {
+    return this._plainCall().send();
+  }
+
+  /** Build the plain (non-deploying) transaction for a non-firing conditional deploy call. */
+  build(): Promise<TransactionBuilder> {
+    return this._plainCall().build();
+  }
 }
 
 export class StatefulFunctionCall {

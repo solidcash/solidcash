@@ -99,7 +99,6 @@ constructor/function modifier positions where Solidity allows it.
 SolidCash keywords shadow ordinary Solidity names, so valid code fails to parse:
 | identifier | reserved as | example |
 |---|---|---|
-| `deploy` | function modifier | `function deploy(...)` (Create2, Factory) |
 | `transaction` | (reserved) | `Transaction storage transaction = ...` (MultiSigWallet) |
 | `pointer` | (reserved) | `returns (AddressSlot storage pointer)` (Slot) |
 | `sig` | type | `signature/Signature.sol` |

@@ -191,11 +191,14 @@ allowed in an `unsafe` body.
 | --- | --- |
 | Upgradeability is a pattern (a proxy that `delegatecall`s a swappable implementation), not a keyword. | A function modifier that relaxes only the master's locking-bytecode self-pin, so the spend may move state to a master with *different* bytecode while keeping category and capability. This is the migration primitive. SDK: `StatefulContract.upgrade()`. |
 
-### `deploy`
+### `deploy` (inferred, not written)
+
+There is no `deploy` keyword. The covenant is auto-implied whenever a function's body creates a child
+contract, so writing it by hand is redundant and `deploy` in modifier position is now an undefined modifier.
 
 | EVM | SolidCash |
 | --- | --- |
-| `new C(...)` / `CREATE` / `CREATE2` issue a child-creating sub-call from any function. | A modifier marking a function that may mint child contracts (`new Child(...)`). The covenant verifies the child's master and data-NFT genesis outputs (a factory covenant). SDK: `StatefulContract.deployFrom()`. See also create2 self-pin in [external-contract-calls.md](./external-contract-calls.md). |
+| `new C(...)` / `CREATE` / `CREATE2` issue a child-creating sub-call from any function. | An inferred covenant marking a function that mints child contracts. Triggered by `new Child(...)` (create), `new Child{salt}(...)` (create2), or a create3 genesis-input read (`tx.inputs[i].outpointTransactionHash`). The covenant verifies the child's master and data-NFT genesis outputs (a factory covenant). SDK: `StatefulContract.deployFrom()`. See also create2 self-pin in [external-contract-calls.md](./external-contract-calls.md). |
 
 ### `selfdestruct`
 
@@ -248,7 +251,8 @@ Validated in `SymbolTableTraversal.validateModifiers`. The general rules:
 - **At most one** visibility modifier; **no duplicate** modifiers.
 - `pure` / `view` cannot combine with any covenant modifier (those mutate state) or with `payable`.
 - The covenant modifiers `unsafe`, `upgrade`, `deploy`, `selfdestruct`, `delegate`, `split`, `merge` are
-  **mutually exclusive** with each other.
+  **mutually exclusive** with each other (`deploy` and `selfdestruct` are inferred, not written, but still
+  participate in the exclusivity check when a body both mints a child and carries another covenant modifier).
 - Every covenant modifier requires a **stateful** contract and an **externally callable** function
   (not `internal` / `private`).
 - `split` and `merge` are mutually exclusive and need a valid integer count parameter.

@@ -91,7 +91,7 @@ The remaining gaps are bounded. They are listed below.
 - **`keccak256`** - no Keccak opcode. Substitute: `sha256` / `hash256` / `hash160` / `ripemd160`.
 - **`ecrecover`** - no pubkey recovery. Substitute: `checkSig` / `checkDataSig` / `checkMultiSig` with an explicit `pubkey`.
 - **`erc7201`, transient storage, storage/memory/calldata data locations, storage-slot layout** - UTXO has no storage slots; state lives in data-NFT commitments.
-- **External/message-call function types, linked (DELEGATECALL) libraries, `new` CREATE/ordered base-constructor execution, create2 deterministic addresses** - no persistent on-chain contract objects. Substitutes: covenant introspection (`IFoo(category).x`), the `delegate` modifier proxy pattern, inline libraries, `deploy` modifier + SDK `deployFrom`.
+- **External/message-call function types, linked (DELEGATECALL) libraries, `new` CREATE/ordered base-constructor execution, create2 deterministic addresses** - no persistent on-chain contract objects. Substitutes: covenant introspection (`IFoo(category).x`), the `delegate` modifier proxy pattern, inline libraries, the inferred deploy covenant (`new Child()`) + SDK `deployFrom`.
 - **`event.selector` / `error.selector`, EIP-55 address literals, EIP-165 semantics** - events are NFT outputs addressed by SHA-256; reverts fail the script unconditionally.
 - **`gwei` / `wei` / `ether` units** - replaced by `sats`/`satoshis`/`finney`/`bits`/`bitcoin`.
 

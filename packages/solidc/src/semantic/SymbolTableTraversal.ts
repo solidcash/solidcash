@@ -1797,6 +1797,15 @@ export default class SymbolTableTraversal extends AstTraversal {
       this.pushToStack(param);
     }
 
+    // Infer the `deploy` modifier for a create3 / deployFrom factory function. Reading a genesis input's outpoint
+    // transaction hash (`tx.inputs[i].outpointTransactionHash`) as the deployed child's category IS participating in
+    // the deploy, so - like `new C()` - the `deploy` keyword is optional. Runs before block layout so the deploy slot
+    // is reserved. (No non-deploy contract reads a genesis input's txhash, so this does not over-infer.)
+    if (this.isStatefulContract && node.isEntryPoint && !node.modifiers.includes(FunctionModifier.DEPLOY)
+      && functionReadsGenesisInput(node.body)) {
+      node.modifiers.push(FunctionModifier.DEPLOY);
+    }
+
     // Compute 1:1 block layout for stateful entry-point functions.
     if (this.isStatefulContract && node.isEntryPoint) {
       node.blockLayout = this.computeBlockLayout(node);
@@ -7417,6 +7426,25 @@ export default class SymbolTableTraversal extends AstTraversal {
 
 function isEmptyBytesLiteral(expr: ExpressionNode): boolean {
   return expr instanceof HexLiteralNode && expr.value.byteLength === 0;
+}
+
+// True if the body reads a genesis input's outpoint transaction hash (tx.inputs[i].outpointTransactionHash) - the
+// create3 / deployFrom signal that this function deploys a child (whose token category IS that input's txid). Skips
+// type/symbol/location metadata and the resolvedFunction back-reference (would cross into a callee's body).
+function functionReadsGenesisInput(body: Node | undefined): boolean {
+  if (!body) return false;
+  let found = false;
+  const walk = (n: Node): void => {
+    if (found) return;
+    if (n instanceof UnaryOpNode && n.operator === UnaryOperator.INPUT_OUTPOINT_HASH) { found = true; return; }
+    for (const [key, v] of Object.entries(n as unknown as Record<string, unknown>)) {
+      if (key === 'type' || key === 'symbolTable' || key === 'location' || key === 'resolvedFunction') continue;
+      if (v instanceof Node) walk(v);
+      else if (Array.isArray(v)) for (const it of v) if (it instanceof Node) walk(it);
+    }
+  };
+  walk(body);
+  return found;
 }
 
 function isCompileTimeExpression(

@@ -184,7 +184,8 @@ export interface DeployFromOptions<T extends Artifact = Artifact> {
   // child (`Child ch = new Child(...); this.tokens[cat].transfer(<addr>, amt)`). Supply each FT transfer the deploy
   // performs; deployFrom co-spends the factory's token container, recreates it (amount minus the transfers), and
   // adds each tcTransfer output. `to` is the recipient locking bytecode/address (pass the child's address to fund
-  // the new contract). See docs/contract-creation.md.
+  // the new contract). Multiple categories are co-spent + recreated in one deploy. NFT (transferNft) transfers on
+  // deploy are not yet supported. See docs/contract-creation.md.
   childTokenTransfers?: Array<{ categoryId: string; to: string | Uint8Array; amount: bigint }>;
   fundingUtxo: Utxo;                         // must be at vout 0 for token genesis (becomes child category)
   // A LOOP deploy (`for (i<n) new C()`) mints N children - a balanced contract block needs N funding inputs
@@ -2013,19 +2014,20 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       if (transfers.length === 0) {
         throw new Error(
           `Deploy function '${deployFunctionName}' transfers tokens from the factory's container; pass `
-          + 'childTokenTransfers [{ categoryId, to, amount }] (one per FT transfer the deploy performs).',
+          + 'childTokenTransfers [{ categoryId, to, amount }] (one per FT transfer the deploy performs). NFT '
+          + '(transferNft) transfers on deploy are not yet supported.',
         );
       }
-      // Group by token category: one co-spent container + recreated remainder per category, then ALL tcTransfer
-      // outputs (block layout groups [..all tokenContainer.., ..all tcTransfer.., deploy]).
+      const remainderOutputs: Array<{ to: string | Uint8Array; amount: bigint; token?: any }> = [];
+      const transferOutputs: Array<{ to: string | Uint8Array; amount: bigint; token?: any }> = [];
+      // Group by category - one co-spent container + recreated remainder (amount minus the transfers) per category,
+      // then ALL tcTransfer outputs (block layout groups [..all tokenContainer.., ..all tcTransfer.., deploy]).
       const byCategory = new Map<string, Array<{ to: string | Uint8Array; amount: bigint }>>();
       for (const t of transfers) {
         const list = byCategory.get(t.categoryId) ?? [];
         list.push({ to: t.to, amount: t.amount });
         byCategory.set(t.categoryId, list);
       }
-      const remainderOutputs: Array<{ to: string | Uint8Array; amount: bigint; token?: any }> = [];
-      const transferOutputs: Array<{ to: string | Uint8Array; amount: bigint; token?: any }> = [];
       for (const [tcCat, ts] of byCategory) {
         const tcAddr = getTokenContainerAddress(factory.inner, factory.categoryId, tcCat);
         const sumAmount = ts.reduce((s, t) => s + t.amount, 0n);
@@ -2047,11 +2049,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           amount: tcUtxo.satoshis,
           token: { category: tcCat, amount: (tcUtxo.token!.amount ?? 0n) - sumAmount },
         });
-        // Each tcTransfer output: `amount` tokens of this category to the recipient (dust satoshis from funding).
-        for (const t of ts) {
-          transferOutputs.push({ to: t.to, amount: dataNftAmount, token: { category: tcCat, amount: t.amount } });
-          tokenTransferCost += dataNftAmount;
-        }
+      }
+      // tcTransfer outputs in the caller's order (must match the deploy fn's transfer-statement order, which the
+      // covenant verifies slot-by-slot): `amount` tokens of the category to the recipient, dust sats from funding.
+      for (const t of transfers) {
+        transferOutputs.push({ to: t.to, amount: dataNftAmount, token: { category: t.categoryId, amount: t.amount } });
+        tokenTransferCost += dataNftAmount;
       }
       tokenContainerOutputs.push(...remainderOutputs, ...transferOutputs);
     }
@@ -2070,6 +2073,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       entryInfos.length,
       childLayout!.dataNftCount,
       returnEventPlaceholders.length,
+      containerOutputs.length + tokenContainerOutputs.length,
     );
 
     // Deploy-then-call fold: the covenant may verify a post-call child genesis (a same-tx
@@ -3583,6 +3587,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     entryOutputCount: number = 0,
     childDataNftCount: number = 0,
     returnEventOutputCount: number = 0,
+    // Count of satoshi/token container outputs that sit between the entries and the return-event/child geneses
+    // (block-layout order: entry < satoshiContainer < tokenContainer < tcTransfer < returnEvent < deploy). The
+    // child-genesis + return-event trace slots shift by this, else a token-container tcTransfer NFT output is
+    // mistaken for the child's data NFT commitment.
+    containerOutputCount: number = 0,
   ): Promise<{
       state: Record<string, StateValueType> | undefined;
       entryCommitments: string[];
@@ -3724,8 +3733,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         if (childDataNftCount > 0 && commitmentHexes && extraOutputs) {
           // A returning deploy function materializes its return-event output between the entries and the child
           // genesis (block-layout order: entry < returnEvent < deploy), so the child outputs shift by its count.
-          const childBase = extraBase + entryOutputCount + returnEventOutputCount + 1; // + child master NFT
-          const childOutStart = entryOutputCount + returnEventOutputCount + 1; // child data NFT 0 in extraOutputs
+          const childBase = extraBase + entryOutputCount + containerOutputCount + returnEventOutputCount + 1; // + child master NFT
+          const childOutStart = entryOutputCount + containerOutputCount + returnEventOutputCount + 1; // child data NFT 0 in extraOutputs
           const childRange = { min: childBase, max: childBase + childDataNftCount };
           // The covenant verifies the child data NFTs in order and aborts at the first mismatch. A plain
           // deploy lands at defaults (probe outputs match -> one pass captures all), but a folded multi-NFT
@@ -3747,7 +3756,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         // covenant compares the placeholder commitment (fails), but the expected __returnBlob is captured first.
         let returnBlob: Uint8Array | undefined;
         if (returnEventOutputCount > 0 && commitmentHexes) {
-          const returnIdx = extraBase + entryOutputCount; // return-event output sits right after the entries
+          const returnIdx = extraBase + entryOutputCount + containerOutputCount; // return-event sits after entries + containers
           const blobs = extractCommitmentsFromTrace(
             runProbe(commitmentHexes), 1, { min: returnIdx, max: returnIdx + 1 },
           );

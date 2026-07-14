@@ -94,3 +94,70 @@ describe('token transfer to a new child on deploy (deployFrom)', () => {
     })).rejects.toThrow(/childTokenTransfers/);
   });
 });
+
+// Two token container categories co-spent + transferred to the child in one deploy: the layout has two
+// tokenContainer slots then two tcTransfer slots. deployFrom recreates each container's remainder (in access
+// order) and appends the transfers (in the deploy fn's statement order = the childTokenTransfers order).
+const MULTI_CHILD = 'contract Child(bytes20 o){int c;function f(){'
+  + 'require(tx.outputs[0].lockingBytecode==new LockingBytecodeP2PKH(o));this.c=this.c+1;}}';
+const MULTI_FACTORY = `${MULTI_CHILD}
+contract MultiTokenFactory(){
+  int cc;
+  function make(bytes32 catA, bytes32 catB, bytes20 o, bytes to, int amtA, int amtB){
+    Child ch = new Child(o);
+    this.tokens[catA].transfer(to, amtA);
+    this.tokens[catB].transfer(to, amtB);
+    this.cc = this.cc + 1;
+  }
+}`;
+const multiArtifact = compileString(MULTI_FACTORY);
+const multiChildArtifact = compileString(MULTI_CHILD);
+
+describe('multi-category token transfer on deploy (deployFrom)', () => {
+  const provider = createTestProvider();
+  const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
+  const bare = new Contract(multiArtifact, [], { provider });
+
+  it('co-spends TWO token containers, recreates both remainders, transfers both to the child', async () => {
+    const fu: Utxo = { txid: 'da01'.repeat(16), vout: 0, satoshis: 400000n };
+    await provider.addUtxo(p2pkh.address, fu);
+    const deployed = await StatefulContract.deploy(multiArtifact, [], {
+      provider, fundingUtxo: fu,
+      funder: p2pkh.unlock.spend(alicePub, new SignatureTemplate(alicePriv)),
+      initialState: { cc: 0n }, changeAddress: p2pkh.address,
+    });
+    const ftA = await genesisFtContainer(provider, bare, deployed.categoryId, [1000n]);
+    const ftB = await genesisFtContainer(provider, bare, deployed.categoryId, [2000n]);
+
+    const g0: Utxo = { txid: 'da02'.repeat(16), vout: 0, satoshis: 400000n };
+    await provider.addUtxo(p2pkh.address, g0);
+    const child = new Contract(multiChildArtifact, [alicePkh], { provider, category: hexToBin(g0.txid) });
+    const childLbc = addressToLockScript(child.address);
+
+    const result = await StatefulContract.deployFrom({
+      provider, factory: deployed.contract,
+      funder: p2pkh.unlock.spend(alicePub, new SignatureTemplate(alicePriv)),
+      fundingUtxo: g0, changeAddress: p2pkh.address,
+      deployFunctionName: 'make',
+      deployFunctionArgs: [ftA.category, ftB.category, alicePkh, childLbc, 300n, 500n],
+      childArtifact: multiChildArtifact, childConstructorArgs: [alicePkh], childInitialState: { c: 0n },
+      tokenContainerCategoryIds: [ftA.category, ftB.category],
+      childTokenTransfers: [
+        { categoryId: ftA.category, to: childLbc, amount: 300n },
+        { categoryId: ftB.category, to: childLbc, amount: 500n },
+      ],
+    });
+
+    const outs = getTxOutputs(result.tx);
+    const childMaster = outs.find((o) => o.token?.category === g0.txid && o.token?.nft?.capability === 'minting');
+    expect(childMaster).toBeDefined();
+    // Both containers recreated at their remainders.
+    expect(outs.some((o) => o.token?.category === ftA.category && o.token?.amount === 700n && !o.token?.nft)).toBe(true);
+    expect(outs.some((o) => o.token?.category === ftB.category && o.token?.amount === 1500n && !o.token?.nft)).toBe(true);
+    // Both transfers landed at the new child.
+    const tA = outs.find((o) => o.token?.category === ftA.category && o.token?.amount === 300n && !o.token?.nft);
+    const tB = outs.find((o) => o.token?.category === ftB.category && o.token?.amount === 500n && !o.token?.nft);
+    expect(tA?.to).toBe(childMaster!.to);
+    expect(tB?.to).toBe(childMaster!.to);
+  });
+});

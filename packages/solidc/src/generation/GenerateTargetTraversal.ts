@@ -7068,8 +7068,28 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // category is the genesis input's outpoint txhash (read again in step 4 for the deploy covenant). User salt
     // is a no-op here (factory children default to self-pin only; a salted child is an SDK-side concern).
     if (node.isStatefulDeploy) {
-      // Read the genesis category (mirrors step 4): verify the deploy input's vout == 0, take its txhash.
-      this.emitBlockSlotIndex('deploy', this.deployCounter, locationData);
+      // Read the genesis category (mirrors step 4): verify the deploy input's vout == 0, take its txhash. For an
+      // inline (branch/loop) deploy the genesis input is at the runtime counter offset, so the self-pinned child
+      // ADDRESS built here must read the SAME input as the step-4 covenant verification (child k self-pins to
+      // input k) - otherwise child k's computed address is pinned to the wrong category and the output check
+      // fails. A straight-line deploy keeps the fixed block-layout slot.
+      if (this.scopeDepth > 0) {
+        const slotBase = this.getBlockSlotOffset('deploy', 0);
+        const inputBase = slotBase - this.countOutputOnlySlotsBefore(slotBase);
+        this.emitMasterInputIndex(locationData);
+        if (inputBase > 0) {
+          this.emit(encodeInt(BigInt(inputBase)), locationData);
+          this.emit(Op.OP_ADD, locationData);
+        }
+        if (this.inlineDeployActive) {
+          // one untracked value (the base input index) sits on the real stack, so PICK the counter one deeper.
+          this.emit(encodeInt(BigInt(this.getStackIndex(this.inlineDeployCounterName) + 1)), locationData);
+          this.emit(Op.OP_PICK, locationData);
+          this.emit(Op.OP_ADD, locationData);
+        }
+      } else {
+        this.emitBlockSlotIndex('deploy', this.deployCounter, locationData);
+      }
       this.emit(Op.OP_DUP, locationData);
       this.emit(Op.OP_OUTPOINTINDEX, locationData);
       this.emit(encodeInt(0n), locationData);

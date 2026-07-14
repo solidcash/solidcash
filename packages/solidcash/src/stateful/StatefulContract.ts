@@ -176,7 +176,11 @@ export interface DeployFromOptions<T extends Artifact = Artifact> {
   childSalt?: Uint8Array;                    // create2 salt; else derived from the recorded new C{salt}() mapping
   childInitialState?: Record<string, StateValueType>; // optional initial state for child
   fundingUtxo: Utxo;                         // must be at vout 0 for token genesis (becomes child category)
-  funder?: Unlocker;                         // unlocker for funding UTXO; else factory.setDeployDefaults()
+  // A LOOP deploy (`for (i<n) new C()`) mints N children - a balanced contract block needs N funding inputs
+  // (any value, each vout 0), one per child; child i's category = fundingUtxos[i].txid. When set, this supersedes
+  // the single fundingUtxo (which stays fundingUtxos[0] for a 1-child deploy). See docs/contract-creation.md.
+  fundingUtxos?: Utxo[];
+  funder?: Unlocker;                         // unlocker for funding UTXO(s); else factory.setDeployDefaults()
   addressType?: AddressType;
   fee?: bigint;                              // default: 1000n
   maxFee?: bigint;                           // maximum allowed fee (throws if exceeded)
@@ -1706,15 +1710,24 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       );
     }
 
-    // Validate funding UTXO
-    if (options.fundingUtxo.vout !== 0) {
-      throw new Error(
-        'Funding UTXO must be at vout 0 to create a valid token category. '
-        + `Got vout ${options.fundingUtxo.vout}.`,
-      );
+    // Funding UTXOs: one per child (a loop `for (i<n) new C()` mints N children, and a balanced contract block
+    // needs N funding inputs). fundingUtxos supersedes the single fundingUtxo; default = [fundingUtxo] (1 child).
+    const fundingUtxos = options.fundingUtxos ?? [options.fundingUtxo];
+    const childCount = fundingUtxos.length;
+    if (childCount === 0) {
+      throw new Error('deployFrom needs at least one funding UTXO (fundingUtxo or a non-empty fundingUtxos).');
+    }
+    for (const fu of fundingUtxos) {
+      if (fu.vout !== 0) {
+        throw new Error(
+          'Each funding UTXO must be at vout 0 to create a valid token category. '
+          + `Got vout ${fu.vout}.`,
+        );
+      }
     }
 
-    const childCategoryId = options.fundingUtxo.txid;
+    // child i's category = fundingUtxos[i].txid. The first child's category doubles as the returned handle's.
+    const childCategoryId = fundingUtxos[0].txid;
     const addressType = options.addressType ?? factory.inner.addressType;
     const fee = options.fee ?? 5000n;
     const masterAmount = options.masterAmount ?? 1200n;
@@ -1735,14 +1748,18 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // SDK-direct deploy (Contract.ts bakes <cat||0x02> OP_INPUTINDEX OP_UTXOTOKENCATEGORY OP_EQUALVERIFY). A
     // create2 salt (if any) composes outside the self-pin (<salt> OP_DROP | <self-pin> | base), matching the
     // compiler. This address is what the deploy covenant verifies in the genesis outputs.
-    const childContractUnsalted = new Contract(childArtifact, childConstructorArgs as any, {
+    // One child Contract per funding UTXO - the self-pinned address is category-dependent, so each of the N
+    // children (loop deploy) has a distinct address derived from its own category. childContracts[0] is the
+    // returned handle. childConstructorArgs are shared (a loop mints the same child type each iteration).
+    const childContracts = fundingUtxos.map((fu) => new Contract(childArtifact, childConstructorArgs as any, {
       provider,
       addressType,
-      category: hexToBin(childCategoryId),
+      category: hexToBin(fu.txid),
       ...(childSalt && { salt: childSalt }),
-    });
+    }));
+    const childContractUnsalted = childContracts[0];
 
-    // The returned handle uses the same self-pinned address as the deployed genesis.
+    // The returned handle uses the same self-pinned address as the first deployed genesis.
     const childContract = childContractUnsalted;
 
     const childLayout = childArtifact.stateLayout!;
@@ -1879,32 +1896,26 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       () => createDataNftUnlocker(factory.inner, 0, factory.categoryId),
     );
 
-    // Build child outputs for VM probe (needed by deploy covenant verification)
-    const childDataNftAddress = getDataNftAddress(childContractUnsalted, childCategoryId);
+    // Build child outputs for the VM probe (needed by the deploy covenant verification). N child groups, one per
+    // funding UTXO, at consecutive stride-sized slots (the runtime deploy counter indexes them). Each child's
+    // master + data NFTs carry its own category (fundingUtxos[k].txid) and self-pinned address.
     const childExtraOutputs: Array<{ to: string | Uint8Array; amount: bigint; token?: any }> = [];
-
-    // Child master NFT output
-    childExtraOutputs.push({
-      to: childContractUnsalted.tokenAddress,
-      amount: masterAmount,
-      token: {
-        category: childCategoryId,
-        amount: 0n,
-        nft: { capability: 'minting', commitment: '' },
-      },
-    });
-
-    // Child data NFT outputs
-    for (let i = 0; i < childLayout!.dataNftCount; i++) {
+    for (let k = 0; k < childCount; k++) {
+      const cc = childContracts[k];
+      const cat = fundingUtxos[k].txid;
+      const dnAddr = getDataNftAddress(cc, cat);
       childExtraOutputs.push({
-        to: childDataNftAddress,
-        amount: dataNftAmount,
-        token: {
-          category: childCategoryId,
-          amount: 0n,
-          nft: { capability: 'mutable', commitment: childCommitments[i] },
-        },
+        to: cc.tokenAddress,
+        amount: masterAmount,
+        token: { category: cat, amount: 0n, nft: { capability: 'minting', commitment: '' } },
       });
+      for (let i = 0; i < childLayout!.dataNftCount; i++) {
+        childExtraOutputs.push({
+          to: dnAddr,
+          amount: dataNftAmount,
+          token: { category: cat, amount: 0n, nft: { capability: 'mutable', commitment: childCommitments[i] } },
+        });
+      }
     }
 
     // Return-event (B8) placeholder for a returning deploy function, at its block-layout slot (after entries,
@@ -1927,7 +1938,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     } = await (factory as StatefulContract)._deriveCommitments(
       deployFunctionName, finalArgs, requiredNftIndices,
       [...entryPlaceholderOutputs, ...returnEventPlaceholders, ...childExtraOutputs],
-      [...entryExtraInputs, { utxo: options.fundingUtxo, unlocker: funder }],
+      [...entryExtraInputs, ...fundingUtxos.map((fu) => ({ utxo: fu, unlocker: funder }))],
       entryInfos.length,
       childLayout!.dataNftCount,
       returnEventPlaceholders.length,
@@ -1986,8 +1997,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       builder.addInput(utxo, unlocker);
     }
 
-    // Funding UTXO for child's token genesis
-    builder.addInput(options.fundingUtxo, funder);
+    // Funding UTXOs for the children's token genesis - N inputs, one per child (a balanced contract block: N
+    // deploy output groups need N balancing inputs). Each is at vout 0 so its txid sources the child's category.
+    for (const fu of fundingUtxos) {
+      builder.addInput(fu, funder);
+    }
 
     // === Factory outputs (first) ===
 
@@ -2056,38 +2070,38 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     }
 
     // === Child contract outputs (appended after factory outputs) ===
-
-    // Child minting NFT - use unsalted address to match compiler's `new` expression
-    builder.addOutput({
-      to: childContractUnsalted.tokenAddress,
-      amount: masterAmount,
-      token: {
-        category: childCategoryId,
-        amount: 0n,
-        nft: { capability: 'minting', commitment: '' },
-      },
-    });
-
-    // Child data NFTs - use unsalted data NFT address
-    for (let i = 0; i < childLayout!.dataNftCount; i++) {
+    // N child genesis groups at consecutive stride-sized slots (the covenant's runtime deploy counter indexes
+    // output[slotBase + counter*stride]). Group k carries fundingUtxos[k]'s category + that child's self-pinned
+    // address; the data NFT commitment is the shared default (a loop mints the same child type each iteration).
+    for (let k = 0; k < childCount; k++) {
+      const cc = childContracts[k];
+      const cat = fundingUtxos[k].txid;
+      const dnAddr = getDataNftAddress(cc, cat);
+      // Child minting NFT - use unsalted address to match compiler's `new` expression
       builder.addOutput({
-        to: childDataNftAddress,
-        amount: dataNftAmount,
-        token: {
-          category: childCategoryId,
-          amount: 0n,
-          nft: { capability: 'mutable', commitment: effectiveChildCommitments[i] },
-        },
+        to: cc.tokenAddress,
+        amount: masterAmount,
+        token: { category: cat, amount: 0n, nft: { capability: 'minting', commitment: '' } },
       });
+      // Child data NFTs
+      for (let i = 0; i < childLayout!.dataNftCount; i++) {
+        builder.addOutput({
+          to: dnAddr,
+          amount: dataNftAmount,
+          token: { category: cat, amount: 0n, nft: { capability: 'mutable', commitment: effectiveChildCommitments[i] } },
+        });
+      }
     }
 
-    // Change output. New entries cost dust from the funding UTXO; existing entries are
-    // satoshi-neutral (input funds output).
+    // Change output. New entries cost dust from the funding UTXOs; existing entries are
+    // satoshi-neutral (input funds output). N children cost N * (master + data NFTs); the N funding inputs' total
+    // satoshis cover them (any value >= that cost).
     const newEntryCount = BigInt(entryInfos.filter((e) => !e.existingUtxo).length);
-    const totalChildCost = masterAmount + (dataNftAmount * BigInt(childLayout!.dataNftCount));
+    const totalChildCost = BigInt(childCount) * (masterAmount + (dataNftAmount * BigInt(childLayout!.dataNftCount)));
     const totalEntryCost = dataNftAmount * newEntryCount;
     const returnEventCost = returnEventPlaceholders.length > 0 ? 800n : 0n;
-    const changeAmount = options.fundingUtxo.satoshis - totalChildCost - totalEntryCost - returnEventCost - fee;
+    const totalFundingSats = fundingUtxos.reduce((sum, fu) => sum + fu.satoshis, 0n);
+    const changeAmount = totalFundingSats - totalChildCost - totalEntryCost - returnEventCost - fee;
     if (changeAmount > 0n) {
       if (!changeAddress) {
         throw new Error(

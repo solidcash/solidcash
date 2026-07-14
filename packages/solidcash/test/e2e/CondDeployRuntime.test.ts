@@ -177,4 +177,45 @@ describe('loop deploy runtime (for (i<n) new Child()) - N=1 via existing deployF
       && o.token?.nft?.capability === 'minting');
     expect(hasChildMaster).toBe(true);
   });
+
+  it('makeN(2): the loop runs twice - the counter covenant co-spends + verifies TWO real Child geneses', async () => {
+    // N=2 is the true test of the runtime counter: child 0 lands at counter 0 (base) and child 1 at counter 1
+    // (base + stride), so the counter*stride multiply is actually exercised. Two balancing funding inputs (any
+    // value, vout 0) source the two child categories; the covenant's 2-iteration loop verifies both. Fresh
+    // factory (childCount 0 -> 2) to isolate from the makeN(1) call above.
+    const fresh: Utxo = { txid: '20f2'.repeat(16), vout: 0, satoshis: 200000n };
+    await provider.addUtxo(p2pkh.address, fresh);
+    const freshFactory = (await StatefulContract.deploy(loopArtifact, [alicePkh], {
+      provider,
+      fundingUtxo: fresh,
+      funder: p2pkh.unlock.spend(alicePub, new SignatureTemplate(alicePriv)),
+      initialState: { childCount: 0n },
+      changeAddress: p2pkh.address,
+    })).contract;
+
+    const g0: Utxo = { txid: '2a01'.repeat(16), vout: 0, satoshis: 200000n };
+    const g1: Utxo = { txid: '2b02'.repeat(16), vout: 0, satoshis: 200000n };
+    await provider.addUtxo(p2pkh.address, g0);
+    await provider.addUtxo(p2pkh.address, g1);
+
+    const result = await StatefulContract.deployFrom({
+      provider,
+      factory: freshFactory,
+      funder: p2pkh.unlock.spend(alicePub, new SignatureTemplate(alicePriv)),
+      fundingUtxos: [g0, g1],
+      changeAddress: p2pkh.address,
+      deployFunctionName: 'makeN',
+      deployFunctionArgs: [2n],
+      childArtifact,
+      childConstructorArgs: [alicePkh],
+      childInitialState: { counter: 0n },
+    });
+
+    const outs = getTxOutputs(result.tx);
+    // Two distinct child minting NFTs, one per funding-input category (child 0 at counter 0, child 1 at counter 1).
+    const child0 = outs.some((o) => o.token?.category === g0.txid && o.token?.nft?.capability === 'minting');
+    const child1 = outs.some((o) => o.token?.category === g1.txid && o.token?.nft?.capability === 'minting');
+    expect(child0).toBe(true);
+    expect(child1).toBe(true);
+  });
 });

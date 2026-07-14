@@ -19,6 +19,7 @@ import {
   StateArrayPopNode,
   StateArrayAssignNode,
   StateArrayDeleteNode,
+  InstantiationNode,
   BranchOps,
 } from '../ast/AST.js';
 
@@ -54,7 +55,9 @@ function isValueTransferNode(node: Node): boolean {
   return node instanceof TransferStatementNode || node instanceof AddressTransferStatementNode
     || node instanceof AddressSendExpressionNode
     || (node instanceof LowLevelCallStatementNode && !!node.callOptions?.value)
-    || (node instanceof MethodCallStatementNode && !!node.call.callOptions?.value);
+    || (node instanceof MethodCallStatementNode && !!node.call.callOptions?.value)
+    // `new C{value: x}()` transfers x from the contract's satoshi container to the child - a value transfer.
+    || (node instanceof InstantiationNode && !!node.callOptions?.value);
 }
 
 // Min and max value-transfers on any single execution path through `node`. Branch/switch arms are MUTUALLY
@@ -81,10 +84,14 @@ export function countTransfersMinMax(node: Node): { min: number; max: number } {
   let min = self;
   let max = self;
   const children: Node[] = [];
-  const anyNode = node as unknown as { statements?: unknown; body?: unknown; block?: unknown };
+  const anyNode = node as unknown as {
+    statements?: unknown; body?: unknown; block?: unknown; expression?: unknown;
+  };
   if (Array.isArray(anyNode.statements)) children.push(...(anyNode.statements as Node[]));
   if (anyNode.body) children.push(anyNode.body as Node);
   if (anyNode.block) children.push(anyNode.block as Node);
+  // A var-def / expression-statement initializer may BE a `new C{value:}()` (a value transfer).
+  if (anyNode.expression instanceof Node) children.push(anyNode.expression);
   for (const child of children) {
     const c = countTransfersMinMax(child);
     min += c.min;
@@ -105,6 +112,10 @@ function countBranchOpsRecursive(node: Node, result: OpCounts): void {
     // Don't return - we still need to recurse into child nodes
   }
   if (node instanceof MethodCallStatementNode && node.call.callOptions?.value) {
+    result.transfers++;
+  }
+  // `new C{value: x}()` transfers x from the contract's satoshi container to the child.
+  if (node instanceof InstantiationNode && node.callOptions?.value) {
     result.transfers++;
   }
   if (node instanceof EmitStatementNode) {
@@ -167,6 +178,10 @@ function countBranchOpsRecursive(node: Node, result: OpCounts): void {
   }
   if ('block' in node && (node as any).block) {
     countBranchOpsRecursive((node as any).block, result);
+  }
+  // A var-def / expression-statement initializer may BE a `new C{value:}()` (a value transfer).
+  if ('expression' in node && (node as any).expression instanceof Node) {
+    countBranchOpsRecursive((node as any).expression, result);
   }
 }
 

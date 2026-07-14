@@ -7283,13 +7283,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // site / {value:} deploys raise ConditionalDeployError. Straight-line deploys keep the proven fixed epilogue.
       if (this.scopeDepth > 0) {
         const inLoop = this.plainLoopDepth > 0;
-        // Supported inline cases: a SINGLE deploy site (so a fired deploy always lands at the running
-        // deploy-counter slot) with no {value:} transfer. A loop deploy additionally requires its runtime
-        // counter to have been set up before OP_BEGIN (the loop visitor does this when the body deploys).
-        if (this.functionDeploySiteCount !== 1 || node.callOptions?.value || (inLoop && !this.inlineDeployActive)) {
+        const hasValue = !!node.callOptions?.value;
+        // Supported inline cases: a SINGLE deploy site. A branch deploy may carry {value:} (the value transfer is
+        // 0-or-1, handled by the conditional-transfer machinery - branchOps counts it, visitBranch pre-allocates
+        // the slot). A LOOP {value:} deploy would need a variable-count transfer (loop-transfer gap) so it still
+        // fails closed; a loop deploy needs its runtime counter set up before OP_BEGIN.
+        if (this.functionDeploySiteCount !== 1 || (inLoop && (hasValue || !this.inlineDeployActive))) {
           throw new ConditionalDeployError(node);
         }
         this.emitInlineDeployVerification(node, locationData, inLoop);
+        if (hasValue) this.emitInlineDeployValueTransfer(node, locationData);
         return node;
       }
 
@@ -11163,6 +11166,32 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.popFromStack();
     this.popFromStack();
     this.pushToStack('(value)');
+  }
+
+  /**
+   * Fill the value transfer for a `new C{value: x}()` INSIDE a branch. The child master-LBC (the `new C()`
+   * result) is on top; the transfer's lockingBytecode = that child address, amount = x. branchOps counts the
+   * deploy as a value transfer, so visitBranch pre-allocated the transfer's lb/amount dummy slots (kept
+   * conditional via the min/max path model) - fill them in place like visitTransferStatement's pre-allocated
+   * path. The satoshi container that sources it is co-spent + preserved by the normal transfer epilogue. Leaves
+   * the child master-LBC on top as the expression result.
+   */
+  private emitInlineDeployValueTransfer(node: InstantiationNode, locationData: SingleLocationData): void {
+    if (!this.preAllocatedTransfers.has(node.transferIndex)) {
+      // A branch {value:} deploy is always pre-allocated (branchOps counts it); guard defensively.
+      throw new ConditionalDeployError(node);
+    }
+    const lbName = `__internal__transfer_lb_${node.transferIndex}`;
+    const amtName = `__internal__transfer_amt_${node.transferIndex}`;
+    // lockingBytecode = the child address (DUP the result so it stays on top for the caller).
+    this.emit(Op.OP_DUP, locationData);
+    this.pushToStack('(value)');
+    this.emitReplace(this.getStackIndex(lbName), node);
+    this.popFromStack();
+    // amount = the {value:} expression.
+    node.callOptions!.value = this.visit(node.callOptions!.value!);
+    this.emitReplace(this.getStackIndex(amtName), node);
+    this.popFromStack();
   }
 
   /**

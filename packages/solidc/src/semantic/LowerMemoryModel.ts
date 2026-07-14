@@ -29,6 +29,7 @@ import {
   BytesConcatNode,
   NewArrayNode,
   IntLiteralNode,
+  HexLiteralNode,
   IdentifierNode,
   ExpressionNode,
   AssemblyStatementNode,
@@ -63,6 +64,11 @@ export default class LowerMemoryModel extends AstTraversal {
   // Locals that are memory-model arrays whose ELEMENTS are struct pointers (`T[] memory`, T a value-field
   // struct). Separate track from memArrays so value-element ops stay untouched. Name -> array type.
   private memStructArrays = new Map<string, ArrayType>();
+  // Locals that are memory-model `bytes` pointers (a [length(32)][data] block, byte-packed data). Same pointer +
+  // .length + alias + boundary machinery as a value array, but element access is BYTE-granular (stride 1, one
+  // byte) instead of word-granular. The taint analysis treats a bytes candidate as a value array (b[i]/.length/
+  // return are supported), so only the geometry differs. Name -> bytes type.
+  private memBytes = new Map<string, BytesType>();
   // Internal/private VOID helpers eligible for pass-by-reference inlining (P4): a `g(a)` call site is replaced
   // with `{ T[] memory __inl_x = a; <g body> }`, so the param aliases the caller's array. Pass-by-ref then falls
   // out of the alias convert/fallback decision - no new gate logic. Populated per-contract. See visitContract.
@@ -92,11 +98,13 @@ export default class LowerMemoryModel extends AstTraversal {
     const savedMem = this.memArrays;
     const savedStructs = this.memStructs;
     const savedStructArrays = this.memStructArrays;
+    const savedBytes = this.memBytes;
     const savedUses = this.usesMemory;
     const savedConv = this.convertible;
     this.memArrays = new Map();
     this.memStructs = new Map();
     this.memStructArrays = new Map();
+    this.memBytes = new Map();
     this.usesMemory = false;
     // P4 v2 (c): materialize a memory-array PARAM into the buffer (deserialize the ABI value-copy at entry) so it
     // is a pointer that a helper can mutate by reference. Only for NON-inlinable functions (an inlinable one is
@@ -120,6 +128,7 @@ export default class LowerMemoryModel extends AstTraversal {
     this.memArrays = savedMem;
     this.memStructs = savedStructs;
     this.memStructArrays = savedStructArrays;
+    this.memBytes = savedBytes;
     this.usesMemory = savedUses;
     this.convertible = savedConv;
     return node;
@@ -353,7 +362,13 @@ export default class LowerMemoryModel extends AstTraversal {
       if (n instanceof VariableDefinitionNode) {
         const ty = n.type;
         const fresh = n.expression instanceof NewArrayNode && !n.expression.rawBytes;
+        // A `bytes` buffer root: `new bytes(runtimeN)` (NewArrayNode rawBytes) OR `new bytes(constN)`, which the
+        // builder folds to an all-ZERO HexLiteralNode. A NON-zero `hex".."` / byte-string literal is left as a
+        // value-copy constant (its compile-time bytes back Yul `create` p2sh32 derivation, abi decode, etc.).
+        const freshBytes = (n.expression instanceof NewArrayNode && n.expression.rawBytes)
+          || (n.expression instanceof HexLiteralNode && n.expression.value.every((byte) => byte === 0));
         if ((this.isHandledMemArray(ty) || this.isHandledMemStructArray(ty)) && fresh) candType.set(n.name, ty!);
+        else if (this.isHandledMemBytes(ty) && freshBytes) candType.set(n.name, ty!);
         else if (this.isHandledMemStruct(ty) && (n.expression === undefined || n.expression instanceof FunctionCallNode)) {
           candType.set(n.name, ty!);
         } else if (ty && this.isRefType(ty) && n.expression && !(n.expression instanceof NewArrayNode)) {
@@ -617,6 +632,20 @@ export default class LowerMemoryModel extends AstTraversal {
           continue;
         }
       }
+      // `return b;` / `this.s = b;` on a memory bytes pointer -> serialize to the value-copy data slice
+      // __yulmem[b+32 : b+32+b.length], so the pointer never crosses the export boundary.
+      if (stmt instanceof ReturnNode && stmt.expressions?.length === 1
+        && stmt.expressions[0] instanceof IdentifierNode && this.memBytes.has(stmt.expressions[0].name)) {
+        out.push(this.at(new ReturnNode([this.serializeBytes(stmt.expressions[0].name, stmt)]), stmt));
+        continue;
+      }
+      if (stmt instanceof StateAssignNode && stmt.expression instanceof IdentifierNode
+        && this.memBytes.has(stmt.expression.name)) {
+        const sa = new StateAssignNode(stmt.name, this.serializeBytes(stmt.expression.name, stmt));
+        sa.fromModifier = stmt.fromModifier;
+        out.push(this.at(sa, stmt));
+        continue;
+      }
       // `return a;` on a memory value-array -> serialize the buffer block into a fresh value-copy array and return
       // that (P3 boundary serialization), so the array can be a memory-model pointer (aliasing/composition) while
       // still crossing the export boundary in the value-copy blob format.
@@ -674,12 +703,22 @@ export default class LowerMemoryModel extends AstTraversal {
     return [...stmts, this.at(new ReturnNode([new IdentifierNode(serName)]), src)];
   }
 
+  // Serialize a bytes pointer to its value-copy data: __yulmem[b+32 : b+32+b.length] - the length data bytes.
+  private serializeBytes(bytesName: string, src: Node): ExpressionNode {
+    const dataStart = this.add(new IdentifierNode(bytesName), this.intLit(WORD));
+    const len = this.mload(new IdentifierNode(bytesName), this.uint());
+    const slice = new SliceNode(this.mem(YULMEM), dataStart, this.add(this.clone(dataStart), len));
+    slice.type = new BytesType();
+    return this.at(slice, src);
+  }
+
   // `T[] memory a = new T[](n)` -> allocate a length-prefixed block in `__yulmem`; `T[] memory b = a` -> pointer
   // copy (alias). Returns the replacement statements, or undefined if this decl is not a handled memory array.
   private tryLowerDecl(node: VariableDefinitionNode): StatementNode[] | undefined {
     const t = node.type;
     if (!this.convertible.has(node.name)) return undefined;
     if (this.isHandledMemStruct(t)) return this.lowerStructDecl(node, t as StructType);
+    if (this.isHandledMemBytes(t)) return this.lowerBytesDecl(node, t as BytesType);
     const isStructArr = this.isHandledMemStructArray(t);
     if (!this.isHandledMemArray(t) && !isStructArr) return undefined;
     const arrT = t as ArrayType;
@@ -738,6 +777,42 @@ export default class LowerMemoryModel extends AstTraversal {
     return this.allocStructBlock(node.name, structT, ctor, node);
   }
 
+  // `bytes memory b = new bytes(n)` -> allocate a zero-filled [length(32)][data] block (data word-aligned so an
+  // assembly word-store stays inside the allocation); `bytes b = a` -> pointer alias. A constant `new bytes(constN)`
+  // reaches here as an all-zero HexLiteralNode (only those convert - see analyzeConvertible), so the data is zeros.
+  private lowerBytesDecl(node: VariableDefinitionNode, bytesT: BytesType): StatementNode[] | undefined {
+    const isHex = node.expression instanceof HexLiteralNode;
+    const isAlloc = node.expression instanceof NewArrayNode || isHex;
+    // Pointer-valued init (alias / ref-field read): share the pointer.
+    if (node.expression && !isAlloc) {
+      const r = this.resolvePtr(node.expression);
+      if (r && this.isHandledMemBytes(r.memType)) {
+        this.usesMemory = true;
+        this.memBytes.set(node.name, r.memType as BytesType);
+        return [this.at(new VariableDefinitionNode(this.uint(), [], node.name, r.ptr), node)];
+      }
+      return undefined;
+    }
+    if (!isAlloc) return undefined;
+    this.usesMemory = true;
+    this.memBytes.set(node.name, bytesT);
+    // Length: the runtime size expr for `new bytes(n)`, or the (zero) literal's byte length for the folded constant.
+    const n = (): ExpressionNode => (isHex
+      ? this.intLit(BigInt((node.expression as HexLiteralNode).value.length))
+      : this.clone((node.expression as NewArrayNode).size));
+    const ptr = new IdentifierNode(node.name);
+    // uint b = mload(0x40);
+    const decl = this.at(new VariableDefinitionNode(this.uint(), [], node.name, this.freePtr()), node);
+    // mstore(0x40, b + 32 + roundUp(n, 32));   (bump past the length word + word-aligned data)
+    const bump = this.at(this.setFreePtr(this.add(this.clone(ptr), this.bytesBlockBytes(n()))), node);
+    // __yulmem = bytes.concat(__yulmem, new bytes(32 + roundUp(n, 32)));   (grow, zero-filled)
+    const grow = this.at(this.assign(YULMEM,
+      new BytesConcatNode([this.mem(YULMEM), this.rawBytes(this.bytesBlockBytes(n()))])), node);
+    // __yulmem = <store n at b>;   (the byte length)
+    const setLen = this.at(this.mstore(this.at(this.clone(ptr), node), n(), this.uint()), node);
+    return [decl, bump, grow, setLen];
+  }
+
   // Allocate a struct block at `ptrName = mload(0x40)` (bump the in-buffer free pointer + grow), then store the
   // constructor args (if any). Used by both a named struct decl and an anonymous struct-array element block.
   private allocStructBlock(ptrName: string, structT: StructType, ctor: FunctionCallNode | undefined, src: Node):
@@ -773,16 +848,26 @@ export default class LowerMemoryModel extends AstTraversal {
     return [...temps, ...stores];
   }
 
-  // `a[i] = v` on a memory array -> single in-place store at `a + 32 + i*32`.
+  // `a[i] = v` on a memory array -> single in-place store at `a + 32 + i*32`. `b[i] = v` on memory bytes ->
+  // single-byte splice at `b + 32 + i`.
   visitArrayAssign(node: ArrayAssignNode): Node {
+    if (this.memBytes.has(node.name)) {
+      const addr = this.byteAddr(new IdentifierNode(node.name), this.visit(node.index) as ExpressionNode);
+      return this.at(this.mstoreByte(addr, this.visit(node.value) as ExpressionNode), node);
+    }
     const arrT = this.memArrays.get(node.name);
     if (!arrT) return super.visitArrayAssign(node);
     const addr = this.elemAddr(new IdentifierNode(node.name), this.visit(node.index) as ExpressionNode);
     return this.at(this.mstore(addr, this.visit(node.value) as ExpressionNode, arrT.elementType), node);
   }
 
-  // `a[i]` read (variable index) on a memory array -> load at `a + 32 + i*32`.
+  // `a[i]` read (variable index) on a memory array -> load at `a + 32 + i*32`. `b[i]` on memory bytes -> the
+  // single byte at `b + 32 + i`.
   visitArrayAccess(node: ArrayAccessNode): Node {
+    if (node.array instanceof IdentifierNode && this.memBytes.has(node.array.name)) {
+      const addr = this.byteAddr(new IdentifierNode(node.array.name), this.visit(node.index) as ExpressionNode);
+      return this.at(this.mloadByte(addr), node);
+    }
     if (node.array instanceof IdentifierNode && this.memArrays.has(node.array.name)) {
       const arrT = this.memArrays.get(node.array.name)!;
       const addr = this.elemAddr(new IdentifierNode(node.array.name), this.visit(node.index) as ExpressionNode);
@@ -799,6 +884,10 @@ export default class LowerMemoryModel extends AstTraversal {
 
   // `a[0]` read (numeric-literal index) parses as a tuple index, not an ArrayAccess -> same load.
   visitTupleIndexOp(node: TupleIndexOpNode): Node {
+    if (node.tuple instanceof IdentifierNode && this.memBytes.has(node.tuple.name)) {
+      const addr = this.byteAddr(new IdentifierNode(node.tuple.name), this.intLit(BigInt(node.index)));
+      return this.at(this.mloadByte(addr), node);
+    }
     if (node.tuple instanceof IdentifierNode && this.memArrays.has(node.tuple.name)) {
       const arrT = this.memArrays.get(node.tuple.name)!;
       const addr = this.elemAddr(new IdentifierNode(node.tuple.name), this.intLit(BigInt(node.index)));
@@ -817,7 +906,8 @@ export default class LowerMemoryModel extends AstTraversal {
   // with int and uint); match it so surrounding comparisons type-check identically.
   visitUnaryOp(node: UnaryOpNode): Node {
     if (node.operator === UnaryOperator.SIZE && node.expression instanceof IdentifierNode
-      && (this.memArrays.has(node.expression.name) || this.memStructArrays.has(node.expression.name))) {
+      && (this.memArrays.has(node.expression.name) || this.memStructArrays.has(node.expression.name)
+        || this.memBytes.has(node.expression.name))) {
       const len = this.mload(new IdentifierNode(node.expression.name), this.uint());
       return this.at(new CastNode(PrimitiveType.BIGINT, len, false), node);
     }
@@ -947,12 +1037,44 @@ export default class LowerMemoryModel extends AstTraversal {
     return this.add(this.intLit(WORD), new BinaryOpNode(n, BinaryOperator.MUL, this.intLit(WORD)));
   }
 
+  // 32 (length word) + roundUp(n, 32) data bytes: the byte size of a `bytes` block. Data is word-aligned (like
+  // EVM) so an assembly word-store into the data region stays inside the allocation.
+  private bytesBlockBytes(n: ExpressionNode): ExpressionNode {
+    const words = new BinaryOpNode(this.add(this.clone(n), this.intLit(31n)), BinaryOperator.DIV, this.intLit(WORD));
+    return this.add(this.intLit(WORD), new BinaryOpNode(words, BinaryOperator.MUL, this.intLit(WORD)));
+  }
+
+  // &b[i] = b + 32 + i: the byte at data offset i (byte stride; the data region is byte-packed).
+  private byteAddr(ptr: ExpressionNode, index: ExpressionNode): ExpressionNode {
+    return this.add(this.add(ptr, this.intLit(WORD)), index);
+  }
+
+  // b[i] read -> the single byte at addr as bytes1: bytes1(__yulmem[addr : addr+1]).
+  private mloadByte(addr: ExpressionNode): ExpressionNode {
+    const slice = new SliceNode(this.mem(YULMEM), this.clone(addr), this.add(this.clone(addr), this.intLit(1n)));
+    return new CastNode(new BytesType(1), slice, false);
+  }
+
+  // b[i] = v write -> splice one byte (bytes1(v)) in place: __yulmem[0:addr] ++ bytes1(v) ++ __yulmem[addr+1:].
+  private mstoreByte(addr: ExpressionNode, val: ExpressionNode): AssignNode {
+    const head = new SliceNode(this.mem(YULMEM), this.intLit(0n), this.clone(addr));
+    const tail = new SliceNode(this.mem(YULMEM), this.add(this.clone(addr), this.intLit(1n)),
+      new UnaryOpNode(UnaryOperator.SIZE, this.mem(YULMEM)));
+    const byte = new CastNode(new BytesType(1), val, false);
+    return this.assign(YULMEM, new BytesConcatNode([head, byte, tail]));
+  }
+
   // Handled today: an unbounded array of a 256-bit int (`uint`/`int`). 32-byte words store the value exactly, so
   // there is no narrowing/wraparound divergence from value-copy. Narrower ints (`uint8[]`) and other element
   // types fall back until their packed encoding is handled (P6).
   private isHandledMemArray(t: Type | undefined): boolean {
     return t instanceof ArrayType && t.bound === undefined
       && t.elementType instanceof IntType && t.elementType.bits === 256;
+  }
+
+  // Handled: dynamic `bytes` (a byte-packed [length][data] block). `bytesN` (fixed) is a value word, not a block.
+  private isHandledMemBytes(t: Type | undefined): boolean {
+    return t instanceof BytesType && t.bound === undefined;
   }
 
   // A struct each of whose fields is either a 256-bit int (a value word) or a handled ARRAY (int array or

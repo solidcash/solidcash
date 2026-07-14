@@ -613,12 +613,12 @@ describe('bytes memory/local element write (bytes memory d; d[i] = v)', () => {
     expect(cc('contract C { function f(uint256 i, bytes1 v) external pure returns (bytes memory) {'
       + ' bytes memory d = new bytes(9); d[0] = "A"; d[i] = v; return d; } }')).toBe('C');
   });
-  it('is byte-identical to the hand-written local slice+concat', () => {
-    const sugar = compileString('contract C { function f(uint256 i, bytes1 v) external pure returns (bytes memory) {'
-      + ' bytes memory d = new bytes(9); d[i] = v; return d; } }', { solidityImportCompat: true });
-    const hand = compileString('contract C { function f(uint256 i, bytes1 v) external pure returns (bytes memory) {'
-      + ' bytes memory d = new bytes(9); d = d[0:i] + v + d[i+1:d.length]; return d; } }', { solidityImportCompat: true });
-    expect(sugar.bytecode).toBe(hand.bytecode);
+  it('lowers a local byte write via the memory-pointer model (byte-splice; VM-covered in MemoryModelBytes)', () => {
+    // A mutable `new bytes(n)` buffer that is byte-indexed + returned converts to a __yulmem pointer, so `d[i] = v`
+    // lowers to a single in-place byte splice - no longer byte-identical to the value-copy slice+concat (which the
+    // whole-var REASSIGNMENT form below still uses, since a reassignment taints the buffer back to value-copy).
+    expect(cc('contract C { function f(uint256 i, bytes1 v) external pure returns (bytes memory) {'
+      + ' bytes memory d = new bytes(9); d[i] = v; return d; } }')).toBe('C');
   });
 });
 

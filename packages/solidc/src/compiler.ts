@@ -49,6 +49,7 @@ import DesugarReturnInLoop from './semantic/DesugarReturnInLoop.js';
 import UnrollFixedBoundEntryLoop from './semantic/UnrollFixedBoundEntryLoop.js';
 import LowerInlineAssembly from './semantic/LowerInlineAssembly.js';
 import LowerMemoryModel from './semantic/LowerMemoryModel.js';
+import DesugarLocalBytesElementWrite from './semantic/DesugarLocalBytesElementWrite.js';
 import CacheDynamicArrayInLoop from './semantic/CacheDynamicArrayInLoop.js';
 import DesugarDynamicArrayCopyCast from './semantic/DesugarDynamicArrayCopyCast.js';
 import IfConvertConditionalEntryOp from './semantic/IfConvertConditionalEntryOp.js';
@@ -251,6 +252,10 @@ function compileResolvedAst(ast: Ast, code: string, mergedCompilerOptions: Compi
   // Memory model: lower local `memory` reference types to linear-buffer pointer ops before the value-copy
   // desugars, so nested writes compose in place. The safety gate falls unsupported locals back to value-copy.
   ast = ast.accept(new LowerMemoryModel()) as Ast;
+
+  // Value-copy the local `bytes` element writes (`b[i] = v`) LowerMemoryModel did not convert to a pointer byte-
+  // splice: rebuild the whole blob. Runs right after the memory model so converted buffers are already splices.
+  ast = ast.accept(new DesugarLocalBytesElementWrite()) as Ast;
 
   // Nested local-array element write `b[i][j] = v` -> read-modify-write over single-level ops (before semantic).
   ast = ast.accept(new DesugarNestedArrayWrite()) as Ast;

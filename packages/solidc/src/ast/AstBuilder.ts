@@ -3113,6 +3113,14 @@ export default class AstBuilder
     if (!isThis && !isIncDec && !hasMember && keyFns.length === 1 && valueCtx
       && (this.bytesStateVarNames.has(rawName) || this.localBytesVars.has(rawName))) {
       const isState = this.bytesStateVarNames.has(rawName);
+      // A LOCAL bytes plain `=` element write stays a raw ArrayAssignNode: LowerMemoryModel lowers it to a single-
+      // byte splice when the buffer is a __yulmem pointer, and DesugarLocalBytesElementWrite value-copies (the
+      // whole-blob rebuild) the ones that fall back. State bytes and compound ops keep the rebuild directly.
+      if (!isState && op === '=') {
+        const aa = new ArrayAssignNode(rawName, keyFns[0](), this.visit(valueCtx) as ExpressionNode);
+        aa.location = loc;
+        return aa;
+      }
       return this.desugarBytesElementWrite(
         rawName, keyFns[0], this.visit(valueCtx) as ExpressionNode, loc, isState, op);
     }

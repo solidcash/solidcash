@@ -19,7 +19,8 @@ const FACTORY = `
 contract Factory() {
     int childCount;
 
-    function createChild() deploy {
+    function createChild(int fundingInputIndex) {
+        require(tx.inputs[fundingInputIndex].outpointTransactionHash != 0x0000000000000000000000000000000000000000000000000000000000000000);
         this.childCount = this.childCount + 1;
     }
 
@@ -155,11 +156,18 @@ describe('StatefulContract.deployFrom()', () => {
       };
       await provider.addUtxo(p2pkh.address, childFundingUtxo);
 
+      // createChild reads the genesis input (tx.inputs[fundingInputIndex].outpointTransactionHash) as the child
+      // category - which infers the `deploy` modifier, so no explicit keyword. Funding input sits after the
+      // factory's own master + data NFTs (same computation as the create3 pattern below).
+      const createChildAbi = factoryArtifact.abi.find((f) => f.name === 'createChild')!;
+      const requiredNftCount = createChildAbi.requiredNftIndices?.length ?? factoryArtifact.stateLayout!.dataNftCount;
+      const fundingInputIndex = 1 + requiredNftCount;
+
       const result = await StatefulContract.deployFrom({
         provider,
         factory: factoryContract,
         deployFunctionName: 'createChild',
-        deployFunctionArgs: [],
+        deployFunctionArgs: [BigInt(fundingInputIndex)],
         childArtifact,
         childConstructorArgs: [alicePkh],
         childInitialState: { counter: 0n },
@@ -212,11 +220,18 @@ describe('StatefulContract.deployFrom()', () => {
       };
       await provider.addUtxo(p2pkh.address, childFundingUtxo2);
 
+      // createChild reads the genesis input (tx.inputs[fundingInputIndex].outpointTransactionHash) as the child
+      // category - which infers the `deploy` modifier, so no explicit keyword. Funding input sits after the
+      // factory's own master + data NFTs (same computation as the create3 pattern below).
+      const createChildAbi = factoryArtifact.abi.find((f) => f.name === 'createChild')!;
+      const requiredNftCount = createChildAbi.requiredNftIndices?.length ?? factoryArtifact.stateLayout!.dataNftCount;
+      const fundingInputIndex = 1 + requiredNftCount;
+
       const result = await StatefulContract.deployFrom({
         provider,
         factory: factoryContract,
         deployFunctionName: 'createChild',
-        deployFunctionArgs: [],
+        deployFunctionArgs: [BigInt(fundingInputIndex)],
         childArtifact,
         childConstructorArgs: [alicePkh],
         childInitialState: { counter: 0n },
@@ -473,7 +488,8 @@ describe('StatefulContract.deployFrom()', () => {
         provider,
         factory,
         deployFunctionName: 'createChild',
-        deployFunctionArgs: [],
+        deployFunctionArgs: [BigInt(1 + (factoryArtifact.abi.find((f) => f.name === 'createChild')!.requiredNftIndices?.length
+          ?? factoryArtifact.stateLayout!.dataNftCount))],
         childArtifact,
         childConstructorArgs: [alicePkh],
         childInitialState: { counter: 0n },

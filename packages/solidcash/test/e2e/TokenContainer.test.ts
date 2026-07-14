@@ -19,7 +19,7 @@ import {
   genesisStatefulMaster, genesisFtContainer, genesisNftContainer,
 } from '../test-util.js';
 import {
-  alicePriv, aliceAddress, alicePub, alicePkh, bobTokenAddress,
+  alicePriv, aliceAddress, alicePub, alicePkh, bobPkh, bobAddress, bobTokenAddress,
 } from '../fixture/vars.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 import { parsePushdataCommitment } from '@solidcash/utils';
@@ -1884,6 +1884,65 @@ contract FtFanOut() {
           && o !== containerOutput,
       );
       expect(ftTransfers.length).toBe(2);
+    });
+  });
+
+  // SOUNDNESS (fund-safety): transferring tokens from a container - including to a freshly-created child on
+  // deploy - must not let a caller redirect the container REMAINDER to a foreign address. Unlike the satoshi
+  // container (which had an empty-IF output-identity no-op, fixed separately), emitTokenContainerPreservation
+  // pins the container output with a real self-preservation (output LBC == input LBC) + amount conservation
+  // (input - transferred <= output) + anti-drain, so the redirect is rejected. No checkSig on sendTokens =>
+  // only the token-container covenant can reject the mutated tx. This is also the first VM-level (real covenant,
+  // not synthetic-unlocker) exercise of the token transfer covenant.
+  describe('token container remainder redirect is rejected (self-preservation)', () => {
+    const REDIRECT_SRC = `
+contract C() {
+    int counter;
+    function sendTokens(bytes32 tokenCategory, bytes20 recipient, int amount) {
+        require(this.tokens[tokenCategory].tokenAmount >= amount);
+        this.tokens[tokenCategory].transfer(new LockingBytecodeP2PKH(recipient), amount);
+        this.counter = this.counter + 1;
+    }
+}`;
+    const redirectArtifact = compileString(REDIRECT_SRC);
+    const provider = createTestProvider();
+    const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
+    const bare = new Contract(redirectArtifact, [], { provider });
+
+    it('rejects redirecting the token container remainder to a foreign address; honest tx accepted', async () => {
+      const { addressToLockScript } = await import('../../src/utils.js');
+      const fu: Utxo = { txid: 'ac01'.repeat(16), vout: 0, satoshis: 200000n };
+      await provider.addUtxo(p2pkh.address, fu);
+      const deployed = await StatefulContract.deploy(redirectArtifact, [], {
+        provider,
+        fundingUtxo: fu,
+        funder: p2pkh.unlock.spend(alicePub, new SignatureTemplate(alicePriv)),
+        initialState: { counter: 0n },
+        changeAddress: p2pkh.address,
+      });
+      const contract = deployed.contract;
+      // Fund the token container with 1000 FT of a fresh category.
+      const ft = await genesisFtContainer(provider, bare, deployed.categoryId, [1000n]);
+
+      // Honest: transfer 300 FT to bob; the container remainder (700 FT) stays at the container address.
+      const builder = await contract.call.sendTokens(ft.category, bobPkh, 300n).build();
+      const cIdx = builder.outputs.findIndex((o) => (o as { token?: { amount: bigint } }).token?.amount === 700n);
+      expect(cIdx).toBeGreaterThanOrEqual(0);
+      const honestRaw = builder.build();
+
+      // ATTACK: redirect the 700-FT container remainder to bob (keep the tokens so token consensus balances).
+      builder.outputs[cIdx].to = addressToLockScript(bobAddress);
+      const attackRaw = builder.build();
+
+      // Attack first (live utxos, a rejected tx spends nothing): rejected by the covenant, not a utxo error.
+      let msg = '';
+      await expect(provider.sendRawTransaction(attackRaw).catch((e) => { msg = (e as Error).message; throw e; }))
+        .rejects.toThrow();
+      expect(/missingorspent|inputs/i.test(msg)).toBe(false);
+      expect(/verify|script/i.test(msg)).toBe(true);
+
+      // The honest, container-preserving tx (built before the mutation) IS accepted against the same utxos.
+      await expect(provider.sendRawTransaction(honestRaw)).resolves.toBeDefined();
     });
   });
 });

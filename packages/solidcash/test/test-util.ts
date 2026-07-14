@@ -11,9 +11,14 @@ import { Output, Network, Utxo } from '../src/interfaces.js';
 import {
   Contract, TransactionBuilder, HDSigner, signersFromMnemonic,
 } from '../src/index.js';
-import { MockNetworkProvider, RegtestNetworkProvider } from '../src/index.js';
+import {
+  MockNetworkProvider, RegtestNetworkProvider, Contract, SignatureTemplate,
+} from '../src/index.js';
 import { getDataNftAddress, getTokenContainerAddress } from '../src/stateful/covenant-helpers.js';
-import { network as defaultNetwork } from './fixture/vars.js';
+import {
+  network as defaultNetwork, alicePub, alicePriv, alicePkh,
+} from './fixture/vars.js';
+import p2pkhArtifact from './fixture/p2pkh.artifact.js';
 import { generateLibauthSourceOutputs, getNetworkPrefix, libauthOutputToSolidCashOutput } from '../src/utils.js';
 import { utxoComparator } from '../src/utils.js';
 
@@ -121,32 +126,21 @@ export function getLargestUtxo(utxos: Utxo[]): Utxo {
 }
 
 /**
- * Create a fee funder input for manual TransactionBuilder tests.
- * Registers a P2SH32 OP_TRUE UTXO with the mocknet provider and returns
- * the UTXO + unlocker ready to be passed to builder.addInput().
+ * Create a fee funder input for manual TransactionBuilder tests. Registers a real P2PKH UTXO (Alice's key) and
+ * returns the UTXO + a p2pkh signing unlocker - matching the anticipated default funding path (a signer-funded
+ * p2pkh input), rather than an anyone-can-spend OP_TRUE dummy. So the fee input actually exercises signing.
  */
 export async function createFeeFunder(
-  provider: { addUtxo: (lbc: string, utxo: Utxo) => void | Promise<Utxo> },
+  provider: MockNetworkProvider | RegtestNetworkProvider,
   satoshis: bigint = 10000n,
 ): Promise<{ utxo: Utxo; unlocker: any }> {
-  const DUMMY_LBC = new Uint8Array([
-    0xaa, 0x20,
-    0x95, 0x3c, 0xcf, 0xa5, 0x96, 0xa6, 0xc6, 0xd3, 0x9e, 0x59, 0x80, 0x19, 0x45, 0x39, 0x12, 0x4f,
-    0xdc, 0xff, 0x11, 0x6a, 0x57, 0x14, 0x55, 0xa2, 0x12, 0xba, 0xed, 0x81, 0x1f, 0x58, 0x5e, 0xe0,
-    0x87,
-  ]);
-  const DUMMY_UNLOCK = new Uint8Array([0x01, 0x51]);
-
-  const txid = '00'.repeat(31) + (0xfe).toString(16);
-  const utxo: Utxo = { txid, vout: 0, satoshis };
-  await provider.addUtxo(binToHex(DUMMY_LBC), utxo);
+  const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
+  const utxo: Utxo = { txid: nextFundingTxid(), vout: 0, satoshis };
+  await provider.addUtxo(p2pkh.address, utxo);
 
   return {
     utxo,
-    unlocker: {
-      generateLockingBytecode: () => DUMMY_LBC,
-      generateUnlockingBytecode: () => DUMMY_UNLOCK,
-    },
+    unlocker: p2pkh.unlock.spend(alicePub, new SignatureTemplate(alicePriv)),
   };
 }
 

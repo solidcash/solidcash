@@ -65,6 +65,19 @@ const SRC = `contract C {
     }
     require(b == x);
   }
+  // The high-level memory model and the Yul runtime buffer are ONE buffer. The memory model allocates the array
+  // at 0x80 (element 0 at 0xa0, element 1 at 0xc0); assembly - not naming the array, so it stays convertible -
+  // reads an element back by absolute address. Only possible if both passes address the same __yulmem buffer.
+  function sharedWithMemoryModel(uint idx) public {
+    uint[] memory a = new uint[](2);
+    a[0] = 111;
+    a[1] = 222;
+    uint got;
+    assembly {
+      got := mload(add(0xa0, mul(idx, 0x20)))
+    }
+    require(got == 111 + idx * 111);
+  }
 }`;
 
 describe('P7: runtime Yul memory (readback)', () => {
@@ -79,5 +92,11 @@ describe('P7: runtime Yul memory (readback)', () => {
   });
   it('two assembly blocks share one memory buffer', async () => {
     await call('sharedAcrossBlocks', [999n, 0n]);
+  });
+  it('assembly and the high-level memory model share one buffer (element 0)', async () => {
+    await call('sharedWithMemoryModel', [0n]);
+  });
+  it('assembly and the high-level memory model share one buffer (element 1)', async () => {
+    await call('sharedWithMemoryModel', [1n]);
   });
 });

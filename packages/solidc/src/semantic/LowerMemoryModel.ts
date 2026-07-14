@@ -54,6 +54,10 @@ import { cloneNode } from '../ast/clone.js';
 // the same primitives (Phase 3). Off by default; the flag gates the whole pass, so the value-copy path is intact.
 const WORD = 32n;
 
+// The one linear-memory buffer, shared with the Yul runtime-memory lowering (LowerInlineAssembly, which runs
+// after this pass and reuses the decl if it already exists). One name = one EVM-faithful memory space per function.
+const YULMEM = '__yulmem';
+
 export default class LowerMemoryModel extends AstTraversal {
   // Locals that are memory-model pointers (declared as a handled memory dynamic array, initialized by a fresh
   // allocation or an alias). Name -> the array type (element type used for encode/decode).
@@ -108,11 +112,11 @@ export default class LowerMemoryModel extends AstTraversal {
     this.convertible = node.body ? this.analyzeConvertible(node.body) : new Set();
     if (node.body) {
       // A first pass over the block rewrites decls/writes/reads; if any memory array is allocated, prepend the
-      // buffer decl so every `__memory` reference resolves. The free-memory pointer lives IN the buffer at slot
+      // buffer decl so every `__yulmem` reference resolves. The free-memory pointer lives IN the buffer at slot
       // 0x40 (init 0x80), matching the Yul runtime `__yulmem` layout, so both memory passes share one addressing.
       node.body = this.visit(node.body) as BlockNode;
       if (this.usesMemory) {
-        const memDecl = new VariableDefinitionNode(new BytesType(), [], '__memory', this.memReservedInit());
+        const memDecl = new VariableDefinitionNode(new BytesType(), [], YULMEM, this.memReservedInit());
         this.at(memDecl, node);
         node.body.statements = [memDecl, ...(node.body.statements ?? [])];
       }
@@ -706,7 +710,7 @@ export default class LowerMemoryModel extends AstTraversal {
     return [...stmts, this.at(new ReturnNode([new IdentifierNode(serName)]), src)];
   }
 
-  // `T[] memory a = new T[](n)` -> allocate a length-prefixed block in `__memory`; `T[] memory b = a` -> pointer
+  // `T[] memory a = new T[](n)` -> allocate a length-prefixed block in `__yulmem`; `T[] memory b = a` -> pointer
   // copy (alias). Returns the replacement statements, or undefined if this decl is not a handled memory array.
   private tryLowerDecl(node: VariableDefinitionNode): StatementNode[] | undefined {
     const t = node.type;
@@ -741,10 +745,10 @@ export default class LowerMemoryModel extends AstTraversal {
       const decl = this.at(new VariableDefinitionNode(this.uint(), [], node.name, this.freePtr()), node);
       // mstore(0x40, a + 32 + n*32);   (bump the free pointer past this block)
       const bump = this.at(this.setFreePtr(this.add(this.clone(ptr), this.blockBytes(this.clone(n)))), node);
-      // __memory = bytes.concat(__memory, new bytes(32 + n*32));   (grow by the block size, zero-filled)
-      const grow = this.at(this.assign('__memory',
-        new BytesConcatNode([this.mem('__memory'), this.rawBytes(this.blockBytes(this.clone(n)))])), node);
-      // __memory = <store n at a>;   (the length word)
+      // __yulmem = bytes.concat(__yulmem, new bytes(32 + n*32));   (grow by the block size, zero-filled)
+      const grow = this.at(this.assign(YULMEM,
+        new BytesConcatNode([this.mem(YULMEM), this.rawBytes(this.blockBytes(this.clone(n)))])), node);
+      // __yulmem = <store n at a>;   (the length word)
       const setLen = this.at(this.mstore(this.at(this.clone(ptr), node), this.clone(n), arrT.elementType), node);
       return [decl, bump, grow, setLen];
     }
@@ -778,8 +782,8 @@ export default class LowerMemoryModel extends AstTraversal {
     const size = BigInt(32 * structT.fields.length);
     const decl = this.at(new VariableDefinitionNode(this.uint(), [], ptrName, this.freePtr()), src);
     const bump = this.at(this.setFreePtr(this.add(new IdentifierNode(ptrName), this.intLit(size))), src);
-    const grow = this.at(this.assign('__memory',
-      new BytesConcatNode([this.mem('__memory'), this.rawBytes(this.intLit(size))])), src);
+    const grow = this.at(this.assign(YULMEM,
+      new BytesConcatNode([this.mem(YULMEM), this.rawBytes(this.intLit(size))])), src);
     const out: StatementNode[] = [decl, bump, grow];
     if (ctor) out.push(...this.storeStructArgs(new IdentifierNode(ptrName), ctor, structT, src));
     return out;
@@ -912,7 +916,7 @@ export default class LowerMemoryModel extends AstTraversal {
 
   // ---- desugar building blocks (all normal AST that type-checks + codegens) ----
 
-  // __memory init = 128-byte EVM reserved region (scratch 0x00-0x3f, free-memory pointer 0x80 at slot 0x40, zero
+  // __yulmem init = 128-byte EVM reserved region (scratch 0x00-0x3f, free-memory pointer 0x80 at slot 0x40, zero
   // slot 0x60-0x7f). Identical layout to the Yul runtime __yulmem buffer, so pointers from both passes agree.
   private memReservedInit(): ExpressionNode {
     const init = new BytesConcatNode([
@@ -934,18 +938,18 @@ export default class LowerMemoryModel extends AstTraversal {
     return this.mstore(this.intLit(0x40n), value, this.uint());
   }
 
-  // mstore(addr, word): __memory = bytes.concat(__memory[0:addr], bytes32(word), __memory[addr+32:]).
+  // mstore(addr, word): __yulmem = bytes.concat(__yulmem[0:addr], bytes32(word), __yulmem[addr+32:]).
   private mstore(addr: ExpressionNode, word: ExpressionNode, elemType: Type): AssignNode {
-    const head = new SliceNode(this.mem('__memory'), this.intLit(0n), this.clone(addr));
-    const tail = new SliceNode(this.mem('__memory'), this.add(this.clone(addr), this.intLit(WORD)),
-      new UnaryOpNode(UnaryOperator.SIZE, this.mem('__memory')));
+    const head = new SliceNode(this.mem(YULMEM), this.intLit(0n), this.clone(addr));
+    const tail = new SliceNode(this.mem(YULMEM), this.add(this.clone(addr), this.intLit(WORD)),
+      new UnaryOpNode(UnaryOperator.SIZE, this.mem(YULMEM)));
     const encoded = this.encodeWord(word, elemType);
-    return this.assign('__memory', new BytesConcatNode([head, encoded, tail]));
+    return this.assign(YULMEM, new BytesConcatNode([head, encoded, tail]));
   }
 
   // mload(addr): decode the 32-byte word at [addr : addr+32] back to the element type.
   private mload(addr: ExpressionNode, elemType: Type): ExpressionNode {
-    const slice = new SliceNode(this.mem('__memory'), this.clone(addr),
+    const slice = new SliceNode(this.mem(YULMEM), this.clone(addr),
       this.add(this.clone(addr), this.intLit(WORD)));
     return this.decodeWord(slice, elemType);
   }

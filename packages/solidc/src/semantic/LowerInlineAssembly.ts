@@ -1357,8 +1357,13 @@ export default class LowerInlineAssembly extends AstTraversal {
     const result = super.visitFunctionDefinition(node) as FunctionDefinitionNode;
     // Declare the shared runtime memory buffer once at the body top (before any block that uses it), so every
     // lowered assembly block reads/writes one function-scoped `__yulmem` - matching EVM's function-scoped memory.
+    // LowerMemoryModel runs first and reuses the SAME buffer for high-level `memory` arrays/structs; if it already
+    // declared __yulmem (its allocations bumped the free pointer at 0x40), reuse that decl instead of re-init'ing.
     if (functionYulMemUsed) {
-      result.body.statements = [yulMemInit(result.body), ...(result.body.statements ?? [])];
+      const alreadyDeclared = (result.body.statements ?? []).some(
+        (s) => s instanceof VariableDefinitionNode && s.name === YULMEM,
+      );
+      if (!alreadyDeclared) result.body.statements = [yulMemInit(result.body), ...(result.body.statements ?? [])];
     }
     currentParams = [];
     currentVars = new Map();

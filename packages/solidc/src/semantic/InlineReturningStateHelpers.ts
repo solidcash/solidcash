@@ -62,6 +62,7 @@ const PREFIX = '__rh';
 
 export default class InlineReturningStateHelpers extends AstTraversal {
   private funcByName: Map<string, FunctionDefinitionNode> = new Map();
+  private funcByKey: Map<string, FunctionDefinitionNode> = new Map(); // keyed by inlineKey(name, arity) for overloads
   private ambiguousInlineKeys: Set<string> = new Set(); // H8: <name>/<arity> shared by >1 overload.
   private inlinedFns: Set<string> = new Set();
   private collectionNames: Set<string> = new Set();
@@ -80,15 +81,21 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     if (node.contract) node.contract = this.visit(node.contract) as ContractNode;
     // A struct storage-pointer value helper (`get`/`size`) is inlined at every expression call site and cannot
     // stand alone (its `map__field` accesses are dangling until renamed to the caller's `<arg>__field`), so drop
-    // the fully-inlined ones. Kept if a call remained in a suppressed (conditionally-evaluated) position.
+    // the fully-inlined ones. Kept if a call remained in a suppressed (conditionally-evaluated) position, OR if it
+    // is still referenced from another free-function body (freeFnRefs, qualified+bare) - a low-level-call helper in
+    // an un-inlined chain (functionCall -> functionCallWithValue) must stay a subroutine there, not dangle.
     node.freeFunctions = (node.freeFunctions ?? [])
-      .filter((f) => !this.inlinedFns.has(f.name) || this.stillCalled.has(f.name));
+      .filter((f) => !this.inlinedFns.has(f.name) || this.stillCalled.has(f.name) || this.freeFnRefs.has(f.name));
     return node;
   }
 
   visitContract(node: ContractNode): Node {
     this.funcByName = new Map();
-    for (const fn of [...node.functions, ...this.freeFns]) this.funcByName.set(fn.name, fn);
+    this.funcByKey = new Map();
+    for (const fn of [...node.functions, ...this.freeFns]) {
+      this.funcByName.set(fn.name, fn);
+      this.funcByKey.set(inlineKey(fn.name, fn.parameters.length), fn);
+    }
     this.ambiguousInlineKeys = collectAmbiguousInlineKeys([...node.functions, ...this.freeFns]);
     this.collectionNames = new Set(node.collections.map((c) => c.name));
     this.stateVarNames = new Set(node.stateVariables.map((sv) => sv.name));
@@ -117,6 +124,7 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     if (node.fallbackDef && this.eligibleShape(node.fallbackDef)
       && (this.readsEntry(node.fallbackDef) || this.touchesScalarState(node.fallbackDef))) {
       this.funcByName.set(node.fallbackDef.name, node.fallbackDef);
+      this.funcByKey.set(inlineKey(node.fallbackDef.name, node.fallbackDef.parameters.length), node.fallbackDef);
       this.inlinedFns.add(node.fallbackDef.name);
       this.keepDefFns.add(node.fallbackDef.name);
     }
@@ -142,7 +150,7 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     // their own (delegate) machinery.
     for (const fn of this.freeFns) {
       if (this.eligibleStructPtr(fn)) this.inlinedFns.add(fn.name);
-      else if (this.eligibleShape(fn) && this.containsLowLevelCall(fn) && !this.referencedFromFreeFn(fn.name)) {
+      else if (this.eligibleShape(fn) && this.transitivelyContainsLowLevelCall(fn)) {
         this.inlinedFns.add(fn.name);
       }
     }
@@ -155,7 +163,10 @@ export default class InlineReturningStateHelpers extends AstTraversal {
 
     const bodies = [...node.functions, node.constructorDef, node.fallbackDef, node.receiveDef];
     for (const fn of bodies) {
-      if (fn?.body) { this.stack = [fn.name]; fn.body = this.visit(fn.body) as BlockNode; }
+      if (fn?.body) {
+        this.stack = [inlineKey(fn.name, fn.parameters.length)];
+        fn.body = this.visit(fn.body) as BlockNode;
+      }
     }
     // Drop a helper only if every call site was inlined (none left in a suppressed/un-hoistable position).
     const stillCalled = new Set<string>();
@@ -221,6 +232,30 @@ export default class InlineReturningStateHelpers extends AstTraversal {
   // both the as-written and the same-library-qualified call names) - inlining+dropping it would dangle it.
   private referencedFromFreeFn(qualifiedName: string): boolean {
     return this.freeFnRefs.has(qualifiedName);
+  }
+
+  // Resolve a call to its exact overload by arity (name-keyed funcByName can't distinguish functionCall/2 from
+  // functionCall/3). Undefined when no overload has that arity - the call is then left as-is (not inlinable).
+  private lookupOverload(name: string, arity: number): FunctionDefinitionNode | undefined {
+    return this.funcByKey.get(inlineKey(name, arity));
+  }
+
+  // Transitive containsLowLevelCall: a wrapper that only CALLS another eligible-shape helper which (transitively)
+  // does a low-level call must inline too, else it stays a subroutine calling a callee that needs the synthetic
+  // covenant param it never forwards (OZ Address.functionCall -> ...WithValue -> target.call). Cycle-guarded by
+  // name; funcByName resolves the exact overload by arity.
+  private transitivelyContainsLowLevelCall(fn: FunctionDefinitionNode, seen: Set<string> = new Set()): boolean {
+    if (this.containsLowLevelCall(fn)) return true;
+    if (seen.has(fn.name)) return false;
+    seen.add(fn.name);
+    let found = false;
+    this.walk(fn.body, (n) => {
+      if (found || !(n instanceof FunctionCallNode)) return;
+      const callee = this.lookupOverload(n.identifier.name, n.parameters.length);
+      if (callee && callee !== fn && this.eligibleShape(callee)
+        && this.transitivelyContainsLowLevelCall(callee, seen)) found = true;
+    });
+    return found;
   }
 
   // Rewrite `address(EXPR).method(args)` -> `L.method(address(EXPR), args)` for `using L for address` where
@@ -395,10 +430,11 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     node.identifier = this.visit(node.identifier) as IdentifierNode;
     node.parameters = this.visitList(node.parameters); // inner calls inlined first
     const name = node.identifier.name;
-    const callee = this.funcByName.get(name);
+    const callee = this.lookupOverload(name, node.parameters.length) ?? this.funcByName.get(name);
     if (callee) this.reorderNamedTail(node, callee);
     if (!this.suppress && callee && this.inlinedFns.has(name)
-      && !this.stack.includes(name) && node.parameters.length === callee.parameters.length
+      && !this.stack.includes(inlineKey(name, node.parameters.length))
+      && node.parameters.length === callee.parameters.length
       && callee.returnTypes.length === 1) {
       if (this.ambiguousInlineKeys.has(inlineKey(name, node.parameters.length))) {
         throw new AmbiguousInlineOverloadError(node, name, node.parameters.length);
@@ -432,8 +468,8 @@ export default class InlineReturningStateHelpers extends AstTraversal {
   private tryInlineMultiValue(expr: ExpressionNode): IdentifierNode[] | undefined {
     if (this.suppress || !(expr instanceof FunctionCallNode)) return undefined;
     const name = expr.identifier.name;
-    const callee = this.funcByName.get(name);
-    if (!callee || !this.inlinedFns.has(name) || this.stack.includes(name)
+    const callee = this.lookupOverload(name, expr.parameters.length) ?? this.funcByName.get(name);
+    if (!callee || !this.inlinedFns.has(name) || this.stack.includes(inlineKey(name, expr.parameters.length))
       || expr.parameters.length !== callee.parameters.length || callee.returnTypes.length < 2) return undefined;
     if (this.ambiguousInlineKeys.has(inlineKey(name, expr.parameters.length))) {
       throw new AmbiguousInlineOverloadError(expr, name, expr.parameters.length);
@@ -522,7 +558,7 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     // Recursively inline nested returning-helper calls within the cloned body (visitBlock flushes their
     // hoists into the statement list). Guard against self-recursion via the stack.
     const savedStack = this.stack;
-    this.stack = [...savedStack, callee.name];
+    this.stack = [...savedStack, inlineKey(callee.name, callee.parameters.length)];
     const processed = (this.visit(cloned.body) as BlockNode).statements ?? [];
     this.stack = savedStack;
 
@@ -562,15 +598,24 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     });
   }
 
-  // Pre-order walk over child Nodes (and Node arrays); skips Type/symbol-table/location fields.
+  // Pre-order walk over child Nodes (and Node arrays); skips Type/symbol-table/location fields. Also descends
+  // into callOptions ({value, gas, salt} - a plain object holding ExpressionNodes) so a param referenced in a
+  // low-level call's `{value: v}` gets visited (else applyRename misses it -> "Undefined reference to symbol v").
   private walk(node: Node | undefined, visit: (n: Node) => void): void {
     if (!node) return;
     visit(node);
     for (const key of Object.keys(node)) {
       if (key === 'type' || key === 'symbolTable' || key === 'location') continue;
       const v = (node as unknown as Record<string, unknown>)[key];
-      if (v instanceof Node) this.walk(v, visit);
-      else if (Array.isArray(v)) for (const it of v) if (it instanceof Node) this.walk(it, visit);
+      if (v instanceof Node) {
+        this.walk(v, visit);
+      } else if (Array.isArray(v)) {
+        for (const it of v) if (it instanceof Node) this.walk(it, visit);
+      } else if (key === 'callOptions' && v && typeof v === 'object') {
+        for (const opt of Object.values(v as unknown as Record<string, unknown>)) {
+          if (opt instanceof Node) this.walk(opt, visit);
+        }
+      }
     }
   }
 }

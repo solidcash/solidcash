@@ -123,6 +123,40 @@ describe('value-returning low-level-call helpers are inlined at direct call site
       + ' function f(address x, bytes d) returns (bytes) { return address(x).fwd(d); } }');
     expect(a.contractName).toBe('C');
   });
+
+  // A wrapper that only CALLS another low-level-call helper is transitively tainted and must inline too, else it
+  // stays a subroutine calling a callee that needs the synthetic covenant param it never forwards.
+  it('inlines a TRANSITIVE chain (wrapper -> low-level-call helper)', () => {
+    const src = 'function llCall(address a, bytes d) view returns (bytes) {'
+      + ' (bool ok, bytes ret) = a.call(d); require(ok); return ret; }'
+      + ' function llWrap(address a, bytes d) view returns (bytes) { return llCall(a, d); }'
+      + ' contract C { int n; function f(address t, bytes d) public {'
+      + ' bytes out = llWrap(t, d); this.n = int(out.length); } }';
+    expect(compileString(src, { solidityImportCompat: true }).contractName).toBe('C');
+  });
+
+  // Overloaded chain call/2 -> call/3: name-keyed resolution can't tell them apart, so this exercises the
+  // arity-keyed overload lookup + recursion stack, and the {value: value} option's param alpha-rename.
+  it('resolves overloads in a chain (call/2 -> call/3 with a {value:} low-level call)', () => {
+    const src = 'function llCall(address a, bytes d) view returns (bytes) { return llCall(a, d, 0); }'
+      + ' function llCall(address a, bytes d, int value) view returns (bytes) {'
+      + ' (bool ok, bytes ret) = a.call{value: value}(d); require(ok); return ret; }'
+      + ' contract C { int n; function f(address t, bytes d) public {'
+      + ' bytes out = llCall(t, d); this.n = int(out.length); } }';
+    expect(compileString(src, { solidityImportCompat: true }).contractName).toBe('C');
+  });
+
+  // Drop-safety: when a chain helper is still referenced from a NON-inlined caller (a void wrapper here, which this
+  // pass does not inline), it must NOT be dropped - the error must be the clean phantom-param, never a dangling ref.
+  it('a chain helper reachable only from a non-inlined caller falls back to a clean error, not a dangling ref', () => {
+    const src = 'function llCall(address a, bytes d) view returns (bytes) {'
+      + ' (bool ok, bytes r) = a.call(d); require(ok); return r; }'
+      + ' function vwrap(address a, bytes d) view { llCall(a, d); }'
+      + ' contract C { int n; function f(address t, bytes d) public { vwrap(t, d); this.n = 1; } }';
+    let msg = '';
+    try { compileString(src, { solidityImportCompat: true }); } catch (e) { msg = (e as Error).message; }
+    expect(msg).not.toMatch(/Undefined reference/);
+  });
 });
 
 describe('external call on a tuple-destructured / copied local interface var', () => {

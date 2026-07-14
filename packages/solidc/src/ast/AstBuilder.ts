@@ -472,6 +472,13 @@ export default class AstBuilder
         errorDefinitions.push(this.visitErrorDefinition(erCtx));
       }
 
+      // Library-level `using L for T` directives (e.g. OZ SafeERC20's `using Address for address`) govern the
+      // library's own functions, which become free functions; lift them to file scope so their member-call
+      // bindings register and `address(x).functionCall(d)` inside a library function resolves.
+      for (const uCtx of libCtx.usingForDirective_list()) {
+        usingForDirectives.push(this.visit(uCtx) as UsingForDirectiveNode);
+      }
+
       declaredLibraryNames.push(libName);
 
       // Library constants get namespaced names (e.g. SafeMath.MAX_VALUE)

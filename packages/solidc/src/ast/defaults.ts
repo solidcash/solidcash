@@ -23,8 +23,9 @@ export function createDefaultValueExpression(type: Type, location: Location): Ex
     node = new BoolLiteralNode(false);
   } else if (type === PrimitiveType.STRING) {
     node = new StringLiteralNode('', '"');
-  } else if (type instanceof BytesType && type.bound !== undefined) {
-    node = new HexLiteralNode(new Uint8Array(type.bound));
+  } else if (type instanceof BytesType) {
+    // bytesN -> N zero bytes; unbounded `bytes` -> empty bytes (0x), NOT int 0 (which mismatches a `bytes` return).
+    node = new HexLiteralNode(new Uint8Array(type.bound ?? 0));
   } else if (type instanceof StructType) {
     const identifier = new IdentifierNode(type.name);
     identifier.location = location;

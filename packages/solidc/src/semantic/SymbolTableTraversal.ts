@@ -496,14 +496,16 @@ export default class SymbolTableTraversal extends AstTraversal {
       this.functionDefinitions.set(func.name, existing);
     }
 
+    // Process file-level using-for directives (after free functions are REGISTERED above, but before their
+    // BODIES are visited, so a library function's `address(x).method(d)` member call resolves against a
+    // library-scoped `using L for address` lifted to file level - e.g. OZ SafeERC20).
+    for (const ufd of node.usingForDirectives) {
+      this.visitUsingForDirective(ufd);
+    }
+
     // Visit free function bodies
     for (const func of node.freeFunctions) {
       this.visitFunctionDefinition(func);
-    }
-
-    // Process file-level using-for directives (must be after free functions are registered)
-    for (const ufd of node.usingForDirectives) {
-      this.visitUsingForDirective(ufd);
     }
 
     node.contract = this.visit(node.contract) as ContractNode;

@@ -42,6 +42,34 @@ honoring - not bypassing - the self-pin.
   categoryId` as an entry NFT. The salt is the user-chosen logical key; the lookup `factory.children[salt]`
   is the deterministic handle. See DeployFromContract.test.ts `CREATE3_FACTORY`.
 
+## Conditional and loop deploys (`if (c) new C()`, `for (i<n) new C()`)
+
+A `new C()` inside a branch or loop can't use the fixed block-layout deploy slot the straight-line epilogue
+uses: when a branch is not taken there is no genesis output, and a loop mints a runtime-variable count. So a
+`scopeDepth > 0` deploy is verified **inline** at the creation site (`emitInlineDeployVerification`), so the
+genesis checks run exactly when/each-time `new C()` runs.
+
+- **Conditional (`if (c) new C()`)** - a single deploy lands at the same fixed slot as an unconditional one when
+  it fires (deploy is the trailing output region), so no counter is needed. SDK: `factory.fn(...).deploy({...})`
+  (or awaiting it) co-spends the child for the firing case; `factory.fn(...).send()` / `.build()` is the
+  **non-firing** call (a plain state write - the covenant verifies no child). Calling `.send()` when the branch
+  *would* fire yields a tx the covenant rejects, so it stays sound.
+- **Loop (`for (i<n) new C()`)** - the deploy count is runtime-variable, so genesis input/output indices are
+  offset by a runtime deploy counter (deploys-fired-so-far): input `= masterInputIndex + inputBase + counter`,
+  master output `= masterInputIndex + slotBase + counter*stride` (`stride = 1 + child dataNftCount`). The counter
+  is a stack var pushed before the loop's `OP_BEGIN`, incremented in place per iteration, dropped after
+  `OP_UNTIL` (covers `for`/`while`/`do-while`). Both the self-pin **address** (step 2) and the covenant
+  **verify** (step 4) read the same counter-offset input, so child k self-pins to genesis input k.
+  - SDK: `deployFrom({ fundingUtxos: [u0, u1, ...] })`. A contract block is **balanced**, so N deploy output
+    groups need **N balancing funding inputs** (any value, each vout 0); child k's category = `fundingUtxos[k]
+    .txid`. deployFrom builds N child `Contract` instances (the self-pinned address is category-dependent), adds
+    N inputs + N child output groups, and N child placeholders to the VM probe. The child commitment is shared
+    (same child type each iteration). VM-proven at N=2 in `CondDeployRuntime.test.ts`.
+
+Guards (raise a clean `ConditionalDeployError` - fail closed, never an unsound covenant): more than one deploy
+site in the function, a `{value:}` transfer on the deploy. Straight-line deploys keep the proven fixed epilogue,
+byte-for-byte.
+
 ## Why no literal CREATE2/CREATE3 redeployable address for stateful contracts
 
 The category = genesis outpoint is consensus-fixed and unique per genesis tx, so the *same* (code, salt) can

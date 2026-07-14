@@ -23,6 +23,14 @@ describe('conditional deploy (new C() inside a branch/loop)', () => {
     expect(compileString(cc('function f() external { for (uint i=0;i<2;i++) { Child ch = new Child(); } require(true); }'),
       compat).contractName).toBe('C');
   });
+  it('a SINGLE deploy inside a while-loop COMPILES', () => {
+    expect(compileString(cc('function f(uint n) external { uint i=0; while (i<n) { Child ch = new Child(); i=i+1; } require(true); }'),
+      compat).contractName).toBe('C');
+  });
+  it('a SINGLE deploy inside a do-while-loop COMPILES', () => {
+    expect(compileString(cc('function f(uint n) external { uint i=0; do { Child ch = new Child(); i=i+1; } while (i<n); require(true); }'),
+      compat).contractName).toBe('C');
+  });
   it('MULTIPLE deploy sites with a conditional one still throw (needs a runtime counter to keep slots stable)', () => {
     expect(() => compileString(cc('function f(uint c) external { Child a = new Child(); if (c==1) { Child b = new Child(); }'
       + ' require(true); }'), compat)).toThrow(/inside a conditional branch or loop is not yet implemented/);

@@ -2918,6 +2918,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
     }
 
+    // Loop deploy: push the runtime deploy counter (deploys-fired-so-far = 0) before OP_BEGIN so it persists
+    // across iterations; the inline genesis verification indexes by it and increments it each iteration.
+    const loopHasDeploy = countInstantiationDeploySites(node.block) > 0 && !this.inlineDeployActive;
+    if (loopHasDeploy) {
+      this.emit(encodeInt(0n), locationData);
+      this.pushToStack(this.inlineDeployCounterName);
+      this.inlineDeployActive = true;
+    }
+
     // EXISTING LOOP LOGIC (with pre-allocated slots now below stackDepth)
     this.scopeDepth += 1;
     this.emit(Op.OP_BEGIN, { location: node.location, positionHint: PositionHint.START });
@@ -2933,6 +2942,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     this.emit(Op.OP_UNTIL, { location: node.location, positionHint: PositionHint.END });
     this.popFromStack();
+
+    // Drop the runtime deploy counter now the loop is done (it lives below the per-iteration working area).
+    if (loopHasDeploy) {
+      this.emit(Op.OP_DROP, { location: node.location, positionHint: PositionHint.END });
+      this.popFromStack();
+      this.inlineDeployActive = false;
+    }
 
     this.scopeDepth -= 1;
 

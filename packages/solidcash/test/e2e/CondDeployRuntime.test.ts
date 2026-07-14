@@ -219,3 +219,61 @@ describe('loop deploy runtime (for (i<n) new Child()) - N=1 via existing deployF
     expect(child1).toBe(true);
   });
 });
+
+// The runtime deploy counter is set up for every loop form (for/while desugar to while; do-while has its own
+// visitor). This verifies the do-while path end to end: `do { new Child(); } while (i<n)` runs body-then-
+// condition, minting N children verified by the same counter machinery.
+const DOWHILE_FACTORY = `${CHILD}
+contract DoWhileFactory(bytes20 owner) {
+    int childCount;
+    function makeN(int n) {
+        int i = 0;
+        do {
+            Child ch = new Child(owner);
+            i = i + 1;
+        } while (i < n);
+        this.childCount = this.childCount + i;
+    }
+}
+`;
+
+describe('do-while deploy runtime (do { new Child() } while (i<n))', () => {
+  const provider = createTestProvider();
+  const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
+  const dwArtifact = compileString(DOWHILE_FACTORY);
+  const childArtifact = compileString(CHILD);
+
+  it('makeN(2) via a do-while mints + verifies TWO children (counter 0 and 1)', async () => {
+    const fresh: Utxo = { txid: 'd0f1'.repeat(16), vout: 0, satoshis: 200000n };
+    await provider.addUtxo(p2pkh.address, fresh);
+    const factory = (await StatefulContract.deploy(dwArtifact, [alicePkh], {
+      provider,
+      fundingUtxo: fresh,
+      funder: p2pkh.unlock.spend(alicePub, new SignatureTemplate(alicePriv)),
+      initialState: { childCount: 0n },
+      changeAddress: p2pkh.address,
+    })).contract;
+
+    const g0: Utxo = { txid: 'd2a1'.repeat(16), vout: 0, satoshis: 200000n };
+    const g1: Utxo = { txid: 'd2b2'.repeat(16), vout: 0, satoshis: 200000n };
+    await provider.addUtxo(p2pkh.address, g0);
+    await provider.addUtxo(p2pkh.address, g1);
+
+    const result = await StatefulContract.deployFrom({
+      provider,
+      factory,
+      funder: p2pkh.unlock.spend(alicePub, new SignatureTemplate(alicePriv)),
+      fundingUtxos: [g0, g1],
+      changeAddress: p2pkh.address,
+      deployFunctionName: 'makeN',
+      deployFunctionArgs: [2n],
+      childArtifact,
+      childConstructorArgs: [alicePkh],
+      childInitialState: { counter: 0n },
+    });
+
+    const outs = getTxOutputs(result.tx);
+    expect(outs.some((o) => o.token?.category === g0.txid && o.token?.nft?.capability === 'minting')).toBe(true);
+    expect(outs.some((o) => o.token?.category === g1.txid && o.token?.nft?.capability === 'minting')).toBe(true);
+  });
+});

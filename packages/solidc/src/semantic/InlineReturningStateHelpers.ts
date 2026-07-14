@@ -96,6 +96,7 @@ export default class InlineReturningStateHelpers extends AstTraversal {
       this.funcByName.set(fn.name, fn);
       this.funcByKey.set(inlineKey(fn.name, fn.parameters.length), fn);
     }
+    this.qualifySiblingCalls();
     this.ambiguousInlineKeys = collectAmbiguousInlineKeys([...node.functions, ...this.freeFns]);
     this.collectionNames = new Set(node.collections.map((c) => c.name));
     this.stateVarNames = new Set(node.stateVariables.map((sv) => sv.name));
@@ -238,6 +239,24 @@ export default class InlineReturningStateHelpers extends AstTraversal {
   // functionCall/3). Undefined when no overload has that arity - the call is then left as-is (not inlinable).
   private lookupOverload(name: string, arity: number): FunctionDefinitionNode | undefined {
     return this.funcByKey.get(inlineKey(name, arity));
+  }
+
+  // A same-library sibling call is written unqualified (`functionCallWithValue` inside `Address.functionCall`) but
+  // the function is registered qualified (`Address.functionCallWithValue`). Rewrite such calls to the qualified
+  // name so detection, overload resolution, inlining and drop-tracking all resolve the real target. Safe: a
+  // qualified library call is exactly how the reference resolves in semantic analysis anyway.
+  private qualifySiblingCalls(): void {
+    for (const fn of this.freeFns) {
+      const dot = fn.name.lastIndexOf('.');
+      if (dot < 0 || !fn.body) continue;
+      const prefix = fn.name.slice(0, dot + 1);
+      this.walk(fn.body, (n) => {
+        if (n instanceof FunctionCallNode && !n.identifier.name.includes('.')
+          && this.funcByName.has(prefix + n.identifier.name)) {
+          n.identifier.name = prefix + n.identifier.name;
+        }
+      });
+    }
   }
 
   // Transitive containsLowLevelCall: a wrapper that only CALLS another eligible-shape helper which (transitively)
@@ -540,6 +559,16 @@ export default class InlineReturningStateHelpers extends AstTraversal {
       if (node instanceof VariableDefinitionNode && !rename.has(node.name) && !subs.has(node.name)) {
         rename.set(node.name, `${PREFIX}${n}_${node.name}`);
       }
+      // Tuple-destructured declarations `(bool ok, bytes ret) = ...` hold their names as plain strings in
+      // `elements`, not VariableDefinitionNodes; collect the freshly-declared ones so repeated inlines of two
+      // helpers that both use `ok`/`ret` do not collide ("Redefinition of variable ok").
+      if (node instanceof TupleAssignmentNode) {
+        for (const el of node.elements) {
+          if (el.name && !el.existing && !el.skip && !rename.has(el.name) && !subs.has(el.name)) {
+            rename.set(el.name, `${PREFIX}${n}_${el.name}`);
+          }
+        }
+      }
     });
     this.applyRename(cloned.body, rename);
     substituteInFunction(cloned, subs);
@@ -591,6 +620,8 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     this.walk(root, (n) => {
       if (n instanceof IdentifierNode) {
         n.name = rn(n.name);
+      } else if (n instanceof TupleAssignmentNode) {
+        for (const el of n.elements) if (el.name) el.name = rn(el.name); // declared + existing tuple slots
       } else {
         const nm = (n as unknown as { name?: unknown }).name;
         if (typeof nm === 'string') (n as unknown as { name: string }).name = rn(nm);

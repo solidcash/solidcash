@@ -10,6 +10,7 @@ import {
   VariableDefinitionNode,
   IdentifierNode,
   MethodCallNode,
+  TupleAssignmentNode,
   BranchNode,
   WhileNode,
   DoWhileNode,
@@ -50,22 +51,26 @@ export default class InlineExternalCallHelpers extends AstTraversal {
   private ambiguousInlineKeys: Set<string> = new Set(); // H8: <name>/<arity> shared by >1 overload.
   private stateVarTypes: Map<string, Type> = new Map();
   private voidExternalCallHelpers: Set<string> = new Set();
+  private freeFns: FunctionDefinitionNode[] = [];
   private counter = 0;
 
   visitSourceFile(node: SourceFileNode): Node {
+    this.freeFns = node.freeFunctions ?? [];
     if (node.contract) node.contract = this.visit(node.contract) as ContractNode;
     return node;
   }
 
   visitContract(node: ContractNode): Node {
-    this.ambiguousInlineKeys = collectAmbiguousInlineKeys(node.functions);
+    const all = [...node.functions, ...this.freeFns];
+    this.ambiguousInlineKeys = collectAmbiguousInlineKeys(all);
     this.funcByName = new Map();
-    for (const fn of node.functions) this.funcByName.set(fn.name, fn);
+    for (const fn of all) this.funcByName.set(fn.name, fn);
     this.stateVarTypes = new Map();
     for (const sv of node.stateVariables) this.stateVarTypes.set(sv.name, sv.type);
+    this.qualifySiblingCalls();
 
     this.voidExternalCallHelpers = new Set();
-    for (const fn of node.functions) {
+    for (const fn of all) {
       if (fn.body && fn.returnTypes.length === 0 && this.makesExternalCall(fn)) {
         this.voidExternalCallHelpers.add(fn.name);
       }
@@ -78,8 +83,33 @@ export default class InlineExternalCallHelpers extends AstTraversal {
     return node;
   }
 
-  // True if fn calls a method on an interface-typed param/local/state var (an external call).
-  private makesExternalCall(fn: FunctionDefinitionNode): boolean {
+  private static isLowLevel(m: string): boolean {
+    return m === 'call' || m === 'staticcall' || m === 'delegatecall';
+  }
+
+  // A same-library sibling call is written unqualified (`_callOptionalReturn` inside `SafeERC20.safeTransfer`) but
+  // the function is registered qualified. Rewrite to the qualified name so detection + inlining resolve the target.
+  private qualifySiblingCalls(): void {
+    for (const fn of this.freeFns) {
+      const dot = fn.name.lastIndexOf('.');
+      if (dot < 0 || !fn.body) continue;
+      const prefix = fn.name.slice(0, dot + 1);
+      this.walk(fn.body, (n) => {
+        if (n instanceof FunctionCallNode && !n.identifier.name.includes('.')
+          && this.funcByName.has(prefix + n.identifier.name)) {
+          n.identifier.name = prefix + n.identifier.name;
+        }
+      });
+    }
+  }
+
+  // True if fn makes an external call: a method on an interface-typed var, a low-level `.call`/`.staticcall`/
+  // `.delegatecall`, OR (transitively) a call to a known helper that does. The transitive case covers the OZ
+  // SafeERC20 void wrappers (safeTransfer -> _callOptionalReturn -> Address.functionCall -> target.call), which
+  // must inline into the entry point so the low-level call's covenant param is supplied there.
+  private makesExternalCall(fn: FunctionDefinitionNode, seen: Set<string> = new Set()): boolean {
+    if (seen.has(fn.name)) return false;
+    seen.add(fn.name);
     const env = new Map<string, Type>(this.stateVarTypes);
     for (const p of fn.parameters) env.set(p.name, p.type);
     let found = false;
@@ -87,11 +117,17 @@ export default class InlineExternalCallHelpers extends AstTraversal {
       if (found) return;
       if (n instanceof VariableDefinitionNode) env.set(n.name, n.type);
       if (n instanceof FunctionCallNode) {
-        const dot = n.identifier.name.indexOf('.');
-        if (dot > 0 && this.isInterfaceTyped(env.get(n.identifier.name.slice(0, dot)))) found = true;
+        const name = n.identifier.name;
+        const dot = name.indexOf('.');
+        if (dot > 0 && this.isInterfaceTyped(env.get(name.slice(0, dot)))) { found = true; return; }
+        if (dot > 0 && InlineExternalCallHelpers.isLowLevel(name.slice(dot + 1))) { found = true; return; }
+        const callee = this.funcByName.get(name);
+        if (callee && callee !== fn && this.makesExternalCall(callee, seen)) { found = true; return; }
       }
-      if (n instanceof MethodCallNode && n.object instanceof IdentifierNode
-        && this.isInterfaceTyped(env.get(n.object.name))) found = true;
+      if (n instanceof MethodCallNode) {
+        if (n.object instanceof IdentifierNode && this.isInterfaceTyped(env.get(n.object.name))) { found = true; return; }
+        if (InlineExternalCallHelpers.isLowLevel(n.methodName)) found = true;
+      }
     });
     return found;
   }
@@ -108,7 +144,8 @@ export default class InlineExternalCallHelpers extends AstTraversal {
       if (stmt instanceof FunctionCallStatementNode) {
         const name = stmt.call.identifier.name;
         const helper = this.funcByName.get(name);
-        if (!name.includes('.') && helper && this.voidExternalCallHelpers.has(name) && !stack.includes(name)
+        // A qualified library call (`SafeERC20.safeTransfer`) is eligible too - the name is the registered helper.
+        if (helper && this.voidExternalCallHelpers.has(name) && !stack.includes(name)
           && stmt.call.parameters.length === helper.parameters.length) {
           if (this.ambiguousInlineKeys.has(inlineKey(name, stmt.call.parameters.length))) {
             throw new AmbiguousInlineOverloadError(stmt.call, name, stmt.call.parameters.length);
@@ -148,6 +185,13 @@ export default class InlineExternalCallHelpers extends AstTraversal {
       if (node instanceof VariableDefinitionNode && !map.has(node.name)) {
         map.set(node.name, `${PREFIX}${n}_${node.name}`);
       }
+      // Tuple-destructured declarations `(bool ok, bytes ret) = ...` hold names as plain strings in `elements`;
+      // collect the freshly-declared ones so repeated inlines do not collide ("Redefinition of variable ok").
+      if (node instanceof TupleAssignmentNode) {
+        for (const el of node.elements) {
+          if (el.name && !el.existing && !el.skip && !map.has(el.name)) map.set(el.name, `${PREFIX}${n}_${el.name}`);
+        }
+      }
     });
     this.applyRename(body, map);
 
@@ -161,15 +205,16 @@ export default class InlineExternalCallHelpers extends AstTraversal {
   }
 
   private applyRename(root: Node, map: Map<string, string>): void {
+    const rn = (name: string): string => {
+      const dot = name.indexOf('.');
+      if (dot > 0 && map.has(name.slice(0, dot))) return map.get(name.slice(0, dot))! + name.slice(dot);
+      return map.get(name) ?? name;
+    };
     this.walk(root, (n) => {
       if (n instanceof IdentifierNode) {
-        const dot = n.name.indexOf('.');
-        if (dot > 0) {
-          const head = n.name.slice(0, dot);
-          if (map.has(head)) n.name = map.get(head)! + n.name.slice(dot);
-        } else if (map.has(n.name)) {
-          n.name = map.get(n.name)!;
-        }
+        n.name = rn(n.name);
+      } else if (n instanceof TupleAssignmentNode) {
+        for (const el of n.elements) if (el.name) el.name = rn(el.name);
       } else {
         const nm = (n as unknown as { name?: unknown }).name;
         if (typeof nm === 'string' && map.has(nm)) (n as unknown as { name: string }).name = map.get(nm)!;
@@ -184,8 +229,16 @@ export default class InlineExternalCallHelpers extends AstTraversal {
     for (const key of Object.keys(node)) {
       if (key === 'type' || key === 'symbolTable' || key === 'location') continue;
       const v = (node as unknown as Record<string, unknown>)[key];
-      if (v instanceof Node) this.walk(v, visit);
-      else if (Array.isArray(v)) for (const it of v) if (it instanceof Node) this.walk(it, visit);
+      if (v instanceof Node) {
+        this.walk(v, visit);
+      } else if (Array.isArray(v)) {
+        for (const it of v) if (it instanceof Node) this.walk(it, visit);
+      } else if (key === 'callOptions' && v && typeof v === 'object') {
+        // Descend into {value, gas, salt} so a param in `x.call{value: v}(d)` is alpha-renamed on inline.
+        for (const opt of Object.values(v as unknown as Record<string, unknown>)) {
+          if (opt instanceof Node) this.walk(opt, visit);
+        }
+      }
     }
   }
 }

@@ -146,16 +146,45 @@ describe('value-returning low-level-call helpers are inlined at direct call site
     expect(compileString(src, { solidityImportCompat: true }).contractName).toBe('C');
   });
 
-  // Drop-safety: when a chain helper is still referenced from a NON-inlined caller (a void wrapper here, which this
-  // pass does not inline), it must NOT be dropped - the error must be the clean phantom-param, never a dangling ref.
-  it('a chain helper reachable only from a non-inlined caller falls back to a clean error, not a dangling ref', () => {
+  // Same-library sibling calls are written unqualified (`fwd(a,d,0)` inside library V's other `fwd`); they must be
+  // qualified to `V.fwd` so the chain resolves + inlines (else the wrapper stays a subroutine -> phantom param).
+  it('inlines a same-library overloaded chain called via a qualified library name (V.fwd)', () => {
+    const src = 'library V { function fwd(address a, bytes d) internal returns (bytes) { return fwd(a, d, 0); }'
+      + ' function fwd(address a, bytes d, int value) internal returns (bytes) {'
+      + ' (bool ok, bytes ret) = a.call{value: value}(d); require(ok); return ret; } }'
+      + ' contract C { int n; function f(address t, bytes d) public {'
+      + ' bytes out = V.fwd(t, d); this.n = int(out.length); } }';
+    expect(compileString(src, { solidityImportCompat: true }).contractName).toBe('C');
+  });
+
+  // Full SafeERC20 shape: a VOID library wrapper -> a value-returning library chain -> a {value:} low-level call.
+  // The void wrapper inlines (InlineExternalCallHelpers) bubbling the value chain into the entry point, where the
+  // returning-helper inliner flattens it to the direct low-level call. Two helpers share `ok`/`ret` tuple names,
+  // exercising the tuple-slot alpha-rename.
+  it('inlines a void wrapper -> value chain -> low-level call end to end (SafeERC20 shape)', () => {
+    const src = 'library Address { function functionCall(address t, bytes d) internal returns (bytes) {'
+      + ' return functionCallWithValue(t, d, 0); }'
+      + ' function functionCallWithValue(address t, bytes d, int v) internal returns (bytes) {'
+      + ' (bool ok, bytes ret) = t.call{value: v}(d); require(ok); return ret; } }'
+      + ' library Safe { function xfer(address token, bytes data) internal { Address.functionCall(token, data); }'
+      + ' function tryXfer(address token, bytes data) internal returns (bool) {'
+      + ' (bool ok, bytes ret) = token.call(data); return ok; }'
+      + ' function force(address token, bytes data) internal { if (!tryXfer(token, data)) { require(false); } } }'
+      + ' contract C { int n; function f(address t, bytes d) public { Safe.xfer(t, d); Safe.force(t, d); this.n = 1; } }';
+    expect(compileString(src, { solidityImportCompat: true }).contractName).toBe('C');
+  });
+
+  // A void wrapper that discards a value-chain call's result: the wrapper inlines, the discarded value call is
+  // then inlined at its statement position, and the chain flattens. Must compile - never a dangling reference.
+  it('inlines a void wrapper that discards a value-returning low-level-call helper result', () => {
     const src = 'function llCall(address a, bytes d) view returns (bytes) {'
-      + ' (bool ok, bytes r) = a.call(d); require(ok); return r; }'
+      + ' (bool ok, bytes ret) = a.call(d); require(ok); return ret; }'
       + ' function vwrap(address a, bytes d) view { llCall(a, d); }'
       + ' contract C { int n; function f(address t, bytes d) public { vwrap(t, d); this.n = 1; } }';
     let msg = '';
     try { compileString(src, { solidityImportCompat: true }); } catch (e) { msg = (e as Error).message; }
     expect(msg).not.toMatch(/Undefined reference/);
+    expect(msg).toBe('');
   });
 });
 

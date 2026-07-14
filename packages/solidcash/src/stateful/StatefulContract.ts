@@ -829,7 +829,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       deployFunctionName: functionName,
       deployFunctionArgs: args,
     };
-    if (override.fundingUtxo) {
+    // Explicit funding: a single fundingUtxo, or fundingUtxos: [...] for a loop/multi deploy (N children need N
+    // funding inputs - a balanced block). N is runtime-dependent, so the signer can't auto-select it; the caller
+    // supplies one input per firing deploy. Either explicit form flows straight through.
+    if (override.fundingUtxo || (override.fundingUtxos && override.fundingUtxos.length > 0)) {
       return StatefulContract.deployFrom({ ...base, ...override });
     }
     if (!this._signer) {

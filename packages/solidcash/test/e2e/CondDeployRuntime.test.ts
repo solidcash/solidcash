@@ -363,3 +363,42 @@ describe('multi-site deploy runtime (straight-line + conditional, same contract)
     expect(mintingChildren.length).toBe(1);
   });
 });
+
+// The `factory.deployFn(...).deploy({ fundingUtxos })` sugar must forward fundingUtxos (N is runtime, so the
+// signer can't auto-select it - the caller supplies one input per firing deploy).
+describe('deploy sugar forwards fundingUtxos (factory.makeN(n).deploy({ fundingUtxos }))', () => {
+  const provider = createTestProvider();
+  const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
+  const loopArtifact = compileString(LOOP_FACTORY);
+  const childArtifact = compileString(CHILD);
+
+  it('makeN(2).deploy({ fundingUtxos: [g0, g1] }) mints two children via the sugar path', async () => {
+    const fresh: Utxo = { txid: '5a0f'.repeat(16), vout: 0, satoshis: 200000n };
+    await provider.addUtxo(p2pkh.address, fresh);
+    const factory = (await StatefulContract.deploy(loopArtifact, [alicePkh], {
+      provider,
+      fundingUtxo: fresh,
+      funder: p2pkh.unlock.spend(alicePub, new SignatureTemplate(alicePriv)),
+      initialState: { childCount: 0n },
+      changeAddress: p2pkh.address,
+    })).contract;
+
+    const g0: Utxo = { txid: '5b01'.repeat(16), vout: 0, satoshis: 200000n };
+    const g1: Utxo = { txid: '5b02'.repeat(16), vout: 0, satoshis: 200000n };
+    await provider.addUtxo(p2pkh.address, g0);
+    await provider.addUtxo(p2pkh.address, g1);
+
+    const result = await factory.makeN(2n).deploy({
+      fundingUtxos: [g0, g1],
+      funder: p2pkh.unlock.spend(alicePub, new SignatureTemplate(alicePriv)),
+      changeAddress: p2pkh.address,
+      childArtifact,
+      childConstructorArgs: [alicePkh],
+      childInitialState: { counter: 0n },
+    });
+
+    const outs = getTxOutputs(result.tx);
+    expect(outs.some((o) => o.token?.category === g0.txid && o.token?.nft?.capability === 'minting')).toBe(true);
+    expect(outs.some((o) => o.token?.category === g1.txid && o.token?.nft?.capability === 'minting')).toBe(true);
+  });
+});

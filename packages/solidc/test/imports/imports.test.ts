@@ -172,6 +172,26 @@ describe('Imports', () => {
       expect(artifact.contractName).toBe('Spender');
     });
 
+    it('desugars a using-for method call on an IMPORTED struct-typed state var (OZ Counters pattern)', () => {
+      // The struct (Counter) is imported, so unknown at parse time - the AstBuilder cannot desugar
+      // `counter.increment()`; the post-import RedesugarImportedUsingForCalls pass must (else it fails as an
+      // "Undefined reference to symbol counter.increment", the storage-pointer helper being inlined-and-dropped).
+      const counters = 'library Counters { struct Counter { uint256 _value; }'
+        + ' function increment(Counter storage c) internal { c._value += 1; }'
+        + ' function current(Counter storage c) internal view returns (uint256) { return c._value; } }';
+      const resolver = (importPath: string): { source: string; id: string } | undefined => (
+        importPath === './Counters.sol' ? { source: counters, id: '/Counters.sol' } : undefined);
+      const code = 'import "./Counters.sol";'
+        + ' contract C { using Counters for Counters.Counter; Counters.Counter public counter; int n;'
+        + ' function f() public { counter.increment(); this.n = int(counter.current()); } }';
+      const artifact = compileString(code, {
+        solidityImportCompat: true,
+        importResolver: resolver,
+        rootFileId: '/main.sol',
+      });
+      expect(artifact.contractName).toBe('C');
+    });
+
     it('should dedup a symbol imported via both a wildcard and a named import', () => {
       const files: Record<string, string> = {
         '/lib/shapes.scash': `

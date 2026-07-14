@@ -225,7 +225,8 @@ const memory = new Map<bigint, YulExpressionNode>();
 // assembly block is re-lowered with `runtimeMem = true`, routing every memory op to a self-declared `__yulmem`
 // byte buffer laid out like EVM memory: reserved region 0x00-0x7f with the free-memory pointer (initial 0x80)
 // stored at slot 0x40 (/Code/solidity CompilerUtils.cpp:45-52, layout_in_memory.rst). Words are 32-byte
-// big-endian; the buffer grows to cover each store. mload of unwritten memory beyond the buffer is not modeled
+// little-endian (BCH-native bytes32(uint) - low byte at index 0, NOT EVM big-endian; see
+// docs/platform-differences.md); the buffer grows to cover each store. mload of unwritten memory is not modeled
 // (real code writes before it reads); the heap is bounded by the max stack-element size (experimental-grade).
 let runtimeMem = false;
 let yulMemUsed = false;
@@ -273,7 +274,7 @@ function growTo(offName: string, word: bigint, src: YulNode): StatementNode {
   return loc(new BranchNode(cond, loc(new BlockNode([grow]), src)), src);
 }
 
-// mstore(off, val): grow to cover off+32, then splice the 32-byte big-endian word in place.
+// mstore(off, val): grow to cover off+32, then splice the 32-byte little-endian word (bytes32(val)) in place.
 function runtimeMstore(offExpr: ExpressionNode, valExpr: ExpressionNode, src: YulNode): StatementNode {
   yulMemUsed = true;
   const offName = `__yoff_${yulTmpN++}`;
@@ -412,7 +413,7 @@ function bytesMemorySlice(memArg: YulExpressionNode): ExpressionNode | undefined
 }
 
 // keccak256(p, len): hash the constant region [p, p+len) = the words at p, p+32, ... concatenated. Each word is
-// rendered as bytes32 (no-op for a bytes32 value, big-endian for an int) before concatenation.
+// rendered as bytes32 (no-op for a bytes32 value, BCH-native little-endian for an int) before concatenation.
 function lowerKeccak(call: YulFunctionCallNode): ExpressionNode {
   const [pArg, lenArg] = call.args;
   if (!isIntLiteral(pArg) || !isIntLiteral(lenArg)) throw new YulNotLowerable();

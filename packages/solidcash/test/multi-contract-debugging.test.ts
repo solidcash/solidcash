@@ -54,7 +54,7 @@ describe('Multi-Contract-Debugging tests', () => {
             amount: sameNameDifferentPathContractUtxo.satoshis - 2000n,
           });
 
-        expect(tx).toLog('[Input #0] SiblingIntrospection.scash:6 outputBytecode: 0xaa2092e16594dd458916b3aa6cae4bf41352d1b3b39658698e8cddbeedd687efec7587\n[Input #0] SiblingIntrospection.scash:10 inputBytecode: 0xaa2092e16594dd458916b3aa6cae4bf41352d1b3b39658698e8cddbeedd687efec7587\n[Input #1] SameNameDifferentPath.scash:5 a is 0');
+        expect(tx).toLog('[Input #0] SiblingIntrospection.scash:6 outputBytecode: 0xaa20e6185e9a2b491c88af85ba9dbfe52cdf20d1e0fe998ced11c8ea764b664d426387\n[Input #0] SiblingIntrospection.scash:10 inputBytecode: 0xaa20e6185e9a2b491c88af85ba9dbfe52cdf20d1e0fe998ced11c8ea764b664d426387\n[Input #1] SameNameDifferentPath.scash:5 a is 0');
       });
 
       it('should log correct data for the reached console.log statements if a require statement fails, and not log unreached console.log statements', () => {
@@ -67,8 +67,8 @@ describe('Multi-Contract-Debugging tests', () => {
             amount: sameNameDifferentPathContractUtxo.satoshis - 2000n,
           });
 
-        expect(tx).toLog('[Input #0] SiblingIntrospection.scash:6 outputBytecode: 0xaa20d510df1721debb0d678d8e424b5f64f04f820005f017cb4731f7be94cd63755787');
-        expect(tx).not.toLog('[Input #0] SiblingIntrospection.scash:10 inputBytecode: 0xaa2092e16594dd458916b3aa6cae4bf41352d1b3b39658698e8cddbeedd687efec7587');
+        expect(tx).toLog('[Input #0] SiblingIntrospection.scash:6 outputBytecode: 0xaa206db7c1accc73bcd795f9d7f9b975f8665c3cb811aa29162bf898653dae7ae5fc87');
+        expect(tx).not.toLog('[Input #0] SiblingIntrospection.scash:10 inputBytecode: 0xaa20e6185e9a2b491c88af85ba9dbfe52cdf20d1e0fe998ced11c8ea764b664d426387');
         expect(tx).not.toLog('[Input #1] SameNameDifferentPath.scash:5 a is 0');
       });
     });

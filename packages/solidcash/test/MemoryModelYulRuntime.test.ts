@@ -53,6 +53,18 @@ const SRC = `contract C {
     }
     require(r == x);
   }
+  // Two separate assembly blocks in one function share one memory buffer (EVM: memory is function-scoped).
+  // The second block must read what the first wrote at the same dynamic offset.
+  function sharedAcrossBlocks(uint x, uint off) public {
+    uint b;
+    assembly {
+      mstore(add(0x80, off), x)
+    }
+    assembly {
+      b := mload(add(0x80, off))
+    }
+    require(b == x);
+  }
 }`;
 
 describe('P7: runtime Yul memory (readback)', () => {
@@ -64,5 +76,8 @@ describe('P7: runtime Yul memory (readback)', () => {
   });
   it('mcopy memmove at dynamic offsets reads back', async () => {
     await call('copyBack', [7777n, 0n]);
+  });
+  it('two assembly blocks share one memory buffer', async () => {
+    await call('sharedAcrossBlocks', [999n, 0n]);
   });
 });

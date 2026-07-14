@@ -229,6 +229,10 @@ const memory = new Map<bigint, YulExpressionNode>();
 // (real code writes before it reads); the heap is bounded by the max stack-element size (experimental-grade).
 let runtimeMem = false;
 let yulMemUsed = false;
+// Set true when any assembly block in the current function lowered to the runtime `__yulmem` buffer. EVM memory
+// is function-scoped, so one buffer is declared at the function-body top and shared across every block (a later
+// block reads what an earlier one wrote); a per-block re-init would reset the free pointer to 0x80 each time.
+let functionYulMemUsed = false;
 let yulTmpN = 0;
 const YULMEM = '__yulmem';
 
@@ -251,7 +255,7 @@ function newBytes(size: ExpressionNode, src: YulNode): NewArrayNode {
 
 // `bytes __yulmem = <0x40 zero bytes> ++ bytes32(0x80) ++ <0x20 zero bytes>` - 128 bytes, EVM reserved layout
 // with the free-memory pointer value 0x80 stored at slot 0x40, so `mload(0x40)` reads 0x80.
-function yulMemInit(src: YulNode): StatementNode {
+function yulMemInit(src: { location?: Node['location'] }): StatementNode {
   const init = loc(new BytesConcatNode([
     newBytes(intLit(0x40n, src), src),
     loc(new CastNode(BYTES32, intLit(0x80n, src), false), src),
@@ -1347,13 +1351,20 @@ export default class LowerInlineAssembly extends AstTraversal {
     currentVars = new Map();
     currentVarValues = new Map();
     bufferWrites = new Map();
+    functionYulMemUsed = false;
     for (const p of node.parameters) currentVars.set(p.name, p.type);
     collectVarTypes(node.body, currentVars);
-    const result = super.visitFunctionDefinition(node);
+    const result = super.visitFunctionDefinition(node) as FunctionDefinitionNode;
+    // Declare the shared runtime memory buffer once at the body top (before any block that uses it), so every
+    // lowered assembly block reads/writes one function-scoped `__yulmem` - matching EVM's function-scoped memory.
+    if (functionYulMemUsed) {
+      result.body.statements = [yulMemInit(result.body), ...(result.body.statements ?? [])];
+    }
     currentParams = [];
     currentVars = new Map();
     currentVarValues = new Map();
     bufferWrites = new Map();
+    functionYulMemUsed = false;
     return result;
   }
 
@@ -1401,8 +1412,10 @@ export default class LowerInlineAssembly extends AstTraversal {
     try {
       const block = lowerBlock(inlineLocalYulFunctions(node.yulBlock!));
       const prefix: StatementNode[] = [];
-      // Hoist the runtime memory buffer decl (before any use), then a zero-init for each transient key used.
-      if (runtime && yulMemUsed) prefix.push(yulMemInit(node.yulBlock!));
+      // The `__yulmem` buffer is function-scoped (declared once at the body top by visitFunctionDefinition), not
+      // per-block, so blocks share one EVM-faithful memory. Just record that this function needs it.
+      if (runtime && yulMemUsed) functionYulMemUsed = true;
+      // Zero-init each transient key used in this block (tstore/tload locals stay block-scoped).
       for (const [name, src] of transientKeys) {
         prefix.push(loc(new VariableDefinitionNode(UINT256, [], name, intLit(0n, src)), src));
       }

@@ -22,10 +22,14 @@ import {
   TernaryOpNode,
   BinaryOpNode,
   TupleAssignmentNode,
+  LowLevelCallNode,
+  LowLevelCallStatementNode,
+  MethodCallNode,
+  CastNode,
 } from '../ast/AST.js';
 import { collectAmbiguousInlineKeys, inlineKey } from './inlineOverloadGuard.js';
 import { AmbiguousInlineOverloadError } from '../Errors.js';
-import { StructType } from '@solidcash/utils';
+import { StructType, AddressType } from '@solidcash/utils';
 import { Modifier } from '../ast/Globals.js';
 import { BinaryOperator } from '../ast/Operator.js';
 import AstTraversal from '../ast/AstTraversal.js';
@@ -64,6 +68,7 @@ export default class InlineReturningStateHelpers extends AstTraversal {
   private freeFns: FunctionDefinitionNode[] = [];
   private stillCalled: Set<string> = new Set();
   private stateVarNames: Set<string> = new Set();
+  private freeFnRefs: Set<string> = new Set(); // names called from within another free-function body
   private keepDefFns: Set<string> = new Set();
   private counter = 0;
   private hoists: StatementNode[] = [];
@@ -115,10 +120,38 @@ export default class InlineReturningStateHelpers extends AstTraversal {
       this.inlinedFns.add(node.fallbackDef.name);
       this.keepDefFns.add(node.fallbackDef.name);
     }
-    // Library free-functions are inlined here ONLY as struct storage-pointer value helpers; other library
-    // functions keep their own (delegate) machinery.
-    for (const fn of this.freeFns) if (this.eligibleStructPtr(fn)) this.inlinedFns.add(fn.name);
+    // Names called from within another free-function body. Free-function bodies are NOT inline-processed, so
+    // inlining+dropping a low-level-call helper reached that way (e.g. OZ `functionCall` -> `functionCallWithValue`)
+    // would leave a dangling reference in the un-inlined caller. Restrict such inlining to helpers reached only
+    // from inlinable sites (contract bodies / using-for), leaving chain helpers to fail as before (not worse).
+    this.freeFnRefs = new Set();
+    for (const fn of this.freeFns) {
+      const dot = fn.name.lastIndexOf('.');
+      const libPrefix = dot >= 0 ? fn.name.slice(0, dot + 1) : ''; // e.g. 'Address.'
+      this.walk(fn.body, (n) => {
+        if (n instanceof FunctionCallNode) {
+          const called = n.identifier.name;
+          this.freeFnRefs.add(called);
+          // A same-library sibling is called unqualified (`functionCallWithValue`); record its qualified form.
+          if (libPrefix && !called.includes('.')) this.freeFnRefs.add(libPrefix + called);
+        }
+      });
+    }
+    // Library free-functions are inlined here as struct storage-pointer value helpers, or (like OZ Address's
+    // `functionCall`) as single-tail-return helpers containing a low-level call; other library functions keep
+    // their own (delegate) machinery.
+    for (const fn of this.freeFns) {
+      if (this.eligibleStructPtr(fn)) this.inlinedFns.add(fn.name);
+      else if (this.eligibleShape(fn) && this.containsLowLevelCall(fn) && !this.referencedFromFreeFn(fn.name)) {
+        this.inlinedFns.add(fn.name);
+      }
+    }
     if (this.inlinedFns.size === 0) return node;
+
+    // The general using-for member dispatch runs later (SymbolTableTraversal), but a low-level-call helper must
+    // be inlined HERE (it can't be a subroutine). So pre-desugar `address(EXPR).method(args)` with `using L for
+    // address` (L.method an inline-eligible low-level-call helper) to `L.method(address(EXPR), args)` first.
+    this.desugarLowLevelUsingForAddressCalls(node);
 
     const bodies = [...node.functions, node.constructorDef, node.fallbackDef, node.receiveDef];
     for (const fn of bodies) {
@@ -161,7 +194,87 @@ export default class InlineReturningStateHelpers extends AstTraversal {
   private eligible(fn: FunctionDefinitionNode): boolean {
     if (!(fn.isFreeFunction || fn.visibility === 'private' || fn.visibility === 'internal')) return false;
     if (!this.eligibleShape(fn)) return false;
-    return this.readsEntry(fn) || this.touchesScalarState(fn);
+    return this.readsEntry(fn) || this.touchesScalarState(fn) || this.containsLowLevelCall(fn);
+  }
+
+  // Contains a low-level call (`a.call(d)`, `a.call{value:}(d)`, static/delegatecall). Such a call injects a
+  // synthetic covenant param (__internal__callInputIndex) supplied only in an entry-point body, so a helper
+  // holding one cannot compile as an OP_INVOKE subroutine and must inline at its call site (the OZ Address /
+  // SafeERC20 `functionCall` shape). Value-returning and single-tail-return, it inlines like a state helper.
+  private containsLowLevelCall(fn: FunctionDefinitionNode): boolean {
+    const isLL = (m: string): boolean => m === 'call' || m === 'staticcall' || m === 'delegatecall';
+    let found = false;
+    this.walk(fn.body, (n) => {
+      if (found) return;
+      if (n instanceof LowLevelCallNode || n instanceof LowLevelCallStatementNode) { found = true; return; }
+      // Pre-semantic, `a.call(d)` is a namespaced FunctionCall (`a.call`) and `a.call{value:}(d)` a MethodCall;
+      // the dedicated LowLevelCall nodes are synthesized later in SymbolTableTraversal.
+      if (n instanceof FunctionCallNode) {
+        const dot = n.identifier.name.lastIndexOf('.');
+        if (dot > 0 && isLL(n.identifier.name.slice(dot + 1))) found = true;
+      } else if (n instanceof MethodCallNode && isLL(n.methodName)) found = true;
+    });
+    return found;
+  }
+
+  // True if a low-level-call helper is referenced from another free-function body (freeFnRefs already records
+  // both the as-written and the same-library-qualified call names) - inlining+dropping it would dangle it.
+  private referencedFromFreeFn(qualifiedName: string): boolean {
+    return this.freeFnRefs.has(qualifiedName);
+  }
+
+  // Rewrite `address(EXPR).method(args)` -> `L.method(address(EXPR), args)` for `using L for address` where
+  // L.method is an inline-eligible low-level-call helper, so the returning-helper inliner (which works on
+  // FunctionCalls) picks it up. Positional-arg, option-less calls only; the general using-for path (later, in
+  // SymbolTableTraversal) still handles every other member-dispatch shape.
+  private desugarLowLevelUsingForAddressCalls(node: ContractNode): void {
+    const bound = new Map<string, string>(); // method name -> `L.method`
+    for (const d of node.usingForDirectives ?? []) {
+      if (!d.libraryName || d.targetTypeName !== 'address') continue;
+      const prefix = `${d.libraryName}.`;
+      for (const fn of this.freeFns) {
+        if (fn.name.startsWith(prefix) && this.eligibleShape(fn) && this.containsLowLevelCall(fn)
+          && !this.referencedFromFreeFn(fn.name)) {
+          bound.set(fn.name.slice(prefix.length), fn.name);
+        }
+      }
+    }
+    if (bound.size === 0) return;
+    const bodies = [...node.functions, node.constructorDef, node.fallbackDef, node.receiveDef];
+    for (const fn of bodies) {
+      if (fn?.body) {
+        this.transformNodes(fn.body, (n) => {
+          if (n instanceof MethodCallNode && !n.callOptions && !n.fieldNames
+            && n.object instanceof CastNode && n.object.type instanceof AddressType && bound.has(n.methodName)) {
+            const call = new FunctionCallNode(new IdentifierNode(bound.get(n.methodName)!), [n.object, ...n.parameters]);
+            call.location = n.location;
+            return call;
+          }
+          return n;
+        });
+      }
+    }
+  }
+
+  // In-place child-replacing walk: apply `xform` to each child Node, substituting the returned node when changed.
+  private transformNodes(node: Node, xform: (n: Node) => Node): void {
+    for (const key of Object.keys(node)) {
+      if (key === 'type' || key === 'symbolTable' || key === 'location') continue;
+      const v = (node as unknown as Record<string, unknown>)[key];
+      if (v instanceof Node) {
+        const rep = xform(v);
+        (node as unknown as Record<string, unknown>)[key] = rep;
+        this.transformNodes(rep, xform);
+      } else if (Array.isArray(v)) {
+        for (let i = 0; i < v.length; i += 1) {
+          if (v[i] instanceof Node) {
+            const rep = xform(v[i]);
+            v[i] = rep;
+            this.transformNodes(rep, xform);
+          }
+        }
+      }
+    }
   }
 
   // Names referenced as VALUES: an IdentifierNode occurrence that is not the identifier of a plain call.

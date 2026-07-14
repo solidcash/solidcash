@@ -4022,6 +4022,9 @@ export default class AstBuilder
     // Interface-level event definitions
     const eventDefs = ctx.eventDefinition_list().map((evCtx) => this.visitEventDefinition(evCtx));
 
+    // Interface-level error definitions (OZ v5 declares custom errors in interfaces like IERC20Errors)
+    const errorDefs = ctx.errorDefinition_list().map((erCtx) => this.visitErrorDefinition(erCtx));
+
     const stateVariables = ctx.interfaceStateVariable_list().map(
       (sv) => this.visitInterfaceStateVariable(sv),
     );
@@ -4032,7 +4035,7 @@ export default class AstBuilder
       (f) => this.visitInterfaceFunction(f),
     );
     const node = new InterfaceNode(
-      name, stateVariables, collections, functions, structDefs, enumDefs, typeDefs, eventDefs,
+      name, stateVariables, collections, functions, structDefs, enumDefs, typeDefs, eventDefs, errorDefs,
     );
     node.parents = parentNames;
     node.location = Location.fromCtx(ctx);
@@ -4524,7 +4527,7 @@ export default class AstBuilder
         : this.buildArrayType(paramCtx.arrayType()!);
       // The name is optional in Solidity (`event Deploy(address)`); the signature uses types only, so a
       // synthetic name for an unnamed param is internal-only.
-      const idCtx = paramCtx.Identifier();
+      const idCtx = paramCtx.anyIdentifier();
       return {
         name: idCtx ? idCtx.getText() : `__unnamed${i}`,
         type,
@@ -4576,11 +4579,14 @@ export default class AstBuilder
         const args = ctx.expressionList().expression_list().map((e) => this.visit(e) as ExpressionNode);
         node = new RevertNode(errorName, args);
       }
-    } else if (ctx.StringLiteral()) {
-      // revert("message");
-      const rawString = ctx.StringLiteral().getText();
-      const message = rawString.substring(1, rawString.length - 1);
-      node = new RevertNode(undefined, [], this.processEscapes(message, Location.fromCtx(ctx)));
+    } else if (ctx.expression()) {
+      // revert("message") or revert(reasonExpr). BCH has no on-chain revert reason: a string literal keeps its
+      // message as compile-time metadata; a dynamic reason (e.g. OZ `revert(errorMessage)`) drops to an
+      // unconditional failure, same as revert().
+      const reason = this.visit(ctx.expression()) as ExpressionNode;
+      node = reason instanceof StringLiteralNode
+        ? new RevertNode(undefined, [], reason.value)
+        : new RevertNode();
     } else {
       // revert();
       node = new RevertNode();

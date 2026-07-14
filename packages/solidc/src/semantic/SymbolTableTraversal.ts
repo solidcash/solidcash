@@ -418,6 +418,13 @@ export default class SymbolTableTraversal extends AstTraversal {
           this.eventMap.set(sig, ev);
         }
       }
+      // Register interface-level errors (OZ v5 declares custom errors in inherited interfaces such as
+      // IERC20Errors/IERC721Errors; a contract inheriting them uses `revert ErrName(..)`). Dedup by signature
+      // since the same interface can be pulled in transitively more than once.
+      for (const err of iface.errorDefinitions) {
+        const sig = computeErrorSignature(err.name, err.parameters.map((p) => p.type.toString()));
+        if (!this.errorMap.has(sig)) this.registerError(err);
+      }
       if (this.interfaceMap.has(iface.name)) {
         throw new InterfaceRedefinitionError(iface);
       }
@@ -5700,7 +5707,17 @@ export default class SymbolTableTraversal extends AstTraversal {
       return node;
     }
 
-    const iface = this.interfaceMap.get(node.interfaceName);
+    let iface = this.interfaceMap.get(node.interfaceName);
+    if (!iface) {
+      // `abi.encodeCall(token.method, (..))` where `token` is an interface-typed variable (e.g. `IERC20 token`,
+      // as in OZ SafeERC20). Resolve the variable's declared interface and route the selector through it, the
+      // same way statement-form member calls dispatch (see visitFunctionCallStatement).
+      const varType = this.symbolTables[0]?.get(node.interfaceName)?.type
+        ?? this.stateVariableMap.get(node.interfaceName)?.type;
+      if (varType instanceof AddressType && varType.interfaceName) {
+        iface = this.interfaceMap.get(varType.interfaceName);
+      }
+    }
     if (!iface) {
       throw new AbiEncodeCallUndefinedInterfaceError(node, node.interfaceName);
     }
@@ -7184,8 +7201,16 @@ export default class SymbolTableTraversal extends AstTraversal {
       }
     }
 
-    // Not an interface method call - visit the object and try using-for resolution
-    if (!node.object.type) node.object = this.visit(node.object);
+    // Not an interface method call - visit the object and try using-for resolution. A cast receiver
+    // (`address(token).functionCall(data)` with `using Address for address`, as in OZ SafeERC20/Address) is
+    // built with its target type already set, so it was never visited and its operand is still unresolved -
+    // resolve the operand in place so the cast keeps its address type and downstream type checks see the real
+    // receiver, letting tryResolveUsingFor dispatch on `address`.
+    if (node.object instanceof CastNode) {
+      node.object.expression = this.visit(node.object.expression) as ExpressionNode;
+    } else if (!node.object.type) {
+      node.object = this.visit(node.object);
+    }
 
     // Try using-for bindings before giving up
     if (this.usingForBindings.size > 0) {

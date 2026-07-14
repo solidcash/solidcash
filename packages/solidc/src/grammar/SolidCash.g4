@@ -7,6 +7,14 @@ dotOpBoundary(): boolean {
   const c = this._input.LA(1);
   return !((c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c === 95);
 }
+// The `.split` op is always a call `x.split(y)`, so it only wins over a member named `split`
+// (`escrow.split[i]`, `s.split = ..`) when the next non-space char is `(`. Skips whitespace before '('.
+splitOpBoundary(): boolean {
+  let i = 1;
+  let c = this._input.LA(i);
+  while (c === 32 || c === 9 || c === 13 || c === 10 || c === 12) { i++; c = this._input.LA(i); }
+  return c === 40;
+}
 }
 
 sourceFile
@@ -123,7 +131,7 @@ eventDefinition
     ;
 
 eventParameter
-    : (typeName | arrayType) 'indexed'? Identifier?
+    : (typeName | arrayType) 'indexed'? anyIdentifier?
     ;
 
 errorDefinition
@@ -601,7 +609,7 @@ requireMessage
 revertStatement
     : 'revert' anyIdentifier ('.' Identifier)? '(' '{' (namedArg (',' namedArg)* ','?)? '}' ')' ';'
     | 'revert' anyIdentifier ('.' Identifier)? expressionList ';'
-    | 'revert' '(' StringLiteral ')' ';'
+    | 'revert' '(' expression ')' ';'
     | 'revert' '(' ')' ';'
     ;
 
@@ -958,7 +966,7 @@ DotValue : '.value' {this.dotOpBoundary()}? ;
 DotLength : '.length' {this.dotOpBoundary()}? ;
 DotPush : '.push' {this.dotOpBoundary()}? ;
 DotPop : '.pop' {this.dotOpBoundary()}? ;
-DotSplit : '.split' {this.dotOpBoundary()}? ;
+DotSplit : '.split' {this.splitOpBoundary()}? ;
 DotSlice : '.slice' {this.dotOpBoundary()}? ;
 DotDelete : '.delete' {this.dotOpBoundary()}? ;
 DotCode : '.code' {this.dotOpBoundary()}? ;
@@ -973,7 +981,7 @@ DotUnlockingBytecode : '.unlockingBytecode' {this.dotOpBoundary()}? ;
 DotSequenceNumber : '.sequenceNumber' {this.dotOpBoundary()}? ;
 
 Identifier
-    : [a-zA-Z_] [a-zA-Z0-9_]*
+    : [a-zA-Z_$] [a-zA-Z0-9_$]*
     ;
 
 WHITESPACE

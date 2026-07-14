@@ -99,6 +99,32 @@ describe('SBE-13: void external-call helpers are inlined at internal call sites 
   });
 });
 
+// A value-returning internal/library helper whose body performs a low-level call injects a synthetic
+// __internal__callInputIndex covenant param (supplied only at the top-level entry), so calling it as a
+// subroutine used to fail with a phantom arg-count mismatch. It is now inlined at direct call sites.
+describe('value-returning low-level-call helpers are inlined at direct call sites', () => {
+  const LIB = 'library L { function fwd(address a, bytes d) internal returns (bytes) {'
+    + ' (bool ok, bytes r) = a.call(d); require(ok); return r; } }';
+  it('a direct call to a bytes-returning helper doing a low-level call compiles', () => {
+    const a = compileString(`${LIB} contract C() {`
+      + ' function f(address x, bytes d) returns (bytes) { return L.fwd(x, d); } }');
+    expect(a.contractName).toBe('C');
+  });
+  it('the inlined low-level-call co-spend covenant is byte-identical to the hand-written form', () => {
+    const inlined = compileString(`${LIB} contract C() {`
+      + ' function f(address x, bytes d) returns (bytes) { return L.fwd(x, d); } }').bytecode.split(' ');
+    const hand = compileString('contract C() { function f(address x, bytes d) returns (bytes) {'
+      + ' (bool ok, bytes r) = x.call(d); require(ok); return r; } }').bytecode.split(' ');
+    // Inlining adds a benign param-copy at the front; the entire co-spend covenant tail must be identical.
+    expect(inlined.slice(-150).join(' ')).toBe(hand.slice(-150).join(' '));
+  });
+  it('inlines the same helper reached via `using L for address` on a cast receiver (address(x).fwd(d))', () => {
+    const a = compileString(`${LIB} contract C() { using L for address;`
+      + ' function f(address x, bytes d) returns (bytes) { return address(x).fwd(d); } }');
+    expect(a.contractName).toBe('C');
+  });
+});
+
 describe('external call on a tuple-destructured / copied local interface var', () => {
   const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
   const iface = 'interface IERC20 { function transferFrom(address f, address t, uint256 a) external returns (bool);'

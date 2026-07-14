@@ -1632,6 +1632,7 @@ export class InterfaceNode extends Node implements Named {
     public enumDefinitions: EnumDefinitionNode[] = [],
     public typeDefinitions: TypeDefinitionNode[] = [],
     public eventDefinitions: EventDefinitionNode[] = [],
+    public errorDefinitions: ErrorDefinitionNode[] = [],
   ) {
     super();
   }

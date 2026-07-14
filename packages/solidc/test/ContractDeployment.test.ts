@@ -31,9 +31,19 @@ describe('conditional deploy (new C() inside a branch/loop)', () => {
     expect(compileString(cc('function f(uint n) external { uint i=0; do { Child ch = new Child(); i=i+1; } while (i<n); require(true); }'),
       compat).contractName).toBe('C');
   });
-  it('MULTIPLE deploy sites with a conditional one still throw (needs a runtime counter to keep slots stable)', () => {
-    expect(() => compileString(cc('function f(uint c) external { Child a = new Child(); if (c==1) { Child b = new Child(); }'
-      + ' require(true); }'), compat)).toThrow(/inside a conditional branch or loop is not yet implemented/);
+  it('MULTIPLE same-contract deploy sites with a conditional one COMPILE (function-level runtime counter)', () => {
+    expect(compileString(cc('function f(uint c) external { Child a = new Child(); if (c==1) { Child b = new Child(); }'
+      + ' require(true); }'), compat).contractName).toBe('C');
+  });
+  it('two conditional same-contract deploy sites COMPILE', () => {
+    expect(compileString(cc('function f(uint c) external { if (c==1) { Child a = new Child(); } if (c==2) { Child b = new Child(); }'
+      + ' require(true); }'), compat).contractName).toBe('C');
+  });
+  it('multi-site with DIFFERENT child contracts still throws (heterogeneous stride not SDK-derivable)', () => {
+    const two = 'contract Child { int x; constructor() { x = 1; } } contract Other { int y; constructor() { y = 2; } }';
+    expect(() => compileString(`${two} contract C { function f(uint c) external { Child a = new Child();`
+      + ' if (c==1) { Other b = new Other(); } require(true); } }', compat))
+      .toThrow(/inside a conditional branch or loop is not yet implemented/);
   });
   it('an unconditional deploy still compiles', () => {
     expect(compileString(cc('function f() external { Child ch = new Child(); require(true); }'), compat).contractName)

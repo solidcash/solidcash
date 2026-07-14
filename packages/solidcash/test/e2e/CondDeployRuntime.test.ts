@@ -277,3 +277,89 @@ describe('do-while deploy runtime (do { new Child() } while (i<n))', () => {
     expect(outs.some((o) => o.token?.category === g1.txid && o.token?.nft?.capability === 'minting')).toBe(true);
   });
 });
+
+// Multiple deploy sites in one function (a straight-line one + a conditional one, same child contract) share a
+// FUNCTION-LEVEL runtime deploy counter: a1 fires at counter 0, a2 (if the branch is taken) at counter 1. The
+// number of firing deploys = the number of funding inputs supplied.
+const MULTI_FACTORY = `${CHILD}
+contract MultiFactory(bytes20 owner) {
+    int childCount;
+    function makeMulti(int c) {
+        Child a1 = new Child(owner);
+        if (c == 1) {
+            Child a2 = new Child(owner);
+        }
+        this.childCount = this.childCount + 1;
+    }
+}
+`;
+
+describe('multi-site deploy runtime (straight-line + conditional, same contract)', () => {
+  const provider = createTestProvider();
+  const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
+  const multiArtifact = compileString(MULTI_FACTORY);
+  const childArtifact = compileString(CHILD);
+
+  const deployFactory = async (seed: string): Promise<Awaited<ReturnType<typeof StatefulContract.deploy>>['contract']> => {
+    const fu: Utxo = { txid: seed.repeat(16), vout: 0, satoshis: 200000n };
+    await provider.addUtxo(p2pkh.address, fu);
+    return (await StatefulContract.deploy(multiArtifact, [alicePkh], {
+      provider,
+      fundingUtxo: fu,
+      funder: p2pkh.unlock.spend(alicePub, new SignatureTemplate(alicePriv)),
+      initialState: { childCount: 0n },
+      changeAddress: p2pkh.address,
+    })).contract;
+  };
+
+  it('makeMulti(1): BOTH the straight-line and the conditional deploy fire -> TWO children (counter 0 and 1)', async () => {
+    const factory = await deployFactory('3aa1');
+    const g0: Utxo = { txid: '3b01'.repeat(16), vout: 0, satoshis: 200000n };
+    const g1: Utxo = { txid: '3b02'.repeat(16), vout: 0, satoshis: 200000n };
+    await provider.addUtxo(p2pkh.address, g0);
+    await provider.addUtxo(p2pkh.address, g1);
+
+    const result = await StatefulContract.deployFrom({
+      provider,
+      factory,
+      funder: p2pkh.unlock.spend(alicePub, new SignatureTemplate(alicePriv)),
+      fundingUtxos: [g0, g1],
+      changeAddress: p2pkh.address,
+      deployFunctionName: 'makeMulti',
+      deployFunctionArgs: [1n],
+      childArtifact,
+      childConstructorArgs: [alicePkh],
+      childInitialState: { counter: 0n },
+    });
+
+    const outs = getTxOutputs(result.tx);
+    expect(outs.some((o) => o.token?.category === g0.txid && o.token?.nft?.capability === 'minting')).toBe(true);
+    expect(outs.some((o) => o.token?.category === g1.txid && o.token?.nft?.capability === 'minting')).toBe(true);
+  });
+
+  it('makeMulti(0): only the straight-line deploy fires -> ONE child (counter 0)', async () => {
+    const factory = await deployFactory('3ac1');
+    const g0: Utxo = { txid: '3c01'.repeat(16), vout: 0, satoshis: 200000n };
+    await provider.addUtxo(p2pkh.address, g0);
+
+    const result = await StatefulContract.deployFrom({
+      provider,
+      factory,
+      funder: p2pkh.unlock.spend(alicePub, new SignatureTemplate(alicePriv)),
+      fundingUtxos: [g0],
+      changeAddress: p2pkh.address,
+      deployFunctionName: 'makeMulti',
+      deployFunctionArgs: [0n],
+      childArtifact,
+      childConstructorArgs: [alicePkh],
+      childInitialState: { counter: 0n },
+    });
+
+    const outs = getTxOutputs(result.tx);
+    expect(outs.some((o) => o.token?.category === g0.txid && o.token?.nft?.capability === 'minting')).toBe(true);
+    // exactly one child minting NFT (no second category minted)
+    const mintingChildren = outs.filter((o) => o.token?.nft?.capability === 'minting'
+      && o.token?.category !== factory.categoryId);
+    expect(mintingChildren.length).toBe(1);
+  });
+});

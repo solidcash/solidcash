@@ -238,6 +238,40 @@ function countInstantiationDeploySites(body: Node | undefined): number {
   return count;
 }
 
+// Survey a function's deploy sites: how many, whether any is CONDITIONAL (inside a branch/switch/loop), and the
+// set of distinct child contract names. Drives the multi-site inline-deploy decision: 2+ sites with a
+// conditional one need a FUNCTION-LEVEL runtime deploy counter, and (for the SDK to derive N children of one
+// type + a uniform counter*stride) they must all deploy the SAME contract.
+function surveyFunctionDeploys(
+  body: Node | undefined,
+): { count: number; hasConditional: boolean; contractNames: Set<string> } {
+  const contractNames = new Set<string>();
+  let count = 0;
+  let hasConditional = false;
+  if (!body) return { count, hasConditional, contractNames };
+  const seen = new WeakSet<object>();
+  const walk = (n: unknown, inCond: boolean): void => {
+    if (Array.isArray(n)) { for (const it of n) walk(it, inCond); return; }
+    if (!(n instanceof Node) || seen.has(n)) return;
+    seen.add(n);
+    if (n instanceof InstantiationNode && n.referencedContract) {
+      count += 1;
+      contractNames.add(n.referencedContract.name);
+      if (inCond) hasConditional = true;
+    }
+    // for-loops desugar to while before codegen, so ForNode never appears here.
+    const childCond = inCond
+      || n instanceof BranchNode || n instanceof SwitchNode
+      || n instanceof WhileNode || n instanceof DoWhileNode;
+    for (const [key, value] of Object.entries(n)) {
+      if (key === 'referencedContract' || key === 'definition' || key === 'symbolTable') continue;
+      walk(value, childCond);
+    }
+  };
+  walk(body, false);
+  return { count, hasConditional, contractNames };
+}
+
 class MsgDataUsageCollector extends AstTraversal {
   found = false;
 
@@ -404,7 +438,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   // (a runtime deploy counter) are a follow-up and still hit ConditionalDeployError.
   private functionDeploySiteCount: number = 0;      // count of `new C()` deploy sites in the current function
   private inlineDeployCounterName: string = '__deploy_counter'; // runtime deploys-fired-so-far (loop deploys)
-  private inlineDeployActive: boolean = false;      // a loop deploy counter is live on the stack
+  private inlineDeployActive: boolean = false;      // a loop/function deploy counter is live on the stack
+  private functionMultiSiteDeploy: boolean = false; // 2+ same-contract sites w/ a conditional: function counter
 
   // User-defined function tracking (for OP_INVOKE)
   private userFunctionDefs: Map<string, FunctionDefinitionNode> = new Map();
@@ -1399,7 +1434,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emitInfos = node.emitInfos ?? [];
     this.pendingDeploys = [];
     this.deployCounter = 0;
-    this.functionDeploySiteCount = countInstantiationDeploySites(node.body);
+    const deploySurvey = surveyFunctionDeploys(node.body);
+    this.functionDeploySiteCount = deploySurvey.count;
+    // Multi-site inline deploy: 2+ deploy sites with at least one conditional (a not-fired conditional shifts
+    // the trailing output layout, so fixed slots break) AND all the same child contract (uniform counter*stride
+    // + one child type for the SDK to derive). Such a function uses a FUNCTION-LEVEL runtime deploy counter -
+    // every deploy (straight-line, branch, loop) verifies inline against it. Heterogeneous multi-site falls
+    // through to the single-site guard (ConditionalDeployError, fail closed).
+    this.functionMultiSiteDeploy = deploySurvey.count > 1 && deploySurvey.hasConditional
+      && deploySurvey.contractNames.size === 1;
+    this.inlineDeployActive = false;
     this.preAllocatedStateWrites = new Set();
     this.preAllocatedTransfers = new Set();
     this.preAllocatedEmits = new Set();
@@ -1661,7 +1705,27 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       else this.emitExternalLibraryLoader(lib, loc);
     }
 
+    // Multi-site deploy: push a FUNCTION-LEVEL runtime deploy counter (deploys-fired-so-far = 0) before the body
+    // so every deploy site (straight-line, branch, loop) verifies inline against it. Inline deploys don't use
+    // the epilogue, so the counter is dropped right after the body - the covenant epilogue never sees it.
+    if (this.functionMultiSiteDeploy) {
+      this.emit(encodeInt(0n), { location: node.location, positionHint: PositionHint.START });
+      this.pushToStack(this.inlineDeployCounterName);
+      this.inlineDeployActive = true;
+    }
+
     node.body = this.visit(node.body) as BlockNode;
+
+    // Drop the function-level deploy counter (roll it up from wherever it sits - the body is depth-balanced, so
+    // it is on top, but roll by tracked index to be safe). Done before any covenant verification.
+    if (this.functionMultiSiteDeploy && this.inlineDeployActive) {
+      const idx = this.getStackIndex(this.inlineDeployCounterName);
+      this.emit(encodeInt(BigInt(idx)), { location: node.location, positionHint: PositionHint.END });
+      this.emit(Op.OP_ROLL, { location: node.location, positionHint: PositionHint.END });
+      this.emit(Op.OP_DROP, { location: node.location, positionHint: PositionHint.END });
+      this.removeFromStack(idx);
+      this.inlineDeployActive = false;
+    }
 
     // Internal/private functions with return types handle their own stack cleanup
     // via visitReturn. They don't need covenant verification.
@@ -7201,12 +7265,22 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         ...(salt && { salt }),
       });
 
+      // Multi-site deploy (2+ same-contract sites with a conditional): a FUNCTION-LEVEL runtime deploy counter
+      // is live for the whole body, so EVERY deploy site - straight-line, branch, or loop - verifies inline
+      // against it (deploys-fired-so-far indexes the genesis input/output). {value:} + deploy is a separate
+      // follow-up and still fails closed.
+      if (this.functionMultiSiteDeploy) {
+        if (node.callOptions?.value) throw new ConditionalDeployError(node);
+        this.emitInlineDeployVerification(node, locationData, true);
+        return node;
+      }
+
       // Conditional (branch) deploy: the fixed epilogue reads a master-LBC/category pushed only on the taken
       // path, and the genesis output position depends on whether the deploy fired - so verify INLINE here (runs
       // iff the branch is taken). Supported now: a SINGLE deploy site in a branch (not a loop), no {value:}
       // transfer; a single conditional deploy lands at the same fixed slot as an unconditional one when it
-      // fires. Loop / variable-count / multi-site deploys need a runtime deploy counter (follow-up) and still
-      // raise ConditionalDeployError. Straight-line deploys (scopeDepth 0) keep the proven fixed epilogue.
+      // fires. Loop deploys use the runtime counter (visitWhile/visitDoWhile set it up); heterogeneous multi-
+      // site / {value:} deploys raise ConditionalDeployError. Straight-line deploys keep the proven fixed epilogue.
       if (this.scopeDepth > 0) {
         const inLoop = this.plainLoopDepth > 0;
         // Supported inline cases: a SINGLE deploy site (so a fired deploy always lands at the running

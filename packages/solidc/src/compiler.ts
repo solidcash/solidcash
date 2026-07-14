@@ -46,6 +46,7 @@ import DesugarPostfixExpressions from './semantic/DesugarPostfixExpressions.js';
 import DesugarNestedArrayWrite from './semantic/DesugarNestedArrayWrite.js';
 import DesugarExternalFunctionPointers from './semantic/DesugarExternalFunctionPointers.js';
 import DesugarReturnInLoop from './semantic/DesugarReturnInLoop.js';
+import UnrollFixedBoundEntryLoop from './semantic/UnrollFixedBoundEntryLoop.js';
 import LowerInlineAssembly from './semantic/LowerInlineAssembly.js';
 import LowerMemoryModel from './semantic/LowerMemoryModel.js';
 import CacheDynamicArrayInLoop from './semantic/CacheDynamicArrayInLoop.js';
@@ -228,6 +229,11 @@ function compileResolvedAst(ast: Ast, code: string, mergedCompilerOptions: Compi
   // Desugar `return` inside a loop -> flag + break + post-loop return (before break/continue expansion so the
   // injected breaks are lowered; internal functions can't raw-return from inside a loop's balanced stack).
   ast = ast.accept(new DesugarReturnInLoop()) as Ast;
+
+  // Unroll a FIXED-BOUND for-loop that writes a mapping into N static writes (which the per-slot machinery already
+  // handles - a mapping write in a RUNTIME loop is rejected by EntryWriteInLoopError). Before break/continue
+  // expansion (so raw break/continue still gate it out) + SymbolTableTraversal (so the static writes get slots).
+  ast = ast.accept(new UnrollFixedBoundEntryLoop()) as Ast;
 
   // Break/continue expansion (before semantic analysis)
   ast = expandBreakContinue(ast);

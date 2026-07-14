@@ -19,9 +19,9 @@ describe('conditional deploy (new C() inside a branch/loop)', () => {
     expect(compileString(cc('function f(uint c) external { if (c==1) { Child ch = new Child(); } require(true); }'),
       compat).contractName).toBe('C');
   });
-  it('deploy inside a for-loop still throws the clean "not yet implemented" error (needs a runtime counter)', () => {
-    expect(() => compileString(cc('function f() external { for (uint i=0;i<2;i++) { Child ch = new Child(); } require(true); }'),
-      compat)).toThrow(/inside a conditional branch or loop is not yet implemented/);
+  it('a SINGLE deploy inside a for-loop now COMPILES (verified inline with a runtime deploy counter)', () => {
+    expect(compileString(cc('function f() external { for (uint i=0;i<2;i++) { Child ch = new Child(); } require(true); }'),
+      compat).contractName).toBe('C');
   });
   it('MULTIPLE deploy sites with a conditional one still throw (needs a runtime counter to keep slots stable)', () => {
     expect(() => compileString(cc('function f(uint c) external { Child a = new Child(); if (c==1) { Child b = new Child(); }'

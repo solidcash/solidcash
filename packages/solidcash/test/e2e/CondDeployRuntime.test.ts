@@ -108,3 +108,73 @@ describe('conditional deploy runtime (if (c==1) new Child())', () => {
     expect((await factory.getState()).childCount).toBe(before + 1n);
   });
 });
+
+// A LOOP deploy `for (i < n) new Child()` mints a runtime-variable count, verified inline per iteration by a
+// runtime deploy counter (masterInputIndex + slotBase + counter*stride). n = 1 runs the loop once -> one child
+// at counter 0 (= the base slot, same layout as a single deploy), so the existing single-child deployFrom
+// co-spends it while fully exercising the counter machinery (PICK counter, counter*stride, increment). This
+// VM-proves the loop covenant for N = 1; N > 1 needs the SDK to derive multiple geneses (a follow-up).
+const LOOP_FACTORY = `${CHILD}
+contract LoopFactory(bytes20 owner) {
+    int childCount;
+    function makeN(int n) {
+        for (int i = 0; i < n; i = i + 1) {
+            Child ch = new Child(owner);
+        }
+        this.childCount = this.childCount + n;
+    }
+}
+`;
+
+describe('loop deploy runtime (for (i<n) new Child()) - N=1 via existing deployFrom', () => {
+  const provider = createTestProvider();
+  const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
+  const loopArtifact = compileString(LOOP_FACTORY);
+  const childArtifact = compileString(CHILD);
+
+  let factory: Awaited<ReturnType<typeof StatefulContract.deploy>>['contract'];
+
+  it('compiles the loop-deploy factory (deploy inferred, verified inline with a runtime counter)', () => {
+    const makeN = loopArtifact.abi.find((f) => f.name === 'makeN');
+    expect(makeN?.modifiers).toContain('deploy');
+    expect(makeN?.deployTargets?.[0]?.contractName).toBe('Child');
+  });
+
+  it('deploys the loop factory', async () => {
+    const fundingUtxo: Utxo = { txid: '10a9'.repeat(16), vout: 0, satoshis: 200000n };
+    await provider.addUtxo(p2pkh.address, fundingUtxo);
+    const result = await StatefulContract.deploy(loopArtifact, [alicePkh], {
+      provider,
+      fundingUtxo,
+      funder: p2pkh.unlock.spend(alicePub, new SignatureTemplate(alicePriv)),
+      initialState: { childCount: 0n },
+      changeAddress: p2pkh.address,
+    });
+    factory = result.contract;
+    expect(factory.categoryId).toBe(result.categoryId);
+  });
+
+  it('makeN(1): the loop runs once, the runtime-counter covenant verifies one real Child genesis', async () => {
+    const genesisFunding: Utxo = { txid: '1c11'.repeat(16), vout: 0, satoshis: 200000n };
+    await provider.addUtxo(p2pkh.address, genesisFunding);
+
+    const result = await StatefulContract.deployFrom({
+      provider,
+      factory,
+      funder: p2pkh.unlock.spend(alicePub, new SignatureTemplate(alicePriv)),
+      fundingUtxo: genesisFunding,
+      changeAddress: p2pkh.address,
+      deployFunctionName: 'makeN',
+      deployFunctionArgs: [1n],
+      childArtifact,
+      childConstructorArgs: [alicePkh],
+      childInitialState: { counter: 0n },
+    });
+
+    expect(result.childCategoryId).toBe(genesisFunding.txid);
+    const outs = getTxOutputs(result.tx);
+    const hasChildMaster = outs.some((o) => o.token?.category === genesisFunding.txid
+      && o.token?.nft?.capability === 'minting');
+    expect(hasChildMaster).toBe(true);
+  });
+});

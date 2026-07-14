@@ -403,6 +403,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   // keep the proven fixed epilogue (emitDeployCovenantVerification) untouched. Loop/variable-count deploys
   // (a runtime deploy counter) are a follow-up and still hit ConditionalDeployError.
   private functionDeploySiteCount: number = 0;      // count of `new C()` deploy sites in the current function
+  private inlineDeployCounterName: string = '__deploy_counter'; // runtime deploys-fired-so-far (loop deploys)
+  private inlineDeployActive: boolean = false;      // a loop deploy counter is live on the stack
 
   // User-defined function tracking (for OP_INVOKE)
   private userFunctionDefs: Map<string, FunctionDefinitionNode> = new Map();
@@ -3026,6 +3028,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
     }
 
+    // Loop deploy: push the runtime deploy counter (deploys-fired-so-far = 0) BEFORE OP_BEGIN so it persists
+    // across iterations; the inline genesis verification indexes by it and increments it each iteration.
+    const loopHasDeploy = countInstantiationDeploySites(node.block) > 0 && !this.inlineDeployActive;
+    if (loopHasDeploy) {
+      this.emit(encodeInt(0n), locationData);
+      this.pushToStack(this.inlineDeployCounterName);
+      this.inlineDeployActive = true;
+    }
+
     // WHILE LOOP LOGIC
     // while(cond) { body } ->
     //   OP_BEGIN
@@ -3061,6 +3072,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     this.emit(Op.OP_UNTIL, { location: node.location, positionHint: PositionHint.END });
     this.popFromStack();
+
+    // Drop the runtime deploy counter now the loop is done (it lives below the per-iteration working area).
+    if (loopHasDeploy) {
+      this.emit(Op.OP_DROP, { location: node.location, positionHint: PositionHint.END });
+      this.popFromStack();
+      this.inlineDeployActive = false;
+    }
 
     this.scopeDepth -= 1;
 
@@ -7154,10 +7172,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // fires. Loop / variable-count / multi-site deploys need a runtime deploy counter (follow-up) and still
       // raise ConditionalDeployError. Straight-line deploys (scopeDepth 0) keep the proven fixed epilogue.
       if (this.scopeDepth > 0) {
-        if (this.plainLoopDepth > 0 || this.functionDeploySiteCount !== 1 || node.callOptions?.value) {
+        const inLoop = this.plainLoopDepth > 0;
+        // Supported inline cases: a SINGLE deploy site (so a fired deploy always lands at the running
+        // deploy-counter slot) with no {value:} transfer. A loop deploy additionally requires its runtime
+        // counter to have been set up before OP_BEGIN (the loop visitor does this when the body deploys).
+        if (this.functionDeploySiteCount !== 1 || node.callOptions?.value || (inLoop && !this.inlineDeployActive)) {
           throw new ConditionalDeployError(node);
         }
-        this.emitInlineDeployVerification(node, locationData);
+        this.emitInlineDeployVerification(node, locationData, inLoop);
         return node;
       }
 
@@ -10842,17 +10864,29 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
-   * Inline genesis verification for a SINGLE conditional (branch) deploy. Runs the same master + data-NFT
-   * checks as emitDeployCovenantVerification, but INLINE at the `new C()` site (so it executes iff the branch
-   * is taken) and reads the child master-LBC from the top of stack (freshly computed by steps 1-3) + the
-   * category from the genesis input, rather than from epilogue-pushed slots. A single conditional deploy lands
-   * at the same fixed deploy slot as an unconditional one when it fires (deploy is the trailing output region),
-   * so no runtime counter is needed. Leaves the child master-LBC on top as the `new C()` expression result.
+   * Inline genesis verification for a conditional (branch) or loop deploy. Runs the same master + data-NFT
+   * checks as emitDeployCovenantVerification, but INLINE at the `new C()` site (so it executes iff/each-time the
+   * `new C()` runs) and reads the child master-LBC from the top of stack (freshly computed by steps 1-3) + the
+   * category from the genesis input, rather than from epilogue-pushed slots.
+   *
+   * `useCounter` false (single branch deploy): a single conditional deploy lands at the same FIXED deploy slot
+   * as an unconditional one when it fires (deploy is the trailing output region) - byte-identical to the
+   * verified branch path.
+   *
+   * `useCounter` true (loop deploy): the deploy count is runtime-variable, so the genesis input/output indices
+   * are offset by a runtime deploy counter (`this.inlineDeployCounterName`, deploys-fired-so-far): input =
+   * masterInputIndex + inputBase + counter; master output = masterInputIndex + slotBase + counter*stride
+   * (stride = 1 + dataNftCount); the counter is incremented after each verification. The counter is a stack var
+   * initialized to 0 before the enclosing loop's OP_BEGIN and dropped after OP_UNTIL.
    */
-  private emitInlineDeployVerification(node: InstantiationNode, locationData: SingleLocationData): void {
+  private emitInlineDeployVerification(
+    node: InstantiationNode, locationData: SingleLocationData, useCounter = false,
+  ): void {
     const slotBase = this.getBlockSlotOffset('deploy', 0);
     const inputBase = slotBase - this.countOutputOnlySlotsBefore(slotBase);
     const dataNftCount = node.deployedDataNftCount;
+    const stride = 1 + dataNftCount;
+    const counterName = this.inlineDeployCounterName;
 
     // Child master-LBC is on top (p2sh32 lbc from steps 1-3). Name it so PICK/cleanup find it.
     const masterLbcName = `__ideploy_lbc_${this.deployCounter}`;
@@ -10861,10 +10895,24 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.popFromStack();
     this.pushToStack(masterLbcName);
 
-    // Child category = the genesis funding input's txhash (its vout must be 0).
+    // PICK the runtime deploy counter when exactly `untracked` extra (untracked) values sit on the real stack
+    // above the tracked model - the index/arithmetic values pushed by emitMasterInputIndex + offset add.
+    const pickCounter = (untracked: number): void => {
+      this.emit(encodeInt(BigInt(this.getStackIndex(counterName) + untracked)), locationData);
+      this.emit(Op.OP_PICK, locationData);
+    };
+
+    // Child category = the genesis funding input's txhash (its vout must be 0). Input index = masterInputIndex
+    // + inputBase [+ counter].
     this.emitMasterInputIndex(locationData);
     if (inputBase > 0) {
       this.emit(encodeInt(BigInt(inputBase)), locationData);
+      this.emit(Op.OP_ADD, locationData);
+    }
+    if (useCounter) {
+      // exactly one untracked value (the base input index) is on the real stack from emitMasterInputIndex
+      // [+ add], so PICK the counter one deeper.
+      pickCounter(1);
       this.emit(Op.OP_ADD, locationData);
     }
     this.emit(Op.OP_DUP, locationData);
@@ -10875,12 +10923,20 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.pushToStack(categoryName);
 
     // Push the genesis OUTPUT index for master (extra 0) or data NFT j (extra 1+j): masterInputIndex + slotBase
-    // + extra. Pushes 1 untracked value (the caller's next emit consumes it).
+    // + extra [+ counter*stride]. Pushes 1 untracked value (the caller's next emit consumes it).
     const emitOutIndex = (extra: number): void => {
       this.emitMasterInputIndex(locationData);
       const off = slotBase + extra;
       if (off > 0) {
         this.emit(encodeInt(BigInt(off)), locationData);
+        this.emit(Op.OP_ADD, locationData);
+      }
+      if (useCounter) {
+        // one untracked value (the base index) is on the real stack from the add above (or from masterInputIndex
+        // when off == 0), so PICK the counter one deeper.
+        pickCounter(1);
+        this.emit(encodeInt(BigInt(stride)), locationData);
+        this.emit(Op.OP_MUL, locationData);
         this.emit(Op.OP_ADD, locationData);
       }
     };
@@ -10975,6 +11031,21 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.pushToStack('(value)');
       this.emit(Op.OP_EQUALVERIFY, locationData);
       this.popFromStack(2);
+    }
+
+    // Loop deploy: increment the runtime deploy counter (deploys-fired-so-far) in place, so the next iteration's
+    // genesis lands at the next slot. Mirrors the in-place stack-var update in visitDeleteLocal.
+    if (useCounter) {
+      this.emit(encodeInt(BigInt(this.getStackIndex(counterName))), locationData);
+      this.emit(Op.OP_PICK, locationData);
+      this.pushToStack('(value)');
+      this.emit(encodeInt(1n), locationData);
+      this.pushToStack('(value)');
+      this.emit(Op.OP_ADD, locationData);
+      this.popFromStack(2);
+      this.pushToStack('(value)');
+      this.emitReplace(this.getStackIndex(counterName), node);
+      this.popFromStack();
     }
 
     // Cleanup: drop the category (on top); the child master-LBC beneath is the `new C()` result.

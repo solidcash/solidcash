@@ -1382,7 +1382,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       // Single collection only: the covenant precomputes ONE entry NFT address and one trailing region, so a
       // second loop-written mapping would have nowhere sound to land (multi-mapping loop-writes stay guarded).
       const loopWritten = new Set<string>();
-      this.collectLoopWrittenSlotKeys(node.body, 0, loopWritten);
+      this.collectLoopWrittenSlotKeys(node.body, 0, loopWritten, new Set());
       if (loopWritten.size === 1 && entryAccessMap.size === 1) {
         for (const [sk, info] of entryAccessMap) {
           if (loopWritten.has(sk) && info.operations.length === 1 && info.operations[0] === 'write') {
@@ -2694,21 +2694,91 @@ export default class SymbolTableTraversal extends AstTraversal {
   }
 
   // Collect the slotKeys (`collection:keyParams`) of mapping ASSIGNS that occur inside a runtime loop
-  // (While/DoWhile). Depth-tracked generic walk; a match at depth>0 is a loop-write candidate.
-  private collectLoopWrittenSlotKeys(node: Node, depth: number, out: Set<string>): void {
+  // (While/DoWhile). Depth-tracked generic walk; a match at depth>0 is a loop-write candidate ONLY when its key
+  // VARIES per iteration - the key must reference a loop-mutated variable (the induction var, or a local derived
+  // from it). An invariant key (`for(i<n) m[k]=v`) would mint the same entry every iteration -> duplicate NFTs,
+  // so it is NOT recorded and falls through to EntryWriteInLoopError (fail-closed, no silent corruption).
+  private collectLoopWrittenSlotKeys(node: Node, depth: number, out: Set<string>, loopVars: Set<string>): void {
     if (!node) return;
     if (node instanceof MappingAssignNode && node.collection && depth > 0
-      && !node.arrayIndex && !node.arrayPush && !node.arrayPop) {
+      && !node.arrayIndex && !node.arrayPush && !node.arrayPop
+      && node.keys.some((k) => this.exprReferencesAny(k, loopVars))) {
       const { keyParams } = this.getMappingKeyDescriptors(node.keys);
       out.add(`${node.collection.name}:${keyParams.join(':')}`);
     }
-    const childDepth = (node instanceof WhileNode || node instanceof DoWhileNode) ? depth + 1 : depth;
+    let childDepth = depth;
+    let childLoopVars = loopVars;
+    if (node instanceof WhileNode || node instanceof DoWhileNode) {
+      childDepth = depth + 1;
+      childLoopVars = new Set(loopVars);
+      this.addLoopVaryingVars(node, childLoopVars);
+    }
     for (const key of Object.keys(node)) {
       if (key === 'location' || key === 'definition') continue;
       const v = (node as unknown as Record<string, unknown>)[key];
-      if (v instanceof Node) this.collectLoopWrittenSlotKeys(v, childDepth, out);
-      else if (Array.isArray(v)) for (const e of v) if (e instanceof Node) this.collectLoopWrittenSlotKeys(e, childDepth, out);
+      if (v instanceof Node) this.collectLoopWrittenSlotKeys(v, childDepth, out, childLoopVars);
+      else if (Array.isArray(v)) {
+        for (const e of v) if (e instanceof Node) this.collectLoopWrittenSlotKeys(e, childDepth, out, childLoopVars);
+      }
     }
+  }
+
+  // Variables that VARY across iterations of `loop`: the mutated/induction vars (an AssignNode target or a
+  // ++/-- on a plain identifier), plus loop-local definitions whose initializer transitively references one.
+  private addLoopVaryingVars(loop: Node, out: Set<string>): void {
+    const incDec = [UnaryOperator.POSTFIX_INCREMENT, UnaryOperator.POSTFIX_DECREMENT,
+      UnaryOperator.PREFIX_INCREMENT, UnaryOperator.PREFIX_DECREMENT];
+    const collectMutated = (n: Node): void => {
+      if (!n) return;
+      if (n instanceof AssignNode && n.identifier instanceof IdentifierNode) out.add(n.identifier.name);
+      if (n instanceof UnaryOpNode && n.expression instanceof IdentifierNode && incDec.includes(n.operator)) {
+        out.add(n.expression.name);
+      }
+      for (const key of Object.keys(n)) {
+        if (key === 'location' || key === 'definition') continue;
+        const v = (n as unknown as Record<string, unknown>)[key];
+        if (v instanceof Node) collectMutated(v);
+        else if (Array.isArray(v)) for (const e of v) if (e instanceof Node) collectMutated(e);
+      }
+    };
+    collectMutated(loop);
+    let changed = true;
+    while (changed) {
+      changed = false;
+      const scanDefs = (n: Node): void => {
+        if (!n) return;
+        if (n instanceof VariableDefinitionNode && !out.has(n.name) && n.expression
+          && this.exprReferencesAny(n.expression, out)) {
+          out.add(n.name);
+          changed = true;
+        }
+        for (const key of Object.keys(n)) {
+          if (key === 'location' || key === 'definition') continue;
+          const v = (n as unknown as Record<string, unknown>)[key];
+          if (v instanceof Node) scanDefs(v);
+          else if (Array.isArray(v)) for (const e of v) if (e instanceof Node) scanDefs(e);
+        }
+      };
+      scanDefs(loop);
+    }
+  }
+
+  // Whether any identifier in `node`'s subtree names a variable in `vars`.
+  private exprReferencesAny(node: Node, vars: Set<string>): boolean {
+    if (vars.size === 0) return false;
+    let found = false;
+    const walk = (n: Node): void => {
+      if (found || !n) return;
+      if (n instanceof IdentifierNode && vars.has(n.name)) { found = true; return; }
+      for (const key of Object.keys(n)) {
+        if (key === 'location' || key === 'definition') continue;
+        const v = (n as unknown as Record<string, unknown>)[key];
+        if (v instanceof Node) walk(v);
+        else if (Array.isArray(v)) for (const e of v) if (e instanceof Node) walk(e);
+      }
+    };
+    walk(node);
+    return found;
   }
 
   private collectEntryAccesses(node: Node, map: Map<string, EntryAccessInfo>): void {

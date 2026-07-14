@@ -88,6 +88,10 @@ describe('write in loop', () => {
       rej(MAP('function f(int n) external { for (int i = 0; i < n; i++) { delete m[i]; } require(true); }'));
     });
 
+    it('rejects an invariant-key write in a loop (m[k]=i would mint duplicate entries)', () => {
+      rej(MAP('function f(int k, int n) external { for (int i = 0; i < n; i++) { m[k] = i; } require(true); }'));
+    });
+
     it('writes distinct mapping keys in a dynamic for-loop (m[i]=i+1 for i<n)', async () => {
       const sc = await dep(MAP('function f(int n) external { for (int i = 0; i < n; i++) { m[i] = i + 1; } require(true); }'));
       await sc.f(3n).send();

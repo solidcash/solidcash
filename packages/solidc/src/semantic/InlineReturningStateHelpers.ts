@@ -287,8 +287,10 @@ export default class InlineReturningStateHelpers extends AstTraversal {
       if (!d.libraryName || d.targetTypeName !== 'address') continue;
       const prefix = `${d.libraryName}.`;
       for (const fn of this.freeFns) {
-        if (fn.name.startsWith(prefix) && this.eligibleShape(fn) && this.containsLowLevelCall(fn)
-          && !this.referencedFromFreeFn(fn.name)) {
+        // Transitive: `address(x).functionCall(d)` on OZ Address.functionCall (which only transitively does a
+        // low-level call, via functionCallWithValue) must convert too, else it stays a MethodCall the
+        // returning-helper inliner cannot pick up and the helper is dropped out from under it.
+        if (fn.name.startsWith(prefix) && this.eligibleShape(fn) && this.transitivelyContainsLowLevelCall(fn)) {
           bound.set(fn.name.slice(prefix.length), fn.name);
         }
       }
@@ -621,7 +623,9 @@ export default class InlineReturningStateHelpers extends AstTraversal {
       if (n instanceof IdentifierNode) {
         n.name = rn(n.name);
       } else if (n instanceof TupleAssignmentNode) {
-        for (const el of n.elements) if (el.name) el.name = rn(el.name); // declared + existing tuple slots
+        // New element objects, not in-place mutation: cloneNode shares the plain-object `elements` across clones,
+        // so mutating a name would stomp another inline frame's rename (dangling `__rhN_<slot>`).
+        n.elements = n.elements.map((el) => (el.name ? { ...el, name: rn(el.name) } : el));
       } else {
         const nm = (n as unknown as { name?: unknown }).name;
         if (typeof nm === 'string') (n as unknown as { name: string }).name = rn(nm);

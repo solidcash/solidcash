@@ -174,6 +174,33 @@ describe('value-returning low-level-call helpers are inlined at direct call site
     expect(compileString(src, { solidityImportCompat: true }).contractName).toBe('C');
   });
 
+  // The exact OZ SafeERC20 shape: a void wrapper calls the value chain via the using-for `address(x).method()`
+  // form (not a plain `L.method(x)`), where the library-level `using Address for address` lands on the file.
+  it('inlines a void wrapper using the `address(token).functionCall(data)` using-for form', () => {
+    const src = 'library Address {'
+      + ' function functionCall(address t, bytes d) internal returns (bytes) { return functionCallWithValue(t, d, 0); }'
+      + ' function functionCallWithValue(address t, bytes d, int v) internal returns (bytes) {'
+      + ' (bool ok, bytes ret) = t.call{value: v}(d); require(ok); return ret; } }'
+      + ' library Safe { using Address for address;'
+      + ' function xfer(address token, bytes data) internal { address(token).functionCall(data); } }'
+      + ' contract C { int n; function f(address t, bytes d) public { Safe.xfer(t, d); this.n = 1; } }';
+    expect(compileString(src, { solidityImportCompat: true }).contractName).toBe('C');
+  });
+
+  // Inlining the SAME low-level-call helper through two paths (`fcv` directly and via `fcv2`) must not collide:
+  // cloneNode shares plain-object `elements`/`callOptions` across clones, so an in-place rename would stomp the
+  // other frame's `(bool ok, bytes ret)` slot or `{value: v}` option (dangling `__rhN_ok`/`__rhN_v`).
+  it('inlines the same low-level-call helper via two paths without a shared-clone rename collision', () => {
+    const src = 'function verify(address t, bool ok, bytes ret) view returns (bytes) {'
+      + ' if (ok) { return ret; } require(false); return ret; }'
+      + ' function fcv(address t, bytes d, int v) view returns (bytes) {'
+      + ' (bool ok, bytes ret) = t.call{value: v}(d); return verify(t, ok, ret); }'
+      + ' function fcv2(address t, bytes d) view returns (bytes) { return fcv(t, d, 0); }'
+      + ' contract C { int n; function f(address t, bytes d) public {'
+      + ' bytes a = fcv(t, d, 0); bytes b = fcv2(t, d); this.n = int(a.length + b.length); } }';
+    expect(compileString(src, { solidityImportCompat: true }).contractName).toBe('C');
+  });
+
   // A void wrapper that discards a value-chain call's result: the wrapper inlines, the discarded value call is
   // then inlined at its statement position, and the chain flattens. Must compile - never a dangling reference.
   it('inlines a void wrapper that discards a value-returning low-level-call helper result', () => {

@@ -10,6 +10,7 @@ import {
   VariableDefinitionNode,
   IdentifierNode,
   MethodCallNode,
+  CastNode,
   TupleAssignmentNode,
   BranchNode,
   WhileNode,
@@ -52,10 +53,12 @@ export default class InlineExternalCallHelpers extends AstTraversal {
   private stateVarTypes: Map<string, Type> = new Map();
   private voidExternalCallHelpers: Set<string> = new Set();
   private freeFns: FunctionDefinitionNode[] = [];
+  private fileUsingForDirectives: { libraryName?: string, targetTypeName?: string }[] = [];
   private counter = 0;
 
   visitSourceFile(node: SourceFileNode): Node {
     this.freeFns = node.freeFunctions ?? [];
+    this.fileUsingForDirectives = node.usingForDirectives ?? [];
     if (node.contract) node.contract = this.visit(node.contract) as ContractNode;
     return node;
   }
@@ -68,6 +71,7 @@ export default class InlineExternalCallHelpers extends AstTraversal {
     this.stateVarTypes = new Map();
     for (const sv of node.stateVariables) this.stateVarTypes.set(sv.name, sv.type);
     this.qualifySiblingCalls();
+    this.desugarUsingForAddressCalls(node);
 
     this.voidExternalCallHelpers = new Set();
     for (const fn of all) {
@@ -134,6 +138,58 @@ export default class InlineExternalCallHelpers extends AstTraversal {
 
   private isInterfaceTyped(t: Type | undefined): boolean {
     return t instanceof AddressType && t.interfaceName !== undefined;
+  }
+
+  // Rewrite `address(x).method(args)` -> `L.method(address(x), args)` for `using L for address` where L.method is
+  // an external-call helper (OZ SafeERC20's `address(token).functionCall(data)`). Runs on ALL bodies (free +
+  // contract) before detection so a void wrapper holding this using-for call is recognised and inlined. Overloads
+  // collapse to `L.method`; the returning-helper inliner resolves the arity later.
+  private desugarUsingForAddressCalls(node: ContractNode): void {
+    const bound = new Map<string, string>();
+    // `using L for address` inside a library body (OZ SafeERC20's `using Address for address`) lands on the file,
+    // not the consuming contract, so combine both directive sources.
+    for (const d of [...(node.usingForDirectives ?? []), ...this.fileUsingForDirectives]) {
+      if (!d.libraryName || d.targetTypeName !== 'address') continue;
+      const prefix = `${d.libraryName}.`;
+      for (const fn of this.freeFns) {
+        if (fn.name.startsWith(prefix) && fn.body && this.makesExternalCall(fn)) {
+          bound.set(fn.name.slice(prefix.length), fn.name);
+        }
+      }
+    }
+    if (bound.size === 0) return;
+    const convert = (n: Node): Node => {
+      if (n instanceof MethodCallNode && !n.callOptions && !n.fieldNames
+        && n.object instanceof CastNode && n.object.type instanceof AddressType && bound.has(n.methodName)) {
+        const call = new FunctionCallNode(new IdentifierNode(bound.get(n.methodName)!), [n.object, ...n.parameters]);
+        call.location = n.location;
+        return call;
+      }
+      return n;
+    };
+    const bodies = [...node.functions, ...this.freeFns, node.constructorDef, node.fallbackDef, node.receiveDef];
+    for (const fn of bodies) if (fn?.body) this.transformNodes(fn.body, convert);
+  }
+
+  // In-place child-replacing walk: apply `xform` to each child Node, substituting the returned node when changed.
+  private transformNodes(node: Node, xform: (n: Node) => Node): void {
+    for (const key of Object.keys(node)) {
+      if (key === 'type' || key === 'symbolTable' || key === 'location') continue;
+      const v = (node as unknown as Record<string, unknown>)[key];
+      if (v instanceof Node) {
+        const rep = xform(v);
+        (node as unknown as Record<string, unknown>)[key] = rep;
+        this.transformNodes(rep, xform);
+      } else if (Array.isArray(v)) {
+        for (let i = 0; i < v.length; i += 1) {
+          if (v[i] instanceof Node) {
+            const rep = xform(v[i]);
+            v[i] = rep;
+            this.transformNodes(rep, xform);
+          }
+        }
+      }
+    }
   }
 
   // Rewrite a statement list, replacing eligible helper-call statements with the inlined helper body.
@@ -214,7 +270,9 @@ export default class InlineExternalCallHelpers extends AstTraversal {
       if (n instanceof IdentifierNode) {
         n.name = rn(n.name);
       } else if (n instanceof TupleAssignmentNode) {
-        for (const el of n.elements) if (el.name) el.name = rn(el.name);
+        // New element objects: cloneNode shares the plain-object `elements` across clones, so in-place mutation
+        // would stomp another inline frame's rename (dangling `__rhN_<slot>`).
+        n.elements = n.elements.map((el) => (el.name ? { ...el, name: rn(el.name) } : el));
       } else {
         const nm = (n as unknown as { name?: unknown }).name;
         if (typeof nm === 'string' && map.has(nm)) (n as unknown as { name: string }).name = map.get(nm)!;

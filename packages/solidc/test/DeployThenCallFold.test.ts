@@ -15,7 +15,7 @@ contract Child(bytes20 owner) {
 }
 contract Factory(pubkey deployer) {
     int deployed;
-    function make(sig s, bytes20 owner, int c0, bytes20 a0) deploy {
+    function make(sig s, bytes20 owner, int c0, bytes20 a0) {
         require(checkSig(s, deployer));
         Child child = new Child(owner);
         ${call}
@@ -71,7 +71,7 @@ contract Child(bytes20 owner) {
 }
 contract Factory(pubkey deployer) {
     int deployed;
-    function make(sig s, bytes20 owner, int sup, int amt) deploy {
+    function make(sig s, bytes20 owner, int sup, int amt) {
         require(checkSig(s, deployer));
         Child child = new Child(owner);
         child.configure(sup, amt);
@@ -93,7 +93,7 @@ contract Child(bytes20 owner) {
 }
 contract Factory(pubkey deployer) {
     int deployed;
-    function make(sig s, bytes20 owner) deploy {
+    function make(sig s, bytes20 owner) {
         require(checkSig(s, deployer));
         Child child = new Child(owner);
         child.bump();
@@ -114,7 +114,7 @@ contract Child(bytes20 owner) {
 }
 contract Factory(pubkey deployer) {
     int deployed;
-    function make(sig s, bytes20 owner, int t) deploy {
+    function make(sig s, bytes20 owner, int t) {
         require(checkSig(s, deployer));
         Child child = new Child(owner);
         child.configure(t);

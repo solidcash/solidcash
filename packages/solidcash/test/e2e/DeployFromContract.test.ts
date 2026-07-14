@@ -52,7 +52,7 @@ contract Create3Factory() {
     int childCount;
     mapping(bytes32 => bytes32) children;
 
-    function create3(bytes32 salt, int fundingInputIndex) deploy {
+    function create3(bytes32 salt, int fundingInputIndex) {
         bytes32 childCategoryId = tx.inputs[fundingInputIndex].outpointTransactionHash;
         require(this.children[salt] == 0x0000000000000000000000000000000000000000000000000000000000000000);
         this.children[salt] = childCategoryId;
@@ -68,7 +68,7 @@ contract OverwriteFactory() {
     int childCount;
     mapping(bytes32 => bytes32) children;
 
-    function recreate(bytes32 salt, int fundingInputIndex) deploy {
+    function recreate(bytes32 salt, int fundingInputIndex) {
         bytes32 childCategoryId = tx.inputs[fundingInputIndex].outpointTransactionHash;
         this.children[salt] = childCategoryId;
         this.childCount = this.childCount + 1;

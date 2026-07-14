@@ -55,7 +55,7 @@ userDefinableOperator
 // positions (parameters, locals, function/struct-field names) so valid Solidity identifiers don't collide.
 anyIdentifier
     : Identifier
-    | 'deploy' | 'delegate' | 'upgrade' | 'selfdestruct' | 'unsafe' | 'packed' | 'entries' | 'error' | 'global' | 'revert'
+    | 'delegate' | 'upgrade' | 'selfdestruct' | 'unsafe' | 'packed' | 'entries' | 'error' | 'global' | 'revert'
     | 'transient' | 'leave' | 'fallback' | 'receive'
     | CryptoType | BchUnit
     ;
@@ -250,7 +250,7 @@ customModifierInvocation
     ;
 
 functionModifier
-    : 'pure' | 'view' | 'internal' | 'external' | 'public' | 'private' | 'payable' | overrideSpecifier | 'virtual' | unsafeModifier | 'upgrade' | 'deploy' | 'selfdestruct' | 'delegate'
+    : 'pure' | 'view' | 'internal' | 'external' | 'public' | 'private' | 'payable' | overrideSpecifier | 'virtual' | unsafeModifier | 'upgrade' | 'selfdestruct' | 'delegate'
     ;
 
 overrideSpecifier

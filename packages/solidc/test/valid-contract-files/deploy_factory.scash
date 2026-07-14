@@ -1,7 +1,8 @@
 contract DeployFactory() {
     int childCount;
 
-    function createChild() deploy {
+    function createChild(int fundingInputIndex) {
+        require(tx.inputs[fundingInputIndex].outpointTransactionHash != 0x0000000000000000000000000000000000000000000000000000000000000000);
         this.childCount = this.childCount + 1;
     }
 

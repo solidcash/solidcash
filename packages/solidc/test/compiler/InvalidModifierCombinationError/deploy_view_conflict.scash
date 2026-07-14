@@ -1,7 +1,0 @@
-contract Test() {
-    int counter;
-
-    function foo() deploy view {
-        require(true);
-    }
-}

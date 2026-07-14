@@ -115,7 +115,7 @@ const computedFactorySource = `
   contract ComputedFactory(pubkey factoryOwner) {
     int deployCount;
 
-    function deployComputed(sig s, bytes20 childOwner, int sup, int amt) deploy {
+    function deployComputed(sig s, bytes20 childOwner, int sup, int amt) {
       require(checkSig(s, factoryOwner));
       ComputedChild child = new ComputedChild(childOwner);
       child.configure(sup, amt);
@@ -207,7 +207,7 @@ const seqFactorySource = `
   contract SeqFactory(pubkey factoryOwner) {
     int deployCount;
 
-    function deploySeq(sig s, bytes20 childOwner, int sup) deploy {
+    function deploySeq(sig s, bytes20 childOwner, int sup) {
       require(checkSig(s, factoryOwner));
       SeqChild child = new SeqChild(childOwner);
       child.init(sup);
@@ -298,7 +298,7 @@ const plainMultiFactorySource = `
   import "./multi_child.scash";
   contract PlainMultiFactory(pubkey factoryOwner) {
     int deployCount;
-    function deployPlain(sig s, bytes20 childOwner) deploy {
+    function deployPlain(sig s, bytes20 childOwner) {
       require(checkSig(s, factoryOwner));
       MultiChild child = new MultiChild(childOwner);
       this.deployCount = this.deployCount + 1;
@@ -310,7 +310,7 @@ const foldMultiFactorySource = `
   import "./multi_child.scash";
   contract FoldMultiFactory(pubkey factoryOwner) {
     int deployCount;
-    function deployConfigured(sig s, bytes20 childOwner, bytes32 va, bytes32 vb, bytes32 vc, bytes32 vd) deploy {
+    function deployConfigured(sig s, bytes20 childOwner, bytes32 va, bytes32 vb, bytes32 vc, bytes32 vd) {
       require(checkSig(s, factoryOwner));
       MultiChild child = new MultiChild(childOwner);
       child.configure(va, vb, vc, vd);
@@ -445,7 +445,7 @@ const saltFactorySource = `
   contract SaltFactory(pubkey factoryOwner) {
     int deployCount;
 
-    function deploySalted(sig s, bytes20 childOwner, bytes32 salt) deploy {
+    function deploySalted(sig s, bytes20 childOwner, bytes32 salt) {
       require(checkSig(s, factoryOwner));
       SaltChild child = new SaltChild{salt: salt}(childOwner);
       this.deployCount = this.deployCount + 1;

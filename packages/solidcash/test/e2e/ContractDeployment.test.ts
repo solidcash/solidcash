@@ -560,7 +560,7 @@ const statefulFactorySource = `
   contract StatefulFactory(pubkey factoryOwner) {
     int deployCount;
 
-    function deployChild(sig s, bytes20 childOwner) deploy {
+    function deployChild(sig s, bytes20 childOwner) {
       require(checkSig(s, factoryOwner));
       bytes childLbc = new StatefulChild(childOwner);
       require(childLbc.length == 35);

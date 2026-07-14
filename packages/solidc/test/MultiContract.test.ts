@@ -30,7 +30,7 @@ describe('compileStringMulti', () => {
       import "./child.scash";
       contract Factory(pubkey o) {
         int n;
-        function make(sig s, bytes20 owner) deploy {
+        function make(sig s, bytes20 owner) {
           require(checkSig(s, o));
           Child c = new Child(owner);
           this.n = this.n + 1;

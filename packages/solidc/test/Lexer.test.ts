@@ -46,8 +46,12 @@ describe('Soft keywords (reserved in SolidCash, valid identifiers in Solidity)',
     expect(compileString(src).contractName).toBe('C');
   });
 
-  it('still parses the deploy/selfdestruct function modifiers in modifier position', () => {
-    expect(compileString('contract C() { int n; function f() deploy { this.n = 1; } }').contractName).toBe('C');
+  it('the `deploy` modifier keyword was removed - deploy is a plain identifier, not a modifier', () => {
+    // A function named `deploy` still parses (deploy is now a normal identifier).
+    expect(compileString('contract C() { int n; function deploy() { this.n = 1; } }').contractName).toBe('C');
+    // `deploy` in modifier position is no longer a keyword - it reads as an undefined custom modifier.
+    expect(() => compileString('contract C() { int n; function f() deploy { this.n = 1; } }'))
+      .toThrow(/[Uu]ndefined modifier/);
   });
 });
 

@@ -33,29 +33,30 @@ describe('conditional deploy (new C() inside a branch/loop) -> clean actionable 
   });
 });
 
-// `new C()` on a stateful child mints its genesis = IS deploying it, so the `deploy` modifier is inferred and
-// explicit `deploy` is redundant (identical bytecode + ABI). Explicit `deploy` remains the ONLY signal for a
-// deployFrom / create3 factory function that has no literal `new C()` in its body. A stateful `new C()` outside a
-// stateful contract's function has nothing to ride the deploy covenant, so it errors - with the real constraint,
-// not the old (misleading) "use the deploy modifier" advice.
-describe('deploy modifier is inferred from new C() (explicit `deploy` is optional for new-expression deploys)', () => {
+// The `deploy` modifier has been REMOVED from the grammar - it is always inferred from the deploy form: `new C()` /
+// `new C{salt}()` (which mint the child's genesis), or a create3/deployFrom factory reading a genesis input's
+// outpoint txhash. Writing `deploy` explicitly is now a parse-time "undefined modifier" error.
+describe('deploy modifier is inferred from the deploy form (the `deploy` keyword was removed from the grammar)', () => {
   const CHILD = 'contract Child { int x; constructor(int v) { x = v; }'
     + ' function authorize(pubkey pk, sig s) unsafe { require(checkSig(s, pk)); } }';
-  const factory = (mod: string): string => `${CHILD} contract F(pubkey a) { int c;`
-    + ` function make(sig s, int v) ${mod} { require(checkSig(s, a)); Child ch = new Child(v); this.c = this.c + 1; }`
+  const factory = (): string => `${CHILD} contract F(pubkey a) { int c;`
+    + ' function make(sig s, int v) { require(checkSig(s, a)); Child ch = new Child(v); this.c = this.c + 1; }'
     + ' function authorize(pubkey pk, sig s) unsafe { require(checkSig(s, pk)); } }';
 
-  it('a stateful new C() infers deploy: byte-identical to explicit `deploy` + same ABI modifiers', () => {
-    const inferred = compileString(factory(''));
-    const explicit = compileString(factory('deploy'));
-    expect(inferred.bytecode).toBe(explicit.bytecode);
-    expect(inferred.abi.find((f) => f.name === 'make')?.modifiers).toEqual(['deploy']);
+  it('a stateful new C() infers the deploy modifier - no keyword needed', () => {
+    expect(compileString(factory()).abi.find((f) => f.name === 'make')?.modifiers).toEqual(['deploy']);
   });
 
-  it('the inferred-deploy function actually carries a deploy block-layout slot (real deploy, not just a label)', () => {
-    const art = compileString(factory(''));
-    const make = art.abi.find((f) => f.name === 'make');
+  it('the inferred-deploy function carries a real deploy block-layout slot (not just a label)', () => {
+    const make = compileString(factory()).abi.find((f) => f.name === 'make');
     expect(make?.blockLayout?.slots.some((s) => s.kind === 'deploy')).toBe(true);
+  });
+
+  it('writing an explicit `deploy` modifier is now rejected (keyword removed from the grammar)', () => {
+    expect(() => compileString(`${CHILD} contract F(pubkey a) { int c;`
+      + ' function make(sig s, int v) deploy { Child ch = new Child(v); this.c = this.c + 1; }'
+      + ' function authorize(pubkey pk, sig s) unsafe { require(checkSig(s, pk)); } }'))
+      .toThrow(/[Uu]ndefined modifier/);
   });
 });
 

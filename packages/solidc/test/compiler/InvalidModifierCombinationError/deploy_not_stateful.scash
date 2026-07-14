@@ -1,5 +1,0 @@
-contract Test() {
-    function foo() deploy {
-        require(true);
-    }
-}

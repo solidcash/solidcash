@@ -18,7 +18,7 @@ const SOURCE = `
   }
   contract MultiFactory(pubkey factoryOwner) {
     int deployCount;
-    function deployChild(sig s, bytes20 childOwner) deploy {
+    function deployChild(sig s, bytes20 childOwner) {
       require(checkSig(s, factoryOwner));
       MultiChild child = new MultiChild(childOwner);
       this.deployCount = this.deployCount + 1;

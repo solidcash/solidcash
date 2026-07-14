@@ -15,7 +15,7 @@ contract Child(bytes20 owner) {
 
 contract Factory(pubkey deployer) {
     int deployed;
-    function make(sig s, bytes20 owner, bytes20 t) deploy {
+    function make(sig s, bytes20 owner, bytes20 t) {
         require(checkSig(s, deployer));
         Child c = new Child(owner);
         c.callOut(t);

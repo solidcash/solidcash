@@ -70,6 +70,26 @@ Guards (raise a clean `ConditionalDeployError` - fail closed, never an unsound c
 site in the function, a `{value:}` transfer on the deploy. Straight-line deploys keep the proven fixed epilogue,
 byte-for-byte.
 
+## Value and token transfers on deploy
+
+A deploy function can move funds from the factory to the freshly-created child (or any recipient) in the same
+transaction:
+
+- **Satoshis** - `new Child{value: V}()` transfers `V` sats from the factory's satoshi container to the child.
+  Straight-line, conditional (`if (c) new Child{value:V}()`), and loop (`for (i<n) new Child{value:V}()`) forms
+  work. SDK: `deployFrom({ childValue: V })`; the factory must have been deployed with `initialBalance >= V`.
+- **CashTokens** - a deploy function that does `this.tokens[cat].transfer(recipient, amt)` co-spends the factory's
+  token container, recreates it with the remainder, and sends `amt` to `recipient` (pass the new child's address
+  to fund it). SDK:
+  `deployFrom({ tokenContainerCategoryIds: [cat], childTokenTransfers: [{ categoryId: cat, to, amount }] })`.
+  `to` is the recipient locking bytecode (a raw p2sh32/p2pkh script, or a token-aware address).
+
+Both are covenant-enforced: the container's own output is self-preserved (locking bytecode + value/amount) and
+each transfer output is pinned (recipient + amount + category), so a caller cannot redirect the container's
+remaining balance to a foreign address - adversarially VM-proven in `SatoshiContainer.test.ts` /
+`TokenContainer.test.ts`. Not yet wired in a single deploy: combining a satoshi and a token transfer, and NFT
+container transfers (both fail closed).
+
 ## Why no literal CREATE2/CREATE3 redeployable address for stateful contracts
 
 The category = genesis outpoint is consensus-fixed and unique per genesis tx, so the *same* (code, salt) can

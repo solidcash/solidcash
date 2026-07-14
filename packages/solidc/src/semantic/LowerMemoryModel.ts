@@ -29,7 +29,6 @@ import {
   BytesConcatNode,
   NewArrayNode,
   IntLiteralNode,
-  HexLiteralNode,
   IdentifierNode,
   ExpressionNode,
   AssemblyStatementNode,
@@ -109,16 +108,13 @@ export default class LowerMemoryModel extends AstTraversal {
     this.convertible = node.body ? this.analyzeConvertible(node.body) : new Set();
     if (node.body) {
       // A first pass over the block rewrites decls/writes/reads; if any memory array is allocated, prepend the
-      // buffer locals so every `__memory`/`__freeptr` reference resolves.
+      // buffer decl so every `__memory` reference resolves. The free-memory pointer lives IN the buffer at slot
+      // 0x40 (init 0x80), matching the Yul runtime `__yulmem` layout, so both memory passes share one addressing.
       node.body = this.visit(node.body) as BlockNode;
       if (this.usesMemory) {
-        const memInit = new HexLiteralNode(new Uint8Array(0));
-        memInit.type = new BytesType();
-        const memDecl = new VariableDefinitionNode(new BytesType(), [], '__memory', memInit);
-        const fmpDecl = new VariableDefinitionNode(this.uint(), [], '__freeptr', this.intLit(0n));
+        const memDecl = new VariableDefinitionNode(new BytesType(), [], '__memory', this.memReservedInit());
         this.at(memDecl, node);
-        this.at(fmpDecl, node);
-        node.body.statements = [memDecl, fmpDecl, ...(node.body.statements ?? [])];
+        node.body.statements = [memDecl, ...(node.body.statements ?? [])];
       }
     }
     this.memArrays = savedMem;
@@ -741,11 +737,10 @@ export default class LowerMemoryModel extends AstTraversal {
       else this.memArrays.set(node.name, arrT);
       const n = node.expression.size;
       const ptr = new IdentifierNode(node.name);
-      // uint a = __freeptr;
-      const decl = this.at(new VariableDefinitionNode(this.uint(), [], node.name, this.mem('__freeptr')), node);
-      // __freeptr = __freeptr + 32 + n*32;
-      const bump = this.at(this.assign('__freeptr',
-        this.add(this.mem('__freeptr'), this.blockBytes(this.clone(n)))), node);
+      // uint a = mload(0x40);   (read the free pointer)
+      const decl = this.at(new VariableDefinitionNode(this.uint(), [], node.name, this.freePtr()), node);
+      // mstore(0x40, a + 32 + n*32);   (bump the free pointer past this block)
+      const bump = this.at(this.setFreePtr(this.add(this.clone(ptr), this.blockBytes(this.clone(n)))), node);
       // __memory = bytes.concat(__memory, new bytes(32 + n*32));   (grow by the block size, zero-filled)
       const grow = this.at(this.assign('__memory',
         new BytesConcatNode([this.mem('__memory'), this.rawBytes(this.blockBytes(this.clone(n)))])), node);
@@ -775,14 +770,14 @@ export default class LowerMemoryModel extends AstTraversal {
     return this.allocStructBlock(node.name, structT, ctor, node);
   }
 
-  // Allocate a struct block at `ptrName = __freeptr` (bump + grow), then store the constructor args (if any).
-  // Used by both a named struct decl and an anonymous struct-array element block.
+  // Allocate a struct block at `ptrName = mload(0x40)` (bump the in-buffer free pointer + grow), then store the
+  // constructor args (if any). Used by both a named struct decl and an anonymous struct-array element block.
   private allocStructBlock(ptrName: string, structT: StructType, ctor: FunctionCallNode | undefined, src: Node):
   StatementNode[] {
     this.usesMemory = true;
     const size = BigInt(32 * structT.fields.length);
-    const decl = this.at(new VariableDefinitionNode(this.uint(), [], ptrName, this.mem('__freeptr')), src);
-    const bump = this.at(this.assign('__freeptr', this.add(this.mem('__freeptr'), this.intLit(size))), src);
+    const decl = this.at(new VariableDefinitionNode(this.uint(), [], ptrName, this.freePtr()), src);
+    const bump = this.at(this.setFreePtr(this.add(new IdentifierNode(ptrName), this.intLit(size))), src);
     const grow = this.at(this.assign('__memory',
       new BytesConcatNode([this.mem('__memory'), this.rawBytes(this.intLit(size))])), src);
     const out: StatementNode[] = [decl, bump, grow];
@@ -916,6 +911,28 @@ export default class LowerMemoryModel extends AstTraversal {
   }
 
   // ---- desugar building blocks (all normal AST that type-checks + codegens) ----
+
+  // __memory init = 128-byte EVM reserved region (scratch 0x00-0x3f, free-memory pointer 0x80 at slot 0x40, zero
+  // slot 0x60-0x7f). Identical layout to the Yul runtime __yulmem buffer, so pointers from both passes agree.
+  private memReservedInit(): ExpressionNode {
+    const init = new BytesConcatNode([
+      this.rawBytes(this.intLit(0x40n)),
+      new CastNode(new BytesType(32), this.intLit(0x80n), false),
+      this.rawBytes(this.intLit(0x20n)),
+    ]);
+    init.type = new BytesType();
+    return init;
+  }
+
+  // Read the free-memory pointer (the next allocation offset) from slot 0x40 of the buffer.
+  private freePtr(): ExpressionNode {
+    return this.mload(this.intLit(0x40n), this.uint());
+  }
+
+  // Write the free-memory pointer back to slot 0x40.
+  private setFreePtr(value: ExpressionNode): AssignNode {
+    return this.mstore(this.intLit(0x40n), value, this.uint());
+  }
 
   // mstore(addr, word): __memory = bytes.concat(__memory[0:addr], bytes32(word), __memory[addr+32:]).
   private mstore(addr: ExpressionNode, word: ExpressionNode, elemType: Type): AssignNode {

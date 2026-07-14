@@ -108,6 +108,9 @@ export interface StatefulTransactionOptions extends TransactionBuilderOptions {
   dynamicChunkVars?: Array<{ name: string; type: string; lockingBytecode: Uint8Array }>;
   // Old chunk UTXOs co-spent (destroyed) on a dynamic-storage write; not recreated as outputs.
   dynamicChunkInputs?: UnlockableUtxo[];
+  // Collections written by a runtime loop (`for(i<n) m[k[i]]=v[i]`): N new entry NFTs created as trailing
+  // outputs (a runtime-variable count, like dynamicChunkVars). Commitments come from auto-derivation.
+  loopEntryVars?: Array<{ collection: string; lockingBytecode: Uint8Array }>;
   eventDefinitions?: readonly EventDefinitionAbi[];
   eventNftLockingBytecodes?: Map<string, Uint8Array>; // eventSignature -> locking bytecode
   tokenContainers?: TokenContainerInfo[];
@@ -194,6 +197,9 @@ export class StatefulTransactionBuilder {
   private dynamicChunkInputs: UnlockableUtxo[] = [];
   // varName -> ordered chunk commitments (hex) from auto-derivation; length determines chunk output count.
   private chunkRawCommitments: Map<string, string[]> = new Map();
+  private loopEntryVars: Array<{ collection: string; lockingBytecode: Uint8Array }> = [];
+  // collection -> ordered loop entry commitments (hex) from auto-derivation; length = entry output count.
+  private loopEntryCommitments: Map<string, string[]> = new Map();
   private eventRawCommitments: Map<number, string> = new Map(); // emitIndex -> hex commitment (from auto-derivation)
   private pendingEventPlaceholders: Array<{ eventSignature: string; emitIndex: number }> = [];
 
@@ -215,6 +221,7 @@ export class StatefulTransactionBuilder {
     this.entryNftLockingBytecodes = options.entryNftLockingBytecodes ?? new Map();
     this.dynamicChunkVars = options.dynamicChunkVars ?? [];
     this.dynamicChunkInputs = options.dynamicChunkInputs ?? [];
+    this.loopEntryVars = options.loopEntryVars ?? [];
     this.eventDefinitions = options.eventDefinitions ?? [];
     this.eventNftLockingBytecodes = options.eventNftLockingBytecodes ?? new Map();
     this.tokenContainers = options.tokenContainers ?? [];
@@ -737,6 +744,37 @@ export class StatefulTransactionBuilder {
     return n;
   }
 
+  getLoopEntryVars(): Array<{ collection: string; lockingBytecode: Uint8Array }> {
+    return this.loopEntryVars;
+  }
+
+  getLoopEntryCommitments(collection: string): string[] {
+    return this.loopEntryCommitments.get(collection) ?? [];
+  }
+
+  /**
+   * Set the ordered entry commitments for a loop mapping write (from auto-derivation). The number of commitments
+   * determines how many trailing entry NFT outputs are created (the runtime iteration count N).
+   */
+  setLoopEntryCommitments(collection: string, commitments: string[]): this {
+    this.loopEntryCommitments.set(collection, commitments);
+    return this;
+  }
+
+  private _loopEntryOutputCount(): number {
+    let n = 0;
+    for (const lv of this.loopEntryVars) n += (this.loopEntryCommitments.get(lv.collection) ?? []).length;
+    return n;
+  }
+
+  /**
+   * Output index where loop entry NFTs begin. They share the trailing region with dynamic chunks (mutually
+   * exclusive in a given function by construction), placed after any chunk outputs.
+   */
+  getLoopEntryOutputBase(): number {
+    return this.getChunkOutputBase() + this._dynamicChunkOutputCount();
+  }
+
   /**
    * Set a raw event NFT commitment by emit index (from auto-derivation).
    */
@@ -889,9 +927,10 @@ export class StatefulTransactionBuilder {
     const baseOpts = this._maximumFeeSatoshis !== undefined
       ? { ...this.builderOptions, maximumFeeSatoshis: this._maximumFeeSatoshis }
       : { ...this.builderOptions };
-    // Dynamic-storage writes consume old chunk NFTs (mint/burn to match the new value), and entry
-    // deletes burn entries - both are intended implicit burns.
-    const opts = (this.entryDeletes.size > 0 || this.dynamicChunkInputs.length > 0 || this.dynamicChunkVars.length > 0)
+    // Dynamic-storage writes consume old chunk NFTs (mint/burn to match the new value), entry deletes burn
+    // entries, and loop mapping writes mint new entry NFTs from the master - all intended implicit mint/burns.
+    const opts = (this.entryDeletes.size > 0 || this.dynamicChunkInputs.length > 0
+      || this.dynamicChunkVars.length > 0 || this.loopEntryVars.length > 0)
       ? { ...baseOpts, allowImplicitNftBurn: true }
       : baseOpts;
     const builder = new CovenantTransactionBuilder(opts);
@@ -1565,6 +1604,25 @@ export class StatefulTransactionBuilder {
       }
     }
 
+    // Loop mapping-write entry outputs (trailing, after any chunks). One new mutable entry NFT per loop iteration;
+    // commitments (key_enc||value_enc) come from auto-derivation (the covenant builds them on-chain per iteration).
+    for (const lv of this.loopEntryVars) {
+      const commitments = this.loopEntryCommitments.get(lv.collection) ?? [];
+      for (const commitment of commitments) {
+        const entryOutput = {
+          to: lv.lockingBytecode,
+          amount: 1200n,
+          token: {
+            amount: 0n,
+            category: this.categoryId,
+            nft: { capability: 'mutable' as const, commitment },
+          },
+        };
+        entryOutput.amount = BigInt(Math.max(1200, calculateDust(entryOutput)));
+        builder.addOutput(entryOutput);
+      }
+    }
+
     // Append any extra outputs buffered via addOutput()
     for (const output of this.pendingOutputs) {
       builder.addOutput(output);
@@ -1699,6 +1757,7 @@ export class StatefulTransactionBuilder {
 
   private hasPostEntryOutput(): boolean {
     if (this.dynamicChunkVars.length > 0) return true;
+    if (this.loopEntryVars.length > 0) return true;
     if (!this.blockLayout) return false;
     const entryOffsets = this.blockLayout.slots.filter((s) => s.kind === 'entry').map((s) => s.offset);
     if (entryOffsets.length === 0) return false;

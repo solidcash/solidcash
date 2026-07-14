@@ -325,6 +325,10 @@ function findRedeemScriptStart(fullTrace: AuthenticationProgramStateCommon[]): n
   return findLastIndex(fullTrace, (state) => state.ip === 0 && state.instructions === redeemInstructions);
 }
 
+// Generous upper bound on the output-index span scanned when deriving a loop mapping write's per-iteration entry
+// commitments. Only indices the covenant actually verified appear in the map, so this just caps the scan window.
+const LOOP_ENTRY_MAX_ITERATIONS = 256;
+
 /**
  * Extract expected commitment hex strings from a VM debug trace, keyed by the output index each verifies.
  *
@@ -490,6 +494,7 @@ function computeConvergenceKey(
   stateCommitments?: string[],
   entryCommitments?: string[],
   eventCommitments?: string[],
+  entryLoopCommitments?: string[],
 ): string {
   const parts: string[] = [String(commitmentProgress)];
   // Include actual commitment content (not just count) so that changed values
@@ -502,6 +507,9 @@ function computeConvergenceKey(
   }
   if (eventCommitments) {
     for (const c of eventCommitments) parts.push(`ev:${c}`);
+  }
+  if (entryLoopCommitments) {
+    for (const c of entryLoopCommitments) parts.push(`le:${c}`);
   }
   if (derivedTransfers) {
     for (const t of derivedTransfers) {
@@ -4115,7 +4123,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         const stateCount = requiredNftIndices.length;
         let prevConvergenceKey = '';
         let derivedStateCount = 0; // how many state commitments have been applied
-        const maxIterations = this.maxDerivationIterations;
+        // Loop mapping writes derive one entry commitment per probe (the VM halts at the first mismatch), so a
+        // loop of N iterations needs ~N+2 probes. Give the convergence loop headroom past the default.
+        const maxIterations = stb.getLoopEntryVars().length > 0
+          ? Math.max(this.maxDerivationIterations, 64)
+          : this.maxDerivationIterations;
         let lastTrace: AuthenticationProgramStateCommon[] | undefined;
         const seenConvergenceKeys = new Set<string>();
 
@@ -4142,6 +4154,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           commitmentProgress += stateCommits.length;
           let latestEntryCommits: string[] = [];
           let latestEventCommits: string[] = [];
+          let latestLoopEntryCommits: string[] = [];
 
           // Apply state commitments - always update when commitments are available,
           // even if the count hasn't increased (values may have changed between iterations).
@@ -4199,6 +4212,40 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 }
               }
               chunkOffset += nNew;
+            }
+          }
+
+          // Loop mapping-write entry commitments (`for(i<n) m[k[i]]=v[i]`): a runtime-variable count N of new
+          // entry NFT outputs. The VM halts at the first mismatched OP_EQUALVERIFY, so each probe reveals one more
+          // commitment; grow the placeholder set by one until the trace stops revealing new ones (all N known),
+          // then drop the trailing probe placeholder so the covenant's output-count pin passes.
+          const loopEntryVars = stb.getLoopEntryVars();
+          if (loopEntryVars.length > 0) {
+            let loopOffset = stb.getLoopEntryOutputBase();
+            for (const lv of loopEntryVars) {
+              const existing = stb.getLoopEntryCommitments(lv.collection);
+              if (existing.length === 0) {
+                // Seed one placeholder so the next probe's iteration 0 has an output to verify against.
+                stb.setLoopEntryCommitments(lv.collection, ['00']);
+                latestLoopEntryCommits = latestLoopEntryCommits.concat('00');
+                continue;
+              }
+              const range = { min: loopOffset, max: loopOffset + LOOP_ENTRY_MAX_ITERATIONS };
+              const commitMap = extractCommitmentMapFromTrace(fullTrace2, range);
+              const derived: string[] = [];
+              for (const [outIdx, commit] of commitMap) derived[outIdx - loopOffset] = commit;
+              const derivedCount = derived.filter((c) => c !== undefined).length;
+              // A newly-learned last commitment (its placeholder was still '00') means more may follow; keep probing
+              // with one extra placeholder. If the last commitment merely re-confirms a known one, the loop ran to
+              // completion (all N derived) - drop the extra placeholder so the count pin sees exactly N outputs.
+              const stillLearning = derivedCount > 0 && derived[derivedCount - 1] !== (existing[derivedCount - 1] ?? '00');
+              const next: string[] = [];
+              for (let i = 0; i < derivedCount; i++) next[i] = derived[i] ?? existing[i] ?? '00';
+              if (stillLearning) next.push('00');
+              stb.setLoopEntryCommitments(lv.collection, next);
+              commitmentProgress += derivedCount;
+              latestLoopEntryCommits = latestLoopEntryCommits.concat(next);
+              loopOffset += derivedCount;
             }
           }
 
@@ -4328,7 +4375,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           // to detect when derived values change without the count increasing.
           const convergenceKey = computeConvergenceKey(
             commitmentProgress, derivedTransfers, derivedFtTransfers, derivedNftTransfers,
-            stateCommits, latestEntryCommits, latestEventCommits,
+            stateCommits, latestEntryCommits, latestEventCommits, latestLoopEntryCommits,
           );
           if (convergenceKey === prevConvergenceKey) break;
           if (seenConvergenceKeys.has(convergenceKey)) {
@@ -6101,6 +6148,16 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       }
     }
 
+    // Collections written by a runtime loop (`for(i<n) m[k[i]]=v[i]`): N new entry NFTs at the collection's
+    // entry covenant address (N derived from the VM trace). Mirrors dynamicChunkVars (variable trailing outputs).
+    const entryLoopWrites = abiFunction?.entryLoopWrites ?? [];
+    const loopEntryVars = (stateLayout.collections ?? [])
+      .filter((c) => entryLoopWrites.includes(c.name))
+      .map((c) => ({
+        collection: c.name,
+        lockingBytecode: getEntryNftLockingBytecode(this.inner, this.categoryId, c.name),
+      }));
+
     const builder = new StatefulTransactionBuilder({
       provider: this.inner.provider,
       maximumFeeSatoshis: 50000n,
@@ -6115,6 +6172,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       entryNftLockingBytecodes,
       ...(dynamicChunkVars.length > 0 && { dynamicChunkVars }),
       ...(dynamicChunkInputs.length > 0 && { dynamicChunkInputs }),
+      ...(loopEntryVars.length > 0 && { loopEntryVars }),
       tokenContainers,
       tokenContainerLockingBytecodes,
       ...(satoshiContainerUtxo && { satoshiContainerUtxo, satoshiContainerLockingBytecode }),
@@ -6277,6 +6335,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // Check if there is nothing to derive for this function (e.g., split/merge/unsafe tiers)
     const hasNothingToDerive = requiredNftIndices.length === 0
       && (abiFunction?.entryAccesses?.length ?? 0) === 0
+      && (abiFunction?.entryLoopWrites?.length ?? 0) === 0
       && emitInfos.length === 0
       && derivTransferCount === 0;
 

@@ -1375,6 +1375,22 @@ export default class SymbolTableTraversal extends AstTraversal {
       const entryAccessMap = new Map<string, EntryAccessInfo>();
       this.collectEntryAccesses(node.body, entryAccessMap);
 
+      // Mark a PURE-WRITE mapping assign whose key varies inside a RUNTIME loop (`for(i<n) m[k[i]]=v[i]`): it has
+      // no fixed entry slot, but a runtime-counter-indexed trailing entry output per iteration (emitLoopEntryWrite).
+      // Restricted to the clean case - the ONLY entry access in the function - so the trailing region starts at
+      // blockSize with nothing else to interleave (read/RMW/multi-mapping loop-writes stay guarded for now).
+      // Single collection only: the covenant precomputes ONE entry NFT address and one trailing region, so a
+      // second loop-written mapping would have nowhere sound to land (multi-mapping loop-writes stay guarded).
+      const loopWritten = new Set<string>();
+      this.collectLoopWrittenSlotKeys(node.body, 0, loopWritten);
+      if (loopWritten.size === 1 && entryAccessMap.size === 1) {
+        for (const [sk, info] of entryAccessMap) {
+          if (loopWritten.has(sk) && info.operations.length === 1 && info.operations[0] === 'write') {
+            info.inLoop = true;
+          }
+        }
+      }
+
       if (entryAccessMap.size > 0) {
         // Assign slot indices with written entries (write / read-write / delete) before pure-read entries. A
         // pure-read slot at a LOWER index than a written slot desyncs the covenant vs the SDK: an absent read-only
@@ -2674,6 +2690,24 @@ export default class SymbolTableTraversal extends AstTraversal {
       for (const clause of node.catchClauses) {
         this.collectCollectionIterations(clause.block, iterations);
       }
+    }
+  }
+
+  // Collect the slotKeys (`collection:keyParams`) of mapping ASSIGNS that occur inside a runtime loop
+  // (While/DoWhile). Depth-tracked generic walk; a match at depth>0 is a loop-write candidate.
+  private collectLoopWrittenSlotKeys(node: Node, depth: number, out: Set<string>): void {
+    if (!node) return;
+    if (node instanceof MappingAssignNode && node.collection && depth > 0
+      && !node.arrayIndex && !node.arrayPush && !node.arrayPop) {
+      const { keyParams } = this.getMappingKeyDescriptors(node.keys);
+      out.add(`${node.collection.name}:${keyParams.join(':')}`);
+    }
+    const childDepth = (node instanceof WhileNode || node instanceof DoWhileNode) ? depth + 1 : depth;
+    for (const key of Object.keys(node)) {
+      if (key === 'location' || key === 'definition') continue;
+      const v = (node as unknown as Record<string, unknown>)[key];
+      if (v instanceof Node) this.collectLoopWrittenSlotKeys(v, childDepth, out);
+      else if (Array.isArray(v)) for (const e of v) if (e instanceof Node) this.collectLoopWrittenSlotKeys(e, childDepth, out);
     }
   }
 
@@ -7345,9 +7379,11 @@ export default class SymbolTableTraversal extends AstTraversal {
       }
     }
 
-    // Entries
+    // Entries. A loop-write entry (inLoop) has NO fixed slot - its runtime-variable count of outputs sits in the
+    // trailing region [blockSize, blockSize+N), indexed by the covenant's runtime counter (emitLoopEntryWrite).
     if (node.entryAccesses) {
       for (let i = 0; i < node.entryAccesses.length; i++) {
+        if (node.entryAccesses[i].inLoop) continue;
         slots.push({ kind: 'entry', offset: offset++, slotIndex: i });
       }
     }

@@ -64,40 +64,54 @@ describe('read-after-write same key', () => {
 });
 
 describe('write in loop', () => {
-  // One entry-NFT output slot per keyed access makes writes in a plain loop unsound (last-write-wins
-  // data loss, stale RMW); now EntryWriteInLoopError. Collection iteration remains the update loop.
+  // A pure-write mapping loop (`for(i<n) m[k[i]]=v[i]`) now compiles to a runtime counter-indexed entry-mint
+  // covenant loop, and a fixed-bound loop unrolls to N static writes - both sound. A read-modify-write or a
+  // delete in a loop stays rejected (stale-read / omission unsoundness): still EntryWriteInLoopError.
   const rej = (src: string): void => {
     expect(() => compileString(src, { forceStateful: true })).toThrow(EntryWriteInLoopError);
   };
+  const dep = async (src: string): Promise<any> =>
+    getContractFactory(compileString(src, { forceStateful: true }), await fundedSigner()).deploy();
   const MAP = (body: string): string => `contract C { mapping(int => int) m;
     ${body}
     function chk(int k, int ev) external { require(m[k] == ev); } }`;
+  const ARR = (body: string): string => `contract C { int[3] a;
+    ${body}
+    function chk(int idx, int ev) external { require(a[idx] == ev); } }`;
 
-  describe('entry-backed state write inside a loop is rejected', () => {
-    it('mapping read-modify-write (invariant key)', () => {
+  describe('entry-backed state write inside a loop', () => {
+    it('rejects a mapping read-modify-write in a loop (invariant key, stale read)', () => {
       rej(MAP('function f(int k, int n) external { for (int i = 0; i < n; i++) { m[k] = m[k] + 1; } require(true); }'));
     });
 
-    it('mapping write-only over distinct keys (was silent data loss)', () => {
-      rej(MAP('function f(int n) external { for (int i = 0; i < n; i++) { m[i] = i + 1; } require(true); }'));
-    });
-
-    it('mapping delete in a loop', () => {
+    it('rejects a mapping delete in a loop', () => {
       rej(MAP('function f(int n) external { for (int i = 0; i < n; i++) { delete m[i]; } require(true); }'));
     });
 
-    it('mapping write in a while loop', () => {
-      rej(MAP('function f(int n) external { int i = 0; while (i < n) { m[i] = 1; i = i + 1; } require(true); }'));
+    it('writes distinct mapping keys in a dynamic for-loop (m[i]=i+1 for i<n)', async () => {
+      const sc = await dep(MAP('function f(int n) external { for (int i = 0; i < n; i++) { m[i] = i + 1; } require(true); }'));
+      await sc.f(3n).send();
+      await sc.chk(0n, 1n).send();
+      await sc.chk(2n, 3n).send();
     });
 
-    it('fixed-size state array element write over runtime indices (was silent data loss)', () => {
-      rej('contract C { int[3] a; function f() external { for (int i = 0; i < 3; i++) { a[i] = i + 1; } require(true); }'
-        + ' function chk(int idx, int ev) external { require(a[idx] == ev); } }');
+    it('writes mapping keys in a while loop (m[i]=1 for i<n)', async () => {
+      const sc = await dep(MAP('function f(int n) external { int i = 0; while (i < n) { m[i] = 1; i = i + 1; } require(true); }'));
+      await sc.f(2n).send();
+      await sc.chk(1n, 1n).send();
     });
 
-    it('fixed-size state array element read-modify-write in a loop', () => {
-      rej('contract C { int[3] a; function f() external { for (int i = 0; i < 3; i++) { a[i] = a[i] + 1; } require(true); }'
-        + ' function chk(int idx, int ev) external { require(a[idx] == ev); } }');
+    it('writes fixed-size state array elements over a constant range (unrolled)', async () => {
+      const sc = await dep(ARR('function f() external { for (int i = 0; i < 3; i++) { a[i] = i + 1; } require(true); }'));
+      await sc.f().send();
+      await sc.chk(0n, 1n).send();
+      await sc.chk(2n, 3n).send();
+    });
+
+    it('read-modify-writes fixed-size state array elements in a fixed loop (unrolled)', async () => {
+      const sc = await dep(ARR('function f() external { for (int i = 0; i < 3; i++) { a[i] = a[i] + 1; } require(true); }'));
+      await sc.f().send();
+      await sc.chk(1n, 1n).send();
     });
 
     it('allows a mapping read BEFORE a loop (no entry write in the loop)', async () => {

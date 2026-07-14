@@ -207,6 +207,10 @@ export interface EntryAccessInfo {
   keySources: KeySourceInfo[];  // detailed source info per key
   operations: ('read' | 'write' | 'delete')[];
   slotIndex: number;
+  // A pure-write mapping assign whose key varies per iteration of a RUNTIME loop (`for(i<n) m[k[i]]=v[i]`). It
+  // has no fixed entry slot; the covenant emits a runtime-counter-indexed trailing entry output per iteration
+  // (like the dynamic-chunk write) and the SDK derives the N (key,value) pairs. See emitLoopEntryWrite (GTT).
+  inLoop?: boolean;
   // A WRITE slot on the same collection as a LATER delete of a different key (swap-remove's
   // `indexOf[lastKey]=v; delete indexOf[key]`). When the two keys alias at runtime the write is redundant
   // (the delete wins), and the single entry NFT can't be co-spent by both slots. Set to the delete slot's
@@ -263,6 +267,9 @@ export class FunctionDefinitionNode extends Node implements Named {
   // Dynamic-storage vars written on-chain here; recorded during codegen. SDK consumes old chunks, creates new.
   // A function that only reads `.length` (or doesn't touch the var) must NOT appear, else its chunks are destroyed.
   dynamicWrites?: string[];
+  // Collections written by a runtime loop (`for(i<n) m[k[i]]=v[i]`); recorded during codegen. SDK derives the N
+  // (key,value) pairs from the VM trace and creates N trailing entry NFT outputs (emitLoopEntryWrite).
+  entryLoopWrites?: string[];
   // Function parameters whose value feeds blockhash(n); recorded during codegen. SDK reads the arg to resolve
   // addr(n) and co-spend the (n->hash) oracle UTXO as a trailing input (mirrors dynamicReads auto-injection).
   blockhashReads?: string[];

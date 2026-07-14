@@ -57,8 +57,10 @@ function buildFunctionAbiMetadata(func: FunctionDefinitionNode, isStateful = fal
     ...(isStateful && { writesState: computeWritesState(func) }),
     ...(func.requiredNftIndices !== undefined
       && { requiredNftIndices: func.requiredNftIndices }),
-    ...(func.entryAccesses && func.entryAccesses.length > 0 && {
-      entryAccesses: func.entryAccesses.map((ea) => ({
+    ...(func.entryAccesses && func.entryAccesses.some((ea) => !ea.inLoop) && {
+      // Loop mapping writes (inLoop) are surfaced via entryLoopWrites, not as fixed entry slots; exclude them
+      // here so the SDK's static-entry path does not allocate a slot / derive them positionally.
+      entryAccesses: func.entryAccesses.filter((ea) => !ea.inLoop).map((ea) => ({
         collection: ea.collection,
         keyParams: ea.keyParams,
         ...(ea.keySources && ea.keySources.some((ks) => ks.kind !== 'param') && {
@@ -168,6 +170,7 @@ function buildFunctionAbiMetadata(func: FunctionDefinitionNode, isStateful = fal
     }),
     ...(func.dynamicReads && func.dynamicReads.length > 0 && { dynamicReads: [...func.dynamicReads] }),
     ...(func.dynamicWrites && func.dynamicWrites.length > 0 && { dynamicWrites: [...func.dynamicWrites] }),
+    ...(func.entryLoopWrites && func.entryLoopWrites.length > 0 && { entryLoopWrites: [...func.entryLoopWrites] }),
     ...(func.blockhashReads && func.blockhashReads.length > 0 && { blockhashReads: [...func.blockhashReads] }),
     ...(func.blockLayout && { blockLayout: func.blockLayout }),
   };

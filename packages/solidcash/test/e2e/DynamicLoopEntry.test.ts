@@ -1,0 +1,67 @@
+import { describe, it, expect } from 'vitest';
+import { compileString } from 'solidc';
+import { Contract, StatefulContract, SignatureTemplate } from '../../src/index.js';
+import { alicePriv, alicePub } from '../fixture/vars.js';
+import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
+
+// A DYNAMIC-bound loop (int[] calldata, runtime length) that writes a mapping. Unlike the fixed-bound case
+// (unrolled to N static writes), this compiles to a native OP_BEGIN/OP_UNTIL covenant loop that mints one new
+// entry NFT per iteration at a runtime-counter-indexed trailing output. The SDK derives the N (key,value) pairs
+// from the VM trace and builds N trailing entry outputs. This proves ALL N entries land and read back.
+const SRC = `contract C() {
+  mapping(int => int) bal;
+  function setAll(int[] ks, int[] vs, pubkey pk, sig sg) {
+    require(checkSig(sg, pk));
+    for (uint i = 0; i < ks.length; i = i + 1) { bal[ks[i]] = vs[i]; }
+  }
+  function check(int k, int e, pubkey pk, sig sg) { require(checkSig(sg, pk)); require(bal[k] == e); }
+}`;
+
+describe('dynamic-bound loop mapping write (runtime OP_BEGIN/OP_UNTIL entry mint)', () => {
+  const provider = createTestProvider();
+  const sig = new SignatureTemplate(alicePriv);
+
+  it('compiles to a loop covenant (not unrolled): entryLoopWrites metadata is present', () => {
+    const art = compileString(SRC);
+    const setAll = art.abi.find((f) => f.name === 'setAll');
+    expect(setAll?.entryLoopWrites).toEqual(['bal']);
+    // The loop write is NOT surfaced as a fixed entry slot.
+    expect(setAll?.entryAccesses).toBeUndefined();
+  });
+
+  it('writes all N entries the loop assigns (N=3), each readable back', async () => {
+    const art = compileString(SRC);
+    const contract = new Contract(art, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(provider, contract, art.stateLayout!, {}, { saltContract: true });
+    let sc = StatefulContract.withCategory(contract, categoryId);
+
+    const tx = await sc.setAll([10n, 20n, 30n], [111n, 222n, 333n], alicePub, sig).send();
+    expect(tx.txid).toBeDefined();
+
+    // Each entry is readable back off the persisted state.
+    for (const [k, e] of [[10n, 111n], [20n, 222n], [30n, 333n]] as const) {
+      sc = StatefulContract.withCategory(contract, categoryId);
+      expect((await sc.check(k, e, alicePub, sig).send()).txid).toBeDefined();
+    }
+    // A wrong value is rejected (the entry genuinely holds its assigned value).
+    sc = StatefulContract.withCategory(contract, categoryId);
+    await expect(sc.check(10n, 999n, alicePub, sig).send()).rejects.toThrow();
+  });
+
+  it('handles N=1 (single iteration) and N=2', async () => {
+    const art = compileString(SRC);
+    const contract = new Contract(art, [], { provider });
+
+    const setup1 = await setupStatefulUtxos(provider, contract, art.stateLayout!, {}, { saltContract: true });
+    let sc = StatefulContract.withCategory(contract, setup1.categoryId);
+    expect((await sc.setAll([7n], [77n], alicePub, sig).send()).txid).toBeDefined();
+    sc = StatefulContract.withCategory(contract, setup1.categoryId);
+    expect((await sc.check(7n, 77n, alicePub, sig).send()).txid).toBeDefined();
+
+    const setup2 = await setupStatefulUtxos(provider, contract, art.stateLayout!, {}, { saltContract: true });
+    sc = StatefulContract.withCategory(contract, setup2.categoryId);
+    expect((await sc.setAll([1n, 2n], [11n, 22n], alicePub, sig).send()).txid).toBeDefined();
+    sc = StatefulContract.withCategory(contract, setup2.categoryId);
+    expect((await sc.check(2n, 22n, alicePub, sig).send()).txid).toBeDefined();
+  });
+});

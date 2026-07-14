@@ -439,6 +439,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private functionDeploySiteCount: number = 0;      // count of `new C()` deploy sites in the current function
   private inlineDeployCounterName: string = '__deploy_counter'; // runtime deploys-fired-so-far (loop deploys)
   private inlineDeployActive: boolean = false;      // a loop/function deploy counter is live on the stack
+  private entryLoopCounterName: string = '(loop_entry_counter)'; // entries-written-so-far (loop mapping write)
+  private entryLoopAddrName: string = '(loop_entry_addr)';       // loop-invariant entry NFT P2SH32 (precomputed)
+  private entryLoopActive: boolean = false;         // a loop mapping-write counter + address are live on the stack
   private functionMultiSiteDeploy: boolean = false; // 2+ same-contract sites w/ a conditional: function counter
   // A loop `new C{value:V}()` interleaves its transfer per child; the satoshi container that sources them is
   // conserved (input <= output + counter*V) after the loop's OP_UNTIL. V must be loop-invariant (typically a
@@ -3179,6 +3182,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.collectMappingSlots(node.block, mappingWriteSlots, mappingDeleteSlots);
 
     for (const slotIndex of mappingWriteSlots) {
+      // Loop-write entries emit a runtime-counter-indexed trailing output per iteration (emitLoopEntryWrite); they
+      // have no fixed block slot, so must not be pre-allocated into the fixed-slot epilogue write path.
+      if (this.entrySlots?.[slotIndex]?.inLoop) continue;
       if (!this.preAllocatedEntryWrites.has(slotIndex) && !this.pendingEntryWrites.has(slotIndex)) {
         const keyStackName = `__entry_key_enc_${slotIndex}`;
         const valueStackName = `__entry_value_enc_${slotIndex}`;
@@ -3206,6 +3212,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.pushToStack(this.inlineDeployCounterName);
       this.inlineDeployActive = true;
     }
+
+    // Loop mapping write: precompute the entry NFT address + a runtime counter (entries-written-so-far) BEFORE
+    // OP_BEGIN; emitLoopEntryWrite verifies + increments per iteration, the teardown pins the entry-output count.
+    const loopHasEntryWrite = this.emitLoopEntryWriteSetup(node.block, locationData);
 
     // WHILE LOOP LOGIC
     // while(cond) { body } ->
@@ -3250,6 +3260,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_DROP, { location: node.location, positionHint: PositionHint.END });
       this.popFromStack();
       this.inlineDeployActive = false;
+    }
+
+    // Pin the entry-output count + drop the loop mapping-write temps now the loop is done.
+    if (loopHasEntryWrite) {
+      this.emitLoopEntryWriteTeardown({ location: node.location, positionHint: PositionHint.END });
     }
 
     this.scopeDepth -= 1;
@@ -8982,6 +8997,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   visitMappingAssign(node: MappingAssignNode): Node {
     if (this.plainLoopDepth > 0 && node.entrySlotIndex >= 0) {
+      // A pure-write mapping assign inside a runtime loop (`for(i<n) m[k[i]]=v[i]`) emits a runtime-counter-indexed
+      // trailing entry output per iteration instead of the fixed-slot epilogue write. Marked inLoop by the pre-scan.
+      if (this.entryLoopActive && this.entrySlots?.[node.entrySlotIndex]?.inLoop
+        && !node.arrayIndex && !node.arrayPush && !node.arrayPop) {
+        return this.emitLoopEntryWrite(node);
+      }
       throw new EntryWriteInLoopError(node, node.collection?.name ?? node.name);
     }
     if (node.arrayIndex || node.arrayPush || node.arrayPop) {
@@ -10036,6 +10057,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const locationData = { location: node.location, positionHint: PositionHint.START };
 
     for (let i = 0; i < this.entrySlots.length; i++) {
+      // Loop-write entries are NEW (minted from master, no co-spent input entry) and have no fixed block slot.
+      if (this.entrySlots[i].inLoop) continue;
+
       // Check if entry exists via introspection
       this.emitSlotExistsCheck('entry', i, locationData);
 
@@ -10060,6 +10084,158 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
       this.emit(Op.OP_ENDIF, locationData);
     }
+  }
+
+  /**
+   * Emit one iteration of a loop mapping write `m[k[i]] = v[i]` INLINE: verify the entry NFT output at the trailing
+   * runtime-counter-indexed slot (masterInputIndex + blockSize + counter) has commitment key_enc||value_enc, the
+   * master's base category with mutable (0x01) capability, and the collection's entry P2SH32 locking bytecode; then
+   * increment the counter in place. Precomputed loop-invariant temps (address + counter) are set up in visitWhile.
+   * Modeled on emitDynamicWriteVerification's per-chunk verify (a chunk IS an entry NFT). Stack-neutral per body.
+   */
+  private emitLoopEntryWrite(node: MappingAssignNode): Node {
+    const loc = { location: node.location, positionHint: PositionHint.END };
+    const collection = node.collection!;
+    const allKeyTypes = collection.allKeyTypes;
+    const blockSize = this.currentFunction.blockLayout?.blockSize ?? 1;
+
+    // --- expected commitment = key_enc CAT value_enc  (tracked '(loop_commit)') ---
+    for (let i = 0; i < node.keys.length; i++) {
+      node.keys[i] = this.visit(node.keys[i]);
+      this.emitPushdataEncode(allKeyTypes[i], loc);
+      if (i > 0) {
+        this.emit(Op.OP_CAT, loc);
+        this.popFromStack(2);
+        this.pushToStack('(value)');
+      }
+    }
+    node.expression = this.visit(node.expression);
+    this.emitPushdataEncode(collection.innermostValueType, loc);
+    this.emit(Op.OP_CAT, loc);
+    this.popFromStack(2);
+    this.pushToStack('(loop_commit)');
+
+    // --- outIdx = masterInputIndex + blockSize + counter  (untracked, sits above the tracked (loop_commit)) ---
+    this.emitMasterInputIndex(loc);
+    this.emit(encodeInt(BigInt(blockSize)), loc);
+    this.emit(Op.OP_ADD, loc);
+    this.emit(encodeInt(BigInt(this.getStackIndex(this.entryLoopCounterName) + 1)), loc); // +1: partial outIdx untracked
+    this.emit(Op.OP_PICK, loc);
+    this.emit(Op.OP_ADD, loc); // [..., (loop_commit), outIdx]
+
+    // --- (a) locking bytecode == the loop-invariant entry address ---
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_OUTPUTBYTECODE, loc);
+    this.emit(encodeInt(BigInt(this.getStackIndex(this.entryLoopAddrName) + 2)), loc); // +2: outIdx, lbc untracked
+    this.emit(Op.OP_PICK, loc);
+    this.emit(Op.OP_EQUALVERIFY, loc); // [..., (loop_commit), outIdx]
+
+    // --- (b) category base == master + mutable (0x01) ---
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_OUTPUTTOKENCATEGORY, loc); // [..., outIdx, cat]
+    this.emit(Op.OP_DUP, loc);
+    this.emit(encodeInt(32n), loc);
+    this.emit(Op.OP_SPLIT, loc);
+    this.emit(Op.OP_NIP, loc); // [..., outIdx, cat, capability]
+    this.emit(new Uint8Array([0x01]), loc);
+    this.emit(Op.OP_EQUALVERIFY, loc);
+    this.emitVerifyCatBaseEqMaster(loc); // consumes cat -> [..., outIdx]
+
+    // --- (c) commitment == expected. TIGHT <expected> <idx> OUTPUTTOKENCOMMITMENT EQUALVERIFY so the SDK trace
+    // extractor (extractCommitmentsFromTrace) reads each iteration's key||value. ---
+    this.emit(encodeInt(BigInt(this.getStackIndex('(loop_commit)') + 1)), loc); // +1: outIdx on top
+    this.emit(Op.OP_PICK, loc); // [..., outIdx, expected]
+    this.emit(Op.OP_SWAP, loc); // [..., expected, outIdx]
+    this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, loc); // [..., expected, commitment]
+    this.emit(Op.OP_EQUALVERIFY, loc); // [..., (loop_commit)]
+
+    // drop the tracked expected commitment
+    this.emit(Op.OP_DROP, loc);
+    this.popFromStack();
+
+    // --- increment counter in place (tracker-neutral: the OP_PICK value is untracked, so the +1 offset covers it
+    // and emitReplace consumes it; do NOT popFromStack or the counter's tracked slot desyncs from the stack) ---
+    this.emit(encodeInt(BigInt(this.getStackIndex(this.entryLoopCounterName))), loc);
+    this.emit(Op.OP_PICK, loc);
+    this.emit(Op.OP_1ADD, loc);
+    this.emitReplace(this.getStackIndex(this.entryLoopCounterName) + 1, node);
+
+    return node;
+  }
+
+  /** First entry slot index written by a runtime loop (inLoop) reachable in `node`, or -1. */
+  private findLoopEntryWriteSlot(node: Node): number {
+    let found = -1;
+    const walk = (n: Node): void => {
+      if (found >= 0 || !n) return;
+      const idx = (n as unknown as { entrySlotIndex?: number }).entrySlotIndex;
+      if (typeof idx === 'number' && idx >= 0 && this.entrySlots?.[idx]?.inLoop) {
+        found = idx;
+        return;
+      }
+      for (const key of Object.keys(n)) {
+        if (key === 'location') continue;
+        const v = (n as unknown as Record<string, unknown>)[key];
+        if (v instanceof Node) walk(v);
+        else if (Array.isArray(v)) for (const e of v) if (e instanceof Node) walk(e);
+      }
+    };
+    walk(node);
+    return found;
+  }
+
+  /**
+   * Set up a loop mapping write `for(i<n) m[k[i]]=v[i]`: push the loop-invariant entry NFT P2SH32 address and a
+   * runtime counter (entries-written-so-far = 0) BEFORE OP_BEGIN so both persist across iterations. Returns false
+   * (no-op) when the loop body has no inLoop entry write, or when an outer loop already set one up (a function with
+   * a loop entry write has exactly one entry access, so nesting cannot introduce a second address).
+   */
+  private emitLoopEntryWriteSetup(block: Node, loc: SingleLocationData): boolean {
+    if (this.entryLoopActive) return false;
+    const slot = this.findLoopEntryWriteSlot(block);
+    if (slot < 0) return false;
+    const collectionHash = computeCollectionHash(this.entrySlots[slot].collectionSignature);
+
+    // Record the collection so the SDK derives the N (key,value) pairs + builds N trailing entry outputs.
+    const loopWrites = (this.currentFunction.entryLoopWrites ??= []);
+    if (!loopWrites.includes(this.entrySlots[slot].collection)) loopWrites.push(this.entrySlots[slot].collection);
+
+    // Entry NFT address = base(master category) wrapped in the collection's entry covenant.
+    this.emitMasterInputIndex(loc);
+    this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
+    this.emit(encodeInt(32n), loc);
+    this.emit(Op.OP_SPLIT, loc);
+    this.emit(Op.OP_DROP, loc); // [..., categoryId(32B)]
+    this.pushToStack(this.entryLoopAddrName);
+    this.emitP2sh32FromCovenant((cat) => buildEntryNftCovenantScript(cat, collectionHash), loc);
+    this.stack[0] = this.entryLoopAddrName; // helper renamed top to '(value)'
+
+    this.emit(encodeInt(0n), loc);
+    this.pushToStack(this.entryLoopCounterName);
+
+    this.entryLoopActive = true;
+    return true;
+  }
+
+  /**
+   * Tear down a loop mapping write after OP_UNTIL: pin the entry-output count to the counter (no orphan/duplicate
+   * entry outputs beyond the ones each iteration verified), then drop the counter and the precomputed address.
+   */
+  private emitLoopEntryWriteTeardown(loc: SingleLocationData): void {
+    if (!this.entryLoopActive) return;
+
+    this.emitVerifyChunkUtxoCount(this.entryLoopCounterName, true, loc, this.entryLoopAddrName);
+
+    // Drop counter then address (top-down via getStackIndex; other temps may sit between them and the top).
+    for (const name of [this.entryLoopCounterName, this.entryLoopAddrName]) {
+      const idx = this.getStackIndex(name);
+      this.emit(encodeInt(BigInt(idx)), loc);
+      this.emit(Op.OP_ROLL, loc);
+      this.emit(Op.OP_DROP, loc);
+      this.removeFromStack(idx);
+    }
+
+    this.entryLoopActive = false;
   }
 
   /**
@@ -10637,7 +10813,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * `expectedCountName`. Output side = orphan-bound (no extra/duplicate chunk outputs); input side =
    * old-chunk consumption. Scans all inputs/outputs (mirrors emitMintingNftUniqueness).
    */
-  private emitVerifyChunkUtxoCount(expectedCountName: string, isOutput: boolean, loc: SingleLocationData): void {
+  private emitVerifyChunkUtxoCount(
+    expectedCountName: string, isOutput: boolean, loc: SingleLocationData, addrName: string = '(dyn_chunkaddr)',
+  ): void {
     const countOp = isOutput ? Op.OP_TXOUTPUTCOUNT : Op.OP_TXINPUTCOUNT;
     const bytecodeOp = isOutput ? Op.OP_OUTPUTBYTECODE : Op.OP_UTXOBYTECODE;
 
@@ -10658,7 +10836,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_ELSE, loc);
     this.emit(Op.OP_DUP, loc); // copy index
     this.emit(bytecodeOp, loc); // utxo/output[i] locking bytecode
-    this.emit(encodeInt(BigInt(this.getStackIndex('(dyn_chunkaddr)') + 1)), loc); // +1: lbc untracked
+    this.emit(encodeInt(BigInt(this.getStackIndex(addrName) + 1)), loc); // +1: lbc untracked
     this.emit(Op.OP_PICK, loc);
     this.emit(Op.OP_EQUAL, loc);
     this.emit(Op.OP_IF, loc);
@@ -13626,6 +13804,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     for (let i = 0; i < this.entrySlots.length; i++) {
       // Skip written or deleted entries (handled by emitEntryCovenantVerification)
       if (this.pendingEntryWrites.has(i) || this.pendingEntryDeletes.has(i)) continue;
+      // Loop-write entries are NEW (no input to preserve) and have no fixed block slot.
+      if (this.entrySlots[i].inLoop) continue;
 
       // Check if entry exists via introspection
       this.emitSlotExistsCheck('entry', i, locationData);
@@ -13725,6 +13905,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Entry NFT satoshi and fungible token preservation
     for (let i = 0; i < this.entrySlots.length; i++) {
       if (this.pendingEntryDeletes.has(i)) continue; // deleted entries have no output
+      if (this.entrySlots[i].inLoop) continue; // loop-write entries are new, no input to preserve
 
       // Check if entry exists via introspection
       this.emitSlotExistsCheck('entry', i, locationData);

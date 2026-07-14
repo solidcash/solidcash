@@ -286,6 +286,23 @@ function runtimeMstore(offExpr: ExpressionNode, valExpr: ExpressionNode, src: Yu
   return loc(new BlockNode([decl, growTo(offName, 32n, src), store]), src);
 }
 
+// mstore8(off, val): grow to cover off+1, then splice ONE byte at position off - val's low byte, which is
+// bytes32(val)[0:1] under BCH's little-endian word encoding (byte 0 = the low byte, same convention runtimeMstore
+// writes and runtimeMload reads). A later full-word mload straddling this write reads zeros for the unwritten
+// bytes via runtimeMload's trailing zero pad.
+function runtimeMstore8(offExpr: ExpressionNode, valExpr: ExpressionNode, src: YulNode): StatementNode {
+  yulMemUsed = true;
+  const offName = `__yoff8_${yulTmpN++}`;
+  const off = (): ExpressionNode => loc(new IdentifierNode(offName), src);
+  const decl = loc(new VariableDefinitionNode(UINT256, [], offName, offExpr), src);
+  const head = loc(new SliceNode(yulmem(src), intLit(0n, src), off()), src);
+  const word = loc(new CastNode(BYTES32, valExpr, false), src);
+  const lowByte = loc(new SliceNode(word, intLit(0n, src), intLit(1n, src)), src);
+  const tail = loc(new SliceNode(yulmem(src), addE(off(), intLit(1n, src), src), memLen(src)), src);
+  const store = loc(new AssignNode(yulmem(src), loc(new BytesConcatNode([head, lowByte, tail]), src)), src);
+  return loc(new BlockNode([decl, growTo(offName, 1n, src), store]), src);
+}
+
 // returndatacopy(dst, off, len): splice the last low-level call's return data (the tracked `bytes` var) into
 // __yulmem[dst : dst+len], so a later mload/return reads the copied data. The return data is captured by the
 // external-call lowering as a `bytes` local (lastReturnData). No-op if no call preceded (empty return data).
@@ -1049,8 +1066,12 @@ function lowerStatement(stmt: YulStatementNode): StatementNode {
           return loc(new BlockNode([]), stmt);
         }
       }
-      // mstore8(p, v): not yet lowered (the runtime store writes the raw low byte, but a faithful msize / word
-      // re-read after a sub-word write needs more care); throwing leaves the block for the assembly diagnostic.
+      // mstore8(p, v): sub-byte store -> only the runtime `__yulmem` buffer models it (splice the low byte). The
+      // compile-time constant-offset map is word-granular, so throw to re-lower the whole block on the buffer.
+      if (e.name === 'mstore8' && e.args.length === 2) {
+        if (runtimeMem) return runtimeMstore8(lowerValue(e.args[0]), lowerValue(e.args[1]), e);
+        throw new YulNotLowerable();
+      }
       // mcopy(dst, src, size): the runtime path is a byte-granular memmove on `__yulmem`. The compile-time model
       // handles only constant, word-aligned, fully-mstore'd regions (word-copy in the map); anything else throws
       // and re-lowers at runtime.

@@ -274,15 +274,15 @@ describe('Yul inline assembly (Phase 1: parse + diagnostics)', () => {
   });
 
   it('names the specific unlowerable builtin rather than claiming Yul is wholly unsupported', () => {
-    // A block whose only blocker is an un-lowered builtin (mstore8) reports that builtin by name. (mcopy/msize now
-    // lower via the runtime __yulmem buffer; mstore8 is still deferred.)
+    // A block whose only blocker is an un-lowered builtin (extcodecopy - no BCH analog) reports that builtin by
+    // name. (mstore8/mcopy/msize now lower via the runtime __yulmem buffer.)
     expect(() => compileString(`
       contract C() {
         function f() {
-          assembly { mstore8(0, 0) }
+          assembly { extcodecopy(0, 0, 0, 0) }
           require(true);
         }
-      }`)).toThrow(/not yet lowerable to BCH script: mstore8/);
+      }`)).toThrow(/not yet lowerable to BCH script: extcodecopy/);
   });
 
   it('compiles Yul control-flow (for / switch / if) lowered to the main AST', () => {

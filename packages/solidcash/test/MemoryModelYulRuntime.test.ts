@@ -78,6 +78,27 @@ const SRC = `contract C {
     }
     require(got == 111 + idx * 111);
   }
+  // mstore8 writes ONE byte (val's low byte) at position p. On BCH's little-endian word encoding that byte is the
+  // LOW byte of the word read at p, so mload returns exactly the stored byte (consistent with mstore/mload).
+  function byteStore(uint off, uint b) public {
+    uint r;
+    assembly {
+      mstore8(add(0x80, off), b)
+      r := mload(add(0x80, off))
+    }
+    require(r == b);
+  }
+  // mstore8 writes exactly one byte: two adjacent stores occupy distinct positions (no clobber). Little-endian, so
+  // the byte at 0x80 is the low byte and the byte at 0x81 the next, giving mload(0x80) == 0xab + 0xcd*256.
+  function twoBytes() public {
+    uint r;
+    assembly {
+      mstore8(0x80, 0xab)
+      mstore8(0x81, 0xcd)
+      r := mload(0x80)
+    }
+    require(r == 0xab + 0xcd * 256);
+  }
 }`;
 
 describe('P7: runtime Yul memory (readback)', () => {
@@ -98,5 +119,14 @@ describe('P7: runtime Yul memory (readback)', () => {
   });
   it('assembly and the high-level memory model share one buffer (element 1)', async () => {
     await call('sharedWithMemoryModel', [1n]);
+  });
+  it('mstore8 writes a single byte read back via mload', async () => {
+    await call('byteStore', [0n, 0xabn]);
+  });
+  it('mstore8 at a nonzero dynamic offset', async () => {
+    await call('byteStore', [7n, 0x5an]);
+  });
+  it('adjacent mstore8 bytes do not clobber each other', async () => {
+    await call('twoBytes', []);
   });
 });

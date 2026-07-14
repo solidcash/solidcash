@@ -180,6 +180,12 @@ export interface DeployFromOptions<T extends Artifact = Artifact> {
   // co-spends the factory container (input) + recreates it (output, minus x) + adds the x-sat transfer output.
   // The factory must have been deployed with an initialBalance >= x. Supply the transferred amount here.
   childValue?: bigint;
+  // A deploy function that transfers CashTokens from the factory's token container - e.g. to the freshly-created
+  // child (`Child ch = new Child(...); this.tokens[cat].transfer(<addr>, amt)`). Supply each FT transfer the deploy
+  // performs; deployFrom co-spends the factory's token container, recreates it (amount minus the transfers), and
+  // adds each tcTransfer output. `to` is the recipient locking bytecode/address (pass the child's address to fund
+  // the new contract). See docs/contract-creation.md.
+  childTokenTransfers?: Array<{ categoryId: string; to: string | Uint8Array; amount: bigint }>;
   fundingUtxo: Utxo;                         // must be at vout 0 for token genesis (becomes child category)
   // A LOOP deploy (`for (i<n) new C()`) mints N children - a balanced contract block needs N funding inputs
   // (any value, each vout 0), one per child; child i's category = fundingUtxos[i].txid. When set, this supersedes
@@ -1986,6 +1992,70 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       }
     }
 
+    // A deploy function that transfers CashTokens - e.g. to the freshly-created child - co-spends the factory's
+    // TOKEN container as the source, exactly like any this.tokens[cat].transfer(). Detected from the deploy fn's
+    // tokenContainer block-layout slot; the container input sits after entries (before funding), the recreated
+    // container output + each tcTransfer output after entries (before the child geneses) - matching the layout
+    // [.., tokenContainer, tcTransfer, .., deploy]. The covenant self-preserves the container (LBC + amount) and
+    // pins each transfer (LBC + amount + category), so redirecting the remainder is rejected (TokenContainer test).
+    const hasTokenContainer = deployAbi.blockLayout?.slots.some((s) => s.kind === 'tokenContainer') ?? false;
+    const tokenContainerInputs: Array<{ utxo: Utxo; unlocker: Unlocker }> = [];
+    const tokenContainerOutputs: Array<{ to: string | Uint8Array; amount: bigint; token?: any }> = [];
+    let tokenTransferCost = 0n;
+    if (hasTokenContainer) {
+      if (hasSatoshiContainer) {
+        throw new Error(
+          `Deploy function '${deployFunctionName}' co-spends BOTH a satoshi and a token container; deployFrom `
+          + 'does not yet support that combination in a single deploy.',
+        );
+      }
+      const transfers = options.childTokenTransfers ?? [];
+      if (transfers.length === 0) {
+        throw new Error(
+          `Deploy function '${deployFunctionName}' transfers tokens from the factory's container; pass `
+          + 'childTokenTransfers [{ categoryId, to, amount }] (one per FT transfer the deploy performs).',
+        );
+      }
+      // Group by token category: one co-spent container + recreated remainder per category, then ALL tcTransfer
+      // outputs (block layout groups [..all tokenContainer.., ..all tcTransfer.., deploy]).
+      const byCategory = new Map<string, Array<{ to: string | Uint8Array; amount: bigint }>>();
+      for (const t of transfers) {
+        const list = byCategory.get(t.categoryId) ?? [];
+        list.push({ to: t.to, amount: t.amount });
+        byCategory.set(t.categoryId, list);
+      }
+      const remainderOutputs: Array<{ to: string | Uint8Array; amount: bigint; token?: any }> = [];
+      const transferOutputs: Array<{ to: string | Uint8Array; amount: bigint; token?: any }> = [];
+      for (const [tcCat, ts] of byCategory) {
+        const tcAddr = getTokenContainerAddress(factory.inner, factory.categoryId, tcCat);
+        const sumAmount = ts.reduce((s, t) => s + t.amount, 0n);
+        const tcUtxo = (await provider.getUtxos(tcAddr)).find(
+          (u) => u.token?.category === tcCat && (u.token?.amount ?? 0n) >= sumAmount && !u.token?.nft,
+        );
+        if (!tcUtxo) {
+          throw new Error(
+            `Factory '${factory.name}' has no fungible token container for category ${tcCat} with >= ${sumAmount} `
+            + `tokens at ${tcAddr}. Fund the container before deploying.`,
+          );
+        }
+        tokenContainerInputs.push({
+          utxo: tcUtxo, unlocker: createTokenContainerUnlocker(factory.inner, 0, factory.categoryId, tcCat),
+        });
+        // Recreated container (self-preserved LBC, amount minus the transfers); satoshis preserved from the input.
+        remainderOutputs.push({
+          to: tcAddr,
+          amount: tcUtxo.satoshis,
+          token: { category: tcCat, amount: (tcUtxo.token!.amount ?? 0n) - sumAmount },
+        });
+        // Each tcTransfer output: `amount` tokens of this category to the recipient (dust satoshis from funding).
+        for (const t of ts) {
+          transferOutputs.push({ to: t.to, amount: dataNftAmount, token: { category: tcCat, amount: t.amount } });
+          tokenTransferCost += dataNftAmount;
+        }
+      }
+      tokenContainerOutputs.push(...remainderOutputs, ...transferOutputs);
+    }
+
     // Derive factory state + entry commitments via VM probe. Inputs: master, data NFTs,
     // existing entries, [satoshi container], funding. Outputs: master, data NFTs, entries,
     // [container, value transfer], return event, child outputs.
@@ -1993,8 +2063,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       state: derivedState, entryCommitments, childCommitments: derivedChildCommitments, returnBlob,
     } = await (factory as StatefulContract)._deriveCommitments(
       deployFunctionName, finalArgs, requiredNftIndices,
-      [...entryPlaceholderOutputs, ...containerOutputs, ...returnEventPlaceholders, ...childExtraOutputs],
-      [...entryExtraInputs, ...containerInputs, ...fundingUtxos.map((fu) => ({ utxo: fu, unlocker: funder }))],
+      [...entryPlaceholderOutputs, ...containerOutputs, ...tokenContainerOutputs,
+        ...returnEventPlaceholders, ...childExtraOutputs],
+      [...entryExtraInputs, ...containerInputs, ...tokenContainerInputs,
+        ...fundingUtxos.map((fu) => ({ utxo: fu, unlocker: funder }))],
       entryInfos.length,
       childLayout!.dataNftCount,
       returnEventPlaceholders.length,
@@ -2058,6 +2130,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       builder.addInput(ci.utxo, ci.unlocker);
     }
 
+    // Token container input(s) (the source for a token transfer during deploy), after entries + before funding.
+    for (const ti of tokenContainerInputs) {
+      builder.addInput(ti.utxo, ti.unlocker);
+    }
+
     // Funding UTXOs for the children's token genesis - N inputs, one per child (a balanced contract block: N
     // deploy output groups need N balancing inputs). Each is at vout 0 so its txid sources the child's category.
     for (const fu of fundingUtxos) {
@@ -2118,6 +2195,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       builder.addOutput({ to: co.to, amount: co.amount });
     }
 
+    // Token container output(s): the recreated container (remainder) then each tcTransfer, at their block-layout
+    // slots (after entries / satoshi container, before the return event + child geneses). Matches the layout order
+    // [.., tokenContainer, tcTransfer, ..] and the probe extraOutputs above.
+    for (const tco of tokenContainerOutputs) {
+      builder.addOutput({ to: tco.to, amount: tco.amount, ...(tco.token ? { token: tco.token } : {}) });
+    }
+
     // Return-event (B8) output for a returning deploy function, at its block-layout slot (after entries, before
     // the child genesis). Commitment = the derived return value; anyone-can-spend (OP_TRUE), factory category.
     if (returnEventPlaceholders.length > 0) {
@@ -2173,7 +2257,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const totalEntryCost = dataNftAmount * newEntryCount;
     const returnEventCost = returnEventPlaceholders.length > 0 ? 800n : 0n;
     const totalFundingSats = fundingUtxos.reduce((sum, fu) => sum + fu.satoshis, 0n);
-    const changeAmount = totalFundingSats - totalChildCost - totalEntryCost - returnEventCost - fee;
+    // tokenTransferCost = dust for each tcTransfer output (the token container's own satoshis fund only its
+    // recreated remainder; each transfer output's dust comes from the funding inputs).
+    const changeAmount = totalFundingSats - totalChildCost - totalEntryCost - returnEventCost
+      - tokenTransferCost - fee;
     if (changeAmount > 0n) {
       if (!changeAddress) {
         throw new Error(

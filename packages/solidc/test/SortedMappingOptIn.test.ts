@@ -76,9 +76,17 @@ describe('sorted mapping opt-in (C2)', () => {
       .not.toThrow();
   });
 
-  it('still fails closed on a struct value type', () => {
+  it('compiles a (encodable) struct value type (stored verbatim as the blob tail)', () => {
+    // A struct is stored verbatim in the value tail; a field read decodes it. VM-verified in
+    // SortedMappingStructValue.test.ts.
     const MAP = 'contract C() { struct P { int x; int y; } mapping(int => P) pos;';
     expect(() => compileString(`${MAP} function f(int k) { pos[k] = P(1, 2); } }`, { sortedMappings: ['pos'], forceStateful: true }))
+      .not.toThrow();
+  });
+
+  it('still fails closed on an unbounded bytes value type', () => {
+    const MAP = 'contract C() { mapping(int => bytes) blob;';
+    expect(() => compileString(`${MAP} function f(int k, bytes b) { blob[k] = b; } }`, { sortedMappings: ['blob'], forceStateful: true }))
       .toThrow(SortedMappingCodegenPendingError);
   });
 

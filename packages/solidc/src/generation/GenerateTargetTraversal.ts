@@ -8857,6 +8857,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // address is stored verbatim as its locking bytecode in the (last) value tail - variable width is fine there.
     // Default is empty (address(0)); the SDK derives the value from the trace so it need not know the width.
     if (vt instanceof AddressType) return 'rawbytes';
+    // A struct is an encoded blob (already the on-stack representation); store it verbatim in the value tail.
+    if (vt instanceof StructType) return 'rawbytes';
     return null;
   }
 

@@ -1910,6 +1910,28 @@ describe('inlined value helper: local sharing a struct-field name does not corru
       + '   uint16[2] memory r = _split(arbs[id]); return r; } }';
     expect(ok(src)).toBe('C');
   });
+  it('rebuilds the NESTED struct on a packed struct-array element write (Marketplace jobs[i].roles.creator)', () => {
+    // `arr[i].roles.creator = v` (members [roles, creator]): the packed-array rebuild placed the raw `v` (address)
+    // at the `roles` position instead of reconstructing `Roles(v, arr[i].roles.arbitrator, arr[i].roles.worker)`,
+    // failing "Found (uint8,address,uint256) in call to 'Post' where (uint8,Roles,uint256)". Drove MarketplaceV1's
+    // `JobPost storage jobPost = jobs[jobId]; jobPost.roles.creator = msg.sender`.
+    const S = 'struct Roles { address creator; address arbitrator; address worker; }'
+      + ' struct Post { uint8 state; Roles roles; uint256 amount; }';
+    const ok = (body: string): string => compileString(
+      `${S} contract C { Post[] jobs; function f(uint id) public { ${body} require(true); } }`,
+      { solidityImportCompat: true },
+    ).contractName;
+    expect(ok('jobs[id].roles.creator = msg.sender;')).toBe('C');            // direct
+    expect(ok('Post storage p = jobs[id]; p.roles.creator = msg.sender;')).toBe('C'); // via storage pointer
+    expect(ok('jobs[id].roles.worker = msg.sender; jobs[id].amount = 5;')).toBe('C'); // nested + flat, same elem
+  });
+  it('rebuilds a DEEPER (3-level) nested struct-array element write', () => {
+    const S = 'struct Inner { address a; address b; } struct Mid { Inner inner; uint8 tag; }'
+      + ' struct Outer { uint8 state; Mid mid; uint256 amount; }';
+    const src = `${S} contract C { Outer[] xs; function f(uint id) public {`
+      + ' xs[id].mid.inner.a = msg.sender; require(true); } }';
+    expect(compileString(src, { solidityImportCompat: true }).contractName).toBe('C');
+  });
   it('renames abi.encodeCall(token.method) interfaceName when the helper is inlined (OZ SafeERC20.forceApprove)', () => {
     // `_enc` is inlined (reads state bal[id]), renaming its `token` param to `__rh0_token`. The abi.encodeCall's
     // interfaceName field ('token') must be renamed too, else "Interface 'token' referenced in abi.encodeCall is

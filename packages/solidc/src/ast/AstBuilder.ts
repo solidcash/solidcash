@@ -3447,14 +3447,29 @@ export default class AstBuilder
         fa.location = loc;
         return fa;
       };
-      const newValue = op === '='
+      // A nested-field write (`arr[i].roles.creator = v`, members = [roles, creator]) reads/writes the LEAF; the
+      // value placed at the `roles` position must be the REBUILT nested struct, not the raw leaf value.
+      const leafRead = (): ExpressionNode => {
+        let r = fieldRead(members[0]);
+        for (const m of members.slice(1)) {
+          const fa = new FieldAccessNode(r, m);
+          fa.location = loc;
+          r = fa;
+        }
+        return r;
+      };
+      const rawValue = op === '='
         ? (valueNode ?? this.visit(valueCtx!) as ExpressionNode)
-        : this.compoundRhs(fieldRead(fieldName!), op, valueCtx, loc);
+        : this.compoundRhs(leafRead(), op, valueCtx, loc);
+      const headStruct = members.length > 1 ? this.resolveFieldStruct(structArrayElem, fieldName!) : undefined;
+      const fieldValue = headStruct
+        ? this.rebuildStructWithChain(fieldRead(fieldName!), headStruct, members.slice(1), rawValue, nameLoc, loc)
+        : rawValue;
       const ctorId = new IdentifierNode(structArrayElem.name);
       ctorId.location = nameLoc;
       const ctor = new FunctionCallNode(
         ctorId,
-        structArrayElem.fields.map((f) => (f.name === fieldName ? newValue : fieldRead(f.name))),
+        structArrayElem.fields.map((f) => (f.name === fieldName ? fieldValue : fieldRead(f.name))),
       );
       ctor.location = loc;
       const assign = new StateArrayAssignNode(name, buildKeys()[0], ctor);
@@ -3619,6 +3634,36 @@ export default class AstBuilder
     throw new UnsupportedTypeError({ location: loc } as any);
   }
 
+  // Rebuild `structExpr` (of struct type `t`) with its nested field at `chain` (a field-name chain) replaced by
+  // `finalValue`, producing a `T(f0, .., newField, ..)` constructor that reads the other fields from `structExpr`.
+  // Recurses so `s.a.b = v` reconstructs BOTH levels (`T(.., A(.., v, ..), ..)`). Shared by the struct-var field
+  // rebuild and the packed struct-array element write (`arr[i].a.b = v`).
+  private rebuildStructWithChain(
+    structExpr: ExpressionNode, t: StructType, chain: string[], finalValue: ExpressionNode,
+    nameLoc: Location, loc: Location,
+  ): ExpressionNode {
+    const fieldAccess = (expr: ExpressionNode, field: string): ExpressionNode => {
+      const fa = new FieldAccessNode(expr, field);
+      fa.location = loc;
+      return fa;
+    };
+    const [head, ...rest] = chain;
+    const newField = rest.length === 0
+      ? finalValue
+      : this.rebuildStructWithChain(
+        fieldAccess(cloneNode(structExpr) as ExpressionNode, head), this.resolveFieldStruct(t, head)!,
+        rest, finalValue, nameLoc, loc,
+      );
+    const ctorId = new IdentifierNode(t.name);
+    ctorId.location = nameLoc;
+    const ctor = new FunctionCallNode(
+      ctorId,
+      t.fields.map((f) => (f.name === head ? newField : fieldAccess(cloneNode(structExpr) as ExpressionNode, f.name))),
+    );
+    ctor.location = loc;
+    return ctor;
+  }
+
   // Rebuild a struct's value with the field at `members` (a field-name chain) replaced by `finalValueFn`'s
   // result, and assign it back (struct fields have no in-place write codegen). base is a local/state struct
   // variable; returns undefined when it is not a matching struct field chain (caller falls through). Shared by
@@ -3647,27 +3692,13 @@ export default class AstBuilder
       fa.location = loc;
       return fa;
     };
-    // Rebuild `structExpr` (struct type t) with `structExpr.chain` replaced by finalValue.
-    const rebuild = (structExpr: ExpressionNode, t: StructType, chain: string[], finalValue: ExpressionNode):
-    ExpressionNode => {
-      const [head, ...rest] = chain;
-      const newField = rest.length === 0
-        ? finalValue
-        : rebuild(fieldAccess(cloneNode(structExpr), head), this.resolveFieldStruct(t, head)!, rest, finalValue);
-      const ctorId = new IdentifierNode(t.name);
-      ctorId.location = nameLoc;
-      const ctor = new FunctionCallNode(
-        ctorId,
-        t.fields.map((f) => (f.name === head ? newField : fieldAccess(cloneNode(structExpr), f.name))),
-      );
-      ctor.location = loc;
-      return ctor;
-    };
     let chainRead = baseRead();
     for (const m of members) chainRead = fieldAccess(chainRead, m);
     const finalStruct = chainTypes[chainTypes.length - 1];
     const finalFieldType = finalStruct.fields.find((f) => f.name === members[members.length - 1])!.type;
-    const rebuilt = rebuild(baseRead(), baseStructT, members, finalValueFn(chainRead, finalFieldType));
+    const rebuilt = this.rebuildStructWithChain(
+      baseRead(), baseStructT, members, finalValueFn(chainRead, finalFieldType), nameLoc, loc,
+    );
     const assign: StatementNode = useState
       ? new StateAssignNode(rawName, rebuilt)
       : new AssignNode(baseRead() as IdentifierNode, rebuilt); // local: baseRead() is an IdentifierNode

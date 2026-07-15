@@ -87,3 +87,14 @@ a guarantee and is worth turning on only once a sound alternative exists to poin
 mappings compile unchanged. Suggested phases: (1) nullifier primitive (reuses the C1 identity-pin machinery);
 (2) the authenticated-set mapping type(s) matched to the access pattern (the heavy lift, the only irreducibly
 authenticated-data-structure piece); (3) the diagnostic-as-error backstop, once (1)/(2) give a redirect.
+
+## Status: the sorted-linked-list fix is VM-proven
+
+The B2 sorted-linked-list authenticated set (case 3) is **implemented and proven sound at the covenant level**
+(`sorted-mapping-c2.md`). Absence of `k` is witnessed by co-spending the bracketing predecessor `P` with
+`P.slot < k < P.nextKey`; there is **no default-on-absent branch to omit** - a missing/invalid witness reverts.
+Proven end to end in 20 raw-VM tests (`packages/solidcash/test/e2e/SortedMapping*.test.ts`): a present key has no
+valid bracket, a fabricated predecessor fails category authentication, insert/delete splices are forced correct,
+the comparison is sound at full 32-byte width, and a claim-once (`require(!claimed[a]); claimed[a]=true`) works
+end to end. The remaining work is the compiler opt-in + codegen and the SDK list-management plumbing (engineering,
+no soundness risk) - see `sorted-mapping-c2.md`.

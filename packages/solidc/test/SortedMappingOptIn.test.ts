@@ -68,10 +68,17 @@ describe('sorted mapping opt-in (C2)', () => {
       .not.toThrow();
   });
 
-  it('still fails closed on a non-fixed-width value type (address)', () => {
-    // address is a variable-width locking bytecode (p2sh/p2pkh), not a clean fixed-width tail - fail closed.
+  it('compiles an address value type (stored verbatim as the locking-bytecode tail)', () => {
+    // address is stored verbatim in the (last) value tail; variable width is unambiguous there. VM-verified in
+    // SortedMappingAddressValue.test.ts.
     const MAP = 'contract C() { mapping(int => address) owner;';
     expect(() => compileString(`${MAP} function f(int k, address a) { owner[k] = a; } }`, { sortedMappings: ['owner'], forceStateful: true }))
+      .not.toThrow();
+  });
+
+  it('still fails closed on a struct value type', () => {
+    const MAP = 'contract C() { struct P { int x; int y; } mapping(int => P) pos;';
+    expect(() => compileString(`${MAP} function f(int k) { pos[k] = P(1, 2); } }`, { sortedMappings: ['pos'], forceStateful: true }))
       .toThrow(SortedMappingCodegenPendingError);
   });
 

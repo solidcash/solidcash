@@ -8854,6 +8854,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (vt.toString() === 'bool') return 'int';
     if (vt === PrimitiveType.BIGINT || vt instanceof IntType) return 'int';
     if (vt instanceof BytesType && vt.bound !== undefined && vt.bound >= 1 && vt.bound <= 32) return 'rawbytes';
+    // address is stored verbatim as its locking bytecode in the (last) value tail - variable width is fine there.
+    // Default is empty (address(0)); the SDK derives the value from the trace so it need not know the width.
+    if (vt instanceof AddressType) return 'rawbytes';
     return null;
   }
 

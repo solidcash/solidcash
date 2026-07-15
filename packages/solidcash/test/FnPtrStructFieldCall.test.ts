@@ -1,8 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { compileString } from 'solidc';
-import { Contract, TransactionBuilder } from '../src/index.js';
+import { Contract, TransactionBuilder, getContractFactory } from '../src/index.js';
 import { randomUtxo } from '../src/utils.js';
-import { createTestProvider, verifyTransaction } from './test-util.js';
+import { createTestProvider, verifyTransaction, fundedSigner } from './test-util.js';
 
 // Calling a function-POINTER struct field directly: `s.x()`, `t[i].x()`, `s.inner.x()`. These parse as a
 // namespaced function call / method call, not an indirect call; SymbolTableTraversal rewrites them to an
@@ -73,4 +73,43 @@ describe('fn-ptr struct field call (s.x(), t[i].x(), s.inner.x()) - VM-verified'
       await expect(build(src, 'wrong')).rejects.toThrow();
     });
   }
+});
+
+// The mapping-value form m[k].x() is stateful (mapping is state), so it needs a real deploy + entry write/read
+// rather than the non-stateful spend above. The no-arg form is byte-identical to the `fp = m[k].x; fp()` hoist,
+// but that hoist has no VM test of its own, so verify the covenant end-to-end here (write the pointer into the
+// entry, read it back, invoke). Also covers the arg form, whose bytecode differs from the hoist.
+describe('fn-ptr call on a MAPPING-value struct field (m[k].x()) - VM-verified (stateful)', () => {
+  const deploy = async (src: string): Promise<Record<string, () => { send: () => Promise<unknown> }>> =>
+    getContractFactory(compileString(src, { solidityImportCompat: true }), await fundedSigner()).deploy() as never;
+
+  const MAP = (expected: string): string => `contract C {
+    struct S { function() internal returns (uint) x; }
+    mapping(uint => S) m;
+    function h() internal returns (uint) { return 7; }
+    function f() public { m[0].x = h; require(m[0].x() == ${expected}); }
+  }`;
+  const MAP_ARGS = (expected: string): string => `contract C {
+    struct S { function(uint) internal returns (uint) x; }
+    mapping(uint => S) m;
+    function h(uint a) internal returns (uint) { return a + 1; }
+    function f() public { m[0].x = h; require(m[0].x(3) == ${expected}); }
+  }`;
+
+  it('m[k].x() reads the entry pointer and dispatches (== 7)', async () => {
+    const sc = await deploy(MAP('7'));
+    await expect(sc.f().send()).resolves.toBeDefined();
+  });
+  it('m[k].x() wrong value rejects (== 8)', async () => {
+    const sc = await deploy(MAP('8'));
+    await expect(sc.f().send()).rejects.toThrow();
+  });
+  it('m[k].x(3) passes the arg through the entry pointer (== 4)', async () => {
+    const sc = await deploy(MAP_ARGS('4'));
+    await expect(sc.f().send()).resolves.toBeDefined();
+  });
+  it('m[k].x(3) wrong value rejects (== 9)', async () => {
+    const sc = await deploy(MAP_ARGS('9'));
+    await expect(sc.f().send()).rejects.toThrow();
+  });
 });

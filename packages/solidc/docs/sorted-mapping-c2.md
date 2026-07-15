@@ -61,20 +61,24 @@ Sorted ops need input/output slots beyond the current fixed entry slot:
 These are static per write site (unlike the loop-write trailing region), so they fit the existing 1:1 block
 layout with new slot kinds (`sortedPred`, `sortedNew`). The SDK fills them by predecessor lookup.
 
-## SDK list management
+## SDK list management (SHIPPED)
 
-The SDK maintains an off-chain image of the list (proven in miniature as `ListModel` in
-`SortedMappingClaimOnce.test.ts`): a `slot -> nextKey` map rebuilt by scanning the collection's entry NFTs
-(each commitment gives `(slot, nextKey)`). Operations:
+`SortedList` (`packages/solidcash/src/stateful/SortedList.ts`, exported from the SDK) maintains the off-chain image
+of the list: a sorted array of `(slot, nextKey, value, utxo)` rebuilt from the collection's entry NFTs via
+`SortedList.fromUtxos`. `keyToSlot` = `sha256(key)` with the high bit masked (positive 255-bit, little-endian) so
+the covenant's `OP_BIN2NUM`/`OP_LESSTHAN` compare as unsigned. Operations:
 
-- `predecessorOf(k)` = the entry with the greatest `slot < k` (the bracketing predecessor; `HEAD` for the low
-  gap). O(log N) with a sorted index.
-- `insert(k)`: co-spend `predecessorOf(k)`, emit `P'` (next->k) and `NEW` (k->old next).
-- `delete(k)`: co-spend `predecessorOf(k)` + the `k` node, emit `P'` (next->k.next).
-- `has(k)` / read: co-spend `k`'s entry (membership) or `predecessorOf(k)` (non-membership).
+- `predecessorOf(k)` = the entry with the greatest `slot < k` (the bracketing predecessor; `HEAD` for the low gap).
+- `planNonMembership(k)` / `planMembership(k)`: the entry to co-spend (read).
+- `planInsert(k, value?)`: predecessor to co-spend + the `P'` (next->k) and `NEW` (k->old next) commitments.
+- `planUpdate(k, value)`: the entry + new commitment (link preserved, value only).
+- `planDelete(k)`: predecessor + node to co-spend + the `P'` (next->node.next) commitment.
+- Impossible proofs (non-membership of a present key, insert of a present key, ...) are refused off-chain.
 
-Commitments are still derived from the VM trace (as today), so the SDK need not reconstruct pushdata encodings;
-it only chooses which entries to co-spend and the link targets.
+Every plan is **VM-verified against the proven covenants** (`SortedListSdk.test.ts`): the plan's co-spends +
+commitments, assembled into a transaction, are accepted by the insert/delete/update/non-membership covenants; and
+chained inserts evolve the list correctly. Commitments are still derived from the VM trace (as today), so the SDK
+need not reconstruct pushdata encodings; it only chooses which entries to co-spend and the link targets.
 
 ## Compiler codegen plan (remaining)
 
@@ -90,7 +94,10 @@ it only chooses which entries to co-spend and the link targets.
 
 ## Status
 
-- **Proven & done:** the covenant logic (non-membership, insert, delete, membership), full-width unsigned slot
-  comparison, and the claim-once application - 19 VM tests. The design is sound; C2 has a fix.
-- **Remaining (engineering, no soundness risk):** the compiler opt-in + codegen (step 1-3) and the SDK
-  list-management + auto-derivation wiring (generalize `ListModel`). Tracked for a follow-on.
+- **Proven & done:** the covenant logic (non-membership, insert, delete, membership, update), full-width unsigned
+  slot comparison, and the claim-once application - 26 VM tests. The design is sound; C2 has a fix.
+- **SDK done:** `SortedList` (rebuild from chain, predecessor lookup, the full plan op set) - 11 SDK tests, each
+  plan VM-verified against the proven covenants.
+- **Remaining (engineering, no soundness risk):** the compiler opt-in + codegen (step 1-3 above), and wiring
+  `SortedList` into `StatefulTransactionBuilder` for full tx assembly (unlockers, funding, auto-derivation) -
+  which is coupled to the compiler-emitted contract covenant, so it is built + verified together with the codegen.

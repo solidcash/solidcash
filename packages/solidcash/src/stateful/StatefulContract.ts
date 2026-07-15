@@ -41,8 +41,10 @@ import {
   binsAreEqual,
   AuthenticationProgramStateCommon,
   encodeLockingBytecodeP2pkh,
+  bigIntToVmNumber,
 } from '@bitauth/libauth';
 import { Contract } from '../Contract.js';
+import { SortedList, keyToSlot } from './SortedList.js';
 import { resolveBlockhashCoSpend } from '../oracle/blockhashCoSpend.js';
 import { attachWait } from '../wait.js';
 import Signer from '../Signer.js';
@@ -4588,6 +4590,29 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         }
         const collectionEntries = await collectionEntriesFor(collection.signature);
 
+        // C2 sorted-linked-list mapping (mapping(K=>bool) set): co-spend ONE entry read-only - the exact entry if
+        // k is present, else the bracketing predecessor - which the emitted read covenant needs to return the real
+        // membership bit. slot = keyToSlot(k encoded as its on-stack VM number, matching the covenant's OP_SHA256).
+        if (collection.sorted) {
+          const list = SortedList.fromUtxos(collectionEntries);
+          const keyParamName = access.keySources?.[0]?.paramName ?? access.keyParams[0];
+          const kpi = abiFunction!.inputs.findIndex((inp) => inp.name === keyParamName);
+          const kv = args[kpi] as bigint | boolean | Uint8Array | string;
+          const keyBytes = typeof kv === 'bigint' ? bigIntToVmNumber(kv)
+            : kv instanceof Uint8Array ? kv
+              : typeof kv === 'boolean' ? bigIntToVmNumber(kv ? 1n : 0n)
+                : bigIntToVmNumber(BigInt(kv as unknown as string));
+          const slot = keyToSlot(keyBytes);
+          const entry = list.has(slot) ? list.find(slot)! : list.predecessorOf(slot);
+          const roUnlocker = createReadOnlyEntryNftUnlocker(this.inner, this.categoryId, access.collection);
+          entryNfts.push({
+            slotIndex, collection: access.collection, keyType: collection.keyType, valueType: collection.valueType,
+            keyValue: kv as bigint | boolean | Uint8Array, exists: true,
+            utxo: { ...entry.utxo, unlocker: roUnlocker },
+          });
+          continue;
+        }
+
         // Determine key types and values (supports multi-key nested mappings)
         const effectiveKeyTypes = collection.keyTypes ?? [collection.keyType];
         const keyValues: Array<bigint | boolean | Uint8Array> = [];
@@ -6347,8 +6372,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // Kill-switch: SC_DISABLE_GETTER_SKIP=1 forces the full probe (escape hatch for the covenant-path change).
     // Read via globalThis - this is a browser+node library, so `process` is not typed/present in the prod build.
     const env = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env;
+    // A sorted (C2) mapping read REQUIRES co-spending the bracketing entry (no skippable default-on-absent), so
+    // it must not be getter-skipped even though the function writes nothing.
+    const readsSortedMapping = (abiFunction?.entryAccesses ?? [])
+      .some((ea) => stateLayout.collections?.find((c) => c.name === ea.collection)?.sorted);
     const isReadOnlyGetter = env?.SC_DISABLE_GETTER_SKIP !== '1'
       && abiFunction?.writesState === false
+      && !readsSortedMapping
       && returnEmitOutputIndex < 0
       && externalCallUtxoGroups.length === 0
       && externalOutStateUtxoGroups.length === 0;

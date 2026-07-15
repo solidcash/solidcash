@@ -24,12 +24,14 @@ describe('sorted mapping opt-in (C2)', () => {
     expect(art.stateLayout?.collections?.find((c) => c.name === 'b')?.sorted).toBeUndefined();
   });
 
-  it('fails closed on a source-level read of a sorted mapping (no unsound codegen)', () => {
+  it('compiles a source-level read of a sorted mapping (emits the C2 read covenant)', () => {
+    // The read codegen is implemented + VM-verified (SortedMappingCompiledRead.test.ts); it emits the proven
+    // membership/bracket covenant instead of the omittable entry-model read.
     expect(() => compileString(`${SET} function f(int k) { require(!claimed[k]); } }`, { sortedMappings: ['claimed'], forceStateful: true }))
-      .toThrow(SortedMappingCodegenPendingError);
+      .not.toThrow();
   });
 
-  it('fails closed on a source-level write of a sorted mapping', () => {
+  it('fails closed on a source-level WRITE of a sorted mapping (upsert codegen pending)', () => {
     expect(() => compileString(`${SET} function f(int k) { claimed[k] = true; } }`, { sortedMappings: ['claimed'], forceStateful: true }))
       .toThrow(SortedMappingCodegenPendingError);
   });

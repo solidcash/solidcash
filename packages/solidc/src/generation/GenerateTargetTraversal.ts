@@ -8852,49 +8852,44 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const slotIndex = node.entrySlotIndex;
     const collectionHash = computeCollectionHash(this.entrySlots[slotIndex].collectionSignature);
 
-    // Entry address = base(master category) wrapped in the collection's entry covenant. Track the categoryId so
-    // emitP2sh32FromCovenant's popFromStack consumes IT (not a real tracked var), then untrack the resulting
-    // address (it is an untracked working value for the checks below).
-    this.emitMasterInputIndex(loc);
-    this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
-    this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_DROP, loc); // [categoryId]
-    this.pushToStack('(sortedaddr)');
-    this.emitP2sh32FromCovenant((cat) => buildEntryNftCovenantScript(cat, collectionHash), loc); // [entryAddr]
-    this.popFromStack();
-
-    // input[slot] bytecode == entryAddr (a real entry of this collection; omission -> mismatch -> revert).
-    this.emitEntryInputIndex(slotIndex, loc, 1);      // [entryAddr, idx]
-    this.emit(Op.OP_DUP, loc);                        // [entryAddr, idx, idx]
-    this.emit(Op.OP_UTXOBYTECODE, loc);               // [entryAddr, idx, inbc]
-    this.emit(encodeInt(2n), loc); this.emit(Op.OP_PICK, loc); // [entryAddr, idx, inbc, entryAddr]
-    this.emit(Op.OP_EQUALVERIFY, loc);                // [entryAddr, idx]
-    this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_DROP, loc); // [idx]  (drop entryAddr)
-
-    // read commitment -> slot32, nextKey32
-    this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc);        // [commit]
-    this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc);                       // [slot32, rest]
-    this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_DROP, loc); // [slot32, nextKey32]
-
-    // Push the key. slot32 + nextKey32 are 2 untracked values on the real stack, so a param PICK is offset by 2.
+    // 1. H(k) = sha256(k) with the last byte's high bit cleared (matches SortedList.keyToSlot). Computed FIRST so
+    // it sits at the bottom of the working area, giving the proven [Hk32, slot32, nextKey32] layout.
     const keySource = this.entrySlots[slotIndex].keySources?.[0];
     if (!keySource || keySource.kind === 'param') {
       const keyParamName = keySource?.paramName ?? this.entrySlots[slotIndex].keyParams[0];
-      this.emit(encodeInt(BigInt(this.getStackIndex(keyParamName) + 2)), loc);
-      this.emit(Op.OP_PICK, loc);                     // [slot32, nextKey32, key]
+      this.emit(encodeInt(BigInt(this.getStackIndex(keyParamName))), loc);
+      this.emit(Op.OP_PICK, loc);                     // [key]
     } else {
-      this.pushToStack('(sr0)'); this.pushToStack('(sr1)');
       node.keys[0] = this.visit(node.keys[0]);
-      this.popFromStack();
-      this.removeFromStack(this.getStackIndex('(sr1)'));
-      this.removeFromStack(this.getStackIndex('(sr0)'));
+      this.popFromStack();                            // [key] (untrack)
     }
-    // H(k) = sha256(k) with the last byte's high bit cleared (matches SortedList.keyToSlot).
     this.emit(Op.OP_SHA256, loc);
-    this.emit(encodeInt(31n), loc); this.emit(Op.OP_SPLIT, loc);   // [.., h0_31, lastByte]
+    this.emit(encodeInt(31n), loc); this.emit(Op.OP_SPLIT, loc);   // [h0_31, lastByte]
     this.emit(new Uint8Array([0x7f]), loc); this.emit(Op.OP_AND, loc);
-    this.emit(Op.OP_CAT, loc);                        // [slot32, nextKey32, Hk32]
+    this.emit(Op.OP_CAT, loc);                        // [Hk32]
 
-    // membership: slot32 == Hk32
+    // 2. Entry address = base(master category) wrapped in the collection's entry covenant. Track the categoryId so
+    // emitP2sh32FromCovenant's popFromStack consumes IT (not a real tracked var), then untrack the address.
+    this.emitMasterInputIndex(loc);
+    this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
+    this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_DROP, loc); // [Hk32, categoryId]
+    this.pushToStack('(sortedaddr)');
+    this.emitP2sh32FromCovenant((cat) => buildEntryNftCovenantScript(cat, collectionHash), loc); // [Hk32, entryAddr]
+    this.popFromStack();
+
+    // 3. input[slot] bytecode == entryAddr (a real entry of this collection; omission -> mismatch -> revert),
+    // then read its commitment -> slot32, nextKey32.
+    this.emitEntryInputIndex(slotIndex, loc, 1);      // [Hk32, entryAddr, idx]
+    this.emit(Op.OP_DUP, loc);                        // [Hk32, entryAddr, idx, idx]
+    this.emit(Op.OP_UTXOBYTECODE, loc);               // [Hk32, entryAddr, idx, inbc]
+    this.emit(encodeInt(2n), loc); this.emit(Op.OP_PICK, loc); // [Hk32, entryAddr, idx, inbc, entryAddr]
+    this.emit(Op.OP_EQUALVERIFY, loc);                // [Hk32, entryAddr, idx]
+    this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_DROP, loc); // [Hk32, idx]  (drop entryAddr)
+    this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc);        // [Hk32, commit]
+    this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc);                       // [Hk32, slot32, rest]
+    this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_DROP, loc); // [Hk32, slot32, nextKey32]
+
+    // 4. membership: slot32 == Hk32 (proven fragment; SortedMappingRead.test.ts)
     this.emit(Op.OP_OVER, loc);                       // copy slot32 (depth1)
     this.emit(encodeInt(3n), loc); this.emit(Op.OP_PICK, loc); // copy Hk32 (depth3)
     this.emit(Op.OP_EQUAL, loc);                      // [slot32, nextKey32, Hk32, isPresent]

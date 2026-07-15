@@ -35,7 +35,8 @@ describe('sorted struct-valued mapping', () => {
     });
     const categoryId = result.categoryId;
     const ea = getEntryNftAddress(contract.withCategory(hexToBin(categoryId)), categoryId, 'pos');
-    const present = async (k: bigint): Promise<boolean> => SortedList.fromUtxos(await provider.getUtxos(ea)).has(keyToSlot(bigIntToVmNumber(k)));
+    const present = async (k: bigint): Promise<boolean> =>
+      SortedList.fromUtxos(await provider.getUtxos(ea)).has(keyToSlot(bigIntToVmNumber(k)));
     const call = (fn: 'setP' | 'checkXY', ...a: unknown[]): Promise<{ txid: string }> => {
       type Caller = Record<string, (...args: unknown[]) => { send: () => Promise<{ txid: string }> }>;
       return (StatefulContract.withCategory(contract, categoryId) as unknown as Caller)[fn](...a, alicePub, sig).send();

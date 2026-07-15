@@ -1872,6 +1872,30 @@ describe('low-level .call on a struct-field address receiver (MultiSigWallet tra
   });
 });
 
+// `(stateVar,) = <tuple RHS>` - a PARTIAL tuple assignment (with a discarded `,` slot) to an EXISTING state
+// variable. The all-captured `(a, b) = f()` desugars to temps + state writes, but the skip slot made
+// desugarStateTupleAssignment bail, so the codegen treated the state var as a stack slot: "Expected variable
+// 'z' does not exist on the stack". The desugar now preserves skips. `(bool ok,) = addr.call(data)` with `ok`
+// pre-declared is the driver (MultiSigWallet-style low-level-call return capture).
+describe('partial tuple-assign to a state variable ((z,) = f() / (z,) = addr.call(x))', () => {
+  const ok = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  const two = 'function two() pure returns (bool, uint) { return (true, 1); }';
+  it('partial tuple-assign of a multi-return call to a state var', () => {
+    expect(ok(`${two} contract C { bool z; function f() public { (z,) = two(); require(z); } }`)).toBe('C');
+  });
+  it('partial tuple-assign of a low-level-call return to a state var', () => {
+    expect(ok('contract C { bool z; function f(address d, bytes calldata x) public {'
+      + ' (z,) = d.call(x); require(z); } }')).toBe('C');
+  });
+  it('still works with all slots captured to state vars (regression)', () => {
+    expect(ok(`${two} contract C { bool z; uint u; function f() public { (z, u) = two(); require(z); } }`)).toBe('C');
+  });
+  it('partial tuple-assign to a mixed state + skip + local target', () => {
+    expect(ok('function three() pure returns (bool, uint, uint) { return (true, 1, 2); }'
+      + ' contract C { bool z; function f() public { uint local; (z, , local) = three(); require(z && local == 2); } }')).toBe('C');
+  });
+});
+
 // `IFoo(<state chain>).m()` - a plain-`address` field reached through self-pinned STATE, cast to an interface
 // (the cast supplies the callee ABI). Generalizes the `IFoo(stateVar)` cast to a struct-field/mapping-value/array
 // chain, hoisting `IFoo(chain)` into a synthesized __extaddr_ local. This is the EACC Marketplace shape

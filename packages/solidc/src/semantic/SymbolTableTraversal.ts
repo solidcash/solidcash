@@ -4618,14 +4618,20 @@ export default class SymbolTableTraversal extends AstTraversal {
   // target sequentially (visitAssign routes state targets to StateAssign). Temps keep swaps clobber-safe.
   // Struct/array/mapping targets keep their storage-pointer rebinding semantics and are left alone.
   private desugarStateTupleAssignment(node: TupleAssignmentNode): Node | undefined {
-    if (node.elements.length === 0 || !node.elements.every((e) => e.existing && e.name)) return undefined;
-    if (node.tupleExpressions && node.tupleExpressions.length !== node.elements.length) return undefined;
-    const syms = node.elements.map((e) => this.symbolTables[0].get(e.name!));
-    if (!syms.every((s) => s?.type)) return undefined;
-    if (!syms.some((s) => s!.symbolType === SymbolType.STATE_VARIABLE)) return undefined;
+    // Every slot is a SKIP (`,` discard) or an existing named lvalue. A partial tuple `(z,) = call()` (skip +
+    // state var) must be handled too - without it the codegen treats the state target as a stack slot and fails
+    // "Expected variable 'z' does not exist on the stack". Skips are preserved as discards below.
+    if (node.elements.length === 0 || !node.elements.every((e) => e.skip || (e.existing && e.name))) return undefined;
+    if (node.tupleExpressions) {
+      if (node.tupleExpressions.length !== node.elements.length) return undefined;
+      if (node.elements.some((e) => e.skip)) return undefined; // N-expr tuple + skip: leave to the general path
+    }
+    const syms = node.elements.map((e) => (e.skip ? undefined : this.symbolTables[0].get(e.name!)));
+    if (!node.elements.every((e, i) => e.skip || syms[i]?.type)) return undefined;
+    if (!syms.some((s) => s?.symbolType === SymbolType.STATE_VARIABLE)) return undefined;
     const plainScalar = (t: Type): boolean => !(t instanceof StructType)
       && !(t instanceof ArrayType) && !(t instanceof MappingType) && !(t instanceof TupleType);
-    if (!syms.every((s) => plainScalar(s!.type!))) return undefined;
+    if (!node.elements.every((e, i) => e.skip || plainScalar(syms[i]!.type!))) return undefined;
 
     const stmts: StatementNode[] = [];
     const tmpNames = node.elements.map(() => `__tuple_state_${this.tupleStateTempCounter++}`);
@@ -4636,15 +4642,17 @@ export default class SymbolTableTraversal extends AstTraversal {
         stmts.push(def);
       });
     } else {
-      // Single tuple-valued RHS (e.g. a multi-return call): destructure into temp declarations first.
+      // Single tuple-valued RHS (e.g. a multi-return call): destructure into temp declarations first, preserving
+      // skip slots so a partial `(z,) = f()` drops the discarded return value.
       const decl = new TupleAssignmentNode(
-        node.elements.map((_, i) => ({ name: tmpNames[i], type: syms[i]!.type! })),
+        node.elements.map((e, i) => (e.skip ? { skip: true } : { name: tmpNames[i], type: syms[i]!.type! })),
         node.tuple, node.parenthesised,
       );
       decl.location = node.location;
       stmts.push(decl);
     }
     node.elements.forEach((e, i) => {
+      if (e.skip) return;
       const target = new IdentifierNode(e.name!);
       target.location = node.location;
       const value = new IdentifierNode(tmpNames[i]);

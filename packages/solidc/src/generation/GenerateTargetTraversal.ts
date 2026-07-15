@@ -371,6 +371,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private stateVariables: StateVariableNode[] = [];
   private collectionCount: number = 0;
   private sortedCollections: Set<string> = new Set(); // C2 sorted (linked-list) collection names
+  private sortedWrittenCollections: Set<string> = new Set(); // sorted collections written in the current function
   private dataNftCount: number = 0;
   private pendingStateWrites: Map<string, string> = new Map(); // "nftIndex:fieldIndex" -> stack name
   private hasStateAccess: boolean = false;
@@ -1439,6 +1440,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.pendingStateWrites = new Map();
     this.pendingEntryWrites = new Map();
     this.pendingEntryDeletes = new Set();
+    this.sortedWrittenCollections = new Set();
     this.pendingDynamicWrites = new Map();
     this.pendingTransfers = [];
     this.transferInfos = node.transferInfos ?? [];
@@ -9152,6 +9154,113 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
+   * Like emitVerifySortedEntryOutput but pins the commitment to THREE fields field1||field2||field3 - a value
+   * entry commitment slot(32)||nextKey(32)||value (field3 may be an empty value tail). Depths measured with the
+   * (untracked) output index outIdx on top. Consumes outIdx; leaves the working area unchanged.
+   */
+  private emitVerifySortedValueOutput(
+    loc: SingleLocationData, addrDepth: number, f1Depth: number, f2Depth: number, f3Depth: number,
+  ): void {
+    this.emit(Op.OP_DUP, loc); this.emit(Op.OP_OUTPUTBYTECODE, loc);      // [.., outIdx, outbc]
+    this.emit(encodeInt(BigInt(addrDepth + 1)), loc); this.emit(Op.OP_PICK, loc);
+    this.emit(Op.OP_EQUALVERIFY, loc);                                    // bytecode == entryAddr
+    this.emit(Op.OP_DUP, loc); this.emit(Op.OP_OUTPUTTOKENCATEGORY, loc); // [.., outIdx, cat]
+    this.emit(Op.OP_DUP, loc); this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_NIP, loc);
+    this.emit(Op.OP_1, loc); this.emit(Op.OP_EQUALVERIFY, loc);           // capability mutable
+    this.emitVerifyCatBaseEqMaster(loc);                                  // base == master -> [.., outIdx]
+    this.emit(encodeInt(BigInt(f1Depth)), loc); this.emit(Op.OP_PICK, loc);      // f1 (baseline)
+    this.emit(encodeInt(BigInt(f2Depth + 1)), loc); this.emit(Op.OP_PICK, loc);  // f2 (+1: f1 copy)
+    this.emit(Op.OP_CAT, loc);                                           // f1||f2
+    this.emit(encodeInt(BigInt(f3Depth + 1)), loc); this.emit(Op.OP_PICK, loc);  // f3 (+1: f1||f2 blob)
+    this.emit(Op.OP_CAT, loc);                                           // f1||f2||f3
+    this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, loc); this.emit(Op.OP_EQUALVERIFY, loc);
+  }
+
+  /**
+   * Sorted (C2) value mapping WRITE `m[k] = v` for `mapping(K => int)` - an UPSERT. Co-spends ONE entry at the
+   * entry slot: the exact k-entry if present (SDK planUpdate), else the bracketing predecessor (planInsert). The
+   * covenant reads its commitment slot(32)||nextKey(32)||value and branches on slot == H(k):
+   *   present -> UPDATE: pin the entry output = slot||nextKey||v (link preserved, value set to the RHS).
+   *   absent  -> INSERT: verify slot < H(k) < nextKey; pin P' = slot||H(k)||predValue at the entry output and
+   *              NEW = H(k)||nextKey||v at the trailing mint output[blockSize].
+   * Both fragments are proven (SortedMappingInsertDelete.test.ts: insert splice + value update). The value tail is
+   * stored raw (minimal script number); the SDK encodes it identically via bigIntToVmNumber.
+   */
+  private emitSortedValueUpsert(node: MappingAssignNode): Node {
+    const loc = { location: node.location, positionHint: PositionHint.END };
+    const collection = node.collection!;
+    const slotIndex = node.entrySlotIndex;
+    const collectionHash = computeCollectionHash(this.entrySlots[slotIndex].collectionSignature);
+    const blockSize = this.currentFunction.blockLayout?.blockSize ?? 1;
+    const loopWrites = (this.currentFunction.entryLoopWrites ??= []);
+    if (!loopWrites.includes(collection.name)) loopWrites.push(collection.name);
+    this.sortedWrittenCollections.add(collection.name);
+
+    // 1. RHS value v (int) at the bottom of the working area - kept tracked, consumed at the end.
+    node.expression = this.visit(node.expression);
+    this.emit(Op.OP_BIN2NUM, loc);                     // normalize to a minimal number (matches SDK bigIntToVmNumber)
+
+    // 2. H(k) -> [v, Hk32]
+    const keySource = this.entrySlots[slotIndex].keySources?.[0];
+    if (!keySource || keySource.kind === 'param') {
+      const keyParamName = keySource?.paramName ?? this.entrySlots[slotIndex].keyParams[0];
+      this.emit(encodeInt(BigInt(this.getStackIndex(keyParamName))), loc); this.emit(Op.OP_PICK, loc);
+    } else {
+      node.keys[0] = this.visit(node.keys[0]); this.popFromStack();
+    }
+    this.emit(Op.OP_SHA256, loc);
+    this.emit(encodeInt(31n), loc); this.emit(Op.OP_SPLIT, loc);
+    this.emit(new Uint8Array([0x7f]), loc); this.emit(Op.OP_AND, loc); this.emit(Op.OP_CAT, loc); // [v, Hk32]
+
+    // 3. entry address -> [v, Hk32, entryAddr]
+    this.emitMasterInputIndex(loc); this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
+    this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_DROP, loc);
+    this.pushToStack('(sortedaddr)');
+    this.emitP2sh32FromCovenant((cat) => buildEntryNftCovenantScript(cat, collectionHash), loc);
+    this.popFromStack();
+
+    // 4. co-spent entry input[slot]: bytecode == entryAddr, read [coSlot|coNext|coValue]
+    //    -> [v, Hk32, entryAddr, coSlot32, coNext32, coValue]
+    this.emitEntryInputIndex(slotIndex, loc, 2);
+    this.emit(Op.OP_DUP, loc); this.emit(Op.OP_UTXOBYTECODE, loc);
+    this.emit(encodeInt(2n), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_EQUALVERIFY, loc);
+    this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc);
+    this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc);
+    this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc);       // [v, Hk32, entryAddr, coSlot32, coNext32, coValue]
+
+    // 5. branch on coSlot32 == Hk32 (present -> update; absent -> insert)
+    this.emit(encodeInt(2n), loc); this.emit(Op.OP_PICK, loc);         // copy coSlot32 (depth2)
+    this.emit(encodeInt(5n), loc); this.emit(Op.OP_PICK, loc);         // copy Hk32 (depth4 +1)
+    this.emit(Op.OP_EQUAL, loc);                                       // [.., coValue, isPresent]
+    this.emit(Op.OP_IF, loc);
+    // --- UPDATE: entry output == coSlot32 || coNext32 || v (link preserved, value = v) ---
+    this.emitEntryOutputIndex(slotIndex, loc, 6);                      // [.., coValue, outIdx]
+    this.emitVerifySortedValueOutput(loc, 4, 3, 2, 6);                 // addr4, coSlot32 d3, coNext32 d2, v d6
+    this.emit(Op.OP_ELSE, loc);
+    // --- INSERT: bracket coSlot < H(k) < coNext, then P' + NEW ---
+    this.emit(encodeInt(2n), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_BIN2NUM, loc); // coSlot#
+    this.emit(encodeInt(5n), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_BIN2NUM, loc); // Hk#
+    this.emit(Op.OP_LESSTHAN, loc); this.emit(Op.OP_VERIFY, loc);                             // coSlot < H(k)
+    this.emit(encodeInt(1n), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_BIN2NUM, loc); // coNext#
+    this.emit(Op.OP_DUP, loc); this.emit(Op.OP_0, loc); this.emit(Op.OP_NUMEQUAL, loc);
+    this.emit(Op.OP_IF, loc); this.emit(Op.OP_DROP, loc);                                     // +inf ok
+    this.emit(Op.OP_ELSE, loc);
+    this.emit(encodeInt(5n), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_BIN2NUM, loc); // Hk# (coNext# above)
+    this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_LESSTHAN, loc); this.emit(Op.OP_VERIFY, loc); // H(k) < coNext
+    this.emit(Op.OP_ENDIF, loc);                                        // [.., coValue]
+    this.emitEntryOutputIndex(slotIndex, loc, 6);                       // P' outIdx -> [.., coValue, poutIdx]
+    this.emitVerifySortedValueOutput(loc, 4, 3, 5, 1);                  // P' = coSlot32 d3 || Hk32 d5 || coValue d1
+    this.emitMasterInputIndex(loc); this.emit(encodeInt(BigInt(blockSize)), loc); this.emit(Op.OP_ADD, loc); // NEW outIdx
+    this.emitVerifySortedValueOutput(loc, 4, 5, 2, 6);                  // NEW = Hk32 d5 || coNext32 d2 || v d6
+    this.emit(Op.OP_ENDIF, loc);
+
+    // drop coValue, coNext, coSlot, entryAddr, Hk32 (untracked), then v (tracked)
+    this.emit(Op.OP_2DROP, loc); this.emit(Op.OP_2DROP, loc); this.emit(Op.OP_DROP, loc);
+    this.emit(Op.OP_DROP, loc); this.popFromStack();
+    return node;
+  }
+
+  /**
    * Sorted-set (C2) mapping WRITE `m[k] = true` (insert into the sorted linked list). Co-spends the bracketing
    * predecessor P[Ps|S] at the entry slot (write path), verifies Ps < H(k) < S (k absent), and pins two outputs at
    * the collection's entry P2SH: P' = [Ps|H(k)] at the entry output slot (predecessor's next rewritten to k) and
@@ -9170,6 +9279,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const blockSize = this.currentFunction.blockLayout?.blockSize ?? 1;
     const loopWrites = (this.currentFunction.entryLoopWrites ??= []);
     if (!loopWrites.includes(collection.name)) loopWrites.push(collection.name);
+    this.sortedWrittenCollections.add(collection.name);
 
     // RHS must be `true` (a set insert). Evaluate + require it, then drop.
     node.expression = this.visit(node.expression);
@@ -9228,10 +9338,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   visitMappingAssign(node: MappingAssignNode): Node {
-    // Sorted (C2 linked-list) mapping write `m[k] = true`: insert into the sorted list (co-spend the bracketing
-    // predecessor, mint a new node). Never the omittable entry-model write.
+    // Sorted (C2 linked-list) mapping write `m[k] = v`: never the omittable entry-model write. A set
+    // (mapping(K=>bool)) is an insert-only splice (re-writing a present key reverts on the bracket); a value
+    // mapping (mapping(K=>int)) is an upsert (update the value if present, else insert). Single-key, no array ops.
+    if (node.collection?.sorted && !node.arrayIndex && !node.arrayPush && !node.arrayPop
+      && node.collection.allKeyTypes.length === 1) {
+      const vt = node.collection.innermostValueType;
+      if (vt.toString() === 'bool') return this.emitSortedSetWrite(node);
+      if (vt === PrimitiveType.BIGINT || vt instanceof IntType) return this.emitSortedValueUpsert(node);
+    }
     if (node.collection?.sorted) {
-      return this.emitSortedSetWrite(node);
+      return this.emitSortedSetWrite(node); // unsupported sorted shape -> fail closed inside
     }
     if (this.plainLoopDepth > 0 && node.entrySlotIndex >= 0) {
       // A pure-write mapping assign inside a runtime loop (`for(i<n) m[k[i]]=v[i]`) emits a runtime-counter-indexed
@@ -14043,10 +14160,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (this.pendingEntryWrites.has(i) || this.pendingEntryDeletes.has(i)) continue;
       // Loop-write entries are NEW (no input to preserve) and have no fixed block slot.
       if (this.entrySlots[i].inLoop) continue;
-      // A sorted-set WRITE co-spends the predecessor and rewrites it to P' (output != input), so it must not be
-      // read-only-preserved; emitSortedSetWrite handles the input + P' output inline.
-      if (this.sortedCollections.has(this.entrySlots[i].collection)
-        && this.entrySlots[i].operations.includes('write')) continue;
+      // A sorted mapping WRITE co-spends an entry and rewrites it (output != input: P' on insert, k' on update),
+      // so it must not be read-only-preserved; emitSortedSetWrite/emitSortedValueUpsert handle it inline.
+      if (this.sortedWrittenCollections.has(this.entrySlots[i].collection)) continue;
 
       // Check if entry exists via introspection
       this.emitSlotExistsCheck('entry', i, locationData);
@@ -14147,8 +14263,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     for (let i = 0; i < this.entrySlots.length; i++) {
       if (this.pendingEntryDeletes.has(i)) continue; // deleted entries have no output
       if (this.entrySlots[i].inLoop) continue; // loop-write entries are new, no input to preserve
-      if (this.sortedCollections.has(this.entrySlots[i].collection)
-        && this.entrySlots[i].operations.includes('write')) continue; // sorted write: input -> P', handled inline
+      // sorted write: input -> P'/k', handled inline (not preserved)
+      if (this.sortedWrittenCollections.has(this.entrySlots[i].collection)) continue;
 
       // Check if entry exists via introspection
       this.emitSlotExistsCheck('entry', i, locationData);

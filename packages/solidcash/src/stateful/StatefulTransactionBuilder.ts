@@ -193,6 +193,7 @@ export class StatefulTransactionBuilder {
 
   private pendingReturnEventOutputs: Array<{ categoryId: string; commitment: Uint8Array }> = [];
   private entryRawCommitments: Map<number, string> = new Map(); // slotIndex -> hex commitment (from auto-derivation)
+  private pinnedEntrySlots: Set<number> = new Set(); // slots whose commitment is known exactly (never re-derive)
   private dynamicChunkVars: Array<{ name: string; type: string; lockingBytecode: Uint8Array }> = [];
   private dynamicChunkInputs: UnlockableUtxo[] = [];
   // varName -> ordered chunk commitments (hex) from auto-derivation; length determines chunk output count.
@@ -703,6 +704,12 @@ export class StatefulTransactionBuilder {
     this.entryRawCommitments.set(slotIndex, commitment);
     return this;
   }
+
+  /** Mark an entry slot's commitment as known exactly (injected), so auto-derivation must not re-derive it. */
+  pinEntrySlot(slotIndex: number): this { this.pinnedEntrySlots.add(slotIndex); return this; }
+
+  /** Whether slot's commitment was pinned via pinEntrySlot (auto-derivation should skip it). */
+  isEntrySlotPinned(slotIndex: number): boolean { return this.pinnedEntrySlots.has(slotIndex); }
 
   /**
    * Set the ordered chunk commitments for a dynamic-storage var (from auto-derivation). The number of

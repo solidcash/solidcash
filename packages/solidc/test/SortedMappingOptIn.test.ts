@@ -38,9 +38,17 @@ describe('sorted mapping opt-in (C2)', () => {
       .not.toThrow();
   });
 
-  it('still fails closed on a sorted mapping with a value type (only set writes are implemented)', () => {
+  it('compiles a value-typed sorted mapping upsert (mapping(int=>int) bal[k]=v)', () => {
+    // The value upsert (update if present, insert if absent) is implemented + VM-verified
+    // (SortedMappingValueWrite.test.ts): present -> k'[link|v], absent -> P' + NEW[k|next|v].
     const MAP = 'contract C() { mapping(int => int) bal;';
-    expect(() => compileString(`${MAP} function f(int k) { bal[k] = 5; } }`, { sortedMappings: ['bal'], forceStateful: true }))
+    expect(() => compileString(`${MAP} function f(int k, int v) { bal[k] = v; } }`, { sortedMappings: ['bal'], forceStateful: true }))
+      .not.toThrow();
+  });
+
+  it('still fails closed on a sorted mapping with a non-int/bool value type (bytes)', () => {
+    const MAP = 'contract C() { mapping(int => bytes4) meta;';
+    expect(() => compileString(`${MAP} function f(int k) { meta[k] = 0x11223344; } }`, { sortedMappings: ['meta'], forceStateful: true }))
       .toThrow(SortedMappingCodegenPendingError);
   });
 

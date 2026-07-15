@@ -4132,6 +4132,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           : this.maxDerivationIterations;
         let lastTrace: AuthenticationProgramStateCommon[] | undefined;
         const seenConvergenceKeys = new Set<string>();
+        // Sorted value-upsert collections already probed for trailing NEW outputs. Once probed empty (an UPDATE
+        // mints no new node), we must not re-seed a '00' placeholder or the loop count oscillates 0<->1 forever.
+        const probedSortedLoop = new Set<string>();
 
         for (let iter = 0; iter < maxIterations; iter++) {
           const probeBuilder2 = stb.build();
@@ -4184,7 +4187,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             const orderedCommits: string[] = [];
             for (const [outIdx, commit] of commitMap) {
               const slot = slotOrder[outIdx - entryOutputBase];
-              if (slot !== undefined) { stb.setEntryRawCommitment(slot, commit); orderedCommits.push(commit); }
+              // Pinned slots (a sorted-insert P', known exactly) must not be re-derived - the covenant reads the
+              // predecessor's input commitment too, which the extraction would otherwise oscillate onto.
+              if (slot !== undefined && !stb.isEntrySlotPinned(slot)) {
+                stb.setEntryRawCommitment(slot, commit); orderedCommits.push(commit);
+              }
             }
             commitmentProgress += orderedCommits.length;
             latestEntryCommits = orderedCommits;
@@ -4225,16 +4232,22 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           if (loopEntryVars.length > 0) {
             let loopOffset = stb.getLoopEntryOutputBase();
             for (const lv of loopEntryVars) {
-              // C2 sorted-set insert: the NEW node commitment is known exactly (set from SortedList.planInsert),
-              // not derived progressively - leave it untouched.
-              if (stateLayout.collections?.find((c) => c.name === lv.collection)?.sorted) continue;
+              // C2 sorted SET insert (mapping(K=>bool)): the NEW node commitment is known exactly (injected from
+              // SortedList.planInsert), not derived progressively - leave it untouched. A value mapping (=>int)
+              // upsert carries the RHS value in NEW, so it IS derived from the trace (falls through).
+              const scoll = stateLayout.collections?.find((c) => c.name === lv.collection);
+              if (scoll?.sorted && scoll.valueType === 'bool') continue;
+              const isSortedValueMintColl = scoll?.sorted && scoll.valueType !== 'bool';
               const existing = stb.getLoopEntryCommitments(lv.collection);
               if (existing.length === 0) {
+                // An UPDATE (present key) mints no trailing node; once probed empty, keep it empty (no re-seed).
+                if (isSortedValueMintColl && probedSortedLoop.has(lv.collection)) continue;
                 // Seed one placeholder so the next probe's iteration 0 has an output to verify against.
                 stb.setLoopEntryCommitments(lv.collection, ['00']);
                 latestLoopEntryCommits = latestLoopEntryCommits.concat('00');
                 continue;
               }
+              if (isSortedValueMintColl) probedSortedLoop.add(lv.collection);
               const range = { min: loopOffset, max: loopOffset + LOOP_ENTRY_MAX_ITERATIONS };
               const commitMap = extractCommitmentMapFromTrace(fullTrace2, range);
               const derived: string[] = [];
@@ -4243,7 +4256,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               // A newly-learned last commitment (its placeholder was still '00') means more may follow; keep probing
               // with one extra placeholder. If the last commitment merely re-confirms a known one, the loop ran to
               // completion (all N derived) - drop the extra placeholder so the count pin sees exactly N outputs.
-              const stillLearning = derivedCount > 0 && derived[derivedCount - 1] !== (existing[derivedCount - 1] ?? '00');
+              // A sorted VALUE upsert mints a STATIC number of trailing NEW nodes (1 on insert, 0 on update), not a
+              // growing loop, so never add the speculative extra placeholder (it would create a phantom output that
+              // shifts the fixed entry-slot P' and oscillates the derivation).
+              const isSortedValueMint = scoll?.sorted && scoll.valueType !== 'bool';
+              const stillLearning = !isSortedValueMint && derivedCount > 0
+                && derived[derivedCount - 1] !== (existing[derivedCount - 1] ?? '00');
               const next: string[] = [];
               for (let i = 0; i < derivedCount; i++) next[i] = derived[i] ?? existing[i] ?? '00';
               if (stillLearning) next.push('00');
@@ -4562,7 +4580,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     let entryNfts: EntryNftInfo[] = [];
     // C2 sorted-set inserts to inject after the builder is created: P' (the predecessor's new commitment at its
     // entry slot) and NEW (the new node minted at the trailing loop-entry output).
-    const sortedInserts: Array<{ slotIndex: number; collection: string; predNew: Uint8Array; newNode: Uint8Array }> = [];
+    const sortedInserts: Array<{ slotIndex: number; collection: string; predNew: Uint8Array; newNode?: Uint8Array }> = [];
 
     if (entryAccesses && entryAccesses.length > 0 && stateLayout.collections) {
       const entryNftUtxos = onChainState.entryNftUtxos;
@@ -4614,9 +4632,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             slotIndex, collection: access.collection, keyType: collection.keyType, valueType: collection.valueType,
             keyValue: kv as bigint | boolean | Uint8Array, exists: true,
           };
-          if (isWrite) {
-            // Insert: co-spend the bracketing predecessor at the entry slot (write path); P' is placed at its
-            // output, NEW is minted trailing. Both commitments come from the off-chain list (injected below).
+          if (isWrite && collection.valueType === 'bool') {
+            // Set insert (mapping(K=>bool)): co-spend the bracketing predecessor at the entry slot (write path);
+            // P' is placed at its output, NEW is minted trailing. Both commitments are known exactly off-chain.
             const plan = list.planInsert(slot);
             const wUnlocker = createEntryNftUnlocker(this.inner, 0, this.categoryId, access.collection);
             entryNfts.push({ ...entryBase, utxo: { ...plan.predecessor.utxo, unlocker: wUnlocker } });
@@ -4624,6 +4642,20 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               slotIndex, collection: access.collection,
               predNew: plan.predNewCommitment, newNode: plan.newNodeCommitment,
             });
+          } else if (isWrite) {
+            // Value upsert (mapping(K=>int)). Present -> UPDATE: co-spend the exact entry; the covenant pins the
+            // entry output k' = link||v, whose value is derived from the VM trace (entry-slot derivation). Absent
+            // -> INSERT: co-spend the bracketing predecessor; P' at the entry output is known exactly (inject it),
+            // and NEW = k||next||v is minted trailing with its value derived from the trace.
+            const present = list.has(slot);
+            const wUnlocker = createEntryNftUnlocker(this.inner, 0, this.categoryId, access.collection);
+            if (present) {
+              entryNfts.push({ ...entryBase, utxo: { ...list.find(slot)!.utxo, unlocker: wUnlocker } });
+            } else {
+              const plan = list.planInsert(slot);
+              entryNfts.push({ ...entryBase, utxo: { ...plan.predecessor.utxo, unlocker: wUnlocker } });
+              sortedInserts.push({ slotIndex, collection: access.collection, predNew: plan.predNewCommitment });
+            }
           } else {
             const entry = list.has(slot) ? list.find(slot)! : list.predecessorOf(slot);
             const roUnlocker = createReadOnlyEntryNftUnlocker(this.inner, this.categoryId, access.collection);
@@ -6237,7 +6269,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // derivation needed - so set them directly; the covenant pins them, so the probe/send converge.
     for (const ins of sortedInserts) {
       builder.setEntryRawCommitment(ins.slotIndex, binToHex(ins.predNew));
-      builder.setLoopEntryCommitments(ins.collection, [binToHex(ins.newNode)]);
+      builder.pinEntrySlot(ins.slotIndex); // P' is known exactly - do not let auto-derivation re-derive it
+      // Set insert: NEW is known exactly (inject). Value insert: NEW carries the RHS value -> derived from trace.
+      if (ins.newNode !== undefined) builder.setLoopEntryCommitments(ins.collection, [binToHex(ins.newNode)]);
     }
 
     // blockhash(n) requires tx.time >= n; set it so the derivation probe (and the final tx) satisfy the CLTV.

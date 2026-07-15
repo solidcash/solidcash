@@ -31,8 +31,16 @@ describe('sorted mapping opt-in (C2)', () => {
       .not.toThrow();
   });
 
-  it('fails closed on a source-level WRITE of a sorted mapping (upsert codegen pending)', () => {
+  it('compiles a source-level WRITE of a sorted set (emits the C2 insert covenant)', () => {
+    // The write codegen is implemented + VM-verified (SortedMappingCompiledWrite.test.ts); `claimed[k]=true`
+    // emits the proven sorted-list insert (bracket + splice), not the omittable entry-model write.
     expect(() => compileString(`${SET} function f(int k) { claimed[k] = true; } }`, { sortedMappings: ['claimed'], forceStateful: true }))
+      .not.toThrow();
+  });
+
+  it('still fails closed on a sorted mapping with a value type (only set writes are implemented)', () => {
+    const MAP = 'contract C() { mapping(int => int) bal;';
+    expect(() => compileString(`${MAP} function f(int k) { bal[k] = 5; } }`, { sortedMappings: ['bal'], forceStateful: true }))
       .toThrow(SortedMappingCodegenPendingError);
   });
 

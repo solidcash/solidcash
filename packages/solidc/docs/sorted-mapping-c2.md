@@ -92,11 +92,17 @@ need not reconstruct pushdata encodings; it only chooses which entries to co-spe
    the entry reverts. The SDK co-spends `SortedList.predecessorOf(k)` (or the k-entry) read-only for a sorted
    collection, and such a read is never getter-skipped. Proven from source in `SortedMappingCompiledRead.test.ts`:
    a compiled `require(!claimed[k])` passes for an absent key and reverts for a present one.
-3. **Write codegen (remaining, fail-closed).** `claimed[k]=true` -> upsert (insert if absent). Needs block-layout
-   output slots for `P'` (mutate the predecessor's next -> k) and `NEW` (mint `[k|oldNext]`), the master minting
-   co-spend, and SDK output construction from `SortedList.planInsert`. The insert splice covenant is proven
-   (`SortedMappingInsertDelete.test.ts`); the remaining work is the block-layout + SDK output plumbing (a static
-   2-output shape, similar to the loop-entry mint). Currently `SortedMappingCodegenPendingError` (fail-closed).
+3. **Write codegen (DONE + VM-verified end to end).** `claimed[k]=true` on a sorted `mapping(K=>bool)` emits the
+   proven insert splice: co-spend the bracketing predecessor `P[Ps|S]` at the entry slot (write path), verify
+   `Ps < H(k) < S` (k absent), and pin two outputs at the collection's entry P2SH - `P' = [Ps|H(k)]` at the entry
+   output slot (predecessor's next rewritten to k) and `NEW = [H(k)|S]` as a trailing mint. The SDK drives it from
+   `SortedList.planInsert`: it co-spends the predecessor (write unlocker) and sets `P'`/`NEW` commitments directly
+   (known exactly off-chain; the covenant pins them, so the derivation probe and the final send converge without
+   VM-trace derivation). Proven from source in `SortedMappingCompiledWrite.test.ts`: a compiled `claim(k)` inserts
+   the key, a re-claim of the same key reverts on `require(!claimed[k])`, and a different key still inserts - the
+   C2 negative-guard attack closed end-to-end for writes. A sorted mapping with a **value** type (not a set) is
+   still `SortedMappingCodegenPendingError` (only set inserts are implemented; update/delete are proven but not yet
+   emitted).
 
 ## Status
 
@@ -109,7 +115,8 @@ need not reconstruct pushdata encodings; it only chooses which entries to co-spe
   master-preservation + insert splice + entry-address pinning + the REAL entry-NFT covenant on the predecessor)
   is VM-verified, and a live `MockNetworkProvider` round-trip drives real sends end to end (genesis -> fetch ->
   plan -> submit -> persisted entry NFT, multi-claim sequence, re-claim refused) - `SortedMappingFullTx.test.ts`.
-- **Remaining (compiler codegen only, no soundness risk):** emit the (now proven) contract covenant from source
-  `sorted mapping` declarations - the opt-in (step 1), block-layout slots (step 2), and GTT codegen (step 3)
-  above. The runtime entry-address derivation the codegen must emit is the existing `emitP2sh32FromCovenant`
-  pattern; the SDK layer that drives it is done.
+- **Codegen done (read + set write):** a sorted `mapping(K=>bool)` compiles end to end from source - the read
+  membership/non-membership covenant (`SortedMappingCompiledRead.test.ts`) and the set-insert write
+  (`SortedMappingCompiledWrite.test.ts`), both VM-verified. Emitting `update`/`delete` and value-typed sorted
+  mappings (`mapping(K=>V)`) is the only remaining codegen; those covenants are already proven, so it is fragment
+  emission with no soundness risk (value-typed writes currently fail closed with `SortedMappingCodegenPendingError`).

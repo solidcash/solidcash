@@ -4225,6 +4225,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           if (loopEntryVars.length > 0) {
             let loopOffset = stb.getLoopEntryOutputBase();
             for (const lv of loopEntryVars) {
+              // C2 sorted-set insert: the NEW node commitment is known exactly (set from SortedList.planInsert),
+              // not derived progressively - leave it untouched.
+              if (stateLayout.collections?.find((c) => c.name === lv.collection)?.sorted) continue;
               const existing = stb.getLoopEntryCommitments(lv.collection);
               if (existing.length === 0) {
                 // Seed one placeholder so the next probe's iteration 0 has an output to verify against.
@@ -4557,6 +4560,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // Handle entry NFT accesses
     const entryAccesses = abiFunction?.entryAccesses;
     let entryNfts: EntryNftInfo[] = [];
+    // C2 sorted-set inserts to inject after the builder is created: P' (the predecessor's new commitment at its
+    // entry slot) and NEW (the new node minted at the trailing loop-entry output).
+    const sortedInserts: Array<{ slotIndex: number; collection: string; predNew: Uint8Array; newNode: Uint8Array }> = [];
 
     if (entryAccesses && entryAccesses.length > 0 && stateLayout.collections) {
       const entryNftUtxos = onChainState.entryNftUtxos;
@@ -4603,13 +4609,23 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               : typeof kv === 'boolean' ? bigIntToVmNumber(kv ? 1n : 0n)
                 : bigIntToVmNumber(BigInt(kv as unknown as string));
           const slot = keyToSlot(keyBytes);
-          const entry = list.has(slot) ? list.find(slot)! : list.predecessorOf(slot);
-          const roUnlocker = createReadOnlyEntryNftUnlocker(this.inner, this.categoryId, access.collection);
-          entryNfts.push({
+          const isWrite = access.operations.includes('write');
+          const entryBase = {
             slotIndex, collection: access.collection, keyType: collection.keyType, valueType: collection.valueType,
             keyValue: kv as bigint | boolean | Uint8Array, exists: true,
-            utxo: { ...entry.utxo, unlocker: roUnlocker },
-          });
+          };
+          if (isWrite) {
+            // Insert: co-spend the bracketing predecessor at the entry slot (write path); P' is placed at its
+            // output, NEW is minted trailing. Both commitments come from the off-chain list (injected below).
+            const plan = list.planInsert(slot);
+            const wUnlocker = createEntryNftUnlocker(this.inner, 0, this.categoryId, access.collection);
+            entryNfts.push({ ...entryBase, utxo: { ...plan.predecessor.utxo, unlocker: wUnlocker } });
+            sortedInserts.push({ slotIndex, collection: access.collection, predNew: plan.predNewCommitment, newNode: plan.newNodeCommitment });
+          } else {
+            const entry = list.has(slot) ? list.find(slot)! : list.predecessorOf(slot);
+            const roUnlocker = createReadOnlyEntryNftUnlocker(this.inner, this.categoryId, access.collection);
+            entryNfts.push({ ...entryBase, utxo: { ...entry.utxo, unlocker: roUnlocker } });
+          }
           continue;
         }
 
@@ -6212,6 +6228,14 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       ...(iterationEntryInputs.length > 0 && { iterationEntryInputs }),
       ...(abiFunction?.blockLayout && { blockLayout: abiFunction.blockLayout }),
     });
+
+    // C2 sorted-set insert: place P' (the predecessor's rewritten commitment at its entry slot) and NEW (the new
+    // node minted at the trailing loop-entry output). Both are known exactly from the off-chain list - no VM-trace
+    // derivation needed - so set them directly; the covenant pins them, so the probe/send converge.
+    for (const ins of sortedInserts) {
+      builder.setEntryRawCommitment(ins.slotIndex, binToHex(ins.predNew));
+      builder.setLoopEntryCommitments(ins.collection, [binToHex(ins.newNode)]);
+    }
 
     // blockhash(n) requires tx.time >= n; set it so the derivation probe (and the final tx) satisfy the CLTV.
     if (maxBhLocktime > 0) builder.setLocktime(maxBhLocktime);

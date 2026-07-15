@@ -9107,16 +9107,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private emitVerifySortedEntryOutput(
     loc: SingleLocationData, addrDepth: number, field1Depth: number, field2Depth: number,
   ): void {
-    // stack: [.., field1, field2, .., entryAddr, .., outIdx]
+    // stack: [.., field1, field2, .., entryAddr, .., outIdx] (depths are measured with outIdx at depth 0)
     this.emit(Op.OP_DUP, loc); this.emit(Op.OP_OUTPUTBYTECODE, loc);      // [.., outIdx, outbc]
-    this.emit(encodeInt(BigInt(addrDepth + 2)), loc); this.emit(Op.OP_PICK, loc); // +2: outIdx, outbc
+    this.emit(encodeInt(BigInt(addrDepth + 1)), loc); this.emit(Op.OP_PICK, loc); // +1: outbc above baseline
     this.emit(Op.OP_EQUALVERIFY, loc);                                    // [.., outIdx]
     this.emit(Op.OP_DUP, loc); this.emit(Op.OP_OUTPUTTOKENCATEGORY, loc); // [.., outIdx, cat]
     this.emit(Op.OP_DUP, loc); this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_NIP, loc);
     this.emit(Op.OP_1, loc); this.emit(Op.OP_EQUALVERIFY, loc);           // capability mutable -> [.., outIdx, cat]
     this.emitVerifyCatBaseEqMaster(loc);                                  // base == master -> [.., outIdx]
-    this.emit(encodeInt(BigInt(field1Depth + 1)), loc); this.emit(Op.OP_PICK, loc); // +1: outIdx
-    this.emit(encodeInt(BigInt(field2Depth + 2)), loc); this.emit(Op.OP_PICK, loc); // +2: outIdx, field1
+    this.emit(encodeInt(BigInt(field1Depth)), loc); this.emit(Op.OP_PICK, loc);     // baseline (no extra)
+    this.emit(encodeInt(BigInt(field2Depth + 1)), loc); this.emit(Op.OP_PICK, loc); // +1: field1 above baseline
     this.emit(Op.OP_CAT, loc);                                           // [.., outIdx, field1||field2]
     this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, loc); this.emit(Op.OP_EQUALVERIFY, loc);
   }

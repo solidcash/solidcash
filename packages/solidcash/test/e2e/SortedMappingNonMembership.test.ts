@@ -45,7 +45,8 @@ function buildCovenant(): Uint8Array {
   pushData(new Uint8Array([32])); op(Op.OP_SPLIT); // [k, cat32, cap]
   op(Op.OP_DROP);                              // [k, cat32]
   pushData(CATEGORY); op(Op.OP_EQUALVERIFY);   // [k]   (predecessor is an authenticated entry of this contract)
-  op(Op.OP_1, Op.OP_UTXOTOKENCOMMITMENT);      // [k, commit]
+  op(Op.OP_BIN2NUM);                           // [k#]  (k arrives as a 32-byte slot; compare as an unsigned number)
+  op(Op.OP_1, Op.OP_UTXOTOKENCOMMITMENT);      // [k#, commit]
   pushData(new Uint8Array([32])); op(Op.OP_SPLIT); // [k, slot32, rest]
   pushData(new Uint8Array([32])); op(Op.OP_SPLIT); // [k, slot32, nextKey32, value]
   op(Op.OP_DROP);                              // [k, slot32, nextKey32]
@@ -109,8 +110,57 @@ function verifyNonMembership(k: number, predCommitment: Uint8Array, predCategory
   return vm.verify({ inputIndex: 0, sourceOutputs, transaction } as any);
 }
 
+// 32-byte little-endian from a bigint (production slots are H(key) with the high bit masked -> a positive 255-bit
+// script number, so OP_BIN2NUM + OP_LESSTHAN compare them as UNSIGNED). Values here stay below 2^255.
+function slotBig(v: bigint): Uint8Array {
+  const b = new Uint8Array(32);
+  for (let i = 0; i < 32; i++) { b[i] = Number(v & 0xffn); v >>= 8n; }
+  return b;
+}
+function commitBig(slot: bigint, nextKey: bigint): Uint8Array {
+  const out = new Uint8Array(65);
+  out.set(slotBig(slot), 0); out.set(slotBig(nextKey), 32); out[64] = 1;
+  return out;
+}
+function pushSlot(v: bigint): Uint8Array { return new Uint8Array([32, ...slotBig(v)]); }
+
+// Run non-membership with a full-width 32-byte key + predecessor commitment.
+function verifyNonMembershipBig(k: bigint, predCommitment: Uint8Array): true | string {
+  const covenant = buildCovenant();
+  const transaction = {
+    version: 2,
+    inputs: [
+      { outpointTransactionHash: hexToBin('00'.repeat(32)), outpointIndex: 0, unlockingBytecode: new Uint8Array([...pushSlot(k), ...pushRedeem(covenant)]), sequenceNumber: 0xffffffff },
+      { outpointTransactionHash: hexToBin('a1'.repeat(32)), outpointIndex: 0, unlockingBytecode: new Uint8Array([]), sequenceNumber: 0xffffffff },
+    ],
+    outputs: [{ lockingBytecode: new Uint8Array([Op.OP_1]), valueSatoshis: 2500n }],
+    locktime: 0,
+  };
+  const sourceOutputs = [
+    { lockingBytecode: p2sh32Locking(covenant), valueSatoshis: 2000n },
+    { lockingBytecode: new Uint8Array([Op.OP_1]), valueSatoshis: 1000n, token: { category: CATEGORY, amount: 0n, nft: { capability: 'mutable' as const, commitment: predCommitment } } },
+  ];
+  return createVirtualMachineBch2026().verify({ inputIndex: 0, sourceOutputs, transaction } as any);
+}
+
 // State (slots): HEAD[0|10] -> A[10|50] -> B[50|90] -> C[90|0(+inf)]
 describe('sorted linked-list mapping: non-membership soundness (C2)', () => {
+  const LOW = (2n ** 200n);              // large 32-byte slots (all < 2^255 -> positive, sign-safe)
+  const MID = (2n ** 200n) + (2n ** 120n);
+  const HIGH = (2n ** 254n) - 1n;        // near-max positive 255-bit slot
+
+  it('full-width 32-byte slots: accepts a valid bracket LOW < MID < HIGH', () => {
+    expect(verifyNonMembershipBig(MID, commitBig(LOW, HIGH))).toBe(true);
+  });
+
+  it('full-width 32-byte slots: REJECTS a present key at the upper bound (k == nextKey)', () => {
+    expect(verifyNonMembershipBig(HIGH, commitBig(LOW, HIGH))).not.toBe(true);
+  });
+
+  it('full-width 32-byte slots: REJECTS below the predecessor (k < slot, wrong gap)', () => {
+    expect(verifyNonMembershipBig(LOW - 1n, commitBig(LOW, HIGH))).not.toBe(true);
+  });
+
   it('accepts a valid non-membership proof for an absent key (40 in gap 10..50)', () => {
     expect(verifyNonMembership(40, commitment(10, 50), CATEGORY)).toBe(true);
   });

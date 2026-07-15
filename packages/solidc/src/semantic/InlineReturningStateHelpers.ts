@@ -206,7 +206,32 @@ export default class InlineReturningStateHelpers extends AstTraversal {
   private eligible(fn: FunctionDefinitionNode): boolean {
     if (!(fn.isFreeFunction || fn.visibility === 'private' || fn.visibility === 'internal')) return false;
     if (!this.eligibleShape(fn)) return false;
-    return this.readsEntry(fn) || this.touchesScalarState(fn) || this.containsLowLevelCall(fn);
+    return this.readsEntry(fn) || this.touchesScalarState(fn) || this.containsLowLevelCall(fn)
+      || this.containsExternalCall(fn);
+  }
+
+  // Contains an EXTERNAL contract call (`unicrow.getEscrow(id)` / `token.balanceOf(a)` / `this.f(x)`): pre-semantic
+  // this is a DOTTED FunctionCall whose full name is NOT a known internal/library function (those are in funcByName)
+  // - i.e. the receiver is a state var / param / `this`, an interface/contract-typed value. Like a low-level call
+  // it injects the external-call covenant param (input index / return slot), threaded only at an entry point, so a
+  // subroutine holding one cannot forward it and must inline at its (expression) call site. `super.` inheritance
+  // calls are internal (excluded); low-level `.call` is handled by containsLowLevelCall. A cast-receiver form
+  // `IFoo(a).m()` parses to a MethodCall, caught too.
+  private containsExternalCall(fn: FunctionDefinitionNode): boolean {
+    const isLL = (m: string): boolean => m === 'call' || m === 'staticcall' || m === 'delegatecall';
+    let found = false;
+    this.walk(fn.body, (n) => {
+      if (found) return;
+      if (n instanceof MethodCallNode && !isLL(n.methodName)) { found = true; return; }
+      if (n instanceof FunctionCallNode) {
+        const name = n.identifier.name;
+        const dot = name.lastIndexOf('.');
+        if (dot > 0 && !isLL(name.slice(dot + 1)) && !name.startsWith('super.') && !this.funcByName.has(name)) {
+          found = true;
+        }
+      }
+    });
+    return found;
   }
 
   // Contains a low-level call (`a.call(d)`, `a.call{value:}(d)`, static/delegatecall). Such a call injects a

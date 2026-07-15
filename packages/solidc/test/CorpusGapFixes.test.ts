@@ -1828,3 +1828,20 @@ describe('prunes dead internal methods that read msg.data (inherited OZ Context.
     expect(ok('contract C { function f() public returns (bytes memory) { return msg.data; } }')).toBe('C');
   });
 });
+
+describe('inlines internal value helpers that make an EXTERNAL contract call (OZ _isEscrowMember shape)', () => {
+  const ok = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  const iface = 'interface I { function g(uint id) external view returns (uint); }';
+  it('inlines an external-call helper called as a require argument (was a phantom-param arity error)', () => {
+    // `_h` makes an external call `t.g(id)` (a dotted FunctionCall not in funcByName), which injects the external-
+    // call covenant param; as an OP_INVOKE subroutine it cannot forward it. Detected like a low-level-call helper
+    // and inlined at its expression call site (the existing state-helper expression hoisting handles it).
+    expect(ok(iface + ' contract C { I t; function _h(uint id) internal view returns (bool) { return t.g(id) > 0; }'
+      + ' function f(uint id) public view { require(_h(id), "x"); } }')).toBe('C');
+  });
+  it('inlines an external-call helper on an IMMUTABLE receiver used in a binary expression', () => {
+    expect(ok(iface + ' contract C { I immutable t; constructor(address a) { t = I(a); }'
+      + ' function _h(uint id) internal view returns (uint) { return t.g(id); }'
+      + ' function f(uint id) public view returns (uint) { return 1 + _h(id); } }')).toBe('C');
+  });
+});

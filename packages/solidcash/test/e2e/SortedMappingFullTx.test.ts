@@ -1,9 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { createVirtualMachineBch2026, hash256, hexToBin, binToHex } from '@bitauth/libauth';
+import { createVirtualMachineBch2026, hash256, hexToBin, binToHex, encodeTransaction } from '@bitauth/libauth';
 import {
   Op, buildEntryNftCovenantScript, computeCollectionHash, computeCollectionSignature, scriptToBytecode,
 } from '@solidcash/utils';
-import { SortedList, slotValueToBytes, encodeEntryCommitment } from '../../src/index.js';
+import { SortedList, slotValueToBytes, encodeEntryCommitment, bytesToSlotValue, decodeEntryCommitment } from '../../src/index.js';
+import { MockNetworkProvider } from '../../src/index.js';
 import type { Utxo } from '../../src/interfaces.js';
 
 // Full-transaction composition: an insert into a sorted-linked-list mapping, verified with EVERY input running its
@@ -125,5 +126,62 @@ describe('sorted mapping full-transaction composition (contract + real entry cov
     };
     expect(list.has(s(50))).toBe(true);
     expect(forced()).not.toBe(true);
+  });
+});
+
+// Live round-trip through the MockNetworkProvider: genesis the list on chain, then have the SDK fetch it, plan a
+// claim, submit the real transaction, and observe the persisted new entry NFT. Proves the SortedList <-> provider
+// loop, not just an in-memory tx object.
+describe('sorted mapping live provider round-trip (SortedList drives a real send)', () => {
+  const CONTRACT_HEX = binToHex(CONTRACT_P2SH);
+  const ENTRY_HEX = binToHex(ENTRY_P2SH);
+  const FUND_HEX = binToHex(new Uint8Array([Op.OP_1]));
+  const s = (n: number): Uint8Array => slotValueToBytes(BigInt(n));
+
+  async function claim(provider: MockNetworkProvider, k: number): Promise<string> {
+    const entryUtxos = await provider.getUtxosForLockingBytecode(ENTRY_P2SH);
+    const list = SortedList.fromUtxos(entryUtxos);
+    const plan = list.planInsert(s(k));
+    const master = (await provider.getUtxosForLockingBytecode(CONTRACT_P2SH))[0];
+    const funder = (await provider.getUtxosForLockingBytecode(new Uint8Array([Op.OP_1])))[0];
+    const tx = {
+      version: 2,
+      inputs: [
+        { outpointTransactionHash: hexToBin(master.txid), outpointIndex: master.vout, unlockingBytecode: new Uint8Array([...push32(s(k)), ...pushRedeem(CONTRACT_REDEEM)]), sequenceNumber: 0xffffffff },
+        { outpointTransactionHash: hexToBin(plan.predecessor.utxo.txid), outpointIndex: plan.predecessor.utxo.vout, unlockingBytecode: new Uint8Array([...pushNum(0), ...pushNum(1), ...pushRedeem(ENTRY_REDEEM)]), sequenceNumber: 0xffffffff },
+        { outpointTransactionHash: hexToBin(funder.txid), outpointIndex: funder.vout, unlockingBytecode: new Uint8Array([]), sequenceNumber: 0xffffffff },
+      ],
+      outputs: [
+        { lockingBytecode: CONTRACT_P2SH, valueSatoshis: master.satoshis, token: masterCat },
+        { lockingBytecode: ENTRY_P2SH, valueSatoshis: 1500n, token: entryTok(plan.predNewCommitment) },
+        { lockingBytecode: ENTRY_P2SH, valueSatoshis: 1500n, token: entryTok(plan.newNodeCommitment) },
+        { lockingBytecode: new Uint8Array([Op.OP_1]), valueSatoshis: funder.satoshis - 3100n },
+      ],
+      locktime: 0,
+    };
+    return provider.sendRawTransaction(binToHex(encodeTransaction(tx as any)));
+  }
+
+  it('genesis -> claim(30) -> claim(70): entries persist and re-claim is refused', async () => {
+    const provider = new MockNetworkProvider();
+    await provider.addUtxo(CONTRACT_HEX, { txid: 'c0'.repeat(32), vout: 0, satoshis: 5000n, token: { category: '11'.repeat(32), amount: 0n, nft: { capability: 'minting', commitment: '' } } });
+    await provider.addUtxo(ENTRY_HEX, { txid: 'e0'.repeat(32), vout: 0, satoshis: 1500n, token: { category: '11'.repeat(32), amount: 0n, nft: { capability: 'mutable', commitment: binToHex(encodeEntryCommitment(s(0), s(0))) } } });
+    await provider.addUtxo(FUND_HEX, { txid: 'f0'.repeat(32), vout: 0, satoshis: 100000n });
+
+    // claim(30): HEAD[0|0] -> HEAD[0|30] + NEW[30|0]
+    await claim(provider, 30);
+    let entries = SortedList.fromUtxos(await provider.getUtxosForLockingBytecode(ENTRY_P2SH));
+    expect(entries.all.map((e) => Number(bytesToSlotValue(e.slot))).sort((a, b) => a - b)).toEqual([0, 30]);
+    expect(Number(bytesToSlotValue(entries.find(s(30))!.nextKey))).toBe(0); // tail
+
+    // The provider now needs a fresh funder + the new master outpoint (produced by the claim tx).
+    // claim(70): 30[30|0] -> 30[30|70] + NEW[70|0]
+    await claim(provider, 70);
+    entries = SortedList.fromUtxos(await provider.getUtxosForLockingBytecode(ENTRY_P2SH));
+    expect(entries.all.map((e) => Number(bytesToSlotValue(e.slot))).sort((a, b) => a - b)).toEqual([0, 30, 70]);
+
+    // Re-claim 30: present -> the SDK refuses to plan it (and the covenant would reject it on-chain).
+    const now = SortedList.fromUtxos(await provider.getUtxosForLockingBytecode(ENTRY_P2SH));
+    expect(() => now.planInsert(s(30))).toThrow();
   });
 });

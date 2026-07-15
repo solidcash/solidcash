@@ -413,6 +413,7 @@ export function generateArtifact(
             ...(coll.type.bound !== undefined && { bound: coll.type.bound }),
           }),
           ...(coll.immutable && { immutable: true }),
+          ...(coll.sorted && { sorted: true }),
         })),
       }),
       ...(contract.collections.some((c) => !(c.type instanceof ArrayType)) && {
@@ -429,6 +430,7 @@ export function generateArtifact(
             }),
             ...mappingNameFields(coll.type),
             ...(coll.immutable && { immutable: true }),
+          ...(coll.sorted && { sorted: true }),
           })),
       }),
       ...(structDefs.length > 0 && { structs: structDefs }),

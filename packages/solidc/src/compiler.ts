@@ -187,6 +187,13 @@ function compileResolvedAst(ast: Ast, code: string, mergedCompilerOptions: Compi
   // into the derived contract's functions too.
   ast = lowerTransientStateVars(ast);
 
+  // C2 opt-in: mark the requested mappings to use the sorted-linked-list backend (provable non-existence). See
+  // docs/sorted-mapping-c2.md. Only affects the named collections; all others keep the default entry model.
+  if (mergedCompilerOptions.sortedMappings && mergedCompilerOptions.sortedMappings.length > 0) {
+    const sortedSet = new Set(mergedCompilerOptions.sortedMappings);
+    for (const col of ast.contract.collections) if (sortedSet.has(col.name)) col.sorted = true;
+  }
+
   // Check if this is an abstract contract (cannot be compiled to an artifact)
   if (ast.contract.isAbstract) {
     // Under solidityImportCompat, a standalone abstract contract emits an ABI-only declaration artifact

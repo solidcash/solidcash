@@ -403,6 +403,9 @@ export class StateAssignNode extends StatementNode {
 
 export class CollectionNode extends Node implements Named {
   immutable: boolean = false;
+  // C2 sorted-linked-list backend (opt-in via CompilerOptions.sortedMappings): entries form a sorted list keyed
+  // by H(key), so non-existence is provable (co-spend the bracketing predecessor) - closes the omission attack.
+  sorted: boolean = false;
   visibility: StateVariableVisibility = StateVariableVisibility.PUBLIC;
   inheritedFrom?: string;
 

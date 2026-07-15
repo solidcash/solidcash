@@ -171,6 +171,7 @@ import { isNumericType } from '../utils.js';
 import { getStackEffect } from '../asmStackEffects.js';
 import {
   InvalidModifierCombinationError, MsgDataInSubroutineError, MsgSigInInternalFunctionError, EntryWriteInLoopError,
+  SortedMappingCodegenPendingError,
   ChainedEntryElementReadError, ConditionalDeployError,
 } from '../Errors.js';
 import { analyzeInlineAssembly } from '../semantic/InlineAssemblyDiagnostics.js';
@@ -8844,6 +8845,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       return node;
     }
 
+    // A sorted (C2 linked-list) mapping: the bracketing non-existence covenant is proven + SDK-driven, but its
+    // source-level codegen is pending. Fail closed so it never compiles to the omittable entry-model read.
+    if (node.collection?.sorted) {
+      throw new SortedMappingCodegenPendingError(node, node.collection.name);
+    }
+
     // Handle packed state array element access: this.arr[index]
     if (node.isPackedStateArrayAccess && node.packedStateVariable) {
       return this.emitPackedStateArrayAccess(node);
@@ -9007,6 +9014,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   visitMappingAssign(node: MappingAssignNode): Node {
+    // Sorted (C2 linked-list) mapping write: the upsert splice covenant is proven + SDK-driven, source codegen
+    // pending. Fail closed rather than emit the omittable entry-model write.
+    if (node.collection?.sorted) {
+      throw new SortedMappingCodegenPendingError(node, node.collection.name);
+    }
     if (this.plainLoopDepth > 0 && node.entrySlotIndex >= 0) {
       // A pure-write mapping assign inside a runtime loop (`for(i<n) m[k[i]]=v[i]`) emits a runtime-counter-indexed
       // trailing entry output per iteration instead of the fixed-slot epilogue write. Marked inLoop by the pre-scan.

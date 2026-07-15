@@ -27,6 +27,9 @@ export interface CompilerOptions {
   // User-supplied external libraries (script precompiles). Each registers `name(...)` as a callable with
   // the given ABI signature, backed by the hex `code` blob. Merged with the built-in libraries.
   userLibraries?: { name: string; code: string; abi: { inputs: AbiInput[]; outputs: AbiOutput[] } }[];
+  // C2 fix opt-in: names of mapping state vars to back with the sorted-linked-list model (provable non-existence,
+  // closes the omission attack). See docs/sorted-mapping-c2.md. Other mappings keep the default entry model.
+  sortedMappings?: readonly string[];
   // Phase-2 scaffold (default false): route an unbounded fixed-width `T[]` state var to the dense
   // chunk-packed backend (uint32 length header + chunk UTXOs) instead of the sparse entry-NFT collection.
   // Will become the default for fixed-width `T[]` once the codegen/SDK land. See docs/arrays.md.
@@ -245,6 +248,8 @@ export interface CollectionInfo {
   bound?: number;
   /** True when collection can only be assigned in constructor - omitted when false (default). */
   immutable?: boolean;
+  /** True when this mapping uses the C2 sorted-linked-list backend (SDK drives it via SortedList). */
+  sorted?: boolean;
 }
 
 export interface KeySourceAbi {

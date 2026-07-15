@@ -17,14 +17,6 @@ export interface SortedEntry {
   utxo: Utxo;
 }
 
-/** big-endian-hash -> numeric slot value, high bit masked so it is a positive (sign-safe) script number. */
-export function keyToSlotValue(key: Uint8Array): bigint {
-  const h = sha256.hash(key);
-  let v = 0n;
-  for (const byte of h) v = (v << 8n) | BigInt(byte); // big-endian
-  return v & ((1n << 255n) - 1n);                      // mask bit 255 -> positive 255-bit
-}
-
 /** numeric slot -> 32-byte little-endian (the commitment / VM encoding). */
 export function slotValueToBytes(v: bigint): Uint8Array {
   const b = new Uint8Array(SLOT_BYTES);
@@ -40,9 +32,21 @@ export function bytesToSlotValue(b: Uint8Array): bigint {
   return v;
 }
 
-/** slot = H(key), masked, as 32-byte little-endian. */
+/**
+ * slot = sha256(key) with the high bit of the most-significant (last, little-endian) byte cleared. The mask makes
+ * it a positive 255-bit script number so OP_BIN2NUM + OP_LESSTHAN order slots as unsigned. The covenant computes
+ * the identical slot in-script: OP_SHA256(key), split off the last byte, AND it with 0x7f, re-concatenate. Storing
+ * the raw sha256 bytes (masked) - not a re-encoded bigint - is what lets the covenant's byte-wise slot==H(key)
+ * membership check match.
+ */
 export function keyToSlot(key: Uint8Array): Uint8Array {
-  return slotValueToBytes(keyToSlotValue(key));
+  const s = sha256.hash(key).slice();
+  s[SLOT_BYTES - 1] &= 0x7f;
+  return s;
+}
+
+export function keyToSlotValue(key: Uint8Array): bigint {
+  return bytesToSlotValue(keyToSlot(key));
 }
 
 export function encodeEntryCommitment(slot: Uint8Array, nextKey: Uint8Array, value: Uint8Array = new Uint8Array()): Uint8Array {

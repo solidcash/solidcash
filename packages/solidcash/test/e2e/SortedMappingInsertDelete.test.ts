@@ -206,3 +206,82 @@ describe('sorted linked-list mapping: delete splice soundness', () => {
     expect(runDelete(50, commit(10, 50), commit(50, 90), commit(0, 90))).not.toBe(true);
   });
 });
+
+// MEMBERSHIP read: co-spend the entry for k (read-only) and verify its slot == k -> present. An absent key has no
+// such entry to co-spend, so membership cannot be faked (and a positive guard `require(m[k])` fails-safe on
+// omission - the already-sound case). Stack in: [k32]. input1 = entry[k|S].
+function membershipCovenant(): Uint8Array {
+  const a = new Asm();
+  a.op(Op.OP_1, Op.OP_UTXOTOKENCATEGORY).pushData(new Uint8Array([32])).op(Op.OP_SPLIT, Op.OP_DROP)
+    .pushData(CATEGORY).op(Op.OP_EQUALVERIFY);                 // [k32]  (entry authentic)
+  a.op(Op.OP_1, Op.OP_UTXOTOKENCOMMITMENT).pushData(new Uint8Array([32])).op(Op.OP_SPLIT, Op.OP_DROP); // [k32, slot32]
+  a.op(Op.OP_EQUAL);                                          // slot32 == k32 -> present
+  return a.bytes();
+}
+
+// UPDATE: rewrite a present key's value while preserving its link (slot,next). input1 = entry[k|S|Vold], output1
+// = entry'[k|S|Vnew]. Covenant pins the first 64 bytes (slot||next) of the output == input's, so an update cannot
+// move a link (only the value tail changes). Stack in: [k32].
+function updateCovenant(): Uint8Array {
+  const a = new Asm();
+  a.op(Op.OP_1, Op.OP_UTXOTOKENCATEGORY).pushData(new Uint8Array([32])).op(Op.OP_SPLIT, Op.OP_DROP)
+    .pushData(CATEGORY).op(Op.OP_EQUALVERIFY);                 // [k32]
+  a.op(Op.OP_1, Op.OP_UTXOTOKENCOMMITMENT).pushData(new Uint8Array([64])).op(Op.OP_SPLIT, Op.OP_DROP); // [k32, link64] (slot||next)
+  a.op(Op.OP_DUP).pushData(new Uint8Array([32])).op(Op.OP_SPLIT, Op.OP_DROP); // [k32, link64, slot32]
+  a.op(Op.OP_2, Op.OP_PICK, Op.OP_EQUALVERIFY);               // slot == k  -> [k32, link64]
+  // output link (first 64 bytes) == input link
+  a.op(Op.OP_1, Op.OP_OUTPUTTOKENCATEGORY).pushData(new Uint8Array([32])).op(Op.OP_SPLIT, Op.OP_DROP)
+    .pushData(CATEGORY).op(Op.OP_EQUALVERIFY);
+  a.op(Op.OP_1, Op.OP_OUTPUTTOKENCOMMITMENT).pushData(new Uint8Array([64])).op(Op.OP_SPLIT, Op.OP_DROP); // out link64
+  a.op(Op.OP_EQUALVERIFY);                                    // out link == in link (link preserved)
+  a.op(Op.OP_DROP, Op.OP_1);
+  return a.bytes();
+}
+
+const valEntryOut = (link: Uint8Array, value: Uint8Array): any => ({
+  lockingBytecode: new Uint8Array([Op.OP_1]), valueSatoshis: 1000n,
+  token: { category: CATEGORY, amount: 0n, nft: { capability: 'mutable', commitment: new Uint8Array([...link, ...value]) } },
+});
+
+function runOneInput(cov: Uint8Array, k: number, inCommit: Uint8Array, outputs: any[], withMaster = false): true | string {
+  const tx = {
+    version: 2,
+    inputs: [
+      { outpointTransactionHash: hexToBin('00'.repeat(32)), outpointIndex: 0, unlockingBytecode: new Uint8Array([...push32(slot32(k)), ...pushRedeem(cov)]), sequenceNumber: 0xffffffff },
+      { outpointTransactionHash: hexToBin('a1'.repeat(32)), outpointIndex: 0, unlockingBytecode: new Uint8Array([]), sequenceNumber: 0xffffffff },
+    ],
+    outputs,
+    locktime: 0,
+  };
+  const sourceOutputs = [
+    { lockingBytecode: p2sh32(cov), valueSatoshis: 4000n, ...(withMaster ? { token: masterToken } : {}) },
+    entryOut(inCommit),
+  ];
+  return createVirtualMachineBch2026().verify({ inputIndex: 0, sourceOutputs, transaction: tx } as any);
+}
+
+describe('sorted linked-list mapping: membership + update soundness', () => {
+  it('accepts membership of a present key (co-spend B[50|90], slot==50)', () => {
+    expect(runOneInput(membershipCovenant(), 50, commit(50, 90),
+      [{ lockingBytecode: new Uint8Array([Op.OP_1]), valueSatoshis: 3500n }])).toBe(true);
+  });
+
+  it('REJECTS faking membership of an absent key (co-spend A[10|50] and claim it is 40)', () => {
+    expect(runOneInput(membershipCovenant(), 40, commit(10, 50),
+      [{ lockingBytecode: new Uint8Array([Op.OP_1]), valueSatoshis: 3500n }])).not.toBe(true);
+  });
+
+  it('accepts an update that changes only the value (link 50|90 preserved)', () => {
+    const link = commit(50, 90);
+    expect(runOneInput(updateCovenant(), 50, new Uint8Array([...link, 0x07]),
+      [{ lockingBytecode: new Uint8Array([Op.OP_1]), valueSatoshis: 1000n, token: masterToken }, valEntryOut(link, new Uint8Array([0x09]))],
+      true)).toBe(true);
+  });
+
+  it('REJECTS an update that moves the link (next changed 90 -> 99 to corrupt the list)', () => {
+    const link = commit(50, 90);
+    expect(runOneInput(updateCovenant(), 50, new Uint8Array([...link, 0x07]),
+      [{ lockingBytecode: new Uint8Array([Op.OP_1]), valueSatoshis: 1000n, token: masterToken }, valEntryOut(commit(50, 99), new Uint8Array([0x09]))],
+      true)).not.toBe(true);
+  });
+});

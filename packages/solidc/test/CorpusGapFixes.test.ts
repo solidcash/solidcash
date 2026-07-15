@@ -1923,6 +1923,24 @@ describe('complex-lvalue tuple target with a single (call) RHS ((m[k].f,) = g())
   });
 });
 
+// `addmod`/`mulmod` in a CONSTANT initializer - pure integer builtins, compile-time when their args are. Only
+// abi.encode*/keccak(literal) folded before; addmod/mulmod fell through to "Constant must be initialized with a
+// compile-time expression". Now accepted (isCompileTimeExpression) + typed BIGINT (resolveConstantExpression-
+// Identifiers), inlined at each use like abi.encode. Corpus: math_builtin_opcode_based_const_args.
+describe('addmod/mulmod in a constant initializer', () => {
+  const ok = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  it('addmod with literal args', () => {
+    expect(ok('uint256 constant a = addmod(1, 8, 7); contract C { function f() public pure returns (uint) { return a; } }')).toBe('C');
+  });
+  it('mulmod with literal args', () => {
+    expect(ok('uint256 constant a = mulmod(3, 8, 7); contract C { function f() public pure returns (uint) { return a; } }')).toBe('C');
+  });
+  it('addmod with a constant arg (resolves the ref)', () => {
+    expect(ok('uint256 constant k = 7; uint256 constant a = addmod(1, 8, k);'
+      + ' contract C { function f() public pure returns (uint) { return a; } }')).toBe('C');
+  });
+});
+
 // `IFoo(<state chain>).m()` - a plain-`address` field reached through self-pinned STATE, cast to an interface
 // (the cast supplies the callee ABI). Generalizes the `IFoo(stateVar)` cast to a struct-field/mapping-value/array
 // chain, hoisting `IFoo(chain)` into a synthesized __extaddr_ local. This is the EACC Marketplace shape

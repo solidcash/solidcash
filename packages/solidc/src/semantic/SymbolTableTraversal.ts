@@ -1056,6 +1056,12 @@ export default class SymbolTableTraversal extends AstTraversal {
       // Otherwise resolve the base of an enum member access `E.B` (E is an enum symbol) so type-checking sees the
       // base's EnumType and treats `E.B` as a member, not a struct field.
       expr.expression = this.resolveConstantExpressionIdentifiers(expr.expression);
+    } else if (expr instanceof FunctionCallNode
+      && (expr.identifier.name === 'addmod' || expr.identifier.name === 'mulmod')) {
+      // addmod/mulmod const: resolve the args' constant refs and stamp the builtin's BIGINT return type (undefined
+      // otherwise, which fails the const's assign type-check). Inlined at each use, so runtime codegen runs.
+      expr.parameters = expr.parameters.map((e) => this.resolveConstantExpressionIdentifiers(e as ExpressionNode)) as ExpressionNode[];
+      expr.type = PrimitiveType.BIGINT;
     }
     return expr;
   }
@@ -7667,6 +7673,13 @@ function isCompileTimeExpression(
   }
   if (expr instanceof AbiDecodeNode || expr instanceof AbiDecodeAtNode) {
     return isCompileTimeExpression(expr.data, constantMap, enumMap);
+  }
+  // `addmod(a,b,n)` / `mulmod(a,b,n)` are pure integer builtins - compile-time when all three args are. Like
+  // abi.encode*, the constant's initializer is inlined at each use site (visitIdentifier), so the existing
+  // runtime addmod/mulmod codegen runs there.
+  if (expr instanceof FunctionCallNode && expr.parameters.length === 3
+    && (expr.identifier.name === 'addmod' || expr.identifier.name === 'mulmod')) {
+    return expr.parameters.every((e) => isCompileTimeExpression(e, constantMap, enumMap));
   }
   return false;
 }

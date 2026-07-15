@@ -370,6 +370,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   // State-related tracking
   private stateVariables: StateVariableNode[] = [];
   private collectionCount: number = 0;
+  private sortedCollections: Set<string> = new Set(); // C2 sorted (linked-list) collection names
   private dataNftCount: number = 0;
   private pendingStateWrites: Map<string, string> = new Map(); // "nftIndex:fieldIndex" -> stack name
   private hasStateAccess: boolean = false;
@@ -714,6 +715,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Store state variable info for code generation
     this.stateVariables = node.stateVariables;
     this.collectionCount = node.collections.length;
+    // C2 sorted collections: a WRITE slot on one is handled inline (predecessor -> P' + minted NEW), so the
+    // standard read-only preservation / satoshi epilogue must skip it (its output is not the co-spent input).
+    this.sortedCollections = new Set(node.collections.filter((c) => c.sorted).map((c) => c.name));
     this.dataNftCount = node.stateVariables.length > 0
       ? Math.max(...node.stateVariables.map((sv) => sv.nftIndex)) + 1
       : 0;
@@ -9093,11 +9097,111 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     return node;
   }
 
+  /**
+   * Verify a sorted entry NFT output at the (untracked, top-of-stack) output index `outIdx`: its bytecode == the
+   * entry P2SH `entryAddr` (an untracked value at tracker-relative depth `addrDepth` BELOW the working area), its
+   * category base == master with the mutable (0x01) capability, and its commitment == the two 32-byte fields
+   * already on the stack at `field1Depth` and `field2Depth` (concatenated field1||field2). Consumes outIdx.
+   * All depths are measured from the top BEFORE this runs (outIdx is on top).
+   */
+  private emitVerifySortedEntryOutput(
+    loc: SingleLocationData, addrDepth: number, field1Depth: number, field2Depth: number,
+  ): void {
+    // stack: [.., field1, field2, .., entryAddr, .., outIdx]
+    this.emit(Op.OP_DUP, loc); this.emit(Op.OP_OUTPUTBYTECODE, loc);      // [.., outIdx, outbc]
+    this.emit(encodeInt(BigInt(addrDepth + 2)), loc); this.emit(Op.OP_PICK, loc); // +2: outIdx, outbc
+    this.emit(Op.OP_EQUALVERIFY, loc);                                    // [.., outIdx]
+    this.emit(Op.OP_DUP, loc); this.emit(Op.OP_OUTPUTTOKENCATEGORY, loc); // [.., outIdx, cat]
+    this.emit(Op.OP_DUP, loc); this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_NIP, loc);
+    this.emit(Op.OP_1, loc); this.emit(Op.OP_EQUALVERIFY, loc);           // capability mutable -> [.., outIdx, cat]
+    this.emitVerifyCatBaseEqMaster(loc);                                  // base == master -> [.., outIdx]
+    this.emit(encodeInt(BigInt(field1Depth + 1)), loc); this.emit(Op.OP_PICK, loc); // +1: outIdx
+    this.emit(encodeInt(BigInt(field2Depth + 2)), loc); this.emit(Op.OP_PICK, loc); // +2: outIdx, field1
+    this.emit(Op.OP_CAT, loc);                                           // [.., outIdx, field1||field2]
+    this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, loc); this.emit(Op.OP_EQUALVERIFY, loc);
+  }
+
+  /**
+   * Sorted-set (C2) mapping WRITE `m[k] = true` (insert into the sorted linked list). Co-spends the bracketing
+   * predecessor P[Ps|S] at the entry slot (write path), verifies Ps < H(k) < S (k absent), and pins two outputs at
+   * the collection's entry P2SH: P' = [Ps|H(k)] at the entry output slot (predecessor's next rewritten to k) and
+   * NEW = [H(k)|S] at the trailing mint slot output[blockSize] (a new node minted from the master). Registered in
+   * entryLoopWrites so the SDK creates the NEW output. Proven splice: SortedMappingInsertDelete.test.ts.
+   */
+  private emitSortedSetWrite(node: MappingAssignNode): Node {
+    const loc = { location: node.location, positionHint: PositionHint.END };
+    const collection = node.collection!;
+    if (collection.innermostValueType.toString() !== 'bool' || collection.allKeyTypes.length !== 1
+      || node.arrayIndex || node.arrayPush || node.arrayPop) {
+      throw new SortedMappingCodegenPendingError(node, collection.name);
+    }
+    const slotIndex = node.entrySlotIndex;
+    const collectionHash = computeCollectionHash(this.entrySlots[slotIndex].collectionSignature);
+    const blockSize = this.currentFunction.blockLayout?.blockSize ?? 1;
+    const loopWrites = (this.currentFunction.entryLoopWrites ??= []);
+    if (!loopWrites.includes(collection.name)) loopWrites.push(collection.name);
+
+    // RHS must be `true` (a set insert). Evaluate + require it, then drop.
+    node.expression = this.visit(node.expression);
+    this.emit(Op.OP_VERIFY, loc);
+    this.popFromStack();
+
+    // 1. H(k) at the bottom of the working area.
+    const keySource = this.entrySlots[slotIndex].keySources?.[0];
+    if (!keySource || keySource.kind === 'param') {
+      const keyParamName = keySource?.paramName ?? this.entrySlots[slotIndex].keyParams[0];
+      this.emit(encodeInt(BigInt(this.getStackIndex(keyParamName))), loc); this.emit(Op.OP_PICK, loc);
+    } else {
+      node.keys[0] = this.visit(node.keys[0]); this.popFromStack();
+    }
+    this.emit(Op.OP_SHA256, loc);
+    this.emit(encodeInt(31n), loc); this.emit(Op.OP_SPLIT, loc);
+    this.emit(new Uint8Array([0x7f]), loc); this.emit(Op.OP_AND, loc); this.emit(Op.OP_CAT, loc); // [Hk32]
+
+    // 2. entry address -> [Hk32, entryAddr]
+    this.emitMasterInputIndex(loc); this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
+    this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_DROP, loc);
+    this.pushToStack('(sortedaddr)');
+    this.emitP2sh32FromCovenant((cat) => buildEntryNftCovenantScript(cat, collectionHash), loc);
+    this.popFromStack();
+
+    // 3. co-spent predecessor input[slot]: bytecode == entryAddr, read [Ps|S] -> [Hk32, entryAddr, Ps32, S32]
+    this.emitEntryInputIndex(slotIndex, loc, 2);
+    this.emit(Op.OP_DUP, loc); this.emit(Op.OP_UTXOBYTECODE, loc);
+    this.emit(encodeInt(2n), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_EQUALVERIFY, loc);
+    this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc);
+    this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc);
+    this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_DROP, loc); // [Hk32, entryAddr, Ps32, S32]
+
+    // 4. bracket Ps < H(k) < S  (Hk32 at depth3; Ps32 depth1; S32 depth0)
+    this.emit(Op.OP_OVER, loc); this.emit(Op.OP_BIN2NUM, loc);                       // Ps#
+    this.emit(encodeInt(4n), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_BIN2NUM, loc); // Hk#
+    this.emit(Op.OP_LESSTHAN, loc); this.emit(Op.OP_VERIFY, loc);                    // Ps < H(k)
+    this.emit(Op.OP_DUP, loc); this.emit(Op.OP_BIN2NUM, loc); this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_0, loc); this.emit(Op.OP_NUMEQUAL, loc);
+    this.emit(Op.OP_IF, loc); this.emit(Op.OP_DROP, loc);                            // +inf ok
+    this.emit(Op.OP_ELSE, loc);
+    this.emit(encodeInt(4n), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_BIN2NUM, loc);
+    this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_LESSTHAN, loc); this.emit(Op.OP_VERIFY, loc); // H(k) < S
+    this.emit(Op.OP_ENDIF, loc);                                                     // [Hk32, entryAddr, Ps32, S32]
+
+    // 5. P' at output[slot] == Ps32 || Hk32  (depths from top before outIdx: S32=0, Ps32=1, entryAddr=2, Hk32=3)
+    this.emitEntryOutputIndex(slotIndex, loc, 4);                                    // [.., S32, poutIdx]
+    this.emitVerifySortedEntryOutput(loc, 3, 2, 4);  // addr depth3, Ps32 depth2, Hk32 depth4 -> Ps32||Hk32
+
+    // 6. NEW at output[blockSize] == Hk32 || S32
+    this.emitMasterInputIndex(loc); this.emit(encodeInt(BigInt(blockSize)), loc); this.emit(Op.OP_ADD, loc); // [.., noutIdx]
+    this.emitVerifySortedEntryOutput(loc, 3, 4, 1);  // addr depth3, Hk32 depth4, S32 depth1 -> Hk32||S32
+
+    this.emit(Op.OP_2DROP, loc); this.emit(Op.OP_2DROP, loc); // drop S32, Ps32, entryAddr, Hk32
+    return node;
+  }
+
   visitMappingAssign(node: MappingAssignNode): Node {
-    // Sorted (C2 linked-list) mapping write: the upsert splice covenant is proven + SDK-driven, source codegen
-    // pending. Fail closed rather than emit the omittable entry-model write.
+    // Sorted (C2 linked-list) mapping write `m[k] = true`: insert into the sorted list (co-spend the bracketing
+    // predecessor, mint a new node). Never the omittable entry-model write.
     if (node.collection?.sorted) {
-      throw new SortedMappingCodegenPendingError(node, node.collection.name);
+      return this.emitSortedSetWrite(node);
     }
     if (this.plainLoopDepth > 0 && node.entrySlotIndex >= 0) {
       // A pure-write mapping assign inside a runtime loop (`for(i<n) m[k[i]]=v[i]`) emits a runtime-counter-indexed
@@ -13909,6 +14013,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (this.pendingEntryWrites.has(i) || this.pendingEntryDeletes.has(i)) continue;
       // Loop-write entries are NEW (no input to preserve) and have no fixed block slot.
       if (this.entrySlots[i].inLoop) continue;
+      // A sorted-set WRITE co-spends the predecessor and rewrites it to P' (output != input), so it must not be
+      // read-only-preserved; emitSortedSetWrite handles the input + P' output inline.
+      if (this.sortedCollections.has(this.entrySlots[i].collection)
+        && this.entrySlots[i].operations.includes('write')) continue;
 
       // Check if entry exists via introspection
       this.emitSlotExistsCheck('entry', i, locationData);
@@ -14009,6 +14117,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     for (let i = 0; i < this.entrySlots.length; i++) {
       if (this.pendingEntryDeletes.has(i)) continue; // deleted entries have no output
       if (this.entrySlots[i].inLoop) continue; // loop-write entries are new, no input to preserve
+      if (this.sortedCollections.has(this.entrySlots[i].collection)
+        && this.entrySlots[i].operations.includes('write')) continue; // sorted write: input -> P', handled inline
 
       // Check if entry exists via introspection
       this.emitSlotExistsCheck('entry', i, locationData);

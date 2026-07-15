@@ -1846,6 +1846,32 @@ describe('inlines internal value helpers that make an EXTERNAL contract call (OZ
   });
 });
 
+// A low-level `.call`/`.staticcall`/`.delegatecall` on a struct-FIELD address receiver (`t.dest.call(..)`) was
+// rejected: resolveLowLevelReceiverType missed a state-var base (StateAccessNode) and a mapping collection base
+// (collectionMap), so it fell through to the interface path (MethodCallNotSupported); and the field receiver was
+// not sourceable in codegen. Now the receiver resolves AND is hoisted into an address local. MultiSigWallet's
+// `transaction.destination.call{value:}(transaction.data)` shape.
+describe('low-level .call on a struct-field address receiver (MultiSigWallet transaction.destination.call)', () => {
+  const ok = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  const S = 'struct T { address dest; bytes data; }';
+  it('plain state-struct field: t.dest.call(t.data)', () => {
+    expect(ok(`${S} contract C { T t; function f() public {`
+      + ' (bool okk,) = t.dest.call(t.data); require(okk); } }')).toBe('C');
+  });
+  it('mapping-value struct field: m[id].dest.call(m[id].data)', () => {
+    expect(ok(`${S} contract C { mapping(uint => T) m; function f(uint id) public {`
+      + ' (bool okk,) = m[id].dest.call(m[id].data); require(okk); } }')).toBe('C');
+  });
+  it('array-element struct field via a storage pointer (transactions[id] inlined)', () => {
+    expect(ok(`${S} contract C { mapping(uint => T) transactions; function f(uint id) public {`
+      + ' T storage txn = transactions[id]; (bool okk,) = txn.dest.call(txn.data); require(okk); } }')).toBe('C');
+  });
+  it('staticcall on a struct-field receiver', () => {
+    expect(ok(`${S} contract C { T t; function f() public view returns (bool okk) {`
+      + ' (okk,) = t.dest.staticcall(t.data); } }')).toBe('C');
+  });
+});
+
 // `IFoo(<state chain>).m()` - a plain-`address` field reached through self-pinned STATE, cast to an interface
 // (the cast supplies the callee ABI). Generalizes the `IFoo(stateVar)` cast to a struct-field/mapping-value/array
 // chain, hoisting `IFoo(chain)` into a synthesized __extaddr_ local. This is the EACC Marketplace shape

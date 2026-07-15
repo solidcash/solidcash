@@ -41,6 +41,7 @@ import { cloneNode } from '../ast/clone.js';
  */
 const PREFIX = '__extaddr_';
 const ADDRESS_METHODS = new Set(['send', 'call', 'staticcall', 'delegatecall']);
+const LOW_LEVEL_CALLS = new Set(['call', 'staticcall', 'delegatecall']);
 
 // The element/value type of an array/mapping (for stepping through an access chain), else undefined.
 function elementOf(t: Type | undefined): Type | undefined {
@@ -61,8 +62,9 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
   private stateRoots: Map<string, Type> = new Map();      // state var / collection name -> declared type (self-pinned)
   private currentParams: Set<string> = new Set();         // current function's param names (safe at body top)
   private typeNames: Set<string> = new Set();             // interface + contract names usable as a cast target
-  // localName -> synthesized decl parts (init reads the self-pinned state; iface = the local's interface type)
-  private usedInFn: Map<string, { iface: string; init: ExpressionNode }> = new Map();
+  // localName -> synthesized decl parts (init reads the self-pinned state; iface = the local's interface type, or
+  // undefined for a plain-`address` local hoisted as a low-level-call receiver)
+  private usedInFn: Map<string, { iface: string | undefined; init: ExpressionNode }> = new Map();
 
   visitSourceFile(node: SourceFileNode): Node {
     this.typeNames = new Set();
@@ -182,6 +184,19 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
       const loc = node.object.location;
       node.object = new IdentifierNode(paramField.localName);
       node.object.location = loc;
+    } else if (LOW_LEVEL_CALLS.has(node.methodName) && this.llReceiverTarget(node.object)) {
+      // `<recv>.call/staticcall/delegatecall(..)` where `<recv>` is a struct field / element resolving to an
+      // address (self-pinned state chain OR a param-rooted field). A bare-identifier receiver already sources in
+      // codegen; a field/element receiver did not ("external call target must be a parameter"). Hoist it into a
+      // plain-`address` local (`t.dest.call(x)` -> `address __extaddr_ll_t_dest = t.dest; __extaddr_ll_...call(x)`),
+      // same soundness as the interface-target hoist. The data arg keeps its field form (codegen sources that).
+      const localName = this.llReceiverTarget(node.object)!;
+      if (!this.usedInFn.has(localName)) {
+        this.usedInFn.set(localName, { iface: undefined, init: cloneNode(node.object) as ExpressionNode });
+      }
+      const loc = node.object.location;
+      node.object = new IdentifierNode(localName);
+      node.object.location = loc;
     } else {
       node.object = this.visit(node.object) as ExpressionNode;
     }
@@ -265,6 +280,16 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
       return this.currentParams.has(expr.name) && expr.keys.every((k) => this.indexSafe(k));
     }
     return false;
+  }
+
+  // A low-level-call receiver worth hoisting into a plain-`address` local: a struct field / element (NOT a bare
+  // identifier - those already source in codegen) that is either a self-pinned state chain resolving to an
+  // `address`, or a param-rooted access. Returns a stable per-chain local name, else undefined.
+  private llReceiverTarget(obj: ExpressionNode): string | undefined {
+    if (obj instanceof IdentifierNode) return undefined; // bare local/param receiver already works
+    if (!(this.resolveChainType(obj) instanceof AddressType) && !this.isParamRooted(obj)) return undefined;
+    const key = this.chainKey(obj);
+    return key ? `${PREFIX}ll_${key}` : undefined;
   }
 
   // The declared type of a state-rooted access chain (self-pinned): a state var / collection identifier, a

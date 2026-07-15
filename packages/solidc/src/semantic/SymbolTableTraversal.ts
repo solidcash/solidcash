@@ -6980,21 +6980,25 @@ export default class SymbolTableTraversal extends AstTraversal {
   // (element/value type), tuple index, and struct field access, so `structVar.field`, `arr[i]`,
   // `arr[i].field`, `map[k].to` all resolve (e.g. MultiSigWallet's `transactions[i].to`).
   private resolveLowLevelReceiverType(expr: Node): Type | undefined {
-    if (expr instanceof IdentifierNode) {
+    // A named base (local var / state var / collection): walk scopes, then the state-var + collection maps. A
+    // mapping receiver (`mm[k]`) lives in collectionMap, NOT stateVariableMap, and a visited state-var base
+    // (`t` in `t.dest.call(..)`) is a StateAccessNode - both were missed before, so `struct.field.call(..)` on a
+    // plain state struct / mapping-value struct fell through to the interface path (MethodCallNotSupported).
+    const nameType = (name: string): Type | undefined => {
       for (let i = this.symbolTables.length - 1; i >= 0; i -= 1) {
-        const t = this.symbolTables[i]?.get(expr.name)?.type;
+        const t = this.symbolTables[i]?.get(name)?.type;
         if (t) return t;
       }
-      return this.stateVariableMap.get(expr.name)?.type;
-    }
+      return this.stateVariableMap.get(name)?.type ?? this.collectionMap.get(name)?.type;
+    };
+    if (expr instanceof IdentifierNode) return nameType(expr.name);
+    if (expr instanceof StateAccessNode) return nameType(expr.name);
     if (expr instanceof NullaryOpNode
       && (expr.operator === NullaryOperator.MSG_SENDER || expr.operator === NullaryOperator.TX_ORIGIN)) {
       return new AddressType();
     }
     if (expr instanceof MappingAccessNode) {
-      let base: Type | undefined;
-      for (let i = this.symbolTables.length - 1; i >= 0 && !base; i -= 1) base = this.symbolTables[i]?.get(expr.name)?.type;
-      base = base ?? this.stateVariableMap.get(expr.name)?.type;
+      const base = nameType(expr.name);
       return base instanceof ArrayType ? base.elementType : base instanceof MappingType ? base.valueType : undefined;
     }
     if (expr instanceof ArrayAccessNode) {

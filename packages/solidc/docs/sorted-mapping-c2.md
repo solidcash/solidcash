@@ -156,3 +156,7 @@ need not reconstruct pushdata encodings; it only chooses which entries to co-spe
   is unambiguous for any key type; a single key reduces to `sha256(k)`. Proven in `SortedMappingNested.test.ts`
   (`allow[a][b]` upsert/read/RMW, distinct pairs independent, `(20,10) != (10,20)`). Multi-key with an expression
   key (not a plain param) fails closed.
+- **Key types:** `int`/`uint`, fixed-width `bytesN`, and `address` (hashed as its locking bytecode; the SDK matches
+  via `addressToLockScript`) all work as (single or composite) keys - so `mapping(address => uint)` (ERC20 balances)
+  and `mapping(address => mapping(address => uint))` (allowances) compile and run. VM-verified in
+  `SortedMappingAddressKey.test.ts`.

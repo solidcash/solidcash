@@ -4619,9 +4619,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           // Composite slot for a nested mapping m[a][b]...: hash each key independently, then hash the
           // concatenation (keyToSlotMulti), matching the covenant's emitSortedKeyHash. Single key -> keyToSlot.
           const keyNames = access.keyParams.map((name, i) => access.keySources?.[i]?.paramName ?? name);
-          const encodeKey = (paramName: string): Uint8Array => {
+          const keyTypes = collection.keyTypes ?? [collection.keyType];
+          const encodeKey = (paramName: string, keyType: string): Uint8Array => {
             const idx = abiFunction!.inputs.findIndex((inp) => inp.name === paramName);
             const v = args[idx] as bigint | boolean | Uint8Array | string;
+            // An address key is hashed as its locking bytecode (matching the covenant's on-stack address and the
+            // default entry model). Bytes keys arrive as Uint8Array (raw); ints as their VM number.
+            if (keyType === 'address' && typeof v === 'string' && v.includes(':')) return addressToLockScript(v);
             return typeof v === 'bigint' ? bigIntToVmNumber(v)
               : v instanceof Uint8Array ? v
                 : typeof v === 'boolean' ? bigIntToVmNumber(v ? 1n : 0n)
@@ -4629,7 +4633,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           };
           const kvIdx = abiFunction!.inputs.findIndex((inp) => inp.name === keyNames[0]);
           const kv = args[kvIdx] as bigint | boolean | Uint8Array | string;
-          const slot = keyToSlotMulti(keyNames.map(encodeKey));
+          const slot = keyToSlotMulti(keyNames.map((name, i) => encodeKey(name, keyTypes[i] ?? collection.keyType)));
           // A sorted mapping write OR `delete m[k]` (== assign default, Solidity semantics) both upsert the entry,
           // so the SDK co-spends it the same way. bool sets are value mappings too (true=0x01, false/delete=empty).
           const isWrite = access.operations.includes('write') || access.operations.includes('delete');

@@ -46,6 +46,14 @@ describe('sorted mapping opt-in (C2)', () => {
       .not.toThrow();
   });
 
+  it('compiles address-keyed mappings (ERC20 balance/allowance shapes)', () => {
+    // Address keys are hashed as their locking bytecode (VM-verified in SortedMappingAddressKey.test.ts).
+    const B = 'contract C() { mapping(address => int) bal; function f(address a, int v) { bal[a] = v; } }';
+    expect(() => compileString(B, { sortedMappings: ['bal'], forceStateful: true })).not.toThrow();
+    const A = 'contract C() { mapping(address => mapping(address => int)) allow; function f(address o, address s, int v) { allow[o][s] = v; } }';
+    expect(() => compileString(A, { sortedMappings: ['allow'], forceStateful: true })).not.toThrow();
+  });
+
   it('compiles a nested / composite-key mapping (mapping(A=>mapping(B=>V)))', () => {
     // slot = sha256(sha256(a)++sha256(b)) high-bit-masked (keyToSlotMulti); each key hashed independently so any
     // key type works. VM-verified in SortedMappingNested.test.ts (ERC20-allowance shape).

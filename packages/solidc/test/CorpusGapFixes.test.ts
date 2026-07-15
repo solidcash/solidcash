@@ -1910,4 +1910,16 @@ describe('inlined value helper: local sharing a struct-field name does not corru
       + '   uint16[2] memory r = _split(arbs[id]); return r; } }';
     expect(ok(src)).toBe('C');
   });
+  it('renames abi.encodeCall(token.method) interfaceName when the helper is inlined (OZ SafeERC20.forceApprove)', () => {
+    // `_enc` is inlined (reads state bal[id]), renaming its `token` param to `__rh0_token`. The abi.encodeCall's
+    // interfaceName field ('token') must be renamed too, else "Interface 'token' referenced in abi.encodeCall is
+    // not defined". Caller arg is `tk` (not `token`), so a dangling un-renamed `token` cannot accidentally resolve.
+    const src = 'interface IERC20 { function approve(address s, uint256 v) external returns (bool); }'
+      + ' contract C { mapping(uint => uint) bal;'
+      + ' function _enc(IERC20 token, address s, uint256 v, uint id) internal view returns (bytes memory) {'
+      + '   uint x = bal[id]; return abi.encodeCall(token.approve, (s, v + x)); }'
+      + ' function f(IERC20 tk, address s, uint256 v, uint id) public view returns (bytes memory) {'
+      + '   bytes memory d = _enc(tk, s, v, id); return d; } }';
+    expect(ok(src)).toBe('C');
+  });
 });

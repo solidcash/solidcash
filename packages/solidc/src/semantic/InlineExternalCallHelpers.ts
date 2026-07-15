@@ -9,6 +9,8 @@ import {
   FunctionCallNode,
   VariableDefinitionNode,
   IdentifierNode,
+  FieldAccessNode,
+  AbiEncodeCallNode,
   MethodCallNode,
   CastNode,
   TupleAssignmentNode,
@@ -269,10 +271,18 @@ export default class InlineExternalCallHelpers extends AstTraversal {
     this.walk(root, (n) => {
       if (n instanceof IdentifierNode) {
         n.name = rn(n.name);
+      } else if (n instanceof FieldAccessNode) {
+        // n.name is a STRUCT FIELD MEMBER, not a variable - never rename it (the base is still walked as a
+        // child). A local sharing a struct field's name would otherwise corrupt `obj.field` -> `obj.__rhN_field`.
       } else if (n instanceof TupleAssignmentNode) {
         // New element objects: cloneNode shares the plain-object `elements` across clones, so in-place mutation
         // would stomp another inline frame's rename (dangling `__rhN_<slot>`).
         n.elements = n.elements.map((el) => (el.name ? { ...el, name: rn(el.name) } : el));
+      } else if (n instanceof AbiEncodeCallNode) {
+        // interfaceName is a VARIABLE ref (`abi.encodeCall(token.approve, ..)` - `token` is an inlined param
+        // renamed to `__rhN_token`); rename it so the selector resolves. functionName is a fixed interface method.
+        // OZ SafeERC20.forceApprove (a VOID low-level-call helper inlined here) is the trigger.
+        n.interfaceName = rn(n.interfaceName);
       } else {
         const nm = (n as unknown as { name?: unknown }).name;
         if (typeof nm === 'string' && map.has(nm)) (n as unknown as { name: string }).name = map.get(nm)!;

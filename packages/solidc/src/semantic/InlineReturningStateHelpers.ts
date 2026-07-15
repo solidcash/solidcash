@@ -27,6 +27,7 @@ import {
   LowLevelCallStatementNode,
   MethodCallNode,
   CastNode,
+  AbiEncodeCallNode,
 } from '../ast/AST.js';
 import { collectAmbiguousInlineKeys, inlineKey } from './inlineOverloadGuard.js';
 import { AmbiguousInlineOverloadError } from '../Errors.js';
@@ -657,6 +658,12 @@ export default class InlineReturningStateHelpers extends AstTraversal {
         // New element objects, not in-place mutation: cloneNode shares the plain-object `elements` across clones,
         // so mutating a name would stomp another inline frame's rename (dangling `__rhN_<slot>`).
         n.elements = n.elements.map((el) => (el.name ? { ...el, name: rn(el.name) } : el));
+      } else if (n instanceof AbiEncodeCallNode) {
+        // interfaceName is a VARIABLE reference (`abi.encodeCall(token.approve, ..)` - `token` is an inlined
+        // param renamed to `__rh0_token`); rename it so the selector resolves. functionName is a fixed interface
+        // method (never a local). rn() only maps renamed locals, so a literal `abi.encodeCall(IERC20.approve, ..)`
+        // passes through unchanged. OZ SafeERC20.forceApprove is the trigger.
+        n.interfaceName = rn(n.interfaceName);
       } else {
         const nm = (n as unknown as { name?: unknown }).name;
         if (typeof nm === 'string') (n as unknown as { name: string }).name = rn(nm);

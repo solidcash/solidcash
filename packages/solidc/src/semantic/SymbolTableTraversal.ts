@@ -5831,8 +5831,12 @@ export default class SymbolTableTraversal extends AstTraversal {
       // `abi.encodeCall(token.method, (..))` where `token` is an interface-typed variable (e.g. `IERC20 token`,
       // as in OZ SafeERC20). Resolve the variable's declared interface and route the selector through it, the
       // same way statement-form member calls dispatch (see visitFunctionCallStatement).
-      const varType = this.symbolTables[0]?.get(node.interfaceName)?.type
-        ?? this.stateVariableMap.get(node.interfaceName)?.type;
+      let varType = this.stateVariableMap.get(node.interfaceName)?.type;
+      // Walk every scope (innermost first): the variable may be a param/local of an enclosing function - an
+      // inlined helper's hoisted `__rh0_token` binding sits in the caller's body scope, not necessarily [0].
+      for (let i = 0; i < this.symbolTables.length && !varType; i += 1) {
+        varType = this.symbolTables[i]?.get(node.interfaceName)?.type;
+      }
       if (varType instanceof AddressType && varType.interfaceName) {
         iface = this.interfaceMap.get(varType.interfaceName);
       }

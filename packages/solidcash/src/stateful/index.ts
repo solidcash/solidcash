@@ -78,6 +78,11 @@ export {
 export { ThreadManager, ThreadHandle, type SplitOptions, type MergeOptions } from './ThreadManager.js';
 export { resolveDeployReads, type DeployReadResolveOptions } from './resolveDeployReads.js';
 export {
+  SortedList, keyToSlot, keyToSlotValue, slotValueToBytes, bytesToSlotValue,
+  encodeEntryCommitment, decodeEntryCommitment, headSentinelCommitment,
+  type SortedEntry, type NonMembershipPlan, type MembershipPlan, type InsertPlan, type DeletePlan,
+} from './SortedList.js';
+export {
   getDataNftAddress,
   getDataNftLockingBytecode,
   getEntryNftLockingBytecode,

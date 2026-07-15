@@ -1896,6 +1896,33 @@ describe('partial tuple-assign to a state variable ((z,) = f() / (z,) = addr.cal
   });
 });
 
+// `(m[k].f,) = <single tuple-valued RHS>` - a COMPLEX (mapping/array/struct-field) lvalue as a tuple target with
+// a single-expression (call) RHS. desugarComplexTupleAssignment handled only the per-slot `(a,b)=(e1,e2)` form,
+// so a call RHS left the complex slot mis-recorded as `{name:'m'}` -> "Undefined reference to symbol m". The new
+// desugarComplexTupleSingleRhs destructures into typed temps + per-slot writes. MultiSigWallet's
+// `(transaction.executed,) = ...` where `Transaction storage transaction = transactions[id]`.
+describe('complex-lvalue tuple target with a single (call) RHS ((m[k].f,) = g())', () => {
+  const ok = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  const two = 'function two() pure returns (bool, uint) { return (true, 1); }';
+  const S = 'struct T { bool e; uint v; }';
+  it('mapping-value struct field target', () => {
+    expect(ok(`${two} ${S} contract C { mapping(uint => T) m;`
+      + ' function f(uint id) public { (m[id].e,) = two(); require(m[id].e); } }')).toBe('C');
+  });
+  it('mapping-value struct field via a storage pointer', () => {
+    expect(ok(`${two} ${S} contract C { mapping(uint => T) m;`
+      + ' function f(uint id) public { T storage t = m[id]; (t.e, t.v) = two(); require(t.e && t.v == 1); } }')).toBe('C');
+  });
+  it('array-element struct field target', () => {
+    expect(ok(`${two} ${S} contract C { T[] xs;`
+      + ' function f(uint id) public { (xs[id].e,) = two(); require(xs[id].e); } }')).toBe('C');
+  });
+  it('low-level-call return into a struct-field via storage pointer (no value transfer)', () => {
+    expect(ok(`${S} contract C { mapping(uint => T) m; function f(uint id, address d, bytes calldata x) public {`
+      + ' T storage t = m[id]; (t.e,) = d.call(x); } }')).toBe('C');
+  });
+});
+
 // `IFoo(<state chain>).m()` - a plain-`address` field reached through self-pinned STATE, cast to an interface
 // (the cast supplies the callee ABI). Generalizes the `IFoo(stateVar)` cast to a struct-field/mapping-value/array
 // chain, hoisting `IFoo(chain)` into a synthesized __extaddr_ local. This is the EACC Marketplace shape

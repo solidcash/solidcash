@@ -1695,6 +1695,88 @@ export default class AstBuilder
     return block;
   }
 
+  // `(m[k].f, , x) = <single tuple-valued RHS>` (e.g. a multi-return call, incl. a low-level `addr.call(..)`):
+  // destructure the RHS into typed temps (preserving skip slots), then per-slot complex-lvalue writes. Sibling of
+  // desugarComplexTupleAssignment, which only handles the per-slot `(a,b)=(e1,e2)` form. MultiSigWallet's
+  // `(transaction.executed,) = transaction.destination.call{value:..}(transaction.data)`. Bails (null) if any
+  // captured slot is a bare simple lvalue (left to other paths) or its type is not parse-time resolvable.
+  private desugarComplexTupleSingleRhs(ctx: TupleAssignmentContext, slots: TupleSlotContext[]): Node | null {
+    const exprs = ctx.expression_list();
+    if (exprs.length !== 1) return null; // only a single tuple-valued RHS
+    for (const s of slots) {
+      if (this.isEmptyTupleSlot(s)) continue;
+      if (s.typeName() || s.arrayType()) return null; // a declaration slot - not this path
+      if (!this.isComplexTupleSlot(s)) return null; // a bare simple existing lvalue - leave to other paths
+    }
+    const slotTypes = slots.map((s) => (this.isEmptyTupleSlot(s) ? undefined : this.resolveTupleSlotType(s)));
+    if (slots.some((s, i) => !this.isEmptyTupleSlot(s) && !slotTypes[i])) return null;
+
+    const loc = Location.fromCtx(ctx);
+    const tmpNames = slots.map(() => `__ctup_${this.nestedLvalueCounter++}`);
+    const declElements = slots.map((s, i) => (this.isEmptyTupleSlot(s)
+      ? { skip: true } : { name: tmpNames[i], type: slotTypes[i]! }));
+    const decl = new TupleAssignmentNode(declElements, this.visit(exprs[0]) as ExpressionNode, true);
+    decl.location = loc;
+    const stmts: StatementNode[] = [decl];
+    slots.forEach((slot, i) => {
+      if (this.isEmptyTupleSlot(slot)) return;
+      const base = slot.anyIdentifier(0)!;
+      let rawName = base.getText();
+      let segs = this.buildTupleSlotSegs(slot);
+      // Expand an indexed storage-pointer base (`T storage t = coll[k]; t.f`): buildLvalueAssign only substitutes
+      // whole-var (keys-0) aliases, so route through the container + prepend the alias index (`coll[k].f`).
+      const alias = this.storageAliases.get(rawName);
+      if (alias && alias.keys.length > 0) {
+        rawName = alias.container;
+        segs = [...alias.keys.map((k) => ({ key: () => cloneNode(k) as ExpressionNode })), ...segs];
+      }
+      const value = new IdentifierNode(tmpNames[i]);
+      value.location = loc;
+      stmts.push(this.buildLvalueAssign(rawName, false, Location.fromCtx(base), segs, '=', undefined, loc, value));
+    });
+    const block = new BlockNode(stmts);
+    block.location = loc;
+    return block;
+  }
+
+  // The declared TYPE of a complex tuple slot's lvalue (`m[k].field`, `s.a.b`, `arr[i].field`), for typing the
+  // synthesized destructure temp. Handles a mapping/array/struct base (including a storage-pointer alias to one)
+  // + a member chain; returns undefined for anything not resolvable at parse time (caller falls through).
+  private resolveTupleSlotType(slot: TupleSlotContext): Type | undefined {
+    const base = slot.anyIdentifier(0)?.getText();
+    if (!base) return undefined;
+    const segs = this.buildTupleSlotSegs(slot);
+    let structT: StructType | undefined;
+    let memberStart = 0;
+    const alias = this.storageAliases.get(base);
+    if (alias) {
+      // `T storage p = coll[k]; p.field` - the alias already includes the index, so segs are all members.
+      structT = this.mappingStructValueVars.get(alias.container) ?? this.stateMappingValueStruct.get(alias.container)
+        ?? this.packedStructArrayElems.get(alias.container) ?? this.localStructArrayTypes.get(alias.container)
+        ?? this.stateStructVars.get(alias.container) ?? this.localStructTypes.get(alias.container);
+    } else if (segs[0]?.key !== undefined) {
+      // `coll[k].field` - a leading index into a mapping/array; step to the element/value struct.
+      structT = this.mappingStructValueVars.get(base) ?? this.packedStructArrayElems.get(base)
+        ?? this.localStructArrayTypes.get(base) ?? this.stateMappingValueStruct.get(base);
+      memberStart = 1;
+    } else {
+      structT = this.stateStructVars.get(base) ?? this.localStructTypes.get(base); // `s.field`
+    }
+    if (!structT) return undefined;
+    let cur: Type = structT;
+    for (let i = memberStart; i < segs.length; i += 1) {
+      const m = segs[i].member;
+      if (m === undefined || !(cur instanceof StructType)) return undefined; // nested index / non-struct step
+      const fields: { name: string; type: Type }[] = cur.fields;
+      const field = fields.find((f) => f.name === m);
+      if (!field) return undefined;
+      cur = field.type;
+    }
+    // A plain scalar only: a struct/array/mapping tuple target keeps its own storage-pointer rebind semantics.
+    if (cur instanceof StructType || cur instanceof ArrayType || cur instanceof MappingType) return undefined;
+    return cur;
+  }
+
   visitTupleAssignment(ctx: TupleAssignmentContext): Node {
     // Parenthesised single declaration `(uint a) = expr;` (solc one-element tuple decl): behaves exactly like
     // `uint a = expr;`. Detected by a direct anyIdentifier child (only the two single-decl alts have one).
@@ -1722,6 +1804,8 @@ export default class AstBuilder
     if (slots.length > 0 && slots.some((s) => this.isComplexTupleSlot(s))) {
       const desugared = this.desugarComplexTupleAssignment(ctx, slots);
       if (desugared) return desugared;
+      const single = this.desugarComplexTupleSingleRhs(ctx, slots);
+      if (single) return single;
     }
     let elements: { name?: string, type?: Type, skip?: boolean, existing?: boolean }[];
     if (slots.length > 0) {

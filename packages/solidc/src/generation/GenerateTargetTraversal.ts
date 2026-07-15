@@ -8840,17 +8840,39 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   // ===== Mapping (Entry NFT) Support =====
 
   /**
-   * Sorted-set (C2 linked-list) mapping read `m[k]` for `mapping(K => bool)`. Co-spends ONE entry at the entry
-   * block-layout slot - the SDK provides the exact entry if k is present, else the bracketing predecessor. Pins
-   * the co-spent input's bytecode to the collection's entry P2SH (a real entry of this collection), reads its
-   * commitment slot(32)||nextKey(32), computes slot = sha256(k) with the last byte's high bit cleared, and returns
-   * the real bit: slot == H(k) -> 1 (present); slot < H(k) < nextKey -> 0 (absent, nextKey 0 = +inf); neither ->
-   * revert. No default-on-absent branch, so omitting the entry (input bytecode won't match) reverts - closes C2.
+   * The C2 non-membership bracket: given stack [.., slot32, nextKey32] (nextKey on top) and the key hash Hk32 at
+   * depth 2 (below slot32), verify slot < H(k) < nextKey (nextKey 0 = +infinity). Leaves the stack unchanged. This
+   * is the proven absent-witness fragment (SortedMappingRead.test.ts) shared by the bool and value-typed reads.
+   */
+  private emitSortedAbsenceBracket(loc: SingleLocationData): void {
+    this.emit(Op.OP_OVER, loc); this.emit(Op.OP_BIN2NUM, loc);
+    this.emit(encodeInt(3n), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_BIN2NUM, loc);
+    this.emit(Op.OP_LESSTHAN, loc); this.emit(Op.OP_VERIFY, loc);           // slot < H(k)
+    this.emit(Op.OP_DUP, loc); this.emit(Op.OP_BIN2NUM, loc); this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_0, loc); this.emit(Op.OP_NUMEQUAL, loc);
+    this.emit(Op.OP_IF, loc); this.emit(Op.OP_DROP, loc);                   // +inf ok
+    this.emit(Op.OP_ELSE, loc);
+    this.emit(encodeInt(3n), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_BIN2NUM, loc);
+    this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_LESSTHAN, loc); this.emit(Op.OP_VERIFY, loc); // H(k) < nextKey
+    this.emit(Op.OP_ENDIF, loc);
+  }
+
+  /**
+   * Sorted-set (C2 linked-list) mapping read `m[k]`. Co-spends ONE entry at the entry block-layout slot - the SDK
+   * provides the exact entry if k is present, else the bracketing predecessor. Pins the co-spent input's bytecode
+   * to the collection's entry P2SH (a real entry of this collection), reads its commitment slot(32)||nextKey(32)
+   * [||value], computes slot = sha256(k) with the last byte's high bit cleared, and returns: for a set
+   * (mapping(K=>bool)) the real membership bit; for a value mapping (mapping(K=>int)) the value tail if present or
+   * the type default if absent. Absence is proven by the bracket slot < H(k) < nextKey (nextKey 0 = +inf); there is
+   * no default-on-absent branch, so omitting the entry (input bytecode won't match) reverts - closes C2.
    */
   private emitSortedSetRead(node: MappingAccessNode): Node {
     const loc = { location: node.location, positionHint: PositionHint.START };
     const collection = node.collection!;
-    if (collection.innermostValueType.toString() !== 'bool' || collection.allKeyTypes.length !== 1) {
+    const valueType = collection.innermostValueType;
+    const isBool = valueType.toString() === 'bool';
+    const isInt = valueType === PrimitiveType.BIGINT || valueType instanceof IntType;
+    if ((!isBool && !isInt) || collection.allKeyTypes.length !== 1) {
       throw new SortedMappingCodegenPendingError(node, collection.name);
     }
     const slotIndex = node.entrySlotIndex;
@@ -8891,28 +8913,36 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_DROP, loc); // [Hk32, idx]  (drop entryAddr)
     this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc);        // [Hk32, commit]
     this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc);                       // [Hk32, slot32, rest]
-    this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_DROP, loc); // [Hk32, slot32, nextKey32]
+    this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc);                       // [Hk32, slot32, nextKey32, value]
+    if (isBool) this.emit(Op.OP_DROP, loc);           // set: value tail unused -> [Hk32, slot32, nextKey32]
 
-    // 4. membership: slot32 == Hk32 (proven fragment; SortedMappingRead.test.ts)
-    this.emit(Op.OP_OVER, loc);                       // copy slot32 (depth1)
-    this.emit(encodeInt(3n), loc); this.emit(Op.OP_PICK, loc); // copy Hk32 (depth3)
-    this.emit(Op.OP_EQUAL, loc);                      // [slot32, nextKey32, Hk32, isPresent]
-    this.emit(Op.OP_IF, loc);
-    this.emit(Op.OP_2DROP, loc); this.emit(Op.OP_DROP, loc); this.emit(Op.OP_1, loc); // present -> 1
-    this.emit(Op.OP_ELSE, loc);
-    // absence bracket: slot < H(k) < nextKey (nextKey 0 = +inf)
-    this.emit(Op.OP_OVER, loc); this.emit(Op.OP_BIN2NUM, loc);
-    this.emit(encodeInt(3n), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_BIN2NUM, loc);
-    this.emit(Op.OP_LESSTHAN, loc); this.emit(Op.OP_VERIFY, loc);           // slot < H(k)
-    this.emit(Op.OP_DUP, loc); this.emit(Op.OP_BIN2NUM, loc); this.emit(Op.OP_DUP, loc);
-    this.emit(Op.OP_0, loc); this.emit(Op.OP_NUMEQUAL, loc);
-    this.emit(Op.OP_IF, loc); this.emit(Op.OP_DROP, loc);                   // +inf ok
-    this.emit(Op.OP_ELSE, loc);
-    this.emit(encodeInt(3n), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_BIN2NUM, loc);
-    this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_LESSTHAN, loc); this.emit(Op.OP_VERIFY, loc); // H(k) < nextKey
-    this.emit(Op.OP_ENDIF, loc);
-    this.emit(Op.OP_2DROP, loc); this.emit(Op.OP_DROP, loc); this.emit(Op.OP_0, loc); // absent -> 0
-    this.emit(Op.OP_ENDIF, loc);
+    if (isBool) {
+      // 4a. membership bit: slot32 == Hk32 (proven fragment; SortedMappingRead.test.ts)
+      this.emit(Op.OP_OVER, loc);                       // copy slot32 (depth1)
+      this.emit(encodeInt(3n), loc); this.emit(Op.OP_PICK, loc); // copy Hk32 (depth3)
+      this.emit(Op.OP_EQUAL, loc);                      // [slot32, nextKey32, Hk32, isPresent]
+      this.emit(Op.OP_IF, loc);
+      this.emit(Op.OP_2DROP, loc); this.emit(Op.OP_DROP, loc); this.emit(Op.OP_1, loc); // present -> 1
+      this.emit(Op.OP_ELSE, loc);
+      this.emitSortedAbsenceBracket(loc);               // verifies slot < H(k) < nextKey, leaves [.., slot32, nextKey32]
+      this.emit(Op.OP_2DROP, loc); this.emit(Op.OP_DROP, loc); this.emit(Op.OP_0, loc); // absent -> 0
+      this.emit(Op.OP_ENDIF, loc);
+    } else {
+      // 4b. value read: present (slot32 == Hk32) -> the raw value tail; absent (bracket proven) -> type default.
+      // stack: [Hk32, slot32, nextKey32, value]
+      this.emit(encodeInt(2n), loc); this.emit(Op.OP_PICK, loc);   // copy slot32 (depth2)
+      this.emit(encodeInt(4n), loc); this.emit(Op.OP_PICK, loc);   // copy Hk32 (depth4)
+      this.emit(Op.OP_EQUAL, loc);                                 // [Hk32, slot32, nextKey32, value, isPresent]
+      this.emit(Op.OP_IF, loc);
+      this.emit(Op.OP_NIP, loc); this.emit(Op.OP_NIP, loc); this.emit(Op.OP_NIP, loc); // -> [value]
+      this.emit(Op.OP_BIN2NUM, loc);                              // normalize the raw int tail
+      this.emit(Op.OP_ELSE, loc);
+      this.emit(Op.OP_DROP, loc);                                 // drop value -> [Hk32, slot32, nextKey32]
+      this.emitSortedAbsenceBracket(loc);                         // verifies slot < H(k) < nextKey
+      this.emit(Op.OP_2DROP, loc); this.emit(Op.OP_DROP, loc);    // -> []
+      this.emitDefaultValue(loc, valueType);                      // absent -> default
+      this.emit(Op.OP_ENDIF, loc);
+    }
 
     this.pushToStack('(value)');
     return node;
@@ -8929,8 +8959,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
 
     // A sorted (C2 linked-list) mapping read `m[k]`: co-spend one entry (exact if present, else the predecessor)
-    // and return the real membership bit (slot==H(k) -> true; slot<H(k)<nextKey -> false; else revert). No
-    // default-on-absent branch -> the omission attack is closed. Restricted to mapping(K=>bool) sets.
+    // and return the real value (set -> membership bit; value mapping -> the value tail if present, else the type
+    // default proven-absent via the bracket). No default-on-absent branch -> the omission attack is closed.
     if (node.collection?.sorted && !node.arrayIndex) {
       return this.emitSortedSetRead(node);
     }

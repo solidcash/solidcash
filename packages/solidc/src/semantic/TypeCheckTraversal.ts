@@ -1073,7 +1073,10 @@ export default class TypeCheckTraversal extends AstTraversal {
   }
 
   private asMappingRead(expr: ExpressionNode): string | undefined {
-    return expr instanceof MappingAccessNode ? expr.name : undefined;
+    // A sorted (C2 linked-list) mapping makes non-existence PROVABLE (the covenant reverts on omission), so a
+    // negative guard on it is safe - suppress the C2 warning for those collections.
+    if (expr instanceof MappingAccessNode && !expr.collection?.sorted) return expr.name;
+    return undefined;
   }
 
   private isFalsyLiteral(expr: ExpressionNode): boolean {

@@ -80,7 +80,7 @@ export { resolveDeployReads, type DeployReadResolveOptions } from './resolveDepl
 export {
   SortedList, keyToSlot, keyToSlotValue, slotValueToBytes, bytesToSlotValue,
   encodeEntryCommitment, decodeEntryCommitment, headSentinelCommitment,
-  type SortedEntry, type NonMembershipPlan, type MembershipPlan, type InsertPlan, type DeletePlan,
+  type SortedEntry, type NonMembershipPlan, type MembershipPlan, type InsertPlan, type DeletePlan, type UpdatePlan,
 } from './SortedList.js';
 export {
   getDataNftAddress,

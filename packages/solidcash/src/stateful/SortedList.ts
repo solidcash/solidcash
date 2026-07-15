@@ -77,6 +77,8 @@ export interface DeletePlan {
   kind: 'delete'; slot: Uint8Array; predecessor: SortedEntry; node: SortedEntry;
   predNewCommitment: Uint8Array;
 }
+/** Plan for updating a present key's value: co-spend its entry, rewrite value only (link slot||nextKey preserved). */
+export interface UpdatePlan { kind: 'update'; slot: Uint8Array; entry: SortedEntry; newCommitment: Uint8Array }
 
 export class SortedList {
   private entries: SortedEntry[]; // sorted ascending by slot value
@@ -140,6 +142,13 @@ export class SortedList {
       predNewCommitment: encodeEntryCommitment(predecessor.slot, slot, predecessor.value), // P' next -> k
       newNodeCommitment: encodeEntryCommitment(slot, oldNext, value),                       // NEW[k|oldNext]
     };
+  }
+
+  planUpdate(slot: Uint8Array, newValue: Uint8Array): UpdatePlan {
+    const entry = this.find(slot);
+    if (entry === undefined) throw new Error('key is absent; use insert, not update');
+    // Link (slot, nextKey) preserved; only the value tail changes.
+    return { kind: 'update', slot, entry, newCommitment: encodeEntryCommitment(entry.slot, entry.nextKey, newValue) };
   }
 
   planDelete(slot: Uint8Array): DeletePlan {

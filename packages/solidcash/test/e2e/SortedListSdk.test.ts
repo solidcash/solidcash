@@ -51,6 +51,38 @@ function nonMembershipCovenant(): Uint8Array {
   return a.bytes();
 }
 
+// The VM-proven DELETE covenant. input1 = P[Ps|k], input2 = node[k|S], output1 = P'[Ps|S].
+function deleteCovenant(): Uint8Array {
+  const a = new Asm();
+  const cat = hexToBin(CATEGORY);
+  const catBase = (idx: number, opCat: number): void => { a.op(idx, opCat).pushData(new Uint8Array([32])).op(Op.OP_SPLIT, Op.OP_DROP).pushData(cat).op(Op.OP_EQUALVERIFY); };
+  catBase(Op.OP_1, Op.OP_UTXOTOKENCATEGORY);
+  a.op(Op.OP_1, Op.OP_UTXOTOKENCOMMITMENT).pushData(new Uint8Array([32])).op(Op.OP_SPLIT);
+  a.op(Op.OP_2, Op.OP_PICK, Op.OP_EQUALVERIFY);
+  catBase(Op.OP_2, Op.OP_UTXOTOKENCATEGORY);
+  a.op(Op.OP_2, Op.OP_UTXOTOKENCOMMITMENT).pushData(new Uint8Array([32])).op(Op.OP_SPLIT);
+  a.op(Op.OP_SWAP); a.op(Op.OP_3, Op.OP_PICK, Op.OP_EQUALVERIFY);
+  catBase(Op.OP_1, Op.OP_OUTPUTTOKENCATEGORY);
+  a.op(Op.OP_OVER); a.op(Op.OP_1, Op.OP_PICK, Op.OP_CAT); a.op(Op.OP_1, Op.OP_OUTPUTTOKENCOMMITMENT, Op.OP_EQUALVERIFY);
+  a.op(Op.OP_2DROP, Op.OP_DROP, Op.OP_1);
+  return a.bytes();
+}
+
+// The VM-proven UPDATE covenant. input1 = entry[k|S|Vold], output1 = entry'[k|S|Vnew] (link preserved).
+function updateCovenant(): Uint8Array {
+  const a = new Asm();
+  const cat = hexToBin(CATEGORY);
+  a.op(Op.OP_1, Op.OP_UTXOTOKENCATEGORY).pushData(new Uint8Array([32])).op(Op.OP_SPLIT, Op.OP_DROP).pushData(cat).op(Op.OP_EQUALVERIFY);
+  a.op(Op.OP_1, Op.OP_UTXOTOKENCOMMITMENT).pushData(new Uint8Array([64])).op(Op.OP_SPLIT, Op.OP_DROP);
+  a.op(Op.OP_DUP).pushData(new Uint8Array([32])).op(Op.OP_SPLIT, Op.OP_DROP);
+  a.op(Op.OP_2, Op.OP_PICK, Op.OP_EQUALVERIFY);
+  a.op(Op.OP_1, Op.OP_OUTPUTTOKENCATEGORY).pushData(new Uint8Array([32])).op(Op.OP_SPLIT, Op.OP_DROP).pushData(cat).op(Op.OP_EQUALVERIFY);
+  a.op(Op.OP_1, Op.OP_OUTPUTTOKENCOMMITMENT).pushData(new Uint8Array([64])).op(Op.OP_SPLIT, Op.OP_DROP);
+  a.op(Op.OP_EQUALVERIFY);
+  a.op(Op.OP_DROP, Op.OP_1);
+  return a.bytes();
+}
+
 function p2sh32(r: Uint8Array): Uint8Array { return new Uint8Array([Op.OP_HASH256, 32, ...hash256(r), Op.OP_EQUAL]); }
 function pushRedeem(r: Uint8Array): Uint8Array { return r.length <= 75 ? new Uint8Array([r.length, ...r]) : new Uint8Array([0x4c, r.length, ...r]); }
 function push32(d: Uint8Array): Uint8Array { return new Uint8Array([32, ...d]); }
@@ -163,6 +195,59 @@ describe('SortedList SDK: plans satisfy the proven covenants (end to end)', () =
     const sourceOutputs = [
       { lockingBytecode: p2sh32(cov), valueSatoshis: 3000n },
       entrySrc(plan.predecessor.utxo),
+    ];
+    expect(createVirtualMachineBch2026().verify({ inputIndex: 0, sourceOutputs, transaction: tx } as any)).toBe(true);
+  });
+
+  it('a planDelete transaction is accepted by the proven delete covenant', () => {
+    const list = SortedList.fromUtxos(sampleUtxos());
+    const plan = list.planDelete(s(50)); // pred A[10|50], node B[50|90] -> A'[10|90]
+    expect(Number(bytesToSlotValue(plan.predecessor.slot))).toBe(10);
+    expect(Number(bytesToSlotValue(plan.node.slot))).toBe(50);
+    const cov = deleteCovenant();
+    const tx = {
+      version: 2,
+      inputs: [
+        { outpointTransactionHash: hexToBin('ff'.repeat(32)), outpointIndex: 0, unlockingBytecode: new Uint8Array([...push32(plan.slot), ...pushRedeem(cov)]), sequenceNumber: 0xffffffff },
+        { outpointTransactionHash: hexToBin(plan.predecessor.utxo.txid), outpointIndex: 0, unlockingBytecode: new Uint8Array([]), sequenceNumber: 0xffffffff },
+        { outpointTransactionHash: hexToBin(plan.node.utxo.txid), outpointIndex: 0, unlockingBytecode: new Uint8Array([]), sequenceNumber: 0xffffffff },
+      ],
+      outputs: [
+        { lockingBytecode: new Uint8Array([Op.OP_1]), valueSatoshis: 1000n, token: masterToken },
+        entryOut(plan.predNewCommitment),
+      ],
+      locktime: 0,
+    };
+    const sourceOutputs = [
+      { lockingBytecode: p2sh32(cov), valueSatoshis: 4000n, token: masterToken },
+      entrySrc(plan.predecessor.utxo),
+      entrySrc(plan.node.utxo),
+    ];
+    expect(createVirtualMachineBch2026().verify({ inputIndex: 0, sourceOutputs, transaction: tx } as any)).toBe(true);
+  });
+
+  it('a planUpdate transaction is accepted by the proven update covenant (link preserved, value changed)', () => {
+    // A value-carrying entry [50|90|07]; update to value 09.
+    const withVal = [entryUtxo('50'.repeat(32), encodeEntryCommitment(s(50), s(90), hexToBin('07')))];
+    const plan = SortedList.fromUtxos(withVal).planUpdate(s(50), hexToBin('09'));
+    expect(binToHex(decodeEntryCommitment(plan.newCommitment).value)).toBe('09');
+    expect(Number(bytesToSlotValue(decodeEntryCommitment(plan.newCommitment).nextKey))).toBe(90); // link preserved
+    const cov = updateCovenant();
+    const tx = {
+      version: 2,
+      inputs: [
+        { outpointTransactionHash: hexToBin('ff'.repeat(32)), outpointIndex: 0, unlockingBytecode: new Uint8Array([...push32(plan.slot), ...pushRedeem(cov)]), sequenceNumber: 0xffffffff },
+        { outpointTransactionHash: hexToBin(plan.entry.utxo.txid), outpointIndex: 0, unlockingBytecode: new Uint8Array([]), sequenceNumber: 0xffffffff },
+      ],
+      outputs: [
+        { lockingBytecode: new Uint8Array([Op.OP_1]), valueSatoshis: 1000n, token: masterToken },
+        entryOut(plan.newCommitment),
+      ],
+      locktime: 0,
+    };
+    const sourceOutputs = [
+      { lockingBytecode: p2sh32(cov), valueSatoshis: 4000n, token: masterToken },
+      entrySrc(plan.entry.utxo),
     ];
     expect(createVirtualMachineBch2026().verify({ inputIndex: 0, sourceOutputs, transaction: tx } as any)).toBe(true);
   });

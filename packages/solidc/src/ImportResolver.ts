@@ -122,8 +122,12 @@ export class ImportResolver {
         if (!importNode.bindings) break;
         for (const binding of importNode.bindings) {
           const { name } = binding;
-          // Check if importing a library namespace (e.g. import { SafeMath } from "math_lib.scash")
-          if (source.isLibrary && source.libraryName === name) {
+          // Check if importing a library namespace (e.g. import { SafeMath } from "math_lib.scash"). A file may
+          // declare SEVERAL libraries (Sablier's DataTypes.sol: Lockup, LockupDynamic, ..); `libraryName` is only
+          // the last, so match any declared one. Library structs/enums are registered BARE (namespaced type refs
+          // `Lockup.CreateWithDurations` strip to `CreateWithDurations`), so importing one library pulls the
+          // file's bare types wholesale - sound while bare names stay unique across the file's libraries.
+          if (source.isLibrary && (source.libraryName === name || source.declaredLibraryNames.includes(name))) {
             // Import all namespaced functions, constants, enums, structs, types, events, using-for from this
             // library (or interface-only file, whose placeholder name is its first interface).
             target.freeFunctions.push(...source.freeFunctions);

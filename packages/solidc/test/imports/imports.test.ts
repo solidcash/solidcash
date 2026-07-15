@@ -209,6 +209,25 @@ describe('Imports', () => {
       expect(artifact.contractName).toBe('C');
     });
 
+    it('imports a NAMED library from a MULTI-library file (Sablier DataTypes.sol pattern)', () => {
+      // A file declaring SEVERAL libraries (Lockup, LockupDynamic, ..) sets `libraryName` to only the LAST, so
+      // `import {Lockup, LockupDynamic}` must match against declaredLibraryNames. Library structs register bare
+      // (`Lockup.CreateWithDurations` strips to `CreateWithDurations`), so the namespaced param types resolve.
+      const dataTypes = 'struct Broker { address account; uint256 fee; }'
+        + ' library Lockup { struct CreateWithDurations { address sender; uint128 amount; } }'
+        + ' library LockupDynamic { struct SegmentWithDuration { uint128 amount; uint40 duration; } }';
+      const resolver = (importPath: string): { source: string; id: string } | undefined => (
+        importPath === './DataTypes.sol' ? { source: dataTypes, id: '/DataTypes.sol' } : undefined);
+      const code = 'import {Broker, Lockup, LockupDynamic} from "./DataTypes.sol";'
+        + ' contract C { function f(Lockup.CreateWithDurations memory p,'
+        + ' LockupDynamic.SegmentWithDuration memory s, Broker memory b)'
+        + ' public pure returns (uint128) { return p.amount + s.amount + uint128(b.fee); } }';
+      const artifact = compileString(code, {
+        solidityImportCompat: true, importResolver: resolver, rootFileId: '/main.sol',
+      });
+      expect(artifact.contractName).toBe('C');
+    });
+
     it('rebuilds scalar+array field WRITES on an IMPORTED struct-typed local (byte-equal to same-file)', () => {
       // Escrow's type is imported, so unknown at parse - the AstBuilder mis-builds `e.split[i]=v` as a mapping-field
       // assign and `e.claimed=v` as a StateAssign that drops the field. RedesugarImportedStructFieldWrites rewrites

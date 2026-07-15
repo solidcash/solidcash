@@ -48,6 +48,26 @@ describe('dynamic-bound loop mapping write (runtime OP_BEGIN/OP_UNTIL entry mint
     await expect(sc.check(10n, 999n, alicePub, sig).send()).rejects.toThrow();
   });
 
+  it('writes mapping keys in a do-while loop', async () => {
+    const src = `contract C {
+      mapping(int => int) bal;
+      function setAll(int[] ks, int[] vs, pubkey pk, sig sg) {
+        require(checkSig(sg, pk));
+        int i = 0;
+        do { bal[ks[i]] = vs[i]; i = i + 1; } while (i < ks.length);
+      }
+      function check(int k, int e, pubkey pk, sig sg) { require(checkSig(sg, pk)); require(bal[k] == e); }
+    }`;
+    const art = compileString(src);
+    expect(art.abi.find((f) => f.name === 'setAll')?.entryLoopWrites).toEqual(['bal']);
+    const contract = new Contract(art, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(provider, contract, art.stateLayout!, {}, { saltContract: true });
+    let sc = StatefulContract.withCategory(contract, categoryId);
+    expect((await sc.setAll([5n, 6n], [55n, 66n], alicePub, sig).send()).txid).toBeDefined();
+    sc = StatefulContract.withCategory(contract, categoryId);
+    expect((await sc.check(6n, 66n, alicePub, sig).send()).txid).toBeDefined();
+  });
+
   it('handles N=1 (single iteration) and N=2', async () => {
     const art = compileString(SRC);
     const contract = new Contract(art, [], { provider });

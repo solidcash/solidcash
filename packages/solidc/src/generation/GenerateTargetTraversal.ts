@@ -3054,6 +3054,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.collectMappingSlots(node.block, mappingWriteSlots, mappingDeleteSlots);
 
     for (const slotIndex of mappingWriteSlots) {
+      // Loop-write entries emit a runtime counter-indexed trailing output per iteration (emitLoopEntryWrite);
+      // they have no fixed block slot, so must not be pre-allocated into the fixed-slot epilogue write path.
+      if (this.entrySlots?.[slotIndex]?.inLoop) continue;
       if (!this.preAllocatedEntryWrites.has(slotIndex) && !this.pendingEntryWrites.has(slotIndex)) {
         const keyStackName = `__entry_key_enc_${slotIndex}`;
         const valueStackName = `__entry_value_enc_${slotIndex}`;
@@ -3082,6 +3085,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.inlineDeployActive = true;
     }
 
+    // Loop mapping write: precompute the entry NFT address + a runtime counter BEFORE OP_BEGIN (see visitWhile).
+    const loopHasEntryWrite = this.emitLoopEntryWriteSetup(node.block, locationData);
+
     // EXISTING LOOP LOGIC (with pre-allocated slots now below stackDepth)
     this.scopeDepth += 1;
     this.emit(Op.OP_BEGIN, { location: node.location, positionHint: PositionHint.START });
@@ -3105,6 +3111,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_DROP, { location: node.location, positionHint: PositionHint.END });
       this.popFromStack();
       this.inlineDeployActive = false;
+    }
+
+    // Pin the entry-output count + drop the loop mapping-write temps now the loop is done.
+    if (loopHasEntryWrite) {
+      this.emitLoopEntryWriteTeardown({ location: node.location, positionHint: PositionHint.END });
     }
 
     this.scopeDepth -= 1;

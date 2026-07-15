@@ -1,6 +1,6 @@
 import { CharStream, CommonTokenStream } from 'antlr4';
 import { binToHex } from '@bitauth/libauth';
-import { Artifact, ArtifactMap, ArrayType, AddressType, BytesType, CompilerOptions, computeBytecodeFingerprintWithConstructorArgs, generateSourceMap, MappingType, optimiseBytecode, optimiseBytecodeOld, OPTIMISER_COMPAT_CHECK_MAX_OPS, scriptToAsm, scriptToBytecode, sourceMapToLocationData, StructType, Type } from '@solidcash/utils';
+import { Artifact, ArtifactMap, ArrayType, AddressType, BytesType, CompilerOptions, computeBytecodeFingerprintWithConstructorArgs, generateSourceMap, MappingType, optimiseBytecode, optimiseBytecodeOld, OPTIMISER_COMPAT_CHECK_MAX_OPS, scriptToAsm, scriptToBytecode, sourceMapToLocationData, StructType, Type, ValueType } from '@solidcash/utils';
 import { generateArtifact, generateDeclarationArtifact } from './artifact/Artifact.js';
 import {
   Ast, ContractNode, ContractReferenceNode, FunctionModifier, InstantiationNode, Node, ParameterNode,
@@ -58,6 +58,7 @@ import PruneUnreachableFreeFunctions from './semantic/PruneUnreachableFreeFuncti
 import PruneUnreachableMsgDataMethods from './semantic/PruneUnreachableMsgDataMethods.js';
 import RedesugarImportedUsingForCalls from './semantic/RedesugarImportedUsingForCalls.js';
 import RedesugarImportedStructFieldWrites from './semantic/RedesugarImportedStructFieldWrites.js';
+import RedesugarImportedUdvtWrap from './semantic/RedesugarImportedUdvtWrap.js';
 import SynthesizePublicGetters from './semantic/SynthesizePublicGetters.js';
 import expandModifiers from './semantic/ModifierExpansionTransformation.js';
 import FoldHashLiterals from './semantic/FoldHashLiterals.js';
@@ -234,6 +235,11 @@ function compileResolvedAst(ast: Ast, code: string, mergedCompilerOptions: Compi
   // assign (array field) or a field-dropping StateAssign (scalar field). Rewrite both into the read-modify-rebuild
   // block the AstBuilder emits for a same-file struct local. Before LowerMemoryModel (which lowers the rebuild).
   ast = ast.accept(new RedesugarImportedStructFieldWrites()) as Ast;
+
+  // `T.wrap(x)` / `T.unwrap(x)` on an IMPORTED user-defined value type (unknown at parse, so the AstBuilder left it
+  // a dangling `T.wrap` FunctionCall) -> the identity cast the AstBuilder emits for a same-file UDVT. PRB-math's
+  // UD2x18/UD60x18 converters + constants reach this transitively via Sablier.
+  ast = ast.accept(new RedesugarImportedUdvtWrap()) as Ast;
 
   // Desugar `return` inside a loop -> flag + break + post-loop return (before break/continue expansion so the
   // injected breaks are lowered; internal functions can't raw-return from inside a loop's balanced stack).
@@ -804,16 +810,24 @@ function reresolveImportedStructTypes(ast: Ast): void {
   const structMap = new Map<string, StructType>();
   for (const sd of ast.structDefinitions ?? []) structMap.set(sd.name, new StructType(sd.name, sd.fields));
   for (const sd of contract.structDefinitions) structMap.set(sd.name, new StructType(sd.name, sd.fields));
-  if (structMap.size === 0) return;
+  // Imported user-defined value types (`type UD2x18 is uint64`) parse to the same named-AddressType placeholder as
+  // imported structs when used as a param/return/var type; resolve them to the real ValueType too.
+  const udvtMap = new Map<string, ValueType>();
+  for (const td of ast.typeDefinitions ?? []) udvtMap.set(td.name, td.valueType);
+  for (const td of contract.typeDefinitions ?? []) udvtMap.set(td.name, td.valueType);
+  if (structMap.size === 0 && udvtMap.size === 0) return;
+  const resolveName = (name: string): Type | undefined => {
+    if (structMap.has(name)) return structMap.get(name)!;
+    if (udvtMap.has(name)) return udvtMap.get(name)!;
+    // Library-qualified `Counters.Counter` / `Lockup.Amounts`: library structs/UDVTs register bare.
+    const dot = name.lastIndexOf('.');
+    if (dot >= 0) return resolveName(name.slice(dot + 1));
+    return undefined;
+  };
   const fix = (t: Type): Type => {
     if (t instanceof ArrayType) { t.elementType = fix(t.elementType); return t; }
     if (t instanceof MappingType) { t.keyType = fix(t.keyType); t.valueType = fix(t.valueType); return t; }
-    if (t instanceof AddressType && t.interfaceName) {
-      if (structMap.has(t.interfaceName)) return structMap.get(t.interfaceName)!;
-      // Library-qualified `Counters.Counter`: library structs are registered bare (`Counter`).
-      const dot = t.interfaceName.lastIndexOf('.');
-      if (dot >= 0 && structMap.has(t.interfaceName.slice(dot + 1))) return structMap.get(t.interfaceName.slice(dot + 1))!;
-    }
+    if (t instanceof AddressType && t.interfaceName) return resolveName(t.interfaceName) ?? t;
     return t;
   };
   // Fix every placeholder-typed param / local var in a function body too: `Escrow memory escrow` (an imported

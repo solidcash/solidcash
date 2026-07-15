@@ -228,6 +228,23 @@ describe('Imports', () => {
       expect(artifact.contractName).toBe('C');
     });
 
+    it('resolves an IMPORTED user-defined value type: T.wrap/T.unwrap + T as a type (PRB-math UD2x18 pattern)', () => {
+      // `type Dur is uint64` is imported, so at parse `Dur.wrap(v)` survives as a dangling `Dur.wrap` FunctionCall
+      // (AstBuilder only desugars a SAME-FILE UDVT) and `Dur d` types as an address placeholder. Post-merge,
+      // RedesugarImportedUdvtWrap rewrites wrap/unwrap to identity casts and reresolveImportedStructTypes re-types
+      // the local. Drove PRB-math (UD2x18/UD60x18) reached transitively via Sablier's MockSablierLockup.
+      const udvt = 'type Dur is uint64;';
+      const resolver = (importPath: string): { source: string; id: string } | undefined => (
+        importPath === './Dur.sol' ? { source: udvt, id: '/Dur.sol' } : undefined);
+      const code = 'import {Dur} from "./Dur.sol";'
+        + ' contract C { function f(uint64 v) public pure returns (uint64) {'
+        + ' Dur d = Dur.wrap(v); return Dur.unwrap(d); } }';
+      const artifact = compileString(code, {
+        solidityImportCompat: true, importResolver: resolver, rootFileId: '/main.sol',
+      });
+      expect(artifact.contractName).toBe('C');
+    });
+
     it('rebuilds scalar+array field WRITES on an IMPORTED struct-typed local (byte-equal to same-file)', () => {
       // Escrow's type is imported, so unknown at parse - the AstBuilder mis-builds `e.split[i]=v` as a mapping-field
       // assign and `e.claimed=v` as a StateAssign that drops the field. RedesugarImportedStructFieldWrites rewrites

@@ -1057,11 +1057,14 @@ export default class SymbolTableTraversal extends AstTraversal {
       // base's EnumType and treats `E.B` as a member, not a struct field.
       expr.expression = this.resolveConstantExpressionIdentifiers(expr.expression);
     } else if (expr instanceof FunctionCallNode
-      && (expr.identifier.name === 'addmod' || expr.identifier.name === 'mulmod')) {
-      // addmod/mulmod const: resolve the args' constant refs and stamp the builtin's BIGINT return type (undefined
+      && (expr.identifier.name === 'addmod' || expr.identifier.name === 'mulmod'
+        || expr.identifier.name === 'keccak256' || expr.identifier.name === 'sha256')) {
+      // Builtin-in-const: resolve the args' constant refs and stamp the builtin's return type (undefined
       // otherwise, which fails the const's assign type-check). Inlined at each use, so runtime codegen runs.
+      // addmod/mulmod -> BIGINT (uint256); keccak256/sha256 -> bytes32.
       expr.parameters = expr.parameters.map((e) => this.resolveConstantExpressionIdentifiers(e as ExpressionNode)) as ExpressionNode[];
-      expr.type = PrimitiveType.BIGINT;
+      expr.type = expr.identifier.name === 'addmod' || expr.identifier.name === 'mulmod'
+        ? PrimitiveType.BIGINT : new BytesType(32);
     }
     return expr;
   }
@@ -7674,12 +7677,17 @@ function isCompileTimeExpression(
   if (expr instanceof AbiDecodeNode || expr instanceof AbiDecodeAtNode) {
     return isCompileTimeExpression(expr.data, constantMap, enumMap);
   }
-  // `addmod(a,b,n)` / `mulmod(a,b,n)` are pure integer builtins - compile-time when all three args are. Like
-  // abi.encode*, the constant's initializer is inlined at each use site (visitIdentifier), so the existing
-  // runtime addmod/mulmod codegen runs there.
+  // Pure builtins - compile-time when their args are (like abi.encode*): `addmod`/`mulmod` (3 integer args) and
+  // `keccak256`/`sha256` (1 bytes arg). The constant's initializer is inlined at each use site (visitIdentifier),
+  // so the existing runtime codegen runs there (keccak256(<literal>) is separately pre-folded by FoldHashLiterals;
+  // this covers the non-literal-arg forms `keccak256(<const>)` / `keccak256(abi.encode(..))`).
   if (expr instanceof FunctionCallNode && expr.parameters.length === 3
     && (expr.identifier.name === 'addmod' || expr.identifier.name === 'mulmod')) {
     return expr.parameters.every((e) => isCompileTimeExpression(e, constantMap, enumMap));
+  }
+  if (expr instanceof FunctionCallNode && expr.parameters.length === 1
+    && (expr.identifier.name === 'keccak256' || expr.identifier.name === 'sha256')) {
+    return isCompileTimeExpression(expr.parameters[0], constantMap, enumMap);
   }
   return false;
 }

@@ -1939,6 +1939,14 @@ describe('addmod/mulmod in a constant initializer', () => {
     expect(ok('uint256 constant k = 7; uint256 constant a = addmod(1, 8, k);'
       + ' contract C { function f() public pure returns (uint) { return a; } }')).toBe('C');
   });
+  it('keccak256 in a const with a NON-literal arg (const ref) - FoldHashLiterals is literal-only', () => {
+    expect(ok('bytes constant d = hex"ffff"; bytes32 constant k = keccak256(d);'
+      + ' contract C { function f() public pure returns (bytes32) { return k; } }')).toBe('C');
+  });
+  it('keccak256 in a const with an abi.encode arg', () => {
+    expect(ok('bytes32 constant k = keccak256(abi.encode(uint256(7)));'
+      + ' contract C { function f() public pure returns (bytes32) { return k; } }')).toBe('C');
+  });
 });
 
 // `IFoo(<state chain>).m()` - a plain-`address` field reached through self-pinned STATE, cast to an interface

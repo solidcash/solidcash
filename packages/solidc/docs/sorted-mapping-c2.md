@@ -100,9 +100,24 @@ need not reconstruct pushdata encodings; it only chooses which entries to co-spe
    (known exactly off-chain; the covenant pins them, so the derivation probe and the final send converge without
    VM-trace derivation). Proven from source in `SortedMappingCompiledWrite.test.ts`: a compiled `claim(k)` inserts
    the key, a re-claim of the same key reverts on `require(!claimed[k])`, and a different key still inserts - the
-   C2 negative-guard attack closed end-to-end for writes. A sorted mapping with a **value** type (not a set) is
-   still `SortedMappingCodegenPendingError` (only set inserts are implemented; update/delete are proven but not yet
-   emitted).
+   C2 negative-guard attack closed end-to-end for writes.
+4. **Value read + write / upsert (DONE + VM-verified end to end).** A value-typed sorted `mapping(K=>int)` compiles
+   its read `bal[k]` (present -> the raw value tail; absent -> the type default, proven-absent via the bracket) and
+   its write `bal[k]=v` as an **upsert**: the covenant branches at runtime on `slot==H(k)` - present -> UPDATE (pin
+   the entry output `k' = link||v`, link preserved); absent -> INSERT (`P' = slot||H(k)||predValue` + trailing
+   `NEW = H(k)||next||v`). The value is stored raw (minimal script number) in the commitment tail. The SDK
+   co-spends the exact entry (update) or predecessor (insert); the value-carrying outputs derive from the VM trace
+   (the covenant pins them). Proven from source in `SortedMappingValueRead.test.ts` / `SortedMappingValueWrite.test.ts`
+   (insert, update, second insert, reads). Two SDK derivation subtleties: a known `P'` is **pinned** so it is not
+   re-derived (the covenant's input-commitment read would otherwise oscillate it), and an UPDATE's zero trailing
+   outputs are not re-seeded (which oscillated the loop count 0<->1).
+5. **Delete (fail-closed, pending).** `delete m[k]` on a sorted mapping needs a SPLICE (co-spend the node and its
+   bracketing predecessor, rewrite the predecessor's next past the node, burn the node). The default soft-delete
+   would leave the node in the list, so membership would still find it - unsound. The splice covenant is proven
+   (`SortedMappingInsertDelete.test.ts`), but it needs a **second co-spent entry input** (the predecessor, alongside
+   the node) - a block-layout slot the current insert/upsert path (which reuses the single entry slot) does not
+   emit. Until that slot is added, delete throws `SortedMappingCodegenPendingError` rather than compile to the
+   unsound soft-delete.
 
 ## Status
 
@@ -115,8 +130,10 @@ need not reconstruct pushdata encodings; it only chooses which entries to co-spe
   master-preservation + insert splice + entry-address pinning + the REAL entry-NFT covenant on the predecessor)
   is VM-verified, and a live `MockNetworkProvider` round-trip drives real sends end to end (genesis -> fetch ->
   plan -> submit -> persisted entry NFT, multi-claim sequence, re-claim refused) - `SortedMappingFullTx.test.ts`.
-- **Codegen done (read + set write):** a sorted `mapping(K=>bool)` compiles end to end from source - the read
-  membership/non-membership covenant (`SortedMappingCompiledRead.test.ts`) and the set-insert write
-  (`SortedMappingCompiledWrite.test.ts`), both VM-verified. Emitting `update`/`delete` and value-typed sorted
-  mappings (`mapping(K=>V)`) is the only remaining codegen; those covenants are already proven, so it is fragment
-  emission with no soundness risk (value-typed writes currently fail closed with `SortedMappingCodegenPendingError`).
+- **Codegen done (read + set insert + value upsert incl. update):** a sorted `mapping(K=>bool)` set and a
+  `mapping(K=>int)` value mapping compile end to end from source - the membership/non-membership read
+  (`SortedMappingCompiledRead.test.ts`), the value read (`SortedMappingValueRead.test.ts`), the set-insert write
+  (`SortedMappingCompiledWrite.test.ts`), and the value upsert - insert **and** update - (`SortedMappingValueWrite.test.ts`),
+  all VM-verified. **Delete** is the only remaining op: fail-closed with `SortedMappingCodegenPendingError` because
+  a sound splice needs a second co-spent entry input (the predecessor) not yet emitted in the block layout. Value
+  types other than `int`/`bool` (bytes, struct, address) also fail closed.

@@ -10073,6 +10073,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   visitMappingDelete(node: MappingDeleteNode): Node {
+    // A sorted (C2) mapping delete must SPLICE the node out of the linked list (co-spend the node + its bracketing
+    // predecessor, rewrite the predecessor's next past the node). The default soft-delete (overwrite with
+    // key||default) would leave the node in the list, so membership would still find it - unsound for a sorted
+    // set. Deleting soundly needs a second co-spent entry input (the predecessor); until that block-layout slot is
+    // emitted, fail closed rather than compile to the omittable/broken soft-delete. See docs/sorted-mapping-c2.md.
+    if (node.collection?.sorted) {
+      throw new SortedMappingCodegenPendingError(node, node.collection.name);
+    }
     if (this.plainLoopDepth > 0 && node.entrySlotIndex >= 0) {
       throw new EntryWriteInLoopError(node, node.collection?.name ?? node.name);
     }

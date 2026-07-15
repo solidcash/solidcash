@@ -52,6 +52,14 @@ describe('sorted mapping opt-in (C2)', () => {
       .toThrow(SortedMappingCodegenPendingError);
   });
 
+  it('fails closed on delete of a sorted mapping (splice needs a second co-spent input, pending)', () => {
+    // The soft-delete would leave the node in the list (membership still finds it) - unsound for a sorted set.
+    // A sound splice co-spends the node + its predecessor and rewrites the predecessor's next past the node; that
+    // second co-spent input is not yet emitted, so delete fails closed. See docs/sorted-mapping-c2.md.
+    expect(() => compileString(`${SET} function f(int k) { require(true); delete claimed[k]; } }`, { sortedMappings: ['claimed'], forceStateful: true }))
+      .toThrow(SortedMappingCodegenPendingError);
+  });
+
   it('without the opt-in, the same mapping compiles on the default entry model', () => {
     expect(() => compileString(`${SET} function f(int k) { claimed[k] = true; } }`, { forceStateful: true })).not.toThrow();
   });

@@ -9184,9 +9184,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    *   absent  -> INSERT: verify slot < H(k) < nextKey; pin P' = slot||H(k)||predValue at the entry output and
    *              NEW = H(k)||nextKey||v at the trailing mint output[blockSize].
    * Both fragments are proven (SortedMappingInsertDelete.test.ts: insert splice + value update). The value tail is
-   * stored raw (minimal script number); the SDK encodes it identically via bigIntToVmNumber.
+   * stored raw (minimal script number); the SDK encodes it identically via bigIntToVmNumber. `emitValue` pushes the
+   * (tracked) new value onto the stack - the RHS for `m[k]=v`, or the type default for `delete m[k]`.
    */
-  private emitSortedValueUpsert(node: MappingAssignNode): Node {
+  private emitSortedValueUpsert(node: MappingAssignNode | MappingDeleteNode, emitValue: () => void): Node {
     const loc = { location: node.location, positionHint: PositionHint.END };
     const collection = node.collection!;
     const slotIndex = node.entrySlotIndex;
@@ -9196,8 +9197,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (!loopWrites.includes(collection.name)) loopWrites.push(collection.name);
     this.sortedWrittenCollections.add(collection.name);
 
-    // 1. RHS value v (int) at the bottom of the working area - kept tracked, consumed at the end.
-    node.expression = this.visit(node.expression);
+    // 1. New value v (int) at the bottom of the working area - kept tracked, consumed at the end.
+    emitValue();
     this.emit(Op.OP_BIN2NUM, loc);                     // normalize to a minimal number (matches SDK bigIntToVmNumber)
 
     // 2. H(k) -> [v, Hk32]
@@ -9345,7 +9346,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       && node.collection.allKeyTypes.length === 1) {
       const vt = node.collection.innermostValueType;
       if (vt.toString() === 'bool') return this.emitSortedSetWrite(node);
-      if (vt === PrimitiveType.BIGINT || vt instanceof IntType) return this.emitSortedValueUpsert(node);
+      if (vt === PrimitiveType.BIGINT || vt instanceof IntType) {
+        return this.emitSortedValueUpsert(node, () => { node.expression = this.visit(node.expression); });
+      }
     }
     if (node.collection?.sorted) {
       return this.emitSortedSetWrite(node); // unsupported sorted shape -> fail closed inside
@@ -10073,12 +10076,21 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   visitMappingDelete(node: MappingDeleteNode): Node {
-    // A sorted (C2) mapping delete must SPLICE the node out of the linked list (co-spend the node + its bracketing
-    // predecessor, rewrite the predecessor's next past the node). The default soft-delete (overwrite with
-    // key||default) would leave the node in the list, so membership would still find it - unsound for a sorted
-    // set. Deleting soundly needs a second co-spent entry input (the predecessor); until that block-layout slot is
-    // emitted, fail closed rather than compile to the omittable/broken soft-delete. See docs/sorted-mapping-c2.md.
+    // A sorted (C2) mapping delete. For a VALUE mapping (mapping(K=>int)), `delete m[k]` == set to the type default
+    // (Solidity semantics), so route it through the upsert with value = default: a present key updates to 0, an
+    // absent key is a no-op-equivalent insert of 0. For a SET (mapping(K=>bool)), delete means REMOVE from the set,
+    // which needs a true splice (co-spend the node + its bracketing predecessor, rewrite the predecessor's next
+    // past the node) - the default soft-delete would leave the node in the list (membership still finds it -
+    // unsound), and the splice needs a second co-spent entry input not yet emitted, so fail closed. See
+    // docs/sorted-mapping-c2.md.
     if (node.collection?.sorted) {
+      const vt = node.collection.innermostValueType;
+      if ((vt === PrimitiveType.BIGINT || vt instanceof IntType) && node.collection.allKeyTypes.length === 1) {
+        const dLoc = { location: node.location, positionHint: PositionHint.END };
+        return this.emitSortedValueUpsert(node, () => {
+          this.emitDefaultValue(dLoc, vt); this.pushToStack('(value)');
+        });
+      }
       throw new SortedMappingCodegenPendingError(node, node.collection.name);
     }
     if (this.plainLoopDepth > 0 && node.entrySlotIndex >= 0) {

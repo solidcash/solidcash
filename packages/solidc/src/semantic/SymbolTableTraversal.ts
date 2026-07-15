@@ -2851,13 +2851,19 @@ export default class SymbolTableTraversal extends AstTraversal {
       const { keyParams, keySources } = this.getMappingKeyDescriptors(node.keys);
       const slotKey = `${node.collection.name}:${keyParams.join(':')}`;
       const existing = map.get(slotKey);
+      // A sorted VALUE mapping `delete m[k]` compiles to an upsert-to-default (a WRITE: co-spend the entry, emit
+      // its rewritten output), not the input-only soft-delete - so the block layout must allocate a write slot.
+      // Predicate matches the codegen (visitMappingDelete): only int-valued sorted mappings route to the upsert.
+      const vt = node.collection.innermostValueType;
+      const op: 'delete' | 'write' = node.collection.sorted
+        && (vt === PrimitiveType.BIGINT || vt instanceof IntType) ? 'write' : 'delete';
       if (existing) {
-        if (!existing.operations.includes('delete')) existing.operations.push('delete');
+        if (!existing.operations.includes(op)) existing.operations.push(op);
       } else {
         const collSig = computeCollectionSignature(node.collection.name, node.collection.type.toString());
         map.set(slotKey, {
           collection: node.collection.name, collectionSignature: collSig,
-          keyParams, keySources, operations: ['delete'], slotIndex: -1,
+          keyParams, keySources, operations: [op], slotIndex: -1,
         });
       }
       return; // MappingDeleteNode has no children to recurse into

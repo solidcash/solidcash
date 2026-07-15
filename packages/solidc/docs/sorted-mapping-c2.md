@@ -111,13 +111,19 @@ need not reconstruct pushdata encodings; it only chooses which entries to co-spe
    (insert, update, second insert, reads). Two SDK derivation subtleties: a known `P'` is **pinned** so it is not
    re-derived (the covenant's input-commitment read would otherwise oscillate it), and an UPDATE's zero trailing
    outputs are not re-seeded (which oscillated the loop count 0<->1).
-5. **Delete (fail-closed, pending).** `delete m[k]` on a sorted mapping needs a SPLICE (co-spend the node and its
-   bracketing predecessor, rewrite the predecessor's next past the node, burn the node). The default soft-delete
-   would leave the node in the list, so membership would still find it - unsound. The splice covenant is proven
-   (`SortedMappingInsertDelete.test.ts`), but it needs a **second co-spent entry input** (the predecessor, alongside
-   the node) - a block-layout slot the current insert/upsert path (which reuses the single entry slot) does not
-   emit. Until that slot is added, delete throws `SortedMappingCodegenPendingError` rather than compile to the
-   unsound soft-delete.
+5. **Read-modify-write (DONE + VM-verified).** `bal[k] += v` / `bal[k] -= v` on a value mapping just work: the read
+   (RHS) and the write co-spend the SAME entry (the exact entry if present, else the predecessor), so a present-key
+   RMW is an UPDATE with the old value read from the co-spent entry, and an absent-key RMW is an INSERT of `0+v`.
+   This is the original C2-blocked pattern (a `+=` was resettable by omitting the entry). Proven in
+   `SortedMappingRMW.test.ts`. Unblocks balances / vote counts / accumulators.
+6. **Delete - value mapping (DONE), set (fail-closed).** For a value mapping, `delete bal[k]` is Solidity `bal[k]=0`,
+   so it routes through the upsert with value = default (present -> update to 0, absent -> insert 0); a read then
+   returns 0, Solidity-equivalent. Proven in `SortedMappingValueDelete.test.ts`. For a **set** (`mapping(K=>bool)`),
+   delete means REMOVE from the set - a true SPLICE (co-spend the node AND its bracketing predecessor, rewrite the
+   predecessor's next past the node, burn the node). The splice covenant is proven (`SortedMappingInsertDelete.test.ts`),
+   but it needs a **second co-spent entry input** (the predecessor alongside the node) - a block-layout slot the
+   current single-entry-slot path does not emit - so a set delete fails closed (`SortedMappingCodegenPendingError`)
+   rather than compile to the unsound soft-delete (which would leave the node in the list).
 
 ## Status
 
@@ -130,10 +136,11 @@ need not reconstruct pushdata encodings; it only chooses which entries to co-spe
   master-preservation + insert splice + entry-address pinning + the REAL entry-NFT covenant on the predecessor)
   is VM-verified, and a live `MockNetworkProvider` round-trip drives real sends end to end (genesis -> fetch ->
   plan -> submit -> persisted entry NFT, multi-claim sequence, re-claim refused) - `SortedMappingFullTx.test.ts`.
-- **Codegen done (read + set insert + value upsert incl. update):** a sorted `mapping(K=>bool)` set and a
+- **Codegen done (read + set insert + value upsert/RMW + value delete):** a sorted `mapping(K=>bool)` set and a
   `mapping(K=>int)` value mapping compile end to end from source - the membership/non-membership read
   (`SortedMappingCompiledRead.test.ts`), the value read (`SortedMappingValueRead.test.ts`), the set-insert write
-  (`SortedMappingCompiledWrite.test.ts`), and the value upsert - insert **and** update - (`SortedMappingValueWrite.test.ts`),
-  all VM-verified. **Delete** is the only remaining op: fail-closed with `SortedMappingCodegenPendingError` because
-  a sound splice needs a second co-spent entry input (the predecessor) not yet emitted in the block layout. Value
-  types other than `int`/`bool` (bytes, struct, address) also fail closed.
+  (`SortedMappingCompiledWrite.test.ts`), the value upsert - insert **and** update (`SortedMappingValueWrite.test.ts`),
+  read-modify-write (`SortedMappingRMW.test.ts`), and value delete == set-to-default (`SortedMappingValueDelete.test.ts`),
+  all VM-verified. The **only** remaining op is a **set delete** (splice) - fail-closed because a sound splice needs a
+  second co-spent entry input (the predecessor) not yet emitted in the block layout. Value types other than
+  `int`/`bool` (bytes, struct, address) also fail closed.

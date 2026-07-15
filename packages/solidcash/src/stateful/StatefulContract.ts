@@ -4627,7 +4627,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               : typeof kv === 'boolean' ? bigIntToVmNumber(kv ? 1n : 0n)
                 : bigIntToVmNumber(BigInt(kv as unknown as string));
           const slot = keyToSlot(keyBytes);
-          const isWrite = access.operations.includes('write');
+          // A value-mapping `delete m[k]` compiles to an upsert-to-default (Solidity: delete == set to 0), so the
+          // SDK co-spends the entry exactly like a write. (A set `delete` fails closed at compile time.)
+          const isWrite = access.operations.includes('write')
+            || (access.operations.includes('delete') && collection.valueType !== 'bool');
           const entryBase = {
             slotIndex, collection: access.collection, keyType: collection.keyType, valueType: collection.valueType,
             keyValue: kv as bigint | boolean | Uint8Array, exists: true,

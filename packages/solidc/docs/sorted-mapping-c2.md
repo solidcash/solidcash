@@ -96,8 +96,12 @@ need not reconstruct pushdata encodings; it only chooses which entries to co-spe
 
 - **Proven & done:** the covenant logic (non-membership, insert, delete, membership, update), full-width unsigned
   slot comparison, and the claim-once application - 26 VM tests. The design is sound; C2 has a fix.
-- **SDK done:** `SortedList` (rebuild from chain, predecessor lookup, the full plan op set) - 11 SDK tests, each
-  plan VM-verified against the proven covenants.
-- **Remaining (engineering, no soundness risk):** the compiler opt-in + codegen (step 1-3 above), and wiring
-  `SortedList` into `StatefulTransactionBuilder` for full tx assembly (unlockers, funding, auto-derivation) -
-  which is coupled to the compiler-emitted contract covenant, so it is built + verified together with the codegen.
+- **SDK done:** `SortedList` (rebuild from chain, predecessor lookup, the full plan op set) - each plan
+  VM-verified against the proven covenants (`SortedListSdk.test.ts`). Full-transaction composition (contract
+  master-preservation + insert splice + entry-address pinning + the REAL entry-NFT covenant on the predecessor)
+  is VM-verified, and a live `MockNetworkProvider` round-trip drives real sends end to end (genesis -> fetch ->
+  plan -> submit -> persisted entry NFT, multi-claim sequence, re-claim refused) - `SortedMappingFullTx.test.ts`.
+- **Remaining (compiler codegen only, no soundness risk):** emit the (now proven) contract covenant from source
+  `sorted mapping` declarations - the opt-in (step 1), block-layout slots (step 2), and GTT codegen (step 3)
+  above. The runtime entry-address derivation the codegen must emit is the existing `emitP2sh32FromCovenant`
+  pattern; the SDK layer that drives it is done.

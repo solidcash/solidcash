@@ -1,6 +1,6 @@
 import { CharStream, CommonTokenStream } from 'antlr4';
 import { binToHex } from '@bitauth/libauth';
-import { Artifact, ArtifactMap, ArrayType, AddressType, BytesType, CompilerOptions, computeBytecodeFingerprintWithConstructorArgs, generateSourceMap, optimiseBytecode, optimiseBytecodeOld, OPTIMISER_COMPAT_CHECK_MAX_OPS, scriptToAsm, scriptToBytecode, sourceMapToLocationData, StructType, Type } from '@solidcash/utils';
+import { Artifact, ArtifactMap, ArrayType, AddressType, BytesType, CompilerOptions, computeBytecodeFingerprintWithConstructorArgs, generateSourceMap, MappingType, optimiseBytecode, optimiseBytecodeOld, OPTIMISER_COMPAT_CHECK_MAX_OPS, scriptToAsm, scriptToBytecode, sourceMapToLocationData, StructType, Type } from '@solidcash/utils';
 import { generateArtifact, generateDeclarationArtifact } from './artifact/Artifact.js';
 import {
   Ast, ContractNode, ContractReferenceNode, FunctionModifier, InstantiationNode, Node, ParameterNode,
@@ -794,6 +794,7 @@ function reresolveImportedStructTypes(ast: Ast): void {
   if (structMap.size === 0) return;
   const fix = (t: Type): Type => {
     if (t instanceof ArrayType) { t.elementType = fix(t.elementType); return t; }
+    if (t instanceof MappingType) { t.keyType = fix(t.keyType); t.valueType = fix(t.valueType); return t; }
     if (t instanceof AddressType && t.interfaceName) {
       if (structMap.has(t.interfaceName)) return structMap.get(t.interfaceName)!;
       // Library-qualified `Counters.Counter`: library structs are registered bare (`Counter`).
@@ -830,10 +831,14 @@ function reresolveImportedStructTypes(ast: Ast): void {
   };
   // Fix the primary AND every imported contract - an imported contract's own state var (e.g. a Unicrow with a
   // `Counters.Counter` field, imported by an arbitrator) is still type-checked, so its placeholder must resolve.
-  // CollectionNode.type is ArrayType | MappingType; fix() mutates an array's element in place, so just call it.
+  // CollectionNode.type is ArrayType | MappingType; fix() resolves an imported struct placeholder in an array's
+  // element OR a mapping's key/value (`mapping(uint => Escrow)`) in place, so just call it on every collection.
   const fixContract = (c: ContractNode): void => {
     for (const sv of c.stateVariables) sv.type = fix(sv.type);
-    for (const col of c.collections) if (col.type instanceof ArrayType) fix(col.type);
+    for (const col of c.collections) col.type = fix(col.type) as typeof col.type;
+    // Event parameters carry plain `{name, type}` objects (not Nodes), so fixDecls's Node walk misses them: an
+    // `event X(Escrow escrow)` placeholder must be resolved here too, else the event signature / emit see address.
+    for (const ev of c.eventDefinitions ?? []) for (const p of ev.parameters ?? []) p.type = fix(p.type);
   };
   fixContract(contract);
   for (const ic of ast.importedContracts ?? []) fixContract(ic);

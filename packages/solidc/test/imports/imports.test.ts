@@ -192,6 +192,23 @@ describe('Imports', () => {
       expect(artifact.contractName).toBe('C');
     });
 
+    it('resolves an IMPORTED struct used as a mapping value and an event parameter', () => {
+      // `Escrow` is imported, so at parse time `mapping(uint => Escrow)` and `event E(Escrow)` carry a named-
+      // AddressType placeholder. reresolveImportedStructTypes must re-type the mapping VALUE (not just array
+      // elements) and the event param objects (plain {name,type}, missed by the Node walk), else the write fails
+      // as `Escrow can not be assigned to mapping value of type address`. (The Unicrow escrows map + JobEvent.)
+      const types = 'struct Escrow { uint a; uint b; }';
+      const resolver = (importPath: string): { source: string; id: string } | undefined => (
+        importPath === './Types.sol' ? { source: types, id: '/Types.sol' } : undefined);
+      const code = 'import "./Types.sol";'
+        + ' contract C { mapping(uint => Escrow) escrows; event E(Escrow escrow);'
+        + ' function f(uint k, Escrow memory e) public { escrows[k] = e; require(true); } }';
+      const artifact = compileString(code, {
+        solidityImportCompat: true, importResolver: resolver, rootFileId: '/main.sol',
+      });
+      expect(artifact.contractName).toBe('C');
+    });
+
     it('rebuilds scalar+array field WRITES on an IMPORTED struct-typed local (byte-equal to same-file)', () => {
       // Escrow's type is imported, so unknown at parse - the AstBuilder mis-builds `e.split[i]=v` as a mapping-field
       // assign and `e.claimed=v` as a StateAssign that drops the field. RedesugarImportedStructFieldWrites rewrites

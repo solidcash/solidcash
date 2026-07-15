@@ -100,8 +100,10 @@ need not reconstruct pushdata encodings; it only chooses which entries to co-spe
 
 ## Status
 
-- **Proven & done:** the covenant logic (non-membership, insert, delete, membership, update), full-width unsigned
-  slot comparison, and the claim-once application - 26 VM tests. The design is sound; C2 has a fix.
+- **Proven & done:** the FULL covenant op set - non-membership, membership, insert, delete, update, and the
+  combined **read** (one covenant returns the real membership bit: `slot==H(k)` -> 1, `slot<H(k)<nextKey` -> 0,
+  neither/no-co-spend -> revert; `SortedMappingRead.test.ts`), plus full-width unsigned slot comparison and the
+  claim-once application. The design is sound; C2 has a fix, and the codegen now only has to emit proven fragments.
 - **SDK done:** `SortedList` (rebuild from chain, predecessor lookup, the full plan op set) - each plan
   VM-verified against the proven covenants (`SortedListSdk.test.ts`). Full-transaction composition (contract
   master-preservation + insert splice + entry-address pinning + the REAL entry-NFT covenant on the predecessor)

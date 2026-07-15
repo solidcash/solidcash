@@ -93,3 +93,29 @@ the assignment; then `castChainTarget` handles the rewritten form. OR per-call-s
 
 **Revisit if.** A real contract makes a DIRECT (non-SafeERC20-wrapped) external call on a `memory`-copy struct
 field and it is the last compile blocker.
+
+---
+
+## `mapping(K => Struct)` NESTED struct-field write  — 2026-07-15
+
+**What.** `m[k].nested.field = v` where `m` is a `mapping(K => Struct)` and `nested` is a struct-typed field
+(e.g. `mapping(uint => Post); jobs[id].roles.creator = v`). The packed struct-ARRAY form was fixed (commit
+38a79ceb, `rebuildStructWithChain` in the packed-array element handler), but the mapping form still fails closed:
+`Found type 'address' where type 'Roles' was expected`. Both the direct `m[k].a.b=v` and the storage-pointer
+`S storage p = m[k]; p.a.b=v` forms.
+
+**Why deferred.** The mapping-value path is a DIFFERENT, more complex desugar than the array path: it recursively
+FLATTENS the value struct's fields into per-field mappings (`jobs__roles`, handled in buildLvalueAssign ~3181 via
+`mappingStructValueVars`), and the nested-struct case is not wired through that recursive flattening (it drops the
+deeper member or assigns the raw value at the first-level field). Fixing it means threading the nested rebuild
+through the flatten-map machinery (mappingStructValueVars / mappingStructStateVars / stateMappingValueStruct), not
+just calling rebuildStructWithChain. Fails CLOSED (type error, no miscompile), and the driving EACC contract
+(MarketplaceV1) uses struct ARRAYS not mappings, so no contract is blocked by the mapping form specifically.
+
+**What it'd take.** In the mappingStructValueVars handler (~3181), when `trailing.length > 1` (a nested struct
+chain), rebuild the nested struct value via rebuildStructWithChain against the flattened value struct and reduce
+the write to the first-level flattened field, mirroring the array fix. Verify against the recursive flattening of
+deeper structs.
+
+**Revisit if.** A real contract writes a nested struct field through a `mapping(K => Struct)` value and it blocks
+the compile.

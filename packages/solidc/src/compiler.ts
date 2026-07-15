@@ -55,6 +55,7 @@ import DesugarDynamicArrayCopyCast from './semantic/DesugarDynamicArrayCopyCast.
 import IfConvertConditionalEntryOp from './semantic/IfConvertConditionalEntryOp.js';
 import SynthesizeBlockOracle from './semantic/SynthesizeBlockOracle.js';
 import PruneUnreachableFreeFunctions from './semantic/PruneUnreachableFreeFunctions.js';
+import PruneUnreachableMsgDataMethods from './semantic/PruneUnreachableMsgDataMethods.js';
 import RedesugarImportedUsingForCalls from './semantic/RedesugarImportedUsingForCalls.js';
 import RedesugarImportedStructFieldWrites from './semantic/RedesugarImportedStructFieldWrites.js';
 import SynthesizePublicGetters from './semantic/SynthesizePublicGetters.js';
@@ -370,6 +371,11 @@ function compileResolvedAst(ast: Ast, code: string, mergedCompilerOptions: Compi
   // Drop free/library functions the contract never reaches (OZ libraries ship many unused helpers). Runs last,
   // after every synthesis pass, so no reachable call is missed; conservative by name so nothing live is dropped.
   ast = ast.accept(new PruneUnreachableFreeFunctions()) as Ast;
+
+  // Drop dead internal/private methods that read msg.data (e.g. inherited OZ `Context._msgData`, never called):
+  // msg.data is only reconstructible at an entry point, so a dead one would fail the whole compile. Conservative
+  // by name (every non-internal method is a root), so nothing live is dropped.
+  ast = ast.accept(new PruneUnreachableMsgDataMethods()) as Ast;
 
   // Semantic analysis
   ast = ast.accept(new SymbolTableTraversal(mergedCompilerOptions)) as Ast;

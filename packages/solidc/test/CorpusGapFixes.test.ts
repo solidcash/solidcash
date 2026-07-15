@@ -1808,3 +1808,23 @@ describe('address(L) library-as-address (EVM library-linking parity, corpus libr
     expect(art.constructorInputs.find((i) => i.name?.startsWith('__libAddr_'))).toBeUndefined();
   });
 });
+
+describe('prunes dead internal methods that read msg.data (inherited OZ Context._msgData)', () => {
+  const ok = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  it('compiles when an UNREACHABLE internal method reads msg.data (dropped, not codegen-ed)', () => {
+    // The dead `_msgData` never runs; msg.data is only reconstructible at an entry point, so keeping it would
+    // fail the whole compile with MsgDataInSubroutineError. It is pruned by name-conservative reachability.
+    expect(ok('contract C { function _msgData() internal view returns (bytes memory) { return msg.data; }'
+      + ' function f() public { require(true); } }')).toBe('C');
+  });
+  it('still REJECTS a REACHABLE internal msg.data reader (not silently pruned)', () => {
+    // Called from a public function, so live: it must NOT be pruned - the error surfaces (a wrong prune would be
+    // a silent miscompile). msg.data inside a live subroutine remains unsupported (a separate threading fix).
+    expect(() => compileString('contract C { function _live() internal view returns (bytes memory) { return msg.data; }'
+      + ' function f() public returns (bytes memory) { return _live(); } }', { solidityImportCompat: true }))
+      .toThrow(/msg.data is only available at an entry point/);
+  });
+  it('keeps msg.data at a public entry point (not an internal subroutine)', () => {
+    expect(ok('contract C { function f() public returns (bytes memory) { return msg.data; } }')).toBe('C');
+  });
+});

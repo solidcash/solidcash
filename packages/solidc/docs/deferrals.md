@@ -119,3 +119,9 @@ deeper structs.
 
 **Revisit if.** A real contract writes a nested struct field through a `mapping(K => Struct)` value and it blocks
 the compile.
+
+**Related (2026-07-15).** The fn-ptr CALL form `m[k].inner.x()` (calling a `function()` field nested inside a
+mapping-value struct, shipped 9d2ad911) is gated by THIS write limitation, not by the call rewrite: `m[k].inner.x
+= h` fails identically to the `uint` control, so the pointer can never be stored to invoke. The read/call side is
+proven complete for nesting - `t[i].inner.x()` and `s.a.b.x()` compile and dispatch. When the mapping-value
+nested write is fixed, re-test `m[k].inner.x()`; no call-side change is expected to be needed.

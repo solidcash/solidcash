@@ -80,17 +80,23 @@ commitments, assembled into a transaction, are accepted by the insert/delete/upd
 chained inserts evolve the list correctly. Commitments are still derived from the VM trace (as today), so the SDK
 need not reconstruct pushdata encodings; it only chooses which entries to co-spend and the link targets.
 
-## Compiler codegen plan (remaining)
+## Compiler codegen plan
 
-1. **Opt-in.** `CollectionNode.sorted` flag (set from `CompilerOptions.sortedMappings` initially; a `sorted`
-   mapping keyword later). Only sorted collections use this backend; the existing entry model is untouched.
-2. **Classify accesses.** A negative guard on a sorted mapping (`require(!m[k])`, `== false`, `== 0`) -> emit
-   non-membership. A read that gates an effect -> membership-or-non-membership by case. A write -> upsert
-   (insert if absent, update if present; the SDK picks the branch and the covenant validates it).
-3. **Emit** the proven covenant fragments (bracket + splice) at the access site, indexed by the new block-layout
-   slots. Key -> slot via `OP_SHA256` + high-bit mask.
-4. **SDK** fills predecessor/node inputs and P'/NEW outputs from the off-chain list; auto-derivation supplies the
-   commitments.
+1. **Opt-in (DONE).** `CollectionNode.sorted` set from `CompilerOptions.sortedMappings`; the artifact carries
+   `sorted: true` in the collection metadata (so the SDK's `SortedList` drives it). Only sorted collections use
+   this backend; the existing entry model is untouched. A source-level access currently **fails closed**
+   (`SortedMappingCodegenPendingError`) so a sorted mapping never compiles to the omittable entry-model read/write.
+2. **Classify accesses (remaining).** A read `m[k]` on a sorted set can co-spend ONE entry - the exact entry if
+   present, else the predecessor - and a single covenant returns the real membership bit soundly (`slot == H(k)`
+   -> true; else verify the bracket `slot < H(k) < nextKey` -> false), so `require(m[k])` and `require(!m[k])`
+   need no guard classification. A write -> upsert (insert if absent, update if present; the SDK picks the branch,
+   the covenant validates it).
+3. **Emit (remaining)** the proven covenant fragments (membership/bracket + splice) at the access site. Reuse the
+   existing entry co-spend slot + epilogue authentication/preservation; the only new codegen is the decode +
+   membership/bracket (read) and the splice + P'/NEW outputs (write). Key -> slot via `OP_SHA256` then clear the
+   last byte's high bit (matches `SortedList.keyToSlot`).
+4. **SDK (DONE for planning)** `SortedList` picks the predecessor/node to co-spend and the P'/NEW commitments;
+   wiring it into `StatefulTransactionBuilder` to fill the codegen's slots + auto-derivation is the last step.
 
 ## Status
 

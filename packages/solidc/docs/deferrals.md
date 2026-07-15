@@ -62,3 +62,34 @@ only relocates the plain `=` form), so such a buffer falls back to value-copy.
 pointer optimization is missed. Not worth a read-modify-write byte-splice path yet.
 
 **Revisit if.** A contract hot-path does compound byte writes on a buffer it also drives via assembly.
+
+---
+
+## External-call target: DIRECT method call on a memory-COPY struct field  — 2026-07-15
+
+**What.** `Job memory job = jobs[id]; IFoo(job.token).method()` - a plain-`address` field of a `memory` struct
+COPY, cast + called directly. `SynthesizeExternalAddressLocals` now hoists `IFoo(<state chain>)` (struct/array/
+mapping field of a self-pinned state root - `castChainTarget`) and `IFoo(<param field>)` (caller-witness -
+`castParamFieldTarget`), which unblocked the EACC Marketplace (`JobPost storage job = jobs[id]`, a storage
+pointer AstBuilder inlines to `jobs[id].token`) and Unicrow (`IERC20(input.currency).balanceOf`, a param field).
+The remaining hole is a `memory` copy: `job` is a real local (value-copy), so `job.token` is neither a
+self-pinned state chain (root is a local, not a collection) nor param-rooted.
+
+**Why deferred.**
+- **Soundness subtlety.** A memory copy can be modified before the call (`job.token = <caller value>`), so hoisting
+  `job.token` could pin a caller-influenced value where the author intended the state value - the exact forgery
+  `extcall-target-pinning.md` forbids. Sound handling needs a non-modification proof (dataflow) or a rewrite of
+  `job.token` -> `jobs[id].token` (only valid when `job` is a read-only copy).
+- **Low remaining value.** The real EACC contracts do not hit it: the direct method-call form is rare, and the
+  common wrapped form `SafeERC20.safeTransfer(IFoo(escrow.currency), ..)` already works - the SafeERC20 inline
+  binds the token to a local, which codegen sources as a bare local (the `local-from-statechain` path). This is
+  the same "memory-local-from-state provenance" deep slice flagged as deferred elsewhere (reassignable storage
+  ptr / `[[struct_array_lvalue_grind_2026_07]]`).
+
+**What it'd take.** A per-function memory-local alias map (`local -> state chain`, gated on the local being
+assigned once from a state chain and never field-written/reassigned), applied BEFORE `LowerMemoryModel` obscures
+the assignment; then `castChainTarget` handles the rewritten form. OR per-call-site hoisting (insert
+`__extaddr = job.token` just before the call, where `job` is in scope) instead of body-top hoisting.
+
+**Revisit if.** A real contract makes a DIRECT (non-SafeERC20-wrapped) external call on a `memory`-copy struct
+field and it is the last compile blocker.

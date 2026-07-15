@@ -1845,3 +1845,50 @@ describe('inlines internal value helpers that make an EXTERNAL contract call (OZ
       + ' function f(uint id) public view returns (uint) { return 1 + _h(id); } }')).toBe('C');
   });
 });
+
+// `IFoo(<state chain>).m()` - a plain-`address` field reached through self-pinned STATE, cast to an interface
+// (the cast supplies the callee ABI). Generalizes the `IFoo(stateVar)` cast to a struct-field/mapping-value/array
+// chain, hoisting `IFoo(chain)` into a synthesized __extaddr_ local. This is the EACC Marketplace shape
+// (`IERC20(job.token).transfer(..)` where `JobPost storage job = jobs[id]`); the storage pointer is already
+// inlined to `jobs[id].token` by AstBuilder, so it reaches the pass as a mapping-struct-field cast.
+describe('synthesizes __extaddr for IFoo(<self-pinned state chain>).method() (EACC IERC20(job.token) shape)', () => {
+  const ok = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  const iface = 'interface ITok { function transfer(address to, uint256 v) external returns (bool); }';
+  const struc = 'struct Job { address token; address creator; }';
+  it('casts a mapping-struct field: IFoo(jobs[id].token).transfer(..)', () => {
+    expect(ok(iface + ' ' + struc + ' contract C { mapping(uint256 => Job) public jobs;'
+      + ' function pay(uint256 id) public { ITok(jobs[id].token).transfer(msg.sender, 1); require(true); } }')).toBe('C');
+  });
+  it('casts a state-struct-var field: IFoo(j.token).transfer(..)', () => {
+    expect(ok(iface + ' ' + struc + ' contract C { Job public j;'
+      + ' function pay() public { ITok(j.token).transfer(msg.sender, 1); require(true); } }')).toBe('C');
+  });
+  it('casts a struct STORAGE-POINTER field (AstBuilder inlines job -> jobs[id])', () => {
+    expect(ok(iface + ' ' + struc + ' contract C { mapping(uint256 => Job) public jobs;'
+      + ' function pay(uint256 id) public { Job storage job = jobs[id];'
+      + ' ITok(job.token).transfer(msg.sender, 1); require(true); } }')).toBe('C');
+  });
+  it('dedups two identical-chain casts to ONE synthesized local (compiles, no re-decl)', () => {
+    expect(ok(iface + ' ' + struc + ' contract C { mapping(uint256 => Job) public jobs;'
+      + ' function pay(uint256 id) public { ITok(jobs[id].token).transfer(msg.sender, 1);'
+      + ' ITok(jobs[id].token).transfer(msg.sender, 2); require(true); } }')).toBe('C');
+  });
+});
+
+// `IFoo(param.field).m()` - a field of a FUNCTION PARAM cast to an interface. Caller-supplied, so the sound
+// "caller chooses whom to call" shape (extcall-target-pinning.md's param row), NOT an author-fixed value lifted
+// to a caller input. This is Unicrow's `IERC20(input.currency).balanceOf(..)` (input is a calldata struct param).
+describe('synthesizes __extaddr for IFoo(<param-rooted field>).method() (caller-witness, EACC input.currency)', () => {
+  const ok = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  const iface = 'interface ITok { function transfer(address to, uint256 v) external returns (bool); }';
+  // A struct state root so the pass visits functions (the shape appears alongside struct state in practice).
+  const base = 'struct Inp { address currency; } struct Job { address token; }';
+  it('casts a param struct field: IFoo(inp.currency).transfer(..)', () => {
+    expect(ok(iface + ' ' + base + ' contract C { mapping(uint256 => Job) public jobs;'
+      + ' function pay(Inp calldata inp) public { ITok(inp.currency).transfer(msg.sender, 1); require(true); } }')).toBe('C');
+  });
+  it('does NOT hoist a bare param cast (codegen already sources the param directly)', () => {
+    expect(ok(iface + ' ' + base + ' contract C { mapping(uint256 => Job) public jobs;'
+      + ' function pay(address t) public { ITok(t).transfer(msg.sender, 1); require(true); } }')).toBe('C');
+  });
+});

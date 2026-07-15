@@ -86,6 +86,9 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
     for (const c of node.collections) this.stateRoots.set(c.name, c.type);
     // A state root can hold an interface-typed field directly (struct var) or one step down (struct array
     // element / struct mapping value) - visit the functions if any does, so a `s.field.m()` chain is hoisted.
+    // A param-rooted cast target `IFoo(param.field).m()` (castParamFieldTarget) is also caught here; it needs a
+    // struct root in practice (the shape appears alongside struct state), so no extra gate term - keeping the
+    // gate tight avoids visiting fn-ptr-array-only contracts whose broadcast lowering must stay untouched.
     const hasStructRoot = [...this.stateRoots.values()].some((t) => holdsStruct(t));
     if (this.stateVarIface.size > 0 || this.plainAddrStateVars.size > 0 || hasStructRoot) {
       node.functions = this.visitList(node.functions) as FunctionDefinitionNode[];
@@ -136,6 +139,8 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
   visitMethodCall(node: MethodCallNode): Node {
     const target = this.externalTargetStateVar(node.object);
     const chain = target ? undefined : this.chainTarget(node.object);
+    const castChain = target || chain ? undefined : this.castChainTarget(node.object);
+    const paramField = target || chain || castChain ? undefined : this.castParamFieldTarget(node.object);
     if (target && !ADDRESS_METHODS.has(node.methodName)) {
       const localName = this.markUsed(target.name, target.iface, target.isPlain, node.object);
       const loc = node.object.location;
@@ -152,6 +157,30 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
       }
       const loc = node.object.location;
       node.object = new IdentifierNode(chain.localName);
+      node.object.location = loc;
+    } else if (castChain && !ADDRESS_METHODS.has(node.methodName)) {
+      // `IFoo(s.field).m()` / `IFoo(ss[i].field).m()` / `IFoo(ms[k].field).m()`: a plain-`address` field reached
+      // through self-pinned STATE, cast to an interface (the cast supplies the callee ABI). Same soundness as the
+      // chain case - the value is self-pinned state, never a caller witness. Hoist the whole `IFoo(chain)` cast
+      // (preserving the interface type) into a local. `Job storage job = jobs[id]; IFoo(job.token).m()` reaches
+      // here too: AstBuilder already inlines the storage pointer, so `job.token` is `jobs[id].token`.
+      if (!this.usedInFn.has(castChain.localName)) {
+        this.usedInFn.set(castChain.localName, { iface: castChain.iface, init: cloneNode(node.object) as ExpressionNode });
+      }
+      const loc = node.object.location;
+      node.object = new IdentifierNode(castChain.localName);
+      node.object.location = loc;
+    } else if (paramField && !ADDRESS_METHODS.has(node.methodName)) {
+      // `IFoo(param.field).m()` / `IFoo(param[i].field).m()`: the target is a field/element of a FUNCTION PARAM,
+      // cast to an interface. The base is caller-supplied, so this is the sound "caller chooses whom to call"
+      // shape (extcall-target-pinning.md: a param target is sound because the caller IS the party choosing) - it
+      // is NOT an author-fixed/self-pinned value being lifted, so no forgery. Hoist `IFoo(param.field)` into a
+      // local; the param root is in scope at the body top.
+      if (!this.usedInFn.has(paramField.localName)) {
+        this.usedInFn.set(paramField.localName, { iface: paramField.iface, init: cloneNode(node.object) as ExpressionNode });
+      }
+      const loc = node.object.location;
+      node.object = new IdentifierNode(paramField.localName);
       node.object.location = loc;
     } else {
       node.object = this.visit(node.object) as ExpressionNode;
@@ -189,6 +218,53 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
     const key = this.chainKey(obj);
     if (!key) return undefined;
     return { iface: fieldType.interfaceName, localName: `${PREFIX}${key}` };
+  }
+
+  // `IFoo(<chain>)` where <chain> is an `address`-typed value reached through self-pinned STATE (a struct field,
+  // array element, or mapping value) and IFoo is a known interface/contract - the cast supplies the callee ABI.
+  // The state-var `IFoo(a)` cast (externalTargetStateVar, isPlain) generalized to a state ACCESS CHAIN. Returns
+  // the interface + a stable per-(chain, iface) local name; undefined unless the whole chain is state-rooted with
+  // param/literal indices (so the hoisted `IFoo(chain)` decl is sound + valid at the body top).
+  private castChainTarget(obj: ExpressionNode): { iface: string; localName: string } | undefined {
+    if (!(obj instanceof FunctionCallNode) || obj.parameters.length !== 1) return undefined;
+    const iface = obj.identifier.name;
+    if (!this.typeNames.has(iface)) return undefined;
+    const arg = obj.parameters[0];
+    if (arg instanceof IdentifierNode) return undefined; // bare state var / param - externalTargetStateVar's job
+    if (!(this.resolveChainType(arg) instanceof AddressType)) return undefined;
+    const key = this.chainKey(arg);
+    if (!key) return undefined;
+    return { iface, localName: `${PREFIX}${key}_${iface}` };
+  }
+
+  // `IFoo(<param-rooted access>)` - a field/element of a FUNCTION PARAM cast to an interface. Caller-supplied,
+  // so a sound caller-witness target (extcall-target-pinning.md's param row), distinct from the self-pinned
+  // state chain (castChainTarget). Only a param root qualifies - a plain local could be state-derived (its
+  // author intent unknown), so those are left to fail closed rather than risk lifting a self-pinned value.
+  private castParamFieldTarget(obj: ExpressionNode): { iface: string; localName: string } | undefined {
+    if (!(obj instanceof FunctionCallNode) || obj.parameters.length !== 1) return undefined;
+    const iface = obj.identifier.name;
+    if (!this.typeNames.has(iface)) return undefined;
+    const arg = obj.parameters[0];
+    if (arg instanceof IdentifierNode) return undefined; // bare param already works in codegen
+    if (!this.isParamRooted(arg)) return undefined;
+    const key = this.chainKey(arg);
+    if (!key) return undefined;
+    return { iface, localName: `${PREFIX}${key}_${iface}` };
+  }
+
+  // The access chain is rooted at a function param (base identifier is a param), stepping only through fields
+  // and param/literal indices - entirely caller-supplied and valid at the body top. NOT true for a state root
+  // (that is castChainTarget's self-pinned job) or a plain local.
+  private isParamRooted(expr: ExpressionNode): boolean {
+    if (expr instanceof IdentifierNode) return this.currentParams.has(expr.name);
+    if (expr instanceof FieldAccessNode) return this.isParamRooted(expr.expression);
+    if (expr instanceof ArrayAccessNode) return this.indexSafe(expr.index) && this.isParamRooted(expr.array);
+    if (expr instanceof TupleIndexOpNode) return this.isParamRooted(expr.tuple);
+    if (expr instanceof MappingAccessNode) {
+      return this.currentParams.has(expr.name) && expr.keys.every((k) => this.indexSafe(k));
+    }
+    return false;
   }
 
   // The declared type of a state-rooted access chain (self-pinned): a state var / collection identifier, a

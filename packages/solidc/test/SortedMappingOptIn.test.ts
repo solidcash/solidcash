@@ -46,9 +46,16 @@ describe('sorted mapping opt-in (C2)', () => {
       .not.toThrow();
   });
 
-  it('still fails closed on a sorted mapping with a non-int/bool value type (bytes)', () => {
+  it('compiles a fixed-width bytesN value type (raw commitment tail)', () => {
     const MAP = 'contract C() { mapping(int => bytes4) meta;';
     expect(() => compileString(`${MAP} function f(int k) { meta[k] = 0x11223344; } }`, { sortedMappings: ['meta'], forceStateful: true }))
+      .not.toThrow();
+  });
+
+  it('still fails closed on a non-fixed-width value type (address)', () => {
+    // address is a variable-width locking bytecode (p2sh/p2pkh), not a clean fixed-width tail - fail closed.
+    const MAP = 'contract C() { mapping(int => address) owner;';
+    expect(() => compileString(`${MAP} function f(int k, address a) { owner[k] = a; } }`, { sortedMappings: ['owner'], forceStateful: true }))
       .toThrow(SortedMappingCodegenPendingError);
   });
 

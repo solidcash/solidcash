@@ -2853,10 +2853,11 @@ export default class SymbolTableTraversal extends AstTraversal {
       const existing = map.get(slotKey);
       // A sorted VALUE mapping `delete m[k]` compiles to an upsert-to-default (a WRITE: co-spend the entry, emit
       // its rewritten output), not the input-only soft-delete - so the block layout must allocate a write slot.
-      // Predicate matches the codegen (visitMappingDelete): only int-valued sorted mappings route to the upsert.
+      // Predicate matches the codegen (GTT sortedValueKind): int-like or fixed-width bytesN value types.
       const vt = node.collection.innermostValueType;
-      const op: 'delete' | 'write' = node.collection.sorted
-        && (vt === PrimitiveType.BIGINT || vt instanceof IntType) ? 'write' : 'delete';
+      const isSortedValue = vt === PrimitiveType.BIGINT || vt instanceof IntType
+        || (vt instanceof BytesType && vt.bound !== undefined && vt.bound >= 1 && vt.bound <= 32);
+      const op: 'delete' | 'write' = node.collection.sorted && isSortedValue ? 'write' : 'delete';
       if (existing) {
         if (!existing.operations.includes(op)) existing.operations.push(op);
       } else {

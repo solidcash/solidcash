@@ -141,6 +141,8 @@ need not reconstruct pushdata encodings; it only chooses which entries to co-spe
   (`SortedMappingCompiledRead.test.ts`), the value read (`SortedMappingValueRead.test.ts`), the set-insert write
   (`SortedMappingCompiledWrite.test.ts`), the value upsert - insert **and** update (`SortedMappingValueWrite.test.ts`),
   read-modify-write (`SortedMappingRMW.test.ts`), and value delete == set-to-default (`SortedMappingValueDelete.test.ts`),
-  all VM-verified. The **only** remaining op is a **set delete** (splice) - fail-closed because a sound splice needs a
-  second co-spent entry input (the predecessor) not yet emitted in the block layout. Value types other than
-  `int`/`bool` (bytes, struct, address) also fail closed.
+  all VM-verified. Value types: `bool` (set), `int`/`uint` (raw minimal number tail), and fixed-width `bytesN`
+  (raw N-byte tail, e.g. `bytes32` hashes - `SortedMappingBytesValue.test.ts`) are supported; `address` (a
+  variable-width locking bytecode, not a clean fixed tail), `struct`, and unbounded `bytes`/`string` fail closed.
+  The **only** remaining op is a **set delete** (splice) - fail-closed because a sound splice needs a second
+  co-spent entry input (the predecessor) not yet emitted in the block layout.

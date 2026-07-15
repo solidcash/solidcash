@@ -8842,6 +8842,18 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   // ===== Mapping (Entry NFT) Support =====
 
   /**
+   * The value kind a sorted mapping can store in its entry commitment tail: 'int' (a raw minimal script number,
+   * OP_BIN2NUM-normalized) or 'rawbytes' (a fixed-width bytesN, stored/read verbatim). null = unsupported (bool is
+   * a set, handled separately; struct/unbounded-bytes fail closed). The tail is the last commitment field, so a
+   * fixed-width raw value is unambiguous and the SDK derives it from the VM trace regardless of kind.
+   */
+  private sortedValueKind(vt: Type): 'int' | 'rawbytes' | null {
+    if (vt === PrimitiveType.BIGINT || vt instanceof IntType) return 'int';
+    if (vt instanceof BytesType && vt.bound !== undefined && vt.bound >= 1 && vt.bound <= 32) return 'rawbytes';
+    return null;
+  }
+
+  /**
    * The C2 non-membership bracket: given stack [.., slot32, nextKey32] (nextKey on top) and the key hash Hk32 at
    * depth 2 (below slot32), verify slot < H(k) < nextKey (nextKey 0 = +infinity). Leaves the stack unchanged. This
    * is the proven absent-witness fragment (SortedMappingRead.test.ts) shared by the bool and value-typed reads.
@@ -8873,8 +8885,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const collection = node.collection!;
     const valueType = collection.innermostValueType;
     const isBool = valueType.toString() === 'bool';
-    const isInt = valueType === PrimitiveType.BIGINT || valueType instanceof IntType;
-    if ((!isBool && !isInt) || collection.allKeyTypes.length !== 1) {
+    const valueKind = this.sortedValueKind(valueType);
+    if ((!isBool && valueKind === null) || collection.allKeyTypes.length !== 1) {
       throw new SortedMappingCodegenPendingError(node, collection.name);
     }
     const slotIndex = node.entrySlotIndex;
@@ -8937,7 +8949,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_EQUAL, loc);                                 // [Hk32, slot32, nextKey32, value, isPresent]
       this.emit(Op.OP_IF, loc);
       this.emit(Op.OP_NIP, loc); this.emit(Op.OP_NIP, loc); this.emit(Op.OP_NIP, loc); // -> [value]
-      this.emit(Op.OP_BIN2NUM, loc);                              // normalize the raw int tail
+      if (valueKind === 'int') this.emit(Op.OP_BIN2NUM, loc);     // normalize the raw int tail (bytesN kept verbatim)
       this.emit(Op.OP_ELSE, loc);
       this.emit(Op.OP_DROP, loc);                                 // drop value -> [Hk32, slot32, nextKey32]
       this.emitSortedAbsenceBracket(loc);                         // verifies slot < H(k) < nextKey
@@ -9197,9 +9209,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (!loopWrites.includes(collection.name)) loopWrites.push(collection.name);
     this.sortedWrittenCollections.add(collection.name);
 
-    // 1. New value v (int) at the bottom of the working area - kept tracked, consumed at the end.
+    // 1. New value v at the bottom of the working area - kept tracked, consumed at the end. An int is BIN2NUM-
+    // normalized to a minimal number (matches SDK bigIntToVmNumber); a bytesN value is CAT'd into the tail verbatim.
     emitValue();
-    this.emit(Op.OP_BIN2NUM, loc);                     // normalize to a minimal number (matches SDK bigIntToVmNumber)
+    if (this.sortedValueKind(collection.innermostValueType) === 'int') this.emit(Op.OP_BIN2NUM, loc);
 
     // 2. H(k) -> [v, Hk32]
     const keySource = this.entrySlots[slotIndex].keySources?.[0];
@@ -9346,7 +9359,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       && node.collection.allKeyTypes.length === 1) {
       const vt = node.collection.innermostValueType;
       if (vt.toString() === 'bool') return this.emitSortedSetWrite(node);
-      if (vt === PrimitiveType.BIGINT || vt instanceof IntType) {
+      if (this.sortedValueKind(vt) !== null) {
         return this.emitSortedValueUpsert(node, () => { node.expression = this.visit(node.expression); });
       }
     }
@@ -10085,7 +10098,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // docs/sorted-mapping-c2.md.
     if (node.collection?.sorted) {
       const vt = node.collection.innermostValueType;
-      if ((vt === PrimitiveType.BIGINT || vt instanceof IntType) && node.collection.allKeyTypes.length === 1) {
+      if (this.sortedValueKind(vt) !== null && node.collection.allKeyTypes.length === 1) {
         const dLoc = { location: node.location, positionHint: PositionHint.END };
         return this.emitSortedValueUpsert(node, () => {
           this.emitDefaultValue(dLoc, vt); this.pushToStack('(value)');

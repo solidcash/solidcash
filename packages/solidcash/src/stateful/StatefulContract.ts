@@ -4232,12 +4232,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           if (loopEntryVars.length > 0) {
             let loopOffset = stb.getLoopEntryOutputBase();
             for (const lv of loopEntryVars) {
-              // C2 sorted SET insert (mapping(K=>bool)): the NEW node commitment is known exactly (injected from
-              // SortedList.planInsert), not derived progressively - leave it untouched. A value mapping (=>int)
-              // upsert carries the RHS value in NEW, so it IS derived from the trace (falls through).
+              // A C2 sorted upsert (bool/int/bytesN) carries its value in NEW, so NEW is derived from the trace.
               const scoll = stateLayout.collections?.find((c) => c.name === lv.collection);
-              if (scoll?.sorted && scoll.valueType === 'bool') continue;
-              const isSortedValueMintColl = scoll?.sorted && scoll.valueType !== 'bool';
+              const isSortedValueMintColl = !!scoll?.sorted;
               const existing = stb.getLoopEntryCommitments(lv.collection);
               if (existing.length === 0) {
                 // An UPDATE (present key) mints no trailing node; once probed empty, keep it empty (no re-seed).
@@ -4259,7 +4256,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               // A sorted VALUE upsert mints a STATIC number of trailing NEW nodes (1 on insert, 0 on update), not a
               // growing loop, so never add the speculative extra placeholder (it would create a phantom output that
               // shifts the fixed entry-slot P' and oscillates the derivation).
-              const isSortedValueMint = scoll?.sorted && scoll.valueType !== 'bool';
+              const isSortedValueMint = !!scoll?.sorted;
               const stillLearning = !isSortedValueMint && derivedCount > 0
                 && derived[derivedCount - 1] !== (existing[derivedCount - 1] ?? '00');
               const next: string[] = [];
@@ -4627,29 +4624,18 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               : typeof kv === 'boolean' ? bigIntToVmNumber(kv ? 1n : 0n)
                 : bigIntToVmNumber(BigInt(kv as unknown as string));
           const slot = keyToSlot(keyBytes);
-          // A value-mapping `delete m[k]` compiles to an upsert-to-default (Solidity: delete == set to 0), so the
-          // SDK co-spends the entry exactly like a write. (A set `delete` fails closed at compile time.)
-          const isWrite = access.operations.includes('write')
-            || (access.operations.includes('delete') && collection.valueType !== 'bool');
+          // A sorted mapping write OR `delete m[k]` (== assign default, Solidity semantics) both upsert the entry,
+          // so the SDK co-spends it the same way. bool sets are value mappings too (true=0x01, false/delete=empty).
+          const isWrite = access.operations.includes('write') || access.operations.includes('delete');
           const entryBase = {
             slotIndex, collection: access.collection, keyType: collection.keyType, valueType: collection.valueType,
             keyValue: kv as bigint | boolean | Uint8Array, exists: true,
           };
-          if (isWrite && collection.valueType === 'bool') {
-            // Set insert (mapping(K=>bool)): co-spend the bracketing predecessor at the entry slot (write path);
-            // P' is placed at its output, NEW is minted trailing. Both commitments are known exactly off-chain.
-            const plan = list.planInsert(slot);
-            const wUnlocker = createEntryNftUnlocker(this.inner, 0, this.categoryId, access.collection);
-            entryNfts.push({ ...entryBase, utxo: { ...plan.predecessor.utxo, unlocker: wUnlocker } });
-            sortedInserts.push({
-              slotIndex, collection: access.collection,
-              predNew: plan.predNewCommitment, newNode: plan.newNodeCommitment,
-            });
-          } else if (isWrite) {
-            // Value upsert (mapping(K=>int)). Present -> UPDATE: co-spend the exact entry; the covenant pins the
-            // entry output k' = link||v, whose value is derived from the VM trace (entry-slot derivation). Absent
-            // -> INSERT: co-spend the bracketing predecessor; P' at the entry output is known exactly (inject it),
-            // and NEW = k||next||v is minted trailing with its value derived from the trace.
+          if (isWrite) {
+            // Upsert. Present -> UPDATE: co-spend the exact entry; the covenant pins the entry output k' = link||v,
+            // whose value is derived from the VM trace. Absent -> INSERT: co-spend the bracketing predecessor; P'
+            // at the entry output is known exactly (inject it), and NEW = k||next||v is minted trailing with its
+            // value derived from the trace.
             const present = list.has(slot);
             const wUnlocker = createEntryNftUnlocker(this.inner, 0, this.categoryId, access.collection);
             if (present) {

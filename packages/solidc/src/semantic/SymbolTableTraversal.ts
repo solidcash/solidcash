@@ -2851,11 +2851,11 @@ export default class SymbolTableTraversal extends AstTraversal {
       const { keyParams, keySources } = this.getMappingKeyDescriptors(node.keys);
       const slotKey = `${node.collection.name}:${keyParams.join(':')}`;
       const existing = map.get(slotKey);
-      // A sorted VALUE mapping `delete m[k]` compiles to an upsert-to-default (a WRITE: co-spend the entry, emit
-      // its rewritten output), not the input-only soft-delete - so the block layout must allocate a write slot.
-      // Predicate matches the codegen (GTT sortedValueKind): int-like or fixed-width bytesN value types.
+      // A sorted mapping `delete m[k]` compiles to an upsert-to-default (a WRITE: co-spend the entry, emit its
+      // rewritten output = NULLIFY), not the input-only soft-delete - so the block layout must allocate a write
+      // slot. Predicate matches the codegen (GTT sortedValueKind): bool, int-like, or fixed-width bytesN values.
       const vt = node.collection.innermostValueType;
-      const isSortedValue = vt === PrimitiveType.BIGINT || vt instanceof IntType
+      const isSortedValue = vt.toString() === 'bool' || vt === PrimitiveType.BIGINT || vt instanceof IntType
         || (vt instanceof BytesType && vt.bound !== undefined && vt.bound >= 1 && vt.bound <= 32);
       const op: 'delete' | 'write' = node.collection.sorted && isSortedValue ? 'write' : 'delete';
       if (existing) {

@@ -66,12 +66,14 @@ describe('sorted mapping opt-in (C2)', () => {
       .not.toThrow();
   });
 
-  it('fails closed on delete of a sorted SET (splice needs a second co-spent input, pending)', () => {
-    // For a set (mapping(K=>bool)), delete means REMOVE from the set - a splice that co-spends the node + its
-    // predecessor. The soft-delete would leave the node in the list (membership still finds it - unsound), and the
-    // splice's second co-spent input is not yet emitted, so a set delete fails closed. See docs/sorted-mapping-c2.md.
+  it('compiles delete of a sorted bool set (NULLIFY == set false, Solidity delete parity)', () => {
+    // Solidity `delete m[k]` == assign the default (false), not a physical removal, so a bool set is a value
+    // mapping (true=0x01, false/delete=empty tail) and delete routes through the upsert-to-default. VM-verified in
+    // SortedMappingBoolNullify.test.ts. So `claimed[k]=false` and `delete claimed[k]` both compile now.
     expect(() => compileString(`${SET} function f(int k) { require(true); delete claimed[k]; } }`, { sortedMappings: ['claimed'], forceStateful: true }))
-      .toThrow(SortedMappingCodegenPendingError);
+      .not.toThrow();
+    expect(() => compileString(`${SET} function g(int k) { claimed[k] = false; } }`, { sortedMappings: ['claimed'], forceStateful: true }))
+      .not.toThrow();
   });
 
   it('without the opt-in, the same mapping compiles on the default entry model', () => {

@@ -28,7 +28,9 @@ slot(32) ++ nextKey(32) [++ value]
   half the time). Proven at full width in `SortedMappingNonMembership.test.ts` with 2^200 / 2^254-1 slots.
 - **Sentinels:** `nextKey = 0` = +infinity; a reserved head entry `slot = 0` anchors the low end. The empty map
   is one entry `HEAD[0|0]`.
-- **value** (optional): present for `mapping(K=>V)`; absent for a set / `mapping(K=>bool)` (presence == true).
+- **value** (optional): the mapped value for `mapping(K=>V)`. A bool set stores a 1-bit value (`true` = `0x01`
+  tail, `false` = empty tail) so `m[k]=false`/`delete` can nullify without removing the node; a present entry with
+  an empty tail reads false. The value is the last field, so a fixed-width or empty tail is unambiguous.
 
 ## The covenant (proven)
 
@@ -85,21 +87,20 @@ need not reconstruct pushdata encodings; it only chooses which entries to co-spe
 1. **Opt-in (DONE).** `CollectionNode.sorted` set from `CompilerOptions.sortedMappings`; the artifact carries
    `sorted: true` in the collection metadata. Only sorted collections use this backend; the existing entry model
    is untouched.
-2. **Read codegen (DONE + VM-verified end to end).** `visitMappingAccess` emits the single membership-or-non-
-   membership covenant for a sorted `mapping(K=>bool)` read: compute `slot = sha256(k)` with the last byte's high
-   bit cleared, pin `input[slot]` bytecode to the collection's entry P2SH, read `slot||nextKey`, and return the
-   real bit (`slot==H(k)` -> 1; `slot<H(k)<nextKey` -> 0; else revert). No default-on-absent branch, so omitting
-   the entry reverts. The SDK co-spends `SortedList.predecessorOf(k)` (or the k-entry) read-only for a sorted
-   collection, and such a read is never getter-skipped. Proven from source in `SortedMappingCompiledRead.test.ts`:
-   a compiled `require(!claimed[k])` passes for an absent key and reverts for a present one.
-3. **Write codegen (DONE + VM-verified end to end).** `claimed[k]=true` on a sorted `mapping(K=>bool)` emits the
-   proven insert splice: co-spend the bracketing predecessor `P[Ps|S]` at the entry slot (write path), verify
-   `Ps < H(k) < S` (k absent), and pin two outputs at the collection's entry P2SH - `P' = [Ps|H(k)]` at the entry
-   output slot (predecessor's next rewritten to k) and `NEW = [H(k)|S]` as a trailing mint. The SDK drives it from
-   `SortedList.planInsert`: it co-spends the predecessor (write unlocker) and sets `P'`/`NEW` commitments directly
-   (known exactly off-chain; the covenant pins them, so the derivation probe and the final send converge without
-   VM-trace derivation). Proven from source in `SortedMappingCompiledWrite.test.ts`: a compiled `claim(k)` inserts
-   the key, a re-claim of the same key reverts on `require(!claimed[k])`, and a different key still inserts - the
+2. **Read codegen (DONE + VM-verified end to end).** `visitMappingAccess` co-spends ONE entry (the exact k-entry if
+   present, else the bracketing predecessor) and returns the real value: compute `slot = sha256(k)` high-bit-masked,
+   pin `input[slot]` bytecode to the collection's entry P2SH, read `slot||nextKey||value`, and if `slot==H(k)`
+   return the value tail (int/bool `OP_BIN2NUM`-normalized, `bytesN` verbatim), else prove `slot<H(k)<nextKey` and
+   return the type default. No default-on-absent branch, so omitting the entry reverts. The SDK co-spends the
+   k-entry (or predecessor) read-only, never getter-skipped. Proven in `SortedMappingCompiledRead.test.ts` (a
+   compiled `require(!claimed[k])` passes for absent, reverts for present) + `SortedMappingValueRead.test.ts`.
+3. **Write codegen (DONE + VM-verified end to end).** Every sorted write `m[k]=v` is an UPSERT (`emitSortedValueUpsert`):
+   co-spend one entry and branch at runtime on `slot==H(k)`. Present -> UPDATE: pin the entry output `k' =
+   slot||nextKey||v` (link preserved, value set). Absent -> INSERT: verify `slot<H(k)<nextKey`, pin `P' =
+   slot||H(k)||predValue` at the entry output + a trailing `NEW = H(k)||nextKey||v`. The SDK co-spends the exact
+   entry (update) or predecessor (insert, `P'` injected + pinned); the value-carrying outputs (`k'`/`NEW`) derive
+   from the VM trace. Proven from source in `SortedMappingCompiledWrite.test.ts` (claim-once): a compiled `claim(k)`
+   inserts the key, a re-claim reverts on `require(!claimed[k])`, and a different key still inserts - the
    C2 negative-guard attack closed end-to-end for writes.
 4. **Value read + write / upsert (DONE + VM-verified end to end).** A value-typed sorted `mapping(K=>int)` compiles
    its read `bal[k]` (present -> the raw value tail; absent -> the type default, proven-absent via the bracket) and
@@ -116,14 +117,15 @@ need not reconstruct pushdata encodings; it only chooses which entries to co-spe
    RMW is an UPDATE with the old value read from the co-spent entry, and an absent-key RMW is an INSERT of `0+v`.
    This is the original C2-blocked pattern (a `+=` was resettable by omitting the entry). Proven in
    `SortedMappingRMW.test.ts`. Unblocks balances / vote counts / accumulators.
-6. **Delete - value mapping (DONE), set (fail-closed).** For a value mapping, `delete bal[k]` is Solidity `bal[k]=0`,
-   so it routes through the upsert with value = default (present -> update to 0, absent -> insert 0); a read then
-   returns 0, Solidity-equivalent. Proven in `SortedMappingValueDelete.test.ts`. For a **set** (`mapping(K=>bool)`),
-   delete means REMOVE from the set - a true SPLICE (co-spend the node AND its bracketing predecessor, rewrite the
-   predecessor's next past the node, burn the node). The splice covenant is proven (`SortedMappingInsertDelete.test.ts`),
-   but it needs a **second co-spent entry input** (the predecessor alongside the node) - a block-layout slot the
-   current single-entry-slot path does not emit - so a set delete fails closed (`SortedMappingCodegenPendingError`)
-   rather than compile to the unsound soft-delete (which would leave the node in the list).
+6. **Delete = NULLIFY (DONE + VM-verified) - Solidity parity.** Solidity `delete m[k]` **assigns the type default**
+   to `m[k]` (`libsolidity` compiles it to `storageSetToZero`); it does **not** physically remove the entry
+   (mappings have no length/enumeration). So `delete m[k]` and `m[k] = <default>` are the same op - an upsert to the
+   default. A **value** mapping (`mapping(K=>int)`, `bytesN`) nullifies to `0` (present -> update to 0, absent ->
+   insert 0). A **bool set** is just a value mapping over a 1-bit value: `true` = a `0x01` value tail, `false` /
+   `delete` = an **empty** value tail. So `claimed[k]=true/false` and `delete claimed[k]` are all upserts, the entry
+   **stays** in the list (nullified, not removed), and the read returns the value (present-false and absent both
+   read false; only a present-true entry reads true). No splice, and C2 still holds - omitting a present-true entry
+   can't satisfy the bracket. Proven in `SortedMappingValueDelete.test.ts` + `SortedMappingBoolNullify.test.ts`.
 
 ## Status
 
@@ -141,8 +143,10 @@ need not reconstruct pushdata encodings; it only chooses which entries to co-spe
   (`SortedMappingCompiledRead.test.ts`), the value read (`SortedMappingValueRead.test.ts`), the set-insert write
   (`SortedMappingCompiledWrite.test.ts`), the value upsert - insert **and** update (`SortedMappingValueWrite.test.ts`),
   read-modify-write (`SortedMappingRMW.test.ts`), and value delete == set-to-default (`SortedMappingValueDelete.test.ts`),
-  all VM-verified. Value types: `bool` (set), `int`/`uint` (raw minimal number tail), and fixed-width `bytesN`
-  (raw N-byte tail, e.g. `bytes32` hashes - `SortedMappingBytesValue.test.ts`) are supported; `address` (a
-  variable-width locking bytecode, not a clean fixed tail), `struct`, and unbounded `bytes`/`string` fail closed.
-  The **only** remaining op is a **set delete** (splice) - fail-closed because a sound splice needs a second
-  co-spent entry input (the predecessor) not yet emitted in the block layout.
+  read-modify-write (`SortedMappingRMW.test.ts`), value delete/nullify (`SortedMappingValueDelete.test.ts`), and
+  bool-set true/false/delete nullify (`SortedMappingBoolNullify.test.ts`), all VM-verified. Every op - read, write,
+  RMW, delete - is a **read and/or upsert over one linked-list value entry**; there is no physical-removal splice
+  (Solidity `delete` nullifies, so the node stays). Value types: `bool` (1-bit value), `int`/`uint` (raw minimal
+  number tail), and fixed-width `bytesN` (raw N-byte tail, e.g. `bytes32` - `SortedMappingBytesValue.test.ts`);
+  `address` (a variable-width locking bytecode, not a clean fixed tail), `struct`, and unbounded `bytes`/`string`
+  fail closed. There is no remaining fail-closed op for the supported value types.

@@ -8848,6 +8848,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * fixed-width raw value is unambiguous and the SDK derives it from the VM trace regardless of kind.
    */
   private sortedValueKind(vt: Type): 'int' | 'rawbytes' | null {
+    // bool is a 1-bit int: true stored as 0x01, false as empty (both OP_BIN2NUM-normalize to 1/0). Storing it as a
+    // value (not membership-by-presence) is what lets `m[k]=false` / `delete m[k]` NULLIFY the slot - Solidity
+    // `delete m[k]` == `m[k]=<default>`, an assignment to zero, never a physical removal.
+    if (vt.toString() === 'bool') return 'int';
     if (vt === PrimitiveType.BIGINT || vt instanceof IntType) return 'int';
     if (vt instanceof BytesType && vt.bound !== undefined && vt.bound >= 1 && vt.bound <= 32) return 'rawbytes';
     return null;
@@ -8884,9 +8888,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const loc = { location: node.location, positionHint: PositionHint.START };
     const collection = node.collection!;
     const valueType = collection.innermostValueType;
-    const isBool = valueType.toString() === 'bool';
     const valueKind = this.sortedValueKind(valueType);
-    if ((!isBool && valueKind === null) || collection.allKeyTypes.length !== 1) {
+    if (valueKind === null || collection.allKeyTypes.length !== 1) {
       throw new SortedMappingCodegenPendingError(node, collection.name);
     }
     const slotIndex = node.entrySlotIndex;
@@ -8928,35 +8931,22 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc);        // [Hk32, commit]
     this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc);                       // [Hk32, slot32, rest]
     this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc);                       // [Hk32, slot32, nextKey32, value]
-    if (isBool) this.emit(Op.OP_DROP, loc);           // set: value tail unused -> [Hk32, slot32, nextKey32]
 
-    if (isBool) {
-      // 4a. membership bit: slot32 == Hk32 (proven fragment; SortedMappingRead.test.ts)
-      this.emit(Op.OP_OVER, loc);                       // copy slot32 (depth1)
-      this.emit(encodeInt(3n), loc); this.emit(Op.OP_PICK, loc); // copy Hk32 (depth3)
-      this.emit(Op.OP_EQUAL, loc);                      // [slot32, nextKey32, Hk32, isPresent]
-      this.emit(Op.OP_IF, loc);
-      this.emit(Op.OP_2DROP, loc); this.emit(Op.OP_DROP, loc); this.emit(Op.OP_1, loc); // present -> 1
-      this.emit(Op.OP_ELSE, loc);
-      this.emitSortedAbsenceBracket(loc);               // verifies slot < H(k) < nextKey, leaves [.., slot32, nextKey32]
-      this.emit(Op.OP_2DROP, loc); this.emit(Op.OP_DROP, loc); this.emit(Op.OP_0, loc); // absent -> 0
-      this.emit(Op.OP_ENDIF, loc);
-    } else {
-      // 4b. value read: present (slot32 == Hk32) -> the raw value tail; absent (bracket proven) -> type default.
-      // stack: [Hk32, slot32, nextKey32, value]
-      this.emit(encodeInt(2n), loc); this.emit(Op.OP_PICK, loc);   // copy slot32 (depth2)
-      this.emit(encodeInt(4n), loc); this.emit(Op.OP_PICK, loc);   // copy Hk32 (depth4)
-      this.emit(Op.OP_EQUAL, loc);                                 // [Hk32, slot32, nextKey32, value, isPresent]
-      this.emit(Op.OP_IF, loc);
-      this.emit(Op.OP_NIP, loc); this.emit(Op.OP_NIP, loc); this.emit(Op.OP_NIP, loc); // -> [value]
-      if (valueKind === 'int') this.emit(Op.OP_BIN2NUM, loc);     // normalize the raw int tail (bytesN kept verbatim)
-      this.emit(Op.OP_ELSE, loc);
-      this.emit(Op.OP_DROP, loc);                                 // drop value -> [Hk32, slot32, nextKey32]
-      this.emitSortedAbsenceBracket(loc);                         // verifies slot < H(k) < nextKey
-      this.emit(Op.OP_2DROP, loc); this.emit(Op.OP_DROP, loc);    // -> []
-      this.emitDefaultValue(loc, valueType);                      // absent -> default
-      this.emit(Op.OP_ENDIF, loc);
-    }
+    // 4. value read: present (slot32 == Hk32) -> the value tail (bool/int BIN2NUM-normalized, bytesN verbatim);
+    // absent (bracket proven) -> the type default. A bool set is just a mapping(K=>int-bit) here: true=0x01 present,
+    // false = an entry whose value tail is empty, absent = default false. stack: [Hk32, slot32, nextKey32, value]
+    this.emit(encodeInt(2n), loc); this.emit(Op.OP_PICK, loc);   // copy slot32 (depth2)
+    this.emit(encodeInt(4n), loc); this.emit(Op.OP_PICK, loc);   // copy Hk32 (depth4)
+    this.emit(Op.OP_EQUAL, loc);                                 // [Hk32, slot32, nextKey32, value, isPresent]
+    this.emit(Op.OP_IF, loc);
+    this.emit(Op.OP_NIP, loc); this.emit(Op.OP_NIP, loc); this.emit(Op.OP_NIP, loc); // -> [value]
+    if (valueKind === 'int') this.emit(Op.OP_BIN2NUM, loc);     // normalize the int/bool tail (bytesN kept verbatim)
+    this.emit(Op.OP_ELSE, loc);
+    this.emit(Op.OP_DROP, loc);                                 // drop value -> [Hk32, slot32, nextKey32]
+    this.emitSortedAbsenceBracket(loc);                         // verifies slot < H(k) < nextKey
+    this.emit(Op.OP_2DROP, loc); this.emit(Op.OP_DROP, loc);    // -> []
+    this.emitDefaultValue(loc, valueType);                      // absent -> default
+    this.emit(Op.OP_ENDIF, loc);
 
     this.pushToStack('(value)');
     return node;
@@ -9142,33 +9132,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
-   * Verify a sorted entry NFT output at the (untracked, top-of-stack) output index `outIdx`: its bytecode == the
-   * entry P2SH `entryAddr` (an untracked value at tracker-relative depth `addrDepth` BELOW the working area), its
-   * category base == master with the mutable (0x01) capability, and its commitment == the two 32-byte fields
-   * already on the stack at `field1Depth` and `field2Depth` (concatenated field1||field2). Consumes outIdx.
-   * All depths are measured from the top BEFORE this runs (outIdx is on top).
-   */
-  private emitVerifySortedEntryOutput(
-    loc: SingleLocationData, addrDepth: number, field1Depth: number, field2Depth: number,
-  ): void {
-    // stack: [.., field1, field2, .., entryAddr, .., outIdx] (depths are measured with outIdx at depth 0)
-    this.emit(Op.OP_DUP, loc); this.emit(Op.OP_OUTPUTBYTECODE, loc);      // [.., outIdx, outbc]
-    this.emit(encodeInt(BigInt(addrDepth + 1)), loc); this.emit(Op.OP_PICK, loc); // +1: outbc above baseline
-    this.emit(Op.OP_EQUALVERIFY, loc);                                    // [.., outIdx]
-    this.emit(Op.OP_DUP, loc); this.emit(Op.OP_OUTPUTTOKENCATEGORY, loc); // [.., outIdx, cat]
-    this.emit(Op.OP_DUP, loc); this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_NIP, loc);
-    this.emit(Op.OP_1, loc); this.emit(Op.OP_EQUALVERIFY, loc);           // capability mutable -> [.., outIdx, cat]
-    this.emitVerifyCatBaseEqMaster(loc);                                  // base == master -> [.., outIdx]
-    this.emit(encodeInt(BigInt(field1Depth)), loc); this.emit(Op.OP_PICK, loc);     // baseline (no extra)
-    this.emit(encodeInt(BigInt(field2Depth + 1)), loc); this.emit(Op.OP_PICK, loc); // +1: field1 above baseline
-    this.emit(Op.OP_CAT, loc);                                           // [.., outIdx, field1||field2]
-    this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, loc); this.emit(Op.OP_EQUALVERIFY, loc);
-  }
-
-  /**
-   * Like emitVerifySortedEntryOutput but pins the commitment to THREE fields field1||field2||field3 - a value
-   * entry commitment slot(32)||nextKey(32)||value (field3 may be an empty value tail). Depths measured with the
-   * (untracked) output index outIdx on top. Consumes outIdx; leaves the working area unchanged.
+   * Verify a sorted entry NFT output at the (untracked, top-of-stack) output index outIdx: bytecode == the entry
+   * P2SH entryAddr (untracked, at tracker-relative depth addrDepth below the working area), category base == master
+   * with mutable (0x01) capability, and commitment == field1||field2||field3 - a value entry commitment
+   * slot(32)||nextKey(32)||value (field3 may be an empty value tail). Depths measured with outIdx on top. Consumes
+   * outIdx; leaves the working area unchanged.
    */
   private emitVerifySortedValueOutput(
     loc: SingleLocationData, addrDepth: number, f1Depth: number, f2Depth: number, f3Depth: number,
@@ -9274,97 +9242,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     return node;
   }
 
-  /**
-   * Sorted-set (C2) mapping WRITE `m[k] = true` (insert into the sorted linked list). Co-spends the bracketing
-   * predecessor P[Ps|S] at the entry slot (write path), verifies Ps < H(k) < S (k absent), and pins two outputs at
-   * the collection's entry P2SH: P' = [Ps|H(k)] at the entry output slot (predecessor's next rewritten to k) and
-   * NEW = [H(k)|S] at the trailing mint slot output[blockSize] (a new node minted from the master). Registered in
-   * entryLoopWrites so the SDK creates the NEW output. Proven splice: SortedMappingInsertDelete.test.ts.
-   */
-  private emitSortedSetWrite(node: MappingAssignNode): Node {
-    const loc = { location: node.location, positionHint: PositionHint.END };
-    const collection = node.collection!;
-    if (collection.innermostValueType.toString() !== 'bool' || collection.allKeyTypes.length !== 1
-      || node.arrayIndex || node.arrayPush || node.arrayPop) {
-      throw new SortedMappingCodegenPendingError(node, collection.name);
-    }
-    const slotIndex = node.entrySlotIndex;
-    const collectionHash = computeCollectionHash(this.entrySlots[slotIndex].collectionSignature);
-    const blockSize = this.currentFunction.blockLayout?.blockSize ?? 1;
-    const loopWrites = (this.currentFunction.entryLoopWrites ??= []);
-    if (!loopWrites.includes(collection.name)) loopWrites.push(collection.name);
-    this.sortedWrittenCollections.add(collection.name);
-
-    // RHS must be `true` (a set insert). Evaluate + require it, then drop.
-    node.expression = this.visit(node.expression);
-    this.emit(Op.OP_VERIFY, loc);
-    this.popFromStack();
-
-    // 1. H(k) at the bottom of the working area.
-    const keySource = this.entrySlots[slotIndex].keySources?.[0];
-    if (!keySource || keySource.kind === 'param') {
-      const keyParamName = keySource?.paramName ?? this.entrySlots[slotIndex].keyParams[0];
-      this.emit(encodeInt(BigInt(this.getStackIndex(keyParamName))), loc); this.emit(Op.OP_PICK, loc);
-    } else {
-      node.keys[0] = this.visit(node.keys[0]); this.popFromStack();
-    }
-    this.emit(Op.OP_SHA256, loc);
-    this.emit(encodeInt(31n), loc); this.emit(Op.OP_SPLIT, loc);
-    this.emit(new Uint8Array([0x7f]), loc); this.emit(Op.OP_AND, loc); this.emit(Op.OP_CAT, loc); // [Hk32]
-
-    // 2. entry address -> [Hk32, entryAddr]
-    this.emitMasterInputIndex(loc); this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
-    this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_DROP, loc);
-    this.pushToStack('(sortedaddr)');
-    this.emitP2sh32FromCovenant((cat) => buildEntryNftCovenantScript(cat, collectionHash), loc);
-    this.popFromStack();
-
-    // 3. co-spent predecessor input[slot]: bytecode == entryAddr, read [Ps|S] -> [Hk32, entryAddr, Ps32, S32]
-    this.emitEntryInputIndex(slotIndex, loc, 2);
-    this.emit(Op.OP_DUP, loc); this.emit(Op.OP_UTXOBYTECODE, loc);
-    this.emit(encodeInt(2n), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_EQUALVERIFY, loc);
-    this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc);
-    this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc);
-    this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_DROP, loc); // [Hk32, entryAddr, Ps32, S32]
-
-    // 4. bracket Ps < H(k) < S  (Hk32 at depth3; Ps32 depth1; S32 depth0)
-    this.emit(Op.OP_OVER, loc); this.emit(Op.OP_BIN2NUM, loc);                       // Ps#
-    this.emit(encodeInt(4n), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_BIN2NUM, loc); // Hk#
-    this.emit(Op.OP_LESSTHAN, loc); this.emit(Op.OP_VERIFY, loc);                    // Ps < H(k)
-    this.emit(Op.OP_DUP, loc); this.emit(Op.OP_BIN2NUM, loc); this.emit(Op.OP_DUP, loc);
-    this.emit(Op.OP_0, loc); this.emit(Op.OP_NUMEQUAL, loc);
-    this.emit(Op.OP_IF, loc); this.emit(Op.OP_DROP, loc);                            // +inf ok
-    this.emit(Op.OP_ELSE, loc);
-    this.emit(encodeInt(4n), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_BIN2NUM, loc);
-    this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_LESSTHAN, loc); this.emit(Op.OP_VERIFY, loc); // H(k) < S
-    this.emit(Op.OP_ENDIF, loc);                                                     // [Hk32, entryAddr, Ps32, S32]
-
-    // 5. P' at output[slot] == Ps32 || Hk32  (depths from top before outIdx: S32=0, Ps32=1, entryAddr=2, Hk32=3)
-    this.emitEntryOutputIndex(slotIndex, loc, 4);                                    // [.., S32, poutIdx]
-    this.emitVerifySortedEntryOutput(loc, 3, 2, 4);  // addr depth3, Ps32 depth2, Hk32 depth4 -> Ps32||Hk32
-
-    // 6. NEW at output[blockSize] == Hk32 || S32
-    this.emitMasterInputIndex(loc); this.emit(encodeInt(BigInt(blockSize)), loc); this.emit(Op.OP_ADD, loc); // [.., noutIdx]
-    this.emitVerifySortedEntryOutput(loc, 3, 4, 1);  // addr depth3, Hk32 depth4, S32 depth1 -> Hk32||S32
-
-    this.emit(Op.OP_2DROP, loc); this.emit(Op.OP_2DROP, loc); // drop S32, Ps32, entryAddr, Hk32
-    return node;
-  }
-
   visitMappingAssign(node: MappingAssignNode): Node {
-    // Sorted (C2 linked-list) mapping write `m[k] = v`: never the omittable entry-model write. A set
-    // (mapping(K=>bool)) is an insert-only splice (re-writing a present key reverts on the bracket); a value
-    // mapping (mapping(K=>int)) is an upsert (update the value if present, else insert). Single-key, no array ops.
+    // Sorted (C2 linked-list) mapping write `m[k] = v`: never the omittable entry-model write. Always an UPSERT
+    // (update the value if k is present, else insert) - this is how `m[k]=false` / `delete m[k]` NULLIFY a bool
+    // set (write the empty/false value tail) rather than physically removing the node, matching Solidity's
+    // `delete` == assign-default. Single-key, no array ops; value must be a supported sorted kind (int/bool/bytesN).
     if (node.collection?.sorted && !node.arrayIndex && !node.arrayPush && !node.arrayPop
-      && node.collection.allKeyTypes.length === 1) {
-      const vt = node.collection.innermostValueType;
-      if (vt.toString() === 'bool') return this.emitSortedSetWrite(node);
-      if (this.sortedValueKind(vt) !== null) {
-        return this.emitSortedValueUpsert(node, () => { node.expression = this.visit(node.expression); });
-      }
+      && node.collection.allKeyTypes.length === 1 && this.sortedValueKind(node.collection.innermostValueType) !== null) {
+      return this.emitSortedValueUpsert(node, () => { node.expression = this.visit(node.expression); });
     }
     if (node.collection?.sorted) {
-      return this.emitSortedSetWrite(node); // unsupported sorted shape -> fail closed inside
+      throw new SortedMappingCodegenPendingError(node, node.collection.name); // unsupported sorted shape/value type
     }
     if (this.plainLoopDepth > 0 && node.entrySlotIndex >= 0) {
       // A pure-write mapping assign inside a runtime loop (`for(i<n) m[k[i]]=v[i]`) emits a runtime-counter-indexed
@@ -14194,7 +14082,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // Loop-write entries are NEW (no input to preserve) and have no fixed block slot.
       if (this.entrySlots[i].inLoop) continue;
       // A sorted mapping WRITE co-spends an entry and rewrites it (output != input: P' on insert, k' on update),
-      // so it must not be read-only-preserved; emitSortedSetWrite/emitSortedValueUpsert handle it inline.
+      // so it must not be read-only-preserved; emitSortedValueUpsert handles it inline.
       if (this.sortedWrittenCollections.has(this.entrySlots[i].collection)) continue;
 
       // Check if entry exists via introspection

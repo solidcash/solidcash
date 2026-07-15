@@ -1,4 +1,4 @@
-import { compileString, AbstractContractNotCompilableError, UnimplementedAbstractFunctionError } from 'solidc';
+import { compileString, UnimplementedAbstractFunctionError } from 'solidc';
 import { ResolvedImport } from '@solidcash/utils';
 import {
   Contract, MockNetworkProvider, TransactionBuilder, FailedRequireError,
@@ -148,10 +148,14 @@ contract ParamChild(pubkey owner) is ParamBase {
 
 describe('Abstract Contracts', () => {
   describe('Compilation', () => {
-    it('should throw when compiling abstract contract directly', () => {
-      expect(
-        () => compileString(BASE_CONTRACT),
-      ).toThrow(AbstractContractNotCompilableError);
+    it('compiles an abstract contract to a declaration artifact (ABI + empty bytecode, solc parity)', () => {
+      // An abstract contract is a valid compilation unit but not deployable; like solc (and interfaces /
+      // decl-only files) it yields an ABI + empty bytecode rather than throwing. Deploying it (empty bytecode)
+      // is a no-op; a concrete child that implements the abstract functions compiles normally (next test).
+      const a = compileString(BASE_CONTRACT);
+      expect(a.bytecode).toBe('');
+      expect(a.isLibrary).toBe(true);
+      expect(a.abi.map((f) => f.name).sort()).toEqual(['doubleCheck', 'greet']);
     });
 
     it('should compile concrete child that inherits from abstract base', () => {

@@ -45,8 +45,8 @@ describe('FinalRequire: warning by default, error under enforceFinalRequire', ()
   });
 });
 
-// Empty receive()/fallback() are idiomatic, so they synthesize a state-preserving no-op spend path natively
-// (with a warning). Other empty functions stay an EmptyFunctionError unless solidityImportCompat is set.
+// Empty functions (receive()/fallback() and any regular void function) synthesize a state-preserving no-op spend
+// path (require(true)) with a warning - a plain default now (was gated behind solidityImportCompat).
 describe('Empty receive/fallback synthesized by default', () => {
   it('compiles an empty receive() natively and warns', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
@@ -62,8 +62,10 @@ describe('Empty receive/fallback synthesized by default', () => {
     warn.mockRestore();
   });
 
-  it('still rejects a regular empty function natively', () => {
-    expect(() => compileString('contract C() { function f() {} }')).toThrow(Errors.EmptyFunctionError);
+  it('synthesizes a no-op body for a regular empty function (default; was compat-gated)', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    expect(compileString('contract C() { function f() {} }').contractName).toBe('C');
+    warn.mockRestore();
   });
 
   it('synthesizes a regular empty function under solidityImportCompat', () => {

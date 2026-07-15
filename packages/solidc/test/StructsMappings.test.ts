@@ -43,13 +43,13 @@ describe('SBE-9: imported enum/struct types + hex-literal-as-int + implicit name
     expect(a.contractName).toBe('C');
   });
 
-  it('keeps int-vs-hex-literal a type error in native SolidCash (no flag)', () => {
-    expect(() => compileString('contract C() { function f() { require(tx.version == 0x02); } }')).toThrow();
+  it('coerces int-vs-hex-literal (hex is a Solidity-compatible number) - a default now, no flag', () => {
+    expect(compileString('contract C() { function f() { require(tx.version == 0x02); } }').contractName).toBe('C');
   });
 
-  // Solidity hex `0x..` is a context-driven number literal. Under compat it coerces to int in every integer
-  // context (not just comparisons); natively `0x..` stays bytes, so each native form is a type error.
-  describe('hex literals are Solidity-compatible numbers in integer contexts (compat)', () => {
+  // Solidity hex `0x..` is a context-driven number literal, so it coerces to int in every integer context (not
+  // just comparisons). This is a plain SolidCash default now (was gated behind solidityImportCompat).
+  describe('hex literals are Solidity-compatible numbers in integer contexts (default)', () => {
     const intContexts: [string, string][] = [
       ['local var init', 'contract C() { function f() { int x = 0xff; require(x == 255); } }'],
       ['state assign', 'contract C() { int n; function f(sig s, pubkey pk) { require(checkSig(s, pk)); this.n = 0xff; } }'],
@@ -59,18 +59,13 @@ describe('SBE-9: imported enum/struct types + hex-literal-as-int + implicit name
       ['constant', 'contract C() { int constant MASK = 0xff; function f() { require(MASK == 255); } }'],
     ];
 
-    it.each(intContexts)('coerces hex -> int under compat: %s', (_label, src) => {
-      expect(compileString(src, { solidityImportCompat: true }).contractName).toBe('C');
+    it.each(intContexts)('coerces hex -> int (no flag): %s', (_label, src) => {
+      expect(compileString(src).contractName).toBe('C');
     });
 
-    it.each(intContexts)('keeps it a type error natively: %s', (_label, src) => {
-      expect(() => compileString(src)).toThrow();
-    });
-
-    it('leaves a bytesN target as a bytes literal in both modes (no coercion)', () => {
+    it('leaves a bytesN target as a bytes literal (no int coercion)', () => {
       const src = 'contract C() { function f() { bytes2 b = 0x1234; require(b == 0x1234); } }';
       expect(compileString(src).contractName).toBe('C');
-      expect(compileString(src, { solidityImportCompat: true }).contractName).toBe('C');
     });
   });
 
@@ -99,13 +94,15 @@ describe('SBE-10: storage-pointer locals + block.timestamp + stmt-form interface
     expect(a.contractName).toBe('C');
   });
 
-  it('maps block.timestamp to tx.locktime under solidityImportCompat', () => {
-    // private `t`: a public state var synthesizes a getter that triggers subroutine extraction, hex-encoding
-    // OP_TXLOCKTIME. The mapping under test is visibility-independent.
+  it('routes block.timestamp via the oracle register, not tx.locktime', () => {
+    // block.timestamp lowers to the injected __block_timestamp oracle register (owner-gated) in every mode - the
+    // native model. (The compat-only tx.locktime mapping was removed.) `solidityImportCompat` is set only so the
+    // `pragma solidity` header parses.
     const a = compileString(`pragma solidity ^0.8.26;
       contract C { uint256 private t; function f(uint256 startAt) external { require(startAt >= block.timestamp); t = startAt; } }`,
     { solidityImportCompat: true });
-    expect(a.bytecode).toContain('OP_TXLOCKTIME');
+    expect(a.bytecode).not.toContain('OP_TXLOCKTIME');
+    expect(JSON.stringify(a)).toContain('__block_timestamp'); // the oracle register the source-map references
   });
 
   it('routes a statement-form interface call on a constructor-param var (2-arg .transfer is not satoshi send)', () => {

@@ -38,8 +38,9 @@ const isSafeGetterType = (t: Type): boolean =>
  * solidcash does not (native code reads cross-contract state via `IFoo(category).stateVar`), so a ported
  * contract whose callee is invoked via such a getter (e.g. `timeLock.lockTime(addr)`) has no dispatchable
  * target. This pass synthesizes those getters as real entry-point functions so the callee dispatches them and
- * the caller resolves + selector-verifies them like any external call. Gated on solidityImportCompat (only
- * Solidity ports want it); skipped for native solidcash so the external-read model is untouched.
+ * the caller resolves + selector-verifies them like any external call. Gated (only Solidity ports that make such
+ * external calls want it) - it appends getter functions, which changes the ABI + bytecode, so it is not a silent
+ * default; getters-for-reading are provided as SDK sugar (contract.getState().property()) instead.
  */
 export default class SynthesizePublicGetters extends AstTraversal {
   constructor(private enabled: boolean) { super(); }

@@ -75,9 +75,6 @@ export default class SynthesizeBlockOracle extends AstTraversal {
   private fnComputedBlockhashCount = 0;
   private warnedShims = new Set<string>();
 
-  constructor(private readonly solidityImportCompat = false) {
-    super();
-  }
 
   // One-time compiler warning for an EVM primitive that has no BCH analogue and is lowered as a shim.
   private warnShim(key: string, message: string): void {
@@ -166,11 +163,6 @@ export default class SynthesizeBlockOracle extends AstTraversal {
   }
 
   visitNullaryOp(node: NullaryOpNode): Node {
-    if (this.solidityImportCompat && node.operator === NullaryOperator.BLOCK_TIMESTAMP) {
-      const locktime = new NullaryOpNode(NullaryOperator.LOCKTIME);
-      locktime.location = node.location;
-      return locktime;
-    }
     const varName = FIELD_VAR[node.operator];
     if (varName) {
       this.used.add(varName);

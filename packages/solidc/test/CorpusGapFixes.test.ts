@@ -368,8 +368,9 @@ describe('EVM storage-layout specifier tolerated (contract C layout at expr)', (
     expect(withLayout).toBe(without);
   });
 
-  it('is compat-only: native solidcash still rejects the clause', () => {
-    expect(() => compileString('contract C layout at 42 { function f() {} }', {})).toThrow();
+  it('also drops the clause natively (source-level tolerance, no longer compat-gated)', () => {
+    expect(compileString('contract C layout at 42 { function f(uint256 e) { require(e == e); } }', {}).bytecode)
+      .toBe(compileString('contract C { function f(uint256 e) { require(e == e); } }', {}).bytecode);
   });
 });
 
@@ -1584,7 +1585,8 @@ describe('branch-local external-call target capture', () => {
 describe('string-literal mapping key coerced to bytesN (compat)', () => {
   const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
   // `m["foo"]` where the key type is bytesN right-pads the literal like an assignment value does; byte-identical
-  // to the explicit `m[hex"666f6f00..00"]` form. Native mode stays strict (no implicit coercion).
+  // to the explicit `m[hex"666f6f00..00"]` form. This matches Solidity (a string literal implicitly converts to a
+  // bytesN it fits), so the coercion is now a default (native too), not compat-gated.
   it('coerces a string-literal key on write, read, and delete', () => {
     expect(cc('contract C { mapping(bytes16 => uint) m;'
       + ' function f() public { m["foo"] = 2; require(m["foo"] == 2); delete m["foo"]; } }')).toBe('C');
@@ -1593,9 +1595,9 @@ describe('string-literal mapping key coerced to bytesN (compat)', () => {
     expect(cc('contract C { mapping(bytes1 => uint) m; function f() public { m[""] = 2; require(m[""] == 2); } }'))
       .toBe('C');
   });
-  it('still rejects the implicit string->bytesN key in native (strict) mode', () => {
-    expect(() => compileString('pragma solidcash >=0.8.0; contract C() { mapping(bytes16 => int) m;'
-      + ' function f() { this.m["foo"] = 2; } }')).toThrow();
+  it('also coerces the string->bytesN key natively (coercion now default-on, Solidity parity)', () => {
+    expect(compileString('pragma solidcash >=0.8.0; contract C() { mapping(bytes16 => int) m;'
+      + ' function f() { this.m["foo"] = 2; require(this.m["foo"] == 2); } }').contractName).toBe('C');
   });
 });
 

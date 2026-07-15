@@ -89,10 +89,11 @@ describe('SBE-15: empty-body returning function + named-arg call to a returning 
     );
     expect(a.contractName).toBe('X');
   });
-  it('still rejects an empty-body returning function in native mode (footgun guard)', () => {
-    expect(() => compileString(
+  it('synthesizes a default return for an empty-body returning function (default; was compat-gated)', () => {
+    const a = compileString(
       'contract X() { int n; function ok() { this.n = 1; } function f(uint256 x) returns (uint256) {} }',
-    )).toThrow(/contains no statements/);
+    );
+    expect(a.contractName).toBe('X');
   });
   it('forwards the synthetic returnOutputIdx for a named-arg call to a public returning function', () => {
     const a = compileString(

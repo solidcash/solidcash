@@ -6,46 +6,74 @@ Sablier exercises) compile as SolidCash with minimal edits. Tests: `test/Porting
 
 ## `solidityImportCompat`
 
-A `CompilerOptions` flag scoped to compiling Solidity *source*: import/parse handling plus the few source-level
-semantics that differ between the two languages and so cannot be a SolidCash default. When set:
+A `CompilerOptions` flag now narrowed to two things: parsing Solidity *source files*, and the two porting
+behaviors that change a contract's ABI or bytecode (so they cannot be a silent default). When set:
 
 - `.sol` files are parsed as SolidCash (the import resolver also tries `.sol` candidates).
 - `pragma solidity ...` is accepted (treated like `pragma solidcash`); the version constraint is not enforced.
-- `block.timestamp` lowers to `tx.locktime` instead of the native oracle-backed register (see
-  docs/block-and-transaction-properties.md). The native default is the oracle register.
-- A `0x..` hex literal coerces to a big-endian integer in any integer context (assignment, argument, return,
-  comparison, ...). Natively a `0x..` literal is a *bytes* value (the deliberate inverse of Solidity, where
-  `0x..` is a number), so these uses are a type error without the flag. See "Hex literals" below.
-- An empty *regular* function body is synthesized to `return <defaults>` / `require(true)`. Natively this is an
-  `EmptyFunctionError`; empty `receive()`/`fallback()` are exempt (synthesized by default, see below).
+- A **bounded value-type array** `T[N]` is stored as a contiguous *packed* state-var blob (Solidity's layout),
+  which backs `arr.length`, whole-array copy/reads, and array-element external calls `IFoo(arr[i]).m()` over a
+  fixed token set. Natively `T[N]` is an entry-NFT collection (no bare-array reference / `.length`); the packed
+  model is gated because it is a genuinely different storage shape, not because it relaxes soundness.
+- **Public state-var / mapping getters** are synthesized as real dispatchable entry-point functions
+  (`T x` -> `x() returns (T)`, `mapping(K=>V) m` -> `m(K) returns (V)`), so a *callee* invoked through its getter
+  (e.g. `timeLock.lockTime(addr)`) has a target the caller can resolve + selector-verify. This appends functions
+  and so changes the ABI + bytecode, which is why it stays gated. Reading your *own* contract's public state from
+  the SDK needs no getter - use the `getState()` / `contract.state.<name>()` accessors (Solidity-getter-style
+  sugar). Restricted to plain value types; enum/contract/address/struct/array/nested-mapping getters are skipped.
 
 It adds no EVM execution semantics. Without it, a `.sol` pragma is a clean error pointing at the flag.
 
-These behaviors used to be gated behind this flag but are now plain SolidCash defaults (they help porting but
-never relax soundness, so they apply to every compilation):
+### Behaviors that used to be gated and are now plain defaults
 
+These help porting but never relax soundness - each is additive (it only accepts source that was previously a
+type error, or fills in a Solidity-equivalent default) - so they now apply to every compilation:
+
+- **Hex-literal integer coercion.** A `0x..` literal coerces to its integer value in any integer context
+  (assignment, argument, return, comparison, ...), matching Solidity. A non-integer target (`bytesN`) keeps the
+  native bytes literal, so `bytes2 b = 0x1234;` is unchanged. See "Hex literals" below.
+- **String-literal `bytesN` coercion.** A string/hex literal shorter than a `bytesN` key/value right-pads to fit
+  (Solidity's string-literal-to-`bytesN` rule), e.g. `m["foo"]` against a `bytes16` key.
+- **Empty regular function body** synthesizes `return <defaults>` / `require(true)` (Solidity returns type
+  defaults). Empty `receive()`/`fallback()` were already exempt.
+- **Declaration-only files** compile to a minimal artifact (ABI + empty bytecode, `isLibrary: true`), mirroring
+  solc - a standalone `interface`, a file-level `enum`/`struct`, or an inline-only `library`.
+- **`uint`/`int` aliases**, **declaration order not enforced**, **`Library.Type`** member types, visibility on
+  interface/free/library functions, a local shadowing an outer function/state var, and a state var whose name
+  collides with a BCH built-in accessor (`tokens`, `categoryId`, ...) - accepted by default.
+- The storage-layout specifier `contract C layout at <expr>` (an EVM base slot, meaningless on the UTXO model) is
+  dropped at the source level in either mode.
 - A spending path that performs no `require()`/verification and changes no state compiles to an
   unconditionally-spendable script. This is a **warning** by default; pass `enforceFinalRequire: true` to turn
   it back into a hard `FinalRequireStatementError` (e.g. for CI). A `selfdestruct` function with no `require()`
-  stays a hard error regardless of the option - it skips all covenant codegen, so a missing guard means any
-  caller can trigger the destruction.
-- Empty `receive()`/`fallback()` synthesize a state-preserving no-op spend path (`require(true)`), with a
-  warning. They are idiomatic in Solidity and need no flag.
+  stays a hard error regardless - it skips all covenant codegen, so a missing guard lets any caller trigger the
+  destruction.
+- Empty `receive()`/`fallback()` synthesize a state-preserving no-op spend path (`require(true)`), with a warning.
+
+### Fixed native semantics (no longer a mode switch)
+
+Two behaviors that used to differ by mode are now the single native semantics in both:
+
+- **`block.timestamp`** is an oracle-backed register (`__block_timestamp`), never `tx.locktime` (see
+  docs/block-and-transaction-properties.md). Routing it through the oracle is the intended model.
+- **`keccak256(<literal>)` / `sha256(<literal>)`** fold to the real hash - keccak is Ethereum-identical (via
+  `@noble/hashes`), so a `bytes32 constant = keccak256("...")` slot / role id / erc7201 namespace matches
+  Ethereum.
 
 ### Hex literals
 
 Solidity's `0x..` is a *number* literal whose concrete type is context-driven (Solidity docs: "Conversions
 between Literals and Elementary Types"): it converts implicitly to an integer type if it fits, or to `bytesN`
 only when the hex-digit count is exactly `2N` (zero converts to any `bytesN`). SolidCash natively treats `0x..`
-as a `bytes` value (the deliberate inverse), so the reinterpretation is gated behind the flag.
+as a `bytes` value (the deliberate inverse); the integer reinterpretation is now a default (it only accepts
+source that was previously a type error), matching Solidity.
 
-Under solidityImportCompat a `0x..` literal coerces to its big-endian integer value in every **integer
-context**: variable init, (state/local) assignment, mapping value, constant, return, function/internal-call
-argument, and comparison/binary op. A non-integer target (`bytesN` etc.) keeps the native bytes literal, so
-`bytes2 b = 0x1234;` is unchanged in both modes. The coercion is value-preserving but does not enforce
-Solidity's exact size/fit rules (SolidCash's integer model is unbounded); multi-overload resolution and
-constructor-argument positions are not covered. Tests: `test/PortingFixes.test.ts` (hex describe),
-`test/e2e/PortingRuntime.test.ts`.
+A `0x..` literal coerces to its big-endian integer value in every **integer context**: variable init,
+(state/local) assignment, mapping value, constant, return, function/internal-call argument, and comparison/binary
+op. A non-integer target (`bytesN` etc.) keeps the native bytes literal, so `bytes2 b = 0x1234;` is unchanged.
+The coercion is value-preserving but does not enforce Solidity's exact size/fit rules (SolidCash's integer model
+is unbounded); multi-overload resolution and constructor-argument positions are not covered. Tests:
+`test/PortingFixes.test.ts` (hex describe), `test/e2e/PortingRuntime.test.ts`.
 
 ## Features added while porting
 
@@ -63,16 +91,9 @@ Each was surfaced by a real Solidity line and has a clean BCH mapping.
 - **`address` as an event parameter type.**
 - A returning function that **reads a mapping** does not crash (its result is returned in an output, like a
   logged event).
-- **Public state-var / mapping getters** synthesized as real dispatchable entry-point functions
-  (`T x` -> `x() returns (T)`, `mapping(K=>V) m` -> `m(K) returns (V)`), so a callee invoked through its getter
-  (e.g. `timeLock.lockTime(addr)`) has a target the caller can resolve + selector-verify. Restricted to plain
-  value types; enum/contract/address/struct/array/nested-mapping getters are skipped (placeholder types resolve
-  differently pre-semantic, and complex getters differ in ABI shape).
-- **Declaration-only files compile to a minimal artifact** (ABI + empty bytecode), mirroring solc. A file with
-  no executable contract - a standalone `interface`, a file-level `enum`/`struct`, or an inline-only `library` -
-  is a valid Solidity compilation unit. The artifact carries the primary interface's ABI and any declared
-  enums/events/errors, with `bytecode: ''` and `isLibrary: true` (not instantiable). Without the flag, native
-  solidcash keeps the `LibraryNotCompilableError` guard.
+
+(Public-getter synthesis and declaration-only-file artifacts are described under `solidityImportCompat` above -
+the former stays flag-gated because it changes the ABI/bytecode, the latter is now a default.)
 
 ### Surfaced by the modern Sablier Flow port
 

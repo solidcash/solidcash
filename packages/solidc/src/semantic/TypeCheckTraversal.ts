@@ -165,7 +165,10 @@ export default class TypeCheckTraversal extends AstTraversal {
   private currentFunction: FunctionDefinitionNode;
   private functionDefinitions: Map<string, FunctionDefinitionNode[]> = new Map();
 
-  constructor(private solidityImportCompat: boolean = false) {
+  // The `solidityImportCompat`-named literal coercions (hex->int/address, string->bytesN, bytes widen, negate)
+  // are now plain SolidCash defaults - they only fire on source/target pairings that are a native type error, so
+  // they can't change working code. Default true; kept as a field so the coercion helpers read uniformly.
+  constructor(private solidityImportCompat: boolean = true) {
     super();
   }
 

@@ -1966,10 +1966,12 @@ describe('Imports', () => {
       expect(artifact.contractName).toBe('UsesLibrarySelective');
     });
 
-    it('should throw LibraryNotCompilableError when compiling a library directly', () => {
-      expect(
-        () => compileFile(path.join(fixtures, 'math_lib.scash')),
-      ).toThrow(LibraryNotCompilableError);
+    it('emits an ABI-only declaration artifact when compiling a library directly', () => {
+      // A standalone library / decl-only file has no executable contract; it compiles to a declaration artifact
+      // (ABI + empty bytecode), like solc. (Was LibraryNotCompilableError; now a default.)
+      const artifact = compileFile(path.join(fixtures, 'math_lib.scash'));
+      expect(artifact.bytecode).toBe('');
+      expect(Array.isArray(artifact.abi)).toBe(true);
     });
 
     it('should compile with in-memory library import (namespaced)', () => {
@@ -3074,16 +3076,18 @@ describe('Imports', () => {
   });
 
   describe('Abstract Contracts', () => {
-    it('should throw AbstractContractNotCompilableError when compiling an abstract contract directly', () => {
+    it('emits an ABI-only declaration artifact when compiling an abstract contract directly', () => {
+      // An abstract contract has no deployable bytecode; it compiles to a declaration artifact (ABI + empty
+      // bytecode), like solc. (Was AbstractContractNotCompilableError; now a default.)
       const code = `
         abstract contract Base() {
           function foo(int x);
         }
       `;
 
-      expect(
-        () => compileString(code, { rootFileId: '/main.scash' }),
-      ).toThrow(AbstractContractNotCompilableError);
+      const artifact = compileString(code, { rootFileId: '/main.scash' });
+      expect(artifact.bytecode).toBe('');
+      expect(Array.isArray(artifact.abi)).toBe(true);
     });
 
     it('should throw AbstractFunctionInConcreteContractError for bodyless function in concrete contract', () => {

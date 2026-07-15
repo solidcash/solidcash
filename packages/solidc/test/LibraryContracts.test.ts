@@ -55,16 +55,14 @@ describe('library compiles to a stateless contract artifact (Phase 2)', () => {
     expect(artifact.abi.map((f) => f.name)).toEqual(['addOne']);
   });
 
-  it('still rejects a library whose functions are all unmarked (inline-only)', () => {
-    expect(() => compileString(
-      'library Math { function add(int a, int b) returns (int) { return a + b; } }',
-    )).toThrow(Errors.LibraryNotCompilableError);
+  it('emits an ABI-only declaration artifact for an inline-only library (default; was compat-gated)', () => {
+    const a = compileString('library Math { function add(int a, int b) returns (int) { return a + b; } }');
+    expect(a.bytecode).toBe('');
   });
 
-  it('still rejects an internal-only library', () => {
-    expect(() => compileString(
-      'library Math { function h(int x) internal returns (int) { return x; } }',
-    )).toThrow(Errors.LibraryNotCompilableError);
+  it('emits an ABI-only declaration artifact for an internal-only library', () => {
+    const a = compileString('library Math { function h(int x) internal returns (int) { return x; } }');
+    expect(a.bytecode).toBe('');
   });
 
   it('marks the artifact as a library (isLibrary), and a normal contract is not', () => {

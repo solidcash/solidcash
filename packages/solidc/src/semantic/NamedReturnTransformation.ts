@@ -33,9 +33,6 @@ import AstTraversal from '../ast/AstTraversal.js';
 export default class NamedReturnTransformation extends AstTraversal {
   private currentReturnNames: string[] = [];
 
-  constructor(private solidityImportCompat: boolean = false) {
-    super();
-  }
 
   visitSourceFile(node: SourceFileNode): Node {
     for (let i = 0; i < node.freeFunctions.length; i++) {
@@ -56,12 +53,11 @@ export default class NamedReturnTransformation extends AstTraversal {
   }
 
   visitFunctionDefinition(node: FunctionDefinitionNode): Node {
-    // Function with (unnamed) return types that does not already end in a return: Solidity returns the type
-    // defaults on fall-through (whether the body is empty or just assigns state). Synthesize a trailing
-    // `return <defaults>;` so it compiles - matches the named-return handling below. Porting mode only; native
-    // keeps the MissingReturn / EmptyFunction guards.
-    if (this.solidityImportCompat && node.body
-      && node.returnTypes.length > 0 && node.returnNames.length === 0) {
+    // Function with (unnamed) return types that does not already end in a return: return the type defaults on
+    // fall-through (Solidity semantics; whether the body is empty or just assigns state). Synthesize a trailing
+    // `return <defaults>;` so it compiles - matches the named-return handling below. (Default; was gated behind
+    // solidityImportCompat.)
+    if (node.body && node.returnTypes.length > 0 && node.returnNames.length === 0) {
       // Only synthesize a fall-through default return when the body does NOT already return on every path. A
       // terminal if/else (or switch) whose branches all return needs no default - and the synthesized
       // `return <defaults>` would be dead code that still type-checks (createDefaultValueExpression yields int 0
@@ -77,18 +73,15 @@ export default class NamedReturnTransformation extends AstTraversal {
 
     // Empty-body VOID function (e.g. `receive() external payable {}`, an empty payable `deposit()`): Solidity
     // accepts the call and does nothing. Synthesize `require(true);` so it compiles - a state-preserving no-op
-    // spend path. Empty receive()/fallback() are idiomatic, so they are allowed natively (with a warning);
-    // other empty functions still need porting mode (native keeps EmptyFunctionError as a guard). Constructors
-    // may stay empty (parent-only) and abstract functions have no body, so both are excluded.
-    const isReceiveOrFallback = node.name === '__receive' || node.name === '__fallback';
-    if ((this.solidityImportCompat || isReceiveOrFallback) && node.body
-      && (node.body.statements?.length ?? 0) === 0
+    // spend path (with a warning). Constructors may stay empty (parent-only) and abstract functions have no
+    // body, so both are excluded. (Default; was gated behind solidityImportCompat, except empty receive/fallback
+    // which were always synthesized.)
+    if (node.body && (node.body.statements?.length ?? 0) === 0
       && node.returnTypes.length === 0 && node.name !== '__construct') {
-      if (isReceiveOrFallback && !this.solidityImportCompat) {
-        const fn = node.name === '__receive' ? 'receive()' : 'fallback()';
-        console.warn(`Warning: ${fn} has an empty body; SolidCash synthesizes a state-preserving no-op spend `
-          + 'path (require(true)). Add explicit logic if it should do more.');
-      }
+      const isReceiveOrFallback = node.name === '__receive' || node.name === '__fallback';
+      const label = isReceiveOrFallback ? (node.name === '__receive' ? 'receive()' : 'fallback()') : `${node.name}()`;
+      console.warn(`Warning: ${label} has an empty body; SolidCash synthesizes a state-preserving no-op spend `
+        + 'path (require(true)). Add explicit logic if it should do more.');
       const cond = new BoolLiteralNode(true);
       cond.location = node.location;
       const req = new RequireNode(cond);

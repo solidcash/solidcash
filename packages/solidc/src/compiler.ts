@@ -67,7 +67,7 @@ import expandBreakContinue from './semantic/BreakContinueTransformation.js';
 import expandInheritance from './semantic/InheritanceExpansionTransformation.js';
 import lowerTransientStateVars from './semantic/LowerTransientStateVars.js';
 import { ImportResolver } from './ImportResolver.js';
-import { AbstractContractNotCompilableError, CircularContractReferenceError, LibraryNotCompilableError } from './Errors.js';
+import { CircularContractReferenceError } from './Errors.js';
 
 export const DEFAULT_COMPILER_OPTIONS: CompilerOptions = {
   enforceFunctionParameterTypes: true,
@@ -155,13 +155,9 @@ function compileResolvedAst(ast: Ast, code: string, mergedCompilerOptions: Compi
   // (internal/unmarked) functions has no entry point and cannot be compiled standalone.
   if (ast.isLibrary) {
     if (!ast.libraryContract) {
-      // A standalone interface, a file-level enum/struct, or an inline-only library has no executable
-      // contract. Under solidityImportCompat (porting Solidity, where solc compiles these to an ABI + empty
-      // bytecode) emit a minimal declaration artifact instead of erroring; native solidcash keeps the guard.
-      if (mergedCompilerOptions.solidityImportCompat) {
-        return generateDeclarationArtifact(ast, code);
-      }
-      throw new LibraryNotCompilableError(ast.libraryName ?? 'unknown');
+      // A standalone interface, a file-level enum/struct, or an inline-only library has no executable contract;
+      // emit a minimal ABI-only declaration artifact (like solc: ABI + empty bytecode) instead of erroring.
+      return generateDeclarationArtifact(ast, code);
     }
     ast.contract = ast.libraryContract;
     ast.isLibrary = false;
@@ -195,14 +191,10 @@ function compileResolvedAst(ast: Ast, code: string, mergedCompilerOptions: Compi
     for (const col of ast.contract.collections) if (sortedSet.has(col.name)) col.sorted = true;
   }
 
-  // Check if this is an abstract contract (cannot be compiled to an artifact)
+  // A standalone abstract contract has no deployable bytecode; emit an ABI-only declaration artifact (solc
+  // parity - abstract contracts have an ABI + empty bytecode), like interface / decl-only files.
   if (ast.contract.isAbstract) {
-    // Under solidityImportCompat, a standalone abstract contract emits an ABI-only declaration artifact
-    // (solc parity - abstract contracts have an ABI + empty bytecode), like interface / decl-only files.
-    if (mergedCompilerOptions.solidityImportCompat) {
-      return generateDeclarationArtifact(ast, code);
-    }
-    throw new AbstractContractNotCompilableError(ast.contract.name);
+    return generateDeclarationArtifact(ast, code);
   }
 
   // A foreign fn-ptr ARRAY (dispatch table) with a fixed method -> a plain `address[]` state var + the shipped
@@ -211,8 +203,8 @@ function compileResolvedAst(ast: Ast, code: string, mergedCompilerOptions: Compi
   ast = ast.accept(new LowerForeignFunctionPointerArrayElements()) as Ast;
 
   // Fold keccak256/sha256 of a string/hex literal to a compile-time bytes32 constant (role ids, EIP-712
-  // domains, EVM storage slots). keccak256 uses sha256 under compat (no native keccak; see FoldHashLiterals).
-  ast = ast.accept(new FoldHashLiterals(mergedCompilerOptions.solidityImportCompat ?? false)) as Ast;
+  // domains, EVM storage slots). Both fold to their REAL hash (keccak256 -> real keccak, Ethereum-identical).
+  ast = ast.accept(new FoldHashLiterals()) as Ast;
   // OZ StorageSlot idiom: `XSlot storage d = StorageSlot.getXSlot(SLOT); d.value = v` -> the __evm_storage
   // register. Consumes the slot-pointer factory's assembly before it reaches LowerInlineAssembly.
   ast = ast.accept(new LowerStorageSlotPointers()) as Ast;
@@ -254,7 +246,7 @@ function compileResolvedAst(ast: Ast, code: string, mergedCompilerOptions: Compi
   ast = expandBreakContinue(ast);
 
   // Named-return desugar (before semantic analysis): named returns become default-init locals.
-  ast = ast.accept(new NamedReturnTransformation(mergedCompilerOptions.solidityImportCompat)) as Ast;
+  ast = ast.accept(new NamedReturnTransformation()) as Ast;
 
   // A return nested under further conditions with fall-through (internal fns) -> flag + gated tail +
   // terminal return (after NamedReturn so implicit tails are explicit; before semantic so locals resolve).
@@ -378,7 +370,7 @@ function compileResolvedAst(ast: Ast, code: string, mergedCompilerOptions: Compi
   // synthesized library-address constructor arg). See docs/library-contracts.md (3b sugar).
   ast = ast.accept(new SynthesizeLibraryDelegateCalls()) as Ast;
   // Oracle-backed block.* reads -> injected uint32 state-var registers + desugared state reads.
-  const blockOracle = new SynthesizeBlockOracle(mergedCompilerOptions.solidityImportCompat);
+  const blockOracle = new SynthesizeBlockOracle();
   ast = ast.accept(blockOracle) as Ast;
 
   // Drop free/library functions the contract never reaches (OZ libraries ship many unused helpers). Runs last,
@@ -392,7 +384,7 @@ function compileResolvedAst(ast: Ast, code: string, mergedCompilerOptions: Compi
 
   // Semantic analysis
   ast = ast.accept(new SymbolTableTraversal(mergedCompilerOptions)) as Ast;
-  ast = ast.accept(new TypeCheckTraversal(mergedCompilerOptions.solidityImportCompat)) as Ast;
+  ast = ast.accept(new TypeCheckTraversal()) as Ast;
   ast = ast.accept(new EnsureFinalRequireTraversal(mergedCompilerOptions.enforceFinalRequire)) as Ast;
 
   // Inject synthetic tx.locktime guard where tx.locktime is used without a protocol-enforcing time check
@@ -563,7 +555,7 @@ function compileReferencedContracts(
     // already desugared/inlined by the main pipeline, but the directive node remains and must not throw
     // UsingForUndefinedLibraryError when re-visited here.
     singleAst.declaredLibraryNames = ast.declaredLibraryNames;
-    singleAst = singleAst.accept(new NamedReturnTransformation(compilerOptions.solidityImportCompat)) as Ast;
+    singleAst = singleAst.accept(new NamedReturnTransformation()) as Ast;
     singleAst = singleAst.accept(new DesugarNestedBranchReturn()) as Ast;
     singleAst = singleAst.accept(new DesugarPostfixExpressions()) as Ast;
     singleAst = singleAst.accept(new LowerMemoryModel()) as Ast;
@@ -580,7 +572,7 @@ function compileReferencedContracts(
     singleAst = singleAst.accept(new PromoteConstructorExternalReads()) as Ast;
     singleAst = singleAst.accept(new SynthesizeExternalAddressLocals()) as Ast;
     singleAst = singleAst.accept(new CaptureBranchExternalCallTargets()) as Ast;
-    singleAst = singleAst.accept(new SynthesizeBlockOracle(compilerOptions.solidityImportCompat)) as Ast;
+    singleAst = singleAst.accept(new SynthesizeBlockOracle()) as Ast;
     // Carry the file's library free functions in ONLY for symbol resolution + type checking, AFTER the desugar/
     // inline passes have run (so their already-desugared bodies are not re-desugared, which duplicated locals).
     // This lets a child's own `using L for T` calls (`funding.sub(x)`) bind + resolve, instead of falling through
@@ -589,7 +581,7 @@ function compileReferencedContracts(
     (singleAst as SourceFileNode).freeFunctions = ast.freeFunctions;
     (singleAst as SourceFileNode).constantDefinitions = ast.constantDefinitions; // library constants those fns read
     singleAst = singleAst.accept(new SymbolTableTraversal(compilerOptions)) as Ast;
-    singleAst = singleAst.accept(new TypeCheckTraversal(compilerOptions.solidityImportCompat)) as Ast;
+    singleAst = singleAst.accept(new TypeCheckTraversal()) as Ast;
     singleAst = singleAst.accept(new EnsureFinalRequireTraversal(compilerOptions.enforceFinalRequire)) as Ast;
     if (compilerOptions.enforceLocktimeGuard) {
       singleAst = singleAst.accept(new InjectLocktimeGuardTraversal()) as Ast;
@@ -762,21 +754,20 @@ export function parseCode(
   chunkedArrays = true,
 ): Ast {
   // Solidity's storage-layout specifier `contract C [is ..] layout at <expr> { }` sets an EVM storage base slot;
-  // it has no meaning on the UTXO model, so drop the clause (compat only) so the contract parses. Anchored to a
+  // it has no meaning on the UTXO model, so drop the clause so the contract parses. Anchored to a
   // `contract Name [is ..]` header (so a `layout at .. {` inside a string / body is not touched) and stopping at
-  // the body `{` on the header line (`[^{};\n]`), preserving line numbers for diagnostics.
-  if (solidityImportCompat) {
-    code = code.replace(
-      /(\bcontract\s+\w+\b(?:\s+is\s+[^{}]*?)?)\s+layout\s+at\s+([^{};\n]+?)(?=\s*\{)/g,
-      (_m, header, expr) => {
-        if (/\berc7201\b/.test(expr)) {
-          console.log('Warning: `layout at erc7201(...)` is not supported in SolidCash - storage is not offset by a '
-            + 'base slot on the UTXO model, so the layout specifier is ignored.');
-        }
-        return header;
-      },
-    );
-  }
+  // the body `{` on the header line (`[^{};\n]`), preserving line numbers for diagnostics. (Native code has no
+  // such clause, so the strip is a no-op there.)
+  code = code.replace(
+    /(\bcontract\s+\w+\b(?:\s+is\s+[^{}]*?)?)\s+layout\s+at\s+([^{};\n]+?)(?=\s*\{)/g,
+    (_m, header, expr) => {
+      if (/\berc7201\b/.test(expr)) {
+        console.log('Warning: `layout at erc7201(...)` is not supported in SolidCash - storage is not offset by a '
+          + 'base slot on the UTXO model, so the layout specifier is ignored.');
+      }
+      return header;
+    },
+  );
 
   const syntaxErrorListener = new ForwardingErrorListener(errorListener);
 

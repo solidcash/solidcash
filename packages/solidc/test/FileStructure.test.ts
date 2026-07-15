@@ -121,14 +121,12 @@ describe('A1: declaration order is not enforced', () => {
 });
 
 describe('Interface-only / type-only files', () => {
-  it('parses an interface-only file (no trailing contract) and reports it as not directly compilable', () => {
-    expect(() => compileString('interface I { function f(int x) external returns (int); }'))
-      .toThrow(/do not produce artifacts|Cannot compile/);
+  it('emits an ABI-only declaration artifact for an interface-only file (default; was compat-gated)', () => {
+    expect(compileString('interface I { function f(int x) external returns (int); }').bytecode).toBe('');
   });
 
-  it('parses a type-only file (UDVT + free function, no trailing contract)', () => {
-    expect(() => compileString('type UD is int;\nfunction unwrap(UD x) returns (int) { return UD.unwrap(x); }'))
-      .toThrow(/do not produce artifacts|Cannot compile/);
+  it('emits an ABI-only declaration artifact for a type-only file (UDVT + free function)', () => {
+    expect(compileString('type UD is int;\nfunction unwrap(UD x) returns (int) { return UD.unwrap(x); }').bytecode).toBe('');
   });
 
   it('imports an interface-only file under solidityImportCompat', () => {
@@ -207,8 +205,8 @@ describe('SBE-22: declaration-only files compile under solidityImportCompat (sol
     expect(a.abi).toHaveLength(0);
   });
 
-  it('still throws LibraryNotCompilableError without the flag (native guard preserved)', () => {
-    expect(() => compileString('interface IERC20 { function transfer(address to, uint256 amt) external; }'))
-      .toThrow('libraries do not produce artifacts');
+  it('emits an ABI-only declaration artifact for a decl-only file (default; was compat-gated)', () => {
+    const a = compileString('interface IERC20 { function transfer(address to, uint256 amt) external; }');
+    expect(a.bytecode).toBe('');
   });
 });

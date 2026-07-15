@@ -65,16 +65,16 @@ describe('Porting features (runtime)', () => {
     await expect(sc.f()).resolves.toBeDefined();
   });
 
-  it('SBE-13: block.timestamp maps to tx.locktime (spend gated by locktime)', async () => {
+  it('SBE-13: block.timestamp routes via the block oracle register, not tx.locktime', () => {
+    // block.timestamp is an oracle-backed register (__block_timestamp), the same in ported and native code;
+    // it is no longer aliased to tx.locktime. The full oracle spend path is covered by BlockOracle.test.ts.
     const artifact = compileString(
       `pragma solidity ^0.8.26;
       contract C { function f() external { require(block.timestamp >= 1000); } }`,
       { forceStateful: true, solidityImportCompat: true },
     );
-    const factory1 = getContractFactory(artifact, await fundedSigner());
-    await expect((await factory1.deploy()).f().setLocktime(1000)).resolves.toBeDefined();
-    const factory2 = getContractFactory(artifact, await fundedSigner());
-    await expect((await factory2.deploy()).f().setLocktime(999)).rejects.toThrow();
+    expect(artifact.bytecode).not.toContain('OP_TXLOCKTIME');
+    expect(JSON.stringify(artifact)).toContain('__block_timestamp');
   });
 
   it('SBE-15: local struct member assignment updates the field', async () => {

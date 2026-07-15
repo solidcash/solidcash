@@ -64,16 +64,16 @@ contract TestSlot() {
 }`;
 
 // Two uint256-valued slot pointers. The slot key `uint256(SLOT)` is a compile-time constant the compiler resolves
-// (keySource.kind='constant'), so a READ can locate + co-spend the entry without a key arg. Slot "A" hashes to a
-// uint256 with the top bit SET (uint256(bytes32) sign-pads a 0x00 so it reads positive, not negative); "B" is high
-// bit clear - both roundtrip.
+// (keySource.kind='constant'), so a READ can locate + co-spend the entry without a key arg. Slot A = keccak256(
+// "SLOT_A") hashes to a uint256 with the top bit SET (byte[31]=0xe3; uint256(bytes32) sign-pads a 0x00 so it reads
+// positive, not negative); B = keccak256("B") is high bit clear - both roundtrip.
 const SLOTPTR_U256 = `pragma solidcash >=0.8.0;
 library StorageSlot {
   struct Uint256Slot { uint256 value; }
   function getUint256Slot(bytes32 slot) internal pure returns (Uint256Slot storage r) { assembly { r.slot := slot } }
 }
 contract T() {
-  bytes32 constant A = keccak256("A");
+  bytes32 constant A = keccak256("SLOT_A");
   bytes32 constant B = keccak256("B");
   function setA(uint256 v, pubkey pk, sig s) {
     require(checkSig(s, pk));

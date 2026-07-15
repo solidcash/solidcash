@@ -16,9 +16,8 @@ describe('empty void functions synthesize a no-op body (Solidity porting: receiv
     }
   });
 
-  it('still rejects an empty function in native mode (the guard is preserved)', () => {
-    expect(() => compileString('contract C() { int n; function f() {} }'))
-      .toThrow(/contains no statements/);
+  it('synthesizes a no-op body for an empty function (default; was gated behind solidityImportCompat)', () => {
+    expect(compileString('contract C() { int n; function f() {} }').contractName).toBe('C');
   });
 });
 

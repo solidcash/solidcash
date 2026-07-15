@@ -248,8 +248,6 @@ import { getPragmaName, PragmaName, getVersionOpFromCtx } from './Pragma.js';
 import { version } from '../index.js';
 import { ParseError, StateVariableNameCollisionError, UnsupportedTypeError, VersionError } from '../Errors.js';
 
-const RESERVED_STATE_NAMES = ['age', 'activeInputIndex', 'activeBytecode', 'categoryId', 'tokens'];
-
 // Compound-assignment operators desugared to `target <binop> rhs`.
 const COMPOUND_OPS: Record<string, BinaryOperator> = {
   '+=': BinaryOperator.PLUS, '++': BinaryOperator.PLUS,
@@ -2962,12 +2960,9 @@ export default class AstBuilder
     if (name.startsWith('__internal__')) {
       throw new StateVariableNameCollisionError(name, Location.fromCtx(ctx));
     }
-    // Under solidityImportCompat a ported Solidity state var may shadow a solidcash introspection built-in
-    // (age/tokens/categoryId/activeInputIndex/activeBytecode); native keeps the guard so `this.tokens[...]`
-    // etc. stay unambiguous.
-    if (RESERVED_STATE_NAMES.includes(name) && !this.solidityImportCompat) {
-      throw new StateVariableNameCollisionError(name, Location.fromCtx(ctx));
-    }
+    // A state var may shadow a solidcash introspection built-in (age/tokens/categoryId/activeInputIndex/
+    // activeBytecode) - the state var wins in scope (Solidity-like); naming one after a built-in just makes that
+    // built-in inaccessible in the contract. (Default; was gated behind solidityImportCompat.)
 
     // Parse visibility modifier (leading position or from collectionModifier)
     let visibility = StateVariableVisibility.PUBLIC;
@@ -3044,8 +3039,9 @@ export default class AstBuilder
 
       // Solidity-import compat: a BOUNDED value-type array T[N] is contiguous packed storage in Solidity. Model
       // it as a packed state-var blob (not an entry-NFT collection) so a fixed address[N]/uint[N] reads as one
-      // field - this backs array-element external calls IFoo(arr[i]).m() over a fixed token set (StableSwap) and
-      // whole-array reads. Native (non-compat) keeps the collection model. See docs/arrays.md.
+      // field - this backs `arr.length`, whole-array copy/reads, and array-element external calls IFoo(arr[i]).m()
+      // over a fixed token set (StableSwap). Native (non-compat) keeps the collection model, which has no bare
+      // array reference / `.length`; kept gated because switching to it REMOVES those features. See docs/arrays.md.
       if (this.solidityImportCompat && arrayT.bound !== undefined && isChunkPackableElementType(arrayT.elementType)) {
         const node = new StateVariableNode(arrayT, name);
         node.isPacked = true;
@@ -4256,14 +4252,6 @@ export default class AstBuilder
     const fieldName = memberCtx.Identifier()
       ? memberCtx.Identifier().getText()
       : memberCtx.getText().slice(1); // strip leading '.'
-
-    // Solidity `block.timestamp` -> BCH `tx.locktime` (the spend's nLocktime time bound) under import-compat.
-    if (this.solidityImportCompat && expression instanceof IdentifierNode
-      && expression.name === 'block' && fieldName === 'timestamp') {
-      const locktime = new NullaryOpNode(NullaryOperator.LOCKTIME);
-      locktime.location = Location.fromCtx(ctx);
-      return locktime;
-    }
 
     // Storage-pointer read: `alias.field` -> `container[keys].field` (clone the access path per use site).
     if (expression instanceof IdentifierNode && this.storageAliases.has(expression.name)) {

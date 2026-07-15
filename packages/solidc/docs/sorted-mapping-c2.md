@@ -83,20 +83,20 @@ need not reconstruct pushdata encodings; it only chooses which entries to co-spe
 ## Compiler codegen plan
 
 1. **Opt-in (DONE).** `CollectionNode.sorted` set from `CompilerOptions.sortedMappings`; the artifact carries
-   `sorted: true` in the collection metadata (so the SDK's `SortedList` drives it). Only sorted collections use
-   this backend; the existing entry model is untouched. A source-level access currently **fails closed**
-   (`SortedMappingCodegenPendingError`) so a sorted mapping never compiles to the omittable entry-model read/write.
-2. **Classify accesses (remaining).** A read `m[k]` on a sorted set can co-spend ONE entry - the exact entry if
-   present, else the predecessor - and a single covenant returns the real membership bit soundly (`slot == H(k)`
-   -> true; else verify the bracket `slot < H(k) < nextKey` -> false), so `require(m[k])` and `require(!m[k])`
-   need no guard classification. A write -> upsert (insert if absent, update if present; the SDK picks the branch,
-   the covenant validates it).
-3. **Emit (remaining)** the proven covenant fragments (membership/bracket + splice) at the access site. Reuse the
-   existing entry co-spend slot + epilogue authentication/preservation; the only new codegen is the decode +
-   membership/bracket (read) and the splice + P'/NEW outputs (write). Key -> slot via `OP_SHA256` then clear the
-   last byte's high bit (matches `SortedList.keyToSlot`).
-4. **SDK (DONE for planning)** `SortedList` picks the predecessor/node to co-spend and the P'/NEW commitments;
-   wiring it into `StatefulTransactionBuilder` to fill the codegen's slots + auto-derivation is the last step.
+   `sorted: true` in the collection metadata. Only sorted collections use this backend; the existing entry model
+   is untouched.
+2. **Read codegen (DONE + VM-verified end to end).** `visitMappingAccess` emits the single membership-or-non-
+   membership covenant for a sorted `mapping(K=>bool)` read: compute `slot = sha256(k)` with the last byte's high
+   bit cleared, pin `input[slot]` bytecode to the collection's entry P2SH, read `slot||nextKey`, and return the
+   real bit (`slot==H(k)` -> 1; `slot<H(k)<nextKey` -> 0; else revert). No default-on-absent branch, so omitting
+   the entry reverts. The SDK co-spends `SortedList.predecessorOf(k)` (or the k-entry) read-only for a sorted
+   collection, and such a read is never getter-skipped. Proven from source in `SortedMappingCompiledRead.test.ts`:
+   a compiled `require(!claimed[k])` passes for an absent key and reverts for a present one.
+3. **Write codegen (remaining, fail-closed).** `claimed[k]=true` -> upsert (insert if absent). Needs block-layout
+   output slots for `P'` (mutate the predecessor's next -> k) and `NEW` (mint `[k|oldNext]`), the master minting
+   co-spend, and SDK output construction from `SortedList.planInsert`. The insert splice covenant is proven
+   (`SortedMappingInsertDelete.test.ts`); the remaining work is the block-layout + SDK output plumbing (a static
+   2-output shape, similar to the loop-entry mint). Currently `SortedMappingCodegenPendingError` (fail-closed).
 
 ## Status
 

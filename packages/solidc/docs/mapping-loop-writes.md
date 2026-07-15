@@ -1,0 +1,86 @@
+# Mapping writes in loops
+
+Writing an entry-backed mapping inside a loop (`for (uint i = 0; i < n; i++) m[k[i]] = v[i];`) is supported in
+two forms. Both reduce to the same entry model: one entry NFT per `(key, value)` pair, minted from the master
+NFT, at the collection's per-collection P2SH32 (`buildEntryNftCovenantScript`), commitment `pushdata(key) ++
+pushdata(value)`.
+
+## 1. Fixed-bound loops -> unrolled
+
+A loop whose iteration count is a compile-time constant (`for (int i = 0; i < 3; i++)`, or `i < arr.length`
+where `arr` is a fixed-size array) is unrolled to N static writes with the loop variable substituted by each
+literal (`UnrollFixedBoundEntryLoop`, run before symbol resolution). Distinct constant-index keys get distinct
+entry slots, so the unrolled form is exactly N hand-written static writes - no new covenant. Bounded at N <= 64.
+
+## 2. Dynamic-bound loops -> runtime entry-mint covenant loop
+
+A loop whose count is only known at runtime (`for (uint i = 0; i < ks.length; i++)` over a calldata array, or a
+`while` / `do-while`) compiles to a native `OP_BEGIN`/`OP_UNTIL` covenant loop that mints one new entry NFT per
+iteration at a **runtime counter-indexed trailing output** - the same shape as the dynamic-storage chunk write:
+
+- Before `OP_BEGIN`: precompute the collection's entry NFT P2SH32 address and a counter (`entries-written-so-far
+  = 0`), both persisting across iterations.
+- Each iteration (`emitLoopEntryWrite`): build the expected commitment `key_enc ++ value_enc`; compute
+  `outIdx = masterInputIndex + blockSize + counter`; verify output[outIdx] has that locking bytecode, the
+  master's base category with the mutable (0x01) capability, and that commitment (a tight `<expected> <outIdx>
+  OP_OUTPUTTOKENCOMMITMENT OP_EQUALVERIFY` the SDK reads back); then `counter++` in place.
+- After `OP_UNTIL`: pin the number of tx outputs at the entry address to the counter (no orphan / duplicate entry
+  outputs), then drop the temps.
+
+The SDK derives the N `(key, value)` pairs from the VM trace progressively (the VM halts at the first mismatched
+`OP_EQUALVERIFY`, so each probe reveals one more commitment) and builds N trailing entry outputs. This is a
+runtime-variable output count, exactly like `dynamicChunkVars`.
+
+## Soundness rules (what compiles vs what is rejected)
+
+The write is sound only when each iteration writes a **distinct** entry. The compiler enforces the checkable part
+of that and fails closed (`EntryWriteInLoopError`) otherwise:
+
+- **Key must vary per iteration.** A loop write is accepted only when its key references a loop-mutated variable
+  (the induction variable, or a local transitively derived from it). An invariant key - `for (i<n) m[k] = v`,
+  `k` fixed - would mint N entries for the same key (ambiguous read); it is **rejected**.
+- **Pure write only.** A read-modify-write in the loop (`m[k[i]] += v[i]`, or any read of the written collection)
+  is **rejected** - see "Read-modify-write is deferred" below.
+- **Delete in a loop** is **rejected**.
+- **Single collection.** Two different collections written in one loop is **rejected** (the covenant precomputes
+  one entry address / trailing region). A sound extension (interleave M entries per iteration at stride M with M
+  per-collection count-pins, or M separate trailing regions) is deferred - no current use case needs it.
+- **Negative-existence guard** (`require(!m[k])` inside the loop) is **rejected** - and is unsound even outside a
+  loop (finding C2, `mapping-omission-security.md`).
+
+## Read-modify-write is deferred (blocked on C2)
+
+`for (i<n) m[k[i]] += v[i]` (ERC1155 `_batchMint`/`_batchBurn`/`_batchTransfer`) needs to read the OLD value of
+`m[k[i]]` each iteration, add, and write the sum. This splits by whether the key already exists:
+
+- **Existing keys (sound, but partial).** Force-co-spend each key's entry NFT at `input[blockSize + counter]` and
+  pin its decoded key `== k[i]` (exactly the dynamic-storage chunk read's `chunkIndex == i` pin), read old from
+  its commitment, write `old + v[i]` to `output[blockSize + counter]`, and pin both the input and output entry
+  counts to N. Because the covenant *requires* the entry at that slot, it cannot be omitted - no C2. This is sound
+  but only covers keys that already exist.
+- **New keys (unsound).** A first-time `+=` (e.g. `_batchMint` to a fresh account) has no entry to co-spend, so
+  the read must fall back to the type default (0). That default-on-absent read is exactly the C2 omission attack
+  (`mapping-omission-security.md`): a spender omits an existing entry, the covenant reads 0, and writes `v[i]`
+  instead of `old + v[i]` - **resetting a token balance**. For a batch balance update this is a fund-safety
+  hazard, not just self-denial.
+
+So the *useful* case (mint to new accounts) is unsound, and the *sound* case (all keys pre-exist) does not close
+`_batchMint`. RMW therefore stays `EntryWriteInLoopError` (fail-closed) rather than shipping a caveated covenant.
+The sound existing-keys-only variant is a clean future addition (reuse `emitDynamicReadLoop` for the input read
+and `emitVerifyChunkUtxoCount(isOutput=false)` for the input-count pin), gated to reject any not-yet-existing key.
+Closing the new-key case needs the C2 fix itself: an entry-set accumulator (count / merkle / nullifier root)
+committed in the master, so an existing entry cannot be omitted.
+
+### Accepted gaps (correctness, not fund-safety)
+
+- **Non-injective varying keys** (`m[i % 2] = v`) compile but mint duplicate entries - the same distinct-key
+  assumption as duplicate values in a `keys[]` array. Duplicates corrupt the writer's **own** state (ambiguous
+  read), never another party's funds.
+- **Derivation is O(N) probes**, so the SDK caps a single loop write at ~62 iterations; a larger loop fails to
+  derive rather than miscompiling.
+
+## Verified
+
+`packages/solidcash/test/e2e/DynamicLoopEntry.test.ts` (for / while / do-while, N=1..3, each entry reads back),
+`DynamicLoopEntryAdversarial.test.ts` (wrong commitment, redirected address, and orphan output all rejected),
+`EntryWriteBehavior.test.ts` (the supported loop forms plus the invariant-key / RMW / delete rejections).

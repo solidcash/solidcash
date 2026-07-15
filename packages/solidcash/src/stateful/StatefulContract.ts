@@ -4620,7 +4620,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             const plan = list.planInsert(slot);
             const wUnlocker = createEntryNftUnlocker(this.inner, 0, this.categoryId, access.collection);
             entryNfts.push({ ...entryBase, utxo: { ...plan.predecessor.utxo, unlocker: wUnlocker } });
-            sortedInserts.push({ slotIndex, collection: access.collection, predNew: plan.predNewCommitment, newNode: plan.newNodeCommitment });
+            sortedInserts.push({
+              slotIndex, collection: access.collection,
+              predNew: plan.predNewCommitment, newNode: plan.newNodeCommitment,
+            });
           } else {
             const entry = list.has(slot) ? list.find(slot)! : list.predecessorOf(slot);
             const roUnlocker = createReadOnlyEntryNftUnlocker(this.inner, this.categoryId, access.collection);

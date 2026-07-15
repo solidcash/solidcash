@@ -1892,3 +1892,22 @@ describe('synthesizes __extaddr for IFoo(<param-rooted field>).method() (caller-
       + ' function pay(address t) public { ITok(t).transfer(msg.sender, 1); require(true); } }')).toBe('C');
   });
 });
+
+// InlineReturningStateHelpers.applyRename must NOT rename a struct-FIELD member that shares a name with an inlined
+// local. Unicrow calculateSplits: `uint16 arbitratorFee = a.consensus ? a.arbitratorFee : 0;` - the local
+// `arbitratorFee` and the field `a.arbitratorFee` collide; the catch-all rename corrupted `a.arbitratorFee` ->
+// `a.__rh0_arbitratorFee` -> "Struct has no field __rh0_arbitratorFee". Fixed by skipping FieldAccessNode.name.
+describe('inlined value helper: local sharing a struct-field name does not corrupt the field access', () => {
+  const ok = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  it('compiles a single-tail-return external-call helper with a field-name-colliding local (Unicrow calculateSplits)', () => {
+    const src = 'interface IArb { function calc(uint16 x) external view returns (uint16); }'
+      + ' struct Arb { bool consensus; uint16 arbitratorFee; }'
+      + ' contract C { IArb arb; mapping(uint => Arb) arbs;'
+      + ' function _split(Arb memory a) internal view returns (uint16[2] memory) {'
+      + '   uint16 arbitratorFee = a.consensus ? a.arbitratorFee : 0;'
+      + '   uint16[2] memory s; s[0] = arb.calc(arbitratorFee); s[1] = a.arbitratorFee; return s; }'
+      + ' function go(uint id) public view returns (uint16[2] memory) {'
+      + '   uint16[2] memory r = _split(arbs[id]); return r; } }';
+    expect(ok(src)).toBe('C');
+  });
+});

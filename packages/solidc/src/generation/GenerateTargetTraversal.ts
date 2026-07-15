@@ -8876,6 +8876,37 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
+   * Push the sorted-mapping slot Hk32 for the access `node` onto the stack (top). Single key: slot = sha256(key)
+   * high-bit-masked. Composite (nested `m[a][b]...`): slot = sha256(sha256(k0)++sha256(k1)++...) masked - each key
+   * is hashed independently to 32 bytes so the concatenation is unambiguous for ANY key type (int/address/bytesN),
+   * mirroring the SDK's keyToSlotMulti. Matches SortedList.keyToSlot for the 1-key case. Multi-key requires plain
+   * param keys (an expression key would need the untracked accumulator offset the visit can't see) - else fail closed.
+   */
+  private emitSortedKeyHash(
+    node: MappingAccessNode | MappingAssignNode | MappingDeleteNode, slotIndex: number, loc: SingleLocationData,
+  ): void {
+    const numKeys = node.keys.length;
+    for (let i = 0; i < numKeys; i++) {
+      const keySource = this.entrySlots[slotIndex].keySources?.[i];
+      if (!keySource || keySource.kind === 'param') {
+        const keyParamName = keySource?.paramName ?? this.entrySlots[slotIndex].keyParams[i];
+        // +1 once i>0: the accumulated hash (kept at one item by the CAT below) sits above the tracked stack.
+        this.emit(encodeInt(BigInt(this.getStackIndex(keyParamName) + (i > 0 ? 1 : 0))), loc);
+        this.emit(Op.OP_PICK, loc);
+      } else {
+        if (numKeys > 1) throw new SortedMappingCodegenPendingError(node, node.collection!.name);
+        node.keys[i] = this.visit(node.keys[i]); this.popFromStack();
+      }
+      this.emit(Op.OP_SHA256, loc);              // H(key_i)
+      if (i > 0) this.emit(Op.OP_CAT, loc);      // accumulate H(k0)++H(k1)++...
+    }
+    if (numKeys > 1) this.emit(Op.OP_SHA256, loc); // composite hash of the per-key hashes
+    // mask the 32-byte hash to a positive 255-bit slot (clear the last byte's high bit)
+    this.emit(encodeInt(31n), loc); this.emit(Op.OP_SPLIT, loc);
+    this.emit(new Uint8Array([0x7f]), loc); this.emit(Op.OP_AND, loc); this.emit(Op.OP_CAT, loc);
+  }
+
+  /**
    * Sorted-set (C2 linked-list) mapping read `m[k]`. Co-spends ONE entry at the entry block-layout slot - the SDK
    * provides the exact entry if k is present, else the bracketing predecessor. Pins the co-spent input's bytecode
    * to the collection's entry P2SH (a real entry of this collection), reads its commitment slot(32)||nextKey(32)
@@ -8889,27 +8920,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const collection = node.collection!;
     const valueType = collection.innermostValueType;
     const valueKind = this.sortedValueKind(valueType);
-    if (valueKind === null || collection.allKeyTypes.length !== 1) {
+    if (valueKind === null) {
       throw new SortedMappingCodegenPendingError(node, collection.name);
     }
     const slotIndex = node.entrySlotIndex;
     const collectionHash = computeCollectionHash(this.entrySlots[slotIndex].collectionSignature);
 
-    // 1. H(k) = sha256(k) with the last byte's high bit cleared (matches SortedList.keyToSlot). Computed FIRST so
-    // it sits at the bottom of the working area, giving the proven [Hk32, slot32, nextKey32] layout.
-    const keySource = this.entrySlots[slotIndex].keySources?.[0];
-    if (!keySource || keySource.kind === 'param') {
-      const keyParamName = keySource?.paramName ?? this.entrySlots[slotIndex].keyParams[0];
-      this.emit(encodeInt(BigInt(this.getStackIndex(keyParamName))), loc);
-      this.emit(Op.OP_PICK, loc);                     // [key]
-    } else {
-      node.keys[0] = this.visit(node.keys[0]);
-      this.popFromStack();                            // [key] (untrack)
-    }
-    this.emit(Op.OP_SHA256, loc);
-    this.emit(encodeInt(31n), loc); this.emit(Op.OP_SPLIT, loc);   // [h0_31, lastByte]
-    this.emit(new Uint8Array([0x7f]), loc); this.emit(Op.OP_AND, loc);
-    this.emit(Op.OP_CAT, loc);                        // [Hk32]
+    // 1. H(k) (composite for nested m[a][b]) computed FIRST so it sits at the bottom of the working area, giving
+    // the proven [Hk32, slot32, nextKey32] layout.
+    this.emitSortedKeyHash(node, slotIndex, loc);     // [Hk32]
 
     // 2. Entry address = base(master category) wrapped in the collection's entry covenant. Track the categoryId so
     // emitP2sh32FromCovenant's popFromStack consumes IT (not a real tracked var), then untrack the address.
@@ -9182,17 +9201,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     emitValue();
     if (this.sortedValueKind(collection.innermostValueType) === 'int') this.emit(Op.OP_BIN2NUM, loc);
 
-    // 2. H(k) -> [v, Hk32]
-    const keySource = this.entrySlots[slotIndex].keySources?.[0];
-    if (!keySource || keySource.kind === 'param') {
-      const keyParamName = keySource?.paramName ?? this.entrySlots[slotIndex].keyParams[0];
-      this.emit(encodeInt(BigInt(this.getStackIndex(keyParamName))), loc); this.emit(Op.OP_PICK, loc);
-    } else {
-      node.keys[0] = this.visit(node.keys[0]); this.popFromStack();
-    }
-    this.emit(Op.OP_SHA256, loc);
-    this.emit(encodeInt(31n), loc); this.emit(Op.OP_SPLIT, loc);
-    this.emit(new Uint8Array([0x7f]), loc); this.emit(Op.OP_AND, loc); this.emit(Op.OP_CAT, loc); // [v, Hk32]
+    // 2. H(k) (composite for nested m[a][b]) -> [v, Hk32]
+    this.emitSortedKeyHash(node, slotIndex, loc);
 
     // 3. entry address -> [v, Hk32, entryAddr]
     this.emitMasterInputIndex(loc); this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
@@ -9243,12 +9253,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   visitMappingAssign(node: MappingAssignNode): Node {
-    // Sorted (C2 linked-list) mapping write `m[k] = v`: never the omittable entry-model write. Always an UPSERT
-    // (update the value if k is present, else insert) - this is how `m[k]=false` / `delete m[k]` NULLIFY a bool
-    // set (write the empty/false value tail) rather than physically removing the node, matching Solidity's
-    // `delete` == assign-default. Single-key, no array ops; value must be a supported sorted kind (int/bool/bytesN).
+    // Sorted (C2 linked-list) mapping write `m[k] = v` (or nested `m[a][b] = v`): never the omittable entry-model
+    // write. Always an UPSERT (update the value if the key is present, else insert) - this is how `m[k]=false` /
+    // `delete m[k]` NULLIFY a bool set (write the empty/false value tail) rather than physically removing the node,
+    // matching Solidity's `delete` == assign-default. No array ops; value must be a supported sorted kind
+    // (int/bool/bytesN); composite keys are hashed together (emitSortedKeyHash).
     if (node.collection?.sorted && !node.arrayIndex && !node.arrayPush && !node.arrayPop
-      && node.collection.allKeyTypes.length === 1 && this.sortedValueKind(node.collection.innermostValueType) !== null) {
+      && this.sortedValueKind(node.collection.innermostValueType) !== null) {
       return this.emitSortedValueUpsert(node, () => { node.expression = this.visit(node.expression); });
     }
     if (node.collection?.sorted) {
@@ -9977,16 +9988,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   visitMappingDelete(node: MappingDeleteNode): Node {
-    // A sorted (C2) mapping delete. For a VALUE mapping (mapping(K=>int)), `delete m[k]` == set to the type default
-    // (Solidity semantics), so route it through the upsert with value = default: a present key updates to 0, an
-    // absent key is a no-op-equivalent insert of 0. For a SET (mapping(K=>bool)), delete means REMOVE from the set,
-    // which needs a true splice (co-spend the node + its bracketing predecessor, rewrite the predecessor's next
-    // past the node) - the default soft-delete would leave the node in the list (membership still finds it -
-    // unsound), and the splice needs a second co-spent entry input not yet emitted, so fail closed. See
-    // docs/sorted-mapping-c2.md.
+    // A sorted (C2) mapping `delete m[k]` == assign the type default (Solidity semantics: delete is an assignment,
+    // never a physical removal - libsolidity storageSetToZero). Route it through the upsert with value = default:
+    // present -> update to 0/false/empty (nullify, node stays), absent -> insert the default. Works for bool sets
+    // (delete claimed[k] writes the empty/false tail) and value mappings alike, single- or composite-key.
     if (node.collection?.sorted) {
       const vt = node.collection.innermostValueType;
-      if (this.sortedValueKind(vt) !== null && node.collection.allKeyTypes.length === 1) {
+      if (this.sortedValueKind(vt) !== null) {
         const dLoc = { location: node.location, positionHint: PositionHint.END };
         return this.emitSortedValueUpsert(node, () => {
           this.emitDefaultValue(dLoc, vt); this.pushToStack('(value)');

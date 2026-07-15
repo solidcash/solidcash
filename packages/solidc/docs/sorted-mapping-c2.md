@@ -150,3 +150,9 @@ need not reconstruct pushdata encodings; it only chooses which entries to co-spe
   number tail), and fixed-width `bytesN` (raw N-byte tail, e.g. `bytes32` - `SortedMappingBytesValue.test.ts`);
   `address` (a variable-width locking bytecode, not a clean fixed tail), `struct`, and unbounded `bytes`/`string`
   fail closed. There is no remaining fail-closed op for the supported value types.
+- **Nested / composite-key mappings (DONE + VM-verified):** `mapping(A => mapping(B => V))` (e.g. ERC20 allowances,
+  ERC1155 balances) works - the slot for `m[a][b]...` is `sha256(sha256(a) ++ sha256(b) ++ ...)` high-bit-masked
+  (`emitSortedKeyHash` / SDK `keyToSlotMulti`). Each key is hashed independently to 32 bytes, so the concatenation
+  is unambiguous for any key type; a single key reduces to `sha256(k)`. Proven in `SortedMappingNested.test.ts`
+  (`allow[a][b]` upsert/read/RMW, distinct pairs independent, `(20,10) != (10,20)`). Multi-key with an expression
+  key (not a plain param) fails closed.

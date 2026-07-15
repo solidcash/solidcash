@@ -45,6 +45,23 @@ export function keyToSlot(key: Uint8Array): Uint8Array {
   return s;
 }
 
+/**
+ * Composite slot for a nested mapping `m[k0][k1]...`: sha256(sha256(k0) ++ sha256(k1) ++ ...) high-bit-masked. Each
+ * key is hashed independently to 32 bytes (so the concatenation is unambiguous for any key type), matching the
+ * covenant's emitSortedKeyHash. A single key reduces to keyToSlot(k0).
+ */
+export function keyToSlotMulti(keys: Uint8Array[]): Uint8Array {
+  if (keys.length === 1) return keyToSlot(keys[0]);
+  const perKey = keys.map((k) => sha256.hash(k));
+  const total = perKey.reduce((n, h) => n + h.length, 0);
+  const concat = new Uint8Array(total);
+  let off = 0;
+  for (const h of perKey) { concat.set(h, off); off += h.length; }
+  const s = sha256.hash(concat).slice();
+  s[SLOT_BYTES - 1] &= 0x7f;
+  return s;
+}
+
 export function keyToSlotValue(key: Uint8Array): bigint {
   return bytesToSlotValue(keyToSlot(key));
 }

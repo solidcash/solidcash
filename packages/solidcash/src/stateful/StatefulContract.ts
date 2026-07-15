@@ -44,7 +44,7 @@ import {
   bigIntToVmNumber,
 } from '@bitauth/libauth';
 import { Contract } from '../Contract.js';
-import { SortedList, keyToSlot } from './SortedList.js';
+import { SortedList, keyToSlotMulti } from './SortedList.js';
 import { resolveBlockhashCoSpend } from '../oracle/blockhashCoSpend.js';
 import { attachWait } from '../wait.js';
 import Signer from '../Signer.js';
@@ -4616,14 +4616,20 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         // membership bit. slot = keyToSlot(k encoded as its on-stack VM number, matching the covenant's OP_SHA256).
         if (collection.sorted) {
           const list = SortedList.fromUtxos(collectionEntries);
-          const keyParamName = access.keySources?.[0]?.paramName ?? access.keyParams[0];
-          const kpi = abiFunction!.inputs.findIndex((inp) => inp.name === keyParamName);
-          const kv = args[kpi] as bigint | boolean | Uint8Array | string;
-          const keyBytes = typeof kv === 'bigint' ? bigIntToVmNumber(kv)
-            : kv instanceof Uint8Array ? kv
-              : typeof kv === 'boolean' ? bigIntToVmNumber(kv ? 1n : 0n)
-                : bigIntToVmNumber(BigInt(kv as unknown as string));
-          const slot = keyToSlot(keyBytes);
+          // Composite slot for a nested mapping m[a][b]...: hash each key independently, then hash the
+          // concatenation (keyToSlotMulti), matching the covenant's emitSortedKeyHash. Single key -> keyToSlot.
+          const keyNames = access.keyParams.map((name, i) => access.keySources?.[i]?.paramName ?? name);
+          const encodeKey = (paramName: string): Uint8Array => {
+            const idx = abiFunction!.inputs.findIndex((inp) => inp.name === paramName);
+            const v = args[idx] as bigint | boolean | Uint8Array | string;
+            return typeof v === 'bigint' ? bigIntToVmNumber(v)
+              : v instanceof Uint8Array ? v
+                : typeof v === 'boolean' ? bigIntToVmNumber(v ? 1n : 0n)
+                  : bigIntToVmNumber(BigInt(v as unknown as string));
+          };
+          const kvIdx = abiFunction!.inputs.findIndex((inp) => inp.name === keyNames[0]);
+          const kv = args[kvIdx] as bigint | boolean | Uint8Array | string;
+          const slot = keyToSlotMulti(keyNames.map(encodeKey));
           // A sorted mapping write OR `delete m[k]` (== assign default, Solidity semantics) both upsert the entry,
           // so the SDK co-spends it the same way. bool sets are value mappings too (true=0x01, false/delete=empty).
           const isWrite = access.operations.includes('write') || access.operations.includes('delete');

@@ -46,6 +46,14 @@ describe('sorted mapping opt-in (C2)', () => {
       .not.toThrow();
   });
 
+  it('compiles a nested / composite-key mapping (mapping(A=>mapping(B=>V)))', () => {
+    // slot = sha256(sha256(a)++sha256(b)) high-bit-masked (keyToSlotMulti); each key hashed independently so any
+    // key type works. VM-verified in SortedMappingNested.test.ts (ERC20-allowance shape).
+    const MAP = 'contract C() { mapping(int => mapping(int => int)) allow;';
+    expect(() => compileString(`${MAP} function f(int a, int b, int v) { allow[a][b] = v; } }`, { sortedMappings: ['allow'], forceStateful: true }))
+      .not.toThrow();
+  });
+
   it('compiles a fixed-width bytesN value type (raw commitment tail)', () => {
     const MAP = 'contract C() { mapping(int => bytes4) meta;';
     expect(() => compileString(`${MAP} function f(int k) { meta[k] = 0x11223344; } }`, { sortedMappings: ['meta'], forceStateful: true }))

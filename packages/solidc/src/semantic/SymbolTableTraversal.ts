@@ -78,6 +78,7 @@ import {
   ExternalOutStateSlot,
   MethodCallNode,
   MethodCallStatementNode,
+  IndirectCallNode,
   StateVariableVisibility,
   ErrorDefinitionNode,
   RevertNode,
@@ -2909,6 +2910,11 @@ export default class SymbolTableTraversal extends AstTraversal {
     if ('object' in node && (node as any).object instanceof Node) {
       this.collectEntryAccesses((node as any).object, map);
     }
+    // IndirectCallNode: the callee holds the invoked value, which for `m[k].fnPtrField()` reads a mapping
+    // entry (FieldAccess over MappingAccess). Collect it so the entry slot is allocated.
+    if ('callee' in node && (node as any).callee instanceof Node) {
+      this.collectEntryAccesses((node as any).callee, map);
+    }
     if ('parameters' in node && Array.isArray((node as any).parameters)) {
       for (const param of (node as any).parameters) {
         if (param instanceof Node) this.collectEntryAccesses(param, map);
@@ -3024,6 +3030,11 @@ export default class SymbolTableTraversal extends AstTraversal {
     }
     if ('object' in node && (node as any).object instanceof Node) {
       this.assignEntrySlotIndices((node as any).object, map);
+    }
+    // IndirectCallNode callee (mirrors collectEntryAccesses): `m[k].fnPtrField()` reads a mapping entry
+    // through the callee, so stamp its entry slot index too.
+    if ('callee' in node && (node as any).callee instanceof Node) {
+      this.assignEntrySlotIndices((node as any).callee, map);
     }
     if ('parameters' in node && Array.isArray((node as any).parameters)) {
       for (const param of (node as any).parameters) {
@@ -5057,6 +5068,31 @@ export default class SymbolTableTraversal extends AstTraversal {
       }
     }
 
+    // Fn-ptr field call via a namespaced-looking name: `s.x()` parses as a qualified FunctionCallNode
+    // ("s.x", grammar's namespaced-call alt), but when `s` is a struct-typed variable and `x` is a
+    // function-pointer field it is really an indirect call. Rewrite to read the field then OP_INVOKE.
+    // Guarded on `s` being an actual struct variable, so genuine namespaced calls (Lib.f, abi.encode,
+    // Enum.Member) are untouched (their base is not a struct-typed variable symbol).
+    if (!structType && node.identifier.name.includes('.') && !this.functionDefinitions.has(node.identifier.name)) {
+      const dot = node.identifier.name.indexOf('.');
+      const baseName = node.identifier.name.slice(0, dot);
+      const fieldName = node.identifier.name.slice(dot + 1);
+      const localSym = this.symbolTables[0].get(baseName);
+      const stateVar = this.stateVariableMap.get(baseName);
+      const baseType = localSym?.type ?? stateVar?.type;
+      if (baseType instanceof StructType
+        && baseType.fields.some((f) => f.name === fieldName && f.type instanceof FunctionType)) {
+        const baseNode: ExpressionNode = !localSym && stateVar
+          ? new StateAccessNode(baseName) : new IdentifierNode(baseName);
+        baseNode.location = node.identifier.location;
+        const baseExpr = this.visit(baseNode) as ExpressionNode;
+        const rewritten = this.buildFnPtrFieldCall(
+          baseExpr, baseType, fieldName, node.parameters as ExpressionNode[], node.location,
+        );
+        if (rewritten) return rewritten;
+      }
+    }
+
     // Check if this is a user-defined function call
     const overloads = this.functionDefinitions.get(node.identifier.name);
     if (overloads && overloads.length > 0) {
@@ -6992,6 +7028,26 @@ export default class SymbolTableTraversal extends AstTraversal {
     return funcCall;
   }
 
+  // Rewrite a fn-ptr-field call `<receiver>.<field>(args)` (where `field` is a function-pointer struct
+  // member) into an indirect call that reads the field then OP_INVOKEs it. Reuses the proven read path
+  // (`function() fp = receiver.field; fp(args)`): the field decodes to its integer functionId and
+  // IndirectCallNode dispatches on that value, so no new codegen is needed. `baseExpr` must already be
+  // resolved. Returns undefined when `field` is not a function pointer, so callers fall through normally.
+  private buildFnPtrFieldCall(
+    baseExpr: ExpressionNode, structType: StructType, fieldName: string,
+    params: ExpressionNode[], location: Node['location'],
+  ): IndirectCallNode | undefined {
+    const field = structType.fields.find((f) => f.name === fieldName);
+    if (!(field?.type instanceof FunctionType)) return undefined;
+    const fieldAccess = new FieldAccessNode(baseExpr, fieldName);
+    fieldAccess.structType = structType;
+    fieldAccess.type = field.type;
+    fieldAccess.location = location;
+    const indirect = new IndirectCallNode(fieldAccess, this.visitList(params) as ExpressionNode[]);
+    indirect.location = location;
+    return indirect;
+  }
+
   // Resolve an address-typed low-level-call receiver's type during the symbol-table pass (expression types
   // are not on nodes yet). Recurses through identifiers, msg.sender/tx.origin, array/mapping index
   // (element/value type), tuple index, and struct field access, so `structVar.field`, `arr[i]`,
@@ -7375,6 +7431,20 @@ export default class SymbolTableTraversal extends AstTraversal {
     if (this.usingForBindings.size > 0) {
       const resolved = this.tryResolveUsingFor(node);
       if (resolved) return resolved;
+    }
+
+    // Fn-ptr field call on a struct-typed receiver: `t[i].x()` / `m[k].x()` / `s.field.x()` where `x` is a
+    // function-pointer struct member. The receiver resolves to a struct (not an interface), so route it to an
+    // indirect call that reads the field, rather than rejecting it as an unsupported method call. Use the
+    // receiver-type resolver (node.type is not reliably set for a mapping element in this pass).
+    const recvStructType = node.object.type instanceof StructType
+      ? node.object.type : this.resolveLowLevelReceiverType(node.object);
+    if (recvStructType instanceof StructType) {
+      const rewritten = this.buildFnPtrFieldCall(
+        node.object as ExpressionNode, recvStructType, node.methodName,
+        node.parameters as ExpressionNode[], node.location,
+      );
+      if (rewritten) return rewritten;
     }
 
     throw new MethodCallNotSupportedError(node);

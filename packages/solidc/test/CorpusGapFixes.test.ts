@@ -2048,3 +2048,56 @@ describe('inlined value helper: local sharing a struct-field name does not corru
     expect(ok(src)).toBe('C');
   });
 });
+
+// Calling a function-POINTER struct field directly: `s.x()`, `t[i].x()`, `m[k].x()`, `s.inner.x()`. These
+// parse as a namespaced call / method call (not an indirect call), so were rejected ("Undefined reference to
+// symbol s.x" / "Method calls are only supported on interface..."). SymbolTableTraversal now rewrites them to
+// an IndirectCallNode reading the field (the proven `function() fp = s.x; fp()` value path). VM behavior is in
+// packages/solidcash/test/FnPtrStructFieldCall.test.ts; here we byte-check equivalence to the hoist form.
+describe('call a function-pointer struct field directly (s.x(), t[i].x(), m[k].x())', () => {
+  const bc = (src: string): string => compileString(src, { solidityImportCompat: true }).bytecode;
+  const H = 'function h() internal pure returns (uint) { return 7; }';
+  const HA = 'function h(uint a) internal pure returns (uint) { return a + 1; }';
+  const FP = 'function() internal pure returns (uint)';
+  const FPA = 'function(uint) internal pure returns (uint)';
+
+  it('plain struct s.x() is byte-identical to the hoist `fp = s.x; fp()`', () => {
+    const S = 'struct S { ' + FP + ' x; }';
+    const direct = `contract C { ${S} ${H} function f() public pure returns (uint) { S memory s; s.x = h; return s.x(); } }`;
+    const hoist = `contract C { ${S} ${H} function f() public pure returns (uint) {`
+      + ` S memory s; s.x = h; ${FP} fp = s.x; return fp(); } }`;
+    expect(bc(direct)).toBe(bc(hoist));
+  });
+  it('struct-array element t[i].x() is byte-identical to the hoist', () => {
+    const S = 'struct S { ' + FP + ' x; } S[1] t;';
+    const direct = `contract C { ${S} ${H} function f() public returns (uint) { t[0].x = h; return t[0].x(); } }`;
+    const hoist = `contract C { ${S} ${H} function f() public returns (uint) {`
+      + ` t[0].x = h; ${FP} fp = t[0].x; return fp(); } }`;
+    expect(bc(direct)).toBe(bc(hoist));
+  });
+  it('mapping element m[k].x() is byte-identical to the hoist', () => {
+    const S = 'struct S { ' + FP + ' x; } mapping(uint => S) m;';
+    const direct = `contract C { ${S} ${H} function f() public returns (uint) { m[0].x = h; return m[0].x(); } }`;
+    const hoist = `contract C { ${S} ${H} function f() public returns (uint) {`
+      + ` m[0].x = h; ${FP} fp = m[0].x; return fp(); } }`;
+    expect(bc(direct)).toBe(bc(hoist));
+  });
+  it('accepts the arg-passing forms s.x(3) / t[i].x(3) / m[k].x(3) / nested s.inner.x()', () => {
+    const name = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+    const S = 'struct S { ' + FPA + ' x; }';
+    expect(name(`contract C { ${S} ${HA} function f() public pure returns (uint) {`
+      + ' S memory s; s.x = h; return s.x(3); } }')).toBe('C');
+    expect(name(`contract C { ${S} S[1] t; ${HA} function f() public returns (uint) {`
+      + ' t[0].x = h; return t[0].x(3); } }')).toBe('C');
+    expect(name(`contract C { ${S} mapping(uint => S) m; ${HA} function f() public returns (uint) {`
+      + ' m[0].x = h; return m[0].x(3); } }')).toBe('C');
+    expect(name(`contract C { struct I { ${FP} x; } struct S2 { I inner; } ${H}`
+      + ' function f() public pure returns (uint) { S2 memory s; s.inner.x = h; return s.inner.x(); } }')).toBe('C');
+  });
+  it('does not disturb a genuine namespaced call that looks like `base.member()` (enum + library)', () => {
+    // `Lib.f()` and `E.A` share the `base.member` shape; the rewrite must only fire when `base` is a struct var.
+    const name = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+    expect(name('library Lib { function f() internal pure returns (uint) { return 1; } }'
+      + ' contract C { function g() public pure returns (uint) { return Lib.f(); } }')).toBe('C');
+  });
+});

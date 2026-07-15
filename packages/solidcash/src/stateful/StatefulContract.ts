@@ -970,6 +970,25 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     this._resolved = true;
   }
 
+  // Match a getEntries() entry against the key args passed to a mapping getter. Single-key entries expose `key`,
+  // nested/composite entries expose `keys`. A string arg is UTF-8 encoded (mirrors setEntry) so `sc.m("foo")`
+  // matches a bytesN key stored from the same literal; bigint/boolean compare by value, Uint8Array byte-wise.
+  private static _entryMatchesKeys(
+    entry: { key?: bigint | boolean | Uint8Array; keys?: Array<bigint | boolean | Uint8Array> },
+    keys: Array<bigint | boolean | Uint8Array | string>,
+  ): boolean {
+    const entryKeys = entry.keys ?? (entry.key !== undefined ? [entry.key] : []);
+    if (entryKeys.length !== keys.length) return false;
+    return entryKeys.every((stored, i) => {
+      const arg = keys[i];
+      const user = typeof arg === 'string' ? new TextEncoder().encode(arg) : arg;
+      if (stored instanceof Uint8Array) {
+        return user instanceof Uint8Array && stored.length === user.length && stored.every((v, j) => v === user[j]);
+      }
+      return stored === user;
+    });
+  }
+
   // Build the state / call / functions / tokens namespaces from the (resolved) inner contract's artifact.
   // Bare-name dispatch is handled by the Proxy (see _withDispatchProxy), so nothing is mirrored on `this`.
   private _buildNamespaces(contract: Contract<TArtifact>): void {
@@ -977,6 +996,18 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     for (const variable of contract.stateLayout!.variables) {
       // @ts-ignore - dynamic property assignment for type-safe getters
       this.state[variable.name] = async (): Promise<any> => (await this.getState())[variable.name];
+    }
+    // Solidity-getter parity for mappings: `sc.<mapping>(...keys)` reads the entry value at the given key(s)
+    // (sugar over getEntries), or undefined when no entry exists. Nested/composite keys pass multiple args.
+    // Array collections keep the getEntries form for now (indexed array getters are a separate open item).
+    for (const coll of contract.stateLayout!.collections ?? []) {
+      if (coll.kind !== 'mapping') continue;
+      // @ts-ignore - dynamic property assignment (mapping getter takes key args, unlike the scalar getters)
+      this.state[coll.name] = async (...keys: Array<bigint | boolean | Uint8Array | string>): Promise<any> => {
+        const entries = await this.getEntries(coll.name);
+        const match = entries.find((e) => StatefulContract._entryMatchesKeys(e, keys));
+        return match ? match.value : undefined;
+      };
     }
 
     // A deploy-modifier function returns a thenable DeployFunctionCall (funds + runs via the connected signer);
@@ -1011,6 +1042,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
   private _withDispatchProxy(): this {
     const abiNames = new Set(this.inner.artifact.abi.map((f) => f.name));
     const stateNames = new Set((this.inner.stateLayout?.variables ?? []).map((v) => v.name));
+    // Mapping collections also dispatch as bare-name getters (`sc.<mapping>(key)`); both resolve via `this.state`.
+    for (const c of this.inner.stateLayout?.collections ?? []) if (c.kind === 'mapping') stateNames.add(c.name);
     return new Proxy(this, {
       get(target, prop, receiver) {
         if (typeof prop === 'string' && !(prop in target)) {

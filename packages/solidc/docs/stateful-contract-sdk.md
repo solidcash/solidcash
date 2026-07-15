@@ -123,12 +123,22 @@ always returned.
 Every instance is wrapped in a Proxy, so the ABI function / state getter is reachable on the **bare name**:
 
 ```ts
-await counter.increment();          // thenable: awaiting sends (== counter.increment().send())
-await counter.count();              // == counter.state.count()
+await counter.increment();             // thenable: awaiting sends (== counter.increment().send())
+await counter.count();                 // scalar getter (== counter.state.count()) - reads via getState()
+await bank.balances(userPkh);          // mapping getter: entry value at the key, or undefined if absent
+await bank.allowances(owner, spender); // nested mapping: one argument per key
 ```
 
 A function call is a thenable, so `await sc.fn(args)` builds and sends in one step - the preferred short form.
 `.send()` / `.buildUnsigned()` / `.withDelegatecall(...)` remain for when you need the intermediate builder.
+
+**Solidity-getter parity.** `sc.<name>()` reads a public state variable (over `getState()`) and
+`sc.<mapping>(...keys)` reads a mapping entry (over `getEntries()`), the parity forms for Solidity's
+`contract.property()` / `contract.balances(key)`. A mapping getter returns the stored value or `undefined` when
+no entry exists (rather than a zero-default), takes one argument per key for nested/composite mappings, and
+UTF-8-encodes a string arg (mirroring `setEntry`) to match a `bytesN` key. Both are also reachable on the
+explicit `sc.state.<name>` accessor. Array-collection indexed getters (`sc.<array>(i)`) are not yet wired - use
+`getEntries('<array>')` for those.
 
 A framework member wins a name collision (so `counter.connect`, `counter.state`, `counter.getState` stay the
 framework members). A contract function that is shadowed by a framework name stays reachable via the escape

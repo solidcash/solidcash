@@ -167,19 +167,32 @@ Priorities carry the PACKING lens above: each phase lowers to a 128B-aware subst
   (OwnableUpgradeable) -> **MVP-2** multi-scalar (packing proof, one data NFT) -> **MVP-3** mapping field
   (ERC20-balances). Unlocks ERC-7201, OwnableUpgradeable, ~37 OZ-upgradeable v5 bases, EACC. Today
   `$.slot := CONST` throws `YulNotLowerable` (`LowerInlineAssembly` ~982) -> misleading "control-flow/memory".
-- **P3 - EVM-exact register layout [confirmed latent bug].** `stateVarByteWidth` returns 32 for a
-  struct/array/mapping (`LowerInlineAssembly:127-135`), so `computeStorageLayout` advances the next var by
-  one slot when EVM advances by the composite's full `storageSize()` (N words). A declared var after a
-  `uint256[3]` gets the wrong EVM slot number; sub-word assembly then diverts to a disjoint cell. Fix the
-  width to the full multi-word `storageSize()`, packing-aware.
-- **P2 - sorted-list soundness re-homing.** Route `__evm_storage` (and Tier-2 mapping slots) through the C2
-  sorted-linked-list so negative-existence guards are sound (bracketing). One 128B entry per live key.
-- **P4 - Tier-2 high-level interop [large, multi-session].** Lay high-level state (vars / mappings / arrays)
-  at their derived slots so `arr.push(...)` and `assembly { sload(H(p)+i) }` see the same entries. The
-  logical slot VIEW over the packed register + sorted list + chunk substrates (packing-preserving), gated
-  behind P1/P3 landing. ~45-48 corpus files, byte-exact caveat.
-- **P5 - sorted value-type tail.** string / unbounded-bytes mapping leaves (currently fail closed);
-  address/struct values already work and are VM-tested.
+- **P3 - EVM-exact register layout [DELIVERED].** `packWords`/`compositeSlotWords` (`LowerInlineAssembly`):
+  a fixed array `T[k]` and a struct occupy their full multi-word EVM footprint (packing sub-word members
+  EVM-exactly) and never pack with a neighbour, so a var after `uint256[3]` gets EVM slot 3 (was 1) and its
+  literal-slot assembly interops with the high-level var. e2e `EvmStorageLayout.test.ts`.
+- **P4 - Tier-2 high-level interop [core DELIVERED].** Two parts shipped: (1) `computeStorageLayout` now
+  merges COLLECTIONS in source declaration order, so every state member (incl. mappings/arrays) gets its EVM
+  slot - a mapping's slot is known and a scalar after a mapping is EVM-correct. (2) The EVM mapping-slot
+  assembly idiom (`mstore(0,k); mstore(32,m.slot); sload/sstore(keccak256(0,64))`, inline AND the canonical
+  `let slot := keccak256(0x00,0x40)` form) bridges to the high-level mapping `m[k]` - assembly and high-level
+  hit the same entry collection (bidirectional, `EvmStorageTier2.test.ts`); the dead keccak binding is
+  dropped (no on-chain keccak). REMAINING (deeper, multi-session): NESTED mappings (double-keccak idiom),
+  dynamic-ARRAY element idiom (`sload(keccak256(p)+i)`), and struct-field slot math past a composite base.
+- **P2 - sorted-list soundness re-homing [SCOPED, blocked].** Route `__evm_storage` (and mapping slots)
+  through the C2 sorted-linked-list so negative-existence guards (`require(sload(s)==0)` before first write)
+  are sound (bracketing). The on-chain sorted covenant is complete and sound (`emitSorted*` GTT); TWO
+  blockers remain: (A) mark `__evm_storage` sorted at synthesis (`LowerInlineAssembly` runs after the
+  `sortedMappings` marking, `compiler.ts:189`); (B) the sorted SDK derivation (`StatefulContract` ~4928)
+  resolves keys as function PARAMS only, but `__evm_storage` keys are `constant`/`expression` (computed slot)
+  - it needs an off-chain slot-value evaluator to pick the bracketing predecessor UTXO before the VM probe.
+  ALSO a policy call: sorting adds bracketing co-spend cost and inherits the sorted value-type gaps, so
+  sorted-by-default is a tradeoff needing sign-off (do not flip a default implicitly).
+- **P5 - sorted value-type tail [SCOPED, needs chunk-in-entry].** A sorted entry's 128B commitment holds
+  slot(32)+next(32)+value(<=64), so a value > 64 bytes (unbounded `string`/`bytes`) fails closed
+  (`sortedValueKind` null, `SortedMappingCodegenPendingError`). Closing it needs the dynamic-storage chunk
+  model spliced into the sorted-entry value (value -> chunk pointer + length; SDK derives the chunk run).
+  `bytesN`/`address`/`struct`/`int` values already work and are VM-tested.
 
 Byte-identical LOGICAL slot numbers (the SDK keccak veneer) is reachable any time after P1, reusing the ABI
 encoder + real-keccak fold; fold it in only where a corpus contract exposes a raw slot number cross-chain.
@@ -202,7 +215,10 @@ encoder + real-keccak fold; fold it in only where a corpus contract exposes a ra
 - [x] P0: this doc realigned to shipped reality + the packing cost model + the ABI prerequisites.
 - [x] P1: const-slot (ERC-7201) factory -> promoted packed state (scalar register + mapping collection +
       dynamic chunk; multi-scalar co-packs into one data NFT). Nested-struct/inline-write/address-roundtrip deferred.
-- [ ] P3: EVM-exact register layout past a struct/array.
-- [ ] P2: `__evm_storage` re-homed onto the sorted list (negative-existence soundness).
-- [ ] P4: Tier-2 high-level state on the slot model (logical view over register/sorted-list/chunk).
-- [ ] P5: sorted string / unbounded-bytes value tail.
+- [x] P3: EVM-exact register layout past a struct/array (packWords/compositeSlotWords; e2e verified).
+- [x] P4 (core): declaration-order EVM slots incl. collections + the mapping-slot assembly idiom (inline +
+      canonical let-bound) bridged to the high-level mapping, bidirectional. Nested mappings / dynamic-array
+      element idiom / struct-field slot math remain.
+- [ ] P2: `__evm_storage` re-homed onto the sorted list. On-chain covenant sound; blocked on (A) mark-sorted
+      at synthesis + (B) an off-chain slot-value evaluator in the sorted SDK derivation, plus a default-policy call.
+- [ ] P5: sorted string / unbounded-bytes value tail (needs the chunk model spliced into the sorted entry value).

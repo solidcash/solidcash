@@ -96,6 +96,23 @@ describe('abi.encodeWithSelector (evmCompat): real-world', () => {
   it('approve(address,uint256)', () => sel('bytes4 s, uint160 sp, uint256 v', 's, sp, v', ['0x095ea7b3', ADDR, 10n ** 18n]));
 });
 
+describe('abi.encode (evmCompat): more widths + bytesN distinctions', () => {
+  it('int128 negative', () => enc('int128 a', 'a', [-(1n << 100n)]));
+  it('int64 negative', () => enc('int64 a', 'a', [-42n]));
+  it('uint64 max', () => enc('uint64 a', 'a', [(1n << 64n) - 1n]));
+  it('bytes8', () => enc('bytes8 a', 'a', ['0x0102030405060708']));
+  it('bytes16', () => enc('bytes16 a', 'a', [`0x${'ab'.repeat(16)}`]));
+  it('bytes20 right-padded (distinct from uint160 left-pad)', () => enc('bytes20 a', 'a', [`0x${'11'.repeat(20)}`]));
+});
+
+describe('abi.encodeWithSelector (evmCompat): ERC721 + query patterns', () => {
+  const sel = (params: string, selArgs: string, args: readonly unknown[]): Promise<void> =>
+    assertConformant(selCase({ params, selectorAndArgs: selArgs, args }));
+  const ADDR = 0x00112233445566778899aabbccddeeff00112233n;
+  it('transferFrom(address,address,uint256)', () => sel('bytes4 s, uint160 a, uint160 b, uint256 c', 's, a, b, c', ['0x23b872dd', ADDR, 1n, 100n]));
+  it('balanceOf(address)', () => sel('bytes4 s, uint160 a', 's, a', ['0x70a08231', ADDR]));
+});
+
 describe('abi.encode (evmCompat) KNOWN GAP: multiple dynamic', () => {
   it.fails('two dynamic bytes (multi-dynamic not yet impl)', () => enc('bytes memory a, bytes memory b', 'a, b', ['0xaa', '0xbb']));
 });

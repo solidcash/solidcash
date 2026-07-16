@@ -1,5 +1,6 @@
 import {
-  IntType, BytesType, AddressType, PrimitiveType, ValueType, Type, MappingType, StructType, ArrayType, hash256,
+  IntType, BytesType, AddressType, PrimitiveType, ValueType, Type, MappingType, StructType, ArrayType, EnumType,
+  hash256,
 } from '@solidcash/utils';
 import AstTraversal from '../ast/AstTraversal.js';
 import {
@@ -135,6 +136,7 @@ function stateVarByteWidth(sv: StateVariableNode): number {
   if (t instanceof AddressType) return 20;
   if (t instanceof BytesType) return t.bound ?? 32;
   if (t === PrimitiveType.BOOL) return 1;
+  if (t instanceof EnumType) return 1; // Solidity enums are 1 byte (<=256 members, EnumType::storageBytes == 1)
   return 32; // mapping / dynamic array/bytes: one slot (the base/length header)
 }
 
@@ -144,6 +146,7 @@ function valueByteWidth(t: Type): number {
   if (t instanceof AddressType) return 20;
   if (t instanceof BytesType) return t.bound ?? 32;
   if (t === PrimitiveType.BOOL) return 1;
+  if (t instanceof EnumType) return 1; // Solidity enums are 1 byte
   return 32; // mapping / dynamic: one slot
 }
 

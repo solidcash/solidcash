@@ -29,6 +29,20 @@ describe('EVM slot-id parity (2) packed sub-word data (bools, uintN)', () => {
     () => slot('address a; uint96 b; uint256 c;', 'c.slot', 'address+uint96 @ slot0'));
   it('a value that would overflow the current slot moves to the next',
     () => slot('uint128 a; uint128 b; uint128 x; uint256 c;', 'c.slot', 'uint128x3 then word'));
+  it('small uints pack tightly (uint8+uint8+uint16, next word @ 1)',
+    () => slot('uint8 a; uint8 b; uint16 d; uint256 c;', 'c.slot', 'uint8+uint8+uint16 pack'));
+});
+
+describe('EVM slot-id parity (2b) other value types (signed ints, enum, bytesN)', () => {
+  it('int128 packs like uint128 (same storageBytes)',
+    () => slot('int128 a; int128 b; uint256 c;', 'c.slot', 'int128x2 @ slot0'));
+  it('int256 takes a full slot each', () => slot('int256 a; int256 b; uint256 c;', 'c.slot', 'int256x2'));
+  it('bytes4 + bytes28 fill one slot (4+28=32), next word @ 1',
+    () => slot('bytes4 a; bytes28 b; uint256 c;', 'c.slot', 'bytes4+bytes28 fill'));
+  it('bytes1 + bytes31 fill one slot, next word @ 1',
+    () => slot('bytes1 a; bytes31 b; uint256 c;', 'c.slot', 'bytes1+bytes31 fill'));
+  it('an enum is one byte and packs (enum + uint8 + uint16, next word @ 1)',
+    () => slot('enum E { X, Y } E a; uint8 b; uint16 d; uint256 c;', 'c.slot', 'enum packs as uint8'));
 });
 
 describe('EVM slot-id parity (3) mappings (system: one slot each)', () => {

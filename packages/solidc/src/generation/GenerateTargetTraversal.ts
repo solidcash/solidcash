@@ -7637,6 +7637,55 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   // evmCompat abi.encode: static value types (each a 32-byte word), optionally followed by ONE trailing
   // dynamic bytes/string (a 32-byte head offset + the tail). Multiple / non-trailing dynamics: not yet.
+  // evmCompat: [array blob of DYNAMIC elements on top] (bytes[], string[], uint[][]) -> its ABI tail =
+  // length word ++ head(N offset words) ++ tail(concat of element encodings). Runtime head/tail pack: loop state
+  // [N, headAcc, tailAcc, elements]; each element is pushdata-decoded, encoded via the recursive emitEvmEncodeValue,
+  // appended to tailAcc, and its offset word (32*N + size(tailAcc)) appended to headAcc. This one loop lights up
+  // every recursive case through emitEvmEncodeValue. Loop-safe helpers only; single tracker reconcile at the end.
+  private emitEvmDynamicArrayTail(elemType: Type, loc: SingleLocationData): void {
+    this.emitPushdataDecode(PrimitiveType.BIGINT, loc); // [N, elements]
+    this.emit(new Uint8Array(0), loc); // headAcc = ""
+    this.emit(new Uint8Array(0), loc); // tailAcc = ""
+    this.emit(encodeInt(2n), loc); this.emit(Op.OP_ROLL, loc); // [N, headAcc, tailAcc, elements]
+    this.emit(Op.OP_BEGIN, loc);
+    this.emit(Op.OP_SIZE, loc);
+    this.emit(Op.OP_0NOTEQUAL, loc); // [.., elements, moreLeft]
+    this.emit(Op.OP_IF, loc);
+    this.emitPushdataDecode(elemType, loc); // [N, headAcc, tailAcc, value, rest]
+    this.emit(Op.OP_SWAP, loc); // [.., rest, value]
+    this.emitEvmEncodeValue(elemType, loc); // value -> enc: [N, headAcc, tailAcc, rest, enc]
+    // offset = 32*N + size(tailAcc)
+    this.emit(encodeInt(4n), loc); this.emit(Op.OP_PICK, loc); // copy N (depth 4)
+    this.emit(encodeInt(32n), loc); this.emit(Op.OP_MUL, loc);
+    this.emit(encodeInt(3n), loc); this.emit(Op.OP_PICK, loc); // copy tailAcc (depth 3)
+    this.emit(Op.OP_SIZE, loc); this.emit(Op.OP_NIP, loc);
+    this.emit(Op.OP_ADD, loc);
+    this.emitEvmWordFromUint(loc); // -> offWord
+    // headAcc ++= offWord (headAcc at depth 4)
+    this.emit(encodeInt(4n), loc); this.emit(Op.OP_ROLL, loc);
+    this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_CAT, loc); // [N, tailAcc, rest, enc, headAcc']
+    // tailAcc ++= enc (tailAcc at depth 3, enc at depth 2)
+    this.emit(encodeInt(3n), loc); this.emit(Op.OP_ROLL, loc);
+    this.emit(encodeInt(2n), loc); this.emit(Op.OP_ROLL, loc);
+    this.emit(Op.OP_CAT, loc); // [N, rest, headAcc', tailAcc']
+    // restore elements (rest) to top
+    this.emit(encodeInt(2n), loc); this.emit(Op.OP_ROLL, loc); // [N, headAcc', tailAcc', rest]
+    this.emit(encodeBool(false), loc);
+    this.emit(Op.OP_ELSE, loc);
+    this.emit(encodeBool(true), loc);
+    this.emit(Op.OP_ENDIF, loc);
+    this.emit(Op.OP_UNTIL, loc);
+    // combine: [N, headAcc, tailAcc, empty] -> length word ++ headAcc ++ tailAcc
+    this.emit(Op.OP_DROP, loc); // drop the emptied elements
+    this.emit(Op.OP_CAT, loc); // headAcc ++ tailAcc = body
+    this.emit(Op.OP_SWAP, loc); // [body, N]
+    this.emit(encodeInt(32n), loc); this.emit(Op.OP_NUM2BIN, loc); this.emit(Op.OP_REVERSEBYTES, loc); // N -> len word
+    this.emit(Op.OP_SWAP, loc);
+    this.emit(Op.OP_CAT, loc); // lenWord ++ body
+    this.popFromStack();
+    this.pushToStack('(value)');
+  }
+
   // evmCompat: [dynamic array blob on top] -> its EVM ABI tail = 32-byte length word ++ each element as a 32-byte
   // word. The array is stored `pushdata(len) ++ contiguous fixed-width elements` at getFixedWidth stride; the loop
   // splits each element and reuses emitDecodeElementPacked + emitEvmAbiWord (the same per-element decode/word path as
@@ -7644,6 +7693,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   // int256[], bytes32[], bool[], ...); bigint-backed variable-width element arrays (uint[]) are separate. The tail
   // accumulator is built via a runtime OP_BEGIN..OP_UNTIL loop; tracker is reconciled once at the end (blob -> tail).
   private emitEvmArrayTail(elemType: Type, loc: SingleLocationData, packed = false): void {
+    if (this.isDynamicAbiType(elemType)) {
+      if (packed) throw new Error('evmCompat: abi.encodePacked of an array of dynamic elements is unsupported');
+      this.emitEvmDynamicArrayTail(elemType, loc);
+      return;
+    }
     const w = getFixedWidth(elemType);
     this.emitPushdataDecode(PrimitiveType.BIGINT, loc); // [length, elements]
     if (packed) {

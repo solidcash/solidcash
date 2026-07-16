@@ -167,3 +167,13 @@ describe('abi.encode (evmCompat): dynamic arrays of fixed-width value types', ()
   })));
   it('uint160 + uint256[] (transfer-batch shape)', () => enc('uint160 to, uint256[] memory ids', 'to, ids', [0x1122n, [7n, 8n]]));
 });
+
+describe('abi.encode (evmCompat): arrays of DYNAMIC elements (recursive head/tail)', () => {
+  it('bytes[] two elements', () => enc('bytes[] memory a', 'a', [[hb('0xdeadbeef'), hb('0xcafe')]]));
+  it('bytes[] single', () => enc('bytes[] memory a', 'a', [[hb('0xaabbcc')]]));
+  it('bytes[] empty', () => enc('bytes[] memory a', 'a', [[]]));
+  it('bytes[] element crosses pad boundary', () => enc('bytes[] memory a', 'a', [[hb(`0x${'11'.repeat(40)}`), hb('0xff')]]));
+  it('string[]', () => enc('string[] memory a', 'a', [['hello', 'the quick brown fox']]));
+  it('uint256[][] nested', () => enc('uint256[][] memory a', 'a', [[[1n, 2n], [3n, 4n, 5n]]]));
+  it('uint + bytes[] (mixed)', () => enc('uint x, bytes[] memory a', 'x, a', [7n, [hb('0xaa'), hb('0xbb')]]));
+});

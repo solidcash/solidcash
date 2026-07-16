@@ -198,6 +198,52 @@ UTXO, no global write contention), is sound and worth building for BOUNDED colle
 chain clean (nullify would bloat it). The DEFAULT `mapping` stays Solidity-parity: not enumerable, slot p = 0,
 no overhead.
 
+### Linkage-completeness IMPLEMENTATION PLAN (code-grounded)
+
+Grounded in the actual code (`SortedList.ts`: commitment `slot(32)++nextKey(32)++value`, HEAD@slot 0,
+tail@nextKey 0, `slot=keyToSlot(key)=sha256(key)` high-bit-masked; `visitCollectionIteration` GTT:3316 loop
+`i < __internal__collectionIterCount_N`; SDK derivation `StatefulContract` ~5194 co-spends all entries + the
+count; `emitCollectionIterInputIndex` = `masterInput + blockSize + priorCounts + i`).
+
+**Scope order.** Deliver VALUES mode first - the C2 commitment has slot (chain) + nextKey (chain) + value
+(body), so VALUES needs NO raw key. KEYS/ENTRIES need the raw key, which the C2 commitment does NOT store
+(only `slot=H(key)`); that is a SECOND increment (SDK supplies the keys in slot order as a co-spent blob,
+covenant splits + verifies `H(key)==slot` per entry, ~1 sha256/entry). Enumerable+VALUES on a `sorted`
+collection routes to linkage; keep the existing partial-window path for non-sorted (signed use), so nothing
+breaks. `enumerable`-implies-`sorted` is deferred until KEYS/ENTRIES land (else the existing KEYS/ENTRIES
+fixtures, whose sorted entries lack the key, would break).
+
+**Codegen (a new `emitSortedIterationLinkage`, branched in `visitCollectionIteration` when `collection.sorted`
+&& mode==VALUES; KEYS/ENTRIES on sorted -> clean error for now).**
+1. Co-spend the HEAD at `iterBase+0`: read its commitment, per-entry address/category pin (input bytecode ==
+   the collection entry-P2SH, category base == master, mutable - reuse the `emitSortedSetRead` pin GTT:9854),
+   verify `slot == 0` (HEAD sentinel), set `expectedNext = nextKey` (32-byte). No body for the HEAD.
+2. `OP_BEGIN` loop, condition `OP_BIN2NUM(expectedNext) != 0` (not the tail). Body for entry `i` (input
+   `iterBase+i`): read commitment; ADDRESS/CATEGORY pin (same as HEAD - closes substitution); split
+   `slot||nextKey||value`; `OP_EQUALVERIFY slot == expectedNext` (contiguity: a skipped entry breaks it);
+   decode value; run the user body; `expectedNext = nextKey`; `i++`. `OP_UNTIL`.
+3. Loop exits exactly when `expectedNext == 0` = tail reached = all entries visited. Truncation -> the last
+   presented entry's `nextKey != 0` -> loop reads `iterBase+(k+1)` which is not a chain entry -> address pin
+   fails -> revert. Omission -> `slot != expectedNext` -> revert. Substitution -> address pin fails.
+   Completeness is thus enforced with ~2-3 opcodes/entry over the read (one SPLIT for nextKey + one
+   EQUALVERIFY) + the address pin (already paid by a trustless read) + the HEAD/tail O(1) checks. NO count
+   param (the chain length is self-determining).
+
+**SDK (`StatefulContract` ~5194, branch on `coll.sorted`).** Build `SortedList.fromUtxos`; co-spend the HEAD
+sentinel (slot 0) at `iterBase+0`, then the entries in ASCENDING slot order at `iterBase+1..N` (read-only,
+preserved as outputs, reusing `createReadOnlyEntryNftUnlocker`); do NOT append the count arg. The chain the
+covenant walks is exactly this order. Block-layout: the iteration run is `1 + N` inputs (HEAD + entries) at
+`[blockSize, blockSize + 1 + N)`; codegen `iterBase` and the SDK placement must agree (the dynamic-storage
+lesson - keep them in lockstep).
+
+**Tests (must include ADVERSARIAL).** e2e: a sorted `enumerable mapping(bytesN => int)`, VALUES iteration sums
+all values == the off-chain sum. Adversarial (each MUST revert): drop a middle entry (omission); drop the tail
+(truncation); present a foreign UTXO (substitution); reorder (chain break). Only ship once omission provably
+fails closed.
+
+STATUS: designed + grounded, NOT yet implemented - a soundness-critical covenant build to be done with the
+adversarial suite above, not rushed.
+
 ## Soundness - and why the slot space does NOT need a sorted linked list
 
 `__evm_storage` is an ordinary solidcash mapping - a covenant-verified keyed-UTXO store - so `sstore(s,v)`

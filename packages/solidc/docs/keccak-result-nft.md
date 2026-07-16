@@ -1,14 +1,18 @@
 # keccak256 via a result-NFT side-car (compute-and-commit model)
 
-Status: **SHIPPED - the keccak256 model for stateless direct-param keccak, single AND multi-call
-(slot-per-call); sections 11-13.** Complex-arg / nested / stateful keccak still falls back to the inline path
-(see [external-libraries.md](external-libraries.md)), which is being eliminated (section 13). Here the hash is
-computed inside a **co-spent side-car input's own** script evaluation and returned to the contract through the
-side-car's **NFT commitment**, instead of being computed on the contract input's stack.
+> **For the current implementation reference (how it works, the full support matrix, soundness,
+> provisioning, code map) see [keccak256.md](keccak256.md) - that is the authoritative doc.** This
+> file is the design log: the evaluation, budget evidence, and phase-by-phase build history. Its
+> status lines below are historical snapshots from earlier phases.
+
+Status (FINAL): **keccak256 is ALWAYS the compute-and-commit model, every mainstream form supported
+and VM-verified; inline keccak eliminated from codegen AND descriptor.** The hash is computed inside
+a **co-spent side-car input's own** script evaluation and returned to the contract through the
+side-car's **NFT commitment**, instead of on the contract input's stack.
 
 This doc records the full evaluation (why, the budget evidence, the soundness argument, the branded
-model, endianness) and the phased build plan. The single-hash branded case is the near-term target; the
-3-hash batch is documented but deferred.
+model, endianness) and the phased build plan. The status lines inside sections 3, 11, 13 are earlier
+historical snapshots - see keccak256.md for the shipped state.
 
 ## 1. Why a second model
 

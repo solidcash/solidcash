@@ -154,3 +154,49 @@ stateful + oracle + extcall + entry e2e as the regression gate.
 
 **Revisit if.** A third+ built-in library/oracle lands and the per-mechanism placement code starts to
 duplicate, or a contract needs many heterogeneous co-spent auxiliaries whose ad-hoc ordering becomes fragile.
+
+---
+
+## evmCompat `abi.encodeWithSignature` / `abi.encodeCall` - not at EVM parity (selector + args)
+
+**What.** Under `evmCompat`, `abi.encode` / `abi.encodePacked` / `abi.encodeWithSelector` are byte-identical to
+solc (331 conformance cases). But `abi.encodeWithSignature(sig, args)` and `abi.encodeCall(fn, args)` are NOT:
+they emit (1) a **SHA256**-derived 4-byte selector (`computeFunctionSelector` = `sha256(sig)[:4]`) where the EVM
+uses **keccak256**, and (2) **native pushdata** args (`emitEncodeArgsAndCatSelector` -> `emitPushdataEncode`)
+instead of the EVM head/tail ABI encoding. So both the selector and the argument bytes diverge from solc.
+`encodeWithSelector` is fine because the selector is passed in explicitly and its args already route through
+`emitEvmAbiEncode`.
+
+**Why deferred.** The selector needs keccak256, which is entangled with the concurrent keccak256 rework in
+`GenerateTargetTraversal.ts` (compute-and-commit side-car). The args half is independent (just route through
+`emitEvmAbiEncode`) but can't be conformance-verified on its own: the differential harness compares the whole
+`selector ++ args` blob, so a SHA256 selector makes every case mismatch until keccak lands.
+
+**What it'd take.** (1) An `evmCompat` branch in `visitAbiEncodeWithSignature` / `visitAbiEncodeCall` that encodes
+args via `emitEvmAbiEncode(node.parameters)` instead of `emitEncodeArgsAndCatSelector`. (2) A keccak256 selector:
+signatures are compile-time constants, so const-fold `keccak256(sig)[:4]` (the const-keccak256 path) - no runtime
+side-car needed. (3) `selCase`-style conformance cases for both, cross-checked against ethers `id(sig).slice(0,10)`.
+
+**Revisit if.** The const-`keccak256` work lands (it already covers `keccak256(<const>)`); computing a selector
+from a literal signature is exactly that shape, so this becomes a small, testable follow-up.
+
+---
+
+## evmCompat ABI - niche recursive shapes (fail closed)
+
+**What.** Three deep-recursion shapes throw with clear `evmCompat:` messages rather than mis-encoding:
+(1) `abi.decode` of a nested array of dynamic elements (`bytes[][]`, `string[][]`) - the *encode* works, only
+decode is unimplemented; (2) `abi.encode` of a struct with a **nested dynamic-struct** field; (3) `abi.decode`
+of a dynamic struct with a struct or fixed-array field. (`abi.encodePacked` of an array of dynamic elements also
+throws, but that is ambiguous/disallowed in Solidity too, so rejecting it is correct - not a gap.)
+
+**Why deferred.** Each recurses through the tracker freeze/resync boundary: a nested `emitEvmHeadTailFromBlobs`
+inside a frozen field-unpack would `getStackIndex` on colliding `__abiblob_i` slot names, and `bytes[][]` decode
+needs an inner-array re-frame the leaf decoder does not do. Not shapes real ABIs commonly use.
+
+**What it'd take.** A depth-scoped `__abiblob` namespace (or a stack-relative variant of `emitEvmHeadTailFromBlobs`
+that takes explicit depths instead of tracked names) so nested head/tail calls don't collide; plus a recursive
+`emitEvmDecodeElement` that re-frames inner dynamic arrays for `bytes[][]` decode.
+
+**Revisit if.** A real contract in the corpus needs one of these (e.g. a `bytes[][]` calldata param, or a struct
+whose field is itself a dynamic struct).

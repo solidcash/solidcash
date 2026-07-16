@@ -34,7 +34,7 @@ existing 128-byte-aware substrates fits, so a contiguous or packable region cost
 | EVM shape | Substrate (all already built) | 128B usage | UTXOs |
 |---|---|---|---|
 | declared vars; ERC-7201 namespaced struct fields; any **contiguous static slot run**; array elements `H(p)+i` | **packed register** (data NFT, bin-packed by ordinal, whole-commitment rebuild on write; `SymbolTableTraversal` ~591-704) | ~3-4 words per commitment | 1 per page, not 1 per slot |
-| mapping entries `H(k.p)` (sparse keyspace) | **sorted-list entry** (the C2 model; `SortedList.ts`, `emitSorted*`) | `(slot, next, value)` in one commitment | 1 per live key |
+| mapping entries `H(k.p)` (sparse keyspace) | **entry NFT** at the collection's deterministic address, slot id (key) in the commitment; C2-SORTABLE opt-in for absence proofs (`SortedList.ts`, `emitSorted*`) | 1 per live key | 1 per live key |
 | `bytes` / `string` / dynamic arrays (values > 32 bytes) | **chunk** (dynamic-storage.md) | 120B payload per chunk UTXO + a `uint32 len` header packed in a register | `ceil(len / 120)` |
 
 Rules that fall out of this:
@@ -43,16 +43,16 @@ Rules that fall out of this:
   namespaced structs (`$.slot := CONST`, then `$.f0/$.f1/$.f2` at `CONST+0/+1/+2`) and struct/array bases
   are the same shape - lower them to a **packed page** keyed by the base slot, reusing the register
   bin-packer, NOT to N `__evm_storage[base+i]` entries.
-- **Sparse mapping slots ride the sorted list.** One 128B commitment per live key already carries
-  `(slot, next, value)`; the EVM slot number `H(h(k).p)` is the logical label over that entry, not a new
-  UTXO per word.
+- **Sparse mapping slots are entry NFTs, directly located by slot id.** One entry per live key at the
+  collection's deterministic address (slot id in its commitment); the EVM slot number `H(h(k).p)` is the
+  logical label over that entry. C2 sorting is an opt-in absence-proof overlay, not a location mechanism.
 - **Values over 32 bytes ride the chunk model.** `bytes`/`string`/dynamic arrays already split into 120B
   chunks with the length authority in a register field.
 - **One-UTXO-per-slot stays only for genuinely-sparse assembly slot math** (hand-written `sstore` at a
   keccak-derived scattered slot with no packable neighbours). Even there, a contiguous field group packs.
 
-Net: EVM storage parity is a **logical slot-addressable VIEW** over the existing packed register + sorted
-list + chunk substrates, chosen to minimize UTXO count. It is not a physical re-homing onto a flat
+Net: EVM storage parity is a **logical slot-addressable VIEW** over the existing packed register + entry-NFT
+(C2-sortable) + chunk substrates, chosen to minimize UTXO count. It is not a physical re-homing onto a flat
 per-slot mapping. This matches the deep-research conclusion: make the hybrid EVM-slot-addressable and
 sound, do not rebuild it.
 
@@ -78,9 +78,10 @@ sound, do not rebuild it.
   roundtrip is out of scope: a BCH `address` is the full variable-length locking bytecode, not a 20-byte
   hash, so it cannot round-trip through a uint160 word.
 
-Not built: the ERC-7201 **const-slot** factory (no param, `$.slot := CONST`); EVM-exact register layout past
-a struct/array; sorted-list soundness re-homing of `__evm_storage`; Tier-2 high-level interop; sorted
-value-type tail (string / unbounded-bytes leaves). See Phasing.
+Since shipped (see Phasing): the ERC-7201 **const-slot** factory (P1); EVM-exact register layout past a
+struct/array (P3); the Tier-2 mapping-slot assembly idiom bridge (P4). P2 (sorting the slot space) was
+DROPPED by design - it needs no absence proof (see Soundness). Remaining: deeper Tier-2 (nested mappings /
+array-element idiom); the sorted-MAPPING string-value tail (P5, a C2-feature niche). See Phasing.
 
 ## What the EVM-ABI-parity work changed (prerequisites now retired)
 
@@ -125,17 +126,35 @@ infeasible. This forces a split:
 This is behavioral parity, not byte-identical slot-number parity by default; the byte-identical logical layer
 is the optional veneer above, reachable now that real-keccak folding + the EVM word encoder are shipped.
 
-## Soundness
+## Soundness - and why the slot space does NOT need a sorted linked list
 
-`__evm_storage` in Tier-1 is an ordinary solidcash mapping - a covenant-verified, permissionless-safe
-keyed-UTXO store - so `sstore(s,v)` then `sload(s)` returns `v`, distinct slots are independent, and the
-derivation is deterministic and collision-resistant: EVM storage semantics verbatim, per touched slot.
+`__evm_storage` is an ordinary solidcash mapping - a covenant-verified keyed-UTXO store - so `sstore(s,v)`
+then `sload(s)` returns `v`, distinct slots are independent, and the derivation is deterministic and
+collision-resistant: EVM storage semantics verbatim, per touched slot. Every element is DIRECTLY located by
+its slot id: entries of one collection share that collection's deterministic P2SH address, and each entry
+carries its slot id (key) in its commitment, so `__evm_storage[slot]` is found by scanning that address for
+the entry whose committed key == slot. No linked-list traversal is needed to FIND an element.
 
-The one soundness gap to close for parity (P2): EVM flat slots ride an implicit global authenticated trie;
-BCH has none. A plain mapping cannot prove a key is ABSENT, so negative-existence guards (`require(m[k] ==
-0)` before a first write) can be spoofed by withholding the entry. The sorted-linked-list (C2) is the UTXO
-substitute: absence is proven by bracketing (`pred.slot < H(k) < pred.nextKey`). Re-homing `__evm_storage`
-onto the sorted list closes this; the 128B commitment already fits `(slot, next, value)`.
+The sorted-linked-list (C2) exists for exactly one thing: an ABSENCE proof (bracketing `pred.slot < H(k) <
+pred.nextKey`), which stops the OMISSION attack - withholding an existing entry so a read sees "absent -> 0"
+(breaking a `require(x == 0)` guard) or a write mints a duplicate. That attack only applies to storage held
+in withholdable per-key UTXOs. It does NOT apply to the slot space in general, because the storage that
+actually needs absence proofs is covered elsewhere:
+
+- **Declared vars** live in the data NFT (register), a MANDATORY co-spend+recreate (`requiredNftIndices`).
+  Their value cannot be withheld, so `require(admin == 0)`-style guards are sound with zero absence machinery.
+- **Mappings** are the withholdable case, and the EXISTING C2 opt-in sorted list (`docs/sorted-mapping-c2.md`)
+  is precisely for them (balances/allowances/owners). After P4 an assembly mapping-slot access routes to the
+  SAME high-level mapping collection, so opting that mapping into C2 makes the assembly path sound too.
+- **`__evm_storage`** - after P1 (ERC-7201 -> promoted register/collection) and P4 (mapping idiom -> the
+  high-level mapping) the residual is only genuinely-raw, non-declared computed slots. A negative-existence
+  guard on such a raw slot is vanishingly rare; a contract that needs one should use a declared mapping
+  (C2-sortable), not a raw slot.
+
+So sorting the whole 2^256 slot space by default would pay a bracketing co-spend on every access to cover a
+case that is already sound (declared vars) or better expressed as a mapping (C2). It is dropped by design
+(see P2). The only residual, documented limitation: a raw permissionless `require(sload(rawSlot)==0)` guard
+inherits the plain-mapping omission concern - niche, and the sound path is a declared C2 mapping.
 
 ## Phasing
 
@@ -179,15 +198,11 @@ Priorities carry the PACKING lens above: each phase lowers to a 128B-aware subst
   hit the same entry collection (bidirectional, `EvmStorageTier2.test.ts`); the dead keccak binding is
   dropped (no on-chain keccak). REMAINING (deeper, multi-session): NESTED mappings (double-keccak idiom),
   dynamic-ARRAY element idiom (`sload(keccak256(p)+i)`), and struct-field slot math past a composite base.
-- **P2 - sorted-list soundness re-homing [SCOPED, blocked].** Route `__evm_storage` (and mapping slots)
-  through the C2 sorted-linked-list so negative-existence guards (`require(sload(s)==0)` before first write)
-  are sound (bracketing). The on-chain sorted covenant is complete and sound (`emitSorted*` GTT); TWO
-  blockers remain: (A) mark `__evm_storage` sorted at synthesis (`LowerInlineAssembly` runs after the
-  `sortedMappings` marking, `compiler.ts:189`); (B) the sorted SDK derivation (`StatefulContract` ~4928)
-  resolves keys as function PARAMS only, but `__evm_storage` keys are `constant`/`expression` (computed slot)
-  - it needs an off-chain slot-value evaluator to pick the bracketing predecessor UTXO before the VM probe.
-  ALSO a policy call: sorting adds bracketing co-spend cost and inherits the sorted value-type gaps, so
-  sorted-by-default is a tradeoff needing sign-off (do not flip a default implicitly).
+- **P2 - sorted-list soundness re-homing [DROPPED BY DESIGN].** The premise was wrong: the slot space does
+  not need absence proofs (see Soundness above). Elements are directly located by slot id at a deterministic
+  address; declared-var guards are sound via the always-present register; mapping guards use the existing C2
+  opt-in (and after P4 the assembly path shares that collection). Sorting the whole slot space would be pure
+  overhead. Not implemented.
 - **P5 - sorted value-type tail [SCOPED, needs chunk-in-entry].** A sorted entry's 128B commitment holds
   slot(32)+next(32)+value(<=64), so a value > 64 bytes (unbounded `string`/`bytes`) fails closed
   (`sortedValueKind` null, `SortedMappingCodegenPendingError`). Closing it needs the dynamic-storage chunk
@@ -219,6 +234,7 @@ encoder + real-keccak fold; fold it in only where a corpus contract exposes a ra
 - [x] P4 (core): declaration-order EVM slots incl. collections + the mapping-slot assembly idiom (inline +
       canonical let-bound) bridged to the high-level mapping, bidirectional. Nested mappings / dynamic-array
       element idiom / struct-field slot math remain.
-- [ ] P2: `__evm_storage` re-homed onto the sorted list. On-chain covenant sound; blocked on (A) mark-sorted
-      at synthesis + (B) an off-chain slot-value evaluator in the sorted SDK derivation, plus a default-policy call.
-- [ ] P5: sorted string / unbounded-bytes value tail (needs the chunk model spliced into the sorted entry value).
+- [x] P2: DROPPED BY DESIGN - the slot space needs no absence proof (declared vars = always-present register;
+      mappings = existing C2 opt-in; raw slots directly located by slot id). Sorting it would be pure overhead.
+- [ ] P5: sorted string / unbounded-bytes value tail (a niche enhancement to the C2 sorted-MAPPING feature,
+      not the slot space; needs the chunk model spliced into the sorted entry value).

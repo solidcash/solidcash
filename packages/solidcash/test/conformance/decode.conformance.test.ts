@@ -92,6 +92,16 @@ describe('abi.decode (evmCompat): dynamic arrays of value types', () => {
   it('bool[]', () => arr('bool', [true, false, true]));
 });
 
+describe('abi.decode (evmCompat): arrays of DYNAMIC elements (bytes[]/string[])', () => {
+  const arr = (elemType: string, values: unknown[]): Promise<void> =>
+    assertBchDecode(bchArrayDecodeCase({ elemType, values }));
+  it('bytes[] two elements', () => arr('bytes', [hbb('0xdeadbeef'), hbb('0xcafe')]));
+  it('bytes[] single', () => arr('bytes', [hbb('0xaabbcc')]));
+  it('bytes[] element crosses pad boundary', () => arr('bytes', [hbb(`0x${'11'.repeat(40)}`), hbb('0xff')]));
+  it('bytes[] empty', () => arr('bytes', []));
+  it('string[]', () => arr('string', ['hello', 'the quick brown fox']));
+});
+
 describe('abi.decode (evmCompat): multiple dynamic arrays (offset-following)', () => {
   const two = (type: string, a: unknown[], b: unknown[]): Promise<void> =>
     assertBchDecode(bch2ArrayDecodeCase({ type, a, b }));

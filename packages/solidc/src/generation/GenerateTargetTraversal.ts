@@ -7776,6 +7776,44 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.pushToStack('(value)');
   }
 
+  // Single top-level array of DYNAMIC leaf elements (bytes[]/string[]): the encoding is offset ++ length ++
+  // head(N offsets) ++ tail(N element encodings, each length-word ++ data ++ pad). Rebuild the SolidCash blob
+  // pushdata(N) ++ per-element pushdata. Sequential (canonical order): skip the head, then decode each element
+  // (read its length word, take that many bytes, skip padding) and re-encode via emitPushdataEncode. Loop-safe.
+  private emitEvmDynamicArrayDecode(elemType: Type, loc: SingleLocationData): void {
+    this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_NIP, loc); // drop the offset word
+    this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); // [lenWord, rest]
+    this.emit(Op.OP_SWAP, loc); this.emitEvmWordToValue(PrimitiveType.BIGINT, loc); // [rest, N]
+    this.emit(Op.OP_DUP, loc); this.emitPushdataEncode(PrimitiveType.BIGINT, loc); // [rest, N, acc=pushdata(N)]
+    this.emit(encodeInt(1n), loc); this.emit(Op.OP_PICK, loc); this.emit(encodeInt(32n), loc); this.emit(Op.OP_MUL, loc);
+    this.emit(encodeInt(3n), loc); this.emit(Op.OP_ROLL, loc); // rest to top: [N, acc, N32, rest]
+    this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_NIP, loc); // drop head: [N, acc, tail]
+    this.emit(encodeInt(2n), loc); this.emit(Op.OP_ROLL, loc); this.emit(Op.OP_DROP, loc); // drop N: [acc, tail]
+    this.emit(Op.OP_BEGIN, loc);
+    this.emit(Op.OP_SIZE, loc); this.emit(Op.OP_0NOTEQUAL, loc); // [acc, tail, more]
+    this.emit(Op.OP_IF, loc);
+    this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); // [acc, lenWord, rest1]
+    this.emit(Op.OP_SWAP, loc); this.emitEvmWordToValue(PrimitiveType.BIGINT, loc); // [acc, rest1, len]
+    this.emit(Op.OP_SPLIT, loc); // take len bytes: [acc, data, rest2]
+    this.emit(Op.OP_OVER, loc); this.emit(Op.OP_SIZE, loc); this.emit(Op.OP_NIP, loc); // size(data): [acc, data, rest2, dsz]
+    this.emit(encodeInt(32n), loc); this.emit(Op.OP_MOD, loc); // dsz % 32
+    this.emit(encodeInt(32n), loc); this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_SUB, loc); // 32 - (dsz%32)
+    this.emit(encodeInt(32n), loc); this.emit(Op.OP_MOD, loc); // pad = (32 - dsz%32) % 32
+    this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_NIP, loc); // skip pad: [acc, data, next]
+    this.emit(Op.OP_SWAP, loc); this.emitPushdataEncode(elemType, loc); // data -> pushdata element: [acc, next, pushEl]
+    this.emit(encodeInt(2n), loc); this.emit(Op.OP_ROLL, loc); // acc to top: [next, pushEl, acc]
+    this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_CAT, loc); // acc ++ pushEl: [next, acc']
+    this.emit(Op.OP_SWAP, loc); // [acc', next]
+    this.emit(encodeBool(false), loc);
+    this.emit(Op.OP_ELSE, loc);
+    this.emit(encodeBool(true), loc);
+    this.emit(Op.OP_ENDIF, loc);
+    this.emit(Op.OP_UNTIL, loc);
+    this.emit(Op.OP_DROP, loc); // drop the emptied tail -> [acc = SolidCash array blob]
+    this.popFromStack();
+    this.pushToStack('(value)');
+  }
+
   // Single top-level dynamic array (offset always 32): strip the offset word and the length word, then rebuild.
   private emitEvmArrayDecode(elemType: Type, loc: SingleLocationData): void {
     this.emit(encodeInt(32n), loc);
@@ -8240,8 +8278,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (this.compilerOptions.evmCompat) {
       const single = node.schema[0];
       if (node.schema.length === 1 && single instanceof ArrayType && single.bound === undefined) {
-        // a single top-level dynamic array (offset is always 32); rebuild the SolidCash array blob
-        this.emitEvmArrayDecode(single.elementType, locationData);
+        // a single top-level array (offset is always 32); rebuild the SolidCash array blob
+        if (this.isDynamicAbiType(single.elementType)) this.emitEvmDynamicArrayDecode(single.elementType, locationData);
+        else this.emitEvmArrayDecode(single.elementType, locationData);
         return node;
       }
       const hasDynamic = node.schema.some(

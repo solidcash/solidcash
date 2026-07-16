@@ -1,11 +1,13 @@
 # EVM storage parity on solidcash
 
-Status: DESIGN + Tier-1 proof-of-concept.
+Status: **Tier-1 (assembly-storage) + OZ StorageSlot param-factory SHIPPED and runtime-sound.** Tier-2
+(high-level state re-homed onto the slot model) is the open work. This doc was rewritten 2026-07-16 to
+reflect shipped reality (the earlier "nothing implemented" text was stale) and to fold in two things: the
+128-byte-commitment PACKING cost model, and the prerequisites the EVM-ABI-parity work retired.
 
-The question: can Solidity's storage model be mapped soundly onto solidcash, including the assembly that
-manipulates storage slots directly (`sstore`/`sload` with keccak-derived slots)? Earlier this was called
-"fundamentally out". It is not - it maps soundly, and proving so makes EVM storage a *feature* rather than a
-wall.
+The question was: can Solidity's storage model be mapped soundly onto solidcash, including the assembly that
+manipulates storage slots directly (`sstore`/`sload` with derived slots)? Earlier this was called
+"fundamentally out". It is not - it maps soundly, and the foundation is built.
 
 ## The EVM storage model is a mapping
 
@@ -21,166 +23,179 @@ slot-derivation function:
 where `H` is the hash. Everything is pure computation (hash + concat + arithmetic), all of which solidcash
 already has.
 
-## The model: one mapping is the slot space
+## The cost model: pack into 128-byte commitments, minimize UTXOs (LOAD-BEARING)
 
-A contract in *EVM-storage mode* puts all storage in a single synthesized state mapping that **is** the slot
-space:
+Since the May 2026 upgrade a CashToken NFT commitment holds **128 bytes** (`compiler.ts commitmentLimit:
+128`) = **~3-4 EVM words**. The parity model must exploit this: a naive `mapping(uint256 => uint256)
+__evm_storage` with **one UTXO per touched slot** is the raw EVM cost shape and is wasteful on BCH. A
+struct, a namespaced-storage group, or an array must NOT become N UTXOs. It maps onto whichever of the three
+existing 128-byte-aware substrates fits, so a contiguous or packable region costs one UTXO, not one per word:
 
-```
-mapping(uint256 => bytes32) __evm_storage;   // synthesized, one entry per touched slot
-```
+| EVM shape | Substrate (all already built) | 128B usage | UTXOs |
+|---|---|---|---|
+| declared vars; ERC-7201 namespaced struct fields; any **contiguous static slot run**; array elements `H(p)+i` | **packed register** (data NFT, bin-packed by ordinal, whole-commitment rebuild on write; `SymbolTableTraversal` ~591-704) | ~3-4 words per commitment | 1 per page, not 1 per slot |
+| mapping entries `H(k.p)` (sparse keyspace) | **sorted-list entry** (the C2 model; `SortedList.ts`, `emitSorted*`) | `(slot, next, value)` in one commitment | 1 per live key |
+| `bytes` / `string` / dynamic arrays (values > 32 bytes) | **chunk** (dynamic-storage.md) | 120B payload per chunk UTXO + a `uint32 len` header packed in a register | `ceil(len / 120)` |
 
-| EVM | lowering |
-|---|---|
-| `sstore(slot, v)` | `__evm_storage[slot] = bytes32(v)` |
-| `sload(slot)` | `uint256(__evm_storage[slot])` |
-| `uint256 s_x` (slot 0) | `__evm_storage[0]` (one entry = one packed 32-byte word) |
-| `mapping(K=>V) m @ p`, `m[k]` | `__evm_storage[H(h(k) . p)]` |
-| `T[] arr @ p`, `arr[i]` | `__evm_storage[H(p) + i * size]` |
+Rules that fall out of this:
 
-A solidcash mapping already accepts a **computed runtime key** (verified: a key built from `keccak256`/
-`sha256` + arithmetic works), so `sstore`/`sload` lower to runtime-keyed mapping writes/reads, and the
-slot-deriving assembly lands on the same entries as the high-level access. They interoperate because they
-share `__evm_storage`.
+- **Contiguous static slot runs pack.** Declared vars already bin-pack into 128B data NFTs. ERC-7201
+  namespaced structs (`$.slot := CONST`, then `$.f0/$.f1/$.f2` at `CONST+0/+1/+2`) and struct/array bases
+  are the same shape - lower them to a **packed page** keyed by the base slot, reusing the register
+  bin-packer, NOT to N `__evm_storage[base+i]` entries.
+- **Sparse mapping slots ride the sorted list.** One 128B commitment per live key already carries
+  `(slot, next, value)`; the EVM slot number `H(h(k).p)` is the logical label over that entry, not a new
+  UTXO per word.
+- **Values over 32 bytes ride the chunk model.** `bytes`/`string`/dynamic arrays already split into 120B
+  chunks with the length authority in a register field.
+- **One-UTXO-per-slot stays only for genuinely-sparse assembly slot math** (hand-written `sstore` at a
+  keccak-derived scattered slot with no packable neighbours). Even there, a contiguous field group packs.
+
+Net: EVM storage parity is a **logical slot-addressable VIEW** over the existing packed register + sorted
+list + chunk substrates, chosen to minimize UTXO count. It is not a physical re-homing onto a flat
+per-slot mapping. This matches the deep-research conclusion: make the hybrid EVM-slot-addressable and
+sound, do not rebuild it.
+
+## What is shipped (Tier-1 + slot-pointer), runtime-verified
+
+- **Synthesized `__evm_storage`** (`LowerInlineAssembly.ts`): a computed / arbitrary (non-declared) slot in
+  `sstore(slot,v)` / `sload(slot)` routes to a synthesized `mapping(uint256 => uint256) __evm_storage`
+  (`evmStorageSlotKey` -> `MappingAssignNode` / `MappingAccessNode`; the `CollectionNode` is synthesized
+  once if any slot routed). Runtime-sound (`EvmStorageFoundation.test.ts`): set in tx1 / read in tx2
+  roundtrips; distinct slots independent; an untouched slot reads default 0 even when another slot has a
+  live entry. Each touched slot rides the mapping entry-NFT covenant.
+- **Declared-var slots decompose to packed vars** (`computeStorageLayout` + `resolveSlotFields`): a literal
+  or `.slot` slot that holds declared vars stays the optimized register path (sub-word fields combined /
+  decomposed), NOT `__evm_storage`. `x.slot` of a state var lowers to its constant slot number.
+- **OZ StorageSlot param-factory idiom** (`LowerStorageSlotPointers.ts`): a `library` fn
+  `f(bytes32 slot) returns (XSlot storage r){ assembly { r.slot := slot } }` is a slot-pointer factory;
+  `XSlot storage d = StorageSlot.getXSlot(SLOT); d.value = v` / `d.value` rewrite to
+  `__evm_storage[uint256(SLOT)]` with per-field-type casts. `.value` is a writable field (grammar);
+  constant-key reads resolve (the SDK matches the entry, covenant re-derives + `OP_EQUALVERIFY`s the key so
+  a wrong entry fails safe); high-bit slots write correctly (`uint(bytesN)` sign-pad). `erc7201(id)` lowers
+  to `uint256(sha256(id))`.
+- **uint256 / bool / bytes32 slots roundtrip fully.** **Address-valued** slots compile but the runtime
+  roundtrip is out of scope: a BCH `address` is the full variable-length locking bytecode, not a 20-byte
+  hash, so it cannot round-trip through a uint160 word.
+
+Not built: the ERC-7201 **const-slot** factory (no param, `$.slot := CONST`); EVM-exact register layout past
+a struct/array; sorted-list soundness re-homing of `__evm_storage`; Tier-2 high-level interop; sorted
+value-type tail (string / unbounded-bytes leaves). See Phasing.
+
+## What the EVM-ABI-parity work changed (prerequisites now retired)
+
+The ABI byte-parity work (evm-abi-parity.md, shipped through commit `bab4efe9`) landed three things this
+storage work was going to have to build from scratch:
+
+1. **Compile-time REAL keccak.** `keccak256(literal)` folds via `@noble/hashes/sha3` (`FoldHashLiterals`);
+   the selector path folds `keccak256(canonicalSig)[:4]` (`computeEvmFunctionSelector`). Byte-identical
+   **constant** slot numbers (declared-var slots, struct/array bases, ERC-7201 constants) need exactly this,
+   and it is now proven in codegen, not a claim. (This CORRECTS the earlier version of this doc, which said
+   slot keccak lowers to sha256: PHYSICAL UTXO keys use sha256, but a CONSTANT slot's byte-identical EVM
+   number is a real-keccak compile-time fold.)
+2. **The EVM word / mapping-key preimage encoder.** `emitEvmWordFromUint` / `emitEvmAbiWord` (bytesN
+   left-align; int/uint/address/bool right-align + sign-extend; 32-byte big-endian) is byte-verified against
+   ethers/solc. The byte-identical LOGICAL mapping-slot preimage `H(h(k).p)` needs the same EVM word
+   encoding; the on-chain primitive exists and the SDK mirror is a straight port.
+3. **A differential conformance harness.** `packages/solidcash/test/conformance/` compiles one source under
+   both solc (-> `@ethereumjs/evm`) and solidc (-> libauth) and asserts value/byte-identical results. Storage
+   parity is testable the same way once the harness gains a stateful / multi-call extension.
+
+So the SOUND behavioral core (native sha256 physical slots, no keccak on the hot path) was always reachable;
+the ABI work specifically de-risked the OPTIONAL byte-identical-EVM-slot-number veneer and gave storage a
+real test substrate. The `evmCompat` gate discipline (temporary, dropped once parity is green) is the model
+this work follows too.
+
+## The hash function: physical sha256 vs logical keccak
+
+BCH has no native keccak. Measured cost (`Keccak256.test.ts` compute-budget bench): one input affords ~3
+keccak block-permutations (~8M op budget at the 10,000-byte bytecode limit), spent as ONE keccak256 of up to
+~407 bytes; a 2nd keccak call in the same input aborts. So in-script keccak on a storage hot path is
+infeasible. This forces a split:
+
+- **PHYSICAL slot (the UTXO key) uses native `sha256`** - cheap, on-chain re-derivable, collision-resistant,
+  so distinct keys land on distinct entries and the covenant bracketing / key-check stays sound. Nothing
+  outside the contract observes the physical slot number.
+- **LOGICAL slot (the EVM slot number) uses keccak, off-chain / at compile time.** CONSTANT slots fold real
+  keccak at compile time (free, unforgeable). RUNTIME mapping slots `H(h(k).p)` are the SDK's off-chain view;
+  the physical UTXO key stays sha256. Real in-script keccak is confined to cross-chain interop with
+  pre-existing keccak-derived data (a foreign Merkle path = `log2(N)` levels; a hash committed on Ethereum =
+  1), which is niche and bounded.
+
+This is behavioral parity, not byte-identical slot-number parity by default; the byte-identical logical layer
+is the optional veneer above, reachable now that real-keccak folding + the EVM word encoder are shipped.
 
 ## Soundness
 
-`__evm_storage` is an ordinary solidcash mapping - already a covenant-verified, permissionless-safe keyed-UTXO
-store. EVM storage semantics are exactly: `sstore(s, v)` then `sload(s)` returns `v`; distinct slots are
-independent; the derivation is deterministic and collision-resistant. The mapping provides all of this
-verbatim. Therefore every Solidity storage construct - declared vars, mappings, nested mappings, dynamic and
-struct arrays, and hand-written assembly slot arithmetic - has identical storage semantics. That is the
-parity: **solidcash storage is EVM storage, with UTXOs as the slot cells.** No new soundness machinery is
-introduced; each slot entry rides the existing mapping covenant.
+`__evm_storage` in Tier-1 is an ordinary solidcash mapping - a covenant-verified, permissionless-safe
+keyed-UTXO store - so `sstore(s,v)` then `sload(s)` returns `v`, distinct slots are independent, and the
+derivation is deterministic and collision-resistant: EVM storage semantics verbatim, per touched slot.
 
-The one divergence is the slot *number* (see next section), which is invisible to a standalone contract
-because slot numbers are internal.
+The one soundness gap to close for parity (P2): EVM flat slots ride an implicit global authenticated trie;
+BCH has none. A plain mapping cannot prove a key is ABSENT, so negative-existence guards (`require(m[k] ==
+0)` before a first write) can be spoofed by withholding the entry. The sorted-linked-list (C2) is the UTXO
+substitute: absence is proven by bracketing (`pred.slot < H(k) < pred.nextKey`). Re-homing `__evm_storage`
+onto the sorted list closes this; the 128B commitment already fits `(slot, next, value)`.
 
-## The hash function: sha256 vs keccak256 (compute-budget evaluation)
+## Phasing
 
-EVM derives slots with `keccak256`. BCH has no native keccak: `keccak256` on solidcash is an **external
-co-spend library** (OP_DEFINE/OP_INVOKE blob), which is computationally heavy - invoking it many times in one
-input risks exhausting the per-input compute budget. So the load-bearing question for this model is: **how
-often must keccak run in-script?**
+Priorities carry the PACKING lens above: each phase lowers to a 128B-aware substrate, never one-UTXO-per-slot.
 
-### Measured cost (BCH-2026 VM)
+- **P0 - doc + reality alignment (this rewrite). DONE.**
+- **P1 - ERC-7201 / const-slot factory [IN PROGRESS, top ROI]. Design = PROMOTION to packed hidden state.**
+  A no-param factory `f() returns (S storage $) { assembly { $.slot := CONST } }` (const RHS) is the ERC-7201
+  namespaced-storage idiom. It is NOT the param-factory (`getXSlot(bytes32 slot)`, runtime slot) which stays
+  the existing `__evm_storage[slot]` path. The const factory's struct is a FIXED group of fields, so
+  **promote each field to hidden contract state, routed to its correct 128B-aware substrate** (this is
+  `AstBuilder.buildFlattenedStructField`'s exact mapping, reused): scalar value type -> a hidden packed
+  register `StateVariableNode` (fields of one struct co-pack into one data-NFT commitment = the packing win);
+  `mapping` field -> a hidden `CollectionNode` (entry / sorted list); dynamic `string`/`bytes`/array field ->
+  a hidden `isDynamic` var (chunk model). Promotion is not just packing - it is the only correct semantic: a
+  mapping field CANNOT be a single `__evm_storage[base+i]` slot (it is a subspace `H(k.(base+i))`).
+  Rewrite `_getX()._field` (inline) and the OZ-canonical `S storage $ = _getX(); $._field` (local alias,
+  read + write) to the promoted state. The local-alias write desugars (AstBuilder) to a struct rebuild
+  `$ = S(a0,a1,..)` which the pass maps to per-field `StateAssign`; whole-struct rebuild composes with
+  register packing (one commitment rewrite). Physical slot number CONST is ignored (internal); byte-identical
+  logical slot = the optional keccak veneer later. Implemented in `LowerStorageSlotPointers` (runs
+  pre-`SymbolTableTraversal`, so injected vars pack). Phasing: **MVP-1** single-scalar struct
+  (OwnableUpgradeable) -> **MVP-2** multi-scalar (packing proof, one data NFT) -> **MVP-3** mapping field
+  (ERC20-balances). Unlocks ERC-7201, OwnableUpgradeable, ~37 OZ-upgradeable v5 bases, EACC. Today
+  `$.slot := CONST` throws `YulNotLowerable` (`LowerInlineAssembly` ~982) -> misleading "control-flow/memory".
+- **P3 - EVM-exact register layout [confirmed latent bug].** `stateVarByteWidth` returns 32 for a
+  struct/array/mapping (`LowerInlineAssembly:127-135`), so `computeStorageLayout` advances the next var by
+  one slot when EVM advances by the composite's full `storageSize()` (N words). A declared var after a
+  `uint256[3]` gets the wrong EVM slot number; sub-word assembly then diverts to a disjoint cell. Fix the
+  width to the full multi-word `storageSize()`, packing-aware.
+- **P2 - sorted-list soundness re-homing.** Route `__evm_storage` (and Tier-2 mapping slots) through the C2
+  sorted-linked-list so negative-existence guards are sound (bracketing). One 128B entry per live key.
+- **P4 - Tier-2 high-level interop [large, multi-session].** Lay high-level state (vars / mappings / arrays)
+  at their derived slots so `arr.push(...)` and `assembly { sload(H(p)+i) }` see the same entries. The
+  logical slot VIEW over the packed register + sorted list + chunk substrates (packing-preserving), gated
+  behind P1/P3 landing. ~45-48 corpus files, byte-exact caveat.
+- **P5 - sorted value-type tail.** string / unbounded-bytes mapping leaves (currently fail closed);
+  address/struct values already work and are VM-tested.
 
-A direct measurement (`packages/solidcash/test/Keccak256.test.ts`, "compute-budget bench") pins the numbers
-along two axes. The side-car only *defines* the body; the `OP_INVOKE` executes in the **spending (main)
-input** and consumes that input's operation-cost budget.
-
-- **Cost scales per 136-byte message block** (~2.26M op cost/block): 32 B -> 1 block ~2.29M (21,116
-  instructions, 41 hash-digest iterations); 200 B -> 2 blocks ~4.54M; 272 B -> 3 blocks ~6.78M; 408 B -> 4
-  blocks, over budget. The per-input budget is `operationCostBudgetPerByte(800) * densityControlLength`,
-  and density tracks the spent script size, so **padding raises the budget at ~800 per byte** (a 1000-byte
-  pad adds ~808k). At the 10,000-byte consensus bytecode limit the budget tops out near ~8M op, which caps
-  **one keccak256 at ~3 blocks (~407 bytes)**. (Matches `keccak-poc/README.md`.)
-- **Distinct calls are capped at one per input.** The library blob `OP_DEFINE`s helper functions inside its
-  invoked body, so a 2nd keccak256 call in the same input aborts ("previously-defined function
-  identifier"). The ~3-block capacity is therefore reachable only as ONE call over a long message, not as 3
-  separate calls.
-
-So one input affords ~3 keccak block-permutations (~8M budget), spent as a single keccak256 of up to ~407
-bytes. Real in-script keccak is expensive (a whole input budget for a few blocks), and the storage hot path
-would need one per slot access - infeasible. The sha256-slot approach (zero in-script keccak for storage) is
-not an optimization but a necessity.
-
-The answer is **basically never for storage**, because slot hashing does not need to match Ethereum's slot
-hashing - it only needs to be internally consistent and collision-resistant. So:
-
-- **Slot derivation uses native `sha256`/`hash256`** (BCH opcodes, ~free). `mapping[k]` and `arr[i]` hash with
-  sha256; the value is stored/read at that entry. Distinct keys -> distinct sha256 slots (collision-resistant)
-  -> sound. The contract behaves identically to EVM; only the internal slot *number* differs, and nothing
-  outside the contract observes it.
-- **Assembly `keccak256(...)` used to derive a slot is lowered to `sha256`** in EVM-storage mode, so the
-  hand-written slot math matches the high-level layout. `keccak256(abi.encode(slot))` -> `sha256(...)`; the
-  result flows into `sload`/`sstore`, so it is a slot, not an externally-compared hash.
-
-This is **behavioral parity, not byte-identical slot-number parity**. The two differ only if a contract
-exposes a raw slot number to an off-chain consumer that recomputed it with real keccak - a cross-chain
-inspection case, not a contract-logic case.
-
-### When real keccak IS required in-script (and how little)
-
-Real keccak is only needed when the contract must reproduce a value that was keccak-hashed *outside* and is
-then compared on-chain:
-
-| Operation | In-script keccak? | Why |
-|---|---|---|
-| Storage: declared vars, mappings, arrays, nested, packed slots | 0 | sha256 slots, internally consistent |
-| Assembly slot math (`keccak256(abi.encode(p))` for a slot) | 0 | lowered to sha256 (it is a slot) |
-| Internal commitments / ids (`hash` of on-chain data, compared on-chain) | 0 | app picks the hash; use sha256/hash256 |
-| Native auth (checkSig / checkDataSig) | 0 | no keccak in the path |
-| EIP-712 / Ethereum signature recovery | 0 in-script | recovery is inert on BCH; the message hash is SDK-side |
-| Verifying an **existing Ethereum keccak Merkle tree** | ~log2(N) | each level hashes a node that depends on on-chain proof input |
-| Reproducing a hash **committed on Ethereum** | 1 per check | must match the foreign keccak exactly |
-
-So for **basic contract operations the in-script keccak count is zero** - storage, mappings, arrays, internal
-hashing and native auth all use native sha256/hash256. Real keccak is confined to **cross-chain interop with
-pre-existing keccak-derived data**, which is niche, and even there the count is bounded (a Merkle path is
-`log2(N)` levels, and an app that owns its tree can build it with sha256 to drop to zero).
-
-### What belongs on the SDK side (free of compute budget)
-
-Any keccak whose **input is known to the transaction builder** moves off-chain: the SDK computes the digest
-and passes it as an argument; the script only consumes the 32 bytes. This covers precomputed message hashes,
-domain separators, salted commitments where the salt is chosen by the builder, and Merkle *roots*. The
-script keeps only the hashing it must do to *verify* something against untrusted on-chain input - which, per
-the table, is just the cross-chain-interop tail.
-
-**Conclusion:** the storage-parity model does not move keccak load into the script. Slot hashing is sha256
-(native, sound, behavioral parity). The heavy co-spend keccak stays reserved for explicit cross-chain hashing,
-where the count is small and bounded, and much of even that is SDK-side.
-
-### Option (undecided): lower keccak256 -> sha256 *globally*, not just slots
-
-The analysis above keeps real keccak for the cross-chain tail. A blunter option is to lower **every**
-`keccak256` to `sha256` - a pure rename, both produce 32 bytes - not only the slot-deriving ones. This eases
-the gap maximally: any contract that hashes with keccak (ids, commitments, mappings, a Merkle tree it builds
-itself) compiles and runs cheaply on native sha256, and the heavy co-spend keccak leaves the default path
-entirely.
-
-What it costs: any comparison of an in-script keccak result against a value hashed with **real** keccak
-elsewhere (an existing Ethereum Merkle tree, a hash committed on Ethereum, an EIP-712 digest checked off-chain)
-silently diverges. On a BCH-native contract that never touches Ethereum at runtime this is unobservable; it
-only bites cross-chain interop.
-
-It is sound (sha256 is collision-resistant; internal hashing stays self-consistent) but not elegant - it
-redefines what `keccak256` means - so it must be gated and warned. Shapes:
-- a compiler flag (`keccak256AsSha256`), off by default, that rewrites `keccak256(x)` -> `sha256(x)` and emits
-  a per-use warning; or
-- on by default under solidityImportCompat (porting), warned, with a `realKeccak256`-style opt-out for the
-  cross-chain cases.
-
-Trade: it subsumes the slot-keccak->sha256 rule (with it on, slot hashing is sha256 for free) and clears
-keccak-heavy ports at near-zero compute, at the price of cross-chain hash-value parity - made explicit by the
-warning. Status: proposed, **not decided**.
-
-## Scope - two tiers
-
-- **Tier 1 (assembly-storage mode):** synthesize `__evm_storage`; route `sstore`/`sload` with a *computed*
-  slot to it (a literal / `.slot` slot stays the optimized P4/P7b path - a declared var). Proves the slot-
-  space emulation; compiles contracts that manage storage purely through assembly. This is the PoC below.
-- **Tier 2 (full parity):** also lay high-level state (vars / mappings / arrays) into `__evm_storage` at their
-  derived slots, so `arr.push(...)` and `assembly { sload(sha256(p)+i) }` see the same entries. This is what
-  compiles `EVMStorageDynamicArrayStruct`. It is a storage-backend re-homing onto the slot model - large, and
-  gated behind Tier 1 landing.
+Byte-identical LOGICAL slot numbers (the SDK keccak veneer) is reachable any time after P1, reusing the ABI
+encoder + real-keccak fold; fold it in only where a corpus contract exposes a raw slot number cross-chain.
 
 ## Tradeoffs
 
-1. **Cost.** Native solidcash keeps simple state packed in one data-NFT commitment; EVM-storage mode is one
-   UTXO per touched slot (packing within a slot is preserved - a packed slot is one entry holding the word).
-   It is the EVM cost shape, heavier than native, so it stays an opt-in mode, not the default.
-2. **Per-contract mode**, auto-detected when a contract uses computed-slot `sstore`/`sload` (or opt-in). It
-   supersedes the P4/P7b literal-slot->var mapping for that contract only.
-3. **Slot-number divergence** (sha256 vs keccak) is intentional, for compute budget; documented above.
+1. **Cost.** Native solidcash keeps simple state packed in one data-NFT commitment; the slot model is at most
+   the EVM cost shape, but the packing rules above keep contiguous / packable regions at one UTXO per ~3-4
+   words rather than one per word. It stays an opt-in mode where it is heavier than native.
+2. **Per-contract mode**, auto-detected when a contract uses computed-slot `sstore`/`sload` or the const-slot
+   factory (P1). It supersedes the literal-slot-to-var register mapping for that contract only.
+3. **Slot-number divergence** (physical sha256 vs EVM keccak) is intentional, for the compute budget;
+   invisible to a standalone contract. The byte-identical logical layer is the optional veneer.
 
-## Status
+## Status checklist
 
-- [x] Feasibility verified: solidcash mappings take keccak/sha256-derived computed runtime keys (compiled).
-- [ ] Tier 1 (design only - NOT implemented): computed-slot `sstore`/`sload` lower to a synthesized
-      `__evm_storage` mapping. Awaiting a go/no-go decision.
-- [ ] Tier 2: high-level state re-homed onto the slot model.
-- [ ] keccak256 -> sha256 global option: proposed, undecided.
-
-Nothing here is implemented yet; this is a design + feasibility writeup pending decisions.
+- [x] Feasibility: solidcash mappings take computed sha256/keccak-derived runtime keys.
+- [x] Tier-1: computed-slot `sstore`/`sload` -> synthesized `__evm_storage`; runtime-sound roundtrip.
+- [x] OZ StorageSlot PARAM-factory idiom (read + write, constant-key resolution, high-bit slots).
+- [x] P0: this doc realigned to shipped reality + the packing cost model + the ABI prerequisites.
+- [ ] P1: const-slot (ERC-7201) factory -> packed page.
+- [ ] P3: EVM-exact register layout past a struct/array.
+- [ ] P2: `__evm_storage` re-homed onto the sorted list (negative-existence soundness).
+- [ ] P4: Tier-2 high-level state on the slot model (logical view over register/sorted-list/chunk).
+- [ ] P5: sorted string / unbounded-bytes value tail.

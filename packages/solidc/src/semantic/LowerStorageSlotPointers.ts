@@ -1,34 +1,50 @@
 import {
-  StructType, MappingType, IntType, AddressType, Type,
+  StructType, MappingType, IntType, AddressType, BytesType, ArrayType, PrimitiveType, Type,
 } from '@solidcash/utils';
 import AstTraversal from '../ast/AstTraversal.js';
 import {
   Node, SourceFileNode, ContractNode, FunctionDefinitionNode, AssemblyStatementNode, VariableDefinitionNode,
   AssignNode, FieldAccessNode, IdentifierNode, FunctionCallNode, ExpressionNode, CastNode, BlockNode,
-  MappingAccessNode, MappingAssignNode, CollectionNode,
+  MappingAccessNode, MappingAssignNode, CollectionNode, StateVariableNode, StateAccessNode, StateAssignNode,
+  StateVariableVisibility,
 } from '../ast/AST.js';
 import { cloneNode } from '../ast/clone.js';
-import { YulAssignmentNode, YulPathNode } from '../ast/YulAST.js';
+import { YulAssignmentNode, YulPathNode, YulLiteralNode } from '../ast/YulAST.js';
 
-// The OpenZeppelin StorageSlot idiom (write-to-any-slot). A `library` function
-//   `f(bytes32 slot) internal pure returns (XSlot storage r) { assembly { r.slot := slot } }`
-// is a slot-pointer FACTORY: calling it yields a pointer to arbitrary EVM storage slot `slot`. This pass
-// lowers `XSlot storage x = f(slot); x.value = v` / `x.value` (read) to the synthesized __evm_storage register:
-// `__evm_storage[slot] = <cast v>` / `<cast __evm_storage[slot]>`. Runs pre-semantic (the factory's assembly
-// is consumed here, never reaching LowerInlineAssembly). Single-field slot structs (the OZ set: Address/
-// Boolean/Bytes32/Uint256) only; the field type drives the value cast. See docs/evm-storage-parity.md.
+// The OpenZeppelin StorageSlot idiom (write-to-any-slot). Two factory shapes:
+//   PARAM factory:  `f(bytes32 slot) returns (XSlot storage r) { assembly { r.slot := slot } }`  (runtime slot)
+//   CONST factory:  `f()            returns (S storage $)      { assembly { $.slot := CONST } }`  (ERC-7201)
+// A PARAM factory yields a pointer to an arbitrary EVM slot: `XSlot storage x = f(slot); x.value = v` / `x.value`
+// lower to the synthesized __evm_storage register `__evm_storage[slot]`. A CONST factory is the ERC-7201
+// namespaced-storage idiom over a FIXED struct: each field is PROMOTED to hidden packed contract state, routed
+// to its correct 128-byte-aware substrate (scalar value -> register StateVariableNode; mapping -> CollectionNode;
+// this is AstBuilder.buildFlattenedStructField's mapping). Promotion is the only sound semantic - a mapping
+// field cannot be a single `__evm_storage[base+i]` slot. `_getX().f` / `S storage $ = _getX(); $.f` (read + the
+// struct-rebuild write) rewrite to the promoted state. Runs pre-semantic (before SymbolTableTraversal, so the
+// injected vars pack; the factory's assembly is consumed here, never reaching LowerInlineAssembly).
+// See docs/evm-storage-parity.md.
 
 const UINT256 = new IntType(false, 256);
 const UINT160 = new IntType(false, 160);
 const EVM_STORAGE = '__evm_storage';
 
-interface Factory { struct: StructType; slotParamIdx: number; }
-interface Alias { slot: ExpressionNode; struct: StructType; }
+// PARAM factory carries the slot param index; CONST factory (ERC-7201) sets isConst and promotes the struct.
+interface Factory { struct: StructType; slotParamIdx: number; isConst?: boolean; }
+interface Alias { slot?: ExpressionNode; struct: StructType; isConst?: boolean; }
+
+// The hidden state name a promoted struct field lands on (mirrors AstBuilder's `<var>__<field>` flattening).
+function promotedName(struct: StructType, field: string): string {
+  return `${struct.name}__${field}`;
+}
 
 export default class LowerStorageSlotPointers extends AstTraversal {
   private factories = new Map<string, Factory>();
   private aliases = new Map<string, Alias>();
   private used = false;
+  // CONST-factory structs already promoted into the contract (dedupe: one struct type -> one field set).
+  private promotedStructs = new Set<string>();
+  // CONST-factory structs actually USED (aliased or inline), collected during the visit, promoted after it.
+  private constStructsToPromote = new Map<string, StructType>();
 
   visitSourceFile(node: SourceFileNode): Node {
     const contracts = [node.contract, ...(node.importedContracts ?? [])].filter(Boolean) as ContractNode[];
@@ -45,7 +61,40 @@ export default class LowerStorageSlotPointers extends AstTraversal {
       mapping.location = node.contract.location;
       node.contract.collections.push(mapping);
     }
+    // Promote the fields of every USED CONST-factory struct to hidden packed state on the deployed contract.
+    if (node.contract) for (const struct of this.constStructsToPromote.values()) this.promoteStruct(node.contract, struct);
     return node;
+  }
+
+  // Inject one hidden state node per field of a CONST-factory (ERC-7201) struct, routed to its 128B-aware
+  // substrate: scalar value -> packed register StateVariableNode; mapping -> CollectionNode; dynamic string/
+  // bytes/array -> a chunked isDynamic var. Idempotent per struct type. Nested struct fields are deferred.
+  private promoteStruct(contract: ContractNode, struct: StructType): void {
+    if (this.promotedStructs.has(struct.name)) return;
+    this.promotedStructs.add(struct.name);
+    for (const field of struct.fields) {
+      const name = promotedName(struct, field.name);
+      const t = field.type;
+      if (t instanceof MappingType) {
+        const col = new CollectionNode(t, name);
+        col.visibility = StateVariableVisibility.PRIVATE;
+        col.location = contract.location;
+        contract.collections.push(col);
+        continue;
+      }
+      if (t instanceof StructType) {
+        throw new Error(`ERC-7201 storage struct '${struct.name}' has a nested struct field '${field.name}' `
+          + '(not yet supported); see docs/evm-storage-parity.md P1.');
+      }
+      const sv = new StateVariableNode(t, name);
+      sv.visibility = StateVariableVisibility.PRIVATE;
+      // Unbounded bytes/string/array back their value in chunk UTXOs (docs/dynamic-storage.md), like a declared dynamic var.
+      if ((t instanceof BytesType && t.bound === undefined) || (t instanceof ArrayType && t.bound === undefined)) {
+        sv.isDynamic = true;
+      }
+      sv.location = contract.location;
+      contract.stateVariables.push(sv);
+    }
   }
 
   // A slot-pointer factory: single AssemblyStatement `<returnName>.slot := <param>`, returns a struct storage ptr.
@@ -57,10 +106,17 @@ export default class LowerStorageSlotPointers extends AstTraversal {
     const path = yul.paths[0];
     if (path.members.join('.') !== 'slot' || path.base !== fn.returnNames[0]) return;
     if (fn.returnTypes.length !== 1 || !(fn.returnTypes[0] instanceof StructType)) return;
-    if (!(yul.value instanceof YulPathNode) || yul.value.members.length > 0) return; // r.slot := <bare param>
-    const slotParamIdx = fn.parameters.findIndex((p) => p.name === (yul.value as YulPathNode).base);
-    if (slotParamIdx < 0) return;
-    this.factories.set(fn.name, { struct: fn.returnTypes[0], slotParamIdx });
+    const struct = fn.returnTypes[0];
+    const rhs = yul.value;
+    if (rhs instanceof YulPathNode && rhs.members.length === 0) {
+      // `<r>.slot := <bare name>`: a param name -> PARAM factory; a non-param (a constant) -> ERC-7201 CONST factory.
+      const slotParamIdx = fn.parameters.findIndex((p) => p.name === rhs.base);
+      if (slotParamIdx >= 0) this.factories.set(fn.name, { struct, slotParamIdx });
+      else this.factories.set(fn.name, { struct, slotParamIdx: -1, isConst: true });
+      return;
+    }
+    // `<$>.slot := 0x<literal>` -> CONST factory (the constant baked as a literal).
+    if (rhs instanceof YulLiteralNode) this.factories.set(fn.name, { struct, slotParamIdx: -1, isConst: true });
   }
 
   visitFunctionDefinition(node: FunctionDefinitionNode): Node {
@@ -69,13 +125,19 @@ export default class LowerStorageSlotPointers extends AstTraversal {
     return super.visitFunctionDefinition(node);
   }
 
-  // `XSlot storage x = factory(slot)` -> register x as a slot alias; drop the declaration.
+  // `XSlot storage x = factory(..)` -> register x as an alias; drop the declaration. PARAM factory carries the
+  // slot expression (routes to __evm_storage[slot]); CONST factory (ERC-7201) marks the struct for promotion.
   visitVariableDefinition(node: VariableDefinitionNode): Node {
     if (node.expression instanceof FunctionCallNode) {
       const factory = this.factories.get(node.expression.identifier.name);
       if (factory) {
-        this.aliases.set(node.name, { slot: node.expression.parameters[factory.slotParamIdx], struct: factory.struct });
-        this.used = true;
+        if (factory.isConst) {
+          this.aliases.set(node.name, { struct: factory.struct, isConst: true });
+          this.constStructsToPromote.set(factory.struct.name, factory.struct);
+        } else {
+          this.aliases.set(node.name, { slot: node.expression.parameters[factory.slotParamIdx], struct: factory.struct });
+          this.used = true;
+        }
         const empty = new BlockNode([]);
         empty.location = node.location;
         return empty;
@@ -84,31 +146,58 @@ export default class LowerStorageSlotPointers extends AstTraversal {
     return super.visitVariableDefinition(node);
   }
 
-  // Desugared struct-field write `x.value = v` -> `x = XSlot(v)` -> `__evm_storage[slot] = <cast v>`.
+  // PARAM: desugared `x.value = v` -> `x = XSlot(v)` -> `__evm_storage[slot] = <cast v>`. CONST: desugared
+  // `$.f = v` -> `$ = S(.., v, ..)` (struct rebuild) -> per-scalar-field `StateAssign(S__f, ..)` (unchanged
+  // fields, passed back as `$.f`, are skipped). Field order == constructor arg order.
   visitAssign(node: AssignNode): Node {
     const alias = this.aliases.get(node.identifier.name);
     if (alias && node.expression instanceof FunctionCallNode
-      && node.expression.identifier.name === alias.struct.name && node.expression.parameters.length === 1) {
-      const write = new MappingAssignNode(
-        EVM_STORAGE, [this.keyOf(alias)], this.toUint(node.expression.parameters[0], alias.struct.fields[0].type),
-      );
-      write.location = node.location;
-      return write;
+      && node.expression.identifier.name === alias.struct.name) {
+      const args = node.expression.parameters;
+      if (alias.isConst) {
+        const stmts: StateAssignNode[] = [];
+        alias.struct.fields.forEach((f, i) => {
+          if (f.type instanceof MappingType || args[i] === undefined) return; // mappings aren't rebuilt via the ctor
+          if (this.isSelfFieldRead(args[i], node.identifier.name, f.name)) return; // unchanged field
+          const write = new StateAssignNode(promotedName(alias.struct, f.name), this.visit(args[i]) as ExpressionNode);
+          write.location = node.location;
+          stmts.push(write);
+        });
+        // A single write returns bare (containsStatefulOperation does not recurse a bare BlockNode); multiple
+        // writes go in a BlockNode whose recursion is added to containsStatefulOperation for MVP-2.
+        if (stmts.length === 1) return stmts[0];
+        const block = new BlockNode(stmts);
+        block.location = node.location;
+        return block;
+      }
+      if (args.length === 1) {
+        const write = new MappingAssignNode(
+          EVM_STORAGE, [this.keyOf(alias)], this.toUint(args[0], alias.struct.fields[0].type),
+        );
+        write.location = node.location;
+        return write;
+      }
     }
     return super.visitAssign(node);
   }
 
-  // `x.value` (read) -> `<cast __evm_storage[slot]>`; also the inline `factory(slot).value` (no local alias).
+  // PARAM: `x.value` -> `<cast __evm_storage[slot]>`. CONST: `$.f` / inline `factory().f` -> the promoted state
+  // read (scalar -> `StateAccess(S__f)`). Also the inline `factory(slot).value` (no local alias) for PARAM.
   visitFieldAccess(node: FieldAccessNode): Node {
     const alias = node.expression instanceof IdentifierNode ? this.aliases.get(node.expression.name) : undefined;
     if (alias) {
+      if (alias.isConst) return this.promotedRead(alias.struct, node.name, node.location);
       const read = new MappingAccessNode(EVM_STORAGE, [this.keyOf(alias)]);
       read.location = node.location;
       return this.fromUint(read, alias.struct.fields[0].type);
     }
-    if (node.name === 'value' && node.expression instanceof FunctionCallNode) {
+    if (node.expression instanceof FunctionCallNode) {
       const factory = this.factories.get(node.expression.identifier.name);
-      if (factory) {
+      if (factory?.isConst) {
+        this.constStructsToPromote.set(factory.struct.name, factory.struct);
+        return this.promotedRead(factory.struct, node.name, node.location);
+      }
+      if (factory && node.name === 'value') {
         this.used = true;
         const read = new MappingAccessNode(EVM_STORAGE, [this.slotKey(node.expression, factory)]);
         read.location = node.location;
@@ -116,6 +205,19 @@ export default class LowerStorageSlotPointers extends AstTraversal {
       }
     }
     return super.visitFieldAccess(node);
+  }
+
+  // A promoted scalar field read `<factory>().<field>` / `$.<field>` -> `StateAccess(S__field)`.
+  private promotedRead(struct: StructType, field: string, loc: FieldAccessNode['location']): Node {
+    const read = new StateAccessNode(promotedName(struct, field));
+    read.location = loc;
+    return read;
+  }
+
+  // True when `expr` is `<aliasName>.<field>` - the unchanged-field read a struct rebuild passes back.
+  private isSelfFieldRead(expr: ExpressionNode, aliasName: string, field: string): boolean {
+    return expr instanceof FieldAccessNode && expr.expression instanceof IdentifierNode
+      && expr.expression.name === aliasName && expr.name === field;
   }
 
   // The uint256 storage key for a factory call `factory(.., slot, ..)`.
@@ -131,7 +233,8 @@ export default class LowerStorageSlotPointers extends AstTraversal {
   }
 
   private keyOf(alias: Alias): ExpressionNode {
-    return this.cast(UINT256, cloneNode(alias.slot), alias.slot.location); // slot (bytes32/uint) -> the key
+    const slot = alias.slot!; // only PARAM aliases reach keyOf; CONST aliases have no slot (promoted state)
+    return this.cast(UINT256, cloneNode(slot), slot.location); // slot (bytes32/uint) -> the key
   }
 
   // Store the field value as a uint256 word. address -> uint256(uint160(v)); other value types -> uint256(v).

@@ -18,6 +18,7 @@ export interface ConformanceCase {
   args: readonly unknown[]; // inputs, shared by both sides (JS values both encoders accept: bigint, hex, bool)
   evmCompat?: boolean; // compile the BCH side with evmCompat (EVM-faithful abi encoding)
   expectedConst?: string; // abi cases: the ethers-computed expected bytes, baked into scash + cross-checked vs solc
+  bothAccept?: boolean; // single-word abi: identical bytes32-compare covenant on both VMs (run via assertBothAccept)
   label?: string;
 }
 
@@ -157,6 +158,24 @@ export function abiCase(o: {
   const expected = (o.packed ? ethersAbiEncodePacked : ethersAbiEncode)(
     names.map((n) => types[n]), names.map((n) => byName[n]),
   );
+  // A single-word (exactly 32-byte) abi.encode compares symmetrically via a bytes32 cast: `==` on bytes32 is a
+  // value-type op both Solidity and SolidCash accept, so BOTH contracts are the identical covenant and each
+  // self-verifies the exact 32 bytes (byte order, two's-complement) on-chain. Larger/packed encodings keep the
+  // return + baked-constant cross-check (Solidity has no bytes memory ==).
+  if (!o.packed && expected.length === 66) {
+    const logic = `require(bytes32(${fn}(${o.encodeArgs})) == ${expected});`;
+    return {
+      solidity: `${SPDX}contract C {\n  function f(${o.params}) public pure {\n    ${logic}\n  }\n}\n`,
+      scash: `contract Conf() {\n  function f(${o.params}) {\n    ${logic}\n  }\n}\n`,
+      evmFn: 'f',
+      bchFn: 'f',
+      args: o.args,
+      evmCompat: true,
+      bothAccept: true,
+      expectedConst: expected,
+      label: o.label ?? `${fn}(${o.encodeArgs})`,
+    };
+  }
   return {
     solidity: `${SPDX}contract C {\n  function f(${o.params}) public pure returns (bytes memory) {\n`
       + `    return ${fn}(${o.encodeArgs});\n  }\n}\n`,
@@ -169,6 +188,12 @@ export function abiCase(o: {
     expectedConst: expected,
     label: o.label ?? `${fn}(${o.encodeArgs})`,
   };
+}
+
+// Dispatch an abi case to the right assertion: single-word cases run the identical bytes32-compare covenant on
+// both VMs (assertBothAccept); larger/dynamic cases use the baked-constant cross-check (assertEncodeConformant).
+export function assertAbi(c: ConformanceCase): Promise<void> {
+  return c.bothAccept ? assertBothAccept(c) : assertEncodeConformant(c);
 }
 
 // Build an abi.encodeWithSelector case. `selectorAndArgs` is the full argument list to

@@ -1,16 +1,16 @@
 // abi.encode EVM byte-parity (evmCompat). The Solidity side returns abi.encode(...) as bytes; the BCH side
 // under evmCompat must produce byte-identical output. Phase 1: static value types (32-byte words).
 import { describe, it } from 'vitest';
-import { assertEncodeConformant, abiCase, selCase } from './harness.js';
+import { assertAbi, abiCase, selCase } from './harness.js';
 
 const MAX = (1n << 256n) - 1n;
 const INT_MIN = -(1n << 255n);
 
 const enc = (params: string, encodeArgs: string, args: readonly unknown[]): Promise<void> =>
-  assertEncodeConformant(abiCase({ params, encodeArgs, args }));
+  assertAbi(abiCase({ params, encodeArgs, args }));
 
 const pack = (params: string, encodeArgs: string, args: readonly unknown[]): Promise<void> =>
-  assertEncodeConformant(abiCase({ params, encodeArgs, args, packed: true }));
+  assertAbi(abiCase({ params, encodeArgs, args, packed: true }));
 
 describe('abi.encode (evmCompat): static value types', () => {
   it('single uint256', () => enc('uint a', 'a', [42n]));
@@ -64,7 +64,7 @@ describe('abi.encode (evmCompat): dynamic bytes/string (single trailing)', () =>
 
 describe('abi.encodeWithSelector (evmCompat)', () => {
   const sel = (params: string, selArgs: string, args: readonly unknown[]): Promise<void> =>
-    assertEncodeConformant(selCase({ params, selectorAndArgs: selArgs, args }));
+    assertAbi(selCase({ params, selectorAndArgs: selArgs, args }));
   it('selector only (no args)', () => sel('bytes4 s', 's', ['0xaabbccdd']));
   it('selector + uint', () => sel('bytes4 s, uint a', 's, a', ['0xdeadbeef', 42n]));
   it('selector + two uint', () => sel('bytes4 s, uint a, uint b', 's, a, b', ['0x12345678', 1n, 2n]));
@@ -90,7 +90,7 @@ describe('abi.encode (evmCompat): EVM-address (uint160) + real-world patterns', 
 
 describe('abi.encodeWithSelector (evmCompat): real-world', () => {
   const sel = (params: string, selArgs: string, args: readonly unknown[]): Promise<void> =>
-    assertEncodeConformant(selCase({ params, selectorAndArgs: selArgs, args }));
+    assertAbi(selCase({ params, selectorAndArgs: selArgs, args }));
   const ADDR = 0x00112233445566778899aabbccddeeff00112233n;
   it('transfer(address,uint256) selector + args', () => sel('bytes4 s, uint160 to, uint256 amt', 's, to, amt', ['0xa9059cbb', ADDR, 100n]));
   it('approve(address,uint256)', () => sel('bytes4 s, uint160 sp, uint256 v', 's, sp, v', ['0x095ea7b3', ADDR, 10n ** 18n]));
@@ -107,7 +107,7 @@ describe('abi.encode (evmCompat): more widths + bytesN distinctions', () => {
 
 describe('abi.encodeWithSelector (evmCompat): ERC721 + query patterns', () => {
   const sel = (params: string, selArgs: string, args: readonly unknown[]): Promise<void> =>
-    assertEncodeConformant(selCase({ params, selectorAndArgs: selArgs, args }));
+    assertAbi(selCase({ params, selectorAndArgs: selArgs, args }));
   const ADDR = 0x00112233445566778899aabbccddeeff00112233n;
   it('transferFrom(address,address,uint256)', () => sel('bytes4 s, uint160 a, uint160 b, uint256 c', 's, a, b, c', ['0x23b872dd', ADDR, 1n, 100n]));
   it('balanceOf(address)', () => sel('bytes4 s, uint160 a', 's, a', ['0x70a08231', ADDR]));
@@ -128,7 +128,7 @@ describe('abi.encode (evmCompat): multiple dynamic (head/tail offset accumulatio
 
 describe('abi.encodeWithSelector (evmCompat): multiple dynamic', () => {
   const sel = (params: string, selArgs: string, args: readonly unknown[]): Promise<void> =>
-    assertEncodeConformant(selCase({ params, selectorAndArgs: selArgs, args }));
+    assertAbi(selCase({ params, selectorAndArgs: selArgs, args }));
   it('selector + two dynamic bytes', () => sel('bytes4 s, bytes memory a, bytes memory b', 's, a, b', ['0x12345678', '0xaa', '0xbbcc']));
   it('multicall-shaped: selector + bytes + bytes', () => sel('bytes4 s, bytes memory a, bytes memory b', 's, a, b', ['0xac9650d8', `0x${'11'.repeat(36)}`, `0x${'22'.repeat(4)}`])); // eslint-disable-line max-len
 });

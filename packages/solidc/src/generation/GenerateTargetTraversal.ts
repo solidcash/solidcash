@@ -9968,6 +9968,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (vt.toString() === 'bool') return 'int';
     if (vt === PrimitiveType.BIGINT || vt instanceof IntType) return 'int';
     if (vt instanceof BytesType && vt.bound !== undefined && vt.bound >= 1 && vt.bound <= 32) return 'rawbytes';
+    // Unbounded `bytes` / `string`: the value IS the entire commitment tail (variable width, read verbatim like
+    // address, default empty). Fits the 128 B commitment when the value is <= 64 B (slot 32 + nextKey 32 + value);
+    // a longer value overflows the commitment and fails closed at the VM (arbitrary length needs the chunked-value
+    // spine, docs/deferrals.md P5b). This is Solidity-parity for the common short-string/bytes case.
+    if (vt instanceof BytesType && vt.bound === undefined) return 'rawbytes';
+    if (vt === PrimitiveType.STRING || vt.toString() === 'string') return 'rawbytes';
     // address is stored verbatim as its locking bytecode in the (last) value tail - variable width is fine there.
     // Default is empty (address(0)); the SDK derives the value from the trace so it need not know the width.
     if (vt instanceof AddressType) return 'rawbytes';

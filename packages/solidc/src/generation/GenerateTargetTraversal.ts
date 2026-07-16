@@ -7854,6 +7854,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     return false;
   }
 
+  // ABI static (head) byte size of a STATIC type: a value type is one 32-byte word; a fixed-width struct is the
+  // sum of its fields; a fixed-size array is N times its element. Used to size the head so dynamic offsets stay
+  // correct when a static composite (struct/fixed-array) occupies more than one word in the head.
+  private abiStaticSize(t: Type): number {
+    if (t instanceof StructType) return t.fields.reduce((s, f) => s + this.abiStaticSize(f.type), 0);
+    if (t instanceof ArrayType && t.bound !== undefined) return t.bound * this.abiStaticSize(t.elementType);
+    return 32;
+  }
+
   // Encode a single value (on top) to its EVM ABI bytes: the inline head bytes for a static type, or the tail
   // bytes for a dynamic type. Recursive dispatch - the one place that knows every type's encoding.
   private emitEvmEncodeValue(type: Type, loc: SingleLocationData): void {
@@ -7940,7 +7949,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // arg to a blob slot, build the head (static word or dynamic offset word), append the tails, then drop the
     // blob slots. A dynamic's offset is headSize plus the total size of the earlier dynamics' tails, computed
     // at runtime via tracker-tracked PICK/SIZE so it stays correct for any number of dynamics at any positions.
-    const headSize = 32 * n;
+    // Head bytes: a dynamic arg occupies one offset word; a static arg occupies its full ABI static size (a value
+    // is one word, a fixed-width struct / fixed-size array is several). This keeps dynamic offsets correct.
+    const headSize = params.reduce((s, p) => s + (isDyn(p.type!) ? 32 : this.abiStaticSize(p.type!)), 0);
     // Phase A: encode each arg to a blob (static word or dynamic tail) kept as tracked slot __abiblob_i.
     for (let i = 0; i < n; i += 1) {
       params[i] = this.visit(params[i]);

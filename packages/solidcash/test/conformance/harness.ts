@@ -227,6 +227,30 @@ export function abiStructCase(o: {
   };
 }
 
+// Build an abi.encode(struct, dynamicTail) case: a static-composite struct followed by a dynamic arg. Exercises
+// the head-size generalization - the static struct occupies >32 bytes in the head, so the tail's offset must
+// account for the struct's full size, not one word.
+export function abiStructMixedCase(o: {
+  fields: readonly { type: string; name: string }[]; values: readonly unknown[];
+  tailType: string; tailName: string; tailValue: unknown; label?: string;
+}): ConformanceCase {
+  const structDef = `struct P { ${o.fields.map((f) => `${f.type} ${f.name};`).join(' ')} }`;
+  // bytes/string need an explicit `memory` data location on the Solidity side; SolidCash tolerates it.
+  const params = [...o.fields.map((f) => `${f.type} ${f.name}`), `${o.tailType} memory ${o.tailName}`].join(', ');
+  const ctorArgs = o.fields.map((f) => f.name).join(', ');
+  const tupleType = `tuple(${o.fields.map((f) => toEthers(f.type)).join(',')})`;
+  const expected = ethersAbiEncode([tupleType, toEthers(o.tailType)], [o.values, o.tailValue]);
+  const solidity = `${SPDX}contract C {\n  ${structDef}\n`
+    + `  function f(${params}) public pure returns (bytes memory) {\n`
+    + `    P memory p = P(${ctorArgs});\n    return abi.encode(p, ${o.tailName});\n  }\n}\n`;
+  const scash = `contract Conf() {\n  ${structDef}\n  function f(${params}) {\n`
+    + `    P p = P(${ctorArgs});\n    require(abi.encode(p, ${o.tailName}) == ${expected});\n  }\n}\n`;
+  return {
+    solidity, scash, evmFn: 'f', bchFn: 'f', args: [...o.values, o.tailValue], evmCompat: true,
+    expectedConst: expected, label: o.label ?? `abi.encode(${tupleType}, ${toEthers(o.tailType)})`,
+  };
+}
+
 // Dispatch an abi case to the right assertion: single-word cases run the identical bytes32-compare covenant on
 // both VMs (assertBothAccept); larger/dynamic cases use the baked-constant cross-check (assertEncodeConformant).
 export function assertAbi(c: ConformanceCase): Promise<void> {

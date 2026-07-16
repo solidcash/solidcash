@@ -1,7 +1,9 @@
 // abi.encode EVM byte-parity (evmCompat). The Solidity side returns abi.encode(...) as bytes; the BCH side
 // under evmCompat must produce byte-identical output. Phase 1: static value types (32-byte words).
 import { describe, it } from 'vitest';
-import { assertAbi, abiCase, selCase, abiStructCase, assertEncodeConformant } from './harness.js';
+import {
+  assertAbi, abiCase, selCase, abiStructCase, abiStructMixedCase, assertEncodeConformant,
+} from './harness.js';
 
 const MAX = (1n << 256n) - 1n;
 const INT_MIN = -(1n << 255n);
@@ -191,4 +193,17 @@ describe('abi.encode (evmCompat): fixed-width structs (ABI tuple, inline)', () =
     [{ type: 'bytes32', name: 'a' }, { type: 'bool', name: 'b' }], [hb(`0x${'ab'.repeat(32)}`), false]));
   it('struct {int256, int256} mixed sign', () => st(
     [{ type: 'int256', name: 'a' }, { type: 'int256', name: 'b' }], [-5n, 7n]));
+});
+
+describe('abi.encode (evmCompat): static struct + dynamic (head-size generalization)', () => {
+  type F = { type: string; name: string };
+  const mix = (fields: F[], values: unknown[], tailType: string, tailValue: unknown): Promise<void> =>
+    assertEncodeConformant(abiStructMixedCase({ fields, values, tailType, tailName: 'd', tailValue }));
+  it('(struct{uint256,bool}, bytes)', () => mix(
+    [{ type: 'uint256', name: 'a' }, { type: 'bool', name: 'b' }], [7n, true], 'bytes', hb('0xdeadbeef')));
+  it('(struct{uint128,uint64,bool}, bytes) 3-word head', () => mix(
+    [{ type: 'uint128', name: 'a' }, { type: 'uint64', name: 'b' }, { type: 'bool', name: 'c' }], [1n, 2n, true],
+    'bytes', hb(`0x${'ab'.repeat(40)}`)));
+  it('(struct{uint256,uint256}, string)', () => mix(
+    [{ type: 'uint256', name: 'a' }, { type: 'uint256', name: 'b' }], [11n, 22n], 'string', 'hello world'));
 });

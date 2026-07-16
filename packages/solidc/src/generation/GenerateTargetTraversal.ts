@@ -3897,30 +3897,45 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    */
   private emitKeccakComputeCall(node: FunctionCallNode): Node {
     const loc = { location: node.location, positionHint: PositionHint.END };
+    const fn = this.currentFunction;
+    // Slot-per-call: N keccak calls co-spend N side-cars (the last N inputs) recreated as the last N outputs.
+    // Record this call's preimage param in emission order (the SDK co-spends per that order), and read this
+    // call's side-car at offset (N - i) from the end. i = its emission index; for a single call offset is 1
+    // (the last input/output), byte-compatibly with the single-hash case.
+    const argNode = node.parameters[0];
+    const paramName = argNode instanceof IdentifierNode && fn.parameters.some((p) => p.name === argNode.name)
+      ? argNode.name : null;
+    const i = (fn.keccakPreimageParams ??= []).length;
+    fn.keccakPreimageParams.push(paramName);
+    const n = Number(fn.libraryCallCounts?.get(GlobalFunction.KECCAK256) ?? 1n);
+    const offset = n - i;
+    const fromEnd = (countOp: Op): void => {              // push (countOp - offset) = this call's slot index
+      this.emit(countOp, loc);
+      this.emit(encodeInt(BigInt(offset)), loc);
+      this.emit(Op.OP_SUB, loc);
+    };
     node.parameters[0] = this.visit(node.parameters[0]); // [.., arg]
     const raw = new BytesType();
-    const dropFirst = (n: number): void => {             // split off the first n bytes, keep the remainder
-      this.emit(encodeInt(BigInt(n)), loc);
+    const dropFirst = (b: number): void => {             // split off the first b bytes, keep the remainder
+      this.emit(encodeInt(BigInt(b)), loc);
       this.emit(Op.OP_SPLIT, loc);
       this.emit(Op.OP_NIP, loc);
     };
-    this.emit(Op.OP_TXINPUTCOUNT, loc);
-    this.emit(Op.OP_1SUB, loc);
+    fromEnd(Op.OP_TXINPUTCOUNT);
     this.emit(Op.OP_INPUTBYTECODE, loc);            // [arg, U]  (U = side-car unlocking, any pad/preimage size)
     this.emitGenericPushdataDecode(raw, loc);       // [arg, pad, rest]
     this.emit(Op.OP_NIP, loc);                      // [arg, rest]  (drop the budget pad)
     this.emitGenericPushdataDecode(raw, loc);       // [arg, preimage, redeempush]
     this.emit(Op.OP_TOALTSTACK, loc);               // [arg, preimage]  (stash redeempush; no keccak/loop here)
-    this.emit(Op.OP_EQUALVERIFY, loc);              // bind: preimage == arg -> []
-    this.emit(Op.OP_FROMALTSTACK, loc);             // [redeempush]
+    this.emit(Op.OP_EQUALVERIFY, loc);              // bind: preimage == arg -> []  (the "master verifies the
+    this.emit(Op.OP_FROMALTSTACK, loc);             //   side-car hashed OUR arg" runtime safety check)
     dropFirst(3);                                   // strip redeem PUSHDATA2 prefix -> [redeem]
     dropFirst(KECCAK256_COMPUTE_SALT_PREFIX_LENGTH); // strip OP_PUSHBYTES_32 || salt(32) -> [covenant]
     this.emit(Op.OP_HASH256, loc);
     this.emit(hexToBin(KECCAK256_COMPUTE_COVENANT_HASH), loc);
     this.emit(Op.OP_EQUALVERIFY, loc);              // integrity: genuine compute covenant -> []
-    this.emit(Op.OP_TXOUTPUTCOUNT, loc);
-    this.emit(Op.OP_1SUB, loc);
-    this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, loc);    // [hash]  (last output commitment = keccak256(arg))
+    fromEnd(Op.OP_TXOUTPUTCOUNT);
+    this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, loc);    // [hash]  (this slot's output commitment = keccak256(arg))
     this.popFromStack(1);
     this.pushToStack('(value)');
     return node;
@@ -7636,38 +7651,65 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       });
       return;
     }
-    if (dynIdx.length > 1) {
-      throw new Error('evmCompat abi.encode: multiple dynamic (bytes/string) arguments are not yet '
-        + 'implemented; one dynamic argument (any position) plus value types is supported');
-    }
-    // Exactly one dynamic argument at any position. Its head offset is the constant headSize (it is the only
-    // dynamic). Stash its tail at the bottom, build the head on top, then join head ++ tail.
-    const dynPos = dynIdx[0];
+    // One or more dynamic (bytes/string) args: EVM head/tail with runtime offset accumulation. Encode every
+    // arg to a blob slot, build the head (static word or dynamic offset word), append the tails, then drop the
+    // blob slots. A dynamic's offset is headSize plus the total size of the earlier dynamics' tails, computed
+    // at runtime via tracker-tracked PICK/SIZE so it stays correct for any number of dynamics at any positions.
     const headSize = 32 * n;
-    const offsetConst = new Uint8Array(32);
-    for (let v = headSize, b = 31; v > 0 && b >= 0; b -= 1, v >>= 8) offsetConst[b] = v & 0xff;
-
-    params[dynPos] = this.visit(params[dynPos]);
-    this.emitEvmDynamicTail(loc); // [tail]
-
-    params.forEach((param, i) => {
-      if (i === dynPos) {
-        this.emit(offsetConst, loc);
-        this.pushToStack('(value)');
+    // Phase A: encode each arg to a blob (static word or dynamic tail) kept as tracked slot __abiblob_i.
+    for (let i = 0; i < n; i += 1) {
+      params[i] = this.visit(params[i]);
+      if (isDyn(params[i].type!)) this.emitEvmDynamicTail(loc);
+      else this.emitEvmAbiWord(params[i].type!, loc);
+      this.popFromStack();
+      this.pushToStack(`__abiblob${i}`);
+    }
+    // Phase B: build the head on top - static arg emits its word, dynamic arg emits its offset word.
+    for (let i = 0; i < n; i += 1) {
+      if (isDyn(params[i].type!)) {
+        const dj = dynIdx.indexOf(i);
+        this.emit(encodeInt(BigInt(headSize)), loc);
+        this.pushToStack('(off)');
+        for (let jj = 0; jj < dj; jj += 1) {
+          this.emit(encodeInt(BigInt(this.getStackIndex(`__abiblob${dynIdx[jj]}`))), loc);
+          this.emit(Op.OP_PICK, loc);
+          this.emit(Op.OP_SIZE, loc);
+          this.emit(Op.OP_NIP, loc);
+          this.pushToStack('(sz)');
+          this.emit(Op.OP_ADD, loc);
+          this.popFromStack(2);
+          this.pushToStack('(off)');
+        }
+        this.emitEvmWordFromUint(loc);
       } else {
-        params[i] = this.visit(param);
-        this.emitEvmAbiWord(params[i].type!, loc);
+        this.emit(encodeInt(BigInt(this.getStackIndex(`__abiblob${i}`))), loc);
+        this.emit(Op.OP_PICK, loc);
+        this.pushToStack('(word)');
       }
-      if (i > 0) {
+      if (i === 0) {
+        this.popFromStack();
+        this.pushToStack('__abihead');
+      } else {
         this.emit(Op.OP_CAT, loc);
         this.popFromStack(2);
-        this.pushToStack('(value)');
+        this.pushToStack('__abihead');
       }
-    }); // [tail, head]
-
-    this.emit(Op.OP_SWAP, loc); // [head, tail]
-    this.emit(Op.OP_CAT, loc);
-    this.popFromStack(2);
+    }
+    // Phase C: append the dynamic tails, in argument order, after the head.
+    for (let j = 0; j < dynIdx.length; j += 1) {
+      this.emit(encodeInt(BigInt(this.getStackIndex(`__abiblob${dynIdx[j]}`))), loc);
+      this.emit(Op.OP_PICK, loc);
+      this.pushToStack('(tail)');
+      this.emit(Op.OP_CAT, loc);
+      this.popFromStack(2);
+      this.pushToStack('__abihead');
+    }
+    // Phase D: drop the n blob slots left below the result.
+    for (let i = 0; i < n; i += 1) {
+      this.emit(Op.OP_NIP, loc);
+      this.nipFromStack();
+    }
+    this.popFromStack();
     this.pushToStack('(value)');
   }
 

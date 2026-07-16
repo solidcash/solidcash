@@ -1,10 +1,10 @@
 # keccak256 via a result-NFT side-car (compute-and-commit model)
 
-Status: **SHIPPED - the DEFAULT keccak256 model for stateless single-call keccak (Phase 1 + 1b); sections
-11-12.** Multi-call / stateful / complex-arg keccak auto-falls-back to the inline path (see
-[external-libraries.md](external-libraries.md)). Here the hash is computed inside a **co-spent side-car
-input's own** script evaluation and returned to the contract through the side-car's **NFT commitment**,
-instead of being computed on the contract input's stack.
+Status: **SHIPPED - the keccak256 model for stateless direct-param keccak, single AND multi-call
+(slot-per-call); sections 11-13.** Complex-arg / nested / stateful keccak still falls back to the inline path
+(see [external-libraries.md](external-libraries.md)), which is being eliminated (section 13). Here the hash is
+computed inside a **co-spent side-car input's own** script evaluation and returned to the contract through the
+side-car's **NFT commitment**, instead of being computed on the contract input's stack.
 
 This doc records the full evaluation (why, the budget evidence, the soundness argument, the branded
 model, endianness) and the phased build plan. The single-hash branded case is the near-term target; the
@@ -154,10 +154,16 @@ pre-hashes a not-taken path), any preimage >135 bytes (eats 2 of 3 blocks).
 - **Phase 2 - multi-hash batch**: reversed layout, offset-split commitment, correspondence constant, block
   cap, reversal adversarial test. Deferred (multi-call keccak currently auto-falls-back to the inline model).
 
-## 11. Phase 1 as shipped (2026-07-15)
+## 11. Phase 1 as shipped (2026-07-15) - historical snapshot
 
-Single-hash, VM-verified end-to-end on the mock BCH-2026 VM. Opt-in via `CompilerOptions.keccakResultNft`;
-the inline-compute model stays the default (additive, non-breaking - existing keccak tests unchanged).
+> **Superseded by sections 12-13.** This records the initial opt-in landing. Since then: the
+> `keccakResultNft` flag was **removed** (compute is the implied default, section 12); the covenant self-pres
+> moved from last-output to `INPUTINDEX`-relative for multi-call (section 13); and inline keccak is being
+> eliminated. The mechanics below (opt-in flag, last-output self-pres, 2353 B covenant) are the 2026-07-15
+> state, not current.
+
+Single-hash, VM-verified end-to-end on the mock BCH-2026 VM. Was opt-in via `CompilerOptions.keccakResultNft`
+(since removed); the inline-compute model was the default (additive, non-breaking - existing keccak tests unchanged).
 
 - **utils** (`packages/utils/src/keccak-compute-library.ts`): `KECCAK256_COMPUTE_COVENANT` (2353 B baked
   hex, regen tool `keccak-poc/gen-compute-sidecar.mjs`), `KECCAK256_COMPUTE_COVENANT_HASH`,
@@ -238,12 +244,13 @@ Three follow-ups landed, making the compute model the default for the case it fu
   fixed-size so its prefix/salt are stripped by constants. The SDK sizes the side-car op-budget pad by the
   preimage's keccak block count (`floor(len/136)+1`, cap 3). VM-verified for 0/1/32/135/136/200/300-byte
   preimages against EVM. `>3 blocks` (~407 B) throws (a single side-car input funds at most 3 keccak blocks).
-- **Compute is the DEFAULT keccak model (no flag), non-regressively.** `SymbolTableTraversal` sets
-  `FunctionDefinitionNode.keccakCompute` when a function has exactly ONE `keccak256` call on a **direct
-  parameter** and the contract is **stateless** (so `send()` can transparently co-spend from the arg).
-  Multi-call / stateful / complex-arg keccak auto-falls-back to the inline model (which supports them).
-  `keccakResultNft: false` forces inline; `true` forces compute (single-call). Artifact stamps per-function
-  `keccakCompute` + `keccakPreimageParam` and the descriptor `resultNft`.
+- **Compute is THE keccak model - the `keccakResultNft` flag is removed (2026-07-16).** Selection is purely
+  capability-based: `SymbolTableTraversal` sets `FunctionDefinitionNode.keccakCompute` when a function has
+  exactly ONE `keccak256` call on a **direct parameter** and the contract is **stateless** (so `send()` can
+  transparently co-spend from the arg). Artifact stamps per-function `keccakCompute` + `keccakPreimageParam`
+  and the descriptor `resultNft`. **Inline keccak is being eliminated** (user decision: side-car-with-NFT
+  only). Until the compute model covers every case, multi-call / stateful / complex-arg keccak still routes
+  to the inline path as a temporary fallback - see "eliminating inline" below.
 - **Transparent `send()` co-spend.** `TransactionBuilder.addRequiredKeccakComputeCoSpends()` (auto in
   `send()`) reads the preimage from the recorded param, computes `R` (@noble), and co-spends the side-car -
   idempotent, so an explicit `addKeccakComputeCoSpend` (e.g. for a non-param preimage) is respected.
@@ -253,8 +260,35 @@ Three follow-ups landed, making the compute model the default for the case it fu
   alongside its category. Salt-independent -> one covenant hash. Covenant 2390 B; regen
   `keccak-poc/gen-compute-sidecar.mjs`.
 
-**Still deferred (precise):** multi-call keccak in the compute model (the batch / slot-per-call work,
-section 7/10; today multi-call uses inline); **stateful** compute (thread the compute side-car through
-`StatefulContract` auto-derivation like `blockhashOracle`, so branded stateful keccak defaults to compute);
-side-car mutable-NFT genesis deploy helper (tests provision it via `addUtxo`; `keccakComputeLockingBytecode`
-gives the address); composition-safe block-layout slot (section 10) vs the current last-in/last-out; regtest.
+## 13. Eliminating the inline keccak path (in progress, 2026-07-16)
+
+**Decision (user): keccak256 is side-car-with-NFT ONLY. The inline keccak path is being removed.** The
+`keccakResultNft` flag is gone; keccak is the compute model wherever it applies today (stateless single-call
+direct-param), and the remaining inline usages are being migrated. The generic external-library machinery
+(loader / registrar / `addRequiredSidecars`) stays for USER libraries; only keccak256 stops using it.
+
+Migration plan (each step keeps single-call green; the per-function selection flips to allow the case only
+once its codegen + SDK land):
+
+1. **Multi-call (slot-per-call). SHIPPED + VM-verified (2026-07-16).** N direct-param keccak calls -> N
+   side-car inputs (the last N) + N result outputs (the last N). One covenant self-preserving + committing at
+   `outIdx = OP_INPUTINDEX + OP_TXOUTPUTCOUNT - OP_TXINPUTCOUNT` (generalizes single-call's last-output; for
+   N=1 it *is* the last output). Contract call `i` (emission order) reads `input[TXINPUTCOUNT-(N-i)]` (bind) +
+   `output[TXOUTPUTCOUNT-(N-i)]` (result). SDK `addRequiredKeccakComputeCoSpends` co-spends N side-cars in
+   call order (picking a fresh UTXO each - deploy one mutable-NFT side-car per call); compiler records
+   `FunctionDefinitionNode.keccakPreimageParams: (string|null)[]` in `emitKeccakComputeCall`; the selection
+   requires EVERY call to hash a direct param (`allKeccakCallsDirectParam`). Each side-car input has its OWN
+   ~8M budget, so N calls are N independent inputs - no shared 3-block cap (compute scales past inline). e2e:
+   two `keccak256(param)` calls -> two side-cars, each result read by slot, matching EVM; wrong slot rejected.
+2. **Complex / nested args.** `keccak256(expr)` / `keccak256(keccak256(x))` where a call's preimage is not a
+   direct param: the SDK captures each preimage via a VM probe that reads the arg off the trace at the marked
+   keccak call IP (mirrors `blockhash` computed-`n` extraction), or resolves nesting in dependency order.
+3. **Stateful.** Thread the compute side-car(s) through `StatefulContract` auto-derivation like
+   `blockhashOracle` (co-spent in every derivation probe + the final tx); branded (salt = master category),
+   so the conditional brand check (section 12) enforces category isolation.
+4. **Remove inline keccak.** Once 1-3 cover every case, drop keccak from the inline dispatch/prologue (keep
+   the machinery for user libraries) and migrate the remaining `Keccak256.test.ts` inline tests to compute.
+
+Also still open: side-car mutable-NFT genesis deploy helper (tests provision via `addUtxo`;
+`keccakComputeLockingBytecode` gives the address); composition-safe block-layout slot (section 10) vs the
+current last-in/last-out; regtest.

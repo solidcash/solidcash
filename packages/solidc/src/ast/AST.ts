@@ -302,7 +302,8 @@ export class FunctionDefinitionNode extends Node implements Named {
   inlinedLibraries?: string[];  // subset of usedLibraries inlined into the contract bytecode (no side-car)
   libraryCallCounts?: Map<string, number>; // per-library call-site count (drives the inline decision)
   keccakCompute?: boolean;      // keccak256 uses the compute-and-commit result-NFT model (side-car computes it)
-  keccakPreimageParam?: string; // param name feeding the single keccak256 call (SDK transparent co-spend)
+  keccakPreimageParams?: (string | null)[]; // per keccak256 call (codegen emission order): the param feeding it
+                                            // (SDK transparent co-spend); null = not a direct param
   unsafeTier?: number;          // 0, 1, or 2 (only set when UNSAFE modifier present)
   splitCountParam?: string;     // parameter name for split count
   mergeCountParam?: string;     // parameter name for merge count

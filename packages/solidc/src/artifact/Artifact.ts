@@ -151,7 +151,8 @@ function buildFunctionAbiMetadata(func: FunctionDefinitionNode, isStateful = fal
     ...(func.libraryCallCounts && func.libraryCallCounts.size > 0
       && { externalLibraryCalls: Object.fromEntries(func.libraryCallCounts) }),
     ...(func.keccakCompute && { keccakCompute: true }),
-    ...(func.keccakPreimageParam && { keccakPreimageParam: func.keccakPreimageParam }),
+    ...(func.keccakPreimageParams && func.keccakPreimageParams.length > 0
+      && { keccakPreimageParams: func.keccakPreimageParams }),
     ...(func.unsafeTier !== undefined && { unsafeTier: func.unsafeTier }),
     ...(func.lowLevelCalls && func.lowLevelCalls.length > 0 && {
       lowLevelCalls: func.lowLevelCalls.map((lc) => ({ callMode: lc.callMode })),

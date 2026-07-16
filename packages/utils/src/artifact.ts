@@ -168,8 +168,9 @@ export interface AbiFunction {
   isReceive?: boolean;
   externalLibraries?: readonly string[];  // names of external script libraries this function uses (e.g. 'keccak256')
   externalLibraryCalls?: Readonly<Record<string, number>>;  // per-library call-site count (sizes the SDK budget pad)
-  keccakCompute?: boolean;      // keccak256 uses the compute-and-commit side-car; send() co-spends it + fills the result
-  keccakPreimageParam?: string; // the param feeding keccak256 (send() computes R + builds the side-car unlocking)
+  keccakCompute?: boolean;      // keccak256 uses the compute-and-commit side-car; send() co-spends N side-cars + fills results
+  keccakPreimageParams?: readonly (string | null)[]; // per keccak256 call (order): the param feeding it (send()
+                                                     // computes each R + co-spends per call)
 }
 
 export interface CollectionIterationAbi {

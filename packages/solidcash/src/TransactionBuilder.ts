@@ -210,7 +210,7 @@ export class TransactionBuilder {
   /**
    * Co-spend a keccak256 "compute-and-commit" side-car (result-NFT model). The branded side-car input runs
    * keccak in its OWN op budget and returns keccak256(preimage) in its recreated NFT commitment; a
-   * `keccakResultNft` contract reads it by introspection. Appends the side-car as the LAST input (feeding the
+   * result-NFT contract reads it by introspection. Appends the side-car as the LAST input (feeding the
    * preimage + a budget pad) and its recreation as the LAST output carrying the committed hash. `salt` (the
    * side-car branding) defaults to the first token-carrying contract input's category. The side-car mutable
    * NFT must already exist at keccakComputeLockingBytecode(salt). Call after adding the contract input(s),
@@ -221,12 +221,13 @@ export class TransactionBuilder {
     const redeem = buildKeccakComputeRedeem(salt);
     const lock = keccakComputeLockingBytecode(salt);
     const utxos = await this.provider.getUtxosForLockingBytecode(lock);
-    if (utxos.length === 0) {
-      throw new Error('keccak256 compute side-car UTXO not found; deploy it before spending a result-NFT contract.');
+    // Pick a side-car UTXO not already co-spent (an N-call function co-spends N distinct side-cars at this
+    // address, one per keccak256 call - deploy one mutable-NFT side-car per call).
+    const sidecar = utxos.find((u) => !this.inputs.some((i) => i.txid === u.txid && i.vout === u.vout));
+    if (!sidecar) {
+      throw new Error('keccak256 compute side-car UTXO not available; deploy one mutable-NFT side-car per '
+        + 'keccak256 call in the spent function.');
     }
-    const sidecar = utxos[0];
-    // Idempotent: if this side-car UTXO is already an input (e.g. co-spent manually), don't add it again.
-    if (this.inputs.some((i) => i.txid === sidecar.txid && i.vout === sidecar.vout)) return this;
     // Size the op-budget pad by the preimage's keccak block count (~2.26M op/block; ~2900 unlocking bytes
     // fund one block). The redeem + preimage pushes already contribute to the per-input budget, so subtract
     // them. A single side-car input funds at most 3 keccak blocks (~407 B preimage).
@@ -276,22 +277,26 @@ export class TransactionBuilder {
    * param; call addKeccakComputeCoSpend(preimage) explicitly for those.
    */
   async addRequiredKeccakComputeCoSpends(): Promise<this> {
-    for (const input of this.inputs) {
+    // Snapshot: addKeccakComputeCoSpend appends inputs; the appended side-cars are custom (non-contract)
+    // unlockers, but snapshot anyway so we only process the original contract inputs.
+    for (const input of [...this.inputs]) {
       if (!isUnlockableUtxo(input) || !isContractUnlocker(input.unlocker)) continue;
       const abiFn = input.unlocker.abiFunction;
       if (!abiFn.keccakCompute) continue;
-      const param = abiFn.keccakPreimageParam;
-      if (!param) {
-        throw new Error(`keccak256 in ${abiFn.name} hashes a non-parameter value; co-spend the side-car `
-          + 'explicitly with addKeccakComputeCoSpend(preimage) before send().');
-      }
-      const idx = abiFn.inputs.findIndex((p) => p.name === param);
-      const preimage = input.unlocker.params[idx];
-      if (!(preimage instanceof Uint8Array)) {
-        throw new Error(`keccak256 compute co-spend: parameter '${param}' of ${abiFn.name} must be a bytes value.`);
-      }
       const salt = input.token?.category ? hexToBin(input.token.category) : SHARED_LIBRARY_SALT;
-      await this.addKeccakComputeCoSpend(preimage, { salt });
+      // One side-car per keccak256 call, in call order (the contract reads call i from the i-th of the last N).
+      for (const param of abiFn.keccakPreimageParams ?? []) {
+        if (!param) {
+          throw new Error(`a keccak256 call in ${abiFn.name} hashes a non-parameter value; co-spend the `
+            + 'side-car explicitly with addKeccakComputeCoSpend(preimage) before send().');
+        }
+        const idx = abiFn.inputs.findIndex((p) => p.name === param);
+        const preimage = input.unlocker.params[idx];
+        if (!(preimage instanceof Uint8Array)) {
+          throw new Error(`keccak256 compute co-spend: parameter '${param}' of ${abiFn.name} must be a bytes value.`);
+        }
+        await this.addKeccakComputeCoSpend(preimage, { salt });
+      }
     }
     return this;
   }

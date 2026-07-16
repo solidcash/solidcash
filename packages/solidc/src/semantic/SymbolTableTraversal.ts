@@ -1379,17 +1379,14 @@ export default class SymbolTableTraversal extends AstTraversal {
       node.libraryCallCounts = libraryCallCounts;
     }
 
-    // keccak256 is the compute-and-commit result-NFT model (a co-spent side-car computes the hash and returns
-    // it in an NFT commitment; there is no inline keccak). It applies where the SDK can transparently co-spend:
-    // a stateless function with exactly ONE keccak256 call on a direct parameter. Multi-call / stateful /
-    // complex-arg keccak is not yet on the compute model (work in progress). See docs/keccak-result-nft.md.
+    // keccak256 is the compute-and-commit result-NFT model (co-spent side-cars compute the hashes and return
+    // them in NFT commitments; there is no inline keccak). It applies where the SDK can transparently
+    // co-spend: a stateless function whose EVERY keccak256 call hashes a direct parameter (N calls -> N
+    // side-cars, slot-per-call). Complex-arg / nested / stateful keccak is not yet on the compute model (work
+    // in progress; falls back to inline). Codegen records the per-call param list. See docs/keccak-result-nft.md.
     const keccakCalls = libraryCallCounts.get(GlobalFunction.KECCAK256) ?? 0;
-    if (keccakCalls === 1 && !this.isStatefulContract) {
-      const preimageParam = this.findKeccakPreimageParam(node.body, node);
-      if (preimageParam !== null) {
-        node.keccakCompute = true;
-        node.keccakPreimageParam = preimageParam;
-      }
+    if (keccakCalls >= 1 && !this.isStatefulContract && this.allKeccakCallsDirectParam(node.body, node)) {
+      node.keccakCompute = true;
     }
 
     // Entry slot pre-scan: collect unique (collection, keyParam) pairs and assign slot indices
@@ -2672,22 +2669,21 @@ export default class SymbolTableTraversal extends AstTraversal {
     return counts;
   }
 
-  // The parameter name feeding the (first) keccak256 call, if its argument is a direct function parameter;
-  // null otherwise. Lets the SDK transparently co-spend the compute side-car from the call args.
-  private findKeccakPreimageParam(node: Node, fn: FunctionDefinitionNode, state: { done: boolean; param: string | null } = { done: false, param: null }): string | null {
-    if (state.done) return state.param;
+  // True iff EVERY keccak256 call in the subtree hashes a direct function parameter (so the SDK can
+  // transparently co-spend a side-car per call). A complex/nested argument (e.g. keccak256(keccak256(x)) or
+  // keccak256(expr)) makes it false -> the function stays on the inline model.
+  private allKeccakCallsDirectParam(node: Node, fn: FunctionDefinitionNode, state: { ok: boolean } = { ok: true }): boolean {
+    if (!state.ok) return false;
     if (node instanceof FunctionCallNode && node.identifier.name === GlobalFunction.KECCAK256) {
       const arg = node.parameters[0];
-      state.done = true;
-      state.param = (arg instanceof IdentifierNode && fn.parameters.some((p) => p.name === arg.name)) ? arg.name : null;
-      return state.param;
+      if (!(arg instanceof IdentifierNode && fn.parameters.some((p) => p.name === arg.name))) state.ok = false;
     }
     for (const value of Object.values(node)) {
-      if (value instanceof Node) this.findKeccakPreimageParam(value, fn, state);
-      else if (Array.isArray(value)) for (const item of value) if (item instanceof Node) this.findKeccakPreimageParam(item, fn, state);
-      if (state.done) break;
+      if (value instanceof Node) this.allKeccakCallsDirectParam(value, fn, state);
+      else if (Array.isArray(value)) for (const item of value) if (item instanceof Node) this.allKeccakCallsDirectParam(item, fn, state);
+      if (!state.ok) break;
     }
-    return state.param;
+    return state.ok;
   }
 
   private collectCollectionIterations(node: Node, iterations: CollectionIterationInfo[]): void {

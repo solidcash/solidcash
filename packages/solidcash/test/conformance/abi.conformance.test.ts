@@ -113,6 +113,22 @@ describe('abi.encodeWithSelector (evmCompat): ERC721 + query patterns', () => {
   it('balanceOf(address)', () => sel('bytes4 s, uint160 a', 's, a', ['0x70a08231', ADDR]));
 });
 
-describe('abi.encode (evmCompat) KNOWN GAP: multiple dynamic', () => {
-  it.fails('two dynamic bytes (multi-dynamic not yet impl)', () => enc('bytes memory a, bytes memory b', 'a, b', ['0xaa', '0xbb']));
+describe('abi.encode (evmCompat): multiple dynamic (head/tail offset accumulation)', () => {
+  it('two dynamic bytes', () => enc('bytes memory a, bytes memory b', 'a, b', ['0xaabb', '0xccddee']));
+  it('two dynamic bytes (first crosses a pad boundary)', () => enc('bytes memory a, bytes memory b', 'a, b', [`0x${'11'.repeat(40)}`, '0xcc']));
+  it('string then bytes', () => enc('string memory a, bytes memory b', 'a, b', ['hello world', '0xdeadbeef']));
+  it('bytes then string', () => enc('bytes memory a, string memory b', 'a, b', ['0xcafe', 'the quick brown fox']));
+  it('two empty dynamic', () => enc('bytes memory a, bytes memory b', 'a, b', ['0x', '0x']));
+  it('uint between two dynamic: (bytes, uint, bytes)', () => enc('bytes memory a, uint b, bytes memory c', 'a, b, c', ['0xaa', 42n, '0xbbcc'])); // eslint-disable-line max-len
+  it('static head then two dynamic: (uint, bytes, string)', () => enc('uint a, bytes memory b, string memory c', 'a, b, c', [7n, '0x1234', 'zzz'])); // eslint-disable-line max-len
+  it('two dynamic then static: (bytes, string, uint)', () => enc('bytes memory a, string memory b, uint c', 'a, b, c', ['0xff', 'ab', 99n])); // eslint-disable-line max-len
+  it('three dynamic bytes', () => enc('bytes memory a, bytes memory b, bytes memory c', 'a, b, c', ['0xaa', '0xbbbb', '0xcccccc'])); // eslint-disable-line max-len
+  it('address + two dynamic (transfer-with-data shape)', () => enc('uint160 to, bytes memory data, string memory memo', 'to, data, memo', [0x1122334455667788990011223344556677889900n, '0xdeadbeef', 'gm'])); // eslint-disable-line max-len
+});
+
+describe('abi.encodeWithSelector (evmCompat): multiple dynamic', () => {
+  const sel = (params: string, selArgs: string, args: readonly unknown[]): Promise<void> =>
+    assertConformant(selCase({ params, selectorAndArgs: selArgs, args }));
+  it('selector + two dynamic bytes', () => sel('bytes4 s, bytes memory a, bytes memory b', 's, a, b', ['0x12345678', '0xaa', '0xbbcc']));
+  it('multicall-shaped: selector + bytes + bytes', () => sel('bytes4 s, bytes memory a, bytes memory b', 's, a, b', ['0xac9650d8', `0x${'11'.repeat(36)}`, `0x${'22'.repeat(4)}`])); // eslint-disable-line max-len
 });

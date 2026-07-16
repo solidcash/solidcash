@@ -56,7 +56,7 @@ describe('keccak compute-and-commit side-car (utils)', () => {
   it('COVENANT hash matches the baked integrity constant', () => {
     const covBytes = Uint8Array.from(KECCAK256_COMPUTE_COVENANT.match(/.{2}/g)!.map((b) => parseInt(b, 16)));
     expect(binToHex(hash256(covBytes))).toBe(KECCAK256_COMPUTE_COVENANT_HASH);
-    expect(covBytes.length).toBe(2390);
+    expect(covBytes.length).toBe(2394);
   });
 
   it('redeem = OP_PUSHBYTES_32 || salt || COVENANT; salt-independent covenant', () => {

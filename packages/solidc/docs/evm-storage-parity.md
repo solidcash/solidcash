@@ -241,8 +241,18 @@ all values == the off-chain sum. Adversarial (each MUST revert): drop a middle e
 (truncation); present a foreign UTXO (substitution); reorder (chain break). Only ship once omission provably
 fails closed.
 
-STATUS: designed + grounded, NOT yet implemented - a soundness-critical covenant build to be done with the
-adversarial suite above, not rushed.
+STATUS: SDK HALF DONE (commit 07cd085a - co-spend HEAD + slot-ordered entries; inert until the loop lands).
+Codegen half is the remaining soundness-critical piece, fully de-risked: reuse the address pin + commitment
+split from `emitSortedSetRead` (GTT:9846-9867: `emitMasterInputIndex; OP_UTXOTOKENCATEGORY; 32 SPLIT DROP;
+emitP2sh32FromCovenant(buildEntryNftCovenantScript(cat, collectionHash))` for the entry address, then per entry
+`idx OP_DUP OP_UTXOBYTECODE <entryAddr> OP_EQUALVERIFY; OP_UTXOTOKENCOMMITMENT; 32 SPLIT; 32 SPLIT` ->
+slot32/nextKey32/value). Loop shape: precompute entryAddr (tracked); read HEAD @ base+0, pin + verify slot==0,
+`expectedNext = nextKey` (tracked), i=1; `OP_BEGIN` cond `OP_BIN2NUM(expectedNext) != 0`; body: read entry @
+base+i, pin, split, `slot == expectedNext OP_EQUALVERIFY` (chain), UPDATE `expectedNext = nextKey` (emitReplace)
+BEFORE the value decode + user body (so nextKey survives), i++; `OP_UNTIL`; exits at tail (nextKey==0). Then
+the ADVERSARIAL suite is the ship gate (omission/truncation/substitution/reorder MUST revert). Do NOT ship the
+codegen unverified - the tracked-stack vs VM-stack bookkeeping needs VM-trace debugging; that is why it is
+staged from the (safe, isolated) SDK half rather than rushed.
 
 ### Sound PARTIAL (windowed / paginated) enumeration - resolves the tx-size ceiling
 

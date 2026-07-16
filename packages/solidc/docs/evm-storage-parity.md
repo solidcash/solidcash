@@ -143,7 +143,7 @@ SolidCash parity notes:
   rather than the length - a niche divergence (Solidity's own `arr.length` compiles to `sload(p)`, but explicit
   assembly length-reads are rare). Routing `sload(<dyn-array>.slot)` -> `arr.length` would close it; deferred as
   low-value (the length is already available high-level).
-### Mapping-count for TRUSTLESS enumeration - evaluated (proposed `mapping enumerable` extension)
+### Trustless mapping enumeration - evaluated (proposed `enumerable mapping` extension)
 
 SolidCash has mapping ITERATION (absent in Solidity). Today it is a caller-chosen PARTIAL WINDOW
 (`collection-iteration.md`): the loop is `i < __internal__collectionIterCount_N`, an untrusted UNLOCKING ARG,
@@ -158,28 +158,39 @@ slot (EVM leaves it 0) and require iteration to co-spend exactly N == count entr
   is omittable; (b) EVERY insert/delete updates it atomically on ALL codegen paths; (c) NO duplicate-key
   entries - uniqueness on insert = an absence proof = the C2 sorted list. So an enumerable mapping is built ON
   C2.
-- **Given C2, the count is partly REDUNDANT.** The sorted linked list already proves completeness by LINKAGE:
-  co-spend head->tail following next-pointers, terminating at the sentinel = provably all entries, self-
-  contained, no count needed. The count's value is an O(1) `.length` and a simpler iteration covenant (count-
-  check vs linkage-walk), at the cost of maintaining it.
-- **THE DANGEROUS FLAW: a count as the SOLE completeness source fails OPEN.** A stale-LOW count (a forgotten
-  write path, a desync bug) -> iteration co-spends fewer -> SILENT OMISSION (unsound). Linkage has no such
-  failure mode (the entries are self-describing). Recommendation: use LINKAGE for completeness and treat the
-  count as a redundant CROSS-CHECK (assert walked-N == count) so a desync fails CLOSED (revert/brick), never
-  open. A stale-HIGH count also bricks iteration (can't present N) - a liveness, not soundness, failure.
+- **DECISION: LINKAGE ONLY, drop the count (2026-07-16, user).** The count duplicates work the sorted list
+  already does, and placing it at the mapping's master UTXO would add GLOBAL write contention (every insert/
+  delete rebuilds that one commitment) that the per-key entry UTXOs otherwise avoid - plus a corruptible
+  redundant source of truth whose stale-LOW desync would silently OMIT. The C2 list already proves completeness
+  by LINKAGE and is self-contained. Structure (`SortedList.ts`): commitment = `slot(32) ++ nextKey(32) ++
+  value`; a HEAD sentinel at slot 0 (always present, `:85,141`); tail = `nextKey == 0` (+inf). Sound iteration:
+  co-spend HEAD then follow the chain to the tail, verifying HEAD.slot==0, each entry.slot == prev.nextKey
+  (contiguity - a skipped entry breaks the link), and last.nextKey==0 (completeness - reached the tail); each
+  entry address/category-checked (no foreign substitute). Omission/truncation/substitution/duplicate all fail
+  closed. EXTRA CODE is modest and NON-hashing: per entry ~2-3 opcodes over the read it already does - one
+  `OP_SPLIT` to lift `nextKey`, one `OP_EQUALVERIFY` for `slot == expectedNext`, carry `nextKey` as the new
+  expectedNext; plus O(1) setup (co-spend HEAD + `slot==0`) and teardown (`expectedNext == 0`). Cost is +1
+  co-spent UTXO (the HEAD) and a per-iteration spend of the HEAD sentinel - contention only at iteration time
+  and on head-adjacent inserts, far less than the count's every-write master-UTXO contention. So NO `.length`
+  in O(1) (a count would be needed for that) - an acceptable trade.
 - **Delete semantics must be reconciled.** C2 delete = NULLIFY (node stays). A nullified node is a live UTXO
   not logically present, so either the count/iteration must skip default-valued nodes (and the covenant must
   verify non-default per co-spent entry, else a nullified node substitutes for a real one) or delete must
   SPLICE (re-link predecessor.next, more covenant work) so count == physical == iterable. Splice is cleaner
   for enumeration; nullify bloats (dead nodes accumulate, never shrink, inflating every iteration).
 - **TX-SIZE / COMPUTE CEILING (the load-bearing practical limit).** Trustless full enumeration co-spends ALL N
-  entries in ONE transaction. For a large mapping (millions of USDT balances) that overflows the tx-size and
-  per-input compute limits REGARDLESS of the count mechanism. So enumeration is only feasible for BOUNDED /
-  small collections (admin sets, participant lists). The count does not scale it. This is the decisive reason
-  the design should be `mapping enumerable` OPT-IN (bounded, on C2, count-in-register cross-checked vs linkage,
-  splice-delete) while the DEFAULT `mapping` stays Solidity-parity: not enumerable, slot p = 0, no count
-  overhead, no per-write register rebuild. Verdict: sound and worth building for bounded collections, with the
-  caveats above; NOT a general balances-enumeration primitive.
+  entries (+ the HEAD) in ONE transaction. For a large mapping (millions of USDT balances) that overflows the
+  tx-size and per-input compute limits regardless of the completeness mechanism. So enumeration is only
+  feasible for BOUNDED / small collections (admin sets, participant lists), NOT a general balances primitive.
+- **KEY RECOVERY (separate cost, note).** A C2 commitment stores `slot = H(key)`, not the raw key, so
+  `for (key, value of m)` must recover the key: the SDK (which knows all keys while building the tx) supplies
+  each as an unlocking arg and the covenant verifies `H(key) == slot` - ~1 native `sha256` per entry (cheap,
+  not keccak). Orthogonal to completeness.
+
+Verdict: an OPT-IN `enumerable mapping` built on C2, proving completeness by LINKAGE ALONE (no count, no master
+UTXO, no global write contention), is sound and worth building for BOUNDED collections. Splice-delete keeps the
+chain clean (nullify would bloat it). The DEFAULT `mapping` stays Solidity-parity: not enumerable, slot p = 0,
+no overhead.
 
 ## Soundness - and why the slot space does NOT need a sorted linked list
 

@@ -62,6 +62,10 @@ function collectVarTypes(node: Node, out: Map<string, Type>): void {
 interface SlotField { sv: StateVariableNode; bitOffset: bigint; bitWidth: bigint; }
 let currentSlots = new Map<bigint, SlotField[]>();
 let currentVarSlot = new Map<string, bigint>();
+// slot number -> declared mapping var name at that slot. Used to bridge the EVM mapping-slot assembly idiom
+// (`mstore(0,k); mstore(32,p); sload/sstore(keccak256(0,64))`) to the high-level mapping m at slot p (Tier-2
+// interop): the assembly access and the high-level m[k] then hit the same entry collection.
+let currentMappingSlots = new Map<bigint, string>();
 // Warn only once that the erc7201 Yul builtin is aliased to sha256.
 let warnedErc7201Yul = false;
 
@@ -176,14 +180,36 @@ function compositeSlotWords(t: Type): number {
   return 0;
 }
 
-function computeStorageLayout(vars: StateVariableNode[]): void {
+// Source ordering key for a state member (declaration order = EVM slot order). Absent location sorts last, stable.
+function declPos(n: { location?: { start: { line: number; column: number } } }): number {
+  return n.location ? n.location.start.line * 100000 + n.location.start.column : Number.MAX_SAFE_INTEGER;
+}
+
+// Assign each state member its EVM storage slot in DECLARATION order across both state vars and collections
+// (EVM counts every member - a mapping / dynamic array takes one slot; a fixed struct/array takes its whole
+// multi-word footprint; sub-word scalars pack). Collections are merged in so a mapping's slot is known (needed
+// to bridge the assembly mapping-slot idiom to the high-level mapping) and so a scalar declared after a mapping
+// gets its correct EVM slot. currentSlots (int-field decode) is only filled for packed scalar slots.
+function computeStorageLayout(vars: StateVariableNode[], collections: CollectionNode[] = []): void {
   currentSlots = new Map();
   currentVarSlot = new Map();
+  currentMappingSlots = new Map();
+  type Member = { sv: StateVariableNode } | { col: CollectionNode };
+  const members: Member[] = [...vars.map((sv) => ({ sv })), ...collections.map((col) => ({ col }))];
+  members.sort((a, b) => declPos('sv' in a ? a.sv : a.col) - declPos('sv' in b ? b.sv : b.col));
   let slot = 0n;
   let byteOff = 0;
-  for (const sv of vars) {
-    // A fixed struct/array (non-dynamic) occupies whole EVM slots and does not pack with neighbours; the next
-    // var starts a fresh slot. Its own slots hold composite data (resolveSlotFields returns undefined for them).
+  for (const m of members) {
+    if ('col' in m) {
+      // A mapping / dynamic array occupies exactly one whole slot and never packs with a neighbour.
+      if (byteOff > 0) { slot += 1n; byteOff = 0; }
+      currentVarSlot.set(m.col.name, slot);
+      if (m.col.type instanceof MappingType) currentMappingSlots.set(slot, m.col.name);
+      slot += 1n;
+      continue;
+    }
+    const sv = m.sv;
+    // A fixed struct/array (non-dynamic) occupies whole EVM slots and does not pack; the next var starts fresh.
     const composite = sv.isDynamic ? 0 : compositeSlotWords(sv.type);
     if (composite > 0) {
       if (byteOff > 0) { slot += 1n; byteOff = 0; }
@@ -479,6 +505,36 @@ function lowerKeccak(call: YulFunctionCallNode): ExpressionNode {
   }
   const concat = loc(new BytesConcatNode(words), call);
   return loc(new FunctionCallNode(loc(new IdentifierNode('keccak256'), call), [concat]), call);
+}
+
+// A Yul word that is a compile-time-constant storage slot number: an int literal, or a `<var>.slot` path.
+function constSlotOf(word: YulExpressionNode): bigint | undefined {
+  if (isIntLiteral(word)) return BigInt(word.raw);
+  if (word instanceof YulPathNode && word.members.length === 1 && word.members[0] === 'slot') {
+    return currentVarSlot.get(word.base);
+  }
+  return undefined;
+}
+
+// The EVM mapping-slot idiom: `mstore(0,k); mstore(32,p); ... keccak256(0,64)` derives `m[k]`'s slot for the
+// mapping m declared at slot p. Recognize it and return {collection, key} so sload/sstore route to the high-level
+// mapping m (Tier-2 interop: the assembly and high-level m[k] share the entry collection) instead of an anonymous
+// __evm_storage entry. Requires the two-word region fully mstore'd at compile time with word[1] = a mapping slot.
+function mappingSlotIdiom(slotArg: YulExpressionNode): { collection: string; key: YulExpressionNode } | undefined {
+  if (!(slotArg instanceof YulFunctionCallNode) || slotArg.name !== 'keccak256' || slotArg.args.length !== 2) {
+    return undefined;
+  }
+  const [pArg, lenArg] = slotArg.args;
+  if (!isIntLiteral(pArg) || !isIntLiteral(lenArg) || BigInt(lenArg.raw) !== 64n) return undefined;
+  const p = BigInt(pArg.raw);
+  const keyWord = memory.get(p);
+  const slotWord = memory.get(p + 32n);
+  if (keyWord === undefined || slotWord === undefined) return undefined;
+  const slotNum = constSlotOf(slotWord);
+  if (slotNum === undefined) return undefined;
+  const collection = currentMappingSlots.get(slotNum);
+  if (collection === undefined) return undefined;
+  return { collection, key: keyWord };
 }
 
 // Build the anonymous-event emit for a Yul log0-log4: `emit __YulLog(topics ++ mem[p:p+len])`. Each topic is a
@@ -910,6 +966,8 @@ function lowerCall(call: YulFunctionCallNode): ExpressionNode {
   // sload(slot) -> the word at that storage slot (a single var, or the combined packed sub-word vars), or the
   // synthesized __evm_storage[slot] register entry for an arbitrary (non-declared) slot.
   if (name === 'sload' && args.length === 1) {
+    const mapAccess = mappingSlotIdiom(args[0]);
+    if (mapAccess) return loc(new MappingAccessNode(mapAccess.collection, [lowerValue(mapAccess.key)]), call);
     const fields = resolveSlotFields(args[0]);
     if (fields) return combineSlot(fields, call);
     const key = evmStorageSlotKey(args[0]);
@@ -1084,6 +1142,10 @@ function lowerStatement(stmt: YulStatementNode): StatementNode {
       // sstore(slot, v): write the word to that storage slot (a single var, or decomposed into packed vars),
       // or the synthesized __evm_storage[slot] register entry for an arbitrary (non-declared) slot.
       if (e.name === 'sstore' && e.args.length === 2) {
+        const mapWrite = mappingSlotIdiom(e.args[0]);
+        if (mapWrite) {
+          return loc(new MappingAssignNode(mapWrite.collection, [lowerValue(mapWrite.key)], lowerValue(e.args[1])), e);
+        }
         const fields = resolveSlotFields(e.args[0]);
         if (fields) return decomposeSlot(fields, e.args[1], e);
         const key = evmStorageSlotKey(e.args[0]);
@@ -1392,7 +1454,7 @@ function lowerBlock(block: YulBlockNode): BlockNode {
 export default class LowerInlineAssembly extends AstTraversal {
   // Track the enclosing contract's state variables so sstore/sload can resolve slot numbers.
   visitContract(node: ContractNode): Node {
-    computeStorageLayout(node.stateVariables);
+    computeStorageLayout(node.stateVariables, node.collections);
     evmStorageUsed = false;
     logEventUsed = false;
     const result = super.visitContract(node) as ContractNode;

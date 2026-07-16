@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { compileString, SortedMappingCodegenPendingError } from '../src/index.js';
+import { compileString } from '../src/index.js';
 
 // The C2 sorted-linked-list mapping opt-in (CompilerOptions.sortedMappings). The covenant + SDK (SortedList) are
 // proven and shipped; the source-level codegen is pending, so the compiler marks the collection sorted (metadata
@@ -84,10 +84,10 @@ describe('sorted mapping opt-in (C2)', () => {
       .not.toThrow();
   });
 
-  it('still fails closed on an unbounded bytes value type', () => {
+  it('compiles an unbounded bytes value type (P5a: value in the 64 B tail; >64 B fails closed at the VM)', () => {
     const MAP = 'contract C() { mapping(int => bytes) blob;';
     expect(() => compileString(`${MAP} function f(int k, bytes b) { blob[k] = b; } }`, { sortedMappings: ['blob'], forceStateful: true }))
-      .toThrow(SortedMappingCodegenPendingError);
+      .not.toThrow();
   });
 
   it('compiles delete of a sorted VALUE mapping (== set to default, via the upsert)', () => {

@@ -3403,6 +3403,18 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
     }
 
+    // SORTED (enumerable) collection: trustless LINKAGE-completeness iteration (co-spend HEAD sentinel, walk
+    // nextKey to the tail). VALUES mode only for now - KEYS/ENTRIES need the raw key which the C2 commitment
+    // does not store (only slot = H(key)).
+    if (collection.sorted) {
+      if (node.mode !== CollectionIterationMode.VALUES) {
+        throw new Error(`Iterating keys/entries of a sorted 'enumerable mapping' ('${collection.name}') is not yet `
+          + 'supported (the sorted entry stores slot=H(key), not the raw key); use value iteration.');
+      }
+      this.emitSortedIterationLinkage(node, iterIdx, locationData, endLocationData);
+      return node;
+    }
+
     // Push loop counter: int i = 0
     this.emit(encodeInt(0n), locationData);
     this.pushToStack('(__iter_i)');
@@ -3520,6 +3532,152 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.removeFromStack(iIdxFinal);
 
     return node;
+  }
+
+  // Trustless VALUES-mode iteration over a SORTED (enumerable / C2) mapping by LINKAGE completeness. The SDK
+  // co-spends the HEAD sentinel (slot 0) then the entries in ascending slot order; the covenant co-spends HEAD
+  // and walks the nextKey chain to the tail (nextKey == 0), verifying per entry that (a) its input bytecode is
+  // the collection's entry address (a real entry - no substitution) and (b) its slot == the previous nextKey
+  // (contiguity - a skipped/omitted entry breaks the chain). Completeness is enforced with no trusted count.
+  private emitSortedIterationLinkage(
+    node: CollectionIterationNode, iterIdx: number,
+    locationData: SingleLocationData, endLocationData: SingleLocationData,
+  ): void {
+    const collection = node.collection!;
+    const valueType = collection.innermostValueType;
+    const valueKind = this.sortedValueKind(valueType);
+    if (valueKind === null) {
+      throw new SortedMappingCodegenPendingError(node as unknown as MappingAccessNode, collection.name);
+    }
+    const collectionHash = computeCollectionHash(computeCollectionSignature(collection.name, collection.type.toString()));
+    const ZERO32 = new Uint8Array(32);
+
+    // 1. Entry address (constant for the collection) -> tracked, reused per entry (the address pin below).
+    this.emitMasterInputIndex(locationData);
+    this.emit(Op.OP_UTXOTOKENCATEGORY, locationData);
+    this.emit(encodeInt(32n), locationData); this.emit(Op.OP_SPLIT, locationData); this.emit(Op.OP_DROP, locationData);
+    this.pushToStack('(__iter_entryaddr)');
+    this.emitP2sh32FromCovenant((cat) => buildEntryNftCovenantScript(cat, collectionHash), locationData);
+    this.popFromStack(); // emitP2sh32FromCovenant re-tracks the address as '(value)'; relabel it.
+    this.pushToStack('(__iter_entryaddr)');
+
+    // 2. i = 0 (input offset). HEAD is at base+0, entries at base+1..N.
+    this.emit(encodeInt(0n), locationData);
+    this.pushToStack('(__iter_i)');
+
+    // 3. HEAD @ base+0: pin + split -> tracked [__ent_slot,__ent_next,__ent_value]; verify slot == 0; keep
+    // nextKey as the persistent expectedNext '(__iter_next)'.
+    this.emitSortedIterEntryCommitment(iterIdx, locationData);
+    this.emit(encodeInt(BigInt(this.getStackIndex('(__ent_slot)'))), locationData);
+    this.emit(Op.OP_PICK, locationData);
+    this.emit(ZERO32, locationData);
+    this.emit(Op.OP_EQUALVERIFY, locationData); // HEAD.slot == 0
+    this.emit(encodeInt(BigInt(this.getStackIndex('(__ent_next)'))), locationData);
+    this.emit(Op.OP_PICK, locationData);
+    this.pushToStack('(__iter_next)'); // expectedNext = HEAD.nextKey (persists across iterations)
+    this.removeScopedEntryTemps(node);
+
+    // i = 1 (HEAD consumed; entries start at base+1)
+    this.emit(encodeInt(BigInt(this.getStackIndex('(__iter_i)'))), locationData);
+    this.emit(Op.OP_PICK, locationData);
+    this.emit(Op.OP_1ADD, locationData);
+    this.pushToStack('(__iter_tmp)'); // track the new value so emitReplace/popFromStack reconcile at any depth
+    this.emitReplace(this.getStackIndex('(__iter_i)'), node);
+    this.popFromStack();
+
+    // 4. LOOP: while expectedNext != 0 (not the tail).
+    this.scopeDepth += 1;
+    this.emit(Op.OP_BEGIN, locationData);
+    this.emit(encodeInt(BigInt(this.getStackIndex('(__iter_next)'))), locationData);
+    this.emit(Op.OP_PICK, locationData);
+    this.emit(Op.OP_BIN2NUM, locationData);
+    this.emit(encodeInt(0n), locationData);
+    this.emit(Op.OP_GREATERTHAN, locationData); // expectedNext > 0 (masked slots are positive)
+    this.emit(Op.OP_IF, locationData);
+
+    const stackBeforeBody = [...this.stack];
+    const stackDepth = this.stack.length;
+
+    // Read entry @ base+i -> tracked [__ent_slot,__ent_next,__ent_value].
+    this.emitSortedIterEntryCommitment(iterIdx, locationData);
+    // Contiguity: __ent_slot == expectedNext (omission -> mismatch -> revert).
+    this.emit(encodeInt(BigInt(this.getStackIndex('(__ent_slot)'))), locationData);
+    this.emit(Op.OP_PICK, locationData);
+    this.emit(encodeInt(BigInt(this.getStackIndex('(__iter_next)') + 1)), locationData); // +1 for the picked slot
+    this.emit(Op.OP_PICK, locationData);
+    this.emit(Op.OP_EQUALVERIFY, locationData);
+    // expectedNext = this entry's nextKey (before the body, so it survives).
+    this.emit(encodeInt(BigInt(this.getStackIndex('(__ent_next)'))), locationData);
+    this.emit(Op.OP_PICK, locationData);
+    this.pushToStack('(__iter_tmp)'); // track the copy so emitReplace/popFromStack reconcile at any depth
+    this.emitReplace(this.getStackIndex('(__iter_next)'), node);
+    this.popFromStack();
+    // Value -> loop variable (int/bool normalized, bytesN verbatim).
+    this.emit(encodeInt(BigInt(this.getStackIndex('(__ent_value)'))), locationData);
+    this.emit(Op.OP_PICK, locationData);
+    if (valueKind === 'int') this.emit(Op.OP_BIN2NUM, locationData);
+    this.pushToStack(node.valueName!);
+    this.removeScopedEntryTemps(node);
+
+    node.body = this.visit(node.body);
+    this.removeScopedVariables(stackDepth, node.body);
+
+    // i++
+    this.emit(encodeInt(BigInt(this.getStackIndex('(__iter_i)'))), locationData);
+    this.emit(Op.OP_PICK, locationData);
+    this.emit(Op.OP_1ADD, locationData);
+    this.pushToStack('(__iter_tmp)'); // track the new value so emitReplace/popFromStack reconcile at any depth
+    this.emitReplace(this.getStackIndex('(__iter_i)'), node);
+    this.popFromStack();
+
+    this.emit(encodeBool(false), endLocationData);
+    this.pushToStack('(loop_continue)');
+    this.emit(Op.OP_ELSE, endLocationData);
+    this.stack = [...stackBeforeBody];
+    this.emit(encodeBool(true), endLocationData);
+    this.pushToStack('(loop_exit)');
+    this.emit(Op.OP_ENDIF, endLocationData);
+    this.emit(Op.OP_UNTIL, endLocationData);
+    this.popFromStack();
+    this.scopeDepth -= 1;
+
+    // Clean up expectedNext, i, entryAddr.
+    for (const name of ['(__iter_next)', '(__iter_i)', '(__iter_entryaddr)']) {
+      const idx = this.getStackIndex(name);
+      this.emit(encodeInt(BigInt(idx)), endLocationData);
+      this.emit(Op.OP_ROLL, endLocationData);
+      this.emit(Op.OP_DROP, endLocationData);
+      this.removeFromStack(idx);
+    }
+  }
+
+  // Read the entry NFT at input base+i (i = '(__iter_i)'), PIN it to the collection's entry address (a real
+  // entry - closes substitution), and split its commitment -> tracked [__ent_slot,__ent_next,__ent_value].
+  private emitSortedIterEntryCommitment(iterIdx: number, loc: SingleLocationData): void {
+    this.emitCollectionIterInputIndex(iterIdx, loc); // [.., idx] (untracked)
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_UTXOBYTECODE, loc); // [.., idx, inbc]
+    this.emit(encodeInt(BigInt(this.getStackIndex('(__iter_entryaddr)') + 2)), loc); // +2 untracked (idx, inbc)
+    this.emit(Op.OP_PICK, loc);
+    this.emit(Op.OP_EQUALVERIFY, loc); // inbc == entryAddr
+    this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc); // [.., commit]
+    this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); // [.., slot, rest]
+    this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); // [.., slot, next, value]
+    this.pushToStack('(__ent_slot)');
+    this.pushToStack('(__ent_next)');
+    this.pushToStack('(__ent_value)');
+  }
+
+  // Drop the three per-entry commitment temps (top-down so each ROLL index is current).
+  private removeScopedEntryTemps(node: Node): void {
+    const loc = { location: node.location, positionHint: PositionHint.START };
+    for (const name of ['(__ent_value)', '(__ent_next)', '(__ent_slot)']) {
+      const idx = this.getStackIndex(name);
+      this.emit(encodeInt(BigInt(idx)), loc);
+      this.emit(Op.OP_ROLL, loc);
+      this.emit(Op.OP_DROP, loc);
+      this.removeFromStack(idx);
+    }
   }
 
   /**

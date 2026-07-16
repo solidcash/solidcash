@@ -115,14 +115,40 @@ export function slotLayoutCase(o: { decls: string; slotExpr: string; label?: str
   };
 }
 
-// Run a slot-layout case: solc computes the EVM slot; the SolidCash stateful covenant must accept it.
-export async function assertSlotConformant(c: ConformanceCase): Promise<void> {
+// General STATEFUL value conformance: EVM computes the expected value(s); the SolidCash stateful covenant must
+// accept them via a require(<computed> == __expected) oracle (fed the EVM result). For contracts with state
+// (storage slots, mapping read/write) that the stateless harness cannot run.
+export async function assertStatefulConformant(c: ConformanceCase): Promise<void> {
   const { decoded } = await evalEvm(compileEvm(c.solidity), c.evmFn, c.args);
   const pass = await evalBchStatefulCheck(compileBchStateful(c.scash), c.bchFn, [...c.args, ...decoded]);
   if (!pass) {
     const tag = c.label ? ` [${c.label}]` : '';
-    throw new Error(`Slot-layout MISMATCH${tag}: solc slot = ${fmt(decoded)}, but SolidCash assigns a different slot`);
+    throw new Error(`Stateful conformance MISMATCH${tag}: EVM ${c.evmFn}(${fmt(c.args)}) = ${fmt(decoded)}, `
+      + 'but the SolidCash covenant rejected that result');
   }
+}
+
+// Run a slot-layout case: solc computes the EVM slot; the SolidCash stateful covenant must accept it.
+export const assertSlotConformant = assertStatefulConformant;
+
+// Mapping element read/write VALUE parity: `m[k] = v; m[k]` returns `v`, matching EVM. NOTE: the m[k] SLOT is
+// sha256 on BCH (not byte-parity keccak), so only the VALUE is asserted, not the physical slot number.
+export function mappingCase(o: {
+  keyType: string; valueType: string; args: readonly unknown[]; label?: string;
+}): ConformanceCase {
+  const { keyType, valueType } = o;
+  return {
+    solidity: `${SPDX}contract C {\n  mapping(${keyType} => ${valueType}) m;\n`
+      + `  function f(${keyType} k, ${valueType} v) public returns (${valueType}) {\n`
+      + '    m[k] = v;\n    return m[k];\n  }\n}\n',
+    scash: `contract Conf() {\n  mapping(${keyType} => ${valueType}) m;\n`
+      + `  function f(${keyType} k, ${valueType} v, ${valueType} __expected) {\n`
+      + '    m[k] = v;\n    require(m[k] == __expected);\n  }\n}\n',
+    evmFn: 'f',
+    bchFn: 'f',
+    args: o.args,
+    label: o.label ?? `mapping(${keyType}=>${valueType})`,
+  };
 }
 
 // A case where the operation must REVERT on BOTH sides (e.g. checked over/underflow, division by zero).

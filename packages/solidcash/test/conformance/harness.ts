@@ -145,6 +145,48 @@ export function asmCase(o: {
   };
 }
 
+// The on-chain check that an abi expression's bytes equal the ethers constant, as ONE source valid on BOTH VMs
+// (both self-verify on-chain via assertBothAccept). Returns null when no cheap symmetric form exists (a misaligned
+// length: selector+args, packed>32) - the caller then uses the baked-constant cross-check. Keccak-free, byte-exact,
+// and cheap: no per-byte loop (that blows the BCH op-cost budget past ~32 bytes).
+//   <=32 bytes  -> truncate to bytesN and compare (a single value-type ==)
+//   multiple/32 -> slice into 32-byte words via abi.decode-as-bytes32 and compare each (a few SPLITs + word ==)
+function abiCheckLogic(expr: string, expected: string): string | null {
+  const nbytes = (expected.length - 2) / 2;
+  if (nbytes >= 1 && nbytes <= 32) {
+    return `require(bytes${nbytes}(${expr}) == bytes${nbytes}(hex"${expected.slice(2)}"));`;
+  }
+  if (nbytes % 32 === 0) {
+    const n = nbytes / 32;
+    const decls = Array.from({ length: n }, (_, i) => `bytes32 w${i}`).join(', ');
+    const schema = Array.from({ length: n }, () => 'bytes32').join(', ');
+    const checks = Array.from({ length: n },
+      (_, i) => `require(w${i} == 0x${expected.slice(2 + i * 64, 2 + (i + 1) * 64)});`).join('\n    ');
+    return `(${decls}) = abi.decode(${expr}, (${schema}));\n    ${checks}`;
+  }
+  return null;
+}
+
+// Build a symmetric-if-possible / cross-checked-otherwise abi case around a check expression + its ethers const.
+function abiCaseFrom(o: {
+  params: string; expr: string; expected: string; args: readonly unknown[]; label: string;
+}): ConformanceCase {
+  const logic = abiCheckLogic(o.expr, o.expected);
+  if (logic !== null) {
+    return {
+      solidity: `${SPDX}contract C {\n  function f(${o.params}) public pure {\n    ${logic}\n  }\n}\n`,
+      scash: `contract Conf() {\n  function f(${o.params}) {\n    ${logic}\n  }\n}\n`,
+      evmFn: 'f', bchFn: 'f', args: o.args, evmCompat: true, bothAccept: true, expectedConst: o.expected, label: o.label,
+    };
+  }
+  return {
+    solidity: `${SPDX}contract C {\n  function f(${o.params}) public pure returns (bytes memory) {\n`
+      + `    return ${o.expr};\n  }\n}\n`,
+    scash: `contract Conf() {\n  function f(${o.params}) {\n    require(${o.expr} == ${o.expected});\n  }\n}\n`,
+    evmFn: 'f', bchFn: 'f', args: o.args, evmCompat: true, expectedConst: o.expected, label: o.label,
+  };
+}
+
 // Build an abi.encode / abi.encodePacked case. The Solidity side returns the encoding as `bytes`; the BCH
 // side (compiled with evmCompat) asserts it produces the same bytes. `encodeArgs` is the argument list inside
 // abi.encode(...), referencing the params.
@@ -158,36 +200,10 @@ export function abiCase(o: {
   const expected = (o.packed ? ethersAbiEncodePacked : ethersAbiEncode)(
     names.map((n) => types[n]), names.map((n) => byName[n]),
   );
-  // A single-word (exactly 32-byte) abi.encode compares symmetrically via a bytes32 cast: `==` on bytes32 is a
-  // value-type op both Solidity and SolidCash accept, so BOTH contracts are the identical covenant and each
-  // self-verifies the exact 32 bytes (byte order, two's-complement) on-chain. Larger/packed encodings keep the
-  // return + baked-constant cross-check (Solidity has no bytes memory ==).
-  if (!o.packed && expected.length === 66) {
-    const logic = `require(bytes32(${fn}(${o.encodeArgs})) == ${expected});`;
-    return {
-      solidity: `${SPDX}contract C {\n  function f(${o.params}) public pure {\n    ${logic}\n  }\n}\n`,
-      scash: `contract Conf() {\n  function f(${o.params}) {\n    ${logic}\n  }\n}\n`,
-      evmFn: 'f',
-      bchFn: 'f',
-      args: o.args,
-      evmCompat: true,
-      bothAccept: true,
-      expectedConst: expected,
-      label: o.label ?? `${fn}(${o.encodeArgs})`,
-    };
-  }
-  return {
-    solidity: `${SPDX}contract C {\n  function f(${o.params}) public pure returns (bytes memory) {\n`
-      + `    return ${fn}(${o.encodeArgs});\n  }\n}\n`,
-    scash: `contract Conf() {\n  function f(${o.params}) {\n`
-      + `    require(${fn}(${o.encodeArgs}) == ${expected});\n  }\n}\n`,
-    evmFn: 'f',
-    bchFn: 'f',
-    args: o.args,
-    evmCompat: true,
-    expectedConst: expected,
+  return abiCaseFrom({
+    params: o.params, expr: `${fn}(${o.encodeArgs})`, expected, args: o.args,
     label: o.label ?? `${fn}(${o.encodeArgs})`,
-  };
+  });
 }
 
 // Dispatch an abi case to the right assertion: single-word cases run the identical bytes32-compare covenant on
@@ -207,18 +223,10 @@ export function selCase(o: {
   const selector = String(byName[names[0]]); // first arg is the 4-byte selector, prepended raw
   const rest = names.slice(1);
   const expected = selector + ethersAbiEncode(rest.map((n) => types[n]), rest.map((n) => byName[n])).slice(2);
-  return {
-    solidity: `${SPDX}contract C {\n  function f(${o.params}) public pure returns (bytes memory) {\n`
-      + `    return abi.encodeWithSelector(${o.selectorAndArgs});\n  }\n}\n`,
-    scash: `contract Conf() {\n  function f(${o.params}) {\n`
-      + `    require(abi.encodeWithSelector(${o.selectorAndArgs}) == ${expected});\n  }\n}\n`,
-    evmFn: 'f',
-    bchFn: 'f',
-    args: o.args,
-    evmCompat: true,
-    expectedConst: expected,
+  return abiCaseFrom({
+    params: o.params, expr: `abi.encodeWithSelector(${o.selectorAndArgs})`, expected, args: o.args,
     label: o.label ?? `encodeWithSelector(${o.selectorAndArgs})`,
-  };
+  });
 }
 
 // Build an abi.decode round-trip case. The expected value of abi.decode(abi.encode(a), (T)) is `a` BY DEFINITION,

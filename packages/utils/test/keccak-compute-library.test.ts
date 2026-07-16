@@ -4,12 +4,16 @@ import { keccak_256 } from '@noble/hashes/sha3.js';
 import {
   KECCAK256_COMPUTE_COVENANT,
   KECCAK256_COMPUTE_COVENANT_HASH,
+  KECCAK256_COMPUTE_STATEFUL_COVENANT,
+  KECCAK256_COMPUTE_STATEFUL_COVENANT_HASH,
   KECCAK256_COMPUTE_SALT_PREFIX_LENGTH,
   KECCAK256_COMPUTE_PAD_LENGTH,
   buildKeccakComputeRedeem,
   keccakComputeLockingBytecode,
   keccakComputeResultCommitment,
+  keccakSideCarRequirement,
 } from '../src/keccak-compute-library.js';
+import type { Artifact } from '../src/artifact.js';
 import { hash256 } from '../src/hash.js';
 
 const vm = createVirtualMachineBch2026();
@@ -36,8 +40,14 @@ function evalSidecar(preimage: Uint8Array, commitR: Uint8Array, in0Category: Uin
   const transaction = {
     version: 2, locktime: 0,
     inputs: [
-      { outpointIndex: 0, outpointTransactionHash: new Uint8Array(32), sequenceNumber: 0xffffffff, unlockingBytecode: Uint8Array.from([0x51]) },
-      { outpointIndex: 0, outpointTransactionHash: new Uint8Array(32).fill(1), sequenceNumber: 0xffffffff, unlockingBytecode: scUnlock },
+      {
+        outpointIndex: 0, outpointTransactionHash: new Uint8Array(32),
+        sequenceNumber: 0xffffffff, unlockingBytecode: Uint8Array.from([0x51]),
+      },
+      {
+        outpointIndex: 0, outpointTransactionHash: new Uint8Array(32).fill(1),
+        sequenceNumber: 0xffffffff, unlockingBytecode: scUnlock,
+      },
     ],
     outputs: [
       { lockingBytecode: new Uint8Array(25), valueSatoshis: 1000n },
@@ -57,6 +67,29 @@ describe('keccak compute-and-commit side-car (utils)', () => {
     const covBytes = Uint8Array.from(KECCAK256_COMPUTE_COVENANT.match(/.{2}/g)!.map((b) => parseInt(b, 16)));
     expect(binToHex(hash256(covBytes))).toBe(KECCAK256_COMPUTE_COVENANT_HASH);
     expect(covBytes.length).toBe(2394);
+  });
+
+  it('STATEFUL COVENANT hash matches its baked constant and differs only in the self-pres tail', () => {
+    const stateful = Uint8Array.from(KECCAK256_COMPUTE_STATEFUL_COVENANT.match(/.{2}/g)!.map((b) => parseInt(b, 16)));
+    expect(binToHex(hash256(stateful))).toBe(KECCAK256_COMPUTE_STATEFUL_COVENANT_HASH);
+    // Self-preserves via OP_INPUTINDEX (absolute slot) - 4 bytes shorter than the offset-from-end stateless one.
+    expect(stateful.length).toBe(2390);
+    expect(KECCAK256_COMPUTE_STATEFUL_COVENANT.endsWith('c076d27b88c0c778cd88c0ce78d1887551')).toBe(true);
+    // Everything before the self-pres tail is byte-identical to the stateless covenant (same brand + keccak).
+    const statelessHead = KECCAK256_COMPUTE_COVENANT.slice(0, -'c0c493c39476d27b88c0c778cd88c0ce78d1887551'.length);
+    const statefulHead = KECCAK256_COMPUTE_STATEFUL_COVENANT.slice(0, -'c076d27b88c0c778cd88c0ce78d1887551'.length);
+    expect(statefulHead).toBe(statelessHead);
+  });
+
+  it('keccakSideCarRequirement reads minInstances/unbounded from the artifact descriptor', () => {
+    const mk = (lib?: any): Artifact => ({ externalLibraries: lib ? [lib] : [] } as unknown as Artifact);
+    expect(keccakSideCarRequirement(mk({ name: 'keccak256', resultNft: true, minInstances: 3 })))
+      .toEqual({ minInstances: 3, unbounded: false });
+    expect(keccakSideCarRequirement(mk({ name: 'keccak256', resultNft: true, minInstances: 2, unbounded: true })))
+      .toEqual({ minInstances: 2, unbounded: true });
+    // A non-compute (inline) keccak lib or no lib -> no requirement.
+    expect(keccakSideCarRequirement(mk({ name: 'keccak256', resultNft: false }))).toBeUndefined();
+    expect(keccakSideCarRequirement(mk())).toBeUndefined();
   });
 
   it('redeem = OP_PUSHBYTES_32 || salt || COVENANT; salt-independent covenant', () => {

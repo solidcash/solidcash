@@ -1,9 +1,9 @@
 // 2-input transaction: a `main` input loads keccak from a `side-car` input via OP_INPUTBYTECODE,
 // OP_DEFINEs it, and invokes it on data; the side-car self-preserves. Output verified vs EVM keccak256.
-import createKeccak from 'keccak';
+import { keccak_256 } from '@noble/hashes/sha3';
 import * as S from './sidecar.mjs';
 
-const evm = (h) => createKeccak('keccak256').update(Buffer.from(h, 'hex')).digest('hex');
+const evm = (h) => Buffer.from(keccak_256(Buffer.from(h, 'hex'))).toString('hex');
 
 function runPair(msg, expected) {
   const redeem = S.hexToBin(S.redeemHex);

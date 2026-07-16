@@ -87,6 +87,7 @@ export type BlockSlotKind =
   | 'dataNft'
   | 'readOnlyDataNft'
   | 'blockhashOracle'
+  | 'keccakSideCar'
   | 'entry'
   | 'satoshiContainer'
   | 'tokenContainer'
@@ -171,6 +172,10 @@ export interface AbiFunction {
   keccakCompute?: boolean;      // keccak256 uses the compute-and-commit side-car; send() co-spends N side-cars + fills results
   keccakPreimageParams?: readonly (string | null)[]; // per keccak256 call (order): the param feeding it (send()
                                                      // computes each R + co-spends per call)
+  keccakInLoop?: boolean;       // a keccak256 call is inside a loop -> runtime count exceeds keccakPreimageParams.length;
+                                // deploy MORE side-cars than the static count (the loop bound is the real minimum)
+  keccakLoopReads?: boolean;    // STATEFUL dynamic keccak loop: the SDK progressively co-spends N (runtime
+                                // iteration count) compute side-cars into the trailing region [blockSize, ..)
 }
 
 export interface CollectionIterationAbi {
@@ -382,7 +387,8 @@ export interface DeployReadHint {
  */
 export interface ExternalLibraryAbi {
   name: string;       // the builtin resolves its library by this name (e.g. 'keccak256')
-  blobHash: string;   // hash256 of the library script blob; matches the integrity check in the bytecode
+  blobHash?: string;  // hash256 of the library script blob; matches the integrity check (absent for resultNft:
+                      // the compute side-car runs a covenant, not a loaded blob)
   branded: boolean;   // true: side-car address salted with the contract category (per-contract); false: shared
   inline?: boolean;   // true: blob embedded in the contract redeem (no side-car); false: loaded from a side-car
   codeBegin?: number; // byte offset where the blob begins in the side-car input bytecode
@@ -391,6 +397,10 @@ export interface ExternalLibraryAbi {
   code?: string;      // hex blob; present for user-supplied libraries
   resultNft?: boolean; // true: "compute-and-commit" model - the side-car RUNS keccak and returns the hash in
                        // its NFT commitment (the contract reads it), rather than the contract running the blob
+  minInstances?: number; // (resultNft) minimum side-car instances to deploy at creation: the max keccak256 call
+                         // count across the contract's functions (each function co-spends its own per-call side-cars)
+  unbounded?: boolean;   // (resultNft) some function hashes inside a loop -> minInstances is a LOWER BOUND; the
+                         // real need is the loop's runtime count, so provision extra side-cars
 }
 
 export interface Artifact {

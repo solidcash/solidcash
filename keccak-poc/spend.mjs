@@ -1,11 +1,11 @@
 // Standalone contract spend of the hand-authored keccak256 artifact, verified vs EVM keccak256.
 import { Contract, MockNetworkProvider, TransactionBuilder } from '../packages/solidcash/dist/index.js';
 import { randomUtxo } from '../packages/solidcash/dist/utils.js';
-import createKeccak from 'keccak';
+import { keccak_256 } from '@noble/hashes/sha3';
 import { readFileSync } from 'fs';
 
 const artifact = JSON.parse(readFileSync(new URL('./Keccak256.artifact.json', import.meta.url)));
-const evm = (b) => Uint8Array.from(createKeccak('keccak256').update(Buffer.from(b)).digest());
+const evm = (b) => keccak_256(Buffer.from(b));
 
 async function spend(preimage, expectedHash) {
   const provider = new MockNetworkProvider();

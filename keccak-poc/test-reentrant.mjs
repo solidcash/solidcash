@@ -1,11 +1,11 @@
 // Validate the re-entrant fix: define the round ONCE, define keccak-main as a function, then INVOKE it
 // multiple times (distinct calls + nested) in one input - each result must match EVM.
-import createKeccak from 'keccak';
+import { keccak_256 } from '@noble/hashes/sha3';
 import { run, asm, binToHex } from './vm.mjs';
 import { genRoundDefine, genKeccak256varBody } from './genvar.mjs';
 
 const aTo = (s) => binToHex(asm(s));
-const evm = (h) => createKeccak('keccak256').update(Buffer.from(h, 'hex')).digest('hex');
+const evm = (h) => Buffer.from(keccak_256(Buffer.from(h, 'hex'))).toString('hex');
 const ROUND = 2, KECCAK = 3;
 // Registrar: define round (once) + define keccak-main (which invokes round) as fn KECCAK.
 const setup = `${genRoundDefine(aTo, ROUND)} <0x${aTo(genKeccak256varBody(ROUND))}> <${KECCAK}> OP_DEFINE`;

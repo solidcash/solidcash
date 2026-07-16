@@ -153,6 +153,8 @@ function buildFunctionAbiMetadata(func: FunctionDefinitionNode, isStateful = fal
     ...(func.keccakCompute && { keccakCompute: true }),
     ...(func.keccakPreimageParams && func.keccakPreimageParams.length > 0
       && { keccakPreimageParams: func.keccakPreimageParams }),
+    ...(func.keccakInLoop && { keccakInLoop: true }),
+    ...(func.keccakLoopReads && { keccakLoopReads: true }),
     ...(func.unsafeTier !== undefined && { unsafeTier: func.unsafeTier }),
     ...(func.lowLevelCalls && func.lowLevelCalls.length > 0 && {
       lowLevelCalls: func.lowLevelCalls.map((lc) => ({ callMode: lc.callMode })),
@@ -519,6 +521,23 @@ export function generateArtifact(
   const externalLibraries: ExternalLibraryAbi[] | undefined = usedLibraryNames.length > 0
     ? usedLibraryNames.map((name) => {
       const lib = resolvedLibraries[name];
+      // result-NFT (compute) model: the side-car COMPUTES keccak in its own budget and returns it in its NFT
+      // commitment; the contract never loads a blob, so the inline-loader fields (blobHash/codeBegin/codeEnd) do
+      // not apply (they would describe a blob that is never inlined). keccak256 is always the compute model.
+      const isResultNft = name === 'keccak256' && allFns.some((f) => f?.keccakCompute);
+      if (isResultNft) {
+        return {
+          name,
+          branded: stateLayout !== undefined,
+          abi: lib.abi,
+          resultNft: true,
+          // minInstances = the max keccak256 call count across functions (side-cars to deploy at creation);
+          // unbounded flags a keccak-in-loop function whose runtime count exceeds that static minimum.
+          minInstances: Math.max(0, ...allFns.map((f) => f?.keccakPreimageParams?.length ?? 0)),
+          ...(allFns.some((f) => f?.keccakInLoop) && { unbounded: true }),
+        };
+      }
+      // inline / side-car-blob model: the loader strips to codeBegin/codeEnd in the side-car input bytecode.
       const range = sidecarCodeRange(lib.blob);
       return {
         name,
@@ -530,10 +549,6 @@ export function generateArtifact(
         abi: lib.abi,
         // built-ins resolve by name in the SDK; user libraries embed their blob
         ...(BUILTIN_LIBRARIES[name] ? {} : { code: binToHex(lib.blob) }),
-        // result-NFT model: the side-car computes keccak and returns it in its NFT commitment (SDK co-spends
-        // the compute side-car + fills the result commitment, rather than loading the blob into the contract).
-        // Decided per-function (node.keccakCompute); set here if any function uses the compute model.
-        ...(name === 'keccak256' && allFns.some((f) => f?.keccakCompute) ? { resultNft: true } : {}),
       };
     })
     : undefined;

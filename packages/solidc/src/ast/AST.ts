@@ -304,6 +304,10 @@ export class FunctionDefinitionNode extends Node implements Named {
   keccakCompute?: boolean;      // keccak256 uses the compute-and-commit result-NFT model (side-car computes it)
   keccakPreimageParams?: (string | null)[]; // per keccak256 call (codegen emission order): the param feeding it
                                             // (SDK transparent co-spend); null = not a direct param
+  keccakInLoop?: boolean;       // a keccak256 call is inside a loop -> runtime count exceeds the static count;
+                                // the SDK should foresee extra side-car strain (deploy more than the syntactic count)
+  keccakLoopReads?: boolean;    // a stateful dynamic keccak loop reads N trailing side-cars (SDK progressively
+                                // co-spends N = runtime iteration count into the trailing region [blockSize, ..))
   unsafeTier?: number;          // 0, 1, or 2 (only set when UNSAFE modifier present)
   splitCountParam?: string;     // parameter name for split count
   mergeCountParam?: string;     // parameter name for merge count

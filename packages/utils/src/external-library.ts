@@ -39,6 +39,10 @@ export interface ExternalLibrary {
 export const BUILTIN_LIBRARIES: Record<string, ExternalLibrary> = {
   keccak256: {
     name: 'keccak256',
+    // keccak256 is ALWAYS the compute (result-NFT) model now: the side-car runs keccak in its own budget and
+    // commits the result, so the contract never loads this blob (the loader is skipped, and the artifact
+    // descriptor omits the inline blobHash/codeBegin/codeEnd). The blob/hash/id stay here as the canonical
+    // keccak script (docs/keccak-poc reference) and to satisfy the ExternalLibrary shape; only `abi` is consumed.
     blob: hexToBin(KECCAK256_LIBRARY_BLOB),
     blobHash: hexToBin(KECCAK256_LIBRARY_BLOB_HASH),
     functionId: KECCAK256_LIBRARY_ID,

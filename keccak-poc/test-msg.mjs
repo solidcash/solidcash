@@ -1,12 +1,12 @@
 import { run, asm, binToHex } from './vm.mjs';
 import { genKeccak256x32 } from './gen.mjs';
-import createKeccak from 'keccak';
+import { keccak_256 } from '@noble/hashes/sha3';
 
 const asmToHex = (s) => binToHex(asm(s));
 const script = 'OP_NIP ' + genKeccak256x32(asmToHex);
 console.log('locking size:', asm(script).length, 'bytes');
 
-function evm(hex) { return createKeccak('keccak256').update(Buffer.from(hex, 'hex')).digest('hex'); }
+function evm(hex) { return Buffer.from(keccak_256(Buffer.from(hex, 'hex'))).toString('hex'); }
 
 let allMatch = true;
 for (const msg of ['00'.repeat(32), '11'.repeat(32),

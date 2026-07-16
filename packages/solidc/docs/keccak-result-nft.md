@@ -280,15 +280,144 @@ once its codegen + SDK land):
    requires EVERY call to hash a direct param (`allKeccakCallsDirectParam`). Each side-car input has its OWN
    ~8M budget, so N calls are N independent inputs - no shared 3-block cap (compute scales past inline). e2e:
    two `keccak256(param)` calls -> two side-cars, each result read by slot, matching EVM; wrong slot rejected.
-2. **Complex / nested args.** `keccak256(expr)` / `keccak256(keccak256(x))` where a call's preimage is not a
-   direct param: the SDK captures each preimage via a VM probe that reads the arg off the trace at the marked
-   keccak call IP (mirrors `blockhash` computed-`n` extraction), or resolves nesting in dependency order.
-3. **Stateful.** Thread the compute side-car(s) through `StatefulContract` auto-derivation like
-   `blockhashOracle` (co-spent in every derivation probe + the final tx); branded (salt = master category),
-   so the conditional brand check (section 12) enforces category isolation.
-4. **Remove inline keccak.** Once 1-3 cover every case, drop keccak from the inline dispatch/prologue (keep
-   the machinery for user libraries) and migrate the remaining `Keccak256.test.ts` inline tests to compute.
+2. **Complex / nested args (VM-probe extraction). SHIPPED + VM-verified (2026-07-16).** `keccak256(expr)` /
+   `keccak256(keccak256(x))` where a call's preimage is not a direct param (`keccakPreimageParams[i] == null`).
+   `SymbolTableTraversal` now selects compute for EVERY stateless keccak (the `allKeccakCallsDirectParam` gate
+   is gone); codegen records `null` for non-param args. The SDK resolves nulls via a VM debug probe, the exact
+   `blockhash` precedent: `TransactionBuilder.resolveKeccakPreimages` temporarily co-spends all N side-cars
+   (real preimage/commitment for resolved calls, placeholders for the rest), calls `keccakProbeVm.debug({
+   inputIndex, sourceOutputs, transaction})`, and `extractKeccakPreimageFromTrace` walks the trace for the LAST
+   executed `OP_INPUTBYTECODE` step whose top-of-stack (the side-car input index) is in the reserved range
+   `[base, base+N)`; the preimage `arg` is `stack[len-2]` and the call's slot is `idx - base`. Identify the
+   step by opcode (`step.instructions[step.ip].opcode === OP_INPUTBYTECODE`), skipping not-taken branches
+   (`controlStack.some(c => c===false)`). The value is captured even from a FAILING probe (abort at the bind).
+   **Iterative resolution:** nested calls abort inner-to-outer (runtime order != emission order), so each probe
+   resolves exactly one null - the aborting call - assigned by its **slot index** (not the loop index); loop
+   until every preimage is known. VM-verified: `keccak256(keccak256(x))` (2-level), `keccak^3(x)` (3-level, two
+   probes), `keccak256(abi.encodePacked(a,b))` (concat), and mixed direct+nested multi-call.
+3. **Stateful (block-layout SLOT). DIRECT spends SHIPPED + VM-verified (2026-07-16).** The last-N approach does
+   NOT port to `StatefulTransactionBuilder` (`send()` inserts the change output before the side-car recreation,
+   and the derivation probes are `build()`-derived), so a stateful side-car rides a **block-layout slot**: a new
+   `keccakSideCar` `BlockSlotKind` (sibling of `blockhashOracle`) in `computeBlockLayout`, positioned absolutely.
+   As shipped:
+   - **`BlockSlotKind` `'keccakSideCar'`** (`artifact.ts`); `computeBlockLayout` pushes one per keccak call right
+     after `blockhashOracle` (`SymbolTableTraversal.ts`, gated on `node.keccakCompute`, count from
+     `libraryCallCounts`). The compute decision now selects EVERY keccak (stateless AND stateful).
+   - **Two codegen read paths** in `emitKeccakComputeCall`: `fn.blockLayout` -> `emitBlockSlotIndex('keccakSideCar', i)`
+     (absolute, same index for the 1:1 input+output); else count-relative (stateless). `keccakPreimageParams` is
+     reset per pass in `visitFunctionDefinition` (the node is revisited across sub-traversals).
+   - **A SEPARATE stateful covenant.** The stateless covenant self-preserves at the output offset-from-end
+     (`INPUTINDEX + TXOUTPUTCOUNT - TXINPUTCOUNT`), which only equals the slot when in/out counts match - false
+     for a stateful tx. The stateful side-car's input and output share the block-layout index, so it
+     self-preserves via the **active input index** (`OP_INPUTINDEX`). Only the tail differs (`c0c493c394` ->
+     `c0`); `KECCAK256_COMPUTE_STATEFUL_COVENANT` + `..._HASH` in `keccak-compute-library.ts`, selected by
+     `buildKeccakComputeRedeem(salt, stateful)` / `keccakComputeLockingBytecode(salt, stateful)`; the compiler
+     bakes the matching hash by `fn.blockLayout`.
+   - **SDK.** `StatefulContract._resolveKeccakComputeCoSpends` (mirrors `_resolveBlockhashCoSpends`): direct-param
+     preimages from the call args, side-cars branded to the master category (salt = **reversed** category, since
+     `OP_UTXOTOKENCATEGORY` is internal byte order), `buildKeccakComputeSidecar(.., stateful=true)`. Wired into
+     BOTH the derivation probe (`_deriveCommitments` runProbe: inputs+outputs after blockhash; `entryBase`/
+     `extraBase` bumped) and the final builder (`keccakComputeCoSpendUtxos` + `keccakComputeCommitments` STB
+     options; positioning `case 'keccakSideCar'`, base sums, recreation loop, count helpers). `firstSidecarLib`
+     skips `resultNft` so the inline loader is not required. Shared side-car construction:
+     `keccak/keccakComputeSidecar.ts`.
+   - **Complex/nested-arg stateful. SHIPPED + VM-verified (2026-07-16).** `keccak256(keccak256(secret))` /
+     `keccak256(abi.encodePacked(..))` in a stateful contract (`keccakPreimageParams[i] === null`) resolves via
+     `_extractStatefulKeccakPreimages`: a minimal VM probe (master + data NFTs + placeholder keccak side-cars at
+     their block-layout slots), debug the master, read each unresolved call's arg off the trace at its
+     OP_INPUTBYTECODE step (`extractKeccakPreimageFromTrace`, base = first keccak slot offset), iterative
+     inner-to-outer. Threaded into both derivation call sites via a `probeCtx`. **Front-region oracles/reads
+     (blockhash/external-read) before the keccak slot are SUPPORTED (2026-07-16):** the probe threads the already-
+     resolved `[...externalReadUtxos, ...blockhashCoSpendUtxos]` (+ self-preserving recreations + the blockhash
+     freshness locktime) so it reaches the keccak call, and reads the base from the ACTUAL keccak slot offset. VM
+     e2e: nested keccak in a stateful `reveal`, AND `blockhash(bn)` + `keccak256(keccak256(p))`.
+4. **Transitive (keccak in a CALLED external function). SHIPPED + VM-verified (2026-07-16).** A caller A reads/
+   co-spends a stateful callee B whose function hashes; B's keccak reads a `keccakSideCar` slot in B's OWN block,
+   so B's side-car is co-spent + recreated INSIDE B's co-spend block. Handled on BOTH external-call paths:
+   - Shared resolver `StatefulContract._resolveExternalKeccakSideCars(bAbiFunc, args, bCategory)` (mirrors the
+     master resolver for B).
+   - **externalCall path**: `keccakSideCar` added to the `fullBlockKinds` gate + a switch case in the `bBlockInputs`
+     builder (positions B's side-car at its slot); `keccakRecreates` on the group drives the recreation loop.
+   - **externalOutState path** (the natural `B.outState.counter` read): the group carries `keccakInputs` +
+     `keccakRecreates`; the outState input flatten appends the side-cars after B's data NFTs and the outState
+     output recreation appends their recreations; the outState group-width base sums add the keccak count.
+   - **SHARED (salt=0) side-car** (KEY): a transitive co-spend can't brand to B - the branded covenant brand-checks
+     INPUT 0, which is the OUTER caller A, not B. The shared covenant skips the brand check (integrity still
+     enforced by B's baked covenant-hash + preimage bind; only isolation relaxed, same as a shared stateless
+     side-car). INPUTINDEX self-preservation is unaffected. e2e green (`Keccak256.test.ts` transitive).
+   - **Complex/nested-arg in a transitive callee: SUPPORTED (2026-07-16).** `_resolveExternalKeccakSideCars` takes
+     the callee `StatefulContract`; `_externalKeccakProbeCtx` builds B's probe context (B's master unlocked with
+     the call args + ALL of B's data NFTs) and reuses `_extractStatefulKeccakPreimages` to probe B in isolation
+     (salt=0), so B's `keccak256(keccak256(x))` resolves. VM e2e: nested keccak in a co-spent callee.
+
+   **INLINE KECCAK IS ELIMINATED**: the selection sets `keccakCompute` for EVERY keccak function
+   (`keccakCalls >= 1`), so `emitKeccakComputeCall` always fires and the inline blob loader/prologue is never
+   emitted for keccak. The artifact descriptor for a `resultNft` (compute) library now OMITS the misleading inline
+   fields (`blobHash` / `codeBegin` / `codeEnd` / `inline`) that described a blob the contract never loads
+   (`Artifact.ts`; `blobHash` made optional). The keccak blob constant stays in `BUILTIN_LIBRARIES` only as the
+   canonical script + to supply `abi` (documented vestigial). USER libraries keep the inline fields.
 
 Also still open: side-car mutable-NFT genesis deploy helper (tests provision via `addUtxo`;
-`keccakComputeLockingBytecode` gives the address); composition-safe block-layout slot (section 10) vs the
-current last-in/last-out; regtest.
+`keccakComputeLockingBytecode(salt, stateful)` gives the address); regtest. **Status 2026-07-16: steps 1 + 2 + 3
++ 4 done + VM-verified + green (ALL keccak - stateless single/multi/complex/nested, direct stateful, transitive
+external incl. complex/nested, front-region blockhash/external-read, and runtime-bound loops stateful+stateless -
+is compute; inline eliminated from codegen + descriptor).**
+
+## 14. Deploy-time side-car provisioning (reference count + loop strain, 2026-07-16)
+
+The SDK must know how many compute side-cars to deploy for a contract at creation time. The compiler counts
+keccak256 references and exposes it in the artifact:
+- **Per function**: `AbiFunction.keccakPreimageParams.length` is the static keccak256 call count;
+  `AbiFunction.keccakInLoop` is set when any call sits inside a loop (all `for`/`while` desugar to While/DoWhile;
+  detector `SymbolTableTraversal.keccakCallInLoop`).
+- **Per contract (keccak256 descriptor)**: `ExternalLibraryAbi.minInstances` = the MAX call count across
+  functions (each function co-spends its own per-call side-cars, so the largest function sets the floor);
+  `unbounded` = some function hashes in a loop, so `minInstances` is a LOWER BOUND - the runtime need is the
+  loop's iteration count, provision extra. Stamped in `Artifact.ts`.
+- **SDK**: `keccakSideCarRequirement(artifact)` -> `{ minInstances, unbounded } | undefined` (undefined when the
+  contract uses no compute keccak). Deploy `minInstances` mutable-NFT side-cars at
+  `keccakComputeLockingBytecode(salt, stateful)`; when `unbounded`, deploy for the expected loop bound.
+- **FIXED-bound keccak loops are SUPPORTED (2026-07-16):** `UnrollFixedBoundEntryLoop` (extended with a
+  `hasKeccakCall` guard) unrolls a compile-time-bounded `for` loop containing keccak256 into N syntactic calls -
+  N compute side-cars, each an independent slot resolved by the complex-arg probe (VM-verified: a 3-iteration
+  hash chain). The unroll runs before keccak counting, so `keccakPreimageParams` / `minInstances` see the N
+  calls and `keccakInLoop` is NOT set.
+- A RUNTIME-bound keccak loop (`for (i < n)`, n dynamic) in a STATEFUL contract - **SHIPPED + VM-verified
+  (2026-07-16):**
+  - **Compiler:** `computeBlockLayout` allocates NO fixed `keccakSideCar` slots when `keccakInLoop`
+    (`SymbolTableTraversal`); each iteration reads its side-car from the TRAILING region
+    (`emitKeccakComputeCall` loop-mode: `masterInputIndex + blockSize + counter`), a 0-based counter pushed
+    before `OP_BEGIN` by `emitLoopKeccakSetup` and incremented per iteration (dropped by `emitLoopKeccakTeardown`).
+    Uses the stateful covenant (OP_INPUTINDEX self-preservation). Sets `AbiFunction.keccakLoopReads`. **Sound by
+    construction:** each iteration BINDS its side-car's preimage == the running value, so a missing/wrong side-car
+    fails closed (never accepts a wrong hash). No count-pin needed (extras are independent self-preserving UTXOs).
+  - **SDK:** `StatefulContract._resolveStatefulKeccakLoop` runs a PROGRESSIVE VM probe: co-spend k trailing
+    side-cars (first k-1 resolved, k-th a placeholder), debug the master, and `extractKeccakPreimageFromTrace(
+    base = blockSize, k)` yields the aborting iteration's preimage; resolve one per probe until the placeholder
+    is never read (`callIndex` already resolved) => N reached. Then co-spend N real side-cars into the trailing
+    region and recreate each with R_i, via new STB `keccakLoopSideCars` / `keccakLoopRecreates` (positioned right
+    after the fixed block, in the input flatten + the recreation loop). `_createBuilder` branches on
+    `keccakLoopReads`; `_deriveCommitments` skips the fixed path for loops. VM-verified: a 4-iteration hash chain
+    AND a 3-iteration salt-dependent (general, non-hash-chain) loop, both committing the true derived state, both
+    EXTERNALLY asserting the chain result (`require(h == expected)`).
+  - **CRITICAL fix (2026-07-16):** the loop counter-increment had a spurious `popFromStack()` after `emitReplace`
+    that dropped the tracked `(value)`, so `h = keccak256(h)` wrote to the wrong slot and `h` never updated - the
+    loop computed a SELF-CONSISTENT-BUT-WRONG chain (masked because the SDK derived state from the same corrupted
+    trace, and the test only checked tx validity). Removed the pop (mirror the entry-loop counter). All loop tests
+    now externally assert the chain result so this class of bug fails loudly.
+  - **Per-iteration hashing:** the master compares the side-car covenant by pushing the compile-time covenant
+    CONSTANT + `OP_EQUALVERIFY` (not `OP_HASH256` + hash-compare) - re-hashing the ~2.4 KB covenant each iteration
+    blew the per-input hash-density budget at ~5 iters; the byte-compare has zero hashing cost, lifting the cap to
+    the tx-size bound (~20-25 iters / standard 100 KB tx). Non-loop keccak keeps the tight 32-byte hash-compare.
+  - **Front-region SUPPORTED (2026-07-16):** blockhash/external-read slots before the trailing region are threaded
+    into the loop probe (same `frontRegionInputs` + recreations + locktime as the complex-arg probe); the base is
+    the real `blockSize`. VM e2e: `blockhash(bn)` + a dynamic keccak loop. Still guarded: other TRAILING users
+    (entries/containers/transfers) after the keccak region.
+- A RUNTIME-bound keccak loop in a STATELESS contract (pure verifier) - **SHIPPED + VM-verified (2026-07-16),
+  ABSOLUTE-FORWARD:** the loop read `masterInputIndex + blockSize + counter` is byte-identical for a stateless
+  (`OP_INPUTINDEX`, blockSize 1) and a stateful blockSize-1 contract, so the SAME proven read + stateful
+  (self-preserving) covenant is reused - no offset-from-end. `emitLoopKeccakSetup` drops the `blockLayout`
+  requirement (keccakCompute only). SDK `TransactionBuilder.addStatelessKeccakLoopCoSpends`: progressive probe,
+  SPLICE the side-cars right after the master input + their recreations at the parallel output positions (guard:
+  master input index + 1 <= output count). VM-verified n=1..20 with an EXTERNAL target; fails closed on a wrong
+  target.

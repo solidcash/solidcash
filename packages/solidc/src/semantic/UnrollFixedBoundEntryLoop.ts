@@ -16,7 +16,9 @@ import {
   BreakNode,
   ContinueNode,
   ReturnNode,
+  FunctionCallNode,
 } from '../ast/AST.js';
+import { GlobalFunction } from '../ast/Globals.js';
 import { BinaryOperator, UnaryOperator } from '../ast/Operator.js';
 import { MappingType, ArrayType, Type } from '@solidcash/utils';
 import { cloneNode } from '../ast/clone.js';
@@ -32,9 +34,11 @@ const MAX_UNROLL = 64;
  * by EntryWriteInLoopError, because one fixed entry slot can't hold N runtime entries). Distinct constant-index
  * keys get distinct entry slots, so the unrolled form is equivalent to hand-written static writes.
  *
- * Restricted to be sound: only fires when the body actually contains a mapping write (else unrolling is needless),
- * never when the body has break/continue/return (unrolling changes their control flow), and N <= MAX_UNROLL (avoid
- * code blow-up). Runs before break/continue expansion + SymbolTableTraversal so the static writes get their slots.
+ * Restricted to be sound: only fires when the body contains a mapping write OR a keccak256 call (else unrolling
+ * is needless), never when the body has break/continue/return (unrolling changes their control flow), and
+ * N <= MAX_UNROLL (avoid code blow-up). Runs before break/continue expansion + SymbolTableTraversal so the static
+ * writes / keccak calls get their slots. A fixed-bound keccak256 loop unrolls to N syntactic calls (N compute
+ * side-cars, each resolved by the complex-arg probe); a runtime-bound keccak loop stays flagged keccakInLoop.
  */
 export default class UnrollFixedBoundEntryLoop extends AstTraversal {
   private mappingNames = new Set<string>();
@@ -119,8 +123,11 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
     const step = this.evalStep(all.slice(all.length - k), varName);
     if (step === undefined || step <= 0n) return undefined;
 
-    // Only unroll loops that actually write a mapping (else needless), and never with break/continue/return.
-    if (!this.hasMappingWrite(bodyStmts)) return undefined;
+    // Only unroll loops that actually write a mapping OR call keccak256 (else needless). A keccak256 in a
+    // runtime loop needs one compute side-car per RUNTIME call, but the block layout allocates one per SYNTACTIC
+    // call; unrolling a fixed-bound loop turns the N runtime calls into N syntactic calls (each an independent
+    // slot, resolved by the complex-arg probe). Never unroll with break/continue/return (changes control flow).
+    if (!this.hasMappingWrite(bodyStmts) && !this.hasKeccakCall(bodyStmts)) return undefined;
     if (this.hasControlFlowEscape(bodyStmts)) return undefined;
 
     // Enumerate the iteration values; bail if unbounded or larger than MAX_UNROLL.
@@ -177,6 +184,10 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
 
   private hasMappingWrite(stmts: Node[]): boolean {
     return this.anyNode(stmts, (n) => n instanceof ArrayAssignNode && this.mappingNames.has(n.name));
+  }
+
+  private hasKeccakCall(stmts: Node[]): boolean {
+    return this.anyNode(stmts, (n) => n instanceof FunctionCallNode && n.identifier.name === GlobalFunction.KECCAK256);
   }
 
   private hasControlFlowEscape(stmts: Node[]): boolean {

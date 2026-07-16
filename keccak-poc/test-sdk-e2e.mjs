@@ -1,6 +1,6 @@
 // End-to-end: compile a keccak256 contract -> instantiate via the SDK (budget pad + redeem OP_DROP) ->
 // co-spend the side-car -> evaluate with the budget-enforcing BCH-2026 VM -> output matches EVM.
-import createKeccak from 'keccak';
+import { keccak_256 } from '@noble/hashes/sha3';
 import { createVirtualMachineBch2026, binToHex, hexToBin } from '@bitauth/libauth';
 import { compileString } from '../packages/solidc/dist/compiler.js';
 import { Contract } from '../packages/solidcash/dist/index.js';
@@ -10,7 +10,7 @@ import {
 } from '../packages/utils/dist/index.js';
 
 const vm = createVirtualMachineBch2026();
-const evm = (h) => createKeccak('keccak256').update(Buffer.from(h, 'hex')).digest('hex');
+const evm = (h) => Buffer.from(keccak_256(Buffer.from(h, 'hex'))).toString('hex');
 
 const art = compileString(`contract KeccakTest() {
     function verify(bytes preimage, bytes32 expected) {

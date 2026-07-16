@@ -12,8 +12,9 @@ import {
 import { alicePub, alicePriv, bobPriv, aliceAddress } from '../fixture/vars.js';
 import {
   buildBlockhashOracleCovenantScript, blockhashOracleLockingBytecode, buildBlockhashCommitment, scriptToBytecode,
-  encodeInt,
+  encodeInt, keccakComputeLockingBytecode,
 } from '@solidcash/utils';
+import { keccak_256 } from '@noble/hashes/sha3.js';
 import { BlockOracleUpdater, fetchBlockOracleFields, RpcLike } from '../../src/oracle/blockOracleUpdater.js';
 
 // A fixed category used only where the oracle address is expected to be EMPTY (no NFT seeded), so its value is
@@ -610,6 +611,86 @@ describe('blockhash(n) auto-injection (StatefulContract)', () => {
     });
     const sc = StatefulContract.withCategory(contract, categoryId);
     const tx = await (sc as any).f(n1, H1, n2, H2).send();
+    expect(tx.txid).toMatch(/^[0-9a-f]{64}$/);
+  });
+});
+
+// FRONT-REGION + keccak: a contract that reads blockhash(n) AND hashes a COMPLEX/nested keccak arg. The
+// blockhashOracle slot sits before the keccakSideCar slots, shifting the side-car base past 1 + dataNftCount.
+// The complex-arg probe positions the blockhash oracle (+ its self-preserving recreation + the freshness
+// locktime) so it can reach the keccak call and read each preimage off the trace at the shifted base.
+describe('keccak256 + blockhash front-region (stateful)', () => {
+  const KC = 'ee'.repeat(32); // side-car own NFT category
+  const SRC = 'contract B(){ int c;'
+    + ' function f(int bn, bytes32 bh, bytes p, bytes32 e){'
+    + ' require(blockhash(bn) == bh); require(keccak256(keccak256(p)) == e); this.c = this.c + 1; } }';
+
+  it('resolves a nested keccak alongside a blockhash read (front-region slot before the side-cars)', async () => {
+    const provider = createTestProvider();
+    const { n, hash } = await allocHeight(provider);
+    const artifact = compileString(SRC);
+    // The keccak side-car base is shifted past the data NFT count by the blockhashOracle slot.
+    const fnAbi = artifact.abi.find((f) => f.name === 'f');
+    expect(fnAbi?.blockhashReads).toEqual(['bn']);
+    expect(fnAbi?.keccakPreimageParams).toEqual([null, 'p']);
+    const kSlots = fnAbi?.blockLayout?.slots.filter((s) => s.kind === 'keccakSideCar') ?? [];
+    const dataNftCount = fnAbi?.blockLayout?.slots.filter((s) => s.kind === 'dataNft').length ?? 0;
+    expect(kSlots[0].offset).toBeGreaterThan(1 + dataNftCount); // a front-region slot precedes it
+
+    const contract = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(provider, contract, artifact.stateLayout!, { c: 0n }, {
+      saltContract: true,
+      extraOutputs: (cat) => [{
+        address: binToHex(blockhashOracleLockingBytecode(hexToBin(cat), BigInt(n))), satoshis: 1000n,
+        token: { nft: { capability: 'none', commitment: binToHex(buildBlockhashCommitment(BigInt(n), hash)) } },
+      }],
+    });
+    // Two branded keccak side-cars (nested = two calls).
+    const scLock = binToHex(keccakComputeLockingBytecode(hexToBin(categoryId).slice().reverse(), true));
+    for (let i = 0; i < 2; i++) {
+      await provider.addUtxo(scLock, {
+        txid: (0xc0 + i).toString(16).padStart(2, '0').repeat(32), vout: 0, satoshis: 100_000n,
+        token: { category: KC, amount: 0n, nft: { capability: 'mutable', commitment: '' } },
+      });
+    }
+    const preimage = hexToBin('34'.repeat(20));
+    const expected = keccak_256(keccak_256(preimage)); // keccak(keccak(p))
+    const sc = StatefulContract.withCategory(contract, categoryId);
+    const tx = await (sc as any).f(BigInt(n), hash, preimage, expected).send();
+    expect(tx.txid).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  // Dynamic keccak LOOP alongside a blockhash read: the trailing side-car region starts at blockSize (which now
+  // includes the blockhashOracle slot). The loop probe positions the oracle so the trailing base is right.
+  const LOOP_SRC = 'contract L(){ bytes32 acc;'
+    + ' function run(int bn, bytes32 bh, bytes32 x, int rounds, bytes32 target){'
+    + ' require(blockhash(bn) == bh); bytes32 h = x;'
+    + ' for (int i = 0; i < rounds; i++) { h = keccak256(h); } require(h == target); this.acc = h; } }';
+
+  it('resolves a dynamic keccak loop alongside a blockhash read (trailing base past the oracle slot)', async () => {
+    const provider = createTestProvider();
+    const { n, hash } = await allocHeight(provider);
+    const artifact = compileString(LOOP_SRC);
+    expect(artifact.abi.find((f) => f.name === 'run')?.keccakLoopReads).toBe(true);
+    const contract = new Contract(artifact, [], { provider });
+    const seed = hexToBin('56'.repeat(32));
+    let target = seed; for (let i = 0; i < 3; i++) target = keccak_256(target);
+    const { categoryId } = await setupStatefulUtxos(provider, contract, artifact.stateLayout!, { acc: seed }, {
+      saltContract: true,
+      extraOutputs: (cat) => [{
+        address: binToHex(blockhashOracleLockingBytecode(hexToBin(cat), BigInt(n))), satoshis: 1000n,
+        token: { nft: { capability: 'none', commitment: binToHex(buildBlockhashCommitment(BigInt(n), hash)) } },
+      }],
+    });
+    const scLock = binToHex(keccakComputeLockingBytecode(hexToBin(categoryId).slice().reverse(), true));
+    for (let i = 0; i < 5; i++) {
+      await provider.addUtxo(scLock, {
+        txid: (0xd0 + i).toString(16).padStart(2, '0').repeat(32), vout: 0, satoshis: 100_000n,
+        token: { category: KC, amount: 0n, nft: { capability: 'mutable', commitment: '' } },
+      });
+    }
+    const sc = StatefulContract.withCategory(contract, categoryId);
+    const tx = await (sc as any).run(BigInt(n), hash, seed, 3n, target).send();
     expect(tx.txid).toMatch(/^[0-9a-f]{64}$/);
   });
 });

@@ -33,7 +33,9 @@ import {
   ExternalLibraryAbi,
   isComputedBlockhashKey,
   encodePushdataValue,
+  keccakComputeLockingBytecode,
 } from '@solidcash/utils';
+import { buildKeccakComputeSidecar, extractKeccakPreimageFromTrace } from '../keccak/keccakComputeSidecar.js';
 import {
   createVirtualMachineBch2026,
   binToHex,
@@ -3614,6 +3616,267 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     return ordered;
   }
 
+  // keccak256 compute side-cars for a stateful (branded) function: one per keccak256 call, co-spent at the
+  // consecutive keccakSideCar block-layout slots (right after blockhashOracle). Each side-car input feeds
+  // <pad><preimage><redeem> and its recreation commits R_i = keccak256(preimage_i); the master covenant binds
+  // preimage_i == its call arg and reads R_i from the recreation. Direct-parameter args come from the call
+  // args; complex/nested args (keccakPreimageParams[i] === null) are not yet supported for stateful contracts
+  // (the stateless VM-probe path does not port to the derivation build) and throw. Ordered by call.
+  private async _resolveKeccakComputeCoSpends(
+    abiFunction: AbiFunction, args: any[],
+    probeCtx?: {
+      masterUtxo: Utxo; masterUnlocker: Unlocker; dataNftUtxos: Utxo[]; dataNftUnlockers: Unlocker[];
+      frontRegionInputs?: UnlockableUtxo[]; locktime?: number;
+    },
+  ): Promise<Array<{ utxo: Utxo; unlocker: Unlocker; recreate: Output; commitment: Uint8Array }>> {
+    const params = abiFunction.keccakPreimageParams ?? [];
+    if (params.length === 0 || !this.categoryId) return [];
+    // A stateful DYNAMIC keccak loop (keccakLoopReads) reads N runtime trailing side-cars - resolved by the
+    // separate _resolveStatefulKeccakLoop progressive-probe path, not the fixed-slot path here. Reaching this
+    // with keccakLoopReads set is an internal routing bug (the caller should branch on keccakLoopReads first).
+    if (abiFunction.keccakLoopReads) {
+      throw new Error('internal: stateful dynamic keccak256 loop must resolve via _resolveStatefulKeccakLoop.');
+    }
+    // Branded to the contract's category. The covenant brand-checks the master's OP_UTXOTOKENCATEGORY, which
+    // the VM returns in INTERNAL (reversed) byte order, so the baked salt must be the reversed category.
+    const salt = hexToBin(this.categoryId).slice().reverse();
+    const lock = keccakComputeLockingBytecode(salt, true); // stateful (OP_INPUTINDEX self-preservation) variant
+    const scUtxos = (await this.inner.provider.getUtxosForLockingBytecode(lock))
+      .filter((u) => u.token?.nft?.capability === 'mutable');
+    if (scUtxos.length < params.length) {
+      throw new Error(`keccak256 needs ${params.length} compute side-car UTXO(s) at the branded address; `
+        + `found ${scUtxos.length}. Deploy one mutable-NFT side-car per keccak256 call.`);
+    }
+    const visible = abiFunction.inputs.filter((i) => !i.name.startsWith('__internal__'));
+    // Direct-parameter preimages come straight from the args; complex/nested args (recorded null by codegen)
+    // are resolved by a VM probe of the master (mirrors the stateless resolveKeccakPreimages, but positioned
+    // at the block-layout keccakSideCar slots).
+    const preimages: (Uint8Array | null)[] = params.map(
+      (p) => (p ? (args[visible.findIndex((x) => x.name === p)] instanceof Uint8Array
+        ? args[visible.findIndex((x) => x.name === p)] : null) : null),
+    );
+    if (preimages.some((p) => p === null)) {
+      await this._extractStatefulKeccakPreimages(abiFunction, preimages, salt, scUtxos, probeCtx);
+    }
+    const resolved: Array<{ utxo: Utxo; unlocker: Unlocker; recreate: Output; commitment: Uint8Array }> = [];
+    for (let i = 0; i < params.length; i++) {
+      const preimage = preimages[i];
+      if (!(preimage instanceof Uint8Array)) throw new Error(`keccak256 preimage ${i} could not be resolved.`);
+      const { unlocker, recreate, commitment } = buildKeccakComputeSidecar(preimage, salt, scUtxos[i], true);
+      resolved.push({ utxo: scUtxos[i], unlocker, recreate, commitment });
+    }
+    return resolved;
+  }
+
+  // Resolve complex/nested keccak256 preimages (null params) for a STATEFUL contract via a VM probe: build a
+  // minimal tx (master + data NFTs + placeholder keccak side-cars at their block-layout slots), debug the
+  // master, and read each unresolved call's argument off the trace at its OP_INPUTBYTECODE step (before the
+  // binding OP_EQUALVERIFY aborts). Nested calls resolve one per probe (inner-to-outer), like the stateless
+  // path. Requires the probe context; unsupported alongside front-region oracles/reads that shift the keccak
+  // slot (throws). Mutates `preimages` in place.
+  private async _extractStatefulKeccakPreimages(
+    abiFunction: AbiFunction, preimages: (Uint8Array | null)[], salt: Uint8Array, scUtxos: Utxo[],
+    probeCtx?: {
+      masterUtxo: Utxo; masterUnlocker: Unlocker; dataNftUtxos: Utxo[]; dataNftUnlockers: Unlocker[];
+      frontRegionInputs?: UnlockableUtxo[]; locktime?: number;
+    },
+  ): Promise<void> {
+    if (!probeCtx) {
+      throw new Error('keccak256 with a complex/nested argument in a stateful contract is resolved during '
+        + 'auto-derivation; build the call through StatefulContract (internal probe context missing).');
+    }
+    const { masterUtxo, masterUnlocker, dataNftUtxos, dataNftUnlockers } = probeCtx;
+    // Front-region inputs (read-only data NFTs then blockhash oracles) sit between the data NFTs and the keccak
+    // side-cars, shifting the side-car base. Positioning them (and their self-preserving recreations) lets the
+    // probe reach the keccak call even when the contract also reads external state / blockhashes.
+    const frontRegion = probeCtx.frontRegionInputs ?? [];
+    const kSlots = abiFunction.blockLayout?.slots.filter((s) => s.kind === 'keccakSideCar') ?? [];
+    const base = kSlots[0]?.offset ?? (1 + dataNftUtxos.length);
+    const n = preimages.length;
+    if (base !== 1 + dataNftUtxos.length + frontRegion.length) {
+      throw new Error('keccak256 complex/nested-argument probe: the front-region inputs (external reads / '
+        + 'blockhash oracles) do not fill the slots before the keccak side-car; cannot position the probe.');
+    }
+    const { CovenantTransactionBuilder } = await import('./CovenantTransactionBuilder.js');
+    const vm = createVirtualMachineBch2026();
+    const lock = keccakComputeLockingBytecode(salt, true);
+    let guard = 0;
+    while (preimages.some((p) => p === null)) {
+      if (guard++ > n) throw new Error('keccak256 stateful preimage extraction did not converge.');
+      const probe = new CovenantTransactionBuilder({ provider: this.inner.provider });
+      if (probeCtx.locktime) probe.setLocktime(probeCtx.locktime);
+      probe.addInput(masterUtxo, masterUnlocker);
+      dataNftUtxos.forEach((u, i) => probe.addInput(u, dataNftUnlockers[i]));
+      frontRegion.forEach((u) => probe.addInputs([u])); // unlockable form: u already carries its unlocker
+      const recreates: Output[] = [];
+      for (let j = 0; j < n; j++) {
+        const { unlocker, recreate } = buildKeccakComputeSidecar(preimages[j] ?? new Uint8Array(0), salt, scUtxos[j], true);
+        probe.addInput(scUtxos[j], unlocker);
+        recreates.push(recreate);
+      }
+      probe.addOutput({
+        to: masterUnlocker.generateLockingBytecode(), amount: masterUtxo.satoshis, token: masterUtxo.token,
+      });
+      dataNftUtxos.forEach((u, i) => probe.addOutput({
+        to: dataNftUnlockers[i].generateLockingBytecode(), amount: u.satoshis, token: u.token,
+      }));
+      frontRegion.forEach((u) => probe.addOutput(this._frontRegionRecreate(u))); // self-preserving recreate
+      for (const rec of recreates) probe.addOutput({ ...rec, to: lock });
+      const transaction = probe.buildLibauthTransaction();
+      const sourceOutputs = generateLibauthSourceOutputs(probe.inputs);
+      const trace = vm.debug({ inputIndex: 0, sourceOutputs, transaction }) as unknown[];
+      const { callIndex, preimage } = extractKeccakPreimageFromTrace(trace, base, n);
+      preimages[callIndex] = preimage;
+    }
+  }
+
+  // Self-preserving recreation of a front-region co-spend (read-only data NFT or blockhash oracle): same locking,
+  // amount, token - unchanged. Mirrors the StatefulTransactionBuilder's readOnly/blockhash output construction.
+  private _frontRegionRecreate(u: UnlockableUtxo): Output {
+    return { to: u.unlocker.generateLockingBytecode(), amount: u.satoshis, token: u.token };
+  }
+
+  // Stateful DYNAMIC keccak loop: determine the runtime iteration count N and each iteration's preimage by a
+  // PROGRESSIVE VM probe, then build N trailing compute side-cars. Each probe co-spends k trailing side-cars
+  // (the first k-1 resolved, the k-th a placeholder) at [blockSize, blockSize+k) and reads the master; the loop
+  // aborts at the FIRST placeholder bind, whose preimage `extractKeccakPreimageFromTrace(base=blockSize)` yields.
+  // Resolve one iteration per probe until the loop exits (the k-th placeholder is never read -> the last in-range
+  // read is an already-resolved index) => N reached. MVP: no fixed front-region slots before the trailing region
+  // (blockSize == 1 + dataNftCount) and no other trailing users (entries/containers/transfers).
+  private async _resolveStatefulKeccakLoop(
+    abiFunction: AbiFunction, masterUtxo: Utxo, masterUnlocker: Unlocker,
+    dataNftUtxos: Utxo[], dataNftUnlockers: Unlocker[],
+    frontRegionInputs: UnlockableUtxo[] = [], locktime = 0,
+  ): Promise<{ sideCars: UnlockableUtxo[]; recreates: Output[] }> {
+    const blockSize = abiFunction.blockLayout?.blockSize ?? 1;
+    // The trailing side-cars start at blockSize = 1 + dataNftCount + front-region slots (read-only NFTs then
+    // blockhash oracles). Position the front-region inputs + self-preserving recreations so the trailing region
+    // lands at the right base even when the contract also reads external state / blockhashes.
+    if (blockSize !== 1 + dataNftUtxos.length + frontRegionInputs.length) {
+      throw new Error('stateful dynamic keccak256 loop: the front-region inputs (external reads / blockhash '
+        + 'oracles) do not fill the slots before the trailing side-car region; cannot position the loop.');
+    }
+    const salt = hexToBin(this.categoryId).slice().reverse();
+    const lock = keccakComputeLockingBytecode(salt, true);
+    const scUtxos = (await this.inner.provider.getUtxosForLockingBytecode(lock))
+      .filter((u) => u.token?.nft?.capability === 'mutable');
+    const { CovenantTransactionBuilder } = await import('./CovenantTransactionBuilder.js');
+    const vm = createVirtualMachineBch2026();
+    const MAX_ITERS = 64; // budget/standardness cap on runtime keccak side-cars per tx
+    const preimages: Uint8Array[] = [];
+    for (let k = 1; k <= MAX_ITERS + 1; k++) {
+      if (scUtxos.length < k) {
+        throw new Error(`stateful dynamic keccak256 loop needs >= ${k} compute side-car UTXOs at the branded `
+          + `address; found ${scUtxos.length}. Deploy more mutable-NFT side-cars.`);
+      }
+      const probe = new CovenantTransactionBuilder({ provider: this.inner.provider });
+      if (locktime) probe.setLocktime(locktime);
+      probe.addInput(masterUtxo, masterUnlocker);
+      dataNftUtxos.forEach((u, i) => probe.addInput(u, dataNftUnlockers[i]));
+      frontRegionInputs.forEach((u) => probe.addInputs([u])); // unlockable form: u already carries its unlocker
+      const recreates: Output[] = [];
+      for (let j = 0; j < k; j++) {
+        const { unlocker, recreate } = buildKeccakComputeSidecar(
+          j < preimages.length ? preimages[j] : new Uint8Array(0), salt, scUtxos[j], true,
+        );
+        probe.addInput(scUtxos[j], unlocker);
+        recreates.push(recreate);
+      }
+      probe.addOutput({
+        to: masterUnlocker.generateLockingBytecode(), amount: masterUtxo.satoshis, token: masterUtxo.token,
+      });
+      dataNftUtxos.forEach((u, i) => probe.addOutput({
+        to: dataNftUnlockers[i].generateLockingBytecode(), amount: u.satoshis, token: u.token,
+      }));
+      frontRegionInputs.forEach((u) => probe.addOutput(this._frontRegionRecreate(u))); // self-preserving recreate
+      for (const rec of recreates) probe.addOutput({ ...rec, to: lock });
+      const transaction = probe.buildLibauthTransaction();
+      const sourceOutputs = generateLibauthSourceOutputs(probe.inputs);
+      const trace = vm.debug({ inputIndex: 0, sourceOutputs, transaction }) as unknown[];
+      const { callIndex, preimage } = extractKeccakPreimageFromTrace(trace, blockSize, k);
+      if (callIndex === preimages.length) {
+        preimages.push(preimage); // the k-th placeholder was read+aborted -> a new iteration
+      } else {
+        break; // the placeholder was never read -> the loop exited -> N = preimages.length
+      }
+      if (k > MAX_ITERS) throw new Error(`stateful dynamic keccak256 loop exceeds ${MAX_ITERS} iterations.`);
+    }
+    const sideCars: UnlockableUtxo[] = [];
+    const recreates: Output[] = [];
+    for (let j = 0; j < preimages.length; j++) {
+      const { unlocker, recreate } = buildKeccakComputeSidecar(preimages[j], salt, scUtxos[j], true);
+      sideCars.push({ ...scUtxos[j], unlocker });
+      recreates.push(recreate);
+    }
+    return { sideCars, recreates };
+  }
+
+  // keccak256 compute side-cars for a CO-SPENT EXTERNAL contract B (transitive): both externalCall and
+  // externalOutState run B's function, which reads a keccakSideCar slot in B's OWN block, so B's branded
+  // side-car must be co-spent + recreated inside B's block. Mirrors _resolveKeccakComputeCoSpends but for B
+  // (shared salt=0; direct-param preimages from the group's args, complex/nested via an isolated probe of B).
+  // Returns B's side-car inputs (in keccak call order) + their recreations.
+  private async _resolveExternalKeccakSideCars(
+    bAbiFunc: AbiFunction | undefined, args: any[], externalCategoryId: string,
+    bContract?: StatefulContract | null,
+  ): Promise<{ inputs: UnlockableUtxo[]; recreates: Output[] }> {
+    const params = bAbiFunc?.keccakPreimageParams ?? [];
+    if (params.length === 0 || !bAbiFunc || !externalCategoryId) return { inputs: [], recreates: [] };
+    // SHARED (salt=0) stateful side-car: the branded covenant brand-checks INPUT 0, which for a transitive
+    // co-spend is the OUTER caller (not B), so branding can't apply. The shared covenant skips the brand check
+    // (integrity is still enforced by B's baked covenant-hash check + preimage bind; only isolation is relaxed,
+    // the same tradeoff as a shared stateless side-car). INPUTINDEX self-preservation is unaffected.
+    const salt = new Uint8Array(32);
+    const scUtxos = (await this.inner.provider.getUtxosForLockingBytecode(keccakComputeLockingBytecode(salt, true)))
+      .filter((u) => u.token?.nft?.capability === 'mutable');
+    const visible = bAbiFunc.inputs.filter((inp) => !inp.name.startsWith('__internal__'));
+    // Direct-parameter preimages come straight from B's args; complex/nested args (recorded null by codegen) are
+    // resolved by probing B in isolation (B at input 0 + all its data NFTs + placeholder side-cars) and reading
+    // each unresolved call's argument off B's trace - the same mechanism as the direct stateful path, but on B.
+    const preimages: (Uint8Array | null)[] = params.map(
+      (p) => (p ? (args[visible.findIndex((x) => x.name === p)] instanceof Uint8Array
+        ? args[visible.findIndex((x) => x.name === p)] : null) : null),
+    );
+    if (preimages.some((p) => p === null)) {
+      if (!bContract) {
+        throw new Error('transitive keccak256 with a complex/nested argument needs the external contract '
+          + 'instance to probe; call through withExternalCall()/connect-time externals.');
+      }
+      const bProbeCtx = await this._externalKeccakProbeCtx(bContract, bAbiFunc, args, externalCategoryId);
+      await this._extractStatefulKeccakPreimages(bAbiFunc, preimages, salt, scUtxos, bProbeCtx);
+    }
+    const inputs: UnlockableUtxo[] = [];
+    const recreates: Output[] = [];
+    for (let i = 0; i < params.length; i++) {
+      const preimage = preimages[i];
+      if (!(preimage instanceof Uint8Array)) throw new Error(`keccak256 preimage ${i} could not be resolved.`);
+      if (!scUtxos[i]) {
+        throw new Error(`keccak256 compute side-car UTXO not found for external call (call ${i}); deploy one `
+          + "mutable-NFT side-car per keccak256 call at the callee's branded address.");
+      }
+      const { unlocker, recreate } = buildKeccakComputeSidecar(preimage, salt, scUtxos[i], true);
+      inputs.push({ ...scUtxos[i], unlocker });
+      recreates.push(recreate);
+    }
+    return { inputs, recreates };
+  }
+
+  // Build a probe context for the callee B: B's master (unlocked with B's function args) + ALL of B's data NFTs
+  // (so B's keccakSideCar slot base = 1 + dataNftCount matches its block layout). Used to extract B's complex
+  // keccak preimages by evaluating B in an isolated mini-tx (like the direct stateful complex path, but on B).
+  private async _externalKeccakProbeCtx(
+    bContract: StatefulContract, bAbiFunc: AbiFunction, args: any[], externalCategoryId: string,
+  ): Promise<{ masterUtxo: Utxo; masterUnlocker: Unlocker; dataNftUtxos: Utxo[]; dataNftUnlockers: Unlocker[] }> {
+    const bState = await bContract.getFullState();
+    if (!bState.masterUtxo) throw new Error(`External contract master UTXO not found (category ${externalCategoryId}).`);
+    const unlockFns = bContract.inner.unlock as Record<string, (...a: any[]) => Unlocker>;
+    const masterUnlocker = unlockFns[bAbiFunc.name]?.(...(args ?? []));
+    if (!masterUnlocker) throw new Error(`Cannot build an unlocker for external function ${bAbiFunc.name}.`);
+    const dataNftUtxos = bState.dataNftUtxos;
+    const dataNftUnlockers = dataNftUtxos.map(() => createDataNftUnlocker(bContract.inner, 0, externalCategoryId));
+    return { masterUtxo: bState.masterUtxo, masterUnlocker, dataNftUtxos, dataNftUnlockers };
+  }
+
   // Absolute input index of the first blockhashOracle slot + the slot count (master is input 0, so the slot
   // offset is already absolute). Used to fill __internal__blockhashInputIndex and bound the trace extraction.
   private blockhashSlotBase(abiFunction?: AbiFunction): { base: number; count: number } {
@@ -3678,6 +3941,15 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         );
       }
 
+      // keccak256 compute side-cars at the keccakSideCar slots (right after blockhash): the probe co-spends
+      // them so the master's VM run can bind each preimage and read each result R_i from the recreation.
+      let keccakProbeCoSpends: Array<{ utxo: Utxo; unlocker: Unlocker; recreate: Output; commitment: Uint8Array }> = [];
+      if (abiFunction.keccakCompute && !abiFunction.keccakLoopReads && this.categoryId) {
+        keccakProbeCoSpends = await this._resolveKeccakComputeCoSpends(abiFunction, args, {
+          masterUtxo, masterUnlocker, dataNftUtxos: filteredDataNftUtxos, dataNftUnlockers,
+        });
+      }
+
       // Wrap the VM probe + extraction in AutoDerivationError so failures are
       // cleanly distinguishable from programming bugs or configuration errors.
       try {
@@ -3701,6 +3973,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
 
           // blockhash (n->hash) co-spends at the blockhashOracle slot (right after the data NFTs)
           for (const cs of bhProbeCoSpends) probeBuilder.addInput(cs.utxo, cs.unlocker);
+
+          // keccak256 compute side-cars at the keccakSideCar slots (right after blockhash)
+          for (const cs of keccakProbeCoSpends) probeBuilder.addInput(cs.utxo, cs.unlocker);
 
           // Extra inputs (e.g. funding UTXO for deploy genesis)
           if (extraInputs) {
@@ -3736,6 +4011,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           // blockhash recreate outputs (self-preserving, at the matching slot index)
           for (const cs of bhProbeCoSpends) probeBuilder.addOutput(cs.recreate);
 
+          // keccak256 compute side-car recreate outputs (carry each computed result R_i, matching slot order)
+          for (const cs of keccakProbeCoSpends) probeBuilder.addOutput(cs.recreate);
+
           // Add extra outputs (entry NFTs and child contract outputs)
           if (extraOutputs) {
             for (const output of extraOutputs) {
@@ -3758,7 +4036,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         // NFT commitments to get past it and reach the entry verifies.
         let entryCommitments: string[] = [];
         if (entryOutputCount > 0) {
-          const entryBase = 1 + requiredNftIndices.length;
+          const entryBase = 1 + requiredNftIndices.length + bhProbeCoSpends.length + keccakProbeCoSpends.length;
           const entryTrace = commitmentHexes ? runProbe(commitmentHexes) : fullTrace;
           entryCommitments = extractCommitmentsFromTrace(
             entryTrace, entryOutputCount, { min: entryBase, max: entryBase + entryOutputCount },
@@ -3772,7 +4050,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         // initial state for a plain deploy at default. A deploy that writes mapping entries aborts at the entry
         // verify before the child verify (folded deploy + entries unsupported for now).
         let childCommitments: string[] = [];
-        const extraBase = 1 + requiredNftIndices.length + bhProbeCoSpends.length;
+        const extraBase = 1 + requiredNftIndices.length + bhProbeCoSpends.length + keccakProbeCoSpends.length;
         if (childDataNftCount > 0 && commitmentHexes && extraOutputs) {
           // A returning deploy function materializes its return-event output between the entries and the child
           // genesis (block-layout order: entry < returnEvent < deploy), so the child outputs shift by its count.
@@ -5082,6 +5360,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // safe.
     let blockhashCoSpendUtxos: UnlockableUtxo[] = [];
     let maxBhLocktime = 0; // require(tx.time >= n) - the SDK sets the locktime so the derivation probe passes
+    // keccak256 compute side-cars co-spent at the keccakSideCar slots; parallel commitments (R_i) drive the
+    // recreation. Resolved late (needs the master unlocker's args) alongside blockhash.
+    let keccakComputeCoSpendUtxos: UnlockableUtxo[] = [];
+    let keccakComputeCommitments: string[] = [];
 
     // Pre-declare outState variables (populated later, but needed for base computations in external calls)
     let externalOutStateUtxoGroups: ExternalCallUtxoGroup[] = [];
@@ -5251,11 +5533,17 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           : undefined;
         const bBlockLayout = bAbiFunc?.blockLayout;
         let bBlockInputs: UnlockableUtxo[] | undefined;
+        // B's keccak256 side-cars (transitive): co-spent inside B's block so B's covenant reads them.
+        const bKeccak = await this._resolveExternalKeccakSideCars(
+          bAbiFunc, callInfo.args, externalCategoryId, callInfo.externalContract as StatefulContract | null,
+        );
 
         if (bBlockLayout) {
-          // Check for slots that need full block treatment (entries, TC, SC, events, transfers)
-          // Exclude returnEvent - it's already handled by the return event infrastructure
-          const fullBlockKinds = new Set(['entry', 'satoshiContainer', 'tokenContainer', 'transfer', 'tcTransfer', 'event']);
+          // Check for slots that need full block treatment (entries, TC, SC, events, transfers, keccak side-cars).
+          // Exclude returnEvent - it's already handled by the return event infrastructure.
+          const fullBlockKinds = new Set(
+            ['entry', 'satoshiContainer', 'tokenContainer', 'transfer', 'tcTransfer', 'event', 'keccakSideCar'],
+          );
           const hasExtraSlots = bBlockLayout.slots.some(
             (s) => fullBlockKinds.has(s.kind),
           );
@@ -5316,6 +5604,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                   // Event NFT output slots need a funder input
                   bBlockInputs.push(await makeFunder());
                   break;
+                case 'keccakSideCar': {
+                  // B's keccak side-car at this slot (already resolved). Fall back to a funder if missing so B's
+                  // covenant fails loudly rather than mispositioning the block.
+                  const kInput = bKeccak.inputs[slot.slotIndex ?? 0];
+                  bBlockInputs.push(kInput ?? await makeFunder());
+                  break;
+                }
                 case 'returnEvent':
                 case 'lowLevelCall':
                 case 'deploy':
@@ -5440,6 +5735,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           externalContract: callInfo.externalContract,
           ...(ec.callMode && { callMode: ec.callMode }),
           ...(bBlockInputs && { blockInputs: bBlockInputs, blockLayout: bBlockLayout }),
+          ...(bKeccak.recreates.length > 0 && { keccakRecreates: bKeccak.recreates }),
         });
       }
 
@@ -5865,6 +6161,14 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           });
         }
 
+        // B's keccak256 side-cars (transitive): the outState read runs B's function, which reads a keccakSideCar
+        // slot in B's block, so co-spend + recreate B's branded side-cars (appended after B's data NFTs).
+        const bOsAbiFunc = (callInfo.externalContract.inner.artifact.abi as readonly AbiFunction[])
+          .find((f) => f.name === callInfo.functionName);
+        const bOsKeccak = await this._resolveExternalKeccakSideCars(
+          bOsAbiFunc, callInfo.args, externalCategoryId, callInfo.externalContract as StatefulContract | null,
+        );
+
         externalOutStateUtxoGroups.push({
           categoryId: externalCategoryId,
           stateLayout: bStateLayout,
@@ -5874,6 +6178,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           functionName: callInfo.functionName,
           functionArgs: callInfo.args,
           externalContract: callInfo.externalContract,
+          ...(bOsKeccak.inputs.length > 0 && { keccakInputs: bOsKeccak.inputs, keccakRecreates: bOsKeccak.recreates }),
         });
       }
 
@@ -6193,6 +6498,30 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       maxBhLocktime = resolved.reduce((m, cs) => Math.max(m, cs.locktime), 0);
     }
 
+    // keccak256: resolve the compute side-cars now that the master unlocker (and its args) exists. The builder
+    // positions them at the keccakSideCar slots and recreates each with its committed result R_i.
+    let keccakLoopSideCars: UnlockableUtxo[] = [];
+    let keccakLoopRecreates: Output[] = [];
+    // Front-region co-spends (read-only data NFTs then blockhash oracles, in block-layout slot order) sit before
+    // the keccak side-cars; thread them into the probes so keccak works alongside external reads / blockhash.
+    const keccakFrontRegion = [...externalReadUtxos, ...blockhashCoSpendUtxos];
+    if (abiFunction?.keccakLoopReads && this.categoryId) {
+      // Dynamic loop: N (runtime) trailing side-cars, N + preimages found by a progressive VM probe.
+      const loop = await this._resolveStatefulKeccakLoop(
+        abiFunction, masterUtxo, masterUnlocker, filteredDataNftUtxos, dataNftUnlockers,
+        keccakFrontRegion, maxBhLocktime,
+      );
+      keccakLoopSideCars = loop.sideCars;
+      keccakLoopRecreates = loop.recreates;
+    } else if (abiFunction?.keccakCompute && this.categoryId) {
+      const resolved = await this._resolveKeccakComputeCoSpends(abiFunction, args, {
+        masterUtxo, masterUnlocker, dataNftUtxos: filteredDataNftUtxos, dataNftUnlockers,
+        frontRegionInputs: keccakFrontRegion, locktime: maxBhLocktime,
+      });
+      keccakComputeCoSpendUtxos = resolved.map((cs) => ({ ...cs.utxo, unlocker: cs.unlocker }));
+      keccakComputeCommitments = resolved.map((cs) => binToHex(cs.commitment));
+    }
+
     const unlockableMaster = {
       ...masterUtxo,
       unlocker: masterUnlocker,
@@ -6286,6 +6615,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       ...(satoshiContainerUtxo && { satoshiContainerUtxo, satoshiContainerLockingBytecode }),
       ...(externalReadUtxos.length > 0 && { readOnlyDataNftUtxos: externalReadUtxos }),
       ...(blockhashCoSpendUtxos.length > 0 && { blockhashCoSpendUtxos }),
+      ...(keccakComputeCoSpendUtxos.length > 0 && { keccakComputeCoSpendUtxos, keccakComputeCommitments }),
+      ...(keccakLoopSideCars.length > 0 && { keccakLoopSideCars, keccakLoopRecreates }),
       ...(externalOutStateUtxoGroups.length > 0 && { externalOutStateUtxoGroups }),
       ...(externalCallUtxoGroups.length > 0 && { externalCallUtxoGroups }),
       ...(lowLevelCallUtxoGroups.length > 0 && { lowLevelCallUtxoGroups }),
@@ -6406,10 +6737,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // contract whose function does. One side-car serves every loader in the tx (the loader reads the last
     // input and verifies the blob by hash). Set before derivation so the probes include it.
     // First non-inline library used (inline libraries are baked into the contract; no side-car).
+    // resultNft libraries (keccak256 compute) are co-spent as block-layout keccakSideCar slots, NOT via the
+    // inline side-car loader, so they must not be treated as a sidecar-library dependency here.
     const firstSidecarLib = (art: any, names: readonly string[]): ExternalLibraryAbi | undefined => {
       for (const name of names) {
         const d: ExternalLibraryAbi | undefined = art?.externalLibraries?.find((l: any) => l.name === name);
-        if (d && !d.inline) return d;
+        if (d && !d.inline && !d.resultNft) return d;
       }
       return undefined;
     };

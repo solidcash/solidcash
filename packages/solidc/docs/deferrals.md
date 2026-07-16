@@ -200,3 +200,42 @@ that takes explicit depths instead of tracked names) so nested head/tail calls d
 
 **Revisit if.** A real contract in the corpus needs one of these (e.g. a `bytes[][]` calldata param, or a struct
 whose field is itself a dynamic struct).
+
+---
+
+## keccak compute model - remaining fail-closed edges (2026-07-16)
+
+Every keccak form now uses the compute-and-commit side-car (stateless single/multi/complex/nested, direct
+stateful, transitive external incl. complex/nested-in-callee, front-region blockhash/external-read, and
+runtime-bound loops in stateful + stateless contracts). These compound edges still throw (never mis-resolve):
+
+**What.**
+1. **Loop + other trailing users.** A dynamic keccak loop whose function ALSO writes a mapping loop / spends
+   token-or-satoshi containers / does transfers in the SAME trailing region (both would want `[blockSize, ..)`).
+2. **Transitive complex + front-region IN the callee.** A co-spent callee B that has BOTH a complex/nested keccak
+   arg AND a blockhash/external-read: `_externalKeccakProbeCtx` probes B in isolation without threading B's own
+   front-region, so `_extractStatefulKeccakPreimages` hits the base mismatch (direct-param transitive with
+   front-region, and complex without front-region, both work).
+3. **Preimage > 3 keccak blocks (~407 B)** in one side-car (a single side-car input funds at most 3 blocks).
+
+**Why deferred.** (1) The trailing region has ONE runtime-counter-indexed band; two independent counter-indexed
+users have nowhere sound to interleave. (2) B's probe context would need B's resolved front-region inputs +
+recreations + locktime (the master path threads them, but the transitive path builds B's context from
+`getFullState`, not a full derivation). (3) Fundamental per-input op budget.
+
+**What it'd take.** (1) A shared trailing-region allocator that assigns disjoint counter bands (like the fixed
+front-region band allocator). (2) Resolve B's blockhash/external-read co-spends inside `_externalKeccakProbeCtx`
+and pass them as `frontRegionInputs` (reuse the master's resolvers against B). (3) Split a large preimage across
+multiple side-cars (partial-absorb chaining), or a multi-block side-car covenant.
+
+**Revisit if.** A real contract needs a keccak loop beside a mapping-write loop / container spend (1), a
+transitive callee that hashes a nested arg while reading a blockhash (2), or a >407 B preimage (3).
+
+**Soundness note (not a gap).** The complex-arg + transitive probes assume the keccak preimage depends only on
+the function's args/state, not on surrounding-tx introspection that differs between the isolated probe and the
+real spend. If it did, the probe would extract a wrong preimage and the runtime preimage bind would REJECT at
+spend (fail closed) - never accept a wrong hash.
+
+**Code cleanup (not functional).** `BUILTIN_LIBRARIES.keccak256` still carries the 2.3 KB inline blob
+(`keccak-library.ts`), now only supplying `abi` + as the canonical script reference; fully removing it needs the
+`ExternalLibrary` type to allow a blob-less compute-only builtin. Documented in-code.

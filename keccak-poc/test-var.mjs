@@ -1,10 +1,10 @@
 // Validate variable-length keccak256 vs EVM for many input lengths (pad edges + multi-block).
-import createKeccak from 'keccak';
+import { keccak_256 } from '@noble/hashes/sha3';
 import { run, asm, binToHex } from './vm.mjs';
 import { genKeccak256var } from './genvar.mjs';
 
 const aTo = (s) => binToHex(asm(s));
-const evm = (h) => createKeccak('keccak256').update(Buffer.from(h, 'hex')).digest('hex');
+const evm = (h) => Buffer.from(keccak_256(Buffer.from(h, 'hex'))).toString('hex');
 const script = genKeccak256var(aTo);
 
 let fails = 0;

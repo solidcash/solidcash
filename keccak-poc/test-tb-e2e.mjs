@@ -1,13 +1,13 @@
 // Full SDK e2e: TransactionBuilder auto-co-spends the keccak side-car. Build via the SDK, then evaluate
 // under the budget-enforcing BCH-2026 VM to confirm the keccak result matches EVM.
-import createKeccak from 'keccak';
+import { keccak_256 } from '@noble/hashes/sha3';
 import { createVirtualMachineBch2026, binToHex, hexToBin, decodeTransactionUnsafe } from '@bitauth/libauth';
 import { compileString } from '../packages/solidc/dist/compiler.js';
 import { Contract, TransactionBuilder, MockNetworkProvider } from '../packages/solidcash/dist/index.js';
 import { keccakSidecarLockingBytecode, KECCAK256_SHARED_SALT } from '../packages/utils/dist/index.js';
 
 const vm = createVirtualMachineBch2026();
-const evm = (h) => createKeccak('keccak256').update(Buffer.from(h, 'hex')).digest('hex');
+const evm = (h) => Buffer.from(keccak_256(Buffer.from(h, 'hex'))).toString('hex');
 
 const art = compileString(`contract KeccakTest() {
     function verify(bytes preimage, bytes32 expected) {

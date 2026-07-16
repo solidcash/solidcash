@@ -47,6 +47,7 @@ import {
   encodeComputedBlockhashKey,
   KECCAK256_COMPUTE_COVENANT_HASH,
   KECCAK256_COMPUTE_STATEFUL_COVENANT_HASH,
+  KECCAK256_COMPUTE_STATEFUL_COVENANT,
   KECCAK256_COMPUTE_SALT_PREFIX_LENGTH,
 } from '@solidcash/utils';
 import {
@@ -448,6 +449,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private entryLoopCounterName: string = '(loop_entry_counter)'; // entries-written-so-far (loop mapping write)
   private entryLoopAddrName: string = '(loop_entry_addr)';       // loop-invariant entry NFT P2SH32 (precomputed)
   private entryLoopActive: boolean = false;         // a loop mapping-write counter + address are live on the stack
+  private keccakLoopCounterName: string = '(loop_keccak_counter)'; // keccak side-cars read-so-far (dynamic keccak loop)
+  private keccakLoopActive: boolean = false;        // a dynamic keccak256 loop counter is live on the stack
   private functionMultiSiteDeploy: boolean = false; // 2+ same-contract sites w/ a conditional: function counter
   // A loop `new C{value:V}()` interleaves its transfer per child; the satoshi container that sources them is
   // conserved (input <= output + counter*V) after the loop's OP_UNTIL. V must be loop-invariant (typically a
@@ -3102,6 +3105,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     // Loop mapping write: precompute the entry NFT address + a runtime counter BEFORE OP_BEGIN (see visitWhile).
     const loopHasEntryWrite = this.emitLoopEntryWriteSetup(node.block, locationData);
+    // Dynamic keccak loop: push a 0-based side-car counter BEFORE OP_BEGIN (trailing-region read per iteration).
+    const loopHasKeccak = this.emitLoopKeccakSetup(node.block, locationData);
 
     // EXISTING LOOP LOGIC (with pre-allocated slots now below stackDepth)
     this.scopeDepth += 1;
@@ -3131,6 +3136,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Pin the entry-output count + drop the loop mapping-write temps now the loop is done.
     if (loopHasEntryWrite) {
       this.emitLoopEntryWriteTeardown({ location: node.location, positionHint: PositionHint.END });
+    }
+    // Drop the dynamic keccak loop counter now the loop is done.
+    if (loopHasKeccak) {
+      this.emitLoopKeccakTeardown({ location: node.location, positionHint: PositionHint.END });
     }
 
     this.scopeDepth -= 1;
@@ -3242,6 +3251,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Loop mapping write: precompute the entry NFT address + a runtime counter (entries-written-so-far) BEFORE
     // OP_BEGIN; emitLoopEntryWrite verifies + increments per iteration, the teardown pins the entry-output count.
     const loopHasEntryWrite = this.emitLoopEntryWriteSetup(node.block, locationData);
+    // Dynamic keccak loop: push a 0-based side-car counter BEFORE OP_BEGIN (trailing-region read per iteration).
+    const loopHasKeccak = this.emitLoopKeccakSetup(node.block, locationData);
 
     // WHILE LOOP LOGIC
     // while(cond) { body } ->
@@ -3291,6 +3302,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Pin the entry-output count + drop the loop mapping-write temps now the loop is done.
     if (loopHasEntryWrite) {
       this.emitLoopEntryWriteTeardown({ location: node.location, positionHint: PositionHint.END });
+    }
+    // Drop the dynamic keccak loop counter now the loop is done.
+    if (loopHasKeccak) {
+      this.emitLoopKeccakTeardown({ location: node.location, positionHint: PositionHint.END });
     }
 
     this.scopeDepth -= 1;
@@ -3917,6 +3932,20 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // offset, same index for the 1:1 input and output). Stateless contracts have no block layout, so they read
     // the last N in/outputs count-relative (countOp - (n-i)). Both land on this call's dedicated side-car.
     const fromEnd = (countOp: Op): void => {
+      if (this.keccakLoopActive) {
+        // STATEFUL dynamic loop: read THIS iteration's side-car from the trailing region
+        // (masterInputIndex + blockSize + counter); same absolute index for the 1:1 input+output (the stateful
+        // covenant self-preserves via OP_INPUTINDEX). The counter increments once per iteration below.
+        const blockSize = fn.blockLayout?.blockSize ?? 1;
+        this.emitMasterInputIndex(loc);
+        this.emit(encodeInt(BigInt(blockSize)), loc);
+        this.emit(Op.OP_ADD, loc);
+        const cIdx = this.getStackIndex(this.keccakLoopCounterName);
+        this.emit(encodeInt(BigInt(cIdx + 1)), loc); // +1 for the untracked accumulator on top
+        this.emit(Op.OP_PICK, loc);
+        this.emit(Op.OP_ADD, loc);
+        return;
+      }
       if (fn.blockLayout) { this.emitBlockSlotIndex('keccakSideCar', i, loc); return; }
       this.emit(countOp, loc);
       this.emit(encodeInt(BigInt(offset)), loc);
@@ -3939,15 +3968,34 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_FROMALTSTACK, loc);             //   side-car hashed OUR arg" runtime safety check)
     dropFirst(3);                                   // strip redeem PUSHDATA2 prefix -> [redeem]
     dropFirst(KECCAK256_COMPUTE_SALT_PREFIX_LENGTH); // strip OP_PUSHBYTES_32 || salt(32) -> [covenant]
-    this.emit(Op.OP_HASH256, loc);
-    // Stateful side-cars self-preserve via OP_INPUTINDEX (block-layout slot: input idx == output idx); stateless
-    // ones offset-from-end. The covenant differs, so bake the matching hash.
-    this.emit(hexToBin(fn.blockLayout ? KECCAK256_COMPUTE_STATEFUL_COVENANT_HASH : KECCAK256_COMPUTE_COVENANT_HASH), loc);
+    // Absolute-forward reads (block-layout slot OR dynamic loop: input idx == output idx) use the STATEFUL covenant
+    // (self-preserve via OP_INPUTINDEX); the count-relative stateless single/multi call uses offset-from-end.
+    const absoluteForward = fn.blockLayout != null || this.keccakLoopActive;
+    if (this.keccakLoopActive) {
+      // Dynamic loop: compare the covenant bytecode DIRECTLY (it is a compile-time constant) instead of hashing it.
+      // Re-hashing the ~2.4KB covenant every iteration would blow the per-input hash-density budget (~5 iters); a
+      // byte compare has no hashing cost, lifting the loop's practical iteration cap.
+      this.emit(hexToBin(KECCAK256_COMPUTE_STATEFUL_COVENANT), loc);
+    } else {
+      this.emit(Op.OP_HASH256, loc);                // single/multi call: compare the 32-byte hash (tight script)
+      this.emit(hexToBin(absoluteForward ? KECCAK256_COMPUTE_STATEFUL_COVENANT_HASH : KECCAK256_COMPUTE_COVENANT_HASH), loc);
+    }
     this.emit(Op.OP_EQUALVERIFY, loc);              // integrity: genuine compute covenant -> []
     fromEnd(Op.OP_TXOUTPUTCOUNT);
     this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, loc);    // [hash]  (this slot's output commitment = keccak256(arg))
     this.popFromStack(1);
     this.pushToStack('(value)');
+    // Dynamic keccak loop: advance the side-car counter so the next iteration reads the next trailing side-car.
+    // Tracker-neutral in-place bump (same as the entry-loop counter): the OP_PICK'd value is untracked, so the
+    // emitReplace +1 offset covers it and consumes it, leaving the (value) result on top for the assignment. Do
+    // NOT popFromStack - that would drop the tracked (value), desyncing h's slot so the write-back is lost.
+    if (this.keccakLoopActive) {
+      const cIdx = this.getStackIndex(this.keccakLoopCounterName);
+      this.emit(encodeInt(BigInt(cIdx)), loc);
+      this.emit(Op.OP_PICK, loc);
+      this.emit(Op.OP_1ADD, loc);
+      this.emitReplace(this.getStackIndex(this.keccakLoopCounterName) + 1, node);
+    }
     return node;
   }
 
@@ -8056,7 +8104,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const n = types.length;
     const isDyn = (t: Type): boolean => this.isDynamicAbiType(t);
     const dynIdx = types.map((t, i) => (isDyn(t) ? i : -1)).filter((i) => i >= 0);
-    const headSize = types.reduce((s, t) => s + (isDyn(t) ? 32 : this.abiStaticSize(t)), 0);
+    const headSize = types.reduce((s: number, t) => s + (isDyn(t) ? 32 : this.abiStaticSize(t)), 0);
     // Phase B: build the head on top - static arg emits its blob inline, dynamic arg emits its offset word.
     for (let i = 0; i < n; i += 1) {
       if (isDyn(types[i])) {
@@ -11386,6 +11434,47 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
 
     this.entryLoopActive = false;
+  }
+
+  // A dynamic (runtime-bound) keccak256 loop reads one compute side-car per iteration from the region right after
+  // the master [master+blockSize+counter): stateful contracts use their compile-time blockSize, stateless ones
+  // use blockSize 1 (master + the side-cars immediately after it, absolute-forward from OP_INPUTINDEX). Push a
+  // 0-based counter before OP_BEGIN; emitKeccakComputeCall reads region[master+blockSize+counter], binds, and
+  // increments it each iteration. Fires for any keccakCompute function whose loop body calls keccak256; both the
+  // stateful and stateless reads use the same absolute-forward covenant (self-preserve via OP_INPUTINDEX).
+  private emitLoopKeccakSetup(block: Node, loc: SingleLocationData): boolean {
+    if (this.keccakLoopActive) return false;
+    if (!this.currentFunction.keccakCompute) return false;
+    if (!this.blockHasKeccakCall(block)) return false;
+    this.currentFunction.keccakLoopReads = true; // tells the SDK to progressively co-spend N runtime side-cars
+    this.emit(encodeInt(0n), loc);
+    this.pushToStack(this.keccakLoopCounterName);
+    this.keccakLoopActive = true;
+    return true;
+  }
+
+  // Tear down a dynamic keccak loop after OP_UNTIL: drop the counter. No count-pin is needed - each iteration
+  // BINDS its side-car's preimage == the running value, so extra/missing trailing side-cars fail closed (a
+  // missing one aborts the read; an extra one is an independent self-preserving UTXO the master never reads).
+  private emitLoopKeccakTeardown(loc: SingleLocationData): void {
+    if (!this.keccakLoopActive) return;
+    const idx = this.getStackIndex(this.keccakLoopCounterName);
+    this.emit(encodeInt(BigInt(idx)), loc);
+    this.emit(Op.OP_ROLL, loc);
+    this.emit(Op.OP_DROP, loc);
+    this.removeFromStack(idx);
+    this.keccakLoopActive = false;
+  }
+
+  private blockHasKeccakCall(node: Node): boolean {
+    if (node instanceof FunctionCallNode && node.identifier.name === GlobalFunction.KECCAK256) return true;
+    for (const value of Object.values(node)) {
+      if (value instanceof Node) { if (this.blockHasKeccakCall(value)) return true; }
+      else if (Array.isArray(value)) {
+        for (const item of value) if (item instanceof Node && this.blockHasKeccakCall(item)) return true;
+      }
+    }
+    return false;
   }
 
   /**

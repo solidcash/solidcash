@@ -88,15 +88,20 @@ describe('external library inlining', () => {
     expect(artifact.externalLibraries![0].inline).toBe(false);
   });
 
-  it('does not auto-inline a large library (keccak256) but inlineLibraries: true forces it', () => {
+  it('keccak256 is always the compute model (no inline blob; force-inline does not apply)', () => {
     const keccakSource = `
 contract K() {
     function v(bytes m, bytes32 e) {
         require(keccak256(m) == e);
     }
 }`;
-    expect(compileString(keccakSource).externalLibraries![0].inline).toBe(false);
-    const forced = compileString(keccakSource, { inlineLibraries: { keccak256: true } });
-    expect(forced.externalLibraries![0].inline).toBe(true);
+    // keccak256 uses the compute (result-NFT) side-car, never a loaded blob (the blob would exceed the contract's
+    // own hashing budget), so the descriptor is resultNft with no inline-loader fields regardless of the option.
+    const lib = compileString(keccakSource).externalLibraries![0];
+    expect(lib.resultNft).toBe(true);
+    expect(lib.inline).toBeUndefined();
+    const forced = compileString(keccakSource, { inlineLibraries: { keccak256: true } }).externalLibraries![0];
+    expect(forced.resultNft).toBe(true);
+    expect(forced.inline).toBeUndefined();
   });
 });

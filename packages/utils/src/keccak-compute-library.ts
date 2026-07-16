@@ -10,10 +10,13 @@
 // COVENANT (stack in [pad, P, salt], salt on top from the salt push): a CONDITIONAL brand check - if salt
 // is zero (SHARED, for a stateless contract with no token category) skip it, else (BRANDED) verify input-0's
 // token category == salt (spendable only alongside the contract of that category). Then drop pad, R =
-// keccak(P) on a clean stack (EVM byte order), enforce the recreation output (INPUTINDEX + TXOUTPUTCOUNT - TXINPUTCOUNT, = the last output for a
-// single side-car; each of N side-cars maps to its own output) commits R, and self-preserve it. Generated from keccak-poc/gen-compute-sidecar.mjs (the regen tool) - the
-// compiler's contract-side offsets + the SDK builder MUST match it byte-for-byte.
+// keccak(P) on a clean stack (EVM byte order), enforce the recreation output (INPUTINDEX + TXOUTPUTCOUNT -
+// TXINPUTCOUNT = the last output for a single side-car; each of N side-cars maps to its own output) commits R,
+// and self-preserve it. Generated from keccak-poc/gen-compute-sidecar.mjs (the regen tool) - the compiler's
+// contract-side offsets + the SDK builder MUST match it byte-for-byte. STATEFUL variant below self-preserves
+// via OP_INPUTINDEX (block-layout slot) instead of the offset-from-end formula.
 import { hash256 } from './hash.js';
+import type { Artifact } from './artifact.js';
 
 /** The full computing-side-car COVENANT bytecode (brand + inline keccak + commit + self-preserve). 2394 B. */
 export const KECCAK256_COMPUTE_COVENANT =
@@ -22,6 +25,23 @@ export const KECCAK256_COMPUTE_COVENANT =
 /** hash256(COVENANT); baked into the contract's side-car integrity check. */
 export const KECCAK256_COMPUTE_COVENANT_HASH =
   '911e001711093698434a5851359f8ac65cb64c7eb47b713723c87d8d1f0014a0';
+
+// STATEFUL variant. The stateless covenant self-preserves at the OUTPUT offset-from-end
+// (INPUTINDEX + TXOUTPUTCOUNT - TXINPUTCOUNT), which equals the side-car index only when input/output counts
+// match - true for the balanced stateless co-spend, but NOT for a stateful tx (funders, change, entries). A
+// stateful side-car rides a block-layout keccakSideCar slot where its INPUT and OUTPUT share the same absolute
+// index, so it self-preserves via the ACTIVE INPUT INDEX (OP_INPUTINDEX) directly. The only byte difference is
+// the tail: `c0 c4 93 c3 94` (INPUTINDEX TXOUTPUTCOUNT ADD TXINPUTCOUNT SUB) -> `c0` (INPUTINDEX).
+const STATELESS_SELFPRES_TAIL = 'c0c493c39476d27b88c0c778cd88c0ce78d1887551';
+const STATEFUL_SELFPRES_TAIL = 'c076d27b88c0c778cd88c0ce78d1887551';
+
+/** The STATEFUL computing-side-car COVENANT (self-preserves via OP_INPUTINDEX). 2390 B. */
+export const KECCAK256_COMPUTE_STATEFUL_COVENANT =
+  KECCAK256_COMPUTE_COVENANT.slice(0, -STATELESS_SELFPRES_TAIL.length) + STATEFUL_SELFPRES_TAIL;
+
+/** hash256(STATEFUL COVENANT); baked into a stateful contract's side-car integrity check. */
+export const KECCAK256_COMPUTE_STATEFUL_COVENANT_HASH =
+  '9e2d6fd30973ec8e0b4056c9c6a6180a32893b3612548a57e28bf512af64aedc';
 
 /** Redeem salt-push prefix: OP_PUSHBYTES_32 (0x20) + 32 salt bytes. COVENANT begins at this offset. */
 export const KECCAK256_COMPUTE_SALT_PREFIX_LENGTH = 33;
@@ -32,19 +52,21 @@ export const KECCAK256_COMPUTE_PAD_LENGTH = 1000;
 const hexToBytes = (h: string): Uint8Array => Uint8Array.from(h.match(/.{2}/g)!.map((b) => parseInt(b, 16)));
 
 const COVENANT_BYTES = hexToBytes(KECCAK256_COMPUTE_COVENANT);
+const STATEFUL_COVENANT_BYTES = hexToBytes(KECCAK256_COMPUTE_STATEFUL_COVENANT);
 
 /**
  * Build the computing side-car redeem: OP_PUSHBYTES_32 || salt(32) || COVENANT.
- * salt = the consuming contract's token category (branded, 32 bytes).
+ * salt = the consuming contract's token category (branded, 32 bytes). `stateful` selects the OP_INPUTINDEX
+ * self-preservation variant (a block-layout keccakSideCar slot) over the stateless offset-from-end one.
  */
-export function buildKeccakComputeRedeem(salt: Uint8Array): Uint8Array {
+export function buildKeccakComputeRedeem(salt: Uint8Array, stateful = false): Uint8Array {
   if (salt.length !== 32) throw new Error('keccak compute side-car salt must be 32 bytes');
-  return Uint8Array.from([0x20, ...salt, ...COVENANT_BYTES]);
+  return Uint8Array.from([0x20, ...salt, ...(stateful ? STATEFUL_COVENANT_BYTES : COVENANT_BYTES)]);
 }
 
 /** P2SH32 locking bytecode for the computing side-car: OP_HASH256 <hash256(redeem)> OP_EQUAL. */
-export function keccakComputeLockingBytecode(salt: Uint8Array): Uint8Array {
-  return Uint8Array.from([0xaa, 0x20, ...hash256(buildKeccakComputeRedeem(salt)), 0x87]);
+export function keccakComputeLockingBytecode(salt: Uint8Array, stateful = false): Uint8Array {
+  return Uint8Array.from([0xaa, 0x20, ...hash256(buildKeccakComputeRedeem(salt, stateful)), 0x87]);
 }
 
 /**
@@ -54,4 +76,17 @@ export function keccakComputeLockingBytecode(salt: Uint8Array): Uint8Array {
 export function keccakComputeResultCommitment(hash: Uint8Array): Uint8Array {
   if (hash.length !== 32) throw new Error('keccak result must be 32 bytes');
   return hash;
+}
+
+/**
+ * The minimum keccak256 compute side-car instances a contract needs deployed at creation time, read from its
+ * compiled artifact. `minInstances` covers the largest single function call (each call co-spends its own
+ * side-car, one per keccak256 in the function). `unbounded` = a function hashes inside a loop, so the runtime
+ * need exceeds the static minimum - provision extra. Returns undefined when the contract uses no keccak256.
+ */
+export function keccakSideCarRequirement(
+  artifact: Artifact,
+): { minInstances: number; unbounded: boolean } | undefined {
+  const lib = artifact.externalLibraries?.find((l) => l.name === 'keccak256' && l.resultNft);
+  return lib ? { minInstances: lib.minInstances ?? 0, unbounded: lib.unbounded ?? false } : undefined;
 }

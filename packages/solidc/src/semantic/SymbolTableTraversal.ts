@@ -1380,13 +1380,17 @@ export default class SymbolTableTraversal extends AstTraversal {
     }
 
     // keccak256 is the compute-and-commit result-NFT model (co-spent side-cars compute the hashes and return
-    // them in NFT commitments; there is no inline keccak). It applies where the SDK can transparently
-    // co-spend: a stateless function whose EVERY keccak256 call hashes a direct parameter (N calls -> N
-    // side-cars, slot-per-call). Complex-arg / nested / stateful keccak is not yet on the compute model (work
-    // in progress; falls back to inline). Codegen records the per-call param list. See docs/keccak-result-nft.md.
+    // them in NFT commitments; there is no inline keccak). EVERY keccak256 uses it: N calls -> N side-cars
+    // (slot-per-call). Direct-parameter args are co-spent from the call args; complex/nested args (recorded as
+    // `null` in keccakPreimageParams by codegen) are resolved by the SDK via a VM probe. Stateless contracts
+    // read the side-cars count-relative (the last N in/outputs); stateful contracts read a block-layout slot
+    // (sibling of blockhashOracle, positioned absolutely). See docs/keccak-result-nft.md.
     const keccakCalls = libraryCallCounts.get(GlobalFunction.KECCAK256) ?? 0;
-    if (keccakCalls >= 1 && !this.isStatefulContract && this.allKeccakCallsDirectParam(node.body, node)) {
+    if (keccakCalls >= 1) {
       node.keccakCompute = true;
+      // A keccak256 call inside a loop runs a runtime-variable number of times, so the static call count is a
+      // LOWER BOUND on the side-cars needed. Flag it so the SDK provisions extra instances (see artifact).
+      if (node.body && this.keccakCallInLoop(node.body)) node.keccakInLoop = true;
     }
 
     // Entry slot pre-scan: collect unique (collection, keyParam) pairs and assign slot indices
@@ -2669,21 +2673,18 @@ export default class SymbolTableTraversal extends AstTraversal {
     return counts;
   }
 
-  // True iff EVERY keccak256 call in the subtree hashes a direct function parameter (so the SDK can
-  // transparently co-spend a side-car per call). A complex/nested argument (e.g. keccak256(keccak256(x)) or
-  // keccak256(expr)) makes it false -> the function stays on the inline model.
-  private allKeccakCallsDirectParam(node: Node, fn: FunctionDefinitionNode, state: { ok: boolean } = { ok: true }): boolean {
-    if (!state.ok) return false;
-    if (node instanceof FunctionCallNode && node.identifier.name === GlobalFunction.KECCAK256) {
-      const arg = node.parameters[0];
-      if (!(arg instanceof IdentifierNode && fn.parameters.some((p) => p.name === arg.name))) state.ok = false;
-    }
+  // True if any keccak256 call sits inside a loop (all `for`/`while` desugar to While/DoWhile). Used to flag
+  // runtime-variable keccak strain so the SDK over-provisions side-cars beyond the syntactic call count.
+  private keccakCallInLoop(node: Node, inLoop = false): boolean {
+    const nowInLoop = inLoop || node instanceof WhileNode || node instanceof DoWhileNode;
+    if (nowInLoop && node instanceof FunctionCallNode && node.identifier.name === GlobalFunction.KECCAK256) return true;
     for (const value of Object.values(node)) {
-      if (value instanceof Node) this.allKeccakCallsDirectParam(value, fn, state);
-      else if (Array.isArray(value)) for (const item of value) if (item instanceof Node) this.allKeccakCallsDirectParam(item, fn, state);
-      if (!state.ok) break;
+      if (value instanceof Node) { if (this.keccakCallInLoop(value, nowInLoop)) return true; }
+      else if (Array.isArray(value)) {
+        for (const item of value) if (item instanceof Node && this.keccakCallInLoop(item, nowInLoop)) return true;
+      }
     }
-    return state.ok;
+    return false;
   }
 
   private collectCollectionIterations(node: Node, iterations: CollectionIterationInfo[]): void {
@@ -7569,6 +7570,18 @@ export default class SymbolTableTraversal extends AstTraversal {
     if (node.usesBlockhash) {
       const bhSlots = Math.max(1, node.blockhashSlotCount ?? 0);
       for (let i = 0; i < bhSlots; i++) slots.push({ kind: 'blockhashOracle', offset: offset++ });
+    }
+
+    // keccak256 compute side-cars: each call rides its OWN consecutive side-car - a self-preserving 1:1
+    // input/output slot (sibling of blockhashOracle). The side-car computes keccak256 in its own budget and
+    // commits the result to its recreated NFT; codegen reads input[master+offset] (bind preimage) and
+    // output[master+offset] (result). Stateless contracts have no block layout and read count-relative instead.
+    // Fixed keccakSideCar slots for straight-line (non-loop) keccak calls. A DYNAMIC keccak loop reads a
+    // runtime-variable number of side-cars from the TRAILING region [blockSize, ..) instead (keccakInLoop), so
+    // it allocates no fixed slots here.
+    if (node.keccakCompute && !node.keccakInLoop) {
+      const kSlots = Number(node.libraryCallCounts?.get(GlobalFunction.KECCAK256) ?? 1n);
+      for (let i = 0; i < kSlots; i++) slots.push({ kind: 'keccakSideCar', offset: offset++, slotIndex: i });
     }
 
     // Reserve offset space for outState groups (between reads and entries)

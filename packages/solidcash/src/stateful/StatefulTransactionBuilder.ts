@@ -21,7 +21,7 @@ import {
 import { TransactionBuilder, TransactionBuilderOptions } from '../TransactionBuilder.js';
 import { CovenantTransactionBuilder } from './CovenantTransactionBuilder.js';
 import { scriptToLockingBytecode, generateLibauthSourceOutputs, calculateDust } from '../utils.js';
-import type { LibauthOutput } from '../interfaces.js';
+import type { LibauthOutput, Output } from '../interfaces.js';
 import { attachWait } from '../wait.js';
 import {
   Utxo, UnlockableUtxo, TransactionDetails,
@@ -91,6 +91,11 @@ export interface ExternalCallUtxoGroup {
   blockLayout?: FunctionBlockLayout;
   /** B's event NFT outputs (from auto-derivation of B's VM trace) */
   eventOutputs?: Array<{ eventSignature: string; commitment: string; lockingBytecode: Uint8Array }>;
+  /** B's keccak256 compute side-car INPUTS (outState path: appended after dataNfts; externalCall path already
+   * carries them inside blockInputs). In B's keccak-call order. */
+  keccakInputs?: UnlockableUtxo[];
+  /** B's keccak256 compute side-car recreation OUTPUTS (both paths), committing each computed R_i. */
+  keccakRecreates?: Output[];
 }
 
 export interface StatefulTransactionOptions extends TransactionBuilderOptions {
@@ -101,6 +106,8 @@ export interface StatefulTransactionOptions extends TransactionBuilderOptions {
   requiredNftIndices?: number[];  // if absent, use all indices
   readOnlyDataNftUtxos?: UnlockableUtxo[];  // read-only data NFTs from other contracts
   blockhashCoSpendUtxos?: UnlockableUtxo[];  // (n->hash) oracle co-spends for blockhash(n) readers
+  keccakComputeCoSpendUtxos?: UnlockableUtxo[]; // keccak256 compute side-cars (one per call) at keccakSideCar slots
+  keccakComputeCommitments?: string[];        // parallel: R_i = keccak256(preimage_i) hex, committed to recreation i
   entryNfts?: EntryNftInfo[];
   entryAccesses?: readonly EntryAccessAbi[];
   entryNftLockingBytecodes?: Map<string, Uint8Array>; // collection name -> locking bytecode
@@ -122,6 +129,8 @@ export interface StatefulTransactionOptions extends TransactionBuilderOptions {
   lowLevelCallUtxoGroups?: ExternalCallUtxoGroup[];
   lowLevelCallRawInputs?: UnlockableUtxo[];
   iterationEntryInputs?: UnlockableUtxo[];
+  keccakLoopSideCars?: UnlockableUtxo[];   // dynamic keccak loop: N trailing compute side-car INPUTS at [blockSize,..)
+  keccakLoopRecreates?: Output[];          // ... and their recreation OUTPUTS (R_i per iteration), parallel
   checkMinRelayFee?: boolean; // enforce fee >= feePerByte * txSize
   minRelayFeePerKb?: bigint;  // satoshis per 1000 bytes; default 1000n (1 sat/byte)
   blockLayout?: FunctionBlockLayout;
@@ -178,11 +187,15 @@ export class StatefulTransactionBuilder {
   private tokenContainerTransferInsertionCounter = 0;
   private readOnlyDataNftUtxos: UnlockableUtxo[];
   private blockhashCoSpendUtxos: UnlockableUtxo[];
+  private keccakComputeCoSpendUtxos: UnlockableUtxo[];
+  private keccakComputeCommitments: string[];
   private externalOutStateUtxoGroups: ExternalCallUtxoGroup[];
   private externalCallUtxoGroups: ExternalCallUtxoGroup[];
   private lowLevelCallUtxoGroups: ExternalCallUtxoGroup[];
   private lowLevelCallRawInputs: UnlockableUtxo[];
   private iterationEntryInputs: UnlockableUtxo[];
+  private keccakLoopSideCars: UnlockableUtxo[];
+  private keccakLoopRecreates: Output[];
   private blockLayout?: FunctionBlockLayout;
   funderUtxos: UnlockableUtxo[];
   private funderChangeAddress?: Uint8Array;
@@ -214,6 +227,8 @@ export class StatefulTransactionBuilder {
     this.categoryId = options.categoryId;
     this.readOnlyDataNftUtxos = options.readOnlyDataNftUtxos ?? [];
     this.blockhashCoSpendUtxos = options.blockhashCoSpendUtxos ?? [];
+    this.keccakComputeCoSpendUtxos = options.keccakComputeCoSpendUtxos ?? [];
+    this.keccakComputeCommitments = options.keccakComputeCommitments ?? [];
     this.externalOutStateUtxoGroups = options.externalOutStateUtxoGroups ?? [];
     this.externalCallUtxoGroups = options.externalCallUtxoGroups ?? [];
     this.lowLevelCallUtxoGroups = options.lowLevelCallUtxoGroups ?? [];
@@ -230,6 +245,8 @@ export class StatefulTransactionBuilder {
     this.satoshiContainerUtxo = options.satoshiContainerUtxo;
     this.satoshiContainerLockingBytecode = options.satoshiContainerLockingBytecode;
     this.iterationEntryInputs = options.iterationEntryInputs ?? [];
+    this.keccakLoopSideCars = options.keccakLoopSideCars ?? [];
+    this.keccakLoopRecreates = options.keccakLoopRecreates ?? [];
     this._maximumFeeSatoshis = options.maximumFeeSatoshis;
     this.blockLayout = options.blockLayout;
     this.funderUtxos = options.funderUtxos ?? [];
@@ -238,11 +255,14 @@ export class StatefulTransactionBuilder {
     this.requiredNftIndices = options.requiredNftIndices
       ?? Array.from({ length: options.stateLayout.dataNftCount }, (_, i) => i);
 
-    // Flatten external outState inputs: [B1's master, B1's data NFTs, ...]
+    // Flatten external outState inputs: [B1's master, B1's data NFTs, B1's keccak side-cars, ...] - the keccak
+    // side-cars follow B's data NFTs (B's block-layout order: master < dataNft < keccakSideCar) so B's covenant
+    // reads them at their slot.
     const externalOutStateInputs: UnlockableUtxo[] = [];
     for (const group of this.externalOutStateUtxoGroups) {
       externalOutStateInputs.push(group.masterUtxo as UnlockableUtxo);
       externalOutStateInputs.push(...group.dataNftUtxos);
+      if (group.keccakInputs) externalOutStateInputs.push(...group.keccakInputs);
     }
 
     // Flatten external call inputs - use full block when available
@@ -308,6 +328,7 @@ export class StatefulTransactionBuilder {
       let dataNftIdx = 0, readOnlyIdx = 0, tcIdx = 0;
       let llcIdx = 0; // low-level call input index
       let bhIdx = 0; // blockhash co-spend index
+      let kIdx = 0; // keccak256 compute side-car index
       // Each entry slot gets ITS OWN existing entry input (by slotIndex), or a funder if absent. Not a dense
       // pull from entryInputs: an absent lower slot must not shift a higher slot's entry into the gap (the
       // covenant reads each slot at its fixed offset).
@@ -329,6 +350,11 @@ export class StatefulTransactionBuilder {
           case 'blockhashOracle':
             if (bhIdx < this.blockhashCoSpendUtxos.length) {
               positioned[slot.offset] = this.blockhashCoSpendUtxos[bhIdx++];
+            }
+            break;
+          case 'keccakSideCar':
+            if (kIdx < this.keccakComputeCoSpendUtxos.length) {
+              positioned[slot.offset] = this.keccakComputeCoSpendUtxos[kIdx++];
             }
             break;
           case 'entry': {
@@ -395,6 +421,7 @@ export class StatefulTransactionBuilder {
     if (this.iterationEntryInputs.length > 0 && externalCallInputs.length > 0) {
       return [
         this.masterUtxo, ...this.dataNftUtxos, ...this.readOnlyDataNftUtxos, ...this.blockhashCoSpendUtxos,
+        ...this.keccakComputeCoSpendUtxos, ...this.keccakLoopSideCars,
         ...externalOutStateInputs,
         ...lowLevelCallInputs, ...this.lowLevelCallRawInputs,
         ...entryInputs, ...this.iterationEntryInputs,
@@ -406,6 +433,7 @@ export class StatefulTransactionBuilder {
     }
     return [
       this.masterUtxo, ...this.dataNftUtxos, ...this.readOnlyDataNftUtxos, ...this.blockhashCoSpendUtxos,
+      ...this.keccakComputeCoSpendUtxos, ...this.keccakLoopSideCars,
       ...externalOutStateInputs, ...externalCallInputs,
       ...lowLevelCallInputs, ...this.lowLevelCallRawInputs,
       ...entryInputs, ...this.iterationEntryInputs,
@@ -815,9 +843,11 @@ export class StatefulTransactionBuilder {
    * Get the master input index for an external outState group.
    */
   getExternalOutStateMasterInputIndex(groupIdx: number): number {
-    let base = 1 + this.dataNftUtxos.length + this.readOnlyDataNftUtxos.length + this.blockhashCoSpendUtxos.length;
+    let base = 1 + this.dataNftUtxos.length + this.readOnlyDataNftUtxos.length + this.blockhashCoSpendUtxos.length
+      + this.keccakComputeCoSpendUtxos.length;
     for (let i = 0; i < groupIdx; i++) {
-      base += 1 + this.externalOutStateUtxoGroups[i].dataNftUtxos.length;
+      base += 1 + this.externalOutStateUtxoGroups[i].dataNftUtxos.length
+        + (this.externalOutStateUtxoGroups[i].keccakInputs?.length ?? 0);
     }
     return base;
   }
@@ -826,9 +856,11 @@ export class StatefulTransactionBuilder {
    * Get the output index where outState group's master NFT output starts.
    */
   getExternalOutStateOutputBase(groupIdx: number): number {
-    let base = 1 + this.requiredNftIndices.length + this.readOnlyDataNftUtxos.length + this.blockhashCoSpendUtxos.length;
+    let base = 1 + this.requiredNftIndices.length + this.readOnlyDataNftUtxos.length + this.blockhashCoSpendUtxos.length
+      + this.keccakComputeCoSpendUtxos.length;
     for (let i = 0; i < groupIdx; i++) {
-      base += 1 + this.externalOutStateUtxoGroups[i].dataNftUtxos.length;
+      base += 1 + this.externalOutStateUtxoGroups[i].dataNftUtxos.length
+        + (this.externalOutStateUtxoGroups[i].keccakInputs?.length ?? 0);
     }
     return base;
   }
@@ -837,10 +869,11 @@ export class StatefulTransactionBuilder {
    * Get the master input index for an external call group.
    */
   getExternalCallMasterInputIndex(groupIdx: number): number {
-    let base = 1 + this.dataNftUtxos.length + this.readOnlyDataNftUtxos.length + this.blockhashCoSpendUtxos.length;
+    let base = 1 + this.dataNftUtxos.length + this.readOnlyDataNftUtxos.length + this.blockhashCoSpendUtxos.length
+      + this.keccakComputeCoSpendUtxos.length;
     // Skip outState inputs
     for (const g of this.externalOutStateUtxoGroups) {
-      base += 1 + g.dataNftUtxos.length;
+      base += 1 + g.dataNftUtxos.length + (g.keccakInputs?.length ?? 0);
     }
     // Loop external-call case: the read array's chunk run is co-spent BEFORE the callees (see _buildInputs),
     // so callee inputs are shifted by the chunk count. Zero when no dynamic-array read is co-spent.
@@ -857,10 +890,11 @@ export class StatefulTransactionBuilder {
    * Output layout: master(1) + A's dataNfts + A's readOnlyNfts + preceding groups' (1+dataNfts).
    */
   getExternalCallOutputBase(groupIdx: number): number {
-    let base = 1 + this.requiredNftIndices.length + this.readOnlyDataNftUtxos.length + this.blockhashCoSpendUtxos.length;
+    let base = 1 + this.requiredNftIndices.length + this.readOnlyDataNftUtxos.length + this.blockhashCoSpendUtxos.length
+      + this.keccakComputeCoSpendUtxos.length;
     // Skip outState outputs
     for (const g of this.externalOutStateUtxoGroups) {
-      base += 1 + g.dataNftUtxos.length;
+      base += 1 + g.dataNftUtxos.length + (g.keccakInputs?.length ?? 0);
     }
     // Loop external-call case: the read array's chunk preservation outputs precede the callee outputs
     // (see build()), shifting them by the chunk count. Zero when no dynamic-array read is co-spent.
@@ -881,10 +915,11 @@ export class StatefulTransactionBuilder {
   }
 
   getLowLevelCallMasterInputIndex(groupIdx: number): number {
-    let base = 1 + this.dataNftUtxos.length + this.readOnlyDataNftUtxos.length + this.blockhashCoSpendUtxos.length;
+    let base = 1 + this.dataNftUtxos.length + this.readOnlyDataNftUtxos.length + this.blockhashCoSpendUtxos.length
+      + this.keccakComputeCoSpendUtxos.length;
     // Skip outState inputs
     for (const g of this.externalOutStateUtxoGroups) {
-      base += 1 + g.dataNftUtxos.length;
+      base += 1 + g.dataNftUtxos.length + (g.keccakInputs?.length ?? 0);
     }
     // Skip external call inputs (use full block size when available)
     for (const g of this.externalCallUtxoGroups) {
@@ -1013,6 +1048,24 @@ export class StatefulTransactionBuilder {
       });
     }
 
+    // Create keccak256 compute side-car outputs (right after blockhash, matching the keccakSideCar slots): each
+    // recreation carries this call's computed result R_i = keccak256(preimage_i) in a mutable NFT commitment.
+    this.keccakComputeCoSpendUtxos.forEach((kUtxo, i) => {
+      builder.addOutput({
+        to: kUtxo.unlocker.generateLockingBytecode(),
+        amount: kUtxo.satoshis,
+        token: {
+          category: kUtxo.token?.category ?? this.categoryId,
+          amount: kUtxo.token?.amount ?? 0n,
+          nft: { capability: 'mutable', commitment: this.keccakComputeCommitments[i] ?? '' },
+        },
+      });
+    });
+
+    // Dynamic keccak loop: recreate the N trailing side-cars, each with its iteration result R_i. In the MVP
+    // layout (no other front-region slots) these sit at [blockSize, blockSize+N) - right after the data NFTs.
+    for (const rec of this.keccakLoopRecreates) builder.addOutput(rec);
+
     // Create external outState outputs (same pattern as external call preservation)
     for (const group of this.externalOutStateUtxoGroups) {
       // B's master output: preserved unchanged
@@ -1064,6 +1117,9 @@ export class StatefulTransactionBuilder {
           },
         });
       }
+
+      // B's keccak256 side-car recreations (after B's data NFT outputs, matching the input order).
+      for (const rec of group.keccakRecreates ?? []) builder.addOutput(rec);
     }
 
     // Loop external-call case: the read array's chunk run is co-spent BEFORE the callees (input order
@@ -1159,9 +1215,19 @@ export class StatefulTransactionBuilder {
         // The remaining positions (D+1..) need corresponding outputs.
         const dataNftEnd = 1 + group.requiredDataNftIndices.length;
         let eventIdx = 0;
+        let keccakIdx = 0;
         for (let si = dataNftEnd; si < group.blockInputs.length; si++) {
           const input = group.blockInputs[si];
           const slot = group.blockLayout.slots[si];
+
+          // keccak256 side-car slots: recreate with the computed result R_i (from the group's keccakRecreates).
+          if (slot?.kind === 'keccakSideCar') {
+            const rec = group.keccakRecreates?.[keccakIdx++];
+            builder.addOutput(rec ?? {
+              to: input.unlocker.generateLockingBytecode(), amount: input.satoshis, token: input.token,
+            });
+            continue;
+          }
 
           // Event slots: use auto-derived event NFT output or placeholder
           if (slot?.kind === 'event') {
@@ -1712,8 +1778,9 @@ export class StatefulTransactionBuilder {
     const dataNftOutputCount = this.requiredNftIndices.length;
     const readOnlyOutputCount = this.readOnlyDataNftUtxos.length;
     const blockhashOutputCount = this.blockhashCoSpendUtxos.length;
+    const keccakOutputCount = this.keccakComputeCoSpendUtxos.length;
     const outStateOutputCount = this.externalOutStateUtxoGroups.reduce(
-      (sum, g) => sum + 1 + g.dataNftUtxos.length, 0,
+      (sum, g) => sum + 1 + g.dataNftUtxos.length + (g.keccakInputs?.length ?? 0), 0,
     );
     const externalCallOutputCount = this.externalCallUtxoGroups.reduce(
       (sum, g) => (g.blockInputs ? sum + g.blockInputs.length : sum + 1 + g.dataNftUtxos.length), 0,
@@ -1725,7 +1792,7 @@ export class StatefulTransactionBuilder {
     // the witness-side formula in StatefulContract (returnEventOutputBase counts iterationEntryInputs).
     const chunkBeforeCalleeCount = this.externalCallUtxoGroups.length > 0 ? this.iterationEntryInputs.length : 0;
     // Low-level call outputs are now AFTER entries/SC/TCs/transfers/events (matching block layout)
-    return masterOutputCount + dataNftOutputCount + readOnlyOutputCount + blockhashOutputCount
+    return masterOutputCount + dataNftOutputCount + readOnlyOutputCount + blockhashOutputCount + keccakOutputCount
       + outStateOutputCount + externalCallOutputCount + chunkBeforeCalleeCount;
   }
 
@@ -1878,8 +1945,9 @@ export class StatefulTransactionBuilder {
     const dataNftInputCount = this.dataNftUtxos.length;
     const readOnlyInputCount = this.readOnlyDataNftUtxos.length;
     const blockhashInputCount = this.blockhashCoSpendUtxos.length;
+    const keccakInputCount = this.keccakComputeCoSpendUtxos.length;
     const outStateInputCount = this.externalOutStateUtxoGroups.reduce(
-      (sum, g) => sum + 1 + g.dataNftUtxos.length, 0,
+      (sum, g) => sum + 1 + g.dataNftUtxos.length + (g.keccakInputs?.length ?? 0), 0,
     );
     const externalCallInputCount = this.externalCallUtxoGroups.reduce(
       (sum, g) => (g.blockInputs ? sum + g.blockInputs.length : sum + 1 + g.dataNftUtxos.length), 0,
@@ -1890,7 +1958,7 @@ export class StatefulTransactionBuilder {
     const entryInputCount = this.entryNfts.filter((e) => e.exists && e.utxo).length;
     const iterationEntryInputCount = this.iterationEntryInputs.length;
     const tokenContainerInputCount = this.tokenContainers.filter((d) => d.exists && d.utxo).length;
-    return masterInputCount + dataNftInputCount + readOnlyInputCount + blockhashInputCount
+    return masterInputCount + dataNftInputCount + readOnlyInputCount + blockhashInputCount + keccakInputCount
       + outStateInputCount + externalCallInputCount + lowLevelCallInputCount
       + entryInputCount + iterationEntryInputCount + tokenContainerInputCount;
   }

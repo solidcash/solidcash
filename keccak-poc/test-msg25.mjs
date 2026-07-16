@@ -1,8 +1,8 @@
 import { run, asm, binToHex } from './vm.mjs';
 import { genKeccak256x32v2 } from './gen25.mjs';
-import createKeccak from 'keccak';
+import { keccak_256 } from '@noble/hashes/sha3';
 import { createVirtualMachineBch2026 } from '@bitauth/libauth';
-const evm = (h) => createKeccak('keccak256').update(Buffer.from(h,'hex')).digest('hex');
+const evm = (h) => Buffer.from(keccak_256(Buffer.from(h, 'hex'))).toString('hex');
 const script = 'OP_NIP ' + genKeccak256x32v2((s)=>binToHex(asm(s)));
 console.log('full keccak256 locking size:', asm(script).length, 'bytes');
 let all = true;

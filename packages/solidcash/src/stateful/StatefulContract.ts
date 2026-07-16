@@ -46,7 +46,7 @@ import {
   bigIntToVmNumber,
 } from '@bitauth/libauth';
 import { Contract } from '../Contract.js';
-import { SortedList, keyToSlotMulti, bytesToSlotValue } from './SortedList.js';
+import { SortedList, keyToSlot, keyToSlotMulti, bytesToSlotValue } from './SortedList.js';
 import { resolveBlockhashCoSpend } from '../oracle/blockhashCoSpend.js';
 import { attachWait } from '../wait.js';
 import Signer from '../Signer.js';
@@ -4798,6 +4798,33 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     }
   }
 
+  // Caller-supplied keys for sorted (C2) mapping KEYS/ENTRIES iteration. A sorted entry stores slot=H(key), not
+  // the raw key, so the caller provides the keys and the covenant verifies keyToSlot(key)==slot per entry. Set
+  // before the call; a wrong/incomplete set is rejected by the covenant (wrong key -> hash mismatch; missing
+  // entry -> chain break).
+  private _iterationKeys?: Map<string, Uint8Array[]>;
+  private _rawIterationKeysBlob?: Map<string, Uint8Array>;
+
+  /**
+   * Supply the keys for a sorted `enumerable mapping` KEYS/ENTRIES iteration. Required for such iterations (the
+   * raw key is not on-chain). Order is irrelevant - the SDK orders them to the chain and the covenant verifies
+   * keyToSlot(key) == each entry's slot.
+   */
+  setIterationKeys(collectionName: string, keys: Uint8Array[]): this {
+    (this._iterationKeys ??= new Map()).set(collectionName, keys);
+    return this;
+  }
+
+  /**
+   * @internal Test hook: supply the KEYS/ENTRIES keys blob verbatim, bypassing the honest slot-matching, to
+   * exercise the covenant's key-verify backstop against a malicious spender (a key that does not hash to its
+   * entry's slot must revert).
+   */
+  _setRawIterationKeysBlob(collectionName: string, blob: Uint8Array): this {
+    (this._rawIterationKeysBlob ??= new Map()).set(collectionName, blob);
+    return this;
+  }
+
   /** @internal - compute total output count for sentinel index when draining */
   /** @internal */
   async _createBuilder(
@@ -5215,12 +5242,14 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         // co-spend the HEAD FIRST, then the entries in ASCENDING slot order (the chain order). A plain
         // (non-sorted) collection keeps the caller-window order.
         let orderedUtxos = entryUtxos;
+        let sortedRest: { slot: Uint8Array }[] = [];
         if (coll.sorted) {
           const list = SortedList.fromUtxos(entryUtxos);
           const head = list.all.find((e) => bytesToSlotValue(e.slot) === 0n);
           if (!head) throw new Error(`Enumerable mapping '${coll.name}' is missing its HEAD sentinel (slot 0)`);
           const rest = list.all.filter((e) => bytesToSlotValue(e.slot) !== 0n); // list.all is already ascending
           orderedUtxos = [head.utxo, ...rest.map((e) => e.utxo)];
+          sortedRest = rest;
         }
 
         // Add as read-only inputs
@@ -5232,6 +5261,36 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         // Append _collectionIterCount_<N> argument (the iteration run size = HEAD + entries when sorted; used for
         // block-layout offset accounting, not as the linkage loop bound - the chain self-terminates at the tail).
         finalArgs = [...finalArgs, BigInt(orderedUtxos.length)];
+
+        // KEYS/ENTRIES over a sorted mapping: append the keys blob (caller-supplied via setIterationKeys, ordered
+        // to the ascending chain so blob[i*W:] is the key for entry base+1+i). The covenant splits keyWidth bytes
+        // per entry and verifies keyToSlot(key)==slot; a wrong key hashes elsewhere and a missing entry breaks the
+        // chain, so both revert.
+        if (coll.sorted && iter.mode !== 'values') {
+          const rawOverride = this._rawIterationKeysBlob?.get(coll.name);
+          if (rawOverride) {
+            finalArgs = [...finalArgs, rawOverride]; // test hook: verbatim blob (malicious-spender simulation)
+          } else {
+            const callerKeys = this._iterationKeys?.get(coll.name);
+            if (!callerKeys) {
+              throw new Error(`Iterating keys/entries of sorted enumerable mapping '${coll.name}' requires the keys: `
+                + `call setIterationKeys('${coll.name}', [...]) before the iteration (the raw key is not on-chain).`);
+            }
+            const keyBySlot = new Map<string, Uint8Array>();
+            for (const k of callerKeys) keyBySlot.set(binToHex(keyToSlot(k)), k);
+            const parts: Uint8Array[] = [];
+            for (const e of sortedRest) {
+              const k = keyBySlot.get(binToHex(e.slot));
+              if (!k) throw new Error(`No supplied key hashes to entry slot ${binToHex(e.slot)} in '${coll.name}'`);
+              parts.push(k);
+            }
+            const total = parts.reduce((n, p) => n + p.length, 0);
+            const blob = new Uint8Array(total);
+            let off = 0;
+            for (const p of parts) { blob.set(p, off); off += p.length; }
+            finalArgs = [...finalArgs, blob];
+          }
+        }
       }
     }
 

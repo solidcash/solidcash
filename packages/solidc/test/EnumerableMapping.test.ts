@@ -67,12 +67,17 @@ describe('sorted enumerable mapping: iteration mode support', () => {
     expect(() => compileString(contract(enumerableDecl, 'for (int v of this.m)'), { sortedMappings: ['m'] }))
       .not.toThrow();
   });
-  it('rejects KEYS iteration on a sorted enumerable mapping (no key recovery from slot=H(key))', () => {
+  it('allows KEYS iteration with a fixed-width key (caller-supplied, covenant-verified keyToSlot==slot)', () => {
     expect(() => compileString(contract(enumerableDecl, 'for (bytes20 k in this.m)'), { sortedMappings: ['m'] }))
-      .toThrow(/not yet supported|slot=H\(key\)/i);
+      .not.toThrow();
   });
-  it('rejects ENTRIES iteration on a sorted enumerable mapping (no key recovery from slot=H(key))', () => {
+  it('allows ENTRIES iteration with a fixed-width key', () => {
     expect(() => compileString(contract(enumerableDecl, 'for (bytes20 k, int v of this.m.entries)'), { sortedMappings: ['m'] }))
-      .toThrow(/not yet supported|slot=H\(key\)/i);
+      .not.toThrow();
+  });
+  it('rejects KEYS/ENTRIES on a sorted mapping with a variable-width (int) key', () => {
+    const intDecl = 'enumerable mapping(int => int) m;';
+    expect(() => compileString(contract(intDecl, 'for (int k in this.m)'), { sortedMappings: ['m'] }))
+      .toThrow(/fixed-width bytesN key/i);
   });
 });

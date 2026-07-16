@@ -104,6 +104,7 @@ import {
   LowLevelCallStatementNode,
   CollectionIterationNode,
   CollectionIterationInfo,
+  CollectionIterationMode,
   TypeIntrospectionNode,
   SwitchNode,
   UsingForDirectiveNode,
@@ -1464,6 +1465,21 @@ export default class SymbolTableTraversal extends AstTraversal {
           const sym = this.symbolTables[0].get(`__internal__collectionIterCount_${i}`);
           if (sym) sym.references.push({ name: `__internal__collectionIterCount_${i}` } as IdentifierNode);
           this.pushToStack(countParam);
+
+          // SORTED (C2) KEYS/ENTRIES iteration: the entry stores slot=H(key), not the raw key, so the caller
+          // supplies the keys and the covenant verifies keyToSlot(key)==slot per entry. Inject a bytes blob param
+          // (fixed-width keys concatenated in chain order); only for sorted key-exposing iterations, so plain and
+          // sorted-VALUES iteration ABIs are unchanged.
+          const coll = this.collectionMap.get(collectionIterations[i].collection);
+          if (coll?.sorted && collectionIterations[i].mode !== CollectionIterationMode.VALUES) {
+            const keysParam = new ParameterNode(new BytesType(), `__internal__collectionIterKeys_${i}`);
+            keysParam.location = node.location;
+            node.parameters.push(keysParam);
+            this.symbolTables[0].set(Symbol.variable(keysParam));
+            const ksym = this.symbolTables[0].get(`__internal__collectionIterKeys_${i}`);
+            if (ksym) ksym.references.push({ name: `__internal__collectionIterKeys_${i}` } as IdentifierNode);
+            this.pushToStack(keysParam);
+          }
         }
       }
     }

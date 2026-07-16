@@ -3404,13 +3404,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
 
     // SORTED (enumerable) collection: trustless LINKAGE-completeness iteration (co-spend HEAD sentinel, walk
-    // nextKey to the tail). VALUES mode only for now - KEYS/ENTRIES need the raw key which the C2 commitment
-    // does not store (only slot = H(key)).
+    // nextKey to the tail). VALUES exposes the value tail; KEYS/ENTRIES additionally verify each caller-supplied
+    // key against the entry's slot=H(key) (the raw key is not on-chain). See emitSortedIterationLinkage.
     if (collection.sorted) {
-      if (node.mode !== CollectionIterationMode.VALUES) {
-        throw new Error(`Iterating keys/entries of a sorted 'enumerable mapping' ('${collection.name}') is not yet `
-          + 'supported (the sorted entry stores slot=H(key), not the raw key); use value iteration.');
-      }
       this.emitSortedIterationLinkage(node, iterIdx, locationData, endLocationData);
       return node;
     }
@@ -3534,20 +3530,34 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     return node;
   }
 
-  // Trustless VALUES-mode iteration over a SORTED (enumerable / C2) mapping by LINKAGE completeness. The SDK
-  // co-spends the HEAD sentinel (slot 0) then the entries in ascending slot order; the covenant co-spends HEAD
-  // and walks the nextKey chain to the tail (nextKey == 0), verifying per entry that (a) its input bytecode is
-  // the collection's entry address (a real entry - no substitution) and (b) its slot == the previous nextKey
-  // (contiguity - a skipped/omitted entry breaks the chain). Completeness is enforced with no trusted count.
+  // Trustless iteration over a SORTED (enumerable / C2) mapping by LINKAGE completeness. The SDK co-spends the
+  // HEAD sentinel (slot 0) then the entries in ascending slot order; the covenant co-spends HEAD and walks the
+  // nextKey chain to the tail (nextKey == 0), verifying per entry that (a) its input bytecode is the collection's
+  // entry address (a real entry - no substitution) and (b) its slot == the previous nextKey (contiguity - a
+  // skipped/omitted entry breaks the chain). Completeness is enforced with no trusted count. VALUES exposes the
+  // value tail. KEYS/ENTRIES additionally consume a caller-supplied key from the injected keys blob and verify
+  // keyToSlot(key) == the entry's slot (the raw key is not stored on-chain - a wrong/forged key reverts).
   private emitSortedIterationLinkage(
     node: CollectionIterationNode, iterIdx: number,
     locationData: SingleLocationData, endLocationData: SingleLocationData,
   ): void {
     const collection = node.collection!;
+    const mode = node.mode;
+    const needsKeys = mode !== CollectionIterationMode.VALUES; // KEYS or ENTRIES
+    const needsValue = mode !== CollectionIterationMode.KEYS; // VALUES or ENTRIES
     const valueType = collection.innermostValueType;
     const valueKind = this.sortedValueKind(valueType);
-    if (valueKind === null) {
+    if (needsValue && valueKind === null) {
       throw new SortedMappingCodegenPendingError(node as unknown as MappingAccessNode, collection.name);
+    }
+    let keyWidth = 0;
+    if (needsKeys) {
+      const keyTypes = collection.allKeyTypes;
+      if (keyTypes.length !== 1 || !(keyTypes[0] instanceof BytesType) || (keyTypes[0] as BytesType).bound === undefined) {
+        throw new Error(`Iterating keys/entries of a sorted 'enumerable mapping' ('${collection.name}') requires a `
+          + 'single fixed-width bytesN key (the entry stores slot=H(key), verified against the caller-supplied key).');
+      }
+      keyWidth = (keyTypes[0] as BytesType).bound!;
     }
     const collectionHash = computeCollectionHash(computeCollectionSignature(collection.name, collection.type.toString()));
     const ZERO32 = new Uint8Array(32);
@@ -3585,6 +3595,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emitReplace(this.getStackIndex('(__iter_i)'), node);
     this.popFromStack();
 
+    // KEYS/ENTRIES: copy the caller-supplied keys blob to a loop-carried slot (consumed keyWidth bytes per entry).
+    if (needsKeys) {
+      this.emit(encodeInt(BigInt(this.getStackIndex(`__internal__collectionIterKeys_${iterIdx}`))), locationData);
+      this.emit(Op.OP_PICK, locationData);
+      this.pushToStack('(__iter_keys)');
+    }
+
     // 4. LOOP: while expectedNext != 0 (not the tail).
     this.scopeDepth += 1;
     this.emit(Op.OP_BEGIN, locationData);
@@ -3612,11 +3629,35 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.pushToStack('(__iter_tmp)'); // track the copy so emitReplace/popFromStack reconcile at any depth
     this.emitReplace(this.getStackIndex('(__iter_next)'), node);
     this.popFromStack();
-    // Value -> loop variable (int/bool normalized, bytesN verbatim).
-    this.emit(encodeInt(BigInt(this.getStackIndex('(__ent_value)'))), locationData);
-    this.emit(Op.OP_PICK, locationData);
-    if (valueKind === 'int') this.emit(Op.OP_BIN2NUM, locationData);
-    this.pushToStack(node.valueName!);
+    // KEYS/ENTRIES: consume one key (keyWidth bytes) from the blob, verify keyToSlot(key) == this entry's slot,
+    // and expose it. A forged/wrong/omitted key hashes to a different slot -> EQUALVERIFY reverts.
+    if (needsKeys) {
+      const kIdx = this.getStackIndex('(__iter_keys)');
+      this.emit(encodeInt(BigInt(kIdx)), locationData); this.emit(Op.OP_ROLL, locationData); // blob -> top
+      this.removeFromStack(kIdx);
+      this.emit(encodeInt(BigInt(keyWidth)), locationData); this.emit(Op.OP_SPLIT, locationData); // [key, rest]
+      this.pushToStack('(__ent_key)'); // deeper = key
+      this.pushToStack('(__iter_keys)'); // top = rest (re-tracked for the next entry)
+      this.emit(encodeInt(BigInt(this.getStackIndex('(__ent_key)'))), locationData); this.emit(Op.OP_PICK, locationData);
+      this.emit(Op.OP_SHA256, locationData);
+      this.emit(encodeInt(31n), locationData); this.emit(Op.OP_SPLIT, locationData);
+      this.emit(new Uint8Array([0x7f]), locationData); this.emit(Op.OP_AND, locationData); this.emit(Op.OP_CAT, locationData);
+      this.emit(encodeInt(BigInt(this.getStackIndex('(__ent_slot)') + 1)), locationData); this.emit(Op.OP_PICK, locationData);
+      this.emit(Op.OP_EQUALVERIFY, locationData); // keyToSlot(key) == slot
+    }
+
+    // Expose loop variables. ENTRIES wants [keyName, valueName] with keyName on top (matches non-sorted).
+    if (needsValue) {
+      this.emit(encodeInt(BigInt(this.getStackIndex('(__ent_value)'))), locationData);
+      this.emit(Op.OP_PICK, locationData);
+      if (valueKind === 'int') this.emit(Op.OP_BIN2NUM, locationData);
+      this.pushToStack(node.valueName!);
+    }
+    if (needsKeys) {
+      this.emit(encodeInt(BigInt(this.getStackIndex('(__ent_key)'))), locationData);
+      this.emit(Op.OP_PICK, locationData);
+      this.pushToStack(node.keyName!);
+    }
     this.removeScopedEntryTemps(node);
 
     node.body = this.visit(node.body);
@@ -3641,8 +3682,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.popFromStack();
     this.scopeDepth -= 1;
 
-    // Clean up expectedNext, i, entryAddr.
-    for (const name of ['(__iter_next)', '(__iter_i)', '(__iter_entryaddr)']) {
+    // Clean up loop-carried slots (keys blob copy, if any, then expectedNext, i, entryAddr).
+    const cleanup = needsKeys
+      ? ['(__iter_keys)', '(__iter_next)', '(__iter_i)', '(__iter_entryaddr)']
+      : ['(__iter_next)', '(__iter_i)', '(__iter_entryaddr)'];
+    for (const name of cleanup) {
       const idx = this.getStackIndex(name);
       this.emit(encodeInt(BigInt(idx)), endLocationData);
       this.emit(Op.OP_ROLL, endLocationData);
@@ -3668,11 +3712,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.pushToStack('(__ent_value)');
   }
 
-  // Drop the three per-entry commitment temps (top-down so each ROLL index is current).
+  // Drop the per-entry commitment temps (each ROLL index is recomputed, so order is immaterial). __ent_key is
+  // present only for KEYS/ENTRIES iteration.
   private removeScopedEntryTemps(node: Node): void {
     const loc = { location: node.location, positionHint: PositionHint.START };
-    for (const name of ['(__ent_value)', '(__ent_next)', '(__ent_slot)']) {
-      const idx = this.getStackIndex(name);
+    for (const name of ['(__ent_key)', '(__ent_value)', '(__ent_next)', '(__ent_slot)']) {
+      const idx = this.getStackIndex(name, true);
+      if (idx === -1) continue;
       this.emit(encodeInt(BigInt(idx)), loc);
       this.emit(Op.OP_ROLL, loc);
       this.emit(Op.OP_DROP, loc);

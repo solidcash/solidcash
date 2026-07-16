@@ -182,24 +182,20 @@ from a literal signature is exactly that shape, so this becomes a small, testabl
 
 ---
 
-## evmCompat ABI - niche recursive shapes (fail closed)
+## evmCompat ABI - niche recursive shapes (RESOLVED)
 
-**What.** Three deep-recursion shapes throw with clear `evmCompat:` messages rather than mis-encoding:
-(1) `abi.decode` of a nested array of dynamic elements (`bytes[][]`, `string[][]`) - the *encode* works, only
-decode is unimplemented; (2) `abi.encode` of a struct with a **nested dynamic-struct** field; (3) `abi.decode`
-of a dynamic struct with a struct or fixed-array field. (`abi.encodePacked` of an array of dynamic elements also
-throws, but that is ambiguous/disallowed in Solidity too, so rejecting it is correct - not a gap.)
+**Status: implemented.** All three deep-recursion shapes now work both directions, byte-identical to solc:
+(1) `abi.decode` of `bytes[][]`/`string[][]` (commit 4284ace9: `emitEvmDecodeDynElementArray`, a counted inner
+loop); (2) `abi.encode` of a struct with a nested dynamic- or static-struct field (commit 4ca9df7d:
+`emitEvmStructTail` keeps the tracker synced through the unpack so nested `getStackIndex` resolves, and
+`emitEvmStructInline` recurses via `emitEvmEncodeValue`); (3) `abi.decode` of a dynamic struct with a
+fixed-array or nested-static-struct field (commit 698c516d: `emitEvmAbiDecodeDynamic` head positions generalized
+to cumulative `abiStaticSize` + composite reconstruction). The `__abiblob` slot collision was avoided by keeping
+levels temporally disjoint (each nips its slots before an enclosing level names its own) rather than a depth-scoped
+namespace. Covered by conformance cases in abi/decode.conformance.test.ts.
 
-**Why deferred.** Each recurses through the tracker freeze/resync boundary: a nested `emitEvmHeadTailFromBlobs`
-inside a frozen field-unpack would `getStackIndex` on colliding `__abiblob_i` slot names, and `bytes[][]` decode
-needs an inner-array re-frame the leaf decoder does not do. Not shapes real ABIs commonly use.
-
-**What it'd take.** A depth-scoped `__abiblob` namespace (or a stack-relative variant of `emitEvmHeadTailFromBlobs`
-that takes explicit depths instead of tracked names) so nested head/tail calls don't collide; plus a recursive
-`emitEvmDecodeElement` that re-frames inner dynamic arrays for `bytes[][]` decode.
-
-**Revisit if.** A real contract in the corpus needs one of these (e.g. a `bytes[][]` calldata param, or a struct
-whose field is itself a dynamic struct).
+The only genuine non-support remaining is `abi.encodePacked` of an array of dynamic elements - ambiguous/disallowed
+in Solidity too, so rejecting it is correct, not a gap.
 
 ---
 

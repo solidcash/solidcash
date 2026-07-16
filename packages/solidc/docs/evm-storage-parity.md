@@ -143,16 +143,43 @@ SolidCash parity notes:
   rather than the length - a niche divergence (Solidity's own `arr.length` compiles to `sload(p)`, but explicit
   assembly length-reads are rare). Routing `sload(<dyn-array>.slot)` -> `arr.length` would close it; deferred as
   low-value (the length is already available high-level).
-- **Mapping count for sound enumeration (proposed, aligns with the efficiency principle).** EVM wastes the
-  mapping's slot `p` (always 0). SolidCash could store a live ENTRY COUNT there, turning the otherwise-idle
-  anchor into an enumeration handle. Soundness: a count alone is insufficient (you must prove you visited
-  exactly `count` distinct entries with no omission); it becomes sound WHEN paired with the C2 sorted linked
-  list (`docs/sorted-mapping-c2.md`) - traverse head->tail by next-pointer, the count bounds and verifies the
-  traversal. This is a BEYOND-EVM feature (EVM mappings are not enumerable) and a deliberate divergence
-  (`sload(m.slot)` would return the count, not 0), so it should be an opt-in enumerable-mapping type / a
-  `.length`+iteration API on C2 mappings, not a silent change to every mapping. Recommendation: build it on top
-  of C2 (which already provides the sound ordering) if enumeration is wanted; the count at the anchor is then a
-  cheap increment/decrement on insert/delete. Not built - it is a design decision with a parity divergence.
+### Mapping-count for TRUSTLESS enumeration - evaluated (proposed `mapping enumerable` extension)
+
+SolidCash has mapping ITERATION (absent in Solidity). Today it is a caller-chosen PARTIAL WINDOW
+(`collection-iteration.md`): the loop is `i < __internal__collectionIterCount_N`, an untrusted UNLOCKING ARG,
+and the SDK picks which entry NFTs to co-spend. There is NO on-chain completeness check, so it is sound for
+SIGNED / permissioned use (the signer chose an honest window) but NOT trustless "iterate ALL entries" - an
+attacker can pass a smaller count and OMIT entries. The idea: store a live ENTRY COUNT at the mapping's master
+slot (EVM leaves it 0) and require iteration to co-spend exactly N == count entries. Evaluation:
+
+- **Soundness reduces to COUNT INTEGRITY.** "Co-spend N == count" is sound iff count equals the number of
+  live, distinct-key entries. That requires (a) the count in the ALWAYS-PRESENT register / data NFT (a hidden
+  `<map>$count` field, like a dynamic array's `A$len`) - NOT a withholdable entry UTXO, else the count itself
+  is omittable; (b) EVERY insert/delete updates it atomically on ALL codegen paths; (c) NO duplicate-key
+  entries - uniqueness on insert = an absence proof = the C2 sorted list. So an enumerable mapping is built ON
+  C2.
+- **Given C2, the count is partly REDUNDANT.** The sorted linked list already proves completeness by LINKAGE:
+  co-spend head->tail following next-pointers, terminating at the sentinel = provably all entries, self-
+  contained, no count needed. The count's value is an O(1) `.length` and a simpler iteration covenant (count-
+  check vs linkage-walk), at the cost of maintaining it.
+- **THE DANGEROUS FLAW: a count as the SOLE completeness source fails OPEN.** A stale-LOW count (a forgotten
+  write path, a desync bug) -> iteration co-spends fewer -> SILENT OMISSION (unsound). Linkage has no such
+  failure mode (the entries are self-describing). Recommendation: use LINKAGE for completeness and treat the
+  count as a redundant CROSS-CHECK (assert walked-N == count) so a desync fails CLOSED (revert/brick), never
+  open. A stale-HIGH count also bricks iteration (can't present N) - a liveness, not soundness, failure.
+- **Delete semantics must be reconciled.** C2 delete = NULLIFY (node stays). A nullified node is a live UTXO
+  not logically present, so either the count/iteration must skip default-valued nodes (and the covenant must
+  verify non-default per co-spent entry, else a nullified node substitutes for a real one) or delete must
+  SPLICE (re-link predecessor.next, more covenant work) so count == physical == iterable. Splice is cleaner
+  for enumeration; nullify bloats (dead nodes accumulate, never shrink, inflating every iteration).
+- **TX-SIZE / COMPUTE CEILING (the load-bearing practical limit).** Trustless full enumeration co-spends ALL N
+  entries in ONE transaction. For a large mapping (millions of USDT balances) that overflows the tx-size and
+  per-input compute limits REGARDLESS of the count mechanism. So enumeration is only feasible for BOUNDED /
+  small collections (admin sets, participant lists). The count does not scale it. This is the decisive reason
+  the design should be `mapping enumerable` OPT-IN (bounded, on C2, count-in-register cross-checked vs linkage,
+  splice-delete) while the DEFAULT `mapping` stays Solidity-parity: not enumerable, slot p = 0, no count
+  overhead, no per-write register rebuild. Verdict: sound and worth building for bounded collections, with the
+  caveats above; NOT a general balances-enumeration primitive.
 
 ## Soundness - and why the slot space does NOT need a sorted linked list
 

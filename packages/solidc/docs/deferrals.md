@@ -271,25 +271,25 @@ codegen, tests SortedMappingIteration.test.ts; the covenant co-spends the HEAD s
 chain to the tail, so omission/truncation revert at the VM). Its three named "next steps" plus the value-width
 gap were assessed and DEFERRED - each for a concrete, grounded reason, not for lack of time.
 
-### 1. KEYS / ENTRIES iteration over a SORTED mapping
+### 1. KEYS / ENTRIES iteration over a SORTED mapping - RESOLVED for fixed-width keys (2026-07-16, commit 7b911613)
 
 **What.** `for (k in this.m)` / `for (k, v of this.m.entries)` when `m` is a sorted (C2) enumerable mapping.
-Currently throws a clean codegen error (locked by EnumerableMapping.test.ts); only VALUES works. (KEYS/ENTRIES DO
-work on a NON-sorted enumerable mapping, whose entry commitment stores the raw key.)
 
-**Why deferred.** The sorted entry commitment is `slot(32) ++ nextKey(32) ++ value` where `slot = sha256(key)`
-masked - a ONE-WAY hash. The raw key is not on-chain, and the SDK keeps no slot->key reverse map (only forward
-`keyToSlot`, SortedList.ts). So the key cannot be recovered on-chain or supplied by the SDK from state alone.
-Also the sorted order is by H(key) (hash order), so enumerated keys come out in a meaningless order - low value.
+**Resolution.** Shipped via option (a), the witness-key protocol - ADDITIVELY (no change to the byte-verified C2
+read/write/delete core): the caller supplies the keys (`setIterationKeys`), the SDK orders them to the ascending
+chain and injects them as a concatenated fixed-width blob (a conditionally-injected `__internal__collectionIterKeys_N`
+param, sorted-KEYS/ENTRIES only so other ABIs are untouched), and the linkage covenant per entry splits keyWidth
+bytes off the blob, computes `keyToSlot(key)` (OP_SHA256 + 0x7f mask) and OP_EQUALVERIFYs it against the entry's
+slot before exposing the key. A wrong/forged key hashes elsewhere -> reverts (verified VM-level); a missing entry
+breaks the chain -> reverts. Tests: SortedMappingKeyIteration.test.ts.
 
-**What it'd take.** Either (a) a witness-key protocol: the caller supplies each entry's key as unlocking data,
-the covenant verifies `keyToSlot(suppliedKey) == entry.slot` (preimage bind) and exposes the key to the body -
-requires the caller/SDK to already KNOW all keys (an off-chain key index or a caller-provided key list); or
-(b) widen the commitment to `slot ++ nextKey ++ key ++ value` (store the key), a format change touching every
-sorted read/write/delete path + the 128 B budget accounting.
+**Remaining (still deferred).** VARIABLE-WIDTH keys (int, address) - the sequential blob split needs a fixed
+width, so only a single `bytesN` key is supported today (int/address keys throw a clean "requires a single
+fixed-width bytesN key" error). Extending needs a length-prefixed key encoding in the blob (or per-key-type
+width handling) + the covenant reading the prefix. Also unchanged: keys come out in H(key) (hash) order, and the
+caller must know all keys (owner-driven enumeration; the raw key is still not on-chain).
 
-**Revisit if.** A real contract needs to enumerate a sorted mapping's keys/entries AND has an off-chain key
-source (owner-driven "process every (addr, balance)"), making (a) worthwhile.
+**Revisit if.** A contract needs to enumerate a sorted mapping keyed by int/address (not bytesN).
 
 ### 2. C2 sorted backend as the DEFAULT for plain `mapping`
 

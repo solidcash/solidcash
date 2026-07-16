@@ -269,6 +269,32 @@ large mappings.
   no concurrent mutation (or a covenant rule that forbids writes to the mapping while a pagination is open). A
   single-tx window is atomic (no concurrency). Document the chosen semantics per use.
 
+### C2 is a PARITY REQUIREMENT for mappings, so it should be the DEFAULT (correction)
+
+Earlier this doc said "plain `mapping` = Solidity parity." That is INCOMPLETE. Plain matches Solidity for
+POSITIVE reads (`m[k]=v; m[k]` == v) but NOT for the guarantee that matters: in Solidity a read is UNFORGEABLE,
+including "unwritten => 0" (the state trie commits to it), so `require(m[k] == 0)` (first-init / not-yet-claimed
+/ nonce-unused) is sound. A plain SolidCash mapping breaks exactly that: the read co-spends the entry UTXO, and
+ABSENT => 0 - the covenant cannot distinguish "genuinely absent" from "the spender WITHHELD it", so an adversary
+forges `m[k] == 0` by omission. That is a SEMANTIC divergence, not a cost difference - a ported Solidity
+contract relying on the guard is silently exploitable.
+
+C2's bracketing (`P.slot < H(k) < P.nextKey`) recovers Solidity's unforgeable "absent => 0". So **C2 is a parity
+requirement for mappings, not an enumeration feature** - enumeration is the bonus the same structure provides.
+The parity-correct DEFAULT is therefore C2, with plain as an explicit UNSAFE OPT-OUT (mappings that provably
+never do a negative-existence read, or signed-use where the only withholder is the signer). Two gates before
+flipping the default:
+1. **P5 is now a PREREQUISITE, not niche.** C2 fails closed on unbounded bytes/string VALUES (128B entry can't
+   hold slot+next+long value); plain supports them via chunks. So C2-by-default REQUIRES closing P5 (chunk the
+   sorted-entry value) first, else string-valued mappings regress.
+2. **Cost is the price of the guarantee.** C2 adds a bracketing co-spend per write (one extra UTXO) - the same
+   soundness EVM buys with the trie/gas. Necessary, not avoidable overhead.
+
+Type story then collapses: `mapping` = the C2 backend (sound exclusion proofs = parity) with iteration GATED
+(Solidity mappings are not iterable, so the default surface stays non-enumerable though the structure could
+iterate); `enumerable mapping` = the SAME C2 backend with iteration ENABLED. `enumerable` becomes a pure
+iteration TOGGLE on one universal C2 backend, not a structural choice.
+
 ### Mergeability: `enumerable` == `sorted` (C2), NOT `mapping` == `enumerable mapping`
 
 - **`mapping` (plain) and `enumerable mapping` do NOT merge.** The linked-list is a DECLARATION-TIME commitment

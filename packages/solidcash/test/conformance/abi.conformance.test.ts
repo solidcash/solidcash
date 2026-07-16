@@ -132,3 +132,13 @@ describe('abi.encodeWithSelector (evmCompat): multiple dynamic', () => {
   it('selector + two dynamic bytes', () => sel('bytes4 s, bytes memory a, bytes memory b', 's, a, b', ['0x12345678', '0xaa', '0xbbcc']));
   it('multicall-shaped: selector + bytes + bytes', () => sel('bytes4 s, bytes memory a, bytes memory b', 's, a, b', ['0xac9650d8', `0x${'11'.repeat(36)}`, `0x${'22'.repeat(4)}`])); // eslint-disable-line max-len
 });
+
+describe('abi.encode (evmCompat): dynamic arrays of fixed-width value types', () => {
+  it('uint256[] three elements', () => enc('uint256[] memory a', 'a', [[1n, 2n, 3n]]));
+  it('uint256[] single', () => enc('uint256[] memory a', 'a', [[42n]]));
+  it('uint256[] empty', () => enc('uint256[] memory a', 'a', [[]]));
+  it('uint256[] large values (max, 2^255, 2^255-1)', () => enc('uint256[] memory a', 'a', [[MAX, 1n << 255n, (1n << 255n) - 1n]]));
+  it('uint128[] (narrower fixed width)', () => enc('uint128[] memory a', 'a', [[1n, 2n, (1n << 128n) - 1n]]));
+  it('uint + uint256[] (static head then array)', () => enc('uint a, uint256[] memory b', 'a, b', [7n, [10n, 20n]]));
+  it('uint256[] + uint (array then static)', () => enc('uint256[] memory a, uint b', 'a, b', [[1n, 2n], 99n]));
+});

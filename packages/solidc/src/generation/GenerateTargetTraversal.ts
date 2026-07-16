@@ -46,6 +46,7 @@ import {
   sidecarStripOffsets,
   encodeComputedBlockhashKey,
   KECCAK256_COMPUTE_COVENANT_HASH,
+  KECCAK256_COMPUTE_STATEFUL_COVENANT_HASH,
   KECCAK256_COMPUTE_SALT_PREFIX_LENGTH,
 } from '@solidcash/utils';
 import {
@@ -1439,6 +1440,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   visitFunctionDefinition(node: FunctionDefinitionNode): Node {
     this.currentFunction = node;
     this.functionHasReturnInLoop = node.body ? this.hasReturnInLoop(node.body, false) : false;
+    // Rebuilt fresh each codegen pass (this node is revisited across derivation/subroutine sub-traversals);
+    // emitKeccakComputeCall pushes one entry per keccak256 call in emission order (its per-call slot index).
+    if (node.keccakCompute) node.keccakPreimageParams = [];
     this.pendingStateWrites = new Map();
     this.pendingEntryWrites = new Map();
     this.pendingEntryDeletes = new Set();
@@ -3909,7 +3913,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     fn.keccakPreimageParams.push(paramName);
     const n = Number(fn.libraryCallCounts?.get(GlobalFunction.KECCAK256) ?? 1n);
     const offset = n - i;
-    const fromEnd = (countOp: Op): void => {              // push (countOp - offset) = this call's slot index
+    // Stateful contracts read the side-car from an absolute block-layout slot (master input index + slot
+    // offset, same index for the 1:1 input and output). Stateless contracts have no block layout, so they read
+    // the last N in/outputs count-relative (countOp - (n-i)). Both land on this call's dedicated side-car.
+    const fromEnd = (countOp: Op): void => {
+      if (fn.blockLayout) { this.emitBlockSlotIndex('keccakSideCar', i, loc); return; }
       this.emit(countOp, loc);
       this.emit(encodeInt(BigInt(offset)), loc);
       this.emit(Op.OP_SUB, loc);
@@ -3932,7 +3940,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     dropFirst(3);                                   // strip redeem PUSHDATA2 prefix -> [redeem]
     dropFirst(KECCAK256_COMPUTE_SALT_PREFIX_LENGTH); // strip OP_PUSHBYTES_32 || salt(32) -> [covenant]
     this.emit(Op.OP_HASH256, loc);
-    this.emit(hexToBin(KECCAK256_COMPUTE_COVENANT_HASH), loc);
+    // Stateful side-cars self-preserve via OP_INPUTINDEX (block-layout slot: input idx == output idx); stateless
+    // ones offset-from-end. The covenant differs, so bake the matching hash.
+    this.emit(hexToBin(fn.blockLayout ? KECCAK256_COMPUTE_STATEFUL_COVENANT_HASH : KECCAK256_COMPUTE_COVENANT_HASH), loc);
     this.emit(Op.OP_EQUALVERIFY, loc);              // integrity: genuine compute covenant -> []
     fromEnd(Op.OP_TXOUTPUTCOUNT);
     this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, loc);    // [hash]  (this slot's output commitment = keccak256(arg))
@@ -7627,10 +7637,56 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   // evmCompat abi.encode: static value types (each a 32-byte word), optionally followed by ONE trailing
   // dynamic bytes/string (a 32-byte head offset + the tail). Multiple / non-trailing dynamics: not yet.
+  // evmCompat: [dynamic array blob on top] -> its EVM ABI tail = 32-byte length word ++ each element as a 32-byte
+  // word. The array is stored `pushdata(len) ++ contiguous fixed-width LE elements`; each element is byteWidth bytes
+  // of LITTLE-endian sign-magnitude (byteWidth includes the sign byte, e.g. 33 for uint256), so the EVM word is the
+  // low 32 magnitude bytes reversed to big-endian. UNSIGNED fixed-width value-type elements only (uint256[] etc.);
+  // signed/bytesN/bool elements TODO. Pure-emit with one tracker reconcile at the end (blob -> tail), no loop-internal
+  // tracking (all relative ops, no getStackIndex, no tracker-updating helper calls inside OP_BEGIN..OP_UNTIL).
+  private emitEvmArrayTail(elemType: Type, loc: SingleLocationData): void {
+    const w = getFixedWidth(elemType);
+    this.emitPushdataDecode(PrimitiveType.BIGINT, loc); // [length, elements]
+    this.emit(Op.OP_SWAP, loc); // [elements, length]
+    this.emit(encodeInt(32n), loc);
+    this.emit(Op.OP_NUM2BIN, loc); // length -> 32-byte little-endian
+    this.emit(Op.OP_REVERSEBYTES, loc); // -> 32-byte big-endian length word (= tail accumulator)
+    this.emit(Op.OP_SWAP, loc); // [tailAcc, elements]
+    this.emit(Op.OP_BEGIN, loc);
+    this.emit(Op.OP_SIZE, loc); // OP_SIZE keeps its input and pushes the size (no OP_DUP needed)
+    this.emit(Op.OP_0NOTEQUAL, loc); // [tailAcc, elements, moreLeft]
+    this.emit(Op.OP_IF, loc);
+    this.emit(encodeInt(BigInt(w)), loc);
+    this.emit(Op.OP_SPLIT, loc); // [tailAcc, elem(w), rest]
+    this.emit(Op.OP_SWAP, loc); // [tailAcc, rest, elem]
+    if (w > 32) {
+      this.emit(encodeInt(32n), loc);
+      this.emit(Op.OP_SPLIT, loc); // [tailAcc, rest, mag32, signHigh]
+      this.emit(Op.OP_DROP, loc); // drop the high sign byte(s) -> low 32 magnitude bytes (little-endian)
+    } else if (w < 32) {
+      this.emit(new Uint8Array(32 - w), loc); // left-pad: append high zero bytes (still little-endian)
+      this.emit(Op.OP_CAT, loc);
+    }
+    this.emit(Op.OP_REVERSEBYTES, loc); // 32-byte magnitude little-endian -> big-endian EVM word
+    this.emit(encodeInt(2n), loc);
+    this.emit(Op.OP_ROLL, loc); // [rest, word, tailAcc]
+    this.emit(Op.OP_SWAP, loc);
+    this.emit(Op.OP_CAT, loc); // [rest, tailAcc ++ word]
+    this.emit(Op.OP_SWAP, loc); // [tailAcc', rest]
+    this.emit(encodeBool(false), loc); // continue
+    this.emit(Op.OP_ELSE, loc);
+    this.emit(encodeBool(true), loc); // stop
+    this.emit(Op.OP_ENDIF, loc);
+    this.emit(Op.OP_UNTIL, loc);
+    this.emit(Op.OP_DROP, loc); // drop the emptied elements blob -> [tailAcc]
+    this.popFromStack();
+    this.pushToStack('(value)');
+  }
+
   private emitEvmAbiEncode(params: ExpressionNode[], loc: SingleLocationData): void {
     const n = params.length;
     const isDyn = (t: Type): boolean =>
-      t === PrimitiveType.STRING || (t instanceof BytesType && t.bound === undefined);
+      t === PrimitiveType.STRING || (t instanceof BytesType && t.bound === undefined)
+      || (t instanceof ArrayType && t.bound === undefined);
     const dynIdx = params.map((p, i) => (isDyn(p.type!) ? i : -1)).filter((i) => i >= 0);
 
     if (n === 0) {
@@ -7659,8 +7715,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Phase A: encode each arg to a blob (static word or dynamic tail) kept as tracked slot __abiblob_i.
     for (let i = 0; i < n; i += 1) {
       params[i] = this.visit(params[i]);
-      if (isDyn(params[i].type!)) this.emitEvmDynamicTail(loc);
-      else this.emitEvmAbiWord(params[i].type!, loc);
+      const t = params[i].type!;
+      if (t instanceof ArrayType && t.bound === undefined) this.emitEvmArrayTail(t.elementType, loc);
+      else if (isDyn(t)) this.emitEvmDynamicTail(loc);
+      else this.emitEvmAbiWord(t, loc);
       this.popFromStack();
       this.pushToStack(`__abiblob${i}`);
     }

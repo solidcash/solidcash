@@ -69,3 +69,31 @@ describe('EVM storage Tier-2: assembly mapping-slot idiom <-> high-level mapping
     await (sc as any).checkHighLevel(7n, 99n).send();
   });
 });
+
+// The canonical gas-optimized form: hex offsets, a symbolic `.slot`, and a let-bound slot var (the dead keccak
+// binding is dropped so no on-chain keccak runs).
+const TIER2_CANONICAL = `pragma solidcash >=0.8.0;
+contract C() {
+  mapping(uint256 => uint256) balances;
+  function setViaAsm(uint256 k, uint256 v, pubkey pk, sig s) {
+    require(checkSig(s, pk));
+    assembly {
+      mstore(0x00, k)
+      mstore(0x20, balances.slot)
+      let slot := keccak256(0x00, 0x40)
+      sstore(slot, v)
+    }
+  }
+  function checkHighLevel(uint256 k, uint256 e) { require(balances[k] == e); }
+}`;
+
+describe('EVM storage Tier-2: canonical let-bound mapping-slot idiom (P4)', () => {
+  it('bridges the canonical `let slot := keccak256(0x00,0x40)` form to the high-level mapping', async () => {
+    const art = compileString(TIER2_CANONICAL, { solidityImportCompat: true });
+    const cols = (art.stateLayout as unknown as { collections?: { name: string }[] })?.collections ?? [];
+    expect(cols.some((c) => c.name === '__evm_storage')).toBe(false);
+    const sc = await deploy(TIER2_CANONICAL);
+    await (sc as any).setViaAsm(3n, 55n, alicePub, sig()).send();
+    await (sc as any).checkHighLevel(3n, 55n).send();
+  });
+});

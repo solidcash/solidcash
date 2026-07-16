@@ -297,6 +297,11 @@ const BYTES32 = new BytesType(32);
 // is not mutated between the mstore and the read (the usual store-then-hash shape).
 const memory = new Map<bigint, YulExpressionNode>();
 
+// Let-bound mapping-slot vars: `let slot := keccak256(0,64)` recognized as m[k] at its binding (when the memory
+// map is correct), so a later `sstore(slot, v)` / `sload(slot)` routes to the high-level mapping. The dead keccak
+// binding is dropped (an on-chain keccak per mapping access would blow the compute budget). Reset per block.
+const mappingSlotVars = new Map<string, { collection: string; key: ExpressionNode }>();
+
 // ---- P7: runtime linear-memory buffer for Yul memory the compile-time model cannot resolve ----
 // When the compile-time `memory` map fails (dynamic offset, sub-word/dynamic keccak, msize, mcopy), the WHOLE
 // assembly block is re-lowered with `runtimeMem = true`, routing every memory op to a self-declared `__yulmem`
@@ -520,7 +525,7 @@ function constSlotOf(word: YulExpressionNode): bigint | undefined {
 // mapping m declared at slot p. Recognize it and return {collection, key} so sload/sstore route to the high-level
 // mapping m (Tier-2 interop: the assembly and high-level m[k] share the entry collection) instead of an anonymous
 // __evm_storage entry. Requires the two-word region fully mstore'd at compile time with word[1] = a mapping slot.
-function mappingSlotIdiom(slotArg: YulExpressionNode): { collection: string; key: YulExpressionNode } | undefined {
+function mappingSlotIdiom(slotArg: YulExpressionNode): { collection: string; key: ExpressionNode } | undefined {
   if (!(slotArg instanceof YulFunctionCallNode) || slotArg.name !== 'keccak256' || slotArg.args.length !== 2) {
     return undefined;
   }
@@ -534,7 +539,14 @@ function mappingSlotIdiom(slotArg: YulExpressionNode): { collection: string; key
   if (slotNum === undefined) return undefined;
   const collection = currentMappingSlots.get(slotNum);
   if (collection === undefined) return undefined;
-  return { collection, key: keyWord };
+  return { collection, key: lowerValue(keyWord) };
+}
+
+// Resolve a sload/sstore slot arg to a high-level mapping access: the inline `keccak256(0,64)` idiom, or a
+// let-bound slot var (`let slot := keccak256(0,64)`, the canonical gas-optimized form) tracked at its binding.
+function resolveMappingSlot(slotArg: YulExpressionNode): { collection: string; key: ExpressionNode } | undefined {
+  if (slotArg instanceof YulPathNode && slotArg.members.length === 0) return mappingSlotVars.get(slotArg.base);
+  return mappingSlotIdiom(slotArg);
 }
 
 // Build the anonymous-event emit for a Yul log0-log4: `emit __YulLog(topics ++ mem[p:p+len])`. Each topic is a
@@ -966,8 +978,8 @@ function lowerCall(call: YulFunctionCallNode): ExpressionNode {
   // sload(slot) -> the word at that storage slot (a single var, or the combined packed sub-word vars), or the
   // synthesized __evm_storage[slot] register entry for an arbitrary (non-declared) slot.
   if (name === 'sload' && args.length === 1) {
-    const mapAccess = mappingSlotIdiom(args[0]);
-    if (mapAccess) return loc(new MappingAccessNode(mapAccess.collection, [lowerValue(mapAccess.key)]), call);
+    const mapAccess = resolveMappingSlot(args[0]);
+    if (mapAccess) return loc(new MappingAccessNode(mapAccess.collection, [mapAccess.key]), call);
     const fields = resolveSlotFields(args[0]);
     if (fields) return combineSlot(fields, call);
     const key = evmStorageSlotKey(args[0]);
@@ -1083,6 +1095,15 @@ function lowerStatement(stmt: YulStatementNode): StatementNode {
     }
     // `let ok := call/staticcall/delegatecall(...)` -> a low-level call binding (reuses the external-call covenant).
     if (isLowLevelCall(stmt.value)) return lowerLowLevelCall(stmt.value, stmt.names[0], true, stmt);
+    // `let slot := keccak256(0,64)` mapping-slot idiom -> record m[k] for the var; drop the dead keccak binding.
+    if (stmt.value) {
+      const m = mappingSlotIdiom(stmt.value);
+      if (m) {
+        mappingSlotVars.set(stmt.names[0], m);
+        currentVars.set(stmt.names[0], UINT256);
+        return loc(new BlockNode([]), stmt);
+      }
+    }
     const expr = stmt.value ? lowerValue(stmt.value) : undefined;
     return loc(new VariableDefinitionNode(UINT256, [], stmt.names[0], expr), stmt);
   }
@@ -1092,6 +1113,9 @@ function lowerStatement(stmt: YulStatementNode): StatementNode {
     const name = stmt.paths[0].base;
     // `ok := call/staticcall/delegatecall(...)` -> a low-level call binding onto the existing var.
     if (isLowLevelCall(stmt.value)) return lowerLowLevelCall(stmt.value, name, false, stmt);
+    // `slot := keccak256(0,64)` mapping-slot idiom (assignment form) -> record m[k]; drop the dead keccak binding.
+    const mapSlot = mappingSlotIdiom(stmt.value);
+    if (mapSlot) { mappingSlotVars.set(name, mapSlot); return loc(new BlockNode([]), stmt); }
     const target = loc(new IdentifierNode(name), stmt);
     let value = lowerValue(stmt.value);
     // A plain non-word var read (address, bytesN, bool) yields a value of that type; normalize it to the uint256
@@ -1142,9 +1166,9 @@ function lowerStatement(stmt: YulStatementNode): StatementNode {
       // sstore(slot, v): write the word to that storage slot (a single var, or decomposed into packed vars),
       // or the synthesized __evm_storage[slot] register entry for an arbitrary (non-declared) slot.
       if (e.name === 'sstore' && e.args.length === 2) {
-        const mapWrite = mappingSlotIdiom(e.args[0]);
+        const mapWrite = resolveMappingSlot(e.args[0]);
         if (mapWrite) {
-          return loc(new MappingAssignNode(mapWrite.collection, [lowerValue(mapWrite.key)], lowerValue(e.args[1])), e);
+          return loc(new MappingAssignNode(mapWrite.collection, [mapWrite.key], lowerValue(e.args[1])), e);
         }
         const fields = resolveSlotFields(e.args[0]);
         if (fields) return decomposeSlot(fields, e.args[1], e);
@@ -1546,6 +1570,7 @@ export default class LowerInlineAssembly extends AstTraversal {
   private tryLowerAsm(node: AssemblyStatementNode, runtime: boolean): BlockNode | undefined {
     transientKeys.clear();
     memory.clear();
+    mappingSlotVars.clear();
     lastReturnData = undefined;
     runtimeMem = runtime;
     yulMemUsed = false;

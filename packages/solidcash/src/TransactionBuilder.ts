@@ -27,7 +27,9 @@ import { NetworkProvider } from './network/index.js';
 import {
   hash256, scriptToBytecode, buildSidecarRedeem, sidecarLockingBytecode, resolveLibraryBlob,
   SHARED_LIBRARY_SALT, ExternalLibraryAbi,
+  buildKeccakComputeRedeem, keccakComputeLockingBytecode, KECCAK256_COMPUTE_PAD_LENGTH,
 } from '@solidcash/utils';
+import { keccak_256 } from '@noble/hashes/sha3.js';
 import {
   solidCashOutputToLibauthOutput,
   createOpReturnOutput,
@@ -57,6 +59,21 @@ export interface TransactionBuilderOptions {
 
 const DEFAULT_SEQUENCE = 0xfffffffe;
 const DEFAULT_MAX_FEE_SATS_PER_BYTE = 1000;
+
+// Minimal data push (OP_0 / OP_1-16 / OP_1NEGATE / direct / PUSHDATA1 / PUSHDATA2) for hand-built unlocking
+// bytecode. Must be minimal or the 2026 VM rejects the input ("Push operations must use the smallest encoding").
+function pushDataBytes(data: Uint8Array): Uint8Array {
+  const n = data.length;
+  if (n === 0) return Uint8Array.from([0x00]);                       // OP_0 (empty)
+  if (n === 1) {
+    const b = data[0];
+    if (b >= 1 && b <= 16) return Uint8Array.from([0x50 + b]);       // OP_1 .. OP_16
+    if (b === 0x81) return Uint8Array.from([0x4f]);                  // OP_1NEGATE
+  }
+  if (n <= 75) return Uint8Array.from([n, ...data]);
+  if (n <= 255) return Uint8Array.from([0x4c, n, ...data]);
+  return Uint8Array.from([0x4d, n & 0xff, (n >> 8) & 0xff, ...data]);
+}
 
 export class TransactionBuilder {
   public provider: NetworkProvider;
@@ -151,6 +168,7 @@ export class TransactionBuilder {
       for (const name of used) {
         const lib = descriptors.find((l) => l.name === name);
         if (!lib || lib.inline) continue; // inline libraries are baked into the contract; no side-car
+        if (lib.resultNft) continue; // compute-and-commit side-car co-spent via addRequiredKeccakComputeSidecar
         if (lib.branded && !input.token?.category) {
           throw new Error(`Branded ${name} side-car requires the spent contract input to carry its token category.`);
         }
@@ -186,6 +204,95 @@ export class TransactionBuilder {
     };
     this.addInput(sidecar, unlocker);                              // last input (the loader reads it)
     this.addOutput({ to: sidecarLock, amount: sidecar.satoshis }); // last output (self-preservation)
+    return this;
+  }
+
+  /**
+   * Co-spend a keccak256 "compute-and-commit" side-car (result-NFT model). The branded side-car input runs
+   * keccak in its OWN op budget and returns keccak256(preimage) in its recreated NFT commitment; a
+   * `keccakResultNft` contract reads it by introspection. Appends the side-car as the LAST input (feeding the
+   * preimage + a budget pad) and its recreation as the LAST output carrying the committed hash. `salt` (the
+   * side-car branding) defaults to the first token-carrying contract input's category. The side-car mutable
+   * NFT must already exist at keccakComputeLockingBytecode(salt). Call after adding the contract input(s),
+   * before send(). See docs/keccak-result-nft.md.
+   */
+  async addKeccakComputeCoSpend(preimage: Uint8Array, opts?: { salt?: Uint8Array }): Promise<this> {
+    const salt = opts?.salt ?? this.brandedComputeSalt();
+    const redeem = buildKeccakComputeRedeem(salt);
+    const lock = keccakComputeLockingBytecode(salt);
+    const utxos = await this.provider.getUtxosForLockingBytecode(lock);
+    if (utxos.length === 0) {
+      throw new Error('keccak256 compute side-car UTXO not found; deploy it before spending a result-NFT contract.');
+    }
+    const sidecar = utxos[0];
+    // Idempotent: if this side-car UTXO is already an input (e.g. co-spent manually), don't add it again.
+    if (this.inputs.some((i) => i.txid === sidecar.txid && i.vout === sidecar.vout)) return this;
+    // Size the op-budget pad by the preimage's keccak block count (~2.26M op/block; ~2900 unlocking bytes
+    // fund one block). The redeem + preimage pushes already contribute to the per-input budget, so subtract
+    // them. A single side-car input funds at most 3 keccak blocks (~407 B preimage).
+    const blocks = Math.floor(preimage.length / 136) + 1;
+    if (blocks > 3) {
+      throw new Error(`keccak256 preimage too large (${preimage.length} B = ${blocks} blocks); a single side-car `
+        + 'input funds at most 3 keccak blocks (~407 B). Split the hash or use multiple side-cars.');
+    }
+    const redeemPushLen = redeem.length + (redeem.length <= 255 ? 2 : 3);
+    const preimagePushLen = preimage.length + (preimage.length <= 75 ? 1 : preimage.length <= 255 ? 2 : 3);
+    const padLen = Math.max(KECCAK256_COMPUTE_PAD_LENGTH, blocks * 3100 - redeemPushLen - preimagePushLen);
+    const pad = new Uint8Array(padLen);
+    const unlocker: Unlocker = {
+      generateUnlockingBytecode: () => Uint8Array.from([...pushDataBytes(pad), ...pushDataBytes(preimage), ...pushDataBytes(redeem)]),
+      generateLockingBytecode: () => lock,
+    };
+    const result = keccak_256(preimage); // EVM-order hash committed to the recreated NFT
+    this.addInput(sidecar, unlocker);                    // LAST input
+    this.addOutput({                                     // LAST output: side-car recreation carrying the result
+      to: lock,
+      amount: sidecar.satoshis,
+      token: {
+        category: sidecar.token!.category,
+        amount: sidecar.token?.amount ?? 0n,
+        nft: { capability: 'mutable', commitment: binToHex(result) },
+      },
+    });
+    return this;
+  }
+
+  // Compute-side-car salt = the first token-carrying contract input's category (BRANDED, stateful) or the
+  // shared 32-zero salt (SHARED, a stateless contract with no category). The covenant brand-checks only when
+  // the salt is non-zero, so a stateless contract co-spends the shared side-car without carrying a token.
+  private brandedComputeSalt(): Uint8Array {
+    for (const input of this.inputs) {
+      if (isUnlockableUtxo(input) && isContractUnlocker(input.unlocker) && input.token?.category) {
+        return hexToBin(input.token.category);
+      }
+    }
+    return SHARED_LIBRARY_SALT;
+  }
+
+  /**
+   * Transparent compute co-spend, auto-invoked by send(): for every contract input whose spent function uses
+   * the compute-and-commit keccak model (`abiFunction.keccakCompute`), read the preimage from the recorded
+   * parameter and co-spend the side-car. A function that hashes a non-parameter expression has no recorded
+   * param; call addKeccakComputeCoSpend(preimage) explicitly for those.
+   */
+  async addRequiredKeccakComputeCoSpends(): Promise<this> {
+    for (const input of this.inputs) {
+      if (!isUnlockableUtxo(input) || !isContractUnlocker(input.unlocker)) continue;
+      const abiFn = input.unlocker.abiFunction;
+      if (!abiFn.keccakCompute) continue;
+      const param = abiFn.keccakPreimageParam;
+      if (!param) {
+        throw new Error(`keccak256 in ${abiFn.name} hashes a non-parameter value; co-spend the side-car `
+          + 'explicitly with addKeccakComputeCoSpend(preimage) before send().');
+      }
+      const idx = abiFn.inputs.findIndex((p) => p.name === param);
+      const preimage = input.unlocker.params[idx];
+      if (!(preimage instanceof Uint8Array)) {
+        throw new Error(`keccak256 compute co-spend: parameter '${param}' of ${abiFn.name} must be a bytes value.`);
+      }
+      const salt = input.token?.category ? hexToBin(input.token.category) : SHARED_LIBRARY_SALT;
+      await this.addKeccakComputeCoSpend(preimage, { salt });
+    }
     return this;
   }
 
@@ -513,7 +620,9 @@ export class TransactionBuilder {
   async send(raw?: true): Promise<TransactionDetails | string> {
     // Auto co-spend the blockhash(n) oracle (last input) before sidecars, which would otherwise claim it.
     await this.addRequiredBlockhashCoSpends();
-    // Co-spend any required external-library side-cars (e.g. keccak256) before building.
+    // Auto co-spend keccak256 compute-and-commit side-cars (the default keccak model) from the recorded param.
+    await this.addRequiredKeccakComputeCoSpends();
+    // Co-spend any required INLINE external-library side-cars (multi-call keccak, user libraries) before building.
     await this.addRequiredSidecars();
 
     // Build the transaction, then debug (for script-level errors), then check fees.

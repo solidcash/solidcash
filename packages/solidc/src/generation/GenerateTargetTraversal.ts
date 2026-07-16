@@ -45,6 +45,8 @@ import {
   ExternalLibrary,
   sidecarStripOffsets,
   encodeComputedBlockhashKey,
+  KECCAK256_COMPUTE_COVENANT_HASH,
+  KECCAK256_COMPUTE_SALT_PREFIX_LENGTH,
 } from '@solidcash/utils';
 import {
   ContractNode,
@@ -1713,6 +1715,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Load each external library this function uses and OP_DEFINE it once, before the body. Inlined
     // libraries push their blob from the contract bytecode; the rest load it from the co-spent side-car.
     for (const libName of node.usedLibraries ?? []) {
+      // Result-NFT keccak has no contract-side blob to load: the side-car computes it. Skip the loader.
+      if (node.keccakCompute && libName === GlobalFunction.KECCAK256) continue;
       const loc = { location: node.location, positionHint: PositionHint.START };
       const lib = this.resolvedLibraries[libName];
       if (node.inlinedLibraries?.includes(libName)) this.emitInlineLibraryDefine(lib, loc);
@@ -3882,6 +3886,46 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     return node;
   }
 
+  /**
+   * Result-NFT keccak256(bytes): the co-spent side-car (LAST input) ran keccak in its own budget and put the
+   * 32-byte hash (EVM byte order) in its recreated NFT commitment (LAST output). This reads the side-car's
+   * unlocking `<pad><preimage><PUSHDATA2(redeem)>`, generically decodes the pad + preimage (ANY length),
+   * verifies the side-car IS the genuine compute covenant (hash256(covenant) == baked constant), binds the
+   * hashed preimage == this call's argument, then reads the result from the last output's commitment. The
+   * redeem is fixed-size (salt(32) + covenant) so its prefix/salt are stripped by constant offsets. Stack:
+   * [arg(bytes)] -> [hash(bytes32)]. Matches the utils builders (keccak-compute-library.ts).
+   */
+  private emitKeccakComputeCall(node: FunctionCallNode): Node {
+    const loc = { location: node.location, positionHint: PositionHint.END };
+    node.parameters[0] = this.visit(node.parameters[0]); // [.., arg]
+    const raw = new BytesType();
+    const dropFirst = (n: number): void => {             // split off the first n bytes, keep the remainder
+      this.emit(encodeInt(BigInt(n)), loc);
+      this.emit(Op.OP_SPLIT, loc);
+      this.emit(Op.OP_NIP, loc);
+    };
+    this.emit(Op.OP_TXINPUTCOUNT, loc);
+    this.emit(Op.OP_1SUB, loc);
+    this.emit(Op.OP_INPUTBYTECODE, loc);            // [arg, U]  (U = side-car unlocking, any pad/preimage size)
+    this.emitGenericPushdataDecode(raw, loc);       // [arg, pad, rest]
+    this.emit(Op.OP_NIP, loc);                      // [arg, rest]  (drop the budget pad)
+    this.emitGenericPushdataDecode(raw, loc);       // [arg, preimage, redeempush]
+    this.emit(Op.OP_TOALTSTACK, loc);               // [arg, preimage]  (stash redeempush; no keccak/loop here)
+    this.emit(Op.OP_EQUALVERIFY, loc);              // bind: preimage == arg -> []
+    this.emit(Op.OP_FROMALTSTACK, loc);             // [redeempush]
+    dropFirst(3);                                   // strip redeem PUSHDATA2 prefix -> [redeem]
+    dropFirst(KECCAK256_COMPUTE_SALT_PREFIX_LENGTH); // strip OP_PUSHBYTES_32 || salt(32) -> [covenant]
+    this.emit(Op.OP_HASH256, loc);
+    this.emit(hexToBin(KECCAK256_COMPUTE_COVENANT_HASH), loc);
+    this.emit(Op.OP_EQUALVERIFY, loc);              // integrity: genuine compute covenant -> []
+    this.emit(Op.OP_TXOUTPUTCOUNT, loc);
+    this.emit(Op.OP_1SUB, loc);
+    this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, loc);    // [hash]  (last output commitment = keccak256(arg))
+    this.popFromStack(1);
+    this.pushToStack('(value)');
+    return node;
+  }
+
   visitFunctionCall(node: FunctionCallNode): Node {
     if (node.identifier.name === GlobalFunction.CHECKMULTISIG) {
       return this.visitMultiSig(node);
@@ -3961,6 +4005,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     if (node.identifier.name === GlobalFunction.ECRECOVER) {
       return this.visitEcrecover(node);
+    }
+
+    // Result-NFT model: keccak256 is computed by a co-spent side-car and read from its NFT commitment,
+    // instead of loading the blob and running it on the contract's own input budget. Decided per-function
+    // in SymbolTableTraversal (node.keccakCompute): stateless single-call direct-param keccak by default.
+    if (this.currentFunction?.keccakCompute && node.identifier.name === GlobalFunction.KECCAK256) {
+      return this.emitKeccakComputeCall(node);
     }
 
     const externalLib = this.resolvedLibraries[node.identifier.name];
@@ -4877,29 +4928,29 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           this.popFromStack(2);
           this.pushToStack('(value)');
         } else {
-        // General runtime: result=1; while(exp>0) { result *= base; exp--; }
-          this.emit(Op.OP_SWAP, locationData);        // [exp, base]
-          this.emit(encodeInt(1n), locationData);      // [exp, base, result=1]
-          this.emit(Op.OP_ROT, locationData);          // [base, result, exp]
+        // General runtime base^exp (exp >= 0, guarded above): result = 1; while (exp > 0) { result *= base; exp--; }
+        // Loop invariant stack: [base, result, exp] (top = exp). Net effect: [base, exp] -> [result].
+          this.emit(encodeInt(1n), locationData);       // [base, exp, 1]
+          this.emit(Op.OP_SWAP, locationData);          // [base, 1, exp] = [base, result, exp]
           this.emit(Op.OP_BEGIN, locationData);
           this.emit(Op.OP_DUP, locationData);           // [base, result, exp, exp]
           this.emit(encodeInt(0n), locationData);
-          this.emit(Op.OP_LESSTHANOREQUAL, locationData);
-          this.emit(Op.OP_IF, locationData);
-          this.emit(Op.OP_DROP, locationData);
-          this.emit(Op.OP_NIP, locationData);
+          this.emit(Op.OP_GREATERTHAN, locationData);   // [base, result, exp, exp > 0]
+          this.emit(Op.OP_IF, locationData);            // exp > 0: multiply then decrement
           this.emit(encodeInt(1n), locationData);
-          this.emit(Op.OP_ELSE, locationData);
-          this.emit(encodeInt(1n), locationData);
-          this.emit(Op.OP_SUB, locationData);
-          this.emit(Op.OP_ROT, locationData);
-          this.emit(Op.OP_TUCK, locationData);
-          this.emit(Op.OP_ROT, locationData);
-          this.emit(Op.OP_MUL, locationData);
-          this.emit(Op.OP_SWAP, locationData);
-          this.emit(encodeInt(0n), locationData);
+          this.emit(Op.OP_SUB, locationData);           // [base, result, exp-1]
+          this.emit(Op.OP_SWAP, locationData);          // [base, exp-1, result]
+          this.emit(encodeInt(2n), locationData);
+          this.emit(Op.OP_PICK, locationData);          // [base, exp-1, result, base]
+          this.emit(Op.OP_MUL, locationData);           // [base, exp-1, result*base]
+          this.emit(Op.OP_SWAP, locationData);          // [base, result*base, exp-1]
+          this.emit(encodeInt(0n), locationData);       // push false -> continue the loop
+          this.emit(Op.OP_ELSE, locationData);          // exp <= 0: done
+          this.emit(encodeInt(1n), locationData);       // push true -> exit the loop
           this.emit(Op.OP_ENDIF, locationData);
           this.emit(Op.OP_UNTIL, locationData);
+          this.emit(Op.OP_DROP, locationData);          // [base, result] (exp is 0)
+          this.emit(Op.OP_NIP, locationData);           // [result]
           this.popFromStack(2);
           this.pushToStack('(value)');
         }
@@ -7488,17 +7539,150 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   // ===== ABI Encode/Decode Support =====
 
+  // [uint on stack] -> its 32-byte big-endian ABI word. NUM2BIN to 33 fits positive values including the
+  // high-bit (>= 2^255) case; drop the sign byte, reverse to big-endian. (evmCompat)
+  private emitEvmWordFromUint(loc: SingleLocationData): void {
+    this.emit(encodeInt(33n), loc);
+    this.emit(Op.OP_NUM2BIN, loc);
+    this.emit(encodeInt(32n), loc);
+    this.emit(Op.OP_SPLIT, loc);
+    this.emit(Op.OP_DROP, loc);
+    this.emit(Op.OP_REVERSEBYTES, loc);
+  }
+
+  // evmCompat: encode a static value type as one 32-byte big-endian EVM ABI word. Numbers left-pad (value in
+  // the low bytes, two's-complement for signed); bytesN right-pad (data in the high bytes). Tracker-neutral.
+  private emitEvmAbiWord(type: Type, loc: SingleLocationData): void {
+    if (type === PrimitiveType.BOOL) {
+      this.emit(Op.OP_IF, loc);
+      this.emit(encodeInt(1n), loc);
+      this.emit(Op.OP_ELSE, loc);
+      this.emit(encodeInt(0n), loc);
+      this.emit(Op.OP_ENDIF, loc);
+      this.emitEvmWordFromUint(loc);
+    } else if (type instanceof IntType || type === PrimitiveType.BIGINT) {
+      if (type instanceof IntType && type.signed) {
+        // add 2^256 if negative -> the 256-bit two's-complement pattern
+        this.emit(Op.OP_DUP, loc);
+        this.emit(encodeInt(0n), loc);
+        this.emit(Op.OP_LESSTHAN, loc);
+        this.emit(encodeInt(1n << 256n), loc);
+        this.emit(Op.OP_MUL, loc);
+        this.emit(Op.OP_ADD, loc);
+      }
+      this.emitEvmWordFromUint(loc);
+    } else if (type instanceof BytesType && type.bound !== undefined && type.bound <= 32) {
+      const pad = 32 - type.bound;
+      if (pad > 0) {
+        this.emit(new Uint8Array(pad), loc); // right-pad the N data bytes to a full 32-byte word
+        this.emit(Op.OP_CAT, loc);
+      }
+    } else {
+      throw new Error(`evmCompat abi.encode: unsupported type '${type.toString()}' (Phase 1 = value types)`);
+    }
+    this.popFromStack();
+    this.pushToStack('(value)');
+  }
+
+  // evmCompat: [bytes/string on top] -> its dynamic ABI tail = 32-byte length word ++ data right-padded to a
+  // multiple of 32. The head offset that points here is emitted separately. Tracker-neutral (data -> tail).
+  private emitEvmDynamicTail(loc: SingleLocationData): void {
+    this.emit(Op.OP_SIZE, loc); // [data, len]
+    this.emit(Op.OP_DUP, loc); // [data, len, len]
+    this.emit(encodeInt(32n), loc);
+    this.emit(Op.OP_MOD, loc); // [data, len, len%32]
+    this.emit(encodeInt(32n), loc);
+    this.emit(Op.OP_SWAP, loc);
+    this.emit(Op.OP_SUB, loc); // [data, len, 32-len%32]
+    this.emit(encodeInt(32n), loc);
+    this.emit(Op.OP_MOD, loc); // [data, len, pad]  (pad = (32 - len%32) % 32)
+    this.emit(encodeInt(0n), loc);
+    this.emit(Op.OP_SWAP, loc);
+    this.emit(Op.OP_NUM2BIN, loc); // [data, len, zeros(pad)]
+    this.emit(Op.OP_ROT, loc); // [len, zeros, data]
+    this.emit(Op.OP_SWAP, loc); // [len, data, zeros]
+    this.emit(Op.OP_CAT, loc); // [len, padded]
+    this.emit(Op.OP_SWAP, loc); // [padded, len]
+    this.emitEvmWordFromUint(loc); // [padded, len_word]
+    this.emit(Op.OP_SWAP, loc); // [len_word, padded]
+    this.emit(Op.OP_CAT, loc); // [tail]
+    this.popFromStack();
+    this.pushToStack('(value)');
+  }
+
+  // evmCompat abi.encode: static value types (each a 32-byte word), optionally followed by ONE trailing
+  // dynamic bytes/string (a 32-byte head offset + the tail). Multiple / non-trailing dynamics: not yet.
+  private emitEvmAbiEncode(params: ExpressionNode[], loc: SingleLocationData): void {
+    const n = params.length;
+    const isDyn = (t: Type): boolean =>
+      t === PrimitiveType.STRING || (t instanceof BytesType && t.bound === undefined);
+    const dynIdx = params.map((p, i) => (isDyn(p.type!) ? i : -1)).filter((i) => i >= 0);
+
+    if (n === 0) {
+      this.emit(new Uint8Array(0), loc);
+      this.pushToStack('(value)');
+      return;
+    }
+    if (dynIdx.length === 0) {
+      // All static: the head is the whole encoding.
+      params.forEach((param, i) => {
+        params[i] = this.visit(param);
+        this.emitEvmAbiWord(params[i].type!, loc);
+        if (i > 0) {
+          this.emit(Op.OP_CAT, loc);
+          this.popFromStack(2);
+          this.pushToStack('(value)');
+        }
+      });
+      return;
+    }
+    if (dynIdx.length > 1) {
+      throw new Error('evmCompat abi.encode: multiple dynamic (bytes/string) arguments are not yet '
+        + 'implemented; one dynamic argument (any position) plus value types is supported');
+    }
+    // Exactly one dynamic argument at any position. Its head offset is the constant headSize (it is the only
+    // dynamic). Stash its tail at the bottom, build the head on top, then join head ++ tail.
+    const dynPos = dynIdx[0];
+    const headSize = 32 * n;
+    const offsetConst = new Uint8Array(32);
+    for (let v = headSize, b = 31; v > 0 && b >= 0; b -= 1, v >>= 8) offsetConst[b] = v & 0xff;
+
+    params[dynPos] = this.visit(params[dynPos]);
+    this.emitEvmDynamicTail(loc); // [tail]
+
+    params.forEach((param, i) => {
+      if (i === dynPos) {
+        this.emit(offsetConst, loc);
+        this.pushToStack('(value)');
+      } else {
+        params[i] = this.visit(param);
+        this.emitEvmAbiWord(params[i].type!, loc);
+      }
+      if (i > 0) {
+        this.emit(Op.OP_CAT, loc);
+        this.popFromStack(2);
+        this.pushToStack('(value)');
+      }
+    }); // [tail, head]
+
+    this.emit(Op.OP_SWAP, loc); // [head, tail]
+    this.emit(Op.OP_CAT, loc);
+    this.popFromStack(2);
+    this.pushToStack('(value)');
+  }
+
   visitAbiEncode(node: AbiEncodeNode): Node {
     const locationData = { location: node.location, positionHint: PositionHint.START };
+
+    if (this.compilerOptions.evmCompat) {
+      this.emitEvmAbiEncode(node.parameters, locationData);
+      return node;
+    }
 
     node.parameters.forEach((param, i) => {
       param = this.visit(param);
       node.parameters[i] = param;
-
-      // Emit type-specific minimal pushdata encoder
       this.emitPushdataEncode(param.type!, locationData);
-
-      // CAT with previous if not the first
       if (i > 0) {
         this.emit(Op.OP_CAT, locationData);
         this.popFromStack(2);
@@ -7509,6 +7693,42 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     return node;
   }
 
+  // evmCompat: encode a value type for abi.encodePacked - NATURAL width (no 32-byte padding), big-endian,
+  // two's-complement for signed; bytesN is its raw N bytes; bool is one byte.
+  private emitEvmPackedValue(type: Type, loc: SingleLocationData): void {
+    if (type === PrimitiveType.BOOL) {
+      this.emit(Op.OP_IF, loc);
+      this.emit(encodeInt(1n), loc);
+      this.emit(Op.OP_ELSE, loc);
+      this.emit(encodeInt(0n), loc);
+      this.emit(Op.OP_ENDIF, loc);
+      this.emit(encodeInt(1n), loc);
+      this.emit(Op.OP_NUM2BIN, loc);
+    } else if (type instanceof IntType) {
+      const byteLen = BigInt(type.bits / 8);
+      if (type.signed) {
+        this.emit(Op.OP_DUP, loc);
+        this.emit(encodeInt(0n), loc);
+        this.emit(Op.OP_LESSTHAN, loc);
+        this.emit(encodeInt(1n << BigInt(type.bits)), loc);
+        this.emit(Op.OP_MUL, loc);
+        this.emit(Op.OP_ADD, loc);
+      }
+      this.emit(encodeInt(byteLen + 1n), loc);
+      this.emit(Op.OP_NUM2BIN, loc);
+      this.emit(encodeInt(byteLen), loc);
+      this.emit(Op.OP_SPLIT, loc);
+      this.emit(Op.OP_DROP, loc);
+      this.emit(Op.OP_REVERSEBYTES, loc);
+    } else if (type instanceof BytesType && type.bound !== undefined && type.bound <= 32) {
+      // bytesN: its natural N bytes, already correct - no padding, no reverse.
+    } else {
+      throw new Error(`evmCompat abi.encodePacked: unsupported type '${type.toString()}' (Phase 1 = value types)`);
+    }
+    this.popFromStack();
+    this.pushToStack('(value)');
+  }
+
   visitAbiEncodePacked(node: AbiEncodePackedNode): Node {
     const locationData = { location: node.location, positionHint: PositionHint.START };
 
@@ -7517,7 +7737,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       node.parameters[i] = param;
 
       // For packed encoding, pad numeric types to their declared byte width
-      if (param.type === PrimitiveType.BOOL) {
+      if (this.compilerOptions.evmCompat) {
+        this.emitEvmPackedValue(param.type!, locationData);
+      } else if (param.type === PrimitiveType.BOOL) {
         // OP_IF OP_1 OP_ELSE OP_0 OP_ENDIF [1] OP_NUM2BIN -> canonical 0x00/0x01
         this.emit(Op.OP_IF, locationData);
         this.emit(encodeInt(1n), locationData);
@@ -7569,7 +7791,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   visitAbiEncodeWithSelector(node: AbiEncodeWithSelectorNode): Node {
     const locationData = { location: node.location, positionHint: PositionHint.START };
     this.visit(node.selector);
-    this.emitEncodeArgsAndCatSelector(node.parameters, locationData);
+    if (this.compilerOptions.evmCompat) {
+      // EVM: the raw 4-byte selector followed by the standard encoding of the args.
+      this.emitEvmAbiEncode(node.parameters, locationData);
+      this.emit(Op.OP_CAT, locationData);
+      this.popFromStack(2);
+      this.pushToStack('(value)');
+    } else {
+      this.emitEncodeArgsAndCatSelector(node.parameters, locationData);
+    }
     return node;
   }
 

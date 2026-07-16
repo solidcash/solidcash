@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { compileString } from 'solidc';
 import { binToHex, hexToBin, createVirtualMachineBch2026, decodeTransactionUnsafe } from '@bitauth/libauth';
-import { keccakSidecarLockingBytecode, KECCAK256_SHARED_SALT } from '@solidcash/utils';
+import { keccakSidecarLockingBytecode, keccakComputeLockingBytecode, KECCAK256_SHARED_SALT } from '@solidcash/utils';
 import { Contract, StatefulContract, TransactionBuilder, SignatureTemplate } from '../src/index.js';
 import type { VmResourceUsage } from '../src/index.js';
 import { randomUtxo, generateLibauthSourceOutputs } from '../src/utils.js';
@@ -28,8 +28,10 @@ async function spendKeccak(preimageHex: string, expectedHex: string): Promise<st
   const provider = createTestProvider();
   const contract = new Contract(compileString(SOURCE), [], { provider });
 
-  // Deploy the side-car library once, then fund the contract.
-  await provider.addUtxo(sidecarLockHex, randomUtxo({ satoshis: 5000n }));
+  // keccak256 defaults to the compute-and-commit model: deploy the compute side-car (a mutable NFT) once;
+  // send() transparently co-spends it (reads the preimage from the 'preimage' param) and commits the result.
+  await provider.addUtxo(binToHex(keccakComputeLockingBytecode(KECCAK256_SHARED_SALT)),
+    randomUtxo({ satoshis: 5000n, token: { category: 'bb'.repeat(32), amount: 0n, nft: { capability: 'mutable', commitment: '' } } }));
   const contractUtxo = await provider.addUtxo(contract.address, randomUtxo({ satoshis: 100000n }));
   const feeFunder = await createFeeFunder(provider, 20000n);
 
@@ -258,7 +260,9 @@ async function evalSpend(source: string, argsHex: string[]): Promise<{
   verify: true | string; input0: VmResourceUsage; input0Error?: string;
 }> {
   const provider = createTestProvider();
-  const contract = new Contract(compileString(source), [], { provider });
+  // These tests measure the INLINE keccak op-cost budget on the contract input; force the inline model
+  // (single-call keccak now defaults to the compute-and-commit model, which runs keccak off the contract).
+  const contract = new Contract(compileString(source, { keccakResultNft: false }), [], { provider });
   await provider.addUtxo(sidecarLockHex, randomUtxo({ satoshis: 5000n }));
   const contractUtxo = await provider.addUtxo(contract.address, randomUtxo({ satoshis: 200000n }));
   const feeFunder = await createFeeFunder(provider, 50000n);

@@ -189,9 +189,11 @@ export class Contract<
       asmToScript(this.artifact.bytecode), this.encodedConstructorArgs,
     );
 
-    // Contracts using an external library (e.g. keccak256) are spent with a budget pad pushed on top
-    // of the unlocking; the redeem drops it before any logic runs (see budgetPad / co-spend wiring).
-    this.usesExternalLibraries = !!artifact.externalLibraries?.length;
+    // Contracts using an INLINE-model external library (e.g. keccak256) are spent with a budget pad pushed
+    // on top of the unlocking; the redeem drops it before any logic runs (see budgetPad / co-spend wiring).
+    // Result-NFT (compute-and-commit) libraries need no pad: the side-car runs keccak in its OWN budget, so
+    // the contract only reads the result by introspection (no blob loader, no OP_DROP).
+    this.usesExternalLibraries = !!artifact.externalLibraries?.some((l) => !l.resultNft);
     if (this.usesExternalLibraries) {
       contractBytecodeScript = [Op.OP_DROP, ...contractBytecodeScript];
     }

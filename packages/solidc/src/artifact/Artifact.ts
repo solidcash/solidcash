@@ -150,6 +150,8 @@ function buildFunctionAbiMetadata(func: FunctionDefinitionNode, isStateful = fal
     ...(func.usedLibraries && func.usedLibraries.length > 0 && { externalLibraries: func.usedLibraries }),
     ...(func.libraryCallCounts && func.libraryCallCounts.size > 0
       && { externalLibraryCalls: Object.fromEntries(func.libraryCallCounts) }),
+    ...(func.keccakCompute && { keccakCompute: true }),
+    ...(func.keccakPreimageParam && { keccakPreimageParam: func.keccakPreimageParam }),
     ...(func.unsafeTier !== undefined && { unsafeTier: func.unsafeTier }),
     ...(func.lowLevelCalls && func.lowLevelCalls.length > 0 && {
       lowLevelCalls: func.lowLevelCalls.map((lc) => ({ callMode: lc.callMode })),
@@ -527,6 +529,10 @@ export function generateArtifact(
         abi: lib.abi,
         // built-ins resolve by name in the SDK; user libraries embed their blob
         ...(BUILTIN_LIBRARIES[name] ? {} : { code: binToHex(lib.blob) }),
+        // result-NFT model: the side-car computes keccak and returns it in its NFT commitment (SDK co-spends
+        // the compute side-car + fills the result commitment, rather than loading the blob into the contract).
+        // Decided per-function (node.keccakCompute); set here if any function uses the compute model.
+        ...(name === 'keccak256' && allFns.some((f) => f?.keccakCompute) ? { resultNft: true } : {}),
       };
     })
     : undefined;

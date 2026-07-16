@@ -52,15 +52,21 @@
     "@mr-zwets/bchn-api-wrapper": "^1.0.1",
     "@solidcash/utils": "^0.13.0",
     "fflate": "^0.8.2",
-    "semver": "^7.7.2"
+    "semver": "^7.7.2",
+    "@noble/hashes": "^2.0.0"
   },
   "devDependencies": {
+    "@ethereumjs/common": "^10.1.2",
+    "@ethereumjs/evm": "^10.1.2",
+    "@ethereumjs/util": "^10.1.2",
     "@psf/bch-js": "^6.8.0",
     "@types/semver": "^7.5.8",
     "@vitest/coverage-v8": "^4.0.15",
     "eslint": "^8.54.0",
+    "ethers": "^6.17.0",
     "p-queue": "^9.1.2",
     "p-retry": "^8.0.0",
+    "solc": "^0.8.36",
     "typescript": "^5.9.2",
     "vitest": "^4.0.15"
   },

@@ -13,6 +13,9 @@ export interface CompilerOptions {
   // unconditionally-spendable script; enable this to enforce that every path is guarded (e.g. in CI).
   enforceFinalRequire?: boolean;
   commitmentLimit?: number;
+  // EVM byte-parity mode for the abi.* family (temporary gate; to be dropped once parity is green). Under
+  // evmCompat, abi.encode/encodePacked emit EVM-faithful bytes: 32-byte big-endian two's-complement words.
+  evmCompat?: boolean;
   importResolver?: ImportResolverFn;
   rootFileId?: string;
   // Per-library inline override (keyed by library name, e.g. 'keccak256'): true = always inline the blob
@@ -165,6 +168,8 @@ export interface AbiFunction {
   isReceive?: boolean;
   externalLibraries?: readonly string[];  // names of external script libraries this function uses (e.g. 'keccak256')
   externalLibraryCalls?: Readonly<Record<string, number>>;  // per-library call-site count (sizes the SDK budget pad)
+  keccakCompute?: boolean;      // keccak256 uses the compute-and-commit side-car; send() co-spends it + fills the result
+  keccakPreimageParam?: string; // the param feeding keccak256 (send() computes R + builds the side-car unlocking)
 }
 
 export interface CollectionIterationAbi {
@@ -383,6 +388,8 @@ export interface ExternalLibraryAbi {
   codeEnd?: number;   // ... and ends (the range the loader strips to)
   abi?: { inputs: readonly AbiInput[]; outputs: readonly AbiOutput[] };  // call signature, e.g. (bytes) -> bytes32
   code?: string;      // hex blob; present for user-supplied libraries
+  resultNft?: boolean; // true: "compute-and-commit" model - the side-car RUNS keccak and returns the hash in
+                       // its NFT commitment (the contract reads it), rather than the contract running the blob
 }
 
 export interface Artifact {

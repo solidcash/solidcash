@@ -1,4 +1,4 @@
-import { GLOBAL_SYMBOL_TABLE, Modifier } from '../ast/Globals.js';
+import { GLOBAL_SYMBOL_TABLE, Modifier, GlobalFunction } from '../ast/Globals.js';
 import {
   ContractNode,
   ParameterNode,
@@ -1379,6 +1379,19 @@ export default class SymbolTableTraversal extends AstTraversal {
       node.libraryCallCounts = libraryCallCounts;
     }
 
+    // keccak256 is the compute-and-commit result-NFT model (a co-spent side-car computes the hash and returns
+    // it in an NFT commitment; there is no inline keccak). It applies where the SDK can transparently co-spend:
+    // a stateless function with exactly ONE keccak256 call on a direct parameter. Multi-call / stateful /
+    // complex-arg keccak is not yet on the compute model (work in progress). See docs/keccak-result-nft.md.
+    const keccakCalls = libraryCallCounts.get(GlobalFunction.KECCAK256) ?? 0;
+    if (keccakCalls === 1 && !this.isStatefulContract) {
+      const preimageParam = this.findKeccakPreimageParam(node.body, node);
+      if (preimageParam !== null) {
+        node.keccakCompute = true;
+        node.keccakPreimageParam = preimageParam;
+      }
+    }
+
     // Entry slot pre-scan: collect unique (collection, keyParam) pairs and assign slot indices
     if (this.collectionMap.size > 0) {
       this.collectLocalKeyDefs(node.body);
@@ -2657,6 +2670,24 @@ export default class SymbolTableTraversal extends AstTraversal {
       }
     }
     return counts;
+  }
+
+  // The parameter name feeding the (first) keccak256 call, if its argument is a direct function parameter;
+  // null otherwise. Lets the SDK transparently co-spend the compute side-car from the call args.
+  private findKeccakPreimageParam(node: Node, fn: FunctionDefinitionNode, state: { done: boolean; param: string | null } = { done: false, param: null }): string | null {
+    if (state.done) return state.param;
+    if (node instanceof FunctionCallNode && node.identifier.name === GlobalFunction.KECCAK256) {
+      const arg = node.parameters[0];
+      state.done = true;
+      state.param = (arg instanceof IdentifierNode && fn.parameters.some((p) => p.name === arg.name)) ? arg.name : null;
+      return state.param;
+    }
+    for (const value of Object.values(node)) {
+      if (value instanceof Node) this.findKeccakPreimageParam(value, fn, state);
+      else if (Array.isArray(value)) for (const item of value) if (item instanceof Node) this.findKeccakPreimageParam(item, fn, state);
+      if (state.done) break;
+    }
+    return state.param;
   }
 
   private collectCollectionIterations(node: Node, iterations: CollectionIterationInfo[]): void {

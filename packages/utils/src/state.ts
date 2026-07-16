@@ -8,7 +8,7 @@ import {
   bigIntToVmNumber, binToHex, binToUtf8, hexToBin, utf8ToBin, vmNumberToBigInt, isVmNumberError,
 } from '@bitauth/libauth';
 import { sha256 } from './hash.js';
-import { keccak_256 } from '@noble/hashes/sha3';
+import { keccak_256 } from '@noble/hashes/sha3.js';
 
 /** A primitive pushdata value: integer, boolean, byte array, or string (UTF-8 encoded). */
 export type PrimitiveStateValue = bigint | boolean | Uint8Array | string;

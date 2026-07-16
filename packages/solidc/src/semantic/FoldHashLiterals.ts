@@ -1,5 +1,5 @@
 import { sha256, utf8ToBin } from '@bitauth/libauth';
-import { keccak_256 } from '@noble/hashes/sha3';
+import { keccak_256 } from '@noble/hashes/sha3.js';
 import { BytesType } from '@solidcash/utils';
 import AstTraversal from '../ast/AstTraversal.js';
 import {

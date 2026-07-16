@@ -269,6 +269,24 @@ large mappings.
   no concurrent mutation (or a covenant rule that forbids writes to the mapping while a pagination is open). A
   single-tx window is atomic (no concurrency). Document the chosen semantics per use.
 
+### Mergeability: `enumerable` == `sorted` (C2), NOT `mapping` == `enumerable mapping`
+
+- **`mapping` (plain) and `enumerable mapping` do NOT merge.** The linked-list is a DECLARATION-TIME commitment
+  - it must be maintained from the first insert (you cannot retroactively enumerate an unlinked set without
+  re-sorting every entry), so whether a mapping carries the linkage is fixed at declaration. Plain stays the
+  cheap Solidity-parity default (single mint/update per write, no nextKey field, no HEAD sentinel, no
+  bracketing); making EVERY mapping pay the C2 cost - even ones never iterated - is the tradeoff that keeps them
+  separate. (Also currently blocked: C2 fails closed on unbounded bytes/string VALUES = the deferred P5, which
+  plain mappings support via chunks.)
+- **But `enumerable` and the existing `sorted` (C2) flag ARE the same thing - merge them.** The sorted
+  linked list simultaneously gives (a) negative-existence SOUNDNESS via bracketing (`P.slot < H(k) < P.nextKey`)
+  and (b) ENUMERATION via linkage traversal (HEAD -> nextKey -> tail) - both from the SAME nextKey chain + HEAD
+  sentinel. A `sorted` mapping already HAS the structure an `enumerable` one needs; enabling iteration is only
+  the traversal codegen on top. So collapse the two opt-in concepts into ONE C2 mapping type: `enumerable
+  mapping` == the sorted/C2 mapping (sound AND iterable); a user who wants only sound negative-existence just
+  never iterates it. Net type system: TWO mappings - plain `mapping` (parity default) and `enumerable mapping`
+  (C2: sound negative-existence + iteration). This subsumes `CompilerOptions.sortedMappings` into the type.
+
 ## Soundness - and why the slot space does NOT need a sorted linked list
 
 `__evm_storage` is an ordinary solidcash mapping - a covenant-verified keyed-UTXO store - so `sstore(s,v)`

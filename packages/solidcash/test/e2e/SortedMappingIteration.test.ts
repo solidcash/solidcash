@@ -76,6 +76,23 @@ describe('sorted mapping VALUES iteration (linkage completeness)', () => {
     await expect(sc.total(59n, alicePub, sig).send()).rejects.toThrow(); // wrong total -> require fails
   });
 
+  it('boundary: empty list (HEAD only, nextKey==0) runs zero iterations -> sum 0', async () => {
+    const { contract, categoryId } = await seed([{ slot: ZERO, next: ZERO, value: new Uint8Array() }]);
+    let sc = StatefulContract.withCategory(contract, categoryId);
+    expect((await sc.total(0n, alicePub, sig).send()).txid).toBeDefined();
+    sc = StatefulContract.withCategory(contract, categoryId);
+    await expect(sc.total(1n, alicePub, sig).send()).rejects.toThrow();
+  });
+
+  it('boundary: single entry (HEAD -> e -> tail) runs one iteration', async () => {
+    const all = buildEntries([[7n, 99n]]);
+    const { contract, categoryId } = await seed(all);
+    let sc = StatefulContract.withCategory(contract, categoryId);
+    expect((await sc.total(99n, alicePub, sig).send()).txid).toBeDefined();
+    sc = StatefulContract.withCategory(contract, categoryId);
+    await expect(sc.total(98n, alicePub, sig).send()).rejects.toThrow();
+  });
+
   it('omission: a co-spend set missing a middle linked entry breaks the chain -> reverts', async () => {
     // Full chain HEAD -> min -> mid -> max, but seed only HEAD + min + max (omit the middle). min.nextKey still
     // points to mid's slot, so the covenant reads the next input (max), sees slot(max) != expectedNext(mid) and

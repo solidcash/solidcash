@@ -57,3 +57,22 @@ describe('enumerable mapping: iteration is gated behind the enumerable type', ()
       + '  function f(int enumerable) { require(enumerable > 0); } }', {})).not.toThrow();
   });
 });
+
+// A SORTED (C2) enumerable mapping iterates by trustless linkage completeness. Only VALUES mode is supported:
+// the entry commitment stores slot=H(key), not the raw key, so keys/entries cannot be recovered on-chain. Those
+// throw a clean codegen error rather than miscompile. See docs/evm-storage-parity.md + docs/deferrals.md.
+describe('sorted enumerable mapping: iteration mode support', () => {
+  const enumerableDecl = 'enumerable mapping(bytes20 => int) m;';
+  it('allows VALUES iteration on a sorted enumerable mapping (linkage completeness)', () => {
+    expect(() => compileString(contract(enumerableDecl, 'for (int v of this.m)'), { sortedMappings: ['m'] }))
+      .not.toThrow();
+  });
+  it('rejects KEYS iteration on a sorted enumerable mapping (no key recovery from slot=H(key))', () => {
+    expect(() => compileString(contract(enumerableDecl, 'for (bytes20 k in this.m)'), { sortedMappings: ['m'] }))
+      .toThrow(/not yet supported|slot=H\(key\)/i);
+  });
+  it('rejects ENTRIES iteration on a sorted enumerable mapping (no key recovery from slot=H(key))', () => {
+    expect(() => compileString(contract(enumerableDecl, 'for (bytes20 k, int v of this.m.entries)'), { sortedMappings: ['m'] }))
+      .toThrow(/not yet supported|slot=H\(key\)/i);
+  });
+});

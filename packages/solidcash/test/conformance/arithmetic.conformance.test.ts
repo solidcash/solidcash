@@ -62,6 +62,15 @@ describe('arithmetic: exp + negation', () => {
   it('a ** 1 == a', () => assertConformant(exprCase({
     params: 'uint a, uint b', retType: 'uint', expr: 'a ** b', args: [7n, 1n],
   })));
+  it('0 ** 0 == 1 (EVM convention)', () => assertConformant(exprCase({
+    params: 'uint a, uint b', retType: 'uint', expr: 'a ** b', args: [0n, 0n],
+  })));
+  it('0 ** 5 == 0', () => assertConformant(exprCase({
+    params: 'uint a, uint b', retType: 'uint', expr: 'a ** b', args: [0n, 5n],
+  })));
+  it('2 ** b == 2^200 (literal base -> cheap shift path handles large exponents)', () => assertConformant(exprCase({
+    params: 'uint b', retType: 'uint', expr: '2 ** b', args: [200n],
+  })));
   it('negate positive int', () => assertConformant(exprCase({
     params: 'int a', retType: 'int', expr: '-a', args: [42n],
   })));
@@ -100,5 +109,23 @@ describe('arithmetic: checked over/underflow reverts on both sides', () => {
   })));
   it('negate int256 min overflows', () => assertReverts(revertCase({
     params: 'int a', retType: 'int', expr: '-a', args: [minI(256)],
+  })));
+  // Runtime-base exp overflowing uint256 reverts on both sides (BCH via the op-cost-density budget running
+  // out on the large intermediates, EVM via checked-overflow detection).
+  it('2 ** 256 checked exp overflow reverts', () => assertReverts(revertCase({
+    params: 'uint a, uint b', retType: 'uint', expr: 'a ** b', args: [2n, 256n],
+  })));
+});
+
+// The general runtime-base POW loop is O(exp) big-integer multiplications; for large results the growing
+// intermediates exceed the BCH VM operation-cost-density budget (a platform limit tied to tx size, worst-case
+// in a minimal tx - NOT a codegen bug). Literal-base `2 ** b` (cheap shift path) and the common `10 ** decimals`
+// case (small result) are covered above and pass. Square-and-multiply lowering would extend this range.
+describe('exp: runtime-base POW op-cost limit on large results (known platform divergence)', () => {
+  it.fails('2 ** 200 (runtime base) exceeds op-cost density', () => assertConformant(exprCase({
+    params: 'uint a, uint b', retType: 'uint', expr: 'a ** b', args: [2n, 200n],
+  })));
+  it.fails('2 ** 255 (runtime base) exceeds op-cost density', () => assertConformant(exprCase({
+    params: 'uint a, uint b', retType: 'uint', expr: 'a ** b', args: [2n, 255n],
   })));
 });

@@ -126,6 +126,34 @@ infeasible. This forces a split:
 This is behavioral parity, not byte-identical slot-number parity by default; the byte-identical logical layer
 is the optional veneer above, reachable now that real-keccak folding + the EVM word encoder are shipped.
 
+## The slot-p anchor: array length, and the mapping-count enumeration option
+
+EVM stores metadata at the variable's anchor slot `p` (grounded in `/Code/solidity`):
+- **dynamic array `T[] @ p`** -> slot `p` holds the LENGTH; `arrayLengthFunction` is `length := sload(slot)`
+  (`YulUtilFunctions.cpp:1328`); elements at `H(p)+i`. This is the enumeration handle.
+- **mapping `@ p`** -> slot `p` holds NOTHING. `mappingIndexAccessFunction` is `mstore(0,key); mstore(0x20,
+  slot); dataSlot := keccak256(0,0x40)` (`YulUtilFunctions.cpp:2762-2766`) - `slot` is ONLY a hash input, never
+  sload/sstore'd, so `p` stays 0. EVM mappings are deliberately NOT enumerable; devs bolt on a separate key
+  array (OpenZeppelin `EnumerableMap`). (That exact idiom is what the P4 bridge recognizes - it matches the real
+  compiler's emitted code.)
+
+SolidCash parity notes:
+- **Array length** is kept in a register field (`A$len`, `docs/dynamic-storage.md`), reachable via high-level
+  `arr.length`. The length is NOT physically at `__evm_storage[p]`, so a hand-written `sload(arr.slot)` reads 0
+  rather than the length - a niche divergence (Solidity's own `arr.length` compiles to `sload(p)`, but explicit
+  assembly length-reads are rare). Routing `sload(<dyn-array>.slot)` -> `arr.length` would close it; deferred as
+  low-value (the length is already available high-level).
+- **Mapping count for sound enumeration (proposed, aligns with the efficiency principle).** EVM wastes the
+  mapping's slot `p` (always 0). SolidCash could store a live ENTRY COUNT there, turning the otherwise-idle
+  anchor into an enumeration handle. Soundness: a count alone is insufficient (you must prove you visited
+  exactly `count` distinct entries with no omission); it becomes sound WHEN paired with the C2 sorted linked
+  list (`docs/sorted-mapping-c2.md`) - traverse head->tail by next-pointer, the count bounds and verifies the
+  traversal. This is a BEYOND-EVM feature (EVM mappings are not enumerable) and a deliberate divergence
+  (`sload(m.slot)` would return the count, not 0), so it should be an opt-in enumerable-mapping type / a
+  `.length`+iteration API on C2 mappings, not a silent change to every mapping. Recommendation: build it on top
+  of C2 (which already provides the sound ordering) if enumeration is wanted; the count at the anchor is then a
+  cheap increment/decrement on insert/delete. Not built - it is a design decision with a parity divergence.
+
 ## Soundness - and why the slot space does NOT need a sorted linked list
 
 `__evm_storage` is an ordinary solidcash mapping - a covenant-verified keyed-UTXO store - so `sstore(s,v)`

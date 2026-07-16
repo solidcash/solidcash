@@ -7776,6 +7776,33 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.pushToStack('(value)');
   }
 
+  // Decode one ABI element from the top of a blob, consuming its bytes: [.., tail] -> [.., next, element] where
+  // element is the SolidCash-encoded value. Recursive: a bytes/string element is lengthWord ++ data ++ pad; an
+  // inner value-element array (uint[][]) is lengthWord ++ M 32-byte words rebuilt into a SolidCash array blob.
+  private emitEvmDecodeElement(elemType: Type, loc: SingleLocationData): void {
+    if (elemType instanceof ArrayType && elemType.bound === undefined) {
+      if (this.isDynamicAbiType(elemType.elementType)) {
+        throw new Error('evmCompat: abi.decode of nested arrays of dynamic elements is unsupported');
+      }
+      this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); // [lenWord, rest]
+      this.emit(Op.OP_SWAP, loc); this.emitEvmWordToValue(PrimitiveType.BIGINT, loc); // [rest, M]
+      this.emit(encodeInt(32n), loc); this.emit(Op.OP_MUL, loc); // M*32
+      this.emit(Op.OP_SPLIT, loc); // [innerWords, next]
+      this.emit(Op.OP_SWAP, loc); this.emitEvmWordsToArray(elemType.elementType, loc); // [next, arrayBlob]
+      return;
+    }
+    // bytes/string leaf: lengthWord ++ data ++ pad
+    this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); // [lenWord, rest1]
+    this.emit(Op.OP_SWAP, loc); this.emitEvmWordToValue(PrimitiveType.BIGINT, loc); // [rest1, len]
+    this.emit(Op.OP_SPLIT, loc); // [data, rest2]
+    this.emit(Op.OP_OVER, loc); this.emit(Op.OP_SIZE, loc); this.emit(Op.OP_NIP, loc); // size(data)
+    this.emit(encodeInt(32n), loc); this.emit(Op.OP_MOD, loc);
+    this.emit(encodeInt(32n), loc); this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_SUB, loc);
+    this.emit(encodeInt(32n), loc); this.emit(Op.OP_MOD, loc); // pad
+    this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_NIP, loc); // skip pad: [data, next]
+    this.emit(Op.OP_SWAP, loc); this.emitPushdataEncode(elemType, loc); // [next, element]
+  }
+
   // Single top-level array of DYNAMIC leaf elements (bytes[]/string[]): the encoding is offset ++ length ++
   // head(N offsets) ++ tail(N element encodings, each length-word ++ data ++ pad). Rebuild the SolidCash blob
   // pushdata(N) ++ per-element pushdata. Sequential (canonical order): skip the head, then decode each element
@@ -7792,17 +7819,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_BEGIN, loc);
     this.emit(Op.OP_SIZE, loc); this.emit(Op.OP_0NOTEQUAL, loc); // [acc, tail, more]
     this.emit(Op.OP_IF, loc);
-    this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); // [acc, lenWord, rest1]
-    this.emit(Op.OP_SWAP, loc); this.emitEvmWordToValue(PrimitiveType.BIGINT, loc); // [acc, rest1, len]
-    this.emit(Op.OP_SPLIT, loc); // take len bytes: [acc, data, rest2]
-    this.emit(Op.OP_OVER, loc); this.emit(Op.OP_SIZE, loc); this.emit(Op.OP_NIP, loc); // size(data): [acc, data, rest2, dsz]
-    this.emit(encodeInt(32n), loc); this.emit(Op.OP_MOD, loc); // dsz % 32
-    this.emit(encodeInt(32n), loc); this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_SUB, loc); // 32 - (dsz%32)
-    this.emit(encodeInt(32n), loc); this.emit(Op.OP_MOD, loc); // pad = (32 - dsz%32) % 32
-    this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_NIP, loc); // skip pad: [acc, data, next]
-    this.emit(Op.OP_SWAP, loc); this.emitPushdataEncode(elemType, loc); // data -> pushdata element: [acc, next, pushEl]
-    this.emit(encodeInt(2n), loc); this.emit(Op.OP_ROLL, loc); // acc to top: [next, pushEl, acc]
-    this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_CAT, loc); // acc ++ pushEl: [next, acc']
+    this.emitEvmDecodeElement(elemType, loc); // [acc, tail] -> [acc, next, element]
+    this.emit(encodeInt(2n), loc); this.emit(Op.OP_ROLL, loc); // acc to top: [next, element, acc]
+    this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_CAT, loc); // acc ++ element: [next, acc']
     this.emit(Op.OP_SWAP, loc); // [acc', next]
     this.emit(encodeBool(false), loc);
     this.emit(Op.OP_ELSE, loc);

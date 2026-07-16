@@ -3,7 +3,7 @@
 import { describe, it } from 'vitest';
 import {
   assertBothAccept, decodeCase, decodeMultiCase, assertBchDecode, bchDecodeCase, bchArrayDecodeCase,
-  bch2ArrayDecodeCase, bchDecodeSchemaCase,
+  bch2ArrayDecodeCase, bchDecodeSchemaCase, bchNestedArrayDecodeCase,
 } from './harness.js';
 
 const sc = (type: string, ...values: unknown[]): { type: string; arr: false; values: unknown[] } =>
@@ -100,6 +100,15 @@ describe('abi.decode (evmCompat): arrays of DYNAMIC elements (bytes[]/string[])'
   it('bytes[] element crosses pad boundary', () => arr('bytes', [hbb(`0x${'11'.repeat(40)}`), hbb('0xff')]));
   it('bytes[] empty', () => arr('bytes', []));
   it('string[]', () => arr('string', ['hello', 'the quick brown fox']));
+});
+
+describe('abi.decode (evmCompat): NESTED arrays uint[][] (recursive element decode)', () => {
+  const nested = (elemType: string, rows: unknown[][]): Promise<void> =>
+    assertBchDecode(bchNestedArrayDecodeCase({ elemType, rows }));
+  it('uint256[][] two rows', () => nested('uint256', [[1n, 2n], [3n, 4n, 5n]]));
+  it('uint256[][] jagged incl empty row', () => nested('uint256', [[7n], [], [8n, 9n]]));
+  it('int256[][] mixed sign', () => nested('int256', [[-1n, 2n], [-100n]]));
+  it('uint256[][] single row', () => nested('uint256', [[42n, 43n]]));
 });
 
 describe('abi.decode (evmCompat): multiple dynamic arrays (offset-following)', () => {

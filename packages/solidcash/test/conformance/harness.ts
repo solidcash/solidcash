@@ -306,6 +306,27 @@ export function bchArrayDecodeCase(o: {
   return { scash, args: [blob, ...o.values], label: o.label ?? `decode<${o.elemType}[]>` };
 }
 
+// abi.decode of a NESTED array T[][] (array of value-element arrays): decode an ethers T[][] blob and compare
+// each inner element x[i][j] and length. Exercises the recursive emitEvmDecodeElement (inner value-array rebuild).
+export function bchNestedArrayDecodeCase(o: {
+  elemType: string; rows: readonly (readonly unknown[])[]; label?: string;
+}): { scash: string; args: readonly unknown[]; label: string } {
+  const t = toEthers(o.elemType);
+  const blob = ethersAbiEncode([`${t}[][]`], [o.rows]);
+  const params: string[] = ['bytes blob'];
+  const checks: string[] = [`require(x.length == ${o.rows.length});`];
+  const args: unknown[] = [blob];
+  o.rows.forEach((row, i) => {
+    checks.push(`require(x[${i}].length == ${row.length});`);
+    row.forEach((v, j) => {
+      params.push(`${o.elemType} e${i}_${j}`); checks.push(`require(x[${i}][${j}] == e${i}_${j});`); args.push(v);
+    });
+  });
+  const scash = `contract Conf() {\n  function f(${params.join(', ')}) {\n`
+    + `    ${o.elemType}[][] x = abi.decode(blob, (${o.elemType}[][]));\n    ${checks.join('\n    ')}\n  }\n}\n`;
+  return { scash, args, label: o.label ?? `decode<${o.elemType}[][]>` };
+}
+
 // abi.decode of TWO dynamic arrays (multi-param offset-following): decode an ethers (T[], T[]) blob and check
 // both arrays' lengths + elements. Exercises the array branch in emitEvmAbiDecodeDynamic.
 export function bch2ArrayDecodeCase(o: {

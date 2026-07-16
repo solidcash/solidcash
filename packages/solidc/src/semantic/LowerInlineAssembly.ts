@@ -131,7 +131,49 @@ function stateVarByteWidth(sv: StateVariableNode): number {
   if (t instanceof AddressType) return 20;
   if (t instanceof BytesType) return t.bound ?? 32;
   if (t === PrimitiveType.BOOL) return 1;
-  return 32; // mapping / array / struct: occupies its own slot
+  return 32; // mapping / dynamic array/bytes: one slot (the base/length header)
+}
+
+// The byte width a value type occupies when packed in an EVM storage slot. Composites are handled by packWords.
+function valueByteWidth(t: Type): number {
+  if (t instanceof IntType) return t.bits / 8;
+  if (t instanceof AddressType) return 20;
+  if (t instanceof BytesType) return t.bound ?? 32;
+  if (t === PrimitiveType.BOOL) return 1;
+  return 32; // mapping / dynamic: one slot
+}
+
+// EVM storage packing for a list of member types (struct fields or fixed-array elements): value members pack by
+// byte width within a 32-byte word; a nested struct / fixed array starts a new slot and occupies whole slots.
+// Returns the number of 32-byte slots the members occupy. EVM-exact for value + nested-composite members
+// (Types.cpp computeOffsets); mirrors computeStorageLayout's own packing.
+function packWords(types: Type[]): number {
+  let slot = 0;
+  let byteOff = 0;
+  for (const t of types) {
+    const inner = compositeSlotWords(t);
+    if (inner > 0) {
+      if (byteOff > 0) { slot += 1; byteOff = 0; }
+      slot += inner;
+      continue;
+    }
+    const w = valueByteWidth(t);
+    if (byteOff + w > 32) { slot += 1; byteOff = 0; }
+    byteOff += w;
+    if (byteOff >= 32) { slot += 1; byteOff = 0; }
+  }
+  return slot + (byteOff > 0 ? 1 : 0);
+}
+
+// The whole-slot footprint of a fixed-size array or struct type (>0), else 0 for a value / mapping / dynamic
+// type (those pack by byte width). A fixed array T[k] and a struct occupy whole slots in EVM and never pack with
+// a neighbour, so the following var starts a fresh slot - this is the D2 layout fix (was collapsed to 1 slot).
+function compositeSlotWords(t: Type): number {
+  if (t instanceof ArrayType && t.bound !== undefined) {
+    return Math.max(1, packWords(new Array(Number(t.bound)).fill(t.elementType)));
+  }
+  if (t instanceof StructType) return Math.max(1, packWords(t.fields.map((f) => f.type)));
+  return 0;
 }
 
 function computeStorageLayout(vars: StateVariableNode[]): void {
@@ -140,6 +182,15 @@ function computeStorageLayout(vars: StateVariableNode[]): void {
   let slot = 0n;
   let byteOff = 0;
   for (const sv of vars) {
+    // A fixed struct/array (non-dynamic) occupies whole EVM slots and does not pack with neighbours; the next
+    // var starts a fresh slot. Its own slots hold composite data (resolveSlotFields returns undefined for them).
+    const composite = sv.isDynamic ? 0 : compositeSlotWords(sv.type);
+    if (composite > 0) {
+      if (byteOff > 0) { slot += 1n; byteOff = 0; }
+      currentVarSlot.set(sv.name, slot);
+      slot += BigInt(composite);
+      continue;
+    }
     const w = stateVarByteWidth(sv);
     if (byteOff + w > 32) { slot += 1n; byteOff = 0; }
     if (!currentSlots.has(slot)) currentSlots.set(slot, []);

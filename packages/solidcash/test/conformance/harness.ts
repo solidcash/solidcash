@@ -253,6 +253,35 @@ export function abiStructMixedCase(o: {
   };
 }
 
+// Build an abi.encode of a NESTED struct: Outer { <outerPre...>; Inner inr; } with Inner { <innerFields...> }.
+// Exercises the recursive struct tail (a struct field that is itself a dynamic struct).
+export function abiNestedStructCase(o: {
+  outerPre: readonly { type: string; name: string }[]; innerFields: readonly { type: string; name: string }[];
+  outerPreVals: readonly unknown[]; innerVals: readonly unknown[]; label?: string;
+}): ConformanceCase {
+  const dyn = (t: string): boolean => t === 'bytes' || t === 'string' || t.endsWith('[]');
+  const innerDef = `struct Inner { ${o.innerFields.map((f) => `${f.type} ${f.name};`).join(' ')} }`;
+  const outerDef = `struct Outer { ${o.outerPre.map((f) => `${f.type} ${f.name};`).join(' ')} Inner inr; }`;
+  const allFields = [...o.outerPre, ...o.innerFields];
+  const params = allFields.map((f) => `${f.type}${dyn(f.type) ? ' memory' : ''} ${f.name}`).join(', ');
+  const innerCtor = o.innerFields.map((f) => f.name).join(', ');
+  const outerCtor = [...o.outerPre.map((f) => f.name), 'inner'].join(', ');
+  const innerTuple = `tuple(${o.innerFields.map((f) => toEthers(f.type)).join(',')})`;
+  const outerTuple = `tuple(${[...o.outerPre.map((f) => toEthers(f.type)), innerTuple].join(',')})`;
+  const expected = ethersAbiEncode([outerTuple], [[...o.outerPreVals, o.innerVals]]);
+  const defs = `  ${innerDef}\n  ${outerDef}\n`;
+  const build = `Inner inner = Inner(${innerCtor});\n    Outer o = Outer(${outerCtor});`;
+  return {
+    solidity: `${SPDX}contract C {\n${defs}  function f(${params}) public pure returns (bytes memory) {\n`
+      + `    Inner memory inner = Inner(${innerCtor});\n    Outer memory o = Outer(${outerCtor});\n`
+      + `    return abi.encode(o);\n  }\n}\n`,
+    scash: `contract Conf() {\n${defs}  function f(${params}) {\n    ${build}\n`
+      + `    require(abi.encode(o) == ${expected});\n  }\n}\n`,
+    evmFn: 'f', bchFn: 'f', args: [...o.outerPreVals, ...o.innerVals], evmCompat: true,
+    expectedConst: expected, label: o.label ?? `abi.encode(${outerTuple})`,
+  };
+}
+
 // Dispatch an abi case to the right assertion: single-word cases run the identical bytes32-compare covenant on
 // both VMs (assertBothAccept); larger/dynamic cases use the baked-constant cross-check (assertEncodeConformant).
 export function assertAbi(c: ConformanceCase): Promise<void> {

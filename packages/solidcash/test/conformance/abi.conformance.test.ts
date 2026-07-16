@@ -2,7 +2,8 @@
 // under evmCompat must produce byte-identical output. Phase 1: static value types (32-byte words).
 import { describe, it } from 'vitest';
 import {
-  assertAbi, abiCase, selCase, sigCase, callCase, abiStructCase, abiStructMixedCase, assertEncodeConformant,
+  assertAbi, abiCase, selCase, sigCase, callCase, abiStructCase, abiStructMixedCase, abiNestedStructCase,
+  assertEncodeConformant,
 } from './harness.js';
 
 const MAX = (1n << 256n) - 1n;
@@ -238,6 +239,24 @@ describe('abi.encode (evmCompat): dynamic structs (tuple head/tail)', () => {
     [{ type: 'bytes', name: 'a' }, { type: 'bytes', name: 'b' }], [hb('0xaa'), hb(`0x${'bb'.repeat(40)}`)]));
   it('struct {uint256, bool, bytes}', () => st(
     [{ type: 'uint256', name: 'a' }, { type: 'bool', name: 'c' }, { type: 'bytes', name: 'b' }], [9n, true, hb('0x1234')]));
+});
+
+describe('abi.encode (evmCompat): nested dynamic structs (recursive tuple)', () => {
+  type F = { type: string; name: string };
+  const nst = (outerPre: F[], innerFields: F[], outerPreVals: unknown[], innerVals: unknown[]): Promise<void> =>
+    assertEncodeConformant(abiNestedStructCase({ outerPre, innerFields, outerPreVals, innerVals }));
+  it('Outer{uint, Inner{uint,bytes}}', () => nst(
+    [{ type: 'uint256', name: 'a' }], [{ type: 'uint256', name: 'x' }, { type: 'bytes', name: 'y' }],
+    [7n], [42n, hb('0xdeadbeef')]));
+  it('Outer{bytes, Inner{uint,bytes}} (outer dynamic too)', () => nst(
+    [{ type: 'bytes', name: 'a' }], [{ type: 'uint256', name: 'x' }, { type: 'bytes', name: 'y' }],
+    [hb('0xcafe')], [42n, hb('0xdeadbeef')]));
+  it('Outer{uint,uint, Inner{uint,string}}', () => nst(
+    [{ type: 'uint256', name: 'a' }, { type: 'uint256', name: 'b' }],
+    [{ type: 'uint256', name: 'x' }, { type: 'string', name: 's' }], [1n, 2n], [3n, 'hello world']));
+  it('Outer{uint, Inner{uint,uint}} (inner all-static)', () => nst(
+    [{ type: 'uint256', name: 'a' }], [{ type: 'uint256', name: 'x' }, { type: 'uint256', name: 'z' }],
+    [7n], [42n, 43n]));
 });
 
 describe('abi.encode (evmCompat): static struct + dynamic (head-size generalization)', () => {

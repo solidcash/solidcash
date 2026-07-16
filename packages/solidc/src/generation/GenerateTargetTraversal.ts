@@ -7922,27 +7922,26 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private emitEvmStructTail(type: StructType, loc: SingleLocationData): void {
     const fields = type.fields;
     const n = fields.length;
-    for (const f of fields) {
-      if (f.type instanceof StructType && this.isDynamicAbiType(f.type)) {
-        throw new Error('evmCompat: abi.encode of a struct with a nested dynamic-struct field is unsupported');
-      }
-    }
     // Phase A': unpack + encode each field, leaving blobs [b0..b(n-1)] on the stack (blobs accumulate below, the
-    // remaining framed bytes ride on top). The last field's remainder is empty.
+    // remaining framed bytes ride on top; last field's remainder is empty). The tracker is kept SYNCED throughout
+    // (each pushdata-decode's extra item and each OP_SWAP mirrored) so a nested dynamic-struct field's own head/tail
+    // (which uses getStackIndex) resolves correct depths. Nested __abiblob slots don't collide: each level sets and
+    // then nips (Phase D) its slots before an enclosing level names its own.
+    const swapTop = (): void => { const s = this.stack; [s[0], s[1]] = [s[1], s[0]]; };
     fields.forEach((f, i) => {
-      this.emitPushdataDecode(f.type, loc); // [.., value, rest]
+      this.emitPushdataDecode(f.type, loc); // VM: [.., framed] -> [.., value, rest]
+      this.popFromStack(); this.pushToStack('(fieldval)'); this.pushToStack('(fieldrest)'); // track the +1
       if (i < n - 1) {
-        this.emit(Op.OP_SWAP, loc); // [.., rest, value]
-        this.emitEvmEncodeValue(f.type, loc); // [.., rest, blob_i]
-        this.emit(Op.OP_SWAP, loc); // [.., blob_i, rest]
+        this.emit(Op.OP_SWAP, loc); swapTop(); // [.., rest, value]
+        this.emitEvmEncodeValue(f.type, loc); // value -> blob (net-0, tracked)
+        this.emit(Op.OP_SWAP, loc); swapTop(); // [.., blob_i, rest]
       } else {
-        this.emit(Op.OP_DROP, loc); // drop the empty remainder: [.., value]
-        this.emitEvmEncodeValue(f.type, loc); // [.., blob_i]
+        this.emit(Op.OP_DROP, loc); this.popFromStack(); // drop the empty remainder: [.., value]
+        this.emitEvmEncodeValue(f.type, loc); // value -> blob_i
       }
     });
-    // resync: the single struct blob is now N field blobs on the stack.
-    this.popFromStack();
-    for (let i = 0; i < n; i += 1) this.pushToStack(`__abiblob${i}`);
+    // the top N tracked entries are the field blobs (b(n-1) on top ... b0 deepest); name them for the head/tail engine.
+    for (let i = 0; i < n; i += 1) this.stack[n - 1 - i] = `__abiblob${i}`;
     this.emitEvmHeadTailFromBlobs(fields.map((f) => f.type), loc);
   }
 
@@ -7959,14 +7958,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (i < last) {
         this.emitPushdataDecode(f.type, loc); // [acc, value, rest]
         this.emit(Op.OP_SWAP, loc); // [acc, rest, value]
-        this.emitEvmAbiWord(f.type, loc); // [acc, rest, word]
-        this.emit(encodeInt(2n), loc); this.emit(Op.OP_ROLL, loc); // acc to top: [rest, word, acc]
-        this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_CAT, loc); // acc ++ word: [rest, acc']
+        this.emitEvmEncodeValue(f.type, loc); // value -> its inline encoding (recurses for nested static composites)
+        this.emit(encodeInt(2n), loc); this.emit(Op.OP_ROLL, loc); // acc to top: [rest, enc, acc]
+        this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_CAT, loc); // acc ++ enc: [rest, acc']
         this.emit(Op.OP_SWAP, loc); // [acc', rest]
       } else {
         this.emitPushdataDecode(f.type, loc); this.emit(Op.OP_DROP, loc); // last field, drop empty remainder: [acc, value]
-        this.emitEvmAbiWord(f.type, loc); // [acc, word]
-        this.emit(Op.OP_CAT, loc); // acc ++ word
+        this.emitEvmEncodeValue(f.type, loc); // [acc, enc]
+        this.emit(Op.OP_CAT, loc); // acc ++ enc
       }
     });
     this.popFromStack();

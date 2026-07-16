@@ -7689,19 +7689,18 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   // (offset word ++ length word ++ element words). Rebuild the SolidCash array blob = pushdata(len) ++ packed
   // fixed-width LE elements. Inverse of emitEvmArrayTail: a runtime loop converts each 32-byte big-endian element
   // word back via emitEvmWordToValue + emitEncodeElementPacked (both loop-safe). Pure-emit + one tracker reconcile.
-  private emitEvmArrayDecode(elemType: Type, loc: SingleLocationData): void {
+  // [element words blob on top] -> SolidCash array blob = pushdata(len) ++ packed fixed-width LE elements. The
+  // element count is recovered from the blob size (/32). A runtime loop converts each 32-byte big-endian word back
+  // via emitEvmWordToValue + emitEncodeElementPacked (loop-safe). Pure-emit + one tracker reconcile (words -> blob).
+  private emitEvmWordsToArray(elemType: Type, loc: SingleLocationData): void {
+    this.emit(Op.OP_SIZE, loc); // [words, size]  (OP_SIZE keeps its input)
     this.emit(encodeInt(32n), loc);
-    this.emit(Op.OP_SPLIT, loc); // [offsetWord, rest]
-    this.emit(Op.OP_NIP, loc); // drop the offset word (== 32 for a single top-level array) -> [len ++ elements]
-    this.emit(encodeInt(32n), loc);
-    this.emit(Op.OP_SPLIT, loc); // [lengthWord, elements]
-    this.emit(Op.OP_SWAP, loc); // [elements, lengthWord]
-    this.emitEvmWordToValue(PrimitiveType.BIGINT, loc); // lengthWord -> length number
+    this.emit(Op.OP_DIV, loc); // [words, length]  (each element is one 32-byte word)
     this.emitPushdataEncode(PrimitiveType.BIGINT, loc); // length -> pushdata prefix bytes (accumulator start)
-    this.emit(Op.OP_SWAP, loc); // [acc, elements]
+    this.emit(Op.OP_SWAP, loc); // [acc, words]
     this.emit(Op.OP_BEGIN, loc);
     this.emit(Op.OP_SIZE, loc);
-    this.emit(Op.OP_0NOTEQUAL, loc); // [acc, elements, moreLeft]
+    this.emit(Op.OP_0NOTEQUAL, loc); // [acc, words, moreLeft]
     this.emit(Op.OP_IF, loc);
     this.emit(encodeInt(32n), loc);
     this.emit(Op.OP_SPLIT, loc); // [acc, word, rest]
@@ -7721,6 +7720,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_DROP, loc); // drop the emptied element words -> [acc = SolidCash array blob]
     this.popFromStack();
     this.pushToStack('(value)');
+  }
+
+  // Single top-level dynamic array (offset always 32): strip the offset word and the length word, then rebuild.
+  private emitEvmArrayDecode(elemType: Type, loc: SingleLocationData): void {
+    this.emit(encodeInt(32n), loc);
+    this.emit(Op.OP_SPLIT, loc);
+    this.emit(Op.OP_NIP, loc); // drop the offset word -> [length ++ elements]
+    this.emit(encodeInt(32n), loc);
+    this.emit(Op.OP_SPLIT, loc);
+    this.emit(Op.OP_NIP, loc); // drop the length word -> [element words]
+    this.emitEvmWordsToArray(elemType, loc);
   }
 
   private emitEvmAbiEncode(params: ExpressionNode[], loc: SingleLocationData): void {
@@ -7870,6 +7880,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   // the blob slot; every other pick uses a known local depth, and every VM op is mirrored so that index stays exact.
   private emitEvmAbiDecodeDynamic(schema: readonly Type[], loc: SingleLocationData): void {
     const dyn = (t: Type): boolean => t === PrimitiveType.STRING || (t instanceof BytesType && t.bound === undefined);
+    const isArr = (t: Type): boolean => t instanceof ArrayType && t.bound === undefined;
     this.popFromStack();
     this.pushToStack('__decblob'); // the blob, kept below the accumulating results
 
@@ -7887,12 +7898,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_DROP, loc);
       this.pushToStack('(value)');
 
-      if (!dyn(schema[i])) {
+      if (!dyn(schema[i]) && !isArr(schema[i])) {
         this.emitEvmWordToValue(schema[i], loc); // static: the head word is the value
         continue;
       }
+      const arr = isArr(schema[i]);
 
-      // dynamic: the head word is a byte offset; follow it to [length][data].
+      // dynamic (bytes/string) or array: the head word is a byte offset; follow it to [length][data or words].
       this.emitEvmWordToValue(PrimitiveType.BIGINT, loc); // offset (unsigned)
       // length = decode blob[offset : offset+32]
       this.emit(Op.OP_DUP, loc); this.pushToStack('(x)');
@@ -7914,10 +7926,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_SPLIT, loc); // blob split at offset+32 -> [before, blob[offset+32:]]
       this.emit(Op.OP_NIP, loc); this.nipFromStack();
       this.emit(encodeInt(1n), loc); this.emit(Op.OP_PICK, loc); this.pushToStack('(x)');
-      this.emit(Op.OP_SPLIT, loc); // take length bytes -> [data, rest]
+      if (arr) { // an array of `length` elements occupies length*32 bytes of 32-byte element words
+        this.emit(encodeInt(32n), loc); this.pushToStack('(x)');
+        this.emit(Op.OP_MUL, loc); this.popFromStack();
+      }
+      this.emit(Op.OP_SPLIT, loc); // take that many bytes -> [data, rest]
       this.emit(Op.OP_DROP, loc); this.popFromStack();
       this.emit(Op.OP_NIP, loc); this.nipFromStack(); // drop the length temp
       this.emit(Op.OP_NIP, loc); this.nipFromStack(); // drop the offset temp
+      if (arr) this.emitEvmWordsToArray((schema[i] as ArrayType).elementType, loc); // element words -> array blob
     }
 
     // remove the blob slot sitting under the N results
@@ -8157,10 +8174,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         return node;
       }
       const hasDynamic = node.schema.some(
-        (t) => t === PrimitiveType.STRING || (t instanceof BytesType && t.bound === undefined),
+        (t) => t === PrimitiveType.STRING || (t instanceof BytesType && t.bound === undefined)
+          || (t instanceof ArrayType && t.bound === undefined),
       );
       if (hasDynamic) {
-        // random-access decode that follows head offsets; manages its own tracking (ends with N values).
+        // random-access decode that follows head offsets (bytes/string/array); manages its own tracking.
         this.emitEvmAbiDecodeDynamic(node.schema, locationData);
       } else {
         // all value types: N consecutive 32-byte words; net stack effect (pop blob, push N values) tracked here.

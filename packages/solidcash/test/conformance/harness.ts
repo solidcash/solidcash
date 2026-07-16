@@ -306,6 +306,25 @@ export function bchArrayDecodeCase(o: {
   return { scash, args: [blob, ...o.values], label: o.label ?? `decode<${o.elemType}[]>` };
 }
 
+// abi.decode of TWO dynamic arrays (multi-param offset-following): decode an ethers (T[], T[]) blob and check
+// both arrays' lengths + elements. Exercises the array branch in emitEvmAbiDecodeDynamic.
+export function bch2ArrayDecodeCase(o: {
+  type: string; a: readonly unknown[]; b: readonly unknown[]; label?: string;
+}): { scash: string; args: readonly unknown[]; label: string } {
+  const t = toEthers(o.type);
+  const blob = ethersAbiEncode([`${t}[]`, `${t}[]`], [o.a, o.b]);
+  const aParams = o.a.map((_, i) => `${o.type} a${i}`);
+  const bParams = o.b.map((_, i) => `${o.type} b${i}`);
+  const params = ['bytes blob', ...aParams, ...bParams].join(', ');
+  const aChecks = o.a.map((_, i) => `require(x[${i}] == a${i});`).join('\n    ');
+  const bChecks = o.b.map((_, i) => `require(y[${i}] == b${i});`).join('\n    ');
+  const scash = `contract Conf() {\n  function f(${params}) {\n`
+    + `    (${o.type}[] x, ${o.type}[] y) = abi.decode(blob, (${o.type}[], ${o.type}[]));\n`
+    + `    require(x.length == ${o.a.length});\n    ${aChecks}\n`
+    + `    require(y.length == ${o.b.length});\n    ${bChecks}\n  }\n}\n`;
+  return { scash, args: [blob, ...o.a, ...o.b], label: o.label ?? `decode<${o.type}[], ${o.type}[]>` };
+}
+
 function toEthers(t: string): string {
   if (t === 'uint') return 'uint256';
   if (t === 'int') return 'int256';

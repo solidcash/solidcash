@@ -3,6 +3,7 @@
 import { describe, it } from 'vitest';
 import {
   assertBothAccept, decodeCase, decodeMultiCase, assertBchDecode, bchDecodeCase, bchArrayDecodeCase,
+  bch2ArrayDecodeCase,
 } from './harness.js';
 
 const hbb = (h: string): Uint8Array => Uint8Array.from((h.slice(2).match(/../g) ?? []).map((b) => parseInt(b, 16)));
@@ -84,4 +85,13 @@ describe('abi.decode (evmCompat): dynamic arrays of value types', () => {
   it('int128[] negatives', () => arr('int128', [-1n, -(1n << 100n), 7n]));
   it('bytes32[]', () => arr('bytes32', [hbb(`0x${'ab'.repeat(32)}`), hbb(`0x${'cd'.repeat(32)}`)]));
   it('bool[]', () => arr('bool', [true, false, true]));
+});
+
+describe('abi.decode (evmCompat): multiple dynamic arrays (offset-following)', () => {
+  const two = (type: string, a: unknown[], b: unknown[]): Promise<void> =>
+    assertBchDecode(bch2ArrayDecodeCase({ type, a, b }));
+  it('(uint256[], uint256[]) different lengths', () => two('uint256', [1n, 2n], [3n, 4n, 5n]));
+  it('(uint256[], uint256[]) with empty first', () => two('uint256', [], [7n, 8n]));
+  it('(int256[], int256[]) mixed sign', () => two('int256', [-1n, 5n], [-100n, 200n]));
+  it('(bytes32[], bytes32[])', () => two('bytes32', [hbb(`0x${'11'.repeat(32)}`)], [hbb(`0x${'22'.repeat(32)}`), hbb(`0x${'33'.repeat(32)}`)]));
 });

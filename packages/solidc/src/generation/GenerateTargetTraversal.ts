@@ -7643,14 +7643,21 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   // scalars) so signed ints, bytesN and bool all encode correctly. Fixed-width value-type elements (uint256[],
   // int256[], bytes32[], bool[], ...); bigint-backed variable-width element arrays (uint[]) are separate. The tail
   // accumulator is built via a runtime OP_BEGIN..OP_UNTIL loop; tracker is reconciled once at the end (blob -> tail).
-  private emitEvmArrayTail(elemType: Type, loc: SingleLocationData): void {
+  private emitEvmArrayTail(elemType: Type, loc: SingleLocationData, packed = false): void {
     const w = getFixedWidth(elemType);
     this.emitPushdataDecode(PrimitiveType.BIGINT, loc); // [length, elements]
-    this.emit(Op.OP_SWAP, loc); // [elements, length]
-    this.emit(encodeInt(32n), loc);
-    this.emit(Op.OP_NUM2BIN, loc); // length -> 32-byte little-endian
-    this.emit(Op.OP_REVERSEBYTES, loc); // -> 32-byte big-endian length word (= tail accumulator)
-    this.emit(Op.OP_SWAP, loc); // [tailAcc, elements]
+    if (packed) {
+      // abi.encodePacked: element words only, no length word (elements are still padded to 32).
+      this.emit(Op.OP_NIP, loc); // drop length -> [elements]
+      this.emit(new Uint8Array(0), loc); // empty accumulator
+      this.emit(Op.OP_SWAP, loc); // [acc, elements]
+    } else {
+      this.emit(Op.OP_SWAP, loc); // [elements, length]
+      this.emit(encodeInt(32n), loc);
+      this.emit(Op.OP_NUM2BIN, loc); // length -> 32-byte little-endian
+      this.emit(Op.OP_REVERSEBYTES, loc); // -> 32-byte big-endian length word (= tail accumulator)
+      this.emit(Op.OP_SWAP, loc); // [tailAcc, elements]
+    }
     this.emit(Op.OP_BEGIN, loc);
     this.emit(Op.OP_SIZE, loc); // OP_SIZE keeps its input and pushes the size (no OP_DUP needed)
     this.emit(Op.OP_0NOTEQUAL, loc); // [tailAcc, elements, moreLeft]
@@ -7972,8 +7979,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_REVERSEBYTES, loc);
     } else if (type instanceof BytesType && type.bound !== undefined && type.bound <= 32) {
       // bytesN: its natural N bytes, already correct - no padding, no reverse.
+    } else if ((type instanceof BytesType && type.bound === undefined) || type === PrimitiveType.STRING) {
+      // dynamic bytes/string: packed is the raw content (no length prefix) - the value already IS that.
+      return;
+    } else if (type instanceof ArrayType && type.bound === undefined) {
+      // dynamic array: each element padded to a 32-byte word, no length prefix (encode-tail minus the length).
+      this.emitEvmArrayTail(type.elementType, loc, true);
+      return;
     } else {
-      throw new Error(`evmCompat abi.encodePacked: unsupported type '${type.toString()}' (Phase 1 = value types)`);
+      throw new Error(`evmCompat abi.encodePacked: unsupported type '${type.toString()}'`);
     }
     this.popFromStack();
     this.pushToStack('(value)');

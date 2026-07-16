@@ -49,6 +49,15 @@ describe('abi.encodePacked (evmCompat): natural-width, no padding', () => {
   it('mixed uint16 + bool + bytes2', () => pack('uint16 a, bool b, bytes2 c', 'a, b, c', [0x1234n, true, '0xabcd']));
 });
 
+describe('abi.encodePacked (evmCompat): dynamic types', () => {
+  it('bytes (raw, no length prefix)', () => pack('bytes memory a', 'a', ['0xdeadbeef']));
+  it('string (raw utf8)', () => pack('string memory a', 'a', ['hello']));
+  it('uint256[] (element words, no length)', () => pack('uint256[] memory a', 'a', [[1n, 2n, 3n]]));
+  it('uint8[] (elements padded to 32)', () => pack('uint8[] memory a', 'a', [[1n, 2n, 3n]]));
+  it('bytes + uint (mixed)', () => pack('bytes memory a, uint b', 'a, b', ['0xaa', 5n]));
+  it('uint + bytes (mixed)', () => pack('uint a, bytes memory b', 'a, b', [5n, '0xaa']));
+});
+
 describe('abi.encode (evmCompat): dynamic bytes/string (single trailing)', () => {
   it('single bytes (short)', () => enc('bytes memory a', 'a', ['0xdeadbeef']));
   it('single bytes (empty)', () => enc('bytes memory a', 'a', ['0x']));

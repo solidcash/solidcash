@@ -235,3 +235,29 @@ spend (fail closed) - never accept a wrong hash.
 **Code cleanup (not functional).** `BUILTIN_LIBRARIES.keccak256` still carries the 2.3 KB inline blob
 (`keccak-library.ts`), now only supplying `abi` + as the canonical script reference; fully removing it needs the
 `ExternalLibrary` type to allow a blob-less compute-only builtin. Documented in-code.
+
+---
+
+## Conformance harness: run the SAME EXACT source on solc + solidc  — 2026-07-16
+
+**What.** The differential conformance harness (`packages/solidcash/test/conformance/harness.ts`) generates TWO
+sources per case - a Solidity one (`contract C { ... return <expr>; }`) and a separate SolidCash one
+(`contract Conf() { ... require(<expr> == __expected); }`). They differ only in unavoidable decorations (SPDX +
+pragma, `contract C` vs `contract Conf()`, `public pure`/`view`, and the return-vs-require oracle), but they are
+NOT byte-identical, so a divergence in how the two toolchains PARSE the same source text is not exercised. Ideal:
+compile ONE identical source string under both solc and solidc.
+
+**Why deferred.** The languages are not a strict superset: Solidity requires `pragma solidity`, function
+visibility/mutability keywords, and `return`; SolidCash uses `pragma solidcash`, `contract C()`, no
+visibility/mutability on the tested shapes, and the require-oracle is what makes the BCH covenant checkable
+(there is no `bytes memory ==` and no external return channel to compare on-chain). `assertBothAccept` already
+runs a single self-contained `require()` covenant on both where the shape allows (round-trips), but reference
+cases (arithmetic, abi.encode, slot layout) need the EVM-computed expected fed in, which forces the asymmetry.
+
+**What it'd take.** A shared-subset preprocessor: one canonical source annotated with directives that lower to
+each dialect's decorations (pragma, visibility, return-vs-require) - or a Solidity dialect shim that accepts the
+SolidCash spellings. Non-trivial and low marginal value (the current per-case generation already shares the
+expression/param/type strings verbatim, which is where a real parse divergence would show).
+
+**Revisit if.** A parse-level divergence is suspected (a construct that both accept but interpret differently at
+the syntax layer), or the corpus grows enough that maintaining two source templates per case becomes a burden.

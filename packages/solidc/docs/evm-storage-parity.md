@@ -142,7 +142,13 @@ onto the sorted list closes this; the 128B commitment already fits `(slot, next,
 Priorities carry the PACKING lens above: each phase lowers to a 128B-aware substrate, never one-UTXO-per-slot.
 
 - **P0 - doc + reality alignment (this rewrite). DONE.**
-- **P1 - ERC-7201 / const-slot factory [IN PROGRESS, top ROI]. Design = PROMOTION to packed hidden state.**
+- **P1 - ERC-7201 / const-slot factory [DELIVERED, top ROI]. Design = PROMOTION to packed hidden state.**
+  Shipped (commits 96aec43a scalar, f52ceb71 multi-scalar packing, 0974920d mapping): const-slot factory
+  detection; scalar fields -> packed register (multi-scalar co-pack into ONE data NFT, VM-proven);
+  mapping fields -> collection; dynamic string/bytes fields -> chunk var. Local-alias read + struct-rebuild
+  write + inline scalar read all lower; e2e roundtrips green (`Erc7201Storage.test.ts`). Remaining follow-ups:
+  nested struct fields (clean error), inline WRITE `factory().f = v` (OZ uses local-alias, so non-blocking),
+  address-field runtime roundtrip (same 25-byte-lbc limit as the __evm_storage address slot).
   A no-param factory `f() returns (S storage $) { assembly { $.slot := CONST } }` (const RHS) is the ERC-7201
   namespaced-storage idiom. It is NOT the param-factory (`getXSlot(bytes32 slot)`, runtime slot) which stays
   the existing `__evm_storage[slot]` path. The const factory's struct is a FIXED group of fields, so
@@ -194,7 +200,8 @@ encoder + real-keccak fold; fold it in only where a corpus contract exposes a ra
 - [x] Tier-1: computed-slot `sstore`/`sload` -> synthesized `__evm_storage`; runtime-sound roundtrip.
 - [x] OZ StorageSlot PARAM-factory idiom (read + write, constant-key resolution, high-bit slots).
 - [x] P0: this doc realigned to shipped reality + the packing cost model + the ABI prerequisites.
-- [ ] P1: const-slot (ERC-7201) factory -> packed page.
+- [x] P1: const-slot (ERC-7201) factory -> promoted packed state (scalar register + mapping collection +
+      dynamic chunk; multi-scalar co-packs into one data NFT). Nested-struct/inline-write/address-roundtrip deferred.
 - [ ] P3: EVM-exact register layout past a struct/array.
 - [ ] P2: `__evm_storage` re-homed onto the sorted list (negative-existence soundness).
 - [ ] P4: Tier-2 high-level state on the slot model (logical view over register/sorted-list/chunk).

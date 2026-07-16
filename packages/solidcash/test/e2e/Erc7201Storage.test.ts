@@ -158,3 +158,31 @@ describe('ERC-7201 namespaced storage: mapping field (MVP-3)', () => {
     await (sc as any).checkSupply(150n).send();
   });
 });
+
+// A dynamic string/bytes field (ERC20 name/symbol shape) promotes to a chunk-backed dynamic var (the third
+// 128B-aware substrate). The value lives in chunk UTXOs; the register holds only the length header.
+const NS_STRING = `pragma solidcash >=0.8.0;
+library MetaStorage {
+  struct Layout { string name; }
+  bytes32 constant SLOT = keccak256("myapp.storage.Meta");
+  function layout() internal pure returns (Layout storage $) { assembly { $.slot := SLOT } }
+}
+contract Meta() {
+  function setName(string n, pubkey pk, sig s) {
+    require(checkSig(s, pk));
+    MetaStorage.Layout storage $ = MetaStorage.layout();
+    $.name = n;
+  }
+  function checkName(string e) {
+    MetaStorage.Layout storage $ = MetaStorage.layout();
+    require($.name == e);
+  }
+}`;
+
+describe('ERC-7201 namespaced storage: dynamic string field (chunk substrate)', () => {
+  it('round-trips a promoted dynamic string field across txs', async () => {
+    const sc = await deploy(NS_STRING);
+    await (sc as any).setName('OpenZeppelin Token', alicePub, sig()).send();
+    await (sc as any).checkName('OpenZeppelin Token').send();
+  });
+});

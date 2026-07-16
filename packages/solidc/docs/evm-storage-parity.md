@@ -244,6 +244,31 @@ fails closed.
 STATUS: designed + grounded, NOT yet implemented - a soundness-critical covenant build to be done with the
 adversarial suite above, not rushed.
 
+### Sound PARTIAL (windowed / paginated) enumeration - resolves the tx-size ceiling
+
+Linkage does not only prove FULL completeness; it proves the completeness of any CONTIGUOUS WINDOW - and full
+enumeration is just the window = whole chain. This is the real answer to the tx-size / compute ceiling for
+large mappings.
+
+- **A single sound window.** Co-spend an ANCHOR entry (the window's predecessor - its `slot` verified, or the
+  HEAD), then the next K entries, verifying the chain (`slot == prev.nextKey`) + each entry's address/category
+  pin. The covenant then PROVES those K entries are a faithful CONTIGUOUS slice of the mapping: no omission
+  WITHIN the window (a skip breaks the chain), no substitution. The caller picks the anchor (any real entry)
+  and K (bounded by tx size). Sound for "process this contiguous slice" semantics.
+- **Paginated FULL coverage.** Thread a CURSOR in the contract's REGISTER state (the last slot processed - a
+  hidden `<map>$cursor` field, unforgeable because the data NFT is mandatory). Each page's covenant requires
+  its anchor `== cursor` and writes the new cursor (its last entry's slot); the pass COMPLETES when the cursor
+  reaches the tail (`nextKey == 0`). Because the cursor is covenant-enforced state, consecutive pages cannot
+  SKIP (page k must start exactly where page k-1 ended) - the pages compose into a full HEAD->tail enumeration
+  across multiple bounded txs. So USDT-scale mappings enumerate by SOUND PAGINATION, not one impossible giant
+  tx; the tx-size limit bounds a PAGE, not the mapping.
+- **Caveats.** (1) Cursor lives in the always-present register (withholdable => resettable => unsound). (2)
+  Splice-delete keeps the chain clean; a nullified node the cursor lands on would strand pagination. (3)
+  MODIFICATION DURING PAGINATION (multi-tx) is iterator-invalidation: an insert AFTER the cursor is picked up
+  later (fine); an insert BEFORE it is missed; deleting the cursor's own node strands it. A SNAPSHOT pass wants
+  no concurrent mutation (or a covenant rule that forbids writes to the mapping while a pagination is open). A
+  single-tx window is atomic (no concurrency). Document the chosen semantics per use.
+
 ## Soundness - and why the slot space does NOT need a sorted linked list
 
 `__evm_storage` is an ordinary solidcash mapping - a covenant-verified keyed-UTXO store - so `sstore(s,v)`

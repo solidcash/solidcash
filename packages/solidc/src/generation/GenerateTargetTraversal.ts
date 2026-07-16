@@ -7733,11 +7733,31 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emitEvmWordsToArray(elemType, loc);
   }
 
+  // Recursive ABI dynamic-ness (mirrors ethers): bytes/string and unbounded arrays are dynamic; a bounded array
+  // or struct is dynamic iff any component is. Value types are static. Drives the head/tail split at every level.
+  private isDynamicAbiType(t: Type): boolean {
+    if (t === PrimitiveType.STRING) return true;
+    if (t instanceof BytesType) return t.bound === undefined;
+    if (t instanceof ArrayType) return t.bound === undefined || this.isDynamicAbiType(t.elementType);
+    if (t instanceof StructType) return t.fields.some((f) => this.isDynamicAbiType(f.type));
+    return false;
+  }
+
+  // Encode a single value (on top) to its EVM ABI bytes: the inline head bytes for a static type, or the tail
+  // bytes for a dynamic type. Recursive dispatch - the one place that knows every type's encoding.
+  private emitEvmEncodeValue(type: Type, loc: SingleLocationData): void {
+    if (type instanceof ArrayType && type.bound === undefined) {
+      this.emitEvmArrayTail(type.elementType, loc);
+    } else if (type === PrimitiveType.STRING || (type instanceof BytesType && type.bound === undefined)) {
+      this.emitEvmDynamicTail(loc);
+    } else {
+      this.emitEvmAbiWord(type, loc);
+    }
+  }
+
   private emitEvmAbiEncode(params: ExpressionNode[], loc: SingleLocationData): void {
     const n = params.length;
-    const isDyn = (t: Type): boolean =>
-      t === PrimitiveType.STRING || (t instanceof BytesType && t.bound === undefined)
-      || (t instanceof ArrayType && t.bound === undefined);
+    const isDyn = (t: Type): boolean => this.isDynamicAbiType(t);
     const dynIdx = params.map((p, i) => (isDyn(p.type!) ? i : -1)).filter((i) => i >= 0);
 
     if (n === 0) {
@@ -7766,10 +7786,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Phase A: encode each arg to a blob (static word or dynamic tail) kept as tracked slot __abiblob_i.
     for (let i = 0; i < n; i += 1) {
       params[i] = this.visit(params[i]);
-      const t = params[i].type!;
-      if (t instanceof ArrayType && t.bound === undefined) this.emitEvmArrayTail(t.elementType, loc);
-      else if (isDyn(t)) this.emitEvmDynamicTail(loc);
-      else this.emitEvmAbiWord(t, loc);
+      this.emitEvmEncodeValue(params[i].type!, loc);
       this.popFromStack();
       this.pushToStack(`__abiblob${i}`);
     }

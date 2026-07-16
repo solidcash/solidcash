@@ -1,7 +1,9 @@
 // Differential conformance harness: one source corpus compiled by BOTH solc (EVM) and solidc (BCH),
 // evaluated on BOTH VMs, asserting value-identical results. The EVM side is the reference; the BCH
 // side proves it matches by a require(<computed> == <expected>) oracle fed the EVM result.
-import { compileEvm, evalEvm } from './evm.js';
+import {
+  compileEvm, evalEvm, ethersAbiEncode, ethersAbiEncodePacked,
+} from './evm.js';
 import { compileBch, evalBchCheck, evalBchRejects } from './bch.js';
 
 const SPDX = '// SPDX-License-Identifier: MIT\npragma solidity ^0.8.0;\n';
@@ -15,6 +17,7 @@ export interface ConformanceCase {
   bchFn: string;
   args: readonly unknown[]; // inputs, shared by both sides (JS values both encoders accept: bigint, hex, bool)
   evmCompat?: boolean; // compile the BCH side with evmCompat (EVM-faithful abi encoding)
+  expectedConst?: string; // abi cases: the ethers-computed expected bytes, baked into scash + cross-checked vs solc
   label?: string;
 }
 
@@ -44,6 +47,22 @@ export async function assertBothAccept(c: ConformanceCase): Promise<void> {
   }
   const pass = await evalBchCheck(compileBch(c.scash, c.evmCompat), c.bchFn, c.args);
   if (!pass) throw new Error(`Conformance${tag}: EVM accepted but the BCH covenant rejected`);
+}
+
+// abi.encode/encodePacked/encodeWithSelector conformance against a baked ethers constant. Two independent layers:
+// (1) solc's OWN abi output must equal the ethers constant (validates the constant against the real compiler),
+// (2) the BCH covenant checks its abi output against that same baked constant. So the expected bytes are a fixed,
+// human-auditable anchor that both toolchains are pinned to, not a shared live re-derivation they could both miss.
+export async function assertEncodeConformant(c: ConformanceCase): Promise<void> {
+  const tag = c.label ? ` [${c.label}]` : '';
+  const want = c.expectedConst!.toLowerCase();
+  const { decoded } = await evalEvm(compileEvm(c.solidity), c.evmFn, c.args);
+  const evmBytes = String(decoded[0]).toLowerCase();
+  if (evmBytes !== want) {
+    throw new Error(`Conformance${tag}: solc abi output ${evmBytes} != ethers constant ${want}`);
+  }
+  const pass = await evalBchCheck(compileBch(c.scash, c.evmCompat), c.bchFn, c.args);
+  if (!pass) throw new Error(`Conformance${tag}: the BCH covenant's abi output != the ethers constant ${want}`);
 }
 
 // Build a single-expression case. `expr` is used verbatim on both sides unless `bchExpr` overrides it.
@@ -132,16 +151,22 @@ export function abiCase(o: {
   params: string; encodeArgs: string; args: readonly unknown[]; packed?: boolean; label?: string;
 }): ConformanceCase {
   const fn = o.packed ? 'abi.encodePacked' : 'abi.encode';
-  const paramsSep = o.params.length > 0 ? `${o.params}, ` : '';
+  const types = paramTypes(o.params);
+  const byName = argsByName(o.params, o.args);
+  const names = o.encodeArgs.split(',').map((s) => s.trim());
+  const expected = (o.packed ? ethersAbiEncodePacked : ethersAbiEncode)(
+    names.map((n) => types[n]), names.map((n) => byName[n]),
+  );
   return {
     solidity: `${SPDX}contract C {\n  function f(${o.params}) public pure returns (bytes memory) {\n`
       + `    return ${fn}(${o.encodeArgs});\n  }\n}\n`,
-    scash: `contract Conf() {\n  function f(${paramsSep}bytes __expected) {\n`
-      + `    require(${fn}(${o.encodeArgs}) == __expected);\n  }\n}\n`,
+    scash: `contract Conf() {\n  function f(${o.params}) {\n`
+      + `    require(${fn}(${o.encodeArgs}) == ${expected});\n  }\n}\n`,
     evmFn: 'f',
     bchFn: 'f',
     args: o.args,
     evmCompat: true,
+    expectedConst: expected,
     label: o.label ?? `${fn}(${o.encodeArgs})`,
   };
 }
@@ -151,16 +176,22 @@ export function abiCase(o: {
 export function selCase(o: {
   params: string; selectorAndArgs: string; args: readonly unknown[]; label?: string;
 }): ConformanceCase {
-  const paramsSep = o.params.length > 0 ? `${o.params}, ` : '';
+  const types = paramTypes(o.params);
+  const byName = argsByName(o.params, o.args);
+  const names = o.selectorAndArgs.split(',').map((s) => s.trim());
+  const selector = String(byName[names[0]]); // first arg is the 4-byte selector, prepended raw
+  const rest = names.slice(1);
+  const expected = selector + ethersAbiEncode(rest.map((n) => types[n]), rest.map((n) => byName[n])).slice(2);
   return {
     solidity: `${SPDX}contract C {\n  function f(${o.params}) public pure returns (bytes memory) {\n`
       + `    return abi.encodeWithSelector(${o.selectorAndArgs});\n  }\n}\n`,
-    scash: `contract Conf() {\n  function f(${paramsSep}bytes __expected) {\n`
-      + `    require(abi.encodeWithSelector(${o.selectorAndArgs}) == __expected);\n  }\n}\n`,
+    scash: `contract Conf() {\n  function f(${o.params}) {\n`
+      + `    require(abi.encodeWithSelector(${o.selectorAndArgs}) == ${expected});\n  }\n}\n`,
     evmFn: 'f',
     bchFn: 'f',
     args: o.args,
     evmCompat: true,
+    expectedConst: expected,
     label: o.label ?? `encodeWithSelector(${o.selectorAndArgs})`,
   };
 }
@@ -203,6 +234,27 @@ export function decodeMultiCase(o: {
     evmCompat: true,
     label: o.label ?? `decode<${rets}>`,
   };
+}
+
+// Parse a parameter list into { paramName: ethersType } (uint->uint256, int->int256, `T memory`->T).
+function paramTypes(params: string): Record<string, string> {
+  const map: Record<string, string> = {};
+  for (const p of params.split(',').map((s) => s.trim()).filter(Boolean)) {
+    const toks = p.split(/\s+/).filter((t) => t !== 'memory');
+    let type = toks.slice(0, -1).join('');
+    if (type === 'uint') type = 'uint256';
+    if (type === 'int') type = 'int256';
+    map[toks[toks.length - 1]] = type;
+  }
+  return map;
+}
+
+// Map positional args (in parameter order) to { paramName: value }.
+function argsByName(params: string, args: readonly unknown[]): Record<string, unknown> {
+  const map: Record<string, unknown> = {};
+  params.split(',').map((s) => s.trim()).filter(Boolean)
+    .forEach((p, i) => { map[p.split(/\s+/).filter((t) => t !== 'memory').slice(-1)[0]] = args[i]; });
+  return map;
 }
 
 function fmt(vals: readonly unknown[]): string {

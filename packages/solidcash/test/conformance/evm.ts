@@ -2,7 +2,7 @@
 // Compile Solidity with solc (0.8.36, matching the /Code/solidity reference), execute in
 // @ethereumjs/evm - a node-less, in-memory EVM (the same engine tevm.sh wraps). No RPC, no network.
 import solc from 'solc';
-import { AbiCoder, FunctionFragment } from 'ethers';
+import { AbiCoder, FunctionFragment, solidityPacked } from 'ethers';
 import { createEVM } from '@ethereumjs/evm';
 import { hexToBytes, bytesToHex, createAddressFromString } from '@ethereumjs/util';
 
@@ -36,6 +36,15 @@ export function compileEvm(source: string): EvmCompiled {
   const contract = out.contracts?.[SOURCE_KEY]?.[CONTRACT_NAME];
   if (!contract) throw new Error(`contract "${CONTRACT_NAME}" not found - name the test contract "contract C"`);
   return { abi: contract.abi, deployedBytecode: contract.evm.deployedBytecode.object as string };
+}
+
+// Independent EVM-canonical ABI encodings (ethers), used to bake expected constants into conformance covenants -
+// a fixed, human-auditable anchor that BOTH solc and solidc are checked against (not a shared live re-derivation).
+export function ethersAbiEncode(types: readonly string[], values: readonly unknown[]): string {
+  return coder.encode(types as string[], values as unknown[]);
+}
+export function ethersAbiEncodePacked(types: readonly string[], values: readonly unknown[]): string {
+  return solidityPacked(types as string[], values as unknown[]);
 }
 
 export interface EvmResult {

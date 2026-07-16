@@ -53,4 +53,31 @@ describe('sorted mapping RMW with a computed/local key', () => {
     expect(e).toBeDefined();
     expect(vmNumberToBigInt(e!.value)).toBe(15n);
   });
+
+  it('INSERT branch: an absent computed key mints a new entry (balances[pkh] = 0 + amt)', async () => {
+    const art = compileString(SRC, { sortedMappings: ['balances'] });
+    const contract = new Contract(art, [], { provider });
+
+    const pkh = hash160(alicePub);
+    const slot = keyToSlot(pkh);
+    const ZERO = slotValueToBytes(0n);
+    // Empty mapping: only the HEAD sentinel (no entry for pkh) -> deposit takes the INSERT branch.
+    const result = await provider.addTokenUtxosDynamic((cat: string) => {
+      const pinned = contract.category ? contract : contract.withCategory(hexToBin(cat));
+      const ea = getEntryNftAddress(pinned, cat, 'balances');
+      return [
+        { address: pinned.tokenAddress, satoshis: 10000n, token: { amount: 0n, nft: { capability: 'minting', commitment: '' } } },
+        { address: ea, satoshis: 1500n, token: { amount: 0n, nft: { capability: 'mutable', commitment: binToHex(encodeEntryCommitment(ZERO, ZERO)) } } },
+      ];
+    });
+    const categoryId = result.categoryId;
+    const ea = getEntryNftAddress(contract.withCategory(hexToBin(categoryId)), categoryId, 'balances');
+
+    const sc = StatefulContract.withCategory(contract, categoryId);
+    expect((await sc.deposit(7n, alicePub, sig).withEntryKey(0, pkh).send()).txid).toBeDefined();
+
+    const e = SortedList.fromUtxos(await provider.getUtxos(ea)).find(slot);
+    expect(e).toBeDefined();
+    expect(vmNumberToBigInt(e!.value)).toBe(7n); // 0 (absent default) + 7
+  });
 });

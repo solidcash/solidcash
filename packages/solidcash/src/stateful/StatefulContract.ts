@@ -5278,11 +5278,14 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             }
             const keyBySlot = new Map<string, Uint8Array>();
             for (const k of callerKeys) keyBySlot.set(binToHex(keyToSlot(k)), k);
+            // Length-prefixed blob: each entry's key as (1-byte length ++ key bytes), in ascending-chain order.
+            // Supports variable-width keys (int, address) as well as bytesN; the covenant reads the prefix.
             const parts: Uint8Array[] = [];
             for (const e of sortedRest) {
               const k = keyBySlot.get(binToHex(e.slot));
               if (!k) throw new Error(`No supplied key hashes to entry slot ${binToHex(e.slot)} in '${coll.name}'`);
-              parts.push(k);
+              if (k.length > 255) throw new Error(`Key too long to length-prefix (${k.length} B) in '${coll.name}'`);
+              parts.push(Uint8Array.from([k.length]), k);
             }
             const total = parts.reduce((n, p) => n + p.length, 0);
             const blob = new Uint8Array(total);

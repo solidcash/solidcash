@@ -104,13 +104,41 @@ describe('sorted mapping KEYS/ENTRIES iteration (caller-supplied keys, covenant-
     const { contract, categoryId } = await seed(art, entries);
 
     // `keys` is ascending-slot order. A malicious spender tampers the middle key with one that hashes elsewhere;
-    // the covenant's keyToSlot(k)==slot EQUALVERIFY must revert (bypasses the SDK's honest slot-matching).
-    const tampered = new Uint8Array(20 * keys.length);
-    keys.forEach((k, i) => tampered.set(i === 1 ? bytes20(0x99) : k, i * 20));
+    // the covenant's keyToSlot(k)==slot EQUALVERIFY must revert (bypasses the SDK's honest slot-matching). Blob is
+    // length-prefixed (1-byte length ++ key) to match the covenant's split.
+    const parts: number[] = [];
+    keys.forEach((k, i) => { const key = i === 1 ? bytes20(0x99) : k; parts.push(key.length, ...key); });
+    const tampered = Uint8Array.from(parts);
     // The revert is VM-level: "error in evaluating input index 0: Program failed an OP_VERIFY" - the covenant's
     // keyToSlot(k)==slot EQUALVERIFY, not an SDK pre-check (the raw-blob hook bypasses the SDK's slot-matching).
     const sc = StatefulContract.withCategory(contract, categoryId);
     sc._setRawIterationKeysBlob('bal', tampered);
     await expect(sc.checkKeys(3n, lastKey, alicePub, sig).send()).rejects.toThrow();
+  });
+
+  it('VARIABLE-WIDTH KEYS: int-keyed mapping iterates (length-prefixed blob)', async () => {
+    const SRC = `contract C() {
+      enumerable mapping(int => int) bal;
+      function sumKeys(int expectedCount, int expectedKeySum, pubkey pk, sig s) {
+        require(checkSig(s, pk));
+        int count = 0; int keySum = 0;
+        for (int k in this.bal) { count = count + 1; keySum = keySum + k; }
+        require(count == expectedCount); require(keySum == expectedKeySum);
+      }
+    }`;
+    const art = compileString(SRC, { sortedMappings: ['bal'] });
+    // int keys 5, 9, 12 (variable-width minimal script numbers); ascending by slot.
+    const items = [5n, 9n, 12n].map((n) => ({ key: bigIntToVmNumber(n), slot: keyToSlot(bigIntToVmNumber(n)) }));
+    items.sort((a, b) => (bytesToSlotValue(a.slot) < bytesToSlotValue(b.slot) ? -1 : 1));
+    const entries: { slot: Uint8Array; next: Uint8Array; value: Uint8Array }[] = [
+      { slot: ZERO, next: items[0].slot, value: new Uint8Array() },
+    ];
+    for (let i = 0; i < items.length; i++) {
+      entries.push({ slot: items[i].slot, next: i + 1 < items.length ? items[i + 1].slot : ZERO, value: bigIntToVmNumber(1n) });
+    }
+    const { contract, categoryId } = await seed(art, entries);
+    const sc = StatefulContract.withCategory(contract, categoryId);
+    sc.setIterationKeys('bal', items.map((it) => it.key));
+    expect((await sc.sumKeys(3n, 26n, alicePub, sig).send()).txid).toBeDefined(); // 5+9+12
   });
 });

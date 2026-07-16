@@ -75,9 +75,9 @@ describe('sorted enumerable mapping: iteration mode support', () => {
     expect(() => compileString(contract(enumerableDecl, 'for (bytes20 k, int v of this.m.entries)'), { sortedMappings: ['m'] }))
       .not.toThrow();
   });
-  it('rejects KEYS/ENTRIES on a sorted mapping with a variable-width (int) key', () => {
+  it('allows KEYS/ENTRIES on a sorted mapping with a variable-width (int) key (length-prefixed blob)', () => {
     const intDecl = 'enumerable mapping(int => int) m;';
     expect(() => compileString(contract(intDecl, 'for (int k in this.m)'), { sortedMappings: ['m'] }))
-      .toThrow(/fixed-width bytesN key/i);
+      .not.toThrow();
   });
 });

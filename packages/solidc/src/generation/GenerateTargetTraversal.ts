@@ -3550,14 +3550,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (needsValue && valueKind === null) {
       throw new SortedMappingCodegenPendingError(node as unknown as MappingAccessNode, collection.name);
     }
-    let keyWidth = 0;
-    if (needsKeys) {
-      const keyTypes = collection.allKeyTypes;
-      if (keyTypes.length !== 1 || !(keyTypes[0] instanceof BytesType) || (keyTypes[0] as BytesType).bound === undefined) {
-        throw new Error(`Iterating keys/entries of a sorted 'enumerable mapping' ('${collection.name}') requires a `
-          + 'single fixed-width bytesN key (the entry stores slot=H(key), verified against the caller-supplied key).');
-      }
-      keyWidth = (keyTypes[0] as BytesType).bound!;
+    if (needsKeys && collection.allKeyTypes.length !== 1) {
+      // The caller-supplied keys blob is a flat sequence of length-prefixed keys (single key per entry). A
+      // composite/nested key (mapping(a => mapping(b => v))) hashes keyToSlotMulti and has no single preimage to
+      // length-prefix, so it is not iterable with keys.
+      throw new Error(`Iterating keys/entries of a sorted 'enumerable mapping' ('${collection.name}') supports a `
+        + 'single key only (composite/nested keys have no single preimage to verify).');
     }
     const collectionHash = computeCollectionHash(computeCollectionSignature(collection.name, collection.type.toString()));
     const ZERO32 = new Uint8Array(32);
@@ -3629,13 +3627,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.pushToStack('(__iter_tmp)'); // track the copy so emitReplace/popFromStack reconcile at any depth
     this.emitReplace(this.getStackIndex('(__iter_next)'), node);
     this.popFromStack();
-    // KEYS/ENTRIES: consume one key (keyWidth bytes) from the blob, verify keyToSlot(key) == this entry's slot,
-    // and expose it. A forged/wrong/omitted key hashes to a different slot -> EQUALVERIFY reverts.
+    // KEYS/ENTRIES: consume one length-prefixed key (1-byte length ++ key bytes) from the blob, verify
+    // keyToSlot(key) == this entry's slot, and expose it. A forged/wrong/omitted key hashes to a different slot ->
+    // EQUALVERIFY reverts. The length prefix supports variable-width keys (int, address) as well as bytesN.
     if (needsKeys) {
       const kIdx = this.getStackIndex('(__iter_keys)');
       this.emit(encodeInt(BigInt(kIdx)), locationData); this.emit(Op.OP_ROLL, locationData); // blob -> top
       this.removeFromStack(kIdx);
-      this.emit(encodeInt(BigInt(keyWidth)), locationData); this.emit(Op.OP_SPLIT, locationData); // [key, rest]
+      this.emit(encodeInt(1n), locationData); this.emit(Op.OP_SPLIT, locationData); // [lenByte, rest1]
+      this.emit(Op.OP_SWAP, locationData); this.emit(Op.OP_BIN2NUM, locationData); // [rest1, len]
+      this.emit(Op.OP_SPLIT, locationData); // [key, rest]  (split rest1 at len)
       this.pushToStack('(__ent_key)'); // deeper = key
       this.pushToStack('(__iter_keys)'); // top = rest (re-tracked for the next entry)
       this.emit(encodeInt(BigInt(this.getStackIndex('(__ent_key)'))), locationData); this.emit(Op.OP_PICK, locationData);

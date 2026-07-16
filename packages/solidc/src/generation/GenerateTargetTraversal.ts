@@ -7713,6 +7713,57 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.pushToStack('(value)');
   }
 
+  // evmCompat abi.decode of an all-value-type schema: the blob is N consecutive 32-byte big-endian words.
+  // Decode each in order (the last word is the remaining blob). Pure-emit; the caller tracks the net effect.
+  // Dynamic types (string / unbounded bytes) are not yet supported here.
+  private emitEvmAbiDecode(schema: readonly Type[], loc: SingleLocationData): void {
+    for (let i = 0; i < schema.length; i += 1) {
+      if (i === schema.length - 1) {
+        this.emitEvmWordToValue(schema[i], loc); // the remaining blob is exactly the last 32-byte word
+      } else {
+        this.emit(encodeInt(32n), loc);
+        this.emit(Op.OP_SPLIT, loc); // [word, remainder]
+        this.emit(Op.OP_SWAP, loc); // [remainder, word]
+        this.emitEvmWordToValue(schema[i], loc);
+        this.emit(Op.OP_SWAP, loc); // [value, remainder]
+      }
+    }
+  }
+
+  // Decode one 32-byte big-endian EVM word (on top) into a SolidCash value. Inverse of emitEvmAbiWord.
+  private emitEvmWordToValue(type: Type, loc: SingleLocationData): void {
+    if (type === PrimitiveType.BOOL) {
+      this.emit(Op.OP_REVERSEBYTES, loc);
+      this.emit(Op.OP_BIN2NUM, loc); // 0x01 or empty
+      return;
+    }
+    if (type instanceof BytesType && type.bound !== undefined && type.bound <= 32) {
+      this.emit(encodeInt(BigInt(type.bound)), loc);
+      this.emit(Op.OP_SPLIT, loc); // right-padded: the N data bytes are the first N of the word
+      this.emit(Op.OP_DROP, loc);
+      return;
+    }
+    if (type instanceof IntType || type === PrimitiveType.BIGINT) {
+      // reverse to little-endian, force positive with a 0x00 sign byte, minimise -> unsigned value U
+      this.emit(Op.OP_REVERSEBYTES, loc);
+      this.emit(new Uint8Array([0]), loc);
+      this.emit(Op.OP_CAT, loc);
+      this.emit(Op.OP_BIN2NUM, loc);
+      if (type instanceof IntType && type.signed) {
+        // two's-complement: a high-bit-set U is the negative value U - 2^256
+        this.emit(Op.OP_DUP, loc);
+        this.emit(encodeInt(1n << 255n), loc);
+        this.emit(Op.OP_GREATERTHANOREQUAL, loc);
+        this.emit(Op.OP_IF, loc);
+        this.emit(encodeInt(1n << 256n), loc);
+        this.emit(Op.OP_SUB, loc);
+        this.emit(Op.OP_ENDIF, loc);
+      }
+      return;
+    }
+    throw new Error(`evmCompat abi.decode: unsupported type '${type.toString()}' (value types only)`);
+  }
+
   visitAbiEncode(node: AbiEncodeNode): Node {
     const locationData = { location: node.location, positionHint: PositionHint.START };
 
@@ -7926,6 +7977,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     // Visit data expression - puts encoded blob on stack
     node.data = this.visit(node.data);
+
+    if (this.compilerOptions.evmCompat) {
+      // EVM 32-byte-word decode; net stack effect (pop blob, push N values) tracked below, like the native path.
+      this.emitEvmAbiDecode(node.schema, locationData);
+      this.popFromStack();
+      for (let i = 0; i < node.schema.length; i++) this.pushToStack('(value)');
+      return node;
+    }
 
     // For each schema type, emit decoder that extracts value and leaves remainder
     for (let i = 0; i < node.schema.length; i++) {

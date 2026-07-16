@@ -31,6 +31,21 @@ export async function assertConformant(c: ConformanceCase): Promise<void> {
   }
 }
 
+// Symmetric conformance: the SAME logical contract (a self-contained `require(...)` covenant) runs on BOTH VMs
+// and both must accept - no EVM-computed reference is injected. Used where the expected value is self-contained
+// (e.g. a round-trip, where the result must equal the input by definition), so the two sources differ only in the
+// unavoidable Solidity decorations (SPDX/pragma, `contract C`, `public pure`) and not in the logic under test.
+export async function assertBothAccept(c: ConformanceCase): Promise<void> {
+  const tag = c.label ? ` [${c.label}]` : '';
+  try {
+    await evalEvm(compileEvm(c.solidity), c.evmFn, c.args);
+  } catch (e) {
+    throw new Error(`Conformance${tag}: EVM rejected its own check: ${e instanceof Error ? e.message : String(e)}`);
+  }
+  const pass = await evalBchCheck(compileBch(c.scash, c.evmCompat), c.bchFn, c.args);
+  if (!pass) throw new Error(`Conformance${tag}: EVM accepted but the BCH covenant rejected`);
+}
+
 // Build a single-expression case. `expr` is used verbatim on both sides unless `bchExpr` overrides it.
 // The common Solidity/SolidCash subset shares param and type syntax, so most cases need only one string.
 export function exprCase(o: {
@@ -147,6 +162,46 @@ export function selCase(o: {
     args: o.args,
     evmCompat: true,
     label: o.label ?? `encodeWithSelector(${o.selectorAndArgs})`,
+  };
+}
+
+// Build an abi.decode round-trip case. The expected value of abi.decode(abi.encode(a), (T)) is `a` BY DEFINITION,
+// so no EVM-computed reference is needed: both sides run the SAME self-contained covenant require(roundtrip == a)
+// (run via assertBothAccept). Since abi.encode is separately proven EVM-byte-identical, decode inverting it proves
+// decode is EVM-faithful. Single value type per case.
+export function decodeCase(o: { type: string; value: unknown; label?: string }): ConformanceCase {
+  const logic = `require(abi.decode(abi.encode(a), (${o.type})) == a);`;
+  return {
+    solidity: `${SPDX}contract C {\n  function f(${o.type} a) public pure {\n    ${logic}\n  }\n}\n`,
+    scash: `contract Conf() {\n  function f(${o.type} a) {\n    ${logic}\n  }\n}\n`,
+    evmFn: 'f',
+    bchFn: 'f',
+    args: [o.value],
+    evmCompat: true,
+    label: o.label ?? `decode<${o.type}>`,
+  };
+}
+
+// Multi-value abi.decode round-trip: each decoded element must equal its corresponding input (the self-contained
+// expected), so both sides run the SAME covenant. Exercises the N-word head layout.
+export function decodeMultiCase(o: {
+  types: readonly string[]; names: readonly string[]; values: readonly unknown[]; label?: string;
+}): ConformanceCase {
+  const params = o.types.map((t, i) => `${t} ${o.names[i]}`).join(', ');
+  const encArgs = o.names.join(', ');
+  const rets = o.types.join(', ');
+  const decls = o.types.map((t, i) => `${t} x${i}`).join(', ');
+  const checks = o.names.map((n, i) => `require(x${i} == ${n});`).join('\n    ');
+  // Parenthesized tuple-destructuring is the shared form (valid Solidity AND SolidCash).
+  const logic = `(${decls}) = abi.decode(abi.encode(${encArgs}), (${rets}));\n    ${checks}`;
+  return {
+    solidity: `${SPDX}contract C {\n  function f(${params}) public pure {\n    ${logic}\n  }\n}\n`,
+    scash: `contract Conf() {\n  function f(${params}) {\n    ${logic}\n  }\n}\n`,
+    evmFn: 'f',
+    bchFn: 'f',
+    args: o.values,
+    evmCompat: true,
+    label: o.label ?? `decode<${rets}>`,
   };
 }
 

@@ -283,13 +283,11 @@ bytes off the blob, computes `keyToSlot(key)` (OP_SHA256 + 0x7f mask) and OP_EQU
 slot before exposing the key. A wrong/forged key hashes elsewhere -> reverts (verified VM-level); a missing entry
 breaks the chain -> reverts. Tests: SortedMappingKeyIteration.test.ts.
 
-**Remaining (still deferred).** VARIABLE-WIDTH keys (int, address) - the sequential blob split needs a fixed
-width, so only a single `bytesN` key is supported today (int/address keys throw a clean "requires a single
-fixed-width bytesN key" error). Extending needs a length-prefixed key encoding in the blob (or per-key-type
-width handling) + the covenant reading the prefix. Also unchanged: keys come out in H(key) (hash) order, and the
-caller must know all keys (owner-driven enumeration; the raw key is still not on-chain).
-
-**Revisit if.** A contract needs to enumerate a sorted mapping keyed by int/address (not bytesN).
+**Remaining (still deferred).** None for key type - VARIABLE-WIDTH keys (int, address) now work too (commit
+a9e0037b): the blob is LENGTH-PREFIXED (1-byte length ++ key per entry), the covenant splits the prefix, so any
+single key type iterates (composite/nested keys are still out - no single preimage to verify). Unchanged
+properties: keys come out in H(key) (hash) order, and the caller must know all keys (owner-driven enumeration;
+the raw key is not on-chain). DEFERRAL #1 FULLY RESOLVED.
 
 ### 2. C2 sorted backend as the DEFAULT for plain `mapping`
 
@@ -298,36 +296,43 @@ exclusion proofs = the unforgeable-read / no-omission Solidity parity property),
 `sortedMappings` compiler option. The design conclusion (docs/evm-storage-parity.md) is that C2 SHOULD be the
 default for parity; the `mapping` / `enumerable mapping` split is kept only as an iteration-capability toggle.
 
-**Why deferred.** (a) BLAST RADIUS: flipping the default changes the compiled bytecode of essentially every
-stateful contract with a mapping (~every mapping/stateful e2e + compiler fixture would get sorted-backend
-bytecode and need the C2 read/write/delete infra on every access). (b) BLOCKED on P5 (item 3 below): a plain
-mapping may hold unbounded string/bytes VALUES, which C2's fixed 128 B entry cannot, so a wholesale flip needs
-chunked values first (or a fail-closed carve-out for string/bytes-valued mappings).
+**Why deferred - GAUGED 2026-07-16.** Temporarily defaulting all mappings to C2 measured the blast radius:
+COMPILE level only 1/75 StructsMappings breaks (C2 compiles fine, different bytecode); E2E level ~half of the
+plain-mapping tests break, for a MIX of reasons - (a) seeding: tests seed the default entry model, so the C2
+covenant hits "missing HEAD sentinel" (mechanical migration); (b) real C2 CODEGEN/SDK gaps the flip surfaced.
+So the flip is a staged migration, not a one-line default change.
 
-**What it'd take.** P5 (chunked sorted values) first; then stage the flip value-width by value-width
-(fixed-size-valued mappings -> C2 by default, string/bytes-valued -> C2+chunk), migrating fixtures in batches
-with byte-diff review at each step. A large, multi-session migration.
+**Progress (gaps closed 2026-07-16).** Two of the surfaced gaps are now fixed (commit 368efcfe), moving C2
+toward feature-complete: computed/local-key RMW `balances[pkh]=balances[pkh]+x` now (1) COMPILES (upsert hashes
+the key before the value so the last-use ROLL does not eat the key) and (2) DERIVES (the C2 co-spend path
+resolves an expression key via withEntryKey/entryKeyOverrides + placeholder). Value-type coverage also widened
+(P5a, item 3). 
 
-**Revisit if.** P5 lands, or a concrete contract is shown where a plain mapping's omittable-default read is an
-actual exploit (the motivating parity case) rather than a theoretical one.
+**What it'd take (remaining).** (1) VM-trace AUTO-derivation of a computed C2 key (so withEntryKey is not needed
+- the placeholder path exists but cannot pick the present entry without the real slot). (2) P5b (chunked values)
+for unbounded string/bytes-valued mappings. (3) The seeding migration: a C2-aware mapping-seed helper (auto-mint
+the HEAD sentinel) so the ~half of e2e tests flip without per-test edits. (4) Sweep for any further per-shape C2
+gaps (the gauge only ran a sample). Then flip the default + migrate in batches with byte-diff review.
 
-### 3. Chunked string/bytes VALUES in sorted entries (P5)
+**Revisit if.** Continuing the parity push (the standing directive) - this is now the critical path; each gap
+closed shrinks the eventual flip.
 
-**What.** Store unbounded `string`/`bytes` values in a sorted mapping. `sortedValueKind` returns `null` for
-these (int/bool/bytesN/address/struct are supported and iterate today); the read/write/iterate paths fail closed.
+### 3. string/bytes VALUES in sorted entries - P5a DONE, P5b (chunking) remains
 
-**Why deferred.** The C2 entry commitment is a single 128 B NFT; an unbounded value overflows it. The
-dynamic-storage chunk model (docs/dynamic-storage.md) solves this for top-level vars but is not yet wired into
-the C2 entry model (an entry would point to / span a chunk-UTXO run, and the linkage + absence-bracket proofs
-must account for the chunk spine). Not needed for the numeric/address/struct mappings that cover the common ERC
-shapes.
+**P5a DONE (2026-07-16, commit ad70e15f).** Unbounded `bytes` / `string` values <= 64 B now work in a C2
+mapping: the value IS the commitment tail (read verbatim like address, default empty), so a
+`mapping(K => bytes|string)` gets the same exclusion proofs as int/bytesN values. `sortedValueKind` returns
+`rawbytes` for unbounded bytes/string; a value that pushes the commitment past 128 B fails closed at the VM.
+Tests: SortedMappingDynBytesValue.test.ts. Closes the common short-string/bytes case (symbols, URIs, names).
 
-**What it'd take.** Extend the C2 entry to carry a chunk-spine reference (like dynamic vars), co-spend the value
+**P5b remaining.** Values > 64 B (arbitrary-length string/bytes) still fail closed (commitment overflow).
+
+**What P5b'd take.** Extend the C2 entry to carry a chunk-spine reference (like dynamic vars), co-spend the value
 chunks alongside the entry in read/iterate, and thread chunk length into the commitment so the absence bracket +
 linkage stay sound. Related to [dynamic_storage_chunks] + [c2_sorted_mapping_fix].
 
-**Revisit if.** A target contract needs a `mapping(K => string/bytes)` (e.g. on-chain metadata/URIs), or item 2
-(C2-default) requires it.
+**Revisit if.** A target contract needs a `mapping(K => string/bytes)` value LONGER than ~64 B, or item 2
+(C2-default) requires long-value support.
 
 ### 4. Sound PARTIAL (paginated / windowed) enumeration
 

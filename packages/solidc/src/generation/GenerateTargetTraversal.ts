@@ -7782,7 +7782,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private emitEvmDecodeElement(elemType: Type, loc: SingleLocationData): void {
     if (elemType instanceof ArrayType && elemType.bound === undefined) {
       if (this.isDynamicAbiType(elemType.elementType)) {
-        throw new Error('evmCompat: abi.decode of nested arrays of dynamic elements is unsupported');
+        this.emitEvmDecodeDynElementArray(elemType.elementType, loc); // inner array of dynamic elems (bytes[][]/string[][])
+        return;
       }
       this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); // [lenWord, rest]
       this.emit(Op.OP_SWAP, loc); this.emitEvmWordToValue(PrimitiveType.BIGINT, loc); // [rest, M]
@@ -7801,6 +7802,38 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(encodeInt(32n), loc); this.emit(Op.OP_MOD, loc); // pad
     this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_NIP, loc); // skip pad: [data, next]
     this.emit(Op.OP_SWAP, loc); this.emitPushdataEncode(elemType, loc); // [next, element]
+  }
+
+  // evmCompat: decode one inner array of DYNAMIC elements (a bytes[] element inside bytes[][]) from the top of a
+  // blob, consuming exactly its encoding and leaving the remainder: [.., blob] -> [.., next, innerArrayBlob].
+  // Counted loop over M inner elements (inner offset head skipped; canonical sequential tail). Loop-invariant
+  // [counter, tail, acc]; each iteration decodes one inner element, appends it, and decrements the counter.
+  private emitEvmDecodeDynElementArray(innerElemType: Type, loc: SingleLocationData): void {
+    this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); // [inner_lenWord, rest1]
+    this.emit(Op.OP_SWAP, loc); this.emitEvmWordToValue(PrimitiveType.BIGINT, loc); // [rest1, M]
+    this.emit(Op.OP_DUP, loc); this.emit(encodeInt(32n), loc); this.emit(Op.OP_MUL, loc); // [rest1, M, M*32]
+    this.emit(encodeInt(2n), loc); this.emit(Op.OP_ROLL, loc); // [M, M32, rest1]
+    this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_NIP, loc); // drop inner head: [M, tail]
+    this.emit(Op.OP_OVER, loc); this.emitPushdataEncode(PrimitiveType.BIGINT, loc); // [M(counter), tail, acc=pushdata(M)]
+    this.emit(Op.OP_BEGIN, loc);
+    this.emit(encodeInt(2n), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_0NOTEQUAL, loc); // [counter, tail, acc, more]
+    this.emit(Op.OP_IF, loc);
+    this.emit(Op.OP_SWAP, loc); // [counter, acc, tail]
+    this.emitEvmDecodeElement(innerElemType, loc); // [counter, acc, next, element]
+    this.emit(encodeInt(2n), loc); this.emit(Op.OP_ROLL, loc); // acc to top: [counter, next, element, acc]
+    this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_CAT, loc); // acc ++ element: [counter, next, acc']
+    this.emit(encodeInt(2n), loc); this.emit(Op.OP_ROLL, loc); // counter to top: [next, acc', counter]
+    this.emit(encodeInt(1n), loc); this.emit(Op.OP_SUB, loc); // [next, acc', counter-1]
+    this.emit(encodeInt(2n), loc); this.emit(Op.OP_ROLL, loc); // [acc', counter-1, next]
+    this.emit(encodeInt(2n), loc); this.emit(Op.OP_ROLL, loc); // restore invariant: [counter-1, next, acc']
+    this.emit(encodeBool(false), loc);
+    this.emit(Op.OP_ELSE, loc);
+    this.emit(encodeBool(true), loc);
+    this.emit(Op.OP_ENDIF, loc);
+    this.emit(Op.OP_UNTIL, loc);
+    // [0, rest, acc] -> drop the spent counter, leaving [next=rest, innerArrayBlob=acc]
+    this.emit(encodeInt(2n), loc); this.emit(Op.OP_ROLL, loc); // counter to top: [rest, acc, 0]
+    this.emit(Op.OP_DROP, loc); // [rest, acc]
   }
 
   // Single top-level array of DYNAMIC leaf elements (bytes[]/string[]): the encoding is offset ++ length ++

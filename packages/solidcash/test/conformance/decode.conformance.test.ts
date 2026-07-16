@@ -112,6 +112,15 @@ describe('abi.decode (evmCompat): NESTED arrays uint[][] (recursive element deco
   it('uint256[][] single row', () => nested('uint256', [[42n, 43n]]));
 });
 
+describe('abi.decode (evmCompat): nested arrays of DYNAMIC elements (bytes[][]/string[][])', () => {
+  const nested = (elemType: string, rows: unknown[][]): Promise<void> =>
+    assertBchDecode(bchNestedArrayDecodeCase({ elemType, rows }));
+  it('bytes[][] two rows', () => nested('bytes', [[hbb('0xaa'), hbb('0xbbbb')], [hbb('0xcc')]]));
+  it('bytes[][] jagged incl empty row', () => nested('bytes', [[hbb('0xdead')], [], [hbb('0xbeef'), hbb('0x01')]]));
+  it('bytes[][] element crosses pad', () => nested('bytes', [[hbb(`0x${'11'.repeat(40)}`)], [hbb('0xff')]]));
+  it('string[][]', () => nested('string', [['hi', 'the quick brown fox'], ['sup']]));
+});
+
 describe('abi.decode (evmCompat): fixed-width structs (ABI tuple)', () => {
   type F = { type: string; name: string };
   const st = (fields: F[], values: unknown[]): Promise<void> =>

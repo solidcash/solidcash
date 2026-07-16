@@ -28,14 +28,16 @@ async function buildAndSend(
 ): Promise<void> {
   const provider = new MockNetworkProvider();
   const contract = new Contract(artifact, [], { provider });
-  await provider.addUtxo(contract.address, randomUtxo({ satoshis: 100_000n }));
+  // Generous input + change so the fee headroom scales to large redeem scripts (deeply nested decoders can push a
+  // small-fee tx past the relay minimum). The contracts under test never constrain output amounts.
+  await provider.addUtxo(contract.address, randomUtxo({ satoshis: 1_000_000n }));
   const utxos = await contract.getUtxos();
   const unlock = contract.unlock as unknown as Record<string, UnlockFactory>;
   const unlocker = unlock[fnName](...args);
   await new TransactionBuilder({ provider })
     .addInputs(utxos, unlocker)
     .addOutput({ to: contract.address, amount: 1_000n })
-    .addOutput({ to: contract.address, amount: 94_000n })
+    .addOutput({ to: contract.address, amount: 900_000n })
     .send();
 }
 

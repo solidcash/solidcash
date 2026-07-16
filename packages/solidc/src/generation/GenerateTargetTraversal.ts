@@ -7678,6 +7678,44 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.pushToStack('(value)');
   }
 
+  // evmCompat abi.decode of a SINGLE dynamic array of fixed-width value-type elements. Input: the whole encoding
+  // (offset word ++ length word ++ element words). Rebuild the SolidCash array blob = pushdata(len) ++ packed
+  // fixed-width LE elements. Inverse of emitEvmArrayTail: a runtime loop converts each 32-byte big-endian element
+  // word back via emitEvmWordToValue + emitEncodeElementPacked (both loop-safe). Pure-emit + one tracker reconcile.
+  private emitEvmArrayDecode(elemType: Type, loc: SingleLocationData): void {
+    this.emit(encodeInt(32n), loc);
+    this.emit(Op.OP_SPLIT, loc); // [offsetWord, rest]
+    this.emit(Op.OP_NIP, loc); // drop the offset word (== 32 for a single top-level array) -> [len ++ elements]
+    this.emit(encodeInt(32n), loc);
+    this.emit(Op.OP_SPLIT, loc); // [lengthWord, elements]
+    this.emit(Op.OP_SWAP, loc); // [elements, lengthWord]
+    this.emitEvmWordToValue(PrimitiveType.BIGINT, loc); // lengthWord -> length number
+    this.emitPushdataEncode(PrimitiveType.BIGINT, loc); // length -> pushdata prefix bytes (accumulator start)
+    this.emit(Op.OP_SWAP, loc); // [acc, elements]
+    this.emit(Op.OP_BEGIN, loc);
+    this.emit(Op.OP_SIZE, loc);
+    this.emit(Op.OP_0NOTEQUAL, loc); // [acc, elements, moreLeft]
+    this.emit(Op.OP_IF, loc);
+    this.emit(encodeInt(32n), loc);
+    this.emit(Op.OP_SPLIT, loc); // [acc, word, rest]
+    this.emit(Op.OP_SWAP, loc); // [acc, rest, word]
+    this.emitEvmWordToValue(elemType, loc); // big-endian word -> VM value
+    this.emitEncodeElementPacked(elemType, loc); // value -> fixed-width LE element bytes
+    this.emit(encodeInt(2n), loc);
+    this.emit(Op.OP_ROLL, loc); // [rest, elemBytes, acc]
+    this.emit(Op.OP_SWAP, loc);
+    this.emit(Op.OP_CAT, loc); // [rest, acc ++ elemBytes]
+    this.emit(Op.OP_SWAP, loc); // [acc', rest]
+    this.emit(encodeBool(false), loc);
+    this.emit(Op.OP_ELSE, loc);
+    this.emit(encodeBool(true), loc);
+    this.emit(Op.OP_ENDIF, loc);
+    this.emit(Op.OP_UNTIL, loc);
+    this.emit(Op.OP_DROP, loc); // drop the emptied element words -> [acc = SolidCash array blob]
+    this.popFromStack();
+    this.pushToStack('(value)');
+  }
+
   private emitEvmAbiEncode(params: ExpressionNode[], loc: SingleLocationData): void {
     const n = params.length;
     const isDyn = (t: Type): boolean =>
@@ -8098,6 +8136,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     node.data = this.visit(node.data);
 
     if (this.compilerOptions.evmCompat) {
+      const single = node.schema[0];
+      if (node.schema.length === 1 && single instanceof ArrayType && single.bound === undefined) {
+        // a single top-level dynamic array (offset is always 32); rebuild the SolidCash array blob
+        this.emitEvmArrayDecode(single.elementType, locationData);
+        return node;
+      }
       const hasDynamic = node.schema.some(
         (t) => t === PrimitiveType.STRING || (t instanceof BytesType && t.bound === undefined),
       );

@@ -291,6 +291,21 @@ export async function assertBchDecode(c: { scash: string; args: readonly unknown
   if (!pass) throw new Error(`BCH decode MISMATCH [${c.label}]: decoding an ethers-encoded blob != the inputs`);
 }
 
+// abi.decode of a dynamic array, tested BCH-side: decode an ethers-encoded T[] blob on-chain and compare each
+// element (and the length) to the inputs. Exercises emitEvmArrayDecode (offset/length + per-element word rebuild).
+export function bchArrayDecodeCase(o: {
+  elemType: string; values: readonly unknown[]; label?: string;
+}): { scash: string; args: readonly unknown[]; label: string } {
+  const blob = ethersAbiEncode([`${toEthers(o.elemType)}[]`], [o.values]);
+  const expParams = o.values.map((_, i) => `${o.elemType} e${i}`).join(', ');
+  const checks = o.values.map((_, i) => `require(x[${i}] == e${i});`).join('\n    ');
+  const params = expParams.length > 0 ? `bytes blob, ${expParams}` : 'bytes blob';
+  const scash = `contract Conf() {\n  function f(${params}) {\n`
+    + `    ${o.elemType}[] x = abi.decode(blob, (${o.elemType}[]));\n`
+    + `    require(x.length == ${o.values.length});\n    ${checks}\n  }\n}\n`;
+  return { scash, args: [blob, ...o.values], label: o.label ?? `decode<${o.elemType}[]>` };
+}
+
 function toEthers(t: string): string {
   if (t === 'uint') return 'uint256';
   if (t === 'int') return 'int256';

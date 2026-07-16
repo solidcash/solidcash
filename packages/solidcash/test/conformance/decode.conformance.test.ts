@@ -2,8 +2,10 @@
 // on both sides; since abi.encode is proven EVM-identical, a correct round-trip proves decode is its exact inverse.
 import { describe, it } from 'vitest';
 import {
-  assertBothAccept, decodeCase, decodeMultiCase, assertBchDecode, bchDecodeCase,
+  assertBothAccept, decodeCase, decodeMultiCase, assertBchDecode, bchDecodeCase, bchArrayDecodeCase,
 } from './harness.js';
+
+const hbb = (h: string): Uint8Array => Uint8Array.from((h.slice(2).match(/../g) ?? []).map((b) => parseInt(b, 16)));
 
 const MAX = (1n << 256n) - 1n;
 const INT_MIN = -(1n << 255n);
@@ -69,4 +71,17 @@ describe('abi.decode (evmCompat): dynamic bytes/string (head-offset random acces
   it('uint, bytes, string (mixed)', () => d(['uint', 'bytes', 'string'], [7n, '0x1234', 'zzz']));
   it('bytes, uint, string (dynamic interleaved with static)', () => d(['bytes', 'uint', 'string'], ['0xaa', 99n, 'mid']));
   it('uint160 + bytes (transfer-with-data shape)', () => d(['uint160', 'bytes'], [0x1122334455n, '0xdeadbeef']));
+});
+
+describe('abi.decode (evmCompat): dynamic arrays of value types', () => {
+  const arr = (elemType: string, values: unknown[]): Promise<void> =>
+    assertBchDecode(bchArrayDecodeCase({ elemType, values }));
+  it('uint256[] three elements', () => arr('uint256', [1n, 2n, 3n]));
+  it('uint256[] single', () => arr('uint256', [42n]));
+  it('uint256[] empty', () => arr('uint256', []));
+  it('uint256[] large (max, 2^255-1)', () => arr('uint256', [MAX, (1n << 255n) - 1n, 0n]));
+  it('int256[] mixed sign', () => arr('int256', [-1n, 5n, -100n]));
+  it('int128[] negatives', () => arr('int128', [-1n, -(1n << 100n), 7n]));
+  it('bytes32[]', () => arr('bytes32', [hbb(`0x${'ab'.repeat(32)}`), hbb(`0x${'cd'.repeat(32)}`)]));
+  it('bool[]', () => arr('bool', [true, false, true]));
 });

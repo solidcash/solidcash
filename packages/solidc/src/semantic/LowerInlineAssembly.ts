@@ -300,7 +300,7 @@ const memory = new Map<bigint, YulExpressionNode>();
 // Let-bound mapping-slot vars: `let slot := keccak256(0,64)` recognized as m[k] at its binding (when the memory
 // map is correct), so a later `sstore(slot, v)` / `sload(slot)` routes to the high-level mapping. The dead keccak
 // binding is dropped (an on-chain keccak per mapping access would blow the compute budget). Reset per block.
-const mappingSlotVars = new Map<string, { collection: string; key: ExpressionNode }>();
+const mappingSlotVars = new Map<string, { collection: string; keys: ExpressionNode[] }>();
 
 // ---- P7: runtime linear-memory buffer for Yul memory the compile-time model cannot resolve ----
 // When the compile-time `memory` map fails (dynamic offset, sub-word/dynamic keccak, msize, mcopy), the WHOLE
@@ -525,26 +525,34 @@ function constSlotOf(word: YulExpressionNode): bigint | undefined {
 // mapping m declared at slot p. Recognize it and return {collection, key} so sload/sstore route to the high-level
 // mapping m (Tier-2 interop: the assembly and high-level m[k] share the entry collection) instead of an anonymous
 // __evm_storage entry. Requires the two-word region fully mstore'd at compile time with word[1] = a mapping slot.
-function mappingSlotIdiom(slotArg: YulExpressionNode): { collection: string; key: ExpressionNode } | undefined {
+function mappingSlotIdiom(slotArg: YulExpressionNode): { collection: string; keys: ExpressionNode[] } | undefined {
   if (!(slotArg instanceof YulFunctionCallNode) || slotArg.name !== 'keccak256' || slotArg.args.length !== 2) {
     return undefined;
   }
   const [pArg, lenArg] = slotArg.args;
   if (!isIntLiteral(pArg) || !isIntLiteral(lenArg) || BigInt(lenArg.raw) !== 64n) return undefined;
   const p = BigInt(pArg.raw);
-  const keyWord = memory.get(p);
-  const slotWord = memory.get(p + 32n);
+  const keyWord = memory.get(p); // this level's key k
+  const slotWord = memory.get(p + 32n); // the base slot: a declared mapping, or a tracked partial access m[k1..]
   if (keyWord === undefined || slotWord === undefined) return undefined;
+  // NESTED: the base word is a tracked partial mapping-slot var (m[k1]) -> extend to m[k1][k]. This is the
+  // `mapping(a=>mapping(b=>c))` double-keccak idiom (allowances[owner][spender]).
+  if (slotWord instanceof YulPathNode && slotWord.members.length === 0) {
+    const base = mappingSlotVars.get(slotWord.base);
+    if (base) return { collection: base.collection, keys: [...base.keys, lowerValue(keyWord)] };
+  }
+  // FIRST LEVEL: the base word is a declared mapping's slot.
   const slotNum = constSlotOf(slotWord);
-  if (slotNum === undefined) return undefined;
-  const collection = currentMappingSlots.get(slotNum);
-  if (collection === undefined) return undefined;
-  return { collection, key: lowerValue(keyWord) };
+  if (slotNum !== undefined) {
+    const collection = currentMappingSlots.get(slotNum);
+    if (collection !== undefined) return { collection, keys: [lowerValue(keyWord)] };
+  }
+  return undefined;
 }
 
 // Resolve a sload/sstore slot arg to a high-level mapping access: the inline `keccak256(0,64)` idiom, or a
 // let-bound slot var (`let slot := keccak256(0,64)`, the canonical gas-optimized form) tracked at its binding.
-function resolveMappingSlot(slotArg: YulExpressionNode): { collection: string; key: ExpressionNode } | undefined {
+function resolveMappingSlot(slotArg: YulExpressionNode): { collection: string; keys: ExpressionNode[] } | undefined {
   if (slotArg instanceof YulPathNode && slotArg.members.length === 0) return mappingSlotVars.get(slotArg.base);
   return mappingSlotIdiom(slotArg);
 }
@@ -979,7 +987,7 @@ function lowerCall(call: YulFunctionCallNode): ExpressionNode {
   // synthesized __evm_storage[slot] register entry for an arbitrary (non-declared) slot.
   if (name === 'sload' && args.length === 1) {
     const mapAccess = resolveMappingSlot(args[0]);
-    if (mapAccess) return loc(new MappingAccessNode(mapAccess.collection, [mapAccess.key]), call);
+    if (mapAccess) return loc(new MappingAccessNode(mapAccess.collection, mapAccess.keys), call);
     const fields = resolveSlotFields(args[0]);
     if (fields) return combineSlot(fields, call);
     const key = evmStorageSlotKey(args[0]);
@@ -1168,7 +1176,7 @@ function lowerStatement(stmt: YulStatementNode): StatementNode {
       if (e.name === 'sstore' && e.args.length === 2) {
         const mapWrite = resolveMappingSlot(e.args[0]);
         if (mapWrite) {
-          return loc(new MappingAssignNode(mapWrite.collection, [mapWrite.key], lowerValue(e.args[1])), e);
+          return loc(new MappingAssignNode(mapWrite.collection, mapWrite.keys, lowerValue(e.args[1])), e);
         }
         const fields = resolveSlotFields(e.args[0]);
         if (fields) return decomposeSlot(fields, e.args[1], e);

@@ -97,3 +97,58 @@ describe('EVM storage Tier-2: canonical let-bound mapping-slot idiom (P4)', () =
     await (sc as any).checkHighLevel(3n, 55n).send();
   });
 });
+
+// NESTED mapping via the double-keccak idiom (allowances[owner][spender]) - ubiquitous in gas-optimized
+// ERC20/721. The first keccak yields the inner-mapping slot m[a] (tracked partial), the second extends to
+// m[a][b]; the assembly access routes to the high-level nested mapping with BOTH keys.
+const TIER2_NESTED = `pragma solidcash >=0.8.0;
+contract C() {
+  mapping(uint256 => mapping(uint256 => uint256)) allowances;
+  function approveViaAsm(uint256 a, uint256 b, uint256 v, pubkey pk, sig s) {
+    require(checkSig(s, pk));
+    assembly {
+      mstore(0x00, a)
+      mstore(0x20, allowances.slot)
+      let s1 := keccak256(0x00, 0x40)
+      mstore(0x00, b)
+      mstore(0x20, s1)
+      let s2 := keccak256(0x00, 0x40)
+      sstore(s2, v)
+    }
+  }
+  function setHighLevel(uint256 a, uint256 b, uint256 v, pubkey pk, sig s) {
+    require(checkSig(s, pk));
+    allowances[a][b] = v;
+  }
+  function checkHighLevel(uint256 a, uint256 b, uint256 e) { require(allowances[a][b] == e); }
+  function checkViaAsm(uint256 a, uint256 b, uint256 e) {
+    uint256 r = 0;
+    assembly {
+      mstore(0x00, a)
+      mstore(0x20, allowances.slot)
+      let s1 := keccak256(0x00, 0x40)
+      mstore(0x00, b)
+      mstore(0x20, s1)
+      r := sload(keccak256(0x00, 0x40))
+    }
+    require(r == e);
+  }
+}`;
+
+describe('EVM storage Tier-2: nested mapping via double-keccak idiom (P4)', () => {
+  it('routes allowances[a][b] assembly to the high-level nested mapping (both keys)', () => {
+    const art = compileString(TIER2_NESTED, { solidityImportCompat: true });
+    const ea = art.abi.find((f) => f.name === 'approveViaAsm') as { entryAccesses?: { collection: string; keyParams: string[] }[] };
+    expect(ea?.entryAccesses?.[0]?.collection).toBe('allowances');
+    expect(ea?.entryAccesses?.[0]?.keyParams).toEqual(['a', 'b']);
+  });
+
+  it('nested assembly write is read back by high-level allowances[a][b] and vice versa', async () => {
+    const sc = await deploy(TIER2_NESTED);
+    await (sc as any).approveViaAsm(11n, 22n, 500n, alicePub, sig()).send();
+    await (sc as any).checkHighLevel(11n, 22n, 500n).send();     // high-level sees the nested asm write
+    await (sc as any).checkViaAsm(11n, 22n, 500n).send();         // asm reads it back
+    await (sc as any).setHighLevel(33n, 44n, 700n, alicePub, sig()).send();
+    await (sc as any).checkViaAsm(33n, 44n, 700n).send();         // asm sees the high-level write
+  });
+});

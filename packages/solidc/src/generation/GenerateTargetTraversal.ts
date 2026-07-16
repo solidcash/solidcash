@@ -7861,9 +7861,38 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emitEvmArrayTail(type.elementType, loc);
     } else if (type === PrimitiveType.STRING || (type instanceof BytesType && type.bound === undefined)) {
       this.emitEvmDynamicTail(loc);
+    } else if (type instanceof StructType) {
+      this.emitEvmStructInline(type, loc);
     } else {
       this.emitEvmAbiWord(type, loc);
     }
+  }
+
+  // evmCompat: fixed-width (all-static) struct value on top -> its ABI tuple encoding = each field as an inline
+  // 32-byte word (no offsets, since static). The struct blob is pushdata(field_0) ++ pushdata(field_1) ++ ...
+  // (construction pushdata-encodes each field). Pushdata-decode each field, emit its word, concatenate. Unrolled.
+  private emitEvmStructInline(type: StructType, loc: SingleLocationData): void {
+    if (this.isDynamicAbiType(type)) {
+      throw new Error('evmCompat: abi.encode of a struct with dynamic fields is unsupported');
+    }
+    this.emit(new Uint8Array(0), loc); this.emit(Op.OP_SWAP, loc); // [acc="", blob]
+    const last = type.fields.length - 1;
+    type.fields.forEach((f, i) => {
+      if (i < last) {
+        this.emitPushdataDecode(f.type, loc); // [acc, value, rest]
+        this.emit(Op.OP_SWAP, loc); // [acc, rest, value]
+        this.emitEvmAbiWord(f.type, loc); // [acc, rest, word]
+        this.emit(encodeInt(2n), loc); this.emit(Op.OP_ROLL, loc); // acc to top: [rest, word, acc]
+        this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_CAT, loc); // acc ++ word: [rest, acc']
+        this.emit(Op.OP_SWAP, loc); // [acc', rest]
+      } else {
+        this.emitPushdataDecode(f.type, loc); this.emit(Op.OP_DROP, loc); // last field, drop empty remainder: [acc, value]
+        this.emitEvmAbiWord(f.type, loc); // [acc, word]
+        this.emit(Op.OP_CAT, loc); // acc ++ word
+      }
+    });
+    this.popFromStack();
+    this.pushToStack('(value)');
   }
 
   private emitEvmAbiEncode(params: ExpressionNode[], loc: SingleLocationData): void {
@@ -7877,10 +7906,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       return;
     }
     if (dynIdx.length === 0) {
-      // All static: the head is the whole encoding.
+      // All static: the head is the whole encoding (each arg inline - value word or fixed-width struct's field words).
       params.forEach((param, i) => {
         params[i] = this.visit(param);
-        this.emitEvmAbiWord(params[i].type!, loc);
+        this.emitEvmEncodeValue(params[i].type!, loc);
         if (i > 0) {
           this.emit(Op.OP_CAT, loc);
           this.popFromStack(2);

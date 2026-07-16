@@ -206,6 +206,27 @@ export function abiCase(o: {
   });
 }
 
+// Build an abi.encode(struct) case: define a struct with the given fields, construct it from params, and encode
+// it. A struct's ABI encoding is its tuple encoding; a fixed-width (all-static) struct encodes inline (field words).
+export function abiStructCase(o: {
+  fields: readonly { type: string; name: string }[]; values: readonly unknown[]; label?: string;
+}): ConformanceCase {
+  const structDef = `struct P { ${o.fields.map((f) => `${f.type} ${f.name};`).join(' ')} }`;
+  const params = o.fields.map((f) => `${f.type} ${f.name}`).join(', ');
+  const ctorArgs = o.fields.map((f) => f.name).join(', ');
+  const tupleType = `tuple(${o.fields.map((f) => toEthers(f.type)).join(',')})`;
+  const expected = ethersAbiEncode([tupleType], [o.values]);
+  const solidity = `${SPDX}contract C {\n  ${structDef}\n`
+    + `  function f(${params}) public pure returns (bytes memory) {\n`
+    + `    P memory p = P(${ctorArgs});\n    return abi.encode(p);\n  }\n}\n`;
+  const scash = `contract Conf() {\n  ${structDef}\n  function f(${params}) {\n`
+    + `    P p = P(${ctorArgs});\n    require(abi.encode(p) == ${expected});\n  }\n}\n`;
+  return {
+    solidity, scash, evmFn: 'f', bchFn: 'f', args: o.values, evmCompat: true,
+    expectedConst: expected, label: o.label ?? `abi.encode(${tupleType})`,
+  };
+}
+
 // Dispatch an abi case to the right assertion: single-word cases run the identical bytes32-compare covenant on
 // both VMs (assertBothAccept); larger/dynamic cases use the baked-constant cross-check (assertEncodeConformant).
 export function assertAbi(c: ConformanceCase): Promise<void> {

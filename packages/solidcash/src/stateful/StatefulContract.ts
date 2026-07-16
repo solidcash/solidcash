@@ -46,7 +46,7 @@ import {
   bigIntToVmNumber,
 } from '@bitauth/libauth';
 import { Contract } from '../Contract.js';
-import { SortedList, keyToSlotMulti } from './SortedList.js';
+import { SortedList, keyToSlotMulti, bytesToSlotValue } from './SortedList.js';
 import { resolveBlockhashCoSpend } from '../oracle/blockhashCoSpend.js';
 import { attachWait } from '../wait.js';
 import Signer from '../Signer.js';
@@ -5210,14 +5210,28 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           && u.token.nft.commitment.length > 0,
         );
 
+        // For a SORTED (enumerable) collection, iteration is a trustless LINKAGE walk: the covenant co-spends
+        // the HEAD sentinel (slot 0) and follows nextKey to the tail, proving completeness by the chain. So
+        // co-spend the HEAD FIRST, then the entries in ASCENDING slot order (the chain order). A plain
+        // (non-sorted) collection keeps the caller-window order.
+        let orderedUtxos = entryUtxos;
+        if (coll.sorted) {
+          const list = SortedList.fromUtxos(entryUtxos);
+          const head = list.all.find((e) => bytesToSlotValue(e.slot) === 0n);
+          if (!head) throw new Error(`Enumerable mapping '${coll.name}' is missing its HEAD sentinel (slot 0)`);
+          const rest = list.all.filter((e) => bytesToSlotValue(e.slot) !== 0n); // list.all is already ascending
+          orderedUtxos = [head.utxo, ...rest.map((e) => e.utxo)];
+        }
+
         // Add as read-only inputs
-        for (const utxo of entryUtxos) {
+        for (const utxo of orderedUtxos) {
           const unlocker = createReadOnlyEntryNftUnlocker(this.inner, this.categoryId, coll.name);
           iterationEntryInputs.push({ ...utxo, unlocker });
         }
 
-        // Append _collectionIterCount_<N> argument
-        finalArgs = [...finalArgs, BigInt(entryUtxos.length)];
+        // Append _collectionIterCount_<N> argument (the iteration run size = HEAD + entries when sorted; used for
+        // block-layout offset accounting, not as the linkage loop bound - the chain self-terminates at the tail).
+        finalArgs = [...finalArgs, BigInt(orderedUtxos.length)];
       }
     }
 

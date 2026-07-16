@@ -55,9 +55,10 @@ diverges from the EVM.
 wraps mod 2^256.
 
 **BCH** Script numbers are **little-endian sign-magnitude**: a magnitude plus a dedicated **sign bit** (the high
-bit of the most-significant byte). `-1` is a set sign bit over magnitude `1`, not an all-ones word. Since May
-2025 BCH numbers are **arbitrary-precision (BigInt)**; the only ceiling is the **10,000-byte stack-element
-limit**, so intermediate "overflow" of fixed-width EVM types is a non-issue in practice.
+bit of the most-significant byte). `-1` is a set sign bit over magnitude `1`, not an all-ones word. `int`/`uint`
+are fixed-width `int256`/`uint256` with **EVM overflow semantics** (checked arithmetic reverts on over/underflow;
+`unchecked` wraps mod 2^N, two's-complement parity); the BCH-native **arbitrary-precision** integer is the
+separate `bigint` type, bounded only by the **10,000-byte stack-element limit**.
 
 ### What this affects
 
@@ -74,8 +75,9 @@ limit**, so intermediate "overflow" of fixed-width EVM types is a non-issue in p
 ### What this does NOT affect
 
 Ordinary arithmetic and comparison on values within range. `a + b`, `a < b`, `a * b / c` all behave as expected.
-BigInt means you will not hit the EVM's 256-bit wraparound; if your Solidity relied on `unchecked` wraparound,
-that behaviour is NOT reproduced (values just grow).
+Fixed-width `int`/`uint` reproduce EVM overflow: a checked context reverts, `unchecked` wraps mod 2^N
+(two's-complement parity). Use `bigint` for the BCH-native arbitrary-precision integer that never wraps and
+grows to the stack-element limit.
 
 ---
 
@@ -123,9 +125,10 @@ Not asked for above but essential context for why the primitives above matter:
 - **Memory is on-stack, not a separate heap.** The `memory` data-location keyword is a no-op; local reference
   types are lowered to a linear byte buffer (see `docs/experimental-memory-model.md`) or value-copied. Sections 1
   and 2 are about that buffer.
-- **Addresses are p2sh32** (a 32-byte script hash), not 20-byte EVM addresses. `payable` is a cosmetic no-op
-  (every BCH address can receive value). `bytes20`/`uint160(address)` casts exist for EVM-source compatibility
-  but the underlying identity is the 32-byte hash.
+- **Addresses are full locking bytecode** (the entire scriptPubKey, e.g. P2PKH `76a914<20>88ac` = 25 bytes,
+  P2SH32 `aa20<32>87` = 35 bytes, or an arbitrary covenant script) - variable length, NOT a fixed 20- or
+  32-byte hash. `payable` is a cosmetic no-op (every BCH address can receive value). `bytes20`/`uint160(address)`
+  casts exist for EVM-source compatibility, but the underlying identity is the whole locking script.
 - **No gas metering.** There is no `gas`/`gasprice` economy; limits are on **bytecode/stack size** instead. Yul
   `gas()` etc. lower to the nearest analogue or are rejected.
 - **`msg.data` / calldata** is reconstructed from the input's unlocking bytecode where sound, not a first-class
@@ -138,11 +141,11 @@ Not asked for above but essential context for why the primitives above matter:
 | Primitive | EVM | BCH / SolidCash |
 |-----------|-----|-----------------|
 | Word/byte order | big-endian | **little-endian** |
-| Integer encoding | 256-bit two's-complement | **little-endian sign-magnitude, BigInt** (10 KB element cap) |
-| Overflow | wraps mod 2^256 | grows (no wraparound; `unchecked` wrap not reproduced) |
+| Integer encoding | 256-bit two's-complement | **LE sign-magnitude**; `int`/`uint` = fixed int256/uint256, `bigint` = arbitrary-precision |
+| Overflow | checked reverts, `unchecked` wraps mod 2^256 | **same** for `int`/`uint`; `bigint` grows (no wrap) |
 | Structural hash | keccak256 | **sha256** for slots/ids (warned); real keccak for data via side-car |
 | Storage | account key-value (`SSTORE`) | **NFT-commitment state**, one spend = one execution |
-| Address | 20-byte | **32-byte p2sh32**; `payable` is a no-op |
+| Address | 20-byte | **variable-length locking bytecode**; `payable` is a no-op |
 | Memory | big-endian heap | **little-endian on-stack buffer** |
 | Gas | metered | not metered (size limits) |
 

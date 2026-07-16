@@ -7875,10 +7875,42 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     } else if (type === PrimitiveType.STRING || (type instanceof BytesType && type.bound === undefined)) {
       this.emitEvmDynamicTail(loc);
     } else if (type instanceof StructType) {
-      this.emitEvmStructInline(type, loc);
+      if (this.isDynamicAbiType(type)) this.emitEvmStructTail(type, loc);
+      else this.emitEvmStructInline(type, loc);
     } else {
       this.emitEvmAbiWord(type, loc);
     }
+  }
+
+  // evmCompat: a DYNAMIC struct (has a bytes/string/dynamic-array field) encoded as its ABI tuple = head/tail over
+  // the fields. Unpack each field from the framed struct blob (pushdata per field), encode it via the recursive
+  // emitEvmEncodeValue, then run the shared head/tail engine over the field blobs. The unpack uses only pure-emit /
+  // net-0 helpers (no getStackIndex), so the tracker stays frozen until the resync that names the N field blobs.
+  private emitEvmStructTail(type: StructType, loc: SingleLocationData): void {
+    const fields = type.fields;
+    const n = fields.length;
+    for (const f of fields) {
+      if (f.type instanceof StructType && this.isDynamicAbiType(f.type)) {
+        throw new Error('evmCompat: abi.encode of a struct with a nested dynamic-struct field is unsupported');
+      }
+    }
+    // Phase A': unpack + encode each field, leaving blobs [b0..b(n-1)] on the stack (blobs accumulate below, the
+    // remaining framed bytes ride on top). The last field's remainder is empty.
+    fields.forEach((f, i) => {
+      this.emitPushdataDecode(f.type, loc); // [.., value, rest]
+      if (i < n - 1) {
+        this.emit(Op.OP_SWAP, loc); // [.., rest, value]
+        this.emitEvmEncodeValue(f.type, loc); // [.., rest, blob_i]
+        this.emit(Op.OP_SWAP, loc); // [.., blob_i, rest]
+      } else {
+        this.emit(Op.OP_DROP, loc); // drop the empty remainder: [.., value]
+        this.emitEvmEncodeValue(f.type, loc); // [.., blob_i]
+      }
+    });
+    // resync: the single struct blob is now N field blobs on the stack.
+    this.popFromStack();
+    for (let i = 0; i < n; i += 1) this.pushToStack(`__abiblob${i}`);
+    this.emitEvmHeadTailFromBlobs(fields.map((f) => f.type), loc);
   }
 
   // evmCompat: fixed-width (all-static) struct value on top -> its ABI tuple encoding = each field as an inline
@@ -7953,9 +7985,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // arg to a blob slot, build the head (static word or dynamic offset word), append the tails, then drop the
     // blob slots. A dynamic's offset is headSize plus the total size of the earlier dynamics' tails, computed
     // at runtime via tracker-tracked PICK/SIZE so it stays correct for any number of dynamics at any positions.
-    // Head bytes: a dynamic arg occupies one offset word; a static arg occupies its full ABI static size (a value
-    // is one word, a fixed-width struct / fixed-size array is several). This keeps dynamic offsets correct.
-    const headSize = params.reduce((s, p) => s + (isDyn(p.type!) ? 32 : this.abiStaticSize(p.type!)), 0);
     // Phase A: encode each arg to a blob (static word or dynamic tail) kept as tracked slot __abiblob_i.
     for (let i = 0; i < n; i += 1) {
       params[i] = this.visit(params[i]);
@@ -7963,9 +7992,22 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.popFromStack();
       this.pushToStack(`__abiblob${i}`);
     }
-    // Phase B: build the head on top - static arg emits its word, dynamic arg emits its offset word.
+    // Phases B-D: build the head, append the tails, drop the blob slots. Shared with the dynamic-struct tail.
+    this.emitEvmHeadTailFromBlobs(params.map((p) => p.type!), loc);
+  }
+
+  // Head/tail assembly over N blobs already on the stack, tracked as __abiblob_0..N-1 (in order, bottom to top).
+  // Builds the head (a static arg's blob inline, a dynamic arg's offset word = headSize + earlier dynamic tails),
+  // appends the dynamic tails, drops the blob slots, and leaves the encoding. Shared by top-level abi.encode and
+  // the dynamic-struct tail (a struct's fields packed as a tuple).
+  private emitEvmHeadTailFromBlobs(types: readonly Type[], loc: SingleLocationData): void {
+    const n = types.length;
+    const isDyn = (t: Type): boolean => this.isDynamicAbiType(t);
+    const dynIdx = types.map((t, i) => (isDyn(t) ? i : -1)).filter((i) => i >= 0);
+    const headSize = types.reduce((s, t) => s + (isDyn(t) ? 32 : this.abiStaticSize(t)), 0);
+    // Phase B: build the head on top - static arg emits its blob inline, dynamic arg emits its offset word.
     for (let i = 0; i < n; i += 1) {
-      if (isDyn(params[i].type!)) {
+      if (isDyn(types[i])) {
         const dj = dynIdx.indexOf(i);
         this.emit(encodeInt(BigInt(headSize)), loc);
         this.pushToStack('(off)');
@@ -7994,7 +8036,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.pushToStack('__abihead');
       }
     }
-    // Phase C: append the dynamic tails, in argument order, after the head.
+    // Phase C: append the dynamic tails, in order, after the head.
     for (let j = 0; j < dynIdx.length; j += 1) {
       this.emit(encodeInt(BigInt(this.getStackIndex(`__abiblob${dynIdx[j]}`))), loc);
       this.emit(Op.OP_PICK, loc);
@@ -8003,7 +8045,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.popFromStack(2);
       this.pushToStack('__abihead');
     }
-    // Phase D: drop the n blob slots left below the result.
+    // Phase D: drop the N blob slots left below the result.
     for (let i = 0; i < n; i += 1) {
       this.emit(Op.OP_NIP, loc);
       this.nipFromStack();

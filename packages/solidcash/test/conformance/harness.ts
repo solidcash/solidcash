@@ -212,7 +212,9 @@ export function abiStructCase(o: {
   fields: readonly { type: string; name: string }[]; values: readonly unknown[]; label?: string;
 }): ConformanceCase {
   const structDef = `struct P { ${o.fields.map((f) => `${f.type} ${f.name};`).join(' ')} }`;
-  const params = o.fields.map((f) => `${f.type} ${f.name}`).join(', ');
+  // dynamic field types (bytes/string/T[]) need an explicit `memory` on the Solidity function param
+  const dyn = (t: string): boolean => t === 'bytes' || t === 'string' || t.endsWith('[]');
+  const params = o.fields.map((f) => `${f.type}${dyn(f.type) ? ' memory' : ''} ${f.name}`).join(', ');
   const ctorArgs = o.fields.map((f) => f.name).join(', ');
   const tupleType = `tuple(${o.fields.map((f) => toEthers(f.type)).join(',')})`;
   const expected = ethersAbiEncode([tupleType], [o.values]);

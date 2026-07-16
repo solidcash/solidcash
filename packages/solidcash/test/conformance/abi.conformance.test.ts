@@ -195,6 +195,22 @@ describe('abi.encode (evmCompat): fixed-width structs (ABI tuple, inline)', () =
     [{ type: 'int256', name: 'a' }, { type: 'int256', name: 'b' }], [-5n, 7n]));
 });
 
+describe('abi.encode (evmCompat): dynamic structs (tuple head/tail)', () => {
+  type F = { type: string; name: string };
+  const st = (fields: F[], values: unknown[]): Promise<void> =>
+    assertEncodeConformant(abiStructCase({ fields, values }));
+  it('struct {uint256, bytes}', () => st(
+    [{ type: 'uint256', name: 'a' }, { type: 'bytes', name: 'b' }], [7n, hb('0xdeadbeef')]));
+  it('struct {bytes, uint256} (dynamic first)', () => st(
+    [{ type: 'bytes', name: 'b' }, { type: 'uint256', name: 'a' }], [hb('0xcafe'), 42n]));
+  it('struct {uint256, string}', () => st(
+    [{ type: 'uint256', name: 'a' }, { type: 'string', name: 's' }], [1n, 'hello world']));
+  it('struct {bytes, bytes} two dynamics', () => st(
+    [{ type: 'bytes', name: 'a' }, { type: 'bytes', name: 'b' }], [hb('0xaa'), hb(`0x${'bb'.repeat(40)}`)]));
+  it('struct {uint256, bool, bytes}', () => st(
+    [{ type: 'uint256', name: 'a' }, { type: 'bool', name: 'c' }, { type: 'bytes', name: 'b' }], [9n, true, hb('0x1234')]));
+});
+
 describe('abi.encode (evmCompat): static struct + dynamic (head-size generalization)', () => {
   type F = { type: string; name: string };
   const mix = (fields: F[], values: unknown[], tailType: string, tailValue: unknown): Promise<void> =>

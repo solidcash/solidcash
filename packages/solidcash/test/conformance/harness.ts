@@ -348,6 +348,21 @@ export function bchNestedArrayDecodeCase(o: {
   return { scash, args, label: o.label ?? `decode<${o.elemType}[][]>` };
 }
 
+// abi.decode of a fixed-width struct: decode an ethers tuple blob into a struct and compare each field.
+// Exercises emitEvmStructDecode (tuple words -> pushdata fields).
+export function bchStructDecodeCase(o: {
+  fields: readonly { type: string; name: string }[]; values: readonly unknown[]; label?: string;
+}): { scash: string; args: readonly unknown[]; label: string } {
+  const structDef = `struct P { ${o.fields.map((f) => `${f.type} ${f.name};`).join(' ')} }`;
+  const tupleType = `tuple(${o.fields.map((f) => toEthers(f.type)).join(',')})`;
+  const blob = ethersAbiEncode([tupleType], [o.values]);
+  const expParams = o.fields.map((_, i) => `e${i}`).map((n, i) => `${o.fields[i].type} ${n}`).join(', ');
+  const checks = o.fields.map((f, i) => `require(p.${f.name} == e${i});`).join('\n    ');
+  const scash = `contract Conf() {\n  ${structDef}\n  function f(bytes blob, ${expParams}) {\n`
+    + `    P p = abi.decode(blob, (P));\n    ${checks}\n  }\n}\n`;
+  return { scash, args: [blob, ...o.values], label: o.label ?? `decode<${tupleType}>` };
+}
+
 // abi.decode of TWO dynamic arrays (multi-param offset-following): decode an ethers (T[], T[]) blob and check
 // both arrays' lengths + elements. Exercises the array branch in emitEvmAbiDecodeDynamic.
 export function bch2ArrayDecodeCase(o: {

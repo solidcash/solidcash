@@ -7895,6 +7895,24 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.pushToStack('(value)');
   }
 
+  // evmCompat inverse of emitEvmStructInline: a fixed-width struct's ABI tuple blob (word(f0) ++ word(f1) ++ ...)
+  // -> the SolidCash struct blob (pushdata(f0) ++ pushdata(f1) ++ ...). Split each 32-byte word, decode to a value,
+  // re-encode as pushdata, concatenate. Unrolled over the fields; relative ops + getStackIndex-free helpers only.
+  private emitEvmStructDecode(type: StructType, loc: SingleLocationData): void {
+    this.emit(new Uint8Array(0), loc); this.emit(Op.OP_SWAP, loc); // [acc="", blob]
+    type.fields.forEach((f) => {
+      this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); // [acc, word, rest]
+      this.emit(Op.OP_SWAP, loc); this.emitEvmWordToValue(f.type, loc); // [acc, rest, value]
+      this.emitPushdataEncode(f.type, loc); // [acc, rest, pushdata]
+      this.emit(encodeInt(2n), loc); this.emit(Op.OP_ROLL, loc); // acc to top: [rest, pushdata, acc]
+      this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_CAT, loc); // acc ++ pushdata: [rest, acc']
+      this.emit(Op.OP_SWAP, loc); // [acc', rest]
+    });
+    this.emit(Op.OP_DROP, loc); // drop the emptied blob -> [acc = struct blob]
+    this.popFromStack();
+    this.pushToStack('(value)');
+  }
+
   private emitEvmAbiEncode(params: ExpressionNode[], loc: SingleLocationData): void {
     const n = params.length;
     const isDyn = (t: Type): boolean => this.isDynamicAbiType(t);
@@ -8325,6 +8343,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     if (this.compilerOptions.evmCompat) {
       const single = node.schema[0];
+      if (node.schema.length === 1 && single instanceof StructType && !this.isDynamicAbiType(single)) {
+        // a single fixed-width struct: the tuple's inline field words -> SolidCash struct blob
+        this.emitEvmStructDecode(single, locationData);
+        return node;
+      }
       if (node.schema.length === 1 && single instanceof ArrayType && single.bound === undefined) {
         // a single top-level array (offset is always 32); rebuild the SolidCash array blob
         if (this.isDynamicAbiType(single.elementType)) this.emitEvmDynamicArrayDecode(single.elementType, locationData);

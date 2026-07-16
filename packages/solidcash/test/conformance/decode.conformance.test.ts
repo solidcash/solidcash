@@ -3,7 +3,7 @@
 import { describe, it } from 'vitest';
 import {
   assertBothAccept, decodeCase, decodeMultiCase, assertBchDecode, bchDecodeCase, bchArrayDecodeCase,
-  bch2ArrayDecodeCase, bchDecodeSchemaCase, bchNestedArrayDecodeCase,
+  bch2ArrayDecodeCase, bchDecodeSchemaCase, bchNestedArrayDecodeCase, bchStructDecodeCase,
 } from './harness.js';
 
 const sc = (type: string, ...values: unknown[]): { type: string; arr: false; values: unknown[] } =>
@@ -109,6 +109,19 @@ describe('abi.decode (evmCompat): NESTED arrays uint[][] (recursive element deco
   it('uint256[][] jagged incl empty row', () => nested('uint256', [[7n], [], [8n, 9n]]));
   it('int256[][] mixed sign', () => nested('int256', [[-1n, 2n], [-100n]]));
   it('uint256[][] single row', () => nested('uint256', [[42n, 43n]]));
+});
+
+describe('abi.decode (evmCompat): fixed-width structs (ABI tuple)', () => {
+  type F = { type: string; name: string };
+  const st = (fields: F[], values: unknown[]): Promise<void> =>
+    assertBchDecode(bchStructDecodeCase({ fields, values }));
+  it('struct {uint256, bool}', () => st([{ type: 'uint256', name: 'a' }, { type: 'bool', name: 'b' }], [7n, true]));
+  it('struct {uint256, uint256}', () => st([{ type: 'uint256', name: 'a' }, { type: 'uint256', name: 'b' }], [MAX, 456n]));
+  it('struct {uint128, uint64, bool}', () => st(
+    [{ type: 'uint128', name: 'a' }, { type: 'uint64', name: 'b' }, { type: 'bool', name: 'c' }], [(1n << 100n), 2n, true]));
+  it('struct {uint160, uint256}', () => st([{ type: 'uint160', name: 'a' }, { type: 'uint256', name: 'b' }], [0x1122n, 999n]));
+  it('struct {int256, int256} mixed sign', () => st(
+    [{ type: 'int256', name: 'a' }, { type: 'int256', name: 'b' }], [-5n, 7n]));
 });
 
 describe('abi.decode (evmCompat): multiple dynamic arrays (offset-following)', () => {

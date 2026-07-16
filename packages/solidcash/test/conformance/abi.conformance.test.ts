@@ -150,4 +150,7 @@ describe('abi.encode (evmCompat): dynamic arrays of fixed-width value types', ()
   it('bytes32[] (right-padded, no reverse)', () => enc('bytes32[] memory a', 'a', [[hb(`0x${'ab'.repeat(32)}`), hb(`0x${'cd'.repeat(32)}`)]]));
   it('bytes4[] (short, right-padded to 32)', () => enc('bytes4[] memory a', 'a', [[hb('0xdeadbeef'), hb('0x01020304')]]));
   it('bool[]', () => enc('bool[] memory a', 'a', [[true, false, true]]));
+  it('uint[] alias (== uint256[])', () => enc('uint[] memory a', 'a', [[1n, 2n, 3n]]));
+  it('int[] alias (== int256[])', () => enc('int[] memory a', 'a', [[-1n, 5n, -100n]]));
+  it('two arrays: uint256[] + uint256[]', () => enc('uint256[] memory a, uint256[] memory b', 'a, b', [[1n, 2n], [3n, 4n, 5n]]));
 });

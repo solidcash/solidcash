@@ -302,10 +302,12 @@ function paramTypes(params: string): Record<string, string> {
   const map: Record<string, string> = {};
   for (const p of params.split(',').map((s) => s.trim()).filter(Boolean)) {
     const toks = p.split(/\s+/).filter((t) => t !== 'memory');
-    let type = toks.slice(0, -1).join('');
-    if (type === 'uint') type = 'uint256';
-    if (type === 'int') type = 'int256';
-    map[toks[toks.length - 1]] = type;
+    const raw = toks.slice(0, -1).join('');
+    const arr = raw.endsWith('[]');
+    let base = arr ? raw.slice(0, -2) : raw;
+    if (base === 'uint') base = 'uint256';
+    if (base === 'int') base = 'int256';
+    map[toks[toks.length - 1]] = arr ? `${base}[]` : base;
   }
   return map;
 }

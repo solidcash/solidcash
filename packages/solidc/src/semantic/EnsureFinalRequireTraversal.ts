@@ -36,6 +36,7 @@ import {
   SelfdestructStatementNode,
   IdentifierNode,
   FunctionCallNode,
+  BlockNode,
 } from '../ast/AST.js';
 import AstTraversal from '../ast/AstTraversal.js';
 import { EmptyFunctionError, FinalRequireStatementError, MissingReturnError, ReturnInExternalFunctionError } from '../Errors.js';
@@ -478,6 +479,7 @@ function findFirstReturn(statements: StatementNode[] = []): ReturnNode | undefin
 export function containsStatefulOperation(statements: StatementNode[] = []): boolean {
   for (const s of statements) {
     if (isStatefulOp(s)) return true;
+    if (s instanceof BlockNode && containsStatefulOperation(s.statements)) return true;
     if (s instanceof BranchNode) {
       if (containsStatefulOperation(s.ifBlock.statements)) return true;
       if (s.elseBlock && containsStatefulOperation(s.elseBlock.statements)) return true;

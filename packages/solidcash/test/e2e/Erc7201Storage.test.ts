@@ -61,3 +61,51 @@ describe('ERC-7201 namespaced storage: const-slot factory -> promoted state (MVP
     await (sc as any).checkCount(42n).send();
   });
 });
+
+// MVP-2: a multi-scalar namespaced struct. The PACKING win: the fields co-pack into ONE data-NFT commitment
+// (128B), not one UTXO per slot. Each `$.f = v` is a separate write; all fields round-trip.
+const NS_MULTI = `pragma solidcash >=0.8.0;
+library AppStorage {
+  struct Layout { uint256 a; uint128 b; uint64 c; bool d; }
+  bytes32 constant SLOT = keccak256("myapp.storage.App");
+  function layout() internal pure returns (Layout storage $) { assembly { $.slot := SLOT } }
+}
+contract App() {
+  function setAll(uint256 a, uint128 b, uint64 c, bool d, pubkey pk, sig s) {
+    require(checkSig(s, pk));
+    AppStorage.Layout storage $ = AppStorage.layout();
+    $.a = a; $.b = b; $.c = c; $.d = d;
+  }
+  function checkAll(uint256 a, uint128 b, uint64 c, bool d) {
+    AppStorage.Layout storage $ = AppStorage.layout();
+    require($.a == a && $.b == b && $.c == c && $.d == d);
+  }
+  function bumpA(uint256 delta, pubkey pk, sig s) {
+    require(checkSig(s, pk));
+    AppStorage.Layout storage $ = AppStorage.layout();
+    $.a = $.a + delta;   // read-modify-write one field; the others are untouched (self-read, skipped)
+  }
+}`;
+
+describe('ERC-7201 namespaced storage: multi-scalar packing (MVP-2)', () => {
+  it('packs all fields into ONE data NFT (not one UTXO per slot)', () => {
+    const art = compileString(NS_MULTI, { solidityImportCompat: true });
+    const sl = art.stateLayout as unknown as { variables?: { name: string }[]; dataNftCount?: number };
+    expect(sl?.dataNftCount).toBe(1);
+    expect((sl?.variables ?? []).map((v) => v.name).sort())
+      .toEqual(['Layout__a', 'Layout__b', 'Layout__c', 'Layout__d']);
+  });
+
+  it('round-trips every field of the packed struct', async () => {
+    const sc = await deploy(NS_MULTI);
+    await (sc as any).setAll(7n, 8n, 9n, true, alicePub, sig()).send();
+    await (sc as any).checkAll(7n, 8n, 9n, true).send();
+  });
+
+  it('read-modify-write of one field leaves the others intact (packed rebuild)', async () => {
+    const sc = await deploy(NS_MULTI);
+    await (sc as any).setAll(100n, 8n, 9n, true, alicePub, sig()).send();
+    await (sc as any).bumpA(5n, alicePub, sig()).send();
+    await (sc as any).checkAll(105n, 8n, 9n, true).send();
+  });
+});

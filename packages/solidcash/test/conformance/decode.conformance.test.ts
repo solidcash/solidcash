@@ -6,6 +6,7 @@ import {
   bch2ArrayDecodeCase, bchDecodeSchemaCase, bchNestedArrayDecodeCase, bchStructDecodeCase,
   bchFixedArrayDecodeCase,
 } from './harness.js';
+import { ethersAbiEncode } from './evm.js';
 
 const sc = (type: string, ...values: unknown[]): { type: string; arr: false; values: unknown[] } =>
   ({ type, arr: false, values });
@@ -148,6 +149,25 @@ describe('abi.decode (evmCompat): dynamic structs (tuple head/tail)', () => {
     [{ type: 'bytes', name: 'a' }, { type: 'bytes', name: 'b' }], [hbb('0xaa'), hbb(`0x${'bb'.repeat(40)}`)]));
   it('struct {uint256, bool, bytes}', () => st(
     [{ type: 'uint256', name: 'a' }, { type: 'bool', name: 'c' }, { type: 'bytes', name: 'b' }], [9n, true, hbb('0x1234')]));
+});
+
+describe('abi.decode (evmCompat): dynamic struct with a composite field', () => {
+  it('{uint256[2], bytes}', () => assertBchDecode({
+    scash: 'contract Conf() {\n  struct P { uint256[2] a; bytes b; }\n'
+      + '  function f(bytes blob, uint256 a0, uint256 a1, bytes bv) {\n'
+      + '    P p = abi.decode(blob, (P));\n    require(p.a[0] == a0);\n    require(p.a[1] == a1);\n'
+      + '    require(p.b == bv);\n  }\n}\n',
+    args: [ethersAbiEncode(['tuple(uint256[2],bytes)'], [[[1n, 2n], hbb('0xdeadbeef')]]), 1n, 2n, hbb('0xdeadbeef')],
+    label: 'decode<tuple(uint256[2],bytes)>',
+  }));
+  it('{Inner{uint256,uint256}, bytes} (nested static struct field)', () => assertBchDecode({
+    scash: 'contract Conf() {\n  struct Inner { uint256 x; uint256 y; }\n  struct P { Inner inr; bytes b; }\n'
+      + '  function f(bytes blob, uint256 x, uint256 y, bytes bv) {\n'
+      + '    P p = abi.decode(blob, (P));\n    require(p.inr.x == x);\n    require(p.inr.y == y);\n'
+      + '    require(p.b == bv);\n  }\n}\n',
+    args: [ethersAbiEncode(['tuple(tuple(uint256,uint256),bytes)'], [[[3n, 4n], hbb('0xcafe')]]), 3n, 4n, hbb('0xcafe')],
+    label: 'decode<tuple(tuple,bytes)>',
+  }));
 });
 
 describe('abi.decode (evmCompat): fixed-size arrays T[N] (inline, static)', () => {

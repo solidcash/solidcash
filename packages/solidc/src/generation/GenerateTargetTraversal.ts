@@ -7997,11 +7997,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private emitEvmStructDecodeDynamic(type: StructType, loc: SingleLocationData): void {
     const fields = type.fields;
     const n = fields.length;
-    for (const f of fields) {
-      if (f.type instanceof StructType || (f.type instanceof ArrayType && f.type.bound !== undefined)) {
-        throw new Error('evmCompat: abi.decode of a dynamic struct with a struct/fixed-array field is unsupported');
-      }
-    }
     this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_NIP, loc); // strip top-level offset
     this.emitEvmAbiDecodeDynamic(fields.map((f) => f.type), loc); // [v0..v(n-1)] tracked
     // re-frame: bring each field value (deepest first) up, pushdata-encode, concatenate into the struct blob.
@@ -8170,25 +8165,35 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private emitEvmAbiDecodeDynamic(schema: readonly Type[], loc: SingleLocationData): void {
     const dyn = (t: Type): boolean => t === PrimitiveType.STRING || (t instanceof BytesType && t.bound === undefined);
     const isArr = (t: Type): boolean => t instanceof ArrayType && t.bound === undefined;
+    // Head bytes per field: a dynamic field is one offset word; a static value/composite is its full ABI static
+    // size (a fixed-array or nested static struct occupies several words in the head). Positions are cumulative.
+    const headSizeOf = (t: Type): number => (dyn(t) || isArr(t) ? 32 : this.abiStaticSize(t));
+    const headPos: number[] = []; let hAcc = 0;
+    for (const st of schema) { headPos.push(hAcc); hAcc += headSizeOf(st); }
     this.popFromStack();
     this.pushToStack('__decblob'); // the blob, kept below the accumulating results
 
     for (let i = 0; i < schema.length; i += 1) {
-      // head word i at the constant position 32*i -> top (net +1)
+      // field i's head bytes at its cumulative head position -> top (net +1)
+      const t = schema[i];
       this.emit(encodeInt(BigInt(this.getStackIndex('__decblob'))), loc);
       this.emit(Op.OP_PICK, loc);
-      if (i > 0) {
-        this.emit(encodeInt(BigInt(32 * i)), loc);
+      if (headPos[i] > 0) {
+        this.emit(encodeInt(BigInt(headPos[i])), loc);
         this.emit(Op.OP_SPLIT, loc);
         this.emit(Op.OP_NIP, loc);
       }
-      this.emit(encodeInt(32n), loc);
+      this.emit(encodeInt(BigInt(headSizeOf(t))), loc);
       this.emit(Op.OP_SPLIT, loc);
       this.emit(Op.OP_DROP, loc);
       this.pushToStack('(value)');
 
-      if (!dyn(schema[i]) && !isArr(schema[i])) {
-        this.emitEvmWordToValue(schema[i], loc); // static: the head word is the value
+      if (!dyn(t) && !isArr(t)) {
+        // static: the head bytes are the inline encoding. A value is one word; a fixed-array / nested static struct
+        // is several - reconstruct the SolidCash composite so the caller re-frames it correctly.
+        if (t instanceof ArrayType && t.bound !== undefined) this.emitEvmWordsToArray(t.elementType, loc);
+        else if (t instanceof StructType) this.emitEvmStructDecode(t, loc);
+        else this.emitEvmWordToValue(t, loc);
         continue;
       }
       const arr = isArr(schema[i]);

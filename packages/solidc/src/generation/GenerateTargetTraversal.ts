@@ -7638,11 +7638,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   // evmCompat abi.encode: static value types (each a 32-byte word), optionally followed by ONE trailing
   // dynamic bytes/string (a 32-byte head offset + the tail). Multiple / non-trailing dynamics: not yet.
   // evmCompat: [dynamic array blob on top] -> its EVM ABI tail = 32-byte length word ++ each element as a 32-byte
-  // word. The array is stored `pushdata(len) ++ contiguous fixed-width LE elements`; each element is byteWidth bytes
-  // of LITTLE-endian sign-magnitude (byteWidth includes the sign byte, e.g. 33 for uint256), so the EVM word is the
-  // low 32 magnitude bytes reversed to big-endian. UNSIGNED fixed-width value-type elements only (uint256[] etc.);
-  // signed/bytesN/bool elements TODO. Pure-emit with one tracker reconcile at the end (blob -> tail), no loop-internal
-  // tracking (all relative ops, no getStackIndex, no tracker-updating helper calls inside OP_BEGIN..OP_UNTIL).
+  // word. The array is stored `pushdata(len) ++ contiguous fixed-width elements` at getFixedWidth stride; the loop
+  // splits each element and reuses emitDecodeElementPacked + emitEvmAbiWord (the same per-element decode/word path as
+  // scalars) so signed ints, bytesN and bool all encode correctly. Fixed-width value-type elements (uint256[],
+  // int256[], bytes32[], bool[], ...); bigint-backed variable-width element arrays (uint[]) are separate. The tail
+  // accumulator is built via a runtime OP_BEGIN..OP_UNTIL loop; tracker is reconciled once at the end (blob -> tail).
   private emitEvmArrayTail(elemType: Type, loc: SingleLocationData): void {
     const w = getFixedWidth(elemType);
     this.emitPushdataDecode(PrimitiveType.BIGINT, loc); // [length, elements]
@@ -7658,15 +7658,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(encodeInt(BigInt(w)), loc);
     this.emit(Op.OP_SPLIT, loc); // [tailAcc, elem(w), rest]
     this.emit(Op.OP_SWAP, loc); // [tailAcc, rest, elem]
-    if (w > 32) {
-      this.emit(encodeInt(32n), loc);
-      this.emit(Op.OP_SPLIT, loc); // [tailAcc, rest, mag32, signHigh]
-      this.emit(Op.OP_DROP, loc); // drop the high sign byte(s) -> low 32 magnitude bytes (little-endian)
-    } else if (w < 32) {
-      this.emit(new Uint8Array(32 - w), loc); // left-pad: append high zero bytes (still little-endian)
-      this.emit(Op.OP_CAT, loc);
-    }
-    this.emit(Op.OP_REVERSEBYTES, loc); // 32-byte magnitude little-endian -> big-endian EVM word
+    // Decode the fixed-width element to a VM value, then to its 32-byte EVM word. emitDecodeElementPacked is
+    // pure-emit and emitEvmAbiWord is net-0 with no getStackIndex, so both are safe in the tracker-frozen loop.
+    // This handles signed ints (two's-complement), bytesN (right-pad), and bool - not just unsigned.
+    this.emitDecodeElementPacked(elemType, loc);
+    this.emitEvmAbiWord(elemType, loc); // value -> 32-byte big-endian EVM word
     this.emit(encodeInt(2n), loc);
     this.emit(Op.OP_ROLL, loc); // [rest, word, tailAcc]
     this.emit(Op.OP_SWAP, loc);

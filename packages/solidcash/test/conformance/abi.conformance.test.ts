@@ -5,6 +5,7 @@ import { assertAbi, abiCase, selCase } from './harness.js';
 
 const MAX = (1n << 256n) - 1n;
 const INT_MIN = -(1n << 255n);
+const hb = (h: string): Uint8Array => Uint8Array.from((h.slice(2).match(/../g) ?? []).map((b) => parseInt(b, 16)));
 
 const enc = (params: string, encodeArgs: string, args: readonly unknown[]): Promise<void> =>
   assertAbi(abiCase({ params, encodeArgs, args }));
@@ -141,4 +142,12 @@ describe('abi.encode (evmCompat): dynamic arrays of fixed-width value types', ()
   it('uint128[] (narrower fixed width)', () => enc('uint128[] memory a', 'a', [[1n, 2n, (1n << 128n) - 1n]]));
   it('uint + uint256[] (static head then array)', () => enc('uint a, uint256[] memory b', 'a, b', [7n, [10n, 20n]]));
   it('uint256[] + uint (array then static)', () => enc('uint256[] memory a, uint b', 'a, b', [[1n, 2n], 99n]));
+  it('int256[] mixed sign', () => enc('int256[] memory a', 'a', [[-1n, 5n, -100n]]));
+  it('int256[] min/max boundary', () => enc('int256[] memory a', 'a', [[-(1n << 255n), (1n << 255n) - 1n, 0n]]));
+  it('int128[] negatives', () => enc('int128[] memory a', 'a', [[-1n, -(1n << 100n), 7n]]));
+  // bytesN array elements must be Uint8Array for the SDK's packFixedWidthElement (hex-string auto-conversion is
+  // scalar-only); ethers accepts Uint8Array too.
+  it('bytes32[] (right-padded, no reverse)', () => enc('bytes32[] memory a', 'a', [[hb(`0x${'ab'.repeat(32)}`), hb(`0x${'cd'.repeat(32)}`)]]));
+  it('bytes4[] (short, right-padded to 32)', () => enc('bytes4[] memory a', 'a', [[hb('0xdeadbeef'), hb('0x01020304')]]));
+  it('bool[]', () => enc('bool[] memory a', 'a', [[true, false, true]]));
 });

@@ -413,6 +413,10 @@ export class CollectionNode extends Node implements Named {
   // C2 sorted-linked-list backend (opt-in via CompilerOptions.sortedMappings): entries form a sorted list keyed
   // by H(key), so non-existence is provable (co-spend the bracketing predecessor) - closes the omission attack.
   sorted: boolean = false;
+  // `enumerable mapping(...)`: the mapping may be iterated (`for..of`/`for..in`). A plain `mapping` is NOT
+  // enumerable (Solidity parity - mappings are not iterable in Solidity). Only marks intent; arrays are always
+  // enumerable. See docs/evm-storage-parity.md.
+  enumerable: boolean = false;
   visibility: StateVariableVisibility = StateVariableVisibility.PUBLIC;
   inheritedFrom?: string;
 

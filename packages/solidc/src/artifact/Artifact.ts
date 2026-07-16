@@ -419,6 +419,7 @@ export function generateArtifact(
           }),
           ...(coll.immutable && { immutable: true }),
           ...(coll.sorted && { sorted: true }),
+          ...(coll.enumerable && { enumerable: true }),
         })),
       }),
       ...(contract.collections.some((c) => !(c.type instanceof ArrayType)) && {
@@ -436,6 +437,7 @@ export function generateArtifact(
             ...mappingNameFields(coll.type),
             ...(coll.immutable && { immutable: true }),
           ...(coll.sorted && { sorted: true }),
+          ...(coll.enumerable && { enumerable: true }),
           })),
       }),
       ...(structDefs.length > 0 && { structs: structDefs }),

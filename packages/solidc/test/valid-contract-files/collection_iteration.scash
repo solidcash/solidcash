@@ -2,7 +2,7 @@ pragma solidcash >=0.8.0;
 
 contract CollectionIteration() {
     int total;
-    mapping(bytes20 => int) balances;
+    enumerable mapping(bytes20 => int) balances;
 
     // Iterate over key-value pairs using .entries
     function sumEntries() {

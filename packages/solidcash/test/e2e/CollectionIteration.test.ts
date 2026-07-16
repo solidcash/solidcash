@@ -20,7 +20,7 @@ pragma solidcash >=0.8.0;
 
 contract CollectionIteration() {
     bigint total;
-    mapping(bytes20 => bigint) balances;
+    enumerable mapping(bytes20 => bigint) balances;
 
     function sumValues() {
         bigint sum = 0;
@@ -290,7 +290,7 @@ pragma solidcash >=0.8.0;
 contract C() {
   bigint total;
   string log;
-  mapping(bytes20 => bigint) balances;
+  enumerable mapping(bytes20 => bigint) balances;
 
   function sumAndLog(string msg) {
     bigint sum = 0;

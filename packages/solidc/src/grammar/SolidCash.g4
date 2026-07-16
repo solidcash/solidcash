@@ -56,7 +56,7 @@ userDefinableOperator
 anyIdentifier
     : Identifier
     | 'delegate' | 'upgrade' | 'selfdestruct' | 'unsafe' | 'packed' | 'entries' | 'error' | 'global' | 'revert'
-    | 'transient' | 'leave' | 'fallback' | 'receive'
+    | 'transient' | 'leave' | 'fallback' | 'receive' | 'enumerable'
     | CryptoType | BchUnit
     ;
 
@@ -203,7 +203,7 @@ stateVariableDeclaration
     // `uint public constant X`) parses - Solidity allows any order. `override` (a public state var
     // overriding a base getter) is accepted and ignored: EVM inheritance is a no-op in SolidCash.
     | typeName (modifier | overrideSpecifier)* stateVariableVisibility (modifier | overrideSpecifier)* anyIdentifier ('=' expression)? ';'
-    | stateVariableVisibility? mappingType collectionModifier* anyIdentifier ';'
+    | stateVariableVisibility? 'enumerable'? mappingType collectionModifier* anyIdentifier ';'
     | stateVariableVisibility? arrayType collectionModifier* anyIdentifier ('=' expression)? ';'
     ;
 

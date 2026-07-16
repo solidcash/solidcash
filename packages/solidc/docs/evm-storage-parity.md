@@ -143,14 +143,20 @@ SolidCash parity notes:
   rather than the length - a niche divergence (Solidity's own `arr.length` compiles to `sload(p)`, but explicit
   assembly length-reads are rare). Routing `sload(<dyn-array>.slot)` -> `arr.length` would close it; deferred as
   low-value (the length is already available high-level).
-### Trustless mapping enumeration - evaluated (proposed `enumerable mapping` extension)
+### Trustless mapping enumeration (`enumerable mapping` type)
 
-SolidCash has mapping ITERATION (absent in Solidity). Today it is a caller-chosen PARTIAL WINDOW
-(`collection-iteration.md`): the loop is `i < __internal__collectionIterCount_N`, an untrusted UNLOCKING ARG,
-and the SDK picks which entry NFTs to co-spend. There is NO on-chain completeness check, so it is sound for
-SIGNED / permissioned use (the signer chose an honest window) but NOT trustless "iterate ALL entries" - an
-attacker can pass a smaller count and OMIT entries. The idea: store a live ENTRY COUNT at the mapping's master
-slot (EVM leaves it 0) and require iteration to co-spend exactly N == count entries. Evaluation:
+**SHIPPED (2026-07-16): the `enumerable mapping(...)` TYPE + iteration gating.** Iteration (`for..of` /
+`for..in`) is now allowed ONLY on a mapping declared `enumerable mapping(K => V)`; a plain `mapping(K => V)` is
+NOT iterable and rejects iteration at compile time (`NonEnumerableMappingError`). This downgrades the default
+`mapping` to exact Solidity parity (Solidity mappings are not iterable). `enumerable` is a soft keyword (still
+usable as an identifier); arrays stay iterable (not gated). Grammar + `CollectionNode.enumerable` +
+`SymbolTableTraversal.visitCollectionIteration` gate + artifact flag; tests in `EnumerableMapping.test.ts`.
+
+NOT yet shipped: the trustless COMPLETENESS soundness of `enumerable mapping` iteration itself - it currently
+uses the existing caller-chosen PARTIAL WINDOW (`collection-iteration.md`): the loop is
+`i < __internal__collectionIterCount_N`, an untrusted UNLOCKING ARG, so it is sound for SIGNED / permissioned
+use but NOT trustless "iterate ALL entries" (an attacker can pass a smaller count and OMIT entries). Making it
+trustless is the LINKAGE-completeness build below. Evaluation of how (count vs linkage):
 
 - **Soundness reduces to COUNT INTEGRITY.** "Co-spend N == count" is sound iff count equals the number of
   live, distinct-key entries. That requires (a) the count in the ALWAYS-PRESENT register / data NFT (a hidden

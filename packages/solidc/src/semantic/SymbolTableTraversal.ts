@@ -130,6 +130,7 @@ import {
   CalldataModificationError,
   UndefinedStateVariableError,
   UndefinedCollectionError,
+  NonEnumerableMappingError,
   MappingAccessInConstructorError,
   StructRedefinitionError,
   StructFieldCountError,
@@ -5624,6 +5625,9 @@ export default class SymbolTableTraversal extends AstTraversal {
   visitCollectionIteration(node: CollectionIterationNode): Node {
     const coll = this.collectionMap.get(node.collectionName);
     if (!coll) throw new UndefinedCollectionError(node);
+    // A plain `mapping` is not iterable (Solidity parity); only an `enumerable mapping` may be iterated. Arrays
+    // are always enumerable (ordered + length), so they are not gated.
+    if (coll.type instanceof MappingType && !coll.enumerable) throw new NonEnumerableMappingError(node);
     node.collection = coll;
 
     // Enter new scope for loop variables

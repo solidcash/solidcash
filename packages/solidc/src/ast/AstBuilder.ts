@@ -3004,6 +3004,11 @@ export default class AstBuilder
       const node = new CollectionNode(mappingType, name);
       node.visibility = visibility;
       node.immutable = isImmutable;
+      // `enumerable mapping(...)`: an `enumerable` terminal before the mapping type (the mapping NAME comes after,
+      // so this does not false-positive on a mapping named `enumerable`). Marks the mapping as iterable.
+      const children = (ctx as unknown as { children?: { getText?: () => string }[] }).children ?? [];
+      const mapPos = children.indexOf(mappingTypeCtx as unknown as { getText?: () => string });
+      node.enumerable = mapPos > 0 && children.slice(0, mapPos).some((c) => c.getText?.() === 'enumerable');
       node.location = Location.fromCtx(ctx);
       return node;
     }

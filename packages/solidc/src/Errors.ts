@@ -509,6 +509,16 @@ export class UndefinedCollectionError extends SolidCashError {
   }
 }
 
+export class NonEnumerableMappingError extends SolidCashError {
+  constructor(public node: CollectionIterationNode) {
+    super(
+      node,
+      `Mapping '${node.collectionName}' is not enumerable, so it cannot be iterated (Solidity mappings are not `
+      + `iterable). Declare it as 'enumerable mapping(...)' to allow 'for (.. of this.${node.collectionName}..)'.`,
+    );
+  }
+}
+
 export class MappingKeyMustBeParameterError extends SolidCashError {
   constructor(
     public node: MappingAccessNode | MappingAssignNode | MappingDeleteNode,

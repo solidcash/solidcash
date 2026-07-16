@@ -7958,6 +7958,31 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.pushToStack('(value)');
   }
 
+  // evmCompat inverse of emitEvmStructTail: a DYNAMIC struct's ABI tuple -> the framed struct blob. Strip the
+  // top-level offset, decode the fields into N values via the shared offset-following decoder, then re-frame:
+  // pushdata-encode each field (in order) and concatenate. The re-frame uses pure-emit ROLL/CAT + net-0
+  // emitPushdataEncode (no getStackIndex), so the tracker is frozen until the final reconcile.
+  private emitEvmStructDecodeDynamic(type: StructType, loc: SingleLocationData): void {
+    const fields = type.fields;
+    const n = fields.length;
+    for (const f of fields) {
+      if (f.type instanceof StructType || (f.type instanceof ArrayType && f.type.bound !== undefined)) {
+        throw new Error('evmCompat: abi.decode of a dynamic struct with a struct/fixed-array field is unsupported');
+      }
+    }
+    this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_NIP, loc); // strip top-level offset
+    this.emitEvmAbiDecodeDynamic(fields.map((f) => f.type), loc); // [v0..v(n-1)] tracked
+    // re-frame: bring each field value (deepest first) up, pushdata-encode, concatenate into the struct blob.
+    fields.forEach((f, i) => {
+      this.emit(encodeInt(BigInt(i === 0 ? n - 1 : n - i)), loc);
+      this.emit(Op.OP_ROLL, loc); // deepest remaining value -> top
+      this.emitPushdataEncode(f.type, loc);
+      if (i > 0) this.emit(Op.OP_CAT, loc);
+    });
+    this.popFromStack(n);
+    this.pushToStack('(value)');
+  }
+
   private emitEvmAbiEncode(params: ExpressionNode[], loc: SingleLocationData): void {
     const n = params.length;
     const isDyn = (t: Type): boolean => this.isDynamicAbiType(t);
@@ -8400,9 +8425,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     if (this.compilerOptions.evmCompat) {
       const single = node.schema[0];
-      if (node.schema.length === 1 && single instanceof StructType && !this.isDynamicAbiType(single)) {
-        // a single fixed-width struct: the tuple's inline field words -> SolidCash struct blob
-        this.emitEvmStructDecode(single, locationData);
+      if (node.schema.length === 1 && single instanceof StructType) {
+        // a single struct: fixed-width -> inline field words; dynamic -> tuple head/tail re-framed to the struct blob
+        if (this.isDynamicAbiType(single)) this.emitEvmStructDecodeDynamic(single, locationData);
+        else this.emitEvmStructDecode(single, locationData);
         return node;
       }
       if (node.schema.length === 1 && single instanceof ArrayType && single.bound !== undefined

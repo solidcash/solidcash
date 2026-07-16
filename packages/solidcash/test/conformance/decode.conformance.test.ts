@@ -125,6 +125,22 @@ describe('abi.decode (evmCompat): fixed-width structs (ABI tuple)', () => {
     [{ type: 'int256', name: 'a' }, { type: 'int256', name: 'b' }], [-5n, 7n]));
 });
 
+describe('abi.decode (evmCompat): dynamic structs (tuple head/tail)', () => {
+  type F = { type: string; name: string };
+  const st = (fields: F[], values: unknown[]): Promise<void> =>
+    assertBchDecode(bchStructDecodeCase({ fields, values }));
+  it('struct {uint256, bytes}', () => st(
+    [{ type: 'uint256', name: 'a' }, { type: 'bytes', name: 'b' }], [7n, hbb('0xdeadbeef')]));
+  it('struct {bytes, uint256} (dynamic first)', () => st(
+    [{ type: 'bytes', name: 'b' }, { type: 'uint256', name: 'a' }], [hbb('0xcafe'), 42n]));
+  it('struct {uint256, string}', () => st(
+    [{ type: 'uint256', name: 'a' }, { type: 'string', name: 's' }], [1n, 'hello world']));
+  it('struct {bytes, bytes} two dynamics', () => st(
+    [{ type: 'bytes', name: 'a' }, { type: 'bytes', name: 'b' }], [hbb('0xaa'), hbb(`0x${'bb'.repeat(40)}`)]));
+  it('struct {uint256, bool, bytes}', () => st(
+    [{ type: 'uint256', name: 'a' }, { type: 'bool', name: 'c' }, { type: 'bytes', name: 'b' }], [9n, true, hbb('0x1234')]));
+});
+
 describe('abi.decode (evmCompat): fixed-size arrays T[N] (inline, static)', () => {
   const fx = (elemType: string, size: number, values: unknown[]): Promise<void> =>
     assertBchDecode(bchFixedArrayDecodeCase({ elemType, size, values }));

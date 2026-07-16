@@ -153,4 +153,8 @@ describe('abi.encode (evmCompat): dynamic arrays of fixed-width value types', ()
   it('uint[] alias (== uint256[])', () => enc('uint[] memory a', 'a', [[1n, 2n, 3n]]));
   it('int[] alias (== int256[])', () => enc('int[] memory a', 'a', [[-1n, 5n, -100n]]));
   it('two arrays: uint256[] + uint256[]', () => enc('uint256[] memory a, uint256[] memory b', 'a, b', [[1n, 2n], [3n, 4n, 5n]]));
+  it('selector + uint256[] (batched call data)', () => assertAbi(selCase({
+    params: 'bytes4 s, uint256[] memory a', selectorAndArgs: 's, a', args: ['0xabcdef12', [1n, 2n, 3n]],
+  })));
+  it('uint160 + uint256[] (transfer-batch shape)', () => enc('uint160 to, uint256[] memory ids', 'to, ids', [0x1122n, [7n, 8n]]));
 });

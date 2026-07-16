@@ -295,6 +295,18 @@ Type story then collapses: `mapping` = the C2 backend (sound exclusion proofs = 
 iterate); `enumerable mapping` = the SAME C2 backend with iteration ENABLED. `enumerable` becomes a pure
 iteration TOGGLE on one universal C2 backend, not a structural choice.
 
+**DECISION (2026-07-16, user): KEEP the `mapping` / `enumerable mapping` split - do NOT collapse into one
+iterable mapping.** With C2 as the default backend, `enumerable` no longer gates the STRUCTURE or COST (every
+mapping is C2); it is now purely a CAPABILITY TOGGLE - "is `for..of` allowed on this mapping?". We keep it
+because: (1) SURFACE PARITY - Solidity mappings are not iterable, so a plain `mapping` reading exactly like
+Solidity's is the stated goal; `enumerable mapping` marks the extension (as OZ `EnumerableMap` does). Collapsing
+would make `mapping` iterable = not "exactly Solidity parity" for the surface. (2) INTENT NUDGE - iteration has
+a hard bounded-size / pagination reality (a million-entry mapping cannot be fully enumerated in one tx); opting
+in via `enumerable` is where the dev acknowledges "I will keep this bounded / paginate," rather than writing
+`for (k,v of balances)` into a runtime wall. The gate is cheap (already shipped, tiny) and collapsing later is a
+small reversible change (drop the keyword + un-gate). This does NOT revert the C2-default direction - the
+structure is universal; only the iteration SURFACE stays opt-in.
+
 ### Mergeability: `enumerable` == `sorted` (C2), NOT `mapping` == `enumerable mapping`
 
 - **`mapping` (plain) and `enumerable mapping` do NOT merge.** The linked-list is a DECLARATION-TIME commitment

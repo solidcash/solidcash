@@ -5,8 +5,8 @@ import AstTraversal from '../ast/AstTraversal.js';
 import {
   Node, SourceFileNode, ContractNode, FunctionDefinitionNode, AssemblyStatementNode, VariableDefinitionNode,
   AssignNode, FieldAccessNode, IdentifierNode, FunctionCallNode, ExpressionNode, CastNode, BlockNode,
-  MappingAccessNode, MappingAssignNode, CollectionNode, StateVariableNode, StateAccessNode, StateAssignNode,
-  StateVariableVisibility,
+  MappingAccessNode, MappingAssignNode, MappingFieldAssignNode, ArrayAccessNode, CollectionNode,
+  StateVariableNode, StateAccessNode, StateAssignNode, StateVariableVisibility,
 } from '../ast/AST.js';
 import { cloneNode } from '../ast/clone.js';
 import { YulAssignmentNode, YulPathNode, YulLiteralNode } from '../ast/YulAST.js';
@@ -125,6 +125,41 @@ export default class LowerStorageSlotPointers extends AstTraversal {
     return super.visitFunctionDefinition(node);
   }
 
+  // CONST-alias mapping-field write `$.map[k] = v` arrives as `MappingFieldAssign($, [k], map, v)` (the same
+  // shape a state struct's `s.map[k]=v` flattens to `s__map`); route it to the promoted collection.
+  visitMappingFieldAssign(node: MappingFieldAssignNode): Node {
+    const alias = this.aliases.get(node.name);
+    if (alias?.isConst && this.isMappingField(alias.struct, node.fieldName)) {
+      const write = new MappingAssignNode(
+        promotedName(alias.struct, node.fieldName), node.keys.map((k) => this.visit(k) as ExpressionNode),
+        this.visit(node.expression) as ExpressionNode,
+      );
+      write.location = node.location;
+      return write;
+    }
+    return super.visitMappingFieldAssign(node);
+  }
+
+  // CONST-alias mapping-field read `$.map[k]` arrives as `ArrayAccess(FieldAccess($, map), k)`; route it to the
+  // promoted collection `MappingAccess(S__map, [k])`. (visitFieldAccess leaves a mapping field's `$.map` alone.)
+  visitArrayAccess(node: ArrayAccessNode): Node {
+    if (node.array instanceof FieldAccessNode && node.array.expression instanceof IdentifierNode) {
+      const alias = this.aliases.get(node.array.expression.name);
+      if (alias?.isConst && this.isMappingField(alias.struct, node.array.name)) {
+        const read = new MappingAccessNode(
+          promotedName(alias.struct, node.array.name), [this.visit(node.index) as ExpressionNode],
+        );
+        read.location = node.location;
+        return read;
+      }
+    }
+    return super.visitArrayAccess(node);
+  }
+
+  private isMappingField(struct: StructType, field: string): boolean {
+    return struct.fields.find((f) => f.name === field)?.type instanceof MappingType;
+  }
+
   // `XSlot storage x = factory(..)` -> register x as an alias; drop the declaration. PARAM factory carries the
   // slot expression (routes to __evm_storage[slot]); CONST factory (ERC-7201) marks the struct for promotion.
   visitVariableDefinition(node: VariableDefinitionNode): Node {
@@ -186,14 +221,18 @@ export default class LowerStorageSlotPointers extends AstTraversal {
   visitFieldAccess(node: FieldAccessNode): Node {
     const alias = node.expression instanceof IdentifierNode ? this.aliases.get(node.expression.name) : undefined;
     if (alias) {
-      if (alias.isConst) return this.promotedRead(alias.struct, node.name, node.location);
+      // A mapping field's bare `$.map` is only meaningful when indexed (`$.map[k]`), handled by visitArrayAccess.
+      if (alias.isConst) {
+        return this.isMappingField(alias.struct, node.name)
+          ? super.visitFieldAccess(node) : this.promotedRead(alias.struct, node.name, node.location);
+      }
       const read = new MappingAccessNode(EVM_STORAGE, [this.keyOf(alias)]);
       read.location = node.location;
       return this.fromUint(read, alias.struct.fields[0].type);
     }
     if (node.expression instanceof FunctionCallNode) {
       const factory = this.factories.get(node.expression.identifier.name);
-      if (factory?.isConst) {
+      if (factory?.isConst && !this.isMappingField(factory.struct, node.name)) {
         this.constStructsToPromote.set(factory.struct.name, factory.struct);
         return this.promotedRead(factory.struct, node.name, node.location);
       }

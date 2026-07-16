@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { compileString } from 'solidc';
 import { Contract, StatefulContract, SignatureTemplate } from '../../src/index.js';
 import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
-import { alicePub, alicePriv } from '../fixture/vars.js';
+import { alicePub, alicePriv, aliceAddress } from '../fixture/vars.js';
 
 const provider = createTestProvider();
 const sig = (): SignatureTemplate => new SignatureTemplate(alicePriv);
@@ -107,5 +107,54 @@ describe('ERC-7201 namespaced storage: multi-scalar packing (MVP-2)', () => {
     await (sc as any).setAll(100n, 8n, 9n, true, alicePub, sig()).send();
     await (sc as any).bumpA(5n, alicePub, sig()).send();
     await (sc as any).checkAll(105n, 8n, 9n, true).send();
+  });
+});
+
+// MVP-3: an ERC-20-storage-shaped namespaced struct with a MAPPING field + a scalar. The mapping field can't
+// be a single slot (it is a subspace), so it promotes to a hidden collection; the scalar packs in the register.
+// `$.balances[k]` read/write route to the promoted collection; `$.totalSupply` to the register.
+const NS_MAPPING = `pragma solidcash >=0.8.0;
+library ERC20Storage {
+  struct Layout { mapping(address => uint256) balances; uint256 totalSupply; }
+  bytes32 constant SLOT = keccak256("myapp.storage.ERC20");
+  function layout() internal pure returns (Layout storage $) { assembly { $.slot := SLOT } }
+}
+contract Token() {
+  function mint(address to, uint256 amt, pubkey pk, sig s) {
+    require(checkSig(s, pk));
+    ERC20Storage.Layout storage $ = ERC20Storage.layout();
+    $.balances[to] = $.balances[to] + amt;
+    $.totalSupply = $.totalSupply + amt;
+  }
+  function checkBalance(address who, uint256 e) {
+    ERC20Storage.Layout storage $ = ERC20Storage.layout();
+    require($.balances[who] == e);
+  }
+  function checkSupply(uint256 e) {
+    ERC20Storage.Layout storage $ = ERC20Storage.layout();
+    require($.totalSupply == e);
+  }
+}`;
+
+describe('ERC-7201 namespaced storage: mapping field (MVP-3)', () => {
+  it('promotes a mapping field to a collection and a scalar to the register', () => {
+    const art = compileString(NS_MAPPING, { solidityImportCompat: true });
+    const sl = art.stateLayout as unknown as { variables?: { name: string }[]; collections?: { name: string }[] };
+    expect((sl?.variables ?? []).map((v) => v.name)).toContain('Layout__totalSupply');
+    expect((sl?.collections ?? []).map((c) => c.name)).toContain('Layout__balances');
+    // mint writes both the promoted mapping entry (balances[to]) and the promoted register (totalSupply).
+    const mint = art.abi.find((f) => f.name === 'mint') as { writesState?: boolean; entryAccesses?: { collection: string }[] };
+    expect(mint?.writesState).toBe(true);
+    expect(mint?.entryAccesses?.[0]?.collection).toBe('Layout__balances');
+  });
+
+  it('mints to a mapping entry + register and reads both back across txs', async () => {
+    const sc = await deploy(NS_MAPPING);
+    await (sc as any).mint(aliceAddress, 100n, alicePub, sig()).send();
+    await (sc as any).checkBalance(aliceAddress, 100n).send();
+    await (sc as any).checkSupply(100n).send();
+    await (sc as any).mint(aliceAddress, 50n, alicePub, sig()).send();
+    await (sc as any).checkBalance(aliceAddress, 150n).send();
+    await (sc as any).checkSupply(150n).send();
   });
 });

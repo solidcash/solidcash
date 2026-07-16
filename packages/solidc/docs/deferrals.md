@@ -261,3 +261,89 @@ expression/param/type strings verbatim, which is where a real parse divergence w
 
 **Revisit if.** A parse-level divergence is suspected (a construct that both accept but interpret differently at
 the syntax layer), or the corpus grows enough that maintaining two source templates per case becomes a burden.
+
+---
+
+## Sorted-mapping enumeration + C2-default: the four followups after VALUES linkage — 2026-07-16
+
+VALUES-mode trustless iteration over a sorted (C2) `enumerable mapping` SHIPPED (commits 07cd085a SDK, 42eaed88
+codegen, tests SortedMappingIteration.test.ts; the covenant co-spends the HEAD sentinel and walks the nextKey
+chain to the tail, so omission/truncation revert at the VM). Its three named "next steps" plus the value-width
+gap were assessed and DEFERRED - each for a concrete, grounded reason, not for lack of time.
+
+### 1. KEYS / ENTRIES iteration over a SORTED mapping
+
+**What.** `for (k in this.m)` / `for (k, v of this.m.entries)` when `m` is a sorted (C2) enumerable mapping.
+Currently throws a clean codegen error (locked by EnumerableMapping.test.ts); only VALUES works. (KEYS/ENTRIES DO
+work on a NON-sorted enumerable mapping, whose entry commitment stores the raw key.)
+
+**Why deferred.** The sorted entry commitment is `slot(32) ++ nextKey(32) ++ value` where `slot = sha256(key)`
+masked - a ONE-WAY hash. The raw key is not on-chain, and the SDK keeps no slot->key reverse map (only forward
+`keyToSlot`, SortedList.ts). So the key cannot be recovered on-chain or supplied by the SDK from state alone.
+Also the sorted order is by H(key) (hash order), so enumerated keys come out in a meaningless order - low value.
+
+**What it'd take.** Either (a) a witness-key protocol: the caller supplies each entry's key as unlocking data,
+the covenant verifies `keyToSlot(suppliedKey) == entry.slot` (preimage bind) and exposes the key to the body -
+requires the caller/SDK to already KNOW all keys (an off-chain key index or a caller-provided key list); or
+(b) widen the commitment to `slot ++ nextKey ++ key ++ value` (store the key), a format change touching every
+sorted read/write/delete path + the 128 B budget accounting.
+
+**Revisit if.** A real contract needs to enumerate a sorted mapping's keys/entries AND has an off-chain key
+source (owner-driven "process every (addr, balance)"), making (a) worthwhile.
+
+### 2. C2 sorted backend as the DEFAULT for plain `mapping`
+
+**What.** Make every plain `mapping` compile to the C2 sorted-linked-list backend (so plain mappings get
+exclusion proofs = the unforgeable-read / no-omission Solidity parity property), instead of opt-in via the
+`sortedMappings` compiler option. The design conclusion (docs/evm-storage-parity.md) is that C2 SHOULD be the
+default for parity; the `mapping` / `enumerable mapping` split is kept only as an iteration-capability toggle.
+
+**Why deferred.** (a) BLAST RADIUS: flipping the default changes the compiled bytecode of essentially every
+stateful contract with a mapping (~every mapping/stateful e2e + compiler fixture would get sorted-backend
+bytecode and need the C2 read/write/delete infra on every access). (b) BLOCKED on P5 (item 3 below): a plain
+mapping may hold unbounded string/bytes VALUES, which C2's fixed 128 B entry cannot, so a wholesale flip needs
+chunked values first (or a fail-closed carve-out for string/bytes-valued mappings).
+
+**What it'd take.** P5 (chunked sorted values) first; then stage the flip value-width by value-width
+(fixed-size-valued mappings -> C2 by default, string/bytes-valued -> C2+chunk), migrating fixtures in batches
+with byte-diff review at each step. A large, multi-session migration.
+
+**Revisit if.** P5 lands, or a concrete contract is shown where a plain mapping's omittable-default read is an
+actual exploit (the motivating parity case) rather than a theoretical one.
+
+### 3. Chunked string/bytes VALUES in sorted entries (P5)
+
+**What.** Store unbounded `string`/`bytes` values in a sorted mapping. `sortedValueKind` returns `null` for
+these (int/bool/bytesN/address/struct are supported and iterate today); the read/write/iterate paths fail closed.
+
+**Why deferred.** The C2 entry commitment is a single 128 B NFT; an unbounded value overflows it. The
+dynamic-storage chunk model (docs/dynamic-storage.md) solves this for top-level vars but is not yet wired into
+the C2 entry model (an entry would point to / span a chunk-UTXO run, and the linkage + absence-bracket proofs
+must account for the chunk spine). Not needed for the numeric/address/struct mappings that cover the common ERC
+shapes.
+
+**What it'd take.** Extend the C2 entry to carry a chunk-spine reference (like dynamic vars), co-spend the value
+chunks alongside the entry in read/iterate, and thread chunk length into the commitment so the absence bracket +
+linkage stay sound. Related to [dynamic_storage_chunks] + [c2_sorted_mapping_fix].
+
+**Revisit if.** A target contract needs a `mapping(K => string/bytes)` (e.g. on-chain metadata/URIs), or item 2
+(C2-default) requires it.
+
+### 4. Sound PARTIAL (paginated / windowed) enumeration
+
+**What.** Iterate a sorted mapping too large to co-spend whole (the tx-size ceiling - e.g. millions of balance
+entries). Linkage already proves the completeness of any CONTIGUOUS WINDOW, so a windowed walk is sound in
+principle: co-spend [cursor .. cursor+K], prove contiguity, persist the cursor (+ any accumulator) in the
+register, resume next tx.
+
+**Why deferred.** It does not fit the single-tx `for..of` model (one call = one tx = one result). A paginated
+fold spanning many txs needs (a) the cursor persisted in the data-NFT register, (b) the partial accumulator
+(e.g. running sum) persisted and threaded across txs, and (c) a completion signal (cursor reached the tail) -
+i.e. a NEW resumable-fold API/construct, not a codegen tweak to the existing loop.
+
+**What it'd take.** Design a windowed-iteration surface (explicit `iterateWindow(cursor, k)`-style calls or a
+resumable fold), register-persisted cursor + accumulator state, and a covenant that binds window-start ==
+stored cursor and advances it to the window's last nextKey. Substantial.
+
+**Revisit if.** A real contract must enumerate/aggregate a mapping whose entry count exceeds one tx's input
+budget (the USDT-scale case that motivated the enumerable/plain split originally).

@@ -236,6 +236,34 @@ export function decodeMultiCase(o: {
   };
 }
 
+// abi.decode of DYNAMIC types (bytes/string), tested BCH-side: an ethers-encoded blob (the EVM reference) is
+// decoded on-chain and each element compared to the original via SolidCash's `bytes ==` (Solidity has no bytes==,
+// so no symmetric contract is possible here). This exercises the head-offset/tail random access directly.
+export function bchDecodeCase(o: {
+  types: readonly string[]; values: readonly unknown[]; label?: string;
+}): { scash: string; args: readonly unknown[]; label: string } {
+  const blob = ethersAbiEncode(o.types.map(toEthers), o.values);
+  const expParams = o.types.map((t, i) => `${t} __e${i}`).join(', ');
+  const checks = o.types.map((_, i) => `require(x${i} == __e${i});`).join('\n    ');
+  const lhs = o.types.length === 1
+    ? `${o.types[0]} x0`
+    : `(${o.types.map((t, i) => `${t} x${i}`).join(', ')})`;
+  const scash = `contract Conf() {\n  function f(bytes blob, ${expParams}) {\n`
+    + `    ${lhs} = abi.decode(blob, (${o.types.join(', ')}));\n    ${checks}\n  }\n}\n`;
+  return { scash, args: [blob, ...o.values], label: o.label ?? `decode<${o.types.join(', ')}>` };
+}
+
+export async function assertBchDecode(c: { scash: string; args: readonly unknown[]; label: string }): Promise<void> {
+  const pass = await evalBchCheck(compileBch(c.scash, true), 'f', c.args);
+  if (!pass) throw new Error(`BCH decode MISMATCH [${c.label}]: decoding an ethers-encoded blob != the inputs`);
+}
+
+function toEthers(t: string): string {
+  if (t === 'uint') return 'uint256';
+  if (t === 'int') return 'int256';
+  return t;
+}
+
 // Parse a parameter list into { paramName: ethersType } (uint->uint256, int->int256, `T memory`->T).
 function paramTypes(params: string): Record<string, string> {
   const map: Record<string, string> = {};

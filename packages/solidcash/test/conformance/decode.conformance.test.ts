@@ -1,7 +1,9 @@
 // abi.decode EVM byte-parity (evmCompat), value types. Each case round-trips abi.decode(abi.encode(a), (T)) == a
 // on both sides; since abi.encode is proven EVM-identical, a correct round-trip proves decode is its exact inverse.
 import { describe, it } from 'vitest';
-import { assertBothAccept, decodeCase, decodeMultiCase } from './harness.js';
+import {
+  assertBothAccept, decodeCase, decodeMultiCase, assertBchDecode, bchDecodeCase,
+} from './harness.js';
 
 const MAX = (1n << 256n) - 1n;
 const INT_MIN = -(1n << 255n);
@@ -50,4 +52,21 @@ describe('abi.decode (evmCompat): multiple value types (N-word head)', () => {
   it('(int, int) mixed sign', () => m(['int', 'int'], ['a', 'b'], [-5n, 7n]));
   it('(bytes32, uint, bool)', () => m(['bytes32', 'uint', 'bool'], ['a', 'b', 'c'], [`0x${'11'.repeat(32)}`, 1n, false]));
   it('(uint256 max, int256 min)', () => m(['uint', 'int'], ['a', 'b'], [MAX, INT_MIN]));
+});
+
+describe('abi.decode (evmCompat): dynamic bytes/string (head-offset random access)', () => {
+  const d = (types: string[], values: unknown[]): Promise<void> => assertBchDecode(bchDecodeCase({ types, values }));
+  it('single bytes (short)', () => d(['bytes'], ['0xdeadbeef']));
+  it('single bytes (empty)', () => d(['bytes'], ['0x']));
+  it('single bytes (33 bytes, crosses pad)', () => d(['bytes'], [`0x${'cd'.repeat(33)}`]));
+  it('single bytes (64 bytes, two words)', () => d(['bytes'], [`0x${'11'.repeat(64)}`]));
+  it('single string', () => d(['string'], ['hello world']));
+  it('single string (empty)', () => d(['string'], ['']));
+  it('uint then bytes', () => d(['uint', 'bytes'], [42n, '0xcafe']));
+  it('bytes then uint (dynamic first)', () => d(['bytes', 'uint'], ['0xaabbcc', 5n]));
+  it('string then bytes (two dynamics)', () => d(['string', 'bytes'], ['gm', '0xbeef']));
+  it('bytes then string (two dynamics)', () => d(['bytes', 'string'], ['0xff', 'the quick brown fox']));
+  it('uint, bytes, string (mixed)', () => d(['uint', 'bytes', 'string'], [7n, '0x1234', 'zzz']));
+  it('bytes, uint, string (dynamic interleaved with static)', () => d(['bytes', 'uint', 'string'], ['0xaa', 99n, 'mid']));
+  it('uint160 + bytes (transfer-with-data shape)', () => d(['uint160', 'bytes'], [0x1122334455n, '0xdeadbeef']));
 });

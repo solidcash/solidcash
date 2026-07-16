@@ -7764,6 +7764,71 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     throw new Error(`evmCompat abi.decode: unsupported type '${type.toString()}' (value types only)`);
   }
 
+  // evmCompat abi.decode for a schema containing dynamic (string/bytes) types. The head is N 32-byte words; a
+  // dynamic word is a byte OFFSET into the blob where a 32-byte length precedes the data. Keeps the whole blob as
+  // a base slot and follows each offset (random access), decoding any valid EVM encoding. Manages its own stack
+  // tracking, ending with the N decoded values on top (blob slot removed). getStackIndex is only ever taken for
+  // the blob slot; every other pick uses a known local depth, and every VM op is mirrored so that index stays exact.
+  private emitEvmAbiDecodeDynamic(schema: readonly Type[], loc: SingleLocationData): void {
+    const dyn = (t: Type): boolean => t === PrimitiveType.STRING || (t instanceof BytesType && t.bound === undefined);
+    this.popFromStack();
+    this.pushToStack('__decblob'); // the blob, kept below the accumulating results
+
+    for (let i = 0; i < schema.length; i += 1) {
+      // head word i at the constant position 32*i -> top (net +1)
+      this.emit(encodeInt(BigInt(this.getStackIndex('__decblob'))), loc);
+      this.emit(Op.OP_PICK, loc);
+      if (i > 0) {
+        this.emit(encodeInt(BigInt(32 * i)), loc);
+        this.emit(Op.OP_SPLIT, loc);
+        this.emit(Op.OP_NIP, loc);
+      }
+      this.emit(encodeInt(32n), loc);
+      this.emit(Op.OP_SPLIT, loc);
+      this.emit(Op.OP_DROP, loc);
+      this.pushToStack('(value)');
+
+      if (!dyn(schema[i])) {
+        this.emitEvmWordToValue(schema[i], loc); // static: the head word is the value
+        continue;
+      }
+
+      // dynamic: the head word is a byte offset; follow it to [length][data].
+      this.emitEvmWordToValue(PrimitiveType.BIGINT, loc); // offset (unsigned)
+      // length = decode blob[offset : offset+32]
+      this.emit(Op.OP_DUP, loc); this.pushToStack('(x)');
+      this.emit(encodeInt(BigInt(this.getStackIndex('__decblob'))), loc);
+      this.emit(Op.OP_PICK, loc); this.pushToStack('(x)');
+      this.emit(Op.OP_SWAP, loc);
+      this.emit(Op.OP_SPLIT, loc); // blob split at offset -> [before, blob[offset:]]
+      this.emit(Op.OP_NIP, loc); this.nipFromStack();
+      this.emit(encodeInt(32n), loc); this.pushToStack('(x)');
+      this.emit(Op.OP_SPLIT, loc);
+      this.emit(Op.OP_DROP, loc); this.popFromStack();
+      this.emitEvmWordToValue(PrimitiveType.BIGINT, loc); // length
+      // data = blob[offset+32 : offset+32+length]
+      this.emit(encodeInt(BigInt(this.getStackIndex('__decblob'))), loc);
+      this.emit(Op.OP_PICK, loc); this.pushToStack('(x)');
+      this.emit(encodeInt(2n), loc); this.emit(Op.OP_PICK, loc); this.pushToStack('(x)');
+      this.emit(encodeInt(32n), loc); this.pushToStack('(x)');
+      this.emit(Op.OP_ADD, loc); this.popFromStack();
+      this.emit(Op.OP_SPLIT, loc); // blob split at offset+32 -> [before, blob[offset+32:]]
+      this.emit(Op.OP_NIP, loc); this.nipFromStack();
+      this.emit(encodeInt(1n), loc); this.emit(Op.OP_PICK, loc); this.pushToStack('(x)');
+      this.emit(Op.OP_SPLIT, loc); // take length bytes -> [data, rest]
+      this.emit(Op.OP_DROP, loc); this.popFromStack();
+      this.emit(Op.OP_NIP, loc); this.nipFromStack(); // drop the length temp
+      this.emit(Op.OP_NIP, loc); this.nipFromStack(); // drop the offset temp
+    }
+
+    // remove the blob slot sitting under the N results
+    const blobIdx = this.getStackIndex('__decblob');
+    this.emit(encodeInt(BigInt(blobIdx)), loc);
+    this.emit(Op.OP_ROLL, loc);
+    this.emit(Op.OP_DROP, loc);
+    this.removeFromStack(blobIdx);
+  }
+
   visitAbiEncode(node: AbiEncodeNode): Node {
     const locationData = { location: node.location, positionHint: PositionHint.START };
 
@@ -7979,10 +8044,18 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     node.data = this.visit(node.data);
 
     if (this.compilerOptions.evmCompat) {
-      // EVM 32-byte-word decode; net stack effect (pop blob, push N values) tracked below, like the native path.
-      this.emitEvmAbiDecode(node.schema, locationData);
-      this.popFromStack();
-      for (let i = 0; i < node.schema.length; i++) this.pushToStack('(value)');
+      const hasDynamic = node.schema.some(
+        (t) => t === PrimitiveType.STRING || (t instanceof BytesType && t.bound === undefined),
+      );
+      if (hasDynamic) {
+        // random-access decode that follows head offsets; manages its own tracking (ends with N values).
+        this.emitEvmAbiDecodeDynamic(node.schema, locationData);
+      } else {
+        // all value types: N consecutive 32-byte words; net stack effect (pop blob, push N values) tracked here.
+        this.emitEvmAbiDecode(node.schema, locationData);
+        this.popFromStack();
+        for (let i = 0; i < node.schema.length; i++) this.pushToStack('(value)');
+      }
       return node;
     }
 

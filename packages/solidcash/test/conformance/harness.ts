@@ -325,6 +325,35 @@ export function bch2ArrayDecodeCase(o: {
   return { scash, args: [blob, ...o.a, ...o.b], label: o.label ?? `decode<${o.type}[], ${o.type}[]>` };
 }
 
+// abi.decode of a MIXED schema of scalars and arrays (e.g. (uint256, uint256[])). Each entry is a scalar
+// (arr=false, one value) or an array (arr=true, its elements). Checks each decoded scalar / array length+elements.
+export function bchDecodeSchemaCase(o: {
+  entries: readonly { type: string; arr: boolean; values: readonly unknown[] }[]; label?: string;
+}): { scash: string; args: readonly unknown[]; label: string } {
+  const ethTypes = o.entries.map((e) => (e.arr ? `${toEthers(e.type)}[]` : toEthers(e.type)));
+  const jsValues = o.entries.map((e) => (e.arr ? e.values : e.values[0]));
+  const blob = ethersAbiEncode(ethTypes, jsValues);
+  const decodeTypes = o.entries.map((e) => (e.arr ? `${e.type}[]` : e.type)).join(', ');
+  const decls = o.entries.map((e, i) => `${e.arr ? `${e.type}[]` : e.type} x${i}`).join(', ');
+  const params: string[] = ['bytes blob'];
+  const checks: string[] = [];
+  const args: unknown[] = [blob];
+  o.entries.forEach((e, i) => {
+    if (e.arr) {
+      checks.push(`require(x${i}.length == ${e.values.length});`);
+      e.values.forEach((_, j) => { params.push(`${e.type} e${i}_${j}`); checks.push(`require(x${i}[${j}] == e${i}_${j});`); });
+      args.push(...e.values);
+    } else {
+      params.push(`${e.type} e${i}_0`);
+      checks.push(`require(x${i} == e${i}_0);`);
+      args.push(e.values[0]);
+    }
+  });
+  const scash = `contract Conf() {\n  function f(${params.join(', ')}) {\n`
+    + `    (${decls}) = abi.decode(blob, (${decodeTypes}));\n    ${checks.join('\n    ')}\n  }\n}\n`;
+  return { scash, args, label: o.label ?? `decode<${decodeTypes}>` };
+}
+
 function toEthers(t: string): string {
   if (t === 'uint') return 'uint256';
   if (t === 'int') return 'int256';

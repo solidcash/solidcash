@@ -3,8 +3,13 @@
 import { describe, it } from 'vitest';
 import {
   assertBothAccept, decodeCase, decodeMultiCase, assertBchDecode, bchDecodeCase, bchArrayDecodeCase,
-  bch2ArrayDecodeCase,
+  bch2ArrayDecodeCase, bchDecodeSchemaCase,
 } from './harness.js';
+
+const sc = (type: string, ...values: unknown[]): { type: string; arr: false; values: unknown[] } =>
+  ({ type, arr: false, values });
+const ar = (type: string, values: unknown[]): { type: string; arr: true; values: unknown[] } =>
+  ({ type, arr: true, values });
 
 const hbb = (h: string): Uint8Array => Uint8Array.from((h.slice(2).match(/../g) ?? []).map((b) => parseInt(b, 16)));
 
@@ -94,4 +99,14 @@ describe('abi.decode (evmCompat): multiple dynamic arrays (offset-following)', (
   it('(uint256[], uint256[]) with empty first', () => two('uint256', [], [7n, 8n]));
   it('(int256[], int256[]) mixed sign', () => two('int256', [-1n, 5n], [-100n, 200n]));
   it('(bytes32[], bytes32[])', () => two('bytes32', [hbb(`0x${'11'.repeat(32)}`)], [hbb(`0x${'22'.repeat(32)}`), hbb(`0x${'33'.repeat(32)}`)]));
+});
+
+describe('abi.decode (evmCompat): mixed scalar + array schemas', () => {
+  const m = (entries: { type: string; arr: boolean; values: unknown[] }[]): Promise<void> =>
+    assertBchDecode(bchDecodeSchemaCase({ entries }));
+  it('(uint256, uint256[])', () => m([sc('uint256', 42n), ar('uint256', [1n, 2n, 3n])]));
+  it('(uint256[], uint256)', () => m([ar('uint256', [1n, 2n]), sc('uint256', 99n)]));
+  it('(uint256, uint256[], uint256)', () => m([sc('uint256', 7n), ar('uint256', [4n, 5n]), sc('uint256', 8n)]));
+  it('(address-shaped uint160, uint256[])', () => m([sc('uint160', 0x1122n), ar('uint256', [10n, 20n])]));
+  it('(int256, int256[]) mixed sign', () => m([sc('int256', -5n), ar('int256', [-1n, 2n])]));
 });

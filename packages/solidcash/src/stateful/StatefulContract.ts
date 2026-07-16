@@ -4958,7 +4958,19 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           // concatenation (keyToSlotMulti), matching the covenant's emitSortedKeyHash. Single key -> keyToSlot.
           const keyNames = access.keyParams.map((name, i) => access.keySources?.[i]?.paramName ?? name);
           const keyTypes = collection.keyTypes ?? [collection.keyType];
-          const encodeKey = (paramName: string, keyType: string): Uint8Array => {
+          const encodeKey = (paramName: string, keyType: string, ki: number): Uint8Array => {
+            // Expression/computed key (e.g. balances[hash160(pk)] with a local var): not a function param, so
+            // resolve it from a caller-supplied entryKeyOverrides value (withEntryKey), matching the default entry
+            // model. Without one, use a type-width placeholder (a lone entry / VM-trace derivation resolves it).
+            if (access.keySources?.[ki]?.kind === 'expression') {
+              const ov = overrides?.entryKeyOverrides?.get(slotIndex);
+              if (ov !== undefined) {
+                return ov instanceof Uint8Array ? ov
+                  : typeof ov === 'bigint' ? bigIntToVmNumber(ov) : bigIntToVmNumber(ov ? 1n : 0n);
+              }
+              const m = keyType.match(/^bytes(\d+)$/);
+              return m ? new Uint8Array(parseInt(m[1], 10)) : new Uint8Array(0);
+            }
             const idx = abiFunction!.inputs.findIndex((inp) => inp.name === paramName);
             const v = args[idx] as bigint | boolean | Uint8Array | string;
             // An address key is hashed as its locking bytecode (matching the covenant's on-stack address and the
@@ -4969,9 +4981,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 : typeof v === 'boolean' ? bigIntToVmNumber(v ? 1n : 0n)
                   : bigIntToVmNumber(BigInt(v as unknown as string));
           };
+          const slot = keyToSlotMulti(keyNames.map((name, i) => encodeKey(name, keyTypes[i] ?? collection.keyType, i)));
           const kvIdx = abiFunction!.inputs.findIndex((inp) => inp.name === keyNames[0]);
-          const kv = args[kvIdx] as bigint | boolean | Uint8Array | string;
-          const slot = keyToSlotMulti(keyNames.map((name, i) => encodeKey(name, keyTypes[i] ?? collection.keyType)));
+          const kv = access.keySources?.[0]?.kind === 'expression'
+            ? (overrides?.entryKeyOverrides?.get(slotIndex) ?? new Uint8Array(0))
+            : args[kvIdx] as bigint | boolean | Uint8Array | string;
           // A sorted mapping write OR `delete m[k]` (== assign default, Solidity semantics) both upsert the entry,
           // so the SDK co-spends it the same way. bool sets are value mappings too (true=0x01, false/delete=empty).
           const isWrite = access.operations.includes('write') || access.operations.includes('delete');

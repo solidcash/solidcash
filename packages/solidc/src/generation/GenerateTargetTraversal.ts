@@ -10322,13 +10322,21 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (!loopWrites.includes(collection.name)) loopWrites.push(collection.name);
     this.sortedWrittenCollections.add(collection.name);
 
-    // 1. New value v at the bottom of the working area - kept tracked, consumed at the end. An int is BIN2NUM-
+    // 1. H(k) FIRST (before the value), so a self-referential RMW `m[k] = m[k] + ...` with a computed/local key k
+    // does not lose k: visitIdentifier ROLL-consumes the lexically-LAST use of k (the RHS read inside emitValue,
+    // which is emitted first here) - hashing the write key (the lexically-first LHS use, a PICK) up front keeps k
+    // alive for it. Hk is stashed as a temp and reordered onto the value below to restore the [v, Hk32] layout.
+    this.emitSortedKeyHash(node, slotIndex, loc);
+    this.pushToStack('(__upsert_hk)');
+
+    // 2. New value v at the bottom of the working area - kept tracked, consumed at the end. An int is BIN2NUM-
     // normalized to a minimal number (matches SDK bigIntToVmNumber); a bytesN value is CAT'd into the tail verbatim.
     emitValue();
     if (this.sortedValueKind(collection.innermostValueType) === 'int') this.emit(Op.OP_BIN2NUM, loc);
 
-    // 2. H(k) (composite for nested m[a][b]) -> [v, Hk32]
-    this.emitSortedKeyHash(node, slotIndex, loc);
+    // Reorder [Hk_temp, v] -> [v, Hk32] (Hk back on top, untracked, matching the original working-area layout).
+    const hkIdx = this.getStackIndex('(__upsert_hk)');
+    this.emit(encodeInt(BigInt(hkIdx)), loc); this.emit(Op.OP_ROLL, loc); this.removeFromStack(hkIdx);
 
     // 3. entry address -> [v, Hk32, entryAddr]
     this.emitMasterInputIndex(loc); this.emit(Op.OP_UTXOTOKENCATEGORY, loc);

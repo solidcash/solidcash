@@ -4,8 +4,9 @@
 // (via debug()) and throws FailedRequireError iff a require() failed. So resolve = PASS, throw = MISMATCH.
 import { compileString } from 'solidc';
 import {
-  Contract, TransactionBuilder, MockNetworkProvider, FailedRequireError, randomUtxo,
+  Contract, TransactionBuilder, MockNetworkProvider, FailedRequireError, randomUtxo, StatefulContract,
 } from 'solidcash';
+import { setupStatefulUtxos } from '../test-util.js';
 
 export type BchArtifact = ReturnType<typeof compileString>;
 
@@ -16,6 +17,17 @@ export function compileBch(source: string, evmCompat = false): BchArtifact {
   let artifact = cache.get(key);
   if (artifact === undefined) {
     artifact = compileString(source, evmCompat ? { evmCompat: true } : {});
+    cache.set(key, artifact);
+  }
+  return artifact;
+}
+
+// Stateful compile (state vars / assembly `.slot` layout): needs solidityImportCompat + a data-NFT genesis.
+export function compileBchStateful(source: string): BchArtifact {
+  const key = `state::${source}`;
+  let artifact = cache.get(key);
+  if (artifact === undefined) {
+    artifact = compileString(source, { solidityImportCompat: true });
     cache.set(key, artifact);
   }
   return artifact;
@@ -47,6 +59,30 @@ export async function evalBchCheck(
 ): Promise<boolean> {
   try {
     await buildAndSend(artifact, fnName, args);
+    return true;
+  } catch (e) {
+    if (e instanceof FailedRequireError) return false;
+    throw e;
+  }
+}
+
+// Stateful eval: genesis the contract's data NFT(s), then spend `fnName` through the StatefulContract covenant.
+// Used for slot-layout conformance (assembly `.slot` reads live in a stateful contract). resolve = PASS,
+// FailedRequireError = MISMATCH.
+async function buildAndSendStateful(artifact: BchArtifact, fnName: string, args: readonly unknown[]): Promise<void> {
+  const provider = new MockNetworkProvider();
+  const contract = new Contract(artifact, [], { provider });
+  const { categoryId } = await setupStatefulUtxos(provider, contract, artifact.stateLayout!, {}, { saltContract: true });
+  const sc = StatefulContract.withCategory(contract, categoryId);
+  const fn = (sc as unknown as Record<string, (...a: unknown[]) => { send: () => Promise<unknown> }>)[fnName];
+  await fn(...args).send();
+}
+
+export async function evalBchStatefulCheck(
+  artifact: BchArtifact, fnName: string, args: readonly unknown[],
+): Promise<boolean> {
+  try {
+    await buildAndSendStateful(artifact, fnName, args);
     return true;
   } catch (e) {
     if (e instanceof FailedRequireError) return false;

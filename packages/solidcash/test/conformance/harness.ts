@@ -4,7 +4,9 @@
 import {
   compileEvm, evalEvm, ethersAbiEncode, ethersAbiEncodePacked, ethersSelector,
 } from './evm.js';
-import { compileBch, evalBchCheck, evalBchRejects } from './bch.js';
+import {
+  compileBch, evalBchCheck, evalBchRejects, compileBchStateful, evalBchStatefulCheck,
+} from './bch.js';
 
 const SPDX = '// SPDX-License-Identifier: MIT\npragma solidity ^0.8.0;\n';
 
@@ -92,6 +94,35 @@ export function exprCase(o: {
     args: o.args,
     label: o.label ?? o.expr,
   };
+}
+
+// Slot-layout conformance: SolidCash must assign the SAME EVM storage slot id as solc. A contract with the given
+// state-var `decls` exposes `<slotExpr>` (e.g. `c.slot`); solc computes the slot (EVM ground truth via the /Code/
+// solidity 0.8.36 layout), and the SolidCash covenant asserts its own assembly `.slot` equals it. Catches any
+// divergence in linear / packed / fixed-array / dynamic-array / mapping / struct slot assignment.
+export function slotLayoutCase(o: { decls: string; slotExpr: string; label?: string }): ConformanceCase {
+  return {
+    solidity: `${SPDX}contract C {\n  ${o.decls}\n`
+      + '  function f() public view returns (uint256) {\n    uint256 r;\n'
+      + `    assembly { r := ${o.slotExpr} }\n    return r;\n  }\n}\n`,
+    scash: `contract Conf() {\n  ${o.decls}\n`
+      + '  function f(uint256 __expected) {\n    uint256 r = 0;\n'
+      + `    assembly { r := ${o.slotExpr} }\n    require(r == __expected);\n  }\n}\n`,
+    evmFn: 'f',
+    bchFn: 'f',
+    args: [],
+    label: o.label ?? o.slotExpr,
+  };
+}
+
+// Run a slot-layout case: solc computes the EVM slot; the SolidCash stateful covenant must accept it.
+export async function assertSlotConformant(c: ConformanceCase): Promise<void> {
+  const { decoded } = await evalEvm(compileEvm(c.solidity), c.evmFn, c.args);
+  const pass = await evalBchStatefulCheck(compileBchStateful(c.scash), c.bchFn, [...c.args, ...decoded]);
+  if (!pass) {
+    const tag = c.label ? ` [${c.label}]` : '';
+    throw new Error(`Slot-layout MISMATCH${tag}: solc slot = ${fmt(decoded)}, but SolidCash assigns a different slot`);
+  }
 }
 
 // A case where the operation must REVERT on BOTH sides (e.g. checked over/underflow, division by zero).

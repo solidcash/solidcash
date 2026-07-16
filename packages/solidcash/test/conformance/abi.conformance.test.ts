@@ -207,3 +207,15 @@ describe('abi.encode (evmCompat): static struct + dynamic (head-size generalizat
   it('(struct{uint256,uint256}, string)', () => mix(
     [{ type: 'uint256', name: 'a' }, { type: 'uint256', name: 'b' }], [11n, 22n], 'string', 'hello world'));
 });
+
+describe('abi.encode (evmCompat): fixed-size arrays (inline, static)', () => {
+  it('uint256[3]', () => enc('uint256[3] memory a', 'a', [[1n, 2n, 3n]]));
+  it('uint256[2] max + zero', () => enc('uint256[2] memory a', 'a', [[MAX, 0n]]));
+  it('int256[3] mixed sign', () => enc('int256[3] memory a', 'a', [[-1n, 5n, -100n]]));
+  it('uint128[4]', () => enc('uint128[4] memory a', 'a', [[1n, 2n, 3n, 4n]]));
+  it('bool[2]', () => enc('bool[2] memory a', 'a', [[true, false]]));
+  it('bytes32[2]', () => enc('bytes32[2] memory a', 'a', [[hb(`0x${'ab'.repeat(32)}`), hb(`0x${'cd'.repeat(32)}`)]]));
+  it('uint160[2] address-shaped', () => enc('uint160[2] memory a', 'a', [[0x1122n, 0x3344n]]));
+  it('uint + uint256[3] (mixed static)', () => enc('uint x, uint256[3] memory a', 'x, a', [9n, [1n, 2n, 3n]]));
+  it('uint256[2] + bytes (static array before dynamic)', () => enc('uint256[2] memory a, bytes memory d', 'a, d', [[7n, 8n], hb('0xdeadbeef')]));
+});

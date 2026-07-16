@@ -351,6 +351,19 @@ export function bchArrayDecodeCase(o: {
   return { scash, args: [blob, ...o.values], label: o.label ?? `decode<${o.elemType}[]>` };
 }
 
+// abi.decode of a fixed-size array T[N]: decode an ethers T[N] blob (inline element words) and compare each
+// element. Exercises the fixed-array decode route (emitEvmWordsToArray with no offset/length to strip).
+export function bchFixedArrayDecodeCase(o: {
+  elemType: string; size: number; values: readonly unknown[]; label?: string;
+}): { scash: string; args: readonly unknown[]; label: string } {
+  const blob = ethersAbiEncode([`${toEthers(o.elemType)}[${o.size}]`], [o.values]);
+  const expParams = o.values.map((_, i) => `${o.elemType} e${i}`).join(', ');
+  const checks = o.values.map((_, i) => `require(x[${i}] == e${i});`).join('\n    ');
+  const scash = `contract Conf() {\n  function f(bytes blob, ${expParams}) {\n`
+    + `    ${o.elemType}[${o.size}] x = abi.decode(blob, (${o.elemType}[${o.size}]));\n    ${checks}\n  }\n}\n`;
+  return { scash, args: [blob, ...o.values], label: o.label ?? `decode<${o.elemType}[${o.size}]>` };
+}
+
 // abi.decode of a NESTED array T[][] (array of value-element arrays): decode an ethers T[][] blob and compare
 // each inner element x[i][j] and length. Exercises the recursive emitEvmDecodeElement (inner value-array rebuild).
 export function bchNestedArrayDecodeCase(o: {

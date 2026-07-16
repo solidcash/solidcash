@@ -4647,7 +4647,11 @@ export default class AstBuilder
     const elemName = text.replace(/(\[\])+$/, '');
     const fixup = (t: Type): Type => {
       if (t instanceof ArrayType) {
-        return new ArrayType(t.elementType === undefined ? new AddressType(false, elemName) : fixup(t.elementType));
+        // preserve the bound: a fixed-size array (uint256[3]) must stay bounded, not collapse to a dynamic array
+        return new ArrayType(
+          t.elementType === undefined ? new AddressType(false, elemName) : fixup(t.elementType),
+          t.bound,
+        );
       }
       return t;
     };

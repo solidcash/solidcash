@@ -4,6 +4,7 @@ import { describe, it } from 'vitest';
 import {
   assertBothAccept, decodeCase, decodeMultiCase, assertBchDecode, bchDecodeCase, bchArrayDecodeCase,
   bch2ArrayDecodeCase, bchDecodeSchemaCase, bchNestedArrayDecodeCase, bchStructDecodeCase,
+  bchFixedArrayDecodeCase,
 } from './harness.js';
 
 const sc = (type: string, ...values: unknown[]): { type: string; arr: false; values: unknown[] } =>
@@ -122,6 +123,16 @@ describe('abi.decode (evmCompat): fixed-width structs (ABI tuple)', () => {
   it('struct {uint160, uint256}', () => st([{ type: 'uint160', name: 'a' }, { type: 'uint256', name: 'b' }], [0x1122n, 999n]));
   it('struct {int256, int256} mixed sign', () => st(
     [{ type: 'int256', name: 'a' }, { type: 'int256', name: 'b' }], [-5n, 7n]));
+});
+
+describe('abi.decode (evmCompat): fixed-size arrays T[N] (inline, static)', () => {
+  const fx = (elemType: string, size: number, values: unknown[]): Promise<void> =>
+    assertBchDecode(bchFixedArrayDecodeCase({ elemType, size, values }));
+  it('uint256[3]', () => fx('uint256', 3, [1n, 2n, 3n]));
+  it('uint256[2] max + zero', () => fx('uint256', 2, [MAX, 0n]));
+  it('int256[3] mixed sign', () => fx('int256', 3, [-1n, 5n, -100n]));
+  it('uint128[4]', () => fx('uint128', 4, [1n, 2n, 3n, 4n]));
+  it('bool[2]', () => fx('bool', 2, [true, false]));
 });
 
 describe('abi.decode (evmCompat): multiple dynamic arrays (offset-following)', () => {

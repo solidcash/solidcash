@@ -241,18 +241,34 @@ all values == the off-chain sum. Adversarial (each MUST revert): drop a middle e
 (truncation); present a foreign UTXO (substitution); reorder (chain break). Only ship once omission provably
 fails closed.
 
-STATUS: SDK HALF DONE (commit 07cd085a - co-spend HEAD + slot-ordered entries; inert until the loop lands).
-Codegen half is the remaining soundness-critical piece, fully de-risked: reuse the address pin + commitment
-split from `emitSortedSetRead` (GTT:9846-9867: `emitMasterInputIndex; OP_UTXOTOKENCATEGORY; 32 SPLIT DROP;
-emitP2sh32FromCovenant(buildEntryNftCovenantScript(cat, collectionHash))` for the entry address, then per entry
-`idx OP_DUP OP_UTXOBYTECODE <entryAddr> OP_EQUALVERIFY; OP_UTXOTOKENCOMMITMENT; 32 SPLIT; 32 SPLIT` ->
-slot32/nextKey32/value). Loop shape: precompute entryAddr (tracked); read HEAD @ base+0, pin + verify slot==0,
-`expectedNext = nextKey` (tracked), i=1; `OP_BEGIN` cond `OP_BIN2NUM(expectedNext) != 0`; body: read entry @
-base+i, pin, split, `slot == expectedNext OP_EQUALVERIFY` (chain), UPDATE `expectedNext = nextKey` (emitReplace)
-BEFORE the value decode + user body (so nextKey survives), i++; `OP_UNTIL`; exits at tail (nextKey==0). Then
-the ADVERSARIAL suite is the ship gate (omission/truncation/substitution/reorder MUST revert). Do NOT ship the
-codegen unverified - the tracked-stack vs VM-stack bookkeeping needs VM-trace debugging; that is why it is
-staged from the (safe, isolated) SDK half rather than rushed.
+STATUS: **SHIPPED + adversarially verified** (VALUES mode). SDK half 07cd085a (co-spend HEAD + slot-ordered
+entries); codegen half 42eaed88 (`emitSortedIterationLinkage` in GTT). `for (int v of this.m)` over a sorted
+`enumerable mapping` compiles to the linkage-completeness covenant below; KEYS/ENTRIES on a sorted mapping throw
+a clean error (the C2 commitment stores slot=H(key), not the raw key).
+
+Recipe (as built): reuse the address pin + commitment split from `emitSortedSetRead` - `emitMasterInputIndex;
+OP_UTXOTOKENCATEGORY; 32 SPLIT DROP; emitP2sh32FromCovenant(buildEntryNftCovenantScript(cat, collectionHash))`
+for the entry address (kept TRACKED as `(__iter_entryaddr)` and reused per entry; note emitP2sh32FromCovenant
+re-tracks its result as `(value)` so relabel it), then per entry `idx OP_DUP OP_UTXOBYTECODE <entryAddr>
+OP_EQUALVERIFY; OP_UTXOTOKENCOMMITMENT; 32 SPLIT; 32 SPLIT` -> slot32/nextKey32/value. Loop shape: precompute
+entryAddr; read HEAD @ base+0, pin + verify slot==0, `expectedNext = nextKey`, i=1; `OP_BEGIN` cond
+`OP_BIN2NUM(expectedNext) > 0`; body: read entry @ base+i, pin, split, `slot == expectedNext OP_EQUALVERIFY`
+(chain), UPDATE `expectedNext = nextKey` BEFORE the value decode + user body (so nextKey survives), i++;
+`OP_UNTIL`; exits at tail (nextKey==0). The count arg is used only for block-layout offsets, never as the loop
+bound - the chain self-terminates.
+
+Stack-discipline GOTCHA (the debug that mattered): the loop carries `expectedNext` ABOVE the counter, so the
+plain counter loop's `emitReplace(getStackIndex(i)+1); popFromStack()` pattern (which assumes the picked value
+is at top and pops the leftover top) wrongly drops `expectedNext`. Fix: at each picked-then-emitReplace site,
+`pushToStack` the new value as a temp first, then `emitReplace(getStackIndex(target)); popFromStack()` - the
+`visitAssign` discipline, which reconciles at ANY tracker depth.
+
+Adversarial ship gate (SortedMappingIteration.test.ts, all green): happy (sum HEAD->tail); OMISSION (a co-spend
+set missing a middle linked entry reverts - captured VM error `error in evaluating input index 0: Program failed
+an OP_VERIFY`, i.e. the chain-check EQUALVERIFY, NOT an SDK pre-check - `SortedList.fromUtxos` is lenient so the
+broken chain reaches the covenant); TRUNCATION (missing tail never reaches nextKey==0 -> reverts). SUBSTITUTION
+covered by reduction (the per-entry address pin, exercised on every happy read) and REORDER by the chain check
+(only the ascending HEAD->tail order satisfies slot==expectedNext).
 
 ### Sound PARTIAL (windowed / paginated) enumeration - resolves the tx-size ceiling
 

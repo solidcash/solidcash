@@ -2,7 +2,7 @@
 // Compile Solidity with solc (0.8.36, matching the /Code/solidity reference), execute in
 // @ethereumjs/evm - a node-less, in-memory EVM (the same engine tevm.sh wraps). No RPC, no network.
 import solc from 'solc';
-import { AbiCoder, FunctionFragment, solidityPacked } from 'ethers';
+import { AbiCoder, FunctionFragment, solidityPacked, id } from 'ethers';
 import { createEVM } from '@ethereumjs/evm';
 import { hexToBytes, bytesToHex, createAddressFromString } from '@ethereumjs/util';
 
@@ -45,6 +45,10 @@ export function ethersAbiEncode(types: readonly string[], values: readonly unkno
 }
 export function ethersAbiEncodePacked(types: readonly string[], values: readonly unknown[]): string {
   return solidityPacked(types as string[], values as unknown[]);
+}
+// The 4-byte function selector as 0x + 8 hex: keccak256(signature)[:4], matching Solidity/EVM.
+export function ethersSelector(signature: string): string {
+  return id(signature).slice(0, 10);
 }
 
 export interface EvmResult {

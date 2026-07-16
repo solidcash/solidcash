@@ -8343,6 +8343,19 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   visitAbiEncodeWithSignature(node: AbiEncodeWithSignatureNode): Node {
     const locationData = { location: node.location, positionHint: PositionHint.START };
+    if (this.compilerOptions.evmCompat) {
+      // EVM: keccak256(sig)[:4] selector (computed in SymbolTableTraversal) ++ the standard head/tail arg encoding.
+      if (!node.computedSelector) {
+        throw new Error('evmCompat: abi.encodeWithSignature needs a literal signature (runtime keccak selector unsupported)');
+      }
+      this.emit(node.computedSelector, locationData);
+      this.pushToStack('(value)');
+      this.emitEvmAbiEncode(node.parameters, locationData);
+      this.emit(Op.OP_CAT, locationData);
+      this.popFromStack(2);
+      this.pushToStack('(value)');
+      return node;
+    }
     if (node.computedSelector) {
       this.emit(node.computedSelector, locationData);
       this.pushToStack('(value)');
@@ -8369,6 +8382,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const locationData = { location: node.location, positionHint: PositionHint.START };
     this.emit(node.computedSelector!, locationData);
     this.pushToStack('(value)');
+    if (this.compilerOptions.evmCompat) {
+      // EVM: keccak256(sig)[:4] selector ++ the standard head/tail arg encoding.
+      this.emitEvmAbiEncode(node.parameters, locationData);
+      this.emit(Op.OP_CAT, locationData);
+      this.popFromStack(2);
+      this.pushToStack('(value)');
+      return node;
+    }
     this.emitEncodeArgsAndCatSelector(node.parameters, locationData);
     return node;
   }

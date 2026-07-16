@@ -2,7 +2,7 @@
 // evaluated on BOTH VMs, asserting value-identical results. The EVM side is the reference; the BCH
 // side proves it matches by a require(<computed> == <expected>) oracle fed the EVM result.
 import {
-  compileEvm, evalEvm, ethersAbiEncode, ethersAbiEncodePacked,
+  compileEvm, evalEvm, ethersAbiEncode, ethersAbiEncodePacked, ethersSelector,
 } from './evm.js';
 import { compileBch, evalBchCheck, evalBchRejects } from './bch.js';
 
@@ -257,6 +257,46 @@ export function abiStructMixedCase(o: {
 // both VMs (assertBothAccept); larger/dynamic cases use the baked-constant cross-check (assertEncodeConformant).
 export function assertAbi(c: ConformanceCase): Promise<void> {
   return c.bothAccept ? assertBothAccept(c) : assertEncodeConformant(c);
+}
+
+// Build an abi.encodeWithSignature case: the 4-byte selector is keccak256(signature)[:4] (evmCompat), followed
+// by the standard ABI encoding of the args. `encodeArgs` references the params (empty for a no-arg signature).
+export function sigCase(o: {
+  signature: string; params: string; encodeArgs: string; args: readonly unknown[]; label?: string;
+}): ConformanceCase {
+  const types = paramTypes(o.params);
+  const byName = argsByName(o.params, o.args);
+  const names = o.encodeArgs.split(',').map((s) => s.trim()).filter(Boolean);
+  const selector = ethersSelector(o.signature);
+  const expected = selector + ethersAbiEncode(names.map((n) => types[n]), names.map((n) => byName[n])).slice(2);
+  const argList = names.length ? `, ${o.encodeArgs}` : '';
+  return abiCaseFrom({
+    params: o.params, expr: `abi.encodeWithSignature("${o.signature}"${argList})`, expected, args: o.args,
+    label: o.label ?? `encodeWithSignature(${o.signature})`,
+  });
+}
+
+// Build an abi.encodeCall case: an interface method reference + a parenthesized arg tuple. The selector is
+// keccak256(canonicalSig)[:4] (evmCompat), followed by the standard ABI encoding of the args. Both sides declare
+// the interface so solc and solidc resolve the same method signature.
+export function callCase(o: {
+  ifaceName: string; ifaceDecl: string; method: string; canonicalSig: string;
+  params: string; encodeArgs: string; args: readonly unknown[]; label?: string;
+}): ConformanceCase {
+  const types = paramTypes(o.params);
+  const byName = argsByName(o.params, o.args);
+  const names = o.encodeArgs.split(',').map((s) => s.trim()).filter(Boolean);
+  const selector = ethersSelector(o.canonicalSig);
+  const expected = selector + ethersAbiEncode(names.map((n) => types[n]), names.map((n) => byName[n])).slice(2);
+  const iface = `interface ${o.ifaceName} { ${o.ifaceDecl} }`;
+  const expr = `abi.encodeCall(${o.ifaceName}.${o.method}, (${o.encodeArgs}))`;
+  return {
+    solidity: `${SPDX}${iface}\ncontract C {\n  function f(${o.params}) public pure returns (bytes memory) {\n`
+      + `    return ${expr};\n  }\n}\n`,
+    scash: `${iface}\ncontract Conf() {\n  function f(${o.params}) {\n    require(${expr} == ${expected});\n  }\n}\n`,
+    evmFn: 'f', bchFn: 'f', args: o.args, evmCompat: true, expectedConst: expected,
+    label: o.label ?? `encodeCall(${o.canonicalSig})`,
+  };
 }
 
 // Build an abi.encodeWithSelector case. `selectorAndArgs` is the full argument list to

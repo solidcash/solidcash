@@ -2,7 +2,7 @@
 // under evmCompat must produce byte-identical output. Phase 1: static value types (32-byte words).
 import { describe, it } from 'vitest';
 import {
-  assertAbi, abiCase, selCase, abiStructCase, abiStructMixedCase, assertEncodeConformant,
+  assertAbi, abiCase, selCase, sigCase, callCase, abiStructCase, abiStructMixedCase, assertEncodeConformant,
 } from './harness.js';
 
 const MAX = (1n << 256n) - 1n;
@@ -82,6 +82,35 @@ describe('abi.encodeWithSelector (evmCompat)', () => {
   it('selector + two uint', () => sel('bytes4 s, uint a, uint b', 's, a, b', ['0x12345678', 1n, 2n]));
   it('selector + int + bool', () => sel('bytes4 s, int a, bool b', 's, a, b', ['0x11223344', -7n, true]));
   it('selector + uint + trailing bytes', () => sel('bytes4 s, uint a, bytes memory b', 's, a, b', ['0x11223344', 5n, '0xcafe']));
+});
+
+describe('abi.encodeWithSignature (evmCompat): keccak256 selector + EVM args', () => {
+  const sig = (signature: string, params: string, encodeArgs: string, args: readonly unknown[]): Promise<void> =>
+    assertAbi(sigCase({ signature, params, encodeArgs, args }));
+  it('transfer(address,uint256)', () => sig(
+    'transfer(address,uint256)', 'uint160 to, uint256 amt', 'to, amt', [0x1122334455667788990011223344556677889900n, 1000n]));
+  it('no args - selector only', () => sig('poke()', '', '', []));
+  it('single uint256', () => sig('bar(uint256)', 'uint256 x', 'x', [42n]));
+  it('two static (uint256,bool)', () => sig('f(uint256,bool)', 'uint256 a, bool b', 'a, b', [7n, true]));
+  it('dynamic arg baz(bytes)', () => sig('baz(bytes)', 'bytes memory b', 'b', [hb('0xdeadbeef')]));
+  it('mixed static+dynamic m(uint256,bytes,bool)', () => sig(
+    'm(uint256,bytes,bool)', 'uint256 a, bytes memory b, bool c', 'a, b, c', [7n, hb('0xcafe'), true]));
+  it('dynamic array g(uint256[])', () => sig('g(uint256[])', 'uint256[] memory a', 'a', [[1n, 2n, 3n]]));
+});
+
+describe('abi.encodeCall (evmCompat): keccak256 selector + EVM args', () => {
+  it('IBox.set(uint256)', () => assertAbi(callCase({
+    ifaceName: 'IBox', ifaceDecl: 'function set(uint256 x) external;',
+    method: 'set', canonicalSig: 'set(uint256)', params: 'uint256 x', encodeArgs: 'x', args: [42n],
+  })));
+  it('IPair.put(uint256,bool) (two static)', () => assertAbi(callCase({
+    ifaceName: 'IPair', ifaceDecl: 'function put(uint256 a, bool b) external;',
+    method: 'put', canonicalSig: 'put(uint256,bool)', params: 'uint256 a, bool b', encodeArgs: 'a, b', args: [7n, true],
+  })));
+  it('IData.store(bytes) (dynamic arg)', () => assertAbi(callCase({
+    ifaceName: 'IData', ifaceDecl: 'function store(bytes memory b) external;',
+    method: 'store', canonicalSig: 'store(bytes)', params: 'bytes memory b', encodeArgs: 'b', args: [hb('0xdeadbeef')],
+  })));
 });
 
 describe('abi.encode (evmCompat): single dynamic at any position', () => {

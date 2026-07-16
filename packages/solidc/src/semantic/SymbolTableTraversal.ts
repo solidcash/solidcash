@@ -185,7 +185,7 @@ import {
 import {
   CompilerOptions, PrimitiveType, BytesType, Type, StructType, EnumType, AddressType, ValueType,
   computeEventSignature, computeEventSelector, computeErrorSignature, computeCollectionSignature,
-  computeFunctionSignature, computeFunctionSelector, TupleType, ArrayType,
+  computeFunctionSignature, computeFunctionSelector, computeEvmFunctionSelector, TupleType, ArrayType,
   IntType, FixedType, MappingType, FunctionType,
   FunctionBlockLayout, BlockLayoutSlot, resolveLibraries, ExternalLibrary, parseTypeStrict,
   INLINE_MAX_BLOB_LENGTH, isDynamicStorageType,
@@ -5887,10 +5887,17 @@ export default class SymbolTableTraversal extends AstTraversal {
     return iface;
   }
 
+  // The 4-byte function selector: evmCompat uses keccak256(sig)[:4] (EVM parity); native BCH uses sha256(sig)[:4].
+  private computeAbiSelector(signature: string): Uint8Array {
+    return this.compilerOptions.evmCompat
+      ? computeEvmFunctionSelector(signature)
+      : computeFunctionSelector(signature);
+  }
+
   visitAbiEncodeWithSignature(node: AbiEncodeWithSignatureNode): Node {
     node.signature = this.visit(node.signature) as ExpressionNode;
     if (node.signature instanceof StringLiteralNode) {
-      node.computedSelector = computeFunctionSelector(node.signature.value);
+      node.computedSelector = this.computeAbiSelector(node.signature.value);
     }
     node.parameters = this.visitList(node.parameters);
     return node;
@@ -5907,7 +5914,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         throw new AbiEncodeCallArgCountError(node, fn.parameters.length, node.parameters.length);
       }
       const selfParamTypes = fn.parameters.map((p) => p.type.toString());
-      node.computedSelector = computeFunctionSelector(computeFunctionSignature(node.functionName, selfParamTypes));
+      node.computedSelector = this.computeAbiSelector(computeFunctionSignature(node.functionName, selfParamTypes));
       node.resolvedParamTypes = fn.parameters.map((p) => p.type);
       node.parameters = this.visitList(node.parameters);
       return node;
@@ -5944,7 +5951,7 @@ export default class SymbolTableTraversal extends AstTraversal {
 
     const paramTypes = ifaceFunc.parameters.map((p) => p.type.toString());
     const signature = computeFunctionSignature(node.functionName, paramTypes);
-    node.computedSelector = computeFunctionSelector(signature);
+    node.computedSelector = this.computeAbiSelector(signature);
     node.resolvedParamTypes = ifaceFunc.parameters.map((p) => p.type);
 
     node.parameters = this.visitList(node.parameters);

@@ -8,6 +8,7 @@ import {
   bigIntToVmNumber, binToHex, binToUtf8, hexToBin, utf8ToBin, vmNumberToBigInt, isVmNumberError,
 } from '@bitauth/libauth';
 import { sha256 } from './hash.js';
+import { keccak_256 } from '@noble/hashes/sha3';
 
 /** A primitive pushdata value: integer, boolean, byte array, or string (UTF-8 encoded). */
 export type PrimitiveStateValue = bigint | boolean | Uint8Array | string;
@@ -1410,6 +1411,14 @@ export function computeFunctionSignature(funcName: string, paramTypes: string[])
 export function computeFunctionSelector(signature: string): Uint8Array {
   const nameBytes = utf8ToBin(signature);
   return sha256(nameBytes).slice(0, 4);
+}
+
+/**
+ * EVM/Solidity 4-byte function selector: keccak256(signature)[:4]. Used under evmCompat where selectors must
+ * match Solidity (abi.encodeWithSignature / abi.encodeCall), as opposed to the BCH-native sha256 selector.
+ */
+export function computeEvmFunctionSelector(signature: string): Uint8Array {
+  return keccak_256(utf8ToBin(signature)).slice(0, 4);
 }
 
 /**

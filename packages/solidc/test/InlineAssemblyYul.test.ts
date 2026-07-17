@@ -354,6 +354,12 @@ describe('Yul inline assembly (Phase 1: parse + diagnostics)', () => {
       { solidityImportCompat: true })).not.toThrow();
   });
 
+  it('drops a dead local Yul function (an unused def with a leave does not block the block; a called one inlines)', () => {
+    expect(() => compileString(
+      'contract C() { function f() returns (uint r) { assembly { function dead() { leave } function dbl(x) -> y { y := mul(x, 2) } r := dbl(21) } } }',
+      { solidityImportCompat: true })).not.toThrow();
+  });
+
   it('lowers Yul inside a fallback/receive function (base traversal skips those separate fields)', () => {
     expect(() => compileString('contract C() { fallback() external { uint x; assembly { x := callvalue() } } }',
       { solidityImportCompat: true })).not.toThrow();

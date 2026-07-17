@@ -1634,15 +1634,38 @@ function inlineYulStmts(stmts: YulStatementNode[], defs: Map<string, YulFunction
   return out;
 }
 
+// True if `node` (anywhere within) calls the function `name`.
+function yulBodyCalls(node: YulNode, name: string): boolean {
+  if (node instanceof YulFunctionCallNode && node.name === name) return true;
+  for (const key of Object.keys(node)) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const v = (node as any)[key];
+    if (v instanceof YulNode && yulBodyCalls(v, name)) return true;
+    if (Array.isArray(v)) for (const it of v) if (it instanceof YulNode && yulBodyCalls(it, name)) return true;
+  }
+  return false;
+}
+
 // Inline every local Yul function whose body is self-contained (no nested def, no `leave`, calls no local fn, at
-// most one return). If any definition is not, the block is left for the diagnostic to report.
+// most one return). A REACHABLE (called) definition that is not self-contained leaves the block for the diagnostic;
+// an UNREACHABLE (dead) definition is dropped regardless of its body, so `function f(){ leave }` that is never
+// called does not block compilation.
 function inlineLocalYulFunctions(block: YulBlockNode): YulBlockNode {
   const defs = new Map<string, YulFunctionDefinitionNode>();
   for (const s of block.statements) if (s instanceof YulFunctionDefinitionNode) defs.set(s.name, s);
   if (defs.size === 0) return block;
   const names = new Set(defs.keys());
-  for (const d of defs.values()) {
-    if (yulBodyUsesLocalFns(d.body, names)) return block; // recursion / nested definition / leave
+  // Reachability: called from a non-definition top-level statement, then transitively through reachable bodies.
+  const reachable = new Set<string>();
+  const nonDef = block.statements.filter((s) => !(s instanceof YulFunctionDefinitionNode));
+  const queue: string[] = [];
+  for (const nm of names) if (nonDef.some((s) => yulBodyCalls(s, nm))) { reachable.add(nm); queue.push(nm); }
+  while (queue.length) {
+    const body = defs.get(queue.pop()!)!.body;
+    for (const nm of names) if (!reachable.has(nm) && yulBodyCalls(body, nm)) { reachable.add(nm); queue.push(nm); }
+  }
+  for (const nm of reachable) {
+    if (yulBodyUsesLocalFns(defs.get(nm)!.body, names)) return block; // reachable + recursion/nested/leave
   }
   block.statements = inlineYulStmts(block.statements, defs);
   return block;

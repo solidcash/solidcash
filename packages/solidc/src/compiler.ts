@@ -187,13 +187,14 @@ function compileResolvedAst(ast: Ast, code: string, mergedCompilerOptions: Compi
   // C2 opt-in: mark the requested mappings to use the sorted-linked-list backend (provable non-existence). See
   // docs/sorted-mapping-c2.md. Only affects the named collections; all others keep the default entry model.
   // C2 is the DEFAULT: every mapping whose VALUE type C2 can store is C2-backed (exclusion-proof reads = Solidity
-  // parity). This now covers ALL value types including large ones - scalars, bytesN, address, unbounded bytes/string,
-  // structs, and dynamic arrays - because any variable-width value chunks off-commitment (P5b general chunking). Opt
-  // the whole contract out with `sortedMappingsAll: false` (then `sortedMappings` still names specific mappings).
+  // parity). This now covers ALL value types including large ones - scalars, bytesN, enum, address, unbounded
+  // bytes/string, structs, and arrays (fixed T[N] or dynamic T[]) - because any variable-width value chunks
+  // off-commitment (P5b). A struct with a mapping/array field is field-decomposed into per-field C2 collections.
+  // Opt the whole contract out with `sortedMappingsAll: false` (then `sortedMappings` still names specific mappings).
   const c2StorableValue = (vt: Type): boolean => (
     vt instanceof IntType || vt instanceof BytesType || vt instanceof AddressType || vt instanceof StructType
     || vt instanceof EnumType
-    || (vt instanceof ArrayType && vt.bound === undefined)
+    || vt instanceof ArrayType
     || vt === PrimitiveType.BIGINT || vt.toString() === 'bool' || vt.toString() === 'string'
   );
   if (mergedCompilerOptions.sortedMappingsAll !== false) {

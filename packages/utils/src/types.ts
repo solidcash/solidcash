@@ -794,15 +794,15 @@ export function isDynamicStorageType(type: Type): boolean {
 /**
  * A P5b CHUNKABLE C2 mapping value: a variable-width blob that chunks off-commitment when it exceeds the ~60 B
  * inline tail (stored as len ++ sha256, the value in per-slot chunk NFTs). Covers unbounded `bytes`/`string`,
- * `struct`, and dynamic array `T[]` - any value whose blob can exceed the 128 B commitment. Fixed-width values
- * (int, bool, bytesN) and small variable ones (address = a locking bytecode, always small) stay verbatim in the
- * tail. This is the SINGLE source of truth for the compiler covenant, the SDK gates, and the artifact flag.
+ * `struct`, and any array `T[]` / `T[N]` - any value whose blob can exceed the 128 B commitment. A small value
+ * (int, bool, bytesN, a short array/struct) stays inline in the tail; the runtime `size > 60` guard picks inline
+ * vs chunked. This is the SINGLE source of truth for the compiler covenant, the SDK gates, and the artifact flag.
  */
 export function isChunkableValueType(type: Type): boolean {
   if (type === PrimitiveType.STRING || type.toString() === 'string') return true;
   if (type instanceof BytesType && type.bound === undefined) return true;
   if (type instanceof StructType) return true;
-  if (type instanceof ArrayType && type.bound === undefined) return true;
+  if (type instanceof ArrayType) return true;
   return false;
 }
 

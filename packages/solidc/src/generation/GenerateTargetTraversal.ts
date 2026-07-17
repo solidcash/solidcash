@@ -9984,9 +9984,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (vt instanceof AddressType) return 'rawbytes';
     // A struct is an encoded blob (already the on-stack representation); store it verbatim in the value tail.
     if (vt instanceof StructType) return 'rawbytes';
-    // A dynamic array `T[]` is an encoded blob (length prefix + elements); stored verbatim like a struct. Large
-    // structs/arrays chunk (isChunkableValue), so the tail never exceeds the 128 B commitment.
-    if (vt instanceof ArrayType && vt.bound === undefined) return 'rawbytes';
+    // An array (dynamic `T[]` or fixed `T[N]`) is an encoded blob (length prefix + elements); stored verbatim like
+    // a struct. Large structs/arrays chunk (isChunkableValue), so the tail never exceeds the 128 B commitment.
+    if (vt instanceof ArrayType) return 'rawbytes';
     return null;
   }
 

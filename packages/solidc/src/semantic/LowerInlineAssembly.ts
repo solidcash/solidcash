@@ -428,6 +428,48 @@ function runtimeReturndatacopy(
   return loc(new BlockNode([declDst, declLen, grow, store]), src);
 }
 
+// return(ptr, size): end execution returning __yulmem[ptr : ptr+size] as the function's bytes result. The buffer
+// is zero-padded by `size` first so a return region past the written high-water reads EVM-faithful zeros. Yul
+// offset/size expressions are pure, so lowering each twice is safe.
+function runtimeReturn(ptrArg: YulExpressionNode, sizeArg: YulExpressionNode, src: YulNode): StatementNode {
+  yulMemUsed = true;
+  const ptr = (): ExpressionNode => lowerValue(ptrArg);
+  const size = (): ExpressionNode => lowerValue(sizeArg);
+  const padded = loc(new BytesConcatNode([yulmem(src), newBytes(size(), src)]), src);
+  const slice = loc(new SliceNode(padded, ptr(), addE(ptr(), size(), src)), src);
+  return loc(new ReturnNode([slice]), src);
+}
+
+// Copy srcBytes[off : off+len] into __yulmem[dst : dst+len], growing the buffer to cover it. Shared by codecopy
+// (src = this contract's own bytecode) and extcodecopy (src = addr.code). The source is zero-padded to off+len so
+// a copy past its end yields EVM-faithful zeros (returndatacopy is NOT routed here: EVM reverts, not zero-pads,
+// past returndatasize).
+function runtimeCopyInto(
+  srcBytes: ExpressionNode, dstArg: YulExpressionNode, offArg: YulExpressionNode, lenArg: YulExpressionNode, src: YulNode,
+): StatementNode {
+  yulMemUsed = true;
+  const dstName = `__ycpy_dst_${yulTmpN}`;
+  const lenName = `__ycpy_len_${yulTmpN}`;
+  yulTmpN += 1;
+  const dst = (): ExpressionNode => loc(new IdentifierNode(dstName), src);
+  const len = (): ExpressionNode => loc(new IdentifierNode(lenName), src);
+  const off = (): ExpressionNode => lowerValue(offArg);
+  const need = (): ExpressionNode => addE(dst(), len(), src);
+  const declDst = loc(new VariableDefinitionNode(UINT256, [], dstName, lowerValue(dstArg)), src);
+  const declLen = loc(new VariableDefinitionNode(UINT256, [], lenName, lowerValue(lenArg)), src);
+  const pad = newBytes(loc(new BinaryOpNode(need(), BinaryOperator.MINUS, memLen(src)), src), src);
+  const growAssign = loc(new AssignNode(yulmem(src), loc(new BytesConcatNode([yulmem(src), pad]), src)), src);
+  const grow = loc(new BranchNode(
+    loc(new BinaryOpNode(memLen(src), BinaryOperator.LT, need()), src), loc(new BlockNode([growAssign]), src),
+  ), src);
+  const srcPad = loc(new BytesConcatNode([srcBytes, newBytes(addE(off(), len(), src), src)]), src);
+  const srcSlice = loc(new SliceNode(srcPad, off(), addE(off(), len(), src)), src);
+  const head = loc(new SliceNode(yulmem(src), intLit(0n, src), dst()), src);
+  const tail = loc(new SliceNode(yulmem(src), need(), memLen(src)), src);
+  const store = loc(new AssignNode(yulmem(src), loc(new BytesConcatNode([head, srcSlice, tail]), src)), src);
+  return loc(new BlockNode([declDst, declLen, grow, store]), src);
+}
+
 // mload(off) -> uint256(bytes32(__yulmem[off : off+32])). A trailing zero word is appended before slicing so a
 // read straddling the written high-water mark returns EVM-faithful zeros (e.g. a full-word mload after an mstore8
 // that only grew the buffer by one byte). Yul offset expressions are pure, so lowering twice is safe.
@@ -634,6 +676,13 @@ const NULLARY_CONTEXT: Record<string, NullaryOperator> = {
 // Address-typed context builtins - in Yul these are plain 256-bit words, so wrap the solidc `address` result in
 // a uint256 cast to keep it usable in the word-typed assembly context.
 const ADDRESS_CONTEXT = new Set(['caller', 'origin', 'coinbase']);
+
+// address(this): the executing contract's own address = the active input's locking bytecode as an AddressType.
+function thisAddress(src: { location?: Node['location'] }): ExpressionNode {
+  const lbc = loc(new UnaryOpNode(UnaryOperator.INPUT_LOCKING_BYTECODE,
+    loc(new NullaryOpNode(NullaryOperator.INPUT_INDEX), src)), src);
+  return loc(new CastNode(new AddressType(false), lbc, false), src);
+}
 
 function loc<T extends { location?: Node['location'] }>(node: T, src: { location?: Node['location'] }): T {
   node.location = src.location;
@@ -897,14 +946,30 @@ function lowerCall(call: YulFunctionCallNode): ExpressionNode {
     return loc(new CastNode(UINT256, loc(new UnaryOpNode(UnaryOperator.SIZE, code), call), false), call);
   }
   // selfbalance() -> address(this).balance: the satoshis this contract controls, summed over the inputs locked to
-  // its own bytecode (`this` = tx.inputs[activeInputIndex].lockingBytecode). Cast to a uint256 word. (balance(addr)
-  // and address() are deliberately NOT lowered - a BCH address is variable-length locking bytecode, so an arbitrary
-  // 20-byte word is not a valid address; only `this` is a genuine one.)
+  // its own bytecode (`this` = tx.inputs[activeInputIndex].lockingBytecode). Cast to a uint256 word.
   if (name === 'selfbalance' && args.length === 0) {
-    const thisLbc = loc(new UnaryOpNode(UnaryOperator.INPUT_LOCKING_BYTECODE,
-      loc(new NullaryOpNode(NullaryOperator.INPUT_INDEX), call)), call);
-    const thisAddr = loc(new CastNode(new AddressType(false), thisLbc, false), call);
-    return loc(new CastNode(UINT256, loc(new FieldAccessNode(thisAddr, 'balance'), call), false), call);
+    return loc(new CastNode(UINT256, loc(new FieldAccessNode(thisAddress(call), 'balance'), call), false), call);
+  }
+  // address() -> uint256(address(this)): the executing contract's own address (its input locking bytecode).
+  if (name === 'address' && args.length === 0) {
+    return loc(new CastNode(UINT256, thisAddress(call), false), call);
+  }
+  // balance(addr) -> uint256(addr.balance): satoshis at that address, summed over matching inputs (mirrors
+  // selfbalance/.balance). addr must be an address-typed operand (a param or address()); a bare 256-bit word is
+  // the documented address-representation divergence, same as the other address-context builtins.
+  if (name === 'balance' && args.length === 1) {
+    return loc(new CastNode(UINT256, loc(new FieldAccessNode(lowerValue(args[0]), 'balance'), call), false), call);
+  }
+  // extcodehash(addr) -> uint256(addr.codehash): the P2SH script hash embedded in the address (BCH's contract
+  // identity), the analogue of EVM's account code hash. Cast to a uint256 word for the assembly context.
+  if (name === 'extcodehash' && args.length === 1) {
+    return loc(new CastNode(UINT256, loc(new FieldAccessNode(lowerValue(args[0]), 'codehash'), call), false), call);
+  }
+  // clz(x) (EVM CLZ / EIP-7939): count leading zero bits in the 256-bit word. Constant-folded for a literal
+  // operand (the only form the corpus uses); a runtime operand stays unlowerable and is named by the diagnostic.
+  if (name === 'clz' && args.length === 1 && isIntLiteral(args[0])) {
+    const x = BigInt(args[0].raw);
+    return intLit(x === 0n ? 256n : 256n - BigInt(x.toString(2).length), call);
   }
   if (name in ARITH_OPS && args.length === 2) {
     return loc(new BinaryOpNode(lowerValue(args[0]), ARITH_OPS[name], lowerValue(args[1])), call);
@@ -1265,12 +1330,35 @@ function lowerStatement(stmt: YulStatementNode): StatementNode {
         lowerValue(e.args[0]);
         return loc(new BlockNode([]), stmt);
       }
-      if (e.name === 'return' && e.args.length === 2 && e.args.every(isIntLiteral)) {
-        const [ptr, size] = e.args.map((a) => BigInt((a as YulLiteralNode).raw));
-        if (size === 32n) {
-          const word = memory.get(ptr);
-          if (word !== undefined) return loc(new ReturnNode([lowerValue(word)]), stmt);
+      // return(ptr, size): halt, returning mem[ptr:ptr+size]. A constant 32-byte region covered by a compile-time
+      // mstore returns that single word; otherwise the runtime path slices __yulmem[ptr:ptr+size] as bytes. When
+      // not yet on the runtime buffer, throw so the whole block re-lowers onto __yulmem (matches mstore8/mcopy).
+      if (e.name === 'return' && e.args.length === 2) {
+        if (e.args.every(isIntLiteral)) {
+          const [ptr, size] = e.args.map((a) => BigInt((a as YulLiteralNode).raw));
+          if (size === 32n) {
+            const word = memory.get(ptr);
+            if (word !== undefined) return loc(new ReturnNode([lowerValue(word)]), stmt);
+          }
         }
+        if (runtimeMem) return runtimeReturn(e.args[0], e.args[1], stmt);
+        throw new YulNotLowerable();
+      }
+      // codecopy(dst, off, len): copy this contract's own bytecode into __yulmem[dst:dst+len] (own code = the
+      // active input's bytecode). extcodecopy(addr, dst, off, len): the same from addr.code. Both need the runtime
+      // buffer; throw to re-lower the block onto __yulmem when not yet on it.
+      if (e.name === 'codecopy' && e.args.length === 3) {
+        if (runtimeMem) {
+          return runtimeCopyInto(loc(new NullaryOpNode(NullaryOperator.BYTECODE), e), e.args[0], e.args[1], e.args[2], stmt);
+        }
+        throw new YulNotLowerable();
+      }
+      if (e.name === 'extcodecopy' && e.args.length === 4) {
+        if (runtimeMem) {
+          const code = loc(new FieldAccessNode(lowerValue(e.args[0]), 'code'), e);
+          return runtimeCopyInto(code, e.args[1], e.args[2], e.args[3], stmt);
+        }
+        throw new YulNotLowerable();
       }
       // log0(p,n) .. log4(p,n,t1..t4): the EVM LOG opcodes = EVENT emission (every `emit E(..)` lowers to a LOGn).
       // Wire them to SolidCash's event NFT: emit an anonymous `__YulLog(bytes)` whose data is the topics (each a

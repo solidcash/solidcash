@@ -171,11 +171,20 @@ describe('Yul inline assembly (Phase 1: parse + diagnostics)', () => {
     }
   });
 
-  it('still rejects balance(addr) / address() by name (no valid BCH analogue for an arbitrary address)', () => {
-    expect(() => compileString('contract C() { function f(uint a) { uint b; assembly { b := balance(a) } require(b==b); } }',
-      { solidityImportCompat: true })).toThrow(/not yet lowerable to BCH script: balance/);
-    expect(() => compileString('contract C() { function f() { uint a; assembly { a := address() } require(a==a); } }',
-      { solidityImportCompat: true })).toThrow(/not yet lowerable to BCH script: address/);
+  it('lowers balance(addr)/extcodehash(addr)/address() to .balance/.codehash/address(this)', () => {
+    const asm = (yul: string): string =>
+      `contract C() { function f(address a) { uint b; assembly { b := ${yul} } require(b == b); } }`;
+    const bare = (sol: string): string =>
+      `contract C() { function f(address a) { uint b; b = ${sol}; require(b == b); } }`;
+    const pairs: Array<[string, string]> = [
+      ['balance(a)', 'uint256(a.balance)'],
+      ['extcodehash(a)', 'uint256(a.codehash)'],
+      ['address()', 'uint256(address(this))'],
+    ];
+    for (const [yul, sol] of pairs) {
+      expect(compileString(asm(yul), { solidityImportCompat: true }).bytecode)
+        .toBe(compileString(bare(sol), { solidityImportCompat: true }).bytecode);
+    }
   });
 
   it('lowers addmod/mulmod to the solidc builtins and pop to a discard/effect', () => {
@@ -265,6 +274,40 @@ describe('Yul inline assembly (Phase 1: parse + diagnostics)', () => {
     expect(yul.bytecode).toBe(hand.bytecode);
   });
 
+  it('constant-folds clz(x) (leading-zero count of a 256-bit word)', () => {
+    // clz(0)=256, clz(1)=255, clz(0x4000..0)=1 (bit 254 is the top set bit). Byte-identical to the folded literal.
+    const asm = (yul: string): string =>
+      `contract C() { function f() { uint r; assembly { r := ${yul} } require(r == r); } }`;
+    const bare = (n: string): string =>
+      `contract C() { function f() { uint r; r = ${n}; require(r == r); } }`;
+    const pairs: Array<[string, string]> = [
+      ['clz(0)', '256'],
+      ['clz(1)', '255'],
+      ['clz(0x4000000000000000000000000000000000000000000000000000000000000000)', '1'],
+    ];
+    for (const [yul, n] of pairs) {
+      expect(compileString(asm(yul), { solidityImportCompat: true }).bytecode)
+        .toBe(compileString(bare(n), { solidityImportCompat: true }).bytecode);
+    }
+  });
+
+  it('lowers a runtime-size return(ptr, size) to the __yulmem byte slice', () => {
+    // return(0, x) with a runtime size after constant mstores - the abicoder cross-call idiom. Compiles onto the
+    // runtime __yulmem buffer (a bytes result), where the single-word compile-time path cannot apply.
+    expect(() => compileString(
+      'contract C() { function f(uint x) returns (bytes) { assembly { mstore(0, 0x20) mstore(0x20, 0x21) return(0, x) } } }',
+      { solidityImportCompat: true })).not.toThrow();
+  });
+
+  it('lowers codecopy/extcodecopy onto the runtime __yulmem buffer (own bytecode / addr.code source)', () => {
+    expect(() => compileString(
+      'contract C() { function f() { uint r; assembly { codecopy(0, 0, 32) r := mload(0) } require(r == r); } }',
+      { solidityImportCompat: true })).not.toThrow();
+    expect(() => compileString(
+      'contract C() { function f(address a) { uint r; assembly { extcodecopy(a, 0, 0, 32) r := mload(0) } require(r == r); } }',
+      { solidityImportCompat: true })).not.toThrow();
+  });
+
   it('lowers mcopy in the compile-time memory model (word-copy = mstore(mload))', () => {
     const mcopy = compileString('contract C() { function f(uint a) returns (uint) { uint r;'
       + ' assembly { mstore(0, a) mcopy(64, 0, 32) r := mload(64) } return r; } }', { solidityImportCompat: true });
@@ -274,15 +317,15 @@ describe('Yul inline assembly (Phase 1: parse + diagnostics)', () => {
   });
 
   it('names the specific unlowerable builtin rather than claiming Yul is wholly unsupported', () => {
-    // A block whose only blocker is an un-lowered builtin (extcodecopy - no BCH analog) reports that builtin by
-    // name. (mstore8/mcopy/msize now lower via the runtime __yulmem buffer.)
+    // A block whose only blocker is an un-lowered builtin (calldatacopy - not yet routed) reports that builtin by
+    // name. (mstore8/mcopy/msize/codecopy/extcodecopy now lower via the runtime __yulmem buffer.)
     expect(() => compileString(`
       contract C() {
         function f() {
-          assembly { extcodecopy(0, 0, 0, 0) }
+          assembly { calldatacopy(0, 0, 0) }
           require(true);
         }
-      }`)).toThrow(/not yet lowerable to BCH script: extcodecopy/);
+      }`)).toThrow(/not yet lowerable to BCH script: calldatacopy/);
   });
 
   it('compiles Yul control-flow (for / switch / if) lowered to the main AST', () => {

@@ -23,22 +23,23 @@ routes.
 | Variables | `let`, `:=`, identifier read/write | IN | stack locals; Solidity vars by name; all values are 256-bit words |
 | Arithmetic | `add sub mul div sdiv mod smod exp addmod mulmod` | IN | `OP_ADD/SUB/MUL/DIV/MOD`, existing `addmod/mulmod` |
 | Bitwise | `and or xor not shl shr sar byte` | IN | integer-bitwise codegen; `shl(n,x)=x*2^n`, `shr(n,x)=x/2^n` |
+| Bit count | `clz` | IN (literal) | leading-zero count of the 256-bit word; constant-folded (runtime operand deferred) |
 | Comparison | `lt gt slt sgt eq iszero` | IN | `OP_LESSTHAN/GREATERTHAN/NUMEQUAL`, `iszero=OP_NOT` |
 | Control flow | `if`, `for`, `switch/case/default`, `leave`, `break`, `continue` | IN | `OP_IF`; `for`->existing loop codegen; `switch`->nested `OP_IF` |
 | Abort | `revert(0, 0)`, `return(p, 0)` | IN | unconditional fail / function exit |
-| Memory | `mstore mload mstore8 keccak256(p,l) return(p,l) revert(p,l)` | IN (constant-region only) | compile-time word-addressed buffer; see "Memory model" |
+| Memory | `mstore mload mstore8 keccak256(p,l) return(p,l) revert(p,l)` | IN | compile-time word-addressed buffer + runtime `__yulmem` buffer (dynamic offsets/sizes); `return(p,size)` returns the byte slice; see "Memory model" |
 | Storage | `sstore sload`, `.slot`, `.offset` | IN (value-type slots) | virtual-slot table over state vars; see "Storage model" |
 | Transient | `tstore tload` | IN (constant key) | zero-init function-scoped local, no UTXO; see "Transient model" |
 | Context | `caller callvalue origin gasprice chainid number timestamp gaslimit difficulty prevrandao coinbase basefee blobbasefee gas` | ROUTE | existing NullaryOperator / shims; see "Routing" |
 | Crypto / math | `keccak256(hash) addmod mulmod` | ROUTE | existing GlobalFunction codegen |
-| Balance / code | `balance selfbalance extcodesize extcodehash` | ROUTE | `addr.balance`, `address(this).balance`, `addr.code.length`, `addr.codehash` |
+| Balance / code | `balance selfbalance extcodesize extcodehash address` | ROUTE | `addr.balance`, `address(this).balance`, `addr.code.length`, `addr.codehash`, `address(this)` |
 | Code copy / size | `extcodecopy extcodesize codesize codecopy` | ROUTE | `addr.code` / `this.activeBytecode` (own code) + memory buffer; see "Routing" |
 | Calldata | `calldataload calldatasize calldatacopy` | ROUTE | synthesized EVM calldata `msg.sig ++ abi-encoded args`; see "Calldata model" |
 | Block hash | `blockhash` | ROUTE | existing `blockhash(n)` oracle |
 | Logs | `log0 log1 log2 log3 log4` | ROUTE | `Event` / `emit` |
 | Lifecycle | `selfdestruct` | ROUTE | existing `selfdestruct(addr)` statement |
 | External call | `call delegatecall staticcall` | OUT (Yul form) | corpus uses only opaque-calldata forwarding to an opaque target; the typed call is the high-level `IContract(addr).method(...)`, not Yul (Phase 6) |
-| Return data | `returndatasize returndatacopy` | OUT | only used by the opaque-proxy forward |
+| Return data | `returndatasize returndatacopy` | IN | tracked last low-level-call return-data bytes; splice into the `__yulmem` buffer |
 | Contract create | `create create2` | OUT | deploys runtime/opaque bytecode; typed deploy is the high-level `new Contract(...)`, not Yul (Phase 6) |
 | Immutables | `setimmutable loadimmutable` | ROUTE (deferred) | solidcash immutables; rare (compiler-generated) |
 | Genuinely out | `verbatim pc datasize dataoffset datacopy linkersymbol` + free-pointer memory + opaque-bytecode proxy | OUT | no analogue; see "Genuinely out" |

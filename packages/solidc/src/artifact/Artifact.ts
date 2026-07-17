@@ -75,6 +75,7 @@ function buildFunctionAbiMetadata(func: FunctionDefinitionNode, isStateful = fal
         }),
         operations: ea.operations,
         ...(ea.aliasCondDeleteSlot !== undefined && { aliasCondDeleteSlot: ea.aliasCondDeleteSlot }),
+        ...(ea.valueParam !== undefined && { valueParam: ea.valueParam }),
       })),
     }),
     ...(func.emitInfos && func.emitInfos.length > 0 && {

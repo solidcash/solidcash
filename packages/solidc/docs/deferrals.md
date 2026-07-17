@@ -338,65 +338,52 @@ flip + seeding migration, best done as a dedicated pass.
 **Revisit if.** Continuing the parity push (the standing directive) - this is now the critical path; each gap
 closed shrinks the eventual flip.
 
-### 3. string/bytes VALUES in sorted entries - P5a DONE, P5b (chunking) remains
+### 3. string/bytes VALUES in sorted entries - P5a + P5b DONE; only ARRAY-valued mappings remain
 
-**P5a DONE (2026-07-16, commit ad70e15f).** Unbounded `bytes` / `string` values <= 64 B now work in a C2
-mapping: the value IS the commitment tail (read verbatim like address, default empty), so a
-`mapping(K => bytes|string)` gets the same exclusion proofs as int/bytesN values. `sortedValueKind` returns
-`rawbytes` for unbounded bytes/string; a value that pushes the commitment past 128 B fails closed at the VM.
-Tests: SortedMappingDynBytesValue.test.ts. Closes the common short-string/bytes case (symbols, URIs, names).
+**P5a DONE (2026-07-16, commit ad70e15f).** Unbounded `bytes` / `string` values <= 60 B are stored INLINE in the
+entry commitment tail as `len(4 B LE) ++ value` (<= 128 B total, real-chain-valid), so a `mapping(K => bytes|string)`
+gets the same exclusion proofs as int/bytesN values. Closes the common short-string/bytes case (symbols, URIs, names).
 
-**P5b is now a HARD REQUIREMENT (user, 2026-07-17): "c2 must be default, even for data longer than ~64B".**
-Design (below) is final; it is the next focused build. Current state until then: a `mapping(K => string/bytes)`
-IS C2 by default (exclusion-proof key), values <= 64 B have full parity, and a > 64 B write fails CLOSED at the
-VM (commitment overflow) - safe, not a soundness hole, but the long WRITE does not yet succeed.
+**P5b DONE (2026-07-17).** The HARD REQUIREMENT ("c2 must be default, even for data longer than ~64B") is met:
+`mapping(K => bytes|string)` is C2 by default for values of ANY practical length. A value > 60 B stores
+`len(4 B LE) ++ sha256(value)` (100 B commitment, fits the 128 B token-commitment limit) and the full value
+persists off-commitment in per-(collection, slot, digest) chunk NFTs. A read reassembles the chunks into a witness
+and the covenant verifies `sha256(witness) == storedHash` - a forged/tampered/missing witness fails the read CLOSED
+(never a wrong value). Design E (SDK-minted, covenant-UNPINNED chunks): the covenant stores only the hash, so no
+chunk co-spend loop and no OP_TXOUTPUTCOUNT coupling is needed - the value chunks are extra trailing 0x01 mutable
+outputs the C2 write covenant tolerates (no total-output bound; minting uniqueness counts only 0x02; C3 conservation
+is skipped for entry-access functions). The 10,000 B VM stack-element limit caps an on-chain-READ value (the witness
+must be hashed on-stack) - the same ceiling any storage mechanism faces, since a value the contract compares must be
+loaded whole; not a chunk-design limit.
 
-DESIGN (worked out 2026-07-17): entry tail = `len(uint32) ++ [ inline value if len<=60 | sha256(value) if
-len>60 ]` (<=64 B, still fits the 96 B slot+nextKey+tail budget). Value bytes for the long case live in
-per-entry chunk NFTs at `buildEntryNftCovenantScript(cat, H(collectionSig ++ slot))`, index 0..ceil(len/120)-1.
-- WRITE `m[k]=v`: covenant `OP_SIZE(v)`, branch; long -> store `len ++ sha256(v)`; SDK mints the value chunks
-  (reuse the StatefulTransactionBuilder chunk-mint path, re-keyed by slot). No covenant loop.
-- COMPARISON read `m[k]==x`: long -> `sha256(x) == entry.hash` (present) / bracket->default (absent). No loop.
-- MATERIALIZATION read `bytes z=m[k]`: co-spend the entry's chunks, concat, `sha256(concat)==entry.hash`, return
-  z. This is the only piece needing a chunk co-spend LOOP (mirror emitDynamicReadLoop, re-keyed by slot; the SDK
-  derives the per-slot chunks like getDynamicChunkVars). Soundness rests on this verify.
-Why not folded in now: it is a cross-cutting change to emitSortedSetRead + emitSortedValueUpsert + the SDK
-derivation + the chunk spine, with a runtime length branch and the absent-default/hash-compare interaction - a
-multi-part, soundness-critical implementation, not a bounded edit. Rushing the exclusion-proof read path is the
-one thing worse than the current fail-closed.
+Pieces (all shipped, all green in SortedMappingLongValue.test.ts + migrated SortedMappingDynBytesValue.test.ts):
+- Covenant: `emitChunkableValueTail` (write v -> `len4 ++ [inline<=60 | sha256(v)]`) + `emitChunkableValueRead`
+  (read: strip len4; short -> inline; long -> PICK the `__internal__valueWitness_<slot>` arg, `sha256==hash`
+  OP_EQUALVERIFY). GTT.
+- SymbolTable: `__internal__valueWitness_<slot>` param injection, gated on `collection.sorted` + chunkable value.
+- Compiler ABI: `EntryAccessAbi.valueParam` records the direct value parameter of a chunkable write.
+- SDK: read reassembles the value from `getValueChunkAddress(collection, slot, digest)` chunks -> witness (threaded
+  into finalArgs between blockhash and iteration args, matching the SymbolTable order); write mints the chunks via
+  `StatefulTransactionBuilder.addValueChunkOutput` (trailing, after every covenant-managed output).
 
-IMPLEMENTATION STATUS (2026-07-17, validated-then-reverted to stay green): the COVENANT halves are written and
-compile clean - `emitChunkableValueTail` (write: v -> len4 ++ [inline<=60 | sha256(v)], tracker-neutral) and
-`emitChunkableValueRead` (read: strip len4; short -> inline; long -> PICK witness arg, `sha256(witness)==hash`
-OP_EQUALVERIFY, both branches net one value) - plus the SymbolTable `__internal__valueWitness_<slotIndex>` param
-injection for chunkable reads. CONFIRMED the remaining SDK half is the deep part and genuinely MULTI-SYSTEM: the
-value-chunk OUTPUTS on write must pass the covenant's OP_TXOUTPUTCOUNT bound, which means reusing the
-`emitDynamicWriteVerification` / `getChunkOutputBase` machinery (couples the C2 write to the dynamic-storage chunk
-system), plus the SDK must (a) mint per-slot value chunks on write, (b) read them on read to supply the witness,
-(c) thread the witness into finalArgs in the exact SymbolTable param order (interleaving msgSender/blockhash/
-iteration). That is a dedicated focused build, not a session-tail edit. NEXT: start from the SDK value-chunk
-mint/read reusing the dynamic-chunk path, keyed by (collection, slot); the covenant halves above drop straight in.
+**Documented residual limitations (all fail-CLOSED, none a soundness/forgery hole).**
+- COMPUTED long value (`m[k] = f(...)` whose result > 60 B, not a direct param): `valueParam` is undefined, so no
+  chunks are minted; the write stores the hash but a later long read finds no chunks and reverts (unreadable, never
+  wrong). Direct `m[k] = v` (the primary case) is fully supported. Computed values <= 60 B are unaffected (inline).
+- OVERWRITE orphans: chunks are keyed by digest, so overwriting a long value mints a fresh version at a new address
+  and the old chunks orphan (harmless, digest-filtered on read). A co-spend GC pass is the clean-up follow-up.
+- ADVERSARIAL-writer liveness: the hash IS covenant-enforced (`sha256(v)==storedHash`, v the write arg), but the
+  chunks are SDK-minted (unpinned). A malicious NON-SDK builder could store a correct hash with wrong/no chunks,
+  making that value unreadable (fail-closed grief, not a wrong-value break). Covenant-pinned chunks (Design D) are
+  the liveness-hardening follow-up.
 
-**P5b remaining (also covers ARRAY-valued mappings).** Two related gaps keep the C2-default fall-back:
-(a) `mapping(K => string/bytes)` values > 64 B fail closed (commitment overflow); (b) `mapping(K => T[])`
-(array-valued) is skipped by the compiler.ts value-type guard (stays on the default entry model). Both are the
-FUNCTIONAL, not the soundness, gap - unsupported shapes fall back safely, no forgery.
+**Still deferred: ARRAY-valued mappings.** `mapping(K => T[])` is skipped by the compiler.ts value-type guard
+(stays on the default entry model). It ADDITIONALLY needs the on-C2-value OPERATIONS (`m[k][i]`, `m[k].push`,
+`m[k].length`) which the flip's gauge showed unsupported on a C2 mapping value - a separate codegen piece, not the
+bytes/string chunking (now done). FUNCTIONAL gap only; falls back safely, no forgery.
 
-**What P5b'd take (assessed 2026-07-17, genuinely MULTI-SESSION).** The dynamic-storage chunk model
-([dynamic_storage_chunks], docs/dynamic-storage.md) is shipped but keyed by a TOP-LEVEL var: the chunk address =
-`getDynamicChunkAddress(var)`, the length lives in the register data-NFT, and the read/write loops
-(emitDynamicReadLoop @ GTT:12396 + the SDK getDynamicChunkVars/getChunkOutputBase co-spend) are var-scoped.
-Plugging it into a C2 mapping VALUE requires: (1) re-key the chunk spine by (collection, entry slot) instead of
-var name; (2) thread the value LENGTH into the entry commitment tail (slot ++ nextKey ++ len ++ inline-or-hash)
-so the absence bracket + linkage still parse; (3) integrate the chunk read loop into emitSortedSetRead and the
-chunk mint into emitSortedValueUpsert (co-spend N chunks per entry, verify against the entry); (4) SDK: derive +
-co-spend the entry's chunks. Array values ADDITIONALLY need the on-C2-value OPERATIONS (`m[k][i]`, `m[k].push`,
-`m[k].length`) which the flip's gauge showed unsupported on a C2 mapping value (compile-gap), a separate codegen
-piece. This is a large, soundness-critical, cross-cutting feature (C2 read + write + chunk spine + SDK), not a
-bounded change - a dedicated multi-session effort, not foldable into the flip.
-
-**Revisit if.** A target contract needs a `mapping(K => string/bytes)` value LONGER than ~64 B or a
-`mapping(K => T[])` at parity. Until then those shapes work on the default entry model (no exclusion proof).
+**Revisit if.** A target needs `mapping(K => T[])` at C2 parity, or the residual limitations above bite (computed
+long values / overwrite GC / adversarial-writer liveness).
 
 ### 4. Sound PARTIAL (paginated / windowed) enumeration
 

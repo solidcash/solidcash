@@ -159,6 +159,20 @@ export function getDynamicChunkAddress(
   return scriptToAddress(covenantScript, contract.provider.network, contract.addressType, true);
 }
 
+// Value-chunk address for a LONG (>64 B) sorted-mapping value (P5b). The entry commitment holds only
+// len(4 B) ++ sha256(value); the full value persists off-commitment in chunk NFTs at this per-(collection,
+// slot, digest) address. A read reassembles them and the covenant verifies the witness against the stored
+// hash. Keyed by digest so an overwrite mints a fresh version at a distinct address (old chunks orphan -
+// harmless, filtered by digest on read; co-spend GC is a follow-up). Chunk commitment = chunkIndex ++ data.
+export function getValueChunkAddress(
+  contract: Contract<any, any>, categoryId: string, collection: string, slotHex: string, digestHex: string,
+): string {
+  validateCategoryId(categoryId);
+  const collectionHash = computeCollectionHash(`${collection}$val$${slotHex}$${digestHex}`);
+  const covenantScript = buildEntryNftCovenantScript(hexToBin(categoryId), collectionHash);
+  return scriptToAddress(covenantScript, contract.provider.network, contract.addressType, true);
+}
+
 export function getEventNftAddress(
   contract: Contract<any, any>, categoryId: string, eventNameOrSignature: string,
 ): string {

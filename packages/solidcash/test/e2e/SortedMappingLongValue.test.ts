@@ -1,0 +1,170 @@
+import { describe, it, expect } from 'vitest';
+import { hexToBin, binToHex, utf8ToBin, bigIntToVmNumber, sha256 } from '@bitauth/libauth';
+import { compileString } from 'solidc';
+import { Contract, StatefulContract, SignatureTemplate } from '../../src/index.js';
+import { keyToSlot, encodeEntryCommitment, slotValueToBytes, getEntryNftAddress, getValueChunkAddress } from '../../src/index.js';
+import { buildChunkCommitment, splitValueIntoChunks } from '@solidcash/utils';
+import { alicePriv, alicePub, alicePkh } from '../fixture/vars.js';
+import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
+import { createTestProvider } from '../test-util.js';
+
+// P5b: a sorted (C2) mapping with an unbounded bytes/string VALUE that EXCEEDS the 64 B inline tail. The entry
+// commitment stores len(4 B LE) ++ sha256(value) (100 B total, real-chain-valid <= 128 B); the full value persists
+// off-commitment in per-slot value chunks and a read verifies a caller witness against the stored hash. This closes
+// the last C2 value-type gap: C2 is the unforgeable default for bytes/string of ANY practical length, not just <=64 B.
+
+const ZERO = slotValueToBytes(0n);
+
+// Entry value tail under the len-prefixed format: len(4 B LE) ++ [ value if <=60 B | sha256(value) ].
+function valueTail(v: Uint8Array): Uint8Array {
+  const len4 = new Uint8Array(4);
+  new DataView(len4.buffer).setUint32(0, v.length, true);
+  const body = v.length > 60 ? sha256.hash(v) : v;
+  return new Uint8Array([...len4, ...body]);
+}
+
+describe('sorted mapping with a LONG (>64 B) unbounded bytes/string value (P5b)', () => {
+  const provider = createTestProvider();
+  const sig = new SignatureTemplate(alicePriv);
+
+  it('covenant digest write: overwrites a present key with a 100-byte value (tail = len4 ++ sha256)', async () => {
+    const WRITE_SRC = `contract C() {
+      mapping(int => bytes) data;
+      function put(int k, bytes v, pubkey pk, sig s) { require(checkSig(s, pk)); data[k] = v; }
+    }`;
+    const art = compileString(WRITE_SRC, { sortedMappings: ['data'] });
+    const contract = new Contract(art, [], { provider });
+
+    const s5 = keyToSlot(bigIntToVmNumber(5n));
+    const old = valueTail(utf8ToBin('hi'));
+    const result = await provider.addTokenUtxosDynamic((cat: string) => {
+      const pinned = contract.category ? contract : contract.withCategory(hexToBin(cat));
+      const ea = getEntryNftAddress(pinned, cat, 'data');
+      return [
+        { address: pinned.tokenAddress, satoshis: 10000n, token: { amount: 0n, nft: { capability: 'minting', commitment: '' } } },
+        { address: ea, satoshis: 1500n, token: { amount: 0n, nft: { capability: 'mutable', commitment: binToHex(encodeEntryCommitment(ZERO, s5)) } } },
+        { address: ea, satoshis: 1500n, token: { amount: 0n, nft: { capability: 'mutable', commitment: binToHex(encodeEntryCommitment(s5, ZERO, old)) } } },
+      ];
+    });
+    const categoryId = result.categoryId;
+
+    const bigVal = hexToBin('ab'.repeat(100)); // 100-byte value, > 60 -> hashed tail
+    const sc = StatefulContract.withCategory(contract, categoryId);
+    const { txid } = await sc.put(5n, bigVal, alicePub, sig).send();
+    expect(txid).toBeDefined();
+
+    // The minted entry commitment must be slot ++ nextKey ++ len4(100) ++ sha256(bigVal).
+    const ea = getEntryNftAddress(contract.withCategory(hexToBin(categoryId)), categoryId, 'data');
+    const entries = await provider.getUtxos(ea);
+    const expectedTail = valueTail(bigVal);
+    const expectedCommit = binToHex(encodeEntryCommitment(s5, ZERO, expectedTail));
+    expect(entries.some((e) => e.token?.nft?.commitment === expectedCommit)).toBe(true);
+  });
+
+  it('witness read: reads a present 100-byte value from seeded chunks; forged witness / wrong claim revert', async () => {
+    const READ_SRC = `contract C() {
+      mapping(int => bytes) data;
+      function check(int k, bytes expected, pubkey pk, sig s) { require(checkSig(s, pk)); require(data[k] == expected); }
+    }`;
+    const art = compileString(READ_SRC, { sortedMappings: ['data'] });
+    const contract = new Contract(art, [], { provider });
+
+    const s5 = keyToSlot(bigIntToVmNumber(5n));
+    const bigVal = hexToBin('cd'.repeat(100)); // 100-byte value -> hashed tail + chunks
+    const digest = sha256.hash(bigVal);
+    const result = await provider.addTokenUtxosDynamic((cat: string) => {
+      const pinned = contract.category ? contract : contract.withCategory(hexToBin(cat));
+      const ea = getEntryNftAddress(pinned, cat, 'data');
+      const chunkAddr = getValueChunkAddress(pinned, cat, 'data', binToHex(s5), binToHex(digest));
+      const outs = [
+        { address: pinned.tokenAddress, satoshis: 10000n, token: { amount: 0n, nft: { capability: 'minting' as const, commitment: '' } } },
+        { address: ea, satoshis: 1500n, token: { amount: 0n, nft: { capability: 'mutable' as const, commitment: binToHex(encodeEntryCommitment(ZERO, s5)) } } },
+        { address: ea, satoshis: 1500n, token: { amount: 0n, nft: { capability: 'mutable' as const, commitment: binToHex(encodeEntryCommitment(s5, ZERO, valueTail(bigVal))) } } },
+      ];
+      // Seed the value chunks (100 B -> a single 120 B chunk) at the per-(collection, slot, digest) address.
+      splitValueIntoChunks(bigVal).forEach((data, i) => outs.push({
+        address: chunkAddr, satoshis: 1000n,
+        token: { amount: 0n, nft: { capability: 'mutable' as const, commitment: buildChunkCommitment(i, data) } },
+      }));
+      return outs;
+    });
+    const categoryId = result.categoryId;
+
+    let sc = StatefulContract.withCategory(contract, categoryId);
+    expect((await sc.check(5n, bigVal, alicePub, sig).send()).txid).toBeDefined(); // present long -> witness verified
+
+    sc = StatefulContract.withCategory(contract, categoryId);
+    await expect(sc.check(5n, hexToBin('cd'.repeat(99) + 'ce'), alicePub, sig).send()).rejects.toThrow(); // wrong value -> revert
+  });
+
+  it('round-trip: deploy -> write a 200-byte value (mints chunks) -> read it back (reassembles witness)', async () => {
+    const SRC = `contract C() {
+      mapping(int => bytes) data;
+      function put(int k, bytes v, pubkey pk, sig s) { require(checkSig(s, pk)); data[k] = v; }
+      function check(int k, bytes expected, pubkey pk, sig s) { require(checkSig(s, pk)); require(data[k] == expected); }
+    }`;
+    const art = compileString(SRC); // C2 by default (no options)
+    expect(art.stateLayout?.collections?.find((c) => c.name === 'data')?.sorted).toBe(true);
+    expect(art.abi.find((f) => f.name === 'put')?.entryAccesses?.[0]?.valueParam).toBe('v'); // value param recorded
+
+    const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
+    let nonce = 0xd00;
+    const uid = (): string => { nonce += 1; return nonce.toString(16).padStart(64, '0'); };
+    const fund = async (addr: string): Promise<void> => { await provider.addUtxo(addr, { txid: uid(), vout: 0, satoshis: 100000n }); };
+
+    const f = { txid: uid(), vout: 0, satoshis: 400000n };
+    await provider.addUtxo(p2pkh.address, f);
+    const { contract } = await StatefulContract.deploy(art, [], {
+      provider, fundingUtxo: f, funder: p2pkh.unlock.spend(alicePub, sig), initialState: {}, changeAddress: p2pkh.address,
+    });
+
+    const bigVal = hexToBin('ab12'.repeat(100)); // 200-byte value -> 2 chunks (120 + 80)
+    await fund(contract.address);
+    expect((await contract.put(7n, bigVal, alicePub, sig).send()).txid).toBeDefined(); // write: entry digest + chunks
+
+    await fund(contract.address);
+    expect((await contract.check(7n, bigVal, alicePub, sig).send()).txid).toBeDefined(); // read: chunks -> witness -> match
+
+    await fund(contract.address);
+    await expect(contract.check(7n, hexToBin('ab12'.repeat(99) + 'ab13'), alicePub, sig).send()).rejects.toThrow(); // wrong -> revert
+  });
+
+  it('adversarial: a forged/tampered witness (chunks not matching the stored hash) fails the read closed', async () => {
+    const READ_SRC = `contract C() {
+      mapping(int => bytes) data;
+      function check(int k, bytes expected, pubkey pk, sig s) { require(checkSig(s, pk)); require(data[k] == expected); }
+    }`;
+    const art = compileString(READ_SRC, { sortedMappings: ['data'] });
+    const contract = new Contract(art, [], { provider });
+
+    const s5 = keyToSlot(bigIntToVmNumber(5n));
+    const realVal = hexToBin('11'.repeat(100)); // the value whose hash the entry commits to
+    const forgedVal = hexToBin('22'.repeat(100)); // an attacker's substitute of the same length
+    const digest = sha256.hash(realVal);
+    const result = await provider.addTokenUtxosDynamic((cat: string) => {
+      const pinned = contract.category ? contract : contract.withCategory(hexToBin(cat));
+      const ea = getEntryNftAddress(pinned, cat, 'data');
+      // Chunks are seeded at the address keyed by the ENTRY's digest (sha256(realVal)) but carry FORGED bytes -
+      // the SDK reassembles them into the witness, and the covenant's sha256(witness)==digest check must reject.
+      const chunkAddr = getValueChunkAddress(pinned, cat, 'data', binToHex(s5), binToHex(digest));
+      const outs = [
+        { address: pinned.tokenAddress, satoshis: 10000n, token: { amount: 0n, nft: { capability: 'minting' as const, commitment: '' } } },
+        { address: ea, satoshis: 1500n, token: { amount: 0n, nft: { capability: 'mutable' as const, commitment: binToHex(encodeEntryCommitment(ZERO, s5)) } } },
+        { address: ea, satoshis: 1500n, token: { amount: 0n, nft: { capability: 'mutable' as const, commitment: binToHex(encodeEntryCommitment(s5, ZERO, valueTail(realVal))) } } },
+      ];
+      splitValueIntoChunks(forgedVal).forEach((data, i) => outs.push({
+        address: chunkAddr, satoshis: 1000n,
+        token: { amount: 0n, nft: { capability: 'mutable' as const, commitment: buildChunkCommitment(i, data) } },
+      }));
+      return outs;
+    });
+    const categoryId = result.categoryId;
+
+    // Reading the forged value fails (sha256(forged) != digest); reading the real value would too (chunks are wrong),
+    // so a tampered chunk store makes the value UNREADABLE - never returns a wrong value. Fail-closed soundness.
+    let sc = StatefulContract.withCategory(contract, categoryId);
+    await expect(sc.check(5n, forgedVal, alicePub, sig).send()).rejects.toThrow();
+    sc = StatefulContract.withCategory(contract, categoryId);
+    await expect(sc.check(5n, realVal, alicePub, sig).send()).rejects.toThrow();
+  });
+});

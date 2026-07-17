@@ -1440,6 +1440,26 @@ export default class SymbolTableTraversal extends AstTraversal {
 
         node.entryAccesses = ordered;
 
+        // Chunkable-value READ (unbounded bytes/string, C2): inject witness param __internal__valueWitness_N. A
+        // long value is stored as its sha256 hash; the covenant materializes it by verifying sha256(witness)==hash,
+        // so the SDK supplies the value (from its persisted chunks) and a forged witness fails closed.
+        for (const info of ordered) {
+          if (!info.operations.includes('read')) continue;
+          const coll = this.collectionMap.get(info.collection);
+          const vt = coll?.innermostValueType;
+          // Only a SORTED (C2) chunkable-value read uses the witness path (emitChunkableValueRead); a non-sorted
+          // (opt-out) bytes/string mapping reads its value tail verbatim and must NOT get a spurious witness param.
+          if (!coll?.sorted || !vt || !((vt instanceof BytesType && vt.bound === undefined) || vt.toString() === 'string')) continue;
+          const wname = `__internal__valueWitness_${info.slotIndex}`;
+          const wparam = new ParameterNode(new BytesType(), wname);
+          wparam.location = node.location;
+          node.parameters.push(wparam);
+          this.symbolTables[0].set(Symbol.variable(wparam));
+          const wsym = this.symbolTables[0].get(wname);
+          if (wsym) wsym.references.push({ name: wname } as IdentifierNode);
+          this.pushToStack(wparam);
+        }
+
         // Propagate slot indices to individual mapping nodes (looks up the shared info by key)
         this.assignEntrySlotIndices(node.body, entryAccessMap);
 
@@ -2869,14 +2889,24 @@ export default class SymbolTableTraversal extends AstTraversal {
       // `map[k].push(v)` / `.pop()` are read-modify-writes of the entry's array: the SDK must CO-SPEND the existing
       // entry (read its current array) before appending/dropping - a bare 'write' would overwrite it.
       const rmw = node.arrayPush || node.arrayPop;
+      // P5b: a sorted chunkable-value (unbounded bytes/string) write from a DIRECT parameter records that param so
+      // the SDK persists the full value as chunks (the entry stores only len ++ sha256(value)). A computed value
+      // leaves it undefined - the SDK guards chunk persistence off for it (read fails closed).
+      const vt = node.collection.innermostValueType;
+      const chunkableValue = (vt instanceof BytesType && vt.bound === undefined)
+        || vt === PrimitiveType.STRING || vt.toString() === 'string';
+      const valueParam = chunkableValue && node.expression instanceof IdentifierNode
+        ? node.expression.name : undefined;
       if (existing) {
         if (!existing.operations.includes('write')) existing.operations.push('write');
         if (rmw && !existing.operations.includes('read')) existing.operations.push('read');
+        if (valueParam && existing.valueParam === undefined) existing.valueParam = valueParam;
       } else {
         const collSig = computeCollectionSignature(node.collection.name, node.collection.type.toString());
         map.set(slotKey, {
           collection: node.collection.name, collectionSignature: collSig,
           keyParams, keySources, operations: rmw ? ['read', 'write'] : ['write'], slotIndex: -1,
+          ...(valueParam !== undefined && { valueParam }),
         });
       }
       // Recurse into the value expression (may contain nested mapping accesses)

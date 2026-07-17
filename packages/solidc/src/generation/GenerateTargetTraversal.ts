@@ -9969,10 +9969,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (vt.toString() === 'bool') return 'int';
     if (vt === PrimitiveType.BIGINT || vt instanceof IntType) return 'int';
     if (vt instanceof BytesType && vt.bound !== undefined && vt.bound >= 1 && vt.bound <= 32) return 'rawbytes';
-    // Unbounded `bytes` / `string`: the value IS the entire commitment tail (variable width, read verbatim like
-    // address, default empty). Fits the 128 B commitment when the value is <= 64 B (slot 32 + nextKey 32 + value);
-    // a longer value overflows the commitment and fails closed at the VM (arbitrary length needs the chunked-value
-    // spine, docs/deferrals.md P5b). This is Solidity-parity for the common short-string/bytes case.
+    // Unbounded `bytes` / `string` (P5b): the tail is `len(4 B) ++ [ inline value if <=60 | sha256(value) ]` via
+    // emitChunkableValueTail/Read - inline keeps the commitment <= 128 B, the hash bounds it for a value of ANY
+    // length (the full value persists in per-slot chunk NFTs, a read verifies the witness against the hash). So a
+    // long value no longer fails closed. Still 'rawbytes' here (verbatim-stored kind); isChunkableValue adds the tail.
     if (vt instanceof BytesType && vt.bound === undefined) return 'rawbytes';
     if (vt === PrimitiveType.STRING || vt.toString() === 'string') return 'rawbytes';
     // address is stored verbatim as its locking bytecode in the (last) value tail - variable width is fine there.
@@ -9981,6 +9981,44 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // A struct is an encoded blob (already the on-stack representation); store it verbatim in the value tail.
     if (vt instanceof StructType) return 'rawbytes';
     return null;
+  }
+
+  // A C2 mapping value that can exceed the 64 B inline tail: unbounded `bytes` / `string`. Stored as
+  // len(4B) ++ [ inline value if <=60 B | sha256(value) ]; long bytes persist in per-slot SDK chunk NFTs and a
+  // read verifies a caller witness against the hash. Fixed-width values never chunk.
+  private isChunkableValue(vt: Type): boolean {
+    return (vt instanceof BytesType && vt.bound === undefined) || vt === PrimitiveType.STRING || vt.toString() === 'string';
+  }
+
+  // Value v (top) -> entry tail len(4B LE) ++ [ v if size<=60 | sha256(v) ]. Tracker-neutral.
+  private emitChunkableValueTail(loc: SingleLocationData): void {
+    this.emit(Op.OP_SIZE, loc); // [v, len]
+    this.emit(Op.OP_DUP, loc); this.emit(encodeInt(4n), loc); this.emit(Op.OP_NUM2BIN, loc); // [v, len, len4]
+    this.emit(Op.OP_OVER, loc); this.emit(encodeInt(60n), loc); this.emit(Op.OP_GREATERTHAN, loc); // [v, len, len4, long]
+    this.emit(Op.OP_IF, loc);
+    this.emit(encodeInt(2n), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_SHA256, loc);
+    this.emit(Op.OP_ELSE, loc);
+    this.emit(encodeInt(2n), loc); this.emit(Op.OP_PICK, loc);
+    this.emit(Op.OP_ENDIF, loc);
+    this.emit(Op.OP_CAT, loc); this.emit(Op.OP_NIP, loc); this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_DROP, loc); // [tail]
+  }
+
+  // Entry tail (top) -> materialized value. Short: inline. Long: caller supplies the value as witness arg
+  // __internal__valueWitness_N and the covenant verifies sha256(witness)==stored hash (forged witness fails).
+  private emitChunkableValueRead(loc: SingleLocationData, slotIndex: number): void {
+    this.emit(encodeInt(4n), loc); this.emit(Op.OP_SPLIT, loc); // [len4, rest]
+    this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_BIN2NUM, loc); // [rest, len]
+    this.emit(Op.OP_DUP, loc); this.emit(encodeInt(60n), loc); this.emit(Op.OP_GREATERTHAN, loc); // [rest, len, long]
+    this.emit(Op.OP_IF, loc);
+    this.emit(Op.OP_DROP, loc); // [hash]
+    const w = `__internal__valueWitness_${slotIndex}`;
+    this.emit(encodeInt(BigInt(this.getStackIndex(w) + 1)), loc); this.emit(Op.OP_PICK, loc); // +1: hash untracked
+    this.emit(Op.OP_DUP, loc); this.emit(Op.OP_SHA256, loc);
+    this.emit(encodeInt(2n), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_EQUALVERIFY, loc);
+    this.emit(Op.OP_NIP, loc); // [witness]
+    this.emit(Op.OP_ELSE, loc);
+    this.emit(Op.OP_DROP, loc); // short: [value]
+    this.emit(Op.OP_ENDIF, loc);
   }
 
   /**
@@ -10084,8 +10122,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(encodeInt(4n), loc); this.emit(Op.OP_PICK, loc);   // copy Hk32 (depth4)
     this.emit(Op.OP_EQUAL, loc);                                 // [Hk32, slot32, nextKey32, value, isPresent]
     this.emit(Op.OP_IF, loc);
-    this.emit(Op.OP_NIP, loc); this.emit(Op.OP_NIP, loc); this.emit(Op.OP_NIP, loc); // -> [value]
+    this.emit(Op.OP_NIP, loc); this.emit(Op.OP_NIP, loc); this.emit(Op.OP_NIP, loc); // -> [value | tail]
     if (valueKind === 'int') this.emit(Op.OP_BIN2NUM, loc);     // normalize the int/bool tail (bytesN kept verbatim)
+    else if (this.isChunkableValue(valueType)) this.emitChunkableValueRead(loc, slotIndex);
     this.emit(Op.OP_ELSE, loc);
     this.emit(Op.OP_DROP, loc);                                 // drop value -> [Hk32, slot32, nextKey32]
     this.emitSortedAbsenceBracket(loc);                         // verifies slot < H(k) < nextKey
@@ -10333,6 +10372,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // normalized to a minimal number (matches SDK bigIntToVmNumber); a bytesN value is CAT'd into the tail verbatim.
     emitValue();
     if (this.sortedValueKind(collection.innermostValueType) === 'int') this.emit(Op.OP_BIN2NUM, loc);
+    if (this.isChunkableValue(collection.innermostValueType)) this.emitChunkableValueTail(loc); // len4 ++ [inline|hash]
 
     // Reorder [Hk_temp, v] -> [v, Hk32] (Hk back on top, untracked, matching the original working-area layout).
     const hkIdx = this.getStackIndex('(__upsert_hk)');

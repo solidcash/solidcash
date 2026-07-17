@@ -214,6 +214,10 @@ export class StatefulTransactionBuilder {
   private loopEntryVars: Array<{ collection: string; lockingBytecode: Uint8Array }> = [];
   // collection -> ordered loop entry commitments (hex) from auto-derivation; length = entry output count.
   private loopEntryCommitments: Map<string, string[]> = new Map();
+  // P5b: unpinned same-category 0x01 value-chunk outputs (LONG sorted-mapping values). Trailing, not covenant-
+  // managed - the entry stores sha256(value) and the read verifies the reassembled witness, so these need no
+  // on-chain pinning. Commitments are known exactly (buildChunkCommitment) so they never enter auto-derivation.
+  private valueChunkOutputs: Array<{ to: string | Uint8Array; amount: bigint; token?: Utxo['token'] }> = [];
   private eventRawCommitments: Map<number, string> = new Map(); // emitIndex -> hex commitment (from auto-derivation)
   private pendingEventPlaceholders: Array<{ eventSignature: string; emitIndex: number }> = [];
 
@@ -690,6 +694,18 @@ export class StatefulTransactionBuilder {
       );
     }
     this.pendingOutputs.push(output);
+    return this;
+  }
+
+  /**
+   * P5b: buffer an unpinned same-category value-chunk output (a LONG sorted-mapping value's persisted chunk).
+   * Unlike addOutput, this permits the contract's own category: value chunks are 0x01 mutable NFTs the C2 write
+   * covenant tolerates (no total-output bound; minting uniqueness counts only 0x02; C3 skipped for entry access).
+   * They are materialized trailing (after dynamic chunks / loop entries) with their commitment fixed, so the
+   * auto-derivation never sees them. Soundness is by the entry's stored sha256(value), verified on read.
+   */
+  addValueChunkOutput(output: { to: string | Uint8Array; amount: bigint; token?: Utxo['token'] }): this {
+    this.valueChunkOutputs.push(output);
     return this;
   }
 
@@ -1694,6 +1710,15 @@ export class StatefulTransactionBuilder {
         entryOutput.amount = BigInt(Math.max(1200, calculateDust(entryOutput)));
         builder.addOutput(entryOutput);
       }
+    }
+
+    // P5b value-chunk outputs, placed AFTER every covenant-managed output (entries, dynamic chunks, loop-entry
+    // NEW nodes) so they never shift a covenant-pinned index. Fixed commitments (buildChunkCommitment), unpinned:
+    // the entry stores sha256(value) and a read verifies the reassembled witness, so no on-chain pinning is needed.
+    for (const vco of this.valueChunkOutputs) {
+      const chunkOutput = { ...vco };
+      chunkOutput.amount = BigInt(Math.max(1200, calculateDust(chunkOutput)));
+      builder.addOutput(chunkOutput);
     }
 
     // Append any extra outputs buffered via addOutput()

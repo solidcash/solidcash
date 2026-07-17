@@ -216,6 +216,10 @@ export interface EntryAccessInfo {
   // (the delete wins), and the single entry NFT can't be co-spent by both slots. Set to the delete slot's
   // index: the covenant gates this write off when its key == that slot's key, and the SDK funds it instead.
   aliasCondDeleteSlot?: number;
+  // A sorted (C2) mapping WRITE of an unbounded bytes/string value from a direct function parameter. The entry
+  // commitment stores only len ++ sha256(value); the SDK persists the full value as chunks (P5b) using this
+  // param's runtime argument. Undefined when the value is a computed expression (chunk persistence guarded off).
+  valueParam?: string;
 }
 
 export interface TokenContainerAccessInfo {

@@ -1,15 +1,23 @@
 import { describe, it, expect } from 'vitest';
-import { hexToBin, binToHex, utf8ToBin, bigIntToVmNumber } from '@bitauth/libauth';
+import { hexToBin, binToHex, utf8ToBin, bigIntToVmNumber, sha256 } from '@bitauth/libauth';
 import { compileString } from 'solidc';
 import { Contract, StatefulContract, SignatureTemplate } from '../../src/index.js';
 import { keyToSlot, encodeEntryCommitment, slotValueToBytes, getEntryNftAddress } from '../../src/index.js';
 import { alicePriv, alicePub } from '../fixture/vars.js';
 import { createTestProvider } from '../test-util.js';
 
-// P5a: a sorted (C2) mapping with an UNBOUNDED `bytes` / `string` VALUE (<= 64 B, fits the 128 B commitment tail).
-// The value IS the entire commitment tail (read verbatim, default empty), so C2's exclusion proofs extend to
-// bytes/string values - closing the value-type gap for the common short-string case (a longer value overflows the
-// commitment and fails closed at the VM; arbitrary length is P5b chunking).
+// P5a: a sorted (C2) mapping with an UNBOUNDED `bytes` / `string` VALUE <= 60 B, stored INLINE in the entry
+// commitment tail as len(4 B LE) ++ value (<= 128 B total, real-chain-valid). C2's exclusion proofs extend to
+// bytes/string values - closing the value-type gap for the common short-string case. A value > 60 B stores
+// len ++ sha256(value) and persists the full value in chunks (P5b, see SortedMappingLongValue.test.ts).
+
+// Entry value tail: len(4 B LE) ++ [ value if <=60 B | sha256(value) ] - matches the covenant's emitChunkableValueTail.
+function valueTail(v: Uint8Array): Uint8Array {
+  const len4 = new Uint8Array(4);
+  new DataView(len4.buffer).setUint32(0, v.length, true);
+  const body = v.length > 60 ? sha256.hash(v) : v;
+  return new Uint8Array([...len4, ...body]);
+}
 const READ_SRC = `contract C() {
   mapping(int => bytes) data;
   function check(int k, bytes expected, pubkey pk, sig s) { require(checkSig(s, pk)); require(data[k] == expected); }
@@ -39,7 +47,7 @@ describe('sorted mapping with unbounded bytes/string value (P5a: value in the 64
       return [
         { address: pinned.tokenAddress, satoshis: 10000n, token: { amount: 0n, nft: { capability: 'minting', commitment: '' } } },
         { address: ea, satoshis: 1500n, token: { amount: 0n, nft: { capability: 'mutable', commitment: binToHex(encodeEntryCommitment(ZERO, s5)) } } },
-        { address: ea, satoshis: 1500n, token: { amount: 0n, nft: { capability: 'mutable', commitment: binToHex(encodeEntryCommitment(s5, ZERO, val)) } } },
+        { address: ea, satoshis: 1500n, token: { amount: 0n, nft: { capability: 'mutable', commitment: binToHex(encodeEntryCommitment(s5, ZERO, valueTail(val))) } } },
       ];
     });
     const categoryId = result.categoryId;
@@ -69,7 +77,7 @@ describe('sorted mapping with unbounded bytes/string value (P5a: value in the 64
       return [
         { address: pinned.tokenAddress, satoshis: 10000n, token: { amount: 0n, nft: { capability: 'minting', commitment: '' } } },
         { address: ea, satoshis: 1500n, token: { amount: 0n, nft: { capability: 'mutable', commitment: binToHex(encodeEntryCommitment(ZERO, s5)) } } },
-        { address: ea, satoshis: 1500n, token: { amount: 0n, nft: { capability: 'mutable', commitment: binToHex(encodeEntryCommitment(s5, ZERO, old)) } } },
+        { address: ea, satoshis: 1500n, token: { amount: 0n, nft: { capability: 'mutable', commitment: binToHex(encodeEntryCommitment(s5, ZERO, valueTail(old))) } } },
       ];
     });
     const categoryId = result.categoryId;
@@ -94,7 +102,7 @@ describe('sorted mapping with unbounded bytes/string value (P5a: value in the 64
       return [
         { address: pinned.tokenAddress, satoshis: 10000n, token: { amount: 0n, nft: { capability: 'minting', commitment: '' } } },
         { address: ea, satoshis: 1500n, token: { amount: 0n, nft: { capability: 'mutable', commitment: binToHex(encodeEntryCommitment(ZERO, s5)) } } },
-        { address: ea, satoshis: 1500n, token: { amount: 0n, nft: { capability: 'mutable', commitment: binToHex(encodeEntryCommitment(s5, ZERO, val)) } } },
+        { address: ea, satoshis: 1500n, token: { amount: 0n, nft: { capability: 'mutable', commitment: binToHex(encodeEntryCommitment(s5, ZERO, valueTail(val))) } } },
       ];
     });
     const categoryId = result.categoryId;

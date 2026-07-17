@@ -365,6 +365,18 @@ derivation + the chunk spine, with a runtime length branch and the absent-defaul
 multi-part, soundness-critical implementation, not a bounded edit. Rushing the exclusion-proof read path is the
 one thing worse than the current fail-closed.
 
+IMPLEMENTATION STATUS (2026-07-17, validated-then-reverted to stay green): the COVENANT halves are written and
+compile clean - `emitChunkableValueTail` (write: v -> len4 ++ [inline<=60 | sha256(v)], tracker-neutral) and
+`emitChunkableValueRead` (read: strip len4; short -> inline; long -> PICK witness arg, `sha256(witness)==hash`
+OP_EQUALVERIFY, both branches net one value) - plus the SymbolTable `__internal__valueWitness_<slotIndex>` param
+injection for chunkable reads. CONFIRMED the remaining SDK half is the deep part and genuinely MULTI-SYSTEM: the
+value-chunk OUTPUTS on write must pass the covenant's OP_TXOUTPUTCOUNT bound, which means reusing the
+`emitDynamicWriteVerification` / `getChunkOutputBase` machinery (couples the C2 write to the dynamic-storage chunk
+system), plus the SDK must (a) mint per-slot value chunks on write, (b) read them on read to supply the witness,
+(c) thread the witness into finalArgs in the exact SymbolTable param order (interleaving msgSender/blockhash/
+iteration). That is a dedicated focused build, not a session-tail edit. NEXT: start from the SDK value-chunk
+mint/read reusing the dynamic-chunk path, keyed by (collection, slot); the covenant halves above drop straight in.
+
 **P5b remaining (also covers ARRAY-valued mappings).** Two related gaps keep the C2-default fall-back:
 (a) `mapping(K => string/bytes)` values > 64 B fail closed (commitment overflow); (b) `mapping(K => T[])`
 (array-valued) is skipped by the compiler.ts value-type guard (stays on the default entry model). Both are the

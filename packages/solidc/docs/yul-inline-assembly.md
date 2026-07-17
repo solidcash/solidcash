@@ -244,7 +244,34 @@ defaults to 0); `switch` cases with hex/string-literal values (`case hex"1122"`,
 `x.offset` VALUE reads of a state var (constant slot number / byte offset in the packed layout) and `x.length`
 of a `bytes`/`string`/array calldata param (its `size`); and Yul inside a `fallback`/`receive` (the base
 AST traversal visits `constructorDef` + `functions` but not the separate `fallbackDef`/`receiveDef` fields, so
-`LowerInlineAssembly.visitContract` now visits those two explicitly).
+`LowerInlineAssembly.visitContract` now visits those two explicitly). Also: a `keccak256`/`sha256` result binds
+to a uint256 Yul word in a `let`/assignment (cast when the target is a word; a typed target keeps bytes32); and
+a DEAD local Yul function (never called) is dropped rather than blocking the block (reachability-gated bail).
+
+## Remaining Yul failures (deferred with reasons)
+
+After the above, the solc-corpus Yul residual splits into two groups. **UNSOUND to fake** (compile but diverge at
+runtime - left fail-closed, this is the correct behavior, NOT a gap to close blindly):
+- `sstore(x.slot, N)` on a dynamic array/bytes = set its LENGTH (~20). SolidCash keeps length in a register + chunk
+  storage; force-setting length without moving elements desyncs them. No sound mapping.
+- `x.slot := expr` STORAGE-POINTER reassignment (~22, mostly `storage_boundary_*`). These probe EVM's physical
+  32-byte-slot boundary layout (how packed vars at adjacent slots interact) which BCH's register/chunk/collection
+  model does not have. Routing to `__evm_storage` compiles but the slot<->declared-var interaction diverges.
+- `x.offset := N; x.length := M` CALLDATA-POINTER reassignment (~4). A SolidCash calldata param is a value, not a
+  pointer into a buffer, so re-aiming it has no BCH meaning.
+
+**DEEP / fundamental features** (sound but not yet built):
+- Local Yul functions that are REACHABLE and inter-call / nest / `leave` / are called in a for-condition with a side
+  effect (~7). The inliner handles leaf single+multi-return calls and drops dead defs; inter-call/nested inlining
+  needs recursive inlining + cycle detection, and side-effecting-call-in-loop-condition needs per-iteration body
+  inlining.
+- `create`/`create2` with a non-zero value or literal-offset init bytecode (~5) - a funded deploy needs an output
+  the covenant can't synthesize; the typed `new Contract(...)` is the path.
+- Function-pointer `.selector` read/write in assembly (~2) - fn-pointer feature territory.
+- Runtime (non-literal) `clz(x)` (1) - needs a 256-bit bit-length subroutine.
+- Misc (~7+4): calldata `.offset` VALUE read (no BCH calldata-pointer), `tstore(x.slot,..)`/`.slot` on transient
+  vars (niche; transient is inert on BCH), `return(p,n)` in a void EXTERNAL function (no BCH return-data channel),
+  and keccak results stored to a mapping value / other combos.
 
 ## Phased implementation plan
 

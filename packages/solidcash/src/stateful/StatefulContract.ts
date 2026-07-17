@@ -70,7 +70,7 @@ import {
 } from './StateReader.js';
 import {
   getDataNftAddress, getEntryNftAddress, getEventNftAddress, getAnonymousEventNftAddress,
-  getDynamicChunkAddress, getValueChunkAddress,
+  getDynamicChunkAddress, getValueChunkAddress, getValueChunkLockingBytecode,
   getDataNftLockingBytecode, getEntryNftLockingBytecode,
   getTokenContainerAddress, getSatoshiContainerAddress, getContractState,
   createDataNftUnlocker, createDestroyDataNftUnlocker,
@@ -4626,7 +4626,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 continue;
               }
               if (isSortedValueMintColl) probedSortedLoop.add(lv.collection);
-              const range = { min: loopOffset, max: loopOffset + LOOP_ENTRY_MAX_ITERATIONS };
+              // A sorted VALUE upsert mints at most ONE trailing NEW node (insert), so cap its range to a single
+              // output - otherwise a chunkable-value insert's value-chunk pin (which emits OP_OUTPUTTOKENCOMMITMENT
+              // at loopOffset+1..) would be misread here as extra NEW nodes.
+              const loopMax = isSortedValueMintColl ? loopOffset + 1 : loopOffset + LOOP_ENTRY_MAX_ITERATIONS;
+              const range = { min: loopOffset, max: loopMax };
               const commitMap = extractCommitmentMapFromTrace(fullTrace2, range);
               const derived: string[] = [];
               for (const [outIdx, commit] of commitMap) derived[outIdx - loopOffset] = commit;
@@ -4638,6 +4642,14 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               // growing loop, so never add the speculative extra placeholder (it would create a phantom output that
               // shifts the fixed entry-slot P' and oscillates the derivation).
               const isSortedValueMint = !!scoll?.sorted;
+              // P5b computed INSERT: the value-chunk pin runs BEFORE the NEW-node check in the covenant, so until the
+              // chunks converge the NEW OTC never runs and derivedCount is 0. Do NOT drop the seeded loop entry to 0
+              // (that would shift vcBase and misalign the chunk derivation) - keep the count of 1 until NEW derives.
+              const hasValueChunks = stb.getValueChunkVars().some((v) => v.collection === lv.collection);
+              if (isSortedValueMint && hasValueChunks && derivedCount === 0 && existing.length > 0) {
+                loopOffset += existing.length;
+                continue;
+              }
               const stillLearning = !isSortedValueMint && derivedCount > 0
                 && derived[derivedCount - 1] !== (existing[derivedCount - 1] ?? '00');
               const next: string[] = [];
@@ -4647,6 +4659,34 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               commitmentProgress += derivedCount;
               latestLoopEntryCommits = latestLoopEntryCommits.concat(next);
               loopOffset += derivedCount;
+            }
+          }
+
+          // P5b COMPUTED value chunks: the covenant PINS them (emitSortedValueChunkPin) but the SDK has no value
+          // param to build them, so derive their commitments from the trace progressively (like loop entries). The
+          // VM halts at the first placeholder mismatch, so each probe reveals one more chunk; grow the placeholder
+          // set until the trace stops revealing new ones. A short value (<= 60 B) reveals 0 - the placeholder drops.
+          const valueChunkVars = stb.getValueChunkVars();
+          if (valueChunkVars.length > 0) {
+            let vcOffset = stb.getValueChunkOutputBase();
+            for (const vcv of valueChunkVars) {
+              const existing = stb.getValueChunkRawCommitments(vcv.collection);
+              if (existing.length === 0) {
+                stb.setValueChunkRawCommitments(vcv.collection, ['00']); // seed so the covenant's chunk 0 has an output
+                continue;
+              }
+              const range = { min: vcOffset, max: vcOffset + LOOP_ENTRY_MAX_ITERATIONS };
+              const commitMap = extractCommitmentMapFromTrace(fullTrace2, range);
+              const derived: string[] = [];
+              for (const [outIdx, commit] of commitMap) derived[outIdx - vcOffset] = commit;
+              const derivedCount = derived.filter((c) => c !== undefined).length;
+              const stillLearning = derivedCount > 0 && derived[derivedCount - 1] !== (existing[derivedCount - 1] ?? '00');
+              const next: string[] = [];
+              for (let i = 0; i < derivedCount; i++) next[i] = derived[i] ?? existing[i] ?? '00';
+              if (stillLearning) next.push('00');
+              stb.setValueChunkRawCommitments(vcv.collection, next);
+              commitmentProgress += derivedCount;
+              vcOffset += next.length;
             }
           }
 
@@ -4778,8 +4818,14 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             commitmentProgress, derivedTransfers, derivedFtTransfers, derivedNftTransfers,
             stateCommits, latestEntryCommits, latestEventCommits, latestLoopEntryCommits,
           );
-          if (convergenceKey === prevConvergenceKey) break;
-          if (seenConvergenceKeys.has(convergenceKey)) {
+          // P5b: a computed value's ENTRY commitment only derives once the (earlier) value-chunk pin passes, which
+          // is one probe AFTER the chunks converge - so with value chunks, do not break on a stable fingerprint
+          // while the probe still errors (bounded by maxIterations). Non-value-chunk txs keep the original break so
+          // an expected-revert derivation still exits fast.
+          const probeHadError = fullTrace2.some((s: any) => s.error);
+          const needsPassingProbe = stb.getValueChunkVars().length > 0;
+          if (convergenceKey === prevConvergenceKey && (!needsPassingProbe || !probeHadError)) break;
+          if (seenConvergenceKeys.has(convergenceKey) && (!needsPassingProbe || !probeHadError)) {
             throw new AutoDerivationError(
               'Auto-derivation oscillation detected: derivation state is cycling without converging. '
             + 'This may indicate conflicting covenant constraints.',
@@ -4988,6 +5034,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const sortedInserts: Array<{ slotIndex: number; collection: string; predNew: Uint8Array; newNode?: Uint8Array }> = [];
     // P5b value-chunk mints (collected in the entry loop, added to the builder after it is created).
     const valueChunkMints: Array<{ collection: string; slot: Uint8Array; digest: Uint8Array; chunks: Uint8Array[] }> = [];
+    // P5b COMPUTED chunkable writes (no resolvable value param): the covenant pins the chunks, so the SDK derives
+    // their commitments from the trace (registered as valueChunkVars after the builder is created).
+    const computedValueChunkCollections = new Set<string>();
+    // Computed UPDATES (present key, no NEW node): pin the loop entry empty so it is not phantom-derived.
+    const computedValueUpdateCollections = new Set<string>();
 
     if (entryAccesses && entryAccesses.length > 0 && stateLayout.collections) {
       const entryNftUtxos = onChainState.entryNftUtxos;
@@ -5138,19 +5189,26 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             chunkableReadWitnesses.push(witness);
           }
 
-          // P5b: a sorted chunkable-value WRITE > 60 B persists the full value as chunks; the covenant PINS them to
-          // the on-stack value (Design D), so they must match slot ++ digest ++ i ++ data exactly. Source from the
-          // direct value param; a computed value's chunks are derived from the trace instead (below).
-          if (isWrite && (collection.valueType === 'bytes' || collection.valueType === 'string')
-            && access.valueParam) {
-            const vIdx = abiFunction!.inputs.findIndex((inp) => inp.name === access.valueParam);
+          // P5b: a sorted chunkable-value WRITE persists the full value as chunks; the covenant PINS them to the
+          // on-stack value (Design D), so they must match slot ++ digest ++ i ++ data exactly. A DIRECT value param
+          // is chunked here; a COMPUTED value (unresolvable param / expression) is registered so the SDK derives the
+          // pinned chunk commitments from the VM trace (like dynamicChunkVars).
+          if (isWrite && (collection.valueType === 'bytes' || collection.valueType === 'string')) {
+            const vIdx = access.valueParam ? abiFunction!.inputs.findIndex((inp) => inp.name === access.valueParam) : -1;
             const raw = vIdx >= 0 ? args[vIdx] : undefined;
             const vBytes = typeof raw === 'string' ? utf8ToBin(raw) : raw instanceof Uint8Array ? raw : undefined;
-            if (vBytes && vBytes.length > 60) {
-              valueChunkMints.push({
-                collection: access.collection, slot, digest: sha256Sync(vBytes),
-                chunks: splitValueIntoValueChunks(vBytes),
-              });
+            if (vBytes) {
+              if (vBytes.length > 60) {
+                valueChunkMints.push({
+                  collection: access.collection, slot, digest: sha256Sync(vBytes),
+                  chunks: splitValueIntoValueChunks(vBytes),
+                });
+              }
+            } else {
+              computedValueChunkCollections.add(access.collection); // derive chunk commitments from the trace
+              // A computed UPDATE (present key) mints no NEW node; pin its loop entry EMPTY so the loop-entry
+              // derivation does not misread the value-chunk pin's OP_OUTPUTTOKENCOMMITMENT calls as a phantom NEW.
+              if (list.has(slot)) computedValueUpdateCollections.add(access.collection);
             }
           }
           continue;
@@ -6875,6 +6933,17 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         builder.setLoopEntryCommitments(ins.collection, [binToHex(ins.newNode)]);
         builder.pinLoopEntry(ins.collection);
       }
+    }
+
+    // P5b COMPUTED values: register the collections whose value chunks must be DERIVED from the trace (the covenant
+    // pins them but the SDK has no value param to build them). The auto-derivation reads nNew from the entry's len4
+    // and progressively extracts the pinned chunk commitments (like dynamicChunkVars).
+    for (const collectionName of computedValueChunkCollections) {
+      builder.registerValueChunkVar(collectionName, getValueChunkLockingBytecode(this.inner, this.categoryId, collectionName));
+    }
+    for (const collectionName of computedValueUpdateCollections) {
+      builder.setLoopEntryCommitments(collectionName, []);
+      builder.pinLoopEntry(collectionName); // no NEW node on an update - skip loop-entry derivation
     }
 
     // P5b (Design D): persist LONG (>60 B) sorted-mapping values as chunk NFT outputs at the compile-time per-

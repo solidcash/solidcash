@@ -174,6 +174,15 @@ export function getValueChunkAddress(
   return scriptToAddress(covenantScript, contract.provider.network, contract.addressType, true);
 }
 
+/** Locking bytecode (P2SH32) form of the value-chunk address, for covenant-derived (computed-value) chunk outputs. */
+export function getValueChunkLockingBytecode(
+  contract: Contract<any, any>, categoryId: string, collection: string,
+): Uint8Array {
+  validateCategoryId(categoryId);
+  const collectionHash = computeCollectionHash(valueChunkSignature(collection));
+  return scriptToLockingBytecode(buildEntryNftCovenantScript(hexToBin(categoryId), collectionHash), 'p2sh32');
+}
+
 export function getEventNftAddress(
   contract: Contract<any, any>, categoryId: string, eventNameOrSignature: string,
 ): string {

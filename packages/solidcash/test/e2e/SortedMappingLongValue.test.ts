@@ -167,4 +167,62 @@ describe('sorted mapping with a LONG (>64 B) unbounded bytes/string value (P5b)'
     sc = StatefulContract.withCategory(contract, categoryId);
     await expect(sc.check(5n, realVal, alicePub, sig).send()).rejects.toThrow();
   });
+
+  it('computed value UPDATE: a COMPUTED long value (local-var RHS) writes chunks (derived) and reads back', async () => {
+    // `data[k] = v` where v is a LOCAL (not a function param) - the SDK cannot build the chunks, so it DERIVES the
+    // covenant-pinned chunk commitments from the trace (Design D two-phase). Closes residual #1 for updates.
+    const SRC = `contract C() {
+      mapping(int => bytes) data;
+      function put(int k, bytes a, pubkey pk, sig s) { require(checkSig(s, pk)); bytes v = a; data[k] = v; }
+      function check(int k, bytes expected, pubkey pk, sig s) { require(checkSig(s, pk)); require(data[k] == expected); }
+    }`;
+    const art = compileString(SRC, { sortedMappings: ['data'] });
+    const contract = new Contract(art, [], { provider });
+
+    const s5 = keyToSlot(bigIntToVmNumber(5n));
+    const old = valueTail(utf8ToBin('seed'));
+    const result = await provider.addTokenUtxosDynamic((cat: string) => {
+      const pinned = contract.category ? contract : contract.withCategory(hexToBin(cat));
+      const ea = getEntryNftAddress(pinned, cat, 'data');
+      return [
+        { address: pinned.tokenAddress, satoshis: 10000n, token: { amount: 0n, nft: { capability: 'minting', commitment: '' } } },
+        { address: ea, satoshis: 1500n, token: { amount: 0n, nft: { capability: 'mutable', commitment: binToHex(encodeEntryCommitment(ZERO, s5)) } } },
+        { address: ea, satoshis: 1500n, token: { amount: 0n, nft: { capability: 'mutable', commitment: binToHex(encodeEntryCommitment(s5, ZERO, old)) } } },
+      ];
+    });
+    const categoryId = result.categoryId;
+
+    const bigVal = hexToBin('7a'.repeat(150)); // 150-byte computed value -> 3 chunks (derived from the trace)
+    let sc = StatefulContract.withCategory(contract, categoryId);
+    expect((await sc.put(5n, bigVal, alicePub, sig).send()).txid).toBeDefined(); // computed update: chunks derived
+
+    sc = StatefulContract.withCategory(contract, categoryId);
+    expect((await sc.check(5n, bigVal, alicePub, sig).send()).txid).toBeDefined(); // read: chunks -> witness -> match
+  });
+
+  it('computed value INSERT: a COMPUTED long value into a fresh key derives NEW + chunks from the trace', async () => {
+    const SRC = `contract C() {
+      mapping(int => bytes) data;
+      function put(int k, bytes a, pubkey pk, sig s) { require(checkSig(s, pk)); bytes v = a; data[k] = v; }
+      function check(int k, bytes expected, pubkey pk, sig s) { require(checkSig(s, pk)); require(data[k] == expected); }
+    }`;
+    const art = compileString(SRC);
+    const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
+    let nonce = 0xf00;
+    const uid = (): string => { nonce += 1; return nonce.toString(16).padStart(64, '0'); };
+    const fund = async (addr: string): Promise<void> => { await provider.addUtxo(addr, { txid: uid(), vout: 0, satoshis: 100000n }); };
+
+    const f = { txid: uid(), vout: 0, satoshis: 400000n };
+    await provider.addUtxo(p2pkh.address, f);
+    const { contract } = await StatefulContract.deploy(art, [], {
+      provider, fundingUtxo: f, funder: p2pkh.unlock.spend(alicePub, sig), initialState: {}, changeAddress: p2pkh.address,
+    });
+
+    const bigVal = hexToBin('3c'.repeat(150)); // 150-byte computed value into a fresh key -> INSERT
+    await fund(contract.address);
+    expect((await contract.put(11n, bigVal, alicePub, sig).send()).txid).toBeDefined(); // computed insert
+
+    await fund(contract.address);
+    expect((await contract.check(11n, bigVal, alicePub, sig).send()).txid).toBeDefined(); // read back
+  });
 });

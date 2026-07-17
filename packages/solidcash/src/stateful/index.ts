@@ -88,6 +88,7 @@ export {
   getEntryNftLockingBytecode,
   getEntryNftAddress,
   getValueChunkAddress,
+  getValueChunkLockingBytecode,
   getEventNftAddress,
   getAnonymousEventNftAddress,
   getTokenContainerAddress,

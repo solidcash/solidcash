@@ -378,14 +378,19 @@ is fixed: the SDK computes NEW exactly (`slot ++ oldNext ++ tail`) and injects i
 derivation skips the collection. VM-green update + insert + adversarial (SortedMappingLongValue.test.ts); solidcash
 2949 pass (1 pre-existing BCH_2023_05).
 
-**Documented residual limitations (all fail-CLOSED, none a soundness/forgery hole).**
-- COMPUTED long value (`m[k] = f(...)` whose result > 60 B, not a direct param, e.g. a local-var or expression RHS):
-  the covenant PINS chunks but the SDK has no value to place them, so the write now REVERTS at write time (fail-loud,
-  was silent-unreadable in the pre-pin Design E). To make computed values WORK needs the two-phase trace derivation
-  (probe -> read the derived entry's len4 -> place N chunk placeholders -> progressively derive the pinned chunk
-  commitments from the trace -> fill), the same progressive machinery dynamic-storage chunks + loop-entry NEW nodes
-  use; for a computed INSERT it must also coexist with the NEW-node derivation (both trailing). Direct `m[k] = v`
-  (the primary case) is fully supported. Computed values <= 60 B are unaffected (inline).
+**COMPUTED values - NOW SHIPPED too (2026-07-17), closing residual #1.** A `m[k] = f(...)` whose result > 60 B and
+is not a direct param (a local-var / expression RHS) now WORKS: the covenant pins the chunks, and the SDK DERIVES
+their commitments from the VM trace progressively (the tight `<expected> <idx> OP_OUTPUTTOKENCOMMITMENT OP_EQUALVERIFY`
+pattern exposes each chunk; the VM halts at the first placeholder mismatch, so each probe reveals one more). Both
+UPDATE and INSERT work (SortedMappingLongValue.test.ts). Three derivation subtleties were solved: (a) the value-chunk
+pin runs BEFORE the entry-output check, so the entry only re-derives on a PASSING probe - the convergence loop now
+requires a passing probe (not just a stable fingerprint) when value chunks are present; (b) the loop-entry (NEW)
+extractor's range is capped to a single output for sorted-value mints so it does not misread the chunk OTC calls as
+phantom NEW nodes; (c) a computed INSERT's NEW cannot derive until the chunks converge (the pin blocks it), so the
+seeded loop-entry count is held at 1 (not dropped to 0, which would shift the chunk base). A computed UPDATE pins its
+(empty) loop entry so it is never phantom-derived. Direct `m[k] = v` remains injected exactly (no derivation).
+
+**Documented residual limitation (fail-CLOSED, not a soundness hole).**
 - OVERWRITE orphans: chunks are keyed by digest (in the commitment), so overwriting a long value mints a fresh
   version and the old chunks orphan (harmless, digest-filtered on read). A co-spend GC pass is the clean-up follow-up.
 
@@ -394,8 +399,7 @@ derivation skips the collection. VM-green update + insert + adversarial (SortedM
 `m[k].length`) which the flip's gauge showed unsupported on a C2 mapping value - a separate codegen piece, not the
 bytes/string chunking (now done). FUNCTIONAL gap only; falls back safely, no forgery.
 
-**Revisit if.** A target needs `mapping(K => T[])` at C2 parity, or the residual limitations above bite (computed
-long values / overwrite GC / adversarial-writer liveness).
+**Revisit if.** A target needs `mapping(K => T[])` at C2 parity, or the overwrite-orphan GC becomes material.
 
 ### 4. Sound PARTIAL (paginated / windowed) enumeration
 

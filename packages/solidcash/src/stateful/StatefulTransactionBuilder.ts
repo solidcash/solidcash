@@ -222,6 +222,10 @@ export class StatefulTransactionBuilder {
   // managed - the entry stores sha256(value) and the read verifies the reassembled witness, so these need no
   // on-chain pinning. Commitments are known exactly (buildChunkCommitment) so they never enter auto-derivation.
   private valueChunkOutputs: Array<{ to: string | Uint8Array; amount: bigint; token?: Utxo['token'] }> = [];
+  // P5b (computed values): collections whose value chunks are DERIVED from the trace (the SDK has no value param to
+  // build them). The covenant pins them, so their commitments come from auto-derivation like dynamicChunkVars.
+  private valueChunkVars: Map<string, Uint8Array> = new Map(); // collection -> chunk-address locking bytecode
+  private valueChunkRawCommitments: Map<string, string[]> = new Map(); // collection -> ordered chunk commitments (hex)
   private eventRawCommitments: Map<number, string> = new Map(); // emitIndex -> hex commitment (from auto-derivation)
   private pendingEventPlaceholders: Array<{ eventSignature: string; emitIndex: number }> = [];
 
@@ -722,6 +726,33 @@ export class StatefulTransactionBuilder {
   /** Whether a collection's loop-entry (NEW) commitment is pinned (injected exactly, not trace-derived). */
   isLoopEntryPinned(collection: string): boolean {
     return this.pinnedLoopEntries.has(collection);
+  }
+
+  /** Register a collection whose value chunks are DERIVED from the trace (computed value, no direct param). */
+  registerValueChunkVar(collection: string, lockingBytecode: Uint8Array): this {
+    this.valueChunkVars.set(collection, lockingBytecode);
+    return this;
+  }
+
+  getValueChunkVars(): Array<{ collection: string; lockingBytecode: Uint8Array }> {
+    return [...this.valueChunkVars.entries()].map(([collection, lockingBytecode]) => ({ collection, lockingBytecode }));
+  }
+
+  setValueChunkRawCommitments(collection: string, commitments: string[]): this {
+    this.valueChunkRawCommitments.set(collection, commitments);
+    return this;
+  }
+
+  getValueChunkRawCommitments(collection: string): string[] {
+    return this.valueChunkRawCommitments.get(collection) ?? [];
+  }
+
+  /** Output index where value chunks begin: after the block, dynamic chunks, and loop-entry (NEW) outputs. */
+  getValueChunkOutputBase(): number {
+    let base = this.getChunkOutputBase();
+    for (const dv of this.dynamicChunkVars) base += (this.chunkRawCommitments.get(dv.name) ?? []).length;
+    for (const lv of this.loopEntryVars) base += (this.loopEntryCommitments.get(lv.collection) ?? []).length;
+    return base;
   }
 
   /**
@@ -1727,13 +1758,23 @@ export class StatefulTransactionBuilder {
       }
     }
 
-    // P5b value-chunk outputs, placed AFTER every covenant-managed output (entries, dynamic chunks, loop-entry
-    // NEW nodes) so they never shift a covenant-pinned index. Fixed commitments (buildChunkCommitment), unpinned:
-    // the entry stores sha256(value) and a read verifies the reassembled witness, so no on-chain pinning is needed.
+    // P5b value chunks (Design D), placed AFTER every covenant-managed output (entries, dynamic chunks, loop-entry
+    // NEW nodes), matching the covenant's base masterInput+blockSize+isInsert. DIRECT values are injected exactly
+    // (valueChunkOutputs); COMPUTED values are trace-derived (valueChunkVars, commitments filled by auto-derivation).
     for (const vco of this.valueChunkOutputs) {
       const chunkOutput = { ...vco };
       chunkOutput.amount = BigInt(Math.max(1200, calculateDust(chunkOutput)));
       builder.addOutput(chunkOutput);
+    }
+    for (const { collection, lockingBytecode } of this.getValueChunkVars()) {
+      for (const commitment of this.valueChunkRawCommitments.get(collection) ?? []) {
+        const chunkOutput = {
+          to: lockingBytecode, amount: 1200n,
+          token: { amount: 0n, category: this.categoryId, nft: { capability: 'mutable' as const, commitment } },
+        };
+        chunkOutput.amount = BigInt(Math.max(1200, calculateDust(chunkOutput)));
+        builder.addOutput(chunkOutput);
+      }
     }
 
     // Append any extra outputs buffered via addOutput()

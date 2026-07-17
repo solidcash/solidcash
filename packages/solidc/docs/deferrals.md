@@ -444,9 +444,44 @@ fold spanning many txs needs (a) the cursor persisted in the data-NFT register, 
 (e.g. running sum) persisted and threaded across txs, and (c) a completion signal (cursor reached the tail) -
 i.e. a NEW resumable-fold API/construct, not a codegen tweak to the existing loop.
 
-**What it'd take.** Design a windowed-iteration surface (explicit `iterateWindow(cursor, k)`-style calls or a
-resumable fold), register-persisted cursor + accumulator state, and a covenant that binds window-start ==
-stored cursor and advances it to the window's last nextKey. Substantial.
+**Design is FINALIZED + sound-by-reduction (2026-07-17), implementation is a focused follow-up.** The covenant
+reduces to the EXISTING adversarially-verified full-walk `emitSortedIterationLinkage` (GTT:3542) - which already
+chain-verifies slot==expectedNext per entry (omission/reorder/truncation revert) - with two additions: (1) the walk
+starts from an ANCHOR whose slot == a stored CURSOR (a register state var; the first page's cursor is the HEAD
+sentinel 0), instead of always HEAD; (2) the loop is BOUNDED to K entries (or the tail), and the new cursor = the
+last processed entry's nextKey is written back. Soundness: within a page the chain check is unchanged (=verified);
+pages can't SKIP because each page's anchor slot is pinned == the cursor the prior page wrote, and the cursor is
+covenant-enforced register state; the pass COMPLETES when a page reaches nextKey==0. CAVEAT (same as any paginated
+enumeration over a mutable structure, incl. Solidity): snapshot semantics - an insert/delete between pages
+invalidates the cursor, so pagination is for a signed / no-concurrent-write window. Design commit fef5723b.
+
+**What's left to BUILD (not a codegen tweak - a new resumable-fold surface, held from rushing since it is a
+completeness primitive):** (a) a surface - a windowed `for (v in m.window(cursor, k))` form or an explicit
+`iterateWindow(cursor,k)` builtin exposing the post-window cursor; (b) semantic: bind the cursor state var + K
+param; (c) codegen: parameterize emitSortedIterationLinkage with a start-anchor + a bound + a cursor write-back;
+(d) SDK: co-spend the [cursor..cursor+K] window + derive/persist the cursor; (e) ADVERSARIAL tests
+(omission/skip/stale-cursor/wrong-anchor MUST revert) BEFORE shipping - the silent-omission risk is exactly what
+this prevents, so it ships only when those fail closed.
 
 **Revisit if.** A real contract must enumerate/aggregate a mapping whose entry count exceeds one tx's input
 budget (the USDT-scale case that motivated the enumerable/plain split originally).
+
+### 5. Default entry-model removal - value-shape C2 coverage (2026-07-17)
+
+**Status: C2 covers every value shape except function pointers.** As of the general-chunking + enum + fixed-array
+work, `mapping(K => V)` is C2-backed by default for V in: int/bigint/bool, bytesN, unbounded bytes/string, address,
+enum, struct (incl. structs with a mapping/array field, via per-field decomposition into per-field C2 collections),
+and arrays (dynamic `T[]` AND fixed `T[N]`, chunk-aware). ONLY `mapping(K => function(...))` still falls back to the
+default entry model.
+
+**Remaining before the default entry model can be DELETED:**
+1. **Function-pointer VALUES -> C2** (the last shape). A fn-ptr is its functionId int on the wire, so in principle
+   `sortedValueKind`='int'. NOT done: fn-ptr collections go through heavy lowering (LowerBlobFunctionPointers,
+   LowerForeignFunctionPointer* passes) that may transform the mapping before the C2 opt-in, and fn-ptr-valued
+   mappings are rare - high risk / low value, deferred. Revert-safe: add `FunctionType` to c2StorableValue (needs
+   the import) + sortedValueKind, then test against the fn-ptr suite.
+2. **Migrate the ~110 opt-out'd tests** (the `sortedMappingsAll:false` shim files: the original C2-migration batch +
+   this arc's MappingArrayPush/NoArg/ThisPrefix/IndexedFieldArrayPush/MappingArrayElement) from default-model
+   seeding to C2 seeding (deploy + covenant writes), so they no longer need the opt-out.
+3. **Delete** the default entry-model codegen path + the `sortedMappingsAll` / `sortedMappings` options once nothing
+   references them. Large mechanical change; do it as a dedicated pass, not incrementally.

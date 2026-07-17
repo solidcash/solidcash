@@ -723,6 +723,12 @@ function isIntLiteral(e: YulExpressionNode): e is YulLiteralNode {
   return e instanceof YulLiteralNode && (e.kind === YulLiteralKind.NUMBER || e.kind === YulLiteralKind.HEX);
 }
 
+// keccak256/sha256 lower to a bytes32 value, but a Yul value is a 256-bit word; a let/assignment binding of one to
+// a uint256 var needs a uint256 cast (mstore etc. keep the bytes32 - they encode differently).
+function isBytes32Call(e: YulExpressionNode): boolean {
+  return e instanceof YulFunctionCallNode && (e.name === 'keccak256' || e.name === 'sha256');
+}
+
 // Resolve a Yul `create` offset operand to a compile-time bytecode blob: `add(<hexLocal>, 0x20)` (EVM skips the
 // bytes length word) or a bare `<hexLocal>` -> the local's hex-literal bytes. undefined if not a constant local.
 function resolveConstantBytecode(offset: YulExpressionNode): Uint8Array | undefined {
@@ -1243,7 +1249,8 @@ function lowerStatement(stmt: YulStatementNode): StatementNode {
         return loc(new BlockNode([]), stmt);
       }
     }
-    const expr = stmt.value ? lowerValue(stmt.value) : undefined;
+    let expr = lowerValue(stmt.value);
+    if (isBytes32Call(stmt.value)) expr = loc(new CastNode(UINT256, expr, false), stmt);
     return loc(new VariableDefinitionNode(UINT256, [], stmt.names[0], expr), stmt);
   }
 
@@ -1274,6 +1281,9 @@ function lowerStatement(stmt: YulStatementNode): StatementNode {
       value = loc(new CastNode(t, value, false), stmt);
     } else if (t && !isWord) {
       value = loc(new CastNode(t, value, false), stmt);
+    } else if (isWord && isBytes32Call(stmt.value)) {
+      // keccak256/sha256 yields bytes32; a uint256-word target needs the cast (a typed target is handled above).
+      value = loc(new CastNode(UINT256, value, false), stmt);
     }
     return loc(new AssignNode(target, value), stmt);
   }

@@ -347,6 +347,13 @@ describe('Yul inline assembly (Phase 1: parse + diagnostics)', () => {
       { solidityImportCompat: true })).not.toThrow();
   });
 
+  it('normalizes a keccak256/sha256 result to a uint256 word in a let/assignment binding', () => {
+    // `let a := keccak256(p, n)` binds a bytes32 hash to a uint256 Yul var - cast to the word (mstore keeps bytes32).
+    expect(() => compileString(
+      'contract C() { function f(uint v) returns (uint r) { assembly { mstore(0, v) let h := keccak256(0, 32) r := keccak256(0, 4) r := eq(r, h) } } }',
+      { solidityImportCompat: true })).not.toThrow();
+  });
+
   it('lowers Yul inside a fallback/receive function (base traversal skips those separate fields)', () => {
     expect(() => compileString('contract C() { fallback() external { uint x; assembly { x := callvalue() } } }',
       { solidityImportCompat: true })).not.toThrow();

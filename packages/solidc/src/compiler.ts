@@ -219,9 +219,6 @@ function compileResolvedAst(ast: Ast, code: string, mergedCompilerOptions: Compi
   // Fold keccak256/sha256 of a string/hex literal to a compile-time bytes32 constant (role ids, EIP-712
   // domains, EVM storage slots). Both fold to their REAL hash (keccak256 -> real keccak, Ethereum-identical).
   ast = ast.accept(new FoldHashLiterals()) as Ast;
-  // OZ StorageSlot idiom: `XSlot storage d = StorageSlot.getXSlot(SLOT); d.value = v` -> the __evm_storage
-  // register. Consumes the slot-pointer factory's assembly before it reaches LowerInlineAssembly.
-  ast = ast.accept(new LowerStorageSlotPointers()) as Ast;
 
   // Solidity public state-var/mapping auto-getters -> real entry-point functions, so a ported callee invoked
   // via a getter (`timeLock.lockTime(addr)`) actually dispatches it. Gated on solidityImportCompat.
@@ -229,6 +226,13 @@ function compileResolvedAst(ast: Ast, code: string, mergedCompilerOptions: Compi
 
   // Modifier expansion (before semantic analysis)
   ast = expandModifiers(ast);
+
+  // OZ StorageSlot / ERC-7201 idiom: `XSlot storage d = StorageSlot.getXSlot(SLOT); d.value = v` (PARAM factory)
+  // and `S storage $ = _getXStorage(); $.f = v` (ERC-7201 CONST factory) -> the __evm_storage register / promoted
+  // packed state. Consumes the slot-pointer factory's assembly before it reaches LowerInlineAssembly. Runs AFTER
+  // expandModifiers so factory uses inside OZ initializer/reinitializer modifiers (now inlined into fn bodies) are
+  // rewritten too (else the factory method is dropped with a dangling call left in the modifier body).
+  ast = ast.accept(new LowerStorageSlotPointers()) as Ast;
 
   // Redo the using-for method desugar for calls whose receiver is an IMPORTED struct (unknown at parse time, so
   // the AstBuilder left `x.method()` raw): `x.method(args)` -> `L.method(x, args)`. After modifier expansion (so

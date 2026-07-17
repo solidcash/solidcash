@@ -52,8 +52,8 @@ export default class LowerStorageSlotPointers extends AstTraversal {
     for (const fn of allFns) this.detectFactory(fn);
     if (this.factories.size === 0) return node;
 
-    if (node.contract) node.contract = this.visit(node.contract) as ContractNode;
-    node.importedContracts = node.importedContracts.map((c) => this.visit(c) as ContractNode);
+    if (node.contract) node.contract = this.dropFactories(this.visit(node.contract) as ContractNode);
+    node.importedContracts = node.importedContracts.map((c) => this.dropFactories(this.visit(c) as ContractNode));
     node.freeFunctions = (node.freeFunctions ?? []).filter((f) => !this.factories.has(f.name));
 
     if (this.used && node.contract && !node.contract.collections.some((c) => c.name === EVM_STORAGE)) {
@@ -64,6 +64,15 @@ export default class LowerStorageSlotPointers extends AstTraversal {
     // Promote the fields of every USED CONST-factory struct to hidden packed state on the deployed contract.
     if (node.contract) for (const struct of this.constStructsToPromote.values()) this.promoteStruct(node.contract, struct);
     return node;
+  }
+
+  // Drop consumed slot-pointer factory METHODS from a contract (all their call sites were rewritten to the
+  // promoted state / __evm_storage, so the factory body - a `$.slot := CONST` assembly - is now dead). Free-fn
+  // factories are dropped in visitSourceFile; contract methods (the OZ ERC-7201 `_getXStorage()` shape, and any
+  // library fn kept as a method) need this so their assembly body never reaches LowerInlineAssembly.
+  private dropFactories(contract: ContractNode): ContractNode {
+    contract.functions = (contract.functions ?? []).filter((f) => !this.factories.has(f.name));
+    return contract;
   }
 
   // Inject one hidden state node per field of a CONST-factory (ERC-7201) struct, routed to its 128B-aware

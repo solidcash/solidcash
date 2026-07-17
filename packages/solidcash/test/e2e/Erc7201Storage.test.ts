@@ -186,3 +186,31 @@ describe('ERC-7201 namespaced storage: dynamic string field (chunk substrate)', 
     await (sc as any).checkName('OpenZeppelin Token').send();
   });
 });
+
+// The OZ v5 UPGRADEABLE base shape: the ERC-7201 factory is a CONTRACT METHOD (not a library free fn) and is
+// called inside initializer/reinitializer/guard MODIFIERS. LowerStorageSlotPointers drops contract-method
+// factories too (not just free fns), and runs AFTER modifier expansion so a factory use inlined from a modifier
+// body is rewritten (else the dropped factory leaves a dangling call). This unblocks OZ PausableUpgradeable etc.
+describe('ERC-7201 namespaced storage: contract-method factory + modifier usage (OZ upgradeable shape)', () => {
+  it('compiles a contract-method (non-library) factory used via a local alias', () => {
+    const src = `contract C {
+      struct S { bool paused; }
+      bytes32 private constant LOC = 0xcd5ed15c6e187e77e9aee88184c21f4f2182ab5827cb3b7e07fbedcd63f03300;
+      function _get() private pure returns (S storage $) { assembly { $.slot := LOC } }
+      function pause() public { S storage $ = _get(); $.paused = true; }
+      function isPaused() public view returns (bool) { S storage $ = _get(); return $.paused; }
+    }`;
+    expect(() => compileString(src, { solidityImportCompat: true })).not.toThrow();
+  });
+
+  it('compiles a contract-method factory used INSIDE a modifier body (inlined by expansion), inherited', () => {
+    const src = `contract Base {
+      struct S { bool entered; }
+      bytes32 private constant LOC = 0xcd5ed15c6e187e77e9aee88184c21f4f2182ab5827cb3b7e07fbedcd63f03300;
+      function _get() private pure returns (S storage $) { assembly { $.slot := LOC } }
+      modifier guard() { S storage $ = _get(); require(!$.entered); $.entered = true; _; }
+    }
+    contract C is Base { function act() public guard() { } }`;
+    expect(() => compileString(src, { solidityImportCompat: true })).not.toThrow();
+  });
+});

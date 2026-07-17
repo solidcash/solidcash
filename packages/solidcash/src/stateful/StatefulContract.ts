@@ -34,6 +34,10 @@ import {
   isComputedBlockhashKey,
   encodePushdataValue,
   keccakComputeLockingBytecode,
+  sha256 as sha256Sync,
+  ripemd160 as ripemd160Sync,
+  hash160 as hash160Sync,
+  hash256 as hash256Sync,
 } from '@solidcash/utils';
 import { buildKeccakComputeSidecar, extractKeccakPreimageFromTrace } from '../keccak/keccakComputeSidecar.js';
 import {
@@ -484,6 +488,44 @@ function decodeScriptNumber(valueBytes: Uint8Array): bigint {
     if (negative) value = -value;
   }
   return value;
+}
+
+/**
+ * Auto-evaluate a sorted mapping's COMPUTED key from the artifact's canonical expression label against the call
+ * args, for the common hash-builtin + bytes-cast cases (e.g. balances[hash160(pk)] -> hash160(argPk)). This makes
+ * a direct computed key resolve WITHOUT a manual withEntryKey (Solidity auto-resolves such keys). Returns
+ * undefined when the label is not evaluable (a bare local `id:pkh` with no inlined definition, or an unsupported
+ * op); the caller then falls back to entryKeyOverrides / placeholder.
+ */
+function evalComputedKey(
+  label: string | undefined, args: FunctionArgument[], inputs: readonly { name: string }[],
+): Uint8Array | undefined {
+  if (!label) return undefined;
+  const evalNode = (s: string): Uint8Array | undefined => {
+    let m = s.match(/^id:(.+)$/);
+    if (m) {
+      const idx = inputs.findIndex((i) => i.name === m![1]);
+      if (idx < 0) return undefined;
+      const v = args[idx];
+      return v instanceof Uint8Array ? v : typeof v === 'bigint' ? bigIntToVmNumber(v) : undefined;
+    }
+    m = s.match(/^cast:[a-z0-9]+\((.*)\)$/i);
+    if (m) return evalNode(m[1]); // a bytes/bytesN cast is identity on the underlying bytes
+    m = s.match(/^call:(\w+)\((.*)\)$/);
+    if (m) {
+      const inner = evalNode(m[2]);
+      if (!inner) return undefined;
+      switch (m[1]) {
+        case 'hash160': return hash160Sync(inner);
+        case 'ripemd160': return ripemd160Sync(inner);
+        case 'sha256': return sha256Sync(inner);
+        case 'hash256': return hash256Sync(inner);
+        default: return undefined;
+      }
+    }
+    return undefined;
+  };
+  return evalNode(label);
 }
 
 /**
@@ -4963,6 +5005,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             // resolve it from a caller-supplied entryKeyOverrides value (withEntryKey), matching the default entry
             // model. Without one, use a type-width placeholder (a lone entry / VM-trace derivation resolves it).
             if (access.keySources?.[ki]?.kind === 'expression') {
+              // Auto-derive a direct computed key (hash160(pk), sha256(x), ...) from its canonical label.
+              const auto = evalComputedKey(access.keySources[ki].expressionLabel, args, abiFunction!.inputs);
+              if (auto) return auto;
               const ov = overrides?.entryKeyOverrides?.get(slotIndex);
               if (ov !== undefined) {
                 return ov instanceof Uint8Array ? ov
@@ -4984,7 +5029,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           const slot = keyToSlotMulti(keyNames.map((name, i) => encodeKey(name, keyTypes[i] ?? collection.keyType, i)));
           const kvIdx = abiFunction!.inputs.findIndex((inp) => inp.name === keyNames[0]);
           const kv = access.keySources?.[0]?.kind === 'expression'
-            ? (overrides?.entryKeyOverrides?.get(slotIndex) ?? new Uint8Array(0))
+            ? (evalComputedKey(access.keySources[0].expressionLabel, args, abiFunction!.inputs)
+              ?? overrides?.entryKeyOverrides?.get(slotIndex) ?? new Uint8Array(0))
             : args[kvIdx] as bigint | boolean | Uint8Array | string;
           // A sorted mapping write OR `delete m[k]` (== assign default, Solidity semantics) both upsert the entry,
           // so the SDK co-spends it the same way. bool sets are value mappings too (true=0x01, false/delete=empty).

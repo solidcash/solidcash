@@ -80,4 +80,40 @@ describe('sorted mapping RMW with a computed/local key', () => {
     expect(e).toBeDefined();
     expect(vmNumberToBigInt(e!.value)).toBe(7n); // 0 (absent default) + 7
   });
+
+  it('AUTO-DERIVE: a DIRECT computed key balances[hash160(pk)] resolves WITHOUT withEntryKey', async () => {
+    // Direct (inline) computed key -> the artifact carries expressionLabel "call:hash160(id:pk)", which the SDK
+    // evaluates from the pk arg (hash160(pk)) - no manual withEntryKey needed, matching Solidity auto-resolution.
+    const DIRECT_SRC = `contract C() {
+      mapping(bytes20 => bigint) balances;
+      function deposit(int amt, pubkey pk, sig s) {
+        require(checkSig(s, pk));
+        this.balances[hash160(pk)] = this.balances[hash160(pk)] + amt;
+      }
+    }`;
+    const art = compileString(DIRECT_SRC, { sortedMappings: ['balances'] });
+    const contract = new Contract(art, [], { provider });
+
+    const pkh = hash160(alicePub);
+    const slot = keyToSlot(pkh);
+    const ZERO = slotValueToBytes(0n);
+    const result = await provider.addTokenUtxosDynamic((cat: string) => {
+      const pinned = contract.category ? contract : contract.withCategory(hexToBin(cat));
+      const ea = getEntryNftAddress(pinned, cat, 'balances');
+      return [
+        { address: pinned.tokenAddress, satoshis: 10000n, token: { amount: 0n, nft: { capability: 'minting', commitment: '' } } },
+        { address: ea, satoshis: 1500n, token: { amount: 0n, nft: { capability: 'mutable', commitment: binToHex(encodeEntryCommitment(ZERO, slot)) } } },
+        { address: ea, satoshis: 1500n, token: { amount: 0n, nft: { capability: 'mutable', commitment: binToHex(encodeEntryCommitment(slot, ZERO, bigIntToVmNumber(10n))) } } },
+      ];
+    });
+    const categoryId = result.categoryId;
+    const ea = getEntryNftAddress(contract.withCategory(hexToBin(categoryId)), categoryId, 'balances');
+
+    const sc = StatefulContract.withCategory(contract, categoryId);
+    expect((await sc.deposit(5n, alicePub, sig).send()).txid).toBeDefined(); // no withEntryKey
+
+    const e = SortedList.fromUtxos(await provider.getUtxos(ea)).find(slot);
+    expect(e).toBeDefined();
+    expect(vmNumberToBigInt(e!.value)).toBe(15n);
+  });
 });

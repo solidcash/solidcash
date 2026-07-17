@@ -346,14 +346,26 @@ mapping: the value IS the commitment tail (read verbatim like address, default e
 `rawbytes` for unbounded bytes/string; a value that pushes the commitment past 128 B fails closed at the VM.
 Tests: SortedMappingDynBytesValue.test.ts. Closes the common short-string/bytes case (symbols, URIs, names).
 
-**P5b remaining.** Values > 64 B (arbitrary-length string/bytes) still fail closed (commitment overflow).
+**P5b remaining (also covers ARRAY-valued mappings).** Two related gaps keep the C2-default fall-back:
+(a) `mapping(K => string/bytes)` values > 64 B fail closed (commitment overflow); (b) `mapping(K => T[])`
+(array-valued) is skipped by the compiler.ts value-type guard (stays on the default entry model). Both are the
+FUNCTIONAL, not the soundness, gap - unsupported shapes fall back safely, no forgery.
 
-**What P5b'd take.** Extend the C2 entry to carry a chunk-spine reference (like dynamic vars), co-spend the value
-chunks alongside the entry in read/iterate, and thread chunk length into the commitment so the absence bracket +
-linkage stay sound. Related to [dynamic_storage_chunks] + [c2_sorted_mapping_fix].
+**What P5b'd take (assessed 2026-07-17, genuinely MULTI-SESSION).** The dynamic-storage chunk model
+([dynamic_storage_chunks], docs/dynamic-storage.md) is shipped but keyed by a TOP-LEVEL var: the chunk address =
+`getDynamicChunkAddress(var)`, the length lives in the register data-NFT, and the read/write loops
+(emitDynamicReadLoop @ GTT:12396 + the SDK getDynamicChunkVars/getChunkOutputBase co-spend) are var-scoped.
+Plugging it into a C2 mapping VALUE requires: (1) re-key the chunk spine by (collection, entry slot) instead of
+var name; (2) thread the value LENGTH into the entry commitment tail (slot ++ nextKey ++ len ++ inline-or-hash)
+so the absence bracket + linkage still parse; (3) integrate the chunk read loop into emitSortedSetRead and the
+chunk mint into emitSortedValueUpsert (co-spend N chunks per entry, verify against the entry); (4) SDK: derive +
+co-spend the entry's chunks. Array values ADDITIONALLY need the on-C2-value OPERATIONS (`m[k][i]`, `m[k].push`,
+`m[k].length`) which the flip's gauge showed unsupported on a C2 mapping value (compile-gap), a separate codegen
+piece. This is a large, soundness-critical, cross-cutting feature (C2 read + write + chunk spine + SDK), not a
+bounded change - a dedicated multi-session effort, not foldable into the flip.
 
-**Revisit if.** A target contract needs a `mapping(K => string/bytes)` value LONGER than ~64 B, or item 2
-(C2-default) requires long-value support.
+**Revisit if.** A target contract needs a `mapping(K => string/bytes)` value LONGER than ~64 B or a
+`mapping(K => T[])` at parity. Until then those shapes work on the default entry model (no exclusion proof).
 
 ### 4. Sound PARTIAL (paginated / windowed) enumeration
 

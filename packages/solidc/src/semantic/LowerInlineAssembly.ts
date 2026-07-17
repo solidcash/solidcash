@@ -710,6 +710,14 @@ function thisAddress(src: { location?: Node['location'] }): ExpressionNode {
   return loc(new CastNode(new AddressType(false), lbc, false), src);
 }
 
+// Coerce a Yul operand to an AddressType for balance/extcodesize/extcodehash: an address-typed operand (a param /
+// address()) passes through; a word (literal `extcodesize(0)`, arithmetic) reinterprets its bytes as an address.
+function asAddress(e: YulExpressionNode, src: YulNode): ExpressionNode {
+  const v = lowerValue(e);
+  const t = e instanceof YulPathNode && e.members.length === 0 ? currentVars.get(e.base) : undefined;
+  return t instanceof AddressType ? v : loc(new CastNode(new AddressType(false), v, false), src);
+}
+
 function loc<T extends { location?: Node['location'] }>(node: T, src: { location?: Node['location'] }): T {
   node.location = src.location;
   return node;
@@ -992,7 +1000,7 @@ function lowerCall(call: YulFunctionCallNode): ExpressionNode {
   // extcodesize(addr) -> addr.code.length: the byte length of the script at that address (the high-level `.code`
   // member extracts it). Backs OZ Address.isContract's `addr.code.length > 0`.
   if (name === 'extcodesize' && args.length === 1) {
-    const code = loc(new FieldAccessNode(lowerValue(args[0]), 'code'), call);
+    const code = loc(new FieldAccessNode(asAddress(args[0], call), 'code'), call);
     return loc(new CastNode(UINT256, loc(new UnaryOpNode(UnaryOperator.SIZE, code), call), false), call);
   }
   // selfbalance() -> address(this).balance: the satoshis this contract controls, summed over the inputs locked to
@@ -1008,12 +1016,12 @@ function lowerCall(call: YulFunctionCallNode): ExpressionNode {
   // selfbalance/.balance). addr must be an address-typed operand (a param or address()); a bare 256-bit word is
   // the documented address-representation divergence, same as the other address-context builtins.
   if (name === 'balance' && args.length === 1) {
-    return loc(new CastNode(UINT256, loc(new FieldAccessNode(lowerValue(args[0]), 'balance'), call), false), call);
+    return loc(new CastNode(UINT256, loc(new FieldAccessNode(asAddress(args[0], call), 'balance'), call), false), call);
   }
   // extcodehash(addr) -> uint256(addr.codehash): the P2SH script hash embedded in the address (BCH's contract
   // identity), the analogue of EVM's account code hash. Cast to a uint256 word for the assembly context.
   if (name === 'extcodehash' && args.length === 1) {
-    return loc(new CastNode(UINT256, loc(new FieldAccessNode(lowerValue(args[0]), 'codehash'), call), false), call);
+    return loc(new CastNode(UINT256, loc(new FieldAccessNode(asAddress(args[0], call), 'codehash'), call), false), call);
   }
   // clz(x) (EVM CLZ / EIP-7939): count leading zero bits in the 256-bit word. Constant-folded for a literal
   // operand (the only form the corpus uses); a runtime operand stays unlowerable and is named by the diagnostic.
@@ -1315,16 +1323,22 @@ function lowerStatement(stmt: YulStatementNode): StatementNode {
       // sstore(slot, v): write the word to that storage slot (a single var, or decomposed into packed vars),
       // or the synthesized __evm_storage[slot] register entry for an arbitrary (non-declared) slot.
       if (e.name === 'sstore' && e.args.length === 2) {
+        // A stored value is a uint256 word; keccak256/sha256 yields bytes32, so cast it (matches the let/assignment
+        // binding normalization). decomposeSlot lowers args[1] itself (declared int fields; keccak there is rare).
+        const storeVal = (): ExpressionNode => {
+          const v = lowerValue(e.args[1]);
+          return isBytes32Call(e.args[1]) ? loc(new CastNode(UINT256, v, false), e) : v;
+        };
         const mapWrite = resolveMappingSlot(e.args[0]);
         if (mapWrite) {
-          return loc(new MappingAssignNode(mapWrite.collection, mapWrite.keys, lowerValue(e.args[1])), e);
+          return loc(new MappingAssignNode(mapWrite.collection, mapWrite.keys, storeVal()), e);
         }
         const fields = resolveSlotFields(e.args[0]);
         if (fields) return decomposeSlot(fields, e.args[1], e);
         const key = evmStorageSlotKey(e.args[0]);
         if (key) {
           evmStorageUsed = true;
-          return loc(new MappingAssignNode(EVM_STORAGE, [key], lowerValue(e.args[1])), e);
+          return loc(new MappingAssignNode(EVM_STORAGE, [key], storeVal()), e);
         }
       }
       // tstore(key, v): write the transient local for that constant key.
@@ -1420,7 +1434,7 @@ function lowerStatement(stmt: YulStatementNode): StatementNode {
       }
       if (e.name === 'extcodecopy' && e.args.length === 4) {
         if (runtimeMem) {
-          const code = loc(new FieldAccessNode(lowerValue(e.args[0]), 'code'), e);
+          const code = loc(new FieldAccessNode(asAddress(e.args[0], e), 'code'), e);
           return runtimeCopyInto(code, lowerValue(e.args[1]), lowerValue(e.args[2]), lowerValue(e.args[3]), stmt);
         }
         throw new YulNotLowerable();

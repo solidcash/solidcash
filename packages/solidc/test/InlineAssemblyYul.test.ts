@@ -360,6 +360,17 @@ describe('Yul inline assembly (Phase 1: parse + diagnostics)', () => {
       { solidityImportCompat: true })).not.toThrow();
   });
 
+  it('normalizes a keccak256 sstore value and accepts a literal address for extcodesize/balance/extcodehash', () => {
+    // sstore stores a word - a keccak256 value casts to uint256 (like a let binding).
+    expect(() => compileString(
+      'contract C() { function f(uint v) { assembly { sstore(0, keccak256(0, 32)) } require(v == v); } }',
+      { solidityImportCompat: true })).not.toThrow();
+    // a literal (or word) address arg reinterprets to an AddressType, so extcodesize(0)/balance(0)/extcodehash(0) lower.
+    expect(() => compileString(
+      'contract C() { function f() view returns (uint s) { assembly { s := extcodesize(0) s := balance(0) s := extcodehash(0) } } }',
+      { solidityImportCompat: true })).not.toThrow();
+  });
+
   it('inlines a local Yul function with an unconditional leave (dead code after the leave is dropped)', () => {
     // `function f() -> t { t := 2 leave t := 9 }` returns 2; the `t := 9` after the leave is dead.
     expect(() => compileString(

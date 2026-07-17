@@ -360,6 +360,17 @@ describe('Yul inline assembly (Phase 1: parse + diagnostics)', () => {
       { solidityImportCompat: true })).not.toThrow();
   });
 
+  it('inlines a local Yul function with an unconditional leave (dead code after the leave is dropped)', () => {
+    // `function f() -> t { t := 2 leave t := 9 }` returns 2; the `t := 9` after the leave is dead.
+    expect(() => compileString(
+      'contract C() { function f() returns (uint w) { assembly { function g() -> t { t := 2 leave t := 9 } w := g() } } }',
+      { solidityImportCompat: true })).not.toThrow();
+    // A recursive local function is still (correctly) unsupported.
+    expect(() => compileString(
+      'contract C() { function f() { assembly { function rec(n) -> r { switch n case 0 { r := 1 } default { r := rec(sub(n, 1)) } } let x := rec(3) } require(true); } }',
+      { solidityImportCompat: true })).toThrow(/not yet lowerable|local Yul function/);
+  });
+
   it('lowers Yul inside a fallback/receive function (base traversal skips those separate fields)', () => {
     expect(() => compileString('contract C() { fallback() external { uint x; assembly { x := callvalue() } } }',
       { solidityImportCompat: true })).not.toThrow();

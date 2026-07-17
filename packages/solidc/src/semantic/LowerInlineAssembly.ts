@@ -1665,10 +1665,23 @@ function inlineLocalYulFunctions(block: YulBlockNode): YulBlockNode {
     for (const nm of names) if (!reachable.has(nm) && yulBodyCalls(body, nm)) { reachable.add(nm); queue.push(nm); }
   }
   for (const nm of reachable) {
-    if (yulBodyUsesLocalFns(defs.get(nm)!.body, names)) return block; // reachable + recursion/nested/leave
+    const d = defs.get(nm)!;
+    // Drop dead code after an unconditional top-level `leave` (an early return); the return vars keep the values
+    // they hold at that point. A `leave` that REMAINS (nested in an if/for/switch) is not linearly truncatable and
+    // still bails below.
+    d.body = truncateAtLeave(d.body);
+    if (yulBodyUsesLocalFns(d.body, names)) return block; // reachable + recursion / nested def / remaining leave
   }
   block.statements = inlineYulStmts(block.statements, defs);
   return block;
+}
+
+// Truncate a Yul function body at its first TOP-LEVEL `leave` (unconditional early return): everything after it is
+// dead. A leave nested inside control flow is left in place (handled as un-inlinable by the caller).
+function truncateAtLeave(block: YulBlockNode): YulBlockNode {
+  const out: YulStatementNode[] = [];
+  for (const s of block.statements) { if (s instanceof YulLeaveNode) break; out.push(s); }
+  return out.length === block.statements.length ? block : yulAt(new YulBlockNode(out), block);
 }
 
 function lowerBlock(block: YulBlockNode): BlockNode {

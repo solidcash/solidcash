@@ -289,18 +289,22 @@ single key type iterates (composite/nested keys are still out - no single preima
 properties: keys come out in H(key) (hash) order, and the caller must know all keys (owner-driven enumeration;
 the raw key is not on-chain). DEFERRAL #1 FULLY RESOLVED.
 
-### 2. C2 sorted backend as the DEFAULT for plain `mapping`
+### 2. C2 sorted backend as the DEFAULT for plain `mapping` - SHIPPED (2026-07-17, commit 79d00698)
 
-**What.** Make every plain `mapping` compile to the C2 sorted-linked-list backend (so plain mappings get
-exclusion proofs = the unforgeable-read / no-omission Solidity parity property), instead of opt-in via the
-`sortedMappings` compiler option. The design conclusion (docs/evm-storage-parity.md) is that C2 SHOULD be the
-default for parity; the `mapping` / `enumerable mapping` split is kept only as an iteration-capability toggle.
+**DONE.** Every mapping whose value type C2 can store is C2-backed BY DEFAULT (exclusion-proof / unforgeable
+reads = Solidity storage parity) - no flag. Opt out per contract with `{ sortedMappingsAll: false }` (then
+`sortedMappings` names specific mappings to keep C2). A mapping whose value C2 cannot store (an array) falls back
+to the default entry model via a value-type guard in compiler.ts, so unsupported shapes keep compiling. The
+prior C2 feature work (computed-key auto-derivation, deploy-time HEAD init, value types, iteration keys, RMW)
+made the flip safe. The migration: the ~104 tests that seed/assert the default entry model opt out via a
+one-line per-file compileString shim (a behavioral no-op). Result: solidc 2054 green, solidcash 2944 green (lone
+failure = pre-existing BCH_2023_05 vmTarget, no mappings). C2-as-default is DONE end to end.
 
-**CAPABILITY DELIVERED as an opt-in flag (296efa63): `{ sortedMappingsAll: true }`** backs EVERY mapping with C2
-- exclusion-proof reads for all mappings without naming each - and works END TO END (SortedMappingsAllParity
-test: deploy with HEAD auto-minted -> write -> present read -> absent bracket-proven default -> omission claim
-reverts). So C2-as-default is now one flag away; the only reason it is not the unconditional default is the
-test-suite migration below.
+**Follow-ups (not blocking).** (a) The ~104 opt-out'd legacy tests exercise the DEFAULT ENTRY MODEL; over time
+migrate the representative ones to C2 seeding so the new default is directly tested (SortedMappingsAllParity +
+the SortedMapping* suite already cover the C2 path). (b) P5b (item 3) for array/long-value mappings, which
+currently fall back to the default model (no parity yet). (c) A future major version could remove the default
+entry model + `sortedMappingsAll: false` entirely once nothing needs it.
 
 **Why deferred - GAUGED 2026-07-16.** Temporarily defaulting all mappings to C2 measured the blast radius:
 COMPILE level only 1/75 StructsMappings breaks (C2 compiles fine, different bytecode); E2E level ~half of the

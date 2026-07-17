@@ -15,6 +15,7 @@ import {
   computeCollectionHash,
   computeEventNameHash,
   dynamicChunkSignature,
+  valueChunkSignature,
   Script,
   scriptToBytecode,
 } from '@solidcash/utils';
@@ -159,16 +160,16 @@ export function getDynamicChunkAddress(
   return scriptToAddress(covenantScript, contract.provider.network, contract.addressType, true);
 }
 
-// Value-chunk address for a LONG (>64 B) sorted-mapping value (P5b). The entry commitment holds only
-// len(4 B) ++ sha256(value); the full value persists off-commitment in chunk NFTs at this per-(collection,
-// slot, digest) address. A read reassembles them and the covenant verifies the witness against the stored
-// hash. Keyed by digest so an overwrite mints a fresh version at a distinct address (old chunks orphan -
-// harmless, filtered by digest on read; co-spend GC is a follow-up). Chunk commitment = chunkIndex ++ data.
+// Value-chunk address for a LONG (>60 B) sorted-mapping value (P5b, Design D). A per-COLLECTION compile-time
+// address (so the write covenant can derive it without runtime hashing); the (slot, digest) that identify the
+// value version live in the chunk commitment. The write covenant PINS each chunk output here to the exact
+// commitment built from the on-stack value, so a read reassembles the authentic value - forged/absent chunks
+// are rejected at write time. A read fetches all chunks here and filters by (slot == H(k), digest).
 export function getValueChunkAddress(
-  contract: Contract<any, any>, categoryId: string, collection: string, slotHex: string, digestHex: string,
+  contract: Contract<any, any>, categoryId: string, collection: string,
 ): string {
   validateCategoryId(categoryId);
-  const collectionHash = computeCollectionHash(`${collection}$val$${slotHex}$${digestHex}`);
+  const collectionHash = computeCollectionHash(valueChunkSignature(collection));
   const covenantScript = buildEntryNftCovenantScript(hexToBin(categoryId), collectionHash);
   return scriptToAddress(covenantScript, contract.provider.network, contract.addressType, true);
 }

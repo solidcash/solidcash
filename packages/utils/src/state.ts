@@ -1075,6 +1075,47 @@ export function parseChunkCommitment(hex: string): { chunkIndex: number; chunkDa
   return { chunkIndex: Number(key as bigint), chunkData: value as Uint8Array };
 }
 
+// ===== P5b value chunks (LONG sorted-mapping values, covenant-pinned - Design D) =====
+// A long value's bytes persist in chunk NFTs at a COMPILE-TIME per-collection address (so the write covenant can
+// derive it without runtime hashing); the (slot, digest) that identify the value VERSION live in the commitment:
+//   slot(32) ++ digest(32) ++ pushdata(chunkIndex) ++ pushdata(chunkData)
+// The covenant pins each chunk output to this exact commitment (built from the on-stack value), so a read
+// reassembles the authentic value - a forged/absent chunk is rejected at WRITE time, not just fail-closed on read.
+
+/** Value-chunk data size (bytes). Smaller than DYNAMIC_CHUNK_SIZE: the commitment carries slot(32)+digest(32). */
+export const VALUE_CHUNK_SIZE = 56;
+
+/** Split a long value into VALUE_CHUNK_SIZE-byte pieces (the last may be shorter). */
+export function splitValueIntoValueChunks(value: Uint8Array): Uint8Array[] {
+  const chunks: Uint8Array[] = [];
+  for (let off = 0; off < value.length; off += VALUE_CHUNK_SIZE) {
+    chunks.push(value.slice(off, off + VALUE_CHUNK_SIZE));
+  }
+  return chunks;
+}
+
+/** Build a value-chunk commitment: slot(32) ++ digest(32) ++ pushdata(index) ++ pushdata(data). */
+export function buildValueChunkCommitment(
+  slot: Uint8Array, digest: Uint8Array, chunkIndex: number, chunkData: Uint8Array,
+): string {
+  return binToHex(slot) + binToHex(digest) + buildChunkCommitment(chunkIndex, chunkData);
+}
+
+/** Parse a value-chunk commitment into slot, digest, index and data. */
+export function parseValueChunkCommitment(
+  hex: string,
+): { slot: Uint8Array; digest: Uint8Array; chunkIndex: number; chunkData: Uint8Array } {
+  const slot = hexToBin(hex.slice(0, 64));
+  const digest = hexToBin(hex.slice(64, 128));
+  const { chunkIndex, chunkData } = parseChunkCommitment(hex.slice(128));
+  return { slot, digest, chunkIndex, chunkData };
+}
+
+/** Value-chunk collection signature for a collection (compile-time address key). */
+export function valueChunkSignature(collection: string): string {
+  return `${collection}$valuechunks`;
+}
+
 /** Concatenate chunk data (ordered by chunkIndex) and truncate to the authoritative length. */
 export function joinChunks(orderedChunkData: Uint8Array[], totalLength: number): Uint8Array {
   const joined = new Uint8Array(orderedChunkData.reduce((acc, c) => acc + c.length, 0));

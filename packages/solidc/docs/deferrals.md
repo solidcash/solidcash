@@ -366,31 +366,28 @@ Pieces (all shipped, all green in SortedMappingLongValue.test.ts + migrated Sort
   into finalArgs between blockhash and iteration args, matching the SymbolTable order); write mints the chunks via
   `StatefulTransactionBuilder.addValueChunkOutput` (trailing, after every covenant-managed output).
 
-**Documented residual limitations (all fail-CLOSED, none a soundness/forgery hole).**
-- COMPUTED long value (`m[k] = f(...)` whose result > 60 B, not a direct param): `valueParam` is undefined, so no
-  chunks are minted; the write stores the hash but a later long read finds no chunks and reverts (unreadable, never
-  wrong). Direct `m[k] = v` (the primary case) is fully supported. Computed values <= 60 B are unaffected (inline).
-- OVERWRITE orphans: chunks are keyed by digest, so overwriting a long value mints a fresh version at a new address
-  and the old chunks orphan (harmless, digest-filtered on read). A co-spend GC pass is the clean-up follow-up.
-- ADVERSARIAL-writer liveness: the hash IS covenant-enforced (`sha256(v)==storedHash`, v the write arg), but the
-  chunks are SDK-minted (unpinned). A malicious NON-SDK builder could store a correct hash with wrong/no chunks,
-  making that value unreadable (fail-closed grief, not a wrong-value break). Covenant-pinned chunks (Design D) are
-  the liveness-hardening follow-up.
+**Design D (covenant-PINNED chunks) - SHIPPED for direct values (2026-07-17).** The value chunks are now verified
+ON-CHAIN: `emitSortedValueChunkPin` (modeled on emitDynamicWriteVerification) pins each chunk output at the compile-
+time per-collection value-chunk P2SH with commitment `slot(32) ++ digest(32) ++ pushdata(i) ++ pushdata(v[i*56:])`,
+built from the on-stack value, base `masterInput + blockSize (- unmaterialized returnEvent) + isInsert` (isInsert =
+coSlot != H(k), layout-relative so a trailing fee-change output does not shift it), orphan-bounded. So a forged /
+absent / misplaced chunk fails an OP_EQUALVERIFY at WRITE time - the ADVERSARIAL-writer residual is CLOSED for direct
+writes (a malicious non-SDK builder can no longer persist a correct hash with wrong chunks). The Wall-1 sorted-INSERT
+NEW-node collision (the chunk-pin's OP_OUTPUTTOKENCOMMITMENT calls were misread as NEW by the loop-entry extractor)
+is fixed: the SDK computes NEW exactly (`slot ++ oldNext ++ tail`) and injects it PINNED via `pinLoopEntry`, so the
+derivation skips the collection. VM-green update + insert + adversarial (SortedMappingLongValue.test.ts); solidcash
+2949 pass (1 pre-existing BCH_2023_05).
 
-**Design D (covenant-pinned chunks) - ATTEMPTED 2026-07-17, two blockers found, reverted to Design E.** Would close
-BOTH the computed-value and adversarial-writer residuals: the covenant verifies the value chunks ON-CHAIN so wrong
-chunks are rejected at write time (adversarial) and the SDK derives chunk commitments from the trace so no value
-param is needed (computed). What worked: a `emitSortedValueChunkPin` loop (modeled on emitDynamicWriteVerification)
-with a compile-time per-collection chunk address + `slot ++ digest ++ i ++ data` commitment; chunk base
-`masterInput + blockSize (- unmaterialized returnEvent) + isInsert` (isInsert = coSlot != H(k)) is layout-relative
-so a trailing fee-change output does not shift it. UPDATE (present key) writes pin + verify end to end. TWO WALLS:
-(1) sorted-INSERT NEW-node auto-derivation collides with the chunk-pin's `OP_OUTPUTTOKENCOMMITMENT` calls - the
-trace extractor stops emitting the NEW entry output (dump showed `[master, P', chunk0..3]`, no NEW node); injecting
-NEW via setLoopEntryCommitments did not override the derivation. (2) COMPUTED values still need the two-phase trace
-derivation (probe entry -> read len4 -> place N chunk placeholders -> re-derive commitments), the harder half. Both
-are deep auto-derivation couplings (the same machinery dynamic-storage chunks use, but coexisting with the sorted
-insert's own trailing NEW output) - a genuine dedicated multi-session effort, not a session-tail edit. NEXT: teach
-the loop-entry/NEW derivation to skip the value-chunk OTC index range (or pin NEW like P'), then the two-phase SDK.
+**Documented residual limitations (all fail-CLOSED, none a soundness/forgery hole).**
+- COMPUTED long value (`m[k] = f(...)` whose result > 60 B, not a direct param, e.g. a local-var or expression RHS):
+  the covenant PINS chunks but the SDK has no value to place them, so the write now REVERTS at write time (fail-loud,
+  was silent-unreadable in the pre-pin Design E). To make computed values WORK needs the two-phase trace derivation
+  (probe -> read the derived entry's len4 -> place N chunk placeholders -> progressively derive the pinned chunk
+  commitments from the trace -> fill), the same progressive machinery dynamic-storage chunks + loop-entry NEW nodes
+  use; for a computed INSERT it must also coexist with the NEW-node derivation (both trailing). Direct `m[k] = v`
+  (the primary case) is fully supported. Computed values <= 60 B are unaffected (inline).
+- OVERWRITE orphans: chunks are keyed by digest (in the commitment), so overwriting a long value mints a fresh
+  version and the old chunks orphan (harmless, digest-filtered on read). A co-spend GC pass is the clean-up follow-up.
 
 **Still deferred: ARRAY-valued mappings.** `mapping(K => T[])` is skipped by the compiler.ts value-type guard
 (stays on the default entry model). It ADDITIONALLY needs the on-C2-value OPERATIONS (`m[k][i]`, `m[k].push`,

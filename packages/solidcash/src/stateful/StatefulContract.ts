@@ -14,8 +14,9 @@ import {
   computeCollectionHash,
   dynamicChunkSignature,
   parseChunkCommitment,
-  buildChunkCommitment,
-  splitValueIntoChunks,
+  buildValueChunkCommitment,
+  parseValueChunkCommitment,
+  splitValueIntoValueChunks,
   joinChunks,
   DYNAMIC_CHUNK_SIZE,
   computeEventNameHash,
@@ -54,7 +55,7 @@ import {
   utf8ToBin,
 } from '@bitauth/libauth';
 import { Contract } from '../Contract.js';
-import { SortedList, keyToSlot, keyToSlotMulti, bytesToSlotValue, headSentinelCommitment } from './SortedList.js';
+import { SortedList, keyToSlot, keyToSlotMulti, bytesToSlotValue, headSentinelCommitment, encodeEntryCommitment } from './SortedList.js';
 import { resolveBlockhashCoSpend } from '../oracle/blockhashCoSpend.js';
 import { attachWait } from '../wait.js';
 import Signer from '../Signer.js';
@@ -4606,6 +4607,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           if (loopEntryVars.length > 0) {
             let loopOffset = stb.getLoopEntryOutputBase();
             for (const lv of loopEntryVars) {
+              // P5b: a chunkable-value insert injects NEW exactly (pinned) - skip derivation so the value-chunk pin's
+              // OP_OUTPUTTOKENCOMMITMENT calls are not misread as NEW. Advance loopOffset by the injected count.
+              if (stb.isLoopEntryPinned(lv.collection)) {
+                loopOffset += stb.getLoopEntryCommitments(lv.collection).length;
+                continue;
+              }
               // A C2 sorted upsert (bool/int/bytesN) carries its value in NEW, so NEW is derived from the trace.
               const scoll = stateLayout.collections?.find((c) => c.name === lv.collection);
               const isSortedValueMintColl = !!scoll?.sorted;
@@ -4980,7 +4987,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // entry slot) and NEW (the new node minted at the trailing loop-entry output).
     const sortedInserts: Array<{ slotIndex: number; collection: string; predNew: Uint8Array; newNode?: Uint8Array }> = [];
     // P5b value-chunk mints (collected in the entry loop, added to the builder after it is created).
-    const valueChunkMints: Array<{ collection: string; slotHex: string; digestHex: string; chunks: Uint8Array[] }> = [];
+    const valueChunkMints: Array<{ collection: string; slot: Uint8Array; digest: Uint8Array; chunks: Uint8Array[] }> = [];
 
     if (entryAccesses && entryAccesses.length > 0 && stateLayout.collections) {
       const entryNftUtxos = onChainState.entryNftUtxos;
@@ -5078,7 +5085,23 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             } else {
               const plan = list.planInsert(slot);
               entryNfts.push({ ...entryBase, utxo: { ...plan.predecessor.utxo, unlocker: wUnlocker } });
-              sortedInserts.push({ slotIndex, collection: access.collection, predNew: plan.predNewCommitment });
+              // P5b: for a chunkable-value INSERT the covenant chunk-pin adds OP_OUTPUTTOKENCOMMITMENT calls in the
+              // loop-entry output range, so the trace-derivation of the NEW node reads chunk commitments by mistake.
+              // Compute NEW exactly from the direct value param (slot ++ oldNext ++ len4 ++ [v|sha256(v)]) and inject
+              // it PINNED so the derivation skips this collection entirely (see setLoopEntryCommitments + pinning).
+              let newNode: Uint8Array | undefined;
+              if ((collection.valueType === 'bytes' || collection.valueType === 'string') && access.valueParam) {
+                const vIdx2 = abiFunction!.inputs.findIndex((inp) => inp.name === access.valueParam);
+                const raw2 = vIdx2 >= 0 ? args[vIdx2] : undefined;
+                const vB = typeof raw2 === 'string' ? utf8ToBin(raw2) : raw2 instanceof Uint8Array ? raw2 : undefined;
+                if (vB) {
+                  const len4 = new Uint8Array(4);
+                  new DataView(len4.buffer).setUint32(0, vB.length, true);
+                  const tail = new Uint8Array([...len4, ...(vB.length > 60 ? sha256Sync(vB) : vB)]);
+                  newNode = encodeEntryCommitment(slot, plan.predecessor.nextKey, tail);
+                }
+              }
+              sortedInserts.push({ slotIndex, collection: access.collection, predNew: plan.predNewCommitment, newNode });
             }
           } else {
             const entry = list.has(slot) ? list.find(slot)! : list.predecessorOf(slot);
@@ -5099,13 +5122,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 const len = tail[0] | (tail[1] << 8) | (tail[2] << 16) | (tail[3] << 24);
                 if (len > 60) {
                   const digestHex = binToHex(tail.slice(4, 36));
-                  const chunkAddr = getValueChunkAddress(
-                    this.inner, this.categoryId, access.collection, binToHex(slot), digestHex,
-                  );
+                  const slotHex = binToHex(slot);
+                  const chunkAddr = getValueChunkAddress(this.inner, this.categoryId, access.collection);
                   const chunkData = (await this.inner.provider.getUtxos(chunkAddr))
                     .filter((u) => u.token?.category === this.categoryId
                       && !!u.token?.nft?.commitment && u.token.nft.commitment.length > 0)
-                    .map((u) => parseChunkCommitment(u.token!.nft!.commitment))
+                    .map((u) => parseValueChunkCommitment(u.token!.nft!.commitment))
+                    .filter((c) => binToHex(c.slot) === slotHex && binToHex(c.digest) === digestHex)
                     .sort((a, b) => a.chunkIndex - b.chunkIndex)
                     .map((c) => c.chunkData);
                   witness = joinChunks(chunkData, len);
@@ -5115,19 +5138,18 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             chunkableReadWitnesses.push(witness);
           }
 
-          // P5b: a sorted chunkable-value WRITE > 60 B persists the full value as chunks (the covenant stores only
-          // len ++ sha256(value)). Source the value from the direct value param (access.valueParam); a computed
-          // value has no param -> no chunks persisted (that read fails closed, a documented limitation).
+          // P5b: a sorted chunkable-value WRITE > 60 B persists the full value as chunks; the covenant PINS them to
+          // the on-stack value (Design D), so they must match slot ++ digest ++ i ++ data exactly. Source from the
+          // direct value param; a computed value's chunks are derived from the trace instead (below).
           if (isWrite && (collection.valueType === 'bytes' || collection.valueType === 'string')
             && access.valueParam) {
             const vIdx = abiFunction!.inputs.findIndex((inp) => inp.name === access.valueParam);
             const raw = vIdx >= 0 ? args[vIdx] : undefined;
             const vBytes = typeof raw === 'string' ? utf8ToBin(raw) : raw instanceof Uint8Array ? raw : undefined;
             if (vBytes && vBytes.length > 60) {
-              const digest = sha256Sync(vBytes);
               valueChunkMints.push({
-                collection: access.collection, slotHex: binToHex(slot), digestHex: binToHex(digest),
-                chunks: splitValueIntoChunks(vBytes),
+                collection: access.collection, slot, digest: sha256Sync(vBytes),
+                chunks: splitValueIntoValueChunks(vBytes),
               });
             }
           }
@@ -6846,21 +6868,29 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     for (const ins of sortedInserts) {
       builder.setEntryRawCommitment(ins.slotIndex, binToHex(ins.predNew));
       builder.pinEntrySlot(ins.slotIndex); // P' is known exactly - do not let auto-derivation re-derive it
-      // Set insert: NEW is known exactly (inject). Value insert: NEW carries the RHS value -> derived from trace.
-      if (ins.newNode !== undefined) builder.setLoopEntryCommitments(ins.collection, [binToHex(ins.newNode)]);
+      // Set insert (bool) OR chunkable-value insert: NEW is known exactly (inject) and PINNED so the auto-derivation
+      // skips this collection - vital for chunkable values, whose covenant chunk-pin OTC calls would otherwise be
+      // read as NEW by the loop-entry extractor. An int/bytesN value insert leaves NEW to trace-derivation.
+      if (ins.newNode !== undefined) {
+        builder.setLoopEntryCommitments(ins.collection, [binToHex(ins.newNode)]);
+        builder.pinLoopEntry(ins.collection);
+      }
     }
 
-    // P5b: persist LONG (>60 B) sorted-mapping values as chunk NFT outputs at getValueChunkAddress(collection,
-    // slot, digest). Not covenant-pinned (Design E): the entry stores sha256(value), so a read verifies the
-    // reassembled witness against that hash - a wrong/missing chunk fails the read closed. Keyed by digest, so an
-    // overwrite mints a fresh version (old chunks orphan; co-spend GC is a follow-up). These are extra 0x01 mutable
-    // outputs the C2 write covenant tolerates (no total-output bound; minting uniqueness counts only 0x02).
+    // P5b (Design D): persist LONG (>60 B) sorted-mapping values as chunk NFT outputs at the compile-time per-
+    // collection value-chunk address, commitment slot ++ digest ++ i ++ data. The write covenant PINS these to the
+    // on-stack value (emitSortedValueChunkPin), so a forged/absent chunk is rejected at write time. Placed as the
+    // LAST covenant-managed outputs (after the entries + NEW node), matching the covenant's base masterInput+
+    // blockSize+isInsert.
     for (const mint of valueChunkMints) {
-      const chunkAddr = getValueChunkAddress(this.inner, this.categoryId, mint.collection, mint.slotHex, mint.digestHex);
+      const chunkAddr = getValueChunkAddress(this.inner, this.categoryId, mint.collection);
       mint.chunks.forEach((data, i) => builder.addValueChunkOutput({
         to: chunkAddr,
         amount: 1000n,
-        token: { category: this.categoryId, amount: 0n, nft: { capability: 'mutable', commitment: buildChunkCommitment(i, data) } },
+        token: {
+          category: this.categoryId, amount: 0n,
+          nft: { capability: 'mutable', commitment: buildValueChunkCommitment(mint.slot, mint.digest, i, data) },
+        },
       }));
     }
 

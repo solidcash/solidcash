@@ -3,7 +3,7 @@ import { hexToBin, binToHex, utf8ToBin, bigIntToVmNumber, sha256 } from '@bitaut
 import { compileString } from 'solidc';
 import { Contract, StatefulContract, SignatureTemplate } from '../../src/index.js';
 import { keyToSlot, encodeEntryCommitment, slotValueToBytes, getEntryNftAddress, getValueChunkAddress } from '../../src/index.js';
-import { buildChunkCommitment, splitValueIntoChunks } from '@solidcash/utils';
+import { buildValueChunkCommitment, splitValueIntoValueChunks } from '@solidcash/utils';
 import { alicePriv, alicePub, alicePkh } from '../fixture/vars.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 import { createTestProvider } from '../test-util.js';
@@ -75,16 +75,16 @@ describe('sorted mapping with a LONG (>64 B) unbounded bytes/string value (P5b)'
     const result = await provider.addTokenUtxosDynamic((cat: string) => {
       const pinned = contract.category ? contract : contract.withCategory(hexToBin(cat));
       const ea = getEntryNftAddress(pinned, cat, 'data');
-      const chunkAddr = getValueChunkAddress(pinned, cat, 'data', binToHex(s5), binToHex(digest));
+      const chunkAddr = getValueChunkAddress(pinned, cat, 'data');
       const outs = [
         { address: pinned.tokenAddress, satoshis: 10000n, token: { amount: 0n, nft: { capability: 'minting' as const, commitment: '' } } },
         { address: ea, satoshis: 1500n, token: { amount: 0n, nft: { capability: 'mutable' as const, commitment: binToHex(encodeEntryCommitment(ZERO, s5)) } } },
         { address: ea, satoshis: 1500n, token: { amount: 0n, nft: { capability: 'mutable' as const, commitment: binToHex(encodeEntryCommitment(s5, ZERO, valueTail(bigVal))) } } },
       ];
       // Seed the value chunks (100 B -> a single 120 B chunk) at the per-(collection, slot, digest) address.
-      splitValueIntoChunks(bigVal).forEach((data, i) => outs.push({
+      splitValueIntoValueChunks(bigVal).forEach((data, i) => outs.push({
         address: chunkAddr, satoshis: 1000n,
-        token: { amount: 0n, nft: { capability: 'mutable' as const, commitment: buildChunkCommitment(i, data) } },
+        token: { amount: 0n, nft: { capability: 'mutable' as const, commitment: buildValueChunkCommitment(s5, digest, i, data) } },
       }));
       return outs;
     });
@@ -146,15 +146,15 @@ describe('sorted mapping with a LONG (>64 B) unbounded bytes/string value (P5b)'
       const ea = getEntryNftAddress(pinned, cat, 'data');
       // Chunks are seeded at the address keyed by the ENTRY's digest (sha256(realVal)) but carry FORGED bytes -
       // the SDK reassembles them into the witness, and the covenant's sha256(witness)==digest check must reject.
-      const chunkAddr = getValueChunkAddress(pinned, cat, 'data', binToHex(s5), binToHex(digest));
+      const chunkAddr = getValueChunkAddress(pinned, cat, 'data');
       const outs = [
         { address: pinned.tokenAddress, satoshis: 10000n, token: { amount: 0n, nft: { capability: 'minting' as const, commitment: '' } } },
         { address: ea, satoshis: 1500n, token: { amount: 0n, nft: { capability: 'mutable' as const, commitment: binToHex(encodeEntryCommitment(ZERO, s5)) } } },
         { address: ea, satoshis: 1500n, token: { amount: 0n, nft: { capability: 'mutable' as const, commitment: binToHex(encodeEntryCommitment(s5, ZERO, valueTail(realVal))) } } },
       ];
-      splitValueIntoChunks(forgedVal).forEach((data, i) => outs.push({
+      splitValueIntoValueChunks(forgedVal).forEach((data, i) => outs.push({
         address: chunkAddr, satoshis: 1000n,
-        token: { amount: 0n, nft: { capability: 'mutable' as const, commitment: buildChunkCommitment(i, data) } },
+        token: { amount: 0n, nft: { capability: 'mutable' as const, commitment: buildValueChunkCommitment(s5, digest, i, data) } },
       }));
       return outs;
     });

@@ -31,6 +31,7 @@ import {
   computeEventNameHash,
   computeCollectionHash,
   computeCollectionSignature,
+  valueChunkSignature,
   FunctionDebugInformation,
   optimiseBytecode,
   optimiseBytecodeOld,
@@ -10351,6 +10352,160 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * stored raw (minimal script number); the SDK encodes it identically via bigIntToVmNumber. `emitValue` pushes the
    * (tracked) new value onto the stack - the RHS for `m[k]=v`, or the type default for `delete m[k]`.
    */
+  // Design D: pin the value chunks for a LONG (>60 B) sorted-mapping value. The full value `v` is tracked on top
+  // of the stack; the slot H(k) is tracked as '(__upsert_hk)'. When size(v) > 60, verify the tx creates exactly
+  // ceil(size/VC) value-chunk NFT outputs - the trailing chunk region at masterInput+blockSize+isInsert (after an
+  // INSERT's NEW node) - each at the collection's compile-time value-chunk P2SH with commitment slot(32) ++
+  // digest(32) ++ pushdata(i) ++ pushdata(v[i*VC:]). digest = sha256(v). A read reassembles the authentic value;
+  // a forged/absent/misplaced chunk fails this OP_EQUALVERIFY at write time. Stack-neutral: v is left untouched on
+  // top for emitChunkableValueTail. VC=56 leaves room for slot+digest in the 128 B commitment.
+  private emitSortedValueChunkPin(collectionName: string, slotIndex: number, node: Node, loc: SingleLocationData): void {
+    const VC = 56; // VALUE_CHUNK_SIZE (utils/state.ts)
+    const chunkHash = computeCollectionHash(valueChunkSignature(collectionName));
+    const vName = this.stack[0]; // v, tracked on top
+
+    // Guard: only chunk when size(v) > 60 (inline values <= 60 need no chunks; matches emitChunkableValueTail).
+    this.emit(encodeInt(BigInt(this.getStackIndex(vName))), loc);
+    this.emit(Op.OP_PICK, loc);
+    this.emit(Op.OP_SIZE, loc); this.emit(Op.OP_NIP, loc); // size(v)
+    this.emit(encodeInt(60n), loc);
+    this.emit(Op.OP_GREATERTHAN, loc);
+    this.emit(Op.OP_IF, loc);
+    this.scopeDepth += 1;
+    const outerDepth = this.stack.length;
+
+    // isInsert = (co-spent entry's slot != H(k)): a present-key UPDATE has no NEW node (chunks at masterInput+
+    // blockSize); an absent-key INSERT mints NEW at masterInput+blockSize, so the chunks sit one output later.
+    this.emitEntryInputIndex(slotIndex, loc, 0);
+    this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc);
+    this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_DROP, loc); // coSlot
+    this.pushToStack('(vc_isinsert)');
+    this.emit(encodeInt(BigInt(this.getStackIndex('(__upsert_hk)'))), loc); this.emit(Op.OP_PICK, loc);
+    this.emit(Op.OP_EQUAL, loc); this.emit(Op.OP_NOT, loc); // 1 if coSlot != Hk (insert)
+    this.stack[0] = '(vc_isinsert)';
+
+    // --- loop-invariant temps: digest = sha256(v), slot = Hk32, chunk address, nNew, base ---
+    this.emit(encodeInt(BigInt(this.getStackIndex(vName))), loc);
+    this.emit(Op.OP_PICK, loc);
+    this.emit(Op.OP_SHA256, loc);
+    this.pushToStack('(vc_digest)');
+
+    this.emit(encodeInt(BigInt(this.getStackIndex('(__upsert_hk)'))), loc);
+    this.emit(Op.OP_PICK, loc);
+    this.pushToStack('(vc_slot)');
+
+    this.emitMasterInputIndex(loc);
+    this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
+    this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_DROP, loc);
+    this.pushToStack('(vc_chunkaddr)');
+    this.emitP2sh32FromCovenant((cat) => buildEntryNftCovenantScript(cat, chunkHash), loc);
+    this.stack[0] = '(vc_chunkaddr)'; // the helper renamed the top to '(value)'
+
+    this.emit(encodeInt(BigInt(this.getStackIndex(vName))), loc);
+    this.emit(Op.OP_PICK, loc);
+    this.emit(Op.OP_SIZE, loc); this.emit(Op.OP_NIP, loc);
+    this.emit(encodeInt(BigInt(VC - 1)), loc); this.emit(Op.OP_ADD, loc);
+    this.emit(encodeInt(BigInt(VC)), loc); this.emit(Op.OP_DIV, loc); // nNew = ceil(size/VC)
+    this.pushToStack('(vc_nnew)');
+
+    // base = masterInput + blockSize (layout-relative, so a trailing fee-change output does not shift it - unlike
+    // TXOUTPUTCOUNT-nNew). Adjust down 1 when the reserved returnEvent slot is not materialized (a plain send),
+    // then +isInsert (the INSERT's NEW node precedes the chunks). Matches emitDynamicWriteVerification's family.
+    const blockSize = this.currentFunction.blockLayout?.blockSize ?? 1;
+    const hasReturnEventSlot = this.currentFunction.blockLayout?.slots.some((s) => s.kind === 'returnEvent') ?? false;
+    this.emitMasterInputIndex(loc);
+    this.emit(encodeInt(BigInt(blockSize)), loc);
+    this.emit(Op.OP_ADD, loc);
+    if (hasReturnEventSlot) {
+      const roiIdx = this.getStackIndex('__internal__returnOutputIdx', true);
+      if (roiIdx >= 0) {
+        this.emit(encodeInt(BigInt(roiIdx + 1)), loc); this.emit(Op.OP_PICK, loc); // +1: base on top
+        this.emit(encodeInt(0n), loc); this.emit(Op.OP_LESSTHAN, loc);
+        this.emit(Op.OP_SUB, loc); // base -= (returnOutputIdx < 0 ? 1 : 0)
+      }
+    }
+    this.emit(encodeInt(BigInt(this.getStackIndex('(vc_isinsert)') + 1)), loc); this.emit(Op.OP_PICK, loc); // +1: base on top
+    this.emit(Op.OP_ADD, loc); // base += isInsert
+    this.pushToStack('(vc_base)');
+
+    this.emit(encodeInt(0n), loc);
+    this.pushToStack('(vc_i)');
+
+    // LOOP over i: verify chunk output base+i
+    this.emit(Op.OP_BEGIN, loc);
+    this.emit(encodeInt(BigInt(this.getStackIndex('(vc_i)'))), loc); this.emit(Op.OP_PICK, loc);
+    this.emit(encodeInt(BigInt(this.getStackIndex('(vc_nnew)') + 1)), loc); this.emit(Op.OP_PICK, loc);
+    this.emit(Op.OP_LESSTHAN, loc);
+    this.emit(Op.OP_IF, loc);
+    const bodySnapshot = [...this.stack];
+    const bodyDepth = this.stack.length;
+
+    // expected = slot(32) ++ digest(32) ++ pushdata(i) ++ pushdata(v[i*VC : i*VC+VC])
+    this.emit(encodeInt(BigInt(this.getStackIndex('(vc_slot)'))), loc); this.emit(Op.OP_PICK, loc);
+    this.pushToStack('(vc_expected)');
+    this.emit(encodeInt(BigInt(this.getStackIndex('(vc_digest)'))), loc); this.emit(Op.OP_PICK, loc);
+    this.emit(Op.OP_CAT, loc); // slot ++ digest
+    this.stack[0] = '(vc_expected)';
+    this.emit(encodeInt(BigInt(this.getStackIndex('(vc_i)'))), loc); this.emit(Op.OP_PICK, loc);
+    this.pushToStack('(vc_scratch)');
+    this.emitPushdataEncode(new IntType(false, 32), loc); // pushdata(i)
+    this.stack[0] = '(vc_scratch)';
+    this.emit(Op.OP_CAT, loc); this.popFromStack(); // (vc_expected) = slot ++ digest ++ pushdata(i)
+
+    this.emit(encodeInt(BigInt(this.getStackIndex(vName))), loc); this.emit(Op.OP_PICK, loc);
+    this.pushToStack('(vc_slice)');
+    this.emit(encodeInt(BigInt(this.getStackIndex('(vc_i)'))), loc); this.emit(Op.OP_PICK, loc);
+    this.emit(encodeInt(BigInt(VC)), loc); this.emit(Op.OP_MUL, loc); // start = i*VC
+    this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_NIP, loc); // value[start:]
+    this.emit(Op.OP_SIZE, loc); this.emit(encodeInt(BigInt(VC)), loc); this.emit(Op.OP_MIN, loc);
+    this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_DROP, loc); // slice = value[start : start+min(VC, rest)]
+    this.emitPushdataEncode(new BytesType(), loc); // pushdata(slice)
+    this.stack[0] = '(vc_slice)';
+    this.emit(Op.OP_CAT, loc); this.popFromStack(); // (vc_expected) = full expected commitment
+
+    // outIdx = base + i
+    this.emit(encodeInt(BigInt(this.getStackIndex('(vc_base)'))), loc); this.emit(Op.OP_PICK, loc);
+    this.emit(encodeInt(BigInt(this.getStackIndex('(vc_i)') + 1)), loc); this.emit(Op.OP_PICK, loc); // +1: base on top
+    this.emit(Op.OP_ADD, loc);
+    this.pushToStack('(vc_outidx)');
+    // (a) locking bytecode == chunk address
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_OUTPUTBYTECODE, loc);
+    this.emit(encodeInt(BigInt(this.getStackIndex('(vc_chunkaddr)') + 1)), loc); this.emit(Op.OP_PICK, loc); // +1: outbc
+    this.emit(Op.OP_EQUALVERIFY, loc);
+    // (b) commitment == expected. TIGHT pattern so the SDK trace extractor reads each chunk's expected commitment.
+    this.emit(encodeInt(BigInt(this.getStackIndex('(vc_expected)'))), loc); this.emit(Op.OP_PICK, loc);
+    this.emit(Op.OP_SWAP, loc); // [expected, outIdx]
+    this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, loc);
+    this.emit(Op.OP_EQUALVERIFY, loc);
+    this.popFromStack(); // (vc_outidx)
+
+    // cleanup body temps ((vc_expected)), restore to body snapshot
+    this.removeScopedVariables(bodyDepth, node);
+
+    // increment i in place
+    this.emit(encodeInt(BigInt(this.getStackIndex('(vc_i)'))), loc); this.emit(Op.OP_PICK, loc);
+    this.emit(Op.OP_1ADD, loc);
+    this.emitReplace(this.getStackIndex('(vc_i)') + 1, node);
+    this.popFromStack();
+
+    this.emit(encodeBool(false), loc); this.pushToStack('(vc_loop_continue)');
+    this.emit(Op.OP_ELSE, loc);
+    this.stack = [...bodySnapshot];
+    this.emit(encodeBool(true), loc); this.pushToStack('(vc_loop_exit)');
+    this.emit(Op.OP_ENDIF, loc);
+    this.emit(Op.OP_UNTIL, loc);
+    this.popFromStack(); // loop result
+
+    // Orphan-bound: exactly nNew outputs carry the chunk address (no extra chunk outputs to confuse a read).
+    this.emitVerifyChunkUtxoCount('(vc_nnew)', true, loc, '(vc_chunkaddr)');
+
+    // cleanup loop-invariant temps back to the outer snapshot (top-down keeps indices valid)
+    while (this.stack.length > outerDepth) { this.emit(Op.OP_DROP, loc); this.popFromStack(); }
+    this.scopeDepth -= 1;
+    this.emit(Op.OP_ENDIF, loc);
+  }
+
   private emitSortedValueUpsert(node: MappingAssignNode | MappingDeleteNode, emitValue: () => void): Node {
     const loc = { location: node.location, positionHint: PositionHint.END };
     const collection = node.collection!;
@@ -10372,7 +10527,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // normalized to a minimal number (matches SDK bigIntToVmNumber); a bytesN value is CAT'd into the tail verbatim.
     emitValue();
     if (this.sortedValueKind(collection.innermostValueType) === 'int') this.emit(Op.OP_BIN2NUM, loc);
-    if (this.isChunkableValue(collection.innermostValueType)) this.emitChunkableValueTail(loc); // len4 ++ [inline|hash]
+    if (this.isChunkableValue(collection.innermostValueType)) {
+      // Design D: pin the value chunks from the on-stack value BEFORE transforming it into the digest tail. This
+      // works for ANY value (computed or a direct param) and rejects forged/absent chunks at write time.
+      this.emitSortedValueChunkPin(collection.name, slotIndex, node, loc);
+      this.emitChunkableValueTail(loc); // len4 ++ [inline|hash]
+    }
 
     // Reorder [Hk_temp, v] -> [v, Hk32] (Hk back on top, untracked, matching the original working-area layout).
     const hkIdx = this.getStackIndex('(__upsert_hk)');

@@ -214,6 +214,10 @@ export class StatefulTransactionBuilder {
   private loopEntryVars: Array<{ collection: string; lockingBytecode: Uint8Array }> = [];
   // collection -> ordered loop entry commitments (hex) from auto-derivation; length = entry output count.
   private loopEntryCommitments: Map<string, string[]> = new Map();
+  // P5b: collections whose loop-entry (NEW) commitment is known EXACTLY (a chunkable-value insert) and must NOT be
+  // re-derived from the trace - the value-chunk pin adds OP_OUTPUTTOKENCOMMITMENT calls that the loop-entry
+  // extractor would otherwise read as NEW nodes. Pinned like pinEntrySlot pins a fixed entry slot.
+  private pinnedLoopEntries: Set<string> = new Set();
   // P5b: unpinned same-category 0x01 value-chunk outputs (LONG sorted-mapping values). Trailing, not covenant-
   // managed - the entry stores sha256(value) and the read verifies the reassembled witness, so these need no
   // on-chain pinning. Commitments are known exactly (buildChunkCommitment) so they never enter auto-derivation.
@@ -707,6 +711,17 @@ export class StatefulTransactionBuilder {
   addValueChunkOutput(output: { to: string | Uint8Array; amount: bigint; token?: Utxo['token'] }): this {
     this.valueChunkOutputs.push(output);
     return this;
+  }
+
+  /** Pin a collection's loop-entry (NEW) commitment as known-exactly, so auto-derivation skips re-deriving it. */
+  pinLoopEntry(collection: string): this {
+    this.pinnedLoopEntries.add(collection);
+    return this;
+  }
+
+  /** Whether a collection's loop-entry (NEW) commitment is pinned (injected exactly, not trace-derived). */
+  isLoopEntryPinned(collection: string): boolean {
+    return this.pinnedLoopEntries.has(collection);
   }
 
   /**

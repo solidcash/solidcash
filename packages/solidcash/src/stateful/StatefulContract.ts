@@ -4835,6 +4835,18 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           prevConvergenceKey = convergenceKey;
         }
 
+        // P5b: drop any unresolved '00' value-chunk placeholder from the FINAL commitments. The seed at derivation
+        // time gives the covenant's chunk 0 an output to verify against (the chunked bootstrap), but a computed value
+        // that resolves INLINE (<= 60 B) pins NO chunks (emitSortedValueChunkPin's size>60 guard), so the placeholder
+        // is spurious - a real chunk commitment is always long (slot++digest++i++data), never the 1-byte '00'.
+        // Minting it would leave a garbage chunk NFT that a later chunked read of the same slot fails to parse.
+        for (const vcv of stb.getValueChunkVars()) {
+          const commits = stb.getValueChunkRawCommitments(vcv.collection).filter((c) => c !== '00');
+          if (commits.length !== stb.getValueChunkRawCommitments(vcv.collection).length) {
+            stb.setValueChunkRawCommitments(vcv.collection, commits);
+          }
+        }
+
         const lastStep = lastTrace?.[lastTrace.length - 1];
         const vmHadError = !!(lastStep && (lastStep as any).error);
 

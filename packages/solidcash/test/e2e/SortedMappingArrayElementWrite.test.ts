@@ -87,24 +87,39 @@ describe('sorted array-valued mapping: element write + chunking', () => {
     expect((await contract.checkAt(7n, 5n, b('f6'), alicePub, sig).send()).txid).toBeDefined(); // element 5 preserved
   });
 
-  it('an array mapping that uses push/pop stays on the DEFAULT model (no C2 regression of push/pop)', () => {
-    // `m[k].push`/`.pop` change the element count, which can flip the array value across the inline<->chunked size
-    // boundary; that computed-value size-class transition is not wired for C2 yet. To avoid regressing push/pop
-    // (which works on the default entry model), an array-valued mapping that uses push/pop opts OUT of sorted C2.
-    // A push/pop-free array mapping still gets C2 (chunking large values), as the first two tests show.
-    const withPush = `contract C() {
+  it('push/pop under C2: INSERT (empty->[v]), inline->chunked and back, across the 60 B boundary', async () => {
+    // push/pop CHANGE the element count, so the value can flip across the inline<->chunked size boundary. int elems
+    // pack 32 B, so [10] = 34 B (inline), [10,20] = 66 B (chunked). Exercises INSERT-via-push (computed value),
+    // inline->chunked (push), chunked->chunked (push), and chunked->inline (pop) - the SDK derives the new chunk set.
+    const SRC = `contract C() {
       mapping(int => int[]) m;
       function push(int k, int v, pubkey pk, sig s) { require(checkSig(s, pk)); m[k].push(v); }
-      function setAt(int k, int i, int v, pubkey pk, sig s) { require(checkSig(s, pk)); m[k][i] = v; }
+      function pop(int k, pubkey pk, sig s) { require(checkSig(s, pk)); m[k].pop(); }
+      function checkAt(int k, int i, int e, pubkey pk, sig s) { require(checkSig(s, pk)); require(m[k][i] == e); }
     }`;
-    const noPush = `contract C() {
-      mapping(int => int[]) n;
-      function setAt(int k, int i, int v, pubkey pk, sig s) { require(checkSig(s, pk)); n[k][i] = v; }
-    }`;
-    const artPush = compileString(withPush); // compiles fine, default model
-    expect(artPush.stateLayout?.collections?.find((c) => c.name === 'm')?.sorted).toBeFalsy();
-    const artNoPush = compileString(noPush); // no push/pop -> C2
-    expect(artNoPush.stateLayout?.collections?.find((c) => c.name === 'n')?.sorted).toBe(true);
-    expect(artNoPush.stateLayout?.collections?.find((c) => c.name === 'n')?.chunkableValue).toBe(true);
+    const art = compileString(SRC);
+    expect(art.stateLayout?.collections?.find((c) => c.name === 'm')?.sorted).toBe(true);
+    const { contract, fund } = await setup(art, 0x2c00);
+
+    await fund(contract.address);
+    expect((await contract.push(5n, 10n, alicePub, sig).send()).txid).toBeDefined(); // INSERT: m[5] = [10] (inline)
+    await fund(contract.address);
+    expect((await contract.checkAt(5n, 0n, 10n, alicePub, sig).send()).txid).toBeDefined();
+    await fund(contract.address);
+    expect((await contract.push(5n, 20n, alicePub, sig).send()).txid).toBeDefined(); // inline->chunked: m[5]=[10,20]
+    await fund(contract.address);
+    expect((await contract.checkAt(5n, 1n, 20n, alicePub, sig).send()).txid).toBeDefined();
+    await fund(contract.address);
+    expect((await contract.push(5n, 30n, alicePub, sig).send()).txid).toBeDefined(); // chunked->chunked: m[5]=[10,20,30]
+    await fund(contract.address);
+    expect((await contract.checkAt(5n, 2n, 30n, alicePub, sig).send()).txid).toBeDefined();
+    await fund(contract.address);
+    expect((await contract.pop(5n, alicePub, sig).send()).txid).toBeDefined(); // chunked->chunked: m[5]=[10,20]
+    await fund(contract.address);
+    expect((await contract.checkAt(5n, 1n, 20n, alicePub, sig).send()).txid).toBeDefined();
+    await fund(contract.address);
+    expect((await contract.pop(5n, alicePub, sig).send()).txid).toBeDefined(); // chunked->inline: m[5]=[10]
+    await fund(contract.address);
+    expect((await contract.checkAt(5n, 0n, 10n, alicePub, sig).send()).txid).toBeDefined();
   });
 });

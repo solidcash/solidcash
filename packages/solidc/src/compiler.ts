@@ -195,33 +195,9 @@ function compileResolvedAst(ast: Ast, code: string, mergedCompilerOptions: Compi
     || (vt instanceof ArrayType && vt.bound === undefined)
     || vt === PrimitiveType.BIGINT || vt.toString() === 'bool' || vt.toString() === 'string'
   );
-  // Array-valued mappings that use `m[k].push()`/`.pop()` stay on the DEFAULT entry model: a sorted C2 push/pop
-  // changes the element count, which can flip the value across the inline<->chunked size boundary, and that
-  // computed-value size-class transition is not wired yet. Keeping them default-model avoids regressing push/pop
-  // (whole assign + `m[k][i]=v` element writes still get C2, chunking large arrays). Detect such usage by name
-  // (MappingAssignNode carries its mapping name + arrayPush/arrayPop at parse time).
-  const pushPopMappings = new Set<string>();
-  {
-    const seen = new Set<object>();
-    const walk = (o: unknown): void => {
-      if (!o || typeof o !== 'object' || seen.has(o)) return;
-      seen.add(o);
-      if (Array.isArray(o)) { for (const x of o) walk(x); return; }
-      const n = o as { arrayPush?: boolean; arrayPop?: boolean; name?: unknown };
-      if ((n.arrayPush === true || n.arrayPop === true) && typeof n.name === 'string') pushPopMappings.add(n.name);
-      for (const k of Object.keys(o)) walk((o as Record<string, unknown>)[k]);
-    };
-    // Modifiers are expanded later; a push/pop hidden in a modifier body that we miss here just yields a clean
-    // codegen fail-close (SortedMappingCodegenPending), never a silent miscompile.
-    walk(ast.contract.functions); walk(ast.contract.constructorDef);
-  }
-  const sortable = (col: typeof ast.contract.collections[number]): boolean => (
-    col.type instanceof MappingType && c2StorableValue(col.innermostValueType)
-    && !(col.innermostValueType instanceof ArrayType && pushPopMappings.has(col.name))
-  );
   if (mergedCompilerOptions.sortedMappingsAll !== false) {
     for (const col of ast.contract.collections) {
-      if (sortable(col)) col.sorted = true;
+      if (col.type instanceof MappingType && c2StorableValue(col.innermostValueType)) col.sorted = true;
     }
   } else if (mergedCompilerOptions.sortedMappings && mergedCompilerOptions.sortedMappings.length > 0) {
     const sortedSet = new Set(mergedCompilerOptions.sortedMappings);

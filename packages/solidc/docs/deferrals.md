@@ -338,7 +338,7 @@ flip + seeding migration, best done as a dedicated pass.
 **Revisit if.** Continuing the parity push (the standing directive) - this is now the critical path; each gap
 closed shrinks the eventual flip.
 
-### 3. large VALUES in sorted entries - P5a + P5b + GENERAL struct/array chunking DONE; only sorted push/pop remains
+### 3. large VALUES in sorted entries - P5a + P5b + GENERAL struct/array chunking + sorted push/pop all DONE
 
 **P5a DONE (2026-07-16, commit ad70e15f).** Unbounded `bytes` / `string` values <= 60 B are stored INLINE in the
 entry commitment tail as `len(4 B LE) ++ value` (<= 128 B total, real-chain-valid), so a `mapping(K => bytes|string)`
@@ -418,17 +418,19 @@ within 128 B). Delivered along the CLEAN DESIGN below:
 Tests: SortedMappingStructFieldWrite.test.ts (small + 160 B struct), SortedMappingArrayElementWrite.test.ts (int[]
 var-width + bytes32[] > 128 B chunked, element read/write, neighbor preservation).
 
-**STILL DEFERRED: push/pop on a sorted array.** `m[k].push(v)` / `.pop()` CHANGE the element count, which can flip the
-value across the inline<->chunked (60 B) size boundary. That computed-value SIZE-CLASS transition (persist new chunks
-/ GC old ones as the digest changes AND the inline/hashed tail form flips) is not wired - the SDK read-witness path
-mis-sizes the transitioning value. To avoid REGRESSING push/pop (which works on the default entry model), an
-array-valued mapping that USES push/pop opts OUT of C2 automatically (compiler.ts `pushPopMappings` scan): it stays
-default-model (no omission proof, no chunking, 128 B ceiling) while push/pop keeps working. A push/pop-FREE array
-mapping still gets full C2 + chunking. Element-index writes `m[k][i]=v` (size-preserving) DO work under C2.
-
-**Revisit if.** Need push/pop on a LARGE (> 128 B) sorted array: wire the inline<->chunked transition in the SDK
-computed-value derivation (detect the old vs new size class, mint/GC chunks accordingly, and pick the tail form from
-the NEW size) so the `pushPopMappings` opt-out can be dropped.
+**push/pop on a sorted array - NOW DONE (2026-07-17).** `m[k].push(v)` / `.pop()` route through the same sortedRmw
+whole-value upsert as element writes (materialize -> Phase-2 push/pop surgery -> re-chunk). They CHANGE the element
+count, so the value can flip across the inline<->chunked (60 B) boundary; that transition is handled entirely by the
+SDK computed-value derivation - it already reprobes the new value's chunk set and GCs the old chunks by digest. The
+ONE bug was a spurious minted chunk: the derivation seeds a `'00'` placeholder to bootstrap the covenant's chunk-0
+verification, but a value that resolves INLINE pins no chunks (emitSortedValueChunkPin's size>60 guard), so the seed
+survived and got minted, and a later chunked read of the same slot then failed to parse it. FIX (StatefulContract, in
+the post-convergence cleanup): drop any unresolved `'00'` from the FINAL value-chunk commitments - a real chunk
+commitment is always long (slot++digest++i++data), never the 1-byte `'00'`, so this cleans inline results without
+touching chunked ones. The compiler.ts `pushPopMappings` opt-out was REMOVED (array mappings with push/pop are C2
+again). Test: SortedMappingArrayElementWrite "push/pop under C2" (INSERT empty->[v], inline->chunked, chunked->chunked,
+pop chunked->inline, all with element reads). The legacy DEFAULT-model push/pop suites (MappingArrayPush, NoArg/This
+Prefix/IndexedFieldArrayPush) opt out via `sortedMappingsAll:false` to keep asserting the entry-model byte format.
 
 ### 4. Sound PARTIAL (paginated / windowed) enumeration
 

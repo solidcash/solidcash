@@ -10616,14 +10616,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       && this.sortedValueKind(node.collection.innermostValueType) !== null) {
       return this.emitSortedValueUpsert(node, () => { node.expression = this.visit(node.expression); });
     }
-    if (node.collection?.sorted && node.arrayIndex && !node.arrayPush && !node.arrayPop
+    if (node.collection?.sorted && (node.arrayIndex || node.arrayPush || node.arrayPop)
       && this.isChunkableValue(node.collection.innermostValueType)) {
-      // Sorted C2 array-element write (`m[k][i]=v`): RMW the whole array value through the chunk-aware upsert,
-      // mirroring the struct field-write path. emitMappingArrayElementAssign in sortedRmw mode materializes the
-      // current array (Phase 1), applies element surgery (Phase 2), and leaves the modified blob for
-      // emitSortedValueUpsert to chunk/store (Phase 3). push/pop CHANGE the element count, which can flip the
-      // value across the inline<->chunked size boundary; that computed-value transition is not wired yet, so
-      // `m[k].push/.pop` on a sorted mapping falls through to the fail-close below (SortedMappingCodegenPending).
+      // Sorted C2 array write (`m[k][i]=v` / `m[k].push(v)` / `m[k].pop()`): RMW the whole array value through the
+      // chunk-aware upsert, mirroring the struct field-write path. emitMappingArrayElementAssign in sortedRmw mode
+      // materializes the current array (Phase 1), applies element/push/pop surgery (Phase 2), and leaves the modified
+      // blob for emitSortedValueUpsert to chunk/store (Phase 3). push/pop CHANGE the element count, so the value can
+      // flip across the inline<->chunked size boundary; the SDK derives the new chunk set from the trace.
       return this.emitSortedValueUpsert(node, () => { this.emitMappingArrayElementAssign(node, true); });
     }
     if (node.collection?.sorted) {

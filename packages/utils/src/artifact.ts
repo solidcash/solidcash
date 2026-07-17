@@ -33,6 +33,10 @@ export interface CompilerOptions {
   // C2 fix opt-in: names of mapping state vars to back with the sorted-linked-list model (provable non-existence,
   // closes the omission attack). See docs/sorted-mapping-c2.md. Other mappings keep the default entry model.
   sortedMappings?: readonly string[];
+  // C2 parity mode: back EVERY mapping with the sorted-linked-list model (unforgeable/exclusion-proof reads =
+  // Solidity storage parity), not just the named ones. The intended end-state default; opt-in today so legacy
+  // callers keep the (forgeable-on-absent) default entry model. See docs/evm-storage-parity.md.
+  sortedMappingsAll?: boolean;
   // Phase-2 scaffold (default false): route an unbounded fixed-width `T[]` state var to the dense
   // chunk-packed backend (uint32 length header + chunk UTXOs) instead of the sparse entry-NFT collection.
   // Will become the default for fixed-width `T[]` once the codegen/SDK land. See docs/arrays.md.

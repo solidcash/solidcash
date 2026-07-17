@@ -186,7 +186,10 @@ function compileResolvedAst(ast: Ast, code: string, mergedCompilerOptions: Compi
 
   // C2 opt-in: mark the requested mappings to use the sorted-linked-list backend (provable non-existence). See
   // docs/sorted-mapping-c2.md. Only affects the named collections; all others keep the default entry model.
-  if (mergedCompilerOptions.sortedMappings && mergedCompilerOptions.sortedMappings.length > 0) {
+  if (mergedCompilerOptions.sortedMappingsAll) {
+    // C2 parity mode: every mapping is C2-backed (exclusion-proof reads). Arrays keep their own model.
+    for (const col of ast.contract.collections) if (col.type instanceof MappingType) col.sorted = true;
+  } else if (mergedCompilerOptions.sortedMappings && mergedCompilerOptions.sortedMappings.length > 0) {
     const sortedSet = new Set(mergedCompilerOptions.sortedMappings);
     for (const col of ast.contract.collections) if (sortedSet.has(col.name)) col.sorted = true;
   }

@@ -10058,21 +10058,31 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     node: MappingAccessNode | MappingAssignNode | MappingDeleteNode, slotIndex: number, loc: SingleLocationData,
   ): void {
     const numKeys = node.keys.length;
+    // Accumulate H(k0)++H(k1)++... on the stack. The running accumulator is kept TRACKED as '(__skh_acc)' during
+    // the loop so a PARAM key's OP_PICK offset AND an EXPRESSION key's visit (which uses getStackIndex) both count
+    // past it correctly - that is what lets a nested `m[a][b]` use a computed/expression key (msg.sender, xs[i]),
+    // not just bare params. The final masked hash is left UNTRACKED (the callers account for it manually / push it).
     for (let i = 0; i < numKeys; i++) {
       const keySource = this.entrySlots[slotIndex].keySources?.[i];
       if (!keySource || keySource.kind === 'param') {
         const keyParamName = keySource?.paramName ?? this.entrySlots[slotIndex].keyParams[i];
-        // +1 once i>0: the accumulated hash (kept at one item by the CAT below) sits above the tracked stack.
-        this.emit(encodeInt(BigInt(this.getStackIndex(keyParamName) + (i > 0 ? 1 : 0))), loc);
+        // The accumulator is a TRACKED item for i>0, so getStackIndex already counts it - no manual +1.
+        this.emit(encodeInt(BigInt(this.getStackIndex(keyParamName))), loc);
         this.emit(Op.OP_PICK, loc);
+        this.pushToStack('(__skh_acc)');       // track the picked key copy (becomes / merges into the accumulator)
       } else {
-        if (numKeys > 1) throw new SortedMappingCodegenPendingError(node, node.collection!.name);
-        node.keys[i] = this.visit(node.keys[i]); this.popFromStack();
+        node.keys[i] = this.visit(node.keys[i]); // pushes + tracks the key value on top
       }
-      this.emit(Op.OP_SHA256, loc);              // H(key_i)
-      if (i > 0) this.emit(Op.OP_CAT, loc);      // accumulate H(k0)++H(k1)++...
+      this.emit(Op.OP_SHA256, loc);            // H(key_i) - the top tracked item is now H(key_i)
+      if (i > 0) {
+        this.emit(Op.OP_CAT, loc);             // acc(below) ++ H(key_i)(top) -> the new accumulator on top
+        this.popFromStack();                   // CAT is 2->1: drop H(key_i)'s tracking; the accumulator below remains
+      }
     }
-    if (numKeys > 1) this.emit(Op.OP_SHA256, loc); // composite hash of the per-key hashes
+    // Exactly one tracked item on top = the concatenated per-key hashes (H(k0) for a single key). Untrack it so the
+    // manual composite-hash + mask below (and the caller) treat it as an untracked stack value.
+    this.popFromStack();
+    if (numKeys > 1) this.emit(Op.OP_SHA256, loc); // composite hash of the per-key hashes (== SDK keyToSlotMulti)
     // mask the 32-byte hash to a positive 255-bit slot (clear the last byte's high bit)
     this.emit(encodeInt(31n), loc); this.emit(Op.OP_SPLIT, loc);
     this.emit(new Uint8Array([0x7f]), loc); this.emit(Op.OP_AND, loc); this.emit(Op.OP_CAT, loc);
@@ -10096,6 +10106,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       throw new SortedMappingCodegenPendingError(node, collection.name);
     }
     const slotIndex = node.entrySlotIndex;
+    // No entry slot assigned to this access (e.g. a read whose block-layout slot was never allocated) - fail closed
+    // with the clean pending diagnostic rather than crashing on an undefined entrySlot.
+    if (slotIndex < 0 || !this.entrySlots[slotIndex]) {
+      throw new SortedMappingCodegenPendingError(node, collection.name);
+    }
     const collectionHash = computeCollectionHash(this.entrySlots[slotIndex].collectionSignature);
 
     // 1. H(k) (composite for nested m[a][b]) computed FIRST so it sits at the bottom of the working area, giving

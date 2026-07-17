@@ -72,4 +72,29 @@ describe('C2 parity mode (sortedMappingsAll: every plain mapping is C2)', () => 
     await fund(contract.address);
     expect((await contract.check(7n, 42n, alicePub, sig).send()).txid).toBeDefined(); // read back the persisted value
   });
+
+  it('a NESTED C2 mapping with a computed key (allow[hash160(pk)][b]) writes + reads (multi-key expression key)', async () => {
+    // `allow[hash160(pk)][b]` is a nested (composite-key) sorted mapping whose FIRST key is an EXPRESSION
+    // (hash160(pk)), not a bare param - the covenant emitSortedKeyHash now tracks the accumulator so an expression
+    // key past the first hashes correctly; the SDK auto-derives the computed key (evalComputedKey). This is the
+    // ERC-20 `allowances[owner][spender]` shape. slot = sha256(sha256(H(pk)) ++ sha256(b)) (keyToSlotMulti).
+    const src = `contract C() {
+      mapping(bytes20 => mapping(int => bigint)) allow;
+      function approve(int b, int v, pubkey pk, sig s) { require(checkSig(s, pk)); allow[hash160(pk)][b] = v; }
+      function check(bytes20 owner, int b, int exp, pubkey pk, sig s) { require(checkSig(s, pk)); require(allow[owner][b] == exp); }
+    }`;
+    const art = compileString(src, { sortedMappingsAll: true, forceStateful: true });
+
+    const f = { txid: uid(), vout: 0, satoshis: 400000n };
+    await provider.addUtxo(p2pkh.address, f);
+    const { contract } = await StatefulContract.deploy(art, [], {
+      provider, fundingUtxo: f, funder: p2pkh.unlock.spend(alicePub, sig), initialState: {}, changeAddress: p2pkh.address,
+    });
+    await fund(contract.address);
+    expect((await contract.approve(9n, 100n, alicePub, sig).send()).txid).toBeDefined(); // allow[hash160(pk)][9] = 100
+    await fund(contract.address);
+    expect((await contract.check(alicePkh, 9n, 100n, alicePub, sig).send()).txid).toBeDefined(); // read back at (H(pk), 9)
+    await fund(contract.address);
+    await expect(contract.check(alicePkh, 9n, 7n, alicePub, sig).send()).rejects.toThrow(); // wrong value reverts
+  });
 });

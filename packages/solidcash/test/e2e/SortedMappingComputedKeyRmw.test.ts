@@ -44,10 +44,11 @@ describe('sorted mapping RMW with a computed/local key', () => {
     const categoryId = result.categoryId;
     const ea = getEntryNftAddress(contract.withCategory(hexToBin(categoryId)), categoryId, 'balances');
 
-    // deposit 5 -> balances[pkh] becomes 10 + 5 = 15. The key is a local (hash160(pk)), not a function param, so
-    // it is supplied via withEntryKey (slotIndex 0); the covenant recomputes hash160(pk) and EQUALVERIFYs it.
+    // deposit 5 -> balances[pkh] becomes 10 + 5 = 15. pkh is a LOCAL (bytes20 pkh = hash160(pk)); the compiler
+    // inlines its initializer into the key's canonical (call:hash160(id:pk)) so the SDK auto-derives it - NO
+    // withEntryKey needed. The covenant recomputes hash160(pk) and EQUALVERIFYs it against the entry slot.
     const sc = StatefulContract.withCategory(contract, categoryId);
-    expect((await sc.deposit(5n, alicePub, sig).withEntryKey(0, pkh).send()).txid).toBeDefined();
+    expect((await sc.deposit(5n, alicePub, sig).send()).txid).toBeDefined();
 
     const e = SortedList.fromUtxos(await provider.getUtxos(ea)).find(slot);
     expect(e).toBeDefined();
@@ -74,7 +75,7 @@ describe('sorted mapping RMW with a computed/local key', () => {
     const ea = getEntryNftAddress(contract.withCategory(hexToBin(categoryId)), categoryId, 'balances');
 
     const sc = StatefulContract.withCategory(contract, categoryId);
-    expect((await sc.deposit(7n, alicePub, sig).withEntryKey(0, pkh).send()).txid).toBeDefined();
+    expect((await sc.deposit(7n, alicePub, sig).send()).txid).toBeDefined();
 
     const e = SortedList.fromUtxos(await provider.getUtxos(ea)).find(slot);
     expect(e).toBeDefined();

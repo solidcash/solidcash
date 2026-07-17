@@ -4228,6 +4228,11 @@ export default class SymbolTableTraversal extends AstTraversal {
       const def = this.localKeyDefs.get(key.name);
       const arrName = def && this.matchStateArrayLast(def);
       if (arrName) return { kind: 'stateArrayLast', stateArrayName: arrName, canonical: `lastof:${arrName}` };
+      // A local whose initializer is a computed expression (`bytes20 pkh = hash160(pk)`): inline the initializer's
+      // canonical so the SDK auto-derives the key (evalComputedKey) without a manual withEntryKey. A reassigned
+      // local (localKeyDefs keeps the FIRST def) would inline a stale value -> the covenant's keyToSlot verify
+      // rejects (fail closed), not silent corruption. Single-assignment computed locals (the common case) resolve.
+      if (def) return { kind: 'expression', canonical: this.canonicalizeExpression(def) };
       return { kind: 'expression', canonical: `id:${key.name}` };
     }
     if (key instanceof StateAccessNode) {

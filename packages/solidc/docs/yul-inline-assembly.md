@@ -245,13 +245,18 @@ defaults to 0); `switch` cases with hex/string-literal values (`case hex"1122"`,
 of a `bytes`/`string`/array calldata param (its `size`); and Yul inside a `fallback`/`receive` (the base
 AST traversal visits `constructorDef` + `functions` but not the separate `fallbackDef`/`receiveDef` fields, so
 `LowerInlineAssembly.visitContract` now visits those two explicitly). Also: a `keccak256`/`sha256` result binds
-to a uint256 Yul word in a `let`/assignment (cast when the target is a word; a typed target keeps bytes32); and
-a DEAD local Yul function (never called) is dropped rather than blocking the block (reachability-gated bail).
+to a uint256 Yul word in a `let`/assignment (cast when the target is a word; a typed target keeps bytes32); a
+DEAD local Yul function (never called) is dropped rather than blocking the block (reachability-gated bail); a
+reachable local function with an unconditional top-level `leave` is truncated at the leave (trailing dead code
+dropped) so it inlines; `sstore(slot, keccak256(...))` casts the hash to the uint256 word; and
+`extcodesize`/`balance`/`extcodehash`/`extcodecopy` coerce a literal/word operand to an address (via `asAddress`)
+so `extcodesize(0)`/`balance(0)` lower (an address-typed param passes through unchanged).
 
 ## Remaining Yul failures (deferred with reasons)
 
-After the above, the solc-corpus Yul residual splits into two groups. **UNSOUND to fake** (compile but diverge at
-runtime - left fail-closed, this is the correct behavior, NOT a gap to close blindly):
+After the above, 36 of the 105 solc-corpus Yul-failing files compile; the residual (~69) splits into two groups.
+**UNSOUND to fake** (compile but diverge at runtime - left fail-closed, this is the correct behavior, NOT a gap
+to close blindly):
 - `sstore(x.slot, N)` on a dynamic array/bytes = set its LENGTH (~20). SolidCash keeps length in a register + chunk
   storage; force-setting length without moving elements desyncs them. No sound mapping.
 - `x.slot := expr` STORAGE-POINTER reassignment (~22, mostly `storage_boundary_*`). These probe EVM's physical
@@ -261,17 +266,19 @@ runtime - left fail-closed, this is the correct behavior, NOT a gap to close bli
   pointer into a buffer, so re-aiming it has no BCH meaning.
 
 **DEEP / fundamental features** (sound but not yet built):
-- Local Yul functions that are REACHABLE and inter-call / nest / `leave` / are called in a for-condition with a side
-  effect (~7). The inliner handles leaf single+multi-return calls and drops dead defs; inter-call/nested inlining
-  needs recursive inlining + cycle detection, and side-effecting-call-in-loop-condition needs per-iteration body
-  inlining.
-- `create`/`create2` with a non-zero value or literal-offset init bytecode (~5) - a funded deploy needs an output
+- Local Yul functions that are REACHABLE and inter-call / nest, RECURSE, or are called in a for-condition with a
+  side effect (~2). The inliner handles leaf single+multi-return calls, drops dead defs, and truncates unconditional
+  leaves; inter-call/nested inlining needs recursive inlining + cycle detection (embedded_function_call), recursion
+  is fundamentally un-inlinable, and side-effecting-call-in-loop-condition needs per-iteration body inlining (for2).
+- `create`/`create2` with a non-zero value or literal-offset init bytecode (~4) - a funded deploy needs an output
   the covenant can't synthesize; the typed `new Contract(...)` is the path.
 - Function-pointer `.selector` read/write in assembly (~2) - fn-pointer feature territory.
-- Runtime (non-literal) `clz(x)` (1) - needs a 256-bit bit-length subroutine.
-- Misc (~7+4): calldata `.offset` VALUE read (no BCH calldata-pointer), `tstore(x.slot,..)`/`.slot` on transient
-  vars (niche; transient is inert on BCH), `return(p,n)` in a void EXTERNAL function (no BCH return-data channel),
-  and keccak results stored to a mapping value / other combos.
+- Runtime (non-literal) `clz(x)` (1) - needs a 256-bit bit-length subroutine (compile-time literal `clz` is done).
+- Transient-storage-via-slot (~5): `tstore(x.slot,..)`/`tload(x.slot)`/`x.slot`,`x.offset` on TRANSIENT state vars.
+  Needs a slot->transient-local map; niche (transient storage is inert on BCH - a spend is one execution).
+- Misc: calldata `.offset` VALUE read (no BCH calldata-pointer), `return(p,n)` in a void EXTERNAL function (no BCH
+  return-data channel), storage-reference-local `.slot`/`.offset` (a `S storage p` pointer, not a state var), and a
+  few storage-array delete/dirty-read combos (unsound like the boundary group).
 
 ## Phased implementation plan
 

@@ -377,6 +377,21 @@ Pieces (all shipped, all green in SortedMappingLongValue.test.ts + migrated Sort
   making that value unreadable (fail-closed grief, not a wrong-value break). Covenant-pinned chunks (Design D) are
   the liveness-hardening follow-up.
 
+**Design D (covenant-pinned chunks) - ATTEMPTED 2026-07-17, two blockers found, reverted to Design E.** Would close
+BOTH the computed-value and adversarial-writer residuals: the covenant verifies the value chunks ON-CHAIN so wrong
+chunks are rejected at write time (adversarial) and the SDK derives chunk commitments from the trace so no value
+param is needed (computed). What worked: a `emitSortedValueChunkPin` loop (modeled on emitDynamicWriteVerification)
+with a compile-time per-collection chunk address + `slot ++ digest ++ i ++ data` commitment; chunk base
+`masterInput + blockSize (- unmaterialized returnEvent) + isInsert` (isInsert = coSlot != H(k)) is layout-relative
+so a trailing fee-change output does not shift it. UPDATE (present key) writes pin + verify end to end. TWO WALLS:
+(1) sorted-INSERT NEW-node auto-derivation collides with the chunk-pin's `OP_OUTPUTTOKENCOMMITMENT` calls - the
+trace extractor stops emitting the NEW entry output (dump showed `[master, P', chunk0..3]`, no NEW node); injecting
+NEW via setLoopEntryCommitments did not override the derivation. (2) COMPUTED values still need the two-phase trace
+derivation (probe entry -> read len4 -> place N chunk placeholders -> re-derive commitments), the harder half. Both
+are deep auto-derivation couplings (the same machinery dynamic-storage chunks use, but coexisting with the sorted
+insert's own trailing NEW output) - a genuine dedicated multi-session effort, not a session-tail edit. NEXT: teach
+the loop-entry/NEW derivation to skip the value-chunk OTC index range (or pin NEW like P'), then the two-phase SDK.
+
 **Still deferred: ARRAY-valued mappings.** `mapping(K => T[])` is skipped by the compiler.ts value-type guard
 (stays on the default entry model). It ADDITIONALLY needs the on-C2-value OPERATIONS (`m[k][i]`, `m[k].push`,
 `m[k].length`) which the flip's gauge showed unsupported on a C2 mapping value - a separate codegen piece, not the

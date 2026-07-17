@@ -50,7 +50,7 @@ import {
   bigIntToVmNumber,
 } from '@bitauth/libauth';
 import { Contract } from '../Contract.js';
-import { SortedList, keyToSlot, keyToSlotMulti, bytesToSlotValue } from './SortedList.js';
+import { SortedList, keyToSlot, keyToSlotMulti, bytesToSlotValue, headSentinelCommitment } from './SortedList.js';
 import { resolveBlockhashCoSpend } from '../oracle/blockhashCoSpend.js';
 import { attachWait } from '../wait.js';
 import Signer from '../Signer.js';
@@ -1385,6 +1385,23 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         token: {
           category: categoryId, amount: 0n,
           nft: { capability: 'mutable', commitment: entryCommitments[i] ?? '' },
+        },
+      });
+    }
+
+    // C2 (sorted) mapping HEAD sentinels: a sorted mapping needs a HEAD[slot 0 | nextKey 0] to anchor the linked
+    // list, otherwise its first read/write fails "missing HEAD sentinel". A constructor that writes the mapping
+    // already mints entries for it; for the rest, mint the empty-map HEAD at genesis. Sound: the genesis is
+    // funder-authorized (no covenant yet) and every later read/write pins the HEAD (slot 0) via the covenant.
+    for (const col of (stateLayout.collections ?? [])) {
+      if (!col.sorted) continue;
+      if (entryAccesses.some((a) => a.collection === col.name)) continue; // constructor already created its entries
+      builder.addOutput({
+        to: getEntryNftAddress(contract, categoryId, col.name),
+        amount: dataNftAmount,
+        token: {
+          category: categoryId, amount: 0n,
+          nft: { capability: 'mutable', commitment: binToHex(headSentinelCommitment()) },
         },
       });
     }

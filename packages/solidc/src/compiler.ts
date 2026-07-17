@@ -1,6 +1,6 @@
 import { CharStream, CommonTokenStream } from 'antlr4';
 import { binToHex } from '@bitauth/libauth';
-import { Artifact, ArtifactMap, ArrayType, AddressType, BytesType, CompilerOptions, computeBytecodeFingerprintWithConstructorArgs, generateSourceMap, MappingType, optimiseBytecode, optimiseBytecodeOld, OPTIMISER_COMPAT_CHECK_MAX_OPS, scriptToAsm, scriptToBytecode, sourceMapToLocationData, StructType, Type, ValueType } from '@solidcash/utils';
+import { Artifact, ArtifactMap, ArrayType, AddressType, BytesType, CompilerOptions, computeBytecodeFingerprintWithConstructorArgs, generateSourceMap, IntType, MappingType, optimiseBytecode, optimiseBytecodeOld, OPTIMISER_COMPAT_CHECK_MAX_OPS, PrimitiveType, scriptToAsm, scriptToBytecode, sourceMapToLocationData, StructType, Type, ValueType } from '@solidcash/utils';
 import { generateArtifact, generateDeclarationArtifact } from './artifact/Artifact.js';
 import {
   Ast, ContractNode, ContractReferenceNode, FunctionModifier, InstantiationNode, Node, ParameterNode,
@@ -186,9 +186,18 @@ function compileResolvedAst(ast: Ast, code: string, mergedCompilerOptions: Compi
 
   // C2 opt-in: mark the requested mappings to use the sorted-linked-list backend (provable non-existence). See
   // docs/sorted-mapping-c2.md. Only affects the named collections; all others keep the default entry model.
-  if (mergedCompilerOptions.sortedMappingsAll) {
-    // C2 parity mode: every mapping is C2-backed (exclusion-proof reads). Arrays keep their own model.
-    for (const col of ast.contract.collections) if (col.type instanceof MappingType) col.sorted = true;
+  // C2 is the DEFAULT: every mapping whose VALUE type C2 can store is C2-backed (exclusion-proof reads = Solidity
+  // parity). A mapping whose value C2 cannot store (an array; other non-scalar/struct) stays on the default entry
+  // model - it keeps compiling (no parity for it yet, pending P5b/collection-value support). Opt the whole
+  // contract out with `sortedMappingsAll: false` (then `sortedMappings` still names specific mappings to keep C2).
+  const c2StorableValue = (vt: Type): boolean => (
+    vt instanceof IntType || vt instanceof BytesType || vt instanceof AddressType || vt instanceof StructType
+    || vt === PrimitiveType.BIGINT || vt.toString() === 'bool' || vt.toString() === 'string'
+  );
+  if (mergedCompilerOptions.sortedMappingsAll !== false) {
+    for (const col of ast.contract.collections) {
+      if (col.type instanceof MappingType && c2StorableValue(col.innermostValueType)) col.sorted = true;
+    }
   } else if (mergedCompilerOptions.sortedMappings && mergedCompilerOptions.sortedMappings.length > 0) {
     const sortedSet = new Set(mergedCompilerOptions.sortedMappings);
     for (const col of ast.contract.collections) if (sortedSet.has(col.name)) col.sorted = true;

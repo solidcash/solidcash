@@ -1,7 +1,8 @@
 // Mapping-entry write behavior pins: read-after-write, writes in loops, chained struct-field and
 // array-element writes.
 import { describe, it, expect } from 'vitest';
-import { compileString, EntryWriteInLoopError, ChainedEntryElementReadError } from 'solidc';
+import { compileString as _csRawSolidc, EntryWriteInLoopError, ChainedEntryElementReadError } from 'solidc';
+const compileString = (s: string, o: Record<string, unknown> = {}): ReturnType<typeof _csRawSolidc> => _csRawSolidc(s, { sortedMappingsAll: false, ...o } as any);
 import { getContractFactory } from '../../src/index.js';
 import { fundedSigner } from '../test-util.js';
 

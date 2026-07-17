@@ -1,4 +1,5 @@
-import { compileString } from 'solidc';
+import { compileString as _csRawSolidc } from 'solidc';
+const compileString = (s: string, o: Record<string, unknown> = {}): ReturnType<typeof _csRawSolidc> => _csRawSolidc(s, { sortedMappingsAll: false, ...o } as any);
 import {
   Contract, StatefulContract,
 } from '../../src/index.js';

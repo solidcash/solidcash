@@ -16,7 +16,8 @@ export function compileBch(source: string, evmCompat = false): BchArtifact {
   const key = evmCompat ? `evm::${source}` : source;
   let artifact = cache.get(key);
   if (artifact === undefined) {
-    artifact = compileString(source, evmCompat ? { evmCompat: true } : {});
+    // Conformance compares against the default entry model (the cases seed that shape); opt out of the C2 default.
+    artifact = compileString(source, evmCompat ? { evmCompat: true, sortedMappingsAll: false } : { sortedMappingsAll: false });
     cache.set(key, artifact);
   }
   return artifact;
@@ -27,7 +28,7 @@ export function compileBchStateful(source: string): BchArtifact {
   const key = `state::${source}`;
   let artifact = cache.get(key);
   if (artifact === undefined) {
-    artifact = compileString(source, { solidityImportCompat: true });
+    artifact = compileString(source, { solidityImportCompat: true, sortedMappingsAll: false });
     cache.set(key, artifact);
   }
   return artifact;

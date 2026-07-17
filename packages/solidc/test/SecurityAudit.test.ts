@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
-import { compileString } from '../src/index.js';
+import { compileString as _csRawSolidc } from '../src/index.js';
+const compileString = (s: string, o: Record<string, unknown> = {}): ReturnType<typeof _csRawSolidc> => _csRawSolidc(s, { sortedMappingsAll: false, ...o } as any);
 import * as Errors from '../src/Errors.js';
 
 // Regression tests for the 2026-07 security audit (see repo-root SECURITY-AUDIT.md). Each block pins the fix

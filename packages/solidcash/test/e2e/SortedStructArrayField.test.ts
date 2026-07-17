@@ -39,7 +39,7 @@ describe('sorted struct-with-array-field mapping (field-decomposed C2)', () => {
       function checkA(int k, int e, pubkey pk, sig s) { require(checkSig(s, pk)); require(m[k].a == e); }
       function checkAt(int k, int i, int e, pubkey pk, sig s) { require(checkSig(s, pk)); require(m[k].d[i] == e); }
     }`;
-    const art = compileString(SRC);
+    const art = compileString(SRC, { sortedMappings: ['m__d'] }); // opt the decomposed array field into C2
     // decomposed into per-field C2 sub-mappings
     const cols = art.stateLayout?.collections ?? [];
     expect(cols.find((c) => c.name === 'm__a')?.sorted).toBe(true);

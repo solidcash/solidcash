@@ -38,7 +38,7 @@ describe('sorted array-valued mapping: element write + chunking', () => {
       function setAt(int k, int i, int v, pubkey pk, sig s) { require(checkSig(s, pk)); m[k][i] = v; }
       function checkAt(int k, int i, int e, pubkey pk, sig s) { require(checkSig(s, pk)); require(m[k][i] == e); }
     }`;
-    const art = compileString(SRC);
+    const art = compileString(SRC, { sortedMappings: ['m'] }); // arrays are opt-in to C2
     expect(art.stateLayout?.collections?.find((c) => c.name === 'm')?.sorted).toBe(true);
     expect(art.stateLayout?.collections?.find((c) => c.name === 'm')?.chunkableValue).toBe(true);
     const { contract, fund } = await setup(art, 0x2a00);
@@ -67,7 +67,7 @@ describe('sorted array-valued mapping: element write + chunking', () => {
       function setAt(int k, int i, bytes32 v, pubkey pk, sig s) { require(checkSig(s, pk)); m[k][i] = v; }
       function checkAt(int k, int i, bytes32 e, pubkey pk, sig s) { require(checkSig(s, pk)); require(m[k][i] == e); }
     }`;
-    const art = compileString(SRC);
+    const art = compileString(SRC, { sortedMappings: ['m'] }); // arrays are opt-in to C2
     expect(art.stateLayout?.collections?.find((c) => c.name === 'm')?.chunkableValue).toBe(true);
     const { contract, fund } = await setup(art, 0x2b00);
 
@@ -97,7 +97,7 @@ describe('sorted array-valued mapping: element write + chunking', () => {
       function pop(int k, pubkey pk, sig s) { require(checkSig(s, pk)); m[k].pop(); }
       function checkAt(int k, int i, int e, pubkey pk, sig s) { require(checkSig(s, pk)); require(m[k][i] == e); }
     }`;
-    const art = compileString(SRC);
+    const art = compileString(SRC, { sortedMappings: ['m'] }); // arrays are opt-in to C2
     expect(art.stateLayout?.collections?.find((c) => c.name === 'm')?.sorted).toBe(true);
     const { contract, fund } = await setup(art, 0x2c00);
 

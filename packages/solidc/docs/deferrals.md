@@ -466,22 +466,27 @@ this prevents, so it ships only when those fail closed.
 **Revisit if.** A real contract must enumerate/aggregate a mapping whose entry count exceeds one tx's input
 budget (the USDT-scale case that motivated the enumerable/plain split originally).
 
-### 5. Default entry-model removal - value-shape C2 coverage (2026-07-17)
+### 5. C2 value-shape coverage + the default entry model (2026-07-17)
 
-**Status: C2 covers every value shape except function pointers.** As of the general-chunking + enum + fixed-array
-work, `mapping(K => V)` is C2-backed by default for V in: int/bigint/bool, bytesN, unbounded bytes/string, address,
-enum, struct (incl. structs with a mapping/array field, via per-field decomposition into per-field C2 collections),
-and arrays (dynamic `T[]` AND fixed `T[N]`, chunk-aware). ONLY `mapping(K => function(...))` still falls back to the
-default entry model.
+**C2-by-DEFAULT** for `mapping(K => V)` with V in: int/bigint/bool, bytesN, unbounded bytes/string, address, enum,
+and struct (incl. a struct with a mapping/array field, via per-field decomposition into per-field collections -
+its SCALAR fields are C2, its array field follows the array rule below).
 
-**Remaining before the default entry model can be DELETED:**
-1. **Function-pointer VALUES -> C2** (the last shape). A fn-ptr is its functionId int on the wire, so in principle
-   `sortedValueKind`='int'. NOT done: fn-ptr collections go through heavy lowering (LowerBlobFunctionPointers,
-   LowerForeignFunctionPointer* passes) that may transform the mapping before the C2 opt-in, and fn-ptr-valued
-   mappings are rare - high risk / low value, deferred. Revert-safe: add `FunctionType` to c2StorableValue (needs
-   the import) + sortedValueKind, then test against the fn-ptr suite.
-2. **Migrate the ~110 opt-out'd tests** (the `sortedMappingsAll:false` shim files: the original C2-migration batch +
-   this arc's MappingArrayPush/NoArg/ThisPrefix/IndexedFieldArrayPush/MappingArrayElement) from default-model
-   seeding to C2 seeding (deploy + covenant writes), so they no longer need the opt-out.
-3. **Delete** the default entry-model codegen path + the `sortedMappingsAll` / `sortedMappings` options once nothing
-   references them. Large mechanical change; do it as a dedicated pass, not incrementally.
+**ARRAYS are OPT-IN (not C2-by-default).** `mapping(K => T[])` / `T[N]` defaults to the entry model; opt a specific
+one into C2 with `{ sortedMappings: ['m'] }` (additive - other mappings stay C2-by-default; for a struct's array
+field name the decomposed collection, e.g. `m__d`). RATIONALE: C2 buys the exclusion proof, which for arrays only
+helps length/presence guards (`m[k].length == 0`) - an absent-key ELEMENT read reverts (empty-array bounds check)
+rather than returning a forgeable value, so the omission surface is narrow. The full C2 array machinery (chunking,
+push/pop, element RMW) is retained and active on opt-in. TRADEOFF (accepted): a default-model array value lives in
+the entry commitment, so a value > 128 B is real-chain-invalid (mock-only) - a LARGE array mapping must opt into C2.
+
+**Only function pointers have NO C2 path** (neither default nor opt-in-tested): fn-ptr values go through heavy
+lowering (LowerBlobFunctionPointers, LowerForeignFunctionPointer*) that may transform the mapping before the C2
+opt-in, and are rare - deferred. Revert-safe: add `FunctionType` to c2StorableValue (needs the import) +
+sortedValueKind, then test against the fn-ptr suite.
+
+**Default entry-model DELETION** (still gated): (1) fn-ptr values -> C2; (2) decide arrays - either bring them to
+C2-by-default (accepting the exclusion-proof overhead for narrow benefit) or keep them opt-in and keep the entry
+model FOR arrays; (3) migrate the ~110 `sortedMappingsAll:false` opt-out'd tests to C2 seeding; (4) delete the path.
+Note: while arrays stay opt-in, the entry model is a REQUIRED backend (not just legacy), so full deletion is blocked
+on the array decision.

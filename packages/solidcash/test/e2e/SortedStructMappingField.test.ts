@@ -39,7 +39,7 @@ describe('sorted struct-with-mapping-field mapping (field-decomposed C2, Iterabl
       function isSeen(int k, int j, bool e, pubkey pk, sig s) { require(checkSig(s, pk)); require(m[k].seen[j] == e); }
       function keyAt(int k, int i, int e, pubkey pk, sig s) { require(checkSig(s, pk)); require(m[k].keys[i] == e); }
     }`;
-    const art = compileString(SRC);
+    const art = compileString(SRC, { sortedMappings: ['m__keys'] }); // opt the decomposed array field into C2
     const cols = art.stateLayout?.collections ?? [];
     expect(cols.find((c) => c.name === 'm__seen')?.sorted).toBe(true);
     expect(cols.find((c) => c.name === 'm__keys')?.sorted).toBe(true);

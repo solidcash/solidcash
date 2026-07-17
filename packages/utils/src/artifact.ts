@@ -265,6 +265,9 @@ export interface CollectionInfo {
   immutable?: boolean;
   /** True when this mapping uses the C2 sorted-linked-list backend (SDK drives it via SortedList). */
   sorted?: boolean;
+  /** True when the value is a variable-width blob that chunks when large (P5b): unbounded bytes/string, struct,
+   * dynamic array. The SDK gates chunk read-witness / write-mint / GC on this. Omitted when false. */
+  chunkableValue?: boolean;
   /** True for an `enumerable mapping(...)` - the mapping may be iterated. A plain mapping is not enumerable
    * (Solidity parity). Omitted when false. */
   enumerable?: boolean;

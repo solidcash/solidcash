@@ -190,7 +190,7 @@ import {
   computeFunctionSignature, computeFunctionSelector, computeEvmFunctionSelector, TupleType, ArrayType,
   IntType, FixedType, MappingType, FunctionType,
   FunctionBlockLayout, BlockLayoutSlot, resolveLibraries, ExternalLibrary, parseTypeStrict,
-  INLINE_MAX_BLOB_LENGTH, isDynamicStorageType,
+  INLINE_MAX_BLOB_LENGTH, isDynamicStorageType, isChunkableValueType,
 } from '@solidcash/utils';
 import { binToHex } from '@bitauth/libauth';
 
@@ -1449,7 +1449,7 @@ export default class SymbolTableTraversal extends AstTraversal {
           const vt = coll?.innermostValueType;
           // Only a SORTED (C2) chunkable-value read uses the witness path (emitChunkableValueRead); a non-sorted
           // (opt-out) bytes/string mapping reads its value tail verbatim and must NOT get a spurious witness param.
-          if (!coll?.sorted || !vt || !((vt instanceof BytesType && vt.bound === undefined) || vt.toString() === 'string')) continue;
+          if (!coll?.sorted || !vt || !isChunkableValueType(vt)) continue;
           const wname = `__internal__valueWitness_${info.slotIndex}`;
           const wparam = new ParameterNode(new BytesType(), wname);
           wparam.location = node.location;
@@ -2887,15 +2887,19 @@ export default class SymbolTableTraversal extends AstTraversal {
       const slotKey = `${node.collection.name}:${keyParams.join(':')}`;
       const existing = map.get(slotKey);
       // `map[k].push(v)` / `.pop()` are read-modify-writes of the entry's array: the SDK must CO-SPEND the existing
-      // entry (read its current array) before appending/dropping - a bare 'write' would overwrite it.
-      const rmw = node.arrayPush || node.arrayPop;
-      // P5b: a sorted chunkable-value (unbounded bytes/string) write from a DIRECT parameter records that param so
-      // the SDK persists the full value as chunks (the entry stores only len ++ sha256(value)). A computed value
-      // leaves it undefined - the SDK guards chunk persistence off for it (read fails closed).
+      // entry (read its current array) before appending/dropping - a bare 'write' would overwrite it. A sorted (C2)
+      // element-index write `m[k][i]=v` is ALSO an RMW: it materializes the whole array to replace one element, so
+      // it needs the read witness for a chunked value (the default entry model reads its own co-spent input in-place).
+      const rmw = !!node.arrayPush || !!node.arrayPop || (!!node.arrayIndex && !!node.collection.sorted);
+      // P5b: a sorted chunkable-value write (unbounded bytes/string, struct, dynamic array) from a DIRECT parameter
+      // records that param so the SDK persists the full value as chunks (the entry stores only len ++ sha256(value)).
+      // A computed value leaves it undefined - the SDK guards chunk persistence off for it (read fails closed).
       const vt = node.collection.innermostValueType;
-      const chunkableValue = (vt instanceof BytesType && vt.bound === undefined)
-        || vt === PrimitiveType.STRING || vt.toString() === 'string';
-      const valueParam = chunkableValue && node.expression instanceof IdentifierNode
+      const chunkableValue = node.collection.sorted && isChunkableValueType(vt);
+      // Only a WHOLE-value direct-param assign (`m[k] = p`) records the source param. An element/push/pop write's
+      // expression is the element, not the whole array value (that value is computed by the RMW -> derived from trace).
+      const wholeValueWrite = !node.arrayIndex && !node.arrayPush && !node.arrayPop;
+      const valueParam = wholeValueWrite && chunkableValue && node.expression instanceof IdentifierNode
         ? node.expression.name : undefined;
       if (existing) {
         if (!existing.operations.includes('write')) existing.operations.push('write');

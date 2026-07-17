@@ -50,6 +50,7 @@ import {
   KECCAK256_COMPUTE_STATEFUL_COVENANT_HASH,
   KECCAK256_COMPUTE_STATEFUL_COVENANT,
   KECCAK256_COMPUTE_SALT_PREFIX_LENGTH,
+  isChunkableValueType,
 } from '@solidcash/utils';
 import {
   ContractNode,
@@ -9981,14 +9982,18 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (vt instanceof AddressType) return 'rawbytes';
     // A struct is an encoded blob (already the on-stack representation); store it verbatim in the value tail.
     if (vt instanceof StructType) return 'rawbytes';
+    // A dynamic array `T[]` is an encoded blob (length prefix + elements); stored verbatim like a struct. Large
+    // structs/arrays chunk (isChunkableValue), so the tail never exceeds the 128 B commitment.
+    if (vt instanceof ArrayType && vt.bound === undefined) return 'rawbytes';
     return null;
   }
 
-  // A C2 mapping value that can exceed the 64 B inline tail: unbounded `bytes` / `string`. Stored as
-  // len(4B) ++ [ inline value if <=60 B | sha256(value) ]; long bytes persist in per-slot SDK chunk NFTs and a
-  // read verifies a caller witness against the hash. Fixed-width values never chunk.
+  // A C2 mapping value that can exceed the 60 B inline tail: any variable-width blob - unbounded `bytes`/`string`,
+  // struct, dynamic array (isChunkableValueType). Stored as len(4B) ++ [ inline value if <=60 B | sha256(value) ];
+  // a long value persists in per-slot chunk NFTs and a read verifies a witness against the hash. Fixed-width
+  // (int/bool/bytesN) and small-variable (address) values never chunk (always within the 128 B commitment).
   private isChunkableValue(vt: Type): boolean {
-    return (vt instanceof BytesType && vt.bound === undefined) || vt === PrimitiveType.STRING || vt.toString() === 'string';
+    return isChunkableValueType(vt);
   }
 
   // Value v (top) -> entry tail len(4B LE) ++ [ v if size<=60 | sha256(v) ]. Tracker-neutral.
@@ -10150,8 +10155,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // A sorted (C2 linked-list) mapping read `m[k]`: co-spend one entry (exact if present, else the predecessor)
     // and return the real value (set -> membership bit; value mapping -> the value tail if present, else the type
     // default proven-absent via the bracket). No default-on-absent branch -> the omission attack is closed.
-    if (node.collection?.sorted && !node.arrayIndex) {
-      return this.emitSortedSetRead(node);
+    if (node.collection?.sorted) {
+      // Whole value read, or (for a chunkable array value) element read: materialize the array via the C2 read,
+      // then extract element [i]. emitSortedSetRead already co-spends the proving entry and reassembles chunks.
+      this.emitSortedSetRead(node);
+      if (node.arrayIndex) {
+        this.emitArrayElementExtract(node, { location: node.location, positionHint: PositionHint.START });
+      }
+      return node;
     }
 
     // Handle packed state array element access: this.arr[index]
@@ -10266,54 +10277,63 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     // 8. If arrayIndex is set, perform array element access on the array blob
     if (node.arrayIndex) {
-      const arrType = collection.innermostValueType as ArrayType;
-      const elemType = arrType.elementType;
-      const fixedWidth = isFixedWidthType(elemType);
-
-      // Decode length prefix: [blob] -> [length, elements_blob]
-      this.emitPushdataDecode(PrimitiveType.BIGINT, locationData);
-      this.emit(Op.OP_SWAP, locationData);
-      this.popFromStack();
-      this.pushToStack('(elements)');
-      this.pushToStack('(length)');
-
-      // Visit index
-      node.arrayIndex = this.visit(node.arrayIndex);
-
-      // Bounds check
-      this.emit(Op.OP_SWAP, locationData);
-      this.emitBoundsCheck(locationData);
-      this.popFromStack(2);
-      this.pushToStack('(index)');
-
-      if (fixedWidth) {
-        const width = getFixedWidth(elemType);
-        this.emit(encodeInt(BigInt(width)), locationData);
-        this.emit(Op.OP_MUL, locationData);
-        this.emit(Op.OP_SPLIT, locationData);
-        this.emit(Op.OP_NIP, locationData);
-        this.popFromStack(2);
-        this.pushToStack('(value)');
-        this.emit(encodeInt(BigInt(width)), locationData);
-        this.emit(Op.OP_SPLIT, locationData);
-        this.emit(Op.OP_DROP, locationData);
-        this.emitDecodeElementPacked(elemType, locationData);
-      } else {
-        this.popFromStack(2);
-        this.pushToStack('(elements)');
-        this.pushToStack('(count)');
-        this.emitScanLoop(elemType, locationData);
-        this.popFromStack(2);
-        this.pushToStack('(remaining)');
-        this.emitPushdataDecode(elemType, locationData);
-        this.emit(Op.OP_SWAP, locationData);
-        this.emit(Op.OP_NIP, locationData);
-        this.popFromStack();
-        this.pushToStack('(value)');
-      }
+      this.emitArrayElementExtract(node, locationData);
     }
 
     return node;
+  }
+
+  /**
+   * Extract element [arrayIndex] from an array blob already tracked as '(value)' on top of the stack (length prefix
+   * ++ packed/pushdata elements). Consumes the blob, leaves the decoded element tracked as '(value)'. Shared by the
+   * default entry-model read and the sorted C2 read (which materializes the whole array via emitSortedSetRead first).
+   */
+  private emitArrayElementExtract(node: MappingAccessNode, loc: SingleLocationData): void {
+    const arrType = node.collection!.innermostValueType as ArrayType;
+    const elemType = arrType.elementType;
+    const fixedWidth = isFixedWidthType(elemType);
+
+    // Decode length prefix: [blob] -> [length, elements_blob]
+    this.emitPushdataDecode(PrimitiveType.BIGINT, loc);
+    this.emit(Op.OP_SWAP, loc);
+    this.popFromStack();
+    this.pushToStack('(elements)');
+    this.pushToStack('(length)');
+
+    // Visit index
+    node.arrayIndex = this.visit(node.arrayIndex!);
+
+    // Bounds check
+    this.emit(Op.OP_SWAP, loc);
+    this.emitBoundsCheck(loc);
+    this.popFromStack(2);
+    this.pushToStack('(index)');
+
+    if (fixedWidth) {
+      const width = getFixedWidth(elemType);
+      this.emit(encodeInt(BigInt(width)), loc);
+      this.emit(Op.OP_MUL, loc);
+      this.emit(Op.OP_SPLIT, loc);
+      this.emit(Op.OP_NIP, loc);
+      this.popFromStack(2);
+      this.pushToStack('(value)');
+      this.emit(encodeInt(BigInt(width)), loc);
+      this.emit(Op.OP_SPLIT, loc);
+      this.emit(Op.OP_DROP, loc);
+      this.emitDecodeElementPacked(elemType, loc);
+    } else {
+      this.popFromStack(2);
+      this.pushToStack('(elements)');
+      this.pushToStack('(count)');
+      this.emitScanLoop(elemType, loc);
+      this.popFromStack(2);
+      this.pushToStack('(remaining)');
+      this.emitPushdataDecode(elemType, loc);
+      this.emit(Op.OP_SWAP, loc);
+      this.emit(Op.OP_NIP, loc);
+      this.popFromStack();
+      this.pushToStack('(value)');
+    }
   }
 
   /**
@@ -10596,6 +10616,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       && this.sortedValueKind(node.collection.innermostValueType) !== null) {
       return this.emitSortedValueUpsert(node, () => { node.expression = this.visit(node.expression); });
     }
+    if (node.collection?.sorted && node.arrayIndex && !node.arrayPush && !node.arrayPop
+      && this.isChunkableValue(node.collection.innermostValueType)) {
+      // Sorted C2 array-element write (`m[k][i]=v`): RMW the whole array value through the chunk-aware upsert,
+      // mirroring the struct field-write path. emitMappingArrayElementAssign in sortedRmw mode materializes the
+      // current array (Phase 1), applies element surgery (Phase 2), and leaves the modified blob for
+      // emitSortedValueUpsert to chunk/store (Phase 3). push/pop CHANGE the element count, which can flip the
+      // value across the inline<->chunked size boundary; that computed-value transition is not wired yet, so
+      // `m[k].push/.pop` on a sorted mapping falls through to the fail-close below (SortedMappingCodegenPending).
+      return this.emitSortedValueUpsert(node, () => { this.emitMappingArrayElementAssign(node, true); });
+    }
     if (node.collection?.sorted) {
       throw new SortedMappingCodegenPendingError(node, node.collection.name); // unsupported sorted shape/value type
     }
@@ -10696,7 +10726,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * Handle array element assignment within a mapping value: this.scores[user][index] = value
    * Combines entry read (like visitMappingFieldAssign) + array surgery (like visitArrayAssign).
    */
-  private emitMappingArrayElementAssign(node: MappingAssignNode): Node {
+  private emitMappingArrayElementAssign(node: MappingAssignNode, sortedRmw = false): Node {
     const slotIndex = node.entrySlotIndex;
     const collection = node.collection!;
     const locationData = { location: node.location, positionHint: PositionHint.END };
@@ -10711,84 +10741,92 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     let untrackedCount = 1;
 
-    const prevValueName = `__entry_value_enc_${slotIndex}`;
-    const prevKeyName = `__entry_key_enc_${slotIndex}`;
-    const canChain = this.pendingEntryWrites.has(slotIndex)
-      && !this.preAllocatedEntryWrites.has(slotIndex)
-      && this.getStackIndex(prevValueName, true) !== -1;
-
-    // Fail closed on a chained array-element write whose value or index READS the same entry: the flat
-    // drop+re-push below consumes the pending write before the value/index is evaluated, so that read would
-    // see the stale input (`m[k][0] = m[k][0] + 1; m[k][0] = m[k][0] + 1` -> 1, not 2). Read it into a local.
-    if (canChain
-      && (this.expressionReadsEntrySlot(node.expression, slotIndex)
-        || this.expressionReadsEntrySlot(node.arrayIndex, slotIndex))) {
-      throw new ChainedEntryElementReadError(node, node.collection?.name ?? node.name);
-    }
-
-    if (canChain) {
-      // Chain from previous array element assignment's output.
-      // Pick the already-modified value blob from the tracked stack.
-      const prevValueIdx = this.getStackIndex(prevValueName);
-      this.emit(encodeInt(BigInt(prevValueIdx)), locationData);
-      this.emit(Op.OP_PICK, locationData);
-      // 1 untracked value on stack (the copied blob)
-      // Remove old key and value from the REAL stack (not just tracking) so that
-      // subsequent PICK indices in array surgery and covenant verification are correct.
-      this.pendingEntryWrites.delete(slotIndex);
-      // Roll old key to top (accounting for 1 untracked blob) and drop it
-      const oldKeyIdx = this.getStackIndex(prevKeyName);
-      this.emit(encodeInt(BigInt(oldKeyIdx + 1)), locationData); // +1 for untracked blob
-      this.emit(Op.OP_ROLL, locationData);
-      this.emit(Op.OP_DROP, locationData);
-      this.removeFromStack(this.getStackIndex(prevKeyName));
-      // Roll old value to top (still 1 untracked blob) and drop it
-      const oldValIdx = this.getStackIndex(prevValueName);
-      this.emit(encodeInt(BigInt(oldValIdx + 1)), locationData); // +1 for untracked blob
-      this.emit(Op.OP_ROLL, locationData);
-      this.emit(Op.OP_DROP, locationData);
-      this.removeFromStack(this.getStackIndex(prevValueName));
+    if (sortedRmw) {
+      // Sorted C2 RMW: materialize the current array value (reassembling chunks if chunked),
+      // then fall through to the shared Phase 2 surgery. Phase 3 leaves the blob for the upsert.
+      this.emitSortedSetRead(node as unknown as MappingAccessNode);
+      this.popFromStack();
     } else {
-      // First assignment: check if entry exists via introspection
-      this.emitSlotExistsCheck('entry', slotIndex, locationData);
 
-      this.emit(Op.OP_IF, locationData);
+      const prevValueName = `__entry_value_enc_${slotIndex}`;
+      const prevKeyName = `__entry_key_enc_${slotIndex}`;
+      const canChain = this.pendingEntryWrites.has(slotIndex)
+        && !this.preAllocatedEntryWrites.has(slotIndex)
+        && this.getStackIndex(prevValueName, true) !== -1;
 
-      this.emitEntryInputIndex(slotIndex, locationData, 0);
-      this.emit(Op.OP_UTXOTOKENCOMMITMENT, locationData);
-
-      untrackedCount = 1;
-      for (let i = 0; i < allKeyTypes.length; i++) {
-        this.emitPushdataDecode(allKeyTypes[i], locationData);
-        this.emit(Op.OP_SWAP, locationData);
-
-        const keySource = this.entrySlots[slotIndex].keySources?.[i];
-        if (!keySource || keySource.kind === 'param') {
-          const keyParamName = keySource?.paramName ?? this.entrySlots[slotIndex].keyParams[i];
-          const keyParamIdx = this.getStackIndex(keyParamName);
-          this.emit(encodeInt(BigInt(keyParamIdx + untrackedCount + 1)), locationData);
-          this.emit(Op.OP_PICK, locationData);
-        } else {
-          for (let u = 0; u < untrackedCount + 1; u++) {
-            this.pushToStack(`__untracked_${u}`);
-          }
-          node.keys[i] = this.visit(node.keys[i]);
-          for (let u = 0; u < untrackedCount + 1; u++) {
-            this.removeFromStack(this.getStackIndex(`__untracked_${u}`));
-          }
-          this.popFromStack();
-        }
-        this.emit(Op.OP_EQUALVERIFY, locationData);
+      // Fail closed on a chained array-element write whose value or index READS the same entry: the flat
+      // drop+re-push below consumes the pending write before the value/index is evaluated, so that read would
+      // see the stale input (`m[k][0] = m[k][0] + 1; m[k][0] = m[k][0] + 1` -> 1, not 2). Read it into a local.
+      if (canChain
+        && (this.expressionReadsEntrySlot(node.expression, slotIndex)
+          || this.expressionReadsEntrySlot(node.arrayIndex, slotIndex))) {
+        throw new ChainedEntryElementReadError(node, node.collection?.name ?? node.name);
       }
 
-      // After key verification: [value_blob] on stack (1 untracked value)
-      // For ArrayType, emitPushdataDecodeLastField is a no-op - blob IS the array
+      if (canChain) {
+        // Chain from previous array element assignment's output.
+        // Pick the already-modified value blob from the tracked stack.
+        const prevValueIdx = this.getStackIndex(prevValueName);
+        this.emit(encodeInt(BigInt(prevValueIdx)), locationData);
+        this.emit(Op.OP_PICK, locationData);
+        // 1 untracked value on stack (the copied blob)
+        // Remove old key and value from the REAL stack (not just tracking) so that
+        // subsequent PICK indices in array surgery and covenant verification are correct.
+        this.pendingEntryWrites.delete(slotIndex);
+        // Roll old key to top (accounting for 1 untracked blob) and drop it
+        const oldKeyIdx = this.getStackIndex(prevKeyName);
+        this.emit(encodeInt(BigInt(oldKeyIdx + 1)), locationData); // +1 for untracked blob
+        this.emit(Op.OP_ROLL, locationData);
+        this.emit(Op.OP_DROP, locationData);
+        this.removeFromStack(this.getStackIndex(prevKeyName));
+        // Roll old value to top (still 1 untracked blob) and drop it
+        const oldValIdx = this.getStackIndex(prevValueName);
+        this.emit(encodeInt(BigInt(oldValIdx + 1)), locationData); // +1 for untracked blob
+        this.emit(Op.OP_ROLL, locationData);
+        this.emit(Op.OP_DROP, locationData);
+        this.removeFromStack(this.getStackIndex(prevValueName));
+      } else {
+        // First assignment: check if entry exists via introspection
+        this.emitSlotExistsCheck('entry', slotIndex, locationData);
 
-      this.emit(Op.OP_ELSE, locationData);
-      this.emitDefaultValue(locationData, arrType);
+        this.emit(Op.OP_IF, locationData);
 
-      this.emit(Op.OP_ENDIF, locationData);
-    }
+        this.emitEntryInputIndex(slotIndex, locationData, 0);
+        this.emit(Op.OP_UTXOTOKENCOMMITMENT, locationData);
+
+        untrackedCount = 1;
+        for (let i = 0; i < allKeyTypes.length; i++) {
+          this.emitPushdataDecode(allKeyTypes[i], locationData);
+          this.emit(Op.OP_SWAP, locationData);
+
+          const keySource = this.entrySlots[slotIndex].keySources?.[i];
+          if (!keySource || keySource.kind === 'param') {
+            const keyParamName = keySource?.paramName ?? this.entrySlots[slotIndex].keyParams[i];
+            const keyParamIdx = this.getStackIndex(keyParamName);
+            this.emit(encodeInt(BigInt(keyParamIdx + untrackedCount + 1)), locationData);
+            this.emit(Op.OP_PICK, locationData);
+          } else {
+            for (let u = 0; u < untrackedCount + 1; u++) {
+              this.pushToStack(`__untracked_${u}`);
+            }
+            node.keys[i] = this.visit(node.keys[i]);
+            for (let u = 0; u < untrackedCount + 1; u++) {
+              this.removeFromStack(this.getStackIndex(`__untracked_${u}`));
+            }
+            this.popFromStack();
+          }
+          this.emit(Op.OP_EQUALVERIFY, locationData);
+        }
+
+        // After key verification: [value_blob] on stack (1 untracked value)
+        // For ArrayType, emitPushdataDecodeLastField is a no-op - blob IS the array
+
+        this.emit(Op.OP_ELSE, locationData);
+        this.emitDefaultValue(locationData, arrType);
+
+        this.emit(Op.OP_ENDIF, locationData);
+      }
+    } // end (non-sortedRmw) Phase 1 read
 
     // === Phase 2: Array element surgery ===
     // Stack: [array_blob] (1 untracked value)
@@ -10930,6 +10968,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.popFromStack(2);
     // The modified array blob is now on stack - it's already pushdata-encoded (ArrayType is no-op)
 
+    if (sortedRmw) {
+      // Hand the modified array blob to the enclosing emitSortedValueUpsert, which chunks/stores it.
+      this.pushToStack('(value)');
+      return node;
+    }
+
     // === Phase 3: Write entry (key + value) ===
     if (this.preAllocatedEntryWrites.has(slotIndex)) {
       const keyStackName = `__entry_key_enc_${slotIndex}`;
@@ -11012,9 +11056,69 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.popFromStack();                  // 3 -> 2
   }
 
+  // A SORTED (C2) chunkable struct field write, routed as a whole-value RMW: read the current struct (materialized
+  // via emitSortedSetRead, chunking-transparent), replace the field, re-store via emitSortedValueUpsert (re-chunk +
+  // pin). Co-spends the entry once, like a scalar RMW `m[k] = m[k] + v`.
+  private emitSortedStructFieldWrite(node: MappingFieldAssignNode): Node {
+    const loc = { location: node.location, positionHint: PositionHint.END };
+    const valueType = node.collection!.innermostValueType as StructType;
+    const fieldIndex = valueType.fields.findIndex((f) => f.name === node.fieldName);
+    const fieldType = valueType.fields[fieldIndex].type;
+    return this.emitSortedValueUpsert(node as unknown as MappingAssignNode, () => {
+      this.emitSortedSetRead(node as unknown as MappingAccessNode); // struct blob, tracked as '(value)'
+      this.popFromStack();                                          // -> untracked working blob on top
+      this.emitStructFieldSurgery(node, valueType, fieldIndex, fieldType, loc); // -> new blob (untracked)
+      this.pushToStack('(value)');                                  // re-track as the value for the upsert
+    });
+  }
+
+  // Replace field[fieldIndex] of the struct blob (untracked, on top) with the encoded new value from
+  // node.expression. General prefix ++ new_field ++ suffix surgery (works for any field position). Leaves the new
+  // struct blob untracked on top. `untracked` = working values above the tracked stack when node.expression is
+  // visited (the emitSortedValueUpsert temps + prefix + suffix), so identifier reads locate their params.
+  private emitStructFieldSurgery(
+    node: MappingFieldAssignNode, valueType: StructType, fieldIndex: number, fieldType: Type, loc: SingleLocationData,
+  ): void {
+    // prefix = blob[0 : start of field]
+    this.emit(Op.OP_DUP, loc);
+    for (let i = 0; i < fieldIndex; i++) this.emitPushdataSkip(valueType.fields[i].type, loc);
+    this.emit(Op.OP_SIZE, loc); this.emit(Op.OP_NIP, loc);            // [blob, remainder_size]
+    this.emit(Op.OP_SWAP, loc);
+    this.emit(Op.OP_DUP, loc); this.emit(Op.OP_SIZE, loc); this.emit(Op.OP_NIP, loc); // [remainder_size, blob, blob_size]
+    this.emit(Op.OP_ROT, loc); this.emit(Op.OP_SUB, loc);             // [blob, prefix_size]
+    this.emit(Op.OP_SPLIT, loc);                                      // [prefix, field_and_suffix]
+    // suffix = field_and_suffix[field_size :]
+    this.emit(Op.OP_DUP, loc); this.emitPushdataSkip(fieldType, loc); // [prefix, field_and_suffix, suffix]
+    this.emit(Op.OP_SIZE, loc); this.emit(Op.OP_NIP, loc);            // [prefix, field_and_suffix, suffix_size]
+    this.emit(Op.OP_SWAP, loc);
+    this.emit(Op.OP_DUP, loc); this.emit(Op.OP_SIZE, loc); this.emit(Op.OP_NIP, loc); // [prefix, sufsz, f_and_s, fssz]
+    this.emit(Op.OP_ROT, loc); this.emit(Op.OP_SUB, loc);             // [prefix, field_and_suffix, field_size]
+    this.emit(Op.OP_SPLIT, loc);                                      // [prefix, old_field, suffix]
+    this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_DROP, loc);           // [prefix, suffix]
+    // new_field = encode(visit(node.expression)); 2 untracked working values (prefix, suffix) present.
+    this.pushToStack('(mfa_pre)'); this.pushToStack('(mfa_suf)');
+    node.expression = this.visit(node.expression);
+    this.emitPushdataEncode(fieldType, loc);
+    this.removeFromStack(this.getStackIndex('(mfa_suf)')); this.removeFromStack(this.getStackIndex('(mfa_pre)'));
+    this.popFromStack();                                              // [prefix, suffix, new_field]
+    // reassemble prefix ++ new_field ++ suffix
+    this.emit(Op.OP_ROT, loc);   // [suffix, new_field, prefix]
+    this.emit(Op.OP_SWAP, loc);  // [suffix, prefix, new_field]
+    this.emit(Op.OP_CAT, loc);   // [suffix, prefix_new_field]
+    this.emit(Op.OP_SWAP, loc);  // [prefix_new_field, suffix]
+    this.emit(Op.OP_CAT, loc);   // [new_blob]
+  }
+
   visitMappingFieldAssign(node: MappingFieldAssignNode): Node {
     if (this.plainLoopDepth > 0 && node.entrySlotIndex >= 0) {
       throw new EntryWriteInLoopError(node, node.collection?.name ?? node.name);
+    }
+    // A SORTED (C2) chunkable struct field write `m[k].f = v` is a whole-value RMW: the default-model path below
+    // reads the key||value commitment (wrong for the slot||next||value C2 entry) and the chunkable len4 tail, so
+    // route it through the chunk-aware ops - read the whole struct (materialized), replace field f, re-store
+    // (re-chunk + pin). Reuses emitSortedSetRead + emitSortedValueUpsert like a scalar RMW, co-spending once.
+    if (node.collection?.sorted && this.isChunkableValue(node.collection.innermostValueType)) {
+      return this.emitSortedStructFieldWrite(node);
     }
     const slotIndex = node.entrySlotIndex;
     const collection = node.collection!;

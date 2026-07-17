@@ -560,6 +560,12 @@ export default class TypeCheckTraversal extends AstTraversal {
     if (node.noArg && node.arrayPush && node.collection?.innermostValueType instanceof ArrayType) {
       node.expression = createDefaultValueExpression(node.collection.innermostValueType.elementType, node.location!);
     }
+    // Whole-value array assign `m[k] = [a,b,c]`: blob-encode the literal (pushdata(count) ++ tight elements) so the
+    // codegen stores the array as a single value blob (matching the chunk-aware read), not separate stack items.
+    if (!node.arrayIndex && !node.arrayPush && !node.arrayPop
+      && node.collection?.innermostValueType instanceof ArrayType && node.expression instanceof ArrayNode) {
+      node.expression.blobEncoded = true;
+    }
     node.expression = this.visit(node.expression);
     if (node.collection) {
       const innerType = node.collection.innermostValueType;

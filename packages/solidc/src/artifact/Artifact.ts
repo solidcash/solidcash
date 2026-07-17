@@ -1,7 +1,7 @@
 import {
   AbiFunction, Artifact, CompilerOptions, DebugInformation, Script, scriptToAsm, StateLayout, ArrayType,
   computeCollectionSignature, computeFunctionSelectorHex, ExternalInterfaceInfo, MappingType, Type, ValueType,
-  EnumType, ExternalLibraryAbi, BUILTIN_LIBRARIES, resolveLibraries, sidecarCodeRange,
+  EnumType, ExternalLibraryAbi, BUILTIN_LIBRARIES, resolveLibraries, sidecarCodeRange, isChunkableValueType,
 } from '@solidcash/utils';
 import { binToHex } from '@bitauth/libauth';
 import { version } from '../index.js';
@@ -420,6 +420,7 @@ export function generateArtifact(
           }),
           ...(coll.immutable && { immutable: true }),
           ...(coll.sorted && { sorted: true }),
+          ...(coll.sorted && isChunkableValueType(coll.innermostValueType) && { chunkableValue: true }),
           ...(coll.enumerable && { enumerable: true }),
         })),
       }),
@@ -437,8 +438,9 @@ export function generateArtifact(
             }),
             ...mappingNameFields(coll.type),
             ...(coll.immutable && { immutable: true }),
-          ...(coll.sorted && { sorted: true }),
-          ...(coll.enumerable && { enumerable: true }),
+            ...(coll.sorted && { sorted: true }),
+            ...(coll.sorted && isChunkableValueType(coll.innermostValueType) && { chunkableValue: true }),
+            ...(coll.enumerable && { enumerable: true }),
           })),
       }),
       ...(structDefs.length > 0 && { structs: structDefs }),

@@ -338,7 +338,7 @@ flip + seeding migration, best done as a dedicated pass.
 **Revisit if.** Continuing the parity push (the standing directive) - this is now the critical path; each gap
 closed shrinks the eventual flip.
 
-### 3. string/bytes VALUES in sorted entries - P5a + P5b DONE; only ARRAY-valued mappings remain
+### 3. large VALUES in sorted entries - P5a + P5b + GENERAL struct/array chunking DONE; only sorted push/pop remains
 
 **P5a DONE (2026-07-16, commit ad70e15f).** Unbounded `bytes` / `string` values <= 60 B are stored INLINE in the
 entry commitment tail as `len(4 B LE) ++ value` (<= 128 B total, real-chain-valid), so a `mapping(K => bytes|string)`
@@ -397,36 +397,38 @@ the dynamicChunkInputs consume path). The covenant does not verify them (the new
 pure dust reclaim - no more orphans. Digest-keyed, so only the exact old version is reclaimed. Test: SortedMapping
 LongValue.test.ts "overwrite GC" (v1's 3 chunks gone, only v2's 3 remain).
 
-**GENERAL large-value (STRUCT + ARRAY) chunking - the right generalization, distinct larger feature (PROBED 2026-07-
-17).** The digest+chunk mechanism is BLOB-AGNOSTIC - it should cover ANY variable-width value, not just bytes/string.
-Currently struct + array values are stored VERBATIM in the commitment tail (sortedValueKind='rawbytes', not
-isChunkableValue), so a value > 128 B breaks the real-chain commitment limit (works only in the unenforced mock).
-The fix is to make struct/array/(large) values chunkable too. PROBE findings:
-- The WHOLE-value path already handles chunking transparently: `m[k] = structOrArr` (emitSortedValueUpsert ->
-  emitChunkableValueTail + emitSortedValueChunkPin) and `m[k]` / field-read `m[k].f` / element-read `m[k][i]` /
-  `m[k].length` (emitSortedSetRead materializes via the witness, then the existing struct/array decode composes).
-  So whole assign/read + all READS work by just extending isChunkableValue + the SymbolTable witness injection +
-  the SDK gates to struct/dynamic-array (and adding ArrayType to sortedValueKind). address/bytesN stay verbatim
-  (always small enough).
-- The BLOCKER is field/element WRITES. `m[k].f = v` goes through visitMappingFieldAssign, which reads the RAW blob
-  from the commitment and does in-place field surgery, then pins the output - it currently COMPILES for sorted
-  structs (verbatim tail). Making structs chunkable (len4-prefixed / hashed tail) BREAKS this: the surgery must
-  MATERIALIZE first (strip len4 / witness-reassemble) and RE-CHUNK on store (emitChunkableValueTail + chunk-pin).
-  Same for array `m[k][i]=v` / `m[k].push` (today fail-closed). Because struct field-writes currently work, this is
-  a REGRESSION if not fixed - so it is all-or-nothing per value type.
-CLEAN DESIGN (for a focused next session): route a chunkable field/element WRITE as a whole-value RMW through the
-existing chunk-aware ops - `m[k].f = v` == `m[k] = setField(m[k], f, v)`: emitSortedSetRead (materialize) -> the
-existing field/element surgery on the materialized blob -> emitSortedValueUpsert (re-chunk + pin), co-spending the
-entry ONCE like a scalar RMW. Then the SDK reuses Design D's COMPUTED-value derivation (the new blob is computed
-on-chain via surgery, so its chunks derive from the trace) + the overwrite GC. Also: a `chunkableValue` flag on the
-collection ABI (compiler-computed via isChunkableValue) so the SDK gates cleanly instead of string-matching the
-value type; migrate the verbatim-tail struct/address seed tests to the len4 format (like the P5a migration).
-Scope: this is Design-D-scale (the field/element-write materialize+re-chunk + test migration), NOT a bounded
-follow-up - deferred to keep from destabilizing shipped Design D at session end. Probe changes reverted.
+**GENERAL large-value (STRUCT + ARRAY) chunking - SHIPPED (2026-07-17).** The digest+chunk mechanism is now
+BLOB-AGNOSTIC: `isChunkableValueType` (utils, the single source of truth) = unbounded bytes/string OR struct OR
+dynamic array `T[]`. Any such value chunks off-commitment when > 60 B, so a `mapping(K => struct)` /
+`mapping(K => T[])` is C2 by default (real-chain-valid) regardless of size. address/bytesN/int stay verbatim (always
+within 128 B). Delivered along the CLEAN DESIGN below:
+- Reads: `m[k]` / field-read `m[k].f` / element-read `m[k][i]` all go through emitSortedSetRead (materialize via the
+  witness, chunking-transparent) then the existing struct/array decode (emitArrayElementExtract for `[i]`). Added
+  ArrayType to sortedValueKind ('rawbytes'); extended isChunkableValue + the SymbolTable witness injection + the SDK
+  gates (`collection.chunkableValue`) to struct/dynamic-array.
+- Field/element WRITES are routed as a whole-value RMW through the chunk-aware ops: `m[k].f = v` ==
+  `m[k] = setField(m[k], f, v)` (emitSortedStructFieldWrite + emitStructFieldSurgery); `m[k][i] = v` ==
+  `m[k] = setElem(m[k], i, v)` (emitMappingArrayElementAssign in `sortedRmw` mode: Phase-1 read via emitSortedSetRead,
+  Phase-2 element surgery, Phase-3 hands the blob to emitSortedValueUpsert to re-chunk + pin). Co-spends the entry
+  ONCE like a scalar RMW; the SDK reuses Design D's COMPUTED-value derivation + overwrite GC. This FIXED a pre-existing
+  flip bug where sorted struct field writes read the key||value (default-model) commitment instead of slot||next||value.
+- The `chunkableValue` collection-ABI flag (compiler-computed via isChunkableValueType) drives the SDK gates cleanly.
+- Whole-value array-literal assign `m[k] = [a,b,c]` now blob-encodes the literal in visitMappingAssign (was only done
+  for state vars / var-defs), so the array stores as one value blob, not separate stack items.
+Tests: SortedMappingStructFieldWrite.test.ts (small + 160 B struct), SortedMappingArrayElementWrite.test.ts (int[]
+var-width + bytes32[] > 128 B chunked, element read/write, neighbor preservation).
 
-**Revisit if.** A target stores a `mapping(K => struct)` / `mapping(K => T[])` whose value can exceed ~128 B: start
-from the CLEAN DESIGN above (extend isChunkableValue/witness/SDK gates for the read side, then route field/element
-writes through the chunk-aware RMW), migrating the struct seed tests.
+**STILL DEFERRED: push/pop on a sorted array.** `m[k].push(v)` / `.pop()` CHANGE the element count, which can flip the
+value across the inline<->chunked (60 B) size boundary. That computed-value SIZE-CLASS transition (persist new chunks
+/ GC old ones as the digest changes AND the inline/hashed tail form flips) is not wired - the SDK read-witness path
+mis-sizes the transitioning value. To avoid REGRESSING push/pop (which works on the default entry model), an
+array-valued mapping that USES push/pop opts OUT of C2 automatically (compiler.ts `pushPopMappings` scan): it stays
+default-model (no omission proof, no chunking, 128 B ceiling) while push/pop keeps working. A push/pop-FREE array
+mapping still gets full C2 + chunking. Element-index writes `m[k][i]=v` (size-preserving) DO work under C2.
+
+**Revisit if.** Need push/pop on a LARGE (> 128 B) sorted array: wire the inline<->chunked transition in the SDK
+computed-value derivation (detect the old vs new size class, mint/GC chunks accordingly, and pick the tail form from
+the NEW size) so the `pushPopMappings` opt-out can be dropped.
 
 ### 4. Sound PARTIAL (paginated / windowed) enumeration
 

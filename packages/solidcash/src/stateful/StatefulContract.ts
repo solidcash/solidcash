@@ -5144,7 +5144,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               // Compute NEW exactly from the direct value param (slot ++ oldNext ++ len4 ++ [v|sha256(v)]) and inject
               // it PINNED so the derivation skips this collection entirely (see setLoopEntryCommitments + pinning).
               let newNode: Uint8Array | undefined;
-              if ((collection.valueType === 'bytes' || collection.valueType === 'string') && access.valueParam) {
+              if (collection.chunkableValue && access.valueParam) {
                 const vIdx2 = abiFunction!.inputs.findIndex((inp) => inp.name === access.valueParam);
                 const raw2 = vIdx2 >= 0 ? args[vIdx2] : undefined;
                 const vB = typeof raw2 === 'string' ? utf8ToBin(raw2) : raw2 instanceof Uint8Array ? raw2 : undefined;
@@ -5167,7 +5167,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           // valueWitness_N arg. Present + long (>60 B): reassemble from value chunks at getValueChunkAddress
           // (collection, slot, digest); the covenant verifies sha256(witness) == the entry's stored digest.
           // Present + short OR absent: empty (covenant materializes the inline tail / the default).
-          if ((collection.valueType === 'bytes' || collection.valueType === 'string')
+          if (collection.chunkableValue
             && access.operations.includes('read')) {
             let witness: Uint8Array = new Uint8Array();
             if (list.has(slot)) {
@@ -5196,7 +5196,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           // on-stack value (Design D), so they must match slot ++ digest ++ i ++ data exactly. A DIRECT value param
           // is chunked here; a COMPUTED value (unresolvable param / expression) is registered so the SDK derives the
           // pinned chunk commitments from the VM trace (like dynamicChunkVars).
-          if (isWrite && (collection.valueType === 'bytes' || collection.valueType === 'string')) {
+          if (isWrite && collection.chunkableValue) {
             const vIdx = access.valueParam ? abiFunction!.inputs.findIndex((inp) => inp.name === access.valueParam) : -1;
             const raw = vIdx >= 0 ? args[vIdx] : undefined;
             const vBytes = typeof raw === 'string' ? utf8ToBin(raw) : raw instanceof Uint8Array ? raw : undefined;

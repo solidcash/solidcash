@@ -177,7 +177,16 @@ function packWords(types: Type[]): number {
 // a neighbour, so the following var starts a fresh slot - this is the D2 layout fix (was collapsed to 1 slot).
 function compositeSlotWords(t: Type): number {
   if (t instanceof ArrayType && t.bound !== undefined) {
-    return Math.max(1, packWords(new Array(Number(t.bound)).fill(t.elementType)));
+    // Compute the fixed array's whole-slot footprint ARITHMETICALLY (all elements share one type), rather than
+    // materializing `bound` copies and byte-packing them - a `uint[2 gwei]` (2e9-element) declaration would OOM
+    // the fill. This is the exact result packWords([T,..,T]) returns: a composite element occupies `inner` whole
+    // slots each (bound*inner); a value element of width w packs floor(32/w) per slot.
+    const k = Number(t.bound);
+    const inner = compositeSlotWords(t.elementType);
+    if (inner > 0) return Math.max(1, k * inner);
+    const w = valueByteWidth(t.elementType);
+    const perSlot = Math.max(1, Math.floor(32 / w));
+    return Math.max(1, Math.ceil(k / perSlot));
   }
   if (t instanceof StructType) return Math.max(1, packWords(t.fields.map((f) => f.type)));
   return 0;

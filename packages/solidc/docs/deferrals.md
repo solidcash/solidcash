@@ -302,17 +302,22 @@ plain-mapping tests break, for a MIX of reasons - (a) seeding: tests seed the de
 covenant hits "missing HEAD sentinel" (mechanical migration); (b) real C2 CODEGEN/SDK gaps the flip surfaced.
 So the flip is a staged migration, not a one-line default change.
 
-**Progress (gaps closed 2026-07-16).** Two of the surfaced gaps are now fixed (commit 368efcfe), moving C2
-toward feature-complete: computed/local-key RMW `balances[pkh]=balances[pkh]+x` now (1) COMPILES (upsert hashes
-the key before the value so the last-use ROLL does not eat the key) and (2) DERIVES (the C2 co-spend path
-resolves an expression key via withEntryKey/entryKeyOverrides + placeholder). Value-type coverage also widened
-(P5a, item 3). 
+**Progress (gaps closed 2026-07-16/17).** Several surfaced gaps now fixed, moving C2 toward feature-complete:
+computed/local-key RMW `balances[pkh]=balances[pkh]+x` COMPILES (368efcfe: upsert hashes the key before the
+value so the last-use ROLL does not eat the key) and now AUTO-DERIVES with NO withEntryKey (2ac3941e + ae3fb3bf):
+the artifact carries each computed key's canonical (`call:hash160(id:pk)`) as expressionLabel - for a direct key
+directly, for a LOCAL `pkh=hash160(pk)` by inlining the local's initializer canonical - and the SDK's
+evalComputedKey evaluates it (hash160/sha256/ripemd160/hash256 + casts) so its co-spend agrees with the
+covenant's on-chain hash. Matches Solidity's auto-resolution. Value-type coverage also widened (P5a, item 3). So
+the "computed key" C2 gap is CLOSED for the common hash-of-arg shapes (a reassigned local / non-hash op falls
+back fail-closed, resolvable with withEntryKey).
 
-**What it'd take (remaining).** (1) VM-trace AUTO-derivation of a computed C2 key (so withEntryKey is not needed
-- the placeholder path exists but cannot pick the present entry without the real slot). (2) P5b (chunked values)
-for unbounded string/bytes-valued mappings. (3) The seeding migration: a C2-aware mapping-seed helper (auto-mint
-the HEAD sentinel) so the ~half of e2e tests flip without per-test edits. (4) Sweep for any further per-shape C2
-gaps (the gauge only ran a sample). Then flip the default + migrate in batches with byte-diff review.
+**What it'd take (remaining).** (1) DEPLOY-time HEAD init: `headSentinelCommitment()` exists but is called only
+in a test - no deploy path mints the HEAD sentinel for a C2 mapping, so a freshly deployed C2-default contract's
+first read/write hits "missing HEAD". Need genesis to mint HEAD[0|0] per C2 mapping (or a first-write bootstrap
+branch that mints it). FUNDAMENTAL for real C2-default usage. (2) P5b (chunked values) for unbounded string/bytes
+mappings > 64 B. (3) The test-seeding migration: a C2-aware mapping-seed helper so the ~half of e2e tests flip
+without per-test edits. (4) Sweep for further per-shape C2 gaps (the gauge only sampled). Then flip + migrate.
 
 **Revisit if.** Continuing the parity push (the standing directive) - this is now the critical path; each gap
 closed shrinks the eventual flip.

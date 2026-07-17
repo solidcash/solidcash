@@ -19,6 +19,8 @@ import {
   StateAssignNode,
   StateAccessNode,
   MappingAssignNode,
+  MappingDeleteNode,
+  ArrayAssignNode,
   StateArrayAssignNode,
   MappingFieldAssignNode,
   ReturnNode,
@@ -66,6 +68,8 @@ export default class InlineStoragePointerCalls extends AstTraversal {
   private ambiguousInlineKeys: Set<string> = new Set();
   private inlinedFns: Set<string> = new Set();
   private collectionNames: Set<string> = new Set();
+  private sortedCollectionNames: Set<string> = new Set();
+  private transitiveSortedWriters: Set<string> = new Set();
   private stateVarNames: Set<string> = new Set();
   private keepDefFns: Set<string> = new Set();
   private freeFns: FunctionDefinitionNode[] = [];
@@ -104,6 +108,11 @@ export default class InlineStoragePointerCalls extends AstTraversal {
     for (const fn of [...node.functions, ...this.freeFns]) this.funcByName.set(fn.name, fn);
     this.ambiguousInlineKeys = collectAmbiguousInlineKeys([...node.functions, ...this.freeFns]);
     this.collectionNames = new Set(node.collections.map((c) => c.name));
+    // C2 (sorted) collections: a WRITE to one co-spends the sorted-list entry slots (block layout), like a read,
+    // so a void helper writing a sorted mapping must also inline (a plain-entry-model write works as a subroutine).
+    this.sortedCollectionNames = new Set(node.collections.filter((c) => c.sorted).map((c) => c.name));
+    const allFns = [...node.functions, ...(node.fallbackDef ? [node.fallbackDef] : [])];
+    this.transitiveSortedWriters = this.computeTransitiveSortedWriters(allFns);
     this.stateVarNames = new Set(node.stateVariables.map((sv) => sv.name));
 
     this.inlinedFns = new Set();
@@ -119,10 +128,11 @@ export default class InlineStoragePointerCalls extends AstTraversal {
       if (fn.body && fn.returnTypes.length === 0
         && (this.hasStoragePointerParam(fn)
           || (this.isInternalHelper(fn) && !valueReferenced.has(fn.name)
-            && (this.readsEntry(fn) || this.touchesScalarState(fn))))) {
+            && (this.readsEntry(fn) || this.touchesScalarState(fn) || this.transitiveSortedWriters.has(fn.name))))) {
         this.inlinedFns.add(fn.name);
       } else if (fn.body && fn.returnTypes.length === 0 && !this.isInternalHelper(fn)
-        && !valueReferenced.has(fn.name) && (this.readsEntry(fn) || this.touchesScalarState(fn))) {
+        && !valueReferenced.has(fn.name)
+        && (this.readsEntry(fn) || this.touchesScalarState(fn) || this.transitiveSortedWriters.has(fn.name))) {
         this.inlinedFns.add(fn.name);
         this.keepDefFns.add(fn.name);
       }
@@ -130,7 +140,8 @@ export default class InlineStoragePointerCalls extends AstTraversal {
     // The fallback is internally callable via the self low-level-call lowering; a state-touching one must
     // inline at those call sites (its definition always stays - it is a dispatched entry point).
     if (node.fallbackDef?.body && node.fallbackDef.returnTypes.length === 0
-      && (this.readsEntry(node.fallbackDef) || this.touchesScalarState(node.fallbackDef))) {
+      && (this.readsEntry(node.fallbackDef) || this.touchesScalarState(node.fallbackDef)
+        || this.transitiveSortedWriters.has(node.fallbackDef.name))) {
       this.funcByName.set(node.fallbackDef.name, node.fallbackDef);
       this.inlinedFns.add(node.fallbackDef.name);
       this.keepDefFns.add(node.fallbackDef.name);
@@ -329,6 +340,46 @@ export default class InlineStoragePointerCalls extends AstTraversal {
         && this.collectionNames.has(n.array.name)) found = true;
     });
     return found;
+  }
+
+  // A function DIRECTLY writes a sorted (C2) mapping entry: a MappingAssign/Field/Delete or single-key ArrayAssign
+  // on a sorted collection. A C2 write co-spends the sorted-list entry slots (block layout), which only an entry
+  // point has, so a void helper doing it cannot be an OP_INVOKE subroutine (the plain-entry-model write is fine).
+  private directlyWritesSortedEntry(fn: FunctionDefinitionNode): boolean {
+    let found = false;
+    this.walk(fn.body, (n) => {
+      if (found) return;
+      // A single-key mapping write `m[k] = v` is an ArrayAssignNode; nested / struct-field / delete forms are
+      // MappingAssign / MappingFieldAssign / MappingDelete. All co-spend the sorted entry when the collection is C2.
+      if ((n instanceof ArrayAssignNode || n instanceof MappingAssignNode || n instanceof MappingFieldAssignNode
+        || n instanceof MappingDeleteNode) && this.sortedCollectionNames.has(n.name)) found = true;
+    });
+    return found;
+  }
+
+  // The set of contract functions that DIRECTLY or TRANSITIVELY write a sorted mapping (a fn calling one that does
+  // also writes one after that callee inlines into it). All must inline so the whole chain lands in an entry
+  // point's block layout - inlining only the direct writer would leave its caller a subroutine holding the write
+  // (block-layout fail) or, once the direct writer is dropped, a dangling call. Fixpoint over the call graph.
+  private computeTransitiveSortedWriters(fns: FunctionDefinitionNode[]): Set<string> {
+    const names = new Set(fns.map((f) => f.name));
+    const calleesOf = (f: FunctionDefinitionNode): Set<string> => {
+      const out = new Set<string>();
+      this.walk(f.body, (n) => {
+        if (n instanceof FunctionCallNode && n.identifier && names.has(n.identifier.name)) out.add(n.identifier.name);
+      });
+      return out;
+    };
+    const result = new Set<string>(fns.filter((f) => this.directlyWritesSortedEntry(f)).map((f) => f.name));
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const f of fns) {
+        if (result.has(f.name)) continue;
+        for (const c of calleesOf(f)) if (result.has(c)) { result.add(f.name); changed = true; break; }
+      }
+    }
+    return result;
   }
 
   // Rewrite a statement list, replacing eligible storage-pointer-call statements with the inlined body.

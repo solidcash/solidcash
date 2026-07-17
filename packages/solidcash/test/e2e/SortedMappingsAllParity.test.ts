@@ -47,4 +47,29 @@ describe('C2 parity mode (sortedMappingsAll: every plain mapping is C2)', () => 
     await fund(contract.address);
     await expect(contract.check(3n, 7n, alicePub, sig).send()).rejects.toThrow(); // absent claimed nonzero -> revert
   });
+
+  it('a C2 mapping WRITE via an internal (subroutine-candidate) helper compiles + round-trips', async () => {
+    // `balances[k] = v` inside an internal `_set` used to fail "Block layout not available" (a C2 write needs the
+    // entry-slot block layout only an entry point has). InlineStoragePointerCalls now inlines a helper that
+    // directly OR transitively writes a sorted mapping into its entry-point caller - the OZ _mint/_approve shape.
+    const src = `contract C() {
+      mapping(int => bigint) balances;
+      function _set(int k, int v) internal { balances[k] = v; }
+      function _setVia(int k, int v) internal { _set(k, v); }
+      function set(int k, int v, pubkey pk, sig s) { require(checkSig(s, pk)); _setVia(k, v); }
+      function check(int k, int exp, pubkey pk, sig s) { require(checkSig(s, pk)); require(balances[k] == exp); }
+    }`;
+    const art = compileString(src, { sortedMappingsAll: true, forceStateful: true });
+    expect(art.abi.some((f) => f.name === '_set' || f.name === '_setVia')).toBe(false); // helpers inlined, not subroutines
+
+    const f = { txid: uid(), vout: 0, satoshis: 400000n };
+    await provider.addUtxo(p2pkh.address, f);
+    const { contract } = await StatefulContract.deploy(art, [], {
+      provider, fundingUtxo: f, funder: p2pkh.unlock.spend(alicePub, sig), initialState: {}, changeAddress: p2pkh.address,
+    });
+    await fund(contract.address);
+    expect((await contract.set(7n, 42n, alicePub, sig).send()).txid).toBeDefined(); // write via the inlined helper chain
+    await fund(contract.address);
+    expect((await contract.check(7n, 42n, alicePub, sig).send()).txid).toBeDefined(); // read back the persisted value
+  });
 });

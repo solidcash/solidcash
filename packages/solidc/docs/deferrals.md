@@ -296,6 +296,12 @@ exclusion proofs = the unforgeable-read / no-omission Solidity parity property),
 `sortedMappings` compiler option. The design conclusion (docs/evm-storage-parity.md) is that C2 SHOULD be the
 default for parity; the `mapping` / `enumerable mapping` split is kept only as an iteration-capability toggle.
 
+**CAPABILITY DELIVERED as an opt-in flag (296efa63): `{ sortedMappingsAll: true }`** backs EVERY mapping with C2
+- exclusion-proof reads for all mappings without naming each - and works END TO END (SortedMappingsAllParity
+test: deploy with HEAD auto-minted -> write -> present read -> absent bracket-proven default -> omission claim
+reverts). So C2-as-default is now one flag away; the only reason it is not the unconditional default is the
+test-suite migration below.
+
 **Why deferred - GAUGED 2026-07-16.** Temporarily defaulting all mappings to C2 measured the blast radius:
 COMPILE level only 1/75 StructsMappings breaks (C2 compiles fine, different bytecode); E2E level ~half of the
 plain-mapping tests break, for a MIX of reasons - (a) seeding: tests seed the default entry model, so the C2

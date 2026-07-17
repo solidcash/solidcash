@@ -9970,6 +9970,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // `delete m[k]` == `m[k]=<default>`, an assignment to zero, never a physical removal.
     if (vt.toString() === 'bool') return 'int';
     if (vt === PrimitiveType.BIGINT || vt instanceof IntType) return 'int';
+    // An enum is its ordinal integer on the wire (bounded 0..N-1); store + read it as an int value.
+    if (vt instanceof EnumType) return 'int';
     if (vt instanceof BytesType && vt.bound !== undefined && vt.bound >= 1 && vt.bound <= 32) return 'rawbytes';
     // Unbounded `bytes` / `string` (P5b): the tail is `len(4 B) ++ [ inline value if <=60 | sha256(value) ]` via
     // emitChunkableValueTail/Read - inline keeps the commitment <= 128 B, the hash bounds it for a value of ANY

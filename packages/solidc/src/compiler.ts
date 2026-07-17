@@ -1,6 +1,6 @@
 import { CharStream, CommonTokenStream } from 'antlr4';
 import { binToHex } from '@bitauth/libauth';
-import { Artifact, ArtifactMap, ArrayType, AddressType, BytesType, CompilerOptions, computeBytecodeFingerprintWithConstructorArgs, generateSourceMap, IntType, MappingType, optimiseBytecode, optimiseBytecodeOld, OPTIMISER_COMPAT_CHECK_MAX_OPS, PrimitiveType, scriptToAsm, scriptToBytecode, sourceMapToLocationData, StructType, Type, ValueType } from '@solidcash/utils';
+import { Artifact, ArtifactMap, ArrayType, AddressType, BytesType, CompilerOptions, computeBytecodeFingerprintWithConstructorArgs, EnumType, generateSourceMap, IntType, MappingType, optimiseBytecode, optimiseBytecodeOld, OPTIMISER_COMPAT_CHECK_MAX_OPS, PrimitiveType, scriptToAsm, scriptToBytecode, sourceMapToLocationData, StructType, Type, ValueType } from '@solidcash/utils';
 import { generateArtifact, generateDeclarationArtifact } from './artifact/Artifact.js';
 import {
   Ast, ContractNode, ContractReferenceNode, FunctionModifier, InstantiationNode, Node, ParameterNode,
@@ -192,6 +192,7 @@ function compileResolvedAst(ast: Ast, code: string, mergedCompilerOptions: Compi
   // the whole contract out with `sortedMappingsAll: false` (then `sortedMappings` still names specific mappings).
   const c2StorableValue = (vt: Type): boolean => (
     vt instanceof IntType || vt instanceof BytesType || vt instanceof AddressType || vt instanceof StructType
+    || vt instanceof EnumType
     || (vt instanceof ArrayType && vt.bound === undefined)
     || vt === PrimitiveType.BIGINT || vt.toString() === 'bool' || vt.toString() === 'string'
   );

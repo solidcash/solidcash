@@ -440,23 +440,26 @@ function runtimeReturn(ptrArg: YulExpressionNode, sizeArg: YulExpressionNode, sr
   return loc(new ReturnNode([slice]), src);
 }
 
-// Copy srcBytes[off : off+len] into __yulmem[dst : dst+len], growing the buffer to cover it. Shared by codecopy
-// (src = this contract's own bytecode) and extcodecopy (src = addr.code). The source is zero-padded to off+len so
-// a copy past its end yields EVM-faithful zeros (returndatacopy is NOT routed here: EVM reverts, not zero-pads,
-// past returndatasize).
+// Copy srcBytes[srcOff : srcOff+len] into __yulmem[dst : dst+len], growing the buffer to cover it. Shared by
+// codecopy (src = own bytecode), extcodecopy (src = addr.code) and calldatacopy (src = synthesized EVM calldata /
+// a bytes calldata param). dst/srcOff/len are ALREADY-LOWERED expressions (bound to temps here, so any complexity
+// is evaluated once). The source is zero-padded to srcOff+len so a copy past its end yields EVM-faithful zeros
+// (returndatacopy is NOT routed here: EVM reverts, not zero-pads, past returndatasize).
 function runtimeCopyInto(
-  srcBytes: ExpressionNode, dstArg: YulExpressionNode, offArg: YulExpressionNode, lenArg: YulExpressionNode, src: YulNode,
+  srcBytes: ExpressionNode, dstE: ExpressionNode, srcOffE: ExpressionNode, lenE: ExpressionNode, src: YulNode,
 ): StatementNode {
   yulMemUsed = true;
-  const dstName = `__ycpy_dst_${yulTmpN}`;
-  const lenName = `__ycpy_len_${yulTmpN}`;
-  yulTmpN += 1;
+  const n = yulTmpN++;
+  const dstName = `__ycpy_dst_${n}`, offName = `__ycpy_off_${n}`, lenName = `__ycpy_len_${n}`;
   const dst = (): ExpressionNode => loc(new IdentifierNode(dstName), src);
+  const off = (): ExpressionNode => loc(new IdentifierNode(offName), src);
   const len = (): ExpressionNode => loc(new IdentifierNode(lenName), src);
-  const off = (): ExpressionNode => lowerValue(offArg);
   const need = (): ExpressionNode => addE(dst(), len(), src);
-  const declDst = loc(new VariableDefinitionNode(UINT256, [], dstName, lowerValue(dstArg)), src);
-  const declLen = loc(new VariableDefinitionNode(UINT256, [], lenName, lowerValue(lenArg)), src);
+  const decls = [
+    loc(new VariableDefinitionNode(UINT256, [], dstName, dstE), src),
+    loc(new VariableDefinitionNode(UINT256, [], offName, srcOffE), src),
+    loc(new VariableDefinitionNode(UINT256, [], lenName, lenE), src),
+  ];
   const pad = newBytes(loc(new BinaryOpNode(need(), BinaryOperator.MINUS, memLen(src)), src), src);
   const growAssign = loc(new AssignNode(yulmem(src), loc(new BytesConcatNode([yulmem(src), pad]), src)), src);
   const grow = loc(new BranchNode(
@@ -467,7 +470,30 @@ function runtimeCopyInto(
   const head = loc(new SliceNode(yulmem(src), intLit(0n, src), dst()), src);
   const tail = loc(new SliceNode(yulmem(src), need(), memLen(src)), src);
   const store = loc(new AssignNode(yulmem(src), loc(new BytesConcatNode([head, srcSlice, tail]), src)), src);
-  return loc(new BlockNode([declDst, declLen, grow, store]), src);
+  return loc(new BlockNode([...decls, grow, store]), src);
+}
+
+// The synthesized EVM calldata `msg.sig ++ bytes32(p0) ++ bytes32(p1) ++ ...` that calldataload/calldatasize model
+// (each int param a 32-byte word at offset 4+32k, in mstore/mload's bytes32 convention so a copy then mload round-
+// trips). msg.sig is entry-point-only (MsgSigInInternalFunctionError in a subroutine). A non-int param throws
+// YulNotLowerable - the word model is int-only, exactly like calldataload.
+function synthesizedCalldata(src: YulNode): ExpressionNode {
+  const parts: ExpressionNode[] = [loc(new NullaryOpNode(NullaryOperator.MSG_SIG), src)];
+  for (const p of currentParams) {
+    if (!(p.type instanceof IntType)) throw new YulNotLowerable();
+    parts.push(loc(new CastNode(BYTES32, loc(new IdentifierNode(p.name), src), false), src));
+  }
+  return parts.length === 1 ? parts[0] : loc(new BytesConcatNode(parts), src);
+}
+
+// `calldatacopy(_, P.offset, P.length)` where P is a bytes calldata param -> P (the copied calldata region IS the
+// param's bytes). offset/length are the Yul calldata-slice accessors on the same param. Returns the param name.
+function resolveCalldataParamCopy(off: YulExpressionNode, len: YulExpressionNode): string | undefined {
+  const isAcc = (e: YulExpressionNode, m: string): e is YulPathNode =>
+    e instanceof YulPathNode && e.members.length === 1 && e.members[0] === m;
+  if (!isAcc(off, 'offset') || !isAcc(len, 'length') || off.base !== len.base) return undefined;
+  const p = currentParams.find((pp) => pp.name === off.base && pp.type instanceof BytesType);
+  return p?.name;
 }
 
 // mload(off) -> uint256(bytes32(__yulmem[off : off+32])). A trailing zero word is appended before slicing so a
@@ -1349,14 +1375,31 @@ function lowerStatement(stmt: YulStatementNode): StatementNode {
       // buffer; throw to re-lower the block onto __yulmem when not yet on it.
       if (e.name === 'codecopy' && e.args.length === 3) {
         if (runtimeMem) {
-          return runtimeCopyInto(loc(new NullaryOpNode(NullaryOperator.BYTECODE), e), e.args[0], e.args[1], e.args[2], stmt);
+          return runtimeCopyInto(loc(new NullaryOpNode(NullaryOperator.BYTECODE), e),
+            lowerValue(e.args[0]), lowerValue(e.args[1]), lowerValue(e.args[2]), stmt);
         }
         throw new YulNotLowerable();
       }
       if (e.name === 'extcodecopy' && e.args.length === 4) {
         if (runtimeMem) {
           const code = loc(new FieldAccessNode(lowerValue(e.args[0]), 'code'), e);
-          return runtimeCopyInto(code, e.args[1], e.args[2], e.args[3], stmt);
+          return runtimeCopyInto(code, lowerValue(e.args[1]), lowerValue(e.args[2]), lowerValue(e.args[3]), stmt);
+        }
+        throw new YulNotLowerable();
+      }
+      // calldatacopy(dst, srcOff, len): copy the synthesized EVM calldata (msg.sig ++ 32-byte param words, the model
+      // calldataload/calldatasize use) into __yulmem[dst:dst+len]. The `calldatacopy(dst, P.offset, P.length)` form
+      // for a bytes calldata param P copies P's bytes directly. Needs the runtime buffer; throw to re-lower onto it.
+      if (e.name === 'calldatacopy' && e.args.length === 3) {
+        if (runtimeMem) {
+          const paramName = resolveCalldataParamCopy(e.args[1], e.args[2]);
+          if (paramName) {
+            const p = (): ExpressionNode => loc(new IdentifierNode(paramName), e);
+            return runtimeCopyInto(p(), lowerValue(e.args[0]), intLit(0n, e),
+              loc(new UnaryOpNode(UnaryOperator.SIZE, p()), e), stmt);
+          }
+          return runtimeCopyInto(synthesizedCalldata(e),
+            lowerValue(e.args[0]), lowerValue(e.args[1]), lowerValue(e.args[2]), stmt);
         }
         throw new YulNotLowerable();
       }

@@ -308,6 +308,17 @@ describe('Yul inline assembly (Phase 1: parse + diagnostics)', () => {
       { solidityImportCompat: true })).not.toThrow();
   });
 
+  it('lowers calldatacopy: synthesized calldata (msg.sig ++ param words) + a bytes calldata param copy', () => {
+    // General form copies the synthesized EVM calldata (msg.sig ++ 32-byte int-param words) into __yulmem.
+    expect(() => compileString(
+      'contract C() { function f(uint a, uint b) { uint r; assembly { calldatacopy(0, 0, 68) r := mload(0) } require(r == r); } }',
+      { solidityImportCompat: true })).not.toThrow();
+    // `calldatacopy(dst, P.offset, P.length)` on a bytes calldata param copies the param's bytes directly.
+    expect(() => compileString(
+      'contract C() { function f(bytes data) { uint r; assembly { let p := mload(0x40) calldatacopy(p, data.offset, data.length) r := mload(p) } require(r == r); } }',
+      { solidityImportCompat: true })).not.toThrow();
+  });
+
   it('lowers mcopy in the compile-time memory model (word-copy = mstore(mload))', () => {
     const mcopy = compileString('contract C() { function f(uint a) returns (uint) { uint r;'
       + ' assembly { mstore(0, a) mcopy(64, 0, 32) r := mload(64) } return r; } }', { solidityImportCompat: true });
@@ -317,15 +328,16 @@ describe('Yul inline assembly (Phase 1: parse + diagnostics)', () => {
   });
 
   it('names the specific unlowerable builtin rather than claiming Yul is wholly unsupported', () => {
-    // A block whose only blocker is an un-lowered builtin (calldatacopy - not yet routed) reports that builtin by
-    // name. (mstore8/mcopy/msize/codecopy/extcodecopy now lower via the runtime __yulmem buffer.)
+    // A block whose only blocker is an un-lowered builtin (loadimmutable - immutables are compiler-generated,
+    // deferred) reports that builtin by name. (mstore8/mcopy/msize/codecopy/extcodecopy/calldatacopy now lower.)
     expect(() => compileString(`
       contract C() {
         function f() {
-          assembly { calldatacopy(0, 0, 0) }
-          require(true);
+          uint x;
+          assembly { x := loadimmutable("y") }
+          require(x == x);
         }
-      }`)).toThrow(/not yet lowerable to BCH script: calldatacopy/);
+      }`)).toThrow(/not yet lowerable to BCH script: loadimmutable/);
   });
 
   it('compiles Yul control-flow (for / switch / if) lowered to the main AST', () => {

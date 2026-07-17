@@ -223,16 +223,19 @@ build `calldata = msg.sig ++ abi.encode(param0, param1, ...)` from the known fun
   top 4 bytes followed by the first 28 bytes of `param0`. General/unaligned/dynamic `p` slices the built
   `calldata` buffer.
 - `calldatasize()` -> `4 + 32 * <static-arg-count>`, a compile-time constant from the signature.
-- `calldatacopy(dst, off, len)` -> write the `calldata[off:off+len]` slice into the memory buffer (memory
-  model), same shape as `extcodecopy`.
+- `calldatacopy(dst, off, len)` -> materialize `msg.sig ++ bytes32(p0) ++ bytes32(p1) ++ ...` (int params, the
+  same word model, in mstore/mload's `bytes32` convention so a copy-then-`mload` round-trips) and splice
+  `[off:off+len]` into the `__yulmem` buffer via the shared `runtimeCopyInto` (same shape as `extcodecopy`).
+  The `calldatacopy(dst, P.offset, P.length)` form for a `bytes calldata` param `P` copies `P`'s bytes directly.
+  `msg.sig` is entry-point-only, so a `calldatacopy` inside a subroutine fails cleanly.
 
 Routable, not fundamental. The only hard residual nearby is forwarding *opaque* calldata to an *opaque*
 delegatecall target (UpgradeableProxy) - that wall is the opaque-bytecode impl, not the calldata ops.
 
-DONE (Phase 2): `calldataload(4 + 32*k)` with a constant aligned offset lowers to the k-th `int`/`uint`
-parameter, and `calldatasize()` lowers to `4 + 32 * paramCount`. Verified on the VM (solidcash e2e). The
-selector word (offset 0), non-aligned/dynamic offsets, non-int params, and `calldatacopy` are deferred
-(left to the inline-assembly diagnostic).
+DONE: `calldataload(4 + 32*k)` (constant aligned offset) -> the k-th `int`/`uint` parameter;
+`calldatasize()` -> `4 + 32 * paramCount`; `calldatacopy` -> the synthesized-calldata slice / bytes-param copy
+above (all VM-consistent with mstore/mload). The selector word via `calldataload(0)`, non-aligned/dynamic
+`calldataload`, and non-int-param calldata reads stay deferred (left to the inline-assembly diagnostic).
 
 ## Phased implementation plan
 

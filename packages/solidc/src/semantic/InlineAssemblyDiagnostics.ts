@@ -8,9 +8,9 @@ import { UnsupportedInlineAssemblyError } from '../Errors.js';
 
 // Yul builtins with genuinely no BCH analogue (see docs/yul-inline-assembly.md "Genuinely out"). Kept tight
 // on purpose: anything that is value-computation OR routes to an existing solidcash primitive is NOT here -
-// it gets the "codegen not yet implemented" message instead. In particular calldatacopy is routable (calldata =
-// msg.sig ++ abi-encoded args) and stays deferred, not rejected. (codesize/codecopy/extcodecopy already route to
-// the active/ext bytecode; balance/extcodehash/address route to .balance/.codehash/address(this).)
+// it gets the "codegen not yet implemented" message instead. codesize/codecopy/extcodecopy route to the
+// active/ext bytecode; calldata*/calldatacopy to the synthesized EVM calldata (msg.sig ++ 32-byte param words);
+// balance/extcodehash/address to .balance/.codehash/address(this).
 const YUL_NO_BCH_EQUIVALENT: Record<string, string> = {
   pc: 'the EVM program counter has no BCH analogue',
   datasize: 'EVM bytecode-object builtin has no BCH analogue',
@@ -52,10 +52,11 @@ const LOWERABLE_BUILTINS = new Set<string>([
   'prevrandao', 'basefee', 'blobbasefee', 'gaslimit', 'coinbase',
   'blockhash', 'gas', 'codesize', 'extcodesize', 'selfbalance', 'addmod', 'mulmod', 'pop', 'invalid', 'stop', 'signextend',
   'blobhash',
-  // address/balance/extcodehash -> address(this)/.balance/.codehash; codecopy/extcodecopy -> runtime __yulmem copy
-  // from own bytecode / addr.code; return -> the __yulmem[ptr:ptr+size] bytes result; returndatacopy/returndatasize
-  // -> the tracked last-call return-data bytes. (clz is literal-fold-only and calldatacopy is not yet routed.)
-  'address', 'balance', 'extcodehash', 'codecopy', 'extcodecopy', 'return', 'returndatacopy', 'returndatasize',
+  // address/balance/extcodehash -> address(this)/.balance/.codehash; codecopy/extcodecopy/calldatacopy -> runtime
+  // __yulmem copy from own bytecode / addr.code / synthesized calldata; return -> the __yulmem[ptr:ptr+size] bytes
+  // result; returndatacopy/returndatasize -> the tracked last-call return-data bytes. (clz is literal-fold-only.)
+  'address', 'balance', 'extcodehash', 'codecopy', 'extcodecopy', 'calldatacopy',
+  'return', 'returndatacopy', 'returndatasize',
 ]);
 
 interface Walk { calls: YulFunctionCallNode[]; fnDef: boolean; }

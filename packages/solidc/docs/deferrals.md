@@ -397,12 +397,26 @@ the dynamicChunkInputs consume path). The covenant does not verify them (the new
 pure dust reclaim - no more orphans. Digest-keyed, so only the exact old version is reclaimed. Test: SortedMapping
 LongValue.test.ts "overwrite GC" (v1's 3 chunks gone, only v2's 3 remain).
 
-**Still deferred: ARRAY-valued mappings.** `mapping(K => T[])` is skipped by the compiler.ts value-type guard
-(stays on the default entry model). It ADDITIONALLY needs the on-C2-value OPERATIONS (`m[k][i]`, `m[k].push`,
-`m[k].length`) which the flip's gauge showed unsupported on a C2 mapping value - a separate codegen piece, not the
-bytes/string chunking (now done). FUNCTIONAL gap only; falls back safely, no forgery.
+**Still deferred: ARRAY-valued mappings `mapping(K => T[])` (PROBED 2026-07-17).** Skipped by the compiler.ts
+value-type guard `c2StorableValue` (arrays stay on the default entry model). Concrete probe (temporarily adding
+ArrayType to sortedValueKind + isChunkableValue + the SymbolTable witness injection, opt-in via
+`sortedMappingsAll:false, sortedMappings:['data']`):
+- COMPILES with the witness fix: whole assign `m[k]=arr`, whole read `m[k]`, element read `m[k][i]`, `m[k].length`
+  (the array blob is a chunkable rawbytes value; the read materializes it via the witness, then the existing array
+  index/length codegen composes on top).
+- FAIL-CLOSED cleanly (SortedMappingCodegenPendingError): element write `m[k][i]=v`, `m[k].push` - these need a
+  read-modify-write of the C2 blob (read via emitSortedSetRead -> modify element / append -> re-encode -> upsert),
+  the array-element-assign codegen applied to a C2 value. Not miscompiled.
+Why NOT shipped: (1) the compile-level support is dormant unless opted in, and would need matching SDK runtime
+support (the chunk read-witness / write-mint / GC gates on valueType == bytes|string) + VM verification to actually
+work - else a runtime failure instead of a clean compile fail-closed; (2) making arrays C2 BY DEFAULT (for parity)
+requires the element WRITES too, else a `mapping(K=>T[])` that pushes/element-writes would REGRESS from compiling on
+the default model to failing closed. So it is all-or-nothing: the read side is close, but full parity needs the
+element-write RMW codegen + SDK support - a distinct feature, not a bounded follow-up. Reverted the probe changes.
 
-**Revisit if.** A target needs `mapping(K => T[])` at C2 parity, or the overwrite-orphan GC becomes material.
+**Revisit if.** A target needs `mapping(K => T[])` at C2 parity: start from the probe above (witness fix + SDK
+valueType gates for the read side, then the element-write RMW-on-C2-blob codegen), gated opt-in first to avoid the
+default-model regression.
 
 ### 4. Sound PARTIAL (paginated / windowed) enumeration
 

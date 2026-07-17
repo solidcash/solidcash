@@ -390,9 +390,12 @@ phantom NEW nodes; (c) a computed INSERT's NEW cannot derive until the chunks co
 seeded loop-entry count is held at 1 (not dropped to 0, which would shift the chunk base). A computed UPDATE pins its
 (empty) loop entry so it is never phantom-derived. Direct `m[k] = v` remains injected exactly (no derivation).
 
-**Documented residual limitation (fail-CLOSED, not a soundness hole).**
-- OVERWRITE orphans: chunks are keyed by digest (in the commitment), so overwriting a long value mints a fresh
-  version and the old chunks orphan (harmless, digest-filtered on read). A co-spend GC pass is the clean-up follow-up.
+**OVERWRITE GC - DONE (2026-07-17).** Overwriting a long value now CO-SPENDS (destroys) the old chunks: on a present-
+key UPDATE whose old tail is long (len > 60), the SDK reads the old digest, fetches the old chunks at the collection
+value-chunk address filtered by (slot, old digest), and consumes them via createValueChunkUnlocker (flag=1, reusing
+the dynamicChunkInputs consume path). The covenant does not verify them (the new chunks are pinned), so this is a
+pure dust reclaim - no more orphans. Digest-keyed, so only the exact old version is reclaimed. Test: SortedMapping
+LongValue.test.ts "overwrite GC" (v1's 3 chunks gone, only v2's 3 remain).
 
 **Still deferred: ARRAY-valued mappings.** `mapping(K => T[])` is skipped by the compiler.ts value-type guard
 (stays on the default entry model). It ADDITIONALLY needs the on-C2-value OPERATIONS (`m[k][i]`, `m[k].push`,

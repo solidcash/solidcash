@@ -99,6 +99,7 @@ export {
   createReadOnlyDataNftUnlocker,
   createEntryNftUnlocker,
   createReadOnlyEntryNftUnlocker,
+  createValueChunkUnlocker,
   createEventNftUnlocker,
   createAnonymousEventNftUnlocker,
   createTokenContainerUnlocker,

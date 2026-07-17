@@ -3,7 +3,7 @@ import { hexToBin, binToHex, utf8ToBin, bigIntToVmNumber, sha256 } from '@bitaut
 import { compileString } from 'solidc';
 import { Contract, StatefulContract, SignatureTemplate } from '../../src/index.js';
 import { keyToSlot, encodeEntryCommitment, slotValueToBytes, getEntryNftAddress, getValueChunkAddress } from '../../src/index.js';
-import { buildValueChunkCommitment, splitValueIntoValueChunks } from '@solidcash/utils';
+import { buildValueChunkCommitment, splitValueIntoValueChunks, parseValueChunkCommitment } from '@solidcash/utils';
 import { alicePriv, alicePub, alicePkh } from '../fixture/vars.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 import { createTestProvider } from '../test-util.js';
@@ -224,5 +224,48 @@ describe('sorted mapping with a LONG (>64 B) unbounded bytes/string value (P5b)'
 
     await fund(contract.address);
     expect((await contract.check(11n, bigVal, alicePub, sig).send()).txid).toBeDefined(); // read back
+  });
+
+  it('overwrite GC: overwriting a long value consumes the old chunks (no dust orphans)', async () => {
+    const WRITE_SRC = `contract C() {
+      mapping(int => bytes) data;
+      function put(int k, bytes v, pubkey pk, sig s) { require(checkSig(s, pk)); data[k] = v; }
+    }`;
+    const art = compileString(WRITE_SRC, { sortedMappings: ['data'] });
+    const contract = new Contract(art, [], { provider });
+
+    const s5 = keyToSlot(bigIntToVmNumber(5n));
+    const v1 = hexToBin('a1'.repeat(150)); // old long value -> 3 chunks
+    const d1 = sha256.hash(v1);
+    const result = await provider.addTokenUtxosDynamic((cat: string) => {
+      const pinned = contract.category ? contract : contract.withCategory(hexToBin(cat));
+      const ea = getEntryNftAddress(pinned, cat, 'data');
+      const chunkAddr = getValueChunkAddress(pinned, cat, 'data');
+      const outs = [
+        { address: pinned.tokenAddress, satoshis: 10000n, token: { amount: 0n, nft: { capability: 'minting' as const, commitment: '' } } },
+        { address: ea, satoshis: 1500n, token: { amount: 0n, nft: { capability: 'mutable' as const, commitment: binToHex(encodeEntryCommitment(ZERO, s5)) } } },
+        { address: ea, satoshis: 1500n, token: { amount: 0n, nft: { capability: 'mutable' as const, commitment: binToHex(encodeEntryCommitment(s5, ZERO, valueTail(v1))) } } },
+      ];
+      splitValueIntoValueChunks(v1).forEach((data, i) => outs.push({
+        address: chunkAddr, satoshis: 1000n,
+        token: { amount: 0n, nft: { capability: 'mutable' as const, commitment: buildValueChunkCommitment(s5, d1, i, data) } },
+      }));
+      return outs;
+    });
+    const categoryId = result.categoryId;
+    const chunkAddr = getValueChunkAddress(contract.withCategory(hexToBin(categoryId)), categoryId, 'data');
+    const oldChunkCount = (await provider.getUtxos(chunkAddr)).length;
+    expect(oldChunkCount).toBe(3); // v1's 3 chunks seeded
+
+    const v2 = hexToBin('b2'.repeat(150)); // new long value (different digest)
+    const sc = StatefulContract.withCategory(contract, categoryId);
+    expect((await sc.put(5n, v2, alicePub, sig).send()).txid).toBeDefined(); // overwrite: mint v2 chunks, consume v1's
+
+    // Only v2's chunks remain at the address; v1's old chunks were co-spent (consumed), not orphaned.
+    const remaining = (await provider.getUtxos(chunkAddr))
+      .filter((u) => u.token?.nft?.commitment && u.token.nft.commitment.length > 0)
+      .map((u) => binToHex(parseValueChunkCommitment(u.token!.nft!.commitment).digest));
+    expect(remaining.every((d) => d === binToHex(sha256.hash(v2)))).toBe(true); // no v1-digest chunks left
+    expect(remaining.length).toBe(3); // exactly v2's 3 chunks
   });
 });

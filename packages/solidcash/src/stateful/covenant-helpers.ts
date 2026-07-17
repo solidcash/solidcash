@@ -350,6 +350,25 @@ export function createDynamicChunkUnlocker(
   );
 }
 
+// Unlocker for spending (destroying) a P5b value-chunk NFT: flag=1 authorizes the spend by co-spending the
+// master. Used to GC the OLD chunks of a long sorted-mapping value when it is overwritten (the value chunks
+// reuse the entry NFT covenant, keyed by the collection's value-chunk signature).
+export function createValueChunkUnlocker(
+  contract: Contract<any, any>, masterInputIndex: number, categoryId: string, collection: string,
+): ContractUnlocker {
+  validateMasterInputIndex(masterInputIndex);
+  validateCategoryId(categoryId);
+  const collectionHash = computeCollectionHash(valueChunkSignature(collection));
+  const covenantScript = buildEntryNftCovenantScript(hexToBin(categoryId), collectionHash);
+  return createCovenantContractUnlocker(
+    contract,
+    `ValueChunkNft_${categoryId.slice(0, 8)}`,
+    covenantScript,
+    [{ name: 'flag', type: 'bigint' }, { name: 'masterInputIndex', type: 'bigint' }],
+    [1n, BigInt(masterInputIndex)],
+  );
+}
+
 // Read-only unlocker for a dynamic-storage chunk NFT: flag=0 (preserve, output==input) so an on-chain
 // read can co-spend the var's chunks without destroying them. The entry covenant enforces preservation.
 export function createReadOnlyDynamicChunkUnlocker(

@@ -75,7 +75,7 @@ import {
   getTokenContainerAddress, getSatoshiContainerAddress, getContractState,
   createDataNftUnlocker, createDestroyDataNftUnlocker,
   createReadOnlyDataNftUnlocker, createEntryNftUnlocker, createReadOnlyEntryNftUnlocker,
-  createDynamicChunkUnlocker, createReadOnlyDynamicChunkUnlocker,
+  createDynamicChunkUnlocker, createReadOnlyDynamicChunkUnlocker, createValueChunkUnlocker,
   createEventNftUnlocker, createAnonymousEventNftUnlocker,
   createTokenContainerUnlocker, createSatoshiContainerUnlocker,
   resolveCollectionSignature, resolveCategoryFromLockingBytecode, resolveCategoryFromAddress,
@@ -5039,6 +5039,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const computedValueChunkCollections = new Set<string>();
     // Computed UPDATES (present key, no NEW node): pin the loop entry empty so it is not phantom-derived.
     const computedValueUpdateCollections = new Set<string>();
+    // P5b overwrite GC: on an UPDATE whose OLD value was long, co-spend its old chunks (collection, slot, oldDigest)
+    // so they are consumed rather than orphaned as dust. Digest-keyed, so only the exact old version is reclaimed.
+    const valueChunkGc: Array<{ collection: string; slotHex: string; oldDigestHex: string }> = [];
 
     if (entryAccesses && entryAccesses.length > 0 && stateLayout.collections) {
       const entryNftUtxos = onChainState.entryNftUtxos;
@@ -5209,6 +5212,15 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               // A computed UPDATE (present key) mints no NEW node; pin its loop entry EMPTY so the loop-entry
               // derivation does not misread the value-chunk pin's OP_OUTPUTTOKENCOMMITMENT calls as a phantom NEW.
               if (list.has(slot)) computedValueUpdateCollections.add(access.collection);
+            }
+            // Overwrite GC: if this UPDATE replaces a LONG old value, reclaim its old chunks (old digest tail).
+            if (list.has(slot)) {
+              const oldTail = list.find(slot)!.value; // len4 ++ [ old value | old digest ]
+              if (oldTail.length >= 36 && (oldTail[0] | (oldTail[1] << 8) | (oldTail[2] << 16) | (oldTail[3] << 24)) > 60) {
+                valueChunkGc.push({
+                  collection: access.collection, slotHex: binToHex(slot), oldDigestHex: binToHex(oldTail.slice(4, 36)),
+                });
+              }
             }
           }
           continue;
@@ -6875,6 +6887,21 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       for (const { utxo } of chunks) {
         const unlocker = createDynamicChunkUnlocker(this.inner, 0, this.categoryId, v.name, v.type);
         dynamicChunkInputs.push({ ...utxo, unlocker });
+      }
+    }
+
+    // P5b overwrite GC: consume the OLD value chunks (same slot, old digest) of an overwritten long value so they
+    // do not orphan as dust. Co-spent (destroyed) with flag=1; the covenant does not verify them (the new chunks
+    // are pinned), so this is a pure reclaim. Digest-keyed filter reclaims only the exact old version.
+    for (const gc of valueChunkGc) {
+      const chunkAddr = getValueChunkAddress(this.inner, this.categoryId, gc.collection);
+      const oldChunks = (await this.inner.provider.getUtxos(chunkAddr)).filter((u) => {
+        if (u.token?.category !== this.categoryId || !u.token?.nft?.commitment || u.token.nft.commitment.length === 0) return false;
+        const p = parseValueChunkCommitment(u.token.nft.commitment);
+        return binToHex(p.slot) === gc.slotHex && binToHex(p.digest) === gc.oldDigestHex;
+      });
+      for (const utxo of oldChunks) {
+        dynamicChunkInputs.push({ ...utxo, unlocker: createValueChunkUnlocker(this.inner, 0, this.categoryId, gc.collection) });
       }
     }
 

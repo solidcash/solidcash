@@ -823,7 +823,25 @@ function lowerValue(expr: YulExpressionNode): ExpressionNode {
       if (slot !== undefined) return intLit(slot, expr);
       throw new YulNotLowerable();
     }
-    if (expr.members.length > 0) throw new YulNotLowerable(); // `.offset` / `.length` are calldata (later phase)
+    // `x.offset` of a state var: the byte offset within its 32-byte slot (0 for a full-slot var; the packed
+    // sub-word offset otherwise). A calldata param's `.offset` stays deferred (needs the calldata-pointer model).
+    if (expr.members.length === 1 && expr.members[0] === 'offset') {
+      const slot = currentVarSlot.get(expr.base);
+      if (slot !== undefined) {
+        const field = currentSlots.get(slot)?.find((f) => f.sv.name === expr.base);
+        return intLit(field ? field.bitOffset / 8n : 0n, expr);
+      }
+      throw new YulNotLowerable();
+    }
+    // `x.length` of a bytes/array calldata param: the byte/element length of the param value.
+    if (expr.members.length === 1 && expr.members[0] === 'length') {
+      const p = currentParams.find((pp) => pp.name === expr.base);
+      if (p && (p.type instanceof BytesType || p.type === PrimitiveType.STRING || p.type instanceof ArrayType)) {
+        return loc(new UnaryOpNode(UnaryOperator.SIZE, loc(new IdentifierNode(expr.base), expr)), expr);
+      }
+      throw new YulNotLowerable();
+    }
+    if (expr.members.length > 0) throw new YulNotLowerable(); // other member access (later phase)
     const id = loc(new IdentifierNode(expr.base), expr);
     // A UDVT-typed operand is a raw word inside assembly; unwrap it to its underlying type so arithmetic /
     // bitwise ops type-check (e.g. shl(0x40, _duration) where _duration is a `Duration` = uint64).
@@ -1084,7 +1102,12 @@ function lowerCall(call: YulFunctionCallNode): ExpressionNode {
       const param = currentParams[Number((p - 4n) / 32n)];
       if (param && param.type instanceof IntType) return loc(new IdentifierNode(param.name), call);
     }
-    throw new YulNotLowerable(); // selector region / non-aligned offset / non-int param (later phase)
+    // General constant offset (selector word at 0, unaligned): read the 32-byte word at p of the synthesized
+    // calldata `msg.sig ++ bytes32(params)`, zero-padded past the end (EVM semantics). synthesizedCalldata throws
+    // for a non-int param, so those stay unlowerable. msg.sig is entry-point-only.
+    const padded = loc(new BytesConcatNode([synthesizedCalldata(call), newBytes(intLit(32n, call), call)]), call);
+    const slice = loc(new SliceNode(padded, intLit(p, call), intLit(p + 32n, call)), call);
+    return loc(new CastNode(UINT256, loc(new CastNode(BYTES32, slice, false), call), false), call);
   }
   // sload(slot) -> the word at that storage slot (a single var, or the combined packed sub-word vars), or the
   // synthesized __evm_storage[slot] register entry for an arbitrary (non-declared) slot.
@@ -1196,6 +1219,11 @@ function lowerStatement(stmt: YulStatementNode): StatementNode {
   if (stmt instanceof YulBlockNode) return lowerBlock(stmt);
 
   if (stmt instanceof YulVariableDeclarationNode) {
+    // Empty `let x` / `let y, z` (no initializer): each Yul var defaults to 0.
+    if (!stmt.value) {
+      const defs = stmt.names.map((n) => loc(new VariableDefinitionNode(UINT256, [], n, intLit(0n, stmt)), stmt));
+      return defs.length === 1 ? defs[0] : loc(new BlockNode(defs), stmt);
+    }
     if (stmt.names.length !== 1) throw new YulNotLowerable(); // multi-value `let x, y := f()` (later)
     // `let buf := mload(0x40)` allocates a fresh free-memory byte buffer; track its mstore writes, emit nothing.
     // In the runtime path there is no compile-time buffer - it lowers to a real `mload(0x40)` read (the free
@@ -1633,6 +1661,10 @@ export default class LowerInlineAssembly extends AstTraversal {
     evmStorageUsed = false;
     logEventUsed = false;
     const result = super.visitContract(node) as ContractNode;
+    // The base traversal visits constructorDef + functions but NOT fallbackDef/receiveDef (separate contract
+    // fields), so their assembly would never be lowered - visit them here so Yul in a fallback/receive lowers too.
+    if (result.fallbackDef) result.fallbackDef = this.visitFunctionDefinition(result.fallbackDef) as FunctionDefinitionNode;
+    if (result.receiveDef) result.receiveDef = this.visitFunctionDefinition(result.receiveDef) as FunctionDefinitionNode;
     // Synthesize the EVM-storage register if any assembly routed a slot to it (docs/evm-storage-parity.md).
     if (evmStorageUsed && !result.collections.some((c) => c.name === EVM_STORAGE)) {
       const mapping = new CollectionNode(new MappingType(UINT256, UINT256), EVM_STORAGE);

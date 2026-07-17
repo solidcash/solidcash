@@ -319,6 +319,41 @@ describe('Yul inline assembly (Phase 1: parse + diagnostics)', () => {
       { solidityImportCompat: true })).not.toThrow();
   });
 
+  it('lowers an empty `let x` and multi-var `let y, z` to zero-initialized words', () => {
+    // `let x` == `let x := 0`; multi-var `let y, z` declares both, each 0. Byte-identical to explicit 0-inits.
+    const asm = compileString('contract C() { function f() returns (uint a, uint b) { assembly { let x let y, z a := x b := z } } }',
+      { solidityImportCompat: true });
+    const hand = compileString('contract C() { function f() returns (uint a, uint b) { uint x = 0; uint y = 0; uint z = 0; a = x; b = z; } }',
+      { solidityImportCompat: true });
+    expect(asm.bytecode).toBe(hand.bytecode);
+  });
+
+  it('lowers switch cases with hex/string literal values', () => {
+    expect(() => compileString(
+      'contract C() { function f(uint s) { uint r; assembly { switch s case hex"1122" { r := 1 } case "ab" { r := 2 } default { r := 3 } } require(r == r); } }',
+      { solidityImportCompat: true })).not.toThrow();
+  });
+
+  it('lowers calldataload(0) / unaligned offsets via the synthesized calldata slice', () => {
+    // calldataload(0) = the selector word (msg.sig + partial first arg); no longer a hard reject.
+    expect(() => compileString('contract C() { function f() { uint w; assembly { w := calldataload(0) } require(w == w); } }',
+      { solidityImportCompat: true })).not.toThrow();
+  });
+
+  it('lowers x.length of a bytes/string calldata param and x.offset of a state var', () => {
+    expect(() => compileString('contract C() { function f(bytes x) { uint l; assembly { l := x.length } require(l == l); } }',
+      { solidityImportCompat: true })).not.toThrow();
+    expect(() => compileString('contract C() { uint256 a; uint256 x; function f() { uint s; uint o; assembly { s := x.slot o := x.offset } require(s == o); } }',
+      { solidityImportCompat: true })).not.toThrow();
+  });
+
+  it('lowers Yul inside a fallback/receive function (base traversal skips those separate fields)', () => {
+    expect(() => compileString('contract C() { fallback() external { uint x; assembly { x := callvalue() } } }',
+      { solidityImportCompat: true })).not.toThrow();
+    expect(() => compileString('contract C() { receive() external payable { uint x; assembly { x := caller() } } }',
+      { solidityImportCompat: true })).not.toThrow();
+  });
+
   it('lowers mcopy in the compile-time memory model (word-copy = mstore(mload))', () => {
     const mcopy = compileString('contract C() { function f(uint a) returns (uint) { uint r;'
       + ' assembly { mstore(0, a) mcopy(64, 0, 32) r := mload(64) } return r; } }', { solidityImportCompat: true });

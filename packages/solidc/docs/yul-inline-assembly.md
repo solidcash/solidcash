@@ -232,10 +232,19 @@ build `calldata = msg.sig ++ abi.encode(param0, param1, ...)` from the known fun
 Routable, not fundamental. The only hard residual nearby is forwarding *opaque* calldata to an *opaque*
 delegatecall target (UpgradeableProxy) - that wall is the opaque-bytecode impl, not the calldata ops.
 
-DONE: `calldataload(4 + 32*k)` (constant aligned offset) -> the k-th `int`/`uint` parameter;
-`calldatasize()` -> `4 + 32 * paramCount`; `calldatacopy` -> the synthesized-calldata slice / bytes-param copy
-above (all VM-consistent with mstore/mload). The selector word via `calldataload(0)`, non-aligned/dynamic
-`calldataload`, and non-int-param calldata reads stay deferred (left to the inline-assembly diagnostic).
+DONE: `calldataload(4 + 32*k)` (constant aligned offset) -> the k-th `int`/`uint` parameter (fast path, no
+`msg.sig`); ANY OTHER CONSTANT offset (the selector word `calldataload(0)`, unaligned) -> the 32-byte word of
+the synthesized `msg.sig ++ bytes32(params)` at that offset, zero-padded past the end; `calldatasize()` ->
+`4 + 32 * paramCount`; `calldatacopy` -> the synthesized-calldata slice / bytes-param copy above (all VM-
+consistent with mstore/mload). Only a DYNAMIC (runtime) `calldataload` offset and non-int-param regions stay
+deferred (left to the inline-assembly diagnostic).
+
+Also DONE (structural Yul that is not slot/calldata specific): empty `let x` / multi-var `let y, z` (each
+defaults to 0); `switch` cases with hex/string-literal values (`case hex"1122"`, `case "ab"`); `x.slot`/
+`x.offset` VALUE reads of a state var (constant slot number / byte offset in the packed layout) and `x.length`
+of a `bytes`/`string`/array calldata param (its `size`); and Yul inside a `fallback`/`receive` (the base
+AST traversal visits `constructorDef` + `functions` but not the separate `fallbackDef`/`receiveDef` fields, so
+`LowerInlineAssembly.visitContract` now visits those two explicitly).
 
 ## Phased implementation plan
 

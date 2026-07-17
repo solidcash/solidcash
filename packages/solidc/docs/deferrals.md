@@ -312,12 +312,18 @@ covenant's on-chain hash. Matches Solidity's auto-resolution. Value-type coverag
 the "computed key" C2 gap is CLOSED for the common hash-of-arg shapes (a reassigned local / non-hash op falls
 back fail-closed, resolvable with withEntryKey).
 
-**What it'd take (remaining).** (1) DEPLOY-time HEAD init: `headSentinelCommitment()` exists but is called only
-in a test - no deploy path mints the HEAD sentinel for a C2 mapping, so a freshly deployed C2-default contract's
-first read/write hits "missing HEAD". Need genesis to mint HEAD[0|0] per C2 mapping (or a first-write bootstrap
-branch that mints it). FUNDAMENTAL for real C2-default usage. (2) P5b (chunked values) for unbounded string/bytes
-mappings > 64 B. (3) The test-seeding migration: a C2-aware mapping-seed helper so the ~half of e2e tests flip
-without per-test edits. (4) Sweep for further per-shape C2 gaps (the gauge only sampled). Then flip + migrate.
+**DEPLOY-time HEAD init DONE (8f40abc3).** The genesis tx now mints HEAD[slot 0 | nextKey 0] for each C2 mapping
+the constructor did not populate, so a freshly deployed (unseeded) C2 contract's first read/write works - no
+"missing HEAD". Funder-authorized genesis; later reads/writes pin the HEAD via the covenant. So a real C2-default
+CONTRACT is now deployable + usable end-to-end.
+
+**What it'd take (remaining).** (1) P5b (chunked values) for unbounded string/bytes mappings > 64 B (or a
+fail-closed carve-out). (2) The FLIP itself + test-suite migration: flip the default to C2, and the ~half of e2e
+tests that SEED default-model entries need C2 seeding (HEAD + sorted entries) - either per-test or via a C2-aware
+seed helper; an opt-out `plainMappings` option would let the flip land with legacy tests opting out while the
+default is C2. (3) Sweep for further per-shape C2 gaps (the gauge only sampled). The feature gaps are largely
+closed now (computed keys, deploy init, value types, iteration keys, RMW) - the remaining work is the coordinated
+flip + seeding migration, best done as a dedicated pass.
 
 **Revisit if.** Continuing the parity push (the standing directive) - this is now the critical path; each gap
 closed shrinks the eventual flip.

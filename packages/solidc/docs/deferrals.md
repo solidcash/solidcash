@@ -346,6 +346,25 @@ mapping: the value IS the commitment tail (read verbatim like address, default e
 `rawbytes` for unbounded bytes/string; a value that pushes the commitment past 128 B fails closed at the VM.
 Tests: SortedMappingDynBytesValue.test.ts. Closes the common short-string/bytes case (symbols, URIs, names).
 
+**P5b is now a HARD REQUIREMENT (user, 2026-07-17): "c2 must be default, even for data longer than ~64B".**
+Design (below) is final; it is the next focused build. Current state until then: a `mapping(K => string/bytes)`
+IS C2 by default (exclusion-proof key), values <= 64 B have full parity, and a > 64 B write fails CLOSED at the
+VM (commitment overflow) - safe, not a soundness hole, but the long WRITE does not yet succeed.
+
+DESIGN (worked out 2026-07-17): entry tail = `len(uint32) ++ [ inline value if len<=60 | sha256(value) if
+len>60 ]` (<=64 B, still fits the 96 B slot+nextKey+tail budget). Value bytes for the long case live in
+per-entry chunk NFTs at `buildEntryNftCovenantScript(cat, H(collectionSig ++ slot))`, index 0..ceil(len/120)-1.
+- WRITE `m[k]=v`: covenant `OP_SIZE(v)`, branch; long -> store `len ++ sha256(v)`; SDK mints the value chunks
+  (reuse the StatefulTransactionBuilder chunk-mint path, re-keyed by slot). No covenant loop.
+- COMPARISON read `m[k]==x`: long -> `sha256(x) == entry.hash` (present) / bracket->default (absent). No loop.
+- MATERIALIZATION read `bytes z=m[k]`: co-spend the entry's chunks, concat, `sha256(concat)==entry.hash`, return
+  z. This is the only piece needing a chunk co-spend LOOP (mirror emitDynamicReadLoop, re-keyed by slot; the SDK
+  derives the per-slot chunks like getDynamicChunkVars). Soundness rests on this verify.
+Why not folded in now: it is a cross-cutting change to emitSortedSetRead + emitSortedValueUpsert + the SDK
+derivation + the chunk spine, with a runtime length branch and the absent-default/hash-compare interaction - a
+multi-part, soundness-critical implementation, not a bounded edit. Rushing the exclusion-proof read path is the
+one thing worse than the current fail-closed.
+
 **P5b remaining (also covers ARRAY-valued mappings).** Two related gaps keep the C2-default fall-back:
 (a) `mapping(K => string/bytes)` values > 64 B fail closed (commitment overflow); (b) `mapping(K => T[])`
 (array-valued) is skipped by the compiler.ts value-type guard (stays on the default entry model). Both are the

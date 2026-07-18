@@ -354,6 +354,13 @@ function expandContract(
       expandContract(parent, contractMap, expanded, new Set(expanding), originalImplements);
     }
 
+    // Carry the parent's interface bases up: after expansion `parent.implements` holds only interfaces, and this
+    // contract now transitively implements them too. A flattened `override(IInterface)` (OZ ERC20Permit.nonces
+    // `override(IERC20Permit, Nonces)`) must still find the interface after the parent contract is merged away.
+    for (const iface of parent.implements) {
+      if (!remainingImplements.includes(iface)) remainingImplements.push(iface);
+    }
+
     mergeParent(contract, parent, isAncestor);
   }
 

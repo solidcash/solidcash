@@ -2225,6 +2225,25 @@ describe('same-named PRIVATE state var in different ancestors is origin-mangled,
   });
 });
 
+describe('override(Interface) survives flattening: a parent interface base carries up (EACCToken ERC20Permit.nonces)', () => {
+  // `override(IInterface)` on an intermediate contract that `is IInterface` must stay valid after a derived
+  // contract flattens the intermediate. expandContract now carries a merged parent's interface `implements` up
+  // into the child, so the interface base is still found (was "'I' is not a base contract that declares it").
+  it('compiles override(I) on an intermediate contract, flattened into a derived one', () => {
+    const src = 'pragma solidity ^0.8.20; interface I { function f() external view returns (uint256); }'
+      + ' contract Mid is I { function f() public view virtual override(I) returns (uint256) { return 1; } }'
+      + ' contract Derived is Mid { }';
+    expect(() => compileString(src, { solidityImportCompat: true })).not.toThrow();
+  });
+  it('compiles override(I, Base) multi-base after flattening', () => {
+    const src = 'pragma solidity ^0.8.20; interface I { function f() external view returns (uint256); }'
+      + ' contract Base { function f() public view virtual returns (uint256) { return 0; } }'
+      + ' contract Mid is Base, I { function f() public view virtual override(I, Base) returns (uint256) { return 1; } }'
+      + ' contract Derived is Mid { }';
+    expect(() => compileString(src, { solidityImportCompat: true })).not.toThrow();
+  });
+});
+
 describe('StorageSlot slot-ALIAS factory: getStringSlot(ref).value = v is a direct write of the aliased ref (EACCToken)', () => {
   // OZ StorageSlot.getStringSlot(string storage store) does `assembly { r.slot := store.slot }` - it aliases the
   // return pointer to `store`'s slot, so `getStringSlot(ref).value = v` is just `ref = v`. That routes a string/bytes

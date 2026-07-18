@@ -489,3 +489,29 @@ Revert-safe: add `FunctionType` to c2StorableValue (needs the import) + sortedVa
 **Default entry-model DELETION** (still gated): (1) fn-ptr values -> C2; (2) migrate the ~110 `sortedMappingsAll:false`
 opt-out'd tests to C2 seeding; (3) delete the entry-model codegen path + the `sortedMappingsAll` / `sortedMappings`
 options. Large mechanical change; do it as a dedicated pass.
+
+### 6. C2-default no-guards: the two deep source-shape blockers (2026-07-18)
+
+After the nested/multi-key C2 codegen fix (commit c5c1d5c8) all 4 Unicrow + 11/12 corpus sorted-mapping files
+compile under C2-default. Two source shapes still block a full no-guards flip (both surfaced by EACC Marketplace):
+
+**(a) A C2 (sorted) mapping write inside a DYNAMIC loop.** `for (uint i; i < xs.length; i++) w[id][xs[i]] = true`
+(Marketplace `whitelistWorkers`). A FIXED-bound loop already works - `UnrollFixedBoundEntryLoop` unrolls it to static
+writes before codegen. The dynamic case previously crashed deep at "Block slot not found: entry[0]" (the write routes
+to `emitSortedValueUpsert`, which needs a fixed entry slot); `visitMappingAssign` now FAILS CLOSED with
+`SortedMappingCodegenPendingError` when `node.collection?.sorted && this.plainLoopDepth > 0` (commit 88be6d13, never
+degrades to the omittable entry model). The full feature is a per-iteration sorted-linked-list INSERTION covenant: the
+list, the bracketing predecessor, and the slot ordering all evolve each iteration, so it is the sorted analog of the
+default-model dynamic pure-write loop (`entry_write_in_loop`, OP_BEGIN/OP_UNTIL entry-mint + SDK progressive trace
+derivation). What it'd take: a sorted-insert-in-loop covenant that mints one entry per iteration with the evolving
+bracket pinned + SDK derivation of the growing list, plus adversarial proof (wrong-insert / orphan / omission / out-of-
+order all revert). Soundness-critical: a bug reopens the C2 exclusion-proof hole. Revisit for full no-guards.
+
+**(b) Marketplace external-call TARGET through the SafeERC20 low-level-call chain.** `IERC20(job.token).transfer(...)`
+where the token is a STORAGE-POINTER struct field, routed through OZ SafeERC20 -> `Address.functionCall` -> low-level
+`.call`. All minimal repros (`IFoo(p.tok).m()` through a library fn) COMPILE - the block is the full inlined chain
+with the storage-ptr-field target sourcing. Soundness-critical: the target is a FUND-TRANSFER destination, so a wrong
+source silently redirects funds (worse than a clean compile error). Related to the `memory-COPY struct field` extcall
+deferral (section "External-call target: DIRECT method call on a memory-COPY struct field") but through the low-level
+chain. What it'd take: extend `SynthesizeExternalAddressLocals` sourcing to the chain-inlined storage-ptr-field target
+with a non-modification / self-pin soundness proof (per extcall-target-pinning.md). Revisit for full no-guards.

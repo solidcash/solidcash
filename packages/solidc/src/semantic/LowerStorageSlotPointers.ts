@@ -9,6 +9,7 @@ import {
   StateVariableNode, StateAccessNode, StateAssignNode, StateVariableVisibility,
 } from '../ast/AST.js';
 import { cloneNode } from '../ast/clone.js';
+import { Location } from '../ast/Location.js';
 import { YulAssignmentNode, YulPathNode, YulLiteralNode } from '../ast/YulAST.js';
 
 // The OpenZeppelin StorageSlot idiom (write-to-any-slot). Two factory shapes:
@@ -29,8 +30,12 @@ const UINT160 = new IntType(false, 160);
 const EVM_STORAGE = '__evm_storage';
 
 // PARAM factory carries the slot param index; CONST factory (ERC-7201) sets isConst and promotes the struct.
-interface Factory { struct: StructType; slotParamIdx: number; isConst?: boolean; }
-interface Alias { slot?: ExpressionNode; struct: StructType; isConst?: boolean; }
+// SLOT-ALIAS factory (`r.slot := store.slot`, OZ StorageSlot.getStringSlot/getBytesSlot) aliases the return
+// pointer to ANOTHER storage reference's slot, so `getXSlot(ref).value = v` is just `ref = v` - a direct write of
+// the aliased storage reference (a string/bytes state var routes through the native dynamic-storage path, not the
+// word-granular __evm_storage register that a raw-slot PARAM factory uses).
+interface Factory { struct: StructType; slotParamIdx: number; isConst?: boolean; isSlotAlias?: boolean; }
+interface Alias { slot?: ExpressionNode; struct: StructType; isConst?: boolean; aliasRef?: ExpressionNode; }
 
 // The hidden state name a promoted struct field lands on (mirrors AstBuilder's `<var>__<field>` flattening).
 function promotedName(struct: StructType, field: string): string {
@@ -124,6 +129,13 @@ export default class LowerStorageSlotPointers extends AstTraversal {
       else this.factories.set(fn.name, { struct, slotParamIdx: -1, isConst: true });
       return;
     }
+    if (rhs instanceof YulPathNode && rhs.members.join('.') === 'slot') {
+      // `<r>.slot := <param>.slot` -> SLOT-ALIAS factory: r points at the same slot as the storage-ref param, so
+      // `getXSlot(ref).value` IS `ref` (OZ StorageSlot.getStringSlot/getBytesSlot for the EIP712 name fallback).
+      const slotParamIdx = fn.parameters.findIndex((p) => p.name === rhs.base);
+      if (slotParamIdx >= 0) this.factories.set(fn.name, { struct, slotParamIdx, isSlotAlias: true });
+      return;
+    }
     // `<$>.slot := 0x<literal>` -> CONST factory (the constant baked as a literal).
     if (rhs instanceof YulLiteralNode) this.factories.set(fn.name, { struct, slotParamIdx: -1, isConst: true });
   }
@@ -138,6 +150,21 @@ export default class LowerStorageSlotPointers extends AstTraversal {
   // shape a state struct's `s.map[k]=v` flattens to `s__map`); route it to the promoted collection.
   visitMappingFieldAssign(node: MappingFieldAssignNode): Node {
     const alias = this.aliases.get(node.name);
+    // Deferred inline slot-pointer write `__t.value = v` (imported factory - AstBuilder emitted this MappingFieldAssign
+    // because the return struct was unknown per-file). Route by the resolved factory kind.
+    if (alias && node.keys.length === 0 && node.fieldName === alias.struct.fields[0]?.name) {
+      if (alias.aliasRef) {
+        return this.rewriteAliasRefWrite(alias.aliasRef, this.visit(node.expression) as ExpressionNode, node.location);
+      }
+      if (alias.slot) {
+        this.used = true;
+        const write = new MappingAssignNode(
+          EVM_STORAGE, [this.keyOf(alias)], this.toUint(this.visit(node.expression) as ExpressionNode, alias.struct.fields[0].type),
+        );
+        write.location = node.location;
+        return write;
+      }
+    }
     if (alias?.isConst && this.isMappingField(alias.struct, node.fieldName)) {
       const write = new MappingAssignNode(
         promotedName(alias.struct, node.fieldName), node.keys.map((k) => this.visit(k) as ExpressionNode),
@@ -178,6 +205,9 @@ export default class LowerStorageSlotPointers extends AstTraversal {
         if (factory.isConst) {
           this.aliases.set(node.name, { struct: factory.struct, isConst: true });
           this.constStructsToPromote.set(factory.struct.name, factory.struct);
+        } else if (factory.isSlotAlias) {
+          // `S storage d = getXSlot(ref)` -> d aliases `ref` directly (no __evm_storage register).
+          this.aliases.set(node.name, { aliasRef: node.expression.parameters[factory.slotParamIdx], struct: factory.struct });
         } else {
           this.aliases.set(node.name, { slot: node.expression.parameters[factory.slotParamIdx], struct: factory.struct });
           this.used = true;
@@ -214,6 +244,11 @@ export default class LowerStorageSlotPointers extends AstTraversal {
         block.location = node.location;
         return block;
       }
+      if (alias.aliasRef && args.length === 1) {
+        // Slot-alias `d.value = v` (arrives as `d = S(v)`) -> write the aliased storage reference directly: `ref = v`.
+        // A string/bytes ref routes through the native dynamic-storage write, so no uint cast (the register path).
+        return this.rewriteAliasRefWrite(alias.aliasRef, this.visit(args[0]) as ExpressionNode, node.location);
+      }
       if (args.length === 1) {
         const write = new MappingAssignNode(
           EVM_STORAGE, [this.keyOf(alias)], this.toUint(args[0], alias.struct.fields[0].type),
@@ -223,6 +258,21 @@ export default class LowerStorageSlotPointers extends AstTraversal {
       }
     }
     return super.visitAssign(node);
+  }
+
+  // Slot-alias `d.value = v` / inline `getXSlot(ref).value = v` -> a direct write of the aliased storage ref.
+  // The ref is the arg passed to the factory (an identifier state var / storage param in the OZ StorageSlot idiom);
+  // `ref = v` resolves to a StateAssign for a state var (a string/bytes ref uses the native dynamic-storage write).
+  private rewriteAliasRefWrite(ref: ExpressionNode, value: ExpressionNode, loc: Location): Node {
+    const target = cloneNode(ref) as ExpressionNode;
+    if (target instanceof IdentifierNode) {
+      const write = new AssignNode(target, value);
+      write.location = loc;
+      return write;
+    }
+    const write = new AssignNode(target as unknown as IdentifierNode, value); // non-identifier ref: best-effort
+    write.location = loc;
+    return write;
   }
 
   // PARAM: `x.value` -> `<cast __evm_storage[slot]>`. CONST: `$.f` / inline `factory().f` -> the promoted state
@@ -235,6 +285,7 @@ export default class LowerStorageSlotPointers extends AstTraversal {
         return this.isMappingField(alias.struct, node.name)
           ? super.visitFieldAccess(node) : this.promotedRead(alias.struct, node.name, node.location);
       }
+      if (alias.aliasRef) return this.visit(cloneNode(alias.aliasRef) as ExpressionNode); // slot-alias `d.value` -> ref
       const read = new MappingAccessNode(EVM_STORAGE, [this.keyOf(alias)]);
       read.location = node.location;
       return this.fromUint(read, alias.struct.fields[0].type);
@@ -244,6 +295,10 @@ export default class LowerStorageSlotPointers extends AstTraversal {
       if (factory?.isConst && !this.isMappingField(factory.struct, node.name)) {
         this.constStructsToPromote.set(factory.struct.name, factory.struct);
         return this.promotedRead(factory.struct, node.name, node.location);
+      }
+      if (factory?.isSlotAlias && node.name === 'value') {
+        // inline `getXSlot(ref).value` (no local) -> the aliased storage ref directly.
+        return this.visit(cloneNode(node.expression.parameters[factory.slotParamIdx]) as ExpressionNode);
       }
       if (factory && node.name === 'value') {
         this.used = true;

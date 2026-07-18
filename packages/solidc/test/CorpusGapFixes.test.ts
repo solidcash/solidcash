@@ -2203,3 +2203,30 @@ describe('C2-default: OVERLOADED internal C2-writer chain inlines by (name, arit
     expect(() => compileString(src, { solidityImportCompat: true })).not.toThrow();
   });
 });
+
+describe('StorageSlot slot-ALIAS factory: getStringSlot(ref).value = v is a direct write of the aliased ref (EACCToken)', () => {
+  // OZ StorageSlot.getStringSlot(string storage store) does `assembly { r.slot := store.slot }` - it aliases the
+  // return pointer to `store`'s slot, so `getStringSlot(ref).value = v` is just `ref = v`. That routes a string/bytes
+  // through the native dynamic-storage write (not the word-granular __evm_storage register a raw-slot factory uses).
+  // The value-returning factory's `r.slot := store.slot` was previously an unlowerable Yul block.
+  const lib = ' struct StringSlot { string value; } library StorageSlot {'
+    + ' function getStringSlot(string storage store) internal pure returns (StringSlot storage r)'
+    + ' { assembly { r.slot := store.slot } } }';
+  it('compiles the LOCAL slot-alias form (S storage d = getStringSlot(_fb); d.value = v)', () => {
+    const src = 'pragma solidity ^0.8.20;' + lib + ' contract C { string _fb;'
+      + ' function set(string memory v) public { StringSlot storage d = StorageSlot.getStringSlot(_fb); d.value = v; } }';
+    expect(() => compileString(src, { solidityImportCompat: true })).not.toThrow();
+  });
+  it('compiles the INLINE slot-alias form (getStringSlot(_fb).value = v)', () => {
+    const src = 'pragma solidity ^0.8.20;' + lib + ' contract C { string _fb;'
+      + ' function set(string memory v) public { StorageSlot.getStringSlot(_fb).value = v; } }';
+    expect(() => compileString(src, { solidityImportCompat: true })).not.toThrow();
+  });
+  it('leaves the raw-slot PARAM factory (getUint256Slot -> __evm_storage register) working', () => {
+    const src = 'pragma solidity ^0.8.20; struct Uint256Slot { uint256 value; }'
+      + ' library StorageSlot { function getUint256Slot(bytes32 slot) internal pure returns (Uint256Slot storage r)'
+      + ' { assembly { r.slot := slot } } }'
+      + ' contract C { function setU(bytes32 slot, uint256 v) public { StorageSlot.getUint256Slot(slot).value = v; } }';
+    expect(() => compileString(src, { solidityImportCompat: true })).not.toThrow();
+  });
+});

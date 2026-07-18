@@ -4868,17 +4868,30 @@ export default class AstBuilder
     const ids = fc.Identifier_list();
     if (ids.length !== 2 || !fc.expressionList()) return undefined; // must be a namespaced `Lib.f(args)`
     const fnName = ids[1].getText();
-    const retStruct = this.functionReturnStructs.get(fnName);
-    if (!retStruct) {
-      throw new ParseError(
-        `Cannot resolve the storage-pointer factory '${fnName}' for an inline '.value' write; `
-        + 'assign it to a `T storage` local first, then write its member.', loc,
-      );
-    }
     const tmpName = `__nlv_${this.nestedLvalueCounter++}`;
     const fnId = new IdentifierNode(`${ids[0].getText()}.${fnName}`); fnId.location = loc;
     const factoryCall = new FunctionCallNode(fnId, fc.expressionList().expression_list().map((e) => this.visit(e) as ExpressionNode));
     factoryCall.location = loc;
+    const retStruct = this.functionReturnStructs.get(fnName);
+    if (!retStruct) {
+      // Imported factory (OZ StorageSlot.getStringSlot lives in another file): the return struct is unknown at
+      // per-file parse time. DEFER the single-member `.value` write to LowerStorageSlotPointers (post-merge, where
+      // the factory - and whether it is the slot-alias / raw-slot shape - is known) via a placeholder-typed local
+      // + a `__t.<field> = v` MappingFieldAssign it resolves. A compound op or a deeper chain still can't be
+      // desugared without the struct, so keep the clear "assign to a `T storage` local first" guidance there.
+      if (members.length !== 1 || op !== '=') {
+        throw new ParseError(
+          `Cannot resolve the storage-pointer factory '${fnName}' for an inline '.${members.join('.')}' write; `
+          + 'assign it to a `T storage` local first, then write its member.', loc,
+        );
+      }
+      const decl = new VariableDefinitionNode(new AddressType(false, `__slotptr_${fnName}`), [], tmpName, factoryCall);
+      decl.location = loc;
+      const write = new MappingFieldAssignNode(tmpName, [], members[0], this.visit(valueCtx) as ExpressionNode);
+      write.location = loc;
+      const block = new BlockNode([decl, write]); block.location = loc;
+      return block;
+    }
     const decl = new VariableDefinitionNode(retStruct, [], tmpName, factoryCall); decl.location = loc;
     this.localStructTypes.set(tmpName, retStruct);
     const rebuilt = this.buildStructFieldRebuild(tmpName, loc, members, false, loc,

@@ -534,6 +534,20 @@ brackets); the exclusion proof must SURVIVE the batch (reject forged / omitted /
 adversarial tests per case); and a per-tx cap on N (large N needs the paginated design, section 4). Soundness-critical:
 a bug reopens the C2 exclusion-proof hole. Revisit for full no-guards; recommended order = (1) then (2), defer (3).
 
+**STATUS 2026-07-18: the CODEGEN for the scattered per-iteration insert (item 3) SHIPPED (commit 9c977e14).**
+`emitSortedInsertLoopSetup/Body/Teardown` (GTT) replaces the GTT:10633 fail-close: per iteration compute H(k) for the
+single varying (possibly composite) key, co-spend the bracketing predecessor at input[master+blockSize+counter], bracket
+coSlot<H(k)<coNext (present key / same-gap fail closed), pin P' at output[..+2c] + NEW at output[..+2c+1]; teardown pins
+predecessor-input count == counter and entry-output count == 2c. ABI tag `sortedInsertLoops`. Fixed 2 latent bugs:
+loop-written sorted slots need `inLoop=true` so the epilogue skips them; `findSortedInsertLoopWrite` needs cycle
+protection (post-inline AST graph cycles). STILL PENDING: the SDK progressive-list auto-derivation (co-spend N
+predecessors + emit N (P',NEW) pinned pairs) + VM/adversarial proof - the covenant compiles and fails closed (count
+pins), so the default derivation can't build a wrong tx, but a contract with an insert loop needs manual tx construction
+until the SDK lands. Marketplace: V1 compiles past whitelistWorkers but its FULL assembled contract is ~674k ops (a
+pre-existing deep-inlining explosion, NOT this covenant - a 3-entry-point multi-site insert loop is <1s); commit
+8d5004d0 made the optimiser's per-pass O(n) and OPTIMISER_SKIP_MAX_OPS skips optimisation entirely above 50k ops so it
+degrades gracefully (compiles unoptimised) instead of hanging.
+
 **(b) Marketplace external-call TARGET through the SafeERC20 low-level-call chain - RESOLVED 2026-07-18 (commit
 1e395862).** `IERC20(job.token)` where the token is a STORAGE-POINTER struct field, routed through OZ SafeERC20 ->
 `Address.functionCall` -> low-level `.call`. After the chain inlines, forceApprove's `_callOptionalReturnBool` is

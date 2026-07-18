@@ -160,6 +160,13 @@ interface OptimiseBytecodeResult {
 // changes it. Well above any hand-written contract - only pathological generated scripts (huge arrays) hit it.
 export const OPTIMISER_COMPAT_CHECK_MAX_OPS = 5000;
 
+// Above this op count, skip optimisation ENTIRELY. Each pass round-trips the whole script through scriptToAsm, so on a
+// pathologically large script (e.g. a deep-inlining explosion) the per-pass cost dominates and the fixpoint is
+// prohibitively slow. Such a script is an order of magnitude past any deployable BCH contract (compat check ceiling is
+// 5000), so returning it unoptimised (already assembled from per-function-optimised bodies) rather than hanging is the
+// correct graceful degradation - the bytecode is semantically identical, just larger.
+export const OPTIMISER_SKIP_MAX_OPS = 50000;
+
 export function optimiseBytecode(
   script: Script,
   locationData: FullLocationData,
@@ -168,6 +175,7 @@ export function optimiseBytecode(
   constructorParamLength: number,
   runs: number = 1000,
 ): OptimiseBytecodeResult {
+  if (script.length > OPTIMISER_SKIP_MAX_OPS) return { script, locationData, logs, requires };
   for (let i = 0; i < runs; i += 1) {
     const oldScript = script;
     const {

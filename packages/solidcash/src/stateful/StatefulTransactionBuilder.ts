@@ -129,6 +129,10 @@ export interface StatefulTransactionOptions extends TransactionBuilderOptions {
   lowLevelCallUtxoGroups?: ExternalCallUtxoGroup[];
   lowLevelCallRawInputs?: UnlockableUtxo[];
   iterationEntryInputs?: UnlockableUtxo[];
+  // C2 diff-key insert loop: the N bracketing predecessors, co-spent at input[blockSize+c] but NOT preserved as
+  // outputs (unlike iterationEntryInputs) - they are MODIFIED to P' which is emitted via loopEntryVars. Kept separate
+  // so they are not counted in the loop-entry output base.
+  insertLoopPredecessorInputs?: UnlockableUtxo[];
   keccakLoopSideCars?: UnlockableUtxo[];   // dynamic keccak loop: N trailing compute side-car INPUTS at [blockSize,..)
   keccakLoopRecreates?: Output[];          // ... and their recreation OUTPUTS (R_i per iteration), parallel
   checkMinRelayFee?: boolean; // enforce fee >= feePerByte * txSize
@@ -194,6 +198,7 @@ export class StatefulTransactionBuilder {
   private lowLevelCallUtxoGroups: ExternalCallUtxoGroup[];
   private lowLevelCallRawInputs: UnlockableUtxo[];
   private iterationEntryInputs: UnlockableUtxo[];
+  private insertLoopPredecessorInputs: UnlockableUtxo[];
   private keccakLoopSideCars: UnlockableUtxo[];
   private keccakLoopRecreates: Output[];
   private blockLayout?: FunctionBlockLayout;
@@ -257,6 +262,7 @@ export class StatefulTransactionBuilder {
     this.satoshiContainerUtxo = options.satoshiContainerUtxo;
     this.satoshiContainerLockingBytecode = options.satoshiContainerLockingBytecode;
     this.iterationEntryInputs = options.iterationEntryInputs ?? [];
+    this.insertLoopPredecessorInputs = options.insertLoopPredecessorInputs ?? [];
     this.keccakLoopSideCars = options.keccakLoopSideCars ?? [];
     this.keccakLoopRecreates = options.keccakLoopRecreates ?? [];
     this._maximumFeeSatoshis = options.maximumFeeSatoshis;
@@ -418,6 +424,7 @@ export class StatefulTransactionBuilder {
         // Remaining low-level call inputs not already positioned in block layout slots
         ...lowLevelCallInputs.slice(llcIdx), ...this.lowLevelCallRawInputs,
         ...this.iterationEntryInputs,
+        ...this.insertLoopPredecessorInputs,
         // Old chunk UTXOs being consumed (destroyed) on a dynamic-storage write
         ...this.dynamicChunkInputs,
         // Leftover funders not consumed by block layout slots (fee-only inputs)
@@ -436,7 +443,7 @@ export class StatefulTransactionBuilder {
         ...this.keccakComputeCoSpendUtxos, ...this.keccakLoopSideCars,
         ...externalOutStateInputs,
         ...lowLevelCallInputs, ...this.lowLevelCallRawInputs,
-        ...entryInputs, ...this.iterationEntryInputs,
+        ...entryInputs, ...this.iterationEntryInputs, ...this.insertLoopPredecessorInputs,
         ...externalCallInputs,
         ...this.dynamicChunkInputs,
         ...tokenContainerInputs, ...satoshiContainerInputs,
@@ -448,7 +455,7 @@ export class StatefulTransactionBuilder {
       ...this.keccakComputeCoSpendUtxos, ...this.keccakLoopSideCars,
       ...externalOutStateInputs, ...externalCallInputs,
       ...lowLevelCallInputs, ...this.lowLevelCallRawInputs,
-      ...entryInputs, ...this.iterationEntryInputs,
+      ...entryInputs, ...this.iterationEntryInputs, ...this.insertLoopPredecessorInputs,
       ...this.dynamicChunkInputs,
       ...tokenContainerInputs, ...satoshiContainerInputs,
       ...this.funderUtxos,

@@ -5570,6 +5570,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // EXACTLY from the off-chain sorted list (SortedList.planInsert); the covenant pins them, so no trace derivation.
     // Fail closed (throw) when a key is already present (update-in-loop) or two keys share a predecessor (same-gap).
     const sortedLoopCommitments = new Map<string, string[]>();
+    const insertLoopPredecessors: UnlockableUtxo[] = [];
     for (const info of abiFunction?.sortedInsertLoopInfo ?? []) {
       const collection = (stateLayout.collections ?? []).find((c) => c.name === info.collection);
       if (!collection) continue;
@@ -5612,7 +5613,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         const predKey = binToHex(plan.predecessor.slot);
         if (usedPred.has(predKey)) throw new Error(`C2 insert loop ${info.collection}: two keys share a predecessor (same-gap unsupported)`);
         usedPred.add(predKey);
-        iterationEntryInputs.push({ ...plan.predecessor.utxo, unlocker: wUnlocker });
+        insertLoopPredecessors.push({ ...plan.predecessor.utxo, unlocker: wUnlocker });
         commitments.push(binToHex(plan.predNewCommitment), binToHex(plan.newNodeCommitment));
       }
       if (commitments.length > 0) sortedLoopCommitments.set(info.collection, commitments);
@@ -7010,6 +7011,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       ...(eventDefs.length > 0 && { eventDefinitions: eventDefs }),
       ...(eventNftLockingBytecodes.size > 0 && { eventNftLockingBytecodes }),
       ...(iterationEntryInputs.length > 0 && { iterationEntryInputs }),
+      ...(insertLoopPredecessors.length > 0 && { insertLoopPredecessorInputs: insertLoopPredecessors }),
       ...(abiFunction?.blockLayout && { blockLayout: abiFunction.blockLayout }),
     });
 

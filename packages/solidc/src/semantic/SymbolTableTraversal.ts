@@ -7099,9 +7099,13 @@ export default class SymbolTableTraversal extends AstTraversal {
     }
     // For this.collection[key].method(), infer from collection's value type.
     if (!objectType && node.object instanceof MappingAccessNode && node.object.collection) {
-      const col = node.object.collection;
-      objectType = col.type instanceof MappingType ? col.type.valueType
-        : col.type instanceof ArrayType ? col.type.elementType : undefined;
+      // Step once PER KEY: a nested `m[a][b]` (keys=[a,b]) over mapping(K=>mapping(K2=>V)) resolves to V, not the
+      // one-level mapping(K2=>V). Single-key `m[k]` steps once as before. Backs SushiSwap/OZ ERC20 allowances.
+      let t: Type | undefined = node.object.collection.type;
+      for (let i = 0; i < Math.max(node.object.keys.length, 1) && t; i += 1) {
+        t = t instanceof MappingType ? t.valueType : t instanceof ArrayType ? t.elementType : undefined;
+      }
+      objectType = t;
     }
     // For this.stateVar.method(), infer from state variable type.
     if (!objectType && node.object instanceof StateAccessNode && node.object.stateVariable) {
@@ -7115,9 +7119,13 @@ export default class SymbolTableTraversal extends AstTraversal {
     // For this.collection[key].method(), the MappingAccessNode type isn't set until
     // type checking. Infer from the collection's innermost value type.
     if (!objectType && node.object instanceof MappingAccessNode && node.object.collection) {
-      const col = node.object.collection;
-      objectType = col.type instanceof MappingType ? col.type.valueType
-        : col.type instanceof ArrayType ? col.type.elementType : undefined;
+      // Step once PER KEY: a nested `m[a][b]` (keys=[a,b]) over mapping(K=>mapping(K2=>V)) resolves to V, not the
+      // one-level mapping(K2=>V). Single-key `m[k]` steps once as before. Backs SushiSwap/OZ ERC20 allowances.
+      let t: Type | undefined = node.object.collection.type;
+      for (let i = 0; i < Math.max(node.object.keys.length, 1) && t; i += 1) {
+        t = t instanceof MappingType ? t.valueType : t instanceof ArrayType ? t.elementType : undefined;
+      }
+      objectType = t;
     }
     // For this.stateVar.method(), infer type from the state variable definition.
     if (!objectType && node.object instanceof StateAccessNode && node.object.stateVariable) {
@@ -7129,6 +7137,11 @@ export default class SymbolTableTraversal extends AstTraversal {
       const sym = GLOBAL_SYMBOL_TABLE.get(node.object.identifier.name);
       if (sym?.symbolType === SymbolType.FUNCTION) objectType = sym.type;
     }
+    // A NESTED mapping/array element receiver (`allo[x][y].sub(v)`, SushiSwap/OZ ERC20 allowances) is an
+    // ArrayAccessNode whose element type is not set on the node in this pass; the single-level MappingAccessNode
+    // branch above misses it. Resolve it structurally from the collection/state maps - resolveLowLevelReceiverType
+    // recurses through arbitrarily nested `[..][..]` (and field) chains to the innermost value type.
+    if (!objectType) objectType = this.resolveLowLevelReceiverType(node.object);
 
     // Try exact type match first, then wildcard. A computed receiver (an arithmetic expression `(a-b).mul(c)`,
     // or an overloaded library call `x.mul(a).add(b)` whose result overload is not yet resolved) has no known
@@ -7210,8 +7223,13 @@ export default class SymbolTableTraversal extends AstTraversal {
       return new AddressType();
     }
     if (expr instanceof MappingAccessNode) {
-      const base = nameType(expr.name);
-      return base instanceof ArrayType ? base.elementType : base instanceof MappingType ? base.valueType : undefined;
+      // Step once PER KEY: `allo[x][y]` is a single MappingAccessNode with keys=[x,y] over
+      // mapping(K=>mapping(K2=>V)) -> V (not the one-level mapping(K2=>V)). Single-key `m[k]` steps once as before.
+      let t: Type | undefined = nameType(expr.name);
+      for (let i = 0; i < Math.max(expr.keys.length, 1) && t; i += 1) {
+        t = t instanceof ArrayType ? t.elementType : t instanceof MappingType ? t.valueType : undefined;
+      }
+      return t;
     }
     if (expr instanceof ArrayAccessNode) {
       const base = this.resolveLowLevelReceiverType(expr.array);

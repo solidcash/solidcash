@@ -624,6 +624,27 @@ describe('bytes memory/local element write (bytes memory d; d[i] = v)', () => {
   });
 });
 
+describe('using-for on a NESTED mapping element receiver (SushiSwap/OZ ERC20 allowances)', () => {
+  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  const lib = 'library SM { function sub(uint256 a, uint256 b) internal pure returns (uint256) { return a - b; }'
+    + ' function add(uint256 a, uint256 b) internal pure returns (uint256) { return a + b; } }';
+  it('resolves `allo[x][y].sub(v)` (a 2-key mapping element) through `using SM for uint256`', () => {
+    expect(cc(`${lib} contract C { using SM for uint256;`
+      + ' mapping(address => mapping(address => uint256)) allo;'
+      + ' function f(address x, address y, uint256 v) public { allo[x][y] = allo[x][y].sub(v); } }')).toBe('C');
+  });
+  it('resolves a read-after-write across two nested elements', () => {
+    expect(cc(`${lib} contract C { using SM for uint256;`
+      + ' mapping(address => mapping(address => uint256)) allo;'
+      + ' function f(address x, address y, uint256 v) public { allo[x][y] = allo[x][y].add(allo[y][x].sub(v)); } }'))
+      .toBe('C');
+  });
+  it('still resolves a SINGLE-key mapping element (regression guard)', () => {
+    expect(cc(`${lib} contract C { using SM for uint256; mapping(address => uint256) bal;`
+      + ' function f(address x, uint256 v) public { bal[x] = bal[x].sub(v); } }')).toBe('C');
+  });
+});
+
 describe('require(cond, <message>) accepts any expression message (Solidity: require(bool, string memory))', () => {
   const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
   // Solidity treats require as a plain function taking `string memory`, so the message can be any expression.

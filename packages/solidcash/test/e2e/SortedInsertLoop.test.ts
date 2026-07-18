@@ -60,6 +60,24 @@ describe('C2 diff-key insert-in-loop (SDK progressive derivation)', () => {
     expect((await contract.chkAbsent(9n, alicePub, sig).send()).txid).toBeDefined();
   });
 
+  it('N>1 keys into a FRESH map in ONE call (range-splice: whitelistWorkers common case)', async () => {
+    const art = compileString(SRC, { forceStateful: true });
+    const f = { txid: uid(), vout: 0, satoshis: 400000n };
+    await provider.addUtxo(p2pkh.address, f);
+    const { contract } = await StatefulContract.deploy(art, [], {
+      provider, fundingUtxo: f, funder: p2pkh.unlock.spend(alicePub, sig), initialState: {}, changeAddress: p2pkh.address,
+    });
+    // All three keys bracket HEAD (one gap); the range-splice co-spends HEAD once and mints the sorted chain.
+    await fund(contract.address);
+    expect((await contract.whitelist([3n, 7n, 5n], alicePub, sig).send()).txid).toBeDefined();
+    for (const k of [3n, 5n, 7n]) {
+      await fund(contract.address);
+      expect((await contract.chk(k, alicePub, sig).send()).txid).toBeDefined();
+    }
+    await fund(contract.address);
+    expect((await contract.chkAbsent(9n, alicePub, sig).send()).txid).toBeDefined();
+  });
+
   it('N>1 in one call works when the keys land in DISTINCT gaps (populated map)', async () => {
     const art = compileString(SRC, { forceStateful: true });
     const f = { txid: uid(), vout: 0, satoshis: 400000n };

@@ -452,7 +452,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private entryLoopAddrName: string = '(loop_entry_addr)';       // loop-invariant entry NFT P2SH32 (precomputed)
   private entryLoopActive: boolean = false;         // a loop mapping-write counter + address are live on the stack
   private sortedInsertLoopAddrName: string = '(sorted_insert_addr)';    // loop-invariant sorted entry NFT P2SH32
-  private sortedInsertLoopCounterName: string = '(sorted_insert_counter)'; // inserts-done-so-far (== co-spent preds)
+  private sortedInsertLoopCounterName: string = '(sorted_insert_counter)'; // chain nodes verified so far
+  private sortedInsertLoopOldnextName: string = '(sorted_insert_oldnext)'; // range-splice: P.oldNext (chain terminus)
+  private sortedInsertLoopExpectedName: string = '(sorted_insert_expected)'; // range-splice: next chain node's slot
   private sortedInsertLoopActive: boolean = false;  // a sorted diff-key insert loop's addr + counter are on the stack
   private sortedInsertLoopCollection: string | null = null; // the sorted collection the active insert loop writes
   private keccakLoopCounterName: string = '(loop_keccak_counter)'; // keccak side-cars read-so-far (dynamic keccak loop)
@@ -12078,6 +12080,48 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.pushToStack(this.sortedInsertLoopAddrName);
     this.emitP2sh32FromCovenant((cat) => buildEntryNftCovenantScript(cat, collectionHash), loc);
     this.stack[0] = this.sortedInsertLoopAddrName; // helper renamed top to '(value)'
+    // [addr]
+
+    const blockSize = this.currentFunction.blockLayout?.blockSize ?? 1;
+    const addrD = (): number => this.getStackIndex(this.sortedInsertLoopAddrName);
+
+    // RANGE-SPLICE: co-spend the SINGLE bracketing predecessor P at input[master+blockSize]; verify bytecode==addr;
+    // read [P_slot32, P_oldnext32, P_value]. All N new keys fall in P's gap; the SDK mints the sorted chain
+    // P' -> k1 -> .. -> kN -> P.oldnext.
+    this.emitMasterInputIndex(loc); this.emit(encodeInt(BigInt(blockSize)), loc); this.emit(Op.OP_ADD, loc); // [addr, Pidx(u)]
+    this.emit(Op.OP_DUP, loc); this.emit(Op.OP_UTXOBYTECODE, loc);
+    this.emit(encodeInt(BigInt(addrD() + 2)), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_EQUALVERIFY, loc); // [addr, Pidx]
+    this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc);
+    this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc);
+    this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); // [addr, P_slot, P_oldnext, P_value]
+
+    // Read P' = output[master+blockSize+0]; verify bytecode==addr + category (mutable, base==master); read fields.
+    this.emitMasterInputIndex(loc); this.emit(encodeInt(BigInt(blockSize)), loc); this.emit(Op.OP_ADD, loc); // [.., Poutidx(u)]
+    this.emit(Op.OP_DUP, loc); this.emit(Op.OP_OUTPUTBYTECODE, loc);
+    this.emit(encodeInt(BigInt(addrD() + 5)), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_EQUALVERIFY, loc); // [.., Poutidx]
+    this.emit(Op.OP_DUP, loc); this.emit(Op.OP_OUTPUTTOKENCATEGORY, loc);
+    this.emit(Op.OP_DUP, loc); this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_NIP, loc);
+    this.emit(Op.OP_1, loc); this.emit(Op.OP_EQUALVERIFY, loc);
+    this.emitVerifyCatBaseEqMaster(loc); // [.., Poutidx]
+    this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, loc);
+    this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc);
+    this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); // [addr, P_slot, P_oldnext, P_value, P'_slot, P'_next, P'_value]
+
+    // P' re-points P: verify P'_slot==P_slot, P'_value==P_value, and P_slot < P'_next (first new key is inside the gap).
+    this.emit(encodeInt(2n), loc); this.emit(Op.OP_PICK, loc);
+    this.emit(encodeInt(6n), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_EQUALVERIFY, loc); // P'_slot==P_slot
+    this.emit(Op.OP_DUP, loc); this.emit(encodeInt(4n), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_EQUALVERIFY, loc); // P'_value==P_value
+    this.emit(encodeInt(5n), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_BIN2NUM, loc);
+    this.emit(encodeInt(2n), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_BIN2NUM, loc);
+    this.emit(Op.OP_LESSTHAN, loc); this.emit(Op.OP_VERIFY, loc); // P_slot < P'_next
+
+    // Reduce [.., P_slot, P_oldnext, P_value, P'_slot, P'_next, P'_value] -> [addr, P_oldnext, P'_next], then track.
+    this.emit(Op.OP_DROP, loc);                                // drop P'_value
+    this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_DROP, loc);     // drop P'_slot (P'_next stays on top)
+    this.emit(encodeInt(1n), loc); this.emit(Op.OP_ROLL, loc); this.emit(Op.OP_DROP, loc); // drop P_value
+    this.emit(encodeInt(2n), loc); this.emit(Op.OP_ROLL, loc); this.emit(Op.OP_DROP, loc); // drop P_slot
+    this.stack.unshift(this.sortedInsertLoopOldnextName);   // real depth1 = P_oldnext
+    this.stack.unshift(this.sortedInsertLoopExpectedName);  // real depth0 = P'_next (expected first slot)
 
     this.emit(encodeInt(0n), loc);
     this.pushToStack(this.sortedInsertLoopCounterName);
@@ -12114,59 +12158,50 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // fixed-entry covenant + category verification (emitEntryCovenantVerification skips inLoop slots).
     if (this.entrySlots[slotIndex]) this.entrySlots[slotIndex].inLoop = true;
 
-    // 1. H(k) (composite; the loop-varying key is an expression key handled by emitSortedKeyHash) -> [.., Hk(t)]
-    this.emitSortedKeyHash(node, slotIndex, loc);
-    this.pushToStack('(il_hk)');
+    const blockSize = this.currentFunction.blockLayout?.blockSize ?? 1;
 
-    // 2. new value v: [.., Hk(t), v(t)]; int -> minimal number
-    node.expression = this.visit(node.expression);
-    if (this.sortedValueKind(collection.innermostValueType) === 'int') this.emit(Op.OP_BIN2NUM, loc);
-
-    // reorder [Hk, v] -> [v, Hk(u)]
-    const hkIdx = this.getStackIndex('(il_hk)');
-    this.emit(encodeInt(BigInt(hkIdx)), loc); this.emit(Op.OP_ROLL, loc); this.removeFromStack(hkIdx);
-
-    // 3. entry address (recompute; left untracked) -> [v(t), Hk(u), addr(u)]
-    this.emitMasterInputIndex(loc); this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
-    this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_DROP, loc);
-    this.pushToStack('(il_addr)');
-    const collectionHash = computeCollectionHash(this.entrySlots[slotIndex].collectionSignature);
-    this.emitP2sh32FromCovenant((cat) => buildEntryNftCovenantScript(cat, collectionHash), loc);
-    this.popFromStack();
-
-    // 4. co-spend predecessor input[master+blockSize+counter]; read [coSlot32, coNext32, coValue]
-    this.emitSortedInsertLoopSlotIndex(1, 0, 2, loc); // extraUntracked = Hk, addr
-    this.emit(Op.OP_DUP, loc); this.emit(Op.OP_UTXOBYTECODE, loc);
-    this.emit(encodeInt(2n), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_EQUALVERIFY, loc); // bc == addr
-    this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc);
+    // RANGE-SPLICE body: verify the (counter)th chain node output[master+blockSize+1+counter] = slot | next | value.
+    // The predecessor P was co-spent + P' verified in setup; here we walk the sorted output chain via expected_slot.
+    this.emitMasterInputIndex(loc); this.emit(encodeInt(BigInt(blockSize + 1)), loc); this.emit(Op.OP_ADD, loc); // base
+    this.emit(encodeInt(BigInt(this.getStackIndex(this.sortedInsertLoopCounterName) + 1)), loc);
+    this.emit(Op.OP_PICK, loc); this.emit(Op.OP_ADD, loc); // [.., nodeIdx(u)]
+    this.emit(Op.OP_DUP, loc); this.emit(Op.OP_OUTPUTBYTECODE, loc);
+    this.emit(encodeInt(BigInt(this.getStackIndex(this.sortedInsertLoopAddrName) + 2)), loc);
+    this.emit(Op.OP_PICK, loc); this.emit(Op.OP_EQUALVERIFY, loc); // bytecode == addr
+    this.emit(Op.OP_DUP, loc); this.emit(Op.OP_OUTPUTTOKENCATEGORY, loc);
+    this.emit(Op.OP_DUP, loc); this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_NIP, loc);
+    this.emit(Op.OP_1, loc); this.emit(Op.OP_EQUALVERIFY, loc);
+    this.emitVerifyCatBaseEqMaster(loc); // [.., nodeIdx]
+    this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, loc);
     this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc);
-    this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); // [v, Hk, addr, coSlot32, coNext32, coValue]
+    this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); // [.., slot(u), next(u), value(u)]
 
-    // 5. bracket coSlot < H(k) < coNext (coNext 0 = +inf). Present key -> coSlot==Hk -> coSlot<Hk false -> revert.
-    this.emit(encodeInt(2n), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_BIN2NUM, loc); // coSlot#
-    this.emit(encodeInt(5n), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_BIN2NUM, loc); // Hk#
-    this.emit(Op.OP_LESSTHAN, loc); this.emit(Op.OP_VERIFY, loc);
-    this.emit(encodeInt(1n), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_BIN2NUM, loc); // coNext#
+    // slot == expected_slot (chain linkage).
+    this.emit(encodeInt(2n), loc); this.emit(Op.OP_PICK, loc);
+    this.emit(encodeInt(BigInt(this.getStackIndex(this.sortedInsertLoopExpectedName) + 4)), loc);
+    this.emit(Op.OP_PICK, loc); this.emit(Op.OP_EQUALVERIFY, loc);
+
+    // value == the loop's (loop-invariant) value. Bool literal true -> 0x01, false -> empty; else fall back to 0x01.
+    this.emit(Op.OP_DUP, loc);
+    const expr = node.expression;
+    this.emit(expr instanceof BoolLiteralNode && !expr.value ? new Uint8Array(0) : new Uint8Array([1]), loc);
+    this.emit(Op.OP_EQUALVERIFY, loc);
+
+    // slot < next (sorted forward), unless next == 0 (the terminus +inf / P.oldnext).
+    this.emit(encodeInt(1n), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_BIN2NUM, loc); // next#
     this.emit(Op.OP_DUP, loc); this.emit(Op.OP_0, loc); this.emit(Op.OP_NUMEQUAL, loc);
     this.emit(Op.OP_IF, loc); this.emit(Op.OP_DROP, loc);
     this.emit(Op.OP_ELSE, loc);
-    this.emit(encodeInt(5n), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_BIN2NUM, loc); // Hk# (coNext# above)
-    this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_LESSTHAN, loc); this.emit(Op.OP_VERIFY, loc); // H(k) < coNext
-    this.emit(Op.OP_ENDIF, loc); // [v, Hk, addr, coSlot, coNext, coValue]
+    this.emit(encodeInt(3n), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_BIN2NUM, loc); // slot#
+    this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_LESSTHAN, loc); this.emit(Op.OP_VERIFY, loc); // slot < next
+    this.emit(Op.OP_ENDIF, loc); // [.., slot, next, value]
 
-    // 6. P' at output[master+blockSize+2*counter] = coSlot || H(k) || coValue
-    this.emitSortedInsertLoopSlotIndex(2, 0, 5, loc); // extraUntracked = Hk, addr, coSlot, coNext, coValue
-    this.emitVerifySortedValueOutput(loc, 4, 3, 5, 1);
+    // expected_slot = next; drop value + slot.
+    this.emit(Op.OP_DROP, loc); // drop value
+    this.emit(Op.OP_NIP, loc);  // drop slot -> [.., next]
+    this.emitReplace(this.getStackIndex(this.sortedInsertLoopExpectedName) + 1, node);
 
-    // 7. NEW at output[master+blockSize+2*counter+1] = H(k) || coNext || v
-    this.emitSortedInsertLoopSlotIndex(2, 1, 5, loc);
-    this.emitVerifySortedValueOutput(loc, 4, 5, 2, 6);
-
-    // drop coValue, coNext, coSlot, addr, Hk (untracked), then v (tracked)
-    this.emit(Op.OP_2DROP, loc); this.emit(Op.OP_2DROP, loc); this.emit(Op.OP_DROP, loc);
-    this.emit(Op.OP_DROP, loc); this.popFromStack();
-
-    // counter += 1 in place (tracker-neutral: the PICK'd value is untracked, +1 offset covers it)
+    // counter += 1.
     this.emit(encodeInt(BigInt(this.getStackIndex(this.sortedInsertLoopCounterName))), loc);
     this.emit(Op.OP_PICK, loc); this.emit(Op.OP_1ADD, loc);
     this.emitReplace(this.getStackIndex(this.sortedInsertLoopCounterName) + 1, node);
@@ -12174,25 +12209,36 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
-   * Tear down a sorted INSERT loop after OP_UNTIL: pin the co-spent predecessor-input count == counter AND the entry-
-   * output count == 2*counter (no orphan/duplicate/burned entries), then drop the counter + precomputed address.
+   * Tear down a RANGE-SPLICE insert loop after OP_UNTIL: verify the chain terminates at P.oldnext (expected_slot ==
+   * P_oldnext), the entry-output count == counter+1 (P' + N chain nodes, no orphans) and the entry-input count == 1
+   * (only P co-spent). Then drop the persistent [counter, expected, oldnext, addr].
    */
   private emitSortedInsertLoopTeardown(loc: SingleLocationData): void {
     if (!this.sortedInsertLoopActive) return;
 
-    // output count == 2 * counter: compute 2*counter into a temp, pin, drop the temp.
+    // expected_slot == P_oldnext (the chain's last `next` points to P's old successor).
+    this.emit(encodeInt(BigInt(this.getStackIndex(this.sortedInsertLoopExpectedName))), loc); this.emit(Op.OP_PICK, loc);
+    this.emit(encodeInt(BigInt(this.getStackIndex(this.sortedInsertLoopOldnextName) + 1)), loc); this.emit(Op.OP_PICK, loc);
+    this.emit(Op.OP_EQUALVERIFY, loc);
+
+    // entry-output count == counter + 1 (P' + N chain nodes).
     this.emit(encodeInt(BigInt(this.getStackIndex(this.sortedInsertLoopCounterName))), loc);
-    this.emit(Op.OP_PICK, loc); this.emit(encodeInt(2n), loc); this.emit(Op.OP_MUL, loc);
+    this.emit(Op.OP_PICK, loc); this.emit(Op.OP_1ADD, loc);
     this.pushToStack('(il_outcount)');
     this.emitVerifyChunkUtxoCount('(il_outcount)', true, loc, this.sortedInsertLoopAddrName);
     const oc = this.getStackIndex('(il_outcount)');
     this.emit(encodeInt(BigInt(oc)), loc); this.emit(Op.OP_ROLL, loc); this.emit(Op.OP_DROP, loc);
     this.removeFromStack(oc);
 
-    // input count == counter: only the N predecessors carry the entry address (fail-closed if the fn also reads it).
-    this.emitVerifyChunkUtxoCount(this.sortedInsertLoopCounterName, false, loc, this.sortedInsertLoopAddrName);
+    // entry-input count == 1 (only the single bracketing predecessor P is co-spent at this address).
+    this.emit(Op.OP_1, loc); this.pushToStack('(il_incount)');
+    this.emitVerifyChunkUtxoCount('(il_incount)', false, loc, this.sortedInsertLoopAddrName);
+    const ic = this.getStackIndex('(il_incount)');
+    this.emit(encodeInt(BigInt(ic)), loc); this.emit(Op.OP_ROLL, loc); this.emit(Op.OP_DROP, loc);
+    this.removeFromStack(ic);
 
-    for (const name of [this.sortedInsertLoopCounterName, this.sortedInsertLoopAddrName]) {
+    for (const name of [this.sortedInsertLoopCounterName, this.sortedInsertLoopExpectedName,
+      this.sortedInsertLoopOldnextName, this.sortedInsertLoopAddrName]) {
       const idx = this.getStackIndex(name);
       this.emit(encodeInt(BigInt(idx)), loc);
       this.emit(Op.OP_ROLL, loc); this.emit(Op.OP_DROP, loc);

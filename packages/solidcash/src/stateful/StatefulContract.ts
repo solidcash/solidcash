@@ -5603,20 +5603,33 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         valueTail = typeof vv === 'boolean' ? (vv ? new Uint8Array([1]) : new Uint8Array(0))
           : typeof vv === 'bigint' ? bigIntToVmNumber(vv) : vv instanceof Uint8Array ? vv : new Uint8Array(0);
       }
-      const wUnlocker = createEntryNftUnlocker(this.inner, 0, this.categoryId, info.collection);
-      const commitments: string[] = [];
-      const usedPred = new Set<string>();
-      for (const elem of arr as unknown[]) {
-        const slot = keyToSlotMulti([...fixedBins, encKey(elem, varyType)]);
-        if (list.has(slot)) throw new Error(`C2 insert loop ${info.collection}: key already present (update-in-loop unsupported)`);
-        const plan = list.planInsert(slot, valueTail);
-        const predKey = binToHex(plan.predecessor.slot);
-        if (usedPred.has(predKey)) throw new Error(`C2 insert loop ${info.collection}: two keys share a predecessor (same-gap unsupported)`);
-        usedPred.add(predKey);
-        insertLoopPredecessors.push({ ...plan.predecessor.utxo, unlocker: wUnlocker });
-        commitments.push(binToHex(plan.predNewCommitment), binToHex(plan.newNodeCommitment));
+      // RANGE-SPLICE: all N keys must fall in ONE gap (share the bracketing predecessor P). Co-spend P once and mint
+      // the sorted chain P' -> k1 -> k2 -> .. -> kN -> P.oldNext (P' = P re-pointed to the smallest new key). N+1
+      // trailing entry outputs, ONE predecessor input. The covenant verifies the chain is sorted + bracketed by P.
+      const slots = (arr as unknown[]).map((elem) => keyToSlotMulti([...fixedBins, encKey(elem, varyType)]));
+      if (slots.length === 0) continue;
+      const sorted = [...slots].sort((a, b) => (bytesToSlotValue(a) < bytesToSlotValue(b) ? -1 : 1));
+      for (let i = 1; i < sorted.length; i++) {
+        if (bytesToSlotValue(sorted[i]) === bytesToSlotValue(sorted[i - 1])) throw new Error(`C2 insert loop ${info.collection}: duplicate key`);
       }
-      if (commitments.length > 0) sortedLoopCommitments.set(info.collection, commitments);
+      for (const s of sorted) if (list.has(s)) throw new Error(`C2 insert loop ${info.collection}: key already present (update-in-loop unsupported)`);
+      const P = list.predecessorOf(sorted[0]);
+      const pNextV = bytesToSlotValue(P.nextKey);
+      const pSlotV = bytesToSlotValue(P.slot);
+      for (const s of sorted) {
+        const sv = bytesToSlotValue(s);
+        if (!(pSlotV < sv && (pNextV === 0n || sv < pNextV))) {
+          throw new Error(`C2 insert loop ${info.collection}: keys span multiple gaps (range-splice needs one gap)`);
+        }
+      }
+      const wUnlocker = createEntryNftUnlocker(this.inner, 0, this.categoryId, info.collection);
+      const commitments: string[] = [binToHex(encodeEntryCommitment(P.slot, sorted[0], P.value))]; // P'
+      for (let j = 0; j < sorted.length; j++) {
+        const next = j < sorted.length - 1 ? sorted[j + 1] : P.nextKey;
+        commitments.push(binToHex(encodeEntryCommitment(sorted[j], next, valueTail)));
+      }
+      insertLoopPredecessors.push({ ...P.utxo, unlocker: wUnlocker }); // ONE bracketing predecessor
+      sortedLoopCommitments.set(info.collection, commitments);
     }
 
     // Handle external state reads (cross-contract reads via interfaces)

@@ -2204,6 +2204,27 @@ describe('C2-default: OVERLOADED internal C2-writer chain inlines by (name, arit
   });
 });
 
+describe('same-named PRIVATE state var in different ancestors is origin-mangled, not a collision (EACCToken EIP712+ERC20 _name)', () => {
+  // Solidity allows the same private state-var name in different ancestors (separate slots) - OZ EIP712 `_name`
+  // alongside ERC20 `_name`. SolidCash flattens all ancestors, so it origin-mangles each colliding PRIVATE var
+  // (declaration + own-contract references) before the merge. A same-named private var referenced by its own
+  // contract's methods keeps working (each resolves to its own mangled slot).
+  it('compiles two bases each with a private _name that its own method reads', () => {
+    const src = 'pragma solidity ^0.8.20;'
+      + ' contract A { string private _name; function aName() public view returns (string memory) { return _name; } }'
+      + ' contract B { bytes32 private _name; function bName() public view returns (bytes32) { return _name; } }'
+      + ' contract C is A, B { }';
+    expect(() => compileString(src, { solidityImportCompat: true })).not.toThrow();
+  });
+  it('compiles the diamond-via-intermediate shape (ERC20Permit is ERC20, EIP712 both with _name)', () => {
+    const src = 'pragma solidity ^0.8.20;'
+      + ' contract ERC20 { string private _name; function n() public view returns (string memory) { return _name; } }'
+      + ' contract EIP712 { bytes32 private _name; function h() public view returns (bytes32) { return _name; } }'
+      + ' contract Permit is ERC20, EIP712 { } contract Tok is ERC20, Permit { }';
+    expect(() => compileString(src, { solidityImportCompat: true })).not.toThrow();
+  });
+});
+
 describe('StorageSlot slot-ALIAS factory: getStringSlot(ref).value = v is a direct write of the aliased ref (EACCToken)', () => {
   // OZ StorageSlot.getStringSlot(string storage store) does `assembly { r.slot := store.slot }` - it aliases the
   // return pointer to `store`'s slot, so `getStringSlot(ref).value = v` is just `ref = v`. That routes a string/bytes

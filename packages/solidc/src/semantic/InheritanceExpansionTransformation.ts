@@ -60,6 +60,8 @@ import {
   AddressSendExpressionNode,
   LowLevelCallNode,
   TypeIntrospectionNode,
+  StateVariableNode,
+  StateVariableVisibility,
 } from '../ast/AST.js';
 import {
   CircularContractInheritanceError,
@@ -92,6 +94,68 @@ function superImplName(definingContract: string, fnName: string): string {
  * the parent's definitions are merged into the child. After expansion, parent contract names
  * are removed from `contract.implements`, leaving only interface names.
  */
+// Rename every bare-identifier reference to `oldName` -> `newName` within a node tree. A `FieldAccessNode.name`
+// (a struct member) is left alone (its `expression` is still walked); only IdentifierNode occurrences - a state-var
+// read pre-semantic, or an AssignNode's `.identifier` write target - are renamed.
+function renameIdentifierRefs(node: Node | undefined, oldName: string, newName: string): void {
+  if (!node) return;
+  const walk = (n: Node): void => {
+    if (n instanceof IdentifierNode) {
+      if (n.name === oldName) n.name = newName;
+      return;
+    }
+    for (const [key, value] of Object.entries(n)) {
+      if (key === 'name' && n instanceof FieldAccessNode) continue; // struct field, never the state var
+      if (value instanceof Node) walk(value);
+      else if (Array.isArray(value)) { for (const it of value) if (it instanceof Node) walk(it); }
+    }
+  };
+  walk(node);
+}
+
+// Solidity permits the SAME private state-var name in DIFFERENT ancestors - each is a separate, inaccessible slot
+// (OZ EIP712 `_name` alongside ERC20 `_name`). SolidCash flattens every ancestor into one contract, where the
+// duplicate name would collide (mergeNamedList). Origin-mangle each colliding PRIVATE var (rename its declaration +
+// every reference inside its OWN declaring contract's members) BEFORE flattening, so the merge sees distinct names.
+// Only private vars are mangled - they are never referenced from outside their declaring contract, so the rename is
+// contained; a public/internal same-name collision is a genuine override/shadow and still errors. Operates on the
+// source contracts (re-parsed per compile, so the mutation is compile-local).
+function mangleCollidingPrivateVars(
+  linearization: string[],
+  contractMap: Map<string, ContractNode>,
+  primary: ContractNode,
+): void {
+  const resolve = (name: string): ContractNode | undefined => (name === primary.name ? primary : contractMap.get(name));
+  const ancestors = linearization.map(resolve).filter((c): c is ContractNode => Boolean(c));
+  const byName = new Map<string, ContractNode[]>(); // private var name -> ancestors declaring it
+  for (const c of ancestors) {
+    for (const sv of c.stateVariables as StateVariableNode[]) {
+      if (sv.visibility !== StateVariableVisibility.PRIVATE) continue;
+      const list = byName.get(sv.name) ?? [];
+      list.push(c);
+      byName.set(sv.name, list);
+    }
+  }
+  for (const [name, decls] of byName) {
+    if (decls.length < 2) continue; // declared in only one ancestor - no collision
+    for (const c of decls) {
+      const sv = (c.stateVariables as StateVariableNode[]).find((v) => v.name === name);
+      if (!sv) continue; // already mangled via a shared ancestor visited under another root
+      const mangled = `${c.name}__${name}`;
+      sv.name = mangled;
+      const members: (Node | undefined)[] = [
+        ...(c.functions ?? []), ...(c.modifierDefinitions ?? []), c.constructorDef, c.fallbackDef, c.receiveDef,
+      ];
+      for (const m of members) {
+        // Skip a member that declares `name` as a PARAMETER - there the identifier is the param, not the state var.
+        if (m && (m as FunctionDefinitionNode).parameters?.some((p) => p.name === name)) continue;
+        renameIdentifierRefs(m, name, mangled);
+      }
+      if (sv.initializer) renameIdentifierRefs(sv.initializer, name, mangled);
+    }
+  }
+}
+
 export default function expandInheritance(ast: SourceFileNode): SourceFileNode {
   // Build a map of available contracts from importedContracts
   const contractMap = new Map<string, ContractNode>();
@@ -123,6 +187,7 @@ export default function expandInheritance(ast: SourceFileNode): SourceFileNode {
   for (const imported of [...ast.importedContracts]) {
     if (imported.implements.length > 0 && !expanded.has(imported.name) && !primaryAncestors.has(imported.name)) {
       const importedLinearization = computeLinearization(imported, contractMap, originalImplements);
+      mangleCollidingPrivateVars(importedLinearization, contractMap, ast.contract);
       expandContract(imported, contractMap, expanded, new Set(), originalImplements);
       resolveSuperAndBaseCalls(imported, importedLinearization);
     }
@@ -130,6 +195,10 @@ export default function expandInheritance(ast: SourceFileNode): SourceFileNode {
 
   // If the primary contract doesn't implement anything, nothing more to do
   if (ast.contract.implements.length === 0) return ast;
+
+  // Origin-mangle any private state var declared in >1 ancestor before flattening (Solidity allows same-name
+  // private vars across ancestors; the flatten would otherwise collide). See mangleCollidingPrivateVars.
+  mangleCollidingPrivateVars(primaryLinearization, contractMap, ast.contract);
 
   expandContract(ast.contract, contractMap, expanded, new Set(), originalImplements);
 

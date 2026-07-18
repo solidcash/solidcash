@@ -528,13 +528,34 @@ unrolling, or two struct-field writes `m[k].a=x; m[k].b=y`) do NOT: each routes 
 which CO-SPENDS the entry NFT + emits one output entry, so a second upsert needs a second co-spend of the same (now
 already-spent) input and a second output - the covenant OP_VERIFYs fail (runtime revert, fail-closed, not silent).
 The DEFAULT entry model handles this via `pendingEntryWrites` read-after-write chaining; the C2 analog is COALESCING:
-read the entry ONCE, apply all the surgeries to the in-memory value, emit ONE output. It is the same deferred
-machinery as (a) (per-iteration insert) - soundness-critical (the coalesced value must be correct AND the exclusion
-proof preserved), NOT rushed. Current state kept SOUND: the fixed-bound loop is NOT unrolled for array-element writes
+read the entry ONCE, apply all the surgeries to the in-memory value, emit ONE output.
+
+**CHOSEN DESIGN (2026-07-18, user steer "all ops should be runtime; unrolling eats the byte-limit + has side effects"):
+a RUNTIME cache-in-loop desugar, NOT unrolling.** `CacheDynamicArrayInLoop` already implements exactly this
+read-once/mutate-local/write-once transform for STATE dynamic arrays: `for(..) arr.push(x)` ->
+`T[] __dlcache_arr = arr; for(..) __dlcache_arr.push(x); arr = __dlcache_arr;` (renames every access of `arr` to the
+local, prepends the cache read, flushes `arr = local` before every return + at the tail; runs pre-semantic so the
+renamed accesses resolve as a local array). The C2 fix is the SAME pass extended to a MAPPING ENTRY `m[k]`:
+`for(..) m[k][j]=v` -> `T[] __c2cache = m[k]; for(..) __c2cache[j]=v; m[k] = __c2cache;` - the loop stays a RUNTIME
+loop over the LOCAL array (one covenant body, no byte blowup), and the C2 write is a SINGLE upsert (`m[k]=local`) that
+already works. This also fixes the straight-line consecutive case (`m[k][0]=x; m[k][2]=z`) and the two-struct-field
+case for free. Added complexity vs the state-array pass: the cache is keyed by (mapping, KEY expression) not just a
+name - so the key must be captured + proven loop-invariant, and multiple distinct entries `m[k1]`/`m[k2]` need
+separate caches. Soundness: value-copy semantics must match (a DIRECT read of `m[k]` inside the loop that is not the
+cache would see stale state - the pass must redirect those reads too, or restrict to bodies with no such read). This
+SUPERSEDES the earlier "covenant-level coalescing / per-iteration insert (a)" framing for the SAME-ENTRY case; a
+DIFFERENT-key insert loop `for(i) m[k[i]]=v` is still the runtime per-iteration sorted-insert covenant (a). Note the
+existing default-model `UnrollFixedBoundEntryLoop` (whole-entry fixed loops) fits the same "prefer runtime" critique -
+unifying it onto the cache-in-loop model would remove the unroll, but it is wired in compiler.ts + tested
+(CorpusGapFixes), a separate change. NOT rushed (soundness-adjacent: key loop-invariance + read redirection + the C2
+write); it is the clear next build - extend/sibling `CacheDynamicArrayInLoop` for keyed mapping entries.
+
+Current state kept SOUND: the fixed-bound loop is NOT unrolled for array-element writes
 (`UnrollFixedBoundEntryLoop.hasMappingWrite` intentionally matches only the ArrayAssignNode whole-entry form, not the
 MappingAssignNode element/push form) so it fails closed at `plainLoopDepth > 0`; a straight-line consecutive same-entry
-write still compiles but reverts at runtime (a footgun, but fail-closed - a branch-aware compile guard is deferred with
-the coalescing). A MULTI-DIMENSIONAL array element write `m[k][i][j]` on `mapping(K => T[][])` now fails closed cleanly
-(`UnsupportedTypeError`) - it used to CRASH (the excess index was type-checked as a phantom key at `allKeyTypes[i] ==
-undefined`); guarded in `TypeCheckTraversal.visitMappingAssign` by `node.keys.length > allKeyTypes.length`. Tests:
-`SortedArrayWriteFailClose`. Revisit (coalescing) for full no-guards + multi-element/loop array writes.
+write still compiles but reverts at runtime (a footgun, but fail-closed - a branch-aware compile guard is moot once the
+cache-in-loop desugar lands, since it makes them WORK). A MULTI-DIMENSIONAL array element write `m[k][i][j]` on
+`mapping(K => T[][])` now fails closed cleanly (`UnsupportedTypeError`) - it used to CRASH (the excess index was
+type-checked as a phantom key at `allKeyTypes[i] == undefined`); guarded in `TypeCheckTraversal.visitMappingAssign` by
+`node.keys.length > allKeyTypes.length`. Tests: `SortedArrayWriteFailClose`. Revisit: extend CacheDynamicArrayInLoop
+to keyed mapping entries (runtime, not unroll) for full same-entry multi-write + fixed/dynamic array-fill loops.

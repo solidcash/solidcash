@@ -13,10 +13,11 @@ Format per entry: **what**, **why deferred**, **what it'd take**, **revisit if**
 
 ## bytes / string `memory` PARAMS as `__yulmem` pointers (assembly interop)  — 2026-07-15
 
-**What.** Local `bytes` buffers now lower to `__yulmem` pointers (commit `3cadcba7`, see
-`docs/experimental-memory-model.md`), but a `bytes`/`string` **parameter** used inside inline assembly stays
+**What.** Local `bytes` (commit `3cadcba7`) AND local `string` (commit `25773dbb`, see the RESOLVED note below)
+buffers now lower to `__yulmem` pointers, but a `bytes`/`string` **parameter** used inside inline assembly stays
 value-copy, so `add(p, 0x20)` / `keccak256(p, len)` / `mcopy(add(p, ..), ..)` fail with a `bytes+int` type error.
 Corpus files: `keccak_optimization_bug_string.sol`, `mcopy.sol`, `mcopy_empty.sol` (~3, all `inlineAssembly/`).
+Only the PARAM case (and the uninitialized named-return case, its own entry below) remains deferred.
 
 **Why deferred.**
 - **Regression risk (high).** Materializing a bytes param into a pointer would bypass the
@@ -37,18 +38,33 @@ Corpus files: `keccak_optimization_bug_string.sol`, `mcopy.sol`, `mcopy_empty.so
 **Revisit if.** A REAL contract (not an edge test) needs assembly to mutate or variable-length-hash a
 `bytes`/`string` param's buffer.
 
-**UPDATE 2026-07-18 - a REAL contract now hits this: EACC `EACCToken` (`ERC20` + `ERC20Permit`).** OZ
-`ShortStrings.toString(ShortString)` (reached via `EIP712._EIP712Name` -> the public ERC-5267 `eip712Domain()`)
-does `string memory str = new string(32); assembly { mstore(str, len) mstore(add(str, 0x20), sstr) }` - a LOCAL
-`string` used as a raw memory pointer (`add(str, 0x20)` -> `string + uint256`; `mstore(str, ..)` -> assign-to-string).
-This is the same family as the param case but for a LOCAL `string` (locals were said to lower to `__yulmem` pointers,
-but a `string` local written via `mstore`/`add` in assembly is not carried through). Blocks EACCToken at TypeCheck.
-The dead-code sibling (`Strings.toString`, unreachable) is now pruned (see `PruneUnreachableFreeFunctions` +
-commit `b8e562e7`); this one is REACHABLE so it cannot be pruned - it needs real `string`-local `__yulmem` pointer
-support in assembly (mstore/add on the buffer + a ShortString-word store), the high-risk item above. EACCToken is
-otherwise fully merged/compiled: the bench's remaining 1/15. Cascade already cleared this session:
-transitive-lib-constants `HEX_DIGITS` (`fa67b4fc`), `getStringSlot` inline write in a library free fn (`612e4cda`),
-`using ShortStrings for *` in an imported inherited parent ctor (`f05620ce`).
+**RESOLVED 2026-07-18 for the LOCAL `string` case (commit `25773dbb`).** The real trigger was EACC `EACCToken`
+(`ERC20` + `ERC20Permit`): OZ `ShortStrings.toString(ShortString)` (reached via `EIP712._EIP712Name` -> the public
+ERC-5267 `eip712Domain()`) does `string memory str = new string(32); assembly { mstore(str, len) mstore(add(str,
+0x20), sstr) }` - a LOCAL `string` used as a raw memory pointer, which failed TypeCheck ("Type 'string' can not be
+assigned to variable of type 'uint256'"). Root cause: a `string` local was never a `__yulmem` CANDIDATE
+(`isHandledMemBytes` requires `BytesType`; `string` is `PrimitiveType.STRING`), so it stayed a string value and the
+asm runtime path then built a uint256 offset from it. FIX (`LowerMemoryModel`): a string is an unbounded byte buffer
+on BCH (string == unbounded bytes, mutually assignable), so route a local string through the SAME candidate detection
++ `lowerBytesDecl` path as a local `bytes` (new `isHandledMemString`), plus exclude the `new string(n)`-with-runtime-
+length placeholder (`codegenError`, no BCH analogue) from the gate so it is not silently converted to a 0-byte
+buffer. The emitted script is byte-identical to the bytes-local form; the boundary serializer's unbounded-bytes slice
+is assignable back to a `string`. LOW RISK, LOCAL-ONLY - it does NOT touch the `parseBytesPtr`/`bytesMemorySlice`
+bridge (that is the PARAM case, still deferred above). VM-verified (`MemoryModelStringAsm`: asm offset roundtrip
+length@0/data@32 + byte-exact state serialize) + solidc byte-equality guard (`InlineAssemblyYul`); 2100 solidc + 127
+memory/string/yul VM tests + the ECDSA signature-split bridge tests all green. The dead-code sibling
+`Strings.toString` was already pruned (`b8e562e7`); this one is reachable so it could not be pruned. Cascade earlier
+cleared: `HEX_DIGITS` (`fa67b4fc`), `getStringSlot` in a library free fn (`612e4cda`), `using ShortStrings for *` in
+an imported inherited parent ctor (`f05620ce`).
+
+**EACCToken then advances PAST ShortStrings to a NEW, SEPARATE wall (not this item): OZ `Math.tryAdd` fails codegen
+"Expected variable 'c' does not exist on the stack".** Isolated as: a local declared inside an `unchecked` block in a
+LIBRARY function, used across an early/multi-return (`unchecked { uint256 c = a + b; if (c < a) return (false, 0);
+return (true, c); }`). The same body as a CONTRACT method compiles; a library function WITHOUT `unchecked` compiles;
+only library + `unchecked`-block-local fails (the library/free-function codegen path loses the nested-block local's
+name binding - the stack holds anonymous `(value)` slots). Bounded + reproducible, but a distinct codegen issue from
+the memory model. Behind it, per `[[eacc_port_grind_2026_07_13]]`, EACCToken still has permit `ecrecover` + the EIP712
+domain separator + the `multitransfer` diff-key C2 loop. So EACCToken remains the bench's 1/15 pending those.
 
 ---
 

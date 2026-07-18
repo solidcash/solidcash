@@ -10,14 +10,19 @@ describe('sorted C2 array writes: fail-close boundary', () => {
     `contract C() { mapping(${val}) m;
       function f(int k, int i, int v, pubkey pk, sig s) { require(checkSig(s, pk)); ${body} } }`;
 
-  it('array element write inside a DYNAMIC loop fails closed (per-iteration sorted insert not implemented)', () => {
-    expect(() => compileString(K('for (int j = 0; j < i; j++) { m[k][j] = v; }'))).toThrow();
+  it('a SINGLE-ENTRY array-fill loop now COMPILES (runtime cache-in-loop, not fail-closed)', () => {
+    // for(..) m[k][j]=v and read-after-write are cached to a local array + one upsert (CacheMappingEntryInLoop);
+    // fixed OR dynamic bound, no unrolling. Covered at runtime by SortedArrayCacheInLoop.
+    expect(() => compileString(K('for (int j = 0; j < i; j++) { m[k][j] = v; }'))).not.toThrow();
+    expect(() => compileString(K('for (int j = 0; j < 3; j++) { m[k].push(v); }'))).not.toThrow();
+    expect(() => compileString(K('for (int j = 1; j < 3; j++) { m[k][j] = m[k][j - 1] + 1; }'))).not.toThrow();
   });
 
-  it('array element write inside a FIXED-bound loop fails closed (same-entry write coalescing not implemented)', () => {
-    // Unrolling would produce consecutive writes to the SAME entry, which do not chain (each is a fresh co-spend);
-    // so it stays a loop and fails closed rather than compiling to a runtime-reverting tx.
-    expect(() => compileString(K('for (int j = 0; j < 3; j++) { m[k][j] = v; }'))).toThrow();
+  it('a DIFFERENT-key insert loop `for(i) m[ks[i]]=v` fails closed (per-iteration sorted insert not implemented)', () => {
+    expect(() => compileString(
+      `contract C() { mapping(int => int[]) m;
+        function f(int[] ks, int v, pubkey pk, sig s) { require(checkSig(s, pk)); for (int j = 0; j < 3; j++) { m[ks[j]].push(v); } } }`,
+    )).toThrow();
   });
 
   it('multi-dimensional array element write fails closed (was an internal TypeError crash)', () => {

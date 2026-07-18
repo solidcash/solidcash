@@ -18,7 +18,6 @@ import {
   CastNode,
   AssignNode,
   TupleAssignmentNode,
-  VariableDefinitionNode,
 } from '../ast/AST.js';
 import {
   AddressType, StructType, ArrayType, MappingType, Type,

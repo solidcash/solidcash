@@ -51,6 +51,7 @@ import LowerInlineAssembly from './semantic/LowerInlineAssembly.js';
 import LowerMemoryModel from './semantic/LowerMemoryModel.js';
 import DesugarLocalBytesElementWrite from './semantic/DesugarLocalBytesElementWrite.js';
 import CacheDynamicArrayInLoop from './semantic/CacheDynamicArrayInLoop.js';
+import CacheMappingEntryInLoop from './semantic/CacheMappingEntryInLoop.js';
 import DesugarDynamicArrayCopyCast from './semantic/DesugarDynamicArrayCopyCast.js';
 import IfConvertConditionalEntryOp from './semantic/IfConvertConditionalEntryOp.js';
 import SynthesizeBlockOracle from './semantic/SynthesizeBlockOracle.js';
@@ -374,6 +375,9 @@ function compileResolvedAst(ast: Ast, code: string, mergedCompilerOptions: Compi
   // A dynamic (chunk-backed) array written inside a loop can't use the once-per-function pending-value write
   // model; cache it in a local, mutate the local in the loop, flush back once.
   ast = ast.accept(new CacheDynamicArrayInLoop()) as Ast;
+  // A C2 (sorted) mapping ARRAY value written in a loop `for(..) m[k][j]=v` is cached the same way: read m[k] once,
+  // mutate the local array in the runtime loop, flush `m[k] = local` as one upsert (never unroll the loop).
+  ast = ast.accept(new CacheMappingEntryInLoop()) as Ast;
 
   // A conditional `delete m[k]` inside a branch does not delete on the taken path (the covenant can't statically
   // tell it ran). If-convert it to an unconditional predicated write `m[k] = cond ? default : m[k]`.
@@ -590,6 +594,7 @@ function compileReferencedContracts(
     singleAst = singleAst.accept(new LowerMappingStorageAlias()) as Ast;
     singleAst = singleAst.accept(new DesugarDynamicArrayCopyCast()) as Ast;
     singleAst = singleAst.accept(new CacheDynamicArrayInLoop()) as Ast;
+    singleAst = singleAst.accept(new CacheMappingEntryInLoop()) as Ast;
     singleAst = singleAst.accept(new IfConvertConditionalEntryOp()) as Ast;
     singleAst = singleAst.accept(new PromoteConstructorExternalReads()) as Ast;
     singleAst = singleAst.accept(new SynthesizeExternalAddressLocals()) as Ast;

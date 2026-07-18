@@ -274,6 +274,9 @@ export class FunctionDefinitionNode extends Node implements Named {
   // Collections written by a runtime loop (`for(i<n) m[k[i]]=v[i]`); recorded during codegen. SDK derives the N
   // (key,value) pairs from the VM trace and creates N trailing entry NFT outputs (emitLoopEntryWrite).
   entryLoopWrites?: string[];
+  // Sorted (C2) collections written by a diff-key INSERT loop (`for(i<n) m[k[i]]=v`); recorded during codegen. SDK
+  // co-spends N bracketing predecessors + emits N (P', NEW) pairs from the evolving list (emitSortedInsertLoopBody).
+  sortedInsertLoops?: string[];
   // Function parameters whose value feeds blockhash(n); recorded during codegen. SDK reads the arg to resolve
   // addr(n) and co-spend the (n->hash) oracle UTXO as a trailing input (mirrors dynamicReads auto-injection).
   blockhashReads?: string[];

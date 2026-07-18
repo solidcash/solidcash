@@ -451,6 +451,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private entryLoopCounterName: string = '(loop_entry_counter)'; // entries-written-so-far (loop mapping write)
   private entryLoopAddrName: string = '(loop_entry_addr)';       // loop-invariant entry NFT P2SH32 (precomputed)
   private entryLoopActive: boolean = false;         // a loop mapping-write counter + address are live on the stack
+  private sortedInsertLoopAddrName: string = '(sorted_insert_addr)';    // loop-invariant sorted entry NFT P2SH32
+  private sortedInsertLoopCounterName: string = '(sorted_insert_counter)'; // inserts-done-so-far (== co-spent preds)
+  private sortedInsertLoopActive: boolean = false;  // a sorted diff-key insert loop's addr + counter are on the stack
+  private sortedInsertLoopCollection: string | null = null; // the sorted collection the active insert loop writes
   private keccakLoopCounterName: string = '(loop_keccak_counter)'; // keccak side-cars read-so-far (dynamic keccak loop)
   private keccakLoopActive: boolean = false;        // a dynamic keccak256 loop counter is live on the stack
   private functionMultiSiteDeploy: boolean = false; // 2+ same-contract sites w/ a conditional: function counter
@@ -3105,8 +3109,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.inlineDeployActive = true;
     }
 
+    // C2 diff-key insert loop: precompute the sorted entry NFT address + counter BEFORE OP_BEGIN (each iteration
+    // co-spends the bracketing predecessor + mints one NEW node). Takes precedence over the default entry-mint loop.
+    const loopHasSortedInsert = this.emitSortedInsertLoopSetup(node.block, locationData);
     // Loop mapping write: precompute the entry NFT address + a runtime counter BEFORE OP_BEGIN (see visitWhile).
-    const loopHasEntryWrite = this.emitLoopEntryWriteSetup(node.block, locationData);
+    const loopHasEntryWrite = !loopHasSortedInsert && this.emitLoopEntryWriteSetup(node.block, locationData);
     // Dynamic keccak loop: push a 0-based side-car counter BEFORE OP_BEGIN (trailing-region read per iteration).
     const loopHasKeccak = this.emitLoopKeccakSetup(node.block, locationData);
 
@@ -3138,6 +3145,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Pin the entry-output count + drop the loop mapping-write temps now the loop is done.
     if (loopHasEntryWrite) {
       this.emitLoopEntryWriteTeardown({ location: node.location, positionHint: PositionHint.END });
+    }
+    // Pin the predecessor-input + entry-output counts, drop the sorted insert-loop temps.
+    if (loopHasSortedInsert) {
+      this.emitSortedInsertLoopTeardown({ location: node.location, positionHint: PositionHint.END });
     }
     // Drop the dynamic keccak loop counter now the loop is done.
     if (loopHasKeccak) {
@@ -3250,9 +3261,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.inlineDeployActive = true;
     }
 
+    // C2 diff-key insert loop: precompute the sorted entry NFT address + counter BEFORE OP_BEGIN (takes precedence).
+    const loopHasSortedInsert = this.emitSortedInsertLoopSetup(node.block, locationData);
     // Loop mapping write: precompute the entry NFT address + a runtime counter (entries-written-so-far) BEFORE
     // OP_BEGIN; emitLoopEntryWrite verifies + increments per iteration, the teardown pins the entry-output count.
-    const loopHasEntryWrite = this.emitLoopEntryWriteSetup(node.block, locationData);
+    const loopHasEntryWrite = !loopHasSortedInsert && this.emitLoopEntryWriteSetup(node.block, locationData);
     // Dynamic keccak loop: push a 0-based side-car counter BEFORE OP_BEGIN (trailing-region read per iteration).
     const loopHasKeccak = this.emitLoopKeccakSetup(node.block, locationData);
 
@@ -3304,6 +3317,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Pin the entry-output count + drop the loop mapping-write temps now the loop is done.
     if (loopHasEntryWrite) {
       this.emitLoopEntryWriteTeardown({ location: node.location, positionHint: PositionHint.END });
+    }
+    // Pin the predecessor-input + entry-output counts, drop the sorted insert-loop temps.
+    if (loopHasSortedInsert) {
+      this.emitSortedInsertLoopTeardown({ location: node.location, positionHint: PositionHint.END });
     }
     // Drop the dynamic keccak loop counter now the loop is done.
     if (loopHasKeccak) {
@@ -10624,13 +10641,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   visitMappingAssign(node: MappingAssignNode): Node {
-    // A C2 (sorted linked-list) mapping write inside a DYNAMIC runtime loop (`for(i<n) m[k[i]]=v`) needs a
-    // per-iteration sorted insertion: the list, the bracketing predecessor, and the slot ordering all evolve each
-    // iteration, so a single fixed entry slot cannot describe it. Fixed-bound loops are unrolled to static writes
-    // before codegen (UnrollFixedBoundEntryLoop) and reach here at plainLoopDepth 0, so they are unaffected. Fail
-    // closed with the sorted-pending diagnostic rather than crashing deep in emitSortedValueUpsert ("Block slot not
-    // found: entry[0]"); never silently degrade a C2 write to the omittable default-on-absent entry model.
+    // A C2 (sorted linked-list) mapping write inside a DYNAMIC runtime loop (`for(i<n) m[k[i]]=v`) is a per-iteration
+    // sorted INSERT: each iteration co-spends the bracketing predecessor and mints one NEW node (emitSortedInsertLoop
+    // Body), the SDK derives the evolving list. Fixed-bound loops are unrolled before codegen and reach here at
+    // plainLoopDepth 0. If the insert-loop was set up (value write, single varying key), emit it; else fail closed
+    // (array element write / unsupported shape) - never degrade a C2 write to the omittable default-on-absent model.
     if (node.collection?.sorted && this.plainLoopDepth > 0) {
+      if (this.sortedInsertLoopActive && this.sortedInsertLoopCollection === node.collection.name
+        && !node.arrayIndex && !node.arrayPush && !node.arrayPop
+        && this.sortedValueKind(node.collection.innermostValueType) !== null) {
+        return this.emitSortedInsertLoopBody(node);
+      }
       throw new SortedMappingCodegenPendingError(node, node.collection.name);
     }
     // Sorted (C2 linked-list) mapping write `m[k] = v` (or nested `m[a][b] = v`): never the omittable entry-model
@@ -11982,6 +12003,182 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
 
     this.entryLoopActive = false;
+  }
+
+  /** The sorted (C2) value-write MappingAssign inside a loop body (`for(i<n) m[k[i]]=v`), or null. */
+  private findSortedInsertLoopWrite(node: Node): MappingAssignNode | null {
+    let found: MappingAssignNode | null = null;
+    const seen = new WeakSet<object>(); // resolved-reference fields (.collection, symbols) can form cycles post-inline
+    const walk = (n: Node): void => {
+      if (found || !n || seen.has(n)) return;
+      seen.add(n);
+      if (n instanceof MappingAssignNode && n.collection?.sorted
+        && !n.arrayIndex && !n.arrayPush && !n.arrayPop
+        && this.sortedValueKind(n.collection.innermostValueType) !== null) {
+        found = n; return;
+      }
+      for (const key of Object.keys(n)) {
+        // Skip resolved back-references (collection/symbol/type point into shared graphs), only walk AST tree fields.
+        if (key === 'location' || key === 'collection' || key === 'symbol' || key === 'type' || found) continue;
+        const v = (n as unknown as Record<string, unknown>)[key];
+        if (v instanceof Node) walk(v);
+        else if (Array.isArray(v)) for (const e of v) if (e instanceof Node) walk(e);
+      }
+    };
+    walk(node);
+    return found;
+  }
+
+  /**
+   * Set up a C2 (sorted linked-list) diff-key INSERT loop `for(i<n) m[k[i]]=v`: push the loop-invariant entry NFT
+   * P2SH32 address + a runtime counter (inserts-done-so-far = 0) BEFORE OP_BEGIN so both persist across iterations.
+   * Each iteration co-spends the bracketing predecessor and mints one NEW node; the SDK derives the evolving list.
+   * Returns false when the loop has no sorted value-write, or when an outer loop already set one up.
+   */
+  private emitSortedInsertLoopSetup(block: Node, loc: SingleLocationData): boolean {
+    if (this.sortedInsertLoopActive) return false;
+    const writeNode = this.findSortedInsertLoopWrite(block);
+    if (!writeNode) return false;
+    const collection = writeNode.collection!;
+    const slotIndex = writeNode.entrySlotIndex;
+    if (slotIndex < 0 || !this.entrySlots[slotIndex]) return false; // no slot -> fall through to the fail-close
+    const collectionHash = computeCollectionHash(this.entrySlots[slotIndex].collectionSignature);
+
+    // Record the collection so the SDK co-spends N predecessors + emits N (P', NEW) pairs (progressive list derivation).
+    const loopInserts = (this.currentFunction.sortedInsertLoops ??= []);
+    if (!loopInserts.includes(collection.name)) loopInserts.push(collection.name);
+    this.sortedWrittenCollections.add(collection.name);
+
+    // Entry NFT address (loop-invariant) = base(master category) wrapped in the collection's entry covenant.
+    this.emitMasterInputIndex(loc);
+    this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
+    this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_DROP, loc);
+    this.pushToStack(this.sortedInsertLoopAddrName);
+    this.emitP2sh32FromCovenant((cat) => buildEntryNftCovenantScript(cat, collectionHash), loc);
+    this.stack[0] = this.sortedInsertLoopAddrName; // helper renamed top to '(value)'
+
+    this.emit(encodeInt(0n), loc);
+    this.pushToStack(this.sortedInsertLoopCounterName);
+
+    this.sortedInsertLoopActive = true;
+    this.sortedInsertLoopCollection = collection.name;
+    return true;
+  }
+
+  // Push a co-spend input / entry output index = masterInputIndex + blockSize + counter*mult + add (1 untracked on
+  // top). `extraUntracked` = untracked stack items already on top when called, so the counter PICK depth is right.
+  private emitSortedInsertLoopSlotIndex(mult: number, add: number, extraUntracked: number, loc: SingleLocationData): void {
+    const blockSize = this.currentFunction.blockLayout?.blockSize ?? 1;
+    this.emitMasterInputIndex(loc);
+    this.emit(encodeInt(BigInt(blockSize)), loc); this.emit(Op.OP_ADD, loc); // master+blockSize (1 partial on top)
+    this.emit(encodeInt(BigInt(this.getStackIndex(this.sortedInsertLoopCounterName) + extraUntracked + 1)), loc);
+    this.emit(Op.OP_PICK, loc); // counter copy
+    if (mult !== 1) { this.emit(encodeInt(BigInt(mult)), loc); this.emit(Op.OP_MUL, loc); }
+    this.emit(Op.OP_ADD, loc);
+    if (add !== 0) { this.emit(encodeInt(BigInt(add)), loc); this.emit(Op.OP_ADD, loc); }
+  }
+
+  /**
+   * One iteration of a C2 diff-key INSERT loop. Modeled on emitSortedValueUpsert's INSERT branch (identical working-
+   * area layout [v, Hk, addr, coSlot, coNext, coValue], so the same emitVerifySortedValueOutput depth args hold), but
+   * co-spends the predecessor at input[master+blockSize+counter] and emits P' at output[..+2*counter] / NEW at
+   * output[..+2*counter+1]. INSERT-ONLY: the bracket coSlot<Hk<coNext fails closed if the key is already present.
+   */
+  private emitSortedInsertLoopBody(node: MappingAssignNode): Node {
+    const loc = { location: node.location, positionHint: PositionHint.END };
+    const collection = node.collection!;
+    const slotIndex = node.entrySlotIndex;
+    // This entry is minted/co-spent inside the loop, not at a fixed block slot: exclude it from the function-epilogue
+    // fixed-entry covenant + category verification (emitEntryCovenantVerification skips inLoop slots).
+    if (this.entrySlots[slotIndex]) this.entrySlots[slotIndex].inLoop = true;
+
+    // 1. H(k) (composite; the loop-varying key is an expression key handled by emitSortedKeyHash) -> [.., Hk(t)]
+    this.emitSortedKeyHash(node, slotIndex, loc);
+    this.pushToStack('(il_hk)');
+
+    // 2. new value v: [.., Hk(t), v(t)]; int -> minimal number
+    node.expression = this.visit(node.expression);
+    if (this.sortedValueKind(collection.innermostValueType) === 'int') this.emit(Op.OP_BIN2NUM, loc);
+
+    // reorder [Hk, v] -> [v, Hk(u)]
+    const hkIdx = this.getStackIndex('(il_hk)');
+    this.emit(encodeInt(BigInt(hkIdx)), loc); this.emit(Op.OP_ROLL, loc); this.removeFromStack(hkIdx);
+
+    // 3. entry address (recompute; left untracked) -> [v(t), Hk(u), addr(u)]
+    this.emitMasterInputIndex(loc); this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
+    this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_DROP, loc);
+    this.pushToStack('(il_addr)');
+    const collectionHash = computeCollectionHash(this.entrySlots[slotIndex].collectionSignature);
+    this.emitP2sh32FromCovenant((cat) => buildEntryNftCovenantScript(cat, collectionHash), loc);
+    this.popFromStack();
+
+    // 4. co-spend predecessor input[master+blockSize+counter]; read [coSlot32, coNext32, coValue]
+    this.emitSortedInsertLoopSlotIndex(1, 0, 2, loc); // extraUntracked = Hk, addr
+    this.emit(Op.OP_DUP, loc); this.emit(Op.OP_UTXOBYTECODE, loc);
+    this.emit(encodeInt(2n), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_EQUALVERIFY, loc); // bc == addr
+    this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc);
+    this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc);
+    this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); // [v, Hk, addr, coSlot32, coNext32, coValue]
+
+    // 5. bracket coSlot < H(k) < coNext (coNext 0 = +inf). Present key -> coSlot==Hk -> coSlot<Hk false -> revert.
+    this.emit(encodeInt(2n), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_BIN2NUM, loc); // coSlot#
+    this.emit(encodeInt(5n), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_BIN2NUM, loc); // Hk#
+    this.emit(Op.OP_LESSTHAN, loc); this.emit(Op.OP_VERIFY, loc);
+    this.emit(encodeInt(1n), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_BIN2NUM, loc); // coNext#
+    this.emit(Op.OP_DUP, loc); this.emit(Op.OP_0, loc); this.emit(Op.OP_NUMEQUAL, loc);
+    this.emit(Op.OP_IF, loc); this.emit(Op.OP_DROP, loc);
+    this.emit(Op.OP_ELSE, loc);
+    this.emit(encodeInt(5n), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_BIN2NUM, loc); // Hk# (coNext# above)
+    this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_LESSTHAN, loc); this.emit(Op.OP_VERIFY, loc); // H(k) < coNext
+    this.emit(Op.OP_ENDIF, loc); // [v, Hk, addr, coSlot, coNext, coValue]
+
+    // 6. P' at output[master+blockSize+2*counter] = coSlot || H(k) || coValue
+    this.emitSortedInsertLoopSlotIndex(2, 0, 5, loc); // extraUntracked = Hk, addr, coSlot, coNext, coValue
+    this.emitVerifySortedValueOutput(loc, 4, 3, 5, 1);
+
+    // 7. NEW at output[master+blockSize+2*counter+1] = H(k) || coNext || v
+    this.emitSortedInsertLoopSlotIndex(2, 1, 5, loc);
+    this.emitVerifySortedValueOutput(loc, 4, 5, 2, 6);
+
+    // drop coValue, coNext, coSlot, addr, Hk (untracked), then v (tracked)
+    this.emit(Op.OP_2DROP, loc); this.emit(Op.OP_2DROP, loc); this.emit(Op.OP_DROP, loc);
+    this.emit(Op.OP_DROP, loc); this.popFromStack();
+
+    // counter += 1 in place (tracker-neutral: the PICK'd value is untracked, +1 offset covers it)
+    this.emit(encodeInt(BigInt(this.getStackIndex(this.sortedInsertLoopCounterName))), loc);
+    this.emit(Op.OP_PICK, loc); this.emit(Op.OP_1ADD, loc);
+    this.emitReplace(this.getStackIndex(this.sortedInsertLoopCounterName) + 1, node);
+    return node;
+  }
+
+  /**
+   * Tear down a sorted INSERT loop after OP_UNTIL: pin the co-spent predecessor-input count == counter AND the entry-
+   * output count == 2*counter (no orphan/duplicate/burned entries), then drop the counter + precomputed address.
+   */
+  private emitSortedInsertLoopTeardown(loc: SingleLocationData): void {
+    if (!this.sortedInsertLoopActive) return;
+
+    // output count == 2 * counter: compute 2*counter into a temp, pin, drop the temp.
+    this.emit(encodeInt(BigInt(this.getStackIndex(this.sortedInsertLoopCounterName))), loc);
+    this.emit(Op.OP_PICK, loc); this.emit(encodeInt(2n), loc); this.emit(Op.OP_MUL, loc);
+    this.pushToStack('(il_outcount)');
+    this.emitVerifyChunkUtxoCount('(il_outcount)', true, loc, this.sortedInsertLoopAddrName);
+    const oc = this.getStackIndex('(il_outcount)');
+    this.emit(encodeInt(BigInt(oc)), loc); this.emit(Op.OP_ROLL, loc); this.emit(Op.OP_DROP, loc);
+    this.removeFromStack(oc);
+
+    // input count == counter: only the N predecessors carry the entry address (fail-closed if the fn also reads it).
+    this.emitVerifyChunkUtxoCount(this.sortedInsertLoopCounterName, false, loc, this.sortedInsertLoopAddrName);
+
+    for (const name of [this.sortedInsertLoopCounterName, this.sortedInsertLoopAddrName]) {
+      const idx = this.getStackIndex(name);
+      this.emit(encodeInt(BigInt(idx)), loc);
+      this.emit(Op.OP_ROLL, loc); this.emit(Op.OP_DROP, loc);
+      this.removeFromStack(idx);
+    }
+
+    this.sortedInsertLoopActive = false;
+    this.sortedInsertLoopCollection = null;
   }
 
   // A dynamic (runtime-bound) keccak256 loop reads one compute side-car per iteration from the region right after

@@ -59,7 +59,12 @@ export default class LowerStorageSlotPointers extends AstTraversal {
 
     if (node.contract) node.contract = this.dropFactories(this.visit(node.contract) as ContractNode);
     node.importedContracts = node.importedContracts.map((c) => this.dropFactories(this.visit(c) as ContractNode));
-    node.freeFunctions = (node.freeFunctions ?? []).filter((f) => !this.factories.has(f.name));
+    // Drop the consumed factory free functions AND visit the rest: an inline `getXSlot(ref).value = v` write can
+    // live in an imported LIBRARY free function (OZ ShortStrings.setWithFallback), which must be rewritten too - not
+    // only the contract methods - else the dropped factory call dangles ("Undefined reference to getStringSlot").
+    node.freeFunctions = (node.freeFunctions ?? [])
+      .filter((f) => !this.factories.has(f.name))
+      .map((f) => this.visit(f) as FunctionDefinitionNode);
 
     if (this.used && node.contract && !node.contract.collections.some((c) => c.name === EVM_STORAGE)) {
       const mapping = new CollectionNode(new MappingType(UINT256, UINT256), EVM_STORAGE);

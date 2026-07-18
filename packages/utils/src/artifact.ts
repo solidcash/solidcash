@@ -168,6 +168,10 @@ export interface AbiFunction {
   // Sorted (C2) collections written by a diff-key INSERT loop (`for(i<n) m[k[i]]=v`); the SDK co-spends N bracketing
   // predecessors and emits N (P', NEW) commitment pairs, deriving the evolving sorted list per iteration.
   sortedInsertLoops?: readonly string[];
+  // Per-loop derivation metadata for the above: the fixed leading key params, the varying key array param (its
+  // elements are the per-iteration last key), and the value (a param or a bool literal). Enough for the SDK to
+  // compute each H(k) = keyToSlotMulti([...fixedKeys, arr[i]]) and build the co-spend/output plan off-chain.
+  sortedInsertLoopInfo?: readonly SortedInsertLoopAbi[];
   // Function params whose value feeds blockhash(n); the SDK reads the arg to resolve addr(n) and co-spend
   // the (n->hash) oracle UTXO as a trailing input.
   blockhashReads?: readonly string[];
@@ -274,6 +278,14 @@ export interface CollectionInfo {
   /** True for an `enumerable mapping(...)` - the mapping may be iterated. A plain mapping is not enumerable
    * (Solidity parity). Omitted when false. */
   enumerable?: boolean;
+}
+
+export interface SortedInsertLoopAbi {
+  collection: string;
+  fixedKeyParams: readonly string[]; // leading param keys (in order), constant across the loop
+  varyingArrayParam: string;         // the array whose elements are the varying LAST key, one per iteration
+  valueParam?: string;               // the value comes from this function param
+  valueBool?: boolean;               // ... or is this bool literal (true -> 0x01 tail, false -> empty tail)
 }
 
 export interface KeySourceAbi {

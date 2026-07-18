@@ -12049,6 +12049,28 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (!loopInserts.includes(collection.name)) loopInserts.push(collection.name);
     this.sortedWrittenCollections.add(collection.name);
 
+    // Off-chain derivation metadata: the leading FIXED key params + the VARYING key array (its elements are the
+    // per-iteration last key, encoded as an `arridx(id:<arr>,id:<loopvar>)` keySource) + the value (a param or a bool
+    // literal). Enough for the SDK to compute each H(k) = keyToSlotMulti([...fixedKeys, arr[i]]) and plan off-chain.
+    const keySources = (this.entrySlots[slotIndex].keySources ?? []) as Array<{ kind: string; paramName?: string; canonical?: string }>;
+    const fixedKeyParams: string[] = [];
+    let varyingArrayParam: string | undefined;
+    for (const src of keySources) {
+      if (src.kind === 'param' && src.paramName) { fixedKeyParams.push(src.paramName); continue; }
+      const m = (src.canonical ?? '').match(/^arridx\(id:(\w+),id:\w+\)$/);
+      if (m) varyingArrayParam = m[1];
+    }
+    if (varyingArrayParam) {
+      const expr = writeNode.expression;
+      const info = {
+        collection: collection.name, fixedKeyParams, varyingArrayParam,
+        ...(expr instanceof IdentifierNode ? { valueParam: expr.name } : {}),
+        ...(expr instanceof BoolLiteralNode ? { valueBool: expr.value } : {}),
+      };
+      const infos = (this.currentFunction.sortedInsertLoopInfo ??= []);
+      if (!infos.some((x) => x.collection === info.collection)) infos.push(info);
+    }
+
     // Entry NFT address (loop-invariant) = base(master category) wrapped in the collection's entry covenant.
     this.emitMasterInputIndex(loc);
     this.emit(Op.OP_UTXOTOKENCATEGORY, loc);

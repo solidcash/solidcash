@@ -277,6 +277,10 @@ export class FunctionDefinitionNode extends Node implements Named {
   // Sorted (C2) collections written by a diff-key INSERT loop (`for(i<n) m[k[i]]=v`); recorded during codegen. SDK
   // co-spends N bracketing predecessors + emits N (P', NEW) pairs from the evolving list (emitSortedInsertLoopBody).
   sortedInsertLoops?: string[];
+  // Per-loop key/value derivation metadata (fixed key params + varying key array param + value) for the SDK.
+  sortedInsertLoopInfo?: Array<{
+    collection: string; fixedKeyParams: string[]; varyingArrayParam: string; valueParam?: string; valueBool?: boolean;
+  }>;
   // Function parameters whose value feeds blockhash(n); recorded during codegen. SDK reads the arg to resolve
   // addr(n) and co-spend the (n->hash) oracle UTXO as a trailing input (mirrors dynamicReads auto-injection).
   blockhashReads?: string[];
@@ -886,6 +890,9 @@ export class MappingFieldAssignNode extends StatementNode implements Named {
   collection?: CollectionNode;
   entrySlotIndex: number = -1;
   fromModifier?: string; // see StateAssignNode.fromModifier (inlined-helper origin for the private-collection check)
+  // Deeper member names after `fieldName` for an imported-struct field write whose struct was unknown at parse
+  // (`x[i].a.b = v` -> fieldName 'a', trailingMembers ['b']); the redesugar pass reconstructs the nested rebuild.
+  trailingMembers?: string[];
 
   constructor(
     public name: string,

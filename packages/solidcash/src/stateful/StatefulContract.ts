@@ -5564,6 +5564,60 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       }
     }
 
+    // C2 diff-key INSERT loop derivation: `for(i<arr.length) m[...fixed][arr[i]] = v`. Co-spend the N bracketing
+    // predecessors (iterationEntryInputs, in loop order -> input[master+blockSize+i]) and emit N interleaved (P', NEW)
+    // commitment pairs at the trailing loop-entry outputs (output[master+blockSize+2i / +2i+1]). Both are known
+    // EXACTLY from the off-chain sorted list (SortedList.planInsert); the covenant pins them, so no trace derivation.
+    // Fail closed (throw) when a key is already present (update-in-loop) or two keys share a predecessor (same-gap).
+    const sortedLoopCommitments = new Map<string, string[]>();
+    for (const info of abiFunction?.sortedInsertLoopInfo ?? []) {
+      const collection = (stateLayout.collections ?? []).find((c) => c.name === info.collection);
+      if (!collection) continue;
+      const entryAddr = getEntryNftAddress(this.inner, this.categoryId, collection.signature);
+      const entries = (await this.inner.provider.getUtxos(entryAddr)).filter((u) => (
+        u.token?.category === this.categoryId && u.token?.nft?.capability === 'mutable'
+        && !!u.token?.nft?.commitment && u.token.nft.commitment.length > 0
+      ));
+      const list = SortedList.fromUtxos(entries);
+      const argOf = (name: string | undefined): unknown => {
+        if (!name) return undefined;
+        const i = abiFunction!.inputs.findIndex((p) => p.name === name);
+        return i >= 0 ? args[i] : undefined;
+      };
+      const keyTypes = collection.keyTypes ?? [collection.keyType];
+      const encKey = (v: unknown, keyType: string): Uint8Array => (
+        keyType === 'address' && typeof v === 'string' && v.includes(':') ? addressToLockScript(v)
+          : typeof v === 'bigint' ? bigIntToVmNumber(v)
+            : v instanceof Uint8Array ? v
+              : typeof v === 'boolean' ? bigIntToVmNumber(v ? 1n : 0n)
+                : bigIntToVmNumber(BigInt(v as string)));
+      const fixedBins = info.fixedKeyParams.map((p, i) => encKey(argOf(p), keyTypes[i] ?? collection.keyType));
+      const varyType = keyTypes[info.fixedKeyParams.length] ?? collection.keyType;
+      const arr = argOf(info.varyingArrayParam);
+      if (!Array.isArray(arr)) continue;
+      let valueTail: Uint8Array;
+      if (info.valueBool !== undefined) valueTail = info.valueBool ? new Uint8Array([1]) : new Uint8Array(0);
+      else {
+        const vv = argOf(info.valueParam);
+        valueTail = typeof vv === 'boolean' ? (vv ? new Uint8Array([1]) : new Uint8Array(0))
+          : typeof vv === 'bigint' ? bigIntToVmNumber(vv) : vv instanceof Uint8Array ? vv : new Uint8Array(0);
+      }
+      const wUnlocker = createEntryNftUnlocker(this.inner, 0, this.categoryId, info.collection);
+      const commitments: string[] = [];
+      const usedPred = new Set<string>();
+      for (const elem of arr as unknown[]) {
+        const slot = keyToSlotMulti([...fixedBins, encKey(elem, varyType)]);
+        if (list.has(slot)) throw new Error(`C2 insert loop ${info.collection}: key already present (update-in-loop unsupported)`);
+        const plan = list.planInsert(slot, valueTail);
+        const predKey = binToHex(plan.predecessor.slot);
+        if (usedPred.has(predKey)) throw new Error(`C2 insert loop ${info.collection}: two keys share a predecessor (same-gap unsupported)`);
+        usedPred.add(predKey);
+        iterationEntryInputs.push({ ...plan.predecessor.utxo, unlocker: wUnlocker });
+        commitments.push(binToHex(plan.predNewCommitment), binToHex(plan.newNodeCommitment));
+      }
+      if (commitments.length > 0) sortedLoopCommitments.set(info.collection, commitments);
+    }
+
     // Handle external state reads (cross-contract reads via interfaces)
     const externalReads = abiFunction?.externalReads;
     let externalReadUtxos: UnlockableUtxo[] = [];
@@ -6921,7 +6975,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // entry covenant address (N derived from the VM trace). Mirrors dynamicChunkVars (variable trailing outputs).
     const entryLoopWrites = abiFunction?.entryLoopWrites ?? [];
     const loopEntryVars = (stateLayout.collections ?? [])
-      .filter((c) => entryLoopWrites.includes(c.name))
+      .filter((c) => entryLoopWrites.includes(c.name) || sortedLoopCommitments.has(c.name))
       .map((c) => ({
         collection: c.name,
         lockingBytecode: getEntryNftLockingBytecode(this.inner, this.categoryId, c.name),
@@ -6972,6 +7026,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         builder.setLoopEntryCommitments(ins.collection, [binToHex(ins.newNode)]);
         builder.pinLoopEntry(ins.collection);
       }
+    }
+
+    // C2 diff-key INSERT loop: the 2N interleaved [P'_0, NEW_0, P'_1, NEW_1, ...] trailing outputs are known exactly
+    // from the off-chain list; inject + pin them so the auto-derivation skips this collection (nothing to trace).
+    for (const [collectionName, commitments] of sortedLoopCommitments) {
+      builder.setLoopEntryCommitments(collectionName, commitments);
+      builder.pinLoopEntry(collectionName);
     }
 
     // P5b COMPUTED values: register the collections whose value chunks must be DERIVED from the trace (the covenant

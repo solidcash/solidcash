@@ -78,6 +78,29 @@ describe('C2 diff-key insert-in-loop (SDK progressive derivation)', () => {
     expect((await contract.chkAbsent(9n, alicePub, sig).send()).txid).toBeDefined();
   });
 
+  it('NESTED 2-key mapping w[jobId][worker] (the real whitelistWorkers shape), N>1 into a fresh gap', async () => {
+    const NSRC = `contract C() {
+      mapping(int => mapping(int => bool)) w;
+      function wl(int jobId, int[] ks, pubkey pk, sig s) { require(checkSig(s, pk)); for (int i = 0; i < ks.length; i++) { w[jobId][ks[i]] = true; } }
+      function chk(int jobId, int k, pubkey pk, sig s) { require(checkSig(s, pk)); require(w[jobId][k]); }
+      function chkAbsent(int jobId, int k, pubkey pk, sig s) { require(checkSig(s, pk)); require(!w[jobId][k]); }
+    }`;
+    const art = compileString(NSRC, { forceStateful: true });
+    const f = { txid: uid(), vout: 0, satoshis: 400000n };
+    await provider.addUtxo(p2pkh.address, f);
+    const { contract } = await StatefulContract.deploy(art, [], {
+      provider, fundingUtxo: f, funder: p2pkh.unlock.spend(alicePub, sig), initialState: {}, changeAddress: p2pkh.address,
+    });
+    await fund(contract.address);
+    expect((await contract.wl(42n, [11n, 22n, 33n], alicePub, sig).send()).txid).toBeDefined();
+    for (const k of [11n, 22n, 33n]) {
+      await fund(contract.address);
+      expect((await contract.chk(42n, k, alicePub, sig).send()).txid).toBeDefined();
+    }
+    await fund(contract.address);
+    expect((await contract.chkAbsent(42n, 99n, alicePub, sig).send()).txid).toBeDefined();
+  });
+
   it('N>1 in one call works when the keys land in DISTINCT gaps (populated map)', async () => {
     const art = compileString(SRC, { forceStateful: true });
     const f = { txid: uid(), vout: 0, satoshis: 400000n };

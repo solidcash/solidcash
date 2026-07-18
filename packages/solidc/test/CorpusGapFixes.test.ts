@@ -2168,6 +2168,32 @@ describe('low-level .call target through inlined-local aliases traced to a self-
   });
 });
 
+describe('prune unreachable inline-assembly free functions (EACC EACCToken: dead OZ Strings/MessageHashUtils)', () => {
+  // An imported library ships an assembly helper the contract never calls. Its EVM memory-primitive assembly
+  // (scratch-memory mstore + keccak256, like MessageHashUtils.toEthSignedMessageHash) does not type-check on BCH,
+  // but it is dead code: PruneUnreachableFreeFunctions now treats an inline-assembly free fn as prunable-when-
+  // unreachable (previously only low-level-call helpers were), so the whole compile no longer fails on code that
+  // never runs. A REACHABLE assembly helper is still kept (and still fails), so nothing live is silently dropped.
+  const lib = 'library MHU {'
+    + ' function toEthSignedMessageHash(bytes32 h) internal pure returns (bytes32 d) {'
+    + ' assembly { mstore(0x00, "\\x19Ethereum Signed Message:\\n32") mstore(0x1c, h) d := keccak256(0x00, 0x3c) } }'
+    + ' function plain(uint256 a) internal pure returns (uint256) { return a + 1; } }';
+  const resolver = (p: string): { source: string; id: string } | undefined => (
+    p === './MHU.sol' ? { source: `pragma solidity ^0.8.20;${lib}`, id: '/MHU.sol' } : undefined);
+  const opt = { importResolver: resolver, rootFileId: '/main.sol', solidityImportCompat: true };
+
+  it('drops an UNREACHABLE assembly helper so its EVM-memory assembly never blocks the compile', () => {
+    const code = 'import { MHU } from "./MHU.sol"; contract C { uint256 public x; function f() public { x = MHU.plain(1); } }';
+    expect(() => compileString(code, opt)).not.toThrow();
+  });
+  it('keeps a REACHABLE assembly helper (nothing live is dropped - it is still compiled, and here still rejected)', () => {
+    const code = 'import { MHU } from "./MHU.sol";'
+      + ' contract C { bytes32 public x; function f(bytes32 h) public { x = MHU.toEthSignedMessageHash(h); } }';
+    // Reachable -> kept -> its scratch-memory assembly is genuinely reached; it must NOT silently vanish.
+    expect(() => compileString(code, opt)).toThrow();
+  });
+});
+
 describe('external-call target through a single-assignment local intermediary (EACC Marketplace takeJob / unicrow)', () => {
   // Two Marketplace shapes where the target hides behind a single-assignment local: (a) a STORAGE-POINTER base
   // (`JobPost storage job = jobs[id]; IERC20 token = IERC20(job.token); ...call`) the AstBuilder did not inline, so

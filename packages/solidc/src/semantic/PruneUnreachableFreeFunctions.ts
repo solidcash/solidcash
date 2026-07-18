@@ -1,4 +1,5 @@
 import {
+  AssemblyStatementNode,
   FunctionCallNode,
   FunctionDefinitionNode,
   IdentifierNode,
@@ -11,17 +12,24 @@ import {
 import AstTraversal from '../ast/AstTraversal.js';
 
 /**
- * Drops free (library) functions that are BOTH unreachable from the primary contract AND (transitively)
- * perform a low-level call. Solidity/OZ libraries ship many unused helpers; an unused low-level-call helper
- * (e.g. SafeERC20.forceApprove -> _callOptionalReturnBool when the contract only uses safeTransfer) injects
- * synthetic covenant params (__internal__callInputIndex) that its dead caller cannot supply, surfacing as a
- * spurious arg-count error on code that never runs.
+ * Drops free (library) functions that are BOTH unreachable from the primary contract AND (transitively) perform a
+ * low-level call OR contain inline assembly. Solidity/OZ libraries ship many unused helpers:
+ *  - an unused low-level-call helper (SafeERC20.forceApprove -> _callOptionalReturnBool when the contract only uses
+ *    safeTransfer) injects synthetic covenant params (__internal__callInputIndex) its dead caller cannot supply;
+ *  - an unused assembly helper (Strings.toString's `add(buffer, ..)` memory-pointer arithmetic on a `string memory`,
+ *    reached only via a never-called path) uses EVM memory primitives that do not type-check on BCH.
+ * Both surface as errors on code that never runs.
  *
- * Scoped to the low-level-call subgraph so nothing else is ever removed: operator overloads, math helpers, and
- * ordinary library functions have no low-level call and are always kept (no reachability false-negative can drop
- * them). Reachability is conservative by NAME - a member call `x.m(..)` keeps every free fn named `*.m`, a bare
- * identifier `f` every `*.f`, and every using-for-bound function name is a root - so a live helper is never cut.
- * Runs pre-semantic, after all synthesis passes. A library-only compilation (no contract) is left untouched.
+ * Scoped to the low-level-call / inline-assembly subgraph so nothing benign is ever removed: math helpers and
+ * ordinary library functions with neither are always kept (no reachability false-negative can drop them). A
+ * REACHABLE function is always kept regardless. Reachability is conservative by NAME - a member call `x.m(..)` keeps
+ * every free fn named `*.m`, a bare identifier `f` every `*.f`, every using-for-bound function name is a root - so a
+ * live helper is never cut. Runs pre-semantic, after all synthesis passes; a library-only compilation is untouched.
+ *
+ * NOTE the assembly check sees only the blocks that SURVIVE the earlier lowering passes (LowerMemoryModel /
+ * LowerInlineAssembly). That is exactly the target class: real OZ memory helpers (Strings.toString's mstore8 loop,
+ * MessageHashUtils' scratch-memory keccak256) keep a residual assembly block, whereas trivially-lowerable one-liners
+ * are gone by now - and if such a fully-lowered helper is dead it is harmless (it type-checks as plain ops).
  */
 export default class PruneUnreachableFreeFunctions extends AstTraversal {
   visitSourceFile(node: SourceFileNode): Node {
@@ -30,10 +38,11 @@ export default class PruneUnreachableFreeFunctions extends AstTraversal {
 
     const byName = this.indexByName(freeFns);
 
-    // Tainted = transitively performs a low-level call. Seed with direct low-level calls, then propagate to any
-    // free function that calls a tainted one (fixpoint), so a pure delegator like `forceApprove` is caught too.
+    // Tainted = directly performs a low-level call / contains inline assembly, OR transitively calls such a fn.
+    // Seed with the direct cases, then propagate to any free function that calls a tainted one (fixpoint), so a
+    // pure delegator like `forceApprove` is caught too.
     const tainted = new Set<FunctionDefinitionNode>();
-    for (const fn of freeFns) if (this.hasDirectLowLevelCall(fn)) tainted.add(fn);
+    for (const fn of freeFns) if (this.hasDirectLowLevelCall(fn) || this.hasInlineAssembly(fn)) tainted.add(fn);
     for (let changed = true; changed;) {
       changed = false;
       for (const fn of freeFns) {
@@ -94,6 +103,14 @@ export default class PruneUnreachableFreeFunctions extends AstTraversal {
         if (dot > 0 && isLL(n.identifier.name.slice(dot + 1))) found = true;
       } else if (n instanceof MethodCallNode && isLL(n.methodName)) found = true;
     });
+    return found;
+  }
+
+  // A body directly contains an inline `assembly { .. }` block (EVM Yul primitives - memory-pointer arithmetic,
+  // mstore/mload - that need not type-check on BCH when the whole function is dead).
+  private hasInlineAssembly(fn: FunctionDefinitionNode): boolean {
+    let found = false;
+    this.walk(fn.body, (n) => { if (n instanceof AssemblyStatementNode) found = true; });
     return found;
   }
 

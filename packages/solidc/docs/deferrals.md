@@ -37,6 +37,19 @@ Corpus files: `keccak_optimization_bug_string.sol`, `mcopy.sol`, `mcopy_empty.so
 **Revisit if.** A REAL contract (not an edge test) needs assembly to mutate or variable-length-hash a
 `bytes`/`string` param's buffer.
 
+**UPDATE 2026-07-18 - a REAL contract now hits this: EACC `EACCToken` (`ERC20` + `ERC20Permit`).** OZ
+`ShortStrings.toString(ShortString)` (reached via `EIP712._EIP712Name` -> the public ERC-5267 `eip712Domain()`)
+does `string memory str = new string(32); assembly { mstore(str, len) mstore(add(str, 0x20), sstr) }` - a LOCAL
+`string` used as a raw memory pointer (`add(str, 0x20)` -> `string + uint256`; `mstore(str, ..)` -> assign-to-string).
+This is the same family as the param case but for a LOCAL `string` (locals were said to lower to `__yulmem` pointers,
+but a `string` local written via `mstore`/`add` in assembly is not carried through). Blocks EACCToken at TypeCheck.
+The dead-code sibling (`Strings.toString`, unreachable) is now pruned (see `PruneUnreachableFreeFunctions` +
+commit `b8e562e7`); this one is REACHABLE so it cannot be pruned - it needs real `string`-local `__yulmem` pointer
+support in assembly (mstore/add on the buffer + a ShortString-word store), the high-risk item above. EACCToken is
+otherwise fully merged/compiled: the bench's remaining 1/15. Cascade already cleared this session:
+transitive-lib-constants `HEX_DIGITS` (`fa67b4fc`), `getStringSlot` inline write in a library free fn (`612e4cda`),
+`using ShortStrings for *` in an imported inherited parent ctor (`f05620ce`).
+
 ---
 
 ## Uninitialized named-return bytes  — 2026-07-15

@@ -430,11 +430,12 @@ export function implicitlyCastable(actual?: Type, expected?: Type): boolean {
   // Token containers can't be implicitly cast
   if (actual instanceof TokenContainerType || expected instanceof TokenContainerType) return false;
 
-  // Address type implicit casts
+  // Address type implicit casts. `payable` is a NO-OP cosmetic distinction on BCH (every address can receive
+  // value - see the cast comment below), so ANY payable combination is implicitly castable, including
+  // non-payable -> payable. This is what BCH semantics allow and what older Solidity (0.6.x, where `msg.sender`
+  // is `address payable`) relies on: OZ Context._msgSender() does `return msg.sender` into an `address payable`
+  // return, which a strict non-payable->payable rule would reject on every OZ-based contract.
   if (actual instanceof AddressType && expected instanceof AddressType) {
-    // payable -> non-payable: OK; non-payable -> non-payable: OK; payable -> payable: OK
-    // non-payable -> payable: NOT OK (must use explicit payable() cast)
-    if (expected.payable && !actual.payable) return false;
     return true;
   }
   if (actual instanceof AddressType && expected instanceof BytesType) {

@@ -624,6 +624,18 @@ describe('bytes memory/local element write (bytes memory d; d[i] = v)', () => {
   });
 });
 
+describe('address is implicitly castable to address payable (payable is a no-op on BCH; OZ 0.6.x _msgSender)', () => {
+  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  it('accepts `return msg.sender` into an `address payable` return (OZ Context._msgSender)', () => {
+    expect(cc('contract C { function _msgSender() internal view returns (address payable) { return msg.sender; }'
+      + ' function f() public view returns (address payable) { return _msgSender(); } }')).toBe('C');
+  });
+  it('accepts assigning a plain address to an address payable variable', () => {
+    expect(cc('contract C { function f(address a) public pure returns (address payable) { address payable p = a;'
+      + ' return p; } }')).toBe('C');
+  });
+});
+
 describe('using-for on a NESTED mapping element receiver (SushiSwap/OZ ERC20 allowances)', () => {
   const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
   const lib = 'library SM { function sub(uint256 a, uint256 b) internal pure returns (uint256) { return a - b; }'

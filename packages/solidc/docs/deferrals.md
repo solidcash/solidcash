@@ -543,7 +543,22 @@ loop-written sorted slots need `inLoop=true` so the epilogue skips them; `findSo
 protection (post-inline AST graph cycles). STILL PENDING: the SDK progressive-list auto-derivation (co-spend N
 predecessors + emit N (P',NEW) pinned pairs) + VM/adversarial proof - the covenant compiles and fails closed (count
 pins), so the default derivation can't build a wrong tx, but a contract with an insert loop needs manual tx construction
-until the SDK lands. Marketplace: V1 compiles past whitelistWorkers but its FULL assembled contract is ~674k ops (a
+until the SDK lands.
+
+**UPDATE 2026-07-18 (VM-testing the SDK derivation, commit ba2830ab = WIP it.skip): the scattered design DOES NOT cover
+the real case, and the covenant has a VM bug.** (1) COVENANT VM BUG: even N=1 fails an OP_VERIFY at ~ip162 - `emitSorted
+InsertLoopBody` was committed compile-only, so a stack-offset bug (the emitSortedInsertLoopSlotIndex extraUntracked / the
+emitVerifySortedValueOutput depth args) is almost certain; needs a VM-trace stack dump to fix. (2) WRONG CASE: the
+COMMON scenario - N keys into a FRESH/sparse map (whitelistWorkers on a new job) - is N inserts into ONE gap (all bracket
+HEAD), i.e. the SAME predecessor, which the scattered per-iteration co-spend CANNOT do (fails closed "same-gap"). That is
+item (2) the RANGE-SPLICE (co-spend one predecessor, mint a sorted chain P->k1->..->kN->oldNext), and it has a deep
+LOOP-source-order vs LIST-slot-order tension: the loop visits keys in source order but the chain must be slot-sorted
+(sha256), so a range-splice covenant has to verify the minted run is a sorted PERMUTATION of {H(xs[i])}, not a simple
+source-order loop. So scattered-insert (item 3) fits only an already-dense map with distinct gaps (rare); the common
+one-gap case (item 2) is the real target and is unbuilt. NEXT: fix the covenant stack offsets vs a VM trace (validates
+scattered N=1/distinct-gap), then design + build the range-splice.
+
+Marketplace: V1 compiles past whitelistWorkers but its FULL assembled contract is ~674k ops (a
 pre-existing deep-inlining explosion, NOT this covenant - a 3-entry-point multi-site insert loop is <1s); commit
 8d5004d0 made the optimiser's per-pass O(n) and OPTIMISER_SKIP_MAX_OPS skips optimisation entirely above 50k ops so it
 degrades gracefully (compiles unoptimised) instead of hanging.

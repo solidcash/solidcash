@@ -206,6 +206,34 @@ describe('Imports', () => {
       })).not.toThrow();
     });
 
+    it('rewrites a NESTED struct-field write on an imported-struct array element (jp.roles.creator = v)', () => {
+      // The AstBuilder preserves the deeper member chain (trailingMembers) for an imported struct; the redesugar
+      // pass reconstructs the nested rebuild `arr[id] = S(.., R(v, arr[id].roles.worker), ..)` (EACC MarketplaceV2/V3).
+      const data = 'struct Roles { address creator; address worker; } struct JobPost { bool flag; Roles roles; }'
+        + ' contract Data { uint256 dummy; }';
+      const resolver = (importPath: string): { source: string; id: string } | undefined => (
+        importPath === './Data.sol' ? { source: data, id: '/Data.sol' } : undefined);
+      const code = 'import {Data} from "./Data.sol"; contract V is Data { JobPost[] public jobs;'
+        + ' function upd(uint256 id) public { JobPost storage jp = jobs[id]; jp.roles.creator = msg.sender; } }';
+      expect(() => compileString(code, {
+        importResolver: resolver, rootFileId: '/main.sol', solidityImportCompat: true,
+      })).not.toThrow();
+    });
+
+    it('rewrites a COMPOUND field write on an imported-struct array element inside a loop-caching function', () => {
+      // `jp.owed += v` in a function with a loop over `jobs` (Cache renames jobs -> __dlcache_jobs): the compound
+      // value reads the SAME element, redirected to the local copy so no dangling `jobs[id]` read survives the rename.
+      const data = 'struct JobPost { bool flag; uint256 owed; } contract Data { uint256 dummy; }';
+      const resolver = (importPath: string): { source: string; id: string } | undefined => (
+        importPath === './Data.sol' ? { source: data, id: '/Data.sol' } : undefined);
+      const code = 'import {Data} from "./Data.sol"; contract V is Data { JobPost[] public jobs;'
+        + ' function upd(uint256 jobId, uint256 n) public { for (uint256 i=0;i<n;i++){ jobs.push(); }'
+        + ' JobPost storage jp = jobs[jobId]; jp.owed += 5; } }';
+      expect(() => compileString(code, {
+        importResolver: resolver, rootFileId: '/main.sol', solidityImportCompat: true,
+      })).not.toThrow();
+    });
+
     it('desugars a using-for method call on an IMPORTED struct-typed state var (OZ Counters pattern)', () => {
       // The struct (Counter) is imported, so unknown at parse time - the AstBuilder cannot desugar
       // `counter.increment()`; the post-import RedesugarImportedUsingForCalls pass must (else it fails as an

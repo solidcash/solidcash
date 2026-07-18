@@ -3597,13 +3597,15 @@ export default class AstBuilder
     let node: StatementNode;
     if (keys.length === 0 && hasMember) {
       // `x.field = v` whose struct type was unknown at parse (imported struct local): buildStructFieldRebuild
-      // could not fire above. Preserve the field in a MappingFieldAssign so RedesugarImportedStructFieldWrites
-      // can rebuild it post-merge; a plain StateAssign would silently drop the field.
+      // could not fire above. Preserve the field (and any deeper member chain) in a MappingFieldAssign so
+      // RedesugarImportedStructFieldWrites can rebuild it post-merge; a plain StateAssign would drop the field.
       node = new MappingFieldAssignNode(name, keys, fieldName!, value);
+      if (members.length > 1) (node as MappingFieldAssignNode).trailingMembers = members.slice(1);
     } else if (keys.length === 0) {
       node = new StateAssignNode(name, value);
     } else if (hasMember) {
       node = new MappingFieldAssignNode(name, keys, fieldName!, value);
+      if (members.length > 1) (node as MappingFieldAssignNode).trailingMembers = members.slice(1);
     } else if (bareElement) {
       node = new ArrayAssignNode(name, keys[0], value);
     } else if (keys.length === 1 && this.packedStateArrayNames.has(name)) {

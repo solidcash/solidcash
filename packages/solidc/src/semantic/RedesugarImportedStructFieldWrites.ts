@@ -12,6 +12,7 @@ import {
   SourceFileNode,
   StateArrayAssignNode,
   ArrayAccessNode,
+  MappingAccessNode,
   IntLiteralNode,
   ContractNode,
   StatementNode,
@@ -129,6 +130,10 @@ export default class RedesugarImportedStructFieldWrites extends AstTraversal {
       elemAssign.location = loc;
       stmts.push(decl as StatementNode, elemAssign);
       newFieldValue = id(tmp);
+    } else if (node.trailingMembers && node.trailingMembers.length > 0) {
+      // Nested field write `struct.a.b = v`: the new value of field `a` is `a` rebuilt with `b = v` (recursively).
+      if (!(field.type instanceof StructType)) return undefined; // `a.b` requires `a` to be a struct
+      newFieldValue = this.rebuildNestedExpr(fieldOf(node.name, node.fieldName), field.type, node.trailingMembers, node.expression);
     } else {
       newFieldValue = node.expression;
     }
@@ -151,16 +156,64 @@ export default class RedesugarImportedStructFieldWrites extends AstTraversal {
     const arrId = new IdentifierNode(node.name); arrId.location = loc;
     const read = new ArrayAccessNode(arrId, cloneNode(node.keys[0]) as ExpressionNode); read.location = loc;
     const decl = new VariableDefinitionNode(structT, [], tmp, read); decl.location = loc;
-    // The field write moves to the local `__t` (no array index - that indexed the state array, not the field).
-    const localWrite = new MappingFieldAssignNode(tmp, [], node.fieldName, node.expression); localWrite.location = loc;
+    // The field write moves to the local `__t` (no array index - that indexed the state array, not the field);
+    // carry any deeper member chain (`arr[id].a.b = v` -> `__t.a.b = v`). A COMPOUND write's value contains a read
+    // of the SAME element (`arr[id].f OP v`); redirect that read to `__t` so it does not leave a dangling
+    // `arr[id]` read (which a later loop-cache rename `arr -> __dlcache_arr` turns into an "Undefined mapping").
+    const value = this.redirectElemRead(cloneNode(node.expression) as ExpressionNode, node.name, node.keys[0], tmp);
+    const localWrite = new MappingFieldAssignNode(tmp, [], node.fieldName, value); localWrite.location = loc;
+    localWrite.trailingMembers = node.trailingMembers;
     const rebuilt = this.rebuild(localWrite, new Map([[tmp, structT]]));
     if (!rebuilt) return undefined;
     const back = new StateArrayAssignNode(node.name, cloneNode(node.keys[0]) as ExpressionNode,
       (() => { const x = new IdentifierNode(tmp); x.location = loc; return x; })());
     back.location = loc;
-    const block = new BlockNode([decl as StatementNode, ...rebuilt.statements, back]);
+    const block = new BlockNode([decl as StatementNode, ...(rebuilt.statements ?? []), back]);
     block.location = loc;
     return block;
+  }
+
+  // Rebuild a struct expression with the field at `chain` replaced by `value`, recursively (mirrors the AstBuilder's
+  // rebuildStructWithChain): `S(f0, .., <rebuild of head with rest=value>, .., fN)`. Used for a nested imported-struct
+  // field write `struct.a.b = v` whose deeper members the AstBuilder preserved as trailingMembers.
+  private rebuildNestedExpr(structExpr: ExpressionNode, structT: StructType, chain: string[], value: ExpressionNode): ExpressionNode {
+    const loc = structExpr.location;
+    const fieldAccess = (e: ExpressionNode, f: string): FieldAccessNode => { const fa = new FieldAccessNode(e, f); fa.location = loc; return fa; };
+    const [head, ...rest] = chain;
+    const headType = structT.fields.find((f) => f.name === head)?.type;
+    if (rest.length > 0 && !(headType instanceof StructType)) return value; // malformed chain: fail closed downstream
+    const newField = rest.length === 0 ? value
+      : this.rebuildNestedExpr(fieldAccess(cloneNode(structExpr) as ExpressionNode, head), headType as StructType, rest, value);
+    const ctorId = new IdentifierNode(structT.name); ctorId.location = loc;
+    const ctor = new FunctionCallNode(ctorId,
+      structT.fields.map((f) => (f.name === head ? newField : fieldAccess(cloneNode(structExpr) as ExpressionNode, f.name))));
+    ctor.location = loc;
+    return ctor;
+  }
+
+  // Redirect a read of the SAME state-array element `arr[key]` inside `expr` to the local copy `tmp` (the compound
+  // read `arr[id].f` in `arr[id].f OP= v` -> `tmp.f`). Matches a Mapping/ArrayAccess on `arr` whose single key
+  // structurally equals `key` (a param identifier or a literal - the only forms a compound-rhs read produces).
+  private redirectElemRead(expr: ExpressionNode, arrName: string, key: ExpressionNode, tmp: string): ExpressionNode {
+    const sameKey = (a: ExpressionNode | undefined, b: ExpressionNode): boolean => {
+      if (a instanceof IdentifierNode && b instanceof IdentifierNode) return a.name === b.name;
+      return a instanceof IntLiteralNode && b instanceof IntLiteralNode && a.value === b.value;
+    };
+    const isElem = (n: Node): boolean => (n instanceof MappingAccessNode && n.name === arrName && n.keys.length === 1
+      && sameKey(n.keys[0], key))
+      || (n instanceof ArrayAccessNode && n.array instanceof IdentifierNode && n.array.name === arrName
+        && sameKey(n.index, key));
+    const walk = (n: Node): Node => {
+      if (isElem(n)) { const x = new IdentifierNode(tmp); x.location = n.location; return x; }
+      for (const k of Object.keys(n)) {
+        if (k === 'type' || k === 'location' || k === 'symbolTable') continue;
+        const v = (n as unknown as Record<string, unknown>)[k];
+        if (v instanceof Node) (n as unknown as Record<string, unknown>)[k] = walk(v);
+        else if (Array.isArray(v)) for (let i = 0; i < v.length; i += 1) if (v[i] instanceof Node) v[i] = walk(v[i] as Node);
+      }
+      return n;
+    };
+    return walk(expr) as ExpressionNode;
   }
 
   private walk(node: Node | undefined, visit: (n: Node) => void): void {

@@ -2103,3 +2103,17 @@ describe('call a function-pointer struct field directly (s.x(), t[i].x(), m[k].x
       + ' contract C { function g() public pure returns (uint) { return Lib.f(); } }')).toBe('C');
   });
 });
+
+describe('low-level call with mapping-entry operands (block-layout slot allocation)', () => {
+  // `t.dest.call{value: t.val}(t.data)` where t = txs[id] reads mapping entries in the calldata, the {value}
+  // option, and the target. collectEntryAccesses/assignEntrySlotIndices now walk a low-level call's data /
+  // callOptions / targetExpression so each gets a block-layout slot (was "Block slot not found: entry[-1]").
+  const src = 'contract C { struct T { address dest; uint val; bytes data; bool done; } mapping(uint=>T) txs;'
+    + ' function exec(uint id) public { T storage t = txs[id]; (t.done,) = t.dest.call{value: t.val}(t.data); } }';
+  it('allocates entry slots for a .call{value:} with entry operands (default entry model)', () => {
+    expect(() => compileString(src, { solidityImportCompat: true, sortedMappingsAll: false })).not.toThrow();
+  });
+  it('same under C2-default (the -1 slot no longer trips the sorted read)', () => {
+    expect(() => compileString(src, { solidityImportCompat: true })).not.toThrow();
+  });
+});

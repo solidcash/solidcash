@@ -3016,6 +3016,19 @@ export default class SymbolTableTraversal extends AstTraversal {
     if ('value' in node && (node as any).value instanceof Node) {
       this.collectEntryAccesses((node as any).value, map);
     }
+    // A low-level call `t.dest.call{value: t.val}(t.data)` reads mapping entries in its calldata (`data`), its
+    // {value/gas/salt} options (`callOptions`), and its target (`targetExpression`) - collect those so each entry
+    // access gets a block-layout slot (else the codegen `emitSlotExistsCheck` hits entrySlotIndex -1).
+    if ('data' in node && (node as any).data instanceof Node) this.collectEntryAccesses((node as any).data, map);
+    if ('targetExpression' in node && (node as any).targetExpression instanceof Node) {
+      this.collectEntryAccesses((node as any).targetExpression, map);
+    }
+    if ('callOptions' in node && (node as any).callOptions) {
+      for (const k of ['value', 'gas', 'salt']) {
+        const v = (node as any).callOptions[k];
+        if (v instanceof Node) this.collectEntryAccesses(v, map);
+      }
+    }
     // Index/slice bases so a mapping-entry element read `m[k][i]` / `m[k].f[i]` / `m[k][a:b]` collects the
     // inner `m[k]` entry access (TupleIndexOp.tuple, ArrayAccess.array/index, Slice.element/start/end).
     if ('tuple' in node && (node as any).tuple instanceof Node) this.collectEntryAccesses((node as any).tuple, map);
@@ -3136,6 +3149,17 @@ export default class SymbolTableTraversal extends AstTraversal {
     }
     if ('value' in node && (node as any).value instanceof Node) {
       this.assignEntrySlotIndices((node as any).value, map);
+    }
+    // Low-level-call calldata / {value,gas,salt} options / target (mirror collectEntryAccesses).
+    if ('data' in node && (node as any).data instanceof Node) this.assignEntrySlotIndices((node as any).data, map);
+    if ('targetExpression' in node && (node as any).targetExpression instanceof Node) {
+      this.assignEntrySlotIndices((node as any).targetExpression, map);
+    }
+    if ('callOptions' in node && (node as any).callOptions) {
+      for (const k of ['value', 'gas', 'salt']) {
+        const v = (node as any).callOptions[k];
+        if (v instanceof Node) this.assignEntrySlotIndices(v, map);
+      }
     }
     // Index/slice bases (mirror collectEntryAccesses) so `m[k][i]` etc. assign the inner `m[k]` slot.
     if ('tuple' in node && (node as any).tuple instanceof Node) this.assignEntrySlotIndices((node as any).tuple, map);

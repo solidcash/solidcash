@@ -64,6 +64,10 @@ const PREFIX = '__sp';
 
 export default class InlineStoragePointerCalls extends AstTraversal {
   private funcByName: Map<string, FunctionDefinitionNode> = new Map();
+  // Overload-aware callee lookup keyed by inlineKey(name, arity): a name-only map returns the wrong overload for a
+  // call whose arity differs (OZ ERC20 `_approve/3` -> `_approve/4`), so the arity-mismatched call is never inlined
+  // yet the callee is still dropped by name -> "Undefined reference to symbol _approve".
+  private funcByKey: Map<string, FunctionDefinitionNode> = new Map();
   // H8: <name>/<arity> keys that more than one overload shares - inlining one by that key is ambiguous.
   private ambiguousInlineKeys: Set<string> = new Set();
   private inlinedFns: Set<string> = new Set();
@@ -105,7 +109,11 @@ export default class InlineStoragePointerCalls extends AstTraversal {
 
   visitContract(node: ContractNode): Node {
     this.funcByName = new Map();
-    for (const fn of [...node.functions, ...this.freeFns]) this.funcByName.set(fn.name, fn);
+    this.funcByKey = new Map();
+    for (const fn of [...node.functions, ...this.freeFns]) {
+      this.funcByName.set(fn.name, fn);
+      this.funcByKey.set(inlineKey(fn.name, fn.parameters.length), fn);
+    }
     this.ambiguousInlineKeys = collectAmbiguousInlineKeys([...node.functions, ...this.freeFns]);
     this.collectionNames = new Set(node.collections.map((c) => c.name));
     // C2 (sorted) collections: a WRITE to one co-spends the sorted-list entry slots (block layout), like a read,
@@ -143,6 +151,7 @@ export default class InlineStoragePointerCalls extends AstTraversal {
       && (this.readsEntry(node.fallbackDef) || this.touchesScalarState(node.fallbackDef)
         || this.transitiveSortedWriters.has(node.fallbackDef.name))) {
       this.funcByName.set(node.fallbackDef.name, node.fallbackDef);
+      this.funcByKey.set(inlineKey(node.fallbackDef.name, node.fallbackDef.parameters.length), node.fallbackDef);
       this.inlinedFns.add(node.fallbackDef.name);
       this.keepDefFns.add(node.fallbackDef.name);
     }
@@ -166,7 +175,9 @@ export default class InlineStoragePointerCalls extends AstTraversal {
     // Inline calls in every function body AND the constructor/fallback/receive - a constructor calling an
     // inherited `_mint`-style entry-reading helper is the common ERC20 pattern, and the helper is dropped below.
     for (const fn of [...node.functions, node.constructorDef, node.fallbackDef, node.receiveDef]) {
-      if (fn?.body) fn.body.statements = this.inlineStatements(fn.body.statements ?? [], [fn.name]);
+      if (fn?.body) {
+        fn.body.statements = this.inlineStatements(fn.body.statements ?? [], [inlineKey(fn.name, fn.parameters.length)]);
+      }
     }
     // Expression-position inlining of value-returning storage-pointer calls (after the void statement inlining;
     // the two function sets are disjoint - void vs value-returning). Traverse via the visitor so a call in any
@@ -391,9 +402,13 @@ export default class InlineStoragePointerCalls extends AstTraversal {
         // A `this.f()` self-call statement carries no plain identifier - not an inlinable name call.
         const name = stmt.call.identifier?.name;
         if (name === undefined) { out.push(stmt); continue; }
-        const callee = this.funcByName.get(name);
+        const key = inlineKey(name, stmt.call.parameters.length);
+        // Resolve the exact overload by (name, arity); fall back to the name map for a single-overload callee whose
+        // arity was adjusted by reorderNamedTail. The recursion guard is keyed by (name, arity) too, so inlining
+        // `_approve/4` from inside `_approve/3` is not blocked by the shared name.
+        const callee = this.funcByKey.get(key) ?? this.funcByName.get(name);
         if (callee) this.reorderNamedTail(stmt.call, callee);
-        if (callee && this.inlinedFns.has(name) && !stack.includes(name)
+        if (callee && this.inlinedFns.has(name) && !stack.includes(inlineKey(name, callee.parameters.length))
           && stmt.call.parameters.length === callee.parameters.length) {
           if (this.ambiguousInlineKeys.has(inlineKey(name, stmt.call.parameters.length))) {
             throw new AmbiguousInlineOverloadError(stmt.call, name, stmt.call.parameters.length);
@@ -470,7 +485,8 @@ export default class InlineStoragePointerCalls extends AstTraversal {
       def.location = args[i].location ?? callee.location;
       bindings.push(def);
     });
-    const inlined = this.inlineStatements(cloned.body.statements ?? [], [...stack, callee.name]);
+    const inlined = this.inlineStatements(cloned.body.statements ?? [],
+      [...stack, inlineKey(callee.name, callee.parameters.length)]);
     return [...bindings, ...inlined];
   }
 

@@ -2188,3 +2188,18 @@ describe('C2-default: an inherited method accessing its OWN contract private map
     { solidityImportCompat: true })).toThrow(/Cannot access private collection '_balances'/);
   });
 });
+
+describe('C2-default: OVERLOADED internal C2-writer chain inlines by (name, arity) (OZ ERC20 _approve/3 -> _approve/4)', () => {
+  // `_approve/3` calls `_approve/4` (which writes the C2 `_allowances`). InlineStoragePointerCalls resolved callees
+  // and its recursion guard by NAME only, so the arity-4 call inside `_approve/3` was never inlined yet `_approve`
+  // was dropped by name -> "Undefined reference to symbol _approve". Overload-aware (name, arity) resolution fixes it.
+  it('compiles the overloaded _approve chain that writes a nested C2 mapping', () => {
+    const src = 'pragma solidity ^0.8.20; contract Base {'
+      + ' mapping(address => mapping(address => uint256)) private _allowances;'
+      + ' function _approve(address o, address s, uint256 v, bool e) internal { _allowances[o][s] = v; }'
+      + ' function _approve(address o, address s, uint256 v) internal { _approve(o, s, v, true); }'
+      + ' function approve(address s, uint256 v) public returns (bool) { _approve(msg.sender, s, v); return true; } }'
+      + ' contract Derived is Base {}';
+    expect(() => compileString(src, { solidityImportCompat: true })).not.toThrow();
+  });
+});

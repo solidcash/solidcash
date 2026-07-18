@@ -2166,3 +2166,25 @@ describe('low-level .call target through inlined-local aliases traced to a self-
       ?.addressStateVar).toBe('ll_config_token');
   });
 });
+
+describe('C2-default: an inherited method accessing its OWN contract private mapping (FakeToken ERC20 _update)', () => {
+  // Under C2-default `_balances` is a sorted collection, so a C2-write helper (`_upd`) is inlined into its entry
+  // caller (InlineStoragePointerCalls). The inlined `_balances[a]=v` then lives in the caller's context, whose
+  // inheritedFrom differs from `_balances`'s - the private-collection check wrongly rejected it. tagModifierStateAccess
+  // now tags the inlined collection access with its defining contract; the check consults `node.fromModifier` (like
+  // the scalar private-var check), so an inherited method's access to its own contract's private mapping compiles,
+  // while a DERIVED contract directly touching a base's private mapping still fails.
+  const base = (deriveBody: string): string => 'pragma solidity ^0.8.20;'
+    + ' contract Base { mapping(address => uint256) private _balances;'
+    + '   function _upd(address a, uint256 v) internal { uint256 cur = _balances[a]; _balances[a] = cur + v; } }'
+    + ` contract Derived is Base { ${deriveBody} }`;
+  it('compiles read+write of a base private mapping through an inherited helper (C2-default)', () => {
+    expect(() => compileString(base('function mint(address a, uint256 v) public { _upd(a, v); }'),
+      { solidityImportCompat: true })).not.toThrow();
+  });
+  it('still REJECTS a derived contract accessing a base private mapping directly (real visibility violation)', () => {
+    expect(() => compileString('pragma solidity ^0.8.20; contract Base { mapping(address => uint256) private _balances; }'
+      + ' contract Derived is Base { function poke(address a, uint256 v) public { _balances[a] = v; } }',
+    { solidityImportCompat: true })).toThrow(/Cannot access private collection '_balances'/);
+  });
+});

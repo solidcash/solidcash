@@ -4615,6 +4615,9 @@ export default class SymbolTableTraversal extends AstTraversal {
       && !this.isShadowedByLocal(flat.base.name)) {
       const mapNode = new MappingAccessNode(flat.base.name, flat.keys);
       mapNode.location = node.location;
+      // Carry the inlined-helper origin (tagModifierStateAccess tagged the base identifier) so the
+      // private-collection visibility check sees the defining contract for an inlined C2-read helper.
+      mapNode.fromModifier = flat.base.fromModifier;
       return this.visit(mapNode);
     }
 
@@ -4679,6 +4682,9 @@ export default class SymbolTableTraversal extends AstTraversal {
         ? new StateArrayAssignNode(node.name, node.index, node.value)
         : new MappingAssignNode(node.name, [node.index], node.value);
       stateNode.location = node.location;
+      // Carry the inlined-helper origin so the private-collection visibility check sees the defining contract
+      // (an inlined C2-write helper's `m[k]=v` was tagged in tagModifierStateAccess before this rewrite).
+      if (stateNode instanceof MappingAssignNode) stateNode.fromModifier = node.fromModifier;
       return this.visit(stateNode);
     }
 
@@ -5485,7 +5491,8 @@ export default class SymbolTableTraversal extends AstTraversal {
       throw new UndefinedCollectionError(node);
     }
     if (coll.visibility === StateVariableVisibility.PRIVATE && coll.inheritedFrom
-      && this.currentFunction.inheritedFrom !== coll.inheritedFrom) {
+      && this.currentFunction.inheritedFrom !== coll.inheritedFrom
+      && node.fromModifier !== coll.inheritedFrom) {
       throw new PrivateCollectionAccessError(node, coll.name, coll.inheritedFrom);
     }
     node.collection = coll;
@@ -5513,7 +5520,8 @@ export default class SymbolTableTraversal extends AstTraversal {
       throw new UndefinedCollectionError(node);
     }
     if (coll.visibility === StateVariableVisibility.PRIVATE && coll.inheritedFrom
-      && this.currentFunction.inheritedFrom !== coll.inheritedFrom) {
+      && this.currentFunction.inheritedFrom !== coll.inheritedFrom
+      && node.fromModifier !== coll.inheritedFrom) {
       throw new PrivateCollectionAccessError(node, coll.name, coll.inheritedFrom);
     }
     if (coll.immutable && !this.insideConstructor) {
@@ -5540,7 +5548,8 @@ export default class SymbolTableTraversal extends AstTraversal {
       throw new UndefinedCollectionError(node);
     }
     if (coll.visibility === StateVariableVisibility.PRIVATE && coll.inheritedFrom
-      && this.currentFunction.inheritedFrom !== coll.inheritedFrom) {
+      && this.currentFunction.inheritedFrom !== coll.inheritedFrom
+      && node.fromModifier !== coll.inheritedFrom) {
       throw new PrivateCollectionAccessError(node, coll.name, coll.inheritedFrom);
     }
     if (coll.immutable && !this.insideConstructor) {
@@ -5562,7 +5571,8 @@ export default class SymbolTableTraversal extends AstTraversal {
       throw new UndefinedCollectionError(node);
     }
     if (coll.visibility === StateVariableVisibility.PRIVATE && coll.inheritedFrom
-      && this.currentFunction.inheritedFrom !== coll.inheritedFrom) {
+      && this.currentFunction.inheritedFrom !== coll.inheritedFrom
+      && node.fromModifier !== coll.inheritedFrom) {
       throw new PrivateCollectionAccessError(node, coll.name, coll.inheritedFrom);
     }
     if (coll.immutable) {

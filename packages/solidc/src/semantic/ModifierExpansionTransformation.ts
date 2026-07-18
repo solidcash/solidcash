@@ -14,6 +14,11 @@ import {
   DeleteStateNode,
   AssignNode,
   FieldAccessNode,
+  MappingAccessNode,
+  MappingAssignNode,
+  MappingFieldAssignNode,
+  MappingDeleteNode,
+  ArrayAssignNode,
 } from '../ast/AST.js';
 import {
   ModifierRedefinitionError,
@@ -45,9 +50,14 @@ export function tagModifierStateAccess(nodes: (Node | undefined)[], definingCont
   for (const n of nodes) {
     if (!n) continue;
     // Pre-semantic a state read/write is an Identifier / Assign; SymbolTable later rewrites it to a
-    // State{Access,Assign,Delete}Node and copies fromModifier across. Tag both forms.
+    // State{Access,Assign,Delete}Node and copies fromModifier across. Tag both forms. A COLLECTION access
+    // (mapping/array element) is a Mapping{Access,Assign,FieldAssign,Delete} or a pre-semantic ArrayAssign
+    // (`m[k]=v` before it resolves to a state mapping); tag those too so the private-collection check knows the
+    // access originated in the defining contract's own method (the inlined-C2-helper case, e.g. ERC20 _update).
     if (n instanceof StateAccessNode || n instanceof StateAssignNode || n instanceof DeleteStateNode
-      || n instanceof AssignNode || n instanceof IdentifierNode) {
+      || n instanceof AssignNode || n instanceof IdentifierNode
+      || n instanceof MappingAccessNode || n instanceof MappingAssignNode
+      || n instanceof MappingFieldAssignNode || n instanceof MappingDeleteNode || n instanceof ArrayAssignNode) {
       if (n.fromModifier === undefined) n.fromModifier = definingContract;
     }
     for (const [key, value] of Object.entries(n)) {

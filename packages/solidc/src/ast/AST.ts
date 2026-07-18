@@ -843,6 +843,7 @@ export class MappingAccessNode extends ExpressionNode implements Named {
   // A mapping read in the constructor: genesis has no input entry NFTs, so it resolves to the type default
   // (empty mapping). Codegen emits the default directly (no input read, no entry slot). See visitMappingAccess.
   isGenesisRead?: boolean;
+  fromModifier?: string; // see StateAssignNode.fromModifier (inlined-helper origin for the private-collection check)
 
   constructor(
     public name: string,
@@ -863,6 +864,7 @@ export class MappingAssignNode extends StatementNode implements Named {
   arrayPush?: boolean; // Set for `map[k].push(v)`: append `expression` to the entry's array value (no arrayIndex)
   arrayPop?: boolean;  // Set for `map[k].pop()`: drop the last element of the entry's array value (expression unused)
   noArg?: boolean;     // Set for `map[k].push()`: `expression` is a placeholder, replaced with the element default
+  fromModifier?: string; // see StateAssignNode.fromModifier (inlined-helper origin for the private-collection check)
 
   constructor(
     public name: string,
@@ -880,6 +882,7 @@ export class MappingAssignNode extends StatementNode implements Named {
 export class MappingFieldAssignNode extends StatementNode implements Named {
   collection?: CollectionNode;
   entrySlotIndex: number = -1;
+  fromModifier?: string; // see StateAssignNode.fromModifier (inlined-helper origin for the private-collection check)
 
   constructor(
     public name: string,
@@ -925,6 +928,7 @@ export class DeleteStateNode extends StatementNode {
 export class MappingDeleteNode extends StatementNode implements Named {
   collection?: CollectionNode;
   entrySlotIndex: number = -1;
+  fromModifier?: string; // see StateAssignNode.fromModifier (inlined-helper origin for the private-collection check)
 
   constructor(
     public name: string,
@@ -1175,6 +1179,7 @@ export class ArrayPopNode extends StatementNode implements Named {
 
 export class ArrayAssignNode extends StatementNode implements Named {
   arrayType?: ArrayType;
+  fromModifier?: string; // see StateAssignNode.fromModifier (inlined-helper origin for the private-collection check)
 
   constructor(
     public name: string,

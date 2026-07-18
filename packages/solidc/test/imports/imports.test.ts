@@ -190,6 +190,22 @@ describe('Imports', () => {
       expect(artifact.contractName).toBe('Tok');
     });
 
+    it('rewrites a scalar field write on an IMPORTED-struct state ARRAY element via a storage pointer (EACC MarketplaceV2/V3)', () => {
+      // `JobPost[] jobs; JobPost storage jp = jobs[id]; jp.flag = v` where JobPost is imported: the storage pointer
+      // inlines to `jobs[id].flag = v`, mis-built as a MappingFieldAssign on the array (JobPost unknown at parse).
+      // RedesugarImportedStructFieldWrites now rewrites a state-array element field write (read element -> rebuild
+      // field -> StateArrayAssign back). Scalar/array fields work; a NESTED struct field is a separate deferred case.
+      const data = 'struct JobPost { bool flag; address creator; } contract Data { uint256 dummy; }';
+      const resolver = (importPath: string): { source: string; id: string } | undefined => (
+        importPath === './Data.sol' ? { source: data, id: '/Data.sol' } : undefined);
+      const code = 'import {Data} from "./Data.sol"; contract V is Data { JobPost[] public jobs;'
+        + ' function upd() public { jobs.push(); uint256 id = jobs.length - 1;'
+        + ' JobPost storage jp = jobs[id]; jp.flag = true; jp.creator = msg.sender; } }';
+      expect(() => compileString(code, {
+        importResolver: resolver, rootFileId: '/main.sol', solidityImportCompat: true,
+      })).not.toThrow();
+    });
+
     it('desugars a using-for method call on an IMPORTED struct-typed state var (OZ Counters pattern)', () => {
       // The struct (Counter) is imported, so unknown at parse time - the AstBuilder cannot desugar
       // `counter.increment()`; the post-import RedesugarImportedUsingForCalls pass must (else it fails as an

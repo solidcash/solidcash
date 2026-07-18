@@ -10,11 +10,16 @@ import {
   MappingFieldAssignNode,
   Node,
   SourceFileNode,
+  StateArrayAssignNode,
+  ArrayAccessNode,
+  IntLiteralNode,
+  ContractNode,
   StatementNode,
   VariableDefinitionNode,
 } from '../ast/AST.js';
 import { ArrayType, StructType } from '@solidcash/utils';
 import AstTraversal from '../ast/AstTraversal.js';
+import { cloneNode } from '../ast/clone.js';
 
 /**
  * An array-field element WRITE on a LOCAL/PARAM struct var whose struct type was IMPORTED - `escrow.split[j] = v`
@@ -31,16 +36,31 @@ import AstTraversal from '../ast/AstTraversal.js';
  */
 export default class RedesugarImportedStructFieldWrites extends AstTraversal {
   private counter = 0;
+  // State ARRAY name -> its element struct type (`JobPost[] jobs`). A `JobPost storage jp = jobs[id]; jp.field = v`
+  // storage-pointer write inlines to `jobs[id].field = v`, mis-built as MappingFieldAssign(jobs, [id], field, v)
+  // when JobPost is imported. Resolve it to a read-modify-write of the array element (the EACC MarketplaceV2/V3).
+  private stateArrayStructs: Map<string, StructType> = new Map();
 
   visitSourceFile(node: SourceFileNode): Node {
     const contract = node.contract;
     if (!contract) return node;
+    this.stateArrayStructs = this.collectStateArrayStructs(contract);
     const fns: (FunctionDefinitionNode | undefined)[] = [
       ...contract.functions, contract.constructorDef, contract.fallbackDef, contract.receiveDef,
       ...(node.freeFunctions ?? []),
     ];
     for (const fn of fns) if (fn?.body) this.processFunction(fn);
     return node;
+  }
+
+  private collectStateArrayStructs(contract: ContractNode): Map<string, StructType> {
+    const m = new Map<string, StructType>();
+    const add = (name: string, t: unknown): void => {
+      if (t instanceof ArrayType && t.elementType instanceof StructType) m.set(name, t.elementType);
+    };
+    for (const sv of contract.stateVariables) add(sv.name, sv.type);
+    for (const col of contract.collections) add(col.name, col.type);
+    return m;
   }
 
   private processFunction(fn: FunctionDefinitionNode): void {
@@ -50,7 +70,9 @@ export default class RedesugarImportedStructFieldWrites extends AstTraversal {
     this.walk(fn.body, (n) => {
       if (n instanceof VariableDefinitionNode && n.type instanceof StructType) localStructs.set(n.name, n.type);
     });
-    if (localStructs.size === 0) return;
+    // A storage-pointer `S storage p = arr[id]` is inlined+dropped, so there is no local struct - the state-array
+    // rebuild path still applies, so run whenever there are local structs OR state arrays.
+    if (localStructs.size === 0 && this.stateArrayStructs.size === 0) return;
     this.transform(fn.body, localStructs);
   }
 
@@ -79,6 +101,11 @@ export default class RedesugarImportedStructFieldWrites extends AstTraversal {
   // MappingFieldAssign on an imported-typed struct local -> struct-rebuild block, or undefined when it is not a
   // struct-local field write (a real mapping-field assign, or an unsupported multi-index shape).
   private rebuild(node: MappingFieldAssignNode, localStructs: Map<string, StructType>): BlockNode | undefined {
+    // State-array element field write `arr[id].field = v` (mis-built from a storage-ptr `S storage p = arr[id];
+    // p.field = v`): read the element into a local, rebuild the field, write the element back.
+    const arrStruct = node.keys.length === 1 && !localStructs.has(node.name)
+      ? this.stateArrayStructs.get(node.name) : undefined;
+    if (arrStruct) return this.rebuildStateArrayElem(node, arrStruct);
     const structT = localStructs.get(node.name);
     if (!structT) return undefined;
     const field = structT.fields.find((f) => f.name === node.fieldName);
@@ -112,6 +139,26 @@ export default class RedesugarImportedStructFieldWrites extends AstTraversal {
     back.location = loc;
     stmts.push(back);
     const block = new BlockNode(stmts);
+    block.location = loc;
+    return block;
+  }
+
+  // `arr[id].field = v` (state array of a resolved struct) -> `S __t = arr[id]; __t.field = v; arr[id] = __t;`. The
+  // local write reuses the scalar/array-field rebuild; the write-back is a StateArrayAssign (arr[id] = __t).
+  private rebuildStateArrayElem(node: MappingFieldAssignNode, structT: StructType): BlockNode | undefined {
+    const loc = node.location;
+    const tmp = `__sav_${this.counter++}`;
+    const arrId = new IdentifierNode(node.name); arrId.location = loc;
+    const read = new ArrayAccessNode(arrId, cloneNode(node.keys[0]) as ExpressionNode); read.location = loc;
+    const decl = new VariableDefinitionNode(structT, [], tmp, read); decl.location = loc;
+    // The field write moves to the local `__t` (no array index - that indexed the state array, not the field).
+    const localWrite = new MappingFieldAssignNode(tmp, [], node.fieldName, node.expression); localWrite.location = loc;
+    const rebuilt = this.rebuild(localWrite, new Map([[tmp, structT]]));
+    if (!rebuilt) return undefined;
+    const back = new StateArrayAssignNode(node.name, cloneNode(node.keys[0]) as ExpressionNode,
+      (() => { const x = new IdentifierNode(tmp); x.location = loc; return x; })());
+    back.location = loc;
+    const block = new BlockNode([decl as StatementNode, ...rebuilt.statements, back]);
     block.location = loc;
     return block;
   }

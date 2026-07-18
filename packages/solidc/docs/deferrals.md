@@ -540,23 +540,26 @@ single varying (possibly composite) key, co-spend the bracketing predecessor at 
 coSlot<H(k)<coNext (present key / same-gap fail closed), pin P' at output[..+2c] + NEW at output[..+2c+1]; teardown pins
 predecessor-input count == counter and entry-output count == 2c. ABI tag `sortedInsertLoops`. Fixed 2 latent bugs:
 loop-written sorted slots need `inLoop=true` so the epilogue skips them; `findSortedInsertLoopWrite` needs cycle
-protection (post-inline AST graph cycles). STILL PENDING: the SDK progressive-list auto-derivation (co-spend N
-predecessors + emit N (P',NEW) pinned pairs) + VM/adversarial proof - the covenant compiles and fails closed (count
-pins), so the default derivation can't build a wrong tx, but a contract with an insert loop needs manual tx construction
-until the SDK lands.
+protection (post-inline AST graph cycles). [SUPERSEDED by the RESOLVED note below - the scattered design was replaced by
+the range-splice for the common case; the SDK auto-derivation now lands the co-spend + pinned chain automatically.]
 
-**UPDATE 2026-07-18 (VM-testing the SDK derivation, commit ba2830ab = WIP it.skip): the scattered design DOES NOT cover
-the real case, and the covenant has a VM bug.** (1) COVENANT VM BUG: even N=1 fails an OP_VERIFY at ~ip162 - `emitSorted
-InsertLoopBody` was committed compile-only, so a stack-offset bug (the emitSortedInsertLoopSlotIndex extraUntracked / the
-emitVerifySortedValueOutput depth args) is almost certain; needs a VM-trace stack dump to fix. (2) WRONG CASE: the
-COMMON scenario - N keys into a FRESH/sparse map (whitelistWorkers on a new job) - is N inserts into ONE gap (all bracket
-HEAD), i.e. the SAME predecessor, which the scattered per-iteration co-spend CANNOT do (fails closed "same-gap"). That is
-item (2) the RANGE-SPLICE (co-spend one predecessor, mint a sorted chain P->k1->..->kN->oldNext), and it has a deep
-LOOP-source-order vs LIST-slot-order tension: the loop visits keys in source order but the chain must be slot-sorted
-(sha256), so a range-splice covenant has to verify the minted run is a sorted PERMUTATION of {H(xs[i])}, not a simple
-source-order loop. So scattered-insert (item 3) fits only an already-dense map with distinct gaps (rare); the common
-one-gap case (item 2) is the real target and is unbuilt. NEXT: fix the covenant stack offsets vs a VM trace (validates
-scattered N=1/distinct-gap), then design + build the range-splice.
+**RESOLVED 2026-07-18 for the common case (commits 513a46dc + a0ddf62e + 5576be5d). The insert-loop now works
+VM-verified.** Two things landed: (1) the scattered covenant's VM bug was root-caused + fixed (513a46dc): the SDK had
+put predecessors in `iterationEntryInputs` which PRESERVES co-spent inputs as unchanged outputs, colliding with where
+P' lands; the fix is a NEW `insertLoopPredecessorInputs` list (co-spent, NOT preserved, NOT counted in the output base).
+(2) the COMMON one-gap case - N keys into a FRESH/sparse map (whitelistWorkers on a new job, all bracket the SAME
+predecessor) - is now built as the RANGE-SPLICE (a0ddf62e): co-spend ONE predecessor P, mint a sorted chain
+P'->k1->..->kN->P.oldNext. The source-order/slot-order tension is SIDESTEPPED (no permutation check needed): the covenant
+carries `expected_slot` through the loop and iterates the SORTED OUTPUT chain, not the source-order xs - setup verifies
+P'=P.slot|s1|P.value & expected=P'.next; body reads chain node output[base+1+counter], verifies slot==expected_slot &
+slot<next & value==v & bytecode==addr, sets expected=next; teardown verifies expected==P.oldNext & outcount==counter+1 &
+incount==1. C2-sound WITHOUT a permutation check for positive-membership maps (whitelistWorkers reads
+`job.whitelist==false || w[jobId][sender]` = absence self-denies only): the covenant just needs the minted chain to be a
+VALID sorted list; WHICH keys (==xs) is job-creator data enforced by the SDK, not a C2 property. VM-verified
+(SortedInsertLoop.test.ts, 4 green): N=1 fresh+populated; N>1 into fresh one call; **NESTED 2-key w[jobId][ks[i]]=true
+(the exact whitelistWorkers shape) N>1 fresh** (composite slot keyToSlotMulti SDK-side, covenant key-agnostic);
+distinct-gap works-or-fails-closed. STILL DEFERRED: multi-gap in one call (fails closed), general non-bool values
+(first-cut bool-literal only), `=false` nullify-in-loop, RMW/delete-in-loop.
 
 Marketplace: V1 compiles past whitelistWorkers but its FULL assembled contract is ~674k ops (a
 pre-existing deep-inlining explosion, NOT this covenant - a 3-entry-point multi-site insert loop is <1s); commit

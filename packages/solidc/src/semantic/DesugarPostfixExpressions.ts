@@ -80,6 +80,19 @@ function baseIsWritten(stmt: Node, name: string): boolean {
   return written;
 }
 
+// True if `target` is `root` or a node within `root`'s subtree.
+function containsNode(root: Node, target: Node): boolean {
+  if (root === target) return true;
+  for (const key of Object.keys(root)) {
+    if (key === 'location' || key === 'type' || key === 'symbolTable') continue;
+    const v = (root as unknown as Record<string, unknown>)[key];
+    if (v instanceof Node) { if (containsNode(v, target)) return true; } else if (Array.isArray(v)) {
+      for (const it of v) if (it instanceof Node && containsNode(it, target)) return true;
+    }
+  }
+  return false;
+}
+
 function isLeftmostBaseRef(stmt: Node, operand: Node, name: string): boolean {
   let first: Node | undefined;
   const walk = (x: Node): void => {
@@ -94,7 +107,10 @@ function isLeftmostBaseRef(stmt: Node, operand: Node, name: string): boolean {
     }
   };
   walk(stmt);
-  return first === operand;
+  // The postfix is the leftmost use of the base iff the FIRST base reference is the operand itself OR lives inside
+  // the operand's subtree - i.e. the base is not read anywhere before the postfix. For a mapping/array element
+  // `m[k]++` the operand is the Mapping/ArrayAccess and the first `m` reference is the identifier INSIDE it.
+  return first !== undefined && containsNode(operand, first);
 }
 
 /**

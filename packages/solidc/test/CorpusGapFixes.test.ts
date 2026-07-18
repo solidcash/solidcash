@@ -2244,6 +2244,22 @@ describe('override(Interface) survives flattening: a parent interface base carri
   });
 });
 
+describe('postfix on a mapping/array element in a return: `return m[k]++` (OZ Nonces._useNonce)', () => {
+  // `return m[k]++` returns the pre-value: hoist `m[k] = m[k]+1` before, reconstruct `m[k]-1`. isLeftmostBaseRef
+  // required the first base ref to BE the operand, but for `m[k]++` the operand is the Mapping/ArrayAccess and the
+  // first `m` ref is the identifier INSIDE it - now accepted (the base is still not read before the postfix). A base
+  // read BEFORE the postfix (`m[a] + m[b]++`) still fails closed (the reconstruction would see the post-value).
+  it('lowers `return m[k]++` on a mapping element', () => {
+    expect(() => compileString('pragma solidity ^0.8.20; contract C { mapping(uint=>uint) m;'
+      + ' function f(uint k) public returns (uint) { return m[k]++; } }', { solidityImportCompat: true })).not.toThrow();
+  });
+  it('still FAILS CLOSED when the base is read before the postfix (`return m[a] + m[b]++`)', () => {
+    expect(() => compileString('pragma solidity ^0.8.20; contract C { mapping(uint=>uint) m;'
+      + ' function f(uint a, uint b) public returns (uint) { return m[a] + m[b]++; } }', { solidityImportCompat: true }))
+      .toThrow(/read before the/);
+  });
+});
+
 describe('StorageSlot slot-ALIAS factory: getStringSlot(ref).value = v is a direct write of the aliased ref (EACCToken)', () => {
   // OZ StorageSlot.getStringSlot(string storage store) does `assembly { r.slot := store.slot }` - it aliases the
   // return pointer to `store`'s slot, so `getStringSlot(ref).value = v` is just `ref = v`. That routes a string/bytes

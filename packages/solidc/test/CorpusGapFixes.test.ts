@@ -2134,3 +2134,35 @@ describe('C2 (sorted) mapping write in a runtime loop: fixed-bound unrolls, dyna
       { sortedMappingsAll: true, forceStateful: true })).toThrow(/sorted mapping .* is not yet compiled/);
   });
 });
+
+describe('low-level .call target through inlined-local aliases traced to a self-pinned state chain (EACC #2)', () => {
+  // OZ SafeERC20 forceApprove's `_callOptionalReturnBool` does `address(token).call(data)`; after the SafeERC20/
+  // Address chain inlines, the receiver is `address(__rh0_token)` where `token` bound to `IERC20(coll[k].field)`.
+  // SynthesizeExternalAddressLocals now traces the receiver through casts + inliner-local aliases (and single-
+  // assignment user locals) back to the self-pinned state chain and hoists it, so the covenant pins the co-spent
+  // callee to that chain (__extaddr_ll_ source), NOT a caller input. A reassignable local is NOT traced (a caller
+  // could rebind it - the forgery extcall-target-pinning.md forbids), so it fails closed.
+  const src = (mid: string): string => 'pragma solidcash >=0.8.0;'
+    + ' interface IEcho { function ping(pubkey o, sig s); } struct Config { address token; }'
+    + ' contract C() { Config config; int calls;'
+    + ' function _callBool(IEcho tok, bytes data) internal returns (bool) { bool ok, bytes r = address(tok).call(data); return ok; }'
+    + ` function f(bytes data, address attacker, pubkey pk, sig s) { require(checkSig(s, pk)); ${mid}`
+    + ' bool ok = _callBool(token, data); require(ok); this.calls = this.calls + 1; } }';
+  const extcallOf = (s: string): { addressStateVar?: string } | undefined => compileString(s, {}).abi
+    .find((f) => f.name === 'f')?.externalCalls?.find((e) => e.opaqueReturn);
+
+  it('sources a single-assignment user-local intermediary from the state chain (Marketplace token = IERC20(job.token))', () => {
+    expect(extcallOf(src('IEcho token = IEcho(config.token);'))?.addressStateVar).toBe('ll_config_token');
+  });
+  it('fails closed on a REASSIGNED local (a caller-rebindable target is never hoisted)', () => {
+    expect(() => compileString(src('IEcho token = IEcho(config.token); token = IEcho(attacker);'), {}))
+      .toThrow(/external call target address must be a constructor\/function parameter/);
+  });
+  it('sources a DIRECT address(config.token).call cast (no helper) from the state chain', () => {
+    const direct = 'pragma solidcash >=0.8.0; struct Config { address token; } contract C() { Config config; bytes32 d;'
+      + ' function f(bytes data, pubkey pk, sig s) { require(checkSig(s, pk));'
+      + ' bool ok, bytes r = address(config.token).call(data); require(ok); this.d = sha256(data); } }';
+    expect(compileString(direct, {}).abi.find((f) => f.name === 'f')?.externalCalls?.find((e) => e.opaqueReturn)
+      ?.addressStateVar).toBe('ll_config_token');
+  });
+});

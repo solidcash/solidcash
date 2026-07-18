@@ -15,6 +15,10 @@ import {
   MappingAccessNode,
   IntLiteralNode,
   TupleIndexOpNode,
+  CastNode,
+  AssignNode,
+  TupleAssignmentNode,
+  VariableDefinitionNode,
 } from '../ast/AST.js';
 import {
   AddressType, StructType, ArrayType, MappingType, Type,
@@ -42,6 +46,9 @@ import { cloneNode } from '../ast/clone.js';
 const PREFIX = '__extaddr_';
 const ADDRESS_METHODS = new Set(['send', 'call', 'staticcall', 'delegatecall']);
 const LOW_LEVEL_CALLS = new Set(['call', 'staticcall', 'delegatecall']);
+// Synthetic single-assignment alias locals safe to trace through: `__rh*`/`__inl*` are inliner-created bindings of
+// call args (never reassigned); `__extaddr_*` are this pass's own hoists. A user local is deliberately excluded.
+const SYNTH_ALIAS = /^(__rh|__inl|__extaddr_)/;
 
 // The element/value type of an array/mapping (for stepping through an access chain), else undefined.
 function elementOf(t: Type | undefined): Type | undefined {
@@ -65,6 +72,14 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
   // localName -> synthesized decl parts (init reads the self-pinned state; iface = the local's interface type, or
   // undefined for a plain-`address` local hoisted as a low-level-call receiver)
   private usedInFn: Map<string, { iface: string | undefined; init: ExpressionNode }> = new Map();
+  // Inlined/user local name -> its initializer expression, in body order. Populated as VariableDefinitions are
+  // visited, so a low-level `.call` on `address(<inlined local>)` can trace the local back to a self-pinned state
+  // chain (the SafeERC20 `address(token).call` shape, where the inliner binds `token = IERC20(coll[k].field)`).
+  private localInits: Map<string, ExpressionNode> = new Map();
+  // User locals declared exactly once (with an init) and NEVER reassigned, so their value equals their init at
+  // every use - safe to trace through (the Marketplace `IERC20 token = IERC20(job.token)` intermediary). A
+  // reassignable local is excluded (it could be rebound to a caller value between decl and the call = forgery).
+  private singleAssignLocals: Set<string> = new Set();
 
   visitSourceFile(node: SourceFileNode): Node {
     this.typeNames = new Set();
@@ -105,6 +120,8 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
   visitFunctionDefinition(node: FunctionDefinitionNode): Node {
     if (!node.body) return node;
     this.usedInFn = new Map();
+    this.localInits = new Map();
+    this.singleAssignLocals = this.computeSingleAssignLocals(node.body);
     this.currentParams = new Set(node.parameters.map((p) => p.name));
     node.body = this.visit(node.body) as BlockNode;
     if (this.usedInFn.size > 0) {
@@ -117,6 +134,11 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
       node.body.statements = [...decls, ...(node.body.statements ?? [])];
     }
     return node;
+  }
+
+  visitVariableDefinition(node: VariableDefinitionNode): Node {
+    if (node.expression) this.localInits.set(node.name, node.expression);
+    return super.visitVariableDefinition(node) as Node;
   }
 
   visitFunctionCall(node: FunctionCallNode): Node {
@@ -184,18 +206,24 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
       const loc = node.object.location;
       node.object = new IdentifierNode(paramField.localName);
       node.object.location = loc;
-    } else if (LOW_LEVEL_CALLS.has(node.methodName) && this.llReceiverTarget(node.object)) {
-      // `<recv>.call/staticcall/delegatecall(..)` where `<recv>` is a struct field / element resolving to an
-      // address (self-pinned state chain OR a param-rooted field). A bare-identifier receiver already sources in
-      // codegen; a field/element receiver did not ("external call target must be a parameter"). Hoist it into a
-      // plain-`address` local (`t.dest.call(x)` -> `address __extaddr_ll_t_dest = t.dest; __extaddr_ll_...call(x)`),
-      // same soundness as the interface-target hoist. The data arg keeps its field form (codegen sources that).
-      const localName = this.llReceiverTarget(node.object)!;
-      if (!this.usedInFn.has(localName)) {
-        this.usedInFn.set(localName, { iface: undefined, init: cloneNode(node.object) as ExpressionNode });
+    } else if (LOW_LEVEL_CALLS.has(node.methodName) && this.resolveLlReceiver(node.object)) {
+      // `<recv>.call/staticcall/delegatecall(..)` where `<recv>` resolves to an address that is a self-pinned state
+      // chain OR a param-rooted field. A bare-identifier receiver already sources in codegen; a field/element
+      // receiver did not ("external call target must be a parameter"). Two forms reach here:
+      //   - DIRECT: `t.dest.call(x)` - `t.dest` is a struct field / element of self-pinned state (or a param).
+      //   - THROUGH INLINING: `address(__rh0_token).call(data)` where the SafeERC20/Address chain inlined
+      //     `token = IERC20(jobs[id].token)` into a local - the receiver traces (through casts + inliner-local
+      //     aliases) back to the same self-pinned state chain `jobs[id].token` (OZ forceApprove's
+      //     `_callOptionalReturnBool` does a direct `address(token).call`).
+      // Both hoist the resolved ROOT (the state/param chain, NOT the inlined-local receiver, which is not valid at
+      // the body top) into a plain-`address` local. The pinned value is byte-identical to the shipped-sound direct
+      // form `IFoo(jobs[id].token).call(data)`; the data arg keeps its form (codegen sources that).
+      const resolved = this.resolveLlReceiver(node.object)!;
+      if (!this.usedInFn.has(resolved.localName)) {
+        this.usedInFn.set(resolved.localName, { iface: undefined, init: cloneNode(resolved.init) as ExpressionNode });
       }
       const loc = node.object.location;
-      node.object = new IdentifierNode(localName);
+      node.object = new IdentifierNode(resolved.localName);
       node.object.location = loc;
     } else {
       node.object = this.visit(node.object) as ExpressionNode;
@@ -282,14 +310,65 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
     return false;
   }
 
-  // A low-level-call receiver worth hoisting into a plain-`address` local: a struct field / element (NOT a bare
-  // identifier - those already source in codegen) that is either a self-pinned state chain resolving to an
-  // `address`, or a param-rooted access. Returns a stable per-chain local name, else undefined.
-  private llReceiverTarget(obj: ExpressionNode): string | undefined {
-    if (obj instanceof IdentifierNode) return undefined; // bare local/param receiver already works
-    if (!(this.resolveChainType(obj) instanceof AddressType) && !this.isParamRooted(obj)) return undefined;
-    const key = this.chainKey(obj);
-    return key ? `${PREFIX}ll_${key}` : undefined;
+  // Trace a low-level-call receiver to its provenance ROOT, unwrapping `address(..)` / interface casts and
+  // following SYNTHETIC single-assignment alias locals (`__rh*` / `__inl*` from the inliner, `__extaddr_*` from
+  // this pass) through their recorded initializers. A user local is NOT followed (it may be reassigned - only the
+  // inliner's SSA-style bindings are safe to trace), so this stays scoped to the SafeERC20/Address inline chain
+  // and never re-interprets user-visible aliasing. Returns the deepest expression reached.
+  private llReceiverRoot(expr: ExpressionNode, depth = 0): ExpressionNode {
+    if (depth > 24) return expr; // guard against a pathological init cycle
+    if (expr instanceof CastNode) return this.llReceiverRoot(expr.expression, depth + 1);
+    if (expr instanceof FunctionCallNode && expr.parameters.length === 1 && this.typeNames.has(expr.identifier.name)) {
+      return this.llReceiverRoot(expr.parameters[0], depth + 1); // interface/contract cast `IFoo(x)` -> x
+    }
+    if (expr instanceof IdentifierNode && this.localInits.has(expr.name)
+      && (SYNTH_ALIAS.test(expr.name) || this.singleAssignLocals.has(expr.name))) {
+      return this.llReceiverRoot(this.localInits.get(expr.name)!, depth + 1);
+    }
+    return expr;
+  }
+
+  // Names safe to trace through as value-equal-to-init aliases: declared exactly once WITH an initializer and
+  // never the target of a later assignment (plain `x = ..` or an `existing` tuple slot) nor re-declared. A
+  // reassignable local is EXCLUDED - tracing it could pin a value the caller later rebinds (the forgery
+  // extcall-target-pinning.md forbids). Inliner locals (`__rh*`/`__inl*`) are SSA and handled separately.
+  private computeSingleAssignLocals(body: BlockNode): Set<string> {
+    const declCount = new Map<string, number>();
+    const reassigned = new Set<string>();
+    const seen = new WeakSet<object>();
+    const scan = (node: unknown): void => {
+      if (!node || typeof node !== 'object' || seen.has(node)) return;
+      seen.add(node);
+      if (node instanceof VariableDefinitionNode) {
+        declCount.set(node.name, (declCount.get(node.name) ?? 0) + (node.expression ? 1 : 0));
+        if (!node.expression) reassigned.add(node.name); // uninit decl -> assigned elsewhere, not traceable
+      } else if (node instanceof AssignNode) {
+        reassigned.add(node.identifier.name);
+      } else if (node instanceof TupleAssignmentNode) {
+        for (const el of node.elements) if (el.existing && el.name) reassigned.add(el.name);
+      }
+      for (const key of Object.keys(node as Record<string, unknown>)) {
+        const v = (node as Record<string, unknown>)[key];
+        if (Array.isArray(v)) v.forEach(scan);
+        else if (v instanceof Node) scan(v);
+      }
+    };
+    scan(body);
+    const safe = new Set<string>();
+    for (const [name, count] of declCount) if (count === 1 && !reassigned.has(name)) safe.add(name);
+    return safe;
+  }
+
+  // A low-level-call receiver worth hoisting into a plain-`address` local, resolved to its provenance root: a
+  // self-pinned state chain (`t.dest` == `txs[id].dest`, or `address(__rh0_token)` traced back to `jobs[id].token`)
+  // OR a param-rooted access. A bare-identifier receiver that is not a synthetic alias already sources in codegen.
+  // Returns a stable per-root local name + the ROOT to hoist as its init (valid at the body top), else undefined.
+  private resolveLlReceiver(obj: ExpressionNode): { localName: string; init: ExpressionNode } | undefined {
+    const root = this.llReceiverRoot(obj);
+    if (root === obj && obj instanceof IdentifierNode) return undefined; // bare local/param receiver already works
+    if (!(this.resolveChainType(root) instanceof AddressType) && !this.isParamRooted(root)) return undefined;
+    const key = this.chainKey(root);
+    return key ? { localName: `${PREFIX}ll_${key}`, init: root } : undefined;
   }
 
   // The declared type of a state-rooted access chain (self-pinned): a state var / collection identifier, a

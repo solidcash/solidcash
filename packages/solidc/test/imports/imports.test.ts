@@ -234,6 +234,26 @@ describe('Imports', () => {
       })).not.toThrow();
     });
 
+    it('resolves a TRANSITIVELY imported library constant referenced bare within its function (OZ Strings HEX_DIGITS)', () => {
+      // `main` imports `MsgUtils` which imported `Strings`; Strings.toHex reads a bare `HEX_DIGITS` (registered
+      // `Strings.HEX_DIGITS`). The library-import constant merge dropped non-`MsgUtils.`-prefixed constants, losing
+      // the transitively-carried `Strings.HEX_DIGITS` -> "Undefined reference to symbol HEX_DIGITS".
+      const strings = 'library Strings { bytes16 private constant HEX_DIGITS = "0123456789abcdef";'
+        + ' function toHex(uint8 x) internal pure returns (bytes1) { return HEX_DIGITS[x & 0xf]; } }';
+      const mid = 'import { Strings } from "./Strings.sol";'
+        + ' library MsgUtils { function fmt(uint8 x) internal pure returns (bytes1) { return Strings.toHex(x); } }';
+      const resolver = (importPath: string): { source: string; id: string } | undefined => {
+        if (importPath === './Strings.sol') return { source: `pragma solidity ^0.8.20;${strings}`, id: '/Strings.sol' };
+        if (importPath === './MsgUtils.sol') return { source: `pragma solidity ^0.8.20;${mid}`, id: '/MsgUtils.sol' };
+        return undefined;
+      };
+      const code = 'import { MsgUtils } from "./MsgUtils.sol";'
+        + ' contract C { function g(uint8 x) public pure returns (bytes1) { return MsgUtils.fmt(x); } }';
+      expect(() => compileString(code, {
+        importResolver: resolver, rootFileId: '/main.sol', solidityImportCompat: true,
+      })).not.toThrow();
+    });
+
     it('desugars a using-for method call on an IMPORTED struct-typed state var (OZ Counters pattern)', () => {
       // The struct (Counter) is imported, so unknown at parse time - the AstBuilder cannot desugar
       // `counter.increment()`; the post-import RedesugarImportedUsingForCalls pass must (else it fails as an

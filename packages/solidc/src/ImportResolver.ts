@@ -129,11 +129,12 @@ export class ImportResolver {
           // file's bare types wholesale - sound while bare names stay unique across the file's libraries.
           if (source.isLibrary && (source.libraryName === name || source.declaredLibraryNames.includes(name))) {
             // Import all namespaced functions, constants, enums, structs, types, events, using-for from this
-            // library (or interface-only file, whose placeholder name is its first interface).
+            // library (or interface-only file, whose placeholder name is its first interface). Merge ALL the file's
+            // constants, not only `${name}.`-prefixed ones: the merged free functions may reference constants a
+            // TRANSITIVELY imported library declared (OZ Strings.toHexString reads `HEX_DIGITS`, registered
+            // `Strings.HEX_DIGITS` - dropped by the name filter when Strings arrives via MessageHashUtils/EIP712).
             target.freeFunctions.push(...source.freeFunctions);
-            target.constantDefinitions.push(
-              ...source.constantDefinitions.filter((c) => c.name.startsWith(`${name}.`)),
-            );
+            target.constantDefinitions.push(...source.constantDefinitions);
             target.enumDefinitions.push(...source.enumDefinitions);
             target.structDefinitions.push(...source.structDefinitions);
             target.typeDefinitions.push(...source.typeDefinitions);

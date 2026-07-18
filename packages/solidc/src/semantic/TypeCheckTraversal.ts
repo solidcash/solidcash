@@ -583,6 +583,13 @@ export default class TypeCheckTraversal extends AstTraversal {
         node.expression = this.maybeCoerceBytesWiden(node.expression, expectedValueType);
       }
       const allKeyTypes = node.collection.allKeyTypes;
+      // More index operations than the mapping has keys: indexing INTO a multi-dimensional array VALUE
+      // (`m[k][i][j]` on `mapping(K => T[][])`). Only single-dimension array element access is supported; fail
+      // closed cleanly (the excess index would otherwise be type-checked as a phantom mapping key at allKeyTypes[i]
+      // == undefined and crash with a confusing "type 'undefined' was expected").
+      if (node.keys.length > allKeyTypes.length) {
+        throw new UnsupportedTypeError(node as unknown as BinaryOpNode, innerType);
+      }
       node.keys = this.coerceHexArgs(node.keys, allKeyTypes) as typeof node.keys;
       for (let i = 0; i < node.keys.length; i++) {
         if (node.keys[i].type && !implicitlyCastable(node.keys[i].type, allKeyTypes[i])) {

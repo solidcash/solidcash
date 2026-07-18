@@ -515,3 +515,21 @@ source silently redirects funds (worse than a clean compile error). Related to t
 deferral (section "External-call target: DIRECT method call on a memory-COPY struct field") but through the low-level
 chain. What it'd take: extend `SynthesizeExternalAddressLocals` sourcing to the chain-inlined storage-ptr-field target
 with a non-modification / self-pin soundness proof (per extcall-target-pinning.md). Revisit for full no-guards.
+
+**(c) MULTIPLE writes to the SAME C2 entry in one call (coalescing) - the array-write blocker (2026-07-18).**
+Surfaced probing C2 ARRAY writes. A single element write `m[k][i]=v` / `push` / `pop` / whole assign works, but two
+STRAIGHT-LINE writes to the same entry (`m[k][0]=x; m[k][2]=z`, or a fixed-bound loop `for(j<3) m[k][j]=v` after
+unrolling, or two struct-field writes `m[k].a=x; m[k].b=y`) do NOT: each routes to its own `emitSortedValueUpsert`,
+which CO-SPENDS the entry NFT + emits one output entry, so a second upsert needs a second co-spend of the same (now
+already-spent) input and a second output - the covenant OP_VERIFYs fail (runtime revert, fail-closed, not silent).
+The DEFAULT entry model handles this via `pendingEntryWrites` read-after-write chaining; the C2 analog is COALESCING:
+read the entry ONCE, apply all the surgeries to the in-memory value, emit ONE output. It is the same deferred
+machinery as (a) (per-iteration insert) - soundness-critical (the coalesced value must be correct AND the exclusion
+proof preserved), NOT rushed. Current state kept SOUND: the fixed-bound loop is NOT unrolled for array-element writes
+(`UnrollFixedBoundEntryLoop.hasMappingWrite` intentionally matches only the ArrayAssignNode whole-entry form, not the
+MappingAssignNode element/push form) so it fails closed at `plainLoopDepth > 0`; a straight-line consecutive same-entry
+write still compiles but reverts at runtime (a footgun, but fail-closed - a branch-aware compile guard is deferred with
+the coalescing). A MULTI-DIMENSIONAL array element write `m[k][i][j]` on `mapping(K => T[][])` now fails closed cleanly
+(`UnsupportedTypeError`) - it used to CRASH (the excess index was type-checked as a phantom key at `allKeyTypes[i] ==
+undefined`); guarded in `TypeCheckTraversal.visitMappingAssign` by `node.keys.length > allKeyTypes.length`. Tests:
+`SortedArrayWriteFailClose`. Revisit (coalescing) for full no-guards + multi-element/loop array writes.

@@ -1950,11 +1950,15 @@ export default class AstBuilder
     let args: ExpressionNode[] = [];
     if (rm && rm.StringLiteral()) {
       message = this.createStringLiteral(rm).value;
-    } else if (rm && rm.Identifier()) {
+    } else if (rm && rm.Identifier() && rm.expressionList()) {
       // require(cond, CustomError(args)) - reverts with the custom error if cond is false
       errorName = rm.Identifier().getText();
       args = rm.expressionList().expression_list().map((e) => this.visit(e) as ExpressionNode);
     }
+    // else: require(cond, <any other expression>) - a dynamic string message (a variable, member access, function
+    // call, ternary, string.concat, ...). Solidity treats require as a plain function taking `string memory`; BCH
+    // has no dynamic on-chain reason string, so the message is dropped and the require still reverts on false
+    // (same as revert(expression)). The condition still fully covers correctness.
     const require = new RequireNode(expression, message, errorName, args);
     require.location = Location.fromCtx(ctx);
     return require;

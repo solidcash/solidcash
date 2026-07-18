@@ -6263,12 +6263,18 @@ export default class SymbolTableTraversal extends AstTraversal {
       // require(cond, CustomError(args)): resolve the error like a revert.
       const candidates = [...this.errorMap.values()].filter((e) => e.name === node.errorName);
       if (candidates.length === 0) {
-        throw new UndefinedErrorError(node);
+        // Not a declared error -> it is a dynamic string message that happens to be a call form, e.g.
+        // require(cond, formatMessage(x)) or require(cond, Strings.toString(y)). BCH has no on-chain reason
+        // string, so drop it (the require still reverts on false). Matches require(cond, <other expression>)
+        // and revert(expression). The condition alone fully covers correctness.
+        node.errorName = undefined;
+        node.args = [];
+      } else {
+        if (candidates.length === 1) {
+          node.errorDefinition = candidates[0];
+        }
+        node.args = this.visitList(node.args);
       }
-      if (candidates.length === 1) {
-        node.errorDefinition = candidates[0];
-      }
-      node.args = this.visitList(node.args);
     }
     return node;
   }

@@ -604,6 +604,7 @@ continueStatement
 requireMessage
     : StringLiteral
     | Identifier expressionList
+    | expression
     ;
 
 revertStatement

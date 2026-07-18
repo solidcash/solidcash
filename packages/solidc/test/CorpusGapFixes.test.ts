@@ -624,6 +624,34 @@ describe('bytes memory/local element write (bytes memory d; d[i] = v)', () => {
   });
 });
 
+describe('require(cond, <message>) accepts any expression message (Solidity: require(bool, string memory))', () => {
+  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  // Solidity treats require as a plain function taking `string memory`, so the message can be any expression.
+  // BCH has no on-chain reason string, so a dynamic message is dropped (the require still reverts on false).
+  it('accepts a plain VARIABLE message (OZ SafeMath require(b <= a, errorMessage))', () => {
+    expect(cc('contract C { function f(uint256 a, uint256 b, string memory e) public pure { require(b <= a, e); } }'))
+      .toBe('C');
+  });
+  it('accepts a member-access message', () => {
+    expect(cc('contract C { string m; function f(bool ok) public view { require(ok, this.m); } }')).toBe('C');
+  });
+  it('accepts a function-call message (not a custom error - degrades to a dropped message)', () => {
+    expect(cc('contract C { function g() internal pure returns (string memory) { return "x"; }'
+      + ' function f(bool ok) public pure { require(ok, g()); } }')).toBe('C');
+  });
+  it('accepts a ternary / concat message', () => {
+    expect(cc('contract C { function f(bool ok, uint256 x) public pure {'
+      + ' require(ok, x > 0 ? "a" : "b"); require(ok, string(abi.encodePacked("e", x))); } }')).toBe('C');
+  });
+  it('still routes a DECLARED custom error to a custom-error revert', () => {
+    expect(cc('error Bad(uint256 x); contract C { function f(bool ok, uint256 a) public pure {'
+      + ' require(ok, Bad(a)); } }')).toBe('C');
+  });
+  it('still rejects genuine too-many-args require(a, b, c)', () => {
+    expect(() => cc('contract C { function f(bool a, bool b, bool c) public pure { require(a, b, c); } }')).toThrow();
+  });
+});
+
 describe('erc7201(id) -> spec-conformant ERC-7201 namespaced storage slot (real keccak256, EIP-7201)', () => {
   const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
   it('folds a literal namespace id to the EIP-7201 slot (byte-identical to Ethereum)', () => {

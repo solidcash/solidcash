@@ -365,10 +365,14 @@ export default class LowerMemoryModel extends AstTraversal {
         // A `bytes` buffer root: `new bytes(runtimeN)` (NewArrayNode rawBytes) OR `new bytes(constN)`, which the
         // builder folds to an all-ZERO HexLiteralNode. A NON-zero `hex".."` / byte-string literal is left as a
         // value-copy constant (its compile-time bytes back Yul `create` p2sh32 derivation, abi decode, etc.).
+        // Exclude a HexLiteral carrying a codegenError: `new string(n)` with a NON-constant length folds to an
+        // empty placeholder HexLiteral with codegenError set (no BCH analogue), and an empty array's `.every()` is
+        // vacuously true - converting it would silently drop the error and allocate 0 bytes. `new bytes` never sets it.
         const freshBytes = (n.expression instanceof NewArrayNode && n.expression.rawBytes)
-          || (n.expression instanceof HexLiteralNode && n.expression.value.every((byte) => byte === 0));
+          || (n.expression instanceof HexLiteralNode && !n.expression.codegenError
+            && n.expression.value.every((byte) => byte === 0));
         if ((this.isHandledMemArray(ty) || this.isHandledMemStructArray(ty)) && fresh) candType.set(n.name, ty!);
-        else if (this.isHandledMemBytes(ty) && freshBytes) candType.set(n.name, ty!);
+        else if ((this.isHandledMemBytes(ty) || this.isHandledMemString(ty)) && freshBytes) candType.set(n.name, ty!);
         else if (this.isHandledMemStruct(ty) && (n.expression === undefined || n.expression instanceof FunctionCallNode)) {
           candType.set(n.name, ty!);
         } else if (ty && this.isRefType(ty) && n.expression && !(n.expression instanceof NewArrayNode)) {
@@ -718,7 +722,7 @@ export default class LowerMemoryModel extends AstTraversal {
     const t = node.type;
     if (!this.convertible.has(node.name)) return undefined;
     if (this.isHandledMemStruct(t)) return this.lowerStructDecl(node, t as StructType);
-    if (this.isHandledMemBytes(t)) return this.lowerBytesDecl(node, t as BytesType);
+    if (this.isHandledMemBytes(t) || this.isHandledMemString(t)) return this.lowerBytesDecl(node, t);
     const isStructArr = this.isHandledMemStructArray(t);
     if (!this.isHandledMemArray(t) && !isStructArr) return undefined;
     const arrT = t as ArrayType;
@@ -780,7 +784,7 @@ export default class LowerMemoryModel extends AstTraversal {
   // `bytes memory b = new bytes(n)` -> allocate a zero-filled [length(32)][data] block (data word-aligned so an
   // assembly word-store stays inside the allocation); `bytes b = a` -> pointer alias. A constant `new bytes(constN)`
   // reaches here as an all-zero HexLiteralNode (only those convert - see analyzeConvertible), so the data is zeros.
-  private lowerBytesDecl(node: VariableDefinitionNode, bytesT: BytesType): StatementNode[] | undefined {
+  private lowerBytesDecl(node: VariableDefinitionNode, bytesT: Type | undefined): StatementNode[] | undefined {
     const isHex = node.expression instanceof HexLiteralNode;
     const isAlloc = node.expression instanceof NewArrayNode || isHex;
     // Pointer-valued init (alias / ref-field read): share the pointer.
@@ -795,7 +799,10 @@ export default class LowerMemoryModel extends AstTraversal {
     }
     if (!isAlloc) return undefined;
     this.usesMemory = true;
-    this.memBytes.set(node.name, bytesT);
+    // A `string` local rides the same byte-buffer track; memBytes only marks "this name is a byte-buffer pointer",
+    // so store a canonical unbounded BytesType (the boundary serializer emits an unbounded-bytes slice, which is
+    // assignable to a `string` return/state var - see types.ts string<->bytes rules).
+    this.memBytes.set(node.name, bytesT instanceof BytesType ? bytesT : new BytesType());
     // Length: the runtime size expr for `new bytes(n)`, or the (zero) literal's byte length for the folded constant.
     const n = (): ExpressionNode => (isHex
       ? this.intLit(BigInt((node.expression as HexLiteralNode).value.length))
@@ -1075,6 +1082,13 @@ export default class LowerMemoryModel extends AstTraversal {
   // Handled: dynamic `bytes` (a byte-packed [length][data] block). `bytesN` (fixed) is a value word, not a block.
   private isHandledMemBytes(t: Type | undefined): boolean {
     return t instanceof BytesType && t.bound === undefined;
+  }
+
+  // A `string` local is an unbounded byte buffer on BCH (string == unbounded bytes at the byte level, mutually
+  // assignable), so it rides the SAME __yulmem [length][data] block as `bytes memory`. This lets assembly address a
+  // `string memory str = new string(n)` buffer directly (OZ ShortStrings.toString: mstore(str,len)/add(str,0x20)).
+  private isHandledMemString(t: Type | undefined): boolean {
+    return t === PrimitiveType.STRING;
   }
 
   // A struct each of whose fields is either a 256-bit int (a value word) or a handled ARRAY (int array or

@@ -529,6 +529,23 @@ describe('Yul memory (constant-offset scratch)', () => {
       { solidityImportCompat: true },
     )).not.toThrow();
   });
+
+  it('a LOCAL string used as a __yulmem pointer in assembly compiles like the bytes-local form (OZ ShortStrings.toString)', () => {
+    // `string memory str = new string(32); assembly { mstore(str,len) mstore(add(str,0x20),w) } return str;` rides
+    // the SAME __yulmem [length][data] block as a `bytes` local (string == unbounded bytes on BCH), so the emitted
+    // script is byte-identical to the bytes form. This is the reachable OZ ShortStrings.toString shape (EACCToken).
+    const asString = compileString(
+      'contract C(){function f(bytes32 w,uint256 len)returns(string r){'
+      + 'string memory str=new string(32);assembly{mstore(str,len) mstore(add(str,0x20),w)}return str;}}',
+      { solidityImportCompat: true },
+    );
+    const asBytes = compileString(
+      'contract C(){function f(bytes32 w,uint256 len)returns(bytes r){'
+      + 'bytes memory str=new bytes(32);assembly{mstore(str,len) mstore(add(str,0x20),w)}return str;}}',
+      { solidityImportCompat: true },
+    );
+    expect(asString.bytecode).toBe(asBytes.bytecode);
+  });
 });
 
 // OZ Address / SafeERC20 assembly builtins: revert(ptr,size) aborts, mload(<bytes var>) is its length,

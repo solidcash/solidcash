@@ -178,7 +178,9 @@ export function optimiseBytecode(
     } = replaceOps(script, locationData, logs, requires, constructorParamLength, optimisationReplacements);
 
     // Break on fixed point
-    if (scriptToAsm(oldScript) === scriptToAsm(newScript)) break;
+    if (scriptToAsm(oldScript) === scriptToAsm(newScript)) {
+      break;
+    }
 
     script = newScript;
     locationData = newLocationData;
@@ -271,7 +273,15 @@ function replaceOps(
   let newRequires = [...requires];
 
   optimisations.forEach(([pattern, replacement]) => {
-    let processedAsm = '';
+    // Accumulate normalised ASM pieces in an array and join ONCE at the end - equivalent to repeated
+    // mergeAsm(processedAsm, piece) (single-space separators, empties skipped) but O(n) instead of the O(n^2) of
+    // copying a growing string on every append (which made large generated bodies pathologically slow to optimise).
+    const processedParts: string[] = [];
+    // Pre-normalised pieces (slices of the already single-spaced `asm`) only need a trim; the (small) replacement
+    // string from the optimisation table needs full whitespace normalisation. Re-running the regex on the large
+    // before-match slices was the dominant per-pass cost once the O(n^2) concat was gone.
+    const pushPre = (s: string): void => { const b = s.trim(); if (b !== '') processedParts.push(b); };
+    const pushAsm = (s: string): void => { const b = s.replace(/\s+/g, ' ').trim(); if (b !== '') processedParts.push(b); };
     // Opcode count of processedAsm, tracked incrementally so scriptIndex is O(slice) per match rather than an
     // O(len) matchAll rescan of the whole accumulated prefix - the latter made large scripts O(N^2).
     let processedTokens = 0;
@@ -285,7 +295,7 @@ function replaceOps(
     while (matchIndex !== -1) {
       // We add the part before the match to the processed asm
       const beforeMatch = asmToSearch.slice(0, matchIndex);
-      processedAsm = mergeAsm(processedAsm, beforeMatch);
+      pushPre(beforeMatch);
       processedTokens += (beforeMatch.match(/\S+/g) || []).length;
 
       // The script index is the opcode count of processedAsm (tracked incrementally above).
@@ -379,7 +389,7 @@ function replaceOps(
       });
 
       // We add the replacement to the processed asm
-      processedAsm = mergeAsm(processedAsm, replacement);
+      pushAsm(replacement);
       processedTokens += replacementLength;
 
       // We do not add the matched pattern anywhere since it gets replaced
@@ -392,10 +402,10 @@ function replaceOps(
     }
 
     // We add the remaining asm to the processed asm
-    processedAsm = mergeAsm(processedAsm, asmToSearch);
+    pushPre(asmToSearch);
 
     // We replace the original asm with the processed asm so that the next optimisation can use the updated asm
-    asm = processedAsm;
+    asm = processedParts.join(' ');
   });
 
   return {

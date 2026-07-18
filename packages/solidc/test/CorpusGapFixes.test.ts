@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { computeErc7201SlotNumber } from '@solidcash/utils';
 import { compileString, compileStringMulti } from '../src/index.js';
 
 // Compile-level regression guards for solc-corpus gap fixes (see examples/solidity-corpus/PROGRESS.md).
@@ -623,29 +624,41 @@ describe('bytes memory/local element write (bytes memory d; d[i] = v)', () => {
   });
 });
 
-describe('erc7201 not supported: function -> uint256(sha256) alias + layout clause ignored', () => {
+describe('erc7201(id) -> spec-conformant ERC-7201 namespaced storage slot (real keccak256, EIP-7201)', () => {
   const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
-  it('aliases erc7201(id) to a uint256 storage slot (usable in uint256 contexts)', () => {
-    expect(cc('contract C { function f(string memory id) external pure returns (uint256) {'
-      + ' return erc7201(id); } }')).toBe('C');
-    expect(cc('contract C { uint256 constant X = erc7201("openzeppelin.storage.Y");'
-      + ' function f() external pure returns (uint256) { return X; } }')).toBe('C');
+  it('folds a literal namespace id to the EIP-7201 slot (byte-identical to Ethereum)', () => {
+    // keccak256(abi.encode(uint256(keccak256("example.main")) - 1)) & ~bytes32(uint256(0xff)) = the EIP-7201 reference.
+    expect(`0x${computeErc7201SlotNumber('example.main').toString(16)}`)
+      .toBe('0x183a6125c38840424c4a85fa12bab2ab606c4b6d0e7cc73c0c06ba5300eab500');
+    const viaBuiltin = compileString('contract C { function f() external pure returns (uint256) {'
+      + ' return erc7201("example.main"); } }', { solidityImportCompat: true });
+    const viaLiteral = compileString('contract C { function f() external pure returns (uint256) {'
+      + ` return uint256(${computeErc7201SlotNumber('example.main')}); } }`, { solidityImportCompat: true });
+    expect(viaBuiltin.bytecode).toBe(viaLiteral.bytecode);
   });
-  it('is byte-identical to uint256(sha256(id))', () => {
+  it('is NO LONGER the BCH-native sha256 alias', () => {
     const a = compileString('contract C { function f() external pure returns (uint256) { return erc7201("ns"); } }',
       { solidityImportCompat: true });
     const b = compileString('contract C { function f() external pure returns (uint256) { return uint256(sha256("ns")); } }',
       { solidityImportCompat: true });
-    expect(a.bytecode).toBe(b.bytecode);
+    expect(a.bytecode).not.toBe(b.bytecode);
+  });
+  it('is usable as a uint256 storage-slot constant', () => {
+    expect(cc('contract C { uint256 constant X = erc7201("openzeppelin.storage.Y");'
+      + ' function f() external pure returns (uint256) { return X; } }')).toBe('C');
+  });
+  it('requires a compile-time string literal namespace id (no runtime value)', () => {
+    expect(() => cc('contract C { function f(string memory id) external pure returns (uint256) {'
+      + ' return erc7201(id); } }')).toThrow(/compile-time string literal/);
   });
   it('ignores a `contract C layout at erc7201(...)` storage-layout clause', () => {
     expect(cc('contract C layout at erc7201("x") { uint256 n; function f() external { this.n = 1; } }')).toBe('C');
   });
 });
 
-describe('erc7201 as a Yul builtin -> sha256 (reuses the erc7201 alias)', () => {
+describe('erc7201 as a Yul builtin -> spec-conformant slot (reuses the erc7201 fold)', () => {
   const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
-  it('lowers a Yul erc7201(id) call to sha256(id)', () => {
+  it('lowers a Yul erc7201(id) call to the conformant ERC-7201 slot', () => {
     expect(cc('contract C { function f() external pure returns (bytes32) {'
       + ' bytes32 s; assembly { s := erc7201("example.main") } return s; } }')).toBe('C');
   });

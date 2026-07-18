@@ -90,27 +90,32 @@ grows to the stack-element limit.
 
 | Use | Hash used | Byte-identical to Ethereum? |
 |-----|-----------|------------------------------|
-| Runtime `keccak256(data)` (native mode) | real keccak via a side-car library | **Yes** |
-| Constant `keccak256("literal")` under `solidityImportCompat` | folded to **sha256** (warned) | **No** |
-| `erc7201(id)` / EVM storage-slot derivation | **sha256** (warned) | **No** |
+| Runtime `keccak256(data)` | real keccak via a side-car library | **Yes** |
+| Constant `keccak256("literal")` | folded to real keccak256 | **Yes** |
+| Yul `keccak256(ptr, len)` | real keccak (folded / side-car) | **Yes** |
+| `erc7201(id)` namespaced slot (EIP-7201) | real keccak256, full spec formula | **Yes** |
+| Function selector under `evmCompat` | real keccak256 | **Yes** |
+| Mapping/array physical STORAGE-SLOT space | sha256 (BCH-native) | **No** |
+| Event `.selector` / topic0 | sha256 (BCH-native) | **No** |
 | `sha256(x)` | sha256 | Yes (it is sha256) |
 
 ### What this affects
 
-- **Slot / role-id / domain-separator VALUES differ from Ethereum.** A role id or storage slot SolidCash computes
-  will not equal the one an Ethereum contract computes for the same input. They are **internally consistent** -
-  the same SolidCash contract always derives the same slot - so on-chain correctness within BCH is fine.
-- **Do not rely on cross-chain slot/id equality.** If a design assumes a slot or role id matches a specific
-  Ethereum contract (e.g. a shared registry, an EIP-712 signature verified on both chains), that assumption
-  breaks. The compiler emits a one-time warning at each such site.
-- **Footgun within compat mode:** a *constant* `keccak256("x")` folds to `sha256("x")`, but a *runtime*
-  `keccak256(dynamicBytes)` uses real keccak. Prefer `sha256` explicitly for on-chain slot/id derivation so the
-  constant and runtime forms agree, or stay in native mode with the real-keccak library if you need Ethereum
-  parity for data hashing.
+- **keccak256 VALUES match Ethereum.** Role ids (`keccak256("ADMIN_ROLE")`), EIP-712 domain separators, and
+  `erc7201(id)` namespaced-slot numbers are computed with **real keccak256** (constant fold, runtime side-car, and
+  the Yul builtin), so they equal what an Ethereum contract derives for the same input. `erc7201("...")` folds to
+  the EIP-7201 slot `keccak256(abi.encode(uint256(keccak256(id)) - 1)) & ~bytes32(uint256(0xff))`, verified
+  byte-identical to the spec's reference values.
+- **The physical STORAGE-SLOT SPACE is BCH-native (sha256).** A mapping/array's on-chain slot (and an event's
+  topic0) is derived with sha256 - BCH has its own UTXO/covenant storage model, not the EVM trie. So although
+  `erc7201("x")` yields Ethereum's slot *number*, the data physically lives in BCH's `__evm_storage` space. This
+  is internal and never cross-chain-compared, so on-chain correctness within BCH is unaffected.
+- The `contract C layout at <expr>` storage-layout-offset clause is not supported (ignored, warned) - BCH storage
+  is not a linear slot array to offset.
 
-> Anchors in the compiler: `FoldHashLiterals.ts` (the keccak256->sha256 literal fold), `LowerInlineAssembly.ts`
-> (the `erc7201`/EVM-slot sha256 alias + warnings). See also `docs/external-libraries.md` (keccak side-car) and
-> `docs/evm-storage-parity.md`.
+> Anchors in the compiler: `FoldHashLiterals.ts` (real-keccak literal fold), `state.ts` `computeErc7201Slot`
+> (the EIP-7201 formula), `keccak-compute-library.ts` (runtime keccak side-car). See also
+> `docs/external-libraries.md` (keccak side-car) and `docs/evm-storage-parity.md`.
 
 ---
 

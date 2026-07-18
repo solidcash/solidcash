@@ -1,6 +1,6 @@
 import { ParseTree, ParseTreeVisitor, ParserRuleContext } from 'antlr4';
 import { hexToBin, binToHex } from '@bitauth/libauth';
-import { parseType, MappingType, ArrayType, StructType, IntType, FixedType, Type, AddressType, ValueType, BytesType, PrimitiveType, EnumType, isChunkPackableElementType } from '@solidcash/utils';
+import { parseType, MappingType, ArrayType, StructType, IntType, FixedType, Type, AddressType, ValueType, BytesType, PrimitiveType, EnumType, isChunkPackableElementType, computeErc7201SlotNumber } from '@solidcash/utils';
 import semver from 'semver';
 import {
   Node,
@@ -341,9 +341,6 @@ export default class AstBuilder
   // so a `using L for T` method call `x.method(args)` -> `L.method(x, args)` resolves for any receiver type
   // (structs go through localStructTypes). Per-function.
   private localSimpleTypeKeys: Map<string, string> = new Map();
-
-  // Warn only once that erc7201(...) is aliased to sha256 (no EVM storage layout on BCH).
-  private warnedErc7201 = false;
 
   private forOfArrayCounter = 0; // uniquifies the temp locals of a desugared `for..of` over a state array
 
@@ -2427,22 +2424,18 @@ export default class AstBuilder
       }
     }
 
-    // `erc7201(id)` (Solidity's ERC-7201 namespaced storage-slot hash) has no EVM storage layout on BCH; alias it
-    // to sha256(id) with a warning (like keccak256). Not byte-identical to Ethereum's keccak-based erc7201 - sound
-    // only for internal, same-contract slot derivation, never cross-chain.
+    // `erc7201(id)` (ERC-7201 / EIP-7201 namespaced storage slot): fold to the SPEC-CONFORMANT slot,
+    // keccak256(abi.encode(uint256(keccak256(id)) - 1)) & ~bytes32(uint256(0xff)), as a uint256 - byte-identical to
+    // Ethereum. The namespace id is always a compile-time string literal (as in Solidity), so it folds at parse time.
     if (identifiers.length === 1 && name === 'erc7201' && parameters.length === 1) {
-      if (!this.warnedErc7201) {
-        console.log('Warning: erc7201(...) is not supported in SolidCash (no EVM storage layout); it is aliased to '
-          + 'sha256(...). The result differs from Ethereum ERC-7201 and must not be relied on cross-chain.');
-        this.warnedErc7201 = true;
+      const arg = parameters[0];
+      if (!(arg instanceof StringLiteralNode)) {
+        throw new ParseError('erc7201(...) requires a compile-time string literal namespace id', Location.fromCtx(ctx));
       }
-      const sha = new IdentifierNode('sha256');
-      sha.location = identifier.location;
-      const call = new FunctionCallNode(sha, [parameters[0] as ExpressionNode]);
-      call.location = Location.fromCtx(ctx);
-      // ERC-7201 yields a storage-slot uint256 (not the raw bytes32 hash); return uint256(sha256(id)) so
-      // it composes in the uint256 contexts the spec uses (arithmetic, comparison, slot number).
-      const cast = new CastNode(parseType('uint256'), call, false);
+      const lit = new IntLiteralNode(computeErc7201SlotNumber(arg.value));
+      lit.location = Location.fromCtx(ctx);
+      // Type it as the uint256 slot number (arithmetic/comparison/slot contexts the spec uses).
+      const cast = new CastNode(parseType('uint256'), lit, false);
       cast.location = Location.fromCtx(ctx);
       return cast;
     }

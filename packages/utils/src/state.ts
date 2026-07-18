@@ -1463,6 +1463,31 @@ export function computeEvmFunctionSelector(signature: string): Uint8Array {
 }
 
 /**
+ * ERC-7201 (EIP-7201) namespaced storage slot, SPEC-CONFORMANT with Ethereum (real keccak256, not BCH-native sha256):
+ *   keccak256(abi.encode(uint256(keccak256(bytes(id))) - 1)) & ~bytes32(uint256(0xff))
+ * Verified byte-identical to the spec's reference values (erc7201("example.main") = 0x183a..b500). Returns the
+ * 32-byte big-endian slot; `computeErc7201SlotNumber` returns its uint256 value = the slot key Ethereum uses.
+ */
+export function computeErc7201Slot(namespaceId: string): Uint8Array {
+  const MAX_U256 = (1n << 256n) - 1n;
+  const beToBig = (b: Uint8Array): bigint => { let n = 0n; for (const x of b) n = (n << 8n) | BigInt(x); return n; };
+  const n = (beToBig(keccak_256(utf8ToBin(namespaceId))) - 1n) & MAX_U256; // uint256(keccak256(id)) - 1
+  const enc = new Uint8Array(32);                                          // abi.encode(uint256) = 32-byte big-endian
+  let v = n;
+  for (let i = 31; i >= 0; i -= 1) { enc[i] = Number(v & 0xffn); v >>= 8n; }
+  const slot = keccak_256(enc);
+  slot[31] = 0;                                                            // & ~bytes32(uint256(0xff))
+  return slot;
+}
+
+/** ERC-7201 slot as its big-endian uint256 value (the Ethereum storage-slot key). See computeErc7201Slot. */
+export function computeErc7201SlotNumber(namespaceId: string): bigint {
+  let n = 0n;
+  for (const x of computeErc7201Slot(namespaceId)) n = (n << 8n) | BigInt(x);
+  return n;
+}
+
+/**
  * Compute 4-byte function selector as hex string.
  */
 export function computeFunctionSelectorHex(signature: string): string {

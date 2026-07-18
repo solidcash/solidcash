@@ -1,6 +1,6 @@
 import {
   IntType, BytesType, AddressType, PrimitiveType, ValueType, Type, MappingType, StructType, ArrayType, EnumType,
-  hash256,
+  hash256, computeErc7201SlotNumber,
 } from '@solidcash/utils';
 import AstTraversal from '../ast/AstTraversal.js';
 import {
@@ -67,8 +67,6 @@ let currentVarSlot = new Map<string, bigint>();
 // (`mstore(0,k); mstore(32,p); sload/sstore(keccak256(0,64))`) to the high-level mapping m at slot p (Tier-2
 // interop): the assembly access and the high-level m[k] then hit the same entry collection.
 let currentMappingSlots = new Map<bigint, string>();
-// Warn only once that the erc7201 Yul builtin is aliased to sha256.
-let warnedErc7201Yul = false;
 
 // The synthesized EVM-storage register name. A contract whose assembly touches a slot with NO declared var
 // (an arbitrary EVM storage slot, e.g. `sstore(0, v)` with no var at slot 0, or a keccak/sha256-derived slot)
@@ -1201,16 +1199,16 @@ function lowerCall(call: YulFunctionCallNode): ExpressionNode {
     if (!runtimeMem) throw new YulNotLowerable();
     return runtimeMsize(call);
   }
-  // erc7201(id) - the ERC-7201 namespaced storage-slot dialect builtin. No EVM storage layout on BCH; alias it to
-  // sha256(id), reusing the non-assembly erc7201() alias. Not byte-identical to Ethereum's keccak-based erc7201.
+  // erc7201(id) - the ERC-7201 / EIP-7201 namespaced storage-slot dialect builtin. Fold to the SPEC-CONFORMANT slot,
+  // keccak256(abi.encode(uint256(keccak256(id)) - 1)) & ~bytes32(uint256(0xff)), as a uint256 (byte-identical to
+  // Ethereum). The namespace id is always a string literal, so it folds at compile time.
   if (name === 'erc7201' && args.length === 1) {
-    if (!warnedErc7201Yul) {
-      console.log('Warning: the erc7201 Yul builtin is not supported in SolidCash (no EVM storage layout); it is '
-        + 'aliased to sha256(...). The result differs from Ethereum ERC-7201 and must not be relied on cross-chain.');
-      warnedErc7201Yul = true;
+    const arg = args[0];
+    if (!(arg instanceof YulLiteralNode) || arg.kind !== YulLiteralKind.STRING || arg.raw.includes('\\')) {
+      throw new YulNotLowerable(); // erc7201 requires a plain string-literal namespace id
     }
-    const sha = loc(new FunctionCallNode(loc(new IdentifierNode('sha256'), call), [lowerValue(args[0])]), call);
-    return loc(new CastNode(UINT256, sha, false), call); // erc7201 yields a storage-slot uint256, not bytes32
+    const slot = loc(intLit(computeErc7201SlotNumber(arg.raw.slice(1, -1)), call), call);
+    return loc(new CastNode(UINT256, slot, false), call); // erc7201 yields a storage-slot uint256, not bytes32
   }
   throw new YulNotLowerable();
 }

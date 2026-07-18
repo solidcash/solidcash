@@ -57,14 +57,33 @@ memory/string/yul VM tests + the ECDSA signature-split bridge tests all green. T
 cleared: `HEX_DIGITS` (`fa67b4fc`), `getStringSlot` in a library free fn (`612e4cda`), `using ShortStrings for *` in
 an imported inherited parent ctor (`f05620ce`).
 
-**EACCToken then advances PAST ShortStrings to a NEW, SEPARATE wall (not this item): OZ `Math.tryAdd` fails codegen
-"Expected variable 'c' does not exist on the stack".** Isolated as: a local declared inside an `unchecked` block in a
-LIBRARY function, used across an early/multi-return (`unchecked { uint256 c = a + b; if (c < a) return (false, 0);
-return (true, c); }`). The same body as a CONTRACT method compiles; a library function WITHOUT `unchecked` compiles;
-only library + `unchecked`-block-local fails (the library/free-function codegen path loses the nested-block local's
-name binding - the stack holds anonymous `(value)` slots). Bounded + reproducible, but a distinct codegen issue from
-the memory model. Behind it, per `[[eacc_port_grind_2026_07_13]]`, EACCToken still has permit `ecrecover` + the EIP712
-domain separator + the `multitransfer` diff-key C2 loop. So EACCToken remains the bench's 1/15 pending those.
+**EACCToken then advanced PAST ShortStrings through TWO more OZ Math library-helper walls, both FIXED (commit
+`03c2e383`):** (1) `Math.tryAdd` `unchecked { uint c=a+b; if(c<a) return(false,0); return(true,c); }` crashed codegen
+"Expected variable 'c' does not exist on the stack" - an early return inside an `unchecked` block was never nested
+into if/else (`EarlyReturnTransformation` had no `UncheckedNode` case + skipped a single-statement body), so
+`visitBranch` desynced the fall-through stack (this ALSO silently miscompiled the contract-method form). (2)
+`Math.mulDiv` (dead, fully-lowerable assembly) escaped `PruneUnreachableFreeFunctions`' post-lowering assembly check;
+`LowerInlineAssembly` now stamps `hadInlineAssembly` before lowering so the prune drops it. See the codegen deferrals
+below (§6) - the REMAINING EACCToken walls are both soundness-critical C2 features (still 1/15):
+
+**`_useNonce` (value-returning C2-writer inline) - the current `return m[k]++` desugar is C2-UNSOUND.** OZ
+`Nonces._useNonce` `unchecked { return _nonces[owner]++; }` is a value-returning internal helper doing a C2 mapping
+RMW; it co-spends the sorted entry slots (block layout), so it must inline into its entry caller. The inline mechanism
+(unwrap the lone `unchecked` in `InlineReturningStateHelpers.eligibleShape` + `inlineCall`, treat a value-returning
+transitive-sorted-writer as eligible) was BUILT and ATTEMPTED, then REVERTED: VM-bisection proved it UNSOUND. The
+DIRECT `n = m[k]++` (assignment postfix) desugars to the sound SAVE-OLD form (`__t=m[k]; m[k]=__t+1; n=__t`), but
+`return m[k]++` (the `3be9a3eb` reconstruction) desugars to a POSTVAL-MINUS-1 form (`m[k]=m[k]+1; return m[k]-1`) - a
+C2 read-AFTER-write of the same entry in one tx, which fails OP_VERIFY. The fix path: make `DesugarPostfixExpressions`
+lower a return-postfix to the SAME save-old form as an assignment-postfix, THEN re-add the inline, THEN VM-verify the
+RMW adversarially. Until then it fails CLOSED ("Block layout not available"), never a miscompile. Bounded but
+soundness-adjacent; not rushed.
+
+**`multitransfer` (C2 diff-key RMW-in-loop) - the deep deferred one.** `for (i) _transfer(msg.sender, recipients[i],
+amounts[i])` -> `_balances[to] += amt` (a DIFFERENT key each iteration) is the §6a item-4 RMW/delete-in-loop:
+per-iteration read-modify-write of an evolving sorted list. Fails codegen `__entry_key_enc_0 does not exist on the
+stack` (the C2 entry write in a dynamic loop). This is the soundness-critical C2 covenant work (a bug reopens the
+exclusion-proof hole); needs dedicated design + adversarial omission/reorder/duplicate proofs. `ecrecover` + the EIP712
+domain separator sit behind both of these, unreached.
 
 ---
 

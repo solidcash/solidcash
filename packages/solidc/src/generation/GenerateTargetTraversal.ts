@@ -10624,6 +10624,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   visitMappingAssign(node: MappingAssignNode): Node {
+    // A C2 (sorted linked-list) mapping write inside a DYNAMIC runtime loop (`for(i<n) m[k[i]]=v`) needs a
+    // per-iteration sorted insertion: the list, the bracketing predecessor, and the slot ordering all evolve each
+    // iteration, so a single fixed entry slot cannot describe it. Fixed-bound loops are unrolled to static writes
+    // before codegen (UnrollFixedBoundEntryLoop) and reach here at plainLoopDepth 0, so they are unaffected. Fail
+    // closed with the sorted-pending diagnostic rather than crashing deep in emitSortedValueUpsert ("Block slot not
+    // found: entry[0]"); never silently degrade a C2 write to the omittable default-on-absent entry model.
+    if (node.collection?.sorted && this.plainLoopDepth > 0) {
+      throw new SortedMappingCodegenPendingError(node, node.collection.name);
+    }
     // Sorted (C2 linked-list) mapping write `m[k] = v` (or nested `m[a][b] = v`): never the omittable entry-model
     // write. Always an UPSERT (update the value if the key is present, else insert) - this is how `m[k]=false` /
     // `delete m[k]` NULLIFY a bool set (write the empty/false value tail) rather than physically removing the node,

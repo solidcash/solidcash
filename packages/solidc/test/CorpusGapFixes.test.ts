@@ -2117,3 +2117,20 @@ describe('low-level call with mapping-entry operands (block-layout slot allocati
     expect(() => compileString(src, { solidityImportCompat: true })).not.toThrow();
   });
 });
+
+describe('C2 (sorted) mapping write in a runtime loop: fixed-bound unrolls, dynamic fails closed', () => {
+  // A C2 write inside a DYNAMIC loop needs a per-iteration sorted-linked-list insertion (evolving list +
+  // bracketing predecessor), which a single fixed entry slot cannot describe. Fixed-bound loops are unrolled to
+  // static writes before codegen and work; the dynamic case must fail closed with the sorted-pending diagnostic
+  // (never crash at "Block slot not found: entry[0]", never silently degrade to the omittable entry model).
+  const mk = (loop: string): string => 'contract C() { mapping(int => bigint) m;'
+    + ` function f(int[] ks, int v, pubkey pk, sig s) { require(checkSig(s, pk)); ${loop} } }`;
+  it('unrolls a fixed-bound C2 loop', () => {
+    expect(() => compileString(mk('for (int i = 0; i < 3; i++) { m[ks[i]] = v; }'),
+      { sortedMappingsAll: true, forceStateful: true })).not.toThrow();
+  });
+  it('fails closed on a dynamic C2 loop (SortedMappingCodegenPendingError, not an internal crash)', () => {
+    expect(() => compileString(mk('for (int i = 0; i < ks.length; i++) { m[ks[i]] = v; }'),
+      { sortedMappingsAll: true, forceStateful: true })).toThrow(/sorted mapping .* is not yet compiled/);
+  });
+});

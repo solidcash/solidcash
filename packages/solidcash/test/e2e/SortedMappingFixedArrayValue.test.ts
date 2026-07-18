@@ -14,7 +14,7 @@ describe('sorted fixed-array-valued mapping (C2)', () => {
       function setAt(int k, int i, int v, pubkey pk, sig s) { require(checkSig(s, pk)); m[k][i] = v; }
       function chkAt(int k, int i, int e, pubkey pk, sig s) { require(checkSig(s, pk)); require(m[k][i] == e); }
     }`;
-    const art = compileString(SRC, { sortedMappings: ['m'] }); // arrays are opt-in to C2
+    const art = compileString(SRC);
     expect(art.stateLayout?.collections?.find((c) => c.name === 'm')?.sorted).toBe(true);
     const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
     let nonce = 0x3d00;

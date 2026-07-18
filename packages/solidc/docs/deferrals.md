@@ -468,25 +468,24 @@ budget (the USDT-scale case that motivated the enumerable/plain split originally
 
 ### 5. C2 value-shape coverage + the default entry model (2026-07-17)
 
-**C2-by-DEFAULT** for `mapping(K => V)` with V in: int/bigint/bool, bytesN, unbounded bytes/string, address, enum,
-and struct (incl. a struct with a mapping/array field, via per-field decomposition into per-field collections -
-its SCALAR fields are C2, its array field follows the array rule below).
+**C2-by-DEFAULT covers every value shape except function pointers.** `mapping(K => V)` is C2-backed by default for V
+in: int/bigint/bool, bytesN, unbounded bytes/string, address, enum, struct, and arrays (dynamic `T[]` + fixed `T[N]`,
+chunk-aware). A struct with a mapping/array field is field-decomposed into per-field C2 collections.
 
-**ARRAYS are OPT-IN (not C2-by-default).** `mapping(K => T[])` / `T[N]` defaults to the entry model; opt a specific
-one into C2 with `{ sortedMappings: ['m'] }` (additive - other mappings stay C2-by-default; for a struct's array
-field name the decomposed collection, e.g. `m__d`). RATIONALE: C2 buys the exclusion proof, which for arrays only
-helps length/presence guards (`m[k].length == 0`) - an absent-key ELEMENT read reverts (empty-array bounds check)
-rather than returning a forgeable value, so the omission surface is narrow. The full C2 array machinery (chunking,
-push/pop, element RMW) is retained and active on opt-in. TRADEOFF (accepted): a default-model array value lives in
-the entry commitment, so a value > 128 B is real-chain-invalid (mock-only) - a LARGE array mapping must opt into C2.
+**Why ARRAYS are C2-by-default (the parity argument, revisited 2026-07-18).** Briefly considered making arrays opt-in
+(the exclusion proof only helps array length/presence guards - an absent-key ELEMENT read reverts on the empty-array
+bounds check, not a forgeable value - so the omission surface looked narrow). REVERSED on EVM-parity grounds: the EVM
+makes EVERY storage read unforgeable (the trie commits an array's length slot to 0), so a ported
+`require(orders[user].length == 0)` / presence guard relies on that; leaving arrays on the entry model makes exactly
+that guard omission-forgeable = a silent porter footgun. Plus EVM arrays are unbounded while the entry model caps a
+value at the 128 B commitment. So on both parity dimensions (unforgeable length/presence + no size cap) C2 is the
+faithful choice; the per-read C2 overhead is the parity tax the EVM itself pays via the trie. Uniformity wins: every
+mapping read unforgeable, so a porter never has to reason about which reads are safe.
 
-**Only function pointers have NO C2 path** (neither default nor opt-in-tested): fn-ptr values go through heavy
-lowering (LowerBlobFunctionPointers, LowerForeignFunctionPointer*) that may transform the mapping before the C2
-opt-in, and are rare - deferred. Revert-safe: add `FunctionType` to c2StorableValue (needs the import) +
-sortedValueKind, then test against the fn-ptr suite.
+**Only function pointers have NO C2 path.** fn-ptr values go through heavy lowering (LowerBlobFunctionPointers,
+LowerForeignFunctionPointer*) that may transform the mapping before the C2 opt-in, and are rare - deferred.
+Revert-safe: add `FunctionType` to c2StorableValue (needs the import) + sortedValueKind, then test the fn-ptr suite.
 
-**Default entry-model DELETION** (still gated): (1) fn-ptr values -> C2; (2) decide arrays - either bring them to
-C2-by-default (accepting the exclusion-proof overhead for narrow benefit) or keep them opt-in and keep the entry
-model FOR arrays; (3) migrate the ~110 `sortedMappingsAll:false` opt-out'd tests to C2 seeding; (4) delete the path.
-Note: while arrays stay opt-in, the entry model is a REQUIRED backend (not just legacy), so full deletion is blocked
-on the array decision.
+**Default entry-model DELETION** (still gated): (1) fn-ptr values -> C2; (2) migrate the ~110 `sortedMappingsAll:false`
+opt-out'd tests to C2 seeding; (3) delete the entry-model codegen path + the `sortedMappingsAll` / `sortedMappings`
+options. Large mechanical change; do it as a dedicated pass.

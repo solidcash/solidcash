@@ -191,30 +191,22 @@ function compileResolvedAst(ast: Ast, code: string, mergedCompilerOptions: Compi
   // bytes/string, structs, and arrays (fixed T[N] or dynamic T[]) - because any variable-width value chunks
   // off-commitment (P5b). A struct with a mapping/array field is field-decomposed into per-field C2 collections.
   // Opt the whole contract out with `sortedMappingsAll: false` (then `sortedMappings` still names specific mappings).
-  // NOTE: ARRAY values are deliberately NOT here - an array-valued mapping is OPT-IN to C2 (via `sortedMappings`),
-  // not C2-by-default. Rationale: C2 buys the exclusion proof (unforgeable absent-read), which for arrays only
-  // matters to length/presence guards (`m[k].length == 0`); an element read of an absent key REVERTS (empty array
-  // bounds-check) rather than returning a forgeable value, so the omission surface is narrow. The C2 array machinery
-  // (chunking, push/pop, element RMW) is fully retained and kicks in when a mapping is explicitly opted in. Enums
-  // stay default (an enum is an int with a meaningful 0th-member default - same omission surface as int/bool).
+  // ARRAYS ARE C2-BY-DEFAULT (EVM parity): the EVM makes EVERY storage read unforgeable, incl. an array
+  // length/presence guard `require(m[k].length == 0)` (the trie commits the length slot to 0 - the entry model
+  // can't prove absent-vs-withheld, so that guard would be omission-forgeable). Large arrays chunk off-commitment
+  // (P5b), matching the EVM's unbounded arrays. Enums too (an enum = int with a meaningful 0th-member default).
   const c2StorableValue = (vt: Type): boolean => (
     vt instanceof IntType || vt instanceof BytesType || vt instanceof AddressType || vt instanceof StructType
-    || vt instanceof EnumType
+    || vt instanceof EnumType || vt instanceof ArrayType
     || vt === PrimitiveType.BIGINT || vt.toString() === 'bool' || vt.toString() === 'string'
   );
-  const namedSorted = new Set(mergedCompilerOptions.sortedMappings ?? []);
   if (mergedCompilerOptions.sortedMappingsAll !== false) {
-    // Default: C2 every mapping whose value is C2-by-default, PLUS any explicitly named in `sortedMappings` (this is
-    // how an array-valued mapping opts INTO C2 - arrays are not C2-by-default - without opting the rest of the
-    // contract out).
     for (const col of ast.contract.collections) {
-      if (col.type instanceof MappingType && (c2StorableValue(col.innermostValueType) || namedSorted.has(col.name))) {
-        col.sorted = true;
-      }
+      if (col.type instanceof MappingType && c2StorableValue(col.innermostValueType)) col.sorted = true;
     }
-  } else if (namedSorted.size > 0) {
-    // Whole contract opted out (`sortedMappingsAll: false`); `sortedMappings` still names specific mappings to keep C2.
-    for (const col of ast.contract.collections) if (namedSorted.has(col.name)) col.sorted = true;
+  } else if (mergedCompilerOptions.sortedMappings && mergedCompilerOptions.sortedMappings.length > 0) {
+    const sortedSet = new Set(mergedCompilerOptions.sortedMappings);
+    for (const col of ast.contract.collections) if (sortedSet.has(col.name)) col.sorted = true;
   }
 
   // A standalone abstract contract has no deployable bytecode; emit an ABI-only declaration artifact (solc

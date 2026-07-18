@@ -1,8 +1,9 @@
 // Mapping-entry write behavior pins: read-after-write, writes in loops, chained struct-field and
 // array-element writes.
 import { describe, it, expect } from 'vitest';
-import { compileString as _csRawSolidc, EntryWriteInLoopError, ChainedEntryElementReadError } from 'solidc';
-const compileString = (s: string, o: Record<string, unknown> = {}): ReturnType<typeof _csRawSolidc> => _csRawSolidc(s, { sortedMappingsAll: false, ...o } as any);
+import { compileString as _csRawSolidc, EntryWriteInLoopError } from 'solidc';
+const compileString = (s: string, o: Record<string, unknown> = {}): ReturnType<typeof _csRawSolidc> =>
+  _csRawSolidc(s, { sortedMappingsAll: false, ...o } as any);
 import { getContractFactory } from '../../src/index.js';
 import { fundedSigner } from '../test-util.js';
 
@@ -192,24 +193,28 @@ describe('chained struct-field rmw', () => {
 });
 
 describe('chained array-element read', () => {
-  // A chained mapping-entry ARRAY-element write whose value/index reads the same entry saw stale state
-  // (`m[k][0]+=1` twice kept 1); rejected (ChainedEntryElementReadError) until in-place chaining lands.
+  // A chained mapping-entry ARRAY-element write whose value/index reads the same entry used to see stale state
+  // (`m[k][0]+=1` twice kept 1) and was rejected (ChainedEntryElementReadError). CacheMappingEntryInLoop now reads
+  // m[k] once into a local, mutates the local (reads redirect there), and flushes ONE whole-entry write - so the
+  // chained cases produce correct values instead of failing closed.
   const A = (body: string): string => `contract C { mapping(int => int[3]) m;
     ${body}
     function chk(int k, int i, int ev) external { require(m[k][i] == ev); } }`;
   const dep = async (body: string): Promise<any> =>
     getContractFactory(compileString(A(body), { forceStateful: true }), await fundedSigner()).deploy();
-  const rej = (body: string): void => {
-    expect(() => compileString(A(body), { forceStateful: true })).toThrow(ChainedEntryElementReadError);
-  };
 
   describe('chained mapping-entry array-element write whose value reads the same entry', () => {
-    it('rejects: read-modify-write of the same element twice', () => {
-      rej('function f(int k) external { m[k][0] = m[k][0] + 1; m[k][0] = m[k][0] + 1; require(true); }');
+    it('read-modify-write of the same element twice accumulates (+1 twice -> 2, was rejected/stale)', async () => {
+      const sc = await dep('function f(int k) external { m[k][0] = m[k][0] + 1; m[k][0] = m[k][0] + 1; require(true); }');
+      await sc.f(1n).send();
+      await sc.chk(1n, 0n, 2n).send();
     });
 
-    it('rejects: write one index, then write another index computed from the first', () => {
-      rej('function f(int k) external { m[k][0] = 5; m[k][1] = m[k][0] + 1; require(true); }');
+    it('write one index, then write another index computed from the first (5 -> 6, was rejected)', async () => {
+      const sc = await dep('function f(int k) external { m[k][0] = 5; m[k][1] = m[k][0] + 1; require(true); }');
+      await sc.f(1n).send();
+      await sc.chk(1n, 0n, 5n).send();
+      await sc.chk(1n, 1n, 6n).send();
     });
 
     it('allows a single element write', async () => {

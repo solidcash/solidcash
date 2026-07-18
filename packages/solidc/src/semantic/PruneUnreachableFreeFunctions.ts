@@ -42,7 +42,12 @@ export default class PruneUnreachableFreeFunctions extends AstTraversal {
     // Seed with the direct cases, then propagate to any free function that calls a tainted one (fixpoint), so a
     // pure delegator like `forceApprove` is caught too.
     const tainted = new Set<FunctionDefinitionNode>();
-    for (const fn of freeFns) if (this.hasDirectLowLevelCall(fn) || this.hasInlineAssembly(fn)) tainted.add(fn);
+    // `hadInlineAssembly` is stamped by LowerInlineAssembly BEFORE the block is lowered, so a fully-lowerable
+    // assembly helper (OZ Math.mulDiv: mulmod/mul/div/add - no residual block) is still caught. `hasInlineAssembly`
+    // catches any residual block (defensive; runs on the post-lowering AST).
+    for (const fn of freeFns) {
+      if (this.hasDirectLowLevelCall(fn) || this.hasInlineAssembly(fn) || fn.hadInlineAssembly) tainted.add(fn);
+    }
     for (let changed = true; changed;) {
       changed = false;
       for (const fn of freeFns) {

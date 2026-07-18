@@ -57,6 +57,20 @@ function collectVarTypes(node: Node, out: Map<string, Type>): void {
   }
 }
 
+// True if the subtree contains an inline `assembly {}` block. Checked at fn entry before the block is lowered.
+function bodyHasAssembly(node: Node | undefined): boolean {
+  if (!node) return false;
+  if (node instanceof AssemblyStatementNode) return true;
+  for (const key of Object.keys(node)) {
+    if (key === 'type' || key === 'symbolTable' || key === 'location') continue;
+    const val = (node as any)[key];
+    if (val instanceof Node) { if (bodyHasAssembly(val)) return true; } else if (Array.isArray(val)) {
+      for (const v of val) if (v instanceof Node && bodyHasAssembly(v)) return true;
+    }
+  }
+  return false;
+}
+
 // EVM storage layout of the enclosing contract: each state var packed into a 32-byte slot in declaration
 // order (Solidity rules), so sload/sstore on a slot can map to the var(s) at that slot. A single full-width
 // var (the common uint256 case) stays a plain read/write; a packed slot combines/decomposes its sub-word vars.
@@ -1754,6 +1768,9 @@ export default class LowerInlineAssembly extends AstTraversal {
     functionYulMemUsed = false;
     for (const p of node.parameters) currentVars.set(p.name, p.type);
     collectVarTypes(node.body, currentVars);
+    // Record that this function had inline assembly BEFORE it is lowered away, so PruneUnreachableFreeFunctions can
+    // still drop it when dead (a fully-lowerable helper like OZ Math.mulDiv leaves no residual assembly to detect).
+    if (bodyHasAssembly(node.body)) node.hadInlineAssembly = true;
     const result = super.visitFunctionDefinition(node) as FunctionDefinitionNode;
     // Declare the shared runtime memory buffer once at the body top (before any block that uses it), so every
     // lowered assembly block reads/writes one function-scoped `__yulmem` - matching EVM's function-scoped memory.

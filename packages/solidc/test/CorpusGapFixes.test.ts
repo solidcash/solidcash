@@ -2401,3 +2401,43 @@ describe('StorageSlot slot-ALIAS factory: getStringSlot(ref).value = v is a dire
     expect(() => compileString(src, { solidityImportCompat: true })).not.toThrow();
   });
 });
+
+describe('early return inside an `unchecked` block in a LIBRARY function (OZ Math.tryAdd)', () => {
+  // `unchecked { uint c = a + b; if (c < a) return (false, 0); return (true, c); }` as a library function: the
+  // early return inside the unchecked block must be nested into if/else (EarlyReturnTransformation now recurses into
+  // unchecked, and no longer skips a single-statement body), else codegen's visitBranch desyncs the fall-through
+  // stack and throws "Expected variable 'c' does not exist on the stack".
+  const src = 'library Math { function tryAdd(uint256 a, uint256 b) internal pure returns (bool, uint256) {'
+    + ' unchecked { uint256 c = a + b; if (c < a) return (false, 0); return (true, c); } } }'
+    + ' contract C { using Math for uint256; function f(uint256 x, uint256 y) public pure returns (uint256) {'
+    + ' (bool ok, uint256 r) = Math.tryAdd(x, y); require(ok); return r; } }';
+  it('compiles a called library tryAdd with an unchecked early return', () => {
+    expect(() => compileString(src, { solidityImportCompat: true })).not.toThrow();
+  });
+  it('compiles when tryAdd is DEAD (uncalled) too', () => {
+    const dead = 'library Math { function tryAdd(uint256 a, uint256 b) internal pure returns (bool, uint256) {'
+      + ' unchecked { uint256 c = a + b; if (c < a) return (false, 0); return (true, c); } } }'
+      + ' contract C { function f(uint256 x) public pure returns (uint256) { return x; } }';
+    expect(() => compileString(dead, { solidityImportCompat: true })).not.toThrow();
+  });
+});
+
+describe('dead assembly library helper is pruned even after its assembly fully lowers (OZ Math.mulDiv)', () => {
+  // A DEAD library fn whose assembly lowers to plain ops (mulmod) leaves no residual assembly block, so the prune
+  // pass would miss it by post-lowering detection; LowerInlineAssembly now stamps `hadInlineAssembly` before
+  // lowering so PruneUnreachableFreeFunctions still drops it. Without the drop it reaches codegen and fails.
+  it('prunes an unreachable fully-lowerable-assembly helper', () => {
+    const src = 'library Math { function mulHi(uint256 a, uint256 b) internal pure returns (uint256 result) {'
+      + ' unchecked { uint256 prod0 = a * b; assembly { let mm := mulmod(a, b, not(0)) result := sub(mm, prod0) }'
+      + ' if (result == 0) { return prod0; } return result; } } }'
+      + ' contract C { function f(uint256 x) public pure returns (uint256) { return x; } }';
+    expect(() => compileString(src, { solidityImportCompat: true })).not.toThrow();
+  });
+  it('KEEPS a reachable assembly helper (still compiles when actually used)', () => {
+    const src = 'library Math { function dbl(uint256 a) internal pure returns (uint256 r) {'
+      + ' assembly { r := add(a, a) } } }'
+      + ' contract C { using Math for uint256; function f(uint256 x) public pure returns (uint256) {'
+      + ' return Math.dbl(x); } }';
+    expect(() => compileString(src, { solidityImportCompat: true })).not.toThrow();
+  });
+});

@@ -7,6 +7,7 @@ import {
   ConsoleStatementNode,
   TryCatchNode,
   SwitchNode,
+  UncheckedNode,
   Node,
   ContractNode,
   ParameterNode,
@@ -77,9 +78,11 @@ export default class EarlyReturnTransformation extends AstTraversal {
  * remaining statements as the else-branch.
  */
 function transformStatements(statements: StatementNode[]): StatementNode[] {
-  // Filter out console statements for analysis (they don't affect control flow)
-  // but keep them in the output
-  if (statements.length <= 1) return statements;
+  // Nothing to nest for an empty body. A SINGLE statement is NOT skippable: it may be a container (an
+  // `unchecked { if (c) return a; return b; }` block, a branch, a switch) whose INNER early returns still need
+  // nesting - nestEarlyReturns recurses into those. (The old `<= 1` guard skipped a lone `unchecked` block, so an
+  // early return inside it reached codegen un-nested and desynced the fall-through stack - OZ Math.tryAdd.)
+  if (statements.length === 0) return statements;
 
   // Process from the end: find early returns and nest them
   const result = nestEarlyReturns(statements);
@@ -203,6 +206,19 @@ function nestEarlyReturns(statements: StatementNode[]): StatementNode[] {
       continue;
     }
 
+    // Recurse into an `unchecked` block: an early return INSIDE it (e.g. OZ Math.tryAdd
+    // `unchecked { uint c = a + b; if (c < a) return (false, 0); return (true, c); }`) must be nested into
+    // if/else here, else codegen's visitBranch desyncs the fall-through stack (a returning branch with no else
+    // leaves the tracker at the early-return stack, losing the block's locals). The block keeps unchecked
+    // arithmetic semantics; only its inner control flow is rewritten.
+    if (stmt instanceof UncheckedNode) {
+      if (stmt.block.statements) {
+        stmt.block.statements = nestEarlyReturns(stmt.block.statements);
+      }
+      result.push(stmt);
+      continue;
+    }
+
     // Recursively transform branches that don't cause early return
     if (stmt instanceof BranchNode) {
       const transformedIf = stmt.ifBlock.statements
@@ -251,6 +267,10 @@ export function blockEndsWithReturn(block: BlockNode): boolean {
 
   if (last instanceof TryCatchNode) {
     return blockEndsWithReturn(last.tryBlock);
+  }
+
+  if (last instanceof UncheckedNode) {
+    return blockEndsWithReturn(last.block);
   }
 
   if (last instanceof SwitchNode) {

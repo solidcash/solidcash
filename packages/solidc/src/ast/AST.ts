@@ -287,6 +287,10 @@ export class FunctionDefinitionNode extends Node implements Named {
   // Set by SynthesizeBlockOracle when the function reads blockhash(n); SymbolTable then injects the hidden
   // __internal__blockhashInputIndex param (the co-spend's input index) so the read survives composition.
   usesBlockhash?: boolean;
+  // Set by LowerInlineAssembly when this function's body contained an inline `assembly {}` block (before the
+  // block was lowered away). PruneUnreachableFreeFunctions uses it to drop DEAD assembly helpers whose EVM
+  // primitives may not codegen on BCH, even after the assembly lowered to plain ops (e.g. OZ Math.mulDiv).
+  hadInlineAssembly?: boolean;
   // Distinct identifier-arg blockhash(n) reads in the function (counted by SynthesizeBlockOracle before
   // codegen). Each rides its OWN consecutive blockhashOracle block-layout slot; the k-th read reads
   // input[base + k]. SymbolTable allocates this many slots (min 1 when usesBlockhash).

@@ -507,14 +507,19 @@ derivation). What it'd take: a sorted-insert-in-loop covenant that mints one ent
 bracket pinned + SDK derivation of the growing list, plus adversarial proof (wrong-insert / orphan / omission / out-of-
 order all revert). Soundness-critical: a bug reopens the C2 exclusion-proof hole. Revisit for full no-guards.
 
-**(b) Marketplace external-call TARGET through the SafeERC20 low-level-call chain.** `IERC20(job.token).transfer(...)`
-where the token is a STORAGE-POINTER struct field, routed through OZ SafeERC20 -> `Address.functionCall` -> low-level
-`.call`. All minimal repros (`IFoo(p.tok).m()` through a library fn) COMPILE - the block is the full inlined chain
-with the storage-ptr-field target sourcing. Soundness-critical: the target is a FUND-TRANSFER destination, so a wrong
-source silently redirects funds (worse than a clean compile error). Related to the `memory-COPY struct field` extcall
-deferral (section "External-call target: DIRECT method call on a memory-COPY struct field") but through the low-level
-chain. What it'd take: extend `SynthesizeExternalAddressLocals` sourcing to the chain-inlined storage-ptr-field target
-with a non-modification / self-pin soundness proof (per extcall-target-pinning.md). Revisit for full no-guards.
+**(b) Marketplace external-call TARGET through the SafeERC20 low-level-call chain - RESOLVED 2026-07-18 (commit
+1e395862).** `IERC20(job.token)` where the token is a STORAGE-POINTER struct field, routed through OZ SafeERC20 ->
+`Address.functionCall` -> low-level `.call`. After the chain inlines, forceApprove's `_callOptionalReturnBool` is
+`address(__rh0_token).call(data)` where the inliner bound `token = IERC20(jobs[id].token)`; the inlined-local cast
+form failed "external call target must be a parameter". FIX: `SynthesizeExternalAddressLocals` (runs AFTER inlining)
+now traces a low-level-call receiver to its provenance ROOT - unwrapping `address(..)` / interface casts and
+following inliner SSA aliases (`__rh*`/`__inl*`) plus SINGLE-ASSIGNMENT user locals (the Marketplace
+`IERC20 token = IERC20(job.token)` intermediary, line 718/781) - and hoists the self-pinned state chain / param-root
+into an `__extaddr_ll_` local, so the covenant pins the co-spent callee to the state value (byte-identical to the
+shipped direct form). SOUNDNESS: a REASSIGNABLE user local is NOT traced (a caller could rebind it = the forgery), so
+it fails closed; proven end to end (SafeErc20ChainTargetPinning.test.ts: correct callee accepted, substituted callee
+REJECTED, adversarial reassigned-local fails closed). The distinct `memory-COPY struct field` DIRECT case (section
+above) is still deferred - my trace stops at a FieldAccess on a struct-copy local (no whole-struct-copy provenance).
 
 **(c) MULTIPLE writes to the SAME C2 entry in one call (coalescing) - the array-write blocker (2026-07-18).**
 Surfaced probing C2 ARRAY writes. A single element write `m[k][i]=v` / `push` / `pop` / whole assign works, but two

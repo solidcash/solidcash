@@ -254,6 +254,26 @@ describe('Imports', () => {
       })).not.toThrow();
     });
 
+    it('resolves a `using L for *` wildcard method call inside an IMPORTED inherited parent constructor (OZ EIP712)', () => {
+      // The parent declares `using Lib for *` and its constructor calls `name.toX(5)` on a string param. Inheritance
+      // flattening inlines that constructor into the child and substitutes `name` -> the child's ctor arg - but the
+      // receiver is embedded in the `name.toX` call identifier, unreachable to substitution. Desugaring per-contract
+      // BEFORE flattening turns it into `Lib.toX(name, 5)` (a real arg node) so substitution can rewrite `name`.
+      const lib = 'library Lib { function toX(string memory v, uint256 e) internal pure returns (uint256)'
+        + ' { return bytes(v).length + e; } }';
+      const parent = 'import { Lib } from "./Lib.sol"; contract Parent { using Lib for *; uint256 internal _v;'
+        + ' constructor(string memory name) { _v = name.toX(5); } }';
+      const resolver = (p: string): { source: string; id: string } | undefined => {
+        if (p === './Lib.sol') return { source: `pragma solidity ^0.8.20;${lib}`, id: '/Lib.sol' };
+        if (p === './Parent.sol') return { source: `pragma solidity ^0.8.20;${parent}`, id: '/Parent.sol' };
+        return undefined;
+      };
+      const code = 'import { Parent } from "./Parent.sol"; contract C is Parent { constructor(string memory n) Parent(n) {} }';
+      expect(() => compileString(code, {
+        importResolver: resolver, rootFileId: '/main.sol', solidityImportCompat: true,
+      })).not.toThrow();
+    });
+
     it('desugars a using-for method call on an IMPORTED struct-typed state var (OZ Counters pattern)', () => {
       // The struct (Counter) is imported, so unknown at parse time - the AstBuilder cannot desugar
       // `counter.increment()`; the post-import RedesugarImportedUsingForCalls pass must (else it fails as an

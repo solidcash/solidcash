@@ -178,6 +178,12 @@ function compileResolvedAst(ast: Ast, code: string, mergedCompilerOptions: Compi
     }
   }
 
+  // Desugar `using L for T` method calls in each contract's OWN lexical scope BEFORE inheritance/modifier expansion
+  // inline+substitute parent constructors/modifiers. A parent ctor's `name.toShortStringWithFallback(fb)` becomes
+  // `ShortStrings.toShortStringWithFallback(name, fb)` (a real arg node) while `name` is still the parent's param, so
+  // the constructor-arg substitution can then rewrite it - it cannot reach a receiver embedded in a call identifier.
+  ast = ast.accept(new RedesugarImportedUsingForCalls(true)) as Ast;
+
   // Inheritance expansion (after import resolution, before modifier expansion)
   ast = expandInheritance(ast);
 

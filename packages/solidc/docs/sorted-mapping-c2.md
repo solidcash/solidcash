@@ -151,8 +151,11 @@ need not reconstruct pushdata encodings; it only chooses which entries to co-spe
   (locking bytecode) and `struct` (encoded blob) stored verbatim in the tail, and unbounded `bytes`/`string` of ANY
   practical length (P5b): `len(4 B) ++ value` inline for <= 60 B, `len(4 B) ++ sha256(value)` with the full value in
   per-(collection, slot, digest) chunk NFTs for > 60 B (a read reassembles + verifies the witness against the hash -
-  `SortedMappingLongValue.test.ts` + migrated `SortedMappingDynBytesValue.test.ts`). Only `mapping(K => T[])`
-  (array-valued) fails closed (falls back to the default entry model).
+  `SortedMappingLongValue.test.ts` + migrated `SortedMappingDynBytesValue.test.ts`). Array-valued `mapping(K => T[])` is
+  also C2-backed: element read/write (`m[k][i]`), `push`/`pop` across the inline<->chunked boundary, and whole-array
+  assign all route through the chunk-aware upsert (`emitMappingArrayElementAssign` in `sortedRmw` mode), and multiple
+  writes to the SAME entry in one call coalesce to one upsert (`CacheMappingEntryInLoop`). What is NOT yet supported is
+  multi-KEY writes in a runtime loop - see "Multiple writes in one transaction" below.
 - **Nested / composite-key mappings (DONE + VM-verified):** `mapping(A => mapping(B => V))` (e.g. ERC20 allowances,
   ERC1155 balances) works - the slot for `m[a][b]...` is `sha256(sha256(a) ++ sha256(b) ++ ...)` high-bit-masked
   (`emitSortedKeyHash` / SDK `keyToSlotMulti`). Each key is hashed independently to 32 bytes, so the concatenation
@@ -163,3 +166,53 @@ need not reconstruct pushdata encodings; it only chooses which entries to co-spe
   via `addressToLockScript`) all work as (single or composite) keys - so `mapping(address => uint)` (ERC20 balances)
   and `mapping(address => mapping(address => uint))` (allowances) compile and run. VM-verified in
   `SortedMappingAddressKey.test.ts`.
+
+## Multiple writes in one transaction (same value vs. same range)
+
+Writing more than one thing per call splits into two independent problems, and the split is forced by a hard BCH rule:
+**a transaction cannot spend an output it creates in the same transaction.** So N sequential state transitions of one
+UTXO are impossible in one tx, while N transitions of N distinct UTXOs are fine.
+
+### Same value - N writes to the SAME entry `m[k]` (same key) - DONE
+
+Because the entry is a single UTXO, one tx can produce exactly ONE new version of it. Two upserts of the same entry in
+one tx would co-spend the same (now already-spent) input twice and the covenant `OP_VERIFY`s fail. So N logical writes
+to `m[k]` must COALESCE to one physical upsert. `CacheMappingEntryInLoop` (a pre-semantic pass) does this: it reads
+`m[k]` once into a local, redirects every access of `m[k]` (element write/read, `push`/`pop`, whole assign) to the
+local, and flushes a single `m[k] = local` upsert before each return and at the tail. This makes loops
+(`for (..) m[k][j] = v`), consecutive writes (`m[k][0] = x; m[k][2] = z`), and read-after-write (`m[k][j] = m[k][j-1] +
+1`, which reads the value being built) all work with correct values. The loop stays a runtime loop over the LOCAL
+array - it is never unrolled, so the covenant does not grow with N. This is the ceiling that physics allows in one tx;
+truly separate physical upserts of one entry require N transactions. Residual gaps are compiler COVERAGE only (a key
+reassigned mid-function, a `delete` interleaved with element writes, multi-collection entanglement), not a covenant
+limitation.
+
+### Same range - N writes to DIFFERENT keys - partly open
+
+N different keys are N different entry UTXOs, so they CAN all be co-spent and re-emitted in one tx (N inputs -> N
+outputs), bounded only by transaction size / input count. The default (non-sorted) entry model already ships the
+pure-write case - `for (i < n) m[k[i]] = v[i]` lowers to a runtime entry-mint covenant loop (`emitLoopEntryWrite`, see
+`mapping-loop-writes.md`). The C2 sorted analog currently FAILS CLOSED (`SortedMappingCodegenPendingError` at
+`GenerateTargetTraversal.ts:10633`) because the sorted structure evolves as keys are added. It decomposes by difficulty:
+
+1. **Batch update of N existing keys (medium).** Every key is already present, so each write is an independent
+   value-replace with pointers untouched - no structural dependency between keys. Needs a sorted-update loop covenant
+   (the `emitLoopEntryWrite` shape, extended to read the current value and preserve `next`) plus SDK derivation of the
+   co-spend set from the loop trace.
+2. **Contiguous-range insert into one gap (medium).** If all N new keys sort into a single existing gap
+   (`P.next == S`, `P < k1 < ... < kN < S`), the whole run splices at once: co-spend `P` and `S` a single time, verify
+   the run is internally sorted and bracketed, and emit `P -> k1 -> ... -> kN -> S`. One bracket operation covers the
+   range - this is why a contiguous RANGE is tractable where arbitrary scattered keys are not.
+3. **Scattered multi-insert across gaps (hard).** When new keys land in different gaps - or two land adjacent - each
+   insert's predecessor depends on the inserts before it; the list, the bracketing predecessor, and the slot ordering
+   all evolve per iteration. This is the true per-iteration sorted-insert covenant: thread the evolving list through the
+   covenant and simulate insert-by-insert in the SDK.
+4. **RMW / delete / mixed within the range (incremental).** Layers onto the above - delete unlinks (predecessor
+   re-points to skip the node), RMW reads then writes per key.
+
+Cross-cutting for all of these: a batch-lowering compiler pass (a sibling of `CacheMappingEntryInLoop`) or a batch mode
+on `emitSortedValueUpsert`; SDK progressive-trace derivation extended to the sorted structure (the co-spend set is
+entries plus their brackets); and - the delicate part - the exclusion proof must survive a batch, rejecting forged,
+omitted, misordered, or duplicated entries (adversarial tests per case), since a bug here reopens the C2 exclusion-proof
+hole. N per tx is capped by transaction size; larger N needs paginated writes across txs. Recommended build order is
+(1) then (2), deferring (3). Tracked in `deferrals.md` section 6(a).

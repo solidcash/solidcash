@@ -499,13 +499,40 @@ compile under C2-default. Two source shapes still block a full no-guards flip (b
 (Marketplace `whitelistWorkers`). A FIXED-bound loop already works - `UnrollFixedBoundEntryLoop` unrolls it to static
 writes before codegen. The dynamic case previously crashed deep at "Block slot not found: entry[0]" (the write routes
 to `emitSortedValueUpsert`, which needs a fixed entry slot); `visitMappingAssign` now FAILS CLOSED with
-`SortedMappingCodegenPendingError` when `node.collection?.sorted && this.plainLoopDepth > 0` (commit 88be6d13, never
-degrades to the omittable entry model). The full feature is a per-iteration sorted-linked-list INSERTION covenant: the
-list, the bracketing predecessor, and the slot ordering all evolve each iteration, so it is the sorted analog of the
-default-model dynamic pure-write loop (`entry_write_in_loop`, OP_BEGIN/OP_UNTIL entry-mint + SDK progressive trace
-derivation). What it'd take: a sorted-insert-in-loop covenant that mints one entry per iteration with the evolving
-bracket pinned + SDK derivation of the growing list, plus adversarial proof (wrong-insert / orphan / omission / out-of-
-order all revert). Soundness-critical: a bug reopens the C2 exclusion-proof hole. Revisit for full no-guards.
+`SortedMappingCodegenPendingError` when `node.collection?.sorted && this.plainLoopDepth > 0`
+(`GenerateTargetTraversal.ts:10633`, commit 88be6d13, never degrades to the omittable entry model).
+
+**The full feature decomposes along TWO axes, governed by a hard BCH rule: a transaction cannot spend an output it
+creates in the SAME tx.** (Analysis 2026-07-18, "N writes into same value / same range".)
+
+- **SAME VALUE - N writes to the SAME entry `m[k]` (same key).** N sequential state transitions of ONE UTXO. In a
+  single tx the ceiling is exactly ONE physical upsert; N logical writes MUST coalesce (or become N txs) - there is no
+  covenant that yields N real upserts of one entry in one tx. RESOLVED, see (c): `CacheMappingEntryInLoop` reads `m[k]`
+  once, mutates a local (reads redirect there), flushes ONE upsert. Residual is only compiler COVERAGE (reassigned key
+  / delete interleaved with element writes / multi-collection), NOT a covenant gap.
+- **SAME RANGE - N writes to DIFFERENT keys.** N DIFFERENT UTXOs, which CAN co-spend in one tx (N inputs -> N outputs),
+  bounded only by tx size / input count. This is the open covenant work, and it splits by difficulty:
+  1. **Batch UPDATE of N existing keys - MEDIUM.** Each is an independent value-replace (co-spend `slot||next||val` ->
+     re-emit `slot||next||val'`, pointers untouched); no sorted-structure change, so NO cross-key dependency. Needs a
+     sorted-update loop covenant (the `entry_write_in_loop` `emitLoopEntryWrite` pattern, but reading the current value
+     + preserving `next`), SDK derivation of the co-spend set from the loop trace, and compiler lowering in place of the
+     GTT:10633 fail-close.
+  2. **Contiguous-range INSERT into ONE gap - MEDIUM.** If all N new keys sort into a single existing gap (`P.next==S`,
+     `P<k1<...<kN<S`), splice the whole run at once: co-spend `P` and `S` ONCE, verify the run is internally sorted +
+     bracketed, emit `P->k1->...->kN->S`. One bracket op for the whole range - this is precisely why a RANGE is
+     tractable where arbitrary scattered keys are not.
+  3. **Scattered multi-INSERT across gaps - HARD.** Each insert's predecessor depends on prior inserts (adjacent new
+     keys re-point each other); the list, bracket, and slot ordering evolve per iteration (the GTT:10628 note). This is
+     the true per-iteration sorted-insert covenant: thread the evolving list in the covenant + simulate insert-by-insert
+     in the SDK.
+  4. **RMW / delete / mixed within the range - INCREMENTAL** on top of the above: delete = unlink (predecessor re-point
+     to skip), RMW = read-then-write per key.
+
+Cross-cutting for any of (1)-(4): a batch-lowering compiler pass (sibling of `CacheMappingEntryInLoop`) or a batch mode
+on `emitSortedValueUpsert`; SDK progressive-trace derivation extended to the sorted structure (co-spend set = entries +
+brackets); the exclusion proof must SURVIVE the batch (reject forged / omitted / misordered / duplicated entries -
+adversarial tests per case); and a per-tx cap on N (large N needs the paginated design, section 4). Soundness-critical:
+a bug reopens the C2 exclusion-proof hole. Revisit for full no-guards; recommended order = (1) then (2), defer (3).
 
 **(b) Marketplace external-call TARGET through the SafeERC20 low-level-call chain - RESOLVED 2026-07-18 (commit
 1e395862).** `IERC20(job.token)` where the token is a STORAGE-POINTER struct field, routed through OZ SafeERC20 ->

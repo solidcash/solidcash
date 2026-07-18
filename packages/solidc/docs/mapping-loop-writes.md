@@ -71,6 +71,13 @@ and `emitVerifyChunkUtxoCount(isOutput=false)` for the input-count pin), gated t
 Closing the new-key case needs the C2 fix itself: an entry-set accumulator (count / merkle / nullifier root)
 committed in the master, so an existing entry cannot be omitted.
 
+**Update: under C2-default (`sortedMappings`) the omission hazard above is already closed** - every read is unforgeable
+via the sorted linked list, so the new-key reset attack does not apply. A different-key batch write/RMW under C2 is then
+not a fund-safety dead-end but the SAME-RANGE sorted-write feature, decomposed by difficulty (batch update of existing
+keys / contiguous-range insert / scattered insert / delete) in `sorted-mapping-c2.md` ("Multiple writes in one
+transaction") and tracked in `deferrals.md` section 6(a); it currently fails closed at `GenerateTargetTraversal.ts:10633`.
+The SAME-key case - N writes to a single `m[k]` - is already handled by coalescing (`CacheMappingEntryInLoop`).
+
 ### Accepted gaps (correctness, not fund-safety)
 
 - **Non-injective varying keys** (`m[i % 2] = v`) compile but mint duplicate entries - the same distinct-key

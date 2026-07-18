@@ -143,6 +143,21 @@ export class ImportResolver {
             target.usingForDirectives.push(...source.usingForDirectives);
           } else if (!source.isLibrary && source.contract.name === name) {
             target.importedContracts.push(source.contract);
+            // A selectively-imported contract needs its file's whole dependency closure: FILE-LEVEL types/structs/
+            // enums (OZ EIP712's `ShortString` = `type ShortString is bytes32`), the interfaces it implements
+            // (IERC20), and the library free functions + using-for it relies on (`using ShortStrings for *` ->
+            // `name.toShortStringWithFallback(..)`). The wildcard branch carries all of these; the by-name contract
+            // branch omitted them, so the contract compiled against unresolved types/symbols.
+            target.importedContracts.push(...source.importedContracts);
+            target.typeDefinitions.push(...source.typeDefinitions);
+            target.structDefinitions.push(...source.structDefinitions);
+            target.enumDefinitions.push(...source.enumDefinitions);
+            target.constantDefinitions.push(...source.constantDefinitions);
+            target.interfaceDefinitions.push(...source.interfaceDefinitions);
+            target.eventDefinitions.push(...source.eventDefinitions);
+            target.errorDefinitions.push(...source.errorDefinitions);
+            target.freeFunctions.push(...source.freeFunctions);
+            target.usingForDirectives.push(...source.usingForDirectives);
             // Transitively import parent contracts needed for inheritance
             this.importParentContracts(target, source, source.contract);
           } else {

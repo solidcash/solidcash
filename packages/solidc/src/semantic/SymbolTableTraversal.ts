@@ -616,6 +616,11 @@ export default class SymbolTableTraversal extends AstTraversal {
         } else if (this.structMap.has(sv.contractTypeName) || this.structMap.has(bare)) {
           sv.type = (this.structMap.get(sv.contractTypeName) ?? this.structMap.get(bare))!;
           sv.contractTypeName = undefined;
+        } else if (this.typeDefMap.has(sv.contractTypeName) || this.typeDefMap.has(bare)) {
+          // A user-defined value type (`ShortString private immutable _name`, OZ EIP712 - `type ShortString is
+          // bytes32`); re-type the state var to the UDVT's underlying value type now that imports are merged.
+          sv.type = (this.typeDefMap.get(sv.contractTypeName) ?? this.typeDefMap.get(bare))!;
+          sv.contractTypeName = undefined;
         } else if (!this.contractMap.has(sv.contractTypeName) && !this.interfaceMap.has(sv.contractTypeName)) {
           throw new UnknownContractTypeError(sv, sv.contractTypeName);
         }

@@ -172,6 +172,24 @@ describe('Imports', () => {
       expect(artifact.contractName).toBe('Spender');
     });
 
+    it('resolves an imported FILE-LEVEL UDVT used as a state-var type across a selective contract import (OZ EIP712 ShortString)', () => {
+      // OZ shape: ShortStrings.sol declares a file-level `type ShortString is bytes32`; EIP712 uses it as a state
+      // var; a token selectively imports the contract. A by-name contract import must carry the file's type defs up
+      // (else `ShortString _name` stays an "Unknown contract type"), and SymbolTable must re-type the state var to
+      // the UDVT once imports merge.
+      const lib = 'type ShortString is bytes32;'
+        + ' contract Base { ShortString private _name;'
+        + ' function setName(bytes32 n) internal { _name = ShortString.wrap(n); }'
+        + ' function nameHash() public view returns (bytes32) { return ShortString.unwrap(_name); } }';
+      const resolver = (importPath: string): { source: string; id: string } | undefined => (
+        importPath === './Base.sol' ? { source: lib, id: '/Base.sol' } : undefined);
+      const code = 'import {Base} from "./Base.sol"; contract Tok is Base { }';
+      const artifact = compileString(code, {
+        importResolver: resolver, rootFileId: '/main.sol', solidityImportCompat: true,
+      });
+      expect(artifact.contractName).toBe('Tok');
+    });
+
     it('desugars a using-for method call on an IMPORTED struct-typed state var (OZ Counters pattern)', () => {
       // The struct (Counter) is imported, so unknown at parse time - the AstBuilder cannot desugar
       // `counter.increment()`; the post-import RedesugarImportedUsingForCalls pass must (else it fails as an

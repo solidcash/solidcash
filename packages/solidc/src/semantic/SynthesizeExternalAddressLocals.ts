@@ -151,6 +151,18 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
         const loc = node.identifier.location;
         node.identifier = new IdentifierNode(`${PREFIX}${varName}.${method}`);
         node.identifier.location = loc;
+      } else if (!ADDRESS_METHODS.has(varName) && !ADDRESS_METHODS.has(method)
+        && this.singleAssignLocals.has(varName) && this.localInits.has(varName)) {
+        // A SINGLE-ASSIGNMENT local aliasing an interface-cast target (`IUnicrow unicrow = IUnicrow(unicrowAddress);
+        // unicrow.pay(..)`, EACC Marketplace). The interface local is not materialized (the cast is a no-op), so
+        // sourcing it in codegen fails "variable 'unicrow' does not exist on the stack". Resolve the init to the
+        // underlying state-var / self-pinned chain and hoist THAT, rewriting the call to the __extaddr_ local.
+        const local = this.hoistTargetLocalFor(this.localInits.get(varName)!);
+        if (local) {
+          const loc = node.identifier.location;
+          node.identifier = new IdentifierNode(`${local}.${method}`);
+          node.identifier.location = loc;
+        }
       }
     }
     node.parameters = this.visitList(node.parameters) as ExpressionNode[];
@@ -245,6 +257,24 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
       this.usedInFn.set(localName, { iface, init });
     }
     return localName;
+  }
+
+  // Hoist the underlying target of an interface-cast init expression (`IUnicrow(unicrowAddress)` / `IFoo(s.field)` /
+  // `IFoo(param.field)`) into an __extaddr_ local, reusing the state-var / self-pinned-chain / param-field resolvers,
+  // and return the local name. Undefined when the init is not a recognized (self-pinned or caller-witness) target.
+  private hoistTargetLocalFor(init: ExpressionNode): string | undefined {
+    const sv = this.externalTargetStateVar(init);
+    if (sv) return this.markUsed(sv.name, sv.iface, sv.isPlain, init);
+    const castChain = this.castChainTarget(init);
+    const paramField = castChain ? undefined : this.castParamFieldTarget(init);
+    const resolved = castChain ?? paramField;
+    if (resolved) {
+      if (!this.usedInFn.has(resolved.localName)) {
+        this.usedInFn.set(resolved.localName, { iface: resolved.iface, init: cloneNode(init) as ExpressionNode });
+      }
+      return resolved.localName;
+    }
+    return undefined;
   }
 
   // `obj` is an interface/contract-typed field reached through a chain of self-pinned STATE - a struct field,
@@ -363,11 +393,28 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
   // OR a param-rooted access. A bare-identifier receiver that is not a synthetic alias already sources in codegen.
   // Returns a stable per-root local name + the ROOT to hoist as its init (valid at the body top), else undefined.
   private resolveLlReceiver(obj: ExpressionNode): { localName: string; init: ExpressionNode } | undefined {
-    const root = this.llReceiverRoot(obj);
-    if (root === obj && obj instanceof IdentifierNode) return undefined; // bare local/param receiver already works
+    if (obj instanceof IdentifierNode && this.llReceiverRoot(obj) === obj) return undefined; // bare receiver works
+    // Resolve the receiver to its provenance root, then inline any single-assignment storage-pointer local at the
+    // base of the resulting chain (`JobPost storage job = jobs[id]; job.token` -> `jobs[id].token`) - the AstBuilder
+    // usually inlines the storage alias, but not always (EACC Marketplace takeJob), so do it here for the target.
+    const root = this.inlineStoragePtrBases(cloneNode(this.llReceiverRoot(obj)) as ExpressionNode);
     if (!(this.resolveChainType(root) instanceof AddressType) && !this.isParamRooted(root)) return undefined;
     const key = this.chainKey(root);
     return key ? { localName: `${PREFIX}ll_${key}`, init: root } : undefined;
+  }
+
+  // Replace a single-assignment STORAGE-POINTER local at the base of an access chain with its initializer, so
+  // `job.token` (where `JobPost storage job = jobs[id]`) becomes the self-pinned state chain `jobs[id].token`.
+  // Sound: a storage pointer is an alias to the same slots, and the local is single-assignment. Mutates in place
+  // (the caller passes a clone); indices in the reached chain are params/literals (resolveChainType re-validates).
+  private inlineStoragePtrBases(expr: ExpressionNode, depth = 0): ExpressionNode {
+    if (depth > 24) return expr;
+    if (expr instanceof IdentifierNode && this.singleAssignLocals.has(expr.name) && this.localInits.has(expr.name)) {
+      return this.inlineStoragePtrBases(cloneNode(this.localInits.get(expr.name)!) as ExpressionNode, depth + 1);
+    }
+    if (expr instanceof FieldAccessNode) { expr.expression = this.inlineStoragePtrBases(expr.expression, depth + 1); }
+    else if (expr instanceof ArrayAccessNode) { expr.array = this.inlineStoragePtrBases(expr.array, depth + 1); }
+    return expr;
   }
 
   // The declared type of a state-rooted access chain (self-pinned): a state var / collection identifier, a

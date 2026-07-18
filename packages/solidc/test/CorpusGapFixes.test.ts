@@ -2168,6 +2168,32 @@ describe('low-level .call target through inlined-local aliases traced to a self-
   });
 });
 
+describe('external-call target through a single-assignment local intermediary (EACC Marketplace takeJob / unicrow)', () => {
+  // Two Marketplace shapes where the target hides behind a single-assignment local: (a) a STORAGE-POINTER base
+  // (`JobPost storage job = jobs[id]; IERC20 token = IERC20(job.token); ...call`) the AstBuilder did not inline, so
+  // `job.token` must be resolved to `jobs[id].token`; (b) an interface local (`IUnicrow u = IUnicrow(unicrowAddress);
+  // u.pay()`) the codegen cannot source ("variable 'unicrow' does not exist on the stack"). Both hoist the resolved
+  // self-pinned target. A REASSIGNED local is not traced (falls back to the caller-witness local source).
+  it('resolves a storage-pointer local base at a low-level .call target (job.token -> jobs[id].token)', () => {
+    const src = 'pragma solidcash >=0.8.0; interface ITok { function ping(pubkey o, sig s); }'
+      + ' struct Job { address token; } contract C() { mapping(int => Job) jobs; int calls;'
+      + ' function _callBool(ITok tok, bytes data) internal returns (bool) { bool ok, bytes r = address(tok).call(data); return ok; }'
+      + ' function f(int jobId, bytes data, pubkey pk, sig s) { require(checkSig(s, pk));'
+      + ' Job storage job = jobs[jobId]; ITok token = ITok(job.token);'
+      + ' bool ok = _callBool(token, data); require(ok); this.calls = this.calls + 1; } }';
+    const ec = compileString(src, {}).abi.find((f) => f.name === 'f')?.externalCalls?.find((e) => e.opaqueReturn);
+    expect(ec?.addressStateVar).toBe('ll_jobs_jobId_token');
+  });
+  it('hoists an interface local intermediary IUnicrow u = IUnicrow(unicrowAddress); u.pay() from the state var', () => {
+    const src = 'pragma solidcash >=0.8.0; interface IUnicrow { function pay(int amt, pubkey o, sig s); }'
+      + ' contract C() { address unicrowAddress; int calls;'
+      + ' function f(int amt, pubkey pk, sig s) { require(checkSig(s, pk));'
+      + ' IUnicrow u = IUnicrow(unicrowAddress); u.pay(amt, pk, s); this.calls = this.calls + 1; } }';
+    const ec = compileString(src, {}).abi.find((f) => f.name === 'f')?.externalCalls?.[0];
+    expect(ec?.addressParam).toBe('__extaddr_unicrowAddress_IUnicrow');
+  });
+});
+
 describe('C2-default: an inherited method accessing its OWN contract private mapping (FakeToken ERC20 _update)', () => {
   // Under C2-default `_balances` is a sorted collection, so a C2-write helper (`_upd`) is inlined into its entry
   // caller (InlineStoragePointerCalls). The inlined `_balances[a]=v` then lives in the caller's context, whose

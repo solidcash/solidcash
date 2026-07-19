@@ -2740,6 +2740,28 @@ describe('chained overloaded using-for + interface-local-var dispatch (MistSwap 
       + ' function f(IERC20 tok) public view returns (uint256) { return tok.balanceOf(address(this)); }'
       + ' function g(IERC20 tok, uint256 v) public { tok.safeApprove(address(this), v); } }');
   });
+
+  // A using-for method on a COMPUTED (binary-op) receiver `(a - b).add(c)` (UniswapV2Library.quote): the operator
+  // preserves the operand type, so the `.add` binds to `using SafeMath for uint256` even though the receiver has no
+  // .type yet. Was MethodCallNotSupported (resolveLowLevelReceiverType returned undefined for a BinaryOpNode).
+  it('resolves a using-for method on a computed binary-op receiver', () => {
+    ok('library SafeMath { function add(uint256 a, uint256 b) internal pure returns (uint256){ return a+b; } }'
+      + ' contract C { using SafeMath for uint256; uint256 s;'
+      + ' function f(uint256 a, uint256 b, uint256 c) public { s = (a - b).add(c); } }');
+  });
+
+  // A returning library helper that makes an external call (`getReservesFor -> pair.getReserves()`) reached only
+  // THROUGH another inlined helper (`_mid`) must inline transitively - else the external-call covenant param surfaces
+  // as phantom params at the call site (`Found parameters (..) where (.., bigint, bytes4, bigint) were expected`).
+  // SushiRoll `_addLiquidity -> UniswapV2Library.getReserves`. The target is a param here, so it fully compiles.
+  const PAIR = 'interface IPair { function getReserves() external view returns (uint112, uint112, uint32); }'
+    + ' library Lib { function getReservesFor(IPair pair) internal view returns (uint rA, uint rB){'
+    + ' (uint r0, uint r1,) = pair.getReserves(); (rA, rB) = (r0, r1); } }';
+  it('inlines a returning external-call library helper reached transitively through another helper', () => {
+    ok(`${PAIR} contract C {`
+      + ' function _mid(IPair pair) internal view returns (uint x, uint y){ (x, y) = Lib.getReservesFor(pair); }'
+      + ' function f(IPair pair) public view returns (uint x, uint y){ (x, y) = _mid(pair); } }');
+  });
 });
 
 describe('using-for external-call library method on an interface-typed state var (OZ SafeERC20 pattern)', () => {

@@ -7341,6 +7341,19 @@ export default class SymbolTableTraversal extends AstTraversal {
       const base = this.resolveLowLevelReceiverType(expr.expression);
       return base instanceof StructType ? base.fields.find((f) => f.name === expr.name)?.type : undefined;
     }
+    // A computed arithmetic/bitwise receiver `(a - b).add(c)` / `a.mul(b).add(c)` (SafeMath on an expression, e.g.
+    // UniswapV2Library.quote): the operator PRESERVES the operand type, so resolve it from an operand for the
+    // using-for bind. Comparison / logical operators yield bool (no SafeMath method), so stay unresolved.
+    if (expr instanceof BinaryOpNode) {
+      const valuePreserving = expr.operator === BinaryOperator.POW || expr.operator === BinaryOperator.MUL
+        || expr.operator === BinaryOperator.DIV || expr.operator === BinaryOperator.MOD
+        || expr.operator === BinaryOperator.PLUS || expr.operator === BinaryOperator.MINUS
+        || expr.operator === BinaryOperator.SHIFT_LEFT || expr.operator === BinaryOperator.SHIFT_RIGHT
+        || expr.operator === BinaryOperator.BIT_AND || expr.operator === BinaryOperator.BIT_XOR
+        || expr.operator === BinaryOperator.BIT_OR;
+      if (!valuePreserving) return undefined;
+      return this.resolveLowLevelReceiverType(expr.left) ?? this.resolveLowLevelReceiverType(expr.right);
+    }
     // A chained using-for/library call receiver `SafeMath.sub(a,b).add(c)`: the inner `SafeMath.sub(..)` is a
     // namespaced FunctionCall (produced pre-SymbolTable by RedesugarImportedUsingForCalls) whose overload is not
     // yet resolved, so its .type/.resolvedFunction are unset. Read the callee's return type - single overload

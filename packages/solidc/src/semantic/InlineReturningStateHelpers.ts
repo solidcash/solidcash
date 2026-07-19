@@ -122,7 +122,7 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     for (const fn of node.functions) {
       if (!this.inlinedFns.has(fn.name) && !valueReferenced.has(fn.name) && this.eligibleShape(fn)
         && (this.readsEntry(fn) || this.touchesScalarState(fn)
-          || this.transitivelyContainsLowLevelCall(fn) || this.containsExternalCall(fn))) {
+          || this.transitivelyContainsLowLevelCall(fn) || this.transitivelyContainsExternalCall(fn))) {
         this.inlinedFns.add(fn.name);
         this.keepDefFns.add(fn.name);
       }
@@ -158,7 +158,12 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     // their own (delegate) machinery.
     for (const fn of this.freeFns) {
       if (this.eligibleStructPtr(fn)) this.inlinedFns.add(fn.name);
-      else if (this.eligibleShape(fn) && this.transitivelyContainsLowLevelCall(fn)) {
+      // A returning library helper that makes an EXTERNAL call (`UniswapV2Library.getReserves` ->
+      // `IPair(..).getReserves()`) must inline like a low-level-call one: the external-call covenant param is only
+      // threaded at an entry point, so a subroutine holding it surfaces phantom params at the call site. Transitive
+      // so a helper reaching the external call only through another inlined helper inlines too.
+      else if (this.eligibleShape(fn)
+        && (this.transitivelyContainsLowLevelCall(fn) || this.transitivelyContainsExternalCall(fn))) {
         this.inlinedFns.add(fn.name);
       }
     }
@@ -223,7 +228,7 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     if (!(fn.isFreeFunction || fn.visibility === 'private' || fn.visibility === 'internal')) return false;
     if (!this.eligibleShape(fn)) return false;
     return this.readsEntry(fn) || this.touchesScalarState(fn) || this.containsLowLevelCall(fn)
-      || this.containsExternalCall(fn);
+      || this.transitivelyContainsExternalCall(fn);
   }
 
   // Contains an EXTERNAL contract call (`unicrow.getEscrow(id)` / `token.balanceOf(a)` / `this.f(x)`): pre-semantic
@@ -314,6 +319,24 @@ export default class InlineReturningStateHelpers extends AstTraversal {
       const callee = this.lookupOverload(n.identifier.name, n.parameters.length);
       if (callee && callee !== fn && this.eligibleShape(callee)
         && this.transitivelyContainsLowLevelCall(callee, seen)) found = true;
+    });
+    return found;
+  }
+
+  // Like transitivelyContainsLowLevelCall for EXTERNAL calls: fn contains one directly, or calls an inline-eligible
+  // helper that (transitively) does. Once that helper inlines, fn holds the external call and its covenant param, so
+  // fn cannot be a subroutine either - it must inline at its own call site (SushiRoll `_addLiquidity` -> library
+  // `getReserves` -> `IPair(..).getReserves()`). Cycle-guarded by `seen`; only follows eligible-shape callees.
+  private transitivelyContainsExternalCall(fn: FunctionDefinitionNode, seen: Set<string> = new Set()): boolean {
+    if (this.containsExternalCall(fn)) return true;
+    if (seen.has(fn.name)) return false;
+    seen.add(fn.name);
+    let found = false;
+    this.walk(fn.body, (n) => {
+      if (found || !(n instanceof FunctionCallNode)) return;
+      const callee = this.lookupOverload(n.identifier.name, n.parameters.length);
+      if (callee && callee !== fn && this.eligibleShape(callee)
+        && this.transitivelyContainsExternalCall(callee, seen)) found = true;
     });
     return found;
   }

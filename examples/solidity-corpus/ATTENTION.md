@@ -130,11 +130,12 @@ by it; they are pre-existing and fundamental. Re-bucketed the current top FAILs 
   grindable (user steer).** BCH assigns EVM-parity storage slots (keccak/erc7201 + P3/P4 layout, conformance-tested),
   so slot-addressed assembly has a sound model. Sub-buckets: `.slot`/`.offset` on a state var or a storage-pointer
   local (ARRAY pointer landed 2026-07-19 `6125c53a`); `sstore`/`sload` to a declared scalar / packed slot / literal
-  slot ALREADY WORK; the mapping-keccak-slot idiom routes to the high-level mapping (P4). GENUINELY tractable-next:
-  (a) UDVT (`ValueType`) slot fields - `resolveSlotFields` gates on `IntType` only, so `sstore(a.slot,..)` on a
-  `type T is uintN` var fails (`dirty_slot`, `dirty_uint8_read`); unwrap the value type (+ its dirty-bit write
-  semantics are EVM-specific, check soundness). (b) dynamic-ARRAY `.slot` sload/sstore = the length register (`A$len`),
-  needs routing. HARD/fail-closed remainder: sparse/computed raw slots with no declared var (correctly fail-closed),
+  slot ALREADY WORK; the mapping-keccak-slot idiom routes to the high-level mapping (P4). tractable-next:
+  (a) UDVT (`ValueType`) slot fields - DONE 2026-07-19 `f67b4f91` (unwrap on read / wrap on write + pack by underlying
+  width; `dirty_uint8_read` +1, VM round-trip proven). Remaining UDVT gap = a MIXED int+bytes packed slot (`dirty_slot`:
+  `MyUInt16`+`MyBytes2`+`bytes2` in one slot) needs bytesN/address field decode (LEFT-aligned, BCH-representation-
+  specific - distinct from the int right-aligned word math). (b) dynamic-ARRAY `.slot` sload/sstore = the length
+  register (`A$len`), needs routing (READ = length is clean+sound; WRITE = resize is complex). HARD/fail-closed remainder: sparse/computed raw slots with no declared var (correctly fail-closed),
   `tstore`/`tload` (no tx-scoped storage). 6 = calldata `.offset`/`.length`: `.length` WORKS; `.offset` applies only
   to DYNAMIC calldata params (bytes/string/array) whose head/tail our one-word-per-param model
   (`selector ++ bytes32(p_i)`) can't represent - NOT fundamental (the ABI encoders exist, user's point), but needs

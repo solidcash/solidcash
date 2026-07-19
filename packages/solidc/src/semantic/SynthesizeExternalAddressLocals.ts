@@ -84,6 +84,11 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
   // must be left for the using-for resolver, not hoisted into an __extaddr_ address local (which drops the interface
   // type and breaks the using-for dispatch). Only genuine interface method calls are self-pinned external calls.
   private ifaceMethods: Map<string, Set<string>> = new Map();
+  // Transitive-target decls to insert right BEFORE the current statement (a computed target with a mid-body-only
+  // single-assign-local leaf cannot hoist to the body top). Flushed per-statement by visitBlock. A fresh counter
+  // names each so repeated uses do not collide.
+  private pendingMidbodyDecls: VariableDefinitionNode[] = [];
+  private transitiveCounter = 0;
 
   visitSourceFile(node: SourceFileNode): Node {
     this.typeNames = new Set();
@@ -174,6 +179,7 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
   visitFunctionDefinition(node: FunctionDefinitionNode): Node {
     if (!node.body) return node;
     this.usedInFn = new Map();
+    this.pendingMidbodyDecls = [];
     this.localInits = new Map();
     // Pre-populate from the WHOLE body (not just bindings visited so far): a computed target is recognised mid-visit
     // (castComputedTarget) and must resolve an inliner alias (`__rh<N>_factory`) whose binding a deeply-nested inline
@@ -192,6 +198,22 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
       });
       node.body.statements = [...decls, ...(node.body.statements ?? [])];
     }
+    return node;
+  }
+
+  // Flush transitive-target decls (castTransitiveTarget) right before the statement whose visit produced them, so the
+  // computed target reads its mid-body-only single-assign local where it is live. A nested block visited during a
+  // statement manages its own (save/restore), so an outer statement only picks up its DIRECT decls.
+  visitBlock(node: BlockNode): Node {
+    const out: Node[] = [];
+    for (const stmt of node.statements ?? []) {
+      const before = this.pendingMidbodyDecls;
+      this.pendingMidbodyDecls = [];
+      const visited = this.visit(stmt) as Node;
+      out.push(...this.pendingMidbodyDecls, visited);
+      this.pendingMidbodyDecls = before;
+    }
+    node.statements = out as never;
     return node;
   }
 
@@ -239,6 +261,8 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
     const paramField = target || chain || castChain ? undefined : this.castParamFieldTarget(node.object);
     const computed = target || chain || castChain || paramField
       ? undefined : this.castComputedTarget(node.object);
+    const transitive = target || chain || castChain || paramField || computed
+      ? undefined : this.castTransitiveTarget(node.object);
     if (target && !ADDRESS_METHODS.has(node.methodName) && this.isInterfaceMethod(target.iface, node.methodName)) {
       const localName = this.markUsed(target.name, target.iface, target.isPlain, node.object);
       const loc = node.object.location;
@@ -292,6 +316,19 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
       }
       const loc = node.object.location;
       node.object = new IdentifierNode(computed.localName);
+      node.object.location = loc;
+    } else if (transitive && !ADDRESS_METHODS.has(node.methodName)
+      && this.isInterfaceMethod(transitive.iface, node.methodName)) {
+      // A TRANSITIVE computed target (a leaf is a mid-body single-assign local, e.g. a pinned call-return). Emit the
+      // decl right BEFORE this statement (visitBlock flushes pendingMidbodyDecls) so the local is live; the co-spend
+      // epilogue PICKs it by name, position-independently. A fresh name per use avoids collisions.
+      const localName = `${PREFIX}t${this.transitiveCounter}_${transitive.iface}`;
+      this.transitiveCounter += 1;
+      const def = new VariableDefinitionNode(new AddressType(false, transitive.iface), [], localName, transitive.init);
+      def.location = node.object.location ?? node.location;
+      this.pendingMidbodyDecls.push(def);
+      const loc = node.object.location;
+      node.object = new IdentifierNode(localName);
       node.object.location = loc;
     } else if (LOW_LEVEL_CALLS.has(node.methodName) && this.resolveLlReceiver(node.object)) {
       // `<recv>.call/staticcall/delegatecall(..)` where `<recv>` resolves to an address that is a self-pinned state
@@ -405,20 +442,53 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
   // any leftover identifier is an un-inlined local (would be an undeclared body-top reference), and any MethodCall
   // or value-prefixed dotted call (`__extaddr_router.factory()`) is an external call whose result is not a pure
   // body-top value (the transitive-extcall-target case is separate). Conservative: unknown shapes fail closed.
-  private allLeavesBodyTop(node: Node): boolean {
+  // True if the subtree contains an external call: a MethodCallNode, or a dotted FunctionCallNode whose prefix is a
+  // var (param / state / inliner alias) - `router.factory()` lowers to the latter (`__extaddr_router.factory`).
+  // Used to keep a call-return alias as a materialised leaf in the transitive case, not inline the non-body-top call.
+  private containsExternalCall(node: Node): boolean {
+    let found = false;
+    const walk = (n: unknown): void => {
+      if (found || !n || typeof n !== 'object') return;
+      if (n instanceof MethodCallNode) { found = true; return; }
+      if (n instanceof FunctionCallNode) {
+        const dot = n.identifier.name.lastIndexOf('.');
+        if (dot > 0) {
+          const prefix = n.identifier.name.slice(0, dot);
+          if (this.currentParams.has(prefix) || this.stateRoots.has(prefix) || SYNTH_ALIAS.test(prefix)) {
+            found = true; return;
+          }
+        }
+      }
+      for (const k of Object.keys(n)) {
+        if (k === 'type' || k === 'symbolTable' || k === 'location') continue;
+        const v = (n as Record<string, unknown>)[k];
+        if (Array.isArray(v)) v.forEach(walk);
+        else if (v && typeof v === 'object') walk(v);
+      }
+    };
+    walk(node);
+    return found;
+  }
+
+  // allowSingleAssign (transitive mid-body case): also accept a single-assign local leaf - a materialised value live
+  // at the call site (a pinned call-return / param-derived local). SOUND: at-most-param-permissive (the covenant
+  // still computes + pins the target from it), and the decl is placed right before the use where the local is live.
+  private allLeavesBodyTop(node: Node, allowSingleAssign = false): boolean {
     let ok = true;
     const walk = (n: unknown): void => {
       if (!ok || !n || typeof n !== 'object') return;
       if (n instanceof MethodCallNode) { ok = false; return; }
       if (n instanceof IdentifierNode) {
-        if (!this.currentParams.has(n.name) && !this.stateRoots.has(n.name)) ok = false;
+        if (!this.currentParams.has(n.name) && !this.stateRoots.has(n.name)
+          && !(allowSingleAssign && this.singleAssignLocals.has(n.name))) ok = false;
         return;
       }
       if (n instanceof FunctionCallNode) {
         const dot = n.identifier.name.lastIndexOf('.');
         if (dot > 0) {
           const prefix = n.identifier.name.slice(0, dot);
-          if (this.currentParams.has(prefix) || this.stateRoots.has(prefix) || SYNTH_ALIAS.test(prefix)) {
+          if (this.currentParams.has(prefix) || this.stateRoots.has(prefix) || SYNTH_ALIAS.test(prefix)
+            || (allowSingleAssign && this.singleAssignLocals.has(prefix))) {
             ok = false;
             return;
           }
@@ -472,33 +542,60 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
     return { iface, localName: `${PREFIX}${key}_${iface}`, init };
   }
 
+  // A TRANSITIVE computed target `IFoo(pairFor(factory, a, b))` where a leaf `factory` is a single-assign local that
+  // only exists MID-BODY (a pinned external-call return: `factory = IUniswapV2Factory(router.factory())`). Resolve
+  // ONLY inliner aliases, KEEPING an alias whose init contains an external call as a materialised leaf, then require
+  // every leaf to be a param / self-pinned state / single-assign local. Returns the cast to place as a decl RIGHT
+  // BEFORE the use (visitBlock), where the local is live - a body-top hoist would read it before its definition.
+  // SOUND: single-assign locals are computed from params/state/pinned-returns (at-most-param-permissive). SushiRoll.
+  private castTransitiveTarget(obj: ExpressionNode): { iface: string; init: ExpressionNode } | undefined {
+    if (!(obj instanceof FunctionCallNode) || obj.parameters.length !== 1) return undefined;
+    const iface = obj.identifier.name;
+    if (!this.typeNames.has(iface)) return undefined;
+    let inner: ExpressionNode = obj.parameters[0];
+    while (inner instanceof CastNode) inner = inner.expression;
+    if (!(inner instanceof FunctionCallNode)) return undefined;
+    if (!this.chainKey(obj.parameters[0])) return undefined;
+    const init = cloneNode(obj) as ExpressionNode;
+    this.substituteAliasesInPlace(init, true); // inlineOnly: keep user/call-return single-assign locals as leaves
+    if (this.allLeavesBodyTop(init)) return undefined;        // pure body-top target -> castComputedTarget's job
+    if (!this.allLeavesBodyTop(init, true)) return undefined; // a leaf is not param/state/single-assign -> fail closed
+    return { iface, init };
+  }
+
   // In-place: replace every synthetic SSA alias / single-assignment local identifier in `node` with a clone of its
   // (recursively resolved) init, so a hoisted computed target reads params/self-pinned state directly - valid at the
   // body top, where the inliner's `__rh*` locals are not yet declared. Mutates a CLONE only (never the original AST).
-  private substituteAliasesInPlace(node: Node): void {
+  private substituteAliasesInPlace(node: Node, inlineOnly = false): void {
     const resolve = (id: IdentifierNode): Node | undefined => {
       if (!this.localInits.has(id.name)) return undefined;
-      if (!(SYNTH_ALIAS.test(id.name) || this.singleAssignLocals.has(id.name))) return undefined;
+      // inlineOnly (transitive case): resolve ONLY inliner SSA aliases, keeping a user single-assign local intact.
+      if (!(SYNTH_ALIAS.test(id.name) || (!inlineOnly && this.singleAssignLocals.has(id.name)))) return undefined;
       const clone = cloneNode(this.localInits.get(id.name)!) as Node;
+      // Transitive case: an alias whose init contains an external call (`__rh_factory = IFactory(router.factory())`)
+      // is a MATERIALISED call-return on the stack - keep the alias as a live leaf instead of inlining the (non-body-
+      // top) call. It is a single-assign local, so the mid-body gate (allLeavesBodyTop, allowSingleAssign) accepts it.
+      if (inlineOnly && this.containsExternalCall(clone)) return undefined;
       // The init may itself be a bare alias identifier (`__rh5_x = __rh3_x = ... = x`, chained across inline levels);
       // follow the chain, else substituteAliasesInPlace (which only rewrites CHILD identifiers, never the top-level
       // node) would leave the first link unresolved. Router02 getAmountsOut -> getReserves -> pairFor(__rh_tokenA).
       if (clone instanceof IdentifierNode) { const chained = resolve(clone); if (chained) return chained; }
-      this.substituteAliasesInPlace(clone);
+      this.substituteAliasesInPlace(clone, inlineOnly);
       return clone;
     };
     for (const k of Object.keys(node)) {
       if (k === 'type' || k === 'symbolTable' || k === 'location') continue;
       const rec = node as unknown as Record<string, unknown>;
       const v = rec[k];
-      if (v instanceof IdentifierNode) { const r = resolve(v); if (r) rec[k] = r; else this.substituteAliasesInPlace(v); }
-      else if (v instanceof Node) this.substituteAliasesInPlace(v);
+      if (v instanceof IdentifierNode) {
+        const r = resolve(v); if (r) rec[k] = r; else this.substituteAliasesInPlace(v, inlineOnly);
+      } else if (v instanceof Node) this.substituteAliasesInPlace(v, inlineOnly);
       else if (Array.isArray(v)) {
         for (let i = 0; i < v.length; i += 1) {
           if (v[i] instanceof IdentifierNode) {
             const r = resolve(v[i] as IdentifierNode);
-            if (r) v[i] = r; else this.substituteAliasesInPlace(v[i] as Node);
-          } else if (v[i] instanceof Node) this.substituteAliasesInPlace(v[i] as Node);
+            if (r) v[i] = r; else this.substituteAliasesInPlace(v[i] as Node, inlineOnly);
+          } else if (v[i] instanceof Node) this.substituteAliasesInPlace(v[i] as Node, inlineOnly);
         }
       }
     }

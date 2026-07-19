@@ -2852,6 +2852,27 @@ describe('chained overloaded using-for + interface-local-var dispatch (MistSwap 
       + ' function g(address x, address y) public { (address a, address b) = sortT(x, y); IPair(comp(a, b)).m(5); } }');
   });
 
+  // A TRANSITIVE computed target: a leaf is a single-assign local that is a pinned EXTERNAL-CALL RETURN
+  // (`factory = router.factory()`), which only exists mid-body. castTransitiveTarget keeps it as a live materialised
+  // leaf (substituteAliasesInPlace inlineOnly + containsExternalCall) and places the __extaddr_ decl right before the
+  // use (visitBlock), where it is live. SOUND: at-most-param-permissive; a mutable-local leaf still fails closed.
+  // SushiRoll `IUniswapV2Pair(pairFor(IUniswapV2Factory(router.factory()), a, b)).getReserves()`.
+  it('hoists a transitive computed target rooted in a pinned call-return local', () => {
+    ok('interface IPair { function m(uint256 x) external; }'
+      + ' interface IRouter { function factory() external view returns (address); }'
+      + ' contract C { IRouter router;'
+      + ' function comp(address f, address a, address b) internal pure returns (address){ return f; }'
+      + ' function g(address a, address b) public {'
+      + ' address factory = router.factory(); IPair(comp(factory, a, b)).m(5); } }');
+  });
+  it('fails closed on a transitive target rooted in a reassignable local', () => {
+    expect(() => compileString('pragma solidity ^0.8.0;'
+      + ' interface IPair { function m(uint256 x) external; }'
+      + ' contract C { function comp(address f) internal pure returns (address){ return f; }'
+      + ' function g(address a) public { address x = a; x = address(0); IPair(comp(x)).m(5); } }', opts))
+      .toThrow(/target address must be a constructor\/function parameter/);
+  });
+
   // A BRANCH-LOCAL external-call target (declared inside an `if`, used by a cast/low-level call in that branch) is
   // hoisted to the function-body top so the co-spend reads it at the epilogue - UniswapV2Pair.mint's `migrator`
   // (nested-branch), was "Expected variable 'migrator' does not exist on the stack". The external call stays

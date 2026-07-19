@@ -624,6 +624,25 @@ describe('bytes memory/local element write (bytes memory d; d[i] = v)', () => {
   });
 });
 
+describe('prune an UNREACHABLE storage-pointer library (OZ EnumerableSet imported but unused)', () => {
+  // OZ EnumerableSet has `_add(Set storage) { .. _contains(set, ..) .. }` + public wrappers. Imported but unused,
+  // InlineStoragePointerCalls marks the inner `_contains` inlined and drops it, but `_add`'s call is never inlined
+  // (free-fn bodies are not visited there) -> "Undefined reference to symbol ES._contains". A storage-pointer helper
+  // cannot stand alone, so an unreachable one is pruned (like the dead assembly / low-level-call helpers).
+  it('compiles a contract that imports but never uses an EnumerableSet-shaped library', () => {
+    const es = 'library ES { struct Set { uint256 x; } struct AddressSet { Set _inner; }'
+      + ' function _contains(Set storage s, uint256 v) private view returns (bool) { return s.x == v; }'
+      + ' function _add(Set storage s, uint256 v) private returns (bool) {'
+      + ' if (!_contains(s, v)) { s.x = v; return true; } return false; }'
+      + ' function contains(AddressSet storage s, uint256 v) internal view returns (bool) { return _contains(s._inner, v); }'
+      + ' function add(AddressSet storage s, uint256 v) internal returns (bool) { return _add(s._inner, v); } }';
+    const resolver = (p: string): { source: string; id: string } | undefined => (
+      p === './ES.sol' ? { source: `pragma solidity ^0.8.0;${es}`, id: '/ES.sol' } : undefined);
+    expect(() => compileString('import "./ES.sol"; contract C { uint256 x; function f() public { x = 1; } }',
+      { importResolver: resolver, rootFileId: '/main.sol', solidityImportCompat: true })).not.toThrow();
+  });
+});
+
 describe('using-for directive inside an interface body (SushiSwap IRewarder, valid Solidity 0.6.x)', () => {
   const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
   it('accepts `using L for T;` inside an interface (a no-op there - no bodies to bind)', () => {

@@ -9,6 +9,7 @@ import {
   Node,
   SourceFileNode,
 } from '../ast/AST.js';
+import { Modifier } from '../ast/Globals.js';
 import AstTraversal from '../ast/AstTraversal.js';
 
 /**
@@ -46,7 +47,8 @@ export default class PruneUnreachableFreeFunctions extends AstTraversal {
     // assembly helper (OZ Math.mulDiv: mulmod/mul/div/add - no residual block) is still caught. `hasInlineAssembly`
     // catches any residual block (defensive; runs on the post-lowering AST).
     for (const fn of freeFns) {
-      if (this.hasDirectLowLevelCall(fn) || this.hasInlineAssembly(fn) || fn.hadInlineAssembly) tainted.add(fn);
+      if (this.hasDirectLowLevelCall(fn) || this.hasInlineAssembly(fn) || fn.hadInlineAssembly
+        || this.hasStoragePointerParam(fn)) tainted.add(fn);
     }
     for (let changed = true; changed;) {
       changed = false;
@@ -117,6 +119,14 @@ export default class PruneUnreachableFreeFunctions extends AstTraversal {
     let found = false;
     this.walk(fn.body, (n) => { if (n instanceof AssemblyStatementNode) found = true; });
     return found;
+  }
+
+  // A `T storage` reference param (OZ EnumerableSet `_contains(Set storage set, ..)`). Such a helper cannot stand
+  // alone as a subroutine (its storage-pointer field accesses only resolve when inlined at a call site), so when it
+  // is dead it dangles - InlineStoragePointerCalls partially processes an UNUSED imported library (drops the inner
+  // `_contains` but not its `_add` caller's call). Pruning the whole unreachable subgraph removes the dangle.
+  private hasStoragePointerParam(fn: FunctionDefinitionNode): boolean {
+    return (fn.parameters ?? []).some((p) => p.modifier?.includes(Modifier.STORAGE));
   }
 
   private referencedNames(body: Node | undefined): string[] {

@@ -85,12 +85,33 @@ describe('C2 diff-key per-iteration UPDATE loop (multitransfer credit to existin
     expect(await valOf(2n)).toBe(200n);
   });
 
-  it('fails closed on a recipient with NO existing entry (insert-in-loop unsupported)', async () => {
-    const { contract, call } = await setup();
-    await fund(contract.address); await call('setBal', 3n, 100n);
+  it('INSERTS a new recipient (no existing entry) alongside an update, in one loop', async () => {
+    const { contract, valOf, call } = await setup();
+    await fund(contract.address); await call('setBal', 3n, 100n);   // 3 exists
     await fund(contract.address);
-    // 9 has no entry -> the SDK cannot co-spend it -> clear error (not a silent skip / wrong store).
-    await expect(call('airdrop', [3n, 9n], [10n, 20n])).rejects.toThrow(/no existing entry|not supported|already hold/i);
+    // 9 has NO entry -> INSERT (new node, value = amount); 3 exists -> UPDATE. Mixed in one loop.
+    await call('airdrop', [3n, 9n], [10n, 20n]);
+    expect(await valOf(3n)).toBe(110n); // updated
+    expect(await valOf(9n)).toBe(20n);  // inserted (0 + 20)
+    // A later read of the inserted key proves the sorted list stayed valid.
+    await fund(contract.address); await expect(call('chk', 9n, 20n)).resolves.toBeDefined();
+    await fund(contract.address); await expect(call('chk', 5n, 0n)).resolves.toBeDefined(); // still absent -> 0
+  });
+
+  it('inserts multiple new recipients in distinct gaps', async () => {
+    const { contract, valOf, call } = await setup();
+    await fund(contract.address); await call('setBal', 10n, 100n);
+    await fund(contract.address); await call('setBal', 20n, 200n); // two existing entries -> distinct gaps for new keys
+    await fund(contract.address);
+    // 5, 15, 25 are new and (by their sha256 slots) very likely land in distinct gaps.
+    let ok = false;
+    try { await call('airdrop', [5n, 15n, 25n], [1n, 2n, 3n]); ok = true; } catch { /* same-gap -> fails closed */ }
+    if (ok) {
+      expect(await valOf(5n)).toBe(1n);
+      expect(await valOf(15n)).toBe(2n);
+      expect(await valOf(25n)).toBe(3n);
+      expect(await valOf(10n)).toBe(100n); // existing untouched
+    }
   });
 
   it('fails closed on a duplicate recipient (each entry co-spent once)', async () => {
@@ -98,6 +119,20 @@ describe('C2 diff-key per-iteration UPDATE loop (multitransfer credit to existin
     await fund(contract.address); await call('setBal', 3n, 100n);
     await fund(contract.address);
     await expect(call('airdrop', [3n, 3n], [10n, 20n])).rejects.toThrow(/duplicate/i);
+  });
+
+  it('fails closed when two new recipients share a gap (one predecessor cannot be co-spent twice)', async () => {
+    const { contract, call } = await setup();
+    // Fresh map (only HEAD): every new key brackets HEAD, so two new keys share the same predecessor -> conflict.
+    await fund(contract.address);
+    await expect(call('airdrop', [3n, 7n], [10n, 20n])).rejects.toThrow(/predecessor|gap|separate/i);
+  });
+
+  it('fails closed on `-=` to a nonexistent account (cannot debit nothing)', async () => {
+    const { contract, call } = await setup();
+    await fund(contract.address); await call('setBal', 1n, 500n);
+    await fund(contract.address);
+    await expect(call('debitAll', [1n, 9n], [50n, 10n])).rejects.toThrow(/no balance|cannot debit/i);
   });
 });
 

@@ -53,7 +53,7 @@ describe('FULL ERC-20 multiTransfer (cached msg.sender debit + credit upsert loo
       await provider.addUtxo(contract.address, { txid: uid(), vout: 0, satoshis: 200000n });
     };
 
-    // Seed: sender (alice) = 1000, recipients bob = 100, carol = 200.
+    // Seed: sender (alice) = 1000, recipients bob = 100, carol = 200 (existing).
     await fundContract(); await setBal(aliceAddress, 1000n);
     await fundContract(); await setBal(bobAddress, 100n);
     await fundContract(); await setBal(carolAddress, 200n);

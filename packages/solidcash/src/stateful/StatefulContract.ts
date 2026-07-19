@@ -5692,8 +5692,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         throw new Error(`C2 upsert loop ${info.collection}: recipients/amounts length mismatch`);
       }
       const wUnlocker = createEntryNftUnlocker(this.inner, 0, this.categoryId, info.collection);
+      // Commitments in CUMULATIVE OUTPUT order (matching the covenant's outCounter): an UPDATE contributes 1 (the
+      // updated node), an INSERT contributes 2 (P' = the re-pointed predecessor, then NEW). One co-spent input per
+      // recipient. cospent = co-spent UTXO ids for conflict detection (an entry / predecessor can be co-spent once).
       const commitments: string[] = [];
       const seenSlots = new Set<string>();
+      const cospent = new Set<string>();
+      const uidOf = (u: { txid: string; vout: number }): string => `${u.txid}:${u.vout}`;
       for (let i = 0; i < keysArr.length; i++) {
         const slot = keyToSlotMulti([...fixedBins, encKey(keysArr[i], varyType)]);
         const slotHex = binToHex(slot);
@@ -5701,16 +5706,34 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           throw new Error(`C2 upsert loop ${info.collection}: duplicate recipient (each entry can be co-spent once)`);
         }
         seenSlots.add(slotHex);
-        const entry = list.find(slot);
-        if (!entry) {
-          throw new Error(`C2 upsert loop ${info.collection}: recipient ${i} has no existing entry `
-            + '(credit-to-a-new-recipient / insert-in-loop is not supported; the recipient must already hold a balance)');
-        }
         const amt = typeof valsArr[i] === 'bigint' ? valsArr[i] as bigint : BigInt(valsArr[i] as number);
-        const oldVal = vmNumberToBigInt(entry.value, { requireMinimalEncoding: false }) as bigint;
-        const newVal = info.op === '-' ? oldVal - amt : oldVal + amt;
-        insertLoopPredecessors.push({ ...entry.utxo, unlocker: wUnlocker });
-        commitments.push(binToHex(encodeEntryCommitment(entry.slot, entry.nextKey, bigIntToVmNumber(newVal))));
+        const entry = list.find(slot);
+        if (entry) {
+          // UPDATE (existing recipient): co-spend the entry, mint the updated value.
+          if (cospent.has(uidOf(entry.utxo))) {
+            throw new Error(`C2 upsert loop ${info.collection}: recipient ${i}'s entry is already co-spent this tx`);
+          }
+          cospent.add(uidOf(entry.utxo));
+          const oldVal = vmNumberToBigInt(entry.value, { requireMinimalEncoding: false }) as bigint;
+          const newVal = info.op === '-' ? oldVal - amt : oldVal + amt;
+          insertLoopPredecessors.push({ ...entry.utxo, unlocker: wUnlocker });
+          commitments.push(binToHex(encodeEntryCommitment(entry.slot, entry.nextKey, bigIntToVmNumber(newVal))));
+        } else {
+          // INSERT (a NEW recipient): co-spend the bracketing predecessor (from the ORIGINAL list) + mint P' then NEW.
+          if (info.op === '-') {
+            throw new Error(`C2 upsert loop ${info.collection}: cannot debit recipient ${i} - it has no balance`);
+          }
+          const pred = list.predecessorOf(slot);
+          if (cospent.has(uidOf(pred.utxo))) {
+            throw new Error(`C2 upsert loop ${info.collection}: new recipient ${i} shares a predecessor with another `
+              + 'co-spend (two new recipients in one gap, or its predecessor is also credited) - not supported in one '
+              + 'tx; split into separate transactions.');
+          }
+          cospent.add(uidOf(pred.utxo));
+          insertLoopPredecessors.push({ ...pred.utxo, unlocker: wUnlocker });
+          commitments.push(binToHex(encodeEntryCommitment(pred.slot, slot, pred.value)));           // P' (re-pointed)
+          commitments.push(binToHex(encodeEntryCommitment(slot, pred.nextKey, bigIntToVmNumber(amt)))); // NEW = 0 + amt
+        }
       }
       if (commitments.length > 0) sortedLoopCommitments.set(info.collection, commitments);
     }

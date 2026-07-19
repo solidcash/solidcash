@@ -18,6 +18,14 @@ import {
   YulFunctionCallNode, YulFunctionDefinitionNode, YulPathNode, YulLiteralNode, YulLiteralKind,
   YulCaseNode, YulLeaveNode,
 } from '../ast/YulAST.js';
+import {
+  YULMEM,
+  memReservedInit as buildReservedInit,
+  memWordStore,
+  memWordLoad,
+  memByteStore,
+  memGrowTo,
+} from './YulMemPrimitives.js';
 
 // Thrown when a Yul construct is outside the supported codegen subset; the block is then left as-is for the
 // inline-assembly diagnostic (GTT) to report. Internal to this pass.
@@ -341,7 +349,6 @@ let yulMemUsed = false;
 // block reads what an earlier one wrote); a per-block re-init would reset the free pointer to 0x80 each time.
 let functionYulMemUsed = false;
 let yulTmpN = 0;
-const YULMEM = '__yulmem';
 
 // A Yul log0-log4 (EVM LOG opcodes = event emission) was lowered in the current contract: emit its topics + data
 // region as an anonymous event NFT. Set while lowering; the `event __YulLog(bytes) anonymous` decl is synthesized
@@ -360,53 +367,41 @@ function newBytes(size: ExpressionNode, src: YulNode): NewArrayNode {
   return arr;
 }
 
-// `bytes __yulmem = <0x40 zero bytes> ++ bytes32(0x80) ++ <0x20 zero bytes>` - 128 bytes, EVM reserved layout
-// with the free-memory pointer value 0x80 stored at slot 0x40, so `mload(0x40)` reads 0x80.
+// `bytes __yulmem = <128-byte EVM reserved region>`: scratch 0x00-0x3f, the free-memory pointer value 0x80 stored at
+// slot 0x40 (so `mload(0x40)` reads 0x80), zero slot 0x60-0x7f. The reserved layout is built by ./YulMemPrimitives,
+// shared with the high-level memory model so both passes agree on the buffer's addressing.
 function yulMemInit(src: { location?: Node['location'] }): StatementNode {
-  const init = loc(new BytesConcatNode([
-    newBytes(intLit(0x40n, src), src),
-    loc(new CastNode(BYTES32, intLit(0x80n, src), false), src),
-    newBytes(intLit(0x20n, src), src),
-  ]), src);
-  return loc(new VariableDefinitionNode(new BytesType(), [], YULMEM, init), src);
+  return loc(new VariableDefinitionNode(new BytesType(), [], YULMEM, buildReservedInit(src)), src);
 }
 
 // `if (__yulmem.length < <off>+word) __yulmem = bytes.concat(__yulmem, new bytes(<off>+word - __yulmem.length));`
 function growTo(offName: string, word: bigint, src: YulNode): StatementNode {
-  const need = (): ExpressionNode => addE(loc(new IdentifierNode(offName), src), intLit(word, src), src);
-  const cond = loc(new BinaryOpNode(memLen(src), BinaryOperator.LT, need()), src);
-  const pad = newBytes(loc(new BinaryOpNode(need(), BinaryOperator.MINUS, memLen(src)), src), src);
-  const grow = loc(new AssignNode(yulmem(src), loc(new BytesConcatNode([yulmem(src), pad]), src)), src);
-  return loc(new BranchNode(cond, loc(new BlockNode([grow]), src)), src);
+  return memGrowTo(() => addE(loc(new IdentifierNode(offName), src), intLit(word, src), src), src);
 }
 
-// mstore(off, val): grow to cover off+32, then splice the 32-byte little-endian word (bytes32(val)) in place.
+// mstore(off, val): grow to cover off+32, then splice the 32-byte little-endian word (bytes32(val)) in place. The
+// splice lowering lives in ./YulMemPrimitives (shared with the high-level memory model).
 function runtimeMstore(offExpr: ExpressionNode, valExpr: ExpressionNode, src: YulNode): StatementNode {
   yulMemUsed = true;
   const offName = `__yoff_${yulTmpN++}`;
   const off = (): ExpressionNode => loc(new IdentifierNode(offName), src);
   const decl = loc(new VariableDefinitionNode(UINT256, [], offName, offExpr), src);
-  const head = loc(new SliceNode(yulmem(src), intLit(0n, src), off()), src);
-  const word = loc(new CastNode(BYTES32, valExpr, false), src);
-  const tail = loc(new SliceNode(yulmem(src), addE(off(), intLit(32n, src), src), memLen(src)), src);
-  const store = loc(new AssignNode(yulmem(src), loc(new BytesConcatNode([head, word, tail]), src)), src);
+  const store = memWordStore(off, valExpr, src);
   return loc(new BlockNode([decl, growTo(offName, 32n, src), store]), src);
 }
 
 // mstore8(off, val): grow to cover off+1, then splice ONE byte at position off - val's low byte, which is
 // bytes32(val)[0:1] under BCH's little-endian word encoding (byte 0 = the low byte, same convention runtimeMstore
 // writes and runtimeMload reads). A later full-word mload straddling this write reads zeros for the unwritten
-// bytes via runtimeMload's trailing zero pad.
+// bytes via runtimeMload's trailing zero pad. The splice lowering lives in ./YulMemPrimitives.
 function runtimeMstore8(offExpr: ExpressionNode, valExpr: ExpressionNode, src: YulNode): StatementNode {
   yulMemUsed = true;
   const offName = `__yoff8_${yulTmpN++}`;
   const off = (): ExpressionNode => loc(new IdentifierNode(offName), src);
   const decl = loc(new VariableDefinitionNode(UINT256, [], offName, offExpr), src);
-  const head = loc(new SliceNode(yulmem(src), intLit(0n, src), off()), src);
   const word = loc(new CastNode(BYTES32, valExpr, false), src);
   const lowByte = loc(new SliceNode(word, intLit(0n, src), intLit(1n, src)), src);
-  const tail = loc(new SliceNode(yulmem(src), addE(off(), intLit(1n, src), src), memLen(src)), src);
-  const store = loc(new AssignNode(yulmem(src), loc(new BytesConcatNode([head, lowByte, tail]), src)), src);
+  const store = memByteStore(off, lowByte, src);
   return loc(new BlockNode([decl, growTo(offName, 1n, src), store]), src);
 }
 
@@ -513,9 +508,7 @@ function resolveCalldataParamCopy(off: YulExpressionNode, len: YulExpressionNode
 // that only grew the buffer by one byte). Yul offset expressions are pure, so lowering twice is safe.
 function runtimeMload(offArg: YulExpressionNode, src: YulNode): ExpressionNode {
   yulMemUsed = true;
-  const padded = loc(new BytesConcatNode([yulmem(src), newBytes(intLit(32n, src), src)]), src);
-  const slice = loc(new SliceNode(padded, lowerValue(offArg), addE(lowerValue(offArg), intLit(32n, src), src)), src);
-  return loc(new CastNode(UINT256, loc(new CastNode(BYTES32, slice, false), src), false), src);
+  return memWordLoad(() => lowerValue(offArg), { pad: true, decodeType: UINT256 }, src);
 }
 
 // keccak256(p, len) -> keccak256(__yulmem[p : p+len]); len may be sub-word.

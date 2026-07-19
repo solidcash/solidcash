@@ -37,6 +37,15 @@ import {
 import { BinaryOperator, UnaryOperator } from '../ast/Operator.js';
 import AstTraversal from '../ast/AstTraversal.js';
 import { cloneNode } from '../ast/clone.js';
+import {
+  YULMEM,
+  memReservedInit as buildReservedInit,
+  memWordStore,
+  memWordLoad,
+  memByteStore,
+  memZeroBytes,
+  wordDecodeType,
+} from './YulMemPrimitives.js';
 
 // Lowers local `memory` reference types to integer pointers into a per-function linear byte buffer, so a nested
 // lvalue write is an address-chain + a single in-place store that COMPOSES across statements (the value-copy
@@ -51,9 +60,9 @@ import { cloneNode } from '../ast/clone.js';
 // the same primitives (Phase 3). Off by default; the flag gates the whole pass, so the value-copy path is intact.
 const WORD = 32n;
 
-// The one linear-memory buffer, shared with the Yul runtime-memory lowering (LowerInlineAssembly, which runs
-// after this pass and reuses the decl if it already exists). One name = one EVM-faithful memory space per function.
-const YULMEM = '__yulmem';
+// The one linear-memory buffer (name + primitive lowerings imported from ./YulMemPrimitives) is shared with the Yul
+// runtime-memory lowering (LowerInlineAssembly, which runs after this pass and reuses the decl if it already
+// exists). One name = one EVM-faithful memory space per function; one module = one lowering of store/load/init.
 
 export default class LowerMemoryModel extends AstTraversal {
   // Locals that are memory-model pointers (declared as a handled memory dynamic array, initialized by a fresh
@@ -980,13 +989,7 @@ export default class LowerMemoryModel extends AstTraversal {
   // __yulmem init = 128-byte EVM reserved region (scratch 0x00-0x3f, free-memory pointer 0x80 at slot 0x40, zero
   // slot 0x60-0x7f). Identical layout to the Yul runtime __yulmem buffer, so pointers from both passes agree.
   private memReservedInit(): ExpressionNode {
-    const init = new BytesConcatNode([
-      this.rawBytes(this.intLit(0x40n)),
-      new CastNode(new BytesType(32), this.intLit(0x80n), false),
-      this.rawBytes(this.intLit(0x20n)),
-    ]);
-    init.type = new BytesType();
-    return init;
+    return buildReservedInit();
   }
 
   // Read the free-memory pointer (the next allocation offset) from slot 0x40 of the buffer.
@@ -999,34 +1002,16 @@ export default class LowerMemoryModel extends AstTraversal {
     return this.mstore(this.intLit(0x40n), value, this.uint());
   }
 
-  // mstore(addr, word): __yulmem = bytes.concat(__yulmem[0:addr], bytes32(word), __yulmem[addr+32:]).
-  private mstore(addr: ExpressionNode, word: ExpressionNode, elemType: Type): AssignNode {
-    const head = new SliceNode(this.mem(YULMEM), this.intLit(0n), this.clone(addr));
-    const tail = new SliceNode(this.mem(YULMEM), this.add(this.clone(addr), this.intLit(WORD)),
-      new UnaryOpNode(UnaryOperator.SIZE, this.mem(YULMEM)));
-    const encoded = this.encodeWord(word, elemType);
-    return this.assign(YULMEM, new BytesConcatNode([head, encoded, tail]));
+  // mstore(addr, word): splice bytes32(word) in place at addr. elemType is unused (the word encodes identically for
+  // every 256-bit element type); kept for call-site symmetry with mload. Lowering lives in ./YulMemPrimitives.
+  private mstore(addr: ExpressionNode, word: ExpressionNode, _elemType: Type): AssignNode {
+    return memWordStore(() => this.clone(addr), word);
   }
 
-  // mload(addr): decode the 32-byte word at [addr : addr+32] back to the element type.
+  // mload(addr): decode the 32-byte word at [addr : addr+32] back to the element type. No pad - the high-level side
+  // reads only allocated slots. Lowering lives in ./YulMemPrimitives.
   private mload(addr: ExpressionNode, elemType: Type): ExpressionNode {
-    const slice = new SliceNode(this.mem(YULMEM), this.clone(addr),
-      this.add(this.clone(addr), this.intLit(WORD)));
-    return this.decodeWord(slice, elemType);
-  }
-
-  private encodeWord(word: ExpressionNode, _elemType: Type): ExpressionNode {
-    return new CastNode(new BytesType(32), word, false); // bytes32(word) - 32-byte big-endian word
-  }
-
-  private decodeWord(slice: ExpressionNode, elemType: Type): ExpressionNode {
-    const b32 = new CastNode(new BytesType(32), slice, false);
-    return new CastNode(this.decodeType(elemType), b32, false);
-  }
-
-  // Decode target = the (256-bit) element type, so the read type-checks exactly like the value-copy element read.
-  private decodeType(elemType: Type): Type {
-    return elemType instanceof IntType ? elemType : this.uint();
+    return memWordLoad(() => this.clone(addr), { decodeType: wordDecodeType(elemType) });
   }
 
   // &a[i] = a + 32 + i*32
@@ -1062,13 +1047,10 @@ export default class LowerMemoryModel extends AstTraversal {
     return new CastNode(new BytesType(1), slice, false);
   }
 
-  // b[i] = v write -> splice one byte (bytes1(v)) in place: __yulmem[0:addr] ++ bytes1(v) ++ __yulmem[addr+1:].
+  // b[i] = v write -> splice one byte (bytes1(v), the low byte under BCH little-endian) in place at addr. Lowering
+  // lives in ./YulMemPrimitives.
   private mstoreByte(addr: ExpressionNode, val: ExpressionNode): AssignNode {
-    const head = new SliceNode(this.mem(YULMEM), this.intLit(0n), this.clone(addr));
-    const tail = new SliceNode(this.mem(YULMEM), this.add(this.clone(addr), this.intLit(1n)),
-      new UnaryOpNode(UnaryOperator.SIZE, this.mem(YULMEM)));
-    const byte = new CastNode(new BytesType(1), val, false);
-    return this.assign(YULMEM, new BytesConcatNode([head, byte, tail]));
+    return memByteStore(() => this.clone(addr), new CastNode(new BytesType(1), val, false));
   }
 
   // Handled today: an unbounded array of a 256-bit int (`uint`/`int`). 32-byte words store the value exactly, so
@@ -1162,10 +1144,7 @@ export default class LowerMemoryModel extends AstTraversal {
   private assign(name: string, expr: ExpressionNode): AssignNode { return new AssignNode(new IdentifierNode(name), expr); }
   private clone(e: ExpressionNode): ExpressionNode { return cloneNode(e) as ExpressionNode; }
   private rawBytes(size: ExpressionNode): NewArrayNode {
-    const arr = new NewArrayNode(new BytesType(1), size);
-    arr.rawBytes = true;
-    arr.type = new BytesType();
-    return arr;
+    return memZeroBytes(size);
   }
 
   // Stamp the whole freshly-built tree with the source location (codegen source maps + the optimizer need every

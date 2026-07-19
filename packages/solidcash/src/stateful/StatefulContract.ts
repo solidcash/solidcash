@@ -5714,6 +5714,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       for (const e of entryNfts) {
         if (e.collection === info.collection && e.exists && e.utxo) cospent.add(uidOf(e.utxo));
       }
+      // MSG.SENDER MERGE: the single fixed (non-loop) co-spent entry of this collection is the cached msg.sender DEBIT.
+      // A new recipient whose bracketing predecessor IS that entry re-points the debit's single co-spend (the covenant
+      // does it via the loop's re-point register) instead of co-spending it again - so we mint only the NEW node.
+      const debitEntry = entryNfts.find((e) => e.collection === info.collection && e.exists && e.utxo);
+      let mergedNewCount = 0;
       for (let i = 0; i < keysArr.length; i++) {
         const slot = keyToSlotMulti([...fixedBins, encKey(keysArr[i], varyType)]);
         const slotHex = binToHex(slot);
@@ -5741,9 +5746,20 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               + 'it has no entry');
           }
           const pred = list.predecessorOf(slot);
+          if (debitEntry && uidOf(debitEntry.utxo as { txid: string; vout: number }) === uidOf(pred.utxo)) {
+            // MERGE with the debit: co-spend nothing extra, mint ONLY the NEW node; the covenant re-points the debit's
+            // output (via the register). At most ONE such merge (the covenant's require(register==0) fails a second).
+            if (mergedNewCount >= 1) {
+              throw new Error(`C2 upsert loop ${info.collection}: two new recipients in the debited sender's gap - `
+                + 'not supported in one tx; split into separate transactions.');
+            }
+            mergedNewCount += 1;
+            commitments.push(binToHex(encodeEntryCommitment(slot, pred.nextKey, bigIntToVmNumber(amt)))); // NEW = 0 + amt
+            continue;
+          }
           if (cospent.has(uidOf(pred.utxo))) {
             throw new Error(`C2 upsert loop ${info.collection}: new recipient ${i}'s bracketing predecessor is already `
-              + 'co-spent in this tx (the debited sender, another credited recipient, or another new recipient in the '
+              + 'co-spent in this tx (another credited recipient, or another new recipient in the '
               + 'same gap). Merging both effects into one entry is not yet supported - split into separate transactions.');
           }
           cospent.add(uidOf(pred.utxo));

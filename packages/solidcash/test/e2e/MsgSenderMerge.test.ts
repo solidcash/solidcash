@@ -1,7 +1,10 @@
 import { describe, it, expect } from 'vitest';
+import { vmNumberToBigInt } from '@bitauth/libauth';
 import { compileString } from 'solidc';
 import { Contract, StatefulContract, Signer, SignatureTemplate } from '../../src/index.js';
-import { alicePriv, alicePub, alicePkh, bobPriv, bobPub, bobAddress, carolAddress } from '../fixture/vars.js';
+import { keyToSlot, getEntryNftAddress, SortedList } from '../../src/index.js';
+import { addressToLockScript } from '../../src/utils.js';
+import { alicePriv, alicePub, alicePkh, aliceAddress, bobPriv, bobPub, bobAddress, carolAddress } from '../fixture/vars.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 import { createTestProvider } from '../test-util.js';
 
@@ -18,6 +21,7 @@ const SRC = `contract Token() {
       this.bal[recipients[i]] += amounts[i];
     }
   }
+  function chk(address a, int exp, pubkey pk, sig s) { require(checkSig(s, pk)); require(this.bal[a] == exp); }
 }`;
 
 describe('FULL multiTransfer: NEW recipient whose predecessor is msg.sender (merge)', () => {
@@ -29,11 +33,45 @@ describe('FULL multiTransfer: NEW recipient whose predecessor is msg.sender (mer
   let nonce = 0xa000;
   const uid = (): string => { nonce += 1; return nonce.toString(16).padStart(64, '0'); };
 
-  // This is the BATCH-UPSERT MERGE case (deferrals: "batch-upsert merge"). It currently FAILS CLOSED with a clear
-  // message - the debit entry (bob) cannot be co-spent twice (once by the cached debit, once as carol's insert
-  // predecessor). Merging both effects onto bob's single output (debited value + a nextKey re-point to carol) is a
-  // dedicated fund-guarding build (design in deferrals). This test pins the SOUND fail-closed behavior until then.
-  it('fails closed cleanly (merge not yet built) - the debit entry cannot be co-spent twice', async () => {
+  // BATCH-UPSERT MERGE: the debit entry (bob) is co-spent ONCE and re-pointed to the new node (carol), instead of
+  // failing closed. bob's single output becomes [bobSlot | carolSlot | 980] (debited value + re-point) and carol is
+  // minted [carolSlot | bobOldNext | 20]. Chain: HEAD -> bob -> carol.
+  it('debits bob and INSERTS carol (predecessor = bob = msg.sender) in one tx', async () => {
+    const art = compileString(SRC, { forceStateful: true });
+    const f = { txid: uid(), vout: 0, satoshis: 400000n };
+    await provider.addUtxo(p2pkh.address, f);
+    const { contract, categoryId } = await StatefulContract.deploy(art, [], {
+      provider, fundingUtxo: f, funder: p2pkh.unlock.spend(alicePub, aliceSig), initialState: {}, changeAddress: p2pkh.address,
+    });
+    const ea = getEntryNftAddress(contract.inner, categoryId, 'bal');
+    const valOf = async (addr: string): Promise<bigint | undefined> => {
+      const e = SortedList.fromUtxos(await provider.getUtxos(ea)).find(keyToSlot(addressToLockScript(addr)));
+      return e ? vmNumberToBigInt(e.value, { requireMinimalEncoding: false }) as bigint : undefined;
+    };
+    await provider.addUtxo(contract.address, { txid: uid(), vout: 0, satoshis: 200000n });
+    await (contract as unknown as Record<string, (...x: unknown[]) => { send: () => Promise<unknown> }>)
+      .setBal(bobAddress, 1000n, alicePub, aliceSig).send();
+
+    const sc = contract.connect(bob);
+    await provider.addUtxo(bob.getAddress(), { txid: uid(), vout: 0, satoshis: 200000n });
+    await (sc as unknown as Record<string, (...x: unknown[]) => { send: () => Promise<unknown> }>)
+      .multiTransfer([carolAddress], [20n], bobPub, bobSig).send();
+    expect(await valOf(bobAddress)).toBe(980n);   // debited
+    expect(await valOf(carolAddress)).toBe(20n);   // inserted (predecessor bob re-pointed to carol)
+
+    // CHAIN VALIDITY (no orphan): a covenant read walks HEAD -> bob -> carol. chk reverts if the chain is broken.
+    const chk = (a: string, exp: bigint): Promise<unknown> =>
+      (contract as unknown as Record<string, (...x: unknown[]) => { send: () => Promise<unknown> }>)
+        .chk(a, exp, alicePub, aliceSig).send();
+    await provider.addUtxo(contract.address, { txid: uid(), vout: 0, satoshis: 200000n });
+    await expect(chk(carolAddress, 20n)).resolves.toBeDefined();  // carol reachable through bob's re-point
+    await provider.addUtxo(contract.address, { txid: uid(), vout: 0, satoshis: 200000n });
+    await expect(chk(bobAddress, 980n)).resolves.toBeDefined();
+    await provider.addUtxo(contract.address, { txid: uid(), vout: 0, satoshis: 200000n });
+    await expect(chk(bobAddress, 1000n)).rejects.toThrow(); // bob was debited, not the old value
+  });
+
+  it('fails closed on TWO new recipients in the debited senders gap (only one re-point)', async () => {
     const art = compileString(SRC, { forceStateful: true });
     const f = { txid: uid(), vout: 0, satoshis: 400000n };
     await provider.addUtxo(p2pkh.address, f);
@@ -43,11 +81,11 @@ describe('FULL multiTransfer: NEW recipient whose predecessor is msg.sender (mer
     await provider.addUtxo(contract.address, { txid: uid(), vout: 0, satoshis: 200000n });
     await (contract as unknown as Record<string, (...x: unknown[]) => { send: () => Promise<unknown> }>)
       .setBal(bobAddress, 1000n, alicePub, aliceSig).send();
-
     const sc = contract.connect(bob);
     await provider.addUtxo(bob.getAddress(), { txid: uid(), vout: 0, satoshis: 200000n });
+    // bob is the only entry, so both carol and alice are new and bracket bob (bob's gap) -> two merges -> fail closed.
     await expect((sc as unknown as Record<string, (...x: unknown[]) => { send: () => Promise<unknown> }>)
-      .multiTransfer([carolAddress], [20n], bobPub, bobSig).send())
-      .rejects.toThrow(/predecessor is already co-spent|split into separate/i);
+      .multiTransfer([carolAddress, aliceAddress], [20n, 30n], bobPub, bobSig).send())
+      .rejects.toThrow(/gap|split into separate|register/i);
   });
 });

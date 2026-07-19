@@ -472,6 +472,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private sortedUpsertLoopActive: boolean = false;
   private sortedUpsertLoopCollection: string | null = null;
   private sortedUpsertLoopOp: '+' | '-' | 'set' | 'delete' = '+'; // set=absolute m[k[i]]=v[i]; delete=nullify; +/- = RMW
+  // MSG.SENDER MERGE (batch-upsert a-real): a new recipient whose bracketing predecessor is the DEBITED msg.sender.
+  // On the merge iteration the credit loop records the new recipient's slot here (mints only the NEW node, no trailing
+  // co-spend); the debit flush (emitSortedValueUpsert, runs AFTER the loop) reads it and re-points msg.sender.nextKey.
+  private sortedUpsertLoopRepointName: string = '(sorted_upsert_repoint)';
+  private sortedUpsertMergeDebitSlot: number = -1; // the debit entry's FIXED block slot index (-1 = no merge possible)
+  private sortedUpsertPendingRepoint: boolean = false; // a merge-capable upsert loop left a re-point register on the stack
   private keccakLoopCounterName: string = '(loop_keccak_counter)'; // keccak side-cars read-so-far (dynamic keccak loop)
   private keccakLoopActive: boolean = false;        // a dynamic keccak256 loop counter is live on the stack
   private functionMultiSiteDeploy: boolean = false; // 2+ same-contract sites w/ a conditional: function counter
@@ -10613,6 +10619,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (!loopWrites.includes(collection.name)) loopWrites.push(collection.name);
     this.sortedWrittenCollections.add(collection.name);
 
+    // MSG.SENDER MERGE: a preceding merge-capable upsert loop left a re-point register on the stack (the new
+    // recipient's slot, 0 if none). This flush (the cached msg.sender DEBIT write) reads it into a tracked temp and,
+    // in its UPDATE branch, re-points msg.sender.nextKey to it (leaving coNext when 0). It's at the bottom of this
+    // flush's working area, so the flush's own raw offsets are unchanged; dropped at the end.
+    const hasRepoint = this.sortedUpsertPendingRepoint;
+    if (hasRepoint) {
+      this.emit(encodeInt(BigInt(this.getStackIndex(this.sortedUpsertLoopRepointName))), loc); this.emit(Op.OP_PICK, loc);
+      this.pushToStack('(__repoint)');
+      this.sortedUpsertPendingRepoint = false; // this flush consumes it
+    }
+
     // 1. H(k) FIRST (before the value), so a self-referential RMW `m[k] = m[k] + ...` with a computed/local key k
     // does not lose k: visitIdentifier ROLL-consumes the lexically-LAST use of k (the RHS read inside emitValue,
     // which is emitted first here) - hashing the write key (the lexically-first LHS use, a PICK) up front keeps k
@@ -10656,9 +10673,23 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(encodeInt(5n), loc); this.emit(Op.OP_PICK, loc);         // copy Hk32 (depth4 +1)
     this.emit(Op.OP_EQUAL, loc);                                       // [.., coValue, isPresent]
     this.emit(Op.OP_IF, loc);
-    // --- UPDATE: entry output == coSlot32 || coNext32 || v (link preserved, value = v) ---
-    this.emitEntryOutputIndex(slotIndex, loc, 6);                      // [.., coValue, outIdx]
-    this.emitVerifySortedValueOutput(loc, 4, 3, 2, 6);                 // addr4, coSlot32 d3, coNext32 d2, v d6
+    // --- UPDATE: entry output == coSlot32 || effNext || v. effNext = coNext32 (link preserved) UNLESS a merge loop
+    // re-points this entry: effNext = (repoint != 0) ? repoint : coNext32. The merge covenant already verified
+    // coSlot < repoint < coNext, so this closes the chain msg.sender -> new node (whose NEW node the loop minted). ---
+    if (hasRepoint) {
+      // [.., coSlot32, coNext32, coValue] -> compute effNext on top
+      this.emit(encodeInt(BigInt(this.getStackIndex('(__repoint)') + 5)), loc); this.emit(Op.OP_PICK, loc); // repoint copy
+      this.emit(Op.OP_DUP, loc); this.emit(Op.OP_0, loc); this.emit(Op.OP_NUMEQUAL, loc);                  // isZero
+      this.emit(Op.OP_IF, loc); this.emit(Op.OP_DROP, loc);
+      this.emit(encodeInt(1n), loc); this.emit(Op.OP_PICK, loc);                                           // 0 -> use coNext32
+      this.emit(Op.OP_ELSE, loc); this.emit(Op.OP_ENDIF, loc);                                             // else repoint is effNext
+      this.emitEntryOutputIndex(slotIndex, loc, 7);                    // [.., coValue, effNext, outIdx]
+      this.emitVerifySortedValueOutput(loc, 5, 4, 1, 7);              // addr5, coSlot32 d4, effNext d1, v d7
+      this.emit(Op.OP_DROP, loc);                                     // drop effNext -> [.., coValue] (6 raw, matches INSERT)
+    } else {
+      this.emitEntryOutputIndex(slotIndex, loc, 6);                    // [.., coValue, outIdx]
+      this.emitVerifySortedValueOutput(loc, 4, 3, 2, 6);             // addr4, coSlot32 d3, coNext32 d2, v d6
+    }
     this.emit(Op.OP_ELSE, loc);
     // --- INSERT: bracket coSlot < H(k) < coNext, then P' + NEW ---
     this.emit(encodeInt(2n), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_BIN2NUM, loc); // coSlot#
@@ -10680,6 +10711,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // drop coValue, coNext, coSlot, entryAddr, Hk32 (untracked), then v (tracked)
     this.emit(Op.OP_2DROP, loc); this.emit(Op.OP_2DROP, loc); this.emit(Op.OP_DROP, loc);
     this.emit(Op.OP_DROP, loc); this.popFromStack();
+    if (hasRepoint) { this.emit(Op.OP_DROP, loc); this.popFromStack(); } // drop the re-point register temp
     return node;
   }
 
@@ -12446,6 +12478,24 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.pushToStack(this.sortedUpsertLoopCounterName);
     this.emit(encodeInt(0n), loc);
     this.pushToStack(this.sortedUpsertLoopOutCounterName);
+
+    // MSG.SENDER MERGE: when EXACTLY ONE fixed (non-loop) entry of this collection coexists (the cached msg.sender
+    // debit), push a re-point register (0). A new recipient landing in the debit entry's gap is then inserted by
+    // re-pointing the debit's single co-spend - the credit loop records the new slot, the debit flush applies it.
+    // Only for crediting ops (+ / set); a debit (-) or delete never inserts a new recipient.
+    const fixedSlots = this.entrySlots
+      .map((s, i) => ({ s, i }))
+      .filter(({ s }) => s.collection === collection.name && !s.inLoop);
+    if (fixedSlots.length === 1 && (op === '+' || op === 'set')) {
+      this.sortedUpsertMergeDebitSlot = fixedSlots[0].i;
+      this.sortedUpsertPendingRepoint = true;
+      this.emit(encodeInt(0n), loc);
+      this.pushToStack(this.sortedUpsertLoopRepointName);
+    } else {
+      this.sortedUpsertMergeDebitSlot = -1;
+      this.sortedUpsertPendingRepoint = false;
+    }
+
     this.sortedUpsertLoopActive = true;
     this.sortedUpsertLoopCollection = collection.name;
     return true;
@@ -12496,74 +12546,117 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
     // tracked: [credit_amt(0), credit_hk(1), outCounter(2), iterCounter(3), addr(4), ..]
 
-    // 3. co-spend INPUT[master+blockSize+iterCounter]: bytecode==addr, mutable + base==master, read [coSlot,coNext,coValue].
-    pushIdx(this.sortedUpsertLoopCounterName, 0, 0); // [.., nodeIdx]
-    this.emit(Op.OP_DUP, loc); this.emit(Op.OP_UTXOBYTECODE, loc);
-    this.emit(encodeInt(BigInt(addrIdx() + 2)), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_EQUALVERIFY, loc);
-    this.emit(Op.OP_DUP, loc); this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
-    this.emit(Op.OP_DUP, loc); this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_NIP, loc);
-    this.emit(Op.OP_1, loc); this.emit(Op.OP_EQUALVERIFY, loc);
-    this.emitVerifyCatBaseEqMaster(loc);
-    this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc);
-    this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc);
-    this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); // [.., coSlot(u), coNext(u), coValue(u)]  U=3
+    // NORMAL per-recipient step: co-spend k[i]'s entry (UPDATE) or its bracketing predecessor (INSERT), mint, bump
+    // outCounter, and iterCounter += 1 (one trailing co-spend). Leaves [coSlot, coNext, X] U=3.
+    const emitNormalStep = (): void => {
+      // 3. co-spend INPUT[master+blockSize+iterCounter]: bytecode==addr, mutable + base==master, read [coSlot,coNext,coValue].
+      pushIdx(this.sortedUpsertLoopCounterName, 0, 0); // [.., nodeIdx]
+      this.emit(Op.OP_DUP, loc); this.emit(Op.OP_UTXOBYTECODE, loc);
+      this.emit(encodeInt(BigInt(addrIdx() + 2)), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_EQUALVERIFY, loc);
+      this.emit(Op.OP_DUP, loc); this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
+      this.emit(Op.OP_DUP, loc); this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_NIP, loc);
+      this.emit(Op.OP_1, loc); this.emit(Op.OP_EQUALVERIFY, loc);
+      this.emitVerifyCatBaseEqMaster(loc);
+      this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc);
+      this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc);
+      this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); // [.., coSlot(u), coNext(u), coValue(u)]  U=3
 
-    // 4. isPresent = coSlot == Hk.
-    this.emit(encodeInt(2n), loc); this.emit(Op.OP_PICK, loc);              // coSlot copy (U=4)
-    this.emit(encodeInt(BigInt(hkIdx() + 4)), loc); this.emit(Op.OP_PICK, loc); // Hk (U=5)
-    this.emit(Op.OP_EQUAL, loc);                                            // [.., coSlot, coNext, coValue, isPresent] U=4
-    this.emit(Op.OP_IF, loc);
-    this.scopeDepth += 1;
-    // ---- UPDATE: mint output[..+outCounter] = coSlot|coNext|newValue; newValue = v[i] ('set'), default ('delete'),
-    // or coValue OP v[i] ('+'/'-'). 'set'/'delete' both mint the credit_amt tail directly (delete's amt is the 0 default). ----
-    if (op === 'set' || op === 'delete') {
-      this.emit(Op.OP_DROP, loc);                                          // drop coValue -> [.., coSlot, coNext] U=2
-      this.emit(encodeInt(BigInt(amtIdx() + 2)), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_BIN2NUM, loc);
-    } else {                                                               // [.., coSlot, coNext, v[i]#] U=3
-      this.emit(Op.OP_DUP, loc); this.emit(Op.OP_BIN2NUM, loc);            // coValue# (U=4)
-      this.emit(encodeInt(BigInt(amtIdx() + 4)), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_BIN2NUM, loc);
-      this.emit(isMinus ? Op.OP_SUB : Op.OP_ADD, loc);                     // newValue# (U=4)
-      this.emit(Op.OP_NIP, loc);                                           // [.., coSlot, coNext, newValue] U=3
+      // 4. isPresent = coSlot == Hk.
+      this.emit(encodeInt(2n), loc); this.emit(Op.OP_PICK, loc);              // coSlot copy (U=4)
+      this.emit(encodeInt(BigInt(hkIdx() + 4)), loc); this.emit(Op.OP_PICK, loc); // Hk (U=5)
+      this.emit(Op.OP_EQUAL, loc);                                            // [.., coSlot, coNext, coValue, isPresent] U=4
+      this.emit(Op.OP_IF, loc);
+      this.scopeDepth += 1;
+      // ---- UPDATE: mint output[..+outCounter] = coSlot|coNext|newValue ----
+      if (op === 'set' || op === 'delete') {
+        this.emit(Op.OP_DROP, loc);                                          // drop coValue -> [.., coSlot, coNext] U=2
+        this.emit(encodeInt(BigInt(amtIdx() + 2)), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_BIN2NUM, loc);
+      } else {                                                               // [.., coSlot, coNext, v[i]#] U=3
+        this.emit(Op.OP_DUP, loc); this.emit(Op.OP_BIN2NUM, loc);            // coValue# (U=4)
+        this.emit(encodeInt(BigInt(amtIdx() + 4)), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_BIN2NUM, loc);
+        this.emit(isMinus ? Op.OP_SUB : Op.OP_ADD, loc);                     // newValue# (U=4)
+        this.emit(Op.OP_NIP, loc);                                           // [.., coSlot, coNext, newValue] U=3
+      }
+      pushIdx(this.sortedUpsertLoopOutCounterName, 0, 3);                     // outIdx (U=4)
+      this.emitVerifySortedValueOutput(loc, addrIdx() + 4, 3, 2, 1);          // addr, coSlot, coNext, newValue
+      this.emit(Op.OP_1, loc);                                               // delta = 1 (U=4)
+      this.emit(Op.OP_ELSE, loc);
+      // ---- INSERT (absent -> NEW recipient): only for `+=`; `-=`/`delete` fail closed (branch-balanced) ----
+      if (isMinus || op === 'delete') { this.emit(Op.OP_0, loc); this.emit(Op.OP_VERIFY, loc); }
+      this.emit(encodeInt(2n), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_BIN2NUM, loc);       // coSlot# (U=4)
+      this.emit(encodeInt(BigInt(hkIdx() + 4)), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_BIN2NUM, loc); // Hk#
+      this.emit(Op.OP_LESSTHAN, loc); this.emit(Op.OP_VERIFY, loc);                                   // coSlot < Hk (U=3)
+      this.emit(encodeInt(1n), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_BIN2NUM, loc);       // coNext# (U=4)
+      this.emit(Op.OP_DUP, loc); this.emit(Op.OP_0, loc); this.emit(Op.OP_NUMEQUAL, loc);
+      this.emit(Op.OP_IF, loc); this.emit(Op.OP_DROP, loc);                                           // +inf -> ok (U=3)
+      this.emit(Op.OP_ELSE, loc);
+      this.emit(encodeInt(BigInt(hkIdx() + 4)), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_BIN2NUM, loc); // Hk#
+      this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_LESSTHAN, loc); this.emit(Op.OP_VERIFY, loc);       // Hk < coNext (U=3)
+      this.emit(Op.OP_ENDIF, loc);                                                                    // [.., coSlot, coNext, coValue] U=3
+      pushIdx(this.sortedUpsertLoopOutCounterName, 0, 3);                     // P' outIdx (U=4)
+      this.emitVerifySortedValueOutput(loc, addrIdx() + 4, 3, hkIdx() + 4, 1); // P' = coSlot|Hk|coValue
+      pushIdx(this.sortedUpsertLoopOutCounterName, 1, 3);                     // NEW outIdx2 (U=4)
+      this.emitVerifySortedValueOutput(loc, addrIdx() + 4, hkIdx() + 4, 2, amtIdx() + 4); // NEW = Hk|coNext|v[i]
+      this.emit(Op.OP_2, loc);                                               // delta = 2 (U=4)
+      this.scopeDepth -= 1;
+      this.emit(Op.OP_ENDIF, loc);                                          // [.., coSlot, coNext, X, delta] U=4
+      // 5. outCounter += delta.
+      this.emit(encodeInt(BigInt(outIdxC() + 4)), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_ADD, loc);
+      this.emitReplace(outIdxC() + 4, node);                                 // -> [.., coSlot, coNext, X] U=3
+      // iterCounter += 1 (one trailing co-spend this iteration).
+      this.emit(encodeInt(BigInt(iterIdx() + 3)), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_1ADD, loc);
+      this.emitReplace(iterIdx() + 4, node);                                 // -> [.., coSlot, coNext, X] U=3
+    };
+
+    // MSG.SENDER MERGE: if the debit entry coexists (sortedUpsertMergeDebitSlot >= 0) and this NEW recipient lands in
+    // the DEBIT entry's gap (dSlot < Hk < dNext, read from its REAL input - so an entry between makes dNext=that and
+    // the check fails -> normal path, NO omission), insert by re-pointing the debit's single co-spend: mint ONLY the
+    // NEW node here, record Hk in the re-point register (require it was 0 = at most one merge; two-in-gap fails
+    // closed), NO trailing co-spend (iter += 0). The debit flush reads the register and re-points msg.sender.nextKey.
+    if (this.sortedUpsertMergeDebitSlot >= 0) {
+      this.emitEntryInputIndex(this.sortedUpsertMergeDebitSlot, loc, 0);
+      this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc);
+      this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc);
+      this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_DROP, loc); // [.., dSlot, dNext] U=2
+      // isMerge = dSlot < Hk AND (dNext == 0 OR Hk < dNext)
+      this.emit(encodeInt(1n), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_BIN2NUM, loc);   // dSlot# (U=3)
+      this.emit(encodeInt(BigInt(hkIdx() + 3)), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_BIN2NUM, loc); // Hk#
+      this.emit(Op.OP_LESSTHAN, loc);                                                             // b1 (U=3) [dSlot,dNext,b1]
+      this.emit(encodeInt(1n), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_BIN2NUM, loc);   // dNext# (U=4)
+      this.emit(Op.OP_DUP, loc); this.emit(Op.OP_0, loc); this.emit(Op.OP_NUMEQUAL, loc);         // isInf (U=5)
+      this.emit(Op.OP_IF, loc); this.emit(Op.OP_DROP, loc); this.emit(Op.OP_1, loc);              // +inf -> b2=1 (U=4)
+      this.emit(Op.OP_ELSE, loc);
+      this.emit(encodeInt(BigInt(hkIdx() + 4)), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_BIN2NUM, loc); // Hk#
+      this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_LESSTHAN, loc);                                 // Hk<dNext -> b2 (U=4)
+      this.emit(Op.OP_ENDIF, loc);                                                                // [dSlot,dNext,b1,b2] U=4
+      this.emit(Op.OP_BOOLAND, loc);                                                              // isMerge (U=3) [dSlot,dNext,isMerge]
+      this.emit(Op.OP_IF, loc);
+      this.scopeDepth += 1;
+      // ===== MERGE: require register == 0; mint NEW=[Hk|dNext|amt]; register = Hk; outCounter += 1 =====
+      this.emit(encodeInt(BigInt(this.getStackIndex(this.sortedUpsertLoopRepointName) + 2)), loc); this.emit(Op.OP_PICK, loc);
+      this.emit(Op.OP_0, loc); this.emit(Op.OP_NUMEQUAL, loc); this.emit(Op.OP_VERIFY, loc);       // register == 0 (U=2)
+      pushIdx(this.sortedUpsertLoopOutCounterName, 0, 2);                     // NEW outIdx (U=3)
+      this.emitVerifySortedValueOutput(loc, addrIdx() + 3, hkIdx() + 3, 1, amtIdx() + 3); // NEW = Hk|dNext|amt -> [dSlot,dNext] U=2
+      this.emit(encodeInt(BigInt(hkIdx() + 2)), loc); this.emit(Op.OP_PICK, loc);                  // Hk copy (U=3)
+      this.emitReplace(this.getStackIndex(this.sortedUpsertLoopRepointName) + 3, node);            // register = Hk -> U=2
+      this.emit(encodeInt(BigInt(outIdxC() + 2)), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_1ADD, loc);
+      this.emitReplace(outIdxC() + 3, node);                                 // outCounter += 1 -> [dSlot,dNext] U=2
+      this.emit(Op.OP_0, loc);                                               // dummy -> [dSlot,dNext,dummy] U=3
+      this.scopeDepth -= 1;
+      this.emit(Op.OP_ELSE, loc);
+      this.scopeDepth += 1;
+      this.emit(Op.OP_DROP, loc); this.emit(Op.OP_DROP, loc);                // drop dNext, dSlot
+      emitNormalStep();                                                      // -> [coSlot,coNext,X] U=3
+      this.scopeDepth -= 1;
+      this.emit(Op.OP_ENDIF, loc);                                          // [.., t, t, t] U=3
+    } else {
+      emitNormalStep();                                                      // -> [coSlot,coNext,X] U=3
     }
-    pushIdx(this.sortedUpsertLoopOutCounterName, 0, 3);                     // outIdx (U=4)
-    this.emitVerifySortedValueOutput(loc, addrIdx() + 4, 3, 2, 1);          // addr, coSlot, coNext, newValue -> [.., coSlot,coNext,newValue]
-    this.emit(Op.OP_1, loc);                                               // delta = 1 (U=4)
-    this.emit(Op.OP_ELSE, loc);
-    // ---- INSERT (absent -> a NEW recipient with balance v[i]): only valid for `+=` (crediting). A `-=` on a
-    // nonexistent account would go negative, and a `delete` of an absent key would insert a spurious nullified node
-    // (diverging from Solidity's no-op) - both fail closed. (Runtime-dead; keeps the branch balanced.) ----
-    if (isMinus || op === 'delete') { this.emit(Op.OP_0, loc); this.emit(Op.OP_VERIFY, loc); }
-    // bracket coSlot < Hk < coNext, then mint P' + NEW
-    this.emit(encodeInt(2n), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_BIN2NUM, loc);       // coSlot# (U=4)
-    this.emit(encodeInt(BigInt(hkIdx() + 4)), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_BIN2NUM, loc); // Hk#
-    this.emit(Op.OP_LESSTHAN, loc); this.emit(Op.OP_VERIFY, loc);                                   // coSlot < Hk (U=3)
-    this.emit(encodeInt(1n), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_BIN2NUM, loc);       // coNext# (U=4)
-    this.emit(Op.OP_DUP, loc); this.emit(Op.OP_0, loc); this.emit(Op.OP_NUMEQUAL, loc);
-    this.emit(Op.OP_IF, loc); this.emit(Op.OP_DROP, loc);                                           // +inf -> ok (U=3)
-    this.emit(Op.OP_ELSE, loc);
-    this.emit(encodeInt(BigInt(hkIdx() + 4)), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_BIN2NUM, loc); // Hk# (coNext# above)
-    this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_LESSTHAN, loc); this.emit(Op.OP_VERIFY, loc);       // Hk < coNext (U=3)
-    this.emit(Op.OP_ENDIF, loc);                                                                    // [.., coSlot, coNext, coValue] U=3
-    // P' = coSlot | Hk | coValue at output[..+outCounter]
-    pushIdx(this.sortedUpsertLoopOutCounterName, 0, 3);                     // outIdx (U=4)
-    this.emitVerifySortedValueOutput(loc, addrIdx() + 4, 3, hkIdx() + 4, 1); // addr, f1=coSlot, f2=Hk, f3=coValue
-    // NEW = Hk | coNext | v[i] at output[..+outCounter+1]
-    pushIdx(this.sortedUpsertLoopOutCounterName, 1, 3);                     // outIdx2 (U=4)
-    this.emitVerifySortedValueOutput(loc, addrIdx() + 4, hkIdx() + 4, 2, amtIdx() + 4); // addr, f1=Hk, f2=coNext, f3=v[i]
-    this.emit(Op.OP_2, loc);                                               // delta = 2 (U=4)
-    this.scopeDepth -= 1;
-    this.emit(Op.OP_ENDIF, loc);                                          // [.., coSlot, coNext, X, delta] U=4
 
-    // 5. outCounter += delta (delta on top; PICK outCounter, ADD consumes delta, emitReplace stores it back).
-    this.emit(encodeInt(BigInt(outIdxC() + 4)), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_ADD, loc); // outCounter+delta -> [.., coSlot,coNext,X,sum]
-    this.emitReplace(outIdxC() + 4, node);                                 // replace outCounter with sum -> [.., coSlot, coNext, X] U=3
-
-    // 6. cleanup: drop [coSlot, coNext, X] + [credit_amt, credit_hk]; iterCounter += 1.
+    // common cleanup: drop the 3 untracked temps + [credit_amt, credit_hk].
     this.emit(Op.OP_DROP, loc); this.emit(Op.OP_DROP, loc); this.emit(Op.OP_DROP, loc);
     this.emit(Op.OP_DROP, loc); this.popFromStack(); // credit_amt
     this.emit(Op.OP_DROP, loc); this.popFromStack(); // credit_hk
-    this.emit(encodeInt(BigInt(iterIdx())), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_1ADD, loc);
-    this.emitReplace(iterIdx() + 1, node);
     return node;
   }
 

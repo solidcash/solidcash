@@ -1129,6 +1129,16 @@ export class MethodCallNotSupportedError extends SolidCashError {
   }
 }
 
+// The receiver IS an interface instance, but it is a struct-field / computed read (`s.field.m()`, `pool.lpToken.m()`)
+// whose co-spent target cannot yet be pinned from a field read - hoisting it to a single-assignment local can be.
+export class StructFieldExternalCallError extends SolidCashError {
+  constructor(node: Node, iface: string, method: string) {
+    super(node, `External call '.${method}(...)' on an interface-typed struct field or computed receiver ('${iface}') `
+      + `is not yet supported directly; assign the receiver to a local first (e.g. '${iface} r = <receiver>; `
+      + `r.${method}(...)').`);
+  }
+}
+
 export class DeployThenCallError extends SolidCashError {
   constructor(node: Node, varName: string, methodName: string, contractName: string, foldable: boolean) {
     super(

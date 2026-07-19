@@ -163,6 +163,7 @@ import {
   ExternalReadArgCountError,
   UndefinedInterfaceFunctionError,
   MethodCallNotSupportedError,
+  StructFieldExternalCallError,
   DeployThenCallError,
   UsingForUndefinedLibraryError,
   UsingForUndefinedFunctionError,
@@ -7652,6 +7653,15 @@ export default class SymbolTableTraversal extends AstTraversal {
         node.parameters as ExpressionNode[], node.location,
       );
       if (rewritten) return rewritten;
+    }
+
+    // The receiver resolves to an interface instance but is a struct-field / computed read (`pool.lpToken.m()`),
+    // for which the co-spent target cannot yet be pinned from the field read. The generic error ("only supported on
+    // interface/contract instances") is misleading here - it IS an interface instance. Give the accurate diagnostic
+    // and the working hoist-to-local workaround.
+    const recvIfaceType = this.resolveLowLevelReceiverType(node.object);
+    if (recvIfaceType instanceof AddressType && recvIfaceType.interfaceName) {
+      throw new StructFieldExternalCallError(node, recvIfaceType.interfaceName, node.methodName);
     }
 
     throw new MethodCallNotSupportedError(node);

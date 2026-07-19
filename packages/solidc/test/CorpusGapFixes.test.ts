@@ -2670,3 +2670,23 @@ describe('interface-cast using-for + resolved-back-edge recursion robustness (OZ
     expect(() => compileString(src, { solidityImportCompat: true })).not.toThrow(/Maximum call stack/);
   });
 });
+
+describe('clearer diagnostic for an external call on an interface-typed struct-field receiver', () => {
+  // `pool.lpToken.balanceOf(..)` where the field is an interface type: the receiver IS an interface instance, so the
+  // generic "only supported on interface/contract instances" error was misleading. Give the accurate limitation +
+  // the hoist-to-local workaround (which compiles for a non-inlined receiver; the co-spent target then traces).
+  const I = 'interface IERC20 { function balanceOf(address a) external view returns (uint256); }';
+  it('reports the struct-field limitation, not the misleading generic error', () => {
+    const src = `pragma solidity ^0.8.0; ${I} contract C { struct Pool { IERC20 lpToken; uint256 x; }`
+      + ' function f(IERC20 t) public view returns (uint256) {'
+      + ' Pool memory pool = Pool(t, 0); return pool.lpToken.balanceOf(address(this)); } }';
+    expect(() => compileString(src, { solidityImportCompat: true }))
+      .toThrow(/interface-typed struct field or computed receiver/);
+  });
+  it('the hoist-to-local workaround compiles', () => {
+    const src = `pragma solidity ^0.8.0; ${I} contract C { struct Pool { IERC20 lpToken; uint256 x; } Pool[] poolInfo;`
+      + ' function f(uint256 pid) public view returns (uint256) {'
+      + ' IERC20 r = poolInfo[pid].lpToken; return r.balanceOf(address(this)); } }';
+    expect(() => compileString(src, { solidityImportCompat: true })).not.toThrow();
+  });
+});

@@ -193,11 +193,12 @@ int-param value insert loop (`for(i) m[ks[i]] = v`, `SortedInsertLoopValue`), SA
 DIFF-KEY per-iteration credit loop `for(i) bal[recipients[i]] += amts[i]` - both UPDATE (existing) AND INSERT (new
 recipient, `125cb014`) - int/bytes20/address keys, + the FULL ERC-20 multiTransfer (debit+credit in one tx, `090f4e35`)
 INCLUDING a NEW recipient whose predecessor is UNTOUCHED (`5856dfc5`, the common sha256-random topology);
-ABSOLUTE per-key assignment loop `for(i) m[k[i]] = vs[i]` (op=set, `644532b1`, replace-not-add, update+insert).
+ABSOLUTE per-key assignment loop `for(i) m[k[i]] = vs[i]` (op=set, `644532b1`, replace-not-add, update+insert);
+per-iteration DELETE loop `for(i) delete m[k[i]]` (op=delete, `bbc280a1`, batch nullify existing keys, absent fails closed).
 FAIL-CLOSED (sound, not complete, CLEAN message): a NEW recipient whose bracketing predecessor is ALSO co-spent this tx
 (the debited sender / another credited recipient / two-new-in-one-gap) - needs a batch-upsert MERGE covenant (co-spend
-each distinct touched entry once + mint value-change AND re-point); cross-contract msg.sender, delete/nullify-in-loop,
-2D `m[k][i][j]`, function-pointer values.
+each distinct touched entry once + mint value-change AND re-point); cross-contract msg.sender, `= <default>` nullify-in-loop
+(the delete KEYWORD works; only the IntLiteral `= 0` form fails closed), 2D `m[k][i][j]`, function-pointer values.
 
 **One real HOLE found + FIXED (commit `af6e894a`): C2 `delete m[k]` in a DYNAMIC loop.** `visitMappingDelete`'s sorted
 branch routed to `emitSortedValueUpsert` (a FIXED-slot co-spend) with NO `plainLoopDepth` guard (unlike
@@ -208,26 +209,19 @@ revert), never a partial store (`C2ScalarMultiWrite`). REMAINING clarity nit (st
 `m[k][i][j]` gives an ugly `Found type 'T[][]' where 'undefined'` TypeCheck error (the `keys.length > allKeyTypes.length`
 guard misses it because the excess index is an `arrayIndex`, not a key) - should be a clean `UnsupportedTypeError`.
 
-### DELETE-in-loop `for(i) delete m[ks[i]]` - SCOPED, ready for a focused build (2026-07-19)
-Currently fail-closed (`visitMappingDelete` throws `SortedMappingCodegenPendingError` at `plainLoopDepth > 0`). It is
-the last unbuilt verb of the loop-mutation family (`+=`/`-=`/`= vs[i]`/`= v` all done via the per-iteration upsert
-loop). **Design (sound, UPDATE-only, fail-closed on absent):** route a per-iteration sorted `delete` through the SAME
-upsert loop with a new `op='delete'`. Per key: UPDATE (present) mints `[slot | next | <default>]` (nullify; for int the
-value tail is empty); ABSENT keys FAIL CLOSED (no INSERT branch) - inserting a nullified node on an absent delete would
-diverge from Solidity's no-op for ENUMERABLE (VALUES-mode) mappings (the spurious node would appear in iteration), so
-delete-of-absent reverts (consistent with `-=`-to-absent; a batch-delete of KNOWN-existing keys is the target use).
-**Plumbing:** (1) `findSortedUpsertLoopWrite` also matches a `MappingDeleteNode` in-loop (widen return to
-`MappingAssignNode | MappingDeleteNode`); (2) `emitSortedUpsertLoopSetup` derives `op='delete'`, `varyingArrayParam`
-from the delete key, NO `valueArrayParam` (relax the `!valueArrayParam` guard for delete); (3) `visitMappingDelete`
-dispatches to `emitSortedUpsertLoopBody` when `sortedUpsertLoopActive` (instead of the `plainLoopDepth>0` fail-close);
-(4) body: `op==='delete'` pushes the default (`OP_0`/empty) as `(credit_amt)` instead of visiting a RHS, reuses the
-`op==='set'` UPDATE mint (value = default), and the ELSE (absent) branch is `OP_0 OP_VERIFY` fail-closed; (5) artifact
-`SortedUpsertLoopAbi.op` += `'delete'`, `valueArrayParam` optional; (6) SDK: `op==='delete'` finds each entry (throw
-if absent), mints `[slot|next|default]`. **Tests:** delete N existing keys -> all read default; a subsequent
-`require(!m[k])` passes; delete of an absent key reverts; the same-predecessor collision (a delete whose key is also a
-credit predecessor) fails closed via the existing `cospent` set. Deferred (not rushed into fund-guarding covenant code
-at turn's end); spread also touches the CONCURRENTLY-edited `AST.ts` (op type) - a focused session avoids the
-filtered-staging friction. Value: batch-clear (e.g. removing a set of whitelisted keys) - moderate.
+### DELETE-in-loop `for(i) delete m[ks[i]]` - RESOLVED 2026-07-19 (`bbc280a1`, op=delete, VM-proven)
+The last verb of the loop-mutation family, now built exactly as scoped. A per-iteration sorted `delete` routes through
+the per-iteration upsert loop with `op='delete'`: UPDATE (present) mints `[slot | next | <default>]` (nullify; empty
+value tail for int); ABSENT keys FAIL CLOSED (no INSERT branch - inserting a nullified node would diverge from
+Solidity's no-op for ENUMERABLE/VALUES-mode mappings). Plumbing landed: `findSortedUpsertLoopWrite` matches a
+`MappingDeleteNode` in-loop; setup derives `op='delete'` (no `valueArrayParam`); body pushes the default (`OP_0`),
+reuses the `op='set'` UPDATE mint, ELSE branch `OP_0 OP_VERIFY`; `visitMappingDelete` dispatches to the upsert body
+when active; SDK finds each entry (throws if absent) and mints `[slot|next|default]`. **THE non-obvious fix:**
+`collectLoopWrittenSlotKeys` only counted `MappingAssignNode` as a loop write, so the delete got a phantom FIXED block
+slot (`blockSize` 2 vs the assign path's 1), shifting the loop output region by one -> the covenant checked a non-entry
+output and reverted; adding the `MappingDeleteNode` branch marks it `inLoop`. VM-proven (SortedUpsertLoop): nullify N
+existing keys (later `chk(k,0)` passes, `chk(k,old)` reverts); delete-of-absent reverts. `= 0` (IntLiteral nullify, not
+the delete keyword) still fails closed - `SortedInsertLoopNonBool` asserts both.
 
 ---
 

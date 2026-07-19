@@ -162,6 +162,11 @@ export default function expandInheritance(ast: SourceFileNode): SourceFileNode {
   for (const c of ast.importedContracts) {
     contractMap.set(c.name, c);
   }
+  // The primary contract itself must be resolvable as a parent: when compileFileMulti compiles a BASE contract
+  // (e.g. OZ ERC20) as the primary, a DERIVED sibling (SushiToken `is ERC20(..)`) rides in importedContracts and is
+  // flattened below (line ~187); its parent invocation of the primary would otherwise be unresolvable. A contract
+  // is never its own ancestor, so this cannot introduce a self-merge (guarded by the `expanding` set regardless).
+  if (!contractMap.has(ast.contract.name)) contractMap.set(ast.contract.name, ast.contract);
 
   // Expansion clears each contract's `implements`; snapshot the original hierarchy so linearizations
   // computed after a sibling expansion (memoized) still see the full parent lists.

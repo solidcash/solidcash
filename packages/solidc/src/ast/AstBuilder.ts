@@ -355,6 +355,9 @@ export default class AstBuilder
   // `getAddressSlot(bytes32) returns (AddressSlot storage)`), so an inline `Lib.f(slot).value = v` write can
   // desugar to a typed temp local. Populated as functions are built (callee declared before the caller).
   private functionReturnStructs: Map<string, StructType> = new Map();
+  // True while building the body of a function/constructor/modifier with NO return values, so `return f();`
+  // (Solidity's void tail form) can desugar to `f(); return;`. undefined = unknown scope (do not desugar).
+  private currentFnIsVoid: boolean | undefined = undefined;
   // State mapping name -> its resolved value struct type, for desugaring `m[i].arr[j] = v` (mapping -> struct ->
   // array-field element). Populated per contract from the mapping collections; empty for non-struct mappings.
   private stateMappingValueStruct: Map<string, StructType> = new Map();
@@ -1096,7 +1099,10 @@ export default class AstBuilder
     }
     const structPtrParams = this.registerStructPointerParams(parameters);
     this.registerNamedReturnLocals(ctx.returnType());
+    const rtCtx = ctx.returnType();
+    this.currentFnIsVoid = !rtCtx || rtCtx.returnParam_list().length === 0;
     const statements = this.flattenStatements(ctx.statement_list().map((s) => this.visit(s) as StatementNode));
+    this.currentFnIsVoid = undefined;
     for (const nm of structPtrParams) this.mappingStructStateVars.delete(nm);
     const block = new BlockNode(statements);
     block.location = Location.fromCtx(ctx);
@@ -1223,7 +1229,10 @@ export default class AstBuilder
     }
     const structPtrParams = this.registerStructPointerParams(parameters);
     this.registerNamedReturnLocals(ctx.returnType());
+    const rtCtx = ctx.returnType();
+    this.currentFnIsVoid = !rtCtx || rtCtx.returnParam_list().length === 0;
     const statements = this.flattenStatements(ctx.statement_list().map((s) => this.visit(s) as StatementNode));
+    this.currentFnIsVoid = undefined;
     for (const nm of structPtrParams) this.mappingStructStateVars.delete(nm);
     const block = new BlockNode(statements);
     block.location = Location.fromCtx(ctx);
@@ -4864,6 +4873,22 @@ export default class AstBuilder
     const expressions = exprCtxs.map(
       (e) => this.maybeAssembleFlattenedRead(e, Location.fromCtx(ctx)) ?? this.visit(e) as ExpressionNode,
     );
+    // `return f();` inside a VOID function is Solidity's tail form (f is itself void): lower to `f(); return;` so
+    // the call is a statement (its callee reference is counted for reachability and it resolves in statement
+    // position). OZ/COMP `delegate` returns `_delegate(..)`. A single call expression only.
+    if (this.currentFnIsVoid && expressions.length === 1
+      && (expressions[0] instanceof FunctionCallNode || expressions[0] instanceof MethodCallNode)) {
+      const loc = Location.fromCtx(ctx);
+      const call = expressions[0];
+      const callStmt = call instanceof FunctionCallNode
+        ? new FunctionCallStatementNode(call) : new MethodCallStatementNode(call as MethodCallNode);
+      callStmt.location = loc;
+      const bareReturn = new ReturnNode([]);
+      bareReturn.location = loc;
+      const block = new BlockNode([callStmt, bareReturn]);
+      block.location = loc;
+      return block;
+    }
     const returnNode = new ReturnNode(expressions);
     returnNode.location = Location.fromCtx(ctx);
     return returnNode;

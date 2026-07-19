@@ -2544,3 +2544,37 @@ describe('internally-called PUBLIC low-level-call helper is inlined (Multicall2 
       + ' function outer(address a, bytes memory d) public returns (bool) { return mid(a, d); } }');
   });
 });
+
+describe('return f(); void tail form + base-as-primary derived-sibling flatten (SushiToken/MasterChef)', () => {
+  const ok = (src: string): void => {
+    expect(() => compileString(src, { solidityImportCompat: true })).not.toThrow();
+  };
+  // `return f();` in a VOID function where f is itself void (OZ/COMP `delegate` returns `_delegate(..)`).
+  it('lowers return <void-call>() to <call>; return;', () => {
+    ok('contract T { mapping(address => address) internal _d;'
+      + ' function delegate(address x) external { return _delegate(msg.sender, x); }'
+      + ' function _delegate(address a, address b) internal { _d[a] = b; } }');
+  });
+  it('still returns a value normally (value tail unaffected)', () => {
+    ok('contract T { function outer() external returns (uint256) { return helper(); }'
+      + ' function helper() internal returns (uint256) { return 5; } }');
+  });
+  // A derived contract inheriting a BASE with a constructor invoked in the inheritance list. When compileFileMulti
+  // compiles the base as a primary, the derived sibling flattens and must resolve the primary as its parent.
+  it('resolves a derived sibling whose parent invocation names the primary base', () => {
+    const base = 'pragma solidity ^0.8.0;'
+      + ' abstract contract Context { function _msgSender() internal view virtual returns (address) { return msg.sender; } }'
+      + ' interface IERC20 { function totalSupply() external view returns (uint256); }'
+      + ' contract Ownable is Context { address _o; constructor() { _o = _msgSender(); } }'
+      + ' contract ERC20 is Context, IERC20 { string public nom; uint256 _ts;'
+      + ' constructor(string memory n, string memory s) { nom = n; }'
+      + ' function totalSupply() external view override returns (uint256) { return _ts; } }';
+    const resolver = (p: string): { source: string; id: string } | undefined =>
+      (p === './B.sol' ? { source: base, id: '/B.sol' } : undefined);
+    expect(() => compileString(
+      'import {ERC20, Ownable} from "./B.sol"; contract Tok is ERC20("Sushi", "SUSHI"), Ownable {'
+      + ' function f() public { require(true); } }',
+      { importResolver: resolver, rootFileId: '/main.sol', solidityImportCompat: true },
+    )).not.toThrow();
+  });
+});

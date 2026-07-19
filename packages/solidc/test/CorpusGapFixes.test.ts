@@ -350,6 +350,21 @@ describe('tuple assignment to state variables ((x, y) = (a, b))', () => {
   });
 });
 
+describe('storage-pointer local .slot/.offset in assembly (T[] storage x = a; x.slot)', () => {
+  const ok = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  // A `storage` pointer local that directly aliases a state var resolves `.slot`/`.offset` in assembly to the
+  // underlying var's (constant) slot/offset - the same value a direct `a.slot` yields. Corpus: storage_reference_fine.
+  it('resolves an ARRAY storage-pointer alias .slot and .offset', () => {
+    expect(ok('contract C { uint[] a; function f() public returns (uint s, uint o) {'
+      + ' uint[] storage x = a; assembly { s := x.slot o := x.offset } require(true); } }')).toBe('C');
+  });
+  it('a non-aliasing storage pointer (from an element) fails closed - no wrong slot, no crash', () => {
+    expect(() => compileString('contract C { uint[][] a; function f() public returns (uint s) {'
+      + ' uint[] storage x = a[0]; assembly { s := x.slot } require(true); } }', { solidityImportCompat: true }))
+      .toThrow(/inline assembly/i);
+  });
+});
+
 describe('EVM storage-layout specifier tolerated (contract C layout at expr)', () => {
   // `contract C [is ..] layout at <slot>` sets an EVM storage base slot - meaningless on the UTXO model, so the
   // clause is dropped under solidityImportCompat and the contract compiles as if it were absent.

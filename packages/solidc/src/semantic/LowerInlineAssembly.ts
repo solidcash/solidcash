@@ -65,6 +65,32 @@ function collectVarTypes(node: Node, out: Map<string, Type>): void {
   }
 }
 
+// Record storage-pointer aliases `x -> a` for an ARRAY-typed local initialized with a bare identifier
+// (`T[] storage x = a;`). Restricted to arrays: a mapping/struct storage-pointer decl is dropped by an earlier
+// alias/inline pass before this one (so never seen here), and only the array pointer both survives and codegens.
+// Only the direct bare-state-var shape is tracked; a reassigned pointer or one derived from an element/field is
+// left out -> `.slot`/`.offset` on it falls through to YulNotLowerable (fail-closed, no wrong slot).
+function collectStorageAliases(node: Node, out: Map<string, string>): void {
+  if (node instanceof VariableDefinitionNode
+    && node.type instanceof ArrayType
+    && node.expression instanceof IdentifierNode) {
+    out.set(node.name, node.expression.name);
+  }
+  for (const key of Object.keys(node)) {
+    const val = (node as any)[key];
+    if (val instanceof Node) collectStorageAliases(val, out);
+    else if (Array.isArray(val)) for (const v of val) if (v instanceof Node) collectStorageAliases(v, out);
+  }
+}
+
+// The state var whose slot a `.slot`/`.offset` base denotes: the name itself if it is a state var, else the state
+// var a storage-pointer local directly aliases (one level). undefined -> not a resolvable storage location.
+function resolveStorageVarName(base: string): string | undefined {
+  if (currentVarSlot.has(base)) return base;
+  const target = currentStorageAliases.get(base);
+  return target !== undefined && currentVarSlot.has(target) ? target : undefined;
+}
+
 // True if the subtree contains an inline `assembly {}` block. Checked at fn entry before the block is lowered.
 function bodyHasAssembly(node: Node | undefined): boolean {
   if (!node) return false;
@@ -85,6 +111,11 @@ function bodyHasAssembly(node: Node | undefined): boolean {
 interface SlotField { sv: StateVariableNode; bitOffset: bigint; bitWidth: bigint; }
 let currentSlots = new Map<bigint, SlotField[]>();
 let currentVarSlot = new Map<string, bigint>();
+// A storage-pointer local that DIRECTLY aliases a state var (`mapping(..) storage p = m;` / `T[] storage x = a;`):
+// local name -> underlying state-var name. LowerMappingStorageAlias (which inlines these) runs AFTER this pass and
+// only rewrites high-level indexed uses, so an assembly `p.slot`/`p.offset` reaches here unresolved; the alias maps
+// it to the underlying var's constant slot/offset.
+let currentStorageAliases = new Map<string, string>();
 // slot number -> declared mapping var name at that slot. Used to bridge the EVM mapping-slot assembly idiom
 // (`mstore(0,k); mstore(32,p); sload/sstore(keccak256(0,64))`) to the high-level mapping m at slot p (Tier-2
 // interop): the assembly access and the high-level m[k] then hit the same entry collection.
@@ -826,16 +857,18 @@ function lowerValue(expr: YulExpressionNode): ExpressionNode {
     // `x.slot` of a state var is its (constant) storage-slot number in the computed layout - consistent with the
     // sload/sstore slot resolution + the __evm_storage register. `.offset`/`.length` (calldata slices) stay deferred.
     if (expr.members.length === 1 && expr.members[0] === 'slot') {
-      const slot = currentVarSlot.get(expr.base);
+      const varName = resolveStorageVarName(expr.base);
+      const slot = varName !== undefined ? currentVarSlot.get(varName) : undefined;
       if (slot !== undefined) return intLit(slot, expr);
       throw new YulNotLowerable();
     }
     // `x.offset` of a state var: the byte offset within its 32-byte slot (0 for a full-slot var; the packed
     // sub-word offset otherwise). A calldata param's `.offset` stays deferred (needs the calldata-pointer model).
     if (expr.members.length === 1 && expr.members[0] === 'offset') {
-      const slot = currentVarSlot.get(expr.base);
+      const varName = resolveStorageVarName(expr.base);
+      const slot = varName !== undefined ? currentVarSlot.get(varName) : undefined;
       if (slot !== undefined) {
-        const field = currentSlots.get(slot)?.find((f) => f.sv.name === expr.base);
+        const field = currentSlots.get(slot)?.find((f) => f.sv.name === varName);
         return intLit(field ? field.bitOffset / 8n : 0n, expr);
       }
       throw new YulNotLowerable();
@@ -1749,6 +1782,8 @@ export default class LowerInlineAssembly extends AstTraversal {
     functionYulMemUsed = false;
     for (const p of node.parameters) currentVars.set(p.name, p.type);
     collectVarTypes(node.body, currentVars);
+    currentStorageAliases = new Map();
+    collectStorageAliases(node.body, currentStorageAliases);
     // Record that this function had inline assembly BEFORE it is lowered away, so PruneUnreachableFreeFunctions can
     // still drop it when dead (a fully-lowerable helper like OZ Math.mulDiv leaves no residual assembly to detect).
     if (bodyHasAssembly(node.body)) node.hadInlineAssembly = true;
@@ -1766,6 +1801,7 @@ export default class LowerInlineAssembly extends AstTraversal {
     currentParams = [];
     currentVars = new Map();
     currentVarValues = new Map();
+    currentStorageAliases = new Map();
     bufferWrites = new Map();
     functionYulMemUsed = false;
     return result;

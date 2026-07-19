@@ -2731,3 +2731,22 @@ describe('using-for external-call library method on an interface-typed state var
       + ' function f(address to, uint256 v) public { require(tok.transfer(to, v)); } }');
   });
 });
+
+describe('using-for external-call library method on an interface-typed struct FIELD (MasterChef pattern)', () => {
+  // `Pool storage pool = poolInfo[pid]; pool.lpToken.safeTransfer(..)` (MasterChef deposit/withdraw): the receiver is
+  // an interface-typed struct field. Rewrite pre-inlining via the receiver-type chain (poolInfo -> Pool -> lpToken =
+  // IERC20 bound by `using SafeERC20 for IERC20`), so the external-call helper inlines and its target is self-pinned.
+  const lib = 'interface IERC20 { function transfer(address to, uint256 v) external returns (bool);'
+    + ' function balanceOf(address a) external view returns (uint256); }'
+    + ' library SafeERC20 { function safeTransfer(IERC20 token, address to, uint256 v) internal {'
+    + ' require(token.transfer(to, v), "f"); } }';
+  const ok = (body: string): void => {
+    expect(() => compileString(`pragma solidity ^0.8.0; ${lib} contract C { struct Pool { IERC20 lpToken; uint256 x; }`
+      + ` Pool[] poolInfo; using SafeERC20 for IERC20; uint256 s; function f(uint256 pid, address to, uint256 v)`
+      + ` public { Pool storage pool = poolInfo[pid]; ${body} } }`, { solidityImportCompat: true })).not.toThrow();
+  };
+  it('compiles safeTransfer on an interface-typed struct field', () => ok('pool.lpToken.safeTransfer(to, v);'));
+  it('mixes a using-for external-call method and a genuine interface method on the same field', () => {
+    ok('pool.lpToken.safeTransfer(to, v); s = pool.lpToken.balanceOf(address(this));');
+  });
+});

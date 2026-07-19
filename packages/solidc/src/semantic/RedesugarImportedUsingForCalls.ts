@@ -1,9 +1,12 @@
 import {
+  ArrayAccessNode,
   ContractNode,
+  FieldAccessNode,
   FunctionCallNode,
   FunctionCallStatementNode,
   FunctionDefinitionNode,
   IdentifierNode,
+  MappingAccessNode,
   MethodCallNode,
   MethodCallStatementNode,
   Node,
@@ -14,7 +17,9 @@ import {
   UsingForDirectiveNode,
   VariableDefinitionNode,
 } from '../ast/AST.js';
-import { AddressType, StructType, Type } from '@solidcash/utils';
+import {
+  AddressType, ArrayType, MappingType, StructType, Type,
+} from '@solidcash/utils';
 import AstTraversal from '../ast/AstTraversal.js';
 
 /**
@@ -122,7 +127,7 @@ export default class RedesugarImportedUsingForCalls extends AstTraversal {
     // Replace a top-level statement in place (a bare `IERC20(x).safeTransfer(..);` MethodCallStatement becomes a
     // FunctionCallStatement) - `rewrite` itself only touches CHILDREN, so the outermost statement is handled here.
     for (let i = 0; i < statements.length; i += 1) {
-      statements[i] = this.rewriteInterfaceCastCall(statements[i]) as StatementNode;
+      statements[i] = this.rewriteInterfaceCastCall(statements[i], varTypes) as StatementNode;
       this.rewrite(statements[i], varTypes);
     }
   }
@@ -167,13 +172,13 @@ export default class RedesugarImportedUsingForCalls extends AstTraversal {
       const rec = node as unknown as Record<string, unknown>;
       const v = rec[key];
       if (v instanceof Node) {
-        const replaced = this.rewriteInterfaceCastCall(v);
+        const replaced = this.rewriteInterfaceCastCall(v, varTypes);
         if (replaced !== v) rec[key] = replaced;
         this.rewrite(replaced, varTypes);
       } else if (Array.isArray(v)) {
         for (let i = 0; i < v.length; i += 1) {
           if (!(v[i] instanceof Node)) continue;
-          const replaced = this.rewriteInterfaceCastCall(v[i]);
+          const replaced = this.rewriteInterfaceCastCall(v[i], varTypes);
           if (replaced !== v[i]) v[i] = replaced;
           this.rewrite(replaced, varTypes);
         }
@@ -185,26 +190,32 @@ export default class RedesugarImportedUsingForCalls extends AstTraversal {
   // `SafeERC20.safeTransfer(IERC20(x), a, b)`. The cast receiver is a not-yet-resolved FunctionCall naming the
   // interface. Returns the node unchanged when it is not such a call. Runs before InlineStoragePointerCalls, like
   // the struct/wildcard rewrite, so a using-for library taking the receiver reaches its inliner.
-  private rewriteInterfaceCastCall(node: Node): Node {
+  private rewriteInterfaceCastCall(node: Node, varTypes: Map<string, Type>): Node {
     // Statement form `IERC20(x).safeTransfer(a, b);` is a MethodCallStatement; rewrite it to a FunctionCallStatement
     // so the void-external-call inliner (which keys on FunctionCall statements) picks the library call up.
     if (node instanceof MethodCallStatementNode) {
-      const call = this.rewriteMethodCastCall(node.call);
+      const call = this.rewriteMethodCastCall(node.call, varTypes);
       if (call) { const s = new FunctionCallStatementNode(call); s.location = node.location; return s; }
       return node;
     }
-    if (node instanceof MethodCallNode) return this.rewriteMethodCastCall(node) ?? node;
+    if (node instanceof MethodCallNode) return this.rewriteMethodCastCall(node, varTypes) ?? node;
     return node;
   }
 
-  // `IERC20(x).method(a, b)` -> `L.method(IERC20(x), a, b)` when `using L for IERC20` and L declares `L.method`;
-  // undefined when `node` is not such an interface-cast method call.
-  private rewriteMethodCastCall(node: MethodCallNode): FunctionCallNode | undefined {
+  // `IERC20(x).method(a, b)` (interface CAST receiver) or `pool.lpToken.method(a, b)` (interface-typed struct FIELD /
+  // member receiver) -> `L.method(<receiver>, a, b)` when `using L for IERC20` and L declares `L.method`; undefined
+  // otherwise. Struct-field/member receivers resolve their interface via the receiver-type chain (varTypes + structs).
+  private rewriteMethodCastCall(node: MethodCallNode, varTypes: Map<string, Type>): FunctionCallNode | undefined {
     if (node.callOptions) return undefined;
     const recv = node.object;
-    if (!(recv instanceof FunctionCallNode) || recv.parameters.length !== 1) return undefined;
-    const ifaceName = recv.identifier.name;
-    if (!this.interfaceNames.has(ifaceName)) return undefined;
+    let ifaceName: string | undefined;
+    if (recv instanceof FunctionCallNode && recv.parameters.length === 1 && this.interfaceNames.has(recv.identifier.name)) {
+      ifaceName = recv.identifier.name; // `IERC20(x)` cast receiver
+    } else if (recv instanceof FieldAccessNode || recv instanceof ArrayAccessNode || recv instanceof MappingAccessNode) {
+      const t = this.resolveExprType(recv, varTypes); // `s.field` / `arr[i].field` etc.
+      if (t instanceof AddressType && t.interfaceName) ifaceName = t.interfaceName;
+    }
+    if (!ifaceName) return undefined;
     const lib = this.interfaceToLib.get(ifaceName);
     if (!lib || !this.freeFnNames.has(`${lib}.${node.methodName}`)) return undefined;
     const id = new IdentifierNode(`${lib}.${node.methodName}`);
@@ -212,6 +223,28 @@ export default class RedesugarImportedUsingForCalls extends AstTraversal {
     const call = new FunctionCallNode(id, [recv, ...node.parameters]);
     call.location = node.location;
     return call;
+  }
+
+  // Resolve an lvalue-chain expression's type through varTypes (state vars / params / locals) + struct definitions.
+  // Used to recognise an interface-typed struct-field / array-element receiver for the using-for rewrite.
+  private resolveExprType(expr: Node, varTypes: Map<string, Type>): Type | undefined {
+    if (expr instanceof IdentifierNode) return varTypes.get(expr.name);
+    if (expr instanceof FieldAccessNode) {
+      const base = this.resolveExprType(expr.expression, varTypes);
+      return base instanceof StructType ? base.fields.find((f) => f.name === expr.name)?.type : undefined;
+    }
+    if (expr instanceof ArrayAccessNode) {
+      const base = this.resolveExprType(expr.array, varTypes);
+      return base instanceof ArrayType ? base.elementType : base instanceof MappingType ? base.valueType : undefined;
+    }
+    if (expr instanceof MappingAccessNode) {
+      let t: Type | undefined = varTypes.get(expr.name);
+      for (let i = 0; i < Math.max(expr.keys.length, 1) && t; i += 1) {
+        t = t instanceof ArrayType ? t.elementType : t instanceof MappingType ? t.valueType : undefined;
+      }
+      return t;
+    }
+    return undefined;
   }
 
   private walk(node: Node | undefined, visit: (n: Node) => void): void {

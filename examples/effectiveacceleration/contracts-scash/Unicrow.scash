@@ -1,9 +1,12 @@
 pragma solidcash ^0.13.0;
 
-// Minimal deployable stub. The marketplace only stores Unicrow's address; escrow behaviour (Pay/Release/...) is
-// exercised much later (escrow describe blocks) and will be filled in then.
+// Minimal deployable STATEFUL stub. The 5 constructor args are stored as immutables; a dummy state var makes it
+// a stateful (data-NFT) contract so `getContractFactory("Unicrow").deploy(...)` mints a genesis. Escrow logic
+// (Pay/Release/...) is filled in for the escrow describe blocks later.
 contract Unicrow(bytes20 claimAddr, bytes20 arbitratorAddr, bytes20 disputeAddr, bytes20 governance, int fee) {
-  function version() {
+  int deployed;
+  function touch() {
+    require(this.deployed >= 0);
     require(fee >= 0);
   }
 }

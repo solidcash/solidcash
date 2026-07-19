@@ -95,6 +95,10 @@ export function encodeFunctionArgument(
   }
 
   if (type === PrimitiveType.BIGINT || type instanceof IntType || type instanceof FixedType) {
+    // ethers-parity: accept a JS `number` for an integer arg by coercing a safe integer to bigint.
+    if (typeof argument === 'number' && Number.isSafeInteger(argument)) {
+      argument = BigInt(argument);
+    }
     if (typeof argument !== 'bigint') {
       throw new TypeError(typeof argument, type);
     }

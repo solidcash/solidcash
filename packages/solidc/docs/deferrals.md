@@ -830,3 +830,73 @@ covenant, framing (a)); a MULTI-DIMENSIONAL array element write `m[k][i][j]` on 
 and function-pointer element values (no C2 path). Note the existing default-model `UnrollFixedBoundEntryLoop`
 (whole-entry fixed loops, ArrayAssignNode form) still unrolls - unifying it onto the cache-in-loop model would remove the
 unroll, but it is wired + tested (CorpusGapFixes), a separate change.
+
+---
+
+## Memory-model unification: followups after the shared-primitive extraction (2026-07-19, `bd9822ee`)
+
+`packages/solidc/src/semantic/YulMemPrimitives.ts` now holds the single lowering of the `__yulmem` word/byte
+store, word load, reserved init, and grow; `LowerMemoryModel` (high-level memory) and `LowerInlineAssembly` (Yul
+runtime memory) both delegate to it (was two byte-identical re-implementations). This closed the "split memory
+model" (Solidity has one: `YulUtilFunctions` emits Yul `mstore`/`mload` for high-level mem ops, `libyul` is the
+one backend). Three items were scoped but not done in that pass.
+
+### A. Option 2 - LowerMemoryModel EMITS Yul `mstore`/`mload`, LIA becomes the SOLE lowering
+
+**What.** The truest Solidity-parity endpoint: `LowerMemoryModel` stops building bytes-ops and instead emits Yul
+`mstore(addr,word)` / `mload(addr)` / `mstore8` nodes; `LowerInlineAssembly.runtime*` (already built on
+`YulMemPrimitives`) becomes the single place that lowers memory primitives to `__yulmem`. Lazy `memGrowTo` on the
+first write then replaces the explicit alloc-grow (`tryLowerDecl`/`lowerBytesDecl`/`allocStructBlock` today
+concat-grow + zero-fill the block up front; allocation would just bump the free pointer at `0x40`).
+
+**Why deferred.** The shared-primitive step (Option 1) was the safe, byte-identical foundation; Option 2 changes
+bytecode and has three delicate edges: (1) **zero-init** - LMM zero-fills allocated blocks eagerly, lazy-grow +
+the `mload` trailing-zero pad gives read-zeros for unwritten slots but the whole-region readers
+(`serializeArray`/`serializeBytes`, `abi.encode` fallback) assume a materialized region; (2) **typed decode** - a
+raw Yul `mload` yields `uint256`, so every high-level element read must wrap it in the element-type cast
+(`wordDecodeType` already isolates this); (3) **perf** - the defensive `memGrowTo` before every store adds bytecode
+on the high-level side (which pre-grows), so it needs a no-grow store variant or a bounded-offset proof to avoid a
+size regression against the 10KB unlocking limit. The user explicitly OK'd doing Option 1 first with Option 2
+"some time later".
+
+**What it'd take.** Emit `AssemblyStatementNode`/`YulFunctionCallNode('mstore'|'mload'|'mstore8')` from LMM instead
+of the `bytes.concat`/slice builders; drop LMM's explicit alloc-grow (keep the free-ptr bump); add a no-grow store
+path (or prove offsets bounded) for the pre-grown high-level case; wrap `mload` reads in `wordDecodeType` casts;
+re-verify with the same rig used for Option 1 (byte-identity tests will legitimately CHANGE, so lean on the SDK VM
+suite + a corpus per-file OK/FAIL diff, not byte-equality).
+
+**Revisit if.** Doing the deeper memory rework, or when a case needs high-level and assembly to share a lowering
+bug-fix in ONE place (today a fix still has to land in the LMM caller + the LIA caller, even though both call the
+same primitive).
+
+### B. Route the 3 remaining LIA region-copy grows through `memGrowTo`
+
+**What.** `runtimeReturndatacopy`, `runtimeCopyInto` (codecopy/extcodecopy/calldatacopy), and `runtimeMcopy` still
+build their own inline `if (__yulmem.length < need) __yulmem = concat(__yulmem, new bytes(need - length))` branch
+(`LowerInlineAssembly.ts` ~426, ~470, ~546) instead of the shared `memGrowTo(need, src)`. Not a "split model"
+(these are Yul-only region copies with no high-level counterpart) but the GROW sub-expression is duplicated 3x + the
+`memGrowTo` version.
+
+**Why deferred.** Pure tidy, zero behavior change; out of scope for the primitive-store/load unification and each op
+also does an op-specific source-slice splice, so the win is only the grow line.
+
+**What it'd take.** `memGrowTo` already takes a `need` factory (`() => dst+len`); replace each inline branch with a
+`memGrowTo(need, src)` call. Byte-identical (the shapes match), verify with the yul VM suite
+(`YulInlineAssembly`/`MemoryCalldata`/`MemoryModelYulRuntime`) + a corpus diff.
+
+**Revisit if.** Touching those copy ops for another reason, or folding B into A (A subsumes the grow anyway).
+
+### C. `mstore8` byte-encoding intentionally NOT unified (byte-identity tradeoff)
+
+**What.** The two byte writers encode the low byte differently: high-level `mstoreByte` uses `bytes1(val)`, Yul
+`runtimeMstore8` uses `bytes32(val)[0:1]`. Same runtime low byte under BCH little-endian, but DIFFERENT bytecode, so
+`memByteStore` takes the pre-built `byteExpr` as a per-caller parameter rather than one shared encoding.
+
+**Why deferred.** Unifying to one encoding changes emitted bytecode for one of the two callers, which would break
+the exact-bytecode byte-identity tests and needs its own VM re-verification for near-zero value.
+
+**What it'd take.** Pick the cheaper of `bytes1(val)` vs `bytes32(val)[0:1]`, make `memByteStore` build it, update
+both callers, re-baseline the byte-identity tests, VM-verify a high-byte (`>=0x80`) round-trip on both paths.
+
+**Revisit if.** Consolidating byte-write codegen, or a measured bytecode-size difference between the two encodings
+matters.

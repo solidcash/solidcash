@@ -144,6 +144,16 @@ msg.sender) + `_balances[to] += amt` (DIFFERENT key each iter). Full form still 
   predecessor is the debited sender (or another credited entry) fails closed - that predecessor cannot be co-spent
   twice; split into separate txs.
 
+- **(b3) ABSOLUTE per-key assignment loop `for(i) m[k[i]] = v[i]` - RESOLVED 2026-07-19 (`644532b1`, op=set,
+  VM-proven).** A pure per-key assignment (value REPLACES, not accumulates) now routes through the SAME upsert loop
+  with op='set': present key -> UPDATE to exactly v[i]; absent key -> INSERT v[i]. This retires the "per-key value
+  insert loop (permutation/value-witness)" deferral - the 1:1 co-spend/mint in SOURCE order needs no permutation.
+  findSortedUpsertLoopWrite also matches a MappingAssign whose RHS is a per-iteration ArrayAccess (vs[i]); a
+  loop-INVARIANT param (`= v`) still routes to SortedInsertLoopValue, and `= 0` / delete-in-loop still fail closed
+  (neither is an ArrayAccess RHS). emitSortedUpsertLoopBody's UPDATE branches on op ('set' mints v[i] directly;
+  '+'/'-' mint coValue OP v[i]); the INSERT branch is shared (an absent-slot insert yields v[i] either way). SDK:
+  op==='set' -> UPDATE newVal=amt. VM-proven (SortedUpsertLoop): replace-not-add, mixed set+insert, wrong-value revert.
+
 - **(c) LOOP-INVARIANT non-bool value insert loop - RESOLVED 2026-07-19 (`SortedInsertLoopValue`, VM-proven).** `for(i)
   m[ks[i]] = v` where `v` is a loop-INVARIANT param (same value for every inserted node) is distinct from (b)'s per-key
   permutation - all nodes share value `v`, no source/sorted-order mismatch. The SDK already minted `valueTail =
@@ -153,9 +163,10 @@ msg.sender) + `_balances[to] += amt` (DIFFERENT key each iter). Full form still 
   EQUALVERIFYs `node.value == v` (the stored int tail is the raw VM number, byte-equal to a PICK'd int/bool param; `+4`
   = untracked slot/next/value/value-dup above the tracked top). No setup/teardown change (a param stays tracked at its
   slot all loop). VM-proven sound: 3 keys all = 100 read back exactly 100, `chk(k,1)` and `chk(k,99)` REVERT (not the
-  old pin, not a placeholder), absent reads 0. Fail-closed (still, by design): per-key `vs[i]` (ArrayAccess), RMW `+=`,
-  and the loop var `= i` (not a param) - `CorpusGapFixes` asserts all four boundaries. A reassigned param or non-param
-  local also mints a mismatching/empty tail and reverts (sound). Still NOT this: the (b) per-key diff-key credit.
+  old pin, not a placeholder), absent reads 0. Within the RANGE-SPLICE (insert-loop) matcher, per-key `vs[i]` and RMW
+  `+=` fall through - but they are NOT unsupported: they route to the per-iteration UPSERT loop instead ((b)/(b3)).
+  Only the loop var `= i` (not a param/array) and `= <default>`/delete truly fail closed. A reassigned param or
+  non-param local mints a mismatching/empty tail and reverts (sound).
 
 **C2 SURVEY 2026-07-19 (`scratchpad/c2probe.mjs` + VM).** Every C2 shape is now SOUND (fail-closed where incomplete).
 COMPLETE+SOUND: single-key read/write/RMW/delete (all value types incl chunked long bytes/string), nested/composite/
@@ -165,10 +176,11 @@ int-param value insert loop (`for(i) m[ks[i]] = v`, `SortedInsertLoopValue`), SA
 (`110e4e43`, MsgSenderC2 - msgSender keySource + signer P2PKH slot + forced sender funder; cross-sender-isolated),
 `msg.sender`/`tx.origin` scalar RMW-IN-LOOP (`for(i) bal[msg.sender] -= amts[i]` = multitransfer debit, `12dafc89`),
 DIFF-KEY per-iteration credit loop `for(i) bal[recipients[i]] += amts[i]` - both UPDATE (existing) AND INSERT (new
-recipient, `125cb014`) - int/bytes20/address keys, + the FULL ERC-20 multiTransfer (debit+credit in one tx, `090f4e35`).
+recipient, `125cb014`) - int/bytes20/address keys, + the FULL ERC-20 multiTransfer (debit+credit in one tx, `090f4e35`);
+ABSOLUTE per-key assignment loop `for(i) m[k[i]] = vs[i]` (op=set, `644532b1`, replace-not-add, update+insert).
 FAIL-CLOSED (sound, not complete): a NEW recipient whose bracketing predecessor is already co-spent (full multiTransfer
-new recipient, or two-new-in-one-gap), PER-KEY value insert loop (`= vs[i]`, permutation/value-witness), cross-contract
-msg.sender, delete/nullify-in-loop, 2D `m[k][i][j]`, function-pointer values.
+new recipient, or two-new-in-one-gap), cross-contract msg.sender, delete/nullify-in-loop, 2D `m[k][i][j]`,
+function-pointer values.
 
 **One real HOLE found + FIXED (commit `af6e894a`): C2 `delete m[k]` in a DYNAMIC loop.** `visitMappingDelete`'s sorted
 branch routed to `emitSortedValueUpsert` (a FIXED-slot co-spend) with NO `plainLoopDepth` guard (unlike

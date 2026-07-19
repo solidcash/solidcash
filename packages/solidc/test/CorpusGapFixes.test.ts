@@ -2780,6 +2780,18 @@ describe('chained overloaded using-for + interface-local-var dispatch (MistSwap 
     ok(`${COMP} contract C { function f(address factory, address a, address b) public view returns (uint x, uint y){`
       + ' (x, y) = Lib.getReserves(factory, a, b); } }');
   });
+
+  // A BRANCH-LOCAL external-call target (declared inside an `if`, used by a cast/low-level call in that branch) is
+  // hoisted to the function-body top so the co-spend reads it at the epilogue - UniswapV2Pair.mint's `migrator`
+  // (nested-branch), was "Expected variable 'migrator' does not exist on the stack". The external call stays
+  // conditional; VM-proven sound in BranchLocalExtcallTarget.test.ts.
+  it('hoists a doubly-nested branch-local external-call target to the body top', () => {
+    ok('interface IFactory { function migrator() external view returns (address); }'
+      + ' interface IMigrator { function desiredLiquidity() external view returns (uint256); }'
+      + ' contract C { address factory; function f(address sender, uint256 ts) public view returns (uint256 liq){'
+      + ' liq = 0; if (ts == 0) { address migrator = IFactory(factory).migrator();'
+      + ' if (sender == migrator) { liq = IMigrator(migrator).desiredLiquidity(); } } } }');
+  });
 });
 
 describe('using-for external-call library method on an interface-typed state var (OZ SafeERC20 pattern)', () => {

@@ -19,6 +19,7 @@ import EarlyReturnTransformation from './semantic/EarlyReturnTransformation.js';
 import NamedReturnTransformation from './semantic/NamedReturnTransformation.js';
 import DesugarNestedBranchReturn from './semantic/DesugarNestedBranchReturn.js';
 import SynthesizeExternalAddressLocals from './semantic/SynthesizeExternalAddressLocals.js';
+import HoistBranchLocalExtcallTargets from './semantic/HoistBranchLocalExtcallTargets.js';
 import CaptureBranchExternalCallTargets from './semantic/CaptureBranchExternalCallTargets.js';
 import SplitExternalCallFnPtrArgs from './semantic/SplitExternalCallFnPtrArgs.js';
 import DesugarContractMemberFnPtr from './semantic/DesugarContractMemberFnPtr.js';
@@ -392,6 +393,9 @@ function compileResolvedAst(ast: Ast, code: string, mergedCompilerOptions: Compi
   // Constructor external reads (`token0 = IERC20(pool.token0())`) -> synthesized deploy-input params (BCH has
   // no on-chain constructor; the read is resolved off-chain at deploy). Runs before the target-address synth.
   ast = ast.accept(new PromoteConstructorExternalReads()) as Ast;
+  // A branch-local interface-cast external-call target variable -> hoist its DECLARATION to the body top so the
+  // co-spend reads it at the epilogue (UniswapV2Pair mint's `migrator`); the external calls stay conditional.
+  ast = ast.accept(new HoistBranchLocalExtcallTargets()) as Ast;
   // Interface-typed state vars used as external-call targets -> synthesized address locals (reuses the
   // local-interface-var dispatch).
   ast = ast.accept(new SynthesizeExternalAddressLocals()) as Ast;
@@ -603,6 +607,7 @@ function compileReferencedContracts(
     singleAst = singleAst.accept(new CacheMappingEntryInLoop()) as Ast;
     singleAst = singleAst.accept(new IfConvertConditionalEntryOp()) as Ast;
     singleAst = singleAst.accept(new PromoteConstructorExternalReads()) as Ast;
+    singleAst = singleAst.accept(new HoistBranchLocalExtcallTargets()) as Ast;
     singleAst = singleAst.accept(new SynthesizeExternalAddressLocals()) as Ast;
     singleAst = singleAst.accept(new CaptureBranchExternalCallTargets()) as Ast;
     singleAst = singleAst.accept(new SynthesizeBlockOracle()) as Ast;

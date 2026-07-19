@@ -88,21 +88,47 @@ REVERT at runtime (or, with multitransfer's 2nd same-key write, crash `__entry_k
 `expression instanceof BoolLiteralNode` -> non-bool falls to the clean `SortedMappingCodegenPendingError`. Sound
 (fail-closed earlier; VM-proven a non-bool insert loop reverts - `SortedInsertLoopNonBool`).
 
-**`multitransfer` (C2 two-write + diff-key RMW-in-loop) - STILL the deep deferred one.** `for (i)
+**`multitransfer` (C2 two-write + diff-key RMW-in-loop) - two pieces, one PARTLY SHIPPED, one deep.** `for (i)
 _transfer(msg.sender, recipients[i], amounts[i])` inlines to TWO C2 writes per iteration: `_balances[from]` (SAME key =
-msg.sender) + `_balances[to] += amt` (DIFFERENT key each iter). Now a clean fail-close ("sorted '_balances' not yet
-compiled"). Two independent deep pieces: (a) a SAME-KEY scalar cache-in-loop (extend `CacheMappingEntryInLoop` from
-array to scalar whole-entry RMW + non-identifier key) to lift `_balances[from]` out of the loop; (b) a DIFF-KEY
-RMW-UPDATE-in-loop covenant (per-iteration bracket + read-current + insert-or-update of a SCATTERED evolving list with
-PER-KEY values = the permutation/value-witness problem + §6a item-4). Soundness-critical (a bug reopens the
-exclusion-proof hole); needs dedicated design + adversarial omission/reorder/duplicate/wrong-value proofs. `ecrecover` +
-the EIP712 domain separator sit behind it, unreached.
+msg.sender) + `_balances[to] += amt` (DIFFERENT key each iter). Full form still a clean fail-close.
+
+- **(a) SAME-KEY scalar RMW-in-loop - IDENTIFIER key SHIPPED (2026-07-19, `2f780468`, `C2ScalarCacheInLoop`).**
+  `CacheMappingEntryInLoop` now caches a scalar C2 entry written to the same INVARIANT identifier key more than once /
+  in a loop: `for(i) balance[owner] -= amts[i]` reads `balance[owner]` once -> mutates a local -> one upsert (was a
+  double-spend revert). VM-proven exact (100-10-20-30 = 40, wrong value reverts). Also makes straight-line `m[k]+=a;
+  m[k]+=b` coalesce. **REMAINING for multitransfer: the key is `msg.sender`, NOT an identifier.** A `msg.sender`/
+  `tx.origin`-keyed C2 entry is **SDK-BLOCKED**, not just a cache gap: there is no `msgSender` keySource kind
+  (`StatefulContract` resolves `param`/`state`/`stateArrayLast`/`constant`/`expression` only), and a probe of even a
+  SINGLE `_balances[msg.sender] = v` C2 write REVERTED at the VM (`OP_VERIFY`, input 0) - the covenant derives the slot
+  from `msg.sender` on-chain but the SDK cannot resolve which predecessor/entry to co-spend. A cache extension to
+  `msg.sender` keys was built then REVERTED: it made the loop COMPILE but pushed the failure from a clear compile-time
+  fail-close to a murky VM revert (worse). Unblock = add a `msgSender` keySource + prove single-write msg.sender C2
+  end-to-end FIRST (needs a P2PKH sender input in the harness), THEN generalize the scalar cache key from identifier to
+  loop-invariant nullary. Until then `msg.sender`-keyed C2 stays fail-closed at compile.
+
+- **(b) DIFF-KEY RMW-UPDATE-in-loop covenant - the deep one.** `for(i) _balances[recipients[i]] += amounts[i]`. Root
+  finding (read `emitSortedInsertLoopBody`): the range-splice body verifies ONLY internal chain structure - node.slot ==
+  prev.next (linkage), node.slot < node.next (sorted), value == pinned `0x01`, output-count == N+1, input-count == 1. It
+  NEVER binds a minted slot to `keyToSlot(recipients[i])` nor a value to `amounts[i]`. That is sound for BOOL membership
+  sets (no conserved quantity - the tx author picks the keys, reads stay omission-proof from the sorted invariant
+  alone). Per-key VALUES break it two ways: (1) supply - unbound values let the minted total differ from the debited
+  total (inflation), so values need a supply-conservation binding, but the body walks SORTED order while `amounts[]` is
+  SOURCE order = the permutation/value-witness problem; (2) UPDATE - range-splice is INSERT-ONLY (`coSlot < Hk < coNext`
+  fails closed if the key already exists), yet `+=` on an existing recipient needs its old value, and only ONE
+  predecessor P is co-spent (existing entries in the gap are not individually co-spent). Candidate sound designs to
+  evaluate: a per-source `pos[i]` witness (output index of `recipients[i]`'s node) binding output[pos].slot == Hk_i and
+  output[pos].value == old_i + amounts[i], plus duplicate-key summing; or a sum-only invariant (conserves supply, does
+  NOT prevent misdirection - acceptable only when the caller owns the debited funds). Needs dedicated design +
+  adversarial omission/reorder/duplicate/wrong-value/insert-vs-update proofs. Soundness-critical; `ecrecover` + the
+  EIP712 domain separator sit behind it, unreached.
 
 **C2 SURVEY 2026-07-19 (`scratchpad/c2probe.mjs` + VM).** Every C2 shape is now SOUND (fail-closed where incomplete).
 COMPLETE+SOUND: single-key read/write/RMW/delete (all value types incl chunked long bytes/string), nested/composite/
-address keys, expr-key nested (`m[hash160(pk)][b]=v`), value-returning RMW helper, bool insert loop. FAIL-CLOSED
-(sound, not complete): per-key-value insert loop (permutation/value-witness), multitransfer (above), delete/nullify-in-
-loop, 2D `m[k][i][j]`, function-pointer values.
+address keys, expr-key nested (`m[hash160(pk)][b]=v`), value-returning RMW helper, bool insert loop, SAME-identifier-key
+scalar RMW-in-loop (`for(i) balance[owner] -= amts[i]`, `2f780468`). FAIL-CLOSED (sound, not complete): per-key-value
+insert loop (permutation/value-witness), multitransfer diff-key credit (above), `msg.sender`/`tx.origin`-keyed C2
+(SDK-blocked - no `msgSender` keySource; single write VM-reverts), delete/nullify-in-loop, 2D `m[k][i][j]`,
+function-pointer values.
 
 **One real HOLE found + FIXED (commit `af6e894a`): C2 `delete m[k]` in a DYNAMIC loop.** `visitMappingDelete`'s sorted
 branch routed to `emitSortedValueUpsert` (a FIXED-slot co-spend) with NO `plainLoopDepth` guard (unlike

@@ -51,6 +51,45 @@ Walking `getContractFactory("Unicrow").deploy(...)` surfaced + fixed two harness
   (Marketplace/MarketplaceData). Mapping the fixture's positional CONSTRUCTOR args -> our stateful genesis
   initial state is the first thing to wire per contract. `contracts-scash/Unicrow.scash` is the WIP starting point.
 
+## CONTRACTS STUBBED + DEPLOY PROVEN (2026-07-19)
+All 6 fixture contracts now exist as stateful `.scash` stubs under `contracts-scash/` (7 artifacts, all
+name-resolvable): `Unicrow`/`UnicrowDispute`/`UnicrowArbitrator`/`UnicrowClaim` (address-storing), `FakeToken`
+(ERC-20 stub), `MarketplaceV1` (`initialize` delegate + owner/version/data-addr state), `MarketplaceDataV1`.
+A minimal `.deploy(...)` of a stateful stub SUCCEEDS end to end (mints a genesis data-NFT), validating the whole
+factory->genesis path. Two more portbacks landed getting here:
+- **number->bigint arg coercion** (`Argument.ts`): ethers accepts a JS `number` for uint/int; `deploy(...,69)` now
+  works (safe-integer coercion). Commit 6ff3e5ba.
+- **`Signer.address` sync property** (ethers-parity): ported suites read `signer.address` (was undefined; only
+  `getAddress()` existed). Commit 89f85071.
+
+## THE WALL: EVM address-identity model (2026-07-19, VERIFIED)
+`deployContractsFixture` now runs into a **fundamental** EVM-vs-BCH gap in its CREATE-address precompute block
+(`deployUnicrowSuite`, test lines 53-92), NOT a missing harness feature:
+```
+let transactionCount = await deployer.getNonce();                         // (1)
+const UnicrowContractAddress = getCreateAddress({ from: deployer.address, nonce }); // (2)
+```
+- (1) `Signer.getNonce()` intentionally throws - BCH UTXO has no per-account nonce. A counter would be a fiction
+  that feeds (2) a wrong address (fail-open); we keep it throwing (sound).
+- (2) `getCreateAddress` is imported from the **real `ethers`** (NOT aliasable) and REQUIRES a 20-byte `0x` hex
+  `from` - VERIFIED: `getCreateAddress({from: <cashaddr>})` throws "invalid address"; `{from: 0x+20byte}` works.
+  Our `.address` is a CashAddress. So the precompute block cannot run drop-in.
+- Even past (1)+(2), the admin tests assert `owner() == deployer.address`. `owner()` stores `msg.sender`, which
+  our codegen emits as a **locking bytecode** (~25B P2PKH, via tx.origin/minting verification) - NOT a 20-byte
+  address. There is **no single `.address` value** that satisfies both `getCreateAddress` (needs 0x+20B) and
+  `owner()==.address` (needs the lockscript). This is the core identity-model conflict.
+
+### The fork (needs a direction decision)
+1. **Keep BCH-native** (`.address`=cashaddr, `msg.sender`=lockscript): sound; these specific EVM-isms
+   (getCreateAddress/getNonce CREATE-prediction, ETH-address equality) can't run drop-in and would need per-fixture
+   simplification (violates zero-edit for THOSE lines only).
+2. **ETH-style `.address` (`0x`+pkh)**: unblocks getCreateAddress + the whole deploy phase (precompute addrs are
+   only unused stub ctor-args here) + JS-level ETH-address equality. But diverges from `getAddress()` (cashaddr)
+   and still needs (3) for `owner()==.address` to actually pass.
+3. **Full pkh-based EVM identity under evmCompat**: `msg.sender` emits the 20-byte pkh, `.address`=`0x`+pkh,
+   `address` type = 20-byte pkh end to end. Properly unblocks the fixture's identity model; BIG codegen change
+   (msg.sender currently emits a lockscript; touches external calls, funding, C2 keys). Multi-session.
+
 ## NEXT: port the contracts (simplification allowed). Build order (per the test's describe blocks):
 The fixture `deployContractsFixture` (test lines 137-191) must deploy, so ALL of these need name-resolvable
 artifacts under `contracts-scash/` -> `artifacts/`:

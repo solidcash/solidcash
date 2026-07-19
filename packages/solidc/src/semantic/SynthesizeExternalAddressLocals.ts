@@ -153,10 +153,12 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
     const walk = (n: unknown): void => {
       if (found || !n || typeof n !== 'object') return;
       if (n instanceof MethodCallNode && n.object instanceof FunctionCallNode
-        && n.object.parameters.length === 1 && this.typeNames.has(n.object.identifier.name)
-        && n.object.parameters[0] instanceof FunctionCallNode) {
-        found = true;
-        return;
+        && n.object.parameters.length === 1 && this.typeNames.has(n.object.identifier.name)) {
+        // Unwrap cast wrappers to match castComputedTarget: `IFoo(address(uint(keccak256(..))))` wraps the
+        // computed call in numeric/address casts (the create2 address form).
+        let inner: Node = n.object.parameters[0];
+        while (inner instanceof CastNode) inner = inner.expression;
+        if (inner instanceof FunctionCallNode) { found = true; return; }
       }
       for (const k of Object.keys(n)) {
         if (k === 'type' || k === 'symbolTable' || k === 'location') continue;
@@ -451,8 +453,12 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
     const arg = obj.parameters[0];
     // Only a COMPUTED call result `IFoo(pairFor(..))` - a bare param, a state var, a state/param chain, and an
     // array/field element (`IFoo(fns[i])`, the fn-ptr-array broadcast / loopArrayVar cases) are all handled by the
-    // recognizers before this or by the array co-spend loop; hoisting those here would break their machinery.
-    if (!(arg instanceof FunctionCallNode)) return undefined;
+    // recognizers before this or by the array co-spend loop; hoisting those here would break their machinery. The
+    // create2 address form `IFoo(address(uint(keccak256(..))))` wraps the computed call in numeric/address casts;
+    // unwrap them so the wrapped call still qualifies (a cast over a bare param/state/chain stays excluded).
+    let inner: ExpressionNode = arg;
+    while (inner instanceof CastNode) inner = inner.expression;
+    if (!(inner instanceof FunctionCallNode)) return undefined;
     const key = this.chainKey(arg);
     if (!key) return undefined;
     const init = cloneNode(obj) as ExpressionNode;

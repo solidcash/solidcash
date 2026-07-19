@@ -2810,6 +2810,23 @@ describe('chained overloaded using-for + interface-local-var dispatch (MistSwap 
       + ' (x, y) = Lib.getReserves(factory, a, b); } }');
   });
 
+  // The create2 address form wraps the computed call in numeric/address casts: `IPair(address(uint(keccak256(..))))`.
+  // castComputedTarget / hasComputedCastTarget unwrap the cast chain so the wrapped call still hoists into an
+  // __extaddr_ local. The allLeavesBodyTop gate and the co-spend identity pin are unchanged, so a target whose leaves
+  // are not all params/self-pinned state still fails closed (never a caller-substitutable witness).
+  it('hoists a cast-WRAPPED computed external-call target IFoo(address(comp(a)))', () => {
+    ok('interface IFoo { function m(uint256 x) external; }'
+      + ' contract C { function comp(address a) internal pure returns (address){ return a; }'
+      + ' function f(address a) public { IFoo(address(comp(a))).m(5); } }');
+  });
+  it('fails closed on a cast-wrapped computed target with a non-param/state (mutable local) leaf', () => {
+    expect(() => compileString('pragma solidity ^0.8.0;'
+      + ' interface IFoo { function m(uint256 x) external; }'
+      + ' contract C { function comp(address a) internal pure returns (address){ return a; }'
+      + ' function f(address a) public { address b = a; b = address(0); IFoo(address(comp(b))).m(5); } }', opts))
+      .toThrow(/target address must be a constructor\/function parameter/);
+  });
+
   // A BRANCH-LOCAL external-call target (declared inside an `if`, used by a cast/low-level call in that branch) is
   // hoisted to the function-body top so the co-spend reads it at the epilogue - UniswapV2Pair.mint's `migrator`
   // (nested-branch), was "Expected variable 'migrator' does not exist on the stack". The external call stays

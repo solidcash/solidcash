@@ -2,6 +2,7 @@ import { hexToBin } from '@bitauth/libauth';
 import {
   AbiFunction,
   AddressType,
+  ArrayType,
   Artifact,
   BytesType,
   encodeBool,
@@ -34,6 +35,24 @@ export type EncodedFunctionArgument = Uint8Array | SignatureTemplate;
 export type EncodeFunction =
   (arg: FunctionArgument, typeStr: string, structs?: readonly StructDefinitionInfo[]) => EncodedFunctionArgument;
 
+// Recursively convert CashAddress string elements of an `address[]` (or nested `address[][]`) to their locking
+// bytecode, so the pushdata encoder stores the lockscript (== addressToLockScript / keyToSlot) not the raw string.
+// Non-address arrays pass through untouched.
+function convertAddressArg(value: unknown, typeStr: string): unknown {
+  const t = parseType(typeStr);
+  if (!(t instanceof ArrayType) || !Array.isArray(value)) return value;
+  // Only touch arrays whose element type is `address` (convert CashAddress strings) or a nested array (recurse to
+  // reach an inner address[]). Structs, ints, bytes, etc. are returned UNCHANGED - never remapped - so their
+  // struct-tuple / packed encodings are untouched.
+  if (t.elementType instanceof AddressType) {
+    return value.map((el) => (typeof el === 'string' && el.includes(':') ? addressToLockScript(el) : el));
+  }
+  if (t.elementType instanceof ArrayType) {
+    return value.map((el) => convertAddressArg(el, t.elementType.toString()));
+  }
+  return value;
+}
+
 export function encodeFunctionArgument(
   argument: FunctionArgument,
   typeStr: string,
@@ -55,7 +74,11 @@ export function encodeFunctionArgument(
   // a length prefix followed by packed fixed-width elements (or per-element encodings) - via the shared
   // pushdata encoder, so it matches the compiler's runtime array layout / state encoding exactly.
   if (Array.isArray(argument)) {
-    return encodePushdataValue(argument as StateValue, typeStr, structs);
+    // A CashAddress string inside an `address[]` (or nested) arg must become its locking bytecode BEFORE the
+    // pushdata encoder runs - the scalar path below converts it, but the array path delegates straight to
+    // encodePushdataValue, which would otherwise encode the raw address STRING (mismatching addressToLockScript
+    // everywhere the value is used, e.g. keyToSlot of an address[] mapping key).
+    return encodePushdataValue(convertAddressArg(argument, typeStr) as StateValue, typeStr, structs);
   }
   let type = parseType(typeStr);
   if (type === undefined) {

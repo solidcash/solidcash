@@ -3,7 +3,8 @@ import { bigIntToVmNumber, vmNumberToBigInt } from '@bitauth/libauth';
 import { compileString } from 'solidc';
 import { Contract, StatefulContract, SignatureTemplate } from '../../src/index.js';
 import { keyToSlot, getEntryNftAddress, SortedList } from '../../src/index.js';
-import { alicePriv, alicePub, alicePkh } from '../fixture/vars.js';
+import { addressToLockScript } from '../../src/utils.js';
+import { alicePriv, alicePub, alicePkh, bobAddress, carolAddress } from '../fixture/vars.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 import { createTestProvider } from '../test-util.js';
 
@@ -97,5 +98,50 @@ describe('C2 diff-key per-iteration UPDATE loop (multitransfer credit to existin
     await fund(contract.address); await call('setBal', 3n, 100n);
     await fund(contract.address);
     await expect(call('airdrop', [3n, 3n], [10n, 20n])).rejects.toThrow(/duplicate/i);
+  });
+});
+
+// The real multitransfer shape: address-keyed balances (mapping(address => int)). Address ARRAY elements are now
+// encoded as their locking bytecode (convertAddressArg), so keyToSlot(recipients[i]) matches the seeded entries.
+describe('C2 address-keyed credit loop (multitransfer to existing address recipients)', () => {
+  const provider = createTestProvider();
+  const sig = new SignatureTemplate(alicePriv);
+  const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
+  let nonce = 0xe200;
+  const uid = (): string => { nonce += 1; return nonce.toString(16).padStart(64, '0'); };
+  const fund = async (addr: string): Promise<void> => {
+    await provider.addUtxo(addr, { txid: uid(), vout: 0, satoshis: 200000n });
+  };
+  const ASRC = `contract Token() {
+    mapping(address => int) bal;
+    function setBal(address a, int v, pubkey pk, sig s) { require(checkSig(s, pk)); this.bal[a] = v; }
+    function multiTransfer(address[] recipients, int[] amounts, pubkey pk, sig s) {
+      require(checkSig(s, pk));
+      for (int i = 0; i < recipients.length; i++) { this.bal[recipients[i]] += amounts[i]; }
+    }
+  }`;
+
+  it('credits existing address recipients by their amounts (exact)', async () => {
+    const art = compileString(ASRC, { forceStateful: true });
+    const f = { txid: uid(), vout: 0, satoshis: 400000n };
+    await provider.addUtxo(p2pkh.address, f);
+    const { contract, categoryId } = await StatefulContract.deploy(art, [], {
+      provider, fundingUtxo: f, funder: p2pkh.unlock.spend(alicePub, sig), initialState: {}, changeAddress: p2pkh.address,
+    });
+    const ea = getEntryNftAddress(contract.inner, categoryId, 'bal');
+    const valOf = async (addr: string): Promise<bigint | undefined> => {
+      const e = SortedList.fromUtxos(await provider.getUtxos(ea)).find(keyToSlot(addressToLockScript(addr)));
+      return e ? vmNumberToBigInt(e.value, { requireMinimalEncoding: false }) as bigint : undefined;
+    };
+    const call = (fn: string, ...a: unknown[]): Promise<{ txid: string }> => {
+      type C = Record<string, (...args: unknown[]) => { send: () => Promise<{ txid: string }> }>;
+      return (contract as unknown as C)[fn](...a, alicePub, sig).send();
+    };
+    await fund(contract.address); await call('setBal', bobAddress, 100n);
+    await fund(contract.address); await call('setBal', carolAddress, 200n);
+    await fund(contract.address);
+    await call('multiTransfer', [bobAddress, carolAddress], [10n, 20n]);
+    expect(await valOf(bobAddress)).toBe(110n);
+    expect(await valOf(carolAddress)).toBe(220n);
   });
 });

@@ -4613,11 +4613,17 @@ export default class SymbolTableTraversal extends AstTraversal {
   }
 
   visitTupleIndexOp(node: TupleIndexOpNode): Node {
-    // `stateVar[numLit]` parses as a tuple index (grammar `expression '[' NumberLiteral ']'`), but a state
-    // variable is never a tuple: route it through the array/mapping access path like `stateVar[k]`.
-    if (node.tuple instanceof IdentifierNode
-      && (this.isStateCollectionName(node.tuple.name)
-        || this.symbolTables[0].get(node.tuple.name)?.symbolType === SymbolType.STATE_VARIABLE)) {
+    // The trailing `[numLit]` of a state collection access parses as a tuple index (grammar
+    // `expression '[' NumberLiteral ']'`), but a state mapping/array element is never a tuple. This covers a bare
+    // `stateVar[numLit]` AND a nested `m[k][numLit]` whose outer index is a number literal (SushiToken COMP
+    // checkpoints `checkpoints[account][0].fromBlock`, a `mapping(K1 => mapping(K2 => Struct))`): route the whole
+    // chain through the array/mapping access path so ALL keys resolve together to the innermost value type.
+    let base: ExpressionNode | undefined;
+    if (node.tuple instanceof IdentifierNode) base = node.tuple;
+    else if (node.tuple instanceof ArrayAccessNode) base = this.flattenArrayAccess(node.tuple).base;
+    if (base instanceof IdentifierNode
+      && (this.isStateCollectionName(base.name)
+        || this.symbolTables[0].get(base.name)?.symbolType === SymbolType.STATE_VARIABLE)) {
       const idx = new IntLiteralNode(BigInt(node.index));
       idx.location = node.location;
       const access = new ArrayAccessNode(node.tuple, idx);

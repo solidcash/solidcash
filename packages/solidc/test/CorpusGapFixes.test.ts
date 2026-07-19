@@ -2605,3 +2605,19 @@ describe('Solidity <0.7 `now` aliases block.timestamp (shadowing respected)', ()
       + ' function f(uint256 now) public pure returns (uint256) { return now; } }');
   });
 });
+
+describe('nested mapping to a struct value, outer index a number literal (COMP checkpoints)', () => {
+  // `mapping(K1 => mapping(K2 => Struct))` read `m[k][0].field`: the trailing `[0]` parses as a tuple index, and
+  // the inner `m[k]` previously over-resolved to the innermost struct so indexing it failed. Route the whole chain
+  // through the mapping-access path so both keys resolve together. Single-level `m[0].field` already worked.
+  const S = 'struct CP { uint32 fromBlock; uint256 votes; }';
+  const ok = (body: string): void => {
+    expect(() => compileString(`contract T { ${S}`
+      + ' mapping(address => mapping(uint32 => CP)) public cps;'
+      + ` function f(address a, uint32 n) public view returns (uint256) { ${body} } }`,
+    { solidityImportCompat: true })).not.toThrow();
+  };
+  it('reads a field via a literal outer index', () => ok('return cps[a][0].votes;'));
+  it('reads the whole struct to memory via a literal outer index', () => ok('CP memory c = cps[a][0]; return c.votes;'));
+  it('still works with an expression outer index', () => ok('return cps[a][n - 1].votes;'));
+});

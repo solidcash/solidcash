@@ -97,14 +97,21 @@ msg.sender) + `_balances[to] += amt` (DIFFERENT key each iter). Full form still 
   in a loop: `for(i) balance[owner] -= amts[i]` reads `balance[owner]` once -> mutates a local -> one upsert (was a
   double-spend revert). VM-proven exact (100-10-20-30 = 40, wrong value reverts). Also makes straight-line `m[k]+=a;
   m[k]+=b` coalesce. **REMAINING for multitransfer: the key is `msg.sender`, NOT an identifier.** A `msg.sender`/
-  `tx.origin`-keyed C2 entry is **SDK-BLOCKED**, not just a cache gap: there is no `msgSender` keySource kind
-  (`StatefulContract` resolves `param`/`state`/`stateArrayLast`/`constant`/`expression` only), and a probe of even a
-  SINGLE `_balances[msg.sender] = v` C2 write REVERTED at the VM (`OP_VERIFY`, input 0) - the covenant derives the slot
-  from `msg.sender` on-chain but the SDK cannot resolve which predecessor/entry to co-spend. A cache extension to
-  `msg.sender` keys was built then REVERTED: it made the loop COMPILE but pushed the failure from a clear compile-time
-  fail-close to a murky VM revert (worse). Unblock = add a `msgSender` keySource + prove single-write msg.sender C2
-  end-to-end FIRST (needs a P2PKH sender input in the harness), THEN generalize the scalar cache key from identifier to
-  loop-invariant nullary. Until then `msg.sender`-keyed C2 stays fail-closed at compile.
+  `tx.origin`-keyed C2 entry is **SDK-ARCHITECTURE-BLOCKED**, not just a cache gap. There is no `msgSender` keySource
+  kind (`StatefulContract` resolves `param`/`state`/`stateArrayLast`/`constant`/`expression` only). CONFIRMED
+  2026-07-19 with a corrected probe (a real P2PKH funder input via `p2pkh.unlock.spend`, so on-chain `msg.sender` =
+  `emitTxOrigin` = the funder's `76a914<pkh>88ac` lockscript): even a SINGLE `_balances[msg.sender] = v` write into a
+  FRESH map (predecessor = HEAD, key-independent) still REVERTS. So it is not the co-spend-selection that fails - the
+  SDK's expression-placeholder path cannot PLAN the insert or DERIVE the NEW node for a `msg.sender` key at all. The
+  full fix is real SDK work: (1) a `msgSender` keySource in `classifyKeySource` (a `NullaryOpNode` MSG_SENDER/TX_ORIGIN
+  key -> `{kind:'msgSender'}`); (2) SDK resolves the slot from the FUNDER's P2PKH lockscript (`keyToSlot(76a914<pkh>
+  88ac)`) - it must know which input is `emitTxOrigin`'s first non-self/non-token P2PKH and pin the tx so that input's
+  address matches the slot it planned; (3) plan insert/update + derive NEW like a param key. Fails CLOSED (reverts,
+  never silent-wrong) because on-chain `slot == keyToSlot(msg.sender)` rejects a wrong SDK slot. Note real OZ ERC20
+  mostly reaches storage via a PARAM (`_transfer(from,to)` -> `_balances[from]`, which WORKS) - the DIRECT
+  `_balances[msg.sender]` is the rarer shape. A cache extension to nullary keys was built then REVERTED (it turned the
+  clear compile fail-close into a murky VM revert). Until the keySource lands, `msg.sender`-keyed C2 fails at the VM
+  (compile-then-revert); a compile-time fail-close for it is a possible clarity follow-up.
 
 - **(b) DIFF-KEY RMW-UPDATE-in-loop covenant - the deep one.** `for(i) _balances[recipients[i]] += amounts[i]`. Root
   finding (read `emitSortedInsertLoopBody`): the range-splice body verifies ONLY internal chain structure - node.slot ==

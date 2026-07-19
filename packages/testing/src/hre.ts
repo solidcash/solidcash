@@ -82,22 +82,34 @@ export interface HardhatRuntimeEnvironment {
   run(taskName: string, args?: TaskArguments): Promise<unknown>;
 }
 
-/** hardhat `getContractFactory("Name")`: resolve a compiled artifact by name from the artifacts dir. */
+/**
+ * hardhat `getContractFactory("Name")`: resolve a compiled artifact BY CONTRACT NAME. Mirrors hardhat's
+ * name resolution - the compile task writes one `<Contract>.json` per contract (nested per source file), and
+ * this recursively finds `<Name>.json` anywhere under the artifacts dir. Errors on ambiguity (like hardhat's
+ * "multiple artifacts" - pass the artifact object to disambiguate).
+ */
 export function loadArtifactByName(artifactsDir: string, name: string): Artifact {
   const base = path.isAbsolute(artifactsDir) ? artifactsDir : path.resolve(process.cwd(), artifactsDir);
-  // Try `<dir>/<Name>.json`, then a hardhat-style `<dir>/**/<Name>.sol/<Name>.json`.
-  const direct = path.join(base, `${name}.json`);
-  const candidates = [direct];
-  if (fs.existsSync(base)) {
-    const nested = path.join(base, `${name}.sol`, `${name}.json`);
-    candidates.push(nested);
-  }
-  for (const file of candidates) {
-    if (fs.existsSync(file)) return JSON.parse(fs.readFileSync(file, 'utf-8')) as Artifact;
+  const target = `${name}.json`;
+  const matches: string[] = [];
+  const walk = (dir: string): void => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const p = path.join(dir, entry.name);
+      if (entry.isDirectory()) walk(p);
+      else if (entry.name === target) matches.push(p);
+    }
+  };
+  if (fs.existsSync(base)) walk(base);
+  if (matches.length === 1) return JSON.parse(fs.readFileSync(matches[0], 'utf-8')) as Artifact;
+  if (matches.length > 1) {
+    throw new Error(
+      `getContractFactory: multiple artifacts named "${name}" (${matches.map((m) => path.relative(base, m)).join(', ')}). `
+      + 'Pass the artifact object to disambiguate.',
+    );
   }
   throw new Error(
     `getContractFactory: no artifact named "${name}" in ${base}. Compile it first (\`solidcash compile\`), `
-    + `or pass the artifact object directly. Tried: ${candidates.join(', ')}`,
+    + 'or pass the artifact object directly.',
   );
 }
 

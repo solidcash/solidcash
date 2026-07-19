@@ -122,6 +122,21 @@ msg.sender) + `_balances[to] += amt` (DIFFERENT key each iter). Full form still 
   adversarial omission/reorder/duplicate/wrong-value/insert-vs-update proofs. Soundness-critical; `ecrecover` + the
   EIP712 domain separator sit behind it, unreached.
 
+- **(c) LOOP-INVARIANT non-bool value insert loop - TRACTABLE completeness follow-up (SDK already ready).** `for(i)
+  m[ks[i]] = v` where `v` is a loop-INVARIANT param (same value for every inserted node) is a SOUNDLY-supportable case
+  distinct from (b)'s per-key permutation - all nodes share value `v`, no source/sorted-order mismatch. It used to MATCH
+  `findSortedInsertLoopWrite` (any sorted scalar), compile, then REVERT at the VM (the body pins node.value to `0x01`
+  while the SDK mints the real `v`); `5bc59d08` correctly fail-closed it (restricting the match to `BoolLiteralNode`).
+  The SDK side is ALREADY DONE: `StatefulContract` (~5600-5629) computes `valueTail = encode(valueParam arg)` and mints
+  every chain node with it. ONLY `emitSortedInsertLoopBody`'s value check (~12198) hardcodes `0x01`. To complete: (1)
+  match a loop-invariant param value (bool literal OR an IdentifierNode that is a current-fn PARAM, not the loop var,
+  not reassigned; per-key `vs[i]` and `= i` must stay fail-closed); (2) push `encode(v)` ONCE in
+  `emitSortedInsertLoopSetup` as a persistent named item (mind the setup/body/teardown offset dance - deepest, use
+  `getStackIndex(name)` only), body EQUALVERIFYs node.value against it, teardown drops it. Needs adversarial VM proof
+  (v=7 all-nodes-7 + omission-proof intact; `vs[i]` / `= i` / reassigned-param fail closed). NOT done here: it edits
+  soundness-critical covenant offsets and must not be rushed. `CorpusGapFixes` "dynamic insert loop" now tests the bool
+  case + asserts the non-bool `= v` fail-close.
+
 **C2 SURVEY 2026-07-19 (`scratchpad/c2probe.mjs` + VM).** Every C2 shape is now SOUND (fail-closed where incomplete).
 COMPLETE+SOUND: single-key read/write/RMW/delete (all value types incl chunked long bytes/string), nested/composite/
 address keys, expr-key nested (`m[hash160(pk)][b]=v`), value-returning RMW helper, bool insert loop, SAME-identifier-key

@@ -2223,18 +2223,27 @@ describe('low-level call with mapping-entry operands (block-layout slot allocati
 describe('C2 (sorted) mapping write in a runtime loop: fixed-bound unrolls, dynamic diff-key insert loop', () => {
   // A C2 write inside a DYNAMIC loop is a per-iteration sorted-linked-list INSERT (co-spend the bracketing
   // predecessor, mint one NEW node; the SDK derives the evolving list). Fixed-bound loops are unrolled to static
-  // writes before codegen; the dynamic single-varying-key case now compiles via emitSortedInsertLoopBody (never
-  // crashes at "Block slot not found: entry[0]", never silently degrades to the omittable entry model).
-  const mk = (loop: string): string => 'contract C() { mapping(int => bigint) m;'
+  // writes before codegen (each a full emitSortedValueUpsert that verifies the ACTUAL value, so a non-bool value is
+  // fine there). The DYNAMIC range-splice body (emitSortedInsertLoopBody) pins each node's value to a LOOP-INVARIANT
+  // literal (bool 0x01 / empty) - it walks the SORTED chain and cannot bind a chain position to a per-key source
+  // value, so only a bool-value insert loop (whitelistWorkers `w[k[i]] = true`) compiles; a per-key / non-bool value
+  // falls to the clean SortedMappingCodegenPendingError (see SortedInsertLoopNonBool + deferrals.md multitransfer (b)).
+  const mkBigint = (loop: string): string => 'contract C() { mapping(int => bigint) m;'
     + ` function f(int[] ks, int v, pubkey pk, sig s) { require(checkSig(s, pk)); ${loop} } }`;
-  it('unrolls a fixed-bound C2 loop', () => {
-    expect(() => compileString(mk('for (int i = 0; i < 3; i++) { m[ks[i]] = v; }'),
+  const boolLoop = 'contract C() { mapping(int => bool) m;'
+    + ' function f(int[] ks, pubkey pk, sig s) { require(checkSig(s, pk));'
+    + ' for (int i = 0; i < ks.length; i++) { m[ks[i]] = true; } } }';
+  it('unrolls a fixed-bound C2 loop (static upserts handle the actual value)', () => {
+    expect(() => compileString(mkBigint('for (int i = 0; i < 3; i++) { m[ks[i]] = v; }'),
       { sortedMappingsAll: true, forceStateful: true })).not.toThrow();
   });
-  it('compiles a dynamic diff-key C2 insert loop (per-iteration sorted insert, not fail-closed)', () => {
-    const art = compileString(mk('for (int i = 0; i < ks.length; i++) { m[ks[i]] = v; }'),
-      { sortedMappingsAll: true, forceStateful: true });
+  it('compiles a dynamic bool-value C2 insert loop (per-iteration sorted insert, not fail-closed)', () => {
+    const art = compileString(boolLoop, { sortedMappingsAll: true, forceStateful: true });
     expect(art.abi.find((f) => f.name === 'f')?.sortedInsertLoops).toContain('m');
+  });
+  it('fails closed on a dynamic PER-KEY / non-bool value insert loop (permutation unresolved)', () => {
+    expect(() => compileString(mkBigint('for (int i = 0; i < ks.length; i++) { m[ks[i]] = v; }'),
+      { sortedMappingsAll: true, forceStateful: true })).toThrow(/SortedMappingCodegenPending|sorted/i);
   });
 });
 

@@ -100,10 +100,16 @@ export function loadArtifactByName(artifactsDir: string, name: string): Artifact
     }
   };
   if (fs.existsSync(base)) walk(base);
-  if (matches.length === 1) return JSON.parse(fs.readFileSync(matches[0], 'utf-8')) as Artifact;
-  if (matches.length > 1) {
+  const parsed = matches.map((m) => JSON.parse(fs.readFileSync(m, 'utf-8')) as Artifact);
+  // The flat backward-compat `<file>.json` and the nested `<file>.scash/<Contract>.json` are the SAME contract
+  // when filename == contract name; they differ only in `updatedAt`. Dedupe by fingerprint (fall back to bytecode).
+  const ident = (a: Artifact): string => (a as any).fingerprint ?? a.bytecode ?? JSON.stringify(a.abi);
+  const distinct = new Map<string, Artifact>();
+  parsed.forEach((a) => distinct.set(ident(a), a));
+  if (distinct.size === 1) return [...distinct.values()][0];
+  if (distinct.size > 1) {
     throw new Error(
-      `getContractFactory: multiple artifacts named "${name}" (${matches.map((m) => path.relative(base, m)).join(', ')}). `
+      `getContractFactory: multiple DISTINCT artifacts named "${name}" (${matches.map((m) => path.relative(base, m)).join(', ')}). `
       + 'Pass the artifact object to disambiguate.',
     );
   }
@@ -119,6 +125,16 @@ function buildEthers(provider: NetworkProvider, mnemonic: string, opts: EthersOp
   const { artifactsDir, accountsPath } = opts;
   const resolveArtifact = <T extends Artifact>(a: T | string): T =>
     (typeof a === 'string' ? loadArtifactByName(artifactsDir, a) : a) as T;
+
+  // hardhat `getContractFactory("Name")` binds to the default deployer = signers[0]. Derive it synchronously
+  // (same identity `getSigners()` funds), so `factory.deploy(...)` funds the genesis from that account.
+  let cachedSigner: Signer | undefined;
+  const defaultRunner = (): ContractRunner => {
+    const anyProvider = provider as unknown as { getSigners?: unknown };
+    if (typeof anyProvider.getSigners !== 'function') return provider; // live net: no local signer
+    cachedSigner ??= signersFromMnemonic(mnemonic, provider, { count: 1, path: accountsPath })[0];
+    return cachedSigner;
+  };
 
   const getSigners = async (count = 20, o: { satoshis?: bigint; mnemonic?: string } = {}): Promise<Signer[]> => {
     const anyProvider = provider as unknown as { getSigners?: (c: number, x: object) => Promise<Signer[]> };
@@ -143,12 +159,12 @@ function buildEthers(provider: NetworkProvider, mnemonic: string, opts: EthersOp
       return signer;
     },
     getContractFactory: <T extends Artifact>(artifactOrName: T | string, runner?: ContractRunner): ContractFactory<T> =>
-      sdkGetContractFactory(resolveArtifact(artifactOrName), runner ?? provider),
+      sdkGetContractFactory(resolveArtifact(artifactOrName), runner ?? defaultRunner()),
     getContractAt: <T extends Artifact>(artifactOrName: T | string, addressOrCategory: string, runner?: ContractRunner) =>
-      StatefulContract.at(addressOrCategory, resolveArtifact(artifactOrName), runner ?? provider),
+      StatefulContract.at(addressOrCategory, resolveArtifact(artifactOrName), runner ?? defaultRunner()),
     deployContract: <T extends Artifact>(artifactOrName: T | string, args: ConstructorArgument[] = [],
       runner?: ContractRunner, overrides?: DeployContractOptions) =>
-      sdkDeployContract(resolveArtifact(artifactOrName), args, runner ?? provider, overrides),
+      sdkDeployContract(resolveArtifact(artifactOrName), args, runner ?? defaultRunner(), overrides),
     Contract: StatefulContract,
     ContractFactory,
     Signer,

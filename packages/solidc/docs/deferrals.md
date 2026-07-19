@@ -96,25 +96,21 @@ msg.sender) + `_balances[to] += amt` (DIFFERENT key each iter). Full form still 
   `CacheMappingEntryInLoop` now caches a scalar C2 entry written to the same INVARIANT identifier key more than once /
   in a loop: `for(i) balance[owner] -= amts[i]` reads `balance[owner]` once -> mutates a local -> one upsert (was a
   double-spend revert). VM-proven exact (100-10-20-30 = 40, wrong value reverts). Also makes straight-line `m[k]+=a;
-  m[k]+=b` coalesce. **REMAINING for multitransfer: the key is `msg.sender`, NOT an identifier.** A `msg.sender`/
-  `tx.origin`-keyed C2 entry is **SDK-ARCHITECTURE-BLOCKED**, not just a cache gap. There is no `msgSender` keySource
-  kind (`StatefulContract` resolves `param`/`state`/`stateArrayLast`/`constant`/`expression` only). CONFIRMED
-  2026-07-19 with a corrected probe (a real P2PKH funder input via `p2pkh.unlock.spend`, so on-chain `msg.sender` =
-  `emitTxOrigin` = the funder's `76a914<pkh>88ac` lockscript): even a SINGLE `_balances[msg.sender] = v` write into a
-  FRESH map (predecessor = HEAD, key-independent) still REVERTS. So it is not the co-spend-selection that fails - the
-  SDK's expression-placeholder path cannot PLAN the insert or DERIVE the NEW node for a `msg.sender` key at all. The
-  full fix is real SDK work: (1) a `msgSender` keySource in `classifyKeySource` (a `NullaryOpNode` MSG_SENDER/TX_ORIGIN
-  key -> `{kind:'msgSender'}`); (2) SDK resolves the slot from the FUNDER's P2PKH lockscript (`keyToSlot(76a914<pkh>
-  88ac)`) - it must know which input is `emitTxOrigin`'s first non-self/non-token P2PKH and pin the tx so that input's
-  address matches the slot it planned; (3) plan insert/update + derive NEW like a param key. Fails CLOSED (reverts,
-  never silent-wrong) because on-chain `slot == keyToSlot(msg.sender)` rejects a wrong SDK slot. Note real OZ ERC20
-  mostly reaches storage via a PARAM (`_transfer(from,to)` -> `_balances[from]`, which WORKS) - the DIRECT
-  `_balances[msg.sender]` is the rarer shape. A cache extension to nullary keys was built then REVERTED (it turned the
-  clear compile fail-close into a murky VM revert). **Compile-time fail-close SHIPPED 2026-07-19 (`bfbd652b`):**
-  `assertSortedKeyDrivable` (GTT sorted read/write/delete branches) now rejects a msg.sender/tx.origin KEY of a sorted
-  mapping at COMPILE with an actionable message (was compile-then-VM-revert). A PARAMETER address key still compiles;
-  msg.sender AS A VALUE is unaffected (`SortedMappingOptIn.test.ts`, 6 cases). The full drivability fix (the keySource
-  above) stays deferred; when it lands, remove the guard.
+  m[k]+=b` coalesce. **SINGLE `msg.sender` / `tx.origin`-keyed C2 = RESOLVED 2026-07-19 (`110e4e43`, MsgSenderC2.test.ts,
+  VM-proven).** On BCH a direct call's msg.sender = tx.origin = the first native P2PKH input's lockscript
+  (`emitTxOrigin`). Shipped: (1) a `msgSender` keySource kind (`classifyKeySource` detects a NullaryOp MSG_SENDER/
+  TX_ORIGIN key), carried through `KeySourceInfo`/`KeySourceAbi` (+`senderOp`) into the artifact; (2) SDK computes slot =
+  `keyToSlot(the connected Signer's P2PKH lockscript)` at the sorted key-resolution site + the entry-search loop; (3) it
+  FORCES the signer's native P2PKH funder input so `emitTxOrigin` resolves to it (`needsSenderInput` bumps
+  neededFunders), and the fee-estimation `funderUnlockSize` no longer tries to sign a P2PKH funder with empty
+  sourceOutputs (fixed 107 B). SOUND: a wrong SDK slot fails the on-chain `slot == keyToSlot(msg.sender)` check; a caller
+  cannot forge another's msg.sender without their P2PKH signature (VM-proven CROSS-SENDER ISOLATION: bob reads his own
+  slot, cannot touch alice's balance). Insert+update+read + tx.origin all pass. The old compile fail-close
+  (`assertSortedKeyDrivable`, `bfbd652b`) is REMOVED - the case is supported. Needs a connected Signer (else a clear
+  error). REMAINING for multitransfer's debit: `for(i) bal[msg.sender] -= amts[i]` (msg.sender key IN A LOOP) - the
+  scalar cache is identifier-only; extend `CacheMappingEntryInLoop` to a msg.sender key (now that the single flush
+  works, this reduces to the proven single write). Cross-contract msg.sender (non-zero `_msgSenderCategory` = a caller
+  contract, not a P2PKH) is out of scope (reverts, fail-closed).
 
 - **(b) DIFF-KEY RMW-UPDATE-in-loop covenant - the deep one.** `for(i) _balances[recipients[i]] += amounts[i]`. Root
   finding (read `emitSortedInsertLoopBody`): the range-splice body verifies ONLY internal chain structure - node.slot ==
@@ -149,10 +145,11 @@ msg.sender) + `_balances[to] += amt` (DIFFERENT key each iter). Full form still 
 COMPLETE+SOUND: single-key read/write/RMW/delete (all value types incl chunked long bytes/string), nested/composite/
 address keys, expr-key nested (`m[hash160(pk)][b]=v`), value-returning RMW helper, bool insert loop, LOOP-INVARIANT
 int-param value insert loop (`for(i) m[ks[i]] = v`, `SortedInsertLoopValue`), SAME-identifier-key scalar RMW-in-loop
-(`for(i) balance[owner] -= amts[i]`, `2f780468`). FAIL-CLOSED (sound, not complete): PER-KEY value insert loop
-(`= vs[i]`, permutation/value-witness), RMW insert loop (`+= v`), multitransfer diff-key credit (above),
-`msg.sender`/`tx.origin`-keyed C2 (SDK-blocked - no `msgSender` keySource; single write VM-reverts),
-delete/nullify-in-loop, 2D `m[k][i][j]`, function-pointer values.
+(`for(i) balance[owner] -= amts[i]`, `2f780468`), SINGLE `msg.sender`/`tx.origin`-keyed read/write/update
+(`110e4e43`, MsgSenderC2 - msgSender keySource + signer P2PKH slot + forced sender funder; cross-sender-isolated).
+FAIL-CLOSED (sound, not complete): PER-KEY value insert loop (`= vs[i]`, permutation/value-witness), RMW insert loop
+(`+= v`), multitransfer diff-key credit (above), `msg.sender` key IN A LOOP (scalar cache is identifier-only) +
+cross-contract msg.sender, delete/nullify-in-loop, 2D `m[k][i][j]`, function-pointer values.
 
 **One real HOLE found + FIXED (commit `af6e894a`): C2 `delete m[k]` in a DYNAMIC loop.** `visitMappingDelete`'s sorted
 branch routed to `emitSortedValueUpsert` (a FIXED-slot co-spend) with NO `plainLoopDepth` guard (unlike

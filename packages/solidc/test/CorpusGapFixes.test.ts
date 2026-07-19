@@ -2965,9 +2965,18 @@ describe('Yul create2 deploy lowering (UniswapV2Factory createPair)', () => {
       + ' assembly { pair := create2(0, add(code, 0x20), mload(code), salt) } pairs[token] = pair; } }', opts))
       .not.toThrow();
   });
-  it('fails closed on create2 over an unknown runtime buffer (no resolvable contract)', () => {
+  it('lowers create2 over a runtime bytes-local to a salt-baked p2sh32 address (EIP-1167 clone factory)', () => {
+    // Not a `type(C).creationCode` deploy: a create2 over an arbitrary bytes buffer (BentoBox `deploy`'s EIP-1167
+    // clone) computes the p2sh32 of `<salt> OP_DROP || bytecode`, mirroring the `create` handler (whose whole-bytes
+    // -local case already compiles) but salt-distinguished. The deployed EVM proxy has no functional BCH contract,
+    // so a call on the address fails closed at runtime; the address computation itself compiles.
     expect(() => compileString('contract C { function f(bytes memory code, bytes32 salt) external returns (address p){'
       + ' assembly { p := create2(0, add(code, 0x20), mload(code), salt) } } }', opts))
+      .not.toThrow();
+  });
+  it('fails closed on a create2 with a non-zero value (a funded deploy needs an output, not lowered here)', () => {
+    expect(() => compileString('contract C { function f(bytes memory code, bytes32 salt) external returns (address p){'
+      + ' assembly { p := create2(1, add(code, 0x20), mload(code), salt) } } }', opts))
       .toThrow(/create2.*no BCH equivalent/);
   });
 });

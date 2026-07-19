@@ -115,10 +115,14 @@ export default class InlineReturningStateHelpers extends AstTraversal {
       }
     }
     // State-touching returning ENTRY POINTS called internally have the same subroutine problem; inline the
-    // internal call sites but keep the definition (still dispatchable).
+    // internal call sites but keep the definition (still dispatchable). A PUBLIC/external returning helper that
+    // makes a LOW-LEVEL or EXTERNAL call is the same case: the covenant param it injects is threaded only at an
+    // entry, so it cannot be an OP_INVOKE subroutine - an internal call to it must inline (Multicall2 `tryAggregate`
+    // called by `tryBlockAndAggregate`). The public definition still stands as its own dispatched entry.
     for (const fn of node.functions) {
       if (!this.inlinedFns.has(fn.name) && !valueReferenced.has(fn.name) && this.eligibleShape(fn)
-        && (this.readsEntry(fn) || this.touchesScalarState(fn))) {
+        && (this.readsEntry(fn) || this.touchesScalarState(fn)
+          || this.transitivelyContainsLowLevelCall(fn) || this.containsExternalCall(fn))) {
         this.inlinedFns.add(fn.name);
         this.keepDefFns.add(fn.name);
       }

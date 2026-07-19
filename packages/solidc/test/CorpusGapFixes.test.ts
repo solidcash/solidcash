@@ -2524,3 +2524,23 @@ describe('legacy 0.6.x low-level call-option syntax target.call.value(v)(data) /
     ok('contract T { function f() public returns (int) { require(tx.outputs[0].value >= 0); return tx.outputs[0].value; } }');
   });
 });
+
+describe('internally-called PUBLIC low-level-call helper is inlined (Multicall2 tryAggregate pattern)', () => {
+  // A public value-returning helper that makes a low-level call injects an entry-only covenant param, so it cannot
+  // be an OP_INVOKE subroutine. An internal call to it must inline (while its own public definition stays a
+  // dispatched entry); previously the internal call hit a phantom-param arity mismatch. Transitive chains too.
+  const ok = (src: string): void => {
+    expect(() => compileString(src, { solidityImportCompat: true })).not.toThrow();
+  };
+  it('inlines an internal call to a public low-level-call helper', () => {
+    ok('contract T { function helper(address a, bytes memory d) public returns (bool) {'
+      + ' (bool okk, bytes memory r) = a.call(d); return okk; }'
+      + ' function outer(address a, bytes memory d) public returns (bool) { return helper(a, d); } }');
+  });
+  it('inlines a transitive chain of public low-level-call helpers', () => {
+    ok('contract T { function inner(address a, bytes memory d) public returns (bool) {'
+      + ' (bool okk, bytes memory r) = a.call(d); return okk; }'
+      + ' function mid(address a, bytes memory d) public returns (bool) { return inner(a, d); }'
+      + ' function outer(address a, bytes memory d) public returns (bool) { return mid(a, d); } }');
+  });
+});

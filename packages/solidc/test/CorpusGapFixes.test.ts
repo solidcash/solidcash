@@ -2710,3 +2710,24 @@ describe('using-for on an interface-typed struct-field / state-var receiver (not
       + ' function g(uint256 pid) public { Pool storage pool = poolInfo[pid]; s = pool.lpToken.balanceOf(address(this)); } }');
   });
 });
+
+describe('using-for external-call library method on an interface-typed state var (OZ SafeERC20 pattern)', () => {
+  // `IERC20 public token; using SafeERC20 for IERC20; token.safeTransfer(..)` - safeTransfer is a using-for LIBRARY
+  // method (whose body does a low-level/external call), NOT an IERC20 method. It must be rewritten to
+  // `SafeERC20.safeTransfer(token, ..)` PRE-inlining (in RedesugarImportedUsingForCalls) so the external-call helper
+  // reaches its inliner; a SymbolTable-time resolution is too late (the helper's covenant param then surfaces).
+  const lib = 'interface IERC20 { function transfer(address to, uint256 v) external returns (bool); }'
+    + ' library SafeERC20 { function safeTransfer(IERC20 token, address to, uint256 v) internal {'
+    + ' require(token.transfer(to, v), "f"); } }';
+  const ok = (src: string): void => {
+    expect(() => compileString(`pragma solidity ^0.8.0; ${lib} ${src}`, { solidityImportCompat: true })).not.toThrow();
+  };
+  it('compiles token.safeTransfer(..) on an interface state var', () => {
+    ok('contract C { IERC20 tok; using SafeERC20 for IERC20;'
+      + ' function f(address to, uint256 v) public { tok.safeTransfer(to, v); } }');
+  });
+  it('leaves a genuine interface method (tok.transfer) as an external call', () => {
+    ok('contract C { IERC20 tok; using SafeERC20 for IERC20;'
+      + ' function f(address to, uint256 v) public { require(tok.transfer(to, v)); } }');
+  });
+});

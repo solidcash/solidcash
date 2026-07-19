@@ -145,6 +145,14 @@ export default class RedesugarImportedUsingForCalls extends AstTraversal {
         if (!lib && t && !(t instanceof AddressType && t.interfaceName)) {
           lib = this.wildcardLibs.find((wl) => this.freeFnNames.has(`${wl}.${method}`));
         }
+        // An interface-typed receiver bound by `using L for IFace` (`IERC20 token; token.safeTransfer(..)` under
+        // `using SafeERC20 for IERC20`): a using-for LIBRARY method (L declares `L.method`), NOT an interface method
+        // (which stays an external call - it is not an `L.method` free fn). Rewrite pre-inlining so an external-call
+        // helper like SafeERC20.safeTransfer reaches its inliner (a SymbolTable-time resolution is too late).
+        if (!lib && t instanceof AddressType && t.interfaceName) {
+          const l = this.interfaceToLib.get(t.interfaceName);
+          if (l && this.freeFnNames.has(`${l}.${method}`)) lib = l;
+        }
         if (lib && this.freeFnNames.has(`${lib}.${method}`)) {
           const recvId = new IdentifierNode(recv);
           recvId.location = node.identifier.location;

@@ -177,9 +177,13 @@ msg.sender) + `_balances[to] += amt` (DIFFERENT key each iter). Full form still 
   every existing case; the SDK mirrors the fold via lastDeferred (re-points the predecessor's commitment in place +
   appends NEW). REQUIRES ADJACENCY (predecessor credited immediately before R) - else fail-closed (one UTXO can't be
   co-spent twice). VM-proven: MergeCaseB + FullMultiTransfer case-b fold in 2 fixtures, chain valid, supply conserved;
-  fail-closed on wrong-order/non-adjacent + msg.sender-also-recipient + two-new-in-one-gap. Commit after this doc.
-  **STILL fail-closed (sound):** NON-adjacent case-b (P not credited immediately before R - needs an SDK topological
-  reorder of recipients+amounts) and CHAINS (R's pred is P, P's pred is Q - forward refs on already-minted outputs).
+  fail-closed on msg.sender-also-recipient + two-new-in-one-gap. **NON-adjacent case-b is now ORDER-INDEPENDENT
+  (`2e3af87d`):** the SDK reorders recipients+amounts (as a pair, preserving each recipient's amount) to place each new
+  recipient right after its credited predecessor, then writes the reordered arrays to BOTH args AND finalArgs (finalArgs
+  builds the master unlocker, so the encoded tx arg must match the commitment order). VM-proven: `[alice(new),
+  carol(update)]` reorders to `[carol, alice]` -> same result as adjacent. Fires only when a case-b pair exists.
+  **STILL fail-closed (sound):** CHAINS - two-or-more new recipients in ONE gap (R's pred is P, R2's pred is R1 a
+  not-yet-minted node); a forward reference the reorder can't linearize. Needs paginated writes across txs.
 
 - **(b3) ABSOLUTE per-key assignment loop `for(i) m[k[i]] = v[i]` - RESOLVED 2026-07-19 (`644532b1`, op=set,
   VM-proven).** A pure per-key assignment (value REPLACES, not accumulates) now routes through the SAME upsert loop

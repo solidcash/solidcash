@@ -217,9 +217,12 @@ mints) so update (mint 1) and insert (mint P'+NEW) coexist. What ships:
    unchanged. The in-gap check vs P's REAL nextKey is the omission anchor. SDK mirrors it via `lastDeferred`
    (re-points the predecessor's commitment in place). Adversarially VM-proven (`MergeCaseB` + `FullMultiTransfer`).
 
-**Still fail-closed (sound).** (a) NON-adjacent case (b) - the credited predecessor P is not ordered immediately before
-the new recipient R; needs an SDK topological reorder of recipients+amounts (result is order-independent), tracked in
-`deferrals.md`. (b) two-or-more new recipients CHAINING in one gap (a forward reference - the first node's `next` is a
-later-minted node). N per tx is capped by transaction size; larger N needs paginated writes across txs. Cross-cutting:
-the exclusion proof must survive the batch (rejecting forged / omitted / misordered / duplicated entries), since a bug
-reopens the C2 exclusion-proof hole.
+6. **ORDER-INDEPENDENT case (b)** - the credited predecessor P need not be passed immediately before the new recipient
+   R. The SDK reorders recipients+amounts (as a pair, preserving each recipient's amount) to place each such R right
+   after P, writing the reordered arrays to both the commitment builder and the encoded tx argument. The multiTransfer
+   result is order-independent, so this is transparent; it fires only when a case-b pair exists.
+
+**Still fail-closed (sound).** Two-or-more new recipients CHAINING in ONE gap (a forward reference - the first node's
+`next` is a later-minted node the reorder can't linearize). N per tx is capped by transaction size; larger N needs
+paginated writes across txs. Cross-cutting: the exclusion proof must survive the batch (rejecting forged / omitted /
+misordered / duplicated entries), since a bug reopens the C2 exclusion-proof hole.

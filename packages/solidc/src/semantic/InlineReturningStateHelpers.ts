@@ -20,6 +20,7 @@ import {
   StateAssignNode,
   WhileNode,
   DoWhileNode,
+  UncheckedNode,
   TernaryOpNode,
   BinaryOpNode,
   TupleAssignmentNode,
@@ -189,11 +190,20 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     return node;
   }
 
+  // A lone `unchecked { .. }` body is transparent for linearization: BCH integers are arbitrary-precision BigInts
+  // with no fixed-width overflow, so the wrapper never changes the arithmetic of the hoisted prelude. Treating its
+  // inner statements as the body lets `unchecked { __t = m[k]; m[k] = __t+1; return __t; }` (OZ Nonces `_useNonce`,
+  // the save-old lowering of `return m[k]++`) inline like a bare-return state-reading helper.
+  private effectiveStmts(stmts: StatementNode[]): StatementNode[] {
+    if (stmts.length === 1 && stmts[0] instanceof UncheckedNode) return (stmts[0] as UncheckedNode).block.statements ?? [];
+    return stmts;
+  }
+
   // The structural half of `eligible`: single-tail-return, no storage params (visibility-agnostic).
   private eligibleShape(fn: FunctionDefinitionNode): boolean {
     if (!fn.body || fn.returnTypes.length < 1) return false;
     if (fn.parameters.some((p) => p.modifier.includes(Modifier.STORAGE))) return false;
-    const stmts = fn.body.statements ?? [];
+    const stmts = this.effectiveStmts(fn.body.statements ?? []);
     const last = stmts[stmts.length - 1];
     if (!(last instanceof ReturnNode)) return false;
     // The final return must be 1:1 with the declared return types, so a multi-value helper returns `(a, b)` (each
@@ -617,7 +627,7 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     // hoists into the statement list). Guard against self-recursion via the stack.
     const savedStack = this.stack;
     this.stack = [...savedStack, inlineKey(callee.name, callee.parameters.length)];
-    const processed = (this.visit(cloned.body) as BlockNode).statements ?? [];
+    const processed = this.effectiveStmts((this.visit(cloned.body) as BlockNode).statements ?? []);
     this.stack = savedStack;
 
     const ret = processed[processed.length - 1] as ReturnNode;

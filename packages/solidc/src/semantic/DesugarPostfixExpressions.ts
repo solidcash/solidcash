@@ -20,8 +20,10 @@ import {
   WhileNode,
   DoWhileNode,
   ReturnNode,
+  VariableDefinitionNode,
 } from '../ast/AST.js';
 import { UnaryOperator, BinaryOperator } from '../ast/Operator.js';
+import { MappingType, Type } from '@solidcash/utils';
 import AstTraversal from '../ast/AstTraversal.js';
 import { cloneNode } from '../ast/clone.js';
 
@@ -133,10 +135,31 @@ export default class DesugarPostfixExpressions extends AstTraversal {
   private suppress = false;
   private inReturn = false;
   private currentStmt: StatementNode | undefined; // innermost enclosing statement (a sequence point)
+  private collectionTypes = new Map<string, MappingType>(); // mapping name -> its MappingType (for the save-old temp)
+  private tempCounter = 0;
 
   visitSourceFile(node: SourceFileNode): Node {
     if (node.contract) node.contract = this.visit(node.contract) as ContractNode;
     return node;
+  }
+
+  visitContract(node: ContractNode): Node {
+    for (const c of node.collections ?? []) {
+      if (c.type instanceof MappingType) this.collectionTypes.set(c.name, c.type);
+    }
+    return super.visitContract(node) as Node;
+  }
+
+  // The value type of `m[k]` / `m[a][b]`: unwrap the mapping's MappingType by the number of keys applied. Returns
+  // undefined for a non-mapping base or a shape that does not resolve to a value (fall back to the reconstruction).
+  private mappingElementValueType(access: MappingAccessNode): Type | undefined {
+    let t: Type | undefined = this.collectionTypes.get(access.name);
+    if (!t) return undefined;
+    for (let i = 0; i < access.keys.length; i += 1) {
+      if (t instanceof MappingType) t = t.valueType;
+      else return undefined;
+    }
+    return t instanceof MappingType ? undefined : t;
   }
 
   // Per statement: visit it (postfix ops replace themselves with the read + queue their increment in
@@ -185,6 +208,28 @@ export default class DesugarPostfixExpressions extends AstTraversal {
     const reRead = base !== undefined && this.currentStmt !== undefined
       && countBaseRefs(this.currentStmt, base) > 1;
     if (this.inReturn || reRead) {
+      // C2-SOUND read-old-temp for a MAPPING element in a plain `return m[k]++` (the OZ Nonces/EIP-2612 pattern):
+      // the reconstruction below hoists the write then RE-READS `m[k]` as `m[k] -/+ 1`, but a C2 sorted mapping
+      // entry NFT is co-spent by the write and cannot be read again in the same tx - so when such a value helper
+      // inlines into an entry point the re-read OP_VERIFY-fails. Instead lower like the SOUND assignment form
+      // `n = m[k]++` (which the C2 codegen handles): read the old value into `__pfN`, then the ordinary RMW
+      // `m[k] = m[k] +/- 1` (whose read coalesces with the entry's single co-spend), and return `__pfN`. Only the
+      // clean return case (`inReturn && !reRead`); mapping elements are the only C2 entries (state vars / locals are
+      // register/data-NFT), so those keep the cheaper reconstruction.
+      if (this.inReturn && !reRead && node.expression instanceof MappingAccessNode
+        && this.currentStmt !== undefined && base !== undefined && !baseIsWritten(this.currentStmt, base)) {
+        const valueType = this.mappingElementValueType(node.expression);
+        if (valueType) {
+          const tempName = `__pf${this.tempCounter++}`;
+          const readOld = new VariableDefinitionNode(
+            valueType, [], tempName, cloneNode(node.expression) as ExpressionNode,
+          );
+          readOld.location = node.location;
+          this.before.push(readOld, increment); // __pfN = m[k];  m[k] = m[k] +/- 1;  (RMW coalesces the read)
+          const ret = new IdentifierNode(tempName); ret.location = node.location;
+          return ret; // return the saved OLD value
+        }
+      }
       if (base !== undefined && this.currentStmt !== undefined
         && isLeftmostBaseRef(this.currentStmt, node.expression, base)
         && !baseIsWritten(this.currentStmt, base)) {

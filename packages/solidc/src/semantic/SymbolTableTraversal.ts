@@ -262,6 +262,7 @@ export default class SymbolTableTraversal extends AstTraversal {
   // Local var name -> its initializer expression, for resolving a mapping key that is a local (e.g.
   // `address lastKey = keys[keys.length-1]; m[lastKey] = v`). Populated per function before the entry pre-scan.
   private localKeyDefs: Map<string, ExpressionNode> = new Map();
+  private canonSeen: Set<string> = new Set(); // cycle guard for transitive local-key canonicalization
   private currentContract: ContractNode;
   private expectedSymbolType: SymbolType = SymbolType.VARIABLE;
   private insideConsoleStatement: boolean = false;
@@ -4128,6 +4129,18 @@ export default class SymbolTableTraversal extends AstTraversal {
 
   private canonicalizeExpression(node: ExpressionNode): string {
     if (node instanceof IdentifierNode) {
+      // Resolve a local key TRANSITIVELY through its initializer: an inlined value helper binds `__rhN_owner = pkh`
+      // where `pkh = hash160(pk)`, so the key seen by codegen is `__rhN_owner` - inlining the chain to
+      // `call:hash160(id:pk)` lets the SDK evalComputedKey reach the root computation (params/literals). Cycle-
+      // guarded; a reassigned local keeps its FIRST decl in localKeyDefs (a stale canonical -> the covenant's
+      // keyToSlot verify rejects, fail-closed, never silent). Params are not in localKeyDefs so they stay `id:p`.
+      const def = this.localKeyDefs.get(node.name);
+      if (def && !this.canonSeen.has(node.name)) {
+        this.canonSeen.add(node.name);
+        const inner = this.canonicalizeExpression(def);
+        this.canonSeen.delete(node.name);
+        return inner;
+      }
       return `id:${node.name}`;
     }
     if (node instanceof StateAccessNode) {
@@ -4309,11 +4322,14 @@ export default class SymbolTableTraversal extends AstTraversal {
 
   // Collect simple `T local = <expr>;` initializers in the function body so a mapping key that is a local can be
   // resolved back to its initializer (see classifyKeySource). Shallow: a re-declared name keeps the first def.
+  // EXCLUDES loop variables: a `for (uint i = 0; ..)` counter is re-assigned every iteration, so resolving `i` to
+  // its `0` init would corrupt a per-iteration key like `xs[i]` (arridx(id:xs, id:i) must stay literal for the
+  // insert-loop SDK derivation) - a loop var is NOT a single-assignment computed value.
   private collectLocalKeyDefs(node: Node | undefined): void {
     this.localKeyDefs = new Map();
     const walk = (n: Node | undefined): void => {
       if (!n) return;
-      if (n instanceof VariableDefinitionNode && n.expression && !this.localKeyDefs.has(n.name)) {
+      if (n instanceof VariableDefinitionNode && n.expression && !n.isLoopVariable && !this.localKeyDefs.has(n.name)) {
         this.localKeyDefs.set(n.name, n.expression);
       }
       for (const k of Object.keys(n)) {

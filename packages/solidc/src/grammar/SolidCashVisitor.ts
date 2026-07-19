@@ -139,6 +139,7 @@ import { ConsoleParameterListContext } from "./SolidCashParser.js";
 import { FunctionCallContext } from "./SolidCashParser.js";
 import { NamedArgContext } from "./SolidCashParser.js";
 import { ExpressionListContext } from "./SolidCashParser.js";
+import { CallArgumentContext } from "./SolidCashParser.js";
 import { CallOptionsContext } from "./SolidCashParser.js";
 import { CallOptionContext } from "./SolidCashParser.js";
 import { TypeListContext } from "./SolidCashParser.js";
@@ -1045,6 +1046,12 @@ export default class SolidCashVisitor<Result> extends ParseTreeVisitor<Result> {
 	 * @return the visitor result
 	 */
 	visitExpressionList?: (ctx: ExpressionListContext) => Result;
+	/**
+	 * Visit a parse tree produced by `SolidCashParser.callArgument`.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	visitCallArgument?: (ctx: CallArgumentContext) => Result;
 	/**
 	 * Visit a parse tree produced by `SolidCashParser.callOptions`.
 	 * @param ctx the parse tree

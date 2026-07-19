@@ -643,7 +643,14 @@ namedArg
     ;
 
 expressionList
-    : '(' (expression (',' expression)* ','?)? ')'
+    : '(' (callArgument (',' callArgument)* ','?)? ')'
+    ;
+
+// A function-call argument: an expression, optionally an assignment `x = v` (Solidity's assignment-as-argument,
+// e.g. BentoBox `_calculateDomainSeparator(DOMAIN_SEPARATOR_CHAIN_ID = chainId)`). The AstBuilder wraps the tail
+// form in an AssignmentExpressionNode; DesugarAssignmentArguments hoists it to `x = v;` before the call statement.
+callArgument
+    : expression (aop=('=' | '+=' | '-=' | '*=' | '/=' | '%=' | '&=' | '|=' | '^=' | '<<=' | '>>=') assignChain)?
     ;
 
 callOptions

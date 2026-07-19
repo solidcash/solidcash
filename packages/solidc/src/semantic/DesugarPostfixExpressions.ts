@@ -11,6 +11,7 @@ import {
   MappingAccessNode,
   ArrayAccessNode,
   AssignNode,
+  AssignmentExpressionNode,
   StateAssignNode,
   MappingAssignNode,
   ArrayAssignNode,
@@ -289,6 +290,21 @@ export default class DesugarPostfixExpressions extends AstTraversal {
     node.expressions = this.visitList(node.expressions) as ExpressionNode[];
     this.inReturn = saved;
     return node;
+  }
+
+  // An assignment used as an EXPRESSION (`f(x = v)` assignment-as-argument, `int a = (b = c)`): hoist the side
+  // effect to a statement before the enclosing one and read the target in its place - `f(x = v)` becomes
+  // `x = v; f(x)`. This also sidesteps the state-var assignment-as-expression codegen restriction (the write is
+  // now an ordinary statement). Suppressed inside a ternary / short-circuit / loop condition (where the write would
+  // become conditional), where the node is left as-is (the existing local-only value-form handling still applies).
+  visitAssignmentExpression(node: AssignmentExpressionNode): Node {
+    node.assign = this.visit(node.assign) as AssignNode; // recurse first: a nested postfix in the RHS hoists too
+    if (this.suppress) return node;
+    const target = node.assign.identifier;
+    this.before.push(node.assign);
+    const read = new IdentifierNode(target.name);
+    read.location = node.location;
+    return read;
   }
 
   private withSuppressed<T>(fn: () => T): T {

@@ -224,6 +224,8 @@ import type {
   UsingLibraryForContext,
   UsingFunctionsForContext,
   AssignChainContext,
+  CallArgumentContext,
+  ExpressionListContext,
 } from '../grammar/SolidCashParser.js';
 // Value imports (not type-only): needed for `instanceof` when detecting a tuple-valued ternary.
 import { TernaryOpContext, TupleExpressionContext } from '../grammar/SolidCashParser.js';
@@ -734,7 +736,7 @@ export default class AstBuilder
       .filter((s) => s.expressionList() !== null)
       .map((s) => ({
         parentName: s.Identifier().getText(),
-        args: s.expressionList()!.expression_list().map((e) => this.visit(e) as ExpressionNode),
+        args: this.buildCallArguments(s.expressionList()!),
         location: Location.fromCtx(s),
       }));
     // Collect enum definitions
@@ -1013,7 +1015,7 @@ export default class AstBuilder
       this.pendingParentInvocations = piCtxList.map(
         (piCtx: ParentInvocationContext): ParentInvocation => ({
           parentName: piCtx.Identifier().getText(),
-          args: piCtx.expressionList().expression_list().map((e) => this.visit(e) as ExpressionNode),
+          args: this.buildCallArguments(piCtx.expressionList()!),
           location: Location.fromCtx(piCtx),
         }),
       );
@@ -1061,7 +1063,7 @@ export default class AstBuilder
         (m: CustomModifierInvocationContext): CustomModifierInvocation => ({
           name: m.Identifier().getText(),
           args: m.expressionList()
-            ? m.expressionList()!.expression_list().map((e) => this.visit(e) as ExpressionNode)
+            ? this.buildCallArguments(m.expressionList()!)
             : [],
           location: Location.fromCtx(m),
         }),
@@ -1132,7 +1134,7 @@ export default class AstBuilder
           (m: CustomModifierInvocationContext): CustomModifierInvocation => ({
             name: m.Identifier().getText(),
             args: m.expressionList()
-              ? m.expressionList()!.expression_list().map((e) => this.visit(e) as ExpressionNode)
+              ? this.buildCallArguments(m.expressionList()!)
               : [],
             location: Location.fromCtx(m),
           }),
@@ -1187,7 +1189,7 @@ export default class AstBuilder
           (m: CustomModifierInvocationContext): CustomModifierInvocation => ({
             name: m.Identifier().getText(),
             args: m.expressionList()
-              ? m.expressionList()!.expression_list().map((e) => this.visit(e) as ExpressionNode)
+              ? this.buildCallArguments(m.expressionList()!)
               : [],
             location: Location.fromCtx(m),
           }),
@@ -1331,7 +1333,7 @@ export default class AstBuilder
 
     const exprList = ctx.expressionList();
     if (!exprList) return false;
-    const exprs = exprList.expression_list();
+    const exprs = exprList.callArgument_list();
     if (exprs.length !== 1) return false;
 
     // The argument must be a single identifier (parameter name)
@@ -1896,6 +1898,32 @@ export default class AstBuilder
     return node;
   }
 
+  // Function-call arguments. Each is an expression, optionally an assignment `x = v` (Solidity's assignment-as-
+  // argument, BentoBox `_calculateDomainSeparator(DOMAIN_SEPARATOR_CHAIN_ID = chainId)`) wrapped in an
+  // AssignmentExpressionNode - DesugarAssignmentArguments later hoists it to `x = v;` before the call statement.
+  private buildCallArguments(ctx: ExpressionListContext): ExpressionNode[] {
+    return ctx.callArgument_list().map((a) => this.buildCallArgument(a));
+  }
+
+  private buildCallArgument(ctx: CallArgumentContext): ExpressionNode {
+    const expr = this.visit(ctx.expression()) as ExpressionNode;
+    if (!ctx._aop) return expr;
+    // Assignment-as-argument: a simple `identifier = value` only. A complex lvalue or a chained value (`x = y = z`)
+    // is rejected cleanly rather than silently mis-hoisted.
+    const chain = ctx.assignChain()!;
+    if (!(expr instanceof IdentifierNode) || chain._op) {
+      throw new ParseError(
+        'assignment-as-argument is only supported for a simple `identifier = value`', Location.fromCtx(ctx),
+      );
+    }
+    const assign = this.buildCompoundAssign(
+      expr.name, expr.location!, ctx._aop.text, chain.expression(), Location.fromCtx(ctx),
+    );
+    const node = new AssignmentExpressionNode(assign);
+    node.location = Location.fromCtx(ctx);
+    return node;
+  }
+
   // Builds an AssignNode from a `=`, `+=`, `-=`, `++` or `--` form, rewriting compound
   // and increment forms as: identifier (+|-) rhs
   private buildCompoundAssign(
@@ -1969,7 +1997,7 @@ export default class AstBuilder
     } else if (rm && rm.Identifier() && rm.expressionList()) {
       // require(cond, CustomError(args)) - reverts with the custom error if cond is false
       errorName = rm.Identifier().getText();
-      args = rm.expressionList().expression_list().map((e) => this.visit(e) as ExpressionNode);
+      args = this.buildCallArguments(rm.expressionList()!);
     }
     // else: require(cond, <any other expression>) - a dynamic string message (a variable, member access, function
     // call, ternary, string.concat, ...). Solidity treats require as a plain function taking `string memory`; BCH
@@ -2376,8 +2404,7 @@ export default class AstBuilder
     const index = this.visit(ctx._index) as ExpressionNode;
     const callee = new ArrayAccessNode(base, index);
     callee.location = Location.fromCtx(ctx);
-    const argCtxs = ctx.expressionList().expression_list();
-    const args = argCtxs.map((e: any) => this.visit(e) as ExpressionNode);
+    const args = this.buildCallArguments(ctx.expressionList());
     const node = new IndirectCallNode(callee, args);
     node.location = Location.fromCtx(ctx);
     return node;
@@ -2387,8 +2414,7 @@ export default class AstBuilder
   // etc.). Same indirect dispatch as an indexed callee.
   visitParenthesizedFunctionCall(ctx: any): ExpressionNode {
     const callee = this.visit(ctx.expression()) as ExpressionNode;
-    const argCtxs = ctx.expressionList().expression_list();
-    const args = argCtxs.map((e: any) => this.visit(e) as ExpressionNode);
+    const args = this.buildCallArguments(ctx.expressionList());
     const node = new IndirectCallNode(callee, args);
     node.location = Location.fromCtx(ctx);
     return node;
@@ -2421,7 +2447,7 @@ export default class AstBuilder
       : identifiers[0].getText();
     const identifier = new IdentifierNode(name);
     identifier.location = Location.fromToken(identifiers[0].symbol);
-    const parameters = ctx.expressionList().expression_list().map((e) => this.visit(e));
+    const parameters = this.buildCallArguments(ctx.expressionList()!);
 
     // using-for: `recv.method(args)` where recv is a struct var bound to a library -> `Library.method(recv, args)`.
     if (identifiers.length > 1 && this.usingForLibraries.size > 0) {
@@ -2511,7 +2537,7 @@ export default class AstBuilder
   visitInstantiation(ctx: InstantiationContext): InstantiationNode {
     const identifier = new IdentifierNode(ctx.Identifier().getText());
     identifier.location = Location.fromToken(ctx.Identifier().symbol);
-    const parameters = ctx.expressionList().expression_list().map((e) => this.visit(e));
+    const parameters = this.buildCallArguments(ctx.expressionList()!);
     const instantiation = new InstantiationNode(identifier, parameters);
     instantiation.location = Location.fromCtx(ctx);
     if (ctx.callOptions()) {
@@ -2525,7 +2551,7 @@ export default class AstBuilder
   visitInstantiationWithOptions(ctx: any): InstantiationNode {
     const identifier = new IdentifierNode(ctx.Identifier().getText());
     identifier.location = Location.fromToken(ctx.Identifier().symbol);
-    const parameters = ctx.expressionList().expression_list().map((e: ExpressionContext) => this.visit(e));
+    const parameters = this.buildCallArguments(ctx.expressionList()!);
     const instantiation = new InstantiationNode(identifier, parameters);
     instantiation.location = Location.fromCtx(ctx);
     instantiation.callOptions = this.parseCallOptions(ctx.callOptions());
@@ -4375,7 +4401,7 @@ export default class AstBuilder
         Location.fromCtx(ctx),
       );
     }
-    const parameters = ctx.expressionList().expression_list().map((e) => this.visit(e)) as ExpressionNode[];
+    const parameters = this.buildCallArguments(ctx.expressionList()!) as ExpressionNode[];
     const node = new MethodCallNode(object, methodName, parameters);
     node.callOptions = callOpts;
     node.location = Location.fromCtx(ctx);
@@ -4385,7 +4411,7 @@ export default class AstBuilder
   visitMethodCall(ctx: MethodCallContext): ExpressionNode {
     const object = this.visit(ctx.expression());
     const methodName = ctx.Identifier().getText();
-    const parameters = ctx.expressionList().expression_list().map((e) => this.visit(e));
+    const parameters = this.buildCallArguments(ctx.expressionList()!);
     const callOpts = this.parseCallOptions(ctx.callOptions());
 
     // UDVT wrap/unwrap reached as a method call: `C.T.unwrap(x)` strips (visitFieldAccess) to object = bare `T`,
@@ -4638,28 +4664,28 @@ export default class AstBuilder
   }
 
   visitAbiEncode(ctx: AbiEncodeContext): AbiEncodeNode {
-    const parameters = ctx.expressionList().expression_list().map((e) => this.visit(e));
+    const parameters = this.buildCallArguments(ctx.expressionList()!);
     const node = new AbiEncodeNode(parameters);
     node.location = Location.fromCtx(ctx);
     return node;
   }
 
   visitAbiEncodePacked(ctx: AbiEncodePackedContext): AbiEncodePackedNode {
-    const parameters = ctx.expressionList().expression_list().map((e) => this.visit(e));
+    const parameters = this.buildCallArguments(ctx.expressionList()!);
     const node = new AbiEncodePackedNode(parameters);
     node.location = Location.fromCtx(ctx);
     return node;
   }
 
   visitAbiEncodeWithSelector(ctx: AbiEncodeWithSelectorContext): AbiEncodeWithSelectorNode {
-    const exprs = ctx.expressionList().expression_list().map((e) => this.visit(e));
+    const exprs = this.buildCallArguments(ctx.expressionList()!);
     const node = new AbiEncodeWithSelectorNode(exprs[0], exprs.slice(1));
     node.location = Location.fromCtx(ctx);
     return node;
   }
 
   visitAbiEncodeWithSignature(ctx: AbiEncodeWithSignatureContext): AbiEncodeWithSignatureNode {
-    const exprs = ctx.expressionList().expression_list().map((e) => this.visit(e));
+    const exprs = this.buildCallArguments(ctx.expressionList()!);
     const node = new AbiEncodeWithSignatureNode(exprs[0], exprs.slice(1));
     node.location = Location.fromCtx(ctx);
     return node;
@@ -4671,21 +4697,21 @@ export default class AstBuilder
     // resolves to a function of the current contract in SymbolTableTraversal.
     const interfaceName = ids.length === 1 ? 'this' : ids[0].getText();
     const functionName = ids.length === 1 ? ids[0].getText() : ids[1].getText();
-    const params = ctx.expressionList().expression_list()?.map((e) => this.visit(e)) ?? [];
+    const params = this.buildCallArguments(ctx.expressionList());
     const node = new AbiEncodeCallNode(interfaceName, functionName, params);
     node.location = Location.fromCtx(ctx);
     return node;
   }
 
   visitBytesConcat(ctx: BytesConcatContext): BytesConcatNode {
-    const parameters = ctx.expressionList().expression_list().map((e) => this.visit(e));
+    const parameters = this.buildCallArguments(ctx.expressionList()!);
     const node = new BytesConcatNode(parameters);
     node.location = Location.fromCtx(ctx);
     return node;
   }
 
   visitStringConcat(ctx: StringConcatContext): StringConcatNode {
-    const parameters = ctx.expressionList().expression_list().map((e) => this.visit(e));
+    const parameters = this.buildCallArguments(ctx.expressionList()!);
     const node = new StringConcatNode(parameters);
     node.location = Location.fromCtx(ctx);
     return node;
@@ -4790,7 +4816,7 @@ export default class AstBuilder
         node = new RevertNode(errorName, args);
         node.fieldNames = namedArgs.map((na) => na.Identifier().getText());
       } else {
-        const args = ctx.expressionList().expression_list().map((e) => this.visit(e) as ExpressionNode);
+        const args = this.buildCallArguments(ctx.expressionList()!);
         node = new RevertNode(errorName, args);
       }
     } else if (ctx.expression()) {
@@ -4837,7 +4863,7 @@ export default class AstBuilder
       node = new EmitStatementNode(eventName, args);
       node.fieldNames = namedArgs.map((na) => na.Identifier().getText());
     } else {
-      const args = ctx.expressionList().expression_list().map((e) => this.visit(e) as ExpressionNode);
+      const args = this.buildCallArguments(ctx.expressionList()!);
       node = new EmitStatementNode(eventName, args);
     }
     node.location = Location.fromCtx(ctx);
@@ -4955,7 +4981,7 @@ export default class AstBuilder
     const fnName = ids[1].getText();
     const tmpName = `__nlv_${this.nestedLvalueCounter++}`;
     const fnId = new IdentifierNode(`${ids[0].getText()}.${fnName}`); fnId.location = loc;
-    const factoryCall = new FunctionCallNode(fnId, fc.expressionList().expression_list().map((e) => this.visit(e) as ExpressionNode));
+    const factoryCall = new FunctionCallNode(fnId, this.buildCallArguments(fc.expressionList()!));
     factoryCall.location = loc;
     const retStruct = this.functionReturnStructs.get(fnName);
     if (!retStruct) {
@@ -5642,12 +5668,12 @@ export default class AstBuilder
       const fc = lhsCtx.functionCall();
       const ids = fc.Identifier_list();
       const llMethod = ids.length === 2 ? ids[1].getText() : undefined;
-      const llArgs = fc.expressionList()?.expression_list();
+      const llArgs = fc.expressionList()?.callArgument_list();
       if ((llMethod === 'call' || llMethod === 'staticcall' || llMethod === 'delegatecall') && llArgs?.length === 1) {
         const args = llArgs;
         const target = new IdentifierNode(ids[0].getText());
         target.location = Location.fromToken(ids[0].symbol);
-        const node = new LowLevelCallStatementNode(target, this.visit(args[0]) as ExpressionNode, llMethod);
+        const node = new LowLevelCallStatementNode(target, this.visit(args[0].expression()) as ExpressionNode, llMethod);
         node.location = Location.fromCtx(lhsCtx); return node;
       }
       return wrap(this.visit(lhsCtx) as ExpressionNode);
@@ -5659,12 +5685,12 @@ export default class AstBuilder
     const method = ctx.Identifier().getText();
     const recvCtx = ctx.expression();
     const loc = Location.fromCtx(ctx);
-    const argCtxs = ctx.expressionList().expression_list();
+    const callArgs = this.buildCallArguments(ctx.expressionList());
     // Low-level `.call`/`.staticcall`/`.delegatecall(payload)` takes exactly one arg. A same-named method with a
     // different arity (e.g. `IFoo(c).increment.call()` - an interface method reached via a field access) is not a
     // low-level call and falls through to the generic method-call wrap below.
-    if ((method === 'call' || method === 'staticcall' || method === 'delegatecall') && argCtxs.length === 1) {
-      const node = new LowLevelCallStatementNode(this.visit(recvCtx) as ExpressionNode, this.visit(argCtxs[0]) as ExpressionNode, method);
+    if ((method === 'call' || method === 'staticcall' || method === 'delegatecall') && callArgs.length === 1) {
+      const node = new LowLevelCallStatementNode(this.visit(recvCtx) as ExpressionNode, callArgs[0], method);
       node.callOptions = this.parseCallOptions(ctx.callOptions()); node.location = loc; return node;
     }
     if (recvCtx instanceof MappingAccessContext && recvCtx.Identifier().getText() === 'tokens') {
@@ -5672,19 +5698,21 @@ export default class AstBuilder
         throw new ParseError(`Unknown token container method '${method}', expected 'transfer' or 'transferNft'`, loc);
       }
       const keyExpr = this.visit(recvCtx.expression_list()[0]) as ExpressionNode;
-      const args = argCtxs.map((e) => this.visit(e) as ExpressionNode);
+      const args = callArgs;
       if (method === 'transfer' && args.length !== 2) throw new ParseError('this.tokens[...].transfer() expects 2 arguments (to, amount)', loc);
       if (method === 'transferNft' && args.length !== 3) throw new ParseError('this.tokens[...].transferNft() expects 3 arguments (to, commitment, capability)', loc);
       const node = new TokenContainerMethodStatementNode(keyExpr, method, args); node.location = loc; return node;
     }
     if (method === 'transfer') {
       if (recvCtx.getText() === 'this') {
-        if (argCtxs.length !== 2) throw new ParseError('this.transfer() expects 2 arguments (lockingBytecode, amount)', loc);
-        const node = new TransferStatementNode(this.visit(argCtxs[0]) as ExpressionNode, this.visit(argCtxs[1]) as ExpressionNode);
+        if (callArgs.length !== 2) {
+          throw new ParseError('this.transfer() expects 2 arguments (lockingBytecode, amount)', loc);
+        }
+        const node = new TransferStatementNode(callArgs[0], callArgs[1]);
         node.location = loc; return node;
       }
-      if (argCtxs.length === 1 && ctx.callOptions() === null) {
-        const node = new AddressTransferStatementNode(this.visit(recvCtx) as ExpressionNode, this.visit(argCtxs[0]) as ExpressionNode);
+      if (callArgs.length === 1 && ctx.callOptions() === null) {
+        const node = new AddressTransferStatementNode(this.visit(recvCtx) as ExpressionNode, callArgs[0]);
         node.location = loc; return node;
       }
     }

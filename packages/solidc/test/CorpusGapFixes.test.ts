@@ -1491,9 +1491,23 @@ describe('crash-bucket triage (internal errors -> clean diagnostics or fixes)', 
     expect(cc('struct S { U u; } contract C { S s; function f() external pure { require(true); } } type U is address;'))
       .toBe('C');
   });
-  it('rejects assignment-as-expression on a state variable instead of crashing', () => {
-    expect(() => compileString('contract C { bool b; function f() external { if ((b = false) && b) {} require(true); } }',
+  it('rejects assignment-as-expression on a state variable in a SUPPRESSED (short-circuit) position, not crashing', () => {
+    // An unconditional assignment-as-expression (arg / left-of-&& / initializer) is now HOISTED to a statement
+    // (DesugarPostfixExpressions.visitAssignmentExpression). Only a CONDITIONAL position - the right operand of a
+    // short-circuit, a ternary branch, or a loop condition - keeps the value form, where a state-var write cannot
+    // be lowered; it fails closed with a clean diagnostic (not a crash).
+    expect(() => compileString('contract C { bool b; function f() external { if (b && (b = false)) {} require(true); } }',
       { solidityImportCompat: true })).toThrow(/assignment-as-expression on state variable/);
+  });
+  it('compiles assignment-as-argument f(x = v) by hoisting it (BentoBox domain separator)', () => {
+    // `_calculateDomainSeparator(DOMAIN_SEPARATOR_CHAIN_ID = chainId)` - the assignment argument hoists to
+    // `x = v;` before the call statement, so a STATE-var target compiles (no assignment-as-expression restriction).
+    expect(cc('contract C { uint256 cid; bytes32 ds; function calc(uint256 c) internal pure returns (bytes32){'
+      + ' return bytes32(c); } constructor() { ds = calc(cid = 5); } }')).toBe('C');
+    // A local-var assignment argument works too, and the assigned value is what is passed.
+    expect(cc('contract C { function calc(uint256 c) internal pure returns (uint256){ return c; }'
+      + ' function f(uint256 y) external pure returns (uint256){ uint256 x; uint256 r = calc(x = y); return r + x; } }'))
+      .toBe('C');
   });
   it('compiles a compound bitwise assignment whose codegen emits a location-less instruction', () => {
     // Source-map generation used to crash on the missing location; it now serialises an empty entry.

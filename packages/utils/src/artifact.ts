@@ -297,7 +297,7 @@ export interface SortedUpsertLoopAbi {
   fixedKeyParams: readonly string[];
   varyingArrayParam: string;   // the array of keys (recipients), one per iteration
   valueArrayParam: string;     // the array of per-key values (amounts), one per iteration
-  op: '+' | '-';
+  op: '+' | '-' | 'set';       // '+'/'-' = RMW credit/debit; 'set' = absolute per-key assignment m[k[i]]=v[i]
 }
 
 export interface KeySourceAbi {

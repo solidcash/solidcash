@@ -5715,7 +5715,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           }
           cospent.add(uidOf(entry.utxo));
           const oldVal = vmNumberToBigInt(entry.value, { requireMinimalEncoding: false }) as bigint;
-          const newVal = info.op === '-' ? oldVal - amt : oldVal + amt;
+          const newVal = info.op === 'set' ? amt : info.op === '-' ? oldVal - amt : oldVal + amt;
           insertLoopPredecessors.push({ ...entry.utxo, unlocker: wUnlocker });
           commitments.push(binToHex(encodeEntryCommitment(entry.slot, entry.nextKey, bigIntToVmNumber(newVal))));
         } else {

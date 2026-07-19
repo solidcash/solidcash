@@ -466,6 +466,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private sortedUpsertLoopOutCounterName: string = '(sorted_upsert_outctr)'; // cumulative mints (update +1, insert +2)
   private sortedUpsertLoopActive: boolean = false;
   private sortedUpsertLoopCollection: string | null = null;
+  private sortedUpsertLoopOp: '+' | '-' | 'set' = '+'; // 'set' = absolute per-key assign m[k[i]]=v[i]; +/- = RMW
   private keccakLoopCounterName: string = '(loop_keccak_counter)'; // keccak side-cars read-so-far (dynamic keccak loop)
   private keccakLoopActive: boolean = false;        // a dynamic keccak256 loop counter is live on the stack
   private functionMultiSiteDeploy: boolean = false; // 2+ same-contract sites w/ a conditional: function counter
@@ -12322,11 +12323,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       seen.add(n);
       if (n instanceof MappingAssignNode && n.collection?.sorted
         && !n.arrayIndex && !n.arrayPush && !n.arrayPop
-        && n.expression instanceof BinaryOpNode
-        && (n.expression.operator === BinaryOperator.PLUS || n.expression.operator === BinaryOperator.MINUS)
-        && n.expression.left instanceof MappingAccessNode && n.expression.left.name === n.name
         && this.sortedValueKind(n.collection.innermostValueType) === 'int') {
-        found = n; return;
+        const e = n.expression;
+        // RMW credit/debit: `m[k[i]] = m[k[i]] +/- v[i]` (self-read).
+        const isRmw = e instanceof BinaryOpNode
+          && (e.operator === BinaryOperator.PLUS || e.operator === BinaryOperator.MINUS)
+          && e.left instanceof MappingAccessNode && e.left.name === n.name;
+        // Absolute per-key set: `m[k[i]] = v[i]` where v[i] is a per-iteration ARRAY element (NOT a loop-invariant
+        // param - that is the range-splice SortedInsertLoopValue case). The key varying-ness is validated in setup.
+        const isPerKeySet = e instanceof ArrayAccessNode && e.array instanceof IdentifierNode;
+        if (isRmw || isPerKeySet) { found = n; return; }
       }
       for (const key of Object.keys(n)) {
         if (key === 'location' || key === 'collection' || key === 'symbol' || key === 'type' || found) continue;
@@ -12364,16 +12370,18 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       const m = (src.canonical ?? '').match(/^arridx\(id:(\w+),id:\w+\)$/);
       if (m) varyingArrayParam = m[1];
     }
-    const valueRight = (writeNode.expression as BinaryOpNode).right;
+    const expr = writeNode.expression;
+    const isRmw = expr instanceof BinaryOpNode;
+    const op: '+' | '-' | 'set' = !isRmw ? 'set'
+      : (expr as BinaryOpNode).operator === BinaryOperator.MINUS ? '-' : '+';
+    const valueRight = isRmw ? (expr as BinaryOpNode).right : expr; // per-key value = RHS (RMW) or the whole assign (set)
     const valueArrayParam = valueRight instanceof ArrayAccessNode && valueRight.array instanceof IdentifierNode
       ? valueRight.array.name : undefined;
     if (!varyingArrayParam || !valueArrayParam) return false; // unsupported shape -> fall through to fail-close
+    this.sortedUpsertLoopOp = op;
     const infos = (this.currentFunction.sortedUpsertLoopInfo ??= []);
     if (!infos.some((x) => x.collection === collection.name)) {
-      infos.push({
-        collection: collection.name, fixedKeyParams, varyingArrayParam, valueArrayParam,
-        op: (writeNode.expression as BinaryOpNode).operator === BinaryOperator.MINUS ? '-' : '+',
-      });
+      infos.push({ collection: collection.name, fixedKeyParams, varyingArrayParam, valueArrayParam, op });
     }
     this.sortedWrittenCollections.add(collection.name);
 
@@ -12410,7 +12418,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const slotIndex = node.entrySlotIndex;
     if (this.entrySlots[slotIndex]) this.entrySlots[slotIndex].inLoop = true;
     const blockSize = this.currentFunction.blockLayout?.blockSize ?? 1;
-    const isMinus = (node.expression as BinaryOpNode).operator === BinaryOperator.MINUS;
+    const op = this.sortedUpsertLoopOp;
+    const isMinus = op === '-';
     const iterIdx = (): number => this.getStackIndex(this.sortedUpsertLoopCounterName);
     const outIdxC = (): number => this.getStackIndex(this.sortedUpsertLoopOutCounterName);
     const addrIdx = (): number => this.getStackIndex(this.sortedUpsertLoopAddrName);
@@ -12424,10 +12433,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_ADD, loc);
     };
 
-    // 1. Hk = keyToSlot(k[i]) + 2. amount = v[i] - both tracked temps.
+    // 1. Hk = keyToSlot(k[i]) + 2. amount = v[i] - both tracked temps. The per-key value is the BinaryOp RHS (RMW)
+    // or the whole assign expression (absolute 'set').
     this.emitSortedKeyHash(node, slotIndex, loc);
     this.pushToStack('(credit_hk)');
-    (node.expression as BinaryOpNode).right = this.visit((node.expression as BinaryOpNode).right);
+    if (op === 'set') { node.expression = this.visit(node.expression); }
+    else { (node.expression as BinaryOpNode).right = this.visit((node.expression as BinaryOpNode).right); }
     this.stack[0] = '(credit_amt)';
     // tracked: [credit_amt(0), credit_hk(1), outCounter(2), iterCounter(3), addr(4), ..]
 
@@ -12449,11 +12460,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_EQUAL, loc);                                            // [.., coSlot, coNext, coValue, isPresent] U=4
     this.emit(Op.OP_IF, loc);
     this.scopeDepth += 1;
-    // ---- UPDATE: mint output[..+outCounter] = coSlot|coNext|(coValue OP v[i]) ----
-    this.emit(Op.OP_DUP, loc); this.emit(Op.OP_BIN2NUM, loc);               // coValue# (U=4)
-    this.emit(encodeInt(BigInt(amtIdx() + 4)), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_BIN2NUM, loc);
-    this.emit(isMinus ? Op.OP_SUB : Op.OP_ADD, loc);                        // newValue# (U=4)
-    this.emit(Op.OP_NIP, loc);                                             // [.., coSlot, coNext, newValue] U=3
+    // ---- UPDATE: mint output[..+outCounter] = coSlot|coNext|newValue; newValue = v[i] ('set') or coValue OP v[i] ----
+    if (op === 'set') {
+      this.emit(Op.OP_DROP, loc);                                          // drop coValue -> [.., coSlot, coNext] U=2
+      this.emit(encodeInt(BigInt(amtIdx() + 2)), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_BIN2NUM, loc);
+    } else {                                                               // [.., coSlot, coNext, v[i]#] U=3
+      this.emit(Op.OP_DUP, loc); this.emit(Op.OP_BIN2NUM, loc);            // coValue# (U=4)
+      this.emit(encodeInt(BigInt(amtIdx() + 4)), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_BIN2NUM, loc);
+      this.emit(isMinus ? Op.OP_SUB : Op.OP_ADD, loc);                     // newValue# (U=4)
+      this.emit(Op.OP_NIP, loc);                                           // [.., coSlot, coNext, newValue] U=3
+    }
     pushIdx(this.sortedUpsertLoopOutCounterName, 0, 3);                     // outIdx (U=4)
     this.emitVerifySortedValueOutput(loc, addrIdx() + 4, 3, 2, 1);          // addr, coSlot, coNext, newValue -> [.., coSlot,coNext,newValue]
     this.emit(Op.OP_1, loc);                                               // delta = 1 (U=4)

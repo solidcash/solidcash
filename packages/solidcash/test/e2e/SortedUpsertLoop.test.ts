@@ -25,6 +25,10 @@ const SRC = `contract Token() {
     require(checkSig(s, pk));
     for (int i = 0; i < accounts.length; i++) { this.bal[accounts[i]] -= amounts[i]; }
   }
+  function setAll(int[] accounts, int[] amounts, pubkey pk, sig s) {
+    require(checkSig(s, pk));
+    for (int i = 0; i < accounts.length; i++) { this.bal[accounts[i]] = amounts[i]; }
+  }
   function chk(int a, int exp, pubkey pk, sig s) { require(checkSig(s, pk)); require(this.bal[a] == exp); }
 }`;
 
@@ -133,6 +137,38 @@ describe('C2 diff-key per-iteration UPDATE loop (multitransfer credit to existin
     await fund(contract.address); await call('setBal', 1n, 500n);
     await fund(contract.address);
     await expect(call('debitAll', [1n, 9n], [50n, 10n])).rejects.toThrow(/no balance|cannot debit/i);
+  });
+
+  // Absolute per-key assignment `for(i) m[ks[i]] = vs[i]` - the value REPLACES (not accumulates). Same upsert covenant:
+  // present key -> UPDATE to the exact v[i]; absent key -> INSERT v[i]. This is the per-key value insert loop deferral.
+  it('sets existing keys to absolute per-key values (replace, not add)', async () => {
+    const { contract, valOf, call } = await setup();
+    await fund(contract.address); await call('setBal', 3n, 100n);
+    await fund(contract.address); await call('setBal', 7n, 200n);
+    await fund(contract.address);
+    await call('setAll', [3n, 7n], [11n, 22n]);   // absolute: 3 -> 11 (not 111), 7 -> 22 (not 222)
+    expect(await valOf(3n)).toBe(11n);
+    expect(await valOf(7n)).toBe(22n);
+    await fund(contract.address); await expect(call('chk', 3n, 11n)).resolves.toBeDefined();
+    await fund(contract.address); await expect(call('chk', 3n, 111n)).rejects.toThrow(); // NOT accumulated
+  });
+
+  it('sets an existing key AND inserts a new key with absolute values, in one loop', async () => {
+    const { contract, valOf, call } = await setup();
+    await fund(contract.address); await call('setBal', 3n, 100n);   // 3 exists
+    await fund(contract.address);
+    await call('setAll', [3n, 9n], [11n, 42n]);   // 3 present -> set to 11; 9 absent -> insert 42
+    expect(await valOf(3n)).toBe(11n);
+    expect(await valOf(9n)).toBe(42n);
+  });
+
+  it('a wrong absolute value reverts (covenant pins the minted value to v[i])', async () => {
+    const { contract, valOf, call } = await setup();
+    await fund(contract.address); await call('setBal', 5n, 50n);
+    await fund(contract.address);
+    await call('setAll', [5n], [77n]);
+    expect(await valOf(5n)).toBe(77n);
+    await fund(contract.address); await expect(call('chk', 5n, 50n)).rejects.toThrow(); // old value gone
   });
 });
 

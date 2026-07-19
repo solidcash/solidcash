@@ -1,13 +1,14 @@
 import { describe, it, expect } from 'vitest';
 import { compileString } from 'solidc';
 
-// SOUNDNESS + CLARITY: the C2 diff-key insert-in-loop range-splice covenant pins each new node's value to
+// SOUNDNESS + CLARITY: the C2 diff-key insert-in-loop RANGE-SPLICE covenant pins each new node's value to
 // 0x01/empty (loop-invariant bool), because it walks the SORTED output chain and cannot map a chain position back
-// to a source value without a permutation/value witness. A NON-BOOL per-key insert/RMW loop `for(i) w[ks[i]] =
-// vs[i]` therefore is NOT supported - and must fail CLOSED at COMPILE (a clean SortedMappingCodegenPendingError
-// pointing at the opt-out), NOT compile-OK then revert at runtime (which reads like a silent success until it
-// aborts). The bool case (whitelistWorkers `w[k[i]] = true`) still compiles via the range-splice (SortedInsertLoop).
-describe('C2 NON-BOOL insert-in-loop fails closed at COMPILE (not compile-then-revert)', () => {
+// to a source value without a permutation/value witness. Per-key VALUE loops are instead handled by the per-
+// iteration UPSERT loop (1:1 co-spend/mint in SOURCE order = no permutation): `w[ks[i]] = vs[i]` (absolute 'set'),
+// `w[ks[i]] += vs[i]` (RMW credit), and the loop-invariant `w[ks[i]] = v` (SortedInsertLoopValue) all compile and
+// are VM-proven (SortedUpsertLoop). What still fails CLOSED at COMPILE (a clean SortedMappingCodegenPendingError,
+// NOT compile-then-revert): delete-in-loop and `= <default>` nullify-in-loop.
+describe('C2 per-key value loops compile; delete/nullify-in-loop fail closed at COMPILE', () => {
   const nonBool = `contract C() {
     mapping(int => int) w;
     function setmany(int[] ks, int[] vs) { for (int i = 0; i < ks.length; i++) { w[ks[i]] = vs[i]; } }
@@ -21,8 +22,12 @@ describe('C2 NON-BOOL insert-in-loop fails closed at COMPILE (not compile-then-r
     function whitelist(int[] ks) { for (int i = 0; i < ks.length; i++) { w[ks[i]] = true; } }
   }`;
 
-  it('per-key value insert loop (w[ks[i]] = vs[i]) fails closed at compile', () => {
-    expect(() => compileString(nonBool, { sortedMappings: ['w'] })).toThrow(/SortedMappingCodegenPending|sorted/i);
+  it('per-key value assign loop (w[ks[i]] = vs[i]) COMPILES via the per-iteration UPSERT loop (op=set)', () => {
+    // Absolute per-key set: each iteration co-spends k[i]'s entry (update) or predecessor (insert) + mints v[i].
+    const art = compileString(nonBool, { sortedMappings: ['w'] });
+    const info = art.abi.find((f) => f.name === 'setmany')?.sortedUpsertLoopInfo?.[0];
+    expect(info?.valueArrayParam).toBe('vs');
+    expect(info?.op).toBe('set');
   });
   it('diff-key RMW loop (w[ks[i]] += vs[i]) COMPILES via the per-iteration UPDATE loop (multitransfer credit)', () => {
     // Now supported: each iteration co-spends k[i]'s EXISTING entry + mints the updated value (SortedUpsertLoop).

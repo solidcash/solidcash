@@ -105,13 +105,17 @@ owner==msg.sender EVM-address wall - NOT harness gaps. Portbacks that got here (
 - **`ProxyContract.connect` re-wraps in `wrapDispatch`** so `proxy.connect(signer).implFn()` dispatches (was
   "not a function") - a real SDK bug fix (`upgrades.ts`).
 
-### Two SDK bugs surfaced (in the proxy/delegatecall path = user WIP area)
+### Two SDK bugs surfaced (in the proxy/delegatecall path), both now FIXED
 1. FIXED: proxy `connect()` dropped implementation-function dispatch (above).
-2. OPEN (worked around): `upgrades.deployProxy` initialize forward **fails an OP_VERIFY when initialize writes an
-   `address`-typed state field** (`SolidCashProxy.scash:5 implementation.delegatecall(input)`); writing an `int`
-   in the same slot deploys fine. MarketplaceV1/DataV1 initialize therefore write an int and skip the address
-   stores. Root cause is in the proxy delegatecall + address-state-write covenant (StatefulContract WIP) - hand
-   off to the compiler/SDK owner.
+2. FIXED (was mis-diagnosed as "address write"): the real trigger is a **single-function proxy-impl**. The
+   compiler INLINES a lone entry point with no 4-byte selector dispatch (GTT `emitFunctionDefinesAndDispatch`),
+   but the proxy covenant verifies the impl's calldata begins with the function selector, so a selector-less
+   single-function impl fails `OP_EQUALVERIFY` (`SolidCashProxy.scash:5`). Fix: a single **delegate** function on a
+   proxy impl keeps the selector dispatch (compiler GTT + SDK `Contract.ts` unlock, symmetric); non-delegate
+   single-function contracts still inline. LIBRARIES are excluded (`node.isLibraryContract` / `artifact.isLibrary`)
+   - their own delegatecall path expects selector-less calldata, and including them regressed the branded-library
+   master-gate (foreign consumer no longer rejected). MarketplaceDataV1 is back to its natural single-function form
+   (`initialize` writes the address). Regression: compiler 2175/2175, LibraryDelegate 11/11, UpgradesDeployProxy 6/6.
 
 ### To push the pass count up (next, all contract-side)
 Add the missing MarketplaceV1/MarketplaceDataV1 functions (pause/unpause/paused/version getters exist; need

@@ -936,7 +936,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       return;
     }
 
-    if (dispatchFunctions.length === 1 && !hasFallback && !hasReceive) {
+    // A single DELEGATE function that is a proxy impl keeps the selector dispatch (does NOT inline): the proxy
+    // covenant verifies the impl's calldata begins with the function selector, so a selector-less inlined impl
+    // fails that check. Libraries are excluded - their own delegatecall path expects a selector-less calldata.
+    const soleFnIsProxyImpl = dispatchFunctions.length === 1
+      && dispatchFunctions[0].modifiers.includes(FunctionModifier.DELEGATE)
+      && !node.isLibraryContract;
+    if (dispatchFunctions.length === 1 && !hasFallback && !hasReceive && !soleFnIsProxyImpl) {
       const visited = this.visitList(dispatchFunctions) as FunctionDefinitionNode[];
       if (node.constructorDef) {
         node.constructorDef = visited[visited.length - 1];

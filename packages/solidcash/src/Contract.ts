@@ -96,12 +96,15 @@ export class Contract<
     this.encodedConstructorArgs = encodeConstructorArguments(artifact, constructorArgs);
 
     // Populate the 'unlock' object with the contract's functions
-    // (with a special case for single function, which has no "function selector")
+    // (with a special case for single function, which has no "function selector") - EXCEPT a single DELEGATE
+    // function on a proxy impl keeps its selector, mirroring the compiler dispatch, so a proxy delegatecall (which
+    // verifies the impl calldata begins with the selector) matches. Libraries are excluded (selector-less path).
     this.unlock = {};
-    if (artifact.abi.length === 1) {
-      const f = artifact.abi[0];
+    const soleFn = artifact.abi.length === 1 ? artifact.abi[0] : undefined;
+    const soleFnIsProxyImpl = soleFn?.modifiers?.includes('delegate') && !artifact.isLibrary;
+    if (soleFn && !soleFnIsProxyImpl) {
       // @ts-ignore TODO: see if we can use generics to make TypeScript happy
-      this.unlock[f.name] = this.createUnlocker(f);
+      this.unlock[soleFn.name] = this.createUnlocker(soleFn);
     } else {
       // Group ABI entries by name to detect overloads
       const nameGroups = new Map<string, { func: AbiFunction }[]>();

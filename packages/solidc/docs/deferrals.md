@@ -208,6 +208,27 @@ revert), never a partial store (`C2ScalarMultiWrite`). REMAINING clarity nit (st
 `m[k][i][j]` gives an ugly `Found type 'T[][]' where 'undefined'` TypeCheck error (the `keys.length > allKeyTypes.length`
 guard misses it because the excess index is an `arrayIndex`, not a key) - should be a clean `UnsupportedTypeError`.
 
+### DELETE-in-loop `for(i) delete m[ks[i]]` - SCOPED, ready for a focused build (2026-07-19)
+Currently fail-closed (`visitMappingDelete` throws `SortedMappingCodegenPendingError` at `plainLoopDepth > 0`). It is
+the last unbuilt verb of the loop-mutation family (`+=`/`-=`/`= vs[i]`/`= v` all done via the per-iteration upsert
+loop). **Design (sound, UPDATE-only, fail-closed on absent):** route a per-iteration sorted `delete` through the SAME
+upsert loop with a new `op='delete'`. Per key: UPDATE (present) mints `[slot | next | <default>]` (nullify; for int the
+value tail is empty); ABSENT keys FAIL CLOSED (no INSERT branch) - inserting a nullified node on an absent delete would
+diverge from Solidity's no-op for ENUMERABLE (VALUES-mode) mappings (the spurious node would appear in iteration), so
+delete-of-absent reverts (consistent with `-=`-to-absent; a batch-delete of KNOWN-existing keys is the target use).
+**Plumbing:** (1) `findSortedUpsertLoopWrite` also matches a `MappingDeleteNode` in-loop (widen return to
+`MappingAssignNode | MappingDeleteNode`); (2) `emitSortedUpsertLoopSetup` derives `op='delete'`, `varyingArrayParam`
+from the delete key, NO `valueArrayParam` (relax the `!valueArrayParam` guard for delete); (3) `visitMappingDelete`
+dispatches to `emitSortedUpsertLoopBody` when `sortedUpsertLoopActive` (instead of the `plainLoopDepth>0` fail-close);
+(4) body: `op==='delete'` pushes the default (`OP_0`/empty) as `(credit_amt)` instead of visiting a RHS, reuses the
+`op==='set'` UPDATE mint (value = default), and the ELSE (absent) branch is `OP_0 OP_VERIFY` fail-closed; (5) artifact
+`SortedUpsertLoopAbi.op` += `'delete'`, `valueArrayParam` optional; (6) SDK: `op==='delete'` finds each entry (throw
+if absent), mints `[slot|next|default]`. **Tests:** delete N existing keys -> all read default; a subsequent
+`require(!m[k])` passes; delete of an absent key reverts; the same-predecessor collision (a delete whose key is also a
+credit predecessor) fails closed via the existing `cospent` set. Deferred (not rushed into fund-guarding covenant code
+at turn's end); spread also touches the CONCURRENTLY-edited `AST.ts` (op type) - a focused session avoids the
+filtered-staging friction. Value: batch-clear (e.g. removing a set of whitelisted keys) - moderate.
+
 ---
 
 ## Uninitialized named-return bytes  — 2026-07-15

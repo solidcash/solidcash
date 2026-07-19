@@ -130,14 +130,20 @@ by it; they are pre-existing and fundamental. Re-bucketed the current top FAILs 
   grindable (user steer).** BCH assigns EVM-parity storage slots (keccak/erc7201 + P3/P4 layout, conformance-tested),
   so slot-addressed assembly has a sound model. Sub-buckets: `.slot`/`.offset` on a state var or a storage-pointer
   local (ARRAY pointer landed 2026-07-19 `6125c53a`); `sstore`/`sload` to a declared scalar / packed slot / literal
-  slot ALREADY WORK; the mapping-keccak-slot idiom routes to the high-level mapping (P4). LANDED 2026-07-19 (all VM-proven, corpus 0-regress): UDVT (`ValueType`) slot fields `f67b4f91` (unwrap-read/wrap-write
-  + pack by underlying width; `dirty_uint8_read` +1); dynamic-ARRAY `.slot` READ `36dc743e` (sload=length register,
-  EVM-faithful; WRITE/resize stays fail-closed); lone full-word `bytes32` slot `2b685b3c` (whole-word reinterpret,
-  round-trips either endianness). REMAINING storage-slot gaps, all intricate/substantial (NOT clean): (a) MIXED
-  sub-word packed slots with bytesN/address fields (`dirty_slot`, `storage_boundary_*`) - bytesN is byte-order-
-  sensitive positioning + address is 25-byte lbc, subtle-miscompile risk without careful VM byte-order proof; (b)
-  dynamic-array RESIZE (`sstore(a.slot,n)`) + element slots (`sstore(keccak256(0,32)+i, v)`) = array copy/delete
-  (`array/*`), deep; (c) EVM transient storage + sparse computed raw slots (correctly fail-closed). HARD/fail-closed remainder: sparse/computed raw slots with no declared var (correctly fail-closed),
+  slot ALREADY WORK; the mapping-keccak-slot idiom routes to the high-level mapping (P4). LANDED 2026-07-19 (VM-proven incl. high-bit values, corpus 0-regress): array storage-pointer `.slot`/`.offset`
+  `6125c53a`; UDVT-int (`type T is intN`) slot fields `f67b4f91` (unwrap-read/wrap-write + pack by underlying width;
+  `dirty_uint8_read` +1; sound because int truncation `uintN(word)`=word mod 2^N has NO byte cast); dynamic-ARRAY
+  `.slot` READ `36dc743e` (sload=length register; WRITE/resize fail-closed).
+  **KEY SOUNDNESS FINDING (17e7a36b) - bytesN/bytes32 slot fields CANNOT be done via casts: REVERTED bytes32
+  (`2b685b3c`).** `bytesN(uint)` (incl. bytes32(uint)) goes through OP_NUM2BIN = sign-magnitude for a value whose top
+  byte has the high bit set, so `uint256(bytesN(x))!=x` for ~half of all values (top-bit set) = SILENT MISCOMPILE.
+  VM-caught: bytes32(0xff00..00) and a sub-word bytes2 on 0xaaaa both fail to round-trip; my first bytes32 test used
+  only low values (0x1234) and missed it. So the int-word combine/decompose is sound ONLY for int/UDVT-int fields;
+  ANY bytesN field stays fail-closed. Redoing bytesN slots would need a byte-level (non-NUM2BIN) slot encoding, not a
+  cast. REMAINING gaps: (a) mixed packed slots with bytesN/address fields (`dirty_slot`, `storage_boundary_*`) - needs
+  the byte-level encoding above (bytesN) + 25-byte-lbc handling (address); (b) dynamic-array RESIZE (`sstore(a.slot,n)`)
+  + element slots (`sstore(keccak256(0,32)+i, v)`) = array copy/delete (`array/*`), deep; (c) EVM transient storage +
+  sparse/computed raw slots with no declared var (correctly fail-closed),
   `tstore`/`tload` (no tx-scoped storage). 6 = calldata `.offset`/`.length`: `.length` WORKS; `.offset` applies only
   to DYNAMIC calldata params (bytes/string/array) whose head/tail our one-word-per-param model
   (`selector ++ bytes32(p_i)`) can't represent - NOT fundamental (the ABI encoders exist, user's point), but needs

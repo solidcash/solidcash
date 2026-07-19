@@ -6,6 +6,7 @@ import { Utxo, TransactionDetails, AddressType } from '../interfaces.js';
 import {
   StatefulContract, ConnectedStatefulContract, ContractRunner, DeployOptions,
 } from './StatefulContract.js';
+import { TransactionBuilder } from '../TransactionBuilder.js';
 
 /** Deploy overrides (a trailing object on `factory.deploy(...)` / the 3rd arg of `deployContract`). */
 export interface DeployContractOptions {
@@ -33,18 +34,46 @@ function looksLikeOverrides(x: unknown): boolean {
   return typeof x === 'object' && x !== null && !(x instanceof Uint8Array) && !Array.isArray(x);
 }
 
+// A token genesis needs a fresh vout-0 UTXO, but each deploy strands its change at a non-zero vout - so a signer
+// that deploys several contracts runs out of vout-0 coins. Since we control the signer, the deploy step fans one
+// out on demand: it self-sends the signer's spendable balance into a fresh vout-0 output (a plain P2PKH tx, valid
+// on any provider) and uses that. This makes sequential deploys from one account unbounded.
 async function selectGenesisFundingUtxo(signer: Signer, artifact: Artifact): Promise<Utxo> {
-  const utxos = await signer.getUtxos();
   const dataNfts = BigInt(artifact.stateLayout?.dataNftCount ?? 1);
   const cost = 1200n + 1200n * dataNfts + 5000n + 2400n; // master + data NFTs + fee + entry buffer
-  const utxo = utxos.find((u) => u.vout === 0 && !u.token && u.satoshis >= cost);
-  if (!utxo) {
+  const findGenesisUtxo = (us: Utxo[]): Utxo | undefined => us.find((u) => u.vout === 0 && !u.token && u.satoshis >= cost);
+
+  const existing = findGenesisUtxo(await signer.getUtxos());
+  if (existing) return existing;
+
+  // Fan out a fresh vout-0 funding coin from the signer's spendable (token-free) UTXOs.
+  const fee = 1000n;
+  const spendable = (await signer.getUtxos())
+    .filter((u) => !u.token)
+    .sort((a, b) => (b.satoshis > a.satoshis ? 1 : -1));
+  const chosen: Utxo[] = [];
+  let total = 0n;
+  for (const u of spendable) {
+    chosen.push(u);
+    total += u.satoshis;
+    if (total >= cost + fee) break;
+  }
+  if (total < cost + fee) {
     throw new Error(
-      `Signer has no genesis-valid funding UTXO (vout 0, token-free, >= ${cost} sats) at ${signer.getAddress()} `
-      + 'to deploy. A token genesis requires a fresh vout-0 UTXO.',
+      `Signer at ${signer.getAddress()} has insufficient funds (${total} sats) to fan out a genesis funding UTXO `
+      + `(need >= ${cost + fee}). A token genesis requires a fresh vout-0 UTXO; fund the account before deploying.`,
     );
   }
-  return utxo;
+  const tb = new TransactionBuilder({ provider: signer.provider });
+  for (const u of chosen) tb.addInput(u, signer.unlockP2PKH());
+  tb.addOutput({ to: signer.getAddress(), amount: total - fee }); // vout 0 = the fresh genesis funding coin
+  await tb.send();
+
+  const created = findGenesisUtxo(await signer.getUtxos());
+  if (!created) {
+    throw new Error(`Fan-out did not yield a genesis-valid vout-0 UTXO at ${signer.getAddress()}.`);
+  }
+  return created;
 }
 
 /**

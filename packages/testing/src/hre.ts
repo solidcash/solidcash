@@ -28,11 +28,6 @@ import {
 
 const DEFAULT_MNEMONIC = MockNetworkProvider.DEFAULT_MNEMONIC;
 
-// Funding UTXOs pre-funded per signer. Each stateful genesis consumes one fresh vout-0 UTXO, so this bounds how
-// many contracts a single account can deploy in a fixture. Generous by default (the hardhat deployer commonly
-// deploys a whole contract suite); override via getSigners(count, { fundingUtxos }).
-const DEFAULT_SIGNER_FUNDING_UTXOS = 25;
-
 /** Build a network provider from a resolved network config. */
 export function createProvider(name: string, netCfg: NetworkConfig | undefined): NetworkProvider {
   const type = netCfg?.type ?? (name === 'regtest' ? 'regtest' : name === 'mock' ? 'mock' : 'mock');
@@ -146,10 +141,10 @@ function buildEthers(provider: NetworkProvider, mnemonic: string, opts: EthersOp
   ): Promise<Signer[]> => {
     const anyProvider = provider as unknown as { getSigners?: (c: number, x: object) => Promise<Signer[]> };
     if (typeof anyProvider.getSigners === 'function') {
-      // A stateful genesis needs a fresh vout-0 UTXO; each deploy strands its change at a non-zero vout, so an
-      // account that deploys N contracts needs N funding UTXOs. Default generously so ported fixtures that deploy
-      // several contracts from one signer (the hardhat norm) work without per-fixture tuning.
-      return anyProvider.getSigners(count, { mnemonic, path: accountsPath, fundingUtxos: DEFAULT_SIGNER_FUNDING_UTXOS, ...o });
+      // One funding UTXO per signer is enough: the deploy step fans out fresh vout-0 genesis coins on demand
+      // (ContractFactory.selectGenesisFundingUtxo), so an account can deploy any number of contracts. Override
+      // `fundingUtxos` to pre-split (saves a fan-out tx per deploy).
+      return anyProvider.getSigners(count, { mnemonic, path: accountsPath, ...o });
     }
     return signersFromMnemonic(o.mnemonic ?? mnemonic, provider, { count, path: accountsPath });
   };

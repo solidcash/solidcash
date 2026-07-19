@@ -12606,16 +12606,20 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_BOOLAND, loc); // inGap U=1
     this.emit(Op.OP_IF, loc);
     this.scopeDepth += 1;
-    // ===== RE-POINT: mint P' = [pu_slot|Hk|pu_val] + NEW = [Hk|pu_next|amt]; outCounter += 2; clear; consumed = 1 =====
+    // ===== RE-POINT + CHAIN-DEFER: mint P' = [pu_slot|Hk|pu_val] (P re-pointed to the new node), then DEFER the new
+    // node itself into the pending (pu_slot=Hk, pu_val=amt, pu_next stays = P.oldNext = the new node's successor).
+    // outCounter += 1; consumed = 1. Deferring the new node lets a FURTHER new recipient in the same gap chain off it
+    // (R1 < R2 < P.oldNext) via the identical in-gap flush - so 2+ new recipients in one gap now work. The teardown
+    // (or the next non-chaining flush) mints the last deferred new node. =====
     mintIdx(0, 0); // P' outIdx U=1
     this.emitVerifySortedValueOutput(loc, this.getStackIndex(addr) + 1,
       this.getStackIndex(pSlot) + 1, this.getStackIndex(hk) + 1, this.getStackIndex(pVal) + 1); // P' = pSlot|Hk|pVal -> U=0
-    mintIdx(1, 0); // NEW outIdx U=1
-    this.emitVerifySortedValueOutput(loc, this.getStackIndex(addr) + 1,
-      this.getStackIndex(hk) + 1, this.getStackIndex(pNext) + 1, this.getStackIndex(amt) + 1); // NEW = Hk|pNext|amt -> U=0
-    this.emit(encodeInt(BigInt(this.getStackIndex(outCtr))), loc); this.emit(Op.OP_PICK, loc); this.emit(encodeInt(2n), loc); this.emit(Op.OP_ADD, loc);
-    this.emitReplace(this.getStackIndex(outCtr) + 1, node); // outCounter += 2 -> U=0
-    this.emit(Op.OP_0, loc); this.emitReplace(this.getStackIndex(pSlot) + 1, node); // clear pending -> U=0
+    this.emit(encodeInt(BigInt(this.getStackIndex(outCtr))), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_1ADD, loc);
+    this.emitReplace(this.getStackIndex(outCtr) + 1, node); // outCounter += 1 -> U=0
+    this.emit(encodeInt(BigInt(this.getStackIndex(amt))), loc); this.emit(Op.OP_PICK, loc);          // amt copy U=1
+    this.emitReplace(this.getStackIndex(pVal) + 1, node); // pu_val = amt -> U=0
+    this.emit(encodeInt(BigInt(this.getStackIndex(hk))), loc); this.emit(Op.OP_PICK, loc);           // Hk copy U=1
+    this.emitReplace(this.getStackIndex(pSlot) + 1, node); // pu_slot = Hk (pu_next unchanged) -> U=0
     this.emit(Op.OP_1, loc); // consumed = 1 (U=1)
     this.scopeDepth -= 1;
     this.emit(Op.OP_ELSE, loc);
@@ -12743,6 +12747,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_ENDIF, loc);                                                                    // [.., coSlot, coNext, coValue] U=3
       pushIdx(this.sortedUpsertLoopOutCounterName, 0, 3);                     // P' outIdx (U=4)
       this.emitVerifySortedValueOutput(loc, addrIdx() + 4, 3, hkIdx() + 4, 1); // P' = coSlot|Hk|coValue
+      // NOTE: an INSERT with an UNTOUCHED predecessor mints its NEW node immediately (no chain-defer). 2+ new keys in
+      // ONE untouched (or HEAD-sentinel) gap therefore fail closed. Same-gap CHAINS are supported only off a CREDITED
+      // predecessor (the re-point flush defers the new node) - the common airdrop-with-existing shape.
       pushIdx(this.sortedUpsertLoopOutCounterName, 1, 3);                     // NEW outIdx2 (U=4)
       this.emitVerifySortedValueOutput(loc, addrIdx() + 4, hkIdx() + 4, 2, amtIdx() + 4); // NEW = Hk|coNext|v[i]
       this.emit(Op.OP_2, loc);                                               // delta = 2 (U=4)

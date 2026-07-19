@@ -5724,7 +5724,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           for (let i = 0; i < kArr.length; i++) {
             if (placed.has(i) || attached.has(i)) continue;
             order.push(i); placed.add(i);
-            for (const r of attach.get(i) ?? []) if (!placed.has(r)) { order.push(r); placed.add(r); }
+            // Chain multiple new keys in ONE gap in ASCENDING slot order (R1 < R2 < ...) so each defers and the next
+            // folds into it; wrong order would break the chain and fail closed.
+            const chain = (attach.get(i) ?? []).slice()
+              .sort((a, b) => (bytesToSlotValue(slotsB[a]) < bytesToSlotValue(slotsB[b]) ? -1 : 1));
+            for (const r of chain) if (!placed.has(r)) { order.push(r); placed.add(r); }
           }
           for (let i = 0; i < kArr.length; i++) if (!placed.has(i)) order.push(i); // safety net (normally unreachable)
           keysArr = order.map((i) => kArr[i]);
@@ -5766,7 +5770,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       // place + appends its own NEW node (the predecessor is co-spent ONCE). lastDeferred = the immediately-prior
       // update, or null. Requires adjacency (predecessor processed right before the new key) - the reorder above makes
       // that hold for the common case; anything it can't (chains / two-in-gap) fails closed.
-      let lastDeferred: { uid: string; commitIndex: number; slot: Uint8Array; newVal: bigint; oldNext: Uint8Array } | null = null;
+      type DeferredEntry = { uid: string; commitIndex: number; slot: Uint8Array; newVal: bigint; oldNext: Uint8Array };
+      let lastDeferred: DeferredEntry | null = null;
       for (let i = 0; i < keysArr.length; i++) {
         const slot = keyToSlotMulti([...fixedBins, encKey(keysArr[i], varyType)]);
         const slotHex = binToHex(slot);
@@ -5799,7 +5804,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               + 'it has no entry');
           }
           const pred = list.predecessorOf(slot);
-          const deferred = lastDeferred; // the immediately-prior update (covenant's pending); an insert never defers
+          const deferred: DeferredEntry | null = lastDeferred; // the covenant's pending; an insert never defers
           lastDeferred = null;
           if (debitEntry && uidOf(debitEntry.utxo as { txid: string; vout: number }) === uidOf(pred.utxo)) {
             // MERGE with the debit: co-spend nothing extra, mint ONLY the NEW node; the covenant re-points the debit's
@@ -5812,14 +5817,24 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             commitments.push(binToHex(encodeEntryCommitment(slot, pred.nextKey, bigIntToVmNumber(amt)))); // NEW = 0 + amt
             continue;
           }
-          if (foldActive && deferred && uidOf(pred.utxo) === deferred.uid) {
-            // CASE (b) FOLD: the new key's predecessor is the immediately-prior UPDATE. Re-point that update's
-            // commitment in place (nextKey -> the new slot) and append the NEW node taking the predecessor's old
-            // successor. The predecessor is co-spent exactly ONCE (already pushed by the update branch) - the covenant
-            // does the same via its pending-defer re-point flush.
-            commitments[deferred.commitIndex] = binToHex(encodeEntryCommitment(deferred.slot, slot, bigIntToVmNumber(deferred.newVal)));
-            commitments.push(binToHex(encodeEntryCommitment(slot, deferred.oldNext, bigIntToVmNumber(amt)))); // NEW
-            continue;
+          if (foldActive && deferred) {
+            // CASE (b) FOLD + CHAIN: is this new key in the DEFERRED entry's gap? Geometric check (d.slot < slot <
+            // d.oldNext, 0 = +inf) - mirrors the covenant's pending in-gap flush. deferred is either the immediately-prior
+            // UPDATE (case b) OR a just-inserted NEW node (chain: 2+ new keys in one gap). Re-point the deferred entry's
+            // commitment in place, append this new node, and DEFER IT so a further key can chain. (The explicit `d` /
+            // `chained` types break the self-referential inference the lastDeferred re-assignment would otherwise trip.)
+            const d: DeferredEntry = deferred;
+            const sV = bytesToSlotValue(slot);
+            const pV = bytesToSlotValue(d.slot);
+            const nV = bytesToSlotValue(d.oldNext); // 0 = +inf
+            if (pV < sV && (nV === 0n || sV < nV)) {
+              commitments[d.commitIndex] = binToHex(encodeEntryCommitment(d.slot, slot, bigIntToVmNumber(d.newVal)));
+              const newCommitIndex = commitments.length;
+              commitments.push(binToHex(encodeEntryCommitment(slot, d.oldNext, bigIntToVmNumber(amt)))); // NEW
+              const chained: DeferredEntry = { uid: '', commitIndex: newCommitIndex, slot, newVal: amt, oldNext: d.oldNext };
+              lastDeferred = chained;
+              continue;
+            }
           }
           if (cospent.has(uidOf(pred.utxo))) {
             throw new Error(`C2 upsert loop ${info.collection}: new recipient ${i}'s bracketing predecessor is already `
@@ -5830,6 +5845,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           insertLoopPredecessors.push({ ...pred.utxo, unlocker: wUnlocker });
           commitments.push(binToHex(encodeEntryCommitment(pred.slot, slot, pred.value)));           // P' (re-pointed)
           commitments.push(binToHex(encodeEntryCommitment(slot, pred.nextKey, bigIntToVmNumber(amt)))); // NEW = 0 + amt
+          // An untouched-predecessor insert mints its NEW node immediately (no chain-defer) - lastDeferred stays null,
+          // so a 2nd new key in the SAME untouched gap hits the co-spent-twice guard below and fails closed (sound).
+          // Same-gap CHAINS are supported only off a CREDITED predecessor (handled in the fold branch above).
         }
       }
       if (commitments.length > 0) sortedLoopCommitments.set(info.collection, commitments);

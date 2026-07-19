@@ -11479,6 +11479,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // present -> update to 0/false/empty (nullify, node stays), absent -> insert the default. Works for bool sets
     // (delete claimed[k] writes the empty/false tail) and value mappings alike, single- or composite-key.
     if (node.collection?.sorted) {
+      // A C2 `delete m[k]` in a DYNAMIC loop is a per-iteration sorted delete of an EVOLVING list - the same deep
+      // case visitMappingAssign fails closed on. emitSortedValueUpsert co-spends the entry at a FIXED block slot, so
+      // running it in a loop would pin only ONE iteration's delete and leave the rest un-covenanted (a C2 hole).
+      // Fail closed (fixed-bound loops are unrolled to plainLoopDepth 0 before codegen and still work).
+      if (this.plainLoopDepth > 0) {
+        throw new SortedMappingCodegenPendingError(node, node.collection.name);
+      }
       const vt = node.collection.innermostValueType;
       if (this.sortedValueKind(vt) !== null) {
         const dLoc = { location: node.location, positionHint: PositionHint.END };

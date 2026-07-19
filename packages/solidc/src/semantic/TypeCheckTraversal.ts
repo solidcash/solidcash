@@ -115,6 +115,7 @@ import {
   UnequalTypeError,
   SignedExponentError,
   UnsupportedTypeError,
+  MultiDimArrayValueAccessError,
   CastTypeError,
   TypeError,
   AssignTypeError,
@@ -528,6 +529,12 @@ export default class TypeCheckTraversal extends AstTraversal {
 
     if (node.collection) {
       const allKeyTypes = node.collection.allKeyTypes;
+      // Reading INTO a multi-dimensional array value more than one level deep (`m[k][i][j]` on `mapping(K => T[][])`):
+      // the excess indices parse as phantom keys; fail closed with a CLEAR error (else the key loop below type-checks
+      // them against allKeyTypes[i] == undefined and throws a confusing "type 'undefined' was expected").
+      if (node.keys.length > allKeyTypes.length) {
+        throw new MultiDimArrayValueAccessError(node);
+      }
       // A string/hex/zero literal key against a bytesN key type coerces like an assignment value (compat only).
       node.keys = this.coerceHexArgs(node.keys, allKeyTypes) as typeof node.keys;
       // Each key must type-check against its corresponding level
@@ -585,10 +592,10 @@ export default class TypeCheckTraversal extends AstTraversal {
       const allKeyTypes = node.collection.allKeyTypes;
       // More index operations than the mapping has keys: indexing INTO a multi-dimensional array VALUE
       // (`m[k][i][j]` on `mapping(K => T[][])`). Only single-dimension array element access is supported; fail
-      // closed cleanly (the excess index would otherwise be type-checked as a phantom mapping key at allKeyTypes[i]
-      // == undefined and crash with a confusing "type 'undefined' was expected").
+      // closed with a CLEAR error (the excess index would otherwise be type-checked as a phantom mapping key at
+      // allKeyTypes[i] == undefined and crash with a confusing "type 'undefined' was expected").
       if (node.keys.length > allKeyTypes.length) {
-        throw new UnsupportedTypeError(node as unknown as BinaryOpNode, innerType);
+        throw new MultiDimArrayValueAccessError(node);
       }
       node.keys = this.coerceHexArgs(node.keys, allKeyTypes) as typeof node.keys;
       for (let i = 0; i < node.keys.length; i++) {

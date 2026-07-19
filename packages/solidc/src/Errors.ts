@@ -276,6 +276,15 @@ export class ContinueOutsideLoopError extends SolidCashError {
   }
 }
 
+// Indexing a mapping whose value is a MULTI-dimensional array more than one element level deep (`m[k][i][j]` on
+// `mapping(K => T[][])`). Only single-dimension element access `m[k][i]` is supported; fail closed cleanly.
+export class MultiDimArrayValueAccessError extends SolidCashError {
+  constructor(node: Node) {
+    super(node, 'multi-dimensional array-value access (m[k][i][j]) is not supported; a mapping whose value is a '
+      + 'multi-dimensional array can only be indexed one element level deep (m[k][i])');
+  }
+}
+
 export class UnsupportedTypeError extends TypeError {
   constructor(
     node: BinaryOpNode | UnaryOpNode | TimeOpNode | TupleIndexOpNode | SliceNode,

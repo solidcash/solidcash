@@ -71,6 +71,34 @@ describe('FULL multiTransfer: NEW recipient whose predecessor is msg.sender (mer
     await expect(chk(bobAddress, 1000n)).rejects.toThrow(); // bob was debited, not the old value
   });
 
+  it('merges into a gap with a REAL successor (bob -> carol -> alice), leaving the successor untouched', async () => {
+    // Seed bob(sender)=1000 AND alice=500. LE order bob < carol < alice, so the list is HEAD -> bob -> alice and
+    // carol lands in bob's gap with a REAL nextKey (alice, not +inf) - exercises the covenant's dNext != 0 branch.
+    const art = compileString(SRC, { forceStateful: true });
+    const f = { txid: uid(), vout: 0, satoshis: 400000n };
+    await provider.addUtxo(p2pkh.address, f);
+    const { contract, categoryId } = await StatefulContract.deploy(art, [], {
+      provider, fundingUtxo: f, funder: p2pkh.unlock.spend(alicePub, aliceSig), initialState: {}, changeAddress: p2pkh.address,
+    });
+    const ea = getEntryNftAddress(contract.inner, categoryId, 'bal');
+    const valOf = async (addr: string): Promise<bigint | undefined> => {
+      const e = SortedList.fromUtxos(await provider.getUtxos(ea)).find(keyToSlot(addressToLockScript(addr)));
+      return e ? vmNumberToBigInt(e.value, { requireMinimalEncoding: false }) as bigint : undefined;
+    };
+    const setBal = (a: string, v: bigint): Promise<unknown> =>
+      (contract as unknown as Record<string, (...x: unknown[]) => { send: () => Promise<unknown> }>)
+        .setBal(a, v, alicePub, aliceSig).send();
+    await provider.addUtxo(contract.address, { txid: uid(), vout: 0, satoshis: 200000n }); await setBal(bobAddress, 1000n);
+    await provider.addUtxo(contract.address, { txid: uid(), vout: 0, satoshis: 200000n }); await setBal(aliceAddress, 500n);
+    const sc = contract.connect(bob);
+    await provider.addUtxo(bob.getAddress(), { txid: uid(), vout: 0, satoshis: 200000n });
+    await (sc as unknown as Record<string, (...x: unknown[]) => { send: () => Promise<unknown> }>)
+      .multiTransfer([carolAddress], [20n], bobPub, bobSig).send();
+    expect(await valOf(bobAddress)).toBe(980n);
+    expect(await valOf(carolAddress)).toBe(20n);
+    expect(await valOf(aliceAddress)).toBe(500n); // uninvolved successor untouched; chain HEAD -> bob -> carol -> alice
+  });
+
   it('fails closed on TWO new recipients in the debited senders gap (only one re-point)', async () => {
     const art = compileString(SRC, { forceStateful: true });
     const f = { txid: uid(), vout: 0, satoshis: 400000n };

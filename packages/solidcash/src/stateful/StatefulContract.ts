@@ -5687,9 +5687,16 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       const varyType = keyTypes[info.fixedKeyParams.length] ?? collection.keyType;
       const keysArr = argOf(info.varyingArrayParam);
       const isDelete = info.op === 'delete';
-      const valsArr = isDelete ? undefined : argOf(info.valueArrayParam);
-      if (!Array.isArray(keysArr) || (!isDelete && !Array.isArray(valsArr))) continue;
-      if (!isDelete && (valsArr as unknown[]).length !== keysArr.length) {
+      // A loop-INVARIANT value (fixed-amount airdrop `+= amount` / batch-set-const `= 100`): the same amount for every
+      // key, from a scalar param arg or an int literal. Otherwise the value is the per-key array valsArr[i].
+      const toBig = (v: unknown): bigint => (typeof v === 'bigint' ? v : BigInt(v as number | string));
+      let scalarAmt: bigint | undefined;
+      if (!isDelete && info.valueScalarParam !== undefined) scalarAmt = toBig(argOf(info.valueScalarParam));
+      else if (!isDelete && info.valueConst !== undefined) scalarAmt = BigInt(info.valueConst);
+      const perKey = !isDelete && scalarAmt === undefined;
+      const valsArr = perKey ? argOf(info.valueArrayParam) : undefined;
+      if (!Array.isArray(keysArr) || (perKey && !Array.isArray(valsArr))) continue;
+      if (perKey && (valsArr as unknown[]).length !== keysArr.length) {
         throw new Error(`C2 upsert loop ${info.collection}: recipients/amounts length mismatch`);
       }
       const wUnlocker = createEntryNftUnlocker(this.inner, 0, this.categoryId, info.collection);
@@ -5714,9 +5721,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           throw new Error(`C2 upsert loop ${info.collection}: duplicate recipient (each entry can be co-spent once)`);
         }
         seenSlots.add(slotHex);
-        const amt = isDelete ? 0n
-          : typeof (valsArr as unknown[])[i] === 'bigint' ? (valsArr as unknown[])[i] as bigint
-            : BigInt((valsArr as unknown[])[i] as number);
+        const amt = isDelete ? 0n : scalarAmt !== undefined ? scalarAmt : toBig((valsArr as unknown[])[i]);
         const entry = list.find(slot);
         if (entry) {
           // UPDATE (existing recipient): co-spend the entry, mint the updated value ('delete' -> the type default 0).

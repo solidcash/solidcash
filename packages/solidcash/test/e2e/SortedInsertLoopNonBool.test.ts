@@ -38,9 +38,10 @@ describe('C2 per-key value + delete loops compile; only =default nullify fails c
     expect(() => compileString(boolSet, { sortedMappings: ['w'] })).not.toThrow();
   });
 
-  // A per-iteration C2 `delete m[k[i]]` now COMPILES via the upsert loop (op=delete): each iteration co-spends k[i]'s
-  // existing entry + mints it nullified to the default; absent keys fail closed. `= 0` (an IntLiteral nullify, not
-  // the delete keyword nor a per-key array) is NOT the upsert-loop shape, so it still fails closed cleanly.
+  // A per-iteration C2 `delete m[k[i]]` COMPILES via the upsert loop (op=delete): each iteration co-spends k[i]'s
+  // existing entry + mints it nullified to the default; absent keys fail closed. `= 0` (an IntLiteral) also compiles
+  // now, but as an op=set (valueConst): it INSERTS a 0-node on an absent key (set-to-0 = EnumerableMap.set(k,0)),
+  // distinct from delete (which fails closed on absent). Both are sound; they differ only on the absent-key case.
   const delLoop = `contract C() {
     mapping(int => int) w;
     function clear(int[] ks) { for (int i = 0; i < ks.length; i++) { delete w[ks[i]]; } }
@@ -55,7 +56,10 @@ describe('C2 per-key value + delete loops compile; only =default nullify fails c
     expect(info?.op).toBe('delete');
     expect(info?.valueArrayParam).toBeUndefined(); // delete has no value array
   });
-  it('C2 =default nullify-in-loop (w[ks[i]] = 0) fails closed at compile', () => {
-    expect(() => compileString(nullifyLoop, { sortedMappings: ['w'] })).toThrow(/SortedMappingCodegenPending|sorted/i);
+  it('C2 =literal set-in-loop (w[ks[i]] = 0) COMPILES via the upsert loop (op=set, valueConst)', () => {
+    const info = compileString(nullifyLoop, { sortedMappings: ['w'] }).abi
+      .find((f) => f.name === 'zero')?.sortedUpsertLoopInfo?.[0];
+    expect(info?.op).toBe('set');
+    expect(info?.valueConst).toBe('0');
   });
 });

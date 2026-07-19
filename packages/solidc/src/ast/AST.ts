@@ -286,10 +286,12 @@ export class FunctionDefinitionNode extends Node implements Named {
   }>;
   // Per-iteration C2 UPDATE loop `for(i) m[k[i]] += v[i]` (multitransfer credit to existing recipients): the SDK
   // co-spends each k[i]'s existing entry (SortedList.find) at input[master+blockSize+i] and mints its updated
-  // commitment (value = oldValue op v[i], v[i] for 'set', or the type default for 'delete') at
-  // output[master+blockSize+i]. op is '+', '-', 'set', or 'delete' ('delete' has no valueArrayParam).
+  // commitment (value = oldValue op v, v for 'set', or the type default for 'delete') at output[master+blockSize+i].
+  // op is '+', '-', 'set', or 'delete'. The per-iteration value v is one of: valueArrayParam (per-key vs[i]),
+  // valueScalarParam (a loop-INVARIANT param, e.g. `+= amount` fixed-amount airdrop), or valueConst (an int literal).
   sortedUpsertLoopInfo?: Array<{
-    collection: string; fixedKeyParams: string[]; varyingArrayParam: string; valueArrayParam?: string;
+    collection: string; fixedKeyParams: string[]; varyingArrayParam: string;
+    valueArrayParam?: string; valueScalarParam?: string; valueConst?: string;
     op: '+' | '-' | 'set' | 'delete';
   }>;
   // Function parameters whose value feeds blockhash(n); recorded during codegen. SDK reads the arg to resolve

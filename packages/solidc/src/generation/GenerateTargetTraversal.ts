@@ -12354,7 +12354,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         // Absolute per-key set: `m[k[i]] = v[i]` where v[i] is a per-iteration ARRAY element (NOT a loop-invariant
         // param - that is the range-splice SortedInsertLoopValue case). The key varying-ness is validated in setup.
         const isPerKeySet = e instanceof ArrayAccessNode && e.array instanceof IdentifierNode;
-        if (isRmw || isPerKeySet) { found = n; return; }
+        // Absolute set to a loop-invariant INT LITERAL: `m[k[i]] = 100` (batch-set-const). A `= <param>` set goes to
+        // the range-splice (SortedInsertLoopValue, tried first); a literal is not matched there, so it lands here.
+        const isConstSet = e instanceof IntLiteralNode;
+        if (isRmw || isPerKeySet || isConstSet) { found = n; return; }
       }
       // Per-iteration DELETE `for(i) delete m[k[i]]` (batch nullify): route through the upsert loop with op=delete
       // (UPDATE-to-default; absent keys fail closed). The key varying-ness is validated in setup (varyingArrayParam).
@@ -12400,7 +12403,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
     const isDelete = writeNode instanceof MappingDeleteNode;
     let op: '+' | '-' | 'set' | 'delete';
-    let valueArrayParam: string | undefined;
+    let valueArrayParam: string | undefined;    // per-key vs[i]
+    let valueScalarParam: string | undefined;   // loop-invariant param (e.g. `+= amount` fixed-amount airdrop)
+    let valueConst: string | undefined;         // loop-invariant int literal (e.g. `+= 100`)
     if (isDelete) {
       op = 'delete'; // nullify to the type default; no per-key value array
     } else {
@@ -12408,15 +12413,24 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       const isRmw = expr instanceof BinaryOpNode;
       op = !isRmw ? 'set' : (expr as BinaryOpNode).operator === BinaryOperator.MINUS ? '-' : '+';
       const valueRight = isRmw ? (expr as BinaryOpNode).right : expr; // per-key value = RHS (RMW) or the whole assign
-      valueArrayParam = valueRight instanceof ArrayAccessNode && valueRight.array instanceof IdentifierNode
-        ? valueRight.array.name : undefined;
+      if (valueRight instanceof ArrayAccessNode && valueRight.array instanceof IdentifierNode) {
+        valueArrayParam = valueRight.array.name;                        // per-key vs[i]
+      } else if (valueRight instanceof IdentifierNode
+        && this.currentFunction.parameters.some((p) => p.name === (valueRight as IdentifierNode).name)) {
+        valueScalarParam = valueRight.name;                            // loop-INVARIANT param (same for every key)
+      } else if (valueRight instanceof IntLiteralNode) {
+        valueConst = valueRight.value.toString();                      // loop-invariant int literal
+      }
     }
-    // 'delete' has no value array; every other op needs one. Both need the varying key array (else fall to fail-close).
-    if (!varyingArrayParam || (!isDelete && !valueArrayParam)) return false;
+    // 'delete' has no value; every other op needs exactly one value source. All need the varying key array.
+    const hasValue = !!valueArrayParam || !!valueScalarParam || valueConst !== undefined;
+    if (!varyingArrayParam || (!isDelete && !hasValue)) return false;
     this.sortedUpsertLoopOp = op;
     const infos = (this.currentFunction.sortedUpsertLoopInfo ??= []);
     if (!infos.some((x) => x.collection === collection.name)) {
-      infos.push({ collection: collection.name, fixedKeyParams, varyingArrayParam, ...(valueArrayParam && { valueArrayParam }), op });
+      infos.push({ collection: collection.name, fixedKeyParams, varyingArrayParam,
+        ...(valueArrayParam && { valueArrayParam }), ...(valueScalarParam && { valueScalarParam }),
+        ...(valueConst !== undefined && { valueConst }), op });
     }
     this.sortedWrittenCollections.add(collection.name);
 

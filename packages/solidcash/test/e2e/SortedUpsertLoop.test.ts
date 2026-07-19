@@ -33,6 +33,14 @@ const SRC = `contract Token() {
     require(checkSig(s, pk));
     for (int i = 0; i < accounts.length; i++) { delete this.bal[accounts[i]]; }
   }
+  function airdropFixed(int[] accounts, int amount, pubkey pk, sig s) {
+    require(checkSig(s, pk));
+    for (int i = 0; i < accounts.length; i++) { this.bal[accounts[i]] += amount; }
+  }
+  function setConst(int[] accounts, pubkey pk, sig s) {
+    require(checkSig(s, pk));
+    for (int i = 0; i < accounts.length; i++) { this.bal[accounts[i]] = 42; }
+  }
   function chk(int a, int exp, pubkey pk, sig s) { require(checkSig(s, pk)); require(this.bal[a] == exp); }
 }`;
 
@@ -197,6 +205,32 @@ describe('C2 diff-key per-iteration UPDATE loop (multitransfer credit to existin
     await fund(contract.address); await call('setBal', 1n, 500n);
     await fund(contract.address);
     await expect(call('clearAll', [1n, 9n])).rejects.toThrow(/no entry|cannot delete/i);
+  });
+
+  // FIXED-AMOUNT airdrop `for(i) bal[ks[i]] += amount` (a loop-INVARIANT param, not a per-key array): credit every
+  // key by the SAME amount. UPDATE (existing) + INSERT (new) both use the one param value.
+  it('credits every key by a fixed (loop-invariant param) amount - update + insert', async () => {
+    const { contract, valOf, call } = await setup();
+    await fund(contract.address); await call('setBal', 3n, 100n);   // exists
+    await fund(contract.address); await call('setBal', 7n, 200n);   // exists
+    await fund(contract.address);
+    await call('airdropFixed', [3n, 7n, 9n], 50n);                  // 3->150, 7->250, 9 new -> 0+50=50
+    expect(await valOf(3n)).toBe(150n);
+    expect(await valOf(7n)).toBe(250n);
+    expect(await valOf(9n)).toBe(50n);
+    await fund(contract.address); await expect(call('chk', 3n, 150n)).resolves.toBeDefined();
+    await fund(contract.address); await expect(call('chk', 3n, 100n)).rejects.toThrow(); // fixed amount was added
+  });
+
+  // Absolute set to a loop-invariant LITERAL `for(i) bal[ks[i]] = 42` (op=set, valueConst): update existing + insert new.
+  it('sets every key to a loop-invariant literal (op=set valueConst) - update + insert', async () => {
+    const { contract, valOf, call } = await setup();
+    await fund(contract.address); await call('setBal', 3n, 100n);   // exists
+    await fund(contract.address);
+    await call('setConst', [3n, 9n]);                               // 3 -> 42 (replace), 9 new -> insert 42
+    expect(await valOf(3n)).toBe(42n);
+    expect(await valOf(9n)).toBe(42n);
+    await fund(contract.address); await expect(call('chk', 3n, 42n)).resolves.toBeDefined();
   });
 });
 

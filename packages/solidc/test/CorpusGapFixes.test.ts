@@ -2227,15 +2227,17 @@ describe('C2 (sorted) mapping write in a runtime loop: fixed-bound unrolls, dyna
   // body (emitSortedInsertLoopBody) assigns every new node the SAME LOOP-INVARIANT value, so it supports a bool
   // literal (`m[k[i]] = true`) OR an int-kind INVARIANT PARAM (`m[k[i]] = v`): the SDK mints valueTail = encode(v) and
   // the covenant PICKs v + EQUALVERIFYs node.value == v (VM-proven in SortedInsertLoopValue). A PER-KEY value
-  // (`m[k[i]] = vs[i]`), an RMW (`+= v`), or the loop var (`= i`, not a param) cannot be pinned to one value (the
-  // permutation onto the SORTED chain is unresolved) and fall to the clean SortedMappingCodegenPendingError.
+  // (`m[k[i]] = vs[i]`) and an RMW (`+= v`) are instead handled by the per-iteration UPSERT loop (source-order 1:1
+  // co-spend/mint, update+insert - SortedUpsertLoop), NOT the range-splice. Only the loop var (`= i`, neither a param
+  // nor an array element) still falls to the clean SortedMappingCodegenPendingError.
   const mkBigint = (loop: string): string => 'contract C() { mapping(int => bigint) m;'
     + ` function f(int[] ks, int[] vs, int v, pubkey pk, sig s) { require(checkSig(s, pk)); ${loop} } }`;
   const boolLoop = 'contract C() { mapping(int => bool) m;'
     + ' function f(int[] ks, pubkey pk, sig s) { require(checkSig(s, pk));'
     + ' for (int i = 0; i < ks.length; i++) { m[ks[i]] = true; } } }';
-  const silOf = (loop: string): string[] | undefined => compileString(mkBigint(loop),
-    { sortedMappingsAll: true, forceStateful: true }).abi.find((f) => f.name === 'f')?.sortedInsertLoops;
+  const abiOf = (loop: string): ReturnType<typeof compileString>['abi'][number] | undefined =>
+    compileString(mkBigint(loop), { sortedMappingsAll: true, forceStateful: true }).abi.find((f) => f.name === 'f');
+  const silOf = (loop: string): string[] | undefined => abiOf(loop)?.sortedInsertLoops;
   it('unrolls a fixed-bound C2 loop (static upserts handle the actual value)', () => {
     expect(() => compileString(mkBigint('for (int i = 0; i < 3; i++) { m[ks[i]] = v; }'),
       { sortedMappingsAll: true, forceStateful: true })).not.toThrow();
@@ -2247,13 +2249,15 @@ describe('C2 (sorted) mapping write in a runtime loop: fixed-bound unrolls, dyna
   it('compiles a dynamic INVARIANT-PARAM value insert loop (m[ks[i]] = v)', () => {
     expect(silOf('for (int i = 0; i < ks.length; i++) { m[ks[i]] = v; }')).toContain('m');
   });
-  it('fails closed on a PER-KEY value insert loop (m[ks[i]] = vs[i], permutation unresolved)', () => {
-    expect(() => silOf('for (int i = 0; i < ks.length; i++) { m[ks[i]] = vs[i]; }'))
-      .toThrow(/SortedMappingCodegenPending|sorted/i);
+  it('compiles a PER-KEY value loop (m[ks[i]] = vs[i]) via the upsert loop (op=set)', () => {
+    const info = abiOf('for (int i = 0; i < ks.length; i++) { m[ks[i]] = vs[i]; }')?.sortedUpsertLoopInfo?.[0];
+    expect(info?.op).toBe('set');
+    expect(info?.valueArrayParam).toBe('vs');
   });
-  it('fails closed on an RMW insert loop (m[ks[i]] += v)', () => {
-    expect(() => silOf('for (int i = 0; i < ks.length; i++) { m[ks[i]] += v; }'))
-      .toThrow(/SortedMappingCodegenPending|sorted/i);
+  it('compiles a fixed-amount RMW loop (m[ks[i]] += v) via the upsert loop (op=+, invariant-param value)', () => {
+    const info = abiOf('for (int i = 0; i < ks.length; i++) { m[ks[i]] += v; }')?.sortedUpsertLoopInfo?.[0];
+    expect(info?.op).toBe('+');
+    expect(info?.valueScalarParam).toBe('v');
   });
   it('fails closed on a loop-var value (m[ks[i]] = i, not a param)', () => {
     expect(() => silOf('for (int i = 0; i < ks.length; i++) { m[ks[i]] = i; }'))

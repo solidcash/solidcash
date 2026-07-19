@@ -134,14 +134,16 @@ by it; they are pre-existing and fundamental. Re-bucketed the current top FAILs 
   `6125c53a`; UDVT-int (`type T is intN`) slot fields `f67b4f91` (unwrap-read/wrap-write + pack by underlying width;
   `dirty_uint8_read` +1; sound because int truncation `uintN(word)`=word mod 2^N has NO byte cast); dynamic-ARRAY
   `.slot` READ `36dc743e` (sload=length register; WRITE/resize fail-closed).
-  **KEY SOUNDNESS FINDING (17e7a36b) - bytesN/bytes32 slot fields CANNOT be done via casts: REVERTED bytes32
-  (`2b685b3c`).** `bytesN(uint)` (incl. bytes32(uint)) goes through OP_NUM2BIN = sign-magnitude for a value whose top
-  byte has the high bit set, so `uint256(bytesN(x))!=x` for ~half of all values (top-bit set) = SILENT MISCOMPILE.
-  VM-caught: bytes32(0xff00..00) and a sub-word bytes2 on 0xaaaa both fail to round-trip; my first bytes32 test used
-  only low values (0x1234) and missed it. So the int-word combine/decompose is sound ONLY for int/UDVT-int fields;
-  ANY bytesN field stays fail-closed. Redoing bytesN slots would need a byte-level (non-NUM2BIN) slot encoding, not a
-  cast. REMAINING gaps: (a) mixed packed slots with bytesN/address fields (`dirty_slot`, `storage_boundary_*`) - needs
-  the byte-level encoding above (bytesN) + 25-byte-lbc handling (address); (b) dynamic-array RESIZE (`sstore(a.slot,n)`)
+  **KEY: bytesN slot fields VIA THE TWO'S-COMPLEMENT TRICK (user steer) - sub-word DONE `2f40c4f1`.** First naive
+  attempt (`2b685b3c` bytes32) was UNSOUND and REVERTED (`17e7a36b`): a bare `bytesN(uint)` cast goes through
+  OP_NUM2BIN = sign-magnitude, so `uint256(bytesN(x))!=x` for a high-bit value (VM-caught: bytes2 on 0xaaaa, bytes32
+  on 0xff00..00; my first test used only low values 0x1234 and missed it). FIX (reuse the ABI-parity trick
+  emitEvmWordFromUint): write = `bytes(N+1)(word)[0:N]` (NUM2BIN to N+1 bytes fits a positive value, drop the sign
+  byte); read = prepend a 0x00 byte before uint256/BIN2NUM (read unsigned). Now sub-word bytes1..bytes31 + UDVT-over-
+  bytes round-trip HIGH-BIT values (VM-proven 0xccccbbbbaaaa mixed slot); `dirty_slot` compiles. bytes32 STILL
+  excluded: its write needs a 33-byte NUM2BIN (not a valid bytesN cast) - do it by splitting the word into two
+  bytes16 halves (each via the N=16 trick) + concat; read via prepend-0x00 (uint256 of 33 bytes) - FOLLOW-UP.
+  REMAINING gaps: (a) address packed-slot fields (25-byte lbc != 20-byte EVM word) + bytes32 full-word (split, above); (b) dynamic-array RESIZE (`sstore(a.slot,n)`)
   + element slots (`sstore(keccak256(0,32)+i, v)`) = array copy/delete (`array/*`), deep; (c) EVM transient storage +
   sparse/computed raw slots with no declared var (correctly fail-closed),
   `tstore`/`tload` (no tx-scoped storage). 6 = calldata `.offset`/`.length`: `.length` WORKS; `.offset` applies only

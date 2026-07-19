@@ -250,6 +250,14 @@ function getMaxPushdataEncodedSizeForType(type: Type, seen: Set<string> = new Se
   return 9;
 }
 
+// Object keys that are RESOLVED cross-reference back-edges, not structural children. Once SymbolTable sets them a
+// generic child-walk that follows them cycles (a FunctionCall's `resolvedFunction` -> its body -> a call back to it,
+// the OZ SafeERC20.safeTransfer <-> _callOptionalReturn mutual recursion). Ad-hoc analysis walks must skip them.
+const RESOLVED_BACKREF_KEYS = new Set([
+  'location', 'definition', 'resolvedFunction', 'collection', 'stateVariable', 'errorDefinition',
+  'referencedContract', 'symbolTable', 'type',
+]);
+
 export default class SymbolTableTraversal extends AstTraversal {
   private symbolTables: SymbolTable[] = [new SymbolTable(GLOBAL_SYMBOL_TABLE)];
   private functionSignatures: Set<string> = new Set();
@@ -2638,7 +2646,8 @@ export default class SymbolTableTraversal extends AstTraversal {
     if (node instanceof DeleteStateNode) return true;
 
     // Walk child nodes
-    for (const value of Object.values(node)) {
+    for (const [key, value] of Object.entries(node)) {
+      if (RESOLVED_BACKREF_KEYS.has(key)) continue; // skip resolved back-edges - they cycle (SafeERC20 recursion)
       if (value instanceof Node) {
         if (this.bodyContainsStateWrites(value)) return true;
       } else if (Array.isArray(value)) {
@@ -2721,7 +2730,8 @@ export default class SymbolTableTraversal extends AstTraversal {
   private keccakCallInLoop(node: Node, inLoop = false): boolean {
     const nowInLoop = inLoop || node instanceof WhileNode || node instanceof DoWhileNode;
     if (nowInLoop && node instanceof FunctionCallNode && node.identifier.name === GlobalFunction.KECCAK256) return true;
-    for (const value of Object.values(node)) {
+    for (const [key, value] of Object.entries(node)) {
+      if (RESOLVED_BACKREF_KEYS.has(key)) continue; // skip resolved back-edges - they cycle (SafeERC20 recursion)
       if (value instanceof Node) { if (this.keccakCallInLoop(value, nowInLoop)) return true; }
       else if (Array.isArray(value)) {
         for (const item of value) if (item instanceof Node && this.keccakCallInLoop(item, nowInLoop)) return true;
@@ -2795,7 +2805,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       this.addLoopVaryingVars(node, childLoopVars);
     }
     for (const key of Object.keys(node)) {
-      if (key === 'location' || key === 'definition') continue;
+      if (RESOLVED_BACKREF_KEYS.has(key)) continue; // skip resolved back-edges (see the const) - they cycle
       const v = (node as unknown as Record<string, unknown>)[key];
       if (v instanceof Node) this.collectLoopWrittenSlotKeys(v, childDepth, out, childLoopVars);
       else if (Array.isArray(v)) {
@@ -2816,7 +2826,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         out.add(n.expression.name);
       }
       for (const key of Object.keys(n)) {
-        if (key === 'location' || key === 'definition') continue;
+        if (RESOLVED_BACKREF_KEYS.has(key)) continue; // skip resolved back-edges - they cycle
         const v = (n as unknown as Record<string, unknown>)[key];
         if (v instanceof Node) collectMutated(v);
         else if (Array.isArray(v)) for (const e of v) if (e instanceof Node) collectMutated(e);
@@ -2834,7 +2844,7 @@ export default class SymbolTableTraversal extends AstTraversal {
           changed = true;
         }
         for (const key of Object.keys(n)) {
-          if (key === 'location' || key === 'definition') continue;
+          if (RESOLVED_BACKREF_KEYS.has(key)) continue; // skip resolved back-edges - they cycle
           const v = (n as unknown as Record<string, unknown>)[key];
           if (v instanceof Node) scanDefs(v);
           else if (Array.isArray(v)) for (const e of v) if (e instanceof Node) scanDefs(e);
@@ -2852,7 +2862,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       if (found || !n) return;
       if (n instanceof IdentifierNode && vars.has(n.name)) { found = true; return; }
       for (const key of Object.keys(n)) {
-        if (key === 'location' || key === 'definition') continue;
+        if (RESOLVED_BACKREF_KEYS.has(key)) continue; // skip resolved back-edges - they cycle
         const v = (n as unknown as Record<string, unknown>)[key];
         if (v instanceof Node) walk(v);
         else if (Array.isArray(v)) for (const e of v) if (e instanceof Node) walk(e);

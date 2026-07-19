@@ -2635,3 +2635,38 @@ describe('nested mapping to a struct value, outer index a number literal (COMP c
   it('reads the whole struct to memory via a literal outer index', () => ok('CP memory c = cps[a][0]; return c.votes;'));
   it('still works with an expression outer index', () => ok('return cps[a][n - 1].votes;'));
 });
+
+describe('interface-cast using-for + resolved-back-edge recursion robustness (OZ SafeERC20 shape)', () => {
+  const ok = (src: string): void => {
+    expect(() => compileString(src, { solidityImportCompat: true })).not.toThrow();
+  };
+  const lib = 'interface IERC20 { function transfer(address to, uint256 v) external returns (bool); }'
+    + ' library SafeERC20 { function safeTransfer(IERC20 token, address to, uint256 v) internal {'
+    + ' require(token.transfer(to, v), "fail"); } }';
+  it('rewrites IERC20(x).safeTransfer(to,v) -> SafeERC20.safeTransfer(IERC20(x),to,v)', () => {
+    ok(`pragma solidity ^0.8.0; ${lib} contract C { using SafeERC20 for IERC20;`
+      + ' function f(address x, address to, uint256 v) public { IERC20(x).safeTransfer(to, v); } }');
+  });
+  it('handles the cast rewrite nested in a block and mixed with a genuine interface method', () => {
+    ok(`pragma solidity ^0.8.0; ${lib} contract C { using SafeERC20 for IERC20;`
+      + ' function f(address x, address to, uint256 v, bool c) public {'
+      + ' if (c) { IERC20(x).safeTransfer(to, v); } require(IERC20(x).transfer(to, v)); } }');
+  });
+  it('does not stack-overflow the SymbolTable analysis walks on the OZ SafeERC20 _callOptionalReturn chain', () => {
+    // The ad-hoc analysis walks (collectLoopWrittenSlotKeys, keccakCallInLoop, bodyContainsStateWrites,
+    // addLoopVaryingVars) must not follow resolved back-edges (FunctionCall.resolvedFunction etc.) - the deep OZ
+    // SafeERC20 -> _callOptionalReturn -> low-level-call chain re-traversed them into a stack overflow. The
+    // extcall-target-sourcing limit is a separate, expected wall; the point here is NO "Maximum call stack size".
+    const src = 'pragma solidity ^0.8.0;'
+      + ' interface IERC20 { function transfer(address to, uint256 v) external returns (bool); }'
+      + ' library SafeERC20 {'
+      + ' function safeTransfer(IERC20 token, address to, uint256 v) internal {'
+      + ' _callOptionalReturn(token, abi.encodeWithSelector(token.transfer.selector, to, v)); }'
+      + ' function _callOptionalReturn(IERC20 token, bytes memory data) private {'
+      + ' (bool okk, bytes memory ret) = address(token).call(data); require(okk, "fail"); } }'
+      + ' contract C { using SafeERC20 for IERC20;'
+      + ' function f(address x, address to, uint256 v, uint256 n) public {'
+      + ' for (uint256 i = 0; i < n; i++) { IERC20(x).safeTransfer(to, v); } } }';
+    expect(() => compileString(src, { solidityImportCompat: true })).not.toThrow(/Maximum call stack/);
+  });
+});

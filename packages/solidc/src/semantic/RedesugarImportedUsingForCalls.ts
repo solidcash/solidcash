@@ -1,8 +1,11 @@
 import {
   ContractNode,
   FunctionCallNode,
+  FunctionCallStatementNode,
   FunctionDefinitionNode,
   IdentifierNode,
+  MethodCallNode,
+  MethodCallStatementNode,
   Node,
   ParameterNode,
   SourceFileNode,
@@ -33,8 +36,10 @@ import AstTraversal from '../ast/AstTraversal.js';
  */
 export default class RedesugarImportedUsingForCalls extends AstTraversal {
   private structToLib = new Map<string, string>(); // struct type string -> library name
+  private interfaceToLib = new Map<string, string>(); // interface/contract name -> library (`using SafeERC20 for IERC20`)
   private wildcardLibs: string[] = [];             // libraries bound via `using L for *`
   private freeFnNames = new Set<string>();
+  private interfaceNames = new Set<string>();      // interface + imported-contract names (interface-cast receivers)
 
   constructor(private readonly perContract = false) { super(); }
 
@@ -42,6 +47,11 @@ export default class RedesugarImportedUsingForCalls extends AstTraversal {
     const contract = node.contract;
     if (!contract) return node;
     this.freeFnNames = new Set((node.freeFunctions ?? []).map((f) => f.name));
+    // Interface-cast receivers (`IERC20(x).safeTransfer(..)`) name an interface or an imported contract type.
+    this.interfaceNames = new Set([
+      ...(node.interfaceDefinitions ?? []).map((i) => i.name),
+      ...(node.importedContracts ?? []).map((c) => c.name),
+    ]);
 
     const fileStructs = node.structDefinitions ?? [];
     const fileDirectives = node.usingForDirectives ?? [];
@@ -50,7 +60,7 @@ export default class RedesugarImportedUsingForCalls extends AstTraversal {
     for (const c of contracts) this.processContract(c, fileDirectives, fileStructs);
     // Free functions are file-level; process once with file directives only.
     this.buildBindings([], fileDirectives, fileStructs);
-    if (this.structToLib.size > 0 || this.wildcardLibs.length > 0) {
+    if (this.structToLib.size > 0 || this.wildcardLibs.length > 0 || this.interfaceToLib.size > 0) {
       for (const fn of node.freeFunctions ?? []) if (fn?.body) this.processFunction(fn, new Map());
     }
     return node;
@@ -60,7 +70,7 @@ export default class RedesugarImportedUsingForCalls extends AstTraversal {
     fileStructs: StructDefinitionNode[]): void {
     this.buildBindings(contract.structDefinitions, [...fileDirectives, ...(contract.usingForDirectives ?? [])],
       fileStructs);
-    if (this.structToLib.size === 0 && this.wildcardLibs.length === 0) return;
+    if (this.structToLib.size === 0 && this.wildcardLibs.length === 0 && this.interfaceToLib.size === 0) return;
 
     const stateVarTypes = new Map<string, Type>();
     for (const sv of contract.stateVariables) stateVarTypes.set(sv.name, sv.type);
@@ -78,6 +88,7 @@ export default class RedesugarImportedUsingForCalls extends AstTraversal {
   private buildBindings(contractStructs: StructDefinitionNode[], directives: UsingForDirectiveNode[],
     fileStructs: StructDefinitionNode[]): void {
     this.structToLib = new Map();
+    this.interfaceToLib = new Map();
     this.wildcardLibs = [];
     const structMap = new Map<string, StructType>();
     for (const sd of fileStructs) structMap.set(sd.name, new StructType(sd.name, sd.fields));
@@ -89,7 +100,12 @@ export default class RedesugarImportedUsingForCalls extends AstTraversal {
       const dot = d.targetTypeName.lastIndexOf('.');
       const bare = dot >= 0 ? d.targetTypeName.slice(dot + 1) : d.targetTypeName;
       const st = structMap.get(d.targetTypeName) ?? structMap.get(bare);
-      if (st) this.structToLib.set(st.toString(), d.libraryName);
+      if (st) { this.structToLib.set(st.toString(), d.libraryName); continue; }
+      // `using SafeERC20 for IERC20`: the target is an interface (or imported contract) type. Bound methods dispatch
+      // on an interface-cast receiver `IERC20(x).method(..)`, which parses as a MethodCall (not a namespaced call).
+      if (this.interfaceNames.has(d.targetTypeName) || this.interfaceNames.has(bare)) {
+        this.interfaceToLib.set(bare, d.libraryName);
+      }
     }
   }
 
@@ -103,7 +119,12 @@ export default class RedesugarImportedUsingForCalls extends AstTraversal {
     const varTypes = new Map(base);
     for (const p of params ?? []) varTypes.set(p.name, p.type);
     for (const s of statements) this.walk(s, (n) => { if (n instanceof VariableDefinitionNode) varTypes.set(n.name, n.type); });
-    for (const s of statements) this.rewrite(s, varTypes);
+    // Replace a top-level statement in place (a bare `IERC20(x).safeTransfer(..);` MethodCallStatement becomes a
+    // FunctionCallStatement) - `rewrite` itself only touches CHILDREN, so the outermost statement is handled here.
+    for (let i = 0; i < statements.length; i += 1) {
+      statements[i] = this.rewriteInterfaceCastCall(statements[i]) as StatementNode;
+      this.rewrite(statements[i], varTypes);
+    }
   }
 
   // Rewrite `X.Y(args)` -> `L.Y(X, args)` in place where X is a receiver bound by `using L for T` (struct) or
@@ -135,10 +156,54 @@ export default class RedesugarImportedUsingForCalls extends AstTraversal {
     }
     for (const key of Object.keys(node)) {
       if (key === 'type' || key === 'symbolTable' || key === 'location') continue;
-      const v = (node as unknown as Record<string, unknown>)[key];
-      if (v instanceof Node) this.rewrite(v, varTypes);
-      else if (Array.isArray(v)) for (const it of v) if (it instanceof Node) this.rewrite(it, varTypes);
+      const rec = node as unknown as Record<string, unknown>;
+      const v = rec[key];
+      if (v instanceof Node) {
+        const replaced = this.rewriteInterfaceCastCall(v);
+        if (replaced !== v) rec[key] = replaced;
+        this.rewrite(replaced, varTypes);
+      } else if (Array.isArray(v)) {
+        for (let i = 0; i < v.length; i += 1) {
+          if (!(v[i] instanceof Node)) continue;
+          const replaced = this.rewriteInterfaceCastCall(v[i]);
+          if (replaced !== v[i]) v[i] = replaced;
+          this.rewrite(replaced, varTypes);
+        }
+      }
     }
+  }
+
+  // `IERC20(x).safeTransfer(a, b)` (a MethodCall on an interface-cast receiver, `using SafeERC20 for IERC20`) ->
+  // `SafeERC20.safeTransfer(IERC20(x), a, b)`. The cast receiver is a not-yet-resolved FunctionCall naming the
+  // interface. Returns the node unchanged when it is not such a call. Runs before InlineStoragePointerCalls, like
+  // the struct/wildcard rewrite, so a using-for library taking the receiver reaches its inliner.
+  private rewriteInterfaceCastCall(node: Node): Node {
+    // Statement form `IERC20(x).safeTransfer(a, b);` is a MethodCallStatement; rewrite it to a FunctionCallStatement
+    // so the void-external-call inliner (which keys on FunctionCall statements) picks the library call up.
+    if (node instanceof MethodCallStatementNode) {
+      const call = this.rewriteMethodCastCall(node.call);
+      if (call) { const s = new FunctionCallStatementNode(call); s.location = node.location; return s; }
+      return node;
+    }
+    if (node instanceof MethodCallNode) return this.rewriteMethodCastCall(node) ?? node;
+    return node;
+  }
+
+  // `IERC20(x).method(a, b)` -> `L.method(IERC20(x), a, b)` when `using L for IERC20` and L declares `L.method`;
+  // undefined when `node` is not such an interface-cast method call.
+  private rewriteMethodCastCall(node: MethodCallNode): FunctionCallNode | undefined {
+    if (node.callOptions) return undefined;
+    const recv = node.object;
+    if (!(recv instanceof FunctionCallNode) || recv.parameters.length !== 1) return undefined;
+    const ifaceName = recv.identifier.name;
+    if (!this.interfaceNames.has(ifaceName)) return undefined;
+    const lib = this.interfaceToLib.get(ifaceName);
+    if (!lib || !this.freeFnNames.has(`${lib}.${node.methodName}`)) return undefined;
+    const id = new IdentifierNode(`${lib}.${node.methodName}`);
+    id.location = node.location;
+    const call = new FunctionCallNode(id, [recv, ...node.parameters]);
+    call.location = node.location;
+    return call;
   }
 
   private walk(node: Node | undefined, visit: (n: Node) => void): void {

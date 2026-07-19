@@ -313,15 +313,19 @@ function resolveSlotFields(slotArg: YulExpressionNode): SlotField[] | undefined 
   }
   if (slotNum === undefined) return undefined;
   const fields = currentSlots.get(slotNum);
-  // Int fields, or a UDVT wrapping an int (`type T is intN`) - same word packing/masking; the combine/decompose
-  // casts unwrap the UDVT. A slot holding an address/bytes/UDVT-of-bytes field stays unhandled (NotLowerable).
-  if (fields && fields.every((f) => isIntLikeSlotField(f.sv.type))) return fields;
+  // Int fields, a UDVT wrapping an int, or a lone full-word bytes32 - the combine/decompose casts unwrap/reinterpret
+  // them (bytes32<->uint256 round-trips losslessly, all 32 bytes preserved). A slot with an address, a sub-word
+  // bytesN (byte-order-sensitive packing), or a UDVT-of-bytes field stays unhandled (NotLowerable).
+  if (fields && fields.every((f) => isSupportedSlotField(f.sv.type))) return fields;
   return undefined;
 }
 
-// A slot field usable by the int-word combine/decompose: a plain int, or a UDVT over an int.
-function isIntLikeSlotField(t: Type): boolean {
-  return t instanceof IntType || (t instanceof ValueType && t.underlyingType instanceof IntType);
+// A slot field the int-word combine/decompose can handle: a plain int, a UDVT over an int, or a full-word bytes32
+// (a bytes32 is always alone in its slot, so it only hits the full-word path where it is a whole-word cast).
+function isSupportedSlotField(t: Type): boolean {
+  return t instanceof IntType
+    || (t instanceof ValueType && t.underlyingType instanceof IntType)
+    || (t instanceof BytesType && t.bound === 32);
 }
 
 // If a Yul slot argument denotes a declared DYNAMIC ARRAY var's base slot, return the var name. EVM stores a
@@ -367,7 +371,7 @@ function castWordToField(f: SlotField, wordExpr: ExpressionNode, src: YulExpress
 
 // sload(slot): combine the slot's fields into a word, `uint256(v0) + uint256(v1)*2^off1 + ...`.
 function combineSlot(fields: SlotField[], src: YulExpressionNode): ExpressionNode {
-  if (isFullWord(fields) && !(fields[0].sv.type instanceof ValueType)) {
+  if (isFullWord(fields) && fields[0].sv.type instanceof IntType) {
     return loc(new StateAccessNode(fields[0].sv.name), src);
   }
   let expr: ExpressionNode | undefined;
@@ -384,7 +388,7 @@ function combineSlot(fields: SlotField[], src: YulExpressionNode): ExpressionNod
 // sstore(slot, word): decompose the word into the slot's fields, `vi = type((word / 2^offi) % 2^widthi)`.
 // The word is bound to a temp so it is evaluated once.
 function decomposeSlot(fields: SlotField[], valueExpr: YulExpressionNode, src: YulExpressionNode): StatementNode {
-  if (isFullWord(fields) && !(fields[0].sv.type instanceof ValueType)) {
+  if (isFullWord(fields) && fields[0].sv.type instanceof IntType) {
     return loc(new StateAssignNode(fields[0].sv.name, lowerValue(valueExpr)), src);
   }
   const tempName = '__yul_slot';

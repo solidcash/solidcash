@@ -111,3 +111,39 @@ describe('UDVT (type T is uintN) storage slot read/write in assembly', () => {
     await (sc as any).readHi(305n).send();
   });
 });
+
+// A lone bytes32 state var occupies a full slot; sload/sstore on it reinterpret the whole 32-byte word
+// (bytes32<->uint256, lossless in either endianness), so the value round-trips through the slot.
+const BYTES32_SLOT = `pragma solidcash >=0.8.0;
+contract C() {
+  bytes32 x;
+  function setHi(uint256 v, pubkey pk, sig s) {
+    require(checkSig(s, pk));
+    this.x = bytes32(v);
+  }
+  function readViaSlot(uint256 e) {
+    uint256 r = 0;
+    assembly { r := sload(x.slot) }
+    require(r == e);
+  }
+  function setViaSlot(uint256 v, pubkey pk, sig s) {
+    require(checkSig(s, pk));
+    assembly { sstore(x.slot, v) }
+  }
+  function readHi(uint256 e) {
+    require(uint256(x) == e);
+  }
+}`;
+
+describe('bytes32 storage slot read/write in assembly (full-word reinterpret)', () => {
+  it('sload of a bytes32 var slot reads its high-level-written value', async () => {
+    const sc = await deploy(BYTES32_SLOT);
+    await (sc as any).setHi(4660n, alicePub, sig()).send();
+    await (sc as any).readViaSlot(4660n).send();
+  });
+  it('sstore to a bytes32 var slot is read back high-level', async () => {
+    const sc = await deploy(BYTES32_SLOT);
+    await (sc as any).setViaSlot(22136n, alicePub, sig()).send();
+    await (sc as any).readHi(22136n).send();
+  });
+});

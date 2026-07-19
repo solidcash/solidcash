@@ -194,11 +194,16 @@ DIFF-KEY per-iteration credit loop `for(i) bal[recipients[i]] += amts[i]` - both
 recipient, `125cb014`) - int/bytes20/address keys, + the FULL ERC-20 multiTransfer (debit+credit in one tx, `090f4e35`)
 INCLUDING a NEW recipient whose predecessor is UNTOUCHED (`5856dfc5`, the common sha256-random topology);
 ABSOLUTE per-key assignment loop `for(i) m[k[i]] = vs[i]` (op=set, `644532b1`, replace-not-add, update+insert);
-per-iteration DELETE loop `for(i) delete m[k[i]]` (op=delete, `bbc280a1`, batch nullify existing keys, absent fails closed).
+per-iteration DELETE loop `for(i) delete m[k[i]]` (op=delete, `bbc280a1`, batch nullify existing keys, absent fails closed);
+LOOP-INVARIANT value loops via the upsert loop (`7673bc51`): fixed-amount airdrop `for(i) bal[k[i]] += amount` (a scalar
+PARAM, valueScalarParam) + `+= 100`/`= 42` (int LITERAL, valueConst) - update+insert, all ops. `= 0` now compiles as
+op=set (INSERTS a 0-node on absent = EnumerableMap.set(k,0), distinct from delete's fail-closed-on-absent).
 FAIL-CLOSED (sound, not complete, CLEAN message): a NEW recipient whose bracketing predecessor is ALSO co-spent this tx
 (the debited sender / another credited recipient / two-new-in-one-gap) - needs a batch-upsert MERGE covenant (co-spend
-each distinct touched entry once + mint value-change AND re-point); cross-contract msg.sender, `= <default>` nullify-in-loop
-(the delete KEYWORD works; only the IntLiteral `= 0` form fails closed), 2D `m[k][i][j]`, function-pointer values.
+each distinct touched entry once + mint value-change AND re-point); cross-contract msg.sender, 2D `m[k][i][j]`,
+function-pointer values. MINOR wart: `= <param>` (assign, invariant) still routes to the range-splice (insert-only,
+SortedInsertLoopValue) while `= <literal>`/`+= <param>` route to the upsert loop (update+insert) - two mechanisms,
+both sound; unifying `= <param>` into the upsert loop trades same-gap chaining for update support (deferred).
 
 **One real HOLE found + FIXED (commit `af6e894a`): C2 `delete m[k]` in a DYNAMIC loop.** `visitMappingDelete`'s sorted
 branch routed to `emitSortedValueUpsert` (a FIXED-slot co-spend) with NO `plainLoopDepth` guard (unlike

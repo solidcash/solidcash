@@ -2690,3 +2690,23 @@ describe('clearer diagnostic for an external call on an interface-typed struct-f
     expect(() => compileString(src, { solidityImportCompat: true })).not.toThrow();
   });
 });
+
+describe('using-for on an interface-typed struct-field / state-var receiver (not hoisted as an external call)', () => {
+  // A `using L for IERC20` library method on an interface-typed struct FIELD (`pool.lpToken.tag()`) is a using-for
+  // call, NOT an external call: SynthesizeExternalAddressLocals must not hoist it into an __extaddr_ address local
+  // (which drops the interface and breaks dispatch), and tryResolveUsingFor must match the binding by interface NAME
+  // (an interface-typed receiver's toString() is the bare 'address', but the binding is keyed by the interface).
+  const lib = 'interface IERC20 { function balanceOf(address a) external view returns (uint256); }'
+    + ' library L { function tag(IERC20 t) internal pure returns (uint256) { return 7; } }';
+  const ok = (src: string): void => {
+    expect(() => compileString(`pragma solidity ^0.8.0; ${lib} ${src}`, { solidityImportCompat: true })).not.toThrow();
+  };
+  it('resolves a pure library method on an interface-typed struct field', () => {
+    ok('contract C { struct Pool { IERC20 lpToken; uint256 x; } Pool[] poolInfo; using L for IERC20; uint256 s;'
+      + ' function f(uint256 pid) public { Pool storage pool = poolInfo[pid]; s = pool.lpToken.tag(); } }');
+  });
+  it('still hoists a genuine interface method on the same struct field (external call, param index)', () => {
+    ok('contract C { struct Pool { IERC20 lpToken; uint256 x; } Pool[] poolInfo; uint256 s;'
+      + ' function g(uint256 pid) public { Pool storage pool = poolInfo[pid]; s = pool.lpToken.balanceOf(address(this)); } }');
+  });
+});

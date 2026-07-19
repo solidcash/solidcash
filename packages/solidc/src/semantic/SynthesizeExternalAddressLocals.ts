@@ -79,14 +79,41 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
   // every use - safe to trace through (the Marketplace `IERC20 token = IERC20(job.token)` intermediary). A
   // reassignable local is excluded (it could be rebound to a caller value between decl and the call = forgery).
   private singleAssignLocals: Set<string> = new Set();
+  // interface / contract name -> the method names it declares (own + inherited). A target-receiver method that is
+  // NOT one of these is a `using L for IFace` library method (`token.safeTransfer(..)`), NOT an external call - it
+  // must be left for the using-for resolver, not hoisted into an __extaddr_ address local (which drops the interface
+  // type and breaks the using-for dispatch). Only genuine interface method calls are self-pinned external calls.
+  private ifaceMethods: Map<string, Set<string>> = new Map();
 
   visitSourceFile(node: SourceFileNode): Node {
     this.typeNames = new Set();
-    for (const iface of node.interfaceDefinitions as InterfaceNode[]) this.typeNames.add(iface.name);
-    for (const c of node.importedContracts as ContractNode[]) this.typeNames.add(c.name);
+    this.ifaceMethods = new Map();
+    const ifaces = node.interfaceDefinitions as InterfaceNode[];
+    const ifaceByName = new Map(ifaces.map((i) => [i.name, i]));
+    const methodsOf = (name: string, seen = new Set<string>()): Set<string> => {
+      const out = new Set<string>();
+      if (seen.has(name)) return out;
+      seen.add(name);
+      const iface = ifaceByName.get(name);
+      if (!iface) return out;
+      for (const fn of iface.functions) out.add(fn.name);
+      for (const p of iface.parents ?? []) for (const mm of methodsOf(p, seen)) out.add(mm);
+      return out;
+    };
+    for (const iface of ifaces) { this.typeNames.add(iface.name); this.ifaceMethods.set(iface.name, methodsOf(iface.name)); }
+    for (const c of node.importedContracts as ContractNode[]) {
+      this.typeNames.add(c.name);
+      this.ifaceMethods.set(c.name, new Set((c.functions ?? []).map((f) => f.name)));
+    }
     if (node.contract) this.typeNames.add(node.contract.name);
     if (node.contract) node.contract = this.visit(node.contract) as ContractNode;
     return node;
+  }
+
+  // True when `method` is a genuine method of interface/contract `iface` - hoist it as an external call. False for a
+  // using-for library method bound onto the type (leave it for the using-for resolver).
+  private isInterfaceMethod(iface: string | undefined, method: string): boolean {
+    return !!iface && (this.ifaceMethods.get(iface)?.has(method) ?? false);
   }
 
   visitContract(node: ContractNode): Node {
@@ -146,7 +173,8 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
     if (dot > 0) {
       const varName = name.slice(0, dot);
       const method = name.slice(dot + 1);
-      if (this.stateVarIface.has(varName) && !ADDRESS_METHODS.has(method)) {
+      if (this.stateVarIface.has(varName) && !ADDRESS_METHODS.has(method)
+        && this.isInterfaceMethod(this.stateVarIface.get(varName), method)) {
         this.markUsed(varName, this.stateVarIface.get(varName)!, false, undefined);
         const loc = node.identifier.location;
         node.identifier = new IdentifierNode(`${PREFIX}${varName}.${method}`);
@@ -176,12 +204,12 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
     const chain = target ? undefined : this.chainTarget(node.object);
     const castChain = target || chain ? undefined : this.castChainTarget(node.object);
     const paramField = target || chain || castChain ? undefined : this.castParamFieldTarget(node.object);
-    if (target && !ADDRESS_METHODS.has(node.methodName)) {
+    if (target && !ADDRESS_METHODS.has(node.methodName) && this.isInterfaceMethod(target.iface, node.methodName)) {
       const localName = this.markUsed(target.name, target.iface, target.isPlain, node.object);
       const loc = node.object.location;
       node.object = new IdentifierNode(localName);
       node.object.location = loc;
-    } else if (chain && !ADDRESS_METHODS.has(node.methodName)) {
+    } else if (chain && !ADDRESS_METHODS.has(node.methodName) && this.isInterfaceMethod(chain.iface, node.methodName)) {
       // `s.field.m()` / `ss[i].field.m()` / `ms[k].field.m()` / `s.a.b.m()`: the target is an interface-typed
       // field reached through a chain of self-pinned STATE (struct fields, array elements, mapping values). Hoist
       // the whole field read into a local so the audited __extaddr_ dispatch pins the co-spend to it - a caller
@@ -193,7 +221,8 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
       const loc = node.object.location;
       node.object = new IdentifierNode(chain.localName);
       node.object.location = loc;
-    } else if (castChain && !ADDRESS_METHODS.has(node.methodName)) {
+    } else if (castChain && !ADDRESS_METHODS.has(node.methodName)
+      && this.isInterfaceMethod(castChain.iface, node.methodName)) {
       // `IFoo(s.field).m()` / `IFoo(ss[i].field).m()` / `IFoo(ms[k].field).m()`: a plain-`address` field reached
       // through self-pinned STATE, cast to an interface (the cast supplies the callee ABI). Same soundness as the
       // chain case - the value is self-pinned state, never a caller witness. Hoist the whole `IFoo(chain)` cast
@@ -205,7 +234,8 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
       const loc = node.object.location;
       node.object = new IdentifierNode(castChain.localName);
       node.object.location = loc;
-    } else if (paramField && !ADDRESS_METHODS.has(node.methodName)) {
+    } else if (paramField && !ADDRESS_METHODS.has(node.methodName)
+      && this.isInterfaceMethod(paramField.iface, node.methodName)) {
       // `IFoo(param.field).m()` / `IFoo(param[i].field).m()`: the target is a field/element of a FUNCTION PARAM,
       // cast to an interface. The base is caller-supplied, so this is the sound "caller chooses whom to call"
       // shape (extcall-target-pinning.md: a param target is sound because the caller IS the party choosing) - it

@@ -1426,9 +1426,15 @@ export default class SymbolTableTraversal extends AstTraversal {
       this.collectLoopWrittenSlotKeys(node.body, 0, loopWritten, new Set());
       if (loopWritten.size === 1 && entryAccessMap.size === 1) {
         for (const [sk, info] of entryAccessMap) {
-          if (loopWritten.has(sk) && info.operations.length === 1 && info.operations[0] === 'write') {
-            info.inLoop = true;
-          }
+          if (!loopWritten.has(sk)) continue;
+          const ops = info.operations;
+          const isPureWrite = ops.length === 1 && ops[0] === 'write';
+          // A SORTED (C2) RMW loop write `for(i) m[k[i]] += v[i]` is the per-iteration UPDATE loop (multitransfer
+          // credit): also excluded from the fixed block - its co-spend + mint sit in the trailing region
+          // (emitSortedUpsertLoopBody). A NON-sorted RMW loop stays guarded (no handler).
+          const coll = this.collectionMap.get(info.collection);
+          const isSortedRmw = !!coll?.sorted && ops.length === 2 && ops.includes('read') && ops.includes('write');
+          if (isPureWrite || isSortedRmw) info.inLoop = true;
         }
       }
 
@@ -7198,8 +7204,15 @@ export default class SymbolTableTraversal extends AstTraversal {
     // or an overloaded library call `x.mul(a).add(b)` whose result overload is not yet resolved) has no known
     // type here, but a wildcard `using L for *` binding still applies - fall back to the wildcard set. The
     // funcCall's first arg is the receiver expression, whose type TypeCheck validates against the library param.
+    // An interface-typed receiver (`IERC20`-typed state var / struct field, `using SafeERC20 for IERC20`) has
+    // objectType = AddressType(interfaceName), whose toString() is the bare 'address' - but the binding is keyed by
+    // the interface NAME. Look up by the interface name too so `pool.lpToken.safeTransfer(..)` / `tok.safeTransfer(..)`
+    // resolve like the local `IERC20 x; x.safeTransfer(..)` the AstBuilder already desugars.
+    const ifaceKey = objectType instanceof AddressType ? objectType.interfaceName : undefined;
     const candidates = objectType
-      ? [...(this.usingForBindings.get(objectType.toString()) ?? []), ...(this.usingForBindings.get('*') ?? [])]
+      ? [...(this.usingForBindings.get(objectType.toString()) ?? []),
+        ...(ifaceKey ? this.usingForBindings.get(ifaceKey) ?? [] : []),
+        ...(this.usingForBindings.get('*') ?? [])]
       : [...(this.usingForBindings.get('*') ?? [])];
 
     const match = candidates.find((c) => c.methodName === node.methodName);

@@ -172,6 +172,7 @@ export interface AbiFunction {
   // elements are the per-iteration last key), and the value (a param or a bool literal). Enough for the SDK to
   // compute each H(k) = keyToSlotMulti([...fixedKeys, arr[i]]) and build the co-spend/output plan off-chain.
   sortedInsertLoopInfo?: readonly SortedInsertLoopAbi[];
+  sortedUpsertLoopInfo?: readonly SortedUpsertLoopAbi[];
   // Function params whose value feeds blockhash(n); the SDK reads the arg to resolve addr(n) and co-spend
   // the (n->hash) oracle UTXO as a trailing input.
   blockhashReads?: readonly string[];
@@ -286,6 +287,17 @@ export interface SortedInsertLoopAbi {
   varyingArrayParam: string;         // the array whose elements are the varying LAST key, one per iteration
   valueParam?: string;               // the value comes from this function param
   valueBool?: boolean;               // ... or is this bool literal (true -> 0x01 tail, false -> empty tail)
+}
+
+// Per-iteration C2 UPDATE loop `for(i) m[k[i]] += v[i]` (multitransfer credit to existing recipients): the SDK
+// co-spends each k[i]'s existing entry at input[master+blockSize+i] and mints its updated commitment at
+// output[master+blockSize+i] with value = oldValue op v[i].
+export interface SortedUpsertLoopAbi {
+  collection: string;
+  fixedKeyParams: readonly string[];
+  varyingArrayParam: string;   // the array of keys (recipients), one per iteration
+  valueArrayParam: string;     // the array of per-key values (amounts), one per iteration
+  op: '+' | '-';
 }
 
 export interface KeySourceAbi {

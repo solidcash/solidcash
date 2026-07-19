@@ -52,6 +52,7 @@ import {
   AuthenticationProgramStateCommon,
   encodeLockingBytecodeP2pkh,
   bigIntToVmNumber,
+  vmNumberToBigInt,
   utf8ToBin,
 } from '@bitauth/libauth';
 import { Contract } from '../Contract.js';
@@ -5654,6 +5655,64 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       }
       insertLoopPredecessors.push({ ...P.utxo, unlocker: wUnlocker }); // ONE bracketing predecessor
       sortedLoopCommitments.set(info.collection, commitments);
+    }
+
+    // C2 per-iteration UPDATE loop `for(i) m[k[i]] += v[i]` (multitransfer credit to EXISTING recipients): co-spend
+    // each k[i]'s existing entry at input[master+blockSize+i] and mint its updated commitment slot|next|(old op v[i])
+    // at output[master+blockSize+i]. Both known EXACTLY off-chain (SortedList.find + arithmetic) - the covenant pins
+    // them. A recipient with NO existing entry throws (insert-in-loop is a separate covenant); the shared v[] param
+    // ties the credit total to the debit so supply is conserved.
+    for (const info of abiFunction?.sortedUpsertLoopInfo ?? []) {
+      const collection = (stateLayout.collections ?? []).find((c) => c.name === info.collection);
+      if (!collection) continue;
+      const entryAddr = getEntryNftAddress(this.inner, this.categoryId, collection.signature);
+      const entries = (await this.inner.provider.getUtxos(entryAddr)).filter((u) => (
+        u.token?.category === this.categoryId && u.token?.nft?.capability === 'mutable'
+        && !!u.token?.nft?.commitment && u.token.nft.commitment.length > 0
+      ));
+      const list = SortedList.fromUtxos(entries);
+      const argOf = (name: string | undefined): unknown => {
+        if (!name) return undefined;
+        const i = abiFunction!.inputs.findIndex((p) => p.name === name);
+        return i >= 0 ? args[i] : undefined;
+      };
+      const keyTypes = collection.keyTypes ?? [collection.keyType];
+      const encKey = (v: unknown, keyType: string): Uint8Array => (
+        keyType === 'address' && typeof v === 'string' && v.includes(':') ? addressToLockScript(v)
+          : typeof v === 'bigint' ? bigIntToVmNumber(v)
+            : v instanceof Uint8Array ? v
+              : typeof v === 'boolean' ? bigIntToVmNumber(v ? 1n : 0n)
+                : bigIntToVmNumber(BigInt(v as string)));
+      const fixedBins = info.fixedKeyParams.map((p, i) => encKey(argOf(p), keyTypes[i] ?? collection.keyType));
+      const varyType = keyTypes[info.fixedKeyParams.length] ?? collection.keyType;
+      const keysArr = argOf(info.varyingArrayParam);
+      const valsArr = argOf(info.valueArrayParam);
+      if (!Array.isArray(keysArr) || !Array.isArray(valsArr)) continue;
+      if (keysArr.length !== valsArr.length) {
+        throw new Error(`C2 upsert loop ${info.collection}: recipients/amounts length mismatch`);
+      }
+      const wUnlocker = createEntryNftUnlocker(this.inner, 0, this.categoryId, info.collection);
+      const commitments: string[] = [];
+      const seenSlots = new Set<string>();
+      for (let i = 0; i < keysArr.length; i++) {
+        const slot = keyToSlotMulti([...fixedBins, encKey(keysArr[i], varyType)]);
+        const slotHex = binToHex(slot);
+        if (seenSlots.has(slotHex)) {
+          throw new Error(`C2 upsert loop ${info.collection}: duplicate recipient (each entry can be co-spent once)`);
+        }
+        seenSlots.add(slotHex);
+        const entry = list.find(slot);
+        if (!entry) {
+          throw new Error(`C2 upsert loop ${info.collection}: recipient ${i} has no existing entry `
+            + '(credit-to-a-new-recipient / insert-in-loop is not supported; the recipient must already hold a balance)');
+        }
+        const amt = typeof valsArr[i] === 'bigint' ? valsArr[i] as bigint : BigInt(valsArr[i] as number);
+        const oldVal = vmNumberToBigInt(entry.value, { requireMinimalEncoding: false }) as bigint;
+        const newVal = info.op === '-' ? oldVal - amt : oldVal + amt;
+        insertLoopPredecessors.push({ ...entry.utxo, unlocker: wUnlocker });
+        commitments.push(binToHex(encodeEntryCommitment(entry.slot, entry.nextKey, bigIntToVmNumber(newVal))));
+      }
+      if (commitments.length > 0) sortedLoopCommitments.set(info.collection, commitments);
     }
 
     // Handle external state reads (cross-contract reads via interfaces)

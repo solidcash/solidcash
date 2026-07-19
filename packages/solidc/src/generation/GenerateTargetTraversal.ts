@@ -457,6 +457,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private sortedInsertLoopExpectedName: string = '(sorted_insert_expected)'; // range-splice: next chain node's slot
   private sortedInsertLoopActive: boolean = false;  // a sorted diff-key insert loop's addr + counter are on the stack
   private sortedInsertLoopCollection: string | null = null; // the sorted collection the active insert loop writes
+  // Per-iteration C2 UPDATE loop `for(i) m[k[i]] += v[i]` (multitransfer credit, EXISTING recipients): each iteration
+  // co-spends k[i]'s OWN entry at input[master+blockSize+counter], verifies its slot == keyToSlot(k[i]), and mints the
+  // updated entry at output[master+blockSize+counter] = slot|next|(oldValue OP v[i]). 1:1 co-spend/mint, no permutation
+  // (source order = counter order), supply conserved via the shared v[] param.
+  private sortedUpsertLoopAddrName: string = '(sorted_upsert_addr)';
+  private sortedUpsertLoopCounterName: string = '(sorted_upsert_counter)';
+  private sortedUpsertLoopActive: boolean = false;
+  private sortedUpsertLoopCollection: string | null = null;
   private keccakLoopCounterName: string = '(loop_keccak_counter)'; // keccak side-cars read-so-far (dynamic keccak loop)
   private keccakLoopActive: boolean = false;        // a dynamic keccak256 loop counter is live on the stack
   private functionMultiSiteDeploy: boolean = false; // 2+ same-contract sites w/ a conditional: function counter
@@ -3114,8 +3122,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // C2 diff-key insert loop: precompute the sorted entry NFT address + counter BEFORE OP_BEGIN (each iteration
     // co-spends the bracketing predecessor + mints one NEW node). Takes precedence over the default entry-mint loop.
     const loopHasSortedInsert = this.emitSortedInsertLoopSetup(node.block, locationData);
+    // C2 per-iteration UPDATE loop `for(i) m[k[i]] += v[i]` (multitransfer credit): co-spend k[i]'s entry + mint updated.
+    const loopHasSortedUpsert = !loopHasSortedInsert && this.emitSortedUpsertLoopSetup(node.block, locationData);
     // Loop mapping write: precompute the entry NFT address + a runtime counter BEFORE OP_BEGIN (see visitWhile).
-    const loopHasEntryWrite = !loopHasSortedInsert && this.emitLoopEntryWriteSetup(node.block, locationData);
+    const loopHasEntryWrite = !loopHasSortedInsert && !loopHasSortedUpsert
+      && this.emitLoopEntryWriteSetup(node.block, locationData);
     // Dynamic keccak loop: push a 0-based side-car counter BEFORE OP_BEGIN (trailing-region read per iteration).
     const loopHasKeccak = this.emitLoopKeccakSetup(node.block, locationData);
 
@@ -3151,6 +3162,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Pin the predecessor-input + entry-output counts, drop the sorted insert-loop temps.
     if (loopHasSortedInsert) {
       this.emitSortedInsertLoopTeardown({ location: node.location, positionHint: PositionHint.END });
+    }
+    // Pin the entry input/output counts (== N updates), drop the upsert-loop temps.
+    if (loopHasSortedUpsert) {
+      this.emitSortedUpsertLoopTeardown({ location: node.location, positionHint: PositionHint.END });
     }
     // Drop the dynamic keccak loop counter now the loop is done.
     if (loopHasKeccak) {
@@ -3265,9 +3280,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     // C2 diff-key insert loop: precompute the sorted entry NFT address + counter BEFORE OP_BEGIN (takes precedence).
     const loopHasSortedInsert = this.emitSortedInsertLoopSetup(node.block, locationData);
+    // C2 per-iteration UPDATE loop `for(i) m[k[i]] += v[i]` (multitransfer credit): co-spend k[i]'s entry + mint updated.
+    const loopHasSortedUpsert = !loopHasSortedInsert && this.emitSortedUpsertLoopSetup(node.block, locationData);
     // Loop mapping write: precompute the entry NFT address + a runtime counter (entries-written-so-far) BEFORE
     // OP_BEGIN; emitLoopEntryWrite verifies + increments per iteration, the teardown pins the entry-output count.
-    const loopHasEntryWrite = !loopHasSortedInsert && this.emitLoopEntryWriteSetup(node.block, locationData);
+    const loopHasEntryWrite = !loopHasSortedInsert && !loopHasSortedUpsert
+      && this.emitLoopEntryWriteSetup(node.block, locationData);
     // Dynamic keccak loop: push a 0-based side-car counter BEFORE OP_BEGIN (trailing-region read per iteration).
     const loopHasKeccak = this.emitLoopKeccakSetup(node.block, locationData);
 
@@ -3323,6 +3341,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Pin the predecessor-input + entry-output counts, drop the sorted insert-loop temps.
     if (loopHasSortedInsert) {
       this.emitSortedInsertLoopTeardown({ location: node.location, positionHint: PositionHint.END });
+    }
+    // Pin the entry input/output counts (== N updates), drop the upsert-loop temps.
+    if (loopHasSortedUpsert) {
+      this.emitSortedUpsertLoopTeardown({ location: node.location, positionHint: PositionHint.END });
     }
     // Drop the dynamic keccak loop counter now the loop is done.
     if (loopHasKeccak) {
@@ -10654,6 +10676,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         && this.sortedValueKind(node.collection.innermostValueType) !== null) {
         return this.emitSortedInsertLoopBody(node);
       }
+      // Per-iteration UPDATE loop `for(i) m[k[i]] += v[i]` (multitransfer credit): co-spend k[i]'s existing entry.
+      if (this.sortedUpsertLoopActive && this.sortedUpsertLoopCollection === node.collection.name
+        && !node.arrayIndex && !node.arrayPush && !node.arrayPop) {
+        return this.emitSortedUpsertLoopBody(node);
+      }
       throw new SortedMappingCodegenPendingError(node, node.collection.name);
     }
     // Sorted (C2 linked-list) mapping write `m[k] = v` (or nested `m[a][b] = v`): never the omittable entry-model
@@ -12280,6 +12307,188 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     this.sortedInsertLoopActive = false;
     this.sortedInsertLoopCollection = null;
+  }
+
+  // Detect a per-iteration C2 UPDATE loop write `for(i) m[k[i]] += v[i]` (or `-= v[i]`): a MappingAssignNode on a
+  // sorted int mapping whose expression is a self-read RMW (BinaryOp with left = a read of the SAME m[k], op
+  // PLUS/MINUS). By GTT an INVARIANT-key RMW loop is already lifted out by CacheMappingEntryInLoop, so a sorted RMW
+  // loop write that reaches here has a VARYING key (k[i]) - each iteration co-spends k[i]'s OWN existing entry.
+  private findSortedUpsertLoopWrite(node: Node): MappingAssignNode | null {
+    let found: MappingAssignNode | null = null;
+    const seen = new WeakSet<object>();
+    const walk = (n: Node): void => {
+      if (found || !n || seen.has(n)) return;
+      seen.add(n);
+      if (n instanceof MappingAssignNode && n.collection?.sorted
+        && !n.arrayIndex && !n.arrayPush && !n.arrayPop
+        && n.expression instanceof BinaryOpNode
+        && (n.expression.operator === BinaryOperator.PLUS || n.expression.operator === BinaryOperator.MINUS)
+        && n.expression.left instanceof MappingAccessNode && n.expression.left.name === n.name
+        && this.sortedValueKind(n.collection.innermostValueType) === 'int') {
+        found = n; return;
+      }
+      for (const key of Object.keys(n)) {
+        if (key === 'location' || key === 'collection' || key === 'symbol' || key === 'type' || found) continue;
+        const v = (n as unknown as Record<string, unknown>)[key];
+        if (v instanceof Node) walk(v);
+        else if (Array.isArray(v)) for (const e of v) if (e instanceof Node) walk(e);
+      }
+    };
+    walk(node);
+    return found;
+  }
+
+  /**
+   * Set up a per-iteration C2 UPDATE loop `for(i) m[k[i]] += v[i]` (multitransfer credit to EXISTING recipients):
+   * push the loop-invariant entry NFT P2SH32 address + a runtime counter (updates-done = 0) BEFORE OP_BEGIN. Each
+   * iteration co-spends k[i]'s OWN entry at input[master+blockSize+counter] and mints the updated entry at
+   * output[master+blockSize+counter]. Records the varying key array + value array so the SDK co-spends each existing
+   * entry (SortedList.find) and mints its updated commitment. Returns false when no such loop write / already active.
+   */
+  private emitSortedUpsertLoopSetup(block: Node, loc: SingleLocationData): boolean {
+    if (this.sortedUpsertLoopActive) return false;
+    const writeNode = this.findSortedUpsertLoopWrite(block);
+    if (!writeNode) return false;
+    const collection = writeNode.collection!;
+    const slotIndex = writeNode.entrySlotIndex;
+    if (slotIndex < 0 || !this.entrySlots[slotIndex]) return false;
+    const collectionHash = computeCollectionHash(this.entrySlots[slotIndex].collectionSignature);
+
+    // SDK metadata: leading FIXED key params + the VARYING key array + the per-key VALUE array + the op.
+    const keySources = (this.entrySlots[slotIndex].keySources ?? []) as Array<{ kind: string; paramName?: string; canonical?: string }>;
+    const fixedKeyParams: string[] = [];
+    let varyingArrayParam: string | undefined;
+    for (const src of keySources) {
+      if (src.kind === 'param' && src.paramName) { fixedKeyParams.push(src.paramName); continue; }
+      const m = (src.canonical ?? '').match(/^arridx\(id:(\w+),id:\w+\)$/);
+      if (m) varyingArrayParam = m[1];
+    }
+    const valueRight = (writeNode.expression as BinaryOpNode).right;
+    const valueArrayParam = valueRight instanceof ArrayAccessNode && valueRight.array instanceof IdentifierNode
+      ? valueRight.array.name : undefined;
+    if (!varyingArrayParam || !valueArrayParam) return false; // unsupported shape -> fall through to fail-close
+    const infos = (this.currentFunction.sortedUpsertLoopInfo ??= []);
+    if (!infos.some((x) => x.collection === collection.name)) {
+      infos.push({
+        collection: collection.name, fixedKeyParams, varyingArrayParam, valueArrayParam,
+        op: (writeNode.expression as BinaryOpNode).operator === BinaryOperator.MINUS ? '-' : '+',
+      });
+    }
+    this.sortedWrittenCollections.add(collection.name);
+
+    // Entry NFT address (loop-invariant) = base(master category) wrapped in the collection's entry covenant.
+    this.emitMasterInputIndex(loc);
+    this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
+    this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_DROP, loc);
+    this.pushToStack(this.sortedUpsertLoopAddrName);
+    this.emitP2sh32FromCovenant((cat) => buildEntryNftCovenantScript(cat, collectionHash), loc);
+    this.stack[0] = this.sortedUpsertLoopAddrName;
+
+    this.emit(encodeInt(0n), loc);
+    this.pushToStack(this.sortedUpsertLoopCounterName);
+    this.sortedUpsertLoopActive = true;
+    this.sortedUpsertLoopCollection = collection.name;
+    return true;
+  }
+
+  /**
+   * One iteration of a per-iteration C2 UPDATE loop. Co-spend k[i]'s entry at input[master+blockSize+counter], verify
+   * bytecode==addr + mutable/base==master, read [coSlot|coNext|coValue], verify coSlot == keyToSlot(k[i]) (the entry
+   * IS k[i]'s - a new recipient has no such entry and reverts), then mint output[master+blockSize+counter] =
+   * coSlot|coNext|(coValue OP v[i]). Link preserved (slot+next unchanged) so sortedness holds; supply conserved via
+   * the shared v[] param (the debit `bal[msg.sender] -= v[i]` reads the same v[i]).
+   */
+  private emitSortedUpsertLoopBody(node: MappingAssignNode): Node {
+    const loc = { location: node.location, positionHint: PositionHint.END };
+    const collection = node.collection!;
+    const slotIndex = node.entrySlotIndex;
+    if (this.entrySlots[slotIndex]) this.entrySlots[slotIndex].inLoop = true;
+    const blockSize = this.currentFunction.blockLayout?.blockSize ?? 1;
+    const isMinus = (node.expression as BinaryOpNode).operator === BinaryOperator.MINUS;
+    const counterIdx = (): number => this.getStackIndex(this.sortedUpsertLoopCounterName);
+    const addrIdx = (): number => this.getStackIndex(this.sortedUpsertLoopAddrName);
+
+    // 1. Hk = keyToSlot(k[i]); track it as a persistent-for-this-iteration temp.
+    this.emitSortedKeyHash(node, slotIndex, loc); // Hk untracked on top
+    this.pushToStack('(credit_hk)');
+
+    // 2. amount = v[i]; track it. (node.expression.right is the per-key value array element.)
+    (node.expression as BinaryOpNode).right = this.visit((node.expression as BinaryOpNode).right);
+    this.stack[0] = '(credit_amt)';
+    // tracked: [credit_amt(0), credit_hk(1), counter(2), addr(3), ..]; U (untracked above credit_amt) = 0.
+
+    // 3. nodeIdx = master + blockSize + counter  (U: 1 partial on top).
+    this.emitMasterInputIndex(loc);
+    this.emit(encodeInt(BigInt(blockSize)), loc); this.emit(Op.OP_ADD, loc);
+    this.emit(encodeInt(BigInt(counterIdx() + 1)), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_ADD, loc); // [.., nodeIdx]
+
+    // 4. co-spend INPUT[nodeIdx]: bytecode==addr, mutable + base==master, read [coSlot, coNext, coValue].
+    this.emit(Op.OP_DUP, loc); this.emit(Op.OP_UTXOBYTECODE, loc);
+    this.emit(encodeInt(BigInt(addrIdx() + 2)), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_EQUALVERIFY, loc);
+    this.emit(Op.OP_DUP, loc); this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
+    this.emit(Op.OP_DUP, loc); this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_NIP, loc);
+    this.emit(Op.OP_1, loc); this.emit(Op.OP_EQUALVERIFY, loc);
+    this.emitVerifyCatBaseEqMaster(loc); // [.., nodeIdx]
+    this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc);
+    this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc);
+    this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); // [.., coSlot(u), coNext(u), coValue(u)]  U=3
+
+    // 5. coSlot == Hk (the co-spent entry IS k[i]'s; a new recipient reverts here).
+    this.emit(encodeInt(2n), loc); this.emit(Op.OP_PICK, loc); // coSlot copy (depth2)
+    this.emit(encodeInt(BigInt(this.getStackIndex('(credit_hk)') + 4)), loc); this.emit(Op.OP_PICK, loc); // Hk (+4: coSlot,coNext,coValue,coSlot-copy)
+    this.emit(Op.OP_EQUALVERIFY, loc); // [.., coSlot, coNext, coValue]  U=3
+
+    // 6. newValue = coValue OP v[i].
+    this.emit(Op.OP_DUP, loc); this.emit(Op.OP_BIN2NUM, loc); // coValue# (U=4)
+    this.emit(encodeInt(BigInt(this.getStackIndex('(credit_amt)') + 4)), loc); this.emit(Op.OP_PICK, loc); // v[i] (+4)
+    this.emit(Op.OP_BIN2NUM, loc);
+    this.emit(isMinus ? Op.OP_SUB : Op.OP_ADD, loc); // newValue# (U=4: coSlot,coNext,coValue,newValue)
+    this.emit(Op.OP_NIP, loc); // drop coValue -> [.., coSlot, coNext, newValue]  U=3
+
+    // 7. mint OUTPUT[nodeIdx] = coSlot | coNext | newValue (link preserved).
+    this.emitMasterInputIndex(loc);
+    this.emit(encodeInt(BigInt(blockSize)), loc); this.emit(Op.OP_ADD, loc);
+    this.emit(encodeInt(BigInt(counterIdx() + 4)), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_ADD, loc); // [.., outIdx]
+    // real depths from outIdx@0: newValue@1, coNext@2, coSlot@3, credit_amt@4, credit_hk@5, counter@6, addr@7.
+    this.emitVerifySortedValueOutput(loc, addrIdx() + 4, 3, 2, 1); // addr, f1=coSlot, f2=coNext, f3=newValue
+
+    // 8. cleanup: drop [coSlot, coNext, newValue] + [credit_amt, credit_hk]; counter += 1.
+    this.emit(Op.OP_DROP, loc); this.emit(Op.OP_DROP, loc); this.emit(Op.OP_DROP, loc); // newValue, coNext, coSlot
+    this.emit(Op.OP_DROP, loc); this.popFromStack(); // credit_amt
+    this.emit(Op.OP_DROP, loc); this.popFromStack(); // credit_hk
+    this.emit(encodeInt(BigInt(counterIdx())), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_1ADD, loc);
+    this.emitReplace(counterIdx() + 1, node);
+    return node;
+  }
+
+  /**
+   * Tear down a per-iteration C2 UPDATE loop after OP_UNTIL: pin the entry-input count == counter and entry-output
+   * count == counter (N entries co-spent, N minted, no orphans / no extra), then drop [counter, addr].
+   */
+  private emitSortedUpsertLoopTeardown(loc: SingleLocationData): void {
+    if (!this.sortedUpsertLoopActive) return;
+    // entry-input count == counter.
+    this.emit(encodeInt(BigInt(this.getStackIndex(this.sortedUpsertLoopCounterName))), loc); this.emit(Op.OP_PICK, loc);
+    this.pushToStack('(ul_incount)');
+    this.emitVerifyChunkUtxoCount('(ul_incount)', false, loc, this.sortedUpsertLoopAddrName);
+    let idx = this.getStackIndex('(ul_incount)');
+    this.emit(encodeInt(BigInt(idx)), loc); this.emit(Op.OP_ROLL, loc); this.emit(Op.OP_DROP, loc);
+    this.removeFromStack(idx);
+    // entry-output count == counter.
+    this.emit(encodeInt(BigInt(this.getStackIndex(this.sortedUpsertLoopCounterName))), loc); this.emit(Op.OP_PICK, loc);
+    this.pushToStack('(ul_outcount)');
+    this.emitVerifyChunkUtxoCount('(ul_outcount)', true, loc, this.sortedUpsertLoopAddrName);
+    idx = this.getStackIndex('(ul_outcount)');
+    this.emit(encodeInt(BigInt(idx)), loc); this.emit(Op.OP_ROLL, loc); this.emit(Op.OP_DROP, loc);
+    this.removeFromStack(idx);
+
+    for (const name of [this.sortedUpsertLoopCounterName, this.sortedUpsertLoopAddrName]) {
+      const i = this.getStackIndex(name);
+      this.emit(encodeInt(BigInt(i)), loc); this.emit(Op.OP_ROLL, loc); this.emit(Op.OP_DROP, loc);
+      this.removeFromStack(i);
+    }
+    this.sortedUpsertLoopActive = false;
+    this.sortedUpsertLoopCollection = null;
   }
 
   // A dynamic (runtime-bound) keccak256 loop reads one compute side-car per iteration from the region right after

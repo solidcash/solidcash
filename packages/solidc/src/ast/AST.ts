@@ -284,6 +284,12 @@ export class FunctionDefinitionNode extends Node implements Named {
   sortedInsertLoopInfo?: Array<{
     collection: string; fixedKeyParams: string[]; varyingArrayParam: string; valueParam?: string; valueBool?: boolean;
   }>;
+  // Per-iteration C2 UPDATE loop `for(i) m[k[i]] += v[i]` (multitransfer credit to existing recipients): the SDK
+  // co-spends each k[i]'s existing entry (SortedList.find) at input[master+blockSize+i] and mints its updated
+  // commitment (value = oldValue op v[i]) at output[master+blockSize+i]. op is '+' or '-'.
+  sortedUpsertLoopInfo?: Array<{
+    collection: string; fixedKeyParams: string[]; varyingArrayParam: string; valueArrayParam: string; op: '+' | '-';
+  }>;
   // Function parameters whose value feeds blockhash(n); recorded during codegen. SDK reads the arg to resolve
   // addr(n) and co-spend the (n->hash) oracle UTXO as a trailing input (mirrors dynamicReads auto-injection).
   blockhashReads?: string[];

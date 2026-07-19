@@ -24,8 +24,10 @@ describe('C2 NON-BOOL insert-in-loop fails closed at COMPILE (not compile-then-r
   it('per-key value insert loop (w[ks[i]] = vs[i]) fails closed at compile', () => {
     expect(() => compileString(nonBool, { sortedMappings: ['w'] })).toThrow(/SortedMappingCodegenPending|sorted/i);
   });
-  it('diff-key RMW loop (w[ks[i]] += vs[i]) fails closed at compile', () => {
-    expect(() => compileString(rmw, { sortedMappings: ['w'] })).toThrow(/SortedMappingCodegenPending|sorted/i);
+  it('diff-key RMW loop (w[ks[i]] += vs[i]) COMPILES via the per-iteration UPDATE loop (multitransfer credit)', () => {
+    // Now supported: each iteration co-spends k[i]'s EXISTING entry + mints the updated value (SortedUpsertLoop).
+    const art = compileString(rmw, { sortedMappings: ['w'] });
+    expect(art.abi.find((f) => f.name === 'addmany')?.sortedUpsertLoopInfo?.[0]?.valueArrayParam).toBe('vs');
   });
   it('the bool set loop (w[ks[i]] = true) still compiles (range-splice supported)', () => {
     expect(() => compileString(boolSet, { sortedMappings: ['w'] })).not.toThrow();

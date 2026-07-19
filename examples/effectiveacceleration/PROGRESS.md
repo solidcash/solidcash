@@ -117,10 +117,21 @@ owner==msg.sender EVM-address wall - NOT harness gaps. Portbacks that got here (
    master-gate (foreign consumer no longer rejected). MarketplaceDataV1 is back to its natural single-function form
    (`initialize` writes the address). Regression: compiler 2175/2175, LibraryDelegate 11/11, UpgradesDeployProxy 6/6.
 
-### To push the pass count up (next, all contract-side)
-Add the missing MarketplaceV1/MarketplaceDataV1 functions (pause/unpause/paused/version getters exist; need
-transferOwnership/owner, register user/arbitrator, mece tags, publishJobPost + JobEvent emission). The owner and
-msg.sender-authenticated paths stay blocked until the address-identity fork (above) is chosen.
+### To push the pass count up (next) - PROXY GAPS mapped 2026-07-19
+Isolated (minimal repros) what the admin block needs beyond bug #2:
+- **events in a delegate function fail the proxy delegatecall** (KEY BLOCKER): `emit E(..)` inside a `delegate`
+  function reverts at input 2 (the impl) `ip=89 OP_2DROP`-region - the event's extra OP_RETURN output isn't
+  accounted for by the impl's auto-derivation covenant when the state transition runs via delegatecall. Every
+  admin test emits (Paused/Unpaused/OwnershipTransferred/VersionChanged), so this blocks nearly all of them.
+  Deep covenant fix (delegatecall + event output + auto-derivation), likely in the StatefulContract/GTT WIP path.
+- **state getters not on the proxy handle**: `marketplace.version()` is undefined - the getter lives on the
+  underlying `proxy.proxy.version()` (works), but `ProxyContract`/`wrapDispatch` only forwards impl FUNCTIONS, not
+  the grafted state getters. Bounded portback (route state-var names to the underlying proxy StatefulContract).
+- **owner == msg.sender EVM-address wall** (the 3-way fork above): owner/transferOwnership + every
+  `.withArgs(<address>)` event assertion need the address-identity decision.
+Confirmed working through the proxy: a `delegate` setter WITHOUT emit + state read via `proxy.proxy.<var>()`.
+So the achievable order is: fix events-in-delegatecall -> expose proxy getters -> pick the address model ->
+add register/job functions.
 
 ## NEXT: port the contracts (simplification allowed). Build order (per the test's describe blocks):
 The fixture `deployContractsFixture` (test lines 137-191) must deploy, so ALL of these need name-resolvable

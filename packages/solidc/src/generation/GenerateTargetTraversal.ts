@@ -471,7 +471,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private sortedUpsertLoopOutCounterName: string = '(sorted_upsert_outctr)'; // cumulative mints (update +1, insert +2)
   private sortedUpsertLoopActive: boolean = false;
   private sortedUpsertLoopCollection: string | null = null;
-  private sortedUpsertLoopOp: '+' | '-' | 'set' = '+'; // 'set' = absolute per-key assign m[k[i]]=v[i]; +/- = RMW
+  private sortedUpsertLoopOp: '+' | '-' | 'set' | 'delete' = '+'; // set=absolute m[k[i]]=v[i]; delete=nullify; +/- = RMW
   private keccakLoopCounterName: string = '(loop_keccak_counter)'; // keccak side-cars read-so-far (dynamic keccak loop)
   private keccakLoopActive: boolean = false;        // a dynamic keccak256 loop counter is live on the stack
   private functionMultiSiteDeploy: boolean = false; // 2+ same-contract sites w/ a conditional: function counter
@@ -11525,6 +11525,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // present -> update to 0/false/empty (nullify, node stays), absent -> insert the default. Works for bool sets
     // (delete claimed[k] writes the empty/false tail) and value mappings alike, single- or composite-key.
     if (node.collection?.sorted) {
+      // Per-iteration DELETE loop `for(i) delete m[k[i]]` (batch nullify): route to the upsert loop (op=delete) - each
+      // iteration co-spends k[i]'s existing entry + mints it nullified (value = default); absent keys fail closed.
+      if (this.sortedUpsertLoopActive && this.sortedUpsertLoopCollection === node.collection.name) {
+        return this.emitSortedUpsertLoopBody(node);
+      }
       // A C2 `delete m[k]` in a DYNAMIC loop is a per-iteration sorted delete of an EVOLVING list - the same deep
       // case visitMappingAssign fails closed on. emitSortedValueUpsert co-spends the entry at a FIXED block slot, so
       // running it in a loop would pin only ONE iteration's delete and leave the rest un-covenanted (a C2 hole).
@@ -12332,8 +12337,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   // sorted int mapping whose expression is a self-read RMW (BinaryOp with left = a read of the SAME m[k], op
   // PLUS/MINUS). By GTT an INVARIANT-key RMW loop is already lifted out by CacheMappingEntryInLoop, so a sorted RMW
   // loop write that reaches here has a VARYING key (k[i]) - each iteration co-spends k[i]'s OWN existing entry.
-  private findSortedUpsertLoopWrite(node: Node): MappingAssignNode | null {
-    let found: MappingAssignNode | null = null;
+  private findSortedUpsertLoopWrite(node: Node): MappingAssignNode | MappingDeleteNode | null {
+    let found: MappingAssignNode | MappingDeleteNode | null = null;
     const seen = new WeakSet<object>();
     const walk = (n: Node): void => {
       if (found || !n || seen.has(n)) return;
@@ -12350,6 +12355,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         // param - that is the range-splice SortedInsertLoopValue case). The key varying-ness is validated in setup.
         const isPerKeySet = e instanceof ArrayAccessNode && e.array instanceof IdentifierNode;
         if (isRmw || isPerKeySet) { found = n; return; }
+      }
+      // Per-iteration DELETE `for(i) delete m[k[i]]` (batch nullify): route through the upsert loop with op=delete
+      // (UPDATE-to-default; absent keys fail closed). The key varying-ness is validated in setup (varyingArrayParam).
+      if (n instanceof MappingDeleteNode && n.collection?.sorted
+        && this.sortedValueKind(n.collection.innermostValueType) === 'int') {
+        found = n; return;
       }
       for (const key of Object.keys(n)) {
         if (key === 'location' || key === 'collection' || key === 'symbol' || key === 'type' || found) continue;
@@ -12387,18 +12398,25 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       const m = (src.canonical ?? '').match(/^arridx\(id:(\w+),id:\w+\)$/);
       if (m) varyingArrayParam = m[1];
     }
-    const expr = writeNode.expression;
-    const isRmw = expr instanceof BinaryOpNode;
-    const op: '+' | '-' | 'set' = !isRmw ? 'set'
-      : (expr as BinaryOpNode).operator === BinaryOperator.MINUS ? '-' : '+';
-    const valueRight = isRmw ? (expr as BinaryOpNode).right : expr; // per-key value = RHS (RMW) or the whole assign (set)
-    const valueArrayParam = valueRight instanceof ArrayAccessNode && valueRight.array instanceof IdentifierNode
-      ? valueRight.array.name : undefined;
-    if (!varyingArrayParam || !valueArrayParam) return false; // unsupported shape -> fall through to fail-close
+    const isDelete = writeNode instanceof MappingDeleteNode;
+    let op: '+' | '-' | 'set' | 'delete';
+    let valueArrayParam: string | undefined;
+    if (isDelete) {
+      op = 'delete'; // nullify to the type default; no per-key value array
+    } else {
+      const expr = (writeNode as MappingAssignNode).expression;
+      const isRmw = expr instanceof BinaryOpNode;
+      op = !isRmw ? 'set' : (expr as BinaryOpNode).operator === BinaryOperator.MINUS ? '-' : '+';
+      const valueRight = isRmw ? (expr as BinaryOpNode).right : expr; // per-key value = RHS (RMW) or the whole assign
+      valueArrayParam = valueRight instanceof ArrayAccessNode && valueRight.array instanceof IdentifierNode
+        ? valueRight.array.name : undefined;
+    }
+    // 'delete' has no value array; every other op needs one. Both need the varying key array (else fall to fail-close).
+    if (!varyingArrayParam || (!isDelete && !valueArrayParam)) return false;
     this.sortedUpsertLoopOp = op;
     const infos = (this.currentFunction.sortedUpsertLoopInfo ??= []);
     if (!infos.some((x) => x.collection === collection.name)) {
-      infos.push({ collection: collection.name, fixedKeyParams, varyingArrayParam, valueArrayParam, op });
+      infos.push({ collection: collection.name, fixedKeyParams, varyingArrayParam, ...(valueArrayParam && { valueArrayParam }), op });
     }
     this.sortedWrittenCollections.add(collection.name);
 
@@ -12429,7 +12447,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * Link preserved so sortedness holds; supply conserved via the shared v[] param. The SDK detects same-predecessor
    * conflicts (two new keys in one gap / a co-spend used twice) and fails closed.
    */
-  private emitSortedUpsertLoopBody(node: MappingAssignNode): Node {
+  private emitSortedUpsertLoopBody(node: MappingAssignNode | MappingDeleteNode): Node {
     const loc = { location: node.location, positionHint: PositionHint.END };
     const collection = node.collection!;
     const slotIndex = node.entrySlotIndex;
@@ -12451,12 +12469,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     };
 
     // 1. Hk = keyToSlot(k[i]) + 2. amount = v[i] - both tracked temps. The per-key value is the BinaryOp RHS (RMW)
-    // or the whole assign expression (absolute 'set').
+    // or the whole assign expression ('set'); 'delete' has no value - nullify to the type default (0/empty).
     this.emitSortedKeyHash(node, slotIndex, loc);
     this.pushToStack('(credit_hk)');
-    if (op === 'set') { node.expression = this.visit(node.expression); }
-    else { (node.expression as BinaryOpNode).right = this.visit((node.expression as BinaryOpNode).right); }
-    this.stack[0] = '(credit_amt)';
+    if (op === 'delete') {
+      this.emit(Op.OP_0, loc); this.pushToStack('(credit_amt)'); // default value tail (0 = empty for int)
+    } else {
+      const a = node as MappingAssignNode;
+      if (op === 'set') { a.expression = this.visit(a.expression); }
+      else { (a.expression as BinaryOpNode).right = this.visit((a.expression as BinaryOpNode).right); }
+      this.stack[0] = '(credit_amt)';
+    }
     // tracked: [credit_amt(0), credit_hk(1), outCounter(2), iterCounter(3), addr(4), ..]
 
     // 3. co-spend INPUT[master+blockSize+iterCounter]: bytecode==addr, mutable + base==master, read [coSlot,coNext,coValue].
@@ -12477,8 +12500,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_EQUAL, loc);                                            // [.., coSlot, coNext, coValue, isPresent] U=4
     this.emit(Op.OP_IF, loc);
     this.scopeDepth += 1;
-    // ---- UPDATE: mint output[..+outCounter] = coSlot|coNext|newValue; newValue = v[i] ('set') or coValue OP v[i] ----
-    if (op === 'set') {
+    // ---- UPDATE: mint output[..+outCounter] = coSlot|coNext|newValue; newValue = v[i] ('set'), default ('delete'),
+    // or coValue OP v[i] ('+'/'-'). 'set'/'delete' both mint the credit_amt tail directly (delete's amt is the 0 default). ----
+    if (op === 'set' || op === 'delete') {
       this.emit(Op.OP_DROP, loc);                                          // drop coValue -> [.., coSlot, coNext] U=2
       this.emit(encodeInt(BigInt(amtIdx() + 2)), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_BIN2NUM, loc);
     } else {                                                               // [.., coSlot, coNext, v[i]#] U=3
@@ -12492,8 +12516,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_1, loc);                                               // delta = 1 (U=4)
     this.emit(Op.OP_ELSE, loc);
     // ---- INSERT (absent -> a NEW recipient with balance v[i]): only valid for `+=` (crediting). A `-=` on a
-    // nonexistent account would go negative - fail closed. (Runtime-dead when isMinus; keeps the branch balanced.) ----
-    if (isMinus) { this.emit(Op.OP_0, loc); this.emit(Op.OP_VERIFY, loc); }
+    // nonexistent account would go negative, and a `delete` of an absent key would insert a spurious nullified node
+    // (diverging from Solidity's no-op) - both fail closed. (Runtime-dead; keeps the branch balanced.) ----
+    if (isMinus || op === 'delete') { this.emit(Op.OP_0, loc); this.emit(Op.OP_VERIFY, loc); }
     // bracket coSlot < Hk < coNext, then mint P' + NEW
     this.emit(encodeInt(2n), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_BIN2NUM, loc);       // coSlot# (U=4)
     this.emit(encodeInt(BigInt(hkIdx() + 4)), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_BIN2NUM, loc); // Hk#

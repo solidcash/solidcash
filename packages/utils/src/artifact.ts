@@ -296,8 +296,8 @@ export interface SortedUpsertLoopAbi {
   collection: string;
   fixedKeyParams: readonly string[];
   varyingArrayParam: string;   // the array of keys (recipients), one per iteration
-  valueArrayParam: string;     // the array of per-key values (amounts), one per iteration
-  op: '+' | '-' | 'set';       // '+'/'-' = RMW credit/debit; 'set' = absolute per-key assignment m[k[i]]=v[i]
+  valueArrayParam?: string;    // the array of per-key values (amounts); absent for 'delete' (no value)
+  op: '+' | '-' | 'set' | 'delete'; // '+'/'-' = RMW; 'set' = absolute m[k[i]]=v[i]; 'delete' = nullify m[k[i]] to default
 }
 
 export interface KeySourceAbi {

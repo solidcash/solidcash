@@ -2806,6 +2806,13 @@ export default class SymbolTableTraversal extends AstTraversal {
       const { keyParams } = this.getMappingKeyDescriptors(node.keys);
       out.add(`${node.collection.name}:${keyParams.join(':')}`);
     }
+    // A per-iteration sorted `delete m[k[i]]` is a loop WRITE too (nullify-to-default via the upsert loop): collect
+    // its slot key so it is marked inLoop (no fixed block slot), matching the assign path.
+    if (node instanceof MappingDeleteNode && node.collection && depth > 0
+      && node.keys.some((k) => this.exprReferencesAny(k, loopVars))) {
+      const { keyParams } = this.getMappingKeyDescriptors(node.keys);
+      out.add(`${node.collection.name}:${keyParams.join(':')}`);
+    }
     let childDepth = depth;
     let childLoopVars = loopVars;
     if (node instanceof WhileNode || node instanceof DoWhileNode) {

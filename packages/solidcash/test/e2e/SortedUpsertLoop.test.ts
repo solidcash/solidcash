@@ -29,6 +29,10 @@ const SRC = `contract Token() {
     require(checkSig(s, pk));
     for (int i = 0; i < accounts.length; i++) { this.bal[accounts[i]] = amounts[i]; }
   }
+  function clearAll(int[] accounts, pubkey pk, sig s) {
+    require(checkSig(s, pk));
+    for (int i = 0; i < accounts.length; i++) { delete this.bal[accounts[i]]; }
+  }
   function chk(int a, int exp, pubkey pk, sig s) { require(checkSig(s, pk)); require(this.bal[a] == exp); }
 }`;
 
@@ -169,6 +173,30 @@ describe('C2 diff-key per-iteration UPDATE loop (multitransfer credit to existin
     await call('setAll', [5n], [77n]);
     expect(await valOf(5n)).toBe(77n);
     await fund(contract.address); await expect(call('chk', 5n, 50n)).rejects.toThrow(); // old value gone
+  });
+
+  // DELETE-in-loop `for(i) delete m[ks[i]]` (batch nullify): each existing key co-spent + minted to the default (0).
+  // Absent keys FAIL CLOSED (no insert branch - avoids the enumerable divergence of a spurious nullified node).
+  it('nullifies existing keys to the default (0) in one loop', async () => {
+    const { contract, valOf, call } = await setup();
+    await fund(contract.address); await call('setBal', 3n, 100n);
+    await fund(contract.address); await call('setBal', 7n, 200n);
+    await fund(contract.address); await call('setBal', 5n, 50n);
+    await fund(contract.address);
+    await call('clearAll', [3n, 7n, 5n]);
+    expect(await valOf(3n)).toBe(0n);
+    expect(await valOf(7n)).toBe(0n);
+    expect(await valOf(5n)).toBe(0n);
+    // a nullified key reads 0 via chk (require(m[k] == 0)); the nodes stay present-nullified (C2 delete == nullify).
+    await fund(contract.address); await expect(call('chk', 7n, 0n)).resolves.toBeDefined();
+    await fund(contract.address); await expect(call('chk', 7n, 200n)).rejects.toThrow(); // old value gone
+  });
+
+  it('fails closed on delete of a nonexistent key (nothing to nullify)', async () => {
+    const { contract, call } = await setup();
+    await fund(contract.address); await call('setBal', 1n, 500n);
+    await fund(contract.address);
+    await expect(call('clearAll', [1n, 9n])).rejects.toThrow(/no entry|cannot delete/i);
   });
 });
 

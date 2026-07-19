@@ -8,7 +8,7 @@ import { compileString } from 'solidc';
 // `w[ks[i]] += vs[i]` (RMW credit), and the loop-invariant `w[ks[i]] = v` (SortedInsertLoopValue) all compile and
 // are VM-proven (SortedUpsertLoop). What still fails CLOSED at COMPILE (a clean SortedMappingCodegenPendingError,
 // NOT compile-then-revert): delete-in-loop and `= <default>` nullify-in-loop.
-describe('C2 per-key value loops compile; delete/nullify-in-loop fail closed at COMPILE', () => {
+describe('C2 per-key value + delete loops compile; only =default nullify fails closed at COMPILE', () => {
   const nonBool = `contract C() {
     mapping(int => int) w;
     function setmany(int[] ks, int[] vs) { for (int i = 0; i < ks.length; i++) { w[ks[i]] = vs[i]; } }
@@ -38,9 +38,9 @@ describe('C2 per-key value loops compile; delete/nullify-in-loop fail closed at 
     expect(() => compileString(boolSet, { sortedMappings: ['w'] })).not.toThrow();
   });
 
-  // A C2 `delete m[k]` in a DYNAMIC loop routed to a single fixed-slot upsert (emitSortedValueUpsert) with NO
-  // plainLoopDepth guard - it would pin only one iteration's delete and leave the rest un-covenanted (a C2 hole).
-  // Now fails closed like the assign case.
+  // A per-iteration C2 `delete m[k[i]]` now COMPILES via the upsert loop (op=delete): each iteration co-spends k[i]'s
+  // existing entry + mints it nullified to the default; absent keys fail closed. `= 0` (an IntLiteral nullify, not
+  // the delete keyword nor a per-key array) is NOT the upsert-loop shape, so it still fails closed cleanly.
   const delLoop = `contract C() {
     mapping(int => int) w;
     function clear(int[] ks) { for (int i = 0; i < ks.length; i++) { delete w[ks[i]]; } }
@@ -49,10 +49,13 @@ describe('C2 per-key value loops compile; delete/nullify-in-loop fail closed at 
     mapping(int => int) w;
     function zero(int[] ks) { for (int i = 0; i < ks.length; i++) { w[ks[i]] = 0; } }
   }`;
-  it('C2 delete-in-loop fails closed at compile (was a single-slot upsert in a loop = unsound)', () => {
-    expect(() => compileString(delLoop, { sortedMappings: ['w'] })).toThrow(/SortedMappingCodegenPending|sorted/i);
+  it('C2 delete-in-loop COMPILES via the upsert loop (op=delete)', () => {
+    const art = compileString(delLoop, { sortedMappings: ['w'] });
+    const info = art.abi.find((f) => f.name === 'clear')?.sortedUpsertLoopInfo?.[0];
+    expect(info?.op).toBe('delete');
+    expect(info?.valueArrayParam).toBeUndefined(); // delete has no value array
   });
-  it('C2 =default nullify-in-loop fails closed at compile', () => {
+  it('C2 =default nullify-in-loop (w[ks[i]] = 0) fails closed at compile', () => {
     expect(() => compileString(nullifyLoop, { sortedMappings: ['w'] })).toThrow(/SortedMappingCodegenPending|sorted/i);
   });
 });

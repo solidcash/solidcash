@@ -5686,9 +5686,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       const fixedBins = info.fixedKeyParams.map((p, i) => encKey(argOf(p), keyTypes[i] ?? collection.keyType));
       const varyType = keyTypes[info.fixedKeyParams.length] ?? collection.keyType;
       const keysArr = argOf(info.varyingArrayParam);
-      const valsArr = argOf(info.valueArrayParam);
-      if (!Array.isArray(keysArr) || !Array.isArray(valsArr)) continue;
-      if (keysArr.length !== valsArr.length) {
+      const isDelete = info.op === 'delete';
+      const valsArr = isDelete ? undefined : argOf(info.valueArrayParam);
+      if (!Array.isArray(keysArr) || (!isDelete && !Array.isArray(valsArr))) continue;
+      if (!isDelete && (valsArr as unknown[]).length !== keysArr.length) {
         throw new Error(`C2 upsert loop ${info.collection}: recipients/amounts length mismatch`);
       }
       const wUnlocker = createEntryNftUnlocker(this.inner, 0, this.categoryId, info.collection);
@@ -5713,22 +5714,26 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           throw new Error(`C2 upsert loop ${info.collection}: duplicate recipient (each entry can be co-spent once)`);
         }
         seenSlots.add(slotHex);
-        const amt = typeof valsArr[i] === 'bigint' ? valsArr[i] as bigint : BigInt(valsArr[i] as number);
+        const amt = isDelete ? 0n
+          : typeof (valsArr as unknown[])[i] === 'bigint' ? (valsArr as unknown[])[i] as bigint
+            : BigInt((valsArr as unknown[])[i] as number);
         const entry = list.find(slot);
         if (entry) {
-          // UPDATE (existing recipient): co-spend the entry, mint the updated value.
+          // UPDATE (existing recipient): co-spend the entry, mint the updated value ('delete' -> the type default 0).
           if (cospent.has(uidOf(entry.utxo))) {
             throw new Error(`C2 upsert loop ${info.collection}: recipient ${i}'s entry is already co-spent this tx`);
           }
           cospent.add(uidOf(entry.utxo));
           const oldVal = vmNumberToBigInt(entry.value, { requireMinimalEncoding: false }) as bigint;
-          const newVal = info.op === 'set' ? amt : info.op === '-' ? oldVal - amt : oldVal + amt;
+          const newVal = isDelete ? 0n : info.op === 'set' ? amt : info.op === '-' ? oldVal - amt : oldVal + amt;
           insertLoopPredecessors.push({ ...entry.utxo, unlocker: wUnlocker });
           commitments.push(binToHex(encodeEntryCommitment(entry.slot, entry.nextKey, bigIntToVmNumber(newVal))));
         } else {
           // INSERT (a NEW recipient): co-spend the bracketing predecessor (from the ORIGINAL list) + mint P' then NEW.
-          if (info.op === '-') {
-            throw new Error(`C2 upsert loop ${info.collection}: cannot debit recipient ${i} - it has no balance`);
+          // 'delete'/'-' on an absent key fail closed (nothing to nullify/debit).
+          if (info.op === '-' || isDelete) {
+            throw new Error(`C2 upsert loop ${info.collection}: cannot ${isDelete ? 'delete' : 'debit'} key ${i} - `
+              + 'it has no entry');
           }
           const pred = list.predecessorOf(slot);
           if (cospent.has(uidOf(pred.utxo))) {

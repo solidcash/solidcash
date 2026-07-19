@@ -66,6 +66,9 @@ export default class Signer {
     return result.address;
   }
 
+  /** ethers-parity sync alias for {@link getAddress}() (the default-network CashAddress). */
+  get address(): string { return this.getAddress(); }
+
   /** Fetch available UTXOs at this signer's P2PKH address. */
   async getUtxos(): Promise<Utxo[]> {
     return this.provider.getUtxos(this.getAddress());

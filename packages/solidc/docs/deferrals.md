@@ -140,9 +140,24 @@ msg.sender) + `_balances[to] += amt` (DIFFERENT key each iter). Full form still 
   absent account fails closed (can't debit nothing). SDK plans insert-or-update from the ORIGINAL list, commitments in
   cumulative output order, with a `cospent` set that fails closed on two-new-in-one-gap or a duplicate. VM-proven:
   mixed update+insert in one loop, multiple new recipients in distinct gaps, and same-gap / duplicate / `-=`-to-absent
-  all fail closed. **Residual (sound, fail-closed):** in a FULL multiTransfer, a new recipient whose bracketing
-  predecessor is the debited sender (or another credited entry) fails closed - that predecessor cannot be co-spent
-  twice; split into separate txs.
+  all fail closed.
+
+- **FULL multiTransfer to a NEW recipient - WORKS for the common case (`5856dfc5`, FullMultiTransfer, VM-proven).** The
+  cached msg.sender DEBIT + credit upsert loop with an INSERT co-exist end-to-end WHEN the new recipient's bracketing
+  predecessor is UNTOUCHED (HEAD, or an entry not otherwise co-spent this tx). VM: debit alice 1000->980 + INSERT carol
+  (predecessor a bystander) = carol 20, bystander unchanged, supply conserved. Recipient slots are sha256-random, so an
+  untouched predecessor is the usual topology. Collision DETECTION is now COMPLETE + CLEAN: the SDK pre-seeds the
+  upsert-loop `cospent` set with the collection's FIXED (non-loop) entry co-spends (the msg.sender debit entry), so the
+  msg.sender-predecessor case fails closed with the same clear "split into separate transactions" message as the
+  recipient-predecessor case (was an opaque tx-builder "Duplicate input detected").
+  **DEEP residual (sound, fail-closed):** a new recipient whose bracketing predecessor is ALSO co-spent this tx (the
+  debited sender / another credited recipient / another new recipient in the same gap) needs a MERGE - that entry
+  co-spent ONCE and minted with BOTH its value change AND a nextKey re-point to the new node - which the per-iteration
+  1-co-spend/1-2-mint loop structure cannot express (the number of co-spends must drop to the number of DISTINCT touched
+  entries, not recipients). The sound fix is a BATCH-UPSERT covenant: co-spend each distinct touched entry once, mint its
+  final (value, nextKey) + all NEW nodes, verify per-recipient value pinning + full-slice linkage + supply conservation.
+  A covenant redesign (the sorted analog of the original C2 arc), not a bounded follow-up; revisit if a real contract
+  needs same-tx airdrop-to-adjacent-new-recipients.
 
 - **(b3) ABSOLUTE per-key assignment loop `for(i) m[k[i]] = v[i]` - RESOLVED 2026-07-19 (`644532b1`, op=set,
   VM-proven).** A pure per-key assignment (value REPLACES, not accumulates) now routes through the SAME upsert loop
@@ -176,11 +191,13 @@ int-param value insert loop (`for(i) m[ks[i]] = v`, `SortedInsertLoopValue`), SA
 (`110e4e43`, MsgSenderC2 - msgSender keySource + signer P2PKH slot + forced sender funder; cross-sender-isolated),
 `msg.sender`/`tx.origin` scalar RMW-IN-LOOP (`for(i) bal[msg.sender] -= amts[i]` = multitransfer debit, `12dafc89`),
 DIFF-KEY per-iteration credit loop `for(i) bal[recipients[i]] += amts[i]` - both UPDATE (existing) AND INSERT (new
-recipient, `125cb014`) - int/bytes20/address keys, + the FULL ERC-20 multiTransfer (debit+credit in one tx, `090f4e35`);
+recipient, `125cb014`) - int/bytes20/address keys, + the FULL ERC-20 multiTransfer (debit+credit in one tx, `090f4e35`)
+INCLUDING a NEW recipient whose predecessor is UNTOUCHED (`5856dfc5`, the common sha256-random topology);
 ABSOLUTE per-key assignment loop `for(i) m[k[i]] = vs[i]` (op=set, `644532b1`, replace-not-add, update+insert).
-FAIL-CLOSED (sound, not complete): a NEW recipient whose bracketing predecessor is already co-spent (full multiTransfer
-new recipient, or two-new-in-one-gap), cross-contract msg.sender, delete/nullify-in-loop, 2D `m[k][i][j]`,
-function-pointer values.
+FAIL-CLOSED (sound, not complete, CLEAN message): a NEW recipient whose bracketing predecessor is ALSO co-spent this tx
+(the debited sender / another credited recipient / two-new-in-one-gap) - needs a batch-upsert MERGE covenant (co-spend
+each distinct touched entry once + mint value-change AND re-point); cross-contract msg.sender, delete/nullify-in-loop,
+2D `m[k][i][j]`, function-pointer values.
 
 **One real HOLE found + FIXED (commit `af6e894a`): C2 `delete m[k]` in a DYNAMIC loop.** `visitMappingDelete`'s sorted
 branch routed to `emitSortedValueUpsert` (a FIXED-slot co-spend) with NO `plainLoopDepth` guard (unlike

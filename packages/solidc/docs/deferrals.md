@@ -123,12 +123,23 @@ msg.sender) + `_balances[to] += amt` (DIFFERENT key each iter). Full form still 
   total (inflation), so values need a supply-conservation binding, but the body walks SORTED order while `amounts[]` is
   SOURCE order = the permutation/value-witness problem; (2) UPDATE - range-splice is INSERT-ONLY (`coSlot < Hk < coNext`
   fails closed if the key already exists), yet `+=` on an existing recipient needs its old value, and only ONE
-  predecessor P is co-spent (existing entries in the gap are not individually co-spent). Candidate sound designs to
-  evaluate: a per-source `pos[i]` witness (output index of `recipients[i]`'s node) binding output[pos].slot == Hk_i and
-  output[pos].value == old_i + amounts[i], plus duplicate-key summing; or a sum-only invariant (conserves supply, does
-  NOT prevent misdirection - acceptable only when the caller owns the debited funds). Needs dedicated design +
-  adversarial omission/reorder/duplicate/wrong-value/insert-vs-update proofs. Soundness-critical; `ecrecover` + the
-  EIP712 domain separator sit behind it, unreached.
+  predecessor P is co-spent (existing entries in the gap are not individually co-spent). **DESIGN worked out 2026-07-19
+  (scoped, NOT built - a from-scratch fund-guarding covenant; not rushed).** The cleanest structure is a PER-ITERATION
+  upsert loop modeled on the range-splice (setup pushes addr+counter, body per iteration, teardown pins counts), where
+  each iteration co-spends recipients[i]'s OWN entry-or-predecessor at input[master+blockSize+counter] and mints at
+  output[..+counter] (UPDATE: 1 node = slot|next|oldValue+amounts[i]; INSERT: 2 = P'+NEW, needs a cumulative output
+  counter). Two hard problems remain, both genuine (not friction): (P1) to bind each minted node to keyToSlot(recipients
+  [i]) the body must HASH the array element recipients[i] ON-CHAIN inside the untracked per-iteration co-spend region
+  (much harder than the param-PICK used for the loop-invariant-value insert loop; array-element read = length+offset+
+  split in an untracked-offset context); (P2) preventing inflation needs supply-conservation coupling ACROSS the
+  separate debit (`bal[msg.sender]-=`) and credit statements (the covenant currently verifies each write in isolation).
+  Plus the co-spend CONFLICTS: two new recipients sharing a gap (can't co-spend one predecessor twice), and an UPDATE to
+  an entry that is also a new key's predecessor - both must be SDK-detected + fail-closed. The SOUND CORE with none of
+  these is UPDATE-ONLY-distinct-existing-recipients (1:1 co-spend/mint, no branch/permutation/conflict) but it still
+  needs P1 (on-chain array-element hash in the body) + a new SDK derivation (co-spend N SortedList.find entries, mint N
+  updated outputs). Recommend building as a focused pass: UPDATE-only core first (P1 + SDK + adversarial VM: correct
+  sums / cross-entry / wrong-value revert / absent-recipient fail / forgery / omission / duplicate), then the INSERT
+  branch. Soundness-critical; `ecrecover` + the EIP712 domain separator sit behind it, unreached.
 
 - **(c) LOOP-INVARIANT non-bool value insert loop - RESOLVED 2026-07-19 (`SortedInsertLoopValue`, VM-proven).** `for(i)
   m[ks[i]] = v` where `v` is a loop-INVARIANT param (same value for every inserted node) is distinct from (b)'s per-key

@@ -160,14 +160,22 @@ export class ProxyContract<TImpl extends Artifact = Artifact> {
   }
 }
 
-// The dispatch proxy: pass known ProxyContract members through; treat any other property access as an
-// implementation-function forward (`proxy.increment(...args)` -> `proxy.forward('increment', [...args])`).
+// The dispatch proxy: pass known ProxyContract members through; treat an implementation-function name as a
+// forward (`proxy.increment(...args)` -> `proxy.forward('increment', [...args])`) and a state-variable name as a
+// getter (Solidity-parity: the proxy holds the grafted impl state, so `proxy.owner()` reads it via the underlying
+// proxy contract's getState()).
 function wrapDispatch<TImpl extends Artifact>(handle: ProxyContract<TImpl>): ProxyContract<TImpl> {
-  const implAbi = new Set((handle.implementation.inner.artifact.abi as readonly AbiFunction[]).map((f) => f.name));
+  const implArtifact = handle.implementation.inner.artifact;
+  const implAbi = new Set((implArtifact.abi as readonly AbiFunction[]).map((f) => f.name));
+  const stateVars = new Set((implArtifact.stateLayout?.variables ?? []).map((v) => v.name));
   return new Proxy(handle, {
     get(target, prop, receiver) {
-      if (typeof prop === 'string' && implAbi.has(prop) && !(prop in target)) {
-        return (...args: FunctionArgument[]) => target.forward(prop, args);
+      if (typeof prop === 'string' && !(prop in target)) {
+        if (implAbi.has(prop)) return (...args: FunctionArgument[]) => target.forward(prop, args);
+        if (stateVars.has(prop)) {
+          const underlying = target.proxy as unknown as Record<string, (...a: unknown[]) => unknown>;
+          if (typeof underlying[prop] === 'function') return (...args: unknown[]) => underlying[prop](...args);
+        }
       }
       return Reflect.get(target, prop, receiver);
     },

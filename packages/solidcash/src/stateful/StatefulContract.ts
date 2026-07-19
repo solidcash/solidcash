@@ -5699,6 +5699,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       const seenSlots = new Set<string>();
       const cospent = new Set<string>();
       const uidOf = (u: { txid: string; vout: number }): string => `${u.txid}:${u.vout}`;
+      // Pre-seed with this collection's FIXED (non-loop) entry co-spends - notably the cached `bal[msg.sender] -=`
+      // DEBIT write. If a NEW recipient's bracketing predecessor is one of those already-co-spent entries, co-spending
+      // it again would make an invalid duplicate input; detect it here and fail closed with a clear message (else the
+      // tx builder throws an opaque "Duplicate input detected").
+      for (const e of entryNfts) {
+        if (e.collection === info.collection && e.exists && e.utxo) cospent.add(uidOf(e.utxo));
+      }
       for (let i = 0; i < keysArr.length; i++) {
         const slot = keyToSlotMulti([...fixedBins, encKey(keysArr[i], varyType)]);
         const slotHex = binToHex(slot);
@@ -5725,9 +5732,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           }
           const pred = list.predecessorOf(slot);
           if (cospent.has(uidOf(pred.utxo))) {
-            throw new Error(`C2 upsert loop ${info.collection}: new recipient ${i} shares a predecessor with another `
-              + 'co-spend (two new recipients in one gap, or its predecessor is also credited) - not supported in one '
-              + 'tx; split into separate transactions.');
+            throw new Error(`C2 upsert loop ${info.collection}: new recipient ${i}'s bracketing predecessor is already `
+              + 'co-spent in this tx (the debited sender, another credited recipient, or another new recipient in the '
+              + 'same gap). Merging both effects into one entry is not yet supported - split into separate transactions.');
           }
           cospent.add(uidOf(pred.utxo));
           insertLoopPredecessors.push({ ...pred.utxo, unlocker: wUnlocker });

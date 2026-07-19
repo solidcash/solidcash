@@ -9,8 +9,9 @@ import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 import { createTestProvider } from '../test-util.js';
 
 // The FULL ERC-20 multiTransfer: debit the caller once, credit each recipient. Combines the cached same-key
-// msg.sender DEBIT (`bal[msg.sender] -= amounts[i]`) with the per-iteration UPDATE CREDIT loop
-// (`bal[recipients[i]] += amounts[i]`) in ONE transaction.
+// msg.sender DEBIT (`bal[msg.sender] -= amounts[i]`) with the per-iteration CREDIT loop (`bal[recipients[i]] +=
+// amounts[i]`) in ONE transaction. The credit handles both UPDATE (existing recipient) and INSERT (new recipient).
+// masked LE-slot order for the fixtures: bob < carol < alice.
 const SRC = `contract Token() {
   mapping(address => int) bal;
   function setBal(address a, int v, pubkey pk, sig s) { require(checkSig(s, pk)); this.bal[a] = v; }
@@ -31,7 +32,11 @@ describe('FULL ERC-20 multiTransfer (cached msg.sender debit + credit upsert loo
   let nonce = 0xf000;
   const uid = (): string => { nonce += 1; return nonce.toString(16).padStart(64, '0'); };
 
-  it('debits msg.sender by the total and credits each recipient by its amount', async () => {
+  const deploy = async (): Promise<{
+    valOf: (a: string) => Promise<bigint | undefined>;
+    setBal: (a: string, v: bigint) => Promise<{ txid: string }>;
+    fundContract: () => Promise<void>; fundSigner: () => Promise<void>; sc: unknown;
+  }> => {
     const art = compileString(SRC, { forceStateful: true });
     const f = { txid: uid(), vout: 0, satoshis: 400000n };
     await provider.addUtxo(p2pkh.address, f);
@@ -46,26 +51,51 @@ describe('FULL ERC-20 multiTransfer (cached msg.sender debit + credit upsert loo
     const setBal = (a: string, v: bigint): Promise<{ txid: string }> =>
       (contract as unknown as Record<string, (...x: unknown[]) => { send: () => Promise<{ txid: string }> }>)
         .setBal(a, v, alicePub, sig).send();
-    const fundSigner = async (): Promise<void> => {
-      await provider.addUtxo(alice.getAddress(), { txid: uid(), vout: 0, satoshis: 200000n });
-    };
     const fundContract = async (): Promise<void> => {
       await provider.addUtxo(contract.address, { txid: uid(), vout: 0, satoshis: 200000n });
     };
+    const fundSigner = async (): Promise<void> => {
+      await provider.addUtxo(alice.getAddress(), { txid: uid(), vout: 0, satoshis: 200000n });
+    };
+    return { valOf, setBal, fundContract, fundSigner, sc: contract.connect(alice) };
+  };
+  const mt = (sc: unknown, rs: string[], as: bigint[]): Promise<{ txid: string }> =>
+    (sc as Record<string, (...x: unknown[]) => { send: () => Promise<{ txid: string }> }>)
+      .multiTransfer(rs, as, alicePub, sig).send();
 
-    // Seed: sender (alice) = 1000, recipients bob = 100, carol = 200 (existing).
+  it('debits msg.sender by the total and credits each EXISTING recipient by its amount', async () => {
+    const { valOf, setBal, fundContract, fundSigner, sc } = await deploy();
     await fundContract(); await setBal(aliceAddress, 1000n);
     await fundContract(); await setBal(bobAddress, 100n);
     await fundContract(); await setBal(carolAddress, 200n);
-
-    // alice.multiTransfer([bob, carol], [10, 20]) -> alice 1000-30=970, bob 110, carol 220.
-    const sc = contract.connect(alice);
     await fundSigner();
-    await (sc as unknown as Record<string, (...x: unknown[]) => { send: () => Promise<{ txid: string }> }>)
-      .multiTransfer([bobAddress, carolAddress], [10n, 20n], alicePub, sig).send();
-
+    await mt(sc, [bobAddress, carolAddress], [10n, 20n]); // alice 970, bob 110, carol 220
     expect(await valOf(aliceAddress)).toBe(970n);
     expect(await valOf(bobAddress)).toBe(110n);
     expect(await valOf(carolAddress)).toBe(220n);
+  });
+
+  it('credits a NEW recipient (insert) whose predecessor is UNTOUCHED, alongside the debit', async () => {
+    const { valOf, setBal, fundContract, fundSigner, sc } = await deploy();
+    await fundContract(); await setBal(aliceAddress, 1000n); // sender (debited)
+    await fundContract(); await setBal(bobAddress, 100n);    // bystander; carol's predecessor, NOT a recipient
+    await fundSigner();
+    await mt(sc, [carolAddress], [20n]); // debit alice 1000->980; INSERT carol=20 (predecessor bob, untouched)
+    expect(await valOf(aliceAddress)).toBe(980n);
+    expect(await valOf(carolAddress)).toBe(20n);
+    expect(await valOf(bobAddress)).toBe(100n); // bystander unchanged (supply 980+20+100 = 1100 = 1000+100)
+  });
+
+  // Merging a new recipient's INSERT with a co-spend of that same predecessor entry (the debited sender, another
+  // credited recipient, or another new recipient in the same gap) is not yet supported: one UTXO cannot be co-spent
+  // twice. The SDK fails closed with a clear message (sound; no partial/incorrect state) - documented in deferrals (b).
+  it('fails closed (clear msg) when a new recipient shares a predecessor with a co-spent entry', async () => {
+    const { setBal, fundContract, fundSigner, sc } = await deploy();
+    await fundContract(); await setBal(aliceAddress, 1000n);
+    await fundContract(); await setBal(bobAddress, 100n); // bob is a RECIPIENT below + carol's predecessor
+    await fundSigner();
+    // carol(new) predecessor is bob, and bob is ALSO credited -> bob co-spent twice -> fail closed.
+    await expect(mt(sc, [bobAddress, carolAddress], [10n, 20n]))
+      .rejects.toThrow(/predecessor is already co-spent|split into separate/i);
   });
 });

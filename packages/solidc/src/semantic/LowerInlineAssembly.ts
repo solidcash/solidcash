@@ -320,12 +320,15 @@ function resolveSlotFields(slotArg: YulExpressionNode): SlotField[] | undefined 
   return undefined;
 }
 
-// A slot field the int-word combine/decompose can handle: a plain int, a UDVT over an int, or a full-word bytes32
-// (a bytes32 is always alone in its slot, so it only hits the full-word path where it is a whole-word cast).
+// A slot field the int-word combine/decompose can handle: a plain int, or a UDVT over an int - both round-trip
+// through int truncation (`uintN(word)` = word mod 2^N, a positive BigInt, no byte conversion). bytesN of ANY width
+// is EXCLUDED: `bytesN(uint)` goes through OP_NUM2BIN, which is sign-magnitude for a value whose top byte has the
+// high bit set, so the bytesN<->uint round-trip breaks for common (high-bit) values - a silent miscompile
+// (VM-caught: bytes32(0xff00..00) does not round-trip, likewise a sub-word bytes2 on 0xaaaa). Address out too
+// (25-byte lbc != 20-byte EVM word).
 function isSupportedSlotField(t: Type): boolean {
   return t instanceof IntType
-    || (t instanceof ValueType && t.underlyingType instanceof IntType)
-    || (t instanceof BytesType && t.bound === 32);
+    || (t instanceof ValueType && t.underlyingType instanceof IntType);
 }
 
 // If a Yul slot argument denotes a declared DYNAMIC ARRAY var's base slot, return the var name. EVM stores a

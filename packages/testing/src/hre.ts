@@ -136,6 +136,15 @@ function buildEthers(provider: NetworkProvider, mnemonic: string, opts: EthersOp
     return cachedSigner;
   };
 
+  // Drop-in emulation of ethers' account nonce. BCH (UTXO) has no per-account nonce, so the base Signer.getNonce
+  // throws; here (the hardhat-parity layer) a fresh test account reads as nonce 0. The CREATE-address predictors
+  // that consume it (getCreateAddress) are redirected to BCH category identity in the ethers-shim, so a ported
+  // fixture's address-precompute block runs. Real deployed addresses come from `contract.getAddress()`.
+  const withNonce = (signers: Signer[]): Signer[] => {
+    for (const s of signers) (s as unknown as { getNonce: () => Promise<number> }).getNonce = async (): Promise<number> => 0;
+    return signers;
+  };
+
   const getSigners = async (
     count = 20, o: { satoshis?: bigint; mnemonic?: string; fundingUtxos?: number } = {},
   ): Promise<Signer[]> => {
@@ -144,9 +153,9 @@ function buildEthers(provider: NetworkProvider, mnemonic: string, opts: EthersOp
       // One funding UTXO per signer is enough: the deploy step fans out fresh vout-0 genesis coins on demand
       // (ContractFactory.selectGenesisFundingUtxo), so an account can deploy any number of contracts. Override
       // `fundingUtxos` to pre-split (saves a fan-out tx per deploy).
-      return anyProvider.getSigners(count, { mnemonic, path: accountsPath, ...o });
+      return withNonce(await anyProvider.getSigners(count, { mnemonic, path: accountsPath, ...o }));
     }
-    return signersFromMnemonic(o.mnemonic ?? mnemonic, provider, { count, path: accountsPath });
+    return withNonce(signersFromMnemonic(o.mnemonic ?? mnemonic, provider, { count, path: accountsPath }));
   };
 
   const ethers: SolidcashEthers = {

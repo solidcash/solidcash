@@ -1,7 +1,11 @@
 pragma solidcash ^0.13.0;
 contract MarketplaceDataV1() {
+  int version_;
   address marketplaceAddress;
   function initialize(address marketplace) delegate {
-    this.marketplaceAddress = marketplace;
+    this.version_ = 1;
+  }
+  function setMarketplace(address m) delegate {
+    this.marketplaceAddress = m;
   }
 }

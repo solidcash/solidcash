@@ -37,6 +37,8 @@ export function hardhatAliases(): Record<string, string> {
     chai: '@solidcash/testing/chai',
     'chai-subset': stub('chai-plugin'),
     'chai-as-promised': stub('chai-plugin'),
+    // Redirect the EVM CREATE-address predictors to BCH (category-based) identity; re-exports the rest of ethers.
+    ethers: '@solidcash/testing/ethers-shim',
   };
 }
 

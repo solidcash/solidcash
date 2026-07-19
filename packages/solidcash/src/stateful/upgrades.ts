@@ -121,7 +121,8 @@ export class ProxyContract<TImpl extends Artifact = Artifact> {
 
   /** Rebind to a different runner for authorizing forwarded calls (ethers `connect`). */
   connect(runner: ContractRunner): ProxyContract<TImpl> {
-    return new ProxyContract(this.proxy, this.implementation, this.forwardShape, this.auth, runner);
+    // Re-wrap so the connected handle keeps dispatching implementation functions (e.g. proxy.connect(s).fn()).
+    return wrapDispatch(new ProxyContract(this.proxy, this.implementation, this.forwardShape, this.auth, runner));
   }
 
   /**

@@ -27,6 +27,7 @@
     "./chai": { "types": "./dist/chai.d.ts", "default": "./dist/chai.js" },
     "./network-helpers": { "types": "./dist/network-helpers.d.ts", "default": "./dist/network-helpers.js" },
     "./ethers": { "types": "./dist/ethers-utils.d.ts", "default": "./dist/ethers-utils.js" },
+    "./ethers-shim": { "types": "./dist/ethers-shim.d.ts", "default": "./dist/ethers-shim.js" },
     "./vitest-preset": { "types": "./dist/vitest-preset.d.ts", "default": "./dist/vitest-preset.js" },
     "./vitest-setup": { "types": "./dist/vitest-setup.d.ts", "default": "./dist/vitest-setup.js" },
     "./package.json": "./package.json",

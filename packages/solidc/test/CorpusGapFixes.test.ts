@@ -2587,3 +2587,21 @@ describe('return f(); void tail form + base-as-primary derived-sibling flatten (
     )).not.toThrow();
   });
 });
+
+describe('Solidity <0.7 `now` aliases block.timestamp (shadowing respected)', () => {
+  const ok = (src: string): void => {
+    expect(() => compileString(src, { solidityImportCompat: true })).not.toThrow();
+  };
+  it('resolves a bare `now` to block.timestamp', () => {
+    ok('pragma solidity ^0.6.0; contract T { uint256 d;'
+      + ' function f() public view returns (bool) { return now >= d; } }');
+  });
+  it('does not alias a `now` declared as a local variable', () => {
+    ok('pragma solidity ^0.8.0; contract T {'
+      + ' function f() public pure returns (uint256) { uint256 now = 5; return now; } }');
+  });
+  it('does not alias a `now` declared as a parameter', () => {
+    ok('pragma solidity ^0.8.0; contract T {'
+      + ' function f(uint256 now) public pure returns (uint256) { return now; } }');
+  });
+});

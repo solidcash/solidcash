@@ -16,6 +16,7 @@ import {
   IdentifierNode,
   IntLiteralNode,
   BinaryOpNode,
+  VariableDefinitionNode,
 } from '../ast/AST.js';
 import { IntType, AddressType, Type, PrimitiveType, encodeComputedBlockhashKey } from '@solidcash/utils';
 import { NullaryOperator, BinaryOperator } from '../ast/Operator.js';
@@ -73,6 +74,10 @@ export default class SynthesizeBlockOracle extends AstTraversal {
   private fnBlockhashArgs = new Set<string>();
   // Per-function counter for computed-n blockhash reads (each is its own slot).
   private fnComputedBlockhashCount = 0;
+  // Names declared in the contract (state vars) and current function (params + locals), so a bare `now` that is
+  // actually a declared variable is NOT aliased to block.timestamp (Solidity <0.7 global; a plain var in >=0.7).
+  private stateVarNames = new Set<string>();
+  private fnDeclaredNames = new Set<string>();
   private warnedShims = new Set<string>();
 
 
@@ -122,6 +127,10 @@ export default class SynthesizeBlockOracle extends AstTraversal {
     this.fnUsesBlockhash = false;
     this.fnBlockhashArgs = new Set();
     this.fnComputedBlockhashCount = 0;
+    this.fnDeclaredNames = new Set([...this.stateVarNames]);
+    for (const p of node.parameters) this.fnDeclaredNames.add(p.name);
+    for (const rn of node.returnNames ?? []) if (rn) this.fnDeclaredNames.add(rn);
+    this.collectLocalNames(node.body);
     const result = super.visitFunctionDefinition(node) as FunctionDefinitionNode;
     if (this.fnUsesBlockhash) {
       result.usesBlockhash = true;
@@ -133,6 +142,34 @@ export default class SynthesizeBlockOracle extends AstTraversal {
     return result;
   }
 
+  // Record every local variable name declared anywhere in a function body (Solidity function scope is flat for
+  // shadowing purposes here), so a bare `now` read that names one is left alone rather than aliased.
+  private collectLocalNames(body: Node | undefined): void {
+    if (!body) return;
+    const walk = (n: Node | undefined): void => {
+      if (!n) return;
+      if (n instanceof VariableDefinitionNode) this.fnDeclaredNames.add(n.name);
+      for (const key of Object.keys(n)) {
+        if (key === 'type' || key === 'symbolTable' || key === 'location') continue;
+        const v = (n as unknown as Record<string, unknown>)[key];
+        if (v instanceof Node) walk(v);
+        else if (Array.isArray(v)) for (const it of v) if (it instanceof Node) walk(it);
+      }
+    };
+    walk(body);
+  }
+
+  // Solidity <0.7 global `now` aliases `block.timestamp` (removed in 0.7, where it may be a plain variable). Alias
+  // a NON-shadowed bare `now` and re-visit so it flows through the same block.timestamp lowering as an explicit ref.
+  visitIdentifier(node: IdentifierNode): Node {
+    if (node.name === 'now' && !this.fnDeclaredNames.has('now')) {
+      const ts = new NullaryOpNode(NullaryOperator.BLOCK_TIMESTAMP);
+      ts.location = node.location;
+      return this.visit(ts);
+    }
+    return node;
+  }
+
   visitSourceFile(node: SourceFileNode): Node {
     if (node.contract) node.contract = this.visit(node.contract) as ContractNode;
     return node;
@@ -141,6 +178,7 @@ export default class SynthesizeBlockOracle extends AstTraversal {
   visitContract(node: ContractNode): Node {
     this.used = new Set();
     this.loc = node.location;
+    this.stateVarNames = new Set(node.stateVariables.map((sv) => sv.name));
     node.functions = this.visitList(node.functions) as FunctionDefinitionNode[];
     if (node.constructorDef) node.constructorDef = this.visit(node.constructorDef) as FunctionDefinitionNode;
     if (node.fallbackDef) node.fallbackDef = this.visit(node.fallbackDef) as FunctionDefinitionNode;

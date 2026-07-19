@@ -1,12 +1,5 @@
 pragma solidcash ^0.13.0;
-
-// Minimal deployable STATEFUL stub. The 5 constructor args are stored as immutables; a dummy state var makes it
-// a stateful (data-NFT) contract so `getContractFactory("Unicrow").deploy(...)` mints a genesis. Escrow logic
-// (Pay/Release/...) is filled in for the escrow describe blocks later.
-contract Unicrow(bytes20 claimAddr, bytes20 arbitratorAddr, bytes20 disputeAddr, bytes20 governance, int fee) {
+contract Unicrow(address claim, address arbitrator, address dispute, address governance, int fee) {
   int deployed;
-  function touch() {
-    require(this.deployed >= 0);
-    require(fee >= 0);
-  }
+  function touch() { require(this.deployed >= 0); require(fee >= 0); }
 }

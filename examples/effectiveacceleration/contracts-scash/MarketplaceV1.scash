@@ -1,0 +1,26 @@
+pragma solidcash ^0.13.0;
+contract MarketplaceV1() {
+  bytes owner;
+  bool paused;
+  int version_;
+  address unicrowAddress;
+  address unicrowDisputeAddress;
+  address unicrowArbitratorAddress;
+  address treasuryAddress;
+  int marketplaceFee;
+  address marketplaceDataAddress;
+
+  function initialize(address unicrow, address dispute, address arb, address treasury, int fee) delegate {
+    this.unicrowAddress = unicrow;
+    this.unicrowDisputeAddress = dispute;
+    this.unicrowArbitratorAddress = arb;
+    this.treasuryAddress = treasury;
+    this.marketplaceFee = fee;
+    this.owner = msg.sender;
+    this.version_ = 1;
+  }
+
+  function setMarketplaceDataAddress(address dataAddr) delegate {
+    this.marketplaceDataAddress = dataAddr;
+  }
+}

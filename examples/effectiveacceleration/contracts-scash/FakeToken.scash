@@ -1,0 +1,6 @@
+pragma solidcash ^0.13.0;
+contract FakeToken(string name, string symbol) {
+  int totalSupply_;
+  function transfer(address to, int amount) { require(amount >= 0); this.totalSupply_ = this.totalSupply_; }
+  function approve(address spender, int amount) { require(amount >= 0); this.totalSupply_ = this.totalSupply_; }
+}

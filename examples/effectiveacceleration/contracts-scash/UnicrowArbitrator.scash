@@ -1,0 +1,5 @@
+pragma solidcash ^0.13.0;
+contract UnicrowArbitrator(address unicrow, address claim) {
+  int deployed;
+  function touch() { require(this.deployed >= 0); }
+}

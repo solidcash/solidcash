@@ -114,32 +114,24 @@ msg.sender) + `_balances[to] += amt` (DIFFERENT key each iter). Full form still 
   proven single msg.sender write). VM-proven: `bal[msg.sender]=100` then `debitMany([10,20,30]) = 40` exactly, `chk(60)`
   reverts. So multitransfer's DEBIT works; only the CREDIT (b) remains.
 
-- **(b) DIFF-KEY RMW-UPDATE-in-loop covenant - the deep one.** `for(i) _balances[recipients[i]] += amounts[i]`. Root
-  finding (read `emitSortedInsertLoopBody`): the range-splice body verifies ONLY internal chain structure - node.slot ==
-  prev.next (linkage), node.slot < node.next (sorted), value == pinned `0x01`, output-count == N+1, input-count == 1. It
-  NEVER binds a minted slot to `keyToSlot(recipients[i])` nor a value to `amounts[i]`. That is sound for BOOL membership
-  sets (no conserved quantity - the tx author picks the keys, reads stay omission-proof from the sorted invariant
-  alone). Per-key VALUES break it two ways: (1) supply - unbound values let the minted total differ from the debited
-  total (inflation), so values need a supply-conservation binding, but the body walks SORTED order while `amounts[]` is
-  SOURCE order = the permutation/value-witness problem; (2) UPDATE - range-splice is INSERT-ONLY (`coSlot < Hk < coNext`
-  fails closed if the key already exists), yet `+=` on an existing recipient needs its old value, and only ONE
-  predecessor P is co-spent (existing entries in the gap are not individually co-spent). **DESIGN worked out 2026-07-19
-  (scoped, NOT built - a from-scratch fund-guarding covenant; not rushed).** The cleanest structure is a PER-ITERATION
-  upsert loop modeled on the range-splice (setup pushes addr+counter, body per iteration, teardown pins counts), where
-  each iteration co-spends recipients[i]'s OWN entry-or-predecessor at input[master+blockSize+counter] and mints at
-  output[..+counter] (UPDATE: 1 node = slot|next|oldValue+amounts[i]; INSERT: 2 = P'+NEW, needs a cumulative output
-  counter). Two hard problems remain, both genuine (not friction): (P1) to bind each minted node to keyToSlot(recipients
-  [i]) the body must HASH the array element recipients[i] ON-CHAIN inside the untracked per-iteration co-spend region
-  (much harder than the param-PICK used for the loop-invariant-value insert loop; array-element read = length+offset+
-  split in an untracked-offset context); (P2) preventing inflation needs supply-conservation coupling ACROSS the
-  separate debit (`bal[msg.sender]-=`) and credit statements (the covenant currently verifies each write in isolation).
-  Plus the co-spend CONFLICTS: two new recipients sharing a gap (can't co-spend one predecessor twice), and an UPDATE to
-  an entry that is also a new key's predecessor - both must be SDK-detected + fail-closed. The SOUND CORE with none of
-  these is UPDATE-ONLY-distinct-existing-recipients (1:1 co-spend/mint, no branch/permutation/conflict) but it still
-  needs P1 (on-chain array-element hash in the body) + a new SDK derivation (co-spend N SortedList.find entries, mint N
-  updated outputs). Recommend building as a focused pass: UPDATE-only core first (P1 + SDK + adversarial VM: correct
-  sums / cross-entry / wrong-value revert / absent-recipient fail / forgery / omission / duplicate), then the INSERT
-  branch. Soundness-critical; `ecrecover` + the EIP712 domain separator sit behind it, unreached.
+- **(b) DIFF-KEY credit `for(i) bal[recipients[i]] += amounts[i]` - RESOLVED 2026-07-19 (`941dd7de`+`1dca4526`+
+  `090f4e35`, SortedUpsertLoop + FullMultiTransfer, VM-proven).** Built as a PER-ITERATION UPDATE loop (existing
+  recipients), NOT the range-splice: emitSortedUpsertLoop{Setup,Body,Teardown}. Each iteration co-spends recipients[i]'s
+  OWN entry at input[master+blockSize+counter], reads [coSlot|coNext|coValue], and mints coSlot|coNext|(coValue op v[i])
+  at output[..+counter]; teardown pins entry-input-count == entry-output-count == counter+nFixed. The scoped "hard
+  problems" DISSOLVED: (P1) NO on-chain array hashing in the untracked region - recipients[i]/amounts[i] are read in
+  TRACKED context at the body top (via emitSortedKeyHash + visit) and PICK'd with an untracked offset, exactly like the
+  loop-invariant-value insert loop; (P2) supply is conserved by the SHARED amounts[] param (debit reads the same v[i]),
+  no cross-statement coupling needed. Source order == counter order (1:1 co-spend/mint) = NO permutation. INSERT
+  (new recipient) + DUPLICATE co-spend + same-gap CONFLICTS all fail CLOSED with a clear SDK error (each entry
+  co-spent once; new recipients need a separate insert covenant). VM-proven adversarial: exact per-key sums, wrong-value
+  revert, absent-recipient fail, duplicate fail, the `-=` variant, and int/bytes20/ADDRESS keys. **Two enabling fixes:**
+  address[] element args are now encoded as locking bytecode (`1dca4526`, was the raw address STRING); a SORTED RMW loop
+  write is `inLoop` even alongside a fixed entry access, and the teardown count is counter+nFixed - so the cached
+  `bal[msg.sender] -= v[i]` DEBIT and the credit loop COEXIST (`090f4e35`). **The FULL ERC-20 multiTransfer works
+  end-to-end** (FullMultiTransfer: alice 1000->970, bob 100->110, carol 200->220 in one tx). NOT done: credit to a NEW
+  recipient (insert-in-loop, fail-closed) - the harder permutation/value-witness case is unbuilt but not needed for the
+  update-only multiTransfer. `ecrecover` + the EIP712 domain separator sit behind multiTransfer, now reachable.
 
 - **(c) LOOP-INVARIANT non-bool value insert loop - RESOLVED 2026-07-19 (`SortedInsertLoopValue`, VM-proven).** `for(i)
   m[ks[i]] = v` where `v` is a loop-INVARIANT param (same value for every inserted node) is distinct from (b)'s per-key
@@ -160,10 +152,11 @@ address keys, expr-key nested (`m[hash160(pk)][b]=v`), value-returning RMW helpe
 int-param value insert loop (`for(i) m[ks[i]] = v`, `SortedInsertLoopValue`), SAME-identifier-key scalar RMW-in-loop
 (`for(i) balance[owner] -= amts[i]`, `2f780468`), SINGLE `msg.sender`/`tx.origin`-keyed read/write/update
 (`110e4e43`, MsgSenderC2 - msgSender keySource + signer P2PKH slot + forced sender funder; cross-sender-isolated),
-`msg.sender`/`tx.origin` scalar RMW-IN-LOOP (`for(i) bal[msg.sender] -= amts[i]` = multitransfer debit, `12dafc89`).
-FAIL-CLOSED (sound, not complete): PER-KEY value insert loop (`= vs[i]`, permutation/value-witness), RMW insert loop
-(`+= v`), multitransfer diff-key CREDIT (`for(i) bal[recipients[i]] += amts[i]`, above (b)), cross-contract
-msg.sender, delete/nullify-in-loop, 2D `m[k][i][j]`, function-pointer values.
+`msg.sender`/`tx.origin` scalar RMW-IN-LOOP (`for(i) bal[msg.sender] -= amts[i]` = multitransfer debit, `12dafc89`),
+DIFF-KEY per-iteration UPDATE loop credit (`for(i) bal[recipients[i]] += amts[i]` to EXISTING recipients, int/bytes20/
+address keys) + the FULL ERC-20 multiTransfer (debit+credit in one tx, `090f4e35`). FAIL-CLOSED (sound, not complete):
+credit to a NEW recipient (insert-in-loop), PER-KEY value insert loop (`= vs[i]`, permutation/value-witness), cross-
+contract msg.sender, delete/nullify-in-loop, 2D `m[k][i][j]`, function-pointer values.
 
 **One real HOLE found + FIXED (commit `af6e894a`): C2 `delete m[k]` in a DYNAMIC loop.** `visitMappingDelete`'s sorted
 branch routed to `emitSortedValueUpsert` (a FIXED-slot co-spend) with NO `plainLoopDepth` guard (unlike

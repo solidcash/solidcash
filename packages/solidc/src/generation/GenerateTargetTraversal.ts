@@ -398,6 +398,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   // epilogue, where the chunk write loop (split + verify trailing chunk outputs) is emitted.
   private pendingDynamicWrites: Map<string, { valueStackName: string; sv: StateVariableNode }> = new Map();
 
+  // Dynamic-write RMW value stack names (`__internal__dynwrite_value_<name>`) that emitDynamicWriteVerification
+  // must KEEP on the stack (not drop) because a later array-external-call co-spend reads the array from it
+  // (`poolInfo[i].lpToken.m()` in a loop that also writes poolInfo); dropped after that co-spend loop.
+  private coSpendPreservedDynValues: Set<string> = new Set();
+
   // External read tracking
   private externalReadSlots: ExternalReadSlot[] = [];
 
@@ -1469,6 +1474,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.pendingEntryDeletes = new Set();
     this.sortedWrittenCollections = new Set();
     this.pendingDynamicWrites = new Map();
+    this.coSpendPreservedDynValues = new Set();
     this.pendingTransfers = [];
     this.transferInfos = node.transferInfos ?? [];
     this.pendingEmits = [];
@@ -1881,6 +1887,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
       if (!this.functionHasDelegatecall && (hasEntryWrites || hasEntryDeletes)) {
         this.emitEntryCovenantVerification(node);
+      }
+      // An array-external-call co-spend over a dynamically-WRITTEN state array (`poolInfo[i].lpToken.m()` in a
+      // loop that also writes poolInfo, e.g. MasterChef massUpdatePools) reads the array from the write's RMW
+      // value. Mark that value so emitDynamicWriteVerification keeps it on the stack (it is otherwise dropped
+      // there, before the co-spend at emitExternalCallVerification runs). SOUND: only loop-invariant fields
+      // (the called interface field) are read, so the post-write value's field == the pre-state one dispatched.
+      if (!this.functionHasDelegatecall && hasExternalCalls && this.pendingDynamicWrites.size > 0) {
+        for (const slot of this.externalCallSlots) {
+          const w = slot.loopArrayVar ? this.pendingDynamicWrites.get(slot.loopArrayVar) : undefined;
+          if (w) this.coSpendPreservedDynValues.add(w.valueStackName);
+        }
       }
       // Dynamic-storage writes: verify trailing chunk outputs (and consume old chunk inputs).
       if (!this.functionHasDelegatecall && this.pendingDynamicWrites.size > 0) {
@@ -13105,6 +13122,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
     // --- final cleanup: drop the deferred written-var values + the foreign-read count temps ---
     for (const tmp of [...writtenValueStackNames, ...fReadTempNames]) {
+      // A value marked for an array-external-call co-spend is kept on the stack and dropped by
+      // emitExternalCallVerification after the co-spend loop reads the array from it.
+      if (this.coSpendPreservedDynValues.has(tmp)) continue;
       const idx = this.getStackIndex(tmp);
       this.emit(encodeInt(BigInt(idx)), loc);
       this.emit(Op.OP_ROLL, loc);
@@ -14464,6 +14484,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_DROP, locationData);
       this.popFromStack();
     }
+
+    // Drop any dynamic-write RMW values kept alive for an array-external-call co-spend over a written array
+    // (emitDynamicWriteVerification skipped these; the co-spend loop above read the array from them).
+    for (const vName of this.coSpendPreservedDynValues) {
+      const idx = this.getStackIndex(vName);
+      this.emit(encodeInt(BigInt(idx)), locationData);
+      this.emit(Op.OP_ROLL, locationData);
+      this.emit(Op.OP_DROP, locationData);
+      this.removeFromStack(idx);
+    }
+    this.coSpendPreservedDynValues.clear();
   }
 
   /**
@@ -14546,12 +14577,32 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const stackDepth = this.stack.length;
 
     // --- decode arr[i] from (aec_rem); store the new remainder back into (aec_rem); leave elem (the callee
-    // LBC) as the bottom untracked working value ---
+    // LBC, or the packed struct for a struct-field target) as the bottom untracked working value ---
     this.emit(encodeInt(BigInt(this.getStackIndex('(aec_rem)'))), loc);
     this.emit(Op.OP_PICK, loc);                          // copy remainder [..., remcopy]
-    this.emitPushdataDecode(new BytesType(), loc);       // [..., elem, newrem] newrem top
+    // An address array element is one pushdata-framed LBC; a struct-array element is the INLINE packed struct
+    // (fields concatenated, no per-element frame). Decoding the whole struct type skips every field so the
+    // remainder advances past the entire element - decoding it as bytes would stop after the first field.
+    const elemDecodeType = slot.loopArrayElemStructType instanceof StructType
+      ? slot.loopArrayElemStructType : new BytesType();
+    this.emitPushdataDecode(elemDecodeType, loc);        // [..., elem, newrem] newrem top
     this.emitReplace(this.getStackIndex('(aec_rem)') + 2, this.currentFunction); // (aec_rem) := newrem
     // [..., elem]  (1 untracked: elem)
+
+    // Struct-array element field target `poolInfo[i].lpToken.m()`: elem is the packed struct; decode the
+    // interface-typed field (skip preceding fields, decode the target) so the identity check below runs against the
+    // field value, not the whole struct - the same field extraction visitFieldAccess does, applied per iteration.
+    if (slot.loopArrayElemStructType instanceof StructType) {
+      const st = slot.loopArrayElemStructType;
+      const fieldIndex = st.fields.findIndex((f) => f.name === slot.loopArrayElemFieldName);
+      for (let fi = 0; fi < fieldIndex; fi += 1) this.emitPushdataSkip(st.fields[fi].type, loc);
+      if (fieldIndex === st.fields.length - 1) {
+        this.emitPushdataDecodeLastField(st.fields[fieldIndex].type, loc); // [..., field]
+      } else {
+        this.emitPushdataDecode(st.fields[fieldIndex].type, loc);          // [..., field, remainder]
+        this.emit(Op.OP_DROP, loc);                                        // [..., field]
+      }
+    }
 
     if (slot.fnPtrCall) {
       // --- callee master idx = next framed int from the witness list; must be strictly increasing ---

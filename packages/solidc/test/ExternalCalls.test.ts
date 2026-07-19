@@ -457,9 +457,13 @@ describe('external call on a state-rooted access-chain target (ss[i].f.m(), ms[k
     expect(auto.bytecode).toBe(manual.bytecode);
   });
 
-  it('gates out a LOCAL-indexed chain (not body-top safe): stays unsupported', () => {
+  // A LOCAL-indexed struct-array-element field chain `ss[i].target.m()` is NOT body-top hoistable (i is defined
+  // mid-body), but it is now handled by the array-element co-spend loop (emitArrayExternalCallLoop decodes the
+  // field from each self-pinned element) - parity with the plain `arr[i].m()` element call, VM-proven sound in
+  // StructFieldArrayExternalCall.test.ts (MasterChef massUpdatePools `poolInfo[i].lpToken.balanceOf(..)`).
+  it('compiles a LOCAL-indexed struct-field chain via the array co-spend loop', () => {
     expect(() => compileString(
       `${IF}struct S { IFoo target; } contract C { S[] ss; function f() public returns (uint) { uint i = 0; return ss[i].target.m(); } }`, opts,
-    )).toThrow();
+    )).not.toThrow();
   });
 });

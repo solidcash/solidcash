@@ -214,6 +214,12 @@ export default class RedesugarImportedUsingForCalls extends AstTraversal {
     } else if (recv instanceof FieldAccessNode || recv instanceof ArrayAccessNode || recv instanceof MappingAccessNode) {
       const t = this.resolveExprType(recv, varTypes); // `s.field` / `arr[i].field` etc.
       if (t instanceof AddressType && t.interfaceName) ifaceName = t.interfaceName;
+    } else if (recv instanceof IdentifierNode) {
+      // A local/param interface var receiver (`IERC20 t; t.safeTransfer(..)` under `using SafeERC20 for IERC20`).
+      // The AstBuilder defers interface simple-typed receivers here so a library method is rewritten but an interface
+      // method (`t.balanceOf()`) stays an external call (guarded by the freeFnNames check below).
+      const t = this.resolveExprType(recv, varTypes);
+      if (t instanceof AddressType && t.interfaceName) ifaceName = t.interfaceName;
     }
     if (!ifaceName) return undefined;
     const lib = this.interfaceToLib.get(ifaceName);

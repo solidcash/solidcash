@@ -342,6 +342,11 @@ export default class AstBuilder
   // (structs go through localStructTypes). Per-function.
   private localSimpleTypeKeys: Map<string, string> = new Map();
 
+  // Subset of localSimpleTypeKeys whose type is an interface/named-contract (AddressType with interfaceName).
+  // Their `recv.method()` is AMBIGUOUS (interface method = external call, or library method), so the AstBuilder does
+  // NOT rewrite them - RedesugarImportedUsingForCalls does, checking the library's declared names. Per-function.
+  private localInterfaceReceivers: Set<string> = new Set();
+
   private forOfArrayCounter = 0; // uniquifies the temp locals of a desugared `for..of` over a state array
 
   private tupleTernaryCounter = 0; // uniquifies the hoisted condition temp of a desugared tuple ternary
@@ -996,6 +1001,7 @@ export default class AstBuilder
     this.localStructTypes = new Map();
     this.localBytesVars = new Set();
     this.localSimpleTypeKeys = new Map();
+    this.localInterfaceReceivers = new Set();
     this.localStructArrayTypes = new Map();
     const statements = this.flattenStatements(ctx.statement_list().map((s) => this.visit(s) as StatementNode));
     const block = new BlockNode(statements);
@@ -1087,6 +1093,7 @@ export default class AstBuilder
     this.localStructTypes = new Map();
     this.localBytesVars = new Set();
     this.localSimpleTypeKeys = new Map();
+    this.localInterfaceReceivers = new Set();
     this.localStructArrayTypes = new Map();
     const name = ctx.anyIdentifier().getText();
     const parameters = ctx.parameterList().parameter_list().map((p) => this.visit(p) as ParameterNode);
@@ -1095,7 +1102,7 @@ export default class AstBuilder
     for (const p of parameters) {
       if (p.type instanceof StructType) this.localStructTypes.set(p.name, p.type);
       if (p.type instanceof BytesType && p.type.bound === undefined) this.localBytesVars.add(p.name);
-      { const k = this.usingForTypeKey(p.type); if (k) this.localSimpleTypeKeys.set(p.name, k); }
+      this.recordUsingForReceiver(p.name, p.type);
     }
     const structPtrParams = this.registerStructPointerParams(parameters);
     this.registerNamedReturnLocals(ctx.returnType());
@@ -1218,6 +1225,7 @@ export default class AstBuilder
     this.localStructTypes = new Map();
     this.localBytesVars = new Set();
     this.localSimpleTypeKeys = new Map();
+    this.localInterfaceReceivers = new Set();
     this.localStructArrayTypes = new Map();
     const name = ctx.anyIdentifier().getText();
     const parameters = ctx.parameterList().parameter_list().map((p) => this.visit(p) as ParameterNode);
@@ -1225,7 +1233,7 @@ export default class AstBuilder
     for (const p of parameters) {
       if (p.type instanceof StructType) this.localStructTypes.set(p.name, p.type);
       if (p.type instanceof BytesType && p.type.bound === undefined) this.localBytesVars.add(p.name);
-      { const k = this.usingForTypeKey(p.type); if (k) this.localSimpleTypeKeys.set(p.name, k); }
+      this.recordUsingForReceiver(p.name, p.type);
     }
     const structPtrParams = this.registerStructPointerParams(parameters);
     this.registerNamedReturnLocals(ctx.returnType());
@@ -1267,6 +1275,7 @@ export default class AstBuilder
     this.localStructTypes = new Map();
     this.localBytesVars = new Set();
     this.localSimpleTypeKeys = new Map();
+    this.localInterfaceReceivers = new Set();
     this.localStructArrayTypes = new Map();
     const name = ctx.Identifier().getText();
     const parameters = ctx.parameterList()
@@ -1512,8 +1521,7 @@ export default class AstBuilder
     // Track local unbounded bytes vars so `d[i] = v` can desugar to a slice+concat rebuild (see buildLvalueAssign).
     if (type instanceof BytesType && type.bound === undefined) this.localBytesVars.add(name);
     // Track the using-for type key of a non-struct local so `x.method(args)` under `using L for T` resolves.
-    const ufKey = this.usingForTypeKey(type);
-    if (ufKey) this.localSimpleTypeKeys.set(name, ufKey);
+    this.recordUsingForReceiver(name, type);
 
     const variableDefinition = new VariableDefinitionNode(type, modifiers, name, expression);
     variableDefinition.location = Location.fromCtx(ctx);
@@ -1796,8 +1804,7 @@ export default class AstBuilder
         this.localStructArrayTypes.set(name, type.elementType);
       }
       if (type instanceof BytesType && type.bound === undefined) this.localBytesVars.add(name);
-      const ufKey = this.usingForTypeKey(type);
-      if (ufKey) this.localSimpleTypeKeys.set(name, ufKey);
+      this.recordUsingForReceiver(name, type);
       const def = new VariableDefinitionNode(type, modifiers, name, this.visit(ctx.expression(0)!) as ExpressionNode);
       def.location = Location.fromCtx(ctx);
       return def;
@@ -2425,7 +2432,7 @@ export default class AstBuilder
       const libName = (recvStruct && this.usingForLibraries.get(recvStruct.name))
         ?? this.usingForArrayLibrary(recvName)
         ?? this.usingForMappingLibrary(recvName)
-        ?? (simpleKey !== undefined ? this.usingForLibraries.get(simpleKey) : undefined);
+        ?? this.usingForSimpleLibrary(recvName, simpleKey);
       if (libName) {
         const libId = new IdentifierNode(`${libName}.${identifiers[1].getText()}`);
         libId.location = identifier.location;
@@ -4440,7 +4447,7 @@ export default class AstBuilder
       const simpleKey = recvName !== undefined ? this.localSimpleTypeKeys.get(recvName) : undefined;
       const libName = (recvStruct && this.usingForLibraries.get(recvStruct.name))
         ?? (recvName !== undefined ? this.usingForArrayLibrary(recvName) : undefined)
-        ?? (simpleKey !== undefined ? this.usingForLibraries.get(simpleKey) : undefined);
+        ?? this.usingForSimpleLibrary(recvName, simpleKey);
       if (libName) {
         const id = new IdentifierNode(`${libName}.${methodName}`);
         id.location = Location.fromCtx(ctx);
@@ -4483,7 +4490,7 @@ export default class AstBuilder
       const libName = (recvStruct && this.usingForLibraries.get(recvStruct.name))
         ?? this.usingForArrayLibrary(recvName)
         ?? this.usingForMappingLibrary(recvName)
-        ?? (simpleKey !== undefined ? this.usingForLibraries.get(simpleKey) : undefined);
+        ?? this.usingForSimpleLibrary(recvName, simpleKey);
       if (libName) {
         const libId = new IdentifierNode(`${libName}.${methodName}`);
         libId.location = Location.fromCtx(ctx);
@@ -4904,6 +4911,26 @@ export default class AstBuilder
   private usingForMappingLibrary(recvName: string): string | undefined {
     const mapType = this.mappingStateVarTypes.get(recvName);
     return mapType ? this.usingForLibraries.get(mapType.toString()) : undefined;
+  }
+
+  // Record a receiver's using-for type key (and, for an interface/named-contract receiver, its interface-receiver
+  // flag) so `x.method(args)` under `using L for T` resolves.
+  private recordUsingForReceiver(name: string, type: Type): void {
+    const k = this.usingForTypeKey(type);
+    if (!k) return;
+    this.localSimpleTypeKeys.set(name, k);
+    if (type instanceof AddressType && type.interfaceName) this.localInterfaceReceivers.add(name);
+  }
+
+  // The library bound to a simple-typed (non-struct/array/mapping) receiver's type key. An INTERFACE-typed receiver
+  // (`using SafeERC20 for IERC20; IERC20 t; t.balanceOf()/t.safeTransfer()`) is AMBIGUOUS - the method may be an
+  // interface method (external call) or a library method - so return undefined and let RedesugarImportedUsingForCalls
+  // rewrite it (it checks the library's declared free-fn names and leaves interface methods as external calls). A
+  // non-interface receiver (uint256 under SafeMath, a UDVT) has no such ambiguity, so bind here as before.
+  private usingForSimpleLibrary(recvName: string | undefined, simpleKey: string | undefined): string | undefined {
+    if (simpleKey === undefined) return undefined;
+    if (recvName !== undefined && this.localInterfaceReceivers.has(recvName)) return undefined;
+    return this.usingForLibraries.get(simpleKey);
   }
 
   // Inline storage-pointer write `Lib.f(args).field... op= v` (OpenZeppelin StorageSlot): a call sits at the base

@@ -1839,6 +1839,12 @@ export interface ExternalCallSlot {
   // every element is co-spent + verified as a callee in a loop (the source `for` loop is left as harmless
   // iteration; the epilogue reads the array and loop-verifies callee[base+i].master.LBC == arr[i]).
   loopArrayVar?: string;
+  // Set alongside loopArrayVar when the target is an interface-typed FIELD of a struct-array element
+  // (`structArr[i].field.m()`, e.g. MasterChef `poolInfo[i].lpToken.balanceOf(..)`): the epilogue decodes that
+  // field from each packed struct element before the identity check (compiler-internal, not serialized). The
+  // co-spend/SDK derivation is unchanged (dispatch is still on `interfaceName`); only the verified value differs.
+  loopArrayElemStructType?: Type;
+  loopArrayElemFieldName?: string;
   // Set when the call target is `msg.sender` (IFoo(msg.sender).m()): the callee is the tx-derived msg.sender
   // input (category-matched, or tx.origin P2PKH), verified against emitMsgSender's locking bytecode.
   addressIsMsgSender?: boolean;

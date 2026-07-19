@@ -2711,6 +2711,37 @@ describe('using-for on an interface-typed struct-field / state-var receiver (not
   });
 });
 
+describe('chained overloaded using-for + interface-local-var dispatch (MistSwap SafeMath/SafeERC20)', () => {
+  const opts = { solidityImportCompat: true };
+  const ok = (src: string): void => {
+    expect(() => compileString(`pragma solidity ^0.8.0; ${src}`, opts)).not.toThrow();
+  };
+
+  // `t.sub(x).add(y)` where SafeMath OVERLOADS sub(a,b)/sub(a,b,msg) (OZ). The inner `.sub` lowers to a namespaced
+  // library call whose overload (hence return type) is not yet resolved; the outer `.add` must still infer uint256
+  // from it (by the unique arg-count) or it fell through to MethodCallNotSupported. MasterChef `set()` line 136.
+  const SM = 'library SafeMath { function add(uint256 a, uint256 b) internal pure returns (uint256){ return a+b; }'
+    + ' function sub(uint256 a, uint256 b) internal pure returns (uint256){ return sub(a,b,"s"); }'
+    + ' function sub(uint256 a, uint256 b, string memory m) internal pure returns (uint256){'
+    + ' require(b<=a,m); return a-b; } }';
+  it('resolves a chained call through an overloaded library method', () => {
+    ok(`${SM} contract C { using SafeMath for uint256; uint256 t;`
+      + ' function f(uint256 x, uint256 y) public { t = t.sub(x).add(y); } }');
+  });
+
+  // `using SafeERC20 for IERC20` on a LOCAL interface var: a library method (safeApprove) rewrites to
+  // SafeERC20.safeApprove, but an INTERFACE method (balanceOf, NOT declared by SafeERC20) must stay an external
+  // call - the AstBuilder must not blindly rewrite it to a non-existent SafeERC20.balanceOf. MasterChef migrate().
+  const SE = 'interface IERC20 { function balanceOf(address a) external view returns (uint256);'
+    + ' function approve(address s, uint256 v) external returns (bool); }'
+    + ' library SafeERC20 { function safeApprove(IERC20 tok, address s, uint256 v) internal { tok.approve(s,v); } }';
+  it('keeps an interface method external while rewriting the library method on a local interface var', () => {
+    ok(`${SE} contract C { using SafeERC20 for IERC20;`
+      + ' function f(IERC20 tok) public view returns (uint256) { return tok.balanceOf(address(this)); }'
+      + ' function g(IERC20 tok, uint256 v) public { tok.safeApprove(address(this), v); } }');
+  });
+});
+
 describe('using-for external-call library method on an interface-typed state var (OZ SafeERC20 pattern)', () => {
   // `IERC20 public token; using SafeERC20 for IERC20; token.safeTransfer(..)` - safeTransfer is a using-for LIBRARY
   // method (whose body does a low-level/external call), NOT an IERC20 method. It must be rewritten to

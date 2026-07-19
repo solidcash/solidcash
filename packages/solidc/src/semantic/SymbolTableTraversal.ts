@@ -3615,10 +3615,34 @@ export default class SymbolTableTraversal extends AstTraversal {
       // MappingAccessNode (the flattened state-array model); a real mapping reaches the same branch and is
       // rejected later in emitArrayExternalCallLoop ("must be a state array"). Local arrays use ArrayAccessNode.
       let loopArrayVar: string | undefined;
+      let loopArrayElemStructType: StructType | undefined;
+      let loopArrayElemFieldName: string | undefined;
       if (!addressParam) {
         const ae = node.addressExpression;
-        if (ae instanceof MappingAccessNode) loopArrayVar = ae.name;
-        else if (ae instanceof ArrayAccessNode && ae.array instanceof IdentifierNode) loopArrayVar = ae.array.name;
+        // A loop over a dynamic state array read multiple times is cached to a `__dlcache_V` local by
+        // CacheDynamicArrayInLoop; strip the prefix so the co-spend epilogue reads the self-pinned STATE array V.
+        const stripCache = (n: string): string => (n.startsWith('__dlcache_') ? n.slice('__dlcache_'.length) : n);
+        if (ae instanceof MappingAccessNode) loopArrayVar = stripCache(ae.name);
+        else if (ae instanceof ArrayAccessNode && ae.array instanceof IdentifierNode) {
+          loopArrayVar = stripCache(ae.array.name);
+        } else if (ae instanceof FieldAccessNode) {
+          // Interface-typed FIELD of a struct-array element `poolInfo[i].lpToken.m()` (MasterChef): the loop is
+          // over the struct array; record the struct type + field so the epilogue decodes it from each element.
+          const base = ae.expression;
+          const rawArr = base instanceof MappingAccessNode ? base.name
+            : (base instanceof ArrayAccessNode && base.array instanceof IdentifierNode ? base.array.name : undefined);
+          if (rawArr) {
+            const stateArr = stripCache(rawArr);
+            const arrType = this.collectionMap.get(stateArr)?.type ?? this.stateVariableMap.get(stateArr)?.type;
+            const elemType = arrType instanceof ArrayType ? arrType.elementType
+              : arrType instanceof MappingType ? arrType.valueType : undefined;
+            if (elemType instanceof StructType) {
+              loopArrayVar = stateArr;
+              loopArrayElemStructType = elemType;
+              loopArrayElemFieldName = ae.name;
+            }
+          }
+        }
       }
       // `IFoo(msg.sender).m()`: the callee is the tx-derived msg.sender input (verified against emitMsgSender).
       const addressIsMsgSender = node.addressExpression instanceof NullaryOpNode
@@ -3715,6 +3739,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         addressParam,
         addressStateVar,
         loopArrayVar,
+        ...(loopArrayElemStructType && { loopArrayElemStructType, loopArrayElemFieldName }),
         ...(node.selectorArrayVar && { selectorArrayVar: node.selectorArrayVar }),
         ...(addressLiteral && { addressLiteral }),
         ...(addressIsMsgSender && { addressIsMsgSender: true }),
@@ -7230,9 +7255,16 @@ export default class SymbolTableTraversal extends AstTraversal {
     const funcCall = new FunctionCallNode(identifier, [node.object, ...node.parameters]);
     funcCall.location = node.location;
 
-    // Resolve the function (single overload case)
+    // Resolve the function. A single overload binds directly; for an OVERLOADED library method (OZ SafeMath
+    // `sub(a,b)` vs `sub(a,b,msg)`) disambiguate by argument count when exactly one matches, so a CHAINED call
+    // `x.sub(y).add(z)` can read this call's return type - the outer `.add` infers its receiver type from
+    // node.object.resolvedFunction.returnTypes[0], and an unresolved overload left that undefined, tripping
+    // MethodCallNotSupported. Ambiguous same-arity overloads stay deferred to TypeCheck.
     if (overloads.length === 1) {
       funcCall.resolvedFunction = overloads[0];
+    } else {
+      const byArity = overloads.filter((o) => o.parameters.length === funcCall.parameters.length);
+      if (byArity.length === 1) funcCall.resolvedFunction = byArity[0];
     }
 
     // Resolve identifier in symbol table
@@ -7308,6 +7340,21 @@ export default class SymbolTableTraversal extends AstTraversal {
     if (expr instanceof FieldAccessNode) {
       const base = this.resolveLowLevelReceiverType(expr.expression);
       return base instanceof StructType ? base.fields.find((f) => f.name === expr.name)?.type : undefined;
+    }
+    // A chained using-for/library call receiver `SafeMath.sub(a,b).add(c)`: the inner `SafeMath.sub(..)` is a
+    // namespaced FunctionCall (produced pre-SymbolTable by RedesugarImportedUsingForCalls) whose overload is not
+    // yet resolved, so its .type/.resolvedFunction are unset. Read the callee's return type - single overload
+    // directly, else the unique arity match (OZ SafeMath `sub(a,b)` vs `sub(a,b,msg)`) - so the outer `.add` binds.
+    if (expr instanceof FunctionCallNode) {
+      if (expr.resolvedFunction) return expr.resolvedFunction.returnTypes[0];
+      const ov = this.functionDefinitions.get(expr.identifier.name);
+      if (ov && ov.length > 0) {
+        const pick = ov.length === 1 ? ov[0]
+          : ov.filter((o) => o.parameters.length === expr.parameters.length).length === 1
+            ? ov.filter((o) => o.parameters.length === expr.parameters.length)[0] : undefined;
+        return pick?.returnTypes[0];
+      }
+      return undefined;
     }
     return (expr as ExpressionNode).type;
   }
@@ -7605,10 +7652,14 @@ export default class SymbolTableTraversal extends AstTraversal {
     // A method call on a contract-typed STATE-ARRAY element `arr[i].m()` reduces to `IElem(arr[i]).m()`: the
     // element's declared contract type supplies the interface, and the co-spent target address is the element
     // expression itself - the exact address `IFoo(arr[i])` already captures (docs/array-external-calls.md, the
-    // loopArrayVar machinery). Struct-field / nested-state receivers (`s.field.m()`) need a computed-state read
-    // and are a separate follow-up (extcall-target-pinning.md SS7).
+    // loopArrayVar machinery). An interface-typed FIELD of a state-collection element `arr[i].field.m()` /
+    // `m[k].field.m()` (MasterChef `poolInfo[i].lpToken.balanceOf(..)`) is co-spendable too - the field decodes
+    // from the self-pinned element (emitArrayExternalCallLoop). A FieldAccess over a plain local (a `memory`
+    // struct built from caller data) is NOT self-pinned; leave it to the clear StructFieldExternalCallError below.
+    const isStateElemFieldReceiver = node.object instanceof FieldAccessNode
+      && (node.object.expression instanceof MappingAccessNode || node.object.expression instanceof ArrayAccessNode);
     if (node.object instanceof MappingAccessNode || node.object instanceof ArrayAccessNode
-      || node.object instanceof TupleIndexOpNode) {
+      || node.object instanceof TupleIndexOpNode || isStateElemFieldReceiver) {
       const recvType = this.resolveLowLevelReceiverType(node.object);
       const calleeName = recvType instanceof AddressType ? recvType.interfaceName : undefined;
       const ifaceFunc = calleeName ? this.getCalleeFunctions(calleeName)?.find((f) => f.name === node.methodName) : undefined;

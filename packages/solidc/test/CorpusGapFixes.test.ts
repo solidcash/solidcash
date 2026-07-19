@@ -2861,6 +2861,32 @@ describe('using-for external-call library method on an interface-typed state var
   });
 });
 
+describe('opaque MultiCall over a struct-array parameter (Multicall2 calls[i].target.call(calls[i].callData))', () => {
+  // The opaque loop dispatch `targets[i].call(data[i])` (working over parallel address[]/bytes[] arrays) extended
+  // to a struct-array param `Call[] { address target; bytes callData; }` where the target and calldata are FIELDS
+  // of each element. The covenant is the same per-iteration inline loop (emitInlineLoopExternalCall), pinning each
+  // co-spent callee to `calls[i].target` (decoded via visitFieldAccess); the array parameter is resolved through
+  // inliner SSA aliases (`__rh<N>_calls`) back to the real param so the GTT gate + SDK recognise it.
+  const ok = (src: string): void => {
+    expect(() => compileString(`pragma experimental ABIEncoderV2; ${src}`, { solidityImportCompat: true })).not.toThrow();
+  };
+  it('compiles the direct struct-array opaque loop', () => {
+    ok('contract C { struct Call { address target; bytes callData; }'
+      + ' function aggregate(Call[] memory calls) public returns (bytes[] memory out){ out = new bytes[](calls.length);'
+      + ' for (uint i = 0; i < calls.length; i++) { (bool s, bytes memory r) = calls[i].target.call(calls[i].callData);'
+      + ' require(s); out[i] = r; } } }');
+  });
+  it('compiles the inlined struct-array opaque loop (calls param aliased through a returning helper)', () => {
+    ok('contract C { struct Call { address target; bytes callData; } struct Result { bool success; bytes returnData; }'
+      + ' function tryAggregate(bool rs, Call[] memory calls) public returns (Result[] memory out){'
+      + ' out = new Result[](calls.length);'
+      + ' for (uint i = 0; i < calls.length; i++) { (bool s, bytes memory r) = calls[i].target.call(calls[i].callData);'
+      + ' if (rs) { require(s); } out[i] = Result(s, r); } }'
+      + ' function tryBlockAndAggregate(bool rs, Call[] memory calls) public returns (uint bn, Result[] memory out){'
+      + ' bn = block.number; out = tryAggregate(rs, calls); } }');
+  });
+});
+
 describe('using-for external-call library method on an interface-typed struct FIELD (MasterChef pattern)', () => {
   // `Pool storage pool = poolInfo[pid]; pool.lpToken.safeTransfer(..)` (MasterChef deposit/withdraw): the receiver is
   // an interface-typed struct field. Rewrite pre-inlining via the receiver-type chain (poolInfo -> Pool -> lpToken =

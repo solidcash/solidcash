@@ -3631,22 +3631,30 @@ export default class SymbolTableTraversal extends AstTraversal {
         const stripCache = (n: string): string => (n.startsWith('__dlcache_') ? n.slice('__dlcache_'.length) : n);
         if (ae instanceof MappingAccessNode) loopArrayVar = stripCache(ae.name);
         else if (ae instanceof ArrayAccessNode && ae.array instanceof IdentifierNode) {
-          loopArrayVar = stripCache(ae.array.name);
+          loopArrayVar = this.resolveInlineAliasName(stripCache(ae.array.name), this.currentFunction?.body);
         } else if (ae instanceof FieldAccessNode) {
-          // Interface-typed FIELD of a struct-array element `poolInfo[i].lpToken.m()` (MasterChef): the loop is
-          // over the struct array; record the struct type + field so the epilogue decodes it from each element.
+          // A FIELD of a struct-array element: an interface-typed field of a STATE struct-array element
+          // `poolInfo[i].lpToken.m()` (MasterChef, typed epilogue), or a PARAM struct-array target of an opaque
+          // MultiCall `calls[i].target.call(calls[i].callData)` (Multicall2, inline loop dispatch).
           const base = ae.expression;
           const rawArr = base instanceof MappingAccessNode ? base.name
             : (base instanceof ArrayAccessNode && base.array instanceof IdentifierNode ? base.array.name : undefined);
           if (rawArr) {
-            const stateArr = stripCache(rawArr);
-            const arrType = this.collectionMap.get(stateArr)?.type ?? this.stateVariableMap.get(stateArr)?.type;
-            const elemType = arrType instanceof ArrayType ? arrType.elementType
-              : arrType instanceof MappingType ? arrType.valueType : undefined;
-            if (elemType instanceof StructType) {
-              loopArrayVar = stateArr;
-              loopArrayElemStructType = elemType;
-              loopArrayElemFieldName = ae.name;
+            const arr = this.resolveInlineAliasName(stripCache(rawArr), this.currentFunction?.body);
+            if (node.opaqueReturn && this.currentFunction?.parameters.some((p) => p.name === arr)) {
+              // Opaque param struct-array: the array is a function parameter (resolved through inliner aliases).
+              // Record it so the param-gated inline loop dispatch (GTT) picks it up; the covenant re-visits the
+              // FieldAccess each iteration to extract the target, so no struct type/field is needed here.
+              loopArrayVar = arr;
+            } else {
+              const arrType = this.collectionMap.get(arr)?.type ?? this.stateVariableMap.get(arr)?.type;
+              const elemType = arrType instanceof ArrayType ? arrType.elementType
+                : arrType instanceof MappingType ? arrType.valueType : undefined;
+              if (elemType instanceof StructType) {
+                loopArrayVar = arr;
+                loopArrayElemStructType = elemType;
+                loopArrayElemFieldName = ae.name;
+              }
             }
           }
         }
@@ -4121,6 +4129,24 @@ export default class SymbolTableTraversal extends AstTraversal {
       }
     }
     return undefined;
+  }
+
+  // Trace a loop-array variable through the inliner's single-assignment SSA alias bindings (`__rh<N>_x` from
+  // InlineReturningStateHelpers, `__inl_x_<tag>` from LowerMemoryModel/InlineExternalCallHelpers - each a
+  // `VariableDefinitionNode alias = <caller arg>`) back to the underlying value. Follows a BARE-IDENTIFIER init
+  // chain only (these aliases are never reassigned - the audited safe-to-trace set); stops at the first
+  // non-identifier init (a passed expression, not a bare param). Returns the terminal name (unchanged for a
+  // non-alias like a state array). The caller validates the result against params and falls closed otherwise.
+  private resolveInlineAliasName(name: string, body: Node | undefined): string {
+    const seen = new Set<string>();
+    let cur = name;
+    while (/^(__rh|__inl)/.test(cur) && !seen.has(cur)) {
+      seen.add(cur);
+      const init = this.findLocalInit(body, cur);
+      if (init instanceof IdentifierNode) { cur = init.name; continue; }
+      break;
+    }
+    return cur;
   }
 
   // C1/B: does this subtree write contract state (state-var / mapping / state-array assign or delete)? A

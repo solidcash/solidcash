@@ -9731,7 +9731,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Inline loop-indexed dispatch: `targets[i].call/staticcall(data[i])` over a calldata/param address array
     // whose per-element return is consumed in the loop body (MultiCall). The source for-loop is a runtime loop,
     // so this runs once per iteration with the live index. Marks the slot so both epilogues skip it.
-    if (node.callInfo && node.opaqueReturn && node.addressExpression instanceof ArrayAccessNode) {
+    // The target is either a direct element `targets[i]` or a struct FIELD of a struct-array element
+    // `calls[i].target` (Multicall2 `Call[] { address target; bytes callData; }`).
+    const ilcAe = node.addressExpression;
+    const ilcIsLoopElem = ilcAe instanceof ArrayAccessNode
+      || (ilcAe instanceof FieldAccessNode && ilcAe.expression instanceof ArrayAccessNode);
+    if (node.callInfo && node.opaqueReturn && ilcIsLoopElem) {
       const loopSlot = this.externalCallSlots[node.callInfo.externalCallSlotIndex];
       if (loopSlot?.loopArrayVar
           && this.currentFunction?.parameters.some((p) => p.name === loopSlot.loopArrayVar)) {
@@ -14897,7 +14902,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   ): void {
     const stride = 1 + slot.requiredDataNftIndices.length;
     const callMode = slot.callMode ?? ExternalCallMode.REGULAR;
-    const idxExpr = (node.addressExpression as ArrayAccessNode).index;
+    // The target is `targets[i]` (ArrayAccess) or `calls[i].target` (struct field of a struct-array element); the
+    // live loop index lives on the inner ArrayAccess either way. visit(addressExpression) below extracts the address.
+    const ilcArrAccess = node.addressExpression instanceof FieldAccessNode
+      ? node.addressExpression.expression as ArrayAccessNode : node.addressExpression as ArrayAccessNode;
+    const idxExpr = ilcArrAccess.index;
 
     // --- evaluate the live index i and the target address targets[i] (both tracked) ---
     this.visit(idxExpr);                  // [..., i]

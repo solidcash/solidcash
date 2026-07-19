@@ -624,6 +624,15 @@ describe('bytes memory/local element write (bytes memory d; d[i] = v)', () => {
   });
 });
 
+describe('using-for directive inside an interface body (SushiSwap IRewarder, valid Solidity 0.6.x)', () => {
+  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  it('accepts `using L for T;` inside an interface (a no-op there - no bodies to bind)', () => {
+    expect(cc('library L { function f(uint256 a) internal pure returns (uint256) { return a; } }'
+      + ' interface IFoo { using L for uint256; function g() external; }'
+      + ' contract C is IFoo { function g() external override {} }')).toBe('C');
+  });
+});
+
 describe('address is implicitly castable to address payable (payable is a no-op on BCH; OZ 0.6.x _msgSender)', () => {
   const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
   it('accepts `return msg.sender` into an `address payable` return (OZ Context._msgSender)', () => {

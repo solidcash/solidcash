@@ -89,7 +89,7 @@ versionOperator
     ;
 
 interfaceDefinition
-    : 'interface' Identifier ('is' Identifier (',' Identifier)*)? '{' (enumDefinition | structDefinition | typeDefinition | eventDefinition | errorDefinition | interfaceStateVariable | interfaceCollection | interfaceFunction)* '}'
+    : 'interface' Identifier ('is' Identifier (',' Identifier)*)? '{' (enumDefinition | structDefinition | typeDefinition | eventDefinition | errorDefinition | usingForDirective | interfaceStateVariable | interfaceCollection | interfaceFunction)* '}'
     ;
 
 interfaceCollection

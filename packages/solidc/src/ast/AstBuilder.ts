@@ -232,7 +232,7 @@ import {
   ParenthesisedContext, ArrayAccessContext, FieldAccessContext, MappingAccessContext,
   AnyIdentifierContext, ExpressionContext,
   StateAccessContext, IdentifierContext, PostfixOpContext, PrefixOpContext, TupleIndexOpContext,
-  FunctionCallExpressionContext, MethodCallContext, MethodCallNamedContext,
+  FunctionCallExpressionContext, MethodCallContext, MethodCallNamedContext, LegacyCallOptionCallContext,
 } from '../grammar/SolidCashParser.js';
 import SolidCashVisitor from '../grammar/SolidCashVisitor.js';
 import { Location } from './Location.js';
@@ -4330,6 +4330,40 @@ export default class AstBuilder
       }
     }
     return (options.value || options.gas || options.salt) ? options : undefined;
+  }
+
+  // Legacy 0.6.x low-level-call option syntax `target.call.value(v)(data)` / `.call.gas(g)(data)`. Desugar to the
+  // modern `target.call{value:v}(data)` shape (a MethodCall carrying callOptions) that SymbolTable already lowers.
+  visitLegacyCallOptionCall(ctx: LegacyCallOptionCallContext): ExpressionNode {
+    const object = this.visit(ctx.expression(0));
+    const methodName = ctx.Identifier(0).getText();
+    // `.value` lexes as the DotValue token (no second Identifier); `.gas` (and any other) is `'.' Identifier`.
+    const optName = ctx.Identifier_list().length === 2 ? ctx.Identifier(1).getText() : 'value';
+    if (methodName !== 'call' && methodName !== 'staticcall' && methodName !== 'delegatecall') {
+      throw new ParseError(
+        `Legacy call-option syntax '.${methodName}.${optName}(..)(..)' is only valid on call/staticcall/delegatecall`,
+        Location.fromCtx(ctx),
+      );
+    }
+    const optExpr = this.visit(ctx.expression(1)) as ExpressionNode;
+    const callOpts: CallOptions = {};
+    if (optName === 'value') {
+      callOpts.value = optExpr;
+    } else if (optName === 'gas') {
+      callOpts.gas = optExpr;
+      const line = ctx.start ? ` at line ${ctx.start.line}` : '';
+      console.log(`Warning: 'gas' call option is a no-op in SolidCash${line}. BCH does not use gas metering.`);
+    } else {
+      throw new ParseError(
+        `Unknown legacy call option '.${optName}(..)'. Only 'value' and 'gas' are supported`,
+        Location.fromCtx(ctx),
+      );
+    }
+    const parameters = ctx.expressionList().expression_list().map((e) => this.visit(e)) as ExpressionNode[];
+    const node = new MethodCallNode(object, methodName, parameters);
+    node.callOptions = callOpts;
+    node.location = Location.fromCtx(ctx);
+    return node;
   }
 
   visitMethodCall(ctx: MethodCallContext): ExpressionNode {

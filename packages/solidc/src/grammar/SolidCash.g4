@@ -695,6 +695,10 @@ expression
     | expression op=('.reverse()' | '.length') # UnaryOp
     | left=expression op='.split' '(' right=expression ')' # BinaryOp
     | element=expression '.slice' '(' start=expression ',' end=expression ')' # Slice
+    // Legacy 0.6.x low-level call option syntax `target.call.value(v)(data)` / `.call.gas(g)(data)` (superseded
+    // by `.call{value:v}(data)`). Desugared by the AstBuilder to a MethodCall with call options; the first
+    // Identifier must be call/staticcall/delegatecall and the second value/gas (validated there).
+    | expression '.' Identifier ('.' Identifier | '.value') '(' expression ')' expressionList # LegacyCallOptionCall
     | expression '.' Identifier callOptions? '(' '{' (namedArg (',' namedArg)* ','?)? '}' ')' # MethodCallNamed
     | expression '.' Identifier callOptions? expressionList # MethodCall
     | base=expression '[' index=expression ']' expressionList # IndexedFunctionCall

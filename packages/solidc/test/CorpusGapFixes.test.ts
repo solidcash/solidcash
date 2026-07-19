@@ -2506,3 +2506,21 @@ describe('inherited `using L for T` resolves in a derived contract (OZ ERC20 Saf
       + ' function f(uint256 a) public pure returns (uint256) { uint256 x = 1; return x.add(a); } }');
   });
 });
+
+describe('legacy 0.6.x low-level call-option syntax target.call.value(v)(data) / .call.gas(g)(data)', () => {
+  // Superseded by `.call{value:v}(data)`; MistSwap Timelock.executeTransaction uses the old form. `.value` lexes
+  // as the DotValue token (shared with `tx.outputs[i].value`), `.gas` as `'.' Identifier` - both desugar to a
+  // MethodCall carrying call options, the same node the modern brace form produces.
+  const ok = (src: string): void => {
+    expect(() => compileString(src, { solidityImportCompat: true })).not.toThrow();
+  };
+  const mk = (call: string): string => 'pragma solidity ^0.6.0; contract T {'
+    + ` function exec(address target, uint256 v, bytes memory cd) public returns (bool) { (bool okk, bytes memory r)`
+    + ` = ${call}; return okk; } }`;
+  it('accepts target.call.value(v)(data)', () => ok(mk('target.call.value(v)(cd)')));
+  it('accepts target.call.gas(v)(data)', () => ok(mk('target.call.gas(v)(cd)')));
+  it('is equivalent to the modern brace form', () => ok(mk('target.call{value: v}(cd)')));
+  it('does not disturb tx.outputs[i].value introspection', () => {
+    ok('contract T { function f() public returns (int) { require(tx.outputs[0].value >= 0); return tx.outputs[0].value; } }');
+  });
+});

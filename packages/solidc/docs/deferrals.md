@@ -205,9 +205,10 @@ branch routed to `emitSortedValueUpsert` (a FIXED-slot co-spend) with NO `plainL
 `visitMappingAssign`), so `for(i) delete w[ks[i]]` compiled to a single-slot delete in a loop - the covenant pinned
 only ONE iteration and left the rest UN-covenanted (an exclusion-proof hole). Now fails closed at `plainLoopDepth > 0`.
 VM-verified sound (no fix needed): consecutive same-entry scalar RMW `m[k]+=a; m[k]+=b` fail-closes (double-spend
-revert), never a partial store (`C2ScalarMultiWrite`). REMAINING clarity nit (still fail-closed, low priority): 2D
-`m[k][i][j]` gives an ugly `Found type 'T[][]' where 'undefined'` TypeCheck error (the `keys.length > allKeyTypes.length`
-guard misses it because the excess index is an `arrayIndex`, not a key) - should be a clean `UnsupportedTypeError`.
+revert), never a partial store (`C2ScalarMultiWrite`). CLARITY nit RESOLVED 2026-07-19 (`92a13237`): 2D `m[k][i][j]`
+on `mapping(K => T[][])` (read AND write) now fails closed with a clean `MultiDimArrayValueAccessError` instead of the
+confusing `Found type '...' where type 'undefined'` (the excess-key guard `keys.length > allKeyTypes.length` - already
+used by the write - now also guards the read, both throwing the dedicated error; single-level `m[k][i]` still compiles).
 
 ### DELETE-in-loop `for(i) delete m[ks[i]]` - RESOLVED 2026-07-19 (`bbc280a1`, op=delete, VM-proven)
 The last verb of the loop-mutation family, now built exactly as scoped. A per-iteration sorted `delete` routes through

@@ -182,8 +182,17 @@ msg.sender) + `_balances[to] += amt` (DIFFERENT key each iter). Full form still 
   recipient right after its credited predecessor, then writes the reordered arrays to BOTH args AND finalArgs (finalArgs
   builds the master unlocker, so the encoded tx arg must match the commitment order). VM-proven: `[alice(new),
   carol(update)]` reorders to `[carol, alice]` -> same result as adjacent. Fires only when a case-b pair exists.
-  **STILL fail-closed (sound):** CHAINS - two-or-more new recipients in ONE gap (R's pred is P, R2's pred is R1 a
-  not-yet-minted node); a forward reference the reorder can't linearize. Needs paginated writes across txs.
+  **SAME-GAP CHAINS off a CREDITED predecessor RESOLVED (`805c4d92`):** 2+ new recipients in ONE gap now chain
+  when the gap's predecessor is a credited recipient. The re-point flush DEFERS the new node (sets pending = the new
+  node) instead of minting it, so the next new key folds into it via the same in-gap flush: P -> R1 -> R2 -> P.oldNext
+  off ONE co-spend. Omission-proof because P's REAL nextKey proves the whole gap (P, P.oldNext) is empty of existing
+  entries. SDK fold check is now GEOMETRIC (slot in the deferred entry's gap) so it works for an update predecessor AND
+  a chained new node; the reorder sorts same-gap inserts ascending. VM-proven (SameGapChain: K0(update) -> K1 -> K2).
+  **STILL fail-closed (sound):** 2+ new recipients in an UNTOUCHED (bystander) or HEAD-sentinel gap - the first new
+  node is minted immediately there (no defer), so the second co-spends the same predecessor twice. Chain-deferring that
+  path had a HEAD-sentinel covenant bug (slot(3)<slot(7) VM-verified miscompile) and was reverted - not worth the risk
+  vs the common credited-predecessor shape. A pure `= v` insert of N-in-one-gap is handled separately (SortedInsertLoop
+  range-splice). Deep residual: paginated writes across txs for very large N (tx-size bound).
 
 - **(b3) ABSOLUTE per-key assignment loop `for(i) m[k[i]] = v[i]` - RESOLVED 2026-07-19 (`644532b1`, op=set,
   VM-proven).** A pure per-key assignment (value REPLACES, not accumulates) now routes through the SAME upsert loop

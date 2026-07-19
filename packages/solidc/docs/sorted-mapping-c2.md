@@ -222,7 +222,14 @@ mints) so update (mint 1) and insert (mint P'+NEW) coexist. What ships:
    after P, writing the reordered arrays to both the commitment builder and the encoded tx argument. The multiTransfer
    result is order-independent, so this is transparent; it fires only when a case-b pair exists.
 
-**Still fail-closed (sound).** Two-or-more new recipients CHAINING in ONE gap (a forward reference - the first node's
-`next` is a later-minted node the reorder can't linearize). N per tx is capped by transaction size; larger N needs
-paginated writes across txs. Cross-cutting: the exclusion proof must survive the batch (rejecting forged / omitted /
-misordered / duplicated entries), since a bug reopens the C2 exclusion-proof hole.
+7. **SAME-GAP CHAINS off a credited predecessor** - 2+ new recipients in ONE gap (P -> R1 -> R2 -> P.oldNext). The
+   re-point flush DEFERS each new node instead of minting it, so the next new key folds into it via the same in-gap
+   flush - one predecessor co-spend serves the whole chain. Omission-proof: P's REAL nextKey proves the gap is empty of
+   existing entries. The SDK's fold check is geometric (in the deferred entry's gap) so it applies to a chained new node
+   too; the reorder sorts same-gap inserts ascending. VM-proven (`SameGapChain`).
+
+**Still fail-closed (sound).** 2+ new recipients in an UNTOUCHED (bystander) or HEAD-sentinel gap: the first new node is
+minted immediately there (no defer), so a second co-spends the same predecessor twice -> fail closed (a pure `= v`
+N-in-one-gap insert is handled separately by the SortedInsertLoop range-splice). Deep residual: very large N per tx is
+capped by transaction size; larger N needs paginated writes. Cross-cutting: the exclusion proof must survive the batch
+(rejecting forged / omitted / misordered / duplicated entries), since a bug reopens the C2 exclusion-proof hole.

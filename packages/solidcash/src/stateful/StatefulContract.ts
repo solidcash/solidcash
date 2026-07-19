@@ -5719,6 +5719,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       // does it via the loop's re-point register) instead of co-spending it again - so we mint only the NEW node.
       const debitEntry = entryNfts.find((e) => e.collection === info.collection && e.exists && e.utxo);
       let mergedNewCount = 0;
+      // CASE (b) FOLD: mirror the covenant's pending-defer register. On a crediting loop (+/set) each UPDATE defers its
+      // mint; the NEXT recipient, if it is a NEW node bracketed by that update, re-points the update's commitment in
+      // place + appends its own NEW node (the predecessor is co-spent ONCE). lastDeferred = the immediately-prior
+      // update, or null. Requires adjacency (predecessor processed right before the new key) - else fail closed.
+      const foldActive = info.op === '+' || info.op === 'set';
+      let lastDeferred: { uid: string; commitIndex: number; slot: Uint8Array; newVal: bigint; oldNext: Uint8Array } | null = null;
       for (let i = 0; i < keysArr.length; i++) {
         const slot = keyToSlotMulti([...fixedBins, encKey(keysArr[i], varyType)]);
         const slotHex = binToHex(slot);
@@ -5737,6 +5743,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           const oldVal = vmNumberToBigInt(entry.value, { requireMinimalEncoding: false }) as bigint;
           const newVal = isDelete ? 0n : info.op === 'set' ? amt : info.op === '-' ? oldVal - amt : oldVal + amt;
           insertLoopPredecessors.push({ ...entry.utxo, unlocker: wUnlocker });
+          // Record this update as the pending-defer target BEFORE pushing its (initially normal) commitment, so a
+          // following bracketed new key can re-point it in place. Only crediting loops defer (covenant pendActive).
+          if (foldActive) {
+            lastDeferred = { uid: uidOf(entry.utxo), commitIndex: commitments.length, slot: entry.slot, newVal, oldNext: entry.nextKey };
+          }
           commitments.push(binToHex(encodeEntryCommitment(entry.slot, entry.nextKey, bigIntToVmNumber(newVal))));
         } else {
           // INSERT (a NEW recipient): co-spend the bracketing predecessor (from the ORIGINAL list) + mint P' then NEW.
@@ -5746,6 +5757,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               + 'it has no entry');
           }
           const pred = list.predecessorOf(slot);
+          const deferred = lastDeferred; // the immediately-prior update (covenant's pending); an insert never defers
+          lastDeferred = null;
           if (debitEntry && uidOf(debitEntry.utxo as { txid: string; vout: number }) === uidOf(pred.utxo)) {
             // MERGE with the debit: co-spend nothing extra, mint ONLY the NEW node; the covenant re-points the debit's
             // output (via the register). At most ONE such merge (the covenant's require(register==0) fails a second).
@@ -5757,10 +5770,19 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             commitments.push(binToHex(encodeEntryCommitment(slot, pred.nextKey, bigIntToVmNumber(amt)))); // NEW = 0 + amt
             continue;
           }
+          if (foldActive && deferred && uidOf(pred.utxo) === deferred.uid) {
+            // CASE (b) FOLD: the new key's predecessor is the immediately-prior UPDATE. Re-point that update's
+            // commitment in place (nextKey -> the new slot) and append the NEW node taking the predecessor's old
+            // successor. The predecessor is co-spent exactly ONCE (already pushed by the update branch) - the covenant
+            // does the same via its pending-defer re-point flush.
+            commitments[deferred.commitIndex] = binToHex(encodeEntryCommitment(deferred.slot, slot, bigIntToVmNumber(deferred.newVal)));
+            commitments.push(binToHex(encodeEntryCommitment(slot, deferred.oldNext, bigIntToVmNumber(amt)))); // NEW
+            continue;
+          }
           if (cospent.has(uidOf(pred.utxo))) {
             throw new Error(`C2 upsert loop ${info.collection}: new recipient ${i}'s bracketing predecessor is already `
-              + 'co-spent in this tx (another credited recipient, or another new recipient in the '
-              + 'same gap). Merging both effects into one entry is not yet supported - split into separate transactions.');
+              + 'co-spent in this tx (a non-adjacent credited recipient, or another new recipient in the '
+              + 'same gap). Reorder so the predecessor is credited immediately before, or split into separate transactions.');
           }
           cospent.add(uidOf(pred.utxo));
           insertLoopPredecessors.push({ ...pred.utxo, unlocker: wUnlocker });

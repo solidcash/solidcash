@@ -86,16 +86,32 @@ describe('FULL ERC-20 multiTransfer (cached msg.sender debit + credit upsert loo
     expect(await valOf(bobAddress)).toBe(100n); // bystander unchanged (supply 980+20+100 = 1100 = 1000+100)
   });
 
-  // Merging a new recipient's INSERT with a co-spend of that same predecessor entry (the debited sender, another
-  // credited recipient, or another new recipient in the same gap) is not yet supported: one UTXO cannot be co-spent
-  // twice. The SDK fails closed with a clear message (sound; no partial/incorrect state) - documented in deferrals (b).
-  it('fails closed (clear msg) when a new recipient shares a predecessor with a co-spent entry', async () => {
-    const { setBal, fundContract, fundSigner, sc } = await deploy();
-    await fundContract(); await setBal(aliceAddress, 1000n);
-    await fundContract(); await setBal(bobAddress, 100n); // bob is a RECIPIENT below + carol's predecessor
+  // CASE (b): a new recipient whose bracketing predecessor is ANOTHER CREDITED recipient (co-spent as an update this
+  // tx, distinct from the debited msg.sender). The predecessor is co-spent ONCE serving both its update and the insert
+  // re-point via the covenant's pending-defer register (SDK re-points its commitment in place). Requires the
+  // predecessor to be credited immediately before the new key.
+  it('folds a new recipient whose predecessor is another credited recipient (case b)', async () => {
+    const { valOf, setBal, fundContract, fundSigner, sc } = await deploy();
+    await fundContract(); await setBal(aliceAddress, 1000n); // msg.sender (debited)
+    await fundContract(); await setBal(bobAddress, 100n);    // credited recipient below + carol's predecessor
     await fundSigner();
-    // carol(new) predecessor is bob, and bob is ALSO credited -> bob co-spent twice -> fail closed.
-    await expect(mt(sc, [bobAddress, carolAddress], [10n, 20n]))
-      .rejects.toThrow(/predecessor is already co-spent|split into separate/i);
+    // debit alice 1000->970; UPDATE bob 100->110 AND re-point to carol; INSERT carol=20 (predecessor bob). LE order
+    // bob < carol < alice, so the chain becomes bob -> carol -> alice. Supply 970+110+20 = 1100 = 1000+100.
+    await mt(sc, [bobAddress, carolAddress], [10n, 20n]);
+    expect(await valOf(aliceAddress)).toBe(970n);
+    expect(await valOf(bobAddress)).toBe(110n);
+    expect(await valOf(carolAddress)).toBe(20n);
+  });
+
+  // Still fail-closed: the msg.sender is ALSO listed as a recipient (self-transfer within the batch). Its entry would
+  // be co-spent as BOTH the cached debit and a credit update - one UTXO cannot be co-spent twice. Sound fail-closed.
+  it('fails closed when the msg.sender is also a credited recipient (entry co-spent twice)', async () => {
+    const { setBal, fundContract, fundSigner, sc } = await deploy();
+    await fundContract(); await setBal(aliceAddress, 1000n); // alice = msg.sender/debit
+    await fundContract(); await setBal(bobAddress, 100n);
+    await fundSigner();
+    // alice is both the debited sender and recipient[1] -> alice's entry co-spent as debit + credit -> fail closed.
+    await expect(mt(sc, [bobAddress, aliceAddress], [10n, 20n]))
+      .rejects.toThrow(/co-spent|split into separate/i);
   });
 });

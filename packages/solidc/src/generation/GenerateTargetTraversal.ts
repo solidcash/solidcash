@@ -478,6 +478,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private sortedUpsertLoopRepointName: string = '(sorted_upsert_repoint)';
   private sortedUpsertMergeDebitSlot: number = -1; // the debit entry's FIXED block slot index (-1 = no merge possible)
   private sortedUpsertPendingRepoint: boolean = false; // a merge-capable upsert loop left a re-point register on the stack
+  // CASE (b) PENDING-DEFER: a new recipient whose bracketing predecessor is ANOTHER credited recipient (not the debit).
+  // Each UPDATE iteration co-spends its entry but DEFERS the mint into these registers; the NEXT iteration flushes them,
+  // re-pointing the pending entry to the current key iff it lands in the pending's gap (proving it a new node right
+  // after the pending). Look-behind, so no cross-index read. The teardown flushes any entry left pending.
+  private sortedUpsertPendSlotName: string = '(pu_slot)'; // deferred entry slot (empty b'' = no pending)
+  private sortedUpsertPendValName: string = '(pu_val)';   // deferred entry new value
+  private sortedUpsertPendNextName: string = '(pu_next)'; // deferred entry nextKey (empty b'' = +inf)
+  private sortedUpsertPendActive: boolean = false;        // the pending-defer registers are live on the stack
   private keccakLoopCounterName: string = '(loop_keccak_counter)'; // keccak side-cars read-so-far (dynamic keccak loop)
   private keccakLoopActive: boolean = false;        // a dynamic keccak256 loop counter is live on the stack
   private functionMultiSiteDeploy: boolean = false; // 2+ same-contract sites w/ a conditional: function counter
@@ -12501,16 +12509,132 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.sortedUpsertPendingRepoint = false;
     }
 
+    // CASE (b) pending-defer registers (crediting ops only; a debit/delete never inserts a new recipient). Init empty:
+    // pu_slot = b'' (no pending), pu_val = 0, pu_next = b'' (+inf).
+    if (op === '+' || op === 'set') {
+      this.emit(Op.OP_0, loc); this.pushToStack(this.sortedUpsertPendSlotName);
+      this.emit(Op.OP_0, loc); this.pushToStack(this.sortedUpsertPendValName);
+      this.emit(Op.OP_0, loc); this.pushToStack(this.sortedUpsertPendNextName);
+      this.sortedUpsertPendActive = true;
+    } else {
+      this.sortedUpsertPendActive = false;
+    }
+
     this.sortedUpsertLoopActive = true;
     this.sortedUpsertLoopCollection = collection.name;
     return true;
+  }
+
+  // CASE (b) pending-defer flush: if a deferred UPDATE entry is pending (pu_slot != empty), mint it NORMALLY (no
+  // re-point) = [pu_slot|pu_next|pu_val] at output[master+blockSize+outCounter], outCounter += 1, clear pu_slot.
+  // Stack-neutral (U=0 in/out). Used per-iteration (flush the prior pending before processing this key) and at
+  // teardown (flush the last one). The re-point variant lives inline in the body (it needs the current key Hk).
+  private emitSortedFlushPendingNormal(loc: SingleLocationData): void {
+    const blockSize = this.currentFunction.blockLayout?.blockSize ?? 1;
+    const outCtr = this.sortedUpsertLoopOutCounterName;
+    const pSlot = this.sortedUpsertPendSlotName;
+    const pVal = this.sortedUpsertPendValName;
+    const pNext = this.sortedUpsertPendNextName;
+    // pendingValid = size(pu_slot) > 0
+    this.emit(encodeInt(BigInt(this.getStackIndex(pSlot))), loc); this.emit(Op.OP_PICK, loc);
+    this.emit(Op.OP_SIZE, loc); this.emit(Op.OP_NIP, loc);
+    this.emit(Op.OP_0, loc); this.emit(Op.OP_GREATERTHAN, loc);
+    this.emit(Op.OP_IF, loc);
+    this.scopeDepth += 1;
+    // outIdx = master + blockSize + outCounter (U=1)
+    this.emitMasterInputIndex(loc);
+    this.emit(encodeInt(BigInt(blockSize)), loc); this.emit(Op.OP_ADD, loc);
+    this.emit(encodeInt(BigInt(this.getStackIndex(outCtr) + 1)), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_ADD, loc);
+    // mint [pu_slot | pu_next | pu_val] (identical bytes to the deferred UPDATE's commitment)
+    this.emitVerifySortedValueOutput(loc, this.getStackIndex(this.sortedUpsertLoopAddrName) + 1,
+      this.getStackIndex(pSlot) + 1, this.getStackIndex(pNext) + 1, this.getStackIndex(pVal) + 1); // -> U=0
+    // outCounter += 1
+    this.emit(encodeInt(BigInt(this.getStackIndex(outCtr))), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_1ADD, loc);
+    this.emitReplace(this.getStackIndex(outCtr) + 1, { location: loc.location } as unknown as Node);
+    // clear pending (pu_slot = empty)
+    this.emit(Op.OP_0, loc);
+    this.emitReplace(this.getStackIndex(pSlot) + 1, { location: loc.location } as unknown as Node);
+    this.scopeDepth -= 1;
+    this.emit(Op.OP_ENDIF, loc);
+  }
+
+  // CASE (b) pending-defer flush WITH re-point (per-iteration, in the body where the current key Hk = '(credit_hk)' and
+  // amount = '(credit_amt)' are live). If a deferred UPDATE is pending and the CURRENT key lands in its gap
+  // (pu_slot < Hk < pu_next), the current key is provably a NEW node inserting right after the pending entry: mint
+  // pending' = [pu_slot|Hk|pu_val] (updated AND re-pointed) + NEW = [Hk|pu_next|amt], clear the pending, and leave
+  // consumed = 1 (the caller skips the current key's normal processing - it co-spends nothing, its predecessor was
+  // co-spent when it was deferred). Otherwise mint the pending normally and leave consumed = 0. No pending -> 0.
+  // Leaves exactly one untracked value [consumed] on top (U=1). The soundness anchor is the in-gap check against the
+  // pending's REAL nextKey: an existing entry between makes pu_next = that entry and Hk < pu_next fails -> normal path.
+  private emitSortedFlushPendingRepoint(node: Node, loc: SingleLocationData): void {
+    const blockSize = this.currentFunction.blockLayout?.blockSize ?? 1;
+    const outCtr = this.sortedUpsertLoopOutCounterName;
+    const addr = this.sortedUpsertLoopAddrName;
+    const pSlot = this.sortedUpsertPendSlotName;
+    const pVal = this.sortedUpsertPendValName;
+    const pNext = this.sortedUpsertPendNextName;
+    const hk = '(credit_hk)';
+    const amt = '(credit_amt)';
+    // mintIdx: push output index master + blockSize + outCounter + add (u = untracked count currently above)
+    const mintIdx = (add: number, u: number): void => {
+      this.emitMasterInputIndex(loc);
+      this.emit(encodeInt(BigInt(blockSize + add)), loc); this.emit(Op.OP_ADD, loc);
+      this.emit(encodeInt(BigInt(this.getStackIndex(outCtr) + u + 1)), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_ADD, loc);
+    };
+    // pendingValid = size(pu_slot) > 0
+    this.emit(encodeInt(BigInt(this.getStackIndex(pSlot))), loc); this.emit(Op.OP_PICK, loc);
+    this.emit(Op.OP_SIZE, loc); this.emit(Op.OP_NIP, loc); this.emit(Op.OP_0, loc); this.emit(Op.OP_GREATERTHAN, loc); // U=1
+    this.emit(Op.OP_IF, loc);
+    this.scopeDepth += 1;
+    // inGap = (pu_slot < Hk) AND (pu_next == 0 OR Hk < pu_next)
+    this.emit(encodeInt(BigInt(this.getStackIndex(pSlot))), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_BIN2NUM, loc); // pSlot# U=1
+    this.emit(encodeInt(BigInt(this.getStackIndex(hk) + 1)), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_BIN2NUM, loc); // Hk# U=2
+    this.emit(Op.OP_LESSTHAN, loc); // b1 U=1
+    this.emit(encodeInt(BigInt(this.getStackIndex(pNext) + 1)), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_BIN2NUM, loc); // pNext# U=2
+    this.emit(Op.OP_DUP, loc); this.emit(Op.OP_0, loc); this.emit(Op.OP_NUMEQUAL, loc); // isInf U=3
+    this.emit(Op.OP_IF, loc); this.emit(Op.OP_DROP, loc); this.emit(Op.OP_1, loc); // +inf -> b2=1 U=2
+    this.emit(Op.OP_ELSE, loc);
+    this.emit(encodeInt(BigInt(this.getStackIndex(hk) + 2)), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_BIN2NUM, loc); // Hk# U=3
+    this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_LESSTHAN, loc); // Hk < pNext -> b2 U=2
+    this.emit(Op.OP_ENDIF, loc); // [b1, b2] U=2
+    this.emit(Op.OP_BOOLAND, loc); // inGap U=1
+    this.emit(Op.OP_IF, loc);
+    this.scopeDepth += 1;
+    // ===== RE-POINT: mint P' = [pu_slot|Hk|pu_val] + NEW = [Hk|pu_next|amt]; outCounter += 2; clear; consumed = 1 =====
+    mintIdx(0, 0); // P' outIdx U=1
+    this.emitVerifySortedValueOutput(loc, this.getStackIndex(addr) + 1,
+      this.getStackIndex(pSlot) + 1, this.getStackIndex(hk) + 1, this.getStackIndex(pVal) + 1); // P' = pSlot|Hk|pVal -> U=0
+    mintIdx(1, 0); // NEW outIdx U=1
+    this.emitVerifySortedValueOutput(loc, this.getStackIndex(addr) + 1,
+      this.getStackIndex(hk) + 1, this.getStackIndex(pNext) + 1, this.getStackIndex(amt) + 1); // NEW = Hk|pNext|amt -> U=0
+    this.emit(encodeInt(BigInt(this.getStackIndex(outCtr))), loc); this.emit(Op.OP_PICK, loc); this.emit(encodeInt(2n), loc); this.emit(Op.OP_ADD, loc);
+    this.emitReplace(this.getStackIndex(outCtr) + 1, node); // outCounter += 2 -> U=0
+    this.emit(Op.OP_0, loc); this.emitReplace(this.getStackIndex(pSlot) + 1, node); // clear pending -> U=0
+    this.emit(Op.OP_1, loc); // consumed = 1 (U=1)
+    this.scopeDepth -= 1;
+    this.emit(Op.OP_ELSE, loc);
+    this.scopeDepth += 1;
+    // ===== NORMAL flush: mint [pu_slot|pu_next|pu_val]; outCounter += 1; clear; consumed = 0 =====
+    mintIdx(0, 0); // outIdx U=1
+    this.emitVerifySortedValueOutput(loc, this.getStackIndex(addr) + 1,
+      this.getStackIndex(pSlot) + 1, this.getStackIndex(pNext) + 1, this.getStackIndex(pVal) + 1); // -> U=0
+    this.emit(encodeInt(BigInt(this.getStackIndex(outCtr))), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_1ADD, loc);
+    this.emitReplace(this.getStackIndex(outCtr) + 1, node); // outCounter += 1 -> U=0
+    this.emit(Op.OP_0, loc); this.emitReplace(this.getStackIndex(pSlot) + 1, node); // clear pending -> U=0
+    this.emit(Op.OP_0, loc); // consumed = 0 (U=1)
+    this.scopeDepth -= 1;
+    this.emit(Op.OP_ENDIF, loc); // [consumed] U=1
+    this.scopeDepth -= 1;
+    this.emit(Op.OP_ELSE, loc);
+    this.emit(Op.OP_0, loc); // no pending -> consumed = 0 (U=1)
+    this.emit(Op.OP_ENDIF, loc); // [consumed] U=1
   }
 
   /**
    * One iteration of a per-iteration C2 UPSERT loop `for(i) m[k[i]] += v[i]`. Co-spend ONE input at
    * input[master+blockSize+iterCounter] (k[i]'s entry for an UPDATE, or its bracketing predecessor for an INSERT of a
    * NEW recipient), read [coSlot|coNext|coValue], and branch on coSlot == keyToSlot(k[i]):
-   *   UPDATE (present): mint output[..+outCounter] = coSlot|coNext|(coValue OP v[i]); outCounter += 1.
+   *   UPDATE (present): DEFER - stash coSlot|coNext|newValue in the pending registers (mint next iter / teardown).
    *   INSERT (absent): verify coSlot < Hk < coNext; mint P' = coSlot|Hk|coValue at output[..+outCounter] and
    *                    NEW = Hk|coNext|v[i] at output[..+outCounter+1]; outCounter += 2.
    * Link preserved so sortedness holds; supply conserved via the shared v[] param. The SDK detects same-predecessor
@@ -12582,9 +12706,22 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emit(isMinus ? Op.OP_SUB : Op.OP_ADD, loc);                     // newValue# (U=4)
         this.emit(Op.OP_NIP, loc);                                           // [.., coSlot, coNext, newValue] U=3
       }
-      pushIdx(this.sortedUpsertLoopOutCounterName, 0, 3);                     // outIdx (U=4)
-      this.emitVerifySortedValueOutput(loc, addrIdx() + 4, 3, 2, 1);          // addr, coSlot, coNext, newValue
-      this.emit(Op.OP_1, loc);                                               // delta = 1 (U=4)
+      if (this.sortedUpsertPendActive) {
+        // UPDATE-DEFER (crediting loops): stash [coSlot, coNext, newValue] into the pending registers; the mint is
+        // deferred to the next iteration's flush (which may re-point it) or teardown. delta = 0 (nothing minted here).
+        this.emit(Op.OP_DUP, loc);                                            // newValue copy (U=4)
+        this.emitReplace(this.getStackIndex(this.sortedUpsertPendValName) + 4, node);  // pu_val = newValue -> U=3
+        this.emit(encodeInt(2n), loc); this.emit(Op.OP_PICK, loc);            // coSlot copy (U=4)
+        this.emitReplace(this.getStackIndex(this.sortedUpsertPendSlotName) + 4, node); // pu_slot = coSlot -> U=3
+        this.emit(encodeInt(1n), loc); this.emit(Op.OP_PICK, loc);            // coNext copy (U=4)
+        this.emitReplace(this.getStackIndex(this.sortedUpsertPendNextName) + 4, node); // pu_next = coNext -> U=3
+        this.emit(Op.OP_0, loc);                                             // delta = 0 (U=4)
+      } else {
+        // ---- UPDATE (debit/delete loops): mint output[..+outCounter] = coSlot|coNext|newValue immediately ----
+        pushIdx(this.sortedUpsertLoopOutCounterName, 0, 3);                   // outIdx (U=4)
+        this.emitVerifySortedValueOutput(loc, addrIdx() + 4, 3, 2, 1);        // addr, coSlot, coNext, newValue
+        this.emit(Op.OP_1, loc);                                             // delta = 1 (U=4)
+      }
       this.emit(Op.OP_ELSE, loc);
       // ---- INSERT (absent -> NEW recipient): only for `+=`; `-=`/`delete` fail closed (branch-balanced) ----
       if (isMinus || op === 'delete') { this.emit(Op.OP_0, loc); this.emit(Op.OP_VERIFY, loc); }
@@ -12613,49 +12750,70 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emitReplace(iterIdx() + 4, node);                                 // -> [.., coSlot, coNext, X] U=3
     };
 
-    // MSG.SENDER MERGE: if the debit entry coexists (sortedUpsertMergeDebitSlot >= 0) and this NEW recipient lands in
-    // the DEBIT entry's gap (dSlot < Hk < dNext, read from its REAL input - so an entry between makes dNext=that and
-    // the check fails -> normal path, NO omission), insert by re-pointing the debit's single co-spend: mint ONLY the
-    // NEW node here, record Hk in the re-point register (require it was 0 = at most one merge; two-in-gap fails
-    // closed), NO trailing co-spend (iter += 0). The debit flush reads the register and re-points msg.sender.nextKey.
-    if (this.sortedUpsertMergeDebitSlot >= 0) {
-      this.emitEntryInputIndex(this.sortedUpsertMergeDebitSlot, loc, 0);
-      this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc);
-      this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc);
-      this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_DROP, loc); // [.., dSlot, dNext] U=2
-      // isMerge = dSlot < Hk AND (dNext == 0 OR Hk < dNext)
-      this.emit(encodeInt(1n), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_BIN2NUM, loc);   // dSlot# (U=3)
-      this.emit(encodeInt(BigInt(hkIdx() + 3)), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_BIN2NUM, loc); // Hk#
-      this.emit(Op.OP_LESSTHAN, loc);                                                             // b1 (U=3) [dSlot,dNext,b1]
-      this.emit(encodeInt(1n), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_BIN2NUM, loc);   // dNext# (U=4)
-      this.emit(Op.OP_DUP, loc); this.emit(Op.OP_0, loc); this.emit(Op.OP_NUMEQUAL, loc);         // isInf (U=5)
-      this.emit(Op.OP_IF, loc); this.emit(Op.OP_DROP, loc); this.emit(Op.OP_1, loc);              // +inf -> b2=1 (U=4)
-      this.emit(Op.OP_ELSE, loc);
-      this.emit(encodeInt(BigInt(hkIdx() + 4)), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_BIN2NUM, loc); // Hk#
-      this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_LESSTHAN, loc);                                 // Hk<dNext -> b2 (U=4)
-      this.emit(Op.OP_ENDIF, loc);                                                                // [dSlot,dNext,b1,b2] U=4
-      this.emit(Op.OP_BOOLAND, loc);                                                              // isMerge (U=3) [dSlot,dNext,isMerge]
+    // MSG.SENDER MERGE (or normal step): if the debit entry coexists (sortedUpsertMergeDebitSlot >= 0) and this NEW
+    // recipient lands in the DEBIT entry's gap (dSlot < Hk < dNext, read from its REAL input - so an entry between makes
+    // dNext=that and the check fails -> normal path, NO omission), insert by re-pointing the debit's single co-spend:
+    // mint ONLY the NEW node here, record Hk in the re-point register (require it was 0 = at most one merge; two-in-gap
+    // fails closed), NO trailing co-spend (iter += 0). The debit flush reads the register and re-points msg.sender.
+    const emitMergeOrNormalDispatch = (): void => {
+      if (this.sortedUpsertMergeDebitSlot >= 0) {
+        this.emitEntryInputIndex(this.sortedUpsertMergeDebitSlot, loc, 0);
+        this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc);
+        this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc);
+        this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_DROP, loc); // [.., dSlot, dNext] U=2
+        // isMerge = dSlot < Hk AND (dNext == 0 OR Hk < dNext)
+        this.emit(encodeInt(1n), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_BIN2NUM, loc);   // dSlot# (U=3)
+        this.emit(encodeInt(BigInt(hkIdx() + 3)), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_BIN2NUM, loc); // Hk#
+        this.emit(Op.OP_LESSTHAN, loc);                                                             // b1 (U=3) [dSlot,dNext,b1]
+        this.emit(encodeInt(1n), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_BIN2NUM, loc);   // dNext# (U=4)
+        this.emit(Op.OP_DUP, loc); this.emit(Op.OP_0, loc); this.emit(Op.OP_NUMEQUAL, loc);         // isInf (U=5)
+        this.emit(Op.OP_IF, loc); this.emit(Op.OP_DROP, loc); this.emit(Op.OP_1, loc);              // +inf -> b2=1 (U=4)
+        this.emit(Op.OP_ELSE, loc);
+        this.emit(encodeInt(BigInt(hkIdx() + 4)), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_BIN2NUM, loc); // Hk#
+        this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_LESSTHAN, loc);                                 // Hk<dNext -> b2 (U=4)
+        this.emit(Op.OP_ENDIF, loc);                                                                // [dSlot,dNext,b1,b2] U=4
+        this.emit(Op.OP_BOOLAND, loc);                                                              // isMerge (U=3) [dSlot,dNext,isMerge]
+        this.emit(Op.OP_IF, loc);
+        this.scopeDepth += 1;
+        // ===== MERGE: require register == 0; mint NEW=[Hk|dNext|amt]; register = Hk; outCounter += 1 =====
+        this.emit(encodeInt(BigInt(this.getStackIndex(this.sortedUpsertLoopRepointName) + 2)), loc); this.emit(Op.OP_PICK, loc);
+        this.emit(Op.OP_0, loc); this.emit(Op.OP_NUMEQUAL, loc); this.emit(Op.OP_VERIFY, loc);       // register == 0 (U=2)
+        pushIdx(this.sortedUpsertLoopOutCounterName, 0, 2);                     // NEW outIdx (U=3)
+        this.emitVerifySortedValueOutput(loc, addrIdx() + 3, hkIdx() + 3, 1, amtIdx() + 3); // NEW = Hk|dNext|amt -> [dSlot,dNext] U=2
+        this.emit(encodeInt(BigInt(hkIdx() + 2)), loc); this.emit(Op.OP_PICK, loc);                  // Hk copy (U=3)
+        this.emitReplace(this.getStackIndex(this.sortedUpsertLoopRepointName) + 3, node);            // register = Hk -> U=2
+        this.emit(encodeInt(BigInt(outIdxC() + 2)), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_1ADD, loc);
+        this.emitReplace(outIdxC() + 3, node);                                 // outCounter += 1 -> [dSlot,dNext] U=2
+        this.emit(Op.OP_0, loc);                                               // dummy -> [dSlot,dNext,dummy] U=3
+        this.scopeDepth -= 1;
+        this.emit(Op.OP_ELSE, loc);
+        this.scopeDepth += 1;
+        this.emit(Op.OP_DROP, loc); this.emit(Op.OP_DROP, loc);                // drop dNext, dSlot
+        emitNormalStep();                                                      // -> [coSlot,coNext,X] U=3
+        this.scopeDepth -= 1;
+        this.emit(Op.OP_ENDIF, loc);                                          // [.., t, t, t] U=3
+      } else {
+        emitNormalStep();                                                      // -> [coSlot,coNext,X] U=3
+      }
+    };
+
+    // CASE (b) FLUSH-WITH-REPOINT: mint the prior iteration's DEFERRED update (if any). If THIS key lands in the
+    // pending's gap it is a NEW node right after the pending: re-point the pending + mint NEW here (consumed = 1),
+    // and skip the current key's normal processing (it co-spent nothing). Otherwise mint the pending normally and
+    // fall through to the merge/normal dispatch.
+    if (this.sortedUpsertPendActive) {
+      this.emitSortedFlushPendingRepoint(node, loc);                          // -> [consumed] U=1
       this.emit(Op.OP_IF, loc);
       this.scopeDepth += 1;
-      // ===== MERGE: require register == 0; mint NEW=[Hk|dNext|amt]; register = Hk; outCounter += 1 =====
-      this.emit(encodeInt(BigInt(this.getStackIndex(this.sortedUpsertLoopRepointName) + 2)), loc); this.emit(Op.OP_PICK, loc);
-      this.emit(Op.OP_0, loc); this.emit(Op.OP_NUMEQUAL, loc); this.emit(Op.OP_VERIFY, loc);       // register == 0 (U=2)
-      pushIdx(this.sortedUpsertLoopOutCounterName, 0, 2);                     // NEW outIdx (U=3)
-      this.emitVerifySortedValueOutput(loc, addrIdx() + 3, hkIdx() + 3, 1, amtIdx() + 3); // NEW = Hk|dNext|amt -> [dSlot,dNext] U=2
-      this.emit(encodeInt(BigInt(hkIdx() + 2)), loc); this.emit(Op.OP_PICK, loc);                  // Hk copy (U=3)
-      this.emitReplace(this.getStackIndex(this.sortedUpsertLoopRepointName) + 3, node);            // register = Hk -> U=2
-      this.emit(encodeInt(BigInt(outIdxC() + 2)), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_1ADD, loc);
-      this.emitReplace(outIdxC() + 3, node);                                 // outCounter += 1 -> [dSlot,dNext] U=2
-      this.emit(Op.OP_0, loc);                                               // dummy -> [dSlot,dNext,dummy] U=3
+      this.emit(Op.OP_0, loc); this.emit(Op.OP_0, loc); this.emit(Op.OP_0, loc); // consumed: [t,t,t] U=3
       this.scopeDepth -= 1;
       this.emit(Op.OP_ELSE, loc);
       this.scopeDepth += 1;
-      this.emit(Op.OP_DROP, loc); this.emit(Op.OP_DROP, loc);                // drop dNext, dSlot
-      emitNormalStep();                                                      // -> [coSlot,coNext,X] U=3
+      emitMergeOrNormalDispatch();                                            // -> [x,x,x] U=3
       this.scopeDepth -= 1;
-      this.emit(Op.OP_ENDIF, loc);                                          // [.., t, t, t] U=3
+      this.emit(Op.OP_ENDIF, loc);                                            // [x,x,x] U=3
     } else {
-      emitNormalStep();                                                      // -> [coSlot,coNext,X] U=3
+      emitMergeOrNormalDispatch();                                            // -> [coSlot,coNext,X] U=3
     }
 
     // common cleanup: drop the 3 untracked temps + [credit_amt, credit_hk].
@@ -12672,6 +12830,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    */
   private emitSortedUpsertLoopTeardown(loc: SingleLocationData): void {
     if (!this.sortedUpsertLoopActive) return;
+    // CASE (b) FLUSH: the loop's last iteration DEFERS its update's mint into the pending registers; mint it now
+    // (before the count pins, which read outCounter). No key follows, so it is always a normal (non-re-pointed) flush.
+    if (this.sortedUpsertPendActive) this.emitSortedFlushPendingNormal(loc);
     // The entry NFT address ALSO hosts this collection's FIXED (non-loop) entries - e.g. a full multiTransfer's
     // cached `bal[msg.sender] -= amounts[i]` debit is a fixed slot at the same address. Those are co-spent + minted
     // (verified separately at their fixed positions), so the address's total count is counter + nFixed.
@@ -12697,11 +12858,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(encodeInt(BigInt(idx)), loc); this.emit(Op.OP_ROLL, loc); this.emit(Op.OP_DROP, loc);
     this.removeFromStack(idx);
 
-    for (const name of [this.sortedUpsertLoopOutCounterName, this.sortedUpsertLoopCounterName, this.sortedUpsertLoopAddrName]) {
+    const dropNames = [this.sortedUpsertLoopOutCounterName, this.sortedUpsertLoopCounterName, this.sortedUpsertLoopAddrName];
+    if (this.sortedUpsertPendActive) {
+      dropNames.unshift(this.sortedUpsertPendSlotName, this.sortedUpsertPendValName, this.sortedUpsertPendNextName);
+    }
+    for (const name of dropNames) {
       const i = this.getStackIndex(name);
       this.emit(encodeInt(BigInt(i)), loc); this.emit(Op.OP_ROLL, loc); this.emit(Op.OP_DROP, loc);
       this.removeFromStack(i);
     }
+    this.sortedUpsertPendActive = false;
     this.sortedUpsertLoopActive = false;
     this.sortedUpsertLoopCollection = null;
   }

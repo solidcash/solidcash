@@ -2887,6 +2887,28 @@ describe('opaque MultiCall over a struct-array parameter (Multicall2 calls[i].ta
   });
 });
 
+describe('Yul create2 deploy lowering (UniswapV2Factory createPair)', () => {
+  // `bytes code = type(C).creationCode; assembly { pair := create2(0, add(code,0x20), mload(code), salt) }` lowers
+  // to a native `new C{salt: salt}()` deploy (LowerInlineAssembly, pre-semantic), reusing the fully-plumbed deploy
+  // covenant + SDK deployFrom. Only a create2 over a resolvable type(C).creationCode local qualifies; an unknown
+  // runtime buffer stays unlowerable and fails closed with the clear "no BCH equivalent" diagnostic.
+  const opts = { solidityImportCompat: true };
+  it('lowers create2 over type(C).creationCode to new C{salt}()', () => {
+    expect(() => compileString('pragma experimental ABIEncoderV2;'
+      + ' contract Child { uint256 v; function setv(uint256 x) external { v = x; } }'
+      + ' contract Factory { mapping(address => address) pairs;'
+      + ' function make(address token, bytes32 salt) external returns (address pair) {'
+      + ' bytes memory code = type(Child).creationCode;'
+      + ' assembly { pair := create2(0, add(code, 0x20), mload(code), salt) } pairs[token] = pair; } }', opts))
+      .not.toThrow();
+  });
+  it('fails closed on create2 over an unknown runtime buffer (no resolvable contract)', () => {
+    expect(() => compileString('contract C { function f(bytes memory code, bytes32 salt) external returns (address p){'
+      + ' assembly { p := create2(0, add(code, 0x20), mload(code), salt) } } }', opts))
+      .toThrow(/create2.*no BCH equivalent/);
+  });
+});
+
 describe('using-for external-call library method on an interface-typed struct FIELD (MasterChef pattern)', () => {
   // `Pool storage pool = poolInfo[pid]; pool.lpToken.safeTransfer(..)` (MasterChef deposit/withdraw): the receiver is
   // an interface-typed struct field. Rewrite pre-inlining via the receiver-type chain (poolInfo -> Pool -> lpToken =

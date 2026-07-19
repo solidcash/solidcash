@@ -10,6 +10,7 @@ import {
   StateAssignNode, StateAccessNode, StateVariableNode, ContractNode, BytesConcatNode, FunctionCallNode,
   SliceNode, CollectionNode, MappingAccessNode, MappingAssignNode, HexLiteralNode, NullaryOpNode, FieldAccessNode,
   ReturnNode, TupleAssignmentNode, LowLevelCallNode, NewArrayNode, EmitStatementNode, EventDefinitionNode,
+  InstantiationNode, TypeIntrospectionNode,
 } from '../ast/AST.js';
 import { BinaryOperator, UnaryOperator, NullaryOperator } from '../ast/Operator.js';
 import {
@@ -45,6 +46,8 @@ let currentVars = new Map<string, Type>();
 // Constant hex-literal-initialized locals (`bytes memory b = hex"..."`), so Yul `create(0, add(b,0x20), n)` can
 // resolve b to a compile-time bytecode blob and derive the deployed contract's p2sh32 address.
 let currentVarValues = new Map<string, Uint8Array>();
+// `bytes X = type(C).creationCode` locals: X -> contract name C, so a Yul `create2` over X lowers to `new C{salt}()`.
+let currentCreationCodeLocals = new Map<string, string>();
 
 // Free-memory-pointer byte buffers (`let clone := mload(0x40)`) and their ordered mstore writes, so an EIP-1167
 // minimal-proxy style `create(0, clone, size)` can reconstruct the blob (const||runtime||const) and derive the
@@ -57,6 +60,12 @@ function collectVarTypes(node: Node, out: Map<string, Type>): void {
   if (node instanceof VariableDefinitionNode) {
     out.set(node.name, node.type);
     if (node.expression instanceof HexLiteralNode) currentVarValues.set(node.name, node.expression.value);
+    // `bytes X = type(C).creationCode` - record X -> C so a create2 over X lowers to `new C{salt}()`. Read the raw
+    // type name (typeArgText); TypeIntrospectionNode.contractName is only set later (SymbolTableTraversal).
+    if (node.expression instanceof TypeIntrospectionNode
+      && (node.expression.property === 'creationCode' || node.expression.property === 'runtimeCode')) {
+      currentCreationCodeLocals.set(node.name, node.expression.typeArgText);
+    }
   }
   for (const key of Object.keys(node)) {
     const val = (node as any)[key];
@@ -1286,6 +1295,23 @@ function lowerCond(expr: YulExpressionNode): ExpressionNode {
   return loc(new BinaryOpNode(lowerValue(expr), BinaryOperator.NE, intLit(0n, expr)), expr);
 }
 
+// `pair := create2(0, add(code, 0x20), mload(code), salt)` where `bytes code = type(C).creationCode`: deploy the
+// SolidCash contract C. Lower to `new C{salt: salt}()` (an InstantiationNode) - runs pre-semantic, so the deploy
+// modifier inference, self-pin covenant, salt bake and SDK deployFrom all engage downstream. The child's ctor args
+// come from creationCode (none extra here); a same-tx `C(pair).initialize(..)` folds as a deploy-then-call. Value
+// must be 0 (a funded deploy needs an output). Any un-recognised offset/size/type leaves it for the yul diagnostic.
+function tryCreate2Instantiation(value: YulExpressionNode, src: YulNode): InstantiationNode | undefined {
+  if (!(value instanceof YulFunctionCallNode) || value.name !== 'create2' || value.args.length !== 4) return undefined;
+  if (!(isIntLiteral(value.args[0]) && BigInt(value.args[0].raw) === 0n)) return undefined;
+  const codeLocal = resolveWholeBytesLocal(value.args[1], value.args[2]);
+  if (!codeLocal) return undefined;
+  const contractName = currentCreationCodeLocals.get(codeLocal);
+  if (!contractName) return undefined;
+  const inst = loc(new InstantiationNode(loc(new IdentifierNode(contractName), src), []), src);
+  inst.callOptions = { salt: lowerValue(value.args[3]) };
+  return inst;
+}
+
 function lowerStatement(stmt: YulStatementNode): StatementNode {
   if (stmt instanceof YulBlockNode) return lowerBlock(stmt);
 
@@ -1296,6 +1322,13 @@ function lowerStatement(stmt: YulStatementNode): StatementNode {
       return defs.length === 1 ? defs[0] : loc(new BlockNode(defs), stmt);
     }
     if (stmt.names.length !== 1) throw new YulNotLowerable(); // multi-value `let x, y := f()` (later)
+    // `let pair := create2(0, add(code,0x20), mload(code), salt)` -> `address pair = new C{salt}()` (deploy). Emit
+    // the InstantiationNode DIRECTLY (no CastNode wrap) so deploy-result-local registration + deploy-then-call fold
+    // (SymbolTableTraversal, keyed on `expression instanceof InstantiationNode`) engage.
+    const declCreate2 = tryCreate2Instantiation(stmt.value, stmt);
+    if (declCreate2) {
+      return loc(new VariableDefinitionNode(new AddressType(false), [], stmt.names[0], declCreate2), stmt);
+    }
     // `let buf := mload(0x40)` allocates a fresh free-memory byte buffer; track its mstore writes, emit nothing.
     // In the runtime path there is no compile-time buffer - it lowers to a real `mload(0x40)` read (the free
     // pointer stored at slot 0x40), so `buf` holds the allocation base as a runtime value.
@@ -1322,6 +1355,11 @@ function lowerStatement(stmt: YulStatementNode): StatementNode {
   if (stmt instanceof YulAssignmentNode) {
     if (stmt.paths.length !== 1 || stmt.paths[0].members.length > 0) throw new YulNotLowerable();
     const name = stmt.paths[0].base;
+    // `pair := create2(0, add(code,0x20), mload(code), salt)` -> `pair = new C{salt}()` (deploy). Emit the
+    // InstantiationNode DIRECTLY (bypass the target-type CastNode wrap below) so the deploy-result-local /
+    // deploy-then-call fold machinery (keyed on `expression instanceof InstantiationNode`) engages.
+    const asgCreate2 = tryCreate2Instantiation(stmt.value, stmt);
+    if (asgCreate2) return loc(new AssignNode(loc(new IdentifierNode(name), stmt), asgCreate2), stmt);
     // `ok := call/staticcall/delegatecall(...)` -> a low-level call binding onto the existing var.
     if (isLowLevelCall(stmt.value)) return lowerLowLevelCall(stmt.value, name, false, stmt);
     // `slot := keccak256(0,64)` mapping-slot idiom (assignment form) -> record m[k]; drop the dead keccak binding.
@@ -1809,6 +1847,7 @@ export default class LowerInlineAssembly extends AstTraversal {
     currentParams = node.parameters;
     currentVars = new Map();
     currentVarValues = new Map();
+    currentCreationCodeLocals = new Map();
     bufferWrites = new Map();
     functionYulMemUsed = false;
     for (const p of node.parameters) currentVars.set(p.name, p.type);
@@ -1832,6 +1871,7 @@ export default class LowerInlineAssembly extends AstTraversal {
     currentParams = [];
     currentVars = new Map();
     currentVarValues = new Map();
+    currentCreationCodeLocals = new Map();
     currentStorageAliases = new Map();
     bufferWrites = new Map();
     functionYulMemUsed = false;

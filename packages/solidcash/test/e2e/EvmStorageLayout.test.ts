@@ -122,3 +122,52 @@ describe('int/UDVT-int slot round-trips a high (top-bit-set) value', () => {
     await (sc as any).readHi(65535n).send();
   });
 });
+
+// bytesN slot fields via the two's-complement trick (NUM2BIN(N+1) drop sign byte / prepend-0x00 BIN2NUM): round-trip
+// a full word through a packed bytesN slot for HIGH-BIT values (0xcccc/0xbbbb/0xaaaa - the ones a naive bytesN(uint)
+// NUM2BIN sign-magnitude cast broke).
+const PACKED_BYTES2_HI = `pragma solidcash >=0.8.0;
+contract C() {
+  bytes2 a;
+  bytes2 b;
+  function setViaSlot(uint256 w, pubkey pk, sig s) {
+    require(checkSig(s, pk));
+    assembly { sstore(a.slot, w) }
+  }
+  function readSlot(uint256 e) {
+    uint256 r = 0;
+    assembly { r := sload(a.slot) }
+    require(r == e);
+  }
+}`;
+
+const PACKED_MIXED_HI = `pragma solidcash >=0.8.0;
+type MU is uint16;
+type MB is bytes2;
+contract C() {
+  MU a;
+  MB b;
+  bytes2 c;
+  function setViaSlot(uint256 w, pubkey pk, sig s) {
+    require(checkSig(s, pk));
+    assembly { sstore(a.slot, w) }
+  }
+  function readSlot(uint256 e) {
+    uint256 r = 0;
+    assembly { r := sload(a.slot) }
+    require(r == e);
+  }
+}`;
+
+describe('bytesN packed slot round-trips HIGH-BIT values (two-complement trick)', () => {
+  it('two bytes2 fields round-trip 0xccccbbbb (both high bit set)', async () => {
+    const sc = await deploy(PACKED_BYTES2_HI);
+    await (sc as any).setViaSlot(0xccccbbbbn, alicePub, sig()).send();
+    await (sc as any).readSlot(0xccccbbbbn).send();
+  });
+  it('mixed UDVT-int + UDVT-bytes + bytes2 round-trip 0xccccbbbbaaaa (all high bit set)', async () => {
+    const sc = await deploy(PACKED_MIXED_HI);
+    await (sc as any).setViaSlot(0xccccbbbbaaaan, alicePub, sig()).send();
+    await (sc as any).readSlot(0xccccbbbbaaaan).send();
+  });
+});

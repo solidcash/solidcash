@@ -320,15 +320,16 @@ function resolveSlotFields(slotArg: YulExpressionNode): SlotField[] | undefined 
   return undefined;
 }
 
-// A slot field the int-word combine/decompose can handle: a plain int, or a UDVT over an int - both round-trip
-// through int truncation (`uintN(word)` = word mod 2^N, a positive BigInt, no byte conversion). bytesN of ANY width
-// is EXCLUDED: `bytesN(uint)` goes through OP_NUM2BIN, which is sign-magnitude for a value whose top byte has the
-// high bit set, so the bytesN<->uint round-trip breaks for common (high-bit) values - a silent miscompile
-// (VM-caught: bytes32(0xff00..00) does not round-trip, likewise a sub-word bytes2 on 0xaaaa). Address out too
-// (25-byte lbc != 20-byte EVM word).
+// A slot field the int-word combine/decompose can handle: an int, a sub-word bytesN (bytes1..bytes31), or a UDVT
+// over either. int round-trips via truncation (`uintN(word)` = word mod 2^N). bytesN round-trips via the
+// NUM2BIN(N+1)-drop-sign-byte (write) / prepend-0x00-BIN2NUM (read) two's-complement trick in castWordToField/
+// fieldAsWord - the same trick emitEvmWordFromUint uses - so a bare `bytesN(uint)` OP_NUM2BIN sign-magnitude failure
+// on a high-bit value is avoided. bytes32 is EXCLUDED (the write needs a 33-byte NUM2BIN, not expressible as a
+// bytesN cast); address is EXCLUDED (25-byte lbc != 20-byte EVM word).
 function isSupportedSlotField(t: Type): boolean {
-  return t instanceof IntType
-    || (t instanceof ValueType && t.underlyingType instanceof IntType);
+  const core = t instanceof ValueType ? t.underlyingType : t;
+  return core instanceof IntType
+    || (core instanceof BytesType && core.bound !== undefined && core.bound < 32);
 }
 
 // If a Yul slot argument denotes a declared DYNAMIC ARRAY var's base slot, return the var name. EVM stores a
@@ -358,18 +359,31 @@ function isFullWord(fields: SlotField[]): boolean {
 // (`uint256(underlying(access))`, mirroring T.unwrap = a cast to the underlying type).
 function fieldAsWord(f: SlotField, src: YulExpressionNode): ExpressionNode {
   let access: ExpressionNode = loc(new StateAccessNode(f.sv.name), src);
+  const core = f.sv.type instanceof ValueType ? f.sv.type.underlyingType : f.sv.type;
   if (f.sv.type instanceof ValueType) access = loc(new CastNode(f.sv.type.underlyingType, access, false), src);
+  if (core instanceof BytesType) {
+    // Prepend a high 0x00 sign-pad byte so uint256 (BIN2NUM) reads the N little-endian bytes as an UNSIGNED value in
+    // [0, 2^(8N)); a bare uint256(bytesN) would reinterpret the top bit as a sign.
+    access = loc(new BytesConcatNode([access, loc(new HexLiteralNode(new Uint8Array([0])), src)]), src);
+  }
   return loc(new CastNode(UINT256, access, false), src);
 }
 
-// Cast a uint256 word to a slot field's stored type. A UDVT is wrapped (underlying-cast then UDVT-cast, mirroring
-// T.wrap); a plain int is a direct cast.
+// Cast a uint256 word to a slot field's stored type. int: a direct cast. bytesN: `bytes(N+1)(word)[0:N]` - NUM2BIN
+// the word to N+1 bytes (any value in [0, 2^(8N)) fits as a positive sign-magnitude number), then drop the sign-pad
+// byte; this avoids the OP_NUM2BIN failure of a bare bytesN(word) on a high-bit value. A UDVT then wraps the core
+// value (mirroring T.wrap).
 function castWordToField(f: SlotField, wordExpr: ExpressionNode, src: YulExpressionNode): ExpressionNode {
-  if (f.sv.type instanceof ValueType) {
-    const toUnderlying = loc(new CastNode(f.sv.type.underlyingType, wordExpr, false), src);
-    return loc(new CastNode(f.sv.type, toUnderlying, false), src);
+  const core = f.sv.type instanceof ValueType ? f.sv.type.underlyingType : f.sv.type;
+  let coreVal: ExpressionNode;
+  if (core instanceof BytesType && core.bound !== undefined) {
+    const wide = loc(new CastNode(new BytesType(core.bound + 1), wordExpr, false), src);
+    const low = loc(new SliceNode(wide, intLit(0n, src), intLit(BigInt(core.bound), src)), src);
+    coreVal = loc(new CastNode(new BytesType(core.bound), low, false), src);
+  } else {
+    coreVal = loc(new CastNode(core, wordExpr, false), src);
   }
-  return loc(new CastNode(f.sv.type, wordExpr, false), src);
+  return f.sv.type instanceof ValueType ? loc(new CastNode(f.sv.type, coreVal, false), src) : coreVal;
 }
 
 // sload(slot): combine the slot's fields into a word, `uint256(v0) + uint256(v1)*2^off1 + ...`.
@@ -1189,6 +1203,34 @@ function lowerCall(call: YulFunctionCallNode): ExpressionNode {
       const hashed = loc(new FunctionCallNode(
         loc(new IdentifierNode('hash256'), call), [loc(new IdentifierNode(codeLocal), call)],
       ), call);
+      const p2sh = loc(new BytesConcatNode([
+        loc(new HexLiteralNode(Uint8Array.from([0xaa, 0x20])), call), hashed,
+        loc(new HexLiteralNode(Uint8Array.from([0x87])), call),
+      ]), call);
+      return loc(new CastNode(new AddressType(), p2sh, false), call);
+    }
+    throw new YulNotLowerable();
+  }
+  // create2(0, offset, size, salt): like `create` but the salt distinguishes clones. Bake `<salt> OP_DROP` into the
+  // redeem (a 0x20 push of the 32-byte salt then OP_DROP 0x75, matching the deploy handler) and take its p2sh32, so
+  // different salts yield different addresses. (A `type(C).creationCode` create2 becomes `new C{salt}()` at statement
+  // level; a runtime EIP-1167 clone buffer / whole-bytes-local reaches here as an address computation - BentoBox
+  // `deploy`. An EVM proxy has no functional BCH contract at that address, so a call on it fails closed.)
+  if (name === 'create2' && args.length === 4 && isIntLiteral(args[0]) && BigInt(args[0].raw) === 0n) {
+    const bufPtr = resolveBufferPtr(args[1]);
+    const codeLocal = resolveWholeBytesLocal(args[1], args[2]);
+    let content: ExpressionNode | undefined;
+    if (bufPtr && bufPtr.off === 0n && isIntLiteral(args[2])) {
+      content = reconstructBuffer(bufPtr.buffer, BigInt(args[2].raw), call);
+    } else if (codeLocal) content = loc(new IdentifierNode(codeLocal), call);
+    if (content) {
+      const salt = loc(new CastNode(BYTES32, lowerValue(args[3]), false), call);
+      const saltSeg = loc(new BytesConcatNode([
+        loc(new HexLiteralNode(Uint8Array.from([0x20])), call), salt,
+        loc(new HexLiteralNode(Uint8Array.from([0x75])), call),
+      ]), call);
+      const hashed = loc(new FunctionCallNode(loc(new IdentifierNode('hash256'), call),
+        [loc(new BytesConcatNode([saltSeg, content]), call)]), call);
       const p2sh = loc(new BytesConcatNode([
         loc(new HexLiteralNode(Uint8Array.from([0xaa, 0x20])), call), hashed,
         loc(new HexLiteralNode(Uint8Array.from([0x87])), call),

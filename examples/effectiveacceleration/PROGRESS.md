@@ -90,6 +90,34 @@ const UnicrowContractAddress = getCreateAddress({ from: deployer.address, nonce 
    `address` type = 20-byte pkh end to end. Properly unblocks the fixture's identity model; BIG codegen change
    (msg.sender currently emits a lockscript; touches external calls, funding, C2 keys). Multi-session.
 
+## BREAKTHROUGH (2026-07-19): deployContractsFixture COMPLETES; all 66 tests reach their bodies
+The fixture went from "throws at `deployer.getNonce()` (test line 53)" to fully deploying all 6 contracts +
+FakeToken + the transfers. **3 tests pass** (up from 0); the remaining 63 fail on contract-completeness (I only
+stubbed a few functions - `transferOwnership`/`register*`/`publishJobPost`/... don't exist yet) and the
+owner==msg.sender EVM-address wall - NOT harness gaps. Portbacks that got here (per the user's direction to
+"fan out funding utxos" + "redirect getCreateAddress to our sdk-builder"):
+- **On-demand genesis funding fan-out** (`ContractFactory.selectGenesisFundingUtxo`): the deploy step self-sends
+  a fresh vout-0 coin when none exists, so one signer deploys any number of contracts (the fixture does ~9).
+- **`getCreateAddress`/`getCreate2Address` redirect** (`@solidcash/testing/ethers-shim`, aliased as `ethers`):
+  re-exports real ethers from its subpaths (no alias recursion) + returns a deterministic BCH p2sh address, since
+  our identity is the token category (genesis txid + salt), not f(deployer, nonce). Real address = `.getAddress()`.
+- **`getNonce()` -> 0** drop-in emulation in `hre.getSigners` (base Signer still throws; emulation is harness-only).
+- **`ProxyContract.connect` re-wraps in `wrapDispatch`** so `proxy.connect(signer).implFn()` dispatches (was
+  "not a function") - a real SDK bug fix (`upgrades.ts`).
+
+### Two SDK bugs surfaced (in the proxy/delegatecall path = user WIP area)
+1. FIXED: proxy `connect()` dropped implementation-function dispatch (above).
+2. OPEN (worked around): `upgrades.deployProxy` initialize forward **fails an OP_VERIFY when initialize writes an
+   `address`-typed state field** (`SolidCashProxy.scash:5 implementation.delegatecall(input)`); writing an `int`
+   in the same slot deploys fine. MarketplaceV1/DataV1 initialize therefore write an int and skip the address
+   stores. Root cause is in the proxy delegatecall + address-state-write covenant (StatefulContract WIP) - hand
+   off to the compiler/SDK owner.
+
+### To push the pass count up (next, all contract-side)
+Add the missing MarketplaceV1/MarketplaceDataV1 functions (pause/unpause/paused/version getters exist; need
+transferOwnership/owner, register user/arbitrator, mece tags, publishJobPost + JobEvent emission). The owner and
+msg.sender-authenticated paths stay blocked until the address-identity fork (above) is chosen.
+
 ## NEXT: port the contracts (simplification allowed). Build order (per the test's describe blocks):
 The fixture `deployContractsFixture` (test lines 137-191) must deploy, so ALL of these need name-resolvable
 artifacts under `contracts-scash/` -> `artifacts/`:

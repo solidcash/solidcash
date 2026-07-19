@@ -66,24 +66,44 @@ into if/else (`EarlyReturnTransformation` had no `UncheckedNode` case + skipped 
 `LowerInlineAssembly` now stamps `hadInlineAssembly` before lowering so the prune drops it. See the codegen deferrals
 below (§6) - the REMAINING EACCToken walls are both soundness-critical C2 features (still 1/15):
 
-**`_useNonce` (value-returning C2-writer inline) - the current `return m[k]++` desugar is C2-UNSOUND.** OZ
-`Nonces._useNonce` `unchecked { return _nonces[owner]++; }` is a value-returning internal helper doing a C2 mapping
-RMW; it co-spends the sorted entry slots (block layout), so it must inline into its entry caller. The inline mechanism
-(unwrap the lone `unchecked` in `InlineReturningStateHelpers.eligibleShape` + `inlineCall`, treat a value-returning
-transitive-sorted-writer as eligible) was BUILT and ATTEMPTED, then REVERTED: VM-bisection proved it UNSOUND. The
-DIRECT `n = m[k]++` (assignment postfix) desugars to the sound SAVE-OLD form (`__t=m[k]; m[k]=__t+1; n=__t`), but
-`return m[k]++` (the `3be9a3eb` reconstruction) desugars to a POSTVAL-MINUS-1 form (`m[k]=m[k]+1; return m[k]-1`) - a
-C2 read-AFTER-write of the same entry in one tx, which fails OP_VERIFY. The fix path: make `DesugarPostfixExpressions`
-lower a return-postfix to the SAME save-old form as an assignment-postfix, THEN re-add the inline, THEN VM-verify the
-RMW adversarially. Until then it fails CLOSED ("Block layout not available"), never a miscompile. Bounded but
-soundness-adjacent; not rushed.
+**`_useNonce` (value-returning C2-writer inline) - RESOLVED 2026-07-19 (commit `aedd13ca`).** OZ `Nonces._useNonce`
+`unchecked { return _nonces[owner]++; }` (EIP-2612 permit) is a value-returning internal helper doing a C2 mapping RMW;
+it co-spends the sorted entry slots (block layout) so it must inline into its entry caller. The first attempt was
+VM-proven UNSOUND (the `3be9a3eb` `return m[k]++` reconstruction is POSTVAL-MINUS-1, `m[k]=m[k]+1; return m[k]-1`, a C2
+read-AFTER-write of the same co-spent entry -> OP_VERIFY fail). FIXED, three parts, each VM-adversarial-verified
+(`NonceRmwInline.test.ts`): (1) `DesugarPostfixExpressions` lowers a mapping return-postfix to READ-OLD-TEMP
+(`__pf=m[k]; m[k]=m[k]+1; return __pf`) where the RMW read COALESCES with the single co-spend (reduces to the sound
+assignment `n=m[k]++`); temp type from `CollectionNode` `MappingType.valueType`. (2) `InlineReturningStateHelpers`
+`eligibleShape`/`inlineCall` unwrap a lone `unchecked` body (`effectiveStmts`) - `readsEntry` already makes it eligible.
+(3) `SymbolTableTraversal.canonicalizeExpression` resolves a local key TRANSITIVELY through `localKeyDefs` (the inline
+binds `__rhN_owner = pkh`, `pkh = hash160(pk)`) so the SDK `evalComputedKey` reaches the root; cycle-guarded; LOOP VARS
+are excluded from `localKeyDefs` (a `for(i)` counter must not resolve to its `0` init, else a per-iteration key `xs[i]`
+corrupts). EACC EACCToken now compiles PAST `_useNonce`.
 
-**`multitransfer` (C2 diff-key RMW-in-loop) - the deep deferred one.** `for (i) _transfer(msg.sender, recipients[i],
-amounts[i])` -> `_balances[to] += amt` (a DIFFERENT key each iteration) is the §6a item-4 RMW/delete-in-loop:
-per-iteration read-modify-write of an evolving sorted list. Fails codegen `__entry_key_enc_0 does not exist on the
-stack` (the C2 entry write in a dynamic loop). This is the soundness-critical C2 covenant work (a bug reopens the
-exclusion-proof hole); needs dedicated design + adversarial omission/reorder/duplicate proofs. `ecrecover` + the EIP712
-domain separator sit behind both of these, unreached.
+**Non-bool insert/RMW loop -> CLEAN COMPILE fail-close - RESOLVED 2026-07-19 (commit `5bc59d08`).** The range-splice
+insert-loop covenant is BOOL-LITERAL only (`emitSortedInsertLoopBody` pins each chain node value to `0x01`/empty; it
+walks the SORTED chain and can't map a chain position to a source value without a permutation/value witness). A per-key
+`for(i) w[ks[i]] = vs[i]` / RMW `+= vs[i]` used to MATCH `findSortedInsertLoopWrite` (any sorted scalar), compile, then
+REVERT at runtime (or, with multitransfer's 2nd same-key write, crash `__entry_key_enc_0`). Now the match requires
+`expression instanceof BoolLiteralNode` -> non-bool falls to the clean `SortedMappingCodegenPendingError`. Sound
+(fail-closed earlier; VM-proven a non-bool insert loop reverts - `SortedInsertLoopNonBool`).
+
+**`multitransfer` (C2 two-write + diff-key RMW-in-loop) - STILL the deep deferred one.** `for (i)
+_transfer(msg.sender, recipients[i], amounts[i])` inlines to TWO C2 writes per iteration: `_balances[from]` (SAME key =
+msg.sender) + `_balances[to] += amt` (DIFFERENT key each iter). Now a clean fail-close ("sorted '_balances' not yet
+compiled"). Two independent deep pieces: (a) a SAME-KEY scalar cache-in-loop (extend `CacheMappingEntryInLoop` from
+array to scalar whole-entry RMW + non-identifier key) to lift `_balances[from]` out of the loop; (b) a DIFF-KEY
+RMW-UPDATE-in-loop covenant (per-iteration bracket + read-current + insert-or-update of a SCATTERED evolving list with
+PER-KEY values = the permutation/value-witness problem + §6a item-4). Soundness-critical (a bug reopens the
+exclusion-proof hole); needs dedicated design + adversarial omission/reorder/duplicate/wrong-value proofs. `ecrecover` +
+the EIP712 domain separator sit behind it, unreached.
+
+**C2 SURVEY 2026-07-19 (`scratchpad/c2probe.mjs` + VM).** NO silent miscompile found - everything is sound (fail-closed
+where incomplete). COMPLETE+SOUND: single-key read/write/RMW/delete (all value types incl chunked long bytes/string),
+nested/composite/address keys, expr-key nested (`m[hash160(pk)][b]=v`), value-returning RMW helper (new), bool insert
+loop. FAIL-CLOSED (sound, not complete): per-key-value insert loop (permutation/value-witness), multitransfer (above),
+delete/nullify-in-loop, 2D `m[k][i][j]` (an ugly `Found type 'T[][]' where 'undefined'` TypeCheck error - should be a
+clean `UnsupportedTypeError`; low priority, still fail-closed), function-pointer values.
 
 ---
 

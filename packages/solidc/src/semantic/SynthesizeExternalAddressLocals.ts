@@ -175,6 +175,11 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
     if (!node.body) return node;
     this.usedInFn = new Map();
     this.localInits = new Map();
+    // Pre-populate from the WHOLE body (not just bindings visited so far): a computed target is recognised mid-visit
+    // (castComputedTarget) and must resolve an inliner alias (`__rh<N>_factory`) whose binding a deeply-nested inline
+    // may place in a traversal position not yet reached. Sound: only single-assignment aliases (SYNTH_ALIAS /
+    // singleAssignLocals) are ever traced, so their value is position-independent. Router02 UniswapV2Library.getReserves.
+    this.collectLocalInitsUpfront(node.body);
     this.singleAssignLocals = this.computeSingleAssignLocals(node.body);
     this.currentParams = new Set(node.parameters.map((p) => p.name));
     node.body = this.visit(node.body) as BlockNode;
@@ -475,6 +480,10 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
       if (!this.localInits.has(id.name)) return undefined;
       if (!(SYNTH_ALIAS.test(id.name) || this.singleAssignLocals.has(id.name))) return undefined;
       const clone = cloneNode(this.localInits.get(id.name)!) as Node;
+      // The init may itself be a bare alias identifier (`__rh5_x = __rh3_x = ... = x`, chained across inline levels);
+      // follow the chain, else substituteAliasesInPlace (which only rewrites CHILD identifiers, never the top-level
+      // node) would leave the first link unresolved. Router02 getAmountsOut -> getReserves -> pairFor(__rh_tokenA).
+      if (clone instanceof IdentifierNode) { const chained = resolve(clone); if (chained) return chained; }
       this.substituteAliasesInPlace(clone);
       return clone;
     };
@@ -531,6 +540,35 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
   // never the target of a later assignment (plain `x = ..` or an `existing` tuple slot) nor re-declared. A
   // reassignable local is EXCLUDED - tracing it could pin a value the caller later rebinds (the forgery
   // extcall-target-pinning.md forbids). Inliner locals (`__rh*`/`__inl*`) are SSA and handled separately.
+  // Populate localInits from every `VariableDefinition name = init` in the body, up front, so alias resolution
+  // (substituteAliasesInPlace) is independent of the mid-visit order (visitVariableDefinition still refreshes an
+  // entry when it reaches it). Only single-assignment aliases are ever traced, so a whole-body view is sound.
+  private collectLocalInitsUpfront(body: BlockNode): void {
+    const seen = new WeakSet<object>();
+    const scan = (node: unknown): void => {
+      if (!node || typeof node !== 'object' || seen.has(node)) return;
+      seen.add(node);
+      if (node instanceof VariableDefinitionNode && node.expression) this.localInits.set(node.name, node.expression);
+      // A tuple-destructured declaration `(address input, address output) = (path[i], path[i+1])` (swap loops) or
+      // `(address t0, address t1) = sortTokens(a, b)` (pairFor): map each NEW element to its per-slot RHS (a tuple
+      // literal element) or the i-th value of the tuple-returning call, so it resolves like any single-assign local.
+      if (node instanceof TupleAssignmentNode) {
+        node.elements.forEach((el, i) => {
+          if (!el.name || el.existing || el.skip) return;
+          const rhs = node.tupleExpressions?.[i]
+            ?? (node.tuple ? new TupleIndexOpNode(node.tuple, i) : undefined);
+          if (rhs) this.localInits.set(el.name, rhs);
+        });
+      }
+      for (const key of Object.keys(node as Record<string, unknown>)) {
+        const v = (node as Record<string, unknown>)[key];
+        if (Array.isArray(v)) v.forEach(scan);
+        else if (v instanceof Node) scan(v);
+      }
+    };
+    scan(body);
+  }
+
   private computeSingleAssignLocals(body: BlockNode): Set<string> {
     const declCount = new Map<string, number>();
     const reassigned = new Set<string>();
@@ -544,7 +582,10 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
       } else if (node instanceof AssignNode) {
         reassigned.add(node.identifier.name);
       } else if (node instanceof TupleAssignmentNode) {
-        for (const el of node.elements) if (el.existing && el.name) reassigned.add(el.name);
+        for (const el of node.elements) {
+          if (el.existing && el.name) reassigned.add(el.name);
+          else if (el.name && !el.skip) declCount.set(el.name, (declCount.get(el.name) ?? 0) + 1);
+        }
       }
       for (const key of Object.keys(node as Record<string, unknown>)) {
         const v = (node as Record<string, unknown>)[key];

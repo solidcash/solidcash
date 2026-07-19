@@ -2836,6 +2836,22 @@ describe('chained overloaded using-for + interface-local-var dispatch (MistSwap 
       .toThrow(/target address must be a constructor\/function parameter/);
   });
 
+  // A computed target whose leaves are TUPLE-DESTRUCTURED locals (`(a, b) = (x, y)` swap-loop / `(t0, t1) =
+  // sortTokens(x, y)` pairFor) resolves each element to its per-slot RHS / the i-th call return, so allLeavesBodyTop
+  // sees param/state leaves and hoists. localInits is pre-populated whole-body (order-independent) and the alias
+  // resolver follows a bare-identifier chain (`__rh5_x = __rh3_x = x`) across inline levels. UniswapV2Library.
+  it('hoists a computed target whose leaves are tuple-destructured locals', () => {
+    ok('interface IPair { function m(uint256 x) external; } contract C { address factory;'
+      + ' function comp(address f, address u, address v) internal pure returns (address){ return f; }'
+      + ' function g(address x, address y) public { (address a, address b) = (x, y); IPair(comp(factory, a, b)).m(5); } }');
+  });
+  it('hoists a computed target whose leaves are a tuple destructured from a call', () => {
+    ok('interface IPair { function m(uint256 x) external; } contract C {'
+      + ' function sortT(address u, address v) internal pure returns (address, address){ return u < v ? (u, v) : (v, u); }'
+      + ' function comp(address u, address v) internal pure returns (address){ return u; }'
+      + ' function g(address x, address y) public { (address a, address b) = sortT(x, y); IPair(comp(a, b)).m(5); } }');
+  });
+
   // A BRANCH-LOCAL external-call target (declared inside an `if`, used by a cast/low-level call in that branch) is
   // hoisted to the function-body top so the co-spend reads it at the epilogue - UniswapV2Pair.mint's `migrator`
   // (nested-branch), was "Expected variable 'migrator' does not exist on the stack". The external call stays

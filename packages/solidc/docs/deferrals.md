@@ -150,14 +150,41 @@ msg.sender) + `_balances[to] += amt` (DIFFERENT key each iter). Full form still 
   upsert-loop `cospent` set with the collection's FIXED (non-loop) entry co-spends (the msg.sender debit entry), so the
   msg.sender-predecessor case fails closed with the same clear "split into separate transactions" message as the
   recipient-predecessor case (was an opaque tx-builder "Duplicate input detected").
-  **DEEP residual (sound, fail-closed):** a new recipient whose bracketing predecessor is ALSO co-spent this tx (the
-  debited sender / another credited recipient / another new recipient in the same gap) needs a MERGE - that entry
-  co-spent ONCE and minted with BOTH its value change AND a nextKey re-point to the new node - which the per-iteration
-  1-co-spend/1-2-mint loop structure cannot express (the number of co-spends must drop to the number of DISTINCT touched
-  entries, not recipients). The sound fix is a BATCH-UPSERT covenant: co-spend each distinct touched entry once, mint its
-  final (value, nextKey) + all NEW nodes, verify per-recipient value pinning + full-slice linkage + supply conservation.
-  A covenant redesign (the sorted analog of the original C2 arc), not a bounded follow-up; revisit if a real contract
-  needs same-tx airdrop-to-adjacent-new-recipients.
+  **DEEP residual (sound, fail-closed - fail-close pinned by `MsgSenderMerge.test.ts`):** a new recipient whose
+  bracketing predecessor is ALSO co-spent this tx (the debited sender / another credited recipient / two-new-in-one-gap)
+  needs a MERGE - that entry co-spent ONCE, minted with BOTH its value change AND a nextKey re-point to the new node -
+  which the per-iteration 1-co-spend/1-2-mint loop cannot express.
+
+  **SCOPED SOUND DESIGN for the MSG.SENDER case (a-real), ready for a focused build.** This is the tractable + most
+  valuable sub-case (the debit is ALWAYS present in a multiTransfer, and its cached flush runs AFTER the credit loop, so
+  it can apply a re-point the loop records). Target `MsgSenderMerge.test.ts` (bob=sender, carol new, carol's predecessor
+  = bob; LE order bob<carol<alice). Pieces:
+  1. **Loop setup (`emitSortedUpsertLoopSetup`):** push a re-point register `(sorted_upsert_repoint)`=0 before OP_BEGIN,
+     ONLY when a FIXED (non-loop) entry slot of THIS collection exists (the cached msg.sender debit). Stash the register
+     name + the debit entry's fixed slot index on the traversal.
+  2. **Loop body INSERT branch (`emitSortedUpsertLoopBody`):** BEFORE co-spending a trailing predecessor, read the DEBIT
+     entry's input (fixed slot) -> dSlot,dNext, and test `dSlot < Hk < dNext` (Hk in the debit entry's ACTUAL gap - this
+     is the SOUNDNESS anchor: if an entry E sits between, dNext=E and Hk<dNext fails, so it routes to a normal insert
+     co-spending E; no omission). If IN-GAP = MERGE: `require(register==0)` (fail-closed on a 2nd merge = two-in-gap),
+     set register=Hk, mint NEW=[Hk|dNext|value] at outCounter, out+=1, iter+=0 (NO trailing co-spend - the debit already
+     co-spends the entry). Else NORMAL (co-spend trailing predecessor, P'+NEW, iter+=1/out+=2). The conditional co-spend
+     is the intricate part (iterCounter counts only trailing co-spends).
+  3. **Loop teardown:** leave the register on the stack for the flush (don't drop); input-count pin = iterCounter+nFixed
+     is unchanged (merge didn't co-spend a trailing slot); output-count pin uses outCounter (merge minted 1 NEW).
+  4. **Debit flush (`emitSortedValueUpsert`, generic - gate on a `pendingRepoint` field set by the loop):** UPDATE branch
+     mints `[coSlot | (register!=0 ? register : coNext) | v]` (re-point iff the loop set the register), then drop it.
+  5. **SDK (`StatefulContract`):** in the insert branch, when `pred.utxo` IS the debit entry (compare vs entryNfts' fixed
+     co-spend for this collection), don't throw/co-spend pred; push ONLY the NEW node `[slot|pred.nextKey|amt]`. The
+     debit's re-pointed output `[msgSlot|slot|debitedValue]` is filled by AUTO-DERIVATION (the covenant register drives
+     it), so likely no explicit debit-write override is needed - verify.
+  **Soundness (all covenant-enforced):** in-gap check vs the debit's real input (no omission); `require(register==0)`
+  (single merge, two-in-gap fail-closed); the flush pins msg.sender->register==Hk and the loop pins NEW[Hk|dNext|value]
+  + counts it (chain msg.sender->Hk->dNext complete, no orphan); supply via the shared amounts. **Adversarial tests
+  BEFORE shipping:** happy path (bob 980, carol 20); two-new-in-bob's-gap fails closed; omission/orphan (drop the NEW
+  node) reverts; wrong re-point (register != a real NEW node's slot) reverts; cross-sender isolation. **NOT the recipient
+  case (b):** predecessor = another CREDITED recipient is a WITHIN-LOOP collision (the updated entry's mint depends on a
+  later-processed insert) - needs a different ordering mechanism; keep fail-closed. **Magnitude:** ~120 covenant + ~30
+  SDK + ~60 test lines; fund-guarding, so build focused with the adversarial suite green before commit.
 
 - **(b3) ABSOLUTE per-key assignment loop `for(i) m[k[i]] = v[i]` - RESOLVED 2026-07-19 (`644532b1`, op=set,
   VM-proven).** A pure per-key assignment (value REPLACES, not accumulates) now routes through the SAME upsert loop

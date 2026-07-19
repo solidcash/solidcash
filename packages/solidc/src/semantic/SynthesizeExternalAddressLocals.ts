@@ -133,7 +133,10 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
     // struct root in practice (the shape appears alongside struct state), so no extra gate term - keeping the
     // gate tight avoids visiting fn-ptr-array-only contracts whose broadcast lowering must stay untouched.
     const hasStructRoot = [...this.stateRoots.values()].some((t) => holdsStruct(t));
-    if (this.stateVarIface.size > 0 || this.plainAddrStateVars.size > 0 || hasStructRoot) {
+    // A COMPUTED cast target `IFoo(pairFor(..)).m()` needs the pass even with no state var (params-only contract).
+    // Detect it cheaply (a MethodCall on an `IFoo(<non-identifier>)` cast) so the gate stays otherwise tight.
+    const hasComputedTarget = this.hasComputedCastTarget(node);
+    if (this.stateVarIface.size > 0 || this.plainAddrStateVars.size > 0 || hasStructRoot || hasComputedTarget) {
       node.functions = this.visitList(node.functions) as FunctionDefinitionNode[];
       // fallback/receive are external entry points like any function (e.g. a re-entrancy fallback that calls
       // back into another contract); visit them too. The state var is already set by the time they run.
@@ -141,6 +144,29 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
       if (node.receiveDef) node.receiveDef = this.visitFunctionDefinition(node.receiveDef) as FunctionDefinitionNode;
     }
     return node;
+  }
+
+  // Cheap gate pre-scan: does any function make a method call on an interface-CAST of a non-identifier
+  // (`IFoo(pairFor(..)).m()`)? Such a computed target needs this pass even in a state-var-less contract.
+  private hasComputedCastTarget(node: ContractNode): boolean {
+    let found = false;
+    const walk = (n: unknown): void => {
+      if (found || !n || typeof n !== 'object') return;
+      if (n instanceof MethodCallNode && n.object instanceof FunctionCallNode
+        && n.object.parameters.length === 1 && this.typeNames.has(n.object.identifier.name)
+        && n.object.parameters[0] instanceof FunctionCallNode) {
+        found = true;
+        return;
+      }
+      for (const k of Object.keys(n)) {
+        if (k === 'type' || k === 'symbolTable' || k === 'location') continue;
+        const v = (n as Record<string, unknown>)[k];
+        if (Array.isArray(v)) v.forEach(walk);
+        else if (v && typeof v === 'object') walk(v);
+      }
+    };
+    for (const fn of node.functions) walk(fn.body);
+    return found;
   }
 
   visitFunctionDefinition(node: FunctionDefinitionNode): Node {
@@ -204,6 +230,8 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
     const chain = target ? undefined : this.chainTarget(node.object);
     const castChain = target || chain ? undefined : this.castChainTarget(node.object);
     const paramField = target || chain || castChain ? undefined : this.castParamFieldTarget(node.object);
+    const computed = target || chain || castChain || paramField
+      ? undefined : this.castComputedTarget(node.object);
     if (target && !ADDRESS_METHODS.has(node.methodName) && this.isInterfaceMethod(target.iface, node.methodName)) {
       const localName = this.markUsed(target.name, target.iface, target.isPlain, node.object);
       const loc = node.object.location;
@@ -246,6 +274,17 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
       }
       const loc = node.object.location;
       node.object = new IdentifierNode(paramField.localName);
+      node.object.location = loc;
+    } else if (computed && !ADDRESS_METHODS.has(node.methodName)
+      && this.isInterfaceMethod(computed.iface, node.methodName)) {
+      // `IFoo(pairFor(factory, a, b)).m()`: an author-written COMPUTED target rooted in params/self-pinned state.
+      // Hoist the alias-substituted `IFoo(<computed>)` cast (built + validated by castComputedTarget) into an
+      // __extaddr_ local so the body-top decl reads params/state directly and the co-spend pins the computed address.
+      if (!this.usedInFn.has(computed.localName)) {
+        this.usedInFn.set(computed.localName, { iface: computed.iface, init: computed.init });
+      }
+      const loc = node.object.location;
+      node.object = new IdentifierNode(computed.localName);
       node.object.location = loc;
     } else if (LOW_LEVEL_CALLS.has(node.methodName) && this.resolveLlReceiver(node.object)) {
       // `<recv>.call/staticcall/delegatecall(..)` where `<recv>` resolves to an address that is a self-pinned state
@@ -353,6 +392,101 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
     const key = this.chainKey(arg);
     if (!key) return undefined;
     return { iface, localName: `${PREFIX}${key}_${iface}` };
+  }
+
+  // After alias substitution, every leaf of a candidate body-top init must be a param or self-pinned state root -
+  // any leftover identifier is an un-inlined local (would be an undeclared body-top reference), and any MethodCall
+  // or value-prefixed dotted call (`__extaddr_router.factory()`) is an external call whose result is not a pure
+  // body-top value (the transitive-extcall-target case is separate). Conservative: unknown shapes fail closed.
+  private allLeavesBodyTop(node: Node): boolean {
+    let ok = true;
+    const walk = (n: unknown): void => {
+      if (!ok || !n || typeof n !== 'object') return;
+      if (n instanceof MethodCallNode) { ok = false; return; }
+      if (n instanceof IdentifierNode) {
+        if (!this.currentParams.has(n.name) && !this.stateRoots.has(n.name)) ok = false;
+        return;
+      }
+      if (n instanceof FunctionCallNode) {
+        const dot = n.identifier.name.lastIndexOf('.');
+        if (dot > 0) {
+          const prefix = n.identifier.name.slice(0, dot);
+          if (this.currentParams.has(prefix) || this.stateRoots.has(prefix) || SYNTH_ALIAS.test(prefix)) {
+            ok = false;
+            return;
+          }
+        }
+        n.parameters.forEach(walk); // the callee name is a fn/type, not a leaf; validate only the args
+        return;
+      }
+      if (n instanceof MappingAccessNode) {
+        if (!this.currentParams.has(n.name) && !this.stateRoots.has(n.name)) { ok = false; return; }
+        n.keys.forEach(walk);
+        return;
+      }
+      for (const k of Object.keys(n)) {
+        if (k === 'type' || k === 'symbolTable' || k === 'location') continue;
+        const v = (n as Record<string, unknown>)[k];
+        if (Array.isArray(v)) v.forEach(walk);
+        else if (v && typeof v === 'object') walk(v);
+      }
+    };
+    walk(node);
+    return ok;
+  }
+
+  // `IFoo(<computed>).m()` where <computed> is an author-written COMPUTED address rooted in params + self-pinned
+  // state (`IUniswapV2Pair(pairFor(factory, tokenA, tokenB)).getReserves()`) - not a bare param, state var, state
+  // chain, or param-field (those are handled by the recognizers before this). Hoist the whole `IFoo(<computed>)`
+  // into an __extaddr_ local so the audited dispatch pins the co-spend to the runtime-computed target. SOUND: the
+  // bytecode computes <computed> deterministically, so the identity check `input.lbc == <computed>` is real - the
+  // caller supplies the inputs, never the target directly, so it is at most as permissive as the accepted param
+  // form (extcall-target-pinning.md), and the author wrote the computed target (no silent fixed->caller lift).
+  // Substitutes the inliner's SSA aliases then requires ALL leaves to be body-top-safe, so a partially-resolvable
+  // (or external-call-containing) target fails closed rather than hoisting a broken/unsound decl.
+  private castComputedTarget(obj: ExpressionNode): { iface: string; localName: string; init: ExpressionNode } | undefined {
+    if (!(obj instanceof FunctionCallNode) || obj.parameters.length !== 1) return undefined;
+    const iface = obj.identifier.name;
+    if (!this.typeNames.has(iface)) return undefined;
+    const arg = obj.parameters[0];
+    // Only a COMPUTED call result `IFoo(pairFor(..))` - a bare param, a state var, a state/param chain, and an
+    // array/field element (`IFoo(fns[i])`, the fn-ptr-array broadcast / loopArrayVar cases) are all handled by the
+    // recognizers before this or by the array co-spend loop; hoisting those here would break their machinery.
+    if (!(arg instanceof FunctionCallNode)) return undefined;
+    const key = this.chainKey(arg);
+    if (!key) return undefined;
+    const init = cloneNode(obj) as ExpressionNode;
+    this.substituteAliasesInPlace(init);
+    if (!this.allLeavesBodyTop(init)) return undefined;
+    return { iface, localName: `${PREFIX}${key}_${iface}`, init };
+  }
+
+  // In-place: replace every synthetic SSA alias / single-assignment local identifier in `node` with a clone of its
+  // (recursively resolved) init, so a hoisted computed target reads params/self-pinned state directly - valid at the
+  // body top, where the inliner's `__rh*` locals are not yet declared. Mutates a CLONE only (never the original AST).
+  private substituteAliasesInPlace(node: Node): void {
+    const resolve = (id: IdentifierNode): Node | undefined => {
+      if (!this.localInits.has(id.name)) return undefined;
+      if (!(SYNTH_ALIAS.test(id.name) || this.singleAssignLocals.has(id.name))) return undefined;
+      const clone = cloneNode(this.localInits.get(id.name)!) as Node;
+      this.substituteAliasesInPlace(clone);
+      return clone;
+    };
+    for (const k of Object.keys(node)) {
+      if (k === 'type' || k === 'symbolTable' || k === 'location') continue;
+      const rec = node as unknown as Record<string, unknown>;
+      const v = rec[k];
+      if (v instanceof IdentifierNode) { const r = resolve(v); if (r) rec[k] = r; else this.substituteAliasesInPlace(v); }
+      else if (v instanceof Node) this.substituteAliasesInPlace(v);
+      else if (Array.isArray(v)) {
+        for (let i = 0; i < v.length; i += 1) {
+          if (v[i] instanceof IdentifierNode) {
+            const r = resolve(v[i] as IdentifierNode);
+            if (r) v[i] = r; else this.substituteAliasesInPlace(v[i] as Node);
+          } else if (v[i] instanceof Node) this.substituteAliasesInPlace(v[i] as Node);
+        }
+      }
+    }
   }
 
   // The access chain is rooted at a function param (base identifier is a param), stepping only through fields
@@ -498,6 +632,13 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
       const t = this.chainKey(expr.tuple);
       return t ? `${t}_${expr.index}` : undefined;
     }
+    // A computed target `IFoo(pairFor(factory, a, b))` - key off the (internal/library) call name + arg keys so
+    // identical computed targets dedup to one hoisted local; a cast `IFoo(x)` keys off its inner expression.
+    if (expr instanceof FunctionCallNode) {
+      const args = expr.parameters.map((p) => this.chainKey(p as ExpressionNode));
+      return args.every((a) => a) ? `${expr.identifier.name.replace(/\./g, '_')}_${args.join('_')}` : undefined;
+    }
+    if (expr instanceof CastNode) return this.chainKey(expr.expression);
     return undefined;
   }
 

@@ -2766,6 +2766,20 @@ describe('chained overloaded using-for + interface-local-var dispatch (MistSwap 
       + ' function _mid(IPair pair) internal view returns (uint x, uint y){ (x, y) = Lib.getReservesFor(pair); }'
       + ' function f(IPair pair) public view returns (uint x, uint y){ (x, y) = _mid(pair); } }');
   });
+
+  // A COMPUTED external-call target `IFoo(pairFor(factory, a, b)).m()` (MistSwap `IUniswapV2Pair(pairFor(..))`):
+  // the address is an author-written pure computation over params/state, hoisted into an __extaddr_ local so the
+  // co-spend pins the runtime-computed target - was "external call target address must be a param". A pure computed
+  // target (params only) compiles; a target embedding an external call (`pairFor(router.factory())`) stays a clean
+  // "must be a param" error (the transitive case). VM-proven sound in ComputedExtcallTarget.test.ts.
+  const COMP = 'interface IPair { function getReserves() external view returns (uint112, uint112, uint32); }'
+    + ' library Lib { function pairFor(address f, address a, address b) internal pure returns (address){ return a; }'
+    + ' function getReserves(address factory, address a, address b) internal view returns (uint rA, uint rB){'
+    + ' (uint r0, uint r1,) = IPair(pairFor(factory, a, b)).getReserves(); (rA, rB) = (r0, r1); } }';
+  it('hoists a computed external-call target IFoo(pairFor(..)) rooted in params', () => {
+    ok(`${COMP} contract C { function f(address factory, address a, address b) public view returns (uint x, uint y){`
+      + ' (x, y) = Lib.getReserves(factory, a, b); } }');
+  });
 });
 
 describe('using-for external-call library method on an interface-typed state var (OZ SafeERC20 pattern)', () => {

@@ -12,6 +12,15 @@ export function cloneNode<T extends Node>(node: T): T {
   for (const [key, value] of Object.entries(node)) {
     clone[key] = cloneValue(value);
   }
+  // Preserve INTRA-node aliasing of a MethodCallStatementNode's `.call` and `.expression`: post-first-traversal they
+  // are the SAME object (visitMethodCallStatement sets `.expression = visit(.call)`, and visitors mutate in place).
+  // Cloning them independently desyncs a later target rewrite (SynthesizeExternalAddressLocals rewrites `.expression`
+  // while SymbolTableTraversal re-derives from the stale `.call`), losing an interface-cast co-spend target. Re-alias
+  // the clone's `.expression` to its `.call` so both stay one object (the clone still shares nothing with the original).
+  const n = node as unknown as { call?: unknown; expression?: unknown };
+  if (n.call instanceof Node && n.call === n.expression) {
+    (clone as { expression?: unknown }).expression = (clone as { call?: unknown }).call;
+  }
   return clone;
 }
 

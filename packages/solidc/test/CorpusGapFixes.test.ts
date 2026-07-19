@@ -2887,6 +2887,23 @@ describe('opaque MultiCall over a struct-array parameter (Multicall2 calls[i].ta
   });
 });
 
+describe('inlined helper with an interface-cast external-call target (clone .call/.expression aliasing)', () => {
+  // A MethodCallStatementNode holds its call in both `.call` and (post-first-traversal) `.expression` as the SAME
+  // object. cloneNode used to split them when inlining a helper body, so a later target hoist rewrote `.expression`
+  // while SymbolTableTraversal re-derived from the stale `.call` - losing an `IFactory(factory).createPair()`
+  // co-spend target ("must be a constructor/function parameter"). cloneNode now re-aliases them. Router02 _addLiquidity.
+  it('resolves IFactory(factory).m() inside an inlined storage-pointer helper', () => {
+    expect(() => compileString('pragma experimental ABIEncoderV2;'
+      + ' interface IFactory { function getPair(address a, address b) external view returns (address);'
+      + ' function createPair(address a, address b) external returns (address); }'
+      + ' contract C { address factory; mapping(address => uint256) data;'
+      + ' function _helper(mapping(address => uint256) storage d, address a, address b) internal {'
+      + ' if (IFactory(factory).getPair(a, b) == address(0)) { IFactory(factory).createPair(a, b); } d[a] = 1; }'
+      + ' function f(address a, address b) external { _helper(data, a, b); } }', { solidityImportCompat: true }))
+      .not.toThrow();
+  });
+});
+
 describe('Yul create2 deploy lowering (UniswapV2Factory createPair)', () => {
   // `bytes code = type(C).creationCode; assembly { pair := create2(0, add(code,0x20), mload(code), salt) }` lowers
   // to a native `new C{salt: salt}()` deploy (LowerInlineAssembly, pre-semantic), reusing the fully-plumbed deploy

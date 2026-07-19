@@ -5685,7 +5685,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 : bigIntToVmNumber(BigInt(v as string)));
       const fixedBins = info.fixedKeyParams.map((p, i) => encKey(argOf(p), keyTypes[i] ?? collection.keyType));
       const varyType = keyTypes[info.fixedKeyParams.length] ?? collection.keyType;
-      const keysArr = argOf(info.varyingArrayParam);
+      let keysArr = argOf(info.varyingArrayParam) as unknown[];
       const isDelete = info.op === 'delete';
       // A loop-INVARIANT value (fixed-amount airdrop `+= amount` / batch-set-const `= 100`): the same amount for every
       // key, from a scalar param arg or an int literal. Otherwise the value is the per-key array valsArr[i].
@@ -5694,10 +5694,52 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       if (!isDelete && info.valueScalarParam !== undefined) scalarAmt = toBig(argOf(info.valueScalarParam));
       else if (!isDelete && info.valueConst !== undefined) scalarAmt = BigInt(info.valueConst);
       const perKey = !isDelete && scalarAmt === undefined;
-      const valsArr = perKey ? argOf(info.valueArrayParam) : undefined;
+      let valsArr = perKey ? argOf(info.valueArrayParam) : undefined;
       if (!Array.isArray(keysArr) || (perKey && !Array.isArray(valsArr))) continue;
       if (perKey && (valsArr as unknown[]).length !== keysArr.length) {
         throw new Error(`C2 upsert loop ${info.collection}: recipients/amounts length mismatch`);
+      }
+      const foldActive = info.op === '+' || info.op === 'set'; // crediting loops defer + fold (covenant pendActive)
+      // CASE (b) ADJACENCY REORDER: the covenant folds a new recipient into a credited predecessor P only when P is
+      // processed IMMEDIATELY before it. The multiTransfer result is order-independent, so reorder recipients+amounts
+      // (as a PAIR, preserving each recipient's amount) to place each such new recipient right after P. Chains /
+      // two-in-gap can't be made adjacent and stay fail-closed. Crediting loops only (foldActive); write back to args
+      // so the encoded tx argument matches the commitment order the covenant verifies.
+      if (foldActive && Array.isArray(keysArr) && keysArr.length > 1) {
+        const kArr = keysArr as unknown[];
+        const slotsB = kArr.map((k) => keyToSlotMulti([...fixedBins, encKey(k, varyType)]));
+        const updBySlot = new Map<string, number>();
+        slotsB.forEach((s, i) => { if (list.find(s)) updBySlot.set(binToHex(s), i); });
+        const attach = new Map<number, number[]>();
+        const attached = new Set<number>();
+        slotsB.forEach((s, i) => {
+          if (list.find(s)) return; // an update, not an insert
+          const pred = list.predecessorOf(s);
+          const pIdx = pred ? updBySlot.get(binToHex(pred.slot)) : undefined;
+          if (pIdx !== undefined) { if (!attach.has(pIdx)) attach.set(pIdx, []); attach.get(pIdx)!.push(i); attached.add(i); }
+        });
+        if (attached.size > 0) {
+          const order: number[] = [];
+          const placed = new Set<number>();
+          for (let i = 0; i < kArr.length; i++) {
+            if (placed.has(i) || attached.has(i)) continue;
+            order.push(i); placed.add(i);
+            for (const r of attach.get(i) ?? []) if (!placed.has(r)) { order.push(r); placed.add(r); }
+          }
+          for (let i = 0; i < kArr.length; i++) if (!placed.has(i)) order.push(i); // safety net (normally unreachable)
+          keysArr = order.map((i) => kArr[i]);
+          // Write the reordered arrays to BOTH args (read by other derivations) AND finalArgs (already copied from
+          // args by the msg.sender/synthetic injection above - it builds the master unlocker, so the ENCODED tx
+          // argument must carry the same order the commitments were built in, else the covenant OP_VERIFY fails).
+          const recipIdx = abiFunction!.inputs.findIndex((p) => p.name === info.varyingArrayParam);
+          if (recipIdx >= 0) { args[recipIdx] = keysArr; finalArgs[recipIdx] = keysArr; }
+          if (perKey && Array.isArray(valsArr)) {
+            const vArr = valsArr as unknown[];
+            valsArr = order.map((i) => vArr[i]);
+            const amtIdx = abiFunction!.inputs.findIndex((p) => p.name === info.valueArrayParam);
+            if (amtIdx >= 0) { args[amtIdx] = valsArr; finalArgs[amtIdx] = valsArr; }
+          }
+        }
       }
       const wUnlocker = createEntryNftUnlocker(this.inner, 0, this.categoryId, info.collection);
       // Commitments in CUMULATIVE OUTPUT order (matching the covenant's outCounter): an UPDATE contributes 1 (the
@@ -5722,8 +5764,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       // CASE (b) FOLD: mirror the covenant's pending-defer register. On a crediting loop (+/set) each UPDATE defers its
       // mint; the NEXT recipient, if it is a NEW node bracketed by that update, re-points the update's commitment in
       // place + appends its own NEW node (the predecessor is co-spent ONCE). lastDeferred = the immediately-prior
-      // update, or null. Requires adjacency (predecessor processed right before the new key) - else fail closed.
-      const foldActive = info.op === '+' || info.op === 'set';
+      // update, or null. Requires adjacency (predecessor processed right before the new key) - the reorder above makes
+      // that hold for the common case; anything it can't (chains / two-in-gap) fails closed.
       let lastDeferred: { uid: string; commitIndex: number; slot: Uint8Array; newVal: bigint; oldNext: Uint8Array } | null = null;
       for (let i = 0; i < keysArr.length; i++) {
         const slot = keyToSlotMulti([...fixedBins, encKey(keysArr[i], varyType)]);

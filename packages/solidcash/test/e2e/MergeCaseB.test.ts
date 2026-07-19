@@ -70,16 +70,21 @@ describe('CASE (b): NEW recipient whose predecessor is another CREDITED recipien
     await expect(chk(carolAddress, 15n)).resolves.toBeDefined();
   });
 
-  it('fails closed when the credited predecessor is NOT ordered immediately before the new key', async () => {
-    // Reverse order [alice(new), carol(update)]: alice's predecessor is carol, but carol is credited AFTER alice. The
-    // fold requires adjacency (predecessor deferred in the immediately-prior iteration); here carol is co-spent as
-    // alice's insert predecessor at i=0, then again as an update at i=1 -> one UTXO co-spent twice -> fail closed.
+  it('is ORDER-INDEPENDENT: the SDK reorders [alice(new), carol(update)] so the predecessor is adjacent', async () => {
+    // Caller passes the new recipient BEFORE its credited predecessor: multiTransfer([alice(new), carol(update)]).
+    // alice's predecessor is carol, but carol is listed after alice. The SDK's adjacency reorder swaps them (preserving
+    // each recipient's amount) to [carol, alice] so the covenant fold applies. Same result as the adjacent case.
     const art = compileString(SRC, { forceStateful: true });
     const f = { txid: uid(), vout: 0, satoshis: 400000n };
     await provider.addUtxo(p2pkh.address, f);
-    const { contract } = await StatefulContract.deploy(art, [], {
+    const { contract, categoryId } = await StatefulContract.deploy(art, [], {
       provider, fundingUtxo: f, funder: p2pkh.unlock.spend(alicePub, aliceSig), initialState: {}, changeAddress: p2pkh.address,
     });
+    const ea = getEntryNftAddress(contract.inner, categoryId, 'bal');
+    const valOf = async (addr: string): Promise<bigint | undefined> => {
+      const e = SortedList.fromUtxos(await provider.getUtxos(ea)).find(keyToSlot(addressToLockScript(addr)));
+      return e ? vmNumberToBigInt(e.value, { requireMinimalEncoding: false }) as bigint : undefined;
+    };
     const setBal = (a: string, v: bigint): Promise<unknown> =>
       (contract as unknown as Record<string, (...x: unknown[]) => { send: () => Promise<unknown> }>)
         .setBal(a, v, alicePub, aliceSig).send();
@@ -87,8 +92,11 @@ describe('CASE (b): NEW recipient whose predecessor is another CREDITED recipien
     await provider.addUtxo(contract.address, { txid: uid(), vout: 0, satoshis: 200000n }); await setBal(carolAddress, 5n);
     const sc = contract.connect(bob);
     await provider.addUtxo(bob.getAddress(), { txid: uid(), vout: 0, satoshis: 200000n });
-    await expect((sc as unknown as Record<string, (...x: unknown[]) => { send: () => Promise<unknown> }>)
-      .multiTransfer([aliceAddress, carolAddress], [20n, 10n], bobPub, bobSig).send())
-      .rejects.toThrow(/co-spent|split into separate/i);
+    // caller order [alice(new), carol(update)], amounts [20, 10] -> alice+=20, carol+=10 (pairing preserved by reorder)
+    await (sc as unknown as Record<string, (...x: unknown[]) => { send: () => Promise<unknown> }>)
+      .multiTransfer([aliceAddress, carolAddress], [20n, 10n], bobPub, bobSig).send();
+    expect(await valOf(bobAddress)).toBe(970n);   // debited 30
+    expect(await valOf(carolAddress)).toBe(15n);   // 5 + 10
+    expect(await valOf(aliceAddress)).toBe(20n);   // new, +20
   });
 });

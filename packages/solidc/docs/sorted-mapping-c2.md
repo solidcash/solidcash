@@ -207,11 +207,19 @@ mints) so update (mint 1) and insert (mint P'+NEW) coexist. What ships:
    the new node (a re-point register set by the loop, applied by the debit flush; the covenant's in-gap check vs the
    debit's real input is the omission anchor; two-in-gap fails closed). Adversarially VM-proven (`MsgSenderMerge`).
 
-**Still fail-closed (sound, needs a batch-upsert covenant redesign).** Two shapes remain, both requiring a new structure
-that co-spends each DISTINCT touched entry once and mints its final (value, nextKey) together - the per-iteration loop
-can't express them: (a) a NEW recipient whose bracketing predecessor is ANOTHER CREDITED recipient (couples that
-entry's value-update and its link-re-point across different iterations - unlike the msg.sender case, there's no
-after-loop coordination point); (b) two-or-more new recipients CHAINING in one gap (a forward reference - the first
-node's `next` is a later-minted node). N per tx is capped by transaction size; larger N needs paginated writes across
-txs. Cross-cutting for the redesign: the exclusion proof must survive the batch (rejecting forged / omitted / misordered
-/ duplicated entries), since a bug reopens the C2 exclusion-proof hole. Tracked in `deferrals.md`.
+5. **CASE (b) - a NEW recipient whose predecessor is another CREDITED recipient - SHIPPED** (pending-defer register).
+   Unlike the msg.sender merge (a fixed debit with an after-loop flush), the predecessor P here is co-spent inside the
+   loop, so its value-update and link-re-point live in different iterations. Solved by DEFERRING each UPDATE's mint by
+   one iteration into pending registers (`pu_slot`/`pu_val`/`pu_next`): the next iteration's flush re-points the pending
+   to the current key iff `pu_slot < Hk < pu_next` (proving Hk a new node right after P), minting P'=[P|Hk|P.newVal] +
+   NEW=[Hk|P.oldNext|amt] and skipping the current key's own processing; else it mints the pending normally (teardown
+   flushes the last). Look-BEHIND, so no cross-index read; the defer preserves output order, so every prior case is
+   unchanged. The in-gap check vs P's REAL nextKey is the omission anchor. SDK mirrors it via `lastDeferred`
+   (re-points the predecessor's commitment in place). Adversarially VM-proven (`MergeCaseB` + `FullMultiTransfer`).
+
+**Still fail-closed (sound).** (a) NON-adjacent case (b) - the credited predecessor P is not ordered immediately before
+the new recipient R; needs an SDK topological reorder of recipients+amounts (result is order-independent), tracked in
+`deferrals.md`. (b) two-or-more new recipients CHAINING in one gap (a forward reference - the first node's `next` is a
+later-minted node). N per tx is capped by transaction size; larger N needs paginated writes across txs. Cross-cutting:
+the exclusion proof must survive the batch (rejecting forged / omitted / misordered / duplicated entries), since a bug
+reopens the C2 exclusion-proof hole.

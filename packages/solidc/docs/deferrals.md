@@ -163,19 +163,23 @@ msg.sender) + `_balances[to] += amt` (DIFFERENT key each iter). Full form still 
   covenant-enforced (in-gap = no omission; single merge; flush pins msg.sender->register + loop pins+counts NEW = chain
   complete no orphan; supply via shared amounts). VM-proven: bob 980 + carol 20, a later read walks HEAD->bob->carol
   (chain valid) + bob==1000 reverts, two-new-in-bob's-gap fails closed.
-  **STILL fail-closed (case b, sound):** a new recipient R whose predecessor is another CREDITED recipient P is a
-  WITHIN-LOOP collision (P's value-update and its link-re-point live in different iterations, and there's no after-loop
-  coordination point like the msg.sender debit flush). **SCOPED DESIGN (FOLD-into-predecessor's-iteration), for a focused
-  build.** The SDK REORDERS recipients+amounts (order-independent for the result) so P immediately precedes R, then P's
-  UPDATE iteration folds R in: after reading P.oldValue/P.oldNext and computing P.newValue, check `P < R < P.oldNext`
-  (R = recipients[i+1] in P's gap); if so, mint P' = [P | R | P.newValue] (updated AND re-pointed) + NEW = [R | P.oldNext
-  | R.amount], and SKIP R's own iteration (extra i-increment; iterCounter += 1 for P's single co-spend, outCounter += 2).
-  Runtime-dead for existing recipients (the gap-check is false), so incrementally testable against FullMultiTransfer.
-  **The intricacy (why it's a focused build, not a quick add):** the fold must READ recipients[i+1] / amounts[i+1] (the
-  key/value nodes are hard-coded to the loop var i - needs a temp i-increment or a constructed ArrayAccess), and the
-  loop-index skip entangles with the source `for(i;i<n;i++)`. Testable with fixtures: bob(sender)+carol(existing),
-  multiTransfer([carol(update), alice(new, predecessor carol)]) - carol is credited AND alice's predecessor. Chains
-  (R's pred is P, P's pred is Q) + two-new-in-one-gap stay fail-closed (topological reorder + forward refs).
+  **CASE (b) RESOLVED 2026-07-19 (pending-defer register, VM-proven):** a new recipient R whose predecessor is another
+  CREDITED recipient P (not the debited msg.sender). P must be co-spent ONCE serving both its own value-update and R's
+  insert re-point. Built with a PENDING-DEFER register (chosen over the cross-index FOLD design once-scoped here - it
+  avoids the OOB / read-recipients[i+1] intricacy): each UPDATE iteration co-spends its entry but DEFERS the mint into
+  pu_slot/pu_val/pu_next (emitSortedUpsertLoopSetup pushes them for +/set); the NEXT iteration's flush
+  (emitSortedFlushPendingRepoint) re-points the pending to the current key Hk IFF `pu_slot < Hk < pu_next` (proving Hk a
+  new node right after P) - minting P'=[pu_slot|Hk|pu_val] + NEW=[Hk|pu_next|amt], clearing the pending, and leaving
+  consumed=1 so the caller skips R's own processing (R co-spent nothing - its predecessor was co-spent when deferred).
+  Otherwise mint the pending normally (emitSortedFlushPendingNormal, also run at teardown for the last one). Look-BEHIND,
+  so no cross-index read. The in-gap check against P's REAL nextKey is the omission anchor (an existing entry between
+  makes pu_next=that and Hk<pu_next fails -> normal path). The defer preserves output ORDER, so the SDK is unchanged for
+  every existing case; the SDK mirrors the fold via lastDeferred (re-points the predecessor's commitment in place +
+  appends NEW). REQUIRES ADJACENCY (predecessor credited immediately before R) - else fail-closed (one UTXO can't be
+  co-spent twice). VM-proven: MergeCaseB + FullMultiTransfer case-b fold in 2 fixtures, chain valid, supply conserved;
+  fail-closed on wrong-order/non-adjacent + msg.sender-also-recipient + two-new-in-one-gap. Commit after this doc.
+  **STILL fail-closed (sound):** NON-adjacent case-b (P not credited immediately before R - needs an SDK topological
+  reorder of recipients+amounts) and CHAINS (R's pred is P, P's pred is Q - forward refs on already-minted outputs).
 
 - **(b3) ABSOLUTE per-key assignment loop `for(i) m[k[i]] = v[i]` - RESOLVED 2026-07-19 (`644532b1`, op=set,
   VM-proven).** A pure per-key assignment (value REPLACES, not accumulates) now routes through the SAME upsert loop

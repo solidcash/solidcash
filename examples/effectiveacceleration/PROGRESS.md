@@ -36,6 +36,9 @@ with no test edits** - the remaining work is porting the contracts, not the harn
 4. **`getSigners` honours config mnemonic + derivation path** (`MockNetworkProvider.getSigners`/`getSigner`
    gained a `path` option; hre threads `config.accounts.path`).
 5. **`containSubset`** matcher (chai-subset parity) in the chai shim.
+6. **Per-contract artifact output (Hardhat layout)** - `solidcash compile` emits one `<Contract>.json`
+   per contract, nested `artifacts/<sources>/<File>.scash/<Contract>.json` (mirrors Hardhat); `loadArtifactByName`
+   resolves a contract by name across the tree. This is what makes `getContractFactory("MarketplaceV1")` match.
 
 ## NEXT: port the contracts (simplification allowed). Build order (per the test's describe blocks):
 The fixture `deployContractsFixture` (test lines 137-191) must deploy, so ALL of these need name-resolvable

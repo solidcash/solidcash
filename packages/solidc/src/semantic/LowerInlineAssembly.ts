@@ -188,6 +188,9 @@ function stateVarByteWidth(sv: StateVariableNode): number {
   if (t instanceof BytesType) return t.bound ?? 32;
   if (t === PrimitiveType.BOOL) return 1;
   if (t instanceof EnumType) return 1; // Solidity enums are 1 byte (<=256 members, EnumType::storageBytes == 1)
+  // A UDVT (`type T is uintN`) packs by its underlying type's width, exactly like EVM (Types.cpp storageBytes
+  // forwards to the underlying). Was falling through to 32 -> a UDVT var wrongly took a whole slot and never packed.
+  if (t instanceof ValueType) return valueByteWidth(t.underlyingType);
   return 32; // mapping / dynamic array/bytes: one slot (the base/length header)
 }
 
@@ -301,20 +304,47 @@ function resolveSlotFields(slotArg: YulExpressionNode): SlotField[] | undefined 
   }
   if (slotNum === undefined) return undefined;
   const fields = currentSlots.get(slotNum);
-  if (fields && fields.every((f) => f.sv.type instanceof IntType)) return fields;
+  // Int fields, or a UDVT wrapping an int (`type T is intN`) - same word packing/masking; the combine/decompose
+  // casts unwrap the UDVT. A slot holding an address/bytes/UDVT-of-bytes field stays unhandled (NotLowerable).
+  if (fields && fields.every((f) => isIntLikeSlotField(f.sv.type))) return fields;
   return undefined;
+}
+
+// A slot field usable by the int-word combine/decompose: a plain int, or a UDVT over an int.
+function isIntLikeSlotField(t: Type): boolean {
+  return t instanceof IntType || (t instanceof ValueType && t.underlyingType instanceof IntType);
 }
 
 function isFullWord(fields: SlotField[]): boolean {
   return fields.length === 1 && fields[0].bitOffset === 0n && fields[0].bitWidth === 256n;
 }
 
+// Read a slot field as a uint256 word: uint256(StateAccess), unwrapping a UDVT to its underlying int first
+// (`uint256(underlying(access))`, mirroring T.unwrap = a cast to the underlying type).
+function fieldAsWord(f: SlotField, src: YulExpressionNode): ExpressionNode {
+  let access: ExpressionNode = loc(new StateAccessNode(f.sv.name), src);
+  if (f.sv.type instanceof ValueType) access = loc(new CastNode(f.sv.type.underlyingType, access, false), src);
+  return loc(new CastNode(UINT256, access, false), src);
+}
+
+// Cast a uint256 word to a slot field's stored type. A UDVT is wrapped (underlying-cast then UDVT-cast, mirroring
+// T.wrap); a plain int is a direct cast.
+function castWordToField(f: SlotField, wordExpr: ExpressionNode, src: YulExpressionNode): ExpressionNode {
+  if (f.sv.type instanceof ValueType) {
+    const toUnderlying = loc(new CastNode(f.sv.type.underlyingType, wordExpr, false), src);
+    return loc(new CastNode(f.sv.type, toUnderlying, false), src);
+  }
+  return loc(new CastNode(f.sv.type, wordExpr, false), src);
+}
+
 // sload(slot): combine the slot's fields into a word, `uint256(v0) + uint256(v1)*2^off1 + ...`.
 function combineSlot(fields: SlotField[], src: YulExpressionNode): ExpressionNode {
-  if (isFullWord(fields)) return loc(new StateAccessNode(fields[0].sv.name), src);
+  if (isFullWord(fields) && !(fields[0].sv.type instanceof ValueType)) {
+    return loc(new StateAccessNode(fields[0].sv.name), src);
+  }
   let expr: ExpressionNode | undefined;
   for (const f of fields) {
-    const word = loc(new CastNode(UINT256, loc(new StateAccessNode(f.sv.name), src), false), src);
+    const word = fieldAsWord(f, src);
     const term = f.bitOffset === 0n
       ? word
       : loc(new BinaryOpNode(word, BinaryOperator.MUL, intLit(2n ** f.bitOffset, src)), src);
@@ -326,15 +356,16 @@ function combineSlot(fields: SlotField[], src: YulExpressionNode): ExpressionNod
 // sstore(slot, word): decompose the word into the slot's fields, `vi = type((word / 2^offi) % 2^widthi)`.
 // The word is bound to a temp so it is evaluated once.
 function decomposeSlot(fields: SlotField[], valueExpr: YulExpressionNode, src: YulExpressionNode): StatementNode {
-  if (isFullWord(fields)) return loc(new StateAssignNode(fields[0].sv.name, lowerValue(valueExpr)), src);
+  if (isFullWord(fields) && !(fields[0].sv.type instanceof ValueType)) {
+    return loc(new StateAssignNode(fields[0].sv.name, lowerValue(valueExpr)), src);
+  }
   const tempName = '__yul_slot';
   const stmts: StatementNode[] = [loc(new VariableDefinitionNode(UINT256, [], tempName, lowerValue(valueExpr)), src)];
   for (const f of fields) {
     let field: ExpressionNode = loc(new IdentifierNode(tempName), src);
     if (f.bitOffset > 0n) field = loc(new BinaryOpNode(field, BinaryOperator.DIV, intLit(2n ** f.bitOffset, src)), src);
     field = loc(new BinaryOpNode(field, BinaryOperator.MOD, intLit(2n ** f.bitWidth, src)), src);
-    const cast = loc(new CastNode(f.sv.type, field, false), src);
-    stmts.push(loc(new StateAssignNode(f.sv.name, cast), src));
+    stmts.push(loc(new StateAssignNode(f.sv.name, castWordToField(f, field, src)), src));
   }
   return loc(new BlockNode(stmts), src);
 }

@@ -74,3 +74,40 @@ describe('EVM storage layout: composite state vars occupy full EVM slots (P3)', 
     await (sc as any).readXviaSlot2(88n).send();
   });
 });
+
+// A UDVT (`type T is uintN`) state var packs by its underlying width (stateVarByteWidth unwraps ValueType) and its
+// slot is readable/writable in assembly: sload combines via unwrap+uint256 cast, sstore decomposes + masks + wraps.
+const UDVT_SLOT = `pragma solidcash >=0.8.0;
+type Small is uint16;
+contract C() {
+  Small a;
+  function setHi(uint256 v, pubkey pk, sig s) {
+    require(checkSig(s, pk));
+    this.a = Small.wrap(uint16(v));
+  }
+  function readViaSlot(uint256 e) {
+    uint256 r = 0;
+    assembly { r := sload(a.slot) }
+    require(r == e);
+  }
+  function setViaSlot(uint256 v, pubkey pk, sig s) {
+    require(checkSig(s, pk));
+    assembly { sstore(a.slot, v) }
+  }
+  function readHi(uint256 e) {
+    require(uint256(Small.unwrap(a)) == e);
+  }
+}`;
+
+describe('UDVT (type T is uintN) storage slot read/write in assembly', () => {
+  it('sload of a UDVT var slot reads its high-level-written value (unwrap)', async () => {
+    const sc = await deploy(UDVT_SLOT);
+    await (sc as any).setHi(300n, alicePub, sig()).send();
+    await (sc as any).readViaSlot(300n).send();
+  });
+  it('sstore to a UDVT var slot is read back high-level (wrap + sub-word mask)', async () => {
+    const sc = await deploy(UDVT_SLOT);
+    await (sc as any).setViaSlot(305n, alicePub, sig()).send();
+    await (sc as any).readHi(305n).send();
+  });
+});

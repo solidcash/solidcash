@@ -363,6 +363,15 @@ describe('storage-pointer local .slot/.offset in assembly (T[] storage x = a; x.
       + ' uint[] storage x = a[0]; assembly { s := x.slot } require(true); } }', { solidityImportCompat: true }))
       .toThrow(/inline assembly/i);
   });
+  // `sload(a.slot)` on a dynamic array reads its length (EVM: array base slot holds the length). Lowers to the same
+  // `a.length` node that is VM-proven, so this is a compile guard. `sstore(a.slot,..)` (a resize) stays fail-closed.
+  it('routes sload of a dynamic-array var slot to its length; sstore (resize) fails closed', () => {
+    expect(ok('contract C { uint[] a; function f() public returns (uint n) {'
+      + ' assembly { n := sload(a.slot) } require(true); } }')).toBe('C');
+    expect(() => compileString('contract C { uint[] a; function f() public {'
+      + ' assembly { sstore(a.slot, 7) } require(true); } }', { solidityImportCompat: true }))
+      .toThrow(/inline assembly/i);
+  });
 });
 
 describe('EVM storage-layout specifier tolerated (contract C layout at expr)', () => {

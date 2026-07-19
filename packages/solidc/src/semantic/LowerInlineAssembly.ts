@@ -324,6 +324,25 @@ function isIntLikeSlotField(t: Type): boolean {
   return t instanceof IntType || (t instanceof ValueType && t.underlyingType instanceof IntType);
 }
 
+// If a Yul slot argument denotes a declared DYNAMIC ARRAY var's base slot, return the var name. EVM stores a
+// dynamic array's length at its base slot, so `sload(a.slot)` reads the length - which BCH keeps in a length
+// register accessible as `a.length`. Read-only: `sstore(a.slot, n)` (a resize) is not modeled. `bytes`/`string`
+// excluded (their slot length encoding - short-inline vs long - differs).
+function resolveDynArrayName(slotArg: YulExpressionNode): string | undefined {
+  let slotNum: bigint | undefined;
+  if (isIntLiteral(slotArg)) {
+    slotNum = BigInt(slotArg.raw);
+  } else if (slotArg instanceof YulPathNode && slotArg.members.length === 1 && slotArg.members[0] === 'slot') {
+    slotNum = currentVarSlot.get(slotArg.base);
+  }
+  if (slotNum === undefined) return undefined;
+  const fields = currentSlots.get(slotNum);
+  if (fields && fields.length === 1 && fields[0].sv.isDynamic && fields[0].sv.type instanceof ArrayType) {
+    return fields[0].sv.name;
+  }
+  return undefined;
+}
+
 function isFullWord(fields: SlotField[]): boolean {
   return fields.length === 1 && fields[0].bitOffset === 0n && fields[0].bitWidth === 256n;
 }
@@ -1196,6 +1215,8 @@ function lowerCall(call: YulFunctionCallNode): ExpressionNode {
     if (mapAccess) return loc(new MappingAccessNode(mapAccess.collection, mapAccess.keys), call);
     const fields = resolveSlotFields(args[0]);
     if (fields) return combineSlot(fields, call);
+    const arrName = resolveDynArrayName(args[0]);
+    if (arrName) return loc(new UnaryOpNode(UnaryOperator.SIZE, loc(new IdentifierNode(arrName), call)), call);
     const key = evmStorageSlotKey(args[0]);
     if (key) { evmStorageUsed = true; return loc(new MappingAccessNode(EVM_STORAGE, [key]), call); }
     throw new YulNotLowerable();

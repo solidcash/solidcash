@@ -4967,11 +4967,18 @@ export default class SymbolTableTraversal extends AstTraversal {
     const callName = node.identifier.name;
     if (callName.includes('.')) {
       const [varName, methodName] = callName.split('.');
+      // A `recv.method(..)` on a PRIVATE inherited state var receiver (OZ ERC20 `_totalSupply.add(..)` inlined
+      // into a derived contract) parses as a namespaced FunctionCall whose identifier carries the inlined-modifier
+      // origin (tagModifierStateAccess stamps it). Every branch below synthesizes a fresh receiver identifier and
+      // VISITS it to probe its type; without the tag that visit resolves to an untagged state access and trips the
+      // private-var check before dispatch. Propagate the origin to each synthesized receiver.
+      const recvFromMod = node.identifier.fromModifier;
       const symbol = this.symbolTables[0]?.get(varName);
       if (symbol) {
         if (methodName === 'send' && node.parameters.length === 1) {
           const addrIdentifier = new IdentifierNode(varName);
           addrIdentifier.location = node.identifier.location;
+          addrIdentifier.fromModifier = recvFromMod;
           const visitedAddr = this.visit(addrIdentifier);
           const amount = this.visit(node.parameters[0]);
           const sendNode = new AddressSendExpressionNode(visitedAddr, amount);
@@ -4985,6 +4992,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         if (methodName === 'call' && node.parameters.length === 1) {
           const addrId = new IdentifierNode(varName);
           addrId.location = node.identifier.location;
+          addrId.fromModifier = recvFromMod;
           const addressExpr = this.visit(addrId) as ExpressionNode;
           const varType = addressExpr.type
             ?? (addressExpr instanceof IdentifierNode ? addressExpr.definition?.type : undefined)
@@ -5012,6 +5020,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         if ((methodName === 'call' || methodName === 'staticcall' || methodName === 'delegatecall') && node.parameters.length === 1) {
           const addrIdentifier = new IdentifierNode(varName);
           addrIdentifier.location = node.identifier.location;
+          addrIdentifier.fromModifier = recvFromMod;
           const visitedAddr = this.visit(addrIdentifier) as ExpressionNode;
           const data = this.visit(node.parameters[0]) as ExpressionNode;
           const callNode = new LowLevelCallNode(visitedAddr, data, methodName);
@@ -5025,6 +5034,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         {
           const varIdentifier = new IdentifierNode(varName);
           varIdentifier.location = node.identifier.location;
+          varIdentifier.fromModifier = recvFromMod;
           const visitedVar = this.visit(varIdentifier) as ExpressionNode;
           // Resolve the declared type from a param/local symbol or a state variable (a bare state var
           // resolves to a state-access node whose .type is only set later, so consult the state-var map).
@@ -5092,6 +5102,7 @@ export default class SymbolTableTraversal extends AstTraversal {
           // Visit the variable to get its type
           const varIdentifier = new IdentifierNode(varName);
           varIdentifier.location = node.identifier.location;
+          varIdentifier.fromModifier = recvFromMod;
           const visitedVar = this.visit(varIdentifier) as ExpressionNode;
           // A bare state var resolves to a StateAccessNode whose .type is only set in TypeCheck, so consult
           // the state-var map (mirrors the interface-method path above). Without this, `stateVar.method()`

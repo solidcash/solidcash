@@ -2481,3 +2481,28 @@ describe('dead assembly library helper is pruned even after its assembly fully l
     expect(() => compileString(src, { solidityImportCompat: true })).not.toThrow();
   });
 });
+
+describe('inherited `using L for T` resolves in a derived contract (OZ ERC20 SafeMath _mint/_burn)', () => {
+  // A parent contract binds `using SafeMath for uint256` and its `_mint` does `_totalSupply.add(amt)` on a PRIVATE
+  // inherited scalar. When the derived contract calls the inherited helper, (1) the binding must propagate so the
+  // `.add()` member call resolves, and (2) synthesizing the receiver identifier while probing its type must carry
+  // the inlined-modifier origin so the private-var visibility check is not falsely tripped.
+  const base = 'library SM { function add(uint256 a, uint256 b) internal pure returns (uint256) { return a + b; } }'
+    + ' contract ERC20Base { using SM for uint256; uint256 private _totalSupply; mapping(address => uint256) private'
+    + ' _balances; function _mint(address a, uint256 amt) internal virtual { _totalSupply = _totalSupply.add(amt);'
+    + ' _balances[a] = _balances[a].add(amt); } }';
+  const resolver = (p: string): { source: string; id: string } | undefined =>
+    (p === './B.sol' ? { source: base, id: '/B.sol' } : undefined);
+  const ok = (src: string): void => {
+    expect(() => compileString(src, { importResolver: resolver, rootFileId: '/main.sol', solidityImportCompat: true }))
+      .not.toThrow();
+  };
+  it('derived call to inherited _mint (private scalar + C2 mapping via SafeMath) compiles', () => {
+    ok('import {ERC20Base} from "./B.sol"; contract C is ERC20Base {'
+      + ' function mint(address a, uint256 amt) public { _mint(a, amt); } }');
+  });
+  it('inherited binding is usable on the derived contract\'s own local too', () => {
+    ok('import {ERC20Base} from "./B.sol"; contract C is ERC20Base {'
+      + ' function f(uint256 a) public pure returns (uint256) { uint256 x = 1; return x.add(a); } }');
+  });
+});

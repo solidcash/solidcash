@@ -509,10 +509,22 @@ function mergeParent(
   // 11. Merge type definitions
   mergeNamedList(child, parent, 'typeDefinitions', 'Type');
 
-  // NOTE: `using L for T` directives are deliberately NOT merged. Solidity does not inherit them into a derived
-  // contract's own code (syntaxTests/scoping/library_inherited.sol is a solc TypeError). A parent FUNCTION that
-  // uses one keeps its declaration context, but that needs per-function lexical scoping, not a contract-wide
-  // merge (which would over-accept the derived contract's new code) - left as a known limit.
+  // 12. Merge `using L for T` directives. A parent FUNCTION inherited into the child (OZ ERC20 `_mint` with
+  // `_totalSupply.add(..)` under `using SafeMath for uint256`) needs its library binding to resolve once its body
+  // is merged/inlined into the child. Strict Solidity scopes the directive to the declaring contract only (a
+  // derived contract's OWN new code cannot use it - library_inherited.sol is a solc TypeError), so a contract-wide
+  // merge is PERMISSIVE: it never rejects valid Solidity and never miscompiles (`x.method()` -> `L.method(x)` is the
+  // same sugar the parent would apply), it only additionally accepts child code solc would reject - the right
+  // trade-off for a porting compiler. Dedup by (library, target, wildcard) so a re-declared binding is not doubled.
+  const seenUsingFor = new Set(
+    (child.usingForDirectives ?? []).map((d) => `${d.libraryName}|${d.targetTypeName}|${d.isWildcard}`),
+  );
+  for (const d of parent.usingForDirectives ?? []) {
+    const key = `${d.libraryName}|${d.targetTypeName}|${d.isWildcard}`;
+    if (seenUsingFor.has(key)) continue;
+    seenUsingFor.add(key);
+    (child.usingForDirectives ??= []).push(d);
+  }
 }
 
 /**

@@ -80,7 +80,10 @@ const artifact = compileString(SOURCE);
 
 async function spend(fn: string, args: bigint[]): Promise<unknown> {
   const provider: MockNetworkProvider = createTestProvider();
-  const contract = new Contract(artifact, [], { provider });
+  // Salt per call so each spend targets a fresh address. The regtest provider is a shared singleton, so an
+  // unsalted (deterministic) address accumulates UTXOs across calls; gatherUtxos would then pull several inputs,
+  // each carrying the full redeem script, inflating the tx past the fixed 5000-sat fee (min relay fee not met).
+  const contract = new Contract(artifact, [], { provider, salt: Contract.generateSalt() });
   await provider.addUtxo(contract.address, randomUtxo({ satoshis: 10000n }));
   const amount = 1000n;
   const { utxos, changeAmount } = gatherUtxos(await contract.getUtxos(), { amount });

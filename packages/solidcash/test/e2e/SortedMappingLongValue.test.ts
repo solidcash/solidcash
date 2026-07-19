@@ -83,7 +83,7 @@ describe('sorted mapping with a LONG (>64 B) unbounded bytes/string value (P5b)'
       ];
       // Seed the value chunks (100 B -> a single 120 B chunk) at the per-(collection, slot, digest) address.
       splitValueIntoValueChunks(bigVal).forEach((data, i) => outs.push({
-        address: chunkAddr, satoshis: 1000n,
+        address: chunkAddr, satoshis: 1500n, // >= dust for the ~200 B chunk-commitment token output on a live node
         token: { amount: 0n, nft: { capability: 'mutable' as const, commitment: buildValueChunkCommitment(s5, digest, i, data) } },
       }));
       return outs;
@@ -153,7 +153,7 @@ describe('sorted mapping with a LONG (>64 B) unbounded bytes/string value (P5b)'
         { address: ea, satoshis: 1500n, token: { amount: 0n, nft: { capability: 'mutable' as const, commitment: binToHex(encodeEntryCommitment(s5, ZERO, valueTail(realVal))) } } },
       ];
       splitValueIntoValueChunks(forgedVal).forEach((data, i) => outs.push({
-        address: chunkAddr, satoshis: 1000n,
+        address: chunkAddr, satoshis: 1500n, // >= dust for the ~200 B chunk-commitment token output on a live node
         token: { amount: 0n, nft: { capability: 'mutable' as const, commitment: buildValueChunkCommitment(s5, digest, i, data) } },
       }));
       return outs;
@@ -247,7 +247,7 @@ describe('sorted mapping with a LONG (>64 B) unbounded bytes/string value (P5b)'
         { address: ea, satoshis: 1500n, token: { amount: 0n, nft: { capability: 'mutable' as const, commitment: binToHex(encodeEntryCommitment(s5, ZERO, valueTail(v1))) } } },
       ];
       splitValueIntoValueChunks(v1).forEach((data, i) => outs.push({
-        address: chunkAddr, satoshis: 1000n,
+        address: chunkAddr, satoshis: 1500n, // >= dust for the ~200 B chunk-commitment token output on a live node
         token: { amount: 0n, nft: { capability: 'mutable' as const, commitment: buildValueChunkCommitment(s5, d1, i, data) } },
       }));
       return outs;

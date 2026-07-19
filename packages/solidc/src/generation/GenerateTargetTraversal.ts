@@ -12014,8 +12014,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const walk = (n: Node): void => {
       if (found || !n || seen.has(n)) return;
       seen.add(n);
+      // BOOL-LITERAL value ONLY: the range-splice body pins each new node's value to 0x01 / empty (loop-invariant),
+      // so a positive-membership set `m[k[i]] = true` (whitelistWorkers) is the supported case. A PER-KEY value
+      // (`m[k[i]] = v[i]`, RMW `m[k[i]] += v`) would need each chain node's value verified against the source value,
+      // but the covenant walks the SORTED chain (not source order) - the permutation is unresolved (needs a
+      // sorted-order value witness). So a non-bool value write does NOT match here and falls through to the clean
+      // compile-time fail-close (SortedMappingCodegenPendingError), NOT a compile-OK that reverts at runtime.
       if (n instanceof MappingAssignNode && n.collection?.sorted
         && !n.arrayIndex && !n.arrayPush && !n.arrayPop
+        && n.expression instanceof BoolLiteralNode
         && this.sortedValueKind(n.collection.innermostValueType) !== null) {
         found = n; return;
       }

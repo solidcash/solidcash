@@ -559,11 +559,12 @@ export class SortedMappingCodegenPendingError extends SolidCashError {
   constructor(
     public node: Node,
     name: string,
+    detail?: string,
   ) {
-    super(node, `Source-level access of the sorted mapping '${name}' is not yet compiled. The C2 sorted-`
+    super(node, detail ?? (`Source-level access of the sorted mapping '${name}' is not yet compiled. The C2 sorted-`
       + 'linked-list covenant is proven and driven by the SortedList SDK, but the compiler codegen that emits it '
       + 'from source is pending (docs/sorted-mapping-c2.md). Remove it from CompilerOptions.sortedMappings to use '
-      + 'the default entry model, or access this mapping only via the SDK.');
+      + 'the default entry model, or access this mapping only via the SDK.'));
   }
 }
 

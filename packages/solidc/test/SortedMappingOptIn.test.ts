@@ -112,3 +112,38 @@ describe('sorted mapping opt-in (C2)', () => {
     expect(() => compileString(`${SET} function f(int k) { claimed[k] = true; } }`, { forceStateful: true })).not.toThrow();
   });
 });
+
+// A sorted (C2) mapping keyed by msg.sender / tx.origin is not yet drivable: the SDK has no keySource to resolve the
+// caller's slot (keyToSlot of the tx.origin P2PKH lockscript), so the covenant reverts at the VM. It now fails CLOSED
+// at COMPILE with a clear, actionable message instead of compiling then reverting at runtime. deferrals "multitransfer
+// (a)". A PARAMETER address key works; msg.sender used AS A VALUE (not a key) is unaffected.
+describe('sorted mapping keyed by msg.sender / tx.origin fails closed at compile', () => {
+  const M = 'contract C() { mapping(address => int) bal;';
+  const opt = { sortedMappings: ['bal'], forceStateful: true };
+  const err = /keyed by 'msg\.sender'|keyed by 'tx\.origin'|not yet supported/;
+
+  it('write bal[msg.sender] = v fails closed with a clear message', () => {
+    expect(() => compileString(`${M} function f(int v, pubkey pk, sig s) { require(checkSig(s,pk)); bal[msg.sender] = v; } }`, opt))
+      .toThrow(err);
+  });
+  it('read bal[msg.sender] fails closed', () => {
+    expect(() => compileString(`${M} function f(int e, pubkey pk, sig s) { require(checkSig(s,pk)); require(bal[msg.sender] == e); } }`, opt))
+      .toThrow(err);
+  });
+  it('delete bal[msg.sender] fails closed', () => {
+    expect(() => compileString(`${M} function f(pubkey pk, sig s) { require(checkSig(s,pk)); delete bal[msg.sender]; } }`, opt))
+      .toThrow(err);
+  });
+  it('tx.origin key fails closed', () => {
+    expect(() => compileString(`${M} function f(int v, pubkey pk, sig s) { require(checkSig(s,pk)); bal[tx.origin] = v; } }`, opt))
+      .toThrow(err);
+  });
+  it('a PARAMETER address key still compiles (the BCH idiom)', () => {
+    expect(() => compileString(`${M} function f(address a, int v, pubkey pk, sig s) { require(checkSig(s,pk)); bal[a] = v; } }`, opt))
+      .not.toThrow();
+  });
+  it('msg.sender used AS A VALUE (not a key) still compiles', () => {
+    expect(() => compileString('contract C() { mapping(int => address) owner; function f(int k, pubkey pk, sig s) { require(checkSig(s,pk)); owner[k] = msg.sender; } }', { sortedMappings: ['owner'], forceStateful: true }))
+      .not.toThrow();
+  });
+});

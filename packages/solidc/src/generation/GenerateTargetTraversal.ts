@@ -10178,6 +10178,25 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     return node;
   }
 
+  // A sorted (C2) mapping keyed by msg.sender / tx.origin is not yet drivable: the SDK has no keySource to resolve
+  // the caller's slot (keyToSlot of the tx.origin P2PKH lockscript), so it cannot plan the co-spend / insert and the
+  // covenant reverts at the VM. Fail closed at COMPILE with a clear message (never compile-OK-then-revert). deferrals
+  // "multitransfer (a)". A PARAMETER address key (the BCH idiom) works; msg.sender AS A VALUE is unaffected.
+  private assertSortedKeyDrivable(
+    node: MappingAccessNode | MappingAssignNode | MappingDeleteNode, name: string,
+  ): void {
+    for (const k of node.keys) {
+      if (k instanceof NullaryOpNode
+        && (k.operator === NullaryOperator.MSG_SENDER || k.operator === NullaryOperator.TX_ORIGIN)) {
+        throw new SortedMappingCodegenPendingError(node, name,
+          `A sorted (C2) mapping ('${name}') keyed by '${k.operator}' is not yet supported: the SDK cannot resolve `
+          + `the ${k.operator} slot to co-spend its entry (it reverts at the VM). Pass the sender's address as a `
+          + 'function parameter and key by that (the BCH idiom), or opt the mapping out of C2 with '
+          + '{ sortedMappingsAll: false }.');
+      }
+    }
+  }
+
   visitMappingAccess(node: MappingAccessNode): Node {
     // Handle token container access: this.tokens[category]
     // Don't generate code here - the FieldAccess or TokenContainerMethodStatement visitor will handle it
@@ -10192,6 +10211,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // and return the real value (set -> membership bit; value mapping -> the value tail if present, else the type
     // default proven-absent via the bracket). No default-on-absent branch -> the omission attack is closed.
     if (node.collection?.sorted) {
+      this.assertSortedKeyDrivable(node, node.collection.name);
       // Whole value read, or (for a chunkable array value) element read: materialize the array via the C2 read,
       // then extract element [i]. emitSortedSetRead already co-spends the proving entry and reassembles chunks.
       this.emitSortedSetRead(node);
@@ -10648,6 +10668,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Body), the SDK derives the evolving list. Fixed-bound loops are unrolled before codegen and reach here at
     // plainLoopDepth 0. If the insert-loop was set up (value write, single varying key), emit it; else fail closed
     // (array element write / unsupported shape) - never degrade a C2 write to the omittable default-on-absent model.
+    if (node.collection?.sorted) this.assertSortedKeyDrivable(node, node.collection.name);
     if (node.collection?.sorted && this.plainLoopDepth > 0) {
       if (this.sortedInsertLoopActive && this.sortedInsertLoopCollection === node.collection.name
         && !node.arrayIndex && !node.arrayPush && !node.arrayPop
@@ -11479,6 +11500,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // present -> update to 0/false/empty (nullify, node stays), absent -> insert the default. Works for bool sets
     // (delete claimed[k] writes the empty/false tail) and value mappings alike, single- or composite-key.
     if (node.collection?.sorted) {
+      this.assertSortedKeyDrivable(node, node.collection.name);
       // A C2 `delete m[k]` in a DYNAMIC loop is a per-iteration sorted delete of an EVOLVING list - the same deep
       // case visitMappingAssign fails closed on. emitSortedValueUpsert co-spends the entry at a FIXED block slot, so
       // running it in a loop would pin only ONE iteration's delete and leave the rest un-covenanted (a C2 hole).

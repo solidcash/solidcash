@@ -12021,16 +12021,24 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const walk = (n: Node): void => {
       if (found || !n || seen.has(n)) return;
       seen.add(n);
-      // BOOL-LITERAL value ONLY: the range-splice body pins each new node's value to 0x01 / empty (loop-invariant),
-      // so a positive-membership set `m[k[i]] = true` (whitelistWorkers) is the supported case. A PER-KEY value
-      // (`m[k[i]] = v[i]`, RMW `m[k[i]] += v`) would need each chain node's value verified against the source value,
-      // but the covenant walks the SORTED chain (not source order) - the permutation is unresolved (needs a
-      // sorted-order value witness). So a non-bool value write does NOT match here and falls through to the clean
-      // compile-time fail-close (SortedMappingCodegenPendingError), NOT a compile-OK that reverts at runtime.
+      // LOOP-INVARIANT value only: the range-splice body assigns EVERY new chain node the SAME value, so the value must
+      // not vary per key. Two supported forms: (1) a BOOL LITERAL (`m[k[i]] = true`, whitelistWorkers) pinned to
+      // 0x01/empty; (2) an 'int'-kind value read from a bare IDENTIFIER (`m[k[i]] = v`) - the SDK mints every node with
+      // valueTail = encode(v arg) and the body PICKs v + EQUALVERIFYs node.value, so an invariant param verifies while a
+      // reassigned / non-param identifier mints a mismatching tail and REVERTS (fail-closed). A PER-KEY value
+      // (`m[k[i]] = vs[i]`, RMW `+= v`) is an ArrayAccess/binary expr - NOT matched here (the permutation of source
+      // values onto the SORTED chain is unresolved) - so it falls to the clean SortedMappingCodegenPendingError.
+      const vkind = n instanceof MappingAssignNode && n.collection?.sorted
+        ? this.sortedValueKind(n.collection.innermostValueType) : null;
+      // An identifier value must be a function PARAMETER: params are loop-invariant (set once at call entry), so the
+      // SDK's minted valueTail = encode(param arg) is the same for every node and the body's PICK verifies. The loop
+      // variable and other locals are NOT params -> fail closed at COMPILE here (not a compile-then-VM-revert).
+      const isInvariantParamValue = n instanceof MappingAssignNode
+        && n.expression instanceof IdentifierNode && vkind === 'int'
+        && this.currentFunction.parameters.some((p) => p.name === (n.expression as IdentifierNode).name);
       if (n instanceof MappingAssignNode && n.collection?.sorted
-        && !n.arrayIndex && !n.arrayPush && !n.arrayPop
-        && n.expression instanceof BoolLiteralNode
-        && this.sortedValueKind(n.collection.innermostValueType) !== null) {
+        && !n.arrayIndex && !n.arrayPush && !n.arrayPop && vkind !== null
+        && (n.expression instanceof BoolLiteralNode || isInvariantParamValue)) {
         found = n; return;
       }
       for (const key of Object.keys(n)) {
@@ -12195,10 +12203,21 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(encodeInt(BigInt(this.getStackIndex(this.sortedInsertLoopExpectedName) + 4)), loc);
     this.emit(Op.OP_PICK, loc); this.emit(Op.OP_EQUALVERIFY, loc);
 
-    // value == the loop's (loop-invariant) value. Bool literal true -> 0x01, false -> empty; else fall back to 0x01.
-    this.emit(Op.OP_DUP, loc);
+    // value == the loop-INVARIANT value. Bool literal -> pinned 0x01/empty. An 'int'-kind IDENTIFIER value (`= v`):
+    // PICK the value variable and EQUALVERIFY node.value == it. The stored tail is the raw VM number (== the SDK's
+    // encode(v arg) minted into every node), which byte-matches a PICK'd int/bool var. `+4` = the untracked items
+    // above the tracked top (counter) at this point: slot, next, value, value-dup. A reassigned / non-param variable
+    // mints a mismatching tail (or empty) and reverts here - sound (never a silent wrong store).
     const expr = node.expression;
-    this.emit(expr instanceof BoolLiteralNode && !expr.value ? new Uint8Array(0) : new Uint8Array([1]), loc);
+    this.emit(Op.OP_DUP, loc); // [.., slot, next, value, value]
+    if (expr instanceof IdentifierNode) {
+      const d = this.getStackIndex(expr.name, true);
+      if (d < 0) throw new SortedMappingCodegenPendingError(node, collection.name); // clean fail-close, never a crash
+      this.emit(encodeInt(BigInt(d + 4)), loc);
+      this.emit(Op.OP_PICK, loc);
+    } else {
+      this.emit(expr instanceof BoolLiteralNode && !expr.value ? new Uint8Array(0) : new Uint8Array([1]), loc);
+    }
     this.emit(Op.OP_EQUALVERIFY, loc);
 
     // slot < next (sorted forward), unless next == 0 (the terminus +inf / P.oldnext).

@@ -122,28 +122,27 @@ msg.sender) + `_balances[to] += amt` (DIFFERENT key each iter). Full form still 
   adversarial omission/reorder/duplicate/wrong-value/insert-vs-update proofs. Soundness-critical; `ecrecover` + the
   EIP712 domain separator sit behind it, unreached.
 
-- **(c) LOOP-INVARIANT non-bool value insert loop - TRACTABLE completeness follow-up (SDK already ready).** `for(i)
-  m[ks[i]] = v` where `v` is a loop-INVARIANT param (same value for every inserted node) is a SOUNDLY-supportable case
-  distinct from (b)'s per-key permutation - all nodes share value `v`, no source/sorted-order mismatch. It used to MATCH
-  `findSortedInsertLoopWrite` (any sorted scalar), compile, then REVERT at the VM (the body pins node.value to `0x01`
-  while the SDK mints the real `v`); `5bc59d08` correctly fail-closed it (restricting the match to `BoolLiteralNode`).
-  The SDK side is ALREADY DONE: `StatefulContract` (~5600-5629) computes `valueTail = encode(valueParam arg)` and mints
-  every chain node with it. ONLY `emitSortedInsertLoopBody`'s value check (~12198) hardcodes `0x01`. To complete: (1)
-  match a loop-invariant param value (bool literal OR an IdentifierNode that is a current-fn PARAM, not the loop var,
-  not reassigned; per-key `vs[i]` and `= i` must stay fail-closed); (2) push `encode(v)` ONCE in
-  `emitSortedInsertLoopSetup` as a persistent named item (mind the setup/body/teardown offset dance - deepest, use
-  `getStackIndex(name)` only), body EQUALVERIFYs node.value against it, teardown drops it. Needs adversarial VM proof
-  (v=7 all-nodes-7 + omission-proof intact; `vs[i]` / `= i` / reassigned-param fail closed). NOT done here: it edits
-  soundness-critical covenant offsets and must not be rushed. `CorpusGapFixes` "dynamic insert loop" now tests the bool
-  case + asserts the non-bool `= v` fail-close.
+- **(c) LOOP-INVARIANT non-bool value insert loop - RESOLVED 2026-07-19 (`SortedInsertLoopValue`, VM-proven).** `for(i)
+  m[ks[i]] = v` where `v` is a loop-INVARIANT param (same value for every inserted node) is distinct from (b)'s per-key
+  permutation - all nodes share value `v`, no source/sorted-order mismatch. The SDK already minted `valueTail =
+  encode(valueParam arg)` into every node (`StatefulContract` ~5600-5629); only `emitSortedInsertLoopBody` pinned
+  node.value to `0x01` (so it VM-reverted for `v != 1`), which `5bc59d08` fail-closed. Now `findSortedInsertLoopWrite`
+  also matches an 'int'-kind IdentifierNode value that is a current-fn PARAMETER, and the body PICKs that variable +
+  EQUALVERIFYs `node.value == v` (the stored int tail is the raw VM number, byte-equal to a PICK'd int/bool param; `+4`
+  = untracked slot/next/value/value-dup above the tracked top). No setup/teardown change (a param stays tracked at its
+  slot all loop). VM-proven sound: 3 keys all = 100 read back exactly 100, `chk(k,1)` and `chk(k,99)` REVERT (not the
+  old pin, not a placeholder), absent reads 0. Fail-closed (still, by design): per-key `vs[i]` (ArrayAccess), RMW `+=`,
+  and the loop var `= i` (not a param) - `CorpusGapFixes` asserts all four boundaries. A reassigned param or non-param
+  local also mints a mismatching/empty tail and reverts (sound). Still NOT this: the (b) per-key diff-key credit.
 
 **C2 SURVEY 2026-07-19 (`scratchpad/c2probe.mjs` + VM).** Every C2 shape is now SOUND (fail-closed where incomplete).
 COMPLETE+SOUND: single-key read/write/RMW/delete (all value types incl chunked long bytes/string), nested/composite/
-address keys, expr-key nested (`m[hash160(pk)][b]=v`), value-returning RMW helper, bool insert loop, SAME-identifier-key
-scalar RMW-in-loop (`for(i) balance[owner] -= amts[i]`, `2f780468`). FAIL-CLOSED (sound, not complete): per-key-value
-insert loop (permutation/value-witness), multitransfer diff-key credit (above), `msg.sender`/`tx.origin`-keyed C2
-(SDK-blocked - no `msgSender` keySource; single write VM-reverts), delete/nullify-in-loop, 2D `m[k][i][j]`,
-function-pointer values.
+address keys, expr-key nested (`m[hash160(pk)][b]=v`), value-returning RMW helper, bool insert loop, LOOP-INVARIANT
+int-param value insert loop (`for(i) m[ks[i]] = v`, `SortedInsertLoopValue`), SAME-identifier-key scalar RMW-in-loop
+(`for(i) balance[owner] -= amts[i]`, `2f780468`). FAIL-CLOSED (sound, not complete): PER-KEY value insert loop
+(`= vs[i]`, permutation/value-witness), RMW insert loop (`+= v`), multitransfer diff-key credit (above),
+`msg.sender`/`tx.origin`-keyed C2 (SDK-blocked - no `msgSender` keySource; single write VM-reverts),
+delete/nullify-in-loop, 2D `m[k][i][j]`, function-pointer values.
 
 **One real HOLE found + FIXED (commit `af6e894a`): C2 `delete m[k]` in a DYNAMIC loop.** `visitMappingDelete`'s sorted
 branch routed to `emitSortedValueUpsert` (a FIXED-slot co-spend) with NO `plainLoopDepth` guard (unlike

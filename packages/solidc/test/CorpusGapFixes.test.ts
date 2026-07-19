@@ -2223,16 +2223,19 @@ describe('low-level call with mapping-entry operands (block-layout slot allocati
 describe('C2 (sorted) mapping write in a runtime loop: fixed-bound unrolls, dynamic diff-key insert loop', () => {
   // A C2 write inside a DYNAMIC loop is a per-iteration sorted-linked-list INSERT (co-spend the bracketing
   // predecessor, mint one NEW node; the SDK derives the evolving list). Fixed-bound loops are unrolled to static
-  // writes before codegen (each a full emitSortedValueUpsert that verifies the ACTUAL value, so a non-bool value is
-  // fine there). The DYNAMIC range-splice body (emitSortedInsertLoopBody) pins each node's value to a LOOP-INVARIANT
-  // literal (bool 0x01 / empty) - it walks the SORTED chain and cannot bind a chain position to a per-key source
-  // value, so only a bool-value insert loop (whitelistWorkers `w[k[i]] = true`) compiles; a per-key / non-bool value
-  // falls to the clean SortedMappingCodegenPendingError (see SortedInsertLoopNonBool + deferrals.md multitransfer (b)).
+  // writes before codegen (each a full emitSortedValueUpsert that verifies the ACTUAL value). The DYNAMIC range-splice
+  // body (emitSortedInsertLoopBody) assigns every new node the SAME LOOP-INVARIANT value, so it supports a bool
+  // literal (`m[k[i]] = true`) OR an int-kind INVARIANT PARAM (`m[k[i]] = v`): the SDK mints valueTail = encode(v) and
+  // the covenant PICKs v + EQUALVERIFYs node.value == v (VM-proven in SortedInsertLoopValue). A PER-KEY value
+  // (`m[k[i]] = vs[i]`), an RMW (`+= v`), or the loop var (`= i`, not a param) cannot be pinned to one value (the
+  // permutation onto the SORTED chain is unresolved) and fall to the clean SortedMappingCodegenPendingError.
   const mkBigint = (loop: string): string => 'contract C() { mapping(int => bigint) m;'
-    + ` function f(int[] ks, int v, pubkey pk, sig s) { require(checkSig(s, pk)); ${loop} } }`;
+    + ` function f(int[] ks, int[] vs, int v, pubkey pk, sig s) { require(checkSig(s, pk)); ${loop} } }`;
   const boolLoop = 'contract C() { mapping(int => bool) m;'
     + ' function f(int[] ks, pubkey pk, sig s) { require(checkSig(s, pk));'
     + ' for (int i = 0; i < ks.length; i++) { m[ks[i]] = true; } } }';
+  const silOf = (loop: string): string[] | undefined => compileString(mkBigint(loop),
+    { sortedMappingsAll: true, forceStateful: true }).abi.find((f) => f.name === 'f')?.sortedInsertLoops;
   it('unrolls a fixed-bound C2 loop (static upserts handle the actual value)', () => {
     expect(() => compileString(mkBigint('for (int i = 0; i < 3; i++) { m[ks[i]] = v; }'),
       { sortedMappingsAll: true, forceStateful: true })).not.toThrow();
@@ -2241,9 +2244,20 @@ describe('C2 (sorted) mapping write in a runtime loop: fixed-bound unrolls, dyna
     const art = compileString(boolLoop, { sortedMappingsAll: true, forceStateful: true });
     expect(art.abi.find((f) => f.name === 'f')?.sortedInsertLoops).toContain('m');
   });
-  it('fails closed on a dynamic PER-KEY / non-bool value insert loop (permutation unresolved)', () => {
-    expect(() => compileString(mkBigint('for (int i = 0; i < ks.length; i++) { m[ks[i]] = v; }'),
-      { sortedMappingsAll: true, forceStateful: true })).toThrow(/SortedMappingCodegenPending|sorted/i);
+  it('compiles a dynamic INVARIANT-PARAM value insert loop (m[ks[i]] = v)', () => {
+    expect(silOf('for (int i = 0; i < ks.length; i++) { m[ks[i]] = v; }')).toContain('m');
+  });
+  it('fails closed on a PER-KEY value insert loop (m[ks[i]] = vs[i], permutation unresolved)', () => {
+    expect(() => silOf('for (int i = 0; i < ks.length; i++) { m[ks[i]] = vs[i]; }'))
+      .toThrow(/SortedMappingCodegenPending|sorted/i);
+  });
+  it('fails closed on an RMW insert loop (m[ks[i]] += v)', () => {
+    expect(() => silOf('for (int i = 0; i < ks.length; i++) { m[ks[i]] += v; }'))
+      .toThrow(/SortedMappingCodegenPending|sorted/i);
+  });
+  it('fails closed on a loop-var value (m[ks[i]] = i, not a param)', () => {
+    expect(() => silOf('for (int i = 0; i < ks.length; i++) { m[ks[i]] = i; }'))
+      .toThrow(/SortedMappingCodegenPending|sorted/i);
   });
 });
 

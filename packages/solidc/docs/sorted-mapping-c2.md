@@ -187,32 +187,31 @@ truly separate physical upserts of one entry require N transactions. Residual ga
 reassigned mid-function, a `delete` interleaved with element writes, multi-collection entanglement), not a covenant
 limitation.
 
-### Same range - N writes to DIFFERENT keys - partly open
+### Same range - N writes to DIFFERENT keys - largely SHIPPED
 
 N different keys are N different entry UTXOs, so they CAN all be co-spent and re-emitted in one tx (N inputs -> N
-outputs), bounded only by transaction size / input count. The default (non-sorted) entry model already ships the
-pure-write case - `for (i < n) m[k[i]] = v[i]` lowers to a runtime entry-mint covenant loop (`emitLoopEntryWrite`, see
-`mapping-loop-writes.md`). The C2 sorted analog currently FAILS CLOSED (`SortedMappingCodegenPendingError` at
-`GenerateTargetTraversal.ts:10633`) because the sorted structure evolves as keys are added. It decomposes by difficulty:
+outputs), bounded only by transaction size / input count. Most of this is now shipped via the **per-iteration UPSERT
+loop** (`emitSortedUpsertLoop{Setup,Body,Teardown}`), which co-spends one entry per recipient (its own entry for an
+UPDATE, or its bracketing predecessor for an INSERT) and mints the result, with dual counters (co-spends vs cumulative
+mints) so update (mint 1) and insert (mint P'+NEW) coexist. What ships:
 
-1. **Batch update of N existing keys (medium).** Every key is already present, so each write is an independent
-   value-replace with pointers untouched - no structural dependency between keys. Needs a sorted-update loop covenant
-   (the `emitLoopEntryWrite` shape, extended to read the current value and preserve `next`) plus SDK derivation of the
-   co-spend set from the loop trace.
-2. **Contiguous-range insert into one gap (medium).** If all N new keys sort into a single existing gap
-   (`P.next == S`, `P < k1 < ... < kN < S`), the whole run splices at once: co-spend `P` and `S` a single time, verify
-   the run is internally sorted and bracketed, and emit `P -> k1 -> ... -> kN -> S`. One bracket operation covers the
-   range - this is why a contiguous RANGE is tractable where arbitrary scattered keys are not.
-3. **Scattered multi-insert across gaps (hard).** When new keys land in different gaps - or two land adjacent - each
-   insert's predecessor depends on the inserts before it; the list, the bracketing predecessor, and the slot ordering
-   all evolve per iteration. This is the true per-iteration sorted-insert covenant: thread the evolving list through the
-   covenant and simulate insert-by-insert in the SDK.
-4. **RMW / delete / mixed within the range (incremental).** Layers onto the above - delete unlinks (predecessor
-   re-points to skip the node), RMW reads then writes per key.
+1. **Batch update of N existing keys - SHIPPED** (`941dd7de`). `for(i) m[k[i]] += v[i]` (and `-=`, `= vs[i]`) reads each
+   key's current value and mints the updated node with `next` preserved. Source order == counter order = no permutation.
+2. **Batch insert into DISTINCT gaps - SHIPPED** (`125cb014`). Each new recipient co-spends its own bracketing
+   predecessor and mints P' + NEW; 1:1 co-spend/mint per recipient. Duplicate / same-predecessor conflicts fail closed.
+3. **Loop-invariant value + delete + set - SHIPPED.** Fixed-amount airdrop `+= amount` (param) / `+= 100` (literal)
+   (`7673bc51`), absolute `= vs[i]` (op=set, `644532b1`), batch nullify `delete m[k[i]]` (op=delete, `bbc280a1`). All ops.
+4. **The FULL ERC-20 multiTransfer - SHIPPED** (`090f4e35` + `5856dfc5` + `69d1ed93`). The cached `bal[msg.sender] -=`
+   DEBIT and the credit loop coexist; a NEW recipient whose predecessor is UNTOUCHED works, and a NEW recipient whose
+   predecessor is the DEBITED msg.sender works too via the **merge**: the debit entry is co-spent once and re-pointed to
+   the new node (a re-point register set by the loop, applied by the debit flush; the covenant's in-gap check vs the
+   debit's real input is the omission anchor; two-in-gap fails closed). Adversarially VM-proven (`MsgSenderMerge`).
 
-Cross-cutting for all of these: a batch-lowering compiler pass (a sibling of `CacheMappingEntryInLoop`) or a batch mode
-on `emitSortedValueUpsert`; SDK progressive-trace derivation extended to the sorted structure (the co-spend set is
-entries plus their brackets); and - the delicate part - the exclusion proof must survive a batch, rejecting forged,
-omitted, misordered, or duplicated entries (adversarial tests per case), since a bug here reopens the C2 exclusion-proof
-hole. N per tx is capped by transaction size; larger N needs paginated writes across txs. Recommended build order is
-(1) then (2), deferring (3). Tracked in `deferrals.md` section 6(a).
+**Still fail-closed (sound, needs a batch-upsert covenant redesign).** Two shapes remain, both requiring a new structure
+that co-spends each DISTINCT touched entry once and mints its final (value, nextKey) together - the per-iteration loop
+can't express them: (a) a NEW recipient whose bracketing predecessor is ANOTHER CREDITED recipient (couples that
+entry's value-update and its link-re-point across different iterations - unlike the msg.sender case, there's no
+after-loop coordination point); (b) two-or-more new recipients CHAINING in one gap (a forward reference - the first
+node's `next` is a later-minted node). N per tx is capped by transaction size; larger N needs paginated writes across
+txs. Cross-cutting for the redesign: the exclusion proof must survive the batch (rejecting forged / omitted / misordered
+/ duplicated entries), since a bug reopens the C2 exclusion-proof hole. Tracked in `deferrals.md`.

@@ -107,10 +107,12 @@ msg.sender) + `_balances[to] += amt` (DIFFERENT key each iter). Full form still 
   cannot forge another's msg.sender without their P2PKH signature (VM-proven CROSS-SENDER ISOLATION: bob reads his own
   slot, cannot touch alice's balance). Insert+update+read + tx.origin all pass. The old compile fail-close
   (`assertSortedKeyDrivable`, `bfbd652b`) is REMOVED - the case is supported. Needs a connected Signer (else a clear
-  error). REMAINING for multitransfer's debit: `for(i) bal[msg.sender] -= amts[i]` (msg.sender key IN A LOOP) - the
-  scalar cache is identifier-only; extend `CacheMappingEntryInLoop` to a msg.sender key (now that the single flush
-  works, this reduces to the proven single write). Cross-contract msg.sender (non-zero `_msgSenderCategory` = a caller
-  contract, not a P2PKH) is out of scope (reverts, fail-closed).
+  error). Cross-contract msg.sender (non-zero `_msgSenderCategory` = a caller contract, not a P2PKH) is out of scope
+  (reverts, fail-closed). **multitransfer's DEBIT half `for(i) bal[msg.sender] -= amts[i]` = RESOLVED 2026-07-19
+  (`12dafc89`, MsgSenderC2):** `CacheMappingEntryInLoop` now accepts an INVARIANT nullary key (a `KeyKind` = id |
+  nullary), so the msg.sender RMW-in-loop reads bal[msg.sender] once -> accumulates -> ONE flush (the flush is the
+  proven single msg.sender write). VM-proven: `bal[msg.sender]=100` then `debitMany([10,20,30]) = 40` exactly, `chk(60)`
+  reverts. So multitransfer's DEBIT works; only the CREDIT (b) remains.
 
 - **(b) DIFF-KEY RMW-UPDATE-in-loop covenant - the deep one.** `for(i) _balances[recipients[i]] += amounts[i]`. Root
   finding (read `emitSortedInsertLoopBody`): the range-splice body verifies ONLY internal chain structure - node.slot ==
@@ -146,10 +148,11 @@ COMPLETE+SOUND: single-key read/write/RMW/delete (all value types incl chunked l
 address keys, expr-key nested (`m[hash160(pk)][b]=v`), value-returning RMW helper, bool insert loop, LOOP-INVARIANT
 int-param value insert loop (`for(i) m[ks[i]] = v`, `SortedInsertLoopValue`), SAME-identifier-key scalar RMW-in-loop
 (`for(i) balance[owner] -= amts[i]`, `2f780468`), SINGLE `msg.sender`/`tx.origin`-keyed read/write/update
-(`110e4e43`, MsgSenderC2 - msgSender keySource + signer P2PKH slot + forced sender funder; cross-sender-isolated).
+(`110e4e43`, MsgSenderC2 - msgSender keySource + signer P2PKH slot + forced sender funder; cross-sender-isolated),
+`msg.sender`/`tx.origin` scalar RMW-IN-LOOP (`for(i) bal[msg.sender] -= amts[i]` = multitransfer debit, `12dafc89`).
 FAIL-CLOSED (sound, not complete): PER-KEY value insert loop (`= vs[i]`, permutation/value-witness), RMW insert loop
-(`+= v`), multitransfer diff-key credit (above), `msg.sender` key IN A LOOP (scalar cache is identifier-only) +
-cross-contract msg.sender, delete/nullify-in-loop, 2D `m[k][i][j]`, function-pointer values.
+(`+= v`), multitransfer diff-key CREDIT (`for(i) bal[recipients[i]] += amts[i]`, above (b)), cross-contract
+msg.sender, delete/nullify-in-loop, 2D `m[k][i][j]`, function-pointer values.
 
 **One real HOLE found + FIXED (commit `af6e894a`): C2 `delete m[k]` in a DYNAMIC loop.** `visitMappingDelete`'s sorted
 branch routed to `emitSortedValueUpsert` (a FIXED-slot co-spend) with NO `plainLoopDepth` guard (unlike

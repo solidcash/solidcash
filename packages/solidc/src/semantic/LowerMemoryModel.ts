@@ -1047,10 +1047,10 @@ export default class LowerMemoryModel extends AstTraversal {
     return new CastNode(new BytesType(1), slice, false);
   }
 
-  // b[i] = v write -> splice one byte (bytes1(v), the low byte under BCH little-endian) in place at addr. Lowering
-  // lives in ./YulMemPrimitives.
+  // b[i] = v write -> splice one byte in place at addr. `val` is byte-typed (b's element), so the byte encoding is
+  // fullWord:false (bytes1(v)). Lowering + encoding live in ./YulMemPrimitives.
   private mstoreByte(addr: ExpressionNode, val: ExpressionNode): AssignNode {
-    return memByteStore(() => this.clone(addr), new CastNode(new BytesType(1), val, false));
+    return memByteStore(() => this.clone(addr), val, { fullWord: false });
   }
 
   // Handled today: an unbounded array of a 256-bit int (`uint`/`int`). 32-byte words store the value exactly, so

@@ -101,9 +101,15 @@ export function memWordLoad(off: OffFactory, opts: { pad?: boolean; decodeType: 
   return stamp(new CastNode(opts.decodeType, stamp(new CastNode(new BytesType(32), slice, false), src), false), src);
 }
 
-// mstore8(off, byteExpr): splice ONE byte in place at off. `byteExpr` is the caller's pre-built low byte - `bytes1(v)`
-// on the high-level side, `bytes32(v)[0:1]` on the Yul side (both the low byte under BCH little-endian).
-export function memByteStore(off: OffFactory, byteExpr: ExpressionNode, src?: Src): AssignNode {
+// mstore8(off, val): splice val's low byte in place at off. The two encodings live here (single home of the
+// byte-write formula): `fullWord` (a Yul mstore8 on an arbitrary 256-bit word) takes bytes32(val)[0:1] - the low
+// byte under BCH little-endian, valid for any word; otherwise (a high-level byte-typed value already in [0,255])
+// bytes1(val), which is cheaper but would OP_NUM2BIN-overflow for a value >= 256. Callers pick by domain, not
+// duplicate the encoding.
+export function memByteStore(off: OffFactory, val: ExpressionNode, opts: { fullWord: boolean }, src?: Src): AssignNode {
+  const byteExpr = opts.fullWord
+    ? stamp(new SliceNode(stamp(new CastNode(new BytesType(32), val, false), src), intLit(0n, src), intLit(1n, src)), src)
+    : stamp(new CastNode(new BytesType(1), val, false), src);
   const head = stamp(new SliceNode(memId(src), intLit(0n, src), off()), src);
   const tail = stamp(new SliceNode(memId(src), add(off(), intLit(1n, src), src), memLen(src)), src);
   return stamp(new AssignNode(memId(src), stamp(new BytesConcatNode([head, byteExpr, tail]), src)), src);

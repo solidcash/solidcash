@@ -399,9 +399,7 @@ function runtimeMstore8(offExpr: ExpressionNode, valExpr: ExpressionNode, src: Y
   const offName = `__yoff8_${yulTmpN++}`;
   const off = (): ExpressionNode => loc(new IdentifierNode(offName), src);
   const decl = loc(new VariableDefinitionNode(UINT256, [], offName, offExpr), src);
-  const word = loc(new CastNode(BYTES32, valExpr, false), src);
-  const lowByte = loc(new SliceNode(word, intLit(0n, src), intLit(1n, src)), src);
-  const store = memByteStore(off, lowByte, src);
+  const store = memByteStore(off, valExpr, { fullWord: true }, src);
   return loc(new BlockNode([decl, growTo(offName, 1n, src), store]), src);
 }
 
@@ -423,11 +421,7 @@ function runtimeReturndatacopy(
   const off = lowerValue(offArg);
   const declDst = loc(new VariableDefinitionNode(UINT256, [], dstName, lowerValue(dstArg)), src);
   const declLen = loc(new VariableDefinitionNode(UINT256, [], lenName, lowerValue(lenArg)), src);
-  const pad = newBytes(loc(new BinaryOpNode(need(), BinaryOperator.MINUS, memLen(src)), src), src);
-  const growAssign = loc(new AssignNode(yulmem(src), loc(new BytesConcatNode([yulmem(src), pad]), src)), src);
-  const grow = loc(new BranchNode(
-    loc(new BinaryOpNode(memLen(src), BinaryOperator.LT, need()), src), loc(new BlockNode([growAssign]), src),
-  ), src);
+  const grow = memGrowTo(need, src);
   const head = loc(new SliceNode(yulmem(src), intLit(0n, src), dst()), src);
   const rdSlice = loc(new SliceNode(rd, off, addE(off, len(), src)), src);
   const tail = loc(new SliceNode(yulmem(src), need(), memLen(src)), src);
@@ -467,11 +461,7 @@ function runtimeCopyInto(
     loc(new VariableDefinitionNode(UINT256, [], offName, srcOffE), src),
     loc(new VariableDefinitionNode(UINT256, [], lenName, lenE), src),
   ];
-  const pad = newBytes(loc(new BinaryOpNode(need(), BinaryOperator.MINUS, memLen(src)), src), src);
-  const growAssign = loc(new AssignNode(yulmem(src), loc(new BytesConcatNode([yulmem(src), pad]), src)), src);
-  const grow = loc(new BranchNode(
-    loc(new BinaryOpNode(memLen(src), BinaryOperator.LT, need()), src), loc(new BlockNode([growAssign]), src),
-  ), src);
+  const grow = memGrowTo(need, src);
   const srcPad = loc(new BytesConcatNode([srcBytes, newBytes(addE(off(), len(), src), src)]), src);
   const srcSlice = loc(new SliceNode(srcPad, off(), addE(off(), len(), src)), src);
   const head = loc(new SliceNode(yulmem(src), intLit(0n, src), dst()), src);
@@ -538,15 +528,13 @@ function runtimeMcopy(dstE: ExpressionNode, srcE: ExpressionNode, lenE: Expressi
   return loc(new BlockNode([...decls, growSrc, growDst, store]), src);
 }
 
-// grow to cover an arbitrary need expression (mcopy uses this; the store form uses growTo with a named offset).
+// grow to cover an arbitrary need expression (mcopy uses this; the store form uses growTo with a named offset). The
+// need is bound to a temp once (mcopy's need re-evaluates two temps), then the grow branch is the shared memGrowTo.
 function growTo2(need: ExpressionNode, src: YulNode): StatementNode {
   const nName = `__yneed_${yulTmpN++}`;
   const n = (): ExpressionNode => loc(new IdentifierNode(nName), src);
   const decl = loc(new VariableDefinitionNode(UINT256, [], nName, need), src);
-  const cond = loc(new BinaryOpNode(memLen(src), BinaryOperator.LT, n()), src);
-  const pad = newBytes(loc(new BinaryOpNode(n(), BinaryOperator.MINUS, memLen(src)), src), src);
-  const grow = loc(new AssignNode(yulmem(src), loc(new BytesConcatNode([yulmem(src), pad]), src)), src);
-  return loc(new BlockNode([decl, loc(new BranchNode(cond, loc(new BlockNode([grow]), src)), src)]), src);
+  return loc(new BlockNode([decl, memGrowTo(n, src)]), src);
 }
 
 // msize() -> current buffer length (the largest word-aligned index reached by the stores above).

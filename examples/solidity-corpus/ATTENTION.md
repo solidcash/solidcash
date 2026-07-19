@@ -126,11 +126,21 @@ LowerInlineAssembly delegate to `YulMemPrimitives`) is BYTE-IDENTICAL - a per-fi
 baseline was 0 OK<->FAIL / 0 error drift across 4876. So the inline-assembly/memory FAIL buckets below are unchanged
 by it; they are pre-existing and fundamental. Re-bucketed the current top FAILs to confirm no clean sound win remains:
 
-- **UnsupportedInlineAssembly (71).** 56 = EVM storage-slot manipulation (`sstore`/`sload`/`.slot`, `tstore`/`tload`,
-  storage array copy/delete, `storage_boundary_*`) - no EVM storage on BCH's UTXO model, correctly FAIL-CLOSED
-  (faking = miscompile). 7 = Yul user-`function` defs (recursion `fac`, nested defs, multi-return; recursion is not
-  expressible in BCH Script). 6 = calldata `.offset`/`.length` accessors (EVM-calldata-layout-specific offsets;
-  unsound to fake since BCH synthesizes calldata). 2 = fn-pointer `.selector` in asm. NONE cleanly+soundly closable.
+- **UnsupportedInlineAssembly (71) - CORRECTED 2026-07-19: NOT wholesale fundamental; the storage-slot SYSTEM is
+  grindable (user steer).** BCH assigns EVM-parity storage slots (keccak/erc7201 + P3/P4 layout, conformance-tested),
+  so slot-addressed assembly has a sound model. Sub-buckets: `.slot`/`.offset` on a state var or a storage-pointer
+  local (ARRAY pointer landed 2026-07-19 `6125c53a`); `sstore`/`sload` to a declared scalar / packed slot / literal
+  slot ALREADY WORK; the mapping-keccak-slot idiom routes to the high-level mapping (P4). GENUINELY tractable-next:
+  (a) UDVT (`ValueType`) slot fields - `resolveSlotFields` gates on `IntType` only, so `sstore(a.slot,..)` on a
+  `type T is uintN` var fails (`dirty_slot`, `dirty_uint8_read`); unwrap the value type (+ its dirty-bit write
+  semantics are EVM-specific, check soundness). (b) dynamic-ARRAY `.slot` sload/sstore = the length register (`A$len`),
+  needs routing. HARD/fail-closed remainder: sparse/computed raw slots with no declared var (correctly fail-closed),
+  `tstore`/`tload` (no tx-scoped storage). 6 = calldata `.offset`/`.length`: `.length` WORKS; `.offset` applies only
+  to DYNAMIC calldata params (bytes/string/array) whose head/tail our one-word-per-param model
+  (`selector ++ bytes32(p_i)`) can't represent - NOT fundamental (the ABI encoders exist, user's point), but needs
+  the calldata model rebuilt on real ABI head/tail encoding, a substantial + delicate change (must keep
+  `calldataload`/`calldatacopy`/`calldatasize` consistent). 7 = Yul user-`function` defs (recursion not in Script).
+  2 = fn-ptr `.selector`. So: storage SYSTEM grindable incrementally; calldata dynamic-`.offset` = scoped model work.
 - **ParseError (273).** Top slices: erc7201 non-literal namespace (16, niche); `mapping(K=>V)[]` array-of-mappings
   type (14+, PARSEABLE but BCH cannot soundly store an array of mappings -> grammar fix alone just moves the failure
   downstream, so not a real win); `.push`/`.pop`/`.delete` cluster (~38, mostly ref-returning `push()` = documented
@@ -146,6 +156,9 @@ by it; they are pre-existing and fundamental. Re-bucketed the current top FAILs 
   getter/alias chains), `__chaincall_3`, `arrayA`. FAIL-CLOSED (loud, not a miscompile); fixing risks regressing the
   VM-proven deploy-fold / array-extcall paths, so NOT a safe autonomous change.
 
-VERDICT: consistent with the 2026-07-11 "clean-slice veins EXHAUSTED" note - the remaining ~860 need
-platform-fundamental features (EVM storage/calldata, recursion), reference semantics (ref-returning push,
-array-of-mappings), or delicate external-call codegen work. No safe quick win in the top buckets.
+VERDICT (revised 2026-07-19 per user steer): the STORAGE-SLOT system is grindable incrementally for correctness (NOT
+fundamental) - one increment landed (`6125c53a`), UDVT + dynamic-array-slot next. Calldata dynamic-`.offset` needs a
+scoped calldata-model rebuild on ABI head/tail encoding (not fundamental). Genuinely hard/deferred remainder: EVM
+transient storage + sparse computed raw slots (fail-closed), Yul recursion, reference semantics (ref-returning push,
+array-of-mappings), delicate external-call codegen. So: grind storage-slot patterns incrementally; the calldata and
+external-call pieces are larger scoped changes, not quick wins.

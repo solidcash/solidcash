@@ -40,6 +40,17 @@ with no test edits** - the remaining work is porting the contracts, not the harn
    per contract, nested `artifacts/<sources>/<File>.scash/<Contract>.json` (mirrors Hardhat); `loadArtifactByName`
    resolves a contract by name across the tree. This is what makes `getContractFactory("MarketplaceV1")` match.
 
+## DEPLOY-PATH findings (2026-07-19, from a minimal `Unicrow` stub)
+Walking `getContractFactory("Unicrow").deploy(...)` surfaced + fixed two harness gaps, then hit the real one:
+- FIXED: artifact-name resolution deduped the flat `<file>.json` vs nested `<Contract>.json` (same contract).
+- FIXED (portback): `getContractFactory(name)` now defaults its runner to **signers[0]** (the deployer that
+  funds the genesis), mirroring hardhat - previously it defaulted to the read-only provider.
+- **NEXT PORTBACK / contract shape**: `ContractFactory.deploy` requires a STATEFUL contract ("Unicrow is not a
+  stateful contract"). The EA contracts DO have state, so each must be a stateful `.scash` (state vars + genesis
+  initial state); the fixture calls `.deploy(ctorArgs)` (Unicrow/FakeToken) and `upgrades.deployProxy(F, [args])`
+  (Marketplace/MarketplaceData). Mapping the fixture's positional CONSTRUCTOR args -> our stateful genesis
+  initial state is the first thing to wire per contract. `contracts-scash/Unicrow.scash` is the WIP starting point.
+
 ## NEXT: port the contracts (simplification allowed). Build order (per the test's describe blocks):
 The fixture `deployContractsFixture` (test lines 137-191) must deploy, so ALL of these need name-resolvable
 artifacts under `contracts-scash/` -> `artifacts/`:

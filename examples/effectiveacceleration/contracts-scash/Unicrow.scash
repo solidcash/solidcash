@@ -1,0 +1,9 @@
+pragma solidcash ^0.13.0;
+
+// Minimal deployable stub. The marketplace only stores Unicrow's address; escrow behaviour (Pay/Release/...) is
+// exercised much later (escrow describe blocks) and will be filled in then.
+contract Unicrow(bytes20 claimAddr, bytes20 arbitratorAddr, bytes20 disputeAddr, bytes20 governance, int fee) {
+  function version() {
+    require(fee >= 0);
+  }
+}

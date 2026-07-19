@@ -157,7 +157,11 @@ export function gatherUtxos(
 
   const minChangeAmount = 1000n;
 
-  for (const utxo of utxos) {
+  // Largest-first: accumulated small change (from prior spends on a shared regtest-singleton address) must not
+  // force many inputs - each carries the full redeem script and would inflate the tx past the fixed fee (min
+  // relay fee not met on a live node). Picking the biggest UTXO first keeps the input count minimal.
+  const sorted = [...utxos].sort((a, b) => (b.satoshis > a.satoshis ? 1 : b.satoshis < a.satoshis ? -1 : 0));
+  for (const utxo of sorted) {
     if (total - fee - minChangeAmount > amount) break;
     total += utxo.satoshis;
     targetUtxos.push(utxo);

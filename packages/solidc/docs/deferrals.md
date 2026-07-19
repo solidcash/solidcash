@@ -110,8 +110,11 @@ msg.sender) + `_balances[to] += amt` (DIFFERENT key each iter). Full form still 
   never silent-wrong) because on-chain `slot == keyToSlot(msg.sender)` rejects a wrong SDK slot. Note real OZ ERC20
   mostly reaches storage via a PARAM (`_transfer(from,to)` -> `_balances[from]`, which WORKS) - the DIRECT
   `_balances[msg.sender]` is the rarer shape. A cache extension to nullary keys was built then REVERTED (it turned the
-  clear compile fail-close into a murky VM revert). Until the keySource lands, `msg.sender`-keyed C2 fails at the VM
-  (compile-then-revert); a compile-time fail-close for it is a possible clarity follow-up.
+  clear compile fail-close into a murky VM revert). **Compile-time fail-close SHIPPED 2026-07-19 (`bfbd652b`):**
+  `assertSortedKeyDrivable` (GTT sorted read/write/delete branches) now rejects a msg.sender/tx.origin KEY of a sorted
+  mapping at COMPILE with an actionable message (was compile-then-VM-revert). A PARAMETER address key still compiles;
+  msg.sender AS A VALUE is unaffected (`SortedMappingOptIn.test.ts`, 6 cases). The full drivability fix (the keySource
+  above) stays deferred; when it lands, remove the guard.
 
 - **(b) DIFF-KEY RMW-UPDATE-in-loop covenant - the deep one.** `for(i) _balances[recipients[i]] += amounts[i]`. Root
   finding (read `emitSortedInsertLoopBody`): the range-splice body verifies ONLY internal chain structure - node.slot ==

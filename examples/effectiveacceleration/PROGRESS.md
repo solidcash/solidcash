@@ -124,9 +124,11 @@ Isolated (minimal repros) what the admin block needs beyond bug #2:
   accounted for by the impl's auto-derivation covenant when the state transition runs via delegatecall. Every
   admin test emits (Paused/Unpaused/OwnershipTransferred/VersionChanged), so this blocks nearly all of them.
   Deep covenant fix (delegatecall + event output + auto-derivation), likely in the StatefulContract/GTT WIP path.
-- **state getters not on the proxy handle**: `marketplace.version()` is undefined - the getter lives on the
-  underlying `proxy.proxy.version()` (works), but `ProxyContract`/`wrapDispatch` only forwards impl FUNCTIONS, not
-  the grafted state getters. Bounded portback (route state-var names to the underlying proxy StatefulContract).
+- **state getters on the proxy handle: FIXED** (commit 7d660444) - `wrapDispatch` now routes a bare state-var
+  name to the underlying proxy contract's getter, so `marketplace.version()` / `marketplace.paused()` read on the
+  handle (Solidity-parity). Verified: proxy.version()/paused() + a delegate setter round-trip (setVersion(25) ->
+  version() == 25n). (Minor open: `deployProxy(..., { initializer:false, initialState })` seeds 0, not the given
+  value - the default-proxy genesis seed path; the setter path works so it is not blocking.)
 - **owner == msg.sender EVM-address wall** (the 3-way fork above): owner/transferOwnership + every
   `.withArgs(<address>)` event assertion need the address-identity decision.
 Confirmed working through the proxy: a `delegate` setter WITHOUT emit + state read via `proxy.proxy.<var>()`.

@@ -12467,15 +12467,26 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    */
   private emitSortedUpsertLoopTeardown(loc: SingleLocationData): void {
     if (!this.sortedUpsertLoopActive) return;
-    // entry-input count == counter.
-    this.emit(encodeInt(BigInt(this.getStackIndex(this.sortedUpsertLoopCounterName))), loc); this.emit(Op.OP_PICK, loc);
+    // The entry NFT address ALSO hosts this collection's FIXED (non-loop) entries - e.g. a full multiTransfer's
+    // cached `bal[msg.sender] -= amounts[i]` debit is a fixed slot at the same address. Those are co-spent + minted
+    // (verified separately at their fixed positions), so the address's total entry-input/output count is counter +
+    // nFixed, not counter. nFixed = fixed (non-inLoop) entry slots for this collection.
+    const nFixed = this.entrySlots.filter(
+      (s) => s.collection === this.sortedUpsertLoopCollection && !s.inLoop,
+    ).length;
+    const pushExpectedCount = (): void => {
+      this.emit(encodeInt(BigInt(this.getStackIndex(this.sortedUpsertLoopCounterName))), loc); this.emit(Op.OP_PICK, loc);
+      if (nFixed > 0) { this.emit(encodeInt(BigInt(nFixed)), loc); this.emit(Op.OP_ADD, loc); }
+    };
+    // entry-input count == counter + nFixed.
+    pushExpectedCount();
     this.pushToStack('(ul_incount)');
     this.emitVerifyChunkUtxoCount('(ul_incount)', false, loc, this.sortedUpsertLoopAddrName);
     let idx = this.getStackIndex('(ul_incount)');
     this.emit(encodeInt(BigInt(idx)), loc); this.emit(Op.OP_ROLL, loc); this.emit(Op.OP_DROP, loc);
     this.removeFromStack(idx);
-    // entry-output count == counter.
-    this.emit(encodeInt(BigInt(this.getStackIndex(this.sortedUpsertLoopCounterName))), loc); this.emit(Op.OP_PICK, loc);
+    // entry-output count == counter + nFixed.
+    pushExpectedCount();
     this.pushToStack('(ul_outcount)');
     this.emitVerifyChunkUtxoCount('(ul_outcount)', true, loc, this.sortedUpsertLoopAddrName);
     idx = this.getStackIndex('(ul_outcount)');

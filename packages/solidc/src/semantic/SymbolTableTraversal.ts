@@ -1424,17 +1424,19 @@ export default class SymbolTableTraversal extends AstTraversal {
       // second loop-written mapping would have nowhere sound to land (multi-mapping loop-writes stay guarded).
       const loopWritten = new Set<string>();
       this.collectLoopWrittenSlotKeys(node.body, 0, loopWritten, new Set());
-      if (loopWritten.size === 1 && entryAccessMap.size === 1) {
+      if (loopWritten.size === 1) {
         for (const [sk, info] of entryAccessMap) {
           if (!loopWritten.has(sk)) continue;
           const ops = info.operations;
           const isPureWrite = ops.length === 1 && ops[0] === 'write';
           // A SORTED (C2) RMW loop write `for(i) m[k[i]] += v[i]` is the per-iteration UPDATE loop (multitransfer
-          // credit): also excluded from the fixed block - its co-spend + mint sit in the trailing region
-          // (emitSortedUpsertLoopBody). A NON-sorted RMW loop stays guarded (no handler).
+          // credit): also excluded from the fixed block - its co-spend + mint sit in the trailing region AFTER all
+          // fixed slots (emitSortedUpsertLoopBody), so it may COEXIST with other fixed entry accesses (e.g. the cached
+          // `bal[msg.sender] -= amounts[i]` debit in a full multiTransfer). The pure-write loop (emitLoopEntryWrite)
+          // needs a CLEAN trailing region -> single access only. A NON-sorted RMW loop stays guarded (no handler).
           const coll = this.collectionMap.get(info.collection);
           const isSortedRmw = !!coll?.sorted && ops.length === 2 && ops.includes('read') && ops.includes('write');
-          if (isPureWrite || isSortedRmw) info.inLoop = true;
+          if ((isPureWrite && entryAccessMap.size === 1) || isSortedRmw) info.inLoop = true;
         }
       }
 

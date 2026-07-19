@@ -32,5 +32,9 @@
     "update-version": "tsx update-version.ts",
     "publish-all": "lerna publish from-package",
     "build": "lerna run build --ignore solidcash-examples --ignore testing-suite"
+  },
+  "dependencies": {
+    "@noble/ciphers": "^2.2.0",
+    "viem": "^2.55.4"
   }
 }

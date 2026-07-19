@@ -1,0 +1,24 @@
+{
+  "name": "eacc-solidcash-example",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "EffectiveAcceleration Hardhat project ported to run under @solidcash/testing (drop-in via aliases)",
+  "scripts": {
+    "compile": "solidcash compile",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@bitauth/libauth": "^3.1.0-next.8",
+    "@noble/ciphers": "^1.0.0",
+    "@solidcash/testing": "^0.13.0",
+    "ethers": "^6.17.0",
+    "solidc": "^0.13.0",
+    "solidcash": "^0.13.0",
+    "viem": "^2.21.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.2",
+    "vitest": "^4.0.15"
+  }
+}

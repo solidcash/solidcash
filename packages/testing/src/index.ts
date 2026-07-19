@@ -1,31 +1,70 @@
-// Configuration
-export { defineConfig, loadConfig, resolveConfig } from './config.js';
-export type { SolidCashConfig, NetworkConfig, ResolvedConfig, ResolvedPaths } from './config.js';
+/**
+ * SolidCash Hardhat-parity entry point (HARDHAT-PARITY.md). Aliased to `hardhat` in a project's Vitest config so
+ * ported suites' `import { ethers, upgrades, network } from 'hardhat'` resolve here, plus `loadFixture`, the task
+ * system, config helpers and the ethers-utils. Backed by a default mock-network HRE (built lazily on import).
+ */
+import './builtin-tasks.js';
+import {
+  getActiveHre, getDefaultHre, createHardhatRuntimeEnvironment, initHre, hardhatCompatConfig,
+  type HardhatRuntimeEnvironment, type SolidcashEthers, type HardhatNetwork,
+} from './hre.js';
+import { upgrades } from 'solidcash';
+import type { TaskArguments } from './tasks.js';
 
-// Signers
-export { getSigners, type Signer } from './accounts.js';
+// LAZY proxies over the active HRE singleton. `import { ethers, config } from 'hardhat'` binds at module load,
+// but a Vitest setup file can `await initHre()` first to load solidcash.config.ts; these proxies then reflect it
+// at property-access (test-runtime) time.
+function lazy<T extends object>(pick: (hre: HardhatRuntimeEnvironment) => any): T {
+  return new Proxy({}, {
+    get: (_t, prop) => (pick(getActiveHre()) as any)[prop],
+    has: (_t, prop) => prop in (pick(getActiveHre()) as any),
+  }) as T;
+}
 
-// Fixtures
-export { loadFixture, createFixtureFromConfig, type Fixture } from './environment.js';
+/** The active Hardhat Runtime Environment (config-loaded if `initHre` ran, else default mock network). */
+const hre = lazy<HardhatRuntimeEnvironment>((h) => h);
+export default hre;
+export { hre };
 
-// Contract Factory
-export { getContractFactory, getContractFactoryFromConfig } from './factory.js';
-export type { ContractFactory, FactoryDeployOptions, FactoryDeployResult } from './factory.js';
+/** `hre.ethers` - forwarded ethers utils + BCH-native getSigners/getContractFactory/getContractAt/deployContract. */
+export const ethers = lazy<SolidcashEthers>((h) => h.ethers);
+/** `hre.network` - active connection with a v3 `create()` seam. */
+export const network = lazy<HardhatNetwork>((h) => h.network);
+/** hardhat-shaped resolved config (`config.networks.<name>.accounts.{mnemonic,path}`). */
+export const config = lazy<Record<string, unknown>>((h) => hardhatCompatConfig(h.config));
+/** `hre.run(taskName, args?)`. */
+export const run = (taskName: string, args?: TaskArguments): Promise<unknown> => getActiveHre().run(taskName, args);
+/** OpenZeppelin-style upgradeable-proxy deploy/upgrade helpers. */
+export { upgrades };
 
-// Compilation
-export { compile, compileContract, compileAll, compileAllWithConfig, type CompileOptions } from './compile.js';
+export { createHardhatRuntimeEnvironment, initHre, getDefaultHre, getActiveHre };
+export type {
+  HardhatRuntimeEnvironment, SolidcashEthers, HardhatNetwork, NetworkConnection,
+} from './hre.js';
 
-// Re-export commonly used SDK types for convenience
+// Task system
 export {
-  Contract,
-  TransactionBuilder,
-  MockNetworkProvider,
-  ElectrumNetworkProvider,
-  SignatureTemplate,
-  StatefulContract,
-  randomUtxo,
-  randomToken,
-  randomNFT,
-} from 'solidcash';
+  task, subtask, runTask, getTask, getTasks, parseTaskArgs, clearTasks, TaskBuilder,
+} from './tasks.js';
+export type { TaskDefinition, TaskArguments, ActionFn } from './tasks.js';
 
-export type { Artifact, AbiFunction, AbiInput } from '@solidcash/utils';
+// Config
+export {
+  defineConfig, resolveConfig, loadConfig, findConfigFile,
+} from './config.js';
+export type {
+  SolidcashConfig, ResolvedConfig, NetworkConfig, AccountsConfig,
+} from './config.js';
+
+// Network helpers (also available at solidcash/network-helpers)
+export {
+  loadFixture, takeSnapshot, mine, mineUpTo, time, setBalance, clearSnapshots,
+  setActiveProvider, getActiveProvider, impersonateAccount, getImpersonatedSigner,
+} from './network-helpers.js';
+
+// ethers utils (forwarded to ethers v6) + v5-compat shims
+export * from './ethers-utils.js';
+
+// block.* oracle bridge: drive Solidity block.timestamp/block.number from the harness time-travel
+export { mockBlockOracleRpc, BlockOracleUpdater, fetchBlockOracleFields } from './oracle-helpers.js';
+export type { RpcLike, BlockOracleFields } from './oracle-helpers.js';

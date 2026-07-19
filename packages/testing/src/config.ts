@@ -1,147 +1,91 @@
-import path from 'path';
-import fs from 'fs';
+/**
+ * Config surface for the SolidCash harness (HARDHAT-PARITY.md WS1). Mirrors hardhat.config: paths, networks,
+ * a default network, and the test mnemonic/accounts. `defineConfig` is the typed identity helper; `loadConfig`
+ * dynamically imports `solidcash.config.{ts,js,mjs}` from a directory (the CLI runs under tsx so a .ts config
+ * loads directly).
+ */
+import { pathToFileURL } from 'url';
+import { existsSync } from 'fs';
+import { resolve } from 'path';
 
 export interface NetworkConfig {
-  /** Network URL (Electrum server for chipnet/mainnet) */
-  url?: string;
-  /** Mnemonic for account derivation */
-  mnemonic?: string;
-  /** Number of accounts to derive (default: 10) */
-  accountCount?: number;
-  /** Default satoshi balance for mock accounts (default: 100_000) */
-  accountBalance?: bigint;
+  /** Which provider backs this network. */
+  type?: 'mock' | 'regtest' | 'electrum' | 'bitcoin-rpc';
+  electrum?: { host: string; port?: number };
+  rpc?: { url: string; user?: string; password?: string };
 }
 
-export interface SolidCashConfig {
-  /** Compiler settings */
-  compiler?: {
-    /** Compiler version constraint (default: '>=0.13.0') */
-    version?: string;
-  };
+export interface AccountsConfig {
+  /** BIP-32 account branch (child index appended per account). */
+  path?: string;
+  count?: number;
+  initialIndex?: number;
+  /** Per-account funding on mock/regtest, in satoshis. */
+  satoshis?: bigint;
+}
 
-  /** Directory paths (all relative to project root) */
+export interface SolidcashConfig {
   paths?: {
-    /** Contract source files (default: 'contracts') */
-    sources?: string;
-    /** Compiled artifacts (default: 'artifacts') */
+    contracts?: string;
     artifacts?: string;
-    /** Test files (default: 'test') */
     tests?: string;
-    /** Deployment scripts (default: 'scripts') */
-    scripts?: string;
   };
-
-  /** Network configurations */
-  networks?: {
-    /** In-memory mock network (default, always available) */
-    mocknet?: NetworkConfig;
-    /** Local regtest node */
-    regtest?: NetworkConfig;
-    /** BCH chipnet (testnet) */
-    chipnet?: NetworkConfig;
-    /** BCH mainnet */
-    mainnet?: NetworkConfig;
-    /** Custom named networks */
-    [name: string]: NetworkConfig | undefined;
-  };
-
-  /** Default network to use (default: 'mocknet') */
+  networks?: Record<string, NetworkConfig>;
   defaultNetwork?: string;
+  /** The HD mnemonic getSigners derives from (defaults to the hardhat `test test ... junk` phrase). */
+  mnemonic?: string;
+  accounts?: AccountsConfig;
+  /** Compiler options passed through to solidc `compileString`. */
+  solc?: Record<string, unknown>;
 }
 
-const DEFAULT_CONFIG = {
-  compiler: {
-    version: '>=0.13.0',
-  },
-  paths: {
-    sources: 'contracts',
-    artifacts: 'artifacts',
-    tests: 'test',
-    scripts: 'scripts',
-  },
-  networks: {
-    mocknet: {
-      accountCount: 10,
-      accountBalance: 100_000n,
-    },
-  },
-  defaultNetwork: 'mocknet',
-};
-
-/** Resolve paths relative to project root */
-export interface ResolvedPaths {
-  root: string;
-  sources: string;
-  artifacts: string;
-  tests: string;
-  scripts: string;
-}
-
-export interface ResolvedConfig {
-  compiler: Required<SolidCashConfig>['compiler'];
-  paths: ResolvedPaths;
-  networks: NonNullable<SolidCashConfig['networks']>;
+/** Fully-resolved config (defaults applied). */
+export interface ResolvedConfig extends Required<Pick<SolidcashConfig, 'paths' | 'defaultNetwork'>> {
+  paths: Required<NonNullable<SolidcashConfig['paths']>>;
+  networks: Record<string, NetworkConfig>;
   defaultNetwork: string;
+  mnemonic?: string;
+  accounts?: AccountsConfig;
+  solc?: Record<string, unknown>;
 }
 
-/**
- * Load solidcash.config.ts from the project root.
- * Falls back to defaults if no config file is found.
- */
-export async function loadConfig(projectRoot?: string): Promise<ResolvedConfig> {
-  const root = projectRoot ?? process.cwd();
-  let userConfig: SolidCashConfig = {};
-
-  const configPath = path.join(root, 'solidcash.config.ts');
-  const configPathJs = path.join(root, 'solidcash.config.js');
-
-  if (fs.existsSync(configPath) || fs.existsSync(configPathJs)) {
-    const actualPath = fs.existsSync(configPath) ? configPath : configPathJs;
-    try {
-      const imported = await import(actualPath);
-      userConfig = imported.default ?? imported;
-    } catch {
-      // If native import fails (TS file), try dynamic import with tsx loader
-      try {
-        const imported = await import(`file://${actualPath}`);
-        userConfig = imported.default ?? imported;
-      } catch {
-        console.warn(`Warning: could not load ${actualPath}, using defaults`);
-      }
-    }
-  }
-
-  return resolveConfig(userConfig, root);
-}
-
-export function resolveConfig(userConfig: SolidCashConfig, root: string): ResolvedConfig {
-  const paths = {
-    root,
-    sources: path.resolve(root, userConfig.paths?.sources ?? DEFAULT_CONFIG.paths.sources),
-    artifacts: path.resolve(root, userConfig.paths?.artifacts ?? DEFAULT_CONFIG.paths.artifacts),
-    tests: path.resolve(root, userConfig.paths?.tests ?? DEFAULT_CONFIG.paths.tests),
-    scripts: path.resolve(root, userConfig.paths?.scripts ?? DEFAULT_CONFIG.paths.scripts),
-  };
-
-  const networks = {
-    ...DEFAULT_CONFIG.networks,
-    ...userConfig.networks,
-  };
-
-  return {
-    compiler: { ...DEFAULT_CONFIG.compiler, ...userConfig.compiler },
-    paths,
-    networks,
-    defaultNetwork: userConfig.defaultNetwork ?? DEFAULT_CONFIG.defaultNetwork,
-  };
-}
-
-/**
- * Helper to define config with type safety.
- * Usage in solidcash.config.ts:
- *   import { defineConfig } from '@solidcash/testing';
- *   export default defineConfig({ ... });
- */
-export function defineConfig(config: SolidCashConfig): SolidCashConfig {
+/** Typed identity helper for `solidcash.config.ts` (mirrors hardhat `defineConfig`). */
+export function defineConfig(config: SolidcashConfig): SolidcashConfig {
   return config;
+}
+
+const CONFIG_BASENAMES = ['solidcash.config.ts', 'solidcash.config.mjs', 'solidcash.config.js'];
+
+/** Apply defaults to a user config. */
+export function resolveConfig(config: SolidcashConfig = {}): ResolvedConfig {
+  return {
+    paths: {
+      contracts: config.paths?.contracts ?? 'contracts',
+      artifacts: config.paths?.artifacts ?? 'artifacts',
+      tests: config.paths?.tests ?? 'test',
+    },
+    networks: { mock: { type: 'mock' }, ...config.networks },
+    defaultNetwork: config.defaultNetwork ?? 'mock',
+    mnemonic: config.mnemonic,
+    accounts: config.accounts,
+    solc: config.solc,
+  };
+}
+
+/** Locate a solidcash config file in `dir`, returning its absolute path or undefined. */
+export function findConfigFile(dir: string = process.cwd()): string | undefined {
+  for (const name of CONFIG_BASENAMES) {
+    const p = resolve(dir, name);
+    if (existsSync(p)) return p;
+  }
+  return undefined;
+}
+
+/** Load and resolve the config from `dir` (empty config if none found). */
+export async function loadConfig(dir: string = process.cwd()): Promise<ResolvedConfig> {
+  const file = findConfigFile(dir);
+  if (!file) return resolveConfig({});
+  const mod = await import(pathToFileURL(file).href);
+  const user = (mod.default ?? mod.config ?? {}) as SolidcashConfig;
+  return resolveConfig(user);
 }

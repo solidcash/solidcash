@@ -118,3 +118,34 @@ Function-pointer ABI (function-type params, fun.selector/.address, array-of-func
 remaining parse `(`/`memory`/FunctionTypeNotEncodable clusters), genuine int+uint signedness (solc rejects too),
 fixed-point (5.2), external-call-on-array-element, deploy-then-call `new C().m()`, ABIEncoderV2 calldata structs,
 super/C3, Yul EVM-memory/storage/calldata, multifile symbols, gnosis circular-import.
+
+## 2026-07-19 re-survey of the top FAIL buckets (scorecard 4014/4876; memory-model unification is corpus-neutral)
+
+Context: the memory-model primitive-lowering unification (`bd9822ee` + `f1445136`, LowerMemoryModel/
+LowerInlineAssembly delegate to `YulMemPrimitives`) is BYTE-IDENTICAL - a per-file corpus diff vs the pre-change
+baseline was 0 OK<->FAIL / 0 error drift across 4876. So the inline-assembly/memory FAIL buckets below are unchanged
+by it; they are pre-existing and fundamental. Re-bucketed the current top FAILs to confirm no clean sound win remains:
+
+- **UnsupportedInlineAssembly (71).** 56 = EVM storage-slot manipulation (`sstore`/`sload`/`.slot`, `tstore`/`tload`,
+  storage array copy/delete, `storage_boundary_*`) - no EVM storage on BCH's UTXO model, correctly FAIL-CLOSED
+  (faking = miscompile). 7 = Yul user-`function` defs (recursion `fac`, nested defs, multi-return; recursion is not
+  expressible in BCH Script). 6 = calldata `.offset`/`.length` accessors (EVM-calldata-layout-specific offsets;
+  unsound to fake since BCH synthesizes calldata). 2 = fn-pointer `.selector` in asm. NONE cleanly+soundly closable.
+- **ParseError (273).** Top slices: erc7201 non-literal namespace (16, niche); `mapping(K=>V)[]` array-of-mappings
+  type (14+, PARSEABLE but BCH cannot soundly store an array of mappings -> grammar fix alone just moves the failure
+  downstream, so not a real win); `.push`/`.pop`/`.delete` cluster (~38, mostly ref-returning `push()` = documented
+  wall needing reference semantics); `f()()` call-of-call + deeply nested `function()->function()` types (deep);
+  tuple-from-ternary / chained-tuple-assign (our own semantic rejections). ONE trivial-but-low-value lead: bare
+  `data.pop;` / `data.push;` (no parens) is a Solidity no-op statement we reject with `Mismatched input ';'
+  expecting '('` (`array_pop_isolated`, `byte_array_pop_isolated`, 2 files) - would need the grammar to accept a
+  bare `.push`/`.pop`/`.delete` member ref as a no-op statement.
+- **"Expected variable '..' does not exist on the stack" (11).** The known epilogue-co-spend capture bug class
+  (partially fixed 2026-07-11 by `CaptureBranchExternalCallTargets`, f0bdc31b). Remaining variants are the DEEP
+  external-call intersection already flagged fundamental: `__deploy_category_0` x6 = `D[] ds; ds.push(new D());
+  ds[0].x()` (array-of-contracts + deploy-then-call + per-iteration array dispatch), `market` x2 (FutarchyOracle
+  getter/alias chains), `__chaincall_3`, `arrayA`. FAIL-CLOSED (loud, not a miscompile); fixing risks regressing the
+  VM-proven deploy-fold / array-extcall paths, so NOT a safe autonomous change.
+
+VERDICT: consistent with the 2026-07-11 "clean-slice veins EXHAUSTED" note - the remaining ~860 need
+platform-fundamental features (EVM storage/calldata, recursion), reference semantics (ref-returning push,
+array-of-mappings), or delicate external-call codegen work. No safe quick win in the top buckets.

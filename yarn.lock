@@ -2,7 +2,7 @@
 # yarn lockfile v1
 
 
-"@adraffy/ens-normalize@1.11.1":
+"@adraffy/ens-normalize@1.11.1", "@adraffy/ens-normalize@^1.11.0":
   version "1.11.1"
   resolved "https://registry.npmjs.org/@adraffy/ens-normalize/-/ens-normalize-1.11.1.tgz#6c2d657d4b2dfb37f8ea811dcb3e60843d4ac24a"
   integrity sha512-nhCBV3quEgesuf7c7KYfperqSS14T8bYuvJ8PcLJp6znkZpFc0AuW4qBtr8eKVyPPe/8RSr7sglCWPU5eaxwKQ==
@@ -1684,44 +1684,44 @@
     npmlog "^4.1.2"
     write-file-atomic "^2.3.0"
 
-"@mem-cash/core@0.0.6":
-  version "0.0.6"
-  resolved "https://registry.npmjs.org/@mem-cash/core/-/core-0.0.6.tgz#23b374ae82bf80b7c7f00c2a8491d7081a8ce6a9"
-  integrity sha512-dNYrJUgrSWg5xyHAI8L/enc6w+PELVNEhu/CjAHC95LtHMBInfvb4l/i2dfGw0tQoNzsezwhOmrej3nH5eKDzA==
+"@mem-cash/core@0.0.7":
+  version "0.0.7"
+  resolved "https://registry.npmjs.org/@mem-cash/core/-/core-0.0.7.tgz#b270383ccc1b014511b6dfb3dd4d397e9a6ab9fb"
+  integrity sha512-LhtJzkVm79bNe5nE90SSUXDS2hVuqHOpFUM0RTMr5tJTND2Uz1YjGeLX5lNmrsq7lImdGlqipNPchdOULdI7eg==
   dependencies:
     "@bitauth/libauth" "^3.1.0-next.8"
-    "@mem-cash/storage" "0.0.6"
-    "@mem-cash/types" "0.0.6"
+    "@mem-cash/storage" "0.0.7"
+    "@mem-cash/types" "0.0.7"
 
-"@mem-cash/electrum@^0.0.6":
-  version "0.0.6"
-  resolved "https://registry.npmjs.org/@mem-cash/electrum/-/electrum-0.0.6.tgz#eef8879f11b5de39cd28efdf25fdc86e80c03a1b"
-  integrity sha512-FNgLSYGIbxsV28XqDyLTGSyCgQvxzlgNCPDNsclKftuaU0DKsPZzgDoFnNe0A7ak/t16Qh3pIURo79dhlzOCeA==
+"@mem-cash/electrum@^0.0.7":
+  version "0.0.7"
+  resolved "https://registry.npmjs.org/@mem-cash/electrum/-/electrum-0.0.7.tgz#5120888d328f9f49976fcaec26c73940ec06b38c"
+  integrity sha512-w8a9gqxioJrGYlpH93HPAU0AMZ5oe1ZXkLxH2tLUt3PDxGZx+IbgjTJ4wUsThwH6lx9U1bIJVJOJqy5xf0239A==
   dependencies:
     "@bitauth/libauth" "^3.1.0-next.8"
-    "@mem-cash/core" "0.0.6"
-    "@mem-cash/storage" "0.0.6"
-    "@mem-cash/types" "0.0.6"
+    "@mem-cash/core" "0.0.7"
+    "@mem-cash/storage" "0.0.7"
+    "@mem-cash/types" "0.0.7"
 
-"@mem-cash/storage@0.0.6":
-  version "0.0.6"
-  resolved "https://registry.npmjs.org/@mem-cash/storage/-/storage-0.0.6.tgz#65c84988afb69aafbd0ab947277ebd14a28eb81b"
-  integrity sha512-Mh5EAJ6YltorHmVQ4a83gKWOSB3d7WlV9+4YiR3tsrcqwEP46RN5rt+Pb+qEw90XRAroofrmboA8MNNkFwRfrw==
+"@mem-cash/storage@0.0.7":
+  version "0.0.7"
+  resolved "https://registry.npmjs.org/@mem-cash/storage/-/storage-0.0.7.tgz#f68cd81b14c227549c53b3b46f7db9011d0200cf"
+  integrity sha512-3lw4yGrm9I59bv56I5Jg41o8/mpHJOqNzonylTHRTOoD9vXD78hxpGkAlB01uBBlRro3om254b3VBvoEfPBeWw==
   dependencies:
     "@bitauth/libauth" "^3.1.0-next.8"
-    "@mem-cash/types" "0.0.6"
+    "@mem-cash/types" "0.0.7"
 
-"@mem-cash/types@0.0.6":
-  version "0.0.6"
-  resolved "https://registry.npmjs.org/@mem-cash/types/-/types-0.0.6.tgz#9912d14134d001b220c236f8d7bea0ab0edfb59c"
-  integrity sha512-cSjcy02SYQoSJHTIv2Oc4W+bJU7sRv132Ycr112atOS3CyfGQRVTo2W5FWnnPeVqSsEkvl2sLGAMHvLdDJroUQ==
+"@mem-cash/types@0.0.7":
+  version "0.0.7"
+  resolved "https://registry.npmjs.org/@mem-cash/types/-/types-0.0.7.tgz#4ba5a6113701b8808941ac2c407f9b1880f8d773"
+  integrity sha512-30YUjguNWMY8lP1buzgaFdrIzNy4OZ2IQY0NtuwGBtKmGbNvGUhDNfPzZ4ba9qkUo0pM2Wxs18az9+H8FCkt8w==
   dependencies:
     "@bitauth/libauth" "^3.1.0-next.8"
 
-"@mem-cash/validation@^0.0.6":
-  version "0.0.6"
-  resolved "https://registry.npmjs.org/@mem-cash/validation/-/validation-0.0.6.tgz#8beb81605f81be67a859c92e0c725560fb5eb3a3"
-  integrity sha512-otwmuX60E012DUQRRm47OmS8SV679YbHG/7AnCbxSNdpkwVOqEr4CdoQj43dT7RTl0pe1LyVNCRxfzm9DeRlxw==
+"@mem-cash/validation@^0.0.7":
+  version "0.0.7"
+  resolved "https://registry.npmjs.org/@mem-cash/validation/-/validation-0.0.7.tgz#cdde455c7b3f2df6fbe8a4040dde3b2b49c3d8c7"
+  integrity sha512-H7VKNW12iCBKkxUiFvrTn3jzv6zq27F+F0U9U0EkxyMPdxPj6P6omDxexlPoUDk0FC7ZTa1YPF5J9dhcQNY1cw==
   dependencies:
     "@bitauth/libauth" "^3.1.0-next.8"
 
@@ -1743,12 +1743,29 @@
     call-me-maybe "^1.0.1"
     glob-to-regexp "^0.3.0"
 
+"@noble/ciphers@^1.3.0":
+  version "1.3.0"
+  resolved "https://registry.npmjs.org/@noble/ciphers/-/ciphers-1.3.0.tgz#f64b8ff886c240e644e5573c097f86e5b43676dc"
+  integrity sha512-2I0gnIVPtfnMw9ee9h1dJG7tp81+8Ob3OJb3Mv37rx5L40/b0i7djjCVvGOVqc9AEIQyvyu1i6ypKdFw8R8gQw==
+
+"@noble/ciphers@^2.2.0":
+  version "2.2.0"
+  resolved "https://registry.npmjs.org/@noble/ciphers/-/ciphers-2.2.0.tgz#84fb45ac9332925d643b80f89ceb0ea2f21dba95"
+  integrity sha512-Z6pjIZ/8IJcCGzb2S/0Px5J81yij85xASuk1teLNeg75bfT07MV3a/O2Mtn1I2se43k3lkVEcFaR10N4cgQcZA==
+
 "@noble/curves@1.2.0":
   version "1.2.0"
   resolved "https://registry.npmjs.org/@noble/curves/-/curves-1.2.0.tgz#92d7e12e4e49b23105a2555c6984d41733d65c35"
   integrity sha512-oYclrNgRaM9SsBUBVbb8M6DTV7ZHRTKugureoYEncY5c65HOmRzvSiTE3y5CYaPYJA/GVkrhXEoF0M3Ya9PMnw==
   dependencies:
     "@noble/hashes" "1.3.2"
+
+"@noble/curves@1.9.1":
+  version "1.9.1"
+  resolved "https://registry.npmjs.org/@noble/curves/-/curves-1.9.1.tgz#9654a0bc6c13420ae252ddcf975eaf0f58f0a35c"
+  integrity sha512-k11yZxZg+t+gWvBbIswW0yoJlu8cHOC7dhunwOzoWH/mXGBiYyR4YY6hAEK/3EUs4UpB8la1RfdRpeGsFHkWsA==
+  dependencies:
+    "@noble/hashes" "1.8.0"
 
 "@noble/curves@^2.0.1":
   version "2.2.0"
@@ -1757,20 +1774,27 @@
   dependencies:
     "@noble/hashes" "2.2.0"
 
+"@noble/curves@~1.9.0":
+  version "1.9.7"
+  resolved "https://registry.npmjs.org/@noble/curves/-/curves-1.9.7.tgz#79d04b4758a43e4bca2cbdc62e7771352fa6b951"
+  integrity sha512-gbKGcRUYIjA3/zCCNaWDciTMFI0dCkvou3TL8Zmy5Nc7sJ47a0jtOeZoTaMxkuqRo9cRhjOdZJXegxYE5FN/xw==
+  dependencies:
+    "@noble/hashes" "1.8.0"
+
 "@noble/hashes@1.3.2":
   version "1.3.2"
   resolved "https://registry.npmjs.org/@noble/hashes/-/hashes-1.3.2.tgz#6f26dbc8fbc7205873ce3cee2f690eba0d421b39"
   integrity sha512-MVC8EAQp7MvEcm30KWENFjgR+Mkmf+D189XJTkFIlwohU5hcBbn1ZkKq7KVTi2Hme3PMGF390DaL52beVrIihQ==
 
+"@noble/hashes@1.8.0", "@noble/hashes@^1.4.0", "@noble/hashes@^1.8.0", "@noble/hashes@~1.8.0":
+  version "1.8.0"
+  resolved "https://registry.npmjs.org/@noble/hashes/-/hashes-1.8.0.tgz#cee43d801fcef9644b11b8194857695acd5f815a"
+  integrity sha512-jCs9ldd7NwzpgXDIf6P3+NrHh9/sD6CQdxHyjQI+h/6rDNo88ypBxxz45UDuZHz9r3tNz7N/VInSVoVdtXEI4A==
+
 "@noble/hashes@2.2.0", "@noble/hashes@^2.0.0", "@noble/hashes@^2.0.1":
   version "2.2.0"
   resolved "https://registry.npmjs.org/@noble/hashes/-/hashes-2.2.0.tgz#22da1d16a469954fce877055d559900a6c73b63b"
   integrity sha512-IYqDGiTXab6FniAgnSdZwgWbomxpy9FtYvLKs7wCUs2a8RkITG+DFGO1DM9cr+E3/RgADRpFjrKVaJ1z6sjtEg==
-
-"@noble/hashes@^1.4.0":
-  version "1.8.0"
-  resolved "https://registry.npmjs.org/@noble/hashes/-/hashes-1.8.0.tgz#cee43d801fcef9644b11b8194857695acd5f815a"
-  integrity sha512-jCs9ldd7NwzpgXDIf6P3+NrHh9/sD6CQdxHyjQI+h/6rDNo88ypBxxz45UDuZHz9r3tNz7N/VInSVoVdtXEI4A==
 
 "@nodelib/fs.scandir@2.1.5":
   version "2.1.5"
@@ -2089,6 +2113,28 @@
   resolved "https://registry.yarnpkg.com/@rtsao/scc/-/scc-1.1.0.tgz#927dd2fae9bc3361403ac2c7a00c32ddce9ad7e8"
   integrity sha512-zt6OdqaDoOnJ1ZYsCYGt9YmWzDXl4vQdKTyJev62gFhRGKdx7mcT54V9KIjg+d2wi9EXsPvAPKe7i7WjfVWB8g==
 
+"@scure/base@~1.2.5":
+  version "1.2.6"
+  resolved "https://registry.npmjs.org/@scure/base/-/base-1.2.6.tgz#ca917184b8231394dd8847509c67a0be522e59f6"
+  integrity sha512-g/nm5FgUa//MCj1gV09zTJTaM6KBAHqLN907YVQqf7zC49+DcO4B1so4ZX07Ef10Twr6nuqYEH9GEggFXA4Fmg==
+
+"@scure/bip32@1.7.0", "@scure/bip32@^1.7.0":
+  version "1.7.0"
+  resolved "https://registry.npmjs.org/@scure/bip32/-/bip32-1.7.0.tgz#b8683bab172369f988f1589640e53c4606984219"
+  integrity sha512-E4FFX/N3f4B80AKWp5dP6ow+flD1LQZo/w8UnLGYZO674jS6YnYeepycOOksv+vLPSpgN35wgKgy+ybfTb2SMw==
+  dependencies:
+    "@noble/curves" "~1.9.0"
+    "@noble/hashes" "~1.8.0"
+    "@scure/base" "~1.2.5"
+
+"@scure/bip39@1.6.0", "@scure/bip39@^1.6.0":
+  version "1.6.0"
+  resolved "https://registry.npmjs.org/@scure/bip39/-/bip39-1.6.0.tgz#475970ace440d7be87a6086cbee77cb8f1a684f9"
+  integrity sha512-+lF0BbLiJNwVlev4eKelw1WWLaiKXw7sSl8T6FvBlWkdX+94aGJ4o8XjUdlyhTCjd8c+B3KT3JfS8P0bLRNU6A==
+  dependencies:
+    "@noble/hashes" "~1.8.0"
+    "@scure/base" "~1.2.5"
+
 "@standard-schema/spec@^1.0.0":
   version "1.0.0"
   resolved "https://registry.yarnpkg.com/@standard-schema/spec/-/spec-1.0.0.tgz#f193b73dc316c4170f2e82a881da0f550d551b9c"
@@ -2369,6 +2415,16 @@ abbrev@1:
   version "1.1.1"
   resolved "https://registry.yarnpkg.com/abbrev/-/abbrev-1.1.1.tgz#f8f2c887ad10bf67f634f005b6987fed3179aac8"
   integrity sha512-nne9/IiQ/hzIhY6pdDnbBtz7DjPTKrY00P/zvPSm5pOFkl6xuGrGnXn/VtTNNfNtAfZ9/1RtehkszU9qcTii0Q==
+
+abitype@1.2.3:
+  version "1.2.3"
+  resolved "https://registry.npmjs.org/abitype/-/abitype-1.2.3.tgz#bec3e09dea97d99ef6c719140bee663a329ad1f4"
+  integrity sha512-Ofer5QUnuUdTFsBRwARMoWKOH1ND5ehwYhJ3OJ/BQO+StkwQjHw0XyVh4vDttzHB7QOFhPHa/o413PJ82gU/Tg==
+
+abitype@^1.2.3:
+  version "1.3.0"
+  resolved "https://registry.npmjs.org/abitype/-/abitype-1.3.0.tgz#39de89010dd7390ece44d5242a3aa80901cc193d"
+  integrity sha512-fk6Te+bojIFrMvMZrnOO+SxCB+RUksTGOzq/60ZRvs1L+BVzvi2bqt9L3W/17ZLdZsyM1FuYf65P5nlmoiH1Bg==
 
 acorn-jsx@^5.3.2:
   version "5.3.2"
@@ -4576,15 +4632,15 @@ ethers@^6.17.0:
     tslib "2.7.0"
     ws "8.21.0"
 
+eventemitter3@5.0.1, eventemitter3@^5.0.1:
+  version "5.0.1"
+  resolved "https://registry.yarnpkg.com/eventemitter3/-/eventemitter3-5.0.1.tgz#53f5ffd0a492ac800721bb42c66b841de96423c4"
+  integrity sha512-GWkBvjiSZK87ELrYOSESUYeVIc9mvLLf/nXalMOS5dYrgZq9o5OVkbZAVM06CVxYsCwH9BDZFPlQTlPA1j4ahA==
+
 eventemitter3@^3.1.0:
   version "3.1.2"
   resolved "https://registry.yarnpkg.com/eventemitter3/-/eventemitter3-3.1.2.tgz#2d3d48f9c346698fce83a85d7d664e98535df6e7"
   integrity sha512-tvtQIeLVHjDkJYnzf2dgVMxfuSGJeM/7UCG17TT4EumTfNtF+0nebF/4zWOIkCreAbtNqhGEboB6BWrwqNaw4Q==
-
-eventemitter3@^5.0.1:
-  version "5.0.1"
-  resolved "https://registry.yarnpkg.com/eventemitter3/-/eventemitter3-5.0.1.tgz#53f5ffd0a492ac800721bb42c66b841de96423c4"
-  integrity sha512-GWkBvjiSZK87ELrYOSESUYeVIc9mvLLf/nXalMOS5dYrgZq9o5OVkbZAVM06CVxYsCwH9BDZFPlQTlPA1j4ahA==
 
 eventemitter3@^5.0.4:
   version "5.0.4"
@@ -6123,6 +6179,11 @@ isobject@^3.0.0, isobject@^3.0.1:
   resolved "https://registry.yarnpkg.com/isobject/-/isobject-3.0.1.tgz#4e431e92b11a9731636aa1f9c8d1ccbcfdab78df"
   integrity sha1-TkMekrEalzFjaqH5yNHMvP2reN8=
 
+isows@1.0.7:
+  version "1.0.7"
+  resolved "https://registry.npmjs.org/isows/-/isows-1.0.7.tgz#1c06400b7eed216fbba3bcbd68f12490fc342915"
+  integrity sha512-I1fSfDCZL5P0v33sVqeTDSpcstAg/N+wF5HS033mogOVIp4B+oHC7oOCsA3axAbBSGTJ8QubbNmnIRN/h8U7hg==
+
 isstream@~0.1.2:
   version "0.1.2"
   resolved "https://registry.yarnpkg.com/isstream/-/isstream-0.1.2.tgz#47e63f7af55afa6f92e1500e690eb8b8529c099a"
@@ -7271,6 +7332,20 @@ own-keys@^1.0.1:
     get-intrinsic "^1.2.6"
     object-keys "^1.1.1"
     safe-push-apply "^1.0.0"
+
+ox@0.14.30:
+  version "0.14.30"
+  resolved "https://registry.npmjs.org/ox/-/ox-0.14.30.tgz#aee7e72c8f179d8666a7f14e1ae7e28a0fcbea98"
+  integrity sha512-LI11uu+8iiM1B3CLckgd++YF1a0A2k5wDoM9ZeQMiL21BOzQs6L//BLS6hb1HSEKCyycdDIQLsVQx9MjpcC0hA==
+  dependencies:
+    "@adraffy/ens-normalize" "^1.11.0"
+    "@noble/ciphers" "^1.3.0"
+    "@noble/curves" "1.9.1"
+    "@noble/hashes" "^1.8.0"
+    "@scure/bip32" "^1.7.0"
+    "@scure/bip39" "^1.6.0"
+    abitype "^1.2.3"
+    eventemitter3 "5.0.1"
 
 p-event@^5.0.1:
   version "5.0.1"
@@ -9383,6 +9458,20 @@ verror@1.10.0:
     assert-plus "^1.0.0"
     core-util-is "1.0.2"
     extsprintf "^1.2.0"
+
+viem@^2.55.4:
+  version "2.55.4"
+  resolved "https://registry.npmjs.org/viem/-/viem-2.55.4.tgz#a3f83c9e075d30d73fb2ac9cecc0b72a71e108fc"
+  integrity sha512-iSVcFADHPS0GRcY+YMGubuOH0QXcLN87HVlPNaFLPzJv6OzNOql2cim+QxtTe/QxXUqbXLnzTmpFms4PLGyJ6A==
+  dependencies:
+    "@noble/curves" "1.9.1"
+    "@noble/hashes" "1.8.0"
+    "@scure/bip32" "1.7.0"
+    "@scure/bip39" "1.6.0"
+    abitype "1.2.3"
+    isows "1.0.7"
+    ox "0.14.30"
+    ws "8.21.0"
 
 "vite@^6.0.0 || ^7.0.0":
   version "7.2.7"

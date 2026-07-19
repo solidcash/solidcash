@@ -18,6 +18,31 @@ We have included test files in the `test/` directory, which test the expected fu
 
 You can run the tests with `yarn test`.
 
+## Hardhat + ethers parity harness
+
+This suite doubles as a **drop-in replacement for a Hardhat + ethers + chai testing workflow**, so contracts
+ported from Solidity/Hardhat keep their test style. See `HARDHAT-PARITY.md` for the full roadmap/checklist.
+
+- **Config**: `solidcash.config.ts` (`defineConfig`) - paths, networks, mnemonic. Loaded by the `solidcash` CLI.
+- **CLI**: `npx solidcash <task>` - built-in `compile` / `test` / `run <script>` / `clean` / `node`, plus your
+  own `task(...)` definitions. `hre.run(name, args)` invokes tasks programmatically.
+- **Signers**: `const [owner, alice] = await ethers.getSigners()` (from `'@solidcash/testing'` or aliased
+  `'hardhat'`) - pre-funded HD accounts from the hardhat `test test ... junk` mnemonic.
+- **Contracts**: `ethers.getContractFactory(artifact, signer).deploy(...)`, `ethers.getContractAt(...)`,
+  `.waitForDeployment()`, `upgrades.deployProxy(...)`.
+- **Fixtures**: `loadFixture(namedFixture)` snapshots the chain and restores it between tests.
+- **Time travel**: `time.increase(sec)` / `time.increaseTo(ts)` / `mine(n)` / `mineUpTo(h)`. These drive Solidity
+  `block.timestamp` / `block.number` (via the `mockBlockOracleRpc` + `BlockOracleUpdater` bridge) - see
+  `test/block-timestamp.test.ts`.
+- **Matchers**: `import { expect } from '@solidcash/testing/chai'` (or aliased `'chai'`) for
+  `.to.be.revertedWith(...)`, `.to.emit(c, e).withArgs(...)`, `.to.equal(...)` (BigInt), `.changeBchBalance(...)`,
+  `.changeTokenBalance(...)`, `.closeTo(...)`, `.rejectedWith(...)`, etc.
+- **ethers utils**: `import { parseEther, keccak256, AbiCoder, getBigNumber } from '@solidcash/testing/ethers'` (forwarded
+  to ethers v6, plus v5-compat `BigNumber`/`ethers.utils`/`ethers.constants`).
+
+Demo tests: `test/harness.test.ts`, `test/ported-style.test.ts` (bare `hardhat`/`chai` imports via Vitest
+aliases in `vitest.config.ts`), and `test/block-timestamp.test.ts`.
+
 ## Next steps
 
 Once you're getting comfortable writing, compiling and testing SolidCash contracts, you can copy the `testing-suite` directory into your own project to use as a starting point. From there you can start writing more complex contracts and integrate them into full applications.

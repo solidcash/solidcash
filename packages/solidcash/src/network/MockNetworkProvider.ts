@@ -19,6 +19,17 @@ export interface MockNetworkProviderOptions {
   vmTarget?: VmTarget;
 }
 
+// Default simulated block timestamp (unix seconds). Mutable via the time-travel helpers below.
+export const MOCK_DEFAULT_BLOCK_TIME = 1700000000;
+
+/** An opaque snapshot handle mirroring hardhat's SnapshotRestorer. */
+export interface SnapshotRestorer {
+  /** Restore the chain to the state captured when this snapshot was taken. Repeatable. */
+  restore(): Promise<void>;
+  /** Opaque snapshot id. */
+  snapshotId: string;
+}
+
 export default class MockNetworkProvider implements NetworkProvider {
   public indexer: Indexer;
   public network: Network = Network.MOCKNET;
@@ -30,6 +41,7 @@ export default class MockNetworkProvider implements NetworkProvider {
   static readonly DEFAULT_MNEMONIC = 'test test test test test test test test test test test junk';
 
   private fundingNonce = 0x1000;
+  private snapshotNonce = 0;
 
   constructor(options?: Partial<MockNetworkProviderOptions>) {
     this.options = { updateUtxoSet: true, ...options };
@@ -39,7 +51,7 @@ export default class MockNetworkProvider implements NetworkProvider {
       vmVersion: this.vmTarget, standard: true, minRelayFeePerKb: 1000n, maxFee: 10_000_000n,
     });
     this.indexer = createIndexer({ verifier });
-    this.indexer.setChainTip(this.blockHeight, 1700000000);
+    this.indexer.setChainTip(this.blockHeight, MOCK_DEFAULT_BLOCK_TIME);
   }
 
   async getUtxos(address: string): Promise<Utxo[]> {
@@ -63,8 +75,9 @@ export default class MockNetworkProvider implements NetworkProvider {
   }
 
   setBlockHeight(newBlockHeight: number): void {
+    const time = this.getBlockTime();
     this.blockHeight = newBlockHeight;
-    this.indexer.setChainTip(newBlockHeight, 1700000000);
+    this.indexer.setChainTip(newBlockHeight, time); // preserve the current timestamp when jumping height
   }
 
   async getBlockHeight(): Promise<number> {
@@ -75,6 +88,50 @@ export default class MockNetworkProvider implements NetworkProvider {
   // become final and each mined height is fresh.
   async mine(count: number = 1): Promise<void> {
     this.setBlockHeight(this.blockHeight + count);
+  }
+
+  /** hardhat-network-helpers `mineUpTo`: mine until the tip height equals `height` (no-op if already past). */
+  async mineUpTo(height: number): Promise<void> {
+    if (height > this.blockHeight) this.setBlockHeight(height);
+  }
+
+  /** Current simulated block timestamp (unix seconds), read from the chain tip. hardhat `time.latest()`. */
+  getBlockTime(): number {
+    return this.indexer.getTip()?.timestamp ?? MOCK_DEFAULT_BLOCK_TIME;
+  }
+
+  /**
+   * hardhat-network-helpers `time.setNextBlockTimestamp`: set the NEXT block's timestamp WITHOUT mining (the
+   * mem-cash node holds it pending; the next mined/auto-mined block consumes it). The current tip is unchanged.
+   */
+  setNextBlockTimestamp(timestamp: number | bigint): void {
+    this.indexer.setNextBlockTimestamp(Number(timestamp));
+  }
+
+  /** Advance the current chain-tip timestamp by `seconds` immediately (effective for reads now). Returns new ts. */
+  increaseTime(seconds: number | bigint): number {
+    // Use the REAL indexer tip height (auto-mine-on-send climbs it above this.blockHeight); setChainTip only
+    // becomes the tip when its height >= the current tip, otherwise the timestamp change is silently ignored.
+    const tipHeight = this.indexer.getTip()?.height ?? this.blockHeight;
+    const ts = this.getBlockTime() + Number(seconds);
+    this.indexer.setChainTip(tipHeight, ts);
+    return ts;
+  }
+
+  /**
+   * hardhat-network-helpers `takeSnapshot`: capture the full chain + mempool state (via the mem-cash indexer
+   * snapshot) plus the simulated height/timestamp. The returned handle's `restore()` rewinds to this point and
+   * may be called repeatedly.
+   */
+  async takeSnapshot(): Promise<SnapshotRestorer> {
+    const snap = this.indexer.snapshot(); // captures headers => tip height + timestamp
+    const height = this.blockHeight;
+    const snapshotId = `0x${(this.snapshotNonce++).toString(16)}`;
+    const restore = async (): Promise<void> => {
+      this.indexer.restore(snap);
+      this.blockHeight = height;
+    };
+    return { snapshotId, restore };
   }
 
   async getBlockHash(height: number): Promise<string> {
@@ -167,7 +224,7 @@ export default class MockNetworkProvider implements NetworkProvider {
 
   reset(): void {
     this.indexer.reset();
-    this.indexer.setChainTip(this.blockHeight, 1700000000);
+    this.indexer.setChainTip(this.blockHeight, MOCK_DEFAULT_BLOCK_TIME);
   }
 
   private nextFundingTxid(): string {
@@ -182,11 +239,13 @@ export default class MockNetworkProvider implements NetworkProvider {
    */
   async getSigners(
     count = 20,
-    opts: { satoshis?: bigint; mnemonic?: string; fundingUtxos?: number } = {},
+    opts: { satoshis?: bigint; mnemonic?: string; fundingUtxos?: number; path?: string } = {},
   ): Promise<HDSigner[]> {
     const satoshis = opts.satoshis ?? 1_000_000n;
     const fundingUtxos = opts.fundingUtxos ?? 1;
-    const signers = signersFromMnemonic(opts.mnemonic ?? MockNetworkProvider.DEFAULT_MNEMONIC, this, { count });
+    const signers = signersFromMnemonic(
+      opts.mnemonic ?? MockNetworkProvider.DEFAULT_MNEMONIC, this, { count, path: opts.path },
+    );
     for (const signer of signers) {
       for (let i = 0; i < fundingUtxos; i++) {
         await this.addUtxo(signer.getAddress(), { txid: this.nextFundingTxid(), vout: 0, satoshis });
@@ -196,9 +255,9 @@ export default class MockNetworkProvider implements NetworkProvider {
   }
 
   /** A single pre-funded HD signer at `index` (hardhat `ethers.getSigner`). */
-  async getSigner(index = 0, opts: { satoshis?: bigint; mnemonic?: string } = {}): Promise<HDSigner> {
+  async getSigner(index = 0, opts: { satoshis?: bigint; mnemonic?: string; path?: string } = {}): Promise<HDSigner> {
     const [signer] = signersFromMnemonic(
-      opts.mnemonic ?? MockNetworkProvider.DEFAULT_MNEMONIC, this, { initialIndex: index, count: 1 },
+      opts.mnemonic ?? MockNetworkProvider.DEFAULT_MNEMONIC, this, { initialIndex: index, count: 1, path: opts.path },
     );
     await this.addUtxo(signer.getAddress(), {
       txid: this.nextFundingTxid(), vout: 0, satoshis: opts.satoshis ?? 1_000_000n,

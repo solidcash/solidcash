@@ -4291,6 +4291,13 @@ export default class SymbolTableTraversal extends AstTraversal {
   }
 
   private classifyKeySource(key: ExpressionNode): KeySourceInfo {
+    // A `msg.sender` / `tx.origin` key: for a direct call both resolve to tx.origin = the first native P2PKH input's
+    // lockscript, so the SDK computes slot = keyToSlot(76a914<pkh>88ac) of the sender. Distinct kind so the SDK
+    // resolves it from the sender address (not a param/expression placeholder).
+    if (key instanceof NullaryOpNode
+      && (key.operator === NullaryOperator.MSG_SENDER || key.operator === NullaryOperator.TX_ORIGIN)) {
+      return { kind: 'msgSender', senderOp: key.operator, canonical: `sender:${key.operator}` };
+    }
     const constVal = this.tryEvalConstantUintKey(key);
     if (constVal !== undefined) {
       return { kind: 'constant', constantValue: constVal.toString(), canonical: `const:${constVal.toString()}` };

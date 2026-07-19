@@ -24,7 +24,7 @@ import { scriptToLockingBytecode, generateLibauthSourceOutputs, calculateDust } 
 import type { LibauthOutput, Output } from '../interfaces.js';
 import { attachWait } from '../wait.js';
 import {
-  Utxo, UnlockableUtxo, TransactionDetails,
+  Utxo, UnlockableUtxo, TransactionDetails, isP2PKHUnlocker,
 } from '../interfaces.js';
 
 export interface EntryNftInfo {
@@ -2175,9 +2175,13 @@ export class StatefulTransactionBuilder {
     // For P2PKH sig: unlocking ~ 107 bytes -> input overhead = 32+4+1+107+4 = 148
     // Change output: 8 (value) + 1 (scriptLen varint) + scriptLen
     const funderUnlockSize = this.funderUtxos.length > 0
-      ? this.funderUtxos[0].unlocker.generateUnlockingBytecode(
-        { transaction: covenantTx, sourceOutputs: [], inputIndex: 0 },
-      ).length
+      // A native P2PKH funder (msg.sender / tx.origin sender input) signs over the source outputs, which are not
+      // assembled yet at this fee-estimation point, so use the fixed sig+pubkey size (~107 B) instead of signing.
+      ? (isP2PKHUnlocker(this.funderUtxos[0].unlocker)
+        ? 107
+        : this.funderUtxos[0].unlocker.generateUnlockingBytecode(
+          { transaction: covenantTx, sourceOutputs: [], inputIndex: 0 },
+        ).length)
       : 2; // P2SH32 OP_TRUE default for mocknet
     const feeInputOverhead = 32 + 4 + 1 + funderUnlockSize + 4;
     const changeLockingSize = this.funderChangeAddress?.length ?? 35; // P2SH32 default

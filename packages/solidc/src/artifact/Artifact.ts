@@ -70,6 +70,7 @@ function buildFunctionAbiMetadata(func: FunctionDefinitionNode, isStateful = fal
             ...(ks.stateVarName && { stateVarName: ks.stateVarName }),
             ...(ks.stateArrayName && { stateArrayName: ks.stateArrayName }),
             ...(ks.kind === 'constant' && { constantValue: ks.constantValue }),
+            ...(ks.kind === 'msgSender' && { senderOp: ks.senderOp }),
             ...(ks.kind === 'expression' && { expressionLabel: ks.canonical }),
           })),
         }),

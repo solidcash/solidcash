@@ -192,11 +192,14 @@ export class ContractNode extends Node implements Named {
 }
 
 export interface KeySourceInfo {
-  kind: 'param' | 'state' | 'expression' | 'stateArrayLast' | 'constant';
+  kind: 'param' | 'state' | 'expression' | 'stateArrayLast' | 'constant' | 'msgSender';
   paramName?: string;      // kind='param': function parameter name
   stateVarName?: string;   // kind='state': state variable name (e.g. "admin")
   stateArrayName?: string; // kind='stateArrayLast': `arr[arr.length-1]`, the state array name (SDK resolves last elem)
   constantValue?: string;  // kind='constant': compile-time-resolved uint key value (decimal), SDK matches the entry
+  // kind='msgSender': a `msg.sender` / `tx.origin` key. For a direct call both resolve to tx.origin = the first
+  // native P2PKH input's lockscript, so the SDK computes slot = keyToSlot(76a914<pkh>88ac) of the sender.
+  senderOp?: 'msg.sender' | 'tx.origin';
   canonical: string;       // canonical string for deduplication (all kinds)
 }
 

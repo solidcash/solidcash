@@ -5101,6 +5101,16 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           const keyNames = access.keyParams.map((name, i) => access.keySources?.[i]?.paramName ?? name);
           const keyTypes = collection.keyTypes ?? [collection.keyType];
           const encodeKey = (paramName: string, keyType: string, ki: number): Uint8Array => {
+            // msg.sender / tx.origin key: slot = keyToSlot(the sender's native P2PKH lockscript = tx.origin). The
+            // sender funds via _signer.unlockP2PKH(), so the covenant's on-chain emitTxOrigin resolves to the same
+            // lockscript; a wrong address just fails the on-chain slot check (fail-closed).
+            if (access.keySources?.[ki]?.kind === 'msgSender') {
+              if (!this._signer) {
+                throw new Error("A msg.sender/tx.origin-keyed sorted mapping requires a Signer (the sender funds via "
+                  + 'its native P2PKH input): connect one with StatefulContract.connect(signer).');
+              }
+              return addressToLockScript(this._signer.getAddress());
+            }
             // Expression/computed key (e.g. balances[hash160(pk)] with a local var): not a function param, so
             // resolve it from a caller-supplied entryKeyOverrides value (withEntryKey), matching the default entry
             // model. Without one, use a type-width placeholder (a lone entry / VM-trace derivation resolves it).
@@ -5128,10 +5138,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           };
           const slot = keyToSlotMulti(keyNames.map((name, i) => encodeKey(name, keyTypes[i] ?? collection.keyType, i)));
           const kvIdx = abiFunction!.inputs.findIndex((inp) => inp.name === keyNames[0]);
-          const kv = access.keySources?.[0]?.kind === 'expression'
-            ? (evalComputedKey(access.keySources[0].expressionLabel, args, abiFunction!.inputs)
-              ?? overrides?.entryKeyOverrides?.get(slotIndex) ?? new Uint8Array(0))
-            : args[kvIdx] as bigint | boolean | Uint8Array | string;
+          const kv = access.keySources?.[0]?.kind === 'msgSender'
+            ? addressToLockScript(this._signer!.getAddress())
+            : access.keySources?.[0]?.kind === 'expression'
+              ? (evalComputedKey(access.keySources[0].expressionLabel, args, abiFunction!.inputs)
+                ?? overrides?.entryKeyOverrides?.get(slotIndex) ?? new Uint8Array(0))
+              : args[kvIdx] as bigint | boolean | Uint8Array | string;
           // A sorted mapping write OR `delete m[k]` (== assign default, Solidity semantics) both upsert the entry,
           // so the SDK co-spends it the same way. bool sets are value mappings too (true=0x01, false/delete=empty).
           const isWrite = access.operations.includes('write') || access.operations.includes('delete');
@@ -5284,6 +5296,18 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             // Compile-time-constant uint key (OZ StorageSlot `uint256(SLOT)`): the compiler resolved the value, so
             // match the on-chain entry directly (the covenant re-derives + OP_EQUALVERIFYs the same key).
             keyValues.push(BigInt(keySource.constantValue!));
+          } else if (keySource.kind === 'msgSender') {
+            // msg.sender / tx.origin key: for a direct call the covenant computes slot = keyToSlot(tx.origin) where
+            // tx.origin = the first native P2PKH input's lockscript (emitTxOrigin). The sender funds via
+            // _signer.unlockP2PKH(), so slot = keyToSlot(the signer's P2PKH lockscript). A wrong address just fails
+            // the on-chain slot==keyToSlot(msg.sender) check (fail-closed).
+            if (!this._signer) {
+              throw new Error(
+                `A '${keySource.senderOp ?? 'msg.sender'}'-keyed sorted mapping requires a Signer: the sender must `
+                + 'fund the call via its native P2PKH input (StatefulContract.withSigner / connect a Signer).',
+              );
+            }
+            keyValues.push(addressToLockScript(this._signer.getAddress()));
           } else {
             // Expression: look in user-provided entryKeyOverrides, or compute from
             // paramDerivation metadata, or fall back to placeholder.
@@ -7099,6 +7123,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       neededFunders += abiFunction.blockLayout.slots.filter(
         (s) => s.kind === 'tokenContainer' && !tcInfos.some((c) => c.tokenContainerSlotIndex === s.slotIndex && c.exists),
       ).length;
+      // A msg.sender / tx.origin key needs the sender's NATIVE P2PKH input present so the covenant's emitTxOrigin
+      // resolves to it (the sender IS tx.origin), even when the write's fees would otherwise come from the contract.
+      // Force one funder from the signer; its leftover satoshis go to change.
+      const needsSenderInput = (abiFunction.entryAccesses ?? []).some(
+        (ea) => (ea.keySources ?? []).some((ks) => ks.kind === 'msgSender'),
+      );
+      if (needsSenderInput) neededFunders = Math.max(neededFunders, 1);
 
       if (neededFunders > 0) {
         if (this._signer) {

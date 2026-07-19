@@ -113,32 +113,28 @@ describe('sorted mapping opt-in (C2)', () => {
   });
 });
 
-// A sorted (C2) mapping keyed by msg.sender / tx.origin is not yet drivable: the SDK has no keySource to resolve the
-// caller's slot (keyToSlot of the tx.origin P2PKH lockscript), so the covenant reverts at the VM. It now fails CLOSED
-// at COMPILE with a clear, actionable message instead of compiling then reverting at runtime. deferrals "multitransfer
-// (a)". A PARAMETER address key works; msg.sender used AS A VALUE (not a key) is unaffected.
-describe('sorted mapping keyed by msg.sender / tx.origin fails closed at compile', () => {
+// A sorted (C2) mapping keyed by msg.sender / tx.origin compiles and records a `msgSender` keySource: on BCH a direct
+// call's msg.sender = tx.origin = the first native P2PKH input, so the SDK computes slot = keyToSlot(the sender's
+// P2PKH lockscript) and forces the signer's native P2PKH funder. End-to-end VM proof (write/update/read + cross-sender
+// isolation) is in solidcash MsgSenderC2.test.ts. Here we assert the compile side: it compiles + tags the keySource.
+describe('sorted mapping keyed by msg.sender / tx.origin compiles (msgSender keySource)', () => {
   const M = 'contract C() { mapping(address => int) bal;';
   const opt = { sortedMappings: ['bal'], forceStateful: true };
-  const err = /keyed by 'msg\.sender'|keyed by 'tx\.origin'|not yet supported/;
+  const ksOf = (src: string): unknown => compileString(src, opt).abi.find((f) => f.name === 'f')?.entryAccesses?.[0]?.keySources?.[0];
 
-  it('write bal[msg.sender] = v fails closed with a clear message', () => {
-    expect(() => compileString(`${M} function f(int v, pubkey pk, sig s) { require(checkSig(s,pk)); bal[msg.sender] = v; } }`, opt))
-      .toThrow(err);
+  it('write bal[msg.sender] = v compiles + records the msgSender keySource', () => {
+    const ks = ksOf(`${M} function f(int v, pubkey pk, sig s) { require(checkSig(s,pk)); bal[msg.sender] = v; } }`);
+    expect(ks).toMatchObject({ kind: 'msgSender', senderOp: 'msg.sender' });
   });
-  it('read bal[msg.sender] fails closed', () => {
-    expect(() => compileString(`${M} function f(int e, pubkey pk, sig s) { require(checkSig(s,pk)); require(bal[msg.sender] == e); } }`, opt))
-      .toThrow(err);
+  it('read bal[msg.sender] compiles', () => {
+    const ks = ksOf(`${M} function f(int e, pubkey pk, sig s) { require(checkSig(s,pk)); require(bal[msg.sender] == e); } }`);
+    expect(ks).toMatchObject({ kind: 'msgSender' });
   });
-  it('delete bal[msg.sender] fails closed', () => {
-    expect(() => compileString(`${M} function f(pubkey pk, sig s) { require(checkSig(s,pk)); delete bal[msg.sender]; } }`, opt))
-      .toThrow(err);
+  it('tx.origin key compiles + records senderOp tx.origin', () => {
+    const ks = ksOf(`${M} function f(int v, pubkey pk, sig s) { require(checkSig(s,pk)); bal[tx.origin] = v; } }`);
+    expect(ks).toMatchObject({ kind: 'msgSender', senderOp: 'tx.origin' });
   });
-  it('tx.origin key fails closed', () => {
-    expect(() => compileString(`${M} function f(int v, pubkey pk, sig s) { require(checkSig(s,pk)); bal[tx.origin] = v; } }`, opt))
-      .toThrow(err);
-  });
-  it('a PARAMETER address key still compiles (the BCH idiom)', () => {
+  it('a PARAMETER address key stays a param keySource', () => {
     expect(() => compileString(`${M} function f(address a, int v, pubkey pk, sig s) { require(checkSig(s,pk)); bal[a] = v; } }`, opt))
       .not.toThrow();
   });

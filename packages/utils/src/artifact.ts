@@ -289,11 +289,13 @@ export interface SortedInsertLoopAbi {
 }
 
 export interface KeySourceAbi {
-  kind: 'param' | 'state' | 'expression' | 'stateArrayLast' | 'constant';
+  kind: 'param' | 'state' | 'expression' | 'stateArrayLast' | 'constant' | 'msgSender';
   paramName?: string;
   stateVarName?: string;
   stateArrayName?: string; // kind='stateArrayLast': `arr[arr.length-1]` - SDK resolves the array's last element
   constantValue?: string;  // kind='constant': compile-time-resolved uint key value (decimal string)
+  // kind='msgSender': a msg.sender / tx.origin key; SDK resolves slot = keyToSlot(the sender's P2PKH lockscript).
+  senderOp?: 'msg.sender' | 'tx.origin';
   expressionLabel?: string;
 }
 

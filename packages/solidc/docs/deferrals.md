@@ -98,12 +98,20 @@ PER-KEY values = the permutation/value-witness problem + §6a item-4). Soundness
 exclusion-proof hole); needs dedicated design + adversarial omission/reorder/duplicate/wrong-value proofs. `ecrecover` +
 the EIP712 domain separator sit behind it, unreached.
 
-**C2 SURVEY 2026-07-19 (`scratchpad/c2probe.mjs` + VM).** NO silent miscompile found - everything is sound (fail-closed
-where incomplete). COMPLETE+SOUND: single-key read/write/RMW/delete (all value types incl chunked long bytes/string),
-nested/composite/address keys, expr-key nested (`m[hash160(pk)][b]=v`), value-returning RMW helper (new), bool insert
-loop. FAIL-CLOSED (sound, not complete): per-key-value insert loop (permutation/value-witness), multitransfer (above),
-delete/nullify-in-loop, 2D `m[k][i][j]` (an ugly `Found type 'T[][]' where 'undefined'` TypeCheck error - should be a
-clean `UnsupportedTypeError`; low priority, still fail-closed), function-pointer values.
+**C2 SURVEY 2026-07-19 (`scratchpad/c2probe.mjs` + VM).** Every C2 shape is now SOUND (fail-closed where incomplete).
+COMPLETE+SOUND: single-key read/write/RMW/delete (all value types incl chunked long bytes/string), nested/composite/
+address keys, expr-key nested (`m[hash160(pk)][b]=v`), value-returning RMW helper, bool insert loop. FAIL-CLOSED
+(sound, not complete): per-key-value insert loop (permutation/value-witness), multitransfer (above), delete/nullify-in-
+loop, 2D `m[k][i][j]`, function-pointer values.
+
+**One real HOLE found + FIXED (commit `af6e894a`): C2 `delete m[k]` in a DYNAMIC loop.** `visitMappingDelete`'s sorted
+branch routed to `emitSortedValueUpsert` (a FIXED-slot co-spend) with NO `plainLoopDepth` guard (unlike
+`visitMappingAssign`), so `for(i) delete w[ks[i]]` compiled to a single-slot delete in a loop - the covenant pinned
+only ONE iteration and left the rest UN-covenanted (an exclusion-proof hole). Now fails closed at `plainLoopDepth > 0`.
+VM-verified sound (no fix needed): consecutive same-entry scalar RMW `m[k]+=a; m[k]+=b` fail-closes (double-spend
+revert), never a partial store (`C2ScalarMultiWrite`). REMAINING clarity nit (still fail-closed, low priority): 2D
+`m[k][i][j]` gives an ugly `Found type 'T[][]' where 'undefined'` TypeCheck error (the `keys.length > allKeyTypes.length`
+guard misses it because the excess index is an `arrayIndex`, not a key) - should be a clean `UnsupportedTypeError`.
 
 ---
 

@@ -35,9 +35,10 @@ async function deployPair(provider: MockNetworkProvider, salt: Uint8Array, n: nu
   }
 }
 
-// ecrecoverEvm ALSO co-spends a keccak side-car (over the uncompressed key) per call.
-async function deployKeccak(provider: MockNetworkProvider, salt: Uint8Array, n: number): Promise<void> {
-  const lock = binToHex(keccakComputeLockingBytecode(salt));
+// ecrecoverEvm ALSO co-spends a keccak side-car (over the uncompressed key) per call. In a loop the keccak side-car
+// rides the STATEFUL (forward self-preserving) covenant, so `stateful` selects the loop variant.
+async function deployKeccak(provider: MockNetworkProvider, salt: Uint8Array, n: number, stateful = false): Promise<void> {
+  const lock = binToHex(keccakComputeLockingBytecode(salt, stateful));
   for (let i = 0; i < n; i++) {
     await provider.addUtxo(lock, {
       ...randomUtxo({ satoshis: 100_000n }),
@@ -328,6 +329,16 @@ describe('ecrecoverPubKey recovery side-car (compiler + SDK + VM e2e)', () => {
     const sc = StatefulContract.withCategory(contract, categoryId);
     const tx = await sc.bump(h, v, r, s).send();
     expect(tx.txid).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  // ecrecoverEvm INSIDE a loop is not yet supported (per-iteration keccak side-car indexing); it fails closed.
+  it('LOOP + ecrecoverEvm: fails closed at compile time (not yet supported)', () => {
+    expect(() => compileString(`
+      contract AuthLoopEvm(bytes20 owner) {
+          function verify(bytes32[] h, int[] v, bytes32[] r, bytes32[] s, int n) {
+              for (int i = 0; i < n; i++) { require(ecrecoverEvm(h[i], v[i], r[i], s[i]) == owner); }
+          }
+      }`)).toThrow(/ecrecoverEvm is not yet supported inside a loop/);
   });
 
   it('LOOP (fixed-bound): rejects when one iteration signature is wrong', async () => {

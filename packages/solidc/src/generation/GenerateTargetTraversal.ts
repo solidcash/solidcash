@@ -4316,6 +4316,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private emitEcrecoverComputeCall(node: FunctionCallNode): Node {
     const loc = { location: node.location, positionHint: PositionHint.END };
     const isEvm = node.identifier.name === GlobalFunction.ECRECOVER_EVM;
+    // ecrecoverEvm INSIDE a loop needs a per-iteration keccak side-car interleaved with each recovery pair; the
+    // forward keccak indexing is not yet sound. Fail closed rather than miscompile. Recover the pubkey in the loop
+    // (ecrecoverPubKey) and do the keccak/EVM-address projection outside the loop, or hoist the call.
+    if (this.ecrecoverLoopActive && isEvm) {
+      throw new Error('ecrecoverEvm is not yet supported inside a loop (the per-iteration keccak side-car is not '
+        + 'wired). Use ecrecoverPubKey in the loop and project to the EVM address outside it.');
+    }
     const fn = this.currentFunction;
     const i = (fn.ecrecoverArgParams ??= []).length;
     // Record each (hash,v,r,s) arg for the SDK co-spend: a direct param -> its name; an unrolled-loop array element

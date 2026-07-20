@@ -42,6 +42,7 @@ export default class MockNetworkProvider implements NetworkProvider {
 
   private fundingNonce = 0x1000;
   private snapshotNonce = 0;
+  private snapshotRestorers = new Map<string, SnapshotRestorer>();
 
   constructor(options?: Partial<MockNetworkProviderOptions>) {
     this.options = { updateUtxoSet: true, ...options };
@@ -132,6 +133,46 @@ export default class MockNetworkProvider implements NetworkProvider {
       this.blockHeight = height;
     };
     return { snapshotId, restore };
+  }
+
+  /**
+   * hardhat/ethers raw JSON-RPC surface: `network.provider.send("evm_*", params)`. Suites that reach for the raw
+   * provider instead of hardhat-network-helpers still work. Maps the common evm_/eth_ methods to this provider's
+   * snapshot/time/mine primitives; auto-mining knobs are accepted as no-ops (this provider mines on every send).
+   */
+  async send(method: string, params: unknown[] = []): Promise<unknown> {
+    switch (method) {
+      case 'evm_snapshot': {
+        const restorer = await this.takeSnapshot();
+        this.snapshotRestorers.set(restorer.snapshotId, restorer);
+        return restorer.snapshotId;
+      }
+      case 'evm_revert': {
+        const id = String(params[0]);
+        const restorer = this.snapshotRestorers.get(id);
+        if (!restorer) return false;
+        await restorer.restore();
+        return true;
+      }
+      case 'evm_mine':
+        await this.mine(1);
+        return '0x0';
+      case 'evm_increaseTime':
+        return this.increaseTime(Number(params[0]));
+      case 'evm_setNextBlockTimestamp':
+        this.setNextBlockTimestamp(Number(params[0]));
+        return null;
+      case 'evm_setAutomine':
+      case 'evm_setIntervalMining':
+        return null; // no-op: this provider confirms every transaction immediately
+      case 'eth_blockNumber':
+        return `0x${(await this.getBlockHeight()).toString(16)}`;
+      case 'eth_chainId':
+      case 'net_version':
+        return '0x0'; // BCH has no EVM chain id; a stable placeholder for suites that read it
+      default:
+        throw new Error(`MockNetworkProvider.send: unsupported JSON-RPC method '${method}'.`);
+    }
   }
 
   async getBlockHash(height: number): Promise<string> {

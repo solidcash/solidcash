@@ -192,6 +192,7 @@ export interface AbiFunction {
   ecrecoverCompute?: boolean;   // ecrecoverPubKey uses a co-spent recovery side-car PAIR per call; send() co-spends 2N inputs
   ecrecoverArgParams?: readonly (readonly (string | null)[])[]; // per ecrecoverPubKey call (order): its [hash,v,r,s] param names
   ecrecoverEvmFlags?: readonly boolean[]; // per ecrecover call (order): is it ecrecoverEvm? (also co-spends a keccak side-car)
+  ecrecoverLoopReads?: boolean; // dynamic ecrecover loop: the SDK co-spends one recovery pair per sig-array element
 }
 
 export interface CollectionIterationAbi {

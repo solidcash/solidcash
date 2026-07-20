@@ -275,9 +275,12 @@ export class TransactionBuilder {
     for (const input of [...this.inputs]) {
       if (!isUnlockableUtxo(input) || !isContractUnlocker(input.unlocker)) continue;
       const abiFn = input.unlocker.abiFunction as typeof input.unlocker.abiFunction
-        & { ecrecoverCompute?: boolean; ecrecoverArgParams?: readonly (readonly (string | null)[])[]; ecrecoverEvmFlags?: readonly boolean[] };
+        & { ecrecoverCompute?: boolean; ecrecoverArgParams?: readonly (readonly (string | null)[])[];
+            ecrecoverEvmFlags?: readonly boolean[]; ecrecoverLoopReads?: boolean };
       if (!abiFn.ecrecoverCompute) continue;
       const salt = input.token?.category ? hexToBin(input.token.category) : SHARED_LIBRARY_SALT;
+      // Dynamic loop: one recovery PAIR per iteration, read forward from [master+1+2k]. Co-spend N (= sig-array length).
+      if (abiFn.ecrecoverLoopReads) { await this.addStatelessEcrecoverLoopCoSpends(input, salt); continue; }
       const unlocker = input.unlocker as unknown as { abiFunction: { inputs: readonly { name: string }[] }; params: unknown[] };
       const raw = (name: string): unknown => unlocker.params[unlocker.abiFunction.inputs.findIndex((x) => x.name === name)];
       // "h" -> the h param; "h[3]" (unrolled loop) -> element 3 of the h array param.
@@ -329,6 +332,61 @@ export class TransactionBuilder {
     const { unlockerA, recreateA, unlockerB, recreateB } = buildEcrecoverComputeSidecars(wit, chunkA, salt, scA, scB);
     this.addInput(scA, unlockerA); this.addOutput(recreateA);   // A: checkpoint
     this.addInput(scB, unlockerB); this.addOutput(recreateB);   // B: recovered pubkey
+  }
+
+  /**
+   * Dynamic (runtime-bound) ecrecover loop `for (i<n) ecrecoverPubKey(h[i],..)`: co-spend one recovery PAIR per
+   * iteration in the forward region [master+1+2k]. N = the sig-array length (the loop iterates the arrays); the
+   * contract reads pair k at [master+1+2k]/[master+2+2k] (self-preserving) and BINDS its argBlob == (h[k],v[k],r[k],
+   * s[k]), so extra/missing pairs fail closed. Splices the pairs + recreations right after the master (input idx ==
+   * output idx). Mirrors addStatelessKeccakLoopCoSpends but for a 2-side-car pair per iteration.
+   */
+  private async addStatelessEcrecoverLoopCoSpends(input: UnlockableUtxo, salt: Uint8Array): Promise<void> {
+    const contractIdx = this.inputs.indexOf(input);
+    const base = contractIdx + 1; // absolute-forward: pairs/recreations at [master+1 ..]
+    if (base > this.outputs.length) {
+      throw new Error('stateless dynamic ecrecover loop needs the spent contract near the front of the tx (its input '
+        + `index + 1 must be <= the output count; got index ${contractIdx}, ${this.outputs.length} outputs).`);
+    }
+    const unlocker = input.unlocker as unknown as {
+      abiFunction: { inputs: readonly { name: string }[]; ecrecoverArgParams?: readonly (readonly (string | null)[])[] };
+      params: unknown[];
+    };
+    // The single syntactic loop call records its args as "h[]" (array-indexed by the loop var); read those arrays.
+    const [hp, vp, rp, sp] = (unlocker.abiFunction.ecrecoverArgParams ?? [[]])[0] ?? [];
+    const arrOf = (ref: string | null | undefined): unknown[] => {
+      const m = typeof ref === 'string' ? ref.match(/^(\w+)\[\]$/) : null;
+      if (!m) throw new Error('ecrecover loop requires direct array-element args h[i] (v/r/s the same); a computed '
+        + 'argument needs an explicit recovery co-spend.');
+      const v = unlocker.params[unlocker.abiFunction.inputs.findIndex((x) => x.name === m[1])];
+      if (!Array.isArray(v)) throw new Error(`ecrecover loop arg "${m[1]}" is not an array.`);
+      return v;
+    };
+    const hs = arrOf(hp), vs = arrOf(vp), rs = arrOf(rp), ss = arrOf(sp);
+    const N = hs.length;
+    const [lockA, lockB] = [ecrecoverComputeLockingBytecode(salt, 'A'), ecrecoverComputeLockingBytecode(salt, 'B')];
+    const [utxosA, utxosB] = await Promise.all([
+      this.provider.getUtxosForLockingBytecode(lockA), this.provider.getUtxosForLockingBytecode(lockB),
+    ]);
+    const spent = (u: Utxo): boolean => this.inputs.some((i) => i.txid === u.txid && i.vout === u.vout);
+    const freeA = utxosA.filter((u) => !spent(u)), freeB = utxosB.filter((u) => !spent(u));
+    if (freeA.length < N || freeB.length < N) {
+      throw new Error(`dynamic ecrecover loop needs ${N} A + ${N} B recovery side-car UTXOs; found ${freeA.length} A `
+        + `+ ${freeB.length} B. Deploy one A+B pair per loop iteration.`);
+    }
+    const sideCars: UnlockableUtxo[] = [];
+    const recreates: Output[] = [];
+    for (let k = 0; k < N; k++) {
+      const hash = hs[k] as Uint8Array, r = rs[k] as Uint8Array, s = ss[k] as Uint8Array;
+      const v = typeof vs[k] === 'bigint' ? Number(vs[k]) : Number(vs[k]);
+      const wit = computeEcrecoverWitness(hash, v, r, s);
+      const chunkA = this.probeEcrecoverSplit(wit, salt, freeA[k], freeB[k]);
+      const { unlockerA, recreateA, unlockerB, recreateB } = buildEcrecoverComputeSidecars(wit, chunkA, salt, freeA[k], freeB[k]);
+      sideCars.push({ ...freeA[k], unlocker: unlockerA }, { ...freeB[k], unlocker: unlockerB });
+      recreates.push(recreateA, recreateB);
+    }
+    this.inputs.splice(base, 0, ...sideCars);
+    this.outputs.splice(base, 0, ...recreates);
   }
 
   /**

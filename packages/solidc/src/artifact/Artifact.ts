@@ -162,6 +162,7 @@ function buildFunctionAbiMetadata(func: FunctionDefinitionNode, isStateful = fal
       && { ecrecoverArgParams: func.ecrecoverArgParams }),
     ...(func.ecrecoverEvmFlags && func.ecrecoverEvmFlags.some(Boolean)
       && { ecrecoverEvmFlags: func.ecrecoverEvmFlags }),
+    ...(func.ecrecoverLoopReads && { ecrecoverLoopReads: true }),
     ...(func.unsafeTier !== undefined && { unsafeTier: func.unsafeTier }),
     ...(func.lowLevelCalls && func.lowLevelCalls.length > 0 && {
       lowLevelCalls: func.lowLevelCalls.map((lc) => ({ callMode: lc.callMode })),

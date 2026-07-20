@@ -491,6 +491,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private sortedUpsertPendActive: boolean = false;        // the pending-defer registers are live on the stack
   private keccakLoopCounterName: string = '(loop_keccak_counter)'; // keccak side-cars read-so-far (dynamic keccak loop)
   private keccakLoopActive: boolean = false;        // a dynamic keccak256 loop counter is live on the stack
+  private ecrecoverLoopCounterName: string = '(loop_ecrecover_counter)'; // recovery pairs read-so-far (dynamic loop)
+  private ecrecoverLoopActive: boolean = false;     // a dynamic ecrecover loop counter is live on the stack
   private functionMultiSiteDeploy: boolean = false; // 2+ same-contract sites w/ a conditional: function counter
   // A loop `new C{value:V}()` interleaves its transfer per child; the satoshi container that sources them is
   // conserved (input <= output + counter*V) after the loop's OP_UNTIL. V must be loop-invariant (typically a
@@ -3174,6 +3176,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       && this.emitLoopEntryWriteSetup(node.block, locationData);
     // Dynamic keccak loop: push a 0-based side-car counter BEFORE OP_BEGIN (trailing-region read per iteration).
     const loopHasKeccak = this.emitLoopKeccakSetup(node.block, locationData);
+    // Dynamic ecrecover loop: push a 0-based recovery-pair counter BEFORE OP_BEGIN (forward-region read per iter).
+    const loopHasEcrecover = this.emitLoopEcrecoverSetup(node.block, locationData);
 
     // EXISTING LOOP LOGIC (with pre-allocated slots now below stackDepth)
     this.scopeDepth += 1;
@@ -3212,7 +3216,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (loopHasSortedUpsert) {
       this.emitSortedUpsertLoopTeardown({ location: node.location, positionHint: PositionHint.END });
     }
-    // Drop the dynamic keccak loop counter now the loop is done.
+    // Drop the dynamic ecrecover / keccak loop counters now the loop is done (reverse push order).
+    if (loopHasEcrecover) {
+      this.emitLoopEcrecoverTeardown({ location: node.location, positionHint: PositionHint.END });
+    }
     if (loopHasKeccak) {
       this.emitLoopKeccakTeardown({ location: node.location, positionHint: PositionHint.END });
     }
@@ -3333,6 +3340,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       && this.emitLoopEntryWriteSetup(node.block, locationData);
     // Dynamic keccak loop: push a 0-based side-car counter BEFORE OP_BEGIN (trailing-region read per iteration).
     const loopHasKeccak = this.emitLoopKeccakSetup(node.block, locationData);
+    // Dynamic ecrecover loop: push a 0-based recovery-pair counter BEFORE OP_BEGIN (forward-region read per iter).
+    const loopHasEcrecover = this.emitLoopEcrecoverSetup(node.block, locationData);
 
     // WHILE LOOP LOGIC
     // while(cond) { body } ->
@@ -3391,7 +3400,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (loopHasSortedUpsert) {
       this.emitSortedUpsertLoopTeardown({ location: node.location, positionHint: PositionHint.END });
     }
-    // Drop the dynamic keccak loop counter now the loop is done.
+    // Drop the dynamic ecrecover / keccak loop counters now the loop is done (reverse push order).
+    if (loopHasEcrecover) {
+      this.emitLoopEcrecoverTeardown({ location: node.location, positionHint: PositionHint.END });
+    }
     if (loopHasKeccak) {
       this.emitLoopKeccakTeardown({ location: node.location, positionHint: PositionHint.END });
     }
@@ -4311,8 +4323,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const isParam = (name: string): boolean => fn.parameters.some((fp) => fp.name === name);
     fn.ecrecoverArgParams.push(node.parameters.map((p) => {
       if (p instanceof IdentifierNode && isParam(p.name)) return p.name;
-      if (p instanceof ArrayAccessNode && p.array instanceof IdentifierNode && isParam(p.array.name)
-        && p.index instanceof IntLiteralNode) return `${p.array.name}[${p.index.value}]`;
+      if (p instanceof ArrayAccessNode && p.array instanceof IdentifierNode && isParam(p.array.name)) {
+        // Dynamic loop `h[i]` (i = the loop variable) -> "h[]": the SDK iterates the h array param, one pair per element.
+        return this.ecrecoverLoopActive ? `${p.array.name}[]` : null;
+      }
       return null;
     }));
     (fn.ecrecoverEvmFlags ??= []).push(isEvm);
@@ -4322,10 +4336,23 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // so every recovery offset-from-end is shifted by E (the recovery pairs are no longer the very last inputs).
     const n = fn.ecrecoverCallCount ?? 1;
     const E = fn.ecrecoverEvmCallCount ?? 0;
-    const slotIdx = (role: 'A' | 'B', isOutput = false): void => {
+    const loop = this.ecrecoverLoopActive;
+    const slotIdx = (role: 'A' | 'B', _isOutput = false): void => {
+      if (loop) {
+        // Dynamic loop: pair `counter` at [master + 1 + 2*counter] (A) / [master + 2 + 2*counter] (B). Input idx ==
+        // output idx (the recovery covenant self-preserves via OP_INPUTINDEX), so the same index serves in/output.
+        // The tracker is kept in sync (popFromStack after the argBlob CATs / A-read), so the counter's PICK depth is
+        // getStackIndex(counter) + 1 (the +1 is the master-index just pushed by emitMasterInputIndex).
+        this.emitMasterInputIndex(loc);
+        this.emit(encodeInt(BigInt(this.getStackIndex(this.ecrecoverLoopCounterName) + 1)), loc);
+        this.emit(Op.OP_PICK, loc);
+        this.emit(encodeInt(2n), loc); this.emit(Op.OP_MUL, loc); this.emit(Op.OP_ADD, loc); // master + 2*counter
+        this.emit(encodeInt(role === 'A' ? 1n : 2n), loc); this.emit(Op.OP_ADD, loc);          // + 1 (A) / 2 (B)
+        return;
+      }
       if (fn.blockLayout) { this.emitBlockSlotIndex('ecrecoverSideCar', role === 'A' ? 2 * i : 2 * i + 1, loc); return; }
       const offset = (role === 'A' ? 2 * n - 2 * i : 2 * n - 2 * i - 1) + E;
-      this.emit(isOutput ? Op.OP_TXOUTPUTCOUNT : Op.OP_TXINPUTCOUNT, loc);
+      this.emit(_isOutput ? Op.OP_TXOUTPUTCOUNT : Op.OP_TXINPUTCOUNT, loc);
       this.emit(encodeInt(BigInt(offset)), loc);
       this.emit(Op.OP_SUB, loc);
     };
@@ -4345,6 +4372,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // 1. evaluate args -> [hash, v, r, s]; argBlob = hash || v(1) || r || s
     for (let p = 0; p < 4; p++) node.parameters[p] = this.visit(node.parameters[p]);
     this.emit(Op.OP_CAT, loc); this.emit(Op.OP_CAT, loc); this.emit(Op.OP_CAT, loc); // [.., argBlob]
+    // Loop mode: sync the tracker to the VM (4 args collapsed to 1 argBlob) so the counter's OP_PICK depth is exact.
+    if (loop) this.popFromStack(3);
 
     // 2. side-car A: bind ITS argBlob == ours, then integrity-check its covenant
     slotIdx('A'); this.emit(Op.OP_INPUTBYTECODE, loc);                 // [argBlob, U_A]
@@ -4359,6 +4388,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_HASH256, loc);
     this.emit(hexToBin(ECRECOVER_COMPUTE_A_COVENANT_HASH), loc);
     this.emit(Op.OP_EQUALVERIFY, loc);                                // A integrity
+    if (loop) this.popFromStack(1); // argBlob was consumed by the bind above -> keep the tracker synced
 
     // 3. side-car B integrity (its unlock = <pad><argBlob><sharedBlob><Cblob><Zinv><redeem>)
     slotIdx('B'); this.emit(Op.OP_INPUTBYTECODE, loc);                 // [U_B]
@@ -4404,8 +4434,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       keccakIdx(true); this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, loc);          // [R = keccak256(P)]
       this.emit(encodeInt(12n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_NIP, loc); // [R[12:32] = addr20]
     }
-    this.popFromStack(4);            // consume the 4 arg entries (the introspection above is net stack-neutral)
-    this.pushToStack('(value)');
+    if (loop) {
+      // The tracker was already reconciled to the pre-arg baseline (popFromStack 3 + 1), so just track the result,
+      // then advance the loop counter so the next iteration reads the next recovery pair.
+      this.pushToStack('(value)');
+      const cIdx = this.getStackIndex(this.ecrecoverLoopCounterName);
+      this.emit(encodeInt(BigInt(cIdx)), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_1ADD, loc);
+      this.emitReplace(this.getStackIndex(this.ecrecoverLoopCounterName) + 1, node);
+    } else {
+      this.popFromStack(4);            // consume the 4 arg entries (the introspection above is net stack-neutral)
+      this.pushToStack('(value)');
+    }
     return node;
   }
 
@@ -13158,6 +13197,45 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (value instanceof Node) { if (this.blockHasKeccakCall(value)) return true; }
       else if (Array.isArray(value)) {
         for (const item of value) if (item instanceof Node && this.blockHasKeccakCall(item)) return true;
+      }
+    }
+    return false;
+  }
+
+  // A dynamic (runtime-bound) ecrecover loop reads one recovery PAIR per iteration from the forward region
+  // [master+1+2*counter] (A) / [master+2+2*counter] (B). Push a 0-based counter before OP_BEGIN;
+  // emitEcrecoverComputeCall reads pair `counter`, binds argBlob, reads Q, and increments the counter each iteration.
+  private emitLoopEcrecoverSetup(block: Node, loc: SingleLocationData): boolean {
+    if (this.ecrecoverLoopActive) return false;
+    if (!this.currentFunction.ecrecoverCompute) return false;
+    if (!this.blockHasEcrecoverCall(block)) return false;
+    this.emit(encodeInt(0n), loc);
+    this.pushToStack(this.ecrecoverLoopCounterName);
+    this.ecrecoverLoopActive = true;
+    return true;
+  }
+
+  // Tear down a dynamic ecrecover loop after OP_UNTIL: drop the counter. Each iteration BINDS its pair's argBlob ==
+  // the running (h,v,r,s), so extra/missing trailing pairs fail closed (a missing one aborts the read).
+  private emitLoopEcrecoverTeardown(loc: SingleLocationData): void {
+    if (!this.ecrecoverLoopActive) return;
+    const idx = this.getStackIndex(this.ecrecoverLoopCounterName);
+    this.emit(encodeInt(BigInt(idx)), loc);
+    this.emit(Op.OP_ROLL, loc);
+    this.emit(Op.OP_DROP, loc);
+    this.removeFromStack(idx);
+    this.ecrecoverLoopActive = false;
+  }
+
+  private blockHasEcrecoverCall(node: Node): boolean {
+    if (node instanceof FunctionCallNode && (
+      node.identifier.name === GlobalFunction.ECRECOVER_PUBKEY
+      || node.identifier.name === GlobalFunction.ECRECOVER_P2PKH
+      || node.identifier.name === GlobalFunction.ECRECOVER_EVM)) return true;
+    for (const value of Object.values(node)) {
+      if (value instanceof Node) { if (this.blockHasEcrecoverCall(value)) return true; }
+      else if (Array.isArray(value)) {
+        for (const item of value) if (item instanceof Node && this.blockHasEcrecoverCall(item)) return true;
       }
     }
     return false;

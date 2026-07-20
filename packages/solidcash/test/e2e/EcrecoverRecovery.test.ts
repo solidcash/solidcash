@@ -252,9 +252,11 @@ describe('ecrecoverPubKey recovery side-car (compiler + SDK + VM e2e)', () => {
           }
       }
   }`;
-  it('LOOP (fixed-bound): unrolls to per-iteration recovery pairs, authenticates each', async () => {
+  it('LOOP (fixed-bound): dynamic per-iteration recovery pairs, authenticates each', async () => {
     const artifact = compileString(LOOP);
-    expect(artifact.abi.find((fn) => fn.name === 'verify')?.ecrecoverArgParams).toHaveLength(2);
+    const vfn = artifact.abi.find((fn) => fn.name === 'verify');
+    expect(vfn?.ecrecoverLoopReads).toBe(true);
+    expect(vfn?.ecrecoverArgParams).toEqual([['h[]', 'v[]', 'r[]', 's[]']]);
     const provider = new MockNetworkProvider();
     const w = ethers.Wallet.createRandom();
     const g0 = await recovery('loop-0', w), g1 = await recovery('loop-1', w);  // same signer, two messages
@@ -265,6 +267,32 @@ describe('ecrecoverPubKey recovery side-car (compiler + SDK + VM e2e)', () => {
       .addInputs(await contract.getUtxos(),
         contract.unlock.verify([g0.h, g1.h], [g0.v, g1.v], [g0.r, g1.r], [g0.s, g1.s]))
       .addOutput({ to: contract.address, amount: 800_000n })
+      .send();
+    expect(tx.txid).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  // The GENERAL case: a RUNTIME-bound loop (the count is a parameter, not a literal). The SDK co-spends N = the
+  // sig-array length pairs; the contract reads pair k forward at [master+1+2k] per iteration.
+  const LOOP_N = `
+  contract AuthLoopN(pubkey owner) {
+      function verify(bytes32[] h, int[] v, bytes32[] r, bytes32[] s, int n) {
+          for (int i = 0; i < n; i++) {
+              require(ecrecoverPubKey(h[i], v[i], r[i], s[i]) == owner);
+          }
+      }
+  }`;
+  it('LOOP (runtime-bound): dynamic N=3 recovery pairs from a for(i<n) loop', async () => {
+    const artifact = compileString(LOOP_N);
+    const provider = new MockNetworkProvider();
+    const w = ethers.Wallet.createRandom();
+    const g = await Promise.all([0, 1, 2].map((k) => recovery('loopn-' + k, w)));  // same signer, 3 messages
+    const contract = new Contract(artifact, [g[0].owner], { provider });
+    await provider.addUtxo(contract.address, randomUtxo({ satoshis: 1_000_000n }));
+    await deployPair(provider, SHARED_LIBRARY_SALT, 3);   // one A+B pair per iteration
+    const tx = await new TransactionBuilder({ provider })
+      .addInputs(await contract.getUtxos(),
+        contract.unlock.verify(g.map((x) => x.h), g.map((x) => x.v), g.map((x) => x.r), g.map((x) => x.s), 3n))
+      .addOutput({ to: contract.address, amount: 700_000n })
       .send();
     expect(tx.txid).toMatch(/^[0-9a-f]{64}$/);
   });

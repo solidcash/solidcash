@@ -108,6 +108,29 @@ describe('stateful computed-target loop (IFoo(pairFor(path[i], path[i+1])).m() o
     expect((await pubSc.getState()).notifyCount).toBe(1n);
   });
 
+  it('scales to a 3-hop route (3 co-spent instances, path.length 4)', async () => {
+    const pubArt = compileString(PUBLISHER);
+    const subArt = compileString(SUBSCRIBER);
+    const subs: { c1: string; sc: StatefulContract }[] = [];
+    for (let i = 0; i < 3; i++) {
+      const c = new Contract(subArt, [], { provider });
+      const { categoryId } = await setupStatefulUtxos(
+        provider, c, subArt.stateLayout!, { received: 0n }, { saltContract: true },
+      );
+      subs.push({ c1: categoryId, sc: StatefulContract.withCategory(c, categoryId) });
+    }
+    const pub = new Contract(pubArt, [], { provider });
+    const { categoryId: pc } = await setupStatefulUtxos(
+      provider, pub, pubArt.stateLayout!, { notifyCount: 0n }, { saltContract: true },
+    );
+    const pubSc = StatefulContract.withCategory(pub, pc);
+    pubSc.registerExternalArray('IFoo', subs.map((s) => s.sc));
+
+    const path = ['aa', 'bb', 'cc', 'dd'].map((x) => hexToBin(x.repeat(35))); // 4 tokens -> 3 pairs
+    await pubSc.notify(path, 5n, alicePub, sig()).send();
+    for (const s of subs) expect((await s.sc.getState()).received).toBe(5n);
+  });
+
   it('fills the witness correctly when the interface is multi-method (selector param follows in the ABI)', async () => {
     const pubArt = compileString(PUBLISHER_MULTI);
     const subArt = compileString(SUBSCRIBER_MULTI);

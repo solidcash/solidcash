@@ -157,11 +157,12 @@ by it; they are pre-existing and fundamental. Re-bucketed the current top FAILs 
   `6448f446` bool/enum, `1cc36ad2` array-in-struct). Only top-level array-OF-struct fail-closed (SDK can't derive
   that state layout). (b) DYNAMIC-ARRAY RESIZE `sstore(x.slot,n)` - DONE (`0b2f89c0`, branchless blob surgery, +5
   corpus: the array_copy/clear/delete cluster). (c) CALLDATA `.offset` read+assign DONE
-  (`cebd086b`,`ac82db9f`, +2: first-dynamic-param compile-time constant + assignable mutable component). Remaining
-  slot deferrals (docs/deferrals.md, evidence-backed): bytes/string slot fields (per-file audit: all 7 need
-  byte-reversal / keccak-data-region / invalid-encoding, none flips via clean resize), nested calldata arrays,
-  non-first-dynamic calldata offset, address slots (bounded-address Section 10: against), computed keccak element/data
-  slots.
+  (`cebd086b`,`ac82db9f`, +2). (d) KECCAK dynamic-array ELEMENT slot idiom DONE (`8dd0f5e8` inline + `0ed9e4bb`
+  let-bound, +4: `sstore(keccak256(0,32)+i, v)`==arr[i]=v, guarded read; delete_storage_array + 3 more) + bytes32
+  keccak arith cast (`40006947`). **SLOT LINE CUMULATIVE: +11 corpus, 7 features, 0 regress.** Remaining slot
+  deferrals (docs/deferrals.md, evidence-backed): bytes/string slot fields (all 7 need byte-reversal / keccak-data /
+  invalid-encoding), nested calldata arrays, non-first-dynamic calldata offset, address slots (bounded-address
+  Section 10: against), keccak256_optimizer_cache_bug (runtime-mem/array-idiom interaction).
   `sload(v.slot+i)` combines the packed value fields/elements at relative slot i into the EVM-layout word;
   `sstore(v.slot+i,w)` writes the decomposed pieces back (a STRUCT via the AstBuilder's `s.f=v` ctor rebuild = a
   value blob, never a raw slot; a fixed ARRAY via per-element ArrayAssign). Reuses the int/bytesN/UDVT field

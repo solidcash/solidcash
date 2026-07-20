@@ -1,7 +1,19 @@
 import { describe, it, expect } from 'vitest';
+import { binToHex } from '@bitauth/libauth';
 import { compileString } from 'solidc';
-import { Contract, StatefulContract } from '../../src/index.js';
+import { Contract, StatefulContract, getEntryNftAddress, headSentinelCommitment } from '../../src/index.js';
 import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
+
+// A fn-ptr mapping is C2-sorted (an internal fn-ptr = an int functionId, exclusion-proof reads). The older
+// setupStatefulUtxos path does not mint the C2 HEAD sentinel that a first high-level write needs (deploy does),
+// so seed HEAD[0|0] for the `routes` collection here.
+const seedRoutesSentinel = (contract: Contract) => (categoryId: string): Array<{
+  address: string; satoshis: bigint; token: any;
+}> => [{
+  address: getEntryNftAddress(contract, categoryId, 'routes'),
+  satoshis: 10000n,
+  token: { amount: 0n, nft: { capability: 'mutable' as const, commitment: binToHex(headSentinelCommitment()) } },
+}];
 
 // Function pointers stored in a state mapping (a dispatch table / router). The contract registers a
 // handler (storing its functionId in an entry NFT) and later reads it back to dispatch. The SDK
@@ -37,7 +49,7 @@ describe('function pointers in state (dispatch table)', () => {
     const provider = createTestProvider();
     const contract = new Contract(artifact, [], { provider });
     const { categoryId } = await setupStatefulUtxos(
-      provider, contract, stateLayout, { counter: 0n }, { saltContract: true },
+      provider, contract, stateLayout, { counter: 0n }, { saltContract: true, extraOutputs: seedRoutesSentinel(contract) },
     );
 
     const sel = Uint8Array.from([0xde, 0xad, 0xbe, 0xef]);
@@ -57,7 +69,7 @@ describe('function pointers in state (dispatch table)', () => {
     const provider = createTestProvider();
     const contract = new Contract(artifact, [], { provider });
     const { categoryId } = await setupStatefulUtxos(
-      provider, contract, stateLayout, { counter: 0n }, { saltContract: true },
+      provider, contract, stateLayout, { counter: 0n }, { saltContract: true, extraOutputs: seedRoutesSentinel(contract) },
     );
 
     const sel = Uint8Array.from([0x00, 0x11, 0x22, 0x33]);
@@ -68,6 +80,25 @@ describe('function pointers in state (dispatch table)', () => {
     const sc2 = StatefulContract.withCategory(contract, categoryId);
     const invTx = await sc2.invoke(sel, 21n, 63n).send();
     expect(invTx.txid).toBeDefined();
+  });
+
+  // Two distinct selectors in ONE C2 list: the second register is an INSERT into a non-empty sorted list (co-spends
+  // the first entry or HEAD as predecessor). Each dispatches its own handler - proves the C2 fn-ptr path grows the
+  // list, not just the empty-list genesis. (The fn-ptr value is an int functionId; exclusion-proof reads per C2.)
+  it('holds two distinct handlers in the sorted list and dispatches each', async () => {
+    const provider = createTestProvider();
+    const contract = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, contract, stateLayout, { counter: 0n }, { saltContract: true, extraOutputs: seedRoutesSentinel(contract) },
+    );
+    const selD = Uint8Array.from([0xaa, 0xbb, 0xcc, 0xdd]); // -> double
+    const selT = Uint8Array.from([0x11, 0x22, 0x33, 0x44]); // -> triple
+
+    await StatefulContract.withCategory(contract, categoryId).register(selD, false).send();
+    await StatefulContract.withCategory(contract, categoryId).register(selT, true).send();
+
+    expect((await StatefulContract.withCategory(contract, categoryId).invoke(selD, 21n, 42n).send()).txid).toBeDefined();
+    expect((await StatefulContract.withCategory(contract, categoryId).invoke(selT, 21n, 63n).send()).txid).toBeDefined();
   });
 
   // An EXTERNAL self-ref pointer (`this.f`) routes to the internal OP_INVOKE dispatch (the only external-pointer

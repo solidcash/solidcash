@@ -1,6 +1,6 @@
 import { CharStream, CommonTokenStream } from 'antlr4';
 import { binToHex } from '@bitauth/libauth';
-import { Artifact, ArtifactMap, ArrayType, AddressType, BytesType, CompilerOptions, computeBytecodeFingerprintWithConstructorArgs, EnumType, generateSourceMap, IntType, MappingType, optimiseBytecode, optimiseBytecodeOld, OPTIMISER_COMPAT_CHECK_MAX_OPS, PrimitiveType, scriptToAsm, scriptToBytecode, sourceMapToLocationData, StructType, Type, ValueType } from '@solidcash/utils';
+import { Artifact, ArtifactMap, ArrayType, AddressType, BytesType, CompilerOptions, computeBytecodeFingerprintWithConstructorArgs, EnumType, FunctionType, generateSourceMap, IntType, MappingType, optimiseBytecode, optimiseBytecodeOld, OPTIMISER_COMPAT_CHECK_MAX_OPS, PrimitiveType, scriptToAsm, scriptToBytecode, sourceMapToLocationData, StructType, Type, ValueType } from '@solidcash/utils';
 import { generateArtifact, generateDeclarationArtifact } from './artifact/Artifact.js';
 import {
   Ast, ContractNode, ContractReferenceNode, FunctionModifier, InstantiationNode, Node, ParameterNode,
@@ -207,6 +207,9 @@ function compileResolvedAst(ast: Ast, code: string, mergedCompilerOptions: Compi
     vt instanceof IntType || vt instanceof BytesType || vt instanceof AddressType || vt instanceof StructType
     || vt instanceof EnumType || vt instanceof ArrayType
     || vt === PrimitiveType.BIGINT || vt.toString() === 'bool' || vt.toString() === 'string'
+    // Internal fn-ptr = an immutable integer functionId (the 'int' kind); C2 gives its dispatch table exclusion-proof
+    // reads. External fn-ptr as a mapping value stays fail-closed at type-check (isValidStateType), never marked here.
+    || (vt instanceof FunctionType && !vt.isExternal)
   );
   if (mergedCompilerOptions.sortedMappingsAll !== false) {
     for (const col of ast.contract.collections) {

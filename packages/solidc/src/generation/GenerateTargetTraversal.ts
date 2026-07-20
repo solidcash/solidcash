@@ -10060,6 +10060,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (vt === PrimitiveType.BIGINT || vt instanceof IntType) return 'int';
     // An enum is its ordinal integer on the wire (bounded 0..N-1); store + read it as an int value.
     if (vt instanceof EnumType) return 'int';
+    // An internal fn-ptr is an immutable integer functionId; store + read it as an int value. (External fn-ptr as a
+    // mapping value is rejected at type-check, so only the internal 'int' spelling reaches here.)
+    if (vt instanceof FunctionType && !vt.isExternal) return 'int';
     if (vt instanceof BytesType && vt.bound !== undefined && vt.bound >= 1 && vt.bound <= 32) return 'rawbytes';
     // Unbounded `bytes` / `string` (P5b): the tail is `len(4 B) ++ [ inline value if <=60 | sha256(value) ]` via
     // emitChunkableValueTail/Read - inline keeps the commitment <= 128 B, the hash bounds it for a value of ANY

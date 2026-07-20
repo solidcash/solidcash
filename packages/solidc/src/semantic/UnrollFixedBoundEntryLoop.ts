@@ -13,6 +13,12 @@ import {
   UnaryOpNode,
   AssignNode,
   ArrayAssignNode,
+  ArrayPushNode,
+  ArrayPopNode,
+  DeleteLocalNode,
+  MappingAssignNode,
+  MappingFieldAssignNode,
+  MappingDeleteNode,
   BreakNode,
   ContinueNode,
   ReturnNode,
@@ -91,15 +97,19 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
     return node;
   }
 
-  // Every local name that is reassigned or has its length changed anywhere in the fn body (AssignNode target,
-  // or an ArrayAssignNode = push/pop/element-write). A `new T[](N)` binding is only trusted for the length fold
-  // if its name is NOT here, so the recorded size can never be stale (sound regardless of control flow / scoping).
+  // Every local name whose array LENGTH could change anywhere in the fn body: a reassignment (AssignNode), a
+  // push / pop (ArrayPushNode / ArrayPopNode), or a whole-array delete (DeleteLocalNode = `delete arr`, resets to
+  // empty). A `new T[](N)` binding is only trusted for the length fold if its name is NOT here, so the recorded
+  // size can never be stale (sound regardless of control flow / scoping). Length-PRESERVING ops are deliberately
+  // excluded so they don't over-block the fold: an element write `arr[i]=v` (ArrayAssignNode) and an element
+  // delete `delete arr[i]` (ArrayDeleteNode) keep the length - e.g. EACC's `new address[](1); a[0]=w;` stays foldable.
   private collectMutatedNames(body: Node | undefined): Set<string> {
     const names = new Set<string>();
     const walk = (n: Node | undefined): void => {
       if (!n) return;
       if (n instanceof AssignNode && n.identifier instanceof IdentifierNode) names.add(n.identifier.name);
-      if (n instanceof ArrayAssignNode) names.add(n.name);
+      if (n instanceof ArrayPushNode || n instanceof ArrayPopNode) names.add(n.name);
+      if (n instanceof DeleteLocalNode) names.add(n.identifier.name);
       for (const key of Object.keys(n)) {
         if (key === 'location') continue;
         const v = (n as unknown as Record<string, unknown>)[key];
@@ -243,7 +253,14 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
   }
 
   private hasMappingWrite(stmts: Node[]): boolean {
-    return this.anyNode(stmts, (n) => n instanceof ArrayAssignNode && this.mappingNames.has(n.name));
+    // A single-key mapping write `m[k]=v` is an ArrayAssignNode; a NESTED / multi-key write `m[a][b]=v` (EACC
+    // whitelistWorkers), a struct-field write `m[k].f=v`, or a `delete m[k]` are Mapping{Assign,FieldAssign,
+    // Delete}Node. All must count so a fixed-bound loop writing one gets unrolled (else it falls to the
+    // runtime-loop C2 path unnecessarily).
+    return this.anyNode(stmts, (n) => (
+      (n instanceof ArrayAssignNode || n instanceof MappingAssignNode
+        || n instanceof MappingFieldAssignNode || n instanceof MappingDeleteNode)
+      && this.mappingNames.has(n.name)));
   }
 
   private hasKeccakCall(stmts: Node[]): boolean {

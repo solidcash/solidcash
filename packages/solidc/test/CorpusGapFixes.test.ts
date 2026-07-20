@@ -3266,12 +3266,13 @@ describe('a loop over a compile-time-empty new-array is eliminated (post-inline 
       + ' function pub2(uint256 id, address[] memory d) public { upd(id, new address[](0), d); require(true); } }'))
       .toBe('C');
   });
-  it('does NOT eliminate a loop over a MUTATED new-array (soundness: fail-closed, never silently dropped)', () => {
-    // The array is element-written after `new address[](0)`, so its length is no longer provably 0 (mutatedNames
-    // excludes it from the fold). The loop must NOT be dropped - it stays and fails closed on the still-unsupported
-    // dynamic C2 write. Proving the fold never silently removes a loop whose array could be non-empty.
+  it('does NOT fold a loop over a PUSHED new-array (soundness: length changed, fail-closed not dropped)', () => {
+    // `a.push(..)` changes the length, so `new address[](0)` is no longer provably empty (mutatedNames excludes a).
+    // The loop must NOT be dropped - it stays and fails closed on the still-unsupported dynamic C2 write. Proves
+    // the length fold never silently removes a loop whose array could be non-empty. (An element write `a[i]=v`
+    // keeps the length, so it stays foldable - covered by the EACC `new address[](1); a[0]=w;` path above.)
     expect(() => compileString('contract C { mapping(address => bool) w;'
-      + ' function f() public { address[] memory a = new address[](0); a[0] = address(0);'
+      + ' function f() public { address[] memory a = new address[](0); a.push(address(0));'
       + ' for (uint256 i = 0; i < a.length; i++) { w[a[i]] = true; } require(true); } }',
     { solidityImportCompat: true })).toThrow(/not yet compiled/);
   });

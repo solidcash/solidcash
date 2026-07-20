@@ -2530,6 +2530,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (node.elseBlock) this.collectMappingSlots(node.elseBlock, mappingWriteSlots, mappingDeleteSlots);
 
     for (const slotIndex of mappingWriteSlots) {
+      // Loop-write entries emit a runtime-counter-indexed trailing output per iteration (emitLoopEntryWrite) and
+      // have NO fixed block slot, so they must not be pre-allocated into the fixed-slot epilogue write path (the
+      // epilogue would then look up a non-existent entry[i] slot). Matches the other two pre-alloc sites; without
+      // it a loop mapping write reachable through a branch (EACC publishJobPost's whitelistWorkers loop) trips
+      // "Block slot not found: entry[N]".
+      if (this.entrySlots?.[slotIndex]?.inLoop) continue;
       if (!this.preAllocatedEntryWrites.has(slotIndex) && !this.pendingEntryWrites.has(slotIndex)) {
         const keyStackName = `__entry_key_enc_${slotIndex}`;
         const valueStackName = `__entry_value_enc_${slotIndex}`;

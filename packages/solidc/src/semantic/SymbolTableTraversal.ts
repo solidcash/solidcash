@@ -6254,6 +6254,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       throw new ImmutableStateVariableAssignmentError(node, sv.name);
     }
     node.stateVariable = sv;
+    if (node.resizeTo) node.resizeTo = this.visit(node.resizeTo) as ExpressionNode;
     return node;
   }
 

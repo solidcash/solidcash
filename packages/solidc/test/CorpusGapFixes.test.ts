@@ -368,8 +368,14 @@ describe('storage-pointer local .slot/.offset in assembly (T[] storage x = a; x.
   it('routes sload of a dynamic-array var slot to its length; sstore (resize) fails closed', () => {
     expect(ok('contract C { uint[] a; function f() public returns (uint n) {'
       + ' assembly { n := sload(a.slot) } require(true); } }')).toBe('C');
-    expect(() => compileString('contract C { uint[] a; function f() public {'
-      + ' assembly { sstore(a.slot, 7) } require(true); } }', { solidityImportCompat: true }))
+    expect(ok('contract C { uint[] a; function f() public {'
+      + ' assembly { sstore(a.slot, 7) } require(true); } }')).toBe('C');
+  });
+  it('sstore(dynArray.slot, n) resizes a fixed-width dynamic array; variable-width fails closed', () => {
+    expect(ok('contract C { uint128[] a; function f(uint n) public {'
+      + ' assembly { sstore(a.slot, n) } require(true); } }')).toBe('C');
+    expect(() => compileString('contract C { bytes[] a; function f() public {'
+      + ' assembly { sstore(a.slot, 4) } require(true); } }', { solidityImportCompat: true }))
       .toThrow(/inline assembly/i);
   });
 });

@@ -1,6 +1,6 @@
 import {
   IntType, BytesType, AddressType, PrimitiveType, ValueType, Type, MappingType, StructType, ArrayType, EnumType,
-  hash256, computeErc7201SlotNumber,
+  hash256, computeErc7201SlotNumber, isFixedWidthType,
 } from '@solidcash/utils';
 import AstTraversal from '../ast/AstTraversal.js';
 import {
@@ -10,7 +10,7 @@ import {
   StateAssignNode, StateAccessNode, StateVariableNode, ContractNode, BytesConcatNode, FunctionCallNode,
   SliceNode, CollectionNode, MappingAccessNode, MappingAssignNode, HexLiteralNode, NullaryOpNode, FieldAccessNode,
   ReturnNode, TupleAssignmentNode, LowLevelCallNode, NewArrayNode, EmitStatementNode, EventDefinitionNode,
-  InstantiationNode, TypeIntrospectionNode, ArrayAccessNode, ArrayAssignNode, ArrayNode,
+  InstantiationNode, TypeIntrospectionNode, ArrayAccessNode, ArrayAssignNode, ArrayNode, StateArrayPopNode,
 } from '../ast/AST.js';
 import { BinaryOperator, UnaryOperator, NullaryOperator } from '../ast/Operator.js';
 import { cloneNode } from '../ast/clone.js';
@@ -384,6 +384,17 @@ function resolveDynArrayName(slotArg: YulExpressionNode): string | undefined {
     return fields[0].sv.name;
   }
   return undefined;
+}
+
+// If a Yul slot argument denotes a declared dynamic array with a FIXED-WIDTH element type, return its name -
+// `sstore(a.slot, n)` on it is a RESIZE (set the length to n; the packed element blob is truncated / zero-fill
+// grown to n*width bytes). A variable-width element (dynamic bytes/string element, nested dynamic array) is not
+// resizable this way (per-element length prefixes) - fail closed.
+function resolveResizableDynArray(slotArg: YulExpressionNode): string | undefined {
+  const name = resolveDynArrayName(slotArg);
+  if (name === undefined) return undefined;
+  const sv = [...currentSlots.values()].flat().find((f) => f.sv.name === name)?.sv;
+  return sv && sv.type instanceof ArrayType && isFixedWidthType(sv.type.elementType) ? name : undefined;
 }
 
 function isFullWord(fields: SlotField[]): boolean {
@@ -1816,6 +1827,13 @@ function lowerStatement(stmt: YulStatementNode): StatementNode {
         if (fields) return decomposeSlot(fields, e.args[1], e);
         const comp = resolveCompositeSlotAccess(e.args[0]);
         if (comp) { const st = decomposeCompositeSlot(comp.sv, comp.rel, e.args[1], e); if (st) return st; }
+        // sstore(dynArray.slot, n) = resize the fixed-width dynamic array to n elements (truncate / zero-fill grow).
+        const resizeName = resolveResizableDynArray(e.args[0]);
+        if (resizeName) {
+          const pop = new StateArrayPopNode(resizeName);
+          pop.resizeTo = lowerValue(e.args[1]);
+          return loc(pop, e);
+        }
         const key = evmStorageSlotKey(e.args[0]);
         if (key) {
           evmStorageUsed = true;

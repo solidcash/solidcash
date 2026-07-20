@@ -1263,6 +1263,9 @@ export class StateArrayPushNode extends StatementNode implements Named {
 
 export class StateArrayPopNode extends StatementNode implements Named {
   stateVariable?: StateVariableNode;
+  // When set, this is a RESIZE (`x.length = resizeTo`, the assembly `sstore(x.slot, n)` idiom) rather than a
+  // single pop: the array is truncated to / zero-fill-grown to `resizeTo` elements. Fixed-width elements only.
+  resizeTo?: ExpressionNode;
 
   constructor(
     public name: string,

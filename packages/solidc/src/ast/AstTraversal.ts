@@ -391,6 +391,7 @@ export default class AstTraversal extends AstVisitor<Node> {
   }
 
   visitStateArrayPop(node: StateArrayPopNode): Node {
+    if (node.resizeTo) node.resizeTo = this.visit(node.resizeTo) as ExpressionNode;
     return node;
   }
 

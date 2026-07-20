@@ -6737,6 +6737,41 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.pushToStack('(elements)');
     this.pushToStack('(length)');
 
+    // RESIZE (x.length = n / assembly sstore(x.slot, n)): set the length to n, truncating or zero-fill-growing the
+    // packed elements to exactly n*width bytes. Branchless: elems' = (elems ++ zeros(n*width))[0 : n*width] - taking
+    // the first n*width bytes of the padded blob truncates when longer and keeps the (target-size) tail zeros when
+    // shorter (EVM grows a dyn array's length lazily / cleaned, so zero-fill matches the cleaned-slot semantics; a
+    // dirty-slot bump that would expose stale bytes is an EVM footgun BCH's clean model does not replicate).
+    // Fixed-width elements only (LIA gates it). `node.value` is unused for a resize; `resizeTo` is the length.
+    if (node.resizeTo) {
+      const width = getFixedWidth(elemType);
+      this.emit(Op.OP_DROP, locationData); // drop old length -> [..., elements_blob]
+      this.popFromStack();
+      node.resizeTo = this.visit(node.resizeTo) as ExpressionNode; // [..., elements_blob, n]
+      this.emit(Op.OP_DUP, locationData); // keep n for the length prefix
+      this.emit(encodeInt(BigInt(width)), locationData);
+      this.emit(Op.OP_MUL, locationData); // [..., elems, n, target] (target = n*width)
+      this.emit(Op.OP_DUP, locationData); // [..., elems, n, target, target]
+      this.emit(Op.OP_0, locationData);
+      this.emit(Op.OP_SWAP, locationData);
+      this.emit(Op.OP_NUM2BIN, locationData); // [..., elems, n, target, zeros(target)]
+      this.emit(encodeInt(3n), locationData);
+      this.emit(Op.OP_ROLL, locationData); // move elems to top: [..., n, target, zeros, elems]
+      this.emit(Op.OP_SWAP, locationData);
+      this.emit(Op.OP_CAT, locationData); // [..., n, target, elems++zeros]
+      this.emit(Op.OP_SWAP, locationData);
+      this.emit(Op.OP_SPLIT, locationData);
+      this.emit(Op.OP_DROP, locationData); // [..., n, (elems++zeros)[0:target]]
+      this.emit(Op.OP_SWAP, locationData); // [..., elems', n]
+      this.emitPushdataEncode(PrimitiveType.BIGINT, locationData); // [..., elems', pushdata(n)]
+      this.emit(Op.OP_SWAP, locationData);
+      this.emit(Op.OP_CAT, locationData); // [..., pushdata(n)++elems']
+      this.popFromStack(2);
+      this.pushToStack('(value)');
+      this.emitWriteStateArrayBlob(sv, node, locationData);
+      return node;
+    }
+
     // 3. Check length > 0
     this.emit(Op.OP_DUP, locationData);
     this.emit(Op.OP_0NOTEQUAL, locationData);

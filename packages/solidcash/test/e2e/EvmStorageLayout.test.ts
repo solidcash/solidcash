@@ -527,3 +527,34 @@ describe('composite sub-slot: array-in-struct (full-value ctor+array-literal reb
     await (sc as any).readSlot(PACKED_MAX).send();                        // sload combines arr[0] + arr[1]<<64
   });
 });
+
+// Dynamic-array resize `sstore(a.slot, n)` = set length to n (truncate / zero-fill grow), via the branchless blob
+// surgery elems' = (elems ++ zeros(n*width))[0:n*width]. Cross-checked against .length and a[i].
+const RESIZE = `pragma solidcash >=0.8.0;
+contract C() {
+  uint128[] a;
+  function push3(pubkey pk, sig s) { require(checkSig(s, pk)); this.a.push(11); this.a.push(22); this.a.push(33); }
+  function resize(uint256 n, pubkey pk, sig s) { require(checkSig(s, pk)); assembly { sstore(a.slot, n) } }
+  function chkLen(uint256 e) { require(this.a.length == e); }
+  function chkElem(uint256 i, uint256 e) { require(uint256(this.a[i]) == e); }
+}`;
+
+describe('dynamic array resize sstore(a.slot, n) (blob truncate / zero-fill grow)', () => {
+  it('grows with zero-fill, preserving existing elements', async () => {
+    const sc = await deploy(RESIZE);
+    await (sc as any).push3(alicePub, sig()).send();       // [11,22,33]
+    await (sc as any).resize(5n, alicePub, sig()).send();  // [11,22,33,0,0]
+    await (sc as any).chkLen(5n).send();
+    await (sc as any).chkElem(2n, 33n).send();             // preserved
+    await (sc as any).chkElem(4n, 0n).send();              // zero-filled
+  });
+  it('shrinks by truncation, and resize(0) empties', async () => {
+    const sc = await deploy(RESIZE);
+    await (sc as any).push3(alicePub, sig()).send();
+    await (sc as any).resize(1n, alicePub, sig()).send();  // [11]
+    await (sc as any).chkLen(1n).send();
+    await (sc as any).chkElem(0n, 11n).send();
+    await (sc as any).resize(0n, alicePub, sig()).send();
+    await (sc as any).chkLen(0n).send();
+  });
+});

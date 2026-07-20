@@ -1,6 +1,8 @@
 # Bounded-address storage model (spec / design)
 
-Status: **DESIGN / brainstorm.** Not implemented. This doc specifies rescoping solidcash's `address` from a
+Status: **DESIGN SPEC - FINALIZED, not yet implemented.** Ready for Phase 1 (Section 7); the four decisions in
+Section 8 (encoding A-vs-B, `address(0)` bytes, replace-vs-coexist, ceiling value) are to be settled at
+implementation time. This doc specifies rescoping solidcash's `address` from a
 variable-width framed value (today: `isChunkPackableElementType` -> framed like `bytes`, GTT emits `'rawbytes'`) to
 a BOUNDED fixed-width value for STORAGE, so an address becomes a fixed-width slot field and packs deterministically
 into the 128-byte NFT commitment. Motivated by the storage-slot grind (see `bounded-address` follow-on to

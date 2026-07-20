@@ -136,6 +136,20 @@ describe('harness: string / hex matchers (waffle)', () => {
   });
 });
 
+describe('harness: new ethers.Contract(addr, artifact, runner) bare form', () => {
+  it('maps to StatefulContract lean constructor (category id or address + runner)', async () => {
+    const { compileString } = await import('solidc');
+    const art = compileString('pragma solidcash >=0.8.0;\ncontract C() { bigint v; function set(bigint x) { this.v = x; } }');
+    const [alice] = await ethers.getSigners();
+    const cat = 'ab'.repeat(32); // 64-char category id
+    const c = new ethers.Contract(cat, art, alice);
+    expect(c.categoryId).to.equal(cat);
+    // ABI functions are dispatchable on the bare name (ethers v6).
+    expect(typeof (c as unknown as { set: unknown }).set).to.equal('function');
+    expect(typeof c.getAddress).to.equal('function');
+  });
+});
+
 describe('harness: Wallet.createRandom (ad-hoc funded signer)', () => {
   it('returns a fresh funded signer with connect()', async () => {
     const w = ethers.Wallet.createRandom();

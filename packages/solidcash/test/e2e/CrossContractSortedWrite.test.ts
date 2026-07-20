@@ -61,12 +61,59 @@ describe('cross-contract callee C2 sorted write (normal key)', () => {
 
     // A embeds Bank's address; deploy A.
     const bankAddr = bank.inner.withCategory(hexToBin(catBank)).lockingBytecode;
-    const { contract: caller, categoryId: catCaller } = await deploy(artCaller, [bankAddr]);
+    const { contract: caller } = await deploy(artCaller, [bankAddr]);
 
     // A calls Bank.setBal(5, 99): a cross-contract UPDATE of bal[5].
     await fund(caller.address);
     const tx = await caller.poke(5n, 99n, alicePub, sig).withExternalCall(bank, 'setBal', [5n, 99n]).send();
     expect(tx.txid).toBeDefined();
     expect(await balOf(bank.inner, catBank, 5n)).toBe(99n);
+  });
+
+  it('A calls Bank.setBal to INSERT an absent entry; bal[k] appears', async () => {
+    const artBank = compileString(BANK, { forceStateful: true });
+    const artCaller = compileString(CALLER, { forceStateful: true });
+    const { contract: bank, categoryId: catBank } = await deploy(artBank, []);
+    // Seed one entry so the list isn't empty (a fresh insert brackets HEAD or an existing node).
+    await fund(bank.address);
+    await bank.setBal(2n, 7n).send();
+    const bankAddr = bank.inner.withCategory(hexToBin(catBank)).lockingBytecode;
+    const { contract: caller } = await deploy(artCaller, [bankAddr]);
+    // bal[9] is ABSENT -> a cross-contract INSERT (co-spend predecessor, mint P' at entry slot + NEW trailing).
+    await fund(caller.address);
+    const tx = await caller.poke(9n, 55n, alicePub, sig).withExternalCall(bank, 'setBal', [9n, 55n]).send();
+    expect(tx.txid).toBeDefined();
+    expect(await balOf(bank.inner, catBank, 9n)).toBe(55n);
+    expect(await balOf(bank.inner, catBank, 2n)).toBe(7n); // pre-existing entry survives
+  });
+
+  it('A calls Bank.deposit; bal[msg.sender] resolves to A (the caller contract)', async () => {
+    const IBANK2 = `interface IBank2 { function deposit(int amt); }`;
+    const BANK2 = `pragma solidcash >=0.8.0;
+${IBANK2}
+contract Bank2() is IBank2 {
+  mapping(address => int) bal;
+  function deposit(int amt) { this.bal[msg.sender] = amt; }
+}`;
+    const CALLER2 = `pragma solidcash >=0.8.0;
+${IBANK2}
+contract User(bytes bankAddr) {
+  bigint calls;
+  function pay(int amt, pubkey pk, sig s) { require(checkSig(s, pk)); IBank2(bankAddr).deposit(amt); this.calls = this.calls + 1; }
+}`;
+    const artBank = compileString(BANK2, { forceStateful: true });
+    const artCaller = compileString(CALLER2, { forceStateful: true });
+    const { contract: bank, categoryId: catBank } = await deploy(artBank, []);
+    const bankAddr = bank.inner.withCategory(hexToBin(catBank)).lockingBytecode;
+    const { contract: caller } = await deploy(artCaller, [bankAddr]);
+
+    await fund(caller.address);
+    const tx = await caller.pay(42n, alicePub, sig).withExternalCall(bank, 'deposit', [42n]).send();
+    expect(tx.txid).toBeDefined();
+    // Bank.bal[A] == 42 (msg.sender resolved to the caller contract = its address locking script).
+    const { addressToLockScript } = await import('../../src/utils.js');
+    const ea = getEntryNftAddress(bank.inner, catBank, 'bal');
+    const e = SortedList.fromUtxos(await provider.getUtxos(ea)).find(keyToSlot(addressToLockScript(caller.address)));
+    expect(e && vmNumberToBigInt(e.value, { requireMinimalEncoding: false })).toBe(42n);
   });
 });

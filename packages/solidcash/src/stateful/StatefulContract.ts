@@ -4373,10 +4373,42 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           if (group.blockLayout && group.blockInputs) {
             const bEntryMap = extractCommitmentMapFromTrace(fullTrace,
               { min: bOutputBase, max: bOutputBase + group.blockInputs.length });
+            const bBlockSize = group.blockLayout.blockSize ?? group.blockInputs.length;
+            const insertHandles: Array<{ handle: number; newIdx: number }> = [];
+            let insertCount = 0;
             for (let si = 0; si < group.blockLayout.slots.length; si++) {
               if (group.blockLayout.slots[si]?.kind !== 'entry') continue;
               const commit = bEntryMap.get(bOutputBase + si);
-              if (commit !== undefined) stb.setExternalCallEntryOutput(group.categoryId, si, commit);
+              if (commit === undefined) continue;
+              stb.setExternalCallEntryOutput(group.categoryId, si, commit);
+              // INSERT vs UPDATE: an UPDATE output preserves the co-spent entry's nextKey; an INSERT co-spends the
+              // PREDECESSOR and its P' output re-points nextKey (bytes 32..64) to H(k), so out.next != in.next. For an
+              // INSERT, mint a placeholder NEW at the entry address so output[bMasterIdx+blockSize+j] exists (else B's
+              // OP_OUTPUTBYTECODE for the NEW aborts before revealing its commitment); the 2nd pass fills the real one.
+              const input = group.blockInputs[si];
+              const inCommit = input?.token?.nft?.commitment;
+              if (inCommit && inCommit.length >= 128 && commit.length >= 128
+                && inCommit.slice(64, 128) !== commit.slice(64, 128)) {
+                const handle = stb.addExternalCallEntryInsert(
+                  group.categoryId, input.unlocker.generateLockingBytecode(), commit,
+                );
+                insertHandles.push({ handle, newIdx: bMasterIdx + bBlockSize + insertCount });
+                insertCount++;
+              }
+            }
+            // Second pass for INSERTs: with P' + placeholder NEW(s) now present, re-run B's VM so it reaches each NEW's
+            // OP_OUTPUTTOKENCOMMITMENT and pushes the real NEW commitment; extract it and replace the placeholder.
+            if (insertHandles.length > 0) {
+              const pb2 = stb.build();
+              const map2 = extractCommitmentMapFromTrace(createVirtualMachineBch2026().debug({
+                inputIndex: bMasterIdx, sourceOutputs: generateLibauthSourceOutputs(pb2.inputs),
+                transaction: pb2.buildLibauthTransaction(),
+              }) as AuthenticationProgramStateCommon[]);
+              for (const { handle, newIdx } of insertHandles) {
+                const newCommit = map2.get(newIdx);
+                if (newCommit !== undefined) stb.setExternalCallEntryInsertCommitment(handle, newCommit);
+                else stb.removeExternalCallEntryInsert(handle);
+              }
             }
           }
 
@@ -6386,9 +6418,15 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             // use funder inputs for output-only slots and non-existing entries/TCs.
             bBlockInputs = [];
             let bDataIdx = 0;
-            // Create proper unlocker for B's master (not just a type cast)
+            // Create proper unlocker for B's master (not just a type cast). If B's function reads msg.sender, append
+            // OUR category (docs/deferrals.md #1): B is called BY us, so B's msg.sender = this contract - B's covenant
+            // resolves it (emitMsgSenderMintingVerification) from OUR co-spent minting master at that category.
+            const bBlockAbiFn = (callInfo.externalContract.inner.artifact.abi as readonly
+              { name: string; usesMsgSender?: boolean }[]).find((f) => f.name === callInfo.functionName);
+            const bBlockArgs = bBlockAbiFn?.usesMsgSender
+              ? [...(callInfo.args ?? []), hexToBin(this.categoryId).reverse()] : (callInfo.args ?? []);
             const bMasterUnlocker = (callInfo.externalContract.inner.unlock as any)[callInfo.functionName]
-              ? (callInfo.externalContract.inner.unlock as any)[callInfo.functionName](...(callInfo.args ?? []))
+              ? (callInfo.externalContract.inner.unlock as any)[callInfo.functionName](...bBlockArgs)
               : undefined;
             const bMasterUnlockable: UnlockableUtxo = {
               ...bState.masterUtxo!,
@@ -6468,8 +6506,14 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                     // Convert FunctionArgument to primitive for key matching
                     const keyValue = rawKeyValue instanceof Uint8Array || typeof rawKeyValue === 'bigint'
                       || typeof rawKeyValue === 'boolean' ? rawKeyValue : undefined;
+                    // msg.sender key (cross-contract): B's `bal[msg.sender]` where msg.sender = US (the caller). Resolve
+                    // the key to OUR category-pinned locking bytecode - the covenant keys the entry by keyToSlot(caller
+                    // LBC) too (emitSortedKeyHash visits msg.sender -> emitMsgSenderMintingVerification -> caller LBC).
+                    const effKeyValue = bEntryAccess.keySources?.[0]?.kind === 'msgSender'
+                      ? addressToLockScript(this.address)
+                      : keyValue;
                     let matchUtxo: Utxo | undefined;
-                    if (bCollection?.sorted && keyValue !== undefined) {
+                    if (bCollection?.sorted && effKeyValue !== undefined) {
                       // C2 (sorted) collection (docs/deferrals.md #1): the commitment is slot||nextKey||value, so
                       // co-spend by slot - the EXACT entry if present (a cross-contract UPDATE), else the bracketing
                       // predecessor (an INSERT, whose P'/NEW outputs are derived from B's trace). predecessorOf throws
@@ -6477,9 +6521,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                       const bList = SortedList.fromUtxos(
                         bEntryUtxos.filter((u) => u.token?.category === externalCategoryId),
                       );
-                      const keyBin = keyValue instanceof Uint8Array ? keyValue
-                        : typeof keyValue === 'bigint' ? bigIntToVmNumber(keyValue)
-                          : bigIntToVmNumber(keyValue ? 1n : 0n);
+                      const keyBin = effKeyValue instanceof Uint8Array ? effKeyValue
+                        : typeof effKeyValue === 'bigint' ? bigIntToVmNumber(effKeyValue)
+                          : bigIntToVmNumber(effKeyValue ? 1n : 0n);
                       const bSlot = keyToSlot(keyBin);
                       try {
                         matchUtxo = (bList.has(bSlot) ? bList.find(bSlot) : bList.predecessorOf(bSlot))?.utxo;

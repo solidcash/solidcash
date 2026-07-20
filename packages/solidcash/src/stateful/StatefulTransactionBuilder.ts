@@ -217,9 +217,9 @@ export class StatefulTransactionBuilder {
   // categoryId -> (B block-slot position si -> commitment hex). The external-call output loop mints B's updated
   // (or predecessor P') entry at that slot; a NEW insert node rides the trailing region below.
   private externalCallEntryOutputs: Map<string, Map<number, string>> = new Map();
-  // Trailing NEW entry nodes minted for a cross-contract callee INSERT (address lbc + commitment hex), appended
-  // after B's block (and after A's own trailing entry region), in group order.
-  private externalCallEntryInserts: Array<{ to: Uint8Array; commitment: string }> = [];
+  // Trailing NEW entry nodes minted for a cross-contract callee INSERT (per group: address lbc + commitment hex),
+  // placed right after the group's block (B's covenant mints the NEW at masterInputIndex + blockSize).
+  private externalCallEntryInserts: Array<{ categoryId: string; to: Uint8Array; commitment: string }> = [];
 
   private pendingReturnEventOutputs: Array<{ categoryId: string; commitment: Uint8Array }> = [];
   private entryRawCommitments: Map<number, string> = new Map(); // slotIndex -> hex commitment (from auto-derivation)
@@ -583,9 +583,20 @@ export class StatefulTransactionBuilder {
     return this;
   }
 
-  /** A trailing NEW entry node for a cross-contract callee INSERT (minted after B's block). */
-  addExternalCallEntryInsert(to: Uint8Array, commitmentHex: string): this {
-    this.externalCallEntryInserts.push({ to, commitment: commitmentHex });
+  /** A trailing NEW entry node for a cross-contract callee INSERT (minted after B's block). Returns its handle. */
+  addExternalCallEntryInsert(categoryId: string, to: Uint8Array, commitmentHex: string): number {
+    return this.externalCallEntryInserts.push({ categoryId, to, commitment: commitmentHex }) - 1;
+  }
+
+  /** Replace a trailing NEW node's commitment (the placeholder set for the 2nd-pass probe). */
+  setExternalCallEntryInsertCommitment(handle: number, commitmentHex: string): this {
+    if (this.externalCallEntryInserts[handle]) this.externalCallEntryInserts[handle].commitment = commitmentHex;
+    return this;
+  }
+
+  /** Drop a trailing NEW node placeholder (the write turned out to be an UPDATE, not an INSERT). */
+  removeExternalCallEntryInsert(handle: number): this {
+    if (this.externalCallEntryInserts[handle]) this.externalCallEntryInserts[handle] = { categoryId: '', to: new Uint8Array(), commitment: '' };
     return this;
   }
 
@@ -1417,6 +1428,16 @@ export class StatefulTransactionBuilder {
             });
           }
         }
+      }
+      // Trailing NEW entry nodes for a cross-contract callee INSERT (docs/deferrals.md #1): B's covenant mints the
+      // NEW at masterInputIndex + blockSize, right after B's block. Placed here in group order (skip cleared handles).
+      for (const ins of this.externalCallEntryInserts) {
+        if (ins.categoryId !== group.categoryId || ins.commitment === '') continue;
+        builder.addOutput({
+          to: ins.to,
+          amount: 1000n,
+          token: { amount: 0n, category: group.categoryId, nft: { capability: 'mutable', commitment: ins.commitment } },
+        });
       }
     }
 

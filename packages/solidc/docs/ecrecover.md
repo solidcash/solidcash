@@ -763,14 +763,21 @@ address), integrity-checks the keccak covenant, and takes `keccak256(P)[12:]` as
 side-cars trail the 2N recovery pairs, so recovery offset-from-end shifts by E and each evm call reads its keccak
 side-car at offset E-j. e2e-verified (positive == the ethers wallet address; negative rejected).
 
-## Fixed-bound loops (SHIPPED)
+## Loops (SHIPPED) - the general dynamic model
 
-`for (i<N) ecrecoverPubKey(h[i],..)` with a COMPILE-TIME bound N works: `UnrollFixedBoundEntryLoop` unrolls it to N
-syntactic recovery calls (the loop-variable substitution turns `h[i]` into `h[0]`, `h[1]`, ...), each an independent
-A+B pair. The codegen records the array-element args as `"h[<literal>]"` and the SDK co-spend resolves them per array
-element (works for ecrecoverPubKey/P2pkh/Evm in a loop). e2e-verified (authenticates each iteration; rejects a wrong
-one). A RUNTIME-bound loop `for (i<n)` still fails closed at compile time (needs the dynamic-loop covenant model:
-side-car k read at `master+1+2k`, self-preserving, + progressive SDK derivation).
+`for (i<n) ecrecoverPubKey(h[i],..)` works for ANY bound - runtime OR compile-time - via the keccak-style dynamic-loop
+model (no unrolling). A per-iteration counter pushed before `OP_BEGIN` indexes the recovery PAIR forward at
+`[master+1+2*counter]` (A) / `[master+2+2*counter]` (B); the recovery covenants already self-preserve via
+`OP_INPUTINDEX` (input idx == output idx), so the same forward covenant serves every iteration. The counter increments
+each iteration. The codegen records the loop args as `"h[]"` (array-indexed by the loop variable) and the SDK
+(`addStatelessEcrecoverLoopCoSpends`) co-spends N = the sig-array length pairs, spliced forward right after the master.
+Sound: each iteration BINDS its pair's argBlob == `(h[k],v[k],r[k],s[k])`, so a wrong/missing pair fails closed
+(a wrong iteration signature is rejected). e2e-verified with both a fixed bound and a runtime bound (`for (i<n)`, N=3).
+
+One subtlety the keccak loop does not have: ecrecover CATs its 4 args into a single `argBlob`, so the codegen keeps
+the stack tracker in sync with the VM (`popFromStack` after the CATs and after the arg-bind) so the counter's
+`OP_PICK` depth stays exact across iterations. Works for ecrecoverPubKey/P2pkh in a loop; ecrecoverEvm-in-a-loop
+(which also needs a per-iteration keccak side-car) is a follow-up.
 
 **Remaining**:
 - **Stateful** contracts: the codegen reads the `ecrecoverSideCar` block-layout slots correctly (the per-pass

@@ -256,11 +256,12 @@ PARAM, valueScalarParam) + `+= 100`/`= 42` (int LITERAL, valueConst) - update+in
 op=set (INSERTS a 0-node on absent = EnumerableMap.set(k,0), distinct from delete's fail-closed-on-absent);
 BATCH-UPSERT MERGE - full multiTransfer to a NEW recipient whose predecessor is the DEBITED msg.sender (`69d1ed93`,
 re-point register + flush re-point + covenant in-gap check; two-in-gap fails closed).
-FAIL-CLOSED (sound, not complete, CLEAN message): a NEW recipient whose predecessor is ANOTHER CREDITED recipient
-(within-loop ordering - case b) / two-new-in-one-gap; cross-contract msg.sender, 2D `m[k][i][j]`,
-function-pointer values. MINOR wart: `= <param>` (assign, invariant) still routes to the range-splice (insert-only,
-SortedInsertLoopValue) while `= <literal>`/`+= <param>` route to the upsert loop (update+insert) - two mechanisms,
-both sound; unifying `= <param>` into the upsert loop trades same-gap chaining for update support (deferred).
+RESOLVED 2026-07-19/20 (case b + same-gap chains): a NEW recipient whose predecessor is another CREDITED recipient
+(case b) NOW WORKS (pending-defer + order-independent reorder); 2+ new in ONE gap NOW CHAIN off any predecessor
+(credited / untouched / HEAD / debited msg.sender); self-transfer + duplicate (incl. scalar) also work - see the
+multiTransfer entry above. The `= <param>` wart is RESOLVED too (`d08584f2`): it now routes to the upsert loop
+(update+insert), keeping same-gap chaining. STILL FAIL-CLOSED (sound, not complete): scalar `-=` duplicate (no
+pending-defer), cross-contract msg.sender, 2D `m[k][i][j]`, function-pointer values.
 
 **One real HOLE found + FIXED (commit `af6e894a`): C2 `delete m[k]` in a DYNAMIC loop.** `visitMappingDelete`'s sorted
 branch routed to `emitSortedValueUpsert` (a FIXED-slot co-spend) with NO `plainLoopDepth` guard (unlike
@@ -807,8 +808,11 @@ incount==1. C2-sound WITHOUT a permutation check for positive-membership maps (w
 VALID sorted list; WHICH keys (==xs) is job-creator data enforced by the SDK, not a C2 property. VM-verified
 (SortedInsertLoop.test.ts, 4 green): N=1 fresh+populated; N>1 into fresh one call; **NESTED 2-key w[jobId][ks[i]]=true
 (the exact whitelistWorkers shape) N>1 fresh** (composite slot keyToSlotMulti SDK-side, covenant key-agnostic);
-distinct-gap works-or-fails-closed. STILL DEFERRED: multi-gap in one call (fails closed), general non-bool values
-(first-cut bool-literal only), `=false` nullify-in-loop, RMW/delete-in-loop.
+distinct-gap works-or-fails-closed. RESOLVED since: NON-BOOL values now route to the UPSERT loop (`= <param>`
+`d08584f2` / `= <literal>` / `= vs[i]` / `+=` - update+insert, same-gap chains + distinct gaps), and RMW/delete-in-loop
+are the upsert loop (`+=`/`-=`/delete). The range-splice here stays the BOOL `= true` path (whitelistWorkers). STILL
+DEFERRED (bool range-splice only): multi-gap `= true` in one call (int multi-gap works via the upsert loop),
+`= false` nullify-in-loop.
 
 Marketplace: V1 compiles past whitelistWorkers but its FULL assembled contract is ~674k ops (a
 pre-existing deep-inlining explosion, NOT this covenant - a 3-entry-point multi-site insert loop is <1s); commit

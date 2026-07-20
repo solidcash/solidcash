@@ -149,6 +149,9 @@ by it; they are pre-existing and fundamental. Re-bucketed the current top FAILs 
   fundamental - it SPILLS (fixed composites take consecutive slots) or CHUNKS (dynamic values). A slot field for these
   needs the dynamic-value slot model (EVM length-slot + keccak data, or a BCH chunk), NOT the fixed int-word cast - so
   address/bytes/string slot fields are ONE not-yet-implemented bucket (fail-closed, verified, no silent miscompile).
+  DESIGN to move address OUT of this bucket: rescope address to BOUNDED bytes (35B ceiling for p2pkh/p2sh32) so it
+  becomes a fixed 2-word field + packs inline in the 128B commitment - spec + address-keyed-mapping soundness in
+  docs/bounded-address.md (key preimage = canonical sha256(lbc), must round-trip exact; ceiling fail-closed).
   (The 20-byte stateVarByteWidth for address is EVM slot-LAYOUT parity for neighbour packing, not the value's width.);
   (a2) COMPOSITE (struct/fixed-array) SUB-SLOT field reads - the layout is EVM-exact (64B value = slots [p, p+1], next
   var at p+2, VM-verified) but `sload(p+i)`/`sstore(p+i)` on a composite's own sub-slots FAIL CLOSED (`33765964` -

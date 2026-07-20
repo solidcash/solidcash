@@ -941,9 +941,12 @@ NEW at `bMasterIdx+blockSize` so a 2nd VM pass reaches the NEW's `OP_OUTPUTTOKEN
 `OP_OUTPUTBYTECODE` for the not-yet-existing NEW), then replace with the real commitment (per-group
 `externalCallEntryInserts` + trailing placement); (5) msg.sender - append OUR category REVERSED (internal order) as B's
 `_msgSenderCategory`, and key the entry by `keyToSlot(addressToLockScript(this.address))` (the caller's on-chain LBC,
-NOT `withCategory().lockingBytecode`). Remaining edge: >60 B chunked address/value in a cross-contract insert would
-need the value-chunk pins co-spent for B (same fail-closed as the single-contract chunked-in-loop). Original analysis
-retained below.
+NOT `withCategory().lockingBytecode`). Remaining callee shapes are fail-closed (VM-verified, never silent-wrong -
+`solidcash/test/e2e/CrossContractSubcaseSoundness.test.ts`): (a) a >60 B CHUNKED value would need B's value-chunk pins
+co-spent (same as the single-contract chunked-in-loop); (b) a LOOP write in B (`for(i) this.bal[ks[i]] += vs[i]`) would
+need the loop co-spend machinery run for the co-spent callee (N entries co-spent + N commitments derived from B's
+trace), not the single-write derivation. Both revert the tx today (`mandatory-script-verify-flag-failed`); implementable
+(callee loop/chunk derivation), deferred as rare + substantial. Original analysis retained below.
 
 ### Original analysis
 
@@ -988,35 +991,27 @@ the guard accepts a rawbytes value for the invariant-param set only; the body wr
 tail `len4 ++ value` with a runtime `size<=60` assert (chunked-in-loop still fails closed), stores fixed rawbytes
 (bytesN) verbatim, and skips the value BIN2NUM (every mint CATs the tail; the 'set' repoint copies `pu_val=amt`).
 SDK: a `scalarTail` threads through a `commitValue()` helper at every commitment site; the int path is byte-identical
-(35 int upsert-loop tests unchanged). CHUNKED (>60 B) stays fail-closed on BOTH sides. The original deferral analysis
-below is retained for the chunked-in-loop boundary (still unsupported - a per-iteration chunk region is not statically
-indexable).
+(35 int upsert-loop tests unchanged). CHUNKED (>60 B) stays fail-closed on BOTH sides.
 
-### Original analysis (chunked-in-loop still applies)
+## Array-VALUE sorted loop PER-KEY `for(i) m[ks[i]] = vs[i]` - RESOLVED 2026-07-20b (`817e8a1c`)
 
-## Array-VALUE sorted insert-in-loop `for(i) m[ks[i]] = a` (chunked) - DEFERRED 2026-07-20
+The per-key varying form (vs a `bytes[]`/`int[][]` param, each key its OWN value) now routes too. The covenant needed
+only a 2-line guard relax (`isPerKeySet` accepts rawbytes; `rawbytesOk = isParamSet || isPerKeySet`): the body already
+wraps each visited `vs[i]` as the inline tail via `isChunkableVal` (value-kind-based, not param-vs-perkey), and the setup
+captures `valueArrayParam` for any type - so no body/setup change. The earlier "SDK planner too int-shaped / risks
+regressing" worry was DISPROVEN: `DeferredEntry.newVal` is now `bigint | Uint8Array` and every arithmetic path is
+int-only by the `op==='set'` guard (a rawbytes value never adds/subtracts), so the int cases are byte-identical (45
+int/invariant upsert-loop tests unchanged); the dedup stores `set` values verbatim (last-wins, no `toBig`). VM:
+`SortedArrayValueVaryingLoop.test.ts` (bytes[]/int[][] per-key independence, duplicate last-wins, >60 B fail-closed).
 
-**What.** A pure-write loop assigning a loop-invariant ARRAY value to N sorted-mapping keys - `mapping(int => int[]) m;
-for(i) m[ks[i]] = a` - fails closed cleanly at compile (`SortedMappingCodegenPendingError`, "not yet compiled"). The
-INT-value form `for(i) m[ks[i]] = v` works (routes to the upsert loop). The blocker is `sortedValueKind(int[]) ==
-'rawbytes'` vs the `=== 'int'` guard in findSortedUpsertLoopWrite (GTT ~12479).
+### Still fail-closed: CHUNKED (>60 B) value in a loop (considered effort/risk deferral - NOT fundamental)
 
-**Why deferred (not tractability - soundness).** BOTH sides thread a rawbytes tail through fund-guarding code (re-read
-`emitSortedUpsertLoopBody` 2026-07-20 with clean files - the covenant side is NOT the "3-4 lines" the agent scoped).
-COVENANT: the loop body is a stack-tracked machine (explicit U=depth annotations) where the value `(credit_amt)` flows
-through the UPDATE, INSERT, pending-defer, and duplicate-merge branches, each with its own `OP_BIN2NUM` normalization
-(12829, 12831-32, ...) and `amtIdx()` reads. A rawbytes value needs the PROVEN `emitChunkableValueTail` wrap AFTER the
-RHS visit (integrated into the U tracking), EVERY BIN2NUM site conditionally skipped, and a `size(v) > 60 -> OP_VERIFY
-false` fail-closed (chunked-in-loop needs a per-iteration variable-length trailing-region redesign, out of scope). SDK:
-the upsert-loop planner (`StatefulContract.ts` ~5670-5950) is deeply int-shaped - `scalarAmt: bigint`,
-`DeferredEntry.newVal: bigint`, arithmetic accumulate + the hard-won pending-defer register + order-independent duplicate
-MERGE that guards real ERC-20 balances. Threading a `Uint8Array` value variant through EITHER risks regressing the
-working int cases. The pattern (store the SAME array under N keys) is contrived; destabilizing the fund-guarding upsert
-loop for it fails the soundness-paramount bar.
-
-**What it'd take.** Give the loop planner a bytes value branch (encode the tail as len4 ++ [inline | sha256], mirroring
-the single-write path at ~5177-5185) with `DeferredEntry.newVal` a `bigint | Uint8Array` union, and prove the int
-cases byte-identical (the whole C2 e2e set) before + after. INLINE only; chunked stays the covenant fail-closed.
+Implementable via an INTERLEAVED `[entry][chunks]` output layout with a running chunk-output counter (base_i =
+`master + blockSize + runningCounter`, advanced by `1|2 + nNew` each iteration; reads locate chunks by identity, not
+position, so interleaving is sound). NOT done because threading chunk-region management through EVERY mint site of the
+deferred/chained/msg.sender-merge/insert loop state machine - the most soundness-critical covenant - is a large change
+disproportionate to the rare bulk-LONG-value pattern. The chunk NFT is keyed by `(slot=Hk32, digest)`, so even an
+invariant value cannot share one chunk set across keys. Revisit if a real port needs bulk long values in a loop.
 
 **Revisit if.** A real port needs bulk array-value initialization across keys in one loop, OR the upsert-loop planner
 is refactored to a value-kind-generic shape for another reason (then the bytes branch is cheap + low-risk).

@@ -7009,14 +7009,18 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       const externalCallInputCount = externalCallUtxoGroups.reduce(
         (sum, g) => sum + 1 + g.dataNftUtxos.length, 0,
       );
+      // Reserve the delegatecall'd impl's EVENT slots in the proxy block (its covenant verifies them at
+      // proxyMaster+offset). Only handled when the impl fn's block is master + dataNfts + events, so the slot
+      // offsets align 1:1 with the proxy block. A delegate that also transfers, reads a mapping/keccak/blockhash,
+      // etc. has other slots interleaved that we cannot reserve in the proxy block - unsupported here (fail closed).
       for (const g of lowLevelCallUtxoGroups) {
         if (g.callMode !== 'delegatecall') continue;
         const gFn = (g.externalContract.inner.artifact.abi as readonly { name: string; blockLayout?: FunctionBlockLayout }[])
           .find((f) => f.name === g.functionName);
-        for (const s of gFn?.blockLayout?.slots ?? []) {
-          if (s.kind === 'event' || s.kind === 'transfer' || s.kind === 'tcTransfer') {
-            delegateEventSlots.push({ kind: s.kind, offset: s.offset, ...(s.slotIndex !== undefined && { slotIndex: s.slotIndex }) });
-          }
+        const extra = (gFn?.blockLayout?.slots ?? []).filter((s) => s.kind !== 'master' && s.kind !== 'dataNft');
+        if (extra.length === 0 || !extra.every((s) => s.kind === 'event')) continue;
+        for (const s of extra) {
+          delegateEventSlots.push({ kind: s.kind, offset: s.offset, ...(s.slotIndex !== undefined && { slotIndex: s.slotIndex }) });
         }
       }
       lowLevelCallInputBase = 1 + requiredNftIndices.length

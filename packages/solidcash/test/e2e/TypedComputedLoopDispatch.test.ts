@@ -32,8 +32,30 @@ function dummyPath(): Uint8Array[] {
   return [hexToBin('aa'.repeat(20)), hexToBin('bb'.repeat(20)), hexToBin('cc'.repeat(20))];
 }
 
-async function buildTx(witnessTargets: Uint8Array[]): Promise<ReturnType<typeof buildTypedLoopCallTransaction>> {
-  const art = compileString(SRC);
+// Loop-body LOCAL receiver holding the computed target `IPair pair = IPair(pairFor(path[i], path[i+1]));
+// pair.swap(x, x)` (single use). The compiler rewrites the call to the same witness AND neutralizes the dead
+// pairFor initializer (reads the witness instead of recomputing on-chain), so the co-spend is identical to the
+// direct form. A multi-use local (pair used by two calls) is left to fail closed.
+const PAIRLOCAL_SRC = `pragma solidcash >=0.8.0;
+contract C() {
+    function run(address[] path, int x) {
+        for (uint i = 0; i < path.length - 1; i++) {
+            IPair pair = IPair(L.pairFor(path[i], path[i+1]));
+            pair.swap(x, x);
+        }
+    }
+}
+interface IPair { function swap(int a, int b) external; }
+library L {
+    function pairFor(address a, address b) internal pure returns (address) {
+        return address(uint160(uint256(uint160(a)) + uint256(uint160(b))));
+    }
+}`;
+
+async function buildTx(
+  witnessTargets: Uint8Array[], src: string = SRC,
+): Promise<ReturnType<typeof buildTypedLoopCallTransaction>> {
+  const art = compileString(src);
   const provider = createTestProvider();
   const contract = new Contract(art, [], { provider });
 
@@ -70,6 +92,19 @@ describe('typed COMPUTED per-iteration external dispatch (IFoo(pairFor(path[i], 
   it('rejects when the witness claims a target whose co-spent input bytecode differs (identity binding)', async () => {
     const wrong = hexToBin('5152'); // OP_1 OP_2 - not the co-spent OP_TRUE input at index 0
     const tb = await buildTx([wrong, OP_TRUE]);
+    expect(() => verifyTransaction(tb)).toThrow();
+  });
+});
+
+describe('typed COMPUTED loop, single-use LOCAL receiver (IPair pair = IPair(pairFor(..)); pair.swap())', () => {
+  it('rewrites the call + neutralizes the dead init to the same witness; co-spends + validates', async () => {
+    const tb = await buildTx([OP_TRUE, OP_TRUE], PAIRLOCAL_SRC);
+    verifyTransaction(tb);
+    expect(tb.inputs.length).toBe(4);
+  });
+
+  it('rejects a mismatched witness target (identity binding holds through the local)', async () => {
+    const tb = await buildTx([hexToBin('5152'), OP_TRUE], PAIRLOCAL_SRC);
     expect(() => verifyTransaction(tb)).toThrow();
   });
 });

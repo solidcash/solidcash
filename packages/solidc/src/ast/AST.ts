@@ -1853,11 +1853,12 @@ export interface ExternalCallSlot {
   // co-spend/SDK derivation is unchanged (dispatch is still on `interfaceName`); only the verified value differs.
   loopArrayElemStructType?: Type;
   loopArrayElemFieldName?: string;
-  // The synthesized `__internal__loopTargets<n>[i]` array-access identifier (its `.array`) when a per-iteration
-  // COMPUTED target `IFoo(pairFor(.., path[i], ..)).m()` was rewritten to read a witness address[] param. Carried
-  // so the witness-param synthesis can back-link its `.definition` to the freshly created symbol (the node is
-  // created in the collect phase, before the param symbol exists).
-  loopWitnessArrayId?: IdentifierNode;
+  // The synthesized `__internal__loopTargets<n>` array-access identifier(s) (each a witness `.array`) when a
+  // per-iteration COMPUTED target `IFoo(pairFor(.., path[i], ..)).m()` was rewritten to read a witness address[]
+  // param. Usually one (the call target); a loop-body LOCAL receiver adds a second for its neutralized initializer.
+  // Carried so witness-param synthesis can back-link each `.definition` to the freshly created symbol (the nodes
+  // are created in the collect phase, before the param symbol exists).
+  loopWitnessArrayIds?: IdentifierNode[];
   // Set when the call target is `msg.sender` (IFoo(msg.sender).m()): the callee is the tx-derived msg.sender
   // input (category-matched, or tx.origin P2PKH), verified against emitMsgSender's locking bytecode.
   addressIsMsgSender?: boolean;

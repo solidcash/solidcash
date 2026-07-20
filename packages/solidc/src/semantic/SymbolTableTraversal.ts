@@ -294,6 +294,9 @@ export default class SymbolTableTraversal extends AstTraversal {
   // shadowed by a same-named contract struct, which is a distinct contract-scoped type in Solidity)
   private loopTargetsCounter = 0; // uniquifies the synthesized `__internal__loopTargets<n>` witness param per
   // per-iteration COMPUTED external-call target (Router02 IFoo(pairFor(.., path[i], ..)).swap())
+  // Per-function count of external calls whose receiver is a given bare local, snapshotted BEFORE any collect-phase
+  // rewrite (so the loop-body local-receiver rewrite can restrict to single-use locals immune to rewrite order).
+  private extCallReceiverCounts = new Map<string, number>();
   private typeDefMap: Map<string, ValueType> = new Map();
   private enumMap: Map<string, EnumType> = new Map();
   private eventMap: Map<string, EventDefinitionNode> = new Map();
@@ -1583,6 +1586,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     // External calls pre-scan: collect all external function call results and assign slot indices
     {
       const externalCallSlots: ExternalCallSlot[] = [];
+      this.extCallReceiverCounts = this.buildExtCallReceiverCounts(node.body);
       this.collectExternalCalls(node.body, externalCallSlots);
 
       if (externalCallSlots.length > 0) {
@@ -1638,9 +1642,9 @@ export default class SymbolTableTraversal extends AstTraversal {
             const wSym = this.symbolTables[0].get(slot.loopArrayVar);
             if (wSym) {
               wSym.references.push({ name: slot.loopArrayVar } as IdentifierNode);
-              // Back-link the rewritten `__internal__loopTargets<n>[i]` array identifier to the freshly created
+              // Back-link each rewritten `__internal__loopTargets<n>[i]` array identifier to the freshly created
               // symbol so TypeCheck (reads .definition.type) and codegen (locates the stack slot) resolve it.
-              if (slot.loopWitnessArrayId) slot.loopWitnessArrayId.definition = wSym;
+              for (const arrayId of slot.loopWitnessArrayIds ?? []) arrayId.definition = wSym;
             }
             this.pushToStack(witnessParam);
           }
@@ -3693,6 +3697,41 @@ export default class SymbolTableTraversal extends AstTraversal {
   // access reached inside it (`path[i]` -> `i`), resolving inliner aliases (`pairFor(.., __rh_tokenA, ..)` where
   // `__rh_tokenA = path[i]`) and tuple destructures. A computed target SEAL could not hoist has such a loop-
   // dependent leaf; a target with none returns undefined (not a per-iteration loop, left to fail closed downstream).
+  // Build a fresh `__internal__loopTargets<n>[loopIdx]` witness-array access (the SDK fills the param with the
+  // route's co-spend targets). Returns the access + its array identifier (back-linked to the fresh symbol during
+  // witness-param synthesis). `witnessName` lets a caller build a SECOND access on the SAME witness (a loop-body
+  // local receiver reuses one witness for both the call target and its neutralized initializer).
+  private buildLoopWitnessAccess(loopIdx: IdentifierNode, witnessName: string, loc: Node['location']):
+    { access: ArrayAccessNode; arrayId: IdentifierNode } {
+    const arrayId = new IdentifierNode(witnessName);
+    arrayId.location = loc;
+    const idxCopy = new IdentifierNode(loopIdx.name); // fresh ref to the loop counter (i)
+    idxCopy.location = loc;
+    idxCopy.definition = loopIdx.definition; // reuse the already-resolved loop-var symbol
+    const access = new ArrayAccessNode(arrayId, idxCopy);
+    access.location = loc;
+    return { access, arrayId };
+  }
+
+  // Count, per bare-local name, how many external calls use it as their RECEIVER (`local.m()`). Restricts the
+  // loop-body local-receiver rewrite to single-use locals: a multi-use receiver (`pair.getReserves(); pair.swap()`)
+  // would need ONE co-spend to serve several calls (a read + a write on the same UTXO), which the per-call witness
+  // model cannot express - left to fail closed. Snapshotted before any rewrite so the count is order-independent.
+  private buildExtCallReceiverCounts(node: Node | undefined, acc: Map<string, number> = new Map(),
+    seen: Set<Node> = new Set()): Map<string, number> {
+    if (!node || seen.has(node)) return acc;
+    seen.add(node);
+    if (node instanceof ExternalFunctionCallNode && node.addressExpression instanceof IdentifierNode) {
+      const nm = node.addressExpression.name;
+      acc.set(nm, (acc.get(nm) ?? 0) + 1);
+    }
+    for (const v of Object.values(node)) {
+      if (v instanceof Node) this.buildExtCallReceiverCounts(v, acc, seen);
+      else if (Array.isArray(v)) for (const e of v) if (e instanceof Node) this.buildExtCallReceiverCounts(e, acc, seen);
+    }
+    return acc;
+  }
+
   private findLoopIndexInComputedTarget(expr: Node, body: Node | undefined): IdentifierNode | undefined {
     let found: IdentifierNode | undefined;
     const seen = new Set<string>();
@@ -3735,7 +3774,7 @@ export default class SymbolTableTraversal extends AstTraversal {
   private collectExternalCalls(node: Node, slots: ExternalCallSlot[]): void {
     if (node instanceof ExternalFunctionCallNode && node.callInfo && !node.foldedIntoDeploy) {
       // Each call site gets its own slot (no de-duplication)
-      const addressParam = node.addressExpression instanceof IdentifierNode
+      let addressParam = node.addressExpression instanceof IdentifierNode
         ? node.addressExpression.name : undefined;
       // A `__extaddr_<var>` address local is the synthesized read of an interface-typed state var (see
       // SynthesizeExternalAddressLocals); record the underlying state var so the SDK resolves it from state.
@@ -3749,8 +3788,37 @@ export default class SymbolTableTraversal extends AstTraversal {
       let loopArrayVar: string | undefined;
       let loopArrayElemStructType: StructType | undefined;
       let loopArrayElemFieldName: string | undefined;
-      let loopWitnessArrayId: IdentifierNode | undefined;
-      if (!addressParam) {
+      let loopWitnessArrayIds: IdentifierNode[] = [];
+      // A loop-body LOCAL receiver holding a per-iteration computed target
+      // `IPair pair = IPair(pairFor(.., path[i], ..)); pair.m()`: addressParam is the raw local (SEAL left it
+      // un-hoisted - a loop-body local is not single-assign), which the co-spend epilogue cannot read (the local
+      // is loop-consumed). Rewrite the call to the witness (like a direct computed target) AND neutralize the now
+      // dead initializer to read the same witness, so `pairFor` is not recomputed on-chain (defeating the witness
+      // and risking a size fault). Restricted to a SINGLE-use local with a cast/reference init: a multi-use receiver
+      // would need one co-spend to serve several calls (left to fail closed).
+      if (addressParam && !addressStateVar && node.interfaceName
+        && node.addressExpression instanceof IdentifierNode) {
+        const initExpr = this.findLocalInit(this.currentFunction?.body, addressParam);
+        const canNeutralize = initExpr instanceof CastNode
+          || (initExpr instanceof ContractReferenceNode && (initExpr.constructorArgs?.length ?? 0) > 0);
+        if (initExpr && canNeutralize
+          && this.extCallReceiverCounts.get(addressParam) === 1) {
+          const loopIdx = this.findLoopIndexInComputedTarget(node.addressExpression, this.currentFunction?.body);
+          if (loopIdx) {
+            const witnessName = `__internal__loopTargets${this.loopTargetsCounter}`;
+            this.loopTargetsCounter += 1;
+            const call = this.buildLoopWitnessAccess(loopIdx, witnessName, node.location);
+            node.addressExpression = call.access;
+            const init = this.buildLoopWitnessAccess(loopIdx, witnessName, node.location);
+            if (initExpr instanceof CastNode) initExpr.expression = init.access;
+            else (initExpr as ContractReferenceNode).constructorArgs[0] = init.access;
+            loopArrayVar = witnessName;
+            loopWitnessArrayIds = [call.arrayId, init.arrayId];
+            addressParam = undefined; // the local is not the address source; the witness is
+          }
+        }
+      }
+      if (!addressParam && !loopArrayVar) {
         const ae = node.addressExpression;
         // A loop over a dynamic state array read multiple times is cached to a `__dlcache_V` local by
         // CacheDynamicArrayInLoop; strip the prefix so the co-spend epilogue reads the self-pinned STATE array V.
@@ -3794,17 +3862,11 @@ export default class SymbolTableTraversal extends AstTraversal {
           if (loopIdx) {
             const witnessName = `__internal__loopTargets${this.loopTargetsCounter}`;
             this.loopTargetsCounter += 1;
-            const witnessId = new IdentifierNode(witnessName);
-            witnessId.location = node.location;
-            const idxCopy = new IdentifierNode(loopIdx.name); // fresh ref to the loop counter (i)
-            idxCopy.location = node.location;
-            idxCopy.definition = loopIdx.definition; // reuse the already-resolved loop-var symbol
-            const arrAccess = new ArrayAccessNode(witnessId, idxCopy);
-            arrAccess.location = node.location;
-            node.addressExpression = arrAccess;
+            const witness = this.buildLoopWitnessAccess(loopIdx, witnessName, node.location);
+            node.addressExpression = witness.access;
             loopArrayVar = witnessName;
-            // witnessId.definition is back-linked once the witness param symbol is created (below).
-            loopWitnessArrayId = witnessId;
+            // arrayId.definition is back-linked once the witness param symbol is created (below).
+            loopWitnessArrayIds = [witness.arrayId];
           }
         }
       }
@@ -3903,7 +3965,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         addressParam,
         addressStateVar,
         loopArrayVar,
-        ...(loopWitnessArrayId && { loopWitnessArrayId }),
+        ...(loopWitnessArrayIds.length > 0 && { loopWitnessArrayIds }),
         ...(loopArrayElemStructType && { loopArrayElemStructType, loopArrayElemFieldName }),
         ...(node.selectorArrayVar && { selectorArrayVar: node.selectorArrayVar }),
         ...(addressLiteral && { addressLiteral }),

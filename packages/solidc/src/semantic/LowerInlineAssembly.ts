@@ -10,7 +10,7 @@ import {
   StateAssignNode, StateAccessNode, StateVariableNode, ContractNode, BytesConcatNode, FunctionCallNode,
   SliceNode, CollectionNode, MappingAccessNode, MappingAssignNode, HexLiteralNode, NullaryOpNode, FieldAccessNode,
   ReturnNode, TupleAssignmentNode, LowLevelCallNode, NewArrayNode, EmitStatementNode, EventDefinitionNode,
-  InstantiationNode, TypeIntrospectionNode,
+  InstantiationNode, TypeIntrospectionNode, ArrayAccessNode, ArrayAssignNode,
 } from '../ast/AST.js';
 import { BinaryOperator, UnaryOperator, NullaryOperator } from '../ast/Operator.js';
 import { cloneNode } from '../ast/clone.js';
@@ -473,18 +473,17 @@ function decomposeSlot(fields: SlotField[], valueExpr: YulExpressionNode, src: Y
   return loc(new BlockNode(stmts), src);
 }
 
-// ---- Composite sub-slot field access: sload/sstore on a fixed struct's own slots ----
-// A fixed struct state var S at base slot p occupies slots [p, p+words). Its VALUE fields pack into those slots
-// exactly as EVM lays them out (packWords). `sload(S.slot + i)` reads the packed word at relative slot i, and
-// `sstore(S.slot + i, w)` writes it. SOUND by reduction: the read combines the high-level field values
-// (FieldAccess on the state struct) into the word EVM's layout would hold; the write rebuilds the struct value
-// with the slot-i fields replaced by the word's decomposed pieces (other fields read back unchanged) - the same
-// struct-ctor rebuild the AstBuilder emits for `s.f = v`, so it flows through the normal struct-value storage
-// path (a blob), never a raw slot. Both reuse fieldAsWordFrom/castWordToFieldType (int/bytesN/UDVT + the
-// two's-complement byte trick). v1 scope: a STRUCT whose every field is a supported fixed value type
-// (int/bytesN/UDVT-over-either). A nested composite, address, bool/enum, or dynamic field makes the WHOLE struct
-// fail closed (undefined) - the layout would be unsound (a dynamic field holds a length/pointer, not the value)
-// or the word cast is not defined. Fixed arrays and nesting are follow-ons.
+// ---- Composite sub-slot field access: sload/sstore on a fixed struct's / fixed array's own slots ----
+// A fixed struct/array state var at base slot p occupies slots [p, p+words). Its VALUE fields/elements pack into
+// those slots exactly as EVM lays them out (packWords). `sload(v.slot + i)` reads the packed word at relative
+// slot i, `sstore(v.slot + i, w)` writes it. SOUND by reduction: the read combines the high-level field/element
+// values into the word EVM's layout would hold; the write pushes the word's decomposed pieces back - a STRUCT via
+// the struct-ctor rebuild the AstBuilder emits for `s.f = v` (a value blob, never a raw slot), a fixed ARRAY via
+// per-element ArrayAssign (arrays have in-place element writes). Both reuse fieldAsWordFrom/castWordToFieldType
+// (int/bytesN/UDVT + the two's-complement byte trick). Scope: every field/element must be a supported fixed value
+// type (int/bytesN/UDVT-over-either). A nested composite, address, bool/enum, or dynamic field makes the WHOLE
+// composite fail closed (undefined) - the layout would be unsound (a dynamic field holds a length/pointer, not
+// the value) or the word cast is not defined. Nested composites are a follow-on.
 interface CompLeaf { name: string; type: Type; slotOffset: bigint; bitOffset: bigint; bitWidth: bigint; }
 
 function compositeStructLeaves(sv: StateVariableNode): { ctorName: string; leaves: CompLeaf[] } | undefined {
@@ -502,6 +501,27 @@ function compositeStructLeaves(sv: StateVariableNode): { ctorName: string; leave
     if (byteOff >= 32) { slot += 1n; byteOff = 0; }
   }
   return { ctorName: t.name, leaves };
+}
+
+// Elements of a fixed VALUE array `T[k]` that occupy relative slot `rel`. EVM packs floor(32/w) elements per
+// slot and never crosses an element over a slot boundary, so this is pure arithmetic - it never materializes all
+// `k` elements, keeping a huge bound (`uint8[2e9]`) safe. undefined = not a supported fixed value array (a nested
+// composite / address / dynamic / bool / enum element makes it fail closed, same gate as the struct path).
+function compositeArraySlotElems(sv: StateVariableNode, rel: bigint):
+{ elemType: Type; elems: { index: number; bitOffset: bigint; bitWidth: bigint }[] } | undefined {
+  const t = sv.type;
+  if (!(t instanceof ArrayType) || t.bound === undefined) return undefined;
+  const et = t.elementType;
+  if (compositeSlotWords(et) > 0 || !isSupportedSlotField(et)) return undefined;
+  const w = valueByteWidth(et);
+  const perSlot = Math.floor(32 / w); // w in [1,32] for value types
+  if (perSlot < 1) return undefined;
+  const start = rel * BigInt(perSlot);
+  const elems: { index: number; bitOffset: bigint; bitWidth: bigint }[] = [];
+  for (let j = 0; j < perSlot && start + BigInt(j) < t.bound; j += 1) {
+    elems.push({ index: Number(start) + j, bitOffset: BigInt(j * w * 8), bitWidth: BigInt(w * 8) });
+  }
+  return elems.length ? { elemType: et, elems } : undefined;
 }
 
 // Resolve a Yul slot argument to a composite state var + the relative slot within it: `sv.slot` (rel 0), a bare
@@ -523,48 +543,72 @@ function resolveCompositeSlotAccess(slotArg: YulExpressionNode): { sv: StateVari
   return r && r.sv ? { sv: r.sv, rel: slotNum - r.base } : undefined;
 }
 
-// sload(sv.slot + rel): combine the struct fields at relative slot `rel` into a word.
-function combineCompositeSlot(sv: StateVariableNode, rel: bigint, src: YulExpressionNode): ExpressionNode | undefined {
-  const layout = compositeStructLeaves(sv);
-  if (!layout) return undefined;
-  const at = layout.leaves.filter((l) => l.slotOffset === rel);
-  if (at.length === 0) return undefined; // padding-only / out-of-range slot: fail closed
-  let expr: ExpressionNode | undefined;
-  for (const l of at) {
-    const access = loc(new FieldAccessNode(loc(new StateAccessNode(sv.name), src), l.name), src);
-    const word = fieldAsWordFrom(access, l.type, src);
-    const term = l.bitOffset === 0n
-      ? word
-      : loc(new BinaryOpNode(word, BinaryOperator.MUL, intLit(2n ** l.bitOffset, src)), src);
-    expr = expr ? loc(new BinaryOpNode(expr, BinaryOperator.PLUS, term), src) : term;
-  }
-  return expr!;
+// Extract field `i`'s value from the word temp: `(temp / 2^bitOffset) % 2^bitWidth`, cast to the field type.
+function decomposeWordPiece(
+  tempName: string, type: Type, bitOffset: bigint, bitWidth: bigint, src: YulExpressionNode,
+): ExpressionNode {
+  let field: ExpressionNode = loc(new IdentifierNode(tempName), src);
+  if (bitOffset > 0n) field = loc(new BinaryOpNode(field, BinaryOperator.DIV, intLit(2n ** bitOffset, src)), src);
+  field = loc(new BinaryOpNode(field, BinaryOperator.MOD, intLit(2n ** bitWidth, src)), src);
+  return castWordToFieldType(type, field, src);
 }
 
-// sstore(sv.slot + rel, word): rebuild the struct value with the slot-`rel` fields replaced by the word's
-// decomposed pieces (other fields read back unchanged), assigned in ONE StateAssign.
+// sload(sv.slot + rel): combine the composite's value fields/elements at relative slot `rel` into a word.
+function combineCompositeSlot(sv: StateVariableNode, rel: bigint, src: YulExpressionNode): ExpressionNode | undefined {
+  const combine = (terms: ExpressionNode[]): ExpressionNode => terms
+    .reduce((a, t) => loc(new BinaryOpNode(a, BinaryOperator.PLUS, t), src));
+  const shifted = (word: ExpressionNode, bitOffset: bigint): ExpressionNode => (bitOffset === 0n
+    ? word
+    : loc(new BinaryOpNode(word, BinaryOperator.MUL, intLit(2n ** bitOffset, src)), src));
+  const struct = compositeStructLeaves(sv);
+  if (struct) {
+    const at = struct.leaves.filter((l) => l.slotOffset === rel);
+    if (at.length === 0) return undefined; // padding-only / out-of-range slot: fail closed
+    return combine(at.map((l) => {
+      const access = loc(new FieldAccessNode(loc(new StateAccessNode(sv.name), src), l.name), src);
+      return shifted(fieldAsWordFrom(access, l.type, src), l.bitOffset);
+    }));
+  }
+  const arr = compositeArraySlotElems(sv, rel);
+  if (arr) {
+    return combine(arr.elems.map((e) => {
+      const access = loc(new ArrayAccessNode(loc(new IdentifierNode(sv.name), src), intLit(BigInt(e.index), src)), src);
+      return shifted(fieldAsWordFrom(access, arr.elemType, src), e.bitOffset);
+    }));
+  }
+  return undefined;
+}
+
+// sstore(sv.slot + rel, word): write the word's decomposed pieces into the composite's slot-`rel` fields. A
+// STRUCT rebuilds its value with the slot-rel fields replaced (other fields read back unchanged) in ONE
+// StateAssign - the AstBuilder's `s.f = v` shape. A fixed ARRAY writes each slot-rel element in place
+// (ArrayAssign; arrays have per-element write codegen, no whole-value rebuild needed).
 function decomposeCompositeSlot(
   sv: StateVariableNode, rel: bigint, valueExpr: YulExpressionNode, src: YulExpressionNode,
 ): StatementNode | undefined {
-  const layout = compositeStructLeaves(sv);
-  if (!layout) return undefined;
-  if (!layout.leaves.some((l) => l.slotOffset === rel)) return undefined; // no field in this slot: fail closed
   const tempName = '__yul_slot';
-  const decomposed = (l: CompLeaf): ExpressionNode => {
-    let field: ExpressionNode = loc(new IdentifierNode(tempName), src);
-    if (l.bitOffset > 0n) field = loc(new BinaryOpNode(field, BinaryOperator.DIV, intLit(2n ** l.bitOffset, src)), src);
-    field = loc(new BinaryOpNode(field, BinaryOperator.MOD, intLit(2n ** l.bitWidth, src)), src);
-    return castWordToFieldType(l.type, field, src);
-  };
-  const args = layout.leaves.map((l) => (l.slotOffset === rel
-    ? decomposed(l)
-    : loc(new FieldAccessNode(loc(new StateAccessNode(sv.name), src), l.name), src)));
-  const ctor = loc(new FunctionCallNode(loc(new IdentifierNode(layout.ctorName), src), args), src);
-  const stmts: StatementNode[] = [
-    loc(new VariableDefinitionNode(UINT256, [], tempName, lowerValue(valueExpr)), src),
-    loc(new StateAssignNode(sv.name, ctor), src),
-  ];
-  return loc(new BlockNode(stmts), src);
+  const struct = compositeStructLeaves(sv);
+  if (struct) {
+    if (!struct.leaves.some((l) => l.slotOffset === rel)) return undefined; // no field in this slot: fail closed
+    const args = struct.leaves.map((l) => (l.slotOffset === rel
+      ? decomposeWordPiece(tempName, l.type, l.bitOffset, l.bitWidth, src)
+      : loc(new FieldAccessNode(loc(new StateAccessNode(sv.name), src), l.name), src)));
+    const ctor = loc(new FunctionCallNode(loc(new IdentifierNode(struct.ctorName), src), args), src);
+    return loc(new BlockNode([
+      loc(new VariableDefinitionNode(UINT256, [], tempName, lowerValue(valueExpr)), src),
+      loc(new StateAssignNode(sv.name, ctor), src),
+    ]), src);
+  }
+  const arr = compositeArraySlotElems(sv, rel);
+  if (arr) {
+    const stmts: StatementNode[] = [loc(new VariableDefinitionNode(UINT256, [], tempName, lowerValue(valueExpr)), src)];
+    for (const e of arr.elems) {
+      const val = decomposeWordPiece(tempName, arr.elemType, e.bitOffset, e.bitWidth, src);
+      stmts.push(loc(new ArrayAssignNode(sv.name, intLit(BigInt(e.index), src), val), src));
+    }
+    return loc(new BlockNode(stmts), src);
+  }
+  return undefined;
 }
 
 // Transient storage (tstore/tload) maps to a zero-initialized, function-execution-scoped local keyed by the

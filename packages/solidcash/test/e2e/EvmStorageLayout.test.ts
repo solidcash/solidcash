@@ -335,3 +335,61 @@ describe('composite sub-slot field access: struct head/sub-slot read+write (VM r
     await (sc as any).readSlot(0xccccbbbbn).send();
   });
 });
+
+// A fixed VALUE array's head slot decodes to its packed elements: EVM packs floor(32/w) per slot. Same
+// element<->slot cross-check + high-bit values as the struct suite. The write pushes per-element (ArrayAssign),
+// no whole-array rebuild.
+const COMP_ARRAY = `pragma solidcash >=0.8.0;
+contract C() {
+  uint128[2] a;
+  function setViaSlot(uint256 w, pubkey pk, sig sg) {
+    require(checkSig(sg, pk));
+    assembly { sstore(a.slot, w) }
+  }
+  function setElems(uint128 v0, uint128 v1, pubkey pk, sig sg) {
+    require(checkSig(sg, pk));
+    this.a[0] = v0;
+    this.a[1] = v1;
+  }
+  function readSlot(uint256 e) {
+    uint256 r = 0;
+    assembly { r := sload(a.slot) }
+    require(r == e);
+  }
+  function readElems(uint256 e0, uint256 e1) {
+    require(uint256(a[0]) == e0);
+    require(uint256(a[1]) == e1);
+  }
+}`;
+
+// The corpus dirty_storage_static_array shape: a single uint8[1], write via slot truncates to the element width.
+const COMP_ARRAY_U8 = `pragma solidcash >=0.8.0;
+contract C() {
+  uint8[1] a;
+  function setViaSlot(uint256 w, pubkey pk, sig sg) {
+    require(checkSig(sg, pk));
+    assembly { sstore(a.slot, w) }
+  }
+  function readElem(uint256 e) { require(uint256(a[0]) == e); }
+}`;
+
+const U128MAX = (1n << 128n) - 1n;
+const WORD_MAX = (1n << 256n) - 1n; // a[0] = a[1] = 2^128-1
+
+describe('composite sub-slot field access: fixed value array head slot read+write (VM round-trip)', () => {
+  it('write-via-slot lands in the real packed elements (high-bit uint128 both set)', async () => {
+    const sc = await deploy(COMP_ARRAY);
+    await (sc as any).setViaSlot(WORD_MAX, alicePub, sig()).send();
+    await (sc as any).readElems(U128MAX, U128MAX).send(); // cross-check: slot write reached a[0] / a[1]
+  });
+  it('write-the-elements is read back through the combined slot word (high-bit)', async () => {
+    const sc = await deploy(COMP_ARRAY);
+    await (sc as any).setElems(U128MAX, U128MAX, alicePub, sig()).send();
+    await (sc as any).readSlot(WORD_MAX).send(); // cross-check: sload combines a[0] + a[1]<<128
+  });
+  it('uint8[1] slot write truncates to the element width (257 -> a[0] == 1)', async () => {
+    const sc = await deploy(COMP_ARRAY_U8);
+    await (sc as any).setViaSlot(257n, alicePub, sig()).send();
+    await (sc as any).readElem(1n).send();
+  });
+});

@@ -388,6 +388,11 @@ describe('composite sub-slot field access (sload/sstore on a value-field struct 
     expect(ok('contract C { struct M { uint256 a; uint256 b; } M m;'
       + ' function f() public returns (uint r) { assembly { r := sload(add(m.slot, 1)) } require(true); } }')).toBe('C');
   });
+  it('reads and writes a packed fixed value array head slot (corpus dirty_storage_static_array)', () => {
+    expect(ok('contract C { uint128[2] a;'
+      + ' function f() public returns (uint r) { assembly { sstore(a.slot, 7) r := sload(a.slot) } require(true); } }'))
+      .toBe('C');
+  });
   it('a struct with a variable-width (address) field fails closed - no unsound word layout', () => {
     expect(() => compileString('contract C { struct T { address a; uint96 b; } T t;'
       + ' function f() public returns (uint r) { assembly { r := sload(t.slot) } require(true); } }',

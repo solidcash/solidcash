@@ -1,4 +1,4 @@
-import { ArrayType, StructType, Type, isChunkPackableElementType } from '@solidcash/utils';
+import { ArrayType, MappingType, StructType, Type, isChunkPackableElementType } from '@solidcash/utils';
 import {
   Node,
   SourceFileNode,
@@ -43,6 +43,12 @@ export default class DesugarNestedArrayWrite extends AstTraversal {
   // Fixed-inner nested state arrays (`uint256[N][]`): chunk-packed, so `a[i]` is a whole-row state read/write.
   // A nested write `a[i][j] = v` desugars like the local case, but the base write-back is a StateArrayAssign.
   private stateArrays = new Map<string, Type>();
+  // Mappings whose (innermost) value is an array: name -> { keyCount, valueType }. A `m[k..][i][j]=v` write to a
+  // MULTI-dim array value desugars to a whole-value read + local nested write + whole-value write-back.
+  private mappings = new Map<string, { keyCount: number; valueType: ArrayType }>();
+  // Temp declarations hoisted out of the CURRENT statement's expressions (a 2D array-value READ `m[k][i][j]` becomes
+  // `T[][] t = m[k]` hoisted here + an `t[i][j]` local read in place). Flushed before the statement in visitBlock.
+  private pendingHoists: StatementNode[] = [];
   private counter = 0;
 
   visitSourceFile(node: SourceFileNode): Node {
@@ -59,6 +65,13 @@ export default class DesugarNestedArrayWrite extends AstTraversal {
         && isChunkPackableElementType(sv.type.elementType)) {
         this.stateArrays.set(sv.name, sv.type);
       }
+    }
+    this.mappings = new Map();
+    for (const col of node.collections) {
+      let vt: Type = col.type;
+      let keyCount = 0;
+      while (vt instanceof MappingType) { keyCount++; vt = vt.valueType; }
+      if (keyCount > 0 && vt instanceof ArrayType) this.mappings.set(col.name, { keyCount, valueType: vt });
     }
     if (node.constructorDef) node.constructorDef = this.visit(node.constructorDef) as FunctionDefinitionNode;
     node.functions = this.visitList(node.functions) as FunctionDefinitionNode[];
@@ -86,21 +99,67 @@ export default class DesugarNestedArrayWrite extends AstTraversal {
   }
 
   visitBlock(node: BlockNode): Node {
+    const savedHoists = this.pendingHoists;
     const out: StatementNode[] = [];
     for (const stmt of node.statements ?? []) {
+      this.pendingHoists = [];
       const visited = this.visit(stmt) as StatementNode;
+      const myHoists = this.pendingHoists; // 2D array-value reads hoisted out of THIS statement
       const desugared = visited instanceof MappingAssignNode
-        ? (this.tryDesugar(visited) ?? this.tryDesugarNestedPushPop(visited))
+        ? (this.tryDesugar(visited) ?? this.tryDesugarNestedPushPop(visited)
+          ?? this.tryDesugarMappingArrayValue(visited))
         : visited instanceof MappingFieldAssignNode
           ? this.tryDesugarLocalStructArrayField(visited)
           : visited instanceof MappingDeleteNode
             ? this.tryDesugarLocalArrayDelete(visited)
             : undefined;
+      out.push(...myHoists); // hoisted read temps evaluate before the statement that uses them
       if (desugared) out.push(...desugared);
       else out.push(visited);
     }
+    this.pendingHoists = savedHoists;
     node.statements = out;
     return node;
+  }
+
+  // A 2D+ array-value READ `m[k0..][i][j]` (mapping value is a multi-dim array): reads parse as a nested
+  // ArrayAccess chain (SymbolTable flattens it to a MappingAccess only later). Hoist the whole-value read into a
+  // temp and index it locally -> `T[][] t = m[k0..]; ... t[i][j] ...`. Reuses the proven whole-value read + local
+  // nested read. Short-circuits (does not recurse into the inner chain) so the inner accesses are not double-processed.
+  visitArrayAccess(node: ArrayAccessNode): Node {
+    const { base, keys } = this.flattenAccess(node);
+    if (base instanceof IdentifierNode && !this.locals.has(base.name)) {
+      const info = this.mappings.get(base.name);
+      if (info) {
+        let dims = 0; let t: Type = info.valueType;
+        while (t instanceof ArrayType) { dims++; t = t.elementType; }
+        const arrIdxCount = keys.length - info.keyCount;
+        if (arrIdxCount >= 2 && arrIdxCount <= dims) {
+          const visitedKeys = keys.map((k) => this.visit(k) as ExpressionNode);
+          const clone = (e: ExpressionNode): ExpressionNode => cloneNode(e) as ExpressionNode;
+          const mapKeys = visitedKeys.slice(0, info.keyCount);
+          const arrIdxs = visitedKeys.slice(info.keyCount);
+          let read: ExpressionNode = this.ident(base.name, node);
+          for (const k of mapKeys) { const acc = new ArrayAccessNode(read, clone(k)); acc.location = node.location; read = acc; }
+          const tmpName = `__mar_tmp_${this.counter++}`;
+          const decl = new VariableDefinitionNode(info.valueType, [], tmpName, read);
+          decl.location = node.location;
+          this.locals.set(tmpName, info.valueType);
+          this.pendingHoists.push(decl);
+          let repl: ExpressionNode = this.ident(tmpName, node);
+          for (const idx of arrIdxs) { const acc = new ArrayAccessNode(repl, clone(idx)); acc.location = node.location; repl = acc; }
+          return repl;
+        }
+      }
+    }
+    return super.visitArrayAccess(node);
+  }
+
+  private flattenAccess(node: ArrayAccessNode): { base: ExpressionNode; keys: ExpressionNode[] } {
+    const keys: ExpressionNode[] = [];
+    let cur: ExpressionNode = node;
+    while (cur instanceof ArrayAccessNode) { keys.unshift(cur.index); cur = cur.array; }
+    return { base: cur, keys };
   }
 
   // `a[i].push(v)` / `a[i].pop()` on a nested state array (`uint256[][]`): a read-modify-write of row i via a
@@ -186,6 +245,46 @@ export default class DesugarNestedArrayWrite extends AstTraversal {
     const write = new MappingAssignNode(node.name, node.keys.map((k) => cloneNode(k) as ExpressionNode), def);
     write.location = node.location;
     return this.tryDesugar(write);
+  }
+
+  // `m[k0..k_{kc-1}][i][j..] = v` where m is a mapping (kc keys) whose value is a MULTI-dim array: the parser makes
+  // one MappingAssignNode with all indices. A 1-index array write (`m[k][i]=v`) already works (symbol table pops the
+  // lone arrayIndex); a 2+-index write reads the whole array value into a local, does the nested local write, then
+  // writes the value back: `T[][] t = m[k]; t[i][j] = v; m[k] = t;`. Reuses the proven whole-value RW + local desugar.
+  private tryDesugarMappingArrayValue(node: MappingAssignNode): StatementNode[] | undefined {
+    if (node.arrayPush || node.arrayPop) return undefined;
+    if (this.locals.has(node.name)) return undefined; // a local shadows the mapping
+    const info = this.mappings.get(node.name);
+    if (!info) return undefined;
+    const { keyCount, valueType } = info;
+    let dims = 0; let t: Type = valueType;
+    while (t instanceof ArrayType) { dims++; t = t.elementType; }
+    const arrIdxCount = node.keys.length - keyCount;
+    if (arrIdxCount < 2 || arrIdxCount > dims) return undefined; // only the multi-index element write
+
+    const clone = (e: ExpressionNode): ExpressionNode => cloneNode(e) as ExpressionNode;
+    const mapKeys = node.keys.slice(0, keyCount);
+    const arrIdxs = node.keys.slice(keyCount);
+
+    // 1. Materialize the whole array value: `T[][] t = m[k0]..[k_{kc-1}]`.
+    let read: ExpressionNode = this.ident(node.name, node);
+    for (const k of mapKeys) { const acc = new ArrayAccessNode(read, clone(k)); acc.location = node.location; read = acc; }
+    const tmpName = `__ma_tmp_${this.counter++}`;
+    const decl = new VariableDefinitionNode(valueType, [], tmpName, read);
+    decl.location = node.location;
+
+    // 2. Nested local write `t[i][j..] = v` via the existing local desugar (t is now a known local array).
+    this.locals.set(tmpName, valueType);
+    const localWrite = new MappingAssignNode(tmpName, arrIdxs.map((k) => clone(k)), node.expression);
+    localWrite.location = node.location;
+    const localStmts = this.tryDesugar(localWrite);
+    if (!localStmts) return undefined;
+
+    // 3. Write the whole array value back: `m[k0]..[k_{kc-1}] = t`.
+    const back = new MappingAssignNode(node.name, mapKeys.map((k) => clone(k)), this.ident(tmpName, node));
+    back.location = node.location;
+
+    return [decl, ...localStmts, back];
   }
 
   // `b[k0]..[kn] = v` on a local nested array -> read-modify-write statements; undefined if not applicable.

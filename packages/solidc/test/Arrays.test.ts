@@ -129,19 +129,17 @@ describe('whole dynamic-array copy with a per-element bytes conversion (bytes10[
   });
 });
 
-// `mapping(K => T[][])` indexed more than one array level deep (`m[k][i][j]`) is unsupported - only single-dimension
-// element access `m[k][i]` works. It must fail CLOSED with a CLEAR message, not a confusing internal
-// "Found type '...' where type 'undefined' was expected" (which read like a compiler bug).
-describe('multi-dimensional array-value mapping access m[k][i][j] fails closed cleanly', () => {
-  it('read m[k][i][j] throws a clear multi-dim error', () => {
-    expect(() => compileString('contract C() { mapping(int => int[][]) m; '
-      + 'function f(int k, int i, int j) { require(m[k][i][j] == 0); } }'))
-      .toThrow(/multi-dimensional array-value access/i);
+// `mapping(K => T[][])` indexed more than one array level deep (`m[k][i][j]`) is supported: DesugarNestedArrayWrite
+// lowers it to a whole-value read + local nested access + write-back (`T[][] t = m[k]; t[i][j] ...; m[k] = t`),
+// reusing the proven whole-value RW + local nested-array paths. (VM roundtrip in solidcash MappingArray2dWrite.)
+describe('multi-dimensional array-value mapping access m[k][i][j]', () => {
+  it('read m[k][i][j] compiles (hoisted whole-value read + local index)', () => {
+    expect(compileString('contract C() { mapping(int => int[][]) m; '
+      + 'function f(int k, int i, int j) { require(m[k][i][j] == 0); } }').contractName).toBe('C');
   });
-  it('write m[k][i][j] = v throws a clear multi-dim error', () => {
-    expect(() => compileString('contract C() { mapping(int => int[][]) m; '
-      + 'function f(int k, int i, int j, int v, pubkey pk, sig s) { require(checkSig(s, pk)); m[k][i][j] = v; } }'))
-      .toThrow(/multi-dimensional array-value access/i);
+  it('write m[k][i][j] = v compiles (whole-value read-modify-write-back)', () => {
+    expect(compileString('contract C() { mapping(int => int[][]) m; '
+      + 'function f(int k, int i, int j, int v, pubkey pk, sig s) { require(checkSig(s, pk)); m[k][i][j] = v; } }').contractName).toBe('C');
   });
   it('single-level m[k][i] on mapping(K => T[]) still compiles', () => {
     expect(compileString('contract C() { mapping(int => int[]) m; '

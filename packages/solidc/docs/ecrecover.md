@@ -779,14 +779,19 @@ the stack tracker in sync with the VM (`popFromStack` after the CATs and after t
 `OP_PICK` depth stays exact across iterations. Works for ecrecoverPubKey/P2pkh in a loop; ecrecoverEvm-in-a-loop
 (which also needs a per-iteration keccak side-car) is a follow-up.
 
+## Stateful contracts (SHIPPED)
+
+A stateful contract (with storage) authenticates via `ecrecoverPubKey` too. The recovery pair is BRANDED to the
+contract's token category (the covenant/resolve use the reversed category, matching `OP_UTXOTOKENCATEGORY`'s internal
+byte order), positioned at the `ecrecoverSideCar` block-layout slots (A = slot 2i, B = slot 2i+1), and threaded through
+auto-derivation - `StatefulContract._resolveEcrecoverComputeCoSpends` (mirrors `_resolveKeccakComputeCoSpends`: find
+the A/B UTXOs, compute the witness, VM-probe the split, build the pair) feeds both the derivation probe (`runProbe`, so
+the state derives while the master reads the pair) and the final tx, where `StatefulTransactionBuilder` places the A/B
+inputs at the slots and their recreations (A commits H_A, B commits Q) at the matching output slots. The split probe
+runs with the SHARED salt (op-cost is salt-independent) because the isolated 2-input probe has no consuming contract at
+input 0 for a branded brand-check. e2e-verified: a stateful contract authenticates a signer AND increments its state.
+
 **Remaining**:
-- **Stateful** contracts: the codegen reads the `ecrecoverSideCar` block-layout slots correctly (the per-pass
-  `ecrecoverArgParams` reset fixes the slot index), but the `StatefulTransactionBuilder` does not yet position the A+B
-  pair at those slots or thread it through auto-derivation. The mirror is exact - `_resolveEcrecoverComputeCoSpends`
-  (like `_resolveKeccakComputeCoSpends`: branded reversed-category salt, find the A/B UTXOs, compute the witness +
-  VM-probe the split, build the pair), an `ecrecoverSideCar` case in the positioning switch, and threading an
-  `ecrecoverProbeCoSpends` through `runProbe` (like `keccakProbeCoSpends`). Additive + gated on `ecrecoverCompute`, so
-  no risk to existing stateful contracts. Stateless contracts (all projections, N calls, branches, fixed loops) are
-  fully supported.
 - **`ecrecover`** (the 3-argument verify-with-pubkey alias): a removal decision, not a gap; see the removal section
   above. It still works and is tested.
+- `ecrecoverEvm`-inside-a-loop needs a per-iteration keccak side-car too (a small follow-up on the two shipped models).

@@ -275,3 +275,31 @@ VM-PROVEN sound (MultiTransferOzShape.test.ts: the exact OZ shape - value-local 
 gives byte-identical results to the direct form). **All 15 EACC contracts (EACCToken + 4 Marketplace + full Unicrow
 suite + FakeToken + TreasurySplit + MockSablier + libraries) now cross-compile from real OZ-v5 Solidity verbatim.**
 `node tasks/compile-real.mjs` emits every contract's artifact.
+
+## 2026-07-20 (cont3) - REAL artifacts wired into the test; RUNTIME deploy is the next frontier
+Now that all 15 EACC contracts cross-compile (15/15), switched the harness OFF the contracts-scash stubs onto the
+REAL cross-compiled artifacts: `solidcash.config.ts` paths.contracts -> the real source, paths.artifacts ->
+artifacts-real/ (28 real artifacts via `tasks/compile-real.mjs`), solc { solidityImportCompat, ecrecover:'p2pkh' }.
+The stubs are KEPT (per "do not delete the shims") as the fallback. `npx vitest run` -> marketplace.test.ts loads +
+runs all 66 tests against REAL contracts (no stubs, no source edits).
+
+**FIRST RUNTIME WALL (the fixture's very first deploy): SDK genesis state derivation.** `deployUnicrowSuite ->
+Unicrow.deploy(...)` fails "Failed to derive initial state commitments from constructor. Ensure the constructor
+writes all state variables." (StatefulContract.ts:3042). ROOT: `requiredIndices = constructorAbi.requiredNftIndices
+?? all dataNft indices` - the SDK VM-probes the ctor and requires a commitment for EVERY state-var NFT, but the real
+OZ Unicrow ctor writes only its immutables (unicrowClaim/arbitrator/dispute/governance/protocolFee); the rest
+(escrows mapping, counters) default to 0/empty and aren't written. This is a normal Solidity pattern the genesis
+derivation doesn't handle. FIX (deep, spans compile + SDK, the auto-derivation WIP area): the constructor's
+requiredNftIndices should be only the WRITTEN indices, and the SDK should seed unwritten state vars with their zero
+default. Not a bounded patch.
+
+**Runtime frontier for the full 66-test suite (multi-session, the SDK/runtime layer, largely mapped earlier):**
+1. Genesis state derivation for real ctors (above) - gates EVERY deploy.
+2. `upgrades.deployProxy(MarketplaceV1, [..])` - real impl `initialize` must be a `delegate` fn for the proxy path.
+3. msg.sender across register/job/escrow flows (mostly FIXED this month: 070352b2/e546250b), events-in-delegatecall.
+4. getCreateAddress/getNonce CREATE precompute (worked around), FakeToken ERC20 deploy + transfers.
+5. The escrow state machine + ECDSA signMessage (now that native ecrecover exists) + encryption + IPFS (the last
+   describe blocks).
+So: **cross-compilation is DONE (15/15, real Solidity -> BCH bytecode); running the suite is a dedicated RUNTIME/SDK
+phase, gated first on genesis state derivation for real constructors.** The harness + real artifacts are proven; the
+tests execute against real contracts and stop at the SDK deploy layer, not at the harness.

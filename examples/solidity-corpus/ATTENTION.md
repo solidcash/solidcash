@@ -146,7 +146,11 @@ by it; they are pre-existing and fundamental. Re-bucketed the current top FAILs 
   REMAINING gaps: (a) ADDRESS slot fields - CANNOT be added (not a NUM2BIN issue): a BCH address is variable-length
   locking bytecode (25B p2pkh / 35B p2sh32), and a 35-byte p2sh32 address OVERFLOWS the 32-byte slot, so it does not
   fit a fixed-width slot field. Fail-closed + verified. (The 20-byte stateVarByteWidth is EVM slot-LAYOUT parity for
-  neighbour packing, not the stored value's width; the address value is stored separately, never in the slot word.); (b) dynamic-array RESIZE (`sstore(a.slot,n)`)
+  neighbour packing, not the stored value's width; the address value is stored separately, never in the slot word.);
+  (a2) COMPOSITE (struct/fixed-array) SUB-SLOT field reads - the layout is EVM-exact (64B value = slots [p, p+1], next
+  var at p+2, VM-verified) but `sload(p+i)`/`sstore(p+i)` on a composite's own sub-slots FAIL CLOSED (`33765964` -
+  was a silent __evm_storage read, now caught by a compositeRanges check; mapping p+i -> the actual struct field is a
+  future feature); (b) dynamic-array RESIZE (`sstore(a.slot,n)`)
   + element slots (`sstore(keccak256(0,32)+i, v)`) = array copy/delete (`array/*`), deep; (c) EVM transient storage +
   sparse/computed raw slots with no declared var (correctly fail-closed),
   `tstore`/`tload` (no tx-scoped storage). 6 = calldata `.offset`/`.length`: `.length` WORKS; `.offset` applies only

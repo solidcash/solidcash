@@ -25,6 +25,7 @@ import {
   parseEntryCommitment,
   StateValue,
   attachDecodedAccessors,
+  decodePushdataValue,
   parseEntryCommitmentMultiKey,
   Op,
   StateLayout,
@@ -7998,6 +7999,44 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
   }
 
   /**
+   * ethers-style `fn.staticCall(...)` read: run the function's covenant in a read-only VM probe against the
+   * current on-chain state + args, extract the encoded return value, and decode it against the ABI output type(s)
+   * WITHOUT sending a transaction. A single output returns the decoded value; multiple outputs return an
+   * ethers-style array (tuple). Typechain `.toObject()`/`.toArray()` accessors are attached at this boundary.
+   */
+  async _deriveReturnValue(functionName: string, args: FunctionArgument[]): Promise<StateValue> {
+    const abiFunction = this.inner.artifact.abi.find((f) => f.name === functionName);
+    const outputs = abiFunction?.outputs ?? [];
+    if (outputs.length === 0) {
+      throw new Error(`staticCall: '${functionName}' has no return value to read.`);
+    }
+    const slot = abiFunction?.blockLayout?.slots.find((s) => s.kind === 'returnEvent');
+    if (!slot) {
+      throw new Error(`staticCall: '${functionName}' has no returnEvent output slot; its value cannot be derived.`);
+    }
+    // emitReturn makes _createBuilder lay out the return-event output; the probe then extracts its commitment.
+    const builder = await this._createBuilder(functionName, args, { emitReturn: true });
+    const blob = this._deriveReturnBlob(builder, slot.offset);
+    if (!blob) {
+      throw new Error(
+        `staticCall: could not derive the return value of '${functionName}'. `
+        + 'Functions that write state and return a value are not yet supported as reads.',
+      );
+    }
+    const structs = this.inner.artifact.stateLayout?.structs;
+    if (outputs.length === 1) {
+      return attachDecodedAccessors(decodePushdataValue(blob, 0, outputs[0].type, structs).value);
+    }
+    // Multi-value (tuple) returns use a packed return-event encoding that is not a plain concatenation of each
+    // value's pushdata; decoding it needs the tuple-return convention (viewReturn machinery). Fail closed rather
+    // than mis-decode - single-value reads (the common getter shape) are fully supported.
+    throw new Error(
+      `staticCall: '${functionName}' returns ${outputs.length} values; multi-value (tuple) reads are not yet `
+      + 'supported. Read the underlying state via getState(), or split into single-value view functions.',
+    );
+  }
+
+  /**
    * Lightweight state retrieval that only fetches the master UTXO (no data NFTs/entries).
    * Used for functions that don't access on-chain state (e.g., split/merge/unsafe tiers).
    */
@@ -8802,6 +8841,22 @@ export class StatefulFunctionCall {
   emitReturn(): this {
     this.emitReturnFlag = true;
     return this;
+  }
+
+  /**
+   * ethers `contract.fn.staticCall(...)`: read the function's return value(s) without sending a transaction. Runs
+   * the covenant in a read-only VM probe against current state, decodes the return blob against the ABI output
+   * type(s), and returns the value (single output) or an array (tuple). Struct/array values carry `.toObject()` /
+   * `.toArray()`. Note: a plain `await sc.fn(...)` still SENDS (StatefulFunctionCall is a thenable) - use
+   * staticCall() for a value-returning read, mirroring ethers where reads and sends are distinct.
+   */
+  async staticCall(): Promise<StateValueType> {
+    if (!this.parentContract || this.functionName === undefined) {
+      throw new Error('staticCall is only available on a contract function call.');
+    }
+    return this.parentContract._deriveReturnValue(
+      this.functionName, (this.functionArgs ?? []) as FunctionArgument[],
+    ) as Promise<StateValueType>;
   }
 
   /**

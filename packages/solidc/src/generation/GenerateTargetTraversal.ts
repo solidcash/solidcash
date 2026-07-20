@@ -4532,10 +4532,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       return node;
     }
 
-    if (node.identifier.name === GlobalFunction.ECRECOVER) {
-      return this.visitEcrecover(node);
-    }
-
     // Result-NFT model: keccak256 is computed by a co-spent side-car and read from its NFT commitment,
     // instead of loading the blob and running it on the contract's own input budget. Decided per-function
     // in SymbolTableTraversal (node.keccakCompute): stateless single-call direct-param keccak by default.
@@ -4600,39 +4596,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.popFromStack(node.parameters.length);
     this.pushToStack('(value)');
 
-    return node;
-  }
-
-  // ecrecover(hash, sig, pubKey): verify `sig` over `hash` against `pubKey`, then return the signer's P2PKH
-  // locking bytecode (0x76a914 || hash160(pubKey) || 0x88ac) on success or the zero address 0x on an empty
-  // signature. NULLFAIL means a non-empty invalid signature aborts the script. The 4-arg Solidity form
-  // (hash, v, r, s) is inert: it drops its args and yields 0x (BCH cannot recover; see docs/ecrecover.md).
-  visitEcrecover(node: FunctionCallNode): Node {
-    const loc = { location: node.location, positionHint: PositionHint.END };
-    node.parameters = this.visitList(node.parameters);
-
-    if (node.parameters.length === 4) {
-      this.emit([Op.OP_2DROP, Op.OP_2DROP, encodeInt(0n)], loc); // drop (hash, v, r, s), push zero address
-      this.popFromStack(4);
-      this.pushToStack('(value)');
-      return node;
-    }
-
-    // 3-arg form. Stack after visitList: [hash, sig, pubKey].
-    this.emit([
-      Op.OP_DUP, Op.OP_HASH160, // [hash, sig, pubKey, hash160(pubKey)]
-      hexToBin('76a914'), Op.OP_SWAP, Op.OP_CAT, // [.., 0x76a914 || pkh]
-      hexToBin('88ac'), Op.OP_CAT, // [.., p2pkh]  (25-byte locking bytecode)
-      Op.OP_TOALTSTACK, // stash p2pkh; [hash, sig, pubKey]
-      Op.OP_ROT, Op.OP_SWAP, // reorder to OP_CHECKDATASIG operand order [sig, hash, pubKey]
-      Op.OP_CHECKDATASIG, // [bool]
-      Op.OP_FROMALTSTACK, Op.OP_SWAP, // [p2pkh, bool]
-      Op.OP_IF, // valid signature: keep p2pkh
-      Op.OP_ELSE, Op.OP_DROP, encodeInt(0n), // empty signature: zero address 0x
-      Op.OP_ENDIF,
-    ], loc);
-    this.popFromStack(node.parameters.length);
-    this.pushToStack('(value)');
     return node;
   }
 
@@ -15484,6 +15447,75 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emit(encodeInt(BigInt(this.getStackIndex(selectorName) + 1)), loc); // +1: co-spent selector
         this.emit(Op.OP_PICK, loc);           // [..., co-spent selector, expected selector]
         this.emit(Op.OP_EQUALVERIFY, loc);    // [...]
+      }
+      // Typed RETURNING call in a loop (e.g. IUniswapV2Pair(pairFor(..)).getReserves()): read the per-iteration
+      // return-event (idx = externalReturnOutputIdx + i), verify it EXACTLY as the opaque path, then DECODE its
+      // commitment by the return types onto the stack (typed values, not opaque bytes) and clean the loop temps
+      // BELOW the values. The getReserves half of the Router02 fee-on-transfer swap; the void path below drops it.
+      if (slot.hasReturnValues && slot.returnTypes && slot.returnTypes.length > 0) {
+        this.emit(encodeInt(BigInt(this.getStackIndex('__internal__externalReturnOutputIdx'))), loc);
+        this.emit(Op.OP_PICK, loc);           // [..., retbase]
+        this.emit(encodeInt(BigInt(this.getStackIndex('(ilc_i)') + 1)), loc);
+        this.emit(Op.OP_PICK, loc);           // [..., retbase, i]
+        this.emit(Op.OP_ADD, loc);            // [..., retidx]
+        // a. return-event category == callee master category (cross-check via (ilc_inidx))
+        this.emit(Op.OP_DUP, loc);
+        this.emit(Op.OP_OUTPUTTOKENCATEGORY, loc);
+        this.emit(encodeInt(32n), loc);
+        this.emit(Op.OP_SPLIT, loc);
+        this.emit(Op.OP_DROP, loc);           // [..., retidx, retcat32]
+        this.emit(encodeInt(BigInt(this.getStackIndex('(ilc_inidx)') + 2)), loc);
+        this.emit(Op.OP_PICK, loc);
+        this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
+        this.emit(encodeInt(32n), loc);
+        this.emit(Op.OP_SPLIT, loc);
+        this.emit(Op.OP_DROP, loc);
+        this.emit(Op.OP_EQUALVERIFY, loc);    // [..., retidx]
+        // b. capability 'none'
+        this.emit(Op.OP_DUP, loc);
+        this.emit(Op.OP_OUTPUTTOKENCATEGORY, loc);
+        this.emit(encodeInt(32n), loc);
+        this.emit(Op.OP_SPLIT, loc);
+        this.emit(Op.OP_SWAP, loc);
+        this.emit(Op.OP_DROP, loc);
+        this.emit(encodeInt(0n), loc);
+        this.emit(Op.OP_EQUALVERIFY, loc);
+        // c. FT amount 0
+        this.emit(Op.OP_DUP, loc);
+        this.emit(Op.OP_OUTPUTTOKENAMOUNT, loc);
+        this.emit(encodeInt(0n), loc);
+        this.emit(Op.OP_EQUALVERIFY, loc);
+        // d. anyone-can-spend (OP_TRUE locking bytecode)
+        this.emit(Op.OP_DUP, loc);
+        this.emit(Op.OP_OUTPUTBYTECODE, loc);
+        this.emit(hexToBin('51'), loc);
+        this.emit(Op.OP_EQUALVERIFY, loc);
+        // e. value bounded
+        this.emit(Op.OP_DUP, loc);
+        this.emit(Op.OP_OUTPUTVALUE, loc);
+        this.emit(encodeInt(1200n), loc);
+        this.emit(Op.OP_LESSTHANOREQUAL, loc);
+        this.emit(Op.OP_VERIFY, loc);         // [..., retidx]
+        // read commitment + TYPED-decode by the return types (mirrors the non-loop returning read)
+        this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, loc); // [..., blob]
+        for (let k = 0; k < slot.returnTypes.length; k++) {
+          if (k === slot.returnTypes.length - 1) {
+            this.emitPushdataDecodeLastField(slot.returnTypes[k], loc);
+          } else {
+            this.emitPushdataDecode(slot.returnTypes[k], loc);
+            this.emit(Op.OP_SWAP, loc);
+          }
+          this.pushToStack('(value)');
+        }
+        // cleanup the loop temps BELOW the decoded values (keep the values on top)
+        for (const tmp of ['(ilc_inidx)', '(ilc_addr)', '(ilc_i)']) {
+          const idx = this.getStackIndex(tmp);
+          this.emit(encodeInt(BigInt(idx)), loc);
+          this.emit(Op.OP_ROLL, loc);
+          this.emit(Op.OP_DROP, loc);
+          this.removeFromStack(idx);
+        }
+        return;
       }
       for (const tmp of ['(ilc_inidx)', '(ilc_addr)', '(ilc_i)']) {
         const idx = this.getStackIndex(tmp);

@@ -36,7 +36,6 @@ export enum GlobalFunction {
   CHECKSIG = 'checkSig',
   CHECKMULTISIG = 'checkMultiSig',
   CHECKDATASIG = 'checkDataSig',
-  ECRECOVER = 'ecrecover',
   ECRECOVER_PUBKEY = 'ecrecoverPubKey',
   ECRECOVER_P2PKH = 'ecrecoverP2pkh',
   ECRECOVER_EVM = 'ecrecoverEvm',
@@ -133,13 +132,6 @@ GLOBAL_SYMBOL_TABLE.set(Symbol.function(
 GLOBAL_SYMBOL_TABLE.set(Symbol.function(
   GlobalFunction.CHECKDATASIG, PrimitiveType.BOOL,
   [PrimitiveType.DATASIG, new BytesType(), PrimitiveType.PUBKEY],
-));
-// ecrecover(hash, sig, pubKey): verify-with-pubkey form. Returns the signer's P2PKH locking bytecode (as an
-// address) on success, or the zero address 0x on an empty signature. The 4-arg Solidity form is handled
-// separately (warn + always 0x). See docs/ecrecover.md.
-GLOBAL_SYMBOL_TABLE.set(Symbol.function(
-  GlobalFunction.ECRECOVER, new AddressType(),
-  [new BytesType(32), PrimitiveType.DATASIG, PrimitiveType.PUBKEY],
 ));
 // Pure-script secp256k1 public-key recovery (EVM/Solidity ecrecover(bytes32, uint8, bytes32, bytes32) shape).
 // ecrecoverPubKey returns the recovered compressed pubkey (building block); the projections wrap it. Each call is

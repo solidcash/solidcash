@@ -204,7 +204,6 @@ export function compileGlobalFunction(fn: GlobalFunction): Script {
     // checkDataSig + P2PKH build)
     [GlobalFunction.BLOCKHASH]: [],
     [GlobalFunction.BLOBHASH]: [],
-    [GlobalFunction.ECRECOVER]: [],
     // ecrecoverPubKey/P2pkh/Evm are handled directly in visitFunctionCall (recovery side-car read).
     [GlobalFunction.ECRECOVER_PUBKEY]: [],
     [GlobalFunction.ECRECOVER_P2PKH]: [],

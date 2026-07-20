@@ -102,6 +102,65 @@ contract Subscriber() {
   }
 }`;
 
+// Multi-use view+mutate on a stateful caller: `int r = pair.getReserve(); pair.swap(amt)`. getReserve is a VIEW
+// whose result the compiler turns into the `__internal__viewReturn0` witness; the stateful autoderivation AUTO-FILLS
+// it by reading each co-spent pair's state (convention: the view returns the pair's first-N state fields). swap is
+// the co-spend (a user-param arg so it auto-resolves). Verifies the filled reserves are read on-chain (accumulated).
+const PUBLISHER_VM = `pragma solidcash >=0.8.0;
+interface IPair { public bigint reserve; function getReserve() external view returns (int); function swap(int amt) external; }
+contract Publisher() {
+  bigint total;
+  function notify(address[] path, int amt, pubkey pk, sig sg) {
+    require(checkSig(sg, pk));
+    int s = 0;
+    for (uint256 i = 0; i < path.length - 1; i = i + 1) {
+      IPair pair = IPair(L.pairFor(path[i], path[i+1]));
+      int r = pair.getReserve();
+      pair.swap(amt);
+      s = s + r;
+    }
+    this.total = s;
+  }
+}
+library L { function pairFor(address a, address b) internal pure returns (address) {
+  return address(uint160(uint256(uint160(a)) + uint256(uint160(b)))); } }`;
+
+const SUBSCRIBER_VM = `pragma solidcash >=0.8.0;
+contract Subscriber() {
+  bigint reserve;
+  function getReserve() external view returns (int) { return this.reserve; }
+  function swap(int amt) external { this.reserve = this.reserve + amt; require(amt >= 0); }
+}`;
+
+describe('stateful multi-use view+mutate autoderivation (getReserve view witness auto-filled from pair state)', () => {
+  const provider = createTestProvider();
+  const sig = (): SignatureTemplate => new SignatureTemplate(alicePriv);
+
+  it('auto-fills __internal__viewReturn0 from each co-spent pair state; the covenant reads it', async () => {
+    const pubArt = compileString(PUBLISHER_VM);
+    const subArt = compileString(SUBSCRIBER_VM);
+    const sub1 = new Contract(subArt, [], { provider });
+    const { categoryId: c1 } = await setupStatefulUtxos(
+      provider, sub1, subArt.stateLayout!, { reserve: 5n }, { saltContract: true },
+    );
+    const sub2 = new Contract(subArt, [], { provider });
+    const { categoryId: c2 } = await setupStatefulUtxos(
+      provider, sub2, subArt.stateLayout!, { reserve: 7n }, { saltContract: true },
+    );
+    const pub = new Contract(pubArt, [], { provider });
+    const { categoryId: pc } = await setupStatefulUtxos(
+      provider, pub, pubArt.stateLayout!, { total: 0n }, { saltContract: true },
+    );
+    const pubSc = StatefulContract.withCategory(pub, pc);
+    pubSc.registerExternalArray('IPair', [StatefulContract.withCategory(sub1, c1), StatefulContract.withCategory(sub2, c2)]);
+
+    const path = [hexToBin('aa'.repeat(35)), hexToBin('bb'.repeat(35)), hexToBin('cc'.repeat(35))];
+    await pubSc.notify(path, 0n, alicePub, sig()).send();
+    // The SDK auto-filled viewReturn0 = [5, 7] from the pairs' `reserve` state; total = 5 + 7 = 12.
+    expect((await pubSc.getState()).total).toBe(12n);
+  });
+});
+
 describe('stateful RETURNING computed-target loop (s += IFoo(pairFor(..)).tally(v))', () => {
   const provider = createTestProvider();
   const sig = (): SignatureTemplate => new SignatureTemplate(alicePriv);

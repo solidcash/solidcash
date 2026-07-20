@@ -5134,6 +5134,29 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
 
     // Append _msgSenderCategory if function uses msg.sender
     let finalArgs = args;
+
+    // Multi-use view+mutate loop (getReserves() + swap() on one pair): auto-fill each `__internal__viewReturn<n>`
+    // witness from the co-spent pairs' state. The pairs are the loopTargets slot's registered instances; the SDK
+    // reads each pair's n-th state field (convention: the view returns the pair's first-N state fields in order -
+    // Router02 getReserves() -> reserve0/reserve1/blockTimestampLast). Caller-permissive: a wrong value feeds wrong
+    // args into swap, whose co-spent covenant rejects, so a non-conventional view fails closed (a caller override
+    // could refine it, not a soundness gate). Positioned right after the user args (viewReturn precedes the other
+    // synthesized params in the ABI).
+    const viewReturnParams = (abiFunction?.inputs ?? []).filter((i) => i.name.startsWith('__internal__viewReturn'));
+    if (viewReturnParams.length > 0) {
+      const loopSlot = abiFunction?.externalCalls?.find((ec) => ec.loopArrayVar?.startsWith('__internal__loopTargets'));
+      const insts = (loopSlot ? this.inner.getExternalTargetEntriesByInterface(loopSlot.interfaceName) : [])
+        .map((e) => e.instance as { getState(): Promise<Record<string, unknown>>; inner: { artifact: Artifact } });
+      const states = await Promise.all(insts.map((inst) => inst.getState()));
+      for (let vn = 0; vn < viewReturnParams.length; vn++) {
+        const vals = insts.map((inst, k) => {
+          const vars = inst.inner.artifact.stateLayout?.variables ?? [];
+          const fieldName = vars[vn]?.name;
+          return fieldName !== undefined ? states[k][fieldName] : 0n;
+        });
+        finalArgs = [...finalArgs, encodePushdataValue(vals as never, viewReturnParams[vn].type)];
+      }
+    }
     // B8 return-value emit: -1 means "do not emit" (default). With .emitReturn(), point the covenant's
     // __internal__returnOutputIdx at the function's returnEvent output slot (a fixed block-layout offset).
     let returnEmitOutputIndex = -1;

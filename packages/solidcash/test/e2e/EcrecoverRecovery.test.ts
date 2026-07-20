@@ -7,6 +7,7 @@ import { SHARED_LIBRARY_SALT, ecrecoverComputeLockingBytecode, keccakComputeLock
 import { Contract, StatefulContract, TransactionBuilder, MockNetworkProvider } from '../../src/index.js';
 import { randomUtxo } from '../../src/utils.js';
 import { computeEcrecoverWitness } from '../../src/ecrecover/ecrecoverRecovery.js';
+import { probeEcrecoverSplit } from '../../src/ecrecover/ecrecoverComputeSidecar.js';
 import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
 
 // A recovery side-car's OWN NFT category (distinct from the consuming contract's; each of the A/B pair carries one).
@@ -64,6 +65,19 @@ async function recovery(message: string, wallet?: ethers.HDNodeWallet): Promise<
 // the SDK's 34-byte on-chain commitment (parity || Qx-LE) back to a standard big-endian compressed pubkey
 const toStdCompressed = (q: Uint8Array): string =>
   '0x' + q[0].toString(16).padStart(2, '0') + [...q.slice(1, 33)].reverse().map((b) => b.toString(16).padStart(2, '0')).join('');
+
+// A dummy side-car pair for probing whether a signature has a valid 2-covenant split.
+const dummySc = (v: number): { txid: string; vout: number; satoshis: bigint; token: { category: string; amount: bigint; nft: { capability: 'mutable'; commitment: string } } } =>
+  ({ txid: (v ? 'bb' : 'aa').repeat(32), vout: v, satoshis: 100000n, token: { category: 'ee'.repeat(32), amount: 0n, nft: { capability: 'mutable', commitment: '' } } });
+// ~2.3% of random signatures are "width-0": their GLV ladder is too long for the 2-covenant (A+B) split, so recovery
+// fails closed (re-sign to get a different decomposition). Skip those here so multi-signer loop tests stay deterministic.
+async function goodRecovery(prefix: string, wallet: ethers.HDNodeWallet): Promise<Recovery> {
+  for (let t = 0; ; t++) {
+    const g = await recovery(`${prefix}-${t}`, wallet);
+    try { probeEcrecoverSplit(computeEcrecoverWitness(g.h, Number(g.v), g.r, g.s), SHARED_LIBRARY_SALT, dummySc(0), dummySc(1)); return g; }
+    catch { /* width-0 signature, try the next message */ }
+  }
+}
 
 describe('ecrecoverPubKey recovery side-car (compiler + SDK + VM e2e)', () => {
   it('records the recovery-side-car dependency in the artifact', () => {
@@ -299,6 +313,25 @@ describe('ecrecoverPubKey recovery side-car (compiler + SDK + VM e2e)', () => {
     expect(tx.txid).toMatch(/^[0-9a-f]{64}$/);
   });
 
+  // Per-iteration integrity is an OP_UTXOBYTECODE == baked-lock compare (not re-hashing the ~11 KB of A+B covenants),
+  // so the master's op-budget now supports ~15 iterations (was ~3). N=4 exercises past the old op-budget cap; beyond
+  // ~5 recoveries the 100 KB STANDARD tx-size limit binds instead (each side-car unlocking is ~10 KB of op-budget pad).
+  it('LOOP (runtime-bound): N=4 recovery pairs fit the master op-budget (cap lifted from ~3)', async () => {
+    const artifact = compileString(LOOP_N);
+    const provider = new MockNetworkProvider();
+    const w = ethers.Wallet.createRandom();
+    const g = await Promise.all([0, 1, 2, 3].map((k) => goodRecovery('loop4-' + k, w)));
+    const contract = new Contract(artifact, [g[0].owner], { provider });
+    await provider.addUtxo(contract.address, randomUtxo({ satoshis: 2_000_000n }));
+    await deployPair(provider, SHARED_LIBRARY_SALT, 4);
+    const tx = await new TransactionBuilder({ provider })
+      .addInputs(await contract.getUtxos(),
+        contract.unlock.verify(g.map((x) => x.h), g.map((x) => x.v), g.map((x) => x.r), g.map((x) => x.s), 4n))
+      .addOutput({ to: contract.address, amount: 1_500_000n })
+      .send();
+    expect(tx.txid).toMatch(/^[0-9a-f]{64}$/);
+  });
+
   // STATEFUL: a contract WITH storage that also authenticates via ecrecoverPubKey. The recovery pair is BRANDED to the
   // contract's token category (rides its own category), positioned at the ecrecoverSideCar block-layout slots, and
   // threaded through auto-derivation (the state is derived by probing the master, which reads the pair).
@@ -331,14 +364,49 @@ describe('ecrecoverPubKey recovery side-car (compiler + SDK + VM e2e)', () => {
     expect(tx.txid).toMatch(/^[0-9a-f]{64}$/);
   });
 
-  // ecrecoverEvm INSIDE a loop is not yet supported (per-iteration keccak side-car indexing); it fails closed.
-  it('LOOP + ecrecoverEvm: fails closed at compile time (not yet supported)', () => {
-    expect(() => compileString(`
-      contract AuthLoopEvm(bytes20 owner) {
-          function verify(bytes32[] h, int[] v, bytes32[] r, bytes32[] s, int n) {
-              for (int i = 0; i < n; i++) { require(ecrecoverEvm(h[i], v[i], r[i], s[i]) == owner); }
+  // ecrecoverEvm INSIDE a loop: each iteration co-spends a recovery pair AND a keccak side-car (stride 3: A,B,K per
+  // iteration, forward-indexed at [master+3k+1/+2/+3]), projecting each recovered key to its 20-byte EVM address.
+  const LOOP_EVM = `
+  contract AuthLoopEvm(bytes20 owner) {
+      function verify(bytes32[] h, int[] v, bytes32[] r, bytes32[] s, int n) {
+          for (int i = 0; i < n; i++) {
+              require(ecrecoverEvm(h[i], v[i], r[i], s[i]) == owner);
           }
-      }`)).toThrow(/ecrecoverEvm is not yet supported inside a loop/);
+      }
+  }`;
+  it('LOOP + ecrecoverEvm (runtime-bound): recovers each signer EVM address (N=3)', async () => {
+    const artifact = compileString(LOOP_EVM);
+    expect(artifact.abi.find((fn) => fn.name === 'verify')?.ecrecoverLoopReads).toBe(true);
+    const provider = new MockNetworkProvider();
+    const w = ethers.Wallet.createRandom();
+    const g = await Promise.all([0, 1, 2].map((k) => recovery('evmloop-' + k, w)));  // same signer, 3 messages
+    const owner = hexToBin(w.address.slice(2));
+    const contract = new Contract(artifact, [owner], { provider });
+    await provider.addUtxo(contract.address, randomUtxo({ satoshis: 2_000_000n }));
+    await deployPair(provider, SHARED_LIBRARY_SALT, 3);
+    await deployKeccak(provider, SHARED_LIBRARY_SALT, 3, true);   // STATEFUL keccak side-cars (forward self-preserving)
+    const tx = await new TransactionBuilder({ provider })
+      .addInputs(await contract.getUtxos(),
+        contract.unlock.verify(g.map((x) => x.h), g.map((x) => x.v), g.map((x) => x.r), g.map((x) => x.s), 3n))
+      .addOutput({ to: contract.address, amount: 1_500_000n })
+      .send();
+    expect(tx.txid).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it('LOOP + ecrecoverEvm: rejects when one iteration signer is an imposter', async () => {
+    const artifact = compileString(LOOP_EVM);
+    const provider = new MockNetworkProvider();
+    const w = ethers.Wallet.createRandom(), imposter = ethers.Wallet.createRandom();
+    const g = [await recovery('el-0', w), await recovery('el-1', imposter), await recovery('el-2', w)];
+    const contract = new Contract(artifact, [hexToBin(w.address.slice(2))], { provider });  // owner = w; g[1] imposter
+    await provider.addUtxo(contract.address, randomUtxo({ satoshis: 2_000_000n }));
+    await deployPair(provider, SHARED_LIBRARY_SALT, 3);
+    await deployKeccak(provider, SHARED_LIBRARY_SALT, 3, true);
+    await expect(new TransactionBuilder({ provider })
+      .addInputs(await contract.getUtxos(),
+        contract.unlock.verify(g.map((x) => x.h), g.map((x) => x.v), g.map((x) => x.r), g.map((x) => x.s), 3n))
+      .addOutput({ to: contract.address, amount: 1_500_000n })
+      .send()).rejects.toThrow();
   });
 
   it('LOOP (fixed-bound): rejects when one iteration signature is wrong', async () => {

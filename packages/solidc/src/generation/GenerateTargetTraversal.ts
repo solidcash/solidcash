@@ -49,10 +49,13 @@ import {
   KECCAK256_COMPUTE_COVENANT_HASH,
   KECCAK256_COMPUTE_STATEFUL_COVENANT_HASH,
   KECCAK256_COMPUTE_STATEFUL_COVENANT,
+  KECCAK256_COMPUTE_STATEFUL_SHARED_LOCK,
   KECCAK256_COMPUTE_SALT_PREFIX_LENGTH,
   ECRECOVER_COMPUTE_A_COVENANT_HASH,
   ECRECOVER_COMPUTE_B_COVENANT_HASH,
   ECRECOVER_COMPUTE_SALT_PREFIX_LENGTH,
+  ECRECOVER_COMPUTE_A_SHARED_LOCK,
+  ECRECOVER_COMPUTE_B_SHARED_LOCK,
   isChunkableValueType,
 } from '@solidcash/utils';
 import {
@@ -4316,13 +4319,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private emitEcrecoverComputeCall(node: FunctionCallNode): Node {
     const loc = { location: node.location, positionHint: PositionHint.END };
     const isEvm = node.identifier.name === GlobalFunction.ECRECOVER_EVM;
-    // ecrecoverEvm INSIDE a loop needs a per-iteration keccak side-car interleaved with each recovery pair; the
-    // forward keccak indexing is not yet sound. Fail closed rather than miscompile. Recover the pubkey in the loop
-    // (ecrecoverPubKey) and do the keccak/EVM-address projection outside the loop, or hoist the call.
-    if (this.ecrecoverLoopActive && isEvm) {
-      throw new Error('ecrecoverEvm is not yet supported inside a loop (the per-iteration keccak side-car is not '
-        + 'wired). Use ecrecoverPubKey in the loop and project to the EVM address outside it.');
-    }
     const fn = this.currentFunction;
     const i = (fn.ecrecoverArgParams ??= []).length;
     // Record each (hash,v,r,s) arg for the SDK co-spend: a direct param -> its name; an unrolled-loop array element
@@ -4344,29 +4340,32 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const n = fn.ecrecoverCallCount ?? 1;
     const E = fn.ecrecoverEvmCallCount ?? 0;
     const loop = this.ecrecoverLoopActive;
+    // Per-iteration side-car stride in a loop: 2 for ecrecoverPubKey/P2pkh (A,B), 3 for ecrecoverEvm (A,B, keccak K),
+    // laid out forward at [master + stride*counter + slot]: A=+1, B=+2, K=+3. The recovery pair + keccak side-car all
+    // self-preserve (input idx == output idx) so the same index serves for the input and the recreated output.
+    const loopStride = isEvm ? 3n : 2n;
+    // Read this iteration's counter (PICK depth = getStackIndex(counter) + 1 + extra; the +1 is the master-index just
+    // pushed by emitMasterInputIndex, `extra` covers any untracked items already on the stack at the call site).
+    const emitLoopSideCarIndex = (slot: bigint, extra = 0): void => {
+      this.emitMasterInputIndex(loc);
+      this.emit(encodeInt(BigInt(this.getStackIndex(this.ecrecoverLoopCounterName) + 1 + extra)), loc);
+      this.emit(Op.OP_PICK, loc);
+      this.emit(encodeInt(loopStride), loc); this.emit(Op.OP_MUL, loc); this.emit(Op.OP_ADD, loc); // master + stride*counter
+      this.emit(encodeInt(slot), loc); this.emit(Op.OP_ADD, loc);                                   // + slot
+    };
     const slotIdx = (role: 'A' | 'B', _isOutput = false): void => {
-      if (loop) {
-        // Dynamic loop: pair `counter` at [master + 1 + 2*counter] (A) / [master + 2 + 2*counter] (B). Input idx ==
-        // output idx (the recovery covenant self-preserves via OP_INPUTINDEX), so the same index serves in/output.
-        // The tracker is kept in sync (popFromStack after the argBlob CATs / A-read), so the counter's PICK depth is
-        // getStackIndex(counter) + 1 (the +1 is the master-index just pushed by emitMasterInputIndex).
-        this.emitMasterInputIndex(loc);
-        this.emit(encodeInt(BigInt(this.getStackIndex(this.ecrecoverLoopCounterName) + 1)), loc);
-        this.emit(Op.OP_PICK, loc);
-        this.emit(encodeInt(2n), loc); this.emit(Op.OP_MUL, loc); this.emit(Op.OP_ADD, loc); // master + 2*counter
-        this.emit(encodeInt(role === 'A' ? 1n : 2n), loc); this.emit(Op.OP_ADD, loc);          // + 1 (A) / 2 (B)
-        return;
-      }
+      if (loop) { emitLoopSideCarIndex(role === 'A' ? 1n : 2n); return; }
       if (fn.blockLayout) { this.emitBlockSlotIndex('ecrecoverSideCar', role === 'A' ? 2 * i : 2 * i + 1, loc); return; }
       const offset = (role === 'A' ? 2 * n - 2 * i : 2 * n - 2 * i - 1) + E;
       this.emit(_isOutput ? Op.OP_TXOUTPUTCOUNT : Op.OP_TXINPUTCOUNT, loc);
       this.emit(encodeInt(BigInt(offset)), loc);
       this.emit(Op.OP_SUB, loc);
     };
-    // Keccak side-car index for THIS evm call (evm ordinal j): the E keccak side-cars are the last E inputs/outputs,
-    // so offset-from-end = E - j (j=0 is the first evm call, deepest of the E; j=E-1 is the very last input/output).
+    // Keccak side-car index. In a loop it rides slot +3 of THIS iteration (forward, like the pair). Outside a loop the
+    // E keccak side-cars are the last E inputs/outputs, so offset-from-end = E - j (j = this call's evm ordinal).
     const j = isEvm ? fn.ecrecoverEvmFlags.slice(0, -1).filter(Boolean).length : 0;
-    const keccakIdx = (isOutput = false): void => {
+    const keccakIdx = (isOutput = false, extra = 0): void => {
+      if (loop) { emitLoopSideCarIndex(3n, extra); return; }
       this.emit(isOutput ? Op.OP_TXOUTPUTCOUNT : Op.OP_TXINPUTCOUNT, loc);
       this.emit(encodeInt(BigInt(E - j)), loc);
       this.emit(Op.OP_SUB, loc);
@@ -4382,28 +4381,46 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Loop mode: sync the tracker to the VM (4 args collapsed to 1 argBlob) so the counter's OP_PICK depth is exact.
     if (loop) this.popFromStack(3);
 
-    // 2. side-car A: bind ITS argBlob == ours, then integrity-check its covenant
-    slotIdx('A'); this.emit(Op.OP_INPUTBYTECODE, loc);                 // [argBlob, U_A]
-    this.emitGenericPushdataDecode(raw, loc); this.emit(Op.OP_NIP, loc);  // [argBlob, restA] (drop pad)
-    this.emitGenericPushdataDecode(raw, loc);                          // [argBlob, argBlob_A, rest2]
-    this.emit(Op.OP_TOALTSTACK, loc);                                  // [argBlob, argBlob_A]
-    this.emit(Op.OP_EQUALVERIFY, loc);                                 // bind argBlob_A == argBlob
-    this.emit(Op.OP_FROMALTSTACK, loc);                                // [rest2 = sharedBlob||aBlob||redeem]
-    this.emitGenericPushdataDecode(raw, loc); this.emit(Op.OP_NIP, loc);  // drop sharedBlob
-    this.emitGenericPushdataDecode(raw, loc); this.emit(Op.OP_NIP, loc);  // drop aBlob -> [redeempush]
-    dropFirst(3); dropFirst(ECRECOVER_COMPUTE_SALT_PREFIX_LENGTH);     // -> covenantA
-    this.emit(Op.OP_HASH256, loc);
-    this.emit(hexToBin(ECRECOVER_COMPUTE_A_COVENANT_HASH), loc);
-    this.emit(Op.OP_EQUALVERIFY, loc);                                // A integrity
-    if (loop) this.popFromStack(1); // argBlob was consumed by the bind above -> keep the tracker synced
-
-    // 3. side-car B integrity (its unlock = <pad><argBlob><sharedBlob><Cblob><Zinv><redeem>)
-    slotIdx('B'); this.emit(Op.OP_INPUTBYTECODE, loc);                 // [U_B]
-    for (let k = 0; k < 5; k++) { this.emitGenericPushdataDecode(raw, loc); this.emit(Op.OP_NIP, loc); } // drop pad,argBlob,shared,C,Zinv
-    dropFirst(3); dropFirst(ECRECOVER_COMPUTE_SALT_PREFIX_LENGTH);     // -> covenantB
-    this.emit(Op.OP_HASH256, loc);
-    this.emit(hexToBin(ECRECOVER_COMPUTE_B_COVENANT_HASH), loc);
-    this.emit(Op.OP_EQUALVERIFY, loc);                                // B integrity
+    // 2. side-car A: bind ITS argBlob == ours, then integrity-check its covenant.
+    if (loop) {
+      // A dynamic loop verifies integrity with OP_UTXOBYTECODE == the baked shared P2SH lock (a cheap 35-byte
+      // compare), NOT by re-reading + hash256-ing the ~7.4 KB / ~3.3 KB covenants every iteration - that exhausted
+      // the master's op-budget at ~3 iterations. P2SH already binds hash256(redeem) to the lock, so this is exactly
+      // as sound as re-hashing. Loop side-cars are always shared-salt, so both locks are compile-time constants.
+      slotIdx('A'); this.emit(Op.OP_DUP, loc);                        // [argBlob, idxA, idxA]
+      this.emit(Op.OP_UTXOBYTECODE, loc);                             // [argBlob, idxA, lockA]
+      this.emit(ECRECOVER_COMPUTE_A_SHARED_LOCK, loc);
+      this.emit(Op.OP_EQUALVERIFY, loc);                             // A integrity (idxA preserved by the DUP)
+      this.emit(Op.OP_INPUTBYTECODE, loc);                           // [argBlob, U_A]  (read only to bind argBlob)
+      this.emitGenericPushdataDecode(raw, loc); this.emit(Op.OP_NIP, loc);   // [argBlob, restA] (drop pad)
+      this.emitGenericPushdataDecode(raw, loc); this.emit(Op.OP_DROP, loc);  // [argBlob, argBlob_A] (drop the rest)
+      this.emit(Op.OP_EQUALVERIFY, loc);                             // bind argBlob_A == argBlob
+      this.popFromStack(1); // argBlob consumed by the bind -> keep the tracker synced
+      // 3. side-car B integrity via OP_UTXOBYTECODE (B is NOT read: only its integrity + output Q matter).
+      slotIdx('B'); this.emit(Op.OP_UTXOBYTECODE, loc);              // [lockB]
+      this.emit(ECRECOVER_COMPUTE_B_SHARED_LOCK, loc);
+      this.emit(Op.OP_EQUALVERIFY, loc);                            // B integrity
+    } else {
+      slotIdx('A'); this.emit(Op.OP_INPUTBYTECODE, loc);                 // [argBlob, U_A]
+      this.emitGenericPushdataDecode(raw, loc); this.emit(Op.OP_NIP, loc);  // [argBlob, restA] (drop pad)
+      this.emitGenericPushdataDecode(raw, loc);                          // [argBlob, argBlob_A, rest2]
+      this.emit(Op.OP_TOALTSTACK, loc);                                  // [argBlob, argBlob_A]
+      this.emit(Op.OP_EQUALVERIFY, loc);                                 // bind argBlob_A == argBlob
+      this.emit(Op.OP_FROMALTSTACK, loc);                                // [rest2 = sharedBlob||aBlob||redeem]
+      this.emitGenericPushdataDecode(raw, loc); this.emit(Op.OP_NIP, loc);  // drop sharedBlob
+      this.emitGenericPushdataDecode(raw, loc); this.emit(Op.OP_NIP, loc);  // drop aBlob -> [redeempush]
+      dropFirst(3); dropFirst(ECRECOVER_COMPUTE_SALT_PREFIX_LENGTH);     // -> covenantA
+      this.emit(Op.OP_HASH256, loc);
+      this.emit(hexToBin(ECRECOVER_COMPUTE_A_COVENANT_HASH), loc);
+      this.emit(Op.OP_EQUALVERIFY, loc);                                // A integrity
+      // 3. side-car B integrity (its unlock = <pad><argBlob><sharedBlob><Cblob><Zinv><redeem>)
+      slotIdx('B'); this.emit(Op.OP_INPUTBYTECODE, loc);                 // [U_B]
+      for (let k = 0; k < 5; k++) { this.emitGenericPushdataDecode(raw, loc); this.emit(Op.OP_NIP, loc); } // drop pad,argBlob,shared,C,Zinv
+      dropFirst(3); dropFirst(ECRECOVER_COMPUTE_SALT_PREFIX_LENGTH);     // -> covenantB
+      this.emit(Op.OP_HASH256, loc);
+      this.emit(hexToBin(ECRECOVER_COMPUTE_B_COVENANT_HASH), loc);
+      this.emit(Op.OP_EQUALVERIFY, loc);                                // B integrity
+    }
 
     // 4. read the recovered pubkey from B's output commitment (34 B: parity || Qx as a 33-byte LITTLE-endian VM
     //    number) and normalize to a STANDARD compressed pubkey (parity || Qx big-endian, 33 B) so it is checkSig-able
@@ -4420,11 +4437,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(hexToBin('88ac'), loc); this.emit(Op.OP_CAT, loc);
     } else if (isEvm) {
       // Read the co-spent keccak side-car's preimage P (the uncompressed key), BIND compress(P) == Q (so the keccak is
-      // over the genuinely-recovered key), integrity-check the keccak covenant, and take keccak256(P)[12:] as the addr.
-      keccakIdx(); this.emit(Op.OP_INPUTBYTECODE, loc);                        // [Q, U_k]
+      // over the genuinely-recovered key), integrity-check the keccak side-car, and take keccak256(P)[12:] as the addr.
+      // In a loop the recovered Q (pubkey33) is an untracked stack item during the preimage read, so keccakIdx's
+      // counter PICK is one deeper (extra = 1); after the compress bind consumes Q it is back to extra = 0.
+      keccakIdx(false, loop ? 1 : 0); this.emit(Op.OP_INPUTBYTECODE, loc);    // [Q, U_k]
       this.emitGenericPushdataDecode(raw, loc); this.emit(Op.OP_NIP, loc);    // [Q, restK]  (drop the budget pad)
       this.emitGenericPushdataDecode(raw, loc);                              // [Q, P, redeempush]
-      this.emit(Op.OP_TOALTSTACK, loc);                                      // [Q, P]  (stash the redeem push)
+      // Loop: integrity is a cheap OP_UTXOBYTECODE == baked lock (below), so the redeem push is not needed - drop it.
+      // Non-loop: stash the redeem push to hash-check the covenant.
+      this.emit(loop ? Op.OP_DROP : Op.OP_TOALTSTACK, loc);                  // [Q, P]
       // compress(P) = (0x02 + (Y_last & 1)) || X ;  X = P[0:32], Y = P[32:64] (big-endian)
       this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc);           // [Q, X, Y]
       this.emit(encodeInt(31n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_NIP, loc); // [Q, X, Y_last]
@@ -4433,12 +4454,20 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(encodeInt(1n), loc); this.emit(Op.OP_NUM2BIN, loc);          // [Q, X, parity_byte(0x02/0x03)]
       this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_CAT, loc);                 // [Q, parity_byte||X = compress]
       this.emit(Op.OP_EQUALVERIFY, loc);                                     // bind compress(P) == Q -> []
-      this.emit(Op.OP_FROMALTSTACK, loc);                                    // [redeempush]
-      dropFirst(3); dropFirst(KECCAK256_COMPUTE_SALT_PREFIX_LENGTH);         // -> keccak covenant
-      this.emit(Op.OP_HASH256, loc);
-      this.emit(hexToBin(KECCAK256_COMPUTE_COVENANT_HASH), loc);
-      this.emit(Op.OP_EQUALVERIFY, loc);                                     // keccak covenant integrity
-      keccakIdx(true); this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, loc);          // [R = keccak256(P)]
+      if (loop) {
+        // Keccak side-car integrity via OP_UTXOBYTECODE == baked shared STATEFUL keccak lock (loop keccak side-cars
+        // self-preserve). Cheap 35-byte compare, no per-iteration covenant hashing, unambiguous stateless-vs-stateful.
+        keccakIdx(false, 0); this.emit(Op.OP_UTXOBYTECODE, loc);              // [lockK]
+        this.emit(KECCAK256_COMPUTE_STATEFUL_SHARED_LOCK, loc);
+        this.emit(Op.OP_EQUALVERIFY, loc);                                   // keccak integrity
+      } else {
+        this.emit(Op.OP_FROMALTSTACK, loc);                                  // [redeempush]
+        dropFirst(3); dropFirst(KECCAK256_COMPUTE_SALT_PREFIX_LENGTH);       // -> keccak covenant
+        this.emit(Op.OP_HASH256, loc);
+        this.emit(hexToBin(KECCAK256_COMPUTE_COVENANT_HASH), loc);
+        this.emit(Op.OP_EQUALVERIFY, loc);                                   // keccak covenant integrity
+      }
+      keccakIdx(true, 0); this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, loc);        // [R = keccak256(P)]
       this.emit(encodeInt(12n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_NIP, loc); // [R[12:32] = addr20]
     }
     if (loop) {

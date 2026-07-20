@@ -70,6 +70,14 @@ export function keccakComputeLockingBytecode(salt: Uint8Array, stateful = false)
 }
 
 /**
+ * P2SH32 locking bytecode of the SHARED-salt STATEFUL keccak side-car. An ecrecoverEvm loop verifies its per-iteration
+ * keccak side-car's integrity with OP_UTXOBYTECODE == this constant (a cheap, unambiguous 35-byte compare) instead of
+ * extracting + hashing the covenant from the read unlocking. Loop keccak side-cars are always shared-salt + stateful
+ * (forward self-preserving). Computed from the covenant at load, so it tracks any covenant change.
+ */
+export const KECCAK256_COMPUTE_STATEFUL_SHARED_LOCK = keccakComputeLockingBytecode(new Uint8Array(32), true);
+
+/**
  * The result-NFT commitment for a single keccak256 result: the 32-byte hash in EVM byte order, verbatim.
  * (The genvar keccak already emits EVM-endian output; the side-car commits it unchanged.)
  */

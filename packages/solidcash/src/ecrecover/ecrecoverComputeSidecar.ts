@@ -113,25 +113,42 @@ export function probeEcrecoverSplit(wit: EcrecoverWitness, _salt: Uint8Array, sc
     };
   };
   const maxCA = Math.max(1, wit.masks.length - wit.start - 2);
-  // A's op-cost RISES with chunkA (it runs more ladder steps), B's FALLS. The minimum-peak split is at their crossover.
-  // Binary-search it from the ACTUAL VM op-cost (not a heuristic, which was the source of missed windows), steering
-  // toward costA == costB, then fine-scan the bracket for the viable min-peak (local add/no-add jitter is small).
-  let lo = 1, hi = maxCA;
-  while (hi - lo > 6) {
-    const mid = (lo + hi) >> 1;
-    const c = cost(mid);
-    if (c.a > c.b) hi = mid; else lo = mid; // A dearer -> fewer A steps (lower cA); else more
-  }
-  let best = -1, bestMax = Infinity;
-  const scan = (from: number, to: number): void => {
-    for (let cA = Math.max(1, from); cA <= Math.min(maxCA, to); cA++) {
-      const c = cost(cA);
-      if (c.ok && Math.max(c.a, c.b) < bestMax) { bestMax = Math.max(c.a, c.b); best = cA; }
-    }
+  const L = wit.masks.length - wit.start - 1;         // total ladder doubling steps
+  // Each covenant's op-budget (~8M, capped by the 10000-byte scriptSig consensus limit) covers ~half the ladder, so
+  // A's cost RISES with chunkA and B's FALLS, leaving a THIN viable window (width ~1-7) where both fit. The window
+  // sits at nearly the same place for EVERY signature - A carries more fixed overhead (the GLV table check) than B, so
+  // the crossover is ~0.462*L (empirically cA ~= 54..61 across all sigs), NOT L/2. Seed the search there and spiral
+  // out to the first viable split, then settle on the local min-peak (max budget margin). Seeding at the true center
+  // is both fast (a handful of evals vs a full binary search) and robust (binary-search-from-[1,maxCA] occasionally
+  // misconverged around the thin window). op-cost is a pure function of (covenant, witness), so this is reproducible.
+  const seed = Math.min(maxCA, Math.max(1, Math.round(L * 0.462)));
+  let best = -1, bestPeak = Infinity;
+  // Costs are MONOTONE: A rises with chunkA, B falls. So the first A-over-budget above the seed caps the window's high
+  // edge (nothing higher can fit), and the first B-over-budget below caps the low edge. Spiral out from the seed and
+  // stop as soon as BOTH edges are known - the min-peak split is the balanced one between them (max budget margin).
+  let lowCapped = false, highCapped = false;  // hit B-over below seed / A-over above seed
+  const consider = (cA: number, side: -1 | 0 | 1): void => {
+    if (cA < 1) { lowCapped = true; return; }
+    if (cA > maxCA) { highCapped = true; return; }
+    const c = cost(cA);
+    if (c.ok) { const peak = Math.max(c.a, c.b); if (peak < bestPeak) { bestPeak = peak; best = cA; } return; }
+    if (c.a === Infinity && side >= 0) highCapped = true; // A over budget -> no viable split at a higher chunkA
+    if (c.b === Infinity && side <= 0) lowCapped = true;  // B over budget -> no viable split at a lower chunkA
   };
-  scan(lo - 4, hi + 4);                     // the crossover (and the ~3-wide viable window around it) sits in here
-  if (best < 0) scan(1, maxCA);             // fallback: jitter/edge pushed the window outside the bracket - scan all
-  if (best < 0) throw new Error('ecrecover: no ladder split fits both side-cars\' op-budget for this signature.');
+  const RADIUS = 16;                        // >> the observed max distance from seed to a window edge (~4), with margin
+  consider(seed, 0);
+  for (let d = 1; d <= RADIUS && !(lowCapped && highCapped); d++) {
+    if (!lowCapped) consider(seed - d, -1);
+    if (!highCapped) consider(seed + d, 1);
+  }
+  if (best < 0) {                           // window not near the seed (only genuine width-0 sigs) - confirm exhaustively
+    for (let cA = 1; cA <= maxCA; cA++) consider(cA, 0);
+  }
+  if (best < 0) {
+    throw new Error('ecrecover: no ladder split fits both side-cars\' op-budget for this signature (a rare '
+      + 'high-Hamming-weight scalar makes the GLV ladder too long for a 2-covenant split). Re-sign to obtain a '
+      + 'different signature, which will decompose differently.');
+  }
   return best;
 }
 

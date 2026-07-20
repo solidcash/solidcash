@@ -279,7 +279,9 @@ export class TransactionBuilder {
       if (!abiFn.ecrecoverCompute) continue;
       const salt = input.token?.category ? hexToBin(input.token.category) : SHARED_LIBRARY_SALT;
       // Dynamic loop: one recovery PAIR per iteration, read forward from [master+1+2k]. Co-spend N (= sig-array length).
-      if (abiFn.ecrecoverLoopReads) { await this.addStatelessEcrecoverLoopCoSpends(input, salt); continue; }
+      // Loop side-cars are ALWAYS shared-salt: the per-iteration integrity check is an OP_UTXOBYTECODE == baked shared
+      // lock (branding is not needed for soundness - the argBlob bind + A->B hash chain secures the recovered value).
+      if (abiFn.ecrecoverLoopReads) { await this.addStatelessEcrecoverLoopCoSpends(input, SHARED_LIBRARY_SALT); continue; }
       const unlocker = input.unlocker as unknown as { abiFunction: { inputs: readonly { name: string }[] }; params: unknown[] };
       const raw = (name: string): unknown => unlocker.params[unlocker.abiFunction.inputs.findIndex((x) => x.name === name)];
       // "h" -> the h param; "h[3]" (unrolled loop) -> element 3 of the h array param.
@@ -348,9 +350,13 @@ export class TransactionBuilder {
         + `index + 1 must be <= the output count; got index ${contractIdx}, ${this.outputs.length} outputs).`);
     }
     const unlocker = input.unlocker as unknown as {
-      abiFunction: { inputs: readonly { name: string }[]; ecrecoverArgParams?: readonly (readonly (string | null)[])[] };
+      abiFunction: { inputs: readonly { name: string }[]; ecrecoverArgParams?: readonly (readonly (string | null)[])[];
+        ecrecoverEvmFlags?: readonly boolean[] };
       params: unknown[];
     };
+    // ecrecoverEvm in the loop projects each recovered key to its EVM address, so each iteration ALSO co-spends a
+    // keccak side-car over the uncompressed key. Layout is then stride 3: [A, B, K] per iteration (else stride 2).
+    const isEvm = unlocker.abiFunction.ecrecoverEvmFlags?.[0] === true;
     // The single syntactic loop call records its args as "h[]" (array-indexed by the loop var); read those arrays.
     const [hp, vp, rp, sp] = (unlocker.abiFunction.ecrecoverArgParams ?? [[]])[0] ?? [];
     const arrOf = (ref: string | null | undefined): unknown[] => {
@@ -364,14 +370,20 @@ export class TransactionBuilder {
     const hs = arrOf(hp), vs = arrOf(vp), rs = arrOf(rp), ss = arrOf(sp);
     const N = hs.length;
     const [lockA, lockB] = [ecrecoverComputeLockingBytecode(salt, 'A'), ecrecoverComputeLockingBytecode(salt, 'B')];
-    const [utxosA, utxosB] = await Promise.all([
+    // Loop keccak side-cars ride the STATEFUL covenant (forward self-preserving), at the shared salt (matches the
+    // baked KECCAK256_COMPUTE_STATEFUL_SHARED_LOCK the contract checks via OP_UTXOBYTECODE).
+    const lockK = keccakComputeLockingBytecode(salt, true);
+    const [utxosA, utxosB, utxosK] = await Promise.all([
       this.provider.getUtxosForLockingBytecode(lockA), this.provider.getUtxosForLockingBytecode(lockB),
+      isEvm ? this.provider.getUtxosForLockingBytecode(lockK) : Promise.resolve([] as Utxo[]),
     ]);
     const spent = (u: Utxo): boolean => this.inputs.some((i) => i.txid === u.txid && i.vout === u.vout);
     const freeA = utxosA.filter((u) => !spent(u)), freeB = utxosB.filter((u) => !spent(u));
-    if (freeA.length < N || freeB.length < N) {
-      throw new Error(`dynamic ecrecover loop needs ${N} A + ${N} B recovery side-car UTXOs; found ${freeA.length} A `
-        + `+ ${freeB.length} B. Deploy one A+B pair per loop iteration.`);
+    const freeK = utxosK.filter((u) => !spent(u) && u.token?.nft?.capability === 'mutable');
+    if (freeA.length < N || freeB.length < N || (isEvm && freeK.length < N)) {
+      throw new Error(`dynamic ecrecover loop needs ${N} A + ${N} B${isEvm ? ` + ${N} keccak` : ''} side-car UTXOs; `
+        + `found ${freeA.length} A + ${freeB.length} B${isEvm ? ` + ${freeK.length} keccak` : ''}. Deploy one `
+        + `${isEvm ? 'A+B+keccak triple' : 'A+B pair'} per loop iteration.`);
     }
     const sideCars: UnlockableUtxo[] = [];
     const recreates: Output[] = [];
@@ -383,6 +395,12 @@ export class TransactionBuilder {
       const { unlockerA, recreateA, unlockerB, recreateB } = buildEcrecoverComputeSidecars(wit, chunkA, salt, freeA[k], freeB[k]);
       sideCars.push({ ...freeA[k], unlocker: unlockerA }, { ...freeB[k], unlocker: unlockerB });
       recreates.push(recreateA, recreateB);
+      if (isEvm) {
+        // K keccak side-car over the 64-byte uncompressed key; the contract binds compress(preimage) == recovered Q.
+        const { unlocker: unlockerK, recreate: recreateK } = buildKeccakComputeSidecar(wit.uncompressedPubkey, salt, freeK[k], true);
+        sideCars.push({ ...freeK[k], unlocker: unlockerK });
+        recreates.push(recreateK);
+      }
     }
     this.inputs.splice(base, 0, ...sideCars);
     this.outputs.splice(base, 0, ...recreates);

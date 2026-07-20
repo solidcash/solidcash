@@ -1350,3 +1350,30 @@ collection writes buffered with flush delegating to existing C2, P3 the message 
 **Revisit if.** Recursive/looping state helpers or generic cross-contract shared-slot writes become a
 recurring blocker that the per-pattern codegen can no longer absorb. Detail in memory
 internal_fn_recursion_state_buffer.md.
+
+---
+
+## ecrecover "width-0" signatures - 3-covenant split (recovery liveness gap ~2%)  - 2026-07-20
+
+**What.** ~2.3% of secp256k1 signatures have a GLV ladder so long (high-Hamming-weight scalar
+decomposition) that NO split of the 2-covenant (A+B) recovery side-car pair fits both covenants'
+~8M op-budgets - the viable-split window closes to zero and `probeEcrecoverSplit` throws (fail-closed
+with a clear "re-sign" error). Each covenant's budget is capped at ~8M by the 10,000-byte scriptSig
+consensus limit, covering only ~60-70 of the ~127 ladder steps, so 2 covenants barely cover the whole
+ladder (window width ~1-7, occasionally 0).
+
+**Why deferred.** Soundness is unaffected (a width-0 sig can never yield a WRONG key - it just cannot
+be spent); only liveness for those rare sigs. The practical mitigation is cheap: re-sign to get a
+different, shorter decomposition (ECDSA k varies), which the SDK does automatically for loops/multi-sig
+via the same probe (`goodRecovery`-style skip). Fixing it properly is a large covenant change.
+
+**What it'd take.** A 3-covenant split (A verifies the GLV table + ladders to C1, a NEW middle covenant
+M ladders C1->C2 and commits C2, B ladders C2->Q): each does ~L/3 steps => ~5.3M op-cost with huge
+budget margin => the window never closes. Needs a new "middle" covenant generator in `ecrecover-poc/`,
+regeneration + soundness re-verification, a 3rd baked shared lock, and stride-4 loop indexing (A,M,B,+K
+for evm). Triples... (well, +50%s) the side-car count per recovery, which also pushes harder on the
+100KB standard tx-size wall.
+
+**Revisit if.** The ~2% fail-closed rate becomes a real user complaint, OR a use case needs to recover
+FIXED historical signatures (where re-signing is impossible) in bulk. Detail in memory
+ecrecover_builtin.md (2026-07-20b section).

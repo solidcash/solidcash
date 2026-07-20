@@ -776,8 +776,20 @@ Sound: each iteration BINDS its pair's argBlob == `(h[k],v[k],r[k],s[k])`, so a 
 
 One subtlety the keccak loop does not have: ecrecover CATs its 4 args into a single `argBlob`, so the codegen keeps
 the stack tracker in sync with the VM (`popFromStack` after the CATs and after the arg-bind) so the counter's
-`OP_PICK` depth stays exact across iterations. Works for ecrecoverPubKey/P2pkh in a loop; ecrecoverEvm-in-a-loop
-(which also needs a per-iteration keccak side-car) is a follow-up.
+`OP_PICK` depth stays exact across iterations.
+
+**Per-iteration integrity is a cheap `OP_UTXOBYTECODE` compare, not covenant re-hashing.** A loop verifies each pair
+is genuine by `OP_UTXOBYTECODE(idx) == <baked shared P2SH lock>` (35-byte compare), NOT by reading + `hash256`-ing the
+~7.4 KB / ~3.3 KB A/B covenants every iteration. P2SH already binds `hash256(redeem)` to the lock, so this is exactly
+as sound. It also lets the loop skip reading B's unlocking entirely (B is needed only for its integrity + its output
+Q). This cut the per-iteration op-cost from ~381 K to ~133 K, lifting the master's **op-budget cap from ~3 to ~15**
+iterations. Loop side-cars are therefore always shared-salt (`ECRECOVER_COMPUTE_A_SHARED_LOCK` / `_B_SHARED_LOCK`,
+computed constants); branding is not needed for soundness (the argBlob bind + A->B hash chain secures the result).
+
+**The binding wall is now the 100 KB standard tx size, not the op-budget.** Each recovery co-spends ~20 KB of side-car
+unlockings (each ~10 KB of op-budget pad, which funds that covenant's own ~8 M-op ladder half - unavoidable), so a
+STANDARD (relayable) tx tops out at ~4-5 recoveries. Larger loops are consensus-valid but need direct-to-miner
+submission (up to the op-budget cap of ~15). e2e-verified: fixed-bound, runtime-bound N=3, and N=4 (past the old cap).
 
 ## Stateful contracts (SHIPPED)
 
@@ -791,17 +803,30 @@ inputs at the slots and their recreations (A commits H_A, B commits Q) at the ma
 runs with the SHARED salt (op-cost is salt-independent) because the isolated 2-input probe has no consuming contract at
 input 0 for a branded brand-check. e2e-verified: a stateful contract authenticates a signer AND increments its state.
 
-**Status of the two former follow-ups (both resolved):**
+**Status of the former follow-ups (all resolved):**
 - The 3-argument verify-with-pubkey `ecrecover(hash, sig, pubKey)` alias has been **REMOVED** (it aliased
   `checkDataSig` + a P2PKH projection, misleading now that native recovery exists). `ecrecover(...)` is now an
   undefined reference; use `ecrecoverPubKey` to recover, or `checkDataSig` to verify against a known pubkey.
-- `ecrecoverEvm` **inside a loop** fails closed at compile time (a clear error). It would need a per-iteration keccak
-  side-car interleaved with each recovery pair (stride 3, forward-indexed); the forward keccak indexing is not yet
-  sound. Recover with `ecrecoverPubKey` in the loop and project to the EVM address outside it.
+- `ecrecoverEvm` **inside a loop** is now **SHIPPED**. Each iteration co-spends a recovery pair AND a keccak side-car,
+  laid out forward at stride 3: A = `[master+3k+1]`, B = `[master+3k+2]`, K = `[master+3k+3]` (all self-preserving via
+  `OP_INPUTINDEX`). The keccak side-car rides the STATEFUL covenant (forward self-preserving) at the shared salt; its
+  integrity is checked by `OP_UTXOBYTECODE == KECCAK256_COMPUTE_STATEFUL_SHARED_LOCK` (the unambiguous cheap compare
+  that also sidesteps a stateless-vs-stateful covenant-hash mixup). The recovered `Q` (pubkey33) is an untracked stack
+  item during the preimage read, so the keccak index PICK is one deeper (`extra = 1`) until the compress-bind consumes
+  it. e2e-verified: N=3 recovers each signer's EVM address; an imposter iteration is rejected.
 
-**Split probe**: `costA` rises with `chunkA` (side-car A runs more ladder steps) and `costB` falls, so the
-minimum-peak split is their crossover. The probe **binary-searches the crossover from the real VM op-cost** (not a
-heuristic), then fine-scans the bracket for the viable min-peak, with a full-range fallback for the rare local-jitter
-edge. This finds the viable window wherever it sits, so the probe is reliable for every signature (the earlier fixed
-`[center-8, center+8]` band around a mis-calibrated heuristic could miss the window and throw - now fixed). The
-stateless and stateful paths share the one `probeEcrecoverSplit`.
+**Split probe**: `costA` rises with `chunkA` (side-car A runs more ladder steps) and `costB` falls; each covenant's
+~8 M op-budget (capped by the 10,000-byte scriptSig consensus limit) covers only ~60-70 of the ~127 ladder steps, so
+the viable window (both under budget) is THIN - width ~1-7 - and sits at nearly the same place for every signature
+(`chunkA ~= 0.462*L`, empirically 54-61, because A carries more fixed overhead: the GLV-table check). The probe
+**seeds the search at that calibrated center and spirals out**, using the cost monotonicity (first A-over caps the
+high edge, first B-over the low edge) to stop as soon as both edges are known - a handful of VM evals (~3x faster than
+the earlier binary-search-from-`[1,maxCA]`, which occasionally misconverged around the thin window). It returns the
+min-peak (max budget margin) split; every returned split is VM-verified viable. The stateless and stateful paths share
+the one `probeEcrecoverSplit`.
+
+**Known limit - "width-0" signatures (~2%).** A minority of signatures have a GLV ladder so long (high-Hamming-weight
+decomposition) that NO 2-covenant split fits both 8 M budgets - the window closes to zero. These fail closed with a
+clear error (re-sign to get a different, shorter decomposition; for a loop, the SDK skips them via the same probe).
+This is a pre-existing property of the 2-covenant design; a 3-covenant split (each ~L/3 steps, huge margin) would
+close the gap but triples the side-car count. It does not affect soundness, only liveness for those rare signatures.

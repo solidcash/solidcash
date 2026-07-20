@@ -41,6 +41,16 @@ export function ecrecoverComputeLockingBytecode(salt: Uint8Array, role: 'A' | 'B
   return Uint8Array.from([0xaa, 0x20, ...hash256(buildEcrecoverComputeRedeem(salt, role)), 0x87]);
 }
 
+/**
+ * P2SH32 locking bytecode (35 B: OP_HASH256 <hash> OP_EQUAL) of the SHARED-salt A / B recovery side-cars. A dynamic
+ * ecrecover loop verifies each pair's integrity with OP_UTXOBYTECODE == this constant (a cheap 35-byte compare)
+ * instead of re-reading + hash256-ing the ~7.4 KB / ~3.3 KB covenant every iteration, which exhausted the master's
+ * op-budget at ~3 iterations. Computed from the covenant at load, so they track any covenant change. Loop side-cars
+ * are always shared-salt (branding is not needed for soundness: the argBlob bind + A->B hash chain secures the result).
+ */
+export const ECRECOVER_COMPUTE_A_SHARED_LOCK = ecrecoverComputeLockingBytecode(new Uint8Array(32), 'A');
+export const ECRECOVER_COMPUTE_B_SHARED_LOCK = ecrecoverComputeLockingBytecode(new Uint8Array(32), 'B');
+
 /** The result-NFT commitment for a recovery: parity byte (0x02/0x03) || Qx as a 33-byte LE VM number (34 B total). */
 export function ecrecoverComputeResultCommitment(recoveredPubkey: Uint8Array): Uint8Array {
   if (recoveredPubkey.length !== 34) throw new Error('recovered pubkey commitment must be 34 bytes (parity || Qx-LE)');

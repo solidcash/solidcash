@@ -1,8 +1,8 @@
 import exampleArtifact from '../artifacts/example.artifact.js';
 import { Contract, TransactionBuilder, randomUtxo } from 'solidcash';
 // Hardhat-parity harness surface (see ../HARDHAT-PARITY.md)
-import { ethers, network, loadFixture, time, mine, mineUpTo } from '@solidcash/testing';
-import { parseEther, formatEther, getBigNumber, keccak256, AbiCoder, ZeroAddress } from '@solidcash/testing/ethers';
+import { ethers, network, loadFixture, time, mine, mineUpTo, duration } from '@solidcash/testing';
+import { parseEther, formatEther, getBigNumber, keccak256, AbiCoder, ZeroAddress, ADDRESS_ZERO } from '@solidcash/testing/ethers';
 import { expect } from '@solidcash/testing/chai';
 
 const provider = network.provider;
@@ -98,6 +98,25 @@ describe('harness: ethers utils (forwarded to ethers v6 + v5 shims)', () => {
     expect(keccak256('0x')).to.equal('0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470');
     const enc = new AbiCoder().encode(['uint256', 'address'], [1n, ZeroAddress]);
     expect(enc).to.equal(`0x${'0'.repeat(63)}1${'0'.repeat(64)}`);
+  });
+
+  it('duration builders (standalone) and ADDRESS_ZERO constant', () => {
+    expect(duration.seconds(30)).to.equal(30);
+    expect(duration.hours(2)).to.equal(7200);
+    expect(duration.days(7)).to.equal(604800);
+    expect(duration.years(1)).to.equal(31536000);
+    expect(ADDRESS_ZERO).to.equal(ZeroAddress);
+  });
+});
+
+describe('harness: string / hex matchers (waffle)', () => {
+  it('properHex(length?) and hexEqual', () => {
+    expect('0x1234').to.be.properHex(4);
+    expect('0xabcd').to.be.properHex();
+    expect('0xzz').to.not.be.properHex();
+    expect('0x1234').to.not.be.properHex(6);
+    expect('0x00012AB').to.hexEqual('0x12ab');
+    expect('0x1').to.not.hexEqual('0x2');
   });
 });
 

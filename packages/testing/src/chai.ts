@@ -210,6 +210,29 @@ class Assertion {
     return this;
   }
 
+  /** waffle `properHex(length)`: a 0x-hex string; when given, of exactly `length` hex digits. */
+  properHex(length?: number): this {
+    const s = this.actual;
+    const isHex = typeof s === 'string' && /^0x[0-9a-fA-F]*$/.test(s);
+    const ok = isHex && (length === undefined || s.length - 2 === length);
+    if (ok === this.negate) {
+      throw new Error(`expected ${this.actual} ${this.negate ? 'not ' : ''}to be a proper hex`
+        + `${length !== undefined ? ` of length ${length}` : ''}`);
+    }
+    return this;
+  }
+
+  /** waffle `hexEqual`: compare two hex strings ignoring 0x prefix, case, and leading zeros. */
+  hexEqual(other: string): this {
+    const norm = (h: unknown): string => {
+      const raw = typeof h === 'string' ? h.replace(/^0x/i, '') : String(h);
+      return (raw.replace(/^0+/, '') || '0').toLowerCase();
+    };
+    const ok = norm(this.actual) === norm(other);
+    if (ok === this.negate) throw new Error(`expected ${this.actual} ${this.negate ? 'not ' : ''}to hex-equal ${other}`);
+    return this;
+  }
+
   match(re: RegExp): this { this.v().toMatch(re); return this; }
   include(sub: any): this { this.v().toContain(sub); return this; }
   contains(sub: any): this { return this.include(sub); }

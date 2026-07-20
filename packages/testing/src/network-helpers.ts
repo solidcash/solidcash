@@ -84,13 +84,17 @@ export async function mineUpTo(height: number | bigint): Promise<void> {
   await getActiveProvider().mineUpTo(Number(height));
 }
 
-const duration = {
-  seconds: (n: number) => n,
-  minutes: (n: number) => n * 60,
-  hours: (n: number) => n * 60 * 60,
-  days: (n: number) => n * 24 * 60 * 60,
-  weeks: (n: number) => n * 7 * 24 * 60 * 60,
-  years: (n: number) => n * 365 * 24 * 60 * 60,
+/**
+ * hardhat-network-helpers `time.duration.{seconds..years}` - seconds-count builders for time-travel. Exported as a
+ * util too (WS10) so `duration.days(7)` works standalone in a ported suite.
+ */
+export const duration = {
+  seconds: (n: number): number => n,
+  minutes: (n: number): number => n * 60,
+  hours: (n: number): number => n * 60 * 60,
+  days: (n: number): number => n * 24 * 60 * 60,
+  weeks: (n: number): number => n * 7 * 24 * 60 * 60,
+  years: (n: number): number => n * 365 * 24 * 60 * 60,
 };
 
 /**

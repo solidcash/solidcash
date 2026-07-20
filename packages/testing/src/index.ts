@@ -58,7 +58,7 @@ export type {
 
 // Network helpers (also available at solidcash/network-helpers)
 export {
-  loadFixture, takeSnapshot, mine, mineUpTo, time, setBalance, clearSnapshots,
+  loadFixture, takeSnapshot, mine, mineUpTo, time, duration, setBalance, clearSnapshots,
   setActiveProvider, getActiveProvider, impersonateAccount, getImpersonatedSigner,
 } from './network-helpers.js';
 

@@ -33,6 +33,8 @@ export const defaultAbiCoder = AbiCoder.defaultAbiCoder();
 
 /** ethers v5 `ethers.constants.AddressZero` alias. */
 export const AddressZero = ZeroAddress;
+/** MistSwap/Sushi-style `ADDRESS_ZERO` constant (test-utilities helper). */
+export const ADDRESS_ZERO = ZeroAddress;
 /** ethers v5 `ethers.constants.HashZero` alias. */
 export const HashZero = ZeroHash;
 

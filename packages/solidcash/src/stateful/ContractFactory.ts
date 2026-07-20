@@ -143,10 +143,13 @@ export class ContractFactory<T extends Artifact = Artifact> {
     const contract = result.contract as DeployedContract<T>;
     // ethers-style deployment accessors (attach to the instance; the dispatch proxy passes them through).
     (contract as { deploymentTransaction: () => TransactionDetails }).deploymentTransaction = () => result.tx;
-    (contract as { waitForDeployment: () => Promise<DeployedContract<T>> }).waitForDeployment = async () => {
+    const awaitDeployed = async (): Promise<DeployedContract<T>> => {
       await result.tx.wait?.();
       return contract;
     };
+    (contract as { waitForDeployment: () => Promise<DeployedContract<T>> }).waitForDeployment = awaitDeployed;
+    // ethers v5 `.deployed()` alias (MistSwap uses it 38x): resolves to the deployed contract, like waitForDeployment.
+    (contract as { deployed: () => Promise<DeployedContract<T>> }).deployed = awaitDeployed;
     return contract;
   }
 }

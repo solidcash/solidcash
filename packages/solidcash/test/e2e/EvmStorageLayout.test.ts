@@ -624,3 +624,26 @@ describe('keccak256 dynamic-array element-slot idiom (sstore(keccak(0,32)+i, v) 
     await (sc as any).readViaKeccak(0n).send();           // out-of-range after delete -> 0
   });
 });
+
+// Let-bound array-element slot: `let pos := add(keccak256(0,32), i)` recorded as data[i] at its binding, so a
+// later sstore/sload(pos) routes to the element (corpus array_storage_index_zeroed_test).
+const KECCAK_LETBOUND = `pragma solidcash >=0.8.0;
+contract C() {
+  uint256[] data;
+  function seed(pubkey pk, sig s) {
+    require(checkSig(s, pk));
+    assembly { sstore(data.slot, 3) mstore(0, data.slot) let p := add(keccak256(0, 32), 2) sstore(p, 777) }
+  }
+  function chk() { require(data.length == 3); require(data[2] == 777); }
+  function readLet(uint256 i, uint256 e) { uint256 r = 0; assembly { mstore(0, data.slot) let p := add(keccak256(0, 32), i) r := sload(p) } require(r == e); }
+}`;
+
+describe('let-bound array-element slot (let pos := add(keccak(0,32), i))', () => {
+  it('sstore/sload(pos) routes to data[i]; guarded out-of-range', async () => {
+    const sc = await deploy(KECCAK_LETBOUND);
+    await (sc as any).seed(alicePub, sig()).send();
+    await (sc as any).chk().send();
+    await (sc as any).readLet(2n, 777n).send();
+    await (sc as any).readLet(9n, 0n).send();
+  });
+});

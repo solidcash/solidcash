@@ -746,6 +746,9 @@ const memory = new Map<bigint, YulExpressionNode>();
 // map is correct), so a later `sstore(slot, v)` / `sload(slot)` routes to the high-level mapping. The dead keccak
 // binding is dropped (an on-chain keccak per mapping access would blow the compute budget). Reset per block.
 const mappingSlotVars = new Map<string, { collection: string; keys: ExpressionNode[] }>();
+// Let-bound array-element slot vars: `let pos := add(keccak256(0,32), i)` recognized as arr[i] at its binding, so a
+// later `sstore(pos, v)` / `sload(pos)` routes to the element (parallel to mappingSlotVars). Reset per block.
+const arrayElemSlotVars = new Map<string, { arrName: string; index: ExpressionNode }>();
 
 // ---- P7: runtime linear-memory buffer for Yul memory the compile-time model cannot resolve ----
 // When the compile-time `memory` map fails (dynamic offset, sub-word/dynamic keccak, msize, mcopy), the WHOLE
@@ -1134,8 +1137,13 @@ function arrayDataBaseName(kecc: YulExpressionNode): string | undefined {
   return undefined;
 }
 
-// Resolve a slot arg to a dynamic-array element access: `keccak256(0,32)` (element 0) or `add(keccak256(0,32), i)`.
+// Resolve a slot arg to a dynamic-array element access: a let-bound var (`let pos := add(keccak256(0,32), i)`),
+// `keccak256(0,32)` (element 0), or `add(keccak256(0,32), i)`.
 function resolveArrayElementSlot(slotArg: YulExpressionNode): { arrName: string; index: ExpressionNode } | undefined {
+  if (slotArg instanceof YulPathNode && slotArg.members.length === 0) {
+    const bound = arrayElemSlotVars.get(slotArg.base);
+    if (bound) return { arrName: bound.arrName, index: cloneNode(bound.index) as ExpressionNode };
+  }
   const direct = arrayDataBaseName(slotArg);
   if (direct) return { arrName: direct, index: intLit(0n, slotArg) };
   if (slotArg instanceof YulFunctionCallNode && slotArg.name === 'add' && slotArg.args.length === 2) {
@@ -1856,6 +1864,13 @@ function lowerStatement(stmt: YulStatementNode): StatementNode {
         currentVars.set(stmt.names[0], UINT256);
         return loc(new BlockNode([]), stmt);
       }
+      // `let pos := add(keccak256(0,32), i)` array-element idiom -> record arr[i]; drop the dead keccak binding.
+      const ae = resolveArrayElementSlot(stmt.value);
+      if (ae) {
+        arrayElemSlotVars.set(stmt.names[0], ae);
+        currentVars.set(stmt.names[0], UINT256);
+        return loc(new BlockNode([]), stmt);
+      }
     }
     let expr = lowerValue(stmt.value);
     if (isBytes32Call(stmt.value)) expr = loc(new CastNode(UINT256, expr, false), stmt);
@@ -2479,6 +2494,7 @@ export default class LowerInlineAssembly extends AstTraversal {
     transientKeys.clear();
     memory.clear();
     mappingSlotVars.clear();
+    arrayElemSlotVars.clear();
     lastReturnData = undefined;
     runtimeMem = runtime;
     yulMemUsed = false;

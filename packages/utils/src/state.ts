@@ -417,8 +417,13 @@ export function encodePushdataValue(
 
   // Generic pushdata encode for int, int-like types, bytes1, bytes0, unbounded bytes, sig, datasig
   // At this point, struct types have already been handled and returned above
-  const primitiveValue = value as PrimitiveStateValue;
+  let primitiveValue = value as PrimitiveStateValue;
   if (isIntLikeType(type)) {
+    // ethers-parity: accept a JS `number` for an integer state value by coercing a safe integer to bigint, so
+    // `deploy({ initialState: { count: 1 } })` works like ethers (numbers for uint/int).
+    if (typeof primitiveValue === 'number' && Number.isSafeInteger(primitiveValue)) {
+      primitiveValue = BigInt(primitiveValue);
+    }
     // M-9: Validate value is bigint for int-like types
     if (typeof primitiveValue !== 'bigint') {
       throw new Error(

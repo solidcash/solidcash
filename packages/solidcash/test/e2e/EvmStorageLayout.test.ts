@@ -415,3 +415,45 @@ describe('composite sub-slot field access: fixed value array head slot read+writ
     await (sc as any).readA5(V(5n)).send(); // last element (bit 200..239, against the 2-byte slack)
   });
 });
+
+// Nested struct: `struct S { Inner inner; uint256 x; }` - the nested Inner starts a fresh slot (slot 0),
+// x lands at slot 1. sload/sstore(s.slot) reaches the nested Inner's packed fields via a recursive rebuild.
+const COMP_NESTED = `pragma solidcash >=0.8.0;
+contract C() {
+  struct Inner { uint64 a; uint64 b; }
+  struct S { Inner inner; uint256 x; }
+  S s;
+  function setSlot0(uint256 w, pubkey pk, sig sg) { require(checkSig(sg, pk)); assembly { sstore(s.slot, w) } }
+  function setSlot1(uint256 w, pubkey pk, sig sg) { require(checkSig(sg, pk)); assembly { sstore(add(s.slot, 1), w) } }
+  function setFields(uint64 va, uint64 vb, uint256 vx, pubkey pk, sig sg) {
+    require(checkSig(sg, pk));
+    this.s = S(Inner(va, vb), vx);
+  }
+  function readSlot0(uint256 e) { uint256 r = 0; assembly { r := sload(s.slot) } require(r == e); }
+  function readInner(uint256 ea, uint256 eb) {
+    require(uint256(s.inner.a) == ea);
+    require(uint256(s.inner.b) == eb);
+  }
+  function readX(uint256 e) { require(s.x == e); }
+}`;
+
+describe('composite sub-slot field access: NESTED struct (recursive rebuild)', () => {
+  it('write-slot0 lands in the nested Inner fields (high-bit uint64 both set)', async () => {
+    const sc = await deploy(COMP_NESTED);
+    await (sc as any).setSlot0(PACKED_MAX, alicePub, sig()).send();
+    await (sc as any).readInner(U64MAX, U64MAX).send(); // cross-check: reaches s.inner.a / s.inner.b
+  });
+  it('write-the-nested-fields reads back through the combined slot-0 word', async () => {
+    const sc = await deploy(COMP_NESTED);
+    await (sc as any).setFields(U64MAX, U64MAX, 5n, alicePub, sig()).send();
+    await (sc as any).readSlot0(PACKED_MAX).send(); // cross-check: sload combines s.inner.a + s.inner.b<<64
+  });
+  it('write slot 1 (x, after the nested struct) leaves the nested Inner untouched', async () => {
+    const sc = await deploy(COMP_NESTED);
+    await (sc as any).setFields(U64MAX, U64MAX, 0n, alicePub, sig()).send(); // inner = (max,max), x = 0
+    const hix = (1n << 255n) | 42n;
+    await (sc as any).setSlot1(hix, alicePub, sig()).send();                 // x = hix via slot 1
+    await (sc as any).readX(hix).send();
+    await (sc as any).readInner(U64MAX, U64MAX).send();                      // inner unchanged by the slot-1 write
+  });
+});

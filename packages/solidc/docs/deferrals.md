@@ -1190,10 +1190,25 @@ witness grouping (all calls on one local -> one witness index). Multi-hour; soun
 pinned to the SAME co-spent input the write constrains). Prefer the return-EVENT route (reuses the opaque-loop
 return-event machinery + a typed decode) over internal-layout decoding (which would need interface-declared reserves).
 
+**PROGRESS - increment 1 SHIPPED 2026-07-20 (part 2 DONE).** The RETURNING-view-in-a-loop half (part 2, via the
+return-EVENT route) is done + VM-proven: `emitInlineLoopExternalCall` now has a typed-returning branch (reads the
+per-iteration return-event `externalReturnOutputIdx + i`, verifies it exactly as the opaque path, typed-decodes its
+commitment by the return types) - GTT branch landed in `33dcddb9`, SDK fill fix + test in `ae3bf569`
+(`StatefulComputedLoopDispatch.test.ts` "RETURNING computed-target loop": two callees each return via a minted
+return-event, the loop typed-decodes + accumulates them, total == 20). This is the standalone returning computed-target
+loop `s += IFoo(pairFor(..)).tally(v)`. REMAINING: part 1 (the SHARED co-spend - getReserves READ + swap WRITE on ONE
+pair UTXO, so getReserves is not a preserving staticcall but a read of the same input swap mutates) + part 3 (multi-use
+shared-witness grouping in the collect phase, currently blocked by the single-use RECEIVER-count restriction). Part 1
+is the hard remainder: either the pair mints a getReserves return-event DURING the swap co-spend (pair-covenant
+change) or the Router covenant decodes reserves from the swap-co-spent input's PRE-state commitment (needs the pair's
+layout, which the interface hides). A source PORT (interface declares `public reserve0/1`, getReserves -> state read
+via the ExternalStateReads mechanism) is the low-risk route if bench-faithfulness is relaxed.
+
 **Revisit if.** Router02 (or another fail-on-transfer / read-then-write pair pattern) becomes a target to COMPILE end
 to end, AND `GenerateTargetTraversal` churn settles enough for a large sound change. The direct + single-use-local +
-stateless/stateful autoderivation units (VM-proven, `TypedComputedLoopDispatch.test.ts` / `StatefulComputedLoopDispatch
-.test.ts`) are the foundation it extends; start from the return-event decode as the first tractable sub-step.
+stateless/stateful autoderivation + RETURNING-loop (increment 1) units are all VM-proven foundations
+(`TypedComputedLoopDispatch.test.ts` / `StatefulComputedLoopDispatch.test.ts`); the next sub-step is part 3
+(collect-phase multi-use grouping) then part 1 (the shared read+write co-spend).
 
 ## C2-sorted mapping WRITE inside a delegate (proxy) function - DEFERRED 2026-07-20
 
@@ -1211,15 +1226,45 @@ lands right where the co-spent impl master already sits (op-decode of the failin
 `output[3]` expecting the entry-covenant p2sh32 but found the impl master's p2sh32). So the trailing NEW node collides
 with the impl master; the SDK never reserves/derives it and the impl covenant's entry check fails closed.
 
-**What it'd take.** Route the C2 sorted-insert machinery through the delegate: reserve the trailing NEW-node output(s)
-(and predecessor P' at the block slot) in the PROXY block, shift the co-spent impl master/state past them (extend the
-getLowLevelCallMasterInputIndex / delegatePos accounting to include the trailing loop-entry region, not just the
-block-layout output-only slots), and derive both the P' rewrite and the NEW node commitment on the delegate's probe
-(the sortedInserts / loopEntryVars path, but keyed on the proxy category). The derivation + msg.sender-key +
-proxy-conservation pieces are already solved (non-sorted proves them); this is purely the sorted-list output layout.
-Self-contained tests (a MapImpl with a default sorted mapping through deployProxy); the EA marketplace can't validate
-yet (its .scash contracts are stubs).
+**What it'd take (bounded attempt 2026-07-20 pinned the exact core blocker; reverted).** Two coupled pieces, both in
+the STB input/output ASSEMBLY:
+1. The NEW-node OUTPUT (a loopEntry mint) is never created for the delegate. Off-chain SortedList.planInsert pins the
+   NEW node only when the value is resolvable; here `v` is in the forward CALLDATA (not `args`, and abiFunction is
+   __forward not the impl), so `newNode` comes back undefined and `setLoopEntryCommitments` is skipped -> no trailing
+   output. Reserving an extra proxy-block 'entry' slot (delegateEventSlots) only reserves a funder INPUT; the mint
+   OUTPUT still isn't emitted (the entry-output loop mints from entryNfts/loopEntryVars, not from a bare block slot).
+2. Even if minted, the loopEntry must land at proxyMaster+implBlockSize = right AFTER the proxy block and BEFORE the
+   impl. But the STB input/output order (_buildInputs ~425) appends lowLevelCall inputs FIRST, then iterationEntry
+   inputs - so a normal loopEntry sits AFTER the impl, colliding. The delegate path must special-case the ordering:
+   loopEntry NEW-node before the lowLevelCall region, and getLowLevelCallMasterInputIndex/delegatePos must count it.
+So it needs: a DERIVED sorted-insert path (placeholder NEW node whose value the Phase-2 probe fills, like the non-C2
+entry does) + the loopEntry mint emitted BEFORE the impl + the index accounting. The msg.sender-key, proxy-conservation
+(`out>=in`), P'-at-block-slot, and value-derivation pieces are already solved (non-sorted proves them). This shares the
+trailing-NEW-node + derived-value machinery with the user's ACTIVE cross-contract C2 WIP (externalCallEntryInserts) -
+extend that to the delegatecall path once it settles rather than duplicating. Self-contained test: a MapImpl with a
+default sorted mapping through deployProxy (the EA .scash contracts are still stubs).
 
 **Revisit if.** A port needs a DEFAULT (C2-sorted) mapping written from inside a delegate - the EA `registerUser`
 admin pattern (`users[msg.sender] = User(...)`), or any OZ-style upgradeable contract whose initializer/methods write
 a mapping. Detail + re-entry points in memory events_in_delegate_gap.md.
+
+---
+
+## buffered state journal + cross-contract message bus (architecture research)  - 2026-07-20
+
+**What.** A future architecture that would make state/covenant-touching functions into real
+`OP_INVOKE` subroutines (fixing recursive state-writers and generic loop-calls of state helpers) via
+an altstack write-back journal flushed at the entry point, plus a cross-contract message bus (single
+settlement authority per slot) for shared-slot composition. Full design + VM evidence + boundaries in
+`docs/buffered-state-and-message-bus-research.md`.
+
+**Why deferred.** Explicitly a FUTURE direction, not scheduled. Large, multi-phase, and P3 (the bus)
+carries C2-comparable soundness weight. The common case (pure-function recursion/loops) already works;
+the near-term pain is covered by the existing bespoke C2 / entry-write-in-loop paths.
+
+**What it'd take.** P1 scalar journal (fixes the recursive state-writer compile-fail), P2 mapping/
+collection writes buffered with flush delegating to existing C2, P3 the message bus. See the doc.
+
+**Revisit if.** Recursive/looping state helpers or generic cross-contract shared-slot writes become a
+recurring blocker that the per-pattern codegen can no longer absorb. Detail in memory
+internal_fn_recursion_state_buffer.md.

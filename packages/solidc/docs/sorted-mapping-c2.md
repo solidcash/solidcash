@@ -241,8 +241,9 @@ mints) so update (mint 1) and insert (mint P'+NEW) coexist. What ships:
    with the combined amount before the self-transfer filter / reorder; for += the merged sum equals the original, so a
    coexisting debit is unchanged. Scalar/const (no per-key array to merge): the SDK groups the occurrences adjacent and
    the covenant's pending flush accumulates on Hk == pu_slot (co-spend once, apply the scalar per occurrence); scalar
-   set + delete are idempotent so the SDK dedupes. Works for existing (accumulate) and new (single insert). Only scalar
-   `-=` stays fail-closed (`-=` has no pending-defer). VM-proven (`FullMultiTransfer`, `SortedUpsertLoop`).
+   set + delete are idempotent so the SDK dedupes. Scalar `-=` accumulates too (the pending-defer is active for `-`,
+   with its insert path gated off). Works for existing (accumulate) and new (single insert), every op. VM-proven
+   (`FullMultiTransfer`, `SortedUpsertLoop`).
 
 **COMPLETE end-to-end.** Every multiTransfer shape - existing / new / any-gap chain (order-independent) / self-transfer /
 duplicate (incl. scalar) - works. The only residual is N per tx bounded by transaction size, and that bound is generous

@@ -208,9 +208,10 @@ msg.sender) + `_balances[to] += amt` (DIFFERENT key each iter). Full form still 
   reorder; for += the merged sum equals the original so a coexisting debit is unchanged. Scalar/const (`+= amount` /
   `+= 100`, no per-key array to merge): the SDK GROUPS a duplicate's occurrences adjacent and the covenant's pending
   flush ACCUMULATES on Hk == pu_slot (co-spend once, apply the scalar per occurrence); scalar/const `set` + delete are
-  idempotent so the SDK dedupes. Works for existing (accumulate) + new (single insert). Only scalar `-=` stays
-  fail-closed (`-=` has no pending-defer). VM-proven (FullMultiTransfer [bob,carol,bob] -> bob += 40; SortedUpsertLoop
-  per-key 3 += 30 / new 5 = 30, scalar 3 += 100 / new 9 = 100 / non-adjacent [3,7,3] grouped / const set idempotent).
+  idempotent so the SDK dedupes. Works for existing (accumulate) + new (single insert). Scalar `-=` ALSO accumulates
+  now (`6ca4cea8`: pending-defer activated for op `-`, its insert path gated off - a debit can't create an entry).
+  VM-proven (FullMultiTransfer [bob,carol,bob] -> bob += 40; SortedUpsertLoop per-key 3 += 30 / new 5 = 30, scalar
+  3 += 100 / new 9 = 100 / non-adjacent [3,7,3] grouped / const set idempotent / scalar -= [3,7,3]-30 -> 3=40,7=170).
   **The C2 ERC-20 multiTransfer surface is COMPLETE end-to-end** (every same-gap shape, order-independent, +
   self-transfer, + duplicate incl. scalar). The only residual is N per tx bounded by transaction size - and that bound
   is GENEROUS (thousands of entries per tx), so it is a practical non-issue; pagination across txs covers larger still.
@@ -808,11 +809,12 @@ incount==1. C2-sound WITHOUT a permutation check for positive-membership maps (w
 VALID sorted list; WHICH keys (==xs) is job-creator data enforced by the SDK, not a C2 property. VM-verified
 (SortedInsertLoop.test.ts, 4 green): N=1 fresh+populated; N>1 into fresh one call; **NESTED 2-key w[jobId][ks[i]]=true
 (the exact whitelistWorkers shape) N>1 fresh** (composite slot keyToSlotMulti SDK-side, covenant key-agnostic);
-distinct-gap works-or-fails-closed. RESOLVED since: NON-BOOL values now route to the UPSERT loop (`= <param>`
-`d08584f2` / `= <literal>` / `= vs[i]` / `+=` - update+insert, same-gap chains + distinct gaps), and RMW/delete-in-loop
-are the upsert loop (`+=`/`-=`/delete). The range-splice here stays the BOOL `= true` path (whitelistWorkers). STILL
-DEFERRED (bool range-splice only): multi-gap `= true` in one call (int multi-gap works via the upsert loop),
-`= false` nullify-in-loop.
+distinct-gap works-or-fails-closed. RESOLVED (`8368019b`): EVERY loop-invariant sorted-set write now routes to the
+UPSERT loop - bool `= true`/`= false` (bool = int 1/0, valueConst), int `= <param>`/`= <literal>`/`= vs[i]`, and RMW
+`+=`/`-=`/delete. Gains over the range-splice: UPDATE existing keys, MULTI-GAP `= true` in one call (incremental
+whitelist on a populated map - distinct gaps + same-gap chains), and `= false` nullify-in-loop (value 0). The
+range-splice matcher now matches nothing (inert; kept for reference). VM-proven (SortedInsertLoop: N distinct, N>1
+fresh one-gap, nested w[jobId][worker], N>1 DISTINCT gaps). NO bool set-loop deferrals remain.
 
 Marketplace: V1 compiles past whitelistWorkers but its FULL assembled contract is ~674k ops (a
 pre-existing deep-inlining explosion, NOT this covenant - a 3-entry-point multi-site insert loop is <1s); commit

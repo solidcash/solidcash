@@ -5733,12 +5733,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           }
         }
       }
-      // SCALAR `+=` DUPLICATE: a fixed-amount airdrop (`+= amount` / `+= 100`) has no per-key array to merge, so GROUP a
-      // duplicated key's occurrences adjacent (stable, by first occurrence). The covenant's isDup accumulate then applies
-      // the scalar once per occurrence to the single co-spent entry (the SDK accumulates it into the pending commitment
-      // in the loop below). Only `+=` scalar (order-independent, accumulates); scalar `set` is deduped above, `-=` stays
-      // fail-closed.
-      if (info.op === '+' && !perKey && !isDelete && Array.isArray(keysArr) && keysArr.length > 1) {
+      // SCALAR `+=` / `-=` DUPLICATE: a fixed-amount airdrop/debit (`+= amount` / `-= amount`) has no per-key array to
+      // merge, so GROUP a duplicated key's occurrences adjacent (stable, by first occurrence). The covenant's isDup
+      // accumulate then applies the scalar once per occurrence to the single co-spent entry (the SDK accumulates it into
+      // the pending commitment in the loop below). Order-independent (accumulates); scalar `set` is deduped above.
+      if ((info.op === '+' || info.op === '-') && !perKey && !isDelete && Array.isArray(keysArr) && keysArr.length > 1) {
         const kArr = keysArr as unknown[];
         const slotHexes = kArr.map((k) => binToHex(keyToSlotMulti([...fixedBins, encKey(k, varyType)])));
         if (slotHexes.some((h, i) => slotHexes.indexOf(h) !== i)) {
@@ -5862,11 +5861,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         const slotHex = binToHex(slot);
         const amt = isDelete ? 0n : scalarAmt !== undefined ? scalarAmt : toBig((valsArr as unknown[])[i]);
         if (seenSlots.has(slotHex)) {
-          // SCALAR `+=` DUPLICATE: the grouping above made this adjacent to its first occurrence, which is the pending
-          // (lastDeferred). Accumulate the scalar into that entry's commitment - the covenant's isDup does the same,
-          // co-spending the entry only once. (per-key / scalar-set / delete duplicates were already merged/deduped.)
-          if (info.op === '+' && !perKey && !isDelete && lastDeferred && binToHex(lastDeferred.slot) === slotHex) {
-            lastDeferred.newVal += amt;
+          // SCALAR `+=` / `-=` DUPLICATE: the grouping above made this adjacent to its first occurrence, which is the
+          // pending (lastDeferred). Accumulate the scalar into that entry's commitment - the covenant's isDup does the
+          // same, co-spending the entry only once. (per-key / scalar-set / delete duplicates were already merged/deduped.)
+          if ((info.op === '+' || info.op === '-') && !perKey && !isDelete && lastDeferred && binToHex(lastDeferred.slot) === slotHex) {
+            lastDeferred.newVal += info.op === '-' ? -amt : amt;
             commitments[lastDeferred.commitIndex] =
               binToHex(encodeEntryCommitment(lastDeferred.slot, lastDeferred.oldNext, bigIntToVmNumber(lastDeferred.newVal)));
             continue;
@@ -5885,8 +5884,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           const newVal = isDelete ? 0n : info.op === 'set' ? amt : info.op === '-' ? oldVal - amt : oldVal + amt;
           insertLoopPredecessors.push({ ...entry.utxo, unlocker: wUnlocker });
           // Record this update as the pending-defer target BEFORE pushing its (initially normal) commitment, so a
-          // following bracketed new key can re-point it in place. Only crediting loops defer (covenant pendActive).
-          if (foldActive) {
+          // following bracketed new key can re-point it (foldActive) OR a duplicate can accumulate into it (also `-`,
+          // whose covenant pending-defer is active for duplicates even though it never inserts/folds).
+          if (foldActive || info.op === '-') {
             lastDeferred = { uid: uidOf(entry.utxo), commitIndex: commitments.length, slot: entry.slot, newVal, oldNext: entry.nextKey };
           }
           commitments.push(binToHex(encodeEntryCommitment(entry.slot, entry.nextKey, bigIntToVmNumber(newVal))));

@@ -12519,9 +12519,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.sortedUpsertPendingRepoint = false;
     }
 
-    // CASE (b) pending-defer registers (crediting ops only; a debit/delete never inserts a new recipient). Init empty:
+    // Pending-defer registers: crediting ops (+/set, which can INSERT + CHAIN) and the DEBIT op (-, which only updates
+    // + accumulates duplicates; its flush INSERT/re-point path is gated off below). Not 'delete'. Init empty:
     // pu_slot = b'' (no pending), pu_val = 0, pu_next = b'' (+inf).
-    if (op === '+' || op === 'set') {
+    if (op === '+' || op === 'set' || op === '-') {
       this.emit(Op.OP_0, loc); this.pushToStack(this.sortedUpsertPendSlotName);
       this.emit(Op.OP_0, loc); this.pushToStack(this.sortedUpsertPendValName);
       this.emit(Op.OP_0, loc); this.pushToStack(this.sortedUpsertPendNextName);
@@ -12632,6 +12633,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_BOOLAND, loc); // inGap U=1
     this.emit(Op.OP_IF, loc);
     this.scopeDepth += 1;
+    // A DEBIT (`-=`) can never INSERT a new key (debiting an absent key is invalid), so its in-gap flush - which would
+    // mint a NEW node - fails closed. Only +/set reach the re-point. (The duplicate/normal flush paths still apply.)
+    if (this.sortedUpsertLoopOp === '-') { this.emit(Op.OP_0, loc); this.emit(Op.OP_VERIFY, loc); }
     // ===== RE-POINT + CHAIN-DEFER: mint P' = [pu_slot|Hk|pu_val] (P re-pointed to the new node), then DEFER the new
     // node itself into the pending (pu_slot=Hk, pu_val=amt, pu_next stays = P.oldNext = the new node's successor).
     // outCounter += 1; consumed = 1. Deferring the new node lets a FURTHER new recipient in the same gap chain off it

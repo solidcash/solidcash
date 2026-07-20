@@ -37,6 +37,10 @@ const SRC = `contract Token() {
     require(checkSig(s, pk));
     for (int i = 0; i < accounts.length; i++) { this.bal[accounts[i]] += amount; }
   }
+  function debitFixed(int[] accounts, int amount, pubkey pk, sig s) {
+    require(checkSig(s, pk));
+    for (int i = 0; i < accounts.length; i++) { this.bal[accounts[i]] -= amount; }
+  }
   function setConst(int[] accounts, pubkey pk, sig s) {
     require(checkSig(s, pk));
     for (int i = 0; i < accounts.length; i++) { this.bal[accounts[i]] = 42; }
@@ -275,6 +279,18 @@ describe('C2 diff-key per-iteration UPDATE loop (multitransfer credit to existin
     await fund(contract.address);
     await call('setConst', [3n, 3n]); // deduped -> 3 = 42
     expect(await valOf(3n)).toBe(42n);
+  });
+
+  // SCALAR `-=` DUPLICATE: a fixed-amount batch debit with a duplicate account debits the scalar per occurrence (pending
+  // -defer activated for `-`; its insert path is gated off since a debit can't create an entry).
+  it('accumulates a SCALAR -= duplicate (100 - 30 - 30 = 40; non-adjacent grouped)', async () => {
+    const { contract, valOf, call } = await setup();
+    await fund(contract.address); await call('setBal', 3n, 100n);
+    await fund(contract.address); await call('setBal', 7n, 200n);
+    await fund(contract.address);
+    await call('debitFixed', [3n, 7n, 3n], 30n); // 3 -= 60 (grouped), 7 -= 30
+    expect(await valOf(3n)).toBe(40n);  // 100 - 30 - 30
+    expect(await valOf(7n)).toBe(170n); // 200 - 30
   });
 });
 

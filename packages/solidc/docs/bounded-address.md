@@ -1,8 +1,11 @@
 # Bounded-address storage model (spec / design)
 
-Status: **DESIGN SPEC - FINALIZED, not yet implemented.** Ready for Phase 1 (Section 7); the four decisions in
-Section 8 (encoding A-vs-B, `address(0)` bytes, replace-vs-coexist, ceiling value) are to be settled at
-implementation time. This doc specifies rescoping solidcash's `address` from a
+Status: **DESIGN SPEC - RE-EVALUATED 2026-07-20: NOT recommended on current evidence (Section 10).** After the
+Section-9 test audit surfaced address's existing four-representation mess and the conformance tension, the trade
+tilts against switching: the one benefit (address slot fields) is niche + conformance-breaking + BCH-only-consistent,
+and the status quo is fine for storage/packing/mappings. Kept as a complete design + audit to revisit only if
+faithful OZ ERC-1967-proxy-via-raw-address-slots becomes a priority. This doc specifies rescoping solidcash's
+`address` from a
 variable-width framed value (today: `isChunkPackableElementType` -> framed like `bytes`, GTT emits `'rawbytes'`) to
 a BOUNDED fixed-width value for STORAGE, so an address becomes a fixed-width slot field and packs deterministically
 into the 128-byte NFT commitment. Motivated by the storage-slot grind (see `bounded-address` follow-on to
@@ -213,3 +216,40 @@ NET: keep the EVM slot LAYOUT at 20 bytes (Phase 1 = pure commitment packing) an
 AND the uint160 ABI tests are untouched. Only Phase 3 (address as a 2-slot field) intentionally diverges and requires
 updating the one address-packing conformance case. The `AddressCompare` 32-byte representation is the wildcard to
 reconcile before touching the address value bytes.
+
+## 10. Re-evaluation (2026-07-20) - is the switch worth it?
+
+Re-weighing status-quo (variable framed / unbounded, `isChunkPackableElementType`) vs the proposed fixed 2-word form,
+now that the Section-9 audit exposed address's four existing representations and the conformance tension. The initial
+brainstorm was too bullish. Honest re-weighting:
+
+**PROS - all weaker than first framed:**
+- *Address slot fields* (the original motivation): NICHE (address slot access is rare - mainly OZ ERC-1967
+  admin/impl slots), GATED on composite sub-slot field access (unbuilt), BCH-only-self-consistent (NOT EVM parity - a
+  35B lbc across 2 slots is not EVM's 20B/1-slot), and it BREAKS the address+uint96 packing conformance (Section 9).
+- *Commitment packing*: MARGINAL-to-NEGATIVE. A single framed address already fits inline (35 < 128, no chunk), and a
+  FIXED 36B frame WASTES ~10 bytes vs the ~26B variable framing for the common p2pkh/EOA (the pad-to-max is mandatory
+  precisely because it must be fixed-width).
+- *Uniform / deterministic*: minor, and it ADDS a 5th address representation unless the whole model is reconciled
+  (large effort).
+- *Sound address-keyed mappings*: NOT unique to the fixed form - soundness needs an exact key round-trip, which the
+  status-quo framing also provides; address keys already work in C2 as `sha256(value)`.
+
+**CONS - confirmed / heavier:**
+- Breaks the slot-layout conformance (Phase 3, the EVM-20B-layout vs 2-slot-field tension).
+- ~10B/p2pkh space waste from mandatory padding-to-max.
+- Increases fragmentation (a 5th representation) absent a full reconcile.
+- ~30-file blast radius + `AddressCompare`(32B)/getter value-test risk.
+- Ceiling-enforcement burden (fail-close >35B scripts).
+
+**STATUS-QUO advantages, underweighted before:** space-efficient (no pad), conformance-safe (20B layout untouched),
+uniform with the bytes/string variable-width family, address-keyed mappings already work, single addresses already
+pack inline.
+
+**RECOMMENDATION: do NOT switch on current evidence.** The lone benefit (address slot fields) is niche +
+conformance-breaking + BCH-only-consistent and does not justify the costs; the status quo is fine for storage,
+packing, and mappings, and leaving address slot access fail-closed is sound. Revisit ONLY if faithful OZ ERC-1967
+proxy porting via RAW address slots becomes a concrete priority - and even then prefer high-level state getters
+(which the EACC porting already uses) over raw address-slot access. If ever done: Phase 1 (commitment repr) WITHOUT
+changing `stateVarByteWidth` (keep 20B layout parity so the conformance + uint160 ABI tests stay green), and defer the
+conformance-breaking 2-slot field (Phase 3) indefinitely.

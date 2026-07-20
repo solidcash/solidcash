@@ -192,11 +192,16 @@ witness[i]`), so a mismatching claim is rejected by the covenant. This is caller
 as `extcall-target-pinning.md` and the array-element form: the caller routes its own funds through targets it
 chooses, and each co-spent target still enforces its own covenant. No author-pinned target is lifted.
 
-Known gap - a loop-body LOCAL receiver used by MULTIPLE calls per iteration
-(`IUniswapV2Pair pair = IUniswapV2Pair(pairFor(..)); pair.getReserves(); pair.swap(..)`, Router02's
-`_swapSupportingFeeOnTransferTokens`): the read + the write must share ONE co-spend (getReserves reads the
-input commitment, swap constrains the output), which needs a new one-co-spend-serves-read+write dispatch mode
-in `GenerateTargetTraversal`. A single-use local receiver additionally needs its now-dead `pairFor` initializer
-neutralized (else it recomputes on-chain and can size-fault). Both are deferred; the direct form above is the
-shipped foundation. Stateful autoderivation (auto-filling the witness on a `StatefulContract` call, so Router02
-- which is stateful - needs no explicit builder call) is also pending; the stateless builder is the proven core.
+A loop-body LOCAL receiver `IPair pair = IPair(pairFor(.., path[i], ..)); pair.m()` (SEAL leaves the local
+un-hoisted - a loop-body local is not single-assign - and it is loop-consumed, so unreadable at the epilogue) is
+handled for the SINGLE-use case: the collect phase rewrites the call to the witness AND neutralizes the now-dead
+`pairFor` initializer to read the SAME witness (else it recomputes on-chain and size-faults). The slot carries a
+LIST of witness identifiers (call + init), both back-linked. Gated on a per-function external-call RECEIVER-count
+map snapshotted before any rewrite, so only a single-use local qualifies.
+
+Known gap - a MULTI-use local receiver (`pair.getReserves(); pair.swap(..)`, Router02's
+`_swapSupportingFeeOnTransferTokens`): the read + the write must share ONE co-spend (getReserves reads the input
+commitment, swap constrains the output), which needs a new one-co-spend-serves-read+write dispatch mode in
+`GenerateTargetTraversal` - deferred (fails closed). Stateful autoderivation (auto-filling the witness on a
+`StatefulContract` call, so Router02 - which is stateful - needs no explicit builder call) is also pending; the
+stateless builder + deriveTypedLoopCoSpends are the proven core.

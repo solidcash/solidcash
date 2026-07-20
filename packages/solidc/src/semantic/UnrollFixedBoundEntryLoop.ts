@@ -17,6 +17,7 @@ import {
   ContinueNode,
   ReturnNode,
   FunctionCallNode,
+  NewArrayNode,
 } from '../ast/AST.js';
 import { GlobalFunction } from '../ast/Globals.js';
 import { BinaryOperator, UnaryOperator } from '../ast/Operator.js';
@@ -44,6 +45,13 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
   private mappingNames = new Set<string>();
   private varTypes = new Map<string, Type>();
   private stateVarTypes = new Map<string, Type>();
+  // Locals initialized to a `new T[](N)` literal (N compile-time), for folding `local.length`. Populated
+  // post-inline: `_updateJobWhitelist(id, allowed, new address[](0))` binds the arg to an inline local
+  // `__inlN_disallowed_ = new address[](0)`, so the loop's `disallowed_.length` bound is constant. Only names
+  // NOT in mutatedNames (never reassigned / pushed / popped anywhere in the fn) are tracked, so the recorded
+  // size always holds - the length can't change out from under the fold.
+  private newArrayLocalSizes = new Map<string, bigint>();
+  private mutatedNames = new Set<string>(); // names ever reassigned / push / pop / element-written in the fn
 
   visitSourceFile(node: SourceFileNode): Node {
     if (node.contract) node.contract = this.visit(node.contract) as ContractNode;
@@ -71,10 +79,36 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
   visitFunctionDefinition(node: FunctionDefinitionNode): Node {
     const prev = this.varTypes;
     this.varTypes = new Map(prev);
+    const prevNewArr = this.newArrayLocalSizes;
+    this.newArrayLocalSizes = new Map();
+    const prevMutated = this.mutatedNames;
+    this.mutatedNames = this.collectMutatedNames(node.body);
     for (const p of node.parameters) this.varTypes.set(p.name, p.type);
     node.body = this.visit(node.body) as BlockNode;
     this.varTypes = prev;
+    this.newArrayLocalSizes = prevNewArr;
+    this.mutatedNames = prevMutated;
     return node;
+  }
+
+  // Every local name that is reassigned or has its length changed anywhere in the fn body (AssignNode target,
+  // or an ArrayAssignNode = push/pop/element-write). A `new T[](N)` binding is only trusted for the length fold
+  // if its name is NOT here, so the recorded size can never be stale (sound regardless of control flow / scoping).
+  private collectMutatedNames(body: Node | undefined): Set<string> {
+    const names = new Set<string>();
+    const walk = (n: Node | undefined): void => {
+      if (!n) return;
+      if (n instanceof AssignNode && n.identifier instanceof IdentifierNode) names.add(n.identifier.name);
+      if (n instanceof ArrayAssignNode) names.add(n.name);
+      for (const key of Object.keys(n)) {
+        if (key === 'location') continue;
+        const v = (n as unknown as Record<string, unknown>)[key];
+        if (v instanceof Node) walk(v);
+        else if (Array.isArray(v)) for (const e of v) if (e instanceof Node) walk(e);
+      }
+    };
+    walk(body);
+    return names;
   }
 
   visitBlock(node: BlockNode): Node {
@@ -82,7 +116,18 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
     const stmts = node.statements ?? [];
     for (let i = 0; i < stmts.length; i++) {
       const s = stmts[i];
-      if (s instanceof VariableDefinitionNode) this.varTypes.set(s.name, s.type);
+      if (s instanceof VariableDefinitionNode) {
+        this.varTypes.set(s.name, s.type);
+        // Track a `local = new T[](N literal)` binding (or a copy of one) for the length fold - but only if the
+        // local is never mutated in the fn (mutatedNames), so its length is provably the recorded N.
+        if (!this.mutatedNames.has(s.name)) {
+          if (s.expression instanceof NewArrayNode && s.expression.size instanceof IntLiteralNode) {
+            this.newArrayLocalSizes.set(s.name, s.expression.size.value);
+          } else if (s.expression instanceof IdentifierNode && this.newArrayLocalSizes.has(s.expression.name)) {
+            this.newArrayLocalSizes.set(s.name, this.newArrayLocalSizes.get(s.expression.name)!);
+          }
+        }
+      }
       // The AstBuilder desugars `for` into a flattened `{ init; while }`: a loop-variable definition immediately
       // followed by its while (marked forLoopUpdateCount for the trailing update statement).
       if (s instanceof VariableDefinitionNode && s.isLoopVariable
@@ -112,6 +157,7 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
     if (cond.operator !== BinaryOperator.LT && cond.operator !== BinaryOperator.LE) return undefined;
     if (!(cond.left instanceof IdentifierNode && cond.left.name === varName)) return undefined;
     const cn = this.evalBound(cond.right);
+    if (process.env.WLDBG && /__inl/.test(varName)) console.error(`WLDBG tryUnroll var=${varName} boundType=${cond.right?.constructor?.name} boundInner=${(cond.right as any)?.expression?.constructor?.name}/${(cond.right as any)?.expression?.name} cn=${cn}`);
     if (cn === undefined) return undefined;
     const inclusive = cond.operator === BinaryOperator.LE;
 
@@ -123,19 +169,24 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
     const step = this.evalStep(all.slice(all.length - k), varName);
     if (step === undefined || step <= 0n) return undefined;
 
-    // Only unroll loops that actually write a mapping OR call keccak256 (else needless). A keccak256 in a
-    // runtime loop needs one compute side-car per RUNTIME call, but the block layout allocates one per SYNTACTIC
-    // call; unrolling a fixed-bound loop turns the N runtime calls into N syntactic calls (each an independent
-    // slot, resolved by the complex-arg probe). Never unroll with break/continue/return (changes control flow).
-    if (!this.hasMappingWrite(bodyStmts) && !this.hasKeccakCall(bodyStmts)) return undefined;
-    if (this.hasControlFlowEscape(bodyStmts)) return undefined;
-
     // Enumerate the iteration values; bail if unbounded or larger than MAX_UNROLL.
     const values: bigint[] = [];
     for (let v = c0; inclusive ? v <= cn : v < cn; v += step) {
       values.push(v);
       if (values.length > MAX_UNROLL) return undefined;
     }
+
+    // A provably-EMPTY loop (0 iterations, e.g. `for(i < (new T[](0)).length)` after an inline binds an empty
+    // array arg) is DEAD CODE: drop it entirely. The body never runs, so anything in it (a C2 sorted-mapping
+    // write, an external call) is unreachable - sound regardless of body content or control flow.
+    if (values.length === 0) return [];
+
+    // Only unroll a NON-empty loop whose body writes a mapping OR calls keccak256 (else needless). A keccak256 in
+    // a runtime loop needs one compute side-car per RUNTIME call, but the block layout allocates one per SYNTACTIC
+    // call; unrolling a fixed-bound loop turns the N runtime calls into N syntactic calls (each an independent
+    // slot, resolved by the complex-arg probe). Never unroll with break/continue/return (changes control flow).
+    if (!this.hasMappingWrite(bodyStmts) && !this.hasKeccakCall(bodyStmts)) return undefined;
+    if (this.hasControlFlowEscape(bodyStmts)) return undefined;
 
     // Each iteration is wrapped in its own block so body-local declarations (`address user = ...`) don't collide
     // across the N copies (Solidity block scoping). The loop variable is substituted by its per-iteration literal.
@@ -154,13 +205,23 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
     return result;
   }
 
-  // A compile-time-constant loop bound: an int literal, or `fixedArray.length` (a declared ArrayType with a bound).
+  // A compile-time-constant loop bound: an int literal, `fixedArray.length` (a declared ArrayType with a bound),
+  // or `(new T[](N)).length` with N an int literal. The last only appears AFTER inlining substitutes a
+  // `new T[](N)` literal for an array param (`_updateJobWhitelist(id, allowed, new address[](0))`); N==0 unrolls
+  // to ZERO iterations, eliminating a provably-dead loop whose body would otherwise reach codegen (e.g. a C2
+  // sorted mapping write over an empty array). This is why the pass is run a second time, post-inline.
   private evalBound(expr: Node): bigint | undefined {
     if (expr instanceof IntLiteralNode) return expr.value;
-    if (expr instanceof UnaryOpNode && expr.operator === UnaryOperator.SIZE
-      && expr.expression instanceof IdentifierNode) {
-      const t = this.varTypes.get(expr.expression.name) ?? this.stateVarTypes.get(expr.expression.name);
-      if (t instanceof ArrayType && t.bound !== undefined) return BigInt(t.bound);
+    if (expr instanceof UnaryOpNode && expr.operator === UnaryOperator.SIZE) {
+      if (expr.expression instanceof IdentifierNode) {
+        const local = this.newArrayLocalSizes.get(expr.expression.name);
+        if (local !== undefined) return local;
+        const t = this.varTypes.get(expr.expression.name) ?? this.stateVarTypes.get(expr.expression.name);
+        if (t instanceof ArrayType && t.bound !== undefined) return BigInt(t.bound);
+      }
+      if (expr.expression instanceof NewArrayNode && expr.expression.size instanceof IntLiteralNode) {
+        return expr.expression.size.value;
+      }
     }
     return undefined;
   }

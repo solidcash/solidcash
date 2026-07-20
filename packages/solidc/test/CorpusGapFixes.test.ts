@@ -3250,3 +3250,29 @@ describe('ecrecover(hash, v, r, s) alias maps to a recovery projection under the
     expect(() => bc(mkAddr('ecrecover'), {})).toThrow(/Undefined reference to symbol ecrecover/);
   });
 });
+
+describe('a loop over a compile-time-empty new-array is eliminated (post-inline dead loop)', () => {
+  // `_updateJobWhitelist(id, allowed, new address[](0))` (EACC Marketplace publishJobPost): after inlining, the
+  // `disallowed` loop iterates over `new address[](0)` = 0 times. A second UnrollFixedBoundEntryLoop pass (post-
+  // inline) folds the constant bound and drops the dead loop, so its C2 sorted-mapping write never reaches codegen
+  // (was: SortedMappingCodegenPendingError 'whitelistWorkers'). Sound: the body provably never runs.
+  const ok = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  it('compiles an internal C2 mapping-write loop called with new T[](0)', () => {
+    expect(ok('contract C { mapping(uint256 => mapping(address => bool)) w;'
+      + ' function upd(uint256 id, address[] memory a, address[] memory d) internal {'
+      + ' for (uint256 i = 0; i < a.length; i++) { w[id][a[i]] = true; }'
+      + ' for (uint256 i = 0; i < d.length; i++) { w[id][d[i]] = false; } }'
+      + ' function pub(uint256 id, address[] memory a) public { upd(id, a, new address[](0)); require(true); }'
+      + ' function pub2(uint256 id, address[] memory d) public { upd(id, new address[](0), d); require(true); } }'))
+      .toBe('C');
+  });
+  it('does NOT eliminate a loop over a MUTATED new-array (soundness: fail-closed, never silently dropped)', () => {
+    // The array is element-written after `new address[](0)`, so its length is no longer provably 0 (mutatedNames
+    // excludes it from the fold). The loop must NOT be dropped - it stays and fails closed on the still-unsupported
+    // dynamic C2 write. Proving the fold never silently removes a loop whose array could be non-empty.
+    expect(() => compileString('contract C { mapping(address => bool) w;'
+      + ' function f() public { address[] memory a = new address[](0); a[0] = address(0);'
+      + ' for (uint256 i = 0; i < a.length; i++) { w[a[i]] = true; } require(true); } }',
+    { solidityImportCompat: true })).toThrow(/not yet compiled/);
+  });
+});

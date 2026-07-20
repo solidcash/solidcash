@@ -379,6 +379,14 @@ function compileResolvedAst(ast: Ast, code: string, mergedCompilerOptions: Compi
   // value; rewrite each `m[k]` use to the underlying mapping (or a branch/ternary) and drop the declaration.
   ast = ast.accept(new LowerMappingStorageAlias()) as Ast;
 
+  // Re-run the fixed-bound unroll AFTER inlining: a `new T[](N)` literal substituted for an array param at an
+  // inline site (`_updateJobWhitelist(id, allowed, new address[](0))`) now makes the loop bound compile-time
+  // constant. N==0 unrolls to zero iterations, eliminating the provably-dead loop before its body (e.g. a C2
+  // sorted-mapping write over the empty array) reaches the entry-slot pre-scan / codegen. The first pass (before
+  // inlining) can't see the literal, and everything it could unroll it already did, so this pass only fires on
+  // these post-inline new-array-bound loops.
+  ast = ast.accept(new UnrollFixedBoundEntryLoop()) as Ast;
+
   // A whole dynamic-array copy with a differing element type (`bytes10[] = bytes8[]`) desugars to a delete +
   // per-element casting push loop; must precede CacheDynamicArrayInLoop so the emitted push-in-loop is cached.
   ast = ast.accept(new DesugarDynamicArrayCopyCast()) as Ast;

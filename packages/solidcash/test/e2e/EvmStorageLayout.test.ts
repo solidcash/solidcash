@@ -495,3 +495,35 @@ describe('bool + enum packed slot fields (typed-cleaning round-trip)', () => {
     await (sc as any).readSlot(WORD).send();
   });
 });
+
+// Nested array-in-struct: `struct S { uint64[2] arr; uint256 x }` - arr occupies slot 0 (arr[0] bit0, arr[1]
+// bit64), x at slot 1. The write rebuilds `s = S([arr0', arr1'], s.x)` (ctor + array literal). (A top-level fixed
+// array OF structs is excluded - the SDK cannot yet auto-derive that state layout even without assembly.)
+const COMP_ARR_IN_STRUCT = `pragma solidcash >=0.8.0;
+contract C() {
+  struct S { uint64[2] arr; uint256 x; }
+  S s;
+  function setViaSlot(uint256 w, pubkey pk, sig sg) { require(checkSig(sg, pk)); assembly { sstore(s.slot, w) } }
+  function setFields(uint64 v0, uint64 v1, uint256 vx, pubkey pk, sig sg) {
+    require(checkSig(sg, pk));
+    this.s = S([v0, v1], vx);
+  }
+  function readSlot(uint256 e) { uint256 r = 0; assembly { r := sload(s.slot) } require(r == e); }
+  function readArr(uint256 e0, uint256 e1) { require(uint256(s.arr[0]) == e0); require(uint256(s.arr[1]) == e1); }
+  function readX(uint256 e) { require(s.x == e); }
+}`;
+
+describe('composite sub-slot: array-in-struct (full-value ctor+array-literal rebuild)', () => {
+  it('write-slot0 lands in s.arr[0]/s.arr[1], x (slot 1) preserved through the rebuild', async () => {
+    const sc = await deploy(COMP_ARR_IN_STRUCT);
+    await (sc as any).setFields(1n, 2n, 7n, alicePub, sig()).send();      // arr=[1,2], x=7
+    await (sc as any).setViaSlot(PACKED_MAX, alicePub, sig()).send();     // arr=[max,max] via slot 0
+    await (sc as any).readArr(U64MAX, U64MAX).send();                     // cross-check: slot write reached arr
+    await (sc as any).readX(7n).send();                                   // x read back unchanged in the rebuild
+  });
+  it('write-the-fields reads back through the combined slot-0 word', async () => {
+    const sc = await deploy(COMP_ARR_IN_STRUCT);
+    await (sc as any).setFields(U64MAX, U64MAX, 5n, alicePub, sig()).send();
+    await (sc as any).readSlot(PACKED_MAX).send();                        // sload combines arr[0] + arr[1]<<64
+  });
+});

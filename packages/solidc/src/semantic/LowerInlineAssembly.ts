@@ -10,7 +10,7 @@ import {
   StateAssignNode, StateAccessNode, StateVariableNode, ContractNode, BytesConcatNode, FunctionCallNode,
   SliceNode, CollectionNode, MappingAccessNode, MappingAssignNode, HexLiteralNode, NullaryOpNode, FieldAccessNode,
   ReturnNode, TupleAssignmentNode, LowLevelCallNode, NewArrayNode, EmitStatementNode, EventDefinitionNode,
-  InstantiationNode, TypeIntrospectionNode, ArrayAccessNode, ArrayAssignNode,
+  InstantiationNode, TypeIntrospectionNode, ArrayAccessNode, ArrayAssignNode, ArrayNode,
 } from '../ast/AST.js';
 import { BinaryOperator, UnaryOperator, NullaryOperator } from '../ast/Operator.js';
 import { cloneNode } from '../ast/clone.js';
@@ -482,51 +482,76 @@ function decomposeSlot(fields: SlotField[], valueExpr: YulExpressionNode, src: Y
 // A fixed struct/array state var at base slot p occupies slots [p, p+words). Its VALUE fields/elements pack into
 // those slots exactly as EVM lays them out (packWords). `sload(v.slot + i)` reads the packed word at relative
 // slot i, `sstore(v.slot + i, w)` writes it. SOUND by reduction: the read combines the high-level field/element
-// values into the word EVM's layout would hold; the write pushes the word's decomposed pieces back - a STRUCT via
-// the struct-ctor rebuild the AstBuilder emits for `s.f = v` (a value blob, never a raw slot; NESTED structs
-// rebuild recursively, exactly AstBuilder.rebuildStructWithChain), a fixed ARRAY via per-element ArrayAssign
-// (arrays have in-place element writes). Both reuse fieldAsWordFrom/castWordToFieldType (int/bytesN/UDVT + the
-// two's-complement byte trick). Scope: every LEAF field/element must be a supported fixed value type
-// (int/bytesN/UDVT-over-either); struct-in-struct nesting is walked recursively (a nested struct field starts a
-// fresh slot, EVM-exact). A fixed-ARRAY field inside a struct, an address, bool/enum, or dynamic field makes the
-// WHOLE composite fail closed (undefined) - unsound layout (a dynamic field holds a length/pointer) or the word
-// cast is not defined. `path` is the field-name chain from the composite base (`['inner','a']` for `s.inner.a`).
-interface CompLeaf { path: string[]; type: Type; slotOffset: bigint; bitOffset: bigint; bitWidth: bigint; }
+// values into the word EVM's layout would hold; the write REBUILDS the whole composite value with the slot-i
+// leaves replaced by the word's decomposed pieces (other members read back unchanged) and assigns it back in ONE
+// StateAssign - a struct becomes a ctor, a fixed array an array literal, recursively (exactly the value-rebuild
+// shape the AstBuilder emits for `s.f = v` / `a[i] = v`), so it flows through the proven struct/array value
+// storage path, never a raw slot. Both reuse fieldAsWordFrom/castWordToFieldType (int/bytesN/UDVT + the
+// two's-complement byte trick). Scope: every LEAF must be a supported fixed value type (int/bytesN/bool/enum/UDVT);
+// struct + fixed-array nesting is walked recursively (a nested composite member starts a fresh slot, EVM-exact).
+// An address or dynamic (bytes/string/mapping/dyn-array) field makes the WHOLE composite fail closed (undefined) -
+// unsound layout (a dynamic field holds a length/pointer) or the word cast is not defined. A `path` is the
+// field/index step chain from the composite base (`[{field:'inner'},{field:'a'}]`; `[{index:0},{field:'a'}]`).
+type PathStep = { field: string } | { index: number };
+interface CompLeaf { path: PathStep[]; type: Type; slotOffset: bigint; bitOffset: bigint; bitWidth: bigint; }
 
-// Recursively walk a struct into its packed value leaves (nested structs included). Value fields pack by byte
-// width within a slot; a nested STRUCT field starts a fresh slot and occupies its whole footprint, so the next
-// field resumes after it (EVM Types.cpp). Any non-value, non-struct field (fixed array, address, dynamic, ...)
-// fails the whole composite closed. Returns leaves + the number of whole slots the struct occupies.
-function structLeaves(t: StructType, basePath: string[]): { leaves: CompLeaf[]; words: bigint } | undefined {
+// Materialized-layout guard: a composite whose materialized leaves would exceed this fails closed (a top-level
+// fixed VALUE array is NOT materialized - compositeArraySlotElems handles it arithmetically - so only a large
+// array NESTED in a struct / array of structs is bounded here; those are small in practice).
+const COMPOSITE_LEAF_CAP = 4096;
+
+// Pack a sequence of members (a struct's fields or an array's elements) into EVM slots, recursively materializing
+// nested struct / fixed-array members. A value member packs by byte width; a composite member starts a fresh slot
+// and occupies its whole footprint (EVM Types.cpp). Fails closed on any unsupported leaf or if the leaf count
+// exceeds the cap. Returns leaves (relative slots from 0) + the whole-slot footprint.
+function packMembers(members: { path: PathStep[]; type: Type }[]): { leaves: CompLeaf[]; words: bigint } | undefined {
   const leaves: CompLeaf[] = [];
   let slot = 0n;
   let byteOff = 0;
-  for (const f of t.fields) {
-    const fieldPath = [...basePath, f.name];
-    if (f.type instanceof StructType) {
+  for (const m of members) {
+    if (m.type instanceof StructType || (m.type instanceof ArrayType && m.type.bound !== undefined)) {
       if (byteOff > 0) { slot += 1n; byteOff = 0; }
-      const sub = structLeaves(f.type, fieldPath);
+      const sub = materializeLeaves(m.type, m.path);
       if (!sub) return undefined;
       for (const l of sub.leaves) leaves.push({ ...l, slotOffset: l.slotOffset + slot });
+      if (leaves.length > COMPOSITE_LEAF_CAP) return undefined;
       slot += sub.words;
       continue;
     }
-    if (compositeSlotWords(f.type) > 0 || !isSupportedSlotField(f.type)) return undefined;
-    const w = valueByteWidth(f.type);
+    if (!isSupportedSlotField(m.type)) return undefined;
+    const w = valueByteWidth(m.type);
     if (byteOff + w > 32) { slot += 1n; byteOff = 0; }
-    leaves.push({
-      path: fieldPath, type: f.type, slotOffset: slot, bitOffset: BigInt(byteOff * 8), bitWidth: BigInt(w * 8),
-    });
+    leaves.push({ path: m.path, type: m.type, slotOffset: slot, bitOffset: BigInt(byteOff * 8), bitWidth: BigInt(w * 8) });
+    if (leaves.length > COMPOSITE_LEAF_CAP) return undefined;
     byteOff += w;
     if (byteOff >= 32) { slot += 1n; byteOff = 0; }
   }
   return { leaves, words: slot + (byteOff > 0 ? 1n : 0n) };
 }
 
-function compositeStructLeaves(sv: StateVariableNode): { root: StructType; leaves: CompLeaf[] } | undefined {
+// Materialize the packed value leaves of a fixed struct / fixed array type (nested composites walked recursively).
+function materializeLeaves(t: Type, basePath: PathStep[]): { leaves: CompLeaf[]; words: bigint } | undefined {
+  if (t instanceof StructType) {
+    return packMembers(t.fields.map((f) => ({ path: [...basePath, { field: f.name }], type: f.type })));
+  }
+  if (t instanceof ArrayType && t.bound !== undefined) {
+    if (t.bound > BigInt(COMPOSITE_LEAF_CAP)) return undefined; // huge array: fail closed (OOM guard)
+    const members: { path: PathStep[]; type: Type }[] = [];
+    for (let i = 0; i < Number(t.bound); i += 1) members.push({ path: [...basePath, { index: i }], type: t.elementType });
+    return packMembers(members);
+  }
+  return undefined;
+}
+
+// The materialized leaves of a composite STRUCT state var (its fields, incl. nested structs and fixed-array FIELDS,
+// walked recursively). A top-level fixed VALUE array is NOT handled here - compositeArraySlotElems does it
+// arithmetically (huge-bound-safe). A top-level fixed array OF STRUCTS is intentionally excluded: the SDK cannot
+// yet auto-derive that state-var layout at all (independent of assembly), so its slot access stays fail-closed
+// rather than compile to an unusable covenant. Returns the root type + leaves.
+function compositeLeaves(sv: StateVariableNode): { root: Type; leaves: CompLeaf[] } | undefined {
   const t = sv.type;
   if (!(t instanceof StructType)) return undefined;
-  const walked = structLeaves(t, []);
+  const walked = materializeLeaves(t, []);
   return walked ? { root: t, leaves: walked.leaves } : undefined;
 }
 
@@ -580,38 +605,55 @@ function decomposeWordPiece(
   return castWordToFieldType(type, field, src);
 }
 
-// The high-level read of a (possibly nested) field: `sv.path[0].path[1]...` = a FieldAccess chain on the state var.
-function readLeafPath(svName: string, path: string[], src: YulExpressionNode): ExpressionNode {
+// The high-level read of a (possibly nested) leaf: a FieldAccess/ArrayAccess chain on the state var, following the
+// path's field/index steps (`s.inner.a`, `s.arr[1]`, `ps[0].a`).
+function readLeafPath(svName: string, path: PathStep[], src: YulExpressionNode): ExpressionNode {
   let e: ExpressionNode = loc(new StateAccessNode(svName), src);
-  for (const step of path) e = loc(new FieldAccessNode(e, step), src);
+  for (const step of path) {
+    e = 'field' in step
+      ? loc(new FieldAccessNode(e, step.field), src)
+      : loc(new ArrayAccessNode(e, intLit(BigInt(step.index), src)), src);
+  }
   return e;
 }
 
-function pathStartsWith(path: string[], prefix: string[]): boolean {
-  return prefix.length <= path.length && prefix.every((p, i) => path[i] === p);
+function stepEq(a: PathStep, b: PathStep): boolean {
+  return 'field' in a ? ('field' in b && a.field === b.field) : (!('field' in b) && a.index === b.index);
+}
+function pathStartsWith(path: PathStep[], prefix: PathStep[]): boolean {
+  return prefix.length <= path.length && prefix.every((p, i) => stepEq(p, path[i]));
 }
 
-// Rebuild a struct value with the leaves at relative slot `rel` replaced by the word temp's decomposed pieces
-// (other fields read back unchanged). Recurses into a nested struct field only when one of ITS leaves is at slot
-// `rel` (else the whole nested struct is read back). This is exactly AstBuilder.rebuildStructWithChain, so the
-// result flows through the proven struct-value storage path.
-function rebuildStructAtSlot(
-  svName: string, t: StructType, basePath: string[], rel: bigint, leaves: CompLeaf[],
-  tempName: string, src: YulExpressionNode,
+// Build a member's value for a slot-`rel` rebuild: a value LEAF at slot `rel` is the word's decomposed piece, any
+// other leaf is read back; a COMPOSITE member is rebuilt recursively (ctor for a struct, array literal for a fixed
+// array) only when one of ITS leaves is at `rel`, else the whole member is read back unchanged. Emits only proven
+// high-level AST (nested ctors + array literals + FieldAccess/ArrayAccess reads), so it flows through the normal
+// value storage path.
+function buildMember(
+  svName: string, t: Type, path: PathStep[], rel: bigint, leaves: CompLeaf[], tempName: string, src: YulExpressionNode,
 ): ExpressionNode {
-  const args = t.fields.map((f) => {
-    const fieldPath = [...basePath, f.name];
-    if (f.type instanceof StructType) {
-      return leaves.some((l) => l.slotOffset === rel && pathStartsWith(l.path, fieldPath))
-        ? rebuildStructAtSlot(svName, f.type, fieldPath, rel, leaves, tempName, src)
-        : readLeafPath(svName, fieldPath, src);
+  const isComposite = t instanceof StructType || (t instanceof ArrayType && t.bound !== undefined);
+  if (isComposite) {
+    if (!leaves.some((l) => l.slotOffset === rel && pathStartsWith(l.path, path))) {
+      return readLeafPath(svName, path, src); // no leaf here is at the target slot: read the whole member back
     }
-    const leaf = leaves.find((l) => l.path.length === fieldPath.length && pathStartsWith(l.path, fieldPath));
-    return leaf && leaf.slotOffset === rel
-      ? decomposeWordPiece(tempName, leaf.type, leaf.bitOffset, leaf.bitWidth, src)
-      : readLeafPath(svName, fieldPath, src);
-  });
-  return loc(new FunctionCallNode(loc(new IdentifierNode(t.name), src), args), src);
+    if (t instanceof StructType) {
+      const args = t.fields.map((f) => buildMember(
+        svName, f.type, [...path, { field: f.name }], rel, leaves, tempName, src,
+      ));
+      return loc(new FunctionCallNode(loc(new IdentifierNode(t.name), src), args), src);
+    }
+    const at = t as ArrayType;
+    const els: ExpressionNode[] = [];
+    for (let i = 0; i < Number(at.bound!); i += 1) {
+      els.push(buildMember(svName, at.elementType, [...path, { index: i }], rel, leaves, tempName, src));
+    }
+    return loc(new ArrayNode(els), src);
+  }
+  const leaf = leaves.find((l) => l.path.length === path.length && pathStartsWith(l.path, path));
+  return leaf && leaf.slotOffset === rel
+    ? decomposeWordPiece(tempName, leaf.type, leaf.bitOffset, leaf.bitWidth, src)
+    : readLeafPath(svName, path, src);
 }
 
 // sload(sv.slot + rel): combine the composite's value fields/elements at relative slot `rel` into a word.
@@ -621,9 +663,9 @@ function combineCompositeSlot(sv: StateVariableNode, rel: bigint, src: YulExpres
   const shifted = (word: ExpressionNode, bitOffset: bigint): ExpressionNode => (bitOffset === 0n
     ? word
     : loc(new BinaryOpNode(word, BinaryOperator.MUL, intLit(2n ** bitOffset, src)), src));
-  const struct = compositeStructLeaves(sv);
-  if (struct) {
-    const at = struct.leaves.filter((l) => l.slotOffset === rel);
+  const ml = compositeLeaves(sv);
+  if (ml) {
+    const at = ml.leaves.filter((l) => l.slotOffset === rel);
     if (at.length === 0) return undefined; // padding-only / out-of-range slot: fail closed
     return combine(at.map((l) => shifted(fieldAsWordFrom(readLeafPath(sv.name, l.path, src), l.type, src), l.bitOffset)));
   }
@@ -637,21 +679,22 @@ function combineCompositeSlot(sv: StateVariableNode, rel: bigint, src: YulExpres
   return undefined;
 }
 
-// sstore(sv.slot + rel, word): write the word's decomposed pieces into the composite's slot-`rel` fields. A
-// STRUCT rebuilds its value with the slot-rel fields replaced (other fields read back unchanged) in ONE
-// StateAssign - the AstBuilder's `s.f = v` shape. A fixed ARRAY writes each slot-rel element in place
-// (ArrayAssign; arrays have per-element write codegen, no whole-value rebuild needed).
+// sstore(sv.slot + rel, word): write the word's decomposed pieces into the composite's slot-`rel` leaves. A
+// materialized composite (struct / array-of-composite) REBUILDS the whole value with the slot-rel leaves replaced
+// (others read back) in ONE StateAssign (buildMember: nested ctors + array literals - the AstBuilder's own
+// value-rebuild shape). A top-level fixed VALUE array writes each slot-rel element in place (ArrayAssign; arrays
+// have per-element write codegen, no whole-value rebuild needed).
 function decomposeCompositeSlot(
   sv: StateVariableNode, rel: bigint, valueExpr: YulExpressionNode, src: YulExpressionNode,
 ): StatementNode | undefined {
   const tempName = '__yul_slot';
-  const struct = compositeStructLeaves(sv);
-  if (struct) {
-    if (!struct.leaves.some((l) => l.slotOffset === rel)) return undefined; // no field in this slot: fail closed
-    const ctor = rebuildStructAtSlot(sv.name, struct.root, [], rel, struct.leaves, tempName, src);
+  const ml = compositeLeaves(sv);
+  if (ml) {
+    if (!ml.leaves.some((l) => l.slotOffset === rel)) return undefined; // no leaf in this slot: fail closed
+    const value = buildMember(sv.name, ml.root, [], rel, ml.leaves, tempName, src);
     return loc(new BlockNode([
       loc(new VariableDefinitionNode(UINT256, [], tempName, lowerValue(valueExpr)), src),
-      loc(new StateAssignNode(sv.name, ctor), src),
+      loc(new StateAssignNode(sv.name, value), src),
     ]), src);
   }
   const arr = compositeArraySlotElems(sv, rel);

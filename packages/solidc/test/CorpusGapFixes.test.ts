@@ -403,9 +403,14 @@ describe('composite sub-slot field access (sload/sstore on a value-field struct 
       + ' function f() public returns (uint r) { assembly { sstore(s.slot, 7) r := sload(s.slot) } require(true); } }'))
       .toBe('C');
   });
-  it('a fixed-ARRAY field inside a struct fails closed (nested arrays not yet in scope)', () => {
-    expect(() => compileString('contract C { struct S { uint64[2] arr; uint256 x; } S s;'
-      + ' function f() public returns (uint r) { assembly { r := sload(s.slot) } require(true); } }',
+  it('reads and writes a struct with a fixed-ARRAY field (nested array-in-struct)', () => {
+    expect(ok('contract C { struct S { uint64[2] arr; uint256 x; } S s;'
+      + ' function f() public returns (uint r) { assembly { sstore(s.slot, 7) r := sload(s.slot) } require(true); } }'))
+      .toBe('C');
+  });
+  it('a top-level fixed array OF structs fails closed (SDK cannot derive that state layout)', () => {
+    expect(() => compileString('contract C { struct P { uint64 a; uint64 b; } P[2] ps;'
+      + ' function f() public returns (uint r) { assembly { r := sload(ps.slot) } require(true); } }',
     { solidityImportCompat: true })).toThrow(/inline assembly/i);
   });
   it('reads and writes a packed slot with bool + enum fields', () => {

@@ -3,7 +3,7 @@ import { compileString } from 'solidc';
 import { binToHex, hexToBin, hash160 } from '@bitauth/libauth';
 import { ethers } from 'ethers';
 import { secp256k1 } from '@noble/curves/secp256k1';
-import { SHARED_LIBRARY_SALT, ecrecoverComputeLockingBytecode } from '@solidcash/utils';
+import { SHARED_LIBRARY_SALT, ecrecoverComputeLockingBytecode, keccakComputeLockingBytecode } from '@solidcash/utils';
 import { Contract, TransactionBuilder, MockNetworkProvider } from '../../src/index.js';
 import { randomUtxo } from '../../src/utils.js';
 import { computeEcrecoverWitness } from '../../src/ecrecover/ecrecoverRecovery.js';
@@ -31,6 +31,17 @@ async function deployPair(provider: MockNetworkProvider, salt: Uint8Array, n: nu
         token: { category: SIDECAR_CAT, amount: 0n, nft: { capability: 'mutable', commitment: '' } },
       });
     }
+  }
+}
+
+// ecrecoverEvm ALSO co-spends a keccak side-car (over the uncompressed key) per call.
+async function deployKeccak(provider: MockNetworkProvider, salt: Uint8Array, n: number): Promise<void> {
+  const lock = binToHex(keccakComputeLockingBytecode(salt));
+  for (let i = 0; i < n; i++) {
+    await provider.addUtxo(lock, {
+      ...randomUtxo({ satoshis: 100_000n }),
+      token: { category: SIDECAR_CAT, amount: 0n, nft: { capability: 'mutable', commitment: '' } },
+    });
   }
 }
 
@@ -192,4 +203,42 @@ describe('ecrecoverPubKey recovery side-car (compiler + SDK + VM e2e)', () => {
     expect(tx.txid).toMatch(/^[0-9a-f]{64}$/);
   });
 
+  // ecrecoverEvm: the recovered pubkey projected to the 20-byte EVM address = keccak256(uncompressed key)[12:]. This
+  // co-spends the recovery pair AND a keccak side-car (over the uncompressed key), bound by compress(preimage) == Q.
+  const EVM = `
+  contract AuthEvm(bytes20 owner) {
+      function verify(bytes32 h, int v, bytes32 r, bytes32 s) {
+          require(ecrecoverEvm(h, v, r, s) == owner);
+      }
+  }`;
+  it('ecrecoverEvm: recovers the signer EVM address (keccak256(uncompressed)[12:], == ethers/Solidity)', async () => {
+    const artifact = compileString(EVM);
+    expect(artifact.abi.find((fn) => fn.name === 'verify')?.ecrecoverEvmFlags).toEqual([true]);
+    const provider = new MockNetworkProvider();
+    const { h, v, r, s, wallet } = await recovery('evm');
+    const owner = hexToBin(wallet.address.slice(2));  // the signer's 20-byte EVM address (what Solidity ecrecover gives)
+    const contract = new Contract(artifact, [owner], { provider });
+    await provider.addUtxo(contract.address, randomUtxo({ satoshis: 1_000_000n }));
+    await deployPair(provider, SHARED_LIBRARY_SALT, 1);
+    await deployKeccak(provider, SHARED_LIBRARY_SALT, 1);
+    const tx = await new TransactionBuilder({ provider })
+      .addInputs(await contract.getUtxos(), contract.unlock.verify(h, v, r, s))
+      .addOutput({ to: contract.address, amount: 800_000n })
+      .send();
+    expect(tx.txid).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it('ecrecoverEvm: rejects a wrong EVM address', async () => {
+    const artifact = compileString(EVM);
+    const provider = new MockNetworkProvider();
+    const { h, v, r, s } = await recovery('evm-neg');
+    const contract = new Contract(artifact, [new Uint8Array(20)], { provider });  // zero address, not the signer
+    await provider.addUtxo(contract.address, randomUtxo({ satoshis: 1_000_000n }));
+    await deployPair(provider, SHARED_LIBRARY_SALT, 1);
+    await deployKeccak(provider, SHARED_LIBRARY_SALT, 1);
+    await expect(new TransactionBuilder({ provider })
+      .addInputs(await contract.getUtxos(), contract.unlock.verify(h, v, r, s))
+      .addOutput({ to: contract.address, amount: 800_000n })
+      .send()).rejects.toThrow();
+  });
 });

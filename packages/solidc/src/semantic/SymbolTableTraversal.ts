@@ -1444,7 +1444,11 @@ export default class SymbolTableTraversal extends AstTraversal {
     // PAIR (A checkpoints, B finishes -> pubkey) per call. Slot-per-call: N calls -> 2N side-cars. See docs/ecrecover.md.
     if (node.body) {
       const eCalls = this.countEcrecoverCalls(node.body);
-      if (eCalls >= 1) { node.ecrecoverCompute = true; node.ecrecoverCallCount = eCalls; }
+      if (eCalls >= 1) {
+        node.ecrecoverCompute = true; node.ecrecoverCallCount = eCalls;
+        const evmCalls = this.countEcrecoverCalls(node.body, false, true);
+        if (evmCalls >= 1) node.ecrecoverEvmCallCount = evmCalls;
+      }
     }
 
     // Entry slot pre-scan: collect unique (collection, keyParam) pairs and assign slot indices
@@ -2796,7 +2800,7 @@ export default class SymbolTableTraversal extends AstTraversal {
   // True if any keccak256 call sits inside a loop (all `for`/`while` desugar to While/DoWhile). Used to flag
   // runtime-variable keccak strain so the SDK over-provisions side-cars beyond the syntactic call count.
   // Count ecrecoverPubKey / ecrecoverP2pkh / ecrecoverEvm call sites (each = one recovery side-car pair).
-  private countEcrecoverCalls(node: Node, inLoop = false): number {
+  private countEcrecoverCalls(node: Node, inLoop = false, evmOnly = false): number {
     let count = 0;
     if (node instanceof FunctionCallNode && (
       node.identifier.name === GlobalFunction.ECRECOVER_PUBKEY
@@ -2808,15 +2812,15 @@ export default class SymbolTableTraversal extends AstTraversal {
         throw new Error('ecrecoverPubKey is not yet supported inside a loop: each iteration needs its own recovery '
           + 'side-car pair (the dynamic-loop model is not wired). Unroll the calls or hoist them out of the loop.');
       }
-      count += 1;
+      if (!evmOnly || node.identifier.name === GlobalFunction.ECRECOVER_EVM) count += 1;
     }
     const childInLoop = inLoop
       || node instanceof WhileNode || node instanceof DoWhileNode || node instanceof CollectionIterationNode;
     for (const [key, value] of Object.entries(node)) {
       if (RESOLVED_BACKREF_KEYS.has(key)) continue;
-      if (value instanceof Node) count += this.countEcrecoverCalls(value, childInLoop);
+      if (value instanceof Node) count += this.countEcrecoverCalls(value, childInLoop, evmOnly);
       else if (Array.isArray(value)) {
-        for (const item of value) if (item instanceof Node) count += this.countEcrecoverCalls(item, childInLoop);
+        for (const item of value) if (item instanceof Node) count += this.countEcrecoverCalls(item, childInLoop, evmOnly);
       }
     }
     return count;

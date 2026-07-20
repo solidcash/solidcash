@@ -1494,7 +1494,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (node.keccakCompute) node.keccakPreimageParams = [];
     // Same for ecrecoverPubKey: emitEcrecoverComputeCall pushes one arg-param entry per call; without this reset the
     // index (its length) accumulates across passes and the second pass reads a nonexistent block slot (2*i overflow).
-    if (node.ecrecoverCompute) node.ecrecoverArgParams = [];
+    if (node.ecrecoverCompute) { node.ecrecoverArgParams = []; node.ecrecoverEvmFlags = []; }
     this.pendingStateWrites = new Map();
     this.pendingEntryWrites = new Map();
     this.pendingEntryDeletes = new Set();
@@ -4303,24 +4303,31 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    */
   private emitEcrecoverComputeCall(node: FunctionCallNode): Node {
     const loc = { location: node.location, positionHint: PositionHint.END };
-    // ecrecoverEvm needs keccak256(uncompressed pubkey)[12:] - a keccak compute co-spend on the recovered key,
-    // not yet wired. Fail loud rather than return a wrong-width value. Use ecrecoverPubKey or ecrecoverP2pkh.
-    if (node.identifier.name === GlobalFunction.ECRECOVER_EVM) {
-      throw new Error('ecrecoverEvm (recover to a 20-byte EVM address) is not yet implemented; it needs a keccak256 '
-        + 'projection of the recovered key. Use ecrecoverPubKey (compressed pubkey) or ecrecoverP2pkh (BCH address).');
-    }
+    const isEvm = node.identifier.name === GlobalFunction.ECRECOVER_EVM;
     const fn = this.currentFunction;
     const i = (fn.ecrecoverArgParams ??= []).length;
     fn.ecrecoverArgParams.push(node.parameters.map((p) => (p instanceof IdentifierNode
       && fn.parameters.some((fp) => fp.name === p.name)) ? p.name : null));
+    (fn.ecrecoverEvmFlags ??= []).push(isEvm);
     // A/B side-car index. Stateful contracts use absolute block-layout slots (2i, 2i+1). Stateless contracts have no
     // block layout: the 2N recovery side-cars are the LAST 2N inputs, read count-relative (countOp - offsetFromEnd).
+    // ecrecoverEvm ALSO co-spends a keccak side-car; the E keccak side-cars are appended AFTER all 2N recovery pairs,
+    // so every recovery offset-from-end is shifted by E (the recovery pairs are no longer the very last inputs).
     const n = fn.ecrecoverCallCount ?? 1;
+    const E = fn.ecrecoverEvmCallCount ?? 0;
     const slotIdx = (role: 'A' | 'B', isOutput = false): void => {
       if (fn.blockLayout) { this.emitBlockSlotIndex('ecrecoverSideCar', role === 'A' ? 2 * i : 2 * i + 1, loc); return; }
-      const offset = role === 'A' ? 2 * n - 2 * i : 2 * n - 2 * i - 1;
+      const offset = (role === 'A' ? 2 * n - 2 * i : 2 * n - 2 * i - 1) + E;
       this.emit(isOutput ? Op.OP_TXOUTPUTCOUNT : Op.OP_TXINPUTCOUNT, loc);
       this.emit(encodeInt(BigInt(offset)), loc);
+      this.emit(Op.OP_SUB, loc);
+    };
+    // Keccak side-car index for THIS evm call (evm ordinal j): the E keccak side-cars are the last E inputs/outputs,
+    // so offset-from-end = E - j (j=0 is the first evm call, deepest of the E; j=E-1 is the very last input/output).
+    const j = isEvm ? fn.ecrecoverEvmFlags.slice(0, -1).filter(Boolean).length : 0;
+    const keccakIdx = (isOutput = false): void => {
+      this.emit(isOutput ? Op.OP_TXOUTPUTCOUNT : Op.OP_TXINPUTCOUNT, loc);
+      this.emit(encodeInt(BigInt(E - j)), loc);
       this.emit(Op.OP_SUB, loc);
     };
     const raw = new BytesType();
@@ -4362,11 +4369,33 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_DROP, loc); // [parity, Qx32LE]
     this.emit(Op.OP_REVERSEBYTES, loc); this.emit(Op.OP_CAT, loc);          // [pubkey33]
 
-    // 5. project: pubkey = the compressed key; p2pkh = 0x76a914 || hash160(key) || 0x88ac
+    // 5. project: pubkey = the compressed key; p2pkh = 0x76a914 || hash160(key) || 0x88ac; evm = keccak256(key)[12:]
     if (node.identifier.name === GlobalFunction.ECRECOVER_P2PKH) {
       this.emit(Op.OP_HASH160, loc);
       this.emit(hexToBin('76a914'), loc); this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_CAT, loc);
       this.emit(hexToBin('88ac'), loc); this.emit(Op.OP_CAT, loc);
+    } else if (isEvm) {
+      // Read the co-spent keccak side-car's preimage P (the uncompressed key), BIND compress(P) == Q (so the keccak is
+      // over the genuinely-recovered key), integrity-check the keccak covenant, and take keccak256(P)[12:] as the addr.
+      keccakIdx(); this.emit(Op.OP_INPUTBYTECODE, loc);                        // [Q, U_k]
+      this.emitGenericPushdataDecode(raw, loc); this.emit(Op.OP_NIP, loc);    // [Q, restK]  (drop the budget pad)
+      this.emitGenericPushdataDecode(raw, loc);                              // [Q, P, redeempush]
+      this.emit(Op.OP_TOALTSTACK, loc);                                      // [Q, P]  (stash the redeem push)
+      // compress(P) = (0x02 + (Y_last & 1)) || X ;  X = P[0:32], Y = P[32:64] (big-endian)
+      this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc);           // [Q, X, Y]
+      this.emit(encodeInt(31n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_NIP, loc); // [Q, X, Y_last]
+      this.emit(hexToBin('01'), loc); this.emit(Op.OP_AND, loc);             // [Q, X, parity(0x00/0x01)]
+      this.emit(Op.OP_BIN2NUM, loc); this.emit(encodeInt(2n), loc); this.emit(Op.OP_ADD, loc);
+      this.emit(encodeInt(1n), loc); this.emit(Op.OP_NUM2BIN, loc);          // [Q, X, parity_byte(0x02/0x03)]
+      this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_CAT, loc);                 // [Q, parity_byte||X = compress]
+      this.emit(Op.OP_EQUALVERIFY, loc);                                     // bind compress(P) == Q -> []
+      this.emit(Op.OP_FROMALTSTACK, loc);                                    // [redeempush]
+      dropFirst(3); dropFirst(KECCAK256_COMPUTE_SALT_PREFIX_LENGTH);         // -> keccak covenant
+      this.emit(Op.OP_HASH256, loc);
+      this.emit(hexToBin(KECCAK256_COMPUTE_COVENANT_HASH), loc);
+      this.emit(Op.OP_EQUALVERIFY, loc);                                     // keccak covenant integrity
+      keccakIdx(true); this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, loc);          // [R = keccak256(P)]
+      this.emit(encodeInt(12n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_NIP, loc); // [R[12:32] = addr20]
     }
     this.popFromStack(4);            // consume the 4 arg entries (the introspection above is net stack-neutral)
     this.pushToStack('(value)');

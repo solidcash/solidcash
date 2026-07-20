@@ -64,6 +64,7 @@ export interface EcrecoverWitness {
   checkpoints: Uint8Array[];  // cumulative Jacobian ladder state (99 B each) at every step, for any split point
   zinv: Uint8Array;           // Z^-1 of the final Jacobian point (affine conversion witness for B), as a VM number
   compressedQ: Uint8Array;    // 34-byte recovered pubkey commitment: parity(0x02/0x03) || Qx (33-byte LE VM number)
+  uncompressedPubkey: Uint8Array; // 64-byte Qx||Qy big-endian (the EVM keccak preimage; no 0x04 prefix)
   argBlob: Uint8Array;        // hash(32) || v(1) || r(32) || s(32) LE - what the master binds
 }
 
@@ -106,7 +107,11 @@ export function computeEcrecoverWitness(hash: Uint8Array, v: number, r: Uint8Arr
   const compressedQ = new Uint8Array(34);
   compressedQ[0] = 2 + Number(Qy & 1n);
   compressedQ.set(to33(Qx), 1);
+  // the uncompressed pubkey (Qx || Qy, 32-byte big-endian each, NO 0x04 prefix) = the EVM keccak preimage; ecrecoverEvm
+  // co-spends a keccak side-car over this and the master binds compress(it) == the recovered compressed key.
+  const to32BE = (x: bigint): Uint8Array => { const b = new Uint8Array(32); for (let i = 31; i >= 0; i--, x >>= 8n) b[i] = Number(x & 0xffn); return b; };
+  const uncompressedPubkey = new Uint8Array(64); uncompressedPubkey.set(to32BE(Qx), 0); uncompressedPubkey.set(to32BE(Qy), 32);
   const vmNum = (x: bigint): Uint8Array => { if (x === 0n) return new Uint8Array(0); const b: number[] = []; let n = x; while (n > 0n) { b.push(Number(n & 0xffn)); n >>= 8n; } if (b[b.length - 1] & 0x80) b.push(0); return Uint8Array.from(b); };
   const argBlob = new Uint8Array(97); argBlob.set(hash, 0); argBlob[32] = v; argBlob.set(r, 33); argBlob.set(s, 65);
-  return { negZ: mod(-z, N), rr, ss, recPar: BigInt(rec & 1), rinv, Ry, phiRx, t1a, t2a, t1b, t2b, masks, table, invb, start, checkpoints, zinv: vmNum(inv(acc[2], P)), compressedQ, argBlob };
+  return { negZ: mod(-z, N), rr, ss, recPar: BigInt(rec & 1), rinv, Ry, phiRx, t1a, t2a, t1b, t2b, masks, table, invb, start, checkpoints, zinv: vmNum(inv(acc[2], P)), compressedQ, uncompressedPubkey, argBlob };
 }

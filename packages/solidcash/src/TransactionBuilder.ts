@@ -275,21 +275,30 @@ export class TransactionBuilder {
     for (const input of [...this.inputs]) {
       if (!isUnlockableUtxo(input) || !isContractUnlocker(input.unlocker)) continue;
       const abiFn = input.unlocker.abiFunction as typeof input.unlocker.abiFunction
-        & { ecrecoverCompute?: boolean; ecrecoverArgParams?: readonly (readonly (string | null)[])[] };
+        & { ecrecoverCompute?: boolean; ecrecoverArgParams?: readonly (readonly (string | null)[])[]; ecrecoverEvmFlags?: readonly boolean[] };
       if (!abiFn.ecrecoverCompute) continue;
       const salt = input.token?.category ? hexToBin(input.token.category) : SHARED_LIBRARY_SALT;
       const unlocker = input.unlocker as unknown as { abiFunction: { inputs: readonly { name: string }[] }; params: unknown[] };
       const paramAt = (p: string | null): unknown => (p ? unlocker.params[unlocker.abiFunction.inputs.findIndex((x) => x.name === p)] : undefined);
       const bytesAt = (p: string | null): Uint8Array | undefined => { const v = paramAt(p); return v instanceof Uint8Array ? v : undefined; };
-      for (const [hp, vp, rp, sp] of abiFn.ecrecoverArgParams ?? []) {
+      const calls = abiFn.ecrecoverArgParams ?? [];
+      const evmFlags = abiFn.ecrecoverEvmFlags ?? [];
+      const evmPreimages: Uint8Array[] = [];   // uncompressed keys for the trailing keccak side-cars (one per evm call)
+      for (let c = 0; c < calls.length; c++) {
+        const [hp, vp, rp, sp] = calls[c];
         const hash = bytesAt(hp), r = bytesAt(rp), s = bytesAt(sp), vRaw = paramAt(vp);
         const v = typeof vRaw === 'bigint' ? Number(vRaw) : (vRaw instanceof Uint8Array ? vRaw[0] : NaN);
         if (!hash || !r || !s || Number.isNaN(v)) {
           throw new Error('ecrecoverPubKey requires direct (hash, v, r, s) parameters for the auto co-spend; '
             + 'a computed argument needs an explicit recovery co-spend.');
         }
-        await this.addEcrecoverComputeCoSpend(computeEcrecoverWitness(hash, v, r, s), salt);
+        const wit = computeEcrecoverWitness(hash, v, r, s);
+        await this.addEcrecoverComputeCoSpend(wit, salt);
+        if (evmFlags[c]) evmPreimages.push(wit.uncompressedPubkey);
       }
+      // ecrecoverEvm: after ALL recovery pairs, co-spend one keccak side-car per evm call (over the uncompressed key),
+      // in evm-call order. The contract binds compress(preimage) == the recovered key and reads keccak256(key)[12:].
+      for (const preimage of evmPreimages) await this.addKeccakComputeCoSpend(preimage, { salt });
     }
     return this;
   }

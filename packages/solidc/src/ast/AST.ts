@@ -341,6 +341,9 @@ export class FunctionDefinitionNode extends Node implements Named {
   ecrecoverArgParams?: ((string | null)[])[]; // per ecrecoverPubKey call (codegen emission order): the [hash,v,r,s]
                                 // param names feeding it (SDK transparent co-spend); null entry = not a direct param
   ecrecoverCallCount?: number;  // number of ecrecoverPubKey calls (stateless count-relative side-car indexing)
+  ecrecoverEvmCallCount?: number; // number of ecrecoverEvm calls; each ALSO co-spends a keccak side-car (over the
+                                // uncompressed key), appended after all recovery pairs (shifts recovery offsets by E)
+  ecrecoverEvmFlags?: boolean[]; // per ecrecover call (emission order): is it the evm projection? (SDK keccak co-spend)
   unsafeTier?: number;          // 0, 1, or 2 (only set when UNSAFE modifier present)
   splitCountParam?: string;     // parameter name for split count
   mergeCountParam?: string;     // parameter name for merge count

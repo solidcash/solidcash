@@ -96,6 +96,43 @@ describe('typed COMPUTED per-iteration external dispatch (IFoo(pairFor(path[i], 
   });
 });
 
+describe('computed-target loop rewrite - collect-phase robustness (compile + witness synthesis)', () => {
+  const PRE = `pragma solidcash >=0.8.0;
+interface IFoo { function m(int x) external; }
+interface IPair { function swap(int a, int b) external; }
+library L { function pairFor(address a, address b) internal pure returns (address) {
+  return address(uint160(uint256(uint160(a)) + uint256(uint160(b)))); } }`;
+  const witnesses = (src: string): string[] => {
+    const art = compileString(src);
+    return [...new Set(art.abi.flatMap((f) => (f.inputs ?? []).map((i) => i.name)
+      .filter((n) => n.startsWith('__internal__loopTargets'))))];
+  };
+  it('two computed-target loops in one function get independent witnesses (loopTargets0 + loopTargets1)', () => {
+    expect(witnesses(`${PRE}\ncontract C() { function run(address[] p, int x) {`
+      + ' for (uint i=0;i<p.length-1;i++){ IFoo(L.pairFor(p[i],p[i+1])).m(x); }'
+      + ' for (uint j=0;j<p.length-1;j++){ IFoo(L.pairFor(p[j],p[j+1])).m(x); } } }'))
+      .toEqual(['__internal__loopTargets0', '__internal__loopTargets1']);
+  });
+  it('single-use pair-local resolves a tuple-bind receiver ((input,output)=(p[i],p[i+1]))', () => {
+    expect(witnesses(`${PRE}\ncontract C() { function run(address[] p, int x) {`
+      + ' for (uint i=0;i<p.length-1;i++){ (address input,address output)=(p[i],p[i+1]);'
+      + ' IPair pair = IPair(L.pairFor(input,output)); pair.swap(x,x); } } }'))
+      .toEqual(['__internal__loopTargets0']);
+  });
+  it('a computed-target loop coexists with a separate direct external call (only the loop is rewritten)', () => {
+    expect(witnesses(`${PRE}\ncontract C() { address other; function run(address[] p, int x) {`
+      + ' for (uint i=0;i<p.length-1;i++){ IFoo(L.pairFor(p[i],p[i+1])).m(x); } IFoo(other).m(x); } }'))
+      .toEqual(['__internal__loopTargets0']);
+  });
+  it('two single-use pair-locals in one loop get independent witnesses', () => {
+    expect(witnesses(`${PRE}\ncontract C() { function run(address[] p, int x) {`
+      + ' for (uint i=0;i<p.length-1;i++){'
+      + ' IPair pair0 = IPair(L.pairFor(p[i],p[i+1])); pair0.swap(x,x);'
+      + ' IPair pair1 = IPair(L.pairFor(p[i+1],p[i])); pair1.swap(x,x); } } }'))
+      .toEqual(['__internal__loopTargets0', '__internal__loopTargets1']);
+  });
+});
+
 describe('typed COMPUTED loop, single-use LOCAL receiver (IPair pair = IPair(pairFor(..)); pair.swap())', () => {
   it('rewrites the call + neutralizes the dead init to the same witness; co-spends + validates', async () => {
     const tb = await buildTx([OP_TRUE, OP_TRUE], PAIRLOCAL_SRC);

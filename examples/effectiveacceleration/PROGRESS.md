@@ -252,3 +252,15 @@ DEEP compiler regressions in the C2/block-layout codegen (NOT harness gaps), bot
 So the drop-in harness + real cross-compilation pipeline are proven for the 17 compiling files; the marketplace.test.ts
 fixture stays blocked on the real MarketplaceV1 compiling (still needs the entry[0] + _balances C2 fixes). The
 `contracts-scash/` stubs remain as the fallback for the test until then (kept, per "do not delete the shims").
+
+## 2026-07-20 (cont) - RECONCILED to 14/15: all 4 Marketplace cross-compile
+User: "attempt to fix this yourself." The 10/15 was a compiler REGRESSION (not options - all historical drivers use
+the same `{solidityImportCompat:true}`). Peeled the Marketplace whitelistWorkers -> entry[0] -> `new address[](1)`
+-> nested-write chain (commit 6275653c, 3 linked fixes in UnrollFixedBoundEntryLoop + GTT): hasMappingWrite now
+detects nested/multi-key mapping writes (the key fix), mutatedNames excludes only length-changing ops (push/pop/
+delete, not element writes - so `new address[](1); a[0]=w;` folds), and the GTT branch mapping-write pre-allocation
+skips inLoop slots (fixes "Block slot not found: entry[0]" in publishJobPost). **All 4 Marketplace (V1/V2/V3/DataV1)
+now cross-compile; bench 14/15, only EACCToken `_balances` (multitransfer C2 RMW-loop) remains.** solidc 2210 green.
+`node tasks/compile-real.mjs` now emits real Marketplace artifacts too, so the marketplace.test.ts fixture can begin
+moving off the MarketplaceV1/DataV1 stubs (runtime deploy of the real Marketplace is the next validation step; the
+deep msg.sender/events-in-delegatecall runtime walls from earlier this session still apply to a real deploy).

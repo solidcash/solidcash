@@ -54,6 +54,7 @@ import {
   bigIntToVmNumber,
   vmNumberToBigInt,
   utf8ToBin,
+  lockingBytecodeToCashAddress,
 } from '@bitauth/libauth';
 import { Contract } from '../Contract.js';
 import { SortedList, keyToSlot, keyToSlotMulti, bytesToSlotValue, headSentinelCommitment, encodeEntryCommitment } from './SortedList.js';
@@ -86,6 +87,7 @@ import { AbiToFunctionMap } from '../types/type-inference.js';
 import { StateGetterMap, StateValueType } from '../types/state-inference.js';
 import {
   addressToLockScript, findLastIndex, generateLibauthSourceOutputs, scriptToAddress, scriptToLockingBytecode,
+  getNetworkPrefix,
 } from '../utils.js';
 import NetworkProvider from '../network/NetworkProvider.js';
 
@@ -1044,8 +1046,19 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
   private _buildNamespaces(contract: Contract<TArtifact>): void {
     this.state = {} as StateGetterMap<TArtifact>;
     for (const variable of contract.stateLayout!.variables) {
+      const isAddress = variable.type === 'address';
       // @ts-ignore - dynamic property assignment for type-safe getters
-      this.state[variable.name] = async (): Promise<any> => (await this.getState())[variable.name];
+      this.state[variable.name] = async (): Promise<any> => {
+        const value = (await this.getState())[variable.name];
+        // Solidity/ethers-parity: an `address` getter resolves the stored P2PKH lockscript to its CashAddress, so
+        // `owner() == signer.getAddress()` compares like-for-like (both p2pkh addresses). A non-lockscript byte
+        // value (e.g. a raw 20-byte hex address stored verbatim) is left unchanged.
+        if (isAddress && value instanceof Uint8Array) {
+          const res = lockingBytecodeToCashAddress({ bytecode: value, prefix: getNetworkPrefix(this.inner.provider.network) });
+          if (typeof res !== 'string') return res.address;
+        }
+        return value;
+      };
     }
     // Solidity-getter parity for mappings: `sc.<mapping>(...keys)` reads the entry value at the given key(s)
     // (sugar over getEntries), or undefined when no entry exists. Nested/composite keys pass multiple args.
@@ -5704,9 +5717,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       // takes the LAST for = ([a,a],[10,20] -> a = 20), and delete is idempotent. Since the covenant co-spends one
       // entry per recipient, combine duplicates into ONE entry (co-spent once) with the merged amount, BEFORE the
       // self-transfer filter / reorder. For += the merged sum equals the original sum, so a coexisting `bal[msg.sender]
-      // -= amounts[i]` debit is unchanged. Scalar/const-value loops can't carry a per-entry merged amount -> a
-      // duplicate there stays fail-closed (the seenSlots guard below throws).
-      if (Array.isArray(keysArr) && keysArr.length > 1 && (isDelete || perKey)) {
+      // -= amounts[i]` debit is unchanged. Scalar/const-value: a `set` (= amount / = 100) duplicate is idempotent, so
+      // dedupe (keep one); a scalar `+=` duplicate is handled by the covenant's isDup accumulate (below - the entry is
+      // co-spent once and the scalar applied per occurrence), so it is NOT pre-merged here; a scalar `-=` duplicate
+      // stays fail-closed (`-=` has no pending-defer).
+      if (Array.isArray(keysArr) && keysArr.length > 1 && (isDelete || perKey || info.op === 'set')) {
         const kArr = keysArr as unknown[];
         const slotHexes = kArr.map((k) => binToHex(keyToSlotMulti([...fixedBins, encKey(k, varyType)])));
         if (slotHexes.some((h, i) => slotHexes.indexOf(h) !== i)) {
@@ -5726,6 +5741,23 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             const amtIdx = abiFunction!.inputs.findIndex((p) => p.name === info.valueArrayParam);
             if (amtIdx >= 0) { args[amtIdx] = valsArr; finalArgs[amtIdx] = valsArr; }
           }
+        }
+      }
+      // SCALAR `+=` DUPLICATE: a fixed-amount airdrop (`+= amount` / `+= 100`) has no per-key array to merge, so GROUP a
+      // duplicated key's occurrences adjacent (stable, by first occurrence). The covenant's isDup accumulate then applies
+      // the scalar once per occurrence to the single co-spent entry (the SDK accumulates it into the pending commitment
+      // in the loop below). Only `+=` scalar (order-independent, accumulates); scalar `set` is deduped above, `-=` stays
+      // fail-closed.
+      if (info.op === '+' && !perKey && !isDelete && Array.isArray(keysArr) && keysArr.length > 1) {
+        const kArr = keysArr as unknown[];
+        const slotHexes = kArr.map((k) => binToHex(keyToSlotMulti([...fixedBins, encKey(k, varyType)])));
+        if (slotHexes.some((h, i) => slotHexes.indexOf(h) !== i)) {
+          const groups = new Map<string, number[]>();
+          const firstOrder: string[] = [];
+          slotHexes.forEach((h, i) => { if (!groups.has(h)) { groups.set(h, []); firstOrder.push(h); } groups.get(h)!.push(i); });
+          keysArr = firstOrder.flatMap((h) => groups.get(h)!).map((i) => kArr[i]);
+          const recipIdx = abiFunction!.inputs.findIndex((p) => p.name === info.varyingArrayParam);
+          if (recipIdx >= 0) { args[recipIdx] = keysArr; finalArgs[recipIdx] = keysArr; }
         }
       }
       // SELF-TRANSFER: a recipient == the debited msg.sender nets out (`bal[msg.sender] -= a; bal[msg.sender] += a`).
@@ -5838,11 +5870,20 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       for (let i = 0; i < keysArr.length; i++) {
         const slot = keyToSlotMulti([...fixedBins, encKey(keysArr[i], varyType)]);
         const slotHex = binToHex(slot);
+        const amt = isDelete ? 0n : scalarAmt !== undefined ? scalarAmt : toBig((valsArr as unknown[])[i]);
         if (seenSlots.has(slotHex)) {
+          // SCALAR `+=` DUPLICATE: the grouping above made this adjacent to its first occurrence, which is the pending
+          // (lastDeferred). Accumulate the scalar into that entry's commitment - the covenant's isDup does the same,
+          // co-spending the entry only once. (per-key / scalar-set / delete duplicates were already merged/deduped.)
+          if (info.op === '+' && !perKey && !isDelete && lastDeferred && binToHex(lastDeferred.slot) === slotHex) {
+            lastDeferred.newVal += amt;
+            commitments[lastDeferred.commitIndex] =
+              binToHex(encodeEntryCommitment(lastDeferred.slot, lastDeferred.oldNext, bigIntToVmNumber(lastDeferred.newVal)));
+            continue;
+          }
           throw new Error(`C2 upsert loop ${info.collection}: duplicate recipient (each entry can be co-spent once)`);
         }
         seenSlots.add(slotHex);
-        const amt = isDelete ? 0n : scalarAmt !== undefined ? scalarAmt : toBig((valsArr as unknown[])[i]);
         const entry = list.find(slot);
         if (entry) {
           // UPDATE (existing recipient): co-spend the entry, mint the updated value ('delete' -> the type default 0).

@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { compileString } from 'solidc';
+import { binToHex } from '@bitauth/libauth';
 import { Contract, StatefulContract } from '../../src/index.js';
 import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
 
@@ -153,5 +154,32 @@ describe('StatefulFunctionCall.staticCall() - missing mapping key (Solidity pari
     // An absent key reads as the default value (Solidity `mapping` returns the zero value).
     const missing = await sc.getJob(999n).staticCall();
     expect(missing.toObject()).toEqual({ id: 0n, pay: 0n });
+  });
+});
+
+describe('StatefulFunctionCall.staticCall() - scalar return types (bool/bytes)', () => {
+  it('decodes bool and bytes returns', async () => {
+    const { MockNetworkProvider } = await import('../../src/index.js');
+    const art = compileString(
+      'pragma solidcash >=0.8.0;\n'
+      + 'contract T() { bigint n; function set(bigint x) { this.n = x; }\n'
+      + '  function isBig() view returns (bool) { return this.n > 10; }\n'
+      + '  function tag() view returns (bytes4) { return 0xdeadbeef; } }',
+      { forceStateful: true },
+    );
+    const provider = new MockNetworkProvider();
+    const [alice] = await provider.getSigners(1);
+    const f = (await alice.getUtxos()).find((u) => u.vout === 0 && !u.token);
+    const res = await StatefulContract.deploy(art, [], {
+      provider, fundingUtxo: f, funder: alice.unlockP2PKH(), changeAddress: alice.getAddress(), initialState: {},
+    });
+    const sc = res.contract.connect(alice) as unknown as {
+      set: (x: bigint) => { send: () => Promise<unknown> };
+      isBig: () => { staticCall: () => Promise<boolean> };
+      tag: () => { staticCall: () => Promise<Uint8Array> };
+    };
+    await sc.set(50n).send();
+    expect(await sc.isBig().staticCall()).toBe(true);
+    expect(binToHex(await sc.tag().staticCall())).toBe('deadbeef');
   });
 });

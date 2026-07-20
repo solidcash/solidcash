@@ -38,6 +38,38 @@ contract Subscriber() {
   }
 }`;
 
+// Multi-method interface: >1 callable function -> selector verification, so the ABI gains a selector param AFTER
+// the loopTargets witness. Validates the stateful fill's ABI ordering (externalCallInputBase, loopTargets, selector).
+const PUBLISHER_MULTI = `pragma solidcash >=0.8.0;
+interface IFoo { public bigint received; function handleTransferEvent(uint256 value); function ping(uint256 x); }
+contract Publisher() {
+  bigint notifyCount;
+  function notify(address[] path, uint256 value, pubkey pk, sig sg) {
+    require(checkSig(sg, pk));
+    this.notifyCount = this.notifyCount + 1;
+    for (uint256 i = 0; i < path.length - 1; i = i + 1) {
+      IFoo(L.pairFor(path[i], path[i+1])).handleTransferEvent(value);
+    }
+  }
+}
+library L {
+  function pairFor(address a, address b) internal pure returns (address) {
+    return address(uint160(uint256(uint160(a)) + uint256(uint160(b))));
+  }
+}`;
+
+const SUBSCRIBER_MULTI = `pragma solidcash >=0.8.0;
+contract Subscriber() {
+  bigint received;
+  function handleTransferEvent(uint256 value) {
+    this.received = this.received + int(value);
+    require(int(value) >= 0);
+  }
+  function ping(uint256 x) {
+    require(x >= 0);
+  }
+}`;
+
 describe('stateful computed-target loop (IFoo(pairFor(path[i], path[i+1])).m() on a stateful caller)', () => {
   const provider = createTestProvider();
   const sig = (): SignatureTemplate => new SignatureTemplate(alicePriv);
@@ -74,5 +106,38 @@ describe('stateful computed-target loop (IFoo(pairFor(path[i], path[i+1])).m() o
     expect((await sub1Sc.getState()).received).toBe(10n);
     expect((await sub2Sc.getState()).received).toBe(10n);
     expect((await pubSc.getState()).notifyCount).toBe(1n);
+  });
+
+  it('fills the witness correctly when the interface is multi-method (selector param follows in the ABI)', async () => {
+    const pubArt = compileString(PUBLISHER_MULTI);
+    const subArt = compileString(SUBSCRIBER_MULTI);
+    // Sanity: the ABI must order externalCallInputBase, then loopTargets, then the selector param.
+    const runInputs = pubArt.abi.find((f) => f.name === 'notify')!.inputs.map((i) => i.name);
+    const iBase = runInputs.indexOf('__internal__externalCallInputBase');
+    const iWit = runInputs.findIndex((n) => n.startsWith('__internal__loopTargets'));
+    const iSel = runInputs.findIndex((n) => n.startsWith('__internal__externalCallSelector'));
+    expect(iBase).toBeGreaterThanOrEqual(0);
+    expect(iWit).toBeGreaterThan(iBase);
+    expect(iSel).toBeGreaterThan(iWit);
+
+    const sub1 = new Contract(subArt, [], { provider });
+    const { categoryId: c1 } = await setupStatefulUtxos(
+      provider, sub1, subArt.stateLayout!, { received: 0n }, { saltContract: true },
+    );
+    const sub2 = new Contract(subArt, [], { provider });
+    const { categoryId: c2 } = await setupStatefulUtxos(
+      provider, sub2, subArt.stateLayout!, { received: 0n }, { saltContract: true },
+    );
+    const pub = new Contract(pubArt, [], { provider });
+    const { categoryId: pc } = await setupStatefulUtxos(
+      provider, pub, pubArt.stateLayout!, { notifyCount: 0n }, { saltContract: true },
+    );
+    const pubSc = StatefulContract.withCategory(pub, pc);
+    pubSc.registerExternalArray('IFoo', [StatefulContract.withCategory(sub1, c1), StatefulContract.withCategory(sub2, c2)]);
+
+    const path = [hexToBin('aa'.repeat(35)), hexToBin('bb'.repeat(35)), hexToBin('cc'.repeat(35))];
+    await pubSc.notify(path, 7n, alicePub, sig()).send();
+    expect((await StatefulContract.withCategory(sub1, c1).getState()).received).toBe(7n);
+    expect((await StatefulContract.withCategory(sub2, c2).getState()).received).toBe(7n);
   });
 });

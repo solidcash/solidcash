@@ -997,7 +997,7 @@ export class StatefulTransactionBuilder {
     // Skip the main block's output-only funder inputs (event/transfer): they sit inside the proxy block,
     // before the low-level call inputs. A delegatecall'd impl that emits events reserves such slots here.
     for (const s of this.blockLayout?.slots ?? []) {
-      if (s.kind === 'event' || s.kind === 'transfer' || s.kind === 'tcTransfer') base += 1;
+      if (s.kind === 'event' || s.kind === 'transfer' || s.kind === 'tcTransfer' || s.kind === 'entry') base += 1;
     }
     // Skip preceding low-level call groups
     for (let i = 0; i < groupIdx; i++) {

@@ -201,4 +201,33 @@ describe('upgrades.deployProxy (ethers/hardhat OZ-upgrades style)', () => {
     );
     expect(eventOuts.length).toBe(2);
   });
+
+  // A delegate that WRITES A MAPPING (users[msg.sender]=v): the entry NFT (mutable, proxy category) is minted in
+  // the proxy block. Needs the msg.sender-key funder + the default proxy's relaxed mutable-conservation (out >= in).
+  // Non-sorted mapping (single entry output); C2-sorted has an extra trailing-new-node slot not yet handled.
+  const MAP_IMPL = `pragma solidcash >=0.8.0;
+    contract MapImpl() {
+      int count;
+      mapping(address => int) users;
+      function initialize() delegate { this.count = 0; }
+      function register(int v) delegate { users[msg.sender] = v; this.count = this.count + 1; }
+    }`;
+
+  it('writes a msg.sender-keyed mapping from inside a delegate (non-sorted), minting the entry NFT in the proxy block', async () => {
+    const signer = await fundedSigner();
+    // The entry NFT + its signer-P2PKH funder input beyond the two deploy coins.
+    await signer.provider.addUtxo(signer.getAddress(), { txid: 'f6'.repeat(32), vout: 0, satoshis: 1_000_000n });
+    await signer.provider.addUtxo(signer.getAddress(), { txid: '07'.repeat(32), vout: 0, satoshis: 1_000_000n });
+    const implArtifact = compileString(MAP_IMPL, { sortedMappingsAll: false });
+    const proxy = await upgrades.deployProxy(getContractFactory(implArtifact, signer), []);
+
+    const tx = await (proxy as any).register(5n).send();
+    // count++ ran on the proxy state AND the mapping entry NFT (mutable, proxy category) was minted.
+    expect(proxyState(tx, proxy.proxy.categoryId, implArtifact.stateLayout).count).toBe(1n);
+    const entryOut = getTxOutputs(tx).find(
+      (o: any) => o.token?.category === proxy.proxy.categoryId && o.token?.nft?.capability === 'mutable'
+        && (o.token?.nft?.commitment?.length ?? 0) > 20,
+    );
+    expect(entryOut).toBeDefined();
+  });
 });

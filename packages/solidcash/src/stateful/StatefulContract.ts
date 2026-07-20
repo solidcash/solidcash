@@ -5045,7 +5045,20 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     }
 
     // Handle entry NFT accesses
-    const entryAccesses = abiFunction?.entryAccesses;
+    let entryAccesses = abiFunction?.entryAccesses;
+    // A delegatecall'd impl that writes a mapping does so against the PROXY's grafted collections (this.categoryId).
+    // __forward itself has no entryAccesses, so route the impl fn's - the entry machinery below then mints/updates
+    // the proxy's entry NFTs at the proxy-block entry slot (reserved via delegateEventSlots).
+    if (!entryAccesses?.length && abiFunction?.lowLevelCalls) {
+      const resolvedForEntries = overrides?.calls ?? [];
+      for (let i = 0; i < abiFunction.lowLevelCalls.length; i++) {
+        if (abiFunction.lowLevelCalls[i].callMode !== 'delegatecall') continue;
+        const ci = resolvedForEntries[i] as { type?: string; contract?: StatefulContract; functionName?: string } | undefined;
+        if (ci?.type !== 'stateful' || !ci.contract) continue;
+        const implFn = (ci.contract.inner.artifact.abi as readonly AbiFunction[]).find((f) => f.name === ci.functionName);
+        if (implFn?.entryAccesses?.length) { entryAccesses = implFn.entryAccesses; break; }
+      }
+    }
     let entryNfts: EntryNftInfo[] = [];
     // C2 sorted-set inserts to inject after the builder is created: P' (the predecessor's new commitment at its
     // entry slot) and NEW (the new node minted at the trailing loop-entry output).
@@ -6778,6 +6791,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       if (selectorParamCount > 0) {
         for (let i = 0; i < directGroupCount; i++) {
           const group = externalCallUtxoGroups[i];
+          // A loop-expanded slot (computed-target / array-element loop) owns ONE shared selector param (the covenant
+          // checks each co-spent element against it), not one per element - fill it once at the range start, skip
+          // the rest, mirroring the per-group master-index fill above.
+          const selRange = loopIdxRanges.find((r) => i >= r.start && i < r.start + r.count);
+          if (selRange && i !== selRange.start) continue;
           // call/staticcall/delegatecall modes don't inject selector params - skip them
           if (group.callMode === 'call' || group.callMode === 'staticcall' || group.callMode === 'delegatecall') continue;
           // A single-method callee has no witness selector param (its unlocking carries no selector); only groups
@@ -7058,7 +7076,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         const gFn = (g.externalContract.inner.artifact.abi as readonly { name: string; blockLayout?: FunctionBlockLayout }[])
           .find((f) => f.name === g.functionName);
         const extra = (gFn?.blockLayout?.slots ?? []).filter((s) => s.kind !== 'master' && s.kind !== 'dataNft');
-        if (extra.length === 0 || !extra.every((s) => s.kind === 'event')) continue;
+        if (extra.length === 0 || !extra.every((s) => s.kind === 'event' || s.kind === 'entry')) continue;
         for (const s of extra) {
           delegateEventSlots.push({ kind: s.kind, offset: s.offset, ...(s.slotIndex !== undefined && { slotIndex: s.slotIndex }) });
         }
@@ -7523,11 +7541,19 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       // to tx.origin (the caller/deployer signer), same as a direct call - so `upgrades.deployProxy` of an
       // `initialize` that sets `this.owner = msg.sender` needs the signer's native P2PKH input in the tx. (The
       // proxy forward connects the runner, so `this._signer` is set and the funder below is a real P2PKH input.)
-      type DelegAbiFn = { name: string; usesMsgSender?: boolean; externalCalls?: readonly { addressIsMsgSender?: boolean }[] };
+      type DelegAbiFn = {
+        name: string; usesMsgSender?: boolean; externalCalls?: readonly { addressIsMsgSender?: boolean }[];
+        entryAccesses?: readonly { keySources?: readonly { kind?: string }[] }[];
+      };
       const delegateUsesMsgSender = lowLevelCallUtxoGroups.some((g) => {
         if (g.callMode !== 'delegatecall') return false;
         const gFn = (g.externalContract.inner.artifact.abi as readonly DelegAbiFn[]).find((f) => f.name === g.functionName);
-        return !!gFn?.usesMsgSender && !(gFn.externalCalls ?? []).some((ec) => ec.addressIsMsgSender);
+        if (!gFn) return false;
+        const directUse = !!gFn.usesMsgSender && !(gFn.externalCalls ?? []).some((ec) => ec.addressIsMsgSender);
+        // A msg.sender-KEYED mapping write in the delegate (users[msg.sender]=v) also needs the sender's native
+        // P2PKH input so the covenant's emitTxOrigin resolves the on-chain key to the same address the SDK used.
+        const keyUse = (gFn.entryAccesses ?? []).some((ea) => (ea.keySources ?? []).some((ks) => ks.kind === 'msgSender'));
+        return directUse || keyUse;
       });
       if (usesMsgSenderKey || usesTxOriginSender || delegateUsesMsgSender) neededFunders = Math.max(neededFunders, 1);
 
@@ -7691,7 +7717,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       // inputs, generates valid signatures (enabling sig-arg auto-derivation), and handles
       // cross-contract calls. Phase 1 derives B's state for each external call group;
       // Phase 2 derives A's state + entries + events + transfers.
-      const entryAccessesForDerive = abiFunction?.entryAccesses;
+      const entryAccessesForDerive = entryAccesses; // routed: a delegatecall'd impl's entries, else abiFunction's
       let deriveResult: Awaited<ReturnType<StatefulContract['_deriveFullTransactionState']>>;
       const ecGroupsForDerive = externalCallUtxoGroups.length > 0 ? externalCallUtxoGroups : [];
       const ecCallsForDerive = externalCallUtxoGroups.length > 0 ? allGroupEcSlots : [];

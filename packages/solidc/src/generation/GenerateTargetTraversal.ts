@@ -12133,17 +12133,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // reassigned / non-param identifier mints a mismatching tail and REVERTS (fail-closed). A PER-KEY value
       // (`m[k[i]] = vs[i]`, RMW `+= v`) is an ArrayAccess/binary expr - NOT matched here (the permutation of source
       // values onto the SORTED chain is unresolved) - so it falls to the clean SortedMappingCodegenPendingError.
-      const vkind = n instanceof MappingAssignNode && n.collection?.sorted
-        ? this.sortedValueKind(n.collection.innermostValueType) : null;
-      // Only the BOOL-literal set (`m[k[i]] = true`) stays here. A loop-invariant int PARAM value (`m[k[i]] = v`) now
-      // routes to the UPSERT loop instead (op=set, valueScalarParam): that path gained same-gap chaining, so it keeps the
-      // N-in-one-gap range-splice behavior AND adds UPDATE support for existing keys (the insert-only range-splice can't
-      // update). The upsert setup runs when this returns null for such a write.
-      if (n instanceof MappingAssignNode && n.collection?.sorted
-        && !n.arrayIndex && !n.arrayPush && !n.arrayPop && vkind !== null
-        && n.expression instanceof BoolLiteralNode) {
-        found = n; return;
-      }
+      // SUPERSEDED by the upsert loop: every loop-invariant sorted-set write - bool `= true` (whitelistWorkers), int
+      // `= <param>`/`= <literal>`, per-key `= vs[i]`, and RMW `+=`/`-=` - now routes to the upsert loop (op=set/+/-),
+      // which does UPDATE + INSERT, MULTI-GAP (distinct + same-gap chains), and duplicates. This matcher matches nothing
+      // (returns null), so emitSortedInsertLoopSetup no-ops and the upsert setup runs. The range-splice code below is
+      // kept but inert (was the first-cut one-gap-bool path).
       for (const key of Object.keys(n)) {
         // Skip resolved back-references (collection/symbol/type point into shared graphs), only walk AST tree fields.
         if (key === 'location' || key === 'collection' || key === 'symbol' || key === 'type' || found) continue;
@@ -12412,7 +12406,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         // range-splice) so it gains UPDATE support; the upsert loop's same-gap chaining keeps the N-in-one-gap behavior.
         const isParamSet = e instanceof IdentifierNode
           && this.currentFunction.parameters.some((p) => p.name === (e as IdentifierNode).name);
-        if (isRmw || isPerKeySet || isConstSet || isParamSet) { found = n; return; }
+        // Absolute set to a BOOL LITERAL: `m[k[i]] = true` (whitelistWorkers). Routed here (not the one-gap range-splice)
+        // so N keys can land in MULTIPLE gaps (incremental whitelist on a populated map) + update existing. bool = int
+        // 1/0 (sortedValueKind==='int' above), so the value is a const (valueConst 1/0).
+        const isBoolSet = e instanceof BoolLiteralNode;
+        if (isRmw || isPerKeySet || isConstSet || isParamSet || isBoolSet) { found = n; return; }
       }
       // Per-iteration DELETE `for(i) delete m[k[i]]` (batch nullify): route through the upsert loop with op=delete
       // (UPDATE-to-default; absent keys fail closed). The key varying-ness is validated in setup (varyingArrayParam).
@@ -12475,6 +12473,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         valueScalarParam = valueRight.name;                            // loop-INVARIANT param (same for every key)
       } else if (valueRight instanceof IntLiteralNode) {
         valueConst = valueRight.value.toString();                      // loop-invariant int literal
+      } else if (valueRight instanceof BoolLiteralNode) {
+        valueConst = valueRight.value ? '1' : '0';                     // bool literal: true=0x01, false=empty (int 1/0)
       }
     }
     // 'delete' has no value; every other op needs exactly one value source. All need the varying key array.

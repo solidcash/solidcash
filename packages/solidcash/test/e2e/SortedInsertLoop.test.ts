@@ -33,7 +33,11 @@ describe('C2 diff-key insert-in-loop (SDK progressive derivation)', () => {
   // has a source-order (loop) vs slot-order (list) tension. See deferrals.md section 6(a) + memory.
   it('inserts N distinct keys in one loop; present + absent reads verify', async () => {
     const art = compileString(SRC, { forceStateful: true });
-    expect(art.abi.find((f) => f.name === 'whitelist')?.sortedInsertLoopInfo?.[0]?.varyingArrayParam).toBe('ks');
+    // A bool `= true` set loop now routes to the UPSERT loop (op=set, bool = int 1/0) - it does update + insert,
+    // multi-gap (distinct + same-gap chains). (Was the one-gap-only range-splice / sortedInsertLoopInfo.)
+    const info = art.abi.find((f) => f.name === 'whitelist')?.sortedUpsertLoopInfo?.[0];
+    expect(info?.varyingArrayParam).toBe('ks');
+    expect(info?.op).toBe('set');
 
     const f = { txid: uid(), vout: 0, satoshis: 400000n };
     await provider.addUtxo(p2pkh.address, f);

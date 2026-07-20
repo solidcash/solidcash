@@ -121,6 +121,19 @@ function bodyHasAssembly(node: Node | undefined): boolean {
 interface SlotField { sv: StateVariableNode; bitOffset: bigint; bitWidth: bigint; }
 let currentSlots = new Map<bigint, SlotField[]>();
 let currentVarSlot = new Map<string, bigint>();
+// Single slots covered by a declared state var (scalar slots - also in currentSlots - and a mapping/dyn-array's one
+// slot). A fixed struct/array's whole footprint is a RANGE in compositeRanges (never materialized per-slot: a
+// `uint[2e9]` would OOM). Together they stop `sload(structSlot+i)` from being mis-routed to __evm_storage: a slot
+// covered by any declared var (incl. a composite sub-slot) fails closed instead - the field-level read is not
+// modeled.
+let occupiedSlots = new Set<bigint>();
+let compositeRanges: { base: bigint; words: bigint }[] = [];
+
+// True if a literal slot number is covered by any declared state var (scalar, collection, or a composite's range).
+function slotIsDeclared(slotNum: bigint): boolean {
+  return occupiedSlots.has(slotNum)
+    || compositeRanges.some((r) => slotNum >= r.base && slotNum < r.base + r.words);
+}
 // A storage-pointer local that DIRECTLY aliases a state var (`mapping(..) storage p = m;` / `T[] storage x = a;`):
 // local name -> underlying state-var name. LowerMappingStorageAlias (which inlines these) runs AFTER this pass and
 // only rewrites high-level indexed uses, so an assembly `p.slot`/`p.offset` reaches here unresolved; the alias maps
@@ -182,7 +195,10 @@ function lowerLowLevelCall(call: YulFunctionCallNode, okVar: string, okIsNew: bo
 function evmStorageSlotKey(slotArg: YulExpressionNode): ExpressionNode | undefined {
   if (isIntLiteral(slotArg)) {
     const slotNum = BigInt(slotArg.raw);
-    return currentSlots.has(slotNum) ? undefined : intLit(slotNum, slotArg);
+    // A slot covered by ANY declared var (scalar, mapping/array base, or a composite's sub-slot) is not raw
+    // __evm_storage. Composite sub-slots have no scalar-field entry, so a read there falls through to a clean
+    // fail-closed error rather than silently reading __evm_storage[slot].
+    return slotIsDeclared(slotNum) ? undefined : intLit(slotNum, slotArg);
   }
   if (slotArg instanceof YulPathNode && slotArg.members.length === 1 && slotArg.members[0] === 'slot') {
     return undefined; // `x.slot` of a declared var
@@ -270,6 +286,8 @@ function computeStorageLayout(vars: StateVariableNode[], collections: Collection
   currentSlots = new Map();
   currentVarSlot = new Map();
   currentMappingSlots = new Map();
+  occupiedSlots = new Set();
+  compositeRanges = [];
   type Member = { sv: StateVariableNode } | { col: CollectionNode };
   const members: Member[] = [...vars.map((sv) => ({ sv })), ...collections.map((col) => ({ col }))];
   members.sort((a, b) => declPos('sv' in a ? a.sv : a.col) - declPos('sv' in b ? b.sv : b.col));
@@ -281,6 +299,7 @@ function computeStorageLayout(vars: StateVariableNode[], collections: Collection
       if (byteOff > 0) { slot += 1n; byteOff = 0; }
       currentVarSlot.set(m.col.name, slot);
       if (m.col.type instanceof MappingType) currentMappingSlots.set(slot, m.col.name);
+      occupiedSlots.add(slot);
       slot += 1n;
       continue;
     }
@@ -290,6 +309,7 @@ function computeStorageLayout(vars: StateVariableNode[], collections: Collection
     if (composite > 0) {
       if (byteOff > 0) { slot += 1n; byteOff = 0; }
       currentVarSlot.set(sv.name, slot);
+      compositeRanges.push({ base: slot, words: BigInt(composite) });
       slot += BigInt(composite);
       continue;
     }
@@ -298,6 +318,7 @@ function computeStorageLayout(vars: StateVariableNode[], collections: Collection
     if (!currentSlots.has(slot)) currentSlots.set(slot, []);
     currentSlots.get(slot)!.push({ sv, bitOffset: BigInt(byteOff * 8), bitWidth: BigInt(w * 8) });
     currentVarSlot.set(sv.name, slot);
+    occupiedSlots.add(slot);
     byteOff += w;
     if (byteOff >= 32) { slot += 1n; byteOff = 0; }
   }
@@ -1944,6 +1965,8 @@ export default class LowerInlineAssembly extends AstTraversal {
     evmStorageUsed = false;
     logEventUsed = false;
     currentSlots = new Map();
+    occupiedSlots = new Set();
+    compositeRanges = [];
     currentVarSlot = new Map();
     return result;
   }

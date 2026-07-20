@@ -203,3 +203,37 @@ describe('bytes32 full-word slot round-trips a high-bit word (split write / prep
     await (sc as any).readSlot(w).send();
   });
 });
+
+// A 64-byte struct occupies slots [p, p+1] (head + flow), next var at p+2. This probes whether the SUB-slots are
+// A 64-byte struct/array occupies slots [p, p+words] (head slot + flow), and the NEXT var starts at p+words -
+// EVM-parity layout. The composite's own sub-slots are reserved but NOT decoded to its fields, so a raw
+// sload/sstore there fails closed (never silently reads __evm_storage).
+const STRUCT_AFTER = `pragma solidcash >=0.8.0;
+contract C() {
+  struct Pair { uint256 a; uint256 b; }
+  Pair p;
+  uint256 x;
+  function setP(uint256 va, uint256 vb, uint256 vx, pubkey pk, sig s) {
+    require(checkSig(s, pk));
+    this.p = Pair(va, vb);
+    this.x = vx;
+  }
+  function readSlot2(uint256 e) {
+    uint256 r = 0;
+    assembly { r := sload(2) }
+    require(r == e);
+  }
+}`;
+
+describe('64-byte composite occupies [p, p+1]; next var at p+2; sub-slots fail closed', () => {
+  it('the var AFTER a 2-slot struct is at slot 2 (head + flow layout is EVM-exact)', async () => {
+    const sc = await deploy(STRUCT_AFTER);
+    await (sc as any).setP(42n, 99n, 7n, alicePub, sig()).send();
+    await (sc as any).readSlot2(7n).send();
+  });
+  it('a raw sload of a composite SUB-slot fails closed (not a silent __evm_storage read)', () => {
+    const src = `contract C { struct Pair { uint256 a; uint256 b; } Pair p; uint256 x;`
+      + ' function f() public returns (uint r) { assembly { r := sload(0) } require(true); } }';
+    expect(() => compileString(src, { solidityImportCompat: true })).toThrow(/inline assembly/i);
+  });
+});

@@ -1213,19 +1213,27 @@ witness grouping (all calls on one local -> one witness index). Multi-hour; soun
 pinned to the SAME co-spent input the write constrains). Prefer the return-EVENT route (reuses the opaque-loop
 return-event machinery + a typed decode) over internal-layout decoding (which would need interface-declared reserves).
 
-**PROGRESS - increment 1 SHIPPED 2026-07-20 (part 2 DONE).** The RETURNING-view-in-a-loop half (part 2, via the
-return-EVENT route) is done + VM-proven: `emitInlineLoopExternalCall` now has a typed-returning branch (reads the
-per-iteration return-event `externalReturnOutputIdx + i`, verifies it exactly as the opaque path, typed-decodes its
-commitment by the return types) - GTT branch landed in `33dcddb9`, SDK fill fix + test in `ae3bf569`
-(`StatefulComputedLoopDispatch.test.ts` "RETURNING computed-target loop": two callees each return via a minted
-return-event, the loop typed-decodes + accumulates them, total == 20). This is the standalone returning computed-target
-loop `s += IFoo(pairFor(..)).tally(v)`. REMAINING: part 1 (the SHARED co-spend - getReserves READ + swap WRITE on ONE
-pair UTXO, so getReserves is not a preserving staticcall but a read of the same input swap mutates) + part 3 (multi-use
-shared-witness grouping in the collect phase, currently blocked by the single-use RECEIVER-count restriction). Part 1
-is the hard remainder: either the pair mints a getReserves return-event DURING the swap co-spend (pair-covenant
-change) or the Router covenant decodes reserves from the swap-co-spent input's PRE-state commitment (needs the pair's
-layout, which the interface hides). A source PORT (interface declares `public reserve0/1`, getReserves -> state read
-via the ExternalStateReads mechanism) is the low-risk route if bench-faithfulness is relaxed.
+**RESOLVED 2026-07-20 (covenant VM-proven) - increments 1 AND 2 shipped via a simpler route than the analysis above.**
+The "one co-spend serving a read + a write / decode reserves from the co-spent input's layout" framing (parts 1-2)
+was SUPERSEDED by a VIEW-WITNESS reduction that sidesteps the layout problem entirely:
+- **Increment 1 (returning computed loop, `ae3bf569` + GTT `33dcddb9`).** `emitInlineLoopExternalCall` typed-returning
+  branch: a RETURNING call in a computed-target loop reads its per-iteration return-event + typed-decodes it.
+- **Increment 2 (multi-use view+mutate reduction, `272802fe` + `0a66fc82` + `307aec59`).** A loop-body local used by
+  a MUTATE (swap, void) + VIEW calls (getReserves, returning): `rewriteMultiUseViewCalls` replaces each VIEW call with
+  a caller-provided per-iteration witness `__internal__viewReturn<n>[i]` (one array per return value - single AND
+  tuple returns, so `(r0,r1,)=pair.getReserves()` -> viewReturn0/1/2), reducing the local to SINGLE-use (only swap),
+  which the existing pair-local co-spend handles. NO co-spent-input decode, NO pair layout, NO GTT dispatch mode
+  needed. SOUND by caller-permissive: a wrong view witness feeds wrong values into swap, whose co-spent covenant
+  rejects (Router02 K-invariant) -> fail-closed, the same argument as extcall-target-pinning. Classification by
+  hasReturnValues (void=mutate co-spend, returning=view witness); exactly-one-mutate. Covenant VM-proven in
+  `MultiUseViewMutate.test.ts` (single + TUPLE getReserves shape: reads viewReturn0/1/2[i] + co-spends swap + selector;
+  wrong selector rejected).
+
+**REMAINING (ergonomic, not a wall).** The SDK autoderivation must FILL `__internal__viewReturn<n>` (the view values)
+for idiomatic non-manual usage - simulate the callee's view off-chain, or read the pair's registered state. The
+covenant + a manual/caller-provided build are proven; the mapping (getReserves -> which state) is only an SDK-side
+convenience now, not a soundness gate (the witness is caller-permissive). Also: multiple mutates on one local still
+fail closed (physically two co-spends); tuple-return views must be a destructure RHS.
 
 **Revisit if.** Router02 (or another fail-on-transfer / read-then-write pair pattern) becomes a target to COMPILE end
 to end, AND `GenerateTargetTraversal` churn settles enough for a large sound change. The direct + single-use-local +

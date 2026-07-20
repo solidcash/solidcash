@@ -143,7 +143,10 @@ by it; they are pre-existing and fundamental. Re-bucketed the current top FAILs 
   UDVT-over-bytes round-trip HIGH-BIT values (VM-proven: mixed slot 0xccccbbbbaaaa `2f40c4f1`, bytes32 0xff..00
   `cbe2f745`); `dirty_slot` compiles, corpus +2 (4027). bytes32 write splits the word into two bytes16 halves (each
   via the N=16 trick) + concat since NUM2BIN(33) isn't a valid bytesN cast; read prepends 0x00 then uint256.
-  REMAINING gaps: (a) address packed-slot fields (25-byte lbc != 20-byte EVM word); (b) dynamic-array RESIZE (`sstore(a.slot,n)`)
+  REMAINING gaps: (a) ADDRESS slot fields - CANNOT be added (not a NUM2BIN issue): a BCH address is variable-length
+  locking bytecode (25B p2pkh / 35B p2sh32), and a 35-byte p2sh32 address OVERFLOWS the 32-byte slot, so it does not
+  fit a fixed-width slot field. Fail-closed + verified. (The 20-byte stateVarByteWidth is EVM slot-LAYOUT parity for
+  neighbour packing, not the stored value's width; the address value is stored separately, never in the slot word.); (b) dynamic-array RESIZE (`sstore(a.slot,n)`)
   + element slots (`sstore(keccak256(0,32)+i, v)`) = array copy/delete (`array/*`), deep; (c) EVM transient storage +
   sparse/computed raw slots with no declared var (correctly fail-closed),
   `tstore`/`tload` (no tx-scoped storage). 6 = calldata `.offset`/`.length`: `.length` WORKS; `.offset` applies only

@@ -325,7 +325,10 @@ function resolveSlotFields(slotArg: YulExpressionNode): SlotField[] | undefined 
 // int round-trips via truncation (`uintN(word)` = word mod 2^N). bytesN round-trips via the two's-complement trick
 // (the same emitEvmWordFromUint uses): write = wordToBytesN (NUM2BIN(N+1) drop sign byte, or split for bytes32),
 // read = prepend-0x00 then BIN2NUM (fieldAsWord) - so a bare bytesN(uint) OP_NUM2BIN sign-magnitude failure on a
-// high-bit value is avoided. address is EXCLUDED (25-byte lbc != 20-byte EVM word).
+// high-bit value is avoided. ADDRESS is EXCLUDED and cannot be added: a BCH address is variable-length locking
+// bytecode (25 bytes p2pkh, 35 bytes p2sh32), not a fixed EVM word - a p2sh32 address (35B) OVERFLOWS the 32-byte
+// slot, so an address does not fit a fixed-width slot field at all. (Fail-closed, verified; the 20 stateVarByteWidth
+// is EVM slot-LAYOUT parity for where the next var packs, not the stored value's width.)
 function isSupportedSlotField(t: Type): boolean {
   const core = t instanceof ValueType ? t.underlyingType : t;
   return core instanceof IntType

@@ -136,7 +136,12 @@ export class ProxyContract<TImpl extends Artifact = Artifact> {
       .find((f) => f.name === implFunction);
     if (!abiFn) throw new Error(`Implementation '${this.implementation.inner.artifact.contractName}' has no function '${implFunction}'.`);
     const implSc = this.implementation as unknown as StatefulContract;
-    const proxyCall = (this.proxy.call as Record<string, (...a: unknown[]) => StatefulFunctionCall>);
+    // Connect the proxy to the runner so the forwarded call carries the signer. Its native P2PKH input funds the
+    // tx and - crucially - is what the delegatecall'd impl's `emitTxOrigin` resolves `msg.sender` to. Without this
+    // the proxy call has no _signer, the SDK funds with a dummy input, and a delegate impl that uses msg.sender
+    // (e.g. `initialize` setting `this.owner = msg.sender`) reverts in emitTxOrigin.
+    const runnerProxy = this.runner instanceof Signer ? this.proxy.connect(this.runner) : this.proxy;
+    const proxyCall = (runnerProxy.call as Record<string, (...a: unknown[]) => StatefulFunctionCall>);
     const { name, mode } = this.forwardShape;
 
     let builder: StatefulFunctionCall;

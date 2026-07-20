@@ -7406,7 +7406,17 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       );
       const usesTxOriginSender = !!abiFunction.usesMsgSender
         && !(abiFunction.externalCalls ?? []).some((ec) => ec.addressIsMsgSender);
-      if (usesMsgSenderKey || usesTxOriginSender) neededFunders = Math.max(neededFunders, 1);
+      // A delegatecall'd (proxy) impl that uses msg.sender needs it too: msg.sender in the delegate impl resolves
+      // to tx.origin (the caller/deployer signer), same as a direct call - so `upgrades.deployProxy` of an
+      // `initialize` that sets `this.owner = msg.sender` needs the signer's native P2PKH input in the tx. (The
+      // proxy forward connects the runner, so `this._signer` is set and the funder below is a real P2PKH input.)
+      type DelegAbiFn = { name: string; usesMsgSender?: boolean; externalCalls?: readonly { addressIsMsgSender?: boolean }[] };
+      const delegateUsesMsgSender = lowLevelCallUtxoGroups.some((g) => {
+        if (g.callMode !== 'delegatecall') return false;
+        const gFn = (g.externalContract.inner.artifact.abi as readonly DelegAbiFn[]).find((f) => f.name === g.functionName);
+        return !!gFn?.usesMsgSender && !(gFn.externalCalls ?? []).some((ec) => ec.addressIsMsgSender);
+      });
+      if (usesMsgSenderKey || usesTxOriginSender || delegateUsesMsgSender) neededFunders = Math.max(neededFunders, 1);
 
       if (neededFunders > 0) {
         if (this._signer) {

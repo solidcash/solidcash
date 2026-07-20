@@ -5,10 +5,13 @@ export {
 } from './HDSigner.js';
 export { Contract } from './Contract.js';
 export { TransactionBuilder } from './TransactionBuilder.js';
-export { buildOpaqueLoopCallTransaction, deriveOpaqueLoopCoSpends } from './loop-call.js';
+export {
+  buildOpaqueLoopCallTransaction, deriveOpaqueLoopCoSpends, buildTypedLoopCallTransaction,
+} from './loop-call.js';
 export type {
   OpaqueLoopCoSpend, OpaqueLoopCallContext, BuildOpaqueLoopCallOptions,
   CoSpendableContract, OpaqueLoopContractCall,
+  TypedLoopCoSpend, BuildTypedLoopCallOptions,
 } from './loop-call.js';
 export * from './stateful/index.js';
 export * from './oracle/blockOracleUpdater.js';

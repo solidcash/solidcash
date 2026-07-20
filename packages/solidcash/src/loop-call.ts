@@ -211,3 +211,107 @@ export function buildOpaqueLoopCallTransaction(opts: BuildOpaqueLoopCallOptions)
   if (change > 546n) tb.addOutput({ to: changeLbc, amount: change });
   return tb;
 }
+
+/** Per-target co-spend for a TYPED (void) loop dispatch. No return-event (the call returns nothing), so unlike
+ * OpaqueLoopCoSpend there is no returnData and the target UTXO need not carry a minting NFT. */
+export interface TypedLoopCoSpend {
+  /** The UTXO to co-spend; preserved (bytecode + category) at the aligned output. */
+  utxo: Utxo;
+  /** Unlocker for the co-spent UTXO. */
+  unlocker: Unlocker;
+}
+
+/** Fully-resolved options for buildTypedLoopCallTransaction (no lookups - everything present). */
+export interface BuildTypedLoopCallOptions {
+  provider: NetworkProvider;
+  /** The stateless caller contract whose function does the typed per-iteration dispatch. */
+  contract: Contract;
+  /** The dispatch function name. */
+  functionName: string;
+  /** The user-facing args in ABI order (e.g. [path, x]), EXCLUDING synthetic `__internal__` params. */
+  userArgs: unknown[];
+  /** address[] - the co-spend locking bytecodes. Fills the synthesized `__internal__loopTargets<n>` witness AND
+   *  is verified by the covenant against each co-spent input's bytecode (identity binding). */
+  targets: Uint8Array[];
+  /** The caller contract's own UTXO; preserved at output 0. */
+  callerUtxo: Utxo;
+  /** Per-target co-spend info, aligned with targets. */
+  cospends: TypedLoopCoSpend[];
+  /** Funds the fee (the preserved caller/target values cannot be drawn down). */
+  funder: { utxo: Utxo; unlocker: Unlocker };
+  /** Locking bytecode for the change output. Defaults to the funder's own locking bytecode. */
+  changeLockingBytecode?: Uint8Array;
+  /** Flat fee in satoshis (default 1000). */
+  fee?: bigint;
+}
+
+/**
+ * Build a transaction for a stateless TYPED per-iteration loop-dispatch function `IFoo(targets[i]).m(..)` (or a
+ * computed target `IFoo(pairFor(.., path[i], ..)).m(..)` whose target the compiler rewrote to a synthesized
+ * `__internal__loopTargets<n>[i]` witness param). Unlike the opaque MultiCall builder there is no return-event:
+ * the covenant only verifies each co-spent input's bytecode == the claimed target (identity) and preserves it.
+ *
+ *   input 0      caller (preserved)          output 0        preserved caller (bytecode + value + token)
+ *   inputs 1..N  co-spent targets            outputs 1..N    preserved targets (bytecode + category + value)
+ *   input  N+1   funder                      output N+1      change
+ *
+ * Fills the synthetic params by name: `__internal__externalCallInputBase` = 1, and any
+ * `__internal__loopTargets<n>` = the encoded `targets` witness the SDK derived for the computed target (the
+ * caller chooses the targets and co-spends them; a mismatching claim is rejected by the covenant's identity
+ * check, so this is caller-permissive and sound - the same argument as the opaque MultiCall path).
+ */
+export function buildTypedLoopCallTransaction(opts: BuildTypedLoopCallOptions): TransactionBuilder {
+  const {
+    provider, contract, functionName, userArgs, targets, callerUtxo, cospends, funder,
+  } = opts;
+  const n = targets.length;
+  if (n === 0) throw new Error('buildTypedLoopCallTransaction: at least one target is required');
+  if (cospends.length !== n) {
+    throw new Error('buildTypedLoopCallTransaction: targets and cospends must have the same length');
+  }
+  const fee = opts.fee ?? 1000n;
+  const changeLbc = opts.changeLockingBytecode ?? funder.unlocker.generateLockingBytecode();
+
+  const targetsArg = encodePushdataValue(targets, 'address[]');
+  const abiFn = contract.artifact.abi.find((f) => f.name === functionName);
+  if (!abiFn) throw new Error(`buildTypedLoopCallTransaction: function '${functionName}' not found`);
+
+  // Assemble the full unlock args in ABI order: user args in sequence, synthetic params filled by name.
+  const fullArgs: unknown[] = [];
+  let userCursor = 0;
+  for (const inp of abiFn.inputs) {
+    if (inp.name === '__internal__externalCallInputBase') fullArgs.push(1n);
+    else if (inp.name.startsWith('__internal__loopTargets')) fullArgs.push(targetsArg);
+    else if (inp.name.startsWith('__internal__')) {
+      throw new Error(`buildTypedLoopCallTransaction: unsupported synthetic param '${inp.name}'`);
+    } else {
+      if (userCursor >= userArgs.length) {
+        throw new Error(`buildTypedLoopCallTransaction: missing user arg for '${inp.name}'`);
+      }
+      fullArgs.push(userArgs[userCursor]);
+      userCursor += 1;
+    }
+  }
+  const unlockerFactory = contract.unlock[functionName];
+  if (!unlockerFactory) throw new Error(`buildTypedLoopCallTransaction: no unlocker for '${functionName}'`);
+  const callerUnlocker = unlockerFactory(...fullArgs);
+
+  const tb = new TransactionBuilder({ provider });
+  tb.addInput(callerUtxo, callerUnlocker);
+  for (const c of cospends) tb.addInput(c.utxo, c.unlocker);
+  tb.addInput(funder.utxo, funder.unlocker);
+
+  // output 0: preserved caller; outputs 1..N: preserved targets (covenant pins bytecode + category; value mirrored
+  // so the tx balances). No return events (typed void).
+  tb.addOutput({ to: contract.address, amount: callerUtxo.satoshis, token: callerUtxo.token });
+  for (let i = 0; i < n; i += 1) {
+    tb.addOutput({ to: targets[i], amount: cospends[i].utxo.satoshis, token: cospends[i].utxo.token });
+  }
+
+  const targetSats = cospends.reduce((s, c) => s + c.utxo.satoshis, 0n);
+  const inTotal = callerUtxo.satoshis + targetSats + funder.utxo.satoshis;
+  const outTotal = callerUtxo.satoshis + targetSats;
+  const change = inTotal - outTotal - fee;
+  if (change > 546n) tb.addOutput({ to: changeLbc, amount: change });
+  return tb;
+}

@@ -899,6 +899,20 @@ function resolveWholeBytesLocal(offset: YulExpressionNode, size: YulExpressionNo
   return currentVars.get(base) instanceof BytesType ? base : undefined;
 }
 
+// `X := add(X, N)` where X is a bytes var and N an int literal: EVM advances the memory pointer past the first N
+// bytes; for a bytes value this is the slice `X[N:]`. The OZ/BoringCrypto `_getRevertMsg` idiom uses
+// `add(_returnData, 0x04)` to drop the 4-byte Error(string) selector so `abi.decode(X, (string))` reads the
+// message. Bounded to a same-var self-advance by a literal on a bytes local - a value slice, distinct from the
+// __yulmem pointer bridge (deferred). Returns N, or undefined if the shape does not match.
+function tryBytesPtrAdvance(value: YulExpressionNode, name: string): bigint | undefined {
+  if (!(value instanceof YulFunctionCallNode && value.name === 'add' && value.args.length === 2)) return undefined;
+  const [a, b] = value.args;
+  if (!(a instanceof YulPathNode && a.members.length === 0 && a.base === name)) return undefined;
+  if (!isIntLiteral(b)) return undefined;
+  if (!(currentVars.get(name) instanceof BytesType)) return undefined;
+  return BigInt(b.raw);
+}
+
 // The top `width` (<=32) bytes of an mstore'd 32-byte word: a constant renders big-endian and slices; a runtime
 // bytesN local is left-aligned so its top N bytes ARE the value (only the exact width===N case is lowered).
 function sliceWord(value: YulExpressionNode, width: number, src: { location?: Node['location'] }): ExpressionNode {
@@ -1446,6 +1460,14 @@ function lowerStatement(stmt: YulStatementNode): StatementNode {
     // `slot := keccak256(0,64)` mapping-slot idiom (assignment form) -> record m[k]; drop the dead keccak binding.
     const mapSlot = mappingSlotIdiom(stmt.value);
     if (mapSlot) { mappingSlotVars.set(name, mapSlot); return loc(new BlockNode([]), stmt); }
+    // `X := add(X, N)` on a bytes var -> `X = X[N:]` (value form of an EVM byte-pointer advance).
+    const ptrAdv = tryBytesPtrAdvance(stmt.value, name);
+    if (ptrAdv !== undefined) {
+      const id = (): IdentifierNode => loc(new IdentifierNode(name), stmt);
+      const len = loc(new UnaryOpNode(UnaryOperator.SIZE, id()), stmt);
+      const sliced = loc(new SliceNode(id(), intLit(ptrAdv, stmt), len), stmt);
+      return loc(new AssignNode(id(), sliced), stmt);
+    }
     const target = loc(new IdentifierNode(name), stmt);
     let value = lowerValue(stmt.value);
     // A plain non-word var read (address, bytesN, bool) yields a value of that type; normalize it to the uint256

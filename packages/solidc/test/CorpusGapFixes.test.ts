@@ -2999,3 +2999,23 @@ describe('using-for external-call library method on an interface-typed struct FI
     ok('pool.lpToken.safeTransfer(to, v); s = pool.lpToken.balanceOf(address(this));');
   });
 });
+
+describe('bytes-pointer advance in assembly (OZ/BoringCrypto _getRevertMsg)', () => {
+  // `assembly { _returnData := add(_returnData, 0x04) }` advances an EVM bytes-memory pointer past the 4-byte
+  // Error(string) selector. On BCH bytes are values, so it lowers to the slice `_returnData[4:]` (VM-proven
+  // byte-exact in solidcash RevertMsgSlice.test.ts). This unblocks BoringBatchable-derived contracts
+  // (BentoBoxV1, MasterChefV2) at the _getRevertMsg wall.
+  const opts = { solidityImportCompat: true };
+  it('lowers add(bytesMemory, N) to a slice so _getRevertMsg compiles', () => {
+    expect(() => compileString('pragma solidity ^0.8.0; contract C {'
+      + ' function f(bytes memory _returnData) public pure returns (string memory) {'
+      + ' if (_returnData.length < 68) return "silent";'
+      + ' assembly { _returnData := add(_returnData, 0x04) }'
+      + ' return abi.decode(_returnData, (string)); } }', opts)).not.toThrow();
+  });
+  it('leaves add(int, N) arithmetic untouched (only bytes vars slice)', () => {
+    expect(() => compileString('pragma solidity ^0.8.0; contract C {'
+      + ' function f(uint256 x) public pure returns (uint256 y) {'
+      + ' assembly { y := add(x, 0x04) } } }', opts)).not.toThrow();
+  });
+});

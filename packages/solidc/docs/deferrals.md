@@ -928,7 +928,24 @@ They stay DISTINCT expressions on purpose - the domains differ (`bytes1(v)` is c
 `v >= 256`; the Yul low-byte extraction is valid for any word) - but the byte-write formula is now single-source and
 callers select by domain instead of hand-building the cast. Byte-identical (same corpus/VM proof as B).
 
-## Cross-contract callee sorted-mapping entry writes (incl. msg.sender-keyed) - DEFERRED 2026-07-20
+## Cross-contract callee sorted-mapping entry writes (incl. msg.sender-keyed) - RESOLVED 2026-07-20 (2149ca3d, 80564df2)
+
+SHIPPED + VM-verified (solidcash `CrossContractSortedWrite.test.ts`: UPDATE + INSERT + msg.sender). All SDK
+(StatefulContract + StatefulTransactionBuilder): (1) entry INPUT co-spend by slot via `SortedList` (exact = UPDATE,
+predecessor = INSERT); (2) the KEY UNLOCK - patch B's entry unlocker with the REAL `bMasterIdx` once the tx layout is
+known (the entry covenant's write path verifies a minting NFT at `masterInputIndex = B's master`, unknown at
+block-build time; the derivation probe runs only B's master covenant, so the placeholder is fine for extraction);
+(3) entry OUTPUT from B's trace (`extractCommitmentMapFromTrace` at `bOutputBase+si`) -> new STB
+`externalCallEntryOutputs` + output-loop entry case; (4) INSERT - detect via `out.next != in.next`, mint a PLACEHOLDER
+NEW at `bMasterIdx+blockSize` so a 2nd VM pass reaches the NEW's `OP_OUTPUTTOKENCOMMITMENT` (the 1st aborts at
+`OP_OUTPUTBYTECODE` for the not-yet-existing NEW), then replace with the real commitment (per-group
+`externalCallEntryInserts` + trailing placement); (5) msg.sender - append OUR category REVERSED (internal order) as B's
+`_msgSenderCategory`, and key the entry by `keyToSlot(addressToLockScript(this.address))` (the caller's on-chain LBC,
+NOT `withCategory().lockingBytecode`). Remaining edge: >60 B chunked address/value in a cross-contract insert would
+need the value-chunk pins co-spent for B (same fail-closed as the single-contract chunked-in-loop). Original analysis
+retained below.
+
+### Original analysis
 
 **What.** When contract A calls B via `withExternalCall` and B's called function WRITES a C2 (sorted) mapping -
 `B.deposit()` doing `this.bal[k] = v` or `this.bal[msg.sender] = v` - the transaction fails on the VM (verified:

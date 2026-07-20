@@ -727,7 +727,7 @@ The integration is built and compiles across both packages (mirroring the keccak
 
 ## SHIPPED end-to-end (compiler + SDK + VM) - 2026-07-20
 
-The full path validates on the real BCH-2026 VM. `packages/solidcash/test/e2e/EcrecoverRecovery.test.ts` (7 tests,
+The full path validates on the real BCH-2026 VM. `packages/solidcash/test/e2e/EcrecoverRecovery.test.ts` (8 tests,
 all green, no regression against the keccak co-spend infra or the old `ecrecover`):
 
 - **positive** - a contract `require(ecrecoverPubKey(h,v,r,s) == owner)` spends: ethers signs, the SDK reverses
@@ -739,15 +739,33 @@ all green, no regression against the keccak co-spend infra or the old `ecrecover
   `ecrecover` returns, for multiple signatures. This is the acceptance gate from the conformance section above.
 - **0 / 1 / N / branch** - a function with no `ecrecoverPubKey` needs no side-car; one call co-spends one pair; two
   calls co-spend two pairs (each result read by its block slot); a call inside an `if` authenticates when taken.
+- **ecrecoverP2pkh** - the recovered pubkey projected to `0x76a914 || hash160(pubkey) || 0x88ac` (the signer's BCH
+  P2PKH locking bytecode).
+
+**Standard pubkey shape.** `ecrecoverPubKey` returns a STANDARD compressed pubkey (`0x02/03 || Qx` big-endian, 33 B) -
+so it is checkSig-able and compares directly to a `pubkey` literal or an `ethers` public key. Side-car B commits the
+recovered key as 34 B (parity || Qx as a 33-byte LITTLE-endian VM number, the BCH-native form the covenant computes);
+the codegen normalizes that to the 33-byte big-endian standard on read (split parity, drop the LE sign/pad byte,
+`OP_REVERSEBYTES` the 32-byte Qx, re-prepend parity). `ecrecoverP2pkh` hash160s that standard key.
 
 **Deterministic split via VM-probe** (`TransactionBuilder.probeEcrecoverSplit`): the viable `chunkA` window is narrow
 (~[58,60] and signature-dependent), so the SDK builds the A+B pair in isolation and measures both covenants' real
 op-cost across candidate splits, choosing the viable split with the lowest peak. op-cost is a pure function of
 (covenant, witness), so this is reproducible; a wrong split only fails to spend, it can never produce a wrong `Q`.
 
-- **Remaining**: (1) the `for (i<n) ecrecoverPubKey(h[i],..)` **loop** - it compiles but the array-indexed args are
-  `computed` (`ecrecoverArgParams: [[null,null,null,null]]`), so the auto co-spend fails closed with a clear error;
-  finishing it needs loop-aware call counting + per-iteration co-spend derivation (the args are direct array elements,
-  so no trace-probe is needed for them - only `N` + the array-name plumbing + a keccak-style dynamic-loop codegen).
-  (2) the `ecrecoverEvm` keccak projection (Q -> 20-byte EVM address). (3) removing the 3-argument verify-with-pubkey
-  `ecrecover` alias with its test fixture (see the removal section above).
+**Remaining** (all fail CLOSED - a loud error, never a silent miscompile):
+- **`ecrecoverEvm`** (recover to a 20-byte EVM address) throws a clear compile error. It needs the recovered key's
+  keccak256: a keccak compute co-spend over the UNCOMPRESSED key (which exceeds the 40-byte NFT commitment, so it
+  rides the keccak side-car's witness, bound to B's compressed commitment by Qx+parity - fail-closed since a wrong
+  Qy yields a wrong address), then `keccak[12:]`. Composes the recovery pair + a keccak side-car.
+- **Loop** `for (i<n) ecrecoverPubKey(h[i],..)` throws a clear compile error (`ecrecoverPubKey is not yet supported
+  inside a loop`). A loop emits the read ONCE but runs it N times, all reading the same side-car; each iteration needs
+  its own pair. Finishing it needs the keccak-style dynamic-loop codegen (side-car k read at `master+1+2k`, self-
+  preserving) + per-iteration SDK derivation (the args are direct array elements `h[i]`, so no trace-probe is needed -
+  only `N` + array-name plumbing).
+- **Stateful** contracts: the codegen reads the `ecrecoverSideCar` block-layout slots correctly (the per-pass
+  `ecrecoverArgParams` reset fixes the slot index), but the `StatefulTransactionBuilder` does not yet position the A+B
+  pair at those slots or thread it through auto-derivation (the keccak stateful integration is the template). Stateless
+  contracts are fully supported.
+- **`ecrecover`** (the 3-argument verify-with-pubkey alias): a removal decision, not a gap; see the removal section
+  above. It still works and is tested.

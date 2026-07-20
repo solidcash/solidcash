@@ -3,10 +3,10 @@
 // compressed key to its recreated NFT (which the contract reads). The split point (chunkA) is DETERMINISTIC - the SDK
 // VM-probes the two covenants' real op-cost and picks the split where both inputs fit their ~8M budget (a liveness
 // parameter, so a probe can only land on a valid split). Mirrors the keccak compute side-car; see docs/ecrecover.md.
-import { binToHex, hash256 } from '@bitauth/libauth';
+import { binToHex, hash256, hexToBin, createVirtualMachineBch2026 } from '@bitauth/libauth';
 import {
   buildEcrecoverComputeRedeem, ecrecoverComputeLockingBytecode, ecrecoverComputeResultCommitment,
-  ECRECOVER_COMPUTE_PAD_LENGTH,
+  ECRECOVER_COMPUTE_PAD_LENGTH, SHARED_LIBRARY_SALT,
 } from '@solidcash/utils';
 import { computeEcrecoverWitness, type EcrecoverWitness } from './ecrecoverRecovery.js';
 import { pushDataBytes } from '../keccak/keccakComputeSidecar.js';
@@ -90,6 +90,48 @@ export function ecrecoverBalancedSplit(wit: EcrecoverWitness): number {
     rest.forEach((m, i) => { if (i < cA) a += stepCost(m); else b += stepCost(m); });
     if (Math.max(a, b) < bestMax) { bestMax = Math.max(a, b); best = cA; }
   }
+  return best;
+}
+
+let probeVm: ReturnType<typeof createVirtualMachineBch2026> | undefined;
+
+/**
+ * Deterministic split (chunkA) via VM-probe: build the A+B pair in isolation (A input 0 / output 0, B input 1 /
+ * output 1 - the same index alignment the live tx uses) and evaluate each input's real op-cost across candidate
+ * splits, choosing the viable split with the lowest peak. op-cost is a pure function of (covenant, witness), so this
+ * is reproducible. Standalone (no TransactionBuilder) so the stateful path can reuse it.
+ */
+export function probeEcrecoverSplit(wit: EcrecoverWitness, _salt: Uint8Array, scA: Utxo, scB: Utxo): number {
+  probeVm ??= createVirtualMachineBch2026();
+  // Probe with the SHARED (all-zero) salt so the covenant's brand-check drops (the isolated 2-input probe has no
+  // consuming contract at input 0 to verify a branded category against). op-cost is salt-independent (only the tiny
+  // drop-vs-verify branch differs, << the 8M budget margin), so the chosen split is valid for the real branded pair.
+  const salt = SHARED_LIBRARY_SALT;
+  const center = ecrecoverBalancedSplit(wit);
+  const lo = Math.max(1, center - 8), hi = Math.min(wit.masks.length - wit.start - 2, center + 8);
+  const toTok = (t?: Utxo['token']): unknown => (t
+    ? { category: hexToBin(t.category), amount: t.amount ?? 0n,
+      nft: t.nft ? { capability: t.nft.capability, commitment: hexToBin(t.nft.commitment) } : undefined }
+    : undefined);
+  const laOut = (o: Output): unknown => ({ lockingBytecode: o.to, valueSatoshis: o.amount, token: toTok(o.token) });
+  let best = -1, bestMax = Infinity;
+  for (let cA = lo; cA <= hi; cA++) {
+    const { unlockerA, recreateA, unlockerB, recreateB } = buildEcrecoverComputeSidecars(wit, cA, salt, scA, scB);
+    const inputs = [scA, scB].map((u, k) => ({
+      outpointIndex: u.vout, outpointTransactionHash: hexToBin(u.txid), sequenceNumber: 0xffffffff,
+      unlockingBytecode: (k === 0 ? unlockerA : unlockerB).generateUnlockingBytecode({} as never),
+    }));
+    const sourceOutputs = [scA, scB].map((u, k) => ({
+      lockingBytecode: (k === 0 ? unlockerA : unlockerB).generateLockingBytecode(), valueSatoshis: u.satoshis, token: toTok(u.token),
+    }));
+    const transaction = { version: 2, locktime: 0, inputs, outputs: [laOut(recreateA), laOut(recreateB)] };
+    const rA = probeVm.evaluate({ inputIndex: 0, sourceOutputs, transaction } as never) as { error?: string; metrics: { operationCost: number } };
+    const rB = probeVm.evaluate({ inputIndex: 1, sourceOutputs, transaction } as never) as { error?: string; metrics: { operationCost: number } };
+    if (rA.error || rB.error) continue;
+    const peak = Math.max(rA.metrics.operationCost, rB.metrics.operationCost);
+    if (peak < bestMax) { bestMax = peak; best = cA; }
+  }
+  if (best < 0) throw new Error('ecrecover: no ladder split fits both side-cars\' op-budget for this signature.');
   return best;
 }
 

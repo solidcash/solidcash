@@ -4,9 +4,10 @@ import { binToHex, hexToBin, hash160 } from '@bitauth/libauth';
 import { ethers } from 'ethers';
 import { secp256k1 } from '@noble/curves/secp256k1';
 import { SHARED_LIBRARY_SALT, ecrecoverComputeLockingBytecode, keccakComputeLockingBytecode } from '@solidcash/utils';
-import { Contract, TransactionBuilder, MockNetworkProvider } from '../../src/index.js';
+import { Contract, StatefulContract, TransactionBuilder, MockNetworkProvider } from '../../src/index.js';
 import { randomUtxo } from '../../src/utils.js';
 import { computeEcrecoverWitness } from '../../src/ecrecover/ecrecoverRecovery.js';
+import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
 
 // A recovery side-car's OWN NFT category (distinct from the consuming contract's; each of the A/B pair carries one).
 const SIDECAR_CAT = 'ee'.repeat(32);
@@ -294,6 +295,38 @@ describe('ecrecoverPubKey recovery side-car (compiler + SDK + VM e2e)', () => {
         contract.unlock.verify(g.map((x) => x.h), g.map((x) => x.v), g.map((x) => x.r), g.map((x) => x.s), 3n))
       .addOutput({ to: contract.address, amount: 700_000n })
       .send();
+    expect(tx.txid).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  // STATEFUL: a contract WITH storage that also authenticates via ecrecoverPubKey. The recovery pair is BRANDED to the
+  // contract's token category (rides its own category), positioned at the ecrecoverSideCar block-layout slots, and
+  // threaded through auto-derivation (the state is derived by probing the master, which reads the pair).
+  const STATEFUL = `
+  contract StatefulAuth(pubkey owner) {
+      int count;
+      function bump(bytes32 h, int v, bytes32 r, bytes32 s) {
+          require(ecrecoverPubKey(h, v, r, s) == owner);
+          this.count = this.count + 1;
+      }
+  }`;
+  it('STATEFUL: a stateful contract authenticates via ecrecoverPubKey + increments state', async () => {
+    const artifact = compileString(STATEFUL);
+    expect(artifact.abi.find((fn) => fn.name === 'bump')?.ecrecoverCompute).toBe(true);
+    const provider = createTestProvider();
+    const { h, v, r, s, owner } = await recovery('stateful');
+    const contract = new Contract(artifact, [owner], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, contract, artifact.stateLayout!, { count: 0n }, { saltContract: true },
+    );
+    const salt = hexToBin(categoryId).slice().reverse();   // branded: the covenant/resolve use the reversed category
+    for (const role of ['A', 'B'] as const) {
+      await provider.addUtxo(binToHex(ecrecoverComputeLockingBytecode(salt, role)), {
+        ...randomUtxo({ satoshis: 100_000n }),
+        token: { category: SIDECAR_CAT, amount: 0n, nft: { capability: 'mutable', commitment: '' } },
+      });
+    }
+    const sc = StatefulContract.withCategory(contract, categoryId);
+    const tx = await sc.bump(h, v, r, s).send();
     expect(tx.txid).toMatch(/^[0-9a-f]{64}$/);
   });
 

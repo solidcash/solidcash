@@ -40,12 +40,14 @@ import {
   isComputedBlockhashKey,
   encodePushdataValue,
   keccakComputeLockingBytecode,
+  ecrecoverComputeLockingBytecode,
   sha256 as sha256Sync,
   ripemd160 as ripemd160Sync,
   hash160 as hash160Sync,
   hash256 as hash256Sync,
 } from '@solidcash/utils';
 import { buildKeccakComputeSidecar, extractKeccakPreimageFromTrace } from '../keccak/keccakComputeSidecar.js';
+import { buildEcrecoverComputeSidecars, computeEcrecoverWitness, probeEcrecoverSplit } from '../ecrecover/ecrecoverComputeSidecar.js';
 import {
   createVirtualMachineBch2026,
   binToHex,
@@ -3738,6 +3740,46 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     return resolved;
   }
 
+  /**
+   * Resolve the recovery side-car PAIRS for a stateful ecrecoverPubKey function: one A+B pair per call, branded to the
+   * contract's category, positioned at the ecrecoverSideCar block-layout slots (A = slot 2i, B = slot 2i+1). Mirrors
+   * _resolveKeccakComputeCoSpends but a pair per call (A commits H_A, B commits the recovered pubkey Q). The (h,v,r,s)
+   * args come straight from the direct parameters; the split (chunkA) is VM-probed. Returns a flat A0,B0,A1,B1,.. list.
+   */
+  private async _resolveEcrecoverComputeCoSpends(
+    abiFunction: AbiFunction, args: any[],
+  ): Promise<Array<{ utxo: Utxo; unlocker: Unlocker; recreate: Output }>> {
+    const calls = abiFunction.ecrecoverArgParams ?? [];
+    if (calls.length === 0 || !this.categoryId) return [];
+    const salt = hexToBin(this.categoryId).slice().reverse(); // branded: OP_UTXOTOKENCATEGORY is internal (reversed)
+    const [lockA, lockB] = [ecrecoverComputeLockingBytecode(salt, 'A'), ecrecoverComputeLockingBytecode(salt, 'B')];
+    const [utxosA, utxosB] = await Promise.all([
+      this.inner.provider.getUtxosForLockingBytecode(lockA), this.inner.provider.getUtxosForLockingBytecode(lockB),
+    ]);
+    const freeA = utxosA.filter((u) => u.token?.nft?.capability === 'mutable');
+    const freeB = utxosB.filter((u) => u.token?.nft?.capability === 'mutable');
+    if (freeA.length < calls.length || freeB.length < calls.length) {
+      throw new Error(`ecrecoverPubKey needs ${calls.length} A + ${calls.length} B recovery side-car UTXO(s) at the `
+        + `branded address; found ${freeA.length} A + ${freeB.length} B. Deploy one A+B pair per call.`);
+    }
+    const visible = abiFunction.inputs.filter((i) => !i.name.startsWith('__internal__'));
+    const argOf = (p: string | null): unknown => (p ? args[visible.findIndex((x) => x.name === p)] : undefined);
+    const resolved: Array<{ utxo: Utxo; unlocker: Unlocker; recreate: Output }> = [];
+    for (let i = 0; i < calls.length; i++) {
+      const [hp, vp, rp, sp] = calls[i];
+      const hash = argOf(hp), r = argOf(rp), s = argOf(sp), vRaw = argOf(vp);
+      if (!(hash instanceof Uint8Array) || !(r instanceof Uint8Array) || !(s instanceof Uint8Array)) {
+        throw new Error('ecrecoverPubKey in a stateful contract requires direct (hash, v, r, s) parameters.');
+      }
+      const wit = computeEcrecoverWitness(hash, typeof vRaw === 'bigint' ? Number(vRaw) : Number(vRaw), r, s);
+      const chunkA = probeEcrecoverSplit(wit, salt, freeA[i], freeB[i]);
+      const { unlockerA, recreateA, unlockerB, recreateB } = buildEcrecoverComputeSidecars(wit, chunkA, salt, freeA[i], freeB[i]);
+      resolved.push({ utxo: freeA[i], unlocker: unlockerA, recreate: recreateA });
+      resolved.push({ utxo: freeB[i], unlocker: unlockerB, recreate: recreateB });
+    }
+    return resolved;
+  }
+
   // Resolve complex/nested keccak256 preimages (null params) for a STATEFUL contract via a VM probe: build a
   // minimal tx (master + data NFTs + placeholder keccak side-cars at their block-layout slots), debug the
   // master, and read each unresolved call's argument off the trace at its OP_INPUTBYTECODE step (before the
@@ -4019,6 +4061,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           masterUtxo, masterUnlocker, dataNftUtxos: filteredDataNftUtxos, dataNftUnlockers,
         });
       }
+      // ecrecover recovery A/B pairs at the ecrecoverSideCar slots (right after keccak): the probe co-spends them so
+      // the master's VM run can bind each argBlob and read the recovered pubkey Q from B's recreation.
+      let ecrecoverProbeCoSpends: Array<{ utxo: Utxo; unlocker: Unlocker; recreate: Output }> = [];
+      if (abiFunction.ecrecoverCompute && !abiFunction.ecrecoverLoopReads && this.categoryId) {
+        ecrecoverProbeCoSpends = await this._resolveEcrecoverComputeCoSpends(abiFunction, args);
+      }
 
       // Wrap the VM probe + extraction in AutoDerivationError so failures are
       // cleanly distinguishable from programming bugs or configuration errors.
@@ -4046,6 +4094,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
 
           // keccak256 compute side-cars at the keccakSideCar slots (right after blockhash)
           for (const cs of keccakProbeCoSpends) probeBuilder.addInput(cs.utxo, cs.unlocker);
+
+          // ecrecover recovery A/B pairs at the ecrecoverSideCar slots (right after keccak)
+          for (const cs of ecrecoverProbeCoSpends) probeBuilder.addInput(cs.utxo, cs.unlocker);
 
           // Extra inputs (e.g. funding UTXO for deploy genesis)
           if (extraInputs) {
@@ -4084,6 +4135,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           // keccak256 compute side-car recreate outputs (carry each computed result R_i, matching slot order)
           for (const cs of keccakProbeCoSpends) probeBuilder.addOutput(cs.recreate);
 
+          // ecrecover recovery-pair recreate outputs (A commits H_A, B commits Q; matching slot order)
+          for (const cs of ecrecoverProbeCoSpends) probeBuilder.addOutput(cs.recreate);
+
           // Add extra outputs (entry NFTs and child contract outputs)
           if (extraOutputs) {
             for (const output of extraOutputs) {
@@ -4106,7 +4160,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         // NFT commitments to get past it and reach the entry verifies.
         let entryCommitments: string[] = [];
         if (entryOutputCount > 0) {
-          const entryBase = 1 + requiredNftIndices.length + bhProbeCoSpends.length + keccakProbeCoSpends.length;
+          const entryBase = 1 + requiredNftIndices.length + bhProbeCoSpends.length + keccakProbeCoSpends.length + ecrecoverProbeCoSpends.length;
           const entryTrace = commitmentHexes ? runProbe(commitmentHexes) : fullTrace;
           entryCommitments = extractCommitmentsFromTrace(
             entryTrace, entryOutputCount, { min: entryBase, max: entryBase + entryOutputCount },
@@ -4120,7 +4174,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         // initial state for a plain deploy at default. A deploy that writes mapping entries aborts at the entry
         // verify before the child verify (folded deploy + entries unsupported for now).
         let childCommitments: string[] = [];
-        const extraBase = 1 + requiredNftIndices.length + bhProbeCoSpends.length + keccakProbeCoSpends.length;
+        const extraBase = 1 + requiredNftIndices.length + bhProbeCoSpends.length + keccakProbeCoSpends.length + ecrecoverProbeCoSpends.length;
         if (childDataNftCount > 0 && commitmentHexes && extraOutputs) {
           // A returning deploy function materializes its return-event output between the entries and the child
           // genesis (block-layout order: entry < returnEvent < deploy), so the child outputs shift by its count.
@@ -6108,6 +6162,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // recreation. Resolved late (needs the master unlocker's args) alongside blockhash.
     let keccakComputeCoSpendUtxos: UnlockableUtxo[] = [];
     let keccakComputeCommitments: string[] = [];
+    let ecrecoverComputeCoSpendUtxos: UnlockableUtxo[] = [];
+    let ecrecoverComputeRecreates: Output[] = [];
 
     // Pre-declare outState variables (populated later, but needed for base computations in external calls)
     let externalOutStateUtxoGroups: ExternalCallUtxoGroup[] = [];
@@ -7312,6 +7368,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       keccakComputeCoSpendUtxos = resolved.map((cs) => ({ ...cs.utxo, unlocker: cs.unlocker }));
       keccakComputeCommitments = resolved.map((cs) => binToHex(cs.commitment));
     }
+    if (abiFunction?.ecrecoverCompute && this.categoryId) {
+      const resolved = await this._resolveEcrecoverComputeCoSpends(abiFunction, args);
+      ecrecoverComputeCoSpendUtxos = resolved.map((cs) => ({ ...cs.utxo, unlocker: cs.unlocker }));
+      ecrecoverComputeRecreates = resolved.map((cs) => cs.recreate);
+    }
 
     const unlockableMaster = {
       ...masterUtxo,
@@ -7444,6 +7505,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       ...(externalReadUtxos.length > 0 && { readOnlyDataNftUtxos: externalReadUtxos }),
       ...(blockhashCoSpendUtxos.length > 0 && { blockhashCoSpendUtxos }),
       ...(keccakComputeCoSpendUtxos.length > 0 && { keccakComputeCoSpendUtxos, keccakComputeCommitments }),
+      ...(ecrecoverComputeCoSpendUtxos.length > 0 && { ecrecoverComputeCoSpendUtxos, ecrecoverComputeRecreates }),
       ...(keccakLoopSideCars.length > 0 && { keccakLoopSideCars, keccakLoopRecreates }),
       ...(externalOutStateUtxoGroups.length > 0 && { externalOutStateUtxoGroups }),
       ...(externalCallUtxoGroups.length > 0 && { externalCallUtxoGroups }),

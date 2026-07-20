@@ -39,9 +39,32 @@ The rescope introduces a fixed-width STORAGE form alongside the existing runtime
   commitment packing, slot fields) and for the mapping-key preimage (Section 5). `store` pads/frames; `load` strips
   back to the exact canonical lbc.
 
-This is the load-bearing decision: **rescope the storage boundary, not the type everywhere.** ABI-encoding is a
-THIRD, separate form (Solidity ABI-encodes address as a 20-byte word; evmCompat ABI keeps that) - the bounded form
-is a storage representation, never the ABI wire form.
+This is the load-bearing decision: **rescope the storage boundary, not the type everywhere.**
+
+**The ABI wire form is a THIRD, separate representation - and today it is NOT the `address` type at all.** Solidity
+ABI-encodes `address` as `uint160`: a 20-byte value RIGHT-aligned (low bytes) in a 32-byte word, high 12 bytes
+zero-padded - number-like, the *opposite* of `bytesN` (which is left-aligned / right-padded). Verified against
+`abi-spec.rst:58,215` ("address: as in the uint160 case"). In solidcash this EVM-address ABI form is modeled and
+tested via `uint160` (a plain number), NOT via `AddressType`: `emitEvmAbiWord` has ZERO `AddressType` branch and
+THROWS on it (Phase-1 value types only); the abi-conformance suite uses `uint160 ADDR = 0x00112233..` for every
+transfer/permit/balanceOf case (`abi.conformance.test.ts`), proving byte-exact EVM parity through `uint160`.
+
+So there are three genuinely different things, and they must not be conflated:
+- **EVM address = `uint160`** - a 20-byte hash as a NUMBER; the ABI/EVM-parity form (conformance-tested). This is
+  NOT a BCH locking bytecode.
+- **BCH address = `AddressType`** - the variable-length lbc (25/35B); the runtime value. Not evmCompat-ABI-encodable
+  today (throws).
+- **Bounded storage frame** (this spec) - a fixed <=36B storage representation of the `AddressType` lbc.
+
+They are not three encodings of ONE value: an EVM 20-byte address does not map cleanly to a BCH lbc (a 20-byte hash
+is p2pkh-vs-p2sh20 ambiguous, and a p2sh32 needs a 32-byte hash that will not fit 20 bytes). The conformance suite
+sidesteps this precisely by keeping EVM addresses as `uint160` numbers and only ever using the `AddressType` in the
+slot-LAYOUT test (`address a; uint96 b` pack into one slot, via `.slot` - a compile-time number, never an
+encoded runtime value). The bounded frame is a storage representation of the BCH lbc, never the ABI wire form.
+
+OPEN: should `AddressType` become evmCompat-ABI-encodable, and if so as what - the 20-byte hash extracted from the
+lbc (lossy for p2sh32), or the framed lbc? Today the answer is "use `uint160` for EVM-address ABI", which keeps the
+bounded work orthogonal to ABI.
 
 ## 3. Storage encoding: length-prefixed frame (recommended)
 
@@ -85,7 +108,10 @@ PREIMAGE - and the soundness rests on making it canonical:
 1. **The key preimage is the canonical lbc, hashed as-is: `slot = sha256(lbc(addr))` masked.** NOT the padded frame.
    Rationale: the lbc is the address's unique identity; it is what is on the covenant stack; and it keeps address
    keys consistent with the existing type-agnostic `sha256(value)` model (address keys already work in C2 this way).
-   The Section-3 storage frame is never the key preimage.
+   The Section-3 storage frame is never the key preimage. NB this is for `mapping(address => V)` where `address` is
+   the BCH-lbc `AddressType`. A ported EVM contract that keys by the EVM 20-byte address uses `uint160` (Section 2),
+   which is a NUMBER key - `slot = sha256(uint160-bytes)` - and is already handled; the two are different key spaces,
+   never mixed within one mapping.
 2. **CANONICALITY is the whole ballgame.** The same logical address must always hash to the same slot. Two ways it
    could break, both must be closed:
    - *Representation drift*: an address used as a key must be the byte-exact canonical lbc whether it is fresh

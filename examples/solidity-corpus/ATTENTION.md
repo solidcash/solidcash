@@ -156,9 +156,12 @@ by it; they are pre-existing and fundamental. Re-bucketed the current top FAILs 
   (a2) COMPOSITE SUB-SLOT field access - DONE (`57649637` struct, `33f5f5c3` array, `34f1f316` nested struct,
   `6448f446` bool/enum, `1cc36ad2` array-in-struct). Only top-level array-OF-struct fail-closed (SDK can't derive
   that state layout). (b) DYNAMIC-ARRAY RESIZE `sstore(x.slot,n)` - DONE (`0b2f89c0`, branchless blob surgery, +5
-  corpus: the array_copy/clear/delete cluster). Remaining slot deferrals (docs/deferrals.md, tractable-but-not-worth
-  autonomous): calldata `.offset` (~0 flip + shortcut=miscompile), bytes/string slot fields (EVM byte-array encoding,
-  conflicts with BCH chunk model), address slots (bounded-address Section 10: against).
+  corpus: the array_copy/clear/delete cluster). (c) CALLDATA `.offset` read+assign DONE
+  (`cebd086b`,`ac82db9f`, +2: first-dynamic-param compile-time constant + assignable mutable component). Remaining
+  slot deferrals (docs/deferrals.md, evidence-backed): bytes/string slot fields (per-file audit: all 7 need
+  byte-reversal / keccak-data-region / invalid-encoding, none flips via clean resize), nested calldata arrays,
+  non-first-dynamic calldata offset, address slots (bounded-address Section 10: against), computed keccak element/data
+  slots.
   `sload(v.slot+i)` combines the packed value fields/elements at relative slot i into the EVM-layout word;
   `sstore(v.slot+i,w)` writes the decomposed pieces back (a STRUCT via the AstBuilder's `s.f=v` ctor rebuild = a
   value blob, never a raw slot; a fixed ARRAY via per-element ArrayAssign). Reuses the int/bytesN/UDVT field

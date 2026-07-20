@@ -35,7 +35,7 @@ import { keccak_256 } from '@noble/hashes/sha3.js';
 import {
   pushDataBytes, buildKeccakComputeSidecar, extractKeccakPreimageFromTrace,
 } from './keccak/keccakComputeSidecar.js';
-import { buildEcrecoverComputeSidecars, computeEcrecoverWitness, ecrecoverBalancedSplit } from './ecrecover/ecrecoverComputeSidecar.js';
+import { buildEcrecoverComputeSidecars, computeEcrecoverWitness, probeEcrecoverSplit } from './ecrecover/ecrecoverComputeSidecar.js';
 import type { EcrecoverWitness } from './ecrecover/ecrecoverRecovery.js';
 import {
   solidCashOutputToLibauthOutput,
@@ -68,7 +68,6 @@ const DEFAULT_SEQUENCE = 0xfffffffe;
 const DEFAULT_MAX_FEE_SATS_PER_BYTE = 1000;
 
 let keccakProbeVm: ReturnType<typeof createVirtualMachineBch2026> | undefined;
-let ecrecoverProbeVm: ReturnType<typeof createVirtualMachineBch2026> | undefined;
 
 export class TransactionBuilder {
   public provider: NetworkProvider;
@@ -328,7 +327,7 @@ export class TransactionBuilder {
     // so the SDK VM-probes both covenants across candidate splits and picks the one where both inputs fit their ~8M
     // budget with the smallest peak. chunkA is a liveness parameter (A<->B are bound by the A->B hash), never soundness:
     // a wrong split simply fails to spend, it can never yield a wrong Q. See docs/ecrecover.md.
-    const chunkA = this.probeEcrecoverSplit(wit, salt, scA, scB);
+    const chunkA = probeEcrecoverSplit(wit, salt, scA, scB);
     const { unlockerA, recreateA, unlockerB, recreateB } = buildEcrecoverComputeSidecars(wit, chunkA, salt, scA, scB);
     this.addInput(scA, unlockerA); this.addOutput(recreateA);   // A: checkpoint
     this.addInput(scB, unlockerB); this.addOutput(recreateB);   // B: recovered pubkey
@@ -380,7 +379,7 @@ export class TransactionBuilder {
       const hash = hs[k] as Uint8Array, r = rs[k] as Uint8Array, s = ss[k] as Uint8Array;
       const v = typeof vs[k] === 'bigint' ? Number(vs[k]) : Number(vs[k]);
       const wit = computeEcrecoverWitness(hash, v, r, s);
-      const chunkA = this.probeEcrecoverSplit(wit, salt, freeA[k], freeB[k]);
+      const chunkA = probeEcrecoverSplit(wit, salt, freeA[k], freeB[k]);
       const { unlockerA, recreateA, unlockerB, recreateB } = buildEcrecoverComputeSidecars(wit, chunkA, salt, freeA[k], freeB[k]);
       sideCars.push({ ...freeA[k], unlocker: unlockerA }, { ...freeB[k], unlocker: unlockerB });
       recreates.push(recreateA, recreateB);
@@ -389,40 +388,6 @@ export class TransactionBuilder {
     this.outputs.splice(base, 0, ...recreates);
   }
 
-  /**
-   * Pick the ladder split by measuring both covenants' real op-cost. Builds the A+B pair in isolation (A input 0 /
-   * output 0 commits the checkpoint; B input 1 verifies output 0's H_A and commits Q at output 1 - the same index
-   * alignment the live tx uses) and evaluates each input at every candidate split, choosing the viable split with the
-   * lowest peak cost. Deterministic (op-cost depends only on the covenant + witness), so this is reproducible.
-   */
-  private probeEcrecoverSplit(wit: EcrecoverWitness, salt: Uint8Array, scA: Utxo, scB: Utxo): number {
-    ecrecoverProbeVm ??= createVirtualMachineBch2026();
-    const center = ecrecoverBalancedSplit(wit);
-    const lo = Math.max(1, center - 8), hi = Math.min(wit.masks.length - wit.start - 2, center + 8);
-    const savedInputs = [...this.inputs], savedOutputs = [...this.outputs];
-    let best = -1, bestMax = Infinity;
-    try {
-      for (let cA = lo; cA <= hi; cA++) {
-        const { unlockerA, recreateA, unlockerB, recreateB } = buildEcrecoverComputeSidecars(wit, cA, salt, scA, scB);
-        this.inputs = [{ ...scA, unlocker: unlockerA }, { ...scB, unlocker: unlockerB }] as UnlockableUtxo[];
-        this.outputs = [recreateA, recreateB];
-        const transaction = this.buildLibauthTransaction(true);
-        const sourceOutputs = generateLibauthSourceOutputs(this.inputs);
-        const rA = ecrecoverProbeVm.evaluate({ inputIndex: 0, sourceOutputs, transaction }) as { error?: string; metrics: { operationCost: number } };
-        const rB = ecrecoverProbeVm.evaluate({ inputIndex: 1, sourceOutputs, transaction }) as { error?: string; metrics: { operationCost: number } };
-        if (rA.error || rB.error) continue;
-        const peak = Math.max(rA.metrics.operationCost, rB.metrics.operationCost);
-        if (peak < bestMax) { bestMax = peak; best = cA; }
-      }
-    } finally {
-      this.inputs = savedInputs; this.outputs = savedOutputs;
-    }
-    if (best < 0) {
-      throw new Error('ecrecover: no ladder split fits both side-cars\' op-budget; a valid signature should always '
-        + 'have one - check the recovery witness inputs (hash, v, r, s).');
-    }
-    return best;
-  }
 
   /**
    * Resolve every keccak256 call's preimage for a compute-model function. Direct-parameter args come straight

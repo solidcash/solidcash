@@ -74,25 +74,6 @@ export function buildEcrecoverComputeSidecars(
   };
 }
 
-/**
- * Balanced split estimate: the number of ladder steps side-car A runs (B runs the rest). A does the verification +
- * its chunk; B is a pure ladder. This estimates the balancing split from the per-step add counts. The production SDK
- * refines it with a deterministic VM-probe of both covenants' op-cost (op-cost is a pure function of the witness).
- */
-export function ecrecoverBalancedSplit(wit: EcrecoverWitness): number {
-  const rest = Array.from(wit.masks.slice(wit.start + 1));
-  const AFIX = 900000, BFIX = 340000, DBL = 51000, ADD = 66000;
-  const stepCost = (m: number): number => DBL + (m ? ADD : 0);
-  const hi = Math.min(70, rest.length - 1);
-  let best = Math.min(60, hi), bestMax = Infinity;
-  for (let cA = Math.min(45, hi); cA <= hi; cA++) {
-    let a = AFIX, b = BFIX;
-    rest.forEach((m, i) => { if (i < cA) a += stepCost(m); else b += stepCost(m); });
-    if (Math.max(a, b) < bestMax) { bestMax = Math.max(a, b); best = cA; }
-  }
-  return best;
-}
-
 let probeVm: ReturnType<typeof createVirtualMachineBch2026> | undefined;
 
 /**
@@ -102,20 +83,18 @@ let probeVm: ReturnType<typeof createVirtualMachineBch2026> | undefined;
  * is reproducible. Standalone (no TransactionBuilder) so the stateful path can reuse it.
  */
 export function probeEcrecoverSplit(wit: EcrecoverWitness, _salt: Uint8Array, scA: Utxo, scB: Utxo): number {
-  probeVm ??= createVirtualMachineBch2026();
+  const vm = (probeVm ??= createVirtualMachineBch2026());
   // Probe with the SHARED (all-zero) salt so the covenant's brand-check drops (the isolated 2-input probe has no
   // consuming contract at input 0 to verify a branded category against). op-cost is salt-independent (only the tiny
   // drop-vs-verify branch differs, << the 8M budget margin), so the chosen split is valid for the real branded pair.
   const salt = SHARED_LIBRARY_SALT;
-  const center = ecrecoverBalancedSplit(wit);
-  const lo = Math.max(1, center - 8), hi = Math.min(wit.masks.length - wit.start - 2, center + 8);
   const toTok = (t?: Utxo['token']): unknown => (t
     ? { category: hexToBin(t.category), amount: t.amount ?? 0n,
       nft: t.nft ? { capability: t.nft.capability, commitment: hexToBin(t.nft.commitment) } : undefined }
     : undefined);
   const laOut = (o: Output): unknown => ({ lockingBytecode: o.to, valueSatoshis: o.amount, token: toTok(o.token) });
-  let best = -1, bestMax = Infinity;
-  for (let cA = lo; cA <= hi; cA++) {
+  // op-cost at a candidate split: build the pair, evaluate both inputs. Over-budget -> Infinity (the eval errors).
+  const cost = (cA: number): { a: number; b: number; ok: boolean } => {
     const { unlockerA, recreateA, unlockerB, recreateB } = buildEcrecoverComputeSidecars(wit, cA, salt, scA, scB);
     const inputs = [scA, scB].map((u, k) => ({
       outpointIndex: u.vout, outpointTransactionHash: hexToBin(u.txid), sequenceNumber: 0xffffffff,
@@ -125,12 +104,33 @@ export function probeEcrecoverSplit(wit: EcrecoverWitness, _salt: Uint8Array, sc
       lockingBytecode: (k === 0 ? unlockerA : unlockerB).generateLockingBytecode(), valueSatoshis: u.satoshis, token: toTok(u.token),
     }));
     const transaction = { version: 2, locktime: 0, inputs, outputs: [laOut(recreateA), laOut(recreateB)] };
-    const rA = probeVm.evaluate({ inputIndex: 0, sourceOutputs, transaction } as never) as { error?: string; metrics: { operationCost: number } };
-    const rB = probeVm.evaluate({ inputIndex: 1, sourceOutputs, transaction } as never) as { error?: string; metrics: { operationCost: number } };
-    if (rA.error || rB.error) continue;
-    const peak = Math.max(rA.metrics.operationCost, rB.metrics.operationCost);
-    if (peak < bestMax) { bestMax = peak; best = cA; }
+    const rA = vm.evaluate({ inputIndex: 0, sourceOutputs, transaction } as never) as { error?: string; metrics: { operationCost: number } };
+    const rB = vm.evaluate({ inputIndex: 1, sourceOutputs, transaction } as never) as { error?: string; metrics: { operationCost: number } };
+    return {
+      a: rA.error ? Infinity : rA.metrics.operationCost,
+      b: rB.error ? Infinity : rB.metrics.operationCost,
+      ok: !rA.error && !rB.error,
+    };
+  };
+  const maxCA = Math.max(1, wit.masks.length - wit.start - 2);
+  // A's op-cost RISES with chunkA (it runs more ladder steps), B's FALLS. The minimum-peak split is at their crossover.
+  // Binary-search it from the ACTUAL VM op-cost (not a heuristic, which was the source of missed windows), steering
+  // toward costA == costB, then fine-scan the bracket for the viable min-peak (local add/no-add jitter is small).
+  let lo = 1, hi = maxCA;
+  while (hi - lo > 6) {
+    const mid = (lo + hi) >> 1;
+    const c = cost(mid);
+    if (c.a > c.b) hi = mid; else lo = mid; // A dearer -> fewer A steps (lower cA); else more
   }
+  let best = -1, bestMax = Infinity;
+  const scan = (from: number, to: number): void => {
+    for (let cA = Math.max(1, from); cA <= Math.min(maxCA, to); cA++) {
+      const c = cost(cA);
+      if (c.ok && Math.max(c.a, c.b) < bestMax) { bestMax = Math.max(c.a, c.b); best = cA; }
+    }
+  };
+  scan(lo - 4, hi + 4);                     // the crossover (and the ~3-wide viable window around it) sits in here
+  if (best < 0) scan(1, maxCA);             // fallback: jitter/edge pushed the window outside the bracket - scan all
   if (best < 0) throw new Error('ecrecover: no ladder split fits both side-cars\' op-budget for this signature.');
   return best;
 }

@@ -3,6 +3,7 @@ import {
   getMaxPushdataEncodedSize,
   encodePushdataValue,
   decodePushdataValue,
+  attachDecodedAccessors,
   buildPushdataCommitment,
   parsePushdataCommitment,
   buildInitialStateCommitments,
@@ -743,21 +744,28 @@ describe('flat-stream fixed-width array codec', () => {
   });
 });
 
-describe('decoded struct/array accessors (typechain .toObject() / .toArray())', () => {
+describe('attachDecodedAccessors (typechain .toObject() / .toArray() at the user boundary)', () => {
   const structs = [
     { name: 'Inner', fields: [{ name: 'x', type: 'int256' }, { name: 'y', type: 'int256' }] },
     { name: 'Outer', fields: [{ name: 'id', type: 'int256' }, { name: 'inner', type: 'Inner' }, { name: 'label', type: 'string' }] },
   ];
 
-  it('attaches a non-enumerable toObject() that returns a plain deep copy', () => {
+  it('decodePushdataValue stays CLEAN - no accessors on the raw decode (internal derive path)', () => {
     const enc = encodePushdataValue({ id: 7n, inner: { x: 1n, y: 2n }, label: 'A' }, 'Outer', structs);
     const { value } = decodePushdataValue(enc, 0, 'Outer', structs) as { value: any };
+    expect(typeof value.toObject).toBe('undefined');
+    expect(typeof (value.inner as any).toObject).toBe('undefined');
+  });
+
+  it('attaches a non-enumerable toObject() that returns a plain deep copy', () => {
+    const enc = encodePushdataValue({ id: 7n, inner: { x: 1n, y: 2n }, label: 'A' }, 'Outer', structs);
+    const value = attachDecodedAccessors(decodePushdataValue(enc, 0, 'Outer', structs).value) as any;
     // present but non-enumerable: never pollutes Object.keys / spread / deep-equal.
     expect(typeof value.toObject).toBe('function');
     expect(Object.keys(value)).toEqual(['id', 'inner', 'label']);
     const plain = value.toObject();
     expect(plain).toEqual({ id: 7n, inner: { x: 1n, y: 2n }, label: 'A' });
-    // the accessor is stripped recursively on the plain copy.
+    // nested struct also gets it; the accessor is stripped recursively on the plain copy.
     expect(typeof (value.inner as any).toObject).toBe('function');
     expect(typeof (plain.inner as any).toObject).toBe('undefined');
   });
@@ -765,7 +773,7 @@ describe('decoded struct/array accessors (typechain .toObject() / .toArray())', 
   it('attaches a non-enumerable toArray() and per-element toObject() on arrays of structs', () => {
     const rows = [{ x: 1n, y: 2n }, { x: 3n, y: 4n }];
     const enc = encodePushdataValue(rows, 'Inner[]', structs);
-    const { value } = decodePushdataValue(enc, 0, 'Inner[]', structs) as { value: any };
+    const value = attachDecodedAccessors(decodePushdataValue(enc, 0, 'Inner[]', structs).value) as any;
     expect(Array.isArray(value)).toBe(true);
     expect(typeof value.toArray).toBe('function');
     expect(typeof value[0].toObject).toBe('function');
@@ -774,9 +782,9 @@ describe('decoded struct/array accessors (typechain .toObject() / .toArray())', 
     expect(typeof value.toArray()[0].toObject).toBe('undefined');
   });
 
-  it('round-trip encode still works on a decoded struct (accessor is invisible to re-encode)', () => {
+  it('round-trip encode still works on an accessor-attached struct (invisible to re-encode)', () => {
     const enc = encodePushdataValue({ id: 9n, inner: { x: 5n, y: 6n }, label: 'Z' }, 'Outer', structs);
-    const { value } = decodePushdataValue(enc, 0, 'Outer', structs) as { value: any };
+    const value = attachDecodedAccessors(decodePushdataValue(enc, 0, 'Outer', structs).value);
     expect(encodePushdataValue(value, 'Outer', structs)).toEqual(enc);
   });
 });

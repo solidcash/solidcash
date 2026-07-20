@@ -24,6 +24,7 @@ import {
   buildPushdataCommitment,
   parseEntryCommitment,
   StateValue,
+  attachDecodedAccessors,
   parseEntryCommitmentMultiKey,
   Op,
   StateLayout,
@@ -3222,7 +3223,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
   async getState(): Promise<Record<string, StateValueType>> {
     await this._ensureResolved();
     const onChainState = await getContractState(this.inner, this.categoryId);
-    return onChainState.state as Record<string, StateValueType>;
+    const state = onChainState.state as Record<string, StateValueType>;
+    // User-facing boundary: attach typechain .toObject()/.toArray() to struct/array state values (ethers parity).
+    // Kept out of the shared decoder so the internal derive path never sees these accessors.
+    for (const k of Object.keys(state)) attachDecodedAccessors(state[k] as unknown as StateValue);
+    return state;
   }
 
   async getFullState(): Promise<OnChainState> {

@@ -552,7 +552,7 @@ function standardPushdataFrame(data: Uint8Array): Uint8Array {
   return result;
 }
 
-/** Deep copy a decoded value to a plain form, dropping the non-enumerable `toObject` accessor at every level. */
+/** Deep copy a decoded value to a plain form, dropping the non-enumerable `toObject`/`toArray` accessors. */
 function toPlainStateValue(v: StateValue): StateValue {
   if (Array.isArray(v)) return v.map(toPlainStateValue);
   if (v !== null && typeof v === 'object' && !(v instanceof Uint8Array)) {
@@ -564,28 +564,34 @@ function toPlainStateValue(v: StateValue): StateValue {
 }
 
 /**
- * Attach a non-enumerable ethers/typechain-style `toObject()` to a decoded struct record: returns a plain deep
- * copy (nested structs included, accessor stripped). Non-enumerable so it never shows up in Object.keys / spread /
- * `deep.equal` / re-encode (which iterate own enumerable keys or the struct's field list, not this method).
+ * Attach ethers/typechain-style accessors IN PLACE to a decoded value and everything nested inside it: a
+ * non-enumerable `toObject()` on every struct record and `toArray()` on every array, each returning a plain deep
+ * copy with the accessors stripped. Non-enumerable so Object.keys / spread / chai `deep.equal` / re-encode (which
+ * iterate own enumerable keys, array indices, or a struct's field list - never this method) are all unaffected.
+ *
+ * IMPORTANT: apply this ONLY at a user-facing return boundary (getter results, event args). The internal
+ * state-derivation path decodes the same values and must NOT see these accessors, so `decodePushdataValue` stays
+ * clean and the SDK opts in by calling this on values it hands back to the caller.
  */
-function attachStructAccessors(record: StateRecord): StateRecord {
-  Object.defineProperty(record, 'toObject', {
-    enumerable: false, writable: true, configurable: true,
-    value: function toObject(): StateRecord { return toPlainStateValue(this as StateRecord) as StateRecord; },
-  });
-  return record;
-}
-
-/**
- * Attach a non-enumerable ethers/typechain-style `toArray()` to a decoded array: a plain deep copy (struct
- * elements' `toObject` stripped). Non-enumerable so length / index / `deep.equal` / re-encode are unaffected.
- */
-function attachArrayAccessors(arr: StateValue[]): StateValue[] {
-  Object.defineProperty(arr, 'toArray', {
-    enumerable: false, writable: true, configurable: true,
-    value: function toArray(): StateValue[] { return toPlainStateValue(this as StateValue[]) as StateValue[]; },
-  });
-  return arr;
+export function attachDecodedAccessors(value: StateValue): StateValue {
+  if (Array.isArray(value)) {
+    for (const el of value) attachDecodedAccessors(el);
+    if (!Object.prototype.hasOwnProperty.call(value, 'toArray')) {
+      Object.defineProperty(value, 'toArray', {
+        enumerable: false, writable: true, configurable: true,
+        value: function toArray(): StateValue[] { return toPlainStateValue(this as StateValue[]) as StateValue[]; },
+      });
+    }
+  } else if (value !== null && typeof value === 'object' && !(value instanceof Uint8Array)) {
+    for (const k of Object.keys(value)) attachDecodedAccessors((value as StateRecord)[k]);
+    if (!Object.prototype.hasOwnProperty.call(value, 'toObject')) {
+      Object.defineProperty(value, 'toObject', {
+        enumerable: false, writable: true, configurable: true,
+        value: function toObject(): StateRecord { return toPlainStateValue(this as StateRecord) as StateRecord; },
+      });
+    }
+  }
+  return value;
 }
 
 /**
@@ -616,7 +622,7 @@ export function decodePushdataValue(
         record[field.name] = value;
         totalConsumed += bytesConsumed;
       }
-      return { value: attachStructAccessors(record), bytesConsumed: totalConsumed };
+      return { value: record, bytesConsumed: totalConsumed };
     }
   }
   const arrInfo = parseArrayTypeString(type);
@@ -648,7 +654,7 @@ export function decodePushdataValue(
         totalConsumed += bytesConsumed;
       }
     }
-    return { value: attachArrayAccessors(arr), bytesConsumed: totalConsumed };
+    return { value: arr, bytesConsumed: totalConsumed };
   }
 
   if (type === 'bool') {

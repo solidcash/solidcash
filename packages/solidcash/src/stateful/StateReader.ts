@@ -1,9 +1,15 @@
 import {
   StateLayout, parsePushdataCommitment, EventDefinitionAbi, decodePushdataValue,
-  StateValue, StateRecord, isMultiDataNftLayout,
+  StateValue, StateRecord, isMultiDataNftLayout, attachDecodedAccessors,
   parseChunkCommitment, joinChunks, dynamicLenKey,
   parseArrayTypeString, isFixedWidthType, unpackFixedWidthArray, decodePackedEventArray,
 } from '@solidcash/utils';
+
+/** Attach typechain .toObject()/.toArray() to each struct/array member of a decoded event-args record (parity). */
+function attachEventArgsAccessors(values: Record<string, StateValue>): Record<string, StateValue> {
+  for (const k of Object.keys(values)) attachDecodedAccessors(values[k]);
+  return values;
+}
 import { hexToBin, binsAreEqual, binToUtf8 } from '@bitauth/libauth';
 import { Utxo } from '../interfaces.js';
 import NetworkProvider from '../network/NetworkProvider.js';
@@ -323,7 +329,7 @@ export async function readEventsFromChain(
     .map((utxo) => ({
       txid: utxo.txid,
       vout: utxo.vout,
-      values: parseEventCommitment(utxo.token!.nft!.commitment, eventDef, structs),
+      values: attachEventArgsAccessors(parseEventCommitment(utxo.token!.nft!.commitment, eventDef, structs)),
     }));
 }
 

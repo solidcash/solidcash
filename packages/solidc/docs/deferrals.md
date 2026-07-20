@@ -1089,6 +1089,16 @@ STALE element-slot bits, BCH zero-fills (a footgun EVM has, BCH's clean model do
 the fund-relevant blob surgery can get review. Do it with the other array/* deep work (element-slot writes
 `sstore(keccak256(0,32)+i, v)`), not as a standalone increment.
 
+## Calldata `.offset` on dynamic params - MOSTLY DONE 2026-07-20 (cebd086b, ac82db9f)
+
+RESOLVED for the READ + ASSIGN forms. `x.offset` of a FIRST dynamic calldata param = the compile-time ABI data
+position `4 + headWords*32 + 32` (cebd086b; not a fake position - the exact value EVM computes, VM-proven 0x44 /
+0x84). `x.offset := v` / `x.length := v` (a calldata-slice re-point) = a function-scoped mutable local, read back
+across blocks (ac82db9f). Corpus +2 (calldata_offset_read, calldata_offset_read_write). REMAINING: a dynamic param
+that is NOT the first (cumulative runtime tail) and calldata_array_read (nested calldata arrays: `uint[2][] calldata`,
+`uint[2] calldata t = x[1]; s := t` - reading a calldata fixed-array element as a value; a separate deeper feature).
+Original analysis (now largely resolved) below.
+
 ## Calldata `.offset` on dynamic params - DEFERRED 2026-07-20
 
 **What.** In assembly, bare `<dynParam>.offset` (a numeric ABI-tail position) on a `bytes`/`string`/`T[]` calldata
@@ -1121,7 +1131,20 @@ delicate (every calldata op must agree on one layout); reuse the ABI encoders in
 **Revisit if.** A concrete port needs dynamic-calldata tail access (raw ABI decoding in assembly), or the calldata
 model is rebuilt for another reason - then `.offset` falls out of the head/tail layout.
 
-## bytes/string slot fields + address slot fields - DEFERRED 2026-07-20
+## bytes/string slot fields + address slot fields - DEFERRED 2026-07-20 (per-file evidence added)
+
+**PER-FILE AUDIT 2026-07-20 - none flips via a clean resize/clear; ALL need EVM byte-array-encoding internals.**
+Checked each of the 7: `dirty_storage_bytes` = short-string data write `sstore(b.slot, or("deadbeef",0x08))` then
+`b[3]` - needs the SHORT inline-data decode with a BYTE REVERSAL (EVM big-endian high-byte data -> BCH byte order);
+`byte_array_storage_layout` + `dirty_memory_bytes_to_storage_copy[_ir]` = `sload(b.slot)` returning the short/long
+length encoding, which for a short string INCLUDES the data (same reversal; and sload can't know the length at
+compile time so it can't partial-fail); `dirty_storage_bytes_long` + `delete_bytes_array` = a keccak-DATA-region
+write/read `sstore(keccak256(0,b.slot), data)` / `sload(keccak256(0,32))` (the computed-element-slot deferral);
+`invalid_encoding_for_storage_byte_array` = deliberately-INVALID slot encodings (length 32/odd corner cases). So a
+sound write-only slice (clear + long-resize, no reversal) flips 0 of them - every file needs the data reversal, the
+keccak-data region, or an invalid-encoding corner. Building the byte-reversal encoding autonomously for these
+EVM-storage-implementation tests is exactly the miscompile risk to avoid (endianness). CONFIRMS: not a clean
+increment - faithful EVM byte-array storage-encoding emulation, conflicting with BCH's chunk model.
 
 **What.** A `bytes`/`string` or `address` state var packed into / accessed via a raw slot fails closed (the
 composite/scalar slot machinery accepts only fixed value types: int/bytesN/bool/enum/UDVT). ~7 corpus files touch

@@ -202,8 +202,10 @@ map snapshotted before any rewrite, so only a single-use local qualifies.
 Stateful autoderivation IS implemented: a `StatefulContract` caller with a computed-target loop needs no explicit
 builder call - register the route's target instances (`registerExternalArray(interfaceName, [..])`) and the
 autoderivation co-spends them (the array-slot expansion) AND fills each `__internal__loopTargets<n>` witness with
-their addresses in co-spend order (`StatefulContract._createBuilder`, ordered after `externalCallInputBase`). Router02
-is stateful, so its entry functions use this path. e2e: `StatefulComputedLoopDispatch.test.ts`.
+their addresses in co-spend order (`StatefulContract._createBuilder`, ordered after `externalCallInputBase`, before
+the selectors). A MULTI-method interface (Uniswap's `IUniswapV2Pair` shape) works too: a loop-expanded slot owns ONE
+shared selector param (checked against each co-spent element), filled once at the range start. Router02 is stateful,
+so its entry functions use this path. e2e: `StatefulComputedLoopDispatch.test.ts` (single- and multi-method).
 
 Known gap - a MULTI-use local receiver (`pair.getReserves(); pair.swap(..)`, Router02's
 `_swapSupportingFeeOnTransferTokens`): the read + the write must share ONE co-spend (getReserves reads the input

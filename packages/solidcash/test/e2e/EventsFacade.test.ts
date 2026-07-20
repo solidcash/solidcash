@@ -38,6 +38,22 @@ describe('StatefulContract events facade (ethers queryFilter / filters / getEven
     expect(logs[0].txid).toBeDefined();
   });
 
+  it('(await tx.wait()).events[i].args extracts this-tx events (ethers v5 receipt)', async () => {
+    const { sc } = await deploy();
+    const receipt = await (await sc.fire(1n, 2n, 100n).send()).wait!();
+    expect(receipt.events).toHaveLength(1);
+    const ev = receipt.events![0];
+    expect(ev.event).toBe('Transfer');
+    expect(ev.eventSignature).toBe('Transfer(bigint,bigint,bigint)');
+    // named access (ethers `.args.amount`) + array-like index parity + toObject().
+    expect(ev.args.amount).toBe(100n);
+    expect(ev.args.from).toBe(1n);
+    expect((ev.args as unknown as bigint[])[2]).toBe(100n);
+    expect((ev.args as { toObject: () => Record<string, bigint> }).toObject()).toEqual({ from: 1n, to: 2n, amount: 100n });
+    // logs is an alias of events.
+    expect(receipt.logs).toBe(receipt.events);
+  });
+
   it('getEvent(name) is a callable handle with metadata', async () => {
     const { sc } = await deploy();
     const ev = sc.getEvent('Transfer');

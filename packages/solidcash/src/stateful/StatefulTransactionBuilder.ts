@@ -21,8 +21,9 @@ import {
 import { TransactionBuilder, TransactionBuilderOptions } from '../TransactionBuilder.js';
 import { CovenantTransactionBuilder } from './CovenantTransactionBuilder.js';
 import { scriptToLockingBytecode, generateLibauthSourceOutputs, calculateDust } from '../utils.js';
-import type { LibauthOutput, Output } from '../interfaces.js';
+import type { LibauthOutput, Output, ReceiptEvent } from '../interfaces.js';
 import { attachWait } from '../wait.js';
+import { parseEventCommitment } from './StateReader.js';
 import {
   Utxo, UnlockableUtxo, TransactionDetails, isP2PKHUnlocker,
 } from '../interfaces.js';
@@ -2428,6 +2429,62 @@ export class StatefulTransactionBuilder {
     }
 
     const decoded = decodeTransactionUnsafe(rawTxBin);
-    return attachWait({ ...decoded, txid, hex: rawTx } as TransactionDetails, this.builderOptions.provider);
+    const details = attachWait({ ...decoded, txid, hex: rawTx } as TransactionDetails, this.builderOptions.provider);
+    // ethers-v5 receipt.events: decode this tx's own event NFT outputs against the artifact event ABI so a ported
+    // suite can do `(await tx.wait()).events[0].args.pair`. Runtime-computed fields (a factory's deployed-child
+    // address) come from the real on-chain commitment, not the emit-time placeholder args.
+    const emitted = this.decodeEmittedEvents(decoded.outputs as readonly LibauthOutput[]);
+    details.events = emitted;
+    details.logs = emitted;
+    return details;
   }
+
+  /**
+   * Decode the event NFT outputs this transaction created into ethers-v5-style receipt events. An output is an
+   * event log iff its locking bytecode matches one of the event NFT addresses; its commitment is decoded against
+   * that event's ABI. Outputs are scanned in vout order, so `events[0]` is the first-emitted event.
+   */
+  private decodeEmittedEvents(outputs: readonly LibauthOutput[]): ReceiptEvent[] {
+    if (this.eventDefinitions.length === 0 || this.eventNftLockingBytecodes.size === 0) return [];
+    const sigByLbc = new Map<string, string>();
+    for (const [sig, lbc] of this.eventNftLockingBytecodes) sigByLbc.set(binToHex(lbc), sig);
+    const structs = this.stateLayout.structs;
+    const events: ReceiptEvent[] = [];
+    for (const out of outputs) {
+      const commitment = out.token?.nft?.commitment;
+      if (commitment === undefined) continue;
+      const sig = sigByLbc.get(binToHex(out.lockingBytecode));
+      if (sig === undefined) continue;
+      const eventDef = this.eventDefinitions.find((e) => e.signature === sig);
+      if (!eventDef) continue;
+      const commitmentHex = typeof commitment === 'string' ? commitment : binToHex(commitment);
+      let named: Record<string, StateValue>;
+      try {
+        named = parseEventCommitment(commitmentHex, eventDef, structs);
+      } catch {
+        continue; // commitment did not match this event's ABI - skip (should not happen for a real event NFT)
+      }
+      events.push({ event: eventDef.name, eventSignature: eventDef.signature, args: buildReceiptEventArgs(eventDef, named) });
+    }
+    return events;
+  }
+}
+
+/**
+ * Build an ethers-v5 `event.args`: decoded params by name (`.args.pair`), plus non-enumerable numeric indices
+ * (`.args[0]`, array-like Result parity) and a `toObject()` returning a plain named copy. Non-enumerable extras
+ * keep Object.keys / spread / chai deep-equal to just the named fields.
+ */
+function buildReceiptEventArgs(
+  eventDef: EventDefinitionAbi,
+  named: Record<string, StateValue>,
+): Record<string, unknown> {
+  const args: Record<string, unknown> = { ...named };
+  eventDef.parameters.forEach((p, i) => {
+    Object.defineProperty(args, String(i), { value: named[p.name], enumerable: false, writable: true, configurable: true });
+  });
+  Object.defineProperty(args, 'toObject', {
+    value: (): Record<string, StateValue> => ({ ...named }), enumerable: false, writable: true, configurable: true,
+  });
+  return args;
 }

@@ -168,6 +168,15 @@ export const VmTarget = {
 
 export type VmTarget = (typeof VmTarget)[keyof typeof VmTarget];
 
+/** An ethers-v5-style decoded log on a transaction receipt (`(await tx.wait()).events[i]`). */
+export interface ReceiptEvent {
+  event: string;            // event name, e.g. "PairCreated"
+  eventSignature: string;   // full signature, e.g. "PairCreated(bytes,bytes,bytes)"
+  // Decoded params keyed by name (ethers `.args.pair`); also carries non-enumerable numeric indices
+  // (`.args[0]`) and a `toObject()` for array-like / typechain parity.
+  args: Record<string, unknown>;
+}
+
 export interface TransactionDetails extends Transaction {
   txid: string;
   hex: string;
@@ -175,6 +184,10 @@ export interface TransactionDetails extends Transaction {
   // for `confirmations > 1` it additionally waits that many blocks. Instant on MockNetworkProvider (mined on
   // send). Present on results from `.send()` / a deploy; optional so hand-built TransactionDetails stay valid.
   wait?: (confirmations?: number) => Promise<TransactionDetails>;
+  // Decoded event logs emitted by this tx (ethers v5 `receipt.events` / `receipt.logs`), populated on a stateful
+  // `.send()` result by decoding this tx's own event NFT outputs against the artifact's event ABI.
+  events?: ReceiptEvent[];
+  logs?: ReceiptEvent[];
 }
 
 export interface ContractOptions {

@@ -193,3 +193,17 @@ npx vitest run          # marketplace.test.ts, 66 tests
 ```
 Config: `solidcash.config.ts` (EA mnemonic + ETH path), `vitest.config.ts` (aliases), `vitest.setup.ts`
 (initHre + matchers), `typechain-types/` + `stubs/` (drop-in shims).
+
+## 2026-07-20 UPDATE - msg.sender RESOLVED (both direct + deployProxy); it was a bounded SDK bug, not deep codegen
+`this.owner = msg.sender` + `require(msg.sender == this.owner)` (onlyOwner) now work 100%, for a NORMAL contract
+AND for `upgrades.deployProxy` of an `initialize` that sets owner = msg.sender:
+- **direct** (070352b2): the covenant's emitTxOrigin needs the sender's native P2PKH input; the SDK only forced it
+  for msg.sender-keyed MAPPINGS. Now forced for any `usesMsgSender` (not IFoo(msg.sender)).
+- **deployProxy** (b5a13daa + e546250b): the delegatecall arg-assembly skipped `__internal__msgSenderCategory`
+  (partial arg list), AND ProxyContract.forward didn't connect the runner (so `_signer` was unset -> dummy funder
+  -> emitTxOrigin found no P2PKH). Fixed both: inject msgSenderCategory + connect the proxy to the runner + force a
+  signer funder for delegatecall'd msg.sender impls.
+Verified e2e incl. onlyOwner reverting a non-owner and the old owner after transfer. So the admin block's
+`onlyOwner` authorization is now unblocked; what remains for the FULL admin tests is: (a) events-in-delegatecall
+(`OwnershipTransferred`/`Paused`/... emit), and (b) `owner() == deployer.address` needs the address getter to
+decode the stored P2PKH lockscript to a CashAddr (currently returns raw bytes). Both are separate from msg.sender.

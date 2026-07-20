@@ -753,19 +753,33 @@ the codegen normalizes that to the 33-byte big-endian standard on read (split pa
 op-cost across candidate splits, choosing the viable split with the lowest peak. op-cost is a pure function of
 (covenant, witness), so this is reproducible; a wrong split only fails to spend, it can never produce a wrong `Q`.
 
-**Remaining** (all fail CLOSED - a loud error, never a silent miscompile):
-- **`ecrecoverEvm`** (recover to a 20-byte EVM address) throws a clear compile error. It needs the recovered key's
-  keccak256: a keccak compute co-spend over the UNCOMPRESSED key (which exceeds the 40-byte NFT commitment, so it
-  rides the keccak side-car's witness, bound to B's compressed commitment by Qx+parity - fail-closed since a wrong
-  Qy yields a wrong address), then `keccak[12:]`. Composes the recovery pair + a keccak side-car.
-- **Loop** `for (i<n) ecrecoverPubKey(h[i],..)` throws a clear compile error (`ecrecoverPubKey is not yet supported
-  inside a loop`). A loop emits the read ONCE but runs it N times, all reading the same side-car; each iteration needs
-  its own pair. Finishing it needs the keccak-style dynamic-loop codegen (side-car k read at `master+1+2k`, self-
-  preserving) + per-iteration SDK derivation (the args are direct array elements `h[i]`, so no trace-probe is needed -
-  only `N` + array-name plumbing).
+## ecrecoverEvm (SHIPPED) - the 20-byte EVM address
+
+`ecrecoverEvm(hash,v,r,s)` recovers the signer's EVM address (== ethers/Solidity `ecrecover`): the SDK exposes the
+uncompressed recovered key and co-spends a keccak compute side-car over it (reusing the existing keccak machinery),
+appended AFTER all recovery pairs. The contract reads that side-car's preimage P, BINDS `compress(P) == Q` (the
+recovered compressed key, so the keccak is over the genuine key - a wrong P fails the bind, a wrong Qy yields a wrong
+address), integrity-checks the keccak covenant, and takes `keccak256(P)[12:]` as the 20-byte address. The E keccak
+side-cars trail the 2N recovery pairs, so recovery offset-from-end shifts by E and each evm call reads its keccak
+side-car at offset E-j. e2e-verified (positive == the ethers wallet address; negative rejected).
+
+## Fixed-bound loops (SHIPPED)
+
+`for (i<N) ecrecoverPubKey(h[i],..)` with a COMPILE-TIME bound N works: `UnrollFixedBoundEntryLoop` unrolls it to N
+syntactic recovery calls (the loop-variable substitution turns `h[i]` into `h[0]`, `h[1]`, ...), each an independent
+A+B pair. The codegen records the array-element args as `"h[<literal>]"` and the SDK co-spend resolves them per array
+element (works for ecrecoverPubKey/P2pkh/Evm in a loop). e2e-verified (authenticates each iteration; rejects a wrong
+one). A RUNTIME-bound loop `for (i<n)` still fails closed at compile time (needs the dynamic-loop covenant model:
+side-car k read at `master+1+2k`, self-preserving, + progressive SDK derivation).
+
+**Remaining**:
 - **Stateful** contracts: the codegen reads the `ecrecoverSideCar` block-layout slots correctly (the per-pass
   `ecrecoverArgParams` reset fixes the slot index), but the `StatefulTransactionBuilder` does not yet position the A+B
-  pair at those slots or thread it through auto-derivation (the keccak stateful integration is the template). Stateless
-  contracts are fully supported.
+  pair at those slots or thread it through auto-derivation. The mirror is exact - `_resolveEcrecoverComputeCoSpends`
+  (like `_resolveKeccakComputeCoSpends`: branded reversed-category salt, find the A/B UTXOs, compute the witness +
+  VM-probe the split, build the pair), an `ecrecoverSideCar` case in the positioning switch, and threading an
+  `ecrecoverProbeCoSpends` through `runProbe` (like `keccakProbeCoSpends`). Additive + gated on `ecrecoverCompute`, so
+  no risk to existing stateful contracts. Stateless contracts (all projections, N calls, branches, fixed loops) are
+  fully supported.
 - **`ecrecover`** (the 3-argument verify-with-pubkey alias): a removal decision, not a gap; see the removal section
   above. It still works and is tested.

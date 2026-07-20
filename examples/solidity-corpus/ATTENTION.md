@@ -153,19 +153,22 @@ by it; they are pre-existing and fundamental. Re-bucketed the current top FAILs 
   becomes a fixed 2-word field + packs inline in the 128B commitment - spec + address-keyed-mapping soundness in
   docs/bounded-address.md (key preimage = canonical sha256(lbc), must round-trip exact; ceiling fail-closed).
   (The 20-byte stateVarByteWidth for address is EVM slot-LAYOUT parity for neighbour packing, not the value's width.);
-  (a2) COMPOSITE (struct/fixed value array/nested struct) SUB-SLOT field access - DONE (`57649637` struct,
-  `33f5f5c3` array, `34f1f316` nested struct-in-struct). Remaining fail-closed (docs/deferrals.md): nested ARRAYS
-  (array<->struct nesting) + bool/enum (0 corpus + typed-cleaning divergence).
+  (a2) COMPOSITE SUB-SLOT field access - DONE (`57649637` struct, `33f5f5c3` array, `34f1f316` nested struct,
+  `6448f446` bool/enum, `1cc36ad2` array-in-struct). Only top-level array-OF-struct fail-closed (SDK can't derive
+  that state layout). (b) DYNAMIC-ARRAY RESIZE `sstore(x.slot,n)` - DONE (`0b2f89c0`, branchless blob surgery, +5
+  corpus: the array_copy/clear/delete cluster). Remaining slot deferrals (docs/deferrals.md, tractable-but-not-worth
+  autonomous): calldata `.offset` (~0 flip + shortcut=miscompile), bytes/string slot fields (EVM byte-array encoding,
+  conflicts with BCH chunk model), address slots (bounded-address Section 10: against).
   `sload(v.slot+i)` combines the packed value fields/elements at relative slot i into the EVM-layout word;
   `sstore(v.slot+i,w)` writes the decomposed pieces back (a STRUCT via the AstBuilder's `s.f=v` ctor rebuild = a
   value blob, never a raw slot; a fixed ARRAY via per-element ArrayAssign). Reuses the int/bytesN/UDVT field
   machinery (fieldAsWordFrom/castWordToFieldType). Gate: every field/element must be a supported fixed value type,
   else the WHOLE composite fails closed (address/dynamic/bool/enum/nested). VM-proven via field<->slot CROSS-CHECKS
   (not slot->slot) with top-bit values (EvmStorageLayout.test.ts). +2 corpus (struct_delete_storage_small,
-  dirty_storage_static_array), 0 regress. NESTED composites remain the one follow-on (fail-closed). NOTE the earlier
+  dirty_storage_static_array), 0 regress. NOTE the earlier
   "struct-field WRITES are blob rebuilds, harder" worry was UNFOUNDED for value fields - the high-level `s.f=v`
-  desugar already does the sound blob rebuild. (b) dynamic-array RESIZE (`sstore(a.slot,n)`)
-  + element slots (`sstore(keccak256(0,32)+i, v)`) = array copy/delete (`array/*`), deep; (c) EVM transient storage +
+  desugar already does the sound blob rebuild. (b) dynamic-array RESIZE (`sstore(a.slot,n)`) = DONE (`0b2f89c0`);
+  computed element slots (`sstore(keccak256(0,32)+i, v)`) at keccak positions remain deep; (c) EVM transient storage +
   sparse/computed raw slots with no declared var (correctly fail-closed),
   `tstore`/`tload` (no tx-scoped storage). 6 = calldata `.offset`/`.length`: `.length` WORKS; `.offset` applies only
   to DYNAMIC calldata params (bytes/string/array) whose head/tail our one-word-per-param model

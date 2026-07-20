@@ -290,6 +290,8 @@ export default class SymbolTableTraversal extends AstTraversal {
   private stateVariableMap: Map<string, StateVariableNode> = new Map();
   private collectionMap: Map<string, CollectionNode> = new Map();
   private structMap: Map<string, StructType> = new Map();
+  private interfaceStructNames: Set<string> = new Set(); // struct names declared inside an interface (may be
+  // shadowed by a same-named contract struct, which is a distinct contract-scoped type in Solidity)
   private typeDefMap: Map<string, ValueType> = new Map();
   private enumMap: Map<string, EnumType> = new Map();
   private eventMap: Map<string, EventDefinitionNode> = new Map();
@@ -409,10 +411,19 @@ export default class SymbolTableTraversal extends AstTraversal {
           this.registerEnum(ed);
         }
       }
-      // Register interface-level structs
+      // Register interface-level structs. A struct name shared with a contract-level struct is a DISTINCT
+      // contract-scoped type in Solidity (e.g. IMasterChef.UserInfo vs MasterChefV2.UserInfo). Track the interface
+      // origin (so a later same-named contract struct wins the bare slot instead of erroring) and also register the
+      // struct under its qualified `IFace.Struct` name so external qualified references still resolve to it.
       for (const sd of iface.structDefinitions) {
+        this.interfaceStructNames.add(sd.name);
+        const structType = new StructType(sd.name, sd.fields);
+        const qualified = `${iface.name}.${sd.name}`;
+        if (!this.structMap.has(qualified)) {
+          this.structMap.set(qualified, structType);
+          this.symbolTables[0].set(Symbol.function(qualified, structType, sd.fields.map((f) => f.type)));
+        }
         if (!this.structMap.has(sd.name)) {
-          const structType = new StructType(sd.name, sd.fields);
           this.structMap.set(sd.name, structType);
           this.symbolTables[0].set(Symbol.function(sd.name, structType, sd.fields.map((f) => f.type)));
         }
@@ -552,9 +563,12 @@ export default class SymbolTableTraversal extends AstTraversal {
       this.registerEnum(ed);
     }
 
-    // Register struct definitions
+    // Register struct definitions. A name already taken by an INTERFACE struct is not a redefinition: a contract
+    // struct of the same name is a distinct contract-scoped type that wins the bare slot (the interface's stays
+    // reachable via its qualified IFace.Struct name). A name taken by another CONTRACT/file struct is a genuine
+    // redefinition and still errors.
     for (const sd of node.structDefinitions) {
-      if (this.structMap.has(sd.name)) {
+      if (this.structMap.has(sd.name) && !this.interfaceStructNames.has(sd.name)) {
         throw new StructRedefinitionError(sd);
       }
       const structType = new StructType(sd.name, sd.fields);
@@ -7280,8 +7294,13 @@ export default class SymbolTableTraversal extends AstTraversal {
     // the interface NAME. Look up by the interface name too so `pool.lpToken.safeTransfer(..)` / `tok.safeTransfer(..)`
     // resolve like the local `IERC20 x; x.safeTransfer(..)` the AstBuilder already desugars.
     const ifaceKey = objectType instanceof AddressType ? objectType.interfaceName : undefined;
+    // An integer receiver whose exact width has no binding falls back to the canonical uint256/int256 binding: a
+    // using-for integer library (SafeMath/BoringMath) is keyed on uint256/int256, but the receiver may be a
+    // narrower width (block.number is modeled uint32) - widening to the library's uint256 param is safe.
+    const intKey = objectType instanceof IntType ? (objectType.signed ? 'int256' : 'uint256') : undefined;
     const candidates = objectType
       ? [...(this.usingForBindings.get(objectType.toString()) ?? []),
+        ...(intKey && intKey !== objectType.toString() ? this.usingForBindings.get(intKey) ?? [] : []),
         ...(ifaceKey ? this.usingForBindings.get(ifaceKey) ?? [] : []),
         ...(this.usingForBindings.get('*') ?? [])]
       : [...(this.usingForBindings.get('*') ?? [])];
@@ -7360,9 +7379,16 @@ export default class SymbolTableTraversal extends AstTraversal {
     };
     if (expr instanceof IdentifierNode) return nameType(expr.name);
     if (expr instanceof StateAccessNode) return nameType(expr.name);
-    if (expr instanceof NullaryOpNode
-      && (expr.operator === NullaryOperator.MSG_SENDER || expr.operator === NullaryOperator.TX_ORIGIN)) {
-      return new AddressType();
+    if (expr instanceof NullaryOpNode) {
+      const op = expr.operator;
+      if (op === NullaryOperator.MSG_SENDER || op === NullaryOperator.TX_ORIGIN
+        || op === NullaryOperator.BLOCK_COINBASE) return new AddressType();
+      if (op === NullaryOperator.BYTECODE || op === NullaryOperator.MSG_DATA) return new BytesType();
+      if (op === NullaryOperator.CATEGORY_ID) return new BytesType(32);
+      if (op === NullaryOperator.MSG_SIG) return new BytesType(4);
+      // Every remaining nullary property (block.number/timestamp/..., tx.version/locktime, msg.value, chainid,
+      // tx in/out counts) is a uint256 - lets a using-for method bind on it (BoringMath block.number.sub(..)).
+      return new IntType(false, 256);
     }
     if (expr instanceof MappingAccessNode) {
       // Step once PER KEY: `allo[x][y]` is a single MappingAccessNode with keys=[x,y] over
@@ -7381,6 +7407,9 @@ export default class SymbolTableTraversal extends AstTraversal {
       const base = this.resolveLowLevelReceiverType(expr.tuple);
       return base instanceof ArrayType ? base.elementType : undefined;
     }
+    // `arr.length` / `bytes.length` is a UnaryOp SIZE, typed uint256 - lets a using-for method bind on a length
+    // receiver (BoringMath `lpToken.length.sub(1)` in MasterChefV2).
+    if (expr instanceof UnaryOpNode && expr.operator === UnaryOperator.SIZE) return new IntType(false, 256);
     if (expr instanceof FieldAccessNode) {
       const base = this.resolveLowLevelReceiverType(expr.expression);
       return base instanceof StructType ? base.fields.find((f) => f.name === expr.name)?.type : undefined;

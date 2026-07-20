@@ -3080,3 +3080,27 @@ describe('library sibling constant inside an inlined low-level call (BoringERC20
       + ' contract C { function g(address t) public { L.f(t, 0x11223344); } }', opts)).not.toThrow();
   });
 });
+
+describe('MasterChefV2 semantic walls (struct scoping + using-for receiver resolution)', () => {
+  const opts = { solidityImportCompat: true };
+  it('a contract struct shadows a same-named interface struct (distinct contract-scoped types)', () => {
+    // IMasterChef.UserInfo{uint256 rewardDebt} vs MasterChefV2.UserInfo{int256 rewardDebt} - distinct types that
+    // must not collide in the global structMap. The contract's wins the bare name; the interface's stays qualified.
+    expect(() => compileString('pragma solidity ^0.8.0;'
+      + ' interface IMC { struct UserInfo { uint256 amount; uint256 rewardDebt; } function d(uint256 p) external; }'
+      + ' contract C { struct UserInfo { uint256 amount; int256 rewardDebt; }'
+      + ' mapping(uint256 => UserInfo) userInfo;'
+      + ' function f(uint256 p) public view returns (int256) { return userInfo[p].rewardDebt; } }', opts)).not.toThrow();
+  });
+  const bm = 'library BoringMath { function sub(uint256 a, uint256 b) internal pure returns (uint256) { return a - b; } }';
+  it('using-for method binds on an array .length receiver (lpToken.length.sub(1))', () => {
+    expect(() => compileString(`pragma solidity ^0.8.0; ${bm} contract C { using BoringMath for uint256;`
+      + ' address[] lpToken;'
+      + ' function f() public view returns (uint256) { return lpToken.length.sub(1); } }', opts)).not.toThrow();
+  });
+  it('using-for method binds on block.number via the integer-width fallback (block.number.sub(x))', () => {
+    // block.number is modeled uint32 (block oracle) but the BoringMath binding is uint256 - the widening is safe.
+    expect(() => compileString(`pragma solidity ^0.8.0; ${bm} contract C { using BoringMath for uint256;`
+      + ' function f(uint256 x) public view returns (uint256) { return block.number.sub(x); } }', opts)).not.toThrow();
+  });
+});

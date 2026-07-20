@@ -12489,27 +12489,31 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (found || !n || seen.has(n)) return;
       seen.add(n);
       if (n instanceof MappingAssignNode && n.collection?.sorted
-        && !n.arrayIndex && !n.arrayPush && !n.arrayPop
-        && this.sortedValueKind(n.collection.innermostValueType) === 'int') {
+        && !n.arrayIndex && !n.arrayPush && !n.arrayPop) {
+        const upsertVk = this.sortedValueKind(n.collection.innermostValueType);
         const e = n.expression;
-        // RMW credit/debit: `m[k[i]] = m[k[i]] +/- v[i]` (self-read).
-        const isRmw = e instanceof BinaryOpNode
-          && (e.operator === BinaryOperator.PLUS || e.operator === BinaryOperator.MINUS)
-          && e.left instanceof MappingAccessNode && e.left.name === n.name;
-        // Absolute per-key set: `m[k[i]] = v[i]` where v[i] is a per-iteration ARRAY element (NOT a loop-invariant
-        // param - that is the range-splice SortedInsertLoopValue case). The key varying-ness is validated in setup.
-        const isPerKeySet = e instanceof ArrayAccessNode && e.array instanceof IdentifierNode;
-        // Absolute set to a loop-invariant INT LITERAL: `m[k[i]] = 100` (batch-set-const).
-        const isConstSet = e instanceof IntLiteralNode;
-        // Absolute set to a loop-invariant INT PARAM: `m[k[i]] = v` (v a param). Routed here (not the insert-only
-        // range-splice) so it gains UPDATE support; the upsert loop's same-gap chaining keeps the N-in-one-gap behavior.
+        // Absolute set to a loop-invariant PARAM `m[k[i]] = v` (v a fn param). The ONE form valid for a rawbytes value
+        // (a whole bytes/array param - stored as the inline chunkable tail); for int it also gains UPDATE support (the
+        // upsert same-gap chaining keeps the N-in-one-gap behavior). Routed here, not the insert-only range-splice.
         const isParamSet = e instanceof IdentifierNode
           && this.currentFunction.parameters.some((p) => p.name === (e as IdentifierNode).name);
-        // Absolute set to a BOOL LITERAL: `m[k[i]] = true` (whitelistWorkers). Routed here (not the one-gap range-splice)
-        // so N keys can land in MULTIPLE gaps (incremental whitelist on a populated map) + update existing. bool = int
-        // 1/0 (sortedValueKind==='int' above), so the value is a const (valueConst 1/0).
-        const isBoolSet = e instanceof BoolLiteralNode;
-        if (isRmw || isPerKeySet || isConstSet || isParamSet || isBoolSet) { found = n; return; }
+        // The remaining forms are arithmetic/scalar/const and INT-ONLY (an array has no += / literal / bool value).
+        // RMW credit/debit: `m[k[i]] = m[k[i]] +/- v[i]` (self-read).
+        const isRmw = upsertVk === 'int' && e instanceof BinaryOpNode
+          && (e.operator === BinaryOperator.PLUS || e.operator === BinaryOperator.MINUS)
+          && e.left instanceof MappingAccessNode && e.left.name === n.name;
+        // Absolute per-key set: `m[k[i]] = v[i]` where v[i] is a per-iteration ARRAY element. The key varying-ness is
+        // validated in setup.
+        const isPerKeySet = upsertVk === 'int' && e instanceof ArrayAccessNode && e.array instanceof IdentifierNode;
+        // Absolute set to a loop-invariant INT LITERAL `m[k[i]] = 100` (batch-set-const) or BOOL LITERAL `= true`
+        // (whitelistWorkers; bool = int 1/0). N keys can land in MULTIPLE gaps + update existing.
+        const isConstSet = upsertVk === 'int' && e instanceof IntLiteralNode;
+        const isBoolSet = upsertVk === 'int' && e instanceof BoolLiteralNode;
+        // rawbytes (whole bytes/array) is inline-only in a loop (chunked-in-loop fails closed at runtime, see body).
+        const rawbytesOk = upsertVk === 'rawbytes' && isParamSet;
+        if (rawbytesOk || (upsertVk === 'int' && (isRmw || isPerKeySet || isConstSet || isParamSet || isBoolSet))) {
+          found = n; return;
+        }
       }
       // Per-iteration DELETE `for(i) delete m[k[i]]` (batch nullify): route through the upsert loop with op=delete
       // (UPDATE-to-default; absent keys fail closed). The key varying-ness is validated in setup (varyingArrayParam).
@@ -12789,6 +12793,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const blockSize = this.currentFunction.blockLayout?.blockSize ?? 1;
     const op = this.sortedUpsertLoopOp;
     const isMinus = op === '-';
+    // A rawbytes value (whole bytes/array/bytesN param) is stored without numeric normalization; only op==='set'
+    // reaches here for rawbytes (the guard gates RMW/const/bool to int). The value flows verbatim through every mint
+    // (emitVerifySortedValueOutput CATs, the 'set' repoint copies pu_val=amt) - only the UPDATE mint BIN2NUMs, skipped.
+    // A CHUNKABLE value (dynamic bytes/string/array/struct) additionally gets the inline tail len4 ++ value; a fixed
+    // rawbytes (bytesN/address) is stored verbatim (no tail), matching the single-write path + the reader.
+    const isRawbytes = this.sortedValueKind(collection.innermostValueType) === 'rawbytes';
+    const isChunkableVal = isRawbytes && this.isChunkableValue(collection.innermostValueType);
     const iterIdx = (): number => this.getStackIndex(this.sortedUpsertLoopCounterName);
     const outIdxC = (): number => this.getStackIndex(this.sortedUpsertLoopOutCounterName);
     const addrIdx = (): number => this.getStackIndex(this.sortedUpsertLoopAddrName);
@@ -12813,6 +12824,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (op === 'set') { a.expression = this.visit(a.expression); }
       else { (a.expression as BinaryOpNode).right = this.visit((a.expression as BinaryOpNode).right); }
       this.stack[0] = '(credit_amt)';
+      if (isChunkableVal) {
+        // Wrap the whole-array/bytes value as the inline tail len4 ++ value; REVERT if size > 60 (chunked-in-loop is
+        // unsupported - a per-iteration chunk region is not statically indexable). Matches emitChunkableValueTail's
+        // inline branch + the reader (emitChunkableValueRead), so a later read of this key sees the same shape.
+        this.emit(Op.OP_SIZE, loc); this.emit(encodeInt(61n), loc); this.emit(Op.OP_LESSTHAN, loc); this.emit(Op.OP_VERIFY, loc);
+        this.emitChunkableValueTail(loc);
+      }
     }
     // tracked: [credit_amt(0), credit_hk(1), outCounter(2), iterCounter(3), addr(4), ..]
 
@@ -12840,7 +12858,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // ---- UPDATE: mint output[..+outCounter] = coSlot|coNext|newValue ----
       if (op === 'set' || op === 'delete') {
         this.emit(Op.OP_DROP, loc);                                          // drop coValue -> [.., coSlot, coNext] U=2
-        this.emit(encodeInt(BigInt(amtIdx() + 2)), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_BIN2NUM, loc);
+        this.emit(encodeInt(BigInt(amtIdx() + 2)), loc); this.emit(Op.OP_PICK, loc);
+        if (!isRawbytes) this.emit(Op.OP_BIN2NUM, loc);                      // rawbytes tail stored verbatim (no numeric normalize)
       } else {                                                               // [.., coSlot, coNext, v[i]#] U=3
         this.emit(Op.OP_DUP, loc); this.emit(Op.OP_BIN2NUM, loc);            // coValue# (U=4)
         this.emit(encodeInt(BigInt(amtIdx() + 4)), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_BIN2NUM, loc);

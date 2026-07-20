@@ -5695,11 +5695,35 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       // A loop-INVARIANT value (fixed-amount airdrop `+= amount` / batch-set-const `= 100`): the same amount for every
       // key, from a scalar param arg or an int literal. Otherwise the value is the per-key array valsArr[i].
       const toBig = (v: unknown): bigint => (typeof v === 'bigint' ? v : BigInt(v as number | string));
+      // A rawbytes VALUE (whole bytes/string/array/bytesN param `m[k[i]] = a`): the covenant stores the value tail
+      // (len4 ++ value inline for a chunkable type, verbatim for bytesN); the SDK mirrors it. Only op==='set' reaches
+      // here for rawbytes (the guard gates RMW/const to int). scalarTail is the invariant value's on-chain bytes.
+      const rawScalar = !isDelete && info.valueScalarParam !== undefined ? argOf(info.valueScalarParam) : undefined;
+      const isRawbytesVal = rawScalar !== undefined
+        && typeof rawScalar !== 'bigint' && typeof rawScalar !== 'boolean' && typeof rawScalar !== 'number';
+      let scalarTail: Uint8Array | undefined;
+      if (isRawbytesVal) {
+        const vB = rawScalar instanceof Uint8Array ? rawScalar
+          : typeof rawScalar === 'string' ? utf8ToBin(rawScalar)
+            : encodePushdataValue(rawScalar as StateValue, collection.valueType, stateLayout.structs);
+        if (collection.chunkableValue) {
+          if (vB.length > 60) {
+            throw new Error(`C2 array-value loop '${info.collection}': value is ${vB.length} B > 60 (a chunked value in`
+              + ' a loop is unsupported - the covenant fails closed at runtime).');
+          }
+          const len4 = new Uint8Array(4); new DataView(len4.buffer).setUint32(0, vB.length, true);
+          scalarTail = new Uint8Array([...len4, ...vB]);
+        } else {
+          scalarTail = vB; // fixed rawbytes (bytesN/address): stored verbatim, no tail
+        }
+      }
       let scalarAmt: bigint | undefined;
-      if (!isDelete && info.valueScalarParam !== undefined) scalarAmt = toBig(argOf(info.valueScalarParam));
-      else if (!isDelete && info.valueConst !== undefined) scalarAmt = BigInt(info.valueConst);
-      const perKey = !isDelete && scalarAmt === undefined;
+      if (!isRawbytesVal && !isDelete && info.valueScalarParam !== undefined) scalarAmt = toBig(argOf(info.valueScalarParam));
+      else if (!isRawbytesVal && !isDelete && info.valueConst !== undefined) scalarAmt = BigInt(info.valueConst);
+      const perKey = !isRawbytesVal && !isDelete && scalarAmt === undefined;
       let valsArr = perKey ? argOf(info.valueArrayParam) : undefined;
+      // Value bytes for a commitment: the invariant rawbytes tail if present, else the int as a minimal VM number.
+      const commitValue = (nv: bigint): Uint8Array => scalarTail ?? bigIntToVmNumber(nv);
       if (!Array.isArray(keysArr) || (perKey && !Array.isArray(valsArr))) continue;
       if (perKey && (valsArr as unknown[]).length !== keysArr.length) {
         throw new Error(`C2 upsert loop ${info.collection}: recipients/amounts length mismatch`);
@@ -5861,7 +5885,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       for (let i = 0; i < keysArr.length; i++) {
         const slot = keyToSlotMulti([...fixedBins, encKey(keysArr[i], varyType)]);
         const slotHex = binToHex(slot);
-        const amt = isDelete ? 0n : scalarAmt !== undefined ? scalarAmt : toBig((valsArr as unknown[])[i]);
+        const amt = isRawbytesVal ? 0n : isDelete ? 0n : scalarAmt !== undefined ? scalarAmt : toBig((valsArr as unknown[])[i]);
         if (seenSlots.has(slotHex)) {
           // SCALAR `+=` / `-=` DUPLICATE: the grouping above made this adjacent to its first occurrence, which is the
           // pending (lastDeferred). Accumulate the scalar into that entry's commitment - the covenant's isDup does the
@@ -5869,7 +5893,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           if ((info.op === '+' || info.op === '-') && !perKey && !isDelete && lastDeferred && binToHex(lastDeferred.slot) === slotHex) {
             lastDeferred.newVal += info.op === '-' ? -amt : amt;
             commitments[lastDeferred.commitIndex] =
-              binToHex(encodeEntryCommitment(lastDeferred.slot, lastDeferred.oldNext, bigIntToVmNumber(lastDeferred.newVal)));
+              binToHex(encodeEntryCommitment(lastDeferred.slot, lastDeferred.oldNext, commitValue(lastDeferred.newVal)));
             continue;
           }
           throw new Error(`C2 upsert loop ${info.collection}: duplicate recipient (each entry can be co-spent once)`);
@@ -5891,7 +5915,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           if (foldActive || info.op === '-') {
             lastDeferred = { uid: uidOf(entry.utxo), commitIndex: commitments.length, slot: entry.slot, newVal, oldNext: entry.nextKey };
           }
-          commitments.push(binToHex(encodeEntryCommitment(entry.slot, entry.nextKey, bigIntToVmNumber(newVal))));
+          commitments.push(binToHex(encodeEntryCommitment(entry.slot, entry.nextKey, commitValue(newVal))));
         } else {
           // INSERT (a NEW recipient): co-spend the bracketing predecessor (from the ORIGINAL list) + mint P' then NEW.
           // 'delete'/'-' on an absent key fail closed (nothing to nullify/debit).
@@ -5913,9 +5937,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             const pV = bytesToSlotValue(d.slot);
             const nV = bytesToSlotValue(d.oldNext); // 0 = +inf
             if (pV < sV && (nV === 0n || sV < nV)) {
-              commitments[d.commitIndex] = binToHex(encodeEntryCommitment(d.slot, slot, bigIntToVmNumber(d.newVal)));
+              commitments[d.commitIndex] = binToHex(encodeEntryCommitment(d.slot, slot, commitValue(d.newVal)));
               const newCommitIndex = commitments.length;
-              commitments.push(binToHex(encodeEntryCommitment(slot, d.oldNext, bigIntToVmNumber(amt)))); // NEW
+              commitments.push(binToHex(encodeEntryCommitment(slot, d.oldNext, commitValue(amt)))); // NEW
               const chained: DeferredEntry = { uid: '', commitIndex: newCommitIndex, slot, newVal: amt, oldNext: d.oldNext };
               lastDeferred = chained;
               continue;
@@ -5932,7 +5956,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             }
             mergedNewCount += 1;
             const mCommitIndex = commitments.length;
-            commitments.push(binToHex(encodeEntryCommitment(slot, pred.nextKey, bigIntToVmNumber(amt)))); // NEW = 0 + amt (R1)
+            commitments.push(binToHex(encodeEntryCommitment(slot, pred.nextKey, commitValue(amt)))); // NEW = 0 + amt (R1)
             lastDeferred = { uid: '', commitIndex: mCommitIndex, slot, newVal: amt, oldNext: pred.nextKey };
             continue;
           }
@@ -5945,7 +5969,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           insertLoopPredecessors.push({ ...pred.utxo, unlocker: wUnlocker });
           commitments.push(binToHex(encodeEntryCommitment(pred.slot, slot, pred.value)));           // P' (re-pointed)
           const uCommitIndex = commitments.length;
-          commitments.push(binToHex(encodeEntryCommitment(slot, pred.nextKey, bigIntToVmNumber(amt)))); // NEW = 0 + amt
+          commitments.push(binToHex(encodeEntryCommitment(slot, pred.nextKey, commitValue(amt)))); // NEW = 0 + amt
           // DEFER this new node (mirrors the covenant's chain-defer) so a further new key in this same UNTOUCHED / HEAD
           // gap chains off it - a fresh-map airdrop cluster. The reorder groups + ascending-sorts same-gap inserts.
           if (foldActive) lastDeferred = { uid: '', commitIndex: uCommitIndex, slot, newVal: amt, oldNext: pred.nextKey };

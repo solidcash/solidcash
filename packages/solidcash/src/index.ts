@@ -7,6 +7,7 @@ export { Contract } from './Contract.js';
 export { TransactionBuilder } from './TransactionBuilder.js';
 export {
   buildOpaqueLoopCallTransaction, deriveOpaqueLoopCoSpends, buildTypedLoopCallTransaction,
+  deriveTypedLoopCoSpends,
 } from './loop-call.js';
 export type {
   OpaqueLoopCoSpend, OpaqueLoopCallContext, BuildOpaqueLoopCallOptions,

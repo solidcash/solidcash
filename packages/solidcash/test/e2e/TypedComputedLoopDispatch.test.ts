@@ -1,8 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { compileString } from 'solidc';
-import { hexToBin } from '@bitauth/libauth';
+import { hexToBin, binToHex } from '@bitauth/libauth';
 import { encodePushdataValue } from '@solidcash/utils';
-import { Contract, buildTypedLoopCallTransaction } from '../../src/index.js';
+import { Contract, buildTypedLoopCallTransaction, deriveTypedLoopCoSpends } from '../../src/index.js';
 import { createTestProvider, verifyTransaction, createFeeFunder } from '../test-util.js';
 
 // A COMPUTED per-iteration external-call target `IFoo(pairFor(path[i], path[i+1])).m(x)` in a loop (the Router02
@@ -71,5 +71,42 @@ describe('typed COMPUTED per-iteration external dispatch (IFoo(pairFor(path[i], 
     const wrong = hexToBin('5152'); // OP_1 OP_2 - not the co-spent OP_TRUE input at index 0
     const tb = await buildTx([wrong, OP_TRUE]);
     expect(() => verifyTransaction(tb)).toThrow();
+  });
+});
+
+describe('typed computed loop autoderivation (deriveTypedLoopCoSpends from registered target contracts)', () => {
+  it('derives the witness + typed-void cospends from target instances, then builds + verifies', async () => {
+    const art = compileString(SRC);
+    const provider = createTestProvider();
+    const contract = new Contract(art, [], { provider });
+
+    const callerUtxo = { txid: 'cc'.repeat(32), vout: 0, satoshis: 100000n };
+    const t0 = { txid: '01'.repeat(32), vout: 0, satoshis: 1500n };
+    const t1 = { txid: '02'.repeat(32), vout: 0, satoshis: 1500n };
+    const funder = await createFeeFunder(provider, 10000n);
+    const trueUnlocker = {
+      generateLockingBytecode: (): Uint8Array => OP_TRUE,
+      generateUnlockingBytecode: (): Uint8Array => new Uint8Array([]),
+    };
+    // A registered co-spendable target contract (here an OP_TRUE pair) exposing a preserving co-spend fn.
+    const mkTarget = (utxo: typeof t0): any => ({
+      address: 'op-true', lockingBytecode: binToHex(OP_TRUE),
+      unlock: { noop: () => trueUnlocker }, getUtxos: async () => [utxo],
+    });
+
+    // The autoderivation: witness targets + typed-void cospends fall out of the registered target instances.
+    const { targets, cospends } = await deriveTypedLoopCoSpends([
+      { contract: mkTarget(t0), fn: 'noop', args: [] },
+      { contract: mkTarget(t1), fn: 'noop', args: [] },
+    ]);
+    expect(targets.map(binToHex)).toEqual([binToHex(OP_TRUE), binToHex(OP_TRUE)]);
+
+    const tb = buildTypedLoopCallTransaction({
+      provider, contract, functionName: 'run',
+      userArgs: [encodePushdataValue(dummyPath(), 'address[]'), 7n],
+      targets, callerUtxo, cospends, funder,
+    });
+    verifyTransaction(tb);
+    expect(tb.inputs.length).toBe(4);
   });
 });

@@ -315,3 +315,29 @@ export function buildTypedLoopCallTransaction(opts: BuildTypedLoopCallOptions): 
   if (change > 546n) tb.addOutput({ to: changeLbc, amount: change });
   return tb;
 }
+
+/**
+ * Derive (targets, cospends) for a TYPED (void) loop dispatch from known target contract instances - the
+ * autoderivation the SDK does for a computed-target loop `IFoo(pairFor(.., path[i], ..)).m()` once the caller
+ * registers the route's target contracts: each target's locking bytecode (fills the synthesized
+ * `__internal__loopTargets<n>` witness), its UTXO (provider lookup), and its unlocker (artifact + chosen fn/args).
+ * Unlike deriveOpaqueLoopCoSpends there is no return-event, so no minting NFT is required - any co-spendable UTXO
+ * works, and the caller's fn/args must PRESERVE the target (the covenant pins its master bytecode + category).
+ * Feed the result straight into buildTypedLoopCallTransaction (targets + cospends).
+ */
+export async function deriveTypedLoopCoSpends(
+  calls: OpaqueLoopContractCall[],
+): Promise<{ targets: Uint8Array[]; cospends: TypedLoopCoSpend[] }> {
+  const targets: Uint8Array[] = [];
+  const cospends: TypedLoopCoSpend[] = [];
+  for (const call of calls) {
+    const utxos = await call.contract.getUtxos();
+    const utxo = utxos.find((u) => u.token) ?? utxos[0];
+    if (!utxo) throw new Error(`deriveTypedLoopCoSpends: no co-spendable UTXO at ${call.contract.address}`);
+    const unlockFactory = call.contract.unlock[call.fn];
+    if (!unlockFactory) throw new Error(`deriveTypedLoopCoSpends: no unlocker '${call.fn}' on the target`);
+    targets.push(hexToBin(call.contract.lockingBytecode));
+    cospends.push({ utxo, unlocker: unlockFactory(...call.args) });
+  }
+  return { targets, cospends };
+}

@@ -207,7 +207,12 @@ function evmStorageSlotKey(slotArg: YulExpressionNode): ExpressionNode | undefin
   if (slotArg instanceof YulPathNode && slotArg.members.length === 1 && slotArg.members[0] === 'slot') {
     return undefined; // `x.slot` of a declared var
   }
-  return lowerValue(slotArg); // a computed slot expression (arithmetic / hash)
+  // A computed slot expression (arithmetic / hash). A BARE keccak256/sha256 in __evm_storage-key position is NOT
+  // cast to uint256 here on purpose: it appears in the sub-word-keccak + array-idiom + resize combination
+  // (keccak256_optimizer_cache_bug) whose runtime-mem re-lowering MISCOMPILES; leaving the bytes32 type mismatch
+  // keeps that whole block fail-closed (loud) rather than silently miscompiling. Arithmetic on a keccak (the common
+  // `add(keccak,i)` computed-slot key) already casts via ARITH_OPS.
+  return lowerValue(slotArg);
 }
 
 function stateVarByteWidth(sv: StateVariableNode): number {

@@ -173,4 +173,32 @@ describe('upgrades.deployProxy (ethers/hardhat OZ-upgrades style)', () => {
     expect(eventOut).toBeDefined();
     expect(eventOut!.token!.nft!.commitment).toBe('0119');
   });
+
+  // Robustness of events-in-delegate: an indexed param, two emits in one call, and a no-arg event.
+  const EVENT_IMPL2 = `pragma solidcash >=0.8.0;
+    contract EventImpl2() {
+      event A(int indexed i, int v);
+      event B(int v);
+      int x;
+      function initialize(int v) delegate { this.x = v; }
+      function two(int v) delegate { emit A(v, v); emit B(v + 1); this.x = v; }
+      function none() delegate { emit B(0); this.x = this.x + 1; }
+    }`;
+
+  it('supports indexed params, multiple emits in one delegate call, and shifts co-spent impl UTXOs', async () => {
+    const signer = await fundedSigner();
+    // two() emits twice -> two event NFTs -> two output-only funder inputs beyond the two deploy coins.
+    await signer.provider.addUtxo(signer.getAddress(), { txid: 'd4'.repeat(32), vout: 0, satoshis: 1_000_000n });
+    await signer.provider.addUtxo(signer.getAddress(), { txid: 'e5'.repeat(32), vout: 0, satoshis: 1_000_000n });
+    const implArtifact = compileString(EVENT_IMPL2);
+    const proxy = await upgrades.deployProxy(getContractFactory(implArtifact, signer), [3n]);
+
+    const tx = await (proxy as any).two(7n).send();
+    expect(proxyState(tx, proxy.proxy.categoryId, implArtifact.stateLayout).x).toBe(7n);
+    // Two event NFTs (immutable, proxy category) precede the co-spent impl master/state.
+    const eventOuts = getTxOutputs(tx).filter(
+      (o: any) => o.token?.category === proxy.proxy.categoryId && o.token?.nft?.capability === 'none',
+    );
+    expect(eventOuts.length).toBe(2);
+  });
 });

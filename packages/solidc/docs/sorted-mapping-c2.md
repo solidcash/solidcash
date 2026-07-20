@@ -237,13 +237,15 @@ mints) so update (mint 1) and insert (mint P'+NEW) coexist. What ships:
    co-spent once (the debit), for the identical net. VM-proven (`FullMultiTransfer`).
 
 9. **DUPLICATE RECIPIENT** - the same key listed 2+ times. Solidity accumulates for += / -= ([a,a],[10,20] -> a += 30),
-   takes the last for =, and delete is idempotent. The SDK merges duplicates into ONE entry (co-spent once) with the
-   combined amount before the self-transfer filter / reorder; for += the merged sum equals the original, so a coexisting
-   debit is unchanged. Works for an existing key (accumulate) and a new one (single insert). Scalar/const-value loops
-   can't carry a per-entry merged amount, so a duplicate there stays fail-closed. VM-proven (`FullMultiTransfer`,
-   `SortedUpsertLoop`).
+   takes the last for =, and delete is idempotent. Per-key: the SDK merges duplicates into ONE entry (co-spent once)
+   with the combined amount before the self-transfer filter / reorder; for += the merged sum equals the original, so a
+   coexisting debit is unchanged. Scalar/const (no per-key array to merge): the SDK groups the occurrences adjacent and
+   the covenant's pending flush accumulates on Hk == pu_slot (co-spend once, apply the scalar per occurrence); scalar
+   set + delete are idempotent so the SDK dedupes. Works for existing (accumulate) and new (single insert). Only scalar
+   `-=` stays fail-closed (`-=` has no pending-defer). VM-proven (`FullMultiTransfer`, `SortedUpsertLoop`).
 
 **COMPLETE end-to-end.** Every multiTransfer shape - existing / new / any-gap chain (order-independent) / self-transfer /
-duplicate - now works. The only residual is transaction size: very large N per tx exceeds the block/tx limit and needs
-paginated writes across txs. Cross-cutting invariant: the exclusion proof survives every batch shape above (rejecting
-forged / omitted / misordered / duplicated entries), so no batch reopens the C2 exclusion hole.
+duplicate (incl. scalar) - works. The only residual is N per tx bounded by transaction size, and that bound is generous
+(thousands of entries), so it is a practical non-issue; pagination across txs covers larger batches. Cross-cutting
+invariant: the exclusion proof survives every batch shape above (rejecting forged / omitted / misordered / duplicated
+entries), so no batch reopens the C2 exclusion hole.

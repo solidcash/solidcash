@@ -202,14 +202,18 @@ msg.sender) + `_balances[to] += amt` (DIFFERENT key each iter). Full form still 
   (`bal[msg.sender] -= a; bal[msg.sender] += a`) nets out, so the SDK drops the msg.sender entry from recipients+amounts
   (the debit then sums total - own, and msg.sender is co-spent ONCE as the debit) - the identical net, matching Solidity.
   VM-proven (FullMultiTransfer: multiTransfer([bob, alice],[10,20]) from alice -> alice 990, bob 110).
-  **DUPLICATE RECIPIENT accumulates (`feae8a54`):** the same key listed 2+ times - Solidity accumulates for += / -=
-  ([a,a],[10,20] -> a += 30), takes the last for =, delete is idempotent. The SDK merges duplicates into one entry
-  (co-spent once) with the combined amount before the self-transfer filter / reorder; for += the merged sum equals the
-  original so a coexisting debit is unchanged. Works for an existing key (accumulate) + a new one (single insert);
-  scalar/const-value loops stay fail-closed. VM-proven (FullMultiTransfer [bob,carol,bob] -> bob += 40; SortedUpsertLoop
-  existing 3 += 30, new 5 = 30).
-  **The C2 ERC-20 multiTransfer surface is now COMPLETE end-to-end** (every same-gap shape, order-independent, +
-  self-transfer, + duplicate). Only residual: paginated writes for very large N (transaction-size bound - fundamental).
+  **DUPLICATE RECIPIENT accumulates (`feae8a54` per-key, `69da5ad9` scalar/const):** the same key listed 2+ times -
+  Solidity accumulates for += / -= ([a,a],[10,20] -> a += 30), takes the last for =, delete is idempotent. Per-key: the
+  SDK MERGES duplicates into one entry (co-spent once) with the combined amount before the self-transfer filter /
+  reorder; for += the merged sum equals the original so a coexisting debit is unchanged. Scalar/const (`+= amount` /
+  `+= 100`, no per-key array to merge): the SDK GROUPS a duplicate's occurrences adjacent and the covenant's pending
+  flush ACCUMULATES on Hk == pu_slot (co-spend once, apply the scalar per occurrence); scalar/const `set` + delete are
+  idempotent so the SDK dedupes. Works for existing (accumulate) + new (single insert). Only scalar `-=` stays
+  fail-closed (`-=` has no pending-defer). VM-proven (FullMultiTransfer [bob,carol,bob] -> bob += 40; SortedUpsertLoop
+  per-key 3 += 30 / new 5 = 30, scalar 3 += 100 / new 9 = 100 / non-adjacent [3,7,3] grouped / const set idempotent).
+  **The C2 ERC-20 multiTransfer surface is COMPLETE end-to-end** (every same-gap shape, order-independent, +
+  self-transfer, + duplicate incl. scalar). The only residual is N per tx bounded by transaction size - and that bound
+  is GENEROUS (thousands of entries per tx), so it is a practical non-issue; pagination across txs covers larger still.
 
 - **(b3) ABSOLUTE per-key assignment loop `for(i) m[k[i]] = v[i]` - RESOLVED 2026-07-19 (`644532b1`, op=set,
   VM-proven).** A pure per-key assignment (value REPLACES, not accumulates) now routes through the SAME upsert loop

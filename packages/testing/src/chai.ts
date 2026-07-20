@@ -6,7 +6,24 @@
  * `await`, ethers-style. A `chai` module alias lets ported files' `import { expect } from 'chai'` resolve here.
  */
 import 'solidcash/vitest';
+import { cashAddressToLockingBytecode, binToHex } from '@bitauth/libauth';
 import { getActiveProvider } from './network-helpers.js';
+
+// A BCH `address` value is a full locking bytecode (Uint8Array), returned verbatim (never a pubkey-hash or a
+// wrapped CashAddress). Ported ethers/Solidity tests compare it to a CashAddress string (e.g. `owner()` vs
+// `signer.getAddress()`). Bridge such a pair by DECODING the CashAddress to its locking bytecode - never wrapping
+// the locking bytecode into an address - and comparing as hex. Any other value pair passes through unchanged.
+function normalizeAddressPair(actual: any, expected: any): [any, any] {
+  const isBytes = (x: any): x is Uint8Array => x instanceof Uint8Array;
+  const isCashAddr = (x: any): x is string => typeof x === 'string' && /^(bitcoincash|bchtest|bchreg):[0-9a-z]+$/.test(x);
+  const decode = (addr: string): Uint8Array | null => {
+    const r = cashAddressToLockingBytecode(addr);
+    return typeof r === 'string' ? null : r.bytecode;
+  };
+  if (isBytes(actual) && isCashAddr(expected)) { const lb = decode(expected); if (lb) return [binToHex(actual), binToHex(lb)]; }
+  if (isCashAddr(actual) && isBytes(expected)) { const lb = decode(actual); if (lb) return [binToHex(lb), binToHex(expected)]; }
+  return [actual, expected];
+}
 
 // Vitest's global expect (globals:true). Present in any Vitest test run; the custom matchers are registered on it.
 const vexpect: any = (globalThis as any).expect;
@@ -137,10 +154,15 @@ class Assertion {
   }
 
   // --- equality ---
-  equal(expected: any): this { this.v().toEqual(expected); return this; }
+  equal(expected: any): this {
+    const [a, e] = normalizeAddressPair(this.actual, expected);
+    const ev = ensureVitest();
+    (this.negate ? ev(a).not : ev(a)).toEqual(e);
+    return this;
+  }
   equals(expected: any): this { return this.equal(expected); }
   eq(expected: any): this { return this.equal(expected); }
-  eql(expected: any): this { this.v().toEqual(expected); return this; }
+  eql(expected: any): this { return this.equal(expected); }
 
   get deep(): this { return this; }
 

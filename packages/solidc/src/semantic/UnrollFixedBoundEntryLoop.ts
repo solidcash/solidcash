@@ -157,7 +157,6 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
     if (cond.operator !== BinaryOperator.LT && cond.operator !== BinaryOperator.LE) return undefined;
     if (!(cond.left instanceof IdentifierNode && cond.left.name === varName)) return undefined;
     const cn = this.evalBound(cond.right);
-    if (process.env.WLDBG && /__inl/.test(varName)) console.error(`WLDBG tryUnroll var=${varName} boundType=${cond.right?.constructor?.name} boundInner=${(cond.right as any)?.expression?.constructor?.name}/${(cond.right as any)?.expression?.name} cn=${cn}`);
     if (cn === undefined) return undefined;
     const inclusive = cond.operator === BinaryOperator.LE;
 

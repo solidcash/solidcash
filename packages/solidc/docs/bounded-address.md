@@ -183,3 +183,33 @@ value). Fail-closed is mandatory.
    during migration? (Address is used widely; a coexistence period may de-risk.)
 4. Ceiling value: 35 (tight) vs a small margin. 35 covers all standard forms; a margin (e.g. 40) would absorb a
    future standard address type without a format change, still within 2 slots / 128B.
+
+## 9. Test impact - foreseeable breaks (audited 2026-07-20)
+
+Audited the existing address / slot / ABI tests to foresee what the rework breaks:
+
+- **`sload`/`sstore` slot-layout conformance - BREAKS iff we change the address slot WIDTH.**
+  `slot-layout.conformance.test.ts` runs `address a; uint96 b; uint256 c;` on BOTH solc (EVM) and solidc and asserts
+  the SAME `c.slot`: EVM packs address(20B)+uint96(12B) into slot 0, so c is slot 1, and the SolidCash covenant must
+  ACCEPT slot 1 (`assertStatefulConformant` = compile-solc + eval-EVM + BCH-covenant-accepts). Making address a fixed
+  2-word FIELD (Phase 3) means `stateVarByteWidth(address): 20 -> 2 slots`, pushing c to slot 3 -> the covenant
+  rejects EVM's slot 1 -> MISMATCH. This is the EVM-20-byte-layout-parity vs address-as-2-slot-field tension, and it
+  is UNAVOIDABLE for Phase 3. **Phase 1 (commitment packing) is SAFE: it changes the physical storage bytes, not the
+  EVM slot LAYOUT** - keep `stateVarByteWidth(address) = 20` and this conformance passes unchanged. So do Phase 1
+  without touching the layout width; Phase 3 must UPDATE this conformance case to expect the (intentionally divergent)
+  BCH 2-slot layout when it lands.
+- **EVM-address ABI tests - SAFE.** The abi/decode conformance uses `uint160` (a number), never `AddressType`
+  (`emitEvmAbiWord` throws on AddressType). The rework touches neither `uint160` nor the ABI encoder, so all
+  EVM-address ABI byte parity is unaffected.
+- **RISK - address has INCONSISTENT representations today, so the value blast radius is wider than "storage
+  boundary".** `AddressCompare.test.ts` passes addresses as 32-BYTE big-endian values (`b32('01')`,
+  `0x01 ++ 00*31` = 2^248) and compares `<`/`>` unsigned; storage is framed lbc (25/35); ABI is `uint160` (20);
+  slot layout is 20. Four different widths for one type. Phase 1 must NOT change the VALUE a contract observes: if
+  `load` strips back to the exact prior bytes (Section 3 (B) round-trip), value/compare/getter tests stay green; any
+  test that inspects the RAW stored bytes, or depends on address being a 32-byte comparable, must be audited and
+  possibly migrated. Reconciling these representations is a prerequisite, not an afterthought.
+
+NET: keep the EVM slot LAYOUT at 20 bytes (Phase 1 = pure commitment packing) and both the sload/sstore conformance
+AND the uint160 ABI tests are untouched. Only Phase 3 (address as a 2-slot field) intentionally diverges and requires
+updating the one address-packing conformance case. The `AddressCompare` 32-byte representation is the wildcard to
+reconcile before touching the address value bytes.

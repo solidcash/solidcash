@@ -18,6 +18,9 @@ import {
   CastNode,
   AssignNode,
   TupleAssignmentNode,
+  WhileNode,
+  DoWhileNode,
+  CollectionIterationNode,
 } from '../ast/AST.js';
 import {
   AddressType, StructType, ArrayType, MappingType, Type,
@@ -670,27 +673,39 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
     const declCount = new Map<string, number>();
     const reassigned = new Set<string>();
     const seen = new WeakSet<object>();
-    const scan = (node: unknown): void => {
+    const scan = (node: unknown, loopDepth: number): void => {
       if (!node || typeof node !== 'object' || seen.has(node)) return;
       seen.add(node);
+      // A var declared / tuple-bound INSIDE a loop re-runs each iteration, so its value is position-DEPENDENT, not a
+      // single fixed value - it must NOT count as single-assign (otherwise a computed target `IFoo(pairFor(.., arr[i],
+      // ..))` would resolve arr[i] to a fixed index and hoist to the body top, losing the per-iteration index). Router02.
+      const inLoop = loopDepth > 0;
       if (node instanceof VariableDefinitionNode) {
-        declCount.set(node.name, (declCount.get(node.name) ?? 0) + (node.expression ? 1 : 0));
-        if (!node.expression) reassigned.add(node.name); // uninit decl -> assigned elsewhere, not traceable
+        if (inLoop) reassigned.add(node.name);
+        else {
+          declCount.set(node.name, (declCount.get(node.name) ?? 0) + (node.expression ? 1 : 0));
+          if (!node.expression) reassigned.add(node.name); // uninit decl -> assigned elsewhere, not traceable
+        }
       } else if (node instanceof AssignNode) {
         reassigned.add(node.identifier.name);
       } else if (node instanceof TupleAssignmentNode) {
         for (const el of node.elements) {
           if (el.existing && el.name) reassigned.add(el.name);
-          else if (el.name && !el.skip) declCount.set(el.name, (declCount.get(el.name) ?? 0) + 1);
+          else if (el.name && !el.skip) {
+            if (inLoop) reassigned.add(el.name);
+            else declCount.set(el.name, (declCount.get(el.name) ?? 0) + 1);
+          }
         }
       }
+      const childDepth = (node instanceof WhileNode || node instanceof DoWhileNode
+        || node instanceof CollectionIterationNode) ? loopDepth + 1 : loopDepth;
       for (const key of Object.keys(node as Record<string, unknown>)) {
         const v = (node as Record<string, unknown>)[key];
-        if (Array.isArray(v)) v.forEach(scan);
-        else if (v instanceof Node) scan(v);
+        if (Array.isArray(v)) v.forEach((x) => scan(x, childDepth));
+        else if (v instanceof Node) scan(v, childDepth);
       }
     };
-    scan(body);
+    scan(body, 0);
     const safe = new Set<string>();
     for (const [name, count] of declCount) if (count === 1 && !reassigned.has(name)) safe.add(name);
     return safe;

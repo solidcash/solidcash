@@ -3104,3 +3104,24 @@ describe('MasterChefV2 semantic walls (struct scoping + using-for receiver resol
       + ' function f(uint256 x) public view returns (uint256) { return block.number.sub(x); } }', opts)).not.toThrow();
   });
 });
+
+describe('loop-body vars are not single-assign (Router02 per-iteration computed target)', () => {
+  // A var declared / tuple-bound inside a loop re-runs each iteration (position-dependent). It must NOT be treated
+  // as a single-assign local, or a computed external-call target `IFoo(pairFor(.., path[i], ..))` would resolve
+  // path[i] to a fixed index and hoist outside the loop (a wrong co-spend). SEAL now correctly rejects such a
+  // per-iteration computed target (fail-closed) instead of silently mis-hoisting it. A NON-loop computed target
+  // (single-assign leaves) still hoists and compiles - so the fix is scoped to loop bodies only.
+  const opts = { solidityImportCompat: true };
+  const iface = 'interface IFoo { function m(uint256 x) external; }';
+  const lib = 'library L { function at(address f, address a) internal pure returns (address) {'
+    + ' return address(uint160(uint256(uint160(f)) + uint256(uint160(a)))); } }';
+  it('a NON-loop computed external-call target still compiles (single-assign leaves unaffected)', () => {
+    expect(() => compileString(`pragma solidity ^0.8.0; ${iface} ${lib} contract C { address factory;`
+      + ' function f(address t) public { address a = t; IFoo(L.at(factory, a)).m(5); } }', opts)).not.toThrow();
+  });
+  it('a per-iteration computed external-call target fails closed (not silently mis-hoisted to a fixed index)', () => {
+    expect(() => compileString(`pragma solidity ^0.8.0; ${iface} ${lib} contract C { address factory;`
+      + ' function f(address[] memory path) public { for (uint i; i < path.length; i++) {'
+      + ' IFoo(L.at(factory, path[i])).m(5); } } }', opts)).toThrow();
+  });
+});

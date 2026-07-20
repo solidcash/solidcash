@@ -135,6 +135,28 @@ Confirmed working through the proxy: a `delegate` setter WITHOUT emit + state re
 So the achievable order is: fix events-in-delegatecall -> expose proxy getters -> pick the address model ->
 add register/job functions.
 
+## 2026-07-20 - deeper probing: the address model bottoms out at msg.sender mechanics
+- **`msg.sender` as a stored/compared value fails at the covenant level even in a DIRECT call** (`this.owner =
+  msg.sender` reverts at the `msg.sender` statement, `O.scash:1`, both `address` and `bytes` typed). msg.sender is
+  wired for C2 mapping KEYS (`bal[msg.sender]` in transfer fns), not for being stored/returned. The SDK defaults
+  `_msgSenderCategory` to 32 zeros (-> the tx.origin branch), but the tx.origin resolution reverts for a plain
+  signer call. Root is in `emitMsgSender`/`emitTxOrigin` (GTT) + the msg.sender provisioning (StatefulContract.ts)
+  = the user's active WIP. So `owner()==deployer.address` (and every admin/registry/job path keyed by the caller)
+  needs this msg.sender work FIRST - it's the dominant EA blocker, not just admin.
+- **Hypothesis for the address model (untested, blocked by the above):** type identity state as `address`, store
+  the msg.sender lockscript, and let the SDK getter/event-decoder turn the P2PKH lockscript back into the CashAddr
+  - which equals `signer.getAddress()`. This would give `owner()==deployer.address` WITHOUT changing msg.sender to
+  emit a 20-byte pkh (much less invasive than the full ETH-address model). Verify once msg.sender-as-value works.
+- **Two clean portbacks landed while probing** (not blocked): proxy handle state getters (7d660444, above) and
+  **initialState accepts JS numbers** (487299f3) - `deploy({ initialState:{ count: 1 } })` coerces like ethers
+  (was bigint-only; mirrors the Argument.ts arg coercion).
+
+### Net: the EA suite is blocked on TWO deep compiler-covenant items, both in the user's WIP files
+1. `msg.sender` as a stored/compared identity (dominant - gates admin/registry/job/escrow).
+2. events in a `delegate` function (gates the emit assertions).
+Both sit in `GenerateTargetTraversal.ts` (emitMsgSender/emitTxOrigin/delegatecall covenant) + `StatefulContract.ts`
+- hand off to the compiler owner. The harness itself + the proxy/deploy machinery are proven and green.
+
 ## NEXT: port the contracts (simplification allowed). Build order (per the test's describe blocks):
 The fixture `deployContractsFixture` (test lines 137-191) must deploy, so ALL of these need name-resolvable
 artifacts under `contracts-scash/` -> `artifacts/`:

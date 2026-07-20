@@ -56,11 +56,13 @@ export default class InlineExternalCallHelpers extends AstTraversal {
   private voidExternalCallHelpers: Set<string> = new Set();
   private freeFns: FunctionDefinitionNode[] = [];
   private fileUsingForDirectives: { libraryName?: string, targetTypeName?: string }[] = [];
+  private constNames: Set<string> = new Set(); // qualified names of file-level (library) constants (L.SIG)
   private counter = 0;
 
   visitSourceFile(node: SourceFileNode): Node {
     this.freeFns = node.freeFunctions ?? [];
     this.fileUsingForDirectives = node.usingForDirectives ?? [];
+    this.constNames = new Set((node.constantDefinitions ?? []).map((c) => c.name));
     if (node.contract) node.contract = this.visit(node.contract) as ContractNode;
     return node;
   }
@@ -73,6 +75,7 @@ export default class InlineExternalCallHelpers extends AstTraversal {
     this.stateVarTypes = new Map();
     for (const sv of node.stateVariables) this.stateVarTypes.set(sv.name, sv.type);
     this.qualifySiblingCalls();
+    this.qualifySiblingConstants();
     this.desugarUsingForAddressCalls(node);
 
     this.voidExternalCallHelpers = new Set();
@@ -104,6 +107,26 @@ export default class InlineExternalCallHelpers extends AstTraversal {
         if (n instanceof FunctionCallNode && !n.identifier.name.includes('.')
           && this.funcByName.has(prefix + n.identifier.name)) {
           n.identifier.name = prefix + n.identifier.name;
+        }
+      });
+    }
+  }
+
+  // A same-library sibling CONSTANT is written unqualified (`SIG_TRANSFER_FROM` inside `BoringERC20.safeTransferFrom`)
+  // but is registered qualified (`BoringERC20.SIG_TRANSFER_FROM`). When the helper is inlined into a consumer the
+  // library `currentFunction` context is lost, so the later qualifyLibrarySiblingConstant cannot resolve it. Qualify
+  // the reference here (before inlining), skipping any name a param/local shadows. Mirrors qualifySiblingCalls.
+  private qualifySiblingConstants(): void {
+    for (const fn of this.freeFns) {
+      const dot = fn.name.lastIndexOf('.');
+      if (dot < 0 || !fn.body) continue;
+      const prefix = fn.name.slice(0, dot + 1);
+      const shadowed = new Set<string>(fn.parameters.map((p) => p.name));
+      this.walk(fn.body, (n) => { if (n instanceof VariableDefinitionNode) shadowed.add(n.name); });
+      this.walk(fn.body, (n) => {
+        if (n instanceof IdentifierNode && !n.name.includes('.')
+          && !shadowed.has(n.name) && this.constNames.has(prefix + n.name)) {
+          n.name = prefix + n.name;
         }
       });
     }

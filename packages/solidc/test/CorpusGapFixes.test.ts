@@ -3058,3 +3058,25 @@ describe('inherited-private access via assignment-as-expression (BentoBoxV1 DOMA
       + ' contract C is P { constructor() public P() {} function f() public {} }', opts)).not.toThrow();
   });
 });
+
+describe('library sibling constant inside an inlined low-level call (BoringERC20 SIG_TRANSFER_FROM)', () => {
+  // A library's own `bytes4 private constant SIG` referenced unqualified inside a low-level-call helper
+  // (`t.call(abi.encodeWithSelector(SIG, ..))`) is registered qualified (`L.SIG`). The helper is inlined into the
+  // consumer before semantic analysis, losing the library context - so the ref must be qualified up front (mirrors
+  // the sibling-call qualification). Direct use / encodeWithSelector-only already worked; the low-level call did not.
+  const opts = { solidityImportCompat: true };
+  const lib = 'library L { bytes4 private constant SIG = 0x23b872dd;'
+    + ' function f(address t) internal returns (bytes memory) {'
+    + ' (bool ok, bytes memory d) = t.call(abi.encodeWithSelector(SIG, t)); return d; } }';
+  it('resolves a library sibling constant used in an inlined low-level call', () => {
+    expect(() => compileString(`pragma solidity ^0.8.0; ${lib}`
+      + ' contract C { function g(address t) public { L.f(t); } }', opts)).not.toThrow();
+  });
+  it('still resolves a param that shadows a sibling constant name', () => {
+    const lib2 = 'library L { bytes4 private constant SIG = 0x23b872dd;'
+      + ' function f(address t, bytes4 SIG) internal returns (bytes memory) {'
+      + ' (bool ok, bytes memory d) = t.call(abi.encodeWithSelector(SIG, t)); return d; } }';
+    expect(() => compileString(`pragma solidity ^0.8.0; ${lib2}`
+      + ' contract C { function g(address t) public { L.f(t, 0x11223344); } }', opts)).not.toThrow();
+  });
+});

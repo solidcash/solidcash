@@ -159,10 +159,12 @@ by it; they are pre-existing and fundamental. Re-bucketed the current top FAILs 
   corpus: the array_copy/clear/delete cluster). (c) CALLDATA `.offset` read+assign DONE
   (`cebd086b`,`ac82db9f`, +2). (d) KECCAK dynamic-array ELEMENT slot idiom DONE (`8dd0f5e8` inline + `0ed9e4bb`
   let-bound, +4: `sstore(keccak256(0,32)+i, v)`==arr[i]=v, guarded read; delete_storage_array + 3 more) + bytes32
-  keccak arith cast (`40006947`). **SLOT LINE CUMULATIVE: +11 corpus, 7 features, 0 regress.** Remaining slot
-  deferrals (docs/deferrals.md, evidence-backed): bytes/string slot fields (all 7 need byte-reversal / keccak-data /
-  invalid-encoding), nested calldata arrays, non-first-dynamic calldata offset, address slots (bounded-address
-  Section 10: against), keccak256_optimizer_cache_bug (runtime-mem/array-idiom interaction).
+  keccak arith cast (`40006947`). (e) BYTES/STRING slot short-write + sload
+  encoding DONE (`8bd5e708`,`419673d1`, +3: EVM byte-array encoding, byte-reversal VM-proven step-by-step; caught+
+  reverted a keccak-key MISCOMPILE `0157c5d0`). **SLOT LINE CUMULATIVE: +14 corpus, 9 features + 2 fixes, 0 regress,
+  1 miscompile caught.** Remaining slot deferrals (docs/deferrals.md, evidence-backed): bytes long-resize +
+  keccak-data-region + invalid-encoding + bytes-push-loop-SDK-gap, nested calldata arrays, non-first-dynamic calldata
+  offset, address slots (bounded-address Section 10: against), keccak256_optimizer_cache_bug (runtime-mem interaction).
   `sload(v.slot+i)` combines the packed value fields/elements at relative slot i into the EVM-layout word;
   `sstore(v.slot+i,w)` writes the decomposed pieces back (a STRUCT via the AstBuilder's `s.f=v` ctor rebuild = a
   value blob, never a raw slot; a fixed ARRAY via per-element ArrayAssign). Reuses the int/bytesN/UDVT field

@@ -1131,6 +1131,20 @@ delicate (every calldata op must agree on one layout); reuse the ABI encoders in
 **Revisit if.** A concrete port needs dynamic-calldata tail access (raw ABI decoding in assembly), or the calldata
 model is rebuilt for another reason - then `.offset` falls out of the head/tail layout.
 
+## bytes/string slot fields + address slot fields - PARTLY DONE 2026-07-20 (8bd5e708, 419673d1)
+
+UPDATE: the short-string byte-array encoding IS built, VM-proven. `sstore(bytesVar.slot, constX)` decodes EVM's
+short-slot layout at COMPILE TIME (data left-aligned in the high bytes big-endian, low byte = 2*len; X==0 clears) ->
+`bytesVar = <the top len bytes>` (8bd5e708, corpus dirty_storage_bytes). `sload(bytesVar.slot)` lowers to the runtime
+encoding `len<32 ? uint256(bytes32((b ++ zeros ++ bytes1(2*len)).reverse())) : 2*len+1` (419673d1, corpus
+byte_array_storage_layout; uint256(bytesN) is little-endian so the big-endian blob is reversed - VM-confirmed). +3
+corpus. The BYTE-REVERSAL was VM-proven step-by-step (b="dead" -> exact 0x64656164<<224|8), NOT a blind miscompile.
+REMAINING bytes: LONG-string RESIZE (`sstore(b.slot, oddX)` odd low byte -> len (X-1)/2) + the keccak-DATA-region
+write/read (`sstore(keccak256(0,b.slot), data)` / `sload(keccak256(0,32))`, dirty_storage_bytes_long,
+delete_bytes_array), invalid-encoding corners, and the bytes-push-LOOP SDK state-derivation gap (a plain bytes push
+loop fails auto-derivation even without assembly - orthogonal SDK limitation). address slots = bounded-address
+(Section 10: against). Original analysis (now partly resolved) below.
+
 ## bytes/string slot fields + address slot fields - DEFERRED 2026-07-20 (per-file evidence added)
 
 **PER-FILE AUDIT 2026-07-20 - none flips via a clean resize/clear; ALL need EVM byte-array-encoding internals.**
@@ -1229,11 +1243,16 @@ was SUPERSEDED by a VIEW-WITNESS reduction that sidesteps the layout problem ent
   `MultiUseViewMutate.test.ts` (single + TUPLE getReserves shape: reads viewReturn0/1/2[i] + co-spends swap + selector;
   wrong selector rejected).
 
-**REMAINING (ergonomic, not a wall).** The SDK autoderivation must FILL `__internal__viewReturn<n>` (the view values)
-for idiomatic non-manual usage - simulate the callee's view off-chain, or read the pair's registered state. The
-covenant + a manual/caller-provided build are proven; the mapping (getReserves -> which state) is only an SDK-side
-convenience now, not a soundness gate (the witness is caller-permissive). Also: multiple mutates on one local still
-fail closed (physically two co-spends); tuple-return views must be a destructure RHS.
+**ERGONOMIC FILL DONE for the stateless builder (`93bd9bcf`).** `buildTypedLoopCallTransaction` now fills each
+`__internal__viewReturn<n>` from a caller-provided `viewReturns` (per-iteration values, one entry per return value)
++ `__internal__externalCallSelector` from a `selector` option, so the multi-use view+mutate is buildable via the
+builder (not a fully manual TransactionBuilder) - VM-proven in `MultiUseViewMutate.test.ts` ("buildable via
+buildTypedLoopCallTransaction", tuple getReserves shape). REMAINING (Router02 is STATEFUL): the STATEFUL
+autoderivation (`StatefulContract._createBuilder`) should fill `__internal__viewReturn<n>` too - either from a caller
+override (like viewReturns, sound caller-permissive) or auto-derived by simulating the callee view / reading its
+registered state (the getReserves -> which-state mapping is only an SDK convenience now, NOT a soundness gate). Also:
+multiple mutates on one local still fail closed (physically two co-spends); tuple-return views must be a destructure
+RHS.
 
 **Revisit if.** Router02 (or another fail-on-transfer / read-then-write pair pattern) becomes a target to COMPILE end
 to end, AND `GenerateTargetTraversal` churn settles enough for a large sound change. The direct + single-use-local +
@@ -1270,10 +1289,25 @@ the STB input/output ASSEMBLY:
    loopEntry NEW-node before the lowLevelCall region, and getLowLevelCallMasterInputIndex/delegatePos must count it.
 So it needs: a DERIVED sorted-insert path (placeholder NEW node whose value the Phase-2 probe fills, like the non-C2
 entry does) + the loopEntry mint emitted BEFORE the impl + the index accounting. The msg.sender-key, proxy-conservation
-(`out>=in`), P'-at-block-slot, and value-derivation pieces are already solved (non-sorted proves them). This shares the
-trailing-NEW-node + derived-value machinery with the user's ACTIVE cross-contract C2 WIP (externalCallEntryInserts) -
-extend that to the delegatecall path once it settles rather than duplicating. Self-contained test: a MapImpl with a
-default sorted mapping through deployProxy (the EA .scash contracts are still stubs).
+(`out>=in`), P'-at-block-slot, and value-derivation pieces are already solved (non-sorted proves them).
+
+FULL 7-LAYER RECIPE (from 4 careful attempts, all reverted). The NEW-node output is a loopEntry mint: a single sorted
+insert already sets `abiFunction.entryLoopWrites=["users"]`, which drives `loopEntryVars` (StatefulContract ~7523) ->
+the mint output (STB ~1813) whose commitment the Phase-2 loop seeds ('00' placeholder) + derives. Layers: (1) route
+the impl fn's entryAccesses [DONE, in HEAD]; (2) route the impl fn's `entryLoopWrites` into that loopEntryVars filter
+(like entryAccessesForDerive) so loopEntryVars={users}; (3) **build-consistency**: `upgrades.deployProxy`'s forward
+flow calls _createBuilder MULTIPLE times and `overrides.calls` is populated INCONSISTENTLY across them - routing fired
+in one build (loopEntryVars=["users"]) but not another (callsN=1 yet the impl fn didn't resolve) - so the routing must
+key off a stable source (the lowLevelCallUtxoGroups, not overrides.calls) or the derivation build sees loopEntryVars=[]
+and never seeds; (4) loopEntry seed+derive (the Phase-2 loop already does this once loopEntryVars is stably set); (5)
+REORDER the loopEntry input (iterationEntryInputs, STB _buildInputs ~425) AND output (STB ~1813) to sit BEFORE the
+lowLevelCall region for the delegate (gated - non-delegate order unchanged), so NEW lands at proxyMaster+blockSize; (6)
+FUNDER ALIGNMENT: give the NEW node a funder INPUT at its output index so impl-master input==output stays aligned (else
+emitDelegateSelfPreservation needs an output shift); (7) index accounting: getLowLevelCallMasterInputIndex/delegatePos
++ getLoopEntryOutputBase must count the NEW node so the impl shifts and the covenant's masterIndex+blockSize resolves.
+This shares the trailing-NEW-node + derived-value + reorder machinery with the user's ACTIVE cross-contract C2 WIP
+(externalCallEntryInserts) - extend that to the delegatecall path rather than duplicating. Self-contained test: a
+MapImpl with a default sorted mapping through deployProxy (the EA .scash contracts are still stubs).
 
 **Revisit if.** A port needs a DEFAULT (C2-sorted) mapping written from inside a delegate - the EA `registerUser`
 admin pattern (`users[msg.sender] = User(...)`), or any OZ-style upgradeable contract whose initializer/methods write

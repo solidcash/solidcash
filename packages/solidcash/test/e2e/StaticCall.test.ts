@@ -134,3 +134,24 @@ describe('callStatic namespace (ethers v5 sc.callStatic.fn)', () => {
     expect(job.toObject()).toEqual({ id: 11n, pay: 42n });
   });
 });
+
+describe('StatefulFunctionCall.staticCall() - missing mapping key (Solidity parity)', () => {
+  it('returns the zero-struct for an absent key (C2 exclusion-proof read)', async () => {
+    const { MockNetworkProvider } = await import('../../src/index.js');
+    const art = compileString(MAP_SRC, { forceStateful: true });
+    const provider = new MockNetworkProvider();
+    const [alice] = await provider.getSigners(1);
+    const f = (await alice.getUtxos()).find((u) => u.vout === 0 && !u.token);
+    const res = await StatefulContract.deploy(art, [], {
+      provider, fundingUtxo: f, funder: alice.unlockP2PKH(), changeAddress: alice.getAddress(), initialState: {},
+    });
+    const sc = res.contract.connect(alice) as unknown as {
+      put: (k: bigint, id: bigint, pay: bigint) => { send: () => Promise<unknown> };
+      getJob: (k: bigint) => { staticCall: () => Promise<{ toObject: () => unknown }> };
+    };
+    await sc.put(7n, 100n, 250n).send();
+    // An absent key reads as the default value (Solidity `mapping` returns the zero value).
+    const missing = await sc.getJob(999n).staticCall();
+    expect(missing.toObject()).toEqual({ id: 0n, pay: 0n });
+  });
+});

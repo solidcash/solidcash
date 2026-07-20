@@ -12132,15 +12132,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // values onto the SORTED chain is unresolved) - so it falls to the clean SortedMappingCodegenPendingError.
       const vkind = n instanceof MappingAssignNode && n.collection?.sorted
         ? this.sortedValueKind(n.collection.innermostValueType) : null;
-      // An identifier value must be a function PARAMETER: params are loop-invariant (set once at call entry), so the
-      // SDK's minted valueTail = encode(param arg) is the same for every node and the body's PICK verifies. The loop
-      // variable and other locals are NOT params -> fail closed at COMPILE here (not a compile-then-VM-revert).
-      const isInvariantParamValue = n instanceof MappingAssignNode
-        && n.expression instanceof IdentifierNode && vkind === 'int'
-        && this.currentFunction.parameters.some((p) => p.name === (n.expression as IdentifierNode).name);
+      // Only the BOOL-literal set (`m[k[i]] = true`) stays here. A loop-invariant int PARAM value (`m[k[i]] = v`) now
+      // routes to the UPSERT loop instead (op=set, valueScalarParam): that path gained same-gap chaining, so it keeps the
+      // N-in-one-gap range-splice behavior AND adds UPDATE support for existing keys (the insert-only range-splice can't
+      // update). The upsert setup runs when this returns null for such a write.
       if (n instanceof MappingAssignNode && n.collection?.sorted
         && !n.arrayIndex && !n.arrayPush && !n.arrayPop && vkind !== null
-        && (n.expression instanceof BoolLiteralNode || isInvariantParamValue)) {
+        && n.expression instanceof BoolLiteralNode) {
         found = n; return;
       }
       for (const key of Object.keys(n)) {
@@ -12405,10 +12403,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         // Absolute per-key set: `m[k[i]] = v[i]` where v[i] is a per-iteration ARRAY element (NOT a loop-invariant
         // param - that is the range-splice SortedInsertLoopValue case). The key varying-ness is validated in setup.
         const isPerKeySet = e instanceof ArrayAccessNode && e.array instanceof IdentifierNode;
-        // Absolute set to a loop-invariant INT LITERAL: `m[k[i]] = 100` (batch-set-const). A `= <param>` set goes to
-        // the range-splice (SortedInsertLoopValue, tried first); a literal is not matched there, so it lands here.
+        // Absolute set to a loop-invariant INT LITERAL: `m[k[i]] = 100` (batch-set-const).
         const isConstSet = e instanceof IntLiteralNode;
-        if (isRmw || isPerKeySet || isConstSet) { found = n; return; }
+        // Absolute set to a loop-invariant INT PARAM: `m[k[i]] = v` (v a param). Routed here (not the insert-only
+        // range-splice) so it gains UPDATE support; the upsert loop's same-gap chaining keeps the N-in-one-gap behavior.
+        const isParamSet = e instanceof IdentifierNode
+          && this.currentFunction.parameters.some((p) => p.name === (e as IdentifierNode).name);
+        if (isRmw || isPerKeySet || isConstSet || isParamSet) { found = n; return; }
       }
       // Per-iteration DELETE `for(i) delete m[k[i]]` (batch nullify): route through the upsert loop with op=delete
       // (UPDATE-to-default; absent keys fail closed). The key varying-ness is validated in setup (varyingArrayParam).

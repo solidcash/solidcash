@@ -28,9 +28,12 @@ describe('C2 insert-in-loop with a loop-invariant VALUE (bal[ks[i]] = v) is soun
 
   it('inserts N keys all with value v=100; each reads back exactly 100, wrong value reverts, absent reads 0', async () => {
     const art = compileString(SRC, { forceStateful: true });
-    // The param value is captured for SDK minting (valueParam) alongside the varying key array.
-    expect(art.abi.find((f) => f.name === 'setMany')?.sortedInsertLoopInfo?.[0]?.varyingArrayParam).toBe('ks');
-    expect(art.abi.find((f) => f.name === 'setMany')?.sortedInsertLoopInfo?.[0]?.valueParam).toBe('v');
+    // `= <param>` now routes to the UPSERT loop (op=set, valueScalarParam) - it gains UPDATE support while its same-gap
+    // chaining keeps the N-in-one-gap behavior. (Was the insert-only range-splice / sortedInsertLoopInfo.)
+    const info = art.abi.find((f) => f.name === 'setMany')?.sortedUpsertLoopInfo?.[0];
+    expect(info?.varyingArrayParam).toBe('ks');
+    expect(info?.valueScalarParam).toBe('v');
+    expect(info?.op).toBe('set');
 
     const f = { txid: uid(), vout: 0, satoshis: 400000n };
     await provider.addUtxo(p2pkh.address, f);
@@ -55,5 +58,16 @@ describe('C2 insert-in-loop with a loop-invariant VALUE (bal[ks[i]] = v) is soun
     // An absent key is bracket-proven default (0).
     await fund(contract.address);
     expect((await contract.chk(9n, 0n, alicePub, sig).send()).txid).toBeDefined();
+
+    // NEW capability (was insert-only): `= <param>` now UPDATES existing keys too. setMany([3, 9], 200) -> 3 updated
+    // (100 -> 200), 9 inserted (new). The insert-only range-splice could not have updated 3.
+    await fund(contract.address);
+    expect((await contract.setMany([3n, 9n], 200n, alicePub, sig).send()).txid).toBeDefined();
+    await fund(contract.address);
+    expect((await contract.chk(3n, 200n, alicePub, sig).send()).txid).toBeDefined(); // updated
+    await fund(contract.address);
+    expect((await contract.chk(9n, 200n, alicePub, sig).send()).txid).toBeDefined(); // inserted
+    await fund(contract.address);
+    expect((await contract.chk(7n, 100n, alicePub, sig).send()).txid).toBeDefined(); // untouched
   });
 });

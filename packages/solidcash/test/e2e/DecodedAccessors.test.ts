@@ -34,3 +34,35 @@ describe('getState() attaches typechain .toObject()/.toArray()', () => {
     expect((state.xs as { toArray: () => unknown }).toArray()).toEqual([5n]);
   });
 });
+
+// Struct/array params in event args (receipt.events + queryFilter) also carry the accessors.
+const EVENT_SRC = `pragma solidcash >=0.8.0;
+contract E() {
+  struct Pt { bigint x; bigint y; }
+  bigint n;
+  event Moved(Pt indexed who, bigint amt);
+  function fire(bigint a, bigint b, bigint amt) { emit Moved(Pt(a, b), amt); this.n = this.n + 1; }
+}`;
+
+describe('event args attach accessors to struct params (receipt.events + queryFilter)', () => {
+  it('receipt.events[i].args.<struct>.toObject() and queryFilter parity', async () => {
+    const art = compileString(EVENT_SRC);
+    const provider = createTestProvider();
+    const contract = new Contract(art, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, contract, art.stateLayout!, { n: 0n }, { saltContract: true },
+    );
+    const sc = new StatefulContract(categoryId, art, provider) as unknown as {
+      fire: (a: bigint, b: bigint, amt: bigint) => { send: () => Promise<{ wait: () => Promise<{ events: Array<{ args: Record<string, { toObject: () => unknown } & Record<string, bigint>> }> }> }> };
+      queryFilter: (name: string) => Promise<Array<{ args: Record<string, { toObject: () => unknown }> }>>;
+    };
+    const receipt = await (await sc.fire(3n, 4n, 99n).send()).wait();
+    const rArgs = receipt.events[0].args;
+    expect(typeof rArgs.who.toObject).toBe('function');
+    expect(rArgs.who.toObject()).toEqual({ x: 3n, y: 4n });
+    expect(rArgs.amt as unknown as bigint).toBe(99n);
+    const logs = await sc.queryFilter('Moved');
+    expect(typeof logs[0].args.who.toObject).toBe('function');
+    expect(logs[0].args.who.toObject()).toEqual({ x: 3n, y: 4n });
+  });
+});

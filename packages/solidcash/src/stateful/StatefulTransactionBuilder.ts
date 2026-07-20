@@ -11,6 +11,7 @@ import {
   StateValue,
   FunctionBlockLayout,
   BlockSlotKind,
+  attachDecodedAccessors,
 } from '@solidcash/utils';
 import { binToHex, hexToBin, isHex, encodeTransaction, createVirtualMachineBch2026 } from '@bitauth/libauth';
 import { getDustThreshold } from '@mem-cash/validation';
@@ -2479,6 +2480,9 @@ function buildReceiptEventArgs(
   eventDef: EventDefinitionAbi,
   named: Record<string, StateValue>,
 ): Record<string, unknown> {
+  // Attach .toObject()/.toArray() to any struct/array param value so `event.args.someStruct.toObject()` works,
+  // matching the getState()/queryFilter boundaries.
+  for (const p of eventDef.parameters) attachDecodedAccessors(named[p.name]);
   const args: Record<string, unknown> = { ...named };
   eventDef.parameters.forEach((p, i) => {
     Object.defineProperty(args, String(i), { value: named[p.name], enumerable: false, writable: true, configurable: true });

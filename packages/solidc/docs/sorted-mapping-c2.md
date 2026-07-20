@@ -231,6 +231,11 @@ mints) so update (mint 1) and insert (mint P'+NEW) coexist. What ships:
    ascending-sorts each gap's inserts) so all chains are order-independent. VM-proven (`SameGapChain`: credited chain,
    fresh-map HEAD chain, descending-input reorder; `MsgSenderMerge`: bob -> carol -> alice in the debit's gap).
 
-**Fully complete for every same-gap shape.** The only residual is transaction size: very large N per tx exceeds the
-block/tx limit and needs paginated writes across txs. Cross-cutting invariant: the exclusion proof survives every batch
-shape above (rejecting forged / omitted / misordered / duplicated entries), so no batch reopens the C2 exclusion hole.
+8. **SELF-TRANSFER** - msg.sender listed as one of its own recipients (allowed in Solidity). A self-transfer nets out,
+   so the SDK drops the msg.sender entry from recipients+amounts: the debit sums (total - own) and msg.sender is
+   co-spent once (the debit), for the identical net. VM-proven (`FullMultiTransfer`).
+
+**COMPLETE end-to-end.** Every multiTransfer shape - existing / new / any-gap chain (order-independent) / self-transfer -
+now works. The only residual is transaction size: very large N per tx exceeds the block/tx limit and needs paginated
+writes across txs. Cross-cutting invariant: the exclusion proof survives every batch shape above (rejecting forged /
+omitted / misordered / duplicated entries), so no batch reopens the C2 exclusion hole.

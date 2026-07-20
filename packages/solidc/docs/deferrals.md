@@ -197,8 +197,13 @@ msg.sender) + `_balances[to] += amt` (DIFFERENT key each iter). Full form still 
   (records register = R1 for the debit re-point, sets the pending to R1) instead of minting it, so a further new key in
   the debit's gap chains off R1: msg.sender -> R1 -> R2 -> dNext off the single debit co-spend. SDK runs the geometric
   fold BEFORE the debit-merge check (R2's original-list predecessor is the debit, but it chains off the deferred R1).
-  VM-proven (MsgSenderMerge: bob -> carol -> alice, bob debited 50, chain-valid). **The C2 multiTransfer surface is now
-  fully complete for every same-gap shape.** Only residual: paginated writes for very large N (transaction-size bound).
+  VM-proven (MsgSenderMerge: bob -> carol -> alice, bob debited 50, chain-valid).
+  **SELF-TRANSFER (msg.sender listed as its own recipient) nets out (`7033d9a1`):** a self-transfer within the batch
+  (`bal[msg.sender] -= a; bal[msg.sender] += a`) nets out, so the SDK drops the msg.sender entry from recipients+amounts
+  (the debit then sums total - own, and msg.sender is co-spent ONCE as the debit) - the identical net, matching Solidity.
+  VM-proven (FullMultiTransfer: multiTransfer([bob, alice],[10,20]) from alice -> alice 990, bob 110).
+  **The C2 ERC-20 multiTransfer surface is now COMPLETE end-to-end** (every same-gap shape, order-independent, +
+  self-transfer). Only residual: paginated writes for very large N (transaction-size bound - a fundamental limit).
 
 - **(b3) ABSOLUTE per-key assignment loop `for(i) m[k[i]] = v[i]` - RESOLVED 2026-07-19 (`644532b1`, op=set,
   VM-proven).** A pure per-key assignment (value REPLACES, not accumulates) now routes through the SAME upsert loop

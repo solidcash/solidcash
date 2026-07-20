@@ -113,3 +113,24 @@ describe('StatefulFunctionCall.staticCall() - mapping-entry view (EA getJob shap
     expect(job.toObject()).toEqual({ id: 100n, pay: 250n });
   });
 });
+
+describe('callStatic namespace (ethers v5 sc.callStatic.fn)', () => {
+  it('reads a value via the callStatic namespace', async () => {
+    const { MockNetworkProvider } = await import('../../src/index.js');
+    const art = compileString(MAP_SRC, { forceStateful: true });
+    const provider = new MockNetworkProvider();
+    const [alice] = await provider.getSigners(1);
+    const f = (await alice.getUtxos()).find((u) => u.vout === 0 && !u.token);
+    const res = await StatefulContract.deploy(art, [], {
+      provider, fundingUtxo: f, funder: alice.unlockP2PKH(), changeAddress: alice.getAddress(), initialState: {},
+    });
+    const sc = res.contract.connect(alice) as unknown as {
+      put: (k: bigint, id: bigint, pay: bigint) => { send: () => Promise<unknown> };
+      callStatic: { getJob: (k: bigint) => Promise<{ pay: bigint; toObject: () => unknown }> };
+    };
+    await sc.put(3n, 11n, 42n).send();
+    const job = await sc.callStatic.getJob(3n);
+    expect(job.pay).toBe(42n);
+    expect(job.toObject()).toEqual({ id: 11n, pay: 42n });
+  });
+});

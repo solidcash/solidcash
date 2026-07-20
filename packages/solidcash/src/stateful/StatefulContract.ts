@@ -768,6 +768,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
 
   state!: StateGetterMap<TArtifact>;
   call!: AbiToFunctionMap<TArtifact['abi'], StatefulFunctionCall, DeployFunctionCall>;
+  // ethers-v5 `contract.callStatic.fn(...)`: read a view function's return value directly (no send). Each entry
+  // returns a Promise of the decoded value (single output) or array (tuple), like `sc.fn(...).staticCall()`.
+  callStatic!: { [fn: string]: (...args: FunctionArgument[]) => Promise<StateValueType> };
   functions!: AbiToFunctionMap<TArtifact['abi'], Promise<StatefulTransactionBuilder>>;
   tokens!: { [tokenContainerCategoryIdHex: string]: TokenContainerAccessor };
 
@@ -1086,6 +1089,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       this.call[abiFunction.name] = caller;
       // @ts-ignore - dynamic property assignment
       this.functions[abiFunction.name] = (...args: any[]) => this._createBuilder(abiFunction.name, args);
+    }
+
+    // ethers-v5 `contract.callStatic.fn(...)` read namespace (each fn reads its return value without sending).
+    this.callStatic = {};
+    for (const abiFunction of contract.artifact.abi) {
+      this.callStatic[abiFunction.name] = (...args: FunctionArgument[]): Promise<StateValueType> =>
+        this._deriveReturnValue(abiFunction.name, args) as Promise<StateValueType>;
     }
 
     // Token container sugar (sc.tokens[categoryHex]).

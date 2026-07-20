@@ -1048,3 +1048,25 @@ STALE element-slot bits, BCH zero-fills (a footgun EVM has, BCH's clean model do
 **Revisit if.** Dynamic-array copy/clear/delete becomes a priority (this is that whole cluster's entry point), and
 the fund-relevant blob surgery can get review. Do it with the other array/* deep work (element-slot writes
 `sstore(keccak256(0,32)+i, v)`), not as a standalone increment.
+
+## Calldata `.offset` on dynamic params - DEFERRED 2026-07-20
+
+**What.** In assembly, `<dynParam>.offset` (and the raw `calldataload`/`calldatacopy` at a dynamic head/tail) on a
+`bytes`/`string`/`T[]` calldata parameter fails closed. `<dynParam>.length` WORKS (verified). ~53 corpus files touch
+`.offset` (not all would flip - many need other features too). NOT fundamental (the user's point: ABI parity is
+built) - it needs the calldata MODEL rebuilt.
+
+**Why deferred (scope, not tractability).** solidcash synthesizes calldata as `msg.sig ++ bytes32(p_0) ++
+bytes32(p_1) ++ ...` - ONE 32-byte word per parameter (synthesizedCalldata in LowerInlineAssembly). That models a
+static ABI head, so a value param's `calldataload(4+32*i)` and a dynamic param's `.length` (a single count) resolve.
+But a dynamic param's `.offset` points at the ABI TAIL (the head holds an offset, the tail holds `length ++ data`),
+which the one-word-per-param model does not lay out - there is no tail region to point into.
+
+**What it'd take.** Rebuild synthesizedCalldata as a REAL ABI head/tail encoding: static params + offset words in the
+head, each dynamic param's `length ++ padded-data` in the tail, and make `.offset` resolve to the tail position while
+keeping `calldataload`/`calldatacopy`/`calldatasize`/`.length` all consistent against the same buffer. Substantial +
+delicate (every calldata op must agree on one layout); reuse the ABI encoders in [[evm_parity_deep_research_2026_07]]
+/ docs/evm-abi-parity.md. Gate behind the exact dynamic-`.offset` shape so static-calldata codegen is untouched.
+
+**Revisit if.** A concrete port needs dynamic-calldata tail access (raw ABI decoding in assembly), or the calldata
+model is rebuilt for another reason - then `.offset` falls out of the head/tail layout.

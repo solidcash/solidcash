@@ -11,6 +11,7 @@ import {
   SliceNode, CollectionNode, MappingAccessNode, MappingAssignNode, HexLiteralNode, NullaryOpNode, FieldAccessNode,
   ReturnNode, TupleAssignmentNode, LowLevelCallNode, NewArrayNode, EmitStatementNode, EventDefinitionNode,
   InstantiationNode, TypeIntrospectionNode, ArrayAccessNode, ArrayAssignNode, ArrayNode, StateArrayPopNode,
+  TernaryOpNode,
 } from '../ast/AST.js';
 import { BinaryOperator, UnaryOperator, NullaryOperator } from '../ast/Operator.js';
 import { cloneNode } from '../ast/clone.js';
@@ -1112,6 +1113,38 @@ function resolveMappingSlot(slotArg: YulExpressionNode): { collection: string; k
   return mappingSlotIdiom(slotArg);
 }
 
+// The EVM dynamic-array element-slot idiom: EVM stores a dynamic array's elements at keccak(slot), so
+// `mstore(0, arr.slot); keccak256(0, 32)` is the element DATA base and `+ i` selects element i - i.e.
+// `sstore(keccak256(0,32)+i, v)` == `arr[i] = v`, `sload(...)` == `arr[i]`. Recognized ONLY at len 32 (one word):
+// a different keccak length is a distinct hash, NOT this array's base (the keccak256_optimizer_cache_bug case where
+// keccak(0,23) must NOT alias keccak(0,32)). The array must be a declared fixed-width-element dynamic array.
+function arrayDataBaseName(kecc: YulExpressionNode): string | undefined {
+  if (!(kecc instanceof YulFunctionCallNode) || kecc.name !== 'keccak256' || kecc.args.length !== 2) return undefined;
+  const [pArg, lenArg] = kecc.args;
+  if (!isIntLiteral(pArg) || !isIntLiteral(lenArg) || BigInt(lenArg.raw) !== 32n) return undefined;
+  const slotWord = memory.get(BigInt(pArg.raw));
+  if (slotWord === undefined) return undefined;
+  const slotNum = constSlotOf(slotWord);
+  if (slotNum === undefined) return undefined;
+  const fields = currentSlots.get(slotNum);
+  if (fields && fields.length === 1 && fields[0].sv.isDynamic && fields[0].sv.type instanceof ArrayType
+    && isFixedWidthType(fields[0].sv.type.elementType)) {
+    return fields[0].sv.name;
+  }
+  return undefined;
+}
+
+// Resolve a slot arg to a dynamic-array element access: `keccak256(0,32)` (element 0) or `add(keccak256(0,32), i)`.
+function resolveArrayElementSlot(slotArg: YulExpressionNode): { arrName: string; index: ExpressionNode } | undefined {
+  const direct = arrayDataBaseName(slotArg);
+  if (direct) return { arrName: direct, index: intLit(0n, slotArg) };
+  if (slotArg instanceof YulFunctionCallNode && slotArg.name === 'add' && slotArg.args.length === 2) {
+    const base = arrayDataBaseName(slotArg.args[0]);
+    if (base) return { arrName: base, index: lowerValue(slotArg.args[1]) };
+  }
+  return undefined;
+}
+
 // Build the anonymous-event emit for a Yul log0-log4: `emit __YulLog(topics ++ mem[p:p+len])`. Each topic is a
 // 32-byte word; the data region reuses the keccak reconstruction (constant word-concat, or a runtime __yulmem
 // slice). Sets logEventUsed so visitContract synthesizes the event decl. log0 has no topics but still emits data.
@@ -1656,6 +1689,17 @@ function lowerCall(call: YulFunctionCallNode): ExpressionNode {
   if (name === 'sload' && args.length === 1) {
     const mapAccess = resolveMappingSlot(args[0]);
     if (mapAccess) return loc(new MappingAccessNode(mapAccess.collection, mapAccess.keys), call);
+    // sload(keccak256(0,32)+i) = arr[i], guarded: `i < arr.length ? uint256(arr[i]) : 0` (EVM reads an
+    // out-of-range / deleted element as 0, not a bounds revert).
+    const arrEl = resolveArrayElementSlot(args[0]);
+    if (arrEl) {
+      const len = loc(new UnaryOpNode(UnaryOperator.SIZE, loc(new IdentifierNode(arrEl.arrName), call)), call);
+      const cond = loc(new BinaryOpNode(cloneNode(arrEl.index) as ExpressionNode, BinaryOperator.LT, len), call);
+      const read = loc(new CastNode(UINT256, loc(new ArrayAccessNode(
+        loc(new IdentifierNode(arrEl.arrName), call), cloneNode(arrEl.index) as ExpressionNode,
+      ), call), false), call);
+      return loc(new TernaryOpNode(cond, read, intLit(0n, call)), call);
+    }
     const fields = resolveSlotFields(args[0]);
     if (fields) return combineSlot(fields, call);
     const arrName = resolveDynArrayName(args[0]);
@@ -1908,6 +1952,10 @@ function lowerStatement(stmt: YulStatementNode): StatementNode {
         if (mapWrite) {
           return loc(new MappingAssignNode(mapWrite.collection, mapWrite.keys, storeVal()), e);
         }
+        // sstore(keccak256(0,32)+i, v) = arr[i] = v (the array must already be sized to cover i - EVM writes at
+        // the computed element slot; the resize idiom `sstore(arr.slot, n)` sizes it first).
+        const arrElW = resolveArrayElementSlot(e.args[0]);
+        if (arrElW) return loc(new ArrayAssignNode(arrElW.arrName, arrElW.index, storeVal()), e);
         const fields = resolveSlotFields(e.args[0]);
         if (fields) return decomposeSlot(fields, e.args[1], e);
         const comp = resolveCompositeSlotAccess(e.args[0]);

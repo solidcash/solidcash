@@ -386,6 +386,11 @@ describe('storage-pointer local .slot/.offset in assembly (T[] storage x = a; x.
     expect(ok('contract C { function f(uint a, bytes calldata x, uint b) public returns (uint r) {'
       + ' assembly { x.offset := 8 } assembly { r := x.offset } require(true); } }')).toBe('C');
   });
+  it('keccak256 dynamic-array element idiom: sstore(keccak(0,32)+i, v) == arr[i]=v', () => {
+    expect(ok('contract C { uint[] data; function f(uint v) public {'
+      + ' assembly { mstore(0, 0) sstore(keccak256(0, 32), v) sstore(add(keccak256(0, 32), 1), v) } require(true); } }'))
+      .toBe('C');
+  });
 });
 
 describe('composite sub-slot field access (sload/sstore on a value-field struct slot)', () => {

@@ -599,3 +599,28 @@ describe('calldata .offset/.length assignable (mutable component, cross-block)',
     await (sc as any).chk(7n, new Uint8Array([1, 2]), 8n).send();
   });
 });
+
+// EVM dynamic-array element-slot idiom: `mstore(0, arr.slot); sstore(keccak256(0,32)+i, v)` == `arr[i] = v`
+// (EVM stores elements at keccak(slot)+i). sload is guarded (out-of-range -> 0). Corpus delete_storage_array.
+const KECCAK_ELEM = `pragma solidcash >=0.8.0;
+contract C() {
+  uint256[] data;
+  function writeViaKeccak(pubkey pk, sig s) {
+    require(checkSig(s, pk));
+    assembly { sstore(0, 2) mstore(0, 0) sstore(keccak256(0, 32), 234) sstore(add(keccak256(0, 32), 1), 123) }
+  }
+  function chkFields() { require(data.length == 2); require(data[0] == 234); require(data[1] == 123); }
+  function readViaKeccak(uint256 e) { uint256 r = 999; assembly { mstore(0, 0) r := sload(keccak256(0, 32)) } require(r == e); }
+  function clear(pubkey pk, sig s) { require(checkSig(s, pk)); delete this.data; }
+}`;
+
+describe('keccak256 dynamic-array element-slot idiom (sstore(keccak(0,32)+i, v) == arr[i]=v)', () => {
+  it('writes land in the real elements; guarded read returns 0 out-of-range', async () => {
+    const sc = await deploy(KECCAK_ELEM);
+    await (sc as any).writeViaKeccak(alicePub, sig()).send();
+    await (sc as any).chkFields().send();                // cross-check: reached data[0]/data[1]
+    await (sc as any).readViaKeccak(234n).send();
+    await (sc as any).clear(alicePub, sig()).send();
+    await (sc as any).readViaKeccak(0n).send();           // out-of-range after delete -> 0
+  });
+});

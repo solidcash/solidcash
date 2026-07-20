@@ -117,4 +117,19 @@ describe('FULL ERC-20 multiTransfer (cached msg.sender debit + credit upsert loo
     expect(await valOf(aliceAddress)).toBe(990n); // 1000 - 30 + 20  ==  1000 - 10
     expect(await valOf(bobAddress)).toBe(110n);   // 100 + 10
   });
+
+  // DUPLICATE RECIPIENT: a key listed 2+ times accumulates for += (Solidity semantics). The SDK merges duplicates into
+  // one entry (co-spent once) with the summed amount; the debit still sums the full total, so it is unchanged.
+  it('accumulates a recipient listed twice (bob += 10 + 30 = 40)', async () => {
+    const { valOf, setBal, fundContract, fundSigner, sc } = await deploy();
+    await fundContract(); await setBal(aliceAddress, 1000n); // msg.sender (debited)
+    await fundContract(); await setBal(bobAddress, 100n);
+    await fundContract(); await setBal(carolAddress, 200n);
+    await fundSigner();
+    // multiTransfer([bob, carol, bob], [10, 20, 30]) from alice: bob merged to += 40, carol += 20, alice debited 60.
+    await mt(sc, [bobAddress, carolAddress, bobAddress], [10n, 20n, 30n]);
+    expect(await valOf(aliceAddress)).toBe(940n); // 1000 - (10 + 20 + 30)
+    expect(await valOf(bobAddress)).toBe(140n);   // 100 + 10 + 30
+    expect(await valOf(carolAddress)).toBe(220n); // 200 + 20
+  });
 });

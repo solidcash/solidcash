@@ -130,11 +130,23 @@ describe('C2 diff-key per-iteration UPDATE loop (multitransfer credit to existin
     }
   });
 
-  it('fails closed on a duplicate recipient (each entry co-spent once)', async () => {
-    const { contract, call } = await setup();
+  it('ACCUMULATES a duplicate recipient (3 += 10 + 20 = 30)', async () => {
+    const { contract, valOf, call } = await setup();
     await fund(contract.address); await call('setBal', 3n, 100n);
     await fund(contract.address);
-    await expect(call('airdrop', [3n, 3n], [10n, 20n])).rejects.toThrow(/duplicate/i);
+    // 3 listed twice -> the SDK merges to one entry `3 += 30`; matches Solidity's accumulate semantics.
+    await call('airdrop', [3n, 3n], [10n, 20n]);
+    expect(await valOf(3n)).toBe(130n); // 100 + 10 + 20
+  });
+
+  it('ACCUMULATES a duplicate NEW recipient into one insert (5 = 10 + 20 = 30)', async () => {
+    const { contract, valOf, call } = await setup();
+    await fund(contract.address); await call('setBal', 3n, 100n); // an existing entry so 5's gap has a real predecessor
+    await fund(contract.address);
+    // 5 is NEW and listed twice -> merged to a single insert `5 = 30` (one predecessor co-spend), not two.
+    await call('airdrop', [5n, 5n], [10n, 20n]);
+    expect(await valOf(5n)).toBe(30n);
+    expect(await valOf(3n)).toBe(100n); // untouched
   });
 
   it('CHAINS two new recipients that share the HEAD gap in a fresh map (HEAD -> 3 -> 7)', async () => {

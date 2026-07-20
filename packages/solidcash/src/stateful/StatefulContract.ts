@@ -5700,6 +5700,34 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         throw new Error(`C2 upsert loop ${info.collection}: recipients/amounts length mismatch`);
       }
       const foldActive = info.op === '+' || info.op === 'set'; // crediting loops defer + fold (covenant pendActive)
+      // DUPLICATE RECIPIENT: the same key listed 2+ times. Solidity ACCUMULATES for += / -= ([a,a],[10,20] -> a += 30),
+      // takes the LAST for = ([a,a],[10,20] -> a = 20), and delete is idempotent. Since the covenant co-spends one
+      // entry per recipient, combine duplicates into ONE entry (co-spent once) with the merged amount, BEFORE the
+      // self-transfer filter / reorder. For += the merged sum equals the original sum, so a coexisting `bal[msg.sender]
+      // -= amounts[i]` debit is unchanged. Scalar/const-value loops can't carry a per-entry merged amount -> a
+      // duplicate there stays fail-closed (the seenSlots guard below throws).
+      if (Array.isArray(keysArr) && keysArr.length > 1 && (isDelete || perKey)) {
+        const kArr = keysArr as unknown[];
+        const slotHexes = kArr.map((k) => binToHex(keyToSlotMulti([...fixedBins, encKey(k, varyType)])));
+        if (slotHexes.some((h, i) => slotHexes.indexOf(h) !== i)) {
+          const seen = new Set<string>();
+          const order: number[] = [];
+          const merged = new Map<string, bigint>();
+          const vArr = perKey ? (valsArr as unknown[]) : undefined;
+          slotHexes.forEach((h, i) => {
+            if (!seen.has(h)) { seen.add(h); order.push(i); }
+            if (vArr) { const a = toBig(vArr[i]); merged.set(h, info.op === 'set' ? a : (merged.get(h) ?? 0n) + a); }
+          });
+          keysArr = order.map((i) => kArr[i]);
+          const recipIdx = abiFunction!.inputs.findIndex((p) => p.name === info.varyingArrayParam);
+          if (recipIdx >= 0) { args[recipIdx] = keysArr; finalArgs[recipIdx] = keysArr; }
+          if (vArr) {
+            valsArr = order.map((i) => merged.get(slotHexes[i])!);
+            const amtIdx = abiFunction!.inputs.findIndex((p) => p.name === info.valueArrayParam);
+            if (amtIdx >= 0) { args[amtIdx] = valsArr; finalArgs[amtIdx] = valsArr; }
+          }
+        }
+      }
       // SELF-TRANSFER: a recipient == the debited msg.sender nets out (`bal[msg.sender] -= a; bal[msg.sender] += a`).
       // Since the debit and the credit share amounts[i], dropping that entry from recipients+amounts leaves the debit
       // summing (total - own) and never credits msg.sender separately - the identical net, with msg.sender co-spent

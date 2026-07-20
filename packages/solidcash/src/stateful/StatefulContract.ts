@@ -4317,6 +4317,26 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           // Get B's master input index
           const bMasterIdx = stb.getExternalCallMasterInputIndex(groupIdx);
 
+          // Patch B's C2 entry co-spend unlockers with B's REAL master input index (docs/deferrals.md #1). The entry
+          // covenant's write path (flag=1) verifies a minting NFT at masterInputIndex = B's master, but block-build
+          // time used a block-relative placeholder (B's master index isn't known until the tx layout is). A funder
+          // placeholder (absent key, no token) has no covenant to fix. The probe above runs B's master covenant only,
+          // so the placeholder does not affect the entry-commitment extraction below; the final build uses this patch.
+          if (group.blockLayout && group.blockInputs) {
+            const bScPatch = group.externalContract as StatefulContract | null;
+            const bAbiPatch = bScPatch?.inner.artifact.abi?.find(
+              (f: { name: string }) => f.name === group.functionName,
+            ) as AbiFunction | undefined;
+            for (let si = 0; si < group.blockLayout.slots.length; si++) {
+              const s = group.blockLayout.slots[si];
+              const input = group.blockInputs[si];
+              if (s?.kind !== 'entry' || !bScPatch || !input?.token?.nft) continue;
+              const acc = bAbiPatch?.entryAccesses?.[s.slotIndex ?? 0];
+              if (!acc) continue;
+              input.unlocker = createEntryNftUnlocker(bScPatch.inner, bMasterIdx, group.categoryId, acc.collection);
+            }
+          }
+
           // Run VM on B's master input
           const vm = createVirtualMachineBch2026();
           const fullTrace = vm.debug({
@@ -4344,6 +4364,19 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             const bState = commitmentsToState(bCommitments, group.stateLayout, group.requiredDataNftIndices);
             for (const [name, value] of Object.entries(bState)) {
               stb.setExternalCallState(group.categoryId, name, value);
+            }
+          }
+
+          // B's C2 sorted-entry outputs (docs/deferrals.md #1): a cross-contract callee WRITE to a sorted mapping
+          // mints an entry output B's covenant then verifies. Extract each written entry's commitment from B's trace
+          // at its block-slot output index (bOutputBase + si) and hand it to the STB, which mints it at that slot.
+          if (group.blockLayout && group.blockInputs) {
+            const bEntryMap = extractCommitmentMapFromTrace(fullTrace,
+              { min: bOutputBase, max: bOutputBase + group.blockInputs.length });
+            for (let si = 0; si < group.blockLayout.slots.length; si++) {
+              if (group.blockLayout.slots[si]?.kind !== 'entry') continue;
+              const commit = bEntryMap.get(bOutputBase + si);
+              if (commit !== undefined) stb.setExternalCallEntryOutput(group.categoryId, si, commit);
             }
           }
 
@@ -6436,7 +6469,22 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                     const keyValue = rawKeyValue instanceof Uint8Array || typeof rawKeyValue === 'bigint'
                       || typeof rawKeyValue === 'boolean' ? rawKeyValue : undefined;
                     let matchUtxo: Utxo | undefined;
-                    if (keyValue !== undefined && bCollection) {
+                    if (bCollection?.sorted && keyValue !== undefined) {
+                      // C2 (sorted) collection (docs/deferrals.md #1): the commitment is slot||nextKey||value, so
+                      // co-spend by slot - the EXACT entry if present (a cross-contract UPDATE), else the bracketing
+                      // predecessor (an INSERT, whose P'/NEW outputs are derived from B's trace). predecessorOf throws
+                      // if B has no HEAD sentinel; fall back to a funder so B's covenant fails closed rather than crash.
+                      const bList = SortedList.fromUtxos(
+                        bEntryUtxos.filter((u) => u.token?.category === externalCategoryId),
+                      );
+                      const keyBin = keyValue instanceof Uint8Array ? keyValue
+                        : typeof keyValue === 'bigint' ? bigIntToVmNumber(keyValue)
+                          : bigIntToVmNumber(keyValue ? 1n : 0n);
+                      const bSlot = keyToSlot(keyBin);
+                      try {
+                        matchUtxo = (bList.has(bSlot) ? bList.find(bSlot) : bList.predecessorOf(bSlot))?.utxo;
+                      } catch { matchUtxo = undefined; }
+                    } else if (keyValue !== undefined && bCollection) {
                       for (const u of bEntryUtxos) {
                         if (u.token?.category !== externalCategoryId) continue;
                         if (!u.token?.nft?.commitment) continue;

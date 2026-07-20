@@ -213,6 +213,14 @@ export class StatefulTransactionBuilder {
   string, Map<string, StateValue>
   > = new Map(); // categoryId -> (varName -> value)
 
+  // Cross-contract callee (B) C2 sorted-entry outputs, derived from B's VM trace (docs/deferrals.md #1).
+  // categoryId -> (B block-slot position si -> commitment hex). The external-call output loop mints B's updated
+  // (or predecessor P') entry at that slot; a NEW insert node rides the trailing region below.
+  private externalCallEntryOutputs: Map<string, Map<number, string>> = new Map();
+  // Trailing NEW entry nodes minted for a cross-contract callee INSERT (address lbc + commitment hex), appended
+  // after B's block (and after A's own trailing entry region), in group order.
+  private externalCallEntryInserts: Array<{ to: Uint8Array; commitment: string }> = [];
+
   private pendingReturnEventOutputs: Array<{ categoryId: string; commitment: Uint8Array }> = [];
   private entryRawCommitments: Map<number, string> = new Map(); // slotIndex -> hex commitment (from auto-derivation)
   private pinnedEntrySlots: Set<number> = new Set(); // slots whose commitment is known exactly (never re-derive)
@@ -564,6 +572,20 @@ export class StatefulTransactionBuilder {
       this.externalCallStateUpdates.set(categoryId, updates);
     }
     updates.set(name, value);
+    return this;
+  }
+
+  /** B's C2 sorted-entry output at its block-slot position (commitment from B's VM trace). docs/deferrals.md #1. */
+  setExternalCallEntryOutput(categoryId: string, blockSlot: number, commitmentHex: string): this {
+    let m = this.externalCallEntryOutputs.get(categoryId);
+    if (!m) { m = new Map(); this.externalCallEntryOutputs.set(categoryId, m); }
+    m.set(blockSlot, commitmentHex);
+    return this;
+  }
+
+  /** A trailing NEW entry node for a cross-contract callee INSERT (minted after B's block). */
+  addExternalCallEntryInsert(to: Uint8Array, commitmentHex: string): this {
+    this.externalCallEntryInserts.push({ to, commitment: commitmentHex });
     return this;
   }
 
@@ -1316,6 +1338,25 @@ export class StatefulTransactionBuilder {
             builder.addOutput(rec ?? {
               to: input.unlocker.generateLockingBytecode(), amount: input.satoshis, token: input.token,
             });
+            continue;
+          }
+
+          // C2 sorted-entry slot for a cross-contract callee WRITE (docs/deferrals.md #1): mint B's updated entry
+          // (UPDATE) or its re-pointed predecessor P' (INSERT) with the commitment derived from B's VM trace. A
+          // read-only entry (or an absent-key funder placeholder) has no stored commitment -> mirror the input.
+          if (slot?.kind === 'entry') {
+            const bEntryOut = this.externalCallEntryOutputs.get(group.categoryId)?.get(si);
+            builder.addOutput(bEntryOut !== undefined
+              ? {
+                to: input.unlocker.generateLockingBytecode(),
+                amount: input.satoshis,
+                token: {
+                  amount: input.token?.amount ?? 0n,
+                  category: group.categoryId,
+                  nft: { capability: input.token?.nft?.capability ?? 'mutable', commitment: bEntryOut },
+                },
+              }
+              : { to: input.unlocker.generateLockingBytecode(), amount: input.satoshis, token: input.token });
             continue;
           }
 

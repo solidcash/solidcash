@@ -31,6 +31,8 @@ import {
   EntryAccessAbi,
   EmitAbi,
   EventDefinitionAbi,
+  BlockSlotKind,
+  FunctionBlockLayout,
   sidecarLockingBytecode,
   resolveLibraryBlob,
   SHARED_LIBRARY_SALT,
@@ -6938,6 +6940,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     let lowLevelCallUtxoGroups: ExternalCallUtxoGroup[] = [];
     let lowLevelCallRawInputs: UnlockableUtxo[] = [];
     let lowLevelCallInputBase = 0; // hoisted: the delegatecall-index auto-fill (below) needs it in this scope
+    // Output-only (event/transfer) slots contributed by delegatecall'd impls: they are verified at
+    // proxyMaster+offset, so they reserve funder inputs + outputs in the PROXY block, shifting the co-spent
+    // impl UTXOs after them. Populated once below; drives lowLevelCallInputBase, block layout, and funders.
+    let delegateEventSlots: { kind: BlockSlotKind; offset: number; slotIndex?: number }[] = [];
 
     // Track per-group proxy master index for delegatecall composability
     const groupProxyMasterIndices: number[] = [];
@@ -7003,8 +7009,18 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       const externalCallInputCount = externalCallUtxoGroups.reduce(
         (sum, g) => sum + 1 + g.dataNftUtxos.length, 0,
       );
+      for (const g of lowLevelCallUtxoGroups) {
+        if (g.callMode !== 'delegatecall') continue;
+        const gFn = (g.externalContract.inner.artifact.abi as readonly { name: string; blockLayout?: FunctionBlockLayout }[])
+          .find((f) => f.name === g.functionName);
+        for (const s of gFn?.blockLayout?.slots ?? []) {
+          if (s.kind === 'event' || s.kind === 'transfer' || s.kind === 'tcTransfer') {
+            delegateEventSlots.push({ kind: s.kind, offset: s.offset, ...(s.slotIndex !== undefined && { slotIndex: s.slotIndex }) });
+          }
+        }
+      }
       lowLevelCallInputBase = 1 + requiredNftIndices.length
-        + externalReadUtxos.length + outStateInputCount + externalCallInputCount;
+        + externalReadUtxos.length + outStateInputCount + externalCallInputCount + delegateEventSlots.length;
 
       // Fix data NFT unlockers with correct master input index
       let currentBase = lowLevelCallInputBase;
@@ -7245,9 +7261,21 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       unlocker: dataNftUnlockers[i],
     }));
 
-    // Compute event definitions and locking bytecodes for functions that emit events
-    const emitInfos = abiFunction?.emits ?? [];
-    const eventDefs = this.inner.artifact.events ?? [];
+    // Compute event definitions and locking bytecodes for functions that emit events. A delegatecall'd (proxy)
+    // impl emits against the PROXY's runtime master (this.categoryId) via emitMasterInputIndex=proxyMasterIndex, so
+    // its event NFT lands in the PROXY's block (proxyMaster+offset). __forward itself has no emits, so also collect
+    // the delegate impl's emits + event definitions here - the block layout is extended below to reserve the slot.
+    const emitInfos = [...(abiFunction?.emits ?? [])];
+    const eventDefs = [...(this.inner.artifact.events ?? [])];
+    for (const g of lowLevelCallUtxoGroups) {
+      if (g.callMode !== 'delegatecall') continue;
+      const gArt = g.externalContract.inner.artifact;
+      const gFn = (gArt.abi as readonly { name: string; emits?: readonly EmitAbi[] }[]).find((f) => f.name === g.functionName);
+      if (gFn?.emits) emitInfos.push(...gFn.emits);
+      for (const ev of gArt.events ?? []) {
+        if (!eventDefs.some((e) => e.signature === ev.signature)) eventDefs.push(ev);
+      }
+    }
     const eventNftLockingBytecodes = new Map<string, Uint8Array>();
     if (emitInfos.length > 0) {
       for (const emitInfo of emitInfos) {
@@ -7323,6 +7351,16 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         lockingBytecode: getEntryNftLockingBytecode(this.inner, this.categoryId, c.name),
       }));
 
+    // Extend the block layout with the event/transfer slots of any delegatecall'd impl. A delegate fn's event is
+    // verified at proxyMaster+offset (emitMasterInputIndex=proxyMasterIndex), which is INSIDE the proxy's block -
+    // so the proxy must reserve those output-only slots (funder input + event output), shifting the co-spent impl
+    // UTXOs after them. __forward's own layout has none. Offsets align: proxy blockSize == impl master+dataNfts.
+    let effectiveBlockLayout = abiFunction?.blockLayout;
+    if (effectiveBlockLayout && delegateEventSlots.length > 0) {
+      const maxOff = Math.max(effectiveBlockLayout.blockSize - 1, ...delegateEventSlots.map((s) => s.offset));
+      effectiveBlockLayout = { blockSize: maxOff + 1, slots: [...effectiveBlockLayout.slots, ...delegateEventSlots] };
+    }
+
     const builder = new StatefulTransactionBuilder({
       provider: this.inner.provider,
       maximumFeeSatoshis: 50000n,
@@ -7353,7 +7391,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       ...(eventNftLockingBytecodes.size > 0 && { eventNftLockingBytecodes }),
       ...(iterationEntryInputs.length > 0 && { iterationEntryInputs }),
       ...(insertLoopPredecessors.length > 0 && { insertLoopPredecessorInputs: insertLoopPredecessors }),
-      ...(abiFunction?.blockLayout && { blockLayout: abiFunction.blockLayout }),
+      ...(effectiveBlockLayout && { blockLayout: effectiveBlockLayout }),
     });
 
     // C2 sorted-set insert: place P' (the predecessor's rewritten commitment at its entry slot) and NEW (the new
@@ -7414,17 +7452,17 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // block range - the covenant requires them at specific positions.
     // The fee funder is NOT created here; STB.send() handles it via the
     // "build then fund" approach (measure covenant tx size -> create fee input).
-    if (abiFunction?.blockLayout && builder.funderUtxos.length === 0) {
+    if (effectiveBlockLayout && builder.funderUtxos.length === 0) {
       const outputOnlyKinds = new Set(['transfer', 'tcTransfer', 'event', 'returnEvent', 'lowLevelCall', 'deploy']);
       const entryInfos = builder.getEntryNftInfos();
       const tcInfos = builder.getTokenContainerInfos();
-      let neededFunders = abiFunction.blockLayout.slots.filter(
+      let neededFunders = effectiveBlockLayout.slots.filter(
         (s) => outputOnlyKinds.has(s.kind),
       ).length;
-      neededFunders += abiFunction.blockLayout.slots.filter(
+      neededFunders += effectiveBlockLayout.slots.filter(
         (s) => s.kind === 'entry' && !entryInfos.some((e) => e.slotIndex === s.slotIndex && e.exists),
       ).length;
-      neededFunders += abiFunction.blockLayout.slots.filter(
+      neededFunders += effectiveBlockLayout.slots.filter(
         (s) => s.kind === 'tokenContainer' && !tcInfos.some((c) => c.tokenContainerSlotIndex === s.slotIndex && c.exists),
       ).length;
       // ANY msg.sender / tx.origin use needs the sender's NATIVE P2PKH input present so the covenant's emitTxOrigin
@@ -7432,11 +7470,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       // This covers a stored/compared value (`this.owner = msg.sender`, `require(msg.sender == x)`) as well as a
       // mapping key - but NOT an `IFoo(msg.sender).m()` call, where msg.sender resolves via the co-spent callee's
       // category (a minting input), not tx.origin. Force one funder from the signer; leftover satoshis go to change.
-      const usesMsgSenderKey = (abiFunction.entryAccesses ?? []).some(
+      const usesMsgSenderKey = (abiFunction?.entryAccesses ?? []).some(
         (ea) => (ea.keySources ?? []).some((ks) => ks.kind === 'msgSender'),
       );
-      const usesTxOriginSender = !!abiFunction.usesMsgSender
-        && !(abiFunction.externalCalls ?? []).some((ec) => ec.addressIsMsgSender);
+      const usesTxOriginSender = !!abiFunction?.usesMsgSender
+        && !(abiFunction?.externalCalls ?? []).some((ec) => ec.addressIsMsgSender);
       // A delegatecall'd (proxy) impl that uses msg.sender needs it too: msg.sender in the delegate impl resolves
       // to tx.origin (the caller/deployer signer), same as a direct call - so `upgrades.deployProxy` of an
       // `initialize` that sets `this.owner = msg.sender` needs the signer's native P2PKH input in the tx. (The

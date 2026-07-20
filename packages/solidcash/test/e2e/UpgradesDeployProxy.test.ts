@@ -145,4 +145,32 @@ describe('upgrades.deployProxy (ethers/hardhat OZ-upgrades style)', () => {
     expect(state.a).toBe(3n);
     expect(state.b).toBe(4n);
   });
+
+  // A delegate fn that emits: the impl verifies its event at proxyMaster+offset, so the event NFT lands in the
+  // PROXY block (proxy category, capability none) and the co-spent impl UTXOs shift after it.
+  const EVENT_IMPL = `pragma solidcash >=0.8.0;
+    contract EventImpl() {
+      event Changed(int v);
+      int version;
+      function initialize(int v) delegate { this.version = v; }
+      function setVersion(int v) delegate { emit Changed(v); this.version = v; }
+    }`;
+
+  it('emits an event from inside a delegate function (event NFT lands in the proxy block)', async () => {
+    const signer = await fundedSigner();
+    // A third funder: the event NFT reserves one output-only funder input beyond the two deploy genesis coins.
+    await signer.provider.addUtxo(signer.getAddress(), { txid: 'c3'.repeat(32), vout: 0, satoshis: 1_000_000n });
+    const implArtifact = compileString(EVENT_IMPL);
+    const proxy = await upgrades.deployProxy(getContractFactory(implArtifact, signer), [1n]);
+
+    const tx = await (proxy as any).setVersion(25n).send();
+    // State written through the proxy (delegate writes proxyMaster+1).
+    expect(proxyState(tx, proxy.proxy.categoryId, implArtifact.stateLayout).version).toBe(25n);
+    // The event NFT: immutable (capability none), proxy category, commitment = pushdata-encoded arg (25 = 0x19).
+    const eventOut = getTxOutputs(tx).find(
+      (o: any) => o.token?.category === proxy.proxy.categoryId && o.token?.nft?.capability === 'none',
+    );
+    expect(eventOut).toBeDefined();
+    expect(eventOut!.token!.nft!.commitment).toBe('0119');
+  });
 });

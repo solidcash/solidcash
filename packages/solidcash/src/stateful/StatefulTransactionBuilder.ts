@@ -994,6 +994,11 @@ export class StatefulTransactionBuilder {
     for (const g of this.externalCallUtxoGroups) {
       base += g.blockInputs ? g.blockInputs.length : 1 + g.dataNftUtxos.length;
     }
+    // Skip the main block's output-only funder inputs (event/transfer): they sit inside the proxy block,
+    // before the low-level call inputs. A delegatecall'd impl that emits events reserves such slots here.
+    for (const s of this.blockLayout?.slots ?? []) {
+      if (s.kind === 'event' || s.kind === 'transfer' || s.kind === 'tcTransfer') base += 1;
+    }
     // Skip preceding low-level call groups
     for (let i = 0; i < groupIdx; i++) {
       base += 1 + this.lowLevelCallUtxoGroups[i].dataNftUtxos.length;

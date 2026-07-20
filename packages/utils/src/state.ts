@@ -552,6 +552,42 @@ function standardPushdataFrame(data: Uint8Array): Uint8Array {
   return result;
 }
 
+/** Deep copy a decoded value to a plain form, dropping the non-enumerable `toObject` accessor at every level. */
+function toPlainStateValue(v: StateValue): StateValue {
+  if (Array.isArray(v)) return v.map(toPlainStateValue);
+  if (v !== null && typeof v === 'object' && !(v instanceof Uint8Array)) {
+    const out: StateRecord = {};
+    for (const k of Object.keys(v)) out[k] = toPlainStateValue((v as StateRecord)[k]);
+    return out;
+  }
+  return v;
+}
+
+/**
+ * Attach a non-enumerable ethers/typechain-style `toObject()` to a decoded struct record: returns a plain deep
+ * copy (nested structs included, accessor stripped). Non-enumerable so it never shows up in Object.keys / spread /
+ * `deep.equal` / re-encode (which iterate own enumerable keys or the struct's field list, not this method).
+ */
+function attachStructAccessors(record: StateRecord): StateRecord {
+  Object.defineProperty(record, 'toObject', {
+    enumerable: false, writable: true, configurable: true,
+    value: function toObject(): StateRecord { return toPlainStateValue(this as StateRecord) as StateRecord; },
+  });
+  return record;
+}
+
+/**
+ * Attach a non-enumerable ethers/typechain-style `toArray()` to a decoded array: a plain deep copy (struct
+ * elements' `toObject` stripped). Non-enumerable so length / index / `deep.equal` / re-encode are unaffected.
+ */
+function attachArrayAccessors(arr: StateValue[]): StateValue[] {
+  Object.defineProperty(arr, 'toArray', {
+    enumerable: false, writable: true, configurable: true,
+    value: function toArray(): StateValue[] { return toPlainStateValue(this as StateValue[]) as StateValue[]; },
+  });
+  return arr;
+}
+
 /**
  * Decode a pushdata-encoded value from a buffer at a given offset.
  * Returns the decoded value and number of bytes consumed.
@@ -580,7 +616,7 @@ export function decodePushdataValue(
         record[field.name] = value;
         totalConsumed += bytesConsumed;
       }
-      return { value: record, bytesConsumed: totalConsumed };
+      return { value: attachStructAccessors(record), bytesConsumed: totalConsumed };
     }
   }
   const arrInfo = parseArrayTypeString(type);
@@ -612,7 +648,7 @@ export function decodePushdataValue(
         totalConsumed += bytesConsumed;
       }
     }
-    return { value: arr, bytesConsumed: totalConsumed };
+    return { value: attachArrayAccessors(arr), bytesConsumed: totalConsumed };
   }
 
   if (type === 'bool') {

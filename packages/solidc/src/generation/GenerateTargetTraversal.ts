@@ -9750,10 +9750,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const ilcAe = node.addressExpression;
     const ilcIsLoopElem = ilcAe instanceof ArrayAccessNode
       || (ilcAe instanceof FieldAccessNode && ilcAe.expression instanceof ArrayAccessNode);
-    if (node.callInfo && node.opaqueReturn && ilcIsLoopElem) {
+    if (node.callInfo && ilcIsLoopElem) {
       const loopSlot = this.externalCallSlots[node.callInfo.externalCallSlotIndex];
       if (loopSlot?.loopArrayVar
           && this.currentFunction?.parameters.some((p) => p.name === loopSlot.loopArrayVar)) {
+        // opaqueReturn -> `targets[i].call(data[i])` (Multicall2, reads the return-event); a TYPED call
+        // `IFoo(targets[i]).m(..)` over a param array takes the same per-iteration identity co-spend but verifies
+        // the callee's selector and has no opaque return-event (emitInlineLoopExternalCall branches on opaqueReturn).
         loopSlot.inlineLoopDispatch = true;
         this.emitInlineLoopExternalCall(node, loopSlot, locationData);
         return node;
@@ -15178,6 +15181,40 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emit(Op.OP_EQUALVERIFY, loc);                   // [..., dataNftIdx]
         this.emit(Op.OP_DROP, loc);                          // [...]
       }
+    }
+
+    // --- TYPED (non-opaque) call: no opaque return-event. The identity + preservation above already pinned the
+    // callee master to targets[i]; verify its selector matches the slot's (so a co-spent pair can't be driven with
+    // a different method), then clean up the loop temps and return. `IFoo(targets[i]).m(..)` / Router02 pair.swap. ---
+    if (!node.opaqueReturn) {
+      if (callMode === ExternalCallMode.REGULAR && slot.needsSelectorVerification && !slot.runtimeSelector
+        && !slot.selectorArrayVar) {
+        this.emit(encodeInt(BigInt(this.getStackIndex('(ilc_inidx)'))), loc);
+        this.emit(Op.OP_PICK, loc);           // [..., inidx]
+        this.emit(Op.OP_INPUTBYTECODE, loc);  // [..., inBC]
+        this.emit(encodeInt(1n), loc);
+        this.emit(Op.OP_SPLIT, loc);
+        this.emit(Op.OP_NIP, loc);            // [..., rest] (drop the 1-byte push opcode)
+        this.emit(encodeInt(4n), loc);
+        this.emit(Op.OP_SPLIT, loc);
+        this.emit(Op.OP_DROP, loc);           // [..., co-spent selector] (1 untracked)
+        const slotsNeedingSelector = this.externalCallSlots.filter(
+          (s) => s.needsSelectorVerification && !s.selectorArrayVar,
+        );
+        const selectorName = slotsNeedingSelector.length === 1
+          ? '__internal__externalCallSelector' : `__internal__externalCallSelector${slot.slotIndex}`;
+        this.emit(encodeInt(BigInt(this.getStackIndex(selectorName) + 1)), loc); // +1: co-spent selector
+        this.emit(Op.OP_PICK, loc);           // [..., co-spent selector, expected selector]
+        this.emit(Op.OP_EQUALVERIFY, loc);    // [...]
+      }
+      for (const tmp of ['(ilc_inidx)', '(ilc_addr)', '(ilc_i)']) {
+        const idx = this.getStackIndex(tmp);
+        this.emit(encodeInt(BigInt(idx)), loc);
+        this.emit(Op.OP_ROLL, loc);
+        this.emit(Op.OP_DROP, loc);
+        this.removeFromStack(idx);
+      }
+      return;
     }
 
     // --- return event: idx = externalReturnOutputIdx + i ; verify + read commitment as returnData ---

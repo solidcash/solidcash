@@ -3128,3 +3128,16 @@ describe('loop-body vars are not single-assign (Router02 per-iteration computed 
       + ' IFoo(L.at(factory, path[i])).m(5); } } }', opts)).toThrow();
   });
 });
+
+describe('typed per-iteration external dispatch over a param array (IFoo(targets[i]).m(..))', () => {
+  // Extends the opaque inline-loop dispatch (Multicall2 `targets[i].call(data[i])`) to a TYPED void call: same
+  // per-iteration identity co-spend + preservation, no opaque return-event. VM-proven (co-spend validates and a
+  // mismatching target claim is rejected) in solidcash TypedLoopDispatch.test.ts. This is the codegen Router02's
+  // swap loop reuses once its computed pairFor target is rewritten to a witness array element.
+  it('compiles a typed void call over a calldata/param address array in a loop', () => {
+    expect(() => compileString('pragma solidcash >=0.8.0;'
+      + ' contract C() { function run(address[] targets, int x) {'
+      + ' for (uint i = 0; i < targets.length; i++) { IFoo(targets[i]).m(x); } } }'
+      + ' interface IFoo { function m(int x) external; }')).not.toThrow();
+  });
+});

@@ -1377,3 +1377,37 @@ for evm). Triples... (well, +50%s) the side-car count per recovery, which also p
 **Revisit if.** The ~2% fail-closed rate becomes a real user complaint, OR a use case needs to recover
 FIXED historical signatures (where re-signing is impossible) in bulk. Detail in memory
 ecrecover_builtin.md (2026-07-20b section).
+
+---
+
+## ecrecover loop tx-size wall - covenant dedup via introspection + OP_DEFINE (candidate)  - 2026-07-20
+
+**What (user idea).** A dynamic ecrecover loop is bounded by the 100KB STANDARD tx size (~4-5 recoveries),
+because each recovery co-spends an A+B pair whose scriptSigs each embed a full copy of the
+signature-INDEPENDENT covenant (~7.4KB A / ~3.3KB B) in the P2SH redeem. Since every pair runs the SAME
+covenant code, the first A+B pair could carry it as-is, and each CONSECUTIVE recovery input could be a thin
+"reference" input that loads the first pair's covenant via introspection (`OP_UTXOBYTECODE`/
+`OP_INPUTBYTECODE` of the first pair's input) and `OP_DEFINE`s it as a subroutine to `OP_INVOKE` with its
+own signature's witnesses - instead of re-embedding the 7.4KB/3.3KB covenant. Goal: shrink each extra
+recovery's tx-size footprint => more recoveries per standard tx.
+
+**Why deferred / open question.** The blocker is the op-budget floor, not the code. Each input's budget =
+`(41 + scriptSigLen) * 800`, capped at ~8M by the 10,000-byte scriptSig limit, and each covenant runs ~half
+the ~127-step ladder = ~7.9M op-cost => it NEEDS a ~9.9KB scriptSig regardless of whether those bytes are
+covenant or budget-pad. So dropping the covenant from a reference input's redeem just refills the space with
+pad (and the `OP_UTXOBYTECODE` load itself adds a little op-cost) => net-neutral, possibly net-negative, on
+tx size as things stand. The idea only wins if the per-input budget can be met WITHOUT ~10KB of scriptSig -
+e.g., a future VM/CHIP that decouples code size from the op-budget, a budget-pooling/shared-funding trick
+across the reference inputs, or a cheaper ladder that needs << 8M per input (which would also relax the
+width-0 limit). The covenant bytes are currently load-bearing as budget funding, which is what makes them
+"free" to carry and hard to dedup for a size win.
+
+**What it'd take.** A reference-input covenant variant (tiny redeem: load first-pair code, `OP_DEFINE`,
+bind its own argBlob, `OP_INVOKE`, self-preserve) + a way to fund its ~8M budget without a ~10KB pad. Prove
+the size win is real (measure reference-input scriptSig vs a full pair) BEFORE building - the budget floor
+must be beaten first, else it is net-zero.
+
+**Revisit if.** The op-budget model changes to not scale with scriptSig length, OR a budget-sharing
+mechanism lands - then covenant dedup turns the ~20KB/recovery footprint into ~10KB + small, multiplying the
+per-tx recovery count. Related: the tx-size wall noted in docs/ecrecover.md (Loops) and the width-0 3-covenant
+deferral above (a cheaper ladder would help both).

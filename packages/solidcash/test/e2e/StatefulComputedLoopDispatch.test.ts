@@ -70,6 +70,71 @@ contract Subscriber() {
   }
 }`;
 
+// RETURNING computed-target loop: the loop accumulates each callee's RETURN value (read from a per-iteration
+// return-event the callee mints). This is the getReserves half of Router02's fee-on-transfer swap - a returning
+// call inside the computed-target loop. Validates the typed-returning inline-loop dispatch (return-event verify +
+// typed decode) end to end.
+const PUBLISHER_RET = `pragma solidcash >=0.8.0;
+interface IFoo { public bigint received; function tally(uint256 value) returns (int); }
+contract Publisher() {
+  bigint total;
+  function notify(address[] path, uint256 value, pubkey pk, sig sg) {
+    require(checkSig(sg, pk));
+    int s = 0;
+    for (uint256 i = 0; i < path.length - 1; i = i + 1) {
+      s = s + IFoo(L.pairFor(path[i], path[i+1])).tally(value);
+    }
+    this.total = s;
+  }
+}
+library L {
+  function pairFor(address a, address b) internal pure returns (address) {
+    return address(uint160(uint256(uint160(a)) + uint256(uint160(b))));
+  }
+}`;
+
+const SUBSCRIBER_RET = `pragma solidcash >=0.8.0;
+contract Subscriber() {
+  bigint received;
+  function tally(uint256 value) returns (int) {
+    this.received = this.received + int(value);
+    return this.received;
+  }
+}`;
+
+describe('stateful RETURNING computed-target loop (s += IFoo(pairFor(..)).tally(v))', () => {
+  const provider = createTestProvider();
+  const sig = (): SignatureTemplate => new SignatureTemplate(alicePriv);
+
+  it('reads each callee return-event, typed-decodes it, accumulates the returns', async () => {
+    const pubArt = compileString(PUBLISHER_RET);
+    const subArt = compileString(SUBSCRIBER_RET);
+    const sub1 = new Contract(subArt, [], { provider });
+    const { categoryId: c1 } = await setupStatefulUtxos(
+      provider, sub1, subArt.stateLayout!, { received: 0n }, { saltContract: true },
+    );
+    const sub2 = new Contract(subArt, [], { provider });
+    const { categoryId: c2 } = await setupStatefulUtxos(
+      provider, sub2, subArt.stateLayout!, { received: 0n }, { saltContract: true },
+    );
+    const pub = new Contract(pubArt, [], { provider });
+    const { categoryId: pc } = await setupStatefulUtxos(
+      provider, pub, pubArt.stateLayout!, { total: 0n }, { saltContract: true },
+    );
+    const pubSc = StatefulContract.withCategory(pub, pc);
+    const sub1Sc = StatefulContract.withCategory(sub1, c1);
+    const sub2Sc = StatefulContract.withCategory(sub2, c2);
+    pubSc.registerExternalArray('IFoo', [sub1Sc, sub2Sc]);
+
+    const path = [hexToBin('aa'.repeat(35)), hexToBin('bb'.repeat(35)), hexToBin('cc'.repeat(35))];
+    await pubSc.notify(path, 10n, alicePub, sig()).send();
+    // each callee tally(10) -> received 0->10, returns 10; s = 10 + 10 = 20
+    expect((await sub1Sc.getState()).received).toBe(10n);
+    expect((await sub2Sc.getState()).received).toBe(10n);
+    expect((await pubSc.getState()).total).toBe(20n);
+  });
+});
+
 describe('stateful computed-target loop (IFoo(pairFor(path[i], path[i+1])).m() on a stateful caller)', () => {
   const provider = createTestProvider();
   const sig = (): SignatureTemplate => new SignatureTemplate(alicePriv);

@@ -6914,6 +6914,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       const directReturningSlots = externalCalls.filter((ec) => ec.hasReturnValues);
       if (directReturningSlots.length > 0 && returnEventOutputBase >= 0) {
         for (let i = 0; i < directGroupCount; i++) {
+          // A loop-expanded returning slot owns ONE shared externalReturnOutputIdx param (the covenant reads the
+          // per-iteration event at base + i); fill it once at the range start, skip the rest - same as the selector
+          // and master-index fills above (else N return-idx args vs 1 param -> arg-count mismatch).
+          const retRange = loopIdxRanges.find((r) => i >= r.start && i < r.start + r.count);
+          if (retRange && i !== retRange.start) continue;
           if (groupMetas[i].ecSlot.hasReturnValues) {
             const retOutputIdx = returnEventIndexMap.get(i);
             if (retOutputIdx !== undefined) {

@@ -3038,3 +3038,23 @@ describe('interface/contract-typed constant (BentoBoxV1 USE_ETHEREUM = IERC20(0)
       + ' function f(IERC20 t) public view returns (bool) { return t != U; } }', opts)).not.toThrow();
   });
 });
+
+describe('inherited-private access via assignment-as-expression (BentoBoxV1 DOMAIN_SEPARATOR ctor)', () => {
+  // MasterContractManager's ctor does `_DOMAIN_SEPARATOR = _calc(DOMAIN_SEPARATOR_CHAIN_ID = chainId)` - an
+  // assignment-as-expression on its OWN private immutable. Hoisting `x = v` before the call leaves a fresh read
+  // `x` in the argument; that read must carry the ctor's origin tag or the flattened child trips the
+  // inherited-private-access check. The write keeps its tag; the read now copies it.
+  const opts = { solidityImportCompat: true };
+  const parent = 'contract Parent { uint256 private immutable X; uint256 private Y;'
+    + ' constructor() public { Y = id(X = 5); }'
+    + ' function id(uint256 v) internal pure returns (uint256) { return v; } }';
+  it('compiles an ancestor ctor assigning its own private var as a call argument', () => {
+    expect(() => compileString(`pragma solidity ^0.8.0; ${parent}`
+      + ' contract Child is Parent { constructor() public Parent() {} function f() public {} }', opts)).not.toThrow();
+  });
+  it('compiles the parenthesized assignment-as-expression form too', () => {
+    expect(() => compileString('pragma solidity ^0.8.0;'
+      + ' contract P { uint256 private immutable X; uint256 private Y; constructor() public { Y = (X = 5); } }'
+      + ' contract C is P { constructor() public P() {} function f() public {} }', opts)).not.toThrow();
+  });
+});

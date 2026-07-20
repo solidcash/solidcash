@@ -304,6 +304,9 @@ export default class DesugarPostfixExpressions extends AstTraversal {
     this.before.push(node.assign);
     const read = new IdentifierNode(target.name);
     read.location = node.location;
+    // Preserve an inlined-modifier/ctor origin tag (an ancestor ctor accessing its OWN private state) so the
+    // hoisted read does not trip the inherited-private-access check - the write keeps its tag on node.assign.
+    read.fromModifier = node.assign.fromModifier ?? target.fromModifier;
     return read;
   }
 

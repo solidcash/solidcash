@@ -127,21 +127,38 @@ describe('FULL multiTransfer: NEW recipient whose predecessor is msg.sender (mer
     expect(await valOf(carolAddress)).toBe(20n);    // inserted (merged into bob's gap)
   });
 
-  it('fails closed on TWO new recipients in the debited senders gap (only one re-point)', async () => {
+  it('CHAINS two new recipients in the debited senders gap (bob -> carol -> alice)', async () => {
+    // bob is the only entry, so both carol and alice are new and land in bob's (debit) gap. The debit merge DEFERS the
+    // first new node (carol) and re-points bob to it; alice chains off carol via the pending flush. One bob co-spend
+    // serves the whole chain: bob -> carol -> alice. bob is debited by 20 + 30 = 50.
     const art = compileString(SRC, { forceStateful: true });
     const f = { txid: uid(), vout: 0, satoshis: 400000n };
     await provider.addUtxo(p2pkh.address, f);
-    const { contract } = await StatefulContract.deploy(art, [], {
+    const { contract, categoryId } = await StatefulContract.deploy(art, [], {
       provider, fundingUtxo: f, funder: p2pkh.unlock.spend(alicePub, aliceSig), initialState: {}, changeAddress: p2pkh.address,
     });
+    const ea = getEntryNftAddress(contract.inner, categoryId, 'bal');
+    const valOf = async (addr: string): Promise<bigint | undefined> => {
+      const e = SortedList.fromUtxos(await provider.getUtxos(ea)).find(keyToSlot(addressToLockScript(addr)));
+      return e ? vmNumberToBigInt(e.value, { requireMinimalEncoding: false }) as bigint : undefined;
+    };
     await provider.addUtxo(contract.address, { txid: uid(), vout: 0, satoshis: 200000n });
     await (contract as unknown as Record<string, (...x: unknown[]) => { send: () => Promise<unknown> }>)
       .setBal(bobAddress, 1000n, alicePub, aliceSig).send();
     const sc = contract.connect(bob);
     await provider.addUtxo(bob.getAddress(), { txid: uid(), vout: 0, satoshis: 200000n });
-    // bob is the only entry, so both carol and alice are new and bracket bob (bob's gap) -> two merges -> fail closed.
-    await expect((sc as unknown as Record<string, (...x: unknown[]) => { send: () => Promise<unknown> }>)
-      .multiTransfer([carolAddress, aliceAddress], [20n, 30n], bobPub, bobSig).send())
-      .rejects.toThrow(/gap|split into separate|register/i);
+    await (sc as unknown as Record<string, (...x: unknown[]) => { send: () => Promise<unknown> }>)
+      .multiTransfer([carolAddress, aliceAddress], [20n, 30n], bobPub, bobSig).send();
+    expect(await valOf(bobAddress)).toBe(950n);   // debited 20 + 30
+    expect(await valOf(carolAddress)).toBe(20n);   // new, re-pointed from bob
+    expect(await valOf(aliceAddress)).toBe(30n);   // new, chained after carol
+    // CHAIN VALIDITY: a read walks HEAD -> bob -> carol -> alice.
+    const chk = (a: string, exp: bigint): Promise<unknown> =>
+      (contract as unknown as Record<string, (...x: unknown[]) => { send: () => Promise<unknown> }>)
+        .chk(a, exp, alicePub, aliceSig).send();
+    await provider.addUtxo(contract.address, { txid: uid(), vout: 0, satoshis: 200000n });
+    await expect(chk(aliceAddress, 30n)).resolves.toBeDefined();
+    await provider.addUtxo(contract.address, { txid: uid(), vout: 0, satoshis: 200000n });
+    await expect(chk(carolAddress, 20n)).resolves.toBeDefined();
   });
 });

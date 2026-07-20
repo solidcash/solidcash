@@ -5815,23 +5815,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           const pred = list.predecessorOf(slot);
           const deferred: DeferredEntry | null = lastDeferred; // the covenant's pending; an insert never defers
           lastDeferred = null;
-          if (debitEntry && uidOf(debitEntry.utxo as { txid: string; vout: number }) === uidOf(pred.utxo)) {
-            // MERGE with the debit: co-spend nothing extra, mint ONLY the NEW node; the covenant re-points the debit's
-            // output (via the register). At most ONE such merge (the covenant's require(register==0) fails a second).
-            if (mergedNewCount >= 1) {
-              throw new Error(`C2 upsert loop ${info.collection}: two new recipients in the debited sender's gap - `
-                + 'not supported in one tx; split into separate transactions.');
-            }
-            mergedNewCount += 1;
-            commitments.push(binToHex(encodeEntryCommitment(slot, pred.nextKey, bigIntToVmNumber(amt)))); // NEW = 0 + amt
-            continue;
-          }
+          // FOLD + CHAIN (checked BEFORE the debit-merge): is this new key in the DEFERRED entry's gap? Geometric check
+          // (d.slot < slot < d.oldNext, 0 = +inf) - mirrors the covenant's pending in-gap flush. deferred is an UPDATE
+          // predecessor (case b), a chained NEW node, OR a debit-merged R1 (2+ new in the debit's own gap). Re-point the
+          // deferred entry's commitment in place, append this new node, and DEFER IT so a further key can chain. (The
+          // explicit `d` / `chained` types break the self-referential inference the lastDeferred re-assignment trips.)
           if (foldActive && deferred) {
-            // CASE (b) FOLD + CHAIN: is this new key in the DEFERRED entry's gap? Geometric check (d.slot < slot <
-            // d.oldNext, 0 = +inf) - mirrors the covenant's pending in-gap flush. deferred is either the immediately-prior
-            // UPDATE (case b) OR a just-inserted NEW node (chain: 2+ new keys in one gap). Re-point the deferred entry's
-            // commitment in place, append this new node, and DEFER IT so a further key can chain. (The explicit `d` /
-            // `chained` types break the self-referential inference the lastDeferred re-assignment would otherwise trip.)
             const d: DeferredEntry = deferred;
             const sV = bytesToSlotValue(slot);
             const pV = bytesToSlotValue(d.slot);
@@ -5844,6 +5833,21 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               lastDeferred = chained;
               continue;
             }
+          }
+          if (debitEntry && uidOf(debitEntry.utxo as { txid: string; vout: number }) === uidOf(pred.utxo)) {
+            // MERGE with the debit (R1): the covenant re-points the debit's output to R1 (via the register) and DEFERS
+            // R1, so a further new key in the debit's gap chains off it (handled by the fold check above). Record R1 as
+            // the pending. The mergedNewCount guard fails closed on a SECOND, non-chainable debit-merge (unreachable
+            // after the gap-based reorder places the debit gap's inserts consecutively + ascending).
+            if (mergedNewCount >= 1) {
+              throw new Error(`C2 upsert loop ${info.collection}: two non-adjacent new recipients in the debited sender's `
+                + 'gap - split into separate transactions.');
+            }
+            mergedNewCount += 1;
+            const mCommitIndex = commitments.length;
+            commitments.push(binToHex(encodeEntryCommitment(slot, pred.nextKey, bigIntToVmNumber(amt)))); // NEW = 0 + amt (R1)
+            lastDeferred = { uid: '', commitIndex: mCommitIndex, slot, newVal: amt, oldNext: pred.nextKey };
+            continue;
           }
           if (cospent.has(uidOf(pred.utxo))) {
             throw new Error(`C2 upsert loop ${info.collection}: new recipient ${i}'s bracketing predecessor is already `

@@ -12798,15 +12798,21 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emit(Op.OP_BOOLAND, loc);                                                              // isMerge (U=3) [dSlot,dNext,isMerge]
         this.emit(Op.OP_IF, loc);
         this.scopeDepth += 1;
-        // ===== MERGE: require register == 0; mint NEW=[Hk|dNext|amt]; register = Hk; outCounter += 1 =====
+        // ===== MERGE: require register == 0; record register = Hk (the debit flush re-points msg.sender.nextKey to it);
+        // then DEFER the new node (pu_slot=Hk, pu_val=amt, pu_next=dNext) instead of minting it - so a FURTHER new key
+        // in the debit's gap chains off it (msg.sender -> R1 -> R2 -> dNext off the single debit co-spend). The teardown
+        // / next flush mints the last deferred node. out += 0 (nothing minted here). The mergeDebitSlot only exists for
+        // +/set, so the pending registers are guaranteed present. =====
         this.emit(encodeInt(BigInt(this.getStackIndex(this.sortedUpsertLoopRepointName) + 2)), loc); this.emit(Op.OP_PICK, loc);
         this.emit(Op.OP_0, loc); this.emit(Op.OP_NUMEQUAL, loc); this.emit(Op.OP_VERIFY, loc);       // register == 0 (U=2)
-        pushIdx(this.sortedUpsertLoopOutCounterName, 0, 2);                     // NEW outIdx (U=3)
-        this.emitVerifySortedValueOutput(loc, addrIdx() + 3, hkIdx() + 3, 1, amtIdx() + 3); // NEW = Hk|dNext|amt -> [dSlot,dNext] U=2
         this.emit(encodeInt(BigInt(hkIdx() + 2)), loc); this.emit(Op.OP_PICK, loc);                  // Hk copy (U=3)
         this.emitReplace(this.getStackIndex(this.sortedUpsertLoopRepointName) + 3, node);            // register = Hk -> U=2
-        this.emit(encodeInt(BigInt(outIdxC() + 2)), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_1ADD, loc);
-        this.emitReplace(outIdxC() + 3, node);                                 // outCounter += 1 -> [dSlot,dNext] U=2
+        this.emit(encodeInt(BigInt(amtIdx() + 2)), loc); this.emit(Op.OP_PICK, loc);                 // amt copy (U=3)
+        this.emitReplace(this.getStackIndex(this.sortedUpsertPendValName) + 3, node);                // pu_val = amt -> U=2
+        this.emit(Op.OP_DUP, loc);                                             // dNext copy (top) (U=3)
+        this.emitReplace(this.getStackIndex(this.sortedUpsertPendNextName) + 3, node);               // pu_next = dNext -> U=2
+        this.emit(encodeInt(BigInt(hkIdx() + 2)), loc); this.emit(Op.OP_PICK, loc);                  // Hk copy (U=3)
+        this.emitReplace(this.getStackIndex(this.sortedUpsertPendSlotName) + 3, node);               // pu_slot = Hk -> U=2
         this.emit(Op.OP_0, loc);                                               // dummy -> [dSlot,dNext,dummy] U=3
         this.scopeDepth -= 1;
         this.emit(Op.OP_ELSE, loc);

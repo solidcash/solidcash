@@ -1591,6 +1591,9 @@ export default class SymbolTableTraversal extends AstTraversal {
     // External calls pre-scan: collect all external function call results and assign slot indices
     {
       const externalCallSlots: ExternalCallSlot[] = [];
+      // Reduce a multi-use interface-typed local (view calls + one mutate) to single-use by turning each VIEW call
+      // into a caller-provided witness; must run BEFORE the receiver-count snapshot so the mutate reads as single-use.
+      this.rewriteMultiUseViewCalls(node);
       this.extCallReceiverCounts = this.buildExtCallReceiverCounts(node.body);
       this.collectExternalCalls(node.body, externalCallSlots);
 
@@ -3726,6 +3729,83 @@ export default class SymbolTableTraversal extends AstTraversal {
     const access = new ArrayAccessNode(arrayId, idxCopy);
     access.location = loc;
     return { access, arrayId };
+  }
+
+  private viewReturnCounter = 0;
+
+  // Replace `target` with `replacement` wherever it is referenced under `root` (the parent field / array slot).
+  private replaceNodeInTree(root: Node, target: Node, replacement: Node): boolean {
+    for (const k of Object.keys(root)) {
+      if (k === 'location' || k === 'type' || k === 'symbolTable' || k === 'definition') continue;
+      const v = (root as unknown as Record<string, unknown>)[k];
+      if (v === target) { (root as unknown as Record<string, unknown>)[k] = replacement; return true; }
+      if (Array.isArray(v)) {
+        for (let i = 0; i < v.length; i++) {
+          if (v[i] === target) { v[i] = replacement; return true; }
+          if (v[i] instanceof Node && this.replaceNodeInTree(v[i], target, replacement)) return true;
+        }
+      } else if (v instanceof Node && this.replaceNodeInTree(v, target, replacement)) return true;
+    }
+    return false;
+  }
+
+  // A loop-body interface-typed local used by MULTIPLE external calls - one state-changing MUTATE (which co-spends
+  // the pair) plus VIEW calls (`pair.getReserves()`) - cannot co-spend the local once per call (a UTXO is spent
+  // once). Replace each VIEW call with a caller-provided per-iteration witness `__internal__viewReturn<n>[loopIdx]`
+  // (the SDK/caller supplies the read value); the local is then SINGLE-use (only the mutate) and the existing
+  // pair-local co-spend handles it. SOUND by caller-permissive: a wrong witness feeds wrong values into the mutate,
+  // whose co-spent covenant rejects (Router02 swap's K-invariant) -> fail-closed, the same argument as
+  // extcall-target-pinning. Scoped to exactly-one-mutate + SINGLE-return views (tuple returns are a follow-up).
+  private rewriteMultiUseViewCalls(fn: FunctionDefinitionNode): void {
+    const body = fn.body;
+    if (!body) return;
+    const byLocal = new Map<string, ExternalFunctionCallNode[]>();
+    const gather = (n: Node | undefined, seen: Set<Node>): void => {
+      if (!n || seen.has(n)) return;
+      seen.add(n);
+      if (n instanceof ExternalFunctionCallNode && n.addressExpression instanceof IdentifierNode) {
+        const nm = n.addressExpression.name;
+        const list = byLocal.get(nm) ?? [];
+        list.push(n);
+        byLocal.set(nm, list);
+      }
+      for (const v of Object.values(n)) {
+        if (v instanceof Node) gather(v, seen);
+        else if (Array.isArray(v)) for (const e of v) if (e instanceof Node) gather(e, seen);
+      }
+    };
+    gather(body, new Set());
+    for (const [localName, calls] of byLocal) {
+      if (calls.length < 2 || !this.findLocalInit(body, localName)) continue;
+      // Classify by return: a VOID call is the state-changing mutate (the co-spend); a RETURNING call is a view
+      // whose result becomes a caller witness. (The interface AST does not track `view`; hasReturnValues is the
+      // sound proxy - the one void mutate's covenant bounds a wrong witness, and a misclassified returning-mutate
+      // merely has its effect skipped, still bounded.)
+      const views: ExternalFunctionCallNode[] = [];
+      let mutateCount = 0;
+      for (const c of calls) {
+        if (c.callInfo?.hasReturnValues) views.push(c); else mutateCount += 1;
+      }
+      // Exactly one mutate (the co-spend) + single-return views; else leave to fail closed.
+      if (mutateCount !== 1 || views.length === 0
+        || views.some((v) => (v.callInfo?.returnTypes?.length ?? 0) !== 1)) continue;
+      const loopIdx = this.findLoopIndexInComputedTarget(new IdentifierNode(localName), body);
+      if (!loopIdx) continue;
+      for (const view of views) {
+        const witnessName = `__internal__viewReturn${this.viewReturnCounter}`;
+        this.viewReturnCounter += 1;
+        const retType = view.callInfo!.returnTypes![0];
+        const param = new ParameterNode(new ArrayType(retType), witnessName);
+        param.location = view.location;
+        fn.parameters.push(param);
+        this.symbolTables[0].set(Symbol.variable(param));
+        const sym = this.symbolTables[0].get(witnessName);
+        this.pushToStack(param);
+        const { access, arrayId } = this.buildLoopWitnessAccess(loopIdx, witnessName, view.location);
+        if (sym) arrayId.definition = sym;
+        this.replaceNodeInTree(body, view, access);
+      }
+    }
   }
 
   // Count, per bare-local name, how many external calls use it as their RECEIVER (`local.m()`). Restricts the

@@ -204,10 +204,10 @@ describe('bytes32 full-word slot round-trips a high-bit word (split write / prep
   });
 });
 
-// A 64-byte struct occupies slots [p, p+1] (head + flow), next var at p+2. This probes whether the SUB-slots are
 // A 64-byte struct/array occupies slots [p, p+words] (head slot + flow), and the NEXT var starts at p+words -
-// EVM-parity layout. The composite's own sub-slots are reserved but NOT decoded to its fields, so a raw
-// sload/sstore there fails closed (never silently reads __evm_storage).
+// EVM-parity layout. The composite's own value-field sub-slots ARE now decoded to their fields (see the
+// composite sub-slot round-trip suite below); an UNSUPPORTED composite (a variable-width/nested field) still
+// fails closed (never silently reads __evm_storage).
 const STRUCT_AFTER = `pragma solidcash >=0.8.0;
 contract C() {
   struct Pair { uint256 a; uint256 b; }
@@ -225,15 +225,113 @@ contract C() {
   }
 }`;
 
-describe('64-byte composite occupies [p, p+1]; next var at p+2; sub-slots fail closed', () => {
+describe('64-byte composite occupies [p, p+1]; next var at p+2', () => {
   it('the var AFTER a 2-slot struct is at slot 2 (head + flow layout is EVM-exact)', async () => {
     const sc = await deploy(STRUCT_AFTER);
     await (sc as any).setP(42n, 99n, 7n, alicePub, sig()).send();
     await (sc as any).readSlot2(7n).send();
   });
-  it('a raw sload of a composite SUB-slot fails closed (not a silent __evm_storage read)', () => {
-    const src = `contract C { struct Pair { uint256 a; uint256 b; } Pair p; uint256 x;`
+  it('a raw sload of an UNSUPPORTED composite sub-slot (address field) fails closed', () => {
+    // A struct with a variable-width (address) field has no sound fixed-word slot layout, so it stays
+    // fail-closed (never a silent __evm_storage read). Value-field structs are handled below.
+    const src = 'contract C { struct T { address a; uint96 b; } T t; uint256 x;'
       + ' function f() public returns (uint r) { assembly { r := sload(0) } require(true); } }';
     expect(() => compileString(src, { solidityImportCompat: true })).toThrow(/inline assembly/i);
+  });
+});
+
+// Composite sub-slot field access: sload/sstore on a fixed value-field struct's own slots. The SOUNDNESS proof
+// is the CROSS-CHECK between the slot path and the high-level field path (a slot->slot round-trip alone could be
+// self-consistently wrong): write-via-slot then read-the-FIELDS, and write-the-FIELDS then read-via-slot. All
+// with TOP-BIT-SET field values (the sign-magnitude NUM2BIN trap).
+const COMP_STRUCT = `pragma solidcash >=0.8.0;
+contract C() {
+  struct S { uint64 y; uint64 z; }
+  S s;
+  function setViaSlot(uint256 w, pubkey pk, sig sg) {
+    require(checkSig(sg, pk));
+    assembly { sstore(s.slot, w) }
+  }
+  function setFields(uint64 vy, uint64 vz, pubkey pk, sig sg) {
+    require(checkSig(sg, pk));
+    this.s = S(vy, vz);
+  }
+  function readSlot(uint256 e) {
+    uint256 r = 0;
+    assembly { r := sload(s.slot) }
+    require(r == e);
+  }
+  function readFields(uint256 ey, uint256 ez) {
+    require(uint256(s.y) == ey);
+    require(uint256(s.z) == ez);
+  }
+}`;
+
+// A 2-slot struct (two full uint256 words): exercises the rel!=0 sub-slot AND the `add(s.slot, 1)` slot form.
+const COMP_STRUCT_MULTISLOT = `pragma solidcash >=0.8.0;
+contract C() {
+  struct M { uint256 a; uint256 b; }
+  M m;
+  function setBviaSlot(uint256 w, pubkey pk, sig sg) {
+    require(checkSig(sg, pk));
+    assembly { sstore(add(m.slot, 1), w) }
+  }
+  function readB(uint256 e) {
+    uint256 r = 0;
+    assembly { r := sload(add(m.slot, 1)) }
+    require(r == e);
+  }
+  function readFieldB(uint256 e) { require(m.b == e); }
+  function readFieldA(uint256 e) { require(m.a == e); }
+}`;
+
+// A packed bytesN struct routes the composite field through the same two's-complement byte path as a scalar slot.
+const COMP_STRUCT_BYTES = `pragma solidcash >=0.8.0;
+contract C() {
+  struct B { bytes4 p; bytes4 q; }
+  B b;
+  function setViaSlot(uint256 w, pubkey pk, sig sg) {
+    require(checkSig(sg, pk));
+    assembly { sstore(b.slot, w) }
+  }
+  function readSlot(uint256 e) {
+    uint256 r = 0;
+    assembly { r := sload(b.slot) }
+    require(r == e);
+  }
+}`;
+
+const U64MAX = (1n << 64n) - 1n;
+const PACKED_MAX = (1n << 128n) - 1n; // y = z = 2^64-1
+
+describe('composite sub-slot field access: struct head/sub-slot read+write (VM round-trip)', () => {
+  it('write-via-slot lands in the real packed fields (high-bit uint64 both set)', async () => {
+    const sc = await deploy(COMP_STRUCT);
+    await (sc as any).setViaSlot(PACKED_MAX, alicePub, sig()).send();
+    await (sc as any).readFields(U64MAX, U64MAX).send(); // cross-check: slot write reached s.y / s.z
+  });
+  it('write-the-fields is read back through the combined slot word (high-bit)', async () => {
+    const sc = await deploy(COMP_STRUCT);
+    await (sc as any).setFields(U64MAX, U64MAX, alicePub, sig()).send();
+    await (sc as any).readSlot(PACKED_MAX).send(); // cross-check: sload combines s.y + s.z<<64
+  });
+  it('slot write truncates high bits past the two fields (2^150-1 -> both fields 2^64-1)', async () => {
+    const sc = await deploy(COMP_STRUCT);
+    await (sc as any).setViaSlot((1n << 150n) - 1n, alicePub, sig()).send();
+    await (sc as any).readFields(U64MAX, U64MAX).send();
+    await (sc as any).readSlot(PACKED_MAX).send();
+  });
+  it('rel!=0 sub-slot via add(m.slot,1): write b, cross-check field b (and a untouched)', async () => {
+    const sc = await deploy(COMP_STRUCT_MULTISLOT);
+    const hi = (1n << 255n) | 123n; // top bit set
+    await (sc as any).setBviaSlot(hi, alicePub, sig()).send();
+    await (sc as any).readB(hi).send();
+    await (sc as any).readFieldB(hi).send();
+    await (sc as any).readFieldA(0n).send(); // slot+1 write must not touch field a (slot 0)
+  });
+  it('packed bytes4 struct fields round-trip a high-bit word (0xccccbbbb) through the slot', async () => {
+    const sc = await deploy(COMP_STRUCT_BYTES);
+    await (sc as any).setViaSlot(0xccccbbbbn, alicePub, sig()).send();
+    await (sc as any).readSlot(0xccccbbbbn).send();
   });
 });

@@ -374,6 +374,27 @@ describe('storage-pointer local .slot/.offset in assembly (T[] storage x = a; x.
   });
 });
 
+describe('composite sub-slot field access (sload/sstore on a value-field struct slot)', () => {
+  const ok = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  // A fixed struct's own slots decode to its packed value fields: read = combine, write = struct-ctor rebuild
+  // (VM round-trip incl. high-bit values + field<->slot cross-checks in EvmStorageLayout.test.ts). Corpus:
+  // struct_delete_storage_small.
+  it('reads and writes a packed value-field struct head slot (s.slot)', () => {
+    expect(ok('contract C { struct S { uint64 y; uint64 z; } S s;'
+      + ' function f() public returns (uint r) { assembly { sstore(s.slot, 7) r := sload(s.slot) } require(true); } }'))
+      .toBe('C');
+  });
+  it('reads a rel!=0 sub-slot via add(m.slot, 1)', () => {
+    expect(ok('contract C { struct M { uint256 a; uint256 b; } M m;'
+      + ' function f() public returns (uint r) { assembly { r := sload(add(m.slot, 1)) } require(true); } }')).toBe('C');
+  });
+  it('a struct with a variable-width (address) field fails closed - no unsound word layout', () => {
+    expect(() => compileString('contract C { struct T { address a; uint96 b; } T t;'
+      + ' function f() public returns (uint r) { assembly { r := sload(t.slot) } require(true); } }',
+    { solidityImportCompat: true })).toThrow(/inline assembly/i);
+  });
+});
+
 describe('EVM storage-layout specifier tolerated (contract C layout at expr)', () => {
   // `contract C [is ..] layout at <slot>` sets an EVM storage base slot - meaningless on the UTXO model, so the
   // clause is dropped under solidityImportCompat and the contract compiles as if it were absent.

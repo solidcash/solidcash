@@ -127,7 +127,10 @@ let currentVarSlot = new Map<string, bigint>();
 // covered by any declared var (incl. a composite sub-slot) fails closed instead - the field-level read is not
 // modeled.
 let occupiedSlots = new Set<bigint>();
-let compositeRanges: { base: bigint; words: bigint }[] = [];
+// `sv` is the composite state var occupying the range, so a sub-slot access `sload(sv.slot + i)` can resolve to
+// the struct field / array element at that relative slot (compositeSubSlot* below). undefined only for the legacy
+// shape that predates carrying it (none currently).
+let compositeRanges: { base: bigint; words: bigint; sv?: StateVariableNode }[] = [];
 
 // True if a literal slot number is covered by any declared state var (scalar, collection, or a composite's range).
 function slotIsDeclared(slotNum: bigint): boolean {
@@ -309,7 +312,7 @@ function computeStorageLayout(vars: StateVariableNode[], collections: Collection
     if (composite > 0) {
       if (byteOff > 0) { slot += 1n; byteOff = 0; }
       currentVarSlot.set(sv.name, slot);
-      compositeRanges.push({ base: slot, words: BigInt(composite) });
+      compositeRanges.push({ base: slot, words: BigInt(composite), sv });
       slot += BigInt(composite);
       continue;
     }
@@ -385,9 +388,16 @@ function isFullWord(fields: SlotField[]): boolean {
 // Read a slot field as a uint256 word: uint256(StateAccess), unwrapping a UDVT to its underlying int first
 // (`uint256(underlying(access))`, mirroring T.unwrap = a cast to the underlying type).
 function fieldAsWord(f: SlotField, src: YulExpressionNode): ExpressionNode {
-  let access: ExpressionNode = loc(new StateAccessNode(f.sv.name), src);
-  const core = f.sv.type instanceof ValueType ? f.sv.type.underlyingType : f.sv.type;
-  if (f.sv.type instanceof ValueType) access = loc(new CastNode(f.sv.type.underlyingType, access, false), src);
+  return fieldAsWordFrom(loc(new StateAccessNode(f.sv.name), src), f.sv.type, src);
+}
+
+// The reusable core of fieldAsWord: read the given access expression (a whole state var, or a struct field /
+// array element of a composite) of type `fieldType` as a uint256 word. Shared by the scalar slot path and the
+// composite sub-slot path so both apply the same UDVT-unwrap + bytesN unsigned-read handling.
+function fieldAsWordFrom(baseAccess: ExpressionNode, fieldType: Type, src: YulExpressionNode): ExpressionNode {
+  let access = baseAccess;
+  const core = fieldType instanceof ValueType ? fieldType.underlyingType : fieldType;
+  if (fieldType instanceof ValueType) access = loc(new CastNode(fieldType.underlyingType, access, false), src);
   if (core instanceof BytesType) {
     // Prepend a high 0x00 sign-pad byte so uint256 (BIN2NUM) reads the N little-endian bytes as an UNSIGNED value in
     // [0, 2^(8N)); a bare uint256(bytesN) would reinterpret the top bit as a sign.
@@ -417,11 +427,17 @@ function wordToBytesN(word: ExpressionNode, n: number, src: YulExpressionNode): 
 // Cast a uint256 word to a slot field's stored type: int = a direct cast, bytesN = wordToBytesN. A UDVT then wraps
 // the core value (mirroring T.wrap).
 function castWordToField(f: SlotField, wordExpr: ExpressionNode, src: YulExpressionNode): ExpressionNode {
-  const core = f.sv.type instanceof ValueType ? f.sv.type.underlyingType : f.sv.type;
+  return castWordToFieldType(f.sv.type, wordExpr, src);
+}
+
+// The reusable core of castWordToField: cast a uint256 word to the given stored type. Shared by the scalar slot
+// path and the composite sub-slot path (a struct field / array element decompose).
+function castWordToFieldType(fieldType: Type, wordExpr: ExpressionNode, src: YulExpressionNode): ExpressionNode {
+  const core = fieldType instanceof ValueType ? fieldType.underlyingType : fieldType;
   const coreVal = core instanceof BytesType && core.bound !== undefined
     ? wordToBytesN(wordExpr, core.bound, src)
     : loc(new CastNode(core, wordExpr, false), src);
-  return f.sv.type instanceof ValueType ? loc(new CastNode(f.sv.type, coreVal, false), src) : coreVal;
+  return fieldType instanceof ValueType ? loc(new CastNode(fieldType, coreVal, false), src) : coreVal;
 }
 
 // sload(slot): combine the slot's fields into a word, `uint256(v0) + uint256(v1)*2^off1 + ...`.
@@ -454,6 +470,100 @@ function decomposeSlot(fields: SlotField[], valueExpr: YulExpressionNode, src: Y
     field = loc(new BinaryOpNode(field, BinaryOperator.MOD, intLit(2n ** f.bitWidth, src)), src);
     stmts.push(loc(new StateAssignNode(f.sv.name, castWordToField(f, field, src)), src));
   }
+  return loc(new BlockNode(stmts), src);
+}
+
+// ---- Composite sub-slot field access: sload/sstore on a fixed struct's own slots ----
+// A fixed struct state var S at base slot p occupies slots [p, p+words). Its VALUE fields pack into those slots
+// exactly as EVM lays them out (packWords). `sload(S.slot + i)` reads the packed word at relative slot i, and
+// `sstore(S.slot + i, w)` writes it. SOUND by reduction: the read combines the high-level field values
+// (FieldAccess on the state struct) into the word EVM's layout would hold; the write rebuilds the struct value
+// with the slot-i fields replaced by the word's decomposed pieces (other fields read back unchanged) - the same
+// struct-ctor rebuild the AstBuilder emits for `s.f = v`, so it flows through the normal struct-value storage
+// path (a blob), never a raw slot. Both reuse fieldAsWordFrom/castWordToFieldType (int/bytesN/UDVT + the
+// two's-complement byte trick). v1 scope: a STRUCT whose every field is a supported fixed value type
+// (int/bytesN/UDVT-over-either). A nested composite, address, bool/enum, or dynamic field makes the WHOLE struct
+// fail closed (undefined) - the layout would be unsound (a dynamic field holds a length/pointer, not the value)
+// or the word cast is not defined. Fixed arrays and nesting are follow-ons.
+interface CompLeaf { name: string; type: Type; slotOffset: bigint; bitOffset: bigint; bitWidth: bigint; }
+
+function compositeStructLeaves(sv: StateVariableNode): { ctorName: string; leaves: CompLeaf[] } | undefined {
+  const t = sv.type;
+  if (!(t instanceof StructType)) return undefined;
+  const leaves: CompLeaf[] = [];
+  let slot = 0n;
+  let byteOff = 0;
+  for (const f of t.fields) {
+    if (compositeSlotWords(f.type) > 0 || !isSupportedSlotField(f.type)) return undefined;
+    const w = valueByteWidth(f.type);
+    if (byteOff + w > 32) { slot += 1n; byteOff = 0; }
+    leaves.push({ name: f.name, type: f.type, slotOffset: slot, bitOffset: BigInt(byteOff * 8), bitWidth: BigInt(w * 8) });
+    byteOff += w;
+    if (byteOff >= 32) { slot += 1n; byteOff = 0; }
+  }
+  return { ctorName: t.name, leaves };
+}
+
+// Resolve a Yul slot argument to a composite state var + the relative slot within it: `sv.slot` (rel 0), a bare
+// literal slot inside a composite's range, or `add(sv.slot, k)` (rel k). undefined = not a composite sub-slot.
+function resolveCompositeSlotAccess(slotArg: YulExpressionNode): { sv: StateVariableNode; rel: bigint } | undefined {
+  let slotNum: bigint | undefined;
+  if (isIntLiteral(slotArg)) {
+    slotNum = BigInt(slotArg.raw);
+  } else if (slotArg instanceof YulPathNode && slotArg.members.length === 1 && slotArg.members[0] === 'slot') {
+    slotNum = currentVarSlot.get(slotArg.base);
+  } else if (slotArg instanceof YulFunctionCallNode && slotArg.name === 'add' && slotArg.args.length === 2
+    && slotArg.args[0] instanceof YulPathNode && slotArg.args[0].members.length === 1
+    && slotArg.args[0].members[0] === 'slot' && isIntLiteral(slotArg.args[1])) {
+    const base = currentVarSlot.get(slotArg.args[0].base);
+    if (base !== undefined) slotNum = base + BigInt(slotArg.args[1].raw);
+  }
+  if (slotNum === undefined) return undefined;
+  const r = compositeRanges.find((x) => x.sv !== undefined && slotNum! >= x.base && slotNum! < x.base + x.words);
+  return r && r.sv ? { sv: r.sv, rel: slotNum - r.base } : undefined;
+}
+
+// sload(sv.slot + rel): combine the struct fields at relative slot `rel` into a word.
+function combineCompositeSlot(sv: StateVariableNode, rel: bigint, src: YulExpressionNode): ExpressionNode | undefined {
+  const layout = compositeStructLeaves(sv);
+  if (!layout) return undefined;
+  const at = layout.leaves.filter((l) => l.slotOffset === rel);
+  if (at.length === 0) return undefined; // padding-only / out-of-range slot: fail closed
+  let expr: ExpressionNode | undefined;
+  for (const l of at) {
+    const access = loc(new FieldAccessNode(loc(new StateAccessNode(sv.name), src), l.name), src);
+    const word = fieldAsWordFrom(access, l.type, src);
+    const term = l.bitOffset === 0n
+      ? word
+      : loc(new BinaryOpNode(word, BinaryOperator.MUL, intLit(2n ** l.bitOffset, src)), src);
+    expr = expr ? loc(new BinaryOpNode(expr, BinaryOperator.PLUS, term), src) : term;
+  }
+  return expr!;
+}
+
+// sstore(sv.slot + rel, word): rebuild the struct value with the slot-`rel` fields replaced by the word's
+// decomposed pieces (other fields read back unchanged), assigned in ONE StateAssign.
+function decomposeCompositeSlot(
+  sv: StateVariableNode, rel: bigint, valueExpr: YulExpressionNode, src: YulExpressionNode,
+): StatementNode | undefined {
+  const layout = compositeStructLeaves(sv);
+  if (!layout) return undefined;
+  if (!layout.leaves.some((l) => l.slotOffset === rel)) return undefined; // no field in this slot: fail closed
+  const tempName = '__yul_slot';
+  const decomposed = (l: CompLeaf): ExpressionNode => {
+    let field: ExpressionNode = loc(new IdentifierNode(tempName), src);
+    if (l.bitOffset > 0n) field = loc(new BinaryOpNode(field, BinaryOperator.DIV, intLit(2n ** l.bitOffset, src)), src);
+    field = loc(new BinaryOpNode(field, BinaryOperator.MOD, intLit(2n ** l.bitWidth, src)), src);
+    return castWordToFieldType(l.type, field, src);
+  };
+  const args = layout.leaves.map((l) => (l.slotOffset === rel
+    ? decomposed(l)
+    : loc(new FieldAccessNode(loc(new StateAccessNode(sv.name), src), l.name), src)));
+  const ctor = loc(new FunctionCallNode(loc(new IdentifierNode(layout.ctorName), src), args), src);
+  const stmts: StatementNode[] = [
+    loc(new VariableDefinitionNode(UINT256, [], tempName, lowerValue(valueExpr)), src),
+    loc(new StateAssignNode(sv.name, ctor), src),
+  ];
   return loc(new BlockNode(stmts), src);
 }
 
@@ -1318,6 +1428,8 @@ function lowerCall(call: YulFunctionCallNode): ExpressionNode {
     if (fields) return combineSlot(fields, call);
     const arrName = resolveDynArrayName(args[0]);
     if (arrName) return loc(new UnaryOpNode(UnaryOperator.SIZE, loc(new IdentifierNode(arrName), call)), call);
+    const comp = resolveCompositeSlotAccess(args[0]);
+    if (comp) { const w = combineCompositeSlot(comp.sv, comp.rel, call); if (w) return w; }
     const key = evmStorageSlotKey(args[0]);
     if (key) { evmStorageUsed = true; return loc(new MappingAccessNode(EVM_STORAGE, [key]), call); }
     throw new YulNotLowerable();
@@ -1560,6 +1672,8 @@ function lowerStatement(stmt: YulStatementNode): StatementNode {
         }
         const fields = resolveSlotFields(e.args[0]);
         if (fields) return decomposeSlot(fields, e.args[1], e);
+        const comp = resolveCompositeSlotAccess(e.args[0]);
+        if (comp) { const st = decomposeCompositeSlot(comp.sv, comp.rel, e.args[1], e); if (st) return st; }
         const key = evmStorageSlotKey(e.args[0]);
         if (key) {
           evmStorageUsed = true;

@@ -791,7 +791,14 @@ inputs at the slots and their recreations (A commits H_A, B commits Q) at the ma
 runs with the SHARED salt (op-cost is salt-independent) because the isolated 2-input probe has no consuming contract at
 input 0 for a branded brand-check. e2e-verified: a stateful contract authenticates a signer AND increments its state.
 
-**Remaining**:
-- **`ecrecover`** (the 3-argument verify-with-pubkey alias): a removal decision, not a gap; see the removal section
-  above. It still works and is tested.
-- `ecrecoverEvm`-inside-a-loop needs a per-iteration keccak side-car too (a small follow-up on the two shipped models).
+**Status of the two former follow-ups (both resolved):**
+- The 3-argument verify-with-pubkey `ecrecover(hash, sig, pubKey)` alias has been **REMOVED** (it aliased
+  `checkDataSig` + a P2PKH projection, misleading now that native recovery exists). `ecrecover(...)` is now an
+  undefined reference; use `ecrecoverPubKey` to recover, or `checkDataSig` to verify against a known pubkey.
+- `ecrecoverEvm` **inside a loop** fails closed at compile time (a clear error). It would need a per-iteration keccak
+  side-car interleaved with each recovery pair (stride 3, forward-indexed); the forward keccak indexing is not yet
+  sound. Recover with `ecrecoverPubKey` in the loop and project to the EVM address outside it.
+
+**Robustness note**: the VM-probe scans `chunkA` in `[center-8, center+8]` around the balanced-split heuristic. For a
+rare signature whose viable window falls outside that band the probe throws (fail-closed, never a wrong `Q`); widening
+the band or improving the heuristic center would remove that rare miss.

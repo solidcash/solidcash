@@ -25,13 +25,13 @@ describe('sorted C2 array writes: fail-close boundary', () => {
     )).toThrow();
   });
 
-  it('multi-dimensional array element write fails closed (was an internal TypeError crash)', () => {
-    // `m[k][i][j]` on mapping(K => T[][]): the excess index used to be type-checked as a phantom mapping key and
-    // crashed with "type 'undefined' was expected"; now a clean UnsupportedTypeError.
+  it('multi-dimensional array element write `m[k][i][j]` now COMPILES (whole-value RMW desugar)', () => {
+    // `m[k][i][j]` on mapping(K => T[][]): DesugarNestedArrayWrite lowers it to `T[][] t=m[k]; t[i][j]=v; m[k]=t`.
+    // VM roundtrip in MappingArray2dWrite. (Was a fail-closed boundary.)
     expect(() => compileString(
       `contract C() { mapping(int => int[][]) m;
         function f(int k, int i, int v, pubkey pk, sig s) { require(checkSig(s, pk)); m[k][i][0] = v; } }`,
-    )).toThrow();
+    )).not.toThrow();
   });
 
   it('the supported single-write shapes still compile (no over-broad fail-close)', () => {

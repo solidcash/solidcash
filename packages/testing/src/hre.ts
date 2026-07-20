@@ -14,7 +14,7 @@ import {
   StatefulContract, type ContractRunner, type ConnectedStatefulContract,
   ContractFactory, getContractFactory as sdkGetContractFactory, deployContract as sdkDeployContract,
   type DeployedContract, type DeployContractOptions,
-  type ConstructorArgument,
+  type ConstructorArgument, type Utxo, randomUtxo,
 } from 'solidcash';
 import * as ethersUtils from './ethers-utils.js';
 import * as nh from './network-helpers.js';
@@ -54,7 +54,8 @@ export interface SolidcashEthers {
   Contract: typeof StatefulContract;
   ContractFactory: typeof ContractFactory;
   Signer: typeof Signer;
-  Wallet: typeof Signer;
+  // ethers `Wallet` (`new Wallet(wif, provider)`) plus a BCH `createRandom` that returns a funded ad-hoc HDSigner.
+  Wallet: typeof Signer & { createRandom(provider?: NetworkProvider): HDSigner };
   HDSigner: typeof HDSigner;
   HDNodeWallet: typeof HDSigner;
   [k: string]: unknown; // forwarded ethers utils (parseEther, keccak256, AbiCoder, constants, ...)
@@ -158,6 +159,21 @@ function buildEthers(provider: NetworkProvider, mnemonic: string, opts: EthersOp
     return withNonce(signersFromMnemonic(o.mnemonic ?? mnemonic, provider, { count, path: accountsPath }));
   };
 
+  // ethers `Wallet.createRandom()` returns a fresh HDNodeWallet with no provider; ported tests then
+  // `.connect(provider)` and use it as an unauthorized signer. Bind the active provider and, on a mock network,
+  // fund it (fire-and-forget: MockNetworkProvider.addUtxo mutates the in-memory indexer synchronously) so the
+  // covenant call can be built and reach its owner check. Live/regtest providers have no addUtxo - funding is the
+  // caller's job there, matching getSigners.
+  class Wallet extends Signer {
+    static createRandom(providerOverride?: NetworkProvider): HDSigner {
+      const p = providerOverride ?? provider;
+      const s = HDSigner.createRandom(p);
+      const fundable = p as unknown as { addUtxo?: (a: string, u: Utxo) => Promise<Utxo> };
+      if (typeof fundable.addUtxo === 'function') void fundable.addUtxo(s.getAddress(), randomUtxo({ satoshis: 1_000_000n }));
+      return s;
+    }
+  }
+
   const ethers: SolidcashEthers = {
     ...ethersUtils,
     provider,
@@ -182,7 +198,7 @@ function buildEthers(provider: NetworkProvider, mnemonic: string, opts: EthersOp
     Contract: StatefulContract,
     ContractFactory,
     Signer,
-    Wallet: Signer,
+    Wallet,
     HDSigner,
     HDNodeWallet: HDSigner,
   };

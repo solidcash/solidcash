@@ -120,6 +120,21 @@ describe('harness: string / hex matchers (waffle)', () => {
   });
 });
 
+describe('harness: Wallet.createRandom (ad-hoc funded signer)', () => {
+  it('returns a fresh funded signer with connect()', async () => {
+    const w = ethers.Wallet.createRandom();
+    expect(w.getAddress()).to.be.properAddress;
+    // Funded on the mock network so an unauthorized covenant call can be built.
+    const utxos = await provider.getUtxos(w.getAddress());
+    expect(utxos.reduce((s, u) => s + u.satoshis, 0n)).to.be.gt(0n);
+    // .connect(provider) rebinds preserving identity (ethers Signer.connect).
+    const bound = w.connect(provider);
+    expect(bound.getAddress()).to.equal(w.getAddress());
+    // Two calls yield distinct random identities.
+    expect(ethers.Wallet.createRandom().getAddress()).to.not.equal(w.getAddress());
+  });
+});
+
 describe('harness: balance-change matcher', () => {
   it('changeBchBalance measures a funding delta', async () => {
     const [, , carol] = await ethers.getSigners();

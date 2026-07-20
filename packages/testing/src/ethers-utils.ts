@@ -11,22 +11,28 @@ import {
   keccak256, sha256, ripemd160, id, computeAddress,
   toUtf8Bytes, toUtf8String, getBytes, hexlify, concat, zeroPadValue, zeroPadBytes,
   isHexString, isBytesLike, getBigInt, toBigInt, getNumber, toBeHex, toBeArray, toQuantity,
-  getAddress, isAddress, getCreateAddress, getCreate2Address, solidityPacked, solidityPackedKeccak256,
+  getAddress, isAddress, solidityPacked, solidityPackedKeccak256,
   AbiCoder, Interface, Signature, SigningKey, Mnemonic,
   ZeroAddress, ZeroHash, MaxUint256, MaxInt256, MinInt256, WeiPerEther, N, EtherSymbol, MessagePrefix,
   type BytesLike, type BigNumberish,
 } from 'ethers';
+import { getCreateAddress, getCreate2Address } from './ethers-shim.js';
 
 export {
   parseUnits, formatUnits, parseEther, formatEther,
   keccak256, sha256, ripemd160, id, computeAddress,
   toUtf8Bytes, toUtf8String, getBytes, hexlify, concat, zeroPadValue, zeroPadBytes,
   isHexString, isBytesLike, getBigInt, toBigInt, getNumber, toBeHex, toBeArray, toQuantity,
-  getAddress, isAddress, getCreateAddress, getCreate2Address, solidityPacked, solidityPackedKeccak256,
+  getAddress, isAddress, solidityPacked, solidityPackedKeccak256,
   AbiCoder, Interface, Signature, SigningKey, Mnemonic,
   ZeroAddress, ZeroHash, MaxUint256, MaxInt256, MinInt256, WeiPerEther, N, EtherSymbol, MessagePrefix,
 };
 export type { BytesLike, BigNumberish };
+
+// BCH `getCreateAddress`/`getCreate2Address`: the ethers versions are f(deployer, nonce) and reject a CashAddress -
+// override with the BCH shim (identity = category, salt maps to the CREATE2 segment). See ethers-shim.ts. Imported
+// (not `export ... from`) so the names bind locally for the v5 `utils` namespace below.
+export { getCreateAddress, getCreate2Address };
 
 /** ethers v6 `AbiCoder.defaultAbiCoder()` singleton, re-exported as a value for v5-style `defaultAbiCoder`. */
 export const defaultAbiCoder = AbiCoder.defaultAbiCoder();

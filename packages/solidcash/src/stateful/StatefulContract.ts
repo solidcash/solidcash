@@ -6971,6 +6971,14 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             return arg;
           });
 
+          // Inject the SDK-filled synthetic params in ABI order (msgSenderCategory before proxyMasterIndex) so the
+          // impl's unlocker receives the FULL input list (it accepts visible-only OR fully-filled, not a partial).
+          // A delegatecall'd impl that uses msg.sender resolves it against the tx like a direct call: 32 zeros =>
+          // tx.origin = the signer's native P2PKH input. (IFoo(msg.sender).m() inside a delegate impl - the callee
+          // category - is not yet wired for the delegatecall path.)
+          if (bFunc.inputs.some((inp) => inp.name === '__internal__msgSenderCategory')) {
+            encodedArgs.push(new Uint8Array(32));
+          }
           // Inject _proxyMasterIndex for delegate functions.
           // Defaults to 0 (proxy master is the first input in the STB), but can be
           // overridden via withDelegatecall(..., proxyMasterIndex) for composability.

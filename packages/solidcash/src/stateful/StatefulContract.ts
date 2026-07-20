@@ -5853,32 +5853,39 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       // A rawbytes VALUE (whole bytes/string/array/bytesN param `m[k[i]] = a`): the covenant stores the value tail
       // (len4 ++ value inline for a chunkable type, verbatim for bytesN); the SDK mirrors it. Only op==='set' reaches
       // here for rawbytes (the guard gates RMW/const to int). scalarTail is the invariant value's on-chain bytes.
+      // On-chain value bytes for a rawbytes value: the inline tail len4 ++ value (chunkable type) or verbatim (bytesN/
+      // address). Shared by the invariant `= a` and the per-key `= vs[i]` forms; >60 B fails closed (chunked-in-loop is
+      // unsupported - the covenant reverts too).
+      const encodeValueTail = (v: unknown): Uint8Array => {
+        const vB = v instanceof Uint8Array ? v
+          : typeof v === 'string' ? utf8ToBin(v)
+            : encodePushdataValue(v as StateValue, collection.valueType, stateLayout.structs);
+        if (!collection.chunkableValue) return vB; // fixed rawbytes (bytesN/address): stored verbatim, no tail
+        if (vB.length > 60) {
+          throw new Error(`C2 array-value loop '${info.collection}': value is ${vB.length} B > 60 (a chunked value in`
+            + ' a loop is unsupported - the covenant fails closed at runtime).');
+        }
+        const len4 = new Uint8Array(4); new DataView(len4.buffer).setUint32(0, vB.length, true);
+        return new Uint8Array([...len4, ...vB]);
+      };
       const rawScalar = !isDelete && info.valueScalarParam !== undefined ? argOf(info.valueScalarParam) : undefined;
       const isRawbytesVal = rawScalar !== undefined
         && typeof rawScalar !== 'bigint' && typeof rawScalar !== 'boolean' && typeof rawScalar !== 'number';
-      let scalarTail: Uint8Array | undefined;
-      if (isRawbytesVal) {
-        const vB = rawScalar instanceof Uint8Array ? rawScalar
-          : typeof rawScalar === 'string' ? utf8ToBin(rawScalar)
-            : encodePushdataValue(rawScalar as StateValue, collection.valueType, stateLayout.structs);
-        if (collection.chunkableValue) {
-          if (vB.length > 60) {
-            throw new Error(`C2 array-value loop '${info.collection}': value is ${vB.length} B > 60 (a chunked value in`
-              + ' a loop is unsupported - the covenant fails closed at runtime).');
-          }
-          const len4 = new Uint8Array(4); new DataView(len4.buffer).setUint32(0, vB.length, true);
-          scalarTail = new Uint8Array([...len4, ...vB]);
-        } else {
-          scalarTail = vB; // fixed rawbytes (bytesN/address): stored verbatim, no tail
-        }
-      }
+      const scalarTail: Uint8Array | undefined = isRawbytesVal ? encodeValueTail(rawScalar) : undefined;
       let scalarAmt: bigint | undefined;
       if (!isRawbytesVal && !isDelete && info.valueScalarParam !== undefined) scalarAmt = toBig(argOf(info.valueScalarParam));
       else if (!isRawbytesVal && !isDelete && info.valueConst !== undefined) scalarAmt = BigInt(info.valueConst);
       const perKey = !isRawbytesVal && !isDelete && scalarAmt === undefined;
       let valsArr = perKey ? argOf(info.valueArrayParam) : undefined;
-      // Value bytes for a commitment: the invariant rawbytes tail if present, else the int as a minimal VM number.
-      const commitValue = (nv: bigint): Uint8Array => scalarTail ?? bigIntToVmNumber(nv);
+      // Per-key RAWBYTES value `m[k[i]] = vs[i]` (vs a bytes[]/array-of-array param): each vs[i] is committed as its own
+      // inline tail. Detected from the arg (an empty array does no work). op is always 'set' here (the guard gates it).
+      const perKeyRawbytes = perKey && Array.isArray(valsArr) && (valsArr as unknown[]).length > 0
+        && ((): boolean => { const v0 = (valsArr as unknown[])[0];
+          return !(typeof v0 === 'bigint' || typeof v0 === 'number' || typeof v0 === 'boolean'); })();
+      // Value bytes for a commitment: the per-key/invariant rawbytes tail (already a Uint8Array), else the int as a
+      // minimal VM number.
+      const commitValue = (nv: bigint | Uint8Array): Uint8Array =>
+        nv instanceof Uint8Array ? nv : (scalarTail ?? bigIntToVmNumber(nv));
       if (!Array.isArray(keysArr) || (perKey && !Array.isArray(valsArr))) continue;
       if (perKey && (valsArr as unknown[]).length !== keysArr.length) {
         throw new Error(`C2 upsert loop ${info.collection}: recipients/amounts length mismatch`);
@@ -5898,11 +5905,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         if (slotHexes.some((h, i) => slotHexes.indexOf(h) !== i)) {
           const seen = new Set<string>();
           const order: number[] = [];
-          const merged = new Map<string, bigint>();
+          const merged = new Map<string, unknown>();
           const vArr = perKey ? (valsArr as unknown[]) : undefined;
           slotHexes.forEach((h, i) => {
             if (!seen.has(h)) { seen.add(h); order.push(i); }
-            if (vArr) { const a = toBig(vArr[i]); merged.set(h, info.op === 'set' ? a : (merged.get(h) ?? 0n) + a); }
+            // 'set' is last-wins (store the value VERBATIM - a rawbytes value has no toBig); '+'/'-' accumulate (int).
+            if (vArr) merged.set(h, info.op === 'set' ? vArr[i] : toBig(merged.get(h) ?? 0n) + toBig(vArr[i]));
           });
           keysArr = order.map((i) => kArr[i]);
           const recipIdx = abiFunction!.inputs.findIndex((p) => p.name === info.varyingArrayParam);
@@ -6035,18 +6043,21 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       // place + appends its own NEW node (the predecessor is co-spent ONCE). lastDeferred = the immediately-prior
       // update, or null. Requires adjacency (predecessor processed right before the new key) - the reorder above makes
       // that hold for the common case; anything it can't (chains / two-in-gap) fails closed.
-      type DeferredEntry = { uid: string; commitIndex: number; slot: Uint8Array; newVal: bigint; oldNext: Uint8Array };
+      // newVal carries a rawbytes value's tail (Uint8Array) or an int (bigint); arithmetic paths below are int-only (the
+      // guard gates rawbytes to op==='set', which never adds/subtracts).
+      type DeferredEntry = { uid: string; commitIndex: number; slot: Uint8Array; newVal: bigint | Uint8Array; oldNext: Uint8Array };
       let lastDeferred: DeferredEntry | null = null;
       for (let i = 0; i < keysArr.length; i++) {
         const slot = keyToSlotMulti([...fixedBins, encKey(keysArr[i], varyType)]);
         const slotHex = binToHex(slot);
-        const amt = isRawbytesVal ? 0n : isDelete ? 0n : scalarAmt !== undefined ? scalarAmt : toBig((valsArr as unknown[])[i]);
+        const amt: bigint | Uint8Array = perKeyRawbytes ? encodeValueTail((valsArr as unknown[])[i])
+          : isRawbytesVal ? 0n : isDelete ? 0n : scalarAmt !== undefined ? scalarAmt : toBig((valsArr as unknown[])[i]);
         if (seenSlots.has(slotHex)) {
           // SCALAR `+=` / `-=` DUPLICATE: the grouping above made this adjacent to its first occurrence, which is the
           // pending (lastDeferred). Accumulate the scalar into that entry's commitment - the covenant's isDup does the
           // same, co-spending the entry only once. (per-key / scalar-set / delete duplicates were already merged/deduped.)
           if ((info.op === '+' || info.op === '-') && !perKey && !isDelete && lastDeferred && binToHex(lastDeferred.slot) === slotHex) {
-            lastDeferred.newVal += info.op === '-' ? -amt : amt;
+            lastDeferred.newVal = (lastDeferred.newVal as bigint) + (info.op === '-' ? -(amt as bigint) : (amt as bigint));
             commitments[lastDeferred.commitIndex] =
               binToHex(encodeEntryCommitment(lastDeferred.slot, lastDeferred.oldNext, commitValue(lastDeferred.newVal)));
             continue;
@@ -6062,7 +6073,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           }
           cospent.add(uidOf(entry.utxo));
           const oldVal = vmNumberToBigInt(entry.value, { requireMinimalEncoding: false }) as bigint;
-          const newVal = isDelete ? 0n : info.op === 'set' ? amt : info.op === '-' ? oldVal - amt : oldVal + amt;
+          const newVal: bigint | Uint8Array = isDelete ? 0n : info.op === 'set' ? amt
+            : info.op === '-' ? oldVal - (amt as bigint) : oldVal + (amt as bigint);
           insertLoopPredecessors.push({ ...entry.utxo, unlocker: wUnlocker });
           // Record this update as the pending-defer target BEFORE pushing its (initially normal) commitment, so a
           // following bracketed new key can re-point it (foldActive) OR a duplicate can accumulate into it (also `-`,

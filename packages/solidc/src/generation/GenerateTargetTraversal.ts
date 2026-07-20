@@ -12612,14 +12612,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           && (e.operator === BinaryOperator.PLUS || e.operator === BinaryOperator.MINUS)
           && e.left instanceof MappingAccessNode && e.left.name === n.name;
         // Absolute per-key set: `m[k[i]] = v[i]` where v[i] is a per-iteration ARRAY element. The key varying-ness is
-        // validated in setup.
-        const isPerKeySet = upsertVk === 'int' && e instanceof ArrayAccessNode && e.array instanceof IdentifierNode;
+        // validated in setup. Rawbytes per-key (`vs` a bytes[]/array-of-array param) is inline-only, like the invariant
+        // rawbytes set: the body wraps each vs[i] tail (isChunkableVal), the SDK encodes the per-key tail.
+        const isPerKeySet = (upsertVk === 'int' || upsertVk === 'rawbytes')
+          && e instanceof ArrayAccessNode && e.array instanceof IdentifierNode;
         // Absolute set to a loop-invariant INT LITERAL `m[k[i]] = 100` (batch-set-const) or BOOL LITERAL `= true`
         // (whitelistWorkers; bool = int 1/0). N keys can land in MULTIPLE gaps + update existing.
         const isConstSet = upsertVk === 'int' && e instanceof IntLiteralNode;
         const isBoolSet = upsertVk === 'int' && e instanceof BoolLiteralNode;
-        // rawbytes (whole bytes/array) is inline-only in a loop (chunked-in-loop fails closed at runtime, see body).
-        const rawbytesOk = upsertVk === 'rawbytes' && isParamSet;
+        // rawbytes (whole bytes/array) is inline-only in a loop (chunked-in-loop fails closed at runtime, see body):
+        // invariant param `= a` OR per-key `= vs[i]`.
+        const rawbytesOk = upsertVk === 'rawbytes' && (isParamSet || isPerKeySet);
         if (rawbytesOk || (upsertVk === 'int' && (isRmw || isPerKeySet || isConstSet || isParamSet || isBoolSet))) {
           found = n; return;
         }

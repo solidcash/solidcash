@@ -1148,3 +1148,78 @@ so even the partial slice flips ~1 file.
 
 **Revisit if.** Faithful EVM byte-array storage-encoding becomes a real need (unlikely - BCH's chunk model is the
 right one). For address: only if bounded-address is reconsidered (Section 10 says no on current evidence).
+
+---
+
+## MULTI-use loop-body local receiver of a computed target (Router02 `_swapSupportingFeeOnTransferTokens`)  — 2026-07-20
+
+**What.** A loop-body local holding a per-iteration computed external-call target, used by MORE THAN ONE call per
+iteration, where at least one call RETURNS a value:
+```solidity
+IUniswapV2Pair pair = IUniswapV2Pair(UniswapV2Library.pairFor(factory, input, output));
+(uint reserve0, uint reserve1,) = pair.getReserves();   // returning VIEW
+...
+pair.swap(amount0Out, amount1Out, to, new bytes(0));    // void, MODIFIES the pair
+```
+This is the last wall blocking the real `UniswapV2Router02.sol` from compiling (the `_swap` DIRECT-call function and
+the SINGLE-use local receiver both ship - see `array-external-calls.md` "Computed per-iteration targets"). Currently
+fails closed: the single-use restriction (a per-function external-call RECEIVER-count snapshot) does not fire for a
+multi-use local, so `pair` stays as the addressParam and codegen dies "Expected variable '__inl0_pair'/'path' does
+not exist on the stack" (`GenerateTargetTraversal.getStackIndex`). Repro: `scratchpad/pathdesync4.mjs` R11.
+
+**Why deferred (LARGE multi-feature, not a focused increment).** The two calls must share ONE co-spend of the pair's
+single state UTXO - a UTXO cannot be spent twice, so two separate witnesses/co-spends is physically impossible (and
+`getReserves` returns, so the void typed-loop dispatch cannot carry it anyway). Sound handling needs, together:
+1. **One co-spend serving a READ + a WRITE.** `getReserves` reads the pair's PRE-swap reserves (the co-spent INPUT's
+   commitment); `swap` constrains the OUTPUT (the pair's own swap covenant). A staticcall preserves input==output, a
+   regular call modifies it - so `getReserves` cannot be a preserving staticcall on the same input `swap` mutates. It
+   must be a NON-preserving read of the co-spent input, a dispatch mode `GenerateTargetTraversal` does not have.
+2. **Returning view call in a loop, decoded from the co-spent input.** `getReserves` returns (reserve0, reserve1,
+   blockTimestampLast). The value must come either from decoding the pair's state commitment (needs the pair's
+   INTERNAL state layout, which the interface `function getReserves() returns (...)` does NOT expose - only a ported
+   interface declaring `public uint112 reserve0` would) OR from a per-iteration return-event the pair mints (needs the
+   pair covenant to support minting it under co-spend). Both are new machinery.
+3. **Multi-use shared-witness rewrite (collect phase).** All calls on the local share ONE witness + ONE co-spend slot
+   (the collect-phase piece is tractable in `SymbolTableTraversal`, but is dead code without 1+2).
+`GenerateTargetTraversal` is also the parallel agent's most actively-churned file, so a large change there collides.
+
+**What it'd take.** A new inline-loop dispatch mode in `emitInlineLoopExternalCall`: co-spend the witnessed pair once
+per iteration, let a RETURNING call read the PRE-state (input commitment via the interface's declared public-state
+layout, or a minted return-event) while a sibling VOID call constrains the output, plus the collect-phase shared-
+witness grouping (all calls on one local -> one witness index). Multi-hour; soundness-critical (the read must be
+pinned to the SAME co-spent input the write constrains). Prefer the return-EVENT route (reuses the opaque-loop
+return-event machinery + a typed decode) over internal-layout decoding (which would need interface-declared reserves).
+
+**Revisit if.** Router02 (or another fail-on-transfer / read-then-write pair pattern) becomes a target to COMPILE end
+to end, AND `GenerateTargetTraversal` churn settles enough for a large sound change. The direct + single-use-local +
+stateless/stateful autoderivation units (VM-proven, `TypedComputedLoopDispatch.test.ts` / `StatefulComputedLoopDispatch
+.test.ts`) are the foundation it extends; start from the return-event decode as the first tractable sub-step.
+
+## C2-sorted mapping WRITE inside a delegate (proxy) function - DEFERRED 2026-07-20
+
+**What.** `users[msg.sender] = v` (or any sorted-mapping write) inside a `delegate` function, called through
+`upgrades.deployProxy`, fails closed when the mapping is C2-SORTED (the default). The NON-sorted case SHIPPED
+(commit 78dc1b60): entry NFT minted in the proxy block at proxyMaster+offset, key/value/state trace-derived, and the
+default proxy's mutable conservation relaxed `in==out` -> `out>=in` so the new (mutable) entry NFT can be minted.
+Opt into the working path with `compileString(src, { sortedMappingsAll: false })`.
+
+**Why deferred (C2 trailing-node output collision, not tractability).** A C2 sorted insert produces TWO outputs: the
+block-slot `entry` (offset in the block layout) holds the rewritten PREDECESSOR P', and the NEW node rides a TRAILING
+output at `masterInputIndex + blockSize`. The delegate mechanism (delegateEventSlots + effectiveBlockLayout + the
+low-level-call master-index shift) reserves the block-slot entry only. For the proxy, `masterInputIndex(0) + blockSize`
+lands right where the co-spent impl master already sits (op-decode of the failing probe: the covenant read
+`output[3]` expecting the entry-covenant p2sh32 but found the impl master's p2sh32). So the trailing NEW node collides
+with the impl master; the SDK never reserves/derives it and the impl covenant's entry check fails closed.
+
+**What it'd take.** Route the C2 sorted-insert machinery through the delegate: reserve the trailing NEW-node output(s)
+(and predecessor P' at the block slot) in the PROXY block, shift the co-spent impl master/state past them (extend the
+getLowLevelCallMasterInputIndex / delegatePos accounting to include the trailing loop-entry region, not just the
+block-layout output-only slots), and derive both the P' rewrite and the NEW node commitment on the delegate's probe
+(the sortedInserts / loopEntryVars path, but keyed on the proxy category). The derivation + msg.sender-key +
+proxy-conservation pieces are already solved (non-sorted proves them); this is purely the sorted-list output layout.
+Self-contained tests (a MapImpl with a default sorted mapping through deployProxy); the EA marketplace can't validate
+yet (its .scash contracts are stubs).
+
+**Revisit if.** A port needs a DEFAULT (C2-sorted) mapping written from inside a delegate - the EA `registerUser`
+admin pattern (`users[msg.sender] = User(...)`), or any OZ-style upgradeable contract whose initializer/methods write
+a mapping. Detail + re-entry points in memory events_in_delegate_gap.md.

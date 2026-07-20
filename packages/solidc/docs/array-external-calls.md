@@ -147,3 +147,56 @@ semantics:
 
 e2e: `FnPtrDispatchTables.test.ts` (all table kinds: loop-spelling broadcasts + single-element calls,
 returning, mutation lockstep, mixed inline+received, state-var-pointer push).
+
+## Computed per-iteration targets (the `__internal__loopTargets` witness rewrite)
+
+Status: IMPLEMENTED & e2e-green. Motivating corpus contract: `UniswapV2Router02._swap`
+(`for (i < path.length-1) IUniswapV2Pair(pairFor(factory, path[i], path[i+1])).swap(...)`).
+e2e: `packages/solidcash/test/e2e/TypedComputedLoopDispatch.test.ts`.
+
+The array-element loop above co-spends a KNOWN array (`arr[i]` read from state / a param). A Router-style loop
+instead calls a **computed** target that depends on the loop index:
+
+```solidity
+for (uint i = 0; i < path.length - 1; i++) {
+  IUniswapV2Pair(UniswapV2Library.pairFor(factory, path[i], path[i+1])).swap(a0, a1, to, new bytes(0));
+}
+```
+
+`pairFor(...)` is a per-iteration CREATE2 address. `SynthesizeExternalAddressLocals` (SEAL) cannot hoist it to
+a body-top `__extaddr_` local because a leaf (`path[i]`) is loop-dependent (a loop-body local is not
+single-assign). Rather than fail closed, the SymbolTable collect phase rewrites the call target to read a
+**synthesized `address[] __internal__loopTargets<n>[i]` witness param** and routes it through the SAME typed
+inline-loop dispatch as the array-element form (per-iteration identity co-spend + master/category preservation;
+no return-event for a void call). The resulting `externalCalls` slot is byte-identical to the array-element
+case apart from the `loopArrayVar` name (`__internal__loopTargets<n>` vs the state/param array), so it reuses
+the audited codegen.
+
+Mechanics (`SymbolTableTraversal`):
+- `findLoopIndexInComputedTarget` walks the computed target for the loop index - a bare-identifier array-access
+  index (`path[i]`), resolving inliner aliases (`findLocalInit`) and tuple binds (`(input,output)=(path[i],
+  path[i+1])`, `findTupleInit`).
+- `rewriteExternalTargetToLoopWitness` replaces the target with `__internal__loopTargets<n>[loopIdx]` and the
+  witness param is synthesized next to `__internal__externalCallInputBase`. Its array-access identifier is
+  back-linked to the fresh symbol (`ExternalCallSlot.loopWitnessArrayId`) so TypeCheck and codegen resolve it.
+- Fires ONLY for a loop-dependent computed target; a non-loop / single-assign computed target still SEAL-hoists.
+
+SDK (`buildTypedLoopCallTransaction`, `loop-call.ts`): fills the synthesized witness with the co-spend targets
+the caller derived for the route and co-spends each typed-void (no minting NFT / return-event, unlike the
+opaque MultiCall builder). Layout: input 0 = caller (preserved at output 0); inputs 1..N = co-spent targets
+(preserved at outputs 1..N); input N+1 = funder; output N+1 = change. Sets
+`__internal__externalCallInputBase = 1` and `__internal__loopTargets<n>` = the encoded targets.
+
+Soundness: the witness is caller-chosen and identity-verified per iteration (`input[base+i].bytecode ==
+witness[i]`), so a mismatching claim is rejected by the covenant. This is caller-permissive - the same argument
+as `extcall-target-pinning.md` and the array-element form: the caller routes its own funds through targets it
+chooses, and each co-spent target still enforces its own covenant. No author-pinned target is lifted.
+
+Known gap - a loop-body LOCAL receiver used by MULTIPLE calls per iteration
+(`IUniswapV2Pair pair = IUniswapV2Pair(pairFor(..)); pair.getReserves(); pair.swap(..)`, Router02's
+`_swapSupportingFeeOnTransferTokens`): the read + the write must share ONE co-spend (getReserves reads the
+input commitment, swap constrains the output), which needs a new one-co-spend-serves-read+write dispatch mode
+in `GenerateTargetTraversal`. A single-use local receiver additionally needs its now-dead `pairFor` initializer
+neutralized (else it recomputes on-chain and can size-fault). Both are deferred; the direct form above is the
+shipped foundation. Stateful autoderivation (auto-filling the witness on a `StatefulContract` call, so Router02
+- which is stateful - needs no explicit builder call) is also pending; the stateless builder is the proven core.

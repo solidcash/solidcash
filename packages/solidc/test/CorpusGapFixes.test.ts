@@ -2284,8 +2284,11 @@ describe('C2 (sorted) mapping write in a runtime loop: fixed-bound unrolls, dyna
     const art = compileString(boolLoop, { sortedMappingsAll: true, forceStateful: true });
     expect(art.abi.find((f) => f.name === 'f')?.sortedInsertLoops).toContain('m');
   });
-  it('compiles a dynamic INVARIANT-PARAM value insert loop (m[ks[i]] = v)', () => {
-    expect(silOf('for (int i = 0; i < ks.length; i++) { m[ks[i]] = v; }')).toContain('m');
+  it('compiles an INVARIANT-PARAM value loop (m[ks[i]] = v) via the upsert loop (op=set, gains UPDATE support)', () => {
+    // `= <param>` now routes to the upsert loop (was the insert-only range-splice) - update+insert, same-gap chaining.
+    const info = abiOf('for (int i = 0; i < ks.length; i++) { m[ks[i]] = v; }')?.sortedUpsertLoopInfo?.[0];
+    expect(info?.op).toBe('set');
+    expect(info?.valueScalarParam).toBe('v');
   });
   it('compiles a PER-KEY value loop (m[ks[i]] = vs[i]) via the upsert loop (op=set)', () => {
     const info = abiOf('for (int i = 0; i < ks.length; i++) { m[ks[i]] = vs[i]; }')?.sortedUpsertLoopInfo?.[0];

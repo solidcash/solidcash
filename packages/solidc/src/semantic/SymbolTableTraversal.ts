@@ -3749,6 +3749,21 @@ export default class SymbolTableTraversal extends AstTraversal {
     return false;
   }
 
+  // The TupleAssignmentNode `(a, b,) = call()` whose multi-return RHS (`.tuple`) is `call`, if any.
+  private findTupleAssignmentWithRhs(node: Node | undefined, call: Node,
+    seen: Set<Node> = new Set()): TupleAssignmentNode | undefined {
+    if (!node || seen.has(node)) return undefined;
+    seen.add(node);
+    if (node instanceof TupleAssignmentNode && node.tuple === call) return node;
+    for (const v of Object.values(node)) {
+      if (v instanceof Node) { const r = this.findTupleAssignmentWithRhs(v, call, seen); if (r) return r; }
+      else if (Array.isArray(v)) {
+        for (const e of v) if (e instanceof Node) { const r = this.findTupleAssignmentWithRhs(e, call, seen); if (r) return r; }
+      }
+    }
+    return undefined;
+  }
+
   // A loop-body interface-typed local used by MULTIPLE external calls - one state-changing MUTATE (which co-spends
   // the pair) plus VIEW calls (`pair.getReserves()`) - cannot co-spend the local once per call (a UTXO is spent
   // once). Replace each VIEW call with a caller-provided per-iteration witness `__internal__viewReturn<n>[loopIdx]`
@@ -3786,24 +3801,37 @@ export default class SymbolTableTraversal extends AstTraversal {
       for (const c of calls) {
         if (c.callInfo?.hasReturnValues) views.push(c); else mutateCount += 1;
       }
-      // Exactly one mutate (the co-spend) + single-return views; else leave to fail closed.
-      if (mutateCount !== 1 || views.length === 0
-        || views.some((v) => (v.callInfo?.returnTypes?.length ?? 0) !== 1)) continue;
+      // Exactly one mutate (the co-spend) + at least one view. A MULTI-return view (getReserves() -> 3 values) must
+      // be the RHS of a tuple destructure `(r0, r1,) = pair.getReserves()`, so it can be replaced by per-slot witness
+      // accesses; else leave the whole local to fail closed.
+      if (mutateCount !== 1 || views.length === 0) continue;
+      if (views.some((v) => (v.callInfo?.returnTypes?.length ?? 0) !== 1
+        && !this.findTupleAssignmentWithRhs(body, v))) continue;
       const loopIdx = this.findLoopIndexInComputedTarget(new IdentifierNode(localName), body);
       if (!loopIdx) continue;
-      for (const view of views) {
+      const mkWitness = (retType: Type): ArrayAccessNode => {
         const witnessName = `__internal__viewReturn${this.viewReturnCounter}`;
         this.viewReturnCounter += 1;
-        const retType = view.callInfo!.returnTypes![0];
         const param = new ParameterNode(new ArrayType(retType), witnessName);
-        param.location = view.location;
+        param.location = loopIdx.location;
         fn.parameters.push(param);
         this.symbolTables[0].set(Symbol.variable(param));
         const sym = this.symbolTables[0].get(witnessName);
         this.pushToStack(param);
-        const { access, arrayId } = this.buildLoopWitnessAccess(loopIdx, witnessName, view.location);
+        const { access, arrayId } = this.buildLoopWitnessAccess(loopIdx, witnessName, loopIdx.location);
         if (sym) arrayId.definition = sym;
-        this.replaceNodeInTree(body, view, access);
+        return access;
+      };
+      for (const view of views) {
+        const rets = view.callInfo!.returnTypes!;
+        if (rets.length === 1) {
+          this.replaceNodeInTree(body, view, mkWitness(rets[0]));
+        } else {
+          const ta = this.findTupleAssignmentWithRhs(body, view)!;
+          const accesses = rets.map((rt) => mkWitness(rt));
+          ta.tupleExpressions = accesses;
+          ta.tuple = accesses[0]; // `.tuple` (the getReserves call) is walked by collect; replace it so it is not re-collected
+        }
       }
     }
   }

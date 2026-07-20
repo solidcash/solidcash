@@ -64,11 +64,53 @@ async function buildTx(sels: [Uint8Array, Uint8Array]): Promise<TransactionBuild
   return tb;
 }
 
+// The REAL Router02 shape: a TUPLE-return view (getReserves returns 3) + a mutate. Each return value becomes its own
+// per-iteration witness array (__internal__viewReturn0/1/2), and swap is the single co-spend.
+const SRC_TUPLE = `pragma solidcash >=0.8.0;
+interface IPair { function getReserves() external view returns (int, int, int); function swap(int a) external; }
+library L { function pairFor(address a, address b) internal pure returns (address) {
+  return address(uint160(uint256(uint160(a)) + uint256(uint160(b)))); } }
+contract C() {
+  function run(address[] p) {
+    for (uint i = 0; i < p.length - 1; i++) {
+      IPair pair = IPair(L.pairFor(p[i], p[i+1]));
+      (int r0, int r1,) = pair.getReserves();
+      pair.swap(r0 + r1);
+    }
+  }
+}`;
+
 describe('R11 multi-use view+mutate: view-witness read + swap co-spend (mechanism)', () => {
   it('reads the __internal__viewReturn0 witness per iteration and co-spends each swap target', async () => {
     const tb = await buildTx([SEL, SEL]);
     verifyTransaction(tb);
     expect(tb.inputs.length).toBe(4); // caller + 2 swap targets + funder
+  });
+
+  it('handles a TUPLE-return view (getReserves -> 3 witnesses) + swap co-spend (Router02 shape)', async () => {
+    const art = compileString(SRC_TUPLE);
+    const provider = createTestProvider();
+    const contract = new Contract(art, [], { provider });
+    const callerUtxo = { txid: 'cc'.repeat(32), vout: 0, satoshis: 100000n };
+    const t0 = { txid: '01'.repeat(32), vout: 0, satoshis: 1500n };
+    const t1 = { txid: '02'.repeat(32), vout: 0, satoshis: 1500n };
+    const funder = await createFeeFunder(provider, 10000n);
+    const p = encodePushdataValue(
+      [hexToBin('aa'.repeat(20)), hexToBin('bb'.repeat(20)), hexToBin('cc'.repeat(20))], 'address[]');
+    const vr = encodePushdataValue([10n, 20n], 'int[]');
+    const loopTargets = encodePushdataValue([TARGET, TARGET], 'address[]');
+    const tb = new TransactionBuilder({ provider });
+    // run(p, viewReturn0, viewReturn1, viewReturn2, externalCallInputBase, loopTargets0, selector)
+    tb.addInput(callerUtxo, contract.unlock.run(p, vr, vr, vr, 1n, loopTargets, SEL) as never);
+    tb.addInput(t0, mkUnlocker(SEL));
+    tb.addInput(t1, mkUnlocker(SEL));
+    tb.addInput(funder.utxo, funder.unlocker);
+    tb.addOutput({ to: contract.address, amount: 100000n });
+    tb.addOutput({ to: TARGET, amount: 1500n });
+    tb.addOutput({ to: TARGET, amount: 1500n });
+    tb.addOutput({ to: OP_TRUE, amount: 7000n });
+    verifyTransaction(tb);
+    expect(tb.inputs.length).toBe(4);
   });
 
   it('rejects when a co-spent target selector != the bound swap selector', async () => {

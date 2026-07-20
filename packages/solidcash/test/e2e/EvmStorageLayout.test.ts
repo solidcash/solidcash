@@ -376,6 +376,19 @@ contract C() {
 const U128MAX = (1n << 128n) - 1n;
 const WORD_MAX = (1n << 256n) - 1n; // a[0] = a[1] = 2^128-1
 
+// Ragged packing: uint40 (width 5) does not divide 32, so a slot holds floor(32/5)=6 elements with 2 slack
+// bytes. The bit math must still place a[i] at bit 40*i (a[5] at bit 200, ending at bit 240 - inside the slot).
+const COMP_ARRAY_RAGGED = `pragma solidcash >=0.8.0;
+contract C() {
+  uint40[6] a;
+  function setViaSlot(uint256 w, pubkey pk, sig sg) {
+    require(checkSig(sg, pk));
+    assembly { sstore(a.slot, w) }
+  }
+  function readA0(uint256 e) { require(uint256(a[0]) == e); }
+  function readA5(uint256 e) { require(uint256(a[5]) == e); }
+}`;
+
 describe('composite sub-slot field access: fixed value array head slot read+write (VM round-trip)', () => {
   it('write-via-slot lands in the real packed elements (high-bit uint128 both set)', async () => {
     const sc = await deploy(COMP_ARRAY);
@@ -391,5 +404,14 @@ describe('composite sub-slot field access: fixed value array head slot read+writ
     const sc = await deploy(COMP_ARRAY_U8);
     await (sc as any).setViaSlot(257n, alicePub, sig()).send();
     await (sc as any).readElem(1n).send();
+  });
+  it('ragged uint40[6] packing: distinct top-bit elements at slack-boundary offsets', async () => {
+    const sc = await deploy(COMP_ARRAY_RAGGED);
+    const V = (i: bigint): bigint => (1n << 39n) + i; // top bit of uint40 set, distinct per element
+    let w = 0n;
+    for (let i = 0n; i < 6n; i += 1n) w += V(i) << (40n * i);
+    await (sc as any).setViaSlot(w, alicePub, sig()).send();
+    await (sc as any).readA0(V(0n)).send(); // first element
+    await (sc as any).readA5(V(5n)).send(); // last element (bit 200..239, against the 2-byte slack)
   });
 });

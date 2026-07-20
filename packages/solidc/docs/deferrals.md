@@ -1264,12 +1264,21 @@ was SUPERSEDED by a VIEW-WITNESS reduction that sidesteps the layout problem ent
 `__internal__viewReturn<n>` from a caller-provided `viewReturns` (per-iteration values, one entry per return value)
 + `__internal__externalCallSelector` from a `selector` option, so the multi-use view+mutate is buildable via the
 builder (not a fully manual TransactionBuilder) - VM-proven in `MultiUseViewMutate.test.ts` ("buildable via
-buildTypedLoopCallTransaction", tuple getReserves shape). REMAINING (Router02 is STATEFUL): the STATEFUL
-autoderivation (`StatefulContract._createBuilder`) should fill `__internal__viewReturn<n>` too - either from a caller
-override (like viewReturns, sound caller-permissive) or auto-derived by simulating the callee view / reading its
-registered state (the getReserves -> which-state mapping is only an SDK convenience now, NOT a soundness gate). Also:
-multiple mutates on one local still fail closed (physically two co-spends); tuple-return views must be a destructure
-RHS.
+buildTypedLoopCallTransaction", tuple getReserves shape).
+
+**STATEFUL AUTODERIVATION FILL DONE (`3dea90ea`).** `StatefulContract._createBuilder` now AUTO-fills each
+`__internal__viewReturn<n>` by reading each co-spent pair (the loopTargets slot's registered instances) via
+getState() and taking its n-th state field (convention: the view returns the pair's first-N state fields;
+Router02 getReserves() -> reserve0/reserve1/blockTimestampLast). So a stateful caller needs NO manual build and
+NO caller-provided view values - fully idiomatic. VM-proven in `StatefulComputedLoopDispatch.test.ts` ("auto-fills
+__internal__viewReturn0 ..."): two pairs with reserve 5 and 7, SDK fills [5,7], covenant accumulates total==12.
+GOTCHA: the callee interface MUST declare its state (`public bigint reserve`) so the compiler computes the correct
+co-spend STRIDE (the callee's data-NFT count) - an interface with only functions gives stride=1 and reads the wrong
+input (same requirement as the array-external-call IEventSubscriber). Caller-permissive throughout (a wrong value
+fails the mutate covenant). R11 is now END-TO-END idiomatic on both the stateless builder and the stateful
+autoderivation. Residual: multiple mutates on one local still fail closed (physically two co-spends); tuple-return
+views must be a destructure RHS; the first-N-state-fields convention is a best-guess (fails closed if wrong, a
+per-interface annotation could refine it).
 
 **Revisit if.** Router02 (or another fail-on-transfer / read-then-write pair pattern) becomes a target to COMPILE end
 to end, AND `GenerateTargetTraversal` churn settles enough for a large sound change. The direct + single-use-local +

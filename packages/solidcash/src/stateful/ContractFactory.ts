@@ -149,7 +149,8 @@ export class ContractFactory<T extends Artifact = Artifact> {
     };
     (contract as { waitForDeployment: () => Promise<DeployedContract<T>> }).waitForDeployment = awaitDeployed;
     // ethers v5 `.deployed()` alias (MistSwap uses it 38x): resolves to the deployed contract, like waitForDeployment.
-    (contract as { deployed: () => Promise<DeployedContract<T>> }).deployed = awaitDeployed;
+    // `deployed` is not on DeployedContract<T>, so cast through unknown (TS2352) to attach the extra accessor.
+    (contract as unknown as { deployed: () => Promise<DeployedContract<T>> }).deployed = awaitDeployed;
     return contract;
   }
 }

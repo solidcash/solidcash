@@ -86,6 +86,22 @@ describe('harness: time and block control', () => {
   });
 });
 
+describe('harness: raw JSON-RPC shim (ported evm_* time-travel)', () => {
+  it('routes provider.send("evm_increaseTime"/"evm_mine"/"hardhat_mine") verbatim', async () => {
+    const t0 = await time.latest();
+    // EA/MS pass hex-quantity params, exactly as the ported suites do.
+    await provider.send('evm_increaseTime', [`0x${(60 * 60 * 24).toString(16)}`]);
+    await provider.send('evm_mine', []);
+    expect((await time.latest()) - t0).to.equal(86400);
+
+    const h0 = await provider.getBlockHeight();
+    await provider.send('hardhat_mine', ['0x5']);
+    expect((await provider.getBlockHeight()) - h0).to.equal(5);
+    await provider.send('evm_mine', []);
+    expect((await provider.getBlockHeight()) - h0).to.equal(6);
+  });
+});
+
 describe('harness: ethers utils (forwarded to ethers v6 + v5 shims)', () => {
   it('units and BigNumber', () => {
     expect(parseEther('1')).to.equal(10n ** 18n);

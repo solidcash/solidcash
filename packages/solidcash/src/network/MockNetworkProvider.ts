@@ -157,6 +157,12 @@ export default class MockNetworkProvider implements NetworkProvider {
       case 'evm_mine':
         await this.mine(1);
         return '0x0';
+      case 'hardhat_mine': {
+        // hardhat_mine([blocks?, interval?]) - hex quantities; default 1 block. Interval (spacing) is a no-op here.
+        const blocks = params[0] === undefined ? 1 : Number(params[0]);
+        await this.mine(Math.max(1, blocks));
+        return '0x0';
+      }
       case 'evm_increaseTime':
         return this.increaseTime(Number(params[0]));
       case 'evm_setNextBlockTimestamp':

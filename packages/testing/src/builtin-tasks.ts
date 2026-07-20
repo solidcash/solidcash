@@ -9,10 +9,24 @@ import path from 'path';
 import { task } from './tasks.js';
 import type { HardhatRuntimeEnvironment } from './hre.js';
 
-task('compile', 'Compile all .scash contracts to artifacts (per-contract, Hardhat-style layout)')
+// Recursively collect `.sol` sources, skipping vendored dependency trees (node_modules + `@scope` package dirs like
+// @openzeppelin / @sablier) - those are resolved as imports by compileFileMulti, not compiled as top-level targets.
+function findSolSources(dir: string, out: string[] = []): string[] {
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    if (entry.isDirectory()) {
+      if (entry.name === 'node_modules' || entry.name.startsWith('@')) continue;
+      findSolSources(path.join(dir, entry.name), out);
+    } else if (entry.name.endsWith('.sol')) {
+      out.push(path.join(dir, entry.name));
+    }
+  }
+  return out;
+}
+
+task('compile', 'Compile .scash and .sol contracts to artifacts (per-contract, Hardhat-style layout)')
   .addFlag('quiet', 'Suppress per-file output')
   .setAction(async (args, hre: HardhatRuntimeEnvironment) => {
-    const { compileString, compileStringMulti } = await import('solidc');
+    const { compileString, compileStringMulti, compileFileMulti } = await import('solidc');
     const { formatArtifact } = await import('@solidcash/utils');
     const contractsDir = path.resolve(hre.config.paths.contracts);
     const artifactsDir = path.resolve(hre.config.paths.artifacts);
@@ -46,8 +60,36 @@ task('compile', 'Compile all .scash contracts to artifacts (per-contract, Hardha
         console.error(`Error compiling ${fn}: ${e.message}`);
       }
     }
-    if (!args.quiet) console.log(`Compiled ${ok}/${files.length} file(s), ${contracts} contract artifact(s).`);
-    return { compiled: ok, total: files.length, contracts };
+
+    // Cross-compile `.sol` sources (Solidity porting, e.g. `../effectiveacceleration.ai/contract`). compileFileMulti
+    // resolves imports (OZ, interfaces) from the source's own node_modules, so `paths.contracts` may point at the real
+    // Hardhat project. solidityImportCompat is forced on for `.sol`; other solc opts (ecrecover: 'p2pkh', ...) flow
+    // through. Each file's import graph yields many contracts; a name is written once (first compile wins).
+    const solFiles = findSolSources(contractsDir);
+    const writtenNames = new Set<string>();
+    let solOk = 0;
+    for (const full of solFiles) {
+      const rel = path.relative(contractsDir, full);
+      try {
+        const map = compileFileMulti(full, { solidityImportCompat: true, ...hre.config.solc });
+        const fresh: string[] = [];
+        for (const [name, artifact] of Object.entries(map)) {
+          if (writtenNames.has(name)) continue;
+          writtenNames.add(name);
+          fs.writeFileSync(path.join(artifactsDir, `${name}.json`), formatArtifact(artifact as any, 'json'));
+          fresh.push(name);
+          contracts++;
+        }
+        if (!args.quiet) console.log(`Compiled ${rel}${fresh.length ? ` -> ${fresh.join(', ')}` : ' (all names already emitted)'}`);
+        solOk++;
+      } catch (e: any) {
+        console.error(`Error compiling ${rel}: ${e.message.split('\n')[0]}`);
+      }
+    }
+
+    const totalFiles = files.length + solFiles.length;
+    if (!args.quiet) console.log(`Compiled ${ok + solOk}/${totalFiles} file(s), ${contracts} contract artifact(s).`);
+    return { compiled: ok + solOk, total: totalFiles, contracts };
   });
 
 task('test', 'Run the test suite (Vitest)')

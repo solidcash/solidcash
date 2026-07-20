@@ -929,6 +929,42 @@ function calldataDataOffset(name: string): bigint | undefined {
   return 4n + BigInt(headWords) * 32n + 32n;
 }
 
+// A calldata param's `.offset`/`.length` that is ASSIGNED in the function (`x.offset := v`) is a mutable Yul
+// calldata-pointer component: modeled as a function-scoped local `__cd_<base>_<member>` (default = the compile-time
+// offset / SIZE(param)), so a later read in ANY block returns the assigned value. Keyed "base.member". Populated by
+// prescan in visitFunctionDefinition; read/assign consult it.
+let mutableCalldataComponents = new Set<string>();
+const cdComponentLocal = (base: string, member: string): string => `__cd_${base}_${member}`;
+
+function scanYulForComponentAssigns(block: YulBlockNode, out: Set<string>): void {
+  for (const s of block.statements) {
+    if (s instanceof YulAssignmentNode) {
+      for (const p of s.paths) {
+        if (p.members.length === 1 && (p.members[0] === 'offset' || p.members[0] === 'length')) {
+          out.add(`${p.base}.${p.members[0]}`);
+        }
+      }
+    } else if (s instanceof YulIfNode) scanYulForComponentAssigns(s.body, out);
+    else if (s instanceof YulForLoopNode) {
+      scanYulForComponentAssigns(s.pre, out);
+      scanYulForComponentAssigns(s.post, out);
+      scanYulForComponentAssigns(s.body, out);
+    } else if (s instanceof YulSwitchNode) {
+      for (const c of s.cases) scanYulForComponentAssigns(c.body, out);
+      if (s.defaultBody) scanYulForComponentAssigns(s.defaultBody, out);
+    } else if (s instanceof YulBlockNode) scanYulForComponentAssigns(s, out);
+  }
+}
+
+function collectMutableCalldataComponents(node: Node, out: Set<string>): void {
+  if (node instanceof AssemblyStatementNode && node.yulBlock) scanYulForComponentAssigns(node.yulBlock, out);
+  for (const key of Object.keys(node)) {
+    const v = (node as unknown as Record<string, unknown>)[key];
+    if (v instanceof Node) collectMutableCalldataComponents(v, out);
+    else if (Array.isArray(v)) for (const x of v) if (x instanceof Node) collectMutableCalldataComponents(x, out);
+  }
+}
+
 // `calldatacopy(_, P.offset, P.length)` where P is a bytes calldata param -> P (the copied calldata region IS the
 // param's bytes). offset/length are the Yul calldata-slice accessors on the same param. Returns the param name.
 function resolveCalldataParamCopy(off: YulExpressionNode, len: YulExpressionNode): string | undefined {
@@ -1293,7 +1329,11 @@ function lowerValue(expr: YulExpressionNode): ExpressionNode {
     }
     // `x.offset` of a state var: the byte offset within its 32-byte slot (0 for a full-slot var; the packed
     // sub-word offset otherwise). For a dynamic CALLDATA param it is the ABI byte position of the param's DATA.
+    // A MUTABLE calldata component (`x.offset := v` present in the fn) reads the function-scoped local instead.
     if (expr.members.length === 1 && expr.members[0] === 'offset') {
+      if (mutableCalldataComponents.has(`${expr.base}.offset`)) {
+        return loc(new IdentifierNode(cdComponentLocal(expr.base, 'offset')), expr);
+      }
       const varName = resolveStorageVarName(expr.base);
       const slot = varName !== undefined ? currentVarSlot.get(varName) : undefined;
       if (slot !== undefined) {
@@ -1304,8 +1344,11 @@ function lowerValue(expr: YulExpressionNode): ExpressionNode {
       if (off !== undefined) return intLit(off, expr);
       throw new YulNotLowerable();
     }
-    // `x.length` of a bytes/array calldata param: the byte/element length of the param value.
+    // `x.length` of a bytes/array calldata param: the byte/element length of the param value (or the mutable local).
     if (expr.members.length === 1 && expr.members[0] === 'length') {
+      if (mutableCalldataComponents.has(`${expr.base}.length`)) {
+        return loc(new IdentifierNode(cdComponentLocal(expr.base, 'length')), expr);
+      }
       const p = currentParams.find((pp) => pp.name === expr.base);
       if (p && (p.type instanceof BytesType || p.type === PrimitiveType.STRING || p.type instanceof ArrayType)) {
         return loc(new UnaryOpNode(UnaryOperator.SIZE, loc(new IdentifierNode(expr.base), expr)), expr);
@@ -1776,6 +1819,12 @@ function lowerStatement(stmt: YulStatementNode): StatementNode {
   }
 
   if (stmt instanceof YulAssignmentNode) {
+    // `x.offset := v` / `x.length := v` on a mutable calldata component -> assign its function-scoped local.
+    if (stmt.paths.length === 1 && stmt.paths[0].members.length === 1
+      && mutableCalldataComponents.has(`${stmt.paths[0].base}.${stmt.paths[0].members[0]}`)) {
+      const local = cdComponentLocal(stmt.paths[0].base, stmt.paths[0].members[0]);
+      return loc(new AssignNode(loc(new IdentifierNode(local), stmt), lowerValue(stmt.value)), stmt);
+    }
     if (stmt.paths.length !== 1 || stmt.paths[0].members.length > 0) throw new YulNotLowerable();
     const name = stmt.paths[0].base;
     // `pair := create2(0, add(code,0x20), mload(code), salt)` -> `pair = new C{salt}()` (deploy). Emit the
@@ -2292,6 +2341,14 @@ export default class LowerInlineAssembly extends AstTraversal {
     currentCreationCodeLocals = new Map();
     bufferWrites = new Map();
     functionYulMemUsed = false;
+    mutableCalldataComponents = new Set();
+    collectMutableCalldataComponents(node, mutableCalldataComponents);
+    // Keep only components whose base is a dynamic CALLDATA param (a storage-pointer `.offset` is read-only and
+    // must not be re-routed to a local).
+    const dynCalldataParams = new Set(node.parameters.filter((p) => isDynamicCalldataType(p.type)).map((p) => p.name));
+    mutableCalldataComponents = new Set(
+      [...mutableCalldataComponents].filter((k) => dynCalldataParams.has(k.split('.')[0])),
+    );
     for (const p of node.parameters) currentVars.set(p.name, p.type);
     collectVarTypes(node.body, currentVars);
     currentStorageAliases = new Map();
@@ -2309,6 +2366,21 @@ export default class LowerInlineAssembly extends AstTraversal {
         (s) => s instanceof VariableDefinitionNode && s.name === YULMEM,
       );
       if (!alreadyDeclared) result.body.statements = [yulMemInit(result.body), ...(result.body.statements ?? [])];
+    }
+    // Declare each mutable calldata component (`x.offset`/`x.length` assigned in the fn) as a function-scoped local,
+    // initialized to its default (compile-time offset / SIZE(param)) at the body top so an assign in one block is
+    // visible in a later block.
+    if (mutableCalldataComponents.size > 0) {
+      const decls: StatementNode[] = [];
+      for (const key of mutableCalldataComponents) {
+        const [base, member] = key.split('.');
+        const local = cdComponentLocal(base, member);
+        const def = member === 'offset'
+          ? intLit(calldataDataOffset(base) ?? 0n, node)
+          : loc(new UnaryOpNode(UnaryOperator.SIZE, loc(new IdentifierNode(base), node)), node);
+        decls.push(loc(new VariableDefinitionNode(UINT256, [], local, def), node));
+      }
+      result.body.statements = [...decls, ...(result.body.statements ?? [])];
     }
     currentParams = [];
     currentVars = new Map();

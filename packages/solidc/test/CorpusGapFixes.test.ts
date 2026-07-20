@@ -382,6 +382,10 @@ describe('storage-pointer local .slot/.offset in assembly (T[] storage x = a; x.
     expect(ok('contract C { function f(bytes calldata x) public returns (uint r) {'
       + ' assembly { r := x.offset } require(true); } }')).toBe('C');
   });
+  it('calldata .offset/.length are assignable (mutable calldata-slice component)', () => {
+    expect(ok('contract C { function f(uint a, bytes calldata x, uint b) public returns (uint r) {'
+      + ' assembly { x.offset := 8 } assembly { r := x.offset } require(true); } }')).toBe('C');
+  });
 });
 
 describe('composite sub-slot field access (sload/sstore on a value-field struct slot)', () => {

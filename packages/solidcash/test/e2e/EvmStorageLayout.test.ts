@@ -578,3 +578,24 @@ describe('calldata .offset = compile-time ABI data position', () => {
     await (sc as any).chkMixed(7n, new Uint8Array([1, 2]), 8n).send();
   });
 });
+
+// Calldata `.offset`/`.length` are ASSIGNABLE (a calldata-slice re-point): modeled as function-scoped mutable
+// locals, so `x.offset := 8` in one block is read back as 8 in a later block (corpus calldata_offset_read_write).
+const CALLDATA_RW = `pragma solidcash >=0.8.0;
+contract C() {
+  uint256 dummy;
+  function chk(uint256 a, bytes calldata x, uint256 b) {
+    assembly { x.offset := 8  x.length := 20 }
+    uint256 r = 0; uint256 v = 0;
+    assembly { r := x.offset  v := x.length }
+    require(r == 8);
+    require(v == 20);
+  }
+}`;
+
+describe('calldata .offset/.length assignable (mutable component, cross-block)', () => {
+  it('assign in one block, read back in another', async () => {
+    const sc = await deploy(CALLDATA_RW);
+    await (sc as any).chk(7n, new Uint8Array([1, 2]), 8n).send();
+  });
+});
